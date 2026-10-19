@@ -139,11 +139,24 @@ func TestToolDefinitionValidateBranches(t *testing.T) {
 			d.Workload.Lifecycle = CLILifecycleSharedPool
 			d.Workload.WorkspaceScope = "binding"
 		})},
+		// shareable:connection shares one workload between members — it only
+		// exists on a Shared-class definition; a per-user class would silently
+		// fork the "shared" workload per member.
+		{"shareable-connection-per-user", valid(func(d *ToolDefinition) { d.Workload.Class = PerUser; d.Workload.Shareable = "connection" })},
+		{"shareable-unknown", valid(func(d *ToolDefinition) { d.Workload.Shareable = "team" })},
 	}
 	for _, tc := range cases {
 		if err := tc.d.Validate(); err == nil {
 			t.Fatalf("%s: invalid definition accepted", tc.name)
 		}
+	}
+	// shareable:credential keeps per-member workloads — PerUser stays valid.
+	if err := valid(func(d *ToolDefinition) { d.Workload.Class = PerUser; d.Workload.Shareable = "credential" }).Validate(); err != nil {
+		t.Fatalf("per-user shareable:credential rejected: %v", err)
+	}
+	// shareable:connection on a Shared class is the valid pairing.
+	if err := valid(func(d *ToolDefinition) { d.Workload.Class = Shared; d.Workload.Shareable = "connection" }).Validate(); err != nil {
+		t.Fatalf("shared shareable:connection rejected: %v", err)
 	}
 
 	// Valid alternatives: OR-grouped credentials, brokered delivery, remote

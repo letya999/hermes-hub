@@ -174,6 +174,53 @@ These primitives are not a completed deployment boundary. Rendering does not yet
 provision managed identities or isolated roots, legacy deployments remain outside
 the guarantee, and human consent/migration still need CHG-0065.
 
+### Unified connector surface (ADR-0055)
+
+A profile that sets `connectors: personal` or `personal+team` replaces the legacy
+per-operation control projection with exactly nine `connector_*` tools — legacy
+control operations (`prepare_source`, `confirm`, `enable`, `remove`, …) are not
+projected under the bundle. Every call resolves a selector, gets-or-creates one
+durable operation in the journal keyed by `(principal, intent, normalized
+target)`, and returns the uniform `{operation_id, state, code?, summary,
+link_sent?, candidates?}` shape — never a token, nonce, OAuth state, internal
+URL, container ID or link material.
+
+| Tool | Arguments | Behavior |
+|---|---|---|
+| `connector_search` | `query`, `kind?` | reviewed prepared-catalog matches |
+| `connector_list` | — | caller's own live connectors |
+| `connector_status` | `target` or `operation_id` | connector phase or journaled operation |
+| `connector_install` | `target` | catalog install or prepared-source self-install, steps resolve→fetch_artifact→collect_credentials→admit_probe→bind→project→notify |
+| `connector_enable` / `connector_disable` | `target` | reversible phase flip, credentials preserved |
+| `connector_allow_writes` | `target`, `on` | `on:true` arms a `/confirm` link and hides write tools until the human click; `on:false` applies immediately |
+| `connector_reauth` | `target` | fresh credential form without reinstall |
+| `connector_remove` | `target` | one-time `/remove` link; journals confirm→cut_authorization→purge→verify_zero→notify |
+
+`target` resolves by precedence — exact onboarding/connection/definition id,
+alias, source URL, repository basename, registry name — scoped to the caller's
+own live onboardings; removed, failed and superseded records never match, and an
+ambiguous selector returns `ambiguous_target` with public candidate ids. The
+same verbs run on `hubctl connector <verb> --target <sel>` (the operator selects
+the capability profile with `--profile`/`--env`/`--generation`) and on the
+control listener (`POST /v1/connectors:install`, `POST /v1/connectors/{id}:disable`,
+`GET /v1/operations/{id}`, control-token or principal-bearer auth plus
+`X-Hub-Principal`). All three surfaces call `ControlPlane.InvokeConnector` — one
+implementation, one journal.
+
+Team connectors (ADR-0058) extend the surface: the operator publishes a
+confirmed `Team` record (`members`, `write_members`, `allow_writes`,
+monotonic `revision`) and shares a connection under `OwnerRef{team}` —
+`shareable: credential` keeps one workload per member on the shared
+credential reference, `shareable: connection` runs one shared workload and
+is admitted only for stateless definitions. Members see the entry in
+`connector_list` with the `team` badge; their lifecycle calls on it return
+`not_permitted`, write tools stay hidden unless the team record enables
+them, and removing a member drops only that member's binding and workload.
+Operator rotation flows to members on the next call without reconnect —
+in-flight calls finish on the revision they resolved — while
+`DropTeamConnection` purges every member binding plus the shared rows at
+once.
+
 When upgrading to the rights-only `policy_version` hash, inventory every active
 managed profile and runtime envelope before restarting ToolHub. Binding migration
 does not reissue capability profiles. An old profile can fail startup validation
@@ -483,6 +530,21 @@ longer opens the credential store or the audit ledger — `HUB_CREDENTIAL_STORE`
 and are inert to `hub-communication`. `HUB_CREDENTIAL_STORE` must be set on
 `hub-toolhub` for decrypt-and-inject.
 Never run hermes update in prod: update reviewed source pins and rebuild instead.
+
+Human-action links (`/credentials`, `/confirm`, `/remove`, `/connect`,
+`/device`) are one-time `?t=` URLs minted per onboarding; spent or expired
+links answer 410. They are delivered back on the channel the install was
+requested from — a channel without `Caps().Actions` receives the same plain
+text. By default every link targets the loopback listener. To finish actions
+from another device, publish a TLS-terminating origin and set
+`HUB_PUBLIC_ORIGIN=https://<public-host>` on `hub-toolhub` (https only —
+anything else mints loopback links) together with `HUB_PUBLIC_LISTEN=<addr>`
+for the second listener. That listener serves only the human-action paths;
+control and gateway routes answer 404, and the communication hub accepts an
+https `form_url` only when its host equals the configured origin exactly.
+For scripts, `hubctl connector link --onboarding <id>` prints the pending
+action URL, and `--confirm` completes an awaiting-confirmation onboarding
+without a browser.
 
 To enable the Credential Broker path, configure the control, approval and
 runtime URL/key/ID/issuer variables documented in

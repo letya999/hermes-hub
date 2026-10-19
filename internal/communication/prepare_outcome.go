@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
 type prepareOutcomeRequest struct {
@@ -224,27 +225,38 @@ func loopbackCredentialURL(raw string) bool {
 		return true
 	}
 	parsed, err := url.Parse(raw)
-	if err != nil || parsed.User != nil || parsed.Scheme != "http" || parsed.RawQuery == "" {
+	if err != nil || parsed.User != nil || parsed.RawQuery == "" {
 		return false
 	}
-	switch parsed.Hostname() {
-	case "127.0.0.1", "localhost", "::1":
-	default:
+	if parsed.Scheme == "https" {
+		// Public links exist only when the operator configured one; the
+		// notice host must be exactly that origin — no look-alike domains.
+		origin, err := url.Parse(api.PublicOrigin())
+		if err != nil || origin.Host == "" || parsed.Host != origin.Host {
+			return false
+		}
+	} else if parsed.Scheme == "http" {
+		switch parsed.Hostname() {
+		case "127.0.0.1", "localhost", "::1":
+		default:
+			return false
+		}
+	} else {
 		return false
 	}
-	return strings.HasPrefix(parsed.Path, "/credentials/")
+	return strings.HasPrefix(parsed.Path, "/credentials/") || strings.HasPrefix(parsed.Path, "/confirm/") || strings.HasPrefix(parsed.Path, "/remove/") || strings.HasPrefix(parsed.Path, "/connect/") || strings.HasPrefix(parsed.Path, "/device/")
 }
 
 func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key, notice string, request prepareOutcomeRequest, waitingForLogin bool) error {
-	if len(user.TelegramIDs) == 0 {
-		return errNoPrepareChannel
-	}
 	now := g.now().UTC()
 	// The callback authenticates by principal only, so caller.ConversationID is
 	// the synthesized DM envelope: route by the still-active message job that
 	// initiated this onboarding, else the notice leaks to the DM root.
 	conversation, deliveryTarget := caller.ConversationID, caller.DeliveryTargetID
-	bound := g.spool.TaskByConversation(user, user.TelegramIDs[0], conversation)
+	var bound Task
+	if len(user.TelegramIDs) > 0 {
+		bound = g.spool.TaskByConversation(user, user.TelegramIDs[0], conversation)
+	}
 	// The initiating tool call runs inside its message job, so the job that
 	// existed — and most recently started — at the onboarding's creation
 	// instant is the initiator. It outranks a persisted route, which older
@@ -252,7 +264,7 @@ func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key,
 	origin, found := prepareOrigin{}, false
 	if created, err := time.Parse(time.RFC3339Nano, request.CreatedAt); err == nil && !created.IsZero() {
 		if mapping, ok := g.spool.initiatingMessageMapping(user.ID, created, request.Repository); ok {
-			origin = prepareOrigin{ConversationID: mapping.ConversationID, DeliveryTargetID: mapping.DeliveryTargetID, ChatID: mapping.ChatID, TopicID: mapping.TopicID}
+			origin = prepareOrigin{ConversationID: mapping.ConversationID, DeliveryTargetID: mapping.DeliveryTargetID, Channel: mapping.Channel, ChatID: mapping.ChatID, TopicID: mapping.TopicID}
 			found = true
 		}
 	}
@@ -263,7 +275,7 @@ func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key,
 	}
 	if !found {
 		if mapping, ok := g.spool.newestActiveMessageMapping(user.ID); ok {
-			origin = prepareOrigin{ConversationID: mapping.ConversationID, DeliveryTargetID: mapping.DeliveryTargetID, ChatID: mapping.ChatID, TopicID: mapping.TopicID}
+			origin = prepareOrigin{ConversationID: mapping.ConversationID, DeliveryTargetID: mapping.DeliveryTargetID, Channel: mapping.Channel, ChatID: mapping.ChatID, TopicID: mapping.TopicID}
 			found = true
 		}
 	}
@@ -276,7 +288,27 @@ func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key,
 		bound = g.spool.TaskByConversation(user, origin.ChatID, origin.ConversationID)
 		conversation, deliveryTarget = origin.ConversationID, origin.DeliveryTargetID
 	}
-	delivery := Delivery{ID: key + "-notice", IdempotencyKey: key + "-notice", Channel: "telegram_bot", ChatID: bound.ChatID, TaskID: bound.TaskID, TopicID: bound.TopicID, Text: notice, CreatedAt: now}
+	// The notice returns on the channel the human asked from. Channels without
+	// Caps().Actions get the same text — the link is plain and clickable.
+	channelName := origin.Channel
+	if channelName == "" {
+		channelName = bound.Channel
+	}
+	if channelName == "" {
+		channelName = "telegram_bot"
+	}
+	chatID, topicID := bound.ChatID, bound.TopicID
+	if channelName == "telegram_bot" {
+		if len(user.TelegramIDs) == 0 {
+			return errNoPrepareChannel
+		}
+		if chatID == 0 {
+			chatID = user.TelegramIDs[0]
+		}
+	} else if chatID == 0 {
+		chatID, topicID = origin.ChatID, origin.TopicID
+	}
+	delivery := Delivery{ID: key + "-notice", IdempotencyKey: key + "-notice", Channel: channelName, ChatID: chatID, TaskID: bound.TaskID, TopicID: topicID, Text: notice, CreatedAt: now}
 	// One evolving status message per onboarding: once the first notice was
 	// delivered, later updates edit it instead of stacking new messages.
 	delivery.EditMessageID = g.spool.prepareMessageID(request.OnboardingID)
@@ -293,11 +325,10 @@ func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key,
 	if bound.ChatID < 0 && deliveryTarget == "" {
 		envelope.DeliveryTargetID = "telegram-" + strconv.FormatInt(bound.ChatID, 10)
 	}
-	task := bound
 	job := Job{
 		Envelope: envelope, ID: key, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID,
-		ScopeID: "user:" + user.ID, Channel: "telegram_bot", Trigger: "prepare", IdempotencyKey: key,
-		ChatID: task.ChatID, TaskID: task.TaskID, TopicID: task.TopicID,
+		ScopeID: "user:" + user.ID, Channel: channelName, Trigger: "prepare", IdempotencyKey: key,
+		ChatID: chatID, TaskID: bound.TaskID, TopicID: topicID,
 		Text: prepareContinuation(request), CreatedAt: now,
 	}
 	_, err := g.spool.Enqueue(job)

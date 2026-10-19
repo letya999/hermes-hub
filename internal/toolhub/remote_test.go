@@ -194,14 +194,21 @@ func newRemoteMCPFixture(t *testing.T, requiredToken string) *remoteMCPFixture {
 	}))
 	t.Cleanup(server.Close)
 	fixture.URL = server.URL
+	pinRemoteFixtureClient(t, fixture, server.URL)
+	return fixture
+}
 
+// pinRemoteFixtureClient maps the fixture TLS server to a public-looking
+// answer and swaps api.RemoteHTTPClient for a fixture-dialing client.
+func pinRemoteFixtureClient(t *testing.T, fixture *remoteMCPFixture, serverURL string) {
+	t.Helper()
 	originalResolve, originalClient := api.ResolveRemoteIP, api.RemoteHTTPClient
 	fixture.tlsCleanup = func() { api.ResolveRemoteIP, api.RemoteHTTPClient = originalResolve, originalClient }
 	t.Cleanup(fixture.tlsCleanup)
 	api.ResolveRemoteIP = func(ctx context.Context, host string) ([]netip.Addr, error) {
 		return []netip.Addr{netip.MustParseAddr("93.184.216.34")}, nil
 	}
-	dialAddr := strings.TrimPrefix(server.URL, "https://")
+	dialAddr := strings.TrimPrefix(serverURL, "https://")
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -219,7 +226,6 @@ func newRemoteMCPFixture(t *testing.T, requiredToken string) *remoteMCPFixture {
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		}
 	}
-	return fixture
 }
 
 // remoteFixtureHost maps the TLS fixture to a stable public-looking endpoint
@@ -307,7 +313,7 @@ func TestPrepareRemoteCredentialFreeEndToEnd(t *testing.T) {
 	if _, err := callControl(t, bob, "prepare_source", map[string]any{"definition_id": prepared["definition_id"], "version": "1.0.0"}); err == nil {
 		t.Fatal("cross-user catalog prepare allowed")
 	}
-	confirmed, err := callControl(t, alice, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": prepared["nonce"]})
+	confirmed, err := callControl(t, alice, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, fix.store, prepared["onboarding_id"])})
 	if err != nil {
 		t.Fatalf("confirm: %v", err)
 	}

@@ -1,0 +1,22 @@
+{
+  "target": "modelcontextprotocol/puppeteer",
+  "subject": {
+    "kind": "mcp-container",
+    "ref": "modelcontextprotocol/puppeteer@sha256:b7dd36a8ba502bd5e97c61f9c8ea239373bbf59f58f6789de3a28a62ce378e6b"
+  },
+  "provenance": [
+    "recorded upstream README/env contract"
+  ],
+  "entries": [
+    {
+      "claim": {
+        "attribute": "entrypoint",
+        "value": "[\"node\", \"dist/index.js\"]"
+      },
+      "source": "README.md",
+      "ref": "README.md@mcpServers",
+      "rank": "hint"
+    }
+  ],
+  "expect_digest": "sha256:e7c06630941a65f9ce2609fe132bf19410b547c7d7dd577e992953d0cace4107"
+}

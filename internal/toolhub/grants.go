@@ -204,6 +204,28 @@ func (s *Store) sharedForeignConnection(principalID, connectionID string) bool {
 	return ok && connection.Metadata["shared_policy"] != "" && connection.Owner.ID != principalID
 }
 
+// teamConnectionCoversLocked admits a member to a team-owned connection: the
+// owner ref names the team and membership is read from the stored record on
+// every call, so member removal takes effect without mutating bindings.
+func (s *Store) teamConnectionCoversLocked(auth identity.Envelope, connection api.Connection) bool {
+	if connection.Owner.Type != api.TeamOwner {
+		return false
+	}
+	team, ok := s.teams[connection.Owner.ID]
+	return ok && team.IsMember(auth.PrincipalID)
+}
+
+// teamMemberWritesLocked reports whether a call through this connection may
+// carry write-effect tools: non-team connections keep their existing surface,
+// team members need the operator's write policy on the team record.
+func (s *Store) teamMemberWritesLocked(auth identity.Envelope, effective api.EffectiveBinding) bool {
+	if effective.Connection == nil || effective.Connection.Owner.Type != api.TeamOwner {
+		return true
+	}
+	team, ok := s.teams[effective.Connection.Owner.ID]
+	return ok && team.CanWrite(auth.PrincipalID)
+}
+
 func (s *Store) RequireCatalogAccess(auth identity.Envelope, definition api.ToolDefinition) error {
 	if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
 		return fmt.Errorf("%w: %v", api.ErrUnauthorized, err)
@@ -301,6 +323,17 @@ func (s *Store) AllowedControlOperations(auth identity.Envelope) (map[string]boo
 		profile, _, err := s.capabilityProfileLocked(auth)
 		if err != nil {
 			return allowed, err
+		}
+		// The connectors bundle replaces the legacy per-operation projection
+		// with the unified nine-tool surface.
+		if profile.Connectors == api.ConnectorsPersonal || profile.Connectors == api.ConnectorsPersonalTeam {
+			for _, tool := range api.ConnectorTools {
+				allowed[tool] = true
+			}
+			return allowed, nil
+		}
+		if profile.Connectors == api.ConnectorsNone {
+			return allowed, nil
 		}
 		for _, operation := range profile.ControlOperations {
 			if slices.Contains(api.ControlOperations, operation) {

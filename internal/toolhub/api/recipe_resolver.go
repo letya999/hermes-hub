@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 )
 
 type RecipeResolver struct {
@@ -43,6 +45,16 @@ func (r RecipeResolver) Resolve(ctx context.Context, source ArtifactSource, cont
 	resolution := RecipeResolution{Source: source, State: "draft"}
 	resolution.Evidence = contextEvidence(scopedFiles)
 
+	// Catalogs are consulted first with source-derived lookup data only:
+	// registry answers outrank repository files on both ladders, so a repo
+	// hint must never steer which catalog record wins. Repository files are
+	// parsed afterwards and contribute low-rank claims and warnings.
+	candidates := LookupCatalogs(ctx, r.Catalogs, lookup)
+	fetchedAt := time.Now().UTC().Format(time.RFC3339)
+	for _, candidate := range candidates {
+		resolution.Ledger = append(resolution.Ledger, candidateLedgerEntries(candidate, !CandidateMatches(candidate, source), fetchedAt)...)
+	}
+
 	localLaunch, localConnection, warnings, err := ResolveLocalRecipe(scopedFiles, source)
 	if err != nil {
 		return RecipeResolution{}, err
@@ -50,12 +62,7 @@ func (r RecipeResolver) Resolve(ctx context.Context, source ArtifactSource, cont
 	resolution.Launch = localLaunch
 	resolution.Connection = localConnection
 	resolution.Warnings = append(resolution.Warnings, warnings...)
-	lookup.ImageHints = recipeImageHints(localLaunch, scopedFiles)
-	if localLaunch.Version != "" {
-		lookup.VersionHints = []string{localLaunch.Version}
-	}
 
-	candidates := LookupCatalogs(ctx, r.Catalogs, lookup)
 	for _, candidate := range candidates {
 		if !CandidateMatches(candidate, source) {
 			resolution.Warnings = append(resolution.Warnings, "catalog candidate ignored: repository or commit did not match the pinned source")
@@ -78,11 +85,20 @@ func (r RecipeResolver) Resolve(ctx context.Context, source ArtifactSource, cont
 	if err := resolution.Connection.Validate(); err != nil {
 		return RecipeResolution{}, err
 	}
+	// Re-run the recorded ledger to enrich the merged recipe: the winning
+	// claims carry each field's ladder rank and token help link, and the
+	// resolved trust tier summarises the worst winning rank for the form.
+	// Locally parsed fields without ledger claims keep their Source tag. A
+	// ledger-level disagreement degrades to a warning — the merge above and
+	// the review gate already decided admissibility.
+	enrichResolution(&resolution)
 	if !HasLaunch(resolution.Launch) {
 		resolution.Warnings = append(resolution.Warnings, "no complete launch recipe was proven; existing language fallback remains required")
 	}
+	// Ranked claims settle disagreements deterministically, so a disagreeing
+	// warning never decides review; conflicts and unsafe directives still do.
 	for _, warning := range resolution.Warnings {
-		if strings.Contains(warning, "conflict") || strings.Contains(warning, "disagree") || strings.Contains(warning, "unsafe") {
+		if strings.Contains(warning, "conflict") || strings.Contains(warning, "unsafe") {
 			resolution.State = "review"
 		}
 	}
@@ -91,6 +107,84 @@ func (r RecipeResolver) Resolve(ctx context.Context, source ArtifactSource, cont
 	}
 	slices.Sort(resolution.Warnings)
 	return resolution, nil
+}
+
+// candidateLedgerEntries decomposes one fetched catalog response into ledger
+// claims — one per launch attribute and credential field — so resolution can
+// be replayed without repeating the fetch. Mismatched candidates stay in the
+// ledger flagged ignored.
+func candidateLedgerEntries(candidate RecipeCandidate, ignored bool, fetchedAt string) []LedgerEntry {
+	body, _ := json.Marshal(candidate)
+	sum := sha256.Sum256(body)
+	digest := "sha256:" + hex.EncodeToString(sum[:])
+	source := candidate.Source
+	if source == "" {
+		source = "catalog"
+	}
+	ref := candidate.Repository
+	if candidate.CommitSHA != "" {
+		ref += "@" + candidate.CommitSHA
+	}
+	quote := func(value string) string {
+		encoded, _ := json.Marshal(value)
+		return string(encoded)
+	}
+	var entries []LedgerEntry
+	entry := func(claim Claim, rank Rank) {
+		entries = append(entries, LedgerEntry{Claim: claim, Source: source, Ref: ref, Rank: rank, Digest: digest, FetchedAt: fetchedAt, Ignored: ignored})
+	}
+	if candidate.Launch.Artifact != "" {
+		entry(Claim{Attribute: "artifact", Value: quote(candidate.Launch.Artifact)}, candidate.LaunchRank)
+	}
+	if candidate.Launch.Endpoint != "" {
+		entry(Claim{Attribute: "endpoint", Value: quote(candidate.Launch.Endpoint)}, candidate.LaunchRank)
+	}
+	for _, field := range candidate.Connection.Fields {
+		required, secret := field.Required, field.Secret
+		entry(Claim{Field: field.Name, Required: &required, Secret: &secret, Delivery: field.Delivery, Target: field.Target, TokenURL: field.TokenURL}, candidate.CredentialRank)
+	}
+	return entries
+}
+
+// enrichResolution replays the recorded ledger and stamps the resolved trust
+// tier plus per-field rank/token_url onto the merged connection recipe.
+// Without usable claims the resolution keeps an empty tier — an empty ledger
+// resolves to T0, which would misreport locally derived recipes as fully
+// verified. Ledger disagreement surfaces as a warning, never a resolver error.
+func enrichResolution(resolution *RecipeResolution) {
+	usable := false
+	for _, entry := range resolution.Ledger {
+		if !entry.Ignored && (entry.Claim.Field != "" || entry.Claim.Attribute != "") {
+			usable = true
+			break
+		}
+	}
+	if !usable {
+		return
+	}
+	kind := SubjectCLI
+	switch resolution.Launch.Transport {
+	case ContainerMCP:
+		kind = SubjectContainerMCP
+	case RemoteMCP:
+		kind = SubjectRemoteMCP
+	}
+	recipe, err := ResolveLedger(RecipeSubject{Kind: kind, Ref: resolution.Source.Repository}, resolution.Ledger)
+	if err != nil {
+		resolution.Warnings = append(resolution.Warnings, "ledger enrichment failed: "+err.Error())
+		return
+	}
+	resolution.Trust = recipe.Trust
+	provenance := map[string]ConnectionField{}
+	for _, field := range recipe.Credentials.Fields {
+		provenance[field.Name] = field
+	}
+	for i, field := range resolution.Connection.Fields {
+		if proven, ok := provenance[field.Name]; ok {
+			resolution.Connection.Fields[i].Rank = proven.Rank
+			resolution.Connection.Fields[i].TokenURL = proven.TokenURL
+		}
+	}
 }
 
 func LookupCatalogs(ctx context.Context, catalogs []RecipeCatalog, lookup RecipeLookup) []RecipeCandidate {
@@ -175,7 +269,11 @@ func ResolveLocalRecipe(files map[string][]byte, source ArtifactSource) (LaunchR
 		}
 		connection = mergeConnection(connection, tagged)
 	}
-	if data, name := findFile(files, "server.json"); data != nil {
+	data, name, err := findScopedFile(files, "server.json")
+	if err != nil {
+		return LaunchRecipe{}, ConnectionRecipe{}, nil, err
+	}
+	if data != nil {
 		candidate, fields, ok, err := ParseServerManifest(data, name, source)
 		if err != nil {
 			return LaunchRecipe{}, ConnectionRecipe{}, nil, err
@@ -195,7 +293,31 @@ func ResolveLocalRecipe(files map[string][]byte, source ArtifactSource) (LaunchR
 		}
 		merge(fields, name)
 	}
-	for name, data := range files {
+	// The file loop must resolve identically for every call: map iteration is
+	// unspecified, so names are visited in sorted order. Dockerfile and
+	// Compose declarations are the same rank — when two of them disagree about
+	// the launch recipe the resolution fails closed instead of first-wins.
+	launchFromBuild := false
+	mergeBuildLaunch := func(candidate LaunchRecipe, name string) error {
+		if !HasLaunch(candidate) {
+			return nil
+		}
+		if launchFromBuild && !SameLaunch(launch, candidate) {
+			return fmt.Errorf("%w: %s disagrees with an earlier build declaration", ErrAmbiguousEntrypoint, name)
+		}
+		if !HasLaunch(launch) || launchFromBuild {
+			launchFromBuild = true
+		}
+		launch = MergeLaunch(launch, candidate, &warnings)
+		return nil
+	}
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		data := files[name]
 		if testFixturePath(name) {
 			continue
 		}
@@ -206,7 +328,9 @@ func ResolveLocalRecipe(files map[string][]byte, source ArtifactSource) (LaunchR
 			if err != nil {
 				return LaunchRecipe{}, ConnectionRecipe{}, nil, err
 			}
-			launch = MergeLaunch(launch, candidate, &warnings)
+			if err := mergeBuildLaunch(candidate, name); err != nil {
+				return LaunchRecipe{}, ConnectionRecipe{}, nil, err
+			}
 			merge(fields, name)
 			warnings = append(warnings, fileWarnings...)
 		case base == "compose.yaml" || base == "compose.yml" || strings.HasPrefix(base, "docker-compose."):
@@ -221,7 +345,9 @@ func ResolveLocalRecipe(files map[string][]byte, source ArtifactSource) (LaunchR
 				warnings = append(warnings, "Compose recipe rejected: "+err.Error())
 				continue
 			}
-			launch = MergeLaunch(launch, candidate, &warnings)
+			if err := mergeBuildLaunch(candidate, name); err != nil {
+				return LaunchRecipe{}, ConnectionRecipe{}, nil, err
+			}
 			merge(fields, name)
 			warnings = append(warnings, fileWarnings...)
 		case strings.HasPrefix(base, "readme"):

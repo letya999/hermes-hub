@@ -6,6 +6,13 @@ last_verified: 2026-10-02
 
 | Record | Decision |
 |---|---|
+| [ADR-0059](ADR-0059-browser-workloads-as-connectors.md) | Accepted: browsers as ordinary connectors — web egress, per-connection profile isolation, one-time owner viewer links, staged toolsets, bounded shm budget; agent-browser stays blocked |
+| [ADR-0058](ADR-0058-team-connections.md) | Accepted: operator-published Team records, team-owned connections with member bindings, shareable credential/connection modes, not_permitted member lifecycle, sender-attributed audit |
+| [ADR-0057](ADR-0057-ci-built-connector-images.md) | Accepted: catalog tiers T0/T1/T2, CI-built digest-pinned images with zero-build admission, deterministic `connector import` under --confirm, staged toolset projection, bounded prefetch |
+| [ADR-0056](ADR-0056-ownership-finalizers.md) | Accepted: ownership labels on spawned resources, persisted finalizer ladder with verified-zero receipts, one reconciler, revoke-wins commit, bounded store compaction |
+| [ADR-0055](ADR-0055-unified-connector-surface.md) | Accepted: nine `connector_*` tools over one durable operation journal; typed codes, no prose markers or link material in agent results; same facade on MCP, hubctl and control HTTP |
+| [ADR-0054](ADR-0054-human-action-surface.md) | Accepted: one-time `?t=` human-action links on an opt-in public surface, origin-channel delivery, device flow and paste-redirect OAuth, transactional credential save |
+| [ADR-0053](ADR-0053-recipe-source-ledger.md) | Accepted: content-addressed secret-free recipes, ranked source ledgers, fail-closed same-rank ambiguity, digest-referenced onboardings |
 | [ADR-0050](ADR-0050-knowledge-in-runtime-state.md) | Accepted: knowledge in runtime state, staged via apply --state, relocated offline via hubctl spool migrate |
 | [ADR-0049](ADR-0049-broker-only-credential-intake.md) | Accepted: credential intake only via Broker or runtime self-env; legacy gateway surface removed |
 | [ADR-0048](ADR-0048-routines-package.md) | Accepted: internal/routines leaf owns routine semantics and engine behind a Deps seam |

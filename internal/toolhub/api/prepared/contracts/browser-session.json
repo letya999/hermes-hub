@@ -1,0 +1,48 @@
+{
+  "id": "browser-session",
+  "revision": 1,
+  "title": "Browser session import and origin bounds",
+  "storage": "local",
+  "fields": [
+    {
+      "id": "storage_state",
+      "label": "Playwright storage_state.json — optional session import",
+      "kind": "json",
+      "required": false,
+      "max_bytes": 65536
+    },
+    {
+      "id": "allowed_origins",
+      "label": "Semicolon-separated trusted origins (optional, not a security boundary)",
+      "kind": "string",
+      "required": false,
+      "max_bytes": 4096
+    },
+    {
+      "id": "blocked_origins",
+      "label": "Semicolon-separated blocked origins, evaluated before the allowlist",
+      "kind": "string",
+      "required": false,
+      "max_bytes": 4096
+    }
+  ],
+  "allow_shared": false,
+  "deliveries": [
+    {
+      "type": "file",
+      "field": "storage_state",
+      "target": "/run/mcp-secrets/browser/storage-state.json",
+      "env_name": "PLAYWRIGHT_MCP_STORAGE_STATE"
+    },
+    {
+      "type": "env",
+      "field": "allowed_origins",
+      "target": "PLAYWRIGHT_MCP_ALLOWED_ORIGINS"
+    },
+    {
+      "type": "env",
+      "field": "blocked_origins",
+      "target": "PLAYWRIGHT_MCP_BLOCKED_ORIGINS"
+    }
+  ]
+}

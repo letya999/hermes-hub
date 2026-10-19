@@ -173,8 +173,7 @@ func TestCredentialGateDefersRegistrationUntilSubmittedSecrets(t *testing.T) {
 		AdmissionGroups: [][]string{{"SLACK_MCP_XOXC_TOKEN", "SLACK_MCP_XOXD_TOKEN"}, {"SLACK_MCP_XOXP_TOKEN"}, {"SLACK_MCP_XOXB_TOKEN"}},
 	}
 	body, err := control.acceptCredentialGate(t.Context(), aliceAuth(), preparing, review)
-	instructions, _ := body["instructions"].(string)
-	if err != nil || body["phase"] != api.PhaseAwaitingCreds || body["tools_confirmed"] != false || strings.Contains(instructions, "one token field") || !strings.Contains(instructions, "field names") {
+	if err != nil || body["phase"] != api.PhaseAwaitingCreds || body["tools_confirmed"] != false || body["next_action"] != "submit_credentials" {
 		t.Fatalf("body=%v err=%v", body, err)
 	}
 	if _, err := store.Definition("slack-mcp-server", "0.0.2"); !errors.Is(err, api.ErrNotFound) {
@@ -190,8 +189,8 @@ func TestCredentialGateDefersRegistrationUntilSubmittedSecrets(t *testing.T) {
 	if len(stored.Definition.ProxyEnvironment) != 1 || stored.Definition.ProxyEnvironment[0] != "SLACK_MCP_PROXY" {
 		t.Fatalf("proxy environment not persisted on the draft: %+v", stored.Definition.ProxyEnvironment)
 	}
-	requiredBody, err := control.requiredCredentials(aliceAuth(), map[string]any{"onboarding_id": preparing.OnboardingID})
-	if err != nil || !strings.Contains(fmt.Sprint(requiredBody["form_url"]), "/credentials/"+preparing.OnboardingID) {
+	requiredBody, err := control.requiredCredentials(context.Background(), aliceAuth(), map[string]any{"onboarding_id": preparing.OnboardingID})
+	if err != nil || requiredBody["input"] != "localhost-form" {
 		t.Fatalf("required=%v err=%v", requiredBody, err)
 	}
 	gateway := &Gateway{Control: control}
@@ -239,7 +238,7 @@ func TestCredentialGateDefersRegistrationUntilSubmittedSecrets(t *testing.T) {
 	if err != nil || !strings.Contains(noted.Error, "один полный набор") || strings.Contains(noted.Error, "one") {
 		t.Fatalf("form rejection was not recorded: %+v %v", noted.Error, err)
 	}
-	if strings.Contains(credentialFieldMarkup(api.CredentialHint{Name: "SLACK_MCP_XOXP_TOKEN", AlternativeGroup: 2}), "required") {
+	if strings.Contains(credentialFieldMarkup(api.CredentialHint{Name: "SLACK_MCP_XOXP_TOKEN", AlternativeGroup: 2}, api.ConnectionField{}, ""), "required") {
 		t.Fatal("alternative field is required")
 	}
 	nonce := stored.FormNonce

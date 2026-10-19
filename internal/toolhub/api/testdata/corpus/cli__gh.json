@@ -1,0 +1,22 @@
+{
+  "target": "cli/gh",
+  "subject": {
+    "kind": "cli",
+    "ref": "cli/gh@sha256:fb2b7fce0940161406a6aa3e4d8b4aa6104014774ffa665743f8d9704f0eb0ec"
+  },
+  "provenance": [
+    "bounded-cli recipe: language-convention entrypoint"
+  ],
+  "entries": [
+    {
+      "claim": {
+        "attribute": "entrypoint",
+        "value": "[\"gh\"]"
+      },
+      "source": "--help",
+      "ref": "cli/gh",
+      "rank": "L6"
+    }
+  ],
+  "expect_digest": "sha256:da16c57d4a02f61807fd1566c9fd8365494e3c83b4cfe205f84cf4e8ad317344"
+}

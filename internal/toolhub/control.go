@@ -9,7 +9,6 @@ import (
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/oauth"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -40,11 +39,22 @@ type ControlPlane struct {
 	// Release asks the workload controller to stop a running workload. Revoke
 	// and remove use it so a cut connector does not keep a materialized
 	// credential alive in a running container until the idle TTL fires.
-	Release func(context.Context, string) error
+	// Purge additionally drops the workload's named state volumes.
+	Release func(context.Context, api.ControllerRelease) error
 	// CLIRelease drops bounded-cli sandbox cells by principal/binding/job
 	// selector: disable and revoke kill warm cells, the /v1 job-end route
 	// kills task cells. Nil leaves cells to the controller's own ladder.
 	CLIRelease func(context.Context, api.CliReleaseRequest) error
+	// LabelQuery lists Docker objects (container/volume/network/image) whose
+	// labels match the query; remove's verify-zero and the reconciler read the
+	// connection footprint through it. Nil means no controller seam — verify
+	// passes vacuously.
+	LabelQuery func(context.Context, map[string]string) (map[string][]string, error)
+	// LabelPurge deletes one labelled Docker object by kind
+	// (container/volume/network/image); the volume/network/image-ref
+	// finalizers sweep leftovers through it. Nil skips the sweep — the
+	// controller's own release path already removed them.
+	LabelPurge func(context.Context, string, string) error
 	// PrepareSyncWindow bounds how long prepare_source waits for review+build
 	// before returning the durable "preparing" record; the work then continues
 	// on a detached context and its result is read via status. Zero uses the
@@ -113,9 +123,9 @@ func (c *ControlPlane) Invoke(ctx context.Context, auth identity.Envelope, op st
 	case "prepare_source":
 		return c.prepareSource(ctx, auth, args)
 	case "status":
-		return c.status(auth, args)
+		return c.status(ctx, auth, args)
 	case "required_credentials":
-		return c.requiredCredentials(auth, args)
+		return c.requiredCredentials(ctx, auth, args)
 	case "confirm":
 		return c.confirm(ctx, auth, args)
 	case "enable":
@@ -127,7 +137,7 @@ func (c *ControlPlane) Invoke(ctx context.Context, auth identity.Envelope, op st
 	case "revoke":
 		return c.revoke(auth, args)
 	case "remove":
-		return c.remove(auth, args)
+		return c.remove(ctx, auth, args)
 	case "diagnostics":
 		return c.diagnostics(ctx, auth, args)
 	case "grant_request":
@@ -137,7 +147,7 @@ func (c *ControlPlane) Invoke(ctx context.Context, auth identity.Envelope, op st
 	}
 }
 
-func (c *ControlPlane) status(auth identity.Envelope, args map[string]any) (map[string]any, error) {
+func (c *ControlPlane) status(ctx context.Context, auth identity.Envelope, args map[string]any) (map[string]any, error) {
 	if api.ArgString(args, "onboarding_id") == "" && api.ArgString(args, "definition_id") == "" && api.ArgString(args, "selector") == "" && api.ArgString(args, "name") == "" && api.ArgString(args, "source") == "" && api.ArgString(args, "operation_id") == "" && api.ArgString(args, "request_key") == "" {
 		c.Store.mu.RLock()
 		var latest api.Onboarding
@@ -169,7 +179,7 @@ func (c *ControlPlane) status(auth identity.Envelope, args map[string]any) (map[
 	if err := c.refreshBrokerRequest(context.Background(), auth, &onboarding); err != nil {
 		return nil, err
 	}
-	if err := c.refreshConfirmation(&onboarding); err != nil {
+	if err := c.refreshConfirmation(ctx, auth, &onboarding); err != nil {
 		return nil, err
 	}
 	return c.statusBody(onboarding, false), nil
@@ -341,7 +351,7 @@ func (c *ControlPlane) revoke(auth identity.Envelope, args map[string]any) (map[
 	if err != nil {
 		return nil, err
 	}
-	if err := c.cutAuthorization(onboarding); err != nil {
+	if err := c.cutAuthorization(onboarding, false); err != nil {
 		return nil, err
 	}
 	onboarding.Phase = api.PhaseRevoked
@@ -352,7 +362,7 @@ func (c *ControlPlane) revoke(auth identity.Envelope, args map[string]any) (map[
 	return c.statusBody(onboarding, false), nil
 }
 
-func (c *ControlPlane) remove(auth identity.Envelope, args map[string]any) (map[string]any, error) {
+func (c *ControlPlane) remove(ctx context.Context, auth identity.Envelope, args map[string]any) (map[string]any, error) {
 	onboarding, err := c.resolveOnboarding(auth, args)
 	if err != nil {
 		return nil, err
@@ -360,64 +370,81 @@ func (c *ControlPlane) remove(auth identity.Envelope, args map[string]any) (map[
 	if onboarding.Phase == api.PhaseRemoved {
 		return c.statusBody(onboarding, false), nil
 	}
-	// Destructive step: a bare call previews what goes away and arms a nonce;
-	// only the nonce-carrying follow-up deletes credentials and state.
-	nonce := api.ArgString(args, "remove_nonce")
-	if onboarding.RemoveNonce == "" || nonce != onboarding.RemoveNonce {
-		if nonce != "" {
-			return nil, fmt.Errorf("%w: remove confirmation", api.ErrUnauthorized)
+	if onboarding.Phase != api.PhaseCleanupIncomplete {
+		// Destructive step: a bare call previews what goes away and arms a
+		// nonce; only the nonce-carrying follow-up deletes credentials and
+		// state. A cleanup_incomplete retry already passed that gate once.
+		nonce := api.ArgString(args, "remove_nonce")
+		if onboarding.RemoveNonce == "" || nonce != onboarding.RemoveNonce {
+			if nonce != "" {
+				return nil, fmt.Errorf("%w: remove confirmation", api.ErrUnauthorized)
+			}
+			onboarding.RemoveNonce = api.RandomNonce()
+			onboarding.RemoveExpires = c.now().Add(c.ttl())
+			onboarding.Revision++
+			if err := c.Store.PutOnboarding(onboarding); err != nil {
+				return nil, err
+			}
+			// The user confirms through the channel link, not a tool argument.
+			api.PostPrepareNotice(ctx, auth, onboarding, "", 0)
+			body := c.statusBody(onboarding, false)
+			body["requires_confirmation"] = true
+			body["next_action"] = "confirm_remove"
+			return body, nil
 		}
-		onboarding.RemoveNonce = api.RandomNonce()
-		onboarding.RemoveExpires = c.now().Add(c.ttl())
+		if onboarding.RemoveExpires.IsZero() || c.now().After(onboarding.RemoveExpires) {
+			return nil, fmt.Errorf("%w: expired remove confirmation", api.ErrUnauthorized)
+		}
+	}
+	// Keep the spent nonce as a tombstone: a replayed link matches it and gets
+	// a 410 "fresh link" page instead of an opaque 401.
+	if len(onboarding.Finalizers) == 0 {
+		// Immediate cut before the destructive ladder: the binding leaves the
+		// projection and the connection drops to deleting (non-active ⇒
+		// Authorize denies) while finalizers purge the footprint.
+		if err := c.revokeAccess(onboarding, api.DeletingStatus); err != nil {
+			return nil, err
+		}
+		onboarding.Finalizers = newRemoveLadder()
+		onboarding.RemoveFootprint = c.labelFootprint(ctx, onboarding)
 		onboarding.Revision++
 		if err := c.Store.PutOnboarding(onboarding); err != nil {
 			return nil, err
 		}
-		body := c.statusBody(onboarding, false)
-		body["requires_confirmation"] = true
-		body["remove_nonce"] = onboarding.RemoveNonce
-		body["next_action"] = "confirm_remove"
-		body["instructions"] = "Removing this connector deletes its credentials, workspace and runtime state permanently. Repeat remove with remove_nonce to execute; ask the user to confirm first."
-		return body, nil
 	}
-	if onboarding.RemoveExpires.IsZero() || c.now().After(onboarding.RemoveExpires) {
-		return nil, fmt.Errorf("%w: expired remove confirmation", api.ErrUnauthorized)
-	}
-	onboarding.RemoveNonce = ""
-	_ = c.cutAuthorization(onboarding)
-	// Remove deletes the owner's ciphertext, not just revokes it — a revoked
-	// marker still leaves the secret recoverable. A credential owned by
-	// someone else (shared policy store owner) is left untouched: removing
-	// one member's connector must not destroy the shared secret.
-	if c.Secrets != nil && onboarding.Locator != "" {
-		owner := onboarding.PrincipalID
-		if onboarding.CredentialOwner != "" {
-			owner = onboarding.CredentialOwner
+	for i := range onboarding.Finalizers {
+		step := &onboarding.Finalizers[i]
+		if step.State == api.FinalizerDone {
+			continue
 		}
-		if owner == onboarding.PrincipalID {
-			if err := c.Secrets.Delete(onboarding.Locator, owner); err != nil && !errors.Is(err, credstore.ErrNotFound) {
+		step.Attempts++
+		step.Error = ""
+		if err := c.runRemoveFinalizer(ctx, onboarding, step.Name); err != nil {
+			step.State = api.FinalizerFailed
+			step.Error = api.PublicPrepareError(err)
+			onboarding.Phase = api.PhaseCleanupIncomplete
+			onboarding.ErrorCode = "cleanup_incomplete"
+			onboarding.Revision++
+			if err := c.Store.PutOnboarding(onboarding); err != nil {
 				return nil, err
 			}
+			body := c.statusBody(onboarding, false)
+			body["retryable"] = true
+			body["next_action"] = "remove"
+			body["finalizer"] = step.Name
+			return body, nil
 		}
-	}
-	if onboarding.BindingID != "" {
-		if binding, err := c.Store.binding(onboarding.BindingID); err == nil {
-			definition, _ := c.definitionOf(onboarding)
-			effective := api.EffectiveBinding{Binding: binding, Definition: definition}
-			if binding.ConnectionID != "" {
-				if conn, _, err := c.Store.OwnedConnection(auth, binding.ConnectionID); err == nil {
-					effective.Connection = &conn
-				}
-			}
-			if err := api.RemoveBindingWorkspace(c.WorkloadRoot, effective); err != nil {
-				return nil, err
-			}
-		}
-		if err := c.Store.RemoveBindingRecords(onboarding.BindingID); err != nil {
+		step.State = api.FinalizerDone
+		onboarding.Revision++
+		if err := c.Store.PutOnboarding(onboarding); err != nil {
 			return nil, err
 		}
 	}
+	if onboarding.ConnectionID != "" && !c.Store.sharedForeignConnection(onboarding.PrincipalID, onboarding.ConnectionID) {
+		_ = c.Store.SetConnectionStatus(onboarding.ConnectionID, api.RevokedStatus)
+	}
 	onboarding.Phase = api.PhaseRemoved
+	onboarding.RemoveReceipt = removeReceipt(onboarding.RemoveFootprint)
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return nil, err
@@ -441,23 +468,20 @@ func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map
 		"effects":        onboarding.Effects,
 		"principal_from": "request",
 	}
-	if onboarding.Recipe != nil {
-		body["recipe"] = onboarding.Recipe
+	if recipe := c.recipeOf(onboarding); recipe != nil {
+		body["recipe"] = recipe
 	}
 	if len(onboarding.CredentialSources) > 0 {
 		body["credential_sources"] = onboarding.CredentialSources
 	}
+	if len(onboarding.Finalizers) > 0 {
+		body["finalizers"] = onboarding.Finalizers
+	}
+	if onboarding.RemoveReceipt != "" {
+		body["remove_receipt"] = onboarding.RemoveReceipt
+	}
 	if onboarding.BrokerRequestID != "" {
 		body["broker_request_id"] = onboarding.BrokerRequestID
-		// A channel sign-in link outranks the Broker form; an LLM caller
-		// parrots whichever URL it sees first, so the fallback URL leaves the
-		// result while a signin_url exists. The stored onboarding keeps it.
-		if onboarding.BrokerAuthorizationURL != "" && onboarding.ChannelAuthURL == "" {
-			body["authorization_url"] = onboarding.BrokerAuthorizationURL
-		}
-	}
-	if onboarding.Phase == api.PhaseAwaitingOAuth && onboarding.ProviderAuthorizationURL != "" {
-		body["authorization_url"] = onboarding.ProviderAuthorizationURL
 	}
 	if withHints {
 		hints := make([]map[string]string, 0, len(onboarding.Required))
@@ -465,39 +489,18 @@ func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map
 			hints = append(hints, map[string]string{"name": hint.Name, "type": hint.Type, "hint": hint.Hint})
 		}
 		body["credentials"] = hints
-		if onboarding.FormNonce != "" {
-			body["form_path"] = "/credentials/" + onboarding.OnboardingID + "?nonce=" + url.QueryEscape(onboarding.FormNonce)
-			body["form_url"] = c.origin() + body["form_path"].(string)
-		}
 	}
 	switch onboarding.Phase {
 	case api.PhasePreparing:
 		body["next_action"] = "poll_status"
-		body["instructions"] = "Source review and build continue in the background; call status with onboarding_id until the phase changes."
 	case api.PhaseFailed:
 		body["next_action"] = "retry"
-		body["instructions"] = "The prepare failed; call prepare_source again with the same request_key to retry."
 	case api.PhaseAwaitingCreds:
 		body["next_action"] = "submit_credentials"
-		body["instructions"] = "Ask the user to open the credential URL, submit the form, then call this tool again."
 		if onboarding.AdmissionPending {
 			body["tools_confirmed"] = false
-			if onboarding.BrokerContractID != "" {
-				body["instructions"] = "The server needs provider login before tools/list. Open the Credential Broker authorization_url, enter credentials there, then call status. Never ask for a session in chat."
-				if strings.HasPrefix(onboarding.Error, "Проверка не прошла") {
-					body["next_action"] = "rotate"
-					body["instructions"] = "The Broker credential failed admission. Read the recorded error; rotate this onboarding to enter a fresh credential."
-				}
-			} else {
-				body["instructions"] = "The server did not answer tools/list until credentials exist. The channel notice already contains the loopback form URL on this host at 127.0.0.1:8090. Do not send a second link. Do not invent a CORS, browser-host, or blocked-port failure. Do not ask for a token in chat. The form lists the field names from the server or its connection recipe. The shortest set is open; submit only that set unless the user opens another. tools/list runs after a successful submit."
-				switch {
-				case strings.HasPrefix(onboarding.Error, "Проверяю поля"):
-					body["instructions"] = "A credential submit is being checked with the server. Tell the user to wait. Do not repeat an older form error and do not ask for a token in chat."
-				case strings.Contains(onboarding.Error, "набор") || strings.Contains(onboarding.Error, "Не заполнено") || strings.Contains(onboarding.Error, "рецепт"):
-					body["instructions"] = "The previous form submit was rejected before the server was contacted. Read error and tell the user that text. Send the current form URL from required_credentials. Do not invent a network, CORS, or host failure, and do not ask for a token in chat."
-				case strings.HasPrefix(onboarding.Error, "Проверка не прошла"):
-					body["instructions"] = "The credential check already ran. Read error and tell the user that text. Do not repeat an older rejection and do not ask for a token in chat. The form remains available from required_credentials."
-				}
+			if onboarding.BrokerContractID != "" && onboarding.ErrorCode == api.OpCodeProbeFailed {
+				body["next_action"] = "rotate"
 			}
 		}
 		if onboarding.ChannelAuthURL != "" {
@@ -517,16 +520,10 @@ func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map
 		}
 	case api.PhaseAwaitingConfirm:
 		body["next_action"] = "confirm"
-		body["instructions"] = "Call confirm with onboarding_id and the nonce from this response, then call enable. No browser action is required."
-		if onboarding.Error != "" {
-			body["instructions"] = "The last confirm or enable failed; read error and tell the user that text verbatim. Do not invent a runtime restart, controller outage, or network cause. Retry confirm with the nonce only after the recorded cause is addressed or looks transient; do not poll in a loop."
-		}
 	case api.PhaseAwaitingOAuth:
 		body["next_action"] = "authorize"
-		body["instructions"] = "Send authorization_url to the user. After the browser callback, call status to verify the connection."
 	case api.PhaseConfirmed:
 		body["next_action"] = "enable"
-		body["instructions"] = "Call enable with onboarding_id."
 	case api.PhaseEnabled:
 		body["next_action"] = "ready"
 	}
@@ -537,7 +534,7 @@ func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map
 		body["error_code"] = onboarding.ErrorCode
 	}
 	if onboarding.Phase == api.PhaseAwaitingConfirm && onboarding.ConfirmationNonce != "" && !onboarding.ConfirmationUsed {
-		body["nonce"] = onboarding.ConfirmationNonce
+		body["confirmation_sent"] = true
 	}
 	if onboarding.Phase == api.PhaseEnabled {
 		if definition, err := c.definitionOf(onboarding); err == nil {

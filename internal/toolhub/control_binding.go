@@ -324,22 +324,45 @@ func (c *ControlPlane) rotateLocal(auth identity.Envelope, onboarding api.Onboar
 	return c.statusBody(onboarding, false), nil
 }
 
-func (c *ControlPlane) cutAuthorization(onboarding api.Onboarding) error {
-	if onboarding.BindingID != "" {
-		if err := c.Store.SetBindingStatus(onboarding.BindingID, api.RevokedStatus); err != nil && !errors.Is(err, api.ErrRevoked) && !errors.Is(err, api.ErrNotFound) {
-			return err
-		}
+func (c *ControlPlane) cutAuthorization(onboarding api.Onboarding, purge bool) error {
+	if err := c.revokeAccess(onboarding, api.RevokedStatus); err != nil {
+		return err
 	}
 	// A member of a shared connection cuts only its own binding: revoking the
 	// connection, its ciphertext or the shared workload is owner-only.
 	if c.Store.sharedForeignConnection(onboarding.PrincipalID, onboarding.ConnectionID) {
 		return nil
 	}
-	if onboarding.ConnectionID != "" {
-		if err := c.Store.SetConnectionStatus(onboarding.ConnectionID, api.RevokedStatus); err != nil && !errors.Is(err, api.ErrRevoked) && !errors.Is(err, api.ErrNotFound) {
+	if err := c.revokeBrokerCredential(onboarding); err != nil {
+		return err
+	}
+	if err := c.revokeLocalCredentialStatus(onboarding); err != nil {
+		return err
+	}
+	return c.releaseBindingWorkloads(onboarding, purge)
+}
+
+// revokeAccess is the immediate cut: the binding leaves the projection and
+// the connection drops to connStatus (deleting during remove, revoked for
+// disable). A member of a shared connection touches only its own binding.
+func (c *ControlPlane) revokeAccess(onboarding api.Onboarding, connStatus api.Status) error {
+	if onboarding.BindingID != "" {
+		if err := c.Store.SetBindingStatus(onboarding.BindingID, api.RevokedStatus); err != nil && !errors.Is(err, api.ErrRevoked) && !errors.Is(err, api.ErrNotFound) {
 			return err
 		}
 	}
+	if c.Store.sharedForeignConnection(onboarding.PrincipalID, onboarding.ConnectionID) {
+		return nil
+	}
+	if onboarding.ConnectionID != "" {
+		if err := c.Store.SetConnectionStatus(onboarding.ConnectionID, connStatus); err != nil && !errors.Is(err, api.ErrRevoked) && !errors.Is(err, api.ErrNotFound) {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *ControlPlane) revokeBrokerCredential(onboarding api.Onboarding) error {
 	if c.Broker != nil && c.Broker.Enabled() && onboarding.BrokerCredentialID != "" {
 		auth := identity.Envelope{Schema: identity.Schema, PrincipalID: onboarding.PrincipalID, ExternalIdentityID: onboarding.PrincipalID, ContextID: onboarding.ContextID, RuntimeID: onboarding.RuntimeID, ConversationID: onboarding.PrincipalID, DeliveryTargetID: onboarding.PrincipalID, PolicyVersion: onboarding.PolicyVersion}
 		if control, err := c.brokerControl(auth, c.onboardingShared(onboarding)); err == nil {
@@ -348,14 +371,19 @@ func (c *ControlPlane) cutAuthorization(onboarding api.Onboarding) error {
 			}
 		}
 	}
+	return nil
+}
+
+func (c *ControlPlane) revokeLocalCredentialStatus(onboarding api.Onboarding) error {
 	if c.Secrets != nil && onboarding.Locator != "" {
 		owner := onboarding.PrincipalID
 		if onboarding.CredentialOwner != "" {
 			owner = onboarding.CredentialOwner
 		}
-		_ = c.Secrets.SetStatus(onboarding.Locator, owner, credstore.StatusRevoked)
+		if err := c.Secrets.SetStatus(onboarding.Locator, owner, credstore.StatusRevoked); err != nil {
+			return err
+		}
 	}
-	c.releaseBindingWorkloads(onboarding)
 	return nil
 }
 
@@ -363,14 +391,20 @@ func (c *ControlPlane) cutAuthorization(onboarding api.Onboarding) error {
 // Recorded workload instances cover every class; the deterministic recompute
 // covers admissions whose record is gone (e.g. a store snapshot predating the
 // record or a controller that kept the containers after losing its own map).
-func (c *ControlPlane) releaseBindingWorkloads(onboarding api.Onboarding) {
+func (c *ControlPlane) releaseBindingWorkloads(onboarding api.Onboarding, purge bool) error {
+	var firstErr error
+	note := func(err error) {
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
 	if c.CLIRelease != nil && onboarding.BindingID != "" && identity.ValidID(onboarding.PrincipalID) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_ = c.CLIRelease(ctx, api.CliReleaseRequest{PrincipalID: onboarding.PrincipalID, BindingID: onboarding.BindingID, Reason: "binding-release"})
+		note(c.CLIRelease(ctx, api.CliReleaseRequest{PrincipalID: onboarding.PrincipalID, BindingID: onboarding.BindingID, Reason: "binding-release"}))
 	}
 	if c.Release == nil || onboarding.BindingID == "" {
-		return
+		return firstErr
 	}
 	released := map[string]bool{}
 	release := func(workloadID string) {
@@ -380,18 +414,18 @@ func (c *ControlPlane) releaseBindingWorkloads(onboarding api.Onboarding) {
 		released[workloadID] = true
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_ = c.Release(ctx, workloadID)
+		note(c.Release(ctx, api.ControllerRelease{WorkloadID: workloadID, Purge: purge}))
 	}
 	for _, workloadID := range c.Store.WorkloadIDsForBinding(onboarding.BindingID) {
 		release(workloadID)
 	}
 	binding, err := c.Store.binding(onboarding.BindingID)
 	if err != nil {
-		return
+		return firstErr
 	}
 	definition, err := c.definitionOf(onboarding)
 	if err != nil {
-		return
+		return firstErr
 	}
 	switch definition.Workload.Class {
 	case api.Shared:
@@ -403,6 +437,7 @@ func (c *ControlPlane) releaseBindingWorkloads(onboarding api.Onboarding) {
 		}
 		release(api.WorkloadInstanceID(definition.DefinitionID, api.PerUser, ownerID, ""))
 	}
+	return firstErr
 }
 
 func (c *ControlPlane) materializeBinding(ctx context.Context, auth identity.Envelope, onboarding api.Onboarding, definition api.ToolDefinition) (api.ToolBinding, error) {
@@ -459,7 +494,7 @@ func (c *ControlPlane) materializeBinding(ctx context.Context, auth identity.Env
 				return api.ToolBinding{}, fmt.Errorf("%w: rotation requires workload release", api.ErrIsolation)
 			}
 			workloadID := api.WorkloadInstanceID(definition.DefinitionID, api.PerUser, auth.ContextID+":"+auth.PrincipalID+":"+connection.ConnectionID, "")
-			if err := c.Release(ctx, workloadID); err != nil {
+			if err := c.Release(ctx, api.ControllerRelease{WorkloadID: workloadID}); err != nil {
 				return api.ToolBinding{}, err
 			}
 		}
@@ -549,6 +584,17 @@ func (c *ControlPlane) materializeBinding(ctx context.Context, auth identity.Env
 		}
 		connection.Metadata["oauth_provider"] = onboarding.OAuthProvider
 		connection.Metadata["oauth_connection"] = onboarding.OnboardingID
+	}
+	if onboarding.RecipeDigest != "" {
+		if connection.Metadata == nil {
+			connection.Metadata = map[string]string{}
+		}
+		connection.Metadata[api.LabelRecipe] = onboarding.RecipeDigest
+		if resolution, err := c.Store.Recipe(onboarding.RecipeDigest); err == nil {
+			if credDigest, err := api.CredentialRecipeDigest(resolution); err == nil && credDigest != "" {
+				connection.Metadata[api.LabelCredentialRecipe] = credDigest
+			}
+		}
 	}
 	if err := c.Store.PutConnection(connection); err != nil {
 		return api.ToolBinding{}, err
@@ -683,6 +729,24 @@ func (c *ControlPlane) HandleOAuthCallback(auth identity.Envelope, onboardingID,
 		return err
 	}
 	return c.finishAuthorization(context.Background(), onboardingID)
+}
+
+// completeDeviceAuth finishes an onboarding whose user authorized through
+// RFC 8628 device flow: PollDevice already persisted the token, so the tail
+// matches the authorization-code callback — locator on the onboarding, then
+// the shared finishAuthorization path.
+func (c *ControlPlane) completeDeviceAuth(ctx context.Context, onboarding api.Onboarding, meta oauth.TokenMeta) error {
+	onboarding.Locator = meta.Locator
+	onboarding.CredentialOwner = onboarding.PrincipalID
+	onboarding.DeviceCode, onboarding.DeviceUserCode, onboarding.DeviceVerification = "", "", ""
+	onboarding.Phase = api.PhaseAwaitingConfirm
+	onboarding.ConfirmationNonce = api.RandomNonce()
+	onboarding.ConfirmationExpires = c.now().Add(c.ttl())
+	onboarding.Revision++
+	if err := c.Store.PutOnboarding(onboarding); err != nil {
+		return err
+	}
+	return c.finishAuthorization(ctx, onboarding.OnboardingID)
 }
 
 func (c *ControlPlane) resolveOnboarding(auth identity.Envelope, args map[string]any) (api.Onboarding, error) {

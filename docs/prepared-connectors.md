@@ -105,6 +105,92 @@ connection and binding rows and the workspace, leaving a scrubbed onboarding
 tombstone for idempotent replay. Shared immutable artifacts must not be
 deleted while another owner uses them.
 
+
+## Recipe digests and source ledgers (M13)
+
+Resolution is ledger-driven: every consulted source — prepared catalog, MCP
+Registry, ToolHive, Docker MCP Catalog, `server.json`/MCPB manifests and
+repo hints — records ranked claims (launch ladder L0–L6/hint, credential
+ladder R0–R7) with its response digest and fetch time in the resolution
+ledger. Catalogs are queried before repository files, so a repo hint can
+never outrank a registry answer; mismatched candidates stay in the ledger
+flagged `ignored`. Two disagreeing same-rank claims fail closed
+(`ambiguous_entrypoint` / `ambiguous_credential_contract`) instead of
+first-wins, and `credential_source` now records an owner-words (R7) ledger
+entry naming the confirmed source rather than silently picking a file.
+
+The resolved recipe is content-addressed: identical claim sets always pin
+the same sha256 digest, and the store keeps one shared copy under
+`recipes/<sha256>` — onboardings carry `recipe_digest` only. Trust derives
+from the weakest winning rank: T0 prepared-catalog-only, T1 registry-grade
+launch plus authoritative credentials, T2 anything heuristic. A golden
+corpus of recorded real targets (`internal/toolhub/api/testdata/corpus/`)
+pins every recipe digest; `GOLDEN_UPDATE=1` re-pins after an intentional
+model change.
+
+## Human action surface (M13)
+
+Every moment only a human can finish — entering a credential, confirming an
+install, approving a removal, completing OAuth — is a one-time link carrying
+`?t=<token>` on a human-action page: `/credentials`, `/confirm`, `/remove`,
+`/connect`, `/device`. The token resolves the stored nonce of that
+onboarding and that operation only; spent or expired links answer `410
+Gone`, a POST without the token is rejected, and each page re-checks the
+onboarding's principal, context and runtime. No link token, nonce, OAuth
+state or device code ever appears in an agent-facing control result.
+
+The link is delivered on the channel the install was requested from: the
+prepare-outcome notice routes by the initiating message job's channel.
+Channels declaring `Caps().Actions` may render the link as an actionable
+affordance; every other channel receives the same plain text — the link
+itself is the affordance. `hubctl connector link --onboarding <id>` prints
+the URL for scripts, and `--confirm` finishes an awaiting-confirmation
+onboarding without a browser.
+
+When `HUB_PUBLIC_ORIGIN` is set (https only) the minted links use that
+origin, and `HUB_PUBLIC_LISTEN` binds a second listener that serves only
+the human-action paths — control and gateway routes answer 404 there. The
+connect page offers two dead-redirect alternatives: an RFC 8628 device flow
+(`/device/<id>` shows the user code and verification URI while the hub
+polls) and a paste-the-redirect form that validates the pasted `state` and
+redirect origin before completing through the shared PKCE callback.
+
+The credential form renders from the recorded recipe and ledger: source and
+pinned revision, trust tier, egress hosts, and per-field provenance with
+its rank and HTTPS `token_url` help link. Heuristic-only (R6) fields are
+shown as suggestions to verify, never required. Submitted values are probed
+with a read-only `tools/list` before anything persists — a failed probe
+leaves no ciphertext, connection or Broker credential and re-renders the
+form with the entered values page-side.
+
+## Catalog tiers (M13 P5)
+
+Entries declare a `tier`: `t0` for the reviewed prepared catalog, `t1` for
+operator-confirmed imports, `t2` for the arbitrary-source path. A T0 entry
+carries `image` — `{ref, digest, provenance, sbom}` — the CI-built OCI pin.
+`ref` is the `<repo>@sha256:…` form the registry returns; the definition
+splits it into the bare repository image and the admitted digest, and
+runtime admission verifies the pin instead of rebuilding — a pinned entry
+never reaches the restricted builder or a repository fetch
+([ADR-0057](adr/ADR-0057-ci-built-connector-images.md)). Entries without an
+image pin keep the existing review-and-build path.
+
+`hubctl connector import <ref>` turns a T1 ref into a recipe draft:
+`mcp-registry:<name>@<version>`, `docker:mcp/<name>@<digest>`,
+`toolhive:<name>`, `mcpb:<owner>/<repo>@<tag>`, `hermes:<name>@<commit>`
+(the upstream `optional-mcps` tree) and `aqua:<pkg>@<version>`. Parsing is
+pure — the ledger records only what the ref asserted, so identical refs give
+identical review digests. Without `--confirm` the command prints the digest
+and writes nothing; `--confirm` stores the content-addressed recipe.
+
+Catalog entries may carry `toolsets`, `default_enabled` and
+`default_excluded`: install projects the default set only, and
+`connector_enable <target> toolsets=[<set>]` widens a binding to the named
+sets — a `default_excluded` tool appears only through an explicitly enabled
+toolset. `PrefetchPlan` computes which pinned images to warm inside the 8
+GiB cache cap: it evicts only hub-labelled (`hermes-hub.*`) images, never a
+foreign one, and skips a target rather than breach the budget.
+
 ## Bundle IDs and one-operation start
 
 Call ToolHub `prepare_source` once with the repository URL shown in a ready
@@ -245,6 +331,51 @@ recipe, user-token Broker overlay and provider preflight; the current Slack
 data OAuth path remains opt-in. `careergo` is blocked pending an exact MCP
 source, license, tool contract and JobFetch import API. No credentials or
 approval may be inferred from these catalog placeholders.
+`agent-browser` is blocked pending a reviewed runnable connector image: no
+published image exists for the `vercel-labs/agent-browser` source, so the
+entry stays discoverable with its reason, runbook and handoff — it is never
+installable. The installable browser connector is `playwright-mcp` below.
+
+## Playwright MCP (browser)
+
+Source: [microsoft/playwright-mcp](https://github.com/microsoft/playwright-mcp),
+commit `ab6d67cbf8b619338f096980806fdbe29432cc4d` (Apache-2.0). T0 zero-build
+entry running the digest-pinned MCR image
+`mcr.microsoft.com/playwright/mcp@sha256:690763cbb437ee7233f538a953bb5390bf03791eb5c965b471e59d17a6132fcb`
+with `--caps vision,pdf` and a bounded `--idle-timeout`. A browser is an
+ordinary connector: `install` / `enable` / `disable` / `reauth` / `remove`,
+the operation journal, ownership labels, finalizers and verified-zero cleanup
+behave exactly as on any other connection, and the pre-existing hub-owned
+`browser` / `browser_guest` runtime is untouched.
+
+Each connection gets an isolated workload — a per-connection Chromium with
+its own `connection-state` browser profile (plus a `downloads` subdirectory),
+so removing the connector removes the profile through the usual finalizer.
+Web egress is `egress_class: web`: arbitrary outbound HTTPS through the
+audited per-workload proxy, deny-first on private, loopback, link-local,
+CGNAT, metadata and hub-internal destinations, with per-request DNS checks;
+connection metadata may carry bounded `egress_allow` / `egress_deny`
+refinements where deny always wins.
+
+Default projection is read-only (`browser_navigate`, `browser_snapshot`,
+tabs, wait, …). Interaction tools are the `act` toolset and additionally
+need the human-confirmed `connector_allow_writes` step; `eval`
+(`browser_evaluate`) and `network` (`browser_network_requests`, …) are their
+own toolsets and stay hidden until enabled — on both the list and the
+dispatch path. An optional `browser-session` Broker contract imports a
+Playwright storage-state file (and origin allow/block lists) through the
+protected form; no token or link material reaches the model.
+
+`connector_status` on a web connection mints a one-time, short-TTL,
+owner-bound viewer link delivered on the owner's channel — `GET
+/viewer/<connection>?t=<nonce>` serves the viewer exactly once (410 gone on
+reuse or expiry, 403 on a wrong nonce); it is never an unauthenticated
+published port. Chromium needs a larger `/dev/shm`, so the definition
+carries a bounded `shm_size_mib` budget (1024 MiB here, capped globally and
+never above workload memory): the Docker fallback passes `--shm-size` to the
+workload container only, and the ToolHive path forwards the flag only after
+its capability probe advertises it — otherwise it fails closed or falls
+back.
 
 ## Notion
 

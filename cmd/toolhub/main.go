@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -43,6 +44,18 @@ func run() error {
 		return err
 	}
 	server := &http.Server{Addr: config.Listen, Handler: diagnostics.HTTP("toolhub", handler), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 2 * time.Minute}
+	publicServer, publicLn, err := publicServerFor(handler)
+	if err != nil {
+		return err
+	}
+	if publicServer != nil {
+		defer func() { _ = publicServer.Shutdown(context.Background()) }()
+		go func() {
+			if err := publicServer.Serve(publicLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				fmt.Fprintln(os.Stderr, "hub-toolhub public listener:", err)
+			}
+		}()
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if dir := os.Getenv("HUB_DIAGNOSTICS_DIR"); dir != "" {
@@ -101,4 +114,24 @@ func run() error {
 		defer cancel()
 		return server.Shutdown(shutdownCtx)
 	}
+}
+
+// publicServerFor builds the opt-in public listener (HUB_PUBLIC_LISTEN): it
+// serves only the handler's human-action surface — /credentials, /confirm,
+// /remove, /connect, /oauth/callback — never control or gateway APIs. With no
+// listen address configured no second server exists.
+func publicServerFor(handler http.Handler) (*http.Server, net.Listener, error) {
+	addr := os.Getenv("HUB_PUBLIC_LISTEN")
+	if addr == "" {
+		return nil, nil, nil
+	}
+	public, ok := handler.(interface{ PublicHandler() http.Handler })
+	if !ok {
+		return nil, nil, errors.New("endpoint handler has no public surface")
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &http.Server{Addr: addr, Handler: public.PublicHandler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 2 * time.Minute}, ln, nil
 }

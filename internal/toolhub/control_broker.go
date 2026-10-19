@@ -9,7 +9,6 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 )
 
@@ -339,7 +338,7 @@ func (c *ControlPlane) completeBrokerAdmission(ctx context.Context, auth identit
 	if current.BrokerRequestID != onboarding.BrokerRequestID || current.BrokerCredentialID != "" && current.BrokerCredentialID != credentialID && current.BrokerRotateCredentialID != current.BrokerCredentialID {
 		return api.ErrStale
 	}
-	if strings.HasPrefix(current.Error, "Проверка не прошла") {
+	if current.ErrorCode == api.OpCodeProbeFailed {
 		*onboarding = current
 		return nil
 	}
@@ -366,6 +365,7 @@ func (c *ControlPlane) completeBrokerAdmission(ctx context.Context, auth identit
 	if err != nil {
 		latest.Phase = api.PhaseAwaitingCreds
 		latest.Error = "Проверка не прошла. " + credentialProbeFailure(err)
+		latest.ErrorCode = api.OpCodeProbeFailed
 	} else {
 		latest.Definition = &admitted
 		latest.DefinitionID, latest.DefinitionVersion = admitted.DefinitionID, admitted.Version

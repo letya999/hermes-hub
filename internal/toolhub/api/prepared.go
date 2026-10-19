@@ -44,20 +44,51 @@ func (entry PreparedEntry) BrokerContract() (contract.Contract, error) {
 	return result, nil
 }
 
+// Catalog tiers: T0 entries are reviewed and ship CI-built images pinned by
+// digest; T1 entries come from deterministic registry imports an operator
+// confirmed; T2 is the arbitrary-source path, experimental and async.
+const (
+	TierT0 = "t0"
+	TierT1 = "t1"
+	TierT2 = "t2"
+)
+
+// PinnedImage is the CI-built OCI reference a T0/T1 entry admits: the digest
+// is the install authority, provenance and SBOM point at its attestations.
+type PinnedImage struct {
+	Ref        string `json:"ref"`
+	Digest     string `json:"digest"`
+	Provenance string `json:"provenance,omitempty"`
+	SBOM       string `json:"sbom,omitempty"`
+}
+
 type PreparedEntry struct {
-	ID                 string                     `json:"id"`
-	Aliases            []string                   `json:"aliases,omitempty"`
-	Name               string                     `json:"name"`
-	Source             ArtifactSource             `json:"source"`
-	License            string                     `json:"license"`
-	Language           string                     `json:"language"`
-	PythonExtras       []string                   `json:"python_extras,omitempty"`
-	Entrypoint         []string                   `json:"entrypoint"`
-	Connection         ConnectionRecipe           `json:"connection"`
-	ContractID         string                     `json:"contract_id"`
-	ContractRevision   int                        `json:"contract_revision"`
-	Stateful           bool                       `json:"stateful"`
-	StateTarget        string                     `json:"state_target,omitempty"`
+	ID      string   `json:"id"`
+	Aliases []string `json:"aliases,omitempty"`
+	Name    string   `json:"name"`
+	// Tier defaults to t0 for embedded reviewed entries; the catalog may pin
+	// it explicitly, and T0 entries require an image digest.
+	Tier  string       `json:"tier,omitempty"`
+	Image *PinnedImage `json:"image,omitempty"`
+	// Toolsets/DefaultEnabled/DefaultExcluded stage the projected surface:
+	// install projects the default read set, other sets join on enable.
+	Toolsets         map[string][]string `json:"toolsets,omitempty"`
+	DefaultEnabled   []string            `json:"default_enabled,omitempty"`
+	DefaultExcluded  []string            `json:"default_excluded,omitempty"`
+	Source           ArtifactSource      `json:"source"`
+	License          string              `json:"license"`
+	Language         string              `json:"language"`
+	PythonExtras     []string            `json:"python_extras,omitempty"`
+	Entrypoint       []string            `json:"entrypoint"`
+	Connection       ConnectionRecipe    `json:"connection"`
+	ContractID       string              `json:"contract_id"`
+	ContractRevision int                 `json:"contract_revision"`
+	Stateful         bool                `json:"stateful"`
+	StateTarget      string              `json:"state_target,omitempty"`
+	// Budgets raises the default execution budget for heavyweight entries —
+	// headless Chromium needs more memory, pids and /dev/shm than the 512
+	// MiB/64 pid default. Values still pass the global execution bounds.
+	Budgets            *PreparedBudgets           `json:"budgets,omitempty"`
 	Environment        []string                   `json:"environment,omitempty"`
 	RuntimeEnvironment map[string]string          `json:"runtime_environment,omitempty"`
 	ProxyEnvironment   []string                   `json:"proxy_environment,omitempty"`
@@ -80,8 +111,12 @@ type PreparedEntry struct {
 	ContextSources []ArtifactOverlay `json:"context_sources,omitempty"`
 	// TCPForwards declares companion loopback forwards; each target_env must
 	// be an env-delivered connection field carrying a host:port endpoint.
-	TCPForwards      []TCPForward     `json:"tcp_forwards,omitempty"`
-	Egress           []string         `json:"egress"`
+	TCPForwards []TCPForward `json:"tcp_forwards,omitempty"`
+	Egress      []string     `json:"egress"`
+	// EgressClass carries the proxy policy shape: "web" for browser entries
+	// (arbitrary HTTPS through the deny-first proxy); under "web" the egress
+	// list is reviewed extra deny entries and may be empty.
+	EgressClass      string           `json:"egress_class,omitempty"`
 	CredentialGroups [][]string       `json:"credential_groups,omitempty"`
 	ReadTools        []string         `json:"read_tools"`
 	ProbeTool        string           `json:"probe_tool,omitempty"`
@@ -89,6 +124,13 @@ type PreparedEntry struct {
 	OAuth            *PreparedOAuth   `json:"oauth,omitempty"`
 	Runbook          string           `json:"runbook"`
 	Handoff          string           `json:"handoff"`
+}
+
+type PreparedBudgets struct {
+	CPUMillis  int `json:"cpu_millis,omitempty"`
+	MemoryMiB  int `json:"memory_mib,omitempty"`
+	MaxPIDs    int `json:"max_pids,omitempty"`
+	ShmSizeMiB int `json:"shm_size_mib,omitempty"`
 }
 
 // Blocked entries are discoverable bundle slots, not installation authority.
@@ -261,8 +303,17 @@ func ParsePreparedCatalog(data []byte) ([]PreparedEntry, error) {
 			}
 		}
 		config := NormalizeArtifactImportConfig(entry.Apply(DefaultSelfInstallConfig(entry.Source)))
+		if entry.Tier != "" && entry.Tier != TierT0 && entry.Tier != TierT1 && entry.Tier != TierT2 {
+			return nil, fmt.Errorf("prepared %s: %w: unknown tier", entry.ID, ErrInvalid)
+		}
+		imageDigest := "sha256:" + string(bytes.Repeat([]byte("a"), 64))
+		if entry.Image != nil {
+			// The catalog pin is the definition's admitted image digest; the
+			// validation placeholder otherwise stands in for the CI value.
+			imageDigest = entry.Image.Digest
+		}
 		definition := ToolDefinition{Schema: SchemaVersion, DefinitionID: entry.ID, Version: config.Version, Transport: ContainerMCP,
-			Source:      DefinitionSource{Image: config.Image, Digest: "sha256:" + string(bytes.Repeat([]byte("a"), 64)), ContextSources: append([]ArtifactOverlay(nil), entry.ContextSources...)},
+			Source:      DefinitionSource{Image: config.Image, Digest: imageDigest, ContextSources: append([]ArtifactOverlay(nil), entry.ContextSources...)},
 			Credentials: config.Credentials, CredentialGroups: config.CredentialGroups, CredentialContractID: config.CredentialContractID, CredentialContractRevision: config.CredentialContractRevision, CredentialContractEnv: config.CredentialContractEnv,
 			Environment: config.Environment, RuntimeEnvironment: config.RuntimeEnvironment, ProxyEnvironment: config.ProxyEnvironment, Tools: config.Tools, Workload: config.Workload, Execution: config.Execution, Health: config.Health}
 		if err := definition.Validate(); err != nil {
@@ -304,6 +355,10 @@ func PreparedCredentialGate(source ArtifactSource) error {
 	}
 	return &CredentialGate{Names: names, Detail: "Provider login is required before this MCP can list tools; enter credentials in the protected Broker form, then verify the read probe."}
 }
+
+// preparedLookup is the catalog seam admission paths call; tests pin a
+// catalog entry here without touching the embedded catalog.
+var preparedLookup = PreparedForSource
 
 func PreparedForSource(source ArtifactSource) (PreparedEntry, bool, error) {
 	entries, err := PreparedCatalog()
@@ -349,8 +404,43 @@ func (entry PreparedEntry) Apply(config ArtifactImportConfig) ArtifactImportConf
 	config.ProxyEnvironment = append([]string(nil), entry.ProxyEnvironment...)
 	config.ContextSources = append([]ArtifactOverlay(nil), entry.ContextSources...)
 	config.Execution.Egress = append([]string(nil), entry.Egress...)
+	config.Execution.EgressClass = entry.EgressClass
 	config.Execution.TCPForwards = append([]TCPForward(nil), entry.TCPForwards...)
 	config.Workload.Stateful = entry.Stateful
+	if entry.Budgets != nil {
+		if entry.Budgets.CPUMillis > 0 {
+			config.Execution.CPUMillis = entry.Budgets.CPUMillis
+		}
+		if entry.Budgets.MemoryMiB > 0 {
+			config.Execution.MemoryMiB = entry.Budgets.MemoryMiB
+		}
+		if entry.Budgets.MaxPIDs > 0 {
+			config.Execution.MaxPIDs = entry.Budgets.MaxPIDs
+		}
+		if entry.Budgets.ShmSizeMiB > 0 {
+			config.Execution.ShmSizeMiB = entry.Budgets.ShmSizeMiB
+		}
+	}
+	// A stateful target the Broker contract does not manage is workload
+	// state: it becomes a per-connection named volume cleaned by the same
+	// finalizer ladder as every other connector (browser profiles are the
+	// first consumer; google-style broker state keeps its host dir).
+	if entry.Stateful && entry.StateTarget != "" && !slices.ContainsFunc(config.Execution.Mounts, func(m Mount) bool { return m.Target == entry.StateTarget }) {
+		if brokerContract, contractErr := entry.BrokerContract(); contractErr == nil && (brokerContract.State == nil || brokerContract.State.Target != entry.StateTarget) {
+			config.Execution.Mounts = append(config.Execution.Mounts, Mount{Source: "connection-state", Target: entry.StateTarget})
+		}
+	}
+	config.Toolsets = map[string][]string{}
+	for set, tools := range entry.Toolsets {
+		config.Toolsets[set] = append([]string(nil), tools...)
+	}
+	config.DefaultEnabled = append([]string(nil), entry.DefaultEnabled...)
+	config.DefaultExcluded = append([]string(nil), entry.DefaultExcluded...)
+	if entry.Image != nil {
+		// Definitions carry the repository separately from the digest pin:
+		// "repo@sha256:…" splits into Image + Digest at admission.
+		config.Image, _, _ = strings.Cut(entry.Image.Ref, "@")
+	}
 	return config
 }
 

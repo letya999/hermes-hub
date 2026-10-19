@@ -1,0 +1,36 @@
+schema: 1
+change: CHG-0135
+title: M13 P8 browser workloads as connectors
+status: done
+branch: feat/m14-toolhub-connector-platform
+updated: "2026-10-19"
+phase: closeout
+requirements: [S8.1, S8.2, S8.3, S8.4, S8.5, S8.6]
+depends_on: [CHG-0128, CHG-0130, CHG-0131, CHG-0132, CHG-0133]
+github_milestone: M13 — ToolHub Connector Platform
+github_issue: 289
+design_status: accepted
+implementation_status: contract_done
+slices:
+  S8.1-web-egress-class: done
+  S8.2-connection-egress-refinement: done
+  S8.3-owner-viewer-link: done
+  S8.4-t0-browser-recipes: done
+  S8.5-shm-budget: done
+  S8.6-docs-closeout: done
+validation:
+  documents: done
+  just_check: done
+  docker_check: not_run
+  live_acceptance: not_started
+evidence:
+  - "S8.1: EgressClass web admitted for container-MCP; WebProxyConfig renders deny-first Squid ACL — private/loopback/link-local/CGNAT/metadata/hub-internal denied before the allow-all tail, per-request dst checks (rebinding-safe); web entries carry reviewed deny entries in Egress"
+  - "S8.2: Connection.Metadata egress_allow/egress_deny bounded + validated; deny always wins; ControllerPlanFor carries refinements into ProxyConfigFor at spawn"
+  - "S8.3: Store.MintViewerLink owner-scoped one-time short-TTL nonce (remint replaces); GET /viewer/<id>?t=<nonce> serves once — 410 spent/expired, 403 wrong; connector_status mints + delivers on owner channel, no link material in the tool result"
+  - "S4: playwright-mcp T0 — digest-pinned MCR image sha256:690763…, pinned commit ab6d67c, --caps vision,pdf, browser profile on connection-state, read-only default projection, act/eval/network toolsets; agent-browser stays in blocked.json (no reviewed runnable image); browser-session Broker contract imports storage-state file + origin lists"
+  - "S8.5: ExecutionPolicy.ShmSizeMiB bounded (cap + <= workload memory), in execution equality; Docker fallback adds --shm-size to workload only; ToolHive gate probes --shm-size — fails closed or falls back"
+  - "Projection fix: managedSelfInstall list/dispatch and projectedToolLocked now iterate ProjectedToolSpecs(binding) — toolset gating uniform (regression: browser_evaluate projected without its toolset)"
+  - "ADR-0052 appended; prepared-connectors.md browser section; SPEC-0023 delta"
+notes:
+  - "Live gates deferred honestly: two principals with separate browser workloads on one stack, noVNC/CDP rendering, real site login through viewer"
+  - "Hub-owned browser/browser_guest runtime unchanged — separate feature"

@@ -28,8 +28,8 @@ func TestLifecycleIdempotentEnableDisableRemoveAndRaces(t *testing.T) {
 	}
 	root := t.TempDir()
 	var released []string
-	control := &ControlPlane{Store: store, WorkloadRoot: root, Now: time.Now, Release: func(_ context.Context, workloadID string) error {
-		released = append(released, workloadID)
+	control := &ControlPlane{Store: store, WorkloadRoot: root, Now: time.Now, Release: func(_ context.Context, release api.ControllerRelease) error {
+		released = append(released, release.WorkloadID)
 		return nil
 	}}
 	auth := aliceAuth()
@@ -37,11 +37,10 @@ func TestLifecycleIdempotentEnableDisableRemoveAndRaces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	status, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]})
-	if err != nil {
+	if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": status["nonce"]}); err != nil {
+	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, store, prepared["onboarding_id"])}); err != nil {
 		t.Fatal(err)
 	}
 	first, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"]})
@@ -68,7 +67,7 @@ func TestLifecycleIdempotentEnableDisableRemoveAndRaces(t *testing.T) {
 	if got := store.WorkloadIDsForBinding(bindingID); len(got) != 1 {
 		t.Fatalf("second enable created workloads=%v", got)
 	}
-	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": status["nonce"], "effects": []any{"write"}}); !errors.Is(err, api.ErrUnauthorized) {
+	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, store, prepared["onboarding_id"]), "effects": []any{"write"}}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("effect escalation: %v", err)
 	}
 	if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"], "cpu_millis": 999999}); !errors.Is(err, api.ErrUnauthorized) {
@@ -88,11 +87,10 @@ func TestLifecycleIdempotentEnableDisableRemoveAndRaces(t *testing.T) {
 	if tools, err := store.ListProjectedTools(auth); err != nil || len(tools) != 0 {
 		t.Fatalf("disabled projection=%+v err=%v", tools, err)
 	}
-	preview, err := control.Invoke(context.Background(), auth, "remove", map[string]any{"onboarding_id": prepared["onboarding_id"]})
-	if err != nil {
+	if _, err := control.Invoke(context.Background(), auth, "remove", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Invoke(context.Background(), auth, "remove", map[string]any{"onboarding_id": prepared["onboarding_id"], "remove_nonce": preview["remove_nonce"]}); err != nil {
+	if _, err := control.Invoke(context.Background(), auth, "remove", map[string]any{"onboarding_id": prepared["onboarding_id"], "remove_nonce": removeNonceOf(t, store, prepared["onboarding_id"])}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(ws.Path); !os.IsNotExist(err) {
@@ -124,11 +122,10 @@ func TestLifecycleIdempotentEnableDisableRemoveAndRaces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st, err := control2.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": prepared2["onboarding_id"]})
-	if err != nil {
+	if _, err := control2.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": prepared2["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control2.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared2["onboarding_id"], "nonce": st["nonce"]}); err != nil {
+	if _, err := control2.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared2["onboarding_id"], "nonce": confirmNonceOf(t, store2, prepared2["onboarding_id"])}); err != nil {
 		t.Fatal(err)
 	}
 	args := map[string]any{"onboarding_id": prepared2["onboarding_id"]}
@@ -178,11 +175,10 @@ func TestControlEnableUsesReadinessForInitialAndReenable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	status, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]})
-	if err != nil {
+	if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": status["nonce"]}); err != nil {
+	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, store, prepared["onboarding_id"])}); err != nil {
 		t.Fatal(err)
 	}
 	if admissions != 1 {
@@ -238,11 +234,10 @@ func TestCredentialReadinessFailureDoesNotPublishOrRotateOnRetry(t *testing.T) {
 	if err := control.SubmitCredentials(id, onboarding.FormNonce, map[string]string{"TOKEN": "fixture-value"}); err != nil {
 		t.Fatal(err)
 	}
-	status, err := control.Invoke(t.Context(), auth, "status", map[string]any{"onboarding_id": id})
-	if err != nil {
+	if _, err := control.Invoke(t.Context(), auth, "status", map[string]any{"onboarding_id": id}); err != nil {
 		t.Fatal(err)
 	}
-	confirm := map[string]any{"onboarding_id": id, "nonce": status["nonce"]}
+	confirm := map[string]any{"onboarding_id": id, "nonce": confirmNonceOf(t, store, id)}
 	if _, err := control.Invoke(t.Context(), auth, "confirm", confirm); err == nil {
 		t.Fatal("failed admission was accepted")
 	}
@@ -389,26 +384,25 @@ func TestConfirmAndEnableFailureRecordedOnOnboarding(t *testing.T) {
 	if err := control.SubmitCredentials(id, onboarding.FormNonce, map[string]string{"TOKEN": "fixture-value"}); err != nil {
 		t.Fatal(err)
 	}
-	status, err := control.Invoke(t.Context(), auth, "status", map[string]any{"onboarding_id": id})
-	if err != nil {
+	if _, err := control.Invoke(t.Context(), auth, "status", map[string]any{"onboarding_id": id}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Invoke(t.Context(), auth, "confirm", map[string]any{"onboarding_id": id, "nonce": status["nonce"]}); err == nil {
+	if _, err := control.Invoke(t.Context(), auth, "confirm", map[string]any{"onboarding_id": id, "nonce": confirmNonceOf(t, store, id)}); err == nil {
 		t.Fatal("failed admission was confirmed")
 	}
 	stored, _ := store.onboarding(id)
 	if !strings.Contains(stored.Error, "required runtime credential missing") || stored.Phase != api.PhaseAwaitingConfirm || stored.ConfirmationUsed {
 		t.Fatalf("confirm failure not recorded: %+v", stored)
 	}
-	status, err = control.Invoke(t.Context(), auth, "status", map[string]any{"onboarding_id": id})
+	status, err := control.Invoke(t.Context(), auth, "status", map[string]any{"onboarding_id": id})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(fmt.Sprint(status["error"]), "required runtime credential missing") || !strings.Contains(fmt.Sprint(status["instructions"]), "last confirm or enable failed") {
+	if !strings.Contains(fmt.Sprint(status["error"]), "required runtime credential missing") || status["next_action"] != "confirm" {
 		t.Fatalf("status hides the recorded failure: %v", status)
 	}
 	admit = true
-	if _, err := control.Invoke(t.Context(), auth, "confirm", map[string]any{"onboarding_id": id, "nonce": status["nonce"]}); err != nil {
+	if _, err := control.Invoke(t.Context(), auth, "confirm", map[string]any{"onboarding_id": id, "nonce": confirmNonceOf(t, store, id)}); err != nil {
 		t.Fatal(err)
 	}
 	stored, _ = store.onboarding(id)
@@ -474,11 +468,10 @@ func TestNinetyFiveUniqueAndFiveSharedCredentialRefs(t *testing.T) {
 		if err := control.SubmitCredentials(onboardingID, onboarding.FormNonce, map[string]string{"TOKEN": fmt.Sprintf("value-%02d", i)}); err != nil {
 			t.Fatal(err)
 		}
-		status, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": onboardingID})
-		if err != nil {
+		if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": onboardingID}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": onboardingID, "nonce": status["nonce"]}); err != nil {
+		if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": onboardingID, "nonce": confirmNonceOf(t, store, onboardingID)}); err != nil {
 			t.Fatal(err)
 		}
 		enabled, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": onboardingID})
@@ -535,11 +528,10 @@ func TestNinetyFiveUniqueAndFiveSharedCredentialRefs(t *testing.T) {
 		if err := control.SubmitCredentials(onboardingID, onboarding.FormNonce, map[string]string{"TOKEN": "ignored-unique"}); err != nil {
 			t.Fatal(err)
 		}
-		status, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": onboardingID})
-		if err != nil {
+		if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": onboardingID}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": onboardingID, "nonce": status["nonce"]}); err != nil {
+		if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": onboardingID, "nonce": confirmNonceOf(t, store, onboardingID)}); err != nil {
 			t.Fatal(err)
 		}
 		enabled, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": onboardingID})
@@ -596,11 +588,10 @@ func TestEnableOnActiveBindingSupersedesSiblingVersions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	status, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]})
-	if err != nil {
+	if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": status["nonce"]}); err != nil {
+	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, store, prepared["onboarding_id"])}); err != nil {
 		t.Fatal(err)
 	}
 	enabled, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"]})

@@ -1,0 +1,38 @@
+schema: 1
+change: CHG-0132
+title: M13 P5 catalog tiers + CI-built images + install budgets
+status: in_progress
+branch: feat/m14-toolhub-connector-platform
+updated: "2026-10-19"
+phase: implementation
+requirements: [S5.1, S5.2, S5.3, S5.4, S5.5, S5.6]
+depends_on: [CHG-0128, CHG-0130, CHG-0131]
+github_milestone: M13 — ToolHub Connector Platform
+github_issue: 286
+design_status: accepted
+implementation_status: contract_done
+slices:
+  S5.1-tier-image-pin: done
+  S5.2-t0-zero-build: done
+  S5.3-hubctl-import: done
+  S5.4-toolsets-defaults: done
+  S5.5-prefetch-warm: done
+  S5.6-docs-closeout: done
+validation:
+  documents: done
+  just_check: pending
+  docker_check: not_run
+  live_acceptance: not_started
+evidence:
+  - "S5.1: PreparedEntry.Tier + PinnedImage{ref,digest,provenance,sbom}; tier enum validated; pin digest becomes DefinitionSource.Digest (prepared_tiers_test.go)"
+  - "S5.2: DefaultSourceReviewerWithCatalogs takes the pinned-published path for prepared entries with image; restrictedBuild seam asserted never called; no repo fetch (TestT0AdmissionSkipsBuilder)"
+  - "S5.3: api.ParseImportRef covers mcp-registry/docker:mcp//toolhive/mcpb/hermes/aqua; hubctl connector import prints review digest, refuses write without --confirm, stores via PutRecipe (TestConnectorImportRef, TestParseImportRefSchemes)"
+  - "S5.4: ToolDefinition.Toolsets/DefaultEnabled/DefaultExcluded + ToolBinding.EnabledToolsets; ProjectedToolSpecs gates ListProjectedTools/findProjectedLocked; connector_enable toolsets=[...] via Store.EnableToolsets"
+  - "S5.5: PrefetchPlan is pure: pulls missing, evicts owned-only in cache order, skips what cannot fit; warm start = existing WarmMaxAgeSeconds pool retention (install path never calls releaseBindingWorkloads)"
+  - "S5.6: docs/prepared-connectors.md tiers section + ADR-0050 appended"
+remaining:
+  - "CI job that builds T0 images with the restricted generator and pushes ghcr.io/<owner>/hermes-hub-connectors/<id>@sha256:… with SLSA provenance + SBOM (live, owner push)"
+  - "Runtime prefetch wiring on catalog publish/hub start (needs live docker image list — live gate)"
+  - "Benchmark job for install/remove/first-call p95 budgets against fixture providers (live)"
+limitations:
+  - "GHCR publish, provenance/SBOM generation and timing budgets are deferred live gates; contract level only"

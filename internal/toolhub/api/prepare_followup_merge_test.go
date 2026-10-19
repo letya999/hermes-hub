@@ -113,3 +113,37 @@ func TestPostPrepareNoticeCarriesCredentialIntake(t *testing.T) {
 		t.Fatalf("unexpected intake for plain contract: %v", got)
 	}
 }
+
+// CHG-0127 S0.3: external action links (OAuth authorize, broker connect) ride
+// the same notice channel as loopback links — via the /connect/ hop so the
+// provider URL and its state stay off the wire text.
+func TestCredentialNoticeURLActionLinks(t *testing.T) {
+	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:9999")
+	oauth := Onboarding{OnboardingID: "onb-oa", Phase: PhaseAwaitingOAuth,
+		ProviderAuthorizationURL: "https://accounts.example.com/authorize?state=flow-xyz&client_id=c"}
+	if got := credentialNoticeURL(oauth); got != "http://127.0.0.1:9999/connect/onb-oa?state=flow-xyz" {
+		t.Fatalf("oauth action link=%q", got)
+	}
+	broker := Onboarding{OnboardingID: "onb-br", Phase: PhaseAwaitingCreds,
+		BrokerRequestID: "req-1", BrokerAuthorizationURL: "https://broker.example.com/connect/req-1"}
+	if got := credentialNoticeURL(broker); got != "http://127.0.0.1:9999/connect/onb-br?request=req-1" {
+		t.Fatalf("broker action link=%q", got)
+	}
+}
+
+// CHG-0129 S2.2: HUB_PUBLIC_ORIGIN is the opt-in operator-owned surface —
+// minted links carry it (https-only) instead of the loopback listen origin.
+func TestCredentialNoticeURLPublicOrigin(t *testing.T) {
+	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:9999")
+	t.Setenv("HUB_PUBLIC_ORIGIN", "https://hub.example.com")
+	onboarding := Onboarding{OnboardingID: "onb-pub", Phase: PhaseAwaitingConfirm,
+		ConfirmationNonce: "tok-1", ConfirmationExpires: time.Now().Add(time.Hour)}
+	if got := credentialNoticeURL(onboarding); got != "https://hub.example.com/confirm/onb-pub?t=tok-1" {
+		t.Fatalf("public link=%q", got)
+	}
+	// http public origins are not link targets: loopback stays.
+	t.Setenv("HUB_PUBLIC_ORIGIN", "http://hub.example.com")
+	if got := credentialNoticeURL(onboarding); got != "http://127.0.0.1:9999/confirm/onb-pub?t=tok-1" {
+		t.Fatalf("http origin rejected, got %q", got)
+	}
+}

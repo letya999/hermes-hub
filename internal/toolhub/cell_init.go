@@ -116,9 +116,11 @@ func (c *genericController) cellArgv(req api.CliExecRequest, cell *cliCell, runt
 		"--label", "hermes-hub.cell=true",
 		"--label", "hermes-hub.cell.principal="+req.Principal,
 		"--label", "hermes-hub.cell.lifecycle="+cell.lifecycle,
+		"--label", api.LabelOwner+"="+req.Principal,
 	)
 	if req.BindingID != "" {
 		labels = append(labels, "--label", "hermes-hub.cell.binding="+req.BindingID)
+		labels = append(labels, "--label", api.LabelBinding+"="+req.BindingID)
 	}
 	if req.JobID != "" {
 		labels = append(labels, "--label", "hermes-hub.cell.job="+req.JobID)

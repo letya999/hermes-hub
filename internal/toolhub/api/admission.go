@@ -30,10 +30,56 @@ type ControllerPlan struct {
 	// controller creates the sandbox cell and returns its identity in the
 	// receipt rather than attesting a shared executor.
 	Command string `json:"command,omitempty"`
+	// Ownership stamps hermes-hub.owner/connection/binding/recipe labels on
+	// every Docker object the plan spawns so removal and reconciliation can
+	// find the footprint by label query.
+	Ownership OwnershipLabels `json:"ownership,omitempty"`
+	// EgressAllow/EgressDeny carry the connection's web-egress refinement:
+	// allow narrows the open tail to named hosts, deny appends deny entries.
+	// They render only under egress class "web".
+	EgressAllow []string `json:"egress_allow,omitempty"`
+	EgressDeny  []string `json:"egress_deny,omitempty"`
+}
+
+// ControllerPlanFor builds the immutable plan for one effective binding.
+// Web-class connections may carry egress_allow/egress_deny refinements in
+// their metadata; they are validated at connection admission and parsed here
+// into plan fields the proxy renderer consumes. Off the web class they stay
+// empty so a bounded workload can never smuggle an open tail.
+func ControllerPlanFor(effective EffectiveBinding) (ControllerPlan, error) {
+	plan := ControllerPlan{
+		WorkloadID:        effective.WorkloadID,
+		DefinitionID:      effective.Definition.DefinitionID,
+		DefinitionVersion: effective.Definition.Version,
+		Image:             effective.Definition.Source.Image,
+		Digest:            effective.Definition.Source.Digest,
+		ToolHiveVersion:   effective.Definition.Workload.ToolHiveVersion,
+		SidecarImages:     effective.Definition.Workload.SidecarImages,
+		Execution:         effective.Definition.Execution,
+		CredentialMounts:  effective.CredentialMounts,
+		Definition:        effective.Definition,
+		Ownership:         PlanOwnership(effective),
+	}
+	if effective.Definition.Execution.EgressClass == EgressWeb && effective.Connection != nil {
+		allow, err := ParseEgressList(effective.Connection.Metadata["egress_allow"])
+		if err != nil {
+			return ControllerPlan{}, err
+		}
+		deny, err := ParseEgressList(effective.Connection.Metadata["egress_deny"])
+		if err != nil {
+			return ControllerPlan{}, err
+		}
+		plan.EgressAllow, plan.EgressDeny = allow, deny
+	}
+	return plan, nil
 }
 
 type ControllerRelease struct {
 	WorkloadID string `json:"workload_id"`
+	// Purge removes the workload's named state volumes (refresh tokens,
+	// checkpointed session state). Disable/revoke leave it false so a later
+	// enable resumes the state; remove passes true.
+	Purge bool `json:"purge,omitempty"`
 }
 
 // AdmissionReceipt is the controller's proof that the workload was started
@@ -140,19 +186,12 @@ func ControllerAdmissionVerifierFromEnv() (func(context.Context, EffectiveBindin
 		if err != nil {
 			return AdmissionReceipt{}, err
 		}
-		return SubmitPlan(ctx, client, endpoint, token, ControllerPlan{
-			WorkspacePath:     workspace.Path,
-			WorkloadID:        effective.WorkloadID,
-			DefinitionID:      effective.Definition.DefinitionID,
-			DefinitionVersion: effective.Definition.Version,
-			Image:             effective.Definition.Source.Image,
-			Digest:            effective.Definition.Source.Digest,
-			ToolHiveVersion:   effective.Definition.Workload.ToolHiveVersion,
-			SidecarImages:     effective.Definition.Workload.SidecarImages,
-			Execution:         effective.Definition.Execution,
-			CredentialMounts:  effective.CredentialMounts,
-			Definition:        effective.Definition,
-		}, effective)
+		plan, err := ControllerPlanFor(effective)
+		if err != nil {
+			return AdmissionReceipt{}, err
+		}
+		plan.WorkspacePath = workspace.Path
+		return SubmitPlan(ctx, client, endpoint, token, plan, effective)
 	}, nil
 }
 
@@ -293,7 +332,7 @@ func SubmitPlan(ctx context.Context, client *http.Client, endpoint, token string
 	return receipt, nil
 }
 
-func ControllerAdmissionReleaserFromEnv() (func(context.Context, string) error, error) {
+func ControllerAdmissionReleaserFromEnv() (func(context.Context, ControllerRelease) error, error) {
 	endpoint := os.Getenv("HUB_TOOLHIVE_ADMISSION_ENDPOINT")
 	if endpoint == "" {
 		return nil, nil
@@ -303,11 +342,11 @@ func ControllerAdmissionReleaserFromEnv() (func(context.Context, string) error, 
 	}
 	token := os.Getenv("HUB_TOOLHIVE_ADMISSION_TOKEN")
 	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	return func(ctx context.Context, workloadID string) error {
-		if workloadID == "" {
+	return func(ctx context.Context, release ControllerRelease) error {
+		if release.WorkloadID == "" {
 			return fmt.Errorf("%w: empty workload release", ErrInvalid)
 		}
-		body, err := json.Marshal(ControllerRelease{WorkloadID: workloadID})
+		body, err := json.Marshal(release)
 		if err != nil {
 			return err
 		}

@@ -1,0 +1,44 @@
+{
+  "target": "modelcontextprotocol/slack",
+  "subject": {
+    "kind": "mcp-container",
+    "ref": "modelcontextprotocol/slack@sha256:45dbff5f792917d265a69124fe0f2b9c99777ce6250d093d2cdd2ad4b3ada8de"
+  },
+  "provenance": [
+    "recorded upstream README/env contract"
+  ],
+  "entries": [
+    {
+      "claim": {
+        "attribute": "entrypoint",
+        "value": "[\"node\", \"dist/index.js\"]"
+      },
+      "source": "README.md",
+      "ref": "README.md@mcpServers",
+      "rank": "hint"
+    },
+    {
+      "claim": {
+        "field": "SLACK_BOT_TOKEN",
+        "required": true,
+        "secret": true,
+        "delivery": "env"
+      },
+      "source": "README.md",
+      "ref": "README.md@env",
+      "rank": "R6"
+    },
+    {
+      "claim": {
+        "field": "SLACK_TEAM_ID",
+        "required": true,
+        "secret": false,
+        "delivery": "env"
+      },
+      "source": "README.md",
+      "ref": "README.md@env",
+      "rank": "R6"
+    }
+  ],
+  "expect_digest": "sha256:89c95c7688ee6da2c40f102f93d963eac6307efabc637e54523021bfd134e67a"
+}

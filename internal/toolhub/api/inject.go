@@ -103,6 +103,50 @@ func DecryptAuthorized(backend credstore.Backend, effective EffectiveBinding) (m
 	return injected, nil
 }
 
+// ProxyStubPlan rewrites a materialized environment for proxy-delivered
+// credential inputs: the workload env keeps only the hub-managed stub while
+// the returned plan tells the egress proxy which credential reference to
+// resolve and which allowlisted hosts may receive the real value. Inputs
+// that produced no value emit no plan entry — the absence stays visible to
+// the credential-satisfaction checks that ran before this rewrite.
+func ProxyStubPlan(effective EffectiveBinding, environment map[string]string) []ProxyGrant {
+	var plan []ProxyGrant
+	for _, input := range effective.Definition.Credentials {
+		if input.Delivery != "proxy" || environment[input.Name] == "" {
+			continue
+		}
+		environment[input.Name] = ProxyStubValue
+		reference := ""
+		if effective.Credential != nil {
+			reference = effective.Credential.CredentialRefID
+		}
+		plan = append(plan, ProxyGrant{EnvName: input.Name, Reference: reference, Hosts: []string{input.Target}})
+	}
+	return plan
+}
+
+// FileBoundCredentialNames names credential inputs whose submitted content is
+// materialized as a mounted file, never an env line — file delivery is
+// verbatim body, json delivery is a mounted JSON document.
+func FileBoundCredentialNames(definition ToolDefinition) map[string]bool {
+	bound := map[string]bool{}
+	for _, input := range definition.Credentials {
+		if input.Delivery == "file" || input.Delivery == "json" {
+			bound[input.Name] = true
+		}
+	}
+	return bound
+}
+
+// WriteWorkloadCredentialFile stages one file-bound value as <name>.secret at
+// 0600 — the sibling materialize reads it when mounting.
+func WriteWorkloadCredentialFile(dir, name, value string) error {
+	if dir == "" || !CredentialPattern.MatchString(name) {
+		return fmt.Errorf("%w: credential file target %q", ErrInvalid, name)
+	}
+	return os.WriteFile(filepath.Join(dir, name+".secret"), []byte(value), 0600)
+}
+
 // WriteWorkloadEnvFile writes KEY=value lines at 0600 under the workload directory.
 func WriteWorkloadEnvFile(dir string, values map[string]string) error {
 	if dir == "" || len(values) == 0 {
@@ -110,6 +154,9 @@ func WriteWorkloadEnvFile(dir string, values map[string]string) error {
 	}
 	lines := make([]string, 0, len(values))
 	for key, value := range values {
+		if strings.ContainsAny(value, "\r\n") {
+			return fmt.Errorf("%w: env value %s contains a line break", ErrInvalid, key)
+		}
 		lines = append(lines, key+"="+value)
 	}
 	slices.Sort(lines)
@@ -176,6 +223,19 @@ func writeAuthorizedFilesMode(ctx context.Context, root string, effective Effect
 	locked, err := lock.TryLockContext(ctx, 100*time.Millisecond)
 	if err != nil || !locked {
 		return "", nil, ErrIsolation
+	}
+	fileBound := FileBoundCredentialNames(effective.Definition)
+	for name, value := range environment {
+		if fileBound[name] {
+			if err := WriteWorkloadCredentialFile(workspace.Path, name, value); err != nil {
+				_ = lock.Unlock()
+				if workspace.Cleanup != nil {
+					_ = workspace.Cleanup()
+				}
+				return "", nil, err
+			}
+			delete(environment, name)
+		}
 	}
 	if err := WriteWorkloadEnvFile(workspace.Path, environment); err != nil {
 		_ = lock.Unlock()

@@ -32,9 +32,20 @@ type EndpointConfig struct {
 	RecipeCatalogs []api.RecipeCatalog
 	BrokerControl  *credentialbroker.Config
 	BrokerRuntime  *credentialbroker.Config
-	Release        func(context.Context, string) error
+	Release        func(context.Context, api.ControllerRelease) error
 	// CLIRelease drops bounded-cli cells by principal/binding/job selector.
 	CLIRelease func(context.Context, api.CliReleaseRequest) error
+}
+
+// wrapKeepRelease adapts the controller releaser to the backend's keep-state
+// release hook: backend probe cleanup never purges state volumes.
+func wrapKeepRelease(release func(context.Context, api.ControllerRelease) error) func(context.Context, string) error {
+	if release == nil {
+		return nil
+	}
+	return func(ctx context.Context, workloadID string) error {
+		return release(ctx, api.ControllerRelease{WorkloadID: workloadID})
+	}
 }
 
 func EndpointConfigFromEnv() (EndpointConfig, error) {
@@ -130,7 +141,7 @@ func EndpointConfigFromEnv() (EndpointConfig, error) {
 		TokensFile: os.Getenv("HUB_TOOLHUB_TOKENS_FILE"),
 		Backend: api.RoutingBackend{
 			Provider: api.PersonalProviderBackend{},
-			MCP:      api.MCPBackend{Token: os.Getenv("TOOLHIVE_VMCP_TOKEN"), AdmissionVerifier: admission, AdmissionRelease: release, Root: api.EnvOr("HUB_STATE", "/state")},
+			MCP:      api.MCPBackend{Token: os.Getenv("TOOLHIVE_VMCP_TOKEN"), AdmissionVerifier: admission, AdmissionRelease: wrapKeepRelease(release), Root: api.EnvOr("HUB_STATE", "/state")},
 			CLI:      cli,
 			Agent:    agentBackendFromEnv(),
 		},
@@ -243,6 +254,9 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 	}
 	control.SourceResolver = api.ResolveGitHubSource
 	control.FormOrigin = api.FormOriginForListen(config.Listen)
+	if public := api.PublicOrigin(); public != "" {
+		control.FormOrigin = public
+	}
 	artifacts, seccomp := api.ControlArtifactPaths(control.WorkloadRoot)
 	control.Reviewer = api.DefaultSourceReviewerWithCatalogs(artifacts, seccomp, control.RecipeCatalogs)
 	cliArtifacts, err := CLIArtifactPipelineFromEnv()
@@ -257,7 +271,7 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 		return api.AdmitWithSubmittedCredentials(ctx, artifacts, definition, secrets)
 	}
 	control.OAuth = oauth.NewBroker(secrets, []string{control.origin() + "/oauth/callback"})
-	gateway.OAuthRefresh = remoteOAuthRefresh(secrets, control.OAuth)
+	gateway.OAuthRefresh = remoteOAuthRefresh(secrets, control.OAuth, store)
 	control.Injector = gateway.Injector
 	control.PrepareDone = gateway.notifyPrepareDone
 	control.Governance = gateway.Governance
@@ -306,6 +320,12 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 type projectionEndpoint struct {
 	http.Handler
 	gateway *Gateway
+}
+
+// PublicHandler is the opt-in public listener surface — only human-action
+// routes, no control or gateway paths.
+func (e *projectionEndpoint) PublicHandler() http.Handler {
+	return e.gateway.PublicMux()
 }
 
 func (h *projectionEndpoint) RefreshProjection() error { return h.gateway.RefreshProjection() }
@@ -398,8 +418,18 @@ func credentialServicesFromEnv() (credstore.Backend, api.CredentialInjector, err
 	if err != nil {
 		return nil, nil, err
 	}
-	return backend, func(ctx context.Context, effective api.EffectiveBinding) (api.CredentialInjection, error) {
+	return backend, LocalCredentialInjector(backend), nil
+}
+
+// LocalCredentialInjector materializes admitted credentials from the local
+// encrypted store. Proxy-delivered inputs emit only the hub-managed stub in
+// env; the egress-proxy plan rides along on the injection.
+func LocalCredentialInjector(backend credstore.Backend) api.CredentialInjector {
+	return func(ctx context.Context, effective api.EffectiveBinding) (api.CredentialInjection, error) {
 		env, err := api.DecryptAuthorized(backend, effective)
-		return api.CredentialInjection{Environment: env}, err
-	}, nil
+		if err != nil {
+			return api.CredentialInjection{}, err
+		}
+		return api.CredentialInjection{Environment: env, Proxy: api.ProxyStubPlan(effective, env)}, nil
+	}
 }

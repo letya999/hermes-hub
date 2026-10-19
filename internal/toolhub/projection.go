@@ -40,7 +40,10 @@ func (s *Store) ListProjectedTools(auth identity.Envelope) ([]api.ProjectedTool,
 			}
 			return nil, err
 		}
-		for _, tool := range effective.Definition.Tools {
+		for _, tool := range effective.Definition.ProjectedToolSpecs(effective.Binding) {
+			if tool.Effect == api.WriteEffect && !s.teamMemberWritesLocked(auth, effective) {
+				continue
+			}
 			name := api.ProjectedToolName(effective.Definition.DefinitionID, effective.Definition.Version, tool.Name)
 			if seen[name] {
 				return nil, fmt.Errorf("%w: projected tool %s has multiple bindings", api.ErrConflict, name)
@@ -190,8 +193,11 @@ func (s *Store) findProjectedLocked(auth identity.Envelope, projectedName string
 		if err != nil {
 			continue
 		}
-		for _, tool := range candidate.Definition.Tools {
+		for _, tool := range candidate.Definition.ProjectedToolSpecs(candidate.Binding) {
 			if api.ProjectedToolName(candidate.Definition.DefinitionID, candidate.Definition.Version, tool.Name) != projectedName {
+				continue
+			}
+			if tool.Effect == api.WriteEffect && !s.teamMemberWritesLocked(auth, candidate) {
 				continue
 			}
 			if found != nil {

@@ -9,9 +9,128 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/identity"
 )
+
+// CHG-0127 S0.3: confirmation and removal links ride the same notice channel
+// as credential forms — all are loopback action pages the gateway may relay.
+func TestPrepareOutcomeLinkPaths(t *testing.T) {
+	for _, raw := range []string{
+		"http://127.0.0.1:8090/credentials/onboard-abc?nonce=n1",
+		"http://127.0.0.1:8090/confirm/onboard-abc?nonce=n2",
+		"http://127.0.0.1:8090/remove/onboard-abc?nonce=n3",
+		"http://localhost:8090/remove/onboard-abc?nonce=n4",
+		"http://127.0.0.1:8090/connect/onboard-abc?state=flow-xyz",
+		"http://127.0.0.1:8090/connect/onboard-abc?request=req-777",
+	} {
+		if !loopbackCredentialURL(raw) {
+			t.Fatalf("rejected action link %q", raw)
+		}
+	}
+	for _, raw := range []string{
+		"http://127.0.0.1:8090/evil/onboard-abc?nonce=n",
+		"https://attacker.example/remove/onboard-abc?nonce=n",
+		"http://127.0.0.1:8090/remove/onboard-abc",
+	} {
+		if loopbackCredentialURL(raw) {
+			t.Fatalf("accepted unsafe link %q", raw)
+		}
+	}
+}
+
+// CHG-0129 S2.7: an onboarding initiated on the mock channel receives its
+// action link back on the mock channel — the notice follows the origin job's
+// channel instead of assuming Telegram. The link itself stays plain text, so
+// a channel with Caps().Actions == false delivers it unchanged.
+func TestPrepareOutcomeNoticeFollowsOriginChannel(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.ControlAuth = "control-token"
+	gateway, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := time.Now().UTC()
+	mapping := commodel.JobMapping{
+		JobID: "job-mock-origin", PrincipalID: "alice", Trigger: "message",
+		Channel: "mock", ConversationID: "mock-conv-9", DeliveryTargetID: "mock-conv-9",
+		ChatID: 42, Status: "done", CreatedAt: created.Add(-time.Minute),
+	}
+	gateway.spool.mu.Lock()
+	err = gateway.spool.writeMappingLocked(mapping)
+	gateway.spool.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]string{
+		"onboarding_id": "onboard-mock", "phase": "awaiting-credentials",
+		"definition_id": "user-mcp", "repository": "https://github.com/example/mcp",
+		"form_url":   "http://127.0.0.1:8090/credentials/onboard-mock?t=tok1",
+		"created_at": created.Format(time.RFC3339Nano),
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/prepare-outcome", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer control-token")
+	req.Header.Set("X-Hub-Principal", "alice")
+	rec := httptest.NewRecorder()
+	gateway.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	entries, err := os.ReadDir(filepath.Join(cfg.SpoolDir, "outbox", "pending"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sawMock := false
+	for _, entry := range entries {
+		raw, err := os.ReadFile(filepath.Join(cfg.SpoolDir, "outbox", "pending", entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var delivery Delivery
+		if json.Unmarshal(raw, &delivery) != nil {
+			t.Fatalf("outbox record %s", raw)
+		}
+		if delivery.Channel != "mock" || delivery.ChatID != 42 {
+			continue
+		}
+		if !strings.Contains(delivery.Text, "http://127.0.0.1:8090/credentials/onboard-mock?t=tok1") {
+			t.Fatalf("mock notice lost the action link: %q", delivery.Text)
+		}
+		sawMock = true
+	}
+	if !sawMock {
+		t.Fatal("no mock-channel notice spooled")
+	}
+}
+
+// CHG-0129 S2.7: when the operator exposes a public origin, toolhub mints
+// https links; the gateway accepts https only for the configured origin host
+// and only on the approved human-action paths.
+func TestPrepareOutcomePublicOriginLink(t *testing.T) {
+	t.Setenv("HUB_PUBLIC_ORIGIN", "https://hub.example.com")
+	for _, raw := range []string{
+		"https://hub.example.com/credentials/onboard-abc?t=n1",
+		"https://hub.example.com/confirm/onboard-abc?t=n2",
+		"https://hub.example.com/device/onboard-abc?t=n3",
+		"http://127.0.0.1:8090/device/onboard-abc?t=n4",
+	} {
+		if !loopbackCredentialURL(raw) {
+			t.Fatalf("rejected action link %q", raw)
+		}
+	}
+	for _, raw := range []string{
+		"https://evil.example/credentials/onboard-abc?t=n1",
+		"https://hub.example.com.evil.example/credentials/onboard-abc?t=n1",
+		"https://hub.example.com/status/onboard-abc?t=n1",
+		"https://hub.example.com/credentials/onboard-abc",
+	} {
+		if loopbackCredentialURL(raw) {
+			t.Fatalf("accepted unsafe link %q", raw)
+		}
+	}
+}
 
 func TestPrepareNoticeWaitsForTelegramLogin(t *testing.T) {
 	cfg := testConfig(t)

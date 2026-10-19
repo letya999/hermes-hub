@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 )
 
 // storeStamp is the observed identity of the on-disk snapshot: the file's
@@ -33,7 +34,7 @@ func statStoreStamp(path string) (storeStamp, bool) {
 }
 
 func NewStore() *Store {
-	return &Store{definitions: map[string]api.ToolDefinition{}, connections: map[string]api.Connection{}, credentials: map[string]api.CredentialReference{}, bindings: map[string]api.ToolBinding{}, workloads: map[string]api.WorkloadInstance{}, projectionRevisions: map[string]uint64{}, grants: map[string]api.Grant{}, onboardings: map[string]api.Onboarding{}, publications: map[string]api.DefinitionPublication{}, sharedPolicies: map[string]api.SharedCredentialPolicy{}, capabilityPolicies: map[string]api.CapabilityPolicy{}, capabilityProfiles: map[string]api.CapabilityProfile{}, exclusions: map[string]api.ProjectionExclusion{}}
+	return &Store{definitions: map[string]api.ToolDefinition{}, connections: map[string]api.Connection{}, credentials: map[string]api.CredentialReference{}, bindings: map[string]api.ToolBinding{}, workloads: map[string]api.WorkloadInstance{}, projectionRevisions: map[string]uint64{}, grants: map[string]api.Grant{}, onboardings: map[string]api.Onboarding{}, operations: map[string]api.Operation{}, refreshLeases: map[string]api.RefreshLease{}, connStatus: map[string]api.Status{}, recipes: map[string]api.RecipeResolution{}, publications: map[string]api.DefinitionPublication{}, sharedPolicies: map[string]api.SharedCredentialPolicy{}, teams: map[string]api.Team{}, capabilityPolicies: map[string]api.CapabilityPolicy{}, capabilityProfiles: map[string]api.CapabilityProfile{}, exclusions: map[string]api.ProjectionExclusion{}}
 }
 
 func (s *Store) Save(path string) error {
@@ -66,6 +67,7 @@ func (s *Store) saveLocked(path string) error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	s.compactLocked(time.Now())
 	state := snapshot{Schema: api.SchemaVersion, ProjectionRevisions: map[string]uint64{}, CapabilityChanges: s.capabilityChanges, BindingChanges: s.bindingChanges}
 	for _, d := range s.definitions {
 		state.Definitions = append(state.Definitions, d)
@@ -89,13 +91,30 @@ func (s *Store) saveLocked(path string) error {
 		state.Grants = append(state.Grants, grant)
 	}
 	for _, onboarding := range s.onboardings {
+		// A registered definition is already persisted once in the registry;
+		// embedding it per onboarding duplicates the same bytes. Drafts still
+		// awaiting admission keep their copy — nothing else can rebuild it.
+		if onboarding.Definition != nil && !onboarding.AdmissionPending {
+			if _, ok := s.definitions[definitionKey(onboarding.DefinitionID, onboarding.DefinitionVersion)]; ok {
+				onboarding.Definition = nil
+			}
+		}
 		state.Onboardings = append(state.Onboardings, onboarding)
+	}
+	for _, op := range s.operations {
+		state.Operations = append(state.Operations, op)
+	}
+	if len(s.recipes) > 0 {
+		state.Recipes = s.recipes
 	}
 	for _, pub := range s.publications {
 		state.Publications = append(state.Publications, pub)
 	}
 	for _, policy := range s.sharedPolicies {
 		state.SharedPolicies = append(state.SharedPolicies, policy)
+	}
+	for _, team := range s.teams {
+		state.Teams = append(state.Teams, team)
 	}
 	slices.SortFunc(state.Definitions, func(a, b api.ToolDefinition) int {
 		return strings.Compare(definitionKey(a.DefinitionID, a.Version), definitionKey(b.DefinitionID, b.Version))
@@ -106,10 +125,12 @@ func (s *Store) saveLocked(path string) error {
 	slices.SortFunc(state.Workloads, func(a, b api.WorkloadInstance) int { return strings.Compare(a.WorkloadID, b.WorkloadID) })
 	slices.SortFunc(state.Grants, func(a, b api.Grant) int { return strings.Compare(a.GrantID, b.GrantID) })
 	slices.SortFunc(state.Onboardings, func(a, b api.Onboarding) int { return strings.Compare(a.OnboardingID, b.OnboardingID) })
+	slices.SortFunc(state.Operations, func(a, b api.Operation) int { return strings.Compare(a.OperationID, b.OperationID) })
 	slices.SortFunc(state.Publications, func(a, b api.DefinitionPublication) int {
 		return strings.Compare(definitionKey(a.DefinitionID, a.Version), definitionKey(b.DefinitionID, b.Version))
 	})
 	slices.SortFunc(state.SharedPolicies, func(a, b api.SharedCredentialPolicy) int { return strings.Compare(a.PolicyID, b.PolicyID) })
+	slices.SortFunc(state.Teams, func(a, b api.Team) int { return strings.Compare(a.TeamID, b.TeamID) })
 	body, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
@@ -222,6 +243,7 @@ func Load(path string) (*Store, error) {
 			}
 		}
 		store.connections[connection.ConnectionID] = connection
+		store.noteConnectionStatusLocked(connection)
 	}
 	for _, binding := range state.Bindings {
 		if err := binding.Validate(); err != nil {
@@ -259,6 +281,18 @@ func Load(path string) (*Store, error) {
 		}
 		store.onboardings[onboarding.OnboardingID] = onboarding
 	}
+	for _, op := range state.Operations {
+		if err := op.Validate(); err != nil {
+			return nil, err
+		}
+		store.operations[op.OperationID] = op
+	}
+	for digest, resolution := range state.Recipes {
+		if check, err := api.ResolutionDigest(resolution); err != nil || check != digest {
+			return nil, fmt.Errorf("%w: persisted recipe digest", api.ErrInvalid)
+		}
+		store.recipes[digest] = resolution
+	}
 	for _, pub := range state.Publications {
 		if err := pub.Validate(); err != nil {
 			return nil, err
@@ -270,6 +304,12 @@ func Load(path string) (*Store, error) {
 			return nil, err
 		}
 		store.sharedPolicies[policy.PolicyID] = policy
+	}
+	for _, team := range state.Teams {
+		if err := team.Validate(); err != nil {
+			return nil, err
+		}
+		store.teams[team.TeamID] = team
 	}
 	for _, binding := range store.bindings {
 		key := projectionKey(binding.PrincipalID, binding.ContextID, binding.RuntimeID)
@@ -284,6 +324,23 @@ func Load(path string) (*Store, error) {
 	store.savedPath, store.diskDigest = path, sha256.Sum256(b)
 	store.diskStamp = stamp
 	return store, nil
+}
+
+// compactLocked deletes terminal records past their retention windows so a
+// long-lived store stays bounded: removed onboardings older than 30 days
+// and done operations older than 7 days. Live state is untouched. s.mu
+// must be held.
+func (s *Store) compactLocked(now time.Time) {
+	for id, onboarding := range s.onboardings {
+		if onboarding.Phase == api.PhaseRemoved && now.Sub(onboarding.CreatedAt) > 30*24*time.Hour {
+			delete(s.onboardings, id)
+		}
+	}
+	for id, op := range s.operations {
+		if (op.State == api.OpStateDone || op.State == api.OpStateFailed) && now.Sub(op.UpdatedAt) > 7*24*time.Hour {
+			delete(s.operations, id)
+		}
+	}
 }
 
 func (s *Store) persist() error {
@@ -357,6 +414,7 @@ func (s *Store) Reload() error {
 	s.onboardings = fresh.onboardings
 	s.publications = fresh.publications
 	s.sharedPolicies = fresh.sharedPolicies
+	s.teams = fresh.teams
 	s.capabilityPolicies = fresh.capabilityPolicies
 	s.capabilityProfiles = fresh.capabilityProfiles
 	s.capabilityChanges = fresh.capabilityChanges
@@ -364,8 +422,12 @@ func (s *Store) Reload() error {
 	s.savedPath, s.diskDigest = fresh.savedPath, fresh.diskDigest
 	s.diskStamp = fresh.diskStamp
 	s.mu.Unlock()
-	s.stopWorkloads(stopped)
-	return nil
+	// Re-sync the lock-free status mirror wholesale: the freshly loaded set
+	// is authoritative, so connections removed on disk leave no stale entries.
+	s.leaseMu.Lock()
+	s.connStatus = fresh.connStatus
+	s.leaseMu.Unlock()
+	return s.stopWorkloads(stopped)
 }
 
 func (s *Store) validateLocked() error {

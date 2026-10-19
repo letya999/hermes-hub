@@ -123,20 +123,20 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 		}
 	}()
 	step = "network"
-	if _, err := c.docker(ctx, append([]string{"network", "create", "--internal", "--label", "hermes-hub.role=generic-mcp"}, append(c.scopeLabelArgs(), network)...)...); err != nil {
+	if _, err := c.docker(ctx, append([]string{"network", "create", "--internal", "--label", "hermes-hub.role=generic-mcp"}, append(c.planLabelArgs(plan), network)...)...); err != nil {
 		return genericWorkload{}, err
 	}
-	if _, err := c.docker(ctx, append([]string{"volume", "create", "--label", "hermes-hub.role=generic-mcp"}, append(c.scopeLabelArgs(), proxyVol)...)...); err != nil {
+	if _, err := c.docker(ctx, append([]string{"volume", "create", "--label", "hermes-hub.role=generic-mcp"}, append(c.planLabelArgs(plan), proxyVol)...)...); err != nil {
 		return genericWorkload{}, err
 	}
-	if _, err := c.docker(ctx, append([]string{"volume", "create", "--label", "hermes-hub.role=generic-mcp"}, append(c.scopeLabelArgs(), bridgeVol)...)...); err != nil {
+	if _, err := c.docker(ctx, append([]string{"volume", "create", "--label", "hermes-hub.role=generic-mcp"}, append(c.planLabelArgs(plan), bridgeVol)...)...); err != nil {
 		return genericWorkload{}, err
 	}
-	if _, err := c.docker(ctx, append([]string{"volume", "create", "--label", "hermes-hub.role=generic-mcp"}, append(c.scopeLabelArgs(), relayVol)...)...); err != nil {
+	if _, err := c.docker(ctx, append([]string{"volume", "create", "--label", "hermes-hub.role=generic-mcp"}, append(c.planLabelArgs(plan), relayVol)...)...); err != nil {
 		return genericWorkload{}, err
 	}
 	for _, volume := range stateVols {
-		if _, err := c.docker(ctx, append([]string{"volume", "create", "--label", "hermes-hub.role=generic-mcp-state"}, append(c.scopeLabelArgs(), volume)...)...); err != nil {
+		if _, err := c.docker(ctx, append([]string{"volume", "create", "--label", "hermes-hub.role=generic-mcp-state"}, append(c.planLabelArgs(plan), volume)...)...); err != nil {
 			return genericWorkload{}, err
 		}
 		// Named volumes are root-owned; the MCP runs as 10001. Best-effort
@@ -144,7 +144,7 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 		// for read-only tools on a fresh volume.
 		_, _ = c.docker(ctx, "run", "--rm", "--user", "0:0", "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true", "--mount", "type=volume,source="+volume+",target=/state", "--entrypoint", "chmod", imageRef, "0777", "/state")
 	}
-	proxyConfig, err := api.GenericProxyConfig(plan.Execution.Egress)
+	proxyConfig, err := api.ProxyConfigFor(plan)
 	if err != nil {
 		return genericWorkload{}, err
 	}
@@ -155,7 +155,7 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 	defer os.Remove(fileName)
 	limits := []string{"--cpus", strconv.FormatFloat(float64(plan.Execution.CPUMillis)/1000, 'f', 3, 64), "--memory", strconv.Itoa(plan.Execution.MemoryMiB) + "m", "--memory-swap", strconv.Itoa(plan.Execution.MemoryMiB) + "m", "--pids-limit", strconv.Itoa(plan.Execution.MaxPIDs)}
 	step = "proxy-create"
-	proxyArgs := append([]string{"create", "--name", proxyName, "--network", network, "--read-only", "--user", "31:31", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true", "--security-opt", "seccomp=" + c.config.SeccompProfile, "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m", "--mount", "type=volume,source=" + proxyVol + ",target=/etc/squid"}, c.scopeLabelArgs()...)
+	proxyArgs := append([]string{"create", "--name", proxyName, "--network", network, "--read-only", "--user", "31:31", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true", "--security-opt", "seccomp=" + c.config.SeccompProfile, "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m", "--mount", "type=volume,source=" + proxyVol + ",target=/etc/squid"}, c.planLabelArgs(plan)...)
 	proxyArgs = append(append(proxyArgs, limits...), definition.Workload.SidecarImages[0])
 	if _, err := c.docker(ctx, proxyArgs...); err != nil {
 		return genericWorkload{}, err
@@ -196,7 +196,7 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 	}
 	defer os.Remove(configFileName)
 	step = "bridge-seed"
-	seedArgs := append([]string{"create", "--name", bridgeSeed, "--network", "none", "--read-only", "--user", "0:0", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true", "--memory", "32m", "--cpus", "0.1", "--pids-limit", "16", "--mount", "type=volume,source=" + bridgeVol + ",target=/hermes-bridge", "--mount", "type=volume,source=" + relayVol + ",target=/hermes-relay"}, append(c.scopeLabelArgs(), definition.Workload.SidecarImages[0])...)
+	seedArgs := append([]string{"create", "--name", bridgeSeed, "--network", "none", "--read-only", "--user", "0:0", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true", "--memory", "32m", "--cpus", "0.1", "--pids-limit", "16", "--mount", "type=volume,source=" + bridgeVol + ",target=/hermes-bridge", "--mount", "type=volume,source=" + relayVol + ",target=/hermes-relay"}, append(c.planLabelArgs(plan), definition.Workload.SidecarImages[0])...)
 	if _, err := c.docker(ctx, seedArgs...); err != nil {
 		return genericWorkload{}, err
 	}
@@ -214,6 +214,9 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 	}
 	step = "bridge-create"
 	bridgeArgs := append([]string{"create", "--name", plan.WorkloadID, "--network", network, "--read-only", "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true", "--security-opt", "seccomp=" + c.config.SeccompProfile, "--tmpfs", "/tmp:rw,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=64m", "--tmpfs", "/run:rw,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=16m", "--env", "HOME=/tmp", "--env", "HTTP_PROXY=http://" + proxyIP + ":3128", "--env", "HTTPS_PROXY=http://" + proxyIP + ":3128", "--env", "NO_PROXY=127.0.0.1,localhost", "--env", "NODE_USE_ENV_PROXY=1", "--entrypoint", "/hermes-bridge/hubctl"}, limits...)
+	if plan.Execution.ShmSizeMiB > 0 {
+		bridgeArgs = append(bridgeArgs, "--shm-size", strconv.Itoa(plan.Execution.ShmSizeMiB)+"m")
+	}
 	if len(definition.Credentials) > 0 {
 		if plan.WorkspacePath == "" {
 			return genericWorkload{}, fmt.Errorf("%w: credential-bearing fallback requires an owner workspace", api.ErrUnauthorized)
@@ -246,7 +249,7 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 	}
 	bridgeArgs = append(bridgeArgs, api.RuntimeEnvironmentArgs(definition)...)
 	bridgeArgs = append(bridgeArgs, api.ProxyEnvironmentArgs(definition, "http://"+proxyIP+":3128")...)
-	bridgeArgs = append(append(bridgeArgs, c.scopeLabelArgs()...), "--mount", "type=volume,source="+bridgeVol+",target=/hermes-bridge,readonly", imageRef, "companion", "--config", "/hermes-bridge/config.json")
+	bridgeArgs = append(append(bridgeArgs, c.planLabelArgs(plan)...), "--mount", "type=volume,source="+bridgeVol+",target=/hermes-bridge,readonly", imageRef, "companion", "--config", "/hermes-bridge/config.json")
 	if _, err := c.docker(ctx, bridgeArgs...); err != nil {
 		return genericWorkload{}, err
 	}
@@ -255,7 +258,7 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 		return genericWorkload{}, err
 	}
 	step = "relay-create"
-	relayArgs := append(append([]string{"create", "--name", relayName, "--network", network, "--publish", "127.0.0.1::8765/tcp", "--no-healthcheck", "--read-only", "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true", "--security-opt", "seccomp=" + c.config.SeccompProfile, "--tmpfs", "/tmp:rw,nosuid,nodev,size=16m", "--env", "HERMES_BRIDGE_TOKEN=" + bridgeToken, "--entrypoint", "/hermes-relay/hubctl"}, c.scopeLabelArgs()...), limits...)
+	relayArgs := append(append([]string{"create", "--name", relayName, "--network", network, "--publish", "127.0.0.1::8765/tcp", "--no-healthcheck", "--read-only", "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true", "--security-opt", "seccomp=" + c.config.SeccompProfile, "--tmpfs", "/tmp:rw,nosuid,nodev,size=16m", "--env", "HERMES_BRIDGE_TOKEN=" + bridgeToken, "--entrypoint", "/hermes-relay/hubctl"}, c.planLabelArgs(plan)...), limits...)
 	relayArgs = append(relayArgs, "--mount", "type=volume,source="+relayVol+",target=/hermes-relay,readonly", definition.Workload.SidecarImages[0], "relay", "--listen", genericBridgeListen, "--target", "http://"+plan.WorkloadID+":8765/mcp", "--token-env", "HERMES_BRIDGE_TOKEN")
 	if _, err := c.docker(ctx, relayArgs...); err != nil {
 		return genericWorkload{}, err
@@ -372,6 +375,13 @@ func materializeRuntimeCredentials(workspace string, definition api.ToolDefiniti
 	var mounts []api.Mount
 	for _, input := range definition.Credentials {
 		value := values[input.Name]
+		if input.Delivery == "file" || input.Delivery == "json" {
+			// The injector stages file-bound content as a sibling .secret — the
+			// env file carries env-line values only.
+			if staged, err := os.ReadFile(filepath.Join(workspace, input.Name+".secret")); err == nil {
+				value = string(staged)
+			}
+		}
 		if value == "" {
 			continue
 		}
@@ -390,7 +400,7 @@ func materializeRuntimeCredentials(workspace string, definition api.ToolDefiniti
 				mounts = append(mounts, api.Mount{Source: path, Target: input.Target, ReadOnly: true})
 				value = input.Target
 			}
-		} else if strings.Contains(strings.ToUpper(input.Name), "CREDENTIALS") && json.Valid([]byte(value)) {
+		} else if input.Delivery == "json" && json.Valid([]byte(value)) {
 			path := filepath.Join(workspace, input.Name+".json")
 			if err := os.WriteFile(path, []byte(value), 0600); err != nil {
 				return "", nil, err
@@ -398,6 +408,9 @@ func materializeRuntimeCredentials(workspace string, definition api.ToolDefiniti
 			target := "/run/credentials/" + input.Name + ".json"
 			mounts = append(mounts, api.Mount{Source: path, Target: target, ReadOnly: true})
 			value = target
+		}
+		if strings.ContainsAny(value, "\x00\r\n") {
+			return "", nil, fmt.Errorf("%w: env-line credential %s", api.ErrInvalid, input.Name)
 		}
 		body.WriteString(input.Name + "=" + value + "\n")
 	}

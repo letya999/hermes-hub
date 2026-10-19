@@ -155,13 +155,13 @@ func TestControllerAdmissionReleaserUsesAuthenticatedReleaseEndpoint(t *testing.
 	if err != nil || release == nil {
 		t.Fatalf("release endpoint was not configured: %v", err)
 	}
-	if err := release(context.Background(), "fixture-workload"); err != nil {
+	if err := release(context.Background(), ControllerRelease{WorkloadID: "fixture-workload"}); err != nil {
 		t.Fatal(err)
 	}
 	if gotPath != "/release" || gotAuth != "Bearer "+strings.Repeat("r", 32) {
 		t.Fatalf("unexpected release request path=%q auth=%q", gotPath, gotAuth)
 	}
-	if err := release(context.Background(), ""); err == nil {
+	if err := release(context.Background(), ControllerRelease{}); err == nil {
 		t.Fatal("empty workload release accepted")
 	}
 	t.Setenv("HUB_TOOLHIVE_ADMISSION_ENDPOINT", "https://public.example/admit")
@@ -179,7 +179,7 @@ func TestControllerAdmissionReleaserUsesAuthenticatedReleaseEndpoint(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := release(context.Background(), "fixture-workload"); err == nil {
+	if err := release(context.Background(), ControllerRelease{WorkloadID: "fixture-workload"}); err == nil {
 		t.Fatal("failed release response accepted")
 	}
 	denied.Close()
@@ -188,7 +188,7 @@ func TestControllerAdmissionReleaserUsesAuthenticatedReleaseEndpoint(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := failed(context.Background(), "fixture-workload"); err == nil {
+	if err := failed(context.Background(), ControllerRelease{WorkloadID: "fixture-workload"}); err == nil {
 		t.Fatal("network release failure accepted")
 	}
 }

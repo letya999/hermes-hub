@@ -27,7 +27,14 @@ import (
 // checks revisions and pins.
 func runCapability(args []string) error {
 	f := flag.NewFlagSet("capability", flag.ContinueOnError)
-	kind := f.String("kind", "", "policy, profile, group, agent-tools, preview, connectors or tools")
+	kind := f.String("kind", "", "policy, profile, group, agent-tools, preview, connectors, tools, team, team-share or team-drop")
+	teamID := f.String("team", "", "team id for team-share")
+	definitionID := f.String("definition", "", "definition id for team-share")
+	definitionVersion := f.String("version", "", "definition version for team-share")
+	backend := f.String("backend", "", "credential backend for team-share")
+	locator := f.String("locator", "", "credential locator for team-share")
+	keys := f.String("keys", "", "comma-separated credential keys for team-share")
+	connectionID := f.String("connection-id", "", "team connection id for team-drop")
 	file := f.String("file", "", "operator-reviewed JSON record")
 	issuer := f.String("issuer", "operator", "operator identity recorded as issuer and confirmer")
 	confirm := f.Bool("confirm", false, "stamp this operator's confirmation onto the reviewed record")
@@ -41,8 +48,8 @@ func runCapability(args []string) error {
 	if err := f.Parse(args); err != nil {
 		return err
 	}
-	if f.NArg() != 0 || (*kind != "policy" && *kind != "profile" && *kind != "group" && *kind != "agent-tools" && *kind != "preview" && *kind != "connectors" && *kind != "tools") {
-		return errors.New("capability requires --kind policy|profile|group|agent-tools|preview|connectors|tools; no positional arguments")
+	if f.NArg() != 0 || (*kind != "policy" && *kind != "profile" && *kind != "group" && *kind != "agent-tools" && *kind != "preview" && *kind != "connectors" && *kind != "tools" && *kind != "team" && *kind != "team-share" && *kind != "team-drop") {
+		return errors.New("capability requires --kind policy|profile|group|agent-tools|preview|connectors|tools|team|team-share|team-drop; no positional arguments")
 	}
 	if *kind == "tools" {
 		return runCapabilityTools(*settingsPath, *set, *confirm)
@@ -54,8 +61,11 @@ func runCapability(args []string) error {
 		}
 		return json.NewEncoder(os.Stdout).Encode(manifest)
 	}
-	if *kind != "agent-tools" && *file == "" {
-		return errors.New("capability requires --file for policy, profile, group and preview")
+	if (*kind == "team-share" || *kind == "team-drop") && *file != "" {
+		return errors.New("team-share and team-drop take flags, not --file")
+	}
+	if *kind != "agent-tools" && *kind != "team-share" && *kind != "team-drop" && *file == "" {
+		return errors.New("capability requires --file for policy, profile, group, preview and team")
 	}
 	if *kind == "group" {
 		var group api.CapabilityGroup
@@ -105,6 +115,41 @@ func runCapability(args []string) error {
 		}
 		return json.NewEncoder(os.Stdout).Encode(preview)
 	}
+	if *kind == "team-share" {
+		if *teamID == "" || *definitionID == "" || *definitionVersion == "" || *backend == "" || *locator == "" {
+			return errors.New("team-share requires --team, --definition, --version, --backend and --locator")
+		}
+		keyList := []string{}
+		for _, key := range strings.Split(*keys, ",") {
+			if key = strings.TrimSpace(key); key != "" {
+				keyList = append(keyList, key)
+			}
+		}
+		connection, _, err := store.ShareTeamConnection(*teamID, *definitionID, *definitionVersion, *backend, *locator, keyList)
+		if err != nil {
+			return err
+		}
+		if create {
+			if err := store.Save(absolute); err != nil {
+				return err
+			}
+		}
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{"kind": *kind, "id": connection.ConnectionID})
+	}
+	if *kind == "team-drop" {
+		if *connectionID == "" {
+			return errors.New("team-drop requires --connection-id")
+		}
+		if err := store.DropTeamConnection(*connectionID); err != nil {
+			return err
+		}
+		if create {
+			if err := store.Save(absolute); err != nil {
+				return err
+			}
+		}
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{"kind": *kind, "id": *connectionID})
+	}
 	if *kind == "agent-tools" {
 		if *principal == "" || *contextID == "" || *runtimeID == "" || *policyVersion == "" {
 			return errors.New("agent-tools requires --principal, --context, --runtime and --policy-version (or HUB_* equivalents)")
@@ -142,6 +187,18 @@ func runCapability(args []string) error {
 			return err
 		}
 		id, revision, status = record.PolicyID, record.Revision, record.Status
+	} else if *kind == "team" {
+		var record api.Team
+		if err := readCapabilityRecord(*file, &record); err != nil {
+			return err
+		}
+		if err := confirmRecord(*confirm, *issuer, &record); err != nil {
+			return err
+		}
+		if err := store.PutTeam(record); err != nil {
+			return err
+		}
+		id, revision, status = record.TeamID, record.Revision, record.Status
 	} else {
 		var record api.CapabilityProfile
 		if err := readCapabilityRecord(*file, &record); err != nil {

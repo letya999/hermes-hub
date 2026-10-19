@@ -1,0 +1,33 @@
+{
+  "target": "modelcontextprotocol/sqlite",
+  "subject": {
+    "kind": "mcp-container",
+    "ref": "modelcontextprotocol/sqlite@sha256:088e6c4132762eaa73ba8c170117f6adb1c93498b6e728894e30506ce1b640fe"
+  },
+  "provenance": [
+    "recorded upstream README/env contract"
+  ],
+  "entries": [
+    {
+      "claim": {
+        "attribute": "entrypoint",
+        "value": "[\"uvx\", \"mcp-server-sqlite\"]"
+      },
+      "source": "README.md",
+      "ref": "README.md@mcpServers",
+      "rank": "hint"
+    },
+    {
+      "claim": {
+        "field": "SQLITE_DB_PATH",
+        "required": true,
+        "secret": false,
+        "delivery": "env"
+      },
+      "source": "README.md",
+      "ref": "README.md@env",
+      "rank": "R6"
+    }
+  ],
+  "expect_digest": "sha256:c837080cafaf099f992df70851d78a92e7db1b2e2b7c1d1c72ce0c2d1e1c3b04"
+}

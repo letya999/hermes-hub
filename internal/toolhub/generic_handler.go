@@ -34,13 +34,19 @@ func (c *genericController) handler(token string) http.Handler {
 			}
 			c.mu.Lock()
 			if workload, ok := c.workloads[release.WorkloadID]; ok {
-				if err := c.removeWorkload(r.Context(), workload, workload.plan.Definition.Workload.Stateful); err != nil {
+				if err := c.removeWorkload(r.Context(), workload, workload.plan.Definition.Workload.Stateful && !release.Purge); err != nil {
 					c.mu.Unlock()
 					http.Error(w, "workload release failed", http.StatusServiceUnavailable)
 					return
 				}
 				delete(c.workloads, release.WorkloadID)
 				c.config.Budget.Release(release.WorkloadID)
+			} else if release.Purge {
+				if err := c.purgeWorkloadByName(r.Context(), release.WorkloadID); err != nil {
+					c.mu.Unlock()
+					http.Error(w, "workload purge failed", http.StatusServiceUnavailable)
+					return
+				}
 			}
 			c.mu.Unlock()
 			w.WriteHeader(http.StatusNoContent)
@@ -162,6 +168,12 @@ func (c *genericController) start(ctx context.Context, plan api.ControllerPlan) 
 		}
 		return c.startDockerRemoteFallback(ctx, plan)
 	}
+	if plan.Execution.ShmSizeMiB > 0 && !strings.Contains(string(help), "--shm-size") {
+		if !c.config.DockerFallback {
+			return genericWorkload{}, fmt.Errorf("%w: ToolHive cannot express the workload shm-size budget", api.ErrIsolation)
+		}
+		return c.startDockerRemoteFallback(ctx, plan)
+	}
 	if len(plan.CredentialMounts) > 0 && !strings.Contains(string(help), "--volume") {
 		if !c.config.DockerFallback {
 			return genericWorkload{}, fmt.Errorf("%w: ToolHive cannot express credential mounts", api.ErrIsolation)
@@ -185,13 +197,13 @@ func (c *genericController) start(ctx context.Context, plan api.ControllerPlan) 
 		_, _ = c.docker(ctx, "network", "rm", network)
 		_, _ = c.docker(ctx, "volume", "rm", proxyVol)
 	}()
-	if _, err := c.docker(ctx, append([]string{"network", "create", "--internal", "--label", "hermes-hub.role=generic-mcp"}, append(c.scopeLabelArgs(), network)...)...); err != nil {
+	if _, err := c.docker(ctx, append([]string{"network", "create", "--internal", "--label", "hermes-hub.role=generic-mcp"}, append(c.planLabelArgs(plan), network)...)...); err != nil {
 		return genericWorkload{}, err
 	}
-	if _, err := c.docker(ctx, append([]string{"volume", "create", "--label", "hermes-hub.role=generic-mcp"}, append(c.scopeLabelArgs(), proxyVol)...)...); err != nil {
+	if _, err := c.docker(ctx, append([]string{"volume", "create", "--label", "hermes-hub.role=generic-mcp"}, append(c.planLabelArgs(plan), proxyVol)...)...); err != nil {
 		return genericWorkload{}, err
 	}
-	proxyConfig, err := api.GenericProxyConfig(plan.Execution.Egress)
+	proxyConfig, err := api.ProxyConfigFor(plan)
 	if err != nil {
 		return genericWorkload{}, err
 	}
@@ -202,7 +214,7 @@ func (c *genericController) start(ctx context.Context, plan api.ControllerPlan) 
 	}
 	defer os.Remove(fileName)
 	limits := []string{"--cpus", strconv.FormatFloat(float64(plan.Execution.CPUMillis)/1000, 'f', 3, 64), "--memory", strconv.Itoa(plan.Execution.MemoryMiB) + "m", "--memory-swap", strconv.Itoa(plan.Execution.MemoryMiB) + "m", "--pids-limit", strconv.Itoa(plan.Execution.MaxPIDs)}
-	args := append([]string{"create", "--name", proxyName, "--network", network, "--read-only", "--user", "31:31", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true", "--security-opt", "seccomp=" + c.config.SeccompProfile, "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m", "--mount", "type=volume,source=" + proxyVol + ",target=/etc/squid"}, c.scopeLabelArgs()...)
+	args := append([]string{"create", "--name", proxyName, "--network", network, "--read-only", "--user", "31:31", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true", "--security-opt", "seccomp=" + c.config.SeccompProfile, "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m", "--mount", "type=volume,source=" + proxyVol + ",target=/etc/squid"}, c.planLabelArgs(plan)...)
 	args = append(append(args, limits...), plan.SidecarImages[0])
 	if _, err := c.docker(ctx, args...); err != nil {
 		return genericWorkload{}, err
@@ -224,6 +236,9 @@ func (c *genericController) start(ctx context.Context, plan api.ControllerPlan) 
 		return genericWorkload{}, err
 	}
 	toolArgs := []string{"run", "--name", plan.WorkloadID, "--host", "127.0.0.1", "--proxy-port", strconv.Itoa(port), "--transport", "stdio", "--proxy-mode", "streamable-http", "--permission-profile", "none", "--network", network, "--isolate-network=false", "--read-only", "--security-opt", "seccomp=" + c.config.SeccompProfile, "--security-opt", "no-new-privileges=true", "--cap-drop", "ALL", "--user", "10001:10001", "--cpus", strconv.FormatFloat(float64(plan.Execution.CPUMillis)/1000, 'f', 3, 64), "--memory", strconv.Itoa(plan.Execution.MemoryMiB) + "m", "--memory-swap", strconv.Itoa(plan.Execution.MemoryMiB) + "m", "--pids-limit", strconv.Itoa(plan.Execution.MaxPIDs), "--timeout", strconv.Itoa(plan.Execution.TimeoutSeconds), "--output-limit", strconv.Itoa(plan.Execution.OutputBytes), "--env", "HTTP_PROXY=http://" + ip + ":3128", "--env", "HTTPS_PROXY=http://" + ip + ":3128"}
+	if plan.Execution.ShmSizeMiB > 0 {
+		toolArgs = append(toolArgs, "--shm-size", strconv.Itoa(plan.Execution.ShmSizeMiB)+"m")
+	}
 	var secretValues map[string]string
 	if plan.WorkspacePath != "" {
 		secretPath := filepath.Join(plan.WorkspacePath, "credentials.env")

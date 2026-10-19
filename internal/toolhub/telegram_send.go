@@ -36,7 +36,7 @@ func (c *ControlPlane) prepareTelegramSend(ctx context.Context, auth identity.En
 		if existing.Phase == api.PhaseRemoved || existing.Phase == api.PhaseFailed {
 			return nil, api.ErrRevoked
 		}
-		if err := c.refreshConfirmation(&existing); err != nil {
+		if err := c.refreshConfirmation(ctx, auth, &existing); err != nil {
 			return nil, err
 		}
 		return c.statusBody(existing, false), nil

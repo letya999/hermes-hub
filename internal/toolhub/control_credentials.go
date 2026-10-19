@@ -2,12 +2,13 @@ package toolhub
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"log"
-	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -119,6 +120,33 @@ func credentialGateHints(names []string, groups [][]string) []api.CredentialHint
 	return hints
 }
 
+// credentialValueLineSafe rejects control characters in values that land on
+// an env line or HTTP header: a newline injects sibling variables. File
+// delivery is exempt (content is written verbatim to a mounted file), and a
+// json-delivery field keeps newlines only when the value parses as JSON —
+// otherwise it would fall through to an env line.
+func credentialValueLineSafe(hint api.CredentialHint, value string) error {
+	if hint.MaxLength > 0 && len(value) > hint.MaxLength {
+		return fmt.Errorf("%w: %s exceeds %d bytes", api.ErrInvalid, hint.Name, hint.MaxLength)
+	}
+	if hint.Format != "" {
+		pattern, err := regexp.Compile(hint.Format)
+		if err != nil || !pattern.MatchString(value) {
+			return fmt.Errorf("%w: %s does not match its declared format", api.ErrInvalid, hint.Name)
+		}
+	}
+	if hint.Delivery == "file" {
+		return nil
+	}
+	if !strings.ContainsAny(value, "\x00\r\n") {
+		return nil
+	}
+	if hint.Delivery == "json" && json.Valid([]byte(value)) {
+		return nil
+	}
+	return fmt.Errorf("%w: %s must not contain control characters", api.ErrInvalid, hint.Name)
+}
+
 func filterSubmittedCredentials(hints []api.CredentialHint, values map[string]string) (map[string]string, error) {
 	alternatives := map[int][]api.CredentialHint{}
 	filtered := map[string]string{}
@@ -136,6 +164,9 @@ func filterSubmittedCredentials(hints []api.CredentialHint, values map[string]st
 				continue
 			}
 			return nil, fmt.Errorf("%w: missing %s", api.ErrInvalid, hint.Name)
+		}
+		if err := credentialValueLineSafe(hint, value); err != nil {
+			return nil, err
 		}
 		filtered[hint.Name] = value
 	}
@@ -155,6 +186,9 @@ func filterSubmittedCredentials(hints []api.CredentialHint, values map[string]st
 			if value == "" {
 				missing = true
 				continue
+			}
+			if err := credentialValueLineSafe(hint, value); err != nil {
+				return nil, err
 			}
 			filled[hint.Name] = value
 		}
@@ -340,7 +374,7 @@ func (c *ControlPlane) persistFailure(onboarding api.Onboarding, errorText strin
 	return cause
 }
 
-func (c *ControlPlane) requiredCredentials(auth identity.Envelope, args map[string]any) (map[string]any, error) {
+func (c *ControlPlane) requiredCredentials(ctx context.Context, auth identity.Envelope, args map[string]any) (map[string]any, error) {
 	onboarding, err := c.resolveOnboarding(auth, args)
 	if err != nil {
 		return nil, err
@@ -351,24 +385,16 @@ func (c *ControlPlane) requiredCredentials(auth identity.Envelope, args map[stri
 	if err := c.refreshBrokerRequest(context.Background(), auth, &onboarding); err != nil {
 		return nil, err
 	}
-	if err := c.refreshCredentialForm(&onboarding); err != nil {
+	if err := c.refreshCredentialForm(ctx, auth, &onboarding); err != nil {
 		return nil, err
 	}
 	body := c.statusBody(onboarding, true)
 	if onboarding.Phase == api.PhaseAwaitingCreds && onboarding.FormNonce != "" && c.now().Before(onboarding.FormExpires) {
 		body["input"] = "localhost-form"
-		body["form_url"] = c.origin() + "/credentials/" + onboarding.OnboardingID + "?nonce=" + url.QueryEscape(onboarding.FormNonce)
 	}
 	if onboarding.BrokerRequestID != "" && onboarding.BrokerAuthorizationURL != "" && onboarding.Phase == api.PhaseAwaitingCreds {
 		body["input"] = "credential-broker"
 		body["broker_request_id"] = onboarding.BrokerRequestID
-		// With a channel sign-in link the Broker form is fallback only; an LLM
-		// caller parrots whichever URL it sees, so it must leave the result.
-		if onboarding.ChannelAuthURL == "" {
-			body["authorization_url"] = onboarding.BrokerAuthorizationURL
-		}
-		delete(body, "form_url")
-		delete(body, "form_path")
 	}
 	if c.OAuth != nil {
 		body["oauth"] = "pkce"
@@ -379,7 +405,7 @@ func (c *ControlPlane) requiredCredentials(auth identity.Envelope, args map[stri
 // refreshCredentialForm makes an idempotent resume useful after the original
 // loopback link expires. The old nonce is replaced, so an old URL cannot be
 // replayed while the same request key still identifies the onboarding.
-func (c *ControlPlane) refreshCredentialForm(onboarding *api.Onboarding) error {
+func (c *ControlPlane) refreshCredentialForm(ctx context.Context, auth identity.Envelope, onboarding *api.Onboarding) error {
 	if onboarding == nil || onboarding.Phase != api.PhaseAwaitingCreds {
 		return nil
 	}
@@ -393,10 +419,14 @@ func (c *ControlPlane) refreshCredentialForm(onboarding *api.Onboarding) error {
 	onboarding.FormNonce = api.RandomNonce()
 	onboarding.FormExpires = now.Add(c.ttl())
 	onboarding.Revision++
-	return c.Store.PutOnboarding(*onboarding)
+	if err := c.Store.PutOnboarding(*onboarding); err != nil {
+		return err
+	}
+	api.PostPrepareNotice(ctx, auth, *onboarding, "", 0)
+	return nil
 }
 
-func (c *ControlPlane) refreshConfirmation(onboarding *api.Onboarding) error {
+func (c *ControlPlane) refreshConfirmation(ctx context.Context, auth identity.Envelope, onboarding *api.Onboarding) error {
 	if onboarding == nil || onboarding.Phase != api.PhaseAwaitingConfirm || (onboarding.ConfirmationNonce != "" && c.now().Before(onboarding.ConfirmationExpires)) {
 		return nil
 	}
@@ -404,7 +434,13 @@ func (c *ControlPlane) refreshConfirmation(onboarding *api.Onboarding) error {
 	onboarding.ConfirmationExpires = c.now().Add(c.ttl())
 	onboarding.ConfirmationUsed = false
 	onboarding.Revision++
-	return c.Store.PutOnboarding(*onboarding)
+	if err := c.Store.PutOnboarding(*onboarding); err != nil {
+		return err
+	}
+	// A fresh nonce means a fresh link — the channel must carry it because the
+	// tool result never will.
+	api.PostPrepareNotice(ctx, auth, *onboarding, "", 0)
+	return nil
 }
 
 func (c *ControlPlane) SubmitCredentials(onboardingID, nonce string, values map[string]string) error {
@@ -436,10 +472,14 @@ func (c *ControlPlane) SubmitCredentials(onboardingID, nonce string, values map[
 	// other value; empty ones simply stay absent.
 	for _, hint := range onboarding.Optional {
 		if value := strings.TrimSpace(values[hint.Name]); value != "" {
+			if err := credentialValueLineSafe(hint, value); err != nil {
+				return err
+			}
 			filtered[hint.Name] = value
 		}
 	}
 	authEnv := onboardingEnvelope(onboarding)
+	probedByAdmission := onboarding.AdmissionPending
 	if onboarding.AdmissionPending {
 		definition, defErr := c.definitionOf(onboarding)
 		if defErr != nil {
@@ -496,6 +536,23 @@ func (c *ControlPlane) SubmitCredentials(onboardingID, nonce string, values map[
 		shared = true
 	}
 	c.Store.mu.RUnlock()
+	// S2.6: nothing persists until a read-only probe proves the credentials.
+	// The admission path probed above; an already-admitted credentialed remote
+	// definition gets the same tools/list check before the ciphertext write.
+	// Shared-policy submissions skip it — the workload uses the policy-owned
+	// locator, so submitted values never reach the server anyway.
+	if !shared && !probedByAdmission && c.AdmitWithCredentials != nil {
+		definition, defErr := c.definitionOf(onboarding)
+		if defErr == nil && definition.Transport == api.RemoteMCP && len(definition.Credentials) > 0 {
+			if _, probeErr := c.AdmitWithCredentials(context.Background(), definition, filtered); probeErr != nil {
+				failure := "Проверка не прошла. " + credentialProbeFailure(probeErr)
+				if persistErr := c.persistFailure(onboarding, failure, probeErr); persistErr != probeErr {
+					return persistErr
+				}
+				return fmt.Errorf("%w: %s", errCredentialProbe, failure)
+			}
+		}
+	}
 	if !shared {
 		if locator == "" {
 			locator, err = c.Secrets.NewLocator()
@@ -523,6 +580,10 @@ func (c *ControlPlane) SubmitCredentials(onboardingID, nonce string, values map[
 
 // errCredentialSaved marks a failure after the loopback secret is already stored.
 var errCredentialSaved = errors.New("credential saved")
+
+// errCredentialProbe marks a pre-persistence probe rejection: nothing was
+// stored, so the form re-renders instead of reporting a saved secret.
+var errCredentialProbe = errors.New("credential probe rejected")
 
 // AuthorizeCredentials treats the protected form submission as the user's
 // confirmation and completes the binding without another model round-trip.
@@ -572,7 +633,7 @@ func credentialHints(definition api.ToolDefinition) []api.CredentialHint {
 		if input.Target != "" {
 			target = input.Target
 		}
-		hints = append(hints, api.CredentialHint{Name: input.Name, Type: kind, Secret: api.SecretName(input.Name), Delivery: delivery, Target: target, AlternativeGroup: groupOf[input.Name], Hint: "protected loopback form", Source: input.Source})
+		hints = append(hints, api.CredentialHint{Name: input.Name, Type: kind, Secret: api.SecretName(input.Name), Delivery: delivery, Target: target, AlternativeGroup: groupOf[input.Name], Hint: "protected loopback form", Source: input.Source, Format: input.Format, MaxLength: input.MaxLength})
 	}
 	return hints
 }
@@ -591,6 +652,7 @@ func credentialHintsForRecipe(definition api.ToolDefinition, recipe api.Connecti
 		hints = append(hints, api.CredentialHint{
 			Name: field.Name, Type: typ, Secret: field.Secret, Delivery: field.Delivery,
 			Target: field.Target, Alternative: field.Alternative, Hint: hint, Source: field.Source,
+			Format: field.Format, MaxLength: field.MaxLength,
 		})
 	}
 	if len(hints) == 0 {
@@ -629,7 +691,7 @@ func optionalCredentialHints(definition api.ToolDefinition) []api.CredentialHint
 		if input.Target != "" {
 			target = input.Target
 		}
-		hints = append(hints, api.CredentialHint{Name: input.Name, Type: kind, Secret: api.SecretName(input.Name), Delivery: delivery, Target: target, Hint: "protected loopback form", Source: input.Source})
+		hints = append(hints, api.CredentialHint{Name: input.Name, Type: kind, Secret: api.SecretName(input.Name), Delivery: delivery, Target: target, Hint: "protected loopback form", Source: input.Source, Format: input.Format, MaxLength: input.MaxLength})
 	}
 	return hints
 }

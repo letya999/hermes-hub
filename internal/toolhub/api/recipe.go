@@ -2,6 +2,9 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"path"
 	"strings"
@@ -37,11 +40,24 @@ type ConnectionField struct {
 	Delivery    string `json:"delivery"`
 	Target      string `json:"target,omitempty"`
 	Alternative string `json:"alternative,omitempty"`
+	// Unverified marks a field whose only support is heuristic (R6/hint)
+	// rank; the credential form renders it as a suggestion, not a contract.
+	Unverified bool `json:"unverified,omitempty"`
 	// Source names the metadata file this declaration came from
 	// (server.json, docker/.env.example, ...) or "catalog" for catalog
 	// candidates. It lets callers pick one authoritative source when
 	// upstream declarations disagree.
 	Source string `json:"source,omitempty"`
+	// Rank is the winning claim's ladder rank — rendered on the credential
+	// form so the human sees how strong the declaration's evidence is.
+	Rank Rank `json:"rank,omitempty"`
+	// TokenURL is an upstream "create a token here" link (e.g. a pre-filled
+	// GitHub PAT settings page); https-only, rendered as help, never fetched.
+	TokenURL string `json:"token_url,omitempty"`
+	// Format is a review-declared regex the submitted value must match and
+	// MaxLength its byte bound — enforced at the credential submit boundary.
+	Format    string `json:"format,omitempty"`
+	MaxLength int    `json:"max_length,omitempty"`
 }
 
 type ConnectionAlternative struct {
@@ -61,7 +77,7 @@ func (r ConnectionRecipe) Validate() error {
 		if !CredentialPattern.MatchString(field.Name) || seen[field.Name] {
 			return fmt.Errorf("%w: invalid connection field", ErrInvalid)
 		}
-		if field.Delivery != "env" && field.Delivery != "file" && field.Delivery != "json" && field.Delivery != "http_header" && field.Delivery != "oauth" {
+		if field.Delivery != "env" && field.Delivery != "file" && field.Delivery != "json" && field.Delivery != "http_header" && field.Delivery != "oauth" && field.Delivery != "proxy" {
 			return fmt.Errorf("%w: %q", ErrUnsupportedCredentialContract, field.Delivery)
 		}
 		if field.Target != "" && strings.ContainsAny(field.Target, "\x00\r\n") {
@@ -94,7 +110,7 @@ func (r ConnectionRecipe) CredentialInputs() []CredentialInput {
 		if target == field.Name {
 			target = ""
 		}
-		inputs = append(inputs, CredentialInput{Name: field.Name, Required: field.Required, Delivery: field.Delivery, Target: target, Source: field.Source})
+		inputs = append(inputs, CredentialInput{Name: field.Name, Required: field.Required, Delivery: field.Delivery, Target: target, Source: field.Source, Format: field.Format, MaxLength: field.MaxLength})
 	}
 	return inputs
 }
@@ -126,6 +142,12 @@ type RecipeCandidate struct {
 	Launch     LaunchRecipe     `json:"launch"`
 	Connection ConnectionRecipe `json:"connection,omitempty"`
 	Evidence   []RecipeEvidence `json:"evidence,omitempty"`
+	// Source names the producing catalog for ledger provenance;
+	// LaunchRank/CredentialRank place the candidate's claims on the
+	// source ladders (empty ranks resolve as the weakest claim).
+	Source         string `json:"source,omitempty"`
+	LaunchRank     Rank   `json:"launch_rank,omitempty"`
+	CredentialRank Rank   `json:"credential_rank,omitempty"`
 }
 
 type RecipeCatalog interface {
@@ -139,6 +161,42 @@ type RecipeResolution struct {
 	Evidence   []RecipeEvidence `json:"evidence,omitempty"`
 	Warnings   []string         `json:"warnings,omitempty"`
 	State      string           `json:"state"`
+	// Trust is the resolved tier (T0/T1/T2) and Egress the workload's
+	// reachable hosts — both rendered on the human credential form.
+	Trust  TrustTier `json:"trust,omitempty"`
+	Egress []string  `json:"egress,omitempty"`
+	// Ledger is the reproducible record of every external claim consulted:
+	// catalog responses land here (kept or ignored) before repository-file
+	// claims, so re-resolution is auditable without repeating fetches.
+	Ledger []LedgerEntry `json:"ledger,omitempty"`
+}
+
+// ResolutionDigest content-addresses a resolution: the same claims, warnings
+// and evidence always encode to the same bytes, so the digest deduplicates.
+func ResolutionDigest(resolution RecipeResolution) (string, error) {
+	body, err := json.Marshal(resolution)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(body)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+// CredentialRecipeDigest content-addresses only the credential-relevant
+// claims of a resolution: the connection contract (provider, client and
+// field declarations) and the launch endpoint. A drift on these invalidates
+// stored tokens; launch-only noise (warnings, ledger, evidence) never does.
+func CredentialRecipeDigest(resolution RecipeResolution) (string, error) {
+	subset := struct {
+		Connection ConnectionRecipe `json:"connection"`
+		Endpoint   string           `json:"endpoint,omitempty"`
+	}{Connection: resolution.Connection, Endpoint: resolution.Launch.Endpoint}
+	body, err := json.Marshal(subset)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(body)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 func ScopeRecipeContext(files map[string][]byte, subfolder string) (map[string][]byte, error) {

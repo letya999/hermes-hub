@@ -141,14 +141,13 @@ func TestCredentialBrokerOnboardingCreatesGrantAndOpaqueReference(t *testing.T) 
 	if reinstalled.BindingID != stored.BindingID || len(store.connections) != 1 {
 		t.Fatal("reinstall duplicated binding/connection")
 	}
-	rotated, err := control.Rotate(auth, map[string]any{"onboarding_id": reinstall.OnboardingID})
-	if err != nil {
+	if _, err := control.Rotate(auth, map[string]any{"onboarding_id": reinstall.OnboardingID}); err != nil {
 		t.Fatal(err)
 	}
 	if requests != 2 {
 		t.Fatal("rotation did not request Broker form")
 	}
-	if _, err := control.confirm(t.Context(), auth, map[string]any{"onboarding_id": reinstall.OnboardingID, "nonce": rotated["nonce"]}); err != nil {
+	if _, err := control.confirm(t.Context(), auth, map[string]any{"onboarding_id": reinstall.OnboardingID, "nonce": confirmNonceOf(t, store, reinstall.OnboardingID)}); err != nil {
 		t.Fatal(err)
 	}
 	reinstalled, _ = store.OnboardingFor(auth, reinstall.OnboardingID)
@@ -431,11 +430,11 @@ func TestCredentialBrokerControlRequestGuardsAndStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	control = &ControlPlane{Store: store, Now: time.Now}
-	body, err := control.requiredCredentials(auth, map[string]any{"onboarding_id": onboarding.OnboardingID})
+	body, err := control.requiredCredentials(context.Background(), auth, map[string]any{"onboarding_id": onboarding.OnboardingID})
 	if err != nil || body["input"] != "credential-broker" || body["broker_request_id"] != onboarding.BrokerRequestID {
 		t.Fatalf("broker credential status: body=%v err=%v", body, err)
 	}
-	if _, err := control.status(auth, nil); err != nil {
+	if _, err := control.status(context.Background(), auth, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := (&ControlPlane{}).ensureBrokerGrant(t.Context(), auth, definition, onboarding, api.ToolBinding{}); err == nil {
@@ -554,11 +553,12 @@ func TestCredentialBrokerExpiredRequestRegenerates(t *testing.T) {
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
-	body, err := control.requiredCredentials(auth, map[string]any{"onboarding_id": onboarding.OnboardingID})
+	body, err := control.requiredCredentials(context.Background(), auth, map[string]any{"onboarding_id": onboarding.OnboardingID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if body["broker_request_id"] != "request_new" || body["signin_url"] != "http://localhost:8081/telegram-auth/remint" {
+	if body["broker_request_id"] != "request_new" || body["signin_url"] != "http://localhost:8081/telegram-auth/remint" ||
+		mustOnboarding(t, store, onboarding.OnboardingID).BrokerAuthorizationURL != "https://broker.example/connect/request_new" {
 		t.Fatalf("dead link was not replaced: %v", body)
 	}
 	if notice["broker_request_id"] != "request_new" {
@@ -640,7 +640,7 @@ func TestCredentialBrokerMissingRequestRegeneratesAndNotifies(t *testing.T) {
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.requiredCredentials(auth, map[string]any{"onboarding_id": onboarding.OnboardingID}); err != nil {
+	if _, err := control.requiredCredentials(context.Background(), auth, map[string]any{"onboarding_id": onboarding.OnboardingID}); err != nil {
 		t.Fatal(err)
 	}
 	if notice["broker_request_id"] != "request_new" {
@@ -701,7 +701,7 @@ func TestCredentialBrokerPendingRequestReNotifies(t *testing.T) {
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
-	body, err := control.requiredCredentials(auth, map[string]any{"onboarding_id": onboarding.OnboardingID})
+	body, err := control.requiredCredentials(context.Background(), auth, map[string]any{"onboarding_id": onboarding.OnboardingID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -777,7 +777,7 @@ func TestCredentialBrokerDyingRequestRegenerates(t *testing.T) {
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
-	body, err := control.requiredCredentials(auth, map[string]any{"onboarding_id": onboarding.OnboardingID})
+	body, err := control.requiredCredentials(context.Background(), auth, map[string]any{"onboarding_id": onboarding.OnboardingID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -851,7 +851,7 @@ func TestRequiredCredentialsQRIntakePointsToChannelNotice(t *testing.T) {
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
-	body, err := control.requiredCredentials(auth, map[string]any{"onboarding_id": onboarding.OnboardingID})
+	body, err := control.requiredCredentials(context.Background(), auth, map[string]any{"onboarding_id": onboarding.OnboardingID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -932,7 +932,7 @@ func TestStatusQRIntakeKeepsSignInURLWithStaleError(t *testing.T) {
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
-	body, err := control.status(auth, map[string]any{"onboarding_id": onboarding.OnboardingID})
+	body, err := control.status(context.Background(), auth, map[string]any{"onboarding_id": onboarding.OnboardingID})
 	if err != nil {
 		t.Fatal(err)
 	}

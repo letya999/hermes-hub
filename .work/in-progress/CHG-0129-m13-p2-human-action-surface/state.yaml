@@ -1,0 +1,39 @@
+schema: 1
+change: CHG-0129
+title: M13 P2 channel-agnostic human action surface — one-time links
+status: done
+branch: feat/m14-toolhub-connector-platform
+updated: "2026-10-19"
+phase: validation
+requirements: [S2.1, S2.2, S2.3, S2.4, S2.5, S2.6, S2.7, S2.8]
+depends_on: [CHG-0127, CHG-0128]
+github_milestone: M13 — ToolHub Connector Platform
+github_issue: 283
+design_status: accepted
+implementation_status: in_progress
+slices:
+  S2.1-one-time-link-tokens: committed
+  S2.2-public-origin: committed
+  S2.3-device-flow: committed
+  S2.4-paste-redirect: committed
+  S2.5-recipe-rendered-form: committed
+  S2.6-transactional-save: committed
+  S2.7-delivery-caps-hubctl: committed
+  S2.8-property-test-docs: committed
+validation:
+  documents: done
+  just_check: "passed 2026-10-19 — 86.41% coverage, lint/staticcheck/gosec/docs/actionlint clean"
+  docker_check: not_run
+  live_acceptance: not_started
+evidence:
+  - "P0 already moved nonces/URLs out of agent-facing results and added loopback /confirm//remove//connect pages (7316d52)"
+  - "S2.1 link tokens 9372d8a; S2.2 public origin 9ecb9c4; S2.3 device flow 52aa66c; S2.4 paste-redirect 6b39474; S2.5 recipe form a24717a; S2.6 transactional save f4a3b9d; S2.7 channel delivery + hubctl link e2113e9; S2.8 property test + docs 4993603"
+  - "property test sweeps every control op over every phase for stored sentinel material; zero leaks"
+  - "public mux serves only /credentials /confirm /remove /connect /device /oauth/callback; control routes 404 (TestPublicMuxServesOnlyHumanPaths, TestEndpointHandlerExposesPublicSurface)"
+  - "TestPrepareOutcomeNoticeFollowsOriginChannel proves mock-channel delivery; Caps().Actions true only on telegram"
+remaining:
+  - "live public-origin install + remote-device confirm and real-AS device flow need a deployed stack (M18 #145/#146)"
+limitations:
+  - "live public-origin acceptance needs a deployed stack and outbound tunnel (M18 #145); local run cannot prove it"
+  - "docker gate not run — hubctl/communication/toolhub code ships in images; run docker-pull + docker-check-prebuilt or CI before merge"
+  - "control auth still derives the caller envelope from the principal's Telegram/Slack binding, so a channel-only principal needs its platform identity enrolled before control calls; notice delivery itself routes by origin channel"

@@ -174,3 +174,25 @@ func TestCatalogSearchEdgeBranches(t *testing.T) {
 		t.Fatal("smithery candidate formats empty")
 	}
 }
+
+func TestProducerRanks(t *testing.T) {
+	lookup := RecipeLookup{Repository: "https://github.com/acme/fs-mcp"}
+	document := map[string]any{"name": "acme/fs-mcp", "repository": map[string]any{"url": "https://github.com/acme/fs-mcp"}, "remotes": []any{map[string]any{"url": "https://mcp.example/fs"}}}
+	for _, tc := range []struct {
+		source     string
+		launch     Rank
+		credential Rank
+	}{
+		{"mcp-registry", RankL3, RankR2},
+		{"toolhive", RankL2, RankR4},
+		{"docker-mcp", RankL2, RankR4},
+	} {
+		candidate, ok, err := ServerDocumentCandidate(document, tc.source, lookup)
+		if err != nil || !ok {
+			t.Fatalf("%s: candidate lost: ok=%v err=%v", tc.source, ok, err)
+		}
+		if candidate.Source != tc.source || candidate.LaunchRank != tc.launch || candidate.CredentialRank != tc.credential {
+			t.Fatalf("%s: source=%q launch=%s credential=%s", tc.source, candidate.Source, candidate.LaunchRank, candidate.CredentialRank)
+		}
+	}
+}

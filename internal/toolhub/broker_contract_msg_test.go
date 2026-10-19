@@ -97,8 +97,8 @@ func TestPrepareRegistersContractForUncoveredCredentials(t *testing.T) {
 		if final.BrokerAuthorizationURL == "" {
 			t.Fatalf("no credential form minted: %+v", final)
 		}
-	} else if body["authorization_url"] == "" {
-		t.Fatalf("no credential form minted: %v", body)
+	} else if latest, lerr := control.Store.onboarding(body["onboarding_id"].(string)); lerr != nil || latest.BrokerAuthorizationURL == "" {
+		t.Fatalf("no credential form minted: %v %v", body, lerr)
 	}
 	if phase != api.PhaseAwaitingCreds {
 		t.Fatalf("expected awaiting-credentials, got %s", phase)

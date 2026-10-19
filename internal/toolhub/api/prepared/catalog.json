@@ -200,5 +200,33 @@
     "probe_tool": "list_accounts",
     "runbook": "docs/prepared-connectors.md#personal-telegram",
     "handoff": "Call prepare_source once with https://github.com/letya999/telegram-mcp. Enter API ID, API hash, a personal StringSession and expected numeric user ID only in the protected Broker form. Verify list_accounts and a bounded history read. Bot credentials and provider writes are outside this read-only entry."
+  },
+  {
+    "id": "playwright-mcp", "aliases": ["browser"], "name": "Managed browser (Playwright MCP)", "license": "Apache-2.0",
+    "tier": "t0",
+    "image": {"ref": "mcr.microsoft.com/playwright/mcp@sha256:690763cbb437ee7233f538a953bb5390bf03791eb5c965b471e59d17a6132fcb", "digest": "sha256:690763cbb437ee7233f538a953bb5390bf03791eb5c965b471e59d17a6132fcb"},
+    "source": {"repository": "https://github.com/microsoft/playwright-mcp", "commit_sha": "ab6d67cbf8b619338f096980806fdbe29432cc4d"},
+    "language": "node",
+    "entrypoint": ["node", "/app/cli.js", "--headless", "--browser", "chromium", "--no-sandbox", "--user-data-dir", "/state/browser-profile", "--output-dir", "/state/browser-profile/downloads", "--output-max-size", "268435456", "--block-service-workers", "--idle-timeout", "900000", "--caps", "vision,pdf"],
+    "connection": {"fields": [
+      {"name": "PLAYWRIGHT_MCP_STORAGE_STATE", "type": "json", "required": false, "secret": true, "delivery": "file", "target": "/run/mcp-secrets/browser/storage-state.json"},
+      {"name": "PLAYWRIGHT_MCP_ALLOWED_ORIGINS", "type": "string", "required": false, "secret": false, "delivery": "env", "target": "PLAYWRIGHT_MCP_ALLOWED_ORIGINS"},
+      {"name": "PLAYWRIGHT_MCP_BLOCKED_ORIGINS", "type": "string", "required": false, "secret": false, "delivery": "env", "target": "PLAYWRIGHT_MCP_BLOCKED_ORIGINS"}
+    ]},
+    "contract_id": "browser-session", "contract_revision": 1, "stateful": true,
+    "state_target": "/state/browser-profile",
+    "budgets": {"cpu_millis": 2000, "memory_mib": 2048, "max_pids": 256, "shm_size_mib": 1024},
+    "egress_class": "web",
+    "toolsets": {
+      "act": ["browser_click", "browser_drag", "browser_drop", "browser_hover", "browser_type", "browser_fill_form", "browser_press_key", "browser_select_option", "browser_file_upload", "browser_handle_dialog", "browser_mouse_click_xy", "browser_mouse_down", "browser_mouse_drag_xy", "browser_mouse_move_xy", "browser_mouse_up", "browser_mouse_wheel"],
+      "eval": ["browser_evaluate", "browser_run_code_unsafe"],
+      "network": ["browser_network_requests", "browser_network_request"]
+    },
+    "default_enabled": ["browser_navigate", "browser_navigate_back", "browser_tabs", "browser_snapshot", "browser_take_screenshot", "browser_wait_for", "browser_console_messages", "browser_resize", "browser_close", "browser_pdf_save", "browser_find"],
+    "default_excluded": ["browser_click", "browser_drag", "browser_drop", "browser_hover", "browser_type", "browser_fill_form", "browser_press_key", "browser_select_option", "browser_file_upload", "browser_handle_dialog", "browser_mouse_click_xy", "browser_mouse_down", "browser_mouse_drag_xy", "browser_mouse_move_xy", "browser_mouse_up", "browser_mouse_wheel", "browser_evaluate", "browser_run_code_unsafe", "browser_network_requests", "browser_network_request"],
+    "read_tools": ["browser_navigate", "browser_navigate_back", "browser_tabs", "browser_snapshot", "browser_take_screenshot", "browser_wait_for", "browser_console_messages", "browser_resize", "browser_close", "browser_pdf_save", "browser_find"],
+    "probe_tool": "browser_tabs",
+    "runbook": "docs/prepared-connectors.md#playwright-mcp",
+    "handoff": "Install https://github.com/microsoft/playwright-mcp as an isolated per-connection browser workload. The profile persists on the connection state volume; the workload browses the open web only through the audited deny-first proxy. Manual login happens in the owner-only viewer link, never in chat; an optional Playwright storage_state.json and origin restrictions go through the protected Broker form. Read and navigation tools project by default; interaction tools need connector_allow_writes plus the act toolset, eval and network tools their own toolsets."
   }
 ]

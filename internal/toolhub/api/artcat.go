@@ -33,6 +33,11 @@ type ArtifactImportConfig struct {
 	// ContextSources merges additional pinned repositories into the build
 	// context for upstream vendoring steps a tree fetch cannot reproduce.
 	ContextSources []ArtifactOverlay
+	// Toolsets/DefaultEnabled/DefaultExcluded carry the catalog's staged
+	// projection surface into the admitted definition.
+	Toolsets        map[string][]string
+	DefaultEnabled  []string
+	DefaultExcluded []string
 }
 
 type ImportedArtifact struct {

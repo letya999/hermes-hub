@@ -65,7 +65,7 @@ func TestNewEndpointHandlerLaunchesTwiceWithControlStatus(t *testing.T) {
 		if err != nil || status["phase"] == "" {
 			t.Fatalf("status=%v err=%v", status, err)
 		}
-		if _, err := callControl(t, session, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": status["nonce"]}); err != nil {
+		if _, err := callControl(t, session, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, loaded, prepared["onboarding_id"])}); err != nil {
 			t.Fatal(err)
 		}
 		enabled, err := callControl(t, session, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"]})

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"net/netip"
 	"regexp"
 	"strings"
 	"time"
@@ -43,7 +44,7 @@ func CredentialReferenceID(connectionID string, revision uint64) string {
 }
 
 func (c Connection) Validate() error {
-	if c.Schema != SchemaVersion || !identity.ValidID(c.ConnectionID) || !identity.ValidID(c.DefinitionID) || c.Revision == 0 || (c.Status != ActiveStatus && c.Status != DisabledStatus && c.Status != RevokedStatus && c.Status != DegradedStatus) {
+	if c.Schema != SchemaVersion || !identity.ValidID(c.ConnectionID) || !identity.ValidID(c.DefinitionID) || c.Revision == 0 || (c.Status != ActiveStatus && c.Status != DisabledStatus && c.Status != RevokedStatus && c.Status != DegradedStatus && c.Status != DeletingStatus && c.Status != ReauthStatus) {
 		return fmt.Errorf("%w: connection metadata", ErrInvalid)
 	}
 	if err := c.Owner.Validate(); err != nil {
@@ -65,7 +66,41 @@ func (c Connection) Validate() error {
 			return err
 		}
 	}
+	for _, key := range []string{"egress_allow", "egress_deny"} {
+		if _, err := ParseEgressList(c.Metadata[key]); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// ParseEgressList parses a comma-separated connection egress refinement:
+// host[:port] names or CIDR prefixes, at most 32 entries, nothing empty.
+func ParseEgressList(raw string) ([]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	parts := strings.Split(raw, ",")
+	if len(parts) > 32 {
+		return nil, fmt.Errorf("%w: egress list is unbounded", ErrInvalid)
+	}
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		entry := strings.ToLower(strings.TrimSpace(part))
+		if entry == "" {
+			return nil, fmt.Errorf("%w: empty egress entry", ErrInvalid)
+		}
+		if _, err := netip.ParsePrefix(entry); err == nil {
+			out = append(out, entry)
+			continue
+		}
+		if !HostPattern.MatchString(entry) {
+			return nil, fmt.Errorf("%w: invalid egress entry %q", ErrInvalid, entry)
+		}
+		out = append(out, entry)
+	}
+	return out, nil
 }
 
 func (b ToolBinding) Validate() error {

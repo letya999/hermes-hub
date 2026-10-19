@@ -104,11 +104,99 @@ func PostPrepareNotice(ctx context.Context, auth identity.Envelope, onboarding O
 	return outcome.LoginURL
 }
 
-func credentialNoticeURL(onboarding Onboarding) string {
-	if onboarding.Phase != PhaseAwaitingCreds || onboarding.FormNonce == "" || onboarding.OnboardingID == "" {
+// DeliverViewerLink posts the one-time browser viewer link to the owner's
+// channel. The URL never enters a tool result — only the notice carries it.
+func DeliverViewerLink(ctx context.Context, auth identity.Envelope, connectionID, viewerURL string) {
+	base := strings.TrimRight(strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_CONTROL_URL")), "/")
+	if base == "" || auth.PrincipalID == "" || connectionID == "" || viewerURL == "" {
+		return
+	}
+	token := strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_AUTH"))
+	if token == "" {
+		if strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL")) != "" {
+			token = os.Getenv("HUB_SUPERVISOR_AUTH")
+		} else {
+			token = os.Getenv("HUB_RUNTIME_AUTH")
+		}
+	}
+	if token == "" {
+		return
+	}
+	body, err := json.Marshal(map[string]any{"connection_id": connectionID, "viewer_url": viewerURL})
+	if err != nil {
+		return
+	}
+	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, base+"/v1/prepare-outcome", bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Hub-Principal", auth.PrincipalID)
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Printf("toolhub viewer link delivery failed connection=%s: %v", connectionID, err)
+		return
+	}
+	defer response.Body.Close()
+	if response.StatusCode/100 != 2 {
+		log.Printf("toolhub viewer link delivery connection=%s status=%d", connectionID, response.StatusCode)
+	}
+}
+
+// ViewerLinkURL renders the owner-only viewer address on the public form
+// origin — the same selection order the channel notice machinery uses.
+func ViewerLinkURL(connectionID, nonce string) string {
+	origin := PublicOrigin()
+	if origin == "" {
+		origin = FormOriginForListen(os.Getenv("HUB_TOOLHUB_LISTEN"))
+	}
+	if origin == "" || nonce == "" {
 		return ""
 	}
-	return FormOriginForListen(os.Getenv("HUB_TOOLHUB_LISTEN")) + "/credentials/" + url.PathEscape(onboarding.OnboardingID) + "?nonce=" + url.QueryEscape(onboarding.FormNonce)
+	return strings.TrimRight(origin, "/") + "/viewer/" + url.PathEscape(connectionID) + "?t=" + url.QueryEscape(nonce)
+}
+
+func credentialNoticeURL(onboarding Onboarding) string {
+	if origin := PublicOrigin(); origin != "" {
+		return ActionURL(origin, onboarding)
+	}
+	return ActionURL(FormOriginForListen(os.Getenv("HUB_TOOLHUB_LISTEN")), onboarding)
+}
+
+// ActionURL resolves the user-facing link for the onboarding's pending action
+// against an explicit form origin. Selection order matches the channel notice
+// so elicitation and notices never disagree about which link is live.
+func ActionURL(origin string, onboarding Onboarding) string {
+	if onboarding.OnboardingID == "" {
+		return ""
+	}
+	// A live remove link outranks other pending actions: the preview mints it
+	// while the onboarding still sits in its previous phase.
+	if onboarding.RemoveNonce != "" && onboarding.Phase != PhaseRemoved {
+		return origin + "/remove/" + url.PathEscape(onboarding.OnboardingID) + "?t=" + url.QueryEscape(onboarding.RemoveNonce)
+	}
+	if onboarding.Phase == PhaseAwaitingConfirm && onboarding.ConfirmationNonce != "" && !onboarding.ConfirmationUsed {
+		return origin + "/confirm/" + url.PathEscape(onboarding.OnboardingID) + "?t=" + url.QueryEscape(onboarding.ConfirmationNonce)
+	}
+	// External action links (provider OAuth, broker connect) hop through
+	// /connect/ so the destination URL and its state never sit in chat text.
+	if onboarding.Phase == PhaseAwaitingOAuth && onboarding.ProviderAuthorizationURL != "" {
+		if parsed, err := url.Parse(onboarding.ProviderAuthorizationURL); err == nil {
+			if state := parsed.Query().Get("state"); state != "" {
+				return origin + "/connect/" + url.PathEscape(onboarding.OnboardingID) + "?state=" + url.QueryEscape(state)
+			}
+		}
+	}
+	if onboarding.Phase == PhaseAwaitingCreds && onboarding.BrokerRequestID != "" && onboarding.BrokerAuthorizationURL != "" {
+		return origin + "/connect/" + url.PathEscape(onboarding.OnboardingID) + "?request=" + url.QueryEscape(onboarding.BrokerRequestID)
+	}
+	if onboarding.Phase != PhaseAwaitingCreds || onboarding.FormNonce == "" {
+		return ""
+	}
+	return origin + "/credentials/" + url.PathEscape(onboarding.OnboardingID) + "?t=" + url.QueryEscape(onboarding.FormNonce)
 }
 
 func ErrString(text string) error {
