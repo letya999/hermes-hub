@@ -659,6 +659,57 @@ func TestBriefRevokedStaysQuietAndRestartDedups(t *testing.T) {
 	}
 }
 
+// S4.3 — inside the owner's quiet window a brief slot stays pending: no
+// model call, no delivery. After the window the same occurrence dispatches
+// and its unread changes still compose the brief (SPEC-0054 R4, A4).
+func TestBriefQuietDefersSlot(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	if _, err := s.CreateSchedule(Schedule{ScheduleID: "wq-b", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "feed", JobKind: "watcher", Probe: &WatchProbe{URL: "https://example.com/qb"}}, caller, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicJSON(s.watchPath("wq-b"), WatchState{ScheduleID: "wq-b", Baseline: "h", Value: "v", ChangedAt: time.Now().UTC().Add(-time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if _, err := s.CreateSchedule(Schedule{ScheduleID: "briefq", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 8 * * *", Input: "бриф", JobKind: "brief", QuietFrom: now.Add(-30 * time.Minute).Format("15:04"), QuietTo: now.Add(30 * time.Minute).Format("15:04")}, caller, ""); err != nil {
+		t.Fatal(err)
+	}
+	o.ScheduleID = "briefq"
+	o.JobKind = "brief"
+	o.Job.Text = "бриф"
+	o.DueAt = now.Add(-time.Minute)
+	if err := s.PutOccurrence(o, caller); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DispatchDueOccurrences(now, g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	if job, err := s.ClaimJob(); err != nil || job != nil {
+		t.Fatal("quiet window admitted a brief job")
+	}
+	if d, err := s.ClaimDelivery(); err != nil || d != nil {
+		t.Fatal("quiet window produced a brief delivery")
+	}
+	var occ RoutineOccurrence
+	b, err := os.ReadFile(filepath.Join(s.root, "occurrences", occurrenceID(o)+".json"))
+	if err != nil || json.Unmarshal(b, &occ) != nil || occ.State != "pending" {
+		t.Fatalf("quiet brief occurrence state: %s %v", occ.State, err)
+	}
+	// The window is over and the slot is still inside catch-up: the deferred
+	// brief dispatches and the queued change reaches the model.
+	if err := s.DispatchDueOccurrences(now.Add(45*time.Minute), g.authorizeOccurrence); err != nil {
+		t.Fatal(err)
+	}
+	job, err := s.ClaimJob()
+	if err != nil || job == nil {
+		t.Fatal("deferred brief never admitted its job")
+	}
+	if !strings.Contains(job.Text, "feed") {
+		t.Fatalf("deferred brief lost the queued change: %q", job.Text)
+	}
+}
+
 // S5.1 — a tool result carrying an events array (or a bare array) yields one
 // discrete event per item with its durable identity (SPEC-0054 R5.2).
 func TestExtractEventsArray(t *testing.T) {

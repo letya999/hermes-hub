@@ -205,6 +205,14 @@ func (e *Engine) DispatchDueOccurrences(now time.Time, authorize func(commodel.J
 			}
 
 			if o.JobKind == "brief" {
+				if item, err := e.LoadScheduleLocked(o.ScheduleID); err == nil && QuietDefer(item, now).After(now) {
+					// A brief's effect is a model call, which cannot ride a
+					// delivery not_before: the whole slot waits out the quiet
+					// window. Still-due occurrences fire after the window;
+					// a window longer than catch-up settles "missed", never
+					// silent, and the unread cursor carries changes forward.
+					continue
+				}
 				if err := e.dispatchBriefLocked(o, now, authorize); err != nil {
 					return err
 				}
