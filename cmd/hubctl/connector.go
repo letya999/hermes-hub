@@ -171,7 +171,7 @@ func runConnector(ctx context.Context, args []string) error {
 	if err := f.Parse(args[1:]); err != nil {
 		return err
 	}
-	if f.NArg() != 0 {
+	if f.NArg() != 0 && !(args[0] == "import" && f.NArg() == 1) {
 		return fmt.Errorf("unexpected connector arguments")
 	}
 	if *provider != "google" && *provider != "slack" && *provider != "telegram" {
@@ -209,6 +209,29 @@ func runConnector(ctx context.Context, args []string) error {
 			return err
 		}
 		return json.NewEncoder(os.Stdout).Encode(catalog)
+	}
+	if args[0] == "import" {
+		// Deterministic T1 ref → recipe draft. The operator sees the review
+		// digest; only --confirm stores it, like hubctl capability.
+		draft, err := api.ParseImportRef(f.Arg(0))
+		if err != nil {
+			return err
+		}
+		reviewDigest, err := api.ResolutionDigest(draft)
+		if err != nil {
+			return err
+		}
+		if !*confirm {
+			return fmt.Errorf("review digest: %s — re-run with --confirm to store the recipe", reviewDigest)
+		}
+		digest, err := registry.PutRecipe(draft)
+		if err != nil {
+			return err
+		}
+		if err := registry.Save(*registryPath); err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{"review_digest": digest, "trust": string(draft.Trust), "state": draft.State})
 	}
 	if args[0] == "link" {
 		if !identity.ValidID(*onboardingID) {

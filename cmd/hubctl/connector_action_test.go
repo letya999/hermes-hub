@@ -107,6 +107,103 @@ func TestConnectorLinkAndConfirm(t *testing.T) {
 	}
 }
 
+// CHG-0132 S5.3: hubctl connector import parses a deterministic T1 ref into
+// a recipe draft, prints the review digest, and writes only under --confirm.
+func TestConnectorImportRef(t *testing.T) {
+	ctx := context.Background()
+	storePath := filepath.Join(t.TempDir(), "registry.json")
+	keyFile := filepath.Join(t.TempDir(), "key")
+	secretFile := filepath.Join(t.TempDir(), "store.enc")
+	imageDigest := "sha256:" + strings.Repeat("e", 64)
+	ref := "docker:mcp/notion@" + imageDigest
+	draft, err := api.ParseImportRef(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewDigest, err := api.ResolutionDigest(draft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := []string{"--user", "alice", "--toolhub-store", storePath, "--store", secretFile, "--key-file", keyFile}
+	// No --confirm: the operator sees the digest but nothing is stored.
+	err = runConnector(ctx, append(append([]string{"import"}, base...), ref))
+	if err == nil || !strings.Contains(err.Error(), reviewDigest) {
+		t.Fatalf("import without --confirm: %v", err)
+	}
+	if _, statErr := os.Stat(storePath); !os.IsNotExist(statErr) {
+		t.Fatal("refused import still wrote the store")
+	}
+	out, err := captureStdout(t, func() error {
+		return runConnector(ctx, append(append([]string{"import"}, base...), "--confirm", ref))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, reviewDigest) {
+		t.Fatalf("confirmed import output=%q", out)
+	}
+	reloaded, err := toolhub.Load(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := reloaded.Recipe(reviewDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Trust != api.TrustT1 || stored.Launch.Digest != imageDigest {
+		t.Fatalf("stored recipe=%+v", stored)
+	}
+	// Determinism: an identical ref always produces the same digest.
+	again, err := api.ParseImportRef(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if digest2, err := api.ResolutionDigest(again); err != nil || digest2 != reviewDigest {
+		t.Fatalf("import not deterministic: %q vs %q", digest2, reviewDigest)
+	}
+}
+
+// S5.3: every advertised scheme parses into a T1 draft with a source ledger
+// entry; malformed refs fail closed.
+func TestParseImportRefSchemes(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("e", 64)
+	commit := strings.Repeat("f", 40)
+	cases := []struct {
+		ref       string
+		repo      string
+		registry  string
+		artifact  string
+		launchDig string
+	}{
+		{"mcp-registry:notion@1.2.3", "", "mcp-registry", "", ""},
+		{"docker:mcp/github@" + digest, "", "", "mcp/github", digest},
+		{"toolhive:github", "", "toolhive", "", ""},
+		{"mcpb:acme/servers@v1.0.0", "https://github.com/acme/servers", "", "", ""},
+		{"hermes:search@" + commit, "https://github.com/nousresearch/hermes-agent", "", "", ""},
+		{"aqua:cli/cli@v2.0.0", "", "aqua", "", ""},
+	}
+	for _, tc := range cases {
+		draft, err := api.ParseImportRef(tc.ref)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.ref, err)
+		}
+		if draft.Trust != api.TrustT1 || draft.State != "draft" || len(draft.Ledger) == 0 {
+			t.Fatalf("%s: draft=%+v", tc.ref, draft)
+		}
+		if draft.Source.Repository != tc.repo || draft.Source.PackageRegistry != tc.registry {
+			t.Fatalf("%s: source=%+v", tc.ref, draft.Source)
+		}
+		if draft.Launch.Artifact != tc.artifact || draft.Launch.Digest != tc.launchDig {
+			t.Fatalf("%s: launch=%+v", tc.ref, draft.Launch)
+		}
+	}
+	for _, bad := range []string{"", "bogus:x", "docker:other/x@" + digest, "docker:mcp/x@latest", "hermes:x@abc", "mcp-registry:x", "mcpb:onlyrepo@tag"} {
+		if _, err := api.ParseImportRef(bad); err == nil {
+			t.Fatalf("%q accepted", bad)
+		}
+	}
+}
+
 // CHG-0130 S3.7: hubctl connector <verb> runs the same facade the agent
 // surface calls — the connectors capability bundle admits the verbs for the
 // operator-selected profile.

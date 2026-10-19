@@ -63,13 +63,13 @@ type PinnedImage struct {
 }
 
 type PreparedEntry struct {
-	ID                 string                     `json:"id"`
-	Aliases            []string                   `json:"aliases,omitempty"`
-	Name               string                     `json:"name"`
+	ID      string   `json:"id"`
+	Aliases []string `json:"aliases,omitempty"`
+	Name    string   `json:"name"`
 	// Tier defaults to t0 for embedded reviewed entries; the catalog may pin
 	// it explicitly, and T0 entries require an image digest.
-	Tier  string       `json:"tier,omitempty"`
-	Image *PinnedImage `json:"image,omitempty"`
+	Tier               string                     `json:"tier,omitempty"`
+	Image              *PinnedImage               `json:"image,omitempty"`
 	Source             ArtifactSource             `json:"source"`
 	License            string                     `json:"license"`
 	Language           string                     `json:"language"`

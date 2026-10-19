@@ -75,10 +75,12 @@ func TestT0AdmissionSkipsBuilder(t *testing.T) {
 		Entrypoint: []string{"node", "/app/bin/cli.mjs"},
 		Connection: ConnectionRecipe{Fields: []ConnectionField{{Name: "NOTION_TOKEN", Type: "token", Required: true, Secret: true, Delivery: "env", Target: "NOTION_TOKEN"}}},
 		ContractID: "notion-token", ContractRevision: 1,
-		Egress:     []string{"api.notion.com"},
+		Egress: []string{"api.notion.com"},
 	}
 	oldLookup, oldBuild, oldPull, oldList := preparedLookup, restrictedBuild, PublishedImagePull, PublishedMCPToolList
-	t.Cleanup(func() { preparedLookup, restrictedBuild, PublishedImagePull, PublishedMCPToolList = oldLookup, oldBuild, oldPull, oldList })
+	t.Cleanup(func() {
+		preparedLookup, restrictedBuild, PublishedImagePull, PublishedMCPToolList = oldLookup, oldBuild, oldPull, oldList
+	})
 	preparedLookup = func(ArtifactSource) (PreparedEntry, bool, error) { return entry, true, nil }
 	builds := 0
 	restrictedBuild = func(context.Context, ArtifactRecipe, []byte, RestrictedBuildConfig) (StoredOCIArtifact, error) {
