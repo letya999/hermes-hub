@@ -178,3 +178,48 @@ func TestControllerPlanCarriesEgressRefinement(t *testing.T) {
 		t.Fatal("refinement carried on a bounded plan")
 	}
 }
+
+// S8.4: the catalog carries the reviewed T0 browser recipe — per-connection
+// stateful profile, web egress, read-only default projection, interaction
+// and eval toolsets staged behind explicit enables. agent-browser has no
+// reviewed image and lives in the blocked catalog instead.
+func TestPreparedBrowserEntries(t *testing.T) {
+	entries, err := PreparedCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := map[string]PreparedEntry{}
+	for _, entry := range entries {
+		found[entry.ID] = entry
+	}
+	if _, ok := found["agent-browser"]; ok {
+		t.Fatal("agent-browser must not be installable without a reviewed image")
+	}
+	entry, ok := found["playwright-mcp"]
+	if !ok {
+		t.Fatal("prepared entry playwright-mcp missing")
+	}
+	if entry.Tier != TierT0 || !entry.Stateful || entry.StateTarget == "" {
+		t.Fatalf("tier=%q stateful=%v target=%q", entry.Tier, entry.Stateful, entry.StateTarget)
+	}
+	if entry.EgressClass != EgressWeb {
+		t.Fatalf("egress_class=%q", entry.EgressClass)
+	}
+	config := entry.Apply(DefaultSelfInstallConfig(entry.Source))
+	if config.Execution.EgressClass != EgressWeb || !config.Workload.Stateful {
+		t.Fatal("applied config lost browser policy")
+	}
+	if len(config.DefaultEnabled) == 0 || len(config.DefaultExcluded) == 0 {
+		t.Fatal("missing staged projection")
+	}
+	// eval and interaction stay behind their own toolsets.
+	if _, ok := config.Toolsets["eval"]; !ok {
+		t.Fatal("eval toolset missing")
+	}
+	if _, ok := config.Toolsets["act"]; !ok {
+		t.Fatal("act toolset missing")
+	}
+	if _, err := entry.BrokerContract(); err != nil {
+		t.Fatal(err)
+	}
+}

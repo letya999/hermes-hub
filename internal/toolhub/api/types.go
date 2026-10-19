@@ -16,6 +16,10 @@ const (
 	MaxMemoryMiB        = 4096
 	MaxCPUMillis        = 4000
 	MaxPIDs             = 256
+	// MaxShmSizeMiB bounds /dev/shm headroom a workload may request; Chromium
+	// profiles sit well under it while the cap keeps shm a small fraction of
+	// the container memory budget.
+	MaxShmSizeMiB = 2048
 )
 
 var (
@@ -255,6 +259,10 @@ type ExecutionPolicy struct {
 	EgressClass string       `json:"egress_class,omitempty"`
 	TCPForwards []TCPForward `json:"tcp_forwards,omitempty"`
 	Mounts      []Mount      `json:"mounts,omitempty"`
+	// ShmSizeMiB sizes /dev/shm for workloads that need shared memory beyond
+	// the 64 MiB Docker default — headless Chromium is the known consumer.
+	// Zero keeps the daemon default.
+	ShmSizeMiB int `json:"shm_size_mib,omitempty"`
 }
 
 // EgressWeb is the only non-default egress class: browser workloads browse

@@ -72,19 +72,23 @@ type PreparedEntry struct {
 	Image *PinnedImage `json:"image,omitempty"`
 	// Toolsets/DefaultEnabled/DefaultExcluded stage the projected surface:
 	// install projects the default read set, other sets join on enable.
-	Toolsets           map[string][]string        `json:"toolsets,omitempty"`
-	DefaultEnabled     []string                   `json:"default_enabled,omitempty"`
-	DefaultExcluded    []string                   `json:"default_excluded,omitempty"`
-	Source             ArtifactSource             `json:"source"`
-	License            string                     `json:"license"`
-	Language           string                     `json:"language"`
-	PythonExtras       []string                   `json:"python_extras,omitempty"`
-	Entrypoint         []string                   `json:"entrypoint"`
-	Connection         ConnectionRecipe           `json:"connection"`
-	ContractID         string                     `json:"contract_id"`
-	ContractRevision   int                        `json:"contract_revision"`
-	Stateful           bool                       `json:"stateful"`
-	StateTarget        string                     `json:"state_target,omitempty"`
+	Toolsets         map[string][]string `json:"toolsets,omitempty"`
+	DefaultEnabled   []string            `json:"default_enabled,omitempty"`
+	DefaultExcluded  []string            `json:"default_excluded,omitempty"`
+	Source           ArtifactSource      `json:"source"`
+	License          string              `json:"license"`
+	Language         string              `json:"language"`
+	PythonExtras     []string            `json:"python_extras,omitempty"`
+	Entrypoint       []string            `json:"entrypoint"`
+	Connection       ConnectionRecipe    `json:"connection"`
+	ContractID       string              `json:"contract_id"`
+	ContractRevision int                 `json:"contract_revision"`
+	Stateful         bool                `json:"stateful"`
+	StateTarget      string              `json:"state_target,omitempty"`
+	// Budgets raises the default execution budget for heavyweight entries —
+	// headless Chromium needs more memory, pids and /dev/shm than the 512
+	// MiB/64 pid default. Values still pass the global execution bounds.
+	Budgets            *PreparedBudgets           `json:"budgets,omitempty"`
 	Environment        []string                   `json:"environment,omitempty"`
 	RuntimeEnvironment map[string]string          `json:"runtime_environment,omitempty"`
 	ProxyEnvironment   []string                   `json:"proxy_environment,omitempty"`
@@ -107,8 +111,12 @@ type PreparedEntry struct {
 	ContextSources []ArtifactOverlay `json:"context_sources,omitempty"`
 	// TCPForwards declares companion loopback forwards; each target_env must
 	// be an env-delivered connection field carrying a host:port endpoint.
-	TCPForwards      []TCPForward     `json:"tcp_forwards,omitempty"`
-	Egress           []string         `json:"egress"`
+	TCPForwards []TCPForward `json:"tcp_forwards,omitempty"`
+	Egress      []string     `json:"egress"`
+	// EgressClass carries the proxy policy shape: "web" for browser entries
+	// (arbitrary HTTPS through the deny-first proxy); under "web" the egress
+	// list is reviewed extra deny entries and may be empty.
+	EgressClass      string           `json:"egress_class,omitempty"`
 	CredentialGroups [][]string       `json:"credential_groups,omitempty"`
 	ReadTools        []string         `json:"read_tools"`
 	ProbeTool        string           `json:"probe_tool,omitempty"`
@@ -116,6 +124,13 @@ type PreparedEntry struct {
 	OAuth            *PreparedOAuth   `json:"oauth,omitempty"`
 	Runbook          string           `json:"runbook"`
 	Handoff          string           `json:"handoff"`
+}
+
+type PreparedBudgets struct {
+	CPUMillis  int `json:"cpu_millis,omitempty"`
+	MemoryMiB  int `json:"memory_mib,omitempty"`
+	MaxPIDs    int `json:"max_pids,omitempty"`
+	ShmSizeMiB int `json:"shm_size_mib,omitempty"`
 }
 
 // Blocked entries are discoverable bundle slots, not installation authority.
@@ -389,8 +404,32 @@ func (entry PreparedEntry) Apply(config ArtifactImportConfig) ArtifactImportConf
 	config.ProxyEnvironment = append([]string(nil), entry.ProxyEnvironment...)
 	config.ContextSources = append([]ArtifactOverlay(nil), entry.ContextSources...)
 	config.Execution.Egress = append([]string(nil), entry.Egress...)
+	config.Execution.EgressClass = entry.EgressClass
 	config.Execution.TCPForwards = append([]TCPForward(nil), entry.TCPForwards...)
 	config.Workload.Stateful = entry.Stateful
+	if entry.Budgets != nil {
+		if entry.Budgets.CPUMillis > 0 {
+			config.Execution.CPUMillis = entry.Budgets.CPUMillis
+		}
+		if entry.Budgets.MemoryMiB > 0 {
+			config.Execution.MemoryMiB = entry.Budgets.MemoryMiB
+		}
+		if entry.Budgets.MaxPIDs > 0 {
+			config.Execution.MaxPIDs = entry.Budgets.MaxPIDs
+		}
+		if entry.Budgets.ShmSizeMiB > 0 {
+			config.Execution.ShmSizeMiB = entry.Budgets.ShmSizeMiB
+		}
+	}
+	// A stateful target the Broker contract does not manage is workload
+	// state: it becomes a per-connection named volume cleaned by the same
+	// finalizer ladder as every other connector (browser profiles are the
+	// first consumer; google-style broker state keeps its host dir).
+	if entry.Stateful && entry.StateTarget != "" && !slices.ContainsFunc(config.Execution.Mounts, func(m Mount) bool { return m.Target == entry.StateTarget }) {
+		if brokerContract, contractErr := entry.BrokerContract(); contractErr == nil && (brokerContract.State == nil || brokerContract.State.Target != entry.StateTarget) {
+			config.Execution.Mounts = append(config.Execution.Mounts, Mount{Source: "connection-state", Target: entry.StateTarget})
+		}
+	}
 	config.Toolsets = map[string][]string{}
 	for set, tools := range entry.Toolsets {
 		config.Toolsets[set] = append([]string(nil), tools...)

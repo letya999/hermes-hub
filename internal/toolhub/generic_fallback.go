@@ -214,6 +214,9 @@ func (c *genericController) startDockerRemoteFallback(ctx context.Context, plan 
 	}
 	step = "bridge-create"
 	bridgeArgs := append([]string{"create", "--name", plan.WorkloadID, "--network", network, "--read-only", "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true", "--security-opt", "seccomp=" + c.config.SeccompProfile, "--tmpfs", "/tmp:rw,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=64m", "--tmpfs", "/run:rw,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=16m", "--env", "HOME=/tmp", "--env", "HTTP_PROXY=http://" + proxyIP + ":3128", "--env", "HTTPS_PROXY=http://" + proxyIP + ":3128", "--env", "NO_PROXY=127.0.0.1,localhost", "--env", "NODE_USE_ENV_PROXY=1", "--entrypoint", "/hermes-bridge/hubctl"}, limits...)
+	if plan.Execution.ShmSizeMiB > 0 {
+		bridgeArgs = append(bridgeArgs, "--shm-size", strconv.Itoa(plan.Execution.ShmSizeMiB)+"m")
+	}
 	if len(definition.Credentials) > 0 {
 		if plan.WorkspacePath == "" {
 			return genericWorkload{}, fmt.Errorf("%w: credential-bearing fallback requires an owner workspace", api.ErrUnauthorized)

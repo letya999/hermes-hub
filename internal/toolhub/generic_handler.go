@@ -168,6 +168,12 @@ func (c *genericController) start(ctx context.Context, plan api.ControllerPlan) 
 		}
 		return c.startDockerRemoteFallback(ctx, plan)
 	}
+	if plan.Execution.ShmSizeMiB > 0 && !strings.Contains(string(help), "--shm-size") {
+		if !c.config.DockerFallback {
+			return genericWorkload{}, fmt.Errorf("%w: ToolHive cannot express the workload shm-size budget", api.ErrIsolation)
+		}
+		return c.startDockerRemoteFallback(ctx, plan)
+	}
 	if len(plan.CredentialMounts) > 0 && !strings.Contains(string(help), "--volume") {
 		if !c.config.DockerFallback {
 			return genericWorkload{}, fmt.Errorf("%w: ToolHive cannot express credential mounts", api.ErrIsolation)
@@ -230,6 +236,9 @@ func (c *genericController) start(ctx context.Context, plan api.ControllerPlan) 
 		return genericWorkload{}, err
 	}
 	toolArgs := []string{"run", "--name", plan.WorkloadID, "--host", "127.0.0.1", "--proxy-port", strconv.Itoa(port), "--transport", "stdio", "--proxy-mode", "streamable-http", "--permission-profile", "none", "--network", network, "--isolate-network=false", "--read-only", "--security-opt", "seccomp=" + c.config.SeccompProfile, "--security-opt", "no-new-privileges=true", "--cap-drop", "ALL", "--user", "10001:10001", "--cpus", strconv.FormatFloat(float64(plan.Execution.CPUMillis)/1000, 'f', 3, 64), "--memory", strconv.Itoa(plan.Execution.MemoryMiB) + "m", "--memory-swap", strconv.Itoa(plan.Execution.MemoryMiB) + "m", "--pids-limit", strconv.Itoa(plan.Execution.MaxPIDs), "--timeout", strconv.Itoa(plan.Execution.TimeoutSeconds), "--output-limit", strconv.Itoa(plan.Execution.OutputBytes), "--env", "HTTP_PROXY=http://" + ip + ":3128", "--env", "HTTPS_PROXY=http://" + ip + ":3128"}
+	if plan.Execution.ShmSizeMiB > 0 {
+		toolArgs = append(toolArgs, "--shm-size", strconv.Itoa(plan.Execution.ShmSizeMiB)+"m")
+	}
 	var secretValues map[string]string
 	if plan.WorkspacePath != "" {
 		secretPath := filepath.Join(plan.WorkspacePath, "credentials.env")

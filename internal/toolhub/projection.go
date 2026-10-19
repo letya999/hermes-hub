@@ -193,7 +193,7 @@ func (s *Store) findProjectedLocked(auth identity.Envelope, projectedName string
 		if err != nil {
 			continue
 		}
-		for _, tool := range candidate.Definition.Tools {
+		for _, tool := range candidate.Definition.ProjectedToolSpecs(candidate.Binding) {
 			if api.ProjectedToolName(candidate.Definition.DefinitionID, candidate.Definition.Version, tool.Name) != projectedName {
 				continue
 			}

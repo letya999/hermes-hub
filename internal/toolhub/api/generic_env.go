@@ -316,7 +316,7 @@ func renderWebProxy(extraDeny, connDeny []string) (string, error) {
 
 func EqualStrings(a, b []string) bool { return strings.Join(a, "\x00") == strings.Join(b, "\x00") }
 func ReflectExecution(a, b ExecutionPolicy) bool {
-	return a.TimeoutSeconds == b.TimeoutSeconds && a.OutputBytes == b.OutputBytes && a.CPUMillis == b.CPUMillis && a.MemoryMiB == b.MemoryMiB && a.MaxPIDs == b.MaxPIDs && a.EgressClass == b.EgressClass && EqualStrings(a.Egress, b.Egress) && reflectTCPForwards(a.TCPForwards, b.TCPForwards) && ReflectMounts(a.Mounts, b.Mounts)
+	return a.TimeoutSeconds == b.TimeoutSeconds && a.OutputBytes == b.OutputBytes && a.CPUMillis == b.CPUMillis && a.MemoryMiB == b.MemoryMiB && a.MaxPIDs == b.MaxPIDs && a.ShmSizeMiB == b.ShmSizeMiB && a.EgressClass == b.EgressClass && EqualStrings(a.Egress, b.Egress) && reflectTCPForwards(a.TCPForwards, b.TCPForwards) && ReflectMounts(a.Mounts, b.Mounts)
 }
 func reflectTCPForwards(a, b []TCPForward) bool {
 	return len(a) == len(b) && func() bool {

@@ -37,11 +37,14 @@ func TestPreparedTelegramEventTools(t *testing.T) {
 
 func TestPreparedCatalogAndGeneratedRecipes(t *testing.T) {
 	entries, err := api.PreparedCatalog()
-	if err != nil || len(entries) != 11 {
+	if err != nil || len(entries) != 12 {
 		t.Fatalf("catalog: %d %v", len(entries), err)
 	}
 	for _, entry := range entries {
 		t.Run(entry.ID, func(t *testing.T) {
+			if entry.Image != nil {
+				t.Skip("image-pinned entries admit the pinned image, not a generated recipe")
+			}
 			files := map[string]string{"package.json": `{"bin":{"first":"build/index.js","alias":"./build/index.js"}}`, "package-lock.json": "{}"}
 			if entry.ID == "notion" {
 				files["package.json"] = `{"bin":{"notion":"bin/cli.mjs"}}`

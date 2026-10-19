@@ -260,7 +260,7 @@ func (s *Store) managedSelfInstallToolsLocked(auth identity.Envelope, profile ap
 		effective.CapabilityProfileID, effective.CapabilityProfileRevision = profile.ProfileID, profile.Revision
 		effective.CapabilityPolicyID, effective.CapabilityPolicyRevision = profile.PolicyID, profile.PolicyRevision
 		effective.ImplementationDigest = api.DefinitionDigest(effective.Definition)
-		for _, tool := range effective.Definition.Tools {
+		for _, tool := range effective.Definition.ProjectedToolSpecs(effective.Binding) {
 			if tool.Effect == api.WriteEffect && !s.selfInstallWritesLocked(binding.ToolBindingID) {
 				continue
 			}
@@ -288,7 +288,7 @@ func (s *Store) managedSelfInstallToolLocked(auth identity.Envelope, profile api
 		if err != nil {
 			continue
 		}
-		for _, tool := range effective.Definition.Tools {
+		for _, tool := range effective.Definition.ProjectedToolSpecs(effective.Binding) {
 			if tool.Effect == api.WriteEffect && !s.selfInstallWritesLocked(binding.ToolBindingID) {
 				continue
 			}
