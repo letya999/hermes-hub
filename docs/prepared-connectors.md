@@ -128,6 +128,41 @@ corpus of recorded real targets (`internal/toolhub/api/testdata/corpus/`)
 pins every recipe digest; `GOLDEN_UPDATE=1` re-pins after an intentional
 model change.
 
+## Human action surface (M13)
+
+Every moment only a human can finish — entering a credential, confirming an
+install, approving a removal, completing OAuth — is a one-time link carrying
+`?t=<token>` on a human-action page: `/credentials`, `/confirm`, `/remove`,
+`/connect`, `/device`. The token resolves the stored nonce of that
+onboarding and that operation only; spent or expired links answer `410
+Gone`, a POST without the token is rejected, and each page re-checks the
+onboarding's principal, context and runtime. No link token, nonce, OAuth
+state or device code ever appears in an agent-facing control result.
+
+The link is delivered on the channel the install was requested from: the
+prepare-outcome notice routes by the initiating message job's channel.
+Channels declaring `Caps().Actions` may render the link as an actionable
+affordance; every other channel receives the same plain text — the link
+itself is the affordance. `hubctl connector link --onboarding <id>` prints
+the URL for scripts, and `--confirm` finishes an awaiting-confirmation
+onboarding without a browser.
+
+When `HUB_PUBLIC_ORIGIN` is set (https only) the minted links use that
+origin, and `HUB_PUBLIC_LISTEN` binds a second listener that serves only
+the human-action paths — control and gateway routes answer 404 there. The
+connect page offers two dead-redirect alternatives: an RFC 8628 device flow
+(`/device/<id>` shows the user code and verification URI while the hub
+polls) and a paste-the-redirect form that validates the pasted `state` and
+redirect origin before completing through the shared PKCE callback.
+
+The credential form renders from the recorded recipe and ledger: source and
+pinned revision, trust tier, egress hosts, and per-field provenance with
+its rank and HTTPS `token_url` help link. Heuristic-only (R6) fields are
+shown as suggestions to verify, never required. Submitted values are probed
+with a read-only `tools/list` before anything persists — a failed probe
+leaves no ciphertext, connection or Broker credential and re-renders the
+form with the entered values page-side.
+
 ## Bundle IDs and one-operation start
 
 Call ToolHub `prepare_source` once with the repository URL shown in a ready

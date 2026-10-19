@@ -6,6 +6,7 @@ last_verified: 2026-10-02
 
 | Record | Decision |
 |---|---|
+| [ADR-0047](ADR-0047-human-action-surface.md) | Accepted: one-time `?t=` human-action links on an opt-in public surface, origin-channel delivery, device flow and paste-redirect OAuth, transactional credential save |
 | [ADR-0046](ADR-0046-recipe-source-ledger.md) | Accepted: content-addressed secret-free recipes, ranked source ledgers, fail-closed same-rank ambiguity, digest-referenced onboardings |
 | [ADR-0045](ADR-0045-watcher-probe-pipeline.md) | Accepted: watcher probe = fetch + deterministic extract pipeline; isolated script/command probes; snapshotted recipes |
 | [ADR-0044](ADR-0044-routine-destinations.md) | Accepted: verified task destinations and per-run origin for routine delivery |

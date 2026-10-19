@@ -3,6 +3,7 @@ package toolhub
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -801,6 +802,107 @@ func TestCredentialSubmitAdmissionProbesOnce(t *testing.T) {
 	}
 	if probes != 1 {
 		t.Fatalf("admission submit probed %d times, want 1", probes)
+	}
+}
+
+// S2.8 property: no agent-facing result — a control-op body or its error —
+// may carry human-link material. Every secret-bearing onboarding field is
+// seeded with a unique sentinel across every phase; any sentinel found in
+// any op's marshalled output is a leak.
+func TestControlOpsCarryNoLinkMaterial(t *testing.T) {
+	store := NewStore()
+	grantTestControlOperations(t, store, "alice", api.ControlOperations...)
+	definition := catalogReadDefinition()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	control := &ControlPlane{Store: store, WorkloadRoot: t.TempDir(), Now: time.Now}
+	auth := aliceAuth()
+	var sentinels []string
+	mark := func(name string) string {
+		value := "SENT-" + name + "-9f27c1"
+		sentinels = append(sentinels, value)
+		return value
+	}
+	fill := func(o *api.Onboarding) {
+		o.FormNonce = mark("form")
+		o.FormExpires = time.Now().Add(time.Hour)
+		o.ConfirmationNonce = mark("confirm")
+		o.ConfirmationExpires = time.Now().Add(time.Hour)
+		o.RemoveNonce = mark("remove")
+		o.RemoveExpires = time.Now().Add(time.Hour)
+		o.Locator = mark("locator")
+		o.CredentialOwner = mark("owner")
+		o.IdempotencyKey = mark("idem")
+		o.BrokerAuthorizationURL = "https://broker.example/auth?code=" + mark("burl")
+		o.ProviderAuthorizationURL = "https://as.example/authorize?state=" + mark("oauthstate")
+		o.DeviceCode = mark("devcode")
+		o.DeviceUserCode = mark("usercode")
+		o.DeviceVerification = "https://verify.example/" + mark("device")
+	}
+	phases := []string{api.PhasePreparing, api.PhaseReview, api.PhaseAwaitingCreds, api.PhaseAwaitingConfirm, api.PhaseAwaitingOAuth, api.PhaseConfirmed, api.PhaseEnabled, api.PhaseDisabled, api.PhaseRevoked, api.PhaseFailed}
+	ids := map[string]string{}
+	for _, phase := range phases {
+		id := "onb-prop-" + strings.ReplaceAll(phase, "-", "")
+		onboarding := api.Onboarding{
+			Schema: api.SchemaVersion, OnboardingID: id, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
+			RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
+			Mode: api.OnboardingCatalog, Phase: phase,
+			DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
+		}
+		fill(&onboarding)
+		if err := store.PutOnboarding(onboarding); err != nil {
+			t.Fatalf("%s: %v", phase, err)
+		}
+		ids[phase] = id
+	}
+	// Every read-shaped control op over every phase; mutations that mint link
+	// material (remove preview) run too — their output must not echo it.
+	ops := []struct {
+		name string
+		args func(id string) map[string]any
+	}{
+		{"status", func(id string) map[string]any { return map[string]any{"onboarding_id": id} }},
+		{"required_credentials", func(id string) map[string]any { return map[string]any{"onboarding_id": id} }},
+		{"diagnostics", func(id string) map[string]any { return map[string]any{"onboarding_id": id} }},
+		{"remove", func(id string) map[string]any { return map[string]any{"onboarding_id": id} }},
+	}
+	for _, phase := range phases {
+		for _, op := range ops {
+			body, err := control.Invoke(context.Background(), auth, op.name, op.args(ids[phase]))
+			encoded, _ := json.Marshal(body)
+			output := string(encoded)
+			if err != nil {
+				output += "|" + err.Error()
+			}
+			for _, sentinel := range sentinels {
+				if strings.Contains(output, sentinel) {
+					t.Fatalf("%s on %s leaked %q: %.400s", op.name, phase, sentinel, output)
+				}
+			}
+			if strings.Contains(output, "?t=") {
+				t.Fatalf("%s on %s emitted a link token: %.400s", op.name, phase, output)
+			}
+		}
+	}
+	// confirm consumes the nonce as input — the result must not echo it back.
+	stored, err := store.onboarding(ids[api.PhaseAwaitingConfirm])
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": stored.OnboardingID, "nonce": stored.ConfirmationNonce})
+	encoded, _ := json.Marshal(body)
+	output := string(encoded)
+	if err != nil {
+		output += "|" + err.Error()
+	}
+	for _, sentinel := range sentinels {
+		if strings.Contains(output, sentinel) {
+			t.Fatalf("confirm leaked %q: %.400s", sentinel, output)
+		}
 	}
 }
 

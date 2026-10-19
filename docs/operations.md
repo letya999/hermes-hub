@@ -484,6 +484,21 @@ and are inert to `hub-communication`. `HUB_CREDENTIAL_STORE` must be set on
 `hub-toolhub` for decrypt-and-inject.
 Never run hermes update in prod: update reviewed source pins and rebuild instead.
 
+Human-action links (`/credentials`, `/confirm`, `/remove`, `/connect`,
+`/device`) are one-time `?t=` URLs minted per onboarding; spent or expired
+links answer 410. They are delivered back on the channel the install was
+requested from — a channel without `Caps().Actions` receives the same plain
+text. By default every link targets the loopback listener. To finish actions
+from another device, publish a TLS-terminating origin and set
+`HUB_PUBLIC_ORIGIN=https://<public-host>` on `hub-toolhub` (https only —
+anything else mints loopback links) together with `HUB_PUBLIC_LISTEN=<addr>`
+for the second listener. That listener serves only the human-action paths;
+control and gateway routes answer 404, and the communication hub accepts an
+https `form_url` only when its host equals the configured origin exactly.
+For scripts, `hubctl connector link --onboarding <id>` prints the pending
+action URL, and `--confirm` completes an awaiting-confirmation onboarding
+without a browser.
+
 To enable the Credential Broker path, configure the control, approval and
 runtime URL/key/ID/issuer variables documented in
 [integrations](integrations.md). All three audiences are required. Start the

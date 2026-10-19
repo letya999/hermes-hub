@@ -82,12 +82,16 @@ func TestConnectorLinkAndConfirm(t *testing.T) {
 	if out != "http://127.0.0.1:8090/confirm/onb-1?t=nonce-1" {
 		t.Fatalf("link=%q", out)
 	}
-	// --confirm finishes the flow for scripts: the onboarding is confirmed.
+	// --confirm finishes the flow for scripts: the onboarding is confirmed,
+	// and the link line still leads the output for the same script surface.
 	out, err = captureStdout(t, func() error {
 		return runConnector(ctx, append([]string{"link"}, append(base, "--origin", "http://127.0.0.1:8090", "--confirm")...))
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !strings.HasPrefix(out, "http://127.0.0.1:8090/confirm/onb-1?t=nonce-1") || !strings.Contains(out, api.PhaseConfirmed) {
+		t.Fatalf("link --confirm output=%q", out)
 	}
 	reloaded, err := toolhub.Load(storePath)
 	if err != nil {
