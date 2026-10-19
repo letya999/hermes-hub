@@ -73,7 +73,7 @@ func TestModelRelayRegistryNeverFollowsReachableRedirect(t *testing.T) {
 	}))
 	defer target.Close()
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Location", target.URL + "/meta-data")
+		w.Header().Set("Location", target.URL+"/meta-data")
 		w.WriteHeader(http.StatusTemporaryRedirect)
 	}))
 	defer upstream.Close()
