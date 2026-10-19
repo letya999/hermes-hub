@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -757,6 +758,51 @@ func TestBriefUnavailableErrorDeduped(t *testing.T) {
 	d, err := s.ClaimDelivery()
 	if err != nil || d == nil || !strings.Contains(d.Text, "Источников недоступно: 1") {
 		t.Fatalf("second slot did not report the ongoing count: %+v %v", d, err)
+	}
+}
+
+// S4.3 — two dispatchers racing one due brief admit a single agent job:
+// the engine mutex serializes them and the second pass sees the settled
+// occurrence (SPEC-0054 R4, A6).
+func TestBriefTwoWorkersSingleJob(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	if _, err := s.CreateSchedule(Schedule{ScheduleID: "wrace", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "feed", JobKind: "watcher", Probe: &WatchProbe{URL: "https://example.com/race"}}, caller, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicJSON(s.watchPath("wrace"), WatchState{ScheduleID: "wrace", Baseline: "h", Value: "v", ChangedAt: time.Now().UTC().Add(-time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	o.ScheduleID = "briefraced"
+	o.JobKind = "brief"
+	o.Job.Text = "бриф"
+	o.DueAt = now.Add(-time.Minute)
+	if err := s.PutOccurrence(o, caller); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- s.DispatchDueOccurrences(now, g.authorizeOccurrence)
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	job, err := s.ClaimJob()
+	if err != nil || job == nil {
+		t.Fatal("raced brief admitted no job")
+	}
+	if extra, err := s.ClaimJob(); err != nil || extra != nil {
+		t.Fatal("two workers admitted two brief jobs")
 	}
 }
 

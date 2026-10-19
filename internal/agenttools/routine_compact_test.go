@@ -26,7 +26,7 @@ func TestRoutinePublicSurfaceHasFiveTools(t *testing.T) {
 		}
 	}
 	definition := HubToolsDefinition()
-	if definition.Version != "5.0.0" {
+	if definition.Version != "5.0.1" {
 		t.Errorf("new immutable contract version=%s", definition.Version)
 	}
 	arguments := map[string][]string{"routine_create": {"origin_job_id", "destination_task_id"}, "routine_list": {"query", "view"}, "routine_get": {"include", "history_limit", "history_cursor", "preview_limit"}, "routine_edit": {"action", "expected_revision", "patch", "until", "origin_job_id"}}
