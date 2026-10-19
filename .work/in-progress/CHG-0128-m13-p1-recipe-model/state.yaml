@@ -1,0 +1,34 @@
+schema: 1
+change: CHG-0128
+title: M13 P1 recipe model with trust ladders and source ledger
+status: in_progress
+branch: feat/m14-toolhub-connector-platform
+updated: "2025-12-23"
+phase: implementation
+requirements: [S1.1, S1.2, S1.3, S1.4, S1.5, S1.6, S1.7, S1.8]
+depends_on: [CHG-0127]
+github_milestone: M13 — ToolHub Connector Platform
+github_issue: 282
+design_status: accepted
+implementation_status: not_started
+slices:
+  S1.1-ledger-types: not_started
+  S1.2-rank-vocabulary: not_started
+  S1.3-pure-ledger-resolution: not_started
+  S1.4-registry-first-wiring: not_started
+  S1.5-recipe-store-onboarding-digest: not_started
+  S1.6-credential-source-ledger-entry: not_started
+  S1.7-golden-corpus: not_started
+  S1.8-docs: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence:
+  - "CHG-0127 P0 done: S0.1-S0.9 committed; just check green locally (covergo 86.38%); live CI/remove gates pending owner push"
+remaining: []
+limitations:
+  - "push and CI image/container gates require owner instruction"
+  - "golden corpus needs recorded registry/catalog responses; fabricated API replies are snapshots, not live calls"
