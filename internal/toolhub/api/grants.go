@@ -135,8 +135,8 @@ type Onboarding struct {
 	// ChannelAuthURL is the sign-in link the communication plane minted for
 	// this request (e.g. a QR page); when set it outranks the Broker form as
 	// the link the agent should hand to the user.
-	ChannelAuthURL           string    `json:"channel_auth_url,omitempty"`
-	ProviderAuthorizationURL string    `json:"provider_authorization_url,omitempty"`
+	ChannelAuthURL           string `json:"channel_auth_url,omitempty"`
+	ProviderAuthorizationURL string `json:"provider_authorization_url,omitempty"`
 	// OAuthProvider names the broker slot that minted this onboarding's
 	// credential. Set only for OAuth-managed connections so the call path
 	// knows a rejected call may be refreshed and retried once.
