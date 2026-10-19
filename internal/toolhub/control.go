@@ -380,7 +380,6 @@ func (c *ControlPlane) remove(ctx context.Context, auth identity.Envelope, args 
 			body := c.statusBody(onboarding, false)
 			body["requires_confirmation"] = true
 			body["next_action"] = "confirm_remove"
-			body["instructions"] = "Removing this connector deletes its credentials, workspace and runtime state permanently. Repeat remove with remove_nonce to execute; ask the user to confirm first."
 			return body, nil
 		}
 		if onboarding.RemoveExpires.IsZero() || c.now().After(onboarding.RemoveExpires) {
@@ -416,7 +415,6 @@ func (c *ControlPlane) remove(ctx context.Context, auth identity.Envelope, args 
 		body := c.statusBody(onboarding, false)
 		body["retryable"] = true
 		body["next_action"] = "remove"
-		body["instructions"] = "Cleanup did not fully converge; call remove again with the same selector to continue where it stopped."
 		return body, nil
 	}
 	if onboarding.BindingID != "" {
@@ -479,45 +477,22 @@ func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map
 	switch onboarding.Phase {
 	case api.PhasePreparing:
 		body["next_action"] = "poll_status"
-		body["instructions"] = "Source review and build continue in the background; call status with onboarding_id until the phase changes."
 	case api.PhaseFailed:
 		body["next_action"] = "retry"
-		body["instructions"] = "The prepare failed; call prepare_source again with the same request_key to retry."
 	case api.PhaseAwaitingCreds:
 		body["next_action"] = "submit_credentials"
-		body["instructions"] = "Ask the user to open the credential URL, submit the form, then call this tool again."
 		if onboarding.AdmissionPending {
 			body["tools_confirmed"] = false
-			if onboarding.BrokerContractID != "" {
-				body["instructions"] = "The server needs provider login before tools/list. The authorization link was already sent to the user — ask them to open it and finish the provider login, then call status. Never ask for a session in chat."
-				if strings.HasPrefix(onboarding.Error, "Проверка не прошла") {
-					body["next_action"] = "rotate"
-					body["instructions"] = "The Broker credential failed admission. Read the recorded error; rotate this onboarding to enter a fresh credential."
-				}
-			} else {
-				body["instructions"] = "The server did not answer tools/list until credentials exist. The channel notice already contains the loopback form URL on this host at 127.0.0.1:8090. Do not send a second link. Do not invent a CORS, browser-host, or blocked-port failure. Do not ask for a token in chat. The form lists the field names from the server or its connection recipe. The shortest set is open; submit only that set unless the user opens another. tools/list runs after a successful submit."
-				switch {
-				case strings.HasPrefix(onboarding.Error, "Проверяю поля"):
-					body["instructions"] = "A credential submit is being checked with the server. Tell the user to wait. Do not repeat an older form error and do not ask for a token in chat."
-				case strings.Contains(onboarding.Error, "набор") || strings.Contains(onboarding.Error, "Не заполнено") || strings.Contains(onboarding.Error, "рецепт"):
-					body["instructions"] = "The previous form submit was rejected before the server was contacted. Read error and tell the user that text. The current form link was re-sent through the channel notice. Do not invent a network, CORS, or host failure, and do not ask for a token in chat."
-				case strings.HasPrefix(onboarding.Error, "Проверка не прошла"):
-					body["instructions"] = "The credential check already ran. Read error and tell the user that text. Do not repeat an older rejection and do not ask for a token in chat. The form link sent through the channel remains usable."
-				}
+			if onboarding.BrokerContractID != "" && onboarding.ErrorCode == api.OpCodeProbeFailed {
+				body["next_action"] = "rotate"
 			}
 		}
 	case api.PhaseAwaitingConfirm:
 		body["next_action"] = "confirm"
-		body["instructions"] = "The confirmation link was sent to the user. Ask them to open it to finish connecting; afterwards call status to continue."
-		if onboarding.Error != "" {
-			body["instructions"] = "The last confirm or enable failed; read error and tell the user that text verbatim. Do not invent a runtime restart, controller outage, or network cause. Retry confirm with the nonce only after the recorded cause is addressed or looks transient; do not poll in a loop."
-		}
 	case api.PhaseAwaitingOAuth:
 		body["next_action"] = "authorize"
-		body["instructions"] = "The authorization link was sent to the user. After the browser callback completes, call status to verify the connection."
 	case api.PhaseConfirmed:
 		body["next_action"] = "enable"
-		body["instructions"] = "Call enable with onboarding_id."
 	case api.PhaseEnabled:
 		body["next_action"] = "ready"
 	}

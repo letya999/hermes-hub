@@ -173,8 +173,7 @@ func TestCredentialGateDefersRegistrationUntilSubmittedSecrets(t *testing.T) {
 		AdmissionGroups: [][]string{{"SLACK_MCP_XOXC_TOKEN", "SLACK_MCP_XOXD_TOKEN"}, {"SLACK_MCP_XOXP_TOKEN"}, {"SLACK_MCP_XOXB_TOKEN"}},
 	}
 	body, err := control.acceptCredentialGate(t.Context(), aliceAuth(), preparing, review)
-	instructions, _ := body["instructions"].(string)
-	if err != nil || body["phase"] != api.PhaseAwaitingCreds || body["tools_confirmed"] != false || strings.Contains(instructions, "one token field") || !strings.Contains(instructions, "field names") {
+	if err != nil || body["phase"] != api.PhaseAwaitingCreds || body["tools_confirmed"] != false || body["next_action"] != "submit_credentials" {
 		t.Fatalf("body=%v err=%v", body, err)
 	}
 	if _, err := store.Definition("slack-mcp-server", "0.0.2"); !errors.Is(err, api.ErrNotFound) {

@@ -887,7 +887,7 @@ func credentialSubmitPage(err error) (int, string, string) {
 	if errors.Is(err, api.ErrInvalid) {
 		return http.StatusBadRequest, "Форма заполнена не так", credentialFormRejection(err)
 	}
-	reason := strings.TrimPrefix(credentialProbeFailure(err), "Проверка не прошла. ")
+	reason := credentialProbeFailure(err)
 	if reason == "" {
 		reason = "Сервер не подтвердил вход."
 	}

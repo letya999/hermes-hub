@@ -398,7 +398,7 @@ func TestConfirmAndEnableFailureRecordedOnOnboarding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(fmt.Sprint(status["error"]), "required runtime credential missing") || !strings.Contains(fmt.Sprint(status["instructions"]), "last confirm or enable failed") {
+	if !strings.Contains(fmt.Sprint(status["error"]), "required runtime credential missing") || status["next_action"] != "confirm" {
 		t.Fatalf("status hides the recorded failure: %v", status)
 	}
 	admit = true

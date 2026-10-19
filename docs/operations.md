@@ -174,6 +174,39 @@ These primitives are not a completed deployment boundary. Rendering does not yet
 provision managed identities or isolated roots, legacy deployments remain outside
 the guarantee, and human consent/migration still need CHG-0065.
 
+### Unified connector surface (ADR-0048)
+
+A profile that sets `connectors: personal` or `personal+team` replaces the legacy
+per-operation control projection with exactly nine `connector_*` tools — legacy
+control operations (`prepare_source`, `confirm`, `enable`, `remove`, …) are not
+projected under the bundle. Every call resolves a selector, gets-or-creates one
+durable operation in the journal keyed by `(principal, intent, normalized
+target)`, and returns the uniform `{operation_id, state, code?, summary,
+link_sent?, candidates?}` shape — never a token, nonce, OAuth state, internal
+URL, container ID or link material.
+
+| Tool | Arguments | Behavior |
+|---|---|---|
+| `connector_search` | `query`, `kind?` | reviewed prepared-catalog matches |
+| `connector_list` | — | caller's own live connectors |
+| `connector_status` | `target` or `operation_id` | connector phase or journaled operation |
+| `connector_install` | `target` | catalog install or prepared-source self-install, steps resolve→fetch_artifact→collect_credentials→admit_probe→bind→project→notify |
+| `connector_enable` / `connector_disable` | `target` | reversible phase flip, credentials preserved |
+| `connector_allow_writes` | `target`, `on` | `on:true` arms a `/confirm` link and hides write tools until the human click; `on:false` applies immediately |
+| `connector_reauth` | `target` | fresh credential form without reinstall |
+| `connector_remove` | `target` | one-time `/remove` link; journals confirm→cut_authorization→purge→verify_zero→notify |
+
+`target` resolves by precedence — exact onboarding/connection/definition id,
+alias, source URL, repository basename, registry name — scoped to the caller's
+own live onboardings; removed, failed and superseded records never match, and an
+ambiguous selector returns `ambiguous_target` with public candidate ids. The
+same verbs run on `hubctl connector <verb> --target <sel>` (the operator selects
+the capability profile with `--profile`/`--env`/`--generation`) and on the
+control listener (`POST /v1/connectors:install`, `POST /v1/connectors/{id}:disable`,
+`GET /v1/operations/{id}`, control-token or principal-bearer auth plus
+`X-Hub-Principal`). All three surfaces call `ControlPlane.InvokeConnector` — one
+implementation, one journal.
+
 When upgrading to the rights-only `policy_version` hash, inventory every active
 managed profile and runtime envelope before restarting ToolHub. Binding migration
 does not reissue capability profiles. An old profile can fail startup validation

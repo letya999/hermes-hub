@@ -852,11 +852,12 @@ func TestInstructionsNeverReferenceRemovedFields(t *testing.T) {
 	}
 	for _, on := range cases {
 		body := control.statusBody(on, false)
-		text, _ := body["instructions"].(string)
-		lower := strings.ToLower(text)
-		for _, bad := range []string{"nonce from this response", "authorization_url", "from required_credentials", "send the form url", "send authorization"} {
-			if strings.Contains(lower, bad) {
-				t.Fatalf("%s instructions reference removed field %q: %q", on.Phase, bad, text)
+		if text, ok := body["instructions"].(string); ok {
+			lower := strings.ToLower(text)
+			for _, bad := range []string{"nonce from this response", "authorization_url", "from required_credentials", "send the form url", "send authorization"} {
+				if strings.Contains(lower, bad) {
+					t.Fatalf("%s instructions reference removed field %q: %q", on.Phase, bad, text)
+				}
 			}
 		}
 	}

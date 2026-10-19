@@ -6,7 +6,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -1020,6 +1022,67 @@ func TestConnectorHTTPVerbsUseFacade(t *testing.T) {
 		w, _ := call(tc.method, tc.path, "", tc.token, tc.principal)
 		if w.Code == http.StatusOK {
 			t.Fatalf("%+v answered 200", tc)
+		}
+	}
+}
+
+// S3.8: statusBody carries typed fields only — no agent-facing instructions
+// prose — and error_code, not the recorded human text, selects the branch.
+func TestStatusBodyTypedCodesOnly(t *testing.T) {
+	control := &ControlPlane{Store: NewStore(), Listen: "127.0.0.1:0"}
+	phases := []api.Onboarding{
+		{OnboardingID: "o1", Phase: api.PhasePreparing},
+		{OnboardingID: "o2", Phase: api.PhaseFailed},
+		{OnboardingID: "o3", Phase: api.PhaseAwaitingCreds, AdmissionPending: true},
+		{OnboardingID: "o4", Phase: api.PhaseAwaitingConfirm, Error: "enable blew up"},
+		{OnboardingID: "o5", Phase: api.PhaseAwaitingOAuth},
+		{OnboardingID: "o6", Phase: api.PhaseConfirmed},
+		{OnboardingID: "o7", Phase: api.PhaseEnabled},
+	}
+	wantNext := map[string]string{
+		api.PhasePreparing: "poll_status", api.PhaseFailed: "retry", api.PhaseAwaitingCreds: "submit_credentials",
+		api.PhaseAwaitingConfirm: "confirm", api.PhaseAwaitingOAuth: "authorize", api.PhaseConfirmed: "enable",
+	}
+	for _, on := range phases {
+		body := control.statusBody(on, false)
+		if _, ok := body["instructions"]; ok {
+			t.Fatalf("%s body carries instructions prose: %v", on.Phase, body)
+		}
+		if want := wantNext[on.Phase]; want != "" && body["next_action"] != want {
+			t.Fatalf("%s next_action=%v want %q", on.Phase, body["next_action"], want)
+		}
+	}
+	// rotate keys off the typed code — the prose prefix alone no longer drives it.
+	rotate := control.statusBody(api.Onboarding{OnboardingID: "o8", Phase: api.PhaseAwaitingCreds,
+		AdmissionPending: true, BrokerContractID: "c1", ErrorCode: api.OpCodeProbeFailed, Error: "some failure"}, false)
+	if rotate["next_action"] != "rotate" {
+		t.Fatalf("probe_failed did not select rotate: %v", rotate)
+	}
+	proseOnly := control.statusBody(api.Onboarding{OnboardingID: "o9", Phase: api.PhaseAwaitingCreds,
+		AdmissionPending: true, BrokerContractID: "c1", Error: "Проверка не прошла. denied"}, false)
+	if proseOnly["next_action"] == "rotate" {
+		t.Fatalf("prose marker still drives the branch: %v", proseOnly)
+	}
+}
+
+// S3.8 static check: no Cyrillic literal drives control flow anywhere in the
+// package — neither branch conditions nor stored-marker matching.
+func TestNoProseMarkerControlFlow(t *testing.T) {
+	entries, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch := regexp.MustCompile(`strings\.(HasPrefix|Contains|TrimPrefix)\([^,]+,\s*"[^"]*[А-Яа-я]`)
+	for _, name := range entries {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		body, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hit := branch.Find(body); hit != nil {
+			t.Fatalf("%s: prose marker drives logic: %s", name, hit)
 		}
 	}
 }
