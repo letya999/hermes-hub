@@ -117,7 +117,7 @@ func rightsProjection(s Settings) rightsView {
 		CLIToolboxes:          s.CLIToolboxes,
 		Tools:                 s.Tools,
 		Ingress:               s.Ingress,
-		TelegramAuth:          s.TelegramAuth,
+		TelegramAuth:          s.Has("telegram_auth"),
 		Workspace:             s.Workspace,
 		MCP:                   mcpRightsMap(s.MCP),
 		Hooks:                 s.Hooks,

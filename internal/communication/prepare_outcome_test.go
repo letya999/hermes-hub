@@ -133,6 +133,11 @@ func TestPrepareOutcomeDeliversNoticeAndContinuation(t *testing.T) {
 		t.Fatalf("invalid definition=%d", rec.Code)
 	}
 	body["definition_id"] = "user-mcp"
+	body["credential_intake"] = strings.Repeat("x", 41)
+	if rec := post("alice", "control-token"); rec.Code != http.StatusBadRequest {
+		t.Fatalf("oversized credential_intake=%d", rec.Code)
+	}
+	delete(body, "credential_intake")
 	get := httptest.NewRequest(http.MethodGet, "/v1/prepare-outcome", nil)
 	get.Header.Set("Authorization", "Bearer control-token")
 	get.Header.Set("X-Hub-Principal", "alice")

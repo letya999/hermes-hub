@@ -1,5 +1,3 @@
-//go:build telegramauth
-
 package communication
 
 import (
@@ -83,7 +81,7 @@ func (g *Gateway) registerTelegramAuth(mux *http.ServeMux) {
 }
 
 func (g *Gateway) telegramAuthInvite(owner identity.Envelope, request prepareOutcomeRequest) string {
-	if g.telegramAuth == nil || request.Phase != "awaiting-credentials" || request.ContractID != "telegram-session" || !identity.ValidID(request.BrokerRequestID) || request.BrokerRequestID == "" || owner.PrincipalID == "" {
+	if g.telegramAuth == nil || request.Phase != "awaiting-credentials" || request.CredentialIntake != "telegram_qr" || !identity.ValidID(request.BrokerRequestID) || request.BrokerRequestID == "" || owner.PrincipalID == "" {
 		return ""
 	}
 	id, err := randomFormToken()

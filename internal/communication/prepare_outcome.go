@@ -13,16 +13,17 @@ import (
 )
 
 type prepareOutcomeRequest struct {
-	OnboardingID    string `json:"onboarding_id"`
-	Phase           string `json:"phase"`
-	DefinitionID    string `json:"definition_id"`
-	ContractID      string `json:"contract_id"`
-	BrokerRequestID string `json:"broker_request_id"`
-	Repository      string `json:"repository"`
-	Detail          string `json:"detail"`
-	FormURL         string `json:"form_url"`
-	Event           string `json:"event"`
-	Tools           int    `json:"tools"`
+	OnboardingID     string `json:"onboarding_id"`
+	Phase            string `json:"phase"`
+	DefinitionID     string `json:"definition_id"`
+	ContractID       string `json:"contract_id"`
+	CredentialIntake string `json:"credential_intake"`
+	BrokerRequestID  string `json:"broker_request_id"`
+	Repository       string `json:"repository"`
+	Detail           string `json:"detail"`
+	FormURL          string `json:"form_url"`
+	Event            string `json:"event"`
+	Tools            int    `json:"tools"`
 	// CreatedAt pins the onboarding creation instant so the gateway can find
 	// the message job that was running when the install was requested.
 	CreatedAt string `json:"created_at,omitempty"`
@@ -67,6 +68,10 @@ func (g *Gateway) handlePrepareOutcome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if request.ContractID != "" && !identity.ValidID(request.ContractID) {
+		http.Error(w, "invalid prepare outcome", http.StatusBadRequest)
+		return
+	}
+	if len(request.CredentialIntake) > 40 {
 		http.Error(w, "invalid prepare outcome", http.StatusBadRequest)
 		return
 	}
@@ -140,7 +145,7 @@ func prepareOutcomeNotice(request prepareOutcomeRequest, loginURL string) string
 	}
 	switch request.Phase {
 	case "awaiting-credentials":
-		if request.ContractID == "telegram-session" && loginURL != "" {
+		if request.CredentialIntake == "telegram_qr" && loginURL != "" {
 			text := "Для подключения Telegram откройте на этом компьютере: " + loginURL + " Введите API ID и API hash, затем создайте QR и подтвердите вход в приложении Telegram. После входа напишите боту «продолжи подключение Telegram». Сессию в чат отправлять не нужно."
 			if request.FormURL != "" {
 				text += " Запасная форма: " + request.FormURL

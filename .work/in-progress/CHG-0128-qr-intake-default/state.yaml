@@ -1,0 +1,21 @@
+status: in-progress
+branch: refactor/comm-plane-separation
+steps:
+  - name: untag-qr-single-image
+    status: done
+  - name: default-on-tri-state
+    status: done
+  - name: contract-declared-intake
+    status: done
+  - name: live-rebuild
+    status: done
+  - name: live-qr-acceptance
+    status: pending-owner-scan
+evidence:
+  - go test internal/communication internal/stack cmd/hubctl green; contract package green
+  - just check passed with 86.13 percent own Go statement coverage
+  - credential-broker Go packages fail to build on Windows due to pre-existing linux-only securefs; broker module verified via its contract tests and rebuilt into the dev image
+  - dev-rebuild communication-hub and credential-broker healthy on hermes-hub-dev-local-*:local
+  - /telegram-auth/ route answers 404 for unknown ids; HUB_TELEGRAM_AUTH_ENABLED=true in the running gateway
+  - stale hermes-hub-telegram-auth:0.3.0-dev image removed
+pending: owner re-runs prepare_source in Telegram and scans the QR

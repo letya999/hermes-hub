@@ -56,6 +56,11 @@ func PostPrepareNotice(ctx context.Context, auth identity.Envelope, onboarding O
 		"detail":            PublicPrepareError(ErrString(onboarding.Error)),
 		"form_url":          credentialNoticeURL(onboarding),
 	}
+	// The reviewed contract declares how credentials may be collected; the
+	// channel offers that intake (e.g. QR login) instead of sniffing ids.
+	if reviewed, ok, rerr := PreparedContractFor(onboarding.BrokerContractID, onboarding.BrokerContractRevision); rerr == nil && ok && reviewed.Intake != "" {
+		payload["credential_intake"] = reviewed.Intake
+	}
 	if !onboarding.CreatedAt.IsZero() {
 		// The gateway resolves the originating session from this instant; it
 		// travels on every notice so a restarted gateway can still rebind.

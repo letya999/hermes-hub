@@ -79,9 +79,6 @@ func runDevRebuild(ctx context.Context, args []string) (retErr error) {
 	if err := docker("compose", "-f", compose, "config", "--quiet"); err != nil {
 		return err
 	}
-	if (service == "communication-hub" || service == "credential-broker") && settings.Has("telegram_auth") {
-		spec.base = "hermes-hub-telegram-auth:0.3.0-dev"
-	}
 	inspect := exec.CommandContext(ctx, "docker", "image", "inspect", "--format", "{{.Architecture}}", spec.base)
 	inspect.Env = supervisorComposeEnv(dirAbs)
 	out, err := inspect.Output()
@@ -103,9 +100,6 @@ func runDevRebuild(ctx context.Context, args []string) (retErr error) {
 	}
 	goEnv := append(os.Environ(), "GOOS=linux", "GOARCH="+arch, "CGO_ENABLED=0")
 	goArgs := []string{"build", "-buildvcs=false", "-trimpath", "-ldflags=-s -w", "-o", filepath.Join(buildDir, "binary")}
-	if service == "communication-hub" && settings.Has("telegram_auth") {
-		goArgs = append(goArgs, "-tags=telegramauth")
-	}
 	if err := run("go", goEnv, goDir, append(goArgs, spec.source)...); err != nil {
 		return err
 	}

@@ -158,10 +158,11 @@ local copy. Enter the resulting StringSession and numeric `get_me().id` only
 in the Broker form. For the same account, the local `job_ftch` login helper's
 `Authenticated as: ... id=...` output is another way to obtain that ID. The
 fork's generator creates a new session; it does not convert an existing
-`.session` file. Set `telegram_auth: true` alongside `ingress: [telegram]`
-and render/build the dev stack to enable an opt-in Communication Hub image.
-That image also offers
-a local QR page when ToolHub sends a Telegram Broker credential request. It
+`.session` file. On stacks with `ingress: [telegram]` the standard
+Communication Hub already offers a local QR page when ToolHub sends a
+credential request whose reviewed contract declares `intake: telegram_qr`
+(the `telegram-session` contract does); set `telegram_auth: false` to disable
+it. The QR flow
 uses Go MTProto in the same gateway process, shows the QR only at the
 loopback-bound page, handles a two-step password there and creates a new
 Telethon-compatible StringSession in memory. After the owner confirms the

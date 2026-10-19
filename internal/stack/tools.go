@@ -610,7 +610,7 @@ func (s Settings) Has(name string) bool {
 	case "telegram", "slack_app":
 		return slices.Contains(s.Ingress, name)
 	case "telegram_auth":
-		return s.TelegramAuth
+		return s.Has("telegram") && (s.TelegramAuth == nil || *s.TelegramAuth)
 	case "browser_act":
 		return s.toolToggle("browser", "act")
 	case "ssh_write":

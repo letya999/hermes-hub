@@ -77,7 +77,7 @@ func TestPolicyVersionChangesOnRightsFields(t *testing.T) {
 		"CLIToolboxes":          func(s *Settings) { s.CLIToolboxes = map[string][]string{"box": {"img@sha256:aa"}} },
 		"Tools":                 func(s *Settings) { s.Tools["web"] = ToolEntry{Via: ToolViaMCP} },
 		"Ingress":               func(s *Settings) { s.Ingress = append(s.Ingress, "slack") },
-		"TelegramAuth":          func(s *Settings) { s.TelegramAuth = true },
+		"TelegramAuth":          func(s *Settings) { off := false; s.TelegramAuth = &off },
 		"Workspace":             func(s *Settings) { s.Workspace.Mounts = []Mount{{From: "/a", To: "/b", Mode: "ro"}} },
 		"MCP":                   func(s *Settings) { s.MCP = map[string]MCPServer{"ext": {Command: "npx"}} },
 		"Hooks":                 func(s *Settings) { s.Hooks = map[string]any{"pre": "x"} },

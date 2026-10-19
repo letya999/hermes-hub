@@ -122,9 +122,12 @@ func New(config Config) (*Gateway, error) {
 	spool.JobDone = g.toolHubJobDone
 	spool.probeScript = g.runProbeScript
 	if config.TelegramAuthEnabled {
-		g.telegramAuth, err = newTelegramAuthState(config)
-		if err != nil {
-			return nil, err
+		// Enabled by default on telegram stacks: missing Broker/form-origin
+		// prerequisites degrade to no QR invites instead of refusing to start.
+		if state, authErr := newTelegramAuthState(config); authErr == nil {
+			g.telegramAuth = state
+		} else {
+			log.Printf("telegram auth disabled: %v", authErr)
 		}
 	}
 	// HUB_LOG_CONTENT_UNTIL is the explicit content-capture switch: an

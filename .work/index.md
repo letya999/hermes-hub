@@ -58,6 +58,7 @@ also remain in issues #73 (ToolHive/VPS), #74 (Hermes reconnect) and #166/#170/#
 | [CHG-0076](in-progress/CHG-0076-tool-governance/plan.md) | Tool governance — inventory, scoped policy, grants, enforcement planes |
 | [CHG-0075](in-progress/CHG-0075-remote-mcp/plan.md) | Milestone 8 issues 83/84/85/96: owner-scoped remote MCP register/admit/project through prepare_source remote_url |
 | [CHG-0074](in-progress/CHG-0074-telegram-auth-plugin/plan.md) | Opt-in in-process Telegram QR login deployed locally; live account acceptance pending owner scan |
+| [CHG-0128](in-progress/CHG-0128-qr-intake-default/plan.md) | QR login compiled into the one gateway, default-on for telegram stacks; intake declared by the contract; owner rescan pending |
 | [CHG-0074](in-progress/CHG-0074-host-hygiene/plan.md) | Host hygiene batch (issues 226→222→224→223→221+225→171→46) |
 | [CHG-0073](in-progress/CHG-0073-prepared-bundle-telegram/plan.md) | Issues 39/115: 12-ID prepared bundle discovery, selected personal Telegram source and protected onboarding; verification in progress |
 | [CHG-0072](in-progress/CHG-0072-managed-hotfixes/plan.md) | Managed-mode hotfixes from live Telegram verification |

@@ -168,24 +168,6 @@ func TestDevRebuildCompilesAndStartsOnlySelectedService(t *testing.T) {
 		t.Fatal("failed Docker build skipped cleanup")
 	}
 	t.Setenv("HUB_FAIL_DOCKER", "")
-	s.TelegramAuth = true
-	if err := stack.WriteSpace(dir, s); err != nil {
-		t.Fatal(err)
-	}
-	if err := runDevRebuild(context.Background(), []string{"--dir", dir, "--root", "../..", "communication-hub"}); err != nil {
-		t.Fatal(err)
-	}
-	withAuth, _ := os.ReadFile(log)
-	if !strings.Contains(string(withAuth), "-tags=telegramauth") || !strings.Contains(string(withAuth), "BASE=hermes-hub-telegram-auth:0.3.0-dev") {
-		t.Fatal("telegram auth dev build lost tagged gateway binary or base image")
-	}
-	if err := runDevRebuild(context.Background(), []string{"--dir", dir, "--root", "../..", "credential-broker"}); err != nil {
-		t.Fatal(err)
-	}
-	brokerAuth, _ := os.ReadFile(log)
-	if strings.Count(string(brokerAuth), "BASE=hermes-hub-telegram-auth:0.3.0-dev") < 2 {
-		t.Fatal("broker did not retain the selected telegram auth base")
-	}
 	t.Setenv("HUB_FAIL_UP", "1")
 	beforeFailedUp, _ := os.ReadFile(log)
 	if err := runDevRebuild(context.Background(), []string{"--dir", dir, "--root", "../..", "communication-hub"}); err == nil {

@@ -1,5 +1,3 @@
-//go:build telegramauth
-
 package communication
 
 import (
@@ -21,6 +19,46 @@ import (
 	"github.com/letya999/hermes-hub/internal/identity"
 )
 
+func TestTelegramAuthEnabledByDefault(t *testing.T) {
+	t.Setenv("TELEGRAM_ALLOWED_USERS", "11")
+	t.Setenv("TELEGRAM_BOT_TOKEN", "x:y")
+	t.Setenv("HUB_TELEGRAM_AUTH_ENABLED", "")
+	os.Unsetenv("HUB_TELEGRAM_AUTH_ENABLED")
+	cfg, err := ConfigFromEnv()
+	if err != nil || !cfg.TelegramAuthEnabled {
+		t.Fatalf("default must be enabled: enabled=%v err=%v", cfg.TelegramAuthEnabled, err)
+	}
+	t.Setenv("HUB_TELEGRAM_AUTH_ENABLED", "false")
+	if cfg, err := ConfigFromEnv(); err != nil || cfg.TelegramAuthEnabled {
+		t.Fatalf("explicit false must disable: enabled=%v err=%v", cfg.TelegramAuthEnabled, err)
+	}
+	t.Setenv("HUB_TELEGRAM_AUTH_ENABLED", "true")
+	if cfg, err := ConfigFromEnv(); err != nil || !cfg.TelegramAuthEnabled {
+		t.Fatalf("explicit true must enable: enabled=%v err=%v", cfg.TelegramAuthEnabled, err)
+	}
+	// No Telegram bot token at all — a Slack-only gateway must not spin up an
+	// MTProto login surface it can never serve.
+	t.Setenv("TELEGRAM_BOT_TOKEN", "")
+	if cfg, err := ConfigFromEnv(); err != nil || cfg.TelegramAuthEnabled {
+		t.Fatalf("no telegram channel must disable: enabled=%v err=%v", cfg.TelegramAuthEnabled, err)
+	}
+}
+
+func TestTelegramAuthDegradesWithoutBroker(t *testing.T) {
+	// Default-on must not brick stacks that never configured the Broker
+	// approve client or the loopback form origin: the gateway starts and the
+	// invite hook stays inert.
+	cfg := testConfig(t)
+	cfg.TelegramAuthEnabled = true
+	gateway, err := New(cfg)
+	if err != nil {
+		t.Fatalf("gateway refused to start without broker config: %v", err)
+	}
+	if gateway.telegramAuth != nil {
+		t.Fatal("auth state initialized without prerequisites")
+	}
+}
+
 func TestPrepareOutcomeSendsQRWithoutFormContinuation(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.ControlAuth = "control-token"
@@ -31,7 +69,7 @@ func TestPrepareOutcomeSendsQRWithoutFormContinuation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := prepareOutcomeRequest{OnboardingID: "onboard-qr", Phase: "awaiting-credentials", ContractID: "telegram-session", BrokerRequestID: "request-qr", Repository: "https://github.com/example/telegram-mcp"}
+	request := prepareOutcomeRequest{OnboardingID: "onboard-qr", Phase: "awaiting-credentials", CredentialIntake: "telegram_qr", BrokerRequestID: "request-qr", Repository: "https://github.com/example/telegram-mcp"}
 	body, _ := json.Marshal(request)
 	req := httptest.NewRequest(http.MethodPost, "/v1/prepare-outcome", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer control-token")
@@ -90,7 +128,7 @@ func TestTelegramAuthUsesConfiguredAPIWithoutForm(t *testing.T) {
 	}
 	g := &Gateway{config: cfg, now: func() time.Time { return time.Unix(0, 0) }, telegramAuth: state}
 	owner := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
-	link := g.telegramAuthInvite(owner, prepareOutcomeRequest{Phase: "awaiting-credentials", ContractID: "telegram-session", BrokerRequestID: "request_1"})
+	link := g.telegramAuthInvite(owner, prepareOutcomeRequest{Phase: "awaiting-credentials", CredentialIntake: "telegram_qr", BrokerRequestID: "request_1"})
 	preview := httptest.NewRecorder()
 	g.Handler().ServeHTTP(preview, httptest.NewRequest(http.MethodGet, link, nil))
 	id := strings.TrimPrefix(link, cfg.FormOrigin+"/telegram-auth/")
@@ -125,13 +163,16 @@ func TestTelegramAuthInviteAndBrowserBinding(t *testing.T) {
 	}
 	g := &Gateway{config: cfg, now: time.Now, telegramAuth: state}
 	owner := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
-	req := prepareOutcomeRequest{Phase: "awaiting-credentials", ContractID: "telegram-session", BrokerRequestID: "request_1"}
+	req := prepareOutcomeRequest{Phase: "awaiting-credentials", CredentialIntake: "telegram_qr", BrokerRequestID: "request_1"}
 	link := g.telegramAuthInvite(owner, req)
 	if !strings.HasPrefix(link, "http://localhost:8081/telegram-auth/") {
 		t.Fatalf("invite: %q", link)
 	}
-	if g.telegramAuthInvite(owner, prepareOutcomeRequest{Phase: "awaiting-credentials", ContractID: "github-pat", BrokerRequestID: "request_1"}) != "" {
-		t.Fatal("non-Telegram invite")
+	// The contract id alone must not mint a QR invite — the connector declares
+	// the intake method, so a telegram-session request without the intake hint
+	// falls back to the Broker form.
+	if g.telegramAuthInvite(owner, prepareOutcomeRequest{Phase: "awaiting-credentials", ContractID: "telegram-session", BrokerRequestID: "request_1"}) != "" {
+		t.Fatal("invite minted on contract id without intake declaration")
 	}
 	otherContext := owner
 	otherContext.ContextID = "other"

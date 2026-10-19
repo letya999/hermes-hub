@@ -85,3 +85,31 @@ func TestPostPrepareNoticeContract(t *testing.T) {
 	t.Setenv("HUB_COMMUNICATION_CONTROL_URL", "http://127.0.0.1:1")
 	DeliverPrepareOutcome(context.Background(), auth, onboarding)
 }
+
+func TestPostPrepareNoticeCarriesCredentialIntake(t *testing.T) {
+	var got map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(200)
+	}))
+	defer server.Close()
+	t.Setenv("HUB_COMMUNICATION_CONTROL_URL", server.URL)
+	t.Setenv("HUB_COMMUNICATION_AUTH", "tok")
+	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:9999")
+	auth := identity.Envelope{PrincipalID: "p1"}
+
+	// The reviewed telegram-session contract declares QR intake; the gateway
+	// needs it in the payload instead of pattern-matching the contract id.
+	onboarding := Onboarding{OnboardingID: "onb-tg", Phase: PhaseAwaitingCreds, BrokerContractID: "telegram-session", BrokerContractRevision: 1, BrokerRequestID: "req-1"}
+	PostPrepareNotice(context.Background(), auth, onboarding, "", 0)
+	if got["credential_intake"] != "telegram_qr" {
+		t.Fatalf("intake missing from payload: %v", got)
+	}
+	// A contract without an intake declaration sends no key at all.
+	got = nil
+	onboarding.BrokerContractID = "github-pat"
+	PostPrepareNotice(context.Background(), auth, onboarding, "", 0)
+	if _, ok := got["credential_intake"]; ok {
+		t.Fatalf("unexpected intake for plain contract: %v", got)
+	}
+}

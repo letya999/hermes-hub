@@ -73,7 +73,12 @@ type Contract struct {
 	State         *State     `json:"state,omitempty"`
 	Routes        []Route    `json:"routes,omitempty"`
 	OAuthProvider string     `json:"oauth_provider,omitempty"`
-	AllowShared   bool       `json:"allow_shared"`
+	// Intake names a non-form collection path the channel can offer for this
+	// contract (e.g. telegram_qr — QR login minted by the hub instead of
+	// pasting a session into the Broker form). Unknown values are rejected so
+	// a new intake kind is always a deliberate contract revision.
+	Intake      string `json:"intake,omitempty"`
+	AllowShared bool   `json:"allow_shared"`
 }
 
 // MaxExtraInputs bounds one request's optional extras. Upstream metadata can
@@ -179,6 +184,11 @@ func (c Contract) ValidateStructure() error {
 		fields[f.ID] = true
 	}
 	if c.OAuthProvider != "" && !identity.ValidID(c.OAuthProvider) {
+		return ErrContract
+	}
+	// Intake values are a reviewed, closed vocabulary — a new collection path
+	// is a deliberate contract revision, not a free-form annotation.
+	if c.Intake != "" && c.Intake != "telegram_qr" {
 		return ErrContract
 	}
 	if len(c.Fields) == 0 && c.OAuthProvider == "" {

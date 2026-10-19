@@ -46,9 +46,11 @@ type Settings struct {
 	// (managed executor with per-call admission and audit), `mcp[:server]`
 	// (builtin connector or an mcp_servers definition) or `off`. Absent
 	// means denied.
-	Tools           map[string]ToolEntry `yaml:"tools,omitempty"`
-	Ingress         []string             `yaml:"ingress,omitempty"`
-	TelegramAuth    bool                 `yaml:"telegram_auth,omitempty"`
+	Tools   map[string]ToolEntry `yaml:"tools,omitempty"`
+	Ingress []string             `yaml:"ingress,omitempty"`
+	// TelegramAuth is tri-state: nil auto-enables QR login whenever telegram
+	// ingress runs, true forces it on (still requires telegram), false opts out.
+	TelegramAuth    *bool                `yaml:"telegram_auth,omitempty"`
 	Workspace       Workspace            `yaml:"workspace,omitempty"`
 	MCP             map[string]MCPServer `yaml:"mcp_servers,omitempty"`
 	Hooks           map[string]any       `yaml:"hooks,omitempty"`
@@ -397,7 +399,7 @@ func (s Settings) Validate() error {
 	if s.Has("telegram_write") && !s.Has("telegram_user") {
 		return fmt.Errorf("telegram_write requires telegram_user")
 	}
-	if s.TelegramAuth && !s.Has("telegram") {
+	if s.TelegramAuth != nil && *s.TelegramAuth && !s.Has("telegram") {
 		return fmt.Errorf("telegram_auth requires telegram")
 	}
 	if s.Has("google_write") && !s.Has("google") {
