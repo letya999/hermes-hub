@@ -985,7 +985,7 @@ per-runtime `HUB_RUNTIME_AUTH` reference as `HUB_COMMUNICATION_AUTH`, and the
 trusted principal/user IDs explicitly. New renders and legacy config materialization
 both supply these entries because MCP child environments filter inherited variables.
 Routine management still authenticates and checks ownership at the communication hub.
-The five routine tools use `hub-agent-tools@4.0.0` for named delivery destinations.
+The five routine tools use `hub-agent-tools@5.0.1` for named delivery destinations.
 `routine_list view=destinations` shows live owned task IDs and topics; create uses
 the current run's `origin_job_id` or an explicit `destination_task_id`. The hub
 resolves that ID under the owner lock. `routine_get` reports the saved destination

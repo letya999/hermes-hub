@@ -1,6 +1,6 @@
 ---
 description: Routine business tools, interval windows, lifecycle, authorization and delivery evidence.
-last_verified: 2026-10-18
+last_verified: 2026-10-19
 ---
 # Routines
 
@@ -21,6 +21,9 @@ Destination routing follows [ADR-0044](adr/ADR-0044-routine-destinations.md) and
 [CHG-0114](../.work/done/CHG-0114-routine-destinations/state.yaml).
 The post-acceptance snooze correction is tracked in
 [CHG-0115](../.work/done/CHG-0115-routine-snooze-audit/state.yaml).
+The opt-in owner brief follows [ADR-0041](adr/ADR-0041-proactive-automation.md) D5
+and [SPEC-0054](../specs/active/SPEC-0054-proactive-automation.md) R4; rollout
+evidence: [CHG-0102](../.work/in-progress/CHG-0102-owner-brief/state.yaml).
 Deterministic and MCP contract tests do not establish deployed acceptance.
 
 ## Business tools
@@ -142,6 +145,25 @@ To move a routine, use
 Moving retains schedule ID, timing, pause, snooze and history. The next admission
 uses the new audience; work already admitted keeps its original audience.
 
+## Owner brief
+
+A `brief` schedule composes one authorized snapshot per slot: changed watch
+sources since the last slot (the shared digest cursor; `source_ids` narrows —
+empty selects every owned watch), unavailable sources named unavailable with
+their last success time, and the owner's open tasks. Every source re-checks
+its grant at assembly; the admitted job and the deterministic delivery are
+re-authorized again at claim and send. Snapshot lines carry the source URL
+and change time as provenance and are bounded like watch values.
+
+An empty snapshot sends one deterministic "Новых изменений нет." — the model
+never runs. A non-empty snapshot admits a single agent job in the routine
+conversation with the snapshot flagged untrusted; instruction text is where
+length or section intent goes. The same failure episode is named once; later
+slots carry only the unavailable count in the deterministic footer. A quiet
+window defers the whole slot — a model call cannot ride a delivery
+not_before — so still-due slots fire after the window and a window longer
+than catch-up settles `missed`, never silent.
+
 ## Outcomes and retention
 
 Schedule state, execution and delivery are separate. A completed once schedule
@@ -170,7 +192,7 @@ clock occurrences; inspect event_state for current health/error.
 
 ## Deployment and manual acceptance
 
-The catalog is hub-agent-tools@4.0.0. Old definitions remain immutable. Register
+The catalog is hub-agent-tools@5.0.1. Old definitions remain immutable. Register
 the new version and, for managed spaces, deliberately repin selected tools in the protected profile,
 preserving scopes, denies and limits. routine_edit requires routines.update and
 the update:routines tuple for all four actions. Do not translate a former
