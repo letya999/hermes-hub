@@ -147,7 +147,7 @@ type Onboarding struct {
 	DeviceCode         string `json:"device_code,omitempty"`
 	DeviceUserCode     string `json:"device_user_code,omitempty"`
 	DeviceVerification string `json:"device_verification,omitempty"`
-	SupersededBy  string `json:"superseded_by,omitempty"`
+	SupersededBy       string `json:"superseded_by,omitempty"`
 	// AdmissionPending means tools/list has not run because the server named
 	// required secrets and exited first. The definition is a draft until the
 	// protected form is submitted and the probe succeeds.
