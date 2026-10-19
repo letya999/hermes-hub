@@ -44,10 +44,32 @@ func (entry PreparedEntry) BrokerContract() (contract.Contract, error) {
 	return result, nil
 }
 
+// Catalog tiers: T0 entries are reviewed and ship CI-built images pinned by
+// digest; T1 entries come from deterministic registry imports an operator
+// confirmed; T2 is the arbitrary-source path, experimental and async.
+const (
+	TierT0 = "t0"
+	TierT1 = "t1"
+	TierT2 = "t2"
+)
+
+// PinnedImage is the CI-built OCI reference a T0/T1 entry admits: the digest
+// is the install authority, provenance and SBOM point at its attestations.
+type PinnedImage struct {
+	Ref        string `json:"ref"`
+	Digest     string `json:"digest"`
+	Provenance string `json:"provenance,omitempty"`
+	SBOM       string `json:"sbom,omitempty"`
+}
+
 type PreparedEntry struct {
 	ID                 string                     `json:"id"`
 	Aliases            []string                   `json:"aliases,omitempty"`
 	Name               string                     `json:"name"`
+	// Tier defaults to t0 for embedded reviewed entries; the catalog may pin
+	// it explicitly, and T0 entries require an image digest.
+	Tier  string       `json:"tier,omitempty"`
+	Image *PinnedImage `json:"image,omitempty"`
 	Source             ArtifactSource             `json:"source"`
 	License            string                     `json:"license"`
 	Language           string                     `json:"language"`
@@ -261,8 +283,17 @@ func ParsePreparedCatalog(data []byte) ([]PreparedEntry, error) {
 			}
 		}
 		config := NormalizeArtifactImportConfig(entry.Apply(DefaultSelfInstallConfig(entry.Source)))
+		if entry.Tier != "" && entry.Tier != TierT0 && entry.Tier != TierT1 && entry.Tier != TierT2 {
+			return nil, fmt.Errorf("prepared %s: %w: unknown tier", entry.ID, ErrInvalid)
+		}
+		imageDigest := "sha256:" + string(bytes.Repeat([]byte("a"), 64))
+		if entry.Image != nil {
+			// The catalog pin is the definition's admitted image digest; the
+			// validation placeholder otherwise stands in for the CI value.
+			imageDigest = entry.Image.Digest
+		}
 		definition := ToolDefinition{Schema: SchemaVersion, DefinitionID: entry.ID, Version: config.Version, Transport: ContainerMCP,
-			Source:      DefinitionSource{Image: config.Image, Digest: "sha256:" + string(bytes.Repeat([]byte("a"), 64)), ContextSources: append([]ArtifactOverlay(nil), entry.ContextSources...)},
+			Source:      DefinitionSource{Image: config.Image, Digest: imageDigest, ContextSources: append([]ArtifactOverlay(nil), entry.ContextSources...)},
 			Credentials: config.Credentials, CredentialGroups: config.CredentialGroups, CredentialContractID: config.CredentialContractID, CredentialContractRevision: config.CredentialContractRevision, CredentialContractEnv: config.CredentialContractEnv,
 			Environment: config.Environment, RuntimeEnvironment: config.RuntimeEnvironment, ProxyEnvironment: config.ProxyEnvironment, Tools: config.Tools, Workload: config.Workload, Execution: config.Execution, Health: config.Health}
 		if err := definition.Validate(); err != nil {
@@ -351,6 +382,11 @@ func (entry PreparedEntry) Apply(config ArtifactImportConfig) ArtifactImportConf
 	config.Execution.Egress = append([]string(nil), entry.Egress...)
 	config.Execution.TCPForwards = append([]TCPForward(nil), entry.TCPForwards...)
 	config.Workload.Stateful = entry.Stateful
+	if entry.Image != nil {
+		// Definitions carry the repository separately from the digest pin:
+		// "repo@sha256:…" splits into Image + Digest at admission.
+		config.Image, _, _ = strings.Cut(entry.Image.Ref, "@")
+	}
 	return config
 }
 
