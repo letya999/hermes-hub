@@ -509,8 +509,11 @@ func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map
 			// admission-pending detail) must not suppress the link either:
 			// with no URL in the result the agent reconstructs the Broker
 			// connect URL itself.
+			// The Broker form stays a stored fallback but must not exist for
+			// the agent at all: mentioning an "authorization_url fallback"
+			// makes the model reconstruct and parrot that URL anyway.
 			body["signin_url"] = onboarding.ChannelAuthURL
-			body["instructions"] = "Send signin_url to the user as the link to open on this computer — it is the channel sign-in page for this request. Do not present the Broker authorization_url as the primary path; it is the fallback only. Never ask for credentials in chat."
+			body["instructions"] = "Send signin_url to the user verbatim as the only link — it is the sign-in page for this request. Do not offer, construct, or mention any other link. Never ask for credentials in chat."
 		}
 	case api.PhaseAwaitingConfirm:
 		body["next_action"] = "confirm"

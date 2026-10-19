@@ -942,6 +942,10 @@ func TestStatusQRIntakeKeepsSignInURLWithStaleError(t *testing.T) {
 	if _, parrotable := body["authorization_url"]; parrotable {
 		t.Fatalf("form URL still exposed for the agent to parrot: %v", body["authorization_url"])
 	}
+	instructions, _ := body["instructions"].(string)
+	if strings.Contains(instructions, "authorization_url") || strings.Contains(instructions, "fallback") {
+		t.Fatalf("instructions still name the Broker form; the agent will parrot it: %q", instructions)
+	}
 }
 
 // An optional contract delivery for a declared credential input must reach the
