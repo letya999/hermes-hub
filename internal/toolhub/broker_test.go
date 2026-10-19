@@ -520,6 +520,18 @@ func TestCredentialBrokerExpiredRequestRegenerates(t *testing.T) {
 	}))
 	defer server.Close()
 
+	// A re-minted request is dead to the owner unless the channel is told:
+	// the QR invite or form link must be delivered again, not just stored.
+	var notice map[string]any
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&notice)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer gw.Close()
+	t.Setenv("HUB_COMMUNICATION_CONTROL_URL", gw.URL)
+	t.Setenv("HUB_COMMUNICATION_AUTH", "tok")
+	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:9999")
+
 	auth := aliceAuth()
 	definition := remoteDefinition()
 	definition.CredentialContractID = "github-pat"
@@ -547,6 +559,9 @@ func TestCredentialBrokerExpiredRequestRegenerates(t *testing.T) {
 	if body["broker_request_id"] != "request_new" || body["authorization_url"] != "https://broker.example/connect/request_new" {
 		t.Fatalf("dead link was not replaced: %v", body)
 	}
+	if notice["broker_request_id"] != "request_new" {
+		t.Fatalf("owner was not told about the re-minted request: %v", notice)
+	}
 	stored, err := store.OnboardingFor(auth, onboarding.OnboardingID)
 	if err != nil {
 		t.Fatal(err)
@@ -556,6 +571,75 @@ func TestCredentialBrokerExpiredRequestRegenerates(t *testing.T) {
 	}
 	if len(idempotencyKeys) != 1 || idempotencyKeys[0] == stored.OnboardingID {
 		t.Fatalf("retry must use a fresh idempotency key: %v", idempotencyKeys)
+	}
+}
+
+// A request the broker no longer has (ledger reset, volume drift) is re-minted
+// on demand — and the owner must be told, or the QR invite is never issued.
+func TestCredentialBrokerMissingRequestRegeneratesAndNotifies(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "toolhub.private")
+	if err := os.WriteFile(keyPath, private, 0600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/contracts":
+			var c contract.Contract
+			if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
+				t.Error(err)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(c)
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/requests":
+			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_new", ContractID: "github-pat", ContractRevision: 1, ConnectionID: "connection_1", OnboardingID: "onboard_1", Status: "pending", AuthorizationURL: "https://broker.example/connect/request_new"})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/requests/request_new":
+			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_new", ContractID: "github-pat", ContractRevision: 1, ConnectionID: "connection_1", OnboardingID: "onboard_1", Status: "pending", AuthorizationURL: "https://broker.example/connect/request_new"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	var notice map[string]any
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&notice)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer gw.Close()
+	t.Setenv("HUB_COMMUNICATION_CONTROL_URL", gw.URL)
+	t.Setenv("HUB_COMMUNICATION_AUTH", "tok")
+	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:9999")
+
+	auth := aliceAuth()
+	definition := remoteDefinition()
+	definition.CredentialContractID = "github-pat"
+	definition.CredentialContractRevision = 1
+	definition.CredentialContractEnv = map[string]string{"GOOGLE_TOKEN": "GITHUB_PERSONAL_ACCESS_TOKEN"}
+	store := NewStore()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	control := &ControlPlane{Store: store, Broker: &credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}, Now: time.Now}
+	onboarding, err := control.newOnboarding(auth, api.OnboardingCatalog, "broker-missing", definition, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	onboarding.BrokerRequestID = "request_gone"
+	onboarding.BrokerAuthorizationURL = "https://broker.example/connect/request_gone"
+	onboarding.Revision++
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.requiredCredentials(auth, map[string]any{"onboarding_id": onboarding.OnboardingID}); err != nil {
+		t.Fatal(err)
+	}
+	if notice["broker_request_id"] != "request_new" {
+		t.Fatalf("owner was not told about the re-minted request: %v", notice)
 	}
 }
 

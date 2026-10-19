@@ -75,6 +75,7 @@ func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.En
 			}
 		}
 	}
+	deadLink := false
 	if onboarding.BrokerRequestID != "" {
 		// A dead link must not pin the onboarding forever: expired or canceled
 		// requests are replaced by a fresh one under a new idempotency key. The
@@ -88,6 +89,7 @@ func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.En
 			onboarding.BrokerRequestID = ""
 			onboarding.BrokerAuthorizationURL = ""
 			onboarding.BrokerAttempts++
+			deadLink = true
 		}
 	}
 	if onboarding.BrokerRequestID == "" {
@@ -142,6 +144,11 @@ func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.En
 		onboarding.Revision++
 		if err := c.Store.PutOnboarding(*onboarding); err != nil {
 			return err
+		}
+		if deadLink {
+			// The QR invite or form link for the dead request never reaches
+			// the channel on its own; deliver the outcome notice again.
+			api.PostPrepareNotice(ctx, auth, *onboarding, "", len(onboarding.Permissions))
 		}
 	}
 	return c.refreshBrokerRequest(ctx, auth, onboarding)
@@ -234,7 +241,12 @@ func (c *ControlPlane) refreshBrokerRequest(ctx context.Context, auth identity.E
 		if derr != nil {
 			return derr
 		}
-		return c.ensureBrokerRequest(ctx, auth, onboarding, definition)
+		if err := c.ensureBrokerRequest(ctx, auth, onboarding, definition); err != nil {
+			return err
+		}
+		// The old link is dead; the owner needs the new one in the channel.
+		api.PostPrepareNotice(ctx, auth, *onboarding, "", len(onboarding.Permissions))
+		return nil
 	}
 	if request.Status == "expired" || request.Status == "canceled" {
 		// The broker still has the record but the connect link is dead:
@@ -246,7 +258,11 @@ func (c *ControlPlane) refreshBrokerRequest(ctx context.Context, auth identity.E
 		if derr != nil {
 			return derr
 		}
-		return c.ensureBrokerRequest(ctx, auth, onboarding, definition)
+		if err := c.ensureBrokerRequest(ctx, auth, onboarding, definition); err != nil {
+			return err
+		}
+		api.PostPrepareNotice(ctx, auth, *onboarding, "", len(onboarding.Permissions))
+		return nil
 	}
 	onboarding.BrokerAuthorizationURL = request.AuthorizationURL
 	onboarding.BrokerContractID = request.ContractID

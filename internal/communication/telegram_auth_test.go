@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -90,6 +92,57 @@ func TestPrepareOutcomeSendsQRWithoutFormContinuation(t *testing.T) {
 	jobs, err := os.ReadDir(filepath.Join(cfg.SpoolDir, "pending"))
 	if err != nil || len(jobs) != 0 {
 		t.Fatalf("QR login enqueued form continuation: jobs=%v err=%v", jobs, err)
+	}
+}
+
+func TestTelegramAuthFailureLog(t *testing.T) {
+	// A failed QR login previously died silently; the stage must reach the
+	// service log so a broken attempt is diagnosable without a debugger.
+	var buf bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(old)
+	logTelegramAuthFailure("convert", errors.New("invalid MTProto address"))
+	if !strings.Contains(buf.String(), "convert") || !strings.Contains(buf.String(), "invalid MTProto address") {
+		t.Fatalf("stage not logged: %q", buf.String())
+	}
+}
+
+func TestTelegramAuthQRIsLargeAndSubmitFailureLogged(t *testing.T) {
+	cfg := Config{FormOrigin: "http://localhost:8081", BrokerApprove: credentialbroker.Config{URL: "https://broker.example"}}
+	state, err := newTelegramAuthState(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := &Gateway{config: cfg, now: time.Now, telegramAuth: state}
+	owner := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
+	link := g.telegramAuthInvite(owner, prepareOutcomeRequest{Phase: "awaiting-credentials", CredentialIntake: "telegram_qr", BrokerRequestID: "request_1"})
+	id := strings.TrimPrefix(link, cfg.FormOrigin+"/telegram-auth/")
+	a := g.authAttempt(id)
+
+	// A phone camera needs a big code: the QR must not render at thumbnail size.
+	a.mu.Lock()
+	a.status = "qr"
+	a.mu.Unlock()
+	page := httptest.NewRecorder()
+	g.telegramAuthPage(page, id, a)
+	if !strings.Contains(page.Body.String(), "min(520px") {
+		t.Fatal("QR rendered too small to scan reliably")
+	}
+
+	// A Broker rejection (expired request, wrong owner) used to flip the page
+	// to "not finished" with nothing in the log.
+	var buf bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(old)
+	a.mu.Lock()
+	a.status, a.session, a.apiHash, a.apiID, a.accountID = "ready", "s", strings.Repeat("0", 32), 1, 42
+	a.mu.Unlock()
+	save := httptest.NewRequest(http.MethodPost, "/telegram-auth/"+id+"/save", nil)
+	g.telegramAuthSave(httptest.NewRecorder(), save, id, a)
+	if !strings.Contains(buf.String(), "broker-submit") {
+		t.Fatalf("broker submit failure not logged: %q", buf.String())
 	}
 }
 

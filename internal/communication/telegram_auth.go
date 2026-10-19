@@ -11,6 +11,7 @@ import (
 	"html"
 	"image/png"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -279,7 +280,7 @@ func (g *Gateway) telegramAuthPage(w http.ResponseWriter, id string, a *telegram
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	var b strings.Builder
-	b.WriteString(`<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Telegram QR вход</title><style>body{font:16px system-ui;margin:3rem auto;max-width:620px;padding:0 1rem;color:#17212b}input,button{display:block;margin:.75rem 0;padding:.7rem;font:inherit;max-width:100%;box-sizing:border-box}input{width:100%}img{width:min(320px,100%);image-rendering:pixelated}p{line-height:1.5}</style><main><h1>Telegram QR вход</h1>`)
+	b.WriteString(`<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Telegram QR вход</title><style>body{font:16px system-ui;margin:3rem auto;max-width:620px;padding:0 1rem;color:#17212b}input,button{display:block;margin:.75rem 0;padding:.7rem;font:inherit;max-width:100%;box-sizing:border-box}input{width:100%}img{width:min(520px,92vw);image-rendering:pixelated;background:#fff;padding:16px}p{line-height:1.5}</style><main><h1>Telegram QR вход</h1>`)
 	form := func(action string) {
 		b.WriteString(`<form method="post" action="/telegram-auth/` + id + `/` + action + `"><input type="hidden" name="csrf" value="` + html.EscapeString(csrf) + `">`)
 	}
@@ -398,6 +399,7 @@ func (g *Gateway) telegramAuthSave(w http.ResponseWriter, r *http.Request, id st
 	if err == nil {
 		a.status = "done"
 	} else {
+		logTelegramAuthFailure("broker-submit", err)
 		a.status = "failed"
 	}
 	a.mu.Unlock()
@@ -480,15 +482,18 @@ func (g *Gateway) runTelegramAuth(ctx context.Context, a *telegramAuthAttempt) {
 		return nil
 	})
 	if err != nil {
+		logTelegramAuthFailure("login", err)
 		return
 	}
 	data, err := (&session.Loader{Storage: storage}).Load(context.Background())
 	if err != nil {
+		logTelegramAuthFailure("session-load", err)
 		return
 	}
 	defer clear(data.AuthKey)
 	stringSession, err := telethonStringSession(data)
 	if err != nil {
+		logTelegramAuthFailure("session-convert", err)
 		return
 	}
 	a.mu.Lock()
@@ -496,6 +501,13 @@ func (g *Gateway) runTelegramAuth(ctx context.Context, a *telegramAuthAttempt) {
 		a.session, a.accountID, a.accountName, a.status = stringSession, accountID, accountName, "ready"
 	}
 	a.mu.Unlock()
+}
+
+// logTelegramAuthFailure records why an attempt died — login, session-load
+// and session-convert used to return silently, so a successful Telegram
+// login looked identical to a broken pipeline.
+func logTelegramAuthFailure(stage string, err error) {
+	log.Printf("telegram auth %s failed: %v", stage, err)
 }
 
 func telethonStringSession(data *session.Data) (string, error) {
