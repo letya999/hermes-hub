@@ -10,12 +10,20 @@ steps:
   - name: live-rebuild
     status: done
   - name: live-qr-acceptance
-    status: pending-owner-scan
+    status: done
 evidence:
-  - go test internal/communication internal/stack cmd/hubctl green; contract package green
+  - go test internal/communication internal/toolhub green; contract package green
   - just check passed with 86.13 percent own Go statement coverage
   - credential-broker Go packages fail to build on Windows due to pre-existing linux-only securefs; broker module verified via its contract tests and rebuilt into the dev image
   - dev-rebuild communication-hub and credential-broker healthy on hermes-hub-dev-local-*:local
   - /telegram-auth/ route answers 404 for unknown ids; HUB_TELEGRAM_AUTH_ENABLED=true in the running gateway
   - stale hermes-hub-telegram-auth:0.3.0-dev image removed
-pending: owner re-runs prepare_source in Telegram and scans the QR
+  - live root cause found: broker request TTL is 15 min; QR login succeeded twice (10:27, 10:42) but telegram-submit hit an already-expired request and the failure was silent
+  - a1689a9: dead broker requests now re-deliver the prepare-outcome notice on remint (expired and not_found branches); QR auth failures logged at login/session-load/session-convert/broker-submit; QR rendered at min(520px)
+  - 703652d: pending requests re-notify the channel; requests with <12m left remint early so invites cannot outlive them
+  - fc6b768: gateway returns login_url from /v1/prepare-outcome; toolhub stores channel_auth_url and exposes signin_url in the tool result
+  - efacd13: authorization_url hidden from the result while signin_url exists (agent parroted whichever URL it saw)
+  - a4bbed8: stale admission-pending error no longer suppresses signin_url (it left the agent with no URL at all, so it reconstructed the broker connect URL itself)
+  - 5a391b7: instructions never mention the broker form while signin_url exists ("fallback" phrasing still made the LLM print it)
+  - LIVE ACCEPTANCE 2026-10-19 ~15:16 UTC: owner QR login (2FA password attempt logged invalid once, second attempt clean) → POST /v1/requests submit accepted → credential materialized → onboard-1fb6f556/ac3d82b8 phase=enabled binding set → /v1/connectors shows telegram-mcp 0.0.6 with 58 projected tools → bot read probe identified account @artemletya
+pending: none — flow proven end to end in Docker; zombie telegram-mcp onboardings in awaiting-credentials remain cosmetic cleanup
