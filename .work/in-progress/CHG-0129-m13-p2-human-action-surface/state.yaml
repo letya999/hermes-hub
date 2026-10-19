@@ -1,0 +1,32 @@
+schema: 1
+change: CHG-0129
+title: M13 P2 channel-agnostic human action surface — one-time links
+status: in_progress
+branch: feat/m14-toolhub-connector-platform
+updated: "2025-12-23"
+phase: implementation
+requirements: [S2.1, S2.2, S2.3, S2.4, S2.5, S2.6, S2.7, S2.8]
+depends_on: [CHG-0127, CHG-0128]
+github_milestone: M13 — ToolHub Connector Platform
+github_issue: 283
+design_status: accepted
+implementation_status: in_progress
+slices:
+  S2.1-one-time-link-tokens: not_started
+  S2.2-public-origin: not_started
+  S2.3-device-flow: not_started
+  S2.4-paste-redirect: not_started
+  S2.5-recipe-rendered-form: not_started
+  S2.6-transactional-save: not_started
+  S2.7-delivery-caps-hubctl: not_started
+  S2.8-property-test-docs: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  live_acceptance: not_started
+evidence:
+  - "P0 already moved nonces/URLs out of agent-facing results and added loopback /confirm//remove//connect pages (7316d52)"
+remaining: []
+limitations:
+  - "live public-origin acceptance needs a deployed stack and outbound tunnel (M18 #145); local run cannot prove it"
