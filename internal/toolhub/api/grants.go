@@ -164,10 +164,17 @@ type Onboarding struct {
 	// discovered credential declarations in. When several are present the
 	// caller may ask the user which one to trust and replay prepare_source
 	// with credential_source.
-	CredentialSources []string        `json:"credential_sources,omitempty"`
-	Revision          uint64          `json:"revision"`
-	CreatedAt         time.Time       `json:"created_at"`
-	Definition        *ToolDefinition `json:"definition,omitempty"`
+	CredentialSources []string `json:"credential_sources,omitempty"`
+	// WritesEnabled means write-effect tools of this connector may project
+	// and dispatch. Default off: connector_allow_writes(on) flips it only
+	// through the protected confirm link.
+	WritesEnabled bool `json:"writes_enabled,omitempty"`
+	// PendingWrites marks a live connector whose confirm link currently arms
+	// a write-enable instead of a first bind.
+	PendingWrites bool            `json:"pending_writes,omitempty"`
+	Revision      uint64          `json:"revision"`
+	CreatedAt     time.Time       `json:"created_at"`
+	Definition    *ToolDefinition `json:"definition,omitempty"`
 }
 
 func OperatorGrant(kind GrantKind, principal, definitionID, version string) Grant {

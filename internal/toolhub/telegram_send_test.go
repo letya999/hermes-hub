@@ -190,6 +190,12 @@ func testTelegramSendRetainsOwnerSession(t *testing.T, managed bool) {
 		t.Fatalf("enable: %v %v", body, err)
 	}
 	upgrade, _ = c.Store.OnboardingFor(auth, upgrade.OnboardingID)
+	// Write tools stay unprojected until writes are explicitly enabled on the
+	// onboarding; the send upgrade stands in for an already-approved one.
+	upgrade.WritesEnabled = true
+	if err := c.Store.PutOnboarding(upgrade); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := resolve(auth, original.BindingID); err == nil {
 		t.Fatal("old binding still authorized")
 	}

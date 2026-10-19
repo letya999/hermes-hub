@@ -3,8 +3,10 @@ package toolhub
 import (
 	"context"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -629,6 +631,248 @@ func TestConnectorInstallCatalogCLI(t *testing.T) {
 	onboarding, err := store.OnboardingFor(auth, op.OnboardingID)
 	if err != nil || onboarding.Mode != api.OnboardingCatalog || onboarding.Phase != api.PhaseAwaitingConfirm || onboarding.ConfirmationNonce == "" {
 		t.Fatalf("cli catalog onboarding: %v %+v", err, onboarding)
+	}
+}
+
+// m13P3EnabledOnboarding registers an enabled connector record for alice
+// on the managed google-work@2.0.0 binding managedStore already seeded.
+func m13P3EnabledOnboarding(t *testing.T, store *Store, auth identity.Envelope) api.Onboarding {
+	t.Helper()
+	var bound api.ToolBinding
+	for _, b := range store.bindings {
+		if b.DefinitionID == "google-work" && b.DefinitionVersion == "2.0.0" {
+			bound = b
+		}
+	}
+	if bound.ToolBindingID == "" {
+		t.Fatal("managed google-work@2.0.0 binding missing")
+	}
+	onboarding := api.Onboarding{
+		Schema: api.SchemaVersion, OnboardingID: api.DeterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, "m13p3-enabled"),
+		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
+		Mode: api.OnboardingCatalog, DefinitionID: "google-work", DefinitionVersion: "2.0.0",
+		Phase: api.PhaseEnabled, BindingID: bound.ToolBindingID, ConnectionID: bound.ConnectionID,
+		Revision: 1, CreatedAt: time.Now(),
+	}
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	return onboarding
+}
+
+// S3.6: connector_disable/enable journal single-step operations and flip
+// the phase without touching credentials.
+func TestConnectorDisableEnableJournal(t *testing.T) {
+	store, auth, _, profile := managedStore(t)
+	enabled := m13P3EnabledOnboarding(t, store, auth)
+	profile.Revision++
+	profile.Connectors = api.ConnectorsPersonal
+	if err := putProfile(t, store, profile); err != nil {
+		t.Fatal(err)
+	}
+	c := &ControlPlane{Store: store, Now: time.Now, ConfirmationTTL: time.Minute}
+	disabled, err := c.InvokeConnector(context.Background(), auth, "connector_disable", map[string]any{"target": "google-work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if disabled.OperationID == "" || disabled.State != api.OpStateDone {
+		t.Fatalf("disable result: %+v", disabled)
+	}
+	op, err := store.OperationFor(auth, disabled.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op.Intent != api.OpIntentDisable {
+		t.Fatalf("disable operation intent: %+v", op)
+	}
+	onboarding, err := store.OnboardingFor(auth, enabled.OnboardingID)
+	if err != nil || onboarding.Phase != api.PhaseDisabled {
+		t.Fatalf("onboarding after disable: %v %+v", err, onboarding)
+	}
+	reEnabled, err := c.InvokeConnector(context.Background(), auth, "connector_enable", map[string]any{"target": "google-work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reEnabled.State != api.OpStateDone {
+		t.Fatalf("enable result: %+v", reEnabled)
+	}
+	onboarding, err = store.OnboardingFor(auth, enabled.OnboardingID)
+	if err != nil || onboarding.Phase != api.PhaseEnabled {
+		t.Fatalf("onboarding after enable: %v %+v", err, onboarding)
+	}
+}
+
+// S3.6: connector_remove opens one operation, arms the one-time remove
+// link and halts at awaiting_confirm; after the human path purges the
+// connector a repeat call reports done with a zero-resource receipt.
+func TestConnectorRemoveJournal(t *testing.T) {
+	store, auth, _, profile := managedStore(t)
+	enabled := m13P3EnabledOnboarding(t, store, auth)
+	profile.Revision++
+	profile.Connectors = api.ConnectorsPersonal
+	if err := putProfile(t, store, profile); err != nil {
+		t.Fatal(err)
+	}
+	c := &ControlPlane{Store: store, Now: time.Now, ConfirmationTTL: time.Minute, WorkloadRoot: t.TempDir()}
+	result, err := c.InvokeConnector(context.Background(), auth, "connector_remove", map[string]any{"target": "google-work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.OperationID == "" || result.State != api.OpStateAwaitingConfirm || !result.LinkSent {
+		t.Fatalf("remove result: %+v", result)
+	}
+	onboarding, err := store.OnboardingFor(auth, enabled.OnboardingID)
+	if err != nil || onboarding.RemoveNonce == "" || onboarding.Phase == api.PhaseRemoved {
+		t.Fatalf("onboarding after remove preview: %v %+v", err, onboarding)
+	}
+	// The human clicks the link: the primitive remove executes the purge
+	// with the minted nonce — the same path serveRemove takes.
+	if _, err := c.remove(context.Background(), auth, map[string]any{"onboarding_id": enabled.OnboardingID, "remove_nonce": onboarding.RemoveNonce}); err != nil {
+		t.Fatal(err)
+	}
+	onboarding, err = store.OnboardingFor(auth, enabled.OnboardingID)
+	if err != nil || onboarding.Phase != api.PhaseRemoved {
+		t.Fatalf("onboarding after purge: %v %+v", err, onboarding)
+	}
+	resumed, err := c.InvokeConnector(context.Background(), auth, "connector_remove", map[string]any{"target": "google-work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.OperationID != result.OperationID || resumed.State != api.OpStateDone {
+		t.Fatalf("resumed remove: %+v", resumed)
+	}
+	op, err := store.OperationFor(auth, result.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range op.Steps {
+		if step.State != api.OpStepDone {
+			t.Fatalf("remove step %s incomplete: %+v", step.Name, op.Steps)
+		}
+	}
+}
+
+// S3.6: connector_reauth mints a fresh credential form link without a
+// reinstall and completes when the connector is enabled again.
+func TestConnectorReauthJournal(t *testing.T) {
+	store, auth, _, profile := managedStore(t)
+	enabled := m13P3EnabledOnboarding(t, store, auth)
+	profile.Revision++
+	profile.Connectors = api.ConnectorsPersonal
+	if err := putProfile(t, store, profile); err != nil {
+		t.Fatal(err)
+	}
+	c := &ControlPlane{Store: store, Now: time.Now, ConfirmationTTL: time.Minute}
+	result, err := c.InvokeConnector(context.Background(), auth, "connector_reauth", map[string]any{"target": "google-work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.OperationID == "" || result.State != api.OpStateAwaitingUser || !result.LinkSent {
+		t.Fatalf("reauth result: %+v", result)
+	}
+	onboarding, err := store.OnboardingFor(auth, enabled.OnboardingID)
+	if err != nil || onboarding.FormNonce == "" || onboarding.Phase != api.PhaseAwaitingCreds {
+		t.Fatalf("onboarding after reauth: %v %+v", err, onboarding)
+	}
+	// The form is submitted out of band; the connector comes back enabled.
+	onboarding.Phase = api.PhaseEnabled
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := c.InvokeConnector(context.Background(), auth, "connector_reauth", map[string]any{"target": "google-work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.OperationID != result.OperationID || resumed.State != api.OpStateDone {
+		t.Fatalf("resumed reauth: %+v", resumed)
+	}
+}
+
+// S3.6: connector_allow_writes(on) routes through the /confirm human link;
+// (off) applies immediately. Write tools only project while enabled.
+func TestConnectorAllowWritesJournal(t *testing.T) {
+	store, auth, _, profile := managedStore(t)
+	definition := api.ToolDefinition{
+		Schema: api.SchemaVersion, DefinitionID: "wri-mcp", Version: "1.0.0", Transport: api.RemoteMCP,
+		Source:    api.DefinitionSource{URL: "https://wri.example.com/mcp", TLSMode: "required"},
+		Tools:     []api.ToolSpec{{Name: "read", Effect: api.ReadEffect}, {Name: "send", Effect: api.WriteEffect}},
+		Workload:  api.WorkloadPolicy{Class: api.PerUser, Rationale: "user-owned"},
+		Execution: api.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 1 << 20, CPUMillis: 500, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"wri.example.com"}},
+		Health:    api.HealthProbe{Kind: "http", Value: "/health", TimeoutSeconds: 5},
+	}
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	connection := api.Connection{Schema: api.SchemaVersion, ConnectionID: "wri", Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: "alice"}, DefinitionID: definition.DefinitionID, Revision: 1, Status: api.ActiveStatus}
+	if err := store.PutConnection(connection); err != nil {
+		t.Fatal(err)
+	}
+	binding := api.ToolBinding{Schema: api.SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ConnectionID: connection.ConnectionID, ConnectionRevision: connection.Revision, PolicyVersion: auth.PolicyVersion, WorkloadClass: api.PerUser, Status: api.ActiveStatus, Revision: 1, ProjectionRevision: 1}
+	binding.ToolBindingID = api.DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
+	if err := store.PutBinding(binding); err != nil {
+		t.Fatal(err)
+	}
+	onboarding := api.Onboarding{
+		Schema: api.SchemaVersion, OnboardingID: api.DeterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, "m13p3-writes"),
+		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
+		Mode: api.OnboardingSelfInstall, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
+		Phase: api.PhaseEnabled, BindingID: binding.ToolBindingID, ConnectionID: connection.ConnectionID,
+		Revision: 1, CreatedAt: time.Now(),
+	}
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	profile.Revision++
+	profile.Connectors = api.ConnectorsPersonal
+	profile.SelfInstall = true
+	if err := putProfile(t, store, profile); err != nil {
+		t.Fatal(err)
+	}
+	writeName := api.ProjectedToolName(definition.DefinitionID, definition.Version, "send")
+	if tools, err := store.ListProjectedTools(auth); err != nil || slices.ContainsFunc(tools, func(pt api.ProjectedTool) bool { return pt.Name == writeName }) {
+		t.Fatalf("write tool projected before allow_writes: %v %v", tools, err)
+	}
+	c := &ControlPlane{Store: store, Now: time.Now, ConfirmationTTL: time.Minute}
+	result, err := c.InvokeConnector(context.Background(), auth, "connector_allow_writes", map[string]any{"target": "wri-mcp", "on": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.OperationID == "" || result.State != api.OpStateAwaitingConfirm || !result.LinkSent {
+		t.Fatalf("allow_writes result: %+v", result)
+	}
+	armed, err := store.OnboardingFor(auth, onboarding.OnboardingID)
+	if err != nil || armed.ConfirmationNonce == "" || !armed.PendingWrites || armed.Phase != api.PhaseAwaitingConfirm {
+		t.Fatalf("onboarding after allow_writes: %v %+v", err, armed)
+	}
+	// The human confirms on the protected page — same /confirm surface.
+	gateway := &Gateway{Control: c}
+	rec, req := confirmLinkRequest(t, http.MethodPost, "http://127.0.0.1/confirm/"+armed.OnboardingID+"?t="+armed.ConfirmationNonce)
+	gateway.serveConfirm(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("writes confirm page status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	armed, err = store.OnboardingFor(auth, onboarding.OnboardingID)
+	if err != nil || !armed.WritesEnabled || armed.Phase != api.PhaseEnabled {
+		t.Fatalf("onboarding after write confirm: %v %+v", err, armed)
+	}
+	if tools, err := store.ListProjectedTools(auth); err != nil || !slices.ContainsFunc(tools, func(pt api.ProjectedTool) bool { return pt.Name == writeName }) {
+		t.Fatalf("write tool missing after allow_writes: %v %v", tools, err)
+	}
+	resumed, err := c.InvokeConnector(context.Background(), auth, "connector_allow_writes", map[string]any{"target": "wri-mcp", "on": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.OperationID != result.OperationID || resumed.State != api.OpStateDone {
+		t.Fatalf("resumed allow_writes: %+v", resumed)
+	}
+	// off applies immediately — no link.
+	off, err := c.InvokeConnector(context.Background(), auth, "connector_allow_writes", map[string]any{"target": "wri-mcp", "on": false})
+	if err != nil || off.State != api.OpStateDone {
+		t.Fatalf("allow_writes off: %v %+v", err, off)
+	}
+	armed, err = store.OnboardingFor(auth, onboarding.OnboardingID)
+	if err != nil || armed.WritesEnabled {
+		t.Fatalf("writes still enabled: %+v", armed)
 	}
 }
 

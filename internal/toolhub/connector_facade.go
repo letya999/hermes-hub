@@ -26,6 +26,16 @@ func (c *ControlPlane) InvokeConnector(ctx context.Context, auth identity.Envelo
 		return c.connectorStatus(auth, api.ArgString(args, "target"), api.ArgString(args, "operation_id"))
 	case "connector_install":
 		return c.connectorInstall(ctx, auth, args)
+	case "connector_enable":
+		return c.connectorPhase(ctx, auth, args, api.OpIntentEnable)
+	case "connector_disable":
+		return c.connectorPhase(ctx, auth, args, api.OpIntentDisable)
+	case "connector_remove":
+		return c.connectorRemove(ctx, auth, args)
+	case "connector_reauth":
+		return c.connectorReauth(ctx, auth, args)
+	case "connector_allow_writes":
+		return c.connectorAllowWrites(ctx, auth, args)
 	default:
 		return api.OperationResult{State: api.OpStateFailed, Code: api.OpCodeNotPermitted, Summary: "unknown connector tool"}, nil
 	}

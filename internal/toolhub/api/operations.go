@@ -2,6 +2,7 @@ package api
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -9,8 +10,12 @@ import (
 )
 
 const (
-	OpIntentInstall = "install"
-	OpIntentRemove  = "remove"
+	OpIntentInstall     = "install"
+	OpIntentEnable      = "enable"
+	OpIntentDisable     = "disable"
+	OpIntentReauth      = "reauth"
+	OpIntentAllowWrites = "allow_writes"
+	OpIntentRemove      = "remove"
 )
 
 const (
@@ -38,6 +43,11 @@ const (
 	OpStepBind               = "bind"
 	OpStepProject            = "project"
 	OpStepNotify             = "notify"
+	OpStepApply              = "apply"
+	OpStepConfirm            = "confirm"
+	OpStepCutAuthorization   = "cut_authorization"
+	OpStepPurge              = "purge"
+	OpStepVerifyZero         = "verify_zero"
 )
 
 // Stable typed error codes for connector_* results — the control-flow
@@ -99,7 +109,7 @@ func (o Operation) Validate() error {
 	if !identity.ValidID(o.PrincipalID) {
 		return fmt.Errorf("%w: operation principal", ErrInvalid)
 	}
-	if o.Target == "" || (o.Intent != OpIntentInstall && o.Intent != OpIntentRemove) {
+	if o.Target == "" || !slices.Contains([]string{OpIntentInstall, OpIntentEnable, OpIntentDisable, OpIntentReauth, OpIntentAllowWrites, OpIntentRemove}, o.Intent) {
 		return fmt.Errorf("%w: operation intent or target", ErrInvalid)
 	}
 	switch o.State {

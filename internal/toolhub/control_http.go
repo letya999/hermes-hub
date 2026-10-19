@@ -451,9 +451,15 @@ func (g *Gateway) serveConfirm(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if err := g.Control.finishAuthorization(r.Context(), onboardingID); err != nil {
+	var finishErr error
+	if onboarding.PendingWrites {
+		finishErr = g.Control.applyConfirmedWrites(r.Context(), onboardingID)
+	} else {
+		finishErr = g.Control.finishAuthorization(r.Context(), onboardingID)
+	}
+	if finishErr != nil {
 		w.WriteHeader(http.StatusBadGateway)
-		_, _ = io.WriteString(w, credentialResultPage("Подтверждение не прошло", api.PublicPrepareError(err)))
+		_, _ = io.WriteString(w, credentialResultPage("Подтверждение не прошло", api.PublicPrepareError(finishErr)))
 		return
 	}
 	_, _ = io.WriteString(w, credentialResultPage("Подключение подтверждено", "Возвращаться в чат и писать «готово» не нужно."))
