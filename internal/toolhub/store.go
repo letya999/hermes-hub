@@ -179,6 +179,15 @@ func (s *Store) connectionFor(id string) (api.Connection, bool) {
 	return connection, ok
 }
 
+// credentialFor returns a credential reference record by id — internal
+// reconciliation paths only.
+func (s *Store) credentialFor(id string) (api.CredentialReference, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	reference, ok := s.credentials[id]
+	return reference, ok
+}
+
 // Connections returns a snapshot of every connection record — the
 // reconciler's desired-state list.
 func (s *Store) Connections() []api.Connection {
@@ -346,7 +355,7 @@ func (s *Store) rotateCredentialLocked(connection api.Connection, reference api.
 }
 
 func (s *Store) SetConnectionStatus(connectionID string, status api.Status) error {
-	if status != api.ActiveStatus && status != api.DisabledStatus && status != api.RevokedStatus && status != api.DeletingStatus {
+	if status != api.ActiveStatus && status != api.DisabledStatus && status != api.RevokedStatus && status != api.DeletingStatus && status != api.ReauthStatus {
 		return fmt.Errorf("%w: connection status", api.ErrInvalid)
 	}
 	s.mu.Lock()
@@ -363,6 +372,42 @@ func (s *Store) SetConnectionStatus(connectionID string, status api.Status) erro
 	connection.Revision++
 	s.connections[connectionID] = connection
 	s.noteConnectionStatusLocked(connection)
+	for id, binding := range s.bindings {
+		if binding.ConnectionID == connectionID {
+			s.touchProjectionLocked(&binding)
+			s.bindings[id] = binding
+		}
+	}
+	stopped := s.stopAffectedLocked(connectionID)
+	s.mu.Unlock()
+	stopErr := s.stopWorkloads(stopped)
+	if err := s.persistAndNotify(); err != nil {
+		return err
+	}
+	return stopErr
+}
+
+// MarkReauth moves a connection to reauth after credential-relevant drift:
+// the credential reference is revoked so no injector can serve the stale
+// material, and affected workloads stop. The status mirror follows the
+// same path as every other connection mutation.
+func (s *Store) MarkReauth(connectionID string) error {
+	s.mu.Lock()
+	connection, ok := s.connections[connectionID]
+	if !ok {
+		s.mu.Unlock()
+		return fmt.Errorf("%w: connection", api.ErrNotFound)
+	}
+	connection.Status = api.ReauthStatus
+	connection.Revision++
+	s.connections[connectionID] = connection
+	s.noteConnectionStatusLocked(connection)
+	if connection.CredentialRefID != "" {
+		if reference, ok := s.credentials[connection.CredentialRefID]; ok {
+			reference.Status = api.RevokedStatus
+			s.credentials[connection.CredentialRefID] = reference
+		}
+	}
 	for id, binding := range s.bindings {
 		if binding.ConnectionID == connectionID {
 			s.touchProjectionLocked(&binding)

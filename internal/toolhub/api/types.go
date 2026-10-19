@@ -105,6 +105,10 @@ const (
 	// finishes.
 	DeletingStatus Status = "deleting"
 	DegradedStatus Status = "degraded"
+	// ReauthStatus marks a connection whose stored credential material was
+	// purged after credential-relevant recipe drift; admission denies it and
+	// only a human reauthorization can bring it back.
+	ReauthStatus Status = "reauth"
 	StartingStatus Status = "starting"
 	RunningStatus  Status = "running"
 	StoppedStatus  Status = "stopped"

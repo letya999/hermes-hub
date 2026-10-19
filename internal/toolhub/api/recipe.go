@@ -182,6 +182,23 @@ func ResolutionDigest(resolution RecipeResolution) (string, error) {
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
+// CredentialRecipeDigest content-addresses only the credential-relevant
+// claims of a resolution: the connection contract (provider, client and
+// field declarations) and the launch endpoint. A drift on these invalidates
+// stored tokens; launch-only noise (warnings, ledger, evidence) never does.
+func CredentialRecipeDigest(resolution RecipeResolution) (string, error) {
+	subset := struct {
+		Connection ConnectionRecipe `json:"connection"`
+		Endpoint   string           `json:"endpoint,omitempty"`
+	}{Connection: resolution.Connection, Endpoint: resolution.Launch.Endpoint}
+	body, err := json.Marshal(subset)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(body)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
 func ScopeRecipeContext(files map[string][]byte, subfolder string) (map[string][]byte, error) {
 	if subfolder == "" {
 		return files, nil

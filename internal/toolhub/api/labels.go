@@ -21,6 +21,10 @@ const (
 	LabelBinding    = "hermes-hub.binding"
 	LabelOperation  = "hermes-hub.operation"
 	LabelRecipe     = "hermes-hub.recipe"
+	// LabelCredentialRecipe pins the credential-relevant recipe digest
+	// (provider, endpoint, client claims) on the connection record itself —
+	// a drift there purges stored tokens, not just the tool surface.
+	LabelCredentialRecipe = "hermes-hub.credential-recipe"
 )
 
 // OwnershipLabels carries the identity of the store records a spawned

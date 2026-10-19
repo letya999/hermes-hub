@@ -585,6 +585,17 @@ func (c *ControlPlane) materializeBinding(ctx context.Context, auth identity.Env
 		connection.Metadata["oauth_provider"] = onboarding.OAuthProvider
 		connection.Metadata["oauth_connection"] = onboarding.OnboardingID
 	}
+	if onboarding.RecipeDigest != "" {
+		if connection.Metadata == nil {
+			connection.Metadata = map[string]string{}
+		}
+		connection.Metadata[api.LabelRecipe] = onboarding.RecipeDigest
+		if resolution, err := c.Store.Recipe(onboarding.RecipeDigest); err == nil {
+			if credDigest, err := api.CredentialRecipeDigest(resolution); err == nil && credDigest != "" {
+				connection.Metadata[api.LabelCredentialRecipe] = credDigest
+			}
+		}
+	}
 	if err := c.Store.PutConnection(connection); err != nil {
 		return api.ToolBinding{}, err
 	}

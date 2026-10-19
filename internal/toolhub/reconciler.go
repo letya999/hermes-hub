@@ -18,6 +18,13 @@ type Reconciler struct {
 	Surface   func(ctx context.Context, connection api.Connection) ([]api.ToolSpec, error)
 	Notify    func(ctx context.Context, principal, kind string, body map[string]any) error
 	MaxScan   int
+	// CredResolve re-resolves the connection's credential-recipe digest
+	// (provider/endpoint/client claims); CredPurge deletes the stored
+	// credential material for the given reference. Drift on these moves the
+	// connection to reauth — stored tokens are purged, never silently
+	// re-minted against a changed provider.
+	CredResolve func(ctx context.Context, connection api.Connection) (string, error)
+	CredPurge   func(ctx context.Context, connection api.Connection, ref api.CredentialReference) error
 }
 
 func (r *Reconciler) ScanOnce(ctx context.Context) error {
@@ -52,6 +59,41 @@ func (r *Reconciler) ScanOnce(ctx context.Context) error {
 		}
 		if err := r.Notify(ctx, connection.Owner.ID, "reauth", map[string]any{"connection": connection.ConnectionID}); err != nil {
 			return err
+		}
+	}
+	if r.CredResolve != nil {
+		for _, connection := range r.Store.Connections() {
+			if connection.Status != api.ActiveStatus && connection.Status != api.ReauthStatus {
+				continue
+			}
+			pinned := connection.Metadata[api.LabelCredentialRecipe]
+			if pinned == "" {
+				continue
+			}
+			resolved, err := r.CredResolve(ctx, connection)
+			if err != nil {
+				return err
+			}
+			if resolved == pinned {
+				continue
+			}
+			// Fail closed first: reauth stops serving before the purge runs,
+			// so a purge failure can never leave a stale credential live.
+			if connection.Status != api.ReauthStatus {
+				if err := r.Store.MarkReauth(connection.ConnectionID); err != nil {
+					return err
+				}
+			}
+			if r.CredPurge != nil && connection.CredentialRefID != "" {
+				if ref, ok := r.Store.credentialFor(connection.CredentialRefID); ok {
+					if err := r.CredPurge(ctx, connection, ref); err != nil {
+						return err
+					}
+				}
+			}
+			if err := r.Notify(ctx, connection.Owner.ID, "reauth", map[string]any{"connection": connection.ConnectionID}); err != nil {
+				return err
+			}
 		}
 	}
 	if r.Resolve != nil {

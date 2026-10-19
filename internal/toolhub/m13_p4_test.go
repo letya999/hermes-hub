@@ -524,6 +524,142 @@ func TestReconcilerRecipeDrift(t *testing.T) {
 	}
 }
 
+// S6.4: a credential-relevant recipe drift (provider/endpoint/client
+// claims) purges the stored tokens and moves the connection to reauth —
+// no projected call can keep riding a credential minted for a provider
+// the recipe no longer names. A second pass stays converged: the reauth
+// connection is re-purged, never degraded back.
+func TestReconcilerCredentialDriftReauths(t *testing.T) {
+	store, _, _, _ := managedStore(t)
+	connection, ok := store.connectionFor("google-work")
+	if !ok {
+		t.Fatal("seeded connection missing")
+	}
+	connection.Metadata[api.LabelCredentialRecipe] = "sha256:cred-pinned"
+	if err := store.PutConnection(connection); err != nil {
+		t.Fatal(err)
+	}
+	var purged, notices []string
+	r := &Reconciler{
+		Store:       store,
+		Scan:        func(context.Context, map[string]string) ([]api.LabeledResource, error) { return nil, nil },
+		Purge:       func(context.Context, string, string) error { return nil },
+		CredAlive:   func(context.Context, string) (bool, error) { return true, nil },
+		CredResolve: func(context.Context, api.Connection) (string, error) { return "sha256:cred-drifted", nil },
+		CredPurge: func(_ context.Context, conn api.Connection, ref api.CredentialReference) error {
+			purged = append(purged, ref.CredentialRefID)
+			return nil
+		},
+		Notify: func(_ context.Context, principal, kind string, _ map[string]any) error {
+			notices = append(notices, kind+":"+principal)
+			return nil
+		},
+	}
+	if err := r.ScanOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := store.connectionFor("google-work")
+	if after.Status != api.ReauthStatus {
+		t.Fatalf("credential drift not moved to reauth: %s", after.Status)
+	}
+	if len(purged) != 1 || purged[0] != connection.CredentialRefID {
+		t.Fatalf("purged=%v, want the connection's credential ref", purged)
+	}
+	if !containsString(notices, "reauth:alice") {
+		t.Fatalf("notices=%v", notices)
+	}
+	if got := store.credentials[connection.CredentialRefID]; got.Status != api.RevokedStatus {
+		t.Fatalf("credential reference status=%s, want revoked", got.Status)
+	}
+	// A follow-up pass with the pin still stale retries the purge without
+	// resurrecting or demoting the connection.
+	if err := r.ScanOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	after, _ = store.connectionFor("google-work")
+	if after.Status != api.ReauthStatus {
+		t.Fatalf("second pass demoted reauth connection: %s", after.Status)
+	}
+	if len(purged) != 2 {
+		t.Fatalf("purge not retried on the converged pass: %v", purged)
+	}
+}
+
+// S6.4: a recipe-carrying onboarding pins both digests on the connection at
+// materialize time — the launch digest under hermes-hub.recipe and the
+// credential-relevant digest (provider/endpoint/client claims) under
+// hermes-hub.credential-recipe, which is what the reauth drift path reads.
+func TestMaterializeBindingPinsCredentialRecipe(t *testing.T) {
+	store, auth, _, _ := managedStore(t)
+	resolution := api.RecipeResolution{
+		Source: api.ArtifactSource{Repository: "https://github.com/acme/work", CommitSHA: strings.Repeat("7", 40)},
+		State:  "ready",
+		Launch: api.LaunchRecipe{Transport: api.RemoteMCP, Endpoint: "https://mcp.acme.example/x"},
+		Connection: api.ConnectionRecipe{Fields: []api.ConnectionField{
+			{Name: "ACME_TOKEN", Type: "token", Required: true, Secret: true, Delivery: "env", Target: "ACME_TOKEN", Source: "server.json"},
+		}},
+	}
+	digest, err := store.PutRecipe(resolution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition := userMCPDefinition()
+	definition.Credentials = []api.CredentialInput{{Name: "ACME_TOKEN", Required: true, Delivery: "env"}}
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	onboarding := api.Onboarding{
+		Schema: api.SchemaVersion, OnboardingID: api.DeterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, "pin-recipe"),
+		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
+		Mode: api.OnboardingCatalog, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
+		Phase: api.PhaseEnabled, Locator: "loc_pin", RecipeDigest: digest,
+		Required: []api.CredentialHint{{Name: "ACME_TOKEN", Secret: true, Delivery: "env"}},
+		Revision: 1, CreatedAt: time.Now(),
+	}
+	c := &ControlPlane{Store: store, Now: time.Now}
+	if _, err := c.materializeBinding(context.Background(), auth, onboarding, definition); err != nil {
+		t.Fatal(err)
+	}
+	var connection api.Connection
+	ok := false
+	for _, candidate := range store.Connections() {
+		if candidate.DefinitionID == definition.DefinitionID {
+			connection, ok = candidate, true
+		}
+	}
+	if !ok {
+		t.Fatal("materialized connection missing")
+	}
+	if got := connection.Metadata[api.LabelRecipe]; got != digest {
+		t.Fatalf("recipe pin=%q want %q", got, digest)
+	}
+	credDigest, err := api.CredentialRecipeDigest(resolution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := connection.Metadata[api.LabelCredentialRecipe]; got != credDigest {
+		t.Fatalf("credential recipe pin=%q want %q", got, credDigest)
+	}
+	// Endpoint/client/provider claims drift the credential digest; launch-only
+	// noise never invalidates stored tokens.
+	moved := resolution
+	moved.Launch.Endpoint = "https://other.acme.example/x"
+	if other, _ := api.CredentialRecipeDigest(moved); other == credDigest {
+		t.Fatal("endpoint drift did not change the credential digest")
+	}
+	changed := resolution
+	changed.Connection.Fields = append([]api.ConnectionField{}, resolution.Connection.Fields...)
+	changed.Connection.Fields[0].Name = "ACME_KEY"
+	if other, _ := api.CredentialRecipeDigest(changed); other == credDigest {
+		t.Fatal("connection-field drift did not change the credential digest")
+	}
+	noisy := resolution
+	noisy.Warnings = []string{"heuristic"}
+	if other, _ := api.CredentialRecipeDigest(noisy); other != credDigest {
+		t.Fatal("warnings noise changed the credential digest")
+	}
+}
+
 // S4.3: MaxScan bounds each pass — leftover orphans converge on the next
 // pass instead of starving the loop.
 func TestReconcilerMaxScanBoundsPass(t *testing.T) {
