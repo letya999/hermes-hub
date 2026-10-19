@@ -33,6 +33,9 @@ func TestM10RegressionExistingInboxSurvivesDuplicateZIP(t *testing.T) {
 	}
 }
 func TestM10RegressionKnowledgeSendsRequiredAuthorization(t *testing.T) {
+	// HUB_STATE must exist before fixture(): StateDir defaults to /state,
+	// which only happens to exist on some dev machines — CI has none.
+	t.Setenv("HUB_STATE", t.TempDir())
 	v := fixture(t)
 	t.Setenv("HUB_PRINCIPAL_ID", "alice")
 	v.CommunicationAuth = "audit-token"

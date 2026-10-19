@@ -22,7 +22,10 @@ func TestRoutineTickLogsCause(t *testing.T) {
 	log.SetOutput(&out)
 	defer log.SetOutput(previous)
 	g.tickProactive(o.DueAt)
-	if !bytes.Contains(out.Bytes(), []byte("stage=1:")) || !bytes.Contains(out.Bytes(), []byte("occurrences")) {
+	// "stage=1: open " asserts the cause text survives diagnostics.Redact —
+	// on Linux the temp path itself is 32+ token chars and gets redacted,
+	// so the occurrences/ path substring is not a stable assertion.
+	if !bytes.Contains(out.Bytes(), []byte("stage=1: open ")) || !bytes.Contains(out.Bytes(), []byte("remains pending")) {
 		t.Fatalf("cause missing from tick log: %s", out.String())
 	}
 }
