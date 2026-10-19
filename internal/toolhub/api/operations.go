@@ -43,6 +43,17 @@ type OperationStep struct {
 	State string `json:"state"`
 }
 
+// OperationResult is the uniform connector_* tool result — the only shape
+// the agent ever sees. No nonces, URLs, tokens or prose instructions.
+type OperationResult struct {
+	OperationID string               `json:"operation_id,omitempty"`
+	State       string               `json:"state"`
+	Code        string               `json:"code,omitempty"`
+	Summary     string               `json:"summary"`
+	LinkSent    bool                 `json:"link_sent,omitempty"`
+	Candidates  []OperationCandidate `json:"candidates,omitempty"`
+}
+
 // OperationCandidate is one selector match shown on ambiguity.
 type OperationCandidate struct {
 	ID     string `json:"id"`

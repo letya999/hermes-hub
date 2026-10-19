@@ -302,6 +302,17 @@ func (s *Store) AllowedControlOperations(auth identity.Envelope) (map[string]boo
 		if err != nil {
 			return allowed, err
 		}
+		// The connectors bundle replaces the legacy per-operation projection
+		// with the unified nine-tool surface.
+		if profile.Connectors == api.ConnectorsPersonal || profile.Connectors == api.ConnectorsPersonalTeam {
+			for _, tool := range api.ConnectorTools {
+				allowed[tool] = true
+			}
+			return allowed, nil
+		}
+		if profile.Connectors == api.ConnectorsNone {
+			return allowed, nil
+		}
 		for _, operation := range profile.ControlOperations {
 			if slices.Contains(api.ControlOperations, operation) {
 				allowed[operation] = true

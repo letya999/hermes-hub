@@ -1,8 +1,11 @@
 package toolhub
 
 import (
+	"context"
 	"errors"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -243,5 +246,109 @@ func TestConnectorTargetRegistryAndFailed(t *testing.T) {
 		if _, err := store.ResolveConnectorTarget(auth, target); err == nil {
 			t.Fatalf("failed target %q resolved", target)
 		}
+	}
+}
+
+// S3.3: a profile with connectors=personal projects exactly the nine
+// connector_* tools and no legacy control operation.
+func TestConnectorToolsProjection(t *testing.T) {
+	s, auth, _, profile := managedStore(t)
+	profile.Revision++
+	profile.Connectors = api.ConnectorsPersonal
+	profile.ControlOperations = []string{"status", "remove"}
+	if err := putProfile(t, s, profile); err != nil {
+		t.Fatal(err)
+	}
+	g := &Gateway{Store: s, Tokens: map[string]identity.Envelope{aliceToken: auth},
+		Control: &ControlPlane{Store: s, Now: time.Now},
+		Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
+			return api.BackendResult{Text: "ok"}, nil
+		})}
+	handler, err := g.Handler()
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	client := mcpConnect(t, server.URL, aliceToken)
+	listed, err := client.ListTools(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{}
+	for _, name := range api.ConnectorTools {
+		want[name] = true
+	}
+	want["workspace_read"] = true // capability selection still projects
+	got := map[string]bool{}
+	for _, tool := range listed.Tools {
+		got[tool.Name] = true
+		if strings.HasPrefix(tool.Name, "connector_") && !want[tool.Name] {
+			t.Fatalf("unexpected connector tool %q", tool.Name)
+		}
+	}
+	for name := range want {
+		if !got[name] {
+			t.Fatalf("projection missing %q; tools: %v", name, got)
+		}
+	}
+	for _, legacy := range api.ControlOperations {
+		if got[legacy] {
+			t.Fatalf("legacy control op %q leaked into connector projection", legacy)
+		}
+	}
+	if got["invoke"] {
+		t.Fatal("invoke leaked into connector projection")
+	}
+}
+
+// S3.3: the connectors bundle is a closed enum; unknown values fail profile
+// validation.
+func TestConnectorsBundleValidation(t *testing.T) {
+	_, _, _, profile := managedStore(t)
+	for _, value := range []string{"", api.ConnectorsNone, api.ConnectorsPersonal, api.ConnectorsPersonalTeam} {
+		p := profile
+		p.Connectors = value
+		if err := p.ValidateStructure(); err != nil {
+			t.Fatalf("connectors %q rejected: %v", value, err)
+		}
+	}
+	p := profile
+	p.Connectors = "everyone"
+	if err := p.ValidateStructure(); err == nil {
+		t.Fatal("invalid connectors value accepted")
+	}
+}
+
+// S3.3: personal+team admits the same nine tools (team scope is enforced
+// per operation); none admits nothing.
+func TestConnectorsBundleAllowedOps(t *testing.T) {
+	s, auth, _, profile := managedStore(t)
+	profile.Revision++
+	profile.Connectors = api.ConnectorsPersonalTeam
+	if err := putProfile(t, s, profile); err != nil {
+		t.Fatal(err)
+	}
+	allowed, err := s.AllowedControlOperations(auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range api.ConnectorTools {
+		if !allowed[tool] {
+			t.Fatalf("personal+team lost %q", tool)
+		}
+	}
+	if len(allowed) != len(api.ConnectorTools) {
+		t.Fatalf("personal+team leaked legacy ops: %v", allowed)
+	}
+	profile.Revision++
+	profile.Connectors = api.ConnectorsNone
+	profile.ControlOperations = []string{"status"} // legacy list must not leak under none
+	if err := putProfile(t, s, profile); err != nil {
+		t.Fatal(err)
+	}
+	allowed, err = s.AllowedControlOperations(auth)
+	if err != nil || len(allowed) != 0 {
+		t.Fatalf("none must admit nothing: %v %v", allowed, err)
 	}
 }

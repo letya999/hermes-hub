@@ -22,6 +22,27 @@ func (g *Gateway) addControlTools(server *mcp.Server, auth identity.Envelope, al
 	if g == nil || g.Control == nil || server == nil {
 		return
 	}
+	for _, tool := range api.ConnectorTools {
+		if !allowed[tool] {
+			continue
+		}
+		name := tool
+		description, schema := connectorToolContract(name)
+		server.AddTool(&mcp.Tool{Name: name, Description: description, InputSchema: schema}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			arguments := map[string]any{}
+			if request != nil && len(request.Params.Arguments) > 0 {
+				if err := json.Unmarshal(request.Params.Arguments, &arguments); err != nil {
+					return nil, fmt.Errorf("%w: tool arguments: %v", api.ErrInvalid, err)
+				}
+			}
+			result, err := g.Control.InvokeConnector(ctx, auth, name, arguments)
+			if err != nil {
+				return nil, err
+			}
+			encoded, _ := json.Marshal(result)
+			return &mcp.CallToolResult{StructuredContent: result, Content: []mcp.Content{&mcp.TextContent{Text: string(encoded)}}}, nil
+		})
+	}
 	for _, op := range api.ControlOperations {
 		if !allowed[op] {
 			continue

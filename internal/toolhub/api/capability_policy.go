@@ -114,8 +114,29 @@ type CapabilityProfile struct {
 	// SelfInstall admits the GitHub-source prepare path for this principal.
 	// Installation stays a distinct grant (SPEC-0041 CP-05): the pipeline
 	// still requires the single-use human confirmation and enable phases.
-	SelfInstall  bool          `json:"self_install,omitempty"`
+	SelfInstall bool `json:"self_install,omitempty"`
+	// Connectors admits the unified connector_* tool surface: "" keeps the
+	// legacy per-operation grants projection, "none" hides connector control
+	// entirely, "personal" projects the nine connector_* tools over the
+	// principal's own connections, "personal+team" additionally allows
+	// lifecycle on team connections where the caller is a member.
+	Connectors   string        `json:"connectors,omitempty"`
 	Confirmation *Confirmation `json:"confirmation,omitempty"`
+}
+
+// Connector capability bundle values for CapabilityProfile.Connectors.
+const (
+	ConnectorsNone         = "none"
+	ConnectorsPersonal     = "personal"
+	ConnectorsPersonalTeam = "personal+team"
+)
+
+// ConnectorTools is the complete nine-tool connector_* surface, in the order
+// the issue defines it.
+var ConnectorTools = []string{
+	"connector_search", "connector_install", "connector_list",
+	"connector_status", "connector_enable", "connector_disable",
+	"connector_allow_writes", "connector_reauth", "connector_remove",
 }
 
 // Policy history is the persisted authority. Current maps are rebuilt from it,
@@ -313,6 +334,11 @@ func (p CapabilityProfile) ValidateStructure() error {
 			return fmt.Errorf("%w: reviewed control operation", ErrInvalid)
 		}
 		seenOps[operation] = true
+	}
+	switch p.Connectors {
+	case "", ConnectorsNone, ConnectorsPersonal, ConnectorsPersonalTeam:
+	default:
+		return fmt.Errorf("%w: connectors bundle", ErrInvalid)
 	}
 	return nil
 }
