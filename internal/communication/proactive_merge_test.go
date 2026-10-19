@@ -120,8 +120,13 @@ func TestDigestBriefAndEventDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	job, err := s.ClaimJob()
-	if err != nil || job == nil || !strings.HasPrefix(job.ID, "brief-") || !strings.Contains(job.Text, "refactor cron") || !strings.Contains(job.Text, "untrusted snapshot") {
+	if err != nil || job == nil || !strings.HasPrefix(job.ID, "routine-") || !strings.Contains(job.Text, "refactor cron") || !strings.Contains(job.Text, "untrusted snapshot") {
 		t.Fatalf("brief job: %+v %v", job, err)
+	}
+	// The admitted bundle keeps the occurrence id so send-time
+	// re-authorization resolves its schedule-pinned conversation.
+	if err := g.authorizeOccurrence(*job); err != nil {
+		t.Fatalf("brief bundle fails send-time re-authorization: %v", err)
 	}
 
 	// Event subscription: mcp_tool probe, two fresh events — one delivery

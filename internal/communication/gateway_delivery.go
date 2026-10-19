@@ -2,12 +2,10 @@ package communication
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -239,9 +237,7 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 	}
 	if delivery.OccurrenceID != "" {
 		g.spool.mu.Lock()
-		b, readErr := os.ReadFile(filepath.Join(g.spool.root, "occurrences", spoolFileID(delivery.OccurrenceID)+".json"))
-		var o RoutineOccurrence
-		valid := readErr == nil && json.Unmarshal(b, &o) == nil && g.spool.occurrenceCurrentLocked(o) && g.authorizeOccurrence(o.Job) == nil
+		valid := g.occurrenceRefAuthorizedLocked(delivery.OccurrenceID)
 		g.spool.mu.Unlock()
 		if !valid {
 			_ = g.spool.UncertainDelivery(delivery.ID)

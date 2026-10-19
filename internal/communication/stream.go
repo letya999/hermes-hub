@@ -344,6 +344,17 @@ func (s *Spool) recoverStreamEvents() error {
 		}
 		var receipt streamReceipt
 		if err := json.Unmarshal(b, &receipt); err != nil || receipt.JobID == "" || receipt.Position == 0 {
+			// The dir is shared: event-subscription states and slack dedup
+			// markers are valid JSON owned by other contracts; only their
+			// readers may reject them. Anything else malformed is a corrupt
+			// receipt and stays fatal.
+			var foreign struct {
+				ScheduleID string `json:"schedule_id"`
+				Provider   string `json:"provider"`
+			}
+			if json.Unmarshal(b, &foreign) == nil && (foreign.ScheduleID != "" || foreign.Provider != "") {
+				continue
+			}
 			return errors.New("invalid stream receipt")
 		}
 		receipts = append(receipts, receipt)

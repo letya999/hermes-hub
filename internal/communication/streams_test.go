@@ -134,19 +134,19 @@ func TestSettleStreamEventsNotify(t *testing.T) {
 	now := time.Now().UTC()
 	body := []byte(`{"event": true, "chat_id": 777, "name": "Danil", "message_count": 2, "first_message_id": 10, "last_message_id": 11, "kind": "dm"}`)
 	s.settleStreamEvents(sched, body, now, nil, g.authorizeOccurrence)
-	d, err := s.ClaimDelivery()
-	if err != nil || d == nil {
-		t.Fatalf("stream batch admitted no delivery: %+v %v", d, err)
-	}
-	if !strings.Contains(d.Text, "Danil") || !strings.HasPrefix(d.Text, "watch dms") {
-		t.Fatalf("stream delivery text: %q", d.Text)
-	}
-	if d, err := s.ClaimDelivery(); err != nil || d != nil {
-		t.Fatal("one burst produced more than one delivery")
+	// The outbox worker re-resolves OccurrenceID at send time: a stream batch
+	// ref must map back to its owning schedule and re-authorize, or the
+	// delivery dies as uncertain before the channel sees it.
+	fake := &fakeAPI{}
+	g.api = fake
+	g.deliverOne(context.Background())
+	if len(fake.sent) != 1 || !strings.Contains(fake.sent[0], "Danil") || !strings.HasPrefix(fake.sent[0], "watch dms") {
+		t.Fatalf("stream delivery dropped at send-time verification: %v", fake.sent)
 	}
 	// Same batch replayed: deduped by the durable seen-set.
 	s.settleStreamEvents(sched, body, now.Add(time.Second), nil, g.authorizeOccurrence)
-	if d, err := s.ClaimDelivery(); err != nil || d != nil {
+	g.deliverOne(context.Background())
+	if len(fake.sent) != 1 {
 		t.Fatal("replayed stream batch delivered again")
 	}
 }
@@ -169,6 +169,9 @@ func TestSettleStreamEventsAgentSink(t *testing.T) {
 	}
 	if !strings.Contains(job.Text, "untrusted") || !strings.Contains(job.Text, "777") || !strings.Contains(job.Text, "answer Danil for me") {
 		t.Fatalf("stream agent bundle: %q", job.Text)
+	}
+	if err := g.authorizeOccurrence(*job); err != nil {
+		t.Fatalf("stream agent bundle fails send-time re-authorization: %v", err)
 	}
 	if d, err := s.ClaimDelivery(); err != nil || d != nil {
 		t.Fatal("agent stream produced a plain delivery")

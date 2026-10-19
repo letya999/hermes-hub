@@ -2,14 +2,17 @@ package communication
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/diagnostics"
 	"github.com/letya999/hermes-hub/internal/identity"
 )
@@ -87,11 +90,15 @@ func (g *Gateway) ownsRoutineEnvelope(job Job, canonical identity.Envelope) bool
 	return job.Envelope == canonical
 }
 
-// routineConversationOf resolves the schedule-pinned conversation for an
-// admitted occurrence job from its durable occurrence record.
+// routineConversationOf resolves the schedule-pinned conversation for a
+// routine-produced job: occurrence-shaped ids go through the durable
+// occurrence record, stream batch jobs through the schedule id they carry.
 func (g *Gateway) routineConversationOf(jobID string) string {
 	if o, ok := g.occurrenceFor(jobID); ok {
 		return routineConversation(o.ScheduleID)
+	}
+	if sid := streamRefScheduleID(jobID); sid != "" {
+		return routineConversation(sid)
 	}
 	return ""
 }
@@ -103,4 +110,51 @@ func (g *Gateway) occurrenceFor(jobID string) (RoutineOccurrence, bool) {
 		return RoutineOccurrence{}, false
 	}
 	return o, true
+}
+
+// streamRefScheduleID recovers the schedule id a stream fan-out ref was
+// deterministically seeded from (streams.go builds them where no occurrence
+// exists): stream-<schedule id>[-<probe revision>]-<16-hex batch hash>.
+func streamRefScheduleID(id string) string {
+	rest, ok := strings.CutPrefix(id, "stream-")
+	if !ok {
+		return ""
+	}
+	i := strings.LastIndexByte(rest, '-')
+	if i <= 0 || len(rest[i+1:]) != 16 {
+		return ""
+	}
+	if _, err := hex.DecodeString(rest[i+1:]); err != nil {
+		return ""
+	}
+	sid := rest[:i]
+	if j := strings.LastIndexByte(sid, '-'); j > 0 {
+		if _, err := strconv.ParseUint(sid[j+1:], 10, 64); err == nil {
+			sid = sid[:j]
+		}
+	}
+	if !commodel.IDPattern.MatchString(sid) {
+		return ""
+	}
+	return sid
+}
+
+// occurrenceRefAuthorizedLocked re-authorizes a routine-produced delivery
+// ref at send time: occurrence-shaped refs re-check the live occurrence;
+// stream batch refs re-check the owning schedule stays stream-active and
+// authorized. s.mu must be held.
+func (g *Gateway) occurrenceRefAuthorizedLocked(id string) bool {
+	if o, ok := g.occurrenceFor(id); ok {
+		return g.spool.occurrenceCurrentLocked(o) && g.authorizeOccurrence(o.Job) == nil
+	}
+	sid := streamRefScheduleID(id)
+	if sid == "" {
+		return false
+	}
+	schedule, err := g.spool.loadScheduleLocked(sid)
+	if err != nil || !streamActive(&schedule, g.now().UTC()) {
+		return false
+	}
+	job := Job{Envelope: schedule.Envelope, OrganizationID: schedule.OrganizationID, UserID: schedule.UserID, ActorID: schedule.ActorID, ScopeID: schedule.ScopeID, Channel: schedule.Channel, ChatID: schedule.ChatID, TaskID: schedule.TaskID, TopicID: schedule.TopicID, SlackChannel: schedule.SlackChannel, SlackThread: schedule.SlackThread, Trigger: "cron"}
+	return g.authorizeOccurrence(job) == nil
 }

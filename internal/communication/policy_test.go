@@ -574,6 +574,9 @@ func TestBriefSourceIDsScope(t *testing.T) {
 	if !strings.Contains(job.Text, "in scope") || strings.Contains(job.Text, "out of scope") {
 		t.Fatalf("source_ids scope not honored: %q", job.Text)
 	}
+	if err := g.authorizeOccurrence(*job); err != nil {
+		t.Fatalf("brief bundle fails send-time re-authorization: %v", err)
+	}
 }
 
 // S4.2 — a revoked brief cancels its due occurrence through the shared
@@ -794,6 +797,12 @@ func TestEventAgentSinkBundles(t *testing.T) {
 	}
 	if !strings.Contains(job.Text, "untrusted") || !strings.Contains(job.Text, "first mail") || !strings.Contains(job.Text, "second mail") {
 		t.Fatalf("bundle missing events or untrusted flag: %q", job.Text)
+	}
+	// The claimed bundle must survive the send-time re-authorization the
+	// delivery worker applies to every cron job — a rewritten bundle id must
+	// still resolve to its own occurrence for the conversation check.
+	if err := g.authorizeOccurrence(*job); err != nil {
+		t.Fatalf("bundle job fails send-time re-authorization: %v", err)
 	}
 	if d, err := s.ClaimDelivery(); err != nil || d != nil {
 		t.Fatal("agent sink produced a plain delivery")

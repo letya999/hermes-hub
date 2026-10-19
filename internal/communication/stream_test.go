@@ -1405,6 +1405,25 @@ func TestStreamReceiptPersistenceFailureAndRecoveryAuthority(t *testing.T) {
 	}
 }
 
+// spool/events is shared: stream receipts, slack dedup markers and event
+// subscription states coexist under it. Restart recovery must read only
+// receipt-shaped records and leave the other contracts to their owners.
+func TestRecoverStreamEventsIgnoresForeignEventFiles(t *testing.T) {
+	s, job := streamJob(t)
+	if err := s.RecordStreamEvent(job, streamEvent(job)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.root, "events", "lv-evt.json"), []byte(`{"schedule_id":"lv-evt","seen":["a1"],"notify_count":1}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.root, "events", "slack-marker.json"), []byte(`{"provider":"slack","event_id":"ev1"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewSpool(s.root); err != nil {
+		t.Fatalf("restart rejected shared events dir: %v", err)
+	}
+}
+
 func TestRecoveryRejectsCrossAudienceReceipt(t *testing.T) {
 	s, job := streamJob(t)
 	event := streamEvent(job)
