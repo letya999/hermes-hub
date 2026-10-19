@@ -135,6 +135,32 @@ func TestModelRelayRejectsUpstreamRedirect(t *testing.T) {
 	}
 }
 
+// The metadata-endpoint variant only goes red where 169.254.169.254 answers
+// (cloud VMs); a reachable local target makes "never follow" falsifiable
+// everywhere.
+func TestModelRelayNeverFollowsReachableRedirect(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", target.URL + "/meta-data")
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer upstream.Close()
+	handler, err := modelRelayHandler(oneHop(t, "one="+upstream.URL), "synthetic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"synthetic"}`))
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(response, req)
+	if response.Code != http.StatusBadGateway || response.Header().Get("Location") != "" {
+		t.Fatalf("upstream redirect escaped: %d %v", response.Code, response.Header())
+	}
+}
+
 func TestModelRelayIgnoresEnvironmentProxy(t *testing.T) {
 	proxyCalls := 0
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

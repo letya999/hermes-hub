@@ -108,7 +108,11 @@ func modelRelayHandler(hops []*modelHop, selectedModel string) (http.Handler, er
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
-	client := &http.Client{Transport: transport}
+	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error {
+		// The 3xx must reach modelCall as the hop verdict — following it would
+		// let an upstream point the relay at arbitrary hosts (e.g. IMDS).
+		return http.ErrUseLastResponse
+	}}
 
 	call := func(ctx context.Context, method, path, auth, ctype string, body []byte) (*modelHop, *http.Response, error) {
 		return modelCall(ctx, client, hops, method, path, auth, ctype, body)
@@ -337,7 +341,9 @@ func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (ht
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
-	client := &http.Client{Transport: transport}
+	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		// Same review-contract fences as the env relay: fixed paths only, no
 		// query strings, absolute-form targets or protocol upgrades.

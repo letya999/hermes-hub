@@ -64,6 +64,36 @@ func TestModelRelayRegistryKeepsStrictContract(t *testing.T) {
 	}
 }
 
+// The registry client shares the static relay's verdict path; a reachable
+// redirect target proves the client never follows (the 169.254.169.254
+// variant only goes red where IMDS answers).
+func TestModelRelayRegistryNeverFollowsReachableRedirect(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", target.URL + "/meta-data")
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer upstream.Close()
+	dir := t.TempDir()
+	registry := filepath.Join(dir, "models.yaml")
+	content := "providers:\n  p:\n    url: " + upstream.URL + "\nmodels:\n  synthetic:\n    ladder:\n      - {provider: p, model: m1}\n"
+	if err := os.WriteFile(registry, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := modelRelayRegistryHandler(registry, filepath.Join(dir, "sel.json"), "alice", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, chatRequest())
+	if response.Code != http.StatusBadGateway || response.Header().Get("Location") != "" {
+		t.Fatalf("registry upstream redirect escaped: %d %v", response.Code, response.Header())
+	}
+}
+
 // A request naming an explicitly granted logical model routes to that
 // ladder, beating the saved selection.
 func TestModelRelayRegistryRequestModelWinsOverSelection(t *testing.T) {
