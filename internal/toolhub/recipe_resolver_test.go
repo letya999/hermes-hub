@@ -657,10 +657,10 @@ func TestResolveDisagreeingRepoClaimsStayDraft(t *testing.T) {
 	const commit = "0123456789abcdef0123456789abcdef01234567"
 	source := api.ArtifactSource{Repository: "https://github.com/acme/weather", CommitSHA: commit}
 	resolution, err := (api.RecipeResolver{}).Resolve(context.Background(), source, resolverContext(t, map[string]string{
-		"server.json":   `{"repository":"https://github.com/acme/weather","remotes":[{"url":"https://mcp.example/weather"}],"environment":{"API_TOKEN":"required"}}`,
-		".env.example":  "# API_TOKEN is optional here\nAPI_TOKEN=\n",
-		"README.md":     "docs",
-		"main.go":       "package main",
+		"server.json":  `{"repository":"https://github.com/acme/weather","remotes":[{"url":"https://mcp.example/weather"}],"environment":{"API_TOKEN":"required"}}`,
+		".env.example": "# API_TOKEN is optional here\nAPI_TOKEN=\n",
+		"README.md":    "docs",
+		"main.go":      "package main",
 	}))
 	if err != nil {
 		t.Fatal(err)

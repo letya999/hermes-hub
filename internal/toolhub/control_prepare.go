@@ -439,6 +439,16 @@ func (c *ControlPlane) rebuildCredentialSource(onboarding *api.Onboarding, sourc
 		return fmt.Errorf("%w: credential_source %q not among %s", api.ErrInvalid, source, strings.Join(sources, ", "))
 	}
 	recipe.Connection = filtered
+	// The owner's pick is evidence on the credential ladder, not a silent
+	// rewrite: every surviving field gains an R7 (owner words) entry naming
+	// the confirmed source so re-resolution can explain the contract.
+	for _, field := range filtered.Fields {
+		required, secret := field.Required, field.Secret
+		recipe.Ledger = append(recipe.Ledger, api.LedgerEntry{
+			Source: "owner", Ref: source, Rank: api.RankR7,
+			Claim: api.Claim{Field: field.Name, Required: &required, Secret: &secret, Delivery: field.Delivery, Target: field.Target},
+		})
+	}
 	digest, err := c.Store.PutRecipe(*recipe)
 	if err != nil {
 		return err

@@ -218,3 +218,40 @@ func TestOnboardingFixtureShrinks(t *testing.T) {
 		t.Fatalf("shared recipe deduplicated to %d copies", len(raw["recipes"].(map[string]any)))
 	}
 }
+
+func TestCredentialSourceRecordsLedgerEntry(t *testing.T) {
+	// credential_source is owner-stated contract evidence, recorded on the
+	// credential ladder at owner-words rank — not an agent's silent choice.
+	review := func(context.Context, api.ArtifactSource, *api.RecipeCandidate) (api.SourceReview, error) {
+		definition := userMCPDefinition()
+		definition.Credentials = []api.CredentialInput{{Name: "REQ_TOKEN", Required: true}, {Name: "EXTRA_PROJECT"}}
+		return api.SourceReview{Definition: definition, Permissions: api.ToolNames(definition), Effects: api.EffectNames(definition), ReviewDigest: "sha256:review",
+			Recipe: &api.RecipeResolution{Connection: api.ConnectionRecipe{Fields: []api.ConnectionField{
+				{Name: "REQ_TOKEN", Type: "secret", Required: true, Secret: true, Delivery: "env", Target: "REQ_TOKEN", Source: "server.json"},
+				{Name: "EXTRA_PROJECT", Type: "string", Required: false, Delivery: "env", Target: "EXTRA_PROJECT", Source: ".env.example"},
+			}}}}, nil
+	}
+	control := asyncFixture(t, review)
+	control.PrepareSyncWindow = -1
+	if _, err := control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{
+		"source": githubCommitURL(), "request_key": "src-ledger"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{
+		"source": githubCommitURL(), "request_key": "src-ledger", "credential_source": "server.json"}); err != nil {
+		t.Fatal(err)
+	}
+	onboarding, _ := control.Store.FindOnboardingByKey(aliceAuth(), "src-ledger")
+	if onboarding.Recipe == nil {
+		t.Fatal("onboarding lost its recipe")
+	}
+	var found bool
+	for _, entry := range onboarding.Recipe.Ledger {
+		if entry.Rank == api.RankR7 && entry.Ref == "server.json" && entry.Claim.Field == "REQ_TOKEN" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("owner-confirmed source left no R7 ledger entry: %+v", onboarding.Recipe.Ledger)
+	}
+}
