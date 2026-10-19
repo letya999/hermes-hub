@@ -92,6 +92,9 @@ func PostPrepareNotice(ctx context.Context, auth identity.Envelope, onboarding O
 }
 
 func credentialNoticeURL(onboarding Onboarding) string {
+	if origin := PublicOrigin(); origin != "" {
+		return ActionURL(origin, onboarding)
+	}
 	return ActionURL(FormOriginForListen(os.Getenv("HUB_TOOLHUB_LISTEN")), onboarding)
 }
 
@@ -105,10 +108,10 @@ func ActionURL(origin string, onboarding Onboarding) string {
 	// A live remove link outranks other pending actions: the preview mints it
 	// while the onboarding still sits in its previous phase.
 	if onboarding.RemoveNonce != "" && onboarding.Phase != PhaseRemoved {
-		return origin + "/remove/" + url.PathEscape(onboarding.OnboardingID) + "?nonce=" + url.QueryEscape(onboarding.RemoveNonce)
+		return origin + "/remove/" + url.PathEscape(onboarding.OnboardingID) + "?t=" + url.QueryEscape(onboarding.RemoveNonce)
 	}
 	if onboarding.Phase == PhaseAwaitingConfirm && onboarding.ConfirmationNonce != "" && !onboarding.ConfirmationUsed {
-		return origin + "/confirm/" + url.PathEscape(onboarding.OnboardingID) + "?nonce=" + url.QueryEscape(onboarding.ConfirmationNonce)
+		return origin + "/confirm/" + url.PathEscape(onboarding.OnboardingID) + "?t=" + url.QueryEscape(onboarding.ConfirmationNonce)
 	}
 	// External action links (provider OAuth, broker connect) hop through
 	// /connect/ so the destination URL and its state never sit in chat text.
@@ -125,7 +128,7 @@ func ActionURL(origin string, onboarding Onboarding) string {
 	if onboarding.Phase != PhaseAwaitingCreds || onboarding.FormNonce == "" {
 		return ""
 	}
-	return origin + "/credentials/" + url.PathEscape(onboarding.OnboardingID) + "?nonce=" + url.QueryEscape(onboarding.FormNonce)
+	return origin + "/credentials/" + url.PathEscape(onboarding.OnboardingID) + "?t=" + url.QueryEscape(onboarding.FormNonce)
 }
 
 func ErrString(text string) error {

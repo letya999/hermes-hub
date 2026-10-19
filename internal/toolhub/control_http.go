@@ -874,9 +874,20 @@ func linkToken(r *http.Request) string {
 	return r.URL.Query().Get("nonce")
 }
 
+type publicSurfaceKey struct{}
+
+// withPublicSurface marks a request as arriving on the dedicated public
+// listener — the listener itself is the exposure gate.
+func withPublicSurface(ctx context.Context) context.Context {
+	return context.WithValue(ctx, publicSurfaceKey{}, true)
+}
+
 func loopbackHTTP(r *http.Request) bool {
 	if r == nil {
 		return false
+	}
+	if marked, _ := r.Context().Value(publicSurfaceKey{}).(bool); marked {
+		return true
 	}
 	host := r.Host
 	if h, _, err := net.SplitHostPort(host); err == nil {

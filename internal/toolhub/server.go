@@ -254,6 +254,9 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 	}
 	control.SourceResolver = api.ResolveGitHubSource
 	control.FormOrigin = api.FormOriginForListen(config.Listen)
+	if public := api.PublicOrigin(); public != "" {
+		control.FormOrigin = public
+	}
 	artifacts, seccomp := api.ControlArtifactPaths(control.WorkloadRoot)
 	control.Reviewer = api.DefaultSourceReviewerWithCatalogs(artifacts, seccomp, control.RecipeCatalogs)
 	cliArtifacts, err := CLIArtifactPipelineFromEnv()
@@ -317,6 +320,12 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 type projectionEndpoint struct {
 	http.Handler
 	gateway *Gateway
+}
+
+// PublicHandler is the opt-in public listener surface — only human-action
+// routes, no control or gateway paths.
+func (e *projectionEndpoint) PublicHandler() http.Handler {
+	return e.gateway.PublicMux()
 }
 
 func (h *projectionEndpoint) RefreshProjection() error { return h.gateway.RefreshProjection() }

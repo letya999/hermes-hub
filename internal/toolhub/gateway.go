@@ -108,6 +108,25 @@ func (g *Gateway) Handler() (http.Handler, error) {
 	return mux, nil
 }
 
+// PublicMux is the opt-in public listener surface (HUB_PUBLIC_ORIGIN): only
+// human-action pages are registered — control and gateway paths do not exist
+// here at all. Requests arriving on it carry a marker that lets them past the
+// loopback gate.
+func (g *Gateway) PublicMux() *http.ServeMux {
+	mux := http.NewServeMux()
+	wrap := func(h http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			h(w, r.WithContext(withPublicSurface(r.Context())))
+		}
+	}
+	mux.Handle("/credentials/", wrap(g.serveCredentials))
+	mux.Handle("/confirm/", wrap(g.serveConfirm))
+	mux.Handle("/remove/", wrap(g.serveRemove))
+	mux.Handle("/connect/", wrap(g.serveConnect))
+	mux.Handle("/oauth/callback", wrap(g.serveOAuthCallback))
+	return mux
+}
+
 // ConnectorView is the read-only per-principal inventory for /connections:
 // the same data tools/list projects, grouped by definition, without the MCP
 // handshake. Token auth resolves the envelope exactly like the MCP endpoint.

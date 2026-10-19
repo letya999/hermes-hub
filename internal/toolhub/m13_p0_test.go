@@ -473,7 +473,7 @@ func TestRemovePreviewSendsConfirmationLink(t *testing.T) {
 		t.Fatalf("notice carried no remove link: %v", noticed[len(noticed)-1])
 	}
 	latest, _ := store.onboarding("onb-remove-link")
-	if !strings.Contains(link, "nonce="+latest.RemoveNonce) {
+	if !strings.Contains(link, "t="+latest.RemoveNonce) {
 		t.Fatalf("notice link does not carry the minted nonce: %q", link)
 	}
 }
@@ -525,7 +525,7 @@ func TestExpiredConfirmationRenewalSendsLink(t *testing.T) {
 		t.Fatal("renewed confirmation did not notify the channel")
 	}
 	link, _ := noticed[len(noticed)-1]["form_url"].(string)
-	if !strings.Contains(link, "/confirm/onb-expired-conf") || !strings.Contains(link, "nonce="+latest.ConfirmationNonce) {
+	if !strings.Contains(link, "/confirm/onb-expired-conf") || !strings.Contains(link, "t="+latest.ConfirmationNonce) {
 		t.Fatalf("notice carried no confirm link: %v", noticed[len(noticed)-1])
 	}
 }
@@ -577,7 +577,7 @@ func TestExpiredCredentialFormRenewalSendsLink(t *testing.T) {
 		t.Fatal("renewed credential form did not notify the channel")
 	}
 	link, _ := noticed[len(noticed)-1]["form_url"].(string)
-	if !strings.Contains(link, "/credentials/onb-expired-form") || !strings.Contains(link, "nonce="+latest.FormNonce) {
+	if !strings.Contains(link, "/credentials/onb-expired-form") || !strings.Contains(link, "t="+latest.FormNonce) {
 		t.Fatalf("notice carried no credentials link: %v", noticed[len(noticed)-1])
 	}
 }

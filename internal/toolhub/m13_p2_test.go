@@ -4,10 +4,13 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/credstore"
+	"github.com/letya999/hermes-hub/internal/oauth"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
@@ -106,6 +109,133 @@ func TestConfirmPostWithoutTokenRejected(t *testing.T) {
 	gateway.serveConfirm(rec, req)
 	if rec.Code != http.StatusUnauthorized && rec.Code != http.StatusForbidden {
 		t.Fatalf("tokenless POST status=%d", rec.Code)
+	}
+}
+
+// S2.2: the public listener exposes only the human-action surface — a valid
+// confirm link answers even on a non-loopback Host, while control API paths
+// are invisible there.
+func TestPublicMuxServesOnlyHumanPaths(t *testing.T) {
+	gateway, _, id := confirmLinkFixture(t, "pub-token", time.Now().Add(time.Hour))
+	public := gateway.PublicMux()
+	if public == nil {
+		t.Fatal("no public mux")
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "https://hub.example.com/confirm/"+id+"?t=pub-token", nil)
+	req.Host = "hub.example.com"
+	public.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<form") {
+		t.Fatalf("public confirm status=%d", rec.Code)
+	}
+	blocked := httptest.NewRecorder()
+	ctrlReq := httptest.NewRequest(http.MethodGet, "https://hub.example.com/v1/connectors", nil)
+	ctrlReq.Host = "hub.example.com"
+	public.ServeHTTP(blocked, ctrlReq)
+	if blocked.Code != http.StatusNotFound {
+		t.Fatalf("control path on public surface status=%d", blocked.Code)
+	}
+}
+
+func TestPublicMuxServesCredentialsRemoveConnect(t *testing.T) {
+	store := NewStore()
+	grantTestControlOperations(t, store, "alice", api.ControlOperations...)
+	definition := catalogReadDefinition()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	control := &ControlPlane{Store: store, WorkloadRoot: t.TempDir(), Now: time.Now}
+	key, kerr := credstore.GenerateKey()
+	if kerr != nil {
+		t.Fatal(kerr)
+	}
+	secrets, serr := credstore.Open(credstore.Options{Path: filepath.Join(t.TempDir(), "s.enc"), Key: key})
+	if serr != nil {
+		t.Fatal(serr)
+	}
+	control.OAuth = oauth.NewBroker(secrets, nil)
+	auth := aliceAuth()
+	onboarding := api.Onboarding{
+		Schema: api.SchemaVersion, OnboardingID: "onb-pub-all", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
+		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
+		Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingCreds,
+		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
+		FormNonce: "form-tok", FormExpires: time.Now().Add(time.Hour),
+		RemoveNonce: "rm-tok", RemoveExpires: time.Now().Add(time.Hour),
+		ProviderAuthorizationURL: "https://accounts.example.com/authorize?state=st-1",
+	}
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	public := (&Gateway{Control: control}).PublicMux()
+	serve := func(path string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "https://hub.example.com"+path, nil)
+		req.Host = "hub.example.com"
+		public.ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := serve("/credentials/onb-pub-all?t=form-tok"); rec.Code != http.StatusOK {
+		t.Fatalf("public credentials status=%d", rec.Code)
+	}
+	if rec := serve("/remove/onb-pub-all?t=rm-tok"); rec.Code != http.StatusOK {
+		t.Fatalf("public remove status=%d", rec.Code)
+	}
+	rec := serve("/connect/onb-pub-all?state=st-1")
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != onboarding.ProviderAuthorizationURL {
+		t.Fatalf("public connect status=%d loc=%q", rec.Code, rec.Header().Get("Location"))
+	}
+	// /oauth/callback is registered on the public surface: with no OAuth
+	// broker wired the handler 404s itself, so assert the route exists via a
+	// non-404 answer only when a broker is present; otherwise a bare request
+	// proves routing by reaching the handler (400/403/404 are all handler
+	// answers — an unregistered path would also be 404, so we assert against
+	// the unambiguous /confirm shape already covered above and only verify
+	// registration loosely here).
+	if rec := serve("/oauth/callback?onboarding_id=missing"); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("public oauth callback status=%d", rec.Code)
+	}
+}
+
+// S2.2: the endpoint handler exposes the public surface for the second
+// listener and mints links against HUB_PUBLIC_ORIGIN when configured.
+func TestEndpointHandlerExposesPublicSurface(t *testing.T) {
+	store := NewStore()
+	auth := aliceAuth()
+	token := strings.Repeat("p", 40)
+	config := EndpointConfig{Token: token, Auth: auth, Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
+		return api.BackendResult{Text: "ok"}, nil
+	})}
+	handler, err := NewEndpointHandler(config, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, ok := handler.(interface{ PublicHandler() http.Handler })
+	if !ok || public.PublicHandler() == nil {
+		t.Fatal("endpoint does not expose a public handler")
+	}
+}
+
+func TestEndpointHandlerPublicOriginSetsFormOrigin(t *testing.T) {
+	t.Setenv("HUB_PUBLIC_ORIGIN", "https://hub.example.com")
+	store := NewStore()
+	auth := aliceAuth()
+	config := EndpointConfig{Token: strings.Repeat("p", 40), Auth: auth, Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
+		return api.BackendResult{Text: "ok"}, nil
+	})}
+	handler, err := NewEndpointHandler(config, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint, ok := handler.(*projectionEndpoint)
+	if !ok || endpoint.gateway.Control == nil {
+		t.Fatal("no control plane")
+	}
+	if endpoint.gateway.Control.FormOrigin != "https://hub.example.com" {
+		t.Fatalf("form origin=%q", endpoint.gateway.Control.FormOrigin)
 	}
 }
 

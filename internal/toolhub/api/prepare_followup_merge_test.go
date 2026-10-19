@@ -102,3 +102,20 @@ func TestCredentialNoticeURLActionLinks(t *testing.T) {
 		t.Fatalf("broker action link=%q", got)
 	}
 }
+
+// CHG-0129 S2.2: HUB_PUBLIC_ORIGIN is the opt-in operator-owned surface —
+// minted links carry it (https-only) instead of the loopback listen origin.
+func TestCredentialNoticeURLPublicOrigin(t *testing.T) {
+	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:9999")
+	t.Setenv("HUB_PUBLIC_ORIGIN", "https://hub.example.com")
+	onboarding := Onboarding{OnboardingID: "onb-pub", Phase: PhaseAwaitingConfirm,
+		ConfirmationNonce: "tok-1", ConfirmationExpires: time.Now().Add(time.Hour)}
+	if got := credentialNoticeURL(onboarding); got != "https://hub.example.com/confirm/onb-pub?t=tok-1" {
+		t.Fatalf("public link=%q", got)
+	}
+	// http public origins are not link targets: loopback stays.
+	t.Setenv("HUB_PUBLIC_ORIGIN", "http://hub.example.com")
+	if got := credentialNoticeURL(onboarding); got != "http://127.0.0.1:9999/confirm/onb-pub?t=tok-1" {
+		t.Fatalf("http origin rejected, got %q", got)
+	}
+}

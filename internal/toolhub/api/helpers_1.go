@@ -21,6 +21,17 @@ func FormOriginForListen(listen string) string {
 	return "http://" + listen
 }
 
+// PublicOrigin is the opt-in operator-owned surface for human action links
+// (HUB_PUBLIC_ORIGIN). Only https qualifies — a misconfigured http origin
+// is ignored so links never downgrade to plaintext.
+func PublicOrigin() string {
+	value := strings.TrimRight(strings.TrimSpace(os.Getenv("HUB_PUBLIC_ORIGIN")), "/")
+	if strings.HasPrefix(value, "https://") {
+		return value
+	}
+	return ""
+}
+
 func EnvOr(name, fallback string) string {
 	if value := os.Getenv(name); value != "" {
 		return value
