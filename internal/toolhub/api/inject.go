@@ -103,6 +103,28 @@ func DecryptAuthorized(backend credstore.Backend, effective EffectiveBinding) (m
 	return injected, nil
 }
 
+// ProxyStubPlan rewrites a materialized environment for proxy-delivered
+// credential inputs: the workload env keeps only the hub-managed stub while
+// the returned plan tells the egress proxy which credential reference to
+// resolve and which allowlisted hosts may receive the real value. Inputs
+// that produced no value emit no plan entry — the absence stays visible to
+// the credential-satisfaction checks that ran before this rewrite.
+func ProxyStubPlan(effective EffectiveBinding, environment map[string]string) []ProxyGrant {
+	var plan []ProxyGrant
+	for _, input := range effective.Definition.Credentials {
+		if input.Delivery != "proxy" || environment[input.Name] == "" {
+			continue
+		}
+		environment[input.Name] = ProxyStubValue
+		reference := ""
+		if effective.Credential != nil {
+			reference = effective.Credential.CredentialRefID
+		}
+		plan = append(plan, ProxyGrant{EnvName: input.Name, Reference: reference, Hosts: []string{input.Target}})
+	}
+	return plan
+}
+
 // FileBoundCredentialNames names credential inputs whose submitted content is
 // materialized as a mounted file, never an env line — file delivery is
 // verbatim body, json delivery is a mounted JSON document.

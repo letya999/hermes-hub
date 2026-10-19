@@ -148,6 +148,7 @@ func brokerRuntimeInjector(controlConfig, runtimeConfig *credentialbroker.Config
 			_ = release(false, false)
 			return api.CredentialInjection{}, fmt.Errorf("%w: %w: broker delivery %s", api.ErrIsolation, api.ErrCredentialDelivery, input)
 		}
+		proxy := api.ProxyStubPlan(effective, environment)
 		mounts := make([]api.Mount, 0, len(materialized.Mounts))
 		var checkpoint func() error
 		for _, mount := range materialized.Mounts {
@@ -156,7 +157,7 @@ func brokerRuntimeInjector(controlConfig, runtimeConfig *credentialbroker.Config
 				checkpoint = func() error { return release(true, true) }
 			}
 		}
-		return api.CredentialInjection{Environment: environment, Mounts: mounts, Checkpoint: checkpoint, Cleanup: func() error {
+		return api.CredentialInjection{Environment: environment, Mounts: mounts, Proxy: proxy, Checkpoint: checkpoint, Cleanup: func() error {
 			clear(environment)
 			clear(materialized.Env)
 			return release(false, false)

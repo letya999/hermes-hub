@@ -418,8 +418,18 @@ func credentialServicesFromEnv() (credstore.Backend, api.CredentialInjector, err
 	if err != nil {
 		return nil, nil, err
 	}
-	return backend, func(ctx context.Context, effective api.EffectiveBinding) (api.CredentialInjection, error) {
+	return backend, LocalCredentialInjector(backend), nil
+}
+
+// LocalCredentialInjector materializes admitted credentials from the local
+// encrypted store. Proxy-delivered inputs emit only the hub-managed stub in
+// env; the egress-proxy plan rides along on the injection.
+func LocalCredentialInjector(backend credstore.Backend) api.CredentialInjector {
+	return func(ctx context.Context, effective api.EffectiveBinding) (api.CredentialInjection, error) {
 		env, err := api.DecryptAuthorized(backend, effective)
-		return api.CredentialInjection{Environment: env}, err
-	}, nil
+		if err != nil {
+			return api.CredentialInjection{}, err
+		}
+		return api.CredentialInjection{Environment: env, Proxy: api.ProxyStubPlan(effective, env)}, nil
+	}
 }

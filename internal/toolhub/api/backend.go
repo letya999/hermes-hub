@@ -117,9 +117,24 @@ func MergeEgressHosts(egress []string, hosts []string) []string {
 	return merged
 }
 
+// ProxyStubValue is the only value a proxy-delivered credential ever shows
+// in workload environment: the real value stays with the Credential Broker,
+// and the egress proxy resolves the reference at request time.
+const ProxyStubValue = "hub-managed"
+
+// ProxyGrant is one egress-proxy plan entry: which env stub the workload
+// sees, the credential reference the proxy resolves, and the allowlisted
+// hosts the real value may be injected toward.
+type ProxyGrant struct {
+	EnvName   string   `json:"env_name"`
+	Reference string   `json:"reference"`
+	Hosts     []string `json:"hosts"`
+}
+
 type CredentialInjection struct {
 	Environment map[string]string
 	Mounts      []Mount
+	Proxy       []ProxyGrant
 	Cleanup     func() error
 	// Checkpoint is called only after the backend has successfully quiesced
 	// a workload using Broker state. Cleanup on a failed call never snapshots.

@@ -77,7 +77,7 @@ func (r ConnectionRecipe) Validate() error {
 		if !CredentialPattern.MatchString(field.Name) || seen[field.Name] {
 			return fmt.Errorf("%w: invalid connection field", ErrInvalid)
 		}
-		if field.Delivery != "env" && field.Delivery != "file" && field.Delivery != "json" && field.Delivery != "http_header" && field.Delivery != "oauth" {
+		if field.Delivery != "env" && field.Delivery != "file" && field.Delivery != "json" && field.Delivery != "http_header" && field.Delivery != "oauth" && field.Delivery != "proxy" {
 			return fmt.Errorf("%w: %q", ErrUnsupportedCredentialContract, field.Delivery)
 		}
 		if field.Target != "" && strings.ContainsAny(field.Target, "\x00\r\n") {

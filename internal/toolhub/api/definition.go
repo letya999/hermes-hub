@@ -315,6 +315,18 @@ func (d ToolDefinition) Validate() error {
 			if input.Target != "" || input.Prefix != "" {
 				return fmt.Errorf("%w: json credential carries no header/mount target", ErrInvalid)
 			}
+		case "proxy":
+			// The workload env carries only the hub-managed stub; the egress
+			// proxy plan injects the real value, and only toward a host the
+			// reviewed egress allowlist already declares.
+			if !slices.ContainsFunc(d.Execution.Egress, func(host string) bool {
+				return strings.EqualFold(strings.TrimSpace(host), input.Target)
+			}) {
+				return fmt.Errorf("%w: proxy credential target %q must be a declared egress host", ErrInvalid, input.Target)
+			}
+			if len(input.Prefix) > 128 || strings.ContainsAny(input.Prefix, "\x00\r\n") {
+				return fmt.Errorf("%w: invalid proxy credential prefix", ErrInvalid)
+			}
 		case "oauth":
 			// A browser flow mints these at runtime; the value store and the
 			// credential form cannot satisfy a static oauth field.

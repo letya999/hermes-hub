@@ -327,10 +327,7 @@ func runConnector(ctx context.Context, args []string) error {
 			return err
 		}
 		gateway := &toolhub.Gateway{Store: registry, Backend: api.RoutingBackend{Provider: api.PersonalProviderBackend{}, MCP: api.MCPBackend{Root: os.Getenv("HUB_STATE"), Token: os.Getenv("TOOLHIVE_VMCP_TOKEN"), AdmissionVerifier: admission}},
-			Injector: func(_ context.Context, e api.EffectiveBinding) (api.CredentialInjection, error) {
-				env, err := api.DecryptAuthorized(backend, e)
-				return api.CredentialInjection{Environment: env}, err
-			},
+			Injector: toolhub.LocalCredentialInjector(backend),
 			AuditWrite: func(_ string, fields map[string]string) error {
 				event := audit.NewEvent("tool-call", auth.PrincipalID, fields["outcome"])
 				event.ContextID, event.RuntimeID, event.ConnectionID, event.PolicyRevision = auth.ContextID, auth.RuntimeID, fields["connection_id"], auth.PolicyVersion

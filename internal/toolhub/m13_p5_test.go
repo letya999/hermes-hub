@@ -2,10 +2,20 @@ package toolhub
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
 
+	brokerv1 "github.com/letya999/credential-broker/api/v1"
+	"github.com/letya999/hermes-hub/internal/credentialbroker"
+	"github.com/letya999/hermes-hub/internal/credstore"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
@@ -127,5 +137,101 @@ func TestRecipeFieldFormatReachesHint(t *testing.T) {
 	}})
 	if len(optional) != 1 || optional[0].Format != `^https://` || optional[0].MaxLength != 64 {
 		t.Fatalf("optional hint=%+v", optional)
+	}
+}
+
+// S6.3: a proxy-delivered credential never reaches the workload env — the
+// injector emits the "hub-managed" stub and the egress-proxy plan carries
+// the credential reference plus its allowlisted host.
+func TestProxyDeliveryStubAndPlan(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "toolhub.private")
+	if err := os.WriteFile(keyPath, private, 0600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/leases":
+			_ = json.NewEncoder(w).Encode(brokerv1.Lease{ID: "lease_1", GrantID: "grant_1", CredentialID: "credential_1"})
+		case "/v1/runtime/leases/lease_1/materialize":
+			_ = json.NewEncoder(w).Encode(brokerv1.Materialized{Env: map[string]string{"ACME_API_KEY": "real-secret-token"}})
+		case "/v1/runtime/leases/lease_1/release":
+			_ = json.NewEncoder(w).Encode(map[string]any{})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
+	effective := api.EffectiveBinding{
+		Binding:    api.ToolBinding{ToolBindingID: "binding_1", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1"},
+		WorkloadID: "workload_1",
+		Definition: api.ToolDefinition{
+			DefinitionID: "acme-api",
+			Credentials:  []api.CredentialInput{{Name: "ACME_API_KEY", Required: true, Delivery: "proxy", Target: "api.acme.example"}},
+		},
+		Credential: &api.CredentialReference{CredentialRefID: "cred_acme_1", Backend: "credential-broker", BrokerGrantID: "grant_1", Keys: []string{"ACME_API_KEY"}, BrokerEnv: map[string]string{"ACME_API_KEY": "ACME_API_KEY"}},
+	}
+	injection, err := brokerRuntimeInjector(&cfg, &cfg)(t.Context(), effective)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := injection.Environment["ACME_API_KEY"]; got != api.ProxyStubValue {
+		t.Fatalf("workload env=%q, want the %q stub", got, api.ProxyStubValue)
+	}
+	if len(injection.Proxy) != 1 || injection.Proxy[0].EnvName != "ACME_API_KEY" ||
+		injection.Proxy[0].Reference != "cred_acme_1" ||
+		!slices.Equal(injection.Proxy[0].Hosts, []string{"api.acme.example"}) {
+		t.Fatalf("proxy plan=%+v", injection.Proxy)
+	}
+}
+
+// S6.3: the local credential path stubs proxy inputs the same way — the
+// workload env never carries the real value there either.
+func TestProxyDeliveryLocalInjectorStub(t *testing.T) {
+	key, err := credstore.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	storePath := filepath.Join(t.TempDir(), "secrets.enc")
+	keyPath := filepath.Join(t.TempDir(), "store.key")
+	if err := credstore.WriteKeyFile(keyPath, key); err != nil {
+		t.Fatal(err)
+	}
+	backend, err := credstore.Open(credstore.Options{Path: storePath, Key: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.Put("loc_acme", "alice", map[string]string{"ACME_API_KEY": "real-secret-token"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_CREDENTIAL_STORE", storePath)
+	t.Setenv("HUB_CREDENTIAL_KEY_FILE", keyPath)
+	_, injector, err := credentialServicesFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	effective := api.EffectiveBinding{
+		Binding: api.ToolBinding{ToolBindingID: "binding_1", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1"},
+		Definition: api.ToolDefinition{
+			DefinitionID: "acme-api",
+			Credentials:  []api.CredentialInput{{Name: "ACME_API_KEY", Required: true, Delivery: "proxy", Target: "api.acme.example"}},
+		},
+		Credential: &api.CredentialReference{CredentialRefID: "cred_acme_1", Locator: "loc_acme", Keys: []string{"ACME_API_KEY"}},
+	}
+	injection, err := injector(t.Context(), effective)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := injection.Environment["ACME_API_KEY"]; got != api.ProxyStubValue {
+		t.Fatalf("local injector env=%q, want the %q stub", got, api.ProxyStubValue)
+	}
+	if len(injection.Proxy) != 1 || injection.Proxy[0].Reference != "cred_acme_1" ||
+		!slices.Equal(injection.Proxy[0].Hosts, []string{"api.acme.example"}) {
+		t.Fatalf("local proxy plan=%+v", injection.Proxy)
 	}
 }
