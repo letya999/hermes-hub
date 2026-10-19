@@ -15,7 +15,7 @@ slices:
   S4.1-ownership-labels: done
   S4.2-finalizer-ladder: done
   S4.3-reconciler: in_progress
-  S4.4-connection-locks: not_started
+  S4.4-connection-locks: done
   S4.5-store-compaction: not_started
   S4.6-tool-surface-digest: not_started
   S4.7-docs-closeout: not_started

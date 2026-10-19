@@ -275,6 +275,15 @@ func (s *Store) enableWithReady(ctx context.Context, auth identity.Envelope, def
 					return api.ToolBinding{}, err
 				}
 				s.mu.Lock()
+				// Revoke wins: a connection revoked while the probe ran must
+				// not be re-enabled by the recheck commit.
+				if existing.ConnectionID != "" {
+					current, ok := s.connections[existing.ConnectionID]
+					if !ok || current.Status != api.ActiveStatus {
+						s.mu.Unlock()
+						return api.ToolBinding{}, fmt.Errorf("%w: connection changed during readiness", api.ErrRevoked)
+					}
+				}
 			}
 			s.supersedeOtherBindingsLocked(auth, definitionID, existing.ToolBindingID)
 			result := s.bindings[existing.ToolBindingID]
@@ -319,6 +328,18 @@ func (s *Store) enableWithReady(ctx context.Context, auth identity.Envelope, def
 			return api.ToolBinding{}, err
 		}
 		s.mu.Lock()
+		// The probe ran unlocked; a revoke in that window already bumped the
+		// connection revision, so committing the reserved binding now would
+		// resurrect a dead authority. Revoke wins: drop the reservation and
+		// fail the enable.
+		if binding.ConnectionID != "" {
+			current, ok := s.connections[binding.ConnectionID]
+			if !ok || current.Revision != binding.ConnectionRevision || current.Status != api.ActiveStatus {
+				delete(s.bindings, binding.ToolBindingID)
+				s.mu.Unlock()
+				return api.ToolBinding{}, fmt.Errorf("%w: connection changed during readiness", api.ErrRevoked)
+			}
+		}
 	}
 	s.bindings[binding.ToolBindingID] = binding
 	s.supersedeOtherBindingsLocked(auth, definitionID, binding.ToolBindingID)

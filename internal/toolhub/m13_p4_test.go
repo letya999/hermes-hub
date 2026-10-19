@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -543,6 +544,70 @@ func TestReconcilerMaxScanBoundsPass(t *testing.T) {
 	}
 	if purged != 1 {
 		t.Fatalf("MaxScan ignored: purged=%d", purged)
+	}
+}
+
+// S4.4: a connection revoked while its readiness probe runs outside the
+// store lock must win — the commit re-checks the reserved connection
+// revision and refuses to activate a binding on a revoked connection.
+func TestRevokeWinsDuringProbe(t *testing.T) {
+	store, auth, _, _ := managedStore(t)
+	revoked := make(chan struct{})
+	var once sync.Once
+	_, err := store.EnableReady(context.Background(), auth, "google-work", "2.0.0", func(context.Context, api.EffectiveBinding) error {
+		once.Do(func() {
+			if err := store.SetConnectionStatus("google-work", api.RevokedStatus); err != nil {
+				t.Errorf("revoke during probe: %v", err)
+			}
+			close(revoked)
+		})
+		return nil
+	})
+	<-revoked
+	var committed api.ToolBinding
+	for _, b := range store.bindings {
+		if b.DefinitionID == "google-work" && b.DefinitionVersion == "2.0.0" && b.PrincipalID == auth.PrincipalID {
+			committed = b
+		}
+	}
+	if err == nil && committed.Status == api.ActiveStatus {
+		t.Fatalf("revoked connection committed active binding: %+v", committed)
+	}
+	if committed.ToolBindingID != "" {
+		if authErr := store.Authorize(auth, committed.ToolBindingID, func(api.EffectiveBinding) error { return nil }); authErr == nil {
+			t.Fatal("Authorize allowed a revoked connection")
+		}
+	}
+}
+
+// S4.4: the readiness probe runs outside the store lock — unrelated
+// principals keep reading projections while one connection's probe is
+// still in flight.
+func TestProbeDoesNotBlockStore(t *testing.T) {
+	store, auth, _, _ := managedStore(t)
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		_, err := store.EnableReady(context.Background(), auth, "google-work", "2.0.0", func(context.Context, api.EffectiveBinding) error {
+			<-release
+			return nil
+		})
+		done <- err
+	}()
+	deadline := time.After(2 * time.Second)
+	for i := 0; i < 20; i++ {
+		if _, err := store.ProjectionRevision(auth); err != nil {
+			t.Fatal(err)
+		}
+	}
+	close(release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-deadline:
+		t.Fatal("enable did not converge")
 	}
 }
 
