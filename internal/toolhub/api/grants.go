@@ -149,8 +149,11 @@ type Onboarding struct {
 	Error            string `json:"error,omitempty"`
 	// ErrorCode is the stable machine-readable companion of Error; it is set
 	// from the failure cause via ErrorCode() and survives snapshot reloads.
-	ErrorCode string            `json:"error_code,omitempty"`
-	Recipe    *RecipeResolution `json:"recipe,omitempty"`
+	ErrorCode string `json:"error_code,omitempty"`
+	// RecipeDigest references the content-addressed recipe stored under
+	// snapshot recipes/<sha256>; the resolution itself is never embedded.
+	RecipeDigest string            `json:"recipe_digest,omitempty"`
+	Recipe       *RecipeResolution `json:"-"`
 	// CredentialSources records every distinct metadata source the recipe
 	// discovered credential declarations in. When several are present the
 	// caller may ask the user which one to trust and replay prepare_source

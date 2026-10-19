@@ -2,6 +2,9 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"path"
 	"strings"
@@ -152,6 +155,17 @@ type RecipeResolution struct {
 	// catalog responses land here (kept or ignored) before repository-file
 	// claims, so re-resolution is auditable without repeating fetches.
 	Ledger []LedgerEntry `json:"ledger,omitempty"`
+}
+
+// ResolutionDigest content-addresses a resolution: the same claims, warnings
+// and evidence always encode to the same bytes, so the digest deduplicates.
+func ResolutionDigest(resolution RecipeResolution) (string, error) {
+	body, err := json.Marshal(resolution)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(body)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 func ScopeRecipeContext(files map[string][]byte, subfolder string) (map[string][]byte, error) {

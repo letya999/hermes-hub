@@ -459,8 +459,8 @@ func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map
 		"effects":        onboarding.Effects,
 		"principal_from": "request",
 	}
-	if onboarding.Recipe != nil {
-		body["recipe"] = onboarding.Recipe
+	if recipe := c.recipeOf(onboarding); recipe != nil {
+		body["recipe"] = recipe
 	}
 	if len(onboarding.CredentialSources) > 0 {
 		body["credential_sources"] = onboarding.CredentialSources

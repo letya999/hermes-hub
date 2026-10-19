@@ -33,7 +33,7 @@ func statStoreStamp(path string) (storeStamp, bool) {
 }
 
 func NewStore() *Store {
-	return &Store{definitions: map[string]api.ToolDefinition{}, connections: map[string]api.Connection{}, credentials: map[string]api.CredentialReference{}, bindings: map[string]api.ToolBinding{}, workloads: map[string]api.WorkloadInstance{}, projectionRevisions: map[string]uint64{}, grants: map[string]api.Grant{}, onboardings: map[string]api.Onboarding{}, publications: map[string]api.DefinitionPublication{}, sharedPolicies: map[string]api.SharedCredentialPolicy{}, capabilityPolicies: map[string]api.CapabilityPolicy{}, capabilityProfiles: map[string]api.CapabilityProfile{}, exclusions: map[string]api.ProjectionExclusion{}}
+	return &Store{definitions: map[string]api.ToolDefinition{}, connections: map[string]api.Connection{}, credentials: map[string]api.CredentialReference{}, bindings: map[string]api.ToolBinding{}, workloads: map[string]api.WorkloadInstance{}, projectionRevisions: map[string]uint64{}, grants: map[string]api.Grant{}, onboardings: map[string]api.Onboarding{}, recipes: map[string]api.RecipeResolution{}, publications: map[string]api.DefinitionPublication{}, sharedPolicies: map[string]api.SharedCredentialPolicy{}, capabilityPolicies: map[string]api.CapabilityPolicy{}, capabilityProfiles: map[string]api.CapabilityProfile{}, exclusions: map[string]api.ProjectionExclusion{}}
 }
 
 func (s *Store) Save(path string) error {
@@ -89,7 +89,18 @@ func (s *Store) saveLocked(path string) error {
 		state.Grants = append(state.Grants, grant)
 	}
 	for _, onboarding := range s.onboardings {
+		// A registered definition is already persisted once in the registry;
+		// embedding it per onboarding duplicates the same bytes. Drafts still
+		// awaiting admission keep their copy — nothing else can rebuild it.
+		if onboarding.Definition != nil && !onboarding.AdmissionPending {
+			if _, ok := s.definitions[definitionKey(onboarding.DefinitionID, onboarding.DefinitionVersion)]; ok {
+				onboarding.Definition = nil
+			}
+		}
 		state.Onboardings = append(state.Onboardings, onboarding)
+	}
+	if len(s.recipes) > 0 {
+		state.Recipes = s.recipes
 	}
 	for _, pub := range s.publications {
 		state.Publications = append(state.Publications, pub)
@@ -258,6 +269,12 @@ func Load(path string) (*Store, error) {
 			return nil, err
 		}
 		store.onboardings[onboarding.OnboardingID] = onboarding
+	}
+	for digest, resolution := range state.Recipes {
+		if check, err := api.ResolutionDigest(resolution); err != nil || check != digest {
+			return nil, fmt.Errorf("%w: persisted recipe digest", api.ErrInvalid)
+		}
+		store.recipes[digest] = resolution
 	}
 	for _, pub := range state.Publications {
 		if err := pub.Validate(); err != nil {

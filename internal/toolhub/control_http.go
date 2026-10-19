@@ -306,8 +306,8 @@ func (g *Gateway) serveCredentials(w http.ResponseWriter, r *http.Request) {
 			b.WriteString(`<form method="post" enctype="multipart/form-data">`)
 			b.WriteString("<input type=\"hidden\" name=\"nonce\" value=\"" + html.EscapeString(onboarding.FormNonce) + "\">")
 		}
-		if onboarding.Recipe != nil {
-			for _, alternative := range onboarding.Recipe.Connection.Alternatives {
+		if recipe := g.Control.recipeOf(onboarding); recipe != nil {
+			for _, alternative := range recipe.Connection.Alternatives {
 				if alternative.URL == "" {
 					continue
 				}

@@ -389,6 +389,11 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 	if review.Recipe != nil {
 		copyRecipe := *review.Recipe
 		onboarding.Recipe = &copyRecipe
+		digest, err := c.Store.PutRecipe(copyRecipe)
+		if err != nil {
+			return failPrepare(err)
+		}
+		onboarding.RecipeDigest = digest
 		onboarding.Required = credentialHintsForRecipe(review.Definition, review.Recipe.Connection)
 	}
 	// Recipe hints can name required inputs the secret-name heuristic missed —
@@ -425,14 +430,21 @@ func recipeCredentialSources(recipe *api.RecipeResolution) []string {
 // copy are rebuilt from that source alone; the registered definition and the
 // reviewed broker contract stay unchanged.
 func (c *ControlPlane) rebuildCredentialSource(onboarding *api.Onboarding, source string) error {
-	if onboarding == nil || onboarding.Recipe == nil {
+	recipe := c.recipeOf(*onboarding)
+	if onboarding == nil || recipe == nil {
 		return fmt.Errorf("%w: credential_source %q has no discovered recipe to filter", api.ErrInvalid, source)
 	}
-	filtered, sources := api.FilterConnectionSource(onboarding.Recipe.Connection, source)
-	if len(filtered.Fields) == 0 && len(onboarding.Recipe.Connection.Fields) > 0 {
+	filtered, sources := api.FilterConnectionSource(recipe.Connection, source)
+	if len(filtered.Fields) == 0 && len(recipe.Connection.Fields) > 0 {
 		return fmt.Errorf("%w: credential_source %q not among %s", api.ErrInvalid, source, strings.Join(sources, ", "))
 	}
-	onboarding.Recipe.Connection = filtered
+	recipe.Connection = filtered
+	digest, err := c.Store.PutRecipe(*recipe)
+	if err != nil {
+		return err
+	}
+	onboarding.Recipe = recipe
+	onboarding.RecipeDigest = digest
 	defForHints := api.ToolDefinition{Credentials: filtered.CredentialInputs()}
 	if onboarding.Definition != nil {
 		onboarding.Definition.Credentials = defForHints.Credentials
@@ -520,4 +532,19 @@ func selfInstallArtifactPresent(definition api.ToolDefinition) bool {
 	defer root.Close()
 	info, err := root.Lstat(api.ArtifactObjectName(digest))
 	return err == nil && info.Mode().IsRegular()
+}
+
+// recipeOf resolves an onboarding's recipe: the in-memory copy when present,
+// otherwise the content-addressed store entry referenced by its digest.
+func (c *ControlPlane) recipeOf(onboarding api.Onboarding) *api.RecipeResolution {
+	if onboarding.Recipe != nil {
+		return onboarding.Recipe
+	}
+	if c.Store == nil || onboarding.RecipeDigest == "" {
+		return nil
+	}
+	if resolution, err := c.Store.Recipe(onboarding.RecipeDigest); err == nil {
+		return &resolution
+	}
+	return nil
 }

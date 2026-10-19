@@ -16,7 +16,7 @@ slices:
   S1.2-rank-vocabulary: done
   S1.3-pure-ledger-resolution: done
   S1.4-registry-first-wiring: done
-  S1.5-recipe-store-onboarding-digest: not_started
+  S1.5-recipe-store-onboarding-digest: done
   S1.6-credential-source-ledger-entry: not_started
   S1.7-golden-corpus: not_started
   S1.8-docs: not_started
@@ -28,6 +28,7 @@ validation:
   live_acceptance: not_started
 evidence:
   - "S1.1: ledger.go types + canonical sha256 digest + secret rejection (ec5a2fd)"
+  - "S1.5: Store.PutRecipe/Recipe content-addressed snapshot map; onboardings carry recipe_digest; embedded Recipe + registered Definition copies dropped from snapshots (drafts keep theirs); reload-resolved status/credential_source verified"
   - "S1.4: catalogs queried before repo files (source-only lookup), RecipeCandidate carries Source/LaunchRank/CredentialRank, ledger persists fetch digests+timestamps incl. ignored mismatches; disagree-warning no longer forces review"
   - "S1.3: pure ResolveLedger — rank ladders, same-rank fail-closed ambiguity, R6 demotion, T0/T1/T2 trust; api tests green incl. -race"
   - "CHG-0127 P0 done: S0.1-S0.9 committed; just check green locally (covergo 86.38%); live CI/remove gates pending owner push"

@@ -28,6 +28,7 @@ type Store struct {
 	projectionRevisions map[string]uint64
 	grants              map[string]api.Grant
 	onboardings         map[string]api.Onboarding
+	recipes             map[string]api.RecipeResolution
 	publications        map[string]api.DefinitionPublication
 	sharedPolicies      map[string]api.SharedCredentialPolicy
 	capabilityPolicies  map[string]api.CapabilityPolicy
@@ -566,20 +567,57 @@ func (s *Store) resolveLocked(auth identity.Envelope, bindingID string) (api.Eff
 	return effective, nil
 }
 
+// PutRecipe stores a resolution under its content digest; identical content
+// always returns the same digest, so recipes deduplicate across onboardings.
+func (s *Store) PutRecipe(resolution api.RecipeResolution) (string, error) {
+	digest, err := api.ResolutionDigest(resolution)
+	if err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	_, known := s.recipes[digest]
+	if !known {
+		s.recipes[digest] = resolution
+	}
+	s.mu.Unlock()
+	if known {
+		return digest, nil
+	}
+	if err := s.persist(); err != nil {
+		s.mu.Lock()
+		delete(s.recipes, digest)
+		s.mu.Unlock()
+		return "", err
+	}
+	return digest, nil
+}
+
+// Recipe resolves a content-addressed resolution stored by PutRecipe.
+func (s *Store) Recipe(digest string) (api.RecipeResolution, error) {
+	s.mu.RLock()
+	resolution, ok := s.recipes[digest]
+	s.mu.RUnlock()
+	if !ok {
+		return api.RecipeResolution{}, api.ErrNotFound
+	}
+	return resolution, nil
+}
+
 type snapshot struct {
-	Schema              int                          `json:"schema"`
-	Definitions         []api.ToolDefinition         `json:"definitions"`
-	Connections         []api.Connection             `json:"connections"`
-	Credentials         []api.CredentialReference    `json:"credential_references"`
-	Bindings            []api.ToolBinding            `json:"bindings"`
-	Workloads           []api.WorkloadInstance       `json:"workloads"`
-	ProjectionRevisions map[string]uint64            `json:"projection_revisions,omitempty"`
-	Grants              []api.Grant                  `json:"grants,omitempty"`
-	Onboardings         []api.Onboarding             `json:"onboardings,omitempty"`
-	Publications        []api.DefinitionPublication  `json:"publications,omitempty"`
-	SharedPolicies      []api.SharedCredentialPolicy `json:"shared_credential_policies,omitempty"`
-	CapabilityChanges   []api.CapabilityChange       `json:"capability_changes,omitempty"`
-	BindingChanges      []bindingChange              `json:"binding_changes,omitempty"`
+	Schema              int                             `json:"schema"`
+	Definitions         []api.ToolDefinition            `json:"definitions"`
+	Connections         []api.Connection                `json:"connections"`
+	Credentials         []api.CredentialReference       `json:"credential_references"`
+	Bindings            []api.ToolBinding               `json:"bindings"`
+	Workloads           []api.WorkloadInstance          `json:"workloads"`
+	ProjectionRevisions map[string]uint64               `json:"projection_revisions,omitempty"`
+	Grants              []api.Grant                     `json:"grants,omitempty"`
+	Onboardings         []api.Onboarding                `json:"onboardings,omitempty"`
+	Recipes             map[string]api.RecipeResolution `json:"recipes,omitempty"`
+	Publications        []api.DefinitionPublication     `json:"publications,omitempty"`
+	SharedPolicies      []api.SharedCredentialPolicy    `json:"shared_credential_policies,omitempty"`
+	CapabilityChanges   []api.CapabilityChange          `json:"capability_changes,omitempty"`
+	BindingChanges      []bindingChange                 `json:"binding_changes,omitempty"`
 }
 
 func (s *Store) stopAffectedLocked(connectionID string) []string {
