@@ -558,7 +558,7 @@ func TestCredentialBrokerExpiredRequestRegenerates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if body["broker_request_id"] != "request_new" || body["authorization_url"] != "https://broker.example/connect/request_new" {
+	if body["broker_request_id"] != "request_new" || body["signin_url"] != "http://localhost:8081/telegram-auth/remint" {
 		t.Fatalf("dead link was not replaced: %v", body)
 	}
 	if notice["broker_request_id"] != "request_new" {
@@ -857,6 +857,9 @@ func TestRequiredCredentialsQRIntakePointsToChannelNotice(t *testing.T) {
 	}
 	if body["signin_url"] != "http://localhost:8081/telegram-auth/qr-abc" {
 		t.Fatalf("channel sign-in link missing from the tool result: %v", body["signin_url"])
+	}
+	if _, parrotable := body["authorization_url"]; parrotable {
+		t.Fatalf("form URL still exposed for the agent to parrot: %v", body["authorization_url"])
 	}
 	instructions, _ := body["instructions"].(string)
 	if !strings.Contains(instructions, "signin_url") || strings.Contains(instructions, "open the credential URL") {

@@ -362,7 +362,11 @@ func (c *ControlPlane) requiredCredentials(auth identity.Envelope, args map[stri
 	if onboarding.BrokerRequestID != "" && onboarding.BrokerAuthorizationURL != "" && onboarding.Phase == api.PhaseAwaitingCreds {
 		body["input"] = "credential-broker"
 		body["broker_request_id"] = onboarding.BrokerRequestID
-		body["authorization_url"] = onboarding.BrokerAuthorizationURL
+		// With a channel sign-in link the Broker form is fallback only; an LLM
+		// caller parrots whichever URL it sees, so it must leave the result.
+		if onboarding.ChannelAuthURL == "" {
+			body["authorization_url"] = onboarding.BrokerAuthorizationURL
+		}
 		delete(body, "form_url")
 		delete(body, "form_path")
 	}

@@ -449,7 +449,10 @@ func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map
 	}
 	if onboarding.BrokerRequestID != "" {
 		body["broker_request_id"] = onboarding.BrokerRequestID
-		if onboarding.BrokerAuthorizationURL != "" {
+		// A channel sign-in link outranks the Broker form; an LLM caller
+		// parrots whichever URL it sees first, so the fallback URL leaves the
+		// result while a signin_url exists. The stored onboarding keeps it.
+		if onboarding.BrokerAuthorizationURL != "" && onboarding.ChannelAuthURL == "" {
 			body["authorization_url"] = onboarding.BrokerAuthorizationURL
 		}
 	}
