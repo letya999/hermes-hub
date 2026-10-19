@@ -209,6 +209,19 @@ func (s *Store) hasDefinitionID(id string) bool {
 	return false
 }
 
+// definitionByID resolves a connection's definition id to its registered
+// definition — the migration pass carries no version.
+func (s *Store) definitionByID(id string) (api.ToolDefinition, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for key, definition := range s.definitions {
+		if strings.HasPrefix(key, id+"@") {
+			return definition, nil
+		}
+	}
+	return api.ToolDefinition{}, fmt.Errorf("%w: toolhub definition %s", api.ErrNotFound, id)
+}
+
 func (s *Store) PutBinding(binding api.ToolBinding) error {
 	if binding.ToolBindingID == "" {
 		binding.ToolBindingID = api.DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
@@ -385,6 +398,25 @@ func (s *Store) SetConnectionStatus(connectionID string, status api.Status) erro
 		return err
 	}
 	return stopErr
+}
+
+// setMigrateRequest records a pending broker migration request on a live
+// reference without rotating it — the local locator keeps serving calls until
+// the owner submits and the request resolves.
+func (s *Store) setMigrateRequest(refID, requestID string) error {
+	if !identity.ValidID(requestID) {
+		return fmt.Errorf("%w: migrate request", api.ErrInvalid)
+	}
+	s.mu.Lock()
+	reference, ok := s.credentials[refID]
+	if !ok || reference.Status != api.ActiveStatus {
+		s.mu.Unlock()
+		return fmt.Errorf("%w: credential reference", api.ErrNotFound)
+	}
+	reference.MigrateRequestID = requestID
+	s.credentials[refID] = reference
+	s.mu.Unlock()
+	return s.persistAndNotify()
 }
 
 // MarkReauth moves a connection to reauth after credential-relevant drift:

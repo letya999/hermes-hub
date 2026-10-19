@@ -108,7 +108,7 @@ const (
 	// ReauthStatus marks a connection whose stored credential material was
 	// purged after credential-relevant recipe drift; admission denies it and
 	// only a human reauthorization can bring it back.
-	ReauthStatus Status = "reauth"
+	ReauthStatus   Status = "reauth"
 	StartingStatus Status = "starting"
 	RunningStatus  Status = "running"
 	StoppedStatus  Status = "stopped"
@@ -259,6 +259,8 @@ type CredentialReference struct {
 	BrokerContractID       string            `json:"broker_contract_id,omitempty"`
 	BrokerContractRevision int               `json:"broker_contract_revision,omitempty"`
 	BrokerEnv              map[string]string `json:"broker_env,omitempty"`
+	LegacyLocator          string            `json:"legacy_locator,omitempty"`
+	MigrateRequestID       string            `json:"migrate_request_id,omitempty"`
 	Status                 Status            `json:"status"`
 }
 
