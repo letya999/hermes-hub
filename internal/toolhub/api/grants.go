@@ -132,6 +132,10 @@ type Onboarding struct {
 	BrokerContractID         string    `json:"broker_contract_id,omitempty"`
 	BrokerContractRevision   int       `json:"broker_contract_revision,omitempty"`
 	BrokerAuthorizationURL   string    `json:"broker_authorization_url,omitempty"`
+	// ChannelAuthURL is the sign-in link the communication plane minted for
+	// this request (e.g. a QR page); when set it outranks the Broker form as
+	// the link the agent should hand to the user.
+	ChannelAuthURL           string    `json:"channel_auth_url,omitempty"`
 	ProviderAuthorizationURL string    `json:"provider_authorization_url,omitempty"`
 	// OAuthProvider names the broker slot that minted this onboarding's
 	// credential. Set only for OAuth-managed connections so the call path

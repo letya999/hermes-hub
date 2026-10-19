@@ -526,7 +526,8 @@ func TestCredentialBrokerExpiredRequestRegenerates(t *testing.T) {
 	var notice map[string]any
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&notice)
-		w.WriteHeader(http.StatusNoContent)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"login_url": "http://localhost:8081/telegram-auth/remint"})
 	}))
 	defer gw.Close()
 	t.Setenv("HUB_COMMUNICATION_CONTROL_URL", gw.URL)
@@ -569,6 +570,9 @@ func TestCredentialBrokerExpiredRequestRegenerates(t *testing.T) {
 	}
 	if stored.BrokerAttempts != 1 || stored.BrokerRequestID != "request_new" {
 		t.Fatalf("unexpected regeneration state: %+v", stored)
+	}
+	if stored.ChannelAuthURL != "http://localhost:8081/telegram-auth/remint" {
+		t.Fatalf("channel sign-in link not recorded: %+v", stored)
 	}
 	if len(idempotencyKeys) != 1 || idempotencyKeys[0] == stored.OnboardingID {
 		t.Fatalf("retry must use a fresh idempotency key: %v", idempotencyKeys)
@@ -669,7 +673,8 @@ func TestCredentialBrokerPendingRequestReNotifies(t *testing.T) {
 	var notice map[string]any
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&notice)
-		w.WriteHeader(http.StatusNoContent)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"login_url": "http://localhost:8081/telegram-auth/tok123"})
 	}))
 	defer gw.Close()
 	t.Setenv("HUB_COMMUNICATION_CONTROL_URL", gw.URL)
@@ -696,11 +701,15 @@ func TestCredentialBrokerPendingRequestReNotifies(t *testing.T) {
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.requiredCredentials(auth, map[string]any{"onboarding_id": onboarding.OnboardingID}); err != nil {
+	body, err := control.requiredCredentials(auth, map[string]any{"onboarding_id": onboarding.OnboardingID})
+	if err != nil {
 		t.Fatal(err)
 	}
 	if notice["broker_request_id"] != "request_live" {
 		t.Fatalf("owner was not re-notified about the live request: %v", notice)
+	}
+	if body["signin_url"] != "http://localhost:8081/telegram-auth/tok123" {
+		t.Fatalf("channel sign-in link missing from the tool result: %v", body["signin_url"])
 	}
 }
 
@@ -803,7 +812,8 @@ func TestRequiredCredentialsQRIntakePointsToChannelNotice(t *testing.T) {
 	defer server.Close()
 
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"login_url": "http://localhost:8081/telegram-auth/qr-abc"})
 	}))
 	defer gw.Close()
 	t.Setenv("HUB_COMMUNICATION_CONTROL_URL", gw.URL)
@@ -845,8 +855,11 @@ func TestRequiredCredentialsQRIntakePointsToChannelNotice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if body["signin_url"] != "http://localhost:8081/telegram-auth/qr-abc" {
+		t.Fatalf("channel sign-in link missing from the tool result: %v", body["signin_url"])
+	}
 	instructions, _ := body["instructions"].(string)
-	if !strings.Contains(instructions, "QR") || strings.Contains(instructions, "open the credential URL") {
+	if !strings.Contains(instructions, "signin_url") || strings.Contains(instructions, "open the credential URL") {
 		t.Fatalf("QR intake still pushes the form as primary path: %q", instructions)
 	}
 }

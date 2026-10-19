@@ -497,11 +497,14 @@ func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map
 				}
 			}
 		}
-		if reviewed, ok, rerr := api.PreparedContractFor(onboarding.BrokerContractID, onboarding.BrokerContractRevision); rerr == nil && ok && reviewed.Intake == "telegram_qr" && onboarding.Error == "" {
-			// The channel notice carries a QR sign-in page; the Broker form is
-			// only the fallback. Parroting authorization_url as the primary
-			// path makes users submit the form and never see the QR message.
-			body["instructions"] = "A Telegram QR sign-in link was sent to the channel as a separate message — ask the user to open THAT link on this computer, scan it in Telegram (Settings > Devices > Link device), confirm the page, then call status. Do not present the Broker authorization_url as the primary path; it is the fallback only. Never ask for a session in chat."
+		if onboarding.ChannelAuthURL != "" && onboarding.Error == "" {
+			// The communication plane minted a sign-in link for this request
+			// (QR page and friends); it outranks the Broker form, which stays
+			// as the manual fallback. Parroting authorization_url as the
+			// primary path makes users submit the form and never see the
+			// channel link.
+			body["signin_url"] = onboarding.ChannelAuthURL
+			body["instructions"] = "Send signin_url to the user as the link to open on this computer — it is the channel sign-in page for this request. Do not present the Broker authorization_url as the primary path; it is the fallback only. Never ask for credentials in chat."
 		}
 	case api.PhaseAwaitingConfirm:
 		body["next_action"] = "confirm"

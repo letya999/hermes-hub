@@ -78,8 +78,18 @@ func TestPrepareOutcomeSendsQRWithoutFormContinuation(t *testing.T) {
 	req.Header.Set("X-Hub-Principal", "alice")
 	rec := httptest.NewRecorder()
 	gateway.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusNoContent {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("prepare outcome=%d body=%s", rec.Code, rec.Body.String())
+	}
+	// ToolHub needs the minted link to put it in the agent's tool result:
+	// the outcome response returns it so the QR page is the link the owner
+	// is told to open, not just a side-channel message.
+	var outcome map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&outcome); err != nil {
+		t.Fatalf("outcome body=%s", rec.Body.String())
+	}
+	if login, _ := outcome["login_url"].(string); !strings.Contains(login, "/telegram-auth/") {
+		t.Fatalf("login_url not returned: %v", outcome)
 	}
 	notices, err := os.ReadDir(filepath.Join(cfg.SpoolDir, "outbox", "pending"))
 	if err != nil || len(notices) != 1 {

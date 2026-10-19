@@ -155,6 +155,19 @@ func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.En
 	return c.refreshBrokerRequest(ctx, auth, onboarding)
 }
 
+// deliverOutcomeNotice posts the outcome to the communication plane and, when
+// it returns a channel sign-in link (QR invite and friends), records it on the
+// onboarding so the next status result can hand it to the agent directly.
+func (c *ControlPlane) deliverOutcomeNotice(ctx context.Context, auth identity.Envelope, onboarding *api.Onboarding) {
+	url := api.PostPrepareNotice(ctx, auth, *onboarding, "", len(onboarding.Permissions))
+	if url == "" || url == onboarding.ChannelAuthURL {
+		return
+	}
+	onboarding.ChannelAuthURL = url
+	onboarding.Revision++
+	_ = c.Store.PutOnboarding(*onboarding)
+}
+
 // brokerRequestDead reports whether the request can still carry a credential
 // submission: terminal statuses are dead outright, and a pending request with
 // less life than a channel invite (10 minutes) would produce a link that dies
@@ -260,7 +273,7 @@ func (c *ControlPlane) refreshBrokerRequest(ctx context.Context, auth identity.E
 			return err
 		}
 		// The old link is dead; the owner needs the new one in the channel.
-		api.PostPrepareNotice(ctx, auth, *onboarding, "", len(onboarding.Permissions))
+		c.deliverOutcomeNotice(ctx, auth, onboarding)
 		return nil
 	}
 	if c.brokerRequestDead(request) {
@@ -276,7 +289,7 @@ func (c *ControlPlane) refreshBrokerRequest(ctx context.Context, auth identity.E
 		if err := c.ensureBrokerRequest(ctx, auth, onboarding, definition); err != nil {
 			return err
 		}
-		api.PostPrepareNotice(ctx, auth, *onboarding, "", len(onboarding.Permissions))
+		c.deliverOutcomeNotice(ctx, auth, onboarding)
 		return nil
 	}
 	onboarding.BrokerAuthorizationURL = request.AuthorizationURL
@@ -286,7 +299,7 @@ func (c *ControlPlane) refreshBrokerRequest(ctx context.Context, auth identity.E
 		// The QR invite minted for this request dies before the request does;
 		// every credentials ask re-delivers the notice so a fresh link lands
 		// in the channel. The gateway dedupes while the invite is alive.
-		api.PostPrepareNotice(ctx, auth, *onboarding, "", len(onboarding.Permissions))
+		c.deliverOutcomeNotice(ctx, auth, onboarding)
 	}
 	changed := false
 	if request.Status == "ready" && request.CredentialID != "" {

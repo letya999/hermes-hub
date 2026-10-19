@@ -3,6 +3,7 @@ package communication
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -95,7 +96,10 @@ func (g *Gateway) handlePrepareOutcome(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "prepare outcome rejected", http.StatusBadRequest)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	// The channel-side link (QR invite, etc.) goes back to the caller so the
+	// agent can print it in its own reply — the notice alone is easy to miss.
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"login_url": loginURL})
 }
 
 func knownPreparePhase(phase string) bool {
