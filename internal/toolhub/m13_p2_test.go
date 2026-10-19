@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/credstore"
+	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/oauth"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
@@ -236,6 +237,223 @@ func TestEndpointHandlerPublicOriginSetsFormOrigin(t *testing.T) {
 	}
 	if endpoint.gateway.Control.FormOrigin != "https://hub.example.com" {
 		t.Fatalf("form origin=%q", endpoint.gateway.Control.FormOrigin)
+	}
+}
+
+// S2.3: RFC 8628 device flow rides the same one-time link surface — GET
+// renders the user code + verification URI, POST polls and completes.
+func TestDeviceFlowPageCompletesOnboarding(t *testing.T) {
+	store := NewStore()
+	grantTestControlOperations(t, store, "alice", api.ControlOperations...)
+	definition := remoteDefinition()
+	definition.DefinitionID = "device-mcp"
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantDefinition, "alice", "device-mcp", "1.0.0")); err != nil {
+		t.Fatal(err)
+	}
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	key, _ := credstore.GenerateKey()
+	secrets, serr := credstore.Open(credstore.Options{Path: filepath.Join(t.TempDir(), "dev.enc"), Key: key})
+	if serr != nil {
+		t.Fatal(serr)
+	}
+	control := &ControlPlane{Store: store, Secrets: secrets, WorkloadRoot: t.TempDir(), Now: time.Now}
+	fixture := oauth.NewFixture()
+	t.Cleanup(fixture.Close)
+	broker := oauth.NewBroker(secrets, nil)
+	broker.HTTP = fixture.Server.Client()
+	broker.Providers["fixture"] = fixture.Provider()
+	control.OAuth = broker
+
+	auth := aliceAuth()
+	prep, err := control.Invoke(context.Background(), auth, "prepare_source", map[string]any{"definition_id": "device-mcp", "version": "1.0.0", "request_key": "dev-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	onboardingID := prep["onboarding_id"].(string)
+	if _, err := control.Invoke(context.Background(), auth, "required_credentials", map[string]any{"onboarding_id": onboardingID}); err != nil {
+		t.Fatal(err)
+	}
+	onboarding, err := store.onboarding(onboardingID)
+	if err != nil || onboarding.FormNonce == "" {
+		t.Fatal("no form nonce minted")
+	}
+	onboarding.OAuthProvider = "fixture"
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	gateway := &Gateway{Control: control}
+	get, getReq := confirmLinkRequest(t, http.MethodGet, "http://127.0.0.1/device/"+onboardingID+"?t="+onboarding.FormNonce)
+	gateway.serveDevice(get, getReq)
+	if get.Code != http.StatusOK || !strings.Contains(get.Body.String(), "ABCD-1234") || !strings.Contains(get.Body.String(), fixture.Server.URL+"/device") {
+		t.Fatalf("device page status=%d body=%s", get.Code, get.Body.String())
+	}
+	post, postReq := confirmLinkRequest(t, http.MethodPost, "http://127.0.0.1/device/"+onboardingID+"?t="+onboarding.FormNonce)
+	postReq.PostForm = map[string][]string{"device_code": {"dev-code"}}
+	gateway.serveDevice(post, postReq)
+	if post.Code != http.StatusOK {
+		t.Fatalf("device poll status=%d body=%s", post.Code, post.Body.String())
+	}
+	latest, err := store.onboarding(onboardingID)
+	if err != nil || (latest.Phase != api.PhaseConfirmed && latest.Phase != api.PhaseEnabled) {
+		t.Fatalf("device flow did not finish authorization: phase=%v err=%v", latest.Phase, err)
+	}
+}
+
+// authorization_pending is a waiting state, not a failure — the page tells
+// the user to retry; once the AS approves, the same POST completes.
+func TestDeviceFlowPendingThenApproved(t *testing.T) {
+	store := NewStore()
+	grantTestControlOperations(t, store, "alice", api.ControlOperations...)
+	definition := remoteDefinition()
+	definition.DefinitionID = "device-pending-mcp"
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantDefinition, "alice", "device-pending-mcp", "1.0.0")); err != nil {
+		t.Fatal(err)
+	}
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	key, _ := credstore.GenerateKey()
+	secrets, serr := credstore.Open(credstore.Options{Path: filepath.Join(t.TempDir(), "dp.enc"), Key: key})
+	if serr != nil {
+		t.Fatal(serr)
+	}
+	control := &ControlPlane{Store: store, Secrets: secrets, WorkloadRoot: t.TempDir(), Now: time.Now}
+	fixture := oauth.NewFixture()
+	fixture.DevicePending = true
+	t.Cleanup(fixture.Close)
+	broker := oauth.NewBroker(secrets, nil)
+	broker.HTTP = fixture.Server.Client()
+	broker.Providers["fixture"] = fixture.Provider()
+	control.OAuth = broker
+
+	auth := aliceAuth()
+	prep, err := control.Invoke(context.Background(), auth, "prepare_source", map[string]any{"definition_id": "device-pending-mcp", "version": "1.0.0", "request_key": "dev-p1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	onboardingID := prep["onboarding_id"].(string)
+	if _, err := control.Invoke(context.Background(), auth, "required_credentials", map[string]any{"onboarding_id": onboardingID}); err != nil {
+		t.Fatal(err)
+	}
+	onboarding, err := store.onboarding(onboardingID)
+	if err != nil || onboarding.FormNonce == "" {
+		t.Fatal("no form nonce")
+	}
+	onboarding.OAuthProvider = "fixture"
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	gateway := &Gateway{Control: control}
+	get, getReq := confirmLinkRequest(t, http.MethodGet, "http://127.0.0.1/device/"+onboardingID+"?t="+onboarding.FormNonce)
+	gateway.serveDevice(get, getReq)
+	if get.Code != http.StatusOK {
+		t.Fatalf("device page status=%d", get.Code)
+	}
+	post, postReq := confirmLinkRequest(t, http.MethodPost, "http://127.0.0.1/device/"+onboardingID+"?t="+onboarding.FormNonce)
+	postReq.PostForm = map[string][]string{"device_code": {"dev-code"}}
+	gateway.serveDevice(post, postReq)
+	if post.Code != http.StatusOK || !strings.Contains(post.Body.String(), "Жду подтверждение") {
+		t.Fatalf("pending poll status=%d body=%s", post.Code, post.Body.String())
+	}
+	fixture.ApproveDevice("dev-code")
+	// PollDevice marks a pending entry used only after a successful exchange —
+	// the broker needs a fresh pending entry per poll attempt, so restart via GET.
+	retry, retryReq := confirmLinkRequest(t, http.MethodPost, "http://127.0.0.1/device/"+onboardingID+"?t="+onboarding.FormNonce)
+	retryReq.PostForm = map[string][]string{"device_code": {"dev-code"}}
+	gateway.serveDevice(retry, retryReq)
+	if retry.Code != http.StatusOK || strings.Contains(retry.Body.String(), "Жду") {
+		t.Fatalf("approved poll status=%d body=%s", retry.Code, retry.Body.String())
+	}
+}
+
+// The credential form advertises device flow as an alternative when the
+// onboarding's OAuth provider has a device_authorization_endpoint.
+func TestCredentialFormOffersDeviceFlowWhenSupported(t *testing.T) {
+	store := NewStore()
+	grantTestControlOperations(t, store, "alice", api.ControlOperations...)
+	definition := remoteDefinition()
+	definition.DefinitionID = "device-offer-mcp"
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantDefinition, "alice", "device-offer-mcp", "1.0.0")); err != nil {
+		t.Fatal(err)
+	}
+	key, _ := credstore.GenerateKey()
+	secrets, serr := credstore.Open(credstore.Options{Path: filepath.Join(t.TempDir(), "do.enc"), Key: key})
+	if serr != nil {
+		t.Fatal(serr)
+	}
+	control := &ControlPlane{Store: store, Secrets: secrets, WorkloadRoot: t.TempDir(), Now: time.Now}
+	fixture := oauth.NewFixture()
+	t.Cleanup(fixture.Close)
+	broker := oauth.NewBroker(secrets, nil)
+	broker.HTTP = fixture.Server.Client()
+	broker.Providers["fixture"] = fixture.Provider()
+	control.OAuth = broker
+
+	auth := aliceAuth()
+	prep, err := control.Invoke(context.Background(), auth, "prepare_source", map[string]any{"definition_id": "device-offer-mcp", "version": "1.0.0", "request_key": "dev-o1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	onboardingID := prep["onboarding_id"].(string)
+	if _, err := control.Invoke(context.Background(), auth, "required_credentials", map[string]any{"onboarding_id": onboardingID}); err != nil {
+		t.Fatal(err)
+	}
+	onboarding, err := store.onboarding(onboardingID)
+	if err != nil || onboarding.FormNonce == "" {
+		t.Fatal("no form nonce")
+	}
+	onboarding.OAuthProvider = "fixture"
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	gateway := &Gateway{Control: control}
+	rec, req := confirmLinkRequest(t, http.MethodGet, "http://127.0.0.1/credentials/"+onboardingID+"?t="+onboarding.FormNonce)
+	gateway.serveCredentials(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "/device/"+onboardingID) {
+		t.Fatalf("form status=%d, no device offer: %.200s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDeviceRouteRegisteredOnBothMuxes(t *testing.T) {
+	store := NewStore()
+	grantTestControlOperations(t, store, "alice", api.ControlOperations...)
+	control := &ControlPlane{Store: store, WorkloadRoot: t.TempDir(), Now: time.Now}
+	key, _ := credstore.GenerateKey()
+	secrets, serr := credstore.Open(credstore.Options{Path: filepath.Join(t.TempDir(), "d.enc"), Key: key})
+	if serr != nil {
+		t.Fatal(serr)
+	}
+	control.OAuth = oauth.NewBroker(secrets, nil)
+	gateway := &Gateway{Store: store, Control: control,
+		Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
+			return api.BackendResult{Text: "ok"}, nil
+		}),
+		Tokens: map[string]identity.Envelope{strings.Repeat("t", 40): aliceAuth()}}
+	handler, err := gateway.Handler()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []http.Handler{handler, gateway.PublicMux()} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/device/onb-x?t=nope", nil)
+		req.Host = "127.0.0.1"
+		target.ServeHTTP(rec, req)
+		// 401 proves the route reached serveDevice; a mux 404 would mean the
+		// route is unregistered.
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("/device route status=%d", rec.Code)
+		}
 	}
 }
 

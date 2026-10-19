@@ -16,6 +16,18 @@ type Fixture struct {
 	codes   map[string]string
 	devices map[string]bool
 	refresh map[string]int
+	// DevicePending keeps issued device codes unauthorized until
+	// ApproveDevice flips them — the token endpoint then answers RFC 8628
+	// authorization_pending, like a real AS while the user is still typing.
+	DevicePending bool
+}
+
+// ApproveDevice marks a pending device code authorized so the next poll
+// succeeds.
+func (f *Fixture) ApproveDevice(code string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.devices[code] = true
 }
 
 func NewFixture() *Fixture {
@@ -89,7 +101,9 @@ func (f *Fixture) token(w http.ResponseWriter, r *http.Request) {
 		ok := f.devices[form["device_code"]]
 		f.mu.Unlock()
 		if !ok {
-			http.Error(w, "authorization_pending", http.StatusBadRequest)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "authorization_pending"})
 			return
 		}
 		writeTokens(w, "access-"+form["device_code"], "refresh-"+form["device_code"])
@@ -107,7 +121,7 @@ func (f *Fixture) token(w http.ResponseWriter, r *http.Request) {
 func (f *Fixture) device(w http.ResponseWriter, r *http.Request) {
 	code := "dev-code"
 	f.mu.Lock()
-	f.devices[code] = true
+	f.devices[code] = !f.DevicePending
 	f.mu.Unlock()
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"device_code":      code,

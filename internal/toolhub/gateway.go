@@ -103,6 +103,7 @@ func (g *Gateway) Handler() (http.Handler, error) {
 	mux.Handle("/confirm/", http.HandlerFunc(g.serveConfirm))
 	mux.Handle("/remove/", http.HandlerFunc(g.serveRemove))
 	mux.Handle("/connect/", http.HandlerFunc(g.serveConnect))
+	mux.Handle("/device/", http.HandlerFunc(g.serveDevice))
 	mux.Handle("/grants/", http.HandlerFunc(g.serveGrantAck))
 	mux.Handle("/oauth/callback", http.HandlerFunc(g.serveOAuthCallback))
 	return mux, nil
@@ -123,6 +124,7 @@ func (g *Gateway) PublicMux() *http.ServeMux {
 	mux.Handle("/confirm/", wrap(g.serveConfirm))
 	mux.Handle("/remove/", wrap(g.serveRemove))
 	mux.Handle("/connect/", wrap(g.serveConnect))
+	mux.Handle("/device/", wrap(g.serveDevice))
 	mux.Handle("/oauth/callback", wrap(g.serveOAuthCallback))
 	return mux
 }

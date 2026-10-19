@@ -314,6 +314,14 @@ func (g *Gateway) serveCredentials(w http.ResponseWriter, r *http.Request) {
 				b.WriteString("<details><summary>Другой способ авторизации</summary><a rel=\"noopener noreferrer\" href=\"" + html.EscapeString(alternative.URL) + "\">" + html.EscapeString(alternative.Name) + "</a></details>")
 			}
 		}
+		// RFC 8628 escape hatch: when the provider advertises a device
+		// authorization endpoint, offer "sign in on another device" — the
+		// /device page reuses this link's token.
+		if g.Control.OAuth != nil && onboarding.OAuthProvider != "" {
+			if prov, ok := g.Control.OAuth.Provider(onboarding.OAuthProvider); ok && prov.DeviceCodeURL != "" {
+				b.WriteString("<details><summary>Войти кодом на другом устройстве</summary><a rel=\"noopener noreferrer\" href=\"/device/" + html.EscapeString(onboardingID) + "?t=" + html.EscapeString(onboarding.FormNonce) + "\">Открыть страницу кода устройства</a></details>")
+			}
+		}
 		writeCredentialFields(&b, hints, onboarding.Optional, onboarding.FormNonce)
 		if !separate {
 			b.WriteString(`<button type="submit">Сохранить и продолжить</button><button type="submit" formnovalidate>Отправить без проверки браузера</button></form>`)
@@ -538,6 +546,107 @@ func (g *Gateway) serveConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Error(w, "unauthorized", http.StatusUnauthorized)
+}
+
+// serveDevice renders and polls the RFC 8628 device-flow page: the link
+// token is the onboarding's form/confirmation nonce, GET starts (or reuses) a
+// device authorization and shows the user code + verification URI, POST polls
+// once — pending stays a waiting page, success runs finishAuthorization.
+func (g *Gateway) serveDevice(w http.ResponseWriter, r *http.Request) {
+	if !loopbackHTTP(r) {
+		http.Error(w, "loopback only", http.StatusForbidden)
+		return
+	}
+	if g == nil || g.Control == nil || g.Control.OAuth == nil {
+		http.NotFound(w, r)
+		return
+	}
+	onboardingID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/device/"), "/")
+	if onboardingID == "" || strings.Contains(onboardingID, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	token := linkToken(r)
+	onboarding, err := g.Control.Store.onboarding(onboardingID)
+	if err != nil || !deviceTokenValid(onboarding, token) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if onboarding.OAuthProvider == "" {
+		http.Error(w, "no oauth provider", http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method == http.MethodGet {
+		code := onboarding.DeviceCode
+		var userCode, verification string
+		if code != "" {
+			userCode, verification = onboarding.DeviceUserCode, onboarding.DeviceVerification
+		} else {
+			start, serr := g.Control.OAuth.StartDevice(onboarding.PrincipalID, onboarding.ContextID, onboardingID, onboarding.OAuthProvider)
+			if serr != nil {
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = io.WriteString(w, credentialResultPage("Вход по коду недоступен", api.PublicPrepareError(serr)))
+				return
+			}
+			code, userCode, verification = start.DeviceCode, start.UserCode, start.Verification
+			onboarding.DeviceCode = code
+			onboarding.DeviceUserCode = userCode
+			onboarding.DeviceVerification = verification
+			onboarding.Revision++
+			if err := g.Control.Store.PutOnboarding(onboarding); err != nil {
+				http.Error(w, "store failed", http.StatusInternalServerError)
+				return
+			}
+		}
+		_, _ = io.WriteString(w, `<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Вход по коду</title><style>:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:28px;letter-spacing:-.02em}p{margin:0 0 22px;color:#52606d;line-height:1.6}.code{font:700 32px/1.2 ui-monospace,SFMono-Regular,Consolas,monospace;text-align:center;letter-spacing:.08em;margin:12px 0 22px;color:#17202a}button{width:100%;border:0;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font:inherit;font-weight:700;cursor:pointer}a{color:#175cd3}</style><main><h1>Вход по коду устройства</h1><p>Откройте на любом устройстве <a rel="noopener noreferrer" href="`+html.EscapeString(verification)+`">`+html.EscapeString(verification)+`</a> и введите код:</p><div class="code">`+html.EscapeString(userCode)+`</div><form method="post"><input type="hidden" name="device_code" value="`+html.EscapeString(code)+`"><input type="hidden" name="t" value="`+html.EscapeString(token)+`"><button type="submit">Я ввёл код — проверить</button></form></main></html>`)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	_ = r.ParseForm()
+	deviceCode := r.Form.Get("device_code")
+	if deviceCode == "" || deviceCode != onboarding.DeviceCode {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	meta, perr := g.Control.OAuth.PollDevice(onboarding.PrincipalID, onboarding.ContextID, onboardingID, onboarding.OAuthProvider, deviceCode)
+	if perr != nil {
+		// authorization_pending / slow_down are not failures — the user is
+		// still typing the code on their other device.
+		text := perr.Error()
+		if strings.Contains(text, "authorization_pending") || strings.Contains(text, "slow_down") {
+			_, _ = io.WriteString(w, credentialResultPage("Жду подтверждение", "Код ещё не введён на другом устройстве. Вернитесь и нажмите «Проверить» ещё раз."))
+			return
+		}
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = io.WriteString(w, credentialResultPage("Вход не прошёл", api.PublicPrepareError(perr)))
+		return
+	}
+	if err := g.Control.completeDeviceAuth(r.Context(), onboarding, meta); err != nil {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = io.WriteString(w, credentialResultPage("Подключение не прошло", api.PublicPrepareError(err)))
+		return
+	}
+	_, _ = io.WriteString(w, credentialResultPage("Подключение завершено", "Устройство авторизовано. Возвращаться в чат и писать «готово» не нужно."))
+}
+
+// deviceTokenValid accepts the onboarding's live form or confirmation nonce
+// as the /device link token.
+func deviceTokenValid(onboarding api.Onboarding, token string) bool {
+	if token == "" {
+		return false
+	}
+	if onboarding.FormNonce != "" && token == onboarding.FormNonce && !onboarding.FormExpires.IsZero() {
+		return true
+	}
+	if onboarding.ConfirmationNonce != "" && token == onboarding.ConfirmationNonce && !onboarding.ConfirmationUsed {
+		return true
+	}
+	return false
 }
 
 // goneLinkPage answers a spent or dead one-time link: 410 with a hint to

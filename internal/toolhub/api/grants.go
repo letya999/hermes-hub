@@ -141,6 +141,12 @@ type Onboarding struct {
 	// credential. Set only for OAuth-managed connections so the call path
 	// knows a rejected call may be refreshed and retried once.
 	OAuthProvider string `json:"oauth_provider,omitempty"`
+	// Device-flow session started from the /device page: the broker-side
+	// pending entry is keyed by DeviceCode; user code and verification URI are
+	// display data so the page can re-render after a reload.
+	DeviceCode         string `json:"device_code,omitempty"`
+	DeviceUserCode     string `json:"device_user_code,omitempty"`
+	DeviceVerification string `json:"device_verification,omitempty"`
 	SupersededBy  string `json:"superseded_by,omitempty"`
 	// AdmissionPending means tools/list has not run because the server named
 	// required secrets and exited first. The definition is a draft until the

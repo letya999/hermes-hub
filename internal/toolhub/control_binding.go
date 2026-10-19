@@ -693,6 +693,24 @@ func (c *ControlPlane) HandleOAuthCallback(auth identity.Envelope, onboardingID,
 	return c.finishAuthorization(context.Background(), onboardingID)
 }
 
+// completeDeviceAuth finishes an onboarding whose user authorized through
+// RFC 8628 device flow: PollDevice already persisted the token, so the tail
+// matches the authorization-code callback — locator on the onboarding, then
+// the shared finishAuthorization path.
+func (c *ControlPlane) completeDeviceAuth(ctx context.Context, onboarding api.Onboarding, meta oauth.TokenMeta) error {
+	onboarding.Locator = meta.Locator
+	onboarding.CredentialOwner = onboarding.PrincipalID
+	onboarding.DeviceCode, onboarding.DeviceUserCode, onboarding.DeviceVerification = "", "", ""
+	onboarding.Phase = api.PhaseAwaitingConfirm
+	onboarding.ConfirmationNonce = api.RandomNonce()
+	onboarding.ConfirmationExpires = c.now().Add(c.ttl())
+	onboarding.Revision++
+	if err := c.Store.PutOnboarding(onboarding); err != nil {
+		return err
+	}
+	return c.finishAuthorization(ctx, onboarding.OnboardingID)
+}
+
 func (c *ControlPlane) resolveOnboarding(auth identity.Envelope, args map[string]any) (api.Onboarding, error) {
 	if id := api.ArgString(args, "onboarding_id"); id != "" {
 		onboarding, err := c.Store.OnboardingFor(auth, id)

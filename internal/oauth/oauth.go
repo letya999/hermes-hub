@@ -692,6 +692,15 @@ func (b *Broker) postFormClient(endpoint string, form url.Values, client ClientC
 		return nil, fmt.Errorf("%w: token response too large", ErrInvalid)
 	}
 	if resp.StatusCode != http.StatusOK {
+		// RFC 6749/8628 error responses carry a JSON {"error": "<code>"} —
+		// surface the code so callers can tell authorization_pending,
+		// slow_down, expired_token and access_denied apart.
+		var errBody struct {
+			Code string `json:"error"`
+		}
+		if json.Unmarshal(body, &errBody) == nil && errBody.Code != "" {
+			return nil, fmt.Errorf("%w: %s", ErrDenied, errBody.Code)
+		}
 		return nil, fmt.Errorf("%w: token endpoint %s", ErrDenied, resp.Status)
 	}
 	var payload map[string]any
