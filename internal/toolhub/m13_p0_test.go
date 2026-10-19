@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -769,8 +770,8 @@ func TestConnectLinkRedirectsToProviderURL(t *testing.T) {
 	good.Host = "127.0.0.1"
 	rec := httptest.NewRecorder()
 	gateway.serveConnect(rec, good)
-	if rec.Code != http.StatusFound || rec.Header().Get("Location") != onboarding.ProviderAuthorizationURL {
-		t.Fatalf("connect redirect=%d %q", rec.Code, rec.Header().Get("Location"))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), html.EscapeString(onboarding.ProviderAuthorizationURL)) {
+		t.Fatalf("connect interstitial=%d", rec.Code)
 	}
 	bad := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/connect/onb-oauth-link?state=other", nil)
 	bad.Host = "127.0.0.1"

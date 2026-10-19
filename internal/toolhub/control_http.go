@@ -526,18 +526,56 @@ func (g *Gateway) serveConnect(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	onboarding, err := g.Control.Store.onboarding(onboardingID)
 	if err != nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+	storedState := ""
+	if onboarding.ProviderAuthorizationURL != "" {
+		if parsed, perr := url.Parse(onboarding.ProviderAuthorizationURL); perr == nil {
+			storedState = parsed.Query().Get("state")
+		}
+	}
+	if r.Method == http.MethodPost {
+		// Paste-the-redirect fallback: the posted state must match the
+		// onboarding's stored authorization URL AND the pasted URL's own
+		// state, then the shared completePreparedOAuth path re-validates
+		// principal/context/connection and runs the PKCE exchange exactly
+		// like the live /oauth/callback.
+		if storedState == "" || r.ParseForm() != nil || r.Form.Get("state") != storedState {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		pasted, perr := url.Parse(strings.TrimSpace(r.Form.Get("redirect_url")))
+		if perr != nil || pasted.Query().Get("state") != storedState || pasted.Query().Get("code") == "" {
+			http.Error(w, "invalid redirect URL", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		if err := g.Control.completePreparedOAuth(r.Context(), storedState, pasted.Query().Get("code")); err != nil {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, credentialResultPage("Вход не прошёл", "Авторизация отклонена. Вернитесь в чат и запросите свежую ссылку через status."))
+			return
+		}
+		_, _ = io.WriteString(w, credentialResultPage("Подключение завершено", "Можно вернуться в чат."))
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	if state := r.URL.Query().Get("state"); state != "" && onboarding.ProviderAuthorizationURL != "" {
 		if parsed, perr := url.Parse(onboarding.ProviderAuthorizationURL); perr == nil && parsed.Query().Get("state") == state {
-			http.Redirect(w, r, onboarding.ProviderAuthorizationURL, http.StatusFound)
+			// Interstitial instead of a bare 302: a user authorizing on
+			// another device hits a dead loopback /oauth/callback there —
+			// the same chat link must keep working, so the page offers
+			// both the provider hop and a paste-the-final-URL field.
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+			_, _ = io.WriteString(w, `<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Вход у провайдера</title><style>:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:28px;letter-spacing:-.02em}p{margin:0 0 22px;color:#52606d;line-height:1.6}a.btn{display:block;text-align:center;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font-weight:700;text-decoration:none}details{margin-top:18px;color:#52606d}summary{cursor:pointer;font-weight:650}label{display:block;font-weight:650;margin:14px 0 0}input{display:block;width:100%;margin-top:8px;border:1px solid #aab4bf;border-radius:10px;padding:12px 14px;font:inherit}button{width:100%;margin-top:16px;border:0;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font:inherit;font-weight:700;cursor:pointer}</style><main><h1>Вход у провайдера</h1><p>Откройте страницу авторизации и разрешите доступ.</p><a class="btn" rel="noopener noreferrer" href="`+html.EscapeString(onboarding.ProviderAuthorizationURL)+`">Перейти к авторизации</a><details><summary>Входили на другом устройстве? Вставьте адрес финальной страницы</summary><p>Если после входа страница не открылась, скопируйте её адрес целиком и вставьте сюда.</p><form method="post"><input type="hidden" name="state" value="`+html.EscapeString(state)+`"><label>Адрес страницы<input name="redirect_url" required placeholder="http://127.0.0.1/oauth/callback?…"></label><button type="submit">Завершить вход</button></form></details></main></html>`)
 			return
 		}
 	}

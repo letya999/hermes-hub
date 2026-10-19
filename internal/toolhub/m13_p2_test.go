@@ -1,9 +1,12 @@
 package toolhub
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -186,8 +189,8 @@ func TestPublicMuxServesCredentialsRemoveConnect(t *testing.T) {
 		t.Fatalf("public remove status=%d", rec.Code)
 	}
 	rec := serve("/connect/onb-pub-all?state=st-1")
-	if rec.Code != http.StatusFound || rec.Header().Get("Location") != onboarding.ProviderAuthorizationURL {
-		t.Fatalf("public connect status=%d loc=%q", rec.Code, rec.Header().Get("Location"))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "accounts.example.com") {
+		t.Fatalf("public connect status=%d", rec.Code)
 	}
 	// /oauth/callback is registered on the public surface: with no OAuth
 	// broker wired the handler 404s itself, so assert the route exists via a
@@ -454,6 +457,161 @@ func TestDeviceRouteRegisteredOnBothMuxes(t *testing.T) {
 		if rec.Code != http.StatusUnauthorized {
 			t.Fatalf("/device route status=%d", rec.Code)
 		}
+	}
+}
+
+// S2.4: the connect hop renders an interstitial page — a link to the
+// provider plus a paste-the-redirect form for browsers that finished OAuth
+// on another device where the loopback callback cannot load.
+func TestConnectPageOffersPasteRedirectForm(t *testing.T) {
+	gateway, store, _ := confirmLinkFixture(t, "unused", time.Now().Add(time.Hour))
+	onboarding, err := store.onboarding("onb-link-t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	onboarding.Phase = api.PhaseAwaitingOAuth
+	onboarding.ProviderAuthorizationURL = "https://accounts.example.com/authorize?state=st-paste&client_id=c"
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	rec, req := confirmLinkRequest(t, http.MethodGet, "http://127.0.0.1/connect/onb-link-t?state=st-paste")
+	gateway.serveConnect(rec, req)
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK || !strings.Contains(body, "accounts.example.com") || !strings.Contains(body, "redirect_url") {
+		t.Fatalf("connect page status=%d body=%.200s", rec.Code, body)
+	}
+	if rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("Content-Security-Policy") == "" {
+		t.Fatal("connect page missing security headers")
+	}
+}
+
+// S2.4 happy path: the user pasted the final (dead on their other device)
+// redirect URL into the connect page — the hub validates the state embedded
+// in it against the onboarding's stored authorization URL and completes the
+// prepared OAuth flow exactly like the live /oauth/callback would.
+func TestConnectPasteCompletesOAuth(t *testing.T) {
+	entry, matched, err := api.PreparedForRepository("https://github.com/nspady/google-calendar-mcp", "")
+	if err != nil || !matched || entry.OAuth == nil {
+		t.Fatal("reviewed OAuth entry missing", err)
+	}
+	d := statefulContainerDefinition()
+	d.DefinitionID, d.Version = entry.ID, "1.0.0"
+	d.Source.Repository, d.Source.CommitSHA = entry.Source.Repository, entry.Source.CommitSHA
+	d.Credentials = []api.CredentialInput{{Name: entry.OAuth.ClientInput, Required: true}}
+	d.CredentialContractID, d.CredentialContractRevision = entry.ContractID, entry.ContractRevision
+	d.CredentialContractEnv = map[string]string{entry.OAuth.ClientInput: entry.OAuth.ClientInput}
+	store := NewStore()
+	if err := store.RegisterDefinition(d); err != nil {
+		t.Fatal(err)
+	}
+	auth := aliceAuth()
+	ref := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: "cred_paste", ConnectionID: "conn_paste", Revision: 1, Backend: "credential-broker", Locator: "credential_paste", Keys: []string{entry.OAuth.ClientInput}, BrokerGrantID: "grant_paste", BrokerContractID: entry.ContractID, BrokerContractRevision: entry.ContractRevision, BrokerEnv: d.CredentialContractEnv, Status: api.ActiveStatus}
+	if err := store.PutCredentialReference(ref); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutConnection(api.Connection{Schema: api.SchemaVersion, ConnectionID: ref.ConnectionID, Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: auth.PrincipalID}, DefinitionID: d.DefinitionID, CredentialRefID: ref.CredentialRefID, Revision: 1, Status: api.ActiveStatus}); err != nil {
+		t.Fatal(err)
+	}
+	on := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onb_paste", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingConfirm, DefinitionID: d.DefinitionID, DefinitionVersion: d.Version, Locator: ref.Locator, ConfirmationNonce: "nonce", ConfirmationExpires: time.Now().Add(time.Hour), Revision: 1, CreatedAt: time.Now()}
+	if err := store.PutOnboarding(on); err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := credstore.Open(credstore.Options{Path: filepath.Join(t.TempDir(), "p.enc"), Key: bytes.Repeat([]byte("k"), 32)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	clientFile := filepath.Join(root, "client.json")
+	stateDir := filepath.Join(root, "state")
+	if err := os.Mkdir(stateDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(clientFile, []byte(`{"installed":{"client_id":"fixture.apps.googleusercontent.com","client_secret":"fixture-secret","redirect_uris":["http://localhost"]}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c := &ControlPlane{Store: store, Secrets: secrets, FormOrigin: "http://127.0.0.1:8090", Injector: func(_ context.Context, _ api.EffectiveBinding) (api.CredentialInjection, error) {
+		return api.CredentialInjection{Environment: map[string]string{entry.OAuth.ClientInput: "/run/mcp-secrets/google/client.json"}, Mounts: []api.Mount{{Source: clientFile, Target: "/run/mcp-secrets/google/client.json", ReadOnly: true}, {Source: stateDir, Target: entry.StateTarget}}, Checkpoint: func() error { return nil }}, nil
+	}}
+	c.Ready = func(_ context.Context, _ api.EffectiveBinding) error {
+		if _, err := os.Stat(filepath.Join(stateDir, entry.OAuth.TokenFile)); err != nil {
+			return api.ErrUnauthorized
+		}
+		return nil
+	}
+	body, err := c.confirm(t.Context(), auth, map[string]any{"onboarding_id": on.OnboardingID, "nonce": on.ConfirmationNonce})
+	if err != nil || body["phase"] != api.PhaseAwaitingOAuth {
+		t.Fatalf("handoff phase=%v err=%v", body["phase"], err)
+	}
+	authURL, _ := url.Parse(providerAuthURLOf(t, store, on.OnboardingID))
+	state := authURL.Query().Get("state")
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/token" || r.FormValue("code_verifier") == "" {
+			t.Error("invalid exchange")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"a","refresh_token":"r","expires_in":3600,"token_type":"Bearer"}`))
+	}))
+	defer provider.Close()
+	c.oauthFlows.mu.Lock()
+	c.oauthFlows.flows[state].broker.HTTP = provider.Client()
+	c.oauthFlows.flows[state].broker.Providers["google"] = oauth.Provider{Name: "google", AuthorizeURL: provider.URL + "/authorize", TokenURL: provider.URL + "/token"}
+	c.oauthFlows.mu.Unlock()
+
+	gateway := &Gateway{Control: c}
+	rec, req := confirmLinkRequest(t, http.MethodPost, "http://127.0.0.1/connect/"+on.OnboardingID)
+	req.PostForm = map[string][]string{
+		"state":        {state},
+		"redirect_url": {"http://127.0.0.1:8090/oauth/callback?state=" + url.QueryEscape(state) + "&code=paste-code"},
+	}
+	gateway.serveConnect(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("paste status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	latest, err := store.onboarding(on.OnboardingID)
+	if err != nil || latest.Phase != api.PhaseEnabled {
+		t.Fatalf("paste did not complete: phase=%v err=%v", latest.Phase, err)
+	}
+}
+
+// S2.4 fail-closed: a pasted redirect whose state does not match the
+// onboarding's stored authorization URL is rejected before any exchange.
+func TestConnectPasteRejectsForeignState(t *testing.T) {
+	gateway, store, _ := confirmLinkFixture(t, "unused", time.Now().Add(time.Hour))
+	onboarding, err := store.onboarding("onb-link-t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	onboarding.Phase = api.PhaseAwaitingOAuth
+	onboarding.ProviderAuthorizationURL = "https://accounts.example.com/authorize?state=st-paste&client_id=c"
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	rec, req := confirmLinkRequest(t, http.MethodPost, "http://127.0.0.1/connect/onb-link-t")
+	req.PostForm = map[string][]string{
+		"state":        {"st-paste"},
+		"redirect_url": {"http://127.0.0.1/oauth/callback?state=other-onboarding&code=x"},
+	}
+	gateway.serveConnect(rec, req)
+	if rec.Code == http.StatusOK {
+		t.Fatalf("foreign-state paste accepted: %d", rec.Code)
+	}
+	wrongBearer, wrongReq := confirmLinkRequest(t, http.MethodPost, "http://127.0.0.1/connect/onb-link-t")
+	wrongReq.PostForm = map[string][]string{
+		"state":        {"st-other"},
+		"redirect_url": {"http://127.0.0.1/oauth/callback?state=st-paste&code=x"},
+	}
+	gateway.serveConnect(wrongBearer, wrongReq)
+	if wrongBearer.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong posted state status=%d", wrongBearer.Code)
+	}
+	noCode, noCodeReq := confirmLinkRequest(t, http.MethodPost, "http://127.0.0.1/connect/onb-link-t")
+	noCodeReq.PostForm = map[string][]string{
+		"state":        {"st-paste"},
+		"redirect_url": {"http://127.0.0.1/oauth/callback?state=st-paste"},
+	}
+	gateway.serveConnect(noCode, noCodeReq)
+	if noCode.Code != http.StatusBadRequest {
+		t.Fatalf("code-less paste status=%d", noCode.Code)
 	}
 }
 
