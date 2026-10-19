@@ -469,6 +469,7 @@ func (c *ControlPlane) SubmitCredentials(onboardingID, nonce string, values map[
 		}
 	}
 	authEnv := onboardingEnvelope(onboarding)
+	probedByAdmission := onboarding.AdmissionPending
 	if onboarding.AdmissionPending {
 		definition, defErr := c.definitionOf(onboarding)
 		if defErr != nil {
@@ -525,6 +526,23 @@ func (c *ControlPlane) SubmitCredentials(onboardingID, nonce string, values map[
 		shared = true
 	}
 	c.Store.mu.RUnlock()
+	// S2.6: nothing persists until a read-only probe proves the credentials.
+	// The admission path probed above; an already-admitted credentialed remote
+	// definition gets the same tools/list check before the ciphertext write.
+	// Shared-policy submissions skip it — the workload uses the policy-owned
+	// locator, so submitted values never reach the server anyway.
+	if !shared && !probedByAdmission && c.AdmitWithCredentials != nil {
+		definition, defErr := c.definitionOf(onboarding)
+		if defErr == nil && definition.Transport == api.RemoteMCP && len(definition.Credentials) > 0 {
+			if _, probeErr := c.AdmitWithCredentials(context.Background(), definition, filtered); probeErr != nil {
+				failure := "Проверка не прошла. " + credentialProbeFailure(probeErr)
+				if persistErr := c.persistFailure(onboarding, failure, probeErr); persistErr != probeErr {
+					return persistErr
+				}
+				return fmt.Errorf("%w: %s", errCredentialProbe, failure)
+			}
+		}
+	}
 	if !shared {
 		if locator == "" {
 			locator, err = c.Secrets.NewLocator()
@@ -552,6 +570,10 @@ func (c *ControlPlane) SubmitCredentials(onboardingID, nonce string, values map[
 
 // errCredentialSaved marks a failure after the loopback secret is already stored.
 var errCredentialSaved = errors.New("credential saved")
+
+// errCredentialProbe marks a pre-persistence probe rejection: nothing was
+// stored, so the form re-renders instead of reporting a saved secret.
+var errCredentialProbe = errors.New("credential probe rejected")
 
 // AuthorizeCredentials treats the protected form submission as the user's
 // confirmation and completes the binding without another model round-trip.

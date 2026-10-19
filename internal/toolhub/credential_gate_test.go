@@ -239,7 +239,7 @@ func TestCredentialGateDefersRegistrationUntilSubmittedSecrets(t *testing.T) {
 	if err != nil || !strings.Contains(noted.Error, "один полный набор") || strings.Contains(noted.Error, "one") {
 		t.Fatalf("form rejection was not recorded: %+v %v", noted.Error, err)
 	}
-	if strings.Contains(credentialFieldMarkup(api.CredentialHint{Name: "SLACK_MCP_XOXP_TOKEN", AlternativeGroup: 2}, api.ConnectionField{}), "required") {
+	if strings.Contains(credentialFieldMarkup(api.CredentialHint{Name: "SLACK_MCP_XOXP_TOKEN", AlternativeGroup: 2}, api.ConnectionField{}, ""), "required") {
 		t.Fatal("alternative field is required")
 	}
 	nonce := stored.FormNonce

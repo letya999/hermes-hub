@@ -3,6 +3,7 @@ package toolhub
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -632,10 +633,10 @@ func TestCredentialFormRendersRecipeProvenance(t *testing.T) {
 	control := &ControlPlane{Store: store, WorkloadRoot: t.TempDir(), Now: time.Now}
 	auth := aliceAuth()
 	resolution := api.RecipeResolution{
-		Source:  api.ArtifactSource{Repository: "https://github.com/acme/weather", CommitSHA: strings.Repeat("1", 40)},
-		Launch:  api.LaunchRecipe{Artifact: "ghcr.io/acme/weather@sha256:" + strings.Repeat("2", 64), Transport: api.ContainerMCP},
+		Source:   api.ArtifactSource{Repository: "https://github.com/acme/weather", CommitSHA: strings.Repeat("1", 40)},
+		Launch:   api.LaunchRecipe{Artifact: "ghcr.io/acme/weather@sha256:" + strings.Repeat("2", 64), Transport: api.ContainerMCP},
 		Evidence: []api.RecipeEvidence{{Source: "server.json", Detail: "declared env contract"}},
-		State:   "ready",
+		State:    "ready",
 		Connection: api.ConnectionRecipe{Fields: []api.ConnectionField{
 			{Name: "ACME_API_KEY", Required: true, Secret: true, Delivery: "env", Source: "server.json", Rank: api.RankR3, TokenURL: "https://acme.example/settings/tokens"},
 			{Name: "ACME_INSECURE", Required: false, Secret: false, Delivery: "env", Source: "server.json", TokenURL: "http://acme.example/not-https"},
@@ -683,6 +684,123 @@ func TestCredentialFormRendersRecipeProvenance(t *testing.T) {
 	// the human sees the connector can mutate before saving credentials.
 	if !strings.Contains(body, "delete_forecast") || !strings.Contains(body, "по умолчанию") {
 		t.Fatalf("write tool not listed as disabled-by-default: %.400s", body)
+	}
+}
+
+// countingSecrets wraps the real backend so the residue check can assert the
+// ciphertext path was never reached on a failed probe.
+type countingSecrets struct {
+	credstore.Backend
+	puts int32
+}
+
+func (s *countingSecrets) Put(locator, owner string, values map[string]string) error {
+	s.puts++
+	return s.Backend.Put(locator, owner, values)
+}
+
+// S2.6: a failed read-only probe persists nothing — no ciphertext, no
+// locator, no connection — and re-renders the form carrying the entered
+// values and the public probe error, so the owner can correct in place.
+func TestCredentialSubmitProbeFailureLeavesNoResidue(t *testing.T) {
+	store := NewStore()
+	grantTestControlOperations(t, store, "alice", api.ControlOperations...)
+	definition := remoteDefinition()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	key, err := credstore.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := credstore.Open(credstore.Options{Path: filepath.Join(t.TempDir(), "s26.enc"), Key: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spy := &countingSecrets{Backend: secrets}
+	control := &ControlPlane{Store: store, Secrets: spy, WorkloadRoot: t.TempDir(), Now: time.Now,
+		AdmitWithCredentials: func(context.Context, api.ToolDefinition, map[string]string) (api.ToolDefinition, error) {
+			return api.ToolDefinition{}, errors.New("tools/list: 401 invalid token")
+		}}
+	auth := aliceAuth()
+	onboarding := api.Onboarding{
+		Schema: api.SchemaVersion, OnboardingID: "onb-s26", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
+		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
+		Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingCreds,
+		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
+		Required:  []api.CredentialHint{{Name: "GOOGLE_TOKEN", Secret: true, Delivery: "env"}},
+		FormNonce: "s26-tok", FormExpires: time.Now().Add(time.Hour),
+	}
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	gateway := &Gateway{Control: control}
+	rec, req := confirmLinkRequest(t, http.MethodPost, "http://127.0.0.1/credentials/onb-s26?t=s26-tok")
+	req.PostForm = url.Values{"GOOGLE_TOKEN": {"wrong-token"}, "nonce": {"s26-tok"}}
+	gateway.serveCredentials(rec, req)
+	body := rec.Body.String()
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("probe failure status=%d", rec.Code)
+	}
+	// The form comes back with the entered value page-side and the probe's
+	// public error; the model channel sees neither.
+	if !strings.Contains(body, `name="GOOGLE_TOKEN"`) || !strings.Contains(body, "wrong-token") || !strings.Contains(body, "401") {
+		t.Fatalf("form not re-rendered with values+error: %.400s", body)
+	}
+	if spy.puts != 0 {
+		t.Fatalf("ciphertext persisted despite failed probe: %d puts", spy.puts)
+	}
+	stored, err := store.onboarding("onb-s26")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Locator != "" || stored.Phase != api.PhaseAwaitingCreds || stored.BindingID != "" {
+		t.Fatalf("residue after probe failure: locator=%q phase=%s binding=%q", stored.Locator, stored.Phase, stored.BindingID)
+	}
+}
+
+// S2.6: the admission submit already probes; the pre-persist check must not
+// re-probe the same values a second time.
+func TestCredentialSubmitAdmissionProbesOnce(t *testing.T) {
+	store := NewStore()
+	grantTestControlOperations(t, store, "alice", api.ControlOperations...)
+	key, err := credstore.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := credstore.Open(credstore.Options{Path: filepath.Join(t.TempDir(), "s26b.enc"), Key: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition := remoteDefinition()
+	probes := 0
+	control := &ControlPlane{Store: store, Secrets: secrets, WorkloadRoot: t.TempDir(), Now: time.Now,
+		AdmitWithCredentials: func(context.Context, api.ToolDefinition, map[string]string) (api.ToolDefinition, error) {
+			probes++
+			return definition, nil
+		}}
+	auth := aliceAuth()
+	draft := definition
+	onboarding := api.Onboarding{
+		Schema: api.SchemaVersion, OnboardingID: "onb-s26b", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
+		RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Revision: 1,
+		Mode: api.OnboardingRemote, Phase: api.PhaseAwaitingCreds, AdmissionPending: true,
+		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
+		Required:  []api.CredentialHint{{Name: "GOOGLE_TOKEN", Secret: true, Delivery: "env"}},
+		FormNonce: "s26b-tok", FormExpires: time.Now().Add(time.Hour),
+		Definition: &draft,
+	}
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	if err := control.SubmitCredentials("onb-s26b", "s26b-tok", map[string]string{"GOOGLE_TOKEN": "ok"}); err != nil {
+		t.Fatal(err)
+	}
+	if probes != 1 {
+		t.Fatalf("admission submit probed %d times, want 1", probes)
 	}
 }
 

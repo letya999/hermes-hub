@@ -296,96 +296,7 @@ func (g *Gateway) serveCredentials(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-"+cspNonce+"'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
-		var b strings.Builder
-		b.WriteString(`<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Подключение MCP</title><style>
-:root{color-scheme:light;font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}.panel{width:min(640px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{font-size:28px;line-height:1.2;letter-spacing:-.02em;margin:0 0 10px}p{color:#52606d;line-height:1.55;margin:0 0 24px}fieldset{border:1px solid #dfe4ea;border-radius:12px;padding:16px 16px 0;margin:0 0 16px}legend{font-size:16px;font-weight:750;padding:0 6px}label{display:block;font-weight:650;margin:0 0 22px}input,textarea{display:block;width:100%;margin-top:8px;border:1px solid #aab4bf;border-radius:10px;padding:12px 14px;font:inherit;color:#17202a;background:#fff}input[type=file]{padding:10px}textarea{min-height:180px;resize:vertical;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:14px}input:focus,textarea:focus{outline:3px solid rgba(36,99,235,.22);border-color:#2463eb}small{display:block;color:#667583;font-weight:400;line-height:1.45;margin:-12px 0 20px}.tag{display:inline;margin:0 0 0 6px;font-size:12px}.opt{display:flex;align-items:center;gap:8px;margin:-14px 0 18px;font-weight:400;color:#52606d;font-size:14px}.opt input{display:inline;width:auto;margin:0;padding:0}button{width:100%;border:0;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font:inherit;font-weight:700;cursor:pointer}button:hover{background:#124aa8}button:focus-visible{outline:3px solid rgba(36,99,235,.3);outline-offset:2px}details{margin:18px 0 22px;color:#52606d}details label{color:#17202a;margin-top:18px}summary{cursor:pointer;font-weight:650}a{color:#175cd3;text-underline-offset:3px}.wait{text-align:center;padding:20px 0}.spin{width:44px;height:44px;margin:0 auto;border:4px solid #dfe4ea;border-top-color:#175cd3;border-radius:50%;animation:sp .9s linear infinite}@keyframes sp{to{transform:rotate(360deg)}}.wait p{margin:0}.wait .lead{font-weight:650;color:#17202a;margin:18px 0 8px}@media(max-width:520px){body{padding:12px}.panel{padding:22px 18px;border-radius:12px}h1{font-size:24px}}
-</style><main class="panel"><h1>Подключение MCP</h1><p>` + html.EscapeString(credentialFormIntro(onboarding.Required)) + `</p>`)
-		hints := credentialFormHints(onboarding.Required)
-		separate := credentialHintsUseAlternatives(hints)
-		if !separate {
-			b.WriteString(`<form method="post" enctype="multipart/form-data">`)
-			b.WriteString("<input type=\"hidden\" name=\"nonce\" value=\"" + html.EscapeString(onboarding.FormNonce) + "\">")
-		}
-		var recipeFields map[string]api.ConnectionField
-		if recipe := g.Control.recipeOf(onboarding); recipe != nil {
-			recipeFields = map[string]api.ConnectionField{}
-			for _, field := range recipe.Connection.Fields {
-				recipeFields[field.Name] = field
-			}
-			b.WriteString("<p class=\"meta\">")
-			repo := strings.TrimPrefix(recipe.Source.Repository, "https://github.com/")
-			if repo != "" {
-				b.WriteString("<strong>" + html.EscapeString(repo) + "</strong>")
-				if recipe.Source.CommitSHA != "" {
-					commit := recipe.Source.CommitSHA
-					if len(commit) > 12 {
-						commit = commit[:12]
-					}
-					b.WriteString("@" + html.EscapeString(commit))
-				}
-			}
-			if onboarding.DefinitionVersion != "" {
-				b.WriteString(" · " + html.EscapeString(onboarding.DefinitionVersion))
-			}
-			if recipe.Trust != "" {
-				b.WriteString(" · trust " + html.EscapeString(string(recipe.Trust)))
-			}
-			if len(recipe.Egress) > 0 {
-				b.WriteString(" · egress: " + html.EscapeString(strings.Join(recipe.Egress, ", ")))
-			}
-			b.WriteString("</p>")
-		}
-		// Tool inventory: read tools are on; write tools are listed as
-		// disabled-by-default so the human sees the connector can mutate
-		// before saving credentials.
-		if definition, err := g.Control.definitionOf(onboarding); err == nil && len(definition.Tools) > 0 {
-			var reads, writes []string
-			for _, tool := range definition.Tools {
-				if tool.Effect == api.WriteEffect {
-					writes = append(writes, tool.Name)
-				} else {
-					reads = append(reads, tool.Name)
-				}
-			}
-			b.WriteString("<p class=\"meta\">Инструменты: ")
-			if len(reads) > 0 {
-				b.WriteString(html.EscapeString(strings.Join(reads, ", ")))
-			}
-			if len(writes) > 0 {
-				if len(reads) > 0 {
-					b.WriteString("; ")
-				}
-				b.WriteString("запись (по умолчанию выключены): " + html.EscapeString(strings.Join(writes, ", ")))
-			}
-			b.WriteString("</p>")
-		}
-		if recipe := g.Control.recipeOf(onboarding); recipe != nil {
-			for _, alternative := range recipe.Connection.Alternatives {
-				if alternative.URL == "" {
-					continue
-				}
-				b.WriteString("<details><summary>Другой способ авторизации</summary><a rel=\"noopener noreferrer\" href=\"" + html.EscapeString(alternative.URL) + "\">" + html.EscapeString(alternative.Name) + "</a></details>")
-			}
-		}
-		// RFC 8628 escape hatch: when the provider advertises a device
-		// authorization endpoint, offer "sign in on another device" — the
-		// /device page reuses this link's token.
-		if g.Control.OAuth != nil && onboarding.OAuthProvider != "" {
-			if prov, ok := g.Control.OAuth.Provider(onboarding.OAuthProvider); ok && prov.DeviceCodeURL != "" {
-				b.WriteString("<details><summary>Войти кодом на другом устройстве</summary><a rel=\"noopener noreferrer\" href=\"/device/" + html.EscapeString(onboardingID) + "?t=" + html.EscapeString(onboarding.FormNonce) + "\">Открыть страницу кода устройства</a></details>")
-			}
-		}
-		writeCredentialFields(&b, hints, onboarding.Optional, onboarding.FormNonce, recipeFields)
-		if !separate {
-			b.WriteString(`<button type="submit">Сохранить и продолжить</button><button type="submit" formnovalidate>Отправить без проверки браузера</button></form>`)
-		}
-		// The submit blocks on a real server probe; a silent 30+ seconds reads
-		// as a refresh loop. Swap the inputs for an honest waiting state while
-		// the POST completes — the response page still carries the outcome.
-		b.WriteString(`<div class="wait" id="wait" hidden><div class="spin"></div><p class="lead">Проверяю данные и запускаю MCP…</p><p>обычно до минуты — <span id="secs">0</span> с</p></div>`)
-		b.WriteString(`<script nonce="` + cspNonce + `">var t0=Date.now();document.addEventListener('submit',function(e){var f=e.target;if(f._busy){e.preventDefault();return}f._busy=true;document.querySelectorAll('form,details').forEach(function(el){el.style.display='none'});document.getElementById('wait').hidden=false;var s=document.getElementById('secs');setInterval(function(){s.textContent=Math.floor((Date.now()-t0)/1000)},500)});</script>`)
-		b.WriteString("</main></html>")
-		_, _ = io.WriteString(w, b.String())
+		_, _ = io.WriteString(w, g.credentialFormHTML(onboarding, onboardingID, "", nil, cspNonce))
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -457,6 +368,18 @@ func (g *Gateway) serveCredentials(w http.ResponseWriter, r *http.Request) {
 	}
 	applyCredentialDefaults(onboarding.Required, values)
 	if err := g.Control.AuthorizeCredentials(r.Context(), onboardingID, nonce, values); err != nil {
+		if errors.Is(err, errCredentialProbe) {
+			// Transactional save: the probe rejected before any persistence,
+			// so the owner retries in place — the re-rendered form carries
+			// their values and the public probe error, page-side only.
+			cspNonce := api.RandomNonce()
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-"+cspNonce+"'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = io.WriteString(w, g.credentialFormHTML(onboarding, onboardingID, credentialProbeFailure(err), values, cspNonce))
+			return
+		}
 		status, title, message := credentialSubmitPage(err)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
@@ -763,10 +686,10 @@ func credentialFormIntro(hints []api.CredentialHint) string {
 	return "Введите запрошенные поля. Они сохранятся в защищённом хранилище и не попадут в чат."
 }
 
-func writeCredentialFields(b *strings.Builder, hints, optional []api.CredentialHint, nonce string, recipeFields map[string]api.ConnectionField) {
+func writeCredentialFields(b *strings.Builder, hints, optional []api.CredentialHint, nonce string, recipeFields map[string]api.ConnectionField, prefill map[string]string) {
 	if !credentialHintsUseAlternatives(hints) {
 		for _, hint := range hints {
-			b.WriteString(credentialFieldMarkup(hint, recipeFields[hint.Name]))
+			b.WriteString(credentialFieldMarkup(hint, recipeFields[hint.Name], prefill[hint.Name]))
 		}
 		writeOptionalCredentialFields(b, optional)
 		return
@@ -801,7 +724,7 @@ func writeCredentialFields(b *strings.Builder, hints, optional []api.CredentialH
 		b.WriteString(html.EscapeString(legend))
 		b.WriteString("</legend>")
 		for _, hint := range group {
-			b.WriteString(credentialFieldMarkup(hint, recipeFields[hint.Name]))
+			b.WriteString(credentialFieldMarkup(hint, recipeFields[hint.Name], prefill[hint.Name]))
 		}
 		writeOptionalCredentialFields(b, optional)
 		b.WriteString(`<button type="submit">Сохранить и продолжить</button><button type="submit" formnovalidate>Отправить без проверки браузера</button></fieldset></form>`)
@@ -822,6 +745,105 @@ func writeOptionalCredentialFields(b *strings.Builder, optional []api.Credential
 		b.WriteString(optionalCredentialFieldMarkup(hint))
 	}
 	b.WriteString(`</details>`)
+}
+
+// credentialFormHTML renders the one-time credential form. errText is the
+// public probe error shown on a retry; prefill carries the submitted values
+// back page-side — neither ever reaches the model channel.
+func (g *Gateway) credentialFormHTML(onboarding api.Onboarding, onboardingID, errText string, prefill map[string]string, cspNonce string) string {
+	var b strings.Builder
+	b.WriteString(`<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Подключение MCP</title><style>
+:root{color-scheme:light;font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}.panel{width:min(640px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{font-size:28px;line-height:1.2;letter-spacing:-.02em;margin:0 0 10px}p{color:#52606d;line-height:1.55;margin:0 0 24px}p.err{color:#b42318;font-weight:600}fieldset{border:1px solid #dfe4ea;border-radius:12px;padding:16px 16px 0;margin:0 0 16px}legend{font-size:16px;font-weight:750;padding:0 6px}label{display:block;font-weight:650;margin:0 0 22px}input,textarea{display:block;width:100%;margin-top:8px;border:1px solid #aab4bf;border-radius:10px;padding:12px 14px;font:inherit;color:#17202a;background:#fff}input[type=file]{padding:10px}textarea{min-height:180px;resize:vertical;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:14px}input:focus,textarea:focus{outline:3px solid rgba(36,99,235,.22);border-color:#2463eb}small{display:block;color:#667583;font-weight:400;line-height:1.45;margin:-12px 0 20px}.tag{display:inline;margin:0 0 0 6px;font-size:12px}.opt{display:flex;align-items:center;gap:8px;margin:-14px 0 18px;font-weight:400;color:#52606d;font-size:14px}.opt input{display:inline;width:auto;margin:0;padding:0}button{width:100%;border:0;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font:inherit;font-weight:700;cursor:pointer}button:hover{background:#124aa8}button:focus-visible{outline:3px solid rgba(36,99,235,.3);outline-offset:2px}details{margin:18px 0 22px;color:#52606d}details label{color:#17202a;margin-top:18px}summary{cursor:pointer;font-weight:650}a{color:#175cd3;text-underline-offset:3px}.wait{text-align:center;padding:20px 0}.spin{width:44px;height:44px;margin:0 auto;border:4px solid #dfe4ea;border-top-color:#175cd3;border-radius:50%;animation:sp .9s linear infinite}@keyframes sp{to{transform:rotate(360deg)}}.wait p{margin:0}.wait .lead{font-weight:650;color:#17202a;margin:18px 0 8px}@media(max-width:520px){body{padding:12px}.panel{padding:22px 18px;border-radius:12px}h1{font-size:24px}}
+</style><main class="panel"><h1>Подключение MCP</h1><p>` + html.EscapeString(credentialFormIntro(onboarding.Required)) + `</p>`)
+	if errText != "" {
+		b.WriteString(`<p class="err">` + html.EscapeString(errText) + `</p>`)
+	}
+	hints := credentialFormHints(onboarding.Required)
+	separate := credentialHintsUseAlternatives(hints)
+	if !separate {
+		b.WriteString(`<form method="post" enctype="multipart/form-data">`)
+		b.WriteString("<input type=\"hidden\" name=\"nonce\" value=\"" + html.EscapeString(onboarding.FormNonce) + "\">")
+	}
+	var recipeFields map[string]api.ConnectionField
+	if recipe := g.Control.recipeOf(onboarding); recipe != nil {
+		recipeFields = map[string]api.ConnectionField{}
+		for _, field := range recipe.Connection.Fields {
+			recipeFields[field.Name] = field
+		}
+		b.WriteString("<p class=\"meta\">")
+		repo := strings.TrimPrefix(recipe.Source.Repository, "https://github.com/")
+		if repo != "" {
+			b.WriteString("<strong>" + html.EscapeString(repo) + "</strong>")
+			if recipe.Source.CommitSHA != "" {
+				commit := recipe.Source.CommitSHA
+				if len(commit) > 12 {
+					commit = commit[:12]
+				}
+				b.WriteString("@" + html.EscapeString(commit))
+			}
+		}
+		if onboarding.DefinitionVersion != "" {
+			b.WriteString(" · " + html.EscapeString(onboarding.DefinitionVersion))
+		}
+		if recipe.Trust != "" {
+			b.WriteString(" · trust " + html.EscapeString(string(recipe.Trust)))
+		}
+		if len(recipe.Egress) > 0 {
+			b.WriteString(" · egress: " + html.EscapeString(strings.Join(recipe.Egress, ", ")))
+		}
+		b.WriteString("</p>")
+	}
+	// Tool inventory: read tools are on; write tools are listed as
+	// disabled-by-default so the human sees the connector can mutate
+	// before saving credentials.
+	if definition, err := g.Control.definitionOf(onboarding); err == nil && len(definition.Tools) > 0 {
+		var reads, writes []string
+		for _, tool := range definition.Tools {
+			if tool.Effect == api.WriteEffect {
+				writes = append(writes, tool.Name)
+			} else {
+				reads = append(reads, tool.Name)
+			}
+		}
+		b.WriteString("<p class=\"meta\">Инструменты: ")
+		if len(reads) > 0 {
+			b.WriteString(html.EscapeString(strings.Join(reads, ", ")))
+		}
+		if len(writes) > 0 {
+			if len(reads) > 0 {
+				b.WriteString("; ")
+			}
+			b.WriteString("запись (по умолчанию выключены): " + html.EscapeString(strings.Join(writes, ", ")))
+		}
+		b.WriteString("</p>")
+	}
+	if recipe := g.Control.recipeOf(onboarding); recipe != nil {
+		for _, alternative := range recipe.Connection.Alternatives {
+			if alternative.URL == "" {
+				continue
+			}
+			b.WriteString("<details><summary>Другой способ авторизации</summary><a rel=\"noopener noreferrer\" href=\"" + html.EscapeString(alternative.URL) + "\">" + html.EscapeString(alternative.Name) + "</a></details>")
+		}
+	}
+	// RFC 8628 escape hatch: when the provider advertises a device
+	// authorization endpoint, offer "sign in on another device" — the
+	// /device page reuses this link's token.
+	if g.Control.OAuth != nil && onboarding.OAuthProvider != "" {
+		if prov, ok := g.Control.OAuth.Provider(onboarding.OAuthProvider); ok && prov.DeviceCodeURL != "" {
+			b.WriteString("<details><summary>Войти кодом на другом устройстве</summary><a rel=\"noopener noreferrer\" href=\"/device/" + html.EscapeString(onboardingID) + "?t=" + html.EscapeString(onboarding.FormNonce) + "\">Открыть страницу кода устройства</a></details>")
+		}
+	}
+	writeCredentialFields(&b, hints, onboarding.Optional, onboarding.FormNonce, recipeFields, prefill)
+	if !separate {
+		b.WriteString(`<button type="submit">Сохранить и продолжить</button><button type="submit" formnovalidate>Отправить без проверки браузера</button></form>`)
+	}
+	// The submit blocks on a real server probe; a silent 30+ seconds reads
+	// as a refresh loop. Swap the inputs for an honest waiting state while
+	// the POST completes — the response page still carries the outcome.
+	b.WriteString(`<div class="wait" id="wait" hidden><div class="spin"></div><p class="lead">Проверяю данные и запускаю MCP…</p><p>обычно до минуты — <span id="secs">0</span> с</p></div>`)
+	b.WriteString(`<script nonce="` + cspNonce + `">var t0=Date.now();document.addEventListener('submit',function(e){var f=e.target;if(f._busy){e.preventDefault();return}f._busy=true;document.querySelectorAll('form,details').forEach(function(el){el.style.display='none'});document.getElementById('wait').hidden=false;var s=document.getElementById('secs');setInterval(function(){s.textContent=Math.floor((Date.now()-t0)/1000)},500)});</script>`)
+	b.WriteString("</main></html>")
+	return b.String()
 }
 
 func credentialSubmitPage(err error) (int, string, string) {
@@ -878,7 +900,7 @@ func credentialFieldProvenance(field api.ConnectionField) string {
 	return out
 }
 
-func credentialFieldMarkup(hint api.CredentialHint, field api.ConnectionField) string {
+func credentialFieldMarkup(hint api.CredentialHint, field api.ConnectionField, value string) string {
 	prov := credentialFieldProvenance(field)
 	if field.Unverified {
 		markup := optionalCredentialFieldMarkup(hint)
@@ -925,7 +947,12 @@ func credentialFieldMarkup(hint api.CredentialHint, field api.ConnectionField) s
 		tag = "обязательное"
 		opt = `<label class="opt"><input type="checkbox" name="opt:` + inputName + `" value="1"> Поле не требуется — запустить без него</label>`
 	}
-	return "<label>" + label + " <small class=\"tag\">" + tag + "</small>" + "<input type=\"" + inputType + "\" name=\"" + inputName + "\" autocomplete=\"" + autocomplete + "\"" + required + ">" + credentialFieldHint(hint) + prov + "</label>" + opt
+	input := "<input type=\"" + inputType + "\" name=\"" + inputName + "\" autocomplete=\"" + autocomplete + "\"" + required
+	if value != "" {
+		input += " value=\"" + html.EscapeString(value) + "\""
+	}
+	input += ">"
+	return "<label>" + label + " <small class=\"tag\">" + tag + "</small>" + input + credentialFieldHint(hint) + prov + "</label>" + opt
 }
 
 // optionalCredentialFieldMarkup renders a discovered non-required input: same
