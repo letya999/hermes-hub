@@ -1,0 +1,33 @@
+{
+  "target": "modelcontextprotocol/brave-search",
+  "subject": {
+    "kind": "mcp-container",
+    "ref": "modelcontextprotocol/brave-search@sha256:8da3c55f938d4ec7ca5777302337e9cecb26c3d55648f69a22ffd9551c0b20d7"
+  },
+  "provenance": [
+    "recorded upstream README/env contract"
+  ],
+  "entries": [
+    {
+      "claim": {
+        "attribute": "entrypoint",
+        "value": "[\"node\", \"dist/index.js\"]"
+      },
+      "source": "README.md",
+      "ref": "README.md@mcpServers",
+      "rank": "hint"
+    },
+    {
+      "claim": {
+        "field": "BRAVE_API_KEY",
+        "required": true,
+        "secret": true,
+        "delivery": "env"
+      },
+      "source": "README.md",
+      "ref": "README.md@env",
+      "rank": "R6"
+    }
+  ],
+  "expect_digest": "sha256:3e5eece64d88fa2c4bfeff3e2539c6c61735f6aa2be9a5839b0d5d70bf5c130a"
+}

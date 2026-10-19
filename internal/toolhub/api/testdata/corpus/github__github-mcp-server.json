@@ -1,0 +1,45 @@
+{
+  "target": "github/github-mcp-server",
+  "subject": {
+    "kind": "mcp-remote",
+    "ref": "github/github-mcp-server@sha256:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+  },
+  "provenance": [
+    "https://raw.githubusercontent.com/github/github-mcp-server/main/server.json"
+  ],
+  "entries": [
+    {
+      "claim": {
+        "attribute": "endpoint",
+        "value": "\"https://api.githubcopilot.com/mcp/\""
+      },
+      "source": "server.json",
+      "ref": "server.json@repository-root",
+      "rank": "L4"
+    },
+    {
+      "claim": {
+        "field": "GITHUB_PERSONAL_ACCESS_TOKEN",
+        "required": false,
+        "secret": true,
+        "delivery": "env"
+      },
+      "source": "server.json",
+      "ref": "server.json@packages[0].runtimeArguments",
+      "rank": "R3"
+    },
+    {
+      "claim": {
+        "field": "Authorization",
+        "required": true,
+        "secret": true,
+        "delivery": "http_header",
+        "target": "Authorization"
+      },
+      "source": "server.json",
+      "ref": "server.json@remotes[0].headers",
+      "rank": "R3"
+    }
+  ],
+  "expect_digest": "sha256:f158deae63f9ffac8a1b477376f49d2f1fd3950de82e104ddb549e4fa4d953a7"
+}

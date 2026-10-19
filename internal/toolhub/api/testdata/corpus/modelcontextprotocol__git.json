@@ -1,0 +1,33 @@
+{
+  "target": "modelcontextprotocol/git",
+  "subject": {
+    "kind": "mcp-container",
+    "ref": "modelcontextprotocol/git@sha256:23bf9c6a9f553e8b3edd67e3bfdf747e14ca5cb9283255c884c0fa0565a39e1e"
+  },
+  "provenance": [
+    "recorded upstream README/env contract"
+  ],
+  "entries": [
+    {
+      "claim": {
+        "attribute": "entrypoint",
+        "value": "[\"uvx\", \"mcp-server-git\"]"
+      },
+      "source": "README.md",
+      "ref": "README.md@mcpServers",
+      "rank": "hint"
+    },
+    {
+      "claim": {
+        "field": "GIT_REPOSITORY",
+        "required": false,
+        "secret": false,
+        "delivery": "env"
+      },
+      "source": "README.md",
+      "ref": "README.md@env",
+      "rank": "R6"
+    }
+  ],
+  "expect_digest": "sha256:e77e8b72f959349fda00063ca50b4e9e5a0da15d6ea4ae063a6b2329edd3d15a"
+}

@@ -126,6 +126,10 @@ func launchRankOrder(r Rank) int {
 		return 0
 	case RankL3:
 		return 3
+	case RankL4:
+		return 4
+	case RankLH:
+		return 7
 	}
 	return 99
 }
@@ -267,6 +271,8 @@ func applyLaunchClaim(launch *LaunchRecipe, attribute, rawValue string) error {
 		err = json.Unmarshal(value, &launch.Artifact)
 	case "endpoint":
 		err = json.Unmarshal(value, &launch.Endpoint)
+	case "entrypoint":
+		err = json.Unmarshal(value, &launch.Entrypoint)
 	default:
 		return fmt.Errorf("%w: unknown launch attribute %s", ErrInvalid, attribute)
 	}

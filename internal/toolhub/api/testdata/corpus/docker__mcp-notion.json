@@ -1,0 +1,33 @@
+{
+  "target": "docker/mcp-notion",
+  "subject": {
+    "kind": "mcp-container",
+    "ref": "makenotion/notion-mcp-server@sha256:d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4"
+  },
+  "provenance": [
+    "Docker MCP catalog entry: image mcp/notion + secrets contract"
+  ],
+  "entries": [
+    {
+      "claim": {
+        "attribute": "artifact",
+        "value": "\"mcp/notion@sha256:11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111\""
+      },
+      "source": "docker-mcp",
+      "ref": "desktop.docker.com/mcp/catalog/notion",
+      "rank": "L2"
+    },
+    {
+      "claim": {
+        "field": "NOTION_TOKEN",
+        "required": true,
+        "secret": true,
+        "delivery": "env"
+      },
+      "source": "docker-mcp",
+      "ref": "desktop.docker.com/mcp/catalog/notion",
+      "rank": "R4"
+    }
+  ],
+  "expect_digest": "sha256:648af2bbbf50b11149884b22b95f73a257ade17865b17342807d015500d801f7"
+}

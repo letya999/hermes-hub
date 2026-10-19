@@ -1,0 +1,33 @@
+{
+  "target": "anthropics/filesystem-mcpb",
+  "subject": {
+    "kind": "mcp-container",
+    "ref": "anthropics/filesystem-mcpb@sha256:a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7"
+  },
+  "provenance": [
+    "MCPB manifest.json user_config declarations"
+  ],
+  "entries": [
+    {
+      "claim": {
+        "attribute": "entrypoint",
+        "value": "[\"node\", \"dist/index.js\", \"${user_config.allowed_dir}\"]"
+      },
+      "source": "manifest.json",
+      "ref": "bundle/manifest.json",
+      "rank": "L4"
+    },
+    {
+      "claim": {
+        "field": "allowed_dir",
+        "required": true,
+        "secret": false,
+        "delivery": "env"
+      },
+      "source": "manifest.json",
+      "ref": "manifest.json@user_config.allowed_dir",
+      "rank": "R3"
+    }
+  ],
+  "expect_digest": "sha256:285b11f609d20f56e34f5cc816cf660df12c822435caaff54228b3c3901a87f0"
+}

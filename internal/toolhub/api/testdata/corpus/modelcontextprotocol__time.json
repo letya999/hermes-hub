@@ -1,0 +1,33 @@
+{
+  "target": "modelcontextprotocol/time",
+  "subject": {
+    "kind": "mcp-container",
+    "ref": "modelcontextprotocol/time@sha256:f8155d83e8b3a4375bab40dc9cf6a54c1625de613e83406e0d978c18c0399d74"
+  },
+  "provenance": [
+    "recorded upstream README/env contract"
+  ],
+  "entries": [
+    {
+      "claim": {
+        "attribute": "entrypoint",
+        "value": "[\"uvx\", \"mcp-server-time\"]"
+      },
+      "source": "README.md",
+      "ref": "README.md@mcpServers",
+      "rank": "hint"
+    },
+    {
+      "claim": {
+        "field": "TIME_LOCAL_TIMEZONE",
+        "required": false,
+        "secret": false,
+        "delivery": "env"
+      },
+      "source": "README.md",
+      "ref": "README.md@env",
+      "rank": "R6"
+    }
+  ],
+  "expect_digest": "sha256:46c78e4183d14484e3769593dfb4e7ea909ceff8bb72cbfae795aee476679b5d"
+}

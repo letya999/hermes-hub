@@ -1,0 +1,33 @@
+{
+  "target": "modelcontextprotocol/filesystem",
+  "subject": {
+    "kind": "mcp-container",
+    "ref": "modelcontextprotocol/filesystem@sha256:5cf3c96d8bdbedee2f4b991302cddb348473116fbb373b29b58d4ad3ccf9da53"
+  },
+  "provenance": [
+    "recorded upstream README/env contract"
+  ],
+  "entries": [
+    {
+      "claim": {
+        "attribute": "entrypoint",
+        "value": "[\"node\", \"dist/index.js\"]"
+      },
+      "source": "README.md",
+      "ref": "README.md@mcpServers",
+      "rank": "hint"
+    },
+    {
+      "claim": {
+        "field": "FS_ALLOWED_DIRS",
+        "required": true,
+        "secret": false,
+        "delivery": "env"
+      },
+      "source": "README.md",
+      "ref": "README.md@env",
+      "rank": "R6"
+    }
+  ],
+  "expect_digest": "sha256:a684399f572cb2f3eea0fa167d3bc73d622d71dce8c8e423381f5a23ae95035b"
+}

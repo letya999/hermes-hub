@@ -230,3 +230,17 @@ func TestLedgerR3KeepsDeclaredRequired(t *testing.T) {
 		t.Fatalf("author-declared R3 field must stay required: %+v", recipe.Credentials.Fields)
 	}
 }
+
+func TestLedgerHigherRankWinsLaunchAttribute(t *testing.T) {
+	entries := []LedgerEntry{
+		{Claim: Claim{Attribute: "entrypoint", Value: `["npx","-y","readme-guess"]`}, Source: "README.md", Rank: RankLH},
+		{Claim: Claim{Attribute: "entrypoint", Value: `["node","dist/index.js"]`}, Source: "manifest.json", Rank: RankL4},
+	}
+	recipe, err := ResolveLedger(RecipeSubject{Kind: SubjectContainerMCP, Ref: "r@1"}, entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recipe.Launch.Entrypoint) != 2 || recipe.Launch.Entrypoint[1] != "dist/index.js" {
+		t.Fatalf("lower-rank hint displaced the manifest entrypoint: %+v", recipe.Launch.Entrypoint)
+	}
+}

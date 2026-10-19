@@ -18,7 +18,7 @@ slices:
   S1.4-registry-first-wiring: done
   S1.5-recipe-store-onboarding-digest: done
   S1.6-credential-source-ledger-entry: done
-  S1.7-golden-corpus: not_started
+  S1.7-golden-corpus: done
   S1.8-docs: not_started
 validation:
   documents: pending
@@ -28,6 +28,7 @@ validation:
   live_acceptance: not_started
 evidence:
   - "S1.1: ledger.go types + canonical sha256 digest + secret rejection (ec5a2fd)"
+  - "S1.7: testdata/corpus 21 fixtures (5 named live-fetched: github-mcp server.json, gitlab-mcp server.json, calendar package.json+.env.example, notion package.json+README, atlassian Dockerfile+.env.example; remote-only, MCPB, docker-mcp, 3 CLIs, 10 misc recorded contracts); 100 shuffled runs pin identical digests"
   - "S1.6: credential_source replay records per-field R7 owner-words ledger entries naming the confirmed source"
   - "S1.5: Store.PutRecipe/Recipe content-addressed snapshot map; onboardings carry recipe_digest; embedded Recipe + registered Definition copies dropped from snapshots (drafts keep theirs); reload-resolved status/credential_source verified"
   - "S1.4: catalogs queried before repo files (source-only lookup), RecipeCandidate carries Source/LaunchRank/CredentialRank, ledger persists fetch digests+timestamps incl. ignored mismatches; disagree-warning no longer forces review"

@@ -1,0 +1,22 @@
+{
+  "target": "cli/jq",
+  "subject": {
+    "kind": "cli",
+    "ref": "cli/jq@sha256:c84d384f2a25cca2a8fde5eb61b0f81f728e5f778a232211b176ea80143877bc"
+  },
+  "provenance": [
+    "bounded-cli recipe: language-convention entrypoint"
+  ],
+  "entries": [
+    {
+      "claim": {
+        "attribute": "entrypoint",
+        "value": "[\"jq\"]"
+      },
+      "source": "--help",
+      "ref": "cli/jq",
+      "rank": "L6"
+    }
+  ],
+  "expect_digest": "sha256:f976ae85ba90b987a9b67385f948b0f381b6d7cefe97f1caa1cac233b47f1bdf"
+}

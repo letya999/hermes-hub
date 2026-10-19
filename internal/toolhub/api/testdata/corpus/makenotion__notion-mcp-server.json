@@ -1,0 +1,45 @@
+{
+  "target": "makenotion/notion-mcp-server",
+  "subject": {
+    "kind": "mcp-container",
+    "ref": "makenotion/notion-mcp-server@sha256:d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4"
+  },
+  "provenance": [
+    "https://raw.githubusercontent.com/makenotion/notion-mcp-server/main/package.json",
+    "https://raw.githubusercontent.com/makenotion/notion-mcp-server/main/README.md"
+  ],
+  "entries": [
+    {
+      "claim": {
+        "attribute": "entrypoint",
+        "value": "[\"npx\", \"-y\", \"@notionhq/notion-mcp-server\"]"
+      },
+      "source": "README.md",
+      "ref": "README.md@mcpServers",
+      "rank": "hint"
+    },
+    {
+      "claim": {
+        "field": "NOTION_TOKEN",
+        "required": true,
+        "secret": true,
+        "delivery": "env"
+      },
+      "source": "README.md",
+      "ref": "README.md@env",
+      "rank": "R6"
+    },
+    {
+      "claim": {
+        "field": "OPENAPI_MCP_HEADERS",
+        "required": false,
+        "secret": true,
+        "delivery": "json"
+      },
+      "source": "README.md",
+      "ref": "README.md@env",
+      "rank": "R6"
+    }
+  ],
+  "expect_digest": "sha256:0afa3731e163cf3e67b0de067075e17e81d191ed8791e7c6c902fc3aaef12c79"
+}

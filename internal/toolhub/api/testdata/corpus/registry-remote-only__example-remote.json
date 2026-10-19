@@ -1,0 +1,34 @@
+{
+  "target": "registry-remote-only/example-remote",
+  "subject": {
+    "kind": "mcp-remote",
+    "ref": "acme/remote-mcp@sha256:f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6"
+  },
+  "provenance": [
+    "recorded MCP Registry document shape: remotes[0].url only, no packages"
+  ],
+  "entries": [
+    {
+      "claim": {
+        "attribute": "endpoint",
+        "value": "\"https://mcp.acme.example/v1\""
+      },
+      "source": "mcp-registry",
+      "ref": "registry.modelcontextprotocol.io/acme/remote-mcp",
+      "rank": "L3"
+    },
+    {
+      "claim": {
+        "field": "ACME_API_KEY",
+        "required": true,
+        "secret": true,
+        "delivery": "http_header",
+        "target": "Authorization"
+      },
+      "source": "mcp-registry",
+      "ref": "registry.modelcontextprotocol.io/acme/remote-mcp",
+      "rank": "R2"
+    }
+  ],
+  "expect_digest": "sha256:7c0cf29f699cdd9ec2ceeac94e93e7558ca8800a2a7955cb339a4028cec545bd"
+}
