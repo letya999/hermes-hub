@@ -500,12 +500,15 @@ func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map
 				}
 			}
 		}
-		if onboarding.ChannelAuthURL != "" && onboarding.Error == "" {
+		if onboarding.ChannelAuthURL != "" {
 			// The communication plane minted a sign-in link for this request
 			// (QR page and friends); it outranks the Broker form, which stays
 			// as the manual fallback. Parroting authorization_url as the
 			// primary path makes users submit the form and never see the
-			// channel link.
+			// channel link. A stale informational error (e.g. the
+			// admission-pending detail) must not suppress the link either:
+			// with no URL in the result the agent reconstructs the Broker
+			// connect URL itself.
 			body["signin_url"] = onboarding.ChannelAuthURL
 			body["instructions"] = "Send signin_url to the user as the link to open on this computer — it is the channel sign-in page for this request. Do not present the Broker authorization_url as the primary path; it is the fallback only. Never ask for credentials in chat."
 		}

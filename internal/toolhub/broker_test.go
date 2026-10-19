@@ -867,6 +867,83 @@ func TestRequiredCredentialsQRIntakePointsToChannelNotice(t *testing.T) {
 	}
 }
 
+// A stale informational error (admission-pending noise recorded before the
+// channel link existed) must not suppress signin_url: with neither URL in the
+// result the agent reconstructs the Broker connect URL from broker_request_id.
+func TestStatusQRIntakeKeepsSignInURLWithStaleError(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "toolhub.private")
+	if err := os.WriteFile(keyPath, private, 0600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/requests/request_live" {
+			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_live", ContractID: "telegram-session", ContractRevision: 2, ConnectionID: "connection_1", OnboardingID: "onboard_1", Status: "pending", AuthorizationURL: "https://broker.example/connect/request_live", ExpiresAt: time.Now().Add(15 * time.Minute)})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"login_url": "http://localhost:8081/telegram-auth/stale-err"})
+	}))
+	defer gw.Close()
+	t.Setenv("HUB_COMMUNICATION_CONTROL_URL", gw.URL)
+	t.Setenv("HUB_COMMUNICATION_AUTH", "tok")
+	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:9999")
+
+	auth := aliceAuth()
+	definition := remoteDefinition()
+	definition.CredentialContractID = "telegram-session"
+	definition.CredentialContractRevision = 2
+	definition.CredentialContractEnv = map[string]string{
+		"TELEGRAM_API_ID":           "TELEGRAM_API_ID",
+		"TELEGRAM_API_HASH":         "TELEGRAM_API_HASH",
+		"TELEGRAM_SESSION_STRING":   "TELEGRAM_SESSION_STRING",
+		"TELEGRAM_EXPECTED_USER_ID": "TELEGRAM_EXPECTED_USER_ID",
+	}
+	definition.Credentials = nil
+	for name := range definition.CredentialContractEnv {
+		definition.Credentials = append(definition.Credentials, api.CredentialInput{Name: name, Required: true})
+	}
+	store := NewStore()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	control := &ControlPlane{Store: store, Broker: &credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}, Now: time.Now}
+	onboarding, err := control.newOnboarding(auth, api.OnboardingCatalog, "broker-qr", definition, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	onboarding.BrokerRequestID = "request_live"
+	onboarding.BrokerAuthorizationURL = "https://broker.example/connect/request_live"
+	onboarding.BrokerContractID = "telegram-session"
+	onboarding.BrokerContractRevision = 2
+	onboarding.ChannelAuthURL = "http://localhost:8081/telegram-auth/stale-err"
+	onboarding.AdmissionPending = true
+	onboarding.Error = "Provider login is required before this MCP can list tools; enter credentials in the protected Broker form, then verify the read probe."
+	onboarding.Revision++
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	body, err := control.status(auth, map[string]any{"onboarding_id": onboarding.OnboardingID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["signin_url"] != "http://localhost:8081/telegram-auth/stale-err" {
+		t.Fatalf("stale informational error suppressed the channel sign-in link: %v", body)
+	}
+	if _, parrotable := body["authorization_url"]; parrotable {
+		t.Fatalf("form URL still exposed for the agent to parrot: %v", body["authorization_url"])
+	}
+}
+
 // An optional contract delivery for a declared credential input must reach the
 // workload env mapping; only required names gate contract selection.
 func TestBindReviewedContractKeepsOptionalDeliveries(t *testing.T) {
