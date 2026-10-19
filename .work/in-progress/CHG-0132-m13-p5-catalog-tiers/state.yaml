@@ -1,0 +1,28 @@
+schema: 1
+change: CHG-0132
+title: M13 P5 catalog tiers + CI-built images + install budgets
+status: in_progress
+branch: feat/m14-toolhub-connector-platform
+updated: "2026-10-19"
+phase: implementation
+requirements: [S5.1, S5.2, S5.3, S5.4, S5.5, S5.6]
+depends_on: [CHG-0128, CHG-0130, CHG-0131]
+github_milestone: M13 — ToolHub Connector Platform
+github_issue: 286
+design_status: accepted
+implementation_status: in_progress
+slices:
+  S5.1-tier-image-pin: not_started
+  S5.2-t0-zero-build: not_started
+  S5.3-hubctl-import: not_started
+  S5.4-toolsets-defaults: not_started
+  S5.5-prefetch-warm: not_started
+  S5.6-docs-closeout: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  live_acceptance: not_started
+evidence: []
+remaining: []
+limitations: []
