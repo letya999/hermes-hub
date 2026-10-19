@@ -23,7 +23,7 @@ import (
 
 // The auth-gated prepare path reached CreateRequest without ever registering
 // the pinned reviewed contract, so a broker with an empty catalog rejected the
-// request with invalid_request (live: telegram-session@1, onboard-628cfde9).
+// request with invalid_request (live: telegram-session@2, onboard-628cfde9).
 // The gate must register the embedded contract before asking for a request.
 func TestCredentialGateRegistersPinnedContract(t *testing.T) {
 	entries, err := api.PreparedCatalog()
@@ -69,8 +69,8 @@ func TestCredentialGateRegistersPinnedContract(t *testing.T) {
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/contracts":
 			var c contract.Contract
-			if err := json.NewDecoder(r.Body).Decode(&c); err != nil || c.ID != "telegram-session" || c.Revision != 1 {
-				t.Errorf("registered contract is not the reviewed telegram-session@1: %+v %v", c, err)
+			if err := json.NewDecoder(r.Body).Decode(&c); err != nil || c.ID != "telegram-session" || c.Revision != 2 {
+				t.Errorf("registered contract is not the reviewed telegram-session@2: %+v %v", c, err)
 			}
 			registered.Store(true)
 			w.WriteHeader(http.StatusCreated)
@@ -82,9 +82,9 @@ func TestCredentialGateRegistersPinnedContract(t *testing.T) {
 				return
 			}
 			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_1", ContractID: "telegram-session", ContractRevision: 1, Status: "pending", AuthorizationURL: "http://127.0.0.1/connect/request_1"})
+			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_1", ContractID: "telegram-session", ContractRevision: 2, Status: "pending", AuthorizationURL: "http://127.0.0.1/connect/request_1"})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/requests/request_1":
-			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_1", ContractID: "telegram-session", ContractRevision: 1, Status: "pending", AuthorizationURL: "http://127.0.0.1/connect/request_1"})
+			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_1", ContractID: "telegram-session", ContractRevision: 2, Status: "pending", AuthorizationURL: "http://127.0.0.1/connect/request_1"})
 		default:
 			http.NotFound(w, r)
 		}
@@ -165,8 +165,8 @@ func TestPreparedTelegramUsesBrokerBeforeAuthenticatedToolList(t *testing.T) {
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/contracts":
 			var c contract.Contract
-			if err := json.NewDecoder(r.Body).Decode(&c); err != nil || c.ID != "telegram-session" || c.Revision != 1 {
-				t.Errorf("registered contract is not the reviewed telegram-session@1: %+v %v", c, err)
+			if err := json.NewDecoder(r.Body).Decode(&c); err != nil || c.ID != "telegram-session" || c.Revision != 2 {
+				t.Errorf("registered contract is not the reviewed telegram-session@2: %+v %v", c, err)
 			}
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(c)
@@ -175,20 +175,20 @@ func TestPreparedTelegramUsesBrokerBeforeAuthenticatedToolList(t *testing.T) {
 			if requests.Add(1) == 2 {
 				requestID = "request_2"
 			}
-			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: requestID, ContractID: "telegram-session", ContractRevision: 1, Status: "pending", AuthorizationURL: "http://127.0.0.1/connect/" + requestID})
+			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: requestID, ContractID: "telegram-session", ContractRevision: 2, Status: "pending", AuthorizationURL: "http://127.0.0.1/connect/" + requestID})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/requests/request_1":
 			status := "pending"
 			credentialID := ""
 			if ready.Load() {
 				status, credentialID = "ready", "credential_1"
 			}
-			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_1", ContractID: "telegram-session", ContractRevision: 1, Status: status, CredentialID: credentialID, AuthorizationURL: "http://127.0.0.1/connect/request_1"})
+			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_1", ContractID: "telegram-session", ContractRevision: 2, Status: status, CredentialID: credentialID, AuthorizationURL: "http://127.0.0.1/connect/request_1"})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/requests/request_2":
 			status, credentialID := "pending", ""
 			if rotatedReady.Load() {
 				status, credentialID = "ready", "credential_2"
 			}
-			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_2", ContractID: "telegram-session", ContractRevision: 1, Status: status, CredentialID: credentialID, AuthorizationURL: "http://127.0.0.1/connect/request_2"})
+			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_2", ContractID: "telegram-session", ContractRevision: 2, Status: status, CredentialID: credentialID, AuthorizationURL: "http://127.0.0.1/connect/request_2"})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/credentials/credential_1":
 			_ = json.NewEncoder(w).Encode(brokerv1.Credential{ID: "credential_1", Status: "active", ConnectionID: "connection_1", ConsumerID: "telegram"})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/credentials/credential_2":

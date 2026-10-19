@@ -1,6 +1,6 @@
 {
   "id": "telegram-session",
-  "revision": 1,
+  "revision": 2,
   "title": "Personal Telegram MTProto session (separate from the bot)",
   "storage": "local",
   "fields": [

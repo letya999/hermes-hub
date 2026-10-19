@@ -270,7 +270,7 @@ func (b *Broker) SubmitTelegram(ctx context.Context, a identity.Actor, id string
 		return ErrUnavailable
 	}
 	r, ok := b.requests[id]
-	if !ok || !requestBy(a, r) || r.View.ContractID != "telegram-session" || r.View.ContractRevision != 1 {
+	if !ok || !requestBy(a, r) || r.View.ContractID != "telegram-session" || r.View.ContractRevision != 2 {
 		return ErrNotFound
 	}
 	if !b.now().Before(r.View.ExpiresAt) || r.View.Status != "pending" {

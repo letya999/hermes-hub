@@ -191,7 +191,7 @@
       {"name": "TELEGRAM_SESSION_STRING", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "TELEGRAM_SESSION_STRING"},
       {"name": "TELEGRAM_EXPECTED_USER_ID", "type": "string", "required": true, "secret": false, "delivery": "env", "target": "TELEGRAM_EXPECTED_USER_ID"}
     ]},
-    "contract_id": "telegram-session", "contract_revision": 1, "stateful": false,
+    "contract_id": "telegram-session", "contract_revision": 2, "stateful": false,
     "auth_before_tools_list": true,
     "runtime_environment": {"TELEGRAM_EXPOSED_TOOLS": "read-only", "TELEGRAM_TRANSCRIBE": "off", "TELEGRAM_DEVICE_MODEL": "hermes-hub ToolHub"},
     "proxy_environment": ["TELEGRAM_PROXY_HOST", "TELEGRAM_PROXY_PORT"],

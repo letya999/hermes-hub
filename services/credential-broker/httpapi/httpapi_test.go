@@ -64,7 +64,7 @@ func apiContract() contract.Contract {
 }
 
 func TestTelegramAuthSubmitIsOwnerAndContractBound(t *testing.T) {
-	c := contract.Contract{ID: "telegram-session", Revision: 1, Title: "Telegram", Storage: "local", Fields: []contract.Field{
+	c := contract.Contract{ID: "telegram-session", Revision: 2, Title: "Telegram", Storage: "local", Fields: []contract.Field{
 		{ID: "api_id", Label: "API ID", Kind: "string", Required: true, MaxBytes: 20},
 		{ID: "api_hash", Label: "API hash", Kind: "secret", Required: true, MaxBytes: 128},
 		{ID: "session", Label: "Session", Kind: "secret", Required: true, MaxBytes: 8192},
@@ -182,7 +182,7 @@ func parseResponse[T any](t *testing.T, w *httptest.ResponseRecorder, status int
 	return out
 }
 func (f *httpFixture) create() v1.Request {
-	w := f.api("POST", "/v1/requests", "broker:control", actor, v1.CreateRequest{ContractID: f.b.Catalog()[0].ID, ContractRevision: 1, ConnectionID: "connection1", OnboardingID: "onboard1", IdempotencyKey: "request_one", OwnerKind: "user"})
+	w := f.api("POST", "/v1/requests", "broker:control", actor, v1.CreateRequest{ContractID: f.b.Catalog()[0].ID, ContractRevision: f.b.Catalog()[0].Revision, ConnectionID: "connection1", OnboardingID: "onboard1", IdempotencyKey: "request_one", OwnerKind: "user"})
 	return parseResponse[v1.Request](f.t, w, 201)
 }
 func formBytes(t *testing.T, fields [][2]string) ([]byte, string) {
