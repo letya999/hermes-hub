@@ -6,22 +6,23 @@ New milestones follow the [milestone playbook](milestone-playbook.md) and its
 [templates](templates/change-plan.md).
 
 Numbering: `CHG-<NNNN>` is unique and sequential. A handful of historical
-collisions (0015, 0047, 0074, 0105, 0106, 0127) predate the docs-check gate and
-stay for reference stability — rows below disambiguate by directory name.
+collisions (0015, 0026, 0027, 0031, 0039, 0047, 0074, 0105, 0106, 0127) predate
+the docs-check gate and stay for reference stability — rows below disambiguate
+by directory name. Milestone numbers are not chronological either (M19/M12/M8
+labels appear out of order, and the connector platform was called M13 while its
+merge was M14): trust the CHG number and directory, not the milestone name.
 
 ## In progress
 
 | Change | State |
 |---|---|
-| [CHG-0141](in-progress/CHG-0141-broker-multi-consumer/plan.md) | Broker: multi-consumer credentials per connection (imported from services/credential-broker .work/todo) |
-| [CHG-0140](in-progress/CHG-0140-broker-dynamic-contracts/plan.md) | Broker: dynamic contract registration (imported from services/credential-broker .work/todo) |
+| [CHG-0143](in-progress/CHG-0143-oauth-viewer-link-flows/plan.md) | OAuth resend rotation, broker grant-epoch fix, viewer-link relay — retroactive record for the uncommitted branch diff |
+| [CHG-0141](in-progress/CHG-0141-broker-multi-consumer/plan.md) | Broker: multi-consumer credentials per connection — implemented; module `just check` on a Linux runner is the remaining gate |
+| [CHG-0140](in-progress/CHG-0140-broker-dynamic-contracts/plan.md) | Broker: dynamic contract registration — hub integration done as CHG-0107; module `just check` gate remains |
 | [CHG-0139](in-progress/CHG-0139-m15-model-provider-layer/plan.md) | M15 model & provider layer (renumbered from a duplicate CHG-0105) |
-| [CHG-0138](in-progress/CHG-0138-m11-session-ux-closeout/plan.md) | M11 closeout: /stop+/cancel, archive UX, live progress, e2e runner — issues #217/#218/#219/#194/#193 (renumbered from a duplicate CHG-0099) |
-| [CHG-0137](in-progress/CHG-0137-qr-intake-default/plan.md) | QR login compiled into the one gateway, default-on for telegram stacks; owner rescan pending (renumbered from a duplicate CHG-0128) |
 | [CHG-0136](in-progress/CHG-0136-docs-restructure/plan.md) | Documentation restructure and enforcement (this change) |
 | [CHG-0117](in-progress/CHG-0117-probe-source-spectrum/plan.md) | Probe source spectrum and delivery modes; validation phase |
 | [CHG-0110](in-progress/CHG-0110-routine-recovery/plan.md) | Routine tick recovery, record isolation and bounded occurrence history; live acceptance pending |
-| [CHG-0104](in-progress/CHG-0104-event-streams/plan.md) | M12 follow-up: stream event subscriptions (delivery=stream) |
 | [CHG-0101](in-progress/CHG-0101-tool-call-probes/plan.md) | M12 stage 3: ToolHub /v1/tool-call + mcp_tool probes |
 | [CHG-0100](in-progress/CHG-0100-watcher-policy/plan.md) | M12 stage 2: quiet window, daily cap, agent escalation |
 | [CHG-0099](in-progress/CHG-0099-followup-hardening/plan.md) | M12 stage 1: bounded check retry, verdict text, task: probe, reminder evidence |
@@ -40,6 +41,10 @@ stay for reference stability — rows below disambiguate by directory name.
 
 | Change | State |
 |---|---|
+| [CHG-0142](done/CHG-0142-credential-broker-mvp/plan.md) | Credential Broker module import MVP (imported 2026-10-20 from services/credential-broker .work/done CHG-001; number taken after 0141) |
+| [CHG-0138](done/CHG-0138-m11-session-ux-closeout/plan.md) | M11 closeout: /stop+/cancel, archive UX, live progress, e2e runner — issues #217/#218/#219/#194/#193; Telegram live acceptance still pending owner |
+| [CHG-0137](done/CHG-0137-qr-intake-default/plan.md) | QR login compiled into the one gateway, default-on for telegram stacks; live-verified 2026-10-19 |
+| [CHG-0104](done/CHG-0104-event-streams/plan.md) | M12 follow-up: stream event subscriptions (delivery=stream); live-verified 2026-10-19 |
 | [CHG-0135](done/CHG-0135-m13-p8-browser-connectors/plan.md) | M13 P8 browser workloads as connectors (ADR-0059) |
 | [CHG-0134](done/CHG-0134-m13-p7-team-connectors/plan.md) | M13 P7 explicit team connectors (ADR-0058) |
 | [CHG-0133](done/CHG-0133-m13-p6-broker-authority/plan.md) | M13 P6 Credential Broker as single credential authority (ADR-0049) |
@@ -190,7 +195,6 @@ stay for reference stability — rows below disambiguate by directory name.
 
 | Change | State |
 |---|---|
-| [CHG-0142](done/CHG-0142-credential-broker-mvp/plan.md) | Credential Broker module import MVP (imported from services/credential-broker .work/done CHG-001) |
 | [CHG-0023](done/CHG-0023-personal-assistant/plan.md) | M4 personal assistant: Telegram/Slack channels, voice, routines, memory/skills/backup |
 | [CHG-0022](done/CHG-0022-credentials-connector-platform/plan.md) | M3 shipped-path inject/audit/registry wiring |
 | [CHG-0021](done/CHG-0021-toolhub-stage3/plan.md) | M2 control plane; issues #20–#26 closed |

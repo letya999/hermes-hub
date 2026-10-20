@@ -5,6 +5,8 @@ last_verified: "2026-10-16"
 
 # ADR-0068 (imported from services/credential-broker ADR-0009): allow_shared в динамических контрактах
 
+Status: accepted (imported from services/credential-broker).
+
 ## Контекст
 
 ADR-0067 ограничил динамические контракты per-user collect-and-deliver и явно запретил

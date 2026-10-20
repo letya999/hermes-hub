@@ -5,6 +5,8 @@ last_verified: "2026-09-18"
 
 # ADR-0065 (imported from services/credential-broker ADR-0006): Адаптация medium memory bank
 
+Status: accepted (imported from services/credential-broker).
+
 ## Контекст
 
 Нужны specs/ADRs/plans и quality gates без лишнего Node/Python runtime.

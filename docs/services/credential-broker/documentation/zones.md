@@ -1,19 +1,21 @@
 ---
 description: "Как применён memory_bank_setup и где хранить текущую информацию."
-last_verified: "2026-09-18"
+last_verified: "2026-10-20"
 ---
 
 # Зоны знания
 
+После слияния в hermes-hub (CHG-0136) зоны — общие, на корне репозитория.
+Внутри `services/credential-broker` отдельного дерева документов нет.
+
 | Зона | Режим |
 | --- | --- |
-| docs | Текущее устройство, переписывать при изменении |
-| specs/active | Замороженные требования, новая revision вместо тихой правки |
-| specs/archive | Исторические specs, append-only |
-| docs/adr | Решения и основания, не переписывать задним числом |
-| .work/todo,in-progress,done | Процесс, evidence, review; папка определяет состояние |
-| .work/tech-debt | Принятые компромиссы с условием закрытия |
+| docs/services/credential-broker | Текущее устройство модуля, переписывать при изменении |
+| specs/active (корень) | SPEC-0064..0066 — frozen требования, baseline.json держит hash SPEC-0064 |
+| docs/adr (корень) | ADR-0060..0069 — импортированные решения, не переписывать задним числом |
+| .work/{in-progress,done} (корень) | CHG-NNNN записи: процесс, evidence, review |
 
-Не переносить галочки конкретной реализации в architecture overview. Завершённый work evidence
-этой исходной поставки сохранён для проверки пользователем; при последующем merge можно вынести
-его в release artifacts и удалить .work по конвенции upstream. Изменения не создают пустые artifacts.
+Зоны `.work/todo` и `.work/tech-debt` из upstream-шаблона в этом репозитории
+не применяются — не создавать их. Исходный work evidence поставки лежит в
+`.work/done/CHG-0142-credential-broker-mvp/artifacts/`; брокерские задачи
+продолжаются в `CHG-0140`/`CHG-0141` корневого `.work`.

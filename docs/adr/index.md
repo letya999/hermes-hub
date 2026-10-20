@@ -1,6 +1,6 @@
 ---
 description: Architectural decisions and clearly marked proposals; append new records when changing direction.
-last_verified: 2026-10-02
+last_verified: 2026-10-20
 ---
 # Decisions
 
@@ -34,12 +34,12 @@ last_verified: 2026-10-02
 | [ADR-0043](ADR-0043-compact-routine-tools.md) | Accepted: five public routine tools; lifecycle operations retained internally |
 | [ADR-0042](ADR-0042-routine-lifecycle.md) | Accepted direction: routine lifecycle, revision fences and interval windows |
 | [ADR-0041](ADR-0041-proactive-automation.md) | Accepted: proactive automation on the occurrence pipeline — bounded follow-up retry, quiet/cap/escalation policy, control-plane tool calls, owner brief, event subscriptions (M12) |
-| [ADR-0040](ADR-0040-single-stack-supervisor.md) | Accepted direction: one Compose supervisor using the existing control image; deployment acceptance pending |
+| [ADR-0040](ADR-0040-single-stack-supervisor.md) | Accepted direction: one Compose supervisor using the existing control image; container deployment verified live in CHG-0097 |
 | [ADR-0039](ADR-0039-hermes-pin-raise.md) | Proposed: conditional Hermes pin raise once upstream merges the MCP breaker fix (D12c) |
 | [ADR-0038](ADR-0038-embedded-store.md) | Proposed: embedded single-writer store gated on measured post-deploy latency (D12b) |
-| [ADR-0037](ADR-0037-supervisor-in-linux-container.md) | Proposed: containerized supervisor via the ToolHub socket proxy (D12a) |
+| [ADR-0037](ADR-0037-supervisor-in-linux-container.md) | Proposed: containerized supervisor via the ToolHub socket proxy (D12a) — answered by ADR-0040's simpler accepted direction |
 | [ADR-0036](ADR-0036-execution-chain-reliability.md) | Accepted: one run budget with idle deadlines, internal uncertain reconciliation, lease-safe lifecycle, rights-only policy hash, capability readiness, event-driven wakeups, correlation IDs (M19) |
-| [ADR-0035](ADR-0035-telegram-operation-contracts.md) | Proposed: byte-based images, explicit MCP env, routine creation receipts, current approval UI and exact file handoff |
+| [ADR-0035](ADR-0035-telegram-operation-contracts.md) | Accepted: byte-based images, explicit MCP env, routine creation receipts, current approval UI and exact file handoff |
 | [ADR-0034](ADR-0034-cli-package-policy.md) | Accepted: private package home, exact shipped CLI trust and atomic host catalog binding |
 | [ADR-0033](ADR-0033-bounded-cli-transport.md) | Accepted: bounded CLI as a ToolHub transport with executor-container isolation receipts |
 | [ADR-0032](ADR-0032-capability-execution-isolation.md) | Accepted: isolate control state, Hermes, scoped file executors and scratch-only code workloads |
@@ -60,7 +60,7 @@ last_verified: 2026-10-02
 | [ADR-0017](ADR-0017-personal-assistant-channels.md) | Telegram/Slack communication channels, voice envelope and context lifecycle |
 | [ADR-0016](ADR-0016-encrypted-credentials-and-oauth.md) | Ciphertext store behind ToolHub locators, OAuth broker and audit |
 | [ADR-0015](ADR-0015-durable-job-runtime-mappings.md) | Durable job, session, run and generation mappings in local stores |
-| [ADR-0014](ADR-0014-scale-to-zero-context-runtimes.md) | Scale-to-zero warm Hermes runtime per active context; Hub owns routine schedules |
+| [ADR-0014](ADR-0014-scale-to-zero-context-runtimes.md) | Scale-to-zero warm Hermes runtime per active context; Hub owns routine schedules (five-minute idle superseded by 30-min warm TTL in ADR-0036) |
 | [ADR-0013](ADR-0013-toolhub-security-boundary.md) | Go ToolHub authorizes; ToolHive executes and aggregates internally |
 | [ADR-0012](ADR-0012-hermes-api-contract.md) | Accepted: pinned Hermes authenticated API server as the runtime-adapter contract target |
 | [ADR-0011](ADR-0011-stable-identity-identifiers.md) | Stable opaque IDs with a compatibility mapping for current spaces and jobs |

@@ -1,9 +1,13 @@
 ---
 description: "Как присоединить модуль без переписывания Communication Hub, ToolHub и ToolHive."
-last_verified: "2026-09-18"
+last_verified: "2026-10-20"
 ---
 
 # Интеграция с Hermes Hub
+
+Модуль уже влит вариантом 2 (`services/credential-broker`, отдельный `go.mod`, `go.work` —
+ADR-0022). Адаптеры Communication Hub, ToolHub и runtime реализованы; текст ниже
+описывает контракт интеграции и эталонные варианты, а не план работ.
 
 ## Ответственность адаптеров
 

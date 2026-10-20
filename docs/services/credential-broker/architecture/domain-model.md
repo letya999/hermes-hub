@@ -1,6 +1,6 @@
 ---
 description: "Request, credential, grant, lease, state и независимые оси области действия."
-last_verified: "2026-09-28"
+last_verified: "2026-10-20"
 ---
 
 # Модель данных и владения

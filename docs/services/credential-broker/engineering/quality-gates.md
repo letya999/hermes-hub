@@ -1,6 +1,6 @@
 ---
 description: "Исполняемые offline gates и отдельная обязательная проверка production-релиза."
-last_verified: "2026-09-18"
+last_verified: "2026-10-20"
 ---
 
 # Пороги качества

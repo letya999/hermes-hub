@@ -1,7 +1,7 @@
 schema: 1
 change: CHG-0138
 title: M11 closeout — stop/cancel, archive UX, live progress, e2e harness
-status: in_progress
+status: done
 branch: feat/m12-telegram-channel-ux
 base: dev
 updated: 2026-10-15

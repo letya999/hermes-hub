@@ -5,6 +5,8 @@ last_verified: "2026-09-28"
 
 # ADR-0066 (imported from services/credential-broker ADR-0007): consumer_id — дискриминатор нескольких кредов на connection
 
+Status: accepted (imported from services/credential-broker).
+
 ## Контекст
 
 Enrollment разрешал ровно один active credential на пару `(context, connection)`. Это корректно для

@@ -265,8 +265,9 @@ remote MCP discovers `authorization_endpoint`/`token_endpoint` via RFC 9728
 
 ## Misc contract rules
 
-- `communication-hub` never mounts scope homes. Its opt-in `telegram_auth`
-  build holds a fresh MTProto session in memory only while the owner
+- `communication-hub` never mounts scope homes. Its `telegram_auth`
+  path (compiled in, default-on for telegram stacks, `telegram_auth:
+  false` opts out) holds a fresh MTProto session in memory only while the owner
   confirms QR login, then signs a Telegram-only broker request — the
   session never enters spool, logs or files. The gateway sends the
   immutable job envelope to `hermes-runtime` over private Bearer HTTP;

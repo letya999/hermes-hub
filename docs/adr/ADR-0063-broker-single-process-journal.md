@@ -5,6 +5,8 @@ last_verified: "2026-09-18"
 
 # ADR-0063 (imported from services/credential-broker ADR-0004): Однопроцессный encrypted journal
 
+Status: accepted (imported from services/credential-broker).
+
 ## Контекст
 
 MVP должен работать без БД, но не терять authorization после restart.

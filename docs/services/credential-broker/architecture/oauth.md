@@ -1,6 +1,6 @@
 ---
 description: "Предзарегистрированный OAuth-клиент, PKCE, refresh и пределы совместимости."
-last_verified: "2026-09-18"
+last_verified: "2026-10-20"
 ---
 
 # OAuth в Broker

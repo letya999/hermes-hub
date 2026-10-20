@@ -1,6 +1,6 @@
 ---
 description: "Одни just-команды в GitHub и GitLab, pinned toolchain и честные release gates."
-last_verified: "2026-09-18"
+last_verified: "2026-10-20"
 ---
 
 # CI и выпуск

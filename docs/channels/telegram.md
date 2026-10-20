@@ -49,7 +49,11 @@ videos with per-artifact progress (SPEC-0037). `MEDIA:`/`VOICE:` reply
 markers: docs/tools.md. `ErrUncertain` records uncertainty instead of a
 duplicate-retry; cancellation cannot recall a Telegram-accepted message.
 
-## QR login page (telegram_auth build)
+## QR login page (telegram_auth, compiled in)
+
+MTProto QR login is compiled into the standard gateway (CHG-0137); it is
+default-on for stacks with `ingress: [telegram]` unless `telegram_auth:
+false`.
 
 On `ingress: [telegram]` the gateway serves a loopback QR page for
 `intake: telegram_qr` broker contracts: Go MTProto in-process, owner scans

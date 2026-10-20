@@ -1,6 +1,6 @@
 ---
 description: "Долговечность, audit cursors, атомарность и известные пределы хранения."
-last_verified: "2026-09-18"
+last_verified: "2026-10-20"
 ---
 
 # Ledger и восстановление

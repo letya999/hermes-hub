@@ -1,6 +1,6 @@
 ---
 description: "Какие данные где находятся и как добавить новый storage adapter."
-last_verified: "2026-09-18"
+last_verified: "2026-10-20"
 ---
 
 # Providers, файлы и изменяемое состояние

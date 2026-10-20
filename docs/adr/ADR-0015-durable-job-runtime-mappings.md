@@ -4,6 +4,8 @@ last_verified: 2026-09-12
 ---
 # ADR-0015: Durable job/runtime mappings
 
+Accepted 2026-09-12.
+
 ## Decision
 
 Persist job, conversation and runtime lifecycle metadata in the existing local file

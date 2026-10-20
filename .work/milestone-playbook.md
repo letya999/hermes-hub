@@ -48,6 +48,8 @@ Run `go run ./cmd/devcheck docs` (part of `just docs-check`) until it passes.
 2. Write the failing test; run it to confirm red.
 3. Implement the minimum fix; run the package tests, then `just check`.
 4. Update `state.yaml` (`slices`, `validation`, `evidence` without secrets/content).
+   Never commit store snapshots, binaries or live principal data — redacted
+   receipts only; `.work/tmp/` and `*.snapshot.json` are ignored for a reason.
 5. Commit with a message that names the CHG and slice.
 
 ## 5. Accept and close

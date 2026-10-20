@@ -16,7 +16,7 @@
 | [SPEC-0055](active/SPEC-0055-routine-occurrence-recovery.md) | Active amendment: routine coalescing, fault isolation and bounded occurrence detail |
 | [SPEC-0054](active/SPEC-0054-proactive-automation.md) | Frozen: verified follow-ups, watcher notification policy, control-plane tool calls, owner brief and event subscriptions (M12) |
 | [SPEC-0053](active/SPEC-0053-execution-chain-reliability.md) | Frozen: M19 execution chain SLOs, stop-loss, tool surface, latency, recovery and visibility requirements |
-| [SPEC-0052](active/SPEC-0052-telegram-operation-contracts.md) | Draft: Telegram image, watcher, reminder, approval and exact-file acceptance; albums are a subsequent slice |
+| [SPEC-0052](active/SPEC-0052-telegram-operation-contracts.md) | Frozen: Telegram image, watcher, reminder, approval and exact-file acceptance; albums are a subsequent slice |
 | [SPEC-0051](active/SPEC-0051-deployment-contracts.md) | Frozen: environment, provider and Docker deployment contracts |
 | [SPEC-0050](active/SPEC-0050-m10-stabilization.md) | Frozen: M10 remediation amendment |
 | [SPEC-0049](active/SPEC-0049-operability.md) | Frozen: mock, additive apply and BuildKit discipline |
@@ -24,7 +24,7 @@
 | [SPEC-0047](active/SPEC-0047-chat-file-transfer.md) | Frozen: images and file transfer |
 | [SPEC-0046](active/SPEC-0046-tool-governance.md) | Frozen: tool-governance inventory, scoped rules, expiring grants and multi-plane enforcement (issue 139; CHG-0076) |
 | [SPEC-0045](active/SPEC-0045-remote-mcp.md) | Frozen: owner-scoped remote MCP registration, admission, header credentials and projection (issues 83–85, 96; CHG-0075) |
-| [SPEC-0044](active/SPEC-0044-communication-telegram-auth.md) | Frozen: opt-in Communication Hub QR login and owner-bound Broker transfer |
+| [SPEC-0044](active/SPEC-0044-communication-telegram-auth.md) | Frozen: Communication Hub QR login and owner-bound Broker transfer; intake amended by CHG-0137 (compiled-in, default-on for telegram stacks) |
 | [SPEC-0043](active/SPEC-0043-prepared-bundle.md) | Frozen: 12-ID bundle discovery, blocked evidence and personal Telegram admission |
 | [SPEC-0042](active/SPEC-0042-capability-isolation-and-proof.md) | Frozen: execution isolation, file/shell boundaries and T01-T22 acceptance; implementation in CHG-0065 |
 | [SPEC-0041](active/SPEC-0041-default-deny-capabilities.md) | Frozen successor to SPEC-0040 defaults: complete inventory, explicit profiles/grants, routing and revocation; implementation in CHG-0065 |
@@ -38,12 +38,12 @@
 | [SPEC-0033](active/SPEC-0033-document-image-profile.md) | Workspace document and image profile; pdf, xlsx, pptx, and webp; configurable image provider, model, and delivery |
 | [SPEC-0032](active/SPEC-0032-ssh-capability.md) | Opt-in user-scoped SSH capability with pinned host keys and stacked read/write/shell/tunnel grants |
 | [SPEC-0031](active/SPEC-0031-automatic-diagnostics.md) | Automatic bounded multiuser diagnostics; supersedes SPEC-0030 export |
-| [SPEC-0030](active/SPEC-0030-diagnostics.md) | Local multiuser diagnostics and bounded Docker logs |
+| [SPEC-0030](active/SPEC-0030-diagnostics.md) | Local multiuser diagnostics and bounded Docker logs; export superseded by SPEC-0031 |
 | [SPEC-0029](active/SPEC-0029-build-disk-boundary.md) | Core/control image boundary and bounded rebuild storage |
 | [SPEC-0028](active/SPEC-0028-repository-driven-prepared-connectors.md) | Generic exact-source catalog, Broker state, discovery and four-connector acceptance |
 | [SPEC-0027](active/SPEC-0027-toolhive-vmcp-evaluation.md) | ToolHive local vMCP acceptance boundary and no-go result |
 | [SPEC-0026](active/SPEC-0026-mcp-recipe-resolver.md) | Secret-free MCP Launch/Connection Recipe resolution over the existing M5.3 onboarding flow |
-| [SPEC-0025](active/SPEC-0025-credential-broker-boundary.md) | Credential Broker monorepo placement, opt-in process boundary and adapter gate |
+| [SPEC-0025](active/SPEC-0025-credential-broker-boundary.md) | Credential Broker monorepo placement and adapter gate; opt-in closed by the ADR-0022 amendment (Broker is the single credential authority) |
 | [SPEC-0024](active/SPEC-0024-m53-hermes-onboarding.md) | M5.3 Hermes-mediated GitHub MCP onboarding and live acceptance contract |
 | [SPEC-0023](active/SPEC-0023-toolhub-control-plane.md) | M5.2 multi-tenant ToolHub control plane: grants, control MCP, elicitation and lifecycle |
 | [SPEC-0022](active/SPEC-0022-personal-data-connectors.md) | M5 stage 2 personal data connectors and independent capability contracts |
@@ -52,11 +52,11 @@
 | [SPEC-0019](active/SPEC-0019-toolhub-stage3.md) | Dynamic ToolHub catalog, projection revision, enforcement receipt and explicit migration |
 | [SPEC-0018](active/SPEC-0018-toolhub-stage2.md) | Dynamic ToolHub endpoint, private MCP backend adapter, bounded CLI and workload lifecycle |
 | [SPEC-0017](active/SPEC-0017-toolhub-foundation.md) | Versioned ToolHub definitions, workload classes, scoped connections and effective bindings |
-| [SPEC-0016](active/SPEC-0016-communication-execution-migration.md) | Per-context communication execution rollout, rollback and five-minute lifecycle |
+| [SPEC-0016](active/SPEC-0016-communication-execution-migration.md) | Per-context communication execution rollout and rollback; idle default superseded by 30-min warm TTL (SPEC-0053) |
 | [SPEC-0015](active/SPEC-0015-run-controls.md) | Durable cancellation and approval ownership, dispatch and expiry |
 | [SPEC-0014](active/SPEC-0014-job-runtime-mappings.md) | Durable job, session, run and runtime mappings |
 | [SPEC-0013](active/SPEC-0013-routines-and-runtime-wake.md) | Hub-owned routines wake sleeping context runtimes |
-| [SPEC-0012](active/SPEC-0012-scale-to-zero-runtime-lifecycle.md) | Scale-to-zero lifecycle for isolated context runtimes |
+| [SPEC-0012](active/SPEC-0012-scale-to-zero-runtime-lifecycle.md) | Scale-to-zero lifecycle for isolated context runtimes; idle default superseded by 30-min warm TTL (SPEC-0053) |
 | [SPEC-0011](active/SPEC-0011-hermes-api-contract.md) | Pinned Hermes API contract for sessions and runs |
 | [SPEC-0010](active/SPEC-0010-stable-identifiers.md) | Stable identity, context, runtime, conversation and connection identifiers |
 | [SPEC-0009](active/SPEC-0009-scoped-homes-and-service-boundaries.md) | Implemented scoped homes and communication-hub boundary; migration remains explicit |

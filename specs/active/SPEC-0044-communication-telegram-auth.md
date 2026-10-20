@@ -1,6 +1,6 @@
 # SPEC-0044: Communication Hub Telegram authentication
 
-Status: frozen
+Status: frozen (intake amended by CHG-0137: MTProto QR login is compiled into the standard gateway and auto-enables on telegram stacks unless `telegram_auth: false`)
 
 The `telegram_auth` feature builds an optional Communication Hub variant with
 Go MTProto QR login in the gateway process. The standard image has no MTProto

@@ -14,16 +14,25 @@ github_issue: none
 design_status: accepted
 implementation_status: in_progress
 slices:
-  S1-mechanics: not_started
-  S2-gate: not_started
-  S3-content: not_started
-  S4-conventions: not_started
+  S1-mechanics: done
+  S2-gate: done
+  S3-content: done
+  S4-conventions: done
 validation:
-  documents: pending
-  just_check: not_run
+  documents: done
+  just_check: done
   docker_check: not_needed
   red_team: not_applicable
   live_acceptance: not_applicable
-evidence: []
-remaining: []
-limitations: []
+evidence:
+  - 'just docs-check: clean'
+  - 'just check: all packages green, coverage 86.00%'
+  - 'broker module just docs-check: 8 module md files pass; shared docs gated by root devcheck'
+  - '2026-10-20 audit follow-up: 30 broker docs re-verified against the module and stamped; devcheck docs green; closed CHG-0137/0138/0104 triaged to done/; CHG-0140/0141/0143 records brought to schema and honest status; ADR/SPEC index statuses synced; README/engineering/architecture/integrations contradictions fixed; live store snapshots and binaries removed from .work and gitignored'
+remaining:
+  - 'Docker/live gates untouched by this docs-only change'
+  - 'superseded SPECs stay in active/ under the superseded-status convention; physical archive move is a separate decision'
+limitations:
+  - 'imported broker ADRs keep Russian language and original decision dates'
+  - 'broker dynamic/effective specs (SPEC-0065/0066) are not hash-pinned; only SPEC-0064 was in baseline.json'
+  - 'history still contains the live store snapshots and the cleanup binary; rotating any credential captured in CHG-0107 snapshots is an owner decision'

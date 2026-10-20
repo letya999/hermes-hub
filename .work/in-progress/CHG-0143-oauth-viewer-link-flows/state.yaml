@@ -1,0 +1,24 @@
+schema: 1
+change: CHG-0143
+title: OAuth resend, viewer links and grant-epoch fix
+status: in_progress
+branch: feat/m14-toolhub-connector-platform-merge
+updated: 2026-10-20
+phase: implementation
+notes: >
+  Record created 2026-10-20 for the uncommitted toolhub/communication diff on
+  this branch (OAuth link resend rotation, broker grant-epoch rotation on
+  confirm, connector_status viewer-link relay, prepared catalog refresh).
+  Tests are written (prepare_link_resent, prepared_oauth_resend/link,
+  broker_grant_epoch, oauth_callback_log, admission_probe_args,
+  prepare_oauth_continuation); gates not yet run on this record.
+slices:
+  oauth-resend-rotation: green-tests-written
+  broker-grant-epoch: green-tests-written
+  viewer-link-relay: green-tests-written
+  prepared-catalog-refresh: green-tests-written
+validation:
+  documents: this_record
+  just_check: not_run
+  docker_check: not_run
+  live_acceptance: not_run

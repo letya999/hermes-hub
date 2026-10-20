@@ -5,6 +5,8 @@ last_verified: "2026-09-18"
 
 # ADR-0064 (imported from services/credential-broker ADR-0005): Ограниченный OAuth и отсутствие runtime платформ
 
+Status: accepted (imported from services/credential-broker).
+
 ## Контекст
 
 Нужен код, проверяемый локально, а не ещё одна integration platform.

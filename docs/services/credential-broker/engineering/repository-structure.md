@@ -1,6 +1,6 @@
 ---
 description: "Где менять domain, providers, transport и интеграцию."
-last_verified: "2026-09-18"
+last_verified: "2026-10-20"
 ---
 
 # Структура репозитория и слои

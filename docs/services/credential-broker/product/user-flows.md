@@ -1,6 +1,6 @@
 ---
 description: "Связь Telegram, защищённой формы, external account и MCP binding."
-last_verified: "2026-09-28"
+last_verified: "2026-10-20"
 ---
 
 # Пользовательские сценарии

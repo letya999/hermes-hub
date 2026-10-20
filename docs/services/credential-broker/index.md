@@ -11,7 +11,11 @@ last_verified: "2026-10-20"
 /var/lib/credential-broker/config.json`, TLS endpoint
 `https://credential-broker:8787` (host `127.0.0.1:8787`).
 
-ADR-0049: значения секретов завершаются здесь и нигде больше. ToolHub хранит
+ADR-0022 (поправка 2026-10-19): Broker — единственный орган власти над секретами
+для connector/CLI путей. Исключения: локальный credstore остаётся подложкой
+хранения и входом для uncontracted credential-gate admissions, а unmanaged
+deployment хранит `secrets.<env>.env` через runtime self-env (ADR-0049 говорит
+про intake-каналы, не про единственное хранилище). ToolHub хранит
 references (`broker_credential_id`, `broker_grant_id`, `broker_contract_id`);
 runtime получает materialized secrets через broker-controlled delivery или
 том `/run/broker-materialized` — никогда через ToolHub, compose env или audit

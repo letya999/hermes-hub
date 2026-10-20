@@ -5,6 +5,8 @@ last_verified: "2026-09-18"
 
 # ADR-0061 (imported from services/credential-broker ADR-0002): Подтверждение браузера через Communication Hub
 
+Status: accepted (imported from services/credential-broker).
+
 ## Контекст
 
 Ссылка из Telegram может утечь; URL не доказывает principal.

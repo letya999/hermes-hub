@@ -1,6 +1,6 @@
 ---
 description: "Продуктовая роль: согласовать credentials MCP с identity и выбранным хранилищем."
-last_verified: "2026-09-18"
+last_verified: "2026-10-20"
 ---
 
 # Зачем нужен Broker

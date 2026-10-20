@@ -5,6 +5,8 @@ last_verified: "2026-09-18"
 
 # ADR-0060 (imported from services/credential-broker ADR-0001): Broker не является secret store
 
+Status: accepted (imported from services/credential-broker).
+
 ## Контекст
 
 Нужно согласовать зоопарк MCP credentials с разными хранилищами.

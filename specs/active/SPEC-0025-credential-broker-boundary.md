@@ -1,6 +1,6 @@
 ---
 title: Credential Broker boundary and opt-in integration gate
-status: active
+status: active (opt-in gate closed by the ADR-0022 amendment of 2026-10-19: Broker is the single credential authority)
 ---
 
 # Credential Broker boundary

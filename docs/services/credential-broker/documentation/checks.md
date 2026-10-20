@@ -1,6 +1,6 @@
 ---
 description: "Что проверяет dependency-free checker, а что он не обещает."
-last_verified: "2026-09-18"
+last_verified: "2026-10-20"
 ---
 
 # Реестр проверок документации

@@ -5,6 +5,8 @@ last_verified: "2026-10-17"
 
 # ADR-0069 (imported from services/credential-broker ADR-0010): effective contract на запрос — extras и demote
 
+Status: accepted (imported from services/credential-broker).
+
 ## Контекст
 
 Reviewed-контракт по дизайну покрывает только проверенные поля. На практике upstream

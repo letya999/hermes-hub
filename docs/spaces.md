@@ -26,7 +26,7 @@ wrong file are rejected by name, not merged.
 | `runtime.<env>.env`, `communication.<env>.env`, `model-relay.<env>.env` | operator | Per-service env, one file per environment |
 | `runtime.auth`, `media.auth`, `model-relay.auth`, `toolhub-tokens.json`, `supervisor.auth` | operator | Bearer files — auth between services, never literal secrets in compose |
 | `communication.users.yaml` | operator | Sibling Telegram identities for the gateway; `TELEGRAM_ALLOWED_USERS` is the infra-owner fallback |
-| `telegram-auth.<env>.env` | operator | Telegram-auth sidecar env when the `telegram_auth` feature is on |
+| `telegram-auth.<env>.env` | operator | Telegram QR auth app API pair when `telegram_auth` is on (default for telegram stacks) |
 
 `tools:` backends: `native` (upstream toolset in-runtime — no per-call
 admission), `toolhub` (managed executor, per-call admission + audit +

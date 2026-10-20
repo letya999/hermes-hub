@@ -5,6 +5,8 @@ last_verified: "2026-09-18"
 
 # ADR-0062 (imported from services/credential-broker ADR-0003): Shared разрешён по способу доставки
 
+Status: accepted (imported from services/credential-broker).
+
 ## Контекст
 
 Process-global ENV/file не может меняться на пользователя без риска смешения.

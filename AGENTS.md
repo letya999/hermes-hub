@@ -24,6 +24,9 @@ immutable decisions in docs/adr/, frozen requirements in specs/, task state in .
   a full `hubctl up` returns Compose services to their base images.
 - Significant changes use .work/in-progress/CHG-NNNN-name/{plan.md,state.yaml}; plan new milestones with .work/milestone-playbook.md.
   Update docs/specs affected by behavior. Accepted ADRs are appended, not rewritten.
+- `devcheck docs` (part of `just check`) enforces unique ADR/SPEC/CHG numbering, index↔file
+  sync and `last_verified` ≥ last commit. Editing a doc obliges re-verifying it against code;
+  keep statuses honest — a done CHG moves to .work/done/ with an index row the same day.
 - Do not claim integration success from mock tests. Do not add a provider with a guessed API.
 - Keep integrations opt-in. User namespace is spaces/<user>; dev/prod is Docker/env selection with separate volumes. No unsolicited framework/database/queue dependencies.
 
@@ -39,7 +42,7 @@ Own Go module, own `just` pipeline (`check`, `test-unit`, `test-integration`,
 in `scripts/quality.py` and `docs_scripts/check.py`). Documentation lives in
 the shared tree: docs/services/credential-broker/ (Russian, quoted frontmatter),
 its ADRs as docs/adr/ADR-006{0..9}, its frozen specs as specs/active/SPEC-006{4,5,6}
-(hash-pinned by specs/baseline.json in the module), its records as
+(only SPEC-0064 is hash-pinned by specs/baseline.json in the module), its records as
 .work/{in-progress,done}/CHG-014{0,1,2}. Its hard rules: never store a secret in
 ledger DTOs, tool results, argv or examples; never disable TLS, Origin/CSRF,
 audit or authorization for compatibility; never turn it into a container runner,

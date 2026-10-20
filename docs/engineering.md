@@ -25,7 +25,7 @@ a separate copied Go module (MIT) kept out of the flatten.
 ## Pins
 
 - Hermes `0.21.0` @ `869228cab` (ADR-0012). CLIProxy
-  `ba7e55836dee959e93ec6d41395865d9ec535086`. ToolHive 0.49.0 / cellinit
+  `ba7e55836dee959e93ec6d41395865d9ec535086`. ToolHive v0.48.0 / cellinit
   per ADR-0013. Full pin table: docs/integrations.md.
 - Go toolchain pinned uniformly across host and image builds.
 - Staticcheck pinned to upstream commit `452d5bb86b45`

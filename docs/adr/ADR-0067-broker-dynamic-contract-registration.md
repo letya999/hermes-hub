@@ -5,6 +5,8 @@ last_verified: "2026-10-16"
 
 # ADR-0067 (imported from services/credential-broker ADR-0008): динамическая регистрация контрактов через control API
 
+Status: accepted (imported from services/credential-broker).
+
 ## Контекст
 
 Каталог контрактов читался из `contracts_dir` один раз при старте. Подключение любого нового

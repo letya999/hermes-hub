@@ -54,8 +54,11 @@ widened.
 
 ## Trust boundary
 
-Default-deny capability posture (ADR-0031, ADR-0032 — accepted, in
-progress; the deployed stack does not yet meet every guarantee). The rules:
+Default-deny capability posture (ADR-0031, ADR-0032 — accepted; T01–T22
+acceptance rows evidenced in CHG-0065 and awaiting owner sign-off, so the
+deployed stack is not yet certified against every guarantee — see
+`.work/in-progress/CHG-0065-capability-enforcement/acceptance-matrix.md`
+for the per-row enforced-vs-target delta). The rules:
 
 - The model never sees credential values, host env, host paths or
   unrestricted egress; ToolHub projects only tools the principal's policy
@@ -80,7 +83,8 @@ progress; the deployed stack does not yet meet every guarantee). The rules:
   has channels but no Docker authority or scope mounts; ToolHub has
   tool/cell authority but cannot write spawned-runtime state (restart is
   relayed, not written).
-- `communication-hub` never mounts scope homes. Its opt-in `telegram_auth`
+- `communication-hub` never mounts scope homes. Its `telegram_auth` QR
+  path (default-on for telegram stacks, `telegram_auth: false` opts out)
   keeps the MTProto session in memory only.
 
 Threat model: docs/threat-model.md. Engineering rules: docs/engineering.md.
