@@ -59,3 +59,21 @@ Run `go run ./cmd/devcheck docs` (part of `just docs-check`) until it passes.
 4. Comment evidence on the issue and close it; set `status: done`; move the CHG
    folder to `.work/done/`; update `.work/index.md`.
 5. Accepted ADRs are never rewritten; supersede them with a new ADR.
+
+## Documentation rules (enforced by `just docs-check`)
+
+1. Numbering is unique across ADR/SPEC/CHG. Take the next free number, or fill
+   a gap when the record belongs there chronologically — never reuse a live
+   number. Historical collisions stay but are marked in the index.
+2. Every new ADR/SPEC file gets an index row in the same commit; every
+   `.work/{in-progress,done}/CHG-*` folder gets a `.work/index.md` row.
+3. `last_verified` must be `>=` the file's last commit date: editing a doc
+   obliges re-verifying against code and bumping the date. Frozen ADRs are
+   exempt (their date records acceptance, not freshness).
+4. Docs stay under ~500 lines; evidence and dated acceptance journals live in
+   `.work/done/CHG-*/`, not in `docs/`. Service internals go to
+   `docs/services/<name>.md`; broker module docs live under
+   `docs/services/credential-broker/` (Russian, quoted frontmatter — do not
+   translate or reformat).
+5. There is one `AGENTS.md` (repo root) and one `docs/`. Module-local rule
+   files are not reintroduced; broker rules are a section of root AGENTS.md.

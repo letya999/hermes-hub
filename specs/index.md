@@ -2,6 +2,9 @@
 
 | Specification | Status |
 |---|---|
+| [SPEC-0066](active/SPEC-0066-credential-broker-effective-contract.md) | Frozen: broker effective contract on request — extras and demote (imported from services/credential-broker) |
+| [SPEC-0065](active/SPEC-0065-credential-broker-dynamic-contracts.md) | Frozen: broker dynamic contract registration via control API (imported from services/credential-broker) |
+| [SPEC-0064](active/SPEC-0064-credential-broker-v1.md) | Frozen: credential broker MVP contract — requirements traced to executable tests (imported from services/credential-broker; hash-frozen in services/credential-broker/specs/baseline.json) |
 | [SPEC-0063](active/SPEC-0063-cli-policy-completion.md) | Frozen: six CLI policy gaps, private package installation and atomic host catalog operation (renumbered from a duplicate SPEC-0048) |
 | [SPEC-0062](active/SPEC-0062-toolhub-cli-transport.md) | Frozen: bounded CLI as a first-class ToolHub transport — catalog and user-owned, no shell, real isolation receipts (milestone 9; CHG-0077; renumbered from a duplicate SPEC-0047) |
 | [SPEC-0061](active/SPEC-0061-media-generation-service.md) | hub-media generation sidecar (renumbered from a duplicate SPEC-0040) |

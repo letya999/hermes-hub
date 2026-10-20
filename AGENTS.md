@@ -31,3 +31,19 @@ The owner has authorized implementation and reversible verification. Account log
 external sending and publication are separate actions requiring their actual instruction.
 
 - Original project code is AGPL-3.0-only. Never embed business services or mount spaces into dev.
+
+## Credential Broker module (services/credential-broker)
+
+Own Go module, own `just` pipeline (`check`, `test-unit`, `test-integration`,
+`test-e2e`, `test-race`, `fuzz`, `docs-check`, `release-check`; implementations
+in `scripts/quality.py` and `docs_scripts/check.py`). Documentation lives in
+the shared tree: docs/services/credential-broker/ (Russian, quoted frontmatter),
+its ADRs as docs/adr/ADR-006{0..9}, its frozen specs as specs/active/SPEC-006{4,5,6}
+(hash-pinned by specs/baseline.json in the module), its records as
+.work/{in-progress,done}/CHG-014{0,1,2}. Its hard rules: never store a secret in
+ledger DTOs, tool results, argv or examples; never disable TLS, Origin/CSRF,
+audit or authorization for compatibility; never turn it into a container runner,
+identity provider, remote-MCP installer or canonical secret store; a new provider
+implements `provider.Provider` plus contract tests; a new delivery method is a
+declarative contract with materializers, negative tests and an explicit
+trust-boundary decision; 85% coverage overall and per production package.

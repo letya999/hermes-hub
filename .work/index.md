@@ -13,6 +13,8 @@ stay for reference stability — rows below disambiguate by directory name.
 
 | Change | State |
 |---|---|
+| [CHG-0141](in-progress/CHG-0141-broker-multi-consumer/plan.md) | Broker: multi-consumer credentials per connection (imported from services/credential-broker .work/todo) |
+| [CHG-0140](in-progress/CHG-0140-broker-dynamic-contracts/plan.md) | Broker: dynamic contract registration (imported from services/credential-broker .work/todo) |
 | [CHG-0139](in-progress/CHG-0139-m15-model-provider-layer/plan.md) | M15 model & provider layer (renumbered from a duplicate CHG-0105) |
 | [CHG-0138](in-progress/CHG-0138-m11-session-ux-closeout/plan.md) | M11 closeout: /stop+/cancel, archive UX, live progress, e2e runner — issues #217/#218/#219/#194/#193 (renumbered from a duplicate CHG-0099) |
 | [CHG-0137](in-progress/CHG-0137-qr-intake-default/plan.md) | QR login compiled into the one gateway, default-on for telegram stacks; owner rescan pending (renumbered from a duplicate CHG-0128) |
@@ -188,6 +190,7 @@ stay for reference stability — rows below disambiguate by directory name.
 
 | Change | State |
 |---|---|
+| [CHG-0142](done/CHG-0142-credential-broker-mvp/plan.md) | Credential Broker module import MVP (imported from services/credential-broker .work/done CHG-001) |
 | [CHG-0023](done/CHG-0023-personal-assistant/plan.md) | M4 personal assistant: Telegram/Slack channels, voice, routines, memory/skills/backup |
 | [CHG-0022](done/CHG-0022-credentials-connector-platform/plan.md) | M3 shipped-path inject/audit/registry wiring |
 | [CHG-0021](done/CHG-0021-toolhub-stage3/plan.md) | M2 control plane; issues #20–#26 closed |

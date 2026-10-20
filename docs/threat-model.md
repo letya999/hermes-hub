@@ -1,6 +1,6 @@
 ---
 description: Threat model for scoped scale-to-zero runtimes and future organization isolation.
-last_verified: 2026-09-17
+last_verified: 2026-10-20
 ---
 # Threat model
 
@@ -123,6 +123,9 @@ checks.
 
 Related: [ADR-0013](adr/ADR-0013-toolhub-security-boundary.md),
 [ADR-0016](adr/ADR-0016-encrypted-credentials-and-oauth.md),
+[ADR-0031](adr/ADR-0031-default-deny-capability-policy.md),
+[ADR-0032](adr/ADR-0032-capability-execution-isolation.md),
+[ADR-0049](adr/ADR-0049-broker-only-credential-intake.md),
 [SPEC-0010](../specs/active/SPEC-0010-stable-identifiers.md),
 [SPEC-0020](../specs/active/SPEC-0020-credentials-and-connectors.md),
 and issues #11, #12, #20-#28, #46-#51.

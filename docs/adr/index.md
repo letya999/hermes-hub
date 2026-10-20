@@ -6,6 +6,16 @@ last_verified: 2026-10-02
 
 | Record | Decision |
 |---|---|
+| [ADR-0069](ADR-0069-broker-effective-contract.md) | Imported from services/credential-broker ADR-0010: effective contract on request — extras and demote |
+| [ADR-0068](ADR-0068-broker-allow-shared.md) | Imported broker ADR-0009: allow_shared in dynamic contracts |
+| [ADR-0067](ADR-0067-broker-dynamic-contract-registration.md) | Imported broker ADR-0008: dynamic contract registration via control API |
+| [ADR-0066](ADR-0066-broker-consumer-id.md) | Imported broker ADR-0007: consumer_id discriminates multiple credentials per connection |
+| [ADR-0065](ADR-0065-broker-memory-bank.md) | Imported broker ADR-0006: medium memory-bank adaptation |
+| [ADR-0064](ADR-0064-broker-bounded-oauth.md) | Imported broker ADR-0005: bounded OAuth, no runtime platforms |
+| [ADR-0063](ADR-0063-broker-single-process-journal.md) | Imported broker ADR-0004: single-process encrypted journal |
+| [ADR-0062](ADR-0062-broker-shared-by-delivery.md) | Imported broker ADR-0003: shared credentials allowed by delivery method |
+| [ADR-0061](ADR-0061-broker-browser-approval-hub.md) | Imported broker ADR-0002: browser confirmation via Communication Hub |
+| [ADR-0060](ADR-0060-broker-not-secret-store.md) | Imported broker ADR-0001: the broker is not a canonical secret store |
 | [ADR-0059](ADR-0059-browser-workloads-as-connectors.md) | Accepted: browsers as ordinary connectors — web egress, per-connection profile isolation, one-time owner viewer links, staged toolsets, bounded shm budget; agent-browser stays blocked |
 | [ADR-0058](ADR-0058-team-connections.md) | Accepted: operator-published Team records, team-owned connections with member bindings, shareable credential/connection modes, not_permitted member lifecycle, sender-attributed audit |
 | [ADR-0057](ADR-0057-ci-built-connector-images.md) | Accepted: catalog tiers T0/T1/T2, CI-built digest-pinned images with zero-build admission, deterministic `connector import` under --confirm, staged toolset projection, bounded prefetch |

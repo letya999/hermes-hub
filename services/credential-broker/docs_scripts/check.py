@@ -84,7 +84,9 @@ def check():
                 target = link.split('#',1)[0]
                 if not target or re.match(r'^[a-zA-Z]+:', target): continue
                 dest = (p.parent/target).resolve()
-                if not dest.is_relative_to(ROOT) or not dest.exists():
+                # Docs/specs/work records moved to the shared repo tree (CHG-0136);
+                # links may resolve outside the module but must stay inside the repo.
+                if not dest.is_relative_to(ROOT.parents[1]) or not dest.exists():
                     errors.append('MD007 '+rel+': broken local link '+target)
         except (ValueError, OSError) as e:
             errors.append(str(e))
@@ -100,20 +102,20 @@ def check():
         for name in re.findall(r'`(Test[A-Za-z0-9_]+)`',text):
             if not re.search(r'func '+re.escape(name)+r'\(',tests): errors.append('SP003 no executable test '+name)
     for p in (ROOT/'.work').rglob('state.yaml'):
-        try:
-            d=json.loads(p.read_text()) # JSON is our deliberately restricted YAML 1.2 subset.
-            required={'description','last_updated','done','current','next','evidence','review'}
-            if set(d)!=required or set(d['review'])!={'open','resolved'}:
-                errors.append('WK001 state schema '+str(p))
-            dt.date.fromisoformat(d['last_updated'])
-            for location in d['evidence']:
-                if not (p.parent/location).exists(): errors.append('WK002 missing evidence '+location)
-        except (ValueError, TypeError, KeyError) as e: errors.append('WK003 '+str(p)+': '+str(e))
+            try:
+                d=json.loads(p.read_text()) # JSON is our deliberately restricted YAML 1.2 subset.
+                required={'description','last_updated','done','current','next','evidence','review'}
+                if set(d)!=required or set(d['review'])!={'open','resolved'}:
+                    errors.append('WK001 state schema '+str(p))
+                dt.date.fromisoformat(d['last_updated'])
+                for location in d['evidence']:
+                    if not (p.parent/location).exists(): errors.append('WK002 missing evidence '+location)
+            except (ValueError, TypeError, KeyError) as e: errors.append('WK003 '+str(p)+': '+str(e))
     errors += check_openapi()
     lock=ROOT/'specs/baseline.json'
     if lock.exists():
         for file,digest in json.loads(lock.read_text()).items():
-            if hashlib.sha256((ROOT/file).read_bytes()).hexdigest()!=digest:
+            if hashlib.sha256((ROOT/file).resolve().read_bytes()).hexdigest()!=digest:
                 errors.append('SP004 frozen spec changed; new revision/ADR required: '+file)
     # CI job scripts are just entrypoints; tool setup is runner provisioning.
     for path in [ROOT/'.github/workflows/ci.yml',ROOT/'.gitlab-ci.yml']:
@@ -132,7 +134,8 @@ def fix():
 def new_change(name,title):
     if not re.fullmatch(r'[a-z][a-z0-9-]{0,59}',name) or not title.strip() or len(title)>120 or '\n' in title or '"' in title:
         raise SystemExit('Invalid change name/title')
-    d=ROOT/'.work/todo'/name; d.mkdir(parents=True,exist_ok=False)
+    # Broker change records live in the shared tracker since CHG-0136.
+    d=ROOT.parents[1]/'.work/in-progress'/('broker-'+name); d.mkdir(parents=True,exist_ok=False)
     today=dt.date.today().isoformat()
     (d/'plan.md').write_text(f'---\ndescription: "{title}"\nlast_verified: "{today}"\n---\n\n# {title}\n\n## Цель\n\n{title}. До реализации зафиксировать требования и проверяемые критерии.\n\n## Шаги\n\nПервый шаг: прочитать действующую спецификацию и границы доверия.\n\n## Приёмка\n\nЗапустить `just check`; результаты записать в state.yaml.\n')
     state=dict(description=title,last_updated=today,done=[],current='Уточнение требований и рисков',next=['Спецификация','Реализация','Проверки'],evidence=[],review=dict(open=[],resolved=[]))

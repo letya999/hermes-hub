@@ -7,7 +7,7 @@ remain outside the authorized implementation/verification work.
 
 ## Read in order
 
-1. [Audit and community evidence](../../../docs/capability-boundary-audit.md).
+1. [Audit and community evidence](audit.md).
 2. [ADR-0031: policy and unified endpoint](../../../docs/adr/ADR-0031-default-deny-capability-policy.md).
 3. [ADR-0032: execution isolation](../../../docs/adr/ADR-0032-capability-execution-isolation.md).
 4. [SPEC-0041: capability contract](../../../specs/active/SPEC-0041-default-deny-capabilities.md).

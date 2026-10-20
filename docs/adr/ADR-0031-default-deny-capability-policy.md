@@ -14,7 +14,7 @@ requirement is a zero-capability baseline, followed by an organization default
 profile and explicitly authorized user grants. Hiding a tool is insufficient:
 direct calls, aliases, composite calls and extension installation must not bypass
 the same policy. Current findings and upstream evidence are in the
-[audit](../capability-boundary-audit.md).
+[audit](../../.work/in-progress/CHG-0065-capability-enforcement/audit.md).
 
 ## Decision
 

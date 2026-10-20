@@ -55,6 +55,6 @@ index grows enough verified content to matter.
 
 ## 2026-10-11 correction
 
-The [pinned compatibility review](../../../docs/ai-stp-compatibility.md) supersedes
+The [pinned compatibility review](ai-stp-compatibility.md) supersedes
 stale version/compatibility statements above. SPEC-0047 is file transfer, not a
 catalog-installation ban. No Hermes adapter or live account action is claimed.
