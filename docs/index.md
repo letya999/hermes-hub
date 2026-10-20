@@ -17,6 +17,7 @@ last_verified: 2026-10-20
 | [testing.md](testing.md) | Test pyramid, evidence rules, E2E runner |
 | [validation.md](validation.md) | What counts as evidence + the standing unproven boundary |
 | [operations.md](operations.md) | Operator runbook — lifecycle, diagnostics, secrets, links, broker ops, migrations, backups, preflight |
+| [glossary.md](glossary.md) | Canonical terms — feature, tool, toolset, capability, connector, backend/`via` |
 
 ## Access and surface
 

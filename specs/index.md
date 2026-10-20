@@ -1,5 +1,10 @@
 # Specifications
 
+The **Status** column is authoritative. Specs marked *superseded* or *answered*
+stay in `active/` so existing links keep working — their headers carry the same
+note. Never implement requirements from a superseded spec without reading the
+record it points to. `archive/` holds only pre-renumbering originals.
+
 | Specification | Status |
 |---|---|
 | [SPEC-0066](active/SPEC-0066-credential-broker-effective-contract.md) | Frozen: broker effective contract on request — extras and demote (imported from services/credential-broker) |

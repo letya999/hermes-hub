@@ -6,7 +6,8 @@
 /.local/
 /dist/
 /bin/
-coverage.out
+coverage.out*
+
 cov-*.out
 /coverage
 /.playwright-mcp/
