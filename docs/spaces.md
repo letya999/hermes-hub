@@ -85,7 +85,8 @@ In legacy `settings.yaml` the opt-in contract is the `features` list from
 `deep_research`, `browser`, `browser_act`, `ssh`, `ssh_write`, `ssh_shell`,
 `ssh_tunnel`, `hh`, `telegram`, `slack_app`, `telegram_user`,
 `telegram_write`, `google`, `google_write`, `gitlab`, `meet`,
-`transcription`, `image_gen`, `github`, `slack`, `atlassian`, `desktop` —
+`transcription`, `image_gen`, `github`, `slack`, `atlassian`, `desktop`,
+`drafts` —
 each with declared `requires` env keys and a scope note. Write-effect
 features (`*_write`, `browser_act`, `ssh_shell`, `ssh_tunnel`) are separate
 opt-ins on top of their read parent, matching deny-wins. In schema-3 spaces

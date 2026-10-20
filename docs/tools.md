@@ -8,8 +8,9 @@ last_verified: 2026-10-20
 The agent sees tools only through projection: governance evaluation +
 capability profile decide what exists (docs/rbac.md). A tool absent from the
 list is denied, not hidden-by-convention. Two MCP servers carry everything:
-`toolhub` (`mcp__toolhub__*`, control plane) and `hermes-hub-tools`
-(`hub:tools` section, workspace/user tools). Every tool declares read or
+`toolhub` (`mcp__toolhub__*`, control plane) and the hub executor — configured
+as `mcp_servers.hub` (`mcp__hub__*`, implementation name `hermes-hub-tools`;
+the `hub:tools` governance section) for workspace/user tools. Every tool declares read or
 write effect; write effects additionally need the active write path
 (described per group).
 
