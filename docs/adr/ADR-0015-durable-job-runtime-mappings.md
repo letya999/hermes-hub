@@ -1,5 +1,6 @@
 ---
 description: Persist job and runtime mappings without a database dependency.
+last_verified: 2026-09-12
 ---
 # ADR-0015: Durable job/runtime mappings
 

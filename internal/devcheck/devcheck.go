@@ -248,6 +248,134 @@ func Project(root string) error {
 			return err
 		}
 	}
+	// CHG-0136: numbering uniqueness, index sync, freshness and size rules.
+	indexBodies := map[string]string{}
+	for _, idx := range []string{"docs/adr/index.md", "specs/index.md", ".work/index.md"} {
+		if body, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(idx))); err == nil {
+			indexBodies[idx] = string(body)
+		}
+	}
+	numRe := regexp.MustCompile(`^(ADR|SPEC|CHG)-\d{4}`)
+	verifiedRe := regexp.MustCompile(`(?m)^last_verified:\s*"?(\d{4}-\d{2}-\d{2})`)
+	seen := map[string]string{}
+	shallowOut, _ := exec.Command("git", "-C", root, "rev-parse", "--is-shallow-repository").Output()
+	fullHistory := strings.TrimSpace(string(shallowOut)) == "false"
+	// Historical CHG number collisions kept for reference stability; new
+	// collisions fail the gate.
+	allowedCollisions := map[string]bool{
+		"done/CHG-0015-durable-job-runtime-mappings": true,
+		"done/CHG-0015-migration-map":                true,
+		"done/CHG-0026-recipe-resolver":              true,
+		"done/CHG-0026-user-binding-journey":         true,
+		"done/CHG-0027-m53-e2e":                      true,
+		"done/CHG-0027-recipe-catalog-discovery":     true,
+		"done/CHG-0031-docker-disk-diagnosis":        true,
+		"done/CHG-0031-docker-reclaim":               true,
+		"done/CHG-0039-oauth-handoff":                true,
+		"done/CHG-0039-parallel-context-workers":     true,
+		"done/CHG-0047-mcp-admission-and-wake":       true,
+		"done/CHG-0047-ssh-capability":               true,
+		"done/CHG-0074-host-hygiene":                 true,
+		"done/CHG-0074-telegram-auth-plugin":         true,
+		"done/CHG-0105-broker-drift-self-heal":       true,
+		"done/CHG-0105-m13-closeout":                 true,
+		"done/CHG-0106-live-replay-defects":          true,
+		"done/CHG-0106-m13-auth-mcpb":                true,
+		"done/CHG-0127-m13-p0-connector-path":        true,
+		"done/CHG-0127-watcher-failure-visibility":   true,
+	}
+	// Living docs whose verified date predates their last edit. Entries leave
+	// this list only through a real content review in CHG-0136 phase 3 —
+	// never by bumping the date alone.
+	verifiedDriftAllowlist := map[string]bool{
+		"docs/ai-stp-compatibility.md":      true,
+		"docs/architecture.md":              true,
+		"docs/capability-boundary-audit.md": true,
+		"docs/channels.md":                  true,
+		"docs/ci-latency.md":                true,
+		"docs/cli-policy.md":                true,
+		"docs/index.md":                     true,
+		"docs/integrations.md":              true,
+		"docs/local-accounts-manager.md":    true,
+		"docs/m10-stabilization.md":         true,
+		"docs/operations.md":                true,
+		"docs/prepared-connectors.md":       true,
+		"docs/routines.md":                  true,
+		"docs/threat-model.md":              true,
+		"docs/toolhive-vmcp-audit.md":       true,
+		"docs/validation.md":                true,
+	}
+	// Legacy oversize entries allowed until CHG-0136 phase 3 splits them.
+	oversizeAllowlist := map[string]bool{
+		"docs/architecture.md":        true,
+		"docs/integrations.md":        true,
+		"docs/operations.md":          true,
+		"docs/prepared-connectors.md": true,
+		"docs/validation.md":          true,
+	}
+	checkFile := func(rel, idx string) {
+		base := filepath.Base(rel)
+		num := numRe.FindString(base)
+		if num == "" {
+			return
+		}
+		if _, dup := seen[num]; dup && !allowedCollisions[strings.TrimPrefix(rel, ".work/")] {
+			problems = append(problems, "number collision: "+num+" in "+rel)
+		}
+		seen[num] = rel
+		if body := indexBodies[idx]; body != "" && !strings.Contains(body, base) {
+			problems = append(problems, "not in index: "+rel)
+		}
+	}
+	for _, dir := range []string{"docs/adr", "specs/active", "specs/archive"} {
+		entries, _ := os.ReadDir(filepath.Join(root, filepath.FromSlash(dir)))
+		for _, e := range entries {
+			if e.IsDir() || filepath.Ext(e.Name()) != ".md" || e.Name() == "index.md" {
+				continue
+			}
+			idx := "specs/index.md"
+			if strings.HasPrefix(dir, "docs/") {
+				idx = "docs/adr/index.md"
+			}
+			checkFile(dir+"/"+e.Name(), idx)
+		}
+	}
+	for _, dir := range []string{".work/in-progress", ".work/done"} {
+		entries, _ := os.ReadDir(filepath.Join(root, filepath.FromSlash(dir)))
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			checkFile(dir+"/"+e.Name(), ".work/index.md")
+		}
+	}
+	_ = filepath.WalkDir(filepath.Join(root, "docs"), func(name string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || filepath.Ext(name) != ".md" {
+			return err
+		}
+		rel, _ := filepath.Rel(root, name)
+		rel = filepath.ToSlash(rel)
+		body, _ := os.ReadFile(name)
+		if lines := bytes.Count(body, []byte("\n")) + 1; lines > 500 && !oversizeAllowlist[rel] {
+			problems = append(problems, fmt.Sprintf("over 500 lines: %s (%d)", rel, lines))
+		}
+		m := verifiedRe.FindSubmatch(body)
+		if m == nil {
+			problems = append(problems, "missing last_verified: "+rel)
+			return nil
+		}
+		// ADR records freeze at acceptance; their last_verified is the record
+		// date, not a review claim. Living docs must re-verify on every edit.
+		if !fullHistory || strings.HasPrefix(rel, "docs/adr/") || verifiedDriftAllowlist[rel] {
+			return nil
+		}
+		out, _ := exec.Command("git", "-C", root, "log", "-1", "--format=%cs", "--", rel).Output()
+		lastCommit := strings.TrimSpace(string(out))
+		if lastCommit != "" && string(m[1]) < lastCommit {
+			problems = append(problems, "last_verified "+string(m[1])+" predates last commit "+lastCommit+": "+rel)
+		}
+		return nil
+	})
 	if len(problems) > 0 {
 		return fmt.Errorf("%s", strings.Join(problems, "\n"))
 	}
