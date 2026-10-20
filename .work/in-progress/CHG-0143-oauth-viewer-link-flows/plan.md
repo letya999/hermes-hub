@@ -22,6 +22,17 @@ the branch); slices describe landed code, not planned work.
 
 ## Validation
 
+2026-10-20 Google Calendar callback follow-up: reproduced loss of Broker
+binding-scoped state after a failed readiness probe. Record the grant's binding
+ID alongside its policy epoch; reuse it on retry without requiring an already
+enabled binding. Preserve version/identity/policy and revoked-binding rejection.
+The regression failed before the fix (credential reference rotated on retry)
+and passed afterwards, including scope-negative cases.
+Live dev acceptance passed: browser OAuth, enable, projected `list-calendars`
+and one-day `list-events`, without printing provider data. The client project's
+Calendar API was disabled and was enabled with the owner's confirmation.
+`devcheck docs` and format checks passed; `just check` is in progress.
+
 - [ ] `go test ./internal/communication ./internal/toolhub/...` green
 - [ ] `just check` green
 - [ ] live acceptance (OAuth resend + viewer link on the dev stack)

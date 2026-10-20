@@ -209,8 +209,9 @@ ciphertext/connection/broker credential and re-renders values page-side.
 One-op start: `prepare_source` with the repo URL + stable `request_key`.
 Below: source, entry, contract, probe, handoff essence.
 
-### personal-telegram (`telegram-account`)
+### personal-telegram
 
+Catalog id `telegram`; runtime definitions are `telegram-account-read`/`-write`.
 `letya999/telegram-mcp` pinned `26f1632b` — generated Python artifact,
 `proxy` extra, `/opt/venv/bin/telegram-mcp` stdio. Broker contract
 `telegram-session` (API ID/hash + StringSession + expected numeric user ID;
@@ -236,7 +237,9 @@ polls them; `delivery=stream` holds one outstanding bounded wait per
 subscription (seconds, no persistent workload); dedup via durable seen-set;
 no always-on push. Never copy `.session`/OTP/API hash into repo or chat.
 
-### playwright-mcp (browser)
+### playwright-mcp
+
+The managed `browser` surface.
 
 `microsoft/playwright-mcp` `ab6d67cb` — T0 zero-build,
 `mcr.microsoft.com/playwright/mcp@sha256:6907…cb` with `--caps vision,pdf`
@@ -269,7 +272,14 @@ only. With client JSON but no token, confirm returns the Google auth link
 (`calendar.readonly`; callback `http://127.0.0.1:8090/oauth/callback` —
 browser on the Docker host). Verify `list-calendars` + bounded
 `list-events`. Expired token → diagnose or rotate, never a second
-connection. Live consent evidence outstanding.
+connection. The Google Calendar API must be enabled in the OAuth client's
+Cloud project. Live dev acceptance on 2026-10-20 verified browser consent,
+confirmation, `list-calendars` and a one-day `list-events` read.
+
+Pending OAuth reuses the Broker grant's recorded binding ID and policy epoch,
+even when the initial read probe has not yet enabled a binding. Rotating the
+credential reference on that retry would select a different binding-scoped
+state slot and hide the freshly checkpointed token from the MCP server.
 
 ### github
 
@@ -298,7 +308,9 @@ self-hosted works unchanged. Probe follows the delivered block
 (`jira_get_all_projects`/`confluence_list_page_templates`) — a bad token
 still passes `tools/list`; on failure rotate the same connection.
 
-### txttsql (primary SQL)
+### txt-to-sql
+
+Catalog id `txttsql`; the primary SQL connector.
 
 `letya999/txttsql-mcp` (AGPL-3.0-only), Rust `/app/target/release/
 txttsql-mcp --config /app/config.toml` — repo builds into an immutable
@@ -340,7 +352,9 @@ read set only (query/metadata/series/docs/runbooks + target probe);
 `MCP_SERVER_DANGEROUS_ENABLE_TSDB_ADMIN_TOOLS` never set; truncation 500.
 Probe `list_targets` + one `query`; remote-write/admin are separate grants.
 
-### dbhub (fallback SQL)
+### dbhub
+
+The fallback SQL connector.
 
 `bytebase/dbhub` (MIT), pnpm workspace build → `node /app/dist/index.js`
 stdio; HTTP transport never enabled. Exits without config — reviewed

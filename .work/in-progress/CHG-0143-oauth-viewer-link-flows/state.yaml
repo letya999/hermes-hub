@@ -11,14 +11,17 @@ notes: >
   confirm, connector_status viewer-link relay, prepared catalog refresh).
   Tests are written (prepare_link_resent, prepared_oauth_resend/link,
   broker_grant_epoch, oauth_callback_log, admission_probe_args,
-  prepare_oauth_continuation); gates not yet run on this record.
+  prepare_oauth_continuation). Calendar retry regression failed before the fix
+  and passed afterwards with scope-negative cases. Calendar browser OAuth,
+  enable and projected calendar/event reads passed on the dev stack.
 slices:
   oauth-resend-rotation: green-tests-written
   broker-grant-epoch: green-tests-written
+  oauth-pending-binding-state: focused-tests-and-live-calendar-passed
   viewer-link-relay: green-tests-written
   prepared-catalog-refresh: green-tests-written
 validation:
   documents: this_record
-  just_check: not_run
+  just_check: running
   docker_check: not_run
-  live_acceptance: not_run
+  live_acceptance: calendar-passed-viewer-not-run
