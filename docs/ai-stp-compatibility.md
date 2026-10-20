@@ -41,6 +41,6 @@ verify every referenced artifact, map only documented formats and use existing
 ToolHub consent/admission. Upstream code is AGPL-3.0-or-later; Hub's original code
 is AGPL-3.0-only. No upstream source is embedded in this change.
 
-This corrects the historical [phase-A note](../.work/in-progress/CHG-0080-m10-phase-a/ai-stp-research.md):
+This corrects the historical [phase-A note](../.work/done/CHG-0080-m10-phase-a/ai-stp-research.md):
 SPEC-0047 concerns file transfer and does not prohibit catalog discovery. Absence
 of a verified Hermes adapter is the relevant compatibility limit.

@@ -23,7 +23,7 @@ The post-acceptance snooze correction is tracked in
 [CHG-0115](../.work/done/CHG-0115-routine-snooze-audit/state.yaml).
 The opt-in owner brief follows [ADR-0041](adr/ADR-0041-proactive-automation.md) D5
 and [SPEC-0054](../specs/active/SPEC-0054-proactive-automation.md) R4; rollout
-evidence: [CHG-0102](../.work/in-progress/CHG-0102-owner-brief/state.yaml).
+evidence: [CHG-0102](../.work/done/CHG-0102-owner-brief/state.yaml).
 Deterministic and MCP contract tests do not establish deployed acceptance.
 
 ## Business tools

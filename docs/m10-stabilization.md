@@ -8,7 +8,7 @@ This document supplements the frozen [file transfer](../specs/active/SPEC-0047-c
 [routines](../specs/active/SPEC-0048-proactive-routines.md) and
 [operability](../specs/active/SPEC-0049-operability.md) requirements.
 See [SPEC-0050](../specs/active/SPEC-0050-m10-stabilization.md) and
-[ADR-0033](adr/ADR-0033-deterministic-work-isolation.md).
+[ADR-0051](adr/ADR-0051-deterministic-work-isolation.md).
 
 ## Files and images (#150, #151)
 

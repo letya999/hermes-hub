@@ -1,141 +1,218 @@
 # Change plans
 
-Use todo / in-progress / done directories for active change folders. A folder contains
-plan.md and state.yaml. Task progress belongs here, never in current architecture docs.
-New milestones follow the [milestone playbook](milestone-playbook.md) and its [templates](templates/change-plan.md).
+Use `in-progress/` and `done/` for change folders. A folder contains `plan.md`
+and `state.yaml`. Task progress belongs here, never in current architecture docs.
+New milestones follow the [milestone playbook](milestone-playbook.md) and its
+[templates](templates/change-plan.md).
 
-The table tracks current change records. Issue 122's broader default-deny design
-is CHG-0065; its implementation is in progress. Issues 167-169 (task sessions,
-per-task style, measured usage) shipped as CHG-0066/0067/0068 and closed
-2026-10-06. Live deployment follow-ups
-also remain in issues #73 (ToolHive/VPS), #74 (Hermes reconnect) and #166/#170/#172
-(live channel acceptance evidence).
+Numbering: `CHG-<NNNN>` is unique and sequential. A handful of historical
+collisions (0015, 0047, 0074, 0105, 0106, 0127) predate the docs-check gate and
+stay for reference stability — rows below disambiguate by directory name.
+
+## In progress
 
 | Change | State |
 |---|---|
-| [CHG-0127](in-progress/CHG-0127-watcher-failure-visibility/plan.md) | Issue #248 live-run fixes: probe-failure alerts, vacuous-value rejection, quiet agent escalation, drift noise, dev script-image pin; live re-acceptance passed on dev stack |
-| [CHG-0126](done/CHG-0126-spool-knowledge-migration/plan.md) | Done: hubctl spool migrate — offline knowledge copy spool→state, dry-run/conflict-safe, just check green |
-| [CHG-0125](done/CHG-0125-domain-model-relocation/plan.md) | Done: commodel/channel/routines packages, engine relocation, conformance + goldens; coverage 86.39% |
-| [CHG-0114](done/CHG-0114-routine-destinations/plan.md) | Routine delivery destinations; done |
-| [CHG-0115](done/CHG-0115-routine-snooze-audit/plan.md) | Routine snooze acceptance correction; done |
-| [CHG-0113](done/CHG-0113-compact-routine-tools/plan.md) | Done: five public routine tools; deployed MCP lifecycle and just check passed, coverage 86.32% |
-| [CHG-0112](done/CHG-0112-routine-lifecycle/plan.md) | Done: full routine lifecycle and interval windows; deployed ToolHub, real Telegram and just check passed; live policy boundary recorded |
-| [CHG-0111](done/CHG-0111-durable-reminder-acceptance/plan.md) | Done: issue #247 reminder recovery, snooze, history isolation and real Telegram acceptance; just check passed |
-| [CHG-0110](in-progress/CHG-0110-routine-recovery/plan.md) | Routine tick recovery, record isolation and bounded occurrence history; verification in progress |
-| [CHG-0109](in-progress/CHG-0109-fast-local-rebuild/plan.md) | Fast local Go service rebuild, in progress |
-| [CHG-0106](done/CHG-0106-live-replay-defects/plan.md) | Done: live-replay defect fixes — watcher probes, session leak routing, contract errors, retry, broker catalog; live verified |
-| [CHG-0107](done/CHG-0107-dynamic-contracts/plan.md) | Done: dynamic credential contracts (POST /v1/contracts + ToolHub synthesis) + live-verified rotate/self-service on google_workspace_mcp |
-| [CHG-0105](done/CHG-0105-broker-drift-self-heal/plan.md) | Done: live-smoke fixes — broker drift self-heal, agent tool guidance, stale artifact reuse; live replay verified |
+| [CHG-0139](in-progress/CHG-0139-m15-model-provider-layer/plan.md) | M15 model & provider layer (renumbered from a duplicate CHG-0105) |
+| [CHG-0138](in-progress/CHG-0138-m11-session-ux-closeout/plan.md) | M11 closeout: /stop+/cancel, archive UX, live progress, e2e runner — issues #217/#218/#219/#194/#193 (renumbered from a duplicate CHG-0099) |
+| [CHG-0137](in-progress/CHG-0137-qr-intake-default/plan.md) | QR login compiled into the one gateway, default-on for telegram stacks; owner rescan pending (renumbered from a duplicate CHG-0128) |
+| [CHG-0136](in-progress/CHG-0136-docs-restructure/plan.md) | Documentation restructure and enforcement (this change) |
+| [CHG-0117](in-progress/CHG-0117-probe-source-spectrum/plan.md) | Probe source spectrum and delivery modes; validation phase |
+| [CHG-0110](in-progress/CHG-0110-routine-recovery/plan.md) | Routine tick recovery, record isolation and bounded occurrence history; live acceptance pending |
 | [CHG-0104](in-progress/CHG-0104-event-streams/plan.md) | M12 follow-up: stream event subscriptions (delivery=stream) |
-| [CHG-0103](in-progress/CHG-0103-event-subscriptions/plan.md) | M12 stage 5: event subscriptions, sinks, watch_* surface, telegram event tools |
-| [CHG-0102](in-progress/CHG-0102-owner-brief/plan.md) | M12 stage 4: opt-in owner brief — deterministic snapshot, in-slot model synthesis |
 | [CHG-0101](in-progress/CHG-0101-tool-call-probes/plan.md) | M12 stage 3: ToolHub /v1/tool-call + mcp_tool probes |
 | [CHG-0100](in-progress/CHG-0100-watcher-policy/plan.md) | M12 stage 2: quiet window, daily cap, agent escalation |
 | [CHG-0099](in-progress/CHG-0099-followup-hardening/plan.md) | M12 stage 1: bounded check retry, verdict text, task: probe, reminder evidence |
-| [CHG-0099](in-progress/CHG-0099-m11-session-ux-closeout/plan.md) | M11 closeout: /stop+/cancel, /archive+/archived+/use restore with forum close/reopen, live progress, e2e runner in image — issues #217/#218/#219/#194/#193 |
-| [CHG-0098](in-progress/CHG-0098-forum-topic-sessions/plan.md) | Issue #220: /new mints a bot-owned forum topic per session; delete/auto-title mirror it; unit green, Docker + live pending |
-| [CHG-0097](done/CHG-0097-single-stack-supervisor/plan.md) | Done: single-stack supervisor verified live — container supervisor wake/restart, Windows tasks removed, final image rolled out |
-| [CHG-0092](done/CHG-0092-chain-stop-the-bleeding/plan.md) | Done: M19 stage 0 verified live — idle deadlines, pre-admission retry, lease-safe lifecycle, supervisor service, routine isolation |
-| [CHG-0093](done/CHG-0093-tool-surface-integrity/plan.md) | Done: M19 stage 1 accepted with waived live gates — rights-only policy hash, binding migration, tool manifest readiness, context hygiene |
-| [CHG-0094](done/CHG-0094-chain-latency/plan.md) | Done: M19 stage 2 accepted with waived SLO samples — early liveness, single progress message, event-driven spool, lazy browser |
-| [CHG-0095](done/CHG-0095-recovery-observability/plan.md) | Done: M19 stage 3 verified live — job state machine, unconfirmed reconciler, canary, structured logs, trace |
-| [CHG-0096](done/CHG-0096-control-plane-simplification/plan.md) | Done: M19 stage 4 decision — container direction shipped in CHG-0097; store and Hermes pin proposals remain deferred |
-| [CHG-0090](in-progress/CHG-0090-deployment-contracts/plan.md) | Deployment contracts and regressions implemented; source and Docker gates passed; busy local runtime restart scheduled |
-| [CHG-0091](in-progress/CHG-0091-telegram-operation-contracts/plan.md) | Design ready for review: researched ADR-0035/SPEC-0052, code map, migration and acceptance cases; implementation not started |
-| [CHG-0089](done/CHG-0089-routine-control-env/plan.md) | Done: routine control environment forwarding; real Telegram reminder delivered once without agent execution |
-| [CHG-0088](done/CHG-0088-telegram-approval-lifecycle/plan.md) | Done: Telegram approval cleanup, current-request listing guidance and terminal-result preservation; deployed to local dev |
-| [CHG-0087](in-progress/CHG-0087-live-phase1/plan.md) | Live phase 1 capability checks and observed terminal/runtime isolation repairs |
-| [CHG-0086](done/CHG-0086-inbound-documents/plan.md) | Done: Telegram inbound document save and extraction repair; source, Docker, and live Telegram checks passed |
-| [CHG-0085](in-progress/CHG-0085-e2e-ci/plan.md) | Sequential E2E registry and CI latency reduction, in progress |
-| [CHG-0084](done/CHG-0084-m10-dev-merge/plan.md) | Done: M10 merged into dev, shared media image build fixed, final checks and local Docker rebuild/smoke passed |
-| [CHG-0083](done/CHG-0083-m10-stabilization/plan.md) | M10 A–C stabilization implemented; local unit/security/Linux/Docker acceptance passed; live channel acceptance separate |
-| [CHG-0082](in-progress/CHG-0082-m10-phase-c/plan.md) | M10 Phase C — operability (mock channel, apply -f, image discipline) |
-| [CHG-0081](in-progress/CHG-0081-m10-phase-b/plan.md) | M10 Phase B — proactive assistant (watchers, check follow-ups, digest, knowledge) |
-| [CHG-0080](in-progress/CHG-0080-m10-phase-a/plan.md) | M10 Phase A — cheap wins |
-| [CHG-0079](done/CHG-0079-cli-policy-completion/plan.md) | Done: six CLI policy/catalog gaps, full checks and local dev deployment verified |
-| [CHG-0078](done/CHG-0078-cli-cells/plan.md) | Done: per-principal sandbox cells (sibling containers, net none, warm ladder, toolbox mounts, shared-catalog grants) — issues #239–#242, live model verified |
-| [CHG-0077](done/CHG-0077-toolhub-cli/plan.md) | Done: milestone 9 ToolHub CLI connectors — SPEC-0047, admission verifier, catalog defs, prepare_source cli, digest-pinned artifacts |
-| [CHG-0076](in-progress/CHG-0076-tool-governance/plan.md) | Tool governance — inventory, scoped policy, grants, enforcement planes |
-| [CHG-0075](in-progress/CHG-0075-remote-mcp/plan.md) | Milestone 8 issues 83/84/85/96: owner-scoped remote MCP register/admit/project through prepare_source remote_url |
-| [CHG-0074](in-progress/CHG-0074-telegram-auth-plugin/plan.md) | Opt-in in-process Telegram QR login deployed locally; live account acceptance pending owner scan |
-| [CHG-0128](in-progress/CHG-0128-qr-intake-default/plan.md) | QR login compiled into the one gateway, default-on for telegram stacks; intake declared by the contract; owner rescan pending |
-| [CHG-0074](in-progress/CHG-0074-host-hygiene/plan.md) | Host hygiene batch (issues 226→222→224→223→221+225→171→46) |
-| [CHG-0073](in-progress/CHG-0073-prepared-bundle-telegram/plan.md) | Issues 39/115: 12-ID prepared bundle discovery, selected personal Telegram source and protected onboarding; verification in progress |
-| [CHG-0072](in-progress/CHG-0072-managed-hotfixes/plan.md) | Managed-mode hotfixes from live Telegram verification |
-| [CHG-0071](in-progress/CHG-0071-managed-voice-media-settings/plan.md) | Managed compression, settings tools, image gen, STT/TTS, second user |
-| [CHG-0070](in-progress/CHG-0070-managed-cutover/plan.md) | Managed capability cutover for the local space |
-| [CHG-0069](in-progress/CHG-0069-session-ux-and-quota/plan.md) | Session UX (new/list/switch/delete/archive/auto-title), forum topics, command inventory, provider quota in /usage — committed, live evidence pending |
-| [CHG-0068](done/CHG-0068-usage-report/plan.md) | Issue 169 closed: measured `/usage` live-verified end-to-end 2026-10-06 |
-| [CHG-0067](done/CHG-0067-task-style/plan.md) | Issue 168 closed: per-task `/style` admission-snapshotted; instructions channel live-verified |
-| [CHG-0066](done/CHG-0066-task-sessions/plan.md) | Issue 167 closed: durable tasks + DM topics live on the deployed bot |
-| [CHG-0065](in-progress/CHG-0065-capability-enforcement/plan.md) | Issue 122: accepted ADR-0031/0032, frozen SPEC-0041/0042; P0 probes and P1 grant hardening in progress |
-| [CHG-0064](in-progress/CHG-0064-capability-profile/plan.md) | Issue 122 earlier matrix/name-reservation scope; broader enforcement continues in CHG-0065 |
-| [CHG-0063](done/CHG-0063-media-generation-service/plan.md) | Done: hub-media sidecar for media generation, verified live |
-| [CHG-0062](in-progress/CHG-0062-media-sidecars/plan.md) | Issue 170 redo: standalone hub-stt/hub-tts services (separate images), swappable engines, async long-audio jobs |
-| [CHG-0061](in-progress/CHG-0061-voice-readiness/plan.md) | Issue 170: separate STT/TTS readiness in `/voice`, honest unavailable state |
-| [CHG-0060](in-progress/CHG-0060-artifact-delivery/plan.md) | Issue 172: run artifact handoff and chat delivery — committed, live smoke pending |
-| [CHG-0059](in-progress/CHG-0059-channel-rendering/plan.md) | Issue 166: per-channel Markdown rendering and lossless multi-part replies — committed, live smoke pending |
-| [CHG-0058](in-progress/CHG-0058-web-search-research/plan.md) | Issue 123: web search and bounded deep research — merged to dev |
-| [CHG-0057](in-progress/CHG-0057-datalens-connector/plan.md) | Prepared DataLens connector (issue 120) |
-| [CHG-0056](done/CHG-0056-observability-connectors/plan.md) | Done: prepared observability connectors grafana + prometheus (issue 43) |
-| [CHG-0055](in-progress/CHG-0055-sql-connectors/plan.md) | Prepared SQL connectors txttsql (primary) and dbhub (fallback) |
-| [CHG-0054](done/CHG-0054-diagnostics-hardening/plan.md) | Diagnostics hardening: ingest redaction, failure isolation, throttles, per-principal caps — shipped (PR #158) |
-| [CHG-0053](done/CHG-0053-user-diagnostics/plan.md) | Issue 125: user-scoped diagnostics control op — shipped (PR #155, #156) |
-| [CHG-0052](in-progress/CHG-0052-document-image-tools/plan.md) | Workspace document and image capability; Gemini image calls use chat completions, images-endpoint models stay on /images; Fal and a rebuilt Hermes image still open |
-| [CHG-0051](in-progress/CHG-0051-config-gated-empty-tools/plan.md) | Config-gated empty tools/list (mcp-atlassian) |
-| [CHG-0050](done/CHG-0050-artifact-image-restore/plan.md) | Done: restore pruned artifact images at admission |
-| [CHG-0049](done/CHG-0049-install-progress-notices/plan.md) | Done: install progress on the form and in Telegram |
-| [CHG-0048](done/CHG-0048-network-transport-and-proxy-discovery/plan.md) | Done: network-transport fallback and proxy-env discovery |
-| [CHG-0047](in-progress/CHG-0047-ssh-capability/plan.md) | Issue 42: opt-in user-scoped SSH capability (read/write/shell/tunnel) |
-| [CHG-0047](in-progress/CHG-0047-mcp-admission-and-wake/plan.md) | Credential-gated MCP admission, sibling ToolHub tokens, and lost first-message delivery |
-| [CHG-0046](in-progress/CHG-0046-automatic-diagnostics/plan.md) | Automatic bounded diagnostics across users and services |
-| [CHG-0045](in-progress/CHG-0045-diagnostics/plan.md) | Bounded multiuser Docker diagnostics and Telegram/job correlation |
-| [CHG-0044](in-progress/CHG-0044-build-disk-control/plan.md) | Separate core/control images and reclaim stale rebuild state |
-| [CHG-0043](in-progress/CHG-0043-async-prepare/plan.md) | Asynchronous prepare_source — implemented |
-| [CHG-0042](in-progress/CHG-0042-toolhub-build-resilience/plan.md) | ToolHub build resilience — implemented |
-| [CHG-0041](done/CHG-0041-browser-profiles/plan.md) | Done: harden isolated user browser profiles (issue #45) |
-| [CHG-0040](done/CHG-0040-shared-toolhub-control-plane/plan.md) | Done: shared ToolHub/Broker control plane — infra flag, shared network, multi-token endpoint |
-| [CHG-0039](done/CHG-0039-parallel-context-workers/plan.md) | Done: parallel per-context gateway workers — no cross-user head-of-line blocking |
-| [CHG-0039](in-progress/CHG-0039-oauth-handoff/plan.md) | OAuth handoff for prepared MCP connections |
-| [CHG-0038](in-progress/CHG-0038-multiowner-telegram-runtime/plan.md) | Multi-owner Telegram runtime connectivity |
-| [CHG-0037](in-progress/CHG-0037-toolhub-closeout/plan.md) | ToolHub closeout: Broker readiness, isolation, registry discovery, Hermes reconnect, prepared bundle and production acceptance |
-| [CHG-0036](done/CHG-0036-repository-driven-toolhub/plan.md) | Done: repository-driven ToolHub — prepared data, discovery and four exact-source live scenarios verified |
-| [CHG-0035](in-progress/CHG-0035-toolhive-vmcp-audit/plan.md) | ToolHive local vMCP evaluation: no-go evidence recorded |
-| [CHG-0034](in-progress/CHG-0034-noncredential-env-filter/plan.md) | Non-credential env names excluded from connection recipe; gitlab-pat broker contract |
-| [CHG-0033](in-progress/CHG-0033-node-bin-aliases/plan.md) | Node bin aliases to one file resolve as a single MCP entrypoint |
-| [CHG-0032](done/CHG-0032-broker-direct-form/plan.md) | Done: Credential Broker direct form and expired-link regeneration |
-| [CHG-0031](in-progress/CHG-0031-docker-reclaim/plan.md) | Docker reclaim: stale hub tags, dangling and artifact-build orphans removed by devcheck docker-clean |
-| [CHG-0031](in-progress/CHG-0031-docker-disk-diagnosis/plan.md) | Docker build and disk diagnosis |
-| [CHG-0030](in-progress/CHG-0030-compose-consolidation/plan.md) | Compose consolidation refactor |
-| [CHG-0029](in-progress/CHG-0029-github-mcp-install/plan.md) | Safe generic GitHub MCP source review; cache mounts ignored as metadata, secret mounts remain denied |
-| [CHG-0028](in-progress/CHG-0028-credential-broker-merge/plan.md) | Перенос Credential Broker и opt-in интеграция с Hermes Hub |
-| [CHG-0027](in-progress/CHG-0027-m53-e2e/plan.md) | M5.3 Hermes-mediated MCP onboarding |
-| [CHG-0027](done/CHG-0027-recipe-catalog-discovery/plan.md) | Done: complete recipe catalog discovery |
-| [CHG-0026](in-progress/CHG-0026-user-binding-journey/plan.md) | M5.2 control MCP, grants, elicitation and bind/project/revoke |
-| [CHG-0026](done/CHG-0026-recipe-resolver/plan.md) | Done: recipe resolver |
-| [CHG-0025](done/CHG-0025-trusted-artifacts/plan.md) | **done** M5.1 trusted artifacts + local ToolHive; [closeout.md](done/CHG-0025-trusted-artifacts/closeout.md) |
-| [CHG-0024](in-progress/CHG-0024-personal-data-connectors/plan.md) | M5 stage 2: Google Workspace, Slack data and personal Telegram connectors behind ToolHub |
+| [CHG-0098](in-progress/CHG-0098-forum-topic-sessions/plan.md) | Issue #220: /new mints a bot-owned forum topic per session; Docker + live pending |
+| [CHG-0091](in-progress/CHG-0091-telegram-operation-contracts/plan.md) | Telegram operation contracts repair (draft SPEC-0052, proposed ADR-0035) |
+| [CHG-0065](in-progress/CHG-0065-capability-enforcement/plan.md) | Issue 122: default-deny capability enforcement (SPEC-0041/0042, ADR-0031/0032) |
+
+## Abandoned / superseded
+
+| Change | State |
+|---|---|
+| [CHG-0037](done/CHG-0037-toolhub-closeout/plan.md) | Abandoned: ToolHub closeout umbrella superseded by later per-issue CHGs |
+| [CHG-0031](done/CHG-0031-docker-disk-diagnosis/plan.md) | Abandoned: read-only diagnosis superseded by CHG-0031-docker-reclaim findings |
+
+## Done — M13+ platform and fixes
+
+| Change | State |
+|---|---|
+| [CHG-0135](done/CHG-0135-m13-p8-browser-connectors/plan.md) | M13 P8 browser workloads as connectors (ADR-0059) |
+| [CHG-0134](done/CHG-0134-m13-p7-team-connectors/plan.md) | M13 P7 explicit team connectors (ADR-0058) |
+| [CHG-0133](done/CHG-0133-m13-p6-broker-authority/plan.md) | M13 P6 Credential Broker as single credential authority (ADR-0049) |
+| [CHG-0132](done/CHG-0132-m13-p5-catalog-tiers/plan.md) | M13 P5 catalog tiers + CI-built images + install budgets (ADR-0057) |
+| [CHG-0131](done/CHG-0131-m13-p4-ownership-finalizers/plan.md) | M13 P4 ownership labels + finalizers + reconciler (ADR-0056) |
+| [CHG-0130](done/CHG-0130-m13-p3-connector-surface/plan.md) | M13 P3 unified connector_* tools + operation journal (ADR-0055) |
+| [CHG-0129](done/CHG-0129-m13-p2-human-action-surface/plan.md) | M13 P2 channel-agnostic human action surface — one-time links (ADR-0054) |
+| [CHG-0128](done/CHG-0128-m13-p1-recipe-model/plan.md) | M13 P1 recipe model, trust ladders, source ledger (ADR-0053) |
+| [CHG-0127](done/CHG-0127-m13-p0-connector-path/plan.md) | M13 P0 stabilize the connector path (issue #281) |
+| [CHG-0127](done/CHG-0127-watcher-failure-visibility/plan.md) | Issue #248 live-run fixes: probe-failure alerts, vacuous-value rejection, quiet escalation, drift noise; live re-acceptance passed (number collides with m13-p0) |
+| [CHG-0116](done/CHG-0116-watcher-probe-pipeline/plan.md) | Watcher fetch/extract probe pipeline (SPEC-0059, ADR-0045) |
+| [CHG-0109](done/CHG-0109-fast-local-rebuild/plan.md) | Fast local Go service rebuild; live acceptance passed |
+| [CHG-0108](done/CHG-0108-full-credential-coverage/plan.md) | Full credential coverage — file/shared/http_header connectors (broker ADR-0009/0010) |
+| [CHG-0107](done/CHG-0107-dynamic-contracts/plan.md) | Dynamic credential contracts (POST /v1/contracts + ToolHub synthesis), live-verified rotate/self-service |
+| [CHG-0106](done/CHG-0106-m13-auth-mcpb/plan.md) | M13 auth completion + full MCPB support (number collides with live-replay-defects) |
+| [CHG-0106](done/CHG-0106-live-replay-defects/plan.md) | Live-replay defect fixes — watcher probes, session leak routing, contract errors, retry, broker catalog |
+| [CHG-0105](done/CHG-0105-m13-closeout/plan.md) | M13 ToolHub connector platform closeout (number collides with broker-drift-self-heal) |
+| [CHG-0105](done/CHG-0105-broker-drift-self-heal/plan.md) | Broker drift self-heal, agent tool guidance, stale artifact reuse; live replay verified |
+
+## Done — comm-plane separation (M14 refactor)
+
+| Change | State |
+|---|---|
+| [CHG-0126](done/CHG-0126-spool-knowledge-migration/plan.md) | hubctl spool migrate — offline knowledge copy spool→state (ADR-0050) |
+| [CHG-0125](done/CHG-0125-domain-model-relocation/plan.md) | commodel/channel/routines packages, engine relocation, conformance + goldens (ADR-0046/0048) |
+| [CHG-0124](done/CHG-0124-serviceauth/plan.md) | internal/serviceauth extraction |
+| [CHG-0123](done/CHG-0123-commops-extraction/plan.md) | Canary/health ops extraction to commops |
+| [CHG-0122](done/CHG-0122-channel-registry/plan.md) | Channel registry — polymorphic delivery/authorization dispatch (ADR-0047) |
+| [CHG-0121](done/CHG-0121-knowledge-to-runtime/plan.md) | Knowledge moves from communication spool to runtime state |
+| [CHG-0120](done/CHG-0120-broker-only-credential-intake/plan.md) | Legacy credential surface leaves communication (ADR-0049) |
+| [CHG-0119](done/CHG-0119-quota-to-model-relay/plan.md) | Quota lookup moves from communication to model-relay |
+| [CHG-0118](done/CHG-0118-comm-p0-routine-isolation/plan.md) | Routine tick isolation and boundary hardening |
+
+## Done — routines, watchers, M12
+
+| Change | State |
+|---|---|
+| [CHG-0115](done/CHG-0115-routine-snooze-audit/plan.md) | Routine snooze acceptance correction |
+| [CHG-0114](done/CHG-0114-routine-destinations/plan.md) | Routine delivery destinations (SPEC-0058, ADR-0044) |
+| [CHG-0113](done/CHG-0113-compact-routine-tools/plan.md) | Five public routine tools; deployed MCP lifecycle verified (ADR-0043) |
+| [CHG-0112](done/CHG-0112-routine-lifecycle/plan.md) | Full routine lifecycle and interval windows; real Telegram verified (ADR-0042) |
+| [CHG-0111](done/CHG-0111-durable-reminder-acceptance/plan.md) | Issue #247 reminder recovery, snooze, history isolation, real Telegram acceptance |
+| [CHG-0103](done/CHG-0103-event-subscriptions/plan.md) | M12 stage 5: event subscriptions, sinks, watch_* surface; live verified, issue #257 closed |
+| [CHG-0102](done/CHG-0102-owner-brief/plan.md) | M12 stage 4: opt-in owner brief; live acceptance passed |
+
+## Done — M19 execution chain and supervisor
+
+| Change | State |
+|---|---|
+| [CHG-0097](done/CHG-0097-single-stack-supervisor/plan.md) | Single-stack supervisor verified live — container supervisor wake/restart (ADR-0040) |
+| [CHG-0096](done/CHG-0096-control-plane-simplification/plan.md) | Control-plane simplification proposals (M19 stage 4) |
+| [CHG-0095](done/CHG-0095-recovery-observability/plan.md) | Recovery and visibility (M19 stage 3); verified live |
+| [CHG-0094](done/CHG-0094-chain-latency/plan.md) | M19 stage 2: early liveness, single progress, event-driven spool, lazy browser |
+| [CHG-0093](done/CHG-0093-tool-surface-integrity/plan.md) | M19 stage 1: rights-only policy hash, binding migration, tool manifest readiness |
+| [CHG-0092](done/CHG-0092-chain-stop-the-bleeding/plan.md) | M19 stage 0: idle deadlines, pre-admission retry, lease-safe lifecycle; verified live |
+
+## Done — M10 stabilization and M11 operations
+
+| Change | State |
+|---|---|
+| [CHG-0090](done/CHG-0090-deployment-contracts/plan.md) | Deployment contracts (SPEC-0051) |
+| [CHG-0089](done/CHG-0089-routine-control-env/plan.md) | Routine control environment in legacy hub MCP |
+| [CHG-0088](done/CHG-0088-telegram-approval-lifecycle/plan.md) | Telegram approval lifecycle and read-only workspace listing |
+| [CHG-0087](done/CHG-0087-live-phase1/plan.md) | Live phase 1 capability checks |
+| [CHG-0086](done/CHG-0086-inbound-documents/plan.md) | Inbound Telegram documents |
+| [CHG-0085](done/CHG-0085-e2e-ci/plan.md) | Sequential capability acceptance and CI latency |
+| [CHG-0084](done/CHG-0084-m10-dev-merge/plan.md) | M10 merge into dev, shared image build discipline |
+| [CHG-0083](done/CHG-0083-m10-stabilization/plan.md) | M10 phases A–C stabilization (SPEC-0050) |
+| [CHG-0082](done/CHG-0082-m10-phase-c/plan.md) | M10 Phase C — operability: mock channel, apply -f, image discipline |
+| [CHG-0081](done/CHG-0081-m10-phase-b/plan.md) | M10 Phase B — proactive assistant: watchers, follow-ups, digest, knowledge |
+| [CHG-0080](done/CHG-0080-m10-phase-a/plan.md) | M10 Phase A — cheap wins |
+
+## Done — CLI transport and tool governance (M8/M9)
+
+| Change | State |
+|---|---|
+| [CHG-0079](done/CHG-0079-cli-policy-completion/plan.md) | Six CLI policy/catalog gaps (SPEC-0063) |
+| [CHG-0078](done/CHG-0078-cli-cells/plan.md) | Per-principal sandbox cells, issues #239–#242, live verified |
+| [CHG-0077](done/CHG-0077-toolhub-cli/plan.md) | ToolHub CLI connectors (SPEC-0062) |
+| [CHG-0076](done/CHG-0076-tool-governance/plan.md) | Tool governance — inventory, scoped policy, grants, enforcement (SPEC-0046) |
+| [CHG-0075](done/CHG-0075-remote-mcp/plan.md) | Owner-scoped remote MCP register/admit/project (SPEC-0045) |
+| [CHG-0074](done/CHG-0074-telegram-auth-plugin/plan.md) | Opt-in Telegram QR login plugin (SPEC-0044; number collides with host-hygiene) |
+| [CHG-0074](done/CHG-0074-host-hygiene/plan.md) | Host hygiene batch (issues 226→222→224→223→221+225→171→46) |
+| [CHG-0073](done/CHG-0073-prepared-bundle-telegram/plan.md) | Prepared bundle and personal Telegram (SPEC-0043; live provider acceptance recorded as limitation) |
+
+## Done — managed stack, media, diagnostics, connectors (M5–M9 mid)
+
+| Change | State |
+|---|---|
+| [CHG-0072](done/CHG-0072-managed-hotfixes/plan.md) | Managed-mode hotfixes from live Telegram verification |
+| [CHG-0071](done/CHG-0071-managed-voice-media-settings/plan.md) | Managed compression, settings tools, image gen, STT/TTS, second user |
+| [CHG-0070](done/CHG-0070-managed-cutover/plan.md) | Managed capability cutover for the local space |
+| [CHG-0069](done/CHG-0069-session-ux-and-quota/plan.md) | Session UX and provider quota |
+| [CHG-0068](done/CHG-0068-usage-report/plan.md) | Real task/session usage report (issue 169) |
+| [CHG-0067](done/CHG-0067-task-style/plan.md) | Per-task communication style (issue 168) |
+| [CHG-0066](done/CHG-0066-task-sessions/plan.md) | Task sessions and Telegram DM topics (issue 167) |
+| [CHG-0064](done/CHG-0064-capability-profile/plan.md) | Standard user-scoped capability profile (SPEC-0040) |
+| [CHG-0063](done/CHG-0063-media-generation-service/plan.md) | hub-media generation sidecar (SPEC-0061); verified live |
+| [CHG-0062](done/CHG-0062-media-sidecars/plan.md) | Standalone hub-stt/hub-tts services (SPEC-0039); verified on local stack |
+| [CHG-0061](done/CHG-0061-voice-readiness/plan.md) | /voice reports STT and TTS readiness separately (SPEC-0038) |
+| [CHG-0060](done/CHG-0060-artifact-delivery/plan.md) | Run artifact handoff (SPEC-0037) |
+| [CHG-0059](done/CHG-0059-channel-rendering/plan.md) | Per-channel rendering and long replies (SPEC-0036, issue 166) |
+| [CHG-0058](done/CHG-0058-web-search-research/plan.md) | Web search and bounded deep research (SPEC-0035, issue 123) |
+| [CHG-0057](done/CHG-0057-datalens-connector/plan.md) | Prepared DataLens connector (issue 120) |
+| [CHG-0056](done/CHG-0056-observability-connectors/plan.md) | Prepared observability connectors: grafana + prometheus (issue #43) |
+| [CHG-0055](done/CHG-0055-sql-connectors/plan.md) | Prepared SQL connectors txttsql and dbhub |
+| [CHG-0054](done/CHG-0054-diagnostics-hardening/plan.md) | Diagnostics hardening |
+| [CHG-0053](done/CHG-0053-user-diagnostics/plan.md) | User-scoped diagnostics (SPEC-0034) |
+| [CHG-0052](done/CHG-0052-document-image-tools/plan.md) | Workspace document and image capability (SPEC-0033) |
+| [CHG-0051](done/CHG-0051-config-gated-empty-tools/plan.md) | Config-gated empty tools/list (mcp-atlassian) |
+| [CHG-0050](done/CHG-0050-artifact-image-restore/plan.md) | Restore pruned artifact images at admission |
+| [CHG-0049](done/CHG-0049-install-progress-notices/plan.md) | Install progress on the form and in Telegram |
+| [CHG-0048](done/CHG-0048-network-transport-and-proxy-discovery/plan.md) | Network-transport fallback + proxy-env discovery |
+| [CHG-0047](done/CHG-0047-ssh-capability/plan.md) | Opt-in SSH capability (SPEC-0032; number collides with mcp-admission-and-wake) |
+| [CHG-0047](done/CHG-0047-mcp-admission-and-wake/plan.md) | MCP admission, sibling tokens, lost first message; verified |
+| [CHG-0046](done/CHG-0046-automatic-diagnostics/plan.md) | Automatic bounded diagnostics (SPEC-0031) |
+| [CHG-0045](done/CHG-0045-diagnostics/plan.md) | Local multiuser diagnostics (SPEC-0030) |
+| [CHG-0044](done/CHG-0044-build-disk-control/plan.md) | Build disk control and core/control image split (SPEC-0029) |
+| [CHG-0043](done/CHG-0043-async-prepare/plan.md) | Async connector prepare |
+| [CHG-0042](done/CHG-0042-toolhub-build-resilience/plan.md) | ToolHub build resilience |
+
+## Done — M5 connector platform era
+
+| Change | State |
+|---|---|
+| [CHG-0041](done/CHG-0041-browser-profiles/plan.md) | Isolated user browser profiles (issue #45) |
+| [CHG-0040](done/CHG-0040-shared-toolhub-control-plane/plan.md) | Shared control plane, scoped compute (ADR-0026) |
+| [CHG-0039](done/CHG-0039-parallel-context-workers/plan.md) | Parallel per-context gateway workers (ADR-0025; number collides with oauth-handoff) |
+| [CHG-0039](done/CHG-0039-oauth-handoff/plan.md) | OAuth handoff for prepared MCP connections |
+| [CHG-0038](done/CHG-0038-multiowner-telegram-runtime/plan.md) | Multi-owner Telegram runtimes |
+| [CHG-0036](done/CHG-0036-repository-driven-toolhub/plan.md) | Repository-driven ToolHub — prepared data, discovery, four exact-source live scenarios |
+| [CHG-0035](done/CHG-0035-toolhive-vmcp-audit/plan.md) | ToolHive local vMCP evaluation — no-go evidence (SPEC-0027, ADR-0024) |
+| [CHG-0034](done/CHG-0034-noncredential-env-filter/plan.md) | Non-credential env names excluded from connection recipe; gitlab-pat broker contract |
+| [CHG-0033](done/CHG-0033-node-bin-aliases/plan.md) | Node bin aliases resolve as a single MCP entrypoint |
+| [CHG-0032](done/CHG-0032-broker-direct-form/plan.md) | Credential Broker direct form and expired-link regeneration |
+| [CHG-0031](done/CHG-0031-docker-reclaim/plan.md) | Docker reclaim: stale tags, dangling and artifact-build orphans via devcheck docker-clean |
+| [CHG-0030](done/CHG-0030-compose-consolidation/plan.md) | Compose consolidation refactor |
+| [CHG-0029](done/CHG-0029-github-mcp-install/plan.md) | Generic GitHub MCP install; live end-to-end verified |
+| [CHG-0028](done/CHG-0028-credential-broker-merge/plan.md) | Credential Broker merge and opt-in integration (ADR-0022, SPEC-0025) |
+| [CHG-0027](done/CHG-0027-m53-e2e/plan.md) | M5.3 Hermes-mediated MCP onboarding; live Notion e2e verified (number collides with recipe-catalog-discovery) |
+| [CHG-0027](done/CHG-0027-recipe-catalog-discovery/plan.md) | Complete recipe catalog discovery |
+| [CHG-0026](done/CHG-0026-user-binding-journey/plan.md) | M5.2 control MCP, grants, elicitation, bind/project/revoke (number collides with recipe-resolver) |
+| [CHG-0026](done/CHG-0026-recipe-resolver/plan.md) | Recipe resolver (SPEC-0026) |
+| [CHG-0025](done/CHG-0025-trusted-artifacts/plan.md) | M5.1 trusted artifacts + local ToolHive; [closeout](done/CHG-0025-trusted-artifacts/closeout.md) |
+| [CHG-0024](done/CHG-0024-personal-data-connectors/plan.md) | M5 stage 2: Google Workspace, Slack, personal Telegram behind ToolHub (SPEC-0022) |
+
+## Done — foundations (pre-M5)
+
+| Change | State |
+|---|---|
 | [CHG-0023](done/CHG-0023-personal-assistant/plan.md) | M4 personal assistant: Telegram/Slack channels, voice, routines, memory/skills/backup |
-| [CHG-0022](done/CHG-0022-credentials-connector-platform/plan.md) | M3 shipped-path inject/audit/registry wiring; just check 85.07%; docker-check prod a61ce4879a1d |
-| [CHG-0021](done/CHG-0021-toolhub-stage3/plan.md) | M2 control-plane done; #20–#26 closed; live ToolHive/Hermes evidence is #73/#74 |
-| [CHG-0020](done/CHG-0020-toolhub-stage2/plan.md) | M2 stage 2 in progress: authenticated projection endpoint, ToolHive adapter contract, bounded CLI and workload lifecycle |
-| [CHG-0018](done/CHG-0018-communication-runtime-migration/plan.md) | Issue19: per-context execution selection, migration audit and real five-minute gateway lifecycle |
-| [CHG-0019](done/CHG-0019-toolhub-foundation/plan.md) | M2 complete: immutable ToolHub definitions, workload classification and exact-owner bindings; runtime unchanged |
-| [CHG-0017](done/CHG-0017-stream-approval-reconciliation/plan.md) | Issues 16–18 complete: repository and pinned Hermes Docker gates passed; GitHub issues closed |
-| [CHG-0016](done/CHG-0016-scale-to-zero-runtimes/plan.md) | Initial host supervisor, warm lifecycle and opt-in routing implemented; durable migration pending |
-| [CHG-0015](done/CHG-0015-migration-map/plan.md) | Current-to-target migration and deprecation map |
-| [CHG-0015-durable](done/CHG-0015-durable-job-runtime-mappings/plan.md) | Durable job and runtime mappings |
-| [CHG-0014](done/CHG-0014-threat-model/plan.md) | Threat-model personal deployment and future company boundary |
-| [CHG-0013](done/CHG-0013-dependency-refresh/plan.md) | Apply reviewed GitHub Actions and Docker dependency updates |
-| [CHG-0012](done/CHG-0012-hermes-api-contract/plan.md) | Validate pinned Hermes API contract for persistent sessions and runs |
-| [CHG-0011](done/CHG-0011-stable-identifiers/plan.md) | Stable identity and ownership identifier contract |
-| [CHG-0010](done/CHG-0010-direct-mcp-atlassian/plan.md) | Replace Atlassian Rovo with pinned direct mcp-atlassian |
-| [CHG-0009](done/CHG-0009-scoped-homes-and-service-split/plan.md) | Scoped homes and communication-hub split ready for deployment acceptance |
-| [CHG-0008](done/CHG-0008-telegram-service-self-service/plan.md) | Telegram connector catalog and self-service enablement implemented |
-| [CHG-0007](done/CHG-0007-communication-gateway/plan.md) | Communication gateway implemented; local gates passed, live Telegram acceptance pending |
-| [CHG-0006](done/CHG-0006-work-services/plan.md) | Work-service integrations implemented |
-| [CHG-0005](done/CHG-0005-self-env/plan.md) | User self-env and independent Telegram paths implemented |
-| [CHG-0004](done/CHG-0004-multitenant-knowledge/plan.md) | Organization/user scope overlay implemented |
-| [CHG-0001-bootstrap](done/CHG-0001-bootstrap/plan.md) | Implemented; local gates passed |
-| [CHG-0002](done/CHG-0002-standalone/plan.md) | Completed; local checks passed |
-| [CHG-0003](done/CHG-0003-go-first-tooling/plan.md) | Go-first tooling in progress |
+| [CHG-0022](done/CHG-0022-credentials-connector-platform/plan.md) | M3 shipped-path inject/audit/registry wiring |
+| [CHG-0021](done/CHG-0021-toolhub-stage3/plan.md) | M2 control plane; issues #20–#26 closed |
+| [CHG-0020](done/CHG-0020-toolhub-stage2/plan.md) | M2 stage 2: authenticated projection, ToolHive adapter, bounded CLI |
+| [CHG-0019](done/CHG-0019-toolhub-foundation/plan.md) | M2: immutable ToolHub definitions, workload classes, exact-owner bindings |
+| [CHG-0018](done/CHG-0018-communication-runtime-migration/plan.md) | Issue #19: per-context execution selection and five-minute gateway lifecycle |
+| [CHG-0017](done/CHG-0017-stream-approval-reconciliation/plan.md) | Issues #16–#18: stream, approval, reconciliation |
+| [CHG-0016](done/CHG-0016-scale-to-zero-runtimes/plan.md) | Initial host supervisor, warm lifecycle, opt-in routing |
+| [CHG-0015](done/CHG-0015-migration-map/plan.md) | Current-to-target migration and deprecation map (number collides with durable-job-runtime-mappings) |
+| [CHG-0015](done/CHG-0015-durable-job-runtime-mappings/plan.md) | Durable job and runtime mappings (SPEC-0014) |
+| [CHG-0014](done/CHG-0014-threat-model/plan.md) | Threat model for personal deployment and future company boundary |
+| [CHG-0013](done/CHG-0013-dependency-refresh/plan.md) | Reviewed GitHub Actions and Docker dependency updates |
+| [CHG-0012](done/CHG-0012-hermes-api-contract/plan.md) | Validate pinned Hermes API contract (ADR-0012, SPEC-0011) |
+| [CHG-0011](done/CHG-0011-stable-identifiers/plan.md) | Stable identity and ownership identifier contract (ADR-0011) |
+| [CHG-0010](done/CHG-0010-direct-mcp-atlassian/plan.md) | Pinned direct mcp-atlassian replaces Rovo (ADR-0010) |
+| [CHG-0009](done/CHG-0009-scoped-homes-and-service-split/plan.md) | Scoped homes and communication-hub split (ADR-0009, SPEC-0009) |
+| [CHG-0008](done/CHG-0008-telegram-service-self-service/plan.md) | Telegram connector catalog and self-service (ADR-0008) |
+| [CHG-0007](done/CHG-0007-communication-gateway/plan.md) | Communication gateway (ADR-0007, SPEC-0007) |
+| [CHG-0006](done/CHG-0006-work-services/plan.md) | Work-service integrations (SPEC-0006) |
+| [CHG-0005](done/CHG-0005-self-env/plan.md) | User self-env and independent Telegram paths (SPEC-0005) |
+| [CHG-0004](done/CHG-0004-multitenant-knowledge/plan.md) | Organization/user scope overlay (SPEC-0004) |
+| [CHG-0003](done/CHG-0003-go-first-tooling/plan.md) | Go-first tooling (ADR-0003, SPEC-0003) |
+| [CHG-0002](done/CHG-0002-standalone/plan.md) | Standalone general-purpose scope (SPEC-0002) |
+| [CHG-0001](done/CHG-0001-bootstrap/plan.md) | Initial bootstrap |
+
+Open live follow-ups stay as GitHub issues, not stale CHG folders: #73
+(ToolHive/VPS), #74 (Hermes reconnect), #166/#170/#172 (live channel
+acceptance evidence).

@@ -13,6 +13,7 @@ last_verified: 2026-10-02
 | [ADR-0055](ADR-0055-unified-connector-surface.md) | Accepted: nine `connector_*` tools over one durable operation journal; typed codes, no prose markers or link material in agent results; same facade on MCP, hubctl and control HTTP |
 | [ADR-0054](ADR-0054-human-action-surface.md) | Accepted: one-time `?t=` human-action links on an opt-in public surface, origin-channel delivery, device flow and paste-redirect OAuth, transactional credential save |
 | [ADR-0053](ADR-0053-recipe-source-ledger.md) | Accepted: content-addressed secret-free recipes, ranked source ledgers, fail-closed same-rank ambiguity, digest-referenced onboardings |
+| [ADR-0051](ADR-0051-deterministic-work-isolation.md) | Accepted: local writer ownership, durable result handoff and isolated script containers (renumbered from a duplicate ADR-0033) |
 | [ADR-0050](ADR-0050-knowledge-in-runtime-state.md) | Accepted: knowledge in runtime state, staged via apply --state, relocated offline via hubctl spool migrate |
 | [ADR-0049](ADR-0049-broker-only-credential-intake.md) | Accepted: credential intake only via Broker or runtime self-env; legacy gateway surface removed |
 | [ADR-0048](ADR-0048-routines-package.md) | Accepted: internal/routines leaf owns routine semantics and engine behind a Deps seam |
@@ -29,7 +30,6 @@ last_verified: 2026-10-02
 | [ADR-0037](ADR-0037-supervisor-in-linux-container.md) | Proposed: containerized supervisor via the ToolHub socket proxy (D12a) |
 | [ADR-0036](ADR-0036-execution-chain-reliability.md) | Accepted: one run budget with idle deadlines, internal uncertain reconciliation, lease-safe lifecycle, rights-only policy hash, capability readiness, event-driven wakeups, correlation IDs (M19) |
 | [ADR-0035](ADR-0035-telegram-operation-contracts.md) | Proposed: byte-based images, explicit MCP env, routine creation receipts, current approval UI and exact file handoff |
-| [ADR-0033](ADR-0033-deterministic-work-isolation.md) | Local writer ownership, durable result handoff and isolated script containers |
 | [ADR-0034](ADR-0034-cli-package-policy.md) | Accepted: private package home, exact shipped CLI trust and atomic host catalog binding |
 | [ADR-0033](ADR-0033-bounded-cli-transport.md) | Accepted: bounded CLI as a ToolHub transport with executor-container isolation receipts |
 | [ADR-0032](ADR-0032-capability-execution-isolation.md) | Accepted: isolate control state, Hermes, scoped file executors and scratch-only code workloads |
@@ -52,6 +52,7 @@ last_verified: 2026-10-02
 | [ADR-0015](ADR-0015-durable-job-runtime-mappings.md) | Durable job, session, run and generation mappings in local stores |
 | [ADR-0014](ADR-0014-scale-to-zero-context-runtimes.md) | Scale-to-zero warm Hermes runtime per active context; Hub owns routine schedules |
 | [ADR-0013](ADR-0013-toolhub-security-boundary.md) | Go ToolHub authorizes; ToolHive executes and aggregates internally |
+| [ADR-0012](ADR-0012-hermes-api-contract.md) | Accepted: pinned Hermes authenticated API server as the runtime-adapter contract target |
 | [ADR-0011](ADR-0011-stable-identity-identifiers.md) | Stable opaque IDs with a compatibility mapping for current spaces and jobs |
 | [ADR-0010](ADR-0010-direct-mcp-atlassian.md) | Install pinned direct `mcp-atlassian` stdio server instead of Atlassian Rovo |
 | [ADR-0009](ADR-0009-scoped-homes-and-communication-hub.md) | Peer organization/user homes and separate communication-hub |
@@ -60,6 +61,6 @@ last_verified: 2026-10-02
 | [ADR-0006](ADR-0006-work-service-boundaries.md) | Provider-native boundaries for Atlassian, GitLab and Google |
 | [ADR-0005](ADR-0005-self-env-and-telegram-boundaries.md) | Separate Telegram paths and user self-env overlay |
 | [ADR-0004](ADR-0004-organization-user-scope.md) | Organization policy overlay with isolated user runtimes |
-| [ADR-0001](ADR-0001-isolated-hermes-deployments.md) | Historical initial design; partly superseded by ADR-0002 |
-| [ADR-0002](ADR-0002-standalone-user-spaces.md) | Standalone Hermes, spaces/user and Docker environments |
 | [ADR-0003](ADR-0003-go-first-tooling.md) | Just and Go for project-owned tooling and runtime supervision |
+| [ADR-0002](ADR-0002-standalone-user-spaces.md) | Standalone Hermes, spaces/user and Docker environments |
+| [ADR-0001](ADR-0001-isolated-hermes-deployments.md) | Historical initial design; partly superseded by ADR-0002 |

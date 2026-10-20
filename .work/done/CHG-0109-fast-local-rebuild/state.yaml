@@ -1,0 +1,29 @@
+schema: 1
+change: CHG-0109
+title: Fast local Go service rebuild
+status: done
+branch: fix/chg-0105-broker-drift-self-heal
+updated: 2026-10-17
+phase: verification
+implementation_status: complete
+validation:
+  just_check: passed (2026-10-17; Go statement coverage 86.26%)
+  docker_check: not_run
+  overlay_smoke: passed (Linux binary present in built overlay; warm Go build 1.5s, Docker overlay 5.2s)
+  live_acceptance: passed for six running Go services in hermes-hub-local-dev; supervised runtime image selected but next-spawn path not exercised live
+  docs_check: passed
+  config_check: passed
+  gosec: passed for cmd/internal and the nested credential-broker module via devcheck
+evidence:
+  - go test ./cmd/hubctl ./internal/supervisor -count=1 passed
+  - git diff --check passed
+  - just docker-clean passed after Docker overlay probe
+  - 2026-10-16 local/dev: dev-rebuild recreated communication-hub, credential-broker, hub-media, toolhub, workload-controller, supervisor from their own hermes-hub-dev-local-<service>:local images
+  - 2026-10-16 local/dev: all nine Compose containers running; hub-media healthy; ports 8081, 8787, 8090, 8545 answered HTTP; supervisor 8876 answered inside its container
+  - 2026-10-16 local/dev: hermes-runtime overlay built, executable checked, generated/dev-runtime-image selects its exact tag; no active runtime was interrupted or spawned
+  - 2026-10-16 local/dev: old dev-swap binary bind mounts absent from recreated toolhub, workload-controller and supervisor containers
+  - 2026-10-16 local/dev: all nine project containers remained running more than 15 minutes after rebuild; supervisor authorized healthz returned 200
+  - 2026-10-17: just lint and just check passed after scoping gosec to Go package roots and invoking it through devcheck
+remaining:
+  - Exercise supervised runtime next-spawn selection live.
+closeout: retroactive-triage-2026-10-20

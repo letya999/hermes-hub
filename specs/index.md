@@ -2,6 +2,9 @@
 
 | Specification | Status |
 |---|---|
+| [SPEC-0063](active/SPEC-0063-cli-policy-completion.md) | Frozen: six CLI policy gaps, private package installation and atomic host catalog operation (renumbered from a duplicate SPEC-0048) |
+| [SPEC-0062](active/SPEC-0062-toolhub-cli-transport.md) | Frozen: bounded CLI as a first-class ToolHub transport — catalog and user-owned, no shell, real isolation receipts (milestone 9; CHG-0077; renumbered from a duplicate SPEC-0047) |
+| [SPEC-0061](active/SPEC-0061-media-generation-service.md) | hub-media generation sidecar (renumbered from a duplicate SPEC-0040) |
 | [SPEC-0060](active/SPEC-0060-recipe-source-ledger.md) | Frozen: content-addressed connector recipes, ranked source ledgers, trust tiers, golden corpus |
 | [SPEC-0059](active/SPEC-0059-watcher-probe-pipeline.md) | Frozen: watcher fetch/extract pipeline, isolated script/command probes, snapshotted recipes |
 | [SPEC-0058](active/SPEC-0058-routine-destinations.md) | Frozen: routine destination discovery, binding, edits and history |
@@ -16,8 +19,6 @@
 | [SPEC-0049](active/SPEC-0049-operability.md) | Frozen: mock, additive apply and BuildKit discipline |
 | [SPEC-0048](active/SPEC-0048-proactive-routines.md) | Frozen: watchers, checks, deterministic digests and knowledge |
 | [SPEC-0047](active/SPEC-0047-chat-file-transfer.md) | Frozen: images and file transfer |
-| [SPEC-0048](active/SPEC-0048-cli-policy-completion.md) | Frozen: six CLI policy gaps, private package installation and atomic host catalog operation |
-| [SPEC-0047](active/SPEC-0047-toolhub-cli-transport.md) | Frozen: bounded CLI as a first-class ToolHub transport — catalog and user-owned, no shell, real isolation receipts (milestone 9; CHG-0077) |
 | [SPEC-0046](active/SPEC-0046-tool-governance.md) | Frozen: tool-governance inventory, scoped rules, expiring grants and multi-plane enforcement (issue 139; CHG-0076) |
 | [SPEC-0045](active/SPEC-0045-remote-mcp.md) | Frozen: owner-scoped remote MCP registration, admission, header credentials and projection (issues 83–85, 96; CHG-0075) |
 | [SPEC-0044](active/SPEC-0044-communication-telegram-auth.md) | Frozen: opt-in Communication Hub QR login and owner-bound Broker transfer |
@@ -25,15 +26,14 @@
 | [SPEC-0042](active/SPEC-0042-capability-isolation-and-proof.md) | Frozen: execution isolation, file/shell boundaries and T01-T22 acceptance; implementation in CHG-0065 |
 | [SPEC-0041](active/SPEC-0041-default-deny-capabilities.md) | Frozen successor to SPEC-0040 defaults: complete inventory, explicit profiles/grants, routing and revocation; implementation in CHG-0065 |
 | [SPEC-0040](active/SPEC-0040-capability-profile.md) | Frozen earlier capability matrix; defaults/enforcement superseded by SPEC-0041/0042 |
-| [SPEC-0040](active/SPEC-0040-media-generation-service.md) | hub-media generation sidecar (number collides with capability-profile; kept for reference stability) |
 | [SPEC-0039](active/SPEC-0039-media-sidecars.md) | Standalone hub-stt/hub-tts services (separate images): OpenAI-compatible API, swappable engines, durable async jobs for long recordings |
 | [SPEC-0038](active/SPEC-0038-voice-readiness.md) | `/voice` reports STT and TTS readiness separately; live voice evidence is a deployment gate |
 | [SPEC-0037](active/SPEC-0037-artifact-delivery.md) | Run artifact handoff: bounded runtime fetch endpoint, spool staging, ordered channel delivery |
 | [SPEC-0036](active/SPEC-0036-channel-rendering.md) | Per-channel Markdown rendering, lossless multi-part replies, source document for degraded output |
 | [SPEC-0035](active/SPEC-0035-web-research.md) | Configured web search/extract providers, runtime-secret keys, bounded deep-research skill |
 | [SPEC-0034](active/SPEC-0034-user-diagnostics.md) | User-scoped diagnostics projection: store-derived scope, bounded queries, redaction |
-| [SPEC-0032](active/SPEC-0032-ssh-capability.md) | Opt-in user-scoped SSH capability with pinned host keys and stacked read/write/shell/tunnel grants |
 | [SPEC-0033](active/SPEC-0033-document-image-profile.md) | Workspace document and image profile; pdf, xlsx, pptx, and webp; configurable image provider, model, and delivery |
+| [SPEC-0032](active/SPEC-0032-ssh-capability.md) | Opt-in user-scoped SSH capability with pinned host keys and stacked read/write/shell/tunnel grants |
 | [SPEC-0031](active/SPEC-0031-automatic-diagnostics.md) | Automatic bounded multiuser diagnostics; supersedes SPEC-0030 export |
 | [SPEC-0030](active/SPEC-0030-diagnostics.md) | Local multiuser diagnostics and bounded Docker logs |
 | [SPEC-0029](active/SPEC-0029-build-disk-boundary.md) | Core/control image boundary and bounded rebuild storage |
@@ -48,8 +48,8 @@
 | [SPEC-0020](active/SPEC-0020-credentials-and-connectors.md) | Encrypted credentials, inject-after-authorize, OAuth broker and audit ledger |
 | [SPEC-0019](active/SPEC-0019-toolhub-stage3.md) | Dynamic ToolHub catalog, projection revision, enforcement receipt and explicit migration |
 | [SPEC-0018](active/SPEC-0018-toolhub-stage2.md) | Dynamic ToolHub endpoint, private MCP backend adapter, bounded CLI and workload lifecycle |
-| [SPEC-0016](active/SPEC-0016-communication-execution-migration.md) | Per-context communication execution rollout, rollback and five-minute lifecycle |
 | [SPEC-0017](active/SPEC-0017-toolhub-foundation.md) | Versioned ToolHub definitions, workload classes, scoped connections and effective bindings |
+| [SPEC-0016](active/SPEC-0016-communication-execution-migration.md) | Per-context communication execution rollout, rollback and five-minute lifecycle |
 | [SPEC-0015](active/SPEC-0015-run-controls.md) | Durable cancellation and approval ownership, dispatch and expiry |
 | [SPEC-0014](active/SPEC-0014-job-runtime-mappings.md) | Durable job, session, run and runtime mappings |
 | [SPEC-0013](active/SPEC-0013-routines-and-runtime-wake.md) | Hub-owned routines wake sleeping context runtimes |

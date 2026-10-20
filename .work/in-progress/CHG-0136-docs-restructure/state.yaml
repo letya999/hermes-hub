@@ -1,0 +1,29 @@
+schema: 1
+change: CHG-0136
+title: Documentation restructure and enforcement
+status: in_progress
+branch: feat/m14-toolhub-connector-platform-merge
+updated: 2026-10-20
+phase: implementation
+adr: none
+spec: none
+requirements: []
+depends_on: []
+github_milestone: none
+github_issue: none
+design_status: accepted
+implementation_status: in_progress
+slices:
+  S1-mechanics: not_started
+  S2-gate: not_started
+  S3-content: not_started
+  S4-conventions: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_needed
+  red_team: not_applicable
+  live_acceptance: not_applicable
+evidence: []
+remaining: []
+limitations: []

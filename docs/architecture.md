@@ -179,7 +179,7 @@ file queue and reply delivery. Speech is delegated to standalone `hub-stt` /
 durable async jobs; swappable command/remote/sherpa/elevenlabs engines) reached over
 bearer-auth HTTP — see
 [SPEC-0039](../specs/active/SPEC-0039-media-sidecars.md). Image and video
-generation is likewise delegated to `hub-media` (SPEC-0040): the same
+generation is likewise delegated to `hub-media` (SPEC-0061): the same
 `internal/mediasvc` core, `remote`/`fal` engines, sync image endpoints plus
 durable async video jobs on the shared job store. Provider credentials live in
 the service env; the runtime mounts only `media.auth` and the service URL. The gateway mounts only

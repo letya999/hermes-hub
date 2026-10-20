@@ -1,4 +1,4 @@
-status: complete
+status: done
 change: CHG-0026-recipe-resolver
 completed:
   - read README.md and docs/index.md
@@ -13,3 +13,4 @@ completed:
   - passed just security and just docker-check
   - passed real ToolHive 0.49.0 initialize/tools/list against Docker MCP Catalog mcp/sequentialthinking at immutable digest
 remaining: []
+closeout: retroactive-triage-2026-10-20

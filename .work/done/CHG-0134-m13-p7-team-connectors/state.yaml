@@ -1,0 +1,40 @@
+schema: 1
+change: CHG-0134
+title: M13 P7 explicit team connectors
+status: done
+branch: feat/m14-toolhub-connector-platform
+updated: "2026-10-19"
+phase: closeout
+requirements: [S7.1, S7.2, S7.3, S7.4, S7.5, S7.6, S7.7, S7.8, S7.9]
+depends_on: [CHG-0128, CHG-0130, CHG-0131, CHG-0133]
+github_milestone: M13 — ToolHub Connector Platform
+github_issue: 288
+design_status: accepted
+implementation_status: contract_done
+slices:
+  S7.1-team-record: done
+  S7.2-shareable-gate: done
+  S7.3-member-bindings: done
+  S7.4-write-gating: done
+  S7.5-operator-lifecycle: done
+  S7.6-member-removal: done
+  S7.7-sender-audit: done
+  S7.8-surface: done
+  S7.9-docs-closeout: done
+validation:
+  documents: done
+  just_check: pending
+  docker_check: not_run
+  live_acceptance: not_started
+evidence:
+  - "S7.1: api.Team confirmed via capability-policy machinery; OwnerType team never matches an envelope; PutTeam enforces confirmation + monotonic revision; teams persist in snapshot and survive Load/Reload"
+  - "S7.2: Recipe.Shareable and WorkloadPolicy.Shareable — connection only for state: none, credential for per-member workloads; unknown modes fail closed at recipe and definition validation"
+  - "S7.3: member bindings resolve team-owned connections via stored-team membership; own binding/projection/audit identity; non-member and removed-member deny on the next call"
+  - "S7.4: write-effect tools filtered from member projection and lookup unless Team.AllowWrites or Team.WriteMembers names them"
+  - "S7.5: Store.ShareTeamConnection publishes deterministic team conn + cred ref; member bindings follow the connection's current revision (rotate without reconnect, in-flight calls keep their snapshot); SetConnectionStatus revoke cuts members; Store.DropTeamConnection purges member bindings + shared rows"
+  - "S7.6: RemoveBindingRecords keeps team-owned connection/credentials even on the last member's remove; per-member workload goes with the binding"
+  - "S7.7: auditFields carry sender_id (JobEnvelope transport identity), team_id, connection_id, binding_id"
+  - "S7.8: connector_list badges team connections with badge=team; ErrTeamConnectionTarget mapped to not_permitted for member lifecycle verbs"
+  - "S7.9: ADR-0051 accepted and indexed; SPEC-0023 team-connections delta; docs/operations.md team connector paragraph"
+live_deferred:
+  - "two real principals sharing one team connection on a deployed stack"

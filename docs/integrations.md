@@ -641,7 +641,7 @@ or field fails before a request.
 
 Enabling the feature writes the normalized section into the mounted Hermes
 config. On a rendered stack the call runs in the `hub-media` sidecar
-([SPEC-0040](../specs/active/SPEC-0040-media-generation-service.md)): compose
+([SPEC-0061](../specs/active/SPEC-0061-media-generation-service.md)): compose
 adds the service on the internal network with no published port,
 `HUB_MEDIA_URL`/`HUB_MEDIA_AUTH` on the runtime, and `media.auth` plus the
 `HUB_CREDENTIAL_BROKER_MEDIA_*` client env on the service. Provider

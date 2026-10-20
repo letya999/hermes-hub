@@ -1,0 +1,30 @@
+schema: 1
+change: CHG-0087
+status: done
+branch: dev
+updated: 2026-10-13
+completed:
+  - Live terminal, code execution, file, web extraction, and skill calls exercised through the current dev Docker stack.
+  - CLI nonzero exit code is preserved in the failed tool result; rebuilt ToolHub and verified exit code 7 live.
+  - Legacy supervisor source and ownership checks narrowed /scope to the workspace, with regression tests; verified live (workspace ro mount).
+  - Scheduling: once-routine fired on time, delivered SCHED marker, self-disabled, delete produced .deleted record.
+  - Memory: saved fact persisted to hermes/memories/MEMORY.md, recalled in a new session, isolated from other test user.
+  - Session search: two sessions with distinct markers; third session located the correct marker and session id.
+  - Clarification: ambiguous routine request produced a question and no action; after the answer the selected information was persisted.
+  - Approval flow live: protected-instruction write (.cursorrules/AGENTS.md) emitted approval.request; mapping carried approval_id/choices/deadline/pending; outbox carried /approve text and once/deny buttons; invalid choice, stale request id, conflicting decision and expired deadline all rejected 409; approve 'once' resumed the run and produced exactly one file; 'deny' resumed the run with zero writes; replayed approve returned saved outcome without re-execution; ownership mismatch rejected.
+  - Web search: web_search + web_extract tool calls verified in state.db; returned official go.dev/doc/go1.25 page with correct title.
+  - Browser: playwright MCP navigate/fill/click against a host test page; host-side POST oracle recorded FIELD-XQ-77 and page reported CLICKED-OK-314.
+  - Image generation: gemini image produced real PNG artifact (512x512), decoded pixel data verified red circle on white.
+  - Vision: agent called mcp__hub__image_inspect on a generated probe image and correctly reported purple background + 5 white squares.
+  - Deep research: two-source research returned one verified fact per page; both URLs 200; RFC 9110 obsoletes list and Go 1.25 container-aware GOMAXPROCS confirmed against sources.
+fixes:
+  - supervisor: consecutive uncertain outcomes + sustained degraded Hermes readiness now trigger a single owned-runtime docker restart with 3-minute bad-readiness window and 5-minute cooldown (DeletedWalGenerationError wedge auto-remediation); regression tests cover trigger/single-shot/cooldown.
+  - supervisor: default runtime --pids-limit raised 256 -> 1024 so the guest playwright MCP chromium can spawn its threads (was pthread_create EAGAIN, browser died on startup); run-args tests and operations docs updated.
+evidence:
+  - just check: all packages green under -race -shuffle; own Go statement coverage 85.18% (>=85% gate); vet/staticcheck/docs/actionlint clean.
+remaining:
+  - Record the approval-button round trip through a real chat channel when one is wired (mock channel exposes delivery + durable control path only; control dispatched operator-side identical to gateway contract).
+  - Optional: upstream restart path still does not reap the Hermes process tree (SIGINT scheduled but PID survived); wedge remediation covers it via container restart.
+notes:
+  - Web/page fetch tools correctly refuse private addresses (SSRF egress policy) — local test pages verified via the playwright browser instead; web extraction verified through public echo endpoints.
+closeout: retroactive-triage-2026-10-20
