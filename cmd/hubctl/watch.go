@@ -102,7 +102,7 @@ func (o watchOptions) fetchMapping() (string, error) {
 	}
 	var m commodel.JobMapping
 	if err := json.Unmarshal(b, &m); err != nil {
-		return "", err
+		return "", nil // torn read during a write; retry next tick
 	}
 	return m.Status, nil
 }

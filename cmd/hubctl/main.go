@@ -152,13 +152,14 @@ func run(ctx context.Context, args []string) error {
 		profile := f.String("user", "me", "person identifier")
 		spoolDir := f.String("spool", "", "communication spool")
 		stateDir := f.String("state", "", "runtime state dir (knowledge target)")
+		spaceDir := f.String("dir", "", "space directory (required by the space: section)")
 		if err := f.Parse(args[1:]); err != nil {
 			return err
 		}
 		if *file == "" || *spoolDir == "" {
 			return fmt.Errorf("apply requires -f <file> and --spool <dir>")
 		}
-		rep, err := applyFile(*spoolDir, *stateDir, *profile, *file)
+		rep, err := applyFile(*spoolDir, *stateDir, *profile, *file, *spaceDir)
 		if err != nil {
 			return err
 		}
