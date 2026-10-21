@@ -1,0 +1,27 @@
+schema: 1
+change: CHG-0153
+title: incident replay harness
+status: in_progress
+branch: feat/m17-ops-admin-delivery
+updated: 2026-10-22
+phase: design-complete
+adr: ADR-0072
+spec: SPEC-0069
+requirements: [R6.1, R6.2, R6.3]
+depends_on: []
+github_milestone: M17 — Ops, Admin & Delivery
+github_issue: 206
+design_status: accepted
+implementation_status: not_started
+slices:
+  S6.1-bundle-export: not_started
+  S6.2-isolated-run: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_needed
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining: []
+limitations: []

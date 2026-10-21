@@ -1,0 +1,27 @@
+schema: 1
+change: CHG-0152
+title: hermes-admin diagnostics principal
+status: in_progress
+branch: feat/m17-ops-admin-delivery
+updated: 2026-10-22
+phase: design-complete
+adr: ADR-0072
+spec: SPEC-0069
+requirements: [R5.1, R5.2, R5.3, R5.4]
+depends_on: []
+github_milestone: M17 — Ops, Admin & Delivery
+github_issue: 141
+design_status: accepted
+implementation_status: not_started
+slices:
+  S5.1-token-scopes: not_started
+  S5.2-admin-surface: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_needed
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining: []
+limitations: []

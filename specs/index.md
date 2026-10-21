@@ -7,6 +7,7 @@ record it points to. `archive/` holds only pre-renumbering originals.
 
 | Specification | Status |
 |---|---|
+| [SPEC-0069](active/SPEC-0069-ops-admin-delivery.md) | Frozen: usage export, space manifests, watch, image rollout pins, admin diagnostics, incident replay (M17) |
 | [SPEC-0068](active/SPEC-0068-dynamic-session-contract.md) | Frozen: bounded owner-only dynamic JSON sessions |
 | [SPEC-0067](active/SPEC-0067-recipe-oauth.md) | Frozen: recipe-driven OAuth installation |
 | [SPEC-0066](active/SPEC-0066-credential-broker-effective-contract.md) | Frozen: broker effective contract on request — extras and demote (imported from services/credential-broker) |

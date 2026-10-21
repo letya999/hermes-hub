@@ -1,0 +1,26 @@
+schema: 1
+change: CHG-0150
+title: live job watch
+status: in_progress
+branch: feat/m17-ops-admin-delivery
+updated: 2026-10-22
+phase: design-complete
+adr: ADR-0072
+spec: SPEC-0069
+requirements: [R3.1, R3.2]
+depends_on: []
+github_milestone: M17 — Ops, Admin & Delivery
+github_issue: 197
+design_status: accepted
+implementation_status: not_started
+slices:
+  S3.1-watch-loop: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_needed
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining: []
+limitations: []

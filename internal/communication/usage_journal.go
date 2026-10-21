@@ -40,6 +40,7 @@ type UsageTotals struct {
 	Jobs             int   `json:"jobs"`
 	InputTokens      int64 `json:"input_tokens"`
 	OutputTokens     int64 `json:"output_tokens"`
+	RuntimeMS        int64 `json:"runtime_ms,omitempty"`
 }
 
 func usagePath(root string) string { return filepath.Join(root, "usage.jsonl") }

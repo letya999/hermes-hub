@@ -40,7 +40,7 @@ func warmTTLFlag(f *flag.FlagSet) *time.Duration {
 
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		fmt.Println("hubctl 0.3.0: init | org-init | migrate-spaces | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | artifact | build | dev-rebuild | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | grant | governance | capability | context | memory | skill | routine | apply\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nConnector controllers: local-controller (fixed Telegram) or generic-controller (trusted artifact)\nSee README.md for account setup and private VPS access.")
+		fmt.Println("hubctl 0.3.0: init | org-init | migrate-spaces | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | artifact | build | dev-rebuild | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | grant | governance | capability | context | memory | skill | routine | apply | usage\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nConnector controllers: local-controller (fixed Telegram) or generic-controller (trusted artifact)\nSee README.md for account setup and private VPS access.")
 		return nil
 	}
 	op := args[0]
@@ -163,6 +163,20 @@ func run(ctx context.Context, args []string) error {
 			return err
 		}
 		return json.NewEncoder(os.Stdout).Encode(rep)
+	}
+	if op == "usage" {
+		f := flag.NewFlagSet("usage", flag.ContinueOnError)
+		spoolDir := f.String("spool", "", "communication spool dir holding usage.jsonl")
+		days := f.Int("days", 0, "window in days (0 = all records)")
+		actor := f.String("actor", "", "aggregate only this actor/user id")
+		model := f.String("model", "", "aggregate only this model id")
+		if err := f.Parse(args[1:]); err != nil {
+			return err
+		}
+		if *spoolDir == "" || f.NArg() != 0 {
+			return fmt.Errorf("usage requires --spool <dir> and no positional arguments")
+		}
+		return runUsage(os.Stdout, *spoolDir, time.Duration(*days)*24*time.Hour, *actor, *model)
 	}
 	if op == "spool" {
 		f := flag.NewFlagSet("spool", flag.ContinueOnError)
