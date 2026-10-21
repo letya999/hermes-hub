@@ -25,6 +25,15 @@ const (
 	// (provider, endpoint, client claims) on the connection record itself —
 	// a drift there purges stored tokens, not just the tool surface.
 	LabelCredentialRecipe = "hermes-hub.credential-recipe"
+	// LabelAcceptSurface and LabelAcceptRecipe record the digest the
+	// reconciler resolved while the connection waits for a human to accept
+	// the drift on /confirm — never re-trusted silently.
+	LabelAcceptSurface = "hermes-hub.accept-surface"
+	LabelAcceptRecipe  = "hermes-hub.accept-recipe"
+	// LabelAcceptCredential records the credential-recipe digest the
+	// reconciler resolved; fresh credentials consume it into
+	// LabelCredentialRecipe so the healed connection stops re-drifting.
+	LabelAcceptCredential = "hermes-hub.accept-credential"
 )
 
 // OwnershipLabels carries the identity of the store records a spawned

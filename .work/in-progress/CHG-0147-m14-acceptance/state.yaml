@@ -15,7 +15,7 @@ implementation_status: in_progress
 slices:
   live-inventory: in_progress
   scoped-docker-label-ops: green
-  finalizer-restart-and-reconciler: in_progress
+  finalizer-restart-and-reconciler: green
   source-ledger-and-operation-journal: not_started
   broker-and-ci-gates: not_started
   two-user-team-share: not_started
@@ -40,8 +40,9 @@ evidence:
   - The two named Telegram principals are configured, but current Notion and Grafana definitions are not team-shareable; Broker grants are binding-specific and the current team-share command does not mint them.
   - Issue 283 moved open to backlog because public HTTPS phone acceptance cannot run on localhost dev.
   - Issue 133 closed administratively as superseded by open issue 288; this does not count as shared-connector acceptance.
+  - The general reconciler is now production-real: ControlPlane.NewReconciler binds the store, scoped Docker label scan/purge (HUB_DOCKER_SCOPE), credential-backend liveness and ciphertext purge, content-addressed recipe/credential-recipe re-resolution, a remote-MCP surface probe carrying the stored credential env, and an onboarding re-arm notify; cmd/toolhub schedules ScanOnce every 30 seconds beside the removal retry loop. Drift records hermes-hub.accept-* pins; human /confirm re-pins surface and recipe drift, while credential resubmission heals reauth/dead-credential parks through rotation without minting a parallel connection. The install facade now routes every target form issue 284 names: catalog ids, prepared ids and aliases, cli specs, github-release pins, immutable repository URLs, remote MCP URLs and bare CLI names. Regression tests cover seam binding, per-seam behavior, drift accept bookkeeping, heal-without-bypass and scheduled-pass degradation; just check passes at 86.19% statement coverage.
 remaining:
   - Served ToolHub image still needs the scoped-label change deployed and exercised.
-  - General orphan/credential/surface Reconciler.ScanOnce is not scheduled; live restart-mid-remove, two-person Broker share and browser viewer acceptance remain.
-  - First principal capability profile and token need operator-reviewed alignment before two-person acceptance. General orphan/credential/surface reconciliation, live remove/restart, shared Broker grants, and browser viewer login remain unverified or unfinished.
+  - Live restart-mid-remove, two-person Broker share and browser viewer acceptance remain.
+  - First principal capability profile and token need operator-reviewed alignment before two-person acceptance. Shared Broker grants and browser viewer login remain unverified or unfinished.
 limitations: []

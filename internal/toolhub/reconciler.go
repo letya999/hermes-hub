@@ -12,7 +12,7 @@ import (
 type Reconciler struct {
 	Store     *Store
 	Scan      func(ctx context.Context, selector map[string]string) ([]api.LabeledResource, error)
-	Purge     func(ctx context.Context, kind, name string) error
+	Purge     func(ctx context.Context, kind, name string, selector map[string]string) error
 	CredAlive func(ctx context.Context, refID string) (bool, error)
 	Resolve   func(ctx context.Context, connection api.Connection) (string, error)
 	Surface   func(ctx context.Context, connection api.Connection) ([]api.ToolSpec, error)
@@ -28,25 +28,30 @@ type Reconciler struct {
 }
 
 func (r *Reconciler) ScanOnce(ctx context.Context) error {
-	objects, err := r.Scan(ctx, map[string]string{api.LabelConnection: ""})
-	if err != nil {
-		return err
-	}
-	for scanned, object := range objects {
-		if r.MaxScan > 0 && scanned >= r.MaxScan {
-			break
-		}
-		if r.Store.HasConnection(object.Labels[api.LabelConnection]) {
-			continue
-		}
-		if err := r.Purge(ctx, object.Kind, object.Name); err != nil {
+	if r.Scan != nil && r.Purge != nil {
+		objects, err := r.Scan(ctx, map[string]string{api.LabelConnection: ""})
+		if err != nil {
 			return err
+		}
+		for scanned, object := range objects {
+			if r.MaxScan > 0 && scanned >= r.MaxScan {
+				break
+			}
+			if r.Store.HasConnection(object.Labels[api.LabelConnection]) {
+				continue
+			}
+			if err := r.Purge(ctx, object.Kind, object.Name, object.Labels); err != nil {
+				return err
+			}
 		}
 	}
 	if r.CredAlive == nil {
 		return nil
 	}
 	for _, connection := range r.Store.Connections() {
+		if connection.Status != api.ActiveStatus {
+			continue
+		}
 		alive, err := r.CredAlive(ctx, connection.CredentialRefID)
 		if err != nil {
 			return err
@@ -77,8 +82,12 @@ func (r *Reconciler) ScanOnce(ctx context.Context) error {
 			if resolved == pinned {
 				continue
 			}
-			// Fail closed first: reauth stops serving before the purge runs,
-			// so a purge failure can never leave a stale credential live.
+			// Fail closed first: the observed digest is pinned before reauth
+			// stops serving, and both precede the purge — a failure can never
+			// leave a stale credential live or the drift unrecorded.
+			if err := r.Store.ObserveDrift(connection.ConnectionID, api.LabelAcceptCredential, resolved); err != nil {
+				return err
+			}
 			if connection.Status != api.ReauthStatus {
 				if err := r.Store.MarkReauth(connection.ConnectionID); err != nil {
 					return err
@@ -109,6 +118,9 @@ func (r *Reconciler) ScanOnce(ctx context.Context) error {
 			if resolved == pinned {
 				continue
 			}
+			if err := r.Store.ObserveDrift(connection.ConnectionID, api.LabelAcceptRecipe, resolved); err != nil {
+				return err
+			}
 			if err := r.Store.MarkDegraded(connection.ConnectionID); err != nil {
 				return err
 			}
@@ -132,22 +144,20 @@ func (r *Reconciler) checkSurfaces(ctx context.Context) error {
 		if connection.Status != api.ActiveStatus {
 			continue
 		}
-		pinned := ""
-		for _, binding := range r.Store.bindings {
-			if binding.ConnectionID == connection.ConnectionID && binding.Status == api.ActiveStatus && binding.ToolDigest != "" {
-				pinned = binding.ToolDigest
-				break
-			}
-		}
-		if pinned == "" {
+		binding, pinned := r.Store.pinnedBinding(connection.ConnectionID)
+		if !pinned {
 			continue
 		}
 		surface, err := r.Surface(ctx, connection)
 		if err != nil {
 			return err
 		}
-		if api.ToolSurfaceDigest(surface) == pinned {
+		observed := api.ToolSurfaceDigest(surface)
+		if observed == binding.ToolDigest {
 			continue
+		}
+		if err := r.Store.ObserveDrift(connection.ConnectionID, api.LabelAcceptSurface, observed); err != nil {
+			return err
 		}
 		if err := r.Store.MarkDegraded(connection.ConnectionID); err != nil {
 			return err

@@ -473,6 +473,129 @@ func TestScopedLabelOpsKeepProjectBoundary(t *testing.T) {
 	}
 }
 
+// The scan seam keeps the same project boundary as query/purge — a scope
+// label is added to every selector the reconciler issues, so the orphan pass
+// can never see or purge another deployment's objects.
+func TestScopedLabelScanKeepsProjectBoundary(t *testing.T) {
+	var got map[string]string
+	scan := scopedLabelScan("own-project", func(_ context.Context, selector map[string]string) ([]api.LabeledResource, error) {
+		got = selector
+		return nil, nil
+	})
+	if _, err := scan(context.Background(), map[string]string{api.LabelConnection: "", "hermes-hub.scope": "foreign-project"}); err != nil {
+		t.Fatal(err)
+	}
+	_, kept := got[api.LabelConnection]
+	if !kept || got["hermes-hub.scope"] != "own-project" {
+		t.Fatalf("project boundary lost: %v", got)
+	}
+}
+
+// #285: the Docker scope opt-in must feed the reconciler's scan seam too —
+// query/purge alone leave the orphan pass unbound in production.
+func TestEndpointBindsScopedLabelSeams(t *testing.T) {
+	store, auth, _ := seededStore(t)
+	backend := backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
+		return api.BackendResult{Text: "ok"}, nil
+	})
+	config := EndpointConfig{Token: strings.Repeat("t", 32), Auth: auth, Backend: backend}
+	handler, err := NewEndpointHandler(config, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	control := handler.(*projectionEndpoint).gateway.Control
+	if control.LabelScan != nil {
+		t.Fatal("scan seam bound without HUB_DOCKER_SCOPE")
+	}
+	t.Setenv("HUB_DOCKER_SCOPE", "own-project")
+	handler, err = NewEndpointHandler(config, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	control = handler.(*projectionEndpoint).gateway.Control
+	if control.LabelScan == nil || control.LabelQuery == nil || control.LabelPurge == nil {
+		t.Fatalf("scoped label seams not bound: scan=%v query=%v purge=%v", control.LabelScan != nil, control.LabelQuery != nil, control.LabelPurge != nil)
+	}
+}
+
+// The production surface probe replays the admitted definition for
+// non-remote transports, carries the stored credential env into the live
+// probe for remote MCP, and treats an unobservable endpoint as unknown —
+// never as drift — so one dead server cannot wedge the whole pass.
+func TestSurfaceProbeBoundSemantics(t *testing.T) {
+	store, _, _ := seededStore(t)
+	definition := remoteDefinition()
+	connection, _ := store.connectionFor("google-work")
+	called := false
+	probe := func(context.Context, api.ToolDefinition, map[string]string) ([]api.ToolSpec, error) {
+		called = true
+		return []api.ToolSpec{{Name: "live"}}, nil
+	}
+	surface := surfaceProbe(nil, store, probe)
+	container := statefulContainerDefinition()
+	tools, err := surface(context.Background(), connection, container)
+	if err != nil || called {
+		t.Fatalf("non-remote transport probed live: called=%v err=%v", called, err)
+	}
+	if len(tools) != len(container.Tools) {
+		t.Fatal("non-remote transport did not replay the definition surface")
+	}
+	tools, err = surface(context.Background(), connection, definition)
+	if err != nil || len(tools) != 1 || tools[0].Name != "live" {
+		t.Fatalf("remote probe skipped: tools=%v err=%v", tools, err)
+	}
+	var gotEnv map[string]string
+	secrets, err := credstore.Open(credstore.Options{Path: filepath.Join(t.TempDir(), "secrets.json"), Key: make([]byte, 32)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, _ := store.credentialFor(connection.CredentialRefID)
+	live := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: api.CredentialReferenceID("google-work", 2), ConnectionID: "google-work", Revision: 2, Backend: "local", Keys: []string{"GOOGLE_TOKEN"}, Status: api.ActiveStatus}
+	locator, err := secrets.NewLocator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	live.Locator = locator
+	if err := secrets.Put(locator, "alice", map[string]string{"GOOGLE_TOKEN": "sekrit"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutCredentialReference(live); err != nil {
+		t.Fatal(err)
+	}
+	_ = ref
+	surface = surfaceProbe(secrets, store, func(_ context.Context, _ api.ToolDefinition, env map[string]string) ([]api.ToolSpec, error) {
+		gotEnv = env
+		return nil, errors.New("endpoint down")
+	})
+	connection.CredentialRefID = live.CredentialRefID
+	tools, err = surface(context.Background(), connection, definition)
+	if err != nil {
+		t.Fatalf("probe failure must not wedge the pass: %v", err)
+	}
+	if gotEnv["GOOGLE_TOKEN"] != "sekrit" {
+		t.Fatalf("stored credential env not passed to probe: %v", gotEnv)
+	}
+	if len(tools) != len(definition.Tools) {
+		t.Fatal("probe failure reported drift instead of the admitted surface")
+	}
+}
+
+// The endpoint hands the reconciler a live surface seam: without it the
+// rug-pull check silently skips in production.
+func TestEndpointBindsSurfaceProbe(t *testing.T) {
+	store, auth, _ := seededStore(t)
+	backend := backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
+		return api.BackendResult{Text: "ok"}, nil
+	})
+	handler, err := NewEndpointHandler(EndpointConfig{Token: strings.Repeat("t", 32), Auth: auth, Backend: backend}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if handler.(*projectionEndpoint).gateway.Control.SurfaceProbe == nil {
+		t.Fatal("surface probe seam not bound")
+	}
+}
+
 func assertRequiredCredentialsElicitsFormURL(t *testing.T, store *Store, auth identity.Envelope, onboardingID, wantURL string) {
 	t.Helper()
 	control := &ControlPlane{Store: store, Listen: "127.0.0.1:8090"}

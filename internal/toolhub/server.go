@@ -55,6 +55,47 @@ func scopedLabelOps(project string, query func(context.Context, map[string]strin
 		}
 }
 
+// scopedLabelScan pins the full-label scan to this deployment's scope the
+// same way scopedLabelOps pins query and purge — the reconciler's orphan
+// pass only ever sees objects this deployment labelled.
+func scopedLabelScan(project string, scan func(context.Context, map[string]string) ([]api.LabeledResource, error)) func(context.Context, map[string]string) ([]api.LabeledResource, error) {
+	return func(ctx context.Context, selector map[string]string) ([]api.LabeledResource, error) {
+		scoped := map[string]string{}
+		for key, value := range selector {
+			scoped[key] = value
+		}
+		scoped["hermes-hub.scope"] = project
+		return scan(ctx, scoped)
+	}
+}
+
+// surfaceProbe is the production live-surface seam: remote MCP connections
+// are re-listed through the SSRF-guarded probe carrying the stored
+// credential env; every other transport replays the admitted definition
+// surface — the drift pin was minted from it, so a definition rewrite still
+// trips the check and an unobservable endpoint skips rather than wedging
+// the pass.
+func surfaceProbe(secrets credstore.Backend, store *Store, probe func(context.Context, api.ToolDefinition, map[string]string) ([]api.ToolSpec, error)) func(context.Context, api.Connection, api.ToolDefinition) ([]api.ToolSpec, error) {
+	return func(ctx context.Context, connection api.Connection, definition api.ToolDefinition) ([]api.ToolSpec, error) {
+		if definition.Transport != api.RemoteMCP {
+			return definition.Tools, nil
+		}
+		var env map[string]string
+		if secrets != nil && connection.CredentialRefID != "" {
+			if ref, ok := store.credentialFor(connection.CredentialRefID); ok && ref.Locator != "" {
+				if values, err := secrets.Get(ref.Locator, store.credentialOwner(connection.ConnectionID)); err == nil {
+					env = values
+				}
+			}
+		}
+		tools, err := probe(ctx, definition, env)
+		if err != nil {
+			return definition.Tools, nil
+		}
+		return tools, nil
+	}
+}
+
 // wrapKeepRelease adapts the controller releaser to the backend's keep-state
 // release hook: backend probe cleanup never purges state volumes.
 func wrapKeepRelease(release func(context.Context, api.ControllerRelease) error) func(context.Context, string) error {
@@ -245,6 +286,7 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 	control := &ControlPlane{Store: store, Secrets: secrets, Listen: config.Listen, WorkloadRoot: api.EnvOr("HUB_STATE", ""), DiagnosticsDir: api.EnvOr("HUB_DIAGNOSTICS_DIR", ""), Broker: config.BrokerControl, BrokerRuntime: config.BrokerRuntime, RecipeCatalogs: config.RecipeCatalogs, Release: config.Release, CLIRelease: config.CLIRelease}
 	if project := os.Getenv("HUB_DOCKER_SCOPE"); project != "" {
 		control.LabelQuery, control.LabelPurge = scopedLabelOps(project, api.DockerLabelQuery, api.DockerLabelPurge)
+		control.LabelScan = scopedLabelScan(project, api.DockerLabelScan)
 	}
 	if ready := readinessBackend(config.Backend); ready != nil {
 		control.Ready = func(ctx context.Context, effective api.EffectiveBinding) (readyErr error) {
@@ -291,6 +333,13 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 		}
 		return api.AdmitWithSubmittedCredentials(ctx, artifacts, definition, secrets)
 	}
+	control.SurfaceProbe = surfaceProbe(secrets, store, func(ctx context.Context, definition api.ToolDefinition, env map[string]string) ([]api.ToolSpec, error) {
+		probe, err := api.ProbeRemoteMCP(ctx, definition, env)
+		if err != nil {
+			return nil, err
+		}
+		return probe.Tools, nil
+	})
 	control.OAuth = oauth.NewBroker(secrets, []string{control.origin() + "/oauth/callback"})
 	gateway.OAuthRefresh = remoteOAuthRefresh(secrets, control.OAuth, store)
 	control.Injector = gateway.Injector
@@ -345,6 +394,13 @@ type projectionEndpoint struct {
 
 func (e *projectionEndpoint) ResumeRemovals(ctx context.Context) error {
 	return e.gateway.Control.ResumeRemovals(ctx)
+}
+
+// Reconcile runs one convergence pass: orphan purge, credential liveness,
+// recipe/credential-recipe drift and the live surface check — the single
+// production reconciler #285 schedules beside the removal retry loop.
+func (e *projectionEndpoint) Reconcile(ctx context.Context) error {
+	return e.gateway.Control.NewReconciler().ScanOnce(ctx)
 }
 
 // PublicHandler is the opt-in public listener surface — only human-action

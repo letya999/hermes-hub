@@ -37,6 +37,29 @@ func (s *Store) userPublicationOwner(id, version string) (string, bool) {
 	return pub.OwnerPrincipalID, true
 }
 
+// credentialOwner names the principal a connection's credential ciphertext
+// is stored under.
+func (s *Store) credentialOwner(connectionID string) string {
+	if connection, ok := s.connectionFor(connectionID); ok {
+		return connection.Owner.ID
+	}
+	return ""
+}
+
+// onboardingForConnection finds the onboarding that materialized the given
+// connection — the record a reconcile notice re-arms so the channel link
+// lands on a live step.
+func (s *Store) onboardingForConnection(connectionID string) (api.Onboarding, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, onboarding := range s.onboardings {
+		if onboarding.ConnectionID == connectionID {
+			return onboarding, true
+		}
+	}
+	return api.Onboarding{}, false
+}
+
 func (s *Store) onboarding(id string) (api.Onboarding, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

@@ -135,6 +135,74 @@ func TestRunRetriesConfirmedRemovalAfterBrokerRecovers(t *testing.T) {
 	t.Fatal("removal did not retry after Broker recovery")
 }
 
+// #285: the single reconciler runs in production, not just tests — a
+// connection whose credential ciphertext vanished from the backend must be
+// demoted by the scheduled pass without any remove being in flight.
+func TestRunSchedulesReconcilerPass(t *testing.T) {
+	oldInterval := reconcileInterval
+	reconcileInterval = 10 * time.Millisecond
+	defer func() { reconcileInterval = oldInterval }()
+	path := filepath.Join(t.TempDir(), "store.json")
+	store := toolhub.NewStore()
+	definition := api.ToolDefinition{
+		Schema: api.SchemaVersion, DefinitionID: "google-work", Version: "1.0.0", Transport: api.RemoteMCP,
+		Source:      api.DefinitionSource{URL: "https://mcp.example.com/mcp", TLSMode: "required"},
+		Credentials: []api.CredentialInput{{Name: "GOOGLE_TOKEN", Required: true, Delivery: "http_header", Target: "Authorization", Prefix: "Bearer "}},
+		Tools:       []api.ToolSpec{{Name: "search", Effect: api.ReadEffect}},
+		Workload:    api.WorkloadPolicy{Class: api.PerUser, Rationale: "owner-scoped remote endpoint"},
+		Execution:   api.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 1 << 20, CPUMillis: 250, MemoryMiB: 64, MaxPIDs: 8, Egress: []string{"mcp.example.com"}},
+		Health:      api.HealthProbe{Kind: "http", Value: "/", TimeoutSeconds: 5},
+	}
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	credential := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: api.CredentialReferenceID("google-work", 1), ConnectionID: "google-work", Revision: 1, Backend: "local", Locator: "loc-missing", Keys: []string{"GOOGLE_TOKEN"}, Status: api.ActiveStatus}
+	if err := store.PutCredentialReference(credential); err != nil {
+		t.Fatal(err)
+	}
+	connection := api.Connection{Schema: api.SchemaVersion, ConnectionID: "google-work", Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: "alice"}, DefinitionID: definition.DefinitionID, CredentialRefID: credential.CredentialRefID, Revision: 1, Status: api.ActiveStatus}
+	if err := store.PutConnection(connection); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	keyFile := filepath.Join(t.TempDir(), "cred.key")
+	if err := os.WriteFile(keyFile, make([]byte, 32), 0600); err != nil {
+		t.Fatal(err)
+	}
+	secretsPath := filepath.Join(t.TempDir(), "secrets.json")
+	t.Setenv("HUB_TOOLHUB_STORE", path)
+	t.Setenv("HUB_CREDENTIAL_STORE", secretsPath)
+	t.Setenv("HUB_CREDENTIAL_KEY_FILE", keyFile)
+	t.Setenv("HUB_RUNTIME_AUTH", strings.Repeat("a", 32))
+	t.Setenv("HUB_USER_ID", "alice")
+	t.Setenv("HUB_RUNTIME_ID", "runtime")
+	t.Setenv("HUB_CONTEXT_ID", "alice")
+	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:0")
+	t.Setenv("HUB_TOOLHIVE_ADMISSION_ENDPOINT", "")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- runWithContext(ctx) }()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		reloaded, err := toolhub.Load(path)
+		if err == nil {
+			connections := reloaded.Connections()
+			if len(connections) == 1 && connections[0].Status == api.DegradedStatus {
+				cancel()
+				if err := <-done; err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("scheduled reconciler did not degrade the dead-credential connection")
+}
+
 func TestRemovalRetryLoopStopsWithContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

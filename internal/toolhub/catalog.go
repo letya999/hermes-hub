@@ -430,6 +430,41 @@ func (s *Store) matchingOwnerConnectionsLocked(auth identity.Envelope, definitio
 	return matches
 }
 
+// matchingOwnerConnectionsHealableLocked additionally admits connections
+// parked in reauth or degraded without a pending drift-accept pin: a
+// resubmitted credential rotates them back to life instead of minting a
+// parallel connection. s.mu must be held.
+func (s *Store) matchingOwnerConnectionsHealableLocked(auth identity.Envelope, definition api.ToolDefinition) []ownerConnectionMatch {
+	matches := make([]ownerConnectionMatch, 0)
+	for _, candidate := range s.connections {
+		if candidate.DefinitionID != definition.DefinitionID || candidate.CredentialRefID == "" {
+			continue
+		}
+		healable := candidate.Status == api.ReauthStatus || candidate.Status == api.DegradedStatus
+		if candidate.Status != api.ActiveStatus && !healable {
+			continue
+		}
+		if !candidate.Owner.Matches(auth) && !s.sharedConnectionCoversLocked(auth, candidate) && !s.teamConnectionCoversLocked(auth, candidate) {
+			continue
+		}
+		reference, found := s.credentials[candidate.CredentialRefID]
+		if !found || reference.ConnectionID != candidate.ConnectionID {
+			continue
+		}
+		if candidate.Status == api.ActiveStatus && reference.Status != api.ActiveStatus {
+			continue
+		}
+		keys := map[string]bool{}
+		for _, key := range reference.Keys {
+			keys[key] = true
+		}
+		if definition.CredentialsSatisfied(func(name string) bool { return keys[name] }) {
+			matches = append(matches, ownerConnectionMatch{connection: candidate, credential: reference})
+		}
+	}
+	return matches
+}
+
 // Disable marks an effective binding disabled; it does not delete historical
 // ownership or credential metadata.
 func (s *Store) Disable(auth identity.Envelope, definitionID, version string) error {

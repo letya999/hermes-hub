@@ -57,3 +57,11 @@ query/purge with both project and connection checks. Confirmed removals resume
 at startup and retry every 30 seconds, including a crash before the finalizer
 list was recorded. The general orphan/credential/surface reconciler still
 needs production scheduling and live acceptance (CHG-0147).
+
+Implementation note (2026-10-21, reconciler wiring): `ControlPlane.NewReconciler`
+binds the store, scoped Docker label scan/purge, credential-backend liveness and
+purge, content-addressed recipe/credential-recipe re-resolution, the remote-MCP
+surface probe and onboarding re-arm notify; `cmd/toolhub` schedules one pass
+every 30 seconds beside the removal retry loop. Drifted connections record an
+accept pin under `hermes-hub.accept-*`; a human /confirm re-pins it, while
+credential resubmission heals reauth and dead-credential parks through rotation.

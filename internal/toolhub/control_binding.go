@@ -473,7 +473,7 @@ func (c *ControlPlane) materializeBinding(ctx context.Context, auth identity.Env
 	// Store.Enable correctly reject the ambiguous owner, so rotate the
 	// existing connection instead.
 	c.Store.mu.RLock()
-	matches := c.Store.matchingOwnerConnectionsLocked(auth, definition)
+	matches := c.Store.matchingOwnerConnectionsHealableLocked(auth, definition)
 	c.Store.mu.RUnlock()
 	if len(matches) > 1 {
 		return api.ToolBinding{}, fmt.Errorf("%w: ambiguous owner connection", api.ErrUnauthorized)
@@ -693,6 +693,17 @@ func (c *ControlPlane) finishAuthorization(ctx context.Context, onboardingID str
 	}
 	if body["phase"] == api.PhaseAwaitingOAuth {
 		return nil
+	}
+	// A drift-parked connection owes the human's re-pin before enable: the
+	// just-consumed confirm nonce is the acceptance, so apply the observed
+	// digests the reconciler recorded and return the connection to service.
+	if onboarding.ConnectionID != "" {
+		if connection, ok := c.Store.connectionFor(onboarding.ConnectionID); ok && connection.Status == api.DegradedStatus &&
+			(connection.Metadata[api.LabelAcceptSurface] != "" || connection.Metadata[api.LabelAcceptRecipe] != "") {
+			if err := c.Store.AcceptConnectionDrift(onboarding.ConnectionID); err != nil {
+				return err
+			}
+		}
 	}
 	if _, err = c.enable(ctx, auth, map[string]any{"onboarding_id": onboardingID}); err != nil {
 		return err

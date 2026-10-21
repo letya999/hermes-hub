@@ -58,7 +58,7 @@ func (c *ControlPlane) connectorInstall(ctx context.Context, auth identity.Envel
 	op, exists := c.Store.OperationForRequestKey(auth, api.OpIntentInstall, target)
 	if !exists {
 		op = c.newConnectorOperation(auth, api.OpIntentInstall, target, connectorInstallSteps)
-		body, err := c.prepareInstallTarget(ctx, auth, target, strings.TrimSpace(api.ArgString(args, "version")), key)
+		body, err := c.prepareInstallTarget(ctx, auth, target, strings.TrimSpace(api.ArgString(args, "version")), key, args)
 		if err != nil {
 			// The pipeline may have created the durable preparing record before
 			// failing — the operation keeps pointing at it for status/resume.
@@ -378,9 +378,11 @@ func (c *ControlPlane) applyConfirmedWrites(ctx context.Context, onboardingID st
 // prepareInstallTarget infers the connector kind from the target itself —
 // the agent never picks between definition_id/source/remote_url. A
 // registered catalog definition goes to the catalog path; a prepared id or
-// alias resolves to its reviewed pinned source and runs the self-install
-// pipeline.
-func (c *ControlPlane) prepareInstallTarget(ctx context.Context, auth identity.Envelope, target, version, requestKey string) (map[string]any, error) {
+// alias resolves to its reviewed pinned source; a github-release:/package
+// pin, a cli spec object, a bare allowlisted name, an immutable repository
+// URL and a remote MCP URL each route to their own pipeline — every one of
+// them failing closed with a typed error rather than a bare not-found.
+func (c *ControlPlane) prepareInstallTarget(ctx context.Context, auth identity.Envelope, target, version, requestKey string, args map[string]any) (map[string]any, error) {
 	if definition, err := c.Store.Definition(target, version); err == nil {
 		return c.prepareCatalog(ctx, auth, definition.DefinitionID, definition.Version, requestKey)
 	}
@@ -402,5 +404,42 @@ func (c *ControlPlane) prepareInstallTarget(ctx context.Context, auth identity.E
 		}
 		return c.prepareSelfInstallAsync(ctx, auth, source, requestKey, nil, false, "")
 	}
+	for _, prefix := range []string{"github-release:", "pypi:", "uvx:", "npm:", "npx:"} {
+		if strings.HasPrefix(target, prefix) {
+			return c.prepareCLI(ctx, auth, cliSpecForTarget(args, map[string]any{"source": target}), requestKey)
+		}
+	}
+	if raw, ok := args["cli"].(map[string]any); ok {
+		spec := map[string]any{"name": target}
+		for key, value := range raw {
+			spec[key] = value
+		}
+		return c.prepareCLI(ctx, auth, spec, requestKey)
+	}
+	if strings.HasPrefix(target, "https://") || strings.HasPrefix(target, "http://") {
+		if _, err := api.ParseGitHubSource(target); err == nil {
+			return c.prepareSelfInstallAsync(ctx, auth, target, requestKey, nil, false, "")
+		}
+		return c.prepareRemote(ctx, auth, target, args)
+	}
+	if identity.ValidID(target) {
+		return c.prepareCLI(ctx, auth, cliSpecForTarget(args, map[string]any{"name": target, "command": target}), requestKey)
+	}
 	return nil, fmt.Errorf("%w: connector target %s", api.ErrNotFound, target)
+}
+
+// cliSpecForTarget merges the caller's optional "cli" object over the target's
+// inferred defaults — an explicit spec carries asset/binary/tools fields the
+// target string alone cannot express.
+func cliSpecForTarget(args map[string]any, defaults map[string]any) map[string]any {
+	spec := make(map[string]any, len(defaults)+4)
+	for key, value := range defaults {
+		spec[key] = value
+	}
+	if raw, ok := args["cli"].(map[string]any); ok {
+		for key, value := range raw {
+			spec[key] = value
+		}
+	}
+	return spec
 }

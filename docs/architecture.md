@@ -114,8 +114,11 @@ workspace and a zero-resource check. The served endpoint scopes Docker
 queries to the stack project and connection; purge rechecks both labels on
 the object. Confirmed incomplete removals resume at ToolHub startup and
 retry every 30 seconds. Recipe images remain shared and are excluded from
-connection removal receipts. The broader orphan and credential-drift reconciler
-is still awaiting production scheduling (CHG-0147).
+connection removal receipts. The same 30-second cadence runs the single
+reconciler pass: scoped label scans purge orphans whose owner connection is
+gone, dead credential ciphertext degrades the connection, and recipe,
+credential-recipe and live-surface drift park it until a human /confirm
+re-pins the observed digest (CHG-0147).
 
 ## Jobs, runs and events
 

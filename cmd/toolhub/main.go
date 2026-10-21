@@ -19,6 +19,7 @@ import (
 )
 
 var removalRetryInterval = 30 * time.Second
+var reconcileInterval = 30 * time.Second
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.LUTC)
@@ -83,6 +84,8 @@ func runWithContext(ctx context.Context) error {
 	// A transient startup failure is retried and reported by the periodic loop.
 	_ = remover.ResumeRemovals(ctx)
 	go removalRetryLoop(ctx, removalRetryInterval, remover.ResumeRemovals)
+	reconciler := handler.(interface{ Reconcile(context.Context) error })
+	go removalRetryLoop(ctx, reconcileInterval, reconciler.Reconcile)
 	if dir := os.Getenv("HUB_DIAGNOSTICS_DIR"); dir != "" {
 		scope := diagnostics.Scope{
 			Project:  os.Getenv("HUB_DIAGNOSTICS_PROJECT"),

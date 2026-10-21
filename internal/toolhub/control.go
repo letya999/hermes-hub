@@ -56,6 +56,15 @@ type ControlPlane struct {
 	// finalizers sweep leftovers through it. Nil skips the sweep — the
 	// controller's own release path already removed them.
 	LabelPurge func(context.Context, string, string, map[string]string) error
+	// LabelScan lists hub-labelled Docker objects with their full label
+	// sets — the production Scan seam the reconciler's orphan pass diffs
+	// against the store. Nil leaves orphan detection unwired.
+	LabelScan func(context.Context, map[string]string) ([]api.LabeledResource, error)
+	// SurfaceProbe re-lists a live connection's tool surface — a workload
+	// tools/list or remote re-probe — for the reconciler's rug-pull check.
+	// Nil falls back to the recorded definition surface, which still
+	// detects pin-versus-definition drift but cannot see a live workload.
+	SurfaceProbe func(context.Context, api.Connection, api.ToolDefinition) ([]api.ToolSpec, error)
 	// PrepareSyncWindow bounds how long prepare_source waits for review+build
 	// before returning the durable "preparing" record; the work then continues
 	// on a detached context and its result is read via status. Zero uses the

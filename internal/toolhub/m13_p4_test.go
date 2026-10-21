@@ -495,7 +495,7 @@ func TestReconcilerPurgesOrphans(t *testing.T) {
 			}
 			return out, nil
 		},
-		Purge: func(_ context.Context, kind, name string) error {
+		Purge: func(_ context.Context, kind, name string, _ map[string]string) error {
 			purged = append(purged, kind+"/"+name)
 			kept := universe[:0]
 			for _, res := range universe {
@@ -527,7 +527,7 @@ func TestReconcilerDegradesMissingCredential(t *testing.T) {
 	r := &Reconciler{
 		Store:     store,
 		Scan:      func(context.Context, map[string]string) ([]api.LabeledResource, error) { return nil, nil },
-		Purge:     func(context.Context, string, string) error { return nil },
+		Purge:     func(context.Context, string, string, map[string]string) error { return nil },
 		CredAlive: func(context.Context, string) (bool, error) { return false, nil },
 		Notify: func(_ context.Context, principal, kind string, _ map[string]any) error {
 			notices = append(notices, kind+":"+principal)
@@ -565,7 +565,7 @@ func TestReconcilerRecipeDrift(t *testing.T) {
 	r := &Reconciler{
 		Store:     store,
 		Scan:      func(context.Context, map[string]string) ([]api.LabeledResource, error) { return nil, nil },
-		Purge:     func(context.Context, string, string) error { return nil },
+		Purge:     func(context.Context, string, string, map[string]string) error { return nil },
 		CredAlive: func(context.Context, string) (bool, error) { return true, nil },
 		Resolve:   func(context.Context, api.Connection) (string, error) { return "sha256:drifted", nil },
 		Notify: func(_ context.Context, principal, kind string, _ map[string]any) error {
@@ -604,7 +604,7 @@ func TestReconcilerCredentialDriftReauths(t *testing.T) {
 	r := &Reconciler{
 		Store:       store,
 		Scan:        func(context.Context, map[string]string) ([]api.LabeledResource, error) { return nil, nil },
-		Purge:       func(context.Context, string, string) error { return nil },
+		Purge:       func(context.Context, string, string, map[string]string) error { return nil },
 		CredAlive:   func(context.Context, string) (bool, error) { return true, nil },
 		CredResolve: func(context.Context, api.Connection) (string, error) { return "sha256:cred-drifted", nil },
 		CredPurge: func(_ context.Context, conn api.Connection, ref api.CredentialReference) error {
@@ -735,7 +735,7 @@ func TestReconcilerMaxScanBoundsPass(t *testing.T) {
 				{Kind: "container", Name: "b", Labels: map[string]string{api.LabelConnection: "gone"}},
 			}, nil
 		},
-		Purge: func(context.Context, string, string) error { purged++; return nil },
+		Purge: func(context.Context, string, string, map[string]string) error { purged++; return nil },
 	}
 	if err := r.ScanOnce(context.Background()); err != nil {
 		t.Fatal(err)
@@ -866,7 +866,7 @@ func TestToolSurfaceDriftDegrades(t *testing.T) {
 	r := &Reconciler{
 		Store:     store,
 		Scan:      func(context.Context, map[string]string) ([]api.LabeledResource, error) { return nil, nil },
-		Purge:     func(context.Context, string, string) error { return nil },
+		Purge:     func(context.Context, string, string, map[string]string) error { return nil },
 		CredAlive: func(context.Context, string) (bool, error) { return true, nil },
 		Surface:   func(context.Context, api.Connection) ([]api.ToolSpec, error) { return drifted, nil },
 		Notify: func(_ context.Context, principal, kind string, _ map[string]any) error {

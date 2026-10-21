@@ -404,9 +404,9 @@ func (s *Store) RotateCredential(connectionID, backend, locator string, keys []s
 		s.mu.Unlock()
 		return api.CredentialReference{}, fmt.Errorf("%w: connection", api.ErrNotFound)
 	}
-	if connection.Status != api.ActiveStatus {
+	if err := rotatableConnectionLocked(connection); err != nil {
 		s.mu.Unlock()
-		return api.CredentialReference{}, fmt.Errorf("%w: connection is not active", api.ErrRevoked)
+		return api.CredentialReference{}, err
 	}
 	next := connection.Revision + 1
 	reference := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: api.CredentialReferenceID(connectionID, next), ConnectionID: connectionID, Revision: next, Backend: backend, Locator: locator, Keys: append([]string(nil), keys...), Status: api.ActiveStatus}
@@ -424,9 +424,9 @@ func (s *Store) RotateCredentialRecord(reference api.CredentialReference) (api.C
 		s.mu.Unlock()
 		return api.CredentialReference{}, fmt.Errorf("%w: connection", api.ErrNotFound)
 	}
-	if connection.Status != api.ActiveStatus {
+	if err := rotatableConnectionLocked(connection); err != nil {
 		s.mu.Unlock()
-		return api.CredentialReference{}, fmt.Errorf("%w: connection is not active", api.ErrRevoked)
+		return api.CredentialReference{}, err
 	}
 	next := connection.Revision + 1
 	if reference.Revision != next || reference.CredentialRefID != api.CredentialReferenceID(reference.ConnectionID, next) {
@@ -451,6 +451,17 @@ func (s *Store) rotateCredentialLocked(connection api.Connection, reference api.
 	s.credentials[reference.CredentialRefID] = reference
 	connection.CredentialRefID = reference.CredentialRefID
 	connection.Revision = reference.Revision
+	// Fresh credentials are the heal for a parked connection: reauth and a
+	// dead-credential degrade return to service, and the credential-recipe
+	// drift the reconciler observed becomes the new pin — the owner
+	// accepting by resubmission is what makes the new contract authoritative.
+	if connection.Status == api.ReauthStatus || connection.Status == api.DegradedStatus {
+		connection.Status = api.ActiveStatus
+	}
+	if observed := connection.Metadata[api.LabelAcceptCredential]; observed != "" {
+		connection.Metadata[api.LabelCredentialRecipe] = observed
+		delete(connection.Metadata, api.LabelAcceptCredential)
+	}
 	s.connections[connection.ConnectionID] = connection
 	s.noteConnectionStatusLocked(connection)
 	for id, binding := range s.bindings {
@@ -500,6 +511,18 @@ func (s *Store) SetConnectionStatus(connectionID string, status api.Status) erro
 		return err
 	}
 	return stopErr
+}
+
+// rotatableConnectionLocked decides whether a connection may accept a
+// credential rotation. s.mu must be held.
+func rotatableConnectionLocked(connection api.Connection) error {
+	if connection.Status != api.ActiveStatus && connection.Status != api.ReauthStatus && connection.Status != api.DegradedStatus {
+		return fmt.Errorf("%w: connection is not active", api.ErrRevoked)
+	}
+	if connection.Status != api.ActiveStatus && (connection.Metadata[api.LabelAcceptSurface] != "" || connection.Metadata[api.LabelAcceptRecipe] != "") {
+		return fmt.Errorf("%w: drift accept pending human confirm", api.ErrRevoked)
+	}
+	return nil
 }
 
 // setMigrateRequest records a pending broker migration request on a live
@@ -581,6 +604,87 @@ func (s *Store) MarkDegraded(connectionID string) error {
 		return err
 	}
 	return stopErr
+}
+
+// ObserveDrift records a drift the reconciler resolved under an accept key;
+// the connection stays parked until a human /confirm re-pins it or fresh
+// credentials consume the credential pin.
+func (s *Store) ObserveDrift(connectionID, label, value string) error {
+	s.mu.Lock()
+	connection, ok := s.connections[connectionID]
+	if !ok {
+		s.mu.Unlock()
+		return fmt.Errorf("%w: connection", api.ErrNotFound)
+	}
+	if connection.Metadata == nil {
+		connection.Metadata = map[string]string{}
+	}
+	connection.Metadata[label] = value
+	s.connections[connectionID] = connection
+	s.mu.Unlock()
+	return s.persistAndNotify()
+}
+
+// AcceptConnectionDrift applies the human-confirmed accept pins: the observed
+// digests become the new trust pins and the drift-parked connection returns
+// to service.
+func (s *Store) AcceptConnectionDrift(connectionID string) error {
+	s.mu.Lock()
+	connection, ok := s.connections[connectionID]
+	if !ok {
+		s.mu.Unlock()
+		return fmt.Errorf("%w: connection", api.ErrNotFound)
+	}
+	if connection.Status != api.DegradedStatus {
+		s.mu.Unlock()
+		return fmt.Errorf("%w: no drift pending on connection", api.ErrInvalid)
+	}
+	if observed := connection.Metadata[api.LabelAcceptSurface]; observed != "" {
+		for id, binding := range s.bindings {
+			if binding.ConnectionID != connectionID || binding.Status != api.ActiveStatus {
+				continue
+			}
+			binding.ToolDigest = observed
+			binding.Revision++
+			s.touchProjectionLocked(&binding)
+			s.bindings[id] = binding
+		}
+		delete(connection.Metadata, api.LabelAcceptSurface)
+	}
+	if observed := connection.Metadata[api.LabelAcceptRecipe]; observed != "" {
+		connection.Metadata[api.LabelRecipe] = observed
+		delete(connection.Metadata, api.LabelAcceptRecipe)
+	}
+	connection.Status = api.ActiveStatus
+	connection.Revision++
+	s.connections[connectionID] = connection
+	s.noteConnectionStatusLocked(connection)
+	for id, binding := range s.bindings {
+		if binding.ConnectionID == connectionID {
+			s.touchProjectionLocked(&binding)
+			s.bindings[id] = binding
+		}
+	}
+	stopped := s.stopAffectedLocked(connectionID)
+	s.mu.Unlock()
+	stopErr := s.stopWorkloads(stopped)
+	if err := s.persistAndNotify(); err != nil {
+		return err
+	}
+	return stopErr
+}
+
+// pinnedBinding returns the live binding that carries a connection's tool
+// surface pin — the digest the reconciler checks drift against.
+func (s *Store) pinnedBinding(connectionID string) (api.ToolBinding, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, binding := range s.bindings {
+		if binding.ConnectionID == connectionID && binding.Status == api.ActiveStatus && binding.ToolDigest != "" {
+			return binding, true
+		}
+	}
+	return api.ToolBinding{}, false
 }
 
 func (s *Store) SetTerminalExposure(connectionID string, enabled bool) error {
