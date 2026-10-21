@@ -40,7 +40,7 @@ func warmTTLFlag(f *flag.FlagSet) *time.Duration {
 
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		fmt.Println("hubctl 0.3.0: init | org-init | migrate-spaces | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | artifact | build | dev-rebuild | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | grant | governance | capability | context | memory | skill | routine | apply | usage\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nConnector controllers: local-controller (fixed Telegram) or generic-controller (trusted artifact)\nSee README.md for account setup and private VPS access.")
+		fmt.Println("hubctl 0.3.0: init | org-init | migrate-spaces | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | artifact | build | dev-rebuild | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | grant | governance | capability | context | memory | skill | routine | apply | usage | watch\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nConnector controllers: local-controller (fixed Telegram) or generic-controller (trusted artifact)\nSee README.md for account setup and private VPS access.")
 		return nil
 	}
 	op := args[0]
@@ -177,6 +177,26 @@ func run(ctx context.Context, args []string) error {
 			return fmt.Errorf("usage requires --spool <dir> and no positional arguments")
 		}
 		return runUsage(os.Stdout, *spoolDir, time.Duration(*days)*24*time.Hour, *actor, *model)
+	}
+	if op == "watch" {
+		f := flag.NewFlagSet("watch", flag.ContinueOnError)
+		job := f.String("job", "", "job id to watch to terminal")
+		scope := f.String("scope", "", "user scope to watch (runtime transitions)")
+		spoolDir := f.String("spool", "", "communication spool dir (durable mapping source)")
+		supervisorURL := f.String("supervisor-url", "", "supervisor HTTP base URL")
+		supervisorAuth := f.String("supervisor-auth", "", "supervisor bearer token")
+		interval := f.Duration("interval", time.Second, "poll interval")
+		if err := f.Parse(args[1:]); err != nil {
+			return err
+		}
+		if (*job == "") == (*scope == "") || f.NArg() != 0 || (*spoolDir == "" && *supervisorURL == "") {
+			return fmt.Errorf("usage: hubctl watch (--job <id> | --scope <user>) (--spool <dir> | --supervisor-url <url> [--supervisor-auth <tok>])")
+		}
+		return runWatch(ctx, os.Stdout, watchOptions{
+			Job: *job, Scope: *scope, SpoolDir: *spoolDir,
+			SupervisorURL: *supervisorURL, SupervisorAuth: *supervisorAuth,
+			Interval: *interval, Client: http.DefaultClient,
+		})
 	}
 	if op == "spool" {
 		f := flag.NewFlagSet("spool", flag.ContinueOnError)
