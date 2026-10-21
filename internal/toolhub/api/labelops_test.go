@@ -29,7 +29,7 @@ func TestDockerLabelOpsQueryAndPurgeProof(t *testing.T) {
 		if strings.HasSuffix(args[len(args)-1], "foreign") {
 			return []byte(`{"app":"other"}`), nil
 		}
-		return []byte(`{"hermes-hub.connection":"conn-1"}`), nil
+		return []byte(`{"hermes-hub.connection":"conn-1","hermes-hub.scope":"own-project"}`), nil
 	}
 	found, err := dockerLabelQuery(context.Background(), run, map[string]string{LabelConnection: "conn-1"})
 	if err != nil {
@@ -49,13 +49,26 @@ func TestDockerLabelOpsQueryAndPurgeProof(t *testing.T) {
 	if !sawFilter {
 		t.Fatalf("no label filter in argv: %v", argv)
 	}
-	if err := dockerLabelPurge(context.Background(), run, "volume", "v-1"); err != nil {
+	selector := map[string]string{"hermes-hub.scope": "own-project", LabelConnection: "conn-1"}
+	if err := dockerLabelPurge(context.Background(), run, "volume", "v-1", selector); err != nil {
 		t.Fatal(err)
 	}
-	if err := dockerLabelPurge(context.Background(), run, "network", "net-1"); err != nil {
+	if err := dockerLabelPurge(context.Background(), run, "network", "net-1", selector); err != nil {
 		t.Fatal(err)
 	}
-	if err := dockerLabelPurge(context.Background(), run, "volume", "foreign"); !errors.Is(err, ErrIsolation) {
+	if err := dockerLabelPurge(context.Background(), run, "volume", "foreign", selector); !errors.Is(err, ErrIsolation) {
 		t.Fatalf("foreign purge allowed: %v", err)
+	}
+	if err := dockerLabelPurge(context.Background(), run, "volume", "v-1", map[string]string{"hermes-hub.scope": "other-project"}); !errors.Is(err, ErrIsolation) {
+		t.Fatalf("cross-project purge allowed: %v", err)
+	}
+	if err := dockerLabelPurge(context.Background(), run, "volume", "v-1", map[string]string{"hermes-hub.scope": "own-project"}); !errors.Is(err, ErrIsolation) {
+		t.Fatalf("connection-free purge allowed: %v", err)
+	}
+	if err := dockerLabelPurge(context.Background(), run, "volume", "v-1", nil); !errors.Is(err, ErrIsolation) {
+		t.Fatalf("unscoped purge allowed: %v", err)
+	}
+	if err := dockerLabelPurge(context.Background(), run, "volume", "v-1", map[string]string{"hermes-hub.scope": ""}); !errors.Is(err, ErrIsolation) {
+		t.Fatalf("empty project purge allowed: %v", err)
 	}
 }

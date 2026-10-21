@@ -18,6 +18,8 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub"
 )
 
+var removalRetryInterval = 30 * time.Second
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.LUTC)
 	if err := run(); err != nil {
@@ -27,6 +29,27 @@ func main() {
 }
 
 func run() error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return runWithContext(ctx)
+}
+
+func removalRetryLoop(ctx context.Context, interval time.Duration, resume func(context.Context) error) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := resume(ctx); err != nil {
+				log.Printf("ToolHub removal reconciliation: %v", err)
+			}
+		}
+	}
+}
+
+func runWithContext(ctx context.Context) error {
 	storePath := os.Getenv("HUB_TOOLHUB_STORE")
 	if storePath == "" {
 		return errors.New("HUB_TOOLHUB_STORE is required")
@@ -56,8 +79,10 @@ func run() error {
 			}
 		}()
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	remover := handler.(interface{ ResumeRemovals(context.Context) error })
+	// A transient startup failure is retried and reported by the periodic loop.
+	_ = remover.ResumeRemovals(ctx)
+	go removalRetryLoop(ctx, removalRetryInterval, remover.ResumeRemovals)
 	if dir := os.Getenv("HUB_DIAGNOSTICS_DIR"); dir != "" {
 		scope := diagnostics.Scope{
 			Project:  os.Getenv("HUB_DIAGNOSTICS_PROJECT"),

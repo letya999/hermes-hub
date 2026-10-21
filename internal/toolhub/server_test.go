@@ -366,6 +366,8 @@ func TestEndpointHandlerAuditLedgerFailClosed(t *testing.T) {
 }
 
 func TestEndpointHandlerWiresReviewerOAuthAndElicitsFormURL(t *testing.T) {
+	t.Setenv("HUB_DIAGNOSTICS_PROJECT", "")
+	t.Setenv("HUB_DOCKER_SCOPE", "own-project")
 	t.Setenv("HUB_STATE", "")
 	t.Setenv("HUB_ARTIFACT_DIR", "")
 	t.Setenv("HUB_BUILD_SECCOMP", "")
@@ -392,6 +394,9 @@ func TestEndpointHandlerWiresReviewerOAuthAndElicitsFormURL(t *testing.T) {
 	}, store)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if control := handler.(*projectionEndpoint).gateway.Control; control.LabelQuery == nil || control.LabelPurge == nil {
+		t.Fatal("production finalizers are missing project-scoped Docker label operations")
 	}
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
@@ -445,6 +450,27 @@ func TestEndpointHandlerWiresReviewerOAuthAndElicitsFormURL(t *testing.T) {
 		t.Fatalf("elicit=%q want=%q", got, formURL)
 	}
 	assertRequiredCredentialsElicitsFormURL(t, store, auth, onboardingID, formURL)
+}
+
+func TestScopedLabelOpsKeepProjectBoundary(t *testing.T) {
+	var querySelector, purgeSelector map[string]string
+	query, purge := scopedLabelOps("own-project", func(_ context.Context, selector map[string]string) (map[string][]string, error) {
+		querySelector = selector
+		return nil, nil
+	}, func(_ context.Context, _, _ string, selector map[string]string) error {
+		purgeSelector = selector
+		return nil
+	})
+	_, err := query(context.Background(), map[string]string{api.LabelConnection: "conn-1", "hermes-hub.scope": "foreign-project"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := purge(context.Background(), "volume", "v-1", map[string]string{api.LabelConnection: "conn-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if querySelector[api.LabelConnection] != "conn-1" || querySelector["hermes-hub.scope"] != "own-project" || purgeSelector["hermes-hub.scope"] != "own-project" || purgeSelector[api.LabelConnection] != "conn-1" {
+		t.Fatalf("project boundary lost: query=%v purge=%v", querySelector, purgeSelector)
+	}
 }
 
 func assertRequiredCredentialsElicitsFormURL(t *testing.T, store *Store, auth identity.Envelope, onboardingID, wantURL string) {

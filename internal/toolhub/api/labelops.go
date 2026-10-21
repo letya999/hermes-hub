@@ -14,8 +14,8 @@ func DockerLabelQuery(ctx context.Context, selector map[string]string) (map[stri
 
 // DockerLabelPurge deletes one object after re-proving its ownership label —
 // the ControlPlane.LabelPurge production seam.
-func DockerLabelPurge(ctx context.Context, kind, name string) error {
-	return dockerLabelPurge(ctx, LocalCommand, kind, name)
+func DockerLabelPurge(ctx context.Context, kind, name string, selector map[string]string) error {
+	return dockerLabelPurge(ctx, LocalCommand, kind, name, selector)
 }
 
 // dockerLabelQuery lists live objects per kind that carry every selector
@@ -57,7 +57,7 @@ func dockerLabelQuery(ctx context.Context, run func(context.Context, string, ...
 // dockerLabelPurge removes one object after re-proving the ownership label
 // is on it — the read-modify-delete gap between a footprint query and the
 // rm cannot drop an object whose owner changed underneath.
-func dockerLabelPurge(ctx context.Context, run func(context.Context, string, ...string) ([]byte, error), kind, name string) error {
+func dockerLabelPurge(ctx context.Context, run func(context.Context, string, ...string) ([]byte, error), kind, name string, selector map[string]string) error {
 	var inspect []string
 	var remove []string
 	switch kind {
@@ -74,8 +74,14 @@ func dockerLabelPurge(ctx context.Context, run func(context.Context, string, ...
 	if err != nil {
 		return err
 	}
-	if dockerScopeLabelMap(body)[LabelConnection] == "" {
+	labels := dockerScopeLabelMap(body)
+	if labels[LabelConnection] == "" || selector[LabelConnection] == "" {
 		return fmt.Errorf("%w: docker label purge on unowned %s %q denied", ErrIsolation, kind, name)
+	}
+	for key, value := range selector {
+		if labels[key] != value {
+			return fmt.Errorf("%w: docker label purge on foreign %s %q denied", ErrIsolation, kind, name)
+		}
 	}
 	_, err = run(ctx, "docker", remove...)
 	return err

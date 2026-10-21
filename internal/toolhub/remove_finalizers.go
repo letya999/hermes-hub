@@ -33,6 +33,38 @@ func newRemoveLadder() []api.Finalizer {
 	return ladder
 }
 
+func (c *ControlPlane) confirmedRemoveInProgress(onboarding api.Onboarding) bool {
+	if onboarding.Phase == api.PhaseCleanupIncomplete {
+		return true
+	}
+	connection, ok := c.Store.connectionFor(onboarding.ConnectionID)
+	return ok && connection.Status == api.DeletingStatus
+}
+
+// ResumeRemovals retries only removals that already passed the human
+// confirmation gate; a pending nonce alone never authorizes deletion.
+func (c *ControlPlane) ResumeRemovals(ctx context.Context) error {
+	c.Store.mu.RLock()
+	all := make([]api.Onboarding, 0, len(c.Store.onboardings))
+	for _, onboarding := range c.Store.onboardings {
+		all = append(all, onboarding)
+	}
+	c.Store.mu.RUnlock()
+	for _, onboarding := range all {
+		if !c.confirmedRemoveInProgress(onboarding) {
+			continue
+		}
+		auth := identity.Envelope{Schema: identity.Schema, PrincipalID: onboarding.PrincipalID,
+			ExternalIdentityID: onboarding.PrincipalID, ContextID: onboarding.ContextID,
+			RuntimeID: onboarding.RuntimeID, PolicyVersion: onboarding.PolicyVersion,
+			ConversationID: "reconciler", DeliveryTargetID: "reconciler"}
+		if _, err := c.remove(ctx, auth, map[string]any{"onboarding_id": onboarding.OnboardingID}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // labelFootprint counts the Docker objects carrying the connection's
 // ownership labels at remove start; the receipt reports what was purged.
 func (c *ControlPlane) labelFootprint(ctx context.Context, onboarding api.Onboarding) map[string]int {
@@ -45,6 +77,9 @@ func (c *ControlPlane) labelFootprint(ctx context.Context, onboarding api.Onboar
 	}
 	footprint := map[string]int{}
 	for kind, names := range found {
+		if kind == "image" { // Recipe images are shared and retained by remove.
+			continue
+		}
 		if len(names) > 0 {
 			footprint[kind] = len(names)
 		}
@@ -133,6 +168,9 @@ func (c *ControlPlane) runRemoveFinalizer(ctx context.Context, onboarding api.On
 		}
 		var leftovers []string
 		for kind, names := range found {
+			if kind == "image" {
+				continue
+			}
 			for _, n := range names {
 				leftovers = append(leftovers, kind+" "+n)
 			}
@@ -158,7 +196,7 @@ func (c *ControlPlane) purgeLabelled(ctx context.Context, onboarding api.Onboard
 		return err
 	}
 	for _, name := range found[kind] {
-		if err := c.LabelPurge(ctx, kind, name); err != nil {
+		if err := c.LabelPurge(ctx, kind, name, map[string]string{api.LabelConnection: onboarding.ConnectionID}); err != nil {
 			return err
 		}
 	}

@@ -55,7 +55,7 @@ type ControlPlane struct {
 	// (container/volume/network/image); the volume/network/image-ref
 	// finalizers sweep leftovers through it. Nil skips the sweep — the
 	// controller's own release path already removed them.
-	LabelPurge func(context.Context, string, string) error
+	LabelPurge func(context.Context, string, string, map[string]string) error
 	// PrepareSyncWindow bounds how long prepare_source waits for review+build
 	// before returning the durable "preparing" record; the work then continues
 	// on a detached context and its result is read via status. Zero uses the
@@ -382,7 +382,7 @@ func (c *ControlPlane) remove(ctx context.Context, auth identity.Envelope, args 
 	if onboarding.Phase == api.PhaseRemoved {
 		return c.statusBody(onboarding, false), nil
 	}
-	if onboarding.Phase != api.PhaseCleanupIncomplete {
+	if !c.confirmedRemoveInProgress(onboarding) {
 		// Destructive step: a bare call previews what goes away and arms a
 		// nonce; only the nonce-carrying follow-up deletes credentials and
 		// state. A cleanup_incomplete retry already passed that gate once.

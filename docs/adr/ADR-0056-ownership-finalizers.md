@@ -1,6 +1,6 @@
 ---
 description: Ownership labels on every hub-spawned resource, a persisted finalizer ladder on connector_remove, one label-scoped reconciler, verified-zero removal receipts, and store compaction for terminal records.
-last_verified: 2026-10-19
+last_verified: 2026-10-21
 ---
 # ADR-0056: Ownership labels, finalizers, reconciler
 
@@ -51,3 +51,9 @@ and observable. The reconciler heals drift by degrading and notifying, never
 by recreating credentials. Runtime wiring of the label seams into the served
 endpoint and periodic reconciler scheduling are deployment-side concerns
 tracked in the change record.
+
+Implementation note (2026-10-21): the served ToolHub now wires Docker label
+query/purge with both project and connection checks. Confirmed removals resume
+at startup and retry every 30 seconds, including a crash before the finalizer
+list was recorded. The general orphan/credential/surface reconciler still
+needs production scheduling and live acceptance (CHG-0147).

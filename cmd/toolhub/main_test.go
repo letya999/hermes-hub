@@ -1,20 +1,214 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"errors"
+	"log"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/toolhub"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
 func TestRunRequiresStore(t *testing.T) {
 	t.Setenv("HUB_TOOLHUB_STORE", "")
 	if err := run(); err == nil {
 		t.Fatal("missing ToolHub store accepted")
+	}
+}
+
+func TestRunWithContextStopsOnCancel(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "store.json")
+	if err := os.WriteFile(path, []byte(`{"schema":1,"definitions":[],"connections":[],"credential_references":[],"bindings":[],"workloads":[]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_TOOLHUB_STORE", path)
+	t.Setenv("HUB_RUNTIME_AUTH", strings.Repeat("a", 32))
+	t.Setenv("HUB_USER_ID", "alice")
+	t.Setenv("HUB_RUNTIME_ID", "runtime")
+	t.Setenv("HUB_CONTEXT_ID", "alice")
+	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:0")
+	t.Setenv("HUB_TOOLHIVE_ADMISSION_ENDPOINT", "")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runWithContext(ctx) }()
+	select {
+	case err := <-done:
+		t.Fatalf("server exited before cancellation: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server ignored cancellation")
+	}
+}
+
+func TestRunRetriesConfirmedRemovalAfterBrokerRecovers(t *testing.T) {
+	oldInterval := removalRetryInterval
+	removalRetryInterval = 10 * time.Millisecond
+	defer func() { removalRetryInterval = oldInterval }()
+	path := filepath.Join(t.TempDir(), "store.json")
+	store := toolhub.NewStore()
+	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-retry", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingCatalog, Phase: api.PhaseCleanupIncomplete, Revision: 1, CreatedAt: time.Now(), BrokerCredentialID: "credential_1", Finalizers: []api.Finalizer{{Name: api.FinalizerBrokerCredential, State: api.FinalizerPending}}}
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int32
+	var allow atomic.Bool
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if !allow.Load() {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer broker.Close()
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "broker.key")
+	if err := os.WriteFile(keyPath, private, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_TOOLHUB_STORE", path)
+	t.Setenv("HUB_RUNTIME_AUTH", strings.Repeat("a", 32))
+	t.Setenv("HUB_USER_ID", "alice")
+	t.Setenv("HUB_RUNTIME_ID", "runtime")
+	t.Setenv("HUB_CONTEXT_ID", "alice")
+	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:0")
+	t.Setenv("HUB_TOOLHIVE_ADMISSION_ENDPOINT", "")
+	for _, prefix := range []string{"HUB_CREDENTIAL_BROKER_CONTROL_", "HUB_CREDENTIAL_BROKER_RUNTIME_"} {
+		t.Setenv(prefix+"URL", broker.URL)
+		t.Setenv(prefix+"KEY_FILE", keyPath)
+		t.Setenv(prefix+"KEY_ID", "toolhub")
+		t.Setenv(prefix+"ISSUER", "hermes-toolhub")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- runWithContext(ctx) }()
+	deadline := time.Now().Add(2 * time.Second)
+	for calls.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if calls.Load() == 0 {
+		t.Fatal("startup removal did not reach Broker")
+	}
+	allow.Store(true)
+	for time.Now().Before(deadline) {
+		reloaded, err := toolhub.Load(path)
+		if err == nil {
+			auth := identity.Envelope{Schema: identity.Schema, PrincipalID: "alice", ExternalIdentityID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", ConversationID: "test", DeliveryTargetID: "test"}
+			got, err := reloaded.OnboardingFor(auth, onboarding.OnboardingID)
+			if err == nil && got.Phase == api.PhaseRemoved {
+				cancel()
+				if err := <-done; err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("removal did not retry after Broker recovery")
+}
+
+func TestRemovalRetryLoopStopsWithContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var calls atomic.Int32
+	done := make(chan struct{})
+	go func() {
+		removalRetryLoop(ctx, 5*time.Millisecond, func(context.Context) error { calls.Add(1); return nil })
+		close(done)
+	}()
+	deadline := time.After(time.Second)
+	for calls.Load() < 2 {
+		select {
+		case <-deadline:
+			t.Fatal("removal retry loop did not run")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("removal retry loop did not stop")
+	}
+}
+
+func TestRemovalRetryLoopReportsFailure(t *testing.T) {
+	var output bytes.Buffer
+	log.SetOutput(&output)
+	defer log.SetOutput(os.Stderr)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	called := make(chan struct{}, 1)
+	go func() {
+		removalRetryLoop(ctx, 5*time.Millisecond, func(context.Context) error { called <- struct{}{}; return errors.New("retry failed") })
+		close(done)
+	}()
+	select {
+	case <-called:
+	case <-time.After(time.Second):
+		t.Fatal("retry loop did not run")
+	}
+	cancel()
+	<-done
+	if !strings.Contains(output.String(), "retry failed") {
+		t.Fatal("removal failure was swallowed")
+	}
+}
+
+func TestRunResumesConfirmedRemovalBeforeListen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "store.json")
+	store := toolhub.NewStore()
+	onboarding := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-retry", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingCatalog, Phase: api.PhaseCleanupIncomplete, Revision: 1, CreatedAt: time.Now(), Finalizers: []api.Finalizer{{Name: api.FinalizerVerifyZero, State: api.FinalizerDone}}}
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_TOOLHUB_STORE", path)
+	t.Setenv("HUB_RUNTIME_AUTH", strings.Repeat("a", 32))
+	t.Setenv("HUB_USER_ID", "alice")
+	t.Setenv("HUB_RUNTIME_ID", "runtime")
+	t.Setenv("HUB_CONTEXT_ID", "alice")
+	t.Setenv("HUB_TOOLHUB_LISTEN", "invalid-listen-address")
+	t.Setenv("HUB_TOOLHIVE_ADMISSION_ENDPOINT", "")
+	_ = run()
+	reloaded, err := toolhub.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := identity.Envelope{Schema: identity.Schema, PrincipalID: "alice", ExternalIdentityID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", ConversationID: "test", DeliveryTargetID: "test"}
+	got, err := reloaded.OnboardingFor(auth, onboarding.OnboardingID)
+	if err != nil || got.Phase != api.PhaseRemoved {
+		t.Fatalf("removal did not resume at startup: %v %s", err, got.Phase)
 	}
 }
 

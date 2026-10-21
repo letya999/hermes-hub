@@ -37,6 +37,24 @@ type EndpointConfig struct {
 	CLIRelease func(context.Context, api.CliReleaseRequest) error
 }
 
+func scopedLabelOps(project string, query func(context.Context, map[string]string) (map[string][]string, error), purge func(context.Context, string, string, map[string]string) error) (func(context.Context, map[string]string) (map[string][]string, error), func(context.Context, string, string, map[string]string) error) {
+	return func(ctx context.Context, selector map[string]string) (map[string][]string, error) {
+			scoped := map[string]string{}
+			for key, value := range selector {
+				scoped[key] = value
+			}
+			scoped["hermes-hub.scope"] = project
+			return query(ctx, scoped)
+		}, func(ctx context.Context, kind, name string, selector map[string]string) error {
+			scoped := map[string]string{}
+			for key, value := range selector {
+				scoped[key] = value
+			}
+			scoped["hermes-hub.scope"] = project
+			return purge(ctx, kind, name, scoped)
+		}
+}
+
 // wrapKeepRelease adapts the controller releaser to the backend's keep-state
 // release hook: backend probe cleanup never purges state volumes.
 func wrapKeepRelease(release func(context.Context, api.ControllerRelease) error) func(context.Context, string) error {
@@ -225,6 +243,9 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 	}
 	gateway.Injector = mergeCredentialInjectors(injector, brokerRuntimeInjector(config.BrokerControl, config.BrokerRuntime), config.BrokerControl != nil)
 	control := &ControlPlane{Store: store, Secrets: secrets, Listen: config.Listen, WorkloadRoot: api.EnvOr("HUB_STATE", ""), DiagnosticsDir: api.EnvOr("HUB_DIAGNOSTICS_DIR", ""), Broker: config.BrokerControl, BrokerRuntime: config.BrokerRuntime, RecipeCatalogs: config.RecipeCatalogs, Release: config.Release, CLIRelease: config.CLIRelease}
+	if project := os.Getenv("HUB_DOCKER_SCOPE"); project != "" {
+		control.LabelQuery, control.LabelPurge = scopedLabelOps(project, api.DockerLabelQuery, api.DockerLabelPurge)
+	}
 	if ready := readinessBackend(config.Backend); ready != nil {
 		control.Ready = func(ctx context.Context, effective api.EffectiveBinding) (readyErr error) {
 			if gateway.Injector == nil {
@@ -320,6 +341,10 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 type projectionEndpoint struct {
 	http.Handler
 	gateway *Gateway
+}
+
+func (e *projectionEndpoint) ResumeRemovals(ctx context.Context) error {
+	return e.gateway.Control.ResumeRemovals(ctx)
 }
 
 // PublicHandler is the opt-in public listener surface — only human-action

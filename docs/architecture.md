@@ -1,6 +1,6 @@
 ---
 description: System overview — roles, component map, networks, lifecycle; details live in services/, rbac.md, spaces.md and the ADRs.
-last_verified: 2026-10-20
+last_verified: 2026-10-21
 ---
 
 # Architecture
@@ -107,6 +107,15 @@ only that context's mounts, and stops compute ~30 min after the last lease
 control plane; registered users create no resident runtimes;
 reconciliation restores only contexts with runnable work, due routines,
 pending approvals or explicit always-on leases.
+
+ToolHub removes a connector by cutting call authorization first, then
+persisting a finalizer ladder for workloads, volumes, network, credentials,
+workspace and a zero-resource check. The served endpoint scopes Docker
+queries to the stack project and connection; purge rechecks both labels on
+the object. Confirmed incomplete removals resume at ToolHub startup and
+retry every 30 seconds. Recipe images remain shared and are excluded from
+connection removal receipts. The broader orphan and credential-drift reconciler
+is still awaiting production scheduling (CHG-0147).
 
 ## Jobs, runs and events
 

@@ -280,18 +280,73 @@ func TestRemoveFinalizerRetryAfterFault(t *testing.T) {
 	if body["finalizer"] != api.FinalizerBrokerCredential {
 		t.Fatalf("stuck finalizer not reported: %v", body)
 	}
+	path := filepath.Join(t.TempDir(), "store.json")
+	if err := store.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Store = restarted
+	endpoint := &projectionEndpoint{gateway: &Gateway{Control: c}}
 	// Attempts 2 and 3 still fail; attempt 4 reaches the stubbed 204.
 	for i := 0; i < 3; i++ {
-		if _, err = c.remove(context.Background(), auth, map[string]any{"onboarding_id": enabled.OnboardingID}); err != nil {
+		if err = endpoint.ResumeRemovals(context.Background()); err != nil {
 			t.Fatal(err)
 		}
 	}
-	onboarding, err = store.OnboardingFor(auth, enabled.OnboardingID)
+	onboarding, err = restarted.OnboardingFor(auth, enabled.OnboardingID)
 	if err != nil || onboarding.Phase != api.PhaseRemoved {
 		t.Fatalf("onboarding after retries: %v %+v", err, onboarding)
 	}
 	if !strings.Contains(onboarding.RemoveReceipt, "verified 0") {
 		t.Fatalf("receipt: %q", onboarding.RemoveReceipt)
+	}
+}
+
+func TestResumeRemovalAfterRestartWithPendingFinalizers(t *testing.T) {
+	store, auth, _, _ := managedStore(t)
+	onboarding := m13P3EnabledOnboarding(t, store, auth)
+	onboarding.Finalizers = newRemoveLadder()
+	onboarding.RemoveNonce = "spent-remove"
+	onboarding.RemoveExpires = time.Now().Add(-time.Hour)
+	onboarding.Revision++
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetConnectionStatus(onboarding.ConnectionID, api.DeletingStatus); err != nil {
+		t.Fatal(err)
+	}
+	c := &ControlPlane{Store: store, Now: time.Now, WorkloadRoot: t.TempDir()}
+	if err := c.ResumeRemovals(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.OnboardingFor(auth, onboarding.OnboardingID)
+	if err != nil || got.Phase != api.PhaseRemoved {
+		t.Fatalf("pending finalizers not resumed: %v %s", err, got.Phase)
+	}
+}
+
+func TestResumeRemovalAfterCrashBeforeFinalizerRecord(t *testing.T) {
+	store, auth, _, _ := managedStore(t)
+	onboarding := m13P3EnabledOnboarding(t, store, auth)
+	onboarding.RemoveNonce = "spent-remove"
+	onboarding.RemoveExpires = time.Now().Add(-time.Hour)
+	onboarding.Revision++
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetConnectionStatus(onboarding.ConnectionID, api.DeletingStatus); err != nil {
+		t.Fatal(err)
+	}
+	c := &ControlPlane{Store: store, Now: time.Now, WorkloadRoot: t.TempDir()}
+	if err := c.ResumeRemovals(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.OnboardingFor(auth, onboarding.OnboardingID)
+	if err != nil || got.Phase != api.PhaseRemoved {
+		t.Fatalf("remove before finalizer record not resumed: %v %s", err, got.Phase)
 	}
 }
 
@@ -344,7 +399,7 @@ func TestRemoveSweepsLeftoversAndReceiptCounts(t *testing.T) {
 	if err := putProfile(t, store, profile); err != nil {
 		t.Fatal(err)
 	}
-	live := map[string]map[string]bool{"volume": {"stray-1": true, "stray-2": true}, "container": {"w-1": true}, "network": {"net-1": true}}
+	live := map[string]map[string]bool{"volume": {"stray-1": true, "stray-2": true}, "container": {"w-1": true}, "network": {"net-1": true}, "image": {"shared-recipe:local": true}}
 	var purged []string
 	c := &ControlPlane{Store: store, Now: time.Now, ConfirmationTTL: time.Minute, WorkloadRoot: t.TempDir()}
 	c.LabelQuery = func(_ context.Context, labels map[string]string) (map[string][]string, error) {
@@ -356,7 +411,10 @@ func TestRemoveSweepsLeftoversAndReceiptCounts(t *testing.T) {
 		}
 		return out, nil
 	}
-	c.LabelPurge = func(_ context.Context, kind, name string) error {
+	c.LabelPurge = func(_ context.Context, kind, name string, selector map[string]string) error {
+		if selector[api.LabelConnection] != enabled.ConnectionID {
+			t.Fatalf("purge selector=%v", selector)
+		}
 		purged = append(purged, kind+"/"+name)
 		delete(live[kind], name)
 		return nil
@@ -378,6 +436,9 @@ func TestRemoveSweepsLeftoversAndReceiptCounts(t *testing.T) {
 	}
 	if len(purged) != 4 {
 		t.Fatalf("purged=%v", purged)
+	}
+	if !live["image"]["shared-recipe:local"] || strings.Contains(onboarding.RemoveReceipt, "image") {
+		t.Fatalf("shared image must be retained and excluded from remove receipt: %q", onboarding.RemoveReceipt)
 	}
 	if !strings.Contains(onboarding.RemoveReceipt, "2 volumes") || !strings.Contains(onboarding.RemoveReceipt, "1 container") || !strings.Contains(onboarding.RemoveReceipt, "1 network") {
 		t.Fatalf("receipt lacks counts: %q", onboarding.RemoveReceipt)
