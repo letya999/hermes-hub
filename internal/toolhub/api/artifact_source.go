@@ -159,6 +159,11 @@ func FetchRepositoryRecipeContext(ctx context.Context, source ArtifactSource, ma
 	return FetchArtifactContextMode(ctx, client, source, nil, maxBytes, true, true, false)
 }
 
+// Review-path seams: the source reviewer calls these through vars so tests
+// can replay a fixed context instead of hitting the network.
+var fetchRecipeContext = FetchRepositoryRecipeContext
+var fetchArtifactContext = FetchRepositoryArtifactContext
+
 func FetchArtifactContextWith(ctx context.Context, client *http.Client, source ArtifactSource, files []string, maxBytes int64) ([]byte, error) {
 	return FetchArtifactContextMode(ctx, client, source, files, maxBytes, false, false, false)
 }

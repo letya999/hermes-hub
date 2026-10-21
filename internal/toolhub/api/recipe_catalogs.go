@@ -167,7 +167,9 @@ func catalogCandidates(ctx context.Context, client *http.Client, values []json.R
 		}
 		if completed, accepted := CompleteRecipeCandidate(ctx, client, candidate, lookup); accepted {
 			candidates = append(candidates, completed)
-		} else if candidate.CommitSHA != "" && strings.EqualFold(candidate.CommitSHA, lookup.CommitSHA) && candidate.Launch.Transport != ContainerMCP {
+		} else if candidate.Launch.Transport != ContainerMCP {
+			// A repository-matched remote claim that failed commit binding is
+			// not noise: the resolver flags it ignored in the source ledger.
 			candidates = append(candidates, candidate)
 		}
 	}

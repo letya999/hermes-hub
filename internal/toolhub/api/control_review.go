@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
 )
@@ -42,7 +43,7 @@ func DefaultSourceReviewerWithCatalogs(artifactsDir, seccompPath string, catalog
 			// resolves the pin and never fetches sources or runs a build.
 			return admitPinnedPrepared(ctx, source, pinned)
 		}
-		contextBytes, err := FetchRepositoryRecipeContext(ctx, source, 64<<20)
+		contextBytes, err := fetchRecipeContext(ctx, source, 64<<20)
 		if err != nil {
 			return SourceReview{}, err
 		}
@@ -73,13 +74,22 @@ func DefaultSourceReviewerWithCatalogs(artifactsDir, seccompPath string, catalog
 			resolution.State = "ready"
 		}
 		config := DefaultSelfInstallConfig(source)
-		prepared, matched, err := PreparedForSource(source)
+		prepared, matched, err := preparedLookup(source)
 		if err != nil {
 			return SourceReview{}, err
 		}
 		if matched {
 			config = prepared.Apply(config)
 			resolution.Connection = prepared.Overlay(resolution.Connection)
+			// The reviewed entry is the credential authority here just as in
+			// the pinned path: its claims belong in the ledger or the
+			// resolution cannot explain which source made the fields required.
+			preparedCandidate := RecipeCandidate{
+				Repository: source.Repository, Subfolder: source.Subfolder, CommitSHA: source.CommitSHA,
+				Connection: prepared.Connection, Source: "prepared", CredentialRank: RankR0,
+			}
+			resolution.Ledger = append(resolution.Ledger, candidateLedgerEntries(preparedCandidate, false, time.Now().UTC().Format(time.RFC3339))...)
+			enrichResolution(&resolution)
 		}
 		if resolution.State == "ready" {
 			ApplyLaunchState(&config, resolution.Launch)
@@ -165,6 +175,16 @@ func admitPinnedPrepared(ctx context.Context, source ArtifactSource, prepared Pr
 			{Source: "oci", Digest: pin.SBOM, Detail: "sbom attestation"},
 		},
 	}
+	// The reviewed catalog never reaches the network resolver, so record its
+	// claims here: a ready resolution without a ledger cannot be replayed or
+	// explain its trust tier.
+	candidate := RecipeCandidate{
+		Repository: source.Repository, Subfolder: source.Subfolder, CommitSHA: source.CommitSHA,
+		Launch: resolution.Launch, Connection: prepared.Connection,
+		Source: "prepared", LaunchRank: RankL0, CredentialRank: RankR0,
+	}
+	resolution.Ledger = candidateLedgerEntries(candidate, false, time.Now().UTC().Format(time.RFC3339))
+	enrichResolution(&resolution)
 	config := NormalizeArtifactImportConfig(prepared.Apply(DefaultSelfInstallConfig(source)))
 	published, err := ImportPublishedArtifact(source, config, resolution, config.Execution.Egress)
 	if err != nil {

@@ -22,10 +22,12 @@ slices:
   browser-viewer-and-chat-lifecycle: not_started
 validation:
   documents: passed
-  just_check: passed_86.11_percent
+  just_check: passed_86.19_percent
   docker_check: passed_local_build
   live_acceptance: partial
 evidence:
+  - October 21 issue 282 ledger defect fixed and live-verified: catalog adapters no longer drop repository-matched rejected claims, and prepared T0/T1 admission now records L0/R0 claims. Live prepare of github/github-mcp-server at pin 85598ba produced a digest-addressed recipe (trust T0) whose ledger records the docker-mcp foreign-commit artifact/credential claims ignored at L2/R4 plus the prepared R0 claim; the form requests only GITHUB_PERSONAL_ACCESS_TOKEN and the admitted definition runs the restricted build /app/mcp-server stdio.
+  - October 21 issue 105 behaviors re-verified in code and against the live store: file credentials materialize read-only at declared targets, per-connection OAuth state is 0600/O_EXCL and purged with the workload's state volumes, the /oauth/callback relay binds state to the pending onboarding, enable goes through EnableReady's real workload probe, and every ambiguous path fails closed. The enabled google-calendar-mcp bindings (local rev 15, test-owner-2) plus the documented 2026-10-20 consent-to-list-calendars acceptance corroborate.
   - Playwright MCP enabled with 25 tools; browser_tabs and later site audit reported in owner-provided October 20 log. Interactive viewer login remains unproven.
   - October 21 local store shows enabled Google Workspace, GitHub and Calendar onboardings; live store and Docker labels were inspected without printing secret values.
   - Scoped query and purge tests pass, including foreign project and connection-label mismatch. Race-focused tests pass.

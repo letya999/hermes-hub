@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -102,6 +103,118 @@ func TestT0AdmissionSkipsBuilder(t *testing.T) {
 	}
 	if builds != 0 || review.Definition.Source.Digest != digest {
 		t.Fatalf("builds=%d digest=%q", builds, review.Definition.Source.Digest)
+	}
+}
+
+// Issue #282: a T0 admission is still a resolution — the reviewed catalog's
+// launch and credential claims must land in the source ledger at the top
+// ranks, or re-resolution cannot explain where the recipe came from.
+func TestT0AdmissionRecordsPreparedClaimsInLedger(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("b", 64)
+	entry := PreparedEntry{
+		ID: "notion", Name: "Notion", Tier: TierT0,
+		Image:      &PinnedImage{Ref: "ghcr.io/letya999/hermes-hub-connectors/notion@" + digest, Digest: digest, Provenance: "sha256:" + strings.Repeat("c", 64), SBOM: "sha256:" + strings.Repeat("d", 64)},
+		Source:     ArtifactSource{Repository: "https://github.com/makenotion/notion-mcp-server", CommitSHA: "730ae781ba28beeaf0865025a3f2ed4c25ea2387"},
+		Language:   "node",
+		Entrypoint: []string{"node", "/app/bin/cli.mjs"},
+		Connection: ConnectionRecipe{Fields: []ConnectionField{{Name: "NOTION_TOKEN", Type: "token", Required: true, Secret: true, Delivery: "env", Target: "NOTION_TOKEN"}}},
+		ContractID: "notion-token", ContractRevision: 1,
+		Egress: []string{"api.notion.com"},
+	}
+	oldLookup, oldPull, oldList := preparedLookup, PublishedImagePull, PublishedMCPToolList
+	t.Cleanup(func() { preparedLookup, PublishedImagePull, PublishedMCPToolList = oldLookup, oldPull, oldList })
+	preparedLookup = func(ArtifactSource) (PreparedEntry, bool, error) { return entry, true, nil }
+	PublishedImagePull = func(context.Context, string, string) error { return nil }
+	PublishedMCPToolList = func(context.Context, ImportedArtifact) ([]ToolSpec, error) {
+		return []ToolSpec{{Name: "API-get-self", Effect: ReadEffect}}, nil
+	}
+	dir := t.TempDir()
+	seccomp, err := filepath.Abs(filepath.Join("..", "..", "..", "docker", "seccomp-buildkit-rootless.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	review, err := DefaultSourceReviewerWithCatalogs(dir, seccomp, nil)(context.Background(), entry.Source, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review.Recipe == nil || len(review.Recipe.Ledger) == 0 {
+		t.Fatalf("T0 resolution recorded no source ledger: %+v", review.Recipe)
+	}
+	var artifact, field bool
+	for _, e := range review.Recipe.Ledger {
+		if e.Ignored || e.Source != "prepared" {
+			continue
+		}
+		artifact = artifact || e.Claim.Attribute == "artifact" && e.Rank == RankL0
+		field = field || e.Claim.Field == "NOTION_TOKEN" && e.Rank == RankR0
+	}
+	if !artifact || !field {
+		t.Fatalf("prepared claims missing from ledger: %+v", review.Recipe.Ledger)
+	}
+	if review.Recipe.Trust != TrustT0 {
+		t.Fatalf("reviewed L0/R0 claims must resolve T0 trust, got %q", review.Recipe.Trust)
+	}
+}
+
+// Issue #282: a T1 admission consults the hub catalog too — its reviewed
+// credential contract is the R0 authority and must be a ledger claim, or the
+// form cannot explain why those exact fields are the required ones.
+func TestT1AdmissionRecordsPreparedClaimsInLedger(t *testing.T) {
+	entry := PreparedEntry{
+		ID: "weather", Name: "Weather", Tier: TierT1,
+		Source:     ArtifactSource{Repository: "https://github.com/acme/weather", CommitSHA: "730ae781ba28beeaf0865025a3f2ed4c25ea2387"},
+		Language:   "node",
+		Entrypoint: []string{"node", "/app/index.js"},
+		Connection: ConnectionRecipe{Fields: []ConnectionField{{Name: "WEATHER_TOKEN", Type: "token", Required: true, Secret: true, Delivery: "env", Target: "WEATHER_TOKEN"}}},
+		ContractID: "weather-token", ContractRevision: 1,
+		Egress: []string{"api.weather.example"},
+	}
+	contextBytes := recipeContextTar(t, map[string]string{
+		"package.json":      `{"name":"weather","bin":"index.js"}`,
+		"package-lock.json": `{"lockfileVersion":3,"packages":{}}`,
+		"index.js":          `console.log("weather")`,
+	})
+	old := []any{preparedLookup, fetchRecipeContext, fetchArtifactContext, restrictedBuild, StoredArtifactLoader, LocalMCPToolList}
+	t.Cleanup(func() {
+		preparedLookup, fetchRecipeContext, fetchArtifactContext, restrictedBuild, StoredArtifactLoader, LocalMCPToolList =
+			old[0].(func(ArtifactSource) (PreparedEntry, bool, error)),
+			old[1].(func(context.Context, ArtifactSource, int64) ([]byte, error)),
+			old[2].(func(context.Context, ArtifactSource, int64) ([]byte, error)),
+			old[3].(func(context.Context, ArtifactRecipe, []byte, RestrictedBuildConfig) (StoredOCIArtifact, error)),
+			old[4].(func(context.Context, string, string, string, int64) (string, error)),
+			old[5].(func(context.Context, ImportedArtifact) ([]ToolSpec, error))
+	})
+	preparedLookup = func(ArtifactSource) (PreparedEntry, bool, error) { return entry, true, nil }
+	fetchRecipeContext = func(context.Context, ArtifactSource, int64) ([]byte, error) { return contextBytes, nil }
+	fetchArtifactContext = func(context.Context, ArtifactSource, int64) ([]byte, error) { return contextBytes, nil }
+	restrictedBuild = func(context.Context, ArtifactRecipe, []byte, RestrictedBuildConfig) (StoredOCIArtifact, error) {
+		return StoredOCIArtifact{ArchiveDigest: "sha256:" + strings.Repeat("e", 64), Size: 1,
+			Evidence: OCIArtifactEvidence{ImageManifestDigest: "sha256:" + strings.Repeat("f", 64)}}, nil
+	}
+	StoredArtifactLoader = func(context.Context, string, string, string, int64) (string, error) { return "img-id", nil }
+	LocalMCPToolList = func(context.Context, ImportedArtifact) ([]ToolSpec, error) {
+		return nil, errors.New("WEATHER_TOKEN is required")
+	}
+	dir := t.TempDir()
+	seccomp, err := filepath.Abs(filepath.Join("..", "..", "..", "docker", "seccomp-buildkit-rootless.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	review, err := DefaultSourceReviewerWithCatalogs(dir, seccomp, nil)(context.Background(), entry.Source, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review.Recipe == nil {
+		t.Fatal("credential-gated review carried no recipe")
+	}
+	var found bool
+	for _, e := range review.Recipe.Ledger {
+		if e.Claim.Field == "WEATHER_TOKEN" && e.Source == "prepared" && e.Rank == RankR0 && !e.Ignored {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("prepared R0 claim missing from ledger: %+v", review.Recipe.Ledger)
 	}
 }
 

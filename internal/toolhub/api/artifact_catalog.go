@@ -31,7 +31,7 @@ func ImportGitHubArtifact(ctx context.Context, source ArtifactSource, config Art
 	if !ValidCommand(config.Image) || strings.Contains(config.Image, "@") {
 		return ImportedArtifact{}, fmt.Errorf("%w: local immutable image name required", ErrInvalid)
 	}
-	contextBytes, err := FetchRepositoryArtifactContext(ctx, source, 64<<20)
+	contextBytes, err := fetchArtifactContext(ctx, source, 64<<20)
 	if err != nil {
 		return ImportedArtifact{}, err
 	}
@@ -61,7 +61,7 @@ func ImportGitHubArtifact(ctx context.Context, source ArtifactSource, config Art
 	if err != nil {
 		return ImportedArtifact{}, err
 	}
-	if _, err := LoadStoredOCIArtifact(ctx, build.ArtifactDirectory, artifact.ArchiveDigest, config.Image, build.MaxArtifactBytes); err != nil {
+	if _, err := StoredArtifactLoader(ctx, build.ArtifactDirectory, artifact.ArchiveDigest, config.Image, build.MaxArtifactBytes); err != nil {
 		return ImportedArtifact{}, fmt.Errorf("%w: local artifact materialization failed", err)
 	}
 	RecipeDigest, err := RecipeDigest(recipe)
