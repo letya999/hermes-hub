@@ -176,7 +176,7 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 	}
 	address := m.runtimeAddress(container, port, managed)
 	m.gen++
-	logical := &runtimeEntry{Runtime: Runtime{PrincipalID: binding.PrincipalID, ContextID: binding.ContextID, RuntimeID: binding.RuntimeID, RuntimeMode: binding.RuntimeMode, Generation: fmt.Sprintf("gen-%d", m.gen), Container: container, Address: address, State: Starting, Leases: 1, LastUsed: m.cfg.Now(), Managed: managed}, auth: binding.runtimeAuth, leases: map[string]Lease{}}
+	logical := &runtimeEntry{Runtime: Runtime{PrincipalID: binding.PrincipalID, ContextID: binding.ContextID, RuntimeID: binding.RuntimeID, RuntimeMode: binding.RuntimeMode, Generation: fmt.Sprintf("gen-%d", m.gen), Container: container, Address: address, State: Starting, ImageSource: imageSourceOf(binding, m.environment(), m.cfg.Image), Leases: 1, LastUsed: m.cfg.Now(), Managed: managed}, auth: binding.runtimeAuth, leases: map[string]Lease{}}
 	logical.binding = binding
 	for id, lease := range lifecycle {
 		lease.Generation = logical.Generation
@@ -524,7 +524,7 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	if value := strings.TrimSpace(os.Getenv("HUB_RUN_STALL_TIMEOUT")); value != "" {
 		args = append(args, "-e", "HUB_RUN_STALL_TIMEOUT="+value)
 	}
-	image, err := devRuntimeImage(binding.ContextRoot, binding.UserID, env, m.cfg.Image)
+	image, _, err := resolveRuntimeImage(binding.ContextRoot, binding.UserID, binding.ContextID, env, m.cfg.Image)
 	if err != nil {
 		return nil, err
 	}
@@ -604,7 +604,7 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 	if value := strings.TrimSpace(os.Getenv("HUB_RUN_STALL_TIMEOUT")); value != "" {
 		args = append(args, "-e", "HUB_RUN_STALL_TIMEOUT="+value)
 	}
-	image, err := devRuntimeImage(binding.ContextRoot, binding.UserID, env, m.cfg.Image)
+	image, _, err := resolveRuntimeImage(binding.ContextRoot, binding.UserID, binding.ContextID, env, m.cfg.Image)
 	if err != nil {
 		return nil, err
 	}
@@ -640,7 +640,7 @@ func (m *Manager) ensureManagedInfra(ctx context.Context, binding Binding, setti
 
 func (m *Manager) spawnControlRelay(ctx context.Context, binding Binding, container string, port int, generation, agentNet string) error {
 	relay := container + "-ctl"
-	image, err := devRuntimeImage(binding.ContextRoot, binding.UserID, m.cfg.Environment, m.cfg.Image)
+	image, _, err := resolveRuntimeImage(binding.ContextRoot, binding.UserID, binding.ContextID, m.cfg.Environment, m.cfg.Image)
 	if err != nil {
 		return err
 	}

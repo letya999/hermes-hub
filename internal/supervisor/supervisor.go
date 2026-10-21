@@ -135,6 +135,7 @@ type Runtime struct {
 	Container    string            `json:"container"`
 	Address      string            `json:"address"`
 	State        State             `json:"state"`
+	ImageSource  string            `json:"image_source,omitempty"`
 	Leases       int               `json:"leases"`
 	LastUsed     time.Time         `json:"last_used"`
 	IdleDeadline time.Time         `json:"idle_deadline,omitempty"`

@@ -40,7 +40,7 @@ func warmTTLFlag(f *flag.FlagSet) *time.Duration {
 
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		fmt.Println("hubctl 0.3.0: init | org-init | migrate-spaces | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | artifact | build | dev-rebuild | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | grant | governance | capability | context | memory | skill | routine | apply | usage | watch\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nConnector controllers: local-controller (fixed Telegram) or generic-controller (trusted artifact)\nSee README.md for account setup and private VPS access.")
+		fmt.Println("hubctl 0.3.0: init | org-init | migrate-spaces | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | artifact | build | dev-rebuild | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | grant | governance | capability | context | memory | skill | routine | apply | usage | watch | image\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nConnector controllers: local-controller (fixed Telegram) or generic-controller (trusted artifact)\nSee README.md for account setup and private VPS access.")
 		return nil
 	}
 	op := args[0]
@@ -198,6 +198,31 @@ func run(ctx context.Context, args []string) error {
 			SupervisorURL: *supervisorURL, SupervisorAuth: *supervisorAuth,
 			Interval: *interval, Client: http.DefaultClient,
 		})
+	}
+	if op == "image" {
+		dir, environment := "", "prod"
+		subArgs := args[1:]
+		var kept []string
+		for i := 0; i < len(subArgs); i++ {
+			switch subArgs[i] {
+			case "--dir":
+				if i+1 >= len(subArgs) {
+					return fmt.Errorf("image: --dir requires a value")
+				}
+				dir, i = subArgs[i+1], i+1
+			case "--env":
+				if i+1 >= len(subArgs) {
+					return fmt.Errorf("image: --env requires a value")
+				}
+				environment, i = subArgs[i+1], i+1
+			default:
+				kept = append(kept, subArgs[i])
+			}
+		}
+		if environment != "dev" && environment != "prod" {
+			return fmt.Errorf("image requires --env dev|prod")
+		}
+		return runImage(ctx, os.Stdout, dir, environment, devcheck.DockerSmoke, kept)
 	}
 	if op == "spool" {
 		f := flag.NewFlagSet("spool", flag.ContinueOnError)
