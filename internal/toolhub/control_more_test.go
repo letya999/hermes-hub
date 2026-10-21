@@ -1,11 +1,9 @@
 package toolhub
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
-	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -19,35 +17,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/oauth"
 )
 
-func TestGoogleOAuthFormAcceptsFileOrExplicitValues(t *testing.T) {
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	file, _ := writer.CreateFormFile("google_oauth_file", "client_secret.json")
-	_, _ = file.Write([]byte(`{"installed":{"client_id":"id","client_secret":"secret"}}`))
-	_ = writer.Close()
-	req := httptest.NewRequest(http.MethodPost, "/", &body)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-	if err := req.ParseMultipartForm(64 << 10); err != nil {
-		t.Fatal(err)
-	}
-	if value, err := googleOAuthFormValue(req); err != nil || !strings.Contains(value, `"client_id":"id"`) {
-		t.Fatalf("file value=%q err=%v", value, err)
-	}
-
-	body.Reset()
-	writer = multipart.NewWriter(&body)
-	_ = writer.WriteField("google_oauth_client_id", "id")
-	_ = writer.WriteField("google_oauth_client_secret", "secret")
-	_ = writer.Close()
-	manual := httptest.NewRequest(http.MethodPost, "/", &body)
-	manual.Header.Set("Content-Type", writer.FormDataContentType())
-	if err := manual.ParseMultipartForm(64 << 10); err != nil {
-		t.Fatal(err)
-	}
-	if value, err := googleOAuthFormValue(manual); err != nil || !strings.Contains(value, `"client_secret":"secret"`) {
-		t.Fatalf("manual value=%q err=%v", value, err)
-	}
-
+func TestCredentialFormFiltersRuntimeDefaults(t *testing.T) {
 	hints := credentialFormHints([]api.CredentialHint{{Name: "GOOGLE_OAUTH_CREDENTIALS"}, {Name: "HOST"}, {Name: "PORT"}, {Name: "TRANSPORT"}})
 	if len(hints) != 1 || hints[0].Name != "GOOGLE_OAUTH_CREDENTIALS" {
 		t.Fatalf("visible hints=%+v", hints)

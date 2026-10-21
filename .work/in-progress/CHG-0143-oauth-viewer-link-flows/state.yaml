@@ -3,7 +3,7 @@ change: CHG-0143
 title: OAuth resend, viewer links and grant-epoch fix
 status: in_progress
 branch: feat/m14-toolhub-connector-platform-merge
-updated: 2026-10-20
+updated: 2026-10-21
 phase: implementation
 notes: >
   Record created 2026-10-20 for the uncommitted toolhub/communication diff on
@@ -14,14 +14,17 @@ notes: >
   prepare_oauth_continuation). Calendar retry regression failed before the fix
   and passed afterwards with scope-negative cases. Calendar browser OAuth,
   enable and projected calendar/event reads passed on the dev stack.
+  just check passed with 86.02% own Go statement coverage, including race,
+  static/security analysis, docs and configuration integration checks.
 slices:
   oauth-resend-rotation: green-tests-written
   broker-grant-epoch: green-tests-written
   oauth-pending-binding-state: focused-tests-and-live-calendar-passed
   viewer-link-relay: green-tests-written
   prepared-catalog-refresh: green-tests-written
+  tool-output-oauth-scrub: green-tests-written-live-calendar-passed
 validation:
   documents: this_record
-  just_check: running
+  just_check: passed-2026-10-21-coverage-86.07
   docker_check: not_run
   live_acceptance: calendar-passed-viewer-not-run

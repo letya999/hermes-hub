@@ -31,10 +31,12 @@ func (c *ControlPlane) newOnboarding(auth identity.Envelope, mode, requestKey st
 		onboarding.Phase = api.PhaseAwaitingCreds
 		onboarding.FormNonce = api.RandomNonce()
 		onboarding.FormExpires = c.now().Add(c.ttl())
+		c.armWizard(&onboarding)
 	} else {
 		onboarding.Phase = api.PhaseAwaitingConfirm
 		onboarding.ConfirmationNonce = api.RandomNonce()
 		onboarding.ConfirmationExpires = c.now().Add(c.ttl())
+		c.armWizard(&onboarding)
 	}
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return api.Onboarding{}, err
@@ -86,7 +88,7 @@ func (c *ControlPlane) bindReviewedContract(ctx context.Context, auth identity.E
 	// All-optional credentials must not bind an unrelated catalog contract;
 	// they fall through to the synthesis fallback.
 	for i, candidate := range contracts {
-		if len(required) == 0 {
+		if len(required) == 0 || definition.OAuth != nil && bound == "" {
 			break
 		}
 		if bound != "" && candidate.ID != bound {
@@ -380,7 +382,9 @@ func (c *ControlPlane) revokeLocalCredentialStatus(onboarding api.Onboarding) er
 		if onboarding.CredentialOwner != "" {
 			owner = onboarding.CredentialOwner
 		}
-		if err := c.Secrets.SetStatus(onboarding.Locator, owner, credstore.StatusRevoked); err != nil {
+		// A broker-held locator owns no local ciphertext: not-found means the
+		// revoke below (and the delete in the caller) is already a no-op.
+		if err := c.Secrets.SetStatus(onboarding.Locator, owner, credstore.StatusRevoked); err != nil && !errors.Is(err, credstore.ErrNotFound) {
 			return err
 		}
 	}
@@ -443,8 +447,8 @@ func (c *ControlPlane) releaseBindingWorkloads(onboarding api.Onboarding, purge 
 func (c *ControlPlane) materializeBinding(ctx context.Context, auth identity.Envelope, onboarding api.Onboarding, definition api.ToolDefinition) (api.ToolBinding, error) {
 	rotation := onboarding.BrokerRotateCredentialID != ""
 	if existing := c.Store.findBinding(auth, definition); existing != nil && existing.Status != api.RevokedStatus && !rotation {
-		_, ref, err := c.Store.OwnedConnection(auth, existing.ConnectionID)
-		if onboarding.Locator == "" || err == nil && ref.Locator == onboarding.Locator {
+		connection, ref, err := c.Store.OwnedConnection(auth, existing.ConnectionID)
+		if onboarding.Locator == "" || err == nil && ref.Locator == onboarding.Locator && (!c.brokerCredentialRequired(definition, onboarding) || c.Store.brokerGrantReusable(auth, definition, ownerConnectionMatch{connection: connection, credential: ref})) {
 			if c.Ready != nil {
 				return c.Store.EnableReady(ctx, auth, definition.DefinitionID, definition.Version, c.Ready)
 			}
@@ -480,6 +484,12 @@ func (c *ControlPlane) materializeBinding(ctx context.Context, auth identity.Env
 		// includes the definition version — plus the admitting policy epoch, so
 		// a version upgrade must re-mint it through the rotation path instead of
 		// presenting a grant the new binding cannot acquire.
+		// An OAuth rotation onto this same credential that already re-minted
+		// a reusable grant is done: Broker keys token state by binding, so a
+		// second rotation would strand the token the callback just wrote.
+		if rotation && definition.OAuth != nil && onboarding.BrokerRotateCredentialID == onboarding.BrokerCredentialID && matches[0].credential.Locator == onboarding.Locator && c.Store.brokerGrantReusable(auth, definition, matches[0]) {
+			rotation = false
+		}
 		if !rotation && matches[0].credential.Locator == onboarding.Locator && (!c.brokerCredentialRequired(definition, onboarding) || c.Store.brokerGrantReusable(auth, definition, matches[0])) {
 			if c.Ready != nil {
 				return c.Store.EnableReady(ctx, auth, definition.DefinitionID, definition.Version, c.Ready)
@@ -521,6 +531,8 @@ func (c *ControlPlane) materializeBinding(ctx context.Context, auth identity.Env
 				return api.ToolBinding{}, err
 			}
 			reference.BrokerGrantID = grantID
+			reference.BrokerGrantPolicy = auth.PolicyVersion
+			reference.BrokerGrantBinding = candidate.ToolBindingID
 			reference, err = c.Store.RotateCredentialRecord(reference)
 			if err != nil {
 				return api.ToolBinding{}, err
@@ -570,6 +582,8 @@ func (c *ControlPlane) materializeBinding(ctx context.Context, auth identity.Env
 			return api.ToolBinding{}, err
 		}
 		reference.BrokerGrantID = grantID
+		reference.BrokerGrantPolicy = auth.PolicyVersion
+		reference.BrokerGrantBinding = candidate.ToolBindingID
 	}
 	if err := c.Store.PutCredentialReference(reference); err != nil {
 		return api.ToolBinding{}, err

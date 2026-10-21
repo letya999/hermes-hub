@@ -51,6 +51,20 @@ func TestHTTPDiagnosticRouteOmitsCredentialLink(t *testing.T) {
 	}
 }
 
+// A denied lease must name its reason and grant in the operator log, or a
+// 403 during confirm is indistinguishable from any other denial.
+func TestHTTPLeaseDenialLogsReason(t *testing.T) {
+	f := fixtureHTTP(t, apiContract(), safenet.Policy{}, nil)
+	var output bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&output)
+	defer log.SetOutput(previous)
+	w := f.api("POST", "/v1/leases", "broker:control", actor, v1.AcquireLease{GrantID: "g_absent"})
+	if got := output.String(); w.Code != 403 || !strings.Contains(got, "deny_reason=grant_missing") || !strings.Contains(got, `grant_id="g_absent"`) {
+		t.Fatalf("%d %s", w.Code, got)
+	}
+}
+
 type httpFixture struct {
 	s    *Server
 	b    *broker.Broker

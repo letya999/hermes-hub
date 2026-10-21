@@ -271,12 +271,12 @@ func TestPreparedTelegramUsesBrokerBeforeAuthenticatedToolList(t *testing.T) {
 	}
 	var brokerLink string
 	for _, payload := range noticed {
-		if u, _ := payload["form_url"].(string); strings.Contains(u, "/connect/"+preparing.OnboardingID+"?request=") {
+		if u, _ := payload["form_url"].(string); strings.Contains(u, "/connect/"+preparing.OnboardingID+"?k=") {
 			brokerLink = u
 		}
 	}
 	if brokerLink == "" || strings.Contains(brokerLink, "connect/request_1") {
-		t.Fatalf("broker connect link did not reach the channel as a loopback hop: %v", noticed)
+		t.Fatalf("stable wizard link did not reach the channel: %v", noticed)
 	}
 	ready.Store(true)
 	status, err := control.status(context.Background(), auth, map[string]any{"onboarding_id": preparing.OnboardingID})

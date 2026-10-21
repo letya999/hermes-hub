@@ -33,6 +33,7 @@ func (o OwnerRef) Matches(e identity.Envelope) bool {
 }
 
 type ToolDefinition struct {
+	OAuth        *OAuthRecipe      `json:"oauth,omitempty"`
 	Schema       int               `json:"schema"`
 	DefinitionID string            `json:"definition_id"`
 	Version      string            `json:"version"`
@@ -179,6 +180,14 @@ func (d ToolDefinition) CredentialsSatisfied(present func(string) bool) bool {
 }
 
 func (d ToolDefinition) Validate() error {
+	if d.OAuth != nil {
+		if !d.Workload.Stateful {
+			return fmt.Errorf("%w: OAuth requires durable owner state", ErrInvalid)
+		}
+		if err := d.OAuth.Validate(); err != nil {
+			return err
+		}
+	}
 	if d.Schema != SchemaVersion || !identity.ValidID(d.DefinitionID) || !VersionPattern.MatchString(d.Version) {
 		return fmt.Errorf("%w: definition schema, id or version", ErrInvalid)
 	}

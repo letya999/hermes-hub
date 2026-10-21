@@ -12,7 +12,7 @@ import (
 )
 
 // Credential form helpers render the reviewed hint set: input types, the
-// Google OAuth dual-file/manual shape, alternative groups collapsed behind
+// file uploads, alternative groups collapsed behind
 // <details>, and loopback-only OAuth callbacks.
 func TestCredentialFormHelpers(t *testing.T) {
 	hint := api.CredentialHint{Name: "API_TOKEN", Type: "string", Secret: true, Hint: "token from the console"}
@@ -34,17 +34,17 @@ func TestCredentialFormHelpers(t *testing.T) {
 	if got := credentialFieldMarkup(api.CredentialHint{Name: "PAYLOAD", Type: "json", Delivery: "json"}, api.ConnectionField{}, ""); !strings.Contains(got, "<textarea") {
 		t.Fatalf("json markup: %s", got)
 	}
-	oauth := api.CredentialHint{Name: "GOOGLE_OAUTH_CREDENTIALS"}
-	if got := credentialFieldMarkup(oauth, api.ConnectionField{}, ""); !strings.Contains(got, "google_oauth_file") || !strings.Contains(got, "google_oauth_client_id") {
+	oauth := api.CredentialHint{Name: "GOOGLE_OAUTH_CREDENTIALS", Type: "json", Delivery: "file", Hint: "Upload client JSON"}
+	if got := credentialFieldMarkup(oauth, api.ConnectionField{}, ""); !strings.Contains(got, `type="file"`) || !strings.Contains(got, `name="GOOGLE_OAUTH_CREDENTIALS"`) {
 		t.Fatalf("oauth markup: %s", got)
 	}
-	if got := credentialFieldLabel(oauth); !strings.Contains(got, "OAuth") {
+	if got := credentialFieldLabel(oauth); got != "GOOGLE OAUTH CREDENTIALS" {
 		t.Fatalf("oauth label: %s", got)
 	}
 	if got := credentialFieldLabel(api.CredentialHint{Name: "API_KEY"}); got != "API KEY" {
 		t.Fatalf("label: %q", got)
 	}
-	if got := credentialFieldHint(oauth); !strings.Contains(got, "gcp-oauth") {
+	if got := credentialFieldHint(oauth); !strings.Contains(got, "Upload client JSON") {
 		t.Fatalf("oauth hint: %s", got)
 	}
 	if got := credentialFieldHint(api.CredentialHint{Name: "X", Hint: "protected loopback form"}); got != "" {
@@ -121,5 +121,25 @@ func TestCredentialFormHelpers(t *testing.T) {
 	remote.RemoteAddr = "203.0.113.10:5050"
 	if loopbackHTTP(remote) {
 		t.Fatal("public address treated as loopback")
+	}
+}
+
+func TestFileCredentialFormUsesDeclaredContract(t *testing.T) {
+	hint := api.CredentialHint{Name: "GOOGLE_OAUTH_CREDENTIALS", Type: "json", Delivery: "file", Hint: "Upload client JSON"}
+	markup := credentialFieldMarkup(hint, api.ConnectionField{}, "")
+	if !strings.Contains(markup, `name="GOOGLE_OAUTH_CREDENTIALS"`) || !strings.Contains(markup, `type="file"`) {
+		t.Error("file field ignores declared name")
+	}
+	if strings.Contains(markup, "google_oauth_client_id") {
+		t.Error("provider-specific form still active")
+	}
+	if got := credentialFieldLabel(hint); got != "GOOGLE OAUTH CREDENTIALS" {
+		t.Error("provider-specific label overrides contract")
+	}
+	if got := credentialFieldHint(hint); !strings.Contains(got, hint.Hint) {
+		t.Error("contract hint ignored")
+	}
+	if strings.Contains(credentialFormIntro([]api.CredentialHint{hint}), "JSON-файл Google") {
+		t.Error("provider-specific introduction still active")
 	}
 }

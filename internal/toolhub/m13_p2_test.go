@@ -551,12 +551,12 @@ func TestConnectPasteCompletesOAuth(t *testing.T) {
 			t.Error("invalid exchange")
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"access_token":"a","refresh_token":"r","expires_in":3600,"token_type":"Bearer"}`))
+		_, _ = w.Write([]byte(`{"access_token":"a","refresh_token":"r","expires_in":3600,"token_type":"Bearer","scope":"https://www.googleapis.com/auth/calendar.readonly"}`))
 	}))
 	defer provider.Close()
 	c.oauthFlows.mu.Lock()
 	c.oauthFlows.flows[state].broker.HTTP = provider.Client()
-	c.oauthFlows.flows[state].broker.Providers["google"] = oauth.Provider{Name: "google", AuthorizeURL: provider.URL + "/authorize", TokenURL: provider.URL + "/token"}
+	c.oauthFlows.flows[state].broker.Providers["recipe"] = oauth.Provider{Name: "recipe", AuthorizeURL: provider.URL + "/authorize", TokenURL: provider.URL + "/token"}
 	c.oauthFlows.mu.Unlock()
 
 	gateway := &Gateway{Control: c}
@@ -839,6 +839,8 @@ func TestControlOpsCarryNoLinkMaterial(t *testing.T) {
 		o.IdempotencyKey = mark("idem")
 		o.BrokerAuthorizationURL = "https://broker.example/auth?code=" + mark("burl")
 		o.ProviderAuthorizationURL = "https://as.example/authorize?state=" + mark("oauthstate")
+		o.WizardNonce = mark("wizard")
+		o.WizardExpires = time.Now().Add(time.Hour)
 		o.DeviceCode = mark("devcode")
 		o.DeviceUserCode = mark("usercode")
 		o.DeviceVerification = "https://verify.example/" + mark("device")
@@ -883,7 +885,7 @@ func TestControlOpsCarryNoLinkMaterial(t *testing.T) {
 					t.Fatalf("%s on %s leaked %q: %.400s", op.name, phase, sentinel, output)
 				}
 			}
-			if strings.Contains(output, "?t=") {
+			if strings.Contains(output, "?t=") || strings.Contains(output, "?k=") {
 				t.Fatalf("%s on %s emitted a link token: %.400s", op.name, phase, output)
 			}
 		}

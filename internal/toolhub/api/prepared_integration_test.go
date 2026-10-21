@@ -3,6 +3,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -32,6 +33,9 @@ func TestPreparedLiveBuilds(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if entry.OAuth != nil && review.Definition.OAuth == nil {
+				t.Fatal("source build lost reviewed OAuth")
+			}
 			body, err := json.MarshalIndent(review, "", "  ")
 			if err != nil {
 				t.Fatal(err)
@@ -41,6 +45,52 @@ func TestPreparedLiveBuilds(t *testing.T) {
 			}
 			t.Logf("isolated build and MCP preflight: %s %s tools=%d", entry.ID, review.Definition.Source.Digest, len(review.Definition.Tools))
 		})
+	}
+}
+
+func TestExplicitOAuthRecipeLiveBuild(t *testing.T) {
+	if os.Getenv("HUB_PREPARED_LIVE_BUILD") != "1" {
+		t.Skip("explicit isolated build opt-in required")
+	}
+	entries, err := PreparedCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entry PreparedEntry
+	var remaining []PreparedEntry
+	for _, candidate := range entries {
+		if candidate.ID == "google-calendar" {
+			entry = candidate
+		} else {
+			remaining = append(remaining, candidate)
+		}
+	}
+	if entry.OAuth == nil {
+		t.Fatal("calendar fixture missing")
+	}
+	original := PreparedCatalogJSON
+	t.Cleanup(func() { PreparedCatalogJSON = original })
+	PreparedCatalogJSON, err = json.Marshal(remaining)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recipe := entry.Connection
+	recipe.OAuth = entry.OAuth
+	ctx := context.WithValue(t.Context(), ConnectionRecipeContextKey{}, recipe)
+	root, err := filepath.Abs(filepath.Join("..", "..", ".local", "prepared-acceptance"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	seccomp, err := filepath.Abs(filepath.Join("..", "..", "..", "docker", "seccomp-buildkit-rootless.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	review, err := DefaultSourceReviewer(filepath.Join(root, "artifacts"), seccomp)(ctx, entry.Source, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review.Definition.OAuth == nil || review.Definition.OAuth.TokenURL != entry.OAuth.TokenURL || !review.Definition.Workload.Stateful {
+		t.Fatal("non-catalog source build lost explicit OAuth contract")
 	}
 }
 

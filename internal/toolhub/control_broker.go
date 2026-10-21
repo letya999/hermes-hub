@@ -66,6 +66,7 @@ func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.En
 				onboarding.FormExpires = time.Time{}
 				onboarding.ConfirmationNonce = api.RandomNonce()
 				onboarding.ConfirmationExpires = c.now().Add(c.ttl())
+				c.armWizard(onboarding)
 				onboarding.Revision++
 				if err := c.Store.PutOnboarding(*onboarding); err != nil {
 					return err
@@ -141,6 +142,7 @@ func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.En
 		onboarding.BrokerContractRevision = request.ContractRevision
 		onboarding.FormNonce = ""
 		onboarding.FormExpires = time.Time{}
+		c.armWizard(onboarding)
 		onboarding.Revision++
 		if err := c.Store.PutOnboarding(*onboarding); err != nil {
 			return err
@@ -168,9 +170,8 @@ func (c *ControlPlane) deliverOutcomeNotice(ctx context.Context, auth identity.E
 }
 
 // brokerRequestDead reports whether the request can still carry a credential
-// submission: terminal statuses are dead outright, and a pending request with
-// less life than a channel invite (10 minutes) would produce a link that dies
-// while the owner is still scanning — remint it early instead.
+// submission. Keep a live form until expiry: Broker rejects a second pending
+// request for the same connection, and the owner may still be filling it.
 func (c *ControlPlane) brokerRequestDead(request brokerv1.Request) bool {
 	switch request.Status {
 	case "expired", "canceled":
@@ -178,7 +179,7 @@ func (c *ControlPlane) brokerRequestDead(request brokerv1.Request) bool {
 	case "ready", "submitted", "approved":
 		return false
 	}
-	return !request.ExpiresAt.IsZero() && request.ExpiresAt.Before(c.now().Add(12*time.Minute))
+	return !request.ExpiresAt.IsZero() && !c.now().Before(request.ExpiresAt)
 }
 
 // brokerCredentialActive verifies a stored broker credential is still live
@@ -314,6 +315,7 @@ func (c *ControlPlane) refreshBrokerRequest(ctx context.Context, auth identity.E
 			onboarding.ConfirmationNonce = api.RandomNonce()
 			onboarding.ConfirmationExpires = c.now().Add(c.ttl())
 			onboarding.ConfirmationUsed = false
+			c.armWizard(onboarding)
 			changed = true
 		}
 	}
@@ -377,6 +379,7 @@ func (c *ControlPlane) completeBrokerAdmission(ctx context.Context, auth identit
 		latest.ConfirmationNonce = api.RandomNonce()
 		latest.ConfirmationExpires = c.now().Add(c.ttl())
 		latest.ConfirmationUsed = false
+		c.armWizard(&latest)
 	}
 	latest.Revision++
 	if err := c.Store.PutOnboarding(latest); err != nil {

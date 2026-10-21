@@ -400,6 +400,9 @@ func TestPrepareRemoteCredentialedFlow(t *testing.T) {
 	}
 	onboardingID := prepared["onboarding_id"].(string)
 	onboarding := mustOnboarding(t, fix.store, onboardingID)
+	if onboarding.WizardNonce == "" || onboarding.WizardExpires.IsZero() {
+		t.Fatal("remote credentialed onboarding did not arm the wizard link")
+	}
 	if err := fix.control.SubmitCredentials(onboardingID, "wrong-nonce", map[string]string{"GITHUB_TOKEN": "ghp_fixture"}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("bad nonce: %v", err)
 	}

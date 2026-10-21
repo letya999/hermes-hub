@@ -297,7 +297,7 @@ func TestCredentialSubmitPageDoesNotClaimSavedSecrets(t *testing.T) {
 	if _, _, message := credentialSubmitPage(fmt.Errorf("%w: immutable definition slack-mcp-server@0.0.2", api.ErrConflict)); strings.Contains(message, "Данные сохранены") || !strings.Contains(message, "не сохранён") {
 		t.Fatal(message)
 	}
-	if intro := credentialFormIntro([]api.CredentialHint{{Name: "GOOGLE_OAUTH_CREDENTIALS"}}); !strings.Contains(intro, "JSON-файл Google") {
+	if intro := credentialFormIntro([]api.CredentialHint{{Name: "GOOGLE_OAUTH_CREDENTIALS"}}); !strings.Contains(intro, "защищённом хранилище") {
 		t.Fatal(intro)
 	}
 }

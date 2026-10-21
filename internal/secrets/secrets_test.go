@@ -591,7 +591,9 @@ func TestInjectRoutesFileDeliveryToSecretFile(t *testing.T) {
 	}
 	var locator string
 	for _, info := range infos {
-		locator = info.Locator
+		if info.Name == "TLS_PEM" {
+			locator = info.Locator
+		}
 	}
 	store, auth, _ := seededRegistry(t, locator)
 	svc.Registry = store

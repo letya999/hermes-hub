@@ -27,6 +27,33 @@ func asyncFixture(t *testing.T, reviewer api.SourceReviewer) *ControlPlane {
 		ConfirmationTTL: 10 * time.Minute, PrepareSyncWindow: 50 * time.Millisecond}
 }
 
+func TestPrepareSourceCarriesConnectionRecipe(t *testing.T) {
+	seen := false
+	control := asyncFixture(t, func(ctx context.Context, _ api.ArtifactSource, _ *api.RecipeCandidate) (api.SourceReview, error) {
+		recipe, ok := ctx.Value(api.ConnectionRecipeContextKey{}).(api.ConnectionRecipe)
+		seen = ok && len(recipe.Fields) == 1 && recipe.Fields[0].Name == "CLIENT_JSON"
+		return api.SourceReview{}, api.ErrInvalid
+	})
+	control.PrepareSyncWindow = -1
+	_, _ = control.Invoke(t.Context(), aliceAuth(), "prepare_source", map[string]any{"source": githubCommitURL(), "request_key": "explicit-recipe", "connection_recipe": map[string]any{"fields": []any{map[string]any{"name": "CLIENT_JSON", "type": "json", "required": true, "secret": true, "delivery": "file", "target": "/run/client.json"}}}})
+	if !seen {
+		t.Fatal("chat recipe did not reach source reviewer")
+	}
+}
+
+func TestPrepareSourceRejectsUnknownRecipeFields(t *testing.T) {
+	called := false
+	control := asyncFixture(t, func(context.Context, api.ArtifactSource, *api.RecipeCandidate) (api.SourceReview, error) {
+		called = true
+		return api.SourceReview{}, api.ErrInvalid
+	})
+	control.PrepareSyncWindow = -1
+	_, err := control.Invoke(t.Context(), aliceAuth(), "prepare_source", map[string]any{"source": githubCommitURL(), "request_key": "unknown-recipe", "connection_recipe": map[string]any{"oauht": map[string]any{"token_url": "https://identity.example.com/token"}}})
+	if err == nil || called {
+		t.Fatal("unknown recipe fields reached reviewer")
+	}
+}
+
 func TestPrepareSelfInstallAsyncReturnsPreparingThenCompletes(t *testing.T) {
 	release := make(chan struct{})
 	notified := make(chan api.Onboarding, 1)
@@ -108,10 +135,10 @@ func TestPrepareSelfInstallDriftedContractIsReReviewed(t *testing.T) {
 		Execution: api.ExecutionPolicy{TimeoutSeconds: 60, OutputBytes: 2 << 20, CPUMillis: 1000, MemoryMiB: 512, MaxPIDs: 64, Egress: []string{"example.com"}},
 		Health:    api.HealthProbe{Kind: "exec", Value: "/app/health", TimeoutSeconds: 5},
 	}
-	for _, scenario := range []string{"intact", "drifted"} {
+	for _, scenario := range []string{"intact", "drifted", "explicit-recipe"} {
 		t.Run(scenario, func(t *testing.T) {
 			definition := stored
-			if scenario == "intact" {
+			if scenario != "drifted" {
 				digest, err := api.ConfirmedToolContractDigest(api.ConfirmedToolContract{Source: api.ToolContractPreflight, Tools: definition.Tools})
 				if err != nil {
 					t.Fatal(err)
@@ -134,7 +161,11 @@ func TestPrepareSelfInstallDriftedContractIsReReviewed(t *testing.T) {
 			if err := control.Store.PutPublication(api.DefinitionPublication{DefinitionID: definition.DefinitionID, Version: definition.Version, Visibility: api.PublicationUser, OwnerPrincipalID: "alice"}); err != nil {
 				t.Fatal(err)
 			}
-			body, err := control.Invoke(context.Background(), aliceAuth(), "prepare_source", map[string]any{"source": githubCommitURL(), "request_key": "reuse-" + scenario})
+			args := map[string]any{"source": githubCommitURL(), "request_key": "reuse-" + scenario}
+			if scenario == "explicit-recipe" {
+				args["connection_recipe"] = map[string]any{"fields": []any{map[string]any{"name": "CLIENT_JSON", "required": true, "delivery": "file", "target": "/run/client.json"}}}
+			}
+			body, err := control.Invoke(context.Background(), aliceAuth(), "prepare_source", args)
 			if err != nil {
 				t.Fatal(err)
 			}

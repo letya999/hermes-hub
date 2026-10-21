@@ -1,6 +1,6 @@
 ---
 description: "Процедуры, при которых нельзя обойти fail-closed поведение."
-last_verified: "2026-10-20"
+last_verified: "2026-10-21"
 ---
 
 # Восстановление, отзыв и очистка
@@ -25,9 +25,16 @@ backup и повторить enrollment для неясных операций. 
 
 ## Revoke и delete
 
-Revoke — локальный authorization fence плюс cancellation tracked requests. ToolHub немедленно
+Revoke — локальный authorization fence плюс cancellation tracked requests. Revoke credential
+деактивирует и все его grants (событие `grant.revoked` на каждый), иначе мёртвый active grant
+блокирует conflict-check `CreateGrant` для того же binding/workload. ToolHub немедленно
 прекращает MCP calls и останавливает/перезапускает процесс. File cleanup best-effort при OS error:
 mounts остаются операционной ответственностью runtime, даже если API уже запретил lease.
+
+Отказ `POST /v1/leases` пишет в лог `credential-broker lease denied deny_reason=<reason>
+grant_id="<id>"`: `grant_missing`, `identity_mismatch` (неактивный grant или расхождение
+principal/context/runtime/policy/binding/workload) или `credential_inactive`. Ответ API остаётся
+общим `403 denied`.
 
 Delete managed credential удаляет известные managed versions; внешние aliases не удаляет.
 Жизненный цикл одного binding не равен удалению общего credential. Провайдерный revoke OAuth/PAT

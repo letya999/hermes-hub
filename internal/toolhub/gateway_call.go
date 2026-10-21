@@ -78,6 +78,9 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 		}
 		if callErr != nil {
 			_ = g.audit("deny", mergeAudit(auditFields(auth, projected, effective, "backend-error"), corr))
+			if scrubbed := scrubLoopbackOAuthURL(callErr.Error()); scrubbed != callErr.Error() {
+				return errors.New(scrubbed)
+			}
 			return callErr
 		}
 		if injection.Checkpoint != nil && !result.IsError {
@@ -103,9 +106,17 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 				return fmt.Errorf("%w: backend content output", api.ErrInvalid)
 			}
 		}
+		// A backend's own interactive OAuth (desktop loopback like
+		// http://localhost:8000/oauth2callback) is unreachable for the user
+		// through any channel — managed sign-in runs through onboarding.
+		for _, content := range result.Content {
+			if tc, ok := content.(*mcp.TextContent); ok {
+				tc.Text = scrubLoopbackOAuthURL(tc.Text)
+			}
+		}
 		out = &mcp.CallToolResult{IsError: result.IsError, StructuredContent: result.Structured, Content: result.Content}
 		if result.Text != "" && len(out.Content) == 0 {
-			out.Content = []mcp.Content{&mcp.TextContent{Text: result.Text}}
+			out.Content = []mcp.Content{&mcp.TextContent{Text: scrubLoopbackOAuthURL(result.Text)}}
 		}
 		fields := auditFields(auth, projected, effective, "allow")
 		if receipt := api.SafeReceipt(result.Receipt); receipt != "" {

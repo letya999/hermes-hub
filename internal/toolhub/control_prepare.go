@@ -1,7 +1,9 @@
 package toolhub
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
@@ -15,6 +17,22 @@ import (
 )
 
 func (c *ControlPlane) prepareSource(ctx context.Context, auth identity.Envelope, args map[string]any) (map[string]any, error) {
+	if raw, ok := args["connection_recipe"]; ok {
+		data, err := json.Marshal(raw)
+		if err != nil {
+			return nil, api.ErrInvalid
+		}
+		var recipe api.ConnectionRecipe
+		decoder := json.NewDecoder(bytes.NewReader(data))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&recipe); err != nil {
+			return nil, api.ErrInvalid
+		}
+		if err := recipe.Validate(); err != nil {
+			return nil, err
+		}
+		ctx = context.WithValue(ctx, api.ConnectionRecipeContextKey{}, recipe)
+	}
 	if _, requested := args["telegram_send"]; requested {
 		return c.prepareTelegramSend(ctx, auth, args)
 	}
@@ -290,7 +308,8 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 	}
 	review := api.SourceReview{}
 	var err error
-	if existing, ok := c.Store.reusableSelfInstallDefinition(auth, source, preparing.DefinitionID, preparing.DefinitionVersion); !shared && selected == nil && ok && c.selfInstallUsable(existing) && completeToolSchemas(existing) && selfInstallContractIntact(existing) && !api.DeploySecretRequired(existing) {
+	_, explicitRecipe := ctx.Value(api.ConnectionRecipeContextKey{}).(api.ConnectionRecipe)
+	if existing, ok := c.Store.reusableSelfInstallDefinition(auth, source, preparing.DefinitionID, preparing.DefinitionVersion); !explicitRecipe && !shared && selected == nil && ok && c.selfInstallUsable(existing) && completeToolSchemas(existing) && selfInstallContractIntact(existing) && !api.DeploySecretRequired(existing) {
 		review = api.SourceReview{Definition: existing, Permissions: api.ToolNames(existing), Effects: api.EffectNames(existing), ReviewDigest: existing.Source.ReviewDigest}
 	} else {
 		if c.Reviewer == nil {
@@ -404,6 +423,7 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 		onboarding.Phase = api.PhaseAwaitingCreds
 		onboarding.FormNonce = api.RandomNonce()
 		onboarding.FormExpires = c.now().Add(c.ttl())
+		c.armWizard(&onboarding)
 		onboarding.ConfirmationNonce = ""
 		onboarding.ConfirmationExpires = time.Time{}
 	}

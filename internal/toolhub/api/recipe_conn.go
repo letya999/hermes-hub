@@ -92,6 +92,9 @@ func normalizeConnection(recipe ConnectionRecipe) ConnectionRecipe {
 }
 
 func mergeConnection(left, right ConnectionRecipe) ConnectionRecipe {
+	if left.OAuth == nil {
+		left.OAuth = right.OAuth
+	}
 	left.Fields = append(left.Fields, right.Fields...)
 	left.Alternatives = append(left.Alternatives, right.Alternatives...)
 	return normalizeConnection(left)
@@ -135,6 +138,9 @@ func FilterConnectionSource(recipe ConnectionRecipe, source string) (ConnectionR
 	for _, field := range recipe.Fields {
 		if matchConnectionSource(field.Source, source) {
 			filtered.Fields = append(filtered.Fields, field)
+			if recipe.OAuth != nil && field.Name == recipe.OAuth.ClientInput {
+				filtered.OAuth = recipe.OAuth
+			}
 		}
 	}
 	return filtered, ConnectionSources(recipe)
@@ -180,6 +186,7 @@ func MergeConnectionForDefinition(recipe ConnectionRecipe, definition *ToolDefin
 		return
 	}
 	definition.Credentials = nil
+	definition.OAuth = recipe.OAuth
 	definition.Credentials = append(definition.Credentials, recipe.CredentialInputs()...)
 }
 

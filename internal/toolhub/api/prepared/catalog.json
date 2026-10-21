@@ -19,9 +19,35 @@
     "runtime_environment": {"GOOGLE_CALENDAR_MCP_TOKEN_PATH": "/home/mcp/.config/google-calendar/runtime_session.json"},
     "preflight_files": {"GOOGLE_OAUTH_CREDENTIALS": {"installed":{"client_id":"preflight.apps.googleusercontent.com","client_secret":"preflight","redirect_uris":["http://localhost"]}}},
     "egress": ["accounts.google.com", "oauth2.googleapis.com", "www.googleapis.com"], "read_tools": ["list-calendars", "list-events"], "probe_tool": "list-calendars",
-    "oauth": {"provider": "google", "scopes": ["https://www.googleapis.com/auth/calendar.readonly"], "client_input": "GOOGLE_OAUTH_CREDENTIALS", "token_file": "runtime_session.json", "token_account": "normal", "token_format": "google-calendar-account-map"},
+    "oauth": {"authorize_url":"https://accounts.google.com/o/oauth2/v2/auth", "token_url":"https://oauth2.googleapis.com/token", "scopes": ["https://www.googleapis.com/auth/calendar.readonly"], "client_input": "GOOGLE_OAUTH_CREDENTIALS", "client_sections":["installed","web"], "registered_redirect_sections":["web"], "access_type":"offline", "prompt":"consent", "state_target":"/home/mcp/.config/google-calendar", "token_file": "runtime_session.json", "probe_tool":"list-calendars", "token_template":{"normal":{"access_token":"$oauth.ACCESS_TOKEN","refresh_token":"$oauth.REFRESH_TOKEN","expiry_date":"$oauth.EXPIRES_AT_UNIX_MS","token_type":"$oauth.TOKEN_TYPE","scope":"$oauth.OAUTH_SCOPE"}}},
     "runbook": "docs/prepared-connectors.md#google-calendar",
     "handoff": "Install https://github.com/nspady/google-calendar-mcp; reuse my existing OAuth client and token state through Broker. Never paste OAuth JSON or tokens in chat. Verify list-calendars and list-events for my account."
+  },
+  {
+    "id": "google-workspace", "name": "Google Workspace", "license": "MIT",
+    "source": {"repository":"https://github.com/taylorwilsdon/google_workspace_mcp","commit_sha":"af866c34a1d5d9429b09d7fe5572b07be299b844"},
+    "language":"python",
+    "entrypoint":["/opt/venv/bin/workspace-mcp","--transport","stdio","--single-user","--permissions","calendar:readonly","drive:readonly","gmail:readonly","docs:readonly","sheets:readonly","slides:readonly","tasks:readonly"],
+    "connection":{"fields":[
+      {"name":"GOOGLE_CLIENT_SECRET_PATH","type":"json","required":true,"secret":true,"delivery":"file","target":"/run/mcp-secrets/client.json"},
+      {"name":"USER_GOOGLE_EMAIL","type":"email","required":true,"secret":false,"delivery":"env","target":"USER_GOOGLE_EMAIL"}
+    ]},
+    "contract_id":"workspace-file-session","contract_revision":1,"stateful":true,
+    "state_target":"/home/mcp/.google_workspace_mcp/credentials",
+    "runtime_environment":{"MCP_SINGLE_USER_MODE":"1","WORKSPACE_MCP_CREDENTIALS_DIR":"/home/mcp/.google_workspace_mcp/credentials","WORKSPACE_MCP_LOG_LEVEL":"WARNING"},
+    "preflight_environment":{"USER_GOOGLE_EMAIL":"fixture@example.com"},
+    "preflight_files":{"GOOGLE_CLIENT_SECRET_PATH":{"installed":{"client_id":"preflight.apps.googleusercontent.com","client_secret":"preflight","redirect_uris":["http://localhost"]}}},
+    "egress":["accounts.google.com","oauth2.googleapis.com","www.googleapis.com","gmail.googleapis.com","drive.googleapis.com","docs.googleapis.com","sheets.googleapis.com","slides.googleapis.com","tasks.googleapis.com"],
+    "read_tools":["list_calendars","get_events"],"probe_tool":"list_calendars",
+    "oauth":{
+      "authorize_url":"https://accounts.google.com/o/oauth2/v2/auth","token_url":"https://oauth2.googleapis.com/token",
+      "scopes":["openid","https://www.googleapis.com/auth/userinfo.email","https://www.googleapis.com/auth/userinfo.profile","https://www.googleapis.com/auth/calendar.readonly","https://www.googleapis.com/auth/drive.readonly","https://www.googleapis.com/auth/gmail.readonly","https://www.googleapis.com/auth/documents.readonly","https://www.googleapis.com/auth/spreadsheets.readonly","https://www.googleapis.com/auth/presentations.readonly","https://www.googleapis.com/auth/tasks.readonly"],
+      "client_input":"GOOGLE_CLIENT_SECRET_PATH","client_sections":["installed","web"],"registered_redirect_sections":["web"],"access_type":"offline","prompt":"consent",
+      "state_target":"/home/mcp/.google_workspace_mcp/credentials","token_file":"runtime_session.json","account_input":"USER_GOOGLE_EMAIL","probe_tool":"list_calendars",
+      "token_template":{"token":"$oauth.ACCESS_TOKEN","refresh_token":"$oauth.REFRESH_TOKEN","token_uri":"$oauth.TOKEN_URL","client_id":"$client.ID","client_secret":"$client.SECRET","scopes":"$oauth.SCOPES","expiry":"$oauth.EXPIRES_AT_RFC3339"}
+    },
+    "runbook":"docs/prepared-connectors.md#google-workspace",
+    "handoff":"Install https://github.com/taylorwilsdon/google_workspace_mcp through the reviewed read-only recipe. Upload the OAuth client JSON and account email only in the protected Broker form, then approve the requested Google scopes in the browser. Verify list_calendars; no provider writes are authorized."
   },
   {
     "id": "github", "name": "GitHub", "license": "MIT",
@@ -85,7 +111,7 @@
       {"name": "TXTTSQL_CONFIG", "type": "file", "required": false, "secret": true, "delivery": "file", "target": "/app/config.toml"},
       {"name": "TXTTSQL_CA_FILE", "type": "pem", "required": false, "secret": false, "delivery": "file", "target": "/run/txttsql/ca.pem"}
     ]},
-    "contract_id": "txttsql-sql", "contract_revision": 1, "stateful": false,
+    "contract_id": "txttsql-sql", "contract_revision": 2, "stateful": false,
     "tcp_forwards": [
       {"listen": 15432, "target_env": "TXTTSQL_ENDPOINT"},
       {"listen": 15433, "target_env": "TXTTSQL_ENDPOINT_2"},
@@ -204,10 +230,10 @@
   {
     "id": "playwright-mcp", "aliases": ["browser"], "name": "Managed browser (Playwright MCP)", "license": "Apache-2.0",
     "tier": "t0",
-    "image": {"ref": "mcr.microsoft.com/playwright/mcp@sha256:690763cbb437ee7233f538a953bb5390bf03791eb5c965b471e59d17a6132fcb", "digest": "sha256:690763cbb437ee7233f538a953bb5390bf03791eb5c965b471e59d17a6132fcb"},
+    "image": {"ref": "localhost:5543/playwright-mcp@sha256:9b46b8e593e6b72c7f3f8c4aed20e624331358f1e099d2f8705bd59283504925", "digest": "sha256:9b46b8e593e6b72c7f3f8c4aed20e624331358f1e099d2f8705bd59283504925", "provenance": "sha256:50fc6b71dd8fc1ea2eda515f31ccce9c33bba63bcb812f31c772e76aee916bf2", "sbom": "sha256:50fc6b71dd8fc1ea2eda515f31ccce9c33bba63bcb812f31c772e76aee916bf2"},
     "source": {"repository": "https://github.com/microsoft/playwright-mcp", "commit_sha": "ab6d67cbf8b619338f096980806fdbe29432cc4d"},
     "language": "node",
-    "entrypoint": ["node", "/app/cli.js", "--headless", "--browser", "chromium", "--no-sandbox", "--user-data-dir", "/state/browser-profile", "--output-dir", "/state/browser-profile/downloads", "--output-max-size", "268435456", "--block-service-workers", "--idle-timeout", "900000", "--caps", "vision,pdf"],
+    "entrypoint": ["node", "/app/prelaunch.js", "--headless", "--browser", "chromium", "--no-sandbox", "--user-data-dir", "/state/browser-profile", "--output-dir", "/state/browser-profile/downloads", "--output-max-size", "268435456", "--block-service-workers", "--idle-timeout", "900000", "--caps", "vision,pdf"],
     "connection": {"fields": [
       {"name": "PLAYWRIGHT_MCP_STORAGE_STATE", "type": "json", "required": false, "secret": true, "delivery": "file", "target": "/run/mcp-secrets/browser/storage-state.json"},
       {"name": "PLAYWRIGHT_MCP_ALLOWED_ORIGINS", "type": "string", "required": false, "secret": false, "delivery": "env", "target": "PLAYWRIGHT_MCP_ALLOWED_ORIGINS"},
@@ -225,7 +251,7 @@
     "default_enabled": ["browser_navigate", "browser_navigate_back", "browser_tabs", "browser_snapshot", "browser_take_screenshot", "browser_wait_for", "browser_console_messages", "browser_resize", "browser_close", "browser_pdf_save", "browser_find"],
     "default_excluded": ["browser_click", "browser_drag", "browser_drop", "browser_hover", "browser_type", "browser_fill_form", "browser_press_key", "browser_select_option", "browser_file_upload", "browser_handle_dialog", "browser_mouse_click_xy", "browser_mouse_down", "browser_mouse_drag_xy", "browser_mouse_move_xy", "browser_mouse_up", "browser_mouse_wheel", "browser_evaluate", "browser_run_code_unsafe", "browser_network_requests", "browser_network_request"],
     "read_tools": ["browser_navigate", "browser_navigate_back", "browser_tabs", "browser_snapshot", "browser_take_screenshot", "browser_wait_for", "browser_console_messages", "browser_resize", "browser_close", "browser_pdf_save", "browser_find"],
-    "probe_tool": "browser_tabs",
+    "probe_tool": "browser_tabs", "probe_args": {"action": "list"},
     "runbook": "docs/prepared-connectors.md#playwright-mcp",
     "handoff": "Install https://github.com/microsoft/playwright-mcp as an isolated per-connection browser workload. The profile persists on the connection state volume; the workload browses the open web only through the audited deny-first proxy. Manual login happens in the owner-only viewer link, never in chat; an optional Playwright storage_state.json and origin restrictions go through the protected Broker form. Read and navigation tools project by default; interaction tools need connector_allow_writes plus the act toolset, eval and network tools their own toolsets."
   }

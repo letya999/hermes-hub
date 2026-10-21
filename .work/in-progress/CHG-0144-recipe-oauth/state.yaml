@@ -1,0 +1,34 @@
+schema: 1
+change: CHG-0144
+title: Recipe-driven OAuth installation
+status: in_progress
+branch: feat/m14-toolhub-connector-platform-merge
+updated: 2026-10-20
+phase: workspace_runtime_reset_by_owner
+adr: ADR-0070
+spec: SPEC-0067
+slices:
+  recipe-contract: implemented
+  oauth-engine: implemented
+  prepared-migration: implemented
+  live-acceptance: pending
+validation:
+  documents: passed
+  just_check: failed_devcheck_docker_wrapper_on_2026_10_20
+  broker_just_check: passed_linux_90.46_percent
+  docker_check: not_run
+  live_acceptance: calendar_passed_workspace_reset_unverified
+evidence:
+  - Calendar isolated source build and MCP preflight pass with declarative OAuth.
+  - Calendar source build without a prepared entry passes with explicit connection recipe.
+  - Focused OAuth callback, session format, scope and lease file isolation tests pass.
+  - Owner requested a clean Workspace reinstall; both google_workspace_mcp onboardings and their runtime definitions, bindings, connections, credential references, publications and recipe cache entries were removed from the local ToolHub store.
+  - Both Workspace Broker credentials report deleted; the Workspace image, two source archives and residual runtime lock directory were removed. Calendar remains enabled.
+remaining:
+  - Workspace provider acceptance was canceled by owner; a future install must use a new request key and protected form.
+  - The 2026-10-20 root just check failed in TestDockerExecWrappers; rerun before delivering code changes.
+  - Broker Linux just check passed with 90.46 percent total coverage and every production package at least 85 percent.
+  - Calendar retained its session and previously read 11 calendars plus 8 bounded events.
+  - ADR-0071 and SPEC-0068 record bounded owner-only dynamic JSON session registration.
+  - Confirmation and form links now post as new chat messages; an explicit status resend posts a fresh confirmation link.
+  - A generic delivery failure now returns OAuth-enabled onboarding to awaiting-credentials rather than re-routing to OAuth; red-first regression and ToolHub package tests passed.

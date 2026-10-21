@@ -2,14 +2,12 @@ package toolhub
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,8 +35,15 @@ type oauthFlowStore struct {
 
 // ensurePreparedOAuth starts only a reviewed OAuth handoff. Tool output is
 // never interpreted as an authorization URL or a provider configuration.
-func (c *ControlPlane) ensurePreparedOAuth(ctx context.Context, auth identity.Envelope, onboarding api.Onboarding, definition api.ToolDefinition) (map[string]any, error) {
+// resend=true rotates the armed flow: the user asked for the link again, so
+// the gateway gets a link-resent event on top of the standing-message edit.
+func (c *ControlPlane) ensurePreparedOAuth(ctx context.Context, auth identity.Envelope, onboarding api.Onboarding, definition api.ToolDefinition, resend bool) (map[string]any, error) {
 	entry, matched, err := api.PreparedForSource(api.ArtifactSource{Repository: definition.Source.Repository, Subfolder: definition.Source.Subfolder, CommitSHA: definition.Source.CommitSHA})
+	if a := definition.OAuth; a != nil {
+		entry.StateTarget = a.StateTarget
+		entry.OAuth = a
+		matched, err = true, nil
+	}
 	if err != nil || !matched || entry.OAuth == nil {
 		if definition.Transport == api.RemoteMCP {
 			return c.ensureRemoteOAuth(auth, onboarding, definition)
@@ -56,9 +61,25 @@ func (c *ControlPlane) ensurePreparedOAuth(ctx context.Context, auth identity.En
 			delete(c.oauthFlows.flows, state)
 			continue
 		}
-		if flow.onboardingID == onboarding.OnboardingID {
+		if flow.onboardingID == onboarding.OnboardingID && !resend {
 			onboarding.Phase = api.PhaseAwaitingOAuth
 			onboarding.ProviderAuthorizationURL = flow.url
+			// The wizard link must outlive the flow it fronts: a status poll
+			// hitting a live flow renews the TTL instead of stranding the URL.
+			dirty := !c.now().Before(onboarding.WizardExpires)
+			if dirty {
+				onboarding.WizardExpires = c.now().Add(c.ttl())
+			}
+			if onboarding.Error != "" || onboarding.ErrorCode != "" {
+				onboarding.Error, onboarding.ErrorCode = "", ""
+				dirty = true
+			}
+			if dirty {
+				onboarding.Revision++
+				if err := c.Store.PutOnboarding(onboarding); err != nil {
+					return nil, err
+				}
+			}
 			return c.statusBody(onboarding, false), nil
 		}
 	}
@@ -97,45 +118,15 @@ func (c *ControlPlane) ensurePreparedOAuth(ctx context.Context, auth identity.En
 		return nil, api.ErrIsolation
 	}
 	defer clear(data)
-	var document struct {
-		Installed *struct {
-			ID     string   `json:"client_id"`
-			Secret string   `json:"client_secret"`
-			URIs   []string `json:"redirect_uris"`
-		} `json:"installed"`
-		Web *struct {
-			ID     string   `json:"client_id"`
-			Secret string   `json:"client_secret"`
-			URIs   []string `json:"redirect_uris"`
-		} `json:"web"`
-	}
-	if json.Unmarshal(data, &document) != nil {
-		return nil, api.ErrInvalid
-	}
 	redirect := c.origin() + "/oauth/callback"
-	client := document.Installed
-	if client == nil {
-		client = document.Web
-		if client == nil {
-			return nil, api.ErrInvalid
-		}
-		allowed := false
-		for _, uri := range client.URIs {
-			allowed = allowed || uri == redirect
-		}
-		if !allowed {
-			return nil, fmt.Errorf("%w: OAuth web client callback is not registered", api.ErrInvalid)
-		}
-	}
-	if client.ID == "" || client.Secret == "" {
-		return nil, api.ErrInvalid
-	}
-	if _, ok := oauth.OfficialProviders()[entry.OAuth.Provider]; !ok {
-		return nil, api.ErrInvalid
+	id, secret, err := entry.OAuth.OAuthClient(data, redirect)
+	if err != nil {
+		return nil, err
 	}
 	broker := oauth.NewBroker(c.Secrets, []string{redirect})
-	broker.Clients[entry.OAuth.Provider] = oauth.ClientCredential{ID: client.ID, Secret: client.Secret}
-	start, err := broker.StartAuth(oauth.AuthRequest{Principal: auth.PrincipalID, Context: auth.ContextID, Connection: onboarding.OnboardingID, Provider: entry.OAuth.Provider, Redirect: redirect, Scopes: entry.OAuth.Scopes, AccessType: "offline", Prompt: "consent"})
+	broker.Providers = map[string]oauth.Provider{"recipe": {Name: "recipe", AuthorizeURL: entry.OAuth.AuthorizeURL, TokenURL: entry.OAuth.TokenURL}}
+	broker.Clients["recipe"] = oauth.ClientCredential{ID: id, Secret: secret}
+	start, err := broker.StartAuth(oauth.AuthRequest{Principal: auth.PrincipalID, Context: auth.ContextID, Connection: onboarding.OnboardingID, Provider: "recipe", Redirect: redirect, Scopes: entry.OAuth.Scopes, AccessType: entry.OAuth.AccessType, Prompt: entry.OAuth.Prompt})
 	if err != nil {
 		return nil, err
 	}
@@ -148,12 +139,17 @@ func (c *ControlPlane) ensurePreparedOAuth(ctx context.Context, auth identity.En
 	c.oauthFlows.flows[start.State] = &preparedOAuthFlow{onboardingID: onboarding.OnboardingID, url: start.AuthorizeURL, expires: c.now().Add(c.ttl()), broker: broker}
 	onboarding.Phase = api.PhaseAwaitingOAuth
 	onboarding.ProviderAuthorizationURL = start.AuthorizeURL
+	c.armWizard(&onboarding)
+	onboarding.Error, onboarding.ErrorCode = "", ""
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		delete(c.oauthFlows.flows, start.State)
 		return nil, err
 	}
 	api.PostPrepareNotice(ctx, auth, onboarding, "", 0)
+	if resend {
+		api.DeliverPrepareEvent(ctx, auth, onboarding, "link-resent")
+	}
 	return c.statusBody(onboarding, false), nil
 }
 
@@ -169,6 +165,18 @@ func (c *ControlPlane) preparedOAuthEffective(auth identity.Envelope, definition
 	binding.ToolBindingID = api.DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
 	ownerID := auth.ContextID + ":" + auth.PrincipalID + ":" + connection.ConnectionID
 	return api.EffectiveBinding{Binding: binding, Definition: definition, Connection: &connection, Credential: &credential, WorkloadID: api.WorkloadInstanceID(definition.DefinitionID, definition.Workload.Class, ownerID, "")}, nil
+}
+
+// preparedOAuthOnboardingID peeks at the live flow map so the callback page
+// can route the browser back onto the stable wizard link after completion —
+// completePreparedOAuth consumes the state, so the lookup happens first.
+func (c *ControlPlane) preparedOAuthOnboardingID(state string) string {
+	c.oauthFlows.mu.Lock()
+	defer c.oauthFlows.mu.Unlock()
+	if flow := c.oauthFlows.flows[state]; flow != nil {
+		return flow.onboardingID
+	}
+	return ""
 }
 
 func (c *ControlPlane) completePreparedOAuth(ctx context.Context, state, code string) error {
@@ -208,6 +216,11 @@ func (c *ControlPlane) completePreparedOAuth(ctx context.Context, state, code st
 		return err
 	}
 	entry, matched, err := api.PreparedForSource(api.ArtifactSource{Repository: definition.Source.Repository, Subfolder: definition.Source.Subfolder, CommitSHA: definition.Source.CommitSHA})
+	if a := definition.OAuth; a != nil {
+		entry.StateTarget = a.StateTarget
+		entry.OAuth = a
+		matched, err = true, nil
+	}
 	if err != nil || !matched || entry.OAuth == nil {
 		return api.ErrUnauthorized
 	}
@@ -231,12 +244,8 @@ func (c *ControlPlane) completePreparedOAuth(ctx context.Context, state, code st
 	if stateDir == "" || values["ACCESS_TOKEN"] == "" || values["REFRESH_TOKEN"] == "" || injection.Checkpoint == nil {
 		return api.ErrIsolation
 	}
-	seconds, err := strconv.Atoi(values["EXPIRES_IN"])
-	if err != nil || seconds <= 0 {
-		return api.ErrInvalid
-	}
-	token := map[string]any{"access_token": values["ACCESS_TOKEN"], "refresh_token": values["REFRESH_TOKEN"], "expiry_date": c.now().Add(time.Duration(seconds) * time.Second).UnixMilli(), "token_type": values["TOKEN_TYPE"], "scope": values["OAUTH_SCOPE"]}
-	encoded, err := json.Marshal(map[string]any{entry.OAuth.TokenAccount: token})
+	client := flow.broker.Clients["recipe"]
+	encoded, err := entry.OAuth.RenderToken(values, client.ID, client.Secret, c.now())
 	if err != nil {
 		return err
 	}

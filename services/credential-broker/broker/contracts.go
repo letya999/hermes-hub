@@ -20,11 +20,12 @@ func (b *Broker) RegisterContract(a identity.Actor, c contract.Contract) (contra
 	if !a.Valid() {
 		return contract.Contract{}, ErrInvalid
 	}
-	// Dynamic contracts are collect-and-deliver only. Proxy routes, OAuth
-	// providers and state files stay exclusive to the operator-reviewed file
-	// catalog; allow_shared is synthesizable because a Sharable shared
-	// definition's single policy-owned credential is still form-collected.
-	if c.OAuthProvider != "" || c.State != nil || len(c.Routes) != 0 {
+	// ADR-0071 permits one bounded owner-only JSON session through the same
+	// lease machinery; routes and provider implementations remain static.
+	if c.OAuthProvider != "" || len(c.Routes) != 0 {
+		return contract.Contract{}, ErrDenied
+	}
+	if c.State != nil && (c.AllowShared || len(c.State.Files) != 1 || !c.State.Files[0].JSON || c.State.Files[0].MaxBytes > 65536) {
 		return contract.Contract{}, ErrDenied
 	}
 	if c.Storage == "" {

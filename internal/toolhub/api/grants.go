@@ -153,8 +153,16 @@ type Onboarding struct {
 	// ChannelAuthURL is the sign-in link the communication plane minted for
 	// this request (e.g. a QR page); when set it outranks the Broker form as
 	// the link the agent should hand to the user.
-	ChannelAuthURL           string `json:"channel_auth_url,omitempty"`
-	ProviderAuthorizationURL string `json:"provider_authorization_url,omitempty"`
+	ChannelAuthURL string `json:"channel_auth_url,omitempty"`
+	// WizardNonce/WizardExpires arm the stable single-link setup page
+	// (/connect/<id>?k=): one URL renders every interactive phase in place —
+	// credential intake, confirmation and the provider OAuth hop — so the
+	// channel carries one link instead of a rotating set of one-time links.
+	// Per-step nonces still gate each mutation; the nonce alone is a
+	// view/resume capability and dies with the onboarding's terminal phase.
+	WizardNonce              string    `json:"wizard_nonce,omitempty"`
+	WizardExpires            time.Time `json:"wizard_expires,omitempty"`
+	ProviderAuthorizationURL string    `json:"provider_authorization_url,omitempty"`
 	// OAuthProvider names the broker slot that minted this onboarding's
 	// credential. Set only for OAuth-managed connections so the call path
 	// knows a rejected call may be refreshed and retried once.

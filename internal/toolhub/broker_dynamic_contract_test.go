@@ -23,6 +23,14 @@ import (
 // dead-end "no reviewed contract" error. The form the user fills in is the
 // consent point; the contract only declares collection and delivery.
 func TestBindReviewedContractSynthesizesDynamicContract(t *testing.T) {
+	testBindReviewedContractSynthesis(t, false)
+}
+
+func TestOAuthContractDoesNotReuseUnrelatedCollection(t *testing.T) {
+	testBindReviewedContractSynthesis(t, true)
+}
+
+func testBindReviewedContractSynthesis(t *testing.T, withOAuth bool) {
 	_, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -32,6 +40,9 @@ func TestBindReviewedContractSynthesizesDynamicContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	var registered []contract.Contract
+	if withOAuth {
+		registered = append(registered, contract.Contract{ID: "other-collection", Revision: 1, Title: "Other collection", Storage: "local", Fields: []contract.Field{{ID: "token", Label: "Token", Kind: "secret", Required: true, MaxBytes: 65536}}, Deliveries: []contract.Delivery{{Type: "env", Field: "token", Target: "NOTION_TOKEN"}}})
+	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -53,10 +64,18 @@ func TestBindReviewedContractSynthesizesDynamicContract(t *testing.T) {
 	defer server.Close()
 
 	definition := remoteDefinition()
+	if withOAuth {
+		definition = statefulContainerDefinition()
+	}
 	definition.DefinitionID = "notion-mcp-server"
 	definition.Credentials = []api.CredentialInput{
 		{Name: "NOTION_TOKEN", Required: true},
 		{Name: "NOTION_EXTRA", Required: false},
+	}
+	if withOAuth {
+		definition.Credentials[0].Delivery = "file"
+		definition.Credentials[0].Target = "/run/client.json"
+		definition.OAuth = &api.OAuthRecipe{ClientInput: "NOTION_TOKEN", StateTarget: "/session", TokenFile: "session.json"}
 	}
 	control := &ControlPlane{Store: NewStore(), Broker: &credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}, Now: time.Now}
 	if err := control.bindReviewedContract(t.Context(), aliceAuth(), &definition); err != nil {
@@ -65,10 +84,14 @@ func TestBindReviewedContractSynthesizesDynamicContract(t *testing.T) {
 	if !strings.HasPrefix(definition.CredentialContractID, "dyn-") || definition.CredentialContractRevision != 1 {
 		t.Fatalf("dynamic contract not bound: %+v", definition)
 	}
-	if len(registered) != 1 {
+	wantRegistered := 1
+	if withOAuth {
+		wantRegistered = 2
+	}
+	if len(registered) != wantRegistered {
 		t.Fatalf("expected one registered contract, got %d", len(registered))
 	}
-	got := registered[0]
+	got := registered[len(registered)-1]
 	if got.ID != definition.CredentialContractID || got.Revision != 1 {
 		t.Fatalf("registered contract mismatch: %+v", got)
 	}
@@ -76,6 +99,12 @@ func TestBindReviewedContractSynthesizesDynamicContract(t *testing.T) {
 		t.Fatalf("contract does not cover declared inputs: %+v", got)
 	}
 	for _, d := range got.Deliveries {
+		if withOAuth && d.EnvName == "NOTION_TOKEN" {
+			if d.Type != "file" || d.Target != "/run/client.json" {
+				t.Fatal("OAuth client file lost")
+			}
+			continue
+		}
 		if d.Type != "env" || (d.Target != "NOTION_TOKEN" && d.Target != "NOTION_EXTRA") {
 			t.Fatalf("unexpected delivery: %+v", d)
 		}

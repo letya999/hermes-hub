@@ -247,6 +247,22 @@ func (c *genericController) start(ctx context.Context, plan api.ControllerPlan) 
 			if err != nil {
 				return genericWorkload{}, err
 			}
+			for _, input := range plan.Definition.Credentials {
+				if secretValues[input.Name] != "" || (input.Delivery != "file" && input.Delivery != "json") {
+					continue
+				}
+				staged, rerr := os.ReadFile(filepath.Join(plan.WorkspacePath, input.Name+".secret"))
+				if rerr != nil {
+					continue
+				}
+				value := string(staged)
+				if input.Delivery == "file" && value != input.Target {
+					// Raw file content needs a bind mount this path cannot
+					// express; only the broker lease path may pass as env.
+					return genericWorkload{}, fmt.Errorf("%w: file credential %s requires a lease mount", api.ErrIsolation, input.Name)
+				}
+				secretValues[input.Name] = value
+			}
 		} else if !os.IsNotExist(statErr) {
 			return genericWorkload{}, api.ErrIsolation
 		}

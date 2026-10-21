@@ -7,6 +7,8 @@ record it points to. `archive/` holds only pre-renumbering originals.
 
 | Specification | Status |
 |---|---|
+| [SPEC-0068](active/SPEC-0068-dynamic-session-contract.md) | Frozen: bounded owner-only dynamic JSON sessions |
+| [SPEC-0067](active/SPEC-0067-recipe-oauth.md) | Frozen: recipe-driven OAuth installation |
 | [SPEC-0066](active/SPEC-0066-credential-broker-effective-contract.md) | Frozen: broker effective contract on request — extras and demote (imported from services/credential-broker) |
 | [SPEC-0065](active/SPEC-0065-credential-broker-dynamic-contracts.md) | Frozen: broker dynamic contract registration via control API (imported from services/credential-broker) |
 | [SPEC-0064](active/SPEC-0064-credential-broker-v1.md) | Frozen: credential broker MVP contract — requirements traced to executable tests (imported from services/credential-broker; hash-frozen in services/credential-broker/specs/baseline.json) |

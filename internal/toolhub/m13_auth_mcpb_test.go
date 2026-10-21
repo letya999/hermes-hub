@@ -344,6 +344,9 @@ func TestRemoteOAuthStatusHandsAuthorizationURL(t *testing.T) {
 	if rawURL == "" {
 		t.Fatal("onboarding lacks provider authorization url")
 	}
+	if onboarded := mustOnboarding(t, fix.store, prepared["onboarding_id"].(string)); onboarded.WizardNonce == "" || onboarded.WizardExpires.IsZero() {
+		t.Fatalf("remote oauth handoff did not arm the wizard: %+v", onboarded)
+	}
 	authURL, _ := url.Parse(rawURL)
 	scope := authURL.Query().Get("scope")
 	if authURL.Query().Get("client_id") != "dcr-client" || authURL.Query().Get("resource") == "" || !strings.Contains(scope, "mcp:read") || strings.Contains(scope, "mcp:admin") {

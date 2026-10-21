@@ -35,7 +35,9 @@ SDK вычисляет hash и подпись: не собирать assertions 
 `POST /v1/credentials/{id}/grants`; `POST /v1/leases` → descriptor.
 
 `POST /v1/contracts` (только `broker:control`) регистрирует collect-and-deliver контракт: без
-routes/OAuth/state/shared, storage по умолчанию — первый writable provider. Идемпотентен по
+routes/OAuth; личный state допускает один JSON-файл до 65536 байт (ADR-0071).
+Shared state запрещён; allow_shared без state поддерживается (ADR-0068).
+Storage по умолчанию — первый writable provider. Идемпотентен по
 `id@revision`+digest; конфликт digest — 409. Секретов в теле нет — контракт описывает shape,
 значения вводит владелец через форму.
 

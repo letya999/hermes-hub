@@ -16,6 +16,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0144](in-progress/CHG-0144-recipe-oauth/plan.md) | Recipe-driven OAuth for prepared and runtime MCP installation |
 | [CHG-0143](in-progress/CHG-0143-oauth-viewer-link-flows/plan.md) | OAuth resend rotation, broker grant-epoch fix, viewer-link relay — retroactive record for the uncommitted branch diff |
 | [CHG-0141](in-progress/CHG-0141-broker-multi-consumer/plan.md) | Broker: multi-consumer credentials per connection — implemented; module `just check` on a Linux runner is the remaining gate |
 | [CHG-0140](in-progress/CHG-0140-broker-dynamic-contracts/plan.md) | Broker: dynamic contract registration — hub integration done as CHG-0107; module `just check` gate remains |
@@ -41,6 +42,8 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0146](done/CHG-0146-oauth-rotation-state-loss/plan.md) | OAuth re-rotation dropped the callback token (new binding → empty broker state); wizard-link agent copy; broker revoke retires grants and logs lease deny reasons |
+| [CHG-0145](done/CHG-0145-single-link-onboarding/plan.md) | Single-link onboarding wizard: one stable /connect/<id>?k= URL drives credentials, broker hop, confirm and provider OAuth; comm-hub edits one message in place; `just check` green, dev images live |
 | [CHG-0142](done/CHG-0142-credential-broker-mvp/plan.md) | Credential Broker module import MVP (imported 2026-10-20 from services/credential-broker .work/done CHG-001; number taken after 0141) |
 | [CHG-0138](done/CHG-0138-m11-session-ux-closeout/plan.md) | M11 closeout: /stop+/cancel, archive UX, live progress, e2e runner — issues #217/#218/#219/#194/#193; Telegram live acceptance still pending owner |
 | [CHG-0137](done/CHG-0137-qr-intake-default/plan.md) | QR login compiled into the one gateway, default-on for telegram stacks; live-verified 2026-10-19 |

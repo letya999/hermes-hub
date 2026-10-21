@@ -300,6 +300,8 @@ type CredentialReference struct {
 	Locator                string            `json:"locator"`
 	Keys                   []string          `json:"keys"`
 	BrokerGrantID          string            `json:"broker_grant_id,omitempty"`
+	BrokerGrantPolicy      string            `json:"broker_grant_policy,omitempty"`
+	BrokerGrantBinding     string            `json:"broker_grant_binding,omitempty"`
 	BrokerContractID       string            `json:"broker_contract_id,omitempty"`
 	BrokerContractRevision int               `json:"broker_contract_revision,omitempty"`
 	BrokerEnv              map[string]string `json:"broker_env,omitempty"`

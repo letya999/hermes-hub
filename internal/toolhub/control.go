@@ -9,6 +9,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/oauth"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -171,7 +172,8 @@ func (c *ControlPlane) status(ctx context.Context, auth identity.Envelope, args 
 		if err != nil {
 			return nil, err
 		}
-		return c.ensurePreparedOAuth(context.Background(), auth, onboarding, definition)
+		resend, _ := args["resend"].(bool)
+		return c.ensurePreparedOAuth(context.Background(), auth, onboarding, definition, resend)
 	}
 	if err := c.regenerateBrokerRequest(context.Background(), auth, &onboarding); err != nil {
 		return nil, err
@@ -181,6 +183,10 @@ func (c *ControlPlane) status(ctx context.Context, auth identity.Envelope, args 
 	}
 	if err := c.refreshConfirmation(ctx, auth, &onboarding); err != nil {
 		return nil, err
+	}
+	if resend, _ := args["resend"].(bool); resend && onboarding.Phase == api.PhaseAwaitingConfirm {
+		// A resend asks for a fresh message carrying the live confirm link.
+		api.DeliverPrepareEvent(ctx, auth, onboarding, "link-resent")
 	}
 	return c.statusBody(onboarding, false), nil
 }
@@ -201,7 +207,8 @@ func (c *ControlPlane) confirm(ctx context.Context, auth identity.Envelope, args
 		return nil, err
 	}
 	if onboarding.Phase == api.PhaseAwaitingOAuth {
-		return c.ensurePreparedOAuth(ctx, auth, onboarding, definition)
+		resend, _ := args["resend"].(bool)
+		return c.ensurePreparedOAuth(ctx, auth, onboarding, definition, resend)
 	}
 	nonce := api.ArgString(args, "nonce")
 	if onboarding.ConfirmationUsed {
@@ -219,8 +226,13 @@ func (c *ControlPlane) confirm(ctx context.Context, auth identity.Envelope, args
 	binding, err := c.materializeBinding(ctx, auth, onboarding, definition)
 	if err != nil {
 		if errors.Is(err, api.ErrUnauthorized) || errors.Is(err, api.ErrCredentialDelivery) {
-			if entry, matched, lookupErr := api.PreparedForSource(api.ArtifactSource{Repository: definition.Source.Repository, Subfolder: definition.Source.Subfolder, CommitSHA: definition.Source.CommitSHA}); lookupErr == nil && matched && entry.OAuth != nil {
-				return c.ensurePreparedOAuth(ctx, auth, onboarding, definition)
+			// Only a missing token state may re-route to the reviewed OAuth
+			// handoff: a delivered bundle that lacks required inputs (e.g. a
+			// non-client field like the account email) is owner-fixable, so
+			// the credential step reopens for a fresh Broker form instead.
+			if entry, matched, lookupErr := api.PreparedForSource(api.ArtifactSource{Repository: definition.Source.Repository, Subfolder: definition.Source.Subfolder, CommitSHA: definition.Source.CommitSHA}); !errors.Is(err, api.ErrCredentialDelivery) && (definition.OAuth != nil || lookupErr == nil && matched && entry.OAuth != nil) {
+				log.Printf("toolhub oauth re-route onboarding=%s materialize: %v", onboarding.OnboardingID, err)
+				return c.ensurePreparedOAuth(ctx, auth, onboarding, definition, false)
 			}
 			c.resetSubmittedCredential(&onboarding)
 		}
@@ -452,6 +464,12 @@ func (c *ControlPlane) remove(ctx context.Context, auth identity.Envelope, args 
 	return c.statusBody(onboarding, false), nil
 }
 
+// parrotInstructions tells the agent how to hand a protected link to the
+// user: verbatim, alone, without reconstructing alternatives.
+func parrotInstructions(field string) string {
+	return "Send " + field + " to the user verbatim as the only link — it is the protected sign-in page for this request. Do not offer, construct, or mention any other link. Never ask for credentials in chat."
+}
+
 func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map[string]any {
 	body := map[string]any{
 		"onboarding_id":  onboarding.OnboardingID,
@@ -516,7 +534,7 @@ func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map
 			// the agent at all: mentioning an "authorization_url fallback"
 			// makes the model reconstruct and parrot that URL anyway.
 			body["signin_url"] = onboarding.ChannelAuthURL
-			body["instructions"] = "Send signin_url to the user verbatim as the only link — it is the sign-in page for this request. Do not offer, construct, or mention any other link. Never ask for credentials in chat."
+			body["instructions"] = parrotInstructions("signin_url")
 		}
 	case api.PhaseAwaitingConfirm:
 		body["next_action"] = "confirm"

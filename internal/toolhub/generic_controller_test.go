@@ -627,6 +627,76 @@ func TestGenericControllerConstructionAndCommandEnv(t *testing.T) {
 	}
 }
 
+// A lease-delivered file credential lands as a staged <name>.secret holding
+// the mount target — the injector strips it from env lines. The ToolHive path
+// must forward it as the target path; staged raw file content cannot be
+// expressed as an env line and must fail closed.
+func TestGenericControllerStartStagedFileCredential(t *testing.T) {
+	d, root, paths := genericDefinition(t)
+	parts := strings.Split(paths, "\x00")
+	d.Credentials = []api.CredentialInput{
+		{Name: "CLIENT_JSON", Required: true, Delivery: "file", Target: "/run/mcp-secrets/client.json"},
+		{Name: "CONF_JSON", Required: true, Delivery: "json"},
+		{Name: "ACCOUNT", Required: true},
+	}
+	workspace := filepath.Join(root, "credential-workspace")
+	if err := os.Mkdir(workspace, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "credentials.env"), []byte("ACCOUNT=owner@example.com\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "CLIENT_JSON.secret"), []byte("/run/mcp-secrets/client.json"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "CONF_JSON.secret"), []byte(`{"k":1}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	budget, _ := api.NewWorkloadBudget(1, time.Minute)
+	c, err := newGenericController(GenericControllerConfig{StateRoot: root, ToolHiveBinary: parts[0], SeccompProfile: parts[1], Definition: d, Budget: budget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := genericPlan(d)
+	plan.WorkspacePath = workspace
+	containers, _ := json.Marshal(genericContainers(plan, parts[1], plan.WorkloadID+"-egress-config"))
+	c.command = func(_ context.Context, binary string, args ...string) ([]byte, error) {
+		if binary == parts[0] && args[0] == "version" {
+			return []byte("ToolHive v0.48.0"), nil
+		}
+		if binary == parts[0] && args[0] == "run" {
+			return []byte("--read-only --security-opt --cpus --memory --pids-limit --cap-drop --user --timeout --output-limit"), nil
+		}
+		if args[0] == "inspect" && len(args) >= 4 {
+			return []byte(`{"hermes-generic-workload":{"IPAddress":"172.20.0.2"}}`), nil
+		}
+		if args[0] == "inspect" && len(args) == 3 {
+			return containers, nil
+		}
+		return []byte(`[]`), nil
+	}
+	var forwarded map[string]string
+	c.commandEnv = func(_ context.Context, env map[string]string, _ string, args ...string) ([]byte, error) {
+		forwarded = env
+		return nil, nil
+	}
+	if _, err := c.start(context.Background(), plan); err != nil {
+		t.Fatalf("staged lease credential rejected: %v", err)
+	}
+	if forwarded["TOOLHIVE_SECRET_HERMES_GENERIC_WORKLOAD_CLIENT_JSON"] != "/run/mcp-secrets/client.json" {
+		t.Fatalf("file credential target not forwarded: %#v", forwarded)
+	}
+	if forwarded["TOOLHIVE_SECRET_HERMES_GENERIC_WORKLOAD_CONF_JSON"] != `{"k":1}` {
+		t.Fatalf("json credential content not forwarded: %#v", forwarded)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "CLIENT_JSON.secret"), []byte(`{"installed":{}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.start(context.Background(), plan); err == nil {
+		t.Fatal("raw file content must fail closed on the ToolHive path")
+	}
+}
+
 func TestGenericControllerRequiresOneContainerProxy(t *testing.T) {
 	d, root, paths := genericDefinition(t)
 	parts := strings.Split(paths, "\x00")

@@ -82,6 +82,7 @@ func (c *ControlPlane) prepareRemote(ctx context.Context, auth identity.Envelope
 			IdempotencyKey: requestKey, Revision: 1, CreatedAt: c.now(),
 			Definition: &draft,
 		}
+		c.armWizard(&onboarding)
 		if err := c.Store.PutOnboarding(onboarding); err != nil {
 			return nil, err
 		}

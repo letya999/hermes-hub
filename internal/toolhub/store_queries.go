@@ -61,16 +61,25 @@ func (s *Store) binding(id string) (api.ToolBinding, error) {
 // credential still authorizes the binding this enable would run under. A grant
 // is minted for the deterministic binding ID — which folds in the definition
 // version and credential reference — and pins the admitting policy epoch. A
-// stored binding that still resolves to that identity proves the grant covers
-// it; any version or epoch change requires a fresh grant.
+// grant's recorded binding identity also survives a failed readiness probe,
+// before any enabled binding exists. Any version or epoch change requires a
+// fresh grant. The epoch recorded at mint time is the source of truth:
+// policy migration rewrites the binding
+// record, so its version no longer proves the grant accepts the actor.
 func (s *Store) brokerGrantReusable(auth identity.Envelope, definition api.ToolDefinition, match ownerConnectionMatch) bool {
-	if match.credential.BrokerGrantID == "" {
+	if match.credential.BrokerGrantID == "" || match.credential.BrokerGrantPolicy != auth.PolicyVersion {
 		return false
 	}
 	id := api.DeterministicBindingID(auth.PrincipalID, auth.ContextID, auth.RuntimeID, definition.DefinitionID, definition.Version, match.connection.ConnectionID, match.credential.CredentialRefID)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	binding, ok := s.bindings[id]
+	if ok && binding.Status == api.RevokedStatus {
+		return false
+	}
+	if match.credential.BrokerGrantBinding != "" {
+		return match.credential.BrokerGrantBinding == id
+	}
 	return ok && binding.Status != api.RevokedStatus && binding.PolicyVersion == auth.PolicyVersion
 }
 

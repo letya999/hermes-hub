@@ -78,6 +78,10 @@ func TestPrepareOutcomeNoticeFollowsOriginChannel(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
+	var result map[string]string
+	if json.Unmarshal(rec.Body.Bytes(), &result) != nil || result["login_url"] != "http://127.0.0.1:8090/credentials/onboard-mock?t=tok1" {
+		t.Fatalf("protected form link missing from handoff: %s", rec.Body.String())
+	}
 	entries, err := os.ReadDir(filepath.Join(cfg.SpoolDir, "outbox", "pending"))
 	if err != nil {
 		t.Fatal(err)
@@ -326,6 +330,158 @@ func TestPrepareOutcomeDeliversNoticeAndContinuation(t *testing.T) {
 	}
 }
 
+// CHG-0127 made the channel notice the only path carrying one-time action
+// links to the human — tool results no longer include them. Notices for
+// awaiting-confirm and awaiting-oauth must render the /confirm/ and /connect/
+// URLs, and a remove preview keeps the prior phase yet still owes the
+// /remove/ link; dropping any of them deadlocks the onboarding.
+func TestPrepareOutcomeActionLinks(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.ControlAuth = "control-token"
+	gateway, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := map[string]string{
+		"onboarding_id": "onboard-act",
+		"definition_id": "user-mcp",
+		"repository":    "https://github.com/example/mcp",
+	}
+	post := func() *httptest.ResponseRecorder {
+		t.Helper()
+		raw, _ := json.Marshal(body)
+		req := httptest.NewRequest(http.MethodPost, "/v1/prepare-outcome", bytes.NewReader(raw))
+		req.Header.Set("Authorization", "Bearer control-token")
+		req.Header.Set("X-Hub-Principal", "alice")
+		rec := httptest.NewRecorder()
+		gateway.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+	notices := func() []string {
+		t.Helper()
+		entries, err := os.ReadDir(filepath.Join(cfg.SpoolDir, "outbox", "pending"))
+		if err != nil {
+			return nil
+		}
+		var out []string
+		for _, entry := range entries {
+			raw, err := os.ReadFile(filepath.Join(cfg.SpoolDir, "outbox", "pending", entry.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, string(raw))
+		}
+		return out
+	}
+	contains := func(needle string) bool {
+		for _, item := range notices() {
+			if strings.Contains(item, needle) {
+				return true
+			}
+		}
+		return false
+	}
+
+	body["phase"] = "awaiting-confirm"
+	body["form_url"] = "http://127.0.0.1:8090/confirm/onboard-act?t=conf-1"
+	if rec := post(); rec.Code != http.StatusOK {
+		t.Fatalf("awaiting-confirm=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !contains("http://127.0.0.1:8090/confirm/onboard-act?t=conf-1") {
+		t.Fatalf("confirm notice lost the link: %v", notices())
+	}
+
+	body["phase"] = "awaiting-oauth"
+	body["form_url"] = "http://127.0.0.1:8090/connect/onboard-act?state=flow-1"
+	if rec := post(); rec.Code != http.StatusOK {
+		t.Fatalf("awaiting-oauth=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !contains("http://127.0.0.1:8090/connect/onboard-act?state=flow-1") {
+		t.Fatalf("oauth notice lost the link: %v", notices())
+	}
+
+	// The remove preview posts the still-current phase — enabled here — while
+	// form_url carries the armed /remove/ link.
+	jobsBefore, err := os.ReadDir(filepath.Join(cfg.SpoolDir, "pending"))
+	if err != nil {
+		jobsBefore = nil
+	}
+	body["phase"] = "enabled"
+	body["form_url"] = "http://127.0.0.1:8090/remove/onboard-act?t=rm-1"
+	if rec := post(); rec.Code != http.StatusOK {
+		t.Fatalf("remove preview=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !contains("http://127.0.0.1:8090/remove/onboard-act?t=rm-1") {
+		t.Fatalf("remove notice lost the link: %v", notices())
+	}
+	if contains("подключён") {
+		t.Fatalf("remove preview rendered as an enable notice: %v", notices())
+	}
+	// The human click is the continuation — no agent job may resume while the
+	// destructive link is pending.
+	jobsAfter, err := os.ReadDir(filepath.Join(cfg.SpoolDir, "pending"))
+	if err != nil {
+		jobsAfter = nil
+	}
+	if len(jobsAfter) != len(jobsBefore) {
+		t.Fatalf("remove preview enqueued a continuation job: before=%d after=%d", len(jobsBefore), len(jobsAfter))
+	}
+}
+
+// The browser viewer link arrives with its own fields — connection_id and
+// viewer_url — and must reach the owner's channel like any other action
+// link; the old handler rejected the shape outright and the link vanished.
+func TestPrepareOutcomeViewerLink(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.ControlAuth = "control-token"
+	gateway, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	post := func(body map[string]string) *httptest.ResponseRecorder {
+		t.Helper()
+		raw, _ := json.Marshal(body)
+		req := httptest.NewRequest(http.MethodPost, "/v1/prepare-outcome", bytes.NewReader(raw))
+		req.Header.Set("Authorization", "Bearer control-token")
+		req.Header.Set("X-Hub-Principal", "alice")
+		rec := httptest.NewRecorder()
+		gateway.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := post(map[string]string{"connection_id": "conn-1", "viewer_url": "http://127.0.0.1:8090/viewer/conn-1?t=view-1"}); rec.Code != http.StatusOK {
+		t.Fatalf("viewer link=%d body=%s", rec.Code, rec.Body.String())
+	}
+	entries, err := os.ReadDir(filepath.Join(cfg.SpoolDir, "outbox", "pending"))
+	if err != nil || len(entries) == 0 {
+		t.Fatalf("viewer notice not spooled: %v %v", entries, err)
+	}
+	sawLink := false
+	for _, entry := range entries {
+		raw, err := os.ReadFile(filepath.Join(cfg.SpoolDir, "outbox", "pending", entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(raw), "http://127.0.0.1:8090/viewer/conn-1?t=view-1") {
+			sawLink = true
+		}
+	}
+	if !sawLink {
+		t.Fatal("viewer notice lost the link")
+	}
+	if jobs, _ := os.ReadDir(filepath.Join(cfg.SpoolDir, "pending")); len(jobs) != 0 {
+		t.Fatalf("viewer link enqueued a continuation job: %d", len(jobs))
+	}
+	if rec := post(map[string]string{"connection_id": "conn-1", "viewer_url": "http://127.0.0.1:8090/confirm/conn-1?t=x"}); rec.Code != http.StatusBadRequest {
+		t.Fatalf("non-viewer url=%d", rec.Code)
+	}
+	if rec := post(map[string]string{"connection_id": "conn-1", "viewer_url": "https://evil.example/viewer/conn-1?t=x"}); rec.Code != http.StatusBadRequest {
+		t.Fatalf("foreign host=%d", rec.Code)
+	}
+	if rec := post(map[string]string{"connection_id": "conn-1", "viewer_url": "http://127.0.0.1:8090/viewer/conn-1"}); rec.Code != http.StatusBadRequest {
+		t.Fatalf("tokenless viewer=%d", rec.Code)
+	}
+}
+
 func TestPrepareOutcomeProgressEvents(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.ControlAuth = "control-token"
@@ -467,5 +623,58 @@ func TestPrepareOutcomeProgressEvents(t *testing.T) {
 	body["tools"] = 600
 	if rec := post(); rec.Code != http.StatusBadRequest {
 		t.Fatalf("tools bound=%d", rec.Code)
+	}
+}
+
+// An awaiting-confirm notice carrying the stable wizard link must keep the
+// URL in its text: the notice now edits the shared message in place, so a
+// link-free body would strip the only actionable URL the user has.
+func TestPrepareOutcomeWizardConfirmKeepsLink(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.ControlAuth = "control-token"
+	gateway, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wizard := "http://127.0.0.1:8090/connect/onboard-wzc?k=0123456789abcdef0123456789abcdef"
+	raw, _ := json.Marshal(map[string]string{
+		"onboarding_id": "onboard-wzc", "phase": "awaiting-confirm",
+		"definition_id": "user-mcp", "repository": "https://github.com/example/mcp",
+		"form_url": wizard,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/prepare-outcome", bytes.NewReader(raw))
+	req.Header.Set("Authorization", "Bearer control-token")
+	req.Header.Set("X-Hub-Principal", "alice")
+	rec := httptest.NewRecorder()
+	gateway.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	entries, err := os.ReadDir(filepath.Join(cfg.SpoolDir, "outbox", "pending"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, entry := range entries {
+		body, _ := os.ReadFile(filepath.Join(cfg.SpoolDir, "outbox", "pending", entry.Name()))
+		if strings.Contains(string(body), wizard) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("awaiting-confirm notice with a wizard link lost the URL")
+	}
+}
+
+// prepareContinuation must treat a wizard link as the already-sent link — the
+// generic fallback would tell the agent to fetch and forward a form_url that
+// never reaches the model-facing body.
+func TestPrepareContinuationWizardConfirm(t *testing.T) {
+	request := prepareOutcomeRequest{OnboardingID: "onboard-wzc", Phase: "awaiting-confirm",
+		Repository: "https://github.com/example/mcp",
+		FormURL:    "http://127.0.0.1:8090/connect/onboard-wzc?k=0123456789abcdef0123456789abcdef"}
+	text := prepareContinuation(request)
+	if !strings.Contains(text, "уже отправлена") || strings.Contains(text, "required_credentials") {
+		t.Fatalf("continuation did not recognize the wizard link: %s", text)
 	}
 }

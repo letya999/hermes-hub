@@ -6,6 +6,8 @@ last_verified: 2026-10-20
 
 | Record | Decision |
 |---|---|
+| [ADR-0071](ADR-0071-dynamic-session-contract.md) | Bounded owner-only dynamic JSON session contracts |
+| [ADR-0070](ADR-0070-recipe-oauth.md) | Recipe-driven OAuth and lease-local token file views |
 | [ADR-0069](ADR-0069-broker-effective-contract.md) | Imported from services/credential-broker ADR-0010: effective contract on request — extras and demote |
 | [ADR-0068](ADR-0068-broker-allow-shared.md) | Imported broker ADR-0009: allow_shared in dynamic contracts |
 | [ADR-0067](ADR-0067-broker-dynamic-contract-registration.md) | Imported broker ADR-0008: dynamic contract registration via control API |

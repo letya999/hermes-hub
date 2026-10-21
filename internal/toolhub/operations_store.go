@@ -15,6 +15,9 @@ func (s *Store) PutOperation(op api.Operation) error {
 	if err := op.Validate(); err != nil {
 		return err
 	}
+	// Detach the caller's slice: journal verbs keep mutating their copy via
+	// markStep, so the stored record must own its Steps.
+	op.Steps = slices.Clone(op.Steps)
 	s.mu.Lock()
 	s.operations[op.OperationID] = op
 	s.mu.Unlock()
@@ -49,6 +52,7 @@ func (s *Store) OperationForRequestKey(auth identity.Envelope, intent, target st
 		if op.RequestKey != key || op.PrincipalID != auth.PrincipalID || op.SupersededBy != "" {
 			continue
 		}
+		op.Steps = slices.Clone(op.Steps)
 		return op, true
 	}
 	return api.Operation{}, false

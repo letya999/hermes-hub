@@ -261,11 +261,19 @@ func (b MCPBackend) EnsureReady(ctx context.Context, effective EffectiveBinding,
 	if err != nil {
 		return err
 	}
+	if a := effective.Definition.OAuth; a != nil {
+		prepared.ProbeTool = a.ProbeTool
+		prepared.ProbeArgs = a.ProbeArgs
+		prepared.ProbeTools = nil
+		matched = true
+	}
 	if matched && (prepared.ProbeTool != "" || len(prepared.ProbeTools) > 0) {
 		probeName := prepared.ProbeTool
+		probeArgs := prepared.ProbeArgs
 		for _, candidate := range prepared.ProbeTools {
 			if environment[candidate.Env] != "" {
 				probeName = candidate.Tool
+				probeArgs = candidate.Args
 				break
 			}
 		}
@@ -273,9 +281,20 @@ func (b MCPBackend) EnsureReady(ctx context.Context, effective EffectiveBinding,
 			if tool.Name != probeName || probeName == "" {
 				continue
 			}
-			result, probeErr := b.CallEnv(ctx, effective, tool, map[string]any{}, environment)
+			if tool.Effect != ReadEffect {
+				return fmt.Errorf("%w: readiness probe must be read-only", ErrUnauthorized)
+			}
+			result, probeErr := b.CallEnv(ctx, effective, tool, probeArgs, environment)
 			if probeErr == nil && result.IsError {
-				probeErr = fmt.Errorf("%w: provider read probe failed", ErrUnauthorized)
+				detail := strings.TrimSpace(result.Text)
+				if runes := []rune(detail); len(runes) > 256 {
+					detail = string(runes[:256])
+				}
+				if detail == "" {
+					probeErr = fmt.Errorf("%w: provider read probe failed", ErrUnauthorized)
+				} else {
+					probeErr = fmt.Errorf("%w: provider read probe failed: %s", ErrUnauthorized, detail)
+				}
 			}
 			if probeErr != nil && len(effective.CredentialMounts) == 0 && b.AdmissionRelease != nil {
 				probeErr = errors.Join(probeErr, b.AdmissionRelease(context.Background(), effective.WorkloadID))
@@ -400,7 +419,7 @@ func (b MCPBackend) Call(ctx context.Context, effective EffectiveBinding, tool T
 }
 
 func (b MCPBackend) CallEnv(ctx context.Context, effective EffectiveBinding, tool ToolSpec, arguments map[string]any, environment map[string]string) (BackendResult, error) {
-	if strings.HasPrefix(effective.Definition.DefinitionID, "google-workspace-") {
+	if effective.Definition.Transport == RemoteMCP && strings.HasPrefix(effective.Definition.DefinitionID, "google-workspace-") {
 		return (GoogleWorkspaceBackend{HTTP: b.HTTPClient}).CallEnv(ctx, effective, tool, arguments, environment)
 	}
 	if effective.Definition.Transport == RemoteMCP && remoteDefinitionEndpoint(effective) {
@@ -477,6 +496,11 @@ func (b MCPBackend) CallEnv(ctx context.Context, effective EffectiveBinding, too
 	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
 		return BackendResult{}, err
+	}
+	// A nil map marshals as arguments:null and strict servers (the Node MCP
+	// SDK) reject the literal — send an empty record for no-arg calls.
+	if arguments == nil {
+		arguments = map[string]any{}
 	}
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: tool.Name, Arguments: arguments})
 	closeErr := session.Close()

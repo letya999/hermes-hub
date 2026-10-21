@@ -108,6 +108,8 @@ func (c *ControlPlane) ensureRemoteOAuth(auth identity.Envelope, onboarding api.
 	c.oauthFlows.flows[start.State] = &preparedOAuthFlow{onboardingID: onboarding.OnboardingID, url: start.AuthorizeURL, expires: c.now().Add(c.ttl()), broker: c.OAuth, remote: true}
 	onboarding.Phase = api.PhaseAwaitingOAuth
 	onboarding.ProviderAuthorizationURL = start.AuthorizeURL
+	c.armWizard(&onboarding)
+	onboarding.Error, onboarding.ErrorCode = "", ""
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		delete(c.oauthFlows.flows, start.State)

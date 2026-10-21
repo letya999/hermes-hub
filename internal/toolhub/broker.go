@@ -132,8 +132,14 @@ func brokerRuntimeInjector(controlConfig, runtimeConfig *credentialbroker.Config
 		// block or a Confluence block): a complete group satisfies the member
 		// keys of the other alternatives, but never missing standalone keys.
 		if !effective.Definition.CredentialsSatisfied(func(name string) bool { return environment[name] != "" }) {
+			var missing []string
+			for _, input := range effective.Definition.Credentials {
+				if input.Required && environment[input.Name] == "" {
+					missing = append(missing, input.Name)
+				}
+			}
 			_ = release(false, false)
-			return api.CredentialInjection{}, fmt.Errorf("%w: %w: broker delivery does not satisfy %s", api.ErrIsolation, api.ErrCredentialDelivery, effective.Definition.DefinitionID)
+			return api.CredentialInjection{}, fmt.Errorf("%w: %w: broker delivery does not satisfy %s; not delivered: %s", api.ErrIsolation, api.ErrCredentialDelivery, effective.Definition.DefinitionID, strings.Join(missing, ", "))
 		}
 		for _, input := range effective.Credential.Keys {
 			if environment[input] != "" || api.GroupedCredentialInput(effective.Definition, input) {
@@ -157,11 +163,16 @@ func brokerRuntimeInjector(controlConfig, runtimeConfig *credentialbroker.Config
 				checkpoint = func() error { return release(true, true) }
 			}
 		}
-		return api.CredentialInjection{Environment: environment, Mounts: mounts, Proxy: proxy, Checkpoint: checkpoint, Cleanup: func() error {
+		injection := api.CredentialInjection{Environment: environment, Mounts: mounts, Proxy: proxy, Checkpoint: checkpoint, Cleanup: func() error {
 			clear(environment)
 			clear(materialized.Env)
 			return release(false, false)
-		}}, nil
+		}}
+		if err := materializeOAuthStateView(effective.Definition.OAuth, &injection); err != nil {
+			_ = injection.Cleanup()
+			return api.CredentialInjection{}, err
+		}
+		return injection, nil
 	}
 }
 

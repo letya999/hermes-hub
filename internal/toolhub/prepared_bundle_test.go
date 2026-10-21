@@ -54,7 +54,7 @@ func TestPreparedBundleDiscoveryAndTelegramGate(t *testing.T) {
 	}) {
 		t.Fatalf("stable SQL alias unavailable: %v %+v", err, sql)
 	}
-	for _, id := range []string{"google-workspace", "slack", "careergo"} {
+	for _, id := range []string{"slack", "careergo"} {
 		result, err := control.discover(t.Context(), aliceAuth(), id)
 		if err != nil {
 			t.Fatal(err)

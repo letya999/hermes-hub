@@ -117,7 +117,20 @@ func ReadGenericSecrets(path string, definition ToolDefinition) (map[string]stri
 		}
 		values[key] = value
 	}
-	if !definition.CredentialsSatisfied(func(name string) bool { return values[name] != "" }) {
+	fileBound := FileBoundCredentialNames(definition)
+	if !definition.CredentialsSatisfied(func(name string) bool {
+		if values[name] != "" {
+			return true
+		}
+		// File/json-bound inputs stage as <name>.secret siblings — the
+		// injector removes them from env lines, so absence here is delivery,
+		// not a missing credential.
+		if !fileBound[name] {
+			return false
+		}
+		_, err := os.Lstat(filepath.Join(filepath.Dir(path), name+".secret"))
+		return err == nil
+	}) {
 		return nil, fmt.Errorf("%w: required runtime credential missing", ErrUnauthorized)
 	}
 	return values, nil

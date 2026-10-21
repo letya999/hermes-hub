@@ -116,7 +116,11 @@ on `hub-toolhub` for decrypt-and-inject; it is inert on `hub-communication`
 ## Human-action links
 
 `/credentials`, `/confirm`, `/remove`, `/connect`, `/device` are one-time
-`?t=` URLs; spent/expired → 410. Default target is loopback. For other-
+`?t=` URLs; spent/expired → 410. The stable wizard link `/connect/<id>?k=`
+is the exception: one URL per onboarding that renders the current phase
+(credentials form, broker hop, confirm, OAuth interstitial, progress,
+result) and self-refreshes through the flow; it expires with the onboarding
+and dies on terminal phases' TTL. Default target is loopback. For other-
 device access publish TLS and set `HUB_PUBLIC_ORIGIN=https://<host>` (https
 only — anything else mints loopback) + `HUB_PUBLIC_LISTEN=<addr>` on
 hub-toolhub; that listener serves only human-action paths (control/gateway

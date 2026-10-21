@@ -265,6 +265,7 @@ func (c *ControlPlane) connectorReauth(ctx context.Context, auth identity.Envelo
 		if onboarding.FormNonce == "" || !c.now().Before(onboarding.FormExpires) {
 			onboarding.FormNonce = api.RandomNonce()
 			onboarding.FormExpires = c.now().Add(c.ttl())
+			c.armWizard(&onboarding)
 			onboarding.Revision++
 			if err := c.Store.PutOnboarding(onboarding); err != nil {
 				return api.OperationResult{}, err
@@ -339,6 +340,7 @@ func (c *ControlPlane) connectorAllowWrites(ctx context.Context, auth identity.E
 		onboarding.ConfirmationNonce = api.RandomNonce()
 		onboarding.ConfirmationExpires = c.now().Add(c.ttl())
 		onboarding.ConfirmationUsed = false
+		c.armWizard(&onboarding)
 		onboarding.Revision++
 		if err := c.Store.PutOnboarding(onboarding); err != nil {
 			return api.OperationResult{}, err

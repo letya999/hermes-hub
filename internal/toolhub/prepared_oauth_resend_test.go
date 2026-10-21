@@ -1,0 +1,102 @@
+package toolhub
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/letya999/hermes-hub/internal/credstore"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
+)
+
+// A resend request on status rotates the armed OAuth flow and posts a
+// link-resent event so the gateway drops a FRESH message at the bottom of
+// chat — the standing status message still edits to the new state, so every
+// link on screen stays valid. The rotated state must never reach the result.
+func TestPreparedOAuthResendPostsFreshLink(t *testing.T) {
+	var events []string
+	noticer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		events = append(events, fmt.Sprint(payload["event"]))
+		w.WriteHeader(200)
+	}))
+	defer noticer.Close()
+	t.Setenv("HUB_COMMUNICATION_CONTROL_URL", noticer.URL)
+	t.Setenv("HUB_COMMUNICATION_AUTH", "tok")
+	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:9999")
+	entry, matched, err := api.PreparedForRepository("https://github.com/nspady/google-calendar-mcp", "")
+	if err != nil || !matched || entry.OAuth == nil {
+		t.Fatal("reviewed OAuth entry missing", err)
+	}
+	d := statefulContainerDefinition()
+	d.DefinitionID, d.Version = entry.ID, "1.0.0"
+	d.Source.Repository, d.Source.CommitSHA = entry.Source.Repository, entry.Source.CommitSHA
+	d.Credentials = []api.CredentialInput{{Name: entry.OAuth.ClientInput, Required: true}}
+	d.CredentialContractID, d.CredentialContractRevision = entry.ContractID, entry.ContractRevision
+	d.CredentialContractEnv = map[string]string{entry.OAuth.ClientInput: entry.OAuth.ClientInput}
+	store := NewStore()
+	if err := store.RegisterDefinition(d); err != nil {
+		t.Fatal(err)
+	}
+	auth := aliceAuth()
+	ref := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: "cred_calendar4", ConnectionID: "conn_calendar4", Revision: 1, Backend: "credential-broker", Locator: "credential_calendar4", Keys: []string{entry.OAuth.ClientInput}, BrokerGrantID: "grant_calendar4", BrokerContractID: entry.ContractID, BrokerContractRevision: entry.ContractRevision, BrokerEnv: d.CredentialContractEnv, Status: api.ActiveStatus}
+	if err := store.PutCredentialReference(ref); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutConnection(api.Connection{Schema: api.SchemaVersion, ConnectionID: ref.ConnectionID, Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: auth.PrincipalID}, DefinitionID: d.DefinitionID, CredentialRefID: ref.CredentialRefID, Revision: 1, Status: api.ActiveStatus}); err != nil {
+		t.Fatal(err)
+	}
+	oldURL := "https://accounts.google.com/o/oauth2/v2/auth?client_id=x.apps.googleusercontent.com&code_challenge=zz&state=st-old"
+	on := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard_calendar4", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, Mode: api.OnboardingCatalog, Phase: api.PhaseAwaitingOAuth, DefinitionID: d.DefinitionID, DefinitionVersion: d.Version, Locator: ref.Locator, ProviderAuthorizationURL: oldURL, Revision: 1, CreatedAt: time.Now()}
+	if err := store.PutOnboarding(on); err != nil {
+		t.Fatal(err)
+	}
+	secrets, err := credstore.Open(credstore.Options{Path: filepath.Join(t.TempDir(), "tokens.enc"), Key: bytes.Repeat([]byte("k"), 32)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	clientFile := filepath.Join(root, "client.json")
+	stateDir := filepath.Join(root, "state")
+	if err := os.Mkdir(stateDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(clientFile, []byte(`{"installed":{"client_id":"fixture.apps.googleusercontent.com","client_secret":"fixture-secret","redirect_uris":["http://localhost"]}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c := &ControlPlane{Store: store, Secrets: secrets, FormOrigin: "http://127.0.0.1:8090", Injector: func(_ context.Context, _ api.EffectiveBinding) (api.CredentialInjection, error) {
+		return api.CredentialInjection{Environment: map[string]string{entry.OAuth.ClientInput: "/run/mcp-secrets/google/client.json"}, Mounts: []api.Mount{{Source: clientFile, Target: "/run/mcp-secrets/google/client.json", ReadOnly: true}, {Source: stateDir, Target: entry.StateTarget}}}, nil
+	}}
+	c.oauthFlows.flows = map[string]*preparedOAuthFlow{"st-old": {onboardingID: on.OnboardingID, url: oldURL, expires: time.Now().Add(time.Hour)}}
+	body, err := c.status(context.Background(), auth, map[string]any{"onboarding_id": on.OnboardingID, "resend": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resent := false
+	for _, event := range events {
+		if event == "link-resent" {
+			resent = true
+		}
+	}
+	if !resent {
+		t.Fatalf("no link-resent notice posted; events=%v", events)
+	}
+	parsed, _ := url.Parse(providerAuthURLOf(t, store, on.OnboardingID))
+	if parsed.Query().Get("state") == "st-old" || parsed.Query().Get("state") == "" {
+		t.Fatalf("resend did not rotate the armed flow: %s", providerAuthURLOf(t, store, on.OnboardingID))
+	}
+	raw, _ := json.Marshal(body)
+	if strings.Contains(string(raw), parsed.Query().Get("state")) {
+		t.Fatalf("rotated state leaked into the tool result: %s", raw)
+	}
+}

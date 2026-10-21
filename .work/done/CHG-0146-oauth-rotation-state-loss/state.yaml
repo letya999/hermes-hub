@@ -1,0 +1,15 @@
+schema: 1
+change: CHG-0146
+title: OAuth rotation state loss and broker deny diagnostics
+status: done
+branch: feat/m14-toolhub-connector-platform-merge
+updated: 2026-10-21
+phase: done
+validation:
+  documents: done
+  just_check: pass
+  broker_check: pass
+  docker_check: not_run
+  live_acceptance: partial
+remaining:
+  - owner completes one Google consent on the live onboarding to prove enable end-to-end

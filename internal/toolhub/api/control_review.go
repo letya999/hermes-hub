@@ -85,6 +85,10 @@ func DefaultSourceReviewerWithCatalogs(artifactsDir, seccompPath string, catalog
 			ApplyLaunchState(&config, resolution.Launch)
 		}
 		config.Credentials = resolution.Connection.CredentialInputs()
+		if resolution.Connection.OAuth != nil {
+			config.OAuth = resolution.Connection.OAuth
+			config.Workload.Stateful = true
+		}
 		// Only reviewed deliveries enter the Broker mapping; unrelated optional
 		// upstream settings remain metadata, not required form fields.
 		if matched {

@@ -283,6 +283,9 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request, a identity.Actor, d
 		if e = decode(data, &in); e == nil {
 			out, e = s.b.Acquire(a, in)
 			status = 201
+			if reason := broker.DenyReason(e); reason != "" {
+				log.Printf("credential-broker lease denied deny_reason=%s grant_id=%q", reason, in.GrantID)
+			}
 		}
 	case len(parts) == 4 && parts[1] == "runtime" && parts[2] == "leases" && r.Method == "GET":
 		out, e = s.b.InspectLease(a, parts[3])

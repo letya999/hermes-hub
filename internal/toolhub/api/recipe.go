@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path"
+	"slices"
 	"strings"
 )
 
@@ -67,11 +68,27 @@ type ConnectionAlternative struct {
 }
 
 type ConnectionRecipe struct {
+	OAuth        *OAuthRecipe            `json:"oauth,omitempty"`
 	Fields       []ConnectionField       `json:"fields,omitempty"`
 	Alternatives []ConnectionAlternative `json:"alternatives,omitempty"`
 }
 
 func (r ConnectionRecipe) Validate() error {
+	if r.OAuth != nil {
+		if r.OAuth.AccountInput != "" && !slices.ContainsFunc(r.Fields, func(f ConnectionField) bool {
+			return f.Name == r.OAuth.AccountInput && f.Required && f.Delivery == "env"
+		}) {
+			return fmt.Errorf("%w: OAuth account input required", ErrInvalid)
+		}
+		if !slices.ContainsFunc(r.Fields, func(f ConnectionField) bool {
+			return f.Name == r.OAuth.ClientInput && f.Required && f.Delivery == "file"
+		}) {
+			return fmt.Errorf("%w: OAuth client file required", ErrInvalid)
+		}
+		if err := r.OAuth.Validate(); err != nil {
+			return err
+		}
+	}
 	seen := map[string]bool{}
 	for _, field := range r.Fields {
 		if !CredentialPattern.MatchString(field.Name) || seen[field.Name] {

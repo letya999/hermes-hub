@@ -213,6 +213,65 @@ func (f failingSecrets) SetStatus(locator, owner, status string) error {
 	return nil
 }
 
+// missingSecrets answers ErrNotFound for every locator: a broker-backed
+// onboarding owns no local ciphertext to revoke or delete.
+type missingSecrets struct {
+	credstore.Backend
+}
+
+func (missingSecrets) SetStatus(locator, owner, status string) error {
+	return credstore.ErrNotFound
+}
+
+func (missingSecrets) Delete(locator, owner string) error {
+	return credstore.ErrNotFound
+}
+
+func TestRemoveToleratesMissingLocalCiphertext(t *testing.T) {
+	store := NewStore()
+	grantTestControlOperations(t, store, "alice", api.ControlOperations...)
+	definition := catalogReadDefinition()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	control := &ControlPlane{Store: store, WorkloadRoot: t.TempDir(), Now: time.Now, Secrets: missingSecrets{}}
+	auth := aliceAuth()
+	prepared, err := control.Invoke(context.Background(), auth, "prepare_source", map[string]any{"definition_id": definition.DefinitionID, "version": definition.Version, "request_key": "missing-cred-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, store, prepared["onboarding_id"])}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
+		t.Fatal(err)
+	}
+	onboarding, err := store.onboarding(prepared["onboarding_id"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	onboarding.Locator = "broker-held-locator"
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.Invoke(context.Background(), auth, "remove", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
+		t.Fatal(err)
+	}
+	finished, err := control.Invoke(context.Background(), auth, "remove", map[string]any{"onboarding_id": prepared["onboarding_id"], "remove_nonce": removeNonceOf(t, store, prepared["onboarding_id"])})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finished["phase"] != api.PhaseRemoved {
+		t.Fatalf("broker-held locator blocked purge: %+v", finished)
+	}
+}
+
 func TestRemoveReportsCleanupIncompleteOnCredentialDeleteFailure(t *testing.T) {
 	store := NewStore()
 	grantTestControlOperations(t, store, "alice", api.ControlOperations...)
@@ -528,8 +587,8 @@ func TestExpiredConfirmationRenewalSendsLink(t *testing.T) {
 		t.Fatal("renewed confirmation did not notify the channel")
 	}
 	link, _ := noticed[len(noticed)-1]["form_url"].(string)
-	if !strings.Contains(link, "/confirm/onb-expired-conf") || !strings.Contains(link, "t="+latest.ConfirmationNonce) {
-		t.Fatalf("notice carried no confirm link: %v", noticed[len(noticed)-1])
+	if !strings.Contains(link, "/connect/onb-expired-conf?k=") || !strings.Contains(link, "k="+latest.WizardNonce) {
+		t.Fatalf("notice carried no wizard link: %v", noticed[len(noticed)-1])
 	}
 }
 
@@ -580,8 +639,8 @@ func TestExpiredCredentialFormRenewalSendsLink(t *testing.T) {
 		t.Fatal("renewed credential form did not notify the channel")
 	}
 	link, _ := noticed[len(noticed)-1]["form_url"].(string)
-	if !strings.Contains(link, "/credentials/onb-expired-form") || !strings.Contains(link, "t="+latest.FormNonce) {
-		t.Fatalf("notice carried no credentials link: %v", noticed[len(noticed)-1])
+	if !strings.Contains(link, "/connect/onb-expired-form?k=") || !strings.Contains(link, "k="+latest.WizardNonce) {
+		t.Fatalf("notice carried no wizard link: %v", noticed[len(noticed)-1])
 	}
 }
 
@@ -832,7 +891,7 @@ func TestOAuthStartSendsConnectLink(t *testing.T) {
 	if link == "" {
 		t.Fatalf("no /connect/ link reached the channel: %v", noticed)
 	}
-	if !strings.HasPrefix(link, "http://127.0.0.1:9999/connect/") || !strings.Contains(link, "state=") {
+	if !strings.HasPrefix(link, "http://127.0.0.1:9999/connect/") || !strings.Contains(link, "?k=") {
 		t.Fatalf("connect link=%q", link)
 	}
 	if strings.Contains(link, "accounts.") {

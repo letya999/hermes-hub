@@ -422,7 +422,7 @@ func artifactAutoBuildPath(name string) bool {
 		return false
 	}
 	for _, part := range parts[:len(parts)-1] {
-		if part == "test" || part == "tests" {
+		if part == "test" || part == "tests" || part == "__tests__" || part == "__test__" {
 			return false
 		}
 	}

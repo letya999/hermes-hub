@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/url"
-	"path"
 	"slices"
 	"strings"
 
@@ -116,14 +115,18 @@ type PreparedEntry struct {
 	// EgressClass carries the proxy policy shape: "web" for browser entries
 	// (arbitrary HTTPS through the deny-first proxy); under "web" the egress
 	// list is reviewed extra deny entries and may be empty.
-	EgressClass      string           `json:"egress_class,omitempty"`
-	CredentialGroups [][]string       `json:"credential_groups,omitempty"`
-	ReadTools        []string         `json:"read_tools"`
-	ProbeTool        string           `json:"probe_tool,omitempty"`
-	ProbeTools       []ProbeCandidate `json:"probe_tools,omitempty"`
-	OAuth            *PreparedOAuth   `json:"oauth,omitempty"`
-	Runbook          string           `json:"runbook"`
-	Handoff          string           `json:"handoff"`
+	EgressClass      string     `json:"egress_class,omitempty"`
+	CredentialGroups [][]string `json:"credential_groups,omitempty"`
+	ReadTools        []string   `json:"read_tools"`
+	ProbeTool        string     `json:"probe_tool,omitempty"`
+	// ProbeArgs carries the reviewed literal arguments a read probe needs —
+	// browser_tabs rejects a bare call because "action" is required even to
+	// list. Only scalar values are allowed; secrets can never land here.
+	ProbeArgs  map[string]any   `json:"probe_args,omitempty"`
+	ProbeTools []ProbeCandidate `json:"probe_tools,omitempty"`
+	OAuth      *PreparedOAuth   `json:"oauth,omitempty"`
+	Runbook    string           `json:"runbook"`
+	Handoff    string           `json:"handoff"`
 }
 
 type PreparedBudgets struct {
@@ -173,19 +176,36 @@ func BlockedCatalog() ([]BlockedEntry, error) {
 // credential env var was actually delivered — for connectors whose credential
 // groups are alternatives (Jira block or Confluence block, not both).
 type ProbeCandidate struct {
-	Tool string `json:"tool"`
-	Env  string `json:"env"`
+	Tool string         `json:"tool"`
+	Env  string         `json:"env"`
+	Args map[string]any `json:"args,omitempty"`
 }
 
 // PreparedOAuth is reviewed source-specific token delivery, not a guess from
 // a tool's error text. The authorization-code exchange itself stays generic.
-type PreparedOAuth struct {
-	Provider     string   `json:"provider"`
-	Scopes       []string `json:"scopes"`
-	ClientInput  string   `json:"client_input"`
-	TokenFile    string   `json:"token_file"`
-	TokenAccount string   `json:"token_account"`
-	TokenFormat  string   `json:"token_format"`
+type PreparedOAuth = OAuthRecipe
+
+// validProbeArgs bounds reviewed probe literals: a handful of scalar
+// arguments, never nested objects that could smuggle a payload past review.
+func validProbeArgs(args map[string]any) bool {
+	if len(args) > 8 {
+		return false
+	}
+	for key, value := range args {
+		if !identity.ValidID(key) {
+			return false
+		}
+		switch v := value.(type) {
+		case string:
+			if len(v) > 256 || strings.ContainsAny(v, "\x00\r\n") {
+				return false
+			}
+		case bool, float64:
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func PreparedCatalog() ([]PreparedEntry, error) {
@@ -226,8 +246,11 @@ func ParsePreparedCatalog(data []byte) ([]PreparedEntry, error) {
 		for _, field := range entry.Connection.Fields {
 			requiredFields[field.Name] = field.Required
 		}
+		if len(entry.ProbeArgs) > 0 && entry.ProbeTool == "" || !validProbeArgs(entry.ProbeArgs) {
+			return nil, fmt.Errorf("%w: prepared probe args", ErrInvalid)
+		}
 		for _, candidate := range entry.ProbeTools {
-			if !slices.Contains(entry.ReadTools, candidate.Tool) || !requiredFields[candidate.Env] {
+			if !slices.Contains(entry.ReadTools, candidate.Tool) || !requiredFields[candidate.Env] || !validProbeArgs(candidate.Args) {
 				return nil, fmt.Errorf("%w: prepared probe candidate must be a reviewed read tool gated on a required field", ErrInvalid)
 			}
 		}
@@ -263,7 +286,7 @@ func ParsePreparedCatalog(data []byte) ([]PreparedEntry, error) {
 					stateFile = stateFile || file.Name == a.TokenFile && file.JSON
 				}
 			}
-			if !entry.Stateful || !found || a.Provider != "google" || len(a.Scopes) != 1 || a.Scopes[0] != "https://www.googleapis.com/auth/calendar.readonly" || a.TokenFormat != "google-calendar-account-map" || a.TokenFile == "" || path.Base(a.TokenFile) != a.TokenFile || strings.ContainsAny(a.TokenFile, "\\\x00\r\n") || !stateFile || !identity.ValidID(a.TokenAccount) {
+			if !entry.Stateful || !found || a.Validate() != nil || a.StateTarget != entry.StateTarget || !stateFile {
 				return nil, fmt.Errorf("%w: prepared OAuth handoff", ErrInvalid)
 			}
 		}
@@ -386,6 +409,7 @@ func PreparedForRepository(repository, subfolder string) (PreparedEntry, bool, e
 
 func (entry PreparedEntry) Apply(config ArtifactImportConfig) ArtifactImportConfig {
 	config.Language = entry.Language
+	config.OAuth = entry.OAuth
 	// The generator still infers the binary and upstream argv tail; the
 	// reviewed argv may only extend that inferred prefix (read-only flags and
 	// similar gates), never point the launch at a different binary.
@@ -445,6 +469,9 @@ func (entry PreparedEntry) Apply(config ArtifactImportConfig) ArtifactImportConf
 }
 
 func (entry PreparedEntry) Overlay(connection ConnectionRecipe) ConnectionRecipe {
+	if connection.OAuth == nil {
+		connection.OAuth = entry.OAuth
+	}
 	reviewed := map[string]bool{}
 	for _, field := range entry.Connection.Fields {
 		reviewed[field.Name] = true

@@ -178,6 +178,15 @@ func ActionURL(origin string, onboarding Onboarding) string {
 	if onboarding.RemoveNonce != "" && onboarding.Phase != PhaseRemoved {
 		return origin + "/remove/" + url.PathEscape(onboarding.OnboardingID) + "?t=" + url.QueryEscape(onboarding.RemoveNonce)
 	}
+	// An armed wizard collapses the interactive phases into one stable link:
+	// the page renders the live step itself, so a rotated OAuth state or a
+	// reminted broker request never strands the URL the channel delivered.
+	if onboarding.WizardNonce != "" {
+		switch onboarding.Phase {
+		case PhaseAwaitingCreds, PhaseAwaitingConfirm, PhaseAwaitingOAuth:
+			return origin + "/connect/" + url.PathEscape(onboarding.OnboardingID) + "?k=" + url.QueryEscape(onboarding.WizardNonce)
+		}
+	}
 	if onboarding.Phase == PhaseAwaitingConfirm && onboarding.ConfirmationNonce != "" && !onboarding.ConfirmationUsed {
 		return origin + "/confirm/" + url.PathEscape(onboarding.OnboardingID) + "?t=" + url.QueryEscape(onboarding.ConfirmationNonce)
 	}

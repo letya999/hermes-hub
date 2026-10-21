@@ -361,18 +361,29 @@ func writeWorldReadableTemp(dir, pattern, content string) (string, error) {
 
 func materializeRuntimeCredentials(workspace string, definition api.ToolDefinition) (string, []api.Mount, error) {
 	source := filepath.Join(workspace, "credentials.env")
-	if _, err := os.Lstat(source); os.IsNotExist(err) && definition.CredentialsSatisfied(func(string) bool { return false }) {
+	var values map[string]string
+	if _, err := os.Lstat(source); err == nil {
+		values, err = api.ReadGenericSecrets(source, definition)
+		if err != nil {
+			return "", nil, err
+		}
+	} else if os.IsNotExist(err) && definition.CredentialsSatisfied(func(name string) bool {
+		// File-bound inputs stage as sibling <name>.secret before admission —
+		// the injector removes them from env lines, so a credentials.env can
+		// legitimately be absent when every required input is file-mounted.
+		_, statErr := os.Lstat(filepath.Join(workspace, name+".secret"))
+		return statErr == nil
+	}) {
 		if workspace == "" || api.NoSymlinkPath(workspace) != nil {
 			return "", nil, api.ErrIsolation
 		}
-		return "", nil, nil
-	}
-	values, err := api.ReadGenericSecrets(source, definition)
-	if err != nil {
+		values = map[string]string{}
+	} else {
 		return "", nil, err
 	}
 	var body strings.Builder
 	var mounts []api.Mount
+	needsRuntime := false
 	for _, input := range definition.Credentials {
 		value := values[input.Name]
 		if input.Delivery == "file" || input.Delivery == "json" {
@@ -380,6 +391,11 @@ func materializeRuntimeCredentials(workspace string, definition api.ToolDefiniti
 			// env file carries env-line values only.
 			if staged, err := os.ReadFile(filepath.Join(workspace, input.Name+".secret")); err == nil {
 				value = string(staged)
+				if values[input.Name] == "" {
+					// The source env lacks this line entirely; returning it
+					// verbatim would drop the file credential's path redirect.
+					needsRuntime = true
+				}
 			}
 		}
 		if value == "" {
@@ -414,8 +430,14 @@ func materializeRuntimeCredentials(workspace string, definition api.ToolDefiniti
 		}
 		body.WriteString(input.Name + "=" + value + "\n")
 	}
-	if len(mounts) == 0 {
-		return source, nil, nil
+	if len(mounts) == 0 && !needsRuntime {
+		// A secret-only workspace has no source env to reuse — fall through to
+		// the runtime env write so the lease target lines still reach the file.
+		if _, err := os.Lstat(source); err == nil {
+			return source, nil, nil
+		} else if body.Len() == 0 {
+			return "", nil, nil
+		}
 	}
 	runtimeEnv := filepath.Join(workspace, "credentials.runtime.env")
 	if err := os.WriteFile(runtimeEnv, []byte(body.String()), 0600); err != nil {

@@ -847,6 +847,9 @@ func TestConnectorAllowWritesJournal(t *testing.T) {
 	if err != nil || armed.ConfirmationNonce == "" || !armed.PendingWrites || armed.Phase != api.PhaseAwaitingConfirm {
 		t.Fatalf("onboarding after allow_writes: %v %+v", err, armed)
 	}
+	if armed.WizardNonce == "" || armed.WizardExpires.IsZero() {
+		t.Fatalf("allow_writes confirm did not arm the wizard link: %+v", armed)
+	}
 	// The human confirms on the protected page — same /confirm surface.
 	gateway := &Gateway{Control: c}
 	rec, req := confirmLinkRequest(t, http.MethodPost, "http://127.0.0.1/confirm/"+armed.OnboardingID+"?t="+armed.ConfirmationNonce)
@@ -921,6 +924,18 @@ func TestConnectorInstallConcurrent(t *testing.T) {
 	}
 	if onboardings != 1 {
 		t.Fatalf("concurrent install created %d onboardings", onboardings)
+	}
+	// Regression: fetched operations must not alias the stored Steps array —
+	// markStep on one raced PutOperation's validate/save under -race.
+	op, ok := store.OperationForRequestKey(auth, api.OpIntentInstall, "google-work")
+	if !ok || len(op.Steps) == 0 {
+		t.Fatalf("converged operation missing: %+v", op)
+	}
+	was := op.Steps[0].State
+	op.Steps[0].State = "tampered"
+	again, ok := store.OperationForRequestKey(auth, api.OpIntentInstall, "google-work")
+	if !ok || again.Steps[0].State != was {
+		t.Fatalf("operation steps alias store state: %+v", again)
 	}
 }
 

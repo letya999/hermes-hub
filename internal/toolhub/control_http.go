@@ -8,6 +8,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"html"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -108,6 +109,7 @@ func controlToolContract(name string) (string, map[string]any) {
 		properties = map[string]any{"query": map[string]any{"type": "string", "maxLength": 256}}
 		description += " Read-only search: returns a prepared repository and up to four matching registry alternatives. Select its candidate_id with prepare_source; discovery does not install."
 	case "prepare_source":
+		properties["connection_recipe"] = map[string]any{"type": "object", "description": "Optional reviewed connection recipe (fields and OAuth endpoints, scopes, client sections, token template, state target and read probe). Contains no credentials. Secrets are collected only in the protected form."}
 		properties["source"] = map[string]any{"type": "string", "description": "GitHub repository URL of a hosted MCP server connector. To install a command-line tool (ripgrep, bat, jq, fd, …) put a cli spec object in cli instead — never a bare repo URL here."}
 		properties["candidate_id"] = map[string]any{"type": "string"}
 		properties["request_key"] = map[string]any{"type": "string"}
@@ -152,6 +154,7 @@ func controlToolContract(name string) (string, map[string]any) {
 	case "status", "required_credentials":
 		description += " Pass onboarding_id, definition_id, a selector/name/source naming the connector, or the operation_id (request_key) of the original call."
 		if name == "status" {
+			properties["resend"] = map[string]any{"type": "boolean", "description": "Only when the user explicitly asks for the pending action link again (send/resend/re-issue the link): posts it as a fresh channel message. For an OAuth onboarding the armed link is rotated — the previous link stops working, so do not resend as a routine poll."}
 			description += " With no selector, status returns the latest onboarding for the authenticated user."
 		}
 	}
@@ -324,6 +327,14 @@ func (g *Gateway) serveCredentials(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	g.submitCredentialForm(w, r, onboardingID, nonce)
+}
+
+// submitCredentialForm runs the credential POST pipeline shared by the
+// one-time /credentials/ page and the stable /connect/<id>?k= wizard: parse,
+// collect fields and file-upload credentials, then authorize — the stored
+// form nonce still gates the write.
+func (g *Gateway) submitCredentialForm(w http.ResponseWriter, r *http.Request, onboardingID, nonce string) {
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	var parseErr error
 	if strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "multipart/form-data") {
@@ -379,14 +390,6 @@ func (g *Gateway) serveCredentials(w http.ResponseWriter, r *http.Request) {
 			values[hint.Name] = string(data)
 		}
 	}
-	if googleOAuthRequired(onboarding.Required) {
-		value, err := googleOAuthFormValue(r)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		values["GOOGLE_OAUTH_CREDENTIALS"] = value
-	}
 	applyCredentialDefaults(onboarding.Required, values)
 	if err := g.Control.AuthorizeCredentials(r.Context(), onboardingID, nonce, values); err != nil {
 		if errors.Is(err, errCredentialProbe) {
@@ -406,6 +409,14 @@ func (g *Gateway) serveCredentials(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(status)
 		_, _ = io.WriteString(w, credentialResultPage(title, message))
+		return
+	}
+	// Accepted — send the browser back to the stable wizard link, which now
+	// renders the next step (confirm, OAuth or the enabling spinner) instead
+	// of a dead-end page.
+	if done, derr := g.Control.Store.onboarding(onboardingID); derr == nil &&
+		done.WizardNonce != "" && g.Control.now().Before(done.WizardExpires) {
+		http.Redirect(w, r, g.Control.origin()+"/connect/"+url.PathEscape(onboardingID)+"?k="+url.QueryEscape(done.WizardNonce), http.StatusSeeOther)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -444,7 +455,7 @@ func (g *Gateway) serveConfirm(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	if r.Method == http.MethodGet {
-		_, _ = io.WriteString(w, `<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Подтверждение MCP</title><style>:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:28px;letter-spacing:-.02em}p{margin:0 0 22px;color:#52606d;line-height:1.6}button{width:100%;border:0;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font:inherit;font-weight:700;cursor:pointer}</style><main><h1>Подтверждение подключения</h1><p>Сервер `+html.EscapeString(onboarding.DefinitionID)+` будет подключён и получит доступ к сохранённым данным.</p><form method="post"><button type="submit">Подтвердить подключение</button></form></main></html>`)
+		_, _ = io.WriteString(w, confirmPage(onboarding))
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -463,6 +474,10 @@ func (g *Gateway) serveConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = io.WriteString(w, credentialResultPage("Подключение подтверждено", "Возвращаться в чат и писать «готово» не нужно."))
+}
+
+func confirmPage(onboarding api.Onboarding) string {
+	return `<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Подтверждение MCP</title><style>:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:28px;letter-spacing:-.02em}p{margin:0 0 22px;color:#52606d;line-height:1.6}button{width:100%;border:0;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font:inherit;font-weight:700;cursor:pointer}</style><main><h1>Подтверждение подключения</h1><p>Сервер ` + html.EscapeString(onboarding.DefinitionID) + ` будет подключён и получит доступ к сохранённым данным.</p><form method="post"><button type="submit">Подтвердить подключение</button></form></main></html>`
 }
 
 // serveRemove is the destructive twin of serveConfirm: the channel notice
@@ -534,6 +549,10 @@ func (g *Gateway) serveConnect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+	if key := r.URL.Query().Get("k"); key != "" {
+		g.serveWizard(w, r, onboardingID, onboarding, key)
+		return
+	}
 	storedState := ""
 	if onboarding.ProviderAuthorizationURL != "" {
 		if parsed, perr := url.Parse(onboarding.ProviderAuthorizationURL); perr == nil {
@@ -541,28 +560,7 @@ func (g *Gateway) serveConnect(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if r.Method == http.MethodPost {
-		// Paste-the-redirect fallback: the posted state must match the
-		// onboarding's stored authorization URL AND the pasted URL's own
-		// state, then the shared completePreparedOAuth path re-validates
-		// principal/context/connection and runs the PKCE exchange exactly
-		// like the live /oauth/callback.
-		if storedState == "" || r.ParseForm() != nil || r.Form.Get("state") != storedState {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		pasted, perr := url.Parse(strings.TrimSpace(r.Form.Get("redirect_url")))
-		if perr != nil || pasted.Query().Get("state") != storedState || pasted.Query().Get("code") == "" {
-			http.Error(w, "invalid redirect URL", http.StatusBadRequest)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-store")
-		if err := g.Control.completePreparedOAuth(r.Context(), storedState, pasted.Query().Get("code")); err != nil {
-			w.WriteHeader(http.StatusForbidden)
-			_, _ = io.WriteString(w, credentialResultPage("Вход не прошёл", "Авторизация отклонена. Вернитесь в чат и запросите свежую ссылку через status."))
-			return
-		}
-		_, _ = io.WriteString(w, credentialResultPage("Подключение завершено", "Можно вернуться в чат."))
+		g.serveOAuthPaste(w, r, storedState)
 		return
 	}
 	if r.Method != http.MethodGet {
@@ -571,6 +569,13 @@ func (g *Gateway) serveConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	if state := r.URL.Query().Get("state"); state != "" && onboarding.ProviderAuthorizationURL != "" {
 		if parsed, perr := url.Parse(onboarding.ProviderAuthorizationURL); perr == nil && parsed.Query().Get("state") == state {
+			// The stored flow dies with its in-memory state — hand the
+			// browser to the wizard link, which re-arms a live flow
+			// before rendering the provider hop.
+			if r.Method == http.MethodGet && g.Control.preparedOAuthOnboardingID(state) != onboardingID && onboarding.WizardNonce != "" && g.Control.now().Before(onboarding.WizardExpires) {
+				http.Redirect(w, r, g.Control.origin()+"/connect/"+url.PathEscape(onboardingID)+"?k="+url.QueryEscape(onboarding.WizardNonce), http.StatusSeeOther)
+				return
+			}
 			// Interstitial instead of a bare 302: a user authorizing on
 			// another device hits a dead loopback /oauth/callback there —
 			// the same chat link must keep working, so the page offers
@@ -578,7 +583,7 @@ func (g *Gateway) serveConnect(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.Header().Set("Cache-Control", "no-store")
 			w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
-			_, _ = io.WriteString(w, `<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Вход у провайдера</title><style>:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:28px;letter-spacing:-.02em}p{margin:0 0 22px;color:#52606d;line-height:1.6}a.btn{display:block;text-align:center;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font-weight:700;text-decoration:none}details{margin-top:18px;color:#52606d}summary{cursor:pointer;font-weight:650}label{display:block;font-weight:650;margin:14px 0 0}input{display:block;width:100%;margin-top:8px;border:1px solid #aab4bf;border-radius:10px;padding:12px 14px;font:inherit}button{width:100%;margin-top:16px;border:0;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font:inherit;font-weight:700;cursor:pointer}</style><main><h1>Вход у провайдера</h1><p>Откройте страницу авторизации и разрешите доступ.</p><a class="btn" rel="noopener noreferrer" href="`+html.EscapeString(onboarding.ProviderAuthorizationURL)+`">Перейти к авторизации</a><details><summary>Входили на другом устройстве? Вставьте адрес финальной страницы</summary><p>Если после входа страница не открылась, скопируйте её адрес целиком и вставьте сюда.</p><form method="post"><input type="hidden" name="state" value="`+html.EscapeString(state)+`"><label>Адрес страницы<input name="redirect_url" required placeholder="http://127.0.0.1/oauth/callback?…"></label><button type="submit">Завершить вход</button></form></details></main></html>`)
+			_, _ = io.WriteString(w, oauthInterstitialPage(onboarding, state))
 			return
 		}
 	}
@@ -588,6 +593,166 @@ func (g *Gateway) serveConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	http.Error(w, "unauthorized", http.StatusUnauthorized)
 }
+
+// serveOAuthPaste is the paste-the-redirect fallback shared by the ?state=
+// connect link and the wizard's awaiting-oauth step: the posted state must
+// match the onboarding's stored authorization URL AND the pasted URL's own
+// state, then the shared completePreparedOAuth path re-validates
+// principal/context/connection and runs the PKCE exchange exactly like the
+// live /oauth/callback.
+func (g *Gateway) serveOAuthPaste(w http.ResponseWriter, r *http.Request, storedState string) {
+	if storedState == "" || r.ParseForm() != nil || r.Form.Get("state") != storedState {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	pasted, perr := url.Parse(strings.TrimSpace(r.Form.Get("redirect_url")))
+	if perr != nil || pasted.Query().Get("state") != storedState || pasted.Query().Get("code") == "" {
+		http.Error(w, "invalid redirect URL", http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	if err := g.Control.completePreparedOAuth(r.Context(), storedState, pasted.Query().Get("code")); err != nil {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, credentialResultPage("Вход не прошёл", "Авторизация отклонена. Вернитесь в чат и запросите свежую ссылку через status."))
+		return
+	}
+	_, _ = io.WriteString(w, credentialResultPage("Подключение завершено", "Можно вернуться в чат."))
+}
+
+// oauthInterstitialPage is the provider-hop page shared by the ?state=
+// connect link and the wizard's awaiting-oauth phase.
+func oauthInterstitialPage(onboarding api.Onboarding, state string) string {
+	return `<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="10"><title>Вход у провайдера</title><style>:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:28px;letter-spacing:-.02em}p{margin:0 0 22px;color:#52606d;line-height:1.6}a.btn{display:block;text-align:center;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font-weight:700;text-decoration:none}details{margin-top:18px;color:#52606d}summary{cursor:pointer;font-weight:650}label{display:block;font-weight:650;margin:14px 0 0}input{display:block;width:100%;margin-top:8px;border:1px solid #aab4bf;border-radius:10px;padding:12px 14px;font:inherit}button{width:100%;margin-top:16px;border:0;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font:inherit;font-weight:700;cursor:pointer}</style><main><h1>Вход у провайдера</h1><p>Откройте страницу авторизации и разрешите доступ.</p><a class="btn" rel="noopener noreferrer" href="` + html.EscapeString(onboarding.ProviderAuthorizationURL) + `">Перейти к авторизации</a><details><summary>Входили на другом устройстве? Вставьте адрес финальной страницы</summary><p>Если после входа страница не открылась, скопируйте её адрес целиком и вставьте сюда.</p><form method="post"><input type="hidden" name="state" value="` + html.EscapeString(state) + `"><label>Адрес страницы<input name="redirect_url" required placeholder="http://127.0.0.1/oauth/callback?…"></label><button type="submit">Завершить вход</button></form></details></main></html>`
+}
+
+// brokerHopPage is the wizard's awaiting-credentials render for
+// broker-mediated onboarding: the values live at the broker's own form, so
+// the page forwards there and meta-refreshes — a submitted request flips the
+// phase and the reload lands on the confirm step of the same wizard URL.
+func brokerHopPage(onboarding api.Onboarding) string {
+	return `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="8"><title>Подключение MCP</title><style>:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:28px;letter-spacing:-.02em}p{margin:0 0 22px;color:#52606d;line-height:1.6}a.btn{display:block;text-align:center;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font-weight:700;text-decoration:none}</style><main><h1>Ввод учётных данных</h1><p>Откройте защищённую форму брокера и заполните значения. Эта страница обновится сама, когда они будут приняты.</p><a class="btn" rel="noopener noreferrer" href="` + html.EscapeString(onboarding.BrokerAuthorizationURL) + `">Открыть форму брокера</a></main></html>`
+}
+
+// serveWizard renders the stable single-link setup page: ?k= carries the
+// wizard nonce minted with the first credential/confirmation step, and the
+// page shows whatever phase the onboarding is in.
+func (g *Gateway) serveWizard(w http.ResponseWriter, r *http.Request, onboardingID string, onboarding api.Onboarding, key string) {
+	if onboarding.WizardNonce == "" || key != onboarding.WizardNonce || !g.Control.now().Before(onboarding.WizardExpires) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	// A polling page reload is itself a credentials ask: pull the broker
+	// request forward so a submitted form flips the page to confirm without
+	// a second link or a chat round-trip. The gateway dedupes the notices
+	// refreshBrokerRequest posts while the invite is alive.
+	if r.Method == http.MethodGet && onboarding.Phase == api.PhaseAwaitingCreds && onboarding.BrokerRequestID != "" {
+		if err := g.Control.refreshBrokerRequest(r.Context(), onboardingEnvelope(onboarding), &onboarding); err != nil {
+			log.Printf("toolhub wizard %s: broker refresh: %v", onboardingID, err)
+		}
+	}
+	if onboarding.Phase == api.PhaseAwaitingConfirm {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-store")
+			_, _ = io.WriteString(w, confirmPage(onboarding))
+			return
+		}
+		if r.Method == http.MethodPost {
+			var finishErr error
+			if onboarding.PendingWrites {
+				finishErr = g.Control.applyConfirmedWrites(r.Context(), onboardingID)
+			} else {
+				finishErr = g.Control.finishAuthorization(r.Context(), onboardingID)
+			}
+			if finishErr != nil {
+				http.Error(w, "confirmation failed", http.StatusBadGateway)
+				return
+			}
+			wizardURL := g.Control.origin() + "/connect/" + url.PathEscape(onboardingID) + "?k=" + url.QueryEscape(onboarding.WizardNonce)
+			w.Header().Set("Location", wizardURL)
+			w.WriteHeader(http.StatusSeeOther)
+			return
+		}
+	}
+	if onboarding.Phase == api.PhaseAwaitingOAuth {
+		storedState := ""
+		if parsed, perr := url.Parse(onboarding.ProviderAuthorizationURL); perr == nil {
+			storedState = parsed.Query().Get("state")
+		}
+		if r.Method == http.MethodPost {
+			g.serveOAuthPaste(w, r, storedState)
+			return
+		}
+		if r.Method == http.MethodGet {
+			// The provider hop dies with its in-memory flow (step TTL or a
+			// toolhub restart): re-arm it so this page never fronts a dead
+			// authorization URL that only fails at /oauth/callback.
+			if g.Control.preparedOAuthOnboardingID(storedState) != onboardingID {
+				if definition, derr := g.Control.definitionOf(onboarding); derr == nil {
+					if _, oerr := g.Control.ensurePreparedOAuth(r.Context(), onboardingEnvelope(onboarding), onboarding, definition, false); oerr != nil {
+						log.Printf("toolhub wizard %s: oauth re-arm: %v", onboardingID, oerr)
+					} else if fresh, ferr := g.Control.Store.onboarding(onboardingID); ferr == nil && fresh.Phase == api.PhaseAwaitingOAuth {
+						onboarding = fresh
+						if parsed, perr := url.Parse(onboarding.ProviderAuthorizationURL); perr == nil {
+							storedState = parsed.Query().Get("state")
+						}
+					}
+				}
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+			if g.Control.preparedOAuthOnboardingID(storedState) != onboardingID {
+				_, _ = io.WriteString(w, wizardWaitPage)
+				return
+			}
+			_, _ = io.WriteString(w, oauthInterstitialPage(onboarding, storedState))
+			return
+		}
+	}
+	if onboarding.Phase == api.PhaseAwaitingCreds && r.Method == http.MethodPost {
+		g.submitCredentialForm(w, r, onboardingID, "")
+		return
+	}
+	if onboarding.Phase == api.PhaseAwaitingCreds && r.Method == http.MethodGet && onboarding.BrokerAuthorizationURL != "" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")
+		_, _ = io.WriteString(w, brokerHopPage(onboarding))
+		return
+	}
+	if onboarding.Phase == api.PhaseAwaitingCreds && r.Method == http.MethodGet {
+		cspNonce := api.RandomNonce()
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-"+cspNonce+"'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+		_, _ = io.WriteString(w, g.credentialFormHTML(onboarding, onboardingID, "", nil, cspNonce))
+		return
+	}
+	if r.Method == http.MethodGet {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")
+		switch onboarding.Phase {
+		case api.PhasePreparing, api.PhaseReview, api.PhaseConfirmed:
+			_, _ = io.WriteString(w, wizardWaitPage)
+			return
+		case api.PhaseEnabled:
+			_, _ = io.WriteString(w, credentialResultPage("MCP подключён", "Настройка завершена — можно вернуться в чат и пользоваться инструментами."))
+			return
+		case api.PhaseFailed:
+			_, _ = io.WriteString(w, credentialResultPage("Ошибка подключения", "Подключение не удалось. Вернитесь в чат и попросите повторить установку."))
+			return
+		}
+	}
+	http.Error(w, "unauthorized", http.StatusUnauthorized)
+}
+
+// wizardWaitPage renders the honest in-progress state: the backend is still
+// building/reviewing/enabling, so the page meta-refreshes until the phase
+// advances to a real step or a terminal state on the same URL.
+const wizardWaitPage = `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="6"><title>Настройка MCP</title><style>:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:28px;letter-spacing:-.02em}p{margin:0;color:#52606d;line-height:1.6}</style><main><h1>Настройка коннектора…</h1><p>Идёт подготовка и проверка — страница обновится автоматически. Обычно это занимает пару минут.</p></main></html>`
 
 // serveViewer answers the owner-bound browser viewer link: a spent or
 // expired nonce gets 410 gone, a forged one 403, a live one renders the
@@ -741,9 +906,6 @@ func credentialResultPage(title, message string) string {
 }
 
 func credentialFormIntro(hints []api.CredentialHint) string {
-	if googleOAuthRequired(hints) {
-		return "Выберите готовый JSON-файл Google или введите Client ID и Client Secret отдельно. Данные сохранятся в защищённом хранилище и не попадут в чат."
-	}
 	if credentialHintsUseAlternatives(hints) {
 		return "Заполните один набор. Открыт самый короткий. Остальные способы свёрнуты — их поля отправлять не нужно."
 	}
@@ -985,9 +1147,6 @@ func credentialFieldMarkup(hint api.CredentialHint, field api.ConnectionField, v
 			inputType = "text"
 		}
 	}
-	if hint.Name == "GOOGLE_OAUTH_CREDENTIALS" {
-		return `<fieldset><legend>Данные OAuth-клиента Google</legend><label>Выберите скачанный JSON-файл<input type="file" name="google_oauth_file" accept=".json,application/json"></label><small>Подойдёт файл с именем вроде client_secret_….apps.googleusercontent.com.json.</small><details><summary>Или ввести значения вручную</summary><label>Client ID<input type="text" name="google_oauth_client_id" autocomplete="off"></label><label>Client Secret<input type="password" name="google_oauth_client_secret" autocomplete="off"></label></details></fieldset>`
-	}
 	if hint.Delivery == "file" {
 		return "<label>" + label + " <small class=\"tag\">обязательное</small>" + `<input type="file" name="` + inputName + `" required>` + credentialFieldHint(hint) + prov + "</label>"
 	}
@@ -1075,63 +1234,11 @@ func applyCredentialDefaults(hints []api.CredentialHint, values map[string]strin
 	}
 }
 
-func googleOAuthRequired(hints []api.CredentialHint) bool {
-	for _, hint := range hints {
-		if hint.Name == "GOOGLE_OAUTH_CREDENTIALS" {
-			return true
-		}
-	}
-	return false
-}
-
-func googleOAuthFormValue(r *http.Request) (string, error) {
-	var data []byte
-	file, _, err := r.FormFile("google_oauth_file")
-	if err == nil {
-		defer file.Close()
-		data, err = io.ReadAll(io.LimitReader(file, (64<<10)+1))
-		if err != nil || len(data) > 64<<10 {
-			return "", fmt.Errorf("не удалось прочитать JSON-файл")
-		}
-	} else if err != http.ErrMissingFile {
-		return "", fmt.Errorf("не удалось загрузить JSON-файл")
-	}
-	if len(strings.TrimSpace(string(data))) == 0 {
-		clientID := strings.TrimSpace(r.FormValue("google_oauth_client_id"))
-		clientSecret := strings.TrimSpace(r.FormValue("google_oauth_client_secret"))
-		if clientID == "" || clientSecret == "" {
-			return "", fmt.Errorf("выберите JSON-файл или заполните Client ID и Client Secret")
-		}
-		data, _ = json.Marshal(map[string]any{"installed": map[string]any{"client_id": clientID, "client_secret": clientSecret, "redirect_uris": []string{"http://localhost:3000/oauth2callback"}}})
-	}
-	var document map[string]map[string]any
-	if json.Unmarshal(data, &document) != nil {
-		return "", fmt.Errorf("выбранный файл не является корректным JSON")
-	}
-	credentials := document["installed"]
-	if credentials == nil {
-		credentials = document["web"]
-	}
-	if id, _ := credentials["client_id"].(string); strings.TrimSpace(id) == "" {
-		return "", fmt.Errorf("в JSON-файле отсутствует client_id")
-	}
-	if secret, _ := credentials["client_secret"].(string); strings.TrimSpace(secret) == "" {
-		return "", fmt.Errorf("в JSON-файле отсутствует client_secret")
-	}
-	return string(data), nil
-}
-
 func credentialFieldLabel(hint api.CredentialHint) string {
-	if hint.Name == "GOOGLE_OAUTH_CREDENTIALS" {
-		return "Файл OAuth-клиента Google (JSON)"
-	}
 	return strings.ReplaceAll(strings.TrimSpace(hint.Name), "_", " ")
 }
 
 func credentialFieldHint(hint api.CredentialHint) string {
-	if hint.Name == "GOOGLE_OAUTH_CREDENTIALS" {
-		return "<small>Вставьте содержимое файла gcp-oauth.keys.json, скачанного для OAuth client ID типа Desktop app. Email, host, port и transport здесь не нужны.</small>"
-	}
 	parts := []string{}
 	if hint.Alternative != "" {
 		parts = append(parts, hint.Alternative)
@@ -1164,8 +1271,17 @@ func (g *Gateway) serveOAuthCallback(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "missing onboarding", http.StatusBadRequest)
 			return
 		}
+		flowOnboardingID := g.Control.preparedOAuthOnboardingID(r.URL.Query().Get("state"))
 		if err := g.Control.completePreparedOAuth(r.Context(), r.URL.Query().Get("state"), r.URL.Query().Get("code")); err != nil {
+			log.Printf("toolhub oauth callback failed: %v", err)
 			http.Error(w, "authorization failed; return to chat and retry status", http.StatusForbidden)
+			return
+		}
+		// OAuth done — return the browser to the stable wizard link, which
+		// now renders the enablement progress and the final state.
+		if done, derr := g.Control.Store.onboarding(flowOnboardingID); derr == nil &&
+			done.WizardNonce != "" && g.Control.now().Before(done.WizardExpires) {
+			http.Redirect(w, r, g.Control.origin()+"/connect/"+url.PathEscape(done.OnboardingID)+"?k="+url.QueryEscape(done.WizardNonce), http.StatusSeeOther)
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")

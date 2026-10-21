@@ -77,6 +77,7 @@ func (c *ControlPlane) acceptCredentialGate(ctx context.Context, auth identity.E
 	} else {
 		onboarding.FormNonce = api.RandomNonce()
 		onboarding.FormExpires = c.now().Add(c.ttl())
+		c.armWizard(&onboarding)
 	}
 	onboarding.ConfirmationNonce = ""
 	onboarding.ConfirmationUsed = false
@@ -418,6 +419,7 @@ func (c *ControlPlane) refreshCredentialForm(ctx context.Context, auth identity.
 	}
 	onboarding.FormNonce = api.RandomNonce()
 	onboarding.FormExpires = now.Add(c.ttl())
+	c.armWizard(onboarding)
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(*onboarding); err != nil {
 		return err
@@ -433,6 +435,7 @@ func (c *ControlPlane) refreshConfirmation(ctx context.Context, auth identity.En
 	onboarding.ConfirmationNonce = api.RandomNonce()
 	onboarding.ConfirmationExpires = c.now().Add(c.ttl())
 	onboarding.ConfirmationUsed = false
+	c.armWizard(onboarding)
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(*onboarding); err != nil {
 		return err
@@ -574,6 +577,7 @@ func (c *ControlPlane) SubmitCredentials(onboardingID, nonce string, values map[
 	onboarding.ConfirmationNonce = api.RandomNonce()
 	onboarding.ConfirmationExpires = c.now().Add(c.ttl())
 	onboarding.ConfirmationUsed = false
+	c.armWizard(&onboarding)
 	onboarding.Revision++
 	return c.Store.PutOnboarding(onboarding)
 }

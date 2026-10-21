@@ -9,10 +9,41 @@ The reviewed catalog `internal/toolhub/api/prepared/catalog.json` records
 exact commits, licenses, entrypoints, credential overlays, Broker contracts,
 runtime settings, egress, read probes and user handoffs — data, never
 provider branches. Reviewed Broker contracts ship beside it under
-`prepared/contracts/` and validate with their entries; provision them into
-the broker's contracts dir before enrollment (the control API does not
-register contracts — a missing contract is a deployment error, not license
-to invent a provider auth API).
+`prepared/contracts/` and validate with their entries. ToolHub registers the
+reviewed contract with the Broker before enrollment. Unprepared recipes use
+a content-addressed contract synthesized from their declared deliveries.
+
+## Declarative OAuth
+
+`prepare_source` accepts a secret-free `connection_recipe` object; a pinned
+repository can also declare it in root `mcp-connection.json`. The optional
+`oauth` contract declares HTTPS authorize/token URLs, scopes, `client_input`
+(a required file field), `client_sections`, `registered_redirect_sections`,
+`state_target`, `token_file`, `token_template`, `probe_tool` and optional
+`probe_args`, `access_type`, `prompt`, `account_input`. This metadata is bound
+into the immutable definition and review digest. Catalog entries are defaults;
+adding another compatible MCP or OAuth issuer needs no provider branch in Go.
+
+Client sections contain standard `client_id`/`client_secret`; sections listed
+under `registered_redirect_sections` must register the exact ToolHub callback.
+Templates contain objects and literals with explicit `$oauth.ACCESS_TOKEN`,
+`REFRESH_TOKEN`, `EXPIRES_AT_RFC3339`, `EXPIRES_AT_UNIX_MS`, `TOKEN_TYPE`,
+`OAUTH_SCOPE`, `TOKEN_URL`, `SCOPES` substitutions (each with `$oauth.` prefix),
+plus `$client.ID` and `$client.SECRET`. Arbitrary expressions are rejected.
+Client files are collected through the protected form, never chat arguments.
+The communication handoff returns the protected form as `login_url`; ToolHub
+can expose it as `signin_url` for the same onboarding. A live Broker form stays
+valid until its actual expiry; polling must not create a competing request.
+OAuth retains PKCE, one-time state, owner authorization and network guards.
+The server must pass its declared read-only probe before enablement.
+
+Sessions remain encrypted in owner/binding-scoped Broker state. An optional
+`account_input` names a required environment field for servers expecting an
+email-named session file: ToolHub creates a lease-local view and copies refresh
+changes back to the canonical JSON after the workload stops. It does not share
+tokens between connectors or patch upstream code. Providers with different
+authentication protocols still require an explicitly reviewed implementation;
+this contract does not infer undocumented authentication APIs.
 
 `context_sources` merges another exact-pinned repo into the build context
 under a declared prefix (the reviewed equivalent of an upstream vendoring
@@ -281,6 +312,29 @@ even when the initial read probe has not yet enabled a binding. Rotating the
 credential reference on that retry would select a different binding-scoped
 state slot and hide the freshly checkpointed token from the MCP server.
 
+Protected form, confirmation and OAuth links arrive as new chat messages when
+issued. If a pending confirmation or OAuth link is lost, call ToolHub `status`
+with the onboarding ID and `resend: true`; the channel posts a fresh link.
+
+### google-workspace
+
+`taylorwilsdon/google_workspace_mcp`, pinned v2.1.1 source, Python
+`workspace-mcp --transport stdio --single-user --permissions ...`. The prepared
+recipe selects read-only Calendar, Drive, Gmail, Docs, Sheets, Slides and Tasks
+permissions plus Google identity scopes. Contract `workspace-file-session`
+collects `GOOGLE_CLIENT_SECRET_PATH` as JSON upload and `USER_GOOGLE_EMAIL`.
+Both inputs are required for this workload: leave the Broker form's "field not
+required" opt-out unchecked. If delivery is incomplete at confirmation,
+ToolHub returns to credential collection and issues a new protected form.
+The generic OAuth template emits the upstream flat authorized-user session;
+the lease-local account file supports upstream token refresh without changing
+its implementation. Read probe: `list_calendars`. Calendar, Drive, Gmail, Docs,
+Sheets, Slides and Tasks APIs must be enabled in the OAuth client's project.
+Google consent and any organization policy still apply. OAuth apps in Testing
+can issue short-lived refresh tokens; installation cannot bypass that policy.
+Source build and real unauthenticated MCP preflight passed on 2026-10-20;
+provider-account acceptance is tracked separately in CHG-0144.
+
 ### github
 
 `github/github-mcp-server`, generated Go recipe (main package + literal
@@ -386,8 +440,7 @@ privileged stay a separate instruction.
 
 ### Blocked entries
 
-`google-workspace` (single generic artifact — Calendar entry covers only
-Calendar; official remote path is separate), `slack` (awaiting reviewed
+`slack` (awaiting reviewed
 recipe + user-token overlay + preflight), `careergo` (no exact source/
 license/contract), `agent-browser` (no published runnable image —
 discoverable with reason/runbook, never installable; use playwright-mcp).

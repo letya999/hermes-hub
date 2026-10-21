@@ -73,6 +73,7 @@ func ImportGitHubArtifact(ctx context.Context, source ArtifactSource, config Art
 		return ImportedArtifact{}, err
 	}
 	definition := ToolDefinition{
+		OAuth:  config.OAuth,
 		Schema: SchemaVersion, DefinitionID: config.DefinitionID, Version: config.Version,
 		Transport: ContainerMCP,
 		Source: DefinitionSource{
@@ -122,6 +123,7 @@ func ImportPublishedArtifact(source ArtifactSource, config ArtifactImportConfig,
 	}
 	config.Execution.Egress = append([]string(nil), egress...)
 	config.Credentials = resolution.Connection.CredentialInputs()
+	config.OAuth = resolution.Connection.OAuth
 	recipe := ArtifactRecipe{Format: "published-oci-v1", Entrypoint: append([]string(nil), resolution.Launch.Entrypoint...)}
 	RecipeDigest, err := publishedRecipeDigest(source, resolution)
 	if err != nil {
@@ -134,6 +136,7 @@ func ImportPublishedArtifact(source ArtifactSource, config ArtifactImportConfig,
 		Tools:  append([]ToolSpec(nil), config.Tools...), Credentials: append([]CredentialInput(nil), config.Credentials...), CredentialGroups: cloneStringGroups(config.CredentialGroups), CredentialContractID: config.CredentialContractID, CredentialContractRevision: config.CredentialContractRevision, CredentialContractEnv: config.CredentialContractEnv, Environment: append([]string(nil), config.Environment...), Workload: config.Workload, Execution: config.Execution, Health: config.Health,
 	}
 	imported := ImportedArtifact{Definition: definition, Recipe: recipe, Artifact: artifact}
+	imported.Definition.OAuth = config.OAuth
 	imported.Definition.RuntimeEnvironment = config.RuntimeEnvironment
 	imported.Definition.ProxyEnvironment = append([]string(nil), config.ProxyEnvironment...)
 	imported.Definition.Toolsets = config.Toolsets

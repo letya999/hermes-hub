@@ -95,6 +95,68 @@ func TestMaterializeRuntimeCredentialsSkipsLeaseDeliveredFile(t *testing.T) {
 	}
 }
 
+// A credential set made only of file-delivery inputs arrives through staged
+// <name>.secret files, never through credentials.env — the injector removes
+// file-bound values before writing env lines. materializeRuntimeCredentials
+// must therefore synthesize the env file from the staged secrets instead of
+// failing on the missing source (observed: google-calendar-mcp lease mount,
+// bridge-create: bounded CLI isolation is unavailable).
+func TestMaterializeRuntimeCredentialsSecretOnlyWorkspace(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "CLIENT_JSON.secret"), []byte("/run/mcp-secrets/client.json"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	definition := api.ToolDefinition{Credentials: []api.CredentialInput{
+		{Name: "CLIENT_JSON", Required: true, Delivery: "file", Target: "/run/mcp-secrets/client.json"},
+	}}
+	env, mounts, _ := materializeRuntimeCredentials(workspace, definition)
+	body, _ := os.ReadFile(env)
+	if !strings.Contains(string(body), "CLIENT_JSON=/run/mcp-secrets/client.json") || len(mounts) != 0 {
+		t.Fatalf("lease-delivered credentials must yield an env file with the target line: env=%q mounts=%v", env, mounts)
+	}
+}
+
+// A mixed contract (required file delivery + required env) lands as
+// credentials.env carrying only the env line plus a <name>.secret sibling —
+// the injector strips file-bound names from env lines. materialize must see
+// the staged secret as satisfying the required input and emit a runtime env
+// that adds the lease-target line the source file never had (observed:
+// google-workspace confirm, "bridge-create: required runtime credential
+// missing").
+func TestMaterializeRuntimeCredentialsMixedFileAndEnv(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+	envPath := filepath.Join(workspace, "credentials.env")
+	if err := os.WriteFile(envPath, []byte("USER_GOOGLE_EMAIL=owner@example.com\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "GOOGLE_CLIENT_SECRET_PATH.secret"), []byte("/run/mcp-secrets/client.json"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	definition := api.ToolDefinition{Credentials: []api.CredentialInput{
+		{Name: "GOOGLE_CLIENT_SECRET_PATH", Required: true, Delivery: "file", Target: "/run/mcp-secrets/client.json"},
+		{Name: "USER_GOOGLE_EMAIL", Required: true, Delivery: "env"},
+	}}
+	env, mounts, err := materializeRuntimeCredentials(workspace, definition)
+	if err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	if len(mounts) != 0 {
+		t.Fatalf("lease-delivered file credential mounted twice: %+v", mounts)
+	}
+	if env == envPath {
+		t.Fatal("source env lacks the file credential line; runtime env must be written")
+	}
+	body, err := os.ReadFile(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "GOOGLE_CLIENT_SECRET_PATH=/run/mcp-secrets/client.json") || !strings.Contains(string(body), "USER_GOOGLE_EMAIL=owner@example.com") {
+		t.Fatalf("runtime env lost entries: %q", body)
+	}
+}
+
 // writeWorldReadableTemp produces a readable file or cleans it up on error.
 func TestWriteWorldReadableTemp(t *testing.T) {
 	t.Parallel()

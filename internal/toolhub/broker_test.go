@@ -394,6 +394,8 @@ func TestCredentialBrokerInjectorSatisfiesAlternativeGroups(t *testing.T) {
 		mode = incomplete
 		if _, err := brokerRuntimeInjector(&cfg, &cfg)(t.Context(), effective); !errors.Is(err, api.ErrIsolation) || !errors.Is(err, api.ErrCredentialDelivery) {
 			t.Fatalf("incomplete alternative groups accepted (%s): %v", incomplete, err)
+		} else if !strings.Contains(err.Error(), "JIRA_API_TOKEN") {
+			t.Fatalf("missing input names absent from delivery diagnosis: %v", err)
 		}
 	}
 }
@@ -713,10 +715,11 @@ func TestCredentialBrokerPendingRequestReNotifies(t *testing.T) {
 	}
 }
 
-// A pending request with less life left than a QR invite's TTL would mint a
-// link that dies before the owner finishes scanning; treat it as dead and
-// re-mint instead.
-func TestCredentialBrokerDyingRequestRegenerates(t *testing.T) {
+// A pending request stays usable until actual expiry: Broker refuses a
+// second pending request for the same connection, so the live link is
+// re-delivered instead of reminted. Truly expired requests are reminted —
+// that path is covered by broker_stale_expired_test.go.
+func TestCredentialBrokerPendingRequestRemainsUsable(t *testing.T) {
 	_, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -738,9 +741,8 @@ func TestCredentialBrokerDyingRequestRegenerates(t *testing.T) {
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(c)
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/requests":
-			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_fresh", ContractID: "github-pat", ContractRevision: 1, ConnectionID: "connection_1", OnboardingID: "onboard_1", Status: "pending", AuthorizationURL: "https://broker.example/connect/request_fresh", ExpiresAt: time.Now().Add(15 * time.Minute)})
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/requests/request_fresh":
-			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_fresh", ContractID: "github-pat", ContractRevision: 1, ConnectionID: "connection_1", OnboardingID: "onboard_1", Status: "pending", AuthorizationURL: "https://broker.example/connect/request_fresh", ExpiresAt: time.Now().Add(15 * time.Minute)})
+			t.Error("created a second pending request for a live connection")
+			http.Error(w, `{"code":"conflict"}`, http.StatusConflict)
 		default:
 			http.NotFound(w, r)
 		}
@@ -781,11 +783,11 @@ func TestCredentialBrokerDyingRequestRegenerates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if body["broker_request_id"] != "request_fresh" {
-		t.Fatalf("dying request was not replaced: %v", body)
+	if body["broker_request_id"] != "request_dying" {
+		t.Fatalf("live pending request was not reused: %v", body)
 	}
-	if notice["broker_request_id"] != "request_fresh" {
-		t.Fatalf("owner was not told about the re-minted request: %v", notice)
+	if notice["broker_request_id"] != "request_dying" {
+		t.Fatalf("owner was not re-notified about the live request: %v", notice)
 	}
 }
 
@@ -1162,6 +1164,51 @@ func TestMaterializeBindingRotatesBrokerConnection(t *testing.T) {
 	}
 	if store.credentials[old.CredentialRefID].Status != api.RevokedStatus {
 		t.Fatal("previous credential reference was not revoked")
+	}
+}
+
+// An OAuth onboarding whose rotation already re-minted the grant for this very
+// credential (first confirm, then the probe re-routed to OAuth) must keep that
+// binding: re-rotating mints a new binding ID, and Broker keys token state by
+// credential/context/binding, so the token the callback just wrote vanishes.
+func TestMaterializeBindingKeepsMaterializedOAuthRotation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected broker call %s %s", r.Method, r.URL.Path)
+		http.Error(w, "denied", http.StatusForbidden)
+	}))
+	defer server.Close()
+	auth := aliceAuth()
+	definition := statefulContainerDefinition()
+	definition.Credentials = []api.CredentialInput{{Name: "GOOGLE_TOKEN", Required: true}}
+	definition.CredentialContractID = "workspace-file-session"
+	definition.CredentialContractRevision = 1
+	definition.CredentialContractEnv = map[string]string{"GOOGLE_TOKEN": "GOOGLE_TOKEN"}
+	definition.OAuth = &api.OAuthRecipe{AuthorizeURL: "https://accounts.example.com/authorize", TokenURL: "https://accounts.example.com/token", Scopes: []string{"scope"}, ClientInput: "GOOGLE_TOKEN", ClientSections: []string{"installed"}, StateTarget: "/state", TokenFile: "session.json", TokenTemplate: map[string]any{"normal": map[string]any{"access_token": "$oauth.ACCESS_TOKEN"}}, ProbeTool: "probe"}
+	store := NewStore()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantDefinition, auth.PrincipalID, definition.DefinitionID, definition.Version)); err != nil {
+		t.Fatal(err)
+	}
+	refID := api.CredentialReferenceID("conn-existing", 2)
+	bindingID := api.DeterministicBindingID(auth.PrincipalID, auth.ContextID, auth.RuntimeID, definition.DefinitionID, definition.Version, "conn-existing", refID)
+	ref := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: refID, ConnectionID: "conn-existing", Revision: 2, Backend: "credential-broker", Locator: "credential_1", Keys: []string{"GOOGLE_TOKEN"}, Status: api.ActiveStatus, BrokerContractID: "workspace-file-session", BrokerContractRevision: 1, BrokerGrantID: "grant_2", BrokerGrantPolicy: auth.PolicyVersion, BrokerGrantBinding: bindingID}
+	if err := store.PutCredentialReference(ref); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutConnection(api.Connection{Schema: api.SchemaVersion, ConnectionID: "conn-existing", Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: auth.PrincipalID}, DefinitionID: definition.DefinitionID, CredentialRefID: refID, Revision: 2, Status: api.ActiveStatus}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := credentialbroker.Config{URL: server.URL, KeyFile: filepath.Join(t.TempDir(), "unused"), KeyID: "toolhub", Issuer: "hermes-toolhub"}
+	control := &ControlPlane{Store: store, Broker: &cfg, Now: time.Now, Ready: func(context.Context, api.EffectiveBinding) error { return nil }}
+	onboarding := api.Onboarding{OnboardingID: "onboard-oauth", Locator: "credential_1", BrokerCredentialID: "credential_1", BrokerRotateCredentialID: "credential_1", Required: []api.CredentialHint{{Name: "GOOGLE_TOKEN"}}}
+	binding, err := control.materializeBinding(t.Context(), auth, onboarding, definition)
+	if err != nil {
+		t.Fatalf("materialized rotation re-ran: %v", err)
+	}
+	if binding.ToolBindingID != bindingID || binding.CredentialRefID != refID {
+		t.Fatalf("binding moved off the token-bearing grant: %+v", binding)
 	}
 }
 

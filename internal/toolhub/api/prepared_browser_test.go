@@ -29,8 +29,15 @@ func TestPreparedPlaywrightEntryShape(t *testing.T) {
 	if entry.Tier != TierT0 || entry.Image == nil || entry.Source.CommitSHA == "" {
 		t.Fatalf("playwright-mcp must be a T0 source+image pin: tier=%q image=%+v", entry.Tier, entry.Image)
 	}
-	if !strings.HasPrefix(entry.Image.Ref, "mcr.microsoft.com/playwright/mcp@sha256:") || !DigestPattern.MatchString(entry.Image.Digest) || !strings.HasSuffix(entry.Image.Ref, entry.Image.Digest) {
-		t.Fatalf("image pin is not a digest-bound mcr ref: %+v", entry.Image)
+	// MCR does not publish attestations for this image, so the pin references
+	// a digest-identical mirror that carries real provenance+SBOM manifests.
+	if !DigestPattern.MatchString(entry.Image.Digest) || !strings.HasSuffix(entry.Image.Ref, entry.Image.Digest) {
+		t.Fatalf("image pin is not a digest-bound ref: %+v", entry.Image)
+	}
+	for _, evidence := range []string{entry.Image.Provenance, entry.Image.SBOM} {
+		if !DigestPattern.MatchString(evidence) {
+			t.Fatalf("image pin lacks attestation evidence digest: %+v", entry.Image)
+		}
 	}
 	if !entry.Stateful || entry.StateTarget != "/state/browser-profile" || entry.EgressClass != EgressWeb {
 		t.Fatalf("browser entry must be stateful web-egress: %+v", entry)

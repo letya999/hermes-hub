@@ -439,7 +439,7 @@ func TestEndpointHandlerWiresReviewerOAuthAndElicitsFormURL(t *testing.T) {
 		t.Fatalf("required_credentials leaked the form link: %v", required)
 	}
 	formOn := mustOnboarding(t, store, onboardingID)
-	formURL := "http://127.0.0.1:8090/credentials/" + onboardingID + "?t=" + formOn.FormNonce
+	formURL := "http://127.0.0.1:8090/connect/" + onboardingID + "?k=" + formOn.WizardNonce
 	got, _ := elicited.Load().(string)
 	if got != formURL {
 		t.Fatalf("elicit=%q want=%q", got, formURL)

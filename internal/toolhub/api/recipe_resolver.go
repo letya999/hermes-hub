@@ -82,6 +82,9 @@ func (r RecipeResolver) Resolve(ctx context.Context, source ArtifactSource, cont
 	}
 
 	resolution.Connection = normalizeConnection(resolution.Connection)
+	if explicit, ok := ctx.Value(ConnectionRecipeContextKey{}).(ConnectionRecipe); ok {
+		resolution.Connection = mergeConnection(connectionWithSource(explicit, "install-recipe"), resolution.Connection)
+	}
 	if err := resolution.Connection.Validate(); err != nil {
 		return RecipeResolution{}, err
 	}
@@ -258,6 +261,20 @@ func contextEvidence(files map[string][]byte) []RecipeEvidence {
 func ResolveLocalRecipe(files map[string][]byte, source ArtifactSource) (LaunchRecipe, ConnectionRecipe, []string, error) {
 	var launch LaunchRecipe
 	var connection ConnectionRecipe
+	if data, ok := files["mcp-connection.json"]; ok {
+		if !json.Valid(data) {
+			return LaunchRecipe{}, ConnectionRecipe{}, nil, ErrInvalid
+		}
+		decoder := json.NewDecoder(bytes.NewReader(data))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&connection); err != nil {
+			return LaunchRecipe{}, ConnectionRecipe{}, nil, err
+		}
+		if err := connection.Validate(); err != nil {
+			return LaunchRecipe{}, ConnectionRecipe{}, nil, err
+		}
+		connection = connectionWithSource(connection, "mcp-connection.json")
+	}
 	var warnings []string
 	// decls keeps every tagged field declaration before the merge deduplicates
 	// by name, so conflicting requiredness across sources can be reported.
