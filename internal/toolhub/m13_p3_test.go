@@ -435,6 +435,42 @@ func TestConnectorSearch(t *testing.T) {
 	}
 }
 
+// The facade search feeds the same registry discovery as discover: a query
+// for a connector absent from the prepared catalog still returns selectable
+// candidates the model can offer and install by candidate id.
+func TestConnectorSearchIncludesRegistryCandidates(t *testing.T) {
+	store, auth, _, profile := managedStore(t)
+	profile.Revision++
+	profile.Connectors = api.ConnectorsPersonal
+	if err := putProfile(t, store, profile); err != nil {
+		t.Fatal(err)
+	}
+	c := &ControlPlane{Store: store, Now: time.Now, RecipeCatalogs: []api.RecipeCatalog{
+		stubSourceCatalog{found: []api.DiscoveryCandidate{{
+			Name:   "metabase",
+			Source: api.ArtifactSource{Repository: "https://github.com/easecloudio/mcp-metabase-server", CommitSHA: "8a4dfce8afd45ead9cc4c2764f41ace6f91adf66"},
+			Reason: "registry", Status: "registry-source",
+			Evidence: []api.RecipeEvidence{{Source: "docker-mcp", Path: "registry/metabase", Detail: "metadata"}},
+		}}},
+	}}
+	result, err := c.InvokeConnector(context.Background(), auth, "connector_search", map[string]any{"query": "metabase"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State != api.OpStateDone || len(result.Candidates) == 0 {
+		t.Fatalf("registry candidate not surfaced: %+v", result)
+	}
+	found := false
+	for _, candidate := range result.Candidates {
+		if candidate.ID != "" && candidate.Source == "https://github.com/easecloudio/mcp-metabase-server" && candidate.Kind == "registry-source" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("metabase registry candidate missing: %+v", result.Candidates)
+	}
+}
+
 // S3.4: connector_status maps the target's phase onto the operation-state
 // vocabulary and resolves operation ids too.
 func TestConnectorStatus(t *testing.T) {
@@ -1100,4 +1136,15 @@ func TestNoProseMarkerControlFlow(t *testing.T) {
 			t.Fatalf("%s: prose marker drives logic: %s", name, hit)
 		}
 	}
+}
+
+// stubSourceCatalog answers SearchSources with fixed candidates.
+type stubSourceCatalog struct{ found []api.DiscoveryCandidate }
+
+func (s stubSourceCatalog) Lookup(context.Context, api.RecipeLookup) ([]api.RecipeCandidate, error) {
+	return nil, nil
+}
+
+func (s stubSourceCatalog) SearchSources(context.Context, string) ([]api.DiscoveryCandidate, error) {
+	return s.found, nil
 }

@@ -85,6 +85,10 @@ type ControlPlane struct {
 	// grant_request control op stamps the in-conversation request onto a
 	// host-created pending grant; nil disables the op entirely.
 	Governance *GovernanceStore
+	// FinalizerStepDelay stalls each remove-ladder step — a live
+	// restart-resume chaos knob set only through HUB_DEBUG_FINALIZER_DELAY_MS.
+	// Zero (the default) runs the ladder at full speed.
+	FinalizerStepDelay time.Duration
 }
 
 func (c *ControlPlane) now() time.Time {
@@ -438,6 +442,13 @@ func (c *ControlPlane) remove(ctx context.Context, auth identity.Envelope, args 
 		if step.State == api.FinalizerDone {
 			continue
 		}
+		if c.FinalizerStepDelay > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(c.FinalizerStepDelay):
+			}
+		}
 		step.Attempts++
 		step.Error = ""
 		if err := c.runRemoveFinalizer(ctx, onboarding, step.Name); err != nil {
@@ -463,6 +474,9 @@ func (c *ControlPlane) remove(ctx context.Context, auth identity.Envelope, args 
 	}
 	if onboarding.ConnectionID != "" && !c.Store.sharedForeignConnection(onboarding.PrincipalID, onboarding.ConnectionID) {
 		_ = c.Store.SetConnectionStatus(onboarding.ConnectionID, api.RevokedStatus)
+		// Sibling install attempts bound to the same connection are zombies:
+		// the resource they provisioned is gone, so they retire with it.
+		_ = c.Store.SweepConnectionOnboardings(onboarding.ConnectionID, onboarding.OnboardingID)
 	}
 	onboarding.Phase = api.PhaseRemoved
 	onboarding.RemoveReceipt = removeReceipt(onboarding.RemoveFootprint)

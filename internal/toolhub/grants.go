@@ -8,6 +8,14 @@ import (
 	"time"
 )
 
+// cloneOnboarding is the store's copy boundary for mutable record fields:
+// the remove ladder mutates Finalizers in place, so the map and callers
+// must never share its backing array.
+func cloneOnboarding(o api.Onboarding) api.Onboarding {
+	o.Finalizers = slices.Clone(o.Finalizers)
+	return o
+}
+
 func (s *Store) PutGrant(grant api.Grant) error {
 	if err := grant.Validate(); err != nil {
 		return err
@@ -70,7 +78,7 @@ func (s *Store) PutOnboarding(onboarding api.Onboarding) error {
 		return err
 	}
 	s.mu.Lock()
-	s.onboardings[onboarding.OnboardingID] = onboarding
+	s.onboardings[onboarding.OnboardingID] = cloneOnboarding(onboarding)
 	s.mu.Unlock()
 	return s.persist()
 }
@@ -377,7 +385,7 @@ func (s *Store) OnboardingFor(auth identity.Envelope, id string) (api.Onboarding
 	if onboarding.PrincipalID != auth.PrincipalID || onboarding.ContextID != auth.ContextID || onboarding.RuntimeID != auth.RuntimeID || onboarding.PolicyVersion != auth.PolicyVersion {
 		return api.Onboarding{}, fmt.Errorf("%w: onboarding owner", api.ErrUnauthorized)
 	}
-	return onboarding, nil
+	return cloneOnboarding(onboarding), nil
 }
 
 func (s *Store) FindOnboardingByKey(auth identity.Envelope, key string) (api.Onboarding, bool) {

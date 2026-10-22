@@ -518,6 +518,31 @@ func TestEndpointBindsScopedLabelSeams(t *testing.T) {
 	}
 }
 
+// The chaos knob binds only through the env var: a live kill lands
+// mid-ladder so restart-resume can be verified on the deployed stack.
+func TestEndpointBindsFinalizerStepDelay(t *testing.T) {
+	store, auth, _ := seededStore(t)
+	backend := backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
+		return api.BackendResult{Text: "ok"}, nil
+	})
+	config := EndpointConfig{Token: strings.Repeat("t", 32), Auth: auth, Backend: backend}
+	handler, err := NewEndpointHandler(config, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := handler.(*projectionEndpoint).gateway.Control.FinalizerStepDelay; got != 0 {
+		t.Fatalf("delay bound without env: %v", got)
+	}
+	t.Setenv("HUB_DEBUG_FINALIZER_DELAY_MS", "1500")
+	handler, err = NewEndpointHandler(config, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := handler.(*projectionEndpoint).gateway.Control.FinalizerStepDelay; got != 1500*time.Millisecond {
+		t.Fatalf("env delay not bound: %v", got)
+	}
+}
+
 // The production surface probe replays the admitted definition for
 // non-remote transports, carries the stored credential env into the live
 // probe for remote MCP, and treats an unobservable endpoint as unknown —

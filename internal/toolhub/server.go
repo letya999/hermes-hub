@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type EndpointConfig struct {
@@ -284,6 +285,11 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 	}
 	gateway.Injector = mergeCredentialInjectors(injector, brokerRuntimeInjector(config.BrokerControl, config.BrokerRuntime), config.BrokerControl != nil)
 	control := &ControlPlane{Store: store, Secrets: secrets, Listen: config.Listen, WorkloadRoot: api.EnvOr("HUB_STATE", ""), DiagnosticsDir: api.EnvOr("HUB_DIAGNOSTICS_DIR", ""), Broker: config.BrokerControl, BrokerRuntime: config.BrokerRuntime, RecipeCatalogs: config.RecipeCatalogs, Release: config.Release, CLIRelease: config.CLIRelease}
+	// HUB_DEBUG_FINALIZER_DELAY_MS stalls each remove-ladder step so a live
+	// kill lands mid-ladder and restart-resume can be verified on the stack.
+	if ms, err := strconv.Atoi(os.Getenv("HUB_DEBUG_FINALIZER_DELAY_MS")); err == nil && ms > 0 {
+		control.FinalizerStepDelay = time.Duration(ms) * time.Millisecond
+	}
 	if project := os.Getenv("HUB_DOCKER_SCOPE"); project != "" {
 		control.LabelQuery, control.LabelPurge = scopedLabelOps(project, api.DockerLabelQuery, api.DockerLabelPurge)
 		control.LabelScan = scopedLabelScan(project, api.DockerLabelScan)

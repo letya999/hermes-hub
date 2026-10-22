@@ -67,7 +67,7 @@ func (s *Store) onboarding(id string) (api.Onboarding, error) {
 	if !ok {
 		return api.Onboarding{}, fmt.Errorf("%w: onboarding", api.ErrNotFound)
 	}
-	return onboarding, nil
+	return cloneOnboarding(onboarding), nil
 }
 
 func (s *Store) binding(id string) (api.ToolBinding, error) {

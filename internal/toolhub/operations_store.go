@@ -186,6 +186,33 @@ func (s *Store) RequireConnectorTool(auth identity.Envelope, tool string) error 
 	return nil
 }
 
+// SweepConnectionOnboardings retires every non-terminal onboarding still
+// bound to a removed connection: spammed or stale install attempts of the
+// same connector are zombies once the shared resource is gone. The removing
+// record is excluded — it carries the receipt.
+func (s *Store) SweepConnectionOnboardings(connectionID, exceptOnboardingID string) error {
+	if connectionID == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, o := range s.onboardings {
+		if o.ConnectionID != connectionID || o.OnboardingID == exceptOnboardingID {
+			continue
+		}
+		if o.Phase == api.PhaseRemoved || o.Phase == api.PhaseFailed || o.Phase == api.PhaseRevoked || o.SupersededBy != "" {
+			continue
+		}
+		o.Phase = api.PhaseRemoved
+		o.Revision++
+		s.onboardings[id] = o
+	}
+	if s.path != "" {
+		return s.saveLocked(s.path)
+	}
+	return nil
+}
+
 func (e *ErrAmbiguousTarget) Error() string {
 	ids := make([]string, 0, len(e.Candidates))
 	for _, c := range e.Candidates {

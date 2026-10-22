@@ -886,6 +886,185 @@ func TestToolSurfaceDriftDegrades(t *testing.T) {
 	}
 }
 
+// Removing a connection retires every sibling onboarding still bound to it —
+// spammed or stale install attempts of the same connector must not survive as
+// live records once the shared resource is gone.
+func TestRemoveSweepsSiblingOnboardingsOfConnection(t *testing.T) {
+	store, auth, _, _ := managedStore(t)
+	enabled := m13P3EnabledOnboarding(t, store, auth)
+	sibling := api.Onboarding{
+		Schema: api.SchemaVersion, OnboardingID: api.DeterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, "sibling-attempt"),
+		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
+		Mode: api.OnboardingCatalog, DefinitionID: "google-work", DefinitionVersion: "2.0.0",
+		Phase: api.PhaseAwaitingCreds, ConnectionID: enabled.ConnectionID,
+		Revision: 1, CreatedAt: time.Now(),
+	}
+	dead := sibling
+	dead.OnboardingID = api.DeterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, "dead-attempt")
+	dead.Phase = api.PhaseFailed
+	other := sibling
+	other.OnboardingID = api.DeterministicID("onboard", auth.PrincipalID, auth.ContextID, auth.RuntimeID, "other-connector")
+	other.ConnectionID = "conn-different"
+	other.Phase = api.PhaseEnabled
+	for _, o := range []api.Onboarding{sibling, dead, other} {
+		if err := store.PutOnboarding(o); err != nil {
+			t.Fatal(err)
+		}
+	}
+	enabled.Finalizers = newRemoveLadder()
+	enabled.RemoveNonce = "spent-remove"
+	enabled.RemoveExpires = time.Now().Add(-time.Hour)
+	enabled.Revision++
+	if err := store.PutOnboarding(enabled); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetConnectionStatus(enabled.ConnectionID, api.DeletingStatus); err != nil {
+		t.Fatal(err)
+	}
+	c := &ControlPlane{Store: store, Now: time.Now, WorkloadRoot: t.TempDir()}
+	if _, err := c.remove(context.Background(), auth, map[string]any{"onboarding_id": enabled.OnboardingID}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.OnboardingFor(auth, sibling.OnboardingID)
+	if err != nil || got.Phase != api.PhaseRemoved {
+		t.Fatalf("sibling onboarding not swept: %v %s", err, got.Phase)
+	}
+	if got, err = store.OnboardingFor(auth, dead.OnboardingID); err != nil || got.Phase != api.PhaseFailed {
+		t.Fatalf("terminal sibling rewritten: %v %s", err, got.Phase)
+	}
+	if got, err = store.OnboardingFor(auth, other.OnboardingID); err != nil || got.Phase != api.PhaseEnabled {
+		t.Fatalf("unrelated onboarding swept: %v %s", err, got.Phase)
+	}
+}
+
+// A stall mid-ladder (the chaos knob) leaves the removal half-persisted; a
+// fresh control plane — the restarted process — resumes it to removed.
+func TestFinalizerStepDelayHaltsLadderForResume(t *testing.T) {
+	store, auth, _, _ := managedStore(t)
+	onboarding := m13P3EnabledOnboarding(t, store, auth)
+	onboarding.Finalizers = newRemoveLadder()
+	onboarding.RemoveNonce = "spent-remove"
+	onboarding.RemoveExpires = time.Now().Add(-time.Hour)
+	onboarding.Revision++
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetConnectionStatus(onboarding.ConnectionID, api.DeletingStatus); err != nil {
+		t.Fatal(err)
+	}
+	c := &ControlPlane{Store: store, Now: time.Now, WorkloadRoot: t.TempDir(), FinalizerStepDelay: 200 * time.Millisecond}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.remove(ctx, auth, map[string]any{"onboarding_id": onboarding.OnboardingID})
+		done <- err
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		got, err := store.OnboardingFor(auth, onboarding.OnboardingID)
+		if err == nil && len(got.Finalizers) > 0 && got.Finalizers[0].State == api.FinalizerDone {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("first finalizer never completed")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("halted remove returned %v", err)
+	}
+	got, err := store.OnboardingFor(auth, onboarding.OnboardingID)
+	if err != nil || got.Phase == api.PhaseRemoved {
+		t.Fatalf("remove should be mid-ladder: %v %s", err, got.Phase)
+	}
+	restarted := &ControlPlane{Store: store, Now: time.Now, WorkloadRoot: t.TempDir()}
+	if err := restarted.ResumeRemovals(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got, err = store.OnboardingFor(auth, onboarding.OnboardingID)
+	if err != nil || got.Phase != api.PhaseRemoved {
+		t.Fatalf("mid-ladder remove not resumed: %v %s", err, got.Phase)
+	}
+	for _, step := range got.Finalizers {
+		if step.State != api.FinalizerDone {
+			t.Fatalf("finalizer %s unfinished after resume", step.Name)
+		}
+	}
+}
+
+// A remove op whose onboarding reached removed — via the ladder or via the
+// sibling sweep — must report done, not hang at awaiting_confirm forever.
+func TestConnectorStatusReportsSweptRemoveDone(t *testing.T) {
+	store, auth, _, profile := managedStore(t)
+	enabled := m13P3EnabledOnboarding(t, store, auth)
+	profile.Revision++
+	profile.Connectors = api.ConnectorsPersonal
+	if err := putProfile(t, store, profile); err != nil {
+		t.Fatal(err)
+	}
+	c := &ControlPlane{Store: store, Now: time.Now, ConfirmationTTL: time.Minute, WorkloadRoot: t.TempDir()}
+	armed, err := c.InvokeConnector(context.Background(), auth, "connector_remove", map[string]any{"target": "google-work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if armed.State != api.OpStateAwaitingConfirm || armed.OperationID == "" {
+		t.Fatalf("remove not armed: %+v", armed)
+	}
+	// Another onboarding finishing the same connection's ladder sweeps this
+	// record to removed without running its own finalizer list.
+	onboarding, err := store.OnboardingFor(auth, enabled.OnboardingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	onboarding.Phase = api.PhaseRemoved
+	onboarding.Revision++
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	got, err := c.InvokeConnector(context.Background(), auth, "connector_status", map[string]any{"operation_id": armed.OperationID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != api.OpStateDone {
+		t.Fatalf("swept remove reported %q, want done", got.State)
+	}
+}
+
+// Stored records must not share their Finalizers array with callers: a
+// mutating remove and a concurrent reader would otherwise race on it.
+func TestOnboardingFinalizerSliceIsolation(t *testing.T) {
+	store, auth, _, _ := managedStore(t)
+	onboarding := m13P3EnabledOnboarding(t, store, auth)
+	got, err := store.OnboardingFor(auth, onboarding.OnboardingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got.Finalizers = append(got.Finalizers, api.Finalizer{Name: "workloads", State: api.FinalizerPending})
+	got.Finalizers[0].State = api.FinalizerDone
+	if err := store.PutOnboarding(got); err != nil {
+		t.Fatal(err)
+	}
+	// Mutating the caller's slice after Put must not leak into the store.
+	got.Finalizers[0].State = api.FinalizerFailed
+	again, err := store.OnboardingFor(auth, onboarding.OnboardingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Finalizers[0].State != api.FinalizerDone {
+		t.Fatalf("caller mutation reached stored ladder: %s", again.Finalizers[0].State)
+	}
+	// Mutating a read copy must not leak back into the store either.
+	again.Finalizers[0].State = api.FinalizerPending
+	once, err := store.OnboardingFor(auth, onboarding.OnboardingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if once.Finalizers[0].State != api.FinalizerDone {
+		t.Fatalf("reader mutation reached stored ladder: %s", once.Finalizers[0].State)
+	}
+}
+
 func containsString(list []string, want string) bool {
 	for _, item := range list {
 		if item == want {

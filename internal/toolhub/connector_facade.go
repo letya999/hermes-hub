@@ -24,7 +24,7 @@ func (c *ControlPlane) InvokeConnector(ctx context.Context, auth identity.Envelo
 	case "connector_list":
 		result, err = c.connectorList(auth)
 	case "connector_search":
-		result, err = c.connectorSearch(ctx, api.ArgString(args, "query"), api.ArgString(args, "kind"))
+		result, err = c.connectorSearch(ctx, auth, api.ArgString(args, "query"), api.ArgString(args, "kind"))
 	case "connector_status":
 		result, err = c.connectorStatus(ctx, auth, api.ArgString(args, "target"), api.ArgString(args, "operation_id"))
 	case "connector_install":
@@ -79,21 +79,26 @@ func (c *ControlPlane) connectorList(auth identity.Envelope) (api.OperationResul
 	}, nil
 }
 
-// connectorSearch queries the reviewed prepared catalog.
-func (c *ControlPlane) connectorSearch(ctx context.Context, query, kind string) (api.OperationResult, error) {
+// connectorSearch runs the same discovery pipeline as discover: prepared
+// entries plus configured registries, with selectable candidate ids minted
+// so connector_install can take the choice directly.
+func (c *ControlPlane) connectorSearch(ctx context.Context, auth identity.Envelope, query, kind string) (api.OperationResult, error) {
 	query = strings.ToLower(strings.TrimSpace(query))
 	if query == "" {
 		return api.OperationResult{}, fmt.Errorf("%w: search query required", api.ErrInvalid)
 	}
-	entries, err := api.PreparedCatalog()
+	body, err := c.discover(ctx, auth, query)
 	if err != nil {
 		return api.OperationResult{}, err
 	}
-	var candidates []api.OperationCandidate
-	for _, entry := range entries {
-		if strings.Contains(strings.ToLower(entry.ID+" "+strings.Join(entry.Aliases, " ")+" "+entry.Name), query) {
-			candidates = append(candidates, api.OperationCandidate{ID: entry.ID, Source: entry.Source.Repository, Kind: "mcp"})
+	found, _ := body["candidates"].([]api.DiscoveryCandidate)
+	candidates := make([]api.OperationCandidate, 0, len(found))
+	for _, candidate := range found {
+		id := candidate.PreparedID
+		if id == "" {
+			id = candidate.ID
 		}
+		candidates = append(candidates, api.OperationCandidate{ID: id, Source: candidate.Source.Repository, Kind: candidate.Status})
 	}
 	return api.OperationResult{State: api.OpStateDone, Candidates: candidates, Summary: fmt.Sprintf("%d match(es)", len(candidates))}, nil
 }
@@ -111,6 +116,13 @@ func (c *ControlPlane) connectorStatus(ctx context.Context, auth identity.Envelo
 			if onboarding, err := c.Store.OnboardingFor(auth, op.OnboardingID); err == nil {
 				result.Finalizers = onboarding.Finalizers
 				result.Receipt = onboarding.RemoveReceipt
+				// A sibling's completed ladder sweeps this record to removed
+				// without running its own finalizers — the connector is gone,
+				// so the journaled operation is done regardless of its arm
+				// state.
+				if onboarding.Phase == api.PhaseRemoved && op.State == api.OpStateAwaitingConfirm {
+					result.State = api.OpStateDone
+				}
 			}
 		}
 		return result, nil

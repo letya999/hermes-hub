@@ -3,7 +3,7 @@ change: CHG-0147
 title: Milestone 14 acceptance and connector lifecycle repair
 status: in_progress
 branch: feat/m14-toolhub-connector-platform-merge
-updated: 2026-10-21
+updated: 2026-10-22
 phase: implementation
 adr: ADR-0056
 spec: SPEC-0060
@@ -41,8 +41,11 @@ evidence:
   - Issue 283 moved open to backlog because public HTTPS phone acceptance cannot run on localhost dev.
   - Issue 133 closed administratively as superseded by open issue 288; this does not count as shared-connector acceptance.
   - The general reconciler is now production-real: ControlPlane.NewReconciler binds the store, scoped Docker label scan/purge (HUB_DOCKER_SCOPE), credential-backend liveness and ciphertext purge, content-addressed recipe/credential-recipe re-resolution, a remote-MCP surface probe carrying the stored credential env, and an onboarding re-arm notify; cmd/toolhub schedules ScanOnce every 30 seconds beside the removal retry loop. Drift records hermes-hub.accept-* pins; human /confirm re-pins surface and recipe drift, while credential resubmission heals reauth/dead-credential parks through rotation without minting a parallel connection. The install facade now routes every target form issue 284 names: catalog ids, prepared ids and aliases, cli specs, github-release pins, immutable repository URLs, remote MCP URLs and bare CLI names. Regression tests cover seam binding, per-seam behavior, drift accept bookkeeping, heal-without-bypass and scheduled-pass degradation; just check passes at 86.19% statement coverage.
+  - October 22 live remove acceptance on the rebuilt dev image: the scheduled reconciler pass self-degraded gitlab-mcp (conn-a2f224) and telegram-mcp on stale ciphertext before any operator action; the remove flow then ran all eight finalizers once each and persisted "verified 0 remaining" — connection revoked, active binding deleted, zero Docker objects under the connection label, broker materialized dir empty.
+  - October 22 local principal received the operator-issued local-connectors capability profile (connectors: personal, policy local-connectors rev 1) admitted into the live capability journal plus a tokens-file bearer; the connector_* facade projected and connector_remove armed operation op-2acb4ca6375505a08aed4501 against onboarding onboard-1fb6f5563ec62c1b6de91e15.
+  - October 22 live restart-mid-remove chaos with HUB_DEBUG_FINALIZER_DELAY_MS=3000: toolhub was killed (exit 137) after the workloads step; persisted state showed connection deleting, workloads done, seven steps pending. After restart ResumeRemovals converged the ladder to verified-zero on sibling record onboard-ac3d82b8cbea9dade219ed20 — the run also exposed that a sibling completing the ladder sweeps the remaining record to removed mid-flight (pending own finalizers, no receipt) while its journaled op stayed awaiting_confirm. Fixes: connector_status derives done from the onboarding's removed phase; non-terminal sibling onboardings on the same connection now retire via Store.SweepConnectionOnboardings after the canonical ladder. A latent shared-array race on Onboarding.Finalizers between mutating remove and OnboardingFor readers was caught by the race detector and closed by cloning the ladder at the store's Put/read boundary.
+  - October 22 live facade parity: connector_search metabase returned three typed registry candidates with selectable ids (including easecloudio/mcp-metabase-server) where it previously reported 0 matches because it only scanned the prepared catalog — it now runs the same discover pipeline. connector_status on the swept op reports done.
 remaining:
-  - Served ToolHub image still needs the scoped-label change deployed and exercised.
-  - Live restart-mid-remove, two-person Broker share and browser viewer acceptance remain.
+  - Two-person Broker share and browser viewer acceptance remain.
   - First principal capability profile and token need operator-reviewed alignment before two-person acceptance. Shared Broker grants and browser viewer login remain unverified or unfinished.
 limitations: []
