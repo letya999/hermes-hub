@@ -293,7 +293,7 @@ func (s *Spool) editRoutine(id string, caller identity.Envelope, patch map[strin
 			return Schedule{}, err
 		}
 		item.DestinationTaskID, item.OriginJobID = "", ""
-		if previousEnvelope != item.Envelope && !slices.Contains(item.PriorEnvelopes, previousEnvelope) {
+		if !previousEnvelope.Equal(item.Envelope) && !slices.ContainsFunc(item.PriorEnvelopes, previousEnvelope.Equal) {
 			item.PriorEnvelopes = append(item.PriorEnvelopes, previousEnvelope)
 		}
 	}

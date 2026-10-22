@@ -59,7 +59,7 @@ func TestLiveRecoveryObservesOriginalRunWithoutInput(t *testing.T) {
 				}
 				calls++
 				var request hubruntime.ExecuteRequest
-				if json.NewDecoder(r.Body).Decode(&request) != nil || request.Text != "" || r.URL.Path != "/v1/resume" || request.Envelope != job.Envelope {
+				if json.NewDecoder(r.Body).Decode(&request) != nil || request.Text != "" || r.URL.Path != "/v1/resume" || !request.Envelope.Equal(job.Envelope) {
 					t.Errorf("resubmitted input or changed owner: %+v %s", request, r.URL.Path)
 				}
 				w.Header().Set("Content-Type", hubruntime.RunStreamContentType)

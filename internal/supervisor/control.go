@@ -41,7 +41,7 @@ func (m *Manager) control(w http.ResponseWriter, r *http.Request) {
 	m.mu.Lock()
 	record, ok := m.jobs[jobKey]
 	m.mu.Unlock()
-	if !ok || record.Request.Envelope != request.Envelope || record.Request.ScopeID != request.ScopeID || record.Request.UserID != request.UserID || record.Request.ActorID != request.ActorID || record.Request.OrganizationID != request.OrganizationID || record.Request.IdempotencyKey != request.IdempotencyKey {
+	if !ok || !record.Request.Envelope.Equal(request.Envelope) || record.Request.ScopeID != request.ScopeID || record.Request.UserID != request.UserID || record.Request.ActorID != request.ActorID || record.Request.OrganizationID != request.OrganizationID || record.Request.IdempotencyKey != request.IdempotencyKey {
 		writeJSON(w, 409, map[string]string{"error": "job ownership mismatch"})
 		return
 	}

@@ -37,6 +37,24 @@ func (s *Store) userPublicationOwner(id, version string) (string, bool) {
 	return pub.OwnerPrincipalID, true
 }
 
+// ListOnboardings returns every onboarding record regardless of principal;
+// only the admin diagnostics surface (issue 141) calls it.
+func (s *Store) ListOnboardings() ([]api.Onboarding, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]api.Onboarding, 0, len(s.onboardings))
+	for _, o := range s.onboardings {
+		out = append(out, o)
+	}
+	return out, nil
+}
+
+// OnboardingRecord reads one onboarding by id across principals; only the
+// admin diagnostics surface (issue 141) calls it.
+func (s *Store) OnboardingRecord(id string) (api.Onboarding, error) {
+	return s.onboarding(id)
+}
+
 func (s *Store) onboarding(id string) (api.Onboarding, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
