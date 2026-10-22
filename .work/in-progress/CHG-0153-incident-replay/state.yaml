@@ -4,7 +4,7 @@ title: incident replay harness
 status: in_progress
 branch: feat/m17-ops-admin-delivery
 updated: 2026-10-22
-phase: design-complete
+phase: implemented
 adr: ADR-0072
 spec: SPEC-0069
 requirements: [R6.1, R6.2, R6.3]
@@ -12,16 +12,22 @@ depends_on: []
 github_milestone: M17 — Ops, Admin & Delivery
 github_issue: 206
 design_status: accepted
-implementation_status: not_started
+implementation_status: complete
 slices:
-  S6.1-bundle-export: not_started
-  S6.2-isolated-run: not_started
+  S6.1-bundle-export: done
+  S6.2-isolated-run: done
 validation:
   documents: pending
   just_check: not_run
   docker_check: not_needed
-  red_team: not_started
+  red_team: pass        # tampered channel forced to mock; malformed bundles fail closed
   live_acceptance: not_started
-evidence: []
-remaining: []
-limitations: []
+evidence:
+  - go test ./cmd/hubctl green — export, sensitive digest, mock replay,
+    channel tamper, runtime-url + auth, bad-bundle table, dispatch
+remaining:
+  - final just check + docs sweep at milestone close
+limitations:
+  - stub runner path does not execute the prompt; --runtime-url posts to a
+    replay supervisor /v1/execute
+  - bundle schema 1 is strict (unknown fields + trailing JSON rejected)
