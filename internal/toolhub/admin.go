@@ -142,10 +142,15 @@ func (g *Gateway) serveAdminInspectSource(w http.ResponseWriter, r *http.Request
 	tr := tar.NewReader(bytes.NewReader(data))
 	for {
 		hdr, err := tr.Next()
-		if err != nil || hdr == nil || hdr.Typeflag != tar.TypeReg {
+		if err != nil || hdr == nil {
 			break
 		}
-		files = append(files, hdr.Name)
+		if hdr.Typeflag != tar.TypeReg {
+			continue
+		}
+		if len(files) < 512 {
+			files = append(files, hdr.Name)
+		}
 		if req.Grep != "" && len(hits) < 64 {
 			if body, err := io.ReadAll(tr); err == nil {
 				if at := bytes.Index(body, []byte(req.Grep)); at >= 0 {
@@ -163,6 +168,10 @@ func (g *Gateway) serveAdminInspectSource(w http.ResponseWriter, r *http.Request
 }
 
 func (g *Gateway) serveAdminOnboardings(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	auth, ok, anonymous := g.adminAuth(r)
 	if anonymous {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -189,6 +198,10 @@ func (g *Gateway) serveAdminOnboardings(w http.ResponseWriter, r *http.Request) 
 }
 
 func (g *Gateway) serveAdminDiagnose(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	auth, ok, anonymous := g.adminAuth(r)
 	if anonymous {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)

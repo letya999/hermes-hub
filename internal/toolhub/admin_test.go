@@ -157,6 +157,9 @@ func TestAdminInspectSource(t *testing.T) {
 	defer func() { adminFetchSource = oldFetch }()
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
+	// Real repository tars interleave directory entries; they must not stop
+	// the traversal.
+	_ = tw.WriteHeader(&tar.Header{Name: "pkg/", Typeflag: tar.TypeDir, Mode: 0755})
 	_ = tw.WriteHeader(&tar.Header{Name: "server.go", Mode: 0644, Size: int64(len("package main // uses API_TOKEN\n"))})
 	_, _ = tw.Write([]byte("package main // uses API_TOKEN\n"))
 	_ = tw.WriteHeader(&tar.Header{Name: "README.md", Mode: 0644, Size: int64(len("# example mcp\n"))})
@@ -245,7 +248,7 @@ func TestAdminInspectSourceBounded(t *testing.T) {
 	defer func() { adminFetchSource = oldFetch }()
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
-	for i := 0; i < 200; i++ {
+	for i := 0; i < 600; i++ {
 		body := "hit " + strings.Repeat("x", 8) + "\n"
 		name := "f" + strings.Repeat("0", 4-len(strconv.Itoa(i))) + strconv.Itoa(i) + ".go"
 		_ = tw.WriteHeader(&tar.Header{Name: name, Mode: 0644, Size: int64(len(body))})
@@ -270,6 +273,9 @@ func TestAdminInspectSourceBounded(t *testing.T) {
 	if len(out.Hits) > 64 {
 		t.Fatalf("unbounded hits: %d", len(out.Hits))
 	}
+	if len(out.Files) > 512 {
+		t.Fatalf("unbounded file list: %d", len(out.Files))
+	}
 }
 
 func TestAdminRequiresScope(t *testing.T) {
@@ -292,5 +298,16 @@ func TestAdminRequiresScope(t *testing.T) {
 	}
 	if len(out.Onboardings) != 1 || out.Onboardings[0]["onboarding_id"] != "ob-1" {
 		t.Fatalf("list: %s", w.Body)
+	}
+	// The admin read surface is GET/POST-fixed by contract: a POST to a GET
+	// endpoint must not silently answer.
+	for _, tc := range [][2]string{
+		{http.MethodPost, "/v1/admin/onboardings"},
+		{http.MethodPost, "/v1/admin/diagnose/ob-1"},
+		{http.MethodDelete, "/v1/admin/onboardings"},
+	} {
+		if w := adminCall(handler, "admin-bearer-token-0000000000000000", tc[0], tc[1], "{}"); w.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("%s %s: %d, want 405", tc[0], tc[1], w.Code)
+		}
 	}
 }

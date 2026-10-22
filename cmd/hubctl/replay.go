@@ -182,6 +182,14 @@ func runReplayRun(out io.Writer, opts replayRunOpts) error {
 	if d.Decode(&bundle) != nil || d.Decode(new(any)) != io.EOF || bundle.Schema != 1 || bundle.Text == "" || commodel.FileID(bundle.JobID) != bundle.JobID || !identity.ValidID(bundle.Envelope.PrincipalID) {
 		return errors.New("invalid replay bundle")
 	}
+	// A bundle that carries the recorded prompt digest must still match its
+	// text — otherwise someone edited the prompt after export.
+	if bundle.TextSHA256 != "" {
+		sum := sha256.Sum256([]byte(bundle.Text))
+		if hex.EncodeToString(sum[:]) != bundle.TextSHA256 {
+			return errors.New("invalid replay bundle: text no longer matches text_sha256")
+		}
+	}
 	spool, err := communication.OpenSpool(filepath.Join(opts.ReplayDir, "spool"))
 	if err != nil {
 		return err
@@ -307,6 +315,9 @@ func replayExecute(ctx context.Context, job commodel.Job, runtimeURL, auth strin
 		return commodel.RunOutcome{}, err
 	}
 	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return commodel.RunOutcome{}, fmt.Errorf("replay supervisor: HTTP %d", response.StatusCode)
+	}
 	var result hubruntime.ExecuteResponse
 	if err := json.NewDecoder(io.LimitReader(response.Body, 4<<20)).Decode(&result); err != nil {
 		return commodel.RunOutcome{}, err

@@ -344,6 +344,52 @@ func TestReplayDispatch(t *testing.T) {
 	}
 }
 
+func TestReplayRunRuntimeHTTPError(t *testing.T) {
+	spool := replaySpool(t, false)
+	exportDir := t.TempDir()
+	var buf bytes.Buffer
+	if err := runReplayExport(&buf, replayExportOpts{JobID: "mock-abc123", SpoolDir: spool, OutDir: exportDir}); err != nil {
+		t.Fatal(err)
+	}
+	supervisor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		// A well-formed body on a failing status must not be mistaken for a
+		// completed run.
+		_ = json.NewEncoder(w).Encode(hubruntime.ExecuteResponse{Status: "completed", Text: "fake"})
+	}))
+	defer supervisor.Close()
+	if err := runReplayRun(&buf, replayRunOpts{
+		BundlePath: filepath.Join(exportDir, "bundle.json"), ReplayDir: t.TempDir(),
+		RuntimeURL: supervisor.URL,
+	}); err == nil {
+		t.Fatal("HTTP 500 from replay supervisor must fail the replay")
+	}
+}
+
+func TestReplayRunRejectsTamperedText(t *testing.T) {
+	spool := replaySpool(t, true)
+	exportDir := t.TempDir()
+	prompt := filepath.Join(t.TempDir(), "p.txt")
+	if err := os.WriteFile(prompt, []byte("summarize the logs"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := runReplayExport(&buf, replayExportOpts{
+		JobID: "mock-abc123", SpoolDir: spool, OutDir: exportDir, PromptFile: prompt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Edit the exported prompt without touching the recorded digest.
+	bundle := readBundle(t, filepath.Join(exportDir, "bundle.json"))
+	bundle["text"] = "delete everything"
+	mustJSON(t, filepath.Join(exportDir, "bundle.json"), bundle)
+	if err := runReplayRun(&buf, replayRunOpts{
+		BundlePath: filepath.Join(exportDir, "bundle.json"), ReplayDir: t.TempDir(),
+	}); err == nil {
+		t.Fatal("bundle whose text no longer matches text_sha256 must be rejected")
+	}
+}
+
 func mustRead(t *testing.T, path string) []byte {
 	t.Helper()
 	body, err := os.ReadFile(path)

@@ -112,6 +112,29 @@ func TestWatchJobFromSpool(t *testing.T) {
 	}
 }
 
+func TestWatchJobHonorsTimeout(t *testing.T) {
+	spool := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(spool, "mappings"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The job never reaches a terminal status; Timeout is the only exit.
+	var out bytes.Buffer
+	done := make(chan error, 1)
+	go func() {
+		done <- runWatch(t.Context(), &out, watchOptions{
+			Job: "j1", SpoolDir: spool, Interval: time.Millisecond, Timeout: 50 * time.Millisecond,
+		})
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("watch on a never-terminal job must end on Timeout")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Timeout was not honored — watch ran past the deadline")
+	}
+}
+
 func TestWatchSpoolMappingAppearsLater(t *testing.T) {
 	spool := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(spool, "mappings"), 0o755); err != nil {

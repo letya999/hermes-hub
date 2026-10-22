@@ -24,7 +24,7 @@ type watchOptions struct {
 	SupervisorURL  string
 	SupervisorAuth string
 	Interval       time.Duration
-	Timeout        time.Duration
+	Timeout        time.Duration // overall deadline for job mode; 0 = none
 	Client         *http.Client
 }
 
@@ -110,6 +110,11 @@ func (o watchOptions) fetchMapping() (string, error) {
 func runWatch(ctx context.Context, out io.Writer, o watchOptions) error {
 	if o.Scope != "" {
 		return runWatchScope(ctx, out, o)
+	}
+	if o.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, o.Timeout)
+		defer cancel()
 	}
 	last := ""
 	for {
