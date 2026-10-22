@@ -1,6 +1,6 @@
 ---
 description: Operator runbook — stack lifecycle, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
-last_verified: 2026-10-20
+last_verified: 2026-10-22
 ---
 
 # Operations
@@ -57,6 +57,21 @@ own bounded, redacted lines and workload health, plus `excluded` projection
 reasons (`policy_mismatch`, `disabled`, `revoked`, `stale`, `degraded`,
 `not_found`). Needs a `diagnostics` control-operation grant; scoped by
 authenticated identity, never arguments.
+
+Operator ops surface (ADR-0072): `hubctl usage --spool <dir> [--days N]
+[--actor u] [--model m]` aggregates the durable `usage.jsonl` journal per
+scope and actor — read-only, tolerant of a torn tail. `hubctl watch
+(--job <id> | --scope <user>) (--spool <dir> | --supervisor-url <url>)`
+prints timestamped transitions until terminal. `hubctl image
+promote|revert|canary|status --dir <space> --env <env>` moves the runtime
+image pin only behind a passing smoke and always keeps the last-known-good
+pin for one-command revert. `hubctl replay export --job <id> --spool <dir>
+-o <dir>` writes a sanitized incident bundle (digest-verified `--prompt-file`
+for sensitive jobs); `hubctl replay run --bundle <f> --replay-dir <dir>`
+replays it on an isolated spool with the channel forced to mock, printing a
+divergence line. `hubctl apply -f` accepts a declarative `space:` block that
+converges `agent.yaml`/`workspace.yaml` through full stack validation —
+secrets keys are rejected by construction.
 
 ## Operator mutations require `--confirm`
 

@@ -16,12 +16,6 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
-| [CHG-0153](in-progress/CHG-0153-incident-replay/plan.md) | Issue #206: sanitized job bundle export + isolated mock-channel replay + outcome diff (SPEC-0069 R6) |
-| [CHG-0152](in-progress/CHG-0152-admin-diagnostics/plan.md) | Issue #141: hermes-admin token scope, read-only /v1/admin diagnose + inspect-source, rate-limit + audit (SPEC-0069 R5) |
-| [CHG-0151](in-progress/CHG-0151-image-rollout/plan.md) | Issue #198: image-pins.json, smoke-gated promote, one-command revert, per-context canary (SPEC-0069 R4) |
-| [CHG-0150](in-progress/CHG-0150-job-watch/plan.md) | Issue #197b: hubctl watch — real transition stream from supervisor/spool (SPEC-0069 R3) |
-| [CHG-0149](in-progress/CHG-0149-space-manifest/plan.md) | Issue #197a: apply -f converges agent.yaml/workspace.yaml, validate-before-write, idempotent (SPEC-0069 R2) |
-| [CHG-0148](in-progress/CHG-0148-usage-export/plan.md) | Issue #195: hubctl usage — per-scope/per-actor window aggregation of usage.jsonl (SPEC-0069 R1) |
 | [CHG-0147](in-progress/CHG-0147-m14-acceptance/plan.md) | Milestone 14 acceptance and connector lifecycle repair |
 | [CHG-0144](in-progress/CHG-0144-recipe-oauth/plan.md) | Recipe-driven OAuth for prepared and runtime MCP installation |
 | [CHG-0143](in-progress/CHG-0143-oauth-viewer-link-flows/plan.md) | OAuth resend rotation, broker grant-epoch fix, viewer-link relay — retroactive record for the uncommitted branch diff |
@@ -44,6 +38,17 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 |---|---|
 | [CHG-0037](done/CHG-0037-toolhub-closeout/plan.md) | Abandoned: ToolHub closeout umbrella superseded by later per-issue CHGs |
 | [CHG-0031](done/CHG-0031-docker-disk-diagnosis/plan.md) | Abandoned: read-only diagnosis superseded by CHG-0031-docker-reclaim findings |
+
+## Done — M17 ops, admin & delivery
+
+| Change | State |
+|---|---|
+| [CHG-0153](done/CHG-0153-incident-replay/plan.md) | Issue #206: `hubctl replay export` sanitized bundle (digest-verified prompt for sensitive jobs) + `replay run` on an isolated spool with channel forced to mock + divergence line (SPEC-0069 R6) |
+| [CHG-0152](done/CHG-0152-admin-diagnostics/plan.md) | Issue #141: `scopes:["admin"]` on enrolled bearers, serialized + paced `/v1/admin/onboardings|diagnose|inspect-source`, audit-tagged; capability fields never leave (SPEC-0069 R5) |
+| [CHG-0151](done/CHG-0151-image-rollout/plan.md) | Issue #198: `generated/image-pins.json`, smoke-gated promote/revert/canary, spawn-time resolution, forged-pin read rejection (SPEC-0069 R4) |
+| [CHG-0150](done/CHG-0150-job-watch/plan.md) | Issue #197b: `hubctl watch` — timestamped job/runtime transitions from spool mapping or supervisor (SPEC-0069 R3) |
+| [CHG-0149](done/CHG-0149-space-manifest/plan.md) | Issue #197a: `apply -f` `space:` block converges agent.yaml/workspace.yaml — validate-before-write, idempotent, secrets rejected (SPEC-0069 R2) |
+| [CHG-0148](done/CHG-0148-usage-export/plan.md) | Issue #195: `hubctl usage` — per-scope/per-actor window aggregation of `usage.jsonl`, torn-tail tolerant (SPEC-0069 R1) |
 
 ## Done — M13+ platform and fixes
 

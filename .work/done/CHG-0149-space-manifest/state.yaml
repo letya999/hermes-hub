@@ -1,0 +1,27 @@
+schema: 1
+change: CHG-0149
+title: declarative space manifest
+status: done
+branch: feat/m17-ops-admin-delivery
+updated: 2026-10-22
+phase: design-complete
+adr: ADR-0072
+spec: SPEC-0069
+requirements: [R2.1, R2.2, R2.3, R2.4]
+depends_on: []
+github_milestone: M17 — Ops, Admin & Delivery
+github_issue: 197
+design_status: accepted
+implementation_status: not_started
+slices:
+  S2.1-manifest-validation: not_started
+  S2.2-convergent-writes: not_started
+validation:
+  documents: done
+  just_check: pass       # 2026-10-22: tests+lint+gosec+docs green, coverage 86.22%
+  docker_check: not_needed
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining: []
+limitations: []
