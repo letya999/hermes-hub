@@ -155,3 +155,25 @@ func TestApplySpaceDispatchDir(t *testing.T) {
 		t.Fatalf("space unreadable after apply: %v", err)
 	}
 }
+
+func TestWriteSpaceFileFailureKeepsTarget(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "agent.yaml")
+	if err := os.WriteFile(target, []byte("old content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	orig := writeSyncFile
+	writeSyncFile = func(f *os.File, body []byte) error { return os.ErrInvalid }
+	defer func() { writeSyncFile = orig }()
+
+	if _, err := writeSpaceFile(dir, "agent.yaml", []byte("new content")); err == nil {
+		t.Fatal("write failure must return an error")
+	}
+	body, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "old content" {
+		t.Fatalf("failed write clobbered target: %q", body)
+	}
+}

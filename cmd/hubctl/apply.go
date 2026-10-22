@@ -255,9 +255,7 @@ func writeSpaceFile(dir, name string, body []byte) (string, error) {
 		return "", err
 	}
 	defer os.Remove(tempPath)
-	if _, err := f.Write(body); err == nil {
-		err = f.Sync()
-	}
+	err = writeSyncFile(f, body)
 	closeErr := f.Close()
 	if err != nil {
 		return "", err
@@ -272,6 +270,14 @@ func writeSpaceFile(dir, name string, body []byte) (string, error) {
 		return "created", nil
 	}
 	return "updated", nil
+}
+
+// writeSyncFile is a seam for fault injection in tests.
+var writeSyncFile = func(f *os.File, body []byte) error {
+	if _, err := f.Write(body); err != nil {
+		return err
+	}
+	return f.Sync()
 }
 
 func applyRoutine(spool *communication.Spool, profile string, r applyRoutineSpec) (string, error) {
