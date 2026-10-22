@@ -78,7 +78,7 @@ func TestReleasePurgeAbsentWorkloadCleansByDeterministicName(t *testing.T) {
 		t.Fatalf("absent purge status: %d", w.Code)
 	}
 	docker := dockerCallArgs(*calls)
-	if !hasDockerCall(docker, "rm", "--force", "orphan", "orphan-egress", "orphan-relay", "orphan-bridge-seed") {
+	if !hasDockerCall(docker, "rm", "--force", "orphan", "orphan-egress", "orphan-relay", "orphan-bridge-seed", "orphan-cred") {
 		t.Fatalf("purge skipped deterministic container names: %v", docker)
 	}
 	if !hasDockerCall(docker, "volume", "rm", "orphan-state-0") {

@@ -82,6 +82,34 @@ func TestAdmitExtendsEgressFromCredentialEnvironment(t *testing.T) {
 	}
 }
 
+func TestControllerAdmissionStagesWorkspaceOnTmpfsRoot(t *testing.T) {
+	staging, persistent := t.TempDir(), t.TempDir()
+	t.Setenv("HUB_CRED_STAGING", staging)
+	t.Setenv("HUB_STATE", persistent)
+	var plan ControllerPlan
+	definition := statefulContainerDefinition()
+	effective := EffectiveBinding{Definition: definition, WorkloadID: "fixture-workload"}
+	effective.Binding = ToolBinding{ToolBindingID: "fixture-binding", PrincipalID: "alice", ContextID: "alice"}
+	receipt, _ := json.Marshal(AdmissionReceipt{WorkloadID: effective.WorkloadID, State: "running", Enforced: true, ImageDigest: definition.Source.Digest, SidecarImages: definition.Workload.SidecarImages, Execution: definition.Execution})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&plan)
+		_, _ = w.Write(receipt)
+	}))
+	defer server.Close()
+	t.Setenv("HUB_TOOLHIVE_ADMISSION_ENDPOINT", server.URL)
+	t.Setenv("HUB_TOOLHIVE_ADMISSION_TOKEN", strings.Repeat("s", 32))
+	admit, err := ControllerAdmissionVerifierFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admit(context.Background(), effective); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(plan.WorkspacePath, staging) {
+		t.Fatalf("workspace path not under staging root: %s", plan.WorkspacePath)
+	}
+}
+
 func TestControllerAdmissionDeniesNonSuccess(t *testing.T) {
 	effective := EffectiveBinding{Definition: statefulContainerDefinition(), WorkloadID: "fixture-workload"}
 	for _, receipt := range []AdmissionReceipt{

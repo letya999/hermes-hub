@@ -17,6 +17,9 @@ import (
 )
 
 func (c *ControlPlane) prepareSource(ctx context.Context, auth identity.Envelope, args map[string]any) (map[string]any, error) {
+	if _, supplied := args["credentials"]; supplied && api.ArgString(args, "remote_url") == "" {
+		return nil, fmt.Errorf("%w: credentials is only supported with remote_url; source installs use connection_recipe", api.ErrInvalid)
+	}
 	if raw, ok := args["connection_recipe"]; ok {
 		data, err := json.Marshal(raw)
 		if err != nil {

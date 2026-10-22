@@ -195,7 +195,7 @@ func (c *genericController) purgeWorkloadByName(ctx context.Context, workloadID 
 			firstErr = err
 		}
 	}
-	note(c.docker(ctx, "rm", "--force", workloadID, resources.ProxyName, resources.RelayName, resources.BridgeSeed))
+	note(c.docker(ctx, "rm", "--force", workloadID, resources.ProxyName, resources.RelayName, resources.BridgeSeed, resources.CredName))
 	filters := []string{"volume", "ls", "-q", "--filter", "label=hermes-hub.role=generic-mcp-state"}
 	if label := c.scopeLabel(); label != "" {
 		filters = append(filters, "--filter", "label="+label)
@@ -224,6 +224,9 @@ func (c *genericController) removeWorkload(ctx context.Context, workload generic
 	names := []string{workload.plan.WorkloadID, workload.proxyName}
 	if workload.relayName != "" {
 		names = append(names, workload.relayName)
+	}
+	if workload.credName != "" {
+		names = append(names, workload.credName)
 	}
 	if _, err := c.docker(ctx, append([]string{"rm", "--force"}, names...)...); err != nil {
 		return err

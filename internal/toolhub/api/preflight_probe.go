@@ -68,13 +68,16 @@ func RetryListWithPromotedCredentials(ctx context.Context, imported ImportedArti
 	}
 	for index := range imported.Definition.Credentials {
 		input := &imported.Definition.Credentials[index]
-		if !input.Required && SecretName(input.Name) && (len(named) == 0 || named[input.Name]) {
+		if !input.Required && (named[input.Name] || len(named) == 0 && SecretName(input.Name)) {
 			input.Required = true
 			changed = true
 		}
 	}
 	if !changed {
 		return imported, nil, fmt.Errorf("%w: no declared credential to retry with", ErrInvalid)
+	}
+	if gated, _, ok := CredentialGateFrom(imported, firstErr); ok {
+		imported.Definition.CredentialGroups = gated.Definition.CredentialGroups
 	}
 	tools, err := list(ctx, imported)
 	if err != nil {
@@ -187,17 +190,13 @@ func ListMCPToolsFromLocalImage(ctx context.Context, imported ImportedArtifact) 
 	}
 	defer cleanup()
 	if ProbeOptionsFrom(ctx).AllowNetwork {
-		if entry, ok, lookupErr := PreparedForSource(ArtifactSource{Repository: imported.Definition.Source.Repository, CommitSHA: imported.Definition.Source.CommitSHA, Subfolder: imported.Definition.Source.Subfolder}); lookupErr != nil {
-			return nil, lookupErr
-		} else if ok && entry.AuthBeforeToolsList {
-			network, proxyURL, stop, err := startPreparedProbeProxy(ctx, imported.Definition.Execution.Egress)
-			if err != nil {
-				return nil, err
-			}
-			defer stop()
-			credentialArgs = append(credentialArgs, "--network", network, "--env", "HTTP_PROXY="+proxyURL, "--env", "HTTPS_PROXY="+proxyURL)
-			credentialArgs = append(credentialArgs, ProxyEnvironmentArgs(imported.Definition, proxyURL)...)
+		network, proxyURL, stop, err := startPreparedProbeProxy(ctx, imported.Definition.Execution.Egress)
+		if err != nil {
+			return nil, err
 		}
+		defer stop()
+		credentialArgs = append(credentialArgs, "--network", network, "--env", "HTTP_PROXY="+proxyURL, "--env", "HTTPS_PROXY="+proxyURL)
+		credentialArgs = append(credentialArgs, ProxyEnvironmentArgs(imported.Definition, proxyURL)...)
 	}
 	args := PreflightDockerRunArgs(imported, name, []string{"--rm", "-i"}, PreflightCommandArgs(imported), credentialArgs...)
 	if ProbeOptionsFrom(ctx).AllowNetwork {
@@ -309,6 +308,15 @@ func NetworkProbeToolList(ctx context.Context, imported ImportedArtifact) ([]Too
 		return nil, err
 	}
 	defer credCleanup()
+	if ProbeOptionsFrom(ctx).AllowNetwork {
+		network, proxyURL, stop, err := startPreparedProbeProxy(ctx, imported.Definition.Execution.Egress)
+		if err != nil {
+			return nil, err
+		}
+		defer stop()
+		credentialArgs = append(credentialArgs, "--network", network, "--env", "HTTP_PROXY="+proxyURL, "--env", "HTTPS_PROXY="+proxyURL)
+		credentialArgs = append(credentialArgs, ProxyEnvironmentArgs(imported.Definition, proxyURL)...)
+	}
 	env := []string{"PATH=" + os.Getenv("PATH"), "DOCKER_CONFIG=" + dockerConfig}
 	// The server keeps its reviewed entrypoint: the bridge, not the arg list,
 	// is what adapts the network transport to the stdin probe driver.

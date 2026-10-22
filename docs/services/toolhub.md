@@ -1,6 +1,6 @@
 ---
 description: toolhub — capability gateway: tool admission, governance evaluation, connector lifecycle, audit ledger.
-last_verified: 2026-10-20
+last_verified: 2026-10-22
 ---
 
 # toolhub
@@ -62,7 +62,11 @@ All under `/state` (the space's `runtime/` bind):
 
 `HUB_TOOLHUB_STORE`, `HUB_TOOLHUB_LISTEN`, `HUB_TOOLHIVE_ADMISSION_ENDPOINT`
 (`http://workload-controller:8545/admit`), `HUB_DOCKER_HOST_ROOT` +
-`HUB_DOCKER_SCOPE` (label-scoped Docker ops), `HUB_CLI_ALLOWLIST` (`rg,bash` —
+`HUB_DOCKER_SCOPE` (label-scoped Docker ops), `HUB_CRED_STAGING` +
+`HUB_CRED_STAGING_VOLUME` (per-call `credentials.env`/`<name>.secret` staging
+on the shared `cred-staging` tmpfs, never on the `/state` bind; the volume
+name feeds `DockerBindSource` mountpoint resolution for sibling bind mounts),
+`HUB_CLI_ALLOWLIST` (`rg,bash` —
 owner-registered bounded CLI commands), `HUB_RECIPE_CATALOGS`,
 `HUB_AGENT_EXEC_MODE=supervisor` (agent-tools exec via docker exec, never the
 agent network), `HUB_CAPABILITY_MODE`/`_PROFILE_ID`/`_GENERATION`/`_ENVIRONMENT`
@@ -72,6 +76,11 @@ agent network), `HUB_CAPABILITY_MODE`/`_PROFILE_ID`/`_GENERATION`/`_ENVIRONMENT`
 ## Boundaries
 
 - Credential values live only in the broker (ADR-0049); ToolHub holds refs.
+- Per-call credential material (`credentials.env`, `<name>.secret`,
+  `credentials.runtime.env`) stages under `HUB_CRED_STAGING` — a tmpfs named
+  volume shared by `toolhub` and `workload-controller` — and is wiped after
+  admission. Nothing credential-bearing lands on the `/state` bind or any
+  other persistent filesystem.
 - Workload admission goes through `workload-controller` — ToolHub never
   creates a cell from model-supplied config.
 - Agent-tools executor runs inside the owning runtime container via

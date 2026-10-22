@@ -22,7 +22,7 @@ import (
 // contract bans credential-bearing parameters from tool results. The link
 // lives in the channel notice; the status only points the agent there.
 func TestStatusBodyOAuthKeepsLinkInChannel(t *testing.T) {
-	control := &ControlPlane{FormOrigin: "http://127.0.0.1:8090"}
+	control := &ControlPlane{Store: NewStore(), FormOrigin: "http://127.0.0.1:8090"}
 	on := api.Onboarding{OnboardingID: "onboard_oauth", Phase: api.PhaseAwaitingOAuth,
 		ProviderAuthorizationURL: "https://accounts.google.com/o/oauth2/v2/auth?client_id=x.apps.googleusercontent.com&code_challenge=zz&state=st-1"}
 	body := control.statusBody(on, false)

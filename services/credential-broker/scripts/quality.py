@@ -139,7 +139,7 @@ def external_tools() -> None:
         binary = ROOT / ".tools" / "bin" / tool
         if not binary.exists():
             raise SystemExit("Missing security tool; run just tools-install: " + tool)
-        run([str(binary), *args])
+        run([str(binary), *args], env={"GOWORK": "off"})
 
 
 def install_tools() -> None:

@@ -17,11 +17,31 @@ package-management instructions.
 
 ## Mandatory routing
 
+- For a service name without an exact source, call `connector_search` first.
+  Show up to five returned candidates with their repository URLs and prepared
+  or registry status. Ask the user which one to install; do not silently pick
+  the first search result. If fewer candidates exist, show only those found.
+- An exact matching prepared recipe (for example Google Workspace) can be
+  installed directly by its prepared id when the user requested that service.
+  An explicit repository URL or an explicit selection authorizes that source,
+  not a different implementation. Pass the selected candidate id as `target`;
+  do not replace it with a bare repository URL and lose its pinned revision.
+- When a selection expires, search again and ask for the renewed choice if the
+  source or revision changed. Never interpret a missing MCP as permission to
+  install a similarly named unrelated package.
+- For repository metadata corrections use the reviewed `connection_recipe`
+  contract on `connector_install` with an exact repository URL; top-level `credentials` belongs only to remote
+  MCP URLs. Retain the exact source revision when retrying a failed install.
+  Read the pinned source documentation before concluding that no credentials
+  are needed: some servers list tools before checking authentication. File-based
+  credentials require a reviewed file delivery in `connection_recipe`; never
+  ask the user for a host path or a credential value in chat.
+
 - Do not use `terminal`, `patch`, `git clone`, `npm`, `npx`, `node`, or a CLI
   installer to set up the requested service.
 - Do not edit `~/.hermes/config.yaml`, `/state/hermes/config.yaml`, `.env` files,
   or workspace files. Hermes configuration is managed by the runtime and ToolHub.
-- Every connector action is exactly one `mcp__toolhub__connector_*` call:
+- Prefer the advertised `mcp__toolhub__connector_*` surface:
 
   | Intent | Tool | Arguments |
   |---|---|---|
@@ -33,6 +53,16 @@ package-management instructions.
   | allow writes | `connector_allow_writes` | `target`, `on` |
   | re-enter credentials | `connector_reauth` | `target` |
   | remove | `connector_remove` | `target` |
+
+- Some existing profiles advertise only the legacy ToolHub operations. In that
+  case use the tools actually available: `discover` with `query`, then
+  `prepare_source` with the chosen `candidate_id` or exact `source`, and `status`
+  with the returned `onboarding_id`. These use the same review and protected
+  credential flow. Pass a documented `connection_recipe` to `prepare_source`
+  when needed. Do not change permissions or use the terminal to obtain missing
+  tools. Report the legacy `phase` accurately: `awaiting-credentials` means the
+  form is ready; `awaiting-confirm` means confirmation is pending, not that
+  provider access has been verified.
 
 - `target` is the connector's name, alias, source URL, repository basename, or
   registry name — ToolHub resolves it against the caller's own connectors. An
@@ -61,5 +91,7 @@ package-management instructions.
   operation result intentionally carries no link material.
 - Never claim installation, readiness, or provider access before a call returns
   `state: done`; never infer progress from chat history.
+- A failed candidate may be incompatible upstream. Report the actual error;
+  offer alternatives from a new search and wait for selection before replacing it.
 - Never fall back to manual configuration when a ToolHub call fails — report the
   returned `code`/`summary` and let the human act on the delivered link.

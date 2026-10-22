@@ -28,6 +28,9 @@ import (
 // The CLI is a trusted host entry: --user is selected by the authenticated
 // operator, not exposed as a model tool argument.
 func runConnector(ctx context.Context, args []string) error {
+	if len(args) > 0 && args[0] == "prefetch" {
+		return connectorPrefetch(ctx, prefetchRunner)
+	}
 	if len(args) > 0 && args[0] == "catalog-enable" {
 		return runCatalog(args[1:])
 	}

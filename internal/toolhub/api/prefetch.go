@@ -35,6 +35,7 @@ func PrefetchPlan(wanted []PrefetchTarget, cached []CachedImage, budget int64) (
 	}
 	var pull []PrefetchTarget
 	var evict []CachedImage
+	evicted := make(map[int]bool)
 	for _, target := range wanted {
 		if have[target.Digest] {
 			continue
@@ -46,16 +47,18 @@ func PrefetchPlan(wanted []PrefetchTarget, cached []CachedImage, budget int64) (
 				break
 			}
 			image := cached[i]
-			if !image.Owned || wantedDigest[image.Digest] {
+			if evicted[i] || !image.Owned || wantedDigest[image.Digest] {
 				continue
 			}
 			evict = append(evict, image)
+			evicted[i] = true
 			total -= image.Size
 		}
 		if total+target.Size > budget {
 			continue
 		}
 		pull = append(pull, target)
+		have[target.Digest] = true
 		total += target.Size
 	}
 	return pull, evict

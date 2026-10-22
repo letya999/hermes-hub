@@ -311,7 +311,7 @@ func admittedGateDefinition(version, tool string) api.ToolDefinition {
 	return admitted
 }
 
-func TestCredentialGateConfirmsLocalSecretWhenBrokerHasNoContract(t *testing.T) {
+func TestCredentialGateConfirmsLocalSecretWithoutBroker(t *testing.T) {
 	store := NewStore()
 	key, err := credstore.GenerateKey()
 	if err != nil {
@@ -332,7 +332,6 @@ func TestCredentialGateConfirmsLocalSecretWhenBrokerHasNoContract(t *testing.T) 
 	}, true)
 	control := &ControlPlane{
 		Store: store, Secrets: secrets, Now: time.Now, ConfirmationTTL: time.Hour,
-		Broker: &credentialbroker.Config{URL: "https://broker.example"},
 		Ready: func(ctx context.Context, effective api.EffectiveBinding) error {
 			if effective.Credential == nil || effective.Credential.Backend != credstore.BackendLocal || effective.Credential.BrokerGrantID != "" {
 				t.Fatalf("reference=%+v", effective.Credential)
@@ -376,6 +375,7 @@ func TestCredentialGateConfirmsLocalSecretWhenBrokerHasNoContract(t *testing.T) 
 		t.Fatalf("phase=%s broker=%q local=%v", stored.Phase, stored.BrokerCredentialID, seenLocal)
 	}
 	contracted := admittedGateDefinition("1.0.0", "channels_list")
+	control.Broker = &credentialbroker.Config{URL: "https://broker.example"}
 	contracted.DefinitionID = "contracted-mcp"
 	contracted.CredentialContractID = "github-pat"
 	contracted.CredentialContractRevision = 1

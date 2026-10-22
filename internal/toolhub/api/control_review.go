@@ -99,6 +99,16 @@ func DefaultSourceReviewerWithCatalogs(artifactsDir, seccompPath string, catalog
 			config.OAuth = resolution.Connection.OAuth
 			config.Workload.Stateful = true
 		}
+		if resolution.Connection.AuthBeforeToolsList {
+			return SourceReview{Definition: ToolDefinition{
+				Schema: SchemaVersion, DefinitionID: config.DefinitionID, Version: config.Version, Transport: ContainerMCP,
+				Source:      DefinitionSource{Repository: source.Repository, CommitSHA: source.CommitSHA, Subfolder: source.Subfolder},
+				Credentials: config.Credentials, CredentialGroups: config.CredentialGroups,
+				CredentialContractID: config.CredentialContractID, CredentialContractRevision: config.CredentialContractRevision, CredentialContractEnv: config.CredentialContractEnv,
+				RuntimeEnvironment: config.RuntimeEnvironment, ProxyEnvironment: config.ProxyEnvironment,
+				OAuth: config.OAuth, Workload: config.Workload, Execution: config.Execution, Health: config.Health,
+			}, AdmissionPending: true, AdmissionDetail: "The connection recipe requires authentication before building and listing tools.", Recipe: &resolution}, nil
+		}
 		// Only reviewed deliveries enter the Broker mapping; unrelated optional
 		// upstream settings remain metadata, not required form fields.
 		if matched {
@@ -207,8 +217,8 @@ func DefaultSelfInstallConfig(source ArtifactSource) ArtifactImportConfig {
 	id := "user-mcp"
 	if parsed, err := url.Parse(source.Repository); err == nil {
 		parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
-		if len(parts) == 2 {
-			id = SanitizeDefinitionID(parts[1])
+		if len(parts) == 2 || parsed.Host == "gitlab.com" && len(parts) > 2 {
+			id = SanitizeDefinitionID(parts[len(parts)-1])
 		}
 	}
 	return ArtifactImportConfig{

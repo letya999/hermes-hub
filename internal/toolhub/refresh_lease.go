@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gofrs/flock"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
@@ -58,6 +59,11 @@ func (s *Store) AcquireRefreshLease(connectionID, provider string, ttl time.Dura
 	}
 	s.leaseMu.Lock()
 	defer s.leaseMu.Unlock()
+	unlock, err := s.lockLeaseFile()
+	if err != nil {
+		return api.RefreshLease{}, false, err
+	}
+	defer unlock()
 	if err := s.loadLeasesLocked(); err != nil {
 		return api.RefreshLease{}, false, err
 	}
@@ -90,6 +96,14 @@ func (s *Store) AcquireRefreshLease(connectionID, provider string, ttl time.Dura
 func (s *Store) ReleaseRefreshLease(connectionID, provider, holder string) error {
 	s.leaseMu.Lock()
 	defer s.leaseMu.Unlock()
+	unlock, err := s.lockLeaseFile()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err := s.loadLeasesLocked(); err != nil {
+		return err
+	}
 	key := refreshLeaseKey(connectionID, provider)
 	lease, held := s.refreshLeases[key]
 	if !held || lease.Holder != holder {
@@ -104,6 +118,14 @@ func (s *Store) ReleaseRefreshLease(connectionID, provider, holder string) error
 func (s *Store) refreshLeaseHeld(connectionID, provider string, now time.Time) bool {
 	s.leaseMu.Lock()
 	defer s.leaseMu.Unlock()
+	unlock, err := s.lockLeaseFile()
+	if err != nil {
+		return true
+	}
+	defer unlock()
+	if err := s.loadLeasesLocked(); err != nil {
+		return true
+	}
 	lease, held := s.refreshLeases[refreshLeaseKey(connectionID, provider)]
 	return held && now.Before(lease.ExpiresAt)
 }
@@ -115,6 +137,24 @@ func (s *Store) leasesPath() string {
 		return ""
 	}
 	return s.path + ".refresh-leases"
+}
+
+// The file fence covers reload through rename across independent processes.
+func (s *Store) lockLeaseFile() (func(), error) {
+	path := s.leasesPath()
+	if path == "" {
+		return func() {}, nil
+	}
+	if err := api.SafeStorePath(path + ".lock"); err != nil {
+		return nil, err
+	}
+	lock := flock.New(path + ".lock")
+	if err := lock.Lock(); err != nil {
+		return nil, err
+	}
+	s.leasesLoaded = false
+	s.refreshLeases = map[string]api.RefreshLease{}
+	return func() { _ = lock.Unlock() }, nil
 }
 
 func (s *Store) loadLeasesLocked() error {

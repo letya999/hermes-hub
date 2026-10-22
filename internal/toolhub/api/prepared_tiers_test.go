@@ -20,7 +20,7 @@ func TestPreparedEntryTierAndImagePin(t *testing.T) {
 		"source": {"repository": "https://github.com/makenotion/notion-mcp-server", "commit_sha": "730ae781ba28beeaf0865025a3f2ed4c25ea2387"},
 		"language": "node", "entrypoint": ["node", "/app/bin/cli.mjs"],
 		"connection": {"fields": [{"name": "NOTION_TOKEN", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "NOTION_TOKEN"}]},
-		"contract_id": "notion-token", "contract_revision": 1,
+		"contract_id": "notion-token", "contract_revision": 2,
 		"egress": ["api.notion.com"], "read_tools": ["API-get-self"], "probe_tool": "API-get-self",
 		"runbook": "docs/prepared-connectors.md#notion",
 		"handoff": "Install notion."
@@ -48,7 +48,7 @@ func TestPreparedEntryTierValidation(t *testing.T) {
 			"source": {"repository": "https://github.com/makenotion/notion-mcp-server", "commit_sha": "730ae781ba28beeaf0865025a3f2ed4c25ea2387"},
 			"language": "node", "entrypoint": ["node", "/app/bin/cli.mjs"],
 			"connection": {"fields": [{"name": "NOTION_TOKEN", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "NOTION_TOKEN"}]},
-			"contract_id": "notion-token", "contract_revision": 1,
+			"contract_id": "notion-token", "contract_revision": 2,
 			"egress": ["api.notion.com"], "read_tools": ["API-get-self"], "probe_tool": "API-get-self",
 			"runbook": "docs/prepared-connectors.md#notion",
 			"handoff": "Install notion."
@@ -75,7 +75,7 @@ func TestT0AdmissionSkipsBuilder(t *testing.T) {
 		Language:   "node",
 		Entrypoint: []string{"node", "/app/bin/cli.mjs"},
 		Connection: ConnectionRecipe{Fields: []ConnectionField{{Name: "NOTION_TOKEN", Type: "token", Required: true, Secret: true, Delivery: "env", Target: "NOTION_TOKEN"}}},
-		ContractID: "notion-token", ContractRevision: 1,
+		ContractID: "notion-token", ContractRevision: 2,
 		Egress: []string{"api.notion.com"},
 	}
 	oldLookup, oldBuild, oldPull, oldList := preparedLookup, restrictedBuild, PublishedImagePull, PublishedMCPToolList
@@ -118,7 +118,7 @@ func TestT0AdmissionRecordsPreparedClaimsInLedger(t *testing.T) {
 		Language:   "node",
 		Entrypoint: []string{"node", "/app/bin/cli.mjs"},
 		Connection: ConnectionRecipe{Fields: []ConnectionField{{Name: "NOTION_TOKEN", Type: "token", Required: true, Secret: true, Delivery: "env", Target: "NOTION_TOKEN"}}},
-		ContractID: "notion-token", ContractRevision: 1,
+		ContractID: "notion-token", ContractRevision: 2,
 		Egress: []string{"api.notion.com"},
 	}
 	oldLookup, oldPull, oldList := preparedLookup, PublishedImagePull, PublishedMCPToolList
@@ -229,7 +229,7 @@ func TestPreparedEntryToolsetsCarry(t *testing.T) {
 		"source": {"repository": "https://github.com/makenotion/notion-mcp-server", "commit_sha": "730ae781ba28beeaf0865025a3f2ed4c25ea2387"},
 		"language": "node", "entrypoint": ["node", "/app/bin/cli.mjs"],
 		"connection": {"fields": [{"name": "NOTION_TOKEN", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "NOTION_TOKEN"}]},
-		"contract_id": "notion-token", "contract_revision": 1,
+		"contract_id": "notion-token", "contract_revision": 2,
 		"egress": ["api.notion.com"], "read_tools": ["API-get-self"], "probe_tool": "API-get-self",
 		"toolsets": {"pages": ["API-get-page", "API-patch-page"]},
 		"default_enabled": ["API-get-self"], "default_excluded": ["API-patch-page"],

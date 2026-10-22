@@ -447,7 +447,7 @@ func materializeRuntimeCredentials(workspace string, definition api.ToolDefiniti
 }
 
 type fallbackResources struct {
-	Network, ProxyName, ProxyVol, BridgeVol, RelayName, RelayVol, BridgeSeed, RemoteName string
+	Network, ProxyName, ProxyVol, BridgeVol, RelayName, RelayVol, BridgeSeed, RemoteName, CredName string
 }
 
 func genericFallbackResources(workloadID string) fallbackResources {
@@ -456,7 +456,7 @@ func genericFallbackResources(workloadID string) fallbackResources {
 	return fallbackResources{
 		Network: "hermes-" + workloadID, ProxyName: proxyName, ProxyVol: proxyName + "-config",
 		BridgeVol: workloadID + "-bridge", RelayName: relayName, RelayVol: relayName + "-bin",
-		BridgeSeed: workloadID + "-bridge-seed", RemoteName: workloadID + "-thv",
+		BridgeSeed: workloadID + "-bridge-seed", RemoteName: workloadID + "-thv", CredName: workloadID + "-cred",
 	}
 }
 

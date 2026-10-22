@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -187,13 +188,18 @@ func (c *genericController) start(ctx context.Context, plan api.ControllerPlan) 
 	network := "hermes-" + plan.WorkloadID
 	proxyName := plan.WorkloadID + "-egress"
 	proxyVol := proxyName + "-config"
+	credName := ""
 	started := false
 	defer func() {
 		if started {
 			return
 		}
 		_, _ = c.toolhive(ctx, "rm", plan.WorkloadID)
-		_, _ = c.docker(ctx, "rm", "--force", plan.WorkloadID, proxyName)
+		rmArgs := []string{"rm", "--force", plan.WorkloadID, proxyName}
+		if credName != "" {
+			rmArgs = append(rmArgs, credName)
+		}
+		_, _ = c.docker(ctx, rmArgs...)
 		_, _ = c.docker(ctx, "network", "rm", network)
 		_, _ = c.docker(ctx, "volume", "rm", proxyVol)
 	}()
@@ -235,7 +241,39 @@ func (c *genericController) start(ctx context.Context, plan api.ControllerPlan) 
 	if err != nil {
 		return genericWorkload{}, err
 	}
+	// Proxy-delivered credentials need their sidecar: the workload keeps the
+	// hub-managed stub while the cred-proxy injects the real header toward
+	// the grant's declared hosts. No sidecar, no admission — fail closed.
+	if len(plan.ProxyGrants) > 0 {
+		if c.config.CLI == nil {
+			return genericWorkload{}, fmt.Errorf("%w: proxy credential delivery requires the cred-proxy toolchain", api.ErrIsolation)
+		}
+		if info, statErr := os.Stat(c.cellInitHost()); statErr != nil || !info.Mode().IsRegular() {
+			return genericWorkload{}, fmt.Errorf("%w: cred-proxy helper is not seeded", api.ErrIsolation)
+		}
+		toolsImage, err := c.resolveCellImage(ctx, c.config.CLI.ToolsImage)
+		if err != nil {
+			return genericWorkload{}, err
+		}
+		var brokered []api.CliBrokeredCred
+		for _, grant := range plan.ProxyGrants {
+			for _, host := range grant.Hosts {
+				brokered = append(brokered, api.CliBrokeredCred{EnvName: grant.EnvName, Host: host, Prefix: grant.Prefix, Value: grant.Value})
+			}
+		}
+		sidecar, err := c.cellCredProxy(ctx, plan.WorkloadID, network, brokered, toolsImage, c.planLabelArgs(plan))
+		if err != nil {
+			return genericWorkload{}, err
+		}
+		credName = sidecar.name
+		if err := c.waitProxyListenPort(ctx, credName, ":0C39"); err != nil {
+			return genericWorkload{}, err
+		}
+	}
 	toolArgs := []string{"run", "--name", plan.WorkloadID, "--host", "127.0.0.1", "--proxy-port", strconv.Itoa(port), "--transport", "stdio", "--proxy-mode", "streamable-http", "--permission-profile", "none", "--network", network, "--isolate-network=false", "--read-only", "--security-opt", "seccomp=" + c.config.SeccompProfile, "--security-opt", "no-new-privileges=true", "--cap-drop", "ALL", "--user", "10001:10001", "--cpus", strconv.FormatFloat(float64(plan.Execution.CPUMillis)/1000, 'f', 3, 64), "--memory", strconv.Itoa(plan.Execution.MemoryMiB) + "m", "--memory-swap", strconv.Itoa(plan.Execution.MemoryMiB) + "m", "--pids-limit", strconv.Itoa(plan.Execution.MaxPIDs), "--timeout", strconv.Itoa(plan.Execution.TimeoutSeconds), "--output-limit", strconv.Itoa(plan.Execution.OutputBytes), "--env", "HTTP_PROXY=http://" + ip + ":3128", "--env", "HTTPS_PROXY=http://" + ip + ":3128"}
+	if credName != "" {
+		toolArgs = append(toolArgs, "--env", "NO_PROXY=127.0.0.1,"+credName, "--env", "no_proxy=127.0.0.1,"+credName)
+	}
 	if plan.Execution.ShmSizeMiB > 0 {
 		toolArgs = append(toolArgs, "--shm-size", strconv.Itoa(plan.Execution.ShmSizeMiB)+"m")
 	}
@@ -287,7 +325,7 @@ func (c *genericController) start(ctx context.Context, plan api.ControllerPlan) 
 		}
 		toolArgs = append(toolArgs, "--volume", api.DockerBindSource(mount.Source)+":"+mount.Target+mode)
 	}
-	toolArgs = append(toolArgs, api.RuntimeEnvironmentArgs(plan.Definition)...)
+	toolArgs = append(toolArgs, proxyGrantEnvArgs(plan.Definition.RuntimeEnvironment, credName, plan.ProxyGrants)...)
 	toolArgs = append(toolArgs, api.ProxyEnvironmentArgs(plan.Definition, "http://"+ip+":3128")...)
 	imageRef, err := c.resolveArtifactImage(ctx, plan)
 	if err != nil {
@@ -308,12 +346,39 @@ func (c *genericController) start(ctx context.Context, plan api.ControllerPlan) 
 	}); err != nil {
 		return genericWorkload{}, err
 	}
-	workload := genericWorkload{plan: plan, endpoint: "http://127.0.0.1:" + strconv.Itoa(port) + DefaultEndpointPath, proxyName: proxyName, proxyVol: proxyVol, imageRef: imageRef}
+	workload := genericWorkload{plan: plan, endpoint: "http://127.0.0.1:" + strconv.Itoa(port) + DefaultEndpointPath, proxyName: proxyName, proxyVol: proxyVol, credName: credName, imageRef: imageRef}
 	if _, err := c.inspect(ctx, workload); err != nil {
 		return genericWorkload{}, err
 	}
 	started = true
 	return workload, nil
+}
+
+// proxyGrantEnvArgs renders the declared runtime env; when a cred sidecar is
+// wired, an env value that is a URL at a grant host is rewritten onto the
+// sidecar's host-routing endpoint (http://<wl>-cred:3129/<host><path>) so the
+// workload reaches that API only through the credential-injecting proxy.
+func proxyGrantEnvArgs(environment map[string]string, credName string, grants []api.ProxyGrant) []string {
+	if credName == "" {
+		return api.RuntimeEnvironmentArgs(api.ToolDefinition{RuntimeEnvironment: environment})
+	}
+	hosts := map[string]bool{}
+	for _, grant := range grants {
+		for _, host := range grant.Hosts {
+			hosts[strings.ToLower(host)] = true
+		}
+	}
+	rewritten := make(map[string]string, len(environment))
+	for name, value := range environment {
+		if parsed, err := url.Parse(value); err == nil && hosts[strings.ToLower(parsed.Hostname())] {
+			value = "http://" + credName + ":" + strconv.Itoa(credProxyPort) + "/" + parsed.Hostname() + parsed.EscapedPath()
+			if parsed.RawQuery != "" {
+				value += "?" + parsed.RawQuery
+			}
+		}
+		rewritten[name] = value
+	}
+	return api.RuntimeEnvironmentArgs(api.ToolDefinition{RuntimeEnvironment: rewritten})
 }
 
 func reserveLoopbackPort() (int, error) {
@@ -344,10 +409,15 @@ var proxyListenTimeout = 10 * time.Second
 // the proxy container because the internal cell network is unreachable from the
 // controller; procfs needs no extra tools in the slim image.
 func (c *genericController) waitProxyListen(ctx context.Context, name string) error {
+	return c.waitProxyListenPort(ctx, name, ":0C38")
+}
+
+// waitProxyListenPort is the port-parameterized wait: 3128 = 0x0C38, the
+// cred-proxy's 3129 = 0x0C39 in the procfs local_address column.
+func (c *genericController) waitProxyListenPort(ctx context.Context, name, portHex string) error {
 	deadline := time.Now().Add(proxyListenTimeout)
 	for {
-		// 3128 = 0x0C38 in the procfs local_address column.
-		if _, err := c.docker(ctx, "exec", name, "grep", "-q", ":0C38", "/proc/net/tcp", "/proc/net/tcp6"); err == nil {
+		if _, err := c.docker(ctx, "exec", name, "grep", "-q", portHex, "/proc/net/tcp", "/proc/net/tcp6"); err == nil {
 			return nil
 		}
 		if time.Now().After(deadline) {

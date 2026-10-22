@@ -1,6 +1,6 @@
 ---
 description: Connector pipeline — review/build/admission contract, lifecycle, recipe ledger, tiers, and per-connector prepared entries.
-last_verified: 2026-10-20
+last_verified: 2026-10-22
 ---
 
 # Prepared connectors
@@ -12,6 +12,25 @@ provider branches. Reviewed Broker contracts ship beside it under
 `prepared/contracts/` and validate with their entries. ToolHub registers the
 reviewed contract with the Broker before enrollment. Unprepared recipes use
 a content-addressed contract synthesized from their declared deliveries.
+
+## Authentication before artifact execution
+
+A `connection_recipe` or root `mcp-connection.json` can declare
+`"auth_before_tools_list": true` alongside its required fields. Generic source
+review then saves an unbuilt, immutable-source draft and opens the protected
+Broker form before building, pulling or probing the artifact. After enrollment,
+a temporary owner-bound grant resumes the saved recipe, builds the artifact and
+executes real `tools/list`. The resulting definition retains the approved Broker
+contract. A failed probe remains unconfirmed; arbitrary startup failures do not
+become successful installations.
+
+Status reports `form_ready`, `artifact_ready` (a pinned local image digest) and
+`tools_confirmed` separately. A form-ready draft can have no image and no tools.
+Read-only file deliveries are mounted at their declared targets for the probe;
+undeclared or writable mounts, symlink paths and non-files are rejected. Both
+stdio and HTTP/SSE credentialed probes use an internal Docker network and the
+managed egress proxy, including generic connectors. Writable OAuth-state
+materialization during this preliminary probe is not yet supported.
 
 ## Declarative OAuth
 
@@ -55,11 +74,39 @@ keep `--network none`. Live evidence: `.work/done/CHG-0036-*`.
 
 ## Artifact pipeline (review → build → quarantine → preflight → approve)
 
+Conversational discovery searches the configured MCP catalogs, then GitHub
+with a separate timeout budget. The default stack enables `github-search`.
+Show up to five actual candidates and install the selected owner-scoped
+candidate ID; a direct repository URL bypasses candidate selection. Prepared
+aliases retain their reviewed revision. Expired candidate IDs require a new
+search. The install/status facade observes the current onboarding phase,
+including asynchronous failures.
+
+Re-reviewing a source can correct its credential contract. Unbound definitions
+reuse a generated Broker contract only when its content-addressed ID matches the
+new recipe; an older, broader form must not resurrect removed example inputs or
+different requiredness. Explicitly pinned reviewed contracts remain authoritative.
+
+Public `gitlab.com` repository URLs (including nested groups) and exact
+`/-/tree/<sha>/<subfolder>` URLs use the same review/build pipeline. GitLab
+files are fetched through its commit/tree/blob API, with Git blob verification,
+bounded pagination and the existing sensitive-path filters. Self-hosted and
+private GitLab sources are not supported by this public-source reader.
+
+Source credential corrections use `connection_recipe`, never the remote-only
+top-level `credentials` argument. Missing startup configuration can promote
+named URL/username fields alongside secrets. Parenthesized alternative auth
+groups survive the retry; URL probe placeholders use `https://preflight.invalid`
+without network access. A successful `tools/list` alone does not prove that
+lazy provider authentication is configured: inspect the source's documented
+credential delivery and supply a reviewed recipe when necessary.
+
 `hubctl artifact import` drives the whole path:
 
-- **Source**: canonical public GitHub URL + exact 40-char SHA only;
-  commit/tree/blob verified via two API calls + exact-SHA raw URLs with blob
-  ID checks; ≤8-request batches, bounded byte/time budgets; sensitive paths
+- **Source**: canonical public GitHub or gitlab.com URL + exact 40-char SHA;
+  GitHub uses two metadata API calls plus exact-SHA raw files in ≤8-request
+  batches; GitLab uses its paginated tree and blob API. Both verify blob IDs
+  and enforce bounded byte/time budgets; sensitive paths
   excluded before fetch. Content secret scan still mandatory — a token-shaped
   match whose body is one repeated char is a placeholder fixture; a varied
   body fails closed.
@@ -288,10 +335,14 @@ short-TTL owner-bound viewer link (`GET /viewer/<conn>?t=` — 410 on reuse).
 
 ### notion
 
-`makenotion/notion-mcp-server`, Node `bin/cli.mjs`. Contract `notion-token`
+`makenotion/notion-mcp-server`, Node `bin/cli.mjs`. Contract `notion-token@2`
 → `NOTION_TOKEN`. Share root/pages with the integration first; verify
 identity + search + one page read; empty search usually means nothing
 shared. Never create/edit pages as a test.
+
+Revision 2 distinguishes the prepared contract from the Broker example's
+revision 1, whose labels and digest differ. Existing revision 1 connections
+remain pinned; new enrollment uses revision 2 without overwriting contracts.
 
 ### google-calendar
 

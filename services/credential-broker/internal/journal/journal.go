@@ -142,7 +142,7 @@ func (j *Journal) Append(kind string, data any) (uint64, error) {
 		return 0, ErrUnavailable
 	}
 	buf := make([]byte, 4, len(enc)+4)
-	binary.BigEndian.PutUint32(buf, uint32(len(enc)))
+	binary.BigEndian.PutUint32(buf, uint32(len(enc))) // #nosec G115 -- plain is bounded by MaxRecord minus the fixed 28-byte AEAD overhead above.
 	buf = append(buf, enc...)
 	n, err := j.file.Write(buf)
 	if err != nil || n != len(buf) {

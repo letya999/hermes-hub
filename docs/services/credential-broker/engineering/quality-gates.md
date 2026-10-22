@@ -1,6 +1,6 @@
 ---
 description: "Исполняемые offline gates и отдельная обязательная проверка production-релиза."
-last_verified: "2026-10-20"
+last_verified: "2026-10-22"
 ---
 
 # Пороги качества
@@ -20,6 +20,12 @@ Coverage metric — Go statements, не branches. Общий порог 85%; о�
 должен иметь 85% и выше. Пакеты только с DTO или tests не имеют statements и не создают фиктивный denominator.
 `-coverpkg=./...` даёт повторяющиеся блоки: checker объединяет их по source location перед подсчётом.
 Не допускаются exclusions для CLI, error paths или adapters.
+
+Production toolchain и версии анализаторов закреплены в
+`services/credential-broker/tools.json`. Security tools запускаются с
+`GOWORK=off`, чтобы каждый анализатор разрешал internal imports именно этого
+модуля. Архитектурный regression test проверяет окружение всех трёх запусков;
+совместимость анализатора с форматом export data Go проверяется реальным gate.
 
 Secret hygiene сканирует ожидаемые имена файлов, key blocks и GitHub token patterns. Это ограниченный
 репозиторный safeguard, не полноценный DLP/Git-history scanner. Дополнительный корпоративный scanner

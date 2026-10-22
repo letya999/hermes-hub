@@ -45,9 +45,23 @@ func TestHTTPDiagnosticRouteOmitsCredentialLink(t *testing.T) {
 	previous := log.Writer()
 	log.SetOutput(&output)
 	defer log.SetOutput(previous)
-	f.serve(f.request("GET", "/connect/private-token?code=secret", "", actor, nil))
-	if got := output.String(); !strings.Contains(got, "credential-broker http method=GET route=/connect") || strings.Contains(got, "private-token") || strings.Contains(got, "secret") {
-		t.Fatal(got)
+	for _, tc := range []struct{ path, route, method string }{
+		{"/connect/private-token?code=secret", "/connect", "GET"},
+		{"/private-token", "/unknown", "GET"},
+		{"/v1/private-token", "/unknown", "GET"},
+		{"/v1/runtime/private-token", "/v1/runtime", "GET"},
+		{"/%0Aprivate-token", "/unknown", "GET"},
+		{"/healthz", "/healthz", "private-token"},
+	} {
+		output.Reset()
+		f.serve(f.request(tc.method, tc.path, "", actor, nil))
+		method := tc.method
+		if method == "private-token" {
+			method = "other"
+		}
+		if got := output.String(); !strings.Contains(got, "credential-broker http method="+method+" route="+tc.route+" ") || strings.Contains(got, "private-token") || strings.Contains(got, "secret") || strings.Count(got, "\n") != 1 {
+			t.Errorf("diagnostic field was not allowlisted: %q", got)
+		}
 	}
 }
 

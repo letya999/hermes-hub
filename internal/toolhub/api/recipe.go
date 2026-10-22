@@ -68,9 +68,10 @@ type ConnectionAlternative struct {
 }
 
 type ConnectionRecipe struct {
-	OAuth        *OAuthRecipe            `json:"oauth,omitempty"`
-	Fields       []ConnectionField       `json:"fields,omitempty"`
-	Alternatives []ConnectionAlternative `json:"alternatives,omitempty"`
+	AuthBeforeToolsList bool                    `json:"auth_before_tools_list,omitempty"`
+	OAuth               *OAuthRecipe            `json:"oauth,omitempty"`
+	Fields              []ConnectionField       `json:"fields,omitempty"`
+	Alternatives        []ConnectionAlternative `json:"alternatives,omitempty"`
 }
 
 func (r ConnectionRecipe) Validate() error {
@@ -248,6 +249,14 @@ func recipeContextPath(name string) bool {
 }
 
 func LookupRecipe(source ArtifactSource) (RecipeLookup, error) {
+	if strings.HasPrefix(source.Repository, "https://gitlab.com/") {
+		if _, err := source.ArchiveURL(); err != nil {
+			return RecipeLookup{}, err
+		}
+		project := strings.TrimPrefix(source.Repository, "https://gitlab.com/")
+		index := strings.LastIndex(project, "/")
+		return RecipeLookup{Repository: source.Repository, Subfolder: source.Subfolder, CommitSHA: source.CommitSHA, Owner: project[:index], Name: project[index+1:]}, nil
+	}
 	u := strings.TrimPrefix(source.Repository, "https://github.com/")
 	parts := strings.Split(u, "/")
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {

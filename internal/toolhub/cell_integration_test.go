@@ -64,10 +64,11 @@ func TestCLICellRealDocker(t *testing.T) {
 				UserCommands:  []string{"ls", "cat", "sleep", "sh", "uv"},
 			},
 		},
-		command:     api.LocalCommand,
-		commandExit: api.LocalCommandExit,
-		workloads:   map[string]genericWorkload{},
-		registry:    newCellRegistry(),
+		command:      api.LocalCommand,
+		commandExit:  api.LocalCommandExit,
+		commandStdin: api.LocalCommandInput,
+		workloads:    map[string]genericWorkload{},
+		registry:     newCellRegistry(),
 	}
 	t.Cleanup(func() { c.releaseAllCells(context.Background(), "test-done") })
 

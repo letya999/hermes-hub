@@ -5,6 +5,7 @@ package devcheck
 import (
 	"context"
 	"errors"
+	"io"
 )
 
 // HermesContract is built only for Docker-backed integration checks.
@@ -46,4 +47,8 @@ func GatewayLifecycle(context.Context, string) error {
 
 func ToolHubHermesContract(context.Context) error {
 	return errors.New("ToolHub Hermes probe requires: go run -tags integration ./cmd/devcheck toolhub-hermes-contract")
+}
+
+func ConnectorBench(context.Context, int, io.Writer) error {
+	return errors.New("connector bench requires: go run -tags integration ./cmd/devcheck connector-bench RUNS")
 }

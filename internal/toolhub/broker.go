@@ -60,10 +60,24 @@ func (c *ControlPlane) admitWithBrokerCredential(ctx context.Context, auth ident
 			resultErr = errors.Join(resultErr, fmt.Errorf("%w: temporary Broker lease release: %v", api.ErrIsolation, err))
 		}
 	}()
-	if len(injection.Mounts) != 0 {
-		return api.ToolDefinition{}, fmt.Errorf("%w: credentialed tools/list does not support Broker file mounts", api.ErrIsolation)
+	ctx = api.WithProbeOptions(ctx, api.ProbeOptions{Mounts: injection.Mounts})
+	if definition.Source.Digest == "" && onboarding.Recipe != nil && onboarding.Recipe.Connection.AuthBeforeToolsList {
+		if c.Reviewer == nil {
+			return api.ToolDefinition{}, fmt.Errorf("%w: deferred source reviewer unavailable", api.ErrIsolation)
+		}
+		recipe := onboarding.Recipe.Connection
+		recipe.AuthBeforeToolsList = false
+		ctx = context.WithValue(ctx, api.ConnectionRecipeContextKey{}, recipe)
+		ctx = api.WithProbeOptions(ctx, api.ProbeOptions{Values: injection.Environment, Mounts: injection.Mounts, AllowNetwork: true})
+		var review api.SourceReview
+		review, err = c.Reviewer(ctx, onboarding.Recipe.Source, nil)
+		admitted = review.Definition
+		admitted.CredentialContractID = definition.CredentialContractID
+		admitted.CredentialContractRevision = definition.CredentialContractRevision
+		admitted.CredentialContractEnv = api.CloneMap(definition.CredentialContractEnv)
+	} else {
+		admitted, err = c.AdmitWithCredentials(ctx, definition, injection.Environment)
 	}
-	admitted, err = c.AdmitWithCredentials(ctx, definition, injection.Environment)
 	if err != nil {
 		// The upstream error can echo a submitted StringSession. Keep it out of
 		// onboarding state and channel responses.

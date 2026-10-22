@@ -16,18 +16,7 @@ import (
 
 func (c *ControlPlane) acceptCredentialGate(ctx context.Context, auth identity.Envelope, preparing api.Onboarding, review api.SourceReview) (map[string]any, error) {
 	definition := review.Definition
-	brokerGate := definition.CredentialContractID != ""
-	if brokerGate && (c.Broker == nil || !c.Broker.Enabled()) {
-		return nil, fmt.Errorf("%w: reviewed credential Broker is required for authenticated preflight", api.ErrIsolation)
-	}
-	if len(requiredSecretNames(definition)) == 0 && !brokerGate {
-		return nil, fmt.Errorf("%w: credential gate named no secrets", api.ErrInvalid)
-	}
 	names := requiredCredentialNames(definition)
-	hints := credentialGateHints(names, review.AdmissionGroups)
-	if len(hints) == 0 {
-		return nil, fmt.Errorf("%w: credential gate named no secrets", api.ErrInvalid)
-	}
 	if len(definition.CredentialGroups) == 0 {
 		known := map[string]bool{}
 		for _, name := range names {
@@ -48,6 +37,22 @@ func (c *ControlPlane) acceptCredentialGate(ctx context.Context, auth identity.E
 			definition.CredentialGroups = nil
 		}
 	}
+	hints := credentialHints(definition)
+	if len(hints) == 0 {
+		return nil, fmt.Errorf("%w: credential gate named no secrets", api.ErrInvalid)
+	}
+	if definition.CredentialContractID == "" {
+		if err := c.bindReviewedContract(ctx, auth, &definition); err != nil {
+			return nil, err
+		}
+	}
+	brokerGate := definition.CredentialContractID != ""
+	if brokerGate && (c.Broker == nil || !c.Broker.Enabled()) {
+		return nil, fmt.Errorf("%w: reviewed credential Broker is required for authenticated preflight", api.ErrIsolation)
+	}
+	if len(requiredSecretNames(definition)) == 0 && !brokerGate {
+		return nil, fmt.Errorf("%w: credential gate named no secrets", api.ErrInvalid)
+	}
 	onboarding := preparing
 	if latest, err := c.Store.onboarding(preparing.OnboardingID); err == nil {
 		onboarding = latest
@@ -64,6 +69,13 @@ func (c *ControlPlane) acceptCredentialGate(ctx context.Context, auth identity.E
 	onboarding.Permissions = nil
 	onboarding.Effects = nil
 	onboarding.Definition = &definition
+	if review.Recipe != nil {
+		digest, err := c.Store.PutRecipe(*review.Recipe)
+		if err != nil {
+			return nil, err
+		}
+		onboarding.Recipe, onboarding.RecipeDigest = review.Recipe, digest
+	}
 	if definition.DefinitionID != "" {
 		onboarding.DefinitionID = definition.DefinitionID
 	}

@@ -2,7 +2,10 @@ package toolhub
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
+	"net/url"
 	"slices"
 	"strings"
 
@@ -54,10 +57,32 @@ func (c *ControlPlane) connectorInstall(ctx context.Context, auth identity.Envel
 	if target == "" {
 		return api.OperationResult{}, fmt.Errorf("%w: install target", api.ErrInvalid)
 	}
-	key := api.OperationRequestKey(auth, api.OpIntentInstall, target)
-	op, exists := c.Store.OperationForRequestKey(auth, api.OpIntentInstall, target)
+	requestTarget := target
+	if recipe, ok := args["connection_recipe"]; ok {
+		encoded, err := json.Marshal(recipe)
+		if err != nil {
+			return api.OperationResult{}, api.ErrInvalid
+		}
+		requestTarget += fmt.Sprintf("#recipe=%x", sha256.Sum256(encoded))
+	}
+	key := api.OperationRequestKey(auth, api.OpIntentInstall, requestTarget)
+	op, exists := c.Store.OperationForRequestKey(auth, api.OpIntentInstall, requestTarget)
+	for exists && op.OnboardingID != "" {
+		previous, err := c.Store.OnboardingFor(auth, op.OnboardingID)
+		if err != nil {
+			return api.OperationResult{}, err
+		}
+		if previous.Phase != api.PhaseRemoved {
+			break
+		}
+		// A removal tombstone ends this generation, but remains addressable.
+		requestTarget = target + "#after=" + previous.OnboardingID
+		key = api.OperationRequestKey(auth, api.OpIntentInstall, requestTarget)
+		op, exists = c.Store.OperationForRequestKey(auth, api.OpIntentInstall, requestTarget)
+	}
 	if !exists {
-		op = c.newConnectorOperation(auth, api.OpIntentInstall, target, connectorInstallSteps)
+		op = c.newConnectorOperation(auth, api.OpIntentInstall, requestTarget, connectorInstallSteps)
+		op.Target = target
 		body, err := c.prepareInstallTarget(ctx, auth, target, strings.TrimSpace(api.ArgString(args, "version")), key, args)
 		if err != nil {
 			// The pipeline may have created the durable preparing record before
@@ -66,10 +91,11 @@ func (c *ControlPlane) connectorInstall(ctx context.Context, auth identity.Envel
 				op.OnboardingID = onboarding.OnboardingID
 			}
 			op.State = api.OpStateFailed
+			op.ErrorCode = api.OpCodeProbeFailed
 			if persistErr := c.Store.PutOperation(op); persistErr != nil {
 				return api.OperationResult{}, persistErr
 			}
-			return api.OperationResult{OperationID: op.OperationID, State: api.OpStateFailed, Summary: "install " + target}, nil
+			return api.OperationResult{OperationID: op.OperationID, State: api.OpStateFailed, Code: op.ErrorCode, Summary: "install " + target + ": " + api.PublicPrepareError(err)}, nil
 		}
 		markStep(&op, api.OpStepResolve, api.OpStepDone)
 		op.OnboardingID = api.ArgString(body, "onboarding_id")
@@ -97,6 +123,10 @@ func (c *ControlPlane) connectorInstall(ctx context.Context, auth identity.Envel
 		markStep(&op, api.OpStepProject, api.OpStepDone)
 		markStep(&op, api.OpStepNotify, api.OpStepDone)
 		op.State = api.OpStateDone
+	} else if onboarding.Phase == api.PhaseFailed {
+		op.State, op.ErrorCode = api.OpStateFailed, api.OpCodeProbeFailed
+		result.Code = op.ErrorCode
+		result.Summary += ": " + onboarding.Error
 	} else {
 		op.State = api.OpStateRunning
 	}
@@ -184,8 +214,28 @@ func (c *ControlPlane) connectorRemove(ctx context.Context, auth identity.Envelo
 		return api.OperationResult{}, fmt.Errorf("%w: connector target", api.ErrInvalid)
 	}
 	op, exists := c.Store.OperationForRequestKey(auth, api.OpIntentRemove, target)
+	requestTarget := target
+	for exists && op.OnboardingID != "" {
+		previous, err := c.Store.OnboardingFor(auth, op.OnboardingID)
+		if err != nil {
+			return api.OperationResult{}, err
+		}
+		if previous.Phase != api.PhaseRemoved {
+			break
+		}
+		nextTarget := target + "#after=" + previous.OnboardingID
+		if next, found := c.Store.OperationForRequestKey(auth, api.OpIntentRemove, nextTarget); found {
+			op, requestTarget = next, nextTarget
+			continue
+		}
+		if _, err := c.Store.ResolveConnectorTarget(auth, target); err == nil {
+			requestTarget, exists = nextTarget, false
+		}
+		break
+	}
 	if !exists {
-		op = c.newConnectorOperation(auth, api.OpIntentRemove, target, connectorRemoveSteps)
+		op = c.newConnectorOperation(auth, api.OpIntentRemove, requestTarget, connectorRemoveSteps)
+		op.Target = target
 	}
 	if op.OnboardingID == "" {
 		resolved, err := c.Store.ResolveConnectorTarget(auth, target)
@@ -383,6 +433,9 @@ func (c *ControlPlane) applyConfirmedWrites(ctx context.Context, onboardingID st
 // URL and a remote MCP URL each route to their own pipeline — every one of
 // them failing closed with a typed error rather than a bare not-found.
 func (c *ControlPlane) prepareInstallTarget(ctx context.Context, auth identity.Envelope, target, version, requestKey string, args map[string]any) (map[string]any, error) {
+	if _, err := c.selectedCandidate(auth, target); err == nil {
+		return c.prepareSource(ctx, auth, map[string]any{"candidate_id": target, "request_key": requestKey})
+	}
 	if definition, err := c.Store.Definition(target, version); err == nil {
 		return c.prepareCatalog(ctx, auth, definition.DefinitionID, definition.Version, requestKey)
 	}
@@ -417,6 +470,13 @@ func (c *ControlPlane) prepareInstallTarget(ctx context.Context, auth identity.E
 		return c.prepareCLI(ctx, auth, spec, requestKey)
 	}
 	if strings.HasPrefix(target, "https://") || strings.HasPrefix(target, "http://") {
+		if parsed, err := url.Parse(target); err == nil && (strings.EqualFold(parsed.Hostname(), "github.com") || parsed.Hostname() == "gitlab.com") {
+			sourceArgs := map[string]any{"source": target, "request_key": requestKey}
+			if recipe, ok := args["connection_recipe"]; ok {
+				sourceArgs["connection_recipe"] = recipe
+			}
+			return c.prepareSource(ctx, auth, sourceArgs)
+		}
 		if _, err := api.ParseGitHubSource(target); err == nil {
 			return c.prepareSelfInstallAsync(ctx, auth, target, requestKey, nil, false, "")
 		}

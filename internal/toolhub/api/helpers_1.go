@@ -38,3 +38,15 @@ func EnvOr(name, fallback string) string {
 	}
 	return fallback
 }
+
+// CredentialStagingRoot selects where per-call credential material
+// (credentials.env, <name>.secret, runtime env) is staged before the
+// controller hand-off. The deploy mounts it on tmpfs so secrets never reach
+// the persistent host disk; HUB_CRED_STAGING unset keeps the legacy state
+// root for dev and tests.
+func CredentialStagingRoot() string {
+	if staging := strings.TrimSpace(os.Getenv("HUB_CRED_STAGING")); staging != "" {
+		return staging
+	}
+	return EnvOr("HUB_STATE", "/state")
+}

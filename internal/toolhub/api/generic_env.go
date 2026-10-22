@@ -71,6 +71,20 @@ func LocalCommandExit(ctx context.Context, sink io.Writer, binary string, args .
 	return -1, err
 }
 
+// LocalCommandInput runs one binary with a bounded stdin payload — the
+// channel that delivers cred-proxy rules into a running sidecar, where
+// docker cp cannot reach the read-only rootfs.
+func LocalCommandInput(ctx context.Context, stdin io.Reader, binary string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, binary, args...) // #nosec G204 -- binary and args are fixed by the reviewed controller plan.
+	cmd.Env = IsolatedToolHiveEnviron(nil)
+	cmd.Stdin = stdin
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return out, fmt.Errorf("local workload command failed: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return out, nil
+}
+
 func LocalCommandEnv(ctx context.Context, env map[string]string, binary string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, binary, args...) // #nosec G204 -- binary and args are fixed by the reviewed controller plan.
 	cmd.Env = os.Environ()

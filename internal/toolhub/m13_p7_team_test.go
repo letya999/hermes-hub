@@ -2,8 +2,11 @@ package toolhub
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -690,32 +693,35 @@ func TestTeamCallAuditAttributesSenderAndTeam(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var records []map[string]string
-	gateway := &Gateway{Store: store,
-		AuditWrite: func(_ string, fields map[string]string) error {
-			records = append(records, fields)
-			return nil
-		},
-		Injector: func(context.Context, api.EffectiveBinding) (api.CredentialInjection, error) {
-			return api.CredentialInjection{}, nil
-		},
+	ledgerPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	t.Setenv("HUB_AUDIT_LEDGER", ledgerPath)
+	handler, err := NewEndpointHandler(EndpointConfig{Token: aliceToken, Auth: aliceAuth(),
 		Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 			return api.BackendResult{Text: "ok"}, nil
 		}),
+	}, store)
+	if err != nil {
+		t.Fatal(err)
 	}
+	gateway := handler.(*projectionEndpoint).gateway
 	name := api.ProjectedToolName(definition.DefinitionID, definition.Version, "search")
 	if _, err := gateway.CallAuthorized(t.Context(), aliceAuth(), name, map[string]any{}); err != nil {
 		t.Fatal(err)
 	}
-	if len(records) == 0 {
-		t.Fatal("no audit records")
+	body, err := os.ReadFile(ledgerPath)
+	if err != nil {
+		t.Fatal(err)
 	}
-	allow := records[len(records)-1]
+	lines := strings.Split(strings.TrimSpace(string(body)), "\n")
+	var allow map[string]any
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &allow); err != nil {
+		t.Fatal(err)
+	}
 	if allow["sender_id"] != aliceAuth().ExternalIdentityID {
-		t.Fatalf("audit sender_id=%q, want the JobEnvelope sender %q", allow["sender_id"], aliceAuth().ExternalIdentityID)
+		t.Errorf("audit sender_id=%q, want the JobEnvelope sender %q", allow["sender_id"], aliceAuth().ExternalIdentityID)
 	}
 	if allow["team_id"] != "platform" {
-		t.Fatalf("audit team_id=%q, want platform", allow["team_id"])
+		t.Errorf("audit team_id=%q, want platform", allow["team_id"])
 	}
 	if allow["connection_id"] != connection.ConnectionID || allow["binding_id"] != binding.ToolBindingID {
 		t.Fatalf("audit attribution connection=%q binding=%q", allow["connection_id"], allow["binding_id"])

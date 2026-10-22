@@ -416,7 +416,7 @@ func ParseDocumentationCredentials(data []byte, name string) ConnectionRecipe {
 		for _, word := range strings.FieldsFunc(line, func(r rune) bool {
 			return !((r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_')
 		}) {
-			if CredentialPattern.MatchString(word) && (strings.Contains(word, "TOKEN") || strings.Contains(word, "KEY") || strings.Contains(word, "SECRET") || strings.Contains(word, "OAUTH") || strings.Contains(word, "CLIENT_ID")) {
+			if !strings.HasPrefix(word, "YOUR_") && CredentialPattern.MatchString(word) && (strings.Contains(word, "TOKEN") || strings.Contains(word, "KEY") || strings.Contains(word, "SECRET") || strings.Contains(word, "OAUTH") || strings.Contains(word, "CLIENT_ID")) {
 				recipe.Fields = append(recipe.Fields, ConnectionField{Name: word, Type: ConnectionType(word), Secret: SecretName(word), Delivery: "env", Target: word, Alternative: "documentation"})
 			}
 		}

@@ -43,6 +43,12 @@ type ArtifactSource struct {
 }
 
 func (s ArtifactSource) ArchiveURL() (string, error) {
+	if strings.HasPrefix(s.Repository, "https://gitlab.com/") {
+		if _, err := parseGitLabSource(s.Repository, false); err != nil || !gitSHAPattern.MatchString(s.CommitSHA) || !validGitHubSubfolder(s.Subfolder) {
+			return "", fmt.Errorf("%w: pinned public GitLab source required", ErrInvalid)
+		}
+		return s.Repository + "/-/archive/" + s.CommitSHA + "/source.tar.gz", nil
+	}
 	u, err := url.Parse(s.Repository)
 	if err != nil || u.Scheme != "https" || u.Host != "github.com" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawPath != "" || !gitSHAPattern.MatchString(s.CommitSHA) || !validGitHubSubfolder(s.Subfolder) {
 		return "", fmt.Errorf("%w: public GitHub URL and exact lowercase 40-character commit SHA required", ErrInvalid)
@@ -82,6 +88,9 @@ func ResolveGitHubSource(ctx context.Context, raw string) (ArtifactSource, error
 }
 
 func ResolveGitHubSourceWith(ctx context.Context, raw string, client *http.Client) (ArtifactSource, error) {
+	if strings.HasPrefix(strings.TrimSpace(raw), "https://gitlab.com/") {
+		return resolveGitLabSource(ctx, raw, client)
+	}
 	repository, err := parseGitHubRepository(raw)
 	if err != nil {
 		return ArtifactSource{}, err
@@ -172,6 +181,9 @@ func FetchArtifactContextWith(ctx context.Context, client *http.Client, source A
 // safe path, including documentation trees that artifactAutoBuildPath prunes
 // for the primary source — used for declared overlay sources only.
 func FetchArtifactContextMode(ctx context.Context, client *http.Client, source ArtifactSource, files []string, maxBytes int64, discover, recipeMetadata, full bool) ([]byte, error) {
+	if strings.HasPrefix(source.Repository, "https://gitlab.com/") {
+		return fetchGitLabContext(ctx, client, source, files, maxBytes, discover, recipeMetadata, full)
+	}
 	if _, err := source.ArchiveURL(); err != nil {
 		return nil, err
 	}

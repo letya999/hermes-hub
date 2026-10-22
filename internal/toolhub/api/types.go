@@ -371,13 +371,17 @@ type EffectiveBinding struct {
 	WorkloadID string
 	// CredentialMounts are runtime-only paths returned by Credential Broker.
 	// They never enter the persisted projection or audit ledger.
-	CredentialMounts          []Mount `json:"-"`
-	CapabilityID              string  `json:"-"`
-	ImplementationDigest      string  `json:"-"`
-	CapabilityPolicyID        string  `json:"-"`
-	CapabilityProfileID       string  `json:"-"`
-	CapabilityPolicyRevision  uint64  `json:"-"`
-	CapabilityProfileRevision uint64  `json:"-"`
+	CredentialMounts []Mount `json:"-"`
+	// ProxyGrants are the runtime-only proxy-delivery grants the injector
+	// resolved for this call; ControllerPlanFor forwards them to the
+	// controller so it can wire the cred-proxy sidecar.
+	ProxyGrants               []ProxyGrant `json:"-"`
+	CapabilityID              string       `json:"-"`
+	ImplementationDigest      string       `json:"-"`
+	CapabilityPolicyID        string       `json:"-"`
+	CapabilityProfileID       string       `json:"-"`
+	CapabilityPolicyRevision  uint64       `json:"-"`
+	CapabilityProfileRevision uint64       `json:"-"`
 	// CapabilityScopes are the path-grant boundaries the admission bound for
 	// this call; executors must map them to os.Root scopes, never recompute.
 	CapabilityScopes []CapabilityScope `json:"-"`

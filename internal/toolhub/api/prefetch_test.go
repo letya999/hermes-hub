@@ -5,6 +5,18 @@ import (
 	"testing"
 )
 
+func TestPrefetchPlanCountsEachImageOnce(t *testing.T) {
+	wanted := []PrefetchTarget{{Ref: "new-a", Digest: "a", Size: 3}, {Ref: "new-b", Digest: "b", Size: 3}, {Ref: "alias-a", Digest: "a", Size: 3}}
+	cached := []CachedImage{{Ref: "stale", Digest: "old", Size: 3, Owned: true}, {Ref: "foreign", Digest: "foreign", Size: 2}}
+	pull, evict := PrefetchPlan(wanted, cached, 5)
+	if len(evict) != 1 || evict[0].Ref != "stale" {
+		t.Errorf("eviction counted twice or touched foreign image: %+v", evict)
+	}
+	if len(pull) != 1 || pull[0].Digest != "a" {
+		t.Errorf("plan exceeds budget or repulls digest: %+v", pull)
+	}
+}
+
 // S5.5: the prefetch plan stays inside the 8 GB budget and only ever evicts
 // images carrying hub ownership labels — foreign images are untouchable.
 func TestPrefetchPlanRespectsBudget(t *testing.T) {

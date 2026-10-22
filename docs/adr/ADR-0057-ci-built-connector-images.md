@@ -1,6 +1,6 @@
 ---
 description: Catalog tiers T0/T1/T2 with CI-built digest-pinned connector images, deterministic ref imports under operator confirmation, staged toolset projection, and a bounded prefetch plan.
-last_verified: 2026-10-19
+last_verified: 2026-10-23
 ---
 # ADR-0057: Catalog tiers and CI-built connector images
 
@@ -48,6 +48,40 @@ sources by how much review already happened.
   evicts only `hermes-hub.*`-labelled (owned) images, in caller LRU order,
   and skips a target rather than breaching the 8 GiB budget or touching a
   foreign image.
+- **D6 — Prefetch executor.** `hubctl connector prefetch` runs the plan
+  against the daemon: wanted targets are the embedded catalog's digest-pinned
+  `image` entries, sizes come from `manifest inspect`, and the cached set is
+  `docker images --digests`. An image is an eviction candidate only when its
+  repository equals one the catalog pins — a strictly narrower owned set than
+  the `hermes-hub.*` label family, so foreign images can never match. The
+  command is the operator step after a catalog release; entrypoints and
+  schedulers call the same path. Amended 2026-10-19.
+
+- **D7 — CI publication pipeline (`.github/workflows/connector-images.yml`).**
+  A dispatch-only job runs `devcheck connector-build <id>`, which compiles the
+  embedded entry through the same restricted generator local admission uses
+  (verified source pin, generated recipe, rootless BuildKit, provenance
+  `mode=max` plus the pinned syft SBOM scanner), exports the attested OCI
+  archive and writes a `pin.json` of locally verified digests. `skopeo copy
+  --all` pushes archive plus referrer attestations to
+  `ghcr.io/<owner>/hermes-hub-connectors/<id>:src-<commit>`. `devcheck
+  connector-pin` then hashes the pushed manifest bytes (`skopeo inspect
+  --raw`), refuses on any mismatch with the archive digest, and promotes the
+  catalog entry to `t0` with the full `{ref, digest, provenance, sbom}` pin.
+  The patched `catalog.json` ships as a job artifact for the owner to commit;
+  the workflow never commits on its own. Amended 2026-10-23.
+
+- **D8 — Lifecycle benchmark gate.** `devcheck connector-bench RUNS`
+  (integration-only) times the real Docker lifecycle of a fixture MCP stdio
+  workload under the production profile — `--network none`, read-only
+  rootfs, tmpfs `/tmp`, `--cap-drop ALL`, `no-new-privileges`, user
+  `10001:10001`: create, start + `initialize`/`tools/list` handshake, first
+  `tools/call`, and removal. Install is defined as create + handshake, the
+  same work a T0/T1 install performs once the image is local. The verdict
+  fails on budget regression: install p95 > 15 s, first call p95 > 2 s,
+  remove p95 > 5 s. A `bench` gate in `container-gates` runs it on every
+  image build; the JSON report on stdout is the issue evidence. Amended
+  2026-10-23.
 
 ## Consequences
 
@@ -55,7 +89,9 @@ sources by how much review already happened.
   admission with a builder spy (zero calls), all six import schemes plus
   malformed refs, deterministic digests, confirm-gated writes, toolset
   projection and the prefetch budget.
-- Live gates remain open: the CI job that actually builds T0 images and
-  pushes `ghcr.io/<owner>/hermes-hub-connectors/<id>@sha256:…` with SLSA
-  provenance and SBOM, nightly probes, and the p95 budget measurements run
+- The pipeline is honest about trust: `connector-pin` pins the locally
+  verified archive digest, not a registry-reported digest, and refuses when
+  they disagree; a foreign `ref` argument never reaches the catalog.
+- Live gates remain open until the first dispatch run: the GHCR push, the
+  `catalog.patch` commit, nightly probes, and the p95 budget measurements run
   on the owner side; this change does not claim them.

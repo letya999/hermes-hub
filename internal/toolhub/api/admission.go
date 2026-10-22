@@ -24,8 +24,13 @@ type ControllerPlan struct {
 	SidecarImages     []string        `json:"sidecar_images"`
 	Execution         ExecutionPolicy `json:"execution"`
 	CredentialMounts  []Mount         `json:"credential_mounts,omitempty"`
-	WorkspacePath     string          `json:"workspace_path,omitempty"`
-	Definition        ToolDefinition  `json:"definition,omitempty"`
+	// ProxyGrants carry resolved proxy-delivery secrets to the controller
+	// over the same trusted plan channel as CliBrokeredCred.Value. The
+	// controller feeds them to the cred-proxy sidecar's rules file; they
+	// never reach container env, argv or the receipt.
+	ProxyGrants   []ProxyGrant   `json:"proxy_grants,omitempty"`
+	WorkspacePath string         `json:"workspace_path,omitempty"`
+	Definition    ToolDefinition `json:"definition,omitempty"`
 	// Command marks a bounded-cli plan inside a /cli-exec request: the
 	// controller creates the sandbox cell and returns its identity in the
 	// receipt rather than attesting a shared executor.
@@ -57,6 +62,7 @@ func ControllerPlanFor(effective EffectiveBinding) (ControllerPlan, error) {
 		SidecarImages:     effective.Definition.Workload.SidecarImages,
 		Execution:         effective.Definition.Execution,
 		CredentialMounts:  effective.CredentialMounts,
+		ProxyGrants:       effective.ProxyGrants,
 		Definition:        effective.Definition,
 		Ownership:         PlanOwnership(effective),
 	}
@@ -182,7 +188,7 @@ func ControllerAdmissionVerifierFromEnv() (func(context.Context, EffectiveBindin
 		if effective.Definition.Transport != ContainerMCP {
 			return AdmissionReceipt{}, nil
 		}
-		workspace, err := OpenWorkloadWorkspace(EnvOr("HUB_STATE", "/state"), effective, injectJobID(ctx, effective))
+		workspace, err := OpenWorkloadWorkspace(CredentialStagingRoot(), effective, injectJobID(ctx, effective))
 		if err != nil {
 			return AdmissionReceipt{}, err
 		}

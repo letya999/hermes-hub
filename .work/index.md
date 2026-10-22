@@ -43,6 +43,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0148](done/CHG-0148-connector-discovery-onboarding/plan.md) | Done 2026-10-22: discovery, exact selection and 13 source-to-form/confirmation checks |
 | [CHG-0146](done/CHG-0146-oauth-rotation-state-loss/plan.md) | OAuth re-rotation dropped the callback token (new binding → empty broker state); wizard-link agent copy; broker revoke retires grants and logs lease deny reasons |
 | [CHG-0145](done/CHG-0145-single-link-onboarding/plan.md) | Single-link onboarding wizard: one stable /connect/<id>?k= URL drives credentials, broker hop, confirm and provider OAuth; comm-hub edits one message in place; `just check` green, dev images live |
 | [CHG-0142](done/CHG-0142-credential-broker-mvp/plan.md) | Credential Broker module import MVP (imported 2026-10-20 from services/credential-broker .work/done CHG-001; number taken after 0141) |

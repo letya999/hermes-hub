@@ -123,12 +123,17 @@ func MergeEgressHosts(egress []string, hosts []string) []string {
 const ProxyStubValue = "hub-managed"
 
 // ProxyGrant is one egress-proxy plan entry: which env stub the workload
-// sees, the credential reference the proxy resolves, and the allowlisted
-// hosts the real value may be injected toward.
+// sees, the credential reference the proxy resolves, the allowlisted hosts
+// the real value may be injected toward, and the value plus prefix the
+// cred-proxy writes into its rules file. Value travels the same trusted
+// plan channel as CliBrokeredCred.Value — never container env, argv, mounts
+// or receipts.
 type ProxyGrant struct {
 	EnvName   string   `json:"env_name"`
 	Reference string   `json:"reference"`
 	Hosts     []string `json:"hosts"`
+	Prefix    string   `json:"prefix,omitempty"`
+	Value     string   `json:"value"`
 }
 
 type CredentialInjection struct {
@@ -323,39 +328,20 @@ func (b MCPBackend) EnsureReady(ctx context.Context, effective EffectiveBinding,
 		}
 		return nil
 	}
-	var previous []byte
-	var hadPrevious bool
-	if len(environment) > 0 && strings.TrimSpace(b.Root) != "" {
-		workspace, workspaceErr := OpenWorkloadWorkspace(b.Root, effective, injectJobID(ctx, effective))
-		if workspaceErr == nil && workspace.Path != "" {
-			previous, workspaceErr = os.ReadFile(filepath.Join(workspace.Path, "credentials.env"))
-			hadPrevious = workspaceErr == nil
-		}
-	}
-	path, unlock, err := writeAuthorizedFilesPersistent(ctx, b.Root, effective, environment)
+	wipe, err := WriteAuthorizedFiles(ctx, b.Root, effective, environment)
 	if err != nil {
 		return err
 	}
+	defer func() { readyErr = errors.Join(readyErr, wipe()) }()
 	// Keep the admission plan and the local receipt check on the same extended
 	// egress view; admit applies the identical merge for the submitted plan.
 	effective.Definition.Execution.Egress = MergeEgressHosts(effective.Definition.Execution.Egress, CredentialEgressHosts(environment))
 	receipt, err := b.Admit(ctx, effective, environment)
 	if err != nil {
-		restoreAuthorizedFile(path, previous, hadPrevious)
-		if unlock != nil {
-			_ = unlock()
-		}
 		return fmt.Errorf("%w: workload controller: %v", ErrIsolation, err)
 	}
 	if err := receipt.Validate(effective); err != nil {
-		restoreAuthorizedFile(path, previous, hadPrevious)
-		if unlock != nil {
-			_ = unlock()
-		}
 		return fmt.Errorf("%w: workload controller: %v", ErrIsolation, err)
-	}
-	if unlock != nil {
-		_ = unlock()
 	}
 	return nil
 }

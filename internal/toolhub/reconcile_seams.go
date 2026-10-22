@@ -2,6 +2,12 @@ package toolhub
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/url"
+
+	brokerclient "github.com/letya999/credential-broker/client"
+	"github.com/letya999/hermes-hub/internal/identity"
 
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
@@ -12,17 +18,36 @@ import (
 func (c *ControlPlane) NewReconciler() *Reconciler {
 	r := &Reconciler{Store: c.Store}
 	r.CredAlive = func(ctx context.Context, refID string) (bool, error) {
+		ref, ok := c.Store.credentialFor(refID)
+		if ok && ref.Backend == "credential-broker" {
+			control, err := c.reconcileBrokerClient(ref.ConnectionID)
+			if err != nil {
+				return false, err
+			}
+			gone, err := brokerCredentialGone(ctx, control, ref.Locator)
+			return !gone && err == nil, err
+		}
 		if c.Secrets == nil {
 			return true, nil
 		}
-		ref, ok := c.Store.credentialFor(refID)
 		if !ok {
 			return false, nil
 		}
 		_, err := c.Secrets.Info(ref.Locator, c.Store.credentialOwner(ref.ConnectionID))
 		return err == nil, nil
 	}
-	r.CredPurge = func(_ context.Context, _ api.Connection, ref api.CredentialReference) error {
+	r.CredPurge = func(ctx context.Context, _ api.Connection, ref api.CredentialReference) error {
+		if ref.Backend == "credential-broker" {
+			control, err := c.reconcileBrokerClient(ref.ConnectionID)
+			if err != nil {
+				return err
+			}
+			err = control.Do(ctx, http.MethodDelete, "/v1/credentials/"+url.PathEscape(ref.Locator), nil, nil)
+			if brokerclient.IsNotFound(err) {
+				return nil
+			}
+			return err
+		}
 		if c.Secrets == nil || ref.Locator == "" {
 			return nil
 		}
@@ -77,4 +102,19 @@ func (c *ControlPlane) NewReconciler() *Reconciler {
 	r.Scan = c.LabelScan
 	r.Purge = c.LabelPurge
 	return r
+}
+
+func (c *ControlPlane) reconcileBrokerClient(connectionID string) (*brokerclient.Client, error) {
+	if c.Broker == nil || !c.Broker.Enabled() {
+		return nil, fmt.Errorf("%w: credential broker unavailable", api.ErrIsolation)
+	}
+	onboarding, ok := c.Store.onboardingForConnection(connectionID)
+	if !ok {
+		return nil, fmt.Errorf("%w: credential owner context unavailable", api.ErrIsolation)
+	}
+	auth := identity.Envelope{Schema: identity.Schema, PrincipalID: onboarding.PrincipalID,
+		ExternalIdentityID: onboarding.PrincipalID, ContextID: onboarding.ContextID,
+		RuntimeID: onboarding.RuntimeID, ConversationID: onboarding.ContextID,
+		DeliveryTargetID: onboarding.ContextID, PolicyVersion: onboarding.PolicyVersion}
+	return c.brokerControl(auth, c.onboardingShared(onboarding))
 }

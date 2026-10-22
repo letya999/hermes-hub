@@ -587,7 +587,7 @@ func TestComposeKeepsDockerInControlImage(t *testing.T) {
 		t.Fatal(err)
 	}
 	coreStage, controlStage, found := strings.Cut(string(dockerfile), "FROM runtime AS control")
-	if !found || strings.Contains(coreStage, "COPY --from=dockercli") || strings.Contains(coreStage, "git init /slack") || !strings.Contains(controlStage, "COPY --from=dockercli") || !strings.Contains(coreStage, "--mount=type=cache,id=hermes-go-build") || !strings.Contains(coreStage, "FROM golang:1.27.2-bookworm AS cliproxy_build") {
+	if !found || strings.Contains(coreStage, "COPY --from=dockercli") || strings.Contains(coreStage, "git init /slack") || !strings.Contains(controlStage, "COPY --from=dockercli") || !strings.Contains(coreStage, "--mount=type=cache,id=hermes-go-build") || !strings.Contains(coreStage, "FROM golang:1.27.3-bookworm AS cliproxy_build") {
 		t.Fatal("Docker CLI or Slack MCP included in default runtime")
 	}
 }

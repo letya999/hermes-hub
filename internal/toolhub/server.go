@@ -201,7 +201,7 @@ func EndpointConfigFromEnv() (EndpointConfig, error) {
 		TokensFile: os.Getenv("HUB_TOOLHUB_TOKENS_FILE"),
 		Backend: api.RoutingBackend{
 			Provider: api.PersonalProviderBackend{},
-			MCP:      api.MCPBackend{Token: os.Getenv("TOOLHIVE_VMCP_TOKEN"), AdmissionVerifier: admission, AdmissionRelease: wrapKeepRelease(release), Root: api.EnvOr("HUB_STATE", "/state")},
+			MCP:      api.MCPBackend{Token: os.Getenv("TOOLHIVE_VMCP_TOKEN"), AdmissionVerifier: admission, AdmissionRelease: wrapKeepRelease(release), Root: api.CredentialStagingRoot()},
 			CLI:      cli,
 			Agent:    agentBackendFromEnv(),
 		},
@@ -284,7 +284,7 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 		return nil, err
 	}
 	gateway.Injector = mergeCredentialInjectors(injector, brokerRuntimeInjector(config.BrokerControl, config.BrokerRuntime), config.BrokerControl != nil)
-	control := &ControlPlane{Store: store, Secrets: secrets, Listen: config.Listen, WorkloadRoot: api.EnvOr("HUB_STATE", ""), DiagnosticsDir: api.EnvOr("HUB_DIAGNOSTICS_DIR", ""), Broker: config.BrokerControl, BrokerRuntime: config.BrokerRuntime, RecipeCatalogs: config.RecipeCatalogs, Release: config.Release, CLIRelease: config.CLIRelease}
+	control := &ControlPlane{Store: store, Secrets: secrets, Listen: config.Listen, WorkloadRoot: api.EnvOr("HUB_STATE", ""), CredentialStagingRoot: api.CredentialStagingRoot(), DiagnosticsDir: api.EnvOr("HUB_DIAGNOSTICS_DIR", ""), Broker: config.BrokerControl, BrokerRuntime: config.BrokerRuntime, RecipeCatalogs: config.RecipeCatalogs, Release: config.Release, CLIRelease: config.CLIRelease}
 	// HUB_DEBUG_FINALIZER_DELAY_MS stalls each remove-ladder step so a live
 	// kill lands mid-ladder and restart-resume can be verified on the stack.
 	if ms, err := strconv.Atoi(os.Getenv("HUB_DEBUG_FINALIZER_DELAY_MS")); err == nil && ms > 0 {
@@ -362,6 +362,9 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 			record.ContextID = fields["context_id"]
 			record.RuntimeID = fields["runtime_id"]
 			record.ConnectionID = fields["connection_id"]
+			record.SenderID = fields["sender_id"]
+			record.TeamID = fields["team_id"]
+			record.BindingID = fields["binding_id"]
 			record.PolicyRevision = fields["policy_version"]
 			record.JobID = fields["job_id"]
 			record.HermesRunID = fields["hermes_run_id"]

@@ -91,6 +91,16 @@ func (c *ControlPlane) bindReviewedContract(ctx context.Context, auth identity.E
 		if len(required) == 0 || definition.OAuth != nil && bound == "" {
 			break
 		}
+		if bound == "" && strings.HasPrefix(candidate.ID, "dyn-") {
+			// Re-review must not resurrect inputs from an older generated form.
+			expected, err := synthesizeContract(*definition)
+			if err != nil {
+				return err
+			}
+			if candidate.ID != expected.ID {
+				continue
+			}
+		}
 		if bound != "" && candidate.ID != bound {
 			continue
 		}

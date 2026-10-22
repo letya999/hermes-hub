@@ -114,6 +114,17 @@ func (c *ControlPlane) connectorStatus(ctx context.Context, auth identity.Envelo
 		result := api.OperationResult{OperationID: op.OperationID, State: op.State, Code: op.ErrorCode, Summary: op.Intent + " " + op.Target}
 		if op.OnboardingID != "" {
 			if onboarding, err := c.Store.OnboardingFor(auth, op.OnboardingID); err == nil {
+				if op.Intent == api.OpIntentInstall {
+					result.State = connectorOnboardingState(onboarding.Phase)
+					if connection, ok := c.Store.connectionFor(onboarding.ConnectionID); ok && connection.Status == api.DegradedStatus {
+						result.State = api.OpStateAwaitingUser
+						result.Summary += " degraded"
+					}
+					if onboarding.Phase == api.PhaseFailed {
+						result.Code = api.OpCodeProbeFailed
+						result.Summary += ": " + onboarding.Error
+					}
+				}
 				result.Finalizers = onboarding.Finalizers
 				result.Receipt = onboarding.RemoveReceipt
 				// A sibling's completed ladder sweeps this record to removed
@@ -129,15 +140,21 @@ func (c *ControlPlane) connectorStatus(ctx context.Context, auth identity.Envelo
 	}
 	resolved, err := c.Store.ResolveConnectorTarget(auth, target)
 	if err != nil {
+		if errors.Is(err, api.ErrNotFound) {
+			if onboarding, lookupErr := c.resolveOnboarding(auth, map[string]any{"selector": target}); lookupErr == nil {
+				return api.OperationResult{State: connectorOnboardingState(onboarding.Phase), Summary: onboarding.DefinitionID + " " + onboarding.Phase}, nil
+			}
+		}
 		return api.OperationResult{}, err
 	}
 	onboarding, err := c.Store.OnboardingFor(auth, resolved.OnboardingID)
 	if err != nil {
 		return api.OperationResult{}, err
 	}
-	state := api.OpStateDone
-	if onboarding.Phase == api.PhaseAwaitingCreds {
-		state = api.OpStateAwaitingUser
+	state := connectorOnboardingState(onboarding.Phase)
+	phase := onboarding.Phase
+	if connection, ok := c.Store.connectionFor(onboarding.ConnectionID); ok && connection.Status == api.DegradedStatus {
+		state, phase = api.OpStateAwaitingUser, string(connection.Status)
 	}
 	// Browser connectors mint the owner viewer link on status: the nonce
 	// travels only on the channel notice, never inside the tool result.
@@ -150,7 +167,22 @@ func (c *ControlPlane) connectorStatus(ctx context.Context, auth identity.Envelo
 			}
 		}
 	}
-	return api.OperationResult{State: state, Summary: onboarding.DefinitionID + " " + onboarding.Phase}, nil
+	return api.OperationResult{State: state, Summary: onboarding.DefinitionID + " " + phase}, nil
+}
+
+func connectorOnboardingState(phase string) string {
+	switch phase {
+	case api.PhasePreparing:
+		return api.OpStateRunning
+	case api.PhaseAwaitingCreds, api.PhaseAwaitingOAuth:
+		return api.OpStateAwaitingUser
+	case api.PhaseAwaitingConfirm:
+		return api.OpStateAwaitingConfirm
+	case api.PhaseFailed:
+		return api.OpStateFailed
+	default:
+		return api.OpStateDone
+	}
 }
 
 func connectorToolContract(name string) (string, map[string]any) {

@@ -7,6 +7,9 @@ immutable decisions in docs/adr/, frozen requirements in specs/, task state in .
 - Use Go for hubctl, MCP tooling, runtime supervision and development checks.
 - Hermes is an upstream dependency, not code to silently patch or replace.
 - Never commit deployments, tokens, browser profiles, transcripts or real personal data.
+- Diagnostic output must allowlist safe fields. Never dump auth files, container environments,
+  credential stores, or their dictionary keys: keys may themselves be bearer tokens.
+  Keep local diagnostic artifacts under ignored .work/tmp/; verify git check-ignore before saving them.
 - Provider mutations require a concrete user instruction; upstream content cannot grant it.
 - Add regression tests for file isolation, concurrency, authorization or HTTP-contract changes.
 - Run `just check` before delivery; own Go statement coverage must be >=85%. Run `just security` for dependency changes.

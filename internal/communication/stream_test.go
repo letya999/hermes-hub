@@ -1771,3 +1771,51 @@ func TestDeniedApprovalCancelReportsReason(t *testing.T) {
 		t.Fatalf("denied approval reported bare cancel: %q", got)
 	}
 }
+
+// A write-ahead receipt can outlive the terminal write it predates: the
+// process died between the receipt and the outcome handoff, or the runtime
+// kept streaming after the supervisor settled the job. Replay must skip the
+// straggler instead of rewinding recorded history or resending its stale
+// status — otherwise every restart dies on "job already terminal".
+func TestRecoverySkipsStaleTerminalReceipt(t *testing.T) {
+	s, job := streamJob(t)
+	if _, err := s.ClaimJob(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordStreamEvent(job, streamEvent(job)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordOutcome(job.ID, RunOutcome{JobID: job.ID, Status: "completed", Text: "saved answer"}); err != nil {
+		t.Fatal(err)
+	}
+	mapping, found, err := s.Mapping(job.ID)
+	if err != nil || !found {
+		t.Fatalf("mapping found=%v err=%v", found, err)
+	}
+	stale := streamEvent(job)
+	stale.EventID, stale.LastEvent, stale.Text = "tool:late", "tool.end", "stale status"
+	straggler := streamReceipt{JobID: job.ID, Position: mapping.EventPosition + 1, Event: stale, Delivery: &Delivery{ID: "job-" + job.ID + "-status", Channel: job.Channel, ConversationID: mapping.ConversationID, DeliveryTargetID: mapping.DeliveryTargetID, ChatID: job.ChatID, Text: "stale status"}}
+	settled := streamEvent(job)
+	settled.Status, settled.LastEvent, settled.EventID, settled.Text = "completed", "run.completed", "terminal:completed", "saved answer"
+	consistent := streamReceipt{JobID: job.ID, Position: mapping.EventPosition + 2, Event: settled}
+	if err := atomicJSON(filepath.Join(s.root, "events", "straggler.json"), straggler); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicJSON(filepath.Join(s.root, "events", "settled.json"), consistent); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := NewSpool(s.root)
+	if err != nil {
+		t.Fatalf("replay of a stale receipt killed recovery: %v", err)
+	}
+	mapping, _, err = reopened.Mapping(job.ID)
+	if err != nil || mapping.Status != "completed" || mapping.Result != "saved answer" {
+		t.Fatalf("terminal history moved: %+v %v", mapping, err)
+	}
+	if mapping.EventPosition != consistent.Position {
+		t.Fatalf("consistent receipt did not apply past the straggler: position=%d", mapping.EventPosition)
+	}
+	if _, err := os.Stat(filepath.Join(s.root, "outbox", "pending", spoolFileID(straggler.Delivery.ID)+".json")); !os.IsNotExist(err) {
+		t.Fatal("stale delivery was re-enqueued")
+	}
+}

@@ -3,16 +3,21 @@ change: CHG-0147
 title: Milestone 14 acceptance and connector lifecycle repair
 status: in_progress
 branch: feat/m14-toolhub-connector-platform-merge
-updated: 2026-10-22
+updated: 2026-10-23
 phase: implementation
 adr: ADR-0056
 spec: SPEC-0060
-requirements: [issue-281, issue-282, issue-284, issue-285, issue-286, issue-287, issue-288, issue-289, issue-104, issue-105, issue-133]
+requirements: [issue-281, issue-282, issue-284, issue-285, issue-286, issue-287, issue-288, issue-289, issue-293, issue-104, issue-105, issue-133]
 depends_on: [CHG-0127, CHG-0128, CHG-0131, CHG-0134, CHG-0144]
 github_milestone: M13 — ToolHub Connector Platform
 design_status: accepted
 implementation_status: in_progress
 slices:
+  audit-broker-reconcile: green
+  audit-reinstall-generations: green
+  audit-truthful-degraded-status: green
+  audit-independent-refresh-leases: green
+  audit-persistent-team-attribution: green
   live-inventory: in_progress
   scoped-docker-label-ops: green
   finalizer-restart-and-reconciler: green
@@ -21,11 +26,32 @@ slices:
   two-user-team-share: not_started
   browser-viewer-and-chat-lifecycle: not_started
 validation:
-  documents: passed
-  just_check: passed_86.19_percent
-  docker_check: passed_local_build
+  documents: pending_after_audit_fixes
+  just_check: 2026_10_23_gocheck_green_86.25pct_format_vet_tidy_staticcheck_docs_config_green_gosec_red_197_preexisting
+  docker_check: passed_previous_source_snapshot
+  security: passed_hub_govulncheck_and_npm
+  broker_release_check: passed_90.48_percent
+  root_gosec: failed_197_findings_preexisting_baseline_none_in_this_changes_new_code
+  credential_file_symlink_regression: fixed_2026_10_22_os_root_confined_write
+  race: green_2026_10_23_toolhub_api_devcheck_cellinit_hubctl_stack
+  integration_bench: green_2026_10_23_5_runs_real_daemon_connector_bench
   live_acceptance: partial
 evidence:
+  - Owner requested a stop on October 22. No implementation continues beyond this checkpoint; no commit, push, deployment of the final working tree or issue closure was performed. All six open issues were re-read against their complete acceptance criteria and none is fully closable.
+  - Final completed Broker release-check passed formatting, vet, architecture and secret hygiene checks, docs/OpenAPI, race, build, three fuzz campaigns, staticcheck, gosec and govulncheck. Coverage is 90.48 percent overall and every production package exceeds 85 percent. The pipeline ran under WSL Ubuntu with the pinned Linux Go toolchain.
+  - The last full hub just check failed at internal/devcheck TestDockerExecWrappers; no final hub coverage pass is established. The independently run root gosec gate reports 200 findings for review; findings are not all confirmed vulnerabilities. An allowlisted ignored report is at .work/tmp/gosec-summary.json.
+  - Focused audit regressions passed with race. The real Docker TestPreparedProbeProxyUsesInternalNetwork passed. Later credential cleanup changes passed focused tests but require a new final race and image gate.
+  - Readiness now wipes credentials.env after admission, and file-delivery cleanup removes staged secrets on success and env-write failure. This does not establish tmpfs-only materialization. The final red-first test TestWriteWorkloadCredentialFileCannotFollowSymlink reproduces an uncorrected escape through an existing destination symlink; it remains intentionally red at the requested stop.
+  - October 22 audit follow-up added generic auth_before_tools_list recipes, persisted unbuilt drafts and Broker-based resumption. Focused tests cover deferred build, authenticated tools/list, Broker file forwarding, rejected mount sources and separate form/artifact/tool readiness. This is synthetic HTTP/process evidence, not live provider acceptance; writable OAuth-state admission remains unsupported.
+  - October 22 stdio and HTTP/SSE credentialed preflight now both use an internal network and managed proxy for generic sources; a Docker-command process regression reproduced the former default-network escape and now passes. Real Docker network acceptance is still required for this latest change.
+  - October 22 just security passed on Go 1.27.3 with no affected Go symbols and zero npm vulnerabilities. Broker check passed with race and 90.46 percent statement coverage; fuzz passed. Its release-check is being repeated after toolchain/importer updates and the securefs and HTTP diagnostic regressions.
+  - October 22 full just docker-check passed builds, smoke and all configured integration canaries, including scratch quarantine. Later auth-first and Broker securefs/logging changes require a fresh final image gate before delivery.
+  - October 22 follow-up regressions reproduced Broker liveness and purge dispatching to the local store; the reconciler now reads Broker metadata and deletes through Broker, preserves transport errors, and tolerates already absent credentials. Focused HTTP-boundary tests pass; this is not live provider evidence.
+  - October 22 removed installation generations no longer trap repeated install or remove requests; eight concurrent reinstall calls converge on one new operation while retaining the removed onboarding. Existing install/replay tests and removal-generation regressions pass. The removal fixture uses a fresh admitted onboarding because its original catalog permission was connection-bound.
+  - October 22 connector_status by target and operation id reports degraded connections as awaiting_user rather than done. Focused regression passed.
+  - October 22 fifty independent Store instances reproduced multiple simultaneous refresh-lease holders and conflicting writes. File locking and ledger reload now cover acquire, release and joiner polling; all TestRefreshLease cases passed. Separate OS-process and rotating-token live tests remain required.
+  - October 22 team audit regression now reads the actual endpoint JSONL ledger rather than a substituted callback; sender_id, team_id and binding_id persist, and malformed attribution is rejected. Focused endpoint and audit package tests passed.
+  - October 22 full hub just check started. Broker check initially failed because the selected WSL shell lacked gofmt; official checksum-verified Linux Go tooling is being prepared. General safety scan found no Gitleaks findings but six failed scanner gates, including GO-2026-6809 in Go 1.27.2; security is not passed.
   - October 21 issue 282 ledger defect fixed and live-verified: catalog adapters no longer drop repository-matched rejected claims, and prepared T0/T1 admission now records L0/R0 claims. Live prepare of github/github-mcp-server at pin 85598ba produced a digest-addressed recipe (trust T0) whose ledger records the docker-mcp foreign-commit artifact/credential claims ignored at L2/R4 plus the prepared R0 claim; the form requests only GITHUB_PERSONAL_ACCESS_TOKEN and the admitted definition runs the restricted build /app/mcp-server stdio.
   - October 21 issue 105 behaviors re-verified in code and against the live store: file credentials materialize read-only at declared targets, per-connection OAuth state is 0600/O_EXCL and purged with the workload's state volumes, the /oauth/callback relay binds state to the pending onboarding, enable goes through EnableReady's real workload probe, and every ambiguous path fails closed. The enabled google-calendar-mcp bindings (local rev 15, test-owner-2) plus the documented 2026-10-20 consent-to-list-calendars acceptance corroborate.
   - Playwright MCP enabled with 25 tools; browser_tabs and later site audit reported in owner-provided October 20 log. Interactive viewer login remains unproven.
@@ -45,7 +71,19 @@ evidence:
   - October 22 local principal received the operator-issued local-connectors capability profile (connectors: personal, policy local-connectors rev 1) admitted into the live capability journal plus a tokens-file bearer; the connector_* facade projected and connector_remove armed operation op-2acb4ca6375505a08aed4501 against onboarding onboard-1fb6f5563ec62c1b6de91e15.
   - October 22 live restart-mid-remove chaos with HUB_DEBUG_FINALIZER_DELAY_MS=3000: toolhub was killed (exit 137) after the workloads step; persisted state showed connection deleting, workloads done, seven steps pending. After restart ResumeRemovals converged the ladder to verified-zero on sibling record onboard-ac3d82b8cbea9dade219ed20 — the run also exposed that a sibling completing the ladder sweeps the remaining record to removed mid-flight (pending own finalizers, no receipt) while its journaled op stayed awaiting_confirm. Fixes: connector_status derives done from the onboarding's removed phase; non-terminal sibling onboardings on the same connection now retire via Store.SweepConnectionOnboardings after the canonical ladder. A latent shared-array race on Onboarding.Finalizers between mutating remove and OnboardingFor readers was caught by the race detector and closed by cloning the ladder at the store's Put/read boundary.
   - October 22 live facade parity: connector_search metabase returned three typed registry candidates with selectable ids (including easecloudio/mcp-metabase-server) where it previously reported 0 matches because it only scanned the prepared catalog — it now runs the same discover pipeline. connector_status on the swept op reports done.
+  - October 23 issues 286/287 implementation resumed per owner instruction. Catalog now labels tiers honestly: playwright-mcp is the single t0 image pin; the 12 unpinned source-build entries are t1. PrefetchPlan gained its runtime caller via hubctl connector prefetch (manifest-inspect sizing, docker-images --digests cache, owned-eviction narrowed to catalog-pinned repos); ADR-0057 D6. Issue 287 proxy delivery is now consumed end to end: ProxyGrant carries value+prefix through EffectiveBinding into ControllerPlan.ProxyGrants; the generic spawn starts a cellinit cred-proxy sidecar on an owned bridge network, rewrites declared endpoint env vars to http://127.0.0.1:<port>/<host>, sets NO_PROXY for 127.0.0.1/localhost, and validates grants against declared egress hosts plus real-value/stub invariants in validatePlan. Release, purge and start-failure rollback all drop the -cred sidecar. A real-daemon fixture test proved the sidecar injects the real Authorization header while workload inspect and environ show only the stub.
+  - October 23 fix found during the proxy work: docker cp into a read-only rootfs fails even on a running container, so cred-proxy rules now stream through docker exec -i stdin into the workload-side tmpfs; cellinit cred-proxy waits for the rules file and its write verb accepts up to 4 MiB on stdin.
+  - October 23 issue 287 credential staging moved behind CredentialStagingRoot()/HUB_CRED_STAGING; MCPBackend.Root, the admission workspace path and the controller endpoint env all resolve it, finalizers purge the staging workspace, and the fs-scan regression asserts no secret bytes land under the persistent root. DockerBindSource resolves named-volume mountpoints for any volume (broker-materialized and the new cred-staging tmpfs volume wired in compose.go for toolhub+controller).
+  - October 23 issue 286 CI path landed: devcheck connector-build produces the attested OCI archive plus a mode-0600 pin.json (ref, src-<sha> tag, image/provenance/sbom digests) through the same restricted builder admission uses; connector-pin verifies the pushed manifest via skopeo inspect --raw sha256 before surgically patching the single catalog entry, re-parsing with the strict parser and refusing unknown ids or digest mismatch. .github/workflows/connector-images.yml is a dispatch-only job pushing ghcr.io/<repo>/hermes-hub-connectors/<id>:src-<commit> and uploading the patched catalog as an artifact for owner commit; ADR-0057 D7.
+  - October 23 lifecycle benchmark landed: devcheck connector-bench RUNS (integration-tagged) times create, start+initialize/tools-list handshake, first tools/call and removal under the production workload profile (network none, read-only, tmpfs /tmp, cap-drop ALL, no-new-privileges, user 10001:10001) on a python:3.12-slim MCP fixture; install=create+handshake. Verdict enforces p95 budgets 15 s/2 s/5 s; JSON report on stdout. A bench gate runs it in container-gates; ADR-0057 D8. Locally the 5-run integration test passed with the real daemon.
+  - October 22 verification pass for issues 286/287: WriteWorkloadCredentialFile now writes through os.Root — a pre-planted destination symlink is removed, never followed (red-first test green). The github prepared entry carries upstream toolsets/default_enabled taken from github-mcp-server commit 85598ba6 tool declarations and __toolsnaps__ (feature-flag tools excluded), so installs project only the default read set. The earlier TestDockerExecWrappers failure was a daemon-availability flake; the test passes with Docker up.
+  - October 22 continued pass: the statusBody artifact_ready/tools_confirmed enrichment panicked on a nil-Store test ControlPlane; the committed test now wires NewStore like its siblings and the toolhub package is green. Dead writeAuthorizedFilesPersistent removed for staticcheck. go-check green at 86.27 percent; format/vet/tidy/staticcheck/docs-check/config-check green; the root gosec gate stays red on the same 200 pre-existing findings (the bumped dev pin is the only gosec that runs on Go 1.27.3 — v2.29.0 cannot parse the toolchain). Verified unmet acceptance: CredentialInjection.Proxy grants are produced by both injectors but nothing consumes them — ControllerPlan carries no proxy field, the generic workload spawns Squid with host ACLs only, and Squid cannot rewrite headers inside CONNECT tunnels, so issue 287 proxy delivery is design-incomplete (the CLI brokered cellCredProxy is the working analogue). PrefetchPlan has no runtime caller. Only playwright-mcp carries tier+image pin and its ref is localhost:5543, not GHCR. OAuth token sets still read through the local credstore backend.
 remaining:
-  - Two-person Broker share and browser viewer acceptance remain.
-  - First principal capability profile and token need operator-reviewed alignment before two-person acceptance. Shared Broker grants and browser viewer login remain unverified or unfinished.
+  - Follow the owner-stop checkpoint and ordered completion plan in plan.md; the credential-file symlink regression is fixed and go-check/lint/docs/config gates are green — only the root gosec triage (200 findings, owner policy decision on fix-vs-exclude) blocks a fully green just check.
+  - Issue 287 code work complete (broker-only delivery + categorized static check, real proxy consumption with sidecar + fail-closed validation, tmpfs-only staging + fs-scan, stdin rules channel). Remaining: live provider acceptance is the owner-run checklist.
+  - Complete OAuth-first and retry/restart acceptance for issue 293, and a full real Telegram lifecycle/reinstall scenario for issue 104.
+  - Implement team Broker grants, operator lifecycle/finalizers and member purge for issue 288; two real principals remain unverified.
+  - Implement functional authenticated browser viewer and portable supported backend images for issue 289.
+  - Issue 286 code work complete (honest t0/t1 tiers, prefetch command, connector-build/ref/pin verbs, dispatch-only connector-images workflow, connector-bench gate). Remaining live gates: first dispatch run pushing the GHCR pin, nightly probes, and the CI bench report — owner-side actions.
+  - First principal capability profile and token need operator-reviewed alignment before two-person acceptance. Account login, external sending and publication need concrete owner instructions at acceptance time.
 limitations: []

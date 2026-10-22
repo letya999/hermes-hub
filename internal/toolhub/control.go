@@ -29,6 +29,10 @@ type ControlPlane struct {
 	Listen         string
 	FormOrigin     string
 	WorkloadRoot   string
+	// CredentialStagingRoot is the tmpfs root where per-call credential
+	// material stages (HUB_CRED_STAGING). When set and different from
+	// WorkloadRoot, binding cleanup removes the staging workspace too.
+	CredentialStagingRoot string
 	// DiagnosticsDir points at the bounded operator diagnostics directory; the
 	// diagnostics control op reads only the collected log file inside it.
 	DiagnosticsDir  string
@@ -495,19 +499,26 @@ func parrotInstructions(field string) string {
 
 func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map[string]any {
 	body := map[string]any{
-		"onboarding_id":  onboarding.OnboardingID,
-		"phase":          onboarding.Phase,
-		"status":         onboarding.Phase,
-		"mode":           onboarding.Mode,
-		"definition_id":  onboarding.DefinitionID,
-		"version":        onboarding.DefinitionVersion,
-		"repository":     onboarding.SourceURL,
-		"commit_sha":     onboarding.CommitSHA,
-		"subfolder":      onboarding.Subfolder,
-		"binding_id":     onboarding.BindingID,
-		"permissions":    onboarding.Permissions,
-		"effects":        onboarding.Effects,
-		"principal_from": "request",
+		"onboarding_id":   onboarding.OnboardingID,
+		"phase":           onboarding.Phase,
+		"status":          onboarding.Phase,
+		"mode":            onboarding.Mode,
+		"definition_id":   onboarding.DefinitionID,
+		"version":         onboarding.DefinitionVersion,
+		"repository":      onboarding.SourceURL,
+		"commit_sha":      onboarding.CommitSHA,
+		"subfolder":       onboarding.Subfolder,
+		"binding_id":      onboarding.BindingID,
+		"permissions":     onboarding.Permissions,
+		"effects":         onboarding.Effects,
+		"principal_from":  "request",
+		"form_ready":      onboarding.Phase == api.PhaseAwaitingCreds && (onboarding.BrokerAuthorizationURL != "" || onboarding.ChannelAuthURL != "" || onboarding.FormNonce != ""),
+		"artifact_ready":  false,
+		"tools_confirmed": false,
+	}
+	if definition, err := c.definitionOf(onboarding); err == nil {
+		body["artifact_ready"] = api.DigestPattern.MatchString(definition.Source.Digest)
+		body["tools_confirmed"] = !onboarding.AdmissionPending && len(definition.Tools) > 0
 	}
 	if recipe := c.recipeOf(onboarding); recipe != nil {
 		body["recipe"] = recipe

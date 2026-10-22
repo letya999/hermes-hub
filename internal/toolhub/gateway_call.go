@@ -52,6 +52,7 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 			}
 		}
 		effective.CredentialMounts = append([]api.Mount(nil), injection.Mounts...)
+		effective.ProxyGrants = append([]api.ProxyGrant(nil), injection.Proxy...)
 		callCtx, cancel := context.WithTimeout(ctx, time.Duration(effective.Definition.Execution.TimeoutSeconds)*time.Second)
 		defer cancel()
 		var result api.BackendResult

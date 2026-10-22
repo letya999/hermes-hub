@@ -232,3 +232,37 @@ func TestWriteAuthorizedFilesRoutesFileDelivery(t *testing.T) {
 		t.Fatalf("secret file content lost: %q", staged)
 	}
 }
+
+func TestWriteAuthorizedFilesWipesFileDeliveries(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(map[bool]string{false: "success", true: "failure"}[fail], func(t *testing.T) {
+			root := t.TempDir()
+			eff := EffectiveBinding{Binding: ToolBinding{PrincipalID: "alice", ContextID: "alice", ToolBindingID: "bind-1"}, Definition: ToolDefinition{DefinitionID: "file-mcp", Workload: WorkloadPolicy{Class: PerUser}, Credentials: []CredentialInput{{Name: "CLIENT_FILE", Required: true, Delivery: "file"}, {Name: "API_TOKEN", Required: true, Delivery: "env"}}}}
+			env := map[string]string{"CLIENT_FILE": "synthetic-file-secret", "API_TOKEN": "synthetic-token"}
+			if fail {
+				env["API_TOKEN"] = "invalid\nline"
+			}
+			cleanup, err := WriteAuthorizedFiles(t.Context(), root, eff, env)
+			if fail && err == nil {
+				t.Error("invalid env accepted")
+			}
+			if !fail && err != nil {
+				t.Fatal(err)
+			}
+			if cleanup != nil {
+				if err := cleanup(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			workspace, err := OpenWorkloadWorkspace(root, eff, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{"CLIENT_FILE.secret", "credentials.env"} {
+				if _, err := os.Lstat(filepath.Join(workspace.Path, name)); !os.IsNotExist(err) {
+					t.Errorf("credential survived cleanup/failure: %s", name)
+				}
+			}
+		})
+	}
+}

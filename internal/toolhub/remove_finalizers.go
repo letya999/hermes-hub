@@ -152,6 +152,13 @@ func (c *ControlPlane) runRemoveFinalizer(ctx context.Context, onboarding api.On
 			if err := api.RemoveBindingWorkspace(c.WorkloadRoot, effective); err != nil {
 				return err
 			}
+			// Credential staging may live on a separate tmpfs root; the binding
+			// workspace there is credential material, so it goes too.
+			if staging := c.CredentialStagingRoot; staging != "" && staging != c.WorkloadRoot {
+				if err := api.RemoveBindingWorkspace(staging, effective); err != nil {
+					return err
+				}
+			}
 		}
 		return c.Store.RemoveBindingRecords(onboarding.BindingID)
 	case api.FinalizerImageRef:
