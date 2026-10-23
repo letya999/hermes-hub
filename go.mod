@@ -4,7 +4,7 @@ go 1.27.2
 
 require (
 	github.com/HugoSmits86/nativewebp v1.3.0
-	github.com/andybalholm/cascadia v1.3.3
+	github.com/andybalholm/cascadia v1.3.5
 	github.com/gofrs/flock v0.13.0
 	github.com/google/jsonschema-go v0.4.3
 	github.com/gotd/td v0.162.0
