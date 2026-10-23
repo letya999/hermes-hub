@@ -141,7 +141,10 @@ func (g *Gateway) handleViewerNotice(w http.ResponseWriter, caller identity.Enve
 
 func knownPreparePhase(phase string) bool {
 	switch phase {
-	case "awaiting-credentials", "awaiting-confirm", "awaiting-oauth", "confirmed", "enabled", "failed":
+	case "awaiting-credentials", "awaiting-confirm", "awaiting-oauth", "confirmed", "enabled", "failed",
+		// A remove/disable outcome posts the onboarding's current phase, not
+		// an install phase — the /remove/ link carries the pending action.
+		"disabled", "revoked", "cleanup_incomplete":
 		return true
 	default:
 		return false

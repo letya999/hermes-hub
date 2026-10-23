@@ -678,3 +678,65 @@ func TestPrepareContinuationWizardConfirm(t *testing.T) {
 		t.Fatalf("continuation did not recognize the wizard link: %s", text)
 	}
 }
+
+// Issue #104 live defect: connector_remove armed on a disabled onboarding
+// posts phase "disabled" with a /remove/ action link. The phase allowlist only
+// knew install-flow phases, so the confirmation notice died with a 400 before
+// the remove text was ever built — the owner never got the link in chat.
+func TestPrepareOutcomeRemoveOnDisabledDeliversLink(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.ControlAuth = "control-token"
+	gateway, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := time.Now().UTC()
+	mapping := commodel.JobMapping{
+		JobID: "job-remove-origin", PrincipalID: "alice", Trigger: "message",
+		Channel: "mock", ConversationID: "mock-conv-7", DeliveryTargetID: "mock-conv-7",
+		ChatID: 42, Status: "done", CreatedAt: created.Add(-time.Minute),
+	}
+	gateway.spool.mu.Lock()
+	err = gateway.spool.writeMappingLocked(mapping)
+	gateway.spool.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, phase := range []string{"disabled", "revoked", "cleanup_incomplete"} {
+		body, _ := json.Marshal(map[string]string{
+			"onboarding_id": "onboard-rmv-" + phase, "phase": phase,
+			"definition_id": "google-calendar-mcp", "repository": "github.com/example/calendar",
+			"form_url":   "http://127.0.0.1:8090/remove/onboard-rmv-" + phase + "?t=nonce-" + phase,
+			"created_at": created.Format(time.RFC3339Nano),
+		})
+		req := httptest.NewRequest(http.MethodPost, "/v1/prepare-outcome", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer control-token")
+		req.Header.Set("X-Hub-Principal", "alice")
+		rec := httptest.NewRecorder()
+		gateway.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("phase %s: status=%d body=%s", phase, rec.Code, rec.Body.String())
+		}
+	}
+	entries, err := os.ReadDir(filepath.Join(cfg.SpoolDir, "outbox", "pending"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sawRemove := 0
+	for _, entry := range entries {
+		raw, err := os.ReadFile(filepath.Join(cfg.SpoolDir, "outbox", "pending", entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var delivery Delivery
+		if json.Unmarshal(raw, &delivery) != nil {
+			t.Fatalf("outbox record %s", raw)
+		}
+		if strings.Contains(delivery.Text, "ждёт подтверждения") && strings.Contains(delivery.Text, "/remove/") {
+			sawRemove++
+		}
+	}
+	if sawRemove != 3 {
+		t.Fatalf("remove confirmation notices spooled=%d, want 3", sawRemove)
+	}
+}
