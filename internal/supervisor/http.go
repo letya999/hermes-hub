@@ -293,6 +293,13 @@ func (m *Manager) restartRequestHTTP(w http.ResponseWriter, r *http.Request) {
 		lock := m.lockFor(runtimeKey(Binding{PrincipalID: snapshot.PrincipalID, ContextID: snapshot.ContextID, RuntimeMode: snapshot.RuntimeMode}))
 		lock.Lock()
 		defer lock.Unlock()
+		// A notifier whose deadline already fired cannot collect the ack —
+		// its restart would be pure convoy: timed-out retries queueing full
+		// daemon restarts behind this lock starve Ensure/wake for minutes.
+		// The durable marker stays armed for the post-delivery poll or spawn.
+		if r.Context().Err() != nil {
+			return
+		}
 		// Acknowledge the durable marker before the notifier's short deadline;
 		// keep new acquisitions blocked until the accepted restart is ready.
 		body, _ := json.Marshal(map[string]bool{"scheduled": true, "applied": false})
