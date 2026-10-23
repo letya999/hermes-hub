@@ -33,6 +33,7 @@ func runCapability(args []string) error {
 	definitionVersion := f.String("version", "", "definition version for team-share")
 	backend := f.String("backend", "", "credential backend for team-share")
 	locator := f.String("locator", "", "credential locator for team-share")
+	brokerContext := f.String("broker-context", "", "Broker context owning the shared credential (required for credential-broker team-share)")
 	keys := f.String("keys", "", "comma-separated credential keys for team-share")
 	connectionID := f.String("connection-id", "", "team connection id for team-drop")
 	file := f.String("file", "", "operator-reviewed JSON record")
@@ -125,7 +126,7 @@ func runCapability(args []string) error {
 				keyList = append(keyList, key)
 			}
 		}
-		connection, _, err := store.ShareTeamConnection(*teamID, *definitionID, *definitionVersion, *backend, *locator, keyList)
+		connection, _, err := store.ShareTeamConnection(*teamID, *definitionID, *definitionVersion, *backend, *locator, *brokerContext, keyList)
 		if err != nil {
 			return err
 		}

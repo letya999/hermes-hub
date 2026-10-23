@@ -48,7 +48,7 @@ func MigrateCredentials(ctx context.Context, s *Store, brokerFor MigrateBrokerFo
 		if !ok || reference.Backend != credstore.BackendLocal {
 			continue
 		}
-		definition, err := s.definitionByID(connection.DefinitionID)
+		definition, err := s.definitionForConnection(connection)
 		if err != nil || definition.CredentialContractID == "" {
 			continue
 		}

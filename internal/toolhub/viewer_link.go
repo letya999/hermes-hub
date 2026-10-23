@@ -36,7 +36,7 @@ func (s *Store) MintViewerLink(auth identity.Envelope, connectionID, operationID
 	}
 	s.mu.RLock()
 	connection, ok := s.connections[connectionID]
-	definition, defErr := s.definitionByID(connection.DefinitionID)
+	definition, defErr := s.definitionForConnection(connection)
 	s.mu.RUnlock()
 	if !ok {
 		return "", time.Time{}, fmt.Errorf("%w: connection", api.ErrNotFound)
@@ -110,6 +110,134 @@ func (s *Store) SpendViewerLink(connectionID, nonce string, now time.Time) (api.
 	return connection, nil
 }
 
+// viewerSession is the post-spend handle the rendered page polls with. It is
+// memory-only on purpose: a restart drops it and forces a fresh one-time link
+// instead of reviving an aged remote-control grant. ExpiresAt slides on use;
+// NotAfter caps the whole session.
+type viewerSession struct {
+	SessionID    string
+	ConnectionID string
+	PrincipalID  string
+	ExpiresAt    time.Time
+	NotAfter     time.Time
+}
+
+const (
+	viewerSessionSlide = 15 * time.Minute
+	viewerSessionMax   = 2 * time.Hour
+)
+
+// OpenViewerSession spends the one-time link and pins a polling session to
+// the connection's owning principal. The page gets a session id, never the
+// link nonce again; every later forward re-resolves the owner's binding so a
+// mid-session disable or revoke closes the channel.
+func (s *Store) OpenViewerSession(connectionID, nonce string, now time.Time) (string, error) {
+	connection, err := s.SpendViewerLink(connectionID, nonce, now)
+	if err != nil {
+		return "", err
+	}
+	if connection.Owner.Type != api.PrincipalOwner {
+		return "", api.ErrUnauthorized
+	}
+	s.mu.RLock()
+	hasBinding := false
+	for _, binding := range s.bindings {
+		if binding.ConnectionID == connectionID && binding.PrincipalID == connection.Owner.ID && binding.Status == api.ActiveStatus {
+			hasBinding = true
+			break
+		}
+	}
+	s.mu.RUnlock()
+	if !hasBinding {
+		return "", fmt.Errorf("%w: owner binding", api.ErrNotFound)
+	}
+	session := viewerSession{
+		SessionID: api.RandomNonce(), ConnectionID: connectionID,
+		PrincipalID: connection.Owner.ID,
+		ExpiresAt:   now.Add(viewerSessionSlide), NotAfter: now.Add(viewerSessionMax),
+	}
+	s.leaseMu.Lock()
+	defer s.leaseMu.Unlock()
+	if s.viewerSessions == nil {
+		s.viewerSessions = map[string]viewerSession{}
+	}
+	s.viewerSessions[session.SessionID] = session
+	return session.SessionID, nil
+}
+
+// viewerToolAllowlist is the bounded forward surface for the owner viewer:
+// navigation, snapshot/screenshot reads and the coordinate/element input the
+// manual-login flow needs. eval, network, file, pdf and close tools stay out —
+// a spent link must never become a scriptable workload proxy.
+var viewerToolAllowlist = map[string]bool{
+	"browser_navigate": true, "browser_navigate_back": true,
+	"browser_tabs": true, "browser_snapshot": true, "browser_find": true,
+	"browser_take_screenshot": true, "browser_wait_for": true,
+	"browser_console_messages": true, "browser_resize": true,
+	"browser_click": true, "browser_hover": true,
+	"browser_type": true, "browser_fill_form": true,
+	"browser_press_key": true, "browser_select_option": true,
+	"browser_handle_dialog":  true,
+	"browser_mouse_click_xy": true, "browser_mouse_down": true,
+	"browser_mouse_up": true, "browser_mouse_move_xy": true,
+	"browser_mouse_wheel": true, "browser_mouse_drag_xy": true,
+}
+
+// CallViewerTool resolves the session's owner binding and runs admit under
+// the registry read lock, exactly like the projected-call path. The tool must
+// be on the viewer allowlist and exist in the admitted definition — the
+// session can reach nothing else, regardless of the principal's projection.
+func (s *Store) CallViewerTool(sessionID, tool string, now time.Time, admit func(api.ToolSpec, api.EffectiveBinding) error) error {
+	if admit == nil {
+		return fmt.Errorf("%w: nil admission callback", api.ErrInvalid)
+	}
+	if !viewerToolAllowlist[tool] {
+		return fmt.Errorf("%w: tool is outside the viewer surface", api.ErrUnauthorized)
+	}
+	s.leaseMu.Lock()
+	session, ok := s.viewerSessions[sessionID]
+	if !ok {
+		s.leaseMu.Unlock()
+		return fmt.Errorf("%w: viewer session", api.ErrUnauthorized)
+	}
+	if !now.Before(session.ExpiresAt) || !now.Before(session.NotAfter) {
+		delete(s.viewerSessions, sessionID)
+		s.leaseMu.Unlock()
+		return api.ErrLinkGone
+	}
+	session.ExpiresAt = now.Add(viewerSessionSlide)
+	s.viewerSessions[sessionID] = session
+	s.leaseMu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var candidates []api.ToolBinding
+	for _, binding := range s.bindings {
+		if binding.ConnectionID == session.ConnectionID && binding.PrincipalID == session.PrincipalID && binding.Status == api.ActiveStatus {
+			candidates = append(candidates, binding)
+		}
+	}
+	slices.SortFunc(candidates, func(a, b api.ToolBinding) int { return strings.Compare(a.ToolBindingID, b.ToolBindingID) })
+	for _, binding := range candidates {
+		auth := identity.Envelope{
+			Schema: identity.Schema, PrincipalID: binding.PrincipalID, ExternalIdentityID: "viewer",
+			ContextID: binding.ContextID, RuntimeID: binding.RuntimeID,
+			ConversationID: "viewer", DeliveryTargetID: "viewer",
+			PolicyVersion: binding.PolicyVersion,
+		}
+		effective, err := s.resolveLocked(auth, binding.ToolBindingID)
+		if err != nil {
+			continue
+		}
+		for _, spec := range effective.Definition.Tools {
+			if spec.Name == tool {
+				return admit(spec, effective)
+			}
+		}
+		return fmt.Errorf("%w: viewer tool not admitted", api.ErrNotFound)
+	}
+	return fmt.Errorf("%w: owner binding", api.ErrNotFound)
+}
+
 func (s *Store) viewerLinksPath() string {
 	if s.path == "" {
 		return ""
@@ -136,6 +264,13 @@ func (s *Store) loadViewerLinksLocked() error {
 	var links []viewerLink
 	if err := json.Unmarshal(body, &links); err != nil {
 		return fmt.Errorf("%w: viewer link ledger", api.ErrInvalid)
+	}
+	// SpendViewerLink reaches this on a cold process where only
+	// MintViewerLink otherwise creates the map — a restart with a live
+	// ledger would panic on the nil-map write and the owner could never
+	// open a session again.
+	if s.viewerLinks == nil {
+		s.viewerLinks = map[string]viewerLink{}
 	}
 	for _, link := range links {
 		if link.ConnectionID == "" || link.Nonce == "" || link.PrincipalID == "" {

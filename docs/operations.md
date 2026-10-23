@@ -1,6 +1,6 @@
 ---
 description: Operator runbook — stack lifecycle, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
-last_verified: 2026-10-20
+last_verified: 2026-10-23
 ---
 
 # Operations
@@ -85,6 +85,33 @@ Connector verbs run identically on three surfaces — `connector_*` tools,
 `hubctl connector <verb> --target <sel>` (`--profile`/`--env`/`--generation`),
 and `POST /v1/connectors:*` on the control listener — all through
 `ControlPlane.InvokeConnector`, one journal.
+
+Team connectors (ADR-0058) are operator-published, not conversational:
+
+```text
+hubctl capability --kind team --file reviewed-team.json \
+    --toolhub-store <path> --confirm                     # publish {team_id, members, revision}
+hubctl capability --kind team-share --toolhub-store <path> \
+    --team <team-id> --definition <id> --version <v> \
+    --backend credential-broker --locator <locator> \
+    --broker-context <broker-context-id> [--keys k1,k2]  # mint the team-owned shared connection
+hubctl capability --kind team-drop --toolhub-store <path> \
+    --connection-id <conn-id>                            # revoke + finalizers, zero shared resources
+```
+
+`team-share` requires a `shareable: credential|connection` definition and
+stores the operator-supplied Broker contract (`backend`, `locator`,
+`broker-context`) on the credential reference; member bindings lazily mint
+one Broker grant each under that context. `team-drop` revokes and runs the
+same finalizer ladder as a single-owner remove — member bindings, grants
+and workloads are all retired. Team credential rotation goes through
+`Store.RotateCredential`/`RotateCredentialRecord` on the team connection —
+the same store op the control layer uses for credential resubmission; it
+bumps the reference revision and retires every member grant, and each
+member's next call lazily re-mints under the team context with no member
+reconnect. Membership
+changes go through a new `team` record revision; a removed member's grants
+and workload are purged on write.
 
 `policy_version` upgrade procedure: inventory active managed profiles and
 runtime envelopes first; binding migration does not reissue profiles — an

@@ -55,7 +55,7 @@ func (c *ControlPlane) NewReconciler() *Reconciler {
 	}
 	if c.SurfaceProbe != nil {
 		r.Surface = func(ctx context.Context, connection api.Connection) ([]api.ToolSpec, error) {
-			definition, err := c.Store.definitionByID(connection.DefinitionID)
+			definition, err := c.Store.definitionForConnection(connection)
 			if err != nil {
 				return nil, err
 			}

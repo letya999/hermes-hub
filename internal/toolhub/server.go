@@ -13,6 +13,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -250,6 +251,21 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 	if (config.BrokerControl == nil) != (config.BrokerRuntime == nil) {
 		return nil, fmt.Errorf("%w: Credential Broker control/runtime configuration must be paired", api.ErrInvalid)
 	}
+	if config.BrokerControl != nil && store.BrokerRevoke == nil {
+		// Member grants against a team-shared credential live in the credential's
+		// owning context, so retirement signs as that context's manager.
+		controlConfig := *config.BrokerControl
+		endpointAuth := config.Auth
+		store.BrokerRevoke = func(ctx context.Context, grant api.BrokerBindingGrant) error {
+			auth := endpointAuth
+			auth.ContextID, auth.ConversationID, auth.DeliveryTargetID = grant.ContextID, grant.ContextID, grant.ContextID
+			control, err := controlConfig.NewContextManaged(auth, "broker:control")
+			if err != nil {
+				return err
+			}
+			return control.Do(ctx, http.MethodPost, "/v1/grants/"+url.PathEscape(grant.GrantID)+"/revoke", nil, nil)
+		}
+	}
 	tokens := map[string]identity.Envelope{config.Token: config.Auth}
 	if config.TokensFile != "" {
 		extra, err := loadTokenEnvelopes(config.TokensFile)
@@ -283,7 +299,7 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 	if err != nil {
 		return nil, err
 	}
-	gateway.Injector = mergeCredentialInjectors(injector, brokerRuntimeInjector(config.BrokerControl, config.BrokerRuntime), config.BrokerControl != nil)
+	gateway.Injector = mergeCredentialInjectors(injector, teamBrokerInjector(store, config.BrokerControl, config.BrokerRuntime), config.BrokerControl != nil)
 	control := &ControlPlane{Store: store, Secrets: secrets, Listen: config.Listen, WorkloadRoot: api.EnvOr("HUB_STATE", ""), CredentialStagingRoot: api.CredentialStagingRoot(), DiagnosticsDir: api.EnvOr("HUB_DIAGNOSTICS_DIR", ""), Broker: config.BrokerControl, BrokerRuntime: config.BrokerRuntime, RecipeCatalogs: config.RecipeCatalogs, Release: config.Release, CLIRelease: config.CLIRelease}
 	// HUB_DEBUG_FINALIZER_DELAY_MS stalls each remove-ladder step so a live
 	// kill lands mid-ladder and restart-resume can be verified on the stack.

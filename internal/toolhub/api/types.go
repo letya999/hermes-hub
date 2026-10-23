@@ -305,9 +305,15 @@ type CredentialReference struct {
 	BrokerContractID       string            `json:"broker_contract_id,omitempty"`
 	BrokerContractRevision int               `json:"broker_contract_revision,omitempty"`
 	BrokerEnv              map[string]string `json:"broker_env,omitempty"`
-	LegacyLocator          string            `json:"legacy_locator,omitempty"`
-	MigrateRequestID       string            `json:"migrate_request_id,omitempty"`
-	Status                 Status            `json:"status"`
+	// BrokerContextID is the Broker context that owns a context-owned
+	// (team/shared) credential. Per-principal credentials leave it empty —
+	// their grants and leases sign under the binding's own context. A team
+	// reference sets it so per-member grants and the operator lifecycle sign
+	// context-managed against the shared credential record.
+	BrokerContextID  string `json:"broker_context_id,omitempty"`
+	LegacyLocator    string `json:"legacy_locator,omitempty"`
+	MigrateRequestID string `json:"migrate_request_id,omitempty"`
+	Status           Status `json:"status"`
 }
 
 type Connection struct {
@@ -320,6 +326,20 @@ type Connection struct {
 	Status           Status            `json:"status"`
 	TerminalExposure bool              `json:"terminal_exposure,omitempty"`
 	Metadata         map[string]string `json:"metadata,omitempty"`
+}
+
+// BrokerBindingGrant records one minted Credential Broker grant against a
+// shared (team-owned) credential reference: the credential reference cannot
+// hold the grant id because each member's binding mints its own. The ledger
+// lets revoke, member purge and connection drop retire the exact grants they
+// created — one row per binding, replaced on rotation.
+type BrokerBindingGrant struct {
+	BindingID       string `json:"binding_id"`
+	ConnectionID    string `json:"connection_id"`
+	CredentialRefID string `json:"credential_ref"`
+	ContextID       string `json:"context_id"`
+	GrantID         string `json:"grant_id"`
+	PolicyVersion   string `json:"policy_version"`
 }
 
 type ToolBinding struct {

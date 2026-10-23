@@ -160,7 +160,7 @@ func (c *ControlPlane) connectorStatus(ctx context.Context, auth identity.Envelo
 	// travels only on the channel notice, never inside the tool result.
 	if resolved.ConnectionID != "" {
 		if connection, ok := c.Store.connectionFor(resolved.ConnectionID); ok && connection.Status == api.ActiveStatus {
-			if definition, derr := c.Store.definitionByID(connection.DefinitionID); derr == nil && definition.Execution.EgressClass == api.EgressWeb {
+			if definition, derr := c.Store.definitionForConnection(connection); derr == nil && definition.Execution.EgressClass == api.EgressWeb {
 				if nonce, _, merr := c.Store.MintViewerLink(auth, connection.ConnectionID, resolved.OnboardingID, c.now(), c.ttl()); merr == nil {
 					api.DeliverViewerLink(ctx, auth, connection.ConnectionID, api.ViewerLinkURL(connection.ConnectionID, nonce))
 				}

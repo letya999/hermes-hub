@@ -236,7 +236,15 @@ func (c *genericController) validatePlan(plan api.ControllerPlan) error {
 	}
 	if plan.WorkspacePath != "" {
 		path, err := filepath.Abs(plan.WorkspacePath)
-		if err != nil || !api.ContainedPath(c.config.StateRoot, path) || api.NoSymlinkPath(path) != nil {
+		// Credential staging is an operator-declared root too: the shared
+		// tmpfs carries per-call credential material and is deliberately not
+		// under the persistent state root, so it must not be treated as an
+		// arbitrary workspace escape.
+		contained := api.ContainedPath(c.config.StateRoot, path)
+		if staging := api.CredentialStagingRoot(); !contained && staging != "" {
+			contained = api.ContainedPath(staging, path)
+		}
+		if err != nil || !contained || api.NoSymlinkPath(path) != nil {
 			return api.ErrIsolation
 		}
 	}

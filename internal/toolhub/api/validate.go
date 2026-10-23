@@ -23,6 +23,9 @@ func (r CredentialReference) Validate() error {
 		if (r.BrokerGrantID != "" && !identity.ValidID(r.BrokerGrantID)) || !identity.ValidID(r.BrokerContractID) || r.BrokerContractRevision < 1 {
 			return fmt.Errorf("%w: credential broker reference", ErrInvalid)
 		}
+		if r.BrokerContextID != "" && !identity.ValidID(r.BrokerContextID) {
+			return fmt.Errorf("%w: credential broker context", ErrInvalid)
+		}
 		for key, target := range r.BrokerEnv {
 			if !CredentialPattern.MatchString(key) || !CredentialPattern.MatchString(target) {
 				return fmt.Errorf("%w: credential broker environment mapping", ErrInvalid)

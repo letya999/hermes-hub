@@ -190,12 +190,86 @@ func brokerRuntimeInjector(controlConfig, runtimeConfig *credentialbroker.Config
 	}
 }
 
+// teamBrokerInjector wraps the runtime injector with the lazy per-member
+// grant mint a shared (team-owned) credential needs: the reference cannot
+// pin one grant, so the member's binding mints its own on first use, signed
+// as the manager of the credential's owning context and attributed to the
+// member. The minted id lands in the binding grant ledger — durable, so
+// disable, remove, rotation, member purge and team drop retire exactly the
+// grants they created. The shared reference itself is never mutated.
+func teamBrokerInjector(store *Store, controlConfig, runtimeConfig *credentialbroker.Config) api.CredentialInjector {
+	inner := brokerRuntimeInjector(controlConfig, runtimeConfig)
+	return func(ctx context.Context, effective api.EffectiveBinding) (api.CredentialInjection, error) {
+		reference := effective.Credential
+		if reference == nil || reference.Backend != "credential-broker" || reference.BrokerContextID == "" {
+			return inner(ctx, effective)
+		}
+		if store == nil || controlConfig == nil {
+			return api.CredentialInjection{}, fmt.Errorf("%w: team broker grant store unavailable", api.ErrIsolation)
+		}
+		if reference.BrokerGrantID != "" {
+			return inner(ctx, effective)
+		}
+		grantID, err := ensureTeamGrant(ctx, store, controlConfig, effective)
+		if err != nil {
+			return api.CredentialInjection{}, err
+		}
+		clone := *reference
+		clone.BrokerGrantID = grantID
+		effective.Credential = &clone
+		return inner(ctx, effective)
+	}
+}
+
+// ensureTeamGrant returns the binding's live grant against the shared
+// credential, minting one when the ledger has none. The grant request names
+// the credential's owning context — the broker rejects any other — while
+// principal, runtime, binding and workload stay the member's own.
+func ensureTeamGrant(ctx context.Context, store *Store, controlConfig *credentialbroker.Config, effective api.EffectiveBinding) (string, error) {
+	reference := effective.Credential
+	if grant, ok := store.BrokerGrantFor(effective.Binding.ToolBindingID, reference.CredentialRefID); ok {
+		return grant.GrantID, nil
+	}
+	if effective.WorkloadID == "" {
+		return "", fmt.Errorf("%w: workload identity", api.ErrIsolation)
+	}
+	control, err := controlConfig.NewContextManaged(effectiveBrokerEnvelope(effective), "broker:control")
+	if err != nil {
+		return "", err
+	}
+	execution := "dedicated"
+	if effective.Connection != nil && effective.Connection.Metadata["shareable"] == "connection" {
+		execution = "shared"
+	}
+	grant, err := control.Grant(ctx, reference.Locator, brokerv1.GrantRequest{
+		ContractID: reference.BrokerContractID, ContractRevision: reference.BrokerContractRevision,
+		PrincipalID: effective.Binding.PrincipalID, ContextID: reference.BrokerContextID, RuntimeID: effective.Binding.RuntimeID,
+		BindingID: effective.Binding.ToolBindingID, WorkloadID: effective.WorkloadID, Execution: execution,
+		IdempotencyKey: api.DeterministicID("teamgrant", effective.Binding.ToolBindingID, reference.CredentialRefID),
+	})
+	if err != nil {
+		return "", err
+	}
+	return store.RecordBrokerGrant(api.BrokerBindingGrant{
+		BindingID: effective.Binding.ToolBindingID, ConnectionID: reference.ConnectionID,
+		CredentialRefID: reference.CredentialRefID, ContextID: reference.BrokerContextID,
+		GrantID: grant.ID, PolicyVersion: effective.Binding.PolicyVersion,
+	})
+}
+
 func effectiveBrokerEnvelope(effective api.EffectiveBinding) identity.Envelope {
+	contextID := effective.Binding.ContextID
+	if effective.Credential != nil && effective.Credential.BrokerContextID != "" {
+		// The broker keys context-owned credentials and their grants to the
+		// owning context: acquire and materialize must present it or the
+		// grant's identity check denies the member's own context.
+		contextID = effective.Credential.BrokerContextID
+	}
 	return identity.Envelope{
 		Schema: identity.Schema, PrincipalID: effective.Binding.PrincipalID,
-		ExternalIdentityID: effective.Binding.PrincipalID, ContextID: effective.Binding.ContextID,
-		RuntimeID: effective.Binding.RuntimeID, ConversationID: effective.Binding.ContextID,
-		DeliveryTargetID: effective.Binding.ContextID, PolicyVersion: effective.Binding.PolicyVersion,
+		ExternalIdentityID: effective.Binding.PrincipalID, ContextID: contextID,
+		RuntimeID: effective.Binding.RuntimeID, ConversationID: contextID,
+		DeliveryTargetID: contextID, PolicyVersion: effective.Binding.PolicyVersion,
 	}
 }
 

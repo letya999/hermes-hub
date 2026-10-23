@@ -202,6 +202,72 @@ func TestNewReconcilerSurfaceUsesProbe(t *testing.T) {
 	}
 }
 
+// A definition id with several registered versions must resolve to the
+// version the connection was materialized under — a map-order pick compares
+// the binding's pinned digest against the wrong surface and falsely degrades
+// the connection.
+func TestReconcilerSurfaceResolvesConnectionVersion(t *testing.T) {
+	store, _, binding := seededStore(t)
+	older := remoteDefinition()
+	older.Version = "0.9.0"
+	older.Tools = []api.ToolSpec{{Name: "legacy", Effect: api.ReadEffect}}
+	if err := store.RegisterDefinition(older); err != nil {
+		t.Fatal(err)
+	}
+	newer := remoteDefinition()
+	newer.Version = "9.9.9"
+	newer.Tools = []api.ToolSpec{{Name: "renamed", Effect: api.ReadEffect}}
+	if err := store.RegisterDefinition(newer); err != nil {
+		t.Fatal(err)
+	}
+	pinned := store.bindings[binding.ToolBindingID]
+	pinned.ToolDigest = "sha256:pinned"
+	store.bindings[binding.ToolBindingID] = pinned
+	var probed []string
+	c := &ControlPlane{Store: store, SurfaceProbe: func(_ context.Context, _ api.Connection, definition api.ToolDefinition) ([]api.ToolSpec, error) {
+		probed = append(probed, definition.Version)
+		return definition.Tools, nil
+	}}
+	connection, _ := store.connectionFor("google-work")
+	for i := 0; i < 20; i++ {
+		tools, err := c.NewReconciler().Surface(context.Background(), connection)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(tools) != 2 || tools[0].Name != "search" || tools[1].Name != "send" {
+			t.Fatalf("probe resolved a different definition version: %v", tools)
+		}
+	}
+	for _, version := range probed {
+		if version != "1.0.0" {
+			t.Fatalf("probe ran against definition version %s, want pinned 1.0.0", version)
+		}
+	}
+}
+
+// With no binding pinning a version the resolution still must be
+// deterministic — the newest registered version wins, never a random one.
+func TestDefinitionForConnectionFallsBackToNewestVersion(t *testing.T) {
+	store, _, binding := seededStore(t)
+	newer := remoteDefinition()
+	newer.Version = "0.9.9"
+	newer.Tools = []api.ToolSpec{{Name: "legacy", Effect: api.ReadEffect}}
+	if err := store.RegisterDefinition(newer); err != nil {
+		t.Fatal(err)
+	}
+	connection, _ := store.connectionFor("google-work")
+	delete(store.bindings, binding.ToolBindingID)
+	for i := 0; i < 20; i++ {
+		definition, err := store.definitionForConnection(connection)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if definition.Version != "1.0.0" {
+			t.Fatalf("unversioned connection resolved %s, want newest 1.0.0", definition.Version)
+		}
+	}
+}
+
 // The Notify seam is the owner-visible half of a reconcile event: a reauth
 // notice re-arms the credential step on the connection's onboarding and a
 // drift notice re-arms confirmation — the channel link the gateway delivers

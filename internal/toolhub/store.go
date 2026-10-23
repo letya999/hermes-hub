@@ -4,7 +4,9 @@ package toolhub
 // model. It deliberately stops before provider execution and secret material.
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -36,10 +38,23 @@ type Store struct {
 	publications        map[string]api.DefinitionPublication
 	sharedPolicies      map[string]api.SharedCredentialPolicy
 	teams               map[string]api.Team
-	capabilityPolicies  map[string]api.CapabilityPolicy
-	capabilityProfiles  map[string]api.CapabilityProfile
-	capabilityChanges   []api.CapabilityChange
-	bindingChanges      []bindingChange
+	// bindingBrokerGrants is the per-binding Credential Broker grant ledger
+	// for team-owned credentials: a shared reference cannot name one grant
+	// because every member mints their own against it. It has its own lock:
+	// the member-call injector mints while the store's read lock is already
+	// held, so s.mu can never guard this map. grantMu is a leaf — code
+	// holding it must not take s.mu; s.mu-holding code may take grantMu.
+	grantMu             sync.Mutex
+	bindingBrokerGrants map[string]api.BrokerBindingGrant
+	// BrokerRevoke is the wired broker revoke seam for ledger rows — nil in
+	// stores without a broker client (tests, hubctl-local use). Retired rows
+	// leave the ledger even when the seam is absent or fails, because an
+	// unreachable broker must not keep a dead grant authoritative.
+	BrokerRevoke       func(ctx context.Context, grant api.BrokerBindingGrant) error
+	capabilityPolicies map[string]api.CapabilityPolicy
+	capabilityProfiles map[string]api.CapabilityProfile
+	capabilityChanges  []api.CapabilityChange
+	bindingChanges     []bindingChange
 	// exMu guards the exclusion set separately: exclusions are observability
 	// written from read-locked projection scans, so they must not ride s.mu.
 	exMu           sync.Mutex
@@ -54,6 +69,7 @@ type Store struct {
 	leasesLoaded      bool
 	viewerLinks       map[string]viewerLink
 	viewerLinksLoaded bool
+	viewerSessions    map[string]viewerSession
 }
 
 func projectionKey(principalID, contextID, runtimeID string) string {
@@ -173,20 +189,54 @@ func (s *Store) PutTeam(team api.Team) error {
 		return err
 	}
 	s.mu.Lock()
-	if existing, ok := s.teams[team.TeamID]; ok && team.Revision <= existing.Revision {
-		s.mu.Unlock()
-		return api.ErrConflict
+	var droppedMembers map[string]bool
+	if existing, ok := s.teams[team.TeamID]; ok {
+		if team.Revision <= existing.Revision {
+			s.mu.Unlock()
+			return api.ErrConflict
+		}
+		droppedMembers = map[string]bool{}
+		for _, member := range existing.Members {
+			droppedMembers[member] = true
+		}
+		for _, member := range team.Members {
+			delete(droppedMembers, member)
+		}
+		for _, member := range team.WriteMembers {
+			delete(droppedMembers, member)
+		}
 	}
 	s.teams[team.TeamID] = team
+	// A member leaving the team loses the operative parts of their seats on
+	// that team's connections: workloads stop and broker grants retire. The
+	// binding row stays — per-call membership evaluation already denies
+	// resolve — so a re-added member keeps their seat.
+	var stopped []string
+	var retired []api.BrokerBindingGrant
+	for bindingID, binding := range s.bindings {
+		if binding.ConnectionID == "" || !droppedMembers[binding.PrincipalID] {
+			continue
+		}
+		connection, ok := s.connections[binding.ConnectionID]
+		if !ok || connection.Owner.Type != api.TeamOwner || connection.Owner.ID != team.TeamID {
+			continue
+		}
+		stopped = append(stopped, s.stopBindingLocked(bindingID)...)
+		retired = append(retired, s.retireBindingGrantsLocked(bindingID)...)
+	}
 	s.mu.Unlock()
-	return s.persist()
+	stopErr := s.stopWorkloads(stopped)
+	if err := s.persist(); err != nil {
+		return err
+	}
+	return errors.Join(stopErr, s.revokeGrants(retired))
 }
 
 // ShareTeamConnection is the operator's one-shot team publication: it mints
 // the deterministic team-owned connection and credential reference for a
 // definition that declares a shareable mode. Members converge through
 // Enable — no per-member credential is ever minted.
-func (s *Store) ShareTeamConnection(teamID, definitionID, version, backend, locator string, keys []string) (api.Connection, api.CredentialReference, error) {
+func (s *Store) ShareTeamConnection(teamID, definitionID, version, backend, locator, brokerContext string, keys []string) (api.Connection, api.CredentialReference, error) {
 	s.mu.Lock()
 	team, ok := s.teams[teamID]
 	if !ok || team.Status != api.ActiveStatus {
@@ -202,8 +252,23 @@ func (s *Store) ShareTeamConnection(teamID, definitionID, version, backend, loca
 		s.mu.Unlock()
 		return api.Connection{}, api.CredentialReference{}, fmt.Errorf("%w: definition is not team-shareable", api.ErrUnauthorized)
 	}
+	if backend == "credential-broker" {
+		if !identity.ValidID(brokerContext) {
+			s.mu.Unlock()
+			return api.Connection{}, api.CredentialReference{}, fmt.Errorf("%w: team broker credential needs its owning context", api.ErrInvalid)
+		}
+		if definition.CredentialContractID == "" || definition.CredentialContractRevision < 1 {
+			s.mu.Unlock()
+			return api.Connection{}, api.CredentialReference{}, fmt.Errorf("%w: definition %s has no reviewed credential broker contract", api.ErrInvalid, definitionID)
+		}
+	}
 	connectionID := api.DeterministicID("conn", "team", teamID, definitionID, version)
-	reference := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: api.CredentialReferenceID(connectionID, 1), ConnectionID: connectionID, Revision: 1, Backend: backend, Locator: locator, Keys: append([]string(nil), keys...), Status: api.ActiveStatus}
+	reference := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: api.CredentialReferenceID(connectionID, 1), ConnectionID: connectionID, Revision: 1, Backend: backend, Locator: locator, Keys: append([]string(nil), keys...), BrokerContextID: brokerContext, Status: api.ActiveStatus}
+	if backend == "credential-broker" {
+		reference.BrokerContractID = definition.CredentialContractID
+		reference.BrokerContractRevision = definition.CredentialContractRevision
+		reference.BrokerEnv = api.CloneMap(definition.CredentialContractEnv)
+	}
 	connection := api.Connection{Schema: api.SchemaVersion, ConnectionID: connectionID, Owner: api.OwnerRef{Type: api.TeamOwner, ID: teamID}, DefinitionID: definitionID, CredentialRefID: reference.CredentialRefID, Revision: 1, Status: api.ActiveStatus, Metadata: map[string]string{"shareable": definition.Workload.Shareable}}
 	if err := reference.Validate(); err != nil {
 		s.mu.Unlock()
@@ -235,6 +300,7 @@ func (s *Store) DropTeamConnection(connectionID string) error {
 		return fmt.Errorf("%w: not a team connection", api.ErrInvalid)
 	}
 	var stopped []string
+	var retired []api.BrokerBindingGrant
 	for bindingID, binding := range s.bindings {
 		if binding.ConnectionID != connectionID {
 			continue
@@ -244,6 +310,7 @@ func (s *Store) DropTeamConnection(connectionID string) error {
 		s.bindings[bindingID] = binding
 		stopped = append(stopped, s.stopBindingLocked(bindingID)...)
 		delete(s.bindings, bindingID)
+		retired = append(retired, s.retireBindingGrantsLocked(bindingID)...)
 	}
 	for refID, ref := range s.credentials {
 		if ref.ConnectionID == connectionID {
@@ -257,7 +324,82 @@ func (s *Store) DropTeamConnection(connectionID string) error {
 	if err := s.persistAndNotify(); err != nil {
 		return err
 	}
-	return stopErr
+	return errors.Join(stopErr, s.revokeGrants(retired))
+}
+
+// BrokerGrantFor returns the recorded member grant a binding currently holds
+// against refID — the injector's idempotency check before re-minting.
+func (s *Store) BrokerGrantFor(bindingID, refID string) (api.BrokerBindingGrant, bool) {
+	s.grantMu.Lock()
+	defer s.grantMu.Unlock()
+	grant, ok := s.bindingBrokerGrants[bindingID]
+	if !ok || grant.CredentialRefID != refID {
+		return api.BrokerBindingGrant{}, false
+	}
+	return grant, true
+}
+
+// RecordBrokerGrant records a minted member grant. A row already recorded
+// for the binding and credential revision wins: concurrent first calls race
+// the mint, and only the recorded row may drive future acquires. The ledger
+// cannot take s.mu — the minting injector runs under the store's read lock —
+// so rows flush with the next natural save. Losing an unsaved row is safe:
+// the deterministic broker idempotency key re-mints the identical grant and
+// the row is re-recorded.
+func (s *Store) RecordBrokerGrant(grant api.BrokerBindingGrant) (string, error) {
+	if grant.BindingID == "" || grant.GrantID == "" || grant.CredentialRefID == "" || grant.ConnectionID == "" || grant.ContextID == "" {
+		return "", fmt.Errorf("%w: broker binding grant", api.ErrInvalid)
+	}
+	s.grantMu.Lock()
+	defer s.grantMu.Unlock()
+	if existing, ok := s.bindingBrokerGrants[grant.BindingID]; ok && existing.CredentialRefID == grant.CredentialRefID {
+		return existing.GrantID, nil
+	}
+	s.bindingBrokerGrants[grant.BindingID] = grant
+	return grant.GrantID, nil
+}
+
+// retireBindingGrantsLocked drops one binding's grant rows and returns them
+// for the revoke seam. Callers hold s.mu; grantMu is taken inside.
+func (s *Store) retireBindingGrantsLocked(bindingID string) []api.BrokerBindingGrant {
+	s.grantMu.Lock()
+	defer s.grantMu.Unlock()
+	grant, ok := s.bindingBrokerGrants[bindingID]
+	if !ok {
+		return nil
+	}
+	delete(s.bindingBrokerGrants, bindingID)
+	return []api.BrokerBindingGrant{grant}
+}
+
+// retireConnectionGrantsLocked drops grant rows minted against a connection —
+// all of them, or only rows pinned to one stale credential revision.
+// Callers hold s.mu; grantMu is taken inside.
+func (s *Store) retireConnectionGrantsLocked(connectionID, staleRefOnly string) []api.BrokerBindingGrant {
+	s.grantMu.Lock()
+	defer s.grantMu.Unlock()
+	var out []api.BrokerBindingGrant
+	for bindingID, grant := range s.bindingBrokerGrants {
+		if grant.ConnectionID != connectionID || (staleRefOnly != "" && grant.CredentialRefID != staleRefOnly) {
+			continue
+		}
+		delete(s.bindingBrokerGrants, bindingID)
+		out = append(out, grant)
+	}
+	return out
+}
+
+func (s *Store) revokeGrants(grants []api.BrokerBindingGrant) error {
+	if s == nil || s.BrokerRevoke == nil {
+		return nil
+	}
+	var firstErr error
+	for _, grant := range grants {
+		if err := s.BrokerRevoke(context.Background(), grant); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 func (s *Store) TeamFor(id string) (api.Team, bool) {
@@ -311,17 +453,30 @@ func (s *Store) hasDefinitionID(id string) bool {
 	return false
 }
 
-// definitionByID resolves a connection's definition id to its registered
-// definition — the migration pass carries no version.
-func (s *Store) definitionByID(id string) (api.ToolDefinition, error) {
+// definitionForConnection resolves the definition version a connection's
+// surface binding carries — a map-order pick would compare the binding's
+// pinned digest against a different version's surface and degrade falsely.
+func (s *Store) definitionForConnection(connection api.Connection) (api.ToolDefinition, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	for key, definition := range s.definitions {
-		if strings.HasPrefix(key, id+"@") {
-			return definition, nil
+	for _, binding := range s.bindings {
+		if binding.ConnectionID == connection.ConnectionID && binding.DefinitionVersion != "" {
+			if definition, ok := s.definitions[definitionKey(connection.DefinitionID, binding.DefinitionVersion)]; ok {
+				return definition, nil
+			}
 		}
 	}
-	return api.ToolDefinition{}, fmt.Errorf("%w: toolhub definition %s", api.ErrNotFound, id)
+	var picked api.ToolDefinition
+	found := false
+	for key, definition := range s.definitions {
+		if strings.HasPrefix(key, connection.DefinitionID+"@") && (!found || versionLess(picked.Version, definition.Version)) {
+			picked, found = definition, true
+		}
+	}
+	if !found {
+		return api.ToolDefinition{}, fmt.Errorf("%w: toolhub definition %s", api.ErrNotFound, connection.DefinitionID)
+	}
+	return picked, nil
 }
 
 func (s *Store) PutBinding(binding api.ToolBinding) error {
@@ -443,10 +598,14 @@ func (s *Store) rotateCredentialLocked(connection api.Connection, reference api.
 		s.mu.Unlock()
 		return api.CredentialReference{}, err
 	}
+	var retired []api.BrokerBindingGrant
 	if connection.CredentialRefID != "" {
 		old := s.credentials[connection.CredentialRefID]
 		old.Status = api.RevokedStatus
 		s.credentials[old.CredentialRefID] = old
+		// Grants minted against the superseded reference cannot acquire the
+		// new credential — retire them so members re-mint on next call.
+		retired = s.retireConnectionGrantsLocked(connection.ConnectionID, old.CredentialRefID)
 	}
 	s.credentials[reference.CredentialRefID] = reference
 	connection.CredentialRefID = reference.CredentialRefID
@@ -477,7 +636,7 @@ func (s *Store) rotateCredentialLocked(connection api.Connection, reference api.
 		_ = s.MarkDegraded(connection.ConnectionID)
 		return api.CredentialReference{}, err
 	}
-	return reference, stopErr
+	return reference, errors.Join(stopErr, s.revokeGrants(retired))
 }
 
 func (s *Store) SetConnectionStatus(connectionID string, status api.Status) error {
@@ -505,12 +664,16 @@ func (s *Store) SetConnectionStatus(connectionID string, status api.Status) erro
 		}
 	}
 	stopped := s.stopAffectedLocked(connectionID)
+	var retired []api.BrokerBindingGrant
+	if status != api.ActiveStatus {
+		retired = s.retireConnectionGrantsLocked(connectionID, "")
+	}
 	s.mu.Unlock()
 	stopErr := s.stopWorkloads(stopped)
 	if err := s.persistAndNotify(); err != nil {
 		return err
 	}
-	return stopErr
+	return errors.Join(stopErr, s.revokeGrants(retired))
 }
 
 // rotatableConnectionLocked decides whether a connection may accept a
@@ -720,12 +883,16 @@ func (s *Store) SetBindingStatus(bindingID string, status api.Status) error {
 	s.touchProjectionLocked(&binding)
 	s.bindings[bindingID] = binding
 	stopped := s.stopBindingLocked(bindingID)
+	var retired []api.BrokerBindingGrant
+	if status != api.ActiveStatus {
+		retired = s.retireBindingGrantsLocked(bindingID)
+	}
 	s.mu.Unlock()
 	stopErr := s.stopWorkloads(stopped)
 	if err := s.persistAndNotify(); err != nil {
 		return err
 	}
-	return stopErr
+	return errors.Join(stopErr, s.revokeGrants(retired))
 }
 
 // RemoveBindingRecords drops the binding row and any rows only it referenced:
@@ -769,12 +936,13 @@ func (s *Store) RemoveBindingRecords(bindingID string) error {
 			delete(s.workloads, id)
 		}
 	}
+	retired := s.retireBindingGrantsLocked(bindingID)
 	s.mu.Unlock()
 	stopErr := s.stopWorkloads(stopped)
 	if err := s.persistAndNotify(); err != nil {
 		return err
 	}
-	return stopErr
+	return errors.Join(stopErr, s.revokeGrants(retired))
 }
 
 func (s *Store) Resolve(auth identity.Envelope, bindingID string) (api.EffectiveBinding, error) {
@@ -988,6 +1156,7 @@ type snapshot struct {
 	Publications        []api.DefinitionPublication     `json:"publications,omitempty"`
 	SharedPolicies      []api.SharedCredentialPolicy    `json:"shared_credential_policies,omitempty"`
 	Teams               []api.Team                      `json:"teams,omitempty"`
+	BrokerGrants        []api.BrokerBindingGrant        `json:"broker_grants,omitempty"`
 	CapabilityChanges   []api.CapabilityChange          `json:"capability_changes,omitempty"`
 	BindingChanges      []bindingChange                 `json:"binding_changes,omitempty"`
 }

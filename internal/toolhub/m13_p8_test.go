@@ -93,10 +93,25 @@ func TestViewerLinkLifecycle(t *testing.T) {
 // the only routing that matters.
 func TestServeViewerLinkContract(t *testing.T) {
 	store := NewStore()
-	if err := store.RegisterDefinition(browserDefinition()); err != nil {
+	definition := browserDefinition()
+	if err := store.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PutConnection(browserConnection()); err != nil {
+	connection := browserConnection()
+	if err := store.PutConnection(connection); err != nil {
+		t.Fatal(err)
+	}
+	// The rendered page opens a call-forwarding session, so the owner binding
+	// the session resolves must exist — a bare connection no longer serves.
+	binding := api.ToolBinding{
+		Schema: api.SchemaVersion, PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime",
+		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
+		ConnectionID: connection.ConnectionID, ConnectionRevision: connection.Revision,
+		PolicyVersion: "policy-1", WorkloadClass: definition.Workload.Class,
+		Status: api.ActiveStatus, Revision: 1, ProjectionRevision: 1,
+	}
+	binding.ToolBindingID = api.DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, "")
+	if err := store.PutBinding(binding); err != nil {
 		t.Fatal(err)
 	}
 	control := &ControlPlane{Store: store, WorkloadRoot: t.TempDir(), Now: time.Now}

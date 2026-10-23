@@ -34,7 +34,7 @@ func statStoreStamp(path string) (storeStamp, bool) {
 }
 
 func NewStore() *Store {
-	return &Store{definitions: map[string]api.ToolDefinition{}, connections: map[string]api.Connection{}, credentials: map[string]api.CredentialReference{}, bindings: map[string]api.ToolBinding{}, workloads: map[string]api.WorkloadInstance{}, projectionRevisions: map[string]uint64{}, grants: map[string]api.Grant{}, onboardings: map[string]api.Onboarding{}, operations: map[string]api.Operation{}, refreshLeases: map[string]api.RefreshLease{}, connStatus: map[string]api.Status{}, recipes: map[string]api.RecipeResolution{}, publications: map[string]api.DefinitionPublication{}, sharedPolicies: map[string]api.SharedCredentialPolicy{}, teams: map[string]api.Team{}, capabilityPolicies: map[string]api.CapabilityPolicy{}, capabilityProfiles: map[string]api.CapabilityProfile{}, exclusions: map[string]api.ProjectionExclusion{}}
+	return &Store{definitions: map[string]api.ToolDefinition{}, connections: map[string]api.Connection{}, credentials: map[string]api.CredentialReference{}, bindings: map[string]api.ToolBinding{}, workloads: map[string]api.WorkloadInstance{}, projectionRevisions: map[string]uint64{}, grants: map[string]api.Grant{}, onboardings: map[string]api.Onboarding{}, operations: map[string]api.Operation{}, refreshLeases: map[string]api.RefreshLease{}, connStatus: map[string]api.Status{}, recipes: map[string]api.RecipeResolution{}, publications: map[string]api.DefinitionPublication{}, sharedPolicies: map[string]api.SharedCredentialPolicy{}, teams: map[string]api.Team{}, bindingBrokerGrants: map[string]api.BrokerBindingGrant{}, capabilityPolicies: map[string]api.CapabilityPolicy{}, capabilityProfiles: map[string]api.CapabilityProfile{}, exclusions: map[string]api.ProjectionExclusion{}}
 }
 
 func (s *Store) Save(path string) error {
@@ -116,6 +116,11 @@ func (s *Store) saveLocked(path string) error {
 	for _, team := range s.teams {
 		state.Teams = append(state.Teams, team)
 	}
+	s.grantMu.Lock()
+	for _, grant := range s.bindingBrokerGrants {
+		state.BrokerGrants = append(state.BrokerGrants, grant)
+	}
+	s.grantMu.Unlock()
 	slices.SortFunc(state.Definitions, func(a, b api.ToolDefinition) int {
 		return strings.Compare(definitionKey(a.DefinitionID, a.Version), definitionKey(b.DefinitionID, b.Version))
 	})
@@ -131,6 +136,7 @@ func (s *Store) saveLocked(path string) error {
 	})
 	slices.SortFunc(state.SharedPolicies, func(a, b api.SharedCredentialPolicy) int { return strings.Compare(a.PolicyID, b.PolicyID) })
 	slices.SortFunc(state.Teams, func(a, b api.Team) int { return strings.Compare(a.TeamID, b.TeamID) })
+	slices.SortFunc(state.BrokerGrants, func(a, b api.BrokerBindingGrant) int { return strings.Compare(a.BindingID, b.BindingID) })
 	body, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
@@ -326,6 +332,18 @@ func Load(path string) (*Store, error) {
 		}
 		store.teams[team.TeamID] = team
 	}
+	for _, grant := range state.BrokerGrants {
+		if grant.BindingID == "" || grant.GrantID == "" || grant.CredentialRefID == "" || grant.ConnectionID == "" || grant.ContextID == "" {
+			return nil, fmt.Errorf("%w: persisted broker binding grant", api.ErrInvalid)
+		}
+		if _, ok := store.bindings[grant.BindingID]; !ok {
+			return nil, fmt.Errorf("%w: persisted broker grant binding", api.ErrInvalid)
+		}
+		if _, dup := store.bindingBrokerGrants[grant.BindingID]; dup {
+			return nil, fmt.Errorf("%w: duplicate broker binding grant", api.ErrInvalid)
+		}
+		store.bindingBrokerGrants[grant.BindingID] = grant
+	}
 	for _, binding := range store.bindings {
 		key := projectionKey(binding.PrincipalID, binding.ContextID, binding.RuntimeID)
 		if binding.ProjectionRevision > store.projectionRevisions[key] {
@@ -430,6 +448,9 @@ func (s *Store) Reload() error {
 	s.publications = fresh.publications
 	s.sharedPolicies = fresh.sharedPolicies
 	s.teams = fresh.teams
+	s.grantMu.Lock()
+	s.bindingBrokerGrants = fresh.bindingBrokerGrants
+	s.grantMu.Unlock()
 	s.capabilityPolicies = fresh.capabilityPolicies
 	s.capabilityProfiles = fresh.capabilityProfiles
 	s.capabilityChanges = fresh.capabilityChanges

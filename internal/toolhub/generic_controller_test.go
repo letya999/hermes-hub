@@ -51,6 +51,38 @@ func genericPlan(d api.ToolDefinition) api.ControllerPlan {
 	return api.ControllerPlan{WorkloadID: "generic-workload", DefinitionID: d.DefinitionID, DefinitionVersion: d.Version, Image: d.Source.Image, Digest: d.Source.Digest, ToolHiveVersion: d.Workload.ToolHiveVersion, SidecarImages: d.Workload.SidecarImages, Execution: d.Execution, Definition: d}
 }
 
+// #289: credential staging lives on the shared tmpfs declared by
+// HUB_CRED_STAGING, deliberately outside the persistent state root. Admission
+// must accept a workspace under the declared staging root while still
+// refusing paths that belong to neither declared root.
+func TestGenericControllerAcceptsCredentialStagingWorkspace(t *testing.T) {
+	d, root, paths := genericDefinition(t)
+	parts := strings.Split(paths, "\x00")
+	staging := t.TempDir()
+	t.Setenv("HUB_CRED_STAGING", staging)
+	t.Setenv("HUB_STATE", root)
+	c, err := newGenericController(GenericControllerConfig{StateRoot: root, ToolHiveBinary: parts[0], SeccompProfile: parts[1], DynamicDefinitions: true, MaxActive: 2, IdleTTLSeconds: 60})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := genericPlan(d)
+	plan.WorkspacePath = filepath.Join(staging, "per-user", "alice", "alice", d.DefinitionID, "conn")
+	if err := os.MkdirAll(plan.WorkspacePath, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.validatePlan(plan); err != nil {
+		t.Fatalf("declared credential staging workspace rejected: %v", err)
+	}
+	stray := t.TempDir()
+	plan.WorkspacePath = filepath.Join(stray, "workspace")
+	if err := os.MkdirAll(plan.WorkspacePath, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.validatePlan(plan); err == nil {
+		t.Fatal("workspace outside every declared root accepted")
+	}
+}
+
 func TestGenericControllerAcceptsAuthenticatedDynamicDefinitions(t *testing.T) {
 	d, root, paths := genericDefinition(t)
 	parts := strings.Split(paths, "\x00")

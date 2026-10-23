@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -755,9 +756,11 @@ func (g *Gateway) serveWizard(w http.ResponseWriter, r *http.Request, onboarding
 const wizardWaitPage = `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="6"><title>Настройка MCP</title><style>:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:28px;letter-spacing:-.02em}p{margin:0;color:#52606d;line-height:1.6}</style><main><h1>Настройка коннектора…</h1><p>Идёт подготовка и проверка — страница обновится автоматически. Обычно это занимает пару минут.</p></main></html>`
 
 // serveViewer answers the owner-bound browser viewer link: a spent or
-// expired nonce gets 410 gone, a forged one 403, a live one renders the
-// viewer shell and marks the link used — the nonce never reaches any tool
-// result, and the viewer is never an unauthenticated published port.
+// expired nonce gets 410 gone, a forged one 403, a live one opens a short
+// polling session and renders the remote-control shell — the nonce never
+// reaches any tool result, and the viewer is never an unauthenticated
+// published port. /viewer/<id>/frame serves the workload's own screenshot
+// frames; /viewer/<id>/input forwards only the allowlisted input calls.
 func (g *Gateway) serveViewer(w http.ResponseWriter, r *http.Request) {
 	if !loopbackHTTP(r) {
 		http.Error(w, "loopback only", http.StatusForbidden)
@@ -767,16 +770,34 @@ func (g *Gateway) serveViewer(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	connectionID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/viewer/"), "/")
-	if connectionID == "" || strings.Contains(connectionID, "/") {
+	parts := strings.SplitN(strings.Trim(strings.TrimPrefix(r.URL.Path, "/viewer/"), "/"), "/", 2)
+	connectionID := parts[0]
+	action := ""
+	if len(parts) == 2 {
+		action = parts[1]
+	}
+	if connectionID == "" || strings.Contains(action, "/") {
 		http.NotFound(w, r)
 		return
 	}
+	switch action {
+	case "":
+		g.serveViewerPage(w, r, connectionID)
+	case "frame":
+		g.serveViewerFrame(w, r, connectionID)
+	case "input":
+		g.serveViewerInput(w, r, connectionID)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (g *Gateway) serveViewerPage(w http.ResponseWriter, r *http.Request, connectionID string) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	connection, err := g.Control.Store.SpendViewerLink(connectionID, linkToken(r), g.Control.now())
+	sessionID, err := g.Control.Store.OpenViewerSession(connectionID, linkToken(r), g.Control.now())
 	if errors.Is(err, api.ErrLinkGone) {
 		goneLinkPage(w)
 		return
@@ -787,8 +808,140 @@ func (g *Gateway) serveViewer(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")
-	_, _ = io.WriteString(w, `<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Browser viewer</title><style>:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:28px;letter-spacing:-.02em}p{margin:0 0 22px;color:#52606d;line-height:1.6}</style><main><h1>Browser viewer</h1><p>Интерактивная сессия открыта для `+html.EscapeString(connection.DefinitionID)+`. Вход на сайты выполняется только здесь — никогда не отправляйте пароли в чат.</p></main></html>`)
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
+	_, _ = io.WriteString(w, `<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Browser viewer</title><style>`+
+		`:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}`+
+		`body{margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:16px}main{width:min(1024px,100%)}`+
+		`h1{font-size:20px;margin:0 0 8px}p{color:#52606d;line-height:1.5;margin:0 0 12px}`+
+		`#bar{display:flex;gap:8px;margin-bottom:12px}#bar input{flex:1;border:1px solid #dfe4ea;border-radius:8px;padding:9px 12px;font:inherit}`+
+		`#bar button{border:0;border-radius:8px;padding:9px 16px;background:#175cd3;color:#fff;font:inherit;cursor:pointer}`+
+		`#screen{width:100%;background:#17202a;border-radius:12px;cursor:crosshair;display:block}`+
+		`#status{color:#98a2b3;font-size:13px;margin-top:8px}</style>`+
+		`<main><h1>Browser viewer — `+html.EscapeString(connectionID)+`</h1>`+
+		`<p>Вход на сайты выполняется только здесь — никогда не отправляйте пароли в чат.</p>`+
+		`<div id="bar"><input id="url" placeholder="https://…" autocomplete="off"><button id="go">Открыть</button></div>`+
+		`<img id="screen" alt=""><div id="status"></div></main>`+
+		`<script>`+
+		`var S="session=`+html.EscapeString(sessionID)+`";`+
+		`var base="/viewer/`+html.EscapeString(connectionID)+`";`+
+		`var img=document.getElementById("screen"),st=document.getElementById("status");`+
+		`function poll(){var f=new Image();f.onload=function(){img.src=f.src;setTimeout(poll,700)};f.onerror=function(){st.textContent="Кадр недоступен — повтор через 3 с";setTimeout(poll,3000)};f.src=base+"/frame?"+S+"&n="+Date.now()}`+
+		`function send(tool,args){return fetch(base+"/input?"+S,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({tool:tool,arguments:args})})}`+
+		`img.addEventListener("click",function(e){var r=img.getBoundingClientRect();var x=Math.round(e.clientX-r.left),y=Math.round(e.clientY-r.top);send("browser_mouse_click_xy",{x:x,y:y})});`+
+		`document.addEventListener("keydown",function(e){if(e.target.id==="url")return;var k=e.key;if(k.length===1||k==="Enter"||k==="Backspace"||k==="Tab"||k==="Escape"||k.indexOf("Arrow")===0){e.preventDefault();send("browser_press_key",{key:k})}});`+
+		`document.getElementById("go").addEventListener("click",function(){var u=document.getElementById("url").value;if(u)send("browser_navigate",{url:u})});`+
+		`poll();`+
+		`</script></html>`)
+}
+
+// viewerForward runs one allowlisted tool against the session's owner
+// binding through the same injector/backend path a projected call uses.
+func (g *Gateway) viewerForward(ctx context.Context, sessionID, tool string, arguments map[string]any) (api.BackendResult, error) {
+	var out api.BackendResult
+	err := g.Control.Store.CallViewerTool(sessionID, tool, g.Control.now(), func(spec api.ToolSpec, effective api.EffectiveBinding) error {
+		fields := map[string]string{
+			"principal_id": effective.Binding.PrincipalID, "sender_id": "viewer",
+			"context_id": effective.Binding.ContextID, "runtime_id": effective.Binding.RuntimeID,
+			"policy_version": effective.Binding.PolicyVersion, "binding_id": effective.Binding.ToolBindingID,
+			"backend": string(effective.Definition.Transport), "outcome": "admit",
+		}
+		if effective.Connection != nil {
+			fields["connection_id"] = effective.Connection.ConnectionID
+		}
+		if err := g.audit("admit", fields); err != nil {
+			return err
+		}
+		injection := api.CredentialInjection{Environment: map[string]string{}}
+		if g.Injector != nil {
+			var injErr error
+			injection, injErr = g.Injector(ctx, effective)
+			if injErr != nil {
+				return injErr
+			}
+			if injection.Cleanup != nil {
+				defer injection.Cleanup()
+			}
+		}
+		effective.CredentialMounts = append([]api.Mount(nil), injection.Mounts...)
+		callCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		defer cancel()
+		var result api.BackendResult
+		var callErr error
+		if caller, ok := g.Backend.(api.EnvBackend); ok {
+			result, callErr = caller.CallEnv(callCtx, effective, spec, arguments, injection.Environment)
+		} else {
+			result, callErr = g.Backend.Call(callCtx, effective, spec, arguments)
+		}
+		if callErr != nil {
+			fields["outcome"] = "deny"
+			_ = g.audit("deny", fields)
+			return callErr
+		}
+		out = result
+		fields["outcome"] = "allow"
+		return g.audit("allow", fields)
+	})
+	return out, err
+}
+
+func viewerSessionErr(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, api.ErrLinkGone):
+		http.Error(w, "session gone", http.StatusGone)
+	case errors.Is(err, api.ErrUnauthorized):
+		http.Error(w, "forbidden", http.StatusForbidden)
+	case errors.Is(err, api.ErrNotFound), errors.Is(err, api.ErrStale):
+		http.Error(w, "not found", http.StatusNotFound)
+	default:
+		http.Error(w, "backend failed", http.StatusBadGateway)
+	}
+}
+
+func (g *Gateway) serveViewerFrame(w http.ResponseWriter, r *http.Request, connectionID string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	result, err := g.viewerForward(r.Context(), r.URL.Query().Get("session"), "browser_take_screenshot", map[string]any{"type": "jpeg"})
+	if err != nil {
+		viewerSessionErr(w, err)
+		return
+	}
+	for _, content := range result.Content {
+		if image, ok := content.(*mcp.ImageContent); ok && len(image.Data) > 0 {
+			mime := image.MIMEType
+			if mime != "image/jpeg" && mime != "image/png" && mime != "image/webp" {
+				mime = "image/jpeg"
+			}
+			w.Header().Set("Content-Type", mime)
+			w.Header().Set("Cache-Control", "no-store")
+			_, _ = w.Write(image.Data)
+			return
+		}
+	}
+	http.Error(w, "no frame", http.StatusBadGateway)
+}
+
+func (g *Gateway) serveViewerInput(w http.ResponseWriter, r *http.Request, connectionID string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var request struct {
+		Tool      string         `json:"tool"`
+		Arguments map[string]any `json:"arguments"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&request); err != nil || request.Tool == "" {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	result, err := g.viewerForward(r.Context(), r.URL.Query().Get("session"), request.Tool, request.Arguments)
+	if err != nil {
+		viewerSessionErr(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": !result.IsError, "text": result.Text})
 }
 
 // serveDevice renders and polls the RFC 8628 device-flow page: the link

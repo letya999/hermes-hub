@@ -415,7 +415,7 @@ func TestShareTeamConnectionPublishesTeamOwnedRecords(t *testing.T) {
 	if err := store.PutTeam(team); err != nil {
 		t.Fatal(err)
 	}
-	connection, reference, err := store.ShareTeamConnection("platform", definition.DefinitionID, definition.Version, "local", "local://team/1", []string{"GOOGLE_TOKEN"})
+	connection, reference, err := store.ShareTeamConnection("platform", definition.DefinitionID, definition.Version, "local", "local://team/1", "", []string{"GOOGLE_TOKEN"})
 	if err != nil {
 		t.Fatalf("share rejected: %v", err)
 	}
@@ -435,10 +435,10 @@ func TestShareTeamConnectionPublishesTeamOwnedRecords(t *testing.T) {
 	if err := store.RegisterDefinition(plain); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.ShareTeamConnection("platform", plain.DefinitionID, plain.Version, "local", "local://team/2", []string{"GOOGLE_TOKEN"}); err == nil {
+	if _, _, err := store.ShareTeamConnection("platform", plain.DefinitionID, plain.Version, "local", "local://team/2", "", []string{"GOOGLE_TOKEN"}); err == nil {
 		t.Fatal("non-shareable definition shared")
 	}
-	if _, _, err := store.ShareTeamConnection("ghost", definition.DefinitionID, definition.Version, "local", "local://team/3", []string{"GOOGLE_TOKEN"}); err == nil {
+	if _, _, err := store.ShareTeamConnection("ghost", definition.DefinitionID, definition.Version, "local", "local://team/3", "", []string{"GOOGLE_TOKEN"}); err == nil {
 		t.Fatal("missing team shared")
 	}
 }
@@ -464,7 +464,7 @@ func TestShareableConnectionYieldsOneWorkload(t *testing.T) {
 	if err := store.PutTeam(team); err != nil {
 		t.Fatal(err)
 	}
-	connection, _, err := store.ShareTeamConnection("platform", definition.DefinitionID, definition.Version, "local", "local://team/1", []string{"GOOGLE_TOKEN"})
+	connection, _, err := store.ShareTeamConnection("platform", definition.DefinitionID, definition.Version, "local", "local://team/1", "", []string{"GOOGLE_TOKEN"})
 	if err != nil {
 		t.Fatalf("shareable:connection rejected: %v", err)
 	}
@@ -513,7 +513,7 @@ func TestTeamRotationPicksNewRevisionWithoutReconnect(t *testing.T) {
 	if err := store.PutTeam(team); err != nil {
 		t.Fatal(err)
 	}
-	connection, reference, err := store.ShareTeamConnection("platform", definition.DefinitionID, definition.Version, "local", "local://team/1", []string{"GOOGLE_TOKEN"})
+	connection, reference, err := store.ShareTeamConnection("platform", definition.DefinitionID, definition.Version, "local", "local://team/1", "", []string{"GOOGLE_TOKEN"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -581,7 +581,7 @@ func TestTeamMemberRemoveKeepsSharedRows(t *testing.T) {
 	if err := store.PutTeam(team); err != nil {
 		t.Fatal(err)
 	}
-	connection, reference, err := store.ShareTeamConnection("platform", definition.DefinitionID, definition.Version, "local", "local://team/1", []string{"GOOGLE_TOKEN"})
+	connection, reference, err := store.ShareTeamConnection("platform", definition.DefinitionID, definition.Version, "local", "local://team/1", "", []string{"GOOGLE_TOKEN"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -624,7 +624,7 @@ func TestTeamOperatorRemovePurgesSharedRows(t *testing.T) {
 	if err := store.PutTeam(team); err != nil {
 		t.Fatal(err)
 	}
-	connection, reference, err := store.ShareTeamConnection("platform", definition.DefinitionID, definition.Version, "local", "local://team/1", []string{"GOOGLE_TOKEN"})
+	connection, reference, err := store.ShareTeamConnection("platform", definition.DefinitionID, definition.Version, "local", "local://team/1", "", []string{"GOOGLE_TOKEN"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -685,7 +685,7 @@ func TestTeamCallAuditAttributesSenderAndTeam(t *testing.T) {
 	if err := store.PutTeam(team); err != nil {
 		t.Fatal(err)
 	}
-	connection, _, err := store.ShareTeamConnection("platform", definition.DefinitionID, definition.Version, "local", "local://team/1", []string{"GOOGLE_TOKEN"})
+	connection, _, err := store.ShareTeamConnection("platform", definition.DefinitionID, definition.Version, "local", "local://team/1", "", []string{"GOOGLE_TOKEN"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -753,7 +753,7 @@ func TestTeamConnectorListBadge(t *testing.T) {
 	if err := s.PutTeam(team); err != nil {
 		t.Fatal(err)
 	}
-	connection, _, err := s.ShareTeamConnection("platform", definition.DefinitionID, definition.Version, "local", "local://team/1", []string{"GOOGLE_TOKEN"})
+	connection, _, err := s.ShareTeamConnection("platform", definition.DefinitionID, definition.Version, "local", "local://team/1", "", []string{"GOOGLE_TOKEN"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -802,7 +802,7 @@ func TestTeamConnectorMemberOpsNotPermitted(t *testing.T) {
 	if err := s.PutTeam(team); err != nil {
 		t.Fatal(err)
 	}
-	connection, _, err := s.ShareTeamConnection("platform", definition.DefinitionID, definition.Version, "local", "local://team/1", []string{"GOOGLE_TOKEN"})
+	connection, _, err := s.ShareTeamConnection("platform", definition.DefinitionID, definition.Version, "local", "local://team/1", "", []string{"GOOGLE_TOKEN"})
 	if err != nil {
 		t.Fatal(err)
 	}

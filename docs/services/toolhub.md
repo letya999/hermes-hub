@@ -1,6 +1,6 @@
 ---
 description: toolhub — capability gateway: tool admission, governance evaluation, connector lifecycle, audit ledger.
-last_verified: 2026-10-22
+last_verified: 2026-10-23
 ---
 
 # toolhub
@@ -45,6 +45,19 @@ tool call crosses. Listens `0.0.0.0:8090`, host-bound to `127.0.0.1:8090`.
   projection changes go to the supervisor as `POST /v1/restart-request`
   (identity triple = lookup key, not a grant); the runtime's own endpoint
   writes the deferred marker, applied immediately when idle.
+- **Team connectors**: `shareable: credential` shares one team credential
+  across per-member workloads; `shareable: connection` shares one credential
+  and one workload. Each member binding lazily mints one Broker grant,
+  attributed to the member binding and signed under the owning team context —
+  grants live in a side ledger, never inside the shared ref. Member removal,
+  connection removal, rotation and disable all retire the member's grants.
+- **Browser connectors**: Playwright workloads are ordinary isolated
+  connectors with a persistent per-connection profile volume, egress only
+  through the sidecar proxy and enforced CPU/memory/PID/shm budgets. The
+  owner-only viewer mints one-time nonces, spends them into short-lived
+  sessions (sliding 15 min, 2 h cap), polls JPEG frames and forwards a
+  bounded browser-tool allowlist — scripting, network, file and close tools
+  are denied.
 
 ## State
 
