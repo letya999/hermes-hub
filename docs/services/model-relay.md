@@ -48,7 +48,10 @@ values in compose. Quota accounting lives in `model_relay_quota.go`.
   `GET /v1/model` reports the effective selection (same bearer).
   `GET /v1/registry` (admin bearer) reports each granted model with its
   ordered provider ladder — `{name, ladder:[{provider, model, down}]}` —
-  which is the account view `/model` renders; provider URLs, env key names
+  plus `accounts`: every provider used by a granted ladder with its live
+  upstream catalog (`GET {provider}/v1/models`, fetched with the hop's own
+  credentials under a 10-second bound; a failed fetch just omits the list).
+  This is the account view `/model` renders; provider URLs, env key names
   and grant ids never leave the mounted file.
 - Spawned runtimes reach the relay over the managed agent network. They do not
   mount the registry, provider keys, Broker signing key or switch-admin bearer.

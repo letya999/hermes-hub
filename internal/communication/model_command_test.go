@@ -27,7 +27,7 @@ func TestModelCommandSwitchesThroughRelay(t *testing.T) {
 			return
 		}
 		if r.Method == http.MethodGet && r.URL.Path == "/v1/registry" {
-			_, _ = io.WriteString(w, `{"models":[{"name":"default","ladder":[{"provider":"cliproxy","model":"gemini-3.8-flash-n"}]},{"name":"turbo","ladder":[{"provider":"cliproxy","model":"gemini-3-flash"},{"provider":"openai","model":"gpt-5-mini","down":true}]}]}`)
+			_, _ = io.WriteString(w, `{"models":[{"name":"default","ladder":[{"provider":"cliproxy","model":"gemini-3.8-flash-n"}]},{"name":"turbo","ladder":[{"provider":"cliproxy","model":"gemini-3-flash"},{"provider":"openai","model":"gpt-5-mini","down":true}]}],"accounts":[{"provider":"cliproxy","catalog":["gemini-3.8-flash-n","gemini-3-flash","gemini-2.5-pro","veo-3"]},{"provider":"openai","down":true,"catalog":["gpt-5-mini","gpt-5"]}]}`)
 			return
 		}
 		gotAuth = r.Header.Get("Authorization")
@@ -50,10 +50,21 @@ func TestModelCommandSwitchesThroughRelay(t *testing.T) {
 	if strings.HasPrefix(out, "\n") || strings.HasPrefix(out, " ") {
 		t.Fatalf("reply starts with whitespace: %q", out)
 	}
-	for _, want := range []string{"turbo", "— текущая", "cliproxy", "gemini-3-flash", "openai", "gpt-5-mini", "основной", "запасной", "недоступен"} {
+	for _, want := range []string{
+		"Аккаунты:", "cliproxy", "openai",
+		"default → gemini-3.8-flash-n — основной",
+		"turbo → gemini-3-flash — основной ← текущая",
+		"turbo → gpt-5-mini — запасной",
+		"недоступен",
+		"ещё: gemini-2.5-pro, veo-3",
+		"ещё: gpt-5",
+	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("account view missing %q: %q", want, out)
 		}
+	}
+	if strings.Contains(out, "ещё: gemini-3-flash") || strings.Contains(out, "ещё: gpt-5-mini") {
+		t.Fatalf("wired models duplicated into the extra catalog: %q", out)
 	}
 	out = modelCommand(context.Background(), "alice", "/model turbo")
 	if gotAuth != "Bearer admintoken" || gotModel != "turbo" {

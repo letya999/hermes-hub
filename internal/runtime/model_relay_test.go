@@ -671,6 +671,87 @@ models:
 	}
 }
 
+// Accounts join the registry view: every provider on a granted ladder reports
+// its live upstream catalog so /model can show what an account can actually
+// serve. A provider that fails the fetch simply reports no catalog — the row
+// stays, the extra list does not.
+func TestModelRelayRegistryAccountsCatalog(t *testing.T) {
+	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			_, _ = io.WriteString(w, `{"data":[{"id":"gemini-3.8-flash-n"},{"id":"gemini-2.5-pro"},{"id":"veo-3"}]}`)
+			return
+		}
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	defer catalog.Close()
+	dir := t.TempDir()
+	registry := filepath.Join(dir, "models.yaml")
+	content := `providers:
+  a:
+    allow_private: true
+    url: ` + catalog.URL + `
+  b:
+    url: http://127.0.0.1:1
+models:
+  default:
+    ladder:
+      - {provider: a, model: gemini-3.8-flash-n}
+      - {provider: b, model: gpt-5-mini}
+  alt:
+    ladder:
+      - {provider: a, model: gemini-2.5-pro}
+`
+	if err := os.WriteFile(registry, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := modelRelayRegistryHandler(registry, filepath.Join(dir, "sel.json"), "alice", "admintoken")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/registry", nil)
+	req.Header.Set("Authorization", "Bearer admintoken")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("registry rejected admin: %d", rec.Code)
+	}
+	var doc struct {
+		Accounts []struct {
+			Provider string   `json:"provider"`
+			Down     bool     `json:"down,omitempty"`
+			Catalog  []string `json:"catalog,omitempty"`
+		} `json:"accounts"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Accounts) != 2 {
+		t.Fatalf("accounts missing: %+v", doc)
+	}
+	var a, b *struct {
+		Provider string   `json:"provider"`
+		Down     bool     `json:"down,omitempty"`
+		Catalog  []string `json:"catalog,omitempty"`
+	}
+	for i := range doc.Accounts {
+		switch doc.Accounts[i].Provider {
+		case "a":
+			a = &doc.Accounts[i]
+		case "b":
+			b = &doc.Accounts[i]
+		}
+	}
+	if a == nil || b == nil {
+		t.Fatalf("accounts missing providers: %+v", doc.Accounts)
+	}
+	if len(a.Catalog) != 3 || a.Catalog[0] != "gemini-3.8-flash-n" {
+		t.Fatalf("provider catalog not reported: %+v", a)
+	}
+	if len(b.Catalog) != 0 {
+		t.Fatalf("unreachable provider reported a catalog: %+v", b)
+	}
+}
+
 func TestModelRelayRegistryModeFromEnv(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `{"choices":[]}`)

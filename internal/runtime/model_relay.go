@@ -767,23 +767,99 @@ func (r *relayRegistry) serveRegistry(w http.ResponseWriter, req *http.Request) 
 		Ladder []hop  `json:"ladder"`
 	}
 	models := make([]model, 0, len(file.Models))
+	hopByProvider := map[string]*modelHop{}
+	var providers []string
 	for name, entry := range file.Models {
 		if !r.granted(file, entry) {
 			continue
 		}
 		ladder := make([]hop, 0, len(entry.Ladder))
-		for _, ref := range entry.Ladder {
+		hops := r.ladderFor(file, name, entry)
+		for i, ref := range entry.Ladder {
 			h := hop{Provider: ref.Provider, Model: ref.Model}
 			if health := r.health[ref.Provider]; health != nil && health.down(time.Now()) {
 				h.Down = true
 			}
 			ladder = append(ladder, h)
+			if _, seen := hopByProvider[ref.Provider]; !seen {
+				providers = append(providers, ref.Provider)
+				hopByProvider[ref.Provider] = nil
+				if i < len(hops) && hops[i].name == ref.Provider {
+					hopByProvider[ref.Provider] = hops[i]
+				}
+			}
 		}
 		models = append(models, model{Name: name, Ladder: ladder})
 	}
 	slices.SortFunc(models, func(a, b model) int { return strings.Compare(a.Name, b.Name) })
+	type account struct {
+		Provider string   `json:"provider"`
+		Down     bool     `json:"down,omitempty"`
+		Catalog  []string `json:"catalog,omitempty"`
+	}
+	accounts := make([]account, 0, len(providers))
+	for _, name := range providers {
+		a := account{Provider: name}
+		if health := r.health[name]; health != nil && health.down(time.Now()) {
+			a.Down = true
+		}
+		if upstream := hopByProvider[name]; upstream != nil {
+			a.Catalog = r.providerCatalog(req.Context(), upstream)
+		}
+		accounts = append(accounts, a)
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"models": models})
+	_ = json.NewEncoder(w).Encode(map[string]any{"models": models, "accounts": accounts})
+}
+
+// providerCatalog lists what an upstream account can actually serve — the
+// /v1/models of that provider, fetched with the hop's own credentials. The
+// hop transport stays pinned and redirect-free like regular traffic; a
+// failed or empty answer means no catalog rather than a relay error.
+func (r *relayRegistry) providerCatalog(ctx context.Context, hop *modelHop) []string {
+	target := hop.base + "/v1/models"
+	if base, err := url.Parse(hop.base); err == nil && strings.Trim(base.Path, "/") != "" {
+		target = hop.base + "/models"
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil) // #nosec G704 -- configured upstream hop
+	if err != nil {
+		return nil
+	}
+	switch {
+	case hop.keyFor != nil:
+		key, err := hop.keyFor(ctx)
+		if err != nil {
+			return nil
+		}
+		req.Header.Set("Authorization", "Bearer "+key)
+	case hop.keyEnv != "":
+		if key := os.Getenv(hop.keyEnv); key != "" {
+			req.Header.Set("Authorization", "Bearer "+key)
+		}
+	}
+	client := &http.Client{Transport: hop.transport, Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := client.Do(req) // #nosec G704 -- configured upstream hop
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	var doc struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&doc) != nil || resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	out := make([]string, 0, len(doc.Data))
+	for _, m := range doc.Data {
+		if m.ID != "" {
+			out = append(out, m.ID)
+		}
+	}
+	return out
 }
 
 // requestedModel returns the logical model name in the request body, if any.

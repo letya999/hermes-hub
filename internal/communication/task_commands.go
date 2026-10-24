@@ -598,11 +598,54 @@ func modelAccountView(ctx context.Context, call func(context.Context, string, st
 				Down     bool   `json:"down,omitempty"`
 			} `json:"ladder"`
 		} `json:"models"`
+		Accounts []struct {
+			Provider string   `json:"provider"`
+			Down     bool     `json:"down,omitempty"`
+			Catalog  []string `json:"catalog,omitempty"`
+		} `json:"accounts"`
 	}
 	if json.Unmarshal(body, &registry) != nil || len(registry.Models) == 0 {
 		return ""
 	}
 	var out strings.Builder
+	if len(registry.Accounts) > 0 {
+		out.WriteString("Аккаунты:")
+		for _, a := range registry.Accounts {
+			out.WriteString("\n• " + a.Provider)
+			if a.Down {
+				out.WriteString(" (недоступен)")
+			}
+			out.WriteString(":")
+			wired := map[string]bool{}
+			for _, m := range registry.Models {
+				for i, hop := range m.Ladder {
+					if hop.Provider != a.Provider {
+						continue
+					}
+					wired[hop.Model] = true
+					role := "запасной"
+					if i == 0 {
+						role = "основной"
+					}
+					out.WriteString("\n    " + m.Name + " → " + hop.Model + " — " + role)
+					if m.Name == current {
+						out.WriteString(" ← текущая")
+					}
+				}
+			}
+			var extra []string
+			for _, id := range a.Catalog {
+				if !wired[id] {
+					extra = append(extra, id)
+				}
+			}
+			if len(extra) > 0 {
+				out.WriteString("\n    ещё: " + strings.Join(extra, ", "))
+			}
+		}
+		out.WriteString("\n")
+		return out.String()
+	}
 	for _, m := range registry.Models {
 		if out.Len() > 0 {
 			out.WriteString("\n")
