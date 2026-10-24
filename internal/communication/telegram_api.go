@@ -154,7 +154,7 @@ func (t *telegramAPI) call(ctx context.Context, method string, payload any, resu
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+"/bot"+t.token+"/"+method, bytes.NewReader(b))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+"/bot"+t.token+"/"+method, bytes.NewReader(b)) // #nosec G704 -- configured Telegram API base URL
 	if err != nil {
 		return err
 	}
@@ -163,7 +163,7 @@ func (t *telegramAPI) call(ctx context.Context, method string, payload any, resu
 }
 
 func (t *telegramAPI) callRequest(req *http.Request, result any) error {
-	response, err := t.client.Do(req)
+	response, err := t.client.Do(req) // #nosec G704 -- request built on the configured Telegram API base URL
 	if err != nil {
 		return err
 	}

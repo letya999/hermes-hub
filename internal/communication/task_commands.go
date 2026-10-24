@@ -554,7 +554,7 @@ func modelRelayFor(principal string) (base, admin string) {
 	if path == "" || principal == "" {
 		return "", ""
 	}
-	body, err := os.ReadFile(path)
+	body, err := os.ReadFile(path) // #nosec G703 -- HUB_MODEL_RELAY_ADMINS_FILE is operator-rendered service config, not request input
 	if err != nil {
 		return "", ""
 	}

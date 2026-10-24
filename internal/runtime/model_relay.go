@@ -308,7 +308,7 @@ func modelCall(ctx context.Context, client *http.Client, hops []*modelHop, metho
 			cancel()
 			if err != nil {
 				hop.fail()
-				log.Printf("model-relay hop=%s path=%s credential unavailable", hop.name, path)
+				log.Printf("model-relay hop=%s path=%s credential unavailable", hop.name, path) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
 				continue
 			}
 			req.Header.Set("Authorization", "Bearer "+key)
@@ -316,7 +316,7 @@ func modelCall(ctx context.Context, client *http.Client, hops []*modelHop, metho
 			key := os.Getenv(hop.keyEnv)
 			if key == "" {
 				hop.fail()
-				log.Printf("model-relay hop=%s path=%s credential unavailable", hop.name, path)
+				log.Printf("model-relay hop=%s path=%s credential unavailable", hop.name, path) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
 				continue
 			}
 			req.Header.Set("Authorization", "Bearer "+key)

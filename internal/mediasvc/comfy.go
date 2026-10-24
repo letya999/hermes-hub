@@ -142,14 +142,14 @@ func (e *comfyGen) Poll(ctx context.Context, handle SubmitHandle, _ string) (Gen
 		return GenResult{}, false, errors.New("ComfyUI workflow must save exactly one output")
 	}
 	query := url.Values{"filename": {files[0].Filename}, "subfolder": {files[0].Subfolder}, "type": {"output"}}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, e.base+"/view?"+query.Encode(), nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, e.base+"/view?"+query.Encode(), nil) // #nosec G704 -- configured ComfyUI upstream endpoint
 	if err != nil {
 		return GenResult{}, false, errors.New("ComfyUI output reference invalid")
 	}
 	if err := e.authorize(ctx, request); err != nil {
 		return GenResult{}, false, err
 	}
-	response, err := e.client.Do(request)
+	response, err := e.client.Do(request) // #nosec G704 -- configured ComfyUI upstream endpoint
 	if err != nil {
 		return GenResult{}, false, errors.New("ComfyUI output unavailable")
 	}
@@ -177,7 +177,7 @@ func (e *comfyGen) json(ctx context.Context, method, path string, payload, desti
 			return errors.New("invalid ComfyUI request")
 		}
 	}
-	request, err := http.NewRequestWithContext(ctx, method, e.base+path, bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(ctx, method, e.base+path, bytes.NewReader(body)) // #nosec G704 -- configured ComfyUI upstream endpoint
 	if err != nil {
 		return errors.New("invalid ComfyUI endpoint")
 	}
@@ -185,7 +185,7 @@ func (e *comfyGen) json(ctx context.Context, method, path string, payload, desti
 	if err := e.authorize(ctx, request); err != nil {
 		return err
 	}
-	response, err := e.client.Do(request)
+	response, err := e.client.Do(request) // #nosec G704 -- configured ComfyUI upstream endpoint
 	if err != nil {
 		if method == http.MethodPost {
 			return errSubmissionUncertain

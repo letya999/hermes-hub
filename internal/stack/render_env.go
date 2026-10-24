@@ -458,5 +458,5 @@ func atomic(path string, b []byte) error {
 	if err = f.Close(); err != nil {
 		return err
 	}
-	return os.Rename(name, path)
+	return os.Rename(name, path) // #nosec G703 -- temp file renamed onto a rendered path under the owned space dir
 }
