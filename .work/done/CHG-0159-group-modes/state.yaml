@@ -1,10 +1,10 @@
 schema: 1
 change: CHG-0159
 title: group modes — topics vs mention
-status: in_progress
+status: done
 branch: feat/m16-dev-merge
-updated: 2026-10-24
-phase: live_accepted
+updated: 2026-10-25
+phase: done
 adr: ADR-0074
 spec: SPEC-0071
 github_issue: 207
