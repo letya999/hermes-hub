@@ -187,8 +187,13 @@ func (g *Gateway) serveConnectors(w http.ResponseWriter, r *http.Request) {
 		}
 		views = append(views, view)
 	}
+	inventory, err := (&ControlPlane{Store: g.Store}).connectorList(auth)
+	if err != nil {
+		http.Error(w, "registry unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"connectors": views})
+	_ = json.NewEncoder(w).Encode(map[string]any{"connectors": views, "inventory": inventory.Candidates})
 }
 
 // connectorFacadeResult runs one connector_* verb through the shared facade

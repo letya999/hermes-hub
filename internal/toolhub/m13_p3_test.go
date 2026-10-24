@@ -383,11 +383,22 @@ func TestConnectorList(t *testing.T) {
 	if result.State != api.OpStateDone {
 		t.Fatalf("list state: %+v", result)
 	}
-	if len(result.Candidates) != 1 || result.Candidates[0].ID != mine.OnboardingID {
-		t.Fatalf("list must contain exactly my connector: %+v", result.Candidates)
+	if len(result.Candidates) != 2 {
+		t.Fatalf("list must contain my onboarding and existing connection: %+v", result.Candidates)
 	}
-	if result.Candidates[0].Source != mine.SourceURL || result.Candidates[0].Kind == "" {
-		t.Fatalf("candidate fields: %+v", result.Candidates[0])
+	for _, candidate := range result.Candidates {
+		switch candidate.ID {
+		case mine.OnboardingID:
+			if candidate.Source != mine.SourceURL || candidate.Kind == "" {
+				t.Fatalf("candidate fields: %+v", candidate)
+			}
+		case "google-work":
+			if candidate.ConnectionID != "google-work" || candidate.ConnectionStatus != api.ActiveStatus {
+				t.Fatalf("connection fields: %+v", candidate)
+			}
+		default:
+			t.Fatalf("foreign or unexpected candidate: %+v", candidate)
+		}
 	}
 	// A principal without the connectors bundle cannot call the facade.
 	unmanaged := m13P3Auth(t)

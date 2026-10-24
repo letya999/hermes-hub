@@ -199,7 +199,7 @@ func (m *Manager) applyRuntimeRestartLocked(ctx context.Context, runtime Runtime
 		Scheduled bool `json:"scheduled"`
 	}
 	err = json.NewDecoder(io.LimitReader(response.Body, 64*1024)).Decode(&result)
-	response.Body.Close()
+	_ = response.Body.Close()
 	if response.StatusCode != http.StatusOK || err != nil {
 		return false, errors.New("runtime restart response invalid")
 	}
@@ -283,7 +283,7 @@ func (m *Manager) restartRequestHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64*1024))
-	response.Body.Close()
+	_ = response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime marker refused"})
 		return

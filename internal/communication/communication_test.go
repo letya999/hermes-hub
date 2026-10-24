@@ -946,7 +946,7 @@ func TestGatewayRoutesCommandsJobsAndDeletesSensitiveInput(t *testing.T) {
 		t.Fatal("unknown Telegram chat resolved to a user")
 	}
 	joined := strings.Join(fake.sent, "\n")
-	if !strings.Contains(joined, "github — готово") || !strings.Contains(joined, "не настроен") {
+	if !strings.Contains(joined, "github — настроено; работоспособность не проверена") || !strings.Contains(joined, "не настроен") {
 		t.Fatal(fake.sent)
 	}
 	c.Users[0].PolicyDisabled = []string{"slack"}

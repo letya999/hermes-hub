@@ -50,7 +50,7 @@ func (g *Gateway) quotaLines(ctx context.Context) []string {
 }
 
 func fetchQuotaLines(ctx context.Context, base, admin string) ([]string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v1/quota", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v1/quota", nil) // #nosec G704 -- configured internal quota endpoint
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +58,7 @@ func fetchQuotaLines(ctx context.Context, base, admin string) ([]string, error) 
 		req.Header.Set("Authorization", "Bearer "+admin)
 	}
 	client := &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) // #nosec G704 -- configured internal quota endpoint
 	if err != nil {
 		return nil, err
 	}

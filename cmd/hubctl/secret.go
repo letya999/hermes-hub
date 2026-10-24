@@ -83,7 +83,7 @@ func runSecret(_ context.Context, args []string) error {
 			return err
 		}
 	}
-	if _, err := os.Lstat(*toolHubStore); err == nil {
+	if _, err := os.Lstat(*toolHubStore); err == nil { // #nosec G703 -- operator-supplied store path
 		registry, err := toolhub.Load(*toolHubStore)
 		if err != nil {
 			return err
@@ -221,7 +221,7 @@ func defaultCredentialKeyPath() string {
 }
 
 func ensureCredentialKey(path string) error {
-	if _, err := os.Lstat(path); err == nil {
+	if _, err := os.Lstat(path); err == nil { // #nosec G703 -- operator-supplied key path
 		return nil
 	} else if !os.IsNotExist(err) {
 		return err

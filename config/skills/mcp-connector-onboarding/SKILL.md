@@ -9,6 +9,11 @@ metadata:
 
 # MCP and connector lifecycle
 
+For terminology and inventory, read `hermes-hub-system-guide` (ToolHub
+`system_guide` in managed mode). MCP, CLI and hub executors must retain their
+actual format labels. Current connections, catalog entries and setup history
+are separate categories.
+
 Use this skill whenever the owner asks to add, install, connect, enable, disable,
 reauthorize, or remove an MCP, connector, integration, or CLI-backed service, or
 asks to continue, resume, check, or finish an earlier connector operation. A
@@ -89,8 +94,10 @@ package-management instructions.
 
 - Never ask the owner to paste a token, secret, nonce, or link into chat — the
   operation result intentionally carries no link material.
-- Never claim installation, readiness, or provider access before a call returns
-  `state: done`; never infer progress from chat history.
+- `state: done` establishes completion of that operation only. Check current
+  connection status, tool admission, workload readiness and a suitable allowed
+  provider read separately before claiming working provider access. Never infer
+  progress or readiness from chat history.
 - A failed candidate may be incompatible upstream. Report the actual error;
   offer alternatives from a new search and wait for selection before replacing it.
 - Never fall back to manual configuration when a ToolHub call fails — report the

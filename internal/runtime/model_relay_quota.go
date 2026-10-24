@@ -146,13 +146,13 @@ func managementCall(ctx context.Context, client *http.Client, base, key, method,
 		}
 		body = bytes.NewReader(data)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, base+path, body)
+	req, err := http.NewRequestWithContext(ctx, method, base+path, body) // #nosec G704 -- internal quota endpoint
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("Content-Type", "application/json")
-	response, err := client.Do(req)
+	response, err := client.Do(req) // #nosec G704 -- internal quota endpoint
 	if err != nil {
 		return err
 	}

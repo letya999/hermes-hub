@@ -499,7 +499,7 @@ func writeToolEntries(path string, legacy bool, updates map[string]stack.ToolEnt
 		if err != nil {
 			return err
 		}
-		if err = os.WriteFile(filepath.Join(stage, "agent.yaml"), agent, 0600); err != nil {
+		if err = os.WriteFile(filepath.Join(stage, "agent.yaml"), agent, 0600); err != nil { // #nosec G703 -- generated staging dir, fixed filename
 			return err
 		}
 		if _, err = stack.Read(stage); err != nil {

@@ -1,6 +1,6 @@
 ---
 description: "Native TLS, private directories, providers и согласование runtime paths."
-last_verified: "2026-10-20"
+last_verified: "2026-10-23"
 ---
 
 # Конфигурация и развёртывание
@@ -24,6 +24,48 @@ Public origin должен совпадать с фактическим Host, в
 `master.key` — 32 raw random bytes для шифрования metadata и optional local provider, не пользовательский
 PAT. Private identity keys остаются в соответствующих Hub/runtime services; Broker получает только
 их raw32 public keys. Dev init создаёт все роли рядом только для лаборатории.
+
+## Маркер инициализации
+
+`state_witness_dir` — optional absolute private directory для маркера ранее
+инициализированного состояния; путь проверяется при `Build` через securefs.
+Без него маркер хранится рядом с master key. Флаг `serve --state-witness-dir`
+переопределяет поле конфигурации. Каталог должен быть доступен Broker для создания
+файла при первой успешной инициализации сервиса. Compose infra передаёт флаг и
+монтирует отдельный external volume `hermes-credential-broker-recovery-<env>` в
+`/var/lib/credential-broker-recovery` только в Broker. `hubctl up` создаёт volume
+перед запуском infra/Broker; обновлённый образ содержит каталог UID/GID10001,
+mode0700, откуда Docker инициализирует пустой volume. Существующие непустые
+volumes автоматически не chown/chmod; неверные права требуют проверки оператора.
+При прямом Compose volume нужно создать заранее. Dev/prod имеют
+разные volumes; запуск старого образа без нового флага не поддерживается.
+Это только обнаружение пустого состояния, не encrypted backup или anti-rollback.
+
+## Opt-in encrypted recovery
+
+`recovery_dir`, `recovery_anchor_dir`, `recovery_key_file` и
+`recovery_identity` включаются только вместе. `recovery_identity` — стабильный
+уникальный идентификатор deployment и environment, например
+`site-1/dev`; менять его без миграции нельзя. `recovery_key_file` содержит
+отдельные 32 raw random bytes и не может совпадать с `master.key`. Каталоги
+primary journal (`data_dir`), encrypted recovery и commit anchor не должны
+вкладываться друг в друга; оператор размещает их на независимых носителях.
+Ключ recovery должен сохраняться отдельно от primary state и recovery
+ciphertext. Проверка путей не доказывает независимость Docker volumes.
+
+Для новых пустых установок Broker создаёт recovery journal и зашифрованные
+копии новых local provider objects до подтверждения записи. Каждая
+подтверждённая запись фиксируется отдельным зашифрованным commit anchor.
+Старый непустой journal нельзя просто открыть с новыми полями: остановить
+Broker и выполнить `credential-broker migrate-recovery --config <absolute-path>`.
+Команда переносит подтверждённые записи и только ссылки активных managed
+credentials, незавершённых drafts и текущих checkpoints; её можно повторить
+после прерывания. Она не печатает secret values. Порядок и пределы описаны
+в [recovery.md](recovery.md).
+
+Текущий Compose монтирует только independent state witness volume; он не
+включает `recovery_dir` автоматически. Обновление dev-бинарника само по себе
+не означает, что существующее состояние уже защищено резервной копией.
 
 ## Browser session approval
 

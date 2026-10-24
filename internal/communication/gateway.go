@@ -526,7 +526,7 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 				queryCtx = g.commandCtx
 			}
 			g.usageWG.Add(1)
-			go func() {
+			go func() { // #nosec G118 -- detached usage job intentionally outlives the request context
 				defer func() { g.usageQueries.Add(-1); g.usageWG.Done() }()
 				usageCtx, cancel := context.WithTimeout(queryCtx, 2*time.Minute)
 				defer cancel()
@@ -584,7 +584,7 @@ func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, task Task, c
 	if g.config.Supervised {
 		// The runtime spawn overlaps the gateway's own work (SPEC-0053 R2.1);
 		// a failed wake is harmless — /v1/jobs ensures again on dispatch.
-		go g.wakeRuntime(job)
+		go g.wakeRuntime(job) // #nosec G118 -- fire-and-forget wake intentionally outlives the request context
 	}
 	if ch.Caps().Typing {
 		_ = ch.SendPresence(ctx, chatID, task.TopicID)

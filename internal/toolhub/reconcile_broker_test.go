@@ -1,6 +1,7 @@
 package toolhub
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"net/http"
@@ -22,8 +23,10 @@ func TestReconcilerBrokerCredentialBackend(t *testing.T) {
 	}{
 		{"active", `{"status":"active"}`, 200, true, false},
 		{"revoked", `{"status":"revoked"}`, 200, false, false},
-		{"missing", `{"code":"not_found"}`, 404, false, false},
+		{"missing-or-invisible", `{"code":"not_found"}`, 404, false, true},
 		{"unavailable", `{"code":"unavailable"}`, 503, false, true},
+		{"missing-status", `{}`, 200, false, true},
+		{"unknown-status", `{"status":"future_state"}`, 200, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store, _, _ := seededStore(t)
@@ -33,9 +36,10 @@ func TestReconcilerBrokerCredentialBackend(t *testing.T) {
 			ref.BrokerContractID, ref.BrokerContractRevision = "google-token", 1
 			ref.Revision++
 			ref.CredentialRefID = api.CredentialReferenceID(conn.ConnectionID, ref.Revision)
-			if err := store.PutCredentialReference(ref); err != nil {
+			if _, err := store.RotateCredentialRecord(ref); err != nil {
 				t.Fatal(err)
 			}
+			conn, _ = store.connectionFor(conn.ConnectionID)
 			auth := aliceAuth()
 			if err := store.PutOnboarding(api.Onboarding{Schema: api.SchemaVersion, Revision: 1, Mode: api.OnboardingCatalog, OnboardingID: "onboard-broker-check", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, ConnectionID: conn.ConnectionID, Phase: api.PhaseEnabled}); err != nil {
 				t.Fatal(err)
@@ -83,6 +87,19 @@ func TestReconcilerBrokerCredentialBackend(t *testing.T) {
 			alive, err := r.CredAlive(t.Context(), ref.CredentialRefID)
 			if alive != tc.alive || (err != nil) != tc.wantErr || gets != 1 {
 				t.Errorf("alive=%v error=%v broker reads=%d", alive, err, gets)
+			}
+			if tc.wantErr {
+				r.Notify = func(context.Context, string, string, map[string]any) error {
+					t.Error("ambiguous broker response requested reauthorization")
+					return nil
+				}
+				if err := r.ScanOnce(t.Context()); err == nil {
+					t.Error("ambiguous broker response was not reported")
+				}
+				after, _ := store.connectionFor(conn.ConnectionID)
+				if after.Status != api.ActiveStatus {
+					t.Error("ambiguous response changed connection lifecycle")
+				}
 			}
 			if err := r.CredPurge(t.Context(), conn, ref); err != nil || deletes != 1 {
 				t.Fatalf("purge error=%v broker deletes=%d", err, deletes)

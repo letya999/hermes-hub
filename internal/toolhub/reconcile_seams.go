@@ -28,7 +28,7 @@ func (c *ControlPlane) NewReconciler() *Reconciler {
 			return !gone && err == nil, err
 		}
 		if c.Secrets == nil {
-			return true, nil
+			return false, fmt.Errorf("%w: local credential backend unavailable", api.ErrIsolation)
 		}
 		if !ok {
 			return false, nil
@@ -107,6 +107,18 @@ func (c *ControlPlane) NewReconciler() *Reconciler {
 func (c *ControlPlane) reconcileBrokerClient(connectionID string) (*brokerclient.Client, error) {
 	if c.Broker == nil || !c.Broker.Enabled() {
 		return nil, fmt.Errorf("%w: credential broker unavailable", api.ErrIsolation)
+	}
+	if connection, ok := c.Store.connectionFor(connectionID); ok && connection.Owner.Type == api.TeamOwner {
+		team, teamOK := c.Store.TeamFor(connection.Owner.ID)
+		ref, refOK := c.Store.credentialFor(connection.CredentialRefID)
+		if !teamOK || team.Status != api.ActiveStatus || !refOK || ref.ConnectionID != connectionID || ref.Backend != "credential-broker" || ref.BrokerContextID == "" {
+			return nil, fmt.Errorf("%w: team credential owner context unavailable", api.ErrIsolation)
+		}
+		auth := identity.Envelope{Schema: identity.Schema, PrincipalID: "toolhub-reconciler",
+			ExternalIdentityID: "toolhub-reconciler", ContextID: ref.BrokerContextID,
+			RuntimeID: "toolhub-reconciler", ConversationID: ref.BrokerContextID,
+			DeliveryTargetID: ref.BrokerContextID, PolicyVersion: "reconcile"}
+		return c.Broker.NewContextManaged(auth, "broker:control")
 	}
 	onboarding, ok := c.Store.onboardingForConnection(connectionID)
 	if !ok {

@@ -61,6 +61,74 @@ tool call crosses. Listens `0.0.0.0:8090`, host-bound to `127.0.0.1:8090`.
 
 ## State
 
+`connector_list` excludes removed, revoked and superseded onboarding records
+without deleting their history. Its candidates expose `definition_id`,
+`onboarding_phase` and the transport of the recorded definition version when
+known. Owner-matching personal connections and active-team memberships expose
+`connection_id` and `connection_status` separately from onboarding phase.
+Missing fields remain unknown; none of these fields proves provider access.
+Personal onboarding records for an existing owned connection are deduplicated
+within the caller's exact context/runtime/policy. The current credential reference
+outranks legacy blank references; newer creation time and then ID break ties.
+Stale explicit references are excluded. Owned connections without onboarding
+remain visible, with no invented setup phase; their format is resolved from
+the pinned definition when available. Connection candidates expose the verified
+owner. Pending onboarding without a connection has no connection owner field.
+Connection candidates carry the last credential check time, its visibility
+(`active`, `inactive` or `unknown`) and a typed cause when one is known.
+`active` means the Broker or local credential backend saw the stored reference;
+it does not establish provider access or workload admission.
+For an exact connection ID without an owner onboarding, `connector_status`
+returns the same scoped candidate facts, including team connections visible to
+current members. `state: done` means the read completed, not that the provider
+works. Membership is rechecked; this read path does not change the lifecycle
+selector's denial of member mutations on team connections.
+The legacy control `status` body preserves `phase` as onboarding history and
+adds `connection_status` and credential check evidence only for an
+owner-matching connection. `connector_status` by current onboarding ID includes
+the same scoped candidate as `connector_list`. An `enabled`
+onboarding now suggests `diagnostics`, never `ready`: even an active registry
+record does not prove admission, workload readiness or provider access.
+`GET /v1/connectors` now includes this same scoped `inventory` next to its
+existing projected `connectors` tool groups. `/connections` renders connection
+state even when no tools project and merges projected tools into that row.
+Projected-only groups without a recorded format are labelled `unknown` rather
+than presumed to be MCP.
+Configured service environment is reported as configured, not verified ready.
+This is still short of SPEC-0069: onboarding-based status, binding-only tools,
+admission/workload/provider evidence and every channel representation need
+the same complete fact model.
+
+Credential checks preserve references on a Broker `404`: it can also mean the
+actor cannot see the credential. The typed cause is
+`credential_visibility_unknown`. Empty/unrecognized credential status and
+transport errors are also failed checks, not evidence of credential deletion.
+These errors do not automatically request reauthorization, replace a reusable
+credential or discard a rotation target. A visible `deleted` credential can
+still enter the supported fresh-request flow.
+
+Reconciler applies credential, recipe and tool-surface observations only while
+the connection revision and state match the checked snapshot. Concurrent
+deletion or revocation therefore wins over a late probe. One connection's
+credential purge or store mutation error no longer stops independent checks.
+Degraded connections are rechecked for credential visibility without being
+silently reactivated; an inactive credential blocks later recipe and surface
+probes in the same pass. Unknown credential checks wait one minute between
+attempts and persist the retry state across restarts. After five failures,
+checks run at most once per hour; a successful check or credential rotation
+clears that retry state. Rotation also clears check evidence tied to the old
+reference. Recipe check failures also persist a one-minute retry delay across
+restarts and enter a one-hour cooldown after five failures; a successful
+recipe check or credential rotation clears its retry state. Credential-recipe,
+surface and mutation failures still lack durable bounded retries; automatic recovery of verified
+degraded connections is pending.
+
+Reconciliation signs team credential checks under the Broker context recorded
+by the operator's team-share operation. It uses the `toolhub-reconciler` service
+actor and requires an active team and matching Broker reference; a personal
+onboarding is not required. This does not replace the pending durable recovery,
+state-generation and concurrent-revocation work in SPEC-0069.
+
 All under `/state` (the space's `runtime/` bind):
 
 | Path | Contents |

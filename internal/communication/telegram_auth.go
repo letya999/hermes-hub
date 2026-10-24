@@ -185,7 +185,7 @@ func (g *Gateway) serveTelegramAuth(w http.ResponseWriter, r *http.Request) {
 		csrf := a.csrf
 		a.mu.Unlock()
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = io.WriteString(w, `<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Telegram QR вход</title><main><h1>Telegram QR вход</h1><p>Продолжайте только если сами запросили подключение Telegram.</p><form method="post" action="/telegram-auth/`+parts[0]+`/claim"><input type="hidden" name="csrf" value="`+html.EscapeString(csrf)+`"><button>Начать</button></form></main></html>`)
+		_, _ = io.WriteString(w, `<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Telegram QR вход</title><main><h1>Telegram QR вход</h1><p>Продолжайте только если сами запросили подключение Telegram.</p><form method="post" action="/telegram-auth/`+parts[0]+`/claim"><input type="hidden" name="csrf" value="`+html.EscapeString(csrf)+`"><button>Начать</button></form></main></html>`) // #nosec G705 -- page interpolates only the validated session id and escaped csrf
 		return
 	}
 	if a.browser == "" && r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "claim" {
@@ -202,12 +202,12 @@ func (g *Gateway) serveTelegramAuth(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.browser = browser
-		http.SetCookie(w, &http.Cookie{Name: "tg_auth_browser", Value: a.browser, Path: "/telegram-auth/" + parts[0], HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 600})
+		http.SetCookie(w, &http.Cookie{Name: "tg_auth_browser", Value: a.browser, Path: "/telegram-auth/" + parts[0], HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 600}) // #nosec G124 -- loopback-only session cookie; HttpOnly and SameSite=Strict already set
 		a.mu.Unlock()
 		if g.telegramAuth.apiID != 0 {
 			g.beginTelegramAuth(a, g.telegramAuth.apiID, g.telegramAuth.apiHash)
 		}
-		http.Redirect(w, r, "/telegram-auth/"+parts[0], http.StatusSeeOther)
+		http.Redirect(w, r, "/telegram-auth/"+parts[0], http.StatusSeeOther) // #nosec G710 -- fixed path prefix plus the validated 48-char session id
 		return
 	}
 	cookie, err := r.Cookie("tg_auth_browser")
@@ -265,7 +265,7 @@ func (g *Gateway) serveTelegramAuth(w http.ResponseWriter, r *http.Request) {
 		a.status = "failed"
 		a.session, a.apiHash = "", ""
 		a.mu.Unlock()
-		http.Redirect(w, r, "/telegram-auth/"+parts[0], http.StatusSeeOther)
+		http.Redirect(w, r, "/telegram-auth/"+parts[0], http.StatusSeeOther) // #nosec G710 -- fixed path prefix plus the validated 48-char session id
 	default:
 		http.NotFound(w, r)
 	}
@@ -328,7 +328,7 @@ func (g *Gateway) telegramAuthStart(w http.ResponseWriter, r *http.Request, id s
 		http.Error(w, "login already started", http.StatusConflict)
 		return
 	}
-	http.Redirect(w, r, "/telegram-auth/"+id, http.StatusSeeOther)
+	http.Redirect(w, r, "/telegram-auth/"+id, http.StatusSeeOther) // #nosec G710 -- fixed path prefix plus the validated 48-char session id
 }
 
 func validTelegramAPI(id int, hash string) bool {
@@ -371,7 +371,7 @@ func (g *Gateway) telegramAuthPassword(w http.ResponseWriter, r *http.Request, i
 	default:
 	}
 	a.mu.Unlock()
-	http.Redirect(w, r, "/telegram-auth/"+id, http.StatusSeeOther)
+	http.Redirect(w, r, "/telegram-auth/"+id, http.StatusSeeOther) // #nosec G710 -- fixed path prefix plus the validated 48-char session id
 }
 
 func (g *Gateway) telegramAuthSave(w http.ResponseWriter, r *http.Request, id string, a *telegramAuthAttempt) {
@@ -403,7 +403,7 @@ func (g *Gateway) telegramAuthSave(w http.ResponseWriter, r *http.Request, id st
 		a.status = "failed"
 	}
 	a.mu.Unlock()
-	http.Redirect(w, r, "/telegram-auth/"+id, http.StatusSeeOther)
+	http.Redirect(w, r, "/telegram-auth/"+id, http.StatusSeeOther) // #nosec G710 -- fixed path prefix plus the validated 48-char session id
 }
 
 func (g *Gateway) runTelegramAuth(ctx context.Context, a *telegramAuthAttempt) {

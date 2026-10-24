@@ -199,7 +199,7 @@ func pathsOverlap(a, b string) bool {
 // LoadYAML reads a host-owned mapping. Secret values belong in env files.
 func LoadYAML(path string) (Config, error) {
 	var c Config
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) // #nosec G703 -- operator config path
 	if err != nil {
 		return c, err
 	}

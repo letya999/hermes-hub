@@ -58,20 +58,26 @@ func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.En
 		}
 		if len(matches) == 1 {
 			ref := matches[0].credential
-			if ref.Backend == "credential-broker" && ref.BrokerContractID == definition.CredentialContractID && ref.BrokerContractRevision == definition.CredentialContractRevision && brokerCredentialActive(ctx, control, ref.Locator) {
-				onboarding.Locator, onboarding.BrokerCredentialID = ref.Locator, ref.Locator
-				onboarding.BrokerContractID, onboarding.BrokerContractRevision = ref.BrokerContractID, ref.BrokerContractRevision
-				onboarding.Phase = api.PhaseAwaitingConfirm
-				onboarding.FormNonce = ""
-				onboarding.FormExpires = time.Time{}
-				onboarding.ConfirmationNonce = api.RandomNonce()
-				onboarding.ConfirmationExpires = c.now().Add(c.ttl())
-				c.armWizard(onboarding)
-				onboarding.Revision++
-				if err := c.Store.PutOnboarding(*onboarding); err != nil {
+			if ref.Backend == "credential-broker" && ref.BrokerContractID == definition.CredentialContractID && ref.BrokerContractRevision == definition.CredentialContractRevision {
+				active, err := brokerCredentialActive(ctx, control, ref.Locator)
+				if err != nil {
 					return err
 				}
-				return c.refreshBrokerRequest(ctx, auth, onboarding)
+				if active {
+					onboarding.Locator, onboarding.BrokerCredentialID = ref.Locator, ref.Locator
+					onboarding.BrokerContractID, onboarding.BrokerContractRevision = ref.BrokerContractID, ref.BrokerContractRevision
+					onboarding.Phase = api.PhaseAwaitingConfirm
+					onboarding.FormNonce = ""
+					onboarding.FormExpires = time.Time{}
+					onboarding.ConfirmationNonce = api.RandomNonce()
+					onboarding.ConfirmationExpires = c.now().Add(c.ttl())
+					c.armWizard(onboarding)
+					onboarding.Revision++
+					if err := c.Store.PutOnboarding(*onboarding); err != nil {
+						return err
+					}
+					return c.refreshBrokerRequest(ctx, auth, onboarding)
+				}
 			}
 		}
 	}
@@ -105,12 +111,13 @@ func (c *ControlPlane) ensureBrokerRequest(ctx context.Context, auth identity.En
 			var credential brokerv1.Credential
 			err := control.Do(ctx, http.MethodGet, "/v1/credentials/"+url.PathEscape(rotateTarget), nil, &credential)
 			switch {
-			case err != nil && !brokerclient.IsNotFound(err):
+			case brokerclient.IsNotFound(err):
+				return fmt.Errorf("%w: %w", api.ErrCredentialVisibilityUnknown, err)
+			case err != nil:
 				return err
-			case err != nil || credential.Status == "deleted":
-				// Nothing left to rotate against (broker dropped or deleted
-				// the record): send a plain request — passing the dead id as
-				// rotate target is denied by the broker.
+			case credential.Status == "deleted":
+				// A visible deletion permits a fresh request; a masked 404 above
+				// does not prove that the rotation target was deleted.
 				rotateTarget = ""
 			default:
 				connectionID = credential.ConnectionID
@@ -185,20 +192,16 @@ func (c *ControlPlane) brokerRequestDead(request brokerv1.Request) bool {
 // brokerCredentialActive verifies a stored broker credential is still live
 // before a new onboarding reuses it. Revocation happens at the broker, so the
 // toolhub connection record alone cannot prove the credential works.
-func brokerCredentialActive(ctx context.Context, control *brokerclient.Client, id string) bool {
+func brokerCredentialActive(ctx context.Context, control *brokerclient.Client, id string) (bool, error) {
 	if id == "" {
-		return false
+		return false, nil
 	}
-	var credential brokerv1.Credential
-	if err := control.Do(ctx, http.MethodGet, "/v1/credentials/"+url.PathEscape(id), nil, &credential); err != nil {
-		return false
-	}
-	return credential.Status == "active"
+	gone, err := brokerCredentialGone(ctx, control, id)
+	return !gone && err == nil, err
 }
 
-// brokerCredentialGone distinguishes a definitively dead credential (absent or
-// no longer active) from a transient broker fault. Only the former may reset
-// onboarding state — a transport error must retry, not forget the credential.
+// brokerCredentialGone only accepts a visible credential's inactive state.
+// A 404 also masks ownership mismatch and must not reset stored references.
 func brokerCredentialGone(ctx context.Context, control *brokerclient.Client, id string) (bool, error) {
 	if id == "" {
 		return false, nil
@@ -206,11 +209,18 @@ func brokerCredentialGone(ctx context.Context, control *brokerclient.Client, id 
 	var credential brokerv1.Credential
 	if err := control.Do(ctx, http.MethodGet, "/v1/credentials/"+url.PathEscape(id), nil, &credential); err != nil {
 		if brokerclient.IsNotFound(err) {
-			return true, nil
+			return false, fmt.Errorf("%w: %w", api.ErrCredentialVisibilityUnknown, err)
 		}
 		return false, err
 	}
-	return credential.Status != "active", nil
+	switch credential.Status {
+	case "active":
+		return false, nil
+	case "revoked", "deleted", "reauthorize_required":
+		return true, nil
+	default:
+		return false, fmt.Errorf("%w: unknown credential broker status", api.ErrInvalid)
+	}
 }
 
 func (c *ControlPlane) refreshBrokerRequest(ctx context.Context, auth identity.Envelope, onboarding *api.Onboarding) error {
@@ -228,9 +238,8 @@ func (c *ControlPlane) refreshBrokerRequest(ctx context.Context, auth identity.E
 		return err
 	}
 	if onboarding.BrokerCredentialID != "" && (onboarding.Phase == api.PhaseAwaitingConfirm || onboarding.Phase == api.PhaseAwaitingCreds) {
-		// The broker dropped or revoked the minted credential before confirm
-		// (ledger reset, volume drift). Reset to a fresh request so the user
-		// can resubmit through a new link instead of dying on grant not_found.
+		// Reset only after observing an inactive credential. Unknown visibility
+		// preserves the reference and confirmation for owner-context diagnosis.
 		gone, err := brokerCredentialGone(ctx, control, onboarding.BrokerCredentialID)
 		if err != nil {
 			return err

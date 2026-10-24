@@ -516,6 +516,18 @@ func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map
 		"artifact_ready":  false,
 		"tools_confirmed": false,
 	}
+	if connection, ok := c.Store.connectionFor(onboarding.ConnectionID); ok && connection.Owner.Matches(identity.Envelope{
+		PrincipalID: onboarding.PrincipalID, ContextID: onboarding.ContextID,
+	}) {
+		body["connection_status"] = string(connection.Status)
+		if connection.CredentialVisibility != "" {
+			body["credential_visibility"] = connection.CredentialVisibility
+			body["credential_checked_at"] = connection.CredentialCheckedAt
+			if connection.HealthCause != "" {
+				body["health_cause"] = connection.HealthCause
+			}
+		}
+	}
 	if definition, err := c.definitionOf(onboarding); err == nil {
 		body["artifact_ready"] = api.DigestPattern.MatchString(definition.Source.Digest)
 		body["tools_confirmed"] = !onboarding.AdmissionPending && len(definition.Tools) > 0
@@ -577,7 +589,7 @@ func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map
 	case api.PhaseConfirmed:
 		body["next_action"] = "enable"
 	case api.PhaseEnabled:
-		body["next_action"] = "ready"
+		body["next_action"] = "diagnostics"
 	}
 	if onboarding.Error != "" {
 		body["error"] = onboarding.Error

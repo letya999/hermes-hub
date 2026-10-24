@@ -34,13 +34,14 @@ var (
 )
 
 var (
-	ErrInvalid      = errors.New("invalid toolhub record")
-	ErrNotFound     = errors.New("toolhub record not found")
-	ErrConflict     = errors.New("toolhub record conflict")
-	ErrUnauthorized = errors.New("toolhub authorization denied")
-	ErrStale        = errors.New("toolhub record is stale")
-	ErrRevoked      = errors.New("toolhub record is revoked")
-	ErrDegraded     = errors.New("toolhub connection is degraded")
+	ErrInvalid                     = errors.New("invalid toolhub record")
+	ErrNotFound                    = errors.New("toolhub record not found")
+	ErrConflict                    = errors.New("toolhub record conflict")
+	ErrUnauthorized                = errors.New("toolhub authorization denied")
+	ErrStale                       = errors.New("toolhub record is stale")
+	ErrRevoked                     = errors.New("toolhub record is revoked")
+	ErrDegraded                    = errors.New("toolhub connection is degraded")
+	ErrCredentialVisibilityUnknown = errors.New("credential visibility unknown")
 	// Resolution sentinels wrap ErrInvalid so existing fail-closed callers keep
 	// failing closed while stable machine-readable codes reach status.
 	// ErrReconsent marks a granted-set shortfall (RFC6750 insufficient_scope):
@@ -58,6 +59,8 @@ var (
 // code a chat-facing agent can explain. Unmapped errors return "".
 func ErrorCode(err error) string {
 	switch {
+	case errors.Is(err, ErrCredentialVisibilityUnknown):
+		return "credential_visibility_unknown"
 	case errors.Is(err, ErrAmbiguousEntrypoint):
 		return "ambiguous_entrypoint"
 	case errors.Is(err, ErrUnsupportedCredentialContract):
@@ -317,15 +320,26 @@ type CredentialReference struct {
 }
 
 type Connection struct {
-	Schema           int               `json:"schema"`
-	ConnectionID     string            `json:"connection_id"`
-	Owner            OwnerRef          `json:"owner"`
-	DefinitionID     string            `json:"definition_id"`
-	CredentialRefID  string            `json:"credential_ref,omitempty"`
-	Revision         uint64            `json:"revision"`
-	Status           Status            `json:"status"`
-	TerminalExposure bool              `json:"terminal_exposure,omitempty"`
-	Metadata         map[string]string `json:"metadata,omitempty"`
+	Schema               int               `json:"schema"`
+	ConnectionID         string            `json:"connection_id"`
+	Owner                OwnerRef          `json:"owner"`
+	DefinitionID         string            `json:"definition_id"`
+	CredentialRefID      string            `json:"credential_ref,omitempty"`
+	Revision             uint64            `json:"revision"`
+	Status               Status            `json:"status"`
+	CredentialVisibility string            `json:"credential_visibility,omitempty"`
+	CredentialCheckedAt  time.Time         `json:"credential_checked_at,omitempty"`
+	HealthCause          string            `json:"health_cause,omitempty"`
+	CredentialRetryAt    time.Time         `json:"credential_retry_at,omitempty"`
+	CredentialRetryCount int               `json:"credential_retry_count,omitempty"`
+	RecipeRetryAt        time.Time         `json:"recipe_retry_at,omitempty"`
+	RecipeRetryCount     int               `json:"recipe_retry_count,omitempty"`
+	CredRecipeRetryAt    time.Time         `json:"cred_recipe_retry_at,omitempty"`
+	CredRecipeRetryCount int               `json:"cred_recipe_retry_count,omitempty"`
+	SurfaceRetryAt       time.Time         `json:"surface_retry_at,omitempty"`
+	SurfaceRetryCount    int               `json:"surface_retry_count,omitempty"`
+	TerminalExposure     bool              `json:"terminal_exposure,omitempty"`
+	Metadata             map[string]string `json:"metadata,omitempty"`
 }
 
 // BrokerBindingGrant records one minted Credential Broker grant against a

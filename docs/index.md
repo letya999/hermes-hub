@@ -1,6 +1,6 @@
 ---
 description: Current documentation index and Memory Bank navigation.
-last_verified: 2026-10-20
+last_verified: 2026-10-23
 ---
 # Documentation
 
@@ -28,6 +28,7 @@ last_verified: 2026-10-20
 | [tools.md](tools.md) | Agent-visible tool catalog with action/resource/effect per tool |
 | [spaces.md](spaces.md) | `agent.yaml`/`workspace.yaml` fields, space layout, feature registry |
 | [agent-home.md](agent-home.md) | SOUL.md semantics, default skills, hook surface |
+| [system-guide.md](system-guide.md) | Mandatory English reference skill, delivery paths and evidence boundaries |
 
 ## Integrations and channels
 

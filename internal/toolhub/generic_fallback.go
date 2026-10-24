@@ -344,16 +344,16 @@ func writeWorldReadableTemp(dir, pattern, content string) (string, error) {
 	}
 	name := file.Name()
 	if _, err = file.WriteString(content); err != nil {
-		file.Close()
-		os.Remove(name)
+		_ = file.Close()
+		_ = os.Remove(name)
 		return "", err
 	}
 	if err = file.Close(); err != nil {
-		os.Remove(name)
+		_ = os.Remove(name)
 		return "", err
 	}
 	if err := os.Chmod(name, 0644); err != nil {
-		os.Remove(name)
+		_ = os.Remove(name)
 		return "", err
 	}
 	return name, nil
@@ -410,7 +410,7 @@ func materializeRuntimeCredentials(workspace string, definition api.ToolDefiniti
 				// lease mount in the plan; staging a second bind on the same
 				// target makes docker create fail on the duplicate mount point.
 				path := filepath.Join(workspace, input.Name+".secret")
-				if err := os.WriteFile(path, []byte(value), 0600); err != nil {
+				if err := os.WriteFile(path, []byte(value), 0600); err != nil { // #nosec G703 -- credential names validated by CredentialPattern
 					return "", nil, err
 				}
 				mounts = append(mounts, api.Mount{Source: path, Target: input.Target, ReadOnly: true})
@@ -418,7 +418,7 @@ func materializeRuntimeCredentials(workspace string, definition api.ToolDefiniti
 			}
 		} else if input.Delivery == "json" && json.Valid([]byte(value)) {
 			path := filepath.Join(workspace, input.Name+".json")
-			if err := os.WriteFile(path, []byte(value), 0600); err != nil {
+			if err := os.WriteFile(path, []byte(value), 0600); err != nil { // #nosec G703 -- credential names validated by CredentialPattern
 				return "", nil, err
 			}
 			target := "/run/credentials/" + input.Name + ".json"

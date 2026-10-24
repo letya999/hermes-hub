@@ -78,21 +78,21 @@ func PostPrepareNotice(ctx context.Context, auth identity.Envelope, onboarding O
 	}
 	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, base+"/v1/prepare-outcome", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, base+"/v1/prepare-outcome", bytes.NewReader(body)) // #nosec G704 -- internal control endpoint
 	if err != nil {
 		return ""
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("X-Hub-Principal", auth.PrincipalID)
-	response, err := http.DefaultClient.Do(req)
+	response, err := http.DefaultClient.Do(req) // #nosec G704 -- internal control endpoint
 	if err != nil {
 		log.Printf("toolhub prepare outcome delivery failed onboarding=%s: %v", onboarding.OnboardingID, err)
 		return ""
 	}
 	defer response.Body.Close()
 	if response.StatusCode/100 != 2 {
-		log.Printf("toolhub prepare outcome delivery onboarding=%s status=%d", onboarding.OnboardingID, response.StatusCode)
+		log.Printf("toolhub prepare outcome delivery onboarding=%s status=%d", onboarding.OnboardingID, response.StatusCode) // #nosec G706 -- ids are store-generated IDPattern strings
 		return ""
 	}
 	// The channel returns the sign-in link it minted for this request (QR
@@ -128,21 +128,21 @@ func DeliverViewerLink(ctx context.Context, auth identity.Envelope, connectionID
 	}
 	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, base+"/v1/prepare-outcome", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, base+"/v1/prepare-outcome", bytes.NewReader(body)) // #nosec G704 -- internal control endpoint
 	if err != nil {
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("X-Hub-Principal", auth.PrincipalID)
-	response, err := http.DefaultClient.Do(req)
+	response, err := http.DefaultClient.Do(req) // #nosec G704 -- internal control endpoint
 	if err != nil {
 		log.Printf("toolhub viewer link delivery failed connection=%s: %v", connectionID, err)
 		return
 	}
 	defer response.Body.Close()
 	if response.StatusCode/100 != 2 {
-		log.Printf("toolhub viewer link delivery connection=%s status=%d", connectionID, response.StatusCode)
+		log.Printf("toolhub viewer link delivery connection=%s status=%d", connectionID, response.StatusCode) // #nosec G706 -- ids are store-generated IDPattern strings
 	}
 }
 

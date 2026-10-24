@@ -385,7 +385,7 @@ func StagePreflightBridge() (string, func(), error) {
 	if err != nil {
 		return "", func() {}, err
 	}
-	cleanup := func() { _ = os.RemoveAll(directory) }
+	cleanup := func() { _ = os.RemoveAll(directory) } // #nosec G703 -- fresh MkdirTemp dir
 	staged := filepath.Join(directory, "hubctl")
 	binary, err := ResolveLinuxBridgeBinary("")
 	if err == nil {
@@ -412,7 +412,7 @@ func CopyFileMode(source, target string, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(target, body, mode)
+	return os.WriteFile(target, body, mode) // #nosec G703 -- staged temp dir target
 }
 
 func reapPreflightContainer(name string) {

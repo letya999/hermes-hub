@@ -56,13 +56,51 @@ func (c *ControlPlane) InvokeConnector(ctx context.Context, auth identity.Envelo
 func (c *ControlPlane) connectorList(auth identity.Envelope) (api.OperationResult, error) {
 	c.Store.mu.RLock()
 	var candidates []api.OperationCandidate
+	represented := map[string]bool{}
+	selected := map[string]api.Onboarding{}
 	for _, o := range c.Store.onboardings {
 		if o.PrincipalID != auth.PrincipalID || o.ContextID != auth.ContextID || o.RuntimeID != auth.RuntimeID || o.PolicyVersion != auth.PolicyVersion {
 			continue
 		}
-		candidates = append(candidates, api.OperationCandidate{ID: o.OnboardingID, Source: o.SourceURL, Kind: o.Mode})
+		if o.Phase == api.PhaseRemoved || o.Phase == api.PhaseRevoked || o.SupersededBy != "" {
+			continue
+		}
+		key := "onboarding:" + o.OnboardingID
+		if connection, ok := c.Store.connections[o.ConnectionID]; ok && connection.Owner.Matches(auth) {
+			if o.CredentialRefID != "" && o.CredentialRefID != connection.CredentialRefID {
+				continue
+			}
+			key = "connection:" + connection.ConnectionID
+		}
+		previous, found := selected[key]
+		current, previousCurrent := o.CredentialRefID != "", previous.CredentialRefID != ""
+		newer := o.CreatedAt.After(previous.CreatedAt) || (o.CreatedAt.Equal(previous.CreatedAt) && o.OnboardingID > previous.OnboardingID)
+		if !found || (current && !previousCurrent) || (current == previousCurrent && newer) {
+			selected[key] = o
+		}
+	}
+	for _, o := range selected {
+		candidate := api.OperationCandidate{
+			ID: o.OnboardingID, Source: o.SourceURL, Kind: o.Mode,
+			DefinitionID: o.DefinitionID, OnboardingPhase: o.Phase,
+		}
+		if definition, ok := c.Store.definitions[definitionKey(o.DefinitionID, o.DefinitionVersion)]; ok {
+			candidate.Transport = string(definition.Transport)
+		}
+		if connection, ok := c.Store.connections[o.ConnectionID]; ok && connection.Owner.Matches(auth) {
+			candidate.ConnectionID = connection.ConnectionID
+			candidate.ConnectionStatus = connection.Status
+			represented[connection.ConnectionID] = true
+		}
+		candidates = append(candidates, candidate)
 	}
 	for _, connection := range c.Store.connections {
+		if connection.Owner.Matches(auth) && !represented[connection.ConnectionID] {
+			candidates = append(candidates, api.OperationCandidate{
+				ID: connection.ConnectionID, ConnectionID: connection.ConnectionID,
+				DefinitionID: connection.DefinitionID, ConnectionStatus: connection.Status,
+			})
+		}
 		if connection.Owner.Type != api.TeamOwner {
 			continue
 		}
@@ -70,9 +108,32 @@ func (c *ControlPlane) connectorList(auth identity.Envelope) (api.OperationResul
 		if !ok || !team.IsMember(auth.PrincipalID) {
 			continue
 		}
-		candidates = append(candidates, api.OperationCandidate{ID: connection.ConnectionID, Source: connection.DefinitionID, Badge: "team"})
+		candidates = append(candidates, api.OperationCandidate{
+			ID: connection.ConnectionID, Source: connection.DefinitionID, Badge: "team",
+			ConnectionID: connection.ConnectionID, DefinitionID: connection.DefinitionID,
+			ConnectionStatus: connection.Status,
+		})
 	}
 	c.Store.mu.RUnlock()
+	for i := range candidates {
+		if candidates[i].ConnectionID == "" {
+			continue
+		}
+		connection, ok := c.Store.connectionFor(candidates[i].ConnectionID)
+		if !ok {
+			continue
+		}
+		candidates[i].Owner = &connection.Owner
+		candidates[i].CredentialVisibility = connection.CredentialVisibility
+		candidates[i].CredentialCheckedAt = connection.CredentialCheckedAt
+		candidates[i].HealthCause = connection.HealthCause
+		if candidates[i].Transport != "" {
+			continue
+		}
+		if definition, err := c.Store.definitionForConnection(connection); err == nil {
+			candidates[i].Transport = string(definition.Transport)
+		}
+	}
 	return api.OperationResult{
 		State: api.OpStateDone, Candidates: candidates,
 		Summary: fmt.Sprintf("%d connector(s)", len(candidates)),
@@ -140,7 +201,19 @@ func (c *ControlPlane) connectorStatus(ctx context.Context, auth identity.Envelo
 	}
 	resolved, err := c.Store.ResolveConnectorTarget(auth, target)
 	if err != nil {
-		if errors.Is(err, api.ErrNotFound) {
+		if errors.Is(err, api.ErrNotFound) || errors.Is(err, ErrTeamConnectionTarget) {
+			inventory, listErr := c.connectorList(auth)
+			if listErr != nil {
+				return api.OperationResult{}, listErr
+			}
+			for _, candidate := range inventory.Candidates {
+				if candidate.ConnectionID != "" && candidate.ConnectionID == target {
+					return api.OperationResult{
+						State: api.OpStateDone, Candidates: []api.OperationCandidate{candidate},
+						Summary: candidate.DefinitionID + " " + string(candidate.ConnectionStatus),
+					}, nil
+				}
+			}
 			if onboarding, lookupErr := c.resolveOnboarding(auth, map[string]any{"selector": target}); lookupErr == nil {
 				return api.OperationResult{State: connectorOnboardingState(onboarding.Phase), Summary: onboarding.DefinitionID + " " + onboarding.Phase}, nil
 			}
@@ -167,7 +240,18 @@ func (c *ControlPlane) connectorStatus(ctx context.Context, auth identity.Envelo
 			}
 		}
 	}
-	return api.OperationResult{State: state, Summary: onboarding.DefinitionID + " " + phase}, nil
+	result := api.OperationResult{State: state, Summary: onboarding.DefinitionID + " " + phase}
+	inventory, err := c.connectorList(auth)
+	if err != nil {
+		return api.OperationResult{}, err
+	}
+	for _, candidate := range inventory.Candidates {
+		if candidate.ID == onboarding.OnboardingID {
+			result.Candidates = []api.OperationCandidate{candidate}
+			break
+		}
+	}
+	return result, nil
 }
 
 func connectorOnboardingState(phase string) string {

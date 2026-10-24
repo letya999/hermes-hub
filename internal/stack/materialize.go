@@ -7,17 +7,19 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/letya999/hermes-hub/internal/systemguide"
+
 	"gopkg.in/yaml.v3"
 )
 
-// writeSoulEffective composes the effective SOUL (SPEC-0053 R1.8/D7): the
+// MaterializeSoulEffective composes the effective SOUL (SPEC-0053 R1.8/D7): the
 // owner's persona file verbatim plus the hub-owned channel contract. It runs
 // after HealUserSoul so the persona it reads is the healed one. The output is
 // what the runtime mounts at /state/hermes/SOUL.md, so contract edits move
 // the session revision exactly once per render.
-func writeSoulEffective(dir string, s Settings) error {
+func MaterializeSoulEffective(dir string, s Settings) error {
 	persona, err := os.ReadFile(filepath.Join(dir, "SOUL.md"))
-	if err != nil {
+	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	body := strings.TrimRight(string(persona), "\n") + "\n\n" + ChannelContract
@@ -147,7 +149,7 @@ func MaterializeHubPlugins(dir, root string, s Settings) error {
 		if strings.HasSuffix(d.Name(), ".pyc") {
 			return nil
 		}
-		body, err := os.ReadFile(path) // #nosec G304 -- operator-owned plugins dir
+		body, err := os.ReadFile(path) // #nosec G304 G122 -- operator-owned plugins dir
 		if err != nil {
 			return err
 		}
@@ -155,7 +157,7 @@ func MaterializeHubPlugins(dir, root string, s Settings) error {
 		if info, err := d.Info(); err == nil && info.Mode().IsRegular() {
 			mode = info.Mode().Perm()
 		}
-		return os.WriteFile(filepath.Join(dest, rel), body, mode)
+		return os.WriteFile(filepath.Join(dest, rel), body, mode) // #nosec G703 -- dest join of a walked rel path
 	})
 }
 
@@ -164,18 +166,24 @@ func MaterializeHubPlugins(dir, root string, s Settings) error {
 // disabled. The container then sees exactly the skills this space may run;
 // skills.disabled in the rendered config blocks the same names as a fallback.
 func MaterializeGlobalSkills(dir string, s Settings) error {
-	src := strings.TrimSpace(s.GlobalSkillsDir)
-	if src == "" {
+	if s.CapabilityMode == "managed" {
 		return nil
 	}
+	src := strings.TrimSpace(s.GlobalSkillsDir)
 	dest := GeneratedSkillsDir(dir)
 	if filepath.Clean(src) == filepath.Clean(dest) {
-		return nil
+		return materializeSystemGuide(dir)
 	}
 	if err := os.RemoveAll(dest); err != nil {
 		return err
 	}
-	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+	if err := materializeSystemGuide(dir); err != nil {
+		return err
+	}
+	if src == "" {
+		return nil
+	}
+	err := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -185,6 +193,9 @@ func MaterializeGlobalSkills(dir string, s Settings) error {
 		}
 		if d.IsDir() {
 			// A skill directory is <name>/SKILL.md; gated names skip wholesale.
+			if rel == "hermes-hub-system-guide" {
+				return fs.SkipDir
+			}
 			if rel != "." {
 				if feature, gated := webGatedSkills[d.Name()]; gated && !s.Has(feature) && rel == d.Name() {
 					return fs.SkipDir
@@ -192,7 +203,7 @@ func MaterializeGlobalSkills(dir string, s Settings) error {
 			}
 			return os.MkdirAll(filepath.Join(dest, rel), 0755)
 		}
-		body, err := os.ReadFile(path) // #nosec G304 -- operator-owned skills dir
+		body, err := os.ReadFile(path) // #nosec G304 G122 -- operator-owned skills dir
 		if err != nil {
 			return err
 		}
@@ -200,6 +211,18 @@ func MaterializeGlobalSkills(dir string, s Settings) error {
 		if info, err := d.Info(); err == nil && info.Mode().IsRegular() {
 			mode = info.Mode().Perm()
 		}
-		return os.WriteFile(filepath.Join(dest, rel), body, mode)
+		return os.WriteFile(filepath.Join(dest, rel), body, mode) // #nosec G703 -- dest join of a walked rel path
 	})
+	if err != nil {
+		return err
+	}
+	return materializeSystemGuide(dir)
+}
+
+func materializeSystemGuide(dir string) error {
+	dest := filepath.Join(GeneratedSkillsDir(dir), "hermes-hub-system-guide")
+	if err := os.MkdirAll(dest, 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dest, "SKILL.md"), []byte(systemguide.Skill), 0644)
 }

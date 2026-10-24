@@ -87,7 +87,7 @@ func writeFile(args []string) error {
 	default:
 		return fmt.Errorf("write: want <path> [content]")
 	}
-	return os.WriteFile(filepath.Clean(args[0]), data, 0o600)
+	return os.WriteFile(filepath.Clean(args[0]), data, 0o600) // #nosec G703 -- fixed cellinit argv written by the hub spawn
 }
 
 // strayPIDs lists every pid that is neither pid1 nor the caller. Exec'd tool
@@ -136,7 +136,7 @@ func check(args []string) error {
 	if len(args) != 2 {
 		return fmt.Errorf("check: want <path> <token>")
 	}
-	data, err := os.ReadFile(filepath.Clean(args[0])) // #nosec G304 -- path is operator-chosen.
+	data, err := os.ReadFile(filepath.Clean(args[0])) // #nosec G304 G703 -- path is operator-chosen.
 	if err != nil {
 		return err
 	}
@@ -229,7 +229,7 @@ type proxyHandler struct {
 }
 
 func readProxyRules(path string) (map[string]proxyRule, error) {
-	data, err := os.ReadFile(filepath.Clean(path)) // #nosec G304 -- operator config.
+	data, err := os.ReadFile(filepath.Clean(path)) // #nosec G304 G703 -- operator config.
 	if err != nil {
 		return nil, err
 	}

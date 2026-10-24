@@ -382,7 +382,7 @@ func (g *Gateway) submitCredentialForm(w http.ResponseWriter, r *http.Request, o
 			return
 		}
 		data, ferr := io.ReadAll(io.LimitReader(file, (64<<10)+1))
-		file.Close()
+		_ = file.Close()
 		if ferr != nil || len(data) > 64<<10 {
 			http.Error(w, "invalid file upload", http.StatusBadRequest)
 			return
@@ -409,7 +409,7 @@ func (g *Gateway) submitCredentialForm(w http.ResponseWriter, r *http.Request, o
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(status)
-		_, _ = io.WriteString(w, credentialResultPage(title, message))
+		_, _ = io.WriteString(w, credentialResultPage(title, message)) // #nosec G705 -- credentialResultPage escapes title and message
 		return
 	}
 	// Accepted — send the browser back to the stable wizard link, which now
@@ -471,7 +471,7 @@ func (g *Gateway) serveConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 	if finishErr != nil {
 		w.WriteHeader(http.StatusBadGateway)
-		_, _ = io.WriteString(w, credentialResultPage("Подтверждение не прошло", api.PublicPrepareError(finishErr)))
+		_, _ = io.WriteString(w, credentialResultPage("Подтверждение не прошло", api.PublicPrepareError(finishErr))) // #nosec G705 -- credentialResultPage escapes title and message
 		return
 	}
 	_, _ = io.WriteString(w, credentialResultPage("Подключение подтверждено", "Возвращаться в чат и писать «готово» не нужно."))
@@ -584,7 +584,7 @@ func (g *Gateway) serveConnect(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.Header().Set("Cache-Control", "no-store")
 			w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
-			_, _ = io.WriteString(w, oauthInterstitialPage(onboarding, state))
+			_, _ = io.WriteString(w, oauthInterstitialPage(onboarding, state)) // #nosec G705 -- page values are html.EscapeString-escaped
 			return
 		}
 	}
@@ -649,7 +649,7 @@ func (g *Gateway) serveWizard(w http.ResponseWriter, r *http.Request, onboarding
 	// refreshBrokerRequest posts while the invite is alive.
 	if r.Method == http.MethodGet && onboarding.Phase == api.PhaseAwaitingCreds && onboarding.BrokerRequestID != "" {
 		if err := g.Control.refreshBrokerRequest(r.Context(), onboardingEnvelope(onboarding), &onboarding); err != nil {
-			log.Printf("toolhub wizard %s: broker refresh: %v", onboardingID, err)
+			log.Printf("toolhub wizard %s: broker refresh: %v", onboardingID, err) // #nosec G706 -- onboarding id is store-validated before logging; error text is internal
 		}
 	}
 	if onboarding.Phase == api.PhaseAwaitingConfirm {
@@ -692,7 +692,7 @@ func (g *Gateway) serveWizard(w http.ResponseWriter, r *http.Request, onboarding
 			if g.Control.preparedOAuthOnboardingID(storedState) != onboardingID {
 				if definition, derr := g.Control.definitionOf(onboarding); derr == nil {
 					if _, oerr := g.Control.ensurePreparedOAuth(r.Context(), onboardingEnvelope(onboarding), onboarding, definition, false); oerr != nil {
-						log.Printf("toolhub wizard %s: oauth re-arm: %v", onboardingID, oerr)
+						log.Printf("toolhub wizard %s: oauth re-arm: %v", onboardingID, oerr) // #nosec G706 -- onboarding id is store-validated before logging; error text is internal
 					} else if fresh, ferr := g.Control.Store.onboarding(onboardingID); ferr == nil && fresh.Phase == api.PhaseAwaitingOAuth {
 						onboarding = fresh
 						if parsed, perr := url.Parse(onboarding.ProviderAuthorizationURL); perr == nil {
@@ -983,7 +983,7 @@ func (g *Gateway) serveDevice(w http.ResponseWriter, r *http.Request) {
 			start, serr := g.Control.OAuth.StartDevice(onboarding.PrincipalID, onboarding.ContextID, onboardingID, onboarding.OAuthProvider)
 			if serr != nil {
 				w.WriteHeader(http.StatusBadGateway)
-				_, _ = io.WriteString(w, credentialResultPage("Вход по коду недоступен", api.PublicPrepareError(serr)))
+				_, _ = io.WriteString(w, credentialResultPage("Вход по коду недоступен", api.PublicPrepareError(serr))) // #nosec G705 -- credentialResultPage escapes title and message
 				return
 			}
 			code, userCode, verification = start.DeviceCode, start.UserCode, start.Verification
@@ -1019,12 +1019,12 @@ func (g *Gateway) serveDevice(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.WriteHeader(http.StatusBadGateway)
-		_, _ = io.WriteString(w, credentialResultPage("Вход не прошёл", api.PublicPrepareError(perr)))
+		_, _ = io.WriteString(w, credentialResultPage("Вход не прошёл", api.PublicPrepareError(perr))) // #nosec G705 -- credentialResultPage escapes title and message
 		return
 	}
 	if err := g.Control.completeDeviceAuth(r.Context(), onboarding, meta); err != nil {
 		w.WriteHeader(http.StatusBadGateway)
-		_, _ = io.WriteString(w, credentialResultPage("Подключение не прошло", api.PublicPrepareError(err)))
+		_, _ = io.WriteString(w, credentialResultPage("Подключение не прошло", api.PublicPrepareError(err))) // #nosec G705 -- credentialResultPage escapes title and message
 		return
 	}
 	_, _ = io.WriteString(w, credentialResultPage("Подключение завершено", "Устройство авторизовано. Возвращаться в чат и писать «готово» не нужно."))

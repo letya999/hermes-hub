@@ -9,7 +9,9 @@ import (
 	v1 "github.com/letya999/credential-broker/api/v1"
 	"github.com/letya999/credential-broker/contract"
 	"github.com/letya999/credential-broker/identity"
+	"github.com/letya999/credential-broker/internal/seal"
 	"github.com/letya999/credential-broker/internal/strictjson"
+	"github.com/letya999/credential-broker/provider"
 )
 
 func New(cfg Config) (*Broker, error) {
@@ -126,6 +128,32 @@ func (b *Broker) commit(m mutation) (uint64, error) {
 	return seq, nil
 }
 func (b *Broker) Healthy() bool { b.mu.Lock(); defer b.mu.Unlock(); return b.live() }
+func (b *Broker) RecoveryRefs() []provider.Ref {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var refs []provider.Ref
+	for _, c := range b.credentials {
+		if c.Managed && c.View.Status == "active" {
+			refs = append(refs, c.Ref)
+		}
+	}
+	for _, r := range b.requests {
+		if r.DraftRef != nil && r.View.Status == "authorizing" {
+			refs = append(refs, *r.DraftRef)
+		}
+	}
+	for _, g := range b.grants {
+		c := b.credentials[g.View.CredentialID]
+		if !g.View.Active || c.View.Status != "active" {
+			continue
+		}
+		key := seal.Digest(c.View.ID + "/" + g.View.ContextID + "/" + g.View.BindingID)
+		if state, ok := b.states[key]; ok && state.Ref.Provider != "" {
+			refs = append(refs, state.Ref)
+		}
+	}
+	return refs
+}
 func (b *Broker) Close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()

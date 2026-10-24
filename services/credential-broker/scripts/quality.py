@@ -21,6 +21,9 @@ def run(args: list[str], *, capture: bool = False, env: dict[str, str] | None = 
     print("+ " + " ".join(args), flush=True)
     child_env = os.environ.copy()
     child_env["GOTOOLCHAIN"] = "local"
+    # The module is built standalone in CI; the parent go.work must not leak in
+    # or its newer language version pins the local toolchain.
+    child_env["GOWORK"] = "off"
     if env:
         child_env.update(env)
     result = subprocess.run(args, cwd=ROOT, env=child_env, text=True,

@@ -19,10 +19,9 @@ import (
 )
 
 // The tests in this file cover ToolHub ↔ Credential Broker state drift: the
-// broker lost records the ToolHub store still references (ledger reset, volume
-// swap). A missing grant/credential is treated as already revoked and a dead
-// request or credential self-heals into a fresh request instead of pinning the
-// onboarding forever on not_found.
+// broker records changed while ToolHub still references them. Visible deleted
+// credentials permit fresh requests; an ambiguous credential 404 preserves the
+// reference for diagnosis. Request renewal has a separate lifecycle.
 
 func staleBrokerKey(t *testing.T) string {
 	t.Helper()
@@ -173,9 +172,8 @@ func TestRefreshBrokerRequestHealsDeadRequest(t *testing.T) {
 	}
 }
 
-// A credential minted through the protected form may vanish before confirm
-// (broker ledger reset). The onboarding must reset to awaiting-creds and mint
-// a fresh request rather than fail confirm with an opaque not_found.
+// A visible deleted credential can reset setup to a fresh request. A masked
+// 404 is not equivalent: it must preserve the old reference for diagnosis.
 func TestRefreshBrokerRequestHealsDeadCredential(t *testing.T) {
 	keyPath := staleBrokerKey(t)
 	var fresh bool
@@ -185,7 +183,7 @@ func TestRefreshBrokerRequestHealsDeadCredential(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/requests/request_1":
 			_ = json.NewEncoder(w).Encode(brokerv1.Request{ID: "request_1", ContractID: "github-pat", ContractRevision: 1, Status: "ready", CredentialID: "credential_dead"})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/credentials/credential_dead":
-			brokerNotFound(w)
+			_ = json.NewEncoder(w).Encode(brokerv1.Credential{ID: "credential_dead", Status: "deleted"})
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/contracts":
 			var c contract.Contract
 			if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
@@ -317,7 +315,7 @@ func TestConfirmSucceedsWhenOldGrantMissing(t *testing.T) {
 	}
 }
 
-// A user-initiated rotate whose previous credential vanished at the broker
+// A user-initiated rotate whose previous credential is visibly deleted at the broker
 // must mint a plain fresh request on the deterministic connection — sending
 // the dead credential id as rotate target is denied by the broker.
 func TestEnsureBrokerRequestDropsDeadRotateTarget(t *testing.T) {
@@ -326,7 +324,7 @@ func TestEnsureBrokerRequestDropsDeadRotateTarget(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/credentials/credential_gone":
-			brokerNotFound(w)
+			_ = json.NewEncoder(w).Encode(brokerv1.Credential{ID: "credential_gone", Status: "deleted"})
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/contracts":
 			var c contract.Contract
 			if err := json.NewDecoder(r.Body).Decode(&c); err != nil {

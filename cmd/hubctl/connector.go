@@ -463,7 +463,7 @@ func runConnector(ctx context.Context, args []string) error {
 	// Serialize token lifecycle across CLI processes. Connect snapshot saves
 	// separately reject stale writers at the registry boundary.
 	lockPath := *registryPath + ".connection-" + api.CredentialReferenceID(*connectionID, 0) + ".lock"
-	if info, err := os.Lstat(lockPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
+	if info, err := os.Lstat(lockPath); err == nil && info.Mode()&os.ModeSymlink != 0 { // #nosec G703 -- operator-supplied registry path
 		return fmt.Errorf("symlink lifecycle lock denied")
 	}
 	lifecycleLock := flock.New(lockPath)

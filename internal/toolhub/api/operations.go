@@ -83,9 +83,18 @@ type OperationResult struct {
 
 // OperationCandidate is one selector match shown on ambiguity.
 type OperationCandidate struct {
-	ID     string `json:"id"`
-	Source string `json:"source,omitempty"`
-	Kind   string `json:"kind,omitempty"`
+	ID                   string    `json:"id"`
+	Source               string    `json:"source,omitempty"`
+	Kind                 string    `json:"kind,omitempty"`
+	DefinitionID         string    `json:"definition_id,omitempty"`
+	ConnectionID         string    `json:"connection_id,omitempty"`
+	Owner                *OwnerRef `json:"owner,omitempty"`
+	Transport            string    `json:"transport,omitempty"`
+	ConnectionStatus     Status    `json:"connection_status,omitempty"`
+	CredentialVisibility string    `json:"credential_visibility,omitempty"`
+	CredentialCheckedAt  time.Time `json:"credential_checked_at,omitempty"`
+	HealthCause          string    `json:"health_cause,omitempty"`
+	OnboardingPhase      string    `json:"onboarding_phase,omitempty"`
 	// Badge marks candidates the caller can use but does not own — today the
 	// only value is "team" for a member's team-owned connection.
 	Badge string `json:"badge,omitempty"`

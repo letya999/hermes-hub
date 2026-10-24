@@ -356,7 +356,7 @@ func RunGenericController(ctx context.Context, config GenericControllerConfig, l
 	}
 	defer listener.Close()
 	server := &http.Server{Handler: c.handler(token), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: time.Minute}
-	go func() {
+	go func() { // #nosec G118 -- graceful shutdown needs a fresh context after ctx cancellation
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 		for {

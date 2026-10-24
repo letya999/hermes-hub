@@ -164,6 +164,16 @@ service in docs/services/credential-broker.md. Ops-critical facts:
   (`hermes-credential-broker-<env>`); create once (`docker volume create`),
   never point dev and prod renders at it simultaneously. Pre-split
   deployments pin `HUB_BROKER_STATE_VOLUME=<old-volume>` explicitly.
+- Initialization evidence lives in the separate external volume
+  `hermes-credential-broker-recovery-<env>`, mounted only into Broker at
+  `/var/lib/credential-broker-recovery`. `hubctl up` creates it before starting
+  infra (or explicitly selected Broker), after configuration/build preflight.
+  The updated image seeds an empty volume with service UID 10001 and mode0700;
+  existing nonempty volumes are not recursively chowned or modified. Direct
+  Compose users must create the external volume first. Keep it
+  across primary-state replacement and do not merge dev/prod volumes. The new
+  image must support `serve --state-witness-dir`. This marker detects empty-state
+  replacement; it is not a credential backup or a rollback fence.
 - The broker does not bootstrap an empty volume — it exits `cannot read
   configuration` until config.json + key/ledger material exist; migrating
   means copying volume content while stopped (`docker run --rm --user root

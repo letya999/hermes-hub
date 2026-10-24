@@ -70,6 +70,7 @@ RUN chmod 0755 /usr/local/bin/hub-stt /usr/local/bin/hub-tts
 RUN ln -s /usr/local/bin/communication-hub /usr/local/bin/hub-communication && ln -s /usr/local/bin/toolhub /usr/local/bin/hub-toolhub && ln -s /usr/local/bin/credential-broker /usr/local/bin/hub-credential-broker
 ENV PATH="/opt/hermes/.venv/bin:${PATH}" DISPLAY=:99 HERMES_HOME=/state/hermes HOME=/state/home MCPGODEBUG=allowsessionsinstateless=1
 RUN groupadd -g 10001 agent && useradd -u 10001 -g agent -d /state/home -s /bin/bash agent && mkdir -p /state /workspace /archive /data && chown 10001:10001 /state /workspace /archive /data
+RUN install -d -o 10001 -g 10001 -m 0700 /var/lib/credential-broker-recovery /var/lib/credential-broker-recovery-key
 WORKDIR /workspace
 USER 10001:10001
 ENTRYPOINT ["hub-runtime"]

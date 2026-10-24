@@ -6,6 +6,7 @@ last_verified: 2026-10-20
 
 | Record | Decision |
 |---|---|
+| [ADR-0072](ADR-0072-connector-recovery-and-system-guide.md) | Owner-bound encrypted recovery, truthful inventory and mandatory reference guidance |
 | [ADR-0071](ADR-0071-dynamic-session-contract.md) | Bounded owner-only dynamic JSON session contracts |
 | [ADR-0070](ADR-0070-recipe-oauth.md) | Recipe-driven OAuth and lease-local token file views |
 | [ADR-0069](ADR-0069-broker-effective-contract.md) | Imported from services/credential-broker ADR-0010: effective contract on request — extras and demote |

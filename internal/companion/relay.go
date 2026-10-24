@@ -44,7 +44,7 @@ func RunRelay(ctx context.Context, listen, target, token string) error {
 		proxy.ServeHTTP(w, r)
 	}), token)
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: time.Minute}
-	go func() {
+	go func() { // #nosec G118 -- graceful shutdown needs a fresh context after ctx cancellation
 		<-ctx.Done()
 		stop, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -83,7 +83,7 @@ func RunOAuthRelay(ctx context.Context, listen, target string) error {
 		proxy.ServeHTTP(w, r)
 	})
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: time.Minute}
-	go func() {
+	go func() { // #nosec G118 -- graceful shutdown needs a fresh context after ctx cancellation
 		<-ctx.Done()
 		stop, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -122,7 +122,7 @@ func RunOAuthExecRelay(ctx context.Context, listen, container string) error {
 		_, _ = w.Write(output.Bytes())
 	})
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: time.Minute}
-	go func() {
+	go func() { // #nosec G118 -- graceful shutdown needs a fresh context after ctx cancellation
 		<-ctx.Done()
 		stop, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()

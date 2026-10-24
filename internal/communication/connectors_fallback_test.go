@@ -68,6 +68,59 @@ func TestConnectionsFallsBackToToolHubHTTP(t *testing.T) {
 	}
 }
 
+func TestConnectionsHTTPShowsDegradedConnectionWithoutProjection(t *testing.T) {
+	user := User{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"connectors": []any{},
+			"inventory":  []map[string]any{{"id": "conn-1", "connection_id": "conn-1", "definition_id": "notion-mcp", "transport": "container-mcp", "connection_status": "degraded", "credential_visibility": "unknown", "credential_checked_at": "2026-10-23T12:00:00Z", "health_cause": "credential_visibility_unknown", "onboarding_phase": "enabled"}},
+		})
+	}))
+	defer server.Close()
+	g := &Gateway{config: Config{ToolHubURL: server.URL, RuntimeAuth: "supervisor-bearer", Supervised: true}, now: time.Now}
+	got := g.connectionsCommand(user, 11)
+	if !strings.Contains(got, "notion-mcp [container-mcp]") || !strings.Contains(got, "degraded") || !strings.Contains(got, "credential_visibility_unknown") || !strings.Contains(got, "2026-10-23T12:00:00Z") || strings.Contains(got, "Коннекторы ToolHub: нет") {
+		t.Fatalf("degraded connection absent from channel inventory: %q", got)
+	}
+}
+
+func TestConnectionsHTTPDoesNotDuplicateProjectedConnection(t *testing.T) {
+	user := User{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"connectors": []map[string]any{{"definition_id": "notion-mcp", "transport": "container-mcp", "tools": []string{"read_page"}}},
+			"inventory":  []map[string]any{{"id": "conn-1", "connection_id": "conn-1", "definition_id": "notion-mcp", "transport": "container-mcp", "connection_status": "active", "credential_visibility": "active", "credential_checked_at": "2026-10-23T12:00:00Z"}},
+		})
+	}))
+	defer server.Close()
+	g := &Gateway{config: Config{ToolHubURL: server.URL, RuntimeAuth: "supervisor-bearer", Supervised: true}, now: time.Now}
+	got := g.connectionsCommand(user, 11)
+	if strings.Count(got, "notion-mcp [container-mcp]") != 1 || !strings.Contains(got, "read_page") || !strings.Contains(got, "connection active") || !strings.Contains(got, "credential active") {
+		t.Fatalf("connection and projected tools should share one row: %q", got)
+	}
+}
+
+func TestConnectionsHTTPDoesNotInventMCPFormatForProjectedOnlyGroup(t *testing.T) {
+	user := User{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"connectors": []map[string]any{{"definition_id": "native-tools", "tools": []string{"file_read"}}}})
+	}))
+	defer server.Close()
+	g := &Gateway{config: Config{ToolHubURL: server.URL, RuntimeAuth: "supervisor-bearer", Supervised: true}, now: time.Now}
+	got := g.connectionsCommand(user, 11)
+	if strings.Contains(got, "native-tools [mcp]") || !strings.Contains(got, "native-tools [unknown]") {
+		t.Fatalf("missing format was invented as MCP: %q", got)
+	}
+}
+
+func TestConnectionListDoesNotClaimRuntimeReadyFromConfiguredEnv(t *testing.T) {
+	user := User{ID: "alice", Features: []string{"gitlab"}, ConfiguredEnv: map[string]bool{"GITLAB_TOKEN": true}}
+	got := connectionList(user)
+	if strings.Contains(got, "gitlab — готово") || !strings.Contains(got, "gitlab — настроено") {
+		t.Fatalf("configured environment was mistaken for verified runtime: %q", got)
+	}
+}
+
 // Projected tool names carry a hub-<definition>- prefix and a dedup hash;
 // /connections renders them readable and collapses long inventories.
 func TestConnectorLineCompactsProjectedNames(t *testing.T) {

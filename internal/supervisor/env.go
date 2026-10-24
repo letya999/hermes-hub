@@ -200,5 +200,9 @@ func (m *Manager) materializeHermesConfig(binding Binding, env string) (string, 
 	if err := stack.MaterializeHermesConfig(source, dest, opts); err != nil {
 		return "", fmt.Errorf("materialize Hermes config: %w", err)
 	}
+	settings.Environment = env
+	if err := stack.MaterializeSoulEffective(binding.ContextRoot, settings); err != nil {
+		return "", fmt.Errorf("materialize system contract: %w", err)
+	}
 	return dest, nil
 }

@@ -56,6 +56,30 @@ func (c Connection) Validate() error {
 	if c.CredentialRefID != "" && !identity.ValidID(c.CredentialRefID) {
 		return fmt.Errorf("%w: invalid credential reference", ErrInvalid)
 	}
+	if c.CredentialVisibility != "" && c.CredentialVisibility != "active" && c.CredentialVisibility != "inactive" && c.CredentialVisibility != "unknown" {
+		return fmt.Errorf("%w: credential visibility", ErrInvalid)
+	}
+	if c.CredentialVisibility != "" && c.CredentialCheckedAt.IsZero() {
+		return fmt.Errorf("%w: credential check time", ErrInvalid)
+	}
+	if c.HealthCause != "" && c.HealthCause != "credential_visibility_unknown" && c.HealthCause != "credential_check_unavailable" && c.HealthCause != "credential_inactive" {
+		return fmt.Errorf("%w: health cause", ErrInvalid)
+	}
+	if c.HealthCause != "" && c.CredentialVisibility == "" {
+		return fmt.Errorf("%w: health cause without credential check", ErrInvalid)
+	}
+	if c.CredentialRetryCount < 0 || c.CredentialRetryCount > 5 || (c.CredentialRetryCount == 0 && !c.CredentialRetryAt.IsZero()) {
+		return fmt.Errorf("%w: credential retry state", ErrInvalid)
+	}
+	if c.RecipeRetryCount < 0 || c.RecipeRetryCount > 5 || (c.RecipeRetryCount == 0 && !c.RecipeRetryAt.IsZero()) {
+		return fmt.Errorf("%w: recipe retry state", ErrInvalid)
+	}
+	if c.CredRecipeRetryCount < 0 || c.CredRecipeRetryCount > 5 || (c.CredRecipeRetryCount == 0 && !c.CredRecipeRetryAt.IsZero()) {
+		return fmt.Errorf("%w: credential recipe retry state", ErrInvalid)
+	}
+	if c.SurfaceRetryCount < 0 || c.SurfaceRetryCount > 5 || (c.SurfaceRetryCount == 0 && !c.SurfaceRetryAt.IsZero()) {
+		return fmt.Errorf("%w: surface retry state", ErrInvalid)
+	}
 	if len(c.Metadata) > 32 {
 		return fmt.Errorf("%w: too much connection metadata", ErrInvalid)
 	}

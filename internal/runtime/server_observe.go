@@ -384,7 +384,7 @@ func sessionRevision() string {
 	// The revision tracks what the agent reads: the effective SOUL (persona
 	// plus channel contract) at $HERMES_HOME when mounted, else the persona
 	// source legacy mounts provide. A contract change rotates sessions once.
-	body, _ := os.ReadFile(filepath.Join(os.Getenv("HERMES_HOME"), "SOUL.md"))
+	body, _ := os.ReadFile(filepath.Join(os.Getenv("HERMES_HOME"), "SOUL.md")) // #nosec G703 -- session config path
 	if len(body) == 0 {
 		body, _ = os.ReadFile("/config/SOUL.md")
 	}
@@ -403,7 +403,7 @@ func hermesRequest(ctx context.Context, client *http.Client, method, endpoint, a
 		}
 		reader = bytes.NewReader(encoded)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, endpoint, reader)
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, reader) // #nosec G704 -- internal hermes endpoint
 	if err != nil {
 		return err
 	}
@@ -416,7 +416,7 @@ func hermesRequest(ctx context.Context, client *http.Client, method, endpoint, a
 	if len(idempotency) > 0 && idempotency[0] != "" {
 		req.Header.Set("Idempotency-Key", idempotency[0])
 	}
-	response, err := client.Do(req)
+	response, err := client.Do(req) // #nosec G704 -- internal hermes endpoint
 	if err != nil {
 		return err
 	}

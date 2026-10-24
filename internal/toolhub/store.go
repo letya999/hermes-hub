@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
@@ -610,6 +611,17 @@ func (s *Store) rotateCredentialLocked(connection api.Connection, reference api.
 	s.credentials[reference.CredentialRefID] = reference
 	connection.CredentialRefID = reference.CredentialRefID
 	connection.Revision = reference.Revision
+	connection.CredentialVisibility = ""
+	connection.CredentialCheckedAt = time.Time{}
+	connection.HealthCause = ""
+	connection.CredentialRetryAt = time.Time{}
+	connection.CredentialRetryCount = 0
+	connection.RecipeRetryAt = time.Time{}
+	connection.RecipeRetryCount = 0
+	connection.CredRecipeRetryAt = time.Time{}
+	connection.CredRecipeRetryCount = 0
+	connection.SurfaceRetryAt = time.Time{}
+	connection.SurfaceRetryCount = 0
 	// Fresh credentials are the heal for a parked connection: reauth and a
 	// dead-credential degrade return to service, and the credential-recipe
 	// drift the reconciler observed becomes the new pin — the owner
@@ -712,11 +724,29 @@ func (s *Store) setMigrateRequest(refID, requestID string) error {
 // material, and affected workloads stop. The status mirror follows the
 // same path as every other connection mutation.
 func (s *Store) MarkReauth(connectionID string) error {
+	_, err := s.markReauthIfCurrent(connectionID, nil, "")
+	return err
+}
+
+func (s *Store) markReauthIfCurrent(connectionID string, expected *api.Connection, observed string) (bool, error) {
 	s.mu.Lock()
 	connection, ok := s.connections[connectionID]
 	if !ok {
 		s.mu.Unlock()
-		return fmt.Errorf("%w: connection", api.ErrNotFound)
+		if expected != nil {
+			return false, nil
+		}
+		return false, fmt.Errorf("%w: connection", api.ErrNotFound)
+	}
+	if expected != nil && (connection.Status != expected.Status || connection.Revision != expected.Revision || connection.CredentialRefID != expected.CredentialRefID) {
+		s.mu.Unlock()
+		return false, nil
+	}
+	if observed != "" {
+		if connection.Metadata == nil {
+			connection.Metadata = map[string]string{}
+		}
+		connection.Metadata[api.LabelAcceptCredential] = observed
 	}
 	connection.Status = api.ReauthStatus
 	connection.Revision++
@@ -738,17 +768,116 @@ func (s *Store) MarkReauth(connectionID string) error {
 	s.mu.Unlock()
 	stopErr := s.stopWorkloads(stopped)
 	if err := s.persistAndNotify(); err != nil {
-		return err
+		return true, err
 	}
-	return stopErr
+	return true, stopErr
 }
 
 func (s *Store) MarkDegraded(connectionID string) error {
+	_, err := s.markDegradedIfCurrent(connectionID, nil, "", "")
+	return err
+}
+
+func (s *Store) observeCredentialCheckIfCurrent(expected api.Connection, visibility, cause string, at time.Time) (bool, error) {
+	s.mu.Lock()
+	connection, ok := s.connections[expected.ConnectionID]
+	if !ok || connection.Status != expected.Status || connection.Revision != expected.Revision || connection.CredentialRefID != expected.CredentialRefID {
+		s.mu.Unlock()
+		return false, nil
+	}
+	connection.CredentialVisibility = visibility
+	connection.CredentialCheckedAt = at.UTC()
+	connection.HealthCause = cause
+	if visibility == "unknown" {
+		if connection.CredentialRetryCount < 5 {
+			connection.CredentialRetryCount++
+		}
+		connection.CredentialRetryAt = at.UTC().Add(time.Minute)
+		if connection.CredentialRetryCount >= 5 {
+			connection.CredentialRetryAt = at.UTC().Add(time.Hour)
+		}
+	} else {
+		connection.CredentialRetryAt = time.Time{}
+		connection.CredentialRetryCount = 0
+	}
+	s.connections[connection.ConnectionID] = connection
+	s.mu.Unlock()
+	return true, s.persistAndNotify()
+}
+
+// retryState selects the persisted retry fields for one reconcile stage;
+// every stage shares the same bound: one-minute steps for the first five
+// failures, then one-hour cooldowns.
+func retryState(connection *api.Connection, stage string) (*time.Time, *int) {
+	switch stage {
+	case "recipe":
+		return &connection.RecipeRetryAt, &connection.RecipeRetryCount
+	case "credential_recipe":
+		return &connection.CredRecipeRetryAt, &connection.CredRecipeRetryCount
+	case "surface":
+		return &connection.SurfaceRetryAt, &connection.SurfaceRetryCount
+	}
+	return nil, nil
+}
+
+func (s *Store) deferCheckIfCurrent(expected api.Connection, stage string, at time.Time) (bool, error) {
+	s.mu.Lock()
+	connection, ok := s.connections[expected.ConnectionID]
+	if !ok || connection.Status != expected.Status || connection.Revision != expected.Revision || connection.CredentialRefID != expected.CredentialRefID {
+		s.mu.Unlock()
+		return false, nil
+	}
+	retryAt, count := retryState(&connection, stage)
+	if *count < 5 {
+		*count++
+	}
+	*retryAt = at.UTC().Add(time.Minute)
+	if *count >= 5 {
+		*retryAt = at.UTC().Add(time.Hour)
+	}
+	s.connections[connection.ConnectionID] = connection
+	s.mu.Unlock()
+	return true, s.persistAndNotify()
+}
+
+func (s *Store) clearCheckRetryIfCurrent(expected api.Connection, stage string) (bool, error) {
+	s.mu.Lock()
+	connection, ok := s.connections[expected.ConnectionID]
+	if !ok || connection.Status != expected.Status || connection.Revision != expected.Revision || connection.CredentialRefID != expected.CredentialRefID {
+		s.mu.Unlock()
+		return false, nil
+	}
+	retryAt, count := retryState(&connection, stage)
+	if *count == 0 {
+		s.mu.Unlock()
+		return true, nil
+	}
+	*count = 0
+	*retryAt = time.Time{}
+	s.connections[connection.ConnectionID] = connection
+	s.mu.Unlock()
+	return true, s.persistAndNotify()
+}
+
+func (s *Store) markDegradedIfCurrent(connectionID string, expected *api.Connection, label, observed string) (bool, error) {
 	s.mu.Lock()
 	connection, ok := s.connections[connectionID]
 	if !ok {
 		s.mu.Unlock()
-		return fmt.Errorf("%w: connection", api.ErrNotFound)
+		if expected != nil {
+			return false, nil
+		}
+		return false, fmt.Errorf("%w: connection", api.ErrNotFound)
+	}
+	if expected != nil && (connection.Status != expected.Status || connection.Revision != expected.Revision || connection.CredentialRefID != expected.CredentialRefID) {
+		s.mu.Unlock()
+		return false, nil
+	}
+	if label != "" {
+		if connection.Metadata == nil {
+			connection.Metadata = map[string]string{}
+		}
+		connection.Metadata[label] = observed
 	}
 	connection.Status = api.DegradedStatus
 	connection.Revision++
@@ -764,20 +893,32 @@ func (s *Store) MarkDegraded(connectionID string) error {
 	s.mu.Unlock()
 	stopErr := s.stopWorkloads(stopped)
 	if err := s.persistAndNotify(); err != nil {
-		return err
+		return true, err
 	}
-	return stopErr
+	return true, stopErr
 }
 
 // ObserveDrift records a drift the reconciler resolved under an accept key;
 // the connection stays parked until a human /confirm re-pins it or fresh
 // credentials consume the credential pin.
 func (s *Store) ObserveDrift(connectionID, label, value string) error {
+	_, err := s.observeDriftIfCurrent(connectionID, nil, label, value)
+	return err
+}
+
+func (s *Store) observeDriftIfCurrent(connectionID string, expected *api.Connection, label, value string) (bool, error) {
 	s.mu.Lock()
 	connection, ok := s.connections[connectionID]
 	if !ok {
 		s.mu.Unlock()
-		return fmt.Errorf("%w: connection", api.ErrNotFound)
+		if expected != nil {
+			return false, nil
+		}
+		return false, fmt.Errorf("%w: connection", api.ErrNotFound)
+	}
+	if expected != nil && (connection.Status != expected.Status || connection.Revision != expected.Revision || connection.CredentialRefID != expected.CredentialRefID) {
+		s.mu.Unlock()
+		return false, nil
 	}
 	if connection.Metadata == nil {
 		connection.Metadata = map[string]string{}
@@ -785,7 +926,7 @@ func (s *Store) ObserveDrift(connectionID, label, value string) error {
 	connection.Metadata[label] = value
 	s.connections[connectionID] = connection
 	s.mu.Unlock()
-	return s.persistAndNotify()
+	return true, s.persistAndNotify()
 }
 
 // AcceptConnectionDrift applies the human-confirmed accept pins: the observed

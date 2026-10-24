@@ -125,12 +125,12 @@ func checkSupervisorStopped(ctx context.Context, endpoint, auth, user string) er
 	if auth == "" {
 		return errors.New("supervisor authentication required for migration verification")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(endpoint, "/")+"/v1/runtimes", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(endpoint, "/")+"/v1/runtimes", nil) // #nosec G704 -- operator-configured hub endpoint
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+auth)
-	response, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	response, err := (&http.Client{Timeout: 5 * time.Second}).Do(req) // #nosec G704 -- operator-configured hub endpoint
 	if err != nil {
 		return errors.New("supervisor unavailable; cannot prove drained runtime")
 	}

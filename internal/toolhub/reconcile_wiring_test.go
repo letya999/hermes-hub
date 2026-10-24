@@ -49,8 +49,8 @@ func TestNewReconcilerWiresProductionSeams(t *testing.T) {
 	}
 }
 
-// The scheduled pass must run cleanly against a store with no Docker seam and
-// no recipe pins: every check degrades to a skip instead of failing the loop.
+// The scheduled pass must run without panicking when optional seams are absent.
+// Missing credential storage is reported as unavailable.
 func TestReconcileOnceRunsWithoutOptionalSeams(t *testing.T) {
 	store, _, _, _ := managedStore(t)
 	c := &ControlPlane{Store: store}
@@ -59,23 +59,22 @@ func TestReconcileOnceRunsWithoutOptionalSeams(t *testing.T) {
 			t.Fatalf("ScanOnce panicked without optional seams: %v", r)
 		}
 	}()
-	if err := c.NewReconciler().ScanOnce(context.Background()); err != nil {
-		t.Fatal(err)
+	if err := c.NewReconciler().ScanOnce(context.Background()); !errors.Is(err, api.ErrIsolation) {
+		t.Fatalf("missing credential backend error=%v", err)
 	}
 }
 
 // The bound CredAlive seam must consult the credential backend, not just the
 // store: a reference whose ciphertext vanished from the local backend is
-// dead; with no backend configured the check cannot accuse anyone and stays
-// alive.
+// dead; with no backend configured the check cannot claim it is alive.
 func TestNewReconcilerCredAliveChecksBackend(t *testing.T) {
 	store, _, _ := seededStore(t)
 	c := &ControlPlane{Store: store}
 	connection, _ := store.connectionFor("google-work")
 	ref, _ := store.credentialFor(connection.CredentialRefID)
 	alive, err := c.NewReconciler().CredAlive(context.Background(), ref.CredentialRefID)
-	if err != nil || !alive {
-		t.Fatalf("unconfigured backend must not degrade: alive=%v err=%v", alive, err)
+	if alive || !errors.Is(err, api.ErrIsolation) {
+		t.Fatalf("unconfigured backend claimed credential active: alive=%v err=%v", alive, err)
 	}
 	secrets, err := credstore.Open(credstore.Options{Path: filepath.Join(t.TempDir(), "secrets.json"), Key: make([]byte, 32)})
 	if err != nil {

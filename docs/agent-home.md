@@ -1,6 +1,6 @@
 ---
 description: The agent's home — SOUL.md persona contract, skills registry, bundled skills, hooks, memory and runtime-writable state.
-last_verified: 2026-10-20
+last_verified: 2026-10-23
 ---
 
 # Agent home
@@ -21,7 +21,8 @@ owner and mounted into the runtime. Its real content (from a live space):
   (`prepare_source → status → required_credentials → protected form/OAuth`);
   the `mcp-connector-onboarding` skill takes precedence over provider docs;
   never touch terminal/npx/config.yaml to install.
-- Never claim install ready until ToolHub reports `ready`; never ask for
+- Operation completion, active connection, admitted tools, running workload
+  and verified provider access are separate observations. Never ask for
   tokens in chat; resume interrupted onboarding through `status` by
   `onboarding_id`/`definition_id`, not chat memory.
 
@@ -36,14 +37,31 @@ Two bundled defaults under `config/skills/`:
 - `deep-research-embedded` — bounded multi-round research on disk (requires
   the `web` feature).
 
+The mandatory English `hermes-hub-system-guide` is maintained separately at
+[`internal/systemguide/SKILL.md`](../internal/systemguide/SKILL.md). Its compiled
+content is the single source for the installed skill and ToolHub `system_guide`.
+It covers vocabulary, formats, ownership, surfaces, inventory, status evidence,
+credential diagnosis and source navigation. See [system guide delivery](system-guide.md).
+
+Unmanaged rendering materializes this guide under
+`generated/skills/hermes-hub-system-guide/SKILL.md` even when no custom catalog
+is configured. `/opt/hub/skills` is read-only and included in the native skill
+search path. Optional catalog errors remain errors, but the required guide is
+materialized first. The guide's contents override a same-named optional skill.
+
 User-staged skills live under `spaces/<id>/home/hermes/skills/` with a
 registry at `skills/registry.json` (`internal/skills`). Each `Record` carries
 `source_url`, content `digest`, `scope`, declared `capabilities`, a `scan`
 result, `consent`, enable/rollback revisions and a `revoked` flag — a staged
-skill is data until consented, and revocation is durable. In managed
-capability mode the runtime mounts the generated skills dir read-only at
-`/opt/hub/skills` and shadows the agent's own `hermes/skills` path, so
-bundled skill content cannot be tampered with.
+skill is data until consented, and revocation is durable. Managed capability
+mode disables the native skill loader and shadows extension roots. Its reviewed
+reference is the authenticated, static ToolHub `system_guide` read tool; it does
+not enable native skills, plugins or connector lifecycle permissions.
+
+Both modes receive a short guide-routing rule in the hub-owned channel
+contract. Render and supervisor config materialization compose that contract
+with the owner persona into `generated/soul-effective.<env>.md`. A context
+without a persona gets the contract alone. The source `SOUL.md` is not replaced.
 
 ## Hooks and plugins
 

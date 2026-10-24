@@ -58,7 +58,7 @@ func (c *genericController) warmCell(ctx context.Context, req api.CliExecRequest
 			break
 		}
 		delete(c.cells().cells, oldest.key)
-		go c.removeCell(context.Background(), oldest, "evicted-capacity")
+		go c.removeCell(context.Background(), oldest, "evicted-capacity") // #nosec G118 -- cell eviction intentionally outlives the caller context
 	}
 	full := len(c.cells().cells) >= cap_
 	c.mu.Unlock()

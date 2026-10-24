@@ -91,6 +91,40 @@ func TestConnectorsListsOnlyCallerProjection(t *testing.T) {
 	}
 }
 
+func TestConnectorsHTTPIncludesScopedConnectionInventory(t *testing.T) {
+	store, auth, _ := seededStore(t)
+	bob := identity.TelegramEnvelope("bob", 8, "runtime-bob", "policy-1")
+	store.connections["bob-only"] = api.Connection{ConnectionID: "bob-only", DefinitionID: "bob-tool", Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: bob.PrincipalID}, Status: api.DegradedStatus}
+	control := &ControlPlane{Store: store}
+	g := &Gateway{Store: store, Control: control, Backend: api.RoutingBackend{}, Tokens: map[string]identity.Envelope{"alice-principal-token-0000000000000": auth}, projections: map[string]*gatewayProjection{"alice-principal-token-0000000000000": {auth: auth}}}
+	handler, err := g.Handler()
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/connectors", nil)
+	req.Header.Set("Authorization", "Bearer alice-principal-token-0000000000000")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	var body struct {
+		Inventory []api.OperationCandidate `json:"inventory"`
+	}
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &body) != nil {
+		t.Fatalf("HTTP inventory response: %d", w.Code)
+	}
+	listed, err := control.connectorList(auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Inventory) != len(listed.Candidates) || len(body.Inventory) == 0 {
+		t.Fatalf("HTTP inventory differs from connector_list: %+v vs %+v", body.Inventory, listed.Candidates)
+	}
+	for _, item := range body.Inventory {
+		if item.ConnectionID == "bob-only" {
+			t.Fatal("foreign connection leaked")
+		}
+	}
+}
+
 // /v1/cli-jobs/release is the job-end hook: auth pins the principal the same
 // way /v1/connectors does, so a caller can only release its own task cells.
 func TestCLIJobReleasePinsPrincipalAndJob(t *testing.T) {

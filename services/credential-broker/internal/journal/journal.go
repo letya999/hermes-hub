@@ -38,6 +38,9 @@ type Journal struct {
 	limit    int64
 	poisoned bool
 	records  []Record
+	offsets  []int64
+	recovery *Journal
+	anchor   *recoveryAnchor
 }
 
 func Open(dir string, key []byte, limit int64) (*Journal, error) {
@@ -97,6 +100,7 @@ func Open(dir string, key []byte, limit int64) (*Journal, error) {
 		j.seq = r.Sequence
 		j.size += int64(size) + 4
 		j.records = append(j.records, r)
+		j.offsets = append(j.offsets, j.size)
 	}
 	if err := securefs.SyncDir(dir); err != nil {
 		return fail(err)
@@ -144,6 +148,13 @@ func (j *Journal) Append(kind string, data any) (uint64, error) {
 	buf := make([]byte, 4, len(enc)+4)
 	binary.BigEndian.PutUint32(buf, uint32(len(enc))) // #nosec G115 -- plain is bounded by MaxRecord minus the fixed 28-byte AEAD overhead above.
 	buf = append(buf, enc...)
+	// Persist recovery first so acknowledged revocations survive primary loss.
+	if j.recovery != nil {
+		if _, err := j.recovery.Append(kind, json.RawMessage(raw)); err != nil {
+			j.poisoned = true
+			return 0, ErrUnavailable
+		}
+	}
 	n, err := j.file.Write(buf)
 	if err != nil || n != len(buf) {
 		j.poisoned = true
@@ -154,10 +165,17 @@ func (j *Journal) Append(kind string, data any) (uint64, error) {
 		return 0, ErrUnavailable
 	}
 	h := sha256.Sum256(plain)
+	if j.anchor != nil {
+		if err := j.anchor.commit(r.Sequence, hex.EncodeToString(h[:])); err != nil {
+			j.poisoned = true
+			return 0, ErrUnavailable
+		}
+	}
 	j.prev = hex.EncodeToString(h[:])
 	j.seq = r.Sequence
 	j.size += int64(n)
 	j.records = append(j.records, r)
+	j.offsets = append(j.offsets, j.size)
 	return r.Sequence, nil
 }
 func (j *Journal) Healthy() bool {
@@ -173,5 +191,8 @@ func (j *Journal) Close() error {
 	}
 	err := j.file.Close()
 	j.file = nil
+	if j.recovery != nil {
+		err = errors.Join(err, j.recovery.Close())
+	}
 	return err
 }

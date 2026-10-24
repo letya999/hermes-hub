@@ -1,6 +1,6 @@
 ---
 description: "credential-broker — единственный компонент, держащий значения секретов: TLS API, sealed store, provider plugins, delivery contracts."
-last_verified: "2026-10-20"
+last_verified: "2026-10-23"
 ---
 
 # credential-broker
@@ -23,7 +23,7 @@ ledger. «Тела запросов и URL не логируются» — св�
 
 Команды: `init --dir` (development-установка; signing keys принадлежат
 доверенному Hub, не MCP-контейнеру), `serve --config`, `check-config`,
-`version`. Каждый клиент получает `HUB_CREDENTIAL_BROKER_<ROLE>_{URL,
+`migrate-recovery --config` (явный офлайн-переход), `version`. Каждый клиент получает `HUB_CREDENTIAL_BROKER_<ROLE>_{URL,
 KEY_FILE,KEY_ID,ISSUER,CA_FILE}` с per-service ключом в named volume
 `broker-secrets-<service>` на `/run/broker-secrets`; роли `RUNTIME`
 (`hermes-runtime-adapter`), `CONTROL` (`hermes-toolhub`), `APPROVE`

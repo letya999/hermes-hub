@@ -52,12 +52,35 @@ func (s *Store) credentialOwner(connectionID string) string {
 func (s *Store) onboardingForConnection(connectionID string) (api.Onboarding, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	connection, ok := s.connections[connectionID]
+	if !ok {
+		return api.Onboarding{}, false
+	}
+	var selected api.Onboarding
+	found := false
 	for _, onboarding := range s.onboardings {
-		if onboarding.ConnectionID == connectionID {
-			return onboarding, true
+		if onboarding.ConnectionID != connectionID || onboarding.SupersededBy != "" ||
+			onboarding.Phase == api.PhaseRemoved || onboarding.Phase == api.PhaseRevoked {
+			continue
+		}
+		if connection.Owner.Type == api.PrincipalOwner && onboarding.PrincipalID != connection.Owner.ID {
+			continue
+		}
+		if connection.Owner.Type == api.ContextOwner && onboarding.ContextID != connection.Owner.ID {
+			continue
+		}
+		if onboarding.CredentialRefID != "" && onboarding.CredentialRefID != connection.CredentialRefID {
+			continue
+		}
+		current := onboarding.CredentialRefID != ""
+		selectedCurrent := selected.CredentialRefID != ""
+		newer := onboarding.CreatedAt.After(selected.CreatedAt) ||
+			(onboarding.CreatedAt.Equal(selected.CreatedAt) && onboarding.OnboardingID > selected.OnboardingID)
+		if !found || (current && !selectedCurrent) || (current == selectedCurrent && newer) {
+			selected, found = onboarding, true
 		}
 	}
-	return api.Onboarding{}, false
+	return cloneOnboarding(selected), found
 }
 
 func (s *Store) onboarding(id string) (api.Onboarding, error) {

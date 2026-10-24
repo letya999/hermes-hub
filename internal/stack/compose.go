@@ -163,7 +163,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	if s.OrgScoped() && s.CapabilityMode != "managed" {
 		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(s.OrganizationDocsDir), "target": "/org", "read_only": true})
 	}
-	if s.CapabilityMode != "managed" && strings.TrimSpace(s.GlobalSkillsDir) != "" {
+	if s.CapabilityMode != "managed" {
 		// The mounted dir is the per-space filtered copy materialized by
 		// Render: feature-gated bundled skills are absent entirely when the
 		// feature is off, so they cannot be read or followed by prompt.
@@ -442,10 +442,10 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		services["workload-controller"] = controller
 
 		broker := cloneMap(common)
-		broker["entrypoint"] = []string{"credential-broker", "serve", "--config", "/var/lib/credential-broker/config.json"}
+		broker["entrypoint"] = []string{"credential-broker", "serve", "--config", "/var/lib/credential-broker/config.json", "--state-witness-dir", "/var/lib/credential-broker-recovery"}
 		// The dedicated tmpfs volume lets Broker leases reach ToolHub and the
 		// controller without exposing Broker's encrypted store to MCP workloads.
-		broker["volumes"] = []any{M{"type": "volume", "source": "broker-state", "target": "/var/lib/credential-broker"}, brokerMaterializedMount}
+		broker["volumes"] = []any{M{"type": "volume", "source": "broker-state", "target": "/var/lib/credential-broker"}, M{"type": "volume", "source": "broker-recovery", "target": "/var/lib/credential-broker-recovery"}, M{"type": "volume", "source": "broker-recovery-key", "target": "/var/lib/credential-broker-recovery-key"}, brokerMaterializedMount}
 		broker["ports"] = []string{"127.0.0.1:8787:8787"}
 		broker["networks"] = sharedNetworks
 		// Personal loopback deployment: the connect link opens the credential form
@@ -673,6 +673,8 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			brokerState = override
 		}
 		volumes["broker-state"] = M{"external": true, "name": brokerState}
+		volumes["broker-recovery"] = M{"external": true, "name": "hermes-credential-broker-recovery-" + s.Environment}
+		volumes["broker-recovery-key"] = M{"external": true, "name": "hermes-credential-broker-recovery-key-" + s.Environment}
 		volumes["broker-materialized"] = M{"name": brokerMaterializedVolume, "driver": "local", "driver_opts": M{"type": "tmpfs", "device": "tmpfs", "o": "size=64m,uid=10001,gid=10001,mode=0700"}}
 		volumes["cred-staging"] = M{"name": credStagingVolume, "driver": "local", "driver_opts": M{"type": "tmpfs", "device": "tmpfs", "o": "size=64m,uid=10001,gid=10001,mode=0700"}}
 		volumes["broker-secrets-toolhub"] = M{}

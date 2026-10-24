@@ -227,7 +227,7 @@ func Serve(ctx context.Context, manager *Manager, listen string) error {
 			}
 		}
 	}()
-	go func() {
+	go func() { // #nosec G118 -- detached reconcile worker
 		<-ctx.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -567,7 +567,7 @@ func (m *Manager) allocatePortLocked(key string) (int, error) {
 			used[port] = struct{}{}
 		}
 	}
-	start := int(hashNumber(key) % uint32(m.cfg.PortRange))
+	start := int(hashNumber(key) % uint32(m.cfg.PortRange)) // #nosec G115 -- result is bounded by the PortRange modulo
 	for i := 0; i < m.cfg.PortRange; i++ {
 		candidate := m.cfg.PortBase + (start+i)%m.cfg.PortRange
 		if _, busy := used[candidate]; !busy {

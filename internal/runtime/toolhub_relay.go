@@ -51,7 +51,7 @@ func runToolHubRelay(ctx context.Context) error {
 		return err
 	}
 	server := &http.Server{Addr: "0.0.0.0:8090", Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: time.Minute}
-	go func() {
+	go func() { // #nosec G118 -- graceful shutdown needs a fresh context after ctx cancellation
 		<-ctx.Done()
 		stop, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()

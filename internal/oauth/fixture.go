@@ -73,7 +73,7 @@ func (f *Fixture) authorize(w http.ResponseWriter, r *http.Request) {
 	q.Set("code", code)
 	q.Set("state", state)
 	target.RawQuery = q.Encode()
-	http.Redirect(w, r, target.String(), http.StatusFound)
+	http.Redirect(w, r, target.String(), http.StatusFound) // #nosec G710 -- dev/test fixture redirecting to the registered target
 }
 
 func (f *Fixture) token(w http.ResponseWriter, r *http.Request) {

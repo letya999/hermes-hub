@@ -9,7 +9,6 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"path/filepath"
 	"slices"
-	"strings"
 )
 
 func Config(s Settings) M {
@@ -128,9 +127,7 @@ func Config(s Settings) M {
 	if organizationSkills != "" {
 		external = append(external, "/org/hermes/skills")
 	}
-	if strings.TrimSpace(s.GlobalSkillsDir) != "" {
-		external = append(external, "/opt/hub/skills")
-	}
+	external = append(external, "/opt/hub/skills")
 	if len(external) > 0 {
 		skills["external_dirs"] = external
 	}

@@ -167,7 +167,7 @@ func (m *Manager) reconcileUnconfirmed(ctx context.Context, now time.Time) {
 		record := record
 		// Reconciliation outlives the sweep tick that scheduled it; the
 		// stream client's own deadlines bound each observe/readmit call.
-		go func() {
+		go func() { // #nosec G118 -- detached reconcile worker
 			defer lock.Unlock()
 			m.reconcileJob(context.Background(), record)
 		}()

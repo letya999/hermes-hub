@@ -166,7 +166,7 @@ func PreflightCredentialArgs(ctx context.Context, imported ImportedArtifact) ([]
 	if err != nil {
 		return nil, func() {}, err
 	}
-	cleanup := func() { _ = os.RemoveAll(directory) }
+	cleanup := func() { _ = os.RemoveAll(directory) } // #nosec G703 -- fresh MkdirTemp dir
 	args := []string{}
 	if prepared.StateTarget != "" {
 		args = append(args, "--tmpfs", prepared.StateTarget+":rw,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=16m")
@@ -201,7 +201,7 @@ func PreflightCredentialArgs(ctx context.Context, imported ImportedArtifact) ([]
 		}
 		if len(lines) > 0 {
 			path := directory + string(os.PathSeparator) + "credentials.env"
-			if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0600); err != nil {
+			if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0600); err != nil { // #nosec G703 -- temp dir; credential names validated by CredentialPattern
 				cleanup()
 				return nil, func() {}, err
 			}
@@ -219,7 +219,7 @@ func PreflightCredentialArgs(ctx context.Context, imported ImportedArtifact) ([]
 		}
 		if body, ok := prepared.PreflightFiles[input.Name]; ok {
 			path := directory + string(os.PathSeparator) + input.Name + ".json"
-			if err := os.WriteFile(path, body, 0600); err != nil {
+			if err := os.WriteFile(path, body, 0600); err != nil { // #nosec G703 -- temp dir; credential names validated by CredentialPattern
 				cleanup()
 				return nil, func() {}, err
 			}

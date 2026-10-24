@@ -172,18 +172,18 @@ func CoverAll(profile string, minimum, packageMinimum float64, listPackages func
 		return 0, err
 	}
 	if _, err := out.WriteString("mode: count\n"); err != nil {
-		out.Close()
+		_ = out.Close()
 		return 0, err
 	}
 	tmp := profile + ".tmp"
 	for _, pkg := range packages {
 		if err := testPackage(pkg, tmp); err != nil {
-			out.Close()
+			_ = out.Close()
 			return 0, err
 		}
 		body, err := os.ReadFile(tmp)
 		if err != nil {
-			out.Close()
+			_ = out.Close()
 			return 0, err
 		}
 		for _, line := range strings.Split(string(body), "\n") {
@@ -192,7 +192,7 @@ func CoverAll(profile string, minimum, packageMinimum float64, listPackages func
 				continue
 			}
 			if _, err := out.WriteString(line + "\n"); err != nil {
-				out.Close()
+				_ = out.Close()
 				return 0, err
 			}
 		}
@@ -221,7 +221,7 @@ func Project(root string) error {
 			if entry.IsDir() || filepath.Ext(name) != ".md" {
 				return nil
 			}
-			body, err := os.ReadFile(name)
+			body, err := os.ReadFile(name) // #nosec G122 -- walked path inside the project tree
 			if err != nil {
 				return err
 			}
@@ -238,7 +238,7 @@ func Project(root string) error {
 					continue
 				}
 				target = strings.SplitN(target, "#", 2)[0]
-				if _, err := os.Stat(filepath.Join(filepath.Dir(name), filepath.FromSlash(target))); err != nil {
+				if _, err := os.Stat(filepath.Join(filepath.Dir(name), filepath.FromSlash(target))); err != nil { // #nosec G703 -- paths come from devcheck/coverage inputs
 					problems = append(problems, "broken link: "+rel+" -> "+target)
 				}
 			}
@@ -355,7 +355,7 @@ func Project(root string) error {
 		}
 		rel, _ := filepath.Rel(root, name)
 		rel = filepath.ToSlash(rel)
-		body, _ := os.ReadFile(name)
+		body, _ := os.ReadFile(name) // #nosec G122 -- walked path inside the project tree
 		if lines := bytes.Count(body, []byte("\n")) + 1; lines > 500 && !oversizeAllowlist[rel] {
 			problems = append(problems, fmt.Sprintf("over 500 lines: %s (%d)", rel, lines))
 		}
@@ -389,7 +389,7 @@ func Format(root string) error {
 			if err != nil || entry.IsDir() || filepath.Ext(name) != ".go" {
 				return err
 			}
-			body, err := os.ReadFile(name)
+			body, err := os.ReadFile(name) // #nosec G122 -- walked path inside the project tree
 			if err != nil {
 				return err
 			}

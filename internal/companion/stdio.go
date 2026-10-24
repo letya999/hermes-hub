@@ -27,7 +27,7 @@ func (t discoverFallbackTransport) Connect(ctx context.Context) (mcp.Connection,
 		return nil, err
 	}
 	wrapped := &discoverFallbackConn{inner: conn, out: make(chan msgOrErr, 8)}
-	go wrapped.pump()
+	go wrapped.pump() // #nosec G118 -- detached pump is bound to the connection lifetime, not a request
 	return wrapped, nil
 }
 
