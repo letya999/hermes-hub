@@ -501,7 +501,7 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 			}
 			return reply(strings.Join(lines, "\n"))
 		case "model":
-			return reply(modelCommand(ctx, text))
+			return reply(modelCommand(ctx, user.ID, text))
 		case "usage":
 			overview := true
 			if fields := strings.Fields(text); len(fields) >= 2 && fields[1] == "session" {

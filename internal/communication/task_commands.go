@@ -469,16 +469,17 @@ func itoa64(v int64) string {
 	return strconv.FormatInt(v, 10)
 }
 
-// modelCommand implements /model: list the owner's granted logical models and
-// switch the selection through the space's own model-relay admin endpoint.
-// The bearer comes from model-relay.auth (HUB_MODEL_RELAY_ADMIN) — the relay
-// re-checks grants, so the command can never widen access.
-func modelCommand(ctx context.Context, text string) string {
-	base := strings.TrimSpace(os.Getenv("HUB_MODEL_RELAY_URL"))
+// modelCommand implements /model: list the caller's granted logical models
+// and switch the selection through the caller's own model-relay admin
+// endpoint. A single-owner gateway keeps the HUB_MODEL_RELAY_URL env path; a
+// shared gateway resolves principal → {relay URL, admin bearer} from the
+// enrolled model-relay-admins.json. The relay re-checks grants, so the
+// command can never widen access; an unmapped principal gets no relay at all.
+func modelCommand(ctx context.Context, principal, text string) string {
+	base, admin := modelRelayFor(principal)
 	if base == "" {
 		return "Переключение моделей недоступно: в этом пространстве нет управляемого релея."
 	}
-	admin := strings.TrimSpace(os.Getenv("HUB_MODEL_RELAY_ADMIN"))
 	call := func(ctx context.Context, method, path string, body []byte) (int, []byte) {
 		req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(base, "/")+path, bytes.NewReader(body)) // #nosec G704 -- internal control endpoint
 		if err != nil {
@@ -517,7 +518,16 @@ func modelCommand(ctx context.Context, text string) string {
 		for _, m := range catalog.Data {
 			names = append(names, m.ID)
 		}
-		return "Модели: " + strings.Join(names, ", ") + ". Переключить: /model <имя>."
+		current := ""
+		if scode, sbody := call(ctx, http.MethodGet, "/v1/model", nil); scode == http.StatusOK {
+			var sel struct {
+				Model string `json:"model"`
+			}
+			if json.Unmarshal(sbody, &sel) == nil && sel.Model != "" {
+				current = " Текущая: " + sel.Model + "."
+			}
+		}
+		return "Модели: " + strings.Join(names, ", ") + "." + current + " Переключить: /model <имя>."
 	}
 	name := fields[1]
 	payload, _ := json.Marshal(map[string]string{"model": name})
@@ -530,4 +540,34 @@ func modelCommand(ctx context.Context, text string) string {
 	default:
 		return "Переключение недоступно: релей отклонил запрос."
 	}
+}
+
+// modelRelayFor resolves which relay a /model caller owns. The env pair is
+// the reviewed single-space contract; the admins file is the shared-gateway
+// path the stack renders for managed siblings. The file is read per call so
+// an in-place enrollment update is picked up without a gateway restart.
+func modelRelayFor(principal string) (base, admin string) {
+	if env := strings.TrimSpace(os.Getenv("HUB_MODEL_RELAY_URL")); env != "" {
+		return env, strings.TrimSpace(os.Getenv("HUB_MODEL_RELAY_ADMIN"))
+	}
+	path := strings.TrimSpace(os.Getenv("HUB_MODEL_RELAY_ADMINS_FILE"))
+	if path == "" || principal == "" {
+		return "", ""
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return "", ""
+	}
+	var entries map[string]struct {
+		URL   string `json:"url"`
+		Admin string `json:"admin"`
+	}
+	if json.Unmarshal(body, &entries) != nil {
+		return "", ""
+	}
+	entry, ok := entries[principal]
+	if !ok || strings.TrimSpace(entry.URL) == "" {
+		return "", ""
+	}
+	return strings.TrimSpace(entry.URL), strings.TrimSpace(entry.Admin)
 }

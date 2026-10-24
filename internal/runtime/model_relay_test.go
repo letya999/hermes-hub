@@ -499,6 +499,62 @@ models:
 	}
 }
 
+func TestModelRelaySelectionEndpointReportsCurrent(t *testing.T) {
+	dir := t.TempDir()
+	registry := filepath.Join(dir, "models.yaml")
+	content := `providers:
+  a:
+    url: http://127.0.0.1:1
+models:
+  default:
+    ladder:
+      - {provider: a, model: qwen3}
+  turbo:
+    ladder:
+      - {provider: a, model: gpt-5}
+`
+	if err := os.WriteFile(registry, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	sel := filepath.Join(dir, "sel.json")
+	handler, err := modelRelayRegistryHandler(registry, sel, "alice", "admintoken")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	readSelection := func(auth string) (int, string) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/v1/model", nil)
+		if auth != "" {
+			req.Header.Set("Authorization", "Bearer "+auth)
+		}
+		handler.ServeHTTP(rec, req)
+		var body struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(rec.Body).Decode(&body)
+		return rec.Code, body.Model
+	}
+
+	if code, _ := readSelection(""); code != http.StatusForbidden {
+		t.Fatalf("selection readable without admin token: %d", code)
+	}
+	if code, model := readSelection("admintoken"); code != http.StatusOK || model != "default" {
+		t.Fatalf("initial selection not reported as default: %d %q", code, model)
+	}
+
+	put := httptest.NewRequest(http.MethodPut, "/v1/model", strings.NewReader(`{"model":"turbo"}`))
+	put.Header.Set("Authorization", "Bearer admintoken")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, put)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("model switch rejected: %d", rec.Code)
+	}
+	if code, model := readSelection("admintoken"); code != http.StatusOK || model != "turbo" {
+		t.Fatalf("selection not reported after switch: %d %q", code, model)
+	}
+}
+
 func TestModelRelayRegistryModeFromEnv(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `{"choices":[]}`)

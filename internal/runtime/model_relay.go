@@ -348,13 +348,13 @@ func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (ht
 		// Same review-contract fences as the env relay: fixed paths only, no
 		// query strings, absolute-form targets or protocol upgrades.
 		known := (req.Method == http.MethodPost && req.URL.Path == "/v1/chat/completions") ||
-			(req.Method == http.MethodGet && (req.URL.Path == "/v1/models" || req.URL.Path == "/v1/hops" || req.URL.Path == "/v1/quota")) ||
+			(req.Method == http.MethodGet && (req.URL.Path == "/v1/models" || req.URL.Path == "/v1/hops" || req.URL.Path == "/v1/quota" || req.URL.Path == "/v1/model")) ||
 			(req.Method == http.MethodPut && req.URL.Path == "/v1/model")
 		if !known || req.URL.RawPath != "" || req.URL.RawQuery != "" || req.URL.Scheme != "" || req.URL.Host != "" || req.Header.Get("Upgrade") != "" {
 			http.NotFound(w, req)
 			return
 		}
-		if req.Method == http.MethodPut && req.URL.Path == "/v1/model" {
+		if req.URL.Path == "/v1/model" {
 			r.serveSelect(w, req)
 			return
 		}
@@ -529,10 +529,20 @@ func (r *relayRegistry) selection() string {
 }
 
 // serveSelect is the owner-facing model switch: admin-token authenticated,
-// grant-checked and persisted into the mounted selection file.
+// grant-checked and persisted into the mounted selection file. GET reports
+// the effective selection so the owner can see what their traffic resolves to.
 func (r *relayRegistry) serveSelect(w http.ResponseWriter, req *http.Request) {
 	if r.admin == "" || req.Header.Get("Authorization") != "Bearer "+r.admin {
 		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if req.Method == http.MethodGet {
+		model := r.selection()
+		if model == "" {
+			model = "default"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"model": model})
 		return
 	}
 	var sel struct {
