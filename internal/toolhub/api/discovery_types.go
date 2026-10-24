@@ -120,6 +120,13 @@ func (candidate DiscoveryCandidate) SourceURL() string {
 	if source.CommitSHA == "" {
 		return source.Repository
 	}
+	if strings.HasPrefix(source.Repository, "https://gitlab.com/") {
+		value := source.Repository + "/-/tree/" + source.CommitSHA
+		if source.Subfolder != "" {
+			value += "/" + source.Subfolder
+		}
+		return value
+	}
 	if source.Subfolder != "" {
 		return source.Repository + "/tree/" + source.CommitSHA + "/" + source.Subfolder
 	}

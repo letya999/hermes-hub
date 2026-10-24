@@ -104,7 +104,7 @@ func caHTTPClient(path string) (*http.Client, error) {
 	if err != nil || pool == nil {
 		pool = x509.NewCertPool()
 	}
-	pem, err := os.ReadFile(filepath.Clean(path))
+	pem, err := os.ReadFile(filepath.Clean(path)) // #nosec G703 -- configured CA bundle path
 	if err != nil || !pool.AppendCertsFromPEM(pem) {
 		return nil, errors.New("credential broker CA file is invalid")
 	}

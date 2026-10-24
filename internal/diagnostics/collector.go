@@ -244,11 +244,11 @@ func Collect(ctx context.Context, path string, run DockerRun, scope Scope) error
 	}
 	defer os.Remove(tmp.Name())
 	if err := tmp.Chmod(0600); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if _, err := tmp.Write(body); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {

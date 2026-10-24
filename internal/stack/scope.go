@@ -74,7 +74,7 @@ func noSymlinkPath(path string) error {
 			continue
 		}
 		current = filepath.Join(current, part)
-		info, err := os.Lstat(current)
+		info, err := os.Lstat(current) // #nosec G703 -- walk over the scope root
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}

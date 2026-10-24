@@ -95,15 +95,27 @@ func New(cfg Config) (*Server, error) {
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	defer func() {
-		route := "/"
+		route := "/unknown"
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 		if len(parts) > 0 && parts[0] != "" {
-			route = "/" + parts[0]
-			if parts[0] == "v1" && len(parts) > 1 {
-				route += "/" + parts[1]
+			switch parts[0] {
+			case "healthz", "connect", "oauth", "form.css", "form.js":
+				route = "/" + parts[0]
+			case "v1":
+				if len(parts) > 1 {
+					switch parts[1] {
+					case "contracts", "requests", "credentials", "grants", "leases", "runtime":
+						route = "/v1/" + parts[1]
+					}
+				}
 			}
 		}
-		log.Printf("credential-broker http method=%s route=%s duration_ms=%d", r.Method, route, time.Since(started).Milliseconds())
+		method := "other"
+		switch r.Method {
+		case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodHead, http.MethodOptions:
+			method = r.Method
+		}
+		log.Printf("credential-broker http method=%s route=%s duration_ms=%d", method, route, time.Since(started).Milliseconds()) // #nosec G706 -- both string fields are allowlisted above; request identifiers, unknown paths and methods are omitted.
 	}()
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Pragma", "no-cache")
@@ -283,6 +295,9 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request, a identity.Actor, d
 		if e = decode(data, &in); e == nil {
 			out, e = s.b.Acquire(a, in)
 			status = 201
+			if reason := broker.DenyReason(e); reason != "" {
+				log.Printf("credential-broker lease denied deny_reason=%s grant_id=%q", reason, in.GrantID) // #nosec G706 -- reason is a fixed DenyReason enum; %q escapes the grant identifier.
+			}
 		}
 	case len(parts) == 4 && parts[1] == "runtime" && parts[2] == "leases" && r.Method == "GET":
 		out, e = s.b.InspectLease(a, parts[3])

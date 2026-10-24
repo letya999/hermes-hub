@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # Pinned upstream code. Hermes MCP lives here; Telegram/Google/Atlassian Python
 # MCP trees are dedicated images, not copies inside every hub service.
-FROM golang:1.27.2-bookworm AS go_build
+FROM golang:1.27.3-bookworm AS go_build
 WORKDIR /src
 COPY go.mod go.sum ./
 COPY services/credential-broker/go.mod ./services/credential-broker/
@@ -20,7 +20,7 @@ RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABL
 RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build cd services/credential-broker && CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /credential-broker ./cmd/credential-broker
 RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /cellinit ./cmd/cellinit
 
-FROM golang:1.27.2-bookworm AS cliproxy_build
+FROM golang:1.27.3-bookworm AS cliproxy_build
 RUN --mount=type=cache,id=cliproxy-go-mod,target=/go/pkg/mod --mount=type=cache,id=cliproxy-go-build,target=/root/.cache/go-build set -e; git init /cliproxy && cd /cliproxy && git remote add origin https://github.com/router-for-me/CLIProxyAPI.git && for i in 1 2 3 4; do if git -c http.version=HTTP/1.1 fetch --depth 1 origin ba7e55836dee959e93ec6d41395865d9ec535086; then break; fi; if [ "$i" = 4 ]; then exit 1; fi; sleep 10; done && git checkout --detach FETCH_HEAD && CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /cli-proxy-api ./cmd/server
 
 FROM debian:13.6 AS sqlite_build
@@ -70,6 +70,7 @@ RUN chmod 0755 /usr/local/bin/hub-stt /usr/local/bin/hub-tts
 RUN ln -s /usr/local/bin/communication-hub /usr/local/bin/hub-communication && ln -s /usr/local/bin/toolhub /usr/local/bin/hub-toolhub && ln -s /usr/local/bin/credential-broker /usr/local/bin/hub-credential-broker
 ENV PATH="/opt/hermes/.venv/bin:${PATH}" DISPLAY=:99 HERMES_HOME=/state/hermes HOME=/state/home MCPGODEBUG=allowsessionsinstateless=1
 RUN groupadd -g 10001 agent && useradd -u 10001 -g agent -d /state/home -s /bin/bash agent && mkdir -p /state /workspace /archive /data && chown 10001:10001 /state /workspace /archive /data
+RUN install -d -o 10001 -g 10001 -m 0700 /var/lib/credential-broker-recovery /var/lib/credential-broker-recovery-key
 WORKDIR /workspace
 USER 10001:10001
 ENTRYPOINT ["hub-runtime"]

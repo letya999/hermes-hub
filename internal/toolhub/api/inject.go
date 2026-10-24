@@ -103,6 +103,71 @@ func DecryptAuthorized(backend credstore.Backend, effective EffectiveBinding) (m
 	return injected, nil
 }
 
+// ProxyStubPlan rewrites a materialized environment for proxy-delivered
+// credential inputs: the workload env keeps only the hub-managed stub while
+// the returned plan tells the egress proxy which credential reference to
+// resolve and which allowlisted hosts may receive the real value. Inputs
+// that produced no value emit no plan entry — the absence stays visible to
+// the credential-satisfaction checks that ran before this rewrite.
+func ProxyStubPlan(effective EffectiveBinding, environment map[string]string) []ProxyGrant {
+	var plan []ProxyGrant
+	for _, input := range effective.Definition.Credentials {
+		if input.Delivery != "proxy" || environment[input.Name] == "" {
+			continue
+		}
+		value := environment[input.Name]
+		environment[input.Name] = ProxyStubValue
+		reference := ""
+		if effective.Credential != nil {
+			reference = effective.Credential.CredentialRefID
+		}
+		plan = append(plan, ProxyGrant{EnvName: input.Name, Reference: reference, Hosts: []string{input.Target}, Prefix: input.Prefix, Value: value})
+	}
+	return plan
+}
+
+// FileBoundCredentialNames names credential inputs whose submitted content is
+// materialized as a mounted file, never an env line — file delivery is
+// verbatim body, json delivery is a mounted JSON document.
+func FileBoundCredentialNames(definition ToolDefinition) map[string]bool {
+	bound := map[string]bool{}
+	for _, input := range definition.Credentials {
+		if input.Delivery == "file" || input.Delivery == "json" {
+			bound[input.Name] = true
+		}
+	}
+	return bound
+}
+
+// WriteWorkloadCredentialFile stages one file-bound value as <name>.secret at
+// 0600 — the sibling materialize reads it when mounting. The write is confined
+// to the workload directory: a pre-planted symlink is dropped, never followed.
+func WriteWorkloadCredentialFile(dir, name, value string) error {
+	if dir == "" || !CredentialPattern.MatchString(name) {
+		return fmt.Errorf("%w: credential file target %q", ErrInvalid, name)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	target := name + ".secret"
+	if info, statErr := root.Lstat(target); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+		if err := root.Remove(target); err != nil {
+			return err
+		}
+	}
+	file, err := root.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+	if _, err := file.WriteString(value); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
+}
+
 // WriteWorkloadEnvFile writes KEY=value lines at 0600 under the workload directory.
 func WriteWorkloadEnvFile(dir string, values map[string]string) error {
 	if dir == "" || len(values) == 0 {
@@ -110,6 +175,9 @@ func WriteWorkloadEnvFile(dir string, values map[string]string) error {
 	}
 	lines := make([]string, 0, len(values))
 	for key, value := range values {
+		if strings.ContainsAny(value, "\r\n") {
+			return fmt.Errorf("%w: env value %s contains a line break", ErrInvalid, key)
+		}
 		lines = append(lines, key+"="+value)
 	}
 	slices.Sort(lines)
@@ -148,10 +216,6 @@ func WriteAuthorizedFiles(ctx context.Context, root string, effective EffectiveB
 	return cleanup, err
 }
 
-func writeAuthorizedFilesPersistent(ctx context.Context, root string, effective EffectiveBinding, environment map[string]string) (string, func() error, error) {
-	return writeAuthorizedFilesMode(ctx, root, effective, environment, false)
-}
-
 func writeAuthorizedFilesMode(ctx context.Context, root string, effective EffectiveBinding, environment map[string]string, removeOnCleanup bool) (string, func() error, error) {
 	if len(environment) == 0 {
 		return "", func() error { return nil }, nil
@@ -177,7 +241,30 @@ func writeAuthorizedFilesMode(ctx context.Context, root string, effective Effect
 	if err != nil || !locked {
 		return "", nil, ErrIsolation
 	}
+	fileBound := FileBoundCredentialNames(effective.Definition)
+	wipe := func() {
+		_ = os.Remove(filepath.Join(workspace.Path, "credentials.env"))
+		for name := range fileBound {
+			if CredentialPattern.MatchString(name) {
+				_ = os.Remove(filepath.Join(workspace.Path, name+".secret"))
+			}
+		}
+	}
+	for name, value := range environment {
+		if fileBound[name] {
+			if err := WriteWorkloadCredentialFile(workspace.Path, name, value); err != nil {
+				wipe()
+				_ = lock.Unlock()
+				if workspace.Cleanup != nil {
+					_ = workspace.Cleanup()
+				}
+				return "", nil, err
+			}
+			delete(environment, name)
+		}
+	}
 	if err := WriteWorkloadEnvFile(workspace.Path, environment); err != nil {
+		wipe()
 		_ = lock.Unlock()
 		if workspace.Cleanup != nil {
 			_ = workspace.Cleanup()
@@ -187,7 +274,7 @@ func writeAuthorizedFilesMode(ctx context.Context, root string, effective Effect
 	return workspace.Path, func() error {
 		defer lock.Unlock()
 		if removeOnCleanup {
-			_ = os.Remove(filepath.Join(workspace.Path, "credentials.env"))
+			wipe()
 		}
 		if workspace.Cleanup != nil {
 			return workspace.Cleanup()

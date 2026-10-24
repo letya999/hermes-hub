@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
 type prepareOutcomeRequest struct {
@@ -28,6 +29,9 @@ type prepareOutcomeRequest struct {
 	// CreatedAt pins the onboarding creation instant so the gateway can find
 	// the message job that was running when the install was requested.
 	CreatedAt string `json:"created_at,omitempty"`
+	// Browser viewer links carry no onboarding: the connection is the target.
+	ConnectionID string `json:"connection_id,omitempty"`
+	ViewerURL    string `json:"viewer_url,omitempty"`
 }
 
 // handlePrepareOutcome turns a finished ToolHub prepare into a channel reply
@@ -45,6 +49,10 @@ func (g *Gateway) handlePrepareOutcome(w http.ResponseWriter, r *http.Request) {
 	var request prepareOutcomeRequest
 	if decodeJSON(r, &request) != nil {
 		http.Error(w, "invalid prepare outcome", http.StatusBadRequest)
+		return
+	}
+	if request.ConnectionID != "" || request.ViewerURL != "" {
+		g.handleViewerNotice(w, caller, request)
 		return
 	}
 	if !identity.ValidID(request.OnboardingID) || len(request.Repository) > 300 || len(request.Detail) > 400 {
@@ -98,13 +106,45 @@ func (g *Gateway) handlePrepareOutcome(w http.ResponseWriter, r *http.Request) {
 	}
 	// The channel-side link (QR invite, etc.) goes back to the caller so the
 	// agent can print it in its own reply — the notice alone is easy to miss.
+	if loginURL == "" {
+		loginURL = request.FormURL
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"login_url": loginURL})
 }
 
+// handleViewerNotice relays the one-time browser viewer link minted by
+// connector_status. The connection plays the routing role the onboarding id
+// plays for prepare outcomes: origin fallback and message edit key use it.
+func (g *Gateway) handleViewerNotice(w http.ResponseWriter, caller identity.Envelope, request prepareOutcomeRequest) {
+	viewer := actionLink(request.ViewerURL, "/viewer/")
+	if !identity.ValidID(request.ConnectionID) || !loopbackCredentialURL(request.ViewerURL) || viewer == "" {
+		http.Error(w, "invalid viewer outcome", http.StatusBadRequest)
+		return
+	}
+	user := g.user(caller.PrincipalID)
+	if user.ID == "" {
+		http.Error(w, "unknown principal", http.StatusForbidden)
+		return
+	}
+	sum := sha256.Sum256([]byte(viewer))
+	key := "viewer-" + request.ConnectionID + "-" + hex.EncodeToString(sum[:4])
+	notice := "Откройте интерактивную сессию браузера: " + viewer + " Вход на сайты выполняется только на этой странице — пароли в чат не отправляйте."
+	route := prepareOutcomeRequest{OnboardingID: request.ConnectionID, Phase: "viewer", FormURL: viewer}
+	if err := g.deliverPrepareNotice(user, caller, key, notice, route, true); err != nil {
+		http.Error(w, "viewer notice rejected", http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{})
+}
+
 func knownPreparePhase(phase string) bool {
 	switch phase {
-	case "awaiting-credentials", "awaiting-confirm", "awaiting-oauth", "confirmed", "enabled", "failed":
+	case "awaiting-credentials", "awaiting-confirm", "awaiting-oauth", "confirmed", "enabled", "failed",
+		// A remove/disable outcome posts the onboarding's current phase, not
+		// an install phase — the /remove/ link carries the pending action.
+		"disabled", "revoked", "cleanup_incomplete":
 		return true
 	default:
 		return false
@@ -117,7 +157,7 @@ func knownPreparePhase(phase string) bool {
 // phase the form link already used).
 func knownPrepareEvent(event string) bool {
 	switch event {
-	case "prepare-started", "credentials-check", "credentials-rejected", "binding-failed":
+	case "prepare-started", "credentials-check", "credentials-rejected", "binding-failed", "link-resent":
 		return true
 	default:
 		return false
@@ -147,6 +187,11 @@ func prepareOutcomeNotice(request prepareOutcomeRequest, loginURL string) string
 		}
 		return text + " Напишите в чат «продолжи» — повторное подтверждение пройдёт без формы."
 	}
+	// A removal preview keeps the onboarding's prior phase, so the link path —
+	// not the phase — names the pending human action.
+	if remove := actionLink(request.FormURL, "/remove/"); remove != "" {
+		return "Удаление MCP для " + repo + " ждёт подтверждения. Подтвердите по ссылке: " + remove
+	}
 	switch request.Phase {
 	case "awaiting-credentials":
 		if request.CredentialIntake == "telegram_qr" && loginURL != "" {
@@ -170,7 +215,25 @@ func prepareOutcomeNotice(request prepareOutcomeRequest, loginURL string) string
 		}
 		return text
 	case "awaiting-confirm":
-		return "Подготовка MCP для " + repo + " готова к подтверждению. Продолжаю подключение."
+		text := "Подготовка MCP для " + repo + " готова к подтверждению."
+		if confirm := actionLink(request.FormURL, "/confirm/"); confirm != "" {
+			return text + " Подтвердите подключение по ссылке: " + confirm
+		}
+		// The stable wizard link already sits in the edited message — the
+		// replacement text must keep it or the user loses the only URL.
+		if wizardLink(request.FormURL) {
+			return text + " Подтвердите подключение по ссылке: " + strings.TrimSpace(request.FormURL)
+		}
+		return text + " Продолжаю подключение."
+	case "awaiting-oauth":
+		text := "MCP для " + repo + " ждёт входа у провайдера."
+		if connect := actionLink(request.FormURL, "/connect/"); connect != "" {
+			return text + " Откройте страницу авторизации: " + connect
+		}
+		if device := actionLink(request.FormURL, "/device/"); device != "" {
+			return text + " Откройте страницу входа по коду: " + device
+		}
+		return text
 	case "enabled":
 		if request.Tools > 0 {
 			return "MCP для " + repo + " подключён: " + strconv.Itoa(request.Tools) + " инструментов в рантайме."
@@ -187,10 +250,38 @@ func prepareContinuation(request prepareOutcomeRequest) string {
 		repo = "репозиторий"
 	}
 	text := "Служебное продолжение установки MCP. prepare_source для " + repo + " закончился, фаза " + request.Phase + ", onboarding_id " + request.OnboardingID + ". Вызови mcp__toolhub__status с этим onboarding_id. Если фаза awaiting-credentials, вызови mcp__toolhub__required_credentials и отправь пользователю form_url. Не проси токен в чат. Не используй терминал и не меняй config.yaml."
+	if request.Phase == "awaiting-oauth" && actionLink(request.FormURL, "/connect/") != "" {
+		text = "Служебное продолжение установки MCP. Ссылка авторизации для " + repo + " уже отправлена пользователю в статусном сообщении выше — скажи ему открыть её и войти у провайдера; ссылку в чат не дублируй и не конструируй. Если фаза стала enabled, сообщи о подключении. Если пользователь просит ссылку или сообщает, что она не работает, вызови mcp__toolhub__status с onboarding_id " + request.OnboardingID + " и resend=true — в чат придёт свежее сообщение со ссылкой. Не проси токен в чат. Не используй терминал и не меняй config.yaml."
+	}
+	if request.Phase == "awaiting-confirm" && actionLink(request.FormURL, "/confirm/") != "" {
+		text = "Служебное продолжение установки MCP. Ссылка подтверждения для " + repo + " уже отправлена пользователю отдельным сообщением — скажи открыть её. Если он не видит ссылку или она истекла, вызови mcp__toolhub__status с onboarding_id " + request.OnboardingID + " и resend=true: канал отправит новое сообщение. Не конструируй ссылку и не проси данные в чат."
+	}
 	if request.Phase == "awaiting-credentials" && strings.TrimSpace(request.FormURL) != "" {
 		text = "Служебное продолжение установки MCP. Пользователю уже отправлена ссылка на форму для " + repo + ", onboarding_id " + request.OnboardingID + ". Не отправляй другую ссылку и не выдумывай ошибку сети. Если пользователь пишет, что форма не приняла токен, вызови mcp__toolhub__status и перескажи error. Не проси токен в чат. Не используй терминал и не меняй config.yaml."
 	}
+	if wizardLink(request.FormURL) && (request.Phase == "awaiting-credentials" || request.Phase == "awaiting-confirm" || request.Phase == "awaiting-oauth") {
+		text = "Служебное продолжение установки MCP " + repo + ", фаза " + request.Phase + ". Вся установка идёт на одной странице: ссылка пользователю уже отправлена, скажи ему вернуться на ту же ссылку — страница сама покажет текущий шаг (форма, подтверждение или вход Google). Других сообщений, кнопок или ссылок подтверждения нет, не упоминай их. Если ссылка не открывается или истекла, вызови mcp__toolhub__status с onboarding_id " + request.OnboardingID + " и resend=true. Ответь одним коротким сообщением. Не конструируй ссылку и не проси данные в чат."
+	}
 	return text
+}
+
+// actionLink returns the validated human-action URL when its path carries the
+// requested prefix; every other input — empty, unparseable, a different action —
+// yields "" so callers can fall back to link-free text.
+func actionLink(raw, prefix string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || !strings.HasPrefix(parsed.Path, prefix) {
+		return ""
+	}
+	return strings.TrimSpace(raw)
+}
+
+// wizardLink reports whether the action URL is the stable single-link wizard
+// page (/connect/<id>?k=<nonce>) rather than a one-time hop: those keep their
+// own fresh-message rule because each is a different capability token.
+func wizardLink(raw string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	return err == nil && strings.HasPrefix(parsed.Path, "/connect/") && parsed.Query().Get("k") != ""
 }
 
 // prepareOutcomeKey changes when a new form link is minted. Reusing the
@@ -224,27 +315,38 @@ func loopbackCredentialURL(raw string) bool {
 		return true
 	}
 	parsed, err := url.Parse(raw)
-	if err != nil || parsed.User != nil || parsed.Scheme != "http" || parsed.RawQuery == "" {
+	if err != nil || parsed.User != nil || parsed.RawQuery == "" {
 		return false
 	}
-	switch parsed.Hostname() {
-	case "127.0.0.1", "localhost", "::1":
-	default:
+	if parsed.Scheme == "https" {
+		// Public links exist only when the operator configured one; the
+		// notice host must be exactly that origin — no look-alike domains.
+		origin, err := url.Parse(api.PublicOrigin())
+		if err != nil || origin.Host == "" || parsed.Host != origin.Host {
+			return false
+		}
+	} else if parsed.Scheme == "http" {
+		switch parsed.Hostname() {
+		case "127.0.0.1", "localhost", "::1":
+		default:
+			return false
+		}
+	} else {
 		return false
 	}
-	return strings.HasPrefix(parsed.Path, "/credentials/")
+	return strings.HasPrefix(parsed.Path, "/credentials/") || strings.HasPrefix(parsed.Path, "/confirm/") || strings.HasPrefix(parsed.Path, "/remove/") || strings.HasPrefix(parsed.Path, "/connect/") || strings.HasPrefix(parsed.Path, "/device/") || strings.HasPrefix(parsed.Path, "/viewer/")
 }
 
 func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key, notice string, request prepareOutcomeRequest, waitingForLogin bool) error {
-	if len(user.TelegramIDs) == 0 {
-		return errNoPrepareChannel
-	}
 	now := g.now().UTC()
 	// The callback authenticates by principal only, so caller.ConversationID is
 	// the synthesized DM envelope: route by the still-active message job that
 	// initiated this onboarding, else the notice leaks to the DM root.
 	conversation, deliveryTarget := caller.ConversationID, caller.DeliveryTargetID
-	bound := g.spool.TaskByConversation(user, user.TelegramIDs[0], conversation)
+	var bound Task
+	if len(user.TelegramIDs) > 0 {
+		bound = g.spool.TaskByConversation(user, user.TelegramIDs[0], conversation)
+	}
 	// The initiating tool call runs inside its message job, so the job that
 	// existed — and most recently started — at the onboarding's creation
 	// instant is the initiator. It outranks a persisted route, which older
@@ -252,7 +354,7 @@ func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key,
 	origin, found := prepareOrigin{}, false
 	if created, err := time.Parse(time.RFC3339Nano, request.CreatedAt); err == nil && !created.IsZero() {
 		if mapping, ok := g.spool.initiatingMessageMapping(user.ID, created, request.Repository); ok {
-			origin = prepareOrigin{ConversationID: mapping.ConversationID, DeliveryTargetID: mapping.DeliveryTargetID, ChatID: mapping.ChatID, TopicID: mapping.TopicID}
+			origin = prepareOrigin{ConversationID: mapping.ConversationID, DeliveryTargetID: mapping.DeliveryTargetID, Channel: mapping.Channel, ChatID: mapping.ChatID, TopicID: mapping.TopicID}
 			found = true
 		}
 	}
@@ -263,7 +365,7 @@ func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key,
 	}
 	if !found {
 		if mapping, ok := g.spool.newestActiveMessageMapping(user.ID); ok {
-			origin = prepareOrigin{ConversationID: mapping.ConversationID, DeliveryTargetID: mapping.DeliveryTargetID, ChatID: mapping.ChatID, TopicID: mapping.TopicID}
+			origin = prepareOrigin{ConversationID: mapping.ConversationID, DeliveryTargetID: mapping.DeliveryTargetID, Channel: mapping.Channel, ChatID: mapping.ChatID, TopicID: mapping.TopicID}
 			found = true
 		}
 	}
@@ -276,15 +378,40 @@ func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key,
 		bound = g.spool.TaskByConversation(user, origin.ChatID, origin.ConversationID)
 		conversation, deliveryTarget = origin.ConversationID, origin.DeliveryTargetID
 	}
-	delivery := Delivery{ID: key + "-notice", IdempotencyKey: key + "-notice", Channel: "telegram_bot", ChatID: bound.ChatID, TaskID: bound.TaskID, TopicID: bound.TopicID, Text: notice, CreatedAt: now}
-	// One evolving status message per onboarding: once the first notice was
-	// delivered, later updates edit it instead of stacking new messages.
-	delivery.EditMessageID = g.spool.prepareMessageID(request.OnboardingID)
+	// The notice returns on the channel the human asked from. Channels without
+	// Caps().Actions get the same text — the link is plain and clickable.
+	channelName := origin.Channel
+	if channelName == "" {
+		channelName = bound.Channel
+	}
+	if channelName == "" {
+		channelName = "telegram_bot"
+	}
+	chatID, topicID := bound.ChatID, bound.TopicID
+	if channelName == "telegram_bot" {
+		if len(user.TelegramIDs) == 0 {
+			return errNoPrepareChannel
+		}
+		if chatID == 0 {
+			chatID = user.TelegramIDs[0]
+		}
+	} else if chatID == 0 {
+		chatID, topicID = origin.ChatID, origin.TopicID
+	}
+	delivery := Delivery{ID: key + "-notice", IdempotencyKey: key + "-notice", Channel: channelName, ChatID: chatID, TaskID: bound.TaskID, TopicID: topicID, Text: notice, CreatedAt: now}
+	// Each new action link lands as a fresh message; the key dedupes repeats.
+	// Editing the old status can bury the only link the user needs to
+	// continue. The stable wizard link is exempt: it stays the same URL for
+	// the whole flow, so a phase notice refreshes the message in place.
+	if request.Event != "link-resent" && (request.FormURL == "" || wizardLink(request.FormURL)) {
+		delivery.EditMessageID = g.spool.prepareMessageID(request.OnboardingID)
+	}
 	if err := g.spool.EnqueueDelivery(delivery); err != nil {
 		return err
 	}
-	if request.Event != "" || waitingForLogin {
-		// Wait for user action before resuming the agent.
+	if request.Event != "" || waitingForLogin || actionLink(request.FormURL, "/remove/") != "" {
+		// Wait for user action before resuming the agent — an armed remove
+		// link is itself the continuation.
 		return nil
 	}
 	envelope := caller
@@ -293,13 +420,18 @@ func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key,
 	if bound.ChatID < 0 && deliveryTarget == "" {
 		envelope.DeliveryTargetID = "telegram-" + strconv.FormatInt(bound.ChatID, 10)
 	}
-	task := bound
 	job := Job{
 		Envelope: envelope, ID: key, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID,
-		ScopeID: "user:" + user.ID, Channel: "telegram_bot", Trigger: "prepare", IdempotencyKey: key,
-		ChatID: task.ChatID, TaskID: task.TaskID, TopicID: task.TopicID,
+		ScopeID: "user:" + user.ID, Channel: channelName, Trigger: "prepare", IdempotencyKey: key,
+		ChatID: chatID, TaskID: bound.TaskID, TopicID: topicID,
 		Text: prepareContinuation(request), CreatedAt: now,
 	}
+	// The outcome key tracks the action link, not this job's payload: a
+	// resend under a stable wizard link can carry a drifted envelope or
+	// reworded text, which must enqueue afresh instead of colliding with
+	// the spent job's fingerprint.
+	jobKey := key + "-" + jobFingerprint(job)[:8]
+	job.ID, job.IdempotencyKey = jobKey, jobKey
 	_, err := g.spool.Enqueue(job)
 	return err
 }

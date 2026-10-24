@@ -1,6 +1,6 @@
 {
   "id": "txttsql-sql",
-  "revision": 1,
+  "revision": 2,
   "title": "TXT-to-SQL database sources",
   "storage": "local",
   "fields": [

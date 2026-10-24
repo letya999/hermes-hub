@@ -253,7 +253,7 @@ func RenderEnvironment(dir, root, environment string) error {
 	if err = HealUserSoul(dir, filepath.Join(root, "config", "SOUL.md")); err != nil {
 		return err
 	}
-	if err = writeSoulEffective(dir, s); err != nil {
+	if err = MaterializeSoulEffective(dir, s); err != nil {
 		return err
 	}
 	for _, p := range []string{"hermes." + environment + ".yaml", "SOUL.md", filepath.Join("generated", "soul-effective."+environment+".md")} {
@@ -269,7 +269,7 @@ func RenderEnvironment(dir, root, environment string) error {
 
 // removeIfExists deletes path when present; a missing file is not an error.
 func removeIfExists(path string) error {
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) { // #nosec G703 -- internal render path
 		return err
 	}
 	return nil

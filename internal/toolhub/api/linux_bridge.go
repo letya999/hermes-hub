@@ -20,7 +20,7 @@ func ValidateLinuxBridgeBinary(path string) error {
 	if strings.EqualFold(filepath.Ext(path), ".exe") {
 		return fmt.Errorf("%w: Windows hubctl.exe cannot be copied as a Linux bridge", ErrIsolation)
 	}
-	file, err := os.Open(path) // #nosec G304 -- absolute operator-owned bridge path, symlink-checked above.
+	file, err := os.Open(path) // #nosec G304 G703 -- absolute operator-owned bridge path, symlink-checked above.
 	if err != nil {
 		return err
 	}
@@ -63,7 +63,7 @@ func BuildLinuxCompanionBridge(output string) error {
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-o", output, "./cmd/hubctl")
+	cmd := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-o", output, "./cmd/hubctl") // #nosec G702 -- fixed go build argv
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+LinuxBridgeArch(), "CGO_ENABLED=0")
 	body, err := cmd.CombinedOutput()

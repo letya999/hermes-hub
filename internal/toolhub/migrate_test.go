@@ -1,6 +1,8 @@
 package toolhub
 
 import (
+	"reflect"
+
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"path/filepath"
 	"testing"
@@ -60,7 +62,7 @@ func TestMigrateBindingsMovesOnlyActive(t *testing.T) {
 		t.Fatalf("active binding not migrated: %+v", got)
 	}
 	for id, want := range map[string]api.ToolBinding{disabled.ToolBindingID: disabled, revoked.ToolBindingID: revoked, foreign.ToolBindingID: foreign} {
-		if store.bindings[id] != want {
+		if !reflect.DeepEqual(store.bindings[id], want) {
 			t.Fatalf("binding %s must stay untouched: %+v", id, store.bindings[id])
 		}
 	}
@@ -82,7 +84,7 @@ func TestMigrateBindingsIdempotent(t *testing.T) {
 	if err != nil || moved != 0 {
 		t.Fatalf("repeat migrate: moved=%d err=%v", moved, err)
 	}
-	if store.bindings[binding.ToolBindingID] != after {
+	if !reflect.DeepEqual(store.bindings[binding.ToolBindingID], after) {
 		t.Fatalf("repeat migrate mutated the binding: %+v", store.bindings[binding.ToolBindingID])
 	}
 }
@@ -194,7 +196,7 @@ func TestMigrateBindingsRejectsBadScope(t *testing.T) {
 	if _, err := MigrateBindings(store, "", "alice", "runtime", "policy-1", "policy-2"); err == nil {
 		t.Fatal("empty principal accepted")
 	}
-	if store.bindings[binding.ToolBindingID] != binding {
+	if !reflect.DeepEqual(store.bindings[binding.ToolBindingID], binding) {
 		t.Fatalf("rejected calls must not touch bindings: %+v", store.bindings[binding.ToolBindingID])
 	}
 }

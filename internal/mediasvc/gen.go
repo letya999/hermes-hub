@@ -289,7 +289,7 @@ func (e *remoteGen) Generate(ctx context.Context, req GenRequest) (GenResult, er
 	if err != nil {
 		return GenResult{}, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL(e.base, "/images/generations"), bytes.NewReader(payload))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL(e.base, "/images/generations"), bytes.NewReader(payload)) // #nosec G704 -- configured generation API base
 	if err != nil {
 		return GenResult{}, err
 	}
@@ -323,7 +323,7 @@ func (e *remoteGen) edit(ctx context.Context, req GenRequest, key string) (GenRe
 	if err := form.Close(); err != nil {
 		return GenResult{}, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL(e.base, "/images/edits"), &body)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL(e.base, "/images/edits"), &body) // #nosec G704 -- configured generation API base
 	if err != nil {
 		return GenResult{}, err
 	}
@@ -358,13 +358,13 @@ func (e *remoteGen) chatImage(ctx context.Context, req GenRequest, key string) (
 	if err != nil {
 		return GenResult{}, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL(e.base, "/chat/completions"), bytes.NewReader(payload))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL(e.base, "/chat/completions"), bytes.NewReader(payload)) // #nosec G704 -- configured generation API base
 	if err != nil {
 		return GenResult{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	e.authorize(httpReq, key)
-	resp, err := e.client.Do(httpReq)
+	resp, err := e.client.Do(httpReq) // #nosec G704 -- configured generation API base
 	if err != nil {
 		return GenResult{}, err
 	}
@@ -404,7 +404,7 @@ func (e *remoteGen) authorize(req *http.Request, key string) {
 }
 
 func (e *remoteGen) readImages(req *http.Request) (GenResult, error) {
-	resp, err := e.client.Do(req)
+	resp, err := e.client.Do(req) // #nosec G704 -- configured generation API base
 	if err != nil {
 		return GenResult{}, err
 	}
@@ -477,13 +477,13 @@ func (e *falGen) Generate(ctx context.Context, req GenRequest) (GenResult, error
 	if err != nil {
 		return GenResult{}, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(e.base, "/")+"/"+req.Model, bytes.NewReader(payload))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(e.base, "/")+"/"+req.Model, bytes.NewReader(payload)) // #nosec G704 -- configured generation API base
 	if err != nil {
 		return GenResult{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Key "+key)
-	resp, err := e.client.Do(httpReq)
+	resp, err := e.client.Do(httpReq) // #nosec G704 -- configured generation API base
 	if err != nil {
 		return GenResult{}, err
 	}

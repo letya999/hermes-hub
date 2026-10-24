@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -183,5 +184,38 @@ func TestDeliverPrepareOutcomePostsNotice(t *testing.T) {
 	}
 	if api.ErrString("") != nil || api.ErrString("plain").Error() != "plain" {
 		t.Fatal("prepare error string")
+	}
+}
+
+func TestEnsureReadyProbeFailureKeepsProviderDetail(t *testing.T) {
+	provider := mcp.NewServer(&mcp.Implementation{Name: "provider-fixture", Version: "1"}, nil)
+	provider.AddTool(&mcp.Tool{Name: "browser_tabs", InputSchema: map[string]any{"type": "object"}}, func(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: "SyntaxError: Unexpected end of JSON input"}}}, nil
+	})
+	httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return provider }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true}))
+	defer httpServer.Close()
+	definition := statefulContainerDefinition()
+	definition.DefinitionID = "playwright-mcp"
+	definition.Source.Repository = "https://github.com/microsoft/playwright-mcp"
+	definition.Source.CommitSHA = "ab6d67cbf8b619338f096980806fdbe29432cc4d"
+	definition.Tools = []api.ToolSpec{{Name: "browser_tabs", Effect: api.ReadEffect}}
+	effective := api.EffectiveBinding{
+		Definition: definition,
+		WorkloadID: "work-probe",
+		Connection: &api.Connection{Metadata: map[string]string{"mcp_endpoint": httpServer.URL + "/mcp"}},
+	}
+	backend := api.MCPBackend{
+		HTTPClient: httpServer.Client(),
+		AdmissionVerifier: func(context.Context, api.EffectiveBinding) (api.AdmissionReceipt, error) {
+			return api.AdmissionReceipt{WorkloadID: "work-probe", State: "running", Enforced: true, ImageDigest: definition.Source.Digest, SidecarImages: definition.Workload.SidecarImages, Execution: definition.Execution}, nil
+		},
+		AdmissionRelease: func(context.Context, string) error { return nil },
+	}
+	err := backend.EnsureReady(context.Background(), effective, nil)
+	if err == nil || !errors.Is(err, api.ErrUnauthorized) {
+		t.Fatalf("probe error=%v", err)
+	}
+	if !strings.Contains(err.Error(), "SyntaxError") {
+		t.Fatalf("probe provider detail lost: %v", err)
 	}
 }

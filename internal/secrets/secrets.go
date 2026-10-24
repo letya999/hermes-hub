@@ -246,6 +246,15 @@ func (s *Service) Inject(auth identity.Envelope, projectedName, workloadRoot, jo
 		if err != nil {
 			return err
 		}
+		for key, value := range injected.Env {
+			if api.FileBoundCredentialNames(effective.Definition)[key] {
+				if err := api.WriteWorkloadCredentialFile(workspace.Path, key, value); err != nil {
+					_ = workspace.Cleanup()
+					return err
+				}
+				delete(injected.Env, key)
+			}
+		}
 		if workspace.Path != "" && len(injected.Env) > 0 {
 			if err := api.WriteWorkloadEnvFile(workspace.Path, injected.Env); err != nil {
 				_ = workspace.Cleanup()

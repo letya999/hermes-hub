@@ -294,6 +294,23 @@ func (s *Spool) CloseStatusDelivery(jobID string) (chatID int64, messageID int) 
 	return sent.ChatID, sent.TelegramMessageID
 }
 
+// errStaleReceipt marks a write-ahead straggler: its event predates terminal
+// state already recorded for the job, so the receipt carries nothing new.
+// Recovery skips it; a live re-apply still reports the conflict.
+var errStaleReceipt = errors.New("stale stream receipt")
+
+// staleReceipt reports a receipt whose event predates recorded terminal
+// state — the same conflicts updateMappingLocked rejects for live events.
+func staleReceipt(mapping JobMapping, event hubruntime.ExecuteResponse) bool {
+	if !terminalStatus(mapping.Status) {
+		return false
+	}
+	if event.Status != "" && event.Status != mapping.Status {
+		return true
+	}
+	return mapping.Result != "" && event.Text != "" && event.Text != mapping.Result
+}
+
 func (s *Spool) applyStreamReceiptLocked(receipt streamReceipt) error {
 	mapping, err := s.loadMappingLocked(receipt.JobID)
 	if err != nil {
@@ -307,6 +324,9 @@ func (s *Spool) applyStreamReceiptLocked(receipt streamReceipt) error {
 	}
 	if receipt.Position <= mapping.EventPosition {
 		return nil
+	}
+	if staleReceipt(mapping, receipt.Event) {
+		return errStaleReceipt
 	}
 	if err := s.updateMappingLocked(receipt.JobID, outcomeFromEvent(receipt.Event), receipt.Event.Status, terminalStatus(receipt.Event.Status)); err != nil {
 		return err
@@ -366,7 +386,13 @@ func (s *Spool) recoverStreamEvents() error {
 		return receipts[i].JobID < receipts[j].JobID
 	})
 	for _, receipt := range receipts {
-		if err := s.applyStreamReceiptLocked(receipt); err != nil {
+		err := s.applyStreamReceiptLocked(receipt)
+		if errors.Is(err, errStaleReceipt) {
+			// The terminal write superseded this straggler; replaying it would
+			// rewind recorded history and resend a stale delivery.
+			continue
+		}
+		if err != nil {
 			return err
 		}
 		if receipt.Delivery != nil {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"path"
+	"slices"
 	"strings"
 )
 
@@ -144,6 +145,36 @@ func findFile(files map[string][]byte, base string) ([]byte, string) {
 		return nil, ""
 	}
 	return files[names[0]], names[0]
+}
+
+// findScopedFile resolves a base name inside a recipe context: a single match
+// wins, several matches resolve to the scope-root file, and several matches
+// without a root one fail closed — picking a nested copy silently would guess
+// a different manifest than reviewed.
+func findScopedFile(files map[string][]byte, base string) ([]byte, string, error) {
+	var names []string
+	for name := range files {
+		if strings.EqualFold(path.Base(name), base) {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	switch len(names) {
+	case 0:
+		return nil, "", nil
+	case 1:
+		return files[names[0]], names[0], nil
+	}
+	var root []string
+	for _, name := range names {
+		if !strings.Contains(name, "/") {
+			root = append(root, name)
+		}
+	}
+	if len(root) == 1 {
+		return files[root[0]], root[0], nil
+	}
+	return nil, "", fmt.Errorf("%w: multiple %s declarations", ErrAmbiguousEntrypoint, base)
 }
 
 func ParseServerManifest(data []byte, name string, source ArtifactSource) (LaunchRecipe, ConnectionRecipe, bool, error) {
@@ -385,7 +416,7 @@ func ParseDocumentationCredentials(data []byte, name string) ConnectionRecipe {
 		for _, word := range strings.FieldsFunc(line, func(r rune) bool {
 			return !((r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_')
 		}) {
-			if CredentialPattern.MatchString(word) && (strings.Contains(word, "TOKEN") || strings.Contains(word, "KEY") || strings.Contains(word, "SECRET") || strings.Contains(word, "OAUTH") || strings.Contains(word, "CLIENT_ID")) {
+			if !strings.HasPrefix(word, "YOUR_") && CredentialPattern.MatchString(word) && (strings.Contains(word, "TOKEN") || strings.Contains(word, "KEY") || strings.Contains(word, "SECRET") || strings.Contains(word, "OAUTH") || strings.Contains(word, "CLIENT_ID")) {
 				recipe.Fields = append(recipe.Fields, ConnectionField{Name: word, Type: ConnectionType(word), Secret: SecretName(word), Delivery: "env", Target: word, Alternative: "documentation"})
 			}
 		}

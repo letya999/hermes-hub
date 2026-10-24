@@ -322,7 +322,7 @@ func ApplyExports(ctx context.Context, apply AgentExecFunc, fence ScratchFenceFu
 		if _, err := io.ReadFull(reader, content); err != nil {
 			return applied, skipped, fmt.Errorf("export member %s: %w", name, err)
 		}
-		target := path.Join(relPath, "exports", name)
+		target := path.Join(relPath, "exports", name) // #nosec G305 -- member names are validated by ValidCapabilityPath
 		out, callErr := apply(ctx, effective, AgentExecRequest{
 			Tool:           "file_write",
 			Arguments:      map[string]any{"path": target, "export_base64": base64.StdEncoding.EncodeToString(content)},

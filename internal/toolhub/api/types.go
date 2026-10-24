@@ -16,6 +16,10 @@ const (
 	MaxMemoryMiB        = 4096
 	MaxCPUMillis        = 4000
 	MaxPIDs             = 256
+	// MaxShmSizeMiB bounds /dev/shm headroom a workload may request; Chromium
+	// profiles sit well under it while the cap keeps shm a small fraction of
+	// the container memory budget.
+	MaxShmSizeMiB = 2048
 )
 
 var (
@@ -30,15 +34,22 @@ var (
 )
 
 var (
-	ErrInvalid      = errors.New("invalid toolhub record")
-	ErrNotFound     = errors.New("toolhub record not found")
-	ErrConflict     = errors.New("toolhub record conflict")
-	ErrUnauthorized = errors.New("toolhub authorization denied")
-	ErrStale        = errors.New("toolhub record is stale")
-	ErrRevoked      = errors.New("toolhub record is revoked")
-	ErrDegraded     = errors.New("toolhub connection is degraded")
+	ErrInvalid                     = errors.New("invalid toolhub record")
+	ErrNotFound                    = errors.New("toolhub record not found")
+	ErrConflict                    = errors.New("toolhub record conflict")
+	ErrUnauthorized                = errors.New("toolhub authorization denied")
+	ErrStale                       = errors.New("toolhub record is stale")
+	ErrRevoked                     = errors.New("toolhub record is revoked")
+	ErrDegraded                    = errors.New("toolhub connection is degraded")
+	ErrCredentialVisibilityUnknown = errors.New("credential visibility unknown")
 	// Resolution sentinels wrap ErrInvalid so existing fail-closed callers keep
 	// failing closed while stable machine-readable codes reach status.
+	// ErrReconsent marks a granted-set shortfall (RFC6750 insufficient_scope):
+	// the fix is a new consent round, never a token refresh.
+	ErrReconsent = fmt.Errorf("%w: re-consent required", ErrUnauthorized)
+	// ErrLinkGone marks a one-time link that was already spent or expired —
+	// the HTTP surface maps it to 410 Gone, distinct from a forged nonce.
+	ErrLinkGone                      = fmt.Errorf("%w: link expired or spent", ErrInvalid)
 	ErrAmbiguousEntrypoint           = fmt.Errorf("%w: ambiguous MCP entrypoint", ErrInvalid)
 	ErrUnsupportedCredentialContract = fmt.Errorf("%w: unsupported credential contract", ErrInvalid)
 	ErrUnsupportedAuth               = fmt.Errorf("%w: unsupported authentication contract", ErrInvalid)
@@ -48,6 +59,8 @@ var (
 // code a chat-facing agent can explain. Unmapped errors return "".
 func ErrorCode(err error) string {
 	switch {
+	case errors.Is(err, ErrCredentialVisibilityUnknown):
+		return "credential_visibility_unknown"
 	case errors.Is(err, ErrAmbiguousEntrypoint):
 		return "ambiguous_entrypoint"
 	case errors.Is(err, ErrUnsupportedCredentialContract):
@@ -97,7 +110,15 @@ const (
 	ActiveStatus   Status = "active"
 	DisabledStatus Status = "disabled"
 	RevokedStatus  Status = "revoked"
+	// DeletingStatus marks a connection whose finalizers are running: not
+	// Active means Authorize and EffectiveBinding deny it before the ladder
+	// finishes.
+	DeletingStatus Status = "deleting"
 	DegradedStatus Status = "degraded"
+	// ReauthStatus marks a connection whose stored credential material was
+	// purged after credential-relevant recipe drift; admission denies it and
+	// only a human reauthorization can bring it back.
+	ReauthStatus   Status = "reauth"
 	StartingStatus Status = "starting"
 	RunningStatus  Status = "running"
 	StoppedStatus  Status = "stopped"
@@ -110,7 +131,24 @@ type OwnerType string
 const (
 	PrincipalOwner OwnerType = "principal"
 	ContextOwner   OwnerType = "context"
+	TeamOwner      OwnerType = "team"
 )
+
+// Team is an operator-published, confirmed member list. It reuses the
+// capability-policy confirmation machinery and adds no IAM dependency;
+// membership is evaluated per call against the stored record.
+type Team struct {
+	Schema       int           `json:"schema"`
+	TeamID       string        `json:"team_id"`
+	Members      []string      `json:"members"`
+	WriteMembers []string      `json:"write_members,omitempty"`
+	AllowWrites  bool          `json:"allow_writes,omitempty"`
+	Revision     uint64        `json:"revision"`
+	IssuedBy     string        `json:"issued_by"`
+	IssuedAt     time.Time     `json:"issued_at"`
+	Status       Status        `json:"status"`
+	Confirmation *Confirmation `json:"confirmation,omitempty"`
+}
 
 type OwnerRef struct {
 	Type OwnerType `json:"type"`
@@ -161,6 +199,10 @@ type CredentialInput struct {
 	// Source is the metadata file the input was discovered from, carried over
 	// from the connection recipe for audit.
 	Source string `json:"source,omitempty"`
+	// Format/MaxLength carry the recipe's declared value contract to the
+	// credential submit boundary.
+	Format    string `json:"format,omitempty"`
+	MaxLength int    `json:"max_length,omitempty"`
 }
 
 type WorkloadPolicy struct {
@@ -188,6 +230,11 @@ type WorkloadPolicy struct {
 	// Sharable declares that a Shared-class workload may carry stored
 	// credentials under a shared-credential policy.
 	Sharable bool `json:"sharable,omitempty"`
+	// Shareable is the explicit team-connector mode: "credential" shares one
+	// team credential across per-member workloads (PerUser), "connection"
+	// shares one credential and one workload (Shared). Empty means a
+	// connector is not team-shareable.
+	Shareable string `json:"shareable,omitempty"`
 }
 
 // Bounded-cli cell lifecycle tiers (WorkloadPolicy.Lifecycle).
@@ -200,15 +247,30 @@ const (
 )
 
 type ExecutionPolicy struct {
-	TimeoutSeconds int          `json:"timeout_seconds"`
-	OutputBytes    int          `json:"output_bytes"`
-	CPUMillis      int          `json:"cpu_millis"`
-	MemoryMiB      int          `json:"memory_mib"`
-	MaxPIDs        int          `json:"max_pids"`
-	Egress         []string     `json:"egress"`
-	TCPForwards    []TCPForward `json:"tcp_forwards,omitempty"`
-	Mounts         []Mount      `json:"mounts,omitempty"`
+	TimeoutSeconds int      `json:"timeout_seconds"`
+	OutputBytes    int      `json:"output_bytes"`
+	CPUMillis      int      `json:"cpu_millis"`
+	MemoryMiB      int      `json:"memory_mib"`
+	MaxPIDs        int      `json:"max_pids"`
+	Egress         []string `json:"egress"`
+	// EgressClass selects the proxy policy shape. Empty is the bounded
+	// allowlist every workload carries; "web" is the browser class —
+	// arbitrary HTTPS through the per-workload proxy with a deny list of
+	// private, loopback, link-local, metadata and hub-internal
+	// destinations. Under "web" the Egress list carries reviewed extra deny
+	// entries, never allow entries.
+	EgressClass string       `json:"egress_class,omitempty"`
+	TCPForwards []TCPForward `json:"tcp_forwards,omitempty"`
+	Mounts      []Mount      `json:"mounts,omitempty"`
+	// ShmSizeMiB sizes /dev/shm for workloads that need shared memory beyond
+	// the 64 MiB Docker default — headless Chromium is the known consumer.
+	// Zero keeps the daemon default.
+	ShmSizeMiB int `json:"shm_size_mib,omitempty"`
 }
+
+// EgressWeb is the only non-default egress class: browser workloads browse
+// the open web but stay behind the audited per-workload proxy.
+const EgressWeb = "web"
 
 // TCPForward binds a loopback listener inside the workload to one reviewed
 // host:port destination supplied by a non-secret credential environment
@@ -241,22 +303,57 @@ type CredentialReference struct {
 	Locator                string            `json:"locator"`
 	Keys                   []string          `json:"keys"`
 	BrokerGrantID          string            `json:"broker_grant_id,omitempty"`
+	BrokerGrantPolicy      string            `json:"broker_grant_policy,omitempty"`
+	BrokerGrantBinding     string            `json:"broker_grant_binding,omitempty"`
 	BrokerContractID       string            `json:"broker_contract_id,omitempty"`
 	BrokerContractRevision int               `json:"broker_contract_revision,omitempty"`
 	BrokerEnv              map[string]string `json:"broker_env,omitempty"`
-	Status                 Status            `json:"status"`
+	// BrokerContextID is the Broker context that owns a context-owned
+	// (team/shared) credential. Per-principal credentials leave it empty —
+	// their grants and leases sign under the binding's own context. A team
+	// reference sets it so per-member grants and the operator lifecycle sign
+	// context-managed against the shared credential record.
+	BrokerContextID  string `json:"broker_context_id,omitempty"`
+	LegacyLocator    string `json:"legacy_locator,omitempty"`
+	MigrateRequestID string `json:"migrate_request_id,omitempty"`
+	Status           Status `json:"status"`
 }
 
 type Connection struct {
-	Schema           int               `json:"schema"`
-	ConnectionID     string            `json:"connection_id"`
-	Owner            OwnerRef          `json:"owner"`
-	DefinitionID     string            `json:"definition_id"`
-	CredentialRefID  string            `json:"credential_ref,omitempty"`
-	Revision         uint64            `json:"revision"`
-	Status           Status            `json:"status"`
-	TerminalExposure bool              `json:"terminal_exposure,omitempty"`
-	Metadata         map[string]string `json:"metadata,omitempty"`
+	Schema               int               `json:"schema"`
+	ConnectionID         string            `json:"connection_id"`
+	Owner                OwnerRef          `json:"owner"`
+	DefinitionID         string            `json:"definition_id"`
+	CredentialRefID      string            `json:"credential_ref,omitempty"`
+	Revision             uint64            `json:"revision"`
+	Status               Status            `json:"status"`
+	CredentialVisibility string            `json:"credential_visibility,omitempty"`
+	CredentialCheckedAt  time.Time         `json:"credential_checked_at,omitempty"`
+	HealthCause          string            `json:"health_cause,omitempty"`
+	CredentialRetryAt    time.Time         `json:"credential_retry_at,omitempty"`
+	CredentialRetryCount int               `json:"credential_retry_count,omitempty"`
+	RecipeRetryAt        time.Time         `json:"recipe_retry_at,omitempty"`
+	RecipeRetryCount     int               `json:"recipe_retry_count,omitempty"`
+	CredRecipeRetryAt    time.Time         `json:"cred_recipe_retry_at,omitempty"`
+	CredRecipeRetryCount int               `json:"cred_recipe_retry_count,omitempty"`
+	SurfaceRetryAt       time.Time         `json:"surface_retry_at,omitempty"`
+	SurfaceRetryCount    int               `json:"surface_retry_count,omitempty"`
+	TerminalExposure     bool              `json:"terminal_exposure,omitempty"`
+	Metadata             map[string]string `json:"metadata,omitempty"`
+}
+
+// BrokerBindingGrant records one minted Credential Broker grant against a
+// shared (team-owned) credential reference: the credential reference cannot
+// hold the grant id because each member's binding mints its own. The ledger
+// lets revoke, member purge and connection drop retire the exact grants they
+// created — one row per binding, replaced on rotation.
+type BrokerBindingGrant struct {
+	BindingID       string `json:"binding_id"`
+	ConnectionID    string `json:"connection_id"`
+	CredentialRefID string `json:"credential_ref"`
+	ContextID       string `json:"context_id"`
+	GrantID         string `json:"grant_id"`
+	PolicyVersion   string `json:"policy_version"`
 }
 
 type ToolBinding struct {
@@ -276,6 +373,12 @@ type ToolBinding struct {
 	Status             Status        `json:"status"`
 	Revision           uint64        `json:"revision"`
 	ProjectionRevision uint64        `json:"projection_revision"`
+	// ToolDigest pins the admitted tool surface (names, schemas, effects) so
+	// a later drift is detectable by one comparison.
+	ToolDigest string `json:"tool_digest,omitempty"`
+	// EnabledToolsets names the definition's toolsets this binding projects
+	// beyond the default-enabled set.
+	EnabledToolsets []string `json:"enabled_toolsets,omitempty"`
 }
 
 type WorkloadInstance struct {
@@ -302,13 +405,17 @@ type EffectiveBinding struct {
 	WorkloadID string
 	// CredentialMounts are runtime-only paths returned by Credential Broker.
 	// They never enter the persisted projection or audit ledger.
-	CredentialMounts          []Mount `json:"-"`
-	CapabilityID              string  `json:"-"`
-	ImplementationDigest      string  `json:"-"`
-	CapabilityPolicyID        string  `json:"-"`
-	CapabilityProfileID       string  `json:"-"`
-	CapabilityPolicyRevision  uint64  `json:"-"`
-	CapabilityProfileRevision uint64  `json:"-"`
+	CredentialMounts []Mount `json:"-"`
+	// ProxyGrants are the runtime-only proxy-delivery grants the injector
+	// resolved for this call; ControllerPlanFor forwards them to the
+	// controller so it can wire the cred-proxy sidecar.
+	ProxyGrants               []ProxyGrant `json:"-"`
+	CapabilityID              string       `json:"-"`
+	ImplementationDigest      string       `json:"-"`
+	CapabilityPolicyID        string       `json:"-"`
+	CapabilityProfileID       string       `json:"-"`
+	CapabilityPolicyRevision  uint64       `json:"-"`
+	CapabilityProfileRevision uint64       `json:"-"`
 	// CapabilityScopes are the path-grant boundaries the admission bound for
 	// this call; executors must map them to os.Root scopes, never recompute.
 	CapabilityScopes []CapabilityScope `json:"-"`

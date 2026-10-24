@@ -173,8 +173,7 @@ func TestCredentialGateDefersRegistrationUntilSubmittedSecrets(t *testing.T) {
 		AdmissionGroups: [][]string{{"SLACK_MCP_XOXC_TOKEN", "SLACK_MCP_XOXD_TOKEN"}, {"SLACK_MCP_XOXP_TOKEN"}, {"SLACK_MCP_XOXB_TOKEN"}},
 	}
 	body, err := control.acceptCredentialGate(t.Context(), aliceAuth(), preparing, review)
-	instructions, _ := body["instructions"].(string)
-	if err != nil || body["phase"] != api.PhaseAwaitingCreds || body["tools_confirmed"] != false || strings.Contains(instructions, "one token field") || !strings.Contains(instructions, "field names") {
+	if err != nil || body["phase"] != api.PhaseAwaitingCreds || body["tools_confirmed"] != false || body["next_action"] != "submit_credentials" {
 		t.Fatalf("body=%v err=%v", body, err)
 	}
 	if _, err := store.Definition("slack-mcp-server", "0.0.2"); !errors.Is(err, api.ErrNotFound) {
@@ -190,8 +189,8 @@ func TestCredentialGateDefersRegistrationUntilSubmittedSecrets(t *testing.T) {
 	if len(stored.Definition.ProxyEnvironment) != 1 || stored.Definition.ProxyEnvironment[0] != "SLACK_MCP_PROXY" {
 		t.Fatalf("proxy environment not persisted on the draft: %+v", stored.Definition.ProxyEnvironment)
 	}
-	requiredBody, err := control.requiredCredentials(aliceAuth(), map[string]any{"onboarding_id": preparing.OnboardingID})
-	if err != nil || !strings.Contains(fmt.Sprint(requiredBody["form_url"]), "/credentials/"+preparing.OnboardingID) {
+	requiredBody, err := control.requiredCredentials(context.Background(), aliceAuth(), map[string]any{"onboarding_id": preparing.OnboardingID})
+	if err != nil || requiredBody["input"] != "localhost-form" {
 		t.Fatalf("required=%v err=%v", requiredBody, err)
 	}
 	gateway := &Gateway{Control: control}
@@ -239,7 +238,7 @@ func TestCredentialGateDefersRegistrationUntilSubmittedSecrets(t *testing.T) {
 	if err != nil || !strings.Contains(noted.Error, "один полный набор") || strings.Contains(noted.Error, "one") {
 		t.Fatalf("form rejection was not recorded: %+v %v", noted.Error, err)
 	}
-	if strings.Contains(credentialFieldMarkup(api.CredentialHint{Name: "SLACK_MCP_XOXP_TOKEN", AlternativeGroup: 2}), "required") {
+	if strings.Contains(credentialFieldMarkup(api.CredentialHint{Name: "SLACK_MCP_XOXP_TOKEN", AlternativeGroup: 2}, api.ConnectionField{}, ""), "required") {
 		t.Fatal("alternative field is required")
 	}
 	nonce := stored.FormNonce
@@ -298,7 +297,7 @@ func TestCredentialSubmitPageDoesNotClaimSavedSecrets(t *testing.T) {
 	if _, _, message := credentialSubmitPage(fmt.Errorf("%w: immutable definition slack-mcp-server@0.0.2", api.ErrConflict)); strings.Contains(message, "Данные сохранены") || !strings.Contains(message, "не сохранён") {
 		t.Fatal(message)
 	}
-	if intro := credentialFormIntro([]api.CredentialHint{{Name: "GOOGLE_OAUTH_CREDENTIALS"}}); !strings.Contains(intro, "JSON-файл Google") {
+	if intro := credentialFormIntro([]api.CredentialHint{{Name: "GOOGLE_OAUTH_CREDENTIALS"}}); !strings.Contains(intro, "защищённом хранилище") {
 		t.Fatal(intro)
 	}
 }
@@ -312,7 +311,7 @@ func admittedGateDefinition(version, tool string) api.ToolDefinition {
 	return admitted
 }
 
-func TestCredentialGateConfirmsLocalSecretWhenBrokerHasNoContract(t *testing.T) {
+func TestCredentialGateConfirmsLocalSecretWithoutBroker(t *testing.T) {
 	store := NewStore()
 	key, err := credstore.GenerateKey()
 	if err != nil {
@@ -333,7 +332,6 @@ func TestCredentialGateConfirmsLocalSecretWhenBrokerHasNoContract(t *testing.T) 
 	}, true)
 	control := &ControlPlane{
 		Store: store, Secrets: secrets, Now: time.Now, ConfirmationTTL: time.Hour,
-		Broker: &credentialbroker.Config{URL: "https://broker.example"},
 		Ready: func(ctx context.Context, effective api.EffectiveBinding) error {
 			if effective.Credential == nil || effective.Credential.Backend != credstore.BackendLocal || effective.Credential.BrokerGrantID != "" {
 				t.Fatalf("reference=%+v", effective.Credential)
@@ -377,6 +375,7 @@ func TestCredentialGateConfirmsLocalSecretWhenBrokerHasNoContract(t *testing.T) 
 		t.Fatalf("phase=%s broker=%q local=%v", stored.Phase, stored.BrokerCredentialID, seenLocal)
 	}
 	contracted := admittedGateDefinition("1.0.0", "channels_list")
+	control.Broker = &credentialbroker.Config{URL: "https://broker.example"}
 	contracted.DefinitionID = "contracted-mcp"
 	contracted.CredentialContractID = "github-pat"
 	contracted.CredentialContractRevision = 1

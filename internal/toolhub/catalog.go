@@ -245,28 +245,52 @@ func (s *Store) enableWithReady(ctx context.Context, auth identity.Envelope, def
 			s.touchProjectionLocked(&stale)
 			s.bindings[stale.ToolBindingID] = stale
 		} else {
+			key := projectionKey(auth.PrincipalID, auth.ContextID, auth.RuntimeID)
 			previous := *existing
-			previousProjection := s.projectionRevisions[projectionKey(auth.PrincipalID, auth.ContextID, auth.RuntimeID)]
+			previousProjection := s.projectionRevisions[key]
+			if existing.ToolDigest == "" {
+				existing.ToolDigest = api.ToolSurfaceDigest(definition.Tools)
+				s.bindings[existing.ToolBindingID] = *existing
+			}
 			if existing.Status != api.ActiveStatus {
 				existing.Status = api.ActiveStatus
 				existing.Revision++
 				s.touchProjectionLocked(existing)
 				s.bindings[existing.ToolBindingID] = *existing
 			}
+			// The recheck probe runs outside the store lock for the same
+			// reason the new-binding reservation does: a slow remote probe
+			// must not serialize other principals' store access. On failure
+			// only this reservation is rolled back (Revision compare-and-swap).
 			if ready != nil && existing.Status == api.ActiveStatus {
 				effective, err := s.resolveLocked(auth, existing.ToolBindingID)
+				reserved := existing.Revision
+				s.mu.Unlock()
 				if err == nil {
 					err = ready(ctx, effective)
 				}
 				if err != nil {
-					s.bindings[existing.ToolBindingID] = previous
-					s.projectionRevisions[projectionKey(auth.PrincipalID, auth.ContextID, auth.RuntimeID)] = previousProjection
+					s.mu.Lock()
+					if cur, ok := s.bindings[existing.ToolBindingID]; ok && cur.Revision == reserved {
+						s.bindings[existing.ToolBindingID] = previous
+						s.projectionRevisions[key] = previousProjection
+					}
 					s.mu.Unlock()
 					return api.ToolBinding{}, err
 				}
+				s.mu.Lock()
+				// Revoke wins: a connection revoked while the probe ran must
+				// not be re-enabled by the recheck commit.
+				if existing.ConnectionID != "" {
+					current, ok := s.connections[existing.ConnectionID]
+					if !ok || current.Status != api.ActiveStatus {
+						s.mu.Unlock()
+						return api.ToolBinding{}, fmt.Errorf("%w: connection changed during readiness", api.ErrRevoked)
+					}
+				}
 			}
 			s.supersedeOtherBindingsLocked(auth, definitionID, existing.ToolBindingID)
-			result := *existing
+			result := s.bindings[existing.ToolBindingID]
 			s.mu.Unlock()
 			if err := s.persistAndNotify(); err != nil {
 				return api.ToolBinding{}, err
@@ -274,7 +298,7 @@ func (s *Store) enableWithReady(ctx context.Context, auth identity.Envelope, def
 			return result, nil
 		}
 	}
-	binding := api.ToolBinding{Schema: api.SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: api.ActiveStatus, Revision: 1, ProjectionRevision: s.projectionRevisions[projectionKey(auth.PrincipalID, auth.ContextID, auth.RuntimeID)] + 1}
+	binding := api.ToolBinding{Schema: api.SchemaVersion, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: api.ActiveStatus, Revision: 1, ProjectionRevision: s.projectionRevisions[projectionKey(auth.PrincipalID, auth.ContextID, auth.RuntimeID)] + 1, ToolDigest: api.ToolSurfaceDigest(definition.Tools)}
 	if connection != nil {
 		binding.ConnectionID, binding.ConnectionRevision = connection.ConnectionID, connection.Revision
 		binding.CredentialRefID, binding.CredentialRevision = credential.CredentialRefID, credential.Revision
@@ -289,15 +313,36 @@ func (s *Store) enableWithReady(ctx context.Context, auth identity.Envelope, def
 		return api.ToolBinding{}, api.ErrRevoked
 	}
 	if ready != nil {
+		// Reserve the binding, then run readiness outside the store lock: a
+		// slow remote probe must not serialize every other principal's store
+		// access. A failed probe deletes only its own reservation (the
+		// compare-and-swap is Revision equality).
 		s.bindings[binding.ToolBindingID] = binding
 		effective, err := s.resolveLocked(auth, binding.ToolBindingID)
+		s.mu.Unlock()
 		if err == nil {
 			err = ready(ctx, effective)
 		}
 		if err != nil {
-			delete(s.bindings, binding.ToolBindingID)
+			s.mu.Lock()
+			if cur, ok := s.bindings[binding.ToolBindingID]; ok && cur.Revision == binding.Revision {
+				delete(s.bindings, binding.ToolBindingID)
+			}
 			s.mu.Unlock()
 			return api.ToolBinding{}, err
+		}
+		s.mu.Lock()
+		// The probe ran unlocked; a revoke in that window already bumped the
+		// connection revision, so committing the reserved binding now would
+		// resurrect a dead authority. Revoke wins: drop the reservation and
+		// fail the enable.
+		if binding.ConnectionID != "" {
+			current, ok := s.connections[binding.ConnectionID]
+			if !ok || current.Revision != binding.ConnectionRevision || current.Status != api.ActiveStatus {
+				delete(s.bindings, binding.ToolBindingID)
+				s.mu.Unlock()
+				return api.ToolBinding{}, fmt.Errorf("%w: connection changed during readiness", api.ErrRevoked)
+			}
 		}
 	}
 	s.bindings[binding.ToolBindingID] = binding
@@ -366,7 +411,7 @@ func (s *Store) matchingOwnerConnectionsLocked(auth identity.Envelope, definitio
 		if candidate.DefinitionID != definition.DefinitionID || candidate.Status != api.ActiveStatus || candidate.CredentialRefID == "" {
 			continue
 		}
-		if !candidate.Owner.Matches(auth) && !s.sharedConnectionCoversLocked(auth, candidate) {
+		if !candidate.Owner.Matches(auth) && !s.sharedConnectionCoversLocked(auth, candidate) && !s.teamConnectionCoversLocked(auth, candidate) {
 			continue
 		}
 		reference, found := s.credentials[candidate.CredentialRefID]
@@ -379,6 +424,41 @@ func (s *Store) matchingOwnerConnectionsLocked(auth identity.Envelope, definitio
 		}
 		valid := definition.CredentialsSatisfied(func(name string) bool { return keys[name] })
 		if valid {
+			matches = append(matches, ownerConnectionMatch{connection: candidate, credential: reference})
+		}
+	}
+	return matches
+}
+
+// matchingOwnerConnectionsHealableLocked additionally admits connections
+// parked in reauth or degraded without a pending drift-accept pin: a
+// resubmitted credential rotates them back to life instead of minting a
+// parallel connection. s.mu must be held.
+func (s *Store) matchingOwnerConnectionsHealableLocked(auth identity.Envelope, definition api.ToolDefinition) []ownerConnectionMatch {
+	matches := make([]ownerConnectionMatch, 0)
+	for _, candidate := range s.connections {
+		if candidate.DefinitionID != definition.DefinitionID || candidate.CredentialRefID == "" {
+			continue
+		}
+		healable := candidate.Status == api.ReauthStatus || candidate.Status == api.DegradedStatus
+		if candidate.Status != api.ActiveStatus && !healable {
+			continue
+		}
+		if !candidate.Owner.Matches(auth) && !s.sharedConnectionCoversLocked(auth, candidate) && !s.teamConnectionCoversLocked(auth, candidate) {
+			continue
+		}
+		reference, found := s.credentials[candidate.CredentialRefID]
+		if !found || reference.ConnectionID != candidate.ConnectionID {
+			continue
+		}
+		if candidate.Status == api.ActiveStatus && reference.Status != api.ActiveStatus {
+			continue
+		}
+		keys := map[string]bool{}
+		for _, key := range reference.Keys {
+			keys[key] = true
+		}
+		if definition.CredentialsSatisfied(func(name string) bool { return keys[name] }) {
 			matches = append(matches, ownerConnectionMatch{connection: candidate, credential: reference})
 		}
 	}

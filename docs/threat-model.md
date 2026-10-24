@@ -1,6 +1,6 @@
 ---
 description: Threat model for scoped scale-to-zero runtimes and future organization isolation.
-last_verified: 2026-09-17
+last_verified: 2026-10-20
 ---
 # Threat model
 
@@ -88,6 +88,17 @@ leased only for current work and is not an authorization source.
 | Alice lists or calls Bob's binding | Projection and control status are exact-owner; foreign onboarding/binding ids are not found | Principal/binding ids | #101, #86 |
 | Secret entered as Telegram `KEY=value` or chat becomes an MCP credential | Production MCP credentials use the loopback form or URL elicitation into ciphertext; control tools reject credential-named arguments | Key names only | #102 |
 | Expired confirmation or replayed nonce | Single-use nonce with TTL; replay and expiry fail closed | Onboarding id and deny reason | #102 |
+| Replayed, forged or cross-operation human-action link | `?t=` tokens resolve only the stored nonce of that onboarding and operation; replay/expiry answer 410 and token-less POSTs deny | Onboarding id, link path and deny/410 outcome | #283 |
+| Public listener exposes control or gateway routes | The opt-in public surface registers only the human-action paths; all other routes 404, and the gateway accepts https `form_url` only for the exact configured origin host | Route registration and 404 outcome | #283 |
+| Action link lands on the wrong channel or reaches the model | The notice routes to the initiating job's channel; link tokens, nonces, OAuth state and device codes are swept from every control-op result | Channel id and delivery outcome; no tokens in results | #283 |
+| Credential persisted before the server accepts it | The read-only `tools/list` probe precedes any ciphertext, connection or Broker write; a failed probe re-renders the form with no residue | Probe result and persistence outcome | #283 |
+| Device-flow session or pasted redirect stolen mid-flow | Device codes live server-side keyed to the onboarding; pasted redirects re-validate `state` and the registered origin through the same PKCE callback | Onboarding id and flow outcome | #283 |
+| Rotating refresh token double-spent by concurrent callers | One durable lease per `(connection, provider)` under a separate lease lock; a second in-flight caller joins or fails; revoked/missing/degraded connections never acquire | Lease holder, expiry and acquire outcome | #287 |
+| Revoke raced by an in-flight OAuth refresh | Refresh lease admission reads a lock-free status mirror resynced on mutation, `Load` and `Reload`; holder-matched release cannot drop a successor's lease | Connection status and lease outcome | #287 |
+| Credential-bearing recipe drift keeps serving stale tokens | Connections pin `hermes-hub.credential-recipe`; the reconciler compares the pin to the resolved digest and `MarkReauth` revokes the reference, stops workloads and denies calls until reauthorization | Recipe digests, connection status and notify outcome | #287 |
+| `proxy` delivery leaks the secret into env, argv, inspect or logs | The workload environment carries only the `hub-managed` stub; the egress-proxy plan holds the credential reference and allowlisted target host; proxy targets validate against the reviewed egress list | Proxy plan fields and stub-only env | #287 |
+| Migration strands credentials on the legacy store or loses them on rollback | `hubctl credentials migrate` re-anchors contract-bound references through broker requests (secrets enter only via the owner link); `--rollback` restores the preserved legacy locator and needs no broker | Migration entries (`request_pending`/`anchored`/`rolled_back`) | #287 |
+| Credential form accepts hostile values (newlines, oversize, wrong format) | Per-field `format`/`max_length` plus control-byte rejection at the submit boundary; `json`/`file` values must parse | Field name and validation outcome, no values | #287 |
 | Effect or budget escalation at confirm/enable | Requested effects and execution limits cannot exceed the reviewed definition | Definition bounds and deny reason | #86 |
 | Rotate/revoke leaves an open session authorized | Go rereads current revision under the registry fence and stops affected workloads; the next `tools/call` is denied before backend | Credential/binding revision | #86, #102 |
 | OAuth account mis-linking | Callback state binds authenticated principal, context and intended connector; account identity is displayed and explicitly accepted | Link event, provider account identifier and owner | provider OAuth issue |
@@ -112,6 +123,9 @@ checks.
 
 Related: [ADR-0013](adr/ADR-0013-toolhub-security-boundary.md),
 [ADR-0016](adr/ADR-0016-encrypted-credentials-and-oauth.md),
+[ADR-0031](adr/ADR-0031-default-deny-capability-policy.md),
+[ADR-0032](adr/ADR-0032-capability-execution-isolation.md),
+[ADR-0049](adr/ADR-0049-broker-only-credential-intake.md),
 [SPEC-0010](../specs/active/SPEC-0010-stable-identifiers.md),
 [SPEC-0020](../specs/active/SPEC-0020-credentials-and-connectors.md),
 and issues #11, #12, #20-#28, #46-#51.

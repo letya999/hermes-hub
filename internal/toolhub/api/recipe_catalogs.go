@@ -167,7 +167,9 @@ func catalogCandidates(ctx context.Context, client *http.Client, values []json.R
 		}
 		if completed, accepted := CompleteRecipeCandidate(ctx, client, candidate, lookup); accepted {
 			candidates = append(candidates, completed)
-		} else if candidate.CommitSHA != "" && strings.EqualFold(candidate.CommitSHA, lookup.CommitSHA) && candidate.Launch.Transport != ContainerMCP {
+		} else if candidate.Launch.Transport != ContainerMCP {
+			// A repository-matched remote claim that failed commit binding is
+			// not noise: the resolver flags it ignored in the source ledger.
 			candidates = append(candidates, candidate)
 		}
 	}
@@ -197,7 +199,20 @@ func ServerDocumentCandidate(document map[string]any, sourceName string, lookup 
 	}
 	commit := ExactCommitMetadata(document)
 	evidence := []RecipeEvidence{{Source: sourceName, Detail: "repository-matched catalog metadata"}}
-	return RecipeCandidate{Repository: repository, Subfolder: subfolder, CommitSHA: commit, Launch: launch, Connection: connection, Evidence: evidence}, true, nil
+	launchRank, credentialRank := producerRanks(sourceName)
+	return RecipeCandidate{Repository: repository, Subfolder: subfolder, CommitSHA: commit, Launch: launch, Connection: connection, Evidence: evidence, Source: sourceName, LaunchRank: launchRank, CredentialRank: credentialRank}, true, nil
+}
+
+// producerRanks fixes where each catalog's claims sit on the launch and
+// credential ladders. Unknown producers carry no rank and resolve weakest.
+func producerRanks(sourceName string) (Rank, Rank) {
+	switch sourceName {
+	case "mcp-registry":
+		return RankL3, RankR2
+	case "toolhive", "docker-mcp":
+		return RankL2, RankR4
+	}
+	return "", ""
 }
 
 func CatalogQuery(raw string, values map[string]string) (string, error) {

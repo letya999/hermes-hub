@@ -1,4 +1,4 @@
-status: complete
+status: done
 change: CHG-0027-recipe-catalog-discovery
 completed:
   - added Docker Hub namespace/tag discovery with OCI source, revision, provenance and SBOM verification
@@ -14,3 +14,4 @@ remaining: []
 notes:
   - Smithery release correlation uses an operator-provided token; the public schema check does not retrieve secret values
   - GHCR package enumeration may use an operator-selected token, while public image hints remain directly verifiable
+closeout: retroactive-triage-2026-10-20

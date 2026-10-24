@@ -23,6 +23,88 @@ import (
 // dead-end "no reviewed contract" error. The form the user fills in is the
 // consent point; the contract only declares collection and delivery.
 func TestBindReviewedContractSynthesizesDynamicContract(t *testing.T) {
+	testBindReviewedContractSynthesis(t, false)
+}
+
+func TestCredentialGateUsesBrokerForGenericRecipe(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "toolhub.private")
+	if err := os.WriteFile(keyPath, private, 0600); err != nil {
+		t.Fatal(err)
+	}
+	server, registered := dynamicContractBroker(t)
+	control := &ControlPlane{Store: NewStore(), Broker: &credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}, Now: time.Now}
+	definition := statefulContainerDefinition()
+	definition.Credentials = []api.CredentialInput{{Name: "CUSTOM_API_TOKEN", Required: true}, {Name: "CUSTOM_CLIENT_JSON", Required: true, Delivery: "file", Target: "/run/mcp-secrets/client.json"}}
+	preparing, err := control.newOnboarding(aliceAuth(), api.OnboardingSelfInstall, "generic-gate", definition, definition.Source.Repository, definition.Source.CommitSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recipe := &api.RecipeResolution{Source: api.ArtifactSource{Repository: definition.Source.Repository, CommitSHA: definition.Source.CommitSHA}, Connection: api.ConnectionRecipe{AuthBeforeToolsList: true, Fields: []api.ConnectionField{{Name: "CUSTOM_API_TOKEN", Required: true, Delivery: "env"}}}}
+	_, err = control.acceptCredentialGate(t.Context(), aliceAuth(), preparing, api.SourceReview{Definition: definition, AdmissionPending: true, AdmissionDetail: "token required", Recipe: recipe})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := control.Store.OnboardingFor(aliceAuth(), preparing.OnboardingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(*registered) != 1 || stored.BrokerRequestID == "" || stored.FormNonce != "" || stored.Definition == nil || stored.Definition.CredentialContractID == "" {
+		t.Error("generic auth-first admission bypassed Broker contract and form")
+	}
+	if !stored.AdmissionPending || len(stored.Definition.Tools) != 0 {
+		t.Error("unconfirmed tools exposed")
+	}
+	if stored.Recipe == nil || !stored.Recipe.Connection.AuthBeforeToolsList {
+		t.Error("credential draft lost recipe required to resume after login")
+	}
+	fileHint := false
+	for _, hint := range stored.Required {
+		if hint.Name == "CUSTOM_CLIENT_JSON" {
+			fileHint = hint.Delivery == "file" && hint.Target == "/run/mcp-secrets/client.json"
+		}
+	}
+	if !fileHint {
+		t.Error("credential gate downgraded declared file delivery")
+	}
+}
+
+func TestCorrectedRecipeDoesNotReuseStaleDynamicContract(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "toolhub.private")
+	if err := os.WriteFile(keyPath, private, 0600); err != nil {
+		t.Fatal(err)
+	}
+	server, registered := dynamicContractBroker(t)
+	definition := statefulContainerDefinition()
+	definition.Credentials = []api.CredentialInput{{Name: "KASPI_API_KEY", Required: true}}
+	stale := definition
+	stale.Credentials = []api.CredentialInput{{Name: "KASPI_API_KEY"}, {Name: "YOUR_API_KEY", Required: true}}
+	old, err := synthesizeContract(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	*registered = append(*registered, old)
+	control := &ControlPlane{Store: NewStore(), Broker: &credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}}
+	if err := control.bindReviewedContract(t.Context(), aliceAuth(), &definition); err != nil {
+		t.Fatal(err)
+	}
+	if definition.CredentialContractID == old.ID || len(*registered) != 2 || len((*registered)[1].Fields) != 1 || !(*registered)[1].Fields[0].Required {
+		t.Fatal("corrected recipe reused stale credential collection")
+	}
+}
+
+func TestOAuthContractDoesNotReuseUnrelatedCollection(t *testing.T) {
+	testBindReviewedContractSynthesis(t, true)
+}
+
+func testBindReviewedContractSynthesis(t *testing.T, withOAuth bool) {
 	_, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -32,6 +114,9 @@ func TestBindReviewedContractSynthesizesDynamicContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	var registered []contract.Contract
+	if withOAuth {
+		registered = append(registered, contract.Contract{ID: "other-collection", Revision: 1, Title: "Other collection", Storage: "local", Fields: []contract.Field{{ID: "token", Label: "Token", Kind: "secret", Required: true, MaxBytes: 65536}}, Deliveries: []contract.Delivery{{Type: "env", Field: "token", Target: "NOTION_TOKEN"}}})
+	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -53,10 +138,18 @@ func TestBindReviewedContractSynthesizesDynamicContract(t *testing.T) {
 	defer server.Close()
 
 	definition := remoteDefinition()
+	if withOAuth {
+		definition = statefulContainerDefinition()
+	}
 	definition.DefinitionID = "notion-mcp-server"
 	definition.Credentials = []api.CredentialInput{
 		{Name: "NOTION_TOKEN", Required: true},
 		{Name: "NOTION_EXTRA", Required: false},
+	}
+	if withOAuth {
+		definition.Credentials[0].Delivery = "file"
+		definition.Credentials[0].Target = "/run/client.json"
+		definition.OAuth = &api.OAuthRecipe{ClientInput: "NOTION_TOKEN", StateTarget: "/session", TokenFile: "session.json"}
 	}
 	control := &ControlPlane{Store: NewStore(), Broker: &credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}, Now: time.Now}
 	if err := control.bindReviewedContract(t.Context(), aliceAuth(), &definition); err != nil {
@@ -65,10 +158,14 @@ func TestBindReviewedContractSynthesizesDynamicContract(t *testing.T) {
 	if !strings.HasPrefix(definition.CredentialContractID, "dyn-") || definition.CredentialContractRevision != 1 {
 		t.Fatalf("dynamic contract not bound: %+v", definition)
 	}
-	if len(registered) != 1 {
+	wantRegistered := 1
+	if withOAuth {
+		wantRegistered = 2
+	}
+	if len(registered) != wantRegistered {
 		t.Fatalf("expected one registered contract, got %d", len(registered))
 	}
-	got := registered[0]
+	got := registered[len(registered)-1]
 	if got.ID != definition.CredentialContractID || got.Revision != 1 {
 		t.Fatalf("registered contract mismatch: %+v", got)
 	}
@@ -76,6 +173,12 @@ func TestBindReviewedContractSynthesizesDynamicContract(t *testing.T) {
 		t.Fatalf("contract does not cover declared inputs: %+v", got)
 	}
 	for _, d := range got.Deliveries {
+		if withOAuth && d.EnvName == "NOTION_TOKEN" {
+			if d.Type != "file" || d.Target != "/run/client.json" {
+				t.Fatal("OAuth client file lost")
+			}
+			continue
+		}
 		if d.Type != "env" || (d.Target != "NOTION_TOKEN" && d.Target != "NOTION_EXTRA") {
 			t.Fatalf("unexpected delivery: %+v", d)
 		}

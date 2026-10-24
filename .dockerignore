@@ -3,6 +3,7 @@
 !go.sum
 !cmd/**
 !internal/**
+internal/.local/
 !services/
 !services/credential-broker/
 !services/credential-broker/**

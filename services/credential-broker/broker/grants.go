@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	v1 "github.com/letya999/credential-broker/api/v1"
@@ -82,6 +83,23 @@ func (b *Broker) CreateGrant(a identity.Actor, credentialID string, in v1.GrantR
 	_, e := b.commit(mutation{Audit: ev, Grant: &g})
 	return g.View, e
 }
+
+// denial is ErrDenied with a non-secret reason for operator logs; the wire
+// response keeps the generic "denied" code.
+type denial string
+
+func (d denial) Error() string        { return ErrDenied.Error() + ": " + string(d) }
+func (d denial) Is(target error) bool { return target == ErrDenied }
+
+// DenyReason returns the operator-facing reason of a denial, or "".
+func DenyReason(e error) string {
+	var d denial
+	if errors.As(e, &d) {
+		return string(d)
+	}
+	return ""
+}
+
 func grantMatches(a identity.Actor, g grantRecord) bool {
 	return g.View.Active && a.PrincipalID == g.View.PrincipalID && a.ContextID == g.View.ContextID && a.RuntimeID == g.View.RuntimeID && a.PolicyVersion == g.View.PolicyVersion && (a.BindingID == "" || a.BindingID == g.View.BindingID) && (a.WorkloadID == "" || a.WorkloadID == g.View.WorkloadID)
 }
@@ -93,12 +111,15 @@ func (b *Broker) Acquire(a identity.Actor, in v1.AcquireLease) (v1.Lease, error)
 	}
 	b.sweepLocked()
 	g, ok := b.grants[in.GrantID]
-	if !ok || !grantMatches(a, g) {
-		return v1.Lease{}, ErrDenied
+	if !ok {
+		return v1.Lease{}, denial("grant_missing")
+	}
+	if !grantMatches(a, g) {
+		return v1.Lease{}, denial("identity_mismatch")
 	}
 	c, ok := b.credentials[g.View.CredentialID]
 	if !ok || c.View.Status != "active" {
-		return v1.Lease{}, ErrDenied
+		return v1.Lease{}, denial("credential_inactive")
 	}
 	if in.TTLSeconds == 0 {
 		in.TTLSeconds = 60
@@ -230,6 +251,21 @@ func (b *Broker) RevokeCredential(a identity.Actor, id string) error {
 		return e
 	}
 	b.invalidateCredential(id)
+	// A revoked credential's grants still trip CreateGrant's conflict check.
+	for gid, g := range b.grants {
+		if g.View.CredentialID != id || !g.View.Active {
+			continue
+		}
+		g.View.Active = false
+		gev := b.audit("grant.revoked", a)
+		gev.CredentialID = id
+		gev.GrantID = gid
+		gev.BindingID = g.View.BindingID
+		gev.WorkloadID = g.View.WorkloadID
+		if _, e := b.commit(mutation{Audit: gev, Grant: &g}); e != nil {
+			return e
+		}
+	}
 	return nil
 }
 

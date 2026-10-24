@@ -10,7 +10,7 @@ import (
 )
 
 func ensureRuntimeAuth(path string) error {
-	info, err := os.Lstat(path)
+	info, err := os.Lstat(path) // #nosec G703 -- path under the stack render dir
 	if err == nil {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("runtime auth must be a regular file")
@@ -25,7 +25,7 @@ func ensureRuntimeAuth(path string) error {
 		return err
 	}
 	content := []byte("HUB_RUNTIME_AUTH=" + hex.EncodeToString(value) + "\n")
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600) // #nosec G703 -- path under the stack render dir
 	if err != nil {
 		if os.IsExist(err) {
 			return ensureRuntimeAuth(path)
@@ -34,12 +34,12 @@ func ensureRuntimeAuth(path string) error {
 	}
 	if _, err = f.Write(content); err != nil {
 		_ = f.Close()
-		_ = os.Remove(path)
+		_ = os.Remove(path) // #nosec G703 -- path under the stack render dir
 		return err
 	}
 	if err = f.Sync(); err != nil {
 		_ = f.Close()
-		_ = os.Remove(path)
+		_ = os.Remove(path) // #nosec G703 -- path under the stack render dir
 		return err
 	}
 	return f.Close()
@@ -49,7 +49,7 @@ func ensureRuntimeAuth(path string) error {
 // and the media sidecars. One file, three mounts: gateway reads it for
 // HUB_STT_AUTH/HUB_TTS_AUTH, sidecars read HUB_MEDIA_AUTH from the same file.
 func ensureMediaAuth(path string) error {
-	info, err := os.Lstat(path)
+	info, err := os.Lstat(path) // #nosec G703 -- path under the stack render dir
 	if err == nil {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("media auth must be a regular file")
@@ -65,13 +65,13 @@ func ensureMediaAuth(path string) error {
 	}
 	token := hex.EncodeToString(value)
 	content := []byte("HUB_MEDIA_AUTH=" + token + "\nHUB_STT_AUTH=" + token + "\nHUB_TTS_AUTH=" + token + "\n")
-	return os.WriteFile(path, content, 0600)
+	return os.WriteFile(path, content, 0600) // #nosec G703 -- path under the stack render dir
 }
 
 // ensureModelRelayAuth provisions the bearer the communication gateway
 // presents to its own space's model-relay for owner model switching.
 func ensureModelRelayAuth(path string) error {
-	info, err := os.Lstat(path)
+	info, err := os.Lstat(path) // #nosec G703 -- path under the stack render dir
 	if err == nil {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("model-relay auth must be a regular file")
@@ -90,7 +90,7 @@ func ensureModelRelayAuth(path string) error {
 	content = append(content, "HUB_MODEL_RELAY_ADMIN="...)
 	content = append(content, token...)
 	content = append(content, '\n')
-	return os.WriteFile(path, content, 0600)
+	return os.WriteFile(path, content, 0600) // #nosec G703 -- path under the stack render dir
 }
 
 // Secondary spaces use the shared sidecar's bearer, not an unused local token.
@@ -141,7 +141,7 @@ func runtimeMediaAuth(dir string, s Settings) (map[string]string, error) {
 
 // ensureTokenFile creates a random 256-bit hex token file unless it exists.
 func ensureTokenFile(path string) error {
-	info, err := os.Lstat(path)
+	info, err := os.Lstat(path) // #nosec G703 -- path under the stack render dir
 	if err == nil {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("token file must be a regular file")
@@ -155,7 +155,7 @@ func ensureTokenFile(path string) error {
 	if _, err = rand.Read(value); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600) // #nosec G703 -- path under the stack render dir
 	if err != nil {
 		if os.IsExist(err) {
 			return ensureTokenFile(path)

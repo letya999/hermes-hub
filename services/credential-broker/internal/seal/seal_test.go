@@ -42,7 +42,8 @@ func TestAEAD(t *testing.T) {
 	if bytes.Equal(Derive(key, "one"), Derive(key, "two")) {
 		t.Fatal("domain separation")
 	}
-	if len(Random()) != 43 || Random() == Random() {
+	first, second := Random(), Random()
+	if len(first) != 43 || first == second {
 		t.Fatal("random ID")
 	}
 	if !Equal(Digest("x"), Digest("x")) || Equal(Digest("x"), Digest("y")) {

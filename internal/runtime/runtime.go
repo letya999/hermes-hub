@@ -182,8 +182,12 @@ func prepareEntry(path string, entry fs.DirEntry, private bool, uid, gid int, ch
 	return os.Chmod(path, mode)
 }
 
+func runtimeDiagnosticsServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{Addr: addr, Handler: handler, ReadHeaderTimeout: 5 * time.Second}
+}
+
 func Health(markerPath string) error {
-	body, err := os.ReadFile(markerPath)
+	body, err := os.ReadFile(markerPath) // #nosec G703 -- operator marker path
 	if err != nil {
 		return err
 	}
@@ -416,7 +420,7 @@ func superviseOnce(mode string) (bool, error) {
 		if err := startWithEnv(hermesGatewayEnvironment(), "hermes", "gateway", "run", "--no-supervise", "--force"); err != nil {
 			return false, err
 		}
-		server = &http.Server{Addr: env("HUB_RUNTIME_LISTEN", "0.0.0.0:8080"), Handler: diagnostics.HTTP("runtime", runtimeHandler())}
+		server = runtimeDiagnosticsServer(env("HUB_RUNTIME_LISTEN", "0.0.0.0:8080"), diagnostics.HTTP("runtime", runtimeHandler()))
 		go func() {
 			if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				serverErr <- err
@@ -515,7 +519,7 @@ func clearDisplayLocks(paths ...string) error {
 func clearBrowserLocks(dir string) error {
 	for _, name := range []string{"SingletonCookie", "SingletonLock", "SingletonSocket"} {
 		path := filepath.Join(dir, name)
-		info, err := os.Lstat(path)
+		info, err := os.Lstat(path) // #nosec G703 -- browser profile dir from runtime layout
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
@@ -523,7 +527,7 @@ func clearBrowserLocks(dir string) error {
 			return err
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			if err := os.Remove(path); err != nil {
+			if err := os.Remove(path); err != nil { // #nosec G703 -- browser profile dir from runtime layout
 				return err
 			}
 		}
@@ -577,11 +581,11 @@ func sweepBrowserOutput(dir string) {
 		}
 		info, err := d.Info()
 		if err != nil || d.Type()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
-			_ = os.Remove(path)
+			_ = os.Remove(path) // #nosec G122 -- walked path inside the browser output dir
 			return nil
 		}
 		if info.Size() > browserOutputFileLimit || !browserOutputExts[strings.ToLower(filepath.Ext(path))] {
-			_ = os.Remove(path)
+			_ = os.Remove(path) // #nosec G122 -- walked path inside the browser output dir
 			return nil
 		}
 		total += info.Size()
@@ -646,11 +650,11 @@ func waitForDisplay(display string, stop <-chan struct{}) error {
 // enforced signal that the host already materialized the config; a missing
 // file on a writable directory means the runtime must materialize it itself.
 func effectiveConfigWritable(destination string) bool {
-	if f, err := os.OpenFile(destination, os.O_WRONLY, 0); err == nil {
+	if f, err := os.OpenFile(destination, os.O_WRONLY, 0); err == nil { // #nosec G703 -- effective config destination from operator layout
 		_ = f.Close()
 		return true
 	}
-	if f, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE, 0660); err == nil {
+	if f, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE, 0660); err == nil { // #nosec G703 -- effective config destination from operator layout
 		_ = f.Close()
 		return true
 	}
@@ -678,7 +682,7 @@ func copySoulUnlessEdited(source, destination string) error {
 	if readErr == nil && string(existing) == string(body) {
 		return nil
 	}
-	if err := os.WriteFile(destination, body, 0660); err != nil {
+	if err := os.WriteFile(destination, body, 0660); err != nil { // #nosec G703 -- effective config destination from operator layout
 		if readOnlyWrite(err) {
 			return nil
 		}
@@ -708,5 +712,5 @@ func copyIfExists(source, destination string, overwrite bool) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(destination, body, 0660)
+	return os.WriteFile(destination, body, 0660) // #nosec G703 -- effective config destination from operator layout
 }

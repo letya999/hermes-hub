@@ -1,0 +1,66 @@
+{
+  "target": "zereight/gitlab-mcp",
+  "subject": {
+    "kind": "mcp-container",
+    "ref": "zereight/gitlab-mcp@sha256:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+  },
+  "provenance": [
+    "https://raw.githubusercontent.com/zereight/gitlab-mcp/main/server.json"
+  ],
+  "entries": [
+    {
+      "claim": {
+        "attribute": "artifact",
+        "value": "\"docker.io/zereight050/gitlab-mcp:2.3.3\""
+      },
+      "source": "server.json",
+      "ref": "server.json@packages[1]",
+      "rank": "L4"
+    },
+    {
+      "claim": {
+        "field": "GITLAB_PERSONAL_ACCESS_TOKEN",
+        "required": false,
+        "secret": true,
+        "delivery": "env"
+      },
+      "source": "server.json",
+      "ref": "server.json@environmentVariables",
+      "rank": "R3"
+    },
+    {
+      "claim": {
+        "field": "GITLAB_PERSONAL_ACCESS_TOKEN_FILE",
+        "required": false,
+        "secret": false,
+        "delivery": "file"
+      },
+      "source": "server.json",
+      "ref": "server.json@environmentVariables",
+      "rank": "R3"
+    },
+    {
+      "claim": {
+        "field": "GITLAB_API_URL",
+        "required": false,
+        "secret": false,
+        "delivery": "env"
+      },
+      "source": "server.json",
+      "ref": "server.json@environmentVariables",
+      "rank": "R3"
+    },
+    {
+      "claim": {
+        "field": "GITLAB_USE_OAUTH",
+        "required": false,
+        "secret": false,
+        "delivery": "env"
+      },
+      "source": "server.json",
+      "ref": "server.json@environmentVariables",
+      "rank": "R3"
+    }
+  ],
+  "expect_digest": "sha256:d622e6acbeca0772266d584f8716c93bba2c23391822ebe70875691493d5223a"
+}

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -42,6 +43,7 @@ type genericWorkload struct {
 	endpoint       string
 	proxyName      string
 	proxyVol       string
+	credName       string
 	remoteName     string
 	remoteState    string
 	bridgeVol      string
@@ -61,13 +63,16 @@ type genericController struct {
 	// code; `docker exec` needs the tool's own exit status, which the
 	// output-only command seam cannot carry.
 	commandExit func(context.Context, io.Writer, string, ...string) (int, error)
-	scope       *api.DockerScope
-	mu          sync.Mutex // ponytail: one controller lock; split only after measured contention.
-	workloads   map[string]genericWorkload
-	registry    *cellRegistry
-	cellInitOK  bool            // cellinit seeded into the state root for sibling binds
-	runtimes    map[string]bool // daemon runtime list, cached after first read
-	runtimesOK  bool
+	// commandStdin feeds a payload on stdin — the cred-proxy rules channel:
+	// the sidecar rootfs is read-only so docker cp cannot reach its tmpfs.
+	commandStdin func(context.Context, io.Reader, string, ...string) ([]byte, error)
+	scope        *api.DockerScope
+	mu           sync.Mutex // ponytail: one controller lock; split only after measured contention.
+	workloads    map[string]genericWorkload
+	registry     *cellRegistry
+	cellInitOK   bool            // cellinit seeded into the state root for sibling binds
+	runtimes     map[string]bool // daemon runtime list, cached after first read
+	runtimesOK   bool
 	// toolboxes caches resolveToolbox results: every exec asks for the pin
 	// list, and each member costs a docker inspect round trip. Entries are
 	// evicted when a cell create fails so a pruned image re-resolves.
@@ -83,6 +88,21 @@ func (c *genericController) docker(ctx context.Context, args ...string) ([]byte,
 		return c.command(ctx, "docker", args...)
 	}
 	return c.scope.RunScoped(ctx, c.command, "docker", args...)
+}
+
+// dockerStdin is docker() with a stdin payload, under the same scope guard:
+// the wrapped command still carries docker argv through GuardDocker.
+func (c *genericController) dockerStdin(ctx context.Context, stdin io.Reader, args ...string) ([]byte, error) {
+	run := c.commandStdin
+	if run == nil {
+		run = api.LocalCommandInput
+	}
+	if c.scope == nil {
+		return run(ctx, stdin, "docker", args...)
+	}
+	return c.scope.RunScoped(ctx, func(ctx context.Context, _ string, scoped ...string) ([]byte, error) {
+		return run(ctx, stdin, "docker", scoped...)
+	}, "docker", args...)
 }
 
 func (c *genericController) toolhive(ctx context.Context, args ...string) ([]byte, error) {
@@ -107,6 +127,13 @@ func (c *genericController) scopeLabelArgs() []string {
 		return []string{"--label", label}
 	}
 	return nil
+}
+
+// planLabelArgs adds the ownership label set of the plan being spawned so
+// every created object answers a `hermes-hub.connection=<id>` label query —
+// the index finalizers and the reconciler purge by.
+func (c *genericController) planLabelArgs(plan api.ControllerPlan) []string {
+	return append(c.scopeLabelArgs(), plan.Ownership.Args()...)
 }
 
 type genericContainer struct {
@@ -191,7 +218,7 @@ func newGenericController(config GenericControllerConfig) (*genericController, e
 	if api.NoSymlinkPath(config.StateRoot) != nil || api.NoSymlinkPath(config.SeccompProfile) != nil {
 		return nil, api.ErrIsolation
 	}
-	controller := &genericController{config: config, command: api.LocalCommand, commandEnv: api.IsolatedCommandEnv, commandExit: api.LocalCommandExit, workloads: map[string]genericWorkload{}, registry: newCellRegistry()}
+	controller := &genericController{config: config, command: api.LocalCommand, commandEnv: api.IsolatedCommandEnv, commandExit: api.LocalCommandExit, commandStdin: api.LocalCommandInput, workloads: map[string]genericWorkload{}, registry: newCellRegistry()}
 	controller.scope = api.NewDockerScope(os.Getenv("HUB_DOCKER_SCOPE"), os.Getenv("HUB_DOCKER_AGENT_NET"), controller.command)
 	return controller, nil
 }
@@ -209,7 +236,15 @@ func (c *genericController) validatePlan(plan api.ControllerPlan) error {
 	}
 	if plan.WorkspacePath != "" {
 		path, err := filepath.Abs(plan.WorkspacePath)
-		if err != nil || !api.ContainedPath(c.config.StateRoot, path) || api.NoSymlinkPath(path) != nil {
+		// Credential staging is an operator-declared root too: the shared
+		// tmpfs carries per-call credential material and is deliberately not
+		// under the persistent state root, so it must not be treated as an
+		// arbitrary workspace escape.
+		contained := api.ContainedPath(c.config.StateRoot, path)
+		if staging := api.CredentialStagingRoot(); !contained && staging != "" {
+			contained = api.ContainedPath(staging, path)
+		}
+		if err != nil || !contained || api.NoSymlinkPath(path) != nil {
 			return api.ErrIsolation
 		}
 	}
@@ -232,6 +267,28 @@ func (c *genericController) validatePlan(plan api.ControllerPlan) error {
 	}
 	if err := c.validateCredentialMounts(plan.CredentialMounts); err != nil {
 		return err
+	}
+	return validateProxyGrants(plan, definition)
+}
+
+// validateProxyGrants re-checks the plan's proxy grants against the reviewed
+// definition: every grant host must already be a declared egress host, and
+// the secret-carrying fields obey the same bounds as the bounded-cli contract.
+func validateProxyGrants(plan api.ControllerPlan, definition api.ToolDefinition) error {
+	if len(plan.ProxyGrants) > 16 {
+		return fmt.Errorf("%w: too many proxy grants", api.ErrInvalid)
+	}
+	for _, grant := range plan.ProxyGrants {
+		if !api.CredentialPattern.MatchString(grant.EnvName) || grant.Value == "" || len(grant.Value) > 16384 || strings.ContainsAny(grant.Value, "\x00\r\n") || len(grant.Prefix) > 128 || strings.ContainsAny(grant.Prefix, "\x00\r\n") {
+			return fmt.Errorf("%w: proxy grant shape", api.ErrInvalid)
+		}
+		for _, host := range grant.Hosts {
+			if !api.HostPattern.MatchString(strings.ToLower(host)) || !slices.ContainsFunc(definition.Execution.Egress, func(egress string) bool {
+				return strings.EqualFold(strings.TrimSpace(egress), host)
+			}) {
+				return fmt.Errorf("%w: proxy grant host %q outside declared egress", api.ErrInvalid, host)
+			}
+		}
 	}
 	return nil
 }
@@ -299,7 +356,7 @@ func RunGenericController(ctx context.Context, config GenericControllerConfig, l
 	}
 	defer listener.Close()
 	server := &http.Server{Handler: c.handler(token), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: time.Minute}
-	go func() {
+	go func() { // #nosec G118 -- graceful shutdown needs a fresh context after ctx cancellation
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 		for {

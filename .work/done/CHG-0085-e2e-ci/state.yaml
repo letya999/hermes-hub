@@ -1,0 +1,73 @@
+schema: 1
+change: CHG-0085
+status: done
+branch: dev
+updated: 2026-10-12
+completed:
+  - Existing eight dev infrastructure services recreated on updated images.
+  - Host supervisor binary rebuilt and existing private launcher restored.
+  - Registry of 139 scenarios; default core scope has 108 scenarios, 79 offline boundary passes and 29 missing fixtures.
+  - Server-driven Telegram and mock-channel adapters implemented.
+  - Named-task scheduled agent rejection reproduced and fixed with ownership regression.
+  - Managed supervisor Docker canary passed on rebuilt dev image.
+  - Actions baseline measured on run 38153315312, total 21m13s.
+  - Bottleneck identified: image 317s, containers 950s; Go shards 23-101s.
+  - Real provider mock text and incoming voice passed; real Bot API text, outgoing voice and deterministic reminder passed.
+  - Routine create/list/update/pause/delete passed through actual agent in both mock and Telegram server modes; independent state and cleanup verified.
+  - Local catalog binding and existing 24 selections renewed for catalog 1.2.0 without new selections or changed operation scopes; private backups retained.
+  - Supervised unmanaged ToolHub control DNS alias fixed with rendering regression.
+  - TTS now loads baked Silero repository locally; actual offline synthesis canary passed without fallback.
+  - Fresh Docker capability, ToolHub session refresh, five-minute gateway lifecycle and scratch arithmetic/quarantine checks passed.
+  - Six retained future fixtures from terminal failed runs cleaned through owner-authenticated API.
+  - Files/documents/artifact cleanup, bounded shell and independent usage passed through actual agent in both server modes.
+  - Deterministic reminder and Starlark script passed in both modes; firing did not enter agent queue.
+  - Keyless DeepWiki MCP installation/projection/public-call/revocation passed in both server modes.
+  - Pinned Ruff keyless CLI installation/projection/independent invocation/revocation passed in both server modes; separate real Docker registry/private-home isolation gate passed.
+  - Managed remote onboarding projection and long-principal governance rule ID bugs reproduced and fixed with regressions.
+  - Supervisor projection restart serialization and early acknowledgement fixed; regressions and subsequent real Telegram MCP installation passed.
+  - Sequential live suite stops admission after a failure; actual image inspection passed in both modes after binary export repair.
+  - Read-only service catalog and settings passed through actual agent in both server modes.
+  - Binary scratch export corruption reproduced and fixed with byte-preservation, scope and create-only regressions; actual PNG-to-JPEG conversion and delivery passed in both modes on the rebuilt image.
+  - Managed display overlay restart rematerialization reproduced and fixed with regression; E2E-009 changed/effective/restored verification passed in both server modes through synchronous restart readiness.
+  - Native readiness now waits for initialized gateway/API platform; HTTP regressions and rebuilt-image managed Docker canary passed; old unadmitted warm-up reached interrupted status and zero leases through its normal uncertain deadline.
+  - Private ToolHub one-shot and daemon executors now force deferred runtime restart; interrupted setting write reproduced, channel regressions passed; rebuilt-image settings verification passed in both modes.
+  - Real generation exposed secondary/shared media bearer mismatch; renderer resolves the unique same-environment infrastructure owner; rotation/missing/ambiguous owner and Compose override regressions passed; secondary deployment role corrected with private backup.
+  - Image generation/editing E2E-030/031 passed with real provider in both server modes; decoded delivery and original source SHA256 verified; two known terminal failed-generation fixtures cleaned through owner API.
+  - ToolHub status, empty credential requirements and bounded diagnostics E2E-052/053/060 passed through the real agent in both server modes.
+  - Watch/check/digest E2E-083/084/086 passed in both server modes; quiet first baseline, real HTTP change, cursor, no firing agent mapping and removed fixture schedules independently checked.
+  - Managed legacy activation false success fixed with no-write/no-restart regression; final runtime images rebuilt through hubctl.
+  - Installed CLI agent invocation passed both modes; owning Hermes database confirms exact installed tool calls without exporting messages. Full MCP and CLI lifecycle passed both server modes; twelve Telegram schedule fixtures independently confirmed deleted.
+  - Latest full Go/source gate passed at 85.15 including discovery and fail-on-cleanup helpers; updated registry metadata passed focused checks and docs validation.
+  - Reviewed discovery E2E-050 and final text/cleanup repeat passed both server modes; scoped Docker cleanup completed.
+  - Private historical evidence index: 37 mock-server PASS, 36 Telegram-server PASS and one PARTIAL_PASS; this is not a fresh full-scope run.
+  - Plain /usage now combines the journal with configured Antigravity quota without blocking the Telegram poll; missing configuration is explicit and unrelated provider credentials are excluded. Local gateway-only management credentials persist through render, with private backups; real CLIProxyAPI returned two quota groups and four buckets from inside the rebuilt gateway.
+  - Latest full Go/source gate passed at 85.17%; final rebuilt gateway mock and Telegram text/usage-ledger smoke passed, followed by bounded docker-clean.
+  - Real Telegram update from the configured user confirmed /usage session delivery, voice admission/STT path and an inbound 126877-byte file staged without loss; the agent could not fetch the file while ToolHub projected a stale agent-tools binding.
+  - Re-registering agent-tools now uses the store's Enable lifecycle, supersedes old versions and advances the projection revision; focused regression passed. Local binding was repaired with private backup.
+  - Unmanaged governance projection reuses one validated binding per tool group; live ToolHub discovery fell from about 14 seconds to 1.12 seconds after rebuilding and restarting only ToolHub.
+  - Inbound staging records the measured byte count; regression covers a stale declared size.
+  - Full `just check` passed after these fixes with 85.19% Go statement coverage.
+  - Communication gateway rebuilt through hubctl and restarted healthy with measured inbound sizes.
+  - User manually removed three empty Chromium Singleton locks; the supervised local runtime started and the live ToolHub `inbox_fetch` call reached its executor. It failed because the dynamic runtime env omitted the communication control URL. The root cause is fixed in the generated runtime env file, with a regression; local render confirms the URL.
+  - Chromium CDP readiness now waits for HTTP 200 through a longer slow-start window; real logs proved the old 20-second deadline expired just after DevTools opened. Slow-start regression passed.
+  - Full `just docker-check dev` passed on the rebuilt runtime image, including native Hermes contracts, actual five-minute idle/cold-restore, managed isolation and scratch sandbox. The verified image was tagged as local `hermes-hub:0.3.0-dev`.
+  - Real Telegram inbound file passed direct authenticated `inbox_fetch` on the supervised runtime MCP endpoint: workspace SHA256 matched the 126877-byte staged source and the gateway copy was consumed. This does not prove owner-bound ToolHub admission or an agent-generated answer about the file. The runtime started without another manual lock-file deletion.
+  - Final `just check` passed with 85.19% Go statement coverage, including race tests, vet, staticcheck, docs and Actions lint.
+  - Fresh full core offline run recorded 79 PASS and 29 BLOCKED; no boundary checks failed. Fresh mock-server text, synthetic incoming voice, outgoing voice intent and usage passed through the real agent.
+  - Repeated scheduled Telegram failures before runtime admission traced to policy-version mismatch: render included the default global-skills directory while supervisor current-policy verification omitted it. The check now reconstructs that default, with a regression; private local user policy was synchronized and the host supervisor and gateway restarted.
+  - Fresh Telegram-server text, outgoing voice, usage, reminder and Starlark cases passed for the configured local user after the policy fix. A separate credential-free test principal passed file operations E2E-001–004, bounded shell E2E-047, discovery E2E-050 and diagnostics E2E-060 through the real agent and Bot API.
+  - Full `just check` passed after the scheduled-policy parity fix with 85.20% Go statement coverage.
+  - The first local `just docker-check dev` run built fresh images but exposed an outdated supervisor-contract fixture that omitted the renderer's default global-skills directory. After correcting the fixture, the pinned Hermes contract, actual five-minute gateway lifecycle, capability boundary, managed network and supervisor canaries, scratch sandbox and quarantine test all passed individually on the built image; project-scoped Docker cleanup completed.
+  - Updated dev images built through hubctl and all eight local dev infrastructure services recreated healthy; post-restart Telegram text and usage passed.
+  - Cold discovery exceeded the E2E runner's 15-second independent HTTP deadline. A failing regression was recorded, the discovery read deadline was extended to 45 seconds, and the updated runner passed discovery in both server modes after catalog warm-up. Full just check passed with 85.20% coverage.
+pending:
+  - Complete functional automation for 29 missing core offline fixtures and remaining server-mode oracles; definitions and boundary checks do not prove all-tool agent E2E.
+  - Routine snooze is not admitted by selected profile; no grant expansion performed.
+  - New CI workflow has not run in Actions; full 5-10x speedup is not measured and conflicts with preserved five-minute waits.
+  - User-sent /usage passed through real Telegram polling; delivered reply contained the journal and two live quota groups with four percent values and reset times. /usage session also returned session metrics. Incoming voice passed the STT path, but spoken content remains unverified; /status was not observed in the available gateway log.
+  - The initial claim that Windows Singleton lock files caused restart failure was not established. DevTools startup exceeded the old deadline; the new deadline passed the subsequent live startup with those files present. The host runner reported exit 137 without Docker OOM after an idle stop.
+  - The configured local user lacks an owner-bound ToolHub token in the E2E runner's token file; tool admission cases remain BLOCKED for that user. Passing tests on the separate principal cannot be promoted to local-user evidence.
+  - The first independent ToolHub discovery read for the test principal failed once and passed on an isolated repeat; root cause is not established.
+  - Cold catalog discovery still had one agent-answer mismatch against the independent result; warmed discovery passed. The catalog lookup latency and agent response remain unstable under cold conditions.
+  - A new CLI E2E run had no exact temporary operator allow-rule, so its enabled synthetic tool was absent from tools/list; the runner revoked the fixture. The earlier approved CLI lifecycle passes remain valid, but this attempt does not add evidence.
+closeout: retroactive-triage-2026-10-20

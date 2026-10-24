@@ -49,7 +49,7 @@ TLS без отключения проверки сертификата, огр�
 контейнеров на уровне ToolHive/сети, изолировать namespaces/mounts, не выдавать MCP Docker socket.
 Не публиковать `.build`, master key, provider tokens, дампы памяти или приватные Hub signing keys.
 
-[Отчёт поставки](.work/done/CHG-001-credential-broker/artifacts/verification.md) перечисляет, какие
+[Отчёт поставки](../../.work/done/CHG-0142-credential-broker-mvp/artifacts/verification.md) перечисляет, какие
 проверки действительно запускались. Отсутствие сторонних Go-модулей не исключает уязвимости stdlib.
 
 ## Сообщить о проблеме

@@ -16,5 +16,5 @@ type CLIApproval struct {
 }
 
 func ValidContainerMountTarget(target string) bool {
-	return strings.HasPrefix(target, "/") && target != "/" && !strings.ContainsAny(target, "\x00\r\n") && filepath.ToSlash(filepath.Clean(target)) == target
+	return strings.HasPrefix(target, "/") && target != "/" && !strings.ContainsAny(target, ",\x00\r\n") && filepath.ToSlash(filepath.Clean(target)) == target
 }

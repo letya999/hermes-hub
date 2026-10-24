@@ -70,7 +70,7 @@ docker-check target="prod":
     go run -tags integration ./cmd/devcheck managed-network-canary hermes-hub:test
     go run -tags integration ./cmd/devcheck managed-supervisor-canary hermes-hub:test
     go run -tags integration ./cmd/devcheck scratch-workload-canary hermes-hub:test
-    go test -tags integration -run TestDockerScratchExecPausedQuarantine ./internal/toolhub
+    go test -tags integration -run TestDockerScratchExecPausedQuarantine ./internal/toolhub/api
     go run ./cmd/devcheck docker-clean
 
 # Pull the CI-built GHCR image for HEAD (edge-<target> fallback) and retag it
@@ -91,7 +91,7 @@ docker-check-prebuilt target="prod": (docker-pull target)
     go run -tags integration ./cmd/devcheck managed-network-canary hermes-hub:test
     go run -tags integration ./cmd/devcheck managed-supervisor-canary hermes-hub:test
     go run -tags integration ./cmd/devcheck scratch-workload-canary hermes-hub:test
-    go test -tags integration -run TestDockerScratchExecPausedQuarantine ./internal/toolhub
+    go test -tags integration -run TestDockerScratchExecPausedQuarantine ./internal/toolhub/api
     go run ./cmd/devcheck docker-clean
 
 # Probe the pinned upstream without rebuilding or accessing user/provider data.

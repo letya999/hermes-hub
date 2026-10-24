@@ -1,0 +1,22 @@
+{
+  "target": "modelcontextprotocol/fetch",
+  "subject": {
+    "kind": "mcp-container",
+    "ref": "modelcontextprotocol/fetch@sha256:b590e02d15890581c6a661b811476876d4c1d963925e98cfee6367be0d0bcb86"
+  },
+  "provenance": [
+    "recorded upstream README/env contract"
+  ],
+  "entries": [
+    {
+      "claim": {
+        "attribute": "entrypoint",
+        "value": "[\"uvx\", \"mcp-server-fetch\"]"
+      },
+      "source": "README.md",
+      "ref": "README.md@mcpServers",
+      "rank": "hint"
+    }
+  ],
+  "expect_digest": "sha256:cdab508c6b5a2f25366297cb982318ab8d010ccce5e704b98d0900a36d7fee64"
+}

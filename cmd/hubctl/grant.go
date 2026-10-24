@@ -50,7 +50,7 @@ func runGrant(_ context.Context, args []string) error {
 	}
 	store, err := toolhub.Load(*storePath)
 	if err != nil {
-		if _, statErr := os.Stat(*storePath); statErr == nil {
+		if _, statErr := os.Stat(*storePath); statErr == nil { // #nosec G703 -- operator-supplied store path
 			return err
 		}
 		store = toolhub.NewStore()

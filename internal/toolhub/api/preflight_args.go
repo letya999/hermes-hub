@@ -127,6 +127,7 @@ func PreflightDockerRunArgs(imported ImportedArtifact, name string, runFlags []s
 type ProbeOptions struct {
 	Values       map[string]string
 	AllowNetwork bool
+	Mounts       []Mount
 }
 
 type probeOptionsKey struct{}
@@ -165,12 +166,24 @@ func PreflightCredentialArgs(ctx context.Context, imported ImportedArtifact) ([]
 	if err != nil {
 		return nil, func() {}, err
 	}
-	cleanup := func() { _ = os.RemoveAll(directory) }
+	cleanup := func() { _ = os.RemoveAll(directory) } // #nosec G703 -- fresh MkdirTemp dir
 	args := []string{}
 	if prepared.StateTarget != "" {
 		args = append(args, "--tmpfs", prepared.StateTarget+":rw,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=16m")
 	}
 	if opts := ProbeOptionsFrom(ctx); opts.Values != nil {
+		for _, mount := range opts.Mounts {
+			declared := slices.ContainsFunc(imported.Definition.Credentials, func(input CredentialInput) bool {
+				return input.Delivery == "file" && input.Target == mount.Target
+			})
+			info, statErr := os.Lstat(mount.Source)
+			source := DockerBindSource(mount.Source)
+			if !declared || !mount.ReadOnly || !ValidContainerMountTarget(mount.Target) || NoSymlinkPath(mount.Source) != nil || statErr != nil || !info.Mode().IsRegular() || strings.ContainsAny(source, ",\x00\r\n") {
+				cleanup()
+				return nil, func() {}, fmt.Errorf("%w: probe credential mount", ErrIsolation)
+			}
+			args = append(args, "--mount", "type=bind,source="+source+",target="+mount.Target+",readonly")
+		}
 		// Owner-submitted secrets stay in a 0600 env file, not in process argv
 		// and not in the error text. The placeholder "preflight" is only for
 		// the unauthenticated probe that has no real value yet.
@@ -188,7 +201,7 @@ func PreflightCredentialArgs(ctx context.Context, imported ImportedArtifact) ([]
 		}
 		if len(lines) > 0 {
 			path := directory + string(os.PathSeparator) + "credentials.env"
-			if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0600); err != nil {
+			if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0600); err != nil { // #nosec G703 -- temp dir; credential names validated by CredentialPattern
 				cleanup()
 				return nil, func() {}, err
 			}
@@ -201,9 +214,12 @@ func PreflightCredentialArgs(ctx context.Context, imported ImportedArtifact) ([]
 			continue
 		}
 		value := "preflight"
+		if strings.HasSuffix(input.Name, "_URL") {
+			value = "https://preflight.invalid"
+		}
 		if body, ok := prepared.PreflightFiles[input.Name]; ok {
 			path := directory + string(os.PathSeparator) + input.Name + ".json"
-			if err := os.WriteFile(path, body, 0600); err != nil {
+			if err := os.WriteFile(path, body, 0600); err != nil { // #nosec G703 -- temp dir; credential names validated by CredentialPattern
 				cleanup()
 				return nil, func() {}, err
 			}

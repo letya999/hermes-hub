@@ -480,7 +480,7 @@ func modelCommand(ctx context.Context, text string) string {
 	}
 	admin := strings.TrimSpace(os.Getenv("HUB_MODEL_RELAY_ADMIN"))
 	call := func(ctx context.Context, method, path string, body []byte) (int, []byte) {
-		req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(base, "/")+path, bytes.NewReader(body))
+		req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(base, "/")+path, bytes.NewReader(body)) // #nosec G704 -- internal control endpoint
 		if err != nil {
 			return 0, nil
 		}
@@ -491,7 +491,7 @@ func modelCommand(ctx context.Context, text string) string {
 			req.Header.Set("Authorization", "Bearer "+admin)
 		}
 		client := &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-		resp, err := client.Do(req)
+		resp, err := client.Do(req) // #nosec G704 -- internal control endpoint
 		if err != nil {
 			return 0, nil
 		}

@@ -23,7 +23,7 @@ The post-acceptance snooze correction is tracked in
 [CHG-0115](../.work/done/CHG-0115-routine-snooze-audit/state.yaml).
 The opt-in owner brief follows [ADR-0041](adr/ADR-0041-proactive-automation.md) D5
 and [SPEC-0054](../specs/active/SPEC-0054-proactive-automation.md) R4; rollout
-evidence: [CHG-0102](../.work/in-progress/CHG-0102-owner-brief/state.yaml).
+evidence: [CHG-0102](../.work/done/CHG-0102-owner-brief/state.yaml).
 Deterministic and MCP contract tests do not establish deployed acceptance.
 
 ## Business tools
@@ -78,6 +78,76 @@ supply required configuration in the same patch. A check source edit takes a new
 authorized baseline before commit, with a revision fence across that read. Source
 revisions isolate watch baselines and event IDs; stale in-flight results cannot
 settle into the new revision.
+
+## Probe and event internals
+
+- One OS file lock fences the gateway lifetime against a second gateway or
+  offline writer; `apply` and offline routine commands require the gateway
+  stopped. Opening a spool offline does not recover running jobs. Schedule
+  revision changes invalidate queued occurrences; delete writes a permanent
+  tombstone and retired IDs are never reused. Admitted Hermes work may
+  continue; queued delivery is re-checked before sending — cancellation
+  cannot recall a message an external service accepted.
+- Tick admits ≤16 oldest eligible occurrences per pass, one per source; due
+  occurrences inside catch-up take priority over expired backlog so backlog
+  recording cannot starve fresh reminders. 16 settlements/pass bound
+  unchanged.
+- HTTP probes: 10 s deadline, 1 MiB response cap, public-IP validation at
+  connect time, ambient proxies + redirects disabled; private endpoints and
+  credential-bearing URLs refused. Fetch is separate from extraction: an
+  ordered `extract` pipeline (`css`, `html2text`, `regex`, `grep`,
+  `drop_regex`, `drop_lines`, `sort_lines`, `strip`, `json_path`, `rss`;
+  ≤8 steps) reduces the body to the compared value; a failing/empty step is
+  a probe error, never a silent "unchanged". Missing regex capture = error.
+- `kind=script`: fragment reaches the disposable container via `input()`;
+  exactly one emitted value required. `kind=command`: no fetch — runs with
+  only the owner's `spaces/<user>/watch` read-only at `/watch` and bounded
+  `read_file`/`list_dir`/`hash_path` builtins. `needs[]` (≤4 read-tool
+  calls, ≤64 KiB each via `needs()`) prefetch under the owner binding; a
+  failed need is a probe error, container stays networkless.
+- `kind=tool` normalizes to `mcp_tool` — read-effect tools only under owner
+  grants via `/v1/tool-call`. `kind=render`/`kind=service` POST a bounded
+  structured request (kind/url/args/steps/wait_for, ≤512 KiB response) to an
+  operator-registered `service_endpoints` entry — never a schedule-supplied
+  URL; render steps are a declarative browser-action list. `github_issue`
+  takes an exact public GitHub issue REST URL, compares `state` only.
+- `probe.recipe` expands builtin presets into snapshotted schedule fields at
+  create; explicit fields win, unknown recipes rejected. Checks accept
+  `changed`/`unchanged`/`equals:<value>`; creation validates ownership
+  before the baseline request — schedule + baseline commit together.
+- Starlark routines run only under the supervisor: disposable core-image
+  container, no network/mounts/secrets, read-only fs, unprivileged UID,
+  dropped caps, 128 MiB memory+swap, 0.5 CPU, 16 PIDs; source ≤16 KiB,
+  ≤4 emit strings of 4 KiB, 5 s watchdog + step budget, supervisor-side
+  15 s bound. Unsupervised gateway fails scripts explicitly.
+- Receipts precede outbox handoff; a retry replays the receipt. Linux syncs
+  contents + parent dir; Windows syncs contents only (no dir fsync via Go).
+  Not a cross-file transaction — failed writes leave replayable work;
+  malformed completed records need repair.
+- Digest: `source_ids` ≤128 owned sources, default = caller context's
+  sources; ≤16 entries/message, cursor tracks per-source generation,
+  unreported changes retained. An error names its last success; the same
+  unresolved error lists once (subsequent digests summarize persistent
+  unavailability) so a failed source cannot permanently fill every slot.
+  `GET /v1/routines/<id>` returns schedule+watch state;
+  `POST /v1/routines/<id>/snooze {until}` postpones + invalidates queued
+  occurrences. Deterministic digests never call a model.
+- Snooze: reminder snooze rearms the same schedule at a new revision —
+  including when the old occurrence is already queued; recurring snooze
+  defers `next_due` to `until` keeping cron+timezone. Catch-up measures
+  from the deferred deadline, saved per-occurrence; late tick writes
+  `missed` and advances; recovery admits at most one occurrence.
+- Derived reads: `last_occurrence_state`/`last_delivery_state` —
+  `delivered` only with a completed outbox record; `uncertain` never
+  auto-resent; `/routines` names missed/unconfirmed. Detail reads hot spool
+  or archive; expired/unverifiable detail → `unavailable`. Read-only fields
+  never expose outbox state through a caller-supplied history reference.
+- Notification policy (`quiet_from`/`quiet_to` HH:MM owner-tz window;
+  `daily_limit` 0..32 → `capped` with baseline advancing;
+  `notify_mode=digest` feeds daily digest; `notify_mode=agent` admits one
+  untrusted-flagged job — never on reminder/script/digest kinds) and
+  `delivery=stream` internals are in architecture.md §Jobs, runs and
+  events.
 
 ## Schedules and windows
 

@@ -145,7 +145,7 @@ func TestProjectAndFormat(t *testing.T) {
 		}
 		body := "ok\n"
 		if strings.HasPrefix(name, "docs/") {
-			body = "---\ndescription: test\n---\n[readme](../README.md)\n"
+			body = "---\ndescription: test\nlast_verified: 2000-01-01\n---\n[readme](../README.md)\n"
 		}
 		if err := os.WriteFile(path, []byte(body), 0600); err != nil {
 			t.Fatal(err)

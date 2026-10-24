@@ -1,4 +1,4 @@
-# SPEC-0055 — Routine occurrence recovery
+# SPEC-0055 â€” Routine occurrence recovery
 
 Status: active amendment to SPEC-0013, SPEC-0048 and SPEC-0053. Those frozen contracts remain unchanged.
 

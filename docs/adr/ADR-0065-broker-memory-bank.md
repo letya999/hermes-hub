@@ -1,0 +1,28 @@
+---
+description: "Адаптация medium memory bank."
+last_verified: "2026-09-18"
+---
+
+# ADR-0065 (imported from services/credential-broker ADR-0006): Адаптация medium memory bank
+
+Status: accepted (imported from services/credential-broker).
+
+## Контекст
+
+Нужны specs/ADRs/plans и quality gates без лишнего Node/Python runtime.
+
+## Варианты
+
+Скопировать весь шаблон; отказаться от conventions; адаптировать medium и небольшой checker.
+
+## Решение
+
+Сохранены четыре зоны, frontmatter, just, generated indexes и evidence; checker stdlib, state YAML в JSON-синтаксисе.
+
+## Последствия
+
+Не заявляется полная реализация upstream docs tooling; .env заменён protected files по security policy.
+
+## Когда пересматривать
+
+При включении в общий documentation tooling монорепозитория.

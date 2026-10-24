@@ -1,6 +1,7 @@
 ---
 description: Optional Google/Atlassian/Telegram Python MCP trees are dedicated images, not the hub runtime.
 status: accepted
+last_verified: 2026-09-21
 ---
 # ADR-0023: Optional MCP trees live outside the hub image
 

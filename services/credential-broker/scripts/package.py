@@ -27,7 +27,7 @@ def collect():
 def main():
     ap=argparse.ArgumentParser();ap.add_argument('--output',type=Path,default=ROOT/'.build/dist/credential-broker.zip');a=ap.parse_args()
     # Evidence is required, not fabricated by the packager.
-    ev=ROOT/'.work/done/CHG-001-credential-broker/artifacts'
+    ev=ROOT.parents[1]/'.work/done/CHG-0142-credential-broker-mvp/artifacts'
     for name in ['verification.md','coverage.json','tests.jsonl']:
         if not (ev/name).is_file():raise SystemExit('Missing verified evidence: '+name)
     files=collect();manifest=[]

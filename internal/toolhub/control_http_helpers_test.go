@@ -12,39 +12,39 @@ import (
 )
 
 // Credential form helpers render the reviewed hint set: input types, the
-// Google OAuth dual-file/manual shape, alternative groups collapsed behind
+// file uploads, alternative groups collapsed behind
 // <details>, and loopback-only OAuth callbacks.
 func TestCredentialFormHelpers(t *testing.T) {
 	hint := api.CredentialHint{Name: "API_TOKEN", Type: "string", Secret: true, Hint: "token from the console"}
-	if got := credentialFieldMarkup(hint); !strings.Contains(got, `type="password"`) || !strings.Contains(got, "token from the console") {
+	if got := credentialFieldMarkup(hint, api.ConnectionField{}, ""); !strings.Contains(got, `type="password"`) || !strings.Contains(got, "token from the console") {
 		t.Fatalf("secret string markup: %s", got)
 	}
-	if got := credentialFieldMarkup(api.CredentialHint{Name: "EMAIL", Type: "email"}); !strings.Contains(got, `type="email"`) || !strings.Contains(got, `autocomplete="email"`) {
+	if got := credentialFieldMarkup(api.CredentialHint{Name: "EMAIL", Type: "email"}, api.ConnectionField{}, ""); !strings.Contains(got, `type="email"`) || !strings.Contains(got, `autocomplete="email"`) {
 		t.Fatalf("email markup: %s", got)
 	}
-	if got := credentialFieldMarkup(api.CredentialHint{Name: "CALLBACK", Type: "url"}); !strings.Contains(got, `type="url"`) {
+	if got := credentialFieldMarkup(api.CredentialHint{Name: "CALLBACK", Type: "url"}, api.ConnectionField{}, ""); !strings.Contains(got, `type="url"`) {
 		t.Fatalf("url markup: %s", got)
 	}
-	if got := credentialFieldMarkup(api.CredentialHint{Name: "COUNT", Type: "integer"}); !strings.Contains(got, `type="number"`) {
+	if got := credentialFieldMarkup(api.CredentialHint{Name: "COUNT", Type: "integer"}, api.ConnectionField{}, ""); !strings.Contains(got, `type="number"`) {
 		t.Fatalf("number markup: %s", got)
 	}
-	if got := credentialFieldMarkup(api.CredentialHint{Name: "PLAIN", Type: "string"}); !strings.Contains(got, `type="text"`) {
+	if got := credentialFieldMarkup(api.CredentialHint{Name: "PLAIN", Type: "string"}, api.ConnectionField{}, ""); !strings.Contains(got, `type="text"`) {
 		t.Fatalf("plain markup: %s", got)
 	}
-	if got := credentialFieldMarkup(api.CredentialHint{Name: "PAYLOAD", Type: "json", Delivery: "json"}); !strings.Contains(got, "<textarea") {
+	if got := credentialFieldMarkup(api.CredentialHint{Name: "PAYLOAD", Type: "json", Delivery: "json"}, api.ConnectionField{}, ""); !strings.Contains(got, "<textarea") {
 		t.Fatalf("json markup: %s", got)
 	}
-	oauth := api.CredentialHint{Name: "GOOGLE_OAUTH_CREDENTIALS"}
-	if got := credentialFieldMarkup(oauth); !strings.Contains(got, "google_oauth_file") || !strings.Contains(got, "google_oauth_client_id") {
+	oauth := api.CredentialHint{Name: "GOOGLE_OAUTH_CREDENTIALS", Type: "json", Delivery: "file", Hint: "Upload client JSON"}
+	if got := credentialFieldMarkup(oauth, api.ConnectionField{}, ""); !strings.Contains(got, `type="file"`) || !strings.Contains(got, `name="GOOGLE_OAUTH_CREDENTIALS"`) {
 		t.Fatalf("oauth markup: %s", got)
 	}
-	if got := credentialFieldLabel(oauth); !strings.Contains(got, "OAuth") {
+	if got := credentialFieldLabel(oauth); got != "GOOGLE OAUTH CREDENTIALS" {
 		t.Fatalf("oauth label: %s", got)
 	}
 	if got := credentialFieldLabel(api.CredentialHint{Name: "API_KEY"}); got != "API KEY" {
 		t.Fatalf("label: %q", got)
 	}
-	if got := credentialFieldHint(oauth); !strings.Contains(got, "gcp-oauth") {
+	if got := credentialFieldHint(oauth); !strings.Contains(got, "Upload client JSON") {
 		t.Fatalf("oauth hint: %s", got)
 	}
 	if got := credentialFieldHint(api.CredentialHint{Name: "X", Hint: "protected loopback form"}); got != "" {
@@ -63,13 +63,13 @@ func TestCredentialFormHelpers(t *testing.T) {
 		{Name: "EMAIL", Type: "email", AlternativeGroup: 2},
 		{Name: "PASSWORD", Type: "string", Secret: true, AlternativeGroup: 2},
 	}
-	writeCredentialFields(&b, hints, nil, "nonce-1")
+	writeCredentialFields(&b, hints, nil, "nonce-1", nil, nil)
 	page := b.String()
 	if !strings.Contains(page, `value="nonce-1"`) || strings.Count(page, "<form") != 2 || !strings.Contains(page, "<details>") {
 		t.Fatalf("grouped form: %s", page)
 	}
 	b.Reset()
-	writeCredentialFields(&b, []api.CredentialHint{hint}, nil, "n")
+	writeCredentialFields(&b, []api.CredentialHint{hint}, nil, "n", nil, nil)
 	if strings.Contains(b.String(), "<details>") || !strings.Contains(b.String(), "API_TOKEN") {
 		t.Fatalf("plain form: %s", b.String())
 	}
@@ -121,5 +121,25 @@ func TestCredentialFormHelpers(t *testing.T) {
 	remote.RemoteAddr = "203.0.113.10:5050"
 	if loopbackHTTP(remote) {
 		t.Fatal("public address treated as loopback")
+	}
+}
+
+func TestFileCredentialFormUsesDeclaredContract(t *testing.T) {
+	hint := api.CredentialHint{Name: "GOOGLE_OAUTH_CREDENTIALS", Type: "json", Delivery: "file", Hint: "Upload client JSON"}
+	markup := credentialFieldMarkup(hint, api.ConnectionField{}, "")
+	if !strings.Contains(markup, `name="GOOGLE_OAUTH_CREDENTIALS"`) || !strings.Contains(markup, `type="file"`) {
+		t.Error("file field ignores declared name")
+	}
+	if strings.Contains(markup, "google_oauth_client_id") {
+		t.Error("provider-specific form still active")
+	}
+	if got := credentialFieldLabel(hint); got != "GOOGLE OAUTH CREDENTIALS" {
+		t.Error("provider-specific label overrides contract")
+	}
+	if got := credentialFieldHint(hint); !strings.Contains(got, hint.Hint) {
+		t.Error("contract hint ignored")
+	}
+	if strings.Contains(credentialFormIntro([]api.CredentialHint{hint}), "JSON-файл Google") {
+		t.Error("provider-specific introduction still active")
 	}
 }

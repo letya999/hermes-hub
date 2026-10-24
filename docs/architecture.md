@@ -1,602 +1,177 @@
 ---
-description: Current scoped runtime boundary and target scale-to-zero lifecycle.
-last_verified: 2026-10-14
+description: System overview — roles, component map, networks, lifecycle; details live in services/, rbac.md, spaces.md and the ADRs.
+last_verified: 2026-10-21
 ---
+
 # Architecture
 
-The default-deny capability boundary is accepted and **in implementation**.
-The [2026-10-02 audit](capability-boundary-audit.md) records gaps in native/API
-tool selection and control/runtime isolation. Follow
-[ADR-0031](adr/ADR-0031-default-deny-capability-policy.md) and
-[ADR-0032](adr/ADR-0032-capability-execution-isolation.md) for the target decisions;
-the existing deployment must not be described as meeting those guarantees yet.
+## Split of responsibility
 
-The first ToolHub hardening denies self-install without an explicit active grant
-and hides catalog publications when the user has no catalog/definition grant.
-A matching disabled/revoked grant overrides matching allows. Grant writes reject
-older revisions and become visible only after durable persistence succeeds;
-self-install/catalog admission reloads the protected store. Control operations
-(including diagnostics, discovery and generic invoke) require independent exact
-operation grants, are omitted from ungranted projections and reauthorize each
-call; open MCP sessions refresh after grant changes. User-owned publications,
-existing bindings, principal-only legacy grant scopes and the earlier confirmation
-flow still need the remaining P1/P3 changes. These fixes alone do not establish
-the complete capability policy.
+**Hermes** (upstream, pinned — ADR-0012) owns reasoning, chat, tool
+selection, memory, skills and hooks. It is never patched in place; a
+contract bump is a new ADR + spec.
 
-The opt-in managed ToolHub evaluator now combines organization ceiling/defaults,
-personal allows/denies, exact runtime/environment/generation identity and immutable
-implementation selections. It checks complete action/resource/connection tuples
-and execution limits on each call. Managed projection/catalog omit unselected
-tools; legacy binding/control/install paths cannot grant managed authority.
-Policy/profile history is the persisted source for current policy maps, committed
-with the existing atomic snapshot and stale-writer fence. A shared disk lock also
-fences managed admission against writers in other processes. Durable call audit
-is mandatory before injection. Reviewed group snapshots now expand explicit
-complete tuples at fixed revisions; a policy update invalidates old profiles.
-Human consent, runtime provisioning, unified local routing and execution isolation are
-still open. See the current limits in [operations](operations.md).
+**Go** owns everything around it: space initialization, strict config,
+organization policy, Docker lifecycle, channel routing, durable routines,
+bounded file/HH/document tools, ToolHub, the credential boundary and the
+supervisor. There is no replacement agent loop, CRM, crawler, database
+queue or vector database. Retrieval is search → read → reason over files
+and tools.
 
-Managed Compose assigns each user/environment an internal agent network.
-Hermes reaches ToolHub and a per-user model relay there. The ToolHub relay
-exposes MCP plus the caller-scoped connector inventory used by readiness;
-the model relay forwards chat completions only for the selected model and
-returns only that model from CLIProxy's read-only catalog. The ladder is no
-longer env-hardcoded: layered registries (`spaces/models.yaml`, the
-organization's `models.yaml`, then the owner's own) merge into
-`generated/models.<env>.yaml`, mounted read-only at `/run/models.yaml`.
-Each logical model names an ordered ladder of `{provider, model}` hops with
-per-hop provider model ids; providers hold fixed endpoints plus `key_env`
-references into the space's secrets file — never literal keys. A hop cools
-down for a minute after a quota/auth/provider failure and every attempt is
-logged as an audit receipt. Owners granted a model (`owners:`) can switch it
-from chat: `/model` in the communication gateway calls the space's own
-`model-relay-<user>:8318` admin endpoint (`PUT /v1/model`, bearer from
-`model-relay.auth`), which persists the choice to `model-select.json`; the
-relay re-reads the registry when the file changes.
-`spaces/profiles.yaml` still overlays model, model_url and cliproxy topology
-per owner (default → named → the owner's own file), and `cliproxy: dedicated`
-renders a secondary space its own proxy instead of the shared infra one.
-CLIProxy, broker and sibling runtimes are not directly attached to the agent
-network. Managed launch requires supervised network lifecycle, immutable
-extension content and private executors.
+## Component map
 
-M5 stage-2 Calendar and Slack data calls use opt-in stateless `provider-api`
-definitions behind the same ToolHub authorization/injection/audit gateway.
-The protected `hubctl connector` host CLI verifies provider identity before
-binding. Read/write definitions and scopes are independent; no bot/app credential
-is a data grant. Official HTTPS requests reject redirects and bound response
-sizes. Registry writes use an OS lock and loaded-content precondition so stale
-snapshots fail rather than overwriting another process's revoke. Generated MCP
-remains the default. See SPEC-0022 and ADR-0018. Personal Telegram has a pinned,
-locally prepared read-only ToolHive workload; real account login is still pending.
-Official Workspace MCP uses Google's remote endpoints, subject to Preview approval.
-See ADR-0020 and [the owner setup guide](local-accounts-manager.md).
+| Service | Role | Detail |
+|---|---|---|
+| `hermes-runtime` | Per-space agent container: spawns pinned Hermes, serves the private `/v1/*` contract, owns scope mounts | [runtime.md](services/runtime.md) |
+| `communication-hub` | Channel gateway: adapters, job admission, spool, `?t=` human links | [communication.md](services/communication.md) |
+| `supervisor` | Scale-to-zero spawner: warm runtimes, control-call routing, docker-exec agent-tools | [supervisor.md](services/supervisor.md) |
+| `toolhub` | Capability gateway: governance evaluation, connector lifecycle, audit | [toolhub.md](services/toolhub.md) |
+| `credential-broker` | Standalone credential authority (copied MIT module) | [credential-broker.md](services/credential-broker/index.md) |
+| `hub-stt`/`hub-tts`/`hub-media` | Speech + media sidecars, bearer-auth internal API | [media.md](services/media.md) |
+| `cellinit`/`cell-proxy`/`mcp-bridge` | Disposable workload cells + loopback relays | [cell-proxy.md](services/cell-proxy.md) |
+| `model-relay` | Per-space model selection + provider ladder | [model-relay.md](services/model-relay.md) |
+| `hubctl` | Operator CLI: render/up/down, secrets, migrations, connector host ops | [hubctl.md](services/hubctl.md) |
 
-The current implementation follows [ADR-0009](adr/ADR-0009-scoped-homes-and-communication-hub.md):
-organization and user homes are peers under `spaces/`, mutable Hermes data lives in
-those homes, and `communication-hub` is a separate container. Existing deployments
-retain their old layout until an explicit migration succeeds.
+The agent-visible tool surface these produce is catalogued in
+docs/tools.md; space layout and config in docs/spaces.md; the authorization
+model in docs/rbac.md; runtime operation in docs/operations.md.
 
-[ADR-0011](adr/ADR-0011-stable-identity-identifiers.md) separates the human principal
-from verified channel identities, execution contexts, runtimes, conversations,
-delivery audiences and provider connections. The private schema-1 envelope carries
-the canonical IDs alongside compatibility fields: `user_id`/`actor_id` identify the
-configured principal and `scope_id=user:<id>` references its personal context. Both
-services receive the same stable runtime ID and content-derived policy version;
-Telegram IDs are transport links, never filesystem or authorization keys.
+## Identity and scope
 
-Hermes owns reasoning, chat, tool selection, memory, skills and hooks. Go owns
-space initialization, strict configuration, organization policy resolution, Docker
-lifecycle, communication routing, durable routine schedules, bounded file/HH MCP and an optional native MCP bridge.
-A routine's clock, execution and delivery remain separate durable records. The
-[routine lifecycle](routines.md) exposes owner/context-scoped business operations
-through ToolHub with revision fences, bounded discovery/history and interval
-windows; ADR-0042 records decisions and CHG-0112 the acceptance boundary.
-A small Go binary supervises container processes. There is no replacement agent loop,
-CRM, crawler, database queue or vector database. Retrieval is search -> read -> reason
-using files and tools; web retrieval uses the Hermes `web` toolset with
-operator-configured providers, a hub-shipped plugin adding provider listing
-and bounded parallel fan-out (`web_providers`/`web_search_multi`), and the
-bounded `deep-research-embedded` skill
-([SPEC-0035](../specs/active/SPEC-0035-web-research.md)).
+[ADR-0011](adr/ADR-0011-stable-identity-identifiers.md) separates the human
+principal from verified channel identities, execution contexts, runtimes,
+conversations and provider connections. The schema-1 envelope carries
+canonical IDs — `user_id`/`actor_id` = configured principal,
+`scope_id=user:<id>` = its personal context — plus a stable runtime ID and
+content-derived policy version on both services. Channel IDs (Telegram,
+Slack) are transport links, never filesystem or authorization keys.
 
-The pinned Hermes artifact also contains an opt-in authenticated HTTP API server. Its
-`/api/sessions` and `/v1/runs` contract is recorded in [SPEC-0011](../specs/active/SPEC-0011-hermes-api-contract.md)
-and validated against the real image by the Docker gate. This is a future adapter
-surface: the capability response explicitly reports `split_runtime=false`, so tools
-would execute on the API-server host. The current Go `/v1/execute` runtime remains the
-private identity and filesystem trust boundary until a split-runtime adapter is
-implemented. ToolHub now retains an owner-scoped MCP session and updates its tool
-list when the persisted projection changes. The Go SDK sends
-`notifications/tools/list_changed`; the serve runtime no longer restarts Hermes
-for that change. A pinned-Hermes fixture preserved the process, session and an
-active run during refresh. Full lifecycle and production acceptance remain in #74.
+Scopes live at `spaces/<id>` ([ADR-0009](adr/ADR-0009-scoped-homes-and-communication-hub.md)):
+users and organizations are peers; an org job requires the trusted
+`organization:<id>` scope plus an approved `org_actions` entry. The
+effective user scope is org baseline *narrowed by* user settings — never
+widened.
 
-## Scope homes
+## Trust boundary
 
-Both organizations and users live at `spaces/<id>`. `scope.yaml` declares the kind and
-stable ID; IDs are unique across the namespace. A user may reference one organization.
-The effective user scope is the organization policy baseline plus the user's narrowed
-settings. A direct conversation creates `user:<id>` state. Organization jobs require
-the trusted `organization:<id>` scope and an approved organization action.
+Default-deny capability posture (ADR-0031, ADR-0032 — accepted; T01–T22
+acceptance rows evidenced in CHG-0065 and awaiting owner sign-off, so the
+deployed stack is not yet certified against every guarantee — see
+`.work/in-progress/CHG-0065-capability-enforcement/acceptance-matrix.md`
+for the per-row enforced-vs-target delta). The rules:
 
-| Location | Data |
-|---|---|
-| `spaces/<id>/scope.yaml` | Scope kind, ID and organization membership/policy |
-| `spaces/<user>/agent.yaml` | Operator runtime config: identity, model endpoint, ports, capability pin, hooks |
-| `spaces/<user>/workspace.yaml` | Capability intent: `tools:` surface, ingress, mounts and `mcp:` definitions |
-| `spaces/<id>/hermes/` | Hermes memories, skills, sessions, hooks, plugins and state |
-| `spaces/<id>/connections/` | OAuth, browser, Telegram and self-service state |
-| `spaces/<id>/workspace/` | User or organization work files |
-| `spaces/<id>/archive/` | Read-only extracted archive |
-| `spaces/<id>/generated/` | Ignored Compose, Hermes and filtered env files |
-| `communication-hub-data` | Gateway queue and delivery ledger; outside scope homes |
+- The model never sees credential values, host env, host paths or
+  unrestricted egress; ToolHub projects only tools the principal's policy
+  selects (docs/rbac.md).
+- `hermes-runtime` is the private identity + filesystem trust boundary:
+  `POST /v1/jobs` carries immutable identity + bounded prompt under Bearer;
+  binding rejects user/org/actor/scope mismatch before opening a path.
+  Uncertain results are never silently retried.
+- Web/transcript/tool content is data, not authority. Provider mutations
+  need a concrete user instruction; `Confirmation` digests bind human
+  review to exact record bytes — model/agent paths cannot mint them.
+- Secret values live only behind the Credential Broker or the encrypted
+  store; ToolHub holds opaque locators. File deliveries need a shared
+  tmpfs `credential_mount_root` or fail closed.
+- Workloads (connectors, CLI cells) run as disposable containers admitted
+  by `workload-controller` with a proven receipt; inspect verifies digest,
+  limits, caps, seccomp, net/volume topology. HTTP reachability is not
+  admission evidence.
+- Human action links are one-time `?t=` tokens on loopback by default;
+  public origin requires explicit `HUB_PUBLIC_*`.
+- Supervisor has Docker authority but no channel credentials; the gateway
+  has channels but no Docker authority or scope mounts; ToolHub has
+  tool/cell authority but cannot write spawned-runtime state (restart is
+  relayed, not written).
+- `communication-hub` never mounts scope homes. Its `telegram_auth` QR
+  path (default-on for telegram stacks, `telegram_auth: false` opts out)
+  keeps the MTProto session in memory only.
 
-The opt-in `browser` feature renders two hub-owned MCP servers into the Hermes
-config: `browser` attaches Playwright MCP to that user's persistent Chromium
-profile (`connections/browser`, loopback CDP only), and `browser_guest` runs an
-isolated in-memory profile with no authenticated state. Both expose navigation
-and read tools only; `browser_act` is the separate explicit capability that adds
-mutation tools. Downloads and screenshots land in `workspace/browser` and the
-runtime evicts files over the size/type policy. noVNC stays bound to the Docker
-host loopback on `browser_port`.
+Threat model: docs/threat-model.md. Engineering rules: docs/engineering.md.
 
-The opt-in `ssh` feature adds hub-owned MCP tools (`ssh_hosts`, `ssh_exec`,
-`ssh_read`, plus `ssh_write`, `ssh_shell_*` and `ssh_tunnel_*` behind the
-separate `ssh_write`/`ssh_shell`/`ssh_tunnel` features). Destinations come only
-from `connections/ssh/config.yaml` (mounted read-only): aliases carry host,
-port, user, pinned host keys, credential references and per-host
-command/path/tunnel allowlists and bounds. Private keys resolve from the
-read-only config directory or Credential Broker leases; shells and tunnels are
-process-local, loopback-bound and reaped on expiry or restart. SPEC-0033 holds
-the contract.
+## Networks and lifecycle
 
-Job and conversation lifecycle mappings are persisted beside the gateway queue. They
-contain immutable routing, idempotency and Hermes run metadata, while supervisor state
-contains runtime generations and leases; neither store receives provider credentials.
+Managed Compose gives each `spaces/<id>` an internal agent network; Hermes
+reaches ToolHub and the per-space model relay there. CLIProxy, broker and
+sibling runtimes are never attached to the agent network. Shared
+control-plane services (toolhub, credential-broker, cliproxy,
+workload-controller, communication-hub) are rendered once by the space
+whose `agent.yaml` keeps `infra: true`; siblings join the external
+`hermes-hub-runtime` network and enroll via `toolhub-tokens.json`.
 
-The opt-in persistent path can stream normalized NDJSON events through the private
-runtime boundary. The supervisor records admission and run status; the communication
-spool records event receipts and repairs outbox handoff on restart. SSE disconnects
-fall back to the pinned durable run-status API because upstream SSE has no replay
-cursor. Recovery observes an admitted run through `/v1/resume` and `/v1/observe`
-instead of resubmitting its prompt. Admission stamps a `/state/runstarts/<runID>`
-marker whose mtime preserves the artifact scan window, so an interrupted run's
-files still attribute correctly when the observation resumes (SPEC-0037).
-Approval response routing and periodic lifecycle
-reconciliation remain tracked in CHG-0017 until their delivery evidence is complete.
+Execution selection `http://supervisor:8876` runs the supervisor in the
+main stack (ADR-0040): it receives the trusted envelope, dedupes by
+`(principal_id, context_id, runtime mode)`, spawns the pinned runtime with
+only that context's mounts, and stops compute ~30 min after the last lease
+— the context home persists. Gateway and supervisor stay small always-on
+control plane; registered users create no resident runtimes;
+reconciliation restores only contexts with runnable work, due routines,
+pending approvals or explicit always-on leases.
 
-Organization skills are configured through upstream Hermes `skills.external_dirs` and
-are mounted read-only. Hub tools expose organization material with explicit provenance;
-user writes remain in the user home. Duplicate organization/user secret keys are
-rejected rather than overridden.
+ToolHub removes a connector by cutting call authorization first, then
+persisting a finalizer ladder for workloads, volumes, network, credentials,
+workspace and a zero-resource check. The served endpoint scopes Docker
+queries to the stack project and connection; purge rechecks both labels on
+the object. Confirmed incomplete removals resume at ToolHub startup and
+retry every 30 seconds. Recipe images remain shared and are excluded from
+connection removal receipts. The same 30-second cadence runs the single
+reconciler pass: scoped label scans purge orphans whose owner connection is
+gone, dead credential ciphertext degrades the connection, and recipe,
+credential-recipe and live-surface drift park it until a human /confirm
+re-pins the observed digest (CHG-0147).
 
-## Service boundary
+## Jobs, runs and events
 
-`communication-hub` owns Telegram transport, external identity mapping, the bounded
-file queue and reply delivery. Speech is delegated to standalone `hub-stt` /
-`hub-tts` services — separate binaries and images (OpenAI-compatible API +
-durable async jobs; swappable command/remote/sherpa/elevenlabs engines) reached over
-bearer-auth HTTP — see
-[SPEC-0039](../specs/active/SPEC-0039-media-sidecars.md). Image and video
-generation is likewise delegated to `hub-media` (SPEC-0040): the same
-`internal/mediasvc` core, `remote`/`fal` engines, sync image endpoints plus
-durable async video jobs on the shared job store. Provider credentials live in
-the service env; the runtime mounts only `media.auth` and the service URL. The gateway mounts only
-`communication-hub-data` and receives
-the bot token. Model-authored replies render per channel at delivery (Telegram HTML,
-Slack mrkdwn) and split on block boundaries inside the channel limit with durable
-per-part outbox progress (SPEC-0036); hub-authored notices stay plain text.
-Files generated under `workspace/artifacts/{documents,images,videos}` during a run
-cross the private contract through `POST /v1/artifact` while the runtime is
-answering, stage into the outbox and reach the chat as Telegram
-photos/documents/videos with durable per-artifact progress (SPEC-0037).
-The model learns this contract from the run instructions, not MCP server
-metadata — managed mode does not surface `ServerOptions.Instructions` — so
-every managed prompt pins the convention: `artifacts/` auto-delivers on
-completion and an explicit `MEDIA: <path>` line attaches files produced
-earlier or outside the deliverable root.
-`hermes-runtime` owns the selected scope homes, provider credentials
-and configuration. Rollback mode runs one Hermes process per job; target mode keeps
-one pinned Gateway warm per active context. It is not published on a public host port.
+Channel message → normalized `Envelope` → durable job → supervisor lease →
+runtime spawn/warm hit → Hermes run. An admitted run streams NDJSON events
+through the private boundary; SSE disconnect falls back to the durable
+run-status API (upstream SSE has no replay cursor); recovery observes via
+`/v1/resume` + `/v1/observe` instead of resubmitting. `/state/runstarts/
+<runID>` markers keep artifact attribution across interruption
+(SPEC-0037). Job phases, quarantine and `hubctl trace`: docs/operations.md.
 
-The services use a small authenticated private HTTP contract: `POST /v1/jobs` carries
-version 1, immutable identity fields, scope and a bounded prompt; `DELETE
-/v1/jobs/<id>` requests cancellation. A Bearer runtime token is required. The runtime
-is bound to one user and optional organization, rejects identity mismatches before
-opening a path. The communication spool and host supervisor record idempotency
-outcomes as succeeded, failed or uncertain; the runtime only executes the already-
-authorized request. An uncertain result is never silently retried.
+Routines share the same job pipeline — clock, execution and delivery are
+separate durable records. Deterministic kinds (reminder/watcher/check/
+digest/script) never start a runtime; `brief` and `sink=agent` events are
+the only kinds that may wake the agent, always flagged untrusted. Event
+subscriptions poll connector read tools through `/v1/tool-call`;
+`delivery=stream` holds one bounded wait-call loop. Detail:
+docs/routines.md.
 
-Gateway mode supervises `hub-communication`. Its channel adapters map an authenticated
-channel sender (Telegram Bot API or Slack App Events API) to the configured user scope, persist jobs and replies in
-`/state/gateway`, and run one bounded invocation at a time. The durable domain model
-(`Job`, `Delivery`, `Task`, `User`, `Schedule`, `RoutineOccurrence`, `JobMapping`, …)
-lives in the leaf `internal/commodel`; `internal/communication` re-exports it through
-type aliases so its exported contract stays stable. Channel-specific behavior sits
-behind `internal/channel`: the `Channel` contract plus the telegram/slack/mock
-adapters, each reaching the gateway only through an injected `Deps` struct
-(`TelegramDeps`, `SlackDeps`, `MockDeps`). Delivery, artifact sending, routine
-admission/authorization, envelope mapping, blocked-notice routing and the optional
-capabilities (`Caps`: typing presence, editable status, artifacts, destinations,
-routine-origin pinning) dispatch through `channelPlugins[id]` rather than
-provider-name switches. A new channel implements that seam and registers an adapter;
-core job, spool and schedule mechanics stay channel-neutral. Routine semantics and
-orchestration — draft validation, cron/timing math, extract pipelines, recipes,
-durable ids, and the `routines.Engine` driving schedule ticks, occurrences,
-watchers, digests, proactive runs, script execution, reminders and destination
-bindings — live in the leaf `internal/routines`. The engine shares the spool's
-mutex and root and reaches the gateway, channels and runtime through an
-injected `Deps` seam, so `internal/routines` never imports them back.
-The operational plane — the synthetic canary probe and the caller-scoped health
-block — lives in `internal/commops`, a leaf package that reaches the gateway only
-through injected `Deps` closures, so ops code cannot touch gateway internals. Each
-of `commodel`, `channel`, `routines`, `commops` and `serviceauth` carries a parser
-boundary test fixing the import direction. `internal/channel` also carries a
-conformance suite that exercises every registered adapter against stubbed deps —
-identity/normalize, capability declarations, occurrence-ownership validation and
-routine admission — so a new channel proves the contract without a gateway, and
-`internal/routines` freezes the durable id formats (occurrence hash inputs,
-routine conversation, failure digest) with byte-exact goldens. The shared
-enrolled-tokens file contract
-(`{"<token>": <envelope>}`) is owned by `internal/serviceauth`; authorization decisions
-stay local to each service. Slack App credentials stay
-in communication-hub; they do not create Slack data tools. Voice updates keep a bounded
-media envelope, transcribe through the replaceable STT worker, and submit text to the
-same Hermes session. Spoken replies are a per-reply tool, not a mode: a `VOICE:` line in
-the model reply requests speech like an artifact marker, marker-only replies arrive
-voice-only, and synthesized audio is streamed to the channel and never persisted
-(SPEC-0038). `/voice` reports incoming-STT and outgoing-TTS readiness separately so a
-missing worker is never promised (SPEC-0038). Native Hermes memory, profile and
-skills remain in the owning home; Honcho is an official opt-in config file. The initial deployment
-has one configured user; the job envelope and per-user paths keep the expansion point for
-multiple users, organizations and channels explicit without adding external IAM today.
+## Capabilities and egress
 
-## Target scale-to-zero lifecycle
+Each capability has exactly one surface — a native toolset, a hub-rendered
+MCP entry, an owner `mcp_servers` entry, or a ToolHub projection; hub-owned
+and native names are reserved against owner `mcp_servers` (SPEC-0040).
+Feature flags (docs/spaces.md) render mounts, env and toolset wiring
+declaratively — e.g. `browser` projects read-only Playwright tools,
+`browser_act` separately adds mutations; `ssh`/`ssh_write`/`ssh_shell`/
+`ssh_tunnel` stack onto a reviewed `connections/ssh/config.yaml`.
 
-[ADR-0014](adr/ADR-0014-scale-to-zero-context-runtimes.md) replaces the proposed
-permanently resident per-user compute with one warm runtime per active execution
-context. A Go supervisor receives the trusted job envelope, deduplicates
-starts by `(principal_id, context_id, runtime mode)`, launches the pinned runtime with
-only that context's mounts and waits for authenticated Hermes readiness. The runtime
-is reused while busy and for thirty minutes after its final lease by default, then its
-compute is stopped while the context home remains intact.
+Workload egress is deny-by-default: `egress_class: web` permits audited
+per-workload proxy HTTPS with deny-first private/loopback/metadata
+destinations; credential-derived URLs/endpoints join the ACL at readiness;
+`tcp_forwards` relay one credential-bound `host:port` each through the
+same proxy — the model can never choose destinations.
 
-The communication hub and supervisor remain small always-on control-plane services.
-The communication hub has no Docker authority or scope mounts; the supervisor has no
-channel credential or authority to derive identity from message content. Registered
-users do not create resident runtimes. Reconciliation restores only contexts with
-runnable work, due routines, pending approvals or explicit always-on leases.
+## State
 
-Execution selection `http://supervisor:8876` renders the supervisor in the existing
-control image within the main Compose stack. Its trusted spaces/Docker access
-remains separate from user runtimes. Container mode uses private runtime/control
-relay DNS and translates only bind sources contained by the configured spaces
-root. Host mode remains available; writers must never overlap during migration.
-See [ADR-0040](adr/ADR-0040-single-stack-supervisor.md).
+Per space: `connections/`, `workspace/`, `runtime/`, `hermes/`,
+`generated/`, `diagnostics/` (layout: docs/spaces.md). Shared: broker state
+on an external per-env volume, `communication-hub-data` spool, ToolHub
+`/state` (store/audit/governance/credentials/artifacts). Durable records
+are content-addressed or revision-fenced: policies and recipes by digest,
+grants/bindings by revision, projection revisions monotonic, tombstones
+retained for idempotent replay (removed 30 d, terminal operations 7 d).
 
-The communication spool wakes workers after durable changes and retains a
-one-second safety tick. Its control loop indexes nonterminal mappings, updates
-that index after successful durable writes, and rebuilds it on reopen. Each
-indexed mapping is reread under the spool lock before lifecycle decisions;
-terminal history does not need to be decoded on every control tick.
+## Non-goals
 
-Routine definitions and delivery targets are durable hub records. A due occurrence
-becomes the same authenticated, idempotent job used for interactive work and wakes the
-owning context. Hermes performs the agent run but does not remain alive merely to own
-a clock. Existing native Hermes cron is migrated explicitly or pins that context on
-until migration; dual scheduling is forbidden.
-
-Deterministic routine kinds (reminder, watcher, check, digest, script) never start a
-runtime or call a model at fire time: reminder text goes straight to the outbox,
-watcher/check occurrences run one bounded probe, digest aggregates owner watch states
-into one message. After downtime an occurrence inside its `catch_up_window` (default
-one hour) still fires; outside it settles `missed`. A `check` whose probe errors
-re-probes at most `max_retries` times (default three, `retry_after` backoff) before
-settling `failed` — an unverifiable predicate never reads as false. `task:<id>`
-probes verify the owner's own task state without a fetch. Deliveries re-validate the
-occurrence and owner before sending, and a transport answer lost mid-send leaves the
-delivery failed/uncertain rather than claimed sent.
-
-Watcher, check and digest deliveries respect the owner's notification policy:
-`quiet_from`/`quiet_to` set an owner-timezone HH:MM window inside which the outbox
-entry stays pending until the window end; `daily_limit` (0..32) caps same-day
-watcher/check notifications — an over-cap occurrence settles `capped` while its
-baseline still advances. `notify_mode=digest` feeds the daily digest;
-`notify_mode=agent` escalates only a real change as an untrusted-evidence job
-through ordinary idempotent admission — never on reminder, script or digest kinds.
-
-A `mcp_tool` probe polls the owner's connectors without a public URL: ToolHub
-exposes `POST /v1/tool-call` for the control plane (owner-pinned credential,
-`X-Hub-Principal`, read-effect tools only, bounded arguments and response), and
-the probe compares the returned text like any other watch value. An `is_error`
-tool result is a probe error, not a value — the occurrence retries/settles
-through the same policy path. This keeps connector state verifiable without
-publishing credentials or letting model output stand in for evidence.
-
-A `brief` routine is the one deterministic kind that may wake the agent: it
-assembles an authorized snapshot — the owner's watch sources changed since
-its cursor, sources named unavailable (never "no changes"), and open tasks —
-into bounded lines. An empty slot delivers a fixed "nothing new" message with
-no model call. A non-empty slot admits one routine-conversation job whose
-text carries the snapshot flagged untrusted; the durable cursor prevents
-re-reporting and the job file dedups crash replay.
-
-An `event` routine is a hub-owned subscription to a connector's event feed:
-each occurrence probes one projected read tool (usually `mcp_tool`) and the
-deterministic extractor turns the result into discrete events — `{events:[…]}`
-or a bare array items keyed by `id`/`event_id`/`message_id` else a stable
-content hash; any other value is one event keyed by its hash. The durable
-`spool/events/<id>.json` state holds a bounded 512-entry seen-set (FIFO),
-last success/error, a `degraded` flag set by 401/403-shaped connector
-errors, and an `overflow` counter. `sink=notify` (default) fans out one
-deterministically-id'd outbox delivery per unseen event under the same
-quiet-window and daily-cap policy; `sink=agent` admits one job bundling the
-new events flagged untrusted, bounded to 8 KiB with the rest left unseen for
-the next occurrence. An event the sink cannot admit stays unseen, increments
-`overflow`, and is best-effort requeued to the connector by id only through
-`requeue_tool`. `watch_subscribe`/`watch_list`/`watch_pause`/`watch_delete`
-are the agent surface — create goes through the ordinary routine path with
-`job_kind=event`, the others operate only on event-kind schedules — and
-`/watches` is the owner-facing listing (id, source, sink, last success/error,
-degraded, overflow).
-
-An event schedule can opt into `delivery=stream` (event kind plus an
-`mcp_tool` probe only). Stream schedules produce no occurrences —
-`TickSchedules` skips them and the expression stays as a dormant cadence.
-Instead the gateway's stream supervisor keeps one `streamPoll` goroutine per
-live stream schedule, reconciled every two seconds: each round re-reads the
-schedule (pause, snooze, delete or a lost grant stops the loop on live
-durable state), issues one bounded wait-call through the same read-only
-`/v1/tool-call` path under a 30s budget, and settles the returned batch
-through the identical durable pipeline — authorization, extractor, seen-set
-dedup, sink fanout and requeue all reuse the poll-mode machinery. A healthy
-round loops straight into the next wait call, so a connector wait tool like
-`wait_for_settled_message` keeps an outstanding call and batches arrive in
-seconds, not a cron minute; a blocked round (probe error, lost
-authorization, malformed body) paces with 1s-to-30s exponential backoff.
-When the subscriber gives no wait bound the hub injects one inside the call
-budget (`max_wait_ms`/`timeout` on wait-style tool names); explicit bounds
-are honored. There is still no persistent connector workload or push
-ingress — the loop is repeated bounded requests, not an open stream — but
-the connector's own pending-event state makes the gap lossless.
-
-Hermes terminal can read credentials in its own user runtime: this is an isolated
-organization/user deployment boundary, not a public hostile-tenant service. A user's
-OAuth and Hermes state stay in that user's named volumes. Organization documents are
-read-only. Organization actions are explicit strings in host policy and are passed to
-hub-owned tools, not exposed as free `tenant`, `org` or `user` tool arguments.
-The legacy supervisor mirrors only `spaces/<user>/workspace` at `/scope`; it does
-not mount the whole space directory. Runtime ownership checks reject a whole-space
-`/scope` mount, because that directory also contains host secret files.
-The hub `env_update` tool is legacy-only and is disabled for connector credentials when
-Communication Hub control is configured. `service_enable` returns a one-time protected
-form; the authenticated runtime control endpoint writes only the user runtime's
-`self-env.json`, and the supervisor loads it on startup. `service_catalog` reports
-connector status, and `service_enable` writes only the user runtime's `self-services.json`;
-the supervisor merges selected upstream MCP definitions into the next Hermes config.
-The allowlist comes from connector references, and organization-owned keys plus
-runtime-control keys are rejected. These tools cannot edit host env files, settings or
-organization secrets.
-Chromium uses --no-sandbox within the container boundary. A native companion runs with
-its OS user's permissions and needs a private tunnel. Public authentication and request
-routing are outside this repository; an ingress must authenticate a principal and map
-it to exactly one user space before invoking `hubctl`.
-
-## Connections
-
-Built-ins are opt-in connection presets. The `mcp:` map in workspace.yaml adds
-ordinary HTTP or stdio servers (selected via `tools:` entries with
-`via: mcp-raw`) without embedding their applications. CareerGo or any other
-external tool is used only if configured. The agent works without any business service.
-Remote hosted MCP APIs may change independently of this code. Each capability has
-exactly one surface — a native toolset, a hub-rendered MCP entry, an owner
-mcp_servers entry, or the ToolHub projection — and hub-owned plus native toolset
-names are reserved against owner mcp_servers
-([SPEC-0040](../specs/active/SPEC-0040-capability-profile.md)).
-GitLab uses the runtime's `glab` CLI rather than MCP; `GITLAB_TOKEN` and
-`GITLAB_HOST` are supplied to the isolated runtime. Atlassian uses the pinned
-`mcp-atlassian` stdio server from `docker/mcp-atlassian.Dockerfile` (ADR-0010,
-ADR-0023), not a copy inside the hub image;
-`JIRA_URL`, `JIRA_USERNAME` and `JIRA_API_TOKEN` are passed only to that process.
-
-File writes use cross-process locks, hash preconditions and atomic rename. Search/read
-are bounded UTF-8 operations. Document extract, create, edit, and convert, image
-inspect and png/jpeg/webp convert, and opt-in image generation and edit run in that
-same `hubctl tools` process
-([ADR-0027](adr/ADR-0027-workspace-document-image-profile.md),
-[ADR-0028](adr/ADR-0028-configurable-image-capability.md),
-[ADR-0029](adr/ADR-0029-bounded-pdf-office-webp.md),
-[ADR-0030](adr/ADR-0030-cliproxy-image-routes.md)). Provider, model, and
-delivery come from the mounted `image_gen` section. The model selects the
-images endpoint or the Gemini chat image call. pdf, xlsx, and pptx are
-simple text packages in that process. They are not a separate
-service. HeadHunter applications use an existing applicant resume,
-explicit task authorization and actual HTTP receipts; unknown outcomes are not retried.
-
-## M2 ToolHub foundation
-
-The contract-only foundation is recorded in [SPEC-0017](../specs/active/SPEC-0017-toolhub-foundation.md)
-and implemented in `internal/toolhub`. It separates immutable versioned definitions,
-owner-scoped connections, opaque credential references, effective bindings and workload
-instances. Exact `principal_id`, `context_id`, `runtime_id` and `policy_version`
-checks reuse `internal/identity`; ToolHub does not create a second ownership registry.
-
-Credential-free per-user bindings use their deterministic binding ID for workload
-identity and a separate `per-binding/<principal>/<context>/<definition>/<binding>`
-state directory. Different runtimes or definition versions cannot reuse that
-identity/state; restart of the same binding retains its directory. Previously
-created anonymous per-user workload IDs and `per-user/<context>/<definition>`
-directories are not reused or automatically moved/deleted. The existing
-credential-bearing Telegram/controller path remains connection-scoped. The generic
-Docker fallback gives each binding its own workload ID, network, volumes and
-`credentials.env`; shared stateful workloads stay denied, and a shared
-credential-bearing workload exists only where a `Shared` definition carries the
-reviewed `sharable` flag under an operator shared-credential policy — members
-then resolve the policy owner's single connection and workload.
-Live Docker 95-plus-5 used 100 sequential unique networks, volumes and
-containers (95 distinct owner env-files + 5 of one shared file). One hundred
-users means one hundred **registered** bindings and a bounded live set
-(`max_active` + FIFO); it does not mean one hundred concurrent MCP+ToolHive
-stacks. Same SHA reuses one image id with distinct processes, volumes and
-credentials. The MCP container does not receive the forwarding token; a
-process inside it cannot read that token from env, logs or `/proc`. A
-same-UID sibling inside the ToolHive process namespace is a rejected
-one-container layout, not the production fallback.
-
-Definitions classify execution as shared, per-user or per-job and carry finite resource
-limits, explicit egress, logical mounts and immutable source pins. The registry can
-save/load a permissioned atomic JSON snapshot. Container definitions also require an
-exact ToolHive version and digest-pinned sidecars; actual resource and egress enforcement
-is admitted only by the private `HUB_TOOLHIVE_ADMISSION_ENDPOINT` controller contract
-and fails closed when absent.
-
-The M5.2 control plane is recorded in [SPEC-0023](../specs/active/SPEC-0023-toolhub-control-plane.md)
-and [ADR-0021](adr/ADR-0021-toolhub-control-plane.md). The same authenticated
-ToolHub MCP endpoint exposes `prepare_source`, `status`,
-`required_credentials`, `confirm`, `enable`, `disable`, `revoke` and
-`remove`. Identity is taken from the bearer mapping; model arguments cannot
-change owner, locator, backend or policy. Operator grants select
-catalog-default, assigned definition or self-install. Credentials enter a
-loopback form (or MCP URL elicitation pointing at it) and stay in
-ciphertext until inject-after-authorize. Promoting a user MCP to the
-catalog does not convert existing user bindings into shared workloads.
-
-M5.3 is tracked by [SPEC-0024](../specs/active/SPEC-0024-m53-hermes-onboarding.md).
-For self-install, a canonical public GitHub repository URL is resolved once to
-the default branch's exact commit SHA; review and build receive only that immutable
-source. Control calls use standard MCP progress notifications over the existing
-authenticated stateless streamable-HTTP endpoint.
-
-Credential Broker now lives at `services/credential-broker` as a separate Go
-module and process. Its reviewed-contract forms, approval pairing, provider
-references, grants, leases and runtime materialization stay behind its own HTTP
-and identity-audience boundary. The root image includes `credential-broker` and
-`hub-credential-broker`; the root `go.work` and CI expose the module without
-flattening it into Hermes. ToolHub remains the owner of source review, workload
-admission, projection and reconnect. When the Broker audience/key environment
-is configured, onboarding uses Broker requests and grants, Communication Hub
-approves the pairing code, and the runtime materializer handles the lease. With
-that environment unset, the existing encrypted store and loopback form remain
-the compatibility path. A credential-gate admission whose required names are
-not covered by a reviewed contract also keeps the loopback secret in that
-store; once a contract id is bound, confirm still requires a broker credential. Broker file deliveries use a dynamic read-only ToolHive
-mount hand-off: the generic controller accepts only regular files below its
-operator-configured `credential_mount_root`, starts a one-call workload, and
-exposes `/release` to remove it before the Broker runtime lease is released.
-A separate Broker container therefore needs an explicitly shared runtime
-directory; with no shared root, file delivery remains fail closed.
-
-The stage-2 opt-in surface is recorded in [SPEC-0018](../specs/active/SPEC-0018-toolhub-stage2.md).
-When `HUB_TOOLHUB_STORE` is explicitly configured, `service_catalog`,
-`service_enable` and `service_disable` use the manifest-backed catalog and exact
-owner-scoped bindings. Catalog mutations are written back to that store; list and
-call reload the snapshot so a tools process and `hub-toolhub` see the same current
-bindings. Ambiguous owner connections fail closed. Organization scope may disable a
-binding (narrow) but cannot enable one (expand). The legacy `stack`/`self-services.json`
-path remains the compatibility fallback when the store is unset; no runtime route is
-switched by this stage. Each projection has a persisted monotonic revision and an
-observable projection revision; the ToolHub endpoint polls the persisted store
-and refreshes existing MCP sessions when tools change.
-Credential-bearing onboarding can use the generic MCP readiness hook: ToolHive
-admission and its validated running receipt complete before a new binding is
-persisted and its projection is published; failed admission restores any previous
-credentials file.
-The hook is transport-only: current binding state is rechecked under the registry
-read fence before backend execution and Hermes session/home ownership stays outside
-this package. Bounded CLI calls go to the CLI runner and fail closed without an
-isolation check; MCP transports go to the private adapter.
-
-Container admission requires a controller receipt proving the exact running workload,
-digest-pinned images and requested execution policy. HTTP reachability alone is not
-enforcement evidence; missing or mismatched receipts fail closed.
-
-`internal/toolhub` also contains a stateless streamable-HTTP gateway, a private
-ToolHive/vMCP MCP client adapter and a bounded direct-exec runner. The runtime
-image enables the MCP SDK's legacy-session compatibility flag so Hermes clients
-may send session headers while authorization remains per request. The backend
-adapter disables standalone SSE because ToolHub calls are request/response only.
-For upstream servers that implement the current legacy MCP wire version (for
-example Serena 1.5.x), the backend hop pins `MCP-Protocol-Version: 2025-11-25`
-so discovery and calls remain compatible with the SDK's newer default handshake.
-Both list and call use the same current projection resolver. ToolHub, the
-credential broker, the workload controller and cliproxy are shared control-plane
-services: the space whose `agent.yaml` keeps `infra: true` (the default)
-renders and owns them once, while spaces with `infra: false` render only their
-`hermes-runtime`. Shared services and every spawned runtime join the external
-`hermes-hub-runtime` network, so rendered spaces default
-`HUB_TOOLHUB_ENDPOINT` to `http://toolhub:8090/mcp` — one stable name that
-resolves identically for all users on the shared network. An explicit
-`HUB_TOOLHUB_ENDPOINT` in `secrets.<env>.env` overrides and an empty value opts
-out. One ToolHub endpoint authenticates many identities: the owning space's
-`runtime.auth`/`toolhub.auth` token plus an optional `toolhub-tokens.json`
-file (`HUB_TOOLHUB_TOKENS_FILE`) that maps additional bearer tokens to full
-identity envelopes for secondary spaces. Render and the supervisor write each
-sibling space's `HUB_RUNTIME_AUTH` into that file in place (the same inode, so
-a running bind mount sees the update) and never copy the infra owner's own
-token. ToolHub reloads the file when a bearer misses the in-memory map, so a
-sibling enrolled after process start is accepted on the next handshake. A
-Hermes process that already parked the server still needs its runtime
-restarted before it tries again. Every token resolves to its own
-principal/context/runtime triple, so per-user bindings, workloads and
-credentials stay owner-scoped inside the single shared service.
-The shared communication gateway is one process too. When
-`spaces/<owner>/communication.users.yaml` exists, render mounts it and sets
-`HUB_COMMUNICATION_CONFIG`, and that file is the Telegram allowlist. Without
-it the gateway keeps only the infra owner's `TELEGRAM_ALLOWED_USERS` and
-answers every other chat with the not-configured reply.
-Spawned runtimes mount the same contract the render produces: per-user state
-binds plus the hub skills directory (`global_skills_dir`, defaulting to
-`config/skills`) read-only at `/opt/hub/skills`. Without it the
-`mcp-connector-onboarding` skill is invisible to the agent, and MCP installs
-regress to uncontrolled terminal/git operations outside ToolHub's audit.
-The effective Hermes config is materialized on the host
-(`generated/hermes-effective.<env>.yaml` — the source config plus self-service
-and ToolHub MCP entries) and mounted read-only over the agent-writable
-`/state/hermes/config.yaml` in both rendered and spawned runtimes. The agent
-cannot add `mcp_servers` entries from inside the runtime: registration of MCP
-servers goes through ToolHub onboarding only, and the in-container startup
-skips its own materialization when the file is read-only.
-
-Supervised deployments keep zero resident per-user containers. Secondary
-spaces (`infra: false`) render no `hermes-runtime` service at all — their
-compose outputs only feed spawned runtimes — and the infra owner drops it when
-`HUB_RUNTIME_SUPERVISOR_URL` is configured. Every control-plane call a gateway
-needs (`/v1/jobs`, `/v1/resume`, `/v1/control`, `/v1/self-env`, `/v1/restart`)
-is served by the supervisor and routed to the correct user's spawned runtime
-by the job's durable identity; the restart-after-delivery hook carries that
-identity so the spawned Hermes still gets bounced per turn. A restart for an
-absent or stopped runtime is a successful no-op — the next lease spawns a
-fresh container. ToolHub cannot write the spawned runtime's state dir, so a
-projection change is relayed as `POST /v1/restart-request` on the supervisor
-(`{principal_id, context_id, runtime_id}` — a lookup key, not a grant): the
-supervisor forwards it to the runtime's own `/v1/restart-request`, which
-writes the deferred marker, and applies `/v1/restart` immediately when the
-entry is idle. Communication-hub reads the per-principal connector inventory
-through ToolHub's `GET /v1/connectors` when the local registry file is absent
-(broker-approve mode): a sibling token pins its own envelope, or the
-supervisor bearer selects an enrolled principal via `X-Hub-Principal`.
-`HUB_TOOLHUB_AUTOSTART=true` with an existing metadata store injects the same entry
-for a runtime-local ToolHub. Autostart runs the shipped `hub-toolhub` symlink to `toolhub`
-against the existing store and never creates a second ownership registry. ToolHive v0.48.0 remains an
-external conditional backend at the pin recorded in ADR-0013 and issue #11.
-
-## M3 credentials and connectors
-
-[SPEC-0020](../specs/active/SPEC-0020-credentials-and-connectors.md) and
-[ADR-0016](adr/ADR-0016-encrypted-credentials-and-oauth.md) keep ToolHub as the
-ownership registry and store secret values only as ciphertext behind opaque
-locators. The encryption key is supplied by `HUB_CREDENTIAL_KEY` or
-`HUB_CREDENTIAL_KEY_FILE` and is never written to the ToolHub snapshot, the
-ciphertext file or a ciphertext backup. Projected-call authorization gates the
-decrypt/inject path; the shipped ToolHub endpoint decrypts inside that admit
-and passes environment to CLI `CallEnv` and MCP workload files, never to vMCP
-HTTP. Chat `KEY=value` is intercepted before Hermes and rotates matching
-ToolHub connections. `hubctl secret` set/list/delete reads values from stdin or
-`--from-file` and binds those mutations to the registry. Personal-terminal
-exposure is an explicit reversible connection flag. Failed rotates become
-`degraded`. One OAuth broker implements authorization-code+PKCE and device flow
-against official Google, Slack and Atlassian URLs, with remote MCP discovery via
-RFC 8414/9728. The audit ledger records who, runtime, connection, revision and
-job/run/call correlation without prompts or tokens. Generated MCP remains the
-default; ToolHub stays opt-in through `HUB_TOOLHUB_*`.
+- No public multi-tenant service — this is an isolated owner deployment
+  boundary; ingress auth + principal mapping are out of repo scope.
+- No direct agent access to Docker socket, host shell, provider dashboards
+  or credential material.
+- No automatic installation of unpinned packages inside agent images.
+- No dual scheduling: durable hub routines replace native cron; a
+  pre-migration cron pins its context on until migrated.
+- Not every guarantee is deployed yet — ADR-0031/32 acceptance is tracked
+  in .work; describe the deployed stack, not the target, when answering.

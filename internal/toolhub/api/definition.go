@@ -15,7 +15,7 @@ import (
 )
 
 func (o OwnerRef) Validate() error {
-	if (o.Type != PrincipalOwner && o.Type != ContextOwner) || !identity.ValidID(o.ID) {
+	if (o.Type != PrincipalOwner && o.Type != ContextOwner && o.Type != TeamOwner) || !identity.ValidID(o.ID) {
 		return fmt.Errorf("%w: invalid owner", ErrInvalid)
 	}
 	return nil
@@ -33,6 +33,7 @@ func (o OwnerRef) Matches(e identity.Envelope) bool {
 }
 
 type ToolDefinition struct {
+	OAuth        *OAuthRecipe      `json:"oauth,omitempty"`
 	Schema       int               `json:"schema"`
 	DefinitionID string            `json:"definition_id"`
 	Version      string            `json:"version"`
@@ -58,6 +59,49 @@ type ToolDefinition struct {
 	Workload         WorkloadPolicy  `json:"workload"`
 	Execution        ExecutionPolicy `json:"execution"`
 	Health           HealthProbe     `json:"health"`
+	// Toolsets groups the surface for staged projection: DefaultEnabled is
+	// the set an install projects, DefaultExcluded tools stay hidden until a
+	// binding explicitly enables a toolset containing them. Empty metadata
+	// means the whole surface projects (pre-toolset definitions).
+	Toolsets        map[string][]string `json:"toolsets,omitempty"`
+	DefaultEnabled  []string            `json:"default_enabled,omitempty"`
+	DefaultExcluded []string            `json:"default_excluded,omitempty"`
+}
+
+// ProjectedToolSpecs filters a definition's surface for one binding: the
+// default-enabled set plus the members of the binding's enabled toolsets.
+// default_excluded suppresses a tool only from the default projection — an
+// explicitly enabled toolset still surfaces it. Definitions without any
+// toolset metadata project the whole surface (pre-toolset records).
+func (d ToolDefinition) ProjectedToolSpecs(binding ToolBinding) []ToolSpec {
+	if len(d.Toolsets) == 0 && len(d.DefaultEnabled) == 0 && len(d.DefaultExcluded) == 0 {
+		return d.Tools
+	}
+	enabled := map[string]bool{}
+	for _, name := range d.DefaultEnabled {
+		enabled[name] = true
+	}
+	for _, set := range binding.EnabledToolsets {
+		for _, name := range d.Toolsets[set] {
+			enabled[name] = true
+		}
+	}
+	excluded := map[string]bool{}
+	for _, name := range d.DefaultExcluded {
+		excluded[name] = true
+	}
+	for _, set := range binding.EnabledToolsets {
+		for _, name := range d.Toolsets[set] {
+			delete(excluded, name)
+		}
+	}
+	out := make([]ToolSpec, 0, len(d.Tools))
+	for _, tool := range d.Tools {
+		if enabled[tool.Name] && !excluded[tool.Name] {
+			out = append(out, tool)
+		}
+	}
+	return out
 }
 
 type DefinitionSource struct {
@@ -136,6 +180,14 @@ func (d ToolDefinition) CredentialsSatisfied(present func(string) bool) bool {
 }
 
 func (d ToolDefinition) Validate() error {
+	if d.OAuth != nil {
+		if !d.Workload.Stateful {
+			return fmt.Errorf("%w: OAuth requires durable owner state", ErrInvalid)
+		}
+		if err := d.OAuth.Validate(); err != nil {
+			return err
+		}
+	}
 	if d.Schema != SchemaVersion || !identity.ValidID(d.DefinitionID) || !VersionPattern.MatchString(d.Version) {
 		return fmt.Errorf("%w: definition schema, id or version", ErrInvalid)
 	}
@@ -272,6 +324,18 @@ func (d ToolDefinition) Validate() error {
 			if input.Target != "" || input.Prefix != "" {
 				return fmt.Errorf("%w: json credential carries no header/mount target", ErrInvalid)
 			}
+		case "proxy":
+			// The workload env carries only the hub-managed stub; the egress
+			// proxy plan injects the real value, and only toward a host the
+			// reviewed egress allowlist already declares.
+			if !slices.ContainsFunc(d.Execution.Egress, func(host string) bool {
+				return strings.EqualFold(strings.TrimSpace(host), input.Target)
+			}) {
+				return fmt.Errorf("%w: proxy credential target %q must be a declared egress host", ErrInvalid, input.Target)
+			}
+			if len(input.Prefix) > 128 || strings.ContainsAny(input.Prefix, "\x00\r\n") {
+				return fmt.Errorf("%w: invalid proxy credential prefix", ErrInvalid)
+			}
 		case "oauth":
 			// A browser flow mints these at runtime; the value store and the
 			// credential form cannot satisfy a static oauth field.
@@ -330,6 +394,15 @@ func (d ToolDefinition) Validate() error {
 	if d.Workload.Class == Shared && (d.Workload.Stateful || len(d.Execution.Mounts) > 0) {
 		return fmt.Errorf("%w: shared workload cannot own state or mounts", ErrInvalid)
 	}
+	switch d.Workload.Shareable {
+	case "", "credential":
+	case "connection":
+		if d.Workload.Class != Shared {
+			return fmt.Errorf("%w: shareable connection needs one shared workload", ErrInvalid)
+		}
+	default:
+		return fmt.Errorf("%w: shareable mode", ErrInvalid)
+	}
 	if d.Workload.Class == PerJob && d.Workload.Stateful && !HasMountSource(d.Execution.Mounts, "job-state") {
 		return fmt.Errorf("%w: stateful per-job workload needs job-state", ErrInvalid)
 	}
@@ -359,6 +432,9 @@ func (d ToolDefinition) Validate() error {
 	}
 	if err := d.Execution.Validate(d.Workload.Class); err != nil {
 		return err
+	}
+	if d.Execution.EgressClass == EgressWeb && d.Transport != ContainerMCP {
+		return fmt.Errorf("%w: web egress needs a container network controller", ErrInvalid)
 	}
 	for _, host := range d.Execution.Egress {
 		if strings.Contains(host, "/") && d.Transport != ContainerMCP {
@@ -568,7 +644,10 @@ func (s DefinitionSource) Validate(transport Transport) error {
 }
 
 func (e ExecutionPolicy) Validate(class WorkloadClass) error {
-	if e.TimeoutSeconds < 1 || e.TimeoutSeconds > MaxExecutionTimeout || e.OutputBytes < 1 || e.OutputBytes > MaxOutputBytes || e.CPUMillis < 1 || e.CPUMillis > MaxCPUMillis || e.MemoryMiB < 16 || e.MemoryMiB > MaxMemoryMiB || e.MaxPIDs < 1 || e.MaxPIDs > MaxPIDs || len(e.Egress) == 0 || len(e.Egress) > 32 || len(e.Mounts) > 8 || len(e.TCPForwards) > 8 {
+	if e.EgressClass != "" && e.EgressClass != EgressWeb {
+		return fmt.Errorf("%w: unknown egress class", ErrInvalid)
+	}
+	if e.TimeoutSeconds < 1 || e.TimeoutSeconds > MaxExecutionTimeout || e.OutputBytes < 1 || e.OutputBytes > MaxOutputBytes || e.CPUMillis < 1 || e.CPUMillis > MaxCPUMillis || e.MemoryMiB < 16 || e.MemoryMiB > MaxMemoryMiB || e.MaxPIDs < 1 || e.MaxPIDs > MaxPIDs || e.ShmSizeMiB < 0 || e.ShmSizeMiB > MaxShmSizeMiB || e.ShmSizeMiB > e.MemoryMiB || (len(e.Egress) == 0 && e.EgressClass != EgressWeb) || len(e.Egress) > 32 || len(e.Mounts) > 8 || len(e.TCPForwards) > 8 {
 		return fmt.Errorf("%w: execution limits are missing or unbounded", ErrInvalid)
 	}
 	listenPorts := map[int]bool{}

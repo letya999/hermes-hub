@@ -37,7 +37,7 @@ just ctl --key-file /tmp/credential-broker-demo/keys/toolhub.private \
 ## 2. Communication Hub подтверждает браузер
 
 Шаг пропускается, когда Broker запущен с `BROKER_DIRECT_FORM=1` или `direct_form` в config
-(см. [configuration](docs/operations/configuration.md)): форма открывается сразу по ссылке.
+(см. [configuration](../../docs/services/credential-broker/operations/configuration.md)): форма открывается сразу по ссылке.
 Режим для personal loopback-развёртываний, код ниже тогда не нужен.
 
 В отдельном JSON-файле записать только `{"code":"код-со-страницы"}`. Это не токен внешнего провайдера.
@@ -100,5 +100,5 @@ Broker запрещает существующие leases. ToolHub отдель�
 Для `google-oauth-proxy` дополнительно нужен admin-config OAuth; простое копирование этого контракта
 без provider приведёт к намеренному отказу запуска.
 
-[Эксплуатация](docs/operations/configuration.md) описывает production TLS, права и adapters.
-[Интеграция](docs/architecture/hermes-integration.md) отделяет передачу refs от plaintext runtime delivery.
+[Эксплуатация](../../docs/services/credential-broker/operations/configuration.md) описывает production TLS, права и adapters.
+[Интеграция](../../docs/services/credential-broker/architecture/hermes-integration.md) отделяет передачу refs от plaintext runtime delivery.

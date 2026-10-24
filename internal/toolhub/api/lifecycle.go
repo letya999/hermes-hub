@@ -59,6 +59,9 @@ func OpenWorkloadWorkspace(root string, effective EffectiveBinding, jobID string
 	if err := createOwnedDirectory(root, path); err != nil {
 		return WorkloadWorkspace{}, err
 	}
+	if err := WriteWorkspaceOwnership(path, PlanOwnership(effective)); err != nil {
+		return WorkloadWorkspace{}, err
+	}
 	return WorkloadWorkspace{Path: path, Cleanup: func() error { return nil }}, nil
 }
 

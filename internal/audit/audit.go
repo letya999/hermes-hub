@@ -31,6 +31,9 @@ type Event struct {
 	ContextID                 string    `json:"context_id,omitempty"`
 	RuntimeID                 string    `json:"runtime_id,omitempty"`
 	ConnectionID              string    `json:"connection_id,omitempty"`
+	SenderID                  string    `json:"sender_id,omitempty"`
+	TeamID                    string    `json:"team_id,omitempty"`
+	BindingID                 string    `json:"binding_id,omitempty"`
 	PolicyRevision            string    `json:"policy_revision,omitempty"`
 	CredentialRevision        uint64    `json:"credential_revision,omitempty"`
 	ProjectionRevision        uint64    `json:"projection_revision,omitempty"`
@@ -150,7 +153,7 @@ func validate(event Event) error {
 	if len(event.Receipt) > 256 {
 		return fmt.Errorf("%w: receipt is too large", ErrInvalid)
 	}
-	for _, value := range []string{event.CapabilityID, event.CapabilityProfile, event.ImplementationDigest, event.Environment} {
+	for _, value := range []string{event.CapabilityID, event.CapabilityProfile, event.ImplementationDigest, event.Environment, event.SenderID, event.TeamID, event.BindingID} {
 		if len(value) > 128 || strings.ContainsAny(value, "\x00\r\n") {
 			return fmt.Errorf("%w: capability metadata", ErrInvalid)
 		}

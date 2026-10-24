@@ -52,7 +52,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, a identity.Actor,
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery
 	}
-	req, e := http.NewRequestWithContext(use.Context, r.Method, target, bytes.NewReader(body))
+	req, e := http.NewRequestWithContext(use.Context, r.Method, target, bytes.NewReader(body)) // #nosec G704 -- contract-pinned HTTPS base; safenet pins the host, resolves public IPs and denies redirects.
 	if e != nil {
 		fail(w, broker.ErrInvalid)
 		return
@@ -128,7 +128,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, a identity.Actor,
 		fail(w, broker.ErrDenied)
 		return
 	}
-	res, e := client.Do(req)
+	res, e := client.Do(req) // #nosec G704 -- safenet.New enforces the contract host, IP policy, TLS and no redirects on this client.
 	if e != nil {
 		fail(w, broker.ErrUnavailable)
 		return

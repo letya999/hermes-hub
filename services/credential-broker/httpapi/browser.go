@@ -85,7 +85,7 @@ func (s *Server) browser(w http.ResponseWriter, r *http.Request) {
 			fail(w, e)
 			return
 		}
-		http.SetCookie(w, &http.Cookie{Name: s.cookieName(), Value: raw, Path: "/", HttpOnly: true, Secure: !s.cfg.DevHTTP, SameSite: http.SameSiteLaxMode, MaxAge: 900})
+		http.SetCookie(w, &http.Cookie{Name: s.cookieName(), Value: raw, Path: "/", HttpOnly: true, Secure: !s.cfg.DevHTTP, SameSite: http.SameSiteLaxMode, MaxAge: 900}) // #nosec G124 -- DevHTTP is restricted to loopback; production requires HTTPS and Secure cookies.
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_ = formPage.Execute(w, struct {
 			View v1.SessionView
@@ -224,7 +224,7 @@ func readForm(r *http.Request) (provider.Bundle, string, map[string]bool, error)
 	return values, csrf, demoted, nil
 }
 func (s *Server) success(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{Name: s.cookieName(), Value: "", Path: "/", HttpOnly: true, Secure: !s.cfg.DevHTTP, SameSite: http.SameSiteLaxMode, MaxAge: -1, Expires: time.Unix(1, 0)})
+	http.SetCookie(w, &http.Cookie{Name: s.cookieName(), Value: "", Path: "/", HttpOnly: true, Secure: !s.cfg.DevHTTP, SameSite: http.SameSiteLaxMode, MaxAge: -1, Expires: time.Unix(1, 0)}) // #nosec G124 -- expires the same loopback-dev or HTTPS-production cookie.
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = io.WriteString(w, `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Готово</title><body><h1>Учётные данные приняты</h1><p>Вернитесь в чат. ToolHub может продолжить подключение автоматически. Сам MCP ещё должен пройти проверку готовности.</p></body></html>`)
 }

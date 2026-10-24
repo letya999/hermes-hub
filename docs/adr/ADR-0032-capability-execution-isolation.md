@@ -87,4 +87,4 @@ rules. New service-specific storage does not create another user namespace:
 
 - [Pinned Hermes hook loading](https://github.com/NousResearch/hermes-agent/blob/869228cab4a8276d3b4c78da9d9939670c47bd0f/gateway/hooks.py): writable hook placement can become imported code.
 - [Go traversal-resistant APIs](https://go.dev/blog/osroot): `os.Root` protects path resolution, with explicit mount-related limitations.
-- [Audit and current limitations](../capability-boundary-audit.md).
+- [Audit and current limitations](../../.work/in-progress/CHG-0065-capability-enforcement/audit.md).

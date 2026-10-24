@@ -4,6 +4,8 @@ last_verified: 2026-09-10
 ---
 # ADR-0005: Separate Telegram paths and user self-env
 
+Accepted 2026-09-10.
+
 ## Decision
 
 Keep the Telegram Bot API gateway (`telegram`) separate from the personal-account

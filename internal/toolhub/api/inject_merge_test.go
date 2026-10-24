@@ -189,3 +189,80 @@ func TestDecryptAuthorizedAndEnvFile(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// CHG-0127 S0.6: file/json-delivery values are staged as <name>.secret
+// siblings and never land on an env line; env-bound values stay in
+// credentials.env.
+func TestWriteAuthorizedFilesRoutesFileDelivery(t *testing.T) {
+	eff := EffectiveBinding{
+		Definition: ToolDefinition{DefinitionID: "def-1", Workload: WorkloadPolicy{Class: PerUser}, Credentials: []CredentialInput{
+			{Name: "TLS_PEM", Required: true, Delivery: "file"},
+			{Name: "API_TOKEN", Required: true, Delivery: "env"},
+		}},
+		Binding:    ToolBinding{PrincipalID: "p1", ContextID: "ctx-1", ToolBindingID: "bind-1"},
+		Credential: &CredentialReference{Locator: "loc-1", Keys: []string{"API_TOKEN", "TLS_PEM"}},
+		Connection: &Connection{ConnectionID: "conn-1", Owner: OwnerRef{ID: "owner-1"}},
+	}
+	root := t.TempDir()
+	env := map[string]string{"API_TOKEN": "v1", "TLS_PEM": "-----BEGIN-----\nabc\n-----END-----\n"}
+	cleanup, err := WriteAuthorizedFiles(context.Background(), root, eff, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	var envPath, secretPath string
+	filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+		if info != nil && info.Name() == "credentials.env" {
+			envPath = p
+		}
+		if info != nil && info.Name() == "TLS_PEM.secret" {
+			secretPath = p
+		}
+		return nil
+	})
+	if secretPath == "" {
+		t.Fatal("file-delivery value not staged as .secret")
+	}
+	body, _ := os.ReadFile(envPath)
+	if strings.Contains(string(body), "BEGIN") || !strings.Contains(string(body), "API_TOKEN=v1") {
+		t.Fatalf("env file leaked file content: %q", body)
+	}
+	staged, _ := os.ReadFile(secretPath)
+	if !strings.Contains(string(staged), "BEGIN") {
+		t.Fatalf("secret file content lost: %q", staged)
+	}
+}
+
+func TestWriteAuthorizedFilesWipesFileDeliveries(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(map[bool]string{false: "success", true: "failure"}[fail], func(t *testing.T) {
+			root := t.TempDir()
+			eff := EffectiveBinding{Binding: ToolBinding{PrincipalID: "alice", ContextID: "alice", ToolBindingID: "bind-1"}, Definition: ToolDefinition{DefinitionID: "file-mcp", Workload: WorkloadPolicy{Class: PerUser}, Credentials: []CredentialInput{{Name: "CLIENT_FILE", Required: true, Delivery: "file"}, {Name: "API_TOKEN", Required: true, Delivery: "env"}}}}
+			env := map[string]string{"CLIENT_FILE": "synthetic-file-secret", "API_TOKEN": "synthetic-token"}
+			if fail {
+				env["API_TOKEN"] = "invalid\nline"
+			}
+			cleanup, err := WriteAuthorizedFiles(t.Context(), root, eff, env)
+			if fail && err == nil {
+				t.Error("invalid env accepted")
+			}
+			if !fail && err != nil {
+				t.Fatal(err)
+			}
+			if cleanup != nil {
+				if err := cleanup(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			workspace, err := OpenWorkloadWorkspace(root, eff, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{"CLIENT_FILE.secret", "credentials.env"} {
+				if _, err := os.Lstat(filepath.Join(workspace.Path, name)); !os.IsNotExist(err) {
+					t.Errorf("credential survived cleanup/failure: %s", name)
+				}
+			}
+		})
+	}
+}

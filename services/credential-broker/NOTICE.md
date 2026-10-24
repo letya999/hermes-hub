@@ -13,5 +13,5 @@ last_verified: "2026-09-18"
 just как единая точка входа, требования R и evidence. Документация, check.py и Go-код написаны для
 этого сервиса. Шаблонные незаполненные документы не копировались.
 
-См. [реестр источников и отличий](docs/documentation/sources.md). Immutable commit upstream не был
+См. [реестр источников и отличий](../../docs/services/credential-broker/documentation/sources.md). Immutable commit upstream не был
 зафиксирован доступным инструментом; поэтому ветка и дата не выдаются за commit-level provenance.

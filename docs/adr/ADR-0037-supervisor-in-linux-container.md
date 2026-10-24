@@ -1,10 +1,14 @@
 ---
 description: Proposal — run the job supervisor inside a Linux container on the control network instead of a host process.
-last_verified: 2026-10-14
+last_verified: 2026-10-20
 ---
 # ADR-0037: Supervisor in a Linux container (D12a)
 
 Status: proposed, 2026-10-14. No implementation before owner acceptance.
+Answered by [ADR-0040](ADR-0040-single-stack-supervisor.md): the owner accepted
+the simpler direction — supervisor in the existing control image without the
+HTTP socket adapter or proxy allowlist this record proposes. Kept as reference
+for the rejected design.
 
 Requirements: [SPEC-0053](../../specs/active/SPEC-0053-execution-chain-reliability.md) R4.
 Origin: [ADR-0036](ADR-0036-execution-chain-reliability.md) D12a,

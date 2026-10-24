@@ -1,0 +1,28 @@
+---
+description: "Shared разрешён по способу доставки."
+last_verified: "2026-09-18"
+---
+
+# ADR-0062 (imported from services/credential-broker ADR-0003): Shared разрешён по способу доставки
+
+Status: accepted (imported from services/credential-broker).
+
+## Контекст
+
+Process-global ENV/file не может меняться на пользователя без риска смешения.
+
+## Варианты
+
+Всегда per-user; всегда shared; явное разделение process/per-request.
+
+## Решение
+
+Shared process deliveries только для одного credential/contract; разные credentials только proxy-only и trusted per-request identity.
+
+## Последствия
+
+Mutable shared state запрещён. Один user может дать несколько grants без общей state directory.
+
+## Когда пересматривать
+
+При разработке доказуемого session-aware adapter конкретного MCP.

@@ -45,12 +45,12 @@ just serve /tmp/credential-broker-demo/config.json
 | Документ | Для чего |
 | --- | --- |
 | [QUICKSTART](QUICKSTART.md) | Полный сценарий с браузером, подтверждением и CLI |
-| [Интеграция Hermes Hub](docs/architecture/hermes-integration.md) | Контракты, SDK, runtime adapter и перенос в монорепозиторий |
-| [API](docs/architecture/api-contract.md) | Identity assertion, коды ошибок и OpenAPI |
-| [Границы MVP](docs/product/scope.md) | Что работает и что намеренно не реализовано |
+| [Интеграция Hermes Hub](../../docs/services/credential-broker/architecture/hermes-integration.md) | Контракты, SDK, runtime adapter и перенос в монорепозиторий |
+| [API](../../docs/services/credential-broker/architecture/api-contract.md) | Identity assertion, коды ошибок и OpenAPI |
+| [Границы MVP](../../docs/services/credential-broker/product/scope.md) | Что работает и что намеренно не реализовано |
 | [Безопасность](SECURITY.md) | Условия доверия и ограничения гарантий |
-| [Проверки](.work/done/CHG-001-credential-broker/artifacts/verification.md) | Фактически выполненные команды, покрытие и незапущенные проверки |
-| [Документация](docs/index.md) | Архитектура, эксплуатация, решения и правила |
+| [Проверки](../../.work/done/CHG-0142-credential-broker-mvp/artifacts/verification.md) | Фактически выполненные команды, покрытие и незапущенные проверки |
+| [Документация](../../docs/services/credential-broker/index.md) | Архитектура, эксплуатация, решения и правила |
 
 Порог покрытия — **85% statement coverage суммарно и в каждом production-пакете**, без исключения
 неудобных веток. Это проверяемый gate, не утверждение о безопасности по одному проценту.

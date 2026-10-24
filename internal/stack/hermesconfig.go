@@ -75,7 +75,7 @@ func MaterializeHermesConfig(sourcePath, destPath string, opts MaterializeOption
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.WriteFile(name, body, 0600); err != nil {
+	if err := os.WriteFile(name, body, 0600); err != nil { // #nosec G703 -- operator config path
 		return err
 	}
 	if err := ApplyHermesConfig(name, opts); err != nil {
@@ -129,7 +129,7 @@ func hubCommunicationEnv() M {
 }
 
 func applyHubCommunicationConfig(configPath string) error {
-	body, err := os.ReadFile(configPath) // #nosec G304 -- operator-owned materialized configuration.
+	body, err := os.ReadFile(configPath) // #nosec G304 G703 -- operator-owned materialized configuration.
 	if err != nil {
 		return err
 	}
@@ -157,7 +157,7 @@ func applyHubCommunicationConfig(configPath string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(configPath, updated, 0660)
+	return os.WriteFile(configPath, updated, 0660) // #nosec G703 -- operator config path
 }
 
 // The selected model and timezone may vary, but capability-bearing fields

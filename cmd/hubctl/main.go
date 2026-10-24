@@ -110,6 +110,9 @@ func run(ctx context.Context, args []string) error {
 	if op == "secret" {
 		return runSecret(ctx, args[1:])
 	}
+	if op == "credentials" {
+		return runCredentials(ctx, args[1:])
+	}
 	if op == "grant" {
 		return runGrant(ctx, args[1:])
 	}
@@ -366,11 +369,11 @@ func run(ctx context.Context, args []string) error {
 					return fmt.Errorf("model catalog redirects are not followed")
 				}}
 				composePath := filepath.Join(*dir, "generated", "compose."+*environment+".yaml")
-				if _, statErr := os.Stat(composePath); os.IsNotExist(statErr) {
+				if _, statErr := os.Stat(composePath); os.IsNotExist(statErr) { // #nosec G703 -- operator-supplied project dir
 					composePath = filepath.Join(*dir, "compose."+*environment+".yaml")
 				}
 				portLookup := doctorPortLookup(*dir, func(ctx context.Context, env, args []string) ([]byte, error) {
-					cmd := exec.CommandContext(ctx, "docker", args...)
+					cmd := exec.CommandContext(ctx, "docker", args...) // #nosec G702 -- fixed docker executable, argv without shell
 					cmd.Env = env
 					return cmd.CombinedOutput()
 				})
@@ -394,13 +397,13 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 	composePath := filepath.Join(abs, "generated", "compose."+*environment+".yaml")
-	if _, statErr := os.Stat(composePath); os.IsNotExist(statErr) {
+	if _, statErr := os.Stat(composePath); os.IsNotExist(statErr) { // #nosec G703 -- operator-supplied project dir
 		composePath = filepath.Join(abs, "compose."+*environment+".yaml")
 	}
 	prefix := []string{"compose", "-f", composePath}
 	composeEnv := supervisorComposeEnv(abs)
 	dockerCmd := func(args ...string) *exec.Cmd {
-		cmd := exec.CommandContext(ctx, "docker", args...)
+		cmd := exec.CommandContext(ctx, "docker", args...) // #nosec G702 -- fixed docker executable, argv without shell
 		cmd.Env = composeEnv
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
@@ -471,7 +474,7 @@ func run(ctx context.Context, args []string) error {
 			}
 			if *environment == "dev" && (len(f.Args()) == 0 || slices.Contains(f.Args(), "cliproxy")) {
 				for _, pin := range []string{"dev-runtime-image", "dev-script-image"} {
-					if err := os.Remove(filepath.Join(abs, "generated", pin)); err != nil && !os.IsNotExist(err) {
+					if err := os.Remove(filepath.Join(abs, "generated", pin)); err != nil && !os.IsNotExist(err) { // #nosec G703 -- operator-supplied project dir
 						return err
 					}
 				}
@@ -479,6 +482,17 @@ func run(ctx context.Context, args []string) error {
 		}
 		if op == "build" {
 			return nil
+		}
+		s, readErr := stack.ReadEnvironment(*dir, *environment)
+		if readErr != nil {
+			return readErr
+		}
+		if s.RendersInfra() && (len(f.Args()) == 0 || slices.Contains(f.Args(), "credential-broker")) {
+			for _, vol := range []string{"hermes-credential-broker-recovery-", "hermes-credential-broker-recovery-key-"} {
+				if err := dockerCmd("volume", "create", vol+*environment).Run(); err != nil {
+					return fmt.Errorf("provision broker recovery volume: %w", err)
+				}
+			}
 		}
 		upArgs := []string{"up", "-d", "--wait", "--wait-timeout", "180", "--force-recreate", "--remove-orphans"}
 		if *noBuild {
@@ -564,7 +578,7 @@ func supervisorComposeEnv(dir string) []string {
 }
 
 func dockerOutput(ctx context.Context, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd := exec.CommandContext(ctx, "docker", args...) // #nosec G702 -- fixed docker executable, argv without shell
 	cmd.Env = dockerCLIEnv()
 	return cmd.CombinedOutput()
 }

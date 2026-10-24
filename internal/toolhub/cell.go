@@ -231,7 +231,7 @@ func realEgress(egress []string) []string {
 func (c *genericController) cellUID(req api.CliExecRequest, rw bool) string {
 	if c.config.CLI.PerPrincipalUID && rw {
 		h := fnv.New32a()
-		h.Write([]byte(req.Principal))
+		_, _ = h.Write([]byte(req.Principal))
 		uid := 20000 + int(h.Sum32()%30000)
 		return strconv.Itoa(uid) + ":" + strconv.Itoa(uid)
 	}

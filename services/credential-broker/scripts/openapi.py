@@ -32,7 +32,7 @@ def build():
                 schemas[name]={'type':'object','properties':props,'additionalProperties':False}
                 if required:schemas[name]['required']=required
     for name in ['Claims']:
-        schemas[name]['description']='Purpose-separated Ed25519 assertion, NOT JWT; exact signature contract in docs/architecture/api-contract.md.'
+        schemas[name]['description']='Purpose-separated Ed25519 assertion, NOT JWT; exact signature contract in docs/services/credential-broker/architecture/api-contract.md.'
     schemas['Materialized']['description']='SENSITIVE: ENV contains plaintext; trusted runtime audience only. Never send to model or ToolHub job state.'
     schemas['Status']={'type':'object','properties':{'status':{'type':'string'}},'required':['status']}
     schemas['Renew']={'type':'object','properties':{'ttl_seconds':{'type':'integer','minimum':1,'maximum':300}},'additionalProperties':False}
