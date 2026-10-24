@@ -138,7 +138,7 @@ func TestTaskDeleteAndArchivedList(t *testing.T) {
 }
 
 func TestForumTopicResolvesAndReplies(t *testing.T) {
-	c := testConfig(t)
+	c := groupConfig(t)
 	g, err := New(c)
 	if err != nil {
 		t.Fatal(err)
@@ -163,7 +163,7 @@ func TestForumTopicResolvesAndReplies(t *testing.T) {
 	}
 
 	// A forum-topic post adopts the topic as a task; the reply lands back in it.
-	update := Update{UpdateID: 1, Message: &Message{MessageID: 1, From: &TGUser{ID: 11}, Chat: TGChat{ID: -100123, Type: "supergroup"}, Text: "привет", MessageThreadID: 55, IsTopicMessage: true}}
+	update := Update{UpdateID: 1, Message: &Message{MessageID: 1, From: &TGUser{ID: 11}, Chat: TGChat{ID: -100123, Type: "supergroup"}, Text: "@helper привет", MessageThreadID: 55, IsTopicMessage: true}}
 	if err := g.handleUpdate(ctx, update); err != nil {
 		t.Fatal(err)
 	}
@@ -180,6 +180,9 @@ func TestForumTopicResolvesAndReplies(t *testing.T) {
 }
 
 func forumUpdate(updateID, messageID int, text string, sender, chatID, threadID int64) Update {
+	if text != "" && !strings.HasPrefix(text, "/") {
+		text = "@helper " + text
+	}
 	return Update{UpdateID: updateID, Message: &Message{MessageID: messageID, From: &TGUser{ID: sender}, Chat: TGChat{ID: chatID, Type: "supergroup"}, Text: text, MessageThreadID: threadID, IsTopicMessage: threadID != 0}}
 }
 
@@ -196,7 +199,7 @@ func forumOpCalled(ops []forumOp, method string, chat, topic int64, name string)
 // session its own bot-created topic; the confirmation lands inside it and
 // posts in that topic route to the session.
 func TestNewInForumGroupCreatesTopic(t *testing.T) {
-	c := testConfig(t)
+	c := groupConfig(t)
 	g, err := New(c)
 	if err != nil {
 		t.Fatal(err)
@@ -237,7 +240,7 @@ func TestNewInForumGroupCreatesTopic(t *testing.T) {
 // Issue #220: an auto-named session's topic gets the generated name, and the
 // adopted Hermes title later renames the topic.
 func TestNewForumTopicFollowsAutoTitle(t *testing.T) {
-	c := testConfig(t)
+	c := groupConfig(t)
 	g, err := New(c)
 	if err != nil {
 		t.Fatal(err)
@@ -269,7 +272,7 @@ func TestNewForumTopicFollowsAutoTitle(t *testing.T) {
 // Issue #220: without manage_topics the create fails and /new keeps the
 // historical behavior — the task binds to the topic it was typed in.
 func TestNewForumFallbackBindsInboundTopic(t *testing.T) {
-	c := testConfig(t)
+	c := groupConfig(t)
 	g, err := New(c)
 	if err != nil {
 		t.Fatal(err)
@@ -295,7 +298,7 @@ func TestNewForumFallbackBindsInboundTopic(t *testing.T) {
 // Issue #220: deleting a session deletes its forum topic; a confirmation
 // typed inside the deleted topic is delivered to the group root instead.
 func TestDeleteInForumGroupDeletesTopic(t *testing.T) {
-	c := testConfig(t)
+	c := groupConfig(t)
 	g, err := New(c)
 	if err != nil {
 		t.Fatal(err)
@@ -519,7 +522,7 @@ func TestSetMyCommandsRegistersEveryScope(t *testing.T) {
 // Issue #220: a topic a user creates in Telegram becomes a bound session
 // named exactly like it — no /new needed and no "topic-<id>" label.
 func TestUserCreatedTopicBindsNamedSession(t *testing.T) {
-	c := testConfig(t)
+	c := groupConfig(t)
 	g, err := New(c)
 	if err != nil {
 		t.Fatal(err)
@@ -554,7 +557,7 @@ func TestUserCreatedTopicBindsNamedSession(t *testing.T) {
 // Issue #220: renaming a forum topic renames the bound session, so the
 // session list always shows the same name the topic carries.
 func TestTopicRenameRenamesBoundSession(t *testing.T) {
-	c := testConfig(t)
+	c := groupConfig(t)
 	g, err := New(c)
 	if err != nil {
 		t.Fatal(err)
@@ -587,7 +590,7 @@ func TestTopicRenameRenamesBoundSession(t *testing.T) {
 // service message, the real topic name still replaces the "topic-<id>"
 // placeholder — while a deliberately named bound session keeps its name.
 func TestLateTopicCreatedFixesPlaceholder(t *testing.T) {
-	c := testConfig(t)
+	c := groupConfig(t)
 	g, err := New(c)
 	if err != nil {
 		t.Fatal(err)
@@ -665,7 +668,7 @@ func TestStopCancelsCurrentTaskJob(t *testing.T) {
 // Issue #217: /archive retires the resolved session; in a forum group its
 // bot-managed topic is closed so the archive state mirrors in the UI.
 func TestArchiveCommandClosesForumTopic(t *testing.T) {
-	c := testConfig(t)
+	c := groupConfig(t)
 	g, err := New(c)
 	if err != nil {
 		t.Fatal(err)
@@ -752,7 +755,7 @@ func TestArchivedListsArchivedSessions(t *testing.T) {
 // /use on an archived session restores it; in a forum group the session's
 // topic is reopened so its UI mirror matches the live state again.
 func TestUseRestoresArchivedSession(t *testing.T) {
-	c := testConfig(t)
+	c := groupConfig(t)
 	g, err := New(c)
 	if err != nil {
 		t.Fatal(err)
@@ -840,7 +843,7 @@ func TestArchiveCommandBySelector(t *testing.T) {
 // adopted its topic meanwhile, the restored one comes back unbound instead of
 // stealing the binding — and no foreign topic is reopened.
 func TestUseArchivedByNameAndTopicCollision(t *testing.T) {
-	c := testConfig(t)
+	c := groupConfig(t)
 	g, err := New(c)
 	if err != nil {
 		t.Fatal(err)

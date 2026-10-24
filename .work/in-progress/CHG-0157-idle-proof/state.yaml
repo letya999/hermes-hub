@@ -1,0 +1,23 @@
+schema: 1
+change: CHG-0157
+title: M16 idle-proof
+status: in_progress
+branch: feat/m16-runtime-discipline
+updated: 2026-10-21
+phase: local_verified_live_acceptance_pending
+adr: ADR-0074
+spec: SPEC-0071
+github_issue: 214
+implementation_status: locally_verified
+local_contract_progress_percent: 100
+validation:
+  just_check: passed
+  own_go_statement_coverage_percent: 86.15
+  race_tests: passed
+  docs_check: passed
+  configuration_contract: passed
+  docker_check: prohibited_by_owner
+  live_acceptance: not_run
+limitations:
+  - Source baseline includes inherited uncommitted OAuth work; never commit that work.
+  - No Docker builds, deployment or stack mutations; no account login, external sending or publication.

@@ -16,6 +16,14 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0158](in-progress/CHG-0158-knowledge-lifecycle/plan.md) | M16 #249: knowledge-lifecycle; live acceptance pending |
+| [CHG-0157](in-progress/CHG-0157-idle-proof/plan.md) | M16 #214: idle-proof; live acceptance pending |
+| [CHG-0156](in-progress/CHG-0156-goal-bootstrap/plan.md) | M16 #213: goal-bootstrap; live acceptance pending |
+| [CHG-0155](in-progress/CHG-0155-group-scopes/plan.md) | M16 #207: group-scopes; live acceptance pending |
+| [CHG-0154](in-progress/CHG-0154-context-discipline/plan.md) | M16 #196: context-discipline; live acceptance pending |
+| [CHG-0153](in-progress/CHG-0153-memory-boundary/plan.md) | M16 #184: memory-boundary; live acceptance pending |
+| [CHG-0152](in-progress/CHG-0152-todo-contract/plan.md) | M16 #183: todo-contract; live acceptance pending |
+| [CHG-0151](in-progress/CHG-0151-archive-bounds/plan.md) | M16 #151: archive-bounds; live acceptance pending |
 | [CHG-0147](in-progress/CHG-0147-m14-acceptance/plan.md) | Milestone 14 acceptance and connector lifecycle repair |
 | [CHG-0144](in-progress/CHG-0144-recipe-oauth/plan.md) | Recipe-driven OAuth for prepared and runtime MCP installation |
 | [CHG-0143](in-progress/CHG-0143-oauth-viewer-link-flows/plan.md) | OAuth resend rotation, broker grant-epoch fix, viewer-link relay — retroactive record for the uncommitted branch diff |

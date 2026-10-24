@@ -426,3 +426,64 @@ provider identity evidence; do not invent a universal identity endpoint.
   stages; `just docker-check-prebuilt` pulls them.
 - Never `hermes update` in prod — bump the reviewed pin and rebuild.
 - `HUB_TOOLHUB_AUTOSTART=true` starts the shipped `hub-toolhub` binary.
+
+## M16 runtime preparation and group scopes
+
+Optional managed-sandbox preparation lives in `workspace.yaml`:
+
+```yaml
+workspace:
+  goal: Prepare the workspace tools needed for this project.
+  bootstrap_revision: 1
+```
+
+Before an ordinary job, the runtime runs that goal once with its existing
+sandbox and egress grants. No host installer is invoked. `runtime/bootstrap.json`
+records `running`, `ready` or `failed`, the revision key, changed/added/deleted
+workspace paths and `changes_available`. `runtime/bootstrap-history/<key>.json`
+retains each goal/revision receipt across an explicit retry, including session/run
+IDs and the first 4096 runes of redacted output or failure. Detailed upstream
+history stays in that owner's Hermes session. Use increasing revisions for
+new attempts; never reuse a prior revision for a different preparation history.
+A workspace diff is bounded to 4096
+entries and 64 MiB of file content. The shared run budget bounds preparation;
+waiting callers can cancel independently. Failure blocks ordinary jobs and
+retains a partial diff when available. Inspect and repair deliberately, then
+increment `bootstrap_revision` to request a new attempt. Removing `goal` disables
+preparation; no data is migrated or deleted. The default manifest revision is 0.
+
+Create a dedicated group home with
+`hubctl group-init --dir spaces/team --user team --env dev`.
+It refuses existing scopes and never converts a populated personal profile.
+In the host communication configuration, add a dedicated enabled `users` entry
+for `team` with its own state/workspace and no personal Telegram/Slack identity,
+then opt in the group:
+
+```yaml
+groups:
+  - chat_id: -100123
+    space: team
+    members: [11, 22]
+    mention: '@helper'
+```
+
+Only configured members contribute to the bounded passive transcript (last
+16 excerpts, at most 512 runes each). A literal mention starts an ordinary
+group job; slash commands retain their explicit command behavior. Passive
+messages do not wake the model or write personal memory. Recent source-event
+receipts are bounded to 256; admitted jobs retain durable idempotency mappings.
+The Telegram bot must actually receive the messages needed for this transcript;
+the Hub does not change account/privacy settings automatically. Edits do not
+restart work, and groups reject credential input.
+
+Group runtime authority is `group:<space>` and requires a matching group
+`scope.yaml`. Replies stay in the original group/topic; approval taps require
+the original actor and audience. Membership/policy are checked again before
+dispatch and delivery. Personal homes/memories are never copied into a group.
+Active execution, observation streams and pending approvals retain the existing
+typed leases; the idle deadline begins after the last release.
+
+Source-only verification never proves that a running image contains these
+changes. M16 local work does not build, deploy, restart or contact a real account;
+image/channel/provider acceptance must be recorded separately after an authorized
+rollout.

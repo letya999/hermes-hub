@@ -22,7 +22,7 @@ func TestContextMemorySkillRoutineCLI(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(spool, "schedules"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(spool, "schedules", "morning.json"), []byte(`{"schedule_id":"morning"}`), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(spool, "schedules", "morning.json"), []byte(`{"schedule_id":"morning","principal_id":"owner","context_id":"owner"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := run(ctx, []string{"context", "backup", "--dir", dir, "--user", "owner", "--out", out, "--spool", spool}); err != nil {

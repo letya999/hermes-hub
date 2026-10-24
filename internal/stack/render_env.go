@@ -408,11 +408,15 @@ func writeToolHubFiles(dir string, s Settings) error {
 
 func writeHonchoConfig(dir string, s Settings) error {
 	if !s.Honcho || strings.TrimSpace(s.HonchoURL) == "" {
-		return nil
+		err := os.Remove(filepath.Join(dir, "hermes", "honcho.json"))
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
 	}
 	body, err := json.Marshal(M{
 		"baseUrl": s.HonchoURL,
-		"hosts":   M{"hermes": M{"enabled": true, "aiPeer": "hermes", "peerName": s.User, "workspace": "hermes"}},
+		"hosts":   M{"hermes": M{"enabled": true, "aiPeer": "hermes", "peerName": s.User, "workspace": "hermes-" + s.User}},
 	})
 	if err != nil {
 		return err

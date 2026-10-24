@@ -38,10 +38,10 @@ func TestBackupVerifyRestoreBranches(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(spool, "schedules", "s1.json"), []byte("{}"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(spool, "schedules", "s1.json"), []byte(`{"principal_id":"alice","context_id":"alice"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(spool, "mappings", "m1.json"), []byte("{}"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(spool, "mappings", "m1.json"), []byte(`{"principal_id":"alice","context_id":"alice"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(spool, "outbox", "d1.json"), []byte("{}"), 0600); err != nil {
@@ -89,7 +89,7 @@ func TestBackupVerifyRestoreBranches(t *testing.T) {
 	if b, err := os.ReadFile(filepath.Join(home2, "workspace", "README.md")); err != nil || string(b) != "ws" {
 		t.Fatalf("restored workspace: %v", err)
 	}
-	if b, err := os.ReadFile(filepath.Join(spool2, "schedules", "s1.json")); err != nil || string(b) != "{}" {
+	if b, err := os.ReadFile(filepath.Join(spool2, "schedules", "s1.json")); err != nil || string(b) != `{"principal_id":"alice","context_id":"alice"}` {
 		t.Fatalf("restored spool: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(spool2, "outbox", "d1.json")); !os.IsNotExist(err) {

@@ -7,8 +7,9 @@ last_verified: 2026-10-24
 
 One `spaces/<id>/` directory is one principal's deployment unit: its config,
 secrets, generated artifacts and state. `hubctl init`/`render`/`up` work on a
-`--dir spaces/<id>` target. User namespace only; org-level material lives in
-the org dirs referenced from `settings.yaml`, not inside the space.
+`--dir spaces/<id>` target. `hubctl init` creates a user scope;
+`hubctl group-init` creates a new dedicated group scope. Both keep their own
+home. Org-level material lives in the referenced organization directories.
 
 ## Hand-edited inputs
 
@@ -18,8 +19,9 @@ wrong file are rejected by name, not merged.
 
 | File | Owner | Contents |
 |---|---|---|
+| `scope.yaml` | operator | Host-owned `kind` (`user`, `group`, `organization`), `id` and optional organization binding; group init refuses existing personal scopes |
 | `agent.yaml` (schema 3) | operator | runtime config: `user`, `organization`, `model`, `model_url`, `timezone`, ports (`oauth_port`, `browser_port`, `slack_events_port`), `hooks`, `memory`, `honcho`, `cliproxy`, `infra` (exactly one deployed space renders the shared control plane), `diagnostics`, `image_gen`, `web`, `cli_registries`, managed-mode pin (`capability_mode`, `capability_profile_id`, `capability_generation`) |
-| `workspace.yaml` (schema 3) | capability intent | the `tools:` map, `ingress:` channels, `workspace:` mounts, `mcp:` raw server definitions. **Visibility, not authority** — ToolHub profiles/grants still govern admission |
+| `workspace.yaml` (schema 3) | capability intent | the `tools:` map, `ingress:` channels, `workspace:` mounts plus optional `goal`/`bootstrap_revision`, `mcp:` raw server definitions. **Visibility, not authority** — ToolHub profiles/grants still govern admission |
 | `settings.yaml` (schema 1, legacy) | — | pre-split file; still parses — `features`, `native_toolsets`, `disabled_mcp` migrate into the pair at load — but mixing old keys with the new pair is rejected. `internal/stack/defaults/{agent,workspace}.yaml` seed new spaces |
 | `SOUL.md` | owner | The persona/agent-home document — see docs/agent-home.md |
 | `secrets.<env>.env` | operator | Provider keys for this space (`TELEGRAM_BOT_TOKEN`, `GOOGLE_*`, `GITLAB_TOKEN`, …) — named by feature `requires`. Never committed beyond the local operator flow |
@@ -65,6 +67,14 @@ mcp:
 - `connections/` — connector materialization output.
 
 ## State (runtime-writable)
+
+M16 also keeps private `runtime/admissions/`, `runtime/knowledge/`,
+`runtime/bootstrap.json` and `runtime/bootstrap-history/`. Session history and
+compaction live in Hermes' own session store, not in a hub-side copy.
+Knowledge snapshots carry explicit freshness and source state.
+Bootstrap receipts carry bounded redacted output and changed paths. Their
+lifecycle and operator commands are documented in docs/operations.md and
+docs/tools.md; they are not shared personal-memory stores.
 
 - `runtime/` — bind-mounted as `/state` into the runtime: `toolhub/store.json`
   + `audit.jsonl` + `governance.json`, `credentials/store.enc`,

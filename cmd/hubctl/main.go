@@ -281,6 +281,8 @@ func run(ctx context.Context, args []string) error {
 			return stack.InitEnvironmentWithOrganization(*dir, *profile, *environment, *organization)
 		}
 		return stack.InitEnvironment(*dir, *profile, *environment)
+	case "group-init":
+		return stack.InitGroupEnvironment(*dir, *profile, *environment, *organization)
 	case "org-init":
 		if *organization == "" {
 			return fmt.Errorf("org-init requires --org")

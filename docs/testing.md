@@ -81,6 +81,13 @@ not evidence of a pass.
 
 ## Coverage
 
+M16 regression evidence is tracked in CHG-0151 through CHG-0158. E2E-085
+now selects `agenttools.TestKnowledgeBindingRefreshRevokeAndIsolation`.
+The old gateway `/v1/knowledge` 404 test proves endpoint removal only;
+it is not knowledge isolation/revocation evidence. Runtime cache/admission
+and real local filesystem tests complement the tool contract. None of
+these fixtures prove a live Hermes, Honcho, connector or chat integration.
+
 Own Go statement coverage ≥85% (`just check` enforces; upstream Hermes and
 copied broker source excluded from the denominator). Windows zero-statement
 profile rows are accepted by the coverage parser. When a gate is

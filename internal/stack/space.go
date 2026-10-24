@@ -285,7 +285,7 @@ func finishRead(s Settings, dir string) (Settings, error) {
 	s.Environment = "prod"
 	s.SpaceDir = dir
 	if scope, scopeErr := ReadScope(dir); scopeErr == nil {
-		if scope.Kind != UserScope || scope.ID != s.User || scope.Organization != s.Organization {
+		if (scope.Kind != UserScope && scope.Kind != GroupScope) || scope.ID != s.User || scope.Organization != s.Organization {
 			return s, fmt.Errorf("user scope does not match the space files")
 		}
 	} else if !os.IsNotExist(scopeErr) {
@@ -347,6 +347,14 @@ func InitEnvironmentWithOrganization(dir, profile, environment, organization str
 	return initEnvironment(dir, profile, environment, organization)
 }
 func initEnvironment(dir, profile, environment, organization string) error {
+	return initScopeEnvironment(dir, profile, environment, organization, UserScope)
+}
+
+func InitGroupEnvironment(dir, profile, environment, organization string) error {
+	return initScopeEnvironment(dir, profile, environment, organization, GroupScope)
+}
+
+func initScopeEnvironment(dir, profile, environment, organization string, kind ScopeKind) error {
 	if environment != "dev" && environment != "prod" {
 		return fmt.Errorf("environment must be dev or prod")
 	}
@@ -356,7 +364,7 @@ func initEnvironment(dir, profile, environment, organization string) error {
 	if organization != "" && !idPattern.MatchString(organization) {
 		return fmt.Errorf("invalid organization")
 	}
-	if err := ensureScope(dir, Scope{Kind: UserScope, ID: profile, Organization: organization}); err != nil {
+	if err := ensureScope(dir, Scope{Kind: kind, ID: profile, Organization: organization}); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(dir, 0700); err != nil {
@@ -374,7 +382,7 @@ func initEnvironment(dir, profile, environment, organization string) error {
 		return err
 	}
 	workspaceBody := policyTemplate(dir, "workspace-default.yaml", defaultWorkspaceYAML)
-	scopeBody, err := yaml.Marshal(Scope{Kind: UserScope, ID: profile, Organization: organization})
+	scopeBody, err := yaml.Marshal(Scope{Kind: kind, ID: profile, Organization: organization})
 	if err != nil {
 		return err
 	}

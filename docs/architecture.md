@@ -118,7 +118,7 @@ connection removal receipts. The same 30-second cadence runs the single
 reconciler pass: scoped label scans purge orphans whose owner connection is
 gone, dead credential ciphertext degrades the connection, and recipe,
 credential-recipe and live-surface drift park it until a human /confirm
-re-pins the observed digest (CHG-0147).
+re-pins the observed digest (CHG-0153).
 
 ## Jobs, runs and events
 
@@ -137,6 +137,25 @@ the only kinds that may wake the agent, always flagged untrusted. Event
 subscriptions poll connector read tools through `/v1/tool-call`;
 `delivery=stream` holds one bounded wait-call loop. Detail:
 docs/routines.md.
+
+M16 session discipline (ADR-0074/SPEC-0071): a conversation's Hermes session
+(`context + conversation + revision`) is stable across jobs and retry
+attempts; a new session is an explicit owner action (`/new`, `/use`), never a
+hidden per-job rotation. Hermes keeps native transcript continuity and
+in-loop compaction; the hub does not assemble or inject replacement context.
+Admission receipts retain the exact original payload for metadata-only
+recovery. Long-lived conversations stay bounded through Hermes compression
+and explicit `/new`, not hub-side context replacement.
+
+Every relayed chat-completions request is checked after hop/model rewriting.
+The conservative ceiling is 256k estimated tokens — deliberately above the
+managed compaction trigger (200k) so in-loop compression handles long
+sessions first: serialized UTF-8 bytes at ~6 bytes/token worst case, plus at
+least 8192 output tokens (or the larger requested output limit). An
+over-ceiling request returns HTTP 413 `context_budget_exceeded` without
+sending upstream or cooling down a healthy provider. This is a conservative
+text bound, not a measured tokenizer result or a substitute for the selected
+model's own limits.
 
 ## Capabilities and egress
 

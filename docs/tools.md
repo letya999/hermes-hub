@@ -123,3 +123,77 @@ whole reply; synthesized audio is never stored).
   ToolHub isn't on the server, say so — never improvise with terminal/npx/
   config edits.
 - Never invent receipts; transport failure means unknown outcome.
+
+## Session scratch tasks (M16 #183)
+
+`todo: native` selects the upstream Hermes `todo_list` scratchpad for one execution session.
+The session is authoritative: its list has no external synchronization or conflict policy.
+An explicit new session (`/new`, `/use`) starts with an empty list; an old todo list is not a durable personal task tracker.
+Use explicitly configured routine tools for durable reminders; named Hub conversations organize discussions, not checklist items.
+Only the configured native toolset grant exposes todo; absent/off denies it. A native carveout has no per-call Hub audit; the operator grant and owning runtime admission are audited, and do not authorize another scope.
+The backend choice is recorded in ADR-0074. No external task mutations are introduced.
+
+ZIP extraction enforces 8 MiB per file, 8192 entries and 1 GiB aggregate size. Existing targets are refused.
+
+## Memory provider contract (M16 #184)
+
+The logical `memory` capability selects one backend through the existing
+`tools:` surface; `session_search` is a separate grant. Native Hermes state
+lives only in the selected owner's `/state/hermes`, never in a shared vault.
+An alternative MCP backend uses its reviewed server name and scoped tools;
+it must enforce the same owner/context contract for read, search, write and
+forget. External provider credentials belong in Credential Broker contracts
+and materializers, never in a memory result or transcript. An MCP endpoint
+being configurable is not evidence that its external API has been tested.
+
+Provider changes never copy or merge memories. `off` withdraws the tool on
+the next materialized/attested runtime configuration and retains stored data;
+Broker revocation denies new credential uses. Drain/restart already running
+native sessions when changing their static grants. Native carveouts lack
+per-call Hub audit; managed grants/policies and runtime admission provide
+scope-level audit. Honcho remains opt-in legacy configuration: remote workspace
+names are `hermes-<owner>`, disabled configuration is removed, remote content
+is retained, and existing shared `hermes` data requires explicit owner-reviewed
+migration. Local tests do not establish Honcho API integration success.
+
+Memory list/delete reject foreign-home aliases. Context backup rejects
+non-regular files and exports shared spool records only with matching
+principal/context; legacy unattributed records are excluded. Agent replies
+are metadata-only in host logs even during an explicit content-capture window.
+Owner-scoped diagnostics/trace checks remain mandatory.
+
+## Connected knowledge (M16 #249)
+
+`knowledge_list`, `knowledge_read`, `knowledge_search` are read-only on both
+Hub projection and direct MCP. They derive the owner/context from the runtime,
+not tool arguments. Raw staged files retain their existing flat-file contract.
+Managed snapshots use virtual names such as `docs/sub/guide.md`, SHA-256,
+line numbers for search hits and snapshot time. Returned text is untrusted
+data; it cannot authorize tools, credentials or writes to the original folder.
+
+Operator `hubctl apply` accepts an explicitly selected folder snapshot:
+
+```yaml
+knowledge:
+  - name: docs
+    context: project
+    state: present
+    source: ./selected-markdown-folder
+```
+
+Use `--user <owner> --state <own-runtime-state> --spool <configured-spool> -f <file>`.
+`context`, source identifier and `state` are explicit for managed bindings.
+`present` replaces the complete source snapshot, so removed documents disappear;
+`stale` retains it with a warning; `unavailable` blocks reads and appears in
+`unavailable_sources`; `absent` unbinds and removes its derived snapshot bytes.
+For the latter three states omit `source`. Omitting an entry from an apply
+file does not revoke it. Refresh only on the operator's instruction; this is
+an indexed export, not live synchronization or a source-writing capability.
+
+Limits: 128 documents per source, 9 MiB per document and 32 MiB total snapshot
+content per context; apply also bounds its total input to 32 MiB. Symlinks and
+unsafe logical paths are rejected. Snapshot metadata changes and raw-file
+content changes/deletion invalidate the next turn's cached knowledge reply.
+Private immutable traces are retained for audit and never injected as retrieval
+results. External connectors require their own real contract acceptance;
+no embeddings service or database is required.

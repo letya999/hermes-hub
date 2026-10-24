@@ -301,11 +301,13 @@ func (g *Gateway) processBatch(ctx context.Context, updates []Update, offset int
 // showing the loading spinner; rejected taps change nothing.
 func (g *Gateway) handleCallback(ctx context.Context, query *CallbackQuery) error {
 	answer := "Запрос отклонен: подтверждение недоступно."
-	if query.From != nil {
-		if user, ok := g.users[query.From.ID]; ok {
+	if query.From != nil && query.Message != nil {
+		if user, ok := g.telegramUserFor(query.Message.Chat.ID, query.From.ID); ok {
 			if jobID, requestID, choice, err := g.spool.ApprovalCallback(query.Data); err == nil {
 				caller := user.Envelope(query.From.ID)
-				if mapping, found, err := g.spool.Mapping(jobID); err == nil && found {
+				audienceVerified := false
+				if mapping, found, err := g.spool.Mapping(jobID); err == nil && found && mapping.DeliveryTargetID == "telegram-"+strconv.FormatInt(query.Message.Chat.ID, 10) {
+					audienceVerified = true
 					caller.ConversationID = mapping.ConversationID
 					caller.DeliveryTargetID = mapping.DeliveryTargetID
 					// Legacy keyboards had no send receipt. A verified tap supplies
@@ -314,8 +316,10 @@ func (g *Gateway) handleCallback(ctx context.Context, query *CallbackQuery) erro
 						_ = g.api.DeleteMessage(ctx, query.Message.Chat.ID, query.Message.MessageID)
 					}
 				}
-				if err := g.spool.RequestApproval(jobID, caller, requestID, choice); err == nil {
-					answer = "Ответ на подтверждение сохранен."
+				if audienceVerified {
+					if err := g.spool.RequestApproval(jobID, caller, requestID, choice); err == nil {
+						answer = "Ответ на подтверждение сохранен."
+					}
 				}
 			}
 		}
@@ -339,17 +343,22 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 	if text == "" {
 		text = strings.TrimSpace(message.Caption)
 	}
+	user, ok := g.telegramUserFor(message.Chat.ID, message.From.ID)
 	if message.Chat.Type != "private" {
-		// Groups only serve verified users; everyone else is ignored silently.
-		if _, ok := g.users[message.From.ID]; !ok {
-			return nil
-		}
 		if envstore.LooksLikeEnv(text) {
+			if !ok {
+				return nil
+			}
 			_ = g.api.DeleteMessage(ctx, message.Chat.ID, message.MessageID)
 			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-group-secret", message.Chat.ID, 0, "Группы не принимают секреты.")
 		}
+		if !ok || message.Chat.ID >= 0 {
+			return nil
+		}
+		if !edited && !strings.HasPrefix(text, "/") && message.ForumTopicCreated == nil && message.ForumTopicEdited == nil {
+			return g.handleGroupUpdate(ctx, update, message)
+		}
 	}
-	user, ok := g.users[message.From.ID]
 	if !ok {
 		if text == "" && message.Voice == nil && message.Audio == nil && message.Document == nil && len(message.Photo) == 0 {
 			return nil
@@ -590,6 +599,9 @@ func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, task Task, c
 	envelope := ch.JobEnvelope(user, chatID, sender)
 	envelope.ConversationID = task.ConversationID
 	job := Job{Envelope: envelope, ID: id, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: channel, Trigger: "message", IdempotencyKey: idempotency, ChatID: chatID, MessageID: messageID, TaskID: task.TaskID, TopicID: task.TopicID, Text: text, InboundID: inboundID, Sensitive: false, CreatedAt: g.now().UTC()}
+	if channel == "telegram_bot" && chatID < 0 {
+		job.ScopeID = "group:" + user.ID
+	}
 	if _, err := g.spool.Enqueue(job); err != nil {
 		return err
 	}

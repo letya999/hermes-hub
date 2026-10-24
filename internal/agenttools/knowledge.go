@@ -8,11 +8,14 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"sort"
 	"strings"
 	"time"
 )
 
 const knowledgeLimit = 9 << 20
+
+func knowledgeHash(body []byte) string { sum := sha256.Sum256(body); return hex.EncodeToString(sum[:]) }
 
 type knowledgeItem struct {
 	Name    string    `json:"name"`
@@ -50,6 +53,10 @@ func (t *Tools) knowledgeRoot() (*os.Root, error) {
 	root, err := base.OpenRoot(dir)
 	if err == nil && envelope.ContextID != envelope.PrincipalID {
 		parent := root
+		if info, checkErr := parent.Lstat(envelope.ContextID); checkErr == nil && (!info.IsDir() || info.Mode()&os.ModeSymlink != 0) {
+			_ = parent.Close()
+			return nil, fmt.Errorf("invalid knowledge context directory")
+		}
 		root, err = parent.OpenRoot(envelope.ContextID)
 		_ = parent.Close()
 	}
@@ -101,6 +108,17 @@ func (t *Tools) knowledgeList(_ context.Context) (map[string]any, error) {
 		return nil, fmt.Errorf("knowledge unavailable")
 	}
 	items := []any{}
+	bindings, err := readKnowledgeBindings(root)
+	if err != nil {
+		return nil, err
+	}
+	for source, binding := range bindings {
+		if binding.State == "present" || binding.State == "stale" {
+			for path, body := range binding.Files {
+				items = append(items, knowledgeItem{Name: source + "/" + path, Size: int64(len(body)), ModTime: binding.Updated})
+			}
+		}
+	}
 	for _, entry := range entries {
 		if strings.HasPrefix(entry.Name(), ".") {
 			continue
@@ -111,7 +129,14 @@ func (t *Tools) knowledgeList(_ context.Context) (map[string]any, error) {
 		}
 		items = append(items, knowledgeItem{Name: entry.Name(), Size: info.Size(), ModTime: info.ModTime().UTC()})
 	}
-	return map[string]any{"items": items}, nil
+	stale := []string{}
+	for source, binding := range bindings {
+		if binding.State == "stale" {
+			stale = append(stale, source)
+		}
+	}
+	sort.Strings(stale)
+	return map[string]any{"items": items, "stale_sources": stale}, nil
 }
 
 // knowledgeRead returns one staged source as tool output — the content never
@@ -125,6 +150,9 @@ func (t *Tools) knowledgeRead(_ context.Context, r Input) (map[string]any, error
 		return nil, fmt.Errorf("knowledge unavailable")
 	}
 	defer root.Close()
+	if result, bound, err := boundKnowledge(root, r.Name); bound {
+		return result, err
+	}
 	body, info, err := readKnowledgeSource(root, r.Name)
 	if err != nil {
 		return nil, fmt.Errorf("knowledge source unavailable")
@@ -158,8 +186,50 @@ func (t *Tools) knowledgeSearch(_ context.Context, query string) (map[string]any
 		return nil, fmt.Errorf("knowledge unavailable")
 	}
 	query = strings.ToLower(strings.TrimSpace(query))
+	bindings, err := readKnowledgeBindings(root)
+	if err != nil {
+		return nil, err
+	}
+	unavailable := []string{}
+	stale := []string{}
+	for source, binding := range bindings {
+		if binding.State == "stale" {
+			stale = append(stale, source)
+		}
+		if binding.State == "unavailable" {
+			unavailable = append(unavailable, source)
+		}
+	}
 	hits := []knowledgeFragment{}
 	scanned := 0
+	var names []string
+	for source, binding := range bindings {
+		if binding.State == "present" || binding.State == "stale" {
+			for path := range binding.Files {
+				names = append(names, source+"/"+path)
+			}
+		}
+	}
+	sort.Strings(names)
+	sort.Strings(unavailable)
+	sort.Strings(stale)
+	for _, name := range names {
+		if scanned >= 128 || len(hits) >= 8 {
+			break
+		}
+		scanned++
+		source, path, _ := strings.Cut(name, "/")
+		binding := bindings[source]
+		body := binding.Files[path]
+		for line, text := range strings.Split(string(body), "\n") {
+			if strings.Contains(strings.ToLower(text), query) {
+				hits = append(hits, knowledgeFragment{Source: name, Line: line + 1, Text: boundedKnowledgeText(text), SHA256: knowledgeHash(body), ModifiedAt: binding.Updated})
+				if len(hits) >= 8 {
+					break
+				}
+			}
+		}
+	}
 	for _, entry := range entries {
 		if strings.HasPrefix(entry.Name(), ".") {
 			continue
@@ -186,5 +256,5 @@ func (t *Tools) knowledgeSearch(_ context.Context, query string) (map[string]any
 			}
 		}
 	}
-	return map[string]any{"fragments": hits, "scanned": scanned, "scan_limit": 128, "context_id": runtimeEnvelope().ContextID}, nil
+	return map[string]any{"fragments": hits, "scanned": scanned, "scan_limit": 128, "context_id": runtimeEnvelope().ContextID, "unavailable_sources": unavailable, "stale_sources": stale}, nil
 }

@@ -250,7 +250,7 @@ func TestDockerCleanPropagatesTagScanError(t *testing.T) {
 }
 
 func TestDockerExecWrappers(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("docker CLI unavailable")

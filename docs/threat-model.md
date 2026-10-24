@@ -80,7 +80,7 @@ leased only for current work and is not an authorization source.
 | Reconciliation turns all registered users into resident runtimes | Only runnable jobs, due routines, approvals or explicit pins create desired runtime state | Desired-state reason and active-runtime count | #18, #46 |
 | Duplicate or spoofed scheduled occurrence targets another audience | Hub owns schedule identity and audience; occurrence key is durable and execution rechecks current owner/context/policy | Schedule/occurrence/job/delivery IDs | #28, #33 |
 | Browser profile, Telegram session or personal terminal bypass | Treat profiles/sessions as credentials; managed mode stays outside Hermes; personal-terminal exposure is explicit, reversible and owner-scoped | Exposure mode and lifecycle, no values | #51 and connector issue |
-| Group/reply audience disclosure or replayed delivery | Group use stays disabled; delivery binds normalized conversation to verified audience and idempotency record | Conversation/audience IDs and delivery state | communication gateway; future group issue |
+| Group/reply audience disclosure or replayed delivery | Telegram groups require an explicit dedicated group home, member allowlist and mention. Other group adapters remain denied. Delivery, approval and replay bind the verified actor to the original audience; personal homes never become a group implicitly | Group scope, conversation/audience IDs and delivery state; bounded private transcript | #207; communication group scope, audience, revocation and queued-approval tests; supervisor group binding/policy tests |
 | Model forges owner, locator, backend or policy on the control MCP | Control operations derive identity from the authenticated request and reject authority arguments before any store write | Principal and denial reason; no locators as model input | #81, #101 |
 | Control-plane socket reaches foreign containers | The ToolHub/workload-controller socket is mounted only when the space renders workload features or diagnostics; every inspect/exec/logs/lifecycle call is scope-checked against the own compose project label, the `hermes-hub.scope` spawn label or the managed agent network, and foreign objects deny before the socket sees them | `docker-scope: denied` lines in service logs | #221 |
 | Dev stack attaches prod credential material | The broker state volume is named per environment (`hermes-credential-broker-<env>`); crossing environments needs an explicit `HUB_BROKER_STATE_VOLUME` override | Rendered external volume name per env | #225 |
@@ -105,6 +105,28 @@ leased only for current work and is not an authorization source.
 | Backup or restore crosses owner/context | Backups preserve scope metadata and encryption separation; mismatch or unknown revision blocks restore | Backup identity/revision and restore outcome | #48 and operations |
 
 ## Required deny-path suites
+
+M16 source-level disclosure controls also include scoped knowledge snapshots
+with explicit stale/unavailable states and immediate unbind. Knowledge
+revisions (including raw-file content/deletion) stop new access at binding
+resolution; previously delivered replies stay in the session history Hermes
+already owns. Regression owners: #249/#196, agenttools knowledge lifecycle and
+context-alias tests. This does not erase previously delivered messages and
+does not copy documents into personal memory automatically.
+
+Native memory and session history use distinct owner homes. Export reads are
+confined with `os.Root`; shared-spool exports require matching owner/context.
+Agent replies never enter shared content-capture logs. Regression owner #184:
+contextlife memory/export isolation, stack native-state grants and Honcho
+namespace/disable, communication memory-log privacy, diagnostics owner/trace
+deny paths. Real upstream memory/provider isolation remains a deployment gate.
+
+Optional bootstrap uses the same managed runtime/egress authority as ordinary
+jobs, a finite budget, a bounded workspace diff and private redacted attempt
+receipts. Failure blocks jobs until an explicit new revision. Regression owner
+#213: runtime bootstrap sandbox, timeout, failure, concurrency and receipt tests.
+Idle protection remains the typed lease boundary (#214), with unknown work
+preserved; no process-activity claim can override a held lease or crash budget.
 
 Implementation issues own executable tests. At minimum they must cover forged identity
 arguments, cross-user connections, stale policy/binding, removal during an open MCP

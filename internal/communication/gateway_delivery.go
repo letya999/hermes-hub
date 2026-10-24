@@ -47,6 +47,10 @@ func (g *Gateway) worker(ctx context.Context) {
 			nextObservation = now.Add(5 * time.Second)
 		}
 		if job, err := g.spool.ClaimJob(); err == nil && job != nil {
+			if job.Text != "" && g.authorizeGroupMapping(mappingFromJob(*job, g.now())) != nil {
+				_ = g.spool.FailJob(job.ID)
+				continue
+			}
 			if job.Trigger == "cron" && job.Text != "" && g.authorizeOccurrence(*job) != nil {
 				_ = g.spool.FailJob(job.ID)
 				continue
@@ -227,6 +231,10 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 			return
 		}
 		if found {
+			if g.authorizeGroupMapping(mapping) != nil {
+				_ = g.spool.UncertainDelivery(delivery.ID)
+				return
+			}
 			user := g.user(mapping.PrincipalID)
 			current := user.Envelope(1)
 			if !user.Enabled || user.ID != mapping.PrincipalID || current.RuntimeID != mapping.RuntimeID || current.PolicyVersion != mapping.PolicyVersion || (delivery.DeliveryTargetID != "" && delivery.DeliveryTargetID != mapping.DeliveryTargetID) {
@@ -276,7 +284,11 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 		if strings.HasSuffix(delivery.ID, "-secret") || strings.Contains(delivery.Text, "/credentials/") || strings.Contains(delivery.Text, "/telegram-auth/") || strings.Contains(delivery.Text, "form_url=") {
 			visible = "[credential response redacted]"
 		}
-		log.Printf("gateway telegram-sent job_id=%q delivery_id=%q chat_id=%d %s", delivery.JobID, delivery.ID, delivery.ChatID, g.contentField(visible))
+		field := g.contentField(visible)
+		if delivery.JobID != "" {
+			field = fmt.Sprintf("text_len=%d", len(visible))
+		}
+		log.Printf("gateway telegram-sent job_id=%q delivery_id=%q chat_id=%d %s", delivery.JobID, delivery.ID, delivery.ChatID, field)
 	}
 	_ = g.spool.CompleteDelivery(delivery.ID)
 	if delivery.JobID != "" && (strings.HasSuffix(delivery.ID, "-response") || strings.HasSuffix(delivery.ID, "-error")) {

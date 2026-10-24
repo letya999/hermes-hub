@@ -6,6 +6,7 @@ last_verified: 2026-10-20
 
 | Record | Decision |
 |---|---|
+| [ADR-0074](ADR-0074-session-runtime-discipline.md) | Session & runtime discipline: group scopes, knowledge lifecycle, stable session identity with runaway token ceiling, memory boundary, todo contract, idle-proof, goal bootstrap, archive bounds (renumbered from a duplicate ADR-0072) |
 | [ADR-0073](ADR-0073-model-provider-boundaries.md) | Model & provider layer boundaries (renumbered from a duplicate ADR-0072) |
 | [ADR-0072](ADR-0072-connector-recovery-and-system-guide.md) | Owner-bound encrypted recovery, truthful inventory and mandatory reference guidance |
 | [ADR-0071](ADR-0071-dynamic-session-contract.md) | Bounded owner-only dynamic JSON session contracts |

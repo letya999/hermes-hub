@@ -133,6 +133,13 @@ func (t *Tools) Server() *mcp.Server {
 	for _, op := range []string{"list", "read", "write", "search"} {
 		add("file_"+op, "Bounded "+op+" on workspace or read-only archive; updates require revision from read")
 	}
+	for _, op := range []string{"knowledge_list", "knowledge_read", "knowledge_search"} {
+		for _, tool := range HubToolsDefinition().Tools {
+			if tool.Name == op {
+				add(op, tool.Description)
+			}
+		}
+	}
 	add("service_catalog", "List connectors and optional services this runtime can offer, with required env key names, self-service flag and status. Catalog presence means 'can be enabled', not 'connected' — report a connector as usable only when status=ready or its tools are actually present on your tool list; status=available/missing-credentials/host-managed/policy-disabled all mean it is NOT currently usable. Never returns secrets.")
 	add("service_enable", "After a direct owner request, enable one self-service catalog feature. A public GitHub repository is not a feature name: do not install it here, in the terminal, or in config.yaml. If credentials are missing, always returns input=protected-form with form_url; never ask the owner for KEY=value in chat.")
 	add("service_disable", "After a direct owner request, disable one ToolHub binding without deleting its historical owner or credential metadata.")

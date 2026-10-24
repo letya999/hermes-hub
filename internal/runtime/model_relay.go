@@ -298,6 +298,11 @@ func modelCall(ctx context.Context, client *http.Client, hops []*modelHop, metho
 				hopBody = remapped
 			}
 		}
+		// Runaway ceiling only: well above the managed compaction trigger so
+		// in-loop compression stays the primary bound.
+		if method == http.MethodPost && path == "/v1/chat/completions" && !withinModelBudget(hopBody) {
+			return hop, &http.Response{StatusCode: http.StatusRequestEntityTooLarge, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"error":{"code":"context_budget_exceeded","message":"request exceeds conservative token ceiling"}}`))}, nil
+		}
 		target := hop.base + path
 		if base, err := url.Parse(hop.base); err == nil && strings.Trim(base.Path, "/") != "" {
 			target = hop.base + strings.TrimPrefix(path, "/v1")
@@ -358,6 +363,27 @@ func modelCall(ctx context.Context, client *http.Client, hops []*modelHop, metho
 		return hop, resp, nil
 	}
 	return nil, nil, fmt.Errorf("all model upstreams failed")
+}
+
+// modelTokenCeiling refuses requests no provider window could serve. It sits
+// above compression.threshold_tokens (200000) so Hermes in-loop compaction
+// handles long sessions first and the gate only fires on runaway growth.
+const modelTokenCeiling = 262144
+
+func withinModelBudget(body []byte) bool {
+	var output struct {
+		MaxTokens           int64 `json:"max_tokens"`
+		MaxCompletionTokens int64 `json:"max_completion_tokens"`
+	}
+	if json.Unmarshal(body, &output) != nil {
+		return false
+	}
+	reserve := max(int64(8192), output.MaxTokens, output.MaxCompletionTokens)
+	if reserve > modelTokenCeiling {
+		return false
+	}
+	// Worst case ~6 UTF-8/JSON bytes per token (escapes, CJK); conservative.
+	return int64(len(body))/6+reserve <= modelTokenCeiling
 }
 
 // rewriteModelField swaps the top-level "model" value; non-JSON bodies pass through.
