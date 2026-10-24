@@ -1,6 +1,6 @@
 ---
 description: System overview — roles, component map, networks, lifecycle; details live in services/, rbac.md, spaces.md and the ADRs.
-last_verified: 2026-10-21
+last_verified: 2026-10-24
 ---
 
 # Architecture

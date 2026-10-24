@@ -1,6 +1,6 @@
 ---
 description: Operator runbook — stack lifecycle, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
-last_verified: 2026-10-23
+last_verified: 2026-10-24
 ---
 
 # Operations

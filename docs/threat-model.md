@@ -1,6 +1,6 @@
 ---
 description: Threat model for scoped scale-to-zero runtimes and future organization isolation.
-last_verified: 2026-10-20
+last_verified: 2026-10-24
 ---
 # Threat model
 

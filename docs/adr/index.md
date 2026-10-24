@@ -1,6 +1,6 @@
 ---
 description: Architectural decisions and clearly marked proposals; append new records when changing direction.
-last_verified: 2026-10-20
+last_verified: 2026-10-24
 ---
 # Decisions
 

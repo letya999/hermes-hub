@@ -1,6 +1,6 @@
 ---
 description: Frozen acceptance contract for M16 Session and Runtime Discipline.
-last_verified: 2026-10-20
+last_verified: 2026-10-24
 ---
 # SPEC-0071: Session and runtime discipline
 

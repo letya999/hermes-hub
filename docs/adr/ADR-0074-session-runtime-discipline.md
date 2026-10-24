@@ -1,6 +1,6 @@
 ---
 description: M16 bounded sessions, private memory, group disclosure and sandbox bootstrap.
-last_verified: 2026-10-20
+last_verified: 2026-10-24
 ---
 # ADR-0074: Session and runtime discipline
 
