@@ -36,6 +36,16 @@ values in compose. Quota accounting lives in `model_relay_quota.go`.
   8318` plus the `model-relay.auth` env file in managed mode, so channel
   surfaces (e.g. `/model` commands) go through the relay rather than the
   runtime.
+- The shared `communication-hub` (infra space) serves several managed
+  principals: `RenderEnvironment` enrolls each sibling's
+  `HUB_MODEL_RELAY_ADMIN` into `model-relay-admins.json` (principal →
+  `{url, admin}`), mounted read-only at `/config/model-relay-admins.json`
+  with `HUB_MODEL_RELAY_ADMINS_FILE`. `/model` resolves the caller's
+  principal from the authenticated envelope — never from message text — and
+  the relay re-checks the bearer, so an unmapped principal gets no relay and
+  a mapped one can only switch its own granted models.
+- `PUT /v1/model` switches the logical model (admin bearer only);
+  `GET /v1/model` reports the effective selection (same bearer).
 - Spawned runtimes reach the relay over the managed agent network. They do not
   mount the registry, provider keys, Broker signing key or switch-admin bearer.
 

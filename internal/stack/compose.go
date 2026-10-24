@@ -544,6 +544,12 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			gatewayEnvironment["HUB_COMMUNICATION_TOKENS_FILE"] = "/config/toolhub-tokens.json"
 			gateway["volumes"] = append(gateway["volumes"].([]any), M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "toolhub-tokens.json")), "target": "/config/toolhub-tokens.json", "read_only": true})
 		}
+		// Per-principal relay routing for /model: the shared gateway resolves
+		// the caller's own relay URL + admin bearer from this enrolled file.
+		if info, err := os.Stat(filepath.Join(dir, "model-relay-admins.json")); err == nil && info.Mode().IsRegular() {
+			gatewayEnvironment["HUB_MODEL_RELAY_ADMINS_FILE"] = "/config/model-relay-admins.json"
+			gateway["volumes"] = append(gateway["volumes"].([]any), M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "model-relay-admins.json")), "target": "/config/model-relay-admins.json", "read_only": true})
+		}
 		if supervisorURL == "" {
 			gateway["depends_on"] = M{"hermes-runtime": M{"condition": "service_healthy"}}
 		}

@@ -144,6 +144,9 @@ func RenderEnvironment(dir, root, environment string) error {
 		if err = EnrollSiblingRuntimeTokens(dir, environment); err != nil {
 			return err
 		}
+		if err = EnrollSiblingModelRelayAdmins(dir, environment); err != nil {
+			return err
+		}
 	}
 	// FAL_KEY belongs to hub-media: image/video generation always goes
 	// through the service, so the runtime never needs the provider credential.

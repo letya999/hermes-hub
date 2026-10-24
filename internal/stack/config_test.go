@@ -384,6 +384,29 @@ func TestComposeMountsCommunicationUsersWhenPresent(t *testing.T) {
 // writer lives next to readSpace.
 func saveSpace(dir string, settings Settings) error { return WriteSpace(dir, settings) }
 
+func TestComposeMountsModelRelayAdminsWhenPresent(t *testing.T) {
+	t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", "http://host.docker.internal:8765")
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "model-relay-admins.json"), []byte(`{"alice":{"url":"http://model-relay-alice:8318","admin":"x"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := Settings{Schema: 1, Environment: "dev", User: "infra", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("telegram"), Ingress: testIngress("telegram")}
+	gateway := Compose(s, dir, dir)["services"].(M)["communication-hub"].(M)
+	if gateway["environment"].(M)["HUB_MODEL_RELAY_ADMINS_FILE"] != "/config/model-relay-admins.json" {
+		t.Fatalf("admins file env missing: %#v", gateway["environment"])
+	}
+	mounted := false
+	for _, raw := range gateway["volumes"].([]any) {
+		volume := raw.(M)
+		if volume["target"] == "/config/model-relay-admins.json" && volume["read_only"] == true && volume["type"] == "bind" {
+			mounted = true
+		}
+	}
+	if !mounted {
+		t.Fatalf("admins file not mounted: %#v", gateway["volumes"])
+	}
+}
+
 func TestTelegramGatewayAndPersonalMCPAreIndependent(t *testing.T) {
 	s := Settings{Schema: 1, Environment: "prod", User: "me", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
 	s.Tools, s.Ingress = testTools("telegram"), testIngress("telegram")
