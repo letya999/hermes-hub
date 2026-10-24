@@ -1,6 +1,6 @@
 ---
 description: Test pyramid and evidence rules — unit/race, contract probes, Docker gates, mock channels, live acceptance.
-last_verified: 2026-10-20
+last_verified: 2026-10-24
 ---
 
 # Testing
@@ -40,7 +40,10 @@ last_verified: 2026-10-20
 
 `channel.NewMock` binds a mock chat atomically to one owner; attachments
 land as bytes in the mock receipt and never reach a provider. It exercises
-the real queue/delivery pipeline — nothing more. `hubctl apply` validates
+the real queue/delivery pipeline plus slash commands: `/v1/mock/message`
+texts starting with `/` run the same dispatcher as Telegram (`/model`,
+`/new`, `/delete`, `/usage`…) and reply into the durable `mock-sent`
+outbox instead of enqueueing an agent job. `hubctl apply` validates
 the whole input before writing (unknown fields, duplicate resources,
 unsafe names, implicit routing rejected); routine mutations require the
 explicit `--chat-id/--organization/--runtime/--policy/--user` quintuple.

@@ -42,7 +42,10 @@ identities; `TELEGRAM_ALLOWED_USERS` is the infra-owner fallback),
 own managed space, or `HUB_MODEL_RELAY_ADMINS_FILE` (enrolled
 `model-relay-admins.json`, principal → relay URL + admin bearer) for the
 shared gateway serving several managed principals — `/model` resolves the
-caller's relay from the authenticated identity,
+caller's relay from the authenticated identity. Slash commands share one
+dispatcher across channels: Telegram updates and `/v1/mock/message` texts
+starting with `/` both run it, so mock replies land in `mock-sent` and
+never enqueue an agent job,
 `HUB_STT_URL`/`HUB_TTS_URL` + `media.auth` when `transcription` is on,
 `HUB_CREDENTIAL_BROKER_APPROVE_*` (broker client for approvals).
 
