@@ -18,11 +18,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 |---|---|
 | [CHG-0159](in-progress/CHG-0159-group-modes/plan.md) | #207 follow-up: per-group topics/mention modes; live acceptance pending |
 | [CHG-0158](in-progress/CHG-0158-knowledge-lifecycle/plan.md) | M16 #249: knowledge-lifecycle; live acceptance pending |
-| [CHG-0157](in-progress/CHG-0157-idle-proof/plan.md) | M16 #214: idle-proof; live acceptance pending |
 | [CHG-0156](in-progress/CHG-0156-goal-bootstrap/plan.md) | M16 #213: goal-bootstrap; live acceptance pending |
-| [CHG-0155](in-progress/CHG-0155-group-scopes/plan.md) | M16 #207: group-scopes; live acceptance pending |
-| [CHG-0154](in-progress/CHG-0154-context-discipline/plan.md) | M16 #196: context-discipline; live acceptance pending |
-| [CHG-0153](in-progress/CHG-0153-memory-boundary/plan.md) | M16 #184: memory-boundary; live acceptance pending |
 | [CHG-0152](in-progress/CHG-0152-todo-contract/plan.md) | M16 #183: todo-contract; live acceptance pending |
 | [CHG-0151](in-progress/CHG-0151-archive-bounds/plan.md) | M16 #151: archive-bounds; live acceptance pending |
 | [CHG-0147](in-progress/CHG-0147-m14-acceptance/plan.md) | Milestone 14 acceptance and connector lifecycle repair |
@@ -52,6 +48,10 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0157](done/CHG-0157-idle-proof/plan.md) | Done 2026-10-24: M16 #214 idle-proof — live accepted, issue closed |
+| [CHG-0155](done/CHG-0155-group-scopes/plan.md) | Done 2026-10-24: M16 #207 group-scopes — live accepted, issue closed; follow-up CHG-0159 added per-chat modes |
+| [CHG-0154](done/CHG-0154-context-discipline/plan.md) | Done 2026-10-24: M16 #196 context-discipline — live accepted, issue closed |
+| [CHG-0153](done/CHG-0153-memory-boundary/plan.md) | Done 2026-10-24: M16 #184 memory-boundary — live accepted, issue closed |
 | [CHG-0150](done/CHG-0150-m15-completion/plan.md) | Done 2026-10-24: M15 completion — live acceptance on dev stack for #131/#182/#185/#150 (E2E-021 PASS, real agent+provider, mock transport); environment-limited items documented; dedicated-service shared-alias DNS collision recorded as follow-up (renumbered from duplicate CHG-0145) |
 | [CHG-0149](done/CHG-0149-connector-recovery-and-guide/plan.md) | Done 2026-10-24: anchored Broker recovery with independent key, durable reconciliation retries, gosec gate fixed cross-platform, internal key/token rotation, live inventory consistency across surfaces, system guide delivered and verified against a real model |
 | [CHG-0148](done/CHG-0148-connector-discovery-onboarding/plan.md) | Done 2026-10-22: discovery, exact selection and 13 source-to-form/confirmation checks |

@@ -1,13 +1,13 @@
 schema: 1
-change: CHG-0155
-title: M16 group-scopes
-status: in_progress
+change: CHG-0153
+title: M16 memory-boundary
+status: done
 branch: feat/m16-runtime-discipline
 updated: 2026-10-21
-phase: local_verified_live_acceptance_pending
+phase: done
 adr: ADR-0074
 spec: SPEC-0071
-github_issue: 207
+github_issue: 184
 implementation_status: locally_verified
 local_contract_progress_percent: 100
 validation:

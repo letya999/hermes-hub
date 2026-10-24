@@ -1,10 +1,10 @@
 schema: 1
 change: CHG-0157
 title: M16 idle-proof
-status: in_progress
+status: done
 branch: feat/m16-runtime-discipline
 updated: 2026-10-21
-phase: local_verified_live_acceptance_pending
+phase: done
 adr: ADR-0074
 spec: SPEC-0071
 github_issue: 214
