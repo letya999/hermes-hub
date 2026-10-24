@@ -151,9 +151,12 @@ func TestDedicatedCliproxyRenderedForSecondarySpace(t *testing.T) {
 		CapabilityMode: "managed", CapabilityProfileID: "p", CapabilityGeneration: 1,
 		Model: "m", ModelURL: "http://model-relay:8318/v1", Cliproxy: "dedicated"}
 	services := Compose(s, "/source", "/space")["services"].(M)
-	cliproxy, ok := services["cliproxy"].(M)
+	cliproxy, ok := services["cliproxy-alice"].(M)
 	if !ok {
-		t.Fatal("dedicated cliproxy was not rendered")
+		t.Fatal("dedicated cliproxy was not rendered under the owner-scoped name")
+	}
+	if _, taken := services["cliproxy"]; taken {
+		t.Fatal("dedicated cliproxy claims the shared infra service name")
 	}
 	// Its alias carries the owner id on both networks so the space-local
 	// "cliproxy" name can never shadow the shared infra instance.

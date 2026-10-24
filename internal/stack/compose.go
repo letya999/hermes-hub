@@ -456,16 +456,17 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	}
 
 	// cliproxy: dedicated gives a secondary space its own proxy instance,
-	// reachable as cliproxy-<user> on both networks — the space-local plain
-	// "cliproxy" name keeps resolving the shared infra instance.
+	// reachable as cliproxy-<user> on both networks. The service is named
+	// after the owner so its implicit Compose aliases can never collide
+	// with the shared infra "cliproxy" name on the runtime network.
 	if !infra && s.Cliproxy == "dedicated" {
 		cliproxy := cloneMap(common)
 		cliproxy["build"] = coreBuild
 		cliproxy["entrypoint"] = []string{"cli-proxy-api", "-config", "/cliproxy/config.yaml"}
 		cliproxy["volumes"] = []any{M{"type": "bind", "source": hostCliproxyDir, "target": "/cliproxy"}}
-		alias := []string{"cliproxy-" + s.User}
-		cliproxy["networks"] = M{"default": M{"aliases": alias}, sharedNetworkName: M{"aliases": alias}}
-		services["cliproxy"] = cliproxy
+		name := "cliproxy-" + s.User
+		cliproxy["networks"] = M{"default": M{"aliases": []string{name}}, sharedNetworkName: M{"aliases": []string{name}}}
+		services[name] = cliproxy
 	}
 
 	if infra && includeGateway && (s.Has("telegram") || s.Has("slack_app")) {
