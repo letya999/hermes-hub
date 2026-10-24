@@ -3,7 +3,7 @@ package communication
 import "testing"
 
 func TestGroupConfigurationRejectsPersonalAuthority(t *testing.T) {
-	for _, mode := range []string{"personal", "missing", "alias", "positive-chat", "empty-members", "bad-member", "duplicate-member", "empty-mention", "duplicate-chat", "shared-space"} {
+	for _, mode := range []string{"personal", "missing", "alias", "positive-chat", "bad-member", "duplicate-member", "duplicate-chat", "shared-space"} {
 		t.Run(mode, func(t *testing.T) {
 			c := testConfig(t)
 			c.Users = append(c.Users, User{ID: "team", Enabled: true, StateDir: t.TempDir(), WorkspaceDir: t.TempDir()})
@@ -17,14 +17,10 @@ func TestGroupConfigurationRejectsPersonalAuthority(t *testing.T) {
 				c.Users[len(c.Users)-1].RuntimeID = "alice"
 			case "positive-chat":
 				c.Groups[0].ChatID = 11
-			case "empty-members":
-				c.Groups[0].Members = nil
 			case "bad-member":
 				c.Groups[0].Members = []int64{-1}
 			case "duplicate-member":
 				c.Groups[0].Members = []int64{11, 11}
-			case "empty-mention":
-				c.Groups[0].Mention = ""
 			case "duplicate-chat":
 				c.Groups = append(c.Groups, c.Groups[0])
 			case "shared-space":

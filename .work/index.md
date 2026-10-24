@@ -16,6 +16,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0159](in-progress/CHG-0159-group-modes/plan.md) | #207 follow-up: per-group topics/mention modes; live acceptance pending |
 | [CHG-0158](in-progress/CHG-0158-knowledge-lifecycle/plan.md) | M16 #249: knowledge-lifecycle; live acceptance pending |
 | [CHG-0157](in-progress/CHG-0157-idle-proof/plan.md) | M16 #214: idle-proof; live acceptance pending |
 | [CHG-0156](in-progress/CHG-0156-goal-bootstrap/plan.md) | M16 #213: goal-bootstrap; live acceptance pending |

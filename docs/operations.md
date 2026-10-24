@@ -452,29 +452,46 @@ retains a partial diff when available. Inspect and repair deliberately, then
 increment `bootstrap_revision` to request a new attempt. Removing `goal` disables
 preparation; no data is migrated or deleted. The default manifest revision is 0.
 
-Create a dedicated group home with
-`hubctl group-init --dir spaces/team --user team --env dev`.
-It refuses existing scopes and never converts a populated personal profile.
-In the host communication configuration, add a dedicated enabled `users` entry
-for `team` with its own state/workspace and no personal Telegram/Slack identity,
-then opt in the group:
+A configured group runs in one of two modes, chosen per chat in the host
+communication configuration:
 
 ```yaml
 groups:
-  - chat_id: -100123
+  -1009999: topics         # personal interface: each forum topic = a session
+  -100123:                 # mention mode (the default)
     space: team
-    members: [11, 22]
-    mention: '@helper'
+    members: [11, 22]      # optional; empty = every configured Telegram user
+    mention: '@helper'     # optional; empty = the bot's own @username
 ```
 
+The same map accepts only the scalar mode (`topics`) when nothing else is
+needed, and keeps the legacy list-of-objects form working. An unconfigured
+group is always ignored.
+
+`topics` mode makes the group a personal interface: the sender is resolved
+through the ordinary `telegram_ids` user mapping, each forum topic adopts its
+own task/session inside the sender's personal home, and messages plus slash
+commands behave exactly like a private chat — no mention needed. Jobs carry
+the usual `user:<id>` authority and write the sender's own memory.
+
+`mention` mode keeps the bot a passive participant and requires a dedicated
+group home. Create it with
+`hubctl group-init --dir spaces/team --user team --env dev`.
+It refuses existing scopes and never converts a populated personal profile.
+In the host communication configuration, add a dedicated enabled `users` entry
+for `team` with its own state/workspace and no personal Telegram/Slack identity.
+
 Only configured members contribute to the bounded passive transcript (last
-16 excerpts, at most 512 runes each). A literal mention starts an ordinary
-group job; slash commands retain their explicit command behavior. Passive
-messages do not wake the model or write personal memory. Recent source-event
-receipts are bounded to 256; admitted jobs retain durable idempotency mappings.
-The Telegram bot must actually receive the messages needed for this transcript;
-the Hub does not change account/privacy settings automatically. Edits do not
-restart work, and groups reject credential input.
+16 excerpts, at most 512 runes each); with an empty `members` list every
+configured Telegram user counts as a member. A literal mention — the
+configured `mention` tag or, when unset, the bot's own @username resolved
+through `getMe` — starts an ordinary group job; slash commands retain their
+explicit command behavior. Passive messages do not wake the model or write
+personal memory. Recent source-event receipts are bounded to 256; admitted
+jobs retain durable idempotency mappings. The Telegram bot must actually
+receive the messages needed for this transcript; the Hub does not change
+account/privacy settings automatically. Edits do not restart work, and groups
+reject credential input.
 
 Group runtime authority is `group:<space>` and requires a matching group
 `scope.yaml`. Replies stay in the original group/topic; approval taps require

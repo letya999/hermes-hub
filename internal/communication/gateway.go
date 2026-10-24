@@ -59,6 +59,9 @@ type Gateway struct {
 	// ops plane reaches the gateway only through injected deps.
 	opsOnce sync.Once
 	ops     *commops.Engine
+	// botMu/botName cache the getMe lookup behind the default mention tag.
+	botMu   sync.Mutex
+	botName string
 }
 
 func New(config Config) (*Gateway, error) {
@@ -355,7 +358,10 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 		if !ok || message.Chat.ID >= 0 {
 			return nil
 		}
-		if !edited && !strings.HasPrefix(text, "/") && message.ForumTopicCreated == nil && message.ForumTopicEdited == nil {
+		if group := g.groupFor(message.Chat.ID); group != nil && group.Mode == "topics" {
+			// Personal interface: the sender's own home handles this message
+			// below exactly like a private chat.
+		} else if !edited && !strings.HasPrefix(text, "/") && message.ForumTopicCreated == nil && message.ForumTopicEdited == nil {
 			return g.handleGroupUpdate(ctx, update, message)
 		}
 	}
@@ -600,7 +606,9 @@ func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, task Task, c
 	envelope.ConversationID = task.ConversationID
 	job := Job{Envelope: envelope, ID: id, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: channel, Trigger: "message", IdempotencyKey: idempotency, ChatID: chatID, MessageID: messageID, TaskID: task.TaskID, TopicID: task.TopicID, Text: text, InboundID: inboundID, Sensitive: false, CreatedAt: g.now().UTC()}
 	if channel == "telegram_bot" && chatID < 0 {
-		job.ScopeID = "group:" + user.ID
+		if group := g.groupFor(chatID); group == nil || group.Mode != "topics" {
+			job.ScopeID = "group:" + user.ID
+		}
 	}
 	if _, err := g.spool.Enqueue(job); err != nil {
 		return err

@@ -33,15 +33,15 @@ var gatewayOwnedEnv = map[string]bool{
 
 // Config is the channel-neutral gateway configuration. Telegram is v1's adapter.
 type Config struct {
-	Supervised         bool    `yaml:"-"`
-	OrganizationID     string  `yaml:"organization_id"`
-	Users              []User  `yaml:"users"`
-	Groups             []Group `yaml:"groups,omitempty"`
-	TelegramToken      string  `yaml:"-"`
-	APIBaseURL         string  `yaml:"api_base_url,omitempty"`
-	SlackSigningSecret string  `yaml:"-"`
-	SlackBotToken      string  `yaml:"-"`
-	ControlAuth        string  `yaml:"-"`
+	Supervised         bool   `yaml:"-"`
+	OrganizationID     string `yaml:"organization_id"`
+	Users              []User `yaml:"users"`
+	Groups             Groups `yaml:"groups,omitempty"`
+	TelegramToken      string `yaml:"-"`
+	APIBaseURL         string `yaml:"api_base_url,omitempty"`
+	SlackSigningSecret string `yaml:"-"`
+	SlackBotToken      string `yaml:"-"`
+	ControlAuth        string `yaml:"-"`
 	// ControlTokensFile optionally points at the infra owner's
 	// toolhub-tokens.json: sibling-space runtime tokens enrolled there are
 	// equally valid control-plane bearers. The principal still comes from
