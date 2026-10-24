@@ -102,6 +102,11 @@ func Backup(home, user, out string, spoolDir string) error {
 				continue
 			}
 			includes = append(includes, "spool/"+rel)
+			spoolRoot, rootErr := os.OpenRoot(spoolDir)
+			if rootErr != nil {
+				_ = zipw.Close()
+				return rootErr
+			}
 			_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 				if err != nil || info.IsDir() {
 					return err
@@ -110,7 +115,7 @@ func Backup(home, user, out string, spoolDir string) error {
 				if err != nil {
 					return err
 				}
-				body, err := os.ReadFile(path)
+				body, err := spoolRoot.ReadFile(relPath)
 				if err != nil {
 					return err
 				}
@@ -134,6 +139,7 @@ func Backup(home, user, out string, spoolDir string) error {
 				}
 				return addFile(zipw, hashes, "spool/"+filepath.ToSlash(relPath), path, spoolDir)
 			})
+			_ = spoolRoot.Close()
 		}
 	}
 	manifest := Manifest{Schema: Schema, User: user, ContextID: user, CreatedAt: time.Now().UTC(), Includes: includes, Excludes: []string{"plaintext-secrets", "credential-store"}, SHA256: hashes}
