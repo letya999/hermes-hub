@@ -43,6 +43,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0150](done/CHG-0150-m15-completion/plan.md) | Done 2026-10-24: M15 completion — live acceptance on dev stack for #131/#182/#185/#150 (E2E-021 PASS, real agent+provider, mock transport); environment-limited items documented; dedicated-service shared-alias DNS collision recorded as follow-up (renumbered from duplicate CHG-0145) |
 | [CHG-0149](done/CHG-0149-connector-recovery-and-guide/plan.md) | Done 2026-10-24: anchored Broker recovery with independent key, durable reconciliation retries, gosec gate fixed cross-platform, internal key/token rotation, live inventory consistency across surfaces, system guide delivered and verified against a real model |
 | [CHG-0148](done/CHG-0148-connector-discovery-onboarding/plan.md) | Done 2026-10-22: discovery, exact selection and 13 source-to-form/confirmation checks |
 | [CHG-0146](done/CHG-0146-oauth-rotation-state-loss/plan.md) | OAuth re-rotation dropped the callback token (new binding → empty broker state); wizard-link agent copy; broker revoke retires grants and logs lease deny reasons |

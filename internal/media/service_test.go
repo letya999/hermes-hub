@@ -229,6 +229,26 @@ func TestMediaFetchErrorBranches(t *testing.T) {
 	}
 }
 
+func TestMediaFetchReportsSubmissionAndUncertaintyWithoutDownloading(t *testing.T) {
+	for _, status := range []string{"submitting", "uncertain"} {
+		server, seen := serviceStub(t, status, []byte("must not download"), "video/mp4")
+		session, dir := openSession(t)
+		grantFile(t, dir, server.URL, true)
+		t.Setenv("HUB_MEDIA_URL", server.URL)
+		t.Setenv("HUB_MEDIA_AUTH", "tok")
+		out, err := session.MediaFetch(t.Context(), "job-1", "clip")
+		if status == "submitting" && (err != nil || out["status"] != "submitting") {
+			t.Errorf("submission incorrectly treated as terminal: result=%v err=%v", out, err)
+		}
+		if status == "uncertain" && (err == nil || !strings.Contains(err.Error(), "uncertain") || !strings.Contains(err.Error(), "do not resubmit")) {
+			t.Errorf("uncertain outcome lacks safe recovery guidance: %v", err)
+		}
+		if strings.Contains(seen.String(), "/result") {
+			t.Error("downloaded a non-complete job")
+		}
+	}
+}
+
 func TestServiceContractErrors(t *testing.T) {
 	s, dir := openSession(t)
 	grantFile(t, dir, "http://127.0.0.1:9", true)

@@ -144,6 +144,9 @@ func RenderEnvironment(dir, root, environment string) error {
 		if err = EnrollSiblingRuntimeTokens(dir, environment); err != nil {
 			return err
 		}
+		if err = EnrollSiblingModelRelayAdmins(dir, environment); err != nil {
+			return err
+		}
 	}
 	// FAL_KEY belongs to hub-media: image/video generation always goes
 	// through the service, so the runtime never needs the provider credential.
@@ -167,12 +170,12 @@ func RenderEnvironment(dir, root, environment string) error {
 		return err
 	}
 	if s.CapabilityMode == "managed" {
-		modelKey := secrets["OPENAI_API_KEY"]
-		if modelKey == "" {
-			modelKey = orgSecrets["OPENAI_API_KEY"]
+		relayAuth, err := ReadSecrets(filepath.Join(dir, "model-relay.auth"))
+		if err != nil {
+			return err
 		}
 		managedEnv := map[string]string{
-			"OPENAI_API_KEY": modelKey, "HUB_TOOLHUB_ENDPOINT": "http://toolhub:8090/mcp",
+			"OPENAI_API_KEY": relayAuth["HUB_MODEL_RELAY_AUTH"], "HUB_TOOLHUB_ENDPOINT": "http://toolhub:8090/mcp",
 		}
 		// Spawned runtimes live on a route-less internal network: every
 		// reviewed outbound hop goes through the egress relay by proxy env.
@@ -455,5 +458,5 @@ func atomic(path string, b []byte) error {
 	if err = f.Close(); err != nil {
 		return err
 	}
-	return os.Rename(name, path)
+	return os.Rename(name, path) // #nosec G703 -- temp file renamed onto a rendered path under the owned space dir
 }

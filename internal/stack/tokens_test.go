@@ -152,6 +152,151 @@ func TestEnrollSiblingRuntimeTokens(t *testing.T) {
 	}
 }
 
+func TestEnrollSiblingModelRelayAdmins(t *testing.T) {
+	root := t.TempDir()
+	spaces := filepath.Join(root, "spaces")
+	owner := filepath.Join(spaces, "infra")
+	managed := filepath.Join(spaces, "alice")
+	unmanaged := filepath.Join(spaces, "bob")
+	for _, dir := range []string{owner, managed, unmanaged} {
+		name := filepath.Base(dir)
+		if err := Init(dir, name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Only managed spaces have a model-relay; unmanaged siblings must not
+	// appear in the admins file even when an auth file is present.
+	agent := filepath.Join(managed, "agent.yaml")
+	body, err := os.ReadFile(agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Replace(string(body), `model: ""`, "model: default", 1)
+	text = strings.Replace(text, `model_url: ""`, "model_url: http://model-relay:8318/v1", 1)
+	text += "capability_mode: managed\ncapability_profile_id: alice-default\ncapability_generation: 1\n"
+	if err := os.WriteFile(agent, []byte(text), 0600); err != nil {
+		t.Fatal(err)
+	}
+	admin := strings.Repeat("m", 64)
+	if err := os.WriteFile(filepath.Join(managed, "model-relay.auth"), []byte("HUB_MODEL_RELAY_AUTH=x\nHUB_MODEL_RELAY_ADMIN="+admin+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(unmanaged, "model-relay.auth"), []byte("HUB_MODEL_RELAY_ADMIN="+strings.Repeat("n", 64)+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(owner, "model-relay.auth"), []byte("HUB_MODEL_RELAY_ADMIN="+strings.Repeat("o", 64)+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	path := filepath.Join(owner, "model-relay-admins.json")
+	if err := EnrollSiblingModelRelayAdmins(owner, "prod"); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]struct {
+		URL   string `json:"url"`
+		Admin string `json:"admin"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["alice"].Admin != admin || got["alice"].URL != "http://model-relay-alice:8318" {
+		t.Fatalf("managed sibling admin not enrolled: %v", got)
+	}
+	if _, ok := got["bob"]; ok {
+		t.Fatal("unmanaged sibling admin enrolled")
+	}
+	if _, ok := got["infra"]; ok {
+		t.Fatal("owner's own admin enrolled into the shared file")
+	}
+
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := EnrollSiblingModelRelayAdmins(owner, "prod"); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("unchanged enrollment rewrote the admins file")
+	}
+
+	// Once no managed sibling carries a usable admin the file goes away.
+	if err := os.WriteFile(filepath.Join(managed, "model-relay.auth"), []byte("HUB_MODEL_RELAY_AUTH=x\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnrollSiblingModelRelayAdmins(owner, "prod"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("empty enrollment left the admins file in place")
+	}
+}
+
+// RenderEnvironment on the infra space must produce the shared gateway's
+// relay admin map, the same way it produces toolhub-tokens.json.
+func TestRenderEnvironmentEnrollsModelRelayAdmins(t *testing.T) {
+	spaces := filepath.Join(t.TempDir(), "spaces")
+	infra := filepath.Join(spaces, "infra")
+	managed := filepath.Join(spaces, "alice")
+	if err := Init(infra, "infra"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Init(managed, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := Read(infra)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.Model, settings.ModelURL = "test", "http://model.invalid/v1"
+	if err := WriteSpace(infra, settings); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(infra, "secrets.prod.env"), []byte("OPENAI_API_KEY=x\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	agent := filepath.Join(managed, "agent.yaml")
+	body, err := os.ReadFile(agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Replace(string(body), `model: ""`, "model: default", 1)
+	text = strings.Replace(text, `model_url: ""`, "model_url: http://model-relay:8318/v1", 1)
+	text += "capability_mode: managed\ncapability_profile_id: alice-default\ncapability_generation: 1\n"
+	if err := os.WriteFile(agent, []byte(text), 0600); err != nil {
+		t.Fatal(err)
+	}
+	admin := strings.Repeat("m", 64)
+	if err := os.WriteFile(filepath.Join(managed, "model-relay.auth"), []byte("HUB_MODEL_RELAY_AUTH=x\nHUB_MODEL_RELAY_ADMIN="+admin+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "config"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config", "SOUL.md"), []byte("soul"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenderEnvironment(infra, root, "prod"); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(infra, "model-relay-admins.json"))
+	if err != nil {
+		t.Fatalf("render did not enroll relay admins: %v", err)
+	}
+	if !strings.Contains(string(raw), `"alice"`) {
+		t.Fatalf("managed sibling missing from enrolled admins: %s", raw)
+	}
+}
+
 func TestRuntimeTokenEnvelopeUsesOrganizationContext(t *testing.T) {
 	settings := Settings{Schema: 1, User: "bob", Organization: "acme", Environment: "prod", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
 	envelope, err := runtimeTokenEnvelope(settings)

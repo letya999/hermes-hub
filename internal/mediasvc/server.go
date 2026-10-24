@@ -50,6 +50,13 @@ func Serve(cfg Config) (http.Handler, error) {
 	}
 	// Requeue jobs orphaned by a restart; a "running" record is retried once.
 	for _, j := range store.list() {
+		if j.Kind == "video" && j.RemoteID == "" && (j.Status == "submitting" || j.Status == "running") {
+			j.Status, j.Error = "uncertain", errSubmissionUncertain.Error()
+			if err := store.put(j); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		if j.Status == "queued" || j.Status == "running" {
 			j.Status = "queued"
 			_ = store.put(j)
@@ -533,7 +540,7 @@ func (s *service) jobItem(w http.ResponseWriter, r *http.Request) {
 		}
 		http.ServeFile(w, r, filepath.Join(s.jobs.dirOf(j.ID), name))
 	case file == "" && r.Method == http.MethodDelete:
-		if j.Status == "running" {
+		if j.Status == "running" || j.Status == "submitting" {
 			writeError(w, http.StatusConflict, "job is running")
 			return
 		}

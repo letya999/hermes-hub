@@ -182,7 +182,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		}
 	}
 	// Core and control targets share BuildKit layers; only control needs Docker.
-	common := M{"image": "hermes-hub:0.3.0-" + s.Environment, "init": true, "restart": "unless-stopped", "user": fmt.Sprintf("10001:%d", max(0, os.Getgid())), "read_only": true, "cap_drop": []string{"ALL"}, "security_opt": []string{"no-new-privileges:true"}, "shm_size": "1gb", "tmpfs": []string{"/tmp:uid=10001,gid=10001,mode=1777"}, "extra_hosts": []string{"host.docker.internal:host-gateway"}, "logging": M{"driver": "local", "options": M{"max-size": "10m", "max-file": "3"}}}
+	common := M{"image": "hermes-hub:0.3.0-" + s.Environment, "init": true, "restart": "unless-stopped", "user": fmt.Sprintf("10001:%d", max(0, os.Getgid())), "read_only": true, "cap_drop": []string{"ALL"}, "security_opt": []string{"no-new-privileges:true"}, "shm_size": "1gb", "tmpfs": []string{"/tmp:uid=10001,gid=10001,mode=1777"}, "extra_hosts": M{"host.docker.internal": "host-gateway"}, "logging": M{"driver": "local", "options": M{"max-size": "10m", "max-file": "3"}}}
 	coreBuild := M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile", "target": s.Environment}
 	runtimeService := cloneMap(common)
 	runtimeService["env_file"] = runtimeEnvFiles
@@ -190,7 +190,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	runtimeService["volumes"] = stateVolumes
 	runtimeService["ports"] = ports
 	if s.CapabilityMode == "managed" {
-		runtimeService["extra_hosts"] = []string{}
+		runtimeService["extra_hosts"] = M{}
 		runtimeService["tmpfs"] = append(slices.Clone(common["tmpfs"].([]string)),
 			"/state/hermes/skills:ro,mode=0555", "/state/hermes/hooks:ro,mode=0555", "/state/hermes/plugins:ro,mode=0555",
 			"/state/hermes/skill-bundles:ro,mode=0555", "/state/hermes/scripts:ro,mode=0555",
@@ -302,10 +302,13 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			cliproxyURL = "http://cliproxy-" + s.User + ":8317"
 		}
 		modelRelay["environment"] = M{
-			"HUB_MODEL_RELAY_REGISTRY": "/run/models.yaml",
+			"HUB_MODEL_RELAY_REGISTRY": "/run/model-config/models.yaml",
 			"HUB_MODEL_RELAY_STATE":    "/run/model-state/model-select.json",
 			"HUB_MODEL_RELAY_OWNER":    s.User,
 			"HUB_MODEL_RELAY_CLIPROXY": cliproxyURL,
+		}
+		for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_MODEL_", "model", "hermes-model-relay") {
+			modelRelay["environment"].(M)[key] = value
 		}
 		modelRelay["env_file"] = []any{
 			M{"path": filepath.ToSlash(filepath.Join(dir, "runtime."+s.Environment+".env")), "format": "raw"},
@@ -313,10 +316,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			M{"path": filepath.ToSlash(filepath.Join(dir, "model-relay.auth")), "format": "raw"},
 		}
 		modelRelay["volumes"] = []any{
-			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "models."+s.Environment+".yaml")), "target": "/run/models.yaml", "read_only": true},
+			brokerSecrets("model"),
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "model-registry", s.Environment)), "target": "/run/model-config", "read_only": true},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "model-relay")), "target": "/run/model-state"},
 		}
-		modelRelay["extra_hosts"] = []string{}
+		modelRelay["extra_hosts"] = M{}
 		// A stable per-space alias on the shared network lets the gateway of
 		// the same space call its own relay (owner model switching) without
 		// colliding with other spaces' model-relay service names.
@@ -324,7 +328,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		services["model-relay"] = modelRelay
 		toolhubRelay := cloneMap(common)
 		toolhubRelay["entrypoint"] = []string{"hub-runtime", "toolhub-relay"}
-		toolhubRelay["extra_hosts"] = []string{}
+		toolhubRelay["extra_hosts"] = M{}
 		toolhubRelay["networks"] = M{sharedNetworkName: M{}, managedAgentNetwork(s): M{"aliases": []string{"toolhub"}}}
 		services["toolhub-relay"] = toolhubRelay
 		if len(egressHosts) > 0 {
@@ -334,7 +338,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			egressRelay := cloneMap(common)
 			egressRelay["entrypoint"] = []string{"hub-runtime", "egress-relay"}
 			egressRelay["environment"] = M{"HUB_EGRESS_RELAY_HOSTS": strings.Join(egressHosts, ",")}
-			egressRelay["extra_hosts"] = []string{}
+			egressRelay["extra_hosts"] = M{}
 			egressRelay["networks"] = M{sharedNetworkName: M{}, managedAgentNetwork(s): M{"aliases": []string{"egress-relay"}}}
 			services["egress-relay"] = egressRelay
 		}
@@ -456,16 +460,17 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	}
 
 	// cliproxy: dedicated gives a secondary space its own proxy instance,
-	// reachable as cliproxy-<user> on both networks — the space-local plain
-	// "cliproxy" name keeps resolving the shared infra instance.
+	// reachable as cliproxy-<user> on both networks. The service is named
+	// after the owner so its implicit Compose aliases can never collide
+	// with the shared infra "cliproxy" name on the runtime network.
 	if !infra && s.Cliproxy == "dedicated" {
 		cliproxy := cloneMap(common)
 		cliproxy["build"] = coreBuild
 		cliproxy["entrypoint"] = []string{"cli-proxy-api", "-config", "/cliproxy/config.yaml"}
 		cliproxy["volumes"] = []any{M{"type": "bind", "source": hostCliproxyDir, "target": "/cliproxy"}}
-		alias := []string{"cliproxy-" + s.User}
-		cliproxy["networks"] = M{"default": M{"aliases": alias}, sharedNetworkName: M{"aliases": alias}}
-		services["cliproxy"] = cliproxy
+		name := "cliproxy-" + s.User
+		cliproxy["networks"] = M{"default": M{"aliases": []string{name}}, sharedNetworkName: M{"aliases": []string{name}}}
+		services[name] = cliproxy
 	}
 
 	if infra && includeGateway && (s.Has("telegram") || s.Has("slack_app")) {
@@ -538,6 +543,12 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		if info, err := os.Stat(filepath.Join(dir, "toolhub-tokens.json")); err == nil && info.Mode().IsRegular() {
 			gatewayEnvironment["HUB_COMMUNICATION_TOKENS_FILE"] = "/config/toolhub-tokens.json"
 			gateway["volumes"] = append(gateway["volumes"].([]any), M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "toolhub-tokens.json")), "target": "/config/toolhub-tokens.json", "read_only": true})
+		}
+		// Per-principal relay routing for /model: the shared gateway resolves
+		// the caller's own relay URL + admin bearer from this enrolled file.
+		if info, err := os.Stat(filepath.Join(dir, "model-relay-admins.json")); err == nil && info.Mode().IsRegular() {
+			gatewayEnvironment["HUB_MODEL_RELAY_ADMINS_FILE"] = "/config/model-relay-admins.json"
+			gateway["volumes"] = append(gateway["volumes"].([]any), M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "model-relay-admins.json")), "target": "/config/model-relay-admins.json", "read_only": true})
 		}
 		if supervisorURL == "" {
 			gateway["depends_on"] = M{"hermes-runtime": M{"condition": "service_healthy"}}
@@ -617,6 +628,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			// points at a mounted runner script).
 			"HUB_MEDIA_ENGINES":        "${HUB_MEDIA_ENGINES:-}",
 			"HUB_MEDIA_MODEL_ROUTES":   "${HUB_MEDIA_MODEL_ROUTES:-}",
+			"HUB_MEDIA_PROVIDERS":      "${HUB_MEDIA_PROVIDERS:-}",
 			"HUB_MEDIA_COMMAND":        "${HUB_MEDIA_COMMAND:-}",
 			"HUB_MEDIA_UPSTREAM":       "${HUB_MEDIA_UPSTREAM:-http://cliproxy:8317}",
 			"HUB_MEDIA_QUEUE_UPSTREAM": "${HUB_MEDIA_QUEUE_UPSTREAM:-}",
@@ -662,6 +674,9 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	// Secondary spaces still declare broker-secrets-runtime: the supervisor
 	// mounts it by project-derived name into that user's spawned runtimes.
 	volumes := M{"broker-secrets-runtime": M{}}
+	if s.CapabilityMode == "managed" {
+		volumes["broker-secrets-model"] = M{}
+	}
 	result := M{"name": "hermes-hub-" + s.User + "-" + s.Environment, "services": services, "volumes": volumes}
 	if infra {
 		volumes["communication-hub-data"] = M{}

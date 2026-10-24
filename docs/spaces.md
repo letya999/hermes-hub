@@ -1,6 +1,6 @@
 ---
 description: spaces/<id>/ layout — settings.yaml, generated configs, secrets/env files, state dirs, and what is hand-edited vs rendered.
-last_verified: 2026-10-20
+last_verified: 2026-10-24
 ---
 
 # Spaces
@@ -58,7 +58,7 @@ mcp:
 
 - `compose.<env>.yaml` — the per-space compose (`internal/stack/compose.go`).
 - `hermes.<env>.yaml` — upstream Hermes config.
-- `generated/` — merged models.yaml (`models.<env>.yaml`), filtered global
+- `generated/` — merged models.yaml (`model-registry/<env>/models.yaml`), filtered global
   skills, feature-gated plugins (`generated/plugins/<name>` mounts read-only
   into `/opt/hermes/plugins/` — `source "bundled"`, kind "backend",
   auto-loads, agent-untouchable).
@@ -97,3 +97,42 @@ the same intent is expressed through the `tools:` map above.
 `infra: false` spaces render only their runtime; they reach the shared
 control plane (`toolhub`, `credential-broker`, `cliproxy`, and relays) over
 the shared docker network by service name.
+
+## Shared model profiles and personal accounts
+
+`spaces/profiles.yaml` contains named overlays of `model`, `model_url`,
+`cliproxy` and `cliproxy_credentials`. Resolution is default → matching named
+group → values explicitly set by the owner. Conflicting matching groups are
+rejected even when the owner also supplies an override. Matching groups with
+the same value are unambiguous. Profile values never contain credential bytes.
+
+```yaml
+profiles:
+  default:
+    model: reviewed-model
+    model_url: http://model-relay:8318/v1
+    cliproxy: shared
+    cliproxy_credentials: shared
+  personal:
+    owners: [alice]
+    cliproxy: dedicated
+    cliproxy_credentials: private
+```
+
+`cliproxy_credentials: private` requires dedicated placement; a shared proxy
+cannot safely select private upstream accounts by owner without a proven
+identity-routing contract. `shared` explicitly declares the operator's shared
+upstream pool. An omitted scope preserves the undeclared legacy behavior and is
+shown as such by doctor. Dedicated proxy rendering is supported in secondary
+(`infra: false`) spaces; the infrastructure space hosts the shared proxy. For a
+fully personal-account deployment, keep private accounts out of that shared
+instance and use dedicated secondary owner spaces. Mixed shared/private users
+use the same arrangement.
+
+Sharing a profile does not share OAuth files, service bearers, workspaces,
+selection state or Broker grants. Each space keeps its own proxy directory and
+model-relay state. A shared model/provider definition uses explicit owner grant
+references in `models.yaml`; see [model-relay](services/model-relay.md). Re-render
+only affected spaces. Model registry edits reload after rendering; provider env
+rotation recreates that owner's relay; Broker rotation resolves on the next call
+without a relay restart. Model identity changes apply to the next owner runtime.

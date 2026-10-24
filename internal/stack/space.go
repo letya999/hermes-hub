@@ -405,7 +405,7 @@ func initEnvironment(dir, profile, environment, organization string) error {
 }
 
 func ReadSecrets(path string) (map[string]string, error) {
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) // #nosec G703 -- the space's own secrets.env computed by the stack, not request input
 	if err != nil {
 		return nil, err
 	}

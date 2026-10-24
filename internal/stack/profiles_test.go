@@ -2,6 +2,8 @@ package stack
 
 import (
 	"fmt"
+	"gopkg.in/yaml.v3"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -101,14 +103,87 @@ func TestValidateCliproxy(t *testing.T) {
 	}
 }
 
+func TestSharedProxyRejectsDeclaredPrivateAccounts(t *testing.T) {
+	s := Settings{Schema: 1, User: "alice", Environment: "prod", Timezone: "UTC", Model: "m", ModelURL: "https://provider.invalid/v1", BrowserPort: 6080, OAuthPort: 8000}
+	if err := s.Validate(); err != nil {
+		t.Fatalf("invalid baseline: %v", err)
+	}
+	body, _ := yaml.Marshal(s)
+	body = append(body, []byte("cliproxy: shared\ncliproxy_credentials: private\n")...)
+	if err := yaml.Unmarshal(body, &s); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Validate(); err == nil {
+		t.Error("shared proxy accepted private accounts without proven identity routing")
+	}
+	noInfra := false
+	s.Infra = &noInfra
+	s.Cliproxy = "dedicated"
+	if err := s.Validate(); err != nil {
+		t.Fatalf("isolated private proxy rejected: %v", err)
+	}
+	s.CliproxyCredentials = "bogus"
+	if err := s.Validate(); err == nil {
+		t.Error("unknown credential scope accepted")
+	}
+}
+
+func TestProxyCredentialScopeFollowsProfilesAndOwnerOverride(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "spaces", "alice")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	saveYAML(t, filepath.Join(filepath.Dir(dir), "profiles.yaml"), map[string]any{"profiles": map[string]any{
+		"default": map[string]any{"cliproxy": "shared", "cliproxy_credentials": "shared"},
+		"private": map[string]any{"owners": []string{"alice"}, "cliproxy": "dedicated", "cliproxy_credentials": "private"},
+	}})
+	alice := Settings{User: "alice"}
+	if err := applyProfiles(&alice, dir); err != nil {
+		t.Fatal(err)
+	}
+	if alice.Cliproxy != "dedicated" || alice.CliproxyCredentials != "private" {
+		t.Error("group lost its independent credential scope")
+	}
+	bob := Settings{User: "bob"}
+	if err := applyProfiles(&bob, dir); err != nil {
+		t.Fatal(err)
+	}
+	if bob.Cliproxy != "shared" || bob.CliproxyCredentials != "shared" {
+		t.Error("another owner inherited a private account profile")
+	}
+	owner := Settings{User: "alice", Cliproxy: "shared", CliproxyCredentials: "shared"}
+	if err := applyProfiles(&owner, dir); err != nil {
+		t.Fatal(err)
+	}
+	if owner.CliproxyCredentials != "shared" {
+		t.Error("group replaced explicit owner credential scope")
+	}
+}
+
 func TestModelRelayRendersRegistry(t *testing.T) {
 	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
 		CapabilityMode: "managed", CapabilityProfileID: "p", CapabilityGeneration: 1,
 		Model: "m", ModelURL: "http://model-relay:8318/v1"}
 	relay := Compose(s, "/source", "/space")["services"].(M)["model-relay"].(M)
 	env := relay["environment"].(M)
-	if env["HUB_MODEL_RELAY_REGISTRY"] != "/run/models.yaml" || env["HUB_MODEL_RELAY_OWNER"] != "alice" {
+	if env["HUB_MODEL_RELAY_REGISTRY"] != "/run/model-config/models.yaml" || env["HUB_MODEL_RELAY_OWNER"] != "alice" {
 		t.Fatalf("registry env not rendered: %v", env)
+	}
+	if env["HUB_CREDENTIAL_BROKER_MODEL_KEY_ID"] != "model" || env["HUB_CREDENTIAL_BROKER_MODEL_ISSUER"] != "hermes-model-relay" || env["HUB_CREDENTIAL_BROKER_MODEL_CA_FILE"] != "/run/broker-secrets/server.crt" {
+		t.Error("relay lacks its own signed Broker identity")
+	}
+	brokerMount := false
+	for _, raw := range relay["volumes"].([]any) {
+		mount := raw.(M)
+		if mount["source"] == "broker-secrets-model" && mount["target"] == "/run/broker-secrets" && mount["read_only"] == true {
+			brokerMount = true
+		}
+	}
+	if !brokerMount {
+		t.Error("relay lacks isolated read-only Broker key volume")
+	}
+	if _, ok := Compose(s, "/source", "/space")["volumes"].(M)["broker-secrets-model"]; !ok {
+		t.Error("model Broker volume not declared")
 	}
 	// The merged models.yaml mounts read-only; the selection state gets a
 	// writable dir so chat-side switching survives relay restarts.
@@ -116,8 +191,8 @@ func TestModelRelayRendersRegistry(t *testing.T) {
 	var regMount, stateMount bool
 	for _, m := range mounts {
 		mv, _ := m.(M)
-		if mv["target"] == "/run/models.yaml" && mv["read_only"] == true {
-			regMount = strings.HasSuffix(fmt.Sprint(mv["source"]), "generated/models.prod.yaml")
+		if mv["target"] == "/run/model-config" && mv["read_only"] == true {
+			regMount = strings.HasSuffix(fmt.Sprint(mv["source"]), "generated/model-registry/prod")
 		}
 		if mv["target"] == "/run/model-state" && mv["read_only"] != true {
 			stateMount = strings.Contains(fmt.Sprint(mv["source"]), "managed/prod/model-relay")
@@ -151,9 +226,12 @@ func TestDedicatedCliproxyRenderedForSecondarySpace(t *testing.T) {
 		CapabilityMode: "managed", CapabilityProfileID: "p", CapabilityGeneration: 1,
 		Model: "m", ModelURL: "http://model-relay:8318/v1", Cliproxy: "dedicated"}
 	services := Compose(s, "/source", "/space")["services"].(M)
-	cliproxy, ok := services["cliproxy"].(M)
+	cliproxy, ok := services["cliproxy-alice"].(M)
 	if !ok {
-		t.Fatal("dedicated cliproxy was not rendered")
+		t.Fatal("dedicated cliproxy was not rendered under the owner-scoped name")
+	}
+	if _, taken := services["cliproxy"]; taken {
+		t.Fatal("dedicated cliproxy claims the shared infra service name")
 	}
 	// Its alias carries the owner id on both networks so the space-local
 	// "cliproxy" name can never shadow the shared infra instance.

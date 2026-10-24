@@ -1,6 +1,6 @@
 ---
 description: Canonical terms — feature, tool, toolset, capability, connector, backend/via.
-last_verified: 2026-10-23
+last_verified: 2026-10-24
 ---
 # Glossary
 

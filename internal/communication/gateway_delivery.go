@@ -21,12 +21,18 @@ type editThrottle struct {
 	last map[int64]time.Time
 }
 
-func (g *Gateway) queueDelivery(_ context.Context, key string, chatID, topicID int64, text string) error {
+func (g *Gateway) queueDelivery(ctx context.Context, key string, chatID, topicID int64, text string) error {
+	return g.queueDeliveryChannel(ctx, key, "telegram_bot", chatID, topicID, text)
+}
+
+// queueDeliveryChannel is queueDelivery for non-Telegram surfaces: command
+// replies on the mock channel must capture into mock-sent, not call Telegram.
+func (g *Gateway) queueDeliveryChannel(_ context.Context, key, channel string, chatID, topicID int64, text string) error {
 	id := key
 	if id == "" {
 		id = newID()
 	}
-	return g.spool.EnqueueDelivery(Delivery{ID: id, IdempotencyKey: key, Channel: "telegram_bot", ChatID: chatID, TopicID: topicID, Text: text, CreatedAt: g.now().UTC()})
+	return g.spool.EnqueueDelivery(Delivery{ID: id, IdempotencyKey: key, Channel: channel, ChatID: chatID, TopicID: topicID, Text: text, CreatedAt: g.now().UTC()})
 }
 
 func (g *Gateway) worker(ctx context.Context) {

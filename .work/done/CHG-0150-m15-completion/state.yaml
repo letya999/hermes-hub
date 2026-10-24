@@ -1,0 +1,58 @@
+schema: 1
+change: CHG-0150
+title: M15 model/provider completion
+status: done
+branch: feat/m15-dev-merge
+updated: 2026-10-24
+phase: live_acceptance_passed
+adr: ADR-0073
+spec: SPEC-0070
+github_milestone: M15 — Model & Provider Layer
+github_issues: [131, 182, 185, 150]
+slices:
+  media-routing: implemented_live_verified
+  relay: implemented_live_verified
+  profiles: implemented_live_verified
+  local-engine: implemented_live_verified
+  acceptance-oracles: implemented_live_verified
+  documents-and-check: done
+validation:
+  targeted_regressions: passed
+  just_check: passed_in_stages
+  go_race_shuffle_coverage: passed
+  coverage_percent: 86.20
+  package_coverage_floor_percent: 75
+  lint_gosec_actionlint: passed
+  compose_configuration_contract: passed_read_only_no_daemon
+  docs_check: passed
+  format_check: passed
+  merge_branch_just_check_2026_10_24: gosec_8_findings_in_m15_code_blocking_lint_stage
+  success_benchmark: measured_localhost_three_runs
+  docker_check: prohibited_by_owner
+  live_acceptance: passed_2026-10-24
+acceptance_progress:
+  method: equal_weight_verified_checklist_items
+  total: 28
+  verified: 27
+  percent_rounded: 96
+  issue_131: 8_of_8
+  issue_182: 8_of_8
+  issue_185: 7_of_8_environment_limited_external_provider_account
+  issue_150: 4_of_4
+live_acceptance:
+  date: 2026-10-24
+  stack: local_docker_dev_on_feat/m15-dev-merge
+  owners_tested: [telegram-8275678764, m15-owner-b]
+  e2e_021: pass_agent_real_provider_mock_transport
+  environment_limited:
+    - issue_185_real_external_provider_account_quota_health
+    - issue_182_remote_image_upstream_model_not_deployed_in_cliproxy
+  findings:
+    - stale_dev_container_binaries_masked_acceptance
+    - dedicated_service_shared_network_alias_dns_collision
+    - communication_users_yaml_policy_version_skew
+    - default_hop_timeout_too_short_for_two_image_vision_calls
+    - toolhub_restart_drops_inflight_runtime_mcp_sessions
+limitations:
+  - Inherited uncommitted OAuth work was copied without deployment or private data.
+  - Live acceptance ran on the local dev stack; no external provider account exists in this environment.

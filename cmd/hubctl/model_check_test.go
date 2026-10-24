@@ -13,6 +13,70 @@ import (
 	"github.com/letya999/hermes-hub/internal/stack"
 )
 
+func TestDoctorReportsEffectiveModelScopeAndRestartBoundary(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "spaces", "alice")
+	if err := stack.InitEnvironment(dir, "alice", "prod"); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := stack.ReadEnvironment(dir, "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	noInfra := false
+	settings.Infra = &noInfra
+	settings.Model = "fixture-model"
+	settings.ModelURL = "https://provider.invalid/v1"
+	settings.Cliproxy = "dedicated"
+	settings.CliproxyCredentials = "private"
+	if err := stack.WriteSpace(dir, settings); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "secrets.prod.env"), []byte("OPENAI_API_KEY=private-fixture-value\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	output, err := captureStdout(t, func() error { return run(t.Context(), []string{"doctor", "--dir", dir}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"fixture-model", "https://provider.invalid/v1", "dedicated", "private", "alice", "restart"} {
+		if !strings.Contains(output, expected) {
+			t.Errorf("doctor omitted effective scope %q: %s", expected, output)
+		}
+	}
+	if strings.Contains(output, "private-fixture-value") {
+		t.Error("doctor printed provider credential")
+	}
+}
+
+func TestManagedDoctorIncludesOwnerModelApplyPlan(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "spaces", "alice")
+	if err := stack.InitEnvironment(dir, "alice", "prod"); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := stack.ReadEnvironment(dir, "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.Model = "fixture-model"
+	settings.ModelURL = "http://model-relay:8318/v1"
+	settings.CapabilityMode = "managed"
+	settings.CapabilityProfileID = "p"
+	settings.CapabilityGeneration = 1
+	if err := stack.WriteSpace(dir, settings); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "secrets.prod.env"), []byte("OPENAI_API_KEY=private-fixture-value\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	output, err := captureStdout(t, func() error { return run(t.Context(), []string{"doctor", "--dir", dir}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output, "registry not rendered") || !strings.Contains(output, "provider env not rendered") {
+		t.Errorf("managed doctor omitted apply plan: %s", output)
+	}
+}
+
 func TestSelectedModelCheckUsesExactCatalogIDAndKeepsKeyPrivate(t *testing.T) {
 	const secret = "synthetic-model-key"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

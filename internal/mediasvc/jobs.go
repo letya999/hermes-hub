@@ -193,9 +193,17 @@ func (s *service) runJob(ctx context.Context, id string) {
 // provider queue until the result lands. Result bytes go to result.bin.
 func (s *service) runGenJob(ctx context.Context, j *Job) {
 	j.Status = "running"
-	_ = s.jobs.put(j)
+	if j.RemoteID == "" {
+		j.Status = "submitting"
+	}
+	if err := s.jobs.put(j); err != nil {
+		return
+	}
 	fail := func(err error) {
 		j.Status, j.Error = "failed", err.Error()
+		if errors.Is(err, errSubmissionUncertain) {
+			j.Status = "uncertain"
+		}
 		_ = s.jobs.put(j)
 	}
 	eng, ok := s.gen.(AsyncEngine)
@@ -216,7 +224,10 @@ func (s *service) runGenJob(ctx context.Context, j *Job) {
 			return
 		}
 		j.RemoteID, j.Engine, j.ProviderModel = h.RemoteID, h.Engine, h.Model
-		_ = s.jobs.put(j)
+		j.Status = "running"
+		if err := s.jobs.put(j); err != nil {
+			return
+		}
 	}
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
