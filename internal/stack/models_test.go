@@ -149,6 +149,53 @@ func TestModelRegistryLayersMerge(t *testing.T) {
 	}
 }
 
+// The switch grant rides the same layered owner scheme as models and
+// providers: an owner may get none (automatic ladders only), logical
+// (granted registry names) or catalog (any model the account serves).
+// Layers merge per owner key; unknown levels and owner ids are rejected.
+func TestModelRegistrySwitchLevels(t *testing.T) {
+	spaces := filepath.Join(t.TempDir(), "spaces")
+	if err := os.MkdirAll(spaces, 0700); err != nil {
+		t.Fatal(err)
+	}
+	saveYAML(t, filepath.Join(spaces, "models.yaml"), map[string]any{
+		"switch": map[string]any{"alice": "catalog", "bob": "none", "*": "logical"},
+		"models": map[string]any{
+			"default": map[string]any{"ladder": []any{map[string]any{"provider": "cliproxy", "model": "gemini-3-flash"}}},
+		},
+	})
+	user := filepath.Join(spaces, "alice")
+	if err := InitEnvironment(user, "alice", "prod"); err != nil {
+		t.Fatal(err)
+	}
+	// The owner layer narrows her own grant; other keys merge through.
+	saveYAML(t, filepath.Join(user, "models.yaml"), map[string]any{
+		"switch": map[string]any{"alice": "logical"},
+	})
+	s, err := ReadEnvironment(user, "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, err := LoadModelRegistry(user, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reg.Switch["alice"] != "logical" || reg.Switch["bob"] != "none" || reg.Switch["*"] != "logical" {
+		t.Fatalf("switch grants not merged per owner: %+v", reg.Switch)
+	}
+
+	for name, sw := range map[string]map[string]any{
+		"unknown_level":  {"alice": "everything"},
+		"bad_owner_name": {"Bad Owner": "catalog"},
+		"empty_level":    {"alice": ""},
+	} {
+		saveYAML(t, filepath.Join(user, "models.yaml"), map[string]any{"switch": sw})
+		if _, err := LoadModelRegistry(user, s); err == nil {
+			t.Fatalf("%s accepted", name)
+		}
+	}
+}
+
 func TestModelRegistryValidation(t *testing.T) {
 	spaces := filepath.Join(t.TempDir(), "spaces")
 	user := filepath.Join(spaces, "alice")

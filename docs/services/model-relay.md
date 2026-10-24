@@ -44,13 +44,17 @@ values in compose. Quota accounting lives in `model_relay_quota.go`.
   principal from the authenticated envelope — never from message text — and
   the relay re-checks the bearer, so an unmapped principal gets no relay and
   a mapped one can only switch its own granted models.
-- `PUT /v1/model` switches the logical model (admin bearer only);
-  `GET /v1/model` reports the effective selection (same bearer).
+- `PUT /v1/model` switches the model (admin bearer only): a granted logical
+  name, or — under the `catalog` switch grant — any id the owner's accounts
+  actually serve, written as `provider/model` or resolved as a bare id
+  across the granted providers' live catalogs. `GET /v1/model` reports the
+  effective selection `{model, provider?}` (same bearer).
   `GET /v1/registry` (admin bearer) reports each granted model with its
   ordered provider ladder — `{name, ladder:[{provider, model, down}]}` —
   plus `accounts`: every provider used by a granted ladder with its live
   upstream catalog (`GET {provider}/v1/models`, fetched with the hop's own
-  credentials under a 10-second bound; a failed fetch just omits the list).
+  credentials under a 10-second bound; a failed fetch just omits the list),
+  and `switch`: the caller's resolved switch grant.
   This is the account view `/model` renders; provider URLs, env key names
   and grant ids never leave the mounted file.
 - Spawned runtimes reach the relay over the managed agent network. They do not
@@ -85,7 +89,14 @@ models:
 ```
 
 The model's owner list cannot widen a provider's owner list or supply a missing
-owner grant. Each upstream account should have a distinct provider ID: cooldown
+owner grant. `switch` maps owner (or `*`) to the model-switch grant: `none`
+keeps automatic ladders only — even a granted name is refused; `logical`
+(the absent default) allows granted registry names; `catalog` additionally
+allows any model id the owner's granted providers report in their live
+catalog. A catalog selection persists `{model, provider}` and re-validates
+against the current registry on every request, so a revoked provider or a
+downgraded grant stops routing immediately. Each upstream account should
+have a distinct provider ID: cooldown
 is shared across its logical models, isolated between owners and reset after a
 registry reload. `key_env` is an alternative resolving the current owner's
 process env; it cannot be combined with `broker_grants`. An anonymous custom

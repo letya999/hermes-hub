@@ -21,6 +21,11 @@ type ModelRegistry struct {
 	RuntimeModel string                   `yaml:"runtime_model,omitempty"`
 	Providers    map[string]ModelProvider `yaml:"providers"`
 	Models       map[string]ModelEntry    `yaml:"models"`
+	// Switch maps owner (or "*") to the model-switch grant: "none" keeps
+	// automatic ladders only, "logical" allows granted registry names,
+	// "catalog" allows any model the owner's accounts actually serve.
+	// An absent entry resolves to "logical" at the relay.
+	Switch map[string]string `yaml:"switch,omitempty"`
 }
 
 type ModelProvider struct {
@@ -55,6 +60,7 @@ func (e ModelEntry) Allows(owner string) bool {
 type modelRegistryYAML struct {
 	Providers map[string]ModelProvider `yaml:"providers"`
 	Models    map[string]ModelEntry    `yaml:"models"`
+	Switch    map[string]string        `yaml:"switch"`
 }
 
 var (
@@ -96,6 +102,12 @@ func LoadModelRegistry(dir string, s Settings) (*ModelRegistry, error) {
 		}
 		for name, m := range layer.Models {
 			reg.Models[name] = m
+		}
+		if reg.Switch == nil {
+			reg.Switch = map[string]string{}
+		}
+		for name, level := range layer.Switch {
+			reg.Switch[name] = level
 		}
 	}
 	return reg, reg.Validate()
@@ -164,6 +176,14 @@ func (r *ModelRegistry) Validate() error {
 			if strings.TrimSpace(hop.Model) == "" || !registryModelPattern.MatchString(hop.Model) {
 				return fmt.Errorf("models.yaml: model %q bad provider model id %q", name, hop.Model)
 			}
+		}
+	}
+	for owner, level := range r.Switch {
+		if owner != "*" && !idPattern.MatchString(owner) {
+			return fmt.Errorf("models.yaml: switch has invalid owner %q", owner)
+		}
+		if level != "none" && level != "logical" && level != "catalog" {
+			return fmt.Errorf("models.yaml: switch level %q unknown", level)
 		}
 	}
 	return nil

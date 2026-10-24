@@ -518,23 +518,18 @@ func modelCommand(ctx context.Context, principal, text string) string {
 		for _, m := range catalog.Data {
 			names = append(names, m.ID)
 		}
-		currentName := ""
+		var current modelSelection
 		if scode, sbody := call(ctx, http.MethodGet, "/v1/model", nil); scode == http.StatusOK {
-			var sel struct {
-				Model string `json:"model"`
-			}
-			if json.Unmarshal(sbody, &sel) == nil {
-				currentName = sel.Model
-			}
+			_ = json.Unmarshal(sbody, &current)
 		}
-		if view := modelAccountView(ctx, call, currentName); view != "" {
-			return view + "Переключить: /model <имя>."
+		if view := modelAccountView(ctx, call, current); view != "" {
+			return view
 		}
-		current := ""
-		if currentName != "" {
-			current = " Текущая: " + currentName + "."
+		currentName := ""
+		if current.Model != "" {
+			currentName = " Текущая: " + current.Model + "."
 		}
-		return "Модели: " + strings.Join(names, ", ") + "." + current + " Переключить: /model <имя>."
+		return "Модели: " + strings.Join(names, ", ") + "." + currentName + " Переключить: /model <имя>."
 	}
 	name := fields[1]
 	payload, _ := json.Marshal(map[string]string{"model": name})
@@ -579,17 +574,27 @@ func modelRelayFor(principal string) (base, admin string) {
 	return strings.TrimSpace(entry.URL), strings.TrimSpace(entry.Admin)
 }
 
-// modelAccountView renders /model's account view from the relay's /v1/registry:
-// each logical model with its ordered provider ladder — the first hop is the
-// primary account, the rest are fallbacks, and a cooled-down hop is marked
-// unavailable. Empty when the relay predates the endpoint; the caller then
-// falls back to the plain catalog.
-func modelAccountView(ctx context.Context, call func(context.Context, string, string, []byte) (int, []byte), current string) string {
+// modelSelection mirrors the relay's /v1/model answer: a logical name, or a
+// provider-side catalog id pinned to the account that serves it.
+type modelSelection struct {
+	Model    string `json:"model"`
+	Provider string `json:"provider,omitempty"`
+}
+
+// modelAccountView renders /model's account view from the relay's /v1/registry.
+// Every printed name is directly usable as a /model argument: logical rows by
+// their registry name, account extras as provider/model. The relay's switch
+// grant steers the footer and the extras — below catalog level the account
+// catalog is not advertised because those ids cannot be selected. Empty when
+// the relay predates the endpoint; the caller then falls back to the plain
+// catalog.
+func modelAccountView(ctx context.Context, call func(context.Context, string, string, []byte) (int, []byte), current modelSelection) string {
 	code, body := call(ctx, http.MethodGet, "/v1/registry", nil)
 	if code != http.StatusOK {
 		return ""
 	}
 	var registry struct {
+		Switch string `json:"switch"`
 		Models []struct {
 			Name   string `json:"name"`
 			Ladder []struct {
@@ -606,6 +611,16 @@ func modelAccountView(ctx context.Context, call func(context.Context, string, st
 	}
 	if json.Unmarshal(body, &registry) != nil || len(registry.Models) == 0 {
 		return ""
+	}
+	if registry.Switch == "" {
+		registry.Switch = "logical"
+	}
+	footer := "Переключить: /model <имя>."
+	switch registry.Switch {
+	case "catalog":
+		footer = "Переключить: /model <имя> или <аккаунт>/<модель>."
+	case "none":
+		footer = "Переключение моделей отключено."
 	}
 	var out strings.Builder
 	if len(registry.Accounts) > 0 {
@@ -628,22 +643,29 @@ func modelAccountView(ctx context.Context, call func(context.Context, string, st
 						role = "основной"
 					}
 					out.WriteString("\n    " + m.Name + " → " + hop.Model + " — " + role)
-					if m.Name == current {
+					if m.Name == current.Model || (hop.Model == current.Model && a.Provider == current.Provider && current.Provider != "") {
 						out.WriteString(" ← текущая")
 					}
 				}
 			}
-			var extra []string
-			for _, id := range a.Catalog {
-				if !wired[id] {
-					extra = append(extra, id)
+			if registry.Switch == "catalog" {
+				var extra []string
+				for _, id := range a.Catalog {
+					if wired[id] {
+						continue
+					}
+					entry := a.Provider + "/" + id
+					if id == current.Model && a.Provider == current.Provider {
+						entry += " ← текущая"
+					}
+					extra = append(extra, entry)
+				}
+				if len(extra) > 0 {
+					out.WriteString("\n    ещё: " + strings.Join(extra, ", "))
 				}
 			}
-			if len(extra) > 0 {
-				out.WriteString("\n    ещё: " + strings.Join(extra, ", "))
-			}
 		}
-		out.WriteString("\n")
+		out.WriteString("\n" + footer)
 		return out.String()
 	}
 	for _, m := range registry.Models {
@@ -651,7 +673,7 @@ func modelAccountView(ctx context.Context, call func(context.Context, string, st
 			out.WriteString("\n")
 		}
 		out.WriteString("• " + m.Name)
-		if m.Name == current {
+		if m.Name == current.Model {
 			out.WriteString(" — текущая")
 		}
 		out.WriteString(":")
@@ -668,5 +690,5 @@ func modelAccountView(ctx context.Context, call func(context.Context, string, st
 		}
 		out.WriteString("\n")
 	}
-	return out.String()
+	return out.String() + footer
 }

@@ -716,6 +716,7 @@ models:
 		t.Fatalf("registry rejected admin: %d", rec.Code)
 	}
 	var doc struct {
+		Switch   string `json:"switch"`
 		Accounts []struct {
 			Provider string   `json:"provider"`
 			Down     bool     `json:"down,omitempty"`
@@ -724,6 +725,9 @@ models:
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
 		t.Fatal(err)
+	}
+	if doc.Switch != "logical" {
+		t.Fatalf("registry did not report the default switch grant: %q", doc.Switch)
 	}
 	if len(doc.Accounts) != 2 {
 		t.Fatalf("accounts missing: %+v", doc)
@@ -749,6 +753,196 @@ models:
 	}
 	if len(b.Catalog) != 0 {
 		t.Fatalf("unreachable provider reported a catalog: %+v", b)
+	}
+}
+
+// /model <catalog-id> selects a provider-side model straight from a granted
+// account's live catalog: the relay persists provider+model, reports it, and
+// routes the pinned runtime model through that hop. Catalog ids from a
+// provider the owner is not granted — or ids nobody serves — stay forbidden.
+func TestModelRelaySelectsCatalogModel(t *testing.T) {
+	var sawModel string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			_, _ = io.WriteString(w, `{"data":[{"id":"gemini-3.5-flash-lite"},{"id":"gemini-3-flash"}]}`)
+			return
+		}
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		sawModel, _ = body["model"].(string)
+		_, _ = io.WriteString(w, `{"choices":[]}`)
+	}))
+	defer upstream.Close()
+	foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			_, _ = io.WriteString(w, `{"data":[{"id":"secret-model"}]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[]}`)
+	}))
+	defer foreign.Close()
+	dir := t.TempDir()
+	registry := filepath.Join(dir, "models.yaml")
+	content := `runtime_model: hermes
+switch: {alice: catalog}
+providers:
+  a:
+    allow_private: true
+    url: ` + upstream.URL + `
+  b:
+    allow_private: true
+    url: ` + foreign.URL + `
+    owners: [bob]
+models:
+  default:
+    ladder:
+      - {provider: a, model: gemini-3-flash}
+`
+	if err := os.WriteFile(registry, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	sel := filepath.Join(dir, "sel.json")
+	handler, err := modelRelayRegistryHandler(registry, sel, "alice", "admintoken")
+	if err != nil {
+		t.Fatal(err)
+	}
+	put := func(model string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPut, "/v1/model", strings.NewReader(`{"model":"`+model+`"}`))
+		req.Header.Set("Authorization", "Bearer admintoken")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := put("nonexistent-model"); rec.Code != http.StatusForbidden {
+		t.Fatalf("unknown catalog model accepted: %d", rec.Code)
+	}
+	if rec := put("secret-model"); rec.Code != http.StatusForbidden {
+		t.Fatalf("foreign provider's catalog model accepted: %d", rec.Code)
+	}
+	if rec := put("gemini-3.5-flash-lite"); rec.Code != http.StatusOK {
+		t.Fatalf("granted account's catalog model rejected: %d", rec.Code)
+	}
+	if rec := put("b/secret-model"); rec.Code != http.StatusForbidden {
+		t.Fatalf("foreign provider's qualified catalog model accepted: %d", rec.Code)
+	}
+	if rec := put("a/not-in-catalog"); rec.Code != http.StatusForbidden {
+		t.Fatalf("granted provider accepted a model it does not serve: %d", rec.Code)
+	}
+	if rec := put("a/gemini-3.5-flash-lite"); rec.Code != http.StatusOK {
+		t.Fatalf("qualified catalog model rejected: %d", rec.Code)
+	}
+	stored, err := os.ReadFile(sel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved struct {
+		Model    string `json:"model"`
+		Provider string `json:"provider"`
+	}
+	_ = json.Unmarshal(stored, &saved)
+	if saved.Model != "gemini-3.5-flash-lite" || saved.Provider != "a" {
+		t.Fatalf("ad-hoc selection not persisted with provider: %s", stored)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/model", nil)
+	req.Header.Set("Authorization", "Bearer admintoken")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	var reported struct {
+		Model    string `json:"model"`
+		Provider string `json:"provider"`
+	}
+	_ = json.NewDecoder(rec.Body).Decode(&reported)
+	if reported.Model != "gemini-3.5-flash-lite" || reported.Provider != "a" {
+		t.Fatalf("selection not reported with provider: %s", rec.Body.String())
+	}
+	chat := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"hermes","messages":[]}`))
+	chat.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, chat)
+	if sawModel != "gemini-3.5-flash-lite" {
+		t.Fatalf("chat routed the wrong upstream model: %q", sawModel)
+	}
+	if rec.Header().Get("X-Model-Hop") != "a" {
+		t.Fatalf("chat did not route through the selected account: %v", rec.Header())
+	}
+}
+
+// The switch grant levels: none keeps automatic ladders only (even a logical
+// name is refused), logical keeps the old behavior, catalog unlocks provider
+// catalog ids. A persisted ad-hoc selection must not keep routing once the
+// grant drops below catalog.
+func TestModelRelaySwitchGrantLevels(t *testing.T) {
+	var sawModel string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			_, _ = io.WriteString(w, `{"data":[{"id":"gemini-3.5-flash-lite"}]}`)
+			return
+		}
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		sawModel, _ = body["model"].(string)
+		_, _ = io.WriteString(w, `{"choices":[]}`)
+	}))
+	defer upstream.Close()
+	dir := t.TempDir()
+	registry := filepath.Join(dir, "models.yaml")
+	content := `runtime_model: hermes
+switch: {alice: none, carol: logical, "*": none}
+providers:
+  a:
+    allow_private: true
+    url: ` + upstream.URL + `
+models:
+  default:
+    ladder:
+      - {provider: a, model: gemini-3-flash}
+`
+	if err := os.WriteFile(registry, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	put := func(handler http.Handler, model string) int {
+		req := httptest.NewRequest(http.MethodPut, "/v1/model", strings.NewReader(`{"model":"`+model+`"}`))
+		req.Header.Set("Authorization", "Bearer admintoken")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	alice, err := modelRelayRegistryHandler(registry, filepath.Join(dir, "sel-alice.json"), "alice", "admintoken")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := put(alice, "default"); code != http.StatusForbidden {
+		t.Fatalf("switch=none accepted a logical model: %d", code)
+	}
+	carol, err := modelRelayRegistryHandler(registry, filepath.Join(dir, "sel-carol.json"), "carol", "admintoken")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := put(carol, "default"); code != http.StatusOK {
+		t.Fatalf("switch=logical rejected a logical model: %d", code)
+	}
+	if code := put(carol, "gemini-3.5-flash-lite"); code != http.StatusForbidden {
+		t.Fatalf("switch=logical accepted a catalog model: %d", code)
+	}
+	dave, err := modelRelayRegistryHandler(registry, filepath.Join(dir, "sel-dave.json"), "dave", "admintoken")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := put(dave, "default"); code != http.StatusForbidden {
+		t.Fatalf("unlisted owner did not fall to the * grant: %d", code)
+	}
+
+	// Downgrade safety: a catalog selection persisted while the grant was
+	// catalog must not keep routing once the owner drops to none.
+	selAlice := filepath.Join(dir, "sel-alice.json")
+	if err := os.WriteFile(selAlice, []byte(`{"model":"gemini-3.5-flash-lite","provider":"a"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	chat := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"hermes","messages":[]}`))
+	chat.Header.Set("Content-Type", "application/json")
+	alice.ServeHTTP(httptest.NewRecorder(), chat)
+	if sawModel != "gemini-3-flash" {
+		t.Fatalf("ad-hoc selection still routed under switch=none: %q", sawModel)
 	}
 }
 

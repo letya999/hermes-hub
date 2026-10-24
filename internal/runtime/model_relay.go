@@ -590,6 +590,85 @@ func (r *relayRegistry) granted(file *relayRegistryFile, entry relayModel) bool 
 	return true
 }
 
+// grantedProviders returns the accounts the owner can reach: providers wired
+// into at least one granted model's ladder. Ad-hoc catalog selections are
+// limited to this set — a provider that exists in the file but not on a
+// granted ladder stays unreachable.
+func (r *relayRegistry) grantedProviders(file *relayRegistryFile) map[string]bool {
+	set := map[string]bool{}
+	for _, entry := range file.Models {
+		if !r.granted(file, entry) {
+			continue
+		}
+		for _, ref := range entry.Ladder {
+			set[ref.Provider] = true
+		}
+	}
+	return set
+}
+
+// switchLevel resolves the owner's switch grant: switch[owner], then the "*"
+// fallback, then "logical" — the long-standing default where only granted
+// registry names are selectable.
+func (r *relayRegistry) switchLevel(file *relayRegistryFile) string {
+	if level, ok := file.Switch[r.owner]; ok {
+		return level
+	}
+	if level, ok := file.Switch["*"]; ok {
+		return level
+	}
+	return "logical"
+}
+
+// catalogProvider finds which granted account actually serves a model id. A
+// "provider/model" argument pins the account; a bare id resolves against each
+// granted provider's live catalog in sorted order. Empty when nothing serves
+// it — the caller then denies the switch.
+func (r *relayRegistry) catalogProvider(ctx context.Context, file *relayRegistryFile, name string) string {
+	hopsByProvider, providers := r.providerHops(file)
+	if provider, model, ok := strings.Cut(name, "/"); ok {
+		hop := hopsByProvider[provider]
+		if hop == nil {
+			return ""
+		}
+		if slices.Contains(r.providerCatalog(ctx, hop), model) {
+			return provider
+		}
+		return ""
+	}
+	for _, provider := range providers {
+		if hop := hopsByProvider[provider]; hop != nil && slices.Contains(r.providerCatalog(ctx, hop), name) {
+			return provider
+		}
+	}
+	return ""
+}
+
+// providerHops returns one live hop per granted provider (sorted names) so a
+// caller can query each account's upstream catalog.
+func (r *relayRegistry) providerHops(file *relayRegistryFile) (map[string]*modelHop, []string) {
+	hopsByProvider := map[string]*modelHop{}
+	var providers []string
+	names := make([]string, 0, len(file.Models))
+	for name, entry := range file.Models {
+		if r.granted(file, entry) {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		hops := r.ladderFor(file, name, file.Models[name])
+		for i, ref := range file.Models[name].Ladder {
+			if _, seen := hopsByProvider[ref.Provider]; !seen && i < len(hops) && hops[i].name == ref.Provider {
+				hopsByProvider[ref.Provider] = hops[i]
+				providers = append(providers, ref.Provider)
+			}
+		}
+	}
+	slices.Sort(providers)
+	return hopsByProvider, providers
+}
+
 // hopsFor picks the logical model to serve: an explicitly granted name in the
 // request, then the owner's saved selection, then "default", then the first
 // granted model in sorted order.
@@ -604,12 +683,21 @@ func (r *relayRegistry) hopsFor(file *relayRegistryFile, requested string) (stri
 			return "", nil, fmt.Errorf("model not granted")
 		}
 	}
-	for _, name := range []string{requested, r.selection(), "default"} {
+	sel := r.selection()
+	for _, name := range []string{requested, sel.Model, "default"} {
 		if name == "" {
 			continue
 		}
 		if entry, ok := file.Models[name]; ok && r.granted(file, entry) {
 			return name, r.ladderFor(file, name, entry), nil
+		}
+		// An ad-hoc catalog selection resolves to a single-hop ladder on the
+		// account it was persisted for — still validated against the live
+		// registry and the current switch grant so a revoked provider or a
+		// downgraded grant can never serve it.
+		if name == sel.Model && sel.Provider != "" && r.switchLevel(file) == "catalog" && r.grantedProviders(file)[sel.Provider] {
+			entry := relayModel{Ladder: []stack.ModelHopRef{{Provider: sel.Provider, Model: sel.Model}}}
+			return sel.Model, r.ladderFor(file, sel.Model, entry), nil
 		}
 	}
 	names := make([]string, 0, len(file.Models))
@@ -677,18 +765,23 @@ func (r *relayRegistry) ladderFor(file *relayRegistryFile, name string, entry re
 	return hops
 }
 
-func (r *relayRegistry) selection() string {
+// relaySelection is the owner's persisted choice: a logical model name, or a
+// provider-side catalog model pinned to the granted account that serves it.
+type relaySelection struct {
+	Model    string `json:"model"`
+	Provider string `json:"provider,omitempty"`
+}
+
+func (r *relayRegistry) selection() relaySelection {
 	b, err := os.ReadFile(r.statePath) // #nosec G304 -- state path is operator-mounted
 	if err != nil {
-		return ""
+		return relaySelection{}
 	}
-	var sel struct {
-		Model string `json:"model"`
-	}
+	var sel relaySelection
 	if json.Unmarshal(b, &sel) != nil {
-		return ""
+		return relaySelection{}
 	}
-	return sel.Model
+	return sel
 }
 
 // serveSelect is the owner-facing model switch: admin-token authenticated,
@@ -700,17 +793,15 @@ func (r *relayRegistry) serveSelect(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if req.Method == http.MethodGet {
-		model := r.selection()
-		if model == "" {
-			model = "default"
+		sel := r.selection()
+		if sel.Model == "" {
+			sel.Model = "default"
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"model": model})
+		_ = json.NewEncoder(w).Encode(sel)
 		return
 	}
-	var sel struct {
-		Model string `json:"model"`
-	}
+	var sel relaySelection
 	if json.NewDecoder(io.LimitReader(req.Body, 1<<16)).Decode(&sel) != nil || sel.Model == "" {
 		http.Error(w, "invalid model request", http.StatusBadRequest)
 		return
@@ -720,12 +811,29 @@ func (r *relayRegistry) serveSelect(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "model registry unavailable", http.StatusBadGateway)
 		return
 	}
-	entry, ok := file.Models[sel.Model]
-	if !ok || !r.granted(file, entry) {
+	level := r.switchLevel(file)
+	if level == "none" {
+		http.Error(w, "model switching not granted", http.StatusForbidden)
+		return
+	}
+	if entry, ok := file.Models[sel.Model]; ok && r.granted(file, entry) {
+		sel.Provider = ""
+	} else if level == "catalog" {
+		sel.Provider = r.catalogProvider(req.Context(), file, sel.Model)
+		if sel.Provider == "" {
+			http.Error(w, "model not granted", http.StatusForbidden)
+			return
+		}
+		// A qualified "provider/model" argument pins the account but persists
+		// the bare upstream id — it is the id the provider expects.
+		if _, model, ok := strings.Cut(sel.Model, "/"); ok {
+			sel.Model = model
+		}
+	} else {
 		http.Error(w, "model not granted", http.StatusForbidden)
 		return
 	}
-	body, _ := json.Marshal(map[string]string{"model": sel.Model})
+	body, _ := json.Marshal(sel)
 	persisted := false
 	if err := os.MkdirAll(filepath.Dir(r.statePath), 0700); err == nil {
 		if tmp, err := os.CreateTemp(filepath.Dir(r.statePath), ".sel-*"); err == nil {
@@ -809,7 +917,7 @@ func (r *relayRegistry) serveRegistry(w http.ResponseWriter, req *http.Request) 
 		accounts = append(accounts, a)
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"models": models, "accounts": accounts})
+	_ = json.NewEncoder(w).Encode(map[string]any{"models": models, "accounts": accounts, "switch": r.switchLevel(file)})
 }
 
 // providerCatalog lists what an upstream account can actually serve — the

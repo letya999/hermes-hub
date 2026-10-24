@@ -27,7 +27,7 @@ func TestModelCommandSwitchesThroughRelay(t *testing.T) {
 			return
 		}
 		if r.Method == http.MethodGet && r.URL.Path == "/v1/registry" {
-			_, _ = io.WriteString(w, `{"models":[{"name":"default","ladder":[{"provider":"cliproxy","model":"gemini-3.8-flash-n"}]},{"name":"turbo","ladder":[{"provider":"cliproxy","model":"gemini-3-flash"},{"provider":"openai","model":"gpt-5-mini","down":true}]}],"accounts":[{"provider":"cliproxy","catalog":["gemini-3.8-flash-n","gemini-3-flash","gemini-2.5-pro","veo-3"]},{"provider":"openai","down":true,"catalog":["gpt-5-mini","gpt-5"]}]}`)
+			_, _ = io.WriteString(w, `{"switch":"catalog","models":[{"name":"default","ladder":[{"provider":"cliproxy","model":"gemini-3.8-flash-n"}]},{"name":"turbo","ladder":[{"provider":"cliproxy","model":"gemini-3-flash"},{"provider":"openai","model":"gpt-5-mini","down":true}]}],"accounts":[{"provider":"cliproxy","catalog":["gemini-3.8-flash-n","gemini-3-flash","gemini-2.5-pro","veo-3"]},{"provider":"openai","down":true,"catalog":["gpt-5-mini","gpt-5"]}]}`)
 			return
 		}
 		gotAuth = r.Header.Get("Authorization")
@@ -56,14 +56,15 @@ func TestModelCommandSwitchesThroughRelay(t *testing.T) {
 		"turbo → gemini-3-flash — основной ← текущая",
 		"turbo → gpt-5-mini — запасной",
 		"недоступен",
-		"ещё: gemini-2.5-pro, veo-3",
-		"ещё: gpt-5",
+		"ещё: cliproxy/gemini-2.5-pro, cliproxy/veo-3",
+		"ещё: openai/gpt-5",
+		"Переключить: /model <имя> или <аккаунт>/<модель>.",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("account view missing %q: %q", want, out)
 		}
 	}
-	if strings.Contains(out, "ещё: gemini-3-flash") || strings.Contains(out, "ещё: gpt-5-mini") {
+	if strings.Contains(out, "ещё: cliproxy/gemini-3-flash") || strings.Contains(out, "ещё: openai/gpt-5-mini") {
 		t.Fatalf("wired models duplicated into the extra catalog: %q", out)
 	}
 	out = modelCommand(context.Background(), "alice", "/model turbo")
@@ -76,6 +77,52 @@ func TestModelCommandSwitchesThroughRelay(t *testing.T) {
 	out = modelCommand(context.Background(), "alice", "/model secret-model")
 	if !strings.Contains(strings.ToLower(out), "нет права") && !strings.Contains(out, "недоступн") {
 		t.Fatalf("denied switch misreported: %q", out)
+	}
+}
+
+// The relay's switch grant steers what /model advertises: catalog prints
+// directly usable provider/model names, logical lists only registry names,
+// none announces that switching is off. An ad-hoc selection marks the exact
+// catalog entry as current.
+func TestModelCommandSwitchLevelView(t *testing.T) {
+	registry := func(level string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet && r.URL.Path == "/v1/model" {
+				_, _ = io.WriteString(w, `{"model":"gemini-2.5-pro","provider":"cliproxy"}`)
+				return
+			}
+			if r.Method == http.MethodGet && r.URL.Path == "/v1/registry" {
+				_, _ = io.WriteString(w, `{"switch":"`+level+`","models":[{"name":"default","ladder":[{"provider":"cliproxy","model":"gemini-3.8-flash-n"}]}],"accounts":[{"provider":"cliproxy","catalog":["gemini-3.8-flash-n","gemini-2.5-pro"]}]}`)
+				return
+			}
+			_, _ = io.WriteString(w, `{"data":[{"id":"default"}]}`)
+		}
+	}
+	run := func(level string) string {
+		relay := httptest.NewServer(registry(level))
+		defer relay.Close()
+		t.Setenv("HUB_MODEL_RELAY_URL", relay.URL)
+		t.Setenv("HUB_MODEL_RELAY_ADMIN", "admintoken")
+		t.Setenv("HUB_MODEL_RELAY_ADMINS_FILE", "")
+		return modelCommand(context.Background(), "alice", "/model")
+	}
+	out := run("catalog")
+	if !strings.Contains(out, "ещё: cliproxy/gemini-2.5-pro ← текущая") {
+		t.Fatalf("ad-hoc catalog selection not marked current: %q", out)
+	}
+	if !strings.Contains(out, "или <аккаунт>/<модель>") {
+		t.Fatalf("catalog view misses qualified-name hint: %q", out)
+	}
+	out = run("logical")
+	if strings.Contains(out, "ещё:") {
+		t.Fatalf("logical view lists unusable catalog ids: %q", out)
+	}
+	if !strings.Contains(out, "Переключить: /model <имя>.") || strings.Contains(out, "аккаунт/") {
+		t.Fatalf("logical view advertises provider/model switching: %q", out)
+	}
+	out = run("none")
+	if !strings.Contains(out, "Переключение моделей отключено.") {
+		t.Fatalf("none view does not announce the disabled switch: %q", out)
 	}
 }
 
