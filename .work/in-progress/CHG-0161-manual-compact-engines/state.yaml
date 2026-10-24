@@ -1,0 +1,31 @@
+schema: 1
+change: CHG-0161
+title: M17 manual compact — dual engine
+status: in_progress
+branch: feat/m16-dev-merge
+updated: 2026-10-24
+phase: design-complete
+adr: ADR-0075
+spec: SPEC-0073
+requirements: [R1, R2, R3, R4, R5, R6, R7, R8, R9]
+depends_on: [CHG-0160]
+github_milestone: M17 — pending
+github_issue: 309
+design_status: proposed
+implementation_status: not_started
+slices:
+  S2.1-engine-interface-selection: not_started
+  S2.2-hub-engine-pipeline: not_started
+  S2.3-native-engine: not_started
+  S2.4-channel-toolhub-surface: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining: []
+limitations:
+  - "ADR-0075 is Proposed; SPECs are Draft until owner acceptance."
+  - "Native engine needs the pinned upstream symbols; absent -> unsupported refusal."

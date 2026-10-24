@@ -7,6 +7,9 @@ record it points to. `archive/` holds only pre-renumbering originals.
 
 | Specification | Status |
 |---|---|
+| [SPEC-0074](active/SPEC-0074-goal-mode.md) | Draft: persistent /goal mode — dual engine, judge modes, spool continuation |
+| [SPEC-0073](active/SPEC-0073-manual-compaction.md) | Draft: manual compaction — dual engine, upstream semantics, turn-boundary safety |
+| [SPEC-0072](active/SPEC-0072-compression-policy-status.md) | Draft: automatic compaction policy, relay routing, hub sweep, honest status |
 | [SPEC-0071](active/SPEC-0071-session-runtime-discipline.md) | Frozen: session & runtime discipline (renumbered from a duplicate SPEC-0069) |
 | [SPEC-0070](active/SPEC-0070-model-provider-completion.md) | Frozen: model & provider layer completion (renumbered from a duplicate SPEC-0069) |
 | [SPEC-0069](active/SPEC-0069-connector-recovery-and-system-guide.md) | Frozen: connector recovery, access, inventory and mandatory guide delivery |
