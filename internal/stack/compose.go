@@ -182,7 +182,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		}
 	}
 	// Core and control targets share BuildKit layers; only control needs Docker.
-	common := M{"image": "hermes-hub:0.3.0-" + s.Environment, "init": true, "restart": "unless-stopped", "user": fmt.Sprintf("10001:%d", max(0, os.Getgid())), "read_only": true, "cap_drop": []string{"ALL"}, "security_opt": []string{"no-new-privileges:true"}, "shm_size": "1gb", "tmpfs": []string{"/tmp:uid=10001,gid=10001,mode=1777"}, "extra_hosts": []string{"host.docker.internal:host-gateway"}, "logging": M{"driver": "local", "options": M{"max-size": "10m", "max-file": "3"}}}
+	common := M{"image": "hermes-hub:0.3.0-" + s.Environment, "init": true, "restart": "unless-stopped", "user": fmt.Sprintf("10001:%d", max(0, os.Getgid())), "read_only": true, "cap_drop": []string{"ALL"}, "security_opt": []string{"no-new-privileges:true"}, "shm_size": "1gb", "tmpfs": []string{"/tmp:uid=10001,gid=10001,mode=1777"}, "extra_hosts": M{"host.docker.internal": "host-gateway"}, "logging": M{"driver": "local", "options": M{"max-size": "10m", "max-file": "3"}}}
 	coreBuild := M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile", "target": s.Environment}
 	runtimeService := cloneMap(common)
 	runtimeService["env_file"] = runtimeEnvFiles
@@ -190,7 +190,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	runtimeService["volumes"] = stateVolumes
 	runtimeService["ports"] = ports
 	if s.CapabilityMode == "managed" {
-		runtimeService["extra_hosts"] = []string{}
+		runtimeService["extra_hosts"] = M{}
 		runtimeService["tmpfs"] = append(slices.Clone(common["tmpfs"].([]string)),
 			"/state/hermes/skills:ro,mode=0555", "/state/hermes/hooks:ro,mode=0555", "/state/hermes/plugins:ro,mode=0555",
 			"/state/hermes/skill-bundles:ro,mode=0555", "/state/hermes/scripts:ro,mode=0555",
@@ -320,7 +320,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "model-registry", s.Environment)), "target": "/run/model-config", "read_only": true},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "model-relay")), "target": "/run/model-state"},
 		}
-		modelRelay["extra_hosts"] = []string{}
+		modelRelay["extra_hosts"] = M{}
 		// A stable per-space alias on the shared network lets the gateway of
 		// the same space call its own relay (owner model switching) without
 		// colliding with other spaces' model-relay service names.
@@ -328,7 +328,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		services["model-relay"] = modelRelay
 		toolhubRelay := cloneMap(common)
 		toolhubRelay["entrypoint"] = []string{"hub-runtime", "toolhub-relay"}
-		toolhubRelay["extra_hosts"] = []string{}
+		toolhubRelay["extra_hosts"] = M{}
 		toolhubRelay["networks"] = M{sharedNetworkName: M{}, managedAgentNetwork(s): M{"aliases": []string{"toolhub"}}}
 		services["toolhub-relay"] = toolhubRelay
 		if len(egressHosts) > 0 {
@@ -338,7 +338,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			egressRelay := cloneMap(common)
 			egressRelay["entrypoint"] = []string{"hub-runtime", "egress-relay"}
 			egressRelay["environment"] = M{"HUB_EGRESS_RELAY_HOSTS": strings.Join(egressHosts, ",")}
-			egressRelay["extra_hosts"] = []string{}
+			egressRelay["extra_hosts"] = M{}
 			egressRelay["networks"] = M{sharedNetworkName: M{}, managedAgentNetwork(s): M{"aliases": []string{"egress-relay"}}}
 			services["egress-relay"] = egressRelay
 		}

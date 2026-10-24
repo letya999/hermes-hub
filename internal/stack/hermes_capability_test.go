@@ -251,6 +251,26 @@ func TestManagedSupervisedRenderOmitsRuntimeService(t *testing.T) {
 	}
 }
 
+// extra_hosts must always render as a mapping, never the ["host:ip"] sequence:
+// `docker compose -f base -f override` validation rejects sequence values on
+// merge, which breaks every dev-rebuild/dev-image override on these stacks.
+func TestComposeExtraHostsAlwaysMapping(t *testing.T) {
+	for _, s := range []Settings{
+		{Schema: 1, User: "alice", Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, Timezone: "UTC", OAuthPort: 8000, BrowserPort: 6080},
+		{Schema: 1, User: "alice", Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, Timezone: "UTC", OAuthPort: 8000, BrowserPort: 6080, Web: WebSettings{SearchBackend: "keenable"}, Tools: map[string]ToolEntry{"web": {Via: ToolViaNative}}},
+		{Schema: 1, User: "alice", Environment: "dev", Timezone: "UTC", OAuthPort: 8000, BrowserPort: 6080, Tools: testTools("telegram"), Ingress: testIngress("telegram")},
+	} {
+		for name, raw := range Compose(s, t.TempDir(), t.TempDir())["services"].(M) {
+			service := raw.(M)
+			if hosts, present := service["extra_hosts"]; present {
+				if _, ok := hosts.(M); !ok {
+					t.Fatalf("%s renders extra_hosts as %T — compose merge requires a mapping", name, hosts)
+				}
+			}
+		}
+	}
+}
+
 func TestManagedComposeSeparatesHermesDataFromControl(t *testing.T) {
 	s := Settings{Schema: 1, User: "alice", Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, Timezone: "UTC", OAuthPort: 8000, BrowserPort: 6080}
 	topology := Compose(s, t.TempDir(), t.TempDir())
@@ -305,8 +325,8 @@ func TestManagedComposeSeparatesHermesDataFromControl(t *testing.T) {
 	if runtime["environment"].(M)["HUB_TOOLHUB_STORE"] != nil || runtime["read_only"] != true {
 		t.Fatal("managed runtime retains store path or writable image")
 	}
-	if len(runtime["extra_hosts"].([]string)) != 0 {
-		t.Fatal("managed runtime retains host-gateway alias")
+	if hosts, ok := runtime["extra_hosts"].(M); !ok || len(hosts) != 0 {
+		t.Fatalf("managed runtime extra_hosts is not an empty mapping: %T", runtime["extra_hosts"])
 	}
 	if len(runtime["ports"].([]string)) != 0 {
 		t.Fatal("managed runtime exposes legacy host callback ports")
@@ -330,14 +350,15 @@ func TestManagedComposeSeparatesHermesDataFromControl(t *testing.T) {
 	if toolhubRelay["networks"].(M)[managedAgentNetwork(s)].(M)["aliases"].([]string)[0] != "toolhub" {
 		t.Fatal("private agent network lacks the narrow ToolHub MCP alias")
 	}
-	if toolhubRelay["volumes"] != nil || toolhubRelay["env_file"] != nil || toolhubRelay["ports"] != nil || len(toolhubRelay["extra_hosts"].([]string)) != 0 {
+	hosts, hostsOK := toolhubRelay["extra_hosts"].(M)
+	if toolhubRelay["volumes"] != nil || toolhubRelay["env_file"] != nil || toolhubRelay["ports"] != nil || !hostsOK || len(hosts) != 0 {
 		t.Fatalf("ToolHub relay has unnecessary authority: %v", toolhubRelay)
 	}
 	if slices.Contains(services["cliproxy"].(M)["networks"].([]string), managedAgentNetwork(s)) {
 		t.Fatal("agent can bypass model relay and reach CLIProxy directly")
 	}
 	relay := services["model-relay"].(M)
-	if relay["ports"] != nil || len(relay["extra_hosts"].([]string)) != 0 {
+	if relayHosts, relayOK := relay["extra_hosts"].(M); relay["ports"] != nil || !relayOK || len(relayHosts) != 0 {
 		t.Fatalf("model relay has unnecessary authority: %v", relay)
 	}
 	// Bounded authority only: the merged registry mounts read-only, the

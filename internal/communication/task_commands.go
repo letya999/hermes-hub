@@ -518,14 +518,21 @@ func modelCommand(ctx context.Context, principal, text string) string {
 		for _, m := range catalog.Data {
 			names = append(names, m.ID)
 		}
-		current := ""
+		currentName := ""
 		if scode, sbody := call(ctx, http.MethodGet, "/v1/model", nil); scode == http.StatusOK {
 			var sel struct {
 				Model string `json:"model"`
 			}
-			if json.Unmarshal(sbody, &sel) == nil && sel.Model != "" {
-				current = " Текущая: " + sel.Model + "."
+			if json.Unmarshal(sbody, &sel) == nil {
+				currentName = sel.Model
 			}
+		}
+		if view := modelAccountView(ctx, call, currentName); view != "" {
+			return view + "Переключить: /model <имя>."
+		}
+		current := ""
+		if currentName != "" {
+			current = " Текущая: " + currentName + "."
 		}
 		return "Модели: " + strings.Join(names, ", ") + "." + current + " Переключить: /model <имя>."
 	}
@@ -570,4 +577,53 @@ func modelRelayFor(principal string) (base, admin string) {
 		return "", ""
 	}
 	return strings.TrimSpace(entry.URL), strings.TrimSpace(entry.Admin)
+}
+
+// modelAccountView renders /model's account view from the relay's /v1/registry:
+// each logical model with its ordered provider ladder — the first hop is the
+// primary account, the rest are fallbacks, and a cooled-down hop is marked
+// unavailable. Empty when the relay predates the endpoint; the caller then
+// falls back to the plain catalog.
+func modelAccountView(ctx context.Context, call func(context.Context, string, string, []byte) (int, []byte), current string) string {
+	code, body := call(ctx, http.MethodGet, "/v1/registry", nil)
+	if code != http.StatusOK {
+		return ""
+	}
+	var registry struct {
+		Models []struct {
+			Name   string `json:"name"`
+			Ladder []struct {
+				Provider string `json:"provider"`
+				Model    string `json:"model"`
+				Down     bool   `json:"down,omitempty"`
+			} `json:"ladder"`
+		} `json:"models"`
+	}
+	if json.Unmarshal(body, &registry) != nil || len(registry.Models) == 0 {
+		return ""
+	}
+	var out strings.Builder
+	for _, m := range registry.Models {
+		if out.Len() > 0 {
+			out.WriteString("\n")
+		}
+		out.WriteString("• " + m.Name)
+		if m.Name == current {
+			out.WriteString(" — текущая")
+		}
+		out.WriteString(":")
+		for i, hop := range m.Ladder {
+			role := "запасной"
+			if i == 0 {
+				role = "основной"
+			}
+			out.WriteString("\n    " + hop.Provider + " → " + hop.Model + " (" + role)
+			if hop.Down {
+				out.WriteString(", недоступен")
+			}
+			out.WriteString(")")
+		}
+		out.WriteString("\n")
+	}
+	return out.String()
 }

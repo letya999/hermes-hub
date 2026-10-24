@@ -26,6 +26,10 @@ func TestModelCommandSwitchesThroughRelay(t *testing.T) {
 			_, _ = io.WriteString(w, `{"model":"turbo"}`)
 			return
 		}
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/registry" {
+			_, _ = io.WriteString(w, `{"models":[{"name":"default","ladder":[{"provider":"cliproxy","model":"gemini-3.8-flash-n"}]},{"name":"turbo","ladder":[{"provider":"cliproxy","model":"gemini-3-flash"},{"provider":"openai","model":"gpt-5-mini","down":true}]}]}`)
+			return
+		}
 		gotAuth = r.Header.Get("Authorization")
 		var body struct {
 			Model string `json:"model"`
@@ -43,8 +47,13 @@ func TestModelCommandSwitchesThroughRelay(t *testing.T) {
 	t.Setenv("HUB_MODEL_RELAY_ADMIN", "admintoken")
 
 	out := modelCommand(context.Background(), "alice", "/model")
-	if !strings.Contains(out, "default") || !strings.Contains(out, "Текущая: turbo") {
-		t.Fatalf("model list not shown: %q", out)
+	if strings.HasPrefix(out, "\n") || strings.HasPrefix(out, " ") {
+		t.Fatalf("reply starts with whitespace: %q", out)
+	}
+	for _, want := range []string{"turbo", "— текущая", "cliproxy", "gemini-3-flash", "openai", "gpt-5-mini", "основной", "запасной", "недоступен"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("account view missing %q: %q", want, out)
+		}
 	}
 	out = modelCommand(context.Background(), "alice", "/model turbo")
 	if gotAuth != "Bearer admintoken" || gotModel != "turbo" {
@@ -65,6 +74,30 @@ func TestModelCommandWithoutRelay(t *testing.T) {
 	out := modelCommand(context.Background(), "alice", "/model turbo")
 	if !strings.Contains(out, "недоступн") {
 		t.Fatalf("missing relay not reported: %q", out)
+	}
+}
+
+// A relay without /v1/registry (env-mode or older build) still lists models —
+// the account view degrades to the plain catalog, never an error.
+func TestModelCommandListsWithoutRegistryEndpoint(t *testing.T) {
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/models" {
+			_, _ = io.WriteString(w, `{"data":[{"id":"default"},{"id":"turbo"}]}`)
+			return
+		}
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/model" {
+			_, _ = io.WriteString(w, `{"model":"default"}`)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer relay.Close()
+	t.Setenv("HUB_MODEL_RELAY_URL", relay.URL)
+	t.Setenv("HUB_MODEL_RELAY_ADMIN", "admintoken")
+
+	out := modelCommand(context.Background(), "alice", "/model")
+	if !strings.Contains(out, "default") || !strings.Contains(out, "turbo") || !strings.Contains(out, "Текущая") {
+		t.Fatalf("plain catalog not shown: %q", out)
 	}
 }
 

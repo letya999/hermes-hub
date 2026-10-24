@@ -42,6 +42,13 @@ type modelHealth struct {
 	cool time.Time
 }
 
+// down reports whether the provider is still inside its cooldown window.
+func (h *modelHealth) down(now time.Time) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return !h.cool.IsZero() && h.cool.After(now)
+}
+
 var (
 	hopNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,39}$`)
 	envKeyPattern  = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
@@ -422,7 +429,7 @@ func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (ht
 		// Same review-contract fences as the env relay: fixed paths only, no
 		// query strings, absolute-form targets or protocol upgrades.
 		known := (req.Method == http.MethodPost && req.URL.Path == "/v1/chat/completions") ||
-			(req.Method == http.MethodGet && (req.URL.Path == "/v1/models" || req.URL.Path == "/v1/hops" || req.URL.Path == "/v1/quota" || req.URL.Path == "/v1/model")) ||
+			(req.Method == http.MethodGet && (req.URL.Path == "/v1/models" || req.URL.Path == "/v1/hops" || req.URL.Path == "/v1/quota" || req.URL.Path == "/v1/model" || req.URL.Path == "/v1/registry")) ||
 			(req.Method == http.MethodPut && req.URL.Path == "/v1/model")
 		if !known || req.URL.RawPath != "" || req.URL.RawQuery != "" || req.URL.Scheme != "" || req.URL.Host != "" || req.Header.Get("Upgrade") != "" {
 			http.NotFound(w, req)
@@ -441,6 +448,10 @@ func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (ht
 		}
 		if req.URL.Path == "/v1/model" {
 			r.serveSelect(w, req)
+			return
+		}
+		if req.Method == http.MethodGet && req.URL.Path == "/v1/registry" {
+			r.serveRegistry(w, req)
 			return
 		}
 		if req.Method == http.MethodGet && req.URL.Path == "/v1/quota" {
@@ -731,6 +742,48 @@ func (r *relayRegistry) serveSelect(w http.ResponseWriter, req *http.Request) {
 	log.Printf("model-relay owner=%s selected model=%s", r.owner, sel.Model)
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(body)
+}
+
+// serveRegistry reports the owner's granted models with their ordered account
+// ladders — the account view behind /model. Admin-bearer only: provider URLs,
+// env key names and grants stay in the mounted file and never cross the wire.
+func (r *relayRegistry) serveRegistry(w http.ResponseWriter, req *http.Request) {
+	if r.admin == "" || req.Header.Get("Authorization") != "Bearer "+r.admin {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	file, err := r.current()
+	if err != nil {
+		http.Error(w, "model registry unavailable", http.StatusBadGateway)
+		return
+	}
+	type hop struct {
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+		Down     bool   `json:"down,omitempty"`
+	}
+	type model struct {
+		Name   string `json:"name"`
+		Ladder []hop  `json:"ladder"`
+	}
+	models := make([]model, 0, len(file.Models))
+	for name, entry := range file.Models {
+		if !r.granted(file, entry) {
+			continue
+		}
+		ladder := make([]hop, 0, len(entry.Ladder))
+		for _, ref := range entry.Ladder {
+			h := hop{Provider: ref.Provider, Model: ref.Model}
+			if health := r.health[ref.Provider]; health != nil && health.down(time.Now()) {
+				h.Down = true
+			}
+			ladder = append(ladder, h)
+		}
+		models = append(models, model{Name: name, Ladder: ladder})
+	}
+	slices.SortFunc(models, func(a, b model) int { return strings.Compare(a.Name, b.Name) })
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"models": models})
 }
 
 // requestedModel returns the logical model name in the request body, if any.

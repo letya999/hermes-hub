@@ -46,6 +46,10 @@ values in compose. Quota accounting lives in `model_relay_quota.go`.
   a mapped one can only switch its own granted models.
 - `PUT /v1/model` switches the logical model (admin bearer only);
   `GET /v1/model` reports the effective selection (same bearer).
+  `GET /v1/registry` (admin bearer) reports each granted model with its
+  ordered provider ladder — `{name, ladder:[{provider, model, down}]}` —
+  which is the account view `/model` renders; provider URLs, env key names
+  and grant ids never leave the mounted file.
 - Spawned runtimes reach the relay over the managed agent network. They do not
   mount the registry, provider keys, Broker signing key or switch-admin bearer.
 

@@ -561,6 +561,116 @@ models:
 	}
 }
 
+// /v1/registry is the account view behind /model: the owner's granted models
+// with their ordered provider ladders. URLs, env key names, grants and other
+// credential fields must never appear in the response.
+func TestModelRelayRegistryEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	registry := filepath.Join(dir, "models.yaml")
+	content := `providers:
+  a:
+    url: http://secret-upstream-a.internal:9000
+    key_env: MODEL_API_KEY_A
+  b:
+    url: http://secret-upstream-b.internal:9000
+    owners: [alice]
+models:
+  default:
+    ladder:
+      - {provider: a, model: qwen3}
+      - {provider: b, model: gpt-5-mini}
+  turbo:
+    ladder:
+      - {provider: b, model: gpt-5}
+`
+	if err := os.WriteFile(registry, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := modelRelayRegistryHandler(registry, filepath.Join(dir, "sel.json"), "alice", "admintoken")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	get := func(auth string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/v1/registry", nil)
+		if auth != "" {
+			req.Header.Set("Authorization", "Bearer "+auth)
+		}
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+
+	if rec := get(""); rec.Code != http.StatusForbidden {
+		t.Fatalf("registry readable without admin token: %d", rec.Code)
+	}
+	rec := get("admintoken")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("registry rejected admin: %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, leak := range []string{"secret-upstream", "MODEL_API_KEY_A", "url", "key_env", "owners", "grant"} {
+		if strings.Contains(body, leak) {
+			t.Fatalf("registry response leaks %q: %s", leak, body)
+		}
+	}
+	var doc struct {
+		Models []struct {
+			Name   string `json:"name"`
+			Ladder []struct {
+				Provider string `json:"provider"`
+				Model    string `json:"model"`
+				Down     bool   `json:"down,omitempty"`
+			} `json:"ladder"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Models) != 2 {
+		t.Fatalf("granted models missing: %+v", doc)
+	}
+	var def *struct {
+		Name   string `json:"name"`
+		Ladder []struct {
+			Provider string `json:"provider"`
+			Model    string `json:"model"`
+			Down     bool   `json:"down,omitempty"`
+		} `json:"ladder"`
+	}
+	for i := range doc.Models {
+		if doc.Models[i].Name == "default" {
+			def = &doc.Models[i]
+		}
+	}
+	if def == nil || len(def.Ladder) != 2 || def.Ladder[0].Provider != "a" || def.Ladder[0].Model != "qwen3" || def.Ladder[1].Provider != "b" || def.Ladder[1].Model != "gpt-5-mini" {
+		t.Fatalf("default ladder not preserved in order: %+v", doc.Models)
+	}
+	if def.Ladder[0].Down {
+		t.Fatal("fresh provider reported as cooling down")
+	}
+
+	// A transport failure cools the provider down; the registry must expose it
+	// so /model can mark the account as unavailable instead of just "backup".
+	chat := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"default","messages":[]}`))
+	chat.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(httptest.NewRecorder(), chat)
+	rec = get("admintoken")
+	if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	for i := range doc.Models {
+		if doc.Models[i].Name != "default" {
+			continue
+		}
+		for _, h := range doc.Models[i].Ladder {
+			if h.Provider == "a" && !h.Down {
+				t.Fatalf("failed provider not marked down: %+v", doc.Models[i])
+			}
+		}
+	}
+}
+
 func TestModelRelayRegistryModeFromEnv(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `{"choices":[]}`)
