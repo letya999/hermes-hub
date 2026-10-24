@@ -1,6 +1,6 @@
 ---
 description: communication-hub — channel gateway: Telegram/Slack adapters, inbound routing, credential forms, spool, control API.
-last_verified: 2026-10-20
+last_verified: 2026-10-24
 ---
 
 # communication-hub
@@ -37,8 +37,11 @@ everything entering or leaving the human conversation. Listens
 (delivery targets), `HUB_TOOLHUB_URL` (`toolhub:8090` direct or
 `toolhub-control:8090` via supervisor), `HUB_TELEGRAM_AUTH_ENABLED`,
 `HUB_COMMUNICATION_CONFIG` (`communication.users.yaml` — sibling Telegram
-identities; `TELEGRAM_ALLOWED_USERS` is the infra-owner fallback),
-`HUB_MODEL_RELAY_URL` + `model-relay.auth` in managed mode,
+identities; `TELEGRAM_ALLOWED_USERS` is the bot-level allowlist and must
+contain every owner's numeric id),
+`HUB_MODEL_RELAY_URL` + `model-relay.auth` only when the gateway itself is
+rendered inside a managed space (shared comm-hub serving managed principals
+has no per-principal relay — `/model` is unavailable there),
 `HUB_STT_URL`/`HUB_TTS_URL` + `media.auth` when `transcription` is on,
 `HUB_CREDENTIAL_BROKER_APPROVE_*` (broker client for approvals).
 

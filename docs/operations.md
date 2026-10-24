@@ -1,6 +1,6 @@
 ---
 description: Operator runbook — stack lifecycle, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
-last_verified: 2026-10-23
+last_verified: 2026-10-24
 ---
 
 # Operations
@@ -391,6 +391,134 @@ audiences `broker:control`+`broker:runtime`, install the
 service-level identity), write the grant id to `spaces/<u>/media.grant`,
 re-render. Fallback for standalone runs: `HUB_MEDIA_UPSTREAM_KEY`/
 `OPENAI_API_KEY`/`FAL_KEY` env; a fal engine with neither refuses to boot.
+
+Operational facts proven by live acceptance:
+
+- `media.grant` reaches the container only through `hubctl up`/`down`,
+  which feeds the file into compose interpolation (`${HUB_MEDIA_BROKER_GRANT}`).
+  A raw `docker compose up` renders the variable empty: hub-media then runs
+  the `remote` engine with no credential, sends no `Authorization`, and the
+  upstream answers 401 — surfaced to callers only as
+  `"image generation failed"`. Same applies to `supervisor.auth` →
+  `HUB_SUPERVISOR_AUTH`: a compose call without it fails interpolation
+  outright. Always bring rendered stacks up through `hubctl up`, or export
+  both variables explicitly. Verify post-recreate:
+  `docker inspect` on the service shows the grant in `.Config.Env`.
+- The env-key fallback is unreachable in a rendered stack: compose mounts no
+  media env file and injects no `HUB_MEDIA_UPSTREAM_KEY`/`OPENAI_API_KEY` —
+  without a grant the service simply has no upstream credential. There is no
+  silent "works anyway" mode; treat upstream-401 symptoms as a missing grant
+  first, a provider problem second.
+- Gemini-family image models (`gemini-*-image`, e.g.
+  `gemini-3.1-flash-image`) do not serve `/v1/images/generations`; cliproxy
+  routes them through `/v1/chat/completions` with
+  `modalities: ["image","text"]`. hub-media takes that path automatically
+  for ids listed in `HUB_MEDIA_CHAT_MODELS` (the default list covers the
+  cliproxy Gemini image ids) and parses `choices[0].message.images[]`. The
+  plain `/v1/images/generations` contract is reserved for `gpt-image-*`,
+  `grok-imagine-*` and openai-compatibility image models.
+- Image generation deliberately runs on the **shared** cliproxy behind the
+  broker-grant key — not the owner's dedicated cliproxy. Owner isolation for
+  media is the grant+policy binding, not per-owner proxy auth.
+
+## Additional managed owners (multi-principal bring-up)
+
+Adding or renaming a managed principal touches more files than one
+`hubctl init`: the pieces below were each proven load-bearing on a live
+two-owner dev stack (renames `telegram-*` → named principals). Skipping any
+of them fails silently — empty tool lists, `model_not_found`, 401s — rather
+than loudly.
+
+Files and records per owner:
+
+- `spaces/<owner>/agent.yaml` — `user: <owner>` (this is the principal id
+  rendered everywhere), `model:` must be a **registry id** from models.yaml
+  (e.g. `default`), not an upstream model name. Upstream names with dots
+  (`gemini-3.8-flash-high`) fail `registryNamePattern` validation.
+- `models.yaml` — registry ids are logical names without dots (`default`,
+  `alt`); each ladder hop's `model:` must exist in **that owner's** cliproxy
+  `/v1/models` catalog — dedicated instances may expose different catalogs.
+  Hot reload applies edits without restart.
+- `spaces/local/communication.users.yaml` — hand-edited: `id`, `runtime_id`,
+  `telegram_ids`, `policy_version`. The policy version must equal the
+  rendered stack policy (`policy-<hash>` from the space's generated files);
+  a stale value produces a silently empty `tools/list` — the runtime passes
+  health checks and the agent sees zero tools.
+- `communication.<env>.env` — `TELEGRAM_ALLOWED_USERS` must include every
+  owner's numeric Telegram id; an absent id is rejected at bot level before
+  any users.yaml routing.
+- `spaces/<owner>/cliproxy/` (dedicated mode) — own `config.yaml`, own
+  `api-key`, own `auths/` dir. Never copy another owner's keys or upstream
+  auth material: the point of dedicated mode is independent accounts.
+- `secrets.<env>.env`, `runtime.auth`, `model-relay.auth`,
+  `media.auth` — per-owner bearers; `model-relay.auth` carries two distinct
+  tokens: `HUB_MODEL_RELAY_AUTH` (runtime→relay chat/quota) and
+  `HUB_MODEL_RELAY_ADMIN` (the owner-facing `PUT /v1/model` switch — the
+  chat bearer gets 403 on it by design).
+- Capability store — after a rename/re-render the stack policy id changes;
+  reconfirm the owner's profile onto the new `policy_version` and create
+  the `hub-agent-tools` binding via `hubctl capability … --confirm`. Stop
+  toolhub during store writes: a running toolhub rewrites `store.json`
+  between the CLI's load and save, and the write fails on drift.
+- Infra re-render — re-render the infra space (`spaces/local`) after adding
+  or renaming a principal: `EnrollSiblingRuntimeTokens` rewrites
+  `toolhub-tokens.json`, and comm-hub only accepts enrolled runtime tokens.
+- Broker key volume — a freshly created owner stack gets an empty
+  `broker-secrets-*` volume; the relay exits with
+  `credential broker CA file is invalid` until `server.crt` and the key
+  material (0600, uid 10001) are provisioned — same procedure as
+  `broker-secrets-media` above.
+- Compose interpolation — `hubctl up` additionally injects
+  `supervisor.auth`/`media.grant` into compose env; see Media credentials
+  for why raw `docker compose` breaks the stack.
+
+Verification sequence (each step proved a real failure mode):
+
+```text
+# inside any runtime-network container:
+getent hosts cliproxy cliproxy-<owner>        # cliproxy → exactly the infra
+                                            # IP; dedicated cliproxy must
+                                            # never claim the shared alias
+curl -s -o /dev/null -w '%{http_code}' \
+    http://cliproxy-<owner>:8317/v1/models    # 401 unauthenticated
+# own cliproxy key → 200; sibling's key → 401
+curl -s -H "Authorization: Bearer <relay-auth>" \
+    http://model-relay-<owner>:8318/v1/models # own bearer → 200 catalog
+# sibling relay bearer → 403; sibling admin on this relay → forbidden
+PUT /v1/model {"model":"alt"} with the admin bearer
+POST /v1/chat/completions → response's "model" shows the new ladder's
+    upstream name; PUT back to default afterwards
+POST /v1/mock/message (comm-hub, principal header) → outbox delivery
+    proves wake→spawn→admission→reply end-to-end
+```
+
+Known traps from live acceptance:
+
+- **Dedicated cliproxy must not claim `cliproxy` on the shared runtime
+  network.** A service literally named `cliproxy` gets the implicit alias
+  and DNS round-robins owner traffic to the wrong instance (random 401s).
+  Owner-scoped names/aliases only; verify with `getent` as above.
+- **Stale container images mask everything.** `dev-rebuild` the service
+  before trusting evidence — a pre-change `hermes-hub:0.3.0-dev` supervisor,
+  toolhub, relay or hub-media silently shows old behavior. Check
+  `docker inspect` shows a `…:local` overlay image under `.Config.Image`.
+- **Default `HUB_MODEL_RELAY_HOP_TIMEOUT` (30 s) is shorter than a
+  multi-image vision call** on a cold cliproxy → honest upstream work reads
+  as a 502. Raise it in `model-relay.<env>.env` for acceptance runs.
+- **ToolHub restart kills live MCP sessions** inside spawned runtimes —
+  after any toolhub recreate, kill and re-wake runtimes rather than reusing.
+- **Renamed/migrated spaces can carry corrupt SQLite state** — a malformed
+  `managed/<env>/hermes/state.db` lets the runtime boot and answer
+  readiness while every job stalls `uncertain`. Check
+  `PRAGMA integrity_check` on each `managed/<env>/hermes/*.db` after a
+  rename or host migration.
+- **`/model` chat command is currently dead for managed principals** behind
+  the shared comm-hub: `HUB_MODEL_RELAY_URL`/`model-relay.auth` are rendered
+  only into a gateway inside its own managed space, and managed spaces run
+  no gateway — so the command replies "недоступно". Model switching works
+  through the relay admin `PUT /v1/model` (see verification above); a
+  per-principal relay resolution in comm-hub is a known gap, not a secret
+  feature to debug.
 
 ## Preflight and misc
 

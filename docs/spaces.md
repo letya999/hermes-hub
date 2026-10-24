@@ -1,6 +1,6 @@
 ---
 description: spaces/<id>/ layout — settings.yaml, generated configs, secrets/env files, state dirs, and what is hand-edited vs rendered.
-last_verified: 2026-10-20
+last_verified: 2026-10-24
 ---
 
 # Spaces
@@ -25,7 +25,10 @@ wrong file are rejected by name, not merged.
 | `secrets.<env>.env` | operator | Provider keys for this space (`TELEGRAM_BOT_TOKEN`, `GOOGLE_*`, `GITLAB_TOKEN`, …) — named by feature `requires`. Never committed beyond the local operator flow |
 | `runtime.<env>.env`, `communication.<env>.env`, `model-relay.<env>.env` | operator | Per-service env, one file per environment |
 | `runtime.auth`, `media.auth`, `model-relay.auth`, `toolhub-tokens.json`, `supervisor.auth` | operator | Bearer files — auth between services, never literal secrets in compose |
-| `communication.users.yaml` | operator | Sibling Telegram identities for the gateway; `TELEGRAM_ALLOWED_USERS` is the infra-owner fallback |
+| `communication.users.yaml` | operator | Sibling Telegram identities for the gateway; `id`/`runtime_id`/`telegram_ids`/`policy_version` must match the rendered stack policy or tool projection silently returns an empty list; `TELEGRAM_ALLOWED_USERS` is the bot-level allowlist and must contain every owner's id |
+| `models.yaml` | operator | Logical model registry: ids without dots (`default`, `alt`), each ladder hop's `model:` an upstream name present in that space's cliproxy `/v1/models`. `agent.yaml model:` references a registry id. Hot-reloaded by model-relay |
+| `media.grant` | operator | hub-media's broker grant id — not a secret; consumed only through `hubctl up` compose interpolation, never mounted |
+| `cliproxy/` | operator | Dedicated-proxy material (`config.yaml`, `api-key`, `auths/`) when `cliproxy: dedicated` — per-owner accounts, never copied between spaces |
 | `telegram-auth.<env>.env` | operator | Telegram QR auth app API pair when `telegram_auth` is on (default for telegram stacks) |
 
 `tools:` backends: `native` (upstream toolset in-runtime — no per-call

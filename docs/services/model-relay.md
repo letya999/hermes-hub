@@ -1,6 +1,6 @@
 ---
 description: model-relay — per-space model selection endpoint for managed spaces; layered models.yaml, owner switch bearer, cliproxy upstream.
-last_verified: 2026-10-20
+last_verified: 2026-10-24
 ---
 
 # model-relay
@@ -26,15 +26,20 @@ network.
 ## Env and secrets
 
 Env files: `runtime.<env>.env` + `model-relay.<env>.env` + `model-relay.auth`.
-Provider `key_env` names resolve from the space's own secrets env file; the
-owner-facing switch bearer comes from `model-relay.auth` — never as literal
-values in compose. Quota accounting lives in `model_relay_quota.go`.
+Provider `key_env` names resolve from the space's own secrets env file.
+`model-relay.auth` carries two bearers: `HUB_MODEL_RELAY_AUTH` (runtime→relay
+chat/quota/catalog) and `HUB_MODEL_RELAY_ADMIN` (the `PUT /v1/model` owner
+switch; the chat bearer gets 403 on it). Neither appears as a literal value
+in compose. Quota accounting lives in `model_relay_quota.go`.
 
 ## Consumers
 
-- `communication-hub` gets `HUB_MODEL_RELAY_URL=http://model-relay-<user>:
-  8318` plus the `model-relay.auth` env file in managed mode, so channel
-  surfaces (e.g. `/model` commands) go through the relay rather than the
-  runtime.
+- A `communication-hub` rendered **inside** a managed space gets
+  `HUB_MODEL_RELAY_URL=http://model-relay-<user>:8318` plus the
+  `model-relay.auth` env file, so `/model` goes through the relay. Managed
+  spaces render no gateway of their own, though: a shared comm-hub serving
+  several managed principals has no per-principal relay env, so `/model`
+  there answers "недоступно" today — switching is an operator action via
+  the admin bearer (`PUT /v1/model`) until per-principal resolution exists.
 - Spawned runtimes inherit the same merged registry and reach the relay over
   the managed agent network.
