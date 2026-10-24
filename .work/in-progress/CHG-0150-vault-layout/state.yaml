@@ -1,0 +1,29 @@
+schema: 1
+change: CHG-0150
+title: Vault layout, feature gate and CORE injection
+status: in_progress
+branch: feat/m20-knowledge-memory
+updated: 2026-10-24
+phase: design-complete
+adr: ADR-0073
+spec: SPEC-0070
+requirements: [R1.1, R1.2, R1.3, R1.4, R1.5]
+depends_on: []
+github_milestone: M20 — Memory Vault and Knowledge Surface
+github_issue: 299
+design_status: accepted
+implementation_status: not_started
+slices:
+  S1.1-feature: not_started
+  S1.2-scaffold-mount: not_started
+  S1.3-card-schema: not_started
+  S1.4-core-injection: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining: []
+limitations: []

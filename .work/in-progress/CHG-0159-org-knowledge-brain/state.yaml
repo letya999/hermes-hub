@@ -1,0 +1,27 @@
+schema: 1
+change: CHG-0159
+title: Org knowledge brain read-only shared OK
+status: in_progress
+branch: feat/m20-knowledge-memory
+updated: 2026-10-24
+phase: design-complete
+adr: ADR-0073
+spec: SPEC-0070
+requirements: [R10.1]
+depends_on: []
+github_milestone: M20 — Memory Vault and Knowledge Surface
+github_issue: 308
+design_status: accepted
+implementation_status: not_started
+slices:
+  S10.1-org-render: not_started
+  S10.2-member-access: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining: []
+limitations: []

@@ -1,0 +1,29 @@
+schema: 1
+change: CHG-0156
+title: OpenKnowledge MCP wiring and capability split
+status: in_progress
+branch: feat/m20-knowledge-memory
+updated: 2026-10-24
+phase: design-complete
+adr: ADR-0073
+spec: SPEC-0070
+requirements: [R7.1, R7.2, R7.3, R7.4]
+depends_on: []
+github_milestone: M20 — Memory Vault and Knowledge Surface
+github_issue: 305
+design_status: accepted
+implementation_status: not_started
+slices:
+  S7.1-read-surface: not_started
+  S7.2-write-verbs: not_started
+  S7.3-org-readonly: not_started
+  S7.4-boundary-contract: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining: []
+limitations: []

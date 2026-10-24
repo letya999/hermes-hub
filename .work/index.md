@@ -16,6 +16,16 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0159](in-progress/CHG-0159-org-knowledge-brain/plan.md) | M20 stage 10 (optional): org shared brain — read-only OpenKnowledge over org material |
+| [CHG-0158](in-progress/CHG-0158-memory-migration-eval/plan.md) | M20 stage 9: Honcho/native export to cards, memory-eval fixture, `memory vacuum` |
+| [CHG-0157](in-progress/CHG-0157-knowledge-ui-edge/plan.md) | M20 stage 8: loopback `ui_port` + SSH tunnel docs; M18 edge hook |
+| [CHG-0156](in-progress/CHG-0156-openknowledge-mcp/plan.md) | M20 stage 7: OK MCP read/write capability split (`knowledge_ui` / `knowledge_ui_write`) |
+| [CHG-0155](in-progress/CHG-0155-openknowledge-service/plan.md) | M20 stage 6: pinned single-replica OpenKnowledge service per space |
+| [CHG-0154](in-progress/CHG-0154-memory-card-contract/plan.md) | M20 stage 5: `memory_card` fact/truth/merge contract + memory-zone write guards |
+| [CHG-0153](in-progress/CHG-0153-memory-search/plan.md) | M20 stage 4: `memory_search` BM25+link-graph, scope confinement, maintenance pass |
+| [CHG-0152](in-progress/CHG-0152-memory-night-rollup/plan.md) | M20 stage 3: hub-owned nightly rollup — summaries, evidence facts, Compiled Truth, CORE edits |
+| [CHG-0151](in-progress/CHG-0151-daily-leaf-ingest/plan.md) | M20 stage 2: verbatim daily leaf ingest from the communication plane |
+| [CHG-0150](in-progress/CHG-0150-vault-layout/plan.md) | M20 stage 1: `spaces/<id>/vault/` git substrate, `memory_vault` feature, CORE injection |
 | [CHG-0147](in-progress/CHG-0147-m14-acceptance/plan.md) | Milestone 14 acceptance and connector lifecycle repair |
 | [CHG-0144](in-progress/CHG-0144-recipe-oauth/plan.md) | Recipe-driven OAuth for prepared and runtime MCP installation |
 | [CHG-0143](in-progress/CHG-0143-oauth-viewer-link-flows/plan.md) | OAuth resend rotation, broker grant-epoch fix, viewer-link relay — retroactive record for the uncommitted branch diff |

@@ -1,0 +1,27 @@
+schema: 1
+change: CHG-0157
+title: Knowledge-UI human access edge
+status: in_progress
+branch: feat/m20-knowledge-memory
+updated: 2026-10-24
+phase: design-complete
+adr: ADR-0073
+spec: SPEC-0070
+requirements: [R8.1, R8.2, R8.3]
+depends_on: []
+github_milestone: M20 — Memory Vault and Knowledge Surface
+github_issue: 306
+design_status: accepted
+implementation_status: not_started
+slices:
+  S8.1-ui-port: not_started
+  S8.2-tunnel-docs: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining: []
+limitations: []

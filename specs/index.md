@@ -7,6 +7,7 @@ record it points to. `archive/` holds only pre-renumbering originals.
 
 | Specification | Status |
 |---|---|
+| [SPEC-0070](active/SPEC-0070-memory-vault-openknowledge.md) | Frozen: M20 memory vault (leaves, cards, summaries, CORE, rollup, search, write contract) and opt-in OpenKnowledge surface |
 | [SPEC-0069](active/SPEC-0069-connector-recovery-and-system-guide.md) | Frozen: connector recovery, access, inventory and mandatory guide delivery |
 | [SPEC-0068](active/SPEC-0068-dynamic-session-contract.md) | Frozen: bounded owner-only dynamic JSON sessions |
 | [SPEC-0067](active/SPEC-0067-recipe-oauth.md) | Frozen: recipe-driven OAuth installation |
