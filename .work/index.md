@@ -16,6 +16,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0150](in-progress/CHG-0150-m15-completion/plan.md) | M15 completion; merged from isolated worktree, Docker/live acceptance pending (renumbered from duplicate CHG-0145) |
 | [CHG-0147](in-progress/CHG-0147-m14-acceptance/plan.md) | Milestone 14 acceptance and connector lifecycle repair |
 | [CHG-0144](in-progress/CHG-0144-recipe-oauth/plan.md) | Recipe-driven OAuth for prepared and runtime MCP installation |
 | [CHG-0143](in-progress/CHG-0143-oauth-viewer-link-flows/plan.md) | OAuth resend rotation, broker grant-epoch fix, viewer-link relay — retroactive record for the uncommitted branch diff |

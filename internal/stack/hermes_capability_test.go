@@ -348,7 +348,7 @@ func TestManagedComposeSeparatesHermesDataFromControl(t *testing.T) {
 		relayMounts = append(relayMounts, fmt.Sprint(m.(M)["target"]))
 	}
 	slices.Sort(relayMounts)
-	if fmt.Sprint(relayMounts) != "[/run/model-state /run/models.yaml]" {
+	if fmt.Sprint(relayMounts) != "[/run/broker-secrets /run/model-config /run/model-state]" {
 		t.Fatalf("model relay mounts widened: %v", relayMounts)
 	}
 	var relayEnvFiles int

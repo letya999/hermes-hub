@@ -302,10 +302,13 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			cliproxyURL = "http://cliproxy-" + s.User + ":8317"
 		}
 		modelRelay["environment"] = M{
-			"HUB_MODEL_RELAY_REGISTRY": "/run/models.yaml",
+			"HUB_MODEL_RELAY_REGISTRY": "/run/model-config/models.yaml",
 			"HUB_MODEL_RELAY_STATE":    "/run/model-state/model-select.json",
 			"HUB_MODEL_RELAY_OWNER":    s.User,
 			"HUB_MODEL_RELAY_CLIPROXY": cliproxyURL,
+		}
+		for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_MODEL_", "model", "hermes-model-relay") {
+			modelRelay["environment"].(M)[key] = value
 		}
 		modelRelay["env_file"] = []any{
 			M{"path": filepath.ToSlash(filepath.Join(dir, "runtime."+s.Environment+".env")), "format": "raw"},
@@ -313,7 +316,8 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			M{"path": filepath.ToSlash(filepath.Join(dir, "model-relay.auth")), "format": "raw"},
 		}
 		modelRelay["volumes"] = []any{
-			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "models."+s.Environment+".yaml")), "target": "/run/models.yaml", "read_only": true},
+			brokerSecrets("model"),
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "model-registry", s.Environment)), "target": "/run/model-config", "read_only": true},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "model-relay")), "target": "/run/model-state"},
 		}
 		modelRelay["extra_hosts"] = []string{}
@@ -617,6 +621,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			// points at a mounted runner script).
 			"HUB_MEDIA_ENGINES":        "${HUB_MEDIA_ENGINES:-}",
 			"HUB_MEDIA_MODEL_ROUTES":   "${HUB_MEDIA_MODEL_ROUTES:-}",
+			"HUB_MEDIA_PROVIDERS":      "${HUB_MEDIA_PROVIDERS:-}",
 			"HUB_MEDIA_COMMAND":        "${HUB_MEDIA_COMMAND:-}",
 			"HUB_MEDIA_UPSTREAM":       "${HUB_MEDIA_UPSTREAM:-http://cliproxy:8317}",
 			"HUB_MEDIA_QUEUE_UPSTREAM": "${HUB_MEDIA_QUEUE_UPSTREAM:-}",
@@ -662,6 +667,9 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	// Secondary spaces still declare broker-secrets-runtime: the supervisor
 	// mounts it by project-derived name into that user's spawned runtimes.
 	volumes := M{"broker-secrets-runtime": M{}}
+	if s.CapabilityMode == "managed" {
+		volumes["broker-secrets-model"] = M{}
+	}
 	result := M{"name": "hermes-hub-" + s.User + "-" + s.Environment, "services": services, "volumes": volumes}
 	if infra {
 		volumes["communication-hub-data"] = M{}

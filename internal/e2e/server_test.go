@@ -240,6 +240,10 @@ func TestServerRequiresExplicitPrincipalBeforeAnySend(t *testing.T) {
 	if err != nil || len(report.Results) != 1 || report.Results[0].Status != "BLOCKED" {
 		t.Fatal("unsupported live oracle passed", report, err)
 	}
+	report, err = Server(t.Context(), []Case{{ID: "E2E-021", Surface: "hub", Name: "images_inspect"}}, "alice", io.Discard)
+	if err != nil || len(report.Results) != 1 || !strings.Contains(report.Results[0].Reason, "owner image fixture") {
+		t.Fatalf("multi-image case did not reach admission oracle: %v err=%v", report, err)
+	}
 }
 
 func TestServerStopsAfterFailureBeforeAnotherAdmission(t *testing.T) {

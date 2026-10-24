@@ -394,6 +394,27 @@ re-render. Fallback for standalone runs: `HUB_MEDIA_UPSTREAM_KEY`/
 
 ## Preflight and misc
 
+For M15 model changes, run offline `hubctl doctor --dir spaces/<owner> --env
+dev|prod` first. It prints effective model/endpoint/proxy scope and compares the
+merged registry, referenced env credentials and proxy placement against rendered
+files. The apply plan names only the owner relay/proxy or next owner runtime;
+provider entries denied to that owner do not trigger credential restarts.
+Values and Broker grant IDs are not printed. The comparison is against generated
+configuration, not a claim about a live container's loaded state. Render each
+affected space, then deliberately apply only the services listed by the plan.
+The first upgrade to the directory-mounted registry also requires recreating
+the owner's relay to adopt that mount. Do not broadly restart other owners.
+
+Broker model identity provisioning and account-specific grants are described in
+[model-relay](services/model-relay.md#broker-provisioning-operator-action).
+Media per-engine grants and opt-in workflow storage are in
+[media services](services/media.md). E2E-021 now has a server oracle for two
+random workspace images, comparison output and whole-set rejection of an
+unavailable third image. Running it with a real channel sends messages and
+requires the owner's concrete instruction; fixture tests do not establish live
+acceptance. A two-owner identity/read check likewise needs actual documented
+provider identity evidence; do not invent a universal identity endpoint.
+
 - `hubctl doctor --dir … --live` queries the provider `/v1/models` exactly —
   needs host reachability (internal DNS may not resolve from host); for
   cliproxy it uses the loopback-published port. Offline `doctor` never

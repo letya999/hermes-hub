@@ -6,6 +6,7 @@ last_verified: 2026-10-20
 
 | Record | Decision |
 |---|---|
+| [ADR-0073](ADR-0073-model-provider-boundaries.md) | Model & provider layer boundaries (renumbered from a duplicate ADR-0072) |
 | [ADR-0072](ADR-0072-connector-recovery-and-system-guide.md) | Owner-bound encrypted recovery, truthful inventory and mandatory reference guidance |
 | [ADR-0071](ADR-0071-dynamic-session-contract.md) | Bounded owner-only dynamic JSON session contracts |
 | [ADR-0070](ADR-0070-recipe-oauth.md) | Recipe-driven OAuth and lease-local token file views |

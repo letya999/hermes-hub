@@ -324,7 +324,7 @@ func TestDocumentImageProfile(t *testing.T) {
 	}
 	// Engine ladder + model routes ride the deploy env, same contract as the
 	// other HUB_MEDIA_* knobs — the sidecar never sees literal credentials.
-	for _, want := range []string{"HUB_MEDIA_ENGINES", "HUB_MEDIA_MODEL_ROUTES", "HUB_MEDIA_COMMAND"} {
+	for _, want := range []string{"HUB_MEDIA_ENGINES", "HUB_MEDIA_MODEL_ROUTES", "HUB_MEDIA_COMMAND", "HUB_MEDIA_PROVIDERS"} {
 		v, ok := mediaEnv[want].(string)
 		if !ok || !strings.Contains(v, want) {
 			t.Fatalf("hub-media missing %s passthrough: %#v", want, mediaEnv[want])

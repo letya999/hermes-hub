@@ -65,15 +65,16 @@ type Settings struct {
 	ModelURL        string               `yaml:"model_url"`
 	// Cliproxy selects the proxy topology: "shared" (default) resolves the
 	// infra space's instance; "dedicated" renders a cliproxy per space.
-	Cliproxy        string `yaml:"cliproxy,omitempty"`
-	Timezone        string `yaml:"timezone"`
-	GoogleEmail     string `yaml:"google_email"`
-	GitLabHost      string `yaml:"gitlab_host"`
-	DesktopURL      string `yaml:"desktop_url"`
-	DraftsURL       string `yaml:"drafts_url"`
-	OAuthPort       int    `yaml:"oauth_port"`
-	BrowserPort     int    `yaml:"browser_port"`
-	SlackEventsPort int    `yaml:"slack_events_port,omitempty"`
+	Cliproxy            string `yaml:"cliproxy,omitempty"`
+	CliproxyCredentials string `yaml:"cliproxy_credentials,omitempty"`
+	Timezone            string `yaml:"timezone"`
+	GoogleEmail         string `yaml:"google_email"`
+	GitLabHost          string `yaml:"gitlab_host"`
+	DesktopURL          string `yaml:"desktop_url"`
+	DraftsURL           string `yaml:"drafts_url"`
+	OAuthPort           int    `yaml:"oauth_port"`
+	BrowserPort         int    `yaml:"browser_port"`
+	SlackEventsPort     int    `yaml:"slack_events_port,omitempty"`
 	// Infra marks the space that renders the shared control plane (ToolHub,
 	// Credential Broker, workload-controller, cliproxy, communication-hub).
 	// Exactly one deployed space must render it; secondary spaces set
@@ -362,6 +363,12 @@ func (s Settings) Validate() error {
 		}
 	default:
 		return fmt.Errorf("cliproxy must be shared or dedicated")
+	}
+	if s.CliproxyCredentials == "private" && s.Cliproxy != "dedicated" {
+		return fmt.Errorf("private cliproxy credentials require dedicated placement; shared proxy identity routing is not proven")
+	}
+	if s.CliproxyCredentials != "" && s.CliproxyCredentials != "private" && s.CliproxyCredentials != "shared" {
+		return fmt.Errorf("cliproxy_credentials must be private or shared")
 	}
 	if s.Schema < 1 || s.Schema > 3 || !idPattern.MatchString(s.User) {
 		return fmt.Errorf("schema must be 1..3 and profile a lowercase identifier")

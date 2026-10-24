@@ -72,25 +72,34 @@ func ensureMediaAuth(path string) error {
 // presents to its own space's model-relay for owner model switching.
 func ensureModelRelayAuth(path string) error {
 	info, err := os.Lstat(path) // #nosec G703 -- path under the stack render dir
+	values := map[string]string{}
 	if err == nil {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("model-relay auth must be a regular file")
 		}
+		values, err = ReadSecrets(path)
+		if err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	changed := false
+	for _, name := range []string{"HUB_MODEL_RELAY_ADMIN", "HUB_MODEL_RELAY_AUTH"} {
+		if values[name] != "" {
+			continue
+		}
+		value := make([]byte, 32)
+		if _, err = rand.Read(value); err != nil {
+			return err
+		}
+		values[name] = hex.EncodeToString(value)
+		changed = true
+	}
+	if !changed {
 		return nil
 	}
-	if !os.IsNotExist(err) {
-		return err
-	}
-	value := make([]byte, 32)
-	if _, err = rand.Read(value); err != nil {
-		return err
-	}
-	token := hex.EncodeToString(value)
-	content := make([]byte, 0, len(token)+25)
-	content = append(content, "HUB_MODEL_RELAY_ADMIN="...)
-	content = append(content, token...)
-	content = append(content, '\n')
-	return os.WriteFile(path, content, 0600) // #nosec G703 -- path under the stack render dir
+	return writeEnvFile(path, values)
 }
 
 // Secondary spaces use the shared sidecar's bearer, not an unused local token.

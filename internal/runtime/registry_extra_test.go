@@ -21,7 +21,7 @@ func registryFixture(t *testing.T, entries string) (string, string, *httptest.Se
 	}))
 	dir := t.TempDir()
 	registry := filepath.Join(dir, "models.yaml")
-	content := "providers:\n  p:\n    url: " + upstream.URL + "\nmodels:\n" + entries
+	content := "providers:\n  p:\n    allow_private: true\n    url: " + upstream.URL + "\nmodels:\n" + entries
 	if err := os.WriteFile(registry, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestModelRelayRegistryNeverFollowsReachableRedirect(t *testing.T) {
 	defer upstream.Close()
 	dir := t.TempDir()
 	registry := filepath.Join(dir, "models.yaml")
-	content := "providers:\n  p:\n    url: " + upstream.URL + "\nmodels:\n  synthetic:\n    ladder:\n      - {provider: p, model: m1}\n"
+	content := "providers:\n  p:\n    allow_private: true\n    url: " + upstream.URL + "\nmodels:\n  synthetic:\n    ladder:\n      - {provider: p, model: m1}\n"
 	if err := os.WriteFile(registry, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -109,6 +109,7 @@ func TestModelRelayRegistryRequestModelWinsOverSelection(t *testing.T) {
   a:
     url: http://127.0.0.1:1
   b:
+    allow_private: true
     url: ` + second.URL + `
 models:
   default:
@@ -148,6 +149,7 @@ func TestModelRelayRegistryUngrantedRequestFallsBack(t *testing.T) {
 	registry := filepath.Join(dir, "models.yaml")
 	content := `providers:
   p:
+    allow_private: true
     url: ` + p.URL + `
 models:
   default:
@@ -252,7 +254,7 @@ func TestModelRelayRegistryKeyEnvHeader(t *testing.T) {
 	defer upstream.Close()
 	dir := t.TempDir()
 	registry := filepath.Join(dir, "models.yaml")
-	content := "providers:\n  p:\n    url: " + upstream.URL + "\n    key_env: TEST_RELAY_KEY\nmodels:\n  default:\n    ladder:\n      - {provider: p, model: m1}\n"
+	content := "providers:\n  p:\n    allow_private: true\n    url: " + upstream.URL + "\n    key_env: TEST_RELAY_KEY\nmodels:\n  default:\n    ladder:\n      - {provider: p, model: m1}\n"
 	if err := os.WriteFile(registry, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +282,7 @@ func TestModelRelayRegistryReloadsOnChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	content := "providers:\n  q:\n    url: " + second.URL + "\nmodels:\n  default:\n    ladder:\n      - {provider: q, model: m2}\n"
+	content := "providers:\n  q:\n    allow_private: true\n    url: " + second.URL + "\nmodels:\n  default:\n    ladder:\n      - {provider: q, model: m2}\n"
 	if err := os.WriteFile(registry, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}

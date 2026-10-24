@@ -3,8 +3,13 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/credentialbroker"
+	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/netguard"
+	"github.com/letya999/hermes-hub/internal/stack"
 	"io"
 	"log"
 	"mime"
@@ -23,12 +28,18 @@ import (
 
 // modelHop is one upstream in the ordered fallback ladder.
 type modelHop struct {
-	name   string
-	base   string // fixed scheme://host[:port]; the request path appends
-	keyEnv string
-	model  string // provider-side model id; empty forwards the request model
-	mu     sync.Mutex
-	cool   time.Time
+	*modelHealth
+	keyFor    func(context.Context) (string, error)
+	transport http.RoundTripper
+	name      string
+	base      string // fixed scheme://host[:port]; the request path appends
+	keyEnv    string
+	model     string // provider-side model id; empty forwards the request model
+}
+
+type modelHealth struct {
+	mu   sync.Mutex
+	cool time.Time
 }
 
 var (
@@ -43,6 +54,9 @@ func parseModelHops(spec string) ([]*modelHop, error) {
 		spec = "cliproxy=http://cliproxy:8317"
 	}
 	var hops []*modelHop
+	if len(strings.Split(spec, ",")) > 8 {
+		return nil, fmt.Errorf("model relay supports at most eight hops")
+	}
 	seen := map[string]bool{}
 	for _, entry := range strings.Split(spec, ",") {
 		name, rest, ok := strings.Cut(strings.TrimSpace(entry), "=")
@@ -61,7 +75,7 @@ func parseModelHops(spec string) ([]*modelHop, error) {
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || strings.Contains(u.Path, "..") {
 			return nil, fmt.Errorf("model hop %q needs a fixed http(s) base URL", name)
 		}
-		hops = append(hops, &modelHop{name: name, base: strings.TrimRight(u.String(), "/"), keyEnv: keyEnv})
+		hops = append(hops, &modelHop{modelHealth: &modelHealth{}, name: name, base: strings.TrimRight(u.String(), "/"), keyEnv: keyEnv})
 	}
 	return hops, nil
 }
@@ -103,6 +117,10 @@ func retryableModelStatus(status int) bool {
 // forwards arbitrary paths, methods, hosts or query strings, and never follows
 // upstream redirects.
 func modelRelayHandler(hops []*modelHop, selectedModel string) (http.Handler, error) {
+	_, total, err := modelRelayLimits()
+	if err != nil {
+		return nil, err
+	}
 	if len(hops) == 0 {
 		return nil, fmt.Errorf("model relay requires at least one upstream")
 	}
@@ -119,6 +137,9 @@ func modelRelayHandler(hops []*modelHop, selectedModel string) (http.Handler, er
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), total)
+		defer cancel()
+		r = r.WithContext(ctx)
 		chat := r.Method == http.MethodPost && r.URL.Path == "/v1/chat/completions"
 		catalog := r.Method == http.MethodGet && r.URL.Path == "/v1/models"
 		hopsHealth := r.Method == http.MethodGet && r.URL.Path == "/v1/hops"
@@ -202,7 +223,7 @@ func modelRelayHandler(hops []*modelHop, selectedModel string) (http.Handler, er
 		}
 		w.Header().Set("X-Model-Hop", hop.name)
 		w.WriteHeader(resp.StatusCode)
-		_, _ = io.Copy(w, resp.Body)
+		copyModelBody(w, resp)
 		_ = resp.Body.Close()
 	}), nil
 }
@@ -248,26 +269,18 @@ func requestsSelectedModel(body []byte, selected string) bool {
 
 // Registry mode serves the reviewed relay contract from a rendered
 // models.yaml instead of the static HUB_MODEL_RELAY_UPSTREAMS list.
-type relayRegistryFile struct {
-	Providers map[string]relayProvider `yaml:"providers"`
-	Models    map[string]relayModel    `yaml:"models"`
-}
-
-type relayProvider struct {
-	URL    string `yaml:"url"`
-	KeyEnv string `yaml:"key_env"`
-}
-
-type relayModel struct {
-	Owners []string `yaml:"owners"`
-	Ladder []struct {
-		Provider string `yaml:"provider"`
-		Model    string `yaml:"model"`
-	} `yaml:"ladder"`
-}
+type relayRegistryFile = stack.ModelRegistry
+type relayModel = stack.ModelEntry
 
 func modelCall(ctx context.Context, client *http.Client, hops []*modelHop, method, path, auth, ctype string, body []byte) (*modelHop, *http.Response, error) {
+	bounded := *client
+	bounded.Timeout = 30 * time.Second
+	if timeout, err := time.ParseDuration(os.Getenv("HUB_MODEL_RELAY_HOP_TIMEOUT")); err == nil && timeout > 0 {
+		bounded.Timeout = timeout
+	}
+	hopTimeout := bounded.Timeout
 	for _, hop := range hops {
+		started := time.Now()
 		if !hop.available(time.Now()) {
 			log.Printf("model-relay hop=%s path=%s skipped (cooldown)", hop.name, path) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
 			continue
@@ -278,19 +291,48 @@ func modelCall(ctx context.Context, client *http.Client, hops []*modelHop, metho
 				hopBody = remapped
 			}
 		}
-		req, err := http.NewRequestWithContext(ctx, method, hop.base+path, bytes.NewReader(hopBody)) // #nosec G704 -- configured upstream hop
+		target := hop.base + path
+		if base, err := url.Parse(hop.base); err == nil && strings.Trim(base.Path, "/") != "" {
+			target = hop.base + strings.TrimPrefix(path, "/v1")
+		}
+		req, err := http.NewRequestWithContext(ctx, method, target, bytes.NewReader(hopBody)) // #nosec G704 -- configured upstream hop
 		if err != nil {
 			return nil, nil, err
 		}
 		if ctype != "" {
 			req.Header.Set("Content-Type", ctype)
 		}
-		if hop.keyEnv != "" {
-			req.Header.Set("Authorization", "Bearer "+os.Getenv(hop.keyEnv))
+		if hop.keyFor != nil {
+			credentialContext, cancel := context.WithTimeout(ctx, hopTimeout)
+			key, err := hop.keyFor(credentialContext)
+			cancel()
+			if err != nil {
+				hop.fail()
+				log.Printf("model-relay hop=%s path=%s credential unavailable", hop.name, path)
+				continue
+			}
+			req.Header.Set("Authorization", "Bearer "+key)
+		} else if hop.keyEnv != "" {
+			key := os.Getenv(hop.keyEnv)
+			if key == "" {
+				hop.fail()
+				log.Printf("model-relay hop=%s path=%s credential unavailable", hop.name, path)
+				continue
+			}
+			req.Header.Set("Authorization", "Bearer "+key)
 		} else if auth != "" {
 			req.Header.Set("Authorization", auth)
 		}
-		resp, err := client.Do(req) // #nosec G704 -- configured upstream hop
+		bounded.Transport = client.Transport
+		if hop.transport != nil {
+			bounded.Transport = hop.transport
+		}
+		bounded.Timeout = hopTimeout - time.Since(started)
+		if bounded.Timeout <= 0 {
+			hop.fail()
+			continue
+		}
+		resp, err := bounded.Do(req) // #nosec G704 -- configured upstream hop
 		if err != nil {
 			hop.fail()
 			log.Printf("model-relay hop=%s path=%s transport error: %v", hop.name, path, err) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
@@ -313,29 +355,58 @@ func modelCall(ctx context.Context, client *http.Client, hops []*modelHop, metho
 
 // rewriteModelField swaps the top-level "model" value; non-JSON bodies pass through.
 func rewriteModelField(body []byte, model string) ([]byte, error) {
-	var doc map[string]any
+	var doc map[string]json.RawMessage
 	if err := json.Unmarshal(body, &doc); err != nil {
 		return body, nil
 	}
-	doc["model"] = model
+	doc["model"], _ = json.Marshal(model)
 	return json.Marshal(doc)
+}
+
+type modelStreamWriter struct{ http.ResponseWriter }
+
+func (w modelStreamWriter) Write(p []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(p)
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	return n, err
+}
+func copyModelBody(w http.ResponseWriter, response *http.Response) {
+	if strings.HasPrefix(response.Header.Get("Content-Type"), "text/event-stream") {
+		_, _ = io.Copy(modelStreamWriter{w}, response.Body)
+		return
+	}
+	_, _ = io.Copy(w, response.Body)
 }
 
 // relayRegistry owns the mounted models.yaml, the owner's current selection
 // file and per-model hop ladders (so cooldown state survives re-reads).
 type relayRegistry struct {
+	broker    credentialbroker.Config
 	path      string
 	statePath string
 	owner     string
 	admin     string
+	auth      string
 	mu        sync.Mutex
 	mtime     time.Time
 	reg       *relayRegistryFile
 	ladders   map[string][]*modelHop
+	health    map[string]*modelHealth
 }
 
 func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (http.Handler, error) {
-	r := &relayRegistry{path: registryPath, statePath: statePath, owner: owner, admin: admin, ladders: map[string][]*modelHop{}}
+	_, total, err := modelRelayLimits()
+	if err != nil {
+		return nil, err
+	}
+	r := &relayRegistry{path: registryPath, statePath: statePath, owner: owner, admin: admin, auth: os.Getenv("HUB_MODEL_RELAY_AUTH"), ladders: map[string][]*modelHop{}}
+	brokerConfig, err := credentialbroker.FromEnv("HUB_CREDENTIAL_BROKER_MODEL_")
+	if err != nil {
+		return nil, err
+	}
+	r.broker = brokerConfig
 	if _, err := r.current(); err != nil {
 		return nil, err
 	}
@@ -345,6 +416,9 @@ func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (ht
 		return http.ErrUseLastResponse
 	}}
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		ctx, cancel := context.WithTimeout(req.Context(), total)
+		defer cancel()
+		req = req.WithContext(ctx)
 		// Same review-contract fences as the env relay: fixed paths only, no
 		// query strings, absolute-form targets or protocol upgrades.
 		known := (req.Method == http.MethodPost && req.URL.Path == "/v1/chat/completions") ||
@@ -353,6 +427,17 @@ func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (ht
 		if !known || req.URL.RawPath != "" || req.URL.RawQuery != "" || req.URL.Scheme != "" || req.URL.Host != "" || req.Header.Get("Upgrade") != "" {
 			http.NotFound(w, req)
 			return
+		}
+		if r.auth != "" && req.Method == http.MethodGet && (req.URL.Path == "/v1/models" || req.URL.Path == "/v1/hops") {
+			authorized := subtle.ConstantTimeCompare([]byte(req.Header.Get("Authorization")), []byte("Bearer "+r.auth)) == 1
+			if !authorized && r.admin != "" {
+				authorized = subtle.ConstantTimeCompare([]byte(req.Header.Get("Authorization")), []byte("Bearer "+r.admin)) == 1
+			}
+			if !authorized {
+				log.Printf("model-relay owner=%s outcome=deny reason=metadata-caller", r.owner)
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
 		}
 		if req.Method == http.MethodPut && req.URL.Path == "/v1/model" {
 			r.serveSelect(w, req)
@@ -370,7 +455,7 @@ func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (ht
 		if req.Method == http.MethodGet && req.URL.Path == "/v1/models" {
 			names := make([]map[string]string, 0, len(file.Models))
 			for name, entry := range file.Models {
-				if r.granted(entry) {
+				if r.granted(file, entry) {
 					names = append(names, map[string]string{"id": name})
 				}
 			}
@@ -380,6 +465,11 @@ func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (ht
 			return
 		}
 		chat := req.Method == http.MethodPost && req.URL.Path == "/v1/chat/completions"
+		if chat && r.auth != "" && subtle.ConstantTimeCompare([]byte(req.Header.Get("Authorization")), []byte("Bearer "+r.auth)) != 1 {
+			log.Printf("model-relay owner=%s outcome=deny reason=caller", r.owner)
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 		hopsHealth := req.Method == http.MethodGet && req.URL.Path == "/v1/hops"
 		if !chat && !hopsHealth {
 			http.NotFound(w, req)
@@ -425,7 +515,11 @@ func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (ht
 			_ = json.NewEncoder(w).Encode(map[string]any{"hops": states})
 			return
 		}
-		hop, resp, err := modelCall(req.Context(), client, hops, req.Method, req.URL.Path, req.Header.Get("Authorization"), req.Header.Get("Content-Type"), body)
+		providerAuth := req.Header.Get("Authorization")
+		if r.auth != "" {
+			providerAuth = ""
+		}
+		hop, resp, err := modelCall(req.Context(), client, hops, req.Method, req.URL.Path, providerAuth, req.Header.Get("Content-Type"), body)
 		if err != nil {
 			http.Error(w, "model route unavailable", http.StatusBadGateway)
 			return
@@ -435,7 +529,7 @@ func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (ht
 		}
 		w.Header().Set("X-Model-Hop", hop.name)
 		w.WriteHeader(resp.StatusCode)
-		_, _ = io.Copy(w, resp.Body)
+		copyModelBody(w, resp)
 		_ = resp.Body.Close()
 	}), nil
 }
@@ -456,32 +550,60 @@ func (r *relayRegistry) current() (*relayRegistryFile, error) {
 		return nil, err
 	}
 	var reg relayRegistryFile
-	if err := yaml.Unmarshal(b, &reg); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(b))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&reg); err != nil {
+		return nil, fmt.Errorf("invalid model registry")
+	}
+	if decoder.Decode(new(any)) != io.EOF {
+		return nil, fmt.Errorf("invalid model registry trailing document")
+	}
+	if err := reg.Validate(); err != nil {
 		return nil, err
 	}
 	r.reg, r.mtime, r.ladders = &reg, info.ModTime(), map[string][]*modelHop{}
+	r.health = map[string]*modelHealth{}
 	return r.reg, nil
 }
 
-func (r *relayRegistry) granted(entry relayModel) bool {
-	return len(entry.Owners) == 0 || slices.Contains(entry.Owners, r.owner)
+func (r *relayRegistry) granted(file *relayRegistryFile, entry relayModel) bool {
+	if !entry.Allows(r.owner) {
+		return false
+	}
+	for _, hop := range entry.Ladder {
+		provider := file.Providers[hop.Provider]
+		if !provider.Allows(r.owner) {
+			return false
+		}
+	}
+	return true
 }
 
 // hopsFor picks the logical model to serve: an explicitly granted name in the
 // request, then the owner's saved selection, then "default", then the first
 // granted model in sorted order.
 func (r *relayRegistry) hopsFor(file *relayRegistryFile, requested string) (string, []*modelHop, error) {
+	if requested == file.RuntimeModel {
+		requested = ""
+	}
+	if r.auth != "" && requested != "" {
+		entry, ok := file.Models[requested]
+		if !ok || !r.granted(file, entry) {
+			log.Printf("model-relay owner=%s outcome=deny reason=model", r.owner)
+			return "", nil, fmt.Errorf("model not granted")
+		}
+	}
 	for _, name := range []string{requested, r.selection(), "default"} {
 		if name == "" {
 			continue
 		}
-		if entry, ok := file.Models[name]; ok && r.granted(entry) {
+		if entry, ok := file.Models[name]; ok && r.granted(file, entry) {
 			return name, r.ladderFor(file, name, entry), nil
 		}
 	}
 	names := make([]string, 0, len(file.Models))
 	for name, entry := range file.Models {
-		if r.granted(entry) {
+		if r.granted(file, entry) {
 			names = append(names, name)
 		}
 	}
@@ -495,22 +617,52 @@ func (r *relayRegistry) hopsFor(file *relayRegistryFile, requested string) (stri
 func (r *relayRegistry) ladderFor(file *relayRegistryFile, name string, entry relayModel) []*modelHop {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if hops, ok := r.ladders[name]; ok {
+	if hops, ok := r.ladders[name]; ok && file == r.reg {
 		return hops
 	}
 	var hops []*modelHop
 	for _, ref := range entry.Ladder {
 		p := file.Providers[ref.Provider]
+		if ref.Provider == "cliproxy" && p.KeyEnv == "" && r.auth != "" {
+			p.KeyEnv = "OPENAI_API_KEY"
+		}
 		base := strings.TrimRight(p.URL, "/")
 		if ref.Provider == "cliproxy" && base == "" {
+			p.AllowPrivate = true
 			base = "http://cliproxy:8317"
 			if v := strings.TrimSpace(os.Getenv("HUB_MODEL_RELAY_CLIPROXY")); v != "" {
 				base = strings.TrimRight(v, "/")
 			}
 		}
-		hops = append(hops, &modelHop{name: ref.Provider, base: base, keyEnv: p.KeyEnv, model: ref.Model})
+		health := &modelHealth{}
+		if file == r.reg {
+			if shared := r.health[ref.Provider]; shared != nil {
+				health = shared
+			} else {
+				r.health[ref.Provider] = health
+			}
+		}
+		hop := &modelHop{modelHealth: health, name: ref.Provider, base: base, keyEnv: p.KeyEnv, model: ref.Model}
+		if grant := p.BrokerGrants[r.owner]; grant != "" {
+			target := p.CredentialEnv
+			actor := identity.Envelope{Schema: identity.Schema, PrincipalID: r.owner, ContextID: r.owner, RuntimeID: r.owner, ExternalIdentityID: r.owner, ConversationID: "model-relay", DeliveryTargetID: "model-relay", PolicyVersion: "model-relay"}
+			binding := "model-relay-" + ref.Provider
+			hop.keyFor = func(ctx context.Context) (string, error) {
+				return r.broker.ResolveEnv(ctx, actor, binding, "model-relay", grant, target)
+			}
+		}
+		hop.transport = netguard.Transport(p.AllowPrivate)
+		if p.AllowPrivate {
+			hop.transport = netguard.LocalTransport()
+		}
+		if transport, ok := hop.transport.(*http.Transport); ok {
+			transport.Proxy = nil
+		}
+		hops = append(hops, hop)
 	}
-	r.ladders[name] = hops
+	if file == r.reg {
+		r.ladders[name] = hops
+	}
 	return hops
 }
 
@@ -548,7 +700,7 @@ func (r *relayRegistry) serveSelect(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	entry, ok := file.Models[sel.Model]
-	if !ok || !r.granted(entry) {
+	if !ok || !r.granted(file, entry) {
 		http.Error(w, "model not granted", http.StatusForbidden)
 		return
 	}
@@ -585,6 +737,9 @@ func requestedModel(body []byte) string {
 // modelRelayHandlerFromEnv picks the relay mode: a mounted models.yaml
 // registry when HUB_MODEL_RELAY_REGISTRY is set, else the static env ladder.
 func modelRelayHandlerFromEnv() (http.Handler, error) {
+	if _, _, err := modelRelayLimits(); err != nil {
+		return nil, err
+	}
 	if registry := strings.TrimSpace(os.Getenv("HUB_MODEL_RELAY_REGISTRY")); registry != "" {
 		state := strings.TrimSpace(os.Getenv("HUB_MODEL_RELAY_STATE"))
 		if state == "" {
@@ -607,6 +762,30 @@ func modelRelayHandlerFromEnv() (http.Handler, error) {
 		return nil, fmt.Errorf("model relay requires a selected model")
 	}
 	return modelRelayHandler(hops, model)
+}
+
+func modelRelayLimits() (time.Duration, time.Duration, error) {
+	hop, total := 30*time.Second, 2*time.Minute
+	for _, item := range []struct {
+		key     string
+		value   *time.Duration
+		maximum time.Duration
+	}{
+		{"HUB_MODEL_RELAY_HOP_TIMEOUT", &hop, 5 * time.Minute},
+		{"HUB_MODEL_RELAY_TIMEOUT", &total, 10 * time.Minute},
+	} {
+		if raw := os.Getenv(item.key); raw != "" {
+			value, err := time.ParseDuration(raw)
+			if err != nil || value <= 0 || value > item.maximum {
+				return 0, 0, fmt.Errorf("invalid %s bound", item.key)
+			}
+			*item.value = value
+		}
+	}
+	if hop > total {
+		return 0, 0, fmt.Errorf("model hop timeout exceeds total timeout")
+	}
+	return hop, total, nil
 }
 
 func runModelRelay(ctx context.Context) error {

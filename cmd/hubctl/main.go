@@ -360,6 +360,24 @@ func run(ctx context.Context, args []string) error {
 			return fmt.Errorf("configuration incomplete:\n- %s", strings.Join(issues, "\n- "))
 		}
 		if op == "doctor" {
+			if s.CapabilityMode == "managed" {
+				modelSecrets := map[string]string{}
+				for key, value := range orgSecrets {
+					modelSecrets[key] = value
+				}
+				for key, value := range secrets {
+					modelSecrets[key] = value
+				}
+				plan, err := stack.ModelDoctor(*dir, s, modelSecrets)
+				if err != nil {
+					return err
+				}
+				for _, line := range plan {
+					fmt.Println(line)
+				}
+			}
+			fmt.Printf("Effective model: owner=%s model=%s endpoint=%s proxy=%q credential_scope=%q (empty: shared proxy / undeclared legacy credential scope).\n", s.User, s.Model, s.ModelURL, s.Cliproxy, s.CliproxyCredentials)
+			fmt.Println("Model restart policy: rendered registry changes hot-reload in the owner's relay; provider env/auth changes require recreating that relay; proxy placement changes require that owner's relay/proxy; a changed runtime model applies at the next owner runtime spawn.")
 			if *live {
 				key := secrets["OPENAI_API_KEY"]
 				if key == "" {

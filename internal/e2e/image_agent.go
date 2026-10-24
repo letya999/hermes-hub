@@ -12,6 +12,7 @@ import (
 	"github.com/HugoSmits86/nativewebp"
 	"github.com/letya999/hermes-hub/internal/communication"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -66,6 +67,23 @@ func imageAgentCase(ctx context.Context, client *http.Client, config communicati
 	if _, err := hubToolObject(ctx, session, "file_write", map[string]any{"path": seed, "text": base64.StdEncoding.EncodeToString(data.Bytes())}); err != nil {
 		return "FAIL", "image fixture seed failed"
 	}
+	secondSeed := directory + "/second-seed.txt"
+	secondSource := directory + "/exports/second.png"
+	secondColor := (chosen + 1 + int(nonce[3]%3)) % len(colors)
+	if name == "images_inspect" {
+		for y := 0; y < height; y++ {
+			for x := 0; x < width; x++ {
+				img.SetNRGBA(x, y, colors[secondColor])
+			}
+		}
+		var second bytes.Buffer
+		if err := png.Encode(&second, img); err != nil {
+			return "FAIL", "second PNG fixture encoding failed"
+		}
+		if _, err := hubToolObject(ctx, session, "file_write", map[string]any{"path": secondSeed, "text": base64.StdEncoding.EncodeToString(second.Bytes())}); err != nil {
+			return "FAIL", "second image seed failed; first seed retained"
+		}
+	}
 	terminal := false
 	defer func() {
 		if !terminal {
@@ -74,6 +92,9 @@ func imageAgentCase(ctx context.Context, client *http.Client, config communicati
 		cleanup, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		paths := []string{seed, source}
+		if name == "images_inspect" {
+			paths = append(paths, secondSeed, secondSource)
+		}
 		if name == "image_convert" || name == "image_generate" || name == "image_edit" {
 			paths = append(paths, target)
 		}
@@ -84,12 +105,19 @@ func imageAgentCase(ctx context.Context, client *http.Client, config communicati
 		}
 	}()
 	command := `python -c 'import base64,os,pathlib; p=pathlib.Path(os.environ["INPUTS"])/"seed.txt"; (pathlib.Path(os.environ["OUTPUTS"])/"input.png").write_bytes(base64.b64decode(p.read_text()))'`
+	if name == "images_inspect" {
+		command = `python -c 'import base64,os,pathlib; pairs=[("seed.txt","input.png"),("second-seed.txt","second.png")]; [(pathlib.Path(os.environ["OUTPUTS"])/dst).write_bytes(base64.b64decode((pathlib.Path(os.environ["INPUTS"])/src).read_text())) for src,dst in pairs]'`
+	}
 	prepared, err := hubToolObject(ctx, session, "code_exec", map[string]any{"path": directory, "command": command})
 	if err != nil || prepared["exit_code"] != float64(0) {
 		return "FAIL", "actual isolated PNG preparation failed; seed retained"
 	}
 	prompt := fmt.Sprintf("Use image_convert only on %s with name %s, format jpeg. Return exactly %s after success. Do not touch other files.", source, id, marker)
 	expected := marker
+	if name == "images_inspect" {
+		prompt = fmt.Sprintf("Use images_inspect exactly once on these two paths in order: %s and %s. Return exactly %s followed by one space and the dominant color of each image in the same order, separated by a space, in English (red, green, blue or yellow). Do not change files or call other image tools.", source, secondSource, marker)
+		expected += " " + labels[chosen] + " " + labels[secondColor]
+	}
 	if name == "image_inspect" {
 		prompt = fmt.Sprintf("Use image_inspect only on %s. Return exactly %s followed by one space and its dominant color in English, one of red, green, blue, yellow. Do not change any files.", source, marker)
 		expected += " " + labels[chosen]
@@ -110,6 +138,12 @@ func imageAgentCase(ctx context.Context, client *http.Client, config communicati
 		return status, reason + "; own image retained"
 	}
 	terminal = true
+	if name == "images_inspect" {
+		denied, err := session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: map[string]any{"paths": []string{source, secondSource, directory + "/exports/unavailable.png"}}})
+		if err != nil || denied == nil || !denied.IsError {
+			return "FAIL", "unavailable third image did not reject the entire comparison"
+		}
+	}
 	if name == "image_convert" {
 		if err := checkConvertedImage(config.SpoolDir, mode, user.ID, job, "images/"+id+".jpg", width, height, func(path string) ([]byte, error) { return fetchOwnImage(ctx, client, config, user.ID, job, path) }); err != nil {
 			return "FAIL", err.Error()

@@ -347,12 +347,16 @@ func TestParseModelHops(t *testing.T) {
 }
 
 func TestModelRelayRegistryLadderRemapsModel(t *testing.T) {
+	t.Setenv("TEST_RELAY_KEY", "registry-fixture")
 	var sawModel string
 	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
 	defer first.Close()
 	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer registry-fixture" {
+			t.Error("fallback omitted its declared credential")
+		}
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		sawModel, _ = body["model"].(string)
@@ -361,7 +365,7 @@ func TestModelRelayRegistryLadderRemapsModel(t *testing.T) {
 	defer second.Close()
 	dir := t.TempDir()
 	registry := filepath.Join(dir, "models.yaml")
-	content := "providers:\n  local:\n    url: " + first.URL + "\n  openai:\n    url: " + second.URL + "\n    key_env: TEST_RELAY_KEY\nmodels:\n  default:\n    ladder:\n      - {provider: local, model: qwen3}\n      - {provider: openai, model: gpt-5}\n"
+	content := "providers:\n  local:\n    allow_private: true\n    url: " + first.URL + "\n  openai:\n    allow_private: true\n    url: " + second.URL + "\n    key_env: TEST_RELAY_KEY\nmodels:\n  default:\n    ladder:\n      - {provider: local, model: qwen3}\n      - {provider: openai, model: gpt-5}\n"
 	if err := os.WriteFile(registry, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -454,8 +458,10 @@ func TestModelRelaySelectionEndpointSwitchesModel(t *testing.T) {
 	registry := filepath.Join(dir, "models.yaml")
 	content := `providers:
   a:
+    allow_private: true
     url: ` + first.URL + `
   b:
+    allow_private: true
     url: ` + second.URL + `
 models:
   default:
@@ -508,6 +514,7 @@ func TestModelRelayRegistryModeFromEnv(t *testing.T) {
 	registry := filepath.Join(dir, "models.yaml")
 	content := `providers:
   p:
+    allow_private: true
     url: ` + upstream.URL + `
 models:
   default:

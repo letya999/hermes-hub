@@ -3,6 +3,7 @@ package stack
 import (
 	"errors"
 	"fmt"
+	brokeridentity "github.com/letya999/credential-broker/identity"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -17,13 +18,22 @@ import (
 // models.yaml files: shared under spaces/, then the organization space, then
 // the owner's own space — later layers win on the same keys.
 type ModelRegistry struct {
-	Providers map[string]ModelProvider `yaml:"providers"`
-	Models    map[string]ModelEntry    `yaml:"models"`
+	RuntimeModel string                   `yaml:"runtime_model,omitempty"`
+	Providers    map[string]ModelProvider `yaml:"providers"`
+	Models       map[string]ModelEntry    `yaml:"models"`
 }
 
 type ModelProvider struct {
-	URL    string `yaml:"url"`
-	KeyEnv string `yaml:"key_env,omitempty"`
+	BrokerGrants  map[string]string `yaml:"broker_grants,omitempty"`
+	CredentialEnv string            `yaml:"credential_env,omitempty"`
+	Owners        []string          `yaml:"owners,omitempty"`
+	AllowPrivate  bool              `yaml:"allow_private,omitempty"`
+	URL           string            `yaml:"url"`
+	KeyEnv        string            `yaml:"key_env,omitempty"`
+}
+
+func (p ModelProvider) Allows(owner string) bool {
+	return (len(p.Owners) == 0 || slices.Contains(p.Owners, owner)) && (len(p.BrokerGrants) == 0 || p.BrokerGrants[owner] != "")
 }
 
 type ModelHopRef struct {
@@ -88,7 +98,7 @@ func LoadModelRegistry(dir string, s Settings) (*ModelRegistry, error) {
 			reg.Models[name] = m
 		}
 	}
-	return reg, reg.validate()
+	return reg, reg.Validate()
 }
 
 func readModelRegistry(path string) (modelRegistryYAML, error) {
@@ -107,7 +117,8 @@ func readModelRegistry(path string) (modelRegistryYAML, error) {
 	return layer, nil
 }
 
-func (r *ModelRegistry) validate() error {
+// Validate applies the same provider/model contract at render and relay reload.
+func (r *ModelRegistry) Validate() error {
 	for name, p := range r.Providers {
 		if !registryNamePattern.MatchString(name) {
 			return fmt.Errorf("models.yaml: invalid provider name %q", name)
@@ -118,13 +129,28 @@ func (r *ModelRegistry) validate() error {
 		if p.KeyEnv != "" && !envNamePattern.MatchString(p.KeyEnv) {
 			return fmt.Errorf("models.yaml: provider %s key_env is not an env name", name)
 		}
+		for _, owner := range p.Owners {
+			if !idPattern.MatchString(owner) {
+				return fmt.Errorf("models.yaml: provider %s has invalid owner scope", name)
+			}
+		}
+		if p.BrokerGrants != nil {
+			if len(p.BrokerGrants) == 0 || p.KeyEnv != "" || !envNamePattern.MatchString(p.CredentialEnv) {
+				return fmt.Errorf("models.yaml: provider %s needs explicit grants and one credential source", name)
+			}
+			for owner, grant := range p.BrokerGrants {
+				if !idPattern.MatchString(owner) || !brokeridentity.ValidID(grant) || (len(p.Owners) > 0 && !slices.Contains(p.Owners, owner)) {
+					return fmt.Errorf("models.yaml: provider %s has invalid credential scope", name)
+				}
+			}
+		}
 	}
 	for name, m := range r.Models {
 		if !registryNamePattern.MatchString(name) {
 			return fmt.Errorf("models.yaml: invalid model name %q", name)
 		}
-		if len(m.Ladder) == 0 {
-			return fmt.Errorf("models.yaml: model %q needs a ladder", name)
+		if len(m.Ladder) == 0 || len(m.Ladder) > 8 {
+			return fmt.Errorf("models.yaml: model %q needs one to eight fallback hops", name)
 		}
 		for _, owner := range m.Owners {
 			if !idPattern.MatchString(owner) {

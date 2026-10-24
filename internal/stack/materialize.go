@@ -37,11 +37,16 @@ func writeModelRegistry(dir string, s Settings) error {
 	if len(reg.Models) == 0 {
 		reg.Models["default"] = ModelEntry{Ladder: []ModelHopRef{{Provider: "cliproxy", Model: s.Model}}}
 	}
+	reg.RuntimeModel = s.Model
 	body, err := yaml.Marshal(reg)
 	if err != nil {
 		return err
 	}
-	return atomic(filepath.Join(dir, "generated", "models."+s.Environment+".yaml"), body)
+	directory := filepath.Join(dir, "generated", "model-registry", s.Environment)
+	if err := os.MkdirAll(directory, 0700); err != nil {
+		return err
+	}
+	return atomic(filepath.Join(directory, "models.yaml"), body)
 }
 
 // materializeHermesConfig renders the effective Hermes config host-side so the

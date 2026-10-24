@@ -39,6 +39,16 @@ func Client(timeout time.Duration, allowLoopback bool) *http.Client {
 // embedding seam that owns the wire itself), that transport is returned as-is:
 // no DNS guard can run inside a transport that never dials.
 func Transport(allowLoopback bool) http.RoundTripper {
+	return transport(allowLoopback, false)
+}
+
+// LocalTransport admits operator-approved private service endpoints. Link-local,
+// metadata, CGNAT and multicast addresses remain forbidden.
+func LocalTransport() http.RoundTripper {
+	return transport(true, true)
+}
+
+func transport(allowLoopback, allowPrivate bool) http.RoundTripper {
 	base, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
 		return http.DefaultTransport
@@ -58,7 +68,7 @@ func Transport(allowLoopback bool) http.RoundTripper {
 		}
 		for _, ip := range ips {
 			addr, ok := netip.AddrFromSlice(ip)
-			if !ok || blocked(addr.Unmap(), allowLoopback) {
+			if !ok || (blocked(addr.Unmap(), allowLoopback) && !(allowPrivate && addr.Unmap().IsPrivate())) {
 				return nil, fmt.Errorf("netguard: %s resolves to blocked address %s", host, ip)
 			}
 		}
