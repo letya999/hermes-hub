@@ -1,6 +1,6 @@
 ---
 description: The agent's home — SOUL.md persona contract, skills registry, bundled skills, hooks, memory and runtime-writable state.
-last_verified: 2026-10-23
+last_verified: 2026-10-24
 ---
 
 # Agent home

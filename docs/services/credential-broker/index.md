@@ -1,6 +1,6 @@
 ---
 description: "credential-broker — единственный компонент, держащий значения секретов: TLS API, sealed store, provider plugins, delivery contracts."
-last_verified: "2026-10-23"
+last_verified: "2026-10-24"
 ---
 
 # credential-broker

@@ -1,6 +1,6 @@
 ---
 description: "Native TLS, private directories, providers и согласование runtime paths."
-last_verified: "2026-10-23"
+last_verified: "2026-10-24"
 ---
 
 # Конфигурация и развёртывание
