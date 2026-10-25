@@ -112,7 +112,7 @@ func server(ctx context.Context, cases []Case, principal, mode string, progress 
 		if c.Surface == "hub" && c.Name == "settings_set" {
 			r.Status, r.Reason = settingsAgentCase(ctx, client, config, user, mode)
 		}
-		if c.Surface == "hub" && (c.Name == "image_convert" || c.Name == "image_inspect" || c.Name == "image_generate" || c.Name == "image_edit") {
+		if c.Surface == "hub" && (c.Name == "image_convert" || c.Name == "image_inspect" || c.Name == "images_inspect" || c.Name == "image_generate" || c.Name == "image_edit") {
 			r.Status, r.Reason = imageAgentCase(ctx, client, config, user, mode, c.Name)
 		}
 		if c.Surface == "channel" && c.Name == "usage" {

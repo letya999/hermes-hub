@@ -31,7 +31,7 @@ func egressRelayHandler(allow map[string]bool) http.Handler {
 				http.Error(w, "host not allowed", http.StatusForbidden)
 				return
 			}
-			upstream, err := net.DialTimeout("tcp", net.JoinHostPort(host, "443"), 10*time.Second)
+			upstream, err := net.DialTimeout("tcp", net.JoinHostPort(host, "443"), 10*time.Second) // #nosec G704 -- host is allowlisted by egressAllowed above
 			if err != nil {
 				http.Error(w, "upstream unreachable", http.StatusBadGateway)
 				return

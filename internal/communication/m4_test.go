@@ -100,9 +100,8 @@ func TestHandleUpdateIsolationCommandsFilesAndIdempotency(t *testing.T) {
 		}
 		_ = g.spool.CompleteJob(job.ID)
 	}
-	// The allowed user's group message is now a real job (forum topics);
-	// the intruder's stays ignored.
-	if len(jobs) != 4 {
+	// Unconfigured groups cannot borrow a known sender's personal runtime.
+	if len(jobs) != 3 {
 		t.Fatalf("jobs=%d %+v", len(jobs), jobs)
 	}
 	seen := map[string]int{}
@@ -115,7 +114,7 @@ func TestHandleUpdateIsolationCommandsFilesAndIdempotency(t *testing.T) {
 			t.Fatalf("bob job: %+v", job)
 		}
 	}
-	if seen["alice"] != 3 || seen["bob"] != 1 {
+	if seen["alice"] != 2 || seen["bob"] != 1 {
 		t.Fatalf("seen=%v", seen)
 	}
 	for range 20 {

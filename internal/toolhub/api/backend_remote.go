@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"net/http"
 	"strings"
 	"time"
 )
@@ -41,8 +42,21 @@ func (b MCPBackend) CallRemoteMCP(ctx context.Context, effective EffectiveBindin
 	if err != nil {
 		return BackendResult{}, err
 	}
-	session, err := connectRemoteMCP(ctx, endpoint, RemoteHTTPClient(endpoint, headers))
+	client := RemoteHTTPClient(endpoint, headers)
+	var challenge string
+	inner := client.Transport
+	client.Transport = RoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		response, respErr := inner.RoundTrip(request)
+		if response != nil && (response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden) {
+			challenge = response.Header.Get("WWW-Authenticate")
+		}
+		return response, respErr
+	})
+	session, err := connectRemoteMCP(ctx, endpoint, client)
 	if err != nil {
+		if challengeParam(challenge, "error") == "insufficient_scope" {
+			return BackendResult{}, fmt.Errorf("%w: endpoint demands scope %q", ErrReconsent, challengeParam(challenge, "scope"))
+		}
 		return BackendResult{}, fmt.Errorf("%w: remote MCP session: %v", ErrIsolation, sanitizeRemoteError(err))
 	}
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: tool.Name, Arguments: arguments})

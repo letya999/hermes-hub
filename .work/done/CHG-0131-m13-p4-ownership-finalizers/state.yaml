@@ -1,0 +1,32 @@
+schema: 1
+change: CHG-0131
+title: M13 P4 ownership labels + finalizers + reconciler
+status: done
+branch: feat/m14-toolhub-connector-platform
+updated: "2026-10-19"
+phase: implementation
+requirements: [S4.1, S4.2, S4.3, S4.4, S4.5, S4.6, S4.7]
+depends_on: [CHG-0130]
+github_milestone: M13 — ToolHub Connector Platform
+github_issue: 285
+design_status: accepted
+implementation_status: in_progress
+slices:
+  S4.1-ownership-labels: done
+  S4.2-finalizer-ladder: done
+  S4.3-reconciler: done
+  S4.4-connection-locks: done
+  S4.5-store-compaction: done
+  S4.6-tool-surface-digest: done
+  S4.7-docs-closeout: done
+validation:
+  documents: pending
+  just_check: green (86.34%)
+  docker_check: not_run
+  live_acceptance: not_started
+evidence: []
+remaining:
+  - live acceptance gates (docker stack, restart-mid-remove) require owner deploy
+  - LabelQuery/LabelPurge seams and periodic reconciler scheduling are wired at
+    the deployment boundary; served-endpoint wiring deferred (no observable seam)
+limitations: []

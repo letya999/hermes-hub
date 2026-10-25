@@ -21,7 +21,7 @@ import (
 // started container purely as the runtime image donor; relPath stays empty
 // so no exec-pack channel is needed. Run with:
 //
-//	HUB_SCRATCH_FAULT_IMAGE=hermes-hub:test go test -tags integration -run TestDockerScratchExecPausedQuarantine ./internal/toolhub
+//	HUB_SCRATCH_FAULT_IMAGE=hermes-hub:test go test -tags integration -run TestDockerScratchExecPausedQuarantine ./internal/toolhub/api
 func TestDockerScratchExecPausedQuarantine(t *testing.T) {
 	image := os.Getenv("HUB_SCRATCH_FAULT_IMAGE")
 	if image == "" {

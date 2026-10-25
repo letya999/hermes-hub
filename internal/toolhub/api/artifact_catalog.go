@@ -31,7 +31,7 @@ func ImportGitHubArtifact(ctx context.Context, source ArtifactSource, config Art
 	if !ValidCommand(config.Image) || strings.Contains(config.Image, "@") {
 		return ImportedArtifact{}, fmt.Errorf("%w: local immutable image name required", ErrInvalid)
 	}
-	contextBytes, err := FetchRepositoryArtifactContext(ctx, source, 64<<20)
+	contextBytes, err := fetchArtifactContext(ctx, source, 64<<20)
 	if err != nil {
 		return ImportedArtifact{}, err
 	}
@@ -57,11 +57,11 @@ func ImportGitHubArtifact(ctx context.Context, source ArtifactSource, config Art
 	if err != nil {
 		return ImportedArtifact{}, err
 	}
-	artifact, err := BuildRestrictedOCI(ctx, recipe, generated, build)
+	artifact, err := restrictedBuild(ctx, recipe, generated, build)
 	if err != nil {
 		return ImportedArtifact{}, err
 	}
-	if _, err := LoadStoredOCIArtifact(ctx, build.ArtifactDirectory, artifact.ArchiveDigest, config.Image, build.MaxArtifactBytes); err != nil {
+	if _, err := StoredArtifactLoader(ctx, build.ArtifactDirectory, artifact.ArchiveDigest, config.Image, build.MaxArtifactBytes); err != nil {
 		return ImportedArtifact{}, fmt.Errorf("%w: local artifact materialization failed", err)
 	}
 	RecipeDigest, err := RecipeDigest(recipe)
@@ -73,6 +73,7 @@ func ImportGitHubArtifact(ctx context.Context, source ArtifactSource, config Art
 		return ImportedArtifact{}, err
 	}
 	definition := ToolDefinition{
+		OAuth:  config.OAuth,
 		Schema: SchemaVersion, DefinitionID: config.DefinitionID, Version: config.Version,
 		Transport: ContainerMCP,
 		Source: DefinitionSource{
@@ -122,6 +123,7 @@ func ImportPublishedArtifact(source ArtifactSource, config ArtifactImportConfig,
 	}
 	config.Execution.Egress = append([]string(nil), egress...)
 	config.Credentials = resolution.Connection.CredentialInputs()
+	config.OAuth = resolution.Connection.OAuth
 	recipe := ArtifactRecipe{Format: "published-oci-v1", Entrypoint: append([]string(nil), resolution.Launch.Entrypoint...)}
 	RecipeDigest, err := publishedRecipeDigest(source, resolution)
 	if err != nil {
@@ -134,8 +136,12 @@ func ImportPublishedArtifact(source ArtifactSource, config ArtifactImportConfig,
 		Tools:  append([]ToolSpec(nil), config.Tools...), Credentials: append([]CredentialInput(nil), config.Credentials...), CredentialGroups: cloneStringGroups(config.CredentialGroups), CredentialContractID: config.CredentialContractID, CredentialContractRevision: config.CredentialContractRevision, CredentialContractEnv: config.CredentialContractEnv, Environment: append([]string(nil), config.Environment...), Workload: config.Workload, Execution: config.Execution, Health: config.Health,
 	}
 	imported := ImportedArtifact{Definition: definition, Recipe: recipe, Artifact: artifact}
+	imported.Definition.OAuth = config.OAuth
 	imported.Definition.RuntimeEnvironment = config.RuntimeEnvironment
 	imported.Definition.ProxyEnvironment = append([]string(nil), config.ProxyEnvironment...)
+	imported.Definition.Toolsets = config.Toolsets
+	imported.Definition.DefaultEnabled = append([]string(nil), config.DefaultEnabled...)
+	imported.Definition.DefaultExcluded = append([]string(nil), config.DefaultExcluded...)
 	review, err := ReviewDigestForImported(imported)
 	if err != nil {
 		return ImportedArtifact{}, err

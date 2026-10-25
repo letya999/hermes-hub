@@ -15,7 +15,7 @@ import (
 )
 
 func restartRuntime(stateDir string) error {
-	body, err := os.ReadFile(filepath.Join(stateDir, "runtime.json"))
+	body, err := os.ReadFile(filepath.Join(stateDir, "runtime.json")) // #nosec G703 -- service state dir from runtime config
 	if err != nil {
 		return fmt.Errorf("runtime restart unavailable: %w", err)
 	}
@@ -29,7 +29,7 @@ func restartRuntime(stateDir string) error {
 	if err != nil {
 		return fmt.Errorf("runtime supervisor: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(stateDir, "restart.request"), nil, 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(stateDir, "restart.request"), nil, 0600); err != nil { // #nosec G703 -- service state dir from runtime config
 		return fmt.Errorf("runtime restart request: %w", err)
 	}
 	if os.Getenv("HUB_DEFER_RUNTIME_RESTART") == "true" {

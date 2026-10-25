@@ -1,6 +1,6 @@
 # SPEC-0030: Local multiuser diagnostics
 
-Frozen: 2026-09-26.
+Frozen: 2026-09-26. Export requirement superseded by SPEC-0031 automatic diagnostics.
 
 1. An operator can export retained logs from every Hermes Docker container,
    across user spaces and services, into one local Git-ignored text snapshot.

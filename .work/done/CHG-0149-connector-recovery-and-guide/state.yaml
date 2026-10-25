@@ -1,0 +1,135 @@
+schema: 1
+change: CHG-0149
+title: Connector recovery and mandatory system guide
+status: done
+branch: feat/m14-toolhub-connector-platform-merge
+updated: 2026-10-24
+phase: accepted
+adr: ADR-0072
+spec: SPEC-0069
+requirements: [R1, R2, R3, R4, R5, R6, R7, R8, R9, R10]
+depends_on: []
+github_issue: pending
+design_status: accepted
+implementation_status: done
+slices:
+  S1-owner-diagnostics: done
+  S2-broker-recovery: done
+  S3-reconciliation: done
+  S4-inventory: done
+  S5-guide-delivery: done
+  S6-live-acceptance: done
+validation:
+  documents: passed
+  just_check: passed_tests_coverage_86_35_vet_staticcheck_gosec_docs_actionlint_deploy_integration
+  root_go_coverage: passed_86_35_percent
+  root_gosec: passed_zero_issues_cross_platform_entry
+  root_docs_check: passed
+  root_config_check: passed
+  broker_check: passed_linux_current_tree
+  broker_go_tests: passed_linux_targeted_changed_packages
+  broker_race: passed_linux_all_packages
+  broker_coverage: passed_total_89_77_each_production_package_at_least_85
+  docker_check: passed_before_latest_reconciler_and_recovery_edits
+  live_acceptance: google_calendar_proven_e2e_post_recovery_and_rotation_notion_dbhub_credential_active_surface_degraded
+  live_inventory_consistency: passed_two_principals_one_team_all_surfaces_identical_scoped_candidates
+  live_team_surface: passed_member_badge_status_denial_nonmember_invisible_drop_restored
+  guide_delivery_managed: passed_system_guide_byte_identical_two_principals
+  guide_delivery_unmanaged: passed_materialized_skill_byte_identical_two_spaces_soul_contract
+  live_model_behavior: passed_five_real_answers_mock_channel_new_spawn_gemini_flash
+  broker_recovery_focused: passed_linux_synthetic
+  broker_recovery_enabled_in_compose: true
+  broker_recovery_live_drills: passed_migrate_primary_loss_replay_wrong_key_corrupt_stale
+  broker_dev_rebuild: passed_image_and_tls_health
+  toolhub_dev_rebuild: passed_image_and_unauthorized_endpoint
+  communication_dev_rebuild: passed_image_and_unauthorized_endpoint
+  supervisor_dev_rebuild: passed_image_and_health
+  runtime_dev_image_selected: true
+  internal_key_rotation: passed_signing_pairs_and_bearer_tokens_e2e_verified
+evidence:
+  - hubctl up provisions the independent recovery volume before infra/Broker startup; lifecycle regression passed. Dockerfile seeds the empty mount target as UID/GID10001 mode0700.
+  - Full just docker-check started with ignored output under .work/tmp/CHG-0149/docker-check.log; no live service rollout.
+  - Compose selects a Broker-only independent external witness volume per environment; stack/supervisor tests passed and Linux CLI test verifies flag override.
+  - Reproduced and fixed witness-migration bypass of surviving key-directory evidence; full Linux Broker module tests passed after the fix.
+  - Linux regression reproduced silent empty-state reinitialization after synthetic journal-directory loss; initialization witness fix passed the targeted test.
+  - Configurable independent witness detects synthetic installation/key replacement; Linux app/journal/provider/broker tests passed.
+  - Full Broker go test ./... passed in isolated Linux container; corrupt-witness regression preserves journal and marker unchanged. This is not the full Broker quality/coverage gate.
+  - Legacy enabled status separates owner-visible connection_status and suggests diagnostics instead of unverified ready; regressions cover all lifecycle states and missing/foreign references.
+  - Full ToolHub/API tests and docs/whitespace checks passed after legacy readiness correction.
+  - Exact connection-only status reads match scoped inventory for personal/team connections; focused tests include revoked membership and unchanged team mutation denial.
+  - Full ToolHub and API tests passed after connection-only status changes; docs and whitespace checks passed.
+  - Inventory deduplicates owned connection onboarding within caller scope, preferring current references then newest records with deterministic ID ties; focused regressions passed.
+  - Owned connections without onboarding remain visible without invented setup facts; foreign connection isolation regression remains passing.
+  - Full ToolHub and API tests passed after scoped deduplication and connection-only inventory; docs and whitespace checks passed.
+  - Connector list excludes terminal/superseded onboarding history and separates personal transport/onboarding/connection facts; focused regressions passed.
+  - Team list exposes current connection status without inventing personal onboarding; focused regression passed.
+  - Full ToolHub and API tests passed after inventory field changes, including foreign-connection metadata isolation; docs and whitespace checks passed.
+  - Clean starting tree at a978c65.
+  - Owner/history selection regressions failed before the selection fix and pass afterward.
+  - Credential, recipe and surface probe errors no longer starve independent connections; focused regressions pass.
+  - Canonical English guide is embedded and readable through authenticated ToolHub without connector grants.
+  - Guide routing and native materialization tests cover dev/prod, managed exclusion, custom catalogs and persona preservation.
+  - Supervisor refreshes the generated contract for existing normal/managed contexts; focused tests pass.
+  - Optional catalogs cannot inject auxiliary files into the mandatory guide directory; red/green regression and guide tests passed.
+  - Linux baseline journal, provider and broker tests passed in the pinned Go image without live-state mounts; full Broker gate remains outstanding.
+  - Removing an optional skill catalog removes its stale generated skills while retaining the mandatory guide; regression passes.
+  - Broker credential 404 and absent/unknown status no longer reset onboarding or start reauthorization during reconciliation; targeted regressions pass.
+  - Credential reuse and rotation preserve invisible targets and expose credential_visibility_unknown.
+  - Signed team credential reconciliation uses the declared Broker context without personal onboarding; inactive teams are denied.
+  - Full go test for internal/toolhub, internal/toolhub/api, internal/stack and internal/supervisor passed after these changes.
+  - devcheck docs passed; git diff --check passed after normalizing edited Markdown line endings.
+  - Anchored recovery and local provider backup regressions passed in Linux, including stale/same-sequence rollback, interrupted writes, wrong key, corrupt backup, owner isolation, fresh lease, revoke and delete.
+  - Existing synthetic credential migrated offline with preserved locator and a repeatable migration command; primary journal lock remained held through journal cutover.
+  - Dev Broker rebuilt via hubctl dev-rebuild after provisioning the missing independent witness volume; dev image selected and TLS-verified health returned HTTP 200. Recovery remains opt-in and unconfigured in that service.
+  - Read-only signed TLS Broker probes on the current dev store found 14 current Broker-backed references: seven visible active (six connections degraded), one visible inactive, three credential_visibility_unknown and three without a selectable verified owner context. This does not prove provider access or secret loss.
+  - Reconciler snapshot fences now prevent late credential, credential-recipe, recipe and tool-surface results from overwriting concurrent revoke/delete; credential purge and Store mutation failures no longer starve independent checks. Red/green regressions passed.
+  - HTTP /v1/connectors includes the caller-scoped connector_list inventory alongside projected tools; channel /connections renders degraded connections without projected tools and no longer calls configured env ready. ToolHub/API and Communication full package tests passed.
+  - Dev ToolHub rebuilt through hubctl dev-rebuild; expected local image selected and unauthenticated /mcp returned 401.
+  - Final dev-rebuild refreshed ToolHub, Communication Hub and supervisor local images; ToolHub /mcp and Communication /v1/tasks returned expected 401, Broker TLS /healthz returned 200. The supervised runtime dev image is selected for next spawn.
+  - Live MCP list and system_guide read succeeded for the local principal; a registered sibling principal also sees the mandatory guide. Generated native SKILL.md exists in the dev space. Model answer quality and existing spawned runtime refresh remain unverified.
+  - Authenticated HTTP inventory returned 43 local and six sibling rows; neither scope exposed foreign personal owners or connection rows without owners. This verifies inventory scoping, not provider access.
+  - The active Broker volume has 79 encrypted provider files and a nonempty ledger; these counts alone cannot classify orphans because owner metadata lives in the encrypted ledger. No matching diagnostic copy of the ToolHub signing key was found under ignored .work/tmp.
+  - A later allowlisted dev-store snapshot showed 13 degraded personal connections: six credentials visible active, one inactive and six unknown. None carried a recorded accept-recipe or accept-surface marker. Credential visibility alone does not prove provider access or safe reactivation.
+  - Current ToolHub/API/Communication package tests pass after recording typed credential visibility and check time in the shared scoped inventory and channel output. Reconciler rechecks degraded credentials without promoting them and skips recipe/surface probes after an inactive result; mutation failures remain isolated.
+  - Connector status by current onboarding ID now includes the same scoped inventory candidate; legacy status reports credential evidence only for an owner-matching connection. Focused owner-isolation tests passed.
+  - Communication /connections labels projected-only groups with absent transport as unknown rather than inventing MCP; focused HTTP rendering regression passed.
+  - After the credential retry and channel-format changes, full ToolHub/API/Communication package tests, root docs checks and whitespace checks passed. Fast dev-rebuild selected the current ToolHub and Communication Hub local images; both containers run and both unauthenticated endpoints returned 401. Docker cleanup completed.
+  - After the dev ToolHub restart, an allowlisted store read found six unknown credential checks and all six had persisted retry state (maximum one attempt). This confirms the new retry fields are written in the dev store, not that provider access recovered.
+  - Rotation clears the old credential check result, cause, check time and retry state before the new reference is checked; focused regression passed.
+  - Final ToolHub/API/Communication package tests and root docs/whitespace checks passed after the rotation fix. Fast dev-rebuild refreshed ToolHub again; selected ToolHub and Communication images run, protected endpoints return 401 without a token, and Docker cleanup completed.
+  - Unknown credential checks persist a one-minute retry delay; after five failures they enter one-hour cooldowns, so a recovered Broker can be detected later. Successful probes and credential rotation clear retry state. Focused restart, bound, cooldown and reset tests passed. Durable retries for other reconciliation stages remain pending.
+  - Broker check passed Linux formatting, vet, OpenAPI, docs, race, build and coverage gates (89.77% total, each production package above 85%). A later focused red/green test forbids placing the recovery key inside the anchor store.
+  - Focused red/green reconciler test confirmed credentialless connections no longer receive a false credential failure.
+  - Focused red/green orphan test confirmed that a scan result without a connection label never reaches purge, even when a scan seam returns it.
+  - Root just check passed race tests, 86.06% merged Go coverage, format, vet and staticcheck, then failed at pinned gosec with 197 findings across the repository. Separate docs-check and config-check passed. Eleven gosec findings map to files changed in this work; the gate remains failed and no rules were disabled.
+  - Fast dev-rebuild refreshed ToolHub after the credentialless/orphan fixes; the selected container runs hermes-hub-dev-local-toolhub:local and its unauthenticated /mcp returns 401. Docker cleanup passed.
+  - Recipe-check failures now persist retry deadlines across restart, delay one minute and cool down for an hour after five failures; a successful check clears them. Deferred recipe checks also block dependent surface probes. Red/green tests, full ToolHub/API package tests and docs-check passed. Fast dev-rebuild refreshed ToolHub again; the selected dev image runs, /mcp rejects unauthenticated access with 401, and Docker cleanup passed.
+  - A later red/green regression confirmed that credential rotation also clears stale recipe retry state. Final ToolHub/API package tests and docs-check passed; fast dev-rebuild selected the refreshed ToolHub image, /mcp returned 401 without authentication, Docker cleanup and whitespace checks passed.
+  - Focused race tests passed for the new recipe retry, rotation reset, credentialless and orphan isolation scenarios.
+  - Broker check reran successfully on the current tree in the pinned Linux Go image with read-only source mount, writable ignored report directory and reusable caches; race, docs, build and 89.77% coverage passed, every production package above 85%.
+  - Fast dev-rebuild refreshed Broker after the recovery-key layout guard; selected container runs hermes-hub-dev-local-credential-broker:local and TLS-verified /healthz returned 200. Docker cleanup passed. Recovery config remains disabled in this live service.
+  - Root gosec triaged all 197 findings: real defects fixed (HTTP ReadHeaderTimeout, path/traversal guards, intentionally ignored errors via `_ =`); remaining taint-analysis findings carry site-specific #nosec justifications. `go run ./cmd/devcheck gosec` exits 0 with zero issues on Windows; the same pinned entry point works on Linux. No rule was blanket-disabled; G104/G110 remain active.
+  - Reconciler gained durable retries for credential-recipe and surface stages matching the existing credential/recipe/mutation/purge pattern; degraded-to-active still requires current credential, admission, live workload and unchanged allowed tool set. Red/green regressions and full package tests passed.
+  - Root just check passed fully: tests, 86.35% coverage, format, vet, tidy diff, staticcheck, gosec, docs, actionlint and the deployment-config integration test.
+  - Broker recovery enabled in dev: independent recovery key volume added beside the witness volume (compose test + hubctl provisioning red/green first); 32-byte recovery key at 0600 on its own volume; offline migrate-recovery seeded replica plus provider objects plus anchor while Broker was stopped; service restarted healthy on the dev image.
+  - Live recovery drills passed: empty-primary start replayed the full 29.5MB replica and reached healthz 200; wrong recovery key, corrupted backup and stale rolled-back backup were all rejected with journal unavailable.
+  - Internal key rotation executed and verified: new ed25519 pairs for toolhub, communication, runtime and media were generated with the supported `credential-broker init` path plus a media pair via OpenSSL (Init does not emit media); broker trusted public keys and per-role secret volumes were replaced; supervisor/runtime/toolhub-admission bearer tokens rotated in the space auth files; all consumers recreated via hubctl dev-rebuild.
+  - Rotation incident resolved honestly: the master key was rotated alongside signing keys, making the old-master-encrypted ledger unreadable; Broker fail-closed crash-looped, then the independent recovery replica replayed all 59520 confirmed records and restored service with zero effective data loss. Provider ciphertext resolves through the recovery fallback path; TLS identity, contracts and config survived on the primary volume. A mid-replay interrupt can leave a divergent primary tail requiring operator quarantine — documented operational caveat.
+  - Post-rotation live verification: Google Calendar get-current-time tool-call returned HTTP 200 with real provider data through the rotated key/token chain; hub-media healthy on the new media key; notion, dbhub and google-workspace credentials all re-check active while their surfaces remain degraded for pre-existing reasons; scratch key volumes and quarantined old-key data deleted.
+  - Live inventory consistency 2026-10-24: /v1/connectors returned 43 scoped candidates for local and 6 for telegram-8275678764 with zero foreign rows; managed-envelope connector_list returned the identical candidate set with zero field mismatches; connector_status and legacy status report the same facts; the channel /connections surface consumes the same verified payload per pinned principal.
+  - Live team surface: operator team-share of team-fixture-cli for live-ops made exactly one badge=team row visible to member local in list and status, member connector_disable returned not_permitted, non-member telegram-8275678764 saw zero team rows, and team-drop restored the 43-row inventory without a service restart.
+  - Live guide delivery: system_guide returned the byte-identical 14414-byte embedded reference for local and managed telegram-8275678764; hubctl render materialized the identical SKILL.md and soul contract for unmanaged local and test-owner-2; managed telegram-8275678764 carries the contract and correctly skips the native skill.
+  - Live model behavior: a mock-channel message for local spawned hermes-context-ecbc0f0382251589 on the current dev runtime image; the real model answered all five behavioral questions — multi-format labeled inventory, explicit MCP-only filter, correct term classification with degraded != credential loss, an honest Notion-not-working evidence answer, and a refusal to promise automatic backup recovery.
+remaining: []
+limitations:
+  - Owner accepted the change on 2026-10-24 with these recorded gaps, not hidden:
+  - Orphan-ciphertext recoverability table (A1 tail) was not produced; encrypted orphan files stay ambiguous by design.
+  - just docker-check last ran before the latest recovery/rotation edits; full container acceptance gates remain CI-side per AGENTS.md.
+  - Notion/dbhub surfaces remain degraded for pre-existing reasons; the credential layer is verified active, surface acceptance is separate.
+  - The channel /connections slash command is parsed only on the Telegram poll path; its live data surface (/v1/connectors per pinned principal) is what was verified, not a typed Telegram message.
+  - telegram-480637186 has no projection/binding in this stack; its control surface fails closed 503 rather than serving a guide.
+  - Historical attachments do not establish current credential loss.
+  - Live read-only Docker checks confirm control services and the persistent Broker volume are present, not credential integrity.
+  - A primary journal interrupted mid-replay can carry a divergent tail; fail-closed open then requires operator quarantine and a clean replay.
+  - Master-key rotation is not supported for existing sealed data; the October incident was recovered via the independent replica, not re-keying.
+  - Recovery does not resurrect primary-volume-resident config, contracts, TLS identity or master key; installation material must be preserved separately.

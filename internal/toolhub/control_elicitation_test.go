@@ -92,10 +92,8 @@ func TestProtectedCredentialElicitationAndOAuth(t *testing.T) {
 	if _, err := callControl(t, alice, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "GOOGLE_TOKEN": testSecret}); err == nil {
 		t.Fatal("chat KEY=value credential argument accepted")
 	}
-	formPath, _ := required["form_path"].(string)
-	if formPath == "" {
-		t.Fatal("missing form_path")
-	}
+	formOn := mustOnboarding(t, store, prepared["onboarding_id"].(string))
+	formPath := "/credentials/" + formOn.OnboardingID + "?nonce=" + formOn.FormNonce
 	get, err := http.Get(server.URL + formPath)
 	if err != nil {
 		t.Fatal(err)
@@ -160,10 +158,10 @@ func TestProtectedCredentialElicitationAndOAuth(t *testing.T) {
 	}
 	expired := control
 	expired.Now = func() time.Time { return time.Now().UTC().Add(2 * time.Hour) }
-	if _, err := expired.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": status["nonce"]}); !errors.Is(err, api.ErrUnauthorized) {
+	if _, err := expired.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, expired.Store, prepared["onboarding_id"])}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("expired confirmation: %v", err)
 	}
-	if _, err := callControl(t, alice, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": status["nonce"]}); err == nil {
+	if _, err := callControl(t, alice, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, expired.Store, prepared["onboarding_id"])}); err == nil {
 		t.Fatal("replayed nonce accepted")
 	}
 
@@ -235,9 +233,13 @@ func TestExpiredCredentialFormIsRenewedOnResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	formURL, _ := required["form_url"].(string)
-	if formURL == "" || nonceFromPath(formURL) == resumed.FormNonce || !strings.Contains(formURL, id) {
-		t.Fatalf("expired required_credentials form was not renewed: %q", formURL)
+	// The renewed link travels by channel notice, never in the tool result.
+	if _, leaked := required["form_url"]; leaked {
+		t.Fatalf("required_credentials exposed the form link: %v", required)
+	}
+	renewed := mustOnboarding(t, store, id)
+	if renewed.FormNonce == resumed.FormNonce {
+		t.Fatalf("required_credentials kept the stale nonce: %q", renewed.FormNonce)
 	}
 }
 
@@ -261,7 +263,10 @@ func TestExpiredConfirmationRejectsUnusedNonce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	nonce, _ := status["nonce"].(string)
+	if _, leaked := status["nonce"]; leaked {
+		t.Fatal("status exposed the confirmation nonce")
+	}
+	nonce := mustOnboarding(t, store, prepared["onboarding_id"].(string)).ConfirmationNonce
 	if nonce == "" {
 		t.Fatal("missing confirmation nonce")
 	}
@@ -278,8 +283,12 @@ func TestExpiredConfirmationRejectsUnusedNonce(t *testing.T) {
 		t.Fatalf("expiry marked nonce used: %+v err=%v", onboarding, err)
 	}
 	resumed, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]})
-	if err != nil || resumed["nonce"] == "" || resumed["nonce"] == nonce {
-		t.Fatalf("expired confirmation was not renewed: status=%v err=%v", resumed, err)
+	if err != nil {
+		t.Fatalf("expired confirmation status: %v", err)
+	}
+	renewed := confirmNonceOf(t, store, prepared["onboarding_id"])
+	if renewed == "" || renewed == nonce {
+		t.Fatalf("expired confirmation was not renewed: status=%v", resumed)
 	}
 }
 
@@ -313,6 +322,26 @@ func mustOnboarding(t *testing.T, store *Store, id string) api.Onboarding {
 		t.Fatal(err)
 	}
 	return onboarding
+}
+
+// Secret link parameters no longer ride tool results: tests read them from the
+// store record exactly as the loopback page would.
+func confirmNonceOf(t *testing.T, store *Store, id any) string {
+	t.Helper()
+	s, _ := id.(string)
+	return mustOnboarding(t, store, s).ConfirmationNonce
+}
+
+func removeNonceOf(t *testing.T, store *Store, id any) string {
+	t.Helper()
+	s, _ := id.(string)
+	return mustOnboarding(t, store, s).RemoveNonce
+}
+
+func providerAuthURLOf(t *testing.T, store *Store, id any) string {
+	t.Helper()
+	s, _ := id.(string)
+	return mustOnboarding(t, store, s).ProviderAuthorizationURL
 }
 
 func TestRotateRevokeCutsOpenSession(t *testing.T) {

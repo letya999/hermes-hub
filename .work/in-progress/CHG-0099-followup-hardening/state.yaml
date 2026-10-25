@@ -2,7 +2,7 @@ schema: 1
 change: CHG-0099
 title: Verified follow-up hardening
 status: in_progress
-branch: feat/m13-proactive-automation
+branch: feat/m13-proactive-automation (merged into dev; branch deleted — code in dev history)
 updated: 2026-10-14
 phase: implementation
 adr: ADR-0041

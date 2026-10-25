@@ -52,10 +52,10 @@ func TestBackupRestorePurgeIsolation(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(spool, "schedules", "morning.json"), []byte(`{"schedule_id":"morning"}`), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(spool, "schedules", "morning.json"), []byte(`{"schedule_id":"morning","principal_id":"alice","context_id":"alice"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(spool, "mappings", "job-1.json"), []byte(`{"job_id":"job-1"}`), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(spool, "mappings", "job-1.json"), []byte(`{"job_id":"job-1","principal_id":"alice","context_id":"alice"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(spool, "occurrences", "once.json"), []byte(`{"schedule_id":"morning"}`), 0600); err != nil {

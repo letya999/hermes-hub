@@ -91,7 +91,7 @@ Two CLIProxy image calls: [ADR-0030](../../docs/adr/ADR-0030-cliproxy-image-rout
 9. `image_gen` is host-managed. It is not a self-service connector and not a
    default feature. Enabled, the Hermes config receives the normalized provider,
    model, and delivery. On a rendered stack the generation call runs in the
-   `hub-media` sidecar (SPEC-0040): provider credentials are materialized
+   `hub-media` sidecar (SPEC-0061): provider credentials are materialized
    from the Credential Broker grant named by `HUB_MEDIA_BROKER_GRANT`
    (identity `media`, `broker-secrets-media` volume) — no
    `media.<environment>.env` file carries them — and the runtime env never

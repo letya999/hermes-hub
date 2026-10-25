@@ -81,7 +81,7 @@ func verifyManagedIsolation(hermesHome string) error {
 	}
 	for _, name := range managedExtensionRoots {
 		dir := filepath.Join(hermesHome, name)
-		info, err := os.Lstat(dir)
+		info, err := os.Lstat(dir) // #nosec G703 -- fixed managed layout names
 		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("managed extension root %s missing", name)
 		}
@@ -94,7 +94,7 @@ func verifyManagedIsolation(hermesHome string) error {
 		}
 	}
 	config := filepath.Join(hermesHome, "config.yaml")
-	if file, err := os.OpenFile(config, os.O_WRONLY|os.O_APPEND, 0); err == nil {
+	if file, err := os.OpenFile(config, os.O_WRONLY|os.O_APPEND, 0); err == nil { // #nosec G703 -- fixed managed layout names
 		_ = file.Close()
 		return fmt.Errorf("managed effective config is writable")
 	}
@@ -104,7 +104,7 @@ func verifyManagedIsolation(hermesHome string) error {
 	// an existing file also activates upstream's managed-key cleanup.
 	for _, name := range []string{".env", ".op.env"} {
 		target := filepath.Join(hermesHome, name)
-		if _, err := os.Lstat(target); err == nil {
+		if _, err := os.Lstat(target); err == nil { // #nosec G703 -- fixed managed layout names
 			return fmt.Errorf("managed environment file %s present in hermes home", name)
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("managed environment file %s check: %w", name, err)

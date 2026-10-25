@@ -18,6 +18,17 @@ import (
 // A recorded request that expired at the broker still returns 200 with
 // status "expired" — not a 404. refreshBrokerRequest must replace it with a
 // fresh request too, otherwise the agent keeps resending a dead connect link.
+func TestBrokerRequestRemainsUsableBeforeExpiry(t *testing.T) {
+	now := time.Now()
+	c := &ControlPlane{Now: func() time.Time { return now }}
+	if c.brokerRequestDead(brokerv1.Request{Status: "pending", ExpiresAt: now.Add(time.Minute)}) {
+		t.Fatal("live form replaced while broker still rejects a concurrent request")
+	}
+	if !c.brokerRequestDead(brokerv1.Request{Status: "pending", ExpiresAt: now.Add(-time.Second)}) {
+		t.Fatal("expired form retained")
+	}
+}
+
 func TestRefreshBrokerRequestHealsExpiredRequest(t *testing.T) {
 	keyPath := staleBrokerKey(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

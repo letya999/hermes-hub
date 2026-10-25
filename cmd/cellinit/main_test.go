@@ -67,6 +67,32 @@ func TestWriteFileStdin(t *testing.T) {
 	}
 }
 
+// Cred-proxy rules can reach ~270 KiB (16 grants x 16 KiB values): stdin
+// delivery must accept that, not just canary-sized payloads.
+func TestWriteFileStdinLarge(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "rules")
+	payload := strings.Repeat("x", 200*1024)
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		_, _ = w.WriteString(payload)
+		_ = w.Close()
+	}()
+	old := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = old; r.Close() }()
+	if err := writeFile([]string{target}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(target)
+	if len(data) != len(payload) {
+		t.Fatalf("stdin write truncated: %d want %d", len(data), len(payload))
+	}
+}
+
 func TestCheck(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "canary")
@@ -225,8 +251,10 @@ func TestCredProxyArgs(t *testing.T) {
 		t.Fatal("cred-proxy without --rules started")
 	}
 	dir := t.TempDir()
-	if err := credProxy([]string{"--rules", filepath.Join(dir, "missing")}); err == nil {
+	if err := credProxy([]string{"--rules", filepath.Join(dir, "missing"), "--rules-timeout", "50ms"}); err == nil {
 		t.Fatal("cred-proxy with missing rules started")
+	} else if !strings.Contains(err.Error(), "cred-proxy: rules:") {
+		t.Fatalf("missing rules did not fail through the wait path: %v", err)
 	}
 	rules := filepath.Join(dir, "rules.json")
 	if err := os.WriteFile(rules, []byte("{}"), 0600); err != nil {
@@ -234,6 +262,24 @@ func TestCredProxyArgs(t *testing.T) {
 	}
 	if err := credProxy([]string{"--rules", rules, "--listen", "bad listen addr"}); err == nil {
 		t.Fatal("cred-proxy on an invalid address started")
+	}
+}
+
+// The controller injects rules into the running sidecar's tmpfs after start —
+// the proxy must wait for the file instead of dying on a missing read.
+func TestWaitProxyRulesArrivingLate(t *testing.T) {
+	dir := t.TempDir()
+	rules := filepath.Join(dir, "rules.json")
+	go func() {
+		time.Sleep(80 * time.Millisecond)
+		_ = os.WriteFile(rules, []byte(`{"h":{"Authorization":"Bearer x"}}`), 0600)
+	}()
+	got, err := waitProxyRules(rules, 5*time.Second)
+	if err != nil || got["h"].Headers["Authorization"] != "Bearer x" {
+		t.Fatalf("waitProxyRules=%v %v", got, err)
+	}
+	if _, err := waitProxyRules(filepath.Join(dir, "never"), 60*time.Millisecond); err == nil {
+		t.Fatal("waitProxyRules returned without the file")
 	}
 }
 

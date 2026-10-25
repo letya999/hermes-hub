@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"net/netip"
 	"regexp"
 	"strings"
 	"time"
@@ -21,6 +22,9 @@ func (r CredentialReference) Validate() error {
 	if r.Backend == "credential-broker" {
 		if (r.BrokerGrantID != "" && !identity.ValidID(r.BrokerGrantID)) || !identity.ValidID(r.BrokerContractID) || r.BrokerContractRevision < 1 {
 			return fmt.Errorf("%w: credential broker reference", ErrInvalid)
+		}
+		if r.BrokerContextID != "" && !identity.ValidID(r.BrokerContextID) {
+			return fmt.Errorf("%w: credential broker context", ErrInvalid)
 		}
 		for key, target := range r.BrokerEnv {
 			if !CredentialPattern.MatchString(key) || !CredentialPattern.MatchString(target) {
@@ -43,7 +47,7 @@ func CredentialReferenceID(connectionID string, revision uint64) string {
 }
 
 func (c Connection) Validate() error {
-	if c.Schema != SchemaVersion || !identity.ValidID(c.ConnectionID) || !identity.ValidID(c.DefinitionID) || c.Revision == 0 || (c.Status != ActiveStatus && c.Status != DisabledStatus && c.Status != RevokedStatus && c.Status != DegradedStatus) {
+	if c.Schema != SchemaVersion || !identity.ValidID(c.ConnectionID) || !identity.ValidID(c.DefinitionID) || c.Revision == 0 || (c.Status != ActiveStatus && c.Status != DisabledStatus && c.Status != RevokedStatus && c.Status != DegradedStatus && c.Status != DeletingStatus && c.Status != ReauthStatus) {
 		return fmt.Errorf("%w: connection metadata", ErrInvalid)
 	}
 	if err := c.Owner.Validate(); err != nil {
@@ -51,6 +55,30 @@ func (c Connection) Validate() error {
 	}
 	if c.CredentialRefID != "" && !identity.ValidID(c.CredentialRefID) {
 		return fmt.Errorf("%w: invalid credential reference", ErrInvalid)
+	}
+	if c.CredentialVisibility != "" && c.CredentialVisibility != "active" && c.CredentialVisibility != "inactive" && c.CredentialVisibility != "unknown" {
+		return fmt.Errorf("%w: credential visibility", ErrInvalid)
+	}
+	if c.CredentialVisibility != "" && c.CredentialCheckedAt.IsZero() {
+		return fmt.Errorf("%w: credential check time", ErrInvalid)
+	}
+	if c.HealthCause != "" && c.HealthCause != "credential_visibility_unknown" && c.HealthCause != "credential_check_unavailable" && c.HealthCause != "credential_inactive" {
+		return fmt.Errorf("%w: health cause", ErrInvalid)
+	}
+	if c.HealthCause != "" && c.CredentialVisibility == "" {
+		return fmt.Errorf("%w: health cause without credential check", ErrInvalid)
+	}
+	if c.CredentialRetryCount < 0 || c.CredentialRetryCount > 5 || (c.CredentialRetryCount == 0 && !c.CredentialRetryAt.IsZero()) {
+		return fmt.Errorf("%w: credential retry state", ErrInvalid)
+	}
+	if c.RecipeRetryCount < 0 || c.RecipeRetryCount > 5 || (c.RecipeRetryCount == 0 && !c.RecipeRetryAt.IsZero()) {
+		return fmt.Errorf("%w: recipe retry state", ErrInvalid)
+	}
+	if c.CredRecipeRetryCount < 0 || c.CredRecipeRetryCount > 5 || (c.CredRecipeRetryCount == 0 && !c.CredRecipeRetryAt.IsZero()) {
+		return fmt.Errorf("%w: credential recipe retry state", ErrInvalid)
+	}
+	if c.SurfaceRetryCount < 0 || c.SurfaceRetryCount > 5 || (c.SurfaceRetryCount == 0 && !c.SurfaceRetryAt.IsZero()) {
+		return fmt.Errorf("%w: surface retry state", ErrInvalid)
 	}
 	if len(c.Metadata) > 32 {
 		return fmt.Errorf("%w: too much connection metadata", ErrInvalid)
@@ -65,7 +93,41 @@ func (c Connection) Validate() error {
 			return err
 		}
 	}
+	for _, key := range []string{"egress_allow", "egress_deny"} {
+		if _, err := ParseEgressList(c.Metadata[key]); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// ParseEgressList parses a comma-separated connection egress refinement:
+// host[:port] names or CIDR prefixes, at most 32 entries, nothing empty.
+func ParseEgressList(raw string) ([]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	parts := strings.Split(raw, ",")
+	if len(parts) > 32 {
+		return nil, fmt.Errorf("%w: egress list is unbounded", ErrInvalid)
+	}
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		entry := strings.ToLower(strings.TrimSpace(part))
+		if entry == "" {
+			return nil, fmt.Errorf("%w: empty egress entry", ErrInvalid)
+		}
+		if _, err := netip.ParsePrefix(entry); err == nil {
+			out = append(out, entry)
+			continue
+		}
+		if !HostPattern.MatchString(entry) {
+			return nil, fmt.Errorf("%w: invalid egress entry %q", ErrInvalid, entry)
+		}
+		out = append(out, entry)
+	}
+	return out, nil
 }
 
 func (b ToolBinding) Validate() error {

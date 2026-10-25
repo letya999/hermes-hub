@@ -146,14 +146,14 @@ func TestCIContainerFanoutPreservesEveryGate(t *testing.T) {
 	if gates.Needs != "image" || gates.Strategy.FailFast || strings.Join(gates.Strategy.Matrix.Target, ",") != "dev,prod" {
 		t.Fatal("matrix lost target or dependency", gates)
 	}
-	if strings.Join(gates.Strategy.Matrix.Gate, ",") != "smoke,native,supervisor,gateway,capabilities,network,managed,scratch" {
+	if strings.Join(gates.Strategy.Matrix.Gate, ",") != "smoke,native,supervisor,gateway,capabilities,network,managed,scratch,bench" {
 		t.Fatal("container contract omitted", gates.Strategy)
 	}
 	var scripts string
 	for _, step := range gates.Steps {
 		scripts += step.Run + "\n"
 	}
-	for _, required := range []string{"docker-smoke", "hermes-native-contract", "supervisor-contract", "gateway-lifecycle", "hermes-capability-contract", "managed-network-canary", "managed-supervisor-canary", "scratch-workload-canary", "TestDockerScratchExecPausedQuarantine", "credential-broker-docker-check", "org.opencontainers.image.revision", "git rev-parse HEAD"} {
+	for _, required := range []string{"docker-smoke", "hermes-native-contract", "supervisor-contract", "gateway-lifecycle", "hermes-capability-contract", "managed-network-canary", "managed-supervisor-canary", "scratch-workload-canary", "TestDockerScratchExecPausedQuarantine", "connector-bench", "credential-broker-docker-check", "org.opencontainers.image.revision", "git rev-parse HEAD"} {
 		if !strings.Contains(scripts, required) {
 			t.Errorf("gate missing: %s", required)
 		}

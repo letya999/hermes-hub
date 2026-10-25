@@ -47,14 +47,14 @@ func (s *Spool) ReadInbound(id string) (InboundRecord, []byte, error) {
 	if !validInboundID(id) {
 		return rec, nil, errors.New("invalid inbound id")
 	}
-	b, err := os.ReadFile(filepath.Join(s.root, "inbound", id+".json"))
+	b, err := os.ReadFile(filepath.Join(s.root, "inbound", id+".json")) // #nosec G703 -- id is validated by spoolIDPattern
 	if err != nil {
 		return rec, nil, errors.New("inbound record not found")
 	}
 	if err := json.Unmarshal(b, &rec); err != nil {
 		return rec, nil, err
 	}
-	data, err := os.ReadFile(filepath.Join(s.root, "inbound", id+".bin"))
+	data, err := os.ReadFile(filepath.Join(s.root, "inbound", id+".bin")) // #nosec G703 -- id is validated by spoolIDPattern
 	if err != nil {
 		return rec, nil, errors.New("inbound payload missing")
 	}
@@ -65,7 +65,7 @@ func (s *Spool) ConsumeInbound(id string) error {
 	if !validInboundID(id) {
 		return errors.New("invalid inbound id")
 	}
-	err := os.Remove(filepath.Join(s.root, "inbound", id+".json"))
-	_ = os.Remove(filepath.Join(s.root, "inbound", id+".bin"))
+	err := os.Remove(filepath.Join(s.root, "inbound", id+".json")) // #nosec G703 -- id is validated by spoolIDPattern
+	_ = os.Remove(filepath.Join(s.root, "inbound", id+".bin"))     // #nosec G703 -- id is validated by spoolIDPattern
 	return err
 }

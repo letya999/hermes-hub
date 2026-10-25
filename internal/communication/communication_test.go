@@ -55,6 +55,7 @@ type fakeAPI struct {
 		action      string
 	}
 	messageSeq int
+	username   string
 	edits      []struct {
 		chatID    int64
 		messageID int
@@ -74,6 +75,9 @@ func (f *fakeAPI) GetUpdates(context.Context, int64, int) ([]Update, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.updates, f.err
+}
+func (f *fakeAPI) GetMe(context.Context) (TGUser, error) {
+	return TGUser{Username: f.username}, nil
 }
 func (f *fakeAPI) SendMessage(_ context.Context, _ int64, topicID int64, text, parseMode string) error {
 	f.mu.Lock()
@@ -946,7 +950,7 @@ func TestGatewayRoutesCommandsJobsAndDeletesSensitiveInput(t *testing.T) {
 		t.Fatal("unknown Telegram chat resolved to a user")
 	}
 	joined := strings.Join(fake.sent, "\n")
-	if !strings.Contains(joined, "github — готово") || !strings.Contains(joined, "не настроен") {
+	if !strings.Contains(joined, "github — настроено; работоспособность не проверена") || !strings.Contains(joined, "не настроен") {
 		t.Fatal(fake.sent)
 	}
 	c.Users[0].PolicyDisabled = []string{"slack"}
@@ -1767,6 +1771,7 @@ type runAPI struct {
 	cancel context.CancelFunc
 }
 
+func (r *runAPI) GetMe(context.Context) (TGUser, error) { return TGUser{}, nil }
 func (r *runAPI) GetUpdates(ctx context.Context, _ int64, _ int) ([]Update, error) {
 	r.mu.Lock()
 	r.calls++

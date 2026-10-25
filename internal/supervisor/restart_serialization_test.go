@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -243,6 +244,83 @@ func TestProjectionRestartAcknowledgesBeforeNotifierDeadline(t *testing.T) {
 	}
 	release.Do(func() { close(ready) })
 }
+
+// A notifier whose deadline already fired cannot collect the ack, so its
+// queued retry must not spend the acquisition lock on a daemon restart —
+// timed-out posts would otherwise serialize into a convoy that starves
+// Ensure/wake. The durable marker is still written and applies later.
+func TestRestartRequestSkipsRestartForDeadNotifier(t *testing.T) {
+	markerDone := make(chan struct{})
+	var markerOnce sync.Once
+	applied := false
+	runtimeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/restart" {
+			applied = true
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"scheduled": true})
+	}))
+	defer runtimeAPI.Close()
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	if _, err := m.Ensure(context.Background(), binding(root)); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	entry := m.items[runtimeKey(binding(root))]
+	entry.Address, entry.State, entry.Leases, entry.auth = runtimeAPI.URL, Idle, 0, "secret"
+	m.mu.Unlock()
+	base := m.cfg.HTTP.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	m.cfg.HTTP = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		response, err := base.RoundTrip(r)
+		if r.URL.Path == "/v1/restart-request" {
+			markerOnce.Do(func() { close(markerDone) })
+		}
+		return response, err
+	})}
+	lock := m.lockFor(runtimeKey(binding(root)))
+	lock.Lock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	body, err := json.Marshal(map[string]string{"principal_id": "alice", "context_id": "alice", "runtime_id": "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpRequest := httptest.NewRequest(http.MethodPost, "/v1/restart-request", bytes.NewReader(body)).WithContext(ctx)
+	httpRequest.Header.Set("Authorization", "Bearer secret")
+	done := make(chan struct{})
+	go func() {
+		m.Handler().ServeHTTP(httptest.NewRecorder(), httpRequest)
+		close(done)
+	}()
+	select {
+	case <-markerDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("restart-request never marked the runtime")
+	}
+	// The notifier's deadline fires while its request sits in the lock queue;
+	// once it wins the lock it must leave instead of restarting.
+	cancel()
+	lock.Unlock()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("dead notifier stayed queued behind the restart lock")
+	}
+	if applied {
+		t.Fatal("dead notifier triggered a daemon restart")
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestManagedRestartMaterializesChangedDisplayOverlay(t *testing.T) {
 	t.Setenv("HUB_ENV", "prod")

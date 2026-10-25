@@ -179,7 +179,7 @@ func hashWatchPath(path string) (string, error) {
 		}
 		fmt.Fprintf(h, "%s\x00%o\x00", filepath.ToSlash(rel), info.Mode().Perm())
 		if info.Mode().IsRegular() {
-			f, err := os.Open(p)
+			f, err := os.Open(p) // #nosec G122 -- walked path inside the scripts dir
 			if err != nil {
 				return err
 			}

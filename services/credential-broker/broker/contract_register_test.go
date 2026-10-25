@@ -16,6 +16,44 @@ func dynamicContract() contract.Contract {
 	return contract.Contract{ID: "dyn-abc123", Revision: 1, Title: "notion credentials", Fields: []contract.Field{{ID: "token", Kind: "secret", Label: "NOTION_TOKEN", Required: true, MaxBytes: 4096}}, Deliveries: []contract.Delivery{{Type: "env", Field: "token", Target: "NOTION_TOKEN"}}}
 }
 
+func TestDynamicOAuthSessionContract(t *testing.T) {
+	f := newFixture(t)
+	c := dynamicContract()
+	c.ID = "dyn-session"
+	c.State = &contract.State{Target: "/home/mcp/session", Files: []contract.StateFile{{Name: "session.json", MaxBytes: 65536, JSON: true}}}
+	stored, err := f.b.RegisterContract(alice, c)
+	if err != nil || stored.State == nil {
+		t.Fatalf("bounded owner session rejected: %v", err)
+	}
+	for _, invalid := range []contract.Contract{
+		func() contract.Contract { v := c; v.ID = "dyn-shared-session"; v.AllowShared = true; return v }(),
+		func() contract.Contract {
+			v := c
+			v.ID = "dyn-raw-session"
+			v.State = &contract.State{Target: c.State.Target, Files: []contract.StateFile{{Name: "raw", MaxBytes: 65536}}}
+			return v
+		}(),
+		func() contract.Contract {
+			v := c
+			v.ID = "dyn-large-session"
+			v.State = &contract.State{Target: c.State.Target, Files: []contract.StateFile{{Name: "session.json", MaxBytes: 65537, JSON: true}}}
+			return v
+		}(),
+		func() contract.Contract {
+			v := c
+			v.ID = "dyn-multiple-session"
+			v.State = &contract.State{Target: c.State.Target, Files: append(append([]contract.StateFile{}, c.State.Files...), contract.StateFile{Name: "other.json", MaxBytes: 64, JSON: true})}
+			return v
+		}(),
+	} {
+		if _, err := f.b.RegisterContract(alice, invalid); !errors.Is(err, ErrDenied) {
+			t.Errorf("unsafe dynamic state accepted: %s: %v", invalid.ID, err)
+		}
+	}
+	f.restart()
+	f.enroll(alice, c.ID, "session-connection")
+}
+
 func TestDynamicContractRegistration(t *testing.T) {
 	f := newFixture(t)
 	in := dynamicContract()

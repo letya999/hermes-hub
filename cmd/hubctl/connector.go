@@ -28,6 +28,9 @@ import (
 // The CLI is a trusted host entry: --user is selected by the authenticated
 // operator, not exposed as a model tool argument.
 func runConnector(ctx context.Context, args []string) error {
+	if len(args) > 0 && args[0] == "prefetch" {
+		return connectorPrefetch(ctx, prefetchRunner)
+	}
 	if len(args) > 0 && args[0] == "catalog-enable" {
 		return runCatalog(args[1:])
 	}
@@ -133,7 +136,7 @@ func runConnector(ctx context.Context, args []string) error {
 		return json.NewEncoder(os.Stdout).Encode(map[string]any{"catalog_cli": ids})
 	}
 	if len(args) == 0 {
-		return fmt.Errorf("connector requires prepare, connect, status, call, refresh, revoke, local-controller, generic-controller or catalog-cli")
+		return fmt.Errorf("connector requires prepare, connect, status, link, call, refresh, revoke, local-controller, generic-controller or catalog-cli")
 	}
 	f := flag.NewFlagSet("connector", flag.ContinueOnError)
 	user := f.String("user", "me", "authenticated owner")
@@ -157,10 +160,21 @@ func runConnector(ctx context.Context, args []string) error {
 	clientFile := f.String("client-file", "", "protected OAuth CLIENT_ID/CLIENT_SECRET input")
 	toolName := f.String("tool", "", "projected tool name")
 	input := f.String("from-file", "", "tool argument JSON input")
+	onboardingID := f.String("onboarding", "", "pending onboarding ID for link/confirm")
+	origin := f.String("origin", "", "human action link origin (default: HUB_PUBLIC_ORIGIN or the toolhub listener)")
+	confirm := f.Bool("confirm", false, "link: also confirm an awaiting-confirmation onboarding for scripts")
+	profileID := f.String("profile", "", "capability profile carrying the connectors bundle for facade verbs")
+	envID := f.String("env", "dev", "capability profile environment")
+	generation := f.Uint64("generation", 0, "capability profile generation")
+	target := f.String("target", "", "connector selector for facade verbs")
+	operationID := f.String("operation", "", "operation ID for connector status")
+	query := f.String("query", "", "connector search query")
+	writesOn := f.Bool("on", false, "allow-writes: enable write tools (omit to disable)")
+
 	if err := f.Parse(args[1:]); err != nil {
 		return err
 	}
-	if f.NArg() != 0 {
+	if f.NArg() != 0 && !(args[0] == "import" && f.NArg() == 1) {
 		return fmt.Errorf("unexpected connector arguments")
 	}
 	if *provider != "google" && *provider != "slack" && *provider != "telegram" {
@@ -173,6 +187,9 @@ func runConnector(ctx context.Context, args []string) error {
 		*runtimeID = *user
 	}
 	auth := identity.Envelope{Schema: identity.Schema, PrincipalID: *user, ExternalIdentityID: *user, ContextID: *contextID, RuntimeID: *runtimeID, ConversationID: "connector", DeliveryTargetID: "connector", PolicyVersion: *policy}
+	if *profileID != "" {
+		auth.CapabilityProfile, auth.Environment, auth.Generation = *profileID, *envID, *generation
+	}
 	if err := auth.Validate(*user, *contextID, *runtimeID, *policy); err != nil {
 		return err
 	}
@@ -189,12 +206,86 @@ func runConnector(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if args[0] == "status" {
+	if args[0] == "status" && *target == "" && *operationID == "" {
 		catalog, err := registry.Catalog(auth)
 		if err != nil {
 			return err
 		}
 		return json.NewEncoder(os.Stdout).Encode(catalog)
+	}
+	if args[0] == "import" {
+		// Deterministic T1 ref → recipe draft. The operator sees the review
+		// digest; only --confirm stores it, like hubctl capability.
+		draft, err := api.ParseImportRef(f.Arg(0))
+		if err != nil {
+			return err
+		}
+		reviewDigest, err := api.ResolutionDigest(draft)
+		if err != nil {
+			return err
+		}
+		if !*confirm {
+			return fmt.Errorf("review digest: %s — re-run with --confirm to store the recipe", reviewDigest)
+		}
+		digest, err := registry.PutRecipe(draft)
+		if err != nil {
+			return err
+		}
+		if err := registry.Save(*registryPath); err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{"review_digest": digest, "trust": string(draft.Trust), "state": draft.State})
+	}
+	if args[0] == "link" {
+		if !identity.ValidID(*onboardingID) {
+			return fmt.Errorf("connector requires a valid --onboarding")
+		}
+		onboarding, err := registry.OnboardingFor(auth, *onboardingID)
+		if err != nil {
+			return err
+		}
+		// The link is the whole payload — scripts read it raw. No pending
+		// action prints the phase instead of a dead URL.
+		if link := api.ActionURL(connectorActionOrigin(*origin), onboarding); link != "" {
+			fmt.Println(link)
+		} else {
+			fmt.Println(onboarding.Phase)
+		}
+		if !*confirm || onboarding.Phase != api.PhaseAwaitingConfirm {
+			return nil
+		}
+		return connectorConfirm(ctx, registry, auth, onboarding)
+	}
+	// Facade verbs run the identical code path the agent connector_* tools
+	// and the control listener use; the connectors capability bundle on the
+	// caller's profile admits them.
+	facadeTool := map[string]string{
+		"list": "connector_list", "disable": "connector_disable", "enable": "connector_enable",
+		"search": "connector_search", "reauth": "connector_reauth", "remove": "connector_remove",
+		"install": "connector_install", "allow-writes": "connector_allow_writes",
+	}[args[0]]
+	if args[0] == "status" && *target != "" {
+		facadeTool = "connector_status"
+	}
+	if facadeTool != "" {
+		facadeArgs := map[string]any{}
+		if *target != "" {
+			facadeArgs["target"] = *target
+		}
+		if *query != "" {
+			facadeArgs["query"] = *query
+		}
+		if args[0] == "allow-writes" {
+			facadeArgs["on"] = *writesOn
+		}
+		result, err := (&toolhub.ControlPlane{Store: registry}).InvokeConnector(ctx, auth, facadeTool, facadeArgs)
+		if err != nil {
+			return err
+		}
+		if err := registry.Save(*registryPath); err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(result)
 	}
 	if err := ensureCredentialKey(*keyPath); err != nil {
 		return err
@@ -239,10 +330,7 @@ func runConnector(ctx context.Context, args []string) error {
 			return err
 		}
 		gateway := &toolhub.Gateway{Store: registry, Backend: api.RoutingBackend{Provider: api.PersonalProviderBackend{}, MCP: api.MCPBackend{Root: os.Getenv("HUB_STATE"), Token: os.Getenv("TOOLHIVE_VMCP_TOKEN"), AdmissionVerifier: admission}},
-			Injector: func(_ context.Context, e api.EffectiveBinding) (api.CredentialInjection, error) {
-				env, err := api.DecryptAuthorized(backend, e)
-				return api.CredentialInjection{Environment: env}, err
-			},
+			Injector: toolhub.LocalCredentialInjector(backend),
 			AuditWrite: func(_ string, fields map[string]string) error {
 				event := audit.NewEvent("tool-call", auth.PrincipalID, fields["outcome"])
 				event.ContextID, event.RuntimeID, event.ConnectionID, event.PolicyRevision = auth.ContextID, auth.RuntimeID, fields["connection_id"], auth.PolicyVersion
@@ -375,7 +463,7 @@ func runConnector(ctx context.Context, args []string) error {
 	// Serialize token lifecycle across CLI processes. Connect snapshot saves
 	// separately reject stale writers at the registry boundary.
 	lockPath := *registryPath + ".connection-" + api.CredentialReferenceID(*connectionID, 0) + ".lock"
-	if info, err := os.Lstat(lockPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
+	if info, err := os.Lstat(lockPath); err == nil && info.Mode()&os.ModeSymlink != 0 { // #nosec G703 -- operator-supplied registry path
 		return fmt.Errorf("symlink lifecycle lock denied")
 	}
 	lifecycleLock := flock.New(lockPath)
@@ -473,6 +561,31 @@ func runConnector(ctx context.Context, args []string) error {
 	default:
 		return fmt.Errorf("unknown connector operation %q", args[0])
 	}
+}
+
+// connectorActionOrigin picks where human action links resolve: the explicit
+// flag, the operator-published origin, or the toolhub listener's loopback.
+func connectorActionOrigin(flag string) string {
+	if strings.TrimSpace(flag) != "" {
+		return strings.TrimRight(strings.TrimSpace(flag), "/")
+	}
+	if public := api.PublicOrigin(); public != "" {
+		return public
+	}
+	return api.FormOriginForListen(os.Getenv("HUB_TOOLHUB_LISTEN"))
+}
+
+// connectorConfirm finishes an awaiting-confirmation onboarding the same way
+// the /confirm page does; the stored nonce stays in the operator-side store.
+func connectorConfirm(ctx context.Context, registry *toolhub.Store, auth identity.Envelope, onboarding api.Onboarding) error {
+	body, err := (&toolhub.ControlPlane{Store: registry}).Invoke(ctx, auth, "confirm", map[string]any{
+		"onboarding_id": onboarding.OnboardingID,
+		"nonce":         onboarding.ConfirmationNonce,
+	})
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(os.Stdout).Encode(body)
 }
 
 func connectTelegram(ctx context.Context, registry *toolhub.Store, backend credstore.Backend, auth identity.Envelope, connection, expected, input, manifest, endpoint, registryPath string, write bool) error {

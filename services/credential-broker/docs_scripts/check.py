@@ -10,11 +10,16 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+REPO = ROOT.parents[1]
+DOCS = REPO/'docs/services/credential-broker'
 SKIP = {'.git', '.build', '.tools', '__pycache__'}
 FM = re.compile(r'\A---\ndescription: "([^"\n]+)"\nlast_verified: "(\d{4}-\d{2}-\d{2})"\n---\n')
 
 def documents():
-    return sorted(p for p in ROOT.rglob('*.md') if not SKIP.intersection(p.relative_to(ROOT).parts))
+    # Module *.md files plus the shared docs tree (moved out of the module by CHG-0136).
+    module = [p for p in ROOT.rglob('*.md') if not SKIP.intersection(p.relative_to(ROOT).parts)]
+    shared = list(DOCS.rglob('*.md')) if DOCS.is_dir() else []
+    return sorted(module + shared)
 
 def info(p):
     text = p.read_text(encoding='utf-8')
@@ -69,7 +74,7 @@ def check():
     for p in documents():
         try:
             text, meta, title = info(p)
-            rel = str(p.relative_to(ROOT))
+            rel = str(p.relative_to(ROOT if p.is_relative_to(ROOT) else REPO))
             body = text[meta.end():]
             # Do not interpret example shell/code fences as Markdown headings/links.
             prose = re.sub(r'^```[^\n]*\n.*?^```\s*$', '', body, flags=re.M|re.S)
@@ -78,13 +83,17 @@ def check():
             if not text.endswith('\n') or re.search(r'[ \t]+$', text, re.M) or '\t' in prose:
                 errors.append('MD004 '+rel+': whitespace/newline')
             if '\n\n\n' in text: errors.append('MD005 '+rel+': repeated empty lines')
-            if p.name == 'index.md' and text != expected_index(p):
+            # Generated-index rule applies to the module itself; shared-tree
+            # index.md files are curated and checked by the root devcheck docs.
+            if p.name == 'index.md' and p.is_relative_to(ROOT) and text != expected_index(p):
                 errors.append('MD006 '+rel+': index stale; run just docs-fix')
             for link in re.findall(r'\]\(([^)\n]+)\)', prose):
                 target = link.split('#',1)[0]
                 if not target or re.match(r'^[a-zA-Z]+:', target): continue
                 dest = (p.parent/target).resolve()
-                if not dest.is_relative_to(ROOT) or not dest.exists():
+                # Docs/specs/work records moved to the shared repo tree (CHG-0136);
+                # links may resolve outside the module but must stay inside the repo.
+                if not dest.is_relative_to(REPO) or not dest.exists():
                     errors.append('MD007 '+rel+': broken local link '+target)
         except (ValueError, OSError) as e:
             errors.append(str(e))
@@ -100,20 +109,20 @@ def check():
         for name in re.findall(r'`(Test[A-Za-z0-9_]+)`',text):
             if not re.search(r'func '+re.escape(name)+r'\(',tests): errors.append('SP003 no executable test '+name)
     for p in (ROOT/'.work').rglob('state.yaml'):
-        try:
-            d=json.loads(p.read_text()) # JSON is our deliberately restricted YAML 1.2 subset.
-            required={'description','last_updated','done','current','next','evidence','review'}
-            if set(d)!=required or set(d['review'])!={'open','resolved'}:
-                errors.append('WK001 state schema '+str(p))
-            dt.date.fromisoformat(d['last_updated'])
-            for location in d['evidence']:
-                if not (p.parent/location).exists(): errors.append('WK002 missing evidence '+location)
-        except (ValueError, TypeError, KeyError) as e: errors.append('WK003 '+str(p)+': '+str(e))
+            try:
+                d=json.loads(p.read_text()) # JSON is our deliberately restricted YAML 1.2 subset.
+                required={'description','last_updated','done','current','next','evidence','review'}
+                if set(d)!=required or set(d['review'])!={'open','resolved'}:
+                    errors.append('WK001 state schema '+str(p))
+                dt.date.fromisoformat(d['last_updated'])
+                for location in d['evidence']:
+                    if not (p.parent/location).exists(): errors.append('WK002 missing evidence '+location)
+            except (ValueError, TypeError, KeyError) as e: errors.append('WK003 '+str(p)+': '+str(e))
     errors += check_openapi()
     lock=ROOT/'specs/baseline.json'
     if lock.exists():
         for file,digest in json.loads(lock.read_text()).items():
-            if hashlib.sha256((ROOT/file).read_bytes()).hexdigest()!=digest:
+            if hashlib.sha256((ROOT/file).resolve().read_bytes()).hexdigest()!=digest:
                 errors.append('SP004 frozen spec changed; new revision/ADR required: '+file)
     # CI job scripts are just entrypoints; tool setup is runner provisioning.
     for path in [ROOT/'.github/workflows/ci.yml',ROOT/'.gitlab-ci.yml']:
@@ -125,20 +134,31 @@ def check():
     print(f'Documentation: {len(documents())} Markdown files; metadata, indexes, links, specs, states, OpenAPI references passed.')
 
 def fix():
-    indices=sorted((p for p in documents() if p.name=='index.md'),key=lambda p:len(p.parts),reverse=True)
+    indices=sorted((p for p in documents() if p.name=='index.md' and p.is_relative_to(ROOT)),key=lambda p:len(p.parts),reverse=True)
     for p in indices: p.write_text(expected_index(p),encoding='utf-8')
     print(f'Generated {len(indices)} indexes.')
+
+def next_chg():
+    used=set()
+    for zone in ('in-progress','done'):
+        for d in (REPO/'.work'/zone).glob('CHG-*'):
+            try: used.add(int(d.name.split('-',2)[1]))
+            except (IndexError,ValueError): pass
+    n=1
+    while n in used: n+=1
+    return n
 
 def new_change(name,title):
     if not re.fullmatch(r'[a-z][a-z0-9-]{0,59}',name) or not title.strip() or len(title)>120 or '\n' in title or '"' in title:
         raise SystemExit('Invalid change name/title')
-    d=ROOT/'.work/todo'/name; d.mkdir(parents=True,exist_ok=False)
+    # Broker change records live in the shared tracker since CHG-0136.
+    d=REPO/'.work/in-progress'/(f'CHG-{next_chg():04d}-broker-{name}'); d.mkdir(parents=True,exist_ok=False)
     today=dt.date.today().isoformat()
     (d/'plan.md').write_text(f'---\ndescription: "{title}"\nlast_verified: "{today}"\n---\n\n# {title}\n\n## Цель\n\n{title}. До реализации зафиксировать требования и проверяемые критерии.\n\n## Шаги\n\nПервый шаг: прочитать действующую спецификацию и границы доверия.\n\n## Приёмка\n\nЗапустить `just check`; результаты записать в state.yaml.\n')
     state=dict(description=title,last_updated=today,done=[],current='Уточнение требований и рисков',next=['Спецификация','Реализация','Проверки'],evidence=[],review=dict(open=[],resolved=[]))
     (d/'state.yaml').write_text(json.dumps(state,ensure_ascii=False,indent=2)+'\n')
     (d/'index.md').write_text(f'---\ndescription: "{title}"\nlast_verified: "{today}"\n---\n\n# {title}\n')
-    fix()
+    print(f'Created {d.relative_to(REPO)} — add the index row to .work/index.md (root devcheck requires it).')
 
 def main():
     ap=argparse.ArgumentParser(description=__doc__);ap.add_argument('task',choices=['check','fix','new-change']);ap.add_argument('args',nargs='*');a=ap.parse_args()

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
 // RequeueObservations retries observation for uncertain jobs. A durably
@@ -23,6 +25,7 @@ func (s *Spool) RequeueObservations(now time.Time, reconcileAdmissionUnknown boo
 	if err != nil {
 		return err
 	}
+jobs:
 	for _, entry := range entries {
 		if !strings.HasSuffix(entry.Name(), ".json") {
 			continue
@@ -49,6 +52,19 @@ func (s *Spool) RequeueObservations(now time.Time, reconcileAdmissionUnknown boo
 		}
 		if mapping.Fingerprint != jobFingerprint(job) || mapping.JobID != job.ID || entry.Name() != spoolFileID(job.ID)+".json" {
 			return errors.New("recovery job binding mismatch")
+		}
+		// Once the budget notice is durable, further observation cannot
+		// notify again and must not consume a worker forever.
+		if !now.Before(mapping.UncertainSince.Add(hubruntime.RunBudget())) {
+			for _, dir := range []string{"pending", "sending", "done", "failed"} {
+				_, err := os.Stat(filepath.Join(s.root, "outbox", dir, spoolFileID("job-"+job.ID+"-uncertain")+".json"))
+				if err == nil {
+					continue jobs
+				}
+				if !errors.Is(err, os.ErrNotExist) {
+					return err
+				}
+			}
 		}
 		if mapping.ObservationAttempts < 6 {
 			mapping.ObservationAttempts++

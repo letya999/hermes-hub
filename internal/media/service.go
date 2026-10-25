@@ -209,8 +209,10 @@ func (s *Session) MediaFetch(ctx context.Context, jobID, name string) (map[strin
 		return nil, err
 	}
 	switch status.Status {
-	case "queued", "running":
+	case "queued", "submitting", "running":
 		return map[string]any{"job_id": jobID, "status": status.Status, "secret_values_included": false}, nil
+	case "uncertain":
+		return nil, errors.New("media submission outcome uncertain; do not resubmit before checking provider")
 	case "failed":
 		return nil, fmt.Errorf("media job failed: %s", status.Error)
 	case "done":

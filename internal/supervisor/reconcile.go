@@ -167,7 +167,7 @@ func (m *Manager) reconcileUnconfirmed(ctx context.Context, now time.Time) {
 		record := record
 		// Reconciliation outlives the sweep tick that scheduled it; the
 		// stream client's own deadlines bound each observe/readmit call.
-		go func() {
+		go func() { // #nosec G118 -- detached reconcile worker
 			defer lock.Unlock()
 			m.reconcileJob(context.Background(), record)
 		}()
@@ -224,6 +224,14 @@ func (m *Manager) reconcileJob(ctx context.Context, record jobRecord) {
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK || response.Header.Get("Content-Type") != hubruntime.RunStreamContentType {
+		// A readmit refusal is permanent: the immutable durable request can
+		// never produce a different verdict, and a lost admission receipt
+		// cannot reappear. Name the outcome failed rather than re-asking
+		// the same question until the run budget expires.
+		if endpoint == "/v1/readmit" && response.StatusCode == http.StatusConflict {
+			lost := hubruntime.ExecuteResponse{JobID: record.Request.JobID, RuntimeGeneration: fresh.Generation, Status: "failed", LastEvent: "run.failed"}
+			_ = m.finishJobGeneration(record.Request, lost, "failed", fresh.Generation)
+		}
 		return
 	}
 	m.consumeJobStream(record.Request, runtime, response.Body, nil)

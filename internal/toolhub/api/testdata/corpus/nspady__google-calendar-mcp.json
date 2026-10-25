@@ -1,0 +1,56 @@
+{
+  "target": "nspady/google-calendar-mcp",
+  "subject": {
+    "kind": "mcp-container",
+    "ref": "nspady/google-calendar-mcp@sha256:c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
+  },
+  "provenance": [
+    "https://raw.githubusercontent.com/nspady/google-calendar-mcp/main/package.json",
+    "https://raw.githubusercontent.com/nspady/google-calendar-mcp/main/.env.example"
+  ],
+  "entries": [
+    {
+      "claim": {
+        "attribute": "entrypoint",
+        "value": "[\"node\", \"build/index.js\"]"
+      },
+      "source": "package.json",
+      "ref": "package.json@bin",
+      "rank": "L6"
+    },
+    {
+      "claim": {
+        "field": "GOOGLE_OAUTH_CREDENTIALS",
+        "required": true,
+        "secret": false,
+        "delivery": "file"
+      },
+      "source": ".env.example",
+      "ref": ".env.example",
+      "rank": "R6"
+    },
+    {
+      "claim": {
+        "field": "GOOGLE_CALENDAR_MCP_TOKEN_PATH",
+        "required": false,
+        "secret": false,
+        "delivery": "file"
+      },
+      "source": ".env.example",
+      "ref": ".env.example",
+      "rank": "R6"
+    },
+    {
+      "claim": {
+        "field": "TRANSPORT",
+        "required": false,
+        "secret": false,
+        "delivery": "env"
+      },
+      "source": ".env.example",
+      "ref": ".env.example",
+      "rank": "R6"
+    }
+  ],
+  "expect_digest": "sha256:6eb6982de32e373050c15773ea78ca71a0a8341375230e4ae9112e0feed684c4"
+}

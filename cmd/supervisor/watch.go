@@ -10,7 +10,7 @@ import (
 
 func watchSupervisor(ctx context.Context, executable string, args []string) error {
 	for ctx.Err() == nil {
-		child := exec.CommandContext(ctx, executable, args...)
+		child := exec.CommandContext(ctx, executable, args...) // #nosec G702 -- executable and args come from supervisor config, not request input
 		child.Stdout, child.Stderr = os.Stdout, os.Stderr
 		err := child.Run()
 		if ctx.Err() != nil {

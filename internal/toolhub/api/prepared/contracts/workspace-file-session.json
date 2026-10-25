@@ -1,0 +1,12 @@
+{
+  "id":"workspace-file-session","revision":1,"title":"Workspace: OAuth client and account session","storage":"local","allow_shared":false,
+  "fields":[
+    {"id":"client_json","label":"OAuth client JSON","kind":"json","required":true,"max_bytes":65536},
+    {"id":"account_email","label":"Google account email","kind":"string","required":true,"max_bytes":320}
+  ],
+  "deliveries":[
+    {"type":"file","field":"client_json","target":"/run/mcp-secrets/client.json","env_name":"GOOGLE_CLIENT_SECRET_PATH"},
+    {"type":"env","field":"account_email","target":"USER_GOOGLE_EMAIL"}
+  ],
+  "state":{"target":"/home/mcp/.google_workspace_mcp/credentials","files":[{"name":"runtime_session.json","max_bytes":65536,"json":true}]}
+}

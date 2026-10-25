@@ -1,6 +1,7 @@
 ---
 description: Use the same direct upstream Atlassian MCP tool surface as Codex.
 status: accepted
+last_verified: 2026-09-11
 ---
 # ADR-0010: Direct mcp-atlassian server
 

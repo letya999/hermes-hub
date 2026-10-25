@@ -7,6 +7,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/letya999/hermes-hub/internal/compaction"
 )
 
 // usageFixture fakes the pinned Hermes session API: a declared session that
@@ -122,6 +125,61 @@ func TestUsageUnknownWhenUpstreamFieldsMissing(t *testing.T) {
 	}
 	if report.Compactions == nil || *report.Compactions != 0 {
 		t.Fatalf("lineage count wrong: %+v", report)
+	}
+}
+
+// In-place compactions leave no lineage row — only the journal can surface
+// them. /usage reports the journaled count and the last event verbatim;
+// nothing is inferred from transcript text.
+func TestUsageSurfacesJournaledInPlaceCompactions(t *testing.T) {
+	request := usageRequest(t)
+	declared := sessionIDFor(request.ExecuteRequest)
+	api := usageFixture(t, map[string]map[string]any{
+		declared: {"id": declared, "model": "model-a"},
+	}, map[string]string{declared: declared})
+	defer api.Close()
+	usageSetEnv(t, api)
+	stateDir := t.TempDir()
+	t.Setenv("HUB_STATE", stateDir)
+	j, err := compaction.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC)
+	for _, trigger := range []string{compaction.TriggerAutoInLoop, compaction.TriggerAutoSweep} {
+		if err := j.Append(compaction.Event{
+			At: at, SessionID: declared, Trigger: trigger,
+			Engine: compaction.EngineHub, Method: compaction.MethodArchiveCompct}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A refused attempt is evidence, not a compaction: it must not lift the
+	// count or claim the last-compaction slot.
+	if err := j.Append(compaction.Event{
+		At: at.Add(time.Hour), SessionID: declared, Trigger: compaction.TriggerAutoSweep,
+		Engine: compaction.EngineHub, Method: compaction.MethodArchiveCompct,
+		FailureClass: "lease_held"}); err != nil {
+		t.Fatal(err)
+	}
+	report, err := (&runtimeHTTP{}).measureUsage(httptest.NewRequest(http.MethodGet, "/", nil).Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.InPlaceCompactions == nil || *report.InPlaceCompactions != 2 {
+		t.Fatalf("in-place count: %+v", report.InPlaceCompactions)
+	}
+	if report.LastCompaction == nil || report.LastCompaction.Trigger != compaction.TriggerAutoSweep {
+		t.Fatalf("last event: %+v", report.LastCompaction)
+	}
+	// A journaled event newer than the lineage rotation is the real last
+	// compaction moment.
+	if report.LastCompactionAt != at.Format("2006-01-02T15:04:05Z") {
+		t.Fatalf("last_compaction_at: %q", report.LastCompactionAt)
+	}
+	// Sessions with no journal report explicit null, never a fabricated zero.
+	other, err := j.Events("hub-other")
+	if err != nil || len(other) != 0 {
+		t.Fatal(other)
 	}
 }
 

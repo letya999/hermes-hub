@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
 )
@@ -35,7 +36,14 @@ func DefaultSourceReviewerWithCatalogs(artifactsDir, seccompPath string, catalog
 		if selected != nil && (!CandidateMatches(*selected, source) || selected.Launch.Transport != ContainerMCP || !DigestPattern.MatchString(selected.Launch.Digest)) {
 			return SourceReview{}, fmt.Errorf("%w: selected registry artifact does not match the exact source", ErrInvalid)
 		}
-		contextBytes, err := FetchRepositoryRecipeContext(ctx, source, 64<<20)
+		if pinned, matched, pinErr := preparedLookup(source); pinErr != nil {
+			return SourceReview{}, pinErr
+		} else if matched && pinned.Image != nil {
+			// T0: the CI-built image is the reviewed artifact — admission
+			// resolves the pin and never fetches sources or runs a build.
+			return admitPinnedPrepared(ctx, source, pinned)
+		}
+		contextBytes, err := fetchRecipeContext(ctx, source, 64<<20)
 		if err != nil {
 			return SourceReview{}, err
 		}
@@ -66,18 +74,41 @@ func DefaultSourceReviewerWithCatalogs(artifactsDir, seccompPath string, catalog
 			resolution.State = "ready"
 		}
 		config := DefaultSelfInstallConfig(source)
-		prepared, matched, err := PreparedForSource(source)
+		prepared, matched, err := preparedLookup(source)
 		if err != nil {
 			return SourceReview{}, err
 		}
 		if matched {
 			config = prepared.Apply(config)
 			resolution.Connection = prepared.Overlay(resolution.Connection)
+			// The reviewed entry is the credential authority here just as in
+			// the pinned path: its claims belong in the ledger or the
+			// resolution cannot explain which source made the fields required.
+			preparedCandidate := RecipeCandidate{
+				Repository: source.Repository, Subfolder: source.Subfolder, CommitSHA: source.CommitSHA,
+				Connection: prepared.Connection, Source: "prepared", CredentialRank: RankR0,
+			}
+			resolution.Ledger = append(resolution.Ledger, candidateLedgerEntries(preparedCandidate, false, time.Now().UTC().Format(time.RFC3339))...)
+			enrichResolution(&resolution)
 		}
 		if resolution.State == "ready" {
 			ApplyLaunchState(&config, resolution.Launch)
 		}
 		config.Credentials = resolution.Connection.CredentialInputs()
+		if resolution.Connection.OAuth != nil {
+			config.OAuth = resolution.Connection.OAuth
+			config.Workload.Stateful = true
+		}
+		if resolution.Connection.AuthBeforeToolsList {
+			return SourceReview{Definition: ToolDefinition{
+				Schema: SchemaVersion, DefinitionID: config.DefinitionID, Version: config.Version, Transport: ContainerMCP,
+				Source:      DefinitionSource{Repository: source.Repository, CommitSHA: source.CommitSHA, Subfolder: source.Subfolder},
+				Credentials: config.Credentials, CredentialGroups: config.CredentialGroups,
+				CredentialContractID: config.CredentialContractID, CredentialContractRevision: config.CredentialContractRevision, CredentialContractEnv: config.CredentialContractEnv,
+				RuntimeEnvironment: config.RuntimeEnvironment, ProxyEnvironment: config.ProxyEnvironment,
+				OAuth: config.OAuth, Workload: config.Workload, Execution: config.Execution, Health: config.Health,
+			}, AdmissionPending: true, AdmissionDetail: "The connection recipe requires authentication before building and listing tools.", Recipe: &resolution}, nil
+		}
 		// Only reviewed deliveries enter the Broker mapping; unrelated optional
 		// upstream settings remain metadata, not required form fields.
 		if matched {
@@ -132,12 +163,62 @@ func DefaultSourceReviewerWithCatalogs(artifactsDir, seccompPath string, catalog
 	}
 }
 
+// admitPinnedPrepared admits a catalog-pinned T0 entry: the CI-built image,
+// its attestations and the reviewed connection recipe form a ready
+// resolution, so admission only needs the published-artifact path.
+func admitPinnedPrepared(ctx context.Context, source ArtifactSource, prepared PreparedEntry) (SourceReview, error) {
+	pin := prepared.Image
+	repository, _, _ := strings.Cut(pin.Ref, "@")
+	resolution := RecipeResolution{
+		Source: source,
+		State:  "ready",
+		Launch: LaunchRecipe{
+			Transport:  ContainerMCP,
+			Artifact:   repository,
+			Digest:     pin.Digest,
+			Entrypoint: append([]string(nil), prepared.Entrypoint...),
+			Network:    append([]string(nil), prepared.Egress...),
+		},
+		Connection: prepared.Connection,
+		Evidence: []RecipeEvidence{
+			{Source: "oci", Digest: pin.Provenance, Detail: "provenance attestation"},
+			{Source: "oci", Digest: pin.SBOM, Detail: "sbom attestation"},
+		},
+	}
+	// The reviewed catalog never reaches the network resolver, so record its
+	// claims here: a ready resolution without a ledger cannot be replayed or
+	// explain its trust tier.
+	candidate := RecipeCandidate{
+		Repository: source.Repository, Subfolder: source.Subfolder, CommitSHA: source.CommitSHA,
+		Launch: resolution.Launch, Connection: prepared.Connection,
+		Source: "prepared", LaunchRank: RankL0, CredentialRank: RankR0,
+	}
+	resolution.Ledger = candidateLedgerEntries(candidate, false, time.Now().UTC().Format(time.RFC3339))
+	enrichResolution(&resolution)
+	config := NormalizeArtifactImportConfig(prepared.Apply(DefaultSelfInstallConfig(source)))
+	published, err := ImportPublishedArtifact(source, config, resolution, config.Execution.Egress)
+	if err != nil {
+		return SourceReview{}, err
+	}
+	admitted, _, err := PreflightPublishedArtifact(ctx, published)
+	if err != nil {
+		if review, ok := ReviewFromCredentialGate(admitted, err, &resolution); ok {
+			return review, nil
+		}
+		return SourceReview{}, err
+	}
+	return SourceReview{
+		Definition: admitted.Definition, Permissions: ToolNames(admitted.Definition),
+		Effects: EffectNames(admitted.Definition), ReviewDigest: admitted.Definition.Source.ReviewDigest, Recipe: &resolution,
+	}, nil
+}
+
 func DefaultSelfInstallConfig(source ArtifactSource) ArtifactImportConfig {
 	id := "user-mcp"
 	if parsed, err := url.Parse(source.Repository); err == nil {
 		parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
-		if len(parts) == 2 {
-			id = SanitizeDefinitionID(parts[1])
+		if len(parts) == 2 || parsed.Host == "gitlab.com" && len(parts) > 2 {
+			id = SanitizeDefinitionID(parts[len(parts)-1])
 		}
 	}
 	return ArtifactImportConfig{

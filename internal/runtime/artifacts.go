@@ -333,7 +333,7 @@ func mergeArtifacts(groups ...[]ArtifactRef) []ArtifactRef {
 }
 
 func fileExists(path string) bool {
-	info, err := os.Stat(path)
+	info, err := os.Stat(path) // #nosec G703 -- internal artifact path
 	return err == nil && info.Mode().IsRegular()
 }
 

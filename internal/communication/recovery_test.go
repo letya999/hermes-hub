@@ -201,6 +201,57 @@ func TestObservationBackoffAndUnknownAdmission(t *testing.T) {
 	}
 }
 
+func TestObservationStopsAfterBudgetNotice(t *testing.T) {
+	for _, state := range []string{"pending", "sending", "done", "failed", "absent", "before-budget"} {
+		t.Run(state, func(t *testing.T) {
+			s, job := streamJob(t)
+			if _, err := s.ClaimJob(); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.RecordOutcome(job.ID, RunOutcome{Status: "uncertain"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.FailJob(job.ID); err != nil {
+				t.Fatal(err)
+			}
+			mapping, _, err := s.Mapping(job.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := mapping.UncertainSince.Add(hubruntime.RunBudget())
+			if state == "before-budget" {
+				now = now.Add(-time.Second)
+			}
+			if state != "absent" {
+				dir := state
+				if state == "before-budget" {
+					dir = "done"
+				}
+				d := Delivery{ID: "job-" + job.ID + "-uncertain", ChatID: job.ChatID, Text: "unknown outcome"}
+				if err := atomicJSON(filepath.Join(s.root, "outbox", dir, spoolFileID(d.ID)+".json"), d); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for range 2 {
+				if err := s.RequeueObservations(now, true); err != nil {
+					t.Fatal(err)
+				}
+			}
+			claimed, err := s.ClaimJob()
+			wantObservation := state == "absent" || state == "before-budget"
+			if err != nil || (claimed != nil) != wantObservation {
+				t.Fatalf("observation=%v want=%v err=%v", claimed != nil, wantObservation, err)
+			}
+			if !wantObservation {
+				after, _, err := s.Mapping(job.ID)
+				if err != nil || after.Status != "uncertain" || !after.UncertainSince.Equal(mapping.UncertainSince) || after.ObservationAttempts != mapping.ObservationAttempts {
+					t.Fatalf("changed unknown outcome: %+v err=%v", after, err)
+				}
+			}
+		})
+	}
+}
+
 type uncertainRunner struct{}
 
 func (uncertainRunner) RunOutcome(context.Context, Job) (RunOutcome, error) {

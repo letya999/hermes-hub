@@ -1,6 +1,6 @@
 # SPEC-0040: Standard user-scoped capability profile
 
-Frozen: 2026-10-02. Issue 122.
+Frozen: 2026-10-02. Issue 122. Defaults and enforcement superseded by SPEC-0041/0042.
 Hermes pin `869228cab4a8276d3b4c78da9d9939670c47bd0f` (`0.21.0`).
 
 1. The user-scoped catalog is the materialized `hermes-effective.<env>.yaml`

@@ -124,10 +124,11 @@ func Create(dir, name string, data []byte, mode uint32) error {
 	return SyncDir(dir)
 }
 func SyncDir(dir string) error {
-	d, err := os.Open(dir)
+	fd, err := syscall.Open(dir, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		return err
 	}
+	d := os.NewFile(uintptr(fd), dir)
 	defer d.Close()
 	return d.Sync()
 }
@@ -136,7 +137,7 @@ func Tmpfs(path string) error {
 	if err := syscall.Statfs(path, &st); err != nil {
 		return err
 	}
-	if uint64(st.Type) != 0x01021994 {
+	if st.Type != 0x01021994 {
 		return fmt.Errorf("runtime root must be tmpfs")
 	}
 	return nil

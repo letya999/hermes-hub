@@ -1,0 +1,414 @@
+#!/opt/hermes/.venv/bin/python
+"""hub-sidecar: single-request JSON transport into upstream Hermes state.
+
+Reads one JSON object on stdin ({"op": name, ...args}), writes one JSON object
+on stdout ({"ok": true, ...} or {"ok": false, "error": "<class>"}) and exits.
+The hub-runtime execs one process per op; cross-process write safety comes from
+upstream's own state.db locks, never from this file.
+
+Boundary (ADR-0075 D2, D8): the sidecar imports upstream libraries and never
+patches them. Missing upstream symbols answer "unsupported" instead of crashing.
+Only read_transcript/apply_transcript carry message content — the private exec
+channel inside one container; every other op reports counts, booleans and
+bounded fields. Tracebacks go to stderr, never the wire.
+"""
+
+import json
+import os
+import sys
+
+# Upstream imports resolve against the pinned checkout; nothing is vendored.
+sys.path.insert(0, "/opt/hermes")
+
+# Probed once at startup: (module, attribute) pairs every op may call. Methods
+# are probed on the SessionDB class so mixin layout changes surface here.
+_PROBES = (
+    ("hermes_state", "SessionDB", None),
+    ("hermes_state", "get_messages", "SessionDB"),
+    ("hermes_state", "get_session", "SessionDB"),
+    ("hermes_state", "try_acquire_compression_lock", "SessionDB"),
+    ("hermes_state", "release_compression_lock", "SessionDB"),
+    ("hermes_state", "try_acquire_session_turn_lease", "SessionDB"),
+    ("hermes_state", "release_session_turn_lease", "SessionDB"),
+    ("hermes_state", "get_active_message_watermark", "SessionDB"),
+    ("hermes_state", "archive_and_compact", "SessionDB"),
+    ("hermes_state", "get_compression_lineage", "SessionDB"),
+    ("hermes_state", "get_compression_tip", "SessionDB"),
+    ("hermes_state", "get_compression_lock_holder", "SessionDB"),
+    ("agent.context_compressor", "stamp_db_persisted_markers", None),
+    ("agent.context_compressor", "_estimate_msg_budget_tokens", None),
+    ("agent.context_compressor", "ContextCompressor", None),
+    ("agent.context_compressor", "_prune_old_tool_results", "ContextCompressor"),
+    ("hermes_cli.partial_compress", "split_history_for_partial_compress", None),
+    ("hermes_cli.partial_compress", "rejoin_compressed_head_and_tail", None),
+)
+
+_mods = {}
+_symbols = {}
+_missing = []
+
+
+def _load_probes():
+    for mod_name, attr, owner in _PROBES:
+        try:
+            mod = _mods.get(mod_name)
+            if mod is None:
+                mod = _mods[mod_name] = __import__(mod_name, fromlist=["*"])
+            target = getattr(mod, owner) if owner else mod
+            if not callable(getattr(target, attr, None)):
+                _missing.append(f"{mod_name}.{owner + '.' if owner else ''}{attr}")
+            else:
+                _symbols[attr] = getattr(target, attr)
+        except Exception:
+            _missing.append(f"{mod_name}.*")
+            # Module-level failure: remaining attrs of the same module are
+            # unreachable anyway — one marker suffices.
+    _missing[:] = sorted(set(_missing))
+
+
+_load_probes()
+
+
+def _err(kind):
+    return {"ok": False, "error": kind}
+
+
+def _db():
+    cls = _symbols["SessionDB"]
+    return cls()
+
+
+def _need(args, *names):
+    for name in names:
+        value = args.get(name)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            raise ValueError(name)
+        yield value
+
+
+def _op_probe(_db, _args):
+    return {"supported": not _missing, "missing": list(_missing),
+            "symbols": sorted(_symbols.keys())}
+
+
+def _op_lock(db, args):
+    session_id, holder = _need(args, "session_id", "holder")
+    ttl = float(args.get("ttl_seconds") or 300.0)
+    locked = db.try_acquire_compression_lock(session_id, holder, ttl_seconds=ttl)
+    return {"locked": bool(locked), "holder": db.get_compression_lock_holder(session_id)}
+
+
+def _op_unlock(db, args):
+    session_id, holder = _need(args, "session_id", "holder")
+    db.release_compression_lock(session_id, holder)
+    return {"released": True}
+
+
+def _op_lease(db, args):
+    session_id, holder = _need(args, "session_id", "holder")
+    ttl = float(args.get("ttl_seconds") or 300.0)
+    return {"acquired": bool(db.try_acquire_session_turn_lease(
+        session_id, holder, ttl_seconds=ttl))}
+
+
+def _op_unlease(db, args):
+    session_id, holder = _need(args, "session_id", "holder")
+    db.release_session_turn_lease(session_id, holder)
+    return {"released": True}
+
+
+def _op_read_transcript(db, args):
+    (session_id,) = _need(args, "session_id")
+    if db.get_session(session_id) is None:
+        return _err("session_missing")
+    return {"session_id": session_id,
+            "watermark": int(db.get_active_message_watermark(session_id)),
+            "messages": db.get_messages(session_id)}
+
+
+def _op_apply_transcript(db, args):
+    session_id, holder = _need(args, "session_id", "holder")
+    messages = args.get("messages")
+    if not isinstance(messages, list) or not messages:
+        raise ValueError("messages")
+    watermark = args.get("watermark")
+    tail_count = int(args.get("tail_count") or 0)
+    active = db.archive_and_compact(
+        session_id, messages, watermark=watermark,
+        lock_holder=holder, tail_count=tail_count)
+    # Post-commit contract: the caller's live dicts keep their persistence
+    # marker so a later persist walk never re-inserts them.
+    _symbols["stamp_db_persisted_markers"](messages)
+    return {"applied": True, "active_count": int(active)}
+
+
+def _op_scan_compactions(db, args):
+    (session_id,) = _need(args, "session_id")
+    lineage = list(db.get_compression_lineage(session_id) or [])
+    tip = db.get_compression_tip(session_id) or (lineage[-1] if lineage else session_id)
+    in_place = 0
+    last_at = None
+    with db._read_ctx() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*), MAX(timestamp) FROM messages WHERE session_id = ? AND _compressed_summary = 1",
+            (session_id,)).fetchone()
+        if row:
+            in_place = int(row[0] or 0)
+            last_at = row[1]
+    return {"lineage": lineage, "tip": tip,
+            "rotations": max(0, len(lineage) - 1), "in_place": in_place,
+            "last_summary_at": last_at}
+
+
+def _op_estimate_tokens(db, args):
+    (session_id,) = _need(args, "session_id")
+    if db.get_session(session_id) is None:
+        return _err("session_missing")
+    estimate = _symbols["_estimate_msg_budget_tokens"]
+    total = count = 0
+    for msg in db.get_messages(session_id):
+        try:
+            total += int(estimate(msg))
+        except Exception:
+            # A single malformed row must not sink the estimate; count its
+            # characters as a floor instead of dropping it silently.
+            total += len(str(msg.get("content") or "")) // 4
+        count += 1
+    return {"tokens": total, "message_count": count}
+
+
+def _rough_tokens(messages):
+    estimate = _symbols["_estimate_msg_budget_tokens"]
+    total = 0
+    for msg in messages:
+        try:
+            total += int(estimate(msg))
+        except Exception:
+            total += len(str(msg.get("content") or "")) // 4
+    return total
+
+
+def _compressor():
+    # Mirrors the managed agent's own construction: the main provider is the
+    # hub relay ("custom"); the summary call itself resolves through
+    # auxiliary.compression which the rendered config pins to that provider.
+    return _symbols["ContextCompressor"](
+        model=os.environ.get("HUB_MANAGED_MODEL_ID", ""),
+        base_url=os.environ.get("HUB_MANAGED_MODEL_URL", ""),
+        api_key=os.environ.get("OPENAI_API_KEY", ""),
+        provider="custom", quiet_mode=True)
+
+
+def _op_active_session(db, _args):
+    # The session holding an unexpired turn lease is verifiably the running
+    # conversation; resolve its compression tip so the caller compacts the
+    # session messages actually live in.
+    import time as _time
+    with db._read_ctx() as conn:
+        row = conn.execute(
+            "SELECT conversation_id FROM session_turn_leases WHERE expires_at > ?",
+            (_time.time(),)).fetchone()
+    if not row:
+        return {"session_id": None}
+    root = row[0] if not isinstance(row, dict) else row.get("conversation_id")
+    tip = db.get_compression_tip(root) or root
+    return {"session_id": tip}
+
+
+def _op_native_compress(db, args):
+    session_id, holder = _need(args, "session_id", "holder")
+    if db.get_session(session_id) is None:
+        return _err("session_missing")
+    keep_last = int(args.get("keep_last") or 0)
+    focus = (args.get("focus") or "").strip() or None
+    prune = bool(args.get("prune"))
+    preview = bool(args.get("preview"))
+    messages = db.get_messages(session_id)
+    if len(messages) < 4:
+        return {"applied": False, "failure_class": "nothing_to_compress",
+                "messages_before": len(messages), "active_count": len(messages)}
+    head, tail = messages, []
+    if keep_last > 0:
+        head, tail = _symbols["split_history_for_partial_compress"](messages, keep_last)
+        if not tail:
+            head, tail = messages, []
+    if preview:
+        # Dry run: no lock, no LLM, no mutation — the counts a commit would touch.
+        return {"applied": False, "preview": True,
+                "messages_before": len(messages), "active_count": len(messages),
+                "retained_tail": len(tail)}
+    compressor = _compressor()
+    if prune:
+        pruned, count = compressor._prune_old_tool_results(head, protect_tail_count=0)
+        if not count:
+            return {"applied": False, "failure_class": "nothing_to_prune",
+                    "messages_before": len(messages), "active_count": len(messages)}
+        candidate = _symbols["rejoin_compressed_head_and_tail"](list(pruned), list(tail))
+    else:
+        compressed = compressor.compress(list(head), focus_topic=focus, force=True)
+        if compressed == list(head):
+            return {"applied": False, "failure_class": "nothing_to_compress",
+                    "messages_before": len(messages), "active_count": len(messages)}
+        candidate = _symbols["rejoin_compressed_head_and_tail"](list(compressed), list(tail))
+    if candidate == messages:
+        return {"applied": False, "failure_class": "nothing_to_compress",
+                "messages_before": len(messages), "active_count": len(messages)}
+    active = db.archive_and_compact(
+        session_id, candidate,
+        watermark=int(db.get_active_message_watermark(session_id)),
+        lock_holder=holder, tail_count=len(tail))
+    _symbols["stamp_db_persisted_markers"](candidate)
+    return {"applied": True, "active_count": int(active),
+            "messages_before": len(messages), "retained_tail": len(tail),
+            "tokens_after_est": _rough_tokens(candidate)}
+
+
+def _goal_symbols():
+    # Lazy probe: goal ops need upstream's goal machinery, but a missing
+    # module must answer "unsupported" here only — the global _missing gate
+    # intentionally excludes it so compaction ops never inherit the failure.
+    try:
+        goals = _mods.get("hermes_cli.goals")
+        if goals is None:
+            goals = _mods["hermes_cli.goals"] = __import__("hermes_cli.goals", fromlist=["*"])
+        command = _mods.get("hermes_cli.goal_command")
+        if command is None:
+            command = _mods["hermes_cli.goal_command"] = __import__("hermes_cli.goal_command", fromlist=["*"])
+        manager = getattr(goals, "GoalManager", None)
+        dispatch = getattr(command, "dispatch_goal_command", None)
+        return (manager, dispatch) if callable(manager) and callable(dispatch) else (None, None)
+    except Exception:
+        return None, None
+
+
+def _goal_session(db, session_id):
+    # A compaction rotation moves the goal row onto the child session
+    # (upstream migrate_goal_to_session inside archive_and_compact); the
+    # caller always names the durable root, so resolve the live tip.
+    return db.get_compression_tip(session_id) or session_id
+
+
+def _goal_manager(manager_cls, db, args, session_id):
+    kwargs = {"session_id": _goal_session(db, session_id)}
+    max_turns = int(args.get("max_turns") or 0)
+    if max_turns > 0:
+        kwargs["default_max_turns"] = max_turns
+    return manager_cls(**kwargs)
+
+
+def _goal_state_fields(mgr):
+    # Upstream is authoritative for native goals; echo the bounded state the
+    # caller needs to mirror its record.
+    state = mgr.state
+    if state is None:
+        return {}
+    return {"status": state.status, "goal": state.goal or "",
+            "turns_used": int(state.turns_used), "max_turns": int(state.max_turns)}
+
+
+def _op_goal_dispatch(db, args):
+    session_id, verb = _need(args, "session_id", "verb")
+    manager_cls, dispatch = _goal_symbols()
+    if manager_cls is None:
+        return _err("unsupported")
+    mgr = _goal_manager(manager_cls, db, args, session_id)
+    arg = (args.get("text") or "").strip() if verb == "set" else verb
+    result = dispatch(mgr, arg, authorize_gate=lambda: None)
+    out = {"output": result.output}
+    out.update(_goal_state_fields(mgr))
+    if result.prompt:
+        out["kickoff_prompt" if result.kickoff else "continuation_prompt"] = result.prompt
+    if result.error:
+        out["failure_class"] = "invalid"
+    return out
+
+
+def _op_goal_evaluate(db, args):
+    session_id, response = _need(args, "session_id", "response")
+    manager_cls, _ = _goal_symbols()
+    if manager_cls is None:
+        return _err("unsupported")
+    mgr = _goal_manager(manager_cls, db, args, session_id)
+    decision = mgr.evaluate_after_turn(response, user_initiated=True)
+    # Project upstream's decision onto the hub's three-verdict vocabulary:
+    # done/blocked pass through; anything that stops short of continuing —
+    # pause on streaks or budget, a wait barrier the hub cannot enforce —
+    # reports blocked so the loop parks instead of spinning.
+    verdict = decision.get("verdict") or "continue"
+    status = decision.get("status") or ""
+    continuing = bool(decision.get("should_continue")) and status == "active"
+    if verdict == "done" or status == "done":
+        verdict = "done"
+    elif verdict == "blocked" or not continuing:
+        verdict = "blocked"
+    else:
+        verdict = "continue"
+    out = {"verdict": verdict, "reason": decision.get("reason") or "",
+           "should_continue": continuing,
+           "continuation_prompt": decision.get("continuation_prompt") or "",
+           "output": decision.get("message") or ""}
+    out.update(_goal_state_fields(mgr))
+    return out
+
+
+_OPS = {
+    "probe": _op_probe,
+    "lock": _op_lock,
+    "unlock": _op_unlock,
+    "lease": _op_lease,
+    "unlease": _op_unlease,
+    "read_transcript": _op_read_transcript,
+    "apply_transcript": _op_apply_transcript,
+    "scan_compactions": _op_scan_compactions,
+    "estimate_tokens": _op_estimate_tokens,
+    "active_session": _op_active_session,
+    "native_compress": _op_native_compress,
+    "goal_dispatch": _op_goal_dispatch,
+    "goal_evaluate": _op_goal_evaluate,
+}
+
+
+def main() -> int:
+    line = sys.stdin.readline()
+    try:
+        req = json.loads(line or "{}")
+    except Exception:
+        print(json.dumps(_err("invalid_args")))
+        return 0
+    op = req.pop("op", "")
+    handler = _OPS.get(op)
+    if handler is None:
+        print(json.dumps(_err("invalid_args")))
+        return 0
+    if _missing and op != "probe":
+        print(json.dumps({**_err("unsupported"), "missing": list(_missing)}))
+        return 0
+    db = None
+    try:
+        if op == "probe":
+            out = handler(None, req)
+        else:
+            db = _db()
+            out = handler(db, req)
+        out.setdefault("ok", True)
+        print(json.dumps(out))
+    except ValueError:
+        print(json.dumps(_err("invalid_args")))
+    except Exception as exc:
+        name = type(exc).__name__
+        if "InProgress" in name or "Locked" in name or "lease" in name.lower():
+            print(json.dumps(_err("locked")))
+        else:
+            print(json.dumps(_err("internal")))
+        return 0
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

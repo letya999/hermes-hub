@@ -29,3 +29,4 @@ next:
 risks:
   - "Uncertain маппинг держит контекст до терминала — осознанный fail-closed, наблюдаем через ObservationAttempts"
   - "Compose dev-стек не задаёт HUB_COMMUNICATION_WORKERS — действует default 4; для изменения нужен env в generated compose"
+closeout: retroactive-triage-2026-10-20

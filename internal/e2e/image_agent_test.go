@@ -25,8 +25,11 @@ import (
 )
 
 func TestImageAgentNeedsUnknownPixelsAndActualJPEG(t *testing.T) {
-	for _, name := range []string{"image_convert", "image_inspect", "image_generate", "image_edit"} {
+	for _, name := range []string{"image_convert", "image_inspect", "image_generate", "image_edit", "images_inspect"} {
 		for _, outcome := range []string{"ok", "lie", "corrupt"} {
+			if name == "images_inspect" && outcome == "corrupt" {
+				continue
+			}
 			if outcome == "corrupt" && name != "image_edit" {
 				continue
 			}
@@ -40,12 +43,24 @@ func TestImageAgentNeedsUnknownPixelsAndActualJPEG(t *testing.T) {
 				}
 				files := map[string]string{}
 				var picture image.Image
+				var secondPicture image.Image
+				negativeCalls := 0
 				server := mcp.NewServer(&mcp.Implementation{Name: "image-fixture", Version: "1"}, nil)
 				for _, operation := range []string{name, "file_write", "code_exec", "artifact_remove"} {
 					server.AddTool(&mcp.Tool{Name: operation, InputSchema: map[string]any{"type": "object"}}, func(_ context.Context, r *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-						var args struct{ Path, Text, Command string }
+						var args struct {
+							Path, Text, Command string
+							Paths               []string
+						}
 						if err := json.Unmarshal(r.Params.Arguments, &args); err != nil {
 							t.Fatal(err)
+						}
+						if operation == "images_inspect" {
+							negativeCalls++
+							if len(args.Paths) != 3 || files[args.Paths[0]] == "" || files[args.Paths[1]] == "" || files[args.Paths[2]] != "" || !strings.HasSuffix(args.Paths[2], "/unavailable.png") {
+								t.Error("negative comparison did not include two owned images and one unavailable path")
+							}
+							return &mcp.CallToolResult{IsError: true}, nil
 						}
 						if !strings.HasPrefix(args.Path, "artifacts/") || !strings.Contains(args.Path, "e2e-") {
 							t.Fatal("foreign image path")
@@ -73,6 +88,21 @@ func TestImageAgentNeedsUnknownPixelsAndActualJPEG(t *testing.T) {
 								t.Fatal(err)
 							}
 							files[args.Path+"/exports/input.png"] = string(data)
+							if name == "images_inspect" {
+								if !strings.Contains(args.Command, "second-seed.txt") {
+									t.Error("multi-image preparation omitted second image")
+								}
+								second, err := base64.StdEncoding.DecodeString(files[args.Path+"/second-seed.txt"])
+								if err != nil {
+									t.Fatal(err)
+								}
+								secondPicture, err = png.Decode(bytes.NewReader(second))
+								if err != nil {
+									t.Error("second image not prepared")
+								} else {
+									files[args.Path+"/exports/second.png"] = string(second)
+								}
+							}
 							return &mcp.CallToolResult{StructuredContent: map[string]any{"exit_code": 0}}, nil
 						case "artifact_remove":
 							if _, ok := files[args.Path]; !ok {
@@ -112,7 +142,35 @@ func TestImageAgentNeedsUnknownPixelsAndActualJPEG(t *testing.T) {
 					text := marker
 					id := "mock-" + strings.Repeat("a", 64)
 					delivery := communication.Delivery{ID: "job-" + id + "-response", JobID: id, TaskID: "task", ChatID: input.ChatID, Channel: "mock"}
-					if strings.Contains(input.Text, "Use image_") {
+					if strings.Contains(input.Text, "Use image_") || strings.Contains(input.Text, "Use images_inspect") {
+						if name == "images_inspect" {
+							if !strings.Contains(input.Text, "Use images_inspect exactly once") || !strings.Contains(input.Text, "/input.png") || !strings.Contains(input.Text, "/second.png") {
+								t.Error("oracle did not request a single comparison of both images")
+							}
+							label := func(img image.Image) string {
+								if img == nil {
+									return "missing"
+								}
+								r, g, b, _ := img.At(0, 0).RGBA()
+								if r > 0 && g > 0 {
+									return "yellow"
+								}
+								if r > 0 {
+									return "red"
+								}
+								if g > 0 {
+									return "green"
+								}
+								if b > 0 {
+									return "blue"
+								}
+								return "unknown"
+							}
+							text += " " + label(picture) + " " + label(secondPicture)
+							if lie {
+								text = marker + " invented"
+							}
+						}
 						if name == "image_inspect" {
 							red, green, blue, _ := picture.At(0, 0).RGBA()
 							color := "blue"
@@ -185,6 +243,9 @@ func TestImageAgentNeedsUnknownPixelsAndActualJPEG(t *testing.T) {
 				}
 				if status != want {
 					t.Fatal(status, reason)
+				}
+				if name == "images_inspect" && !lie && negativeCalls != 1 {
+					t.Error("oracle omitted unavailable-image whole-set rejection")
 				}
 				if !lie && len(files) != 0 {
 					t.Fatal("own image fixture retained")

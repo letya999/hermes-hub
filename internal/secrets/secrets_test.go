@@ -293,7 +293,7 @@ func seededRegistry(t *testing.T, locator string) (*toolhub.Store, identity.Enve
 		Schema: api.SchemaVersion, DefinitionID: "google-work", Version: "1.0.0", Transport: api.RemoteMCP,
 		Source:      api.DefinitionSource{URL: "https://api.example.com/mcp", TLSMode: "required"},
 		Tools:       []api.ToolSpec{{Name: "search", Effect: api.ReadEffect}, {Name: "send", Effect: api.WriteEffect}},
-		Credentials: []api.CredentialInput{{Name: "GOOGLE_TOKEN", Required: true}},
+		Credentials: []api.CredentialInput{{Name: "GOOGLE_TOKEN", Required: true}, {Name: "TLS_PEM", Required: true, Delivery: "json"}, {Name: "API_TOKEN", Required: true, Delivery: "env"}},
 		Workload:    api.WorkloadPolicy{Class: api.PerUser, Rationale: "OAuth account and provider session are user-owned"},
 		Execution:   api.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 1 << 20, CPUMillis: 500, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"api.example.com"}},
 		Health:      api.HealthProbe{Kind: "http", Value: "/health", TimeoutSeconds: 5},
@@ -301,7 +301,7 @@ func seededRegistry(t *testing.T, locator string) (*toolhub.Store, identity.Enve
 	if err := store.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
-	credential := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: api.CredentialReferenceID("google-work", 1), ConnectionID: "google-work", Revision: 1, Backend: "local", Locator: locator, Keys: []string{"GOOGLE_TOKEN"}, Status: api.ActiveStatus}
+	credential := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: api.CredentialReferenceID("google-work", 1), ConnectionID: "google-work", Revision: 1, Backend: "local", Locator: locator, Keys: []string{"GOOGLE_TOKEN", "TLS_PEM", "API_TOKEN"}, Status: api.ActiveStatus}
 	if err := store.PutCredentialReference(credential); err != nil {
 		t.Fatal(err)
 	}
@@ -578,4 +578,49 @@ type toolhubCallCounter struct{ n *atomic.Int32 }
 func (c toolhubCallCounter) Call(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 	c.n.Add(1)
 	return api.BackendResult{Text: "ok"}, nil
+}
+
+// CHG-0127 S0.6: file/json-delivery values reach the workspace as .secret
+// files, never env lines.
+func TestInjectRoutesFileDeliveryToSecretFile(t *testing.T) {
+	svc := newService(t)
+	pem := "-----BEGIN-----\nabc\n-----END-----\n"
+	infos, err := svc.Set("alice", map[string]string{"TLS_PEM": pem, "API_TOKEN": "tok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var locator string
+	for _, info := range infos {
+		if info.Name == "TLS_PEM" {
+			locator = info.Locator
+		}
+	}
+	store, auth, _ := seededRegistry(t, locator)
+	svc.Registry = store
+	root := t.TempDir()
+	injected, err := svc.Inject(auth, api.ProjectedToolName("google-work", "1.0.0", "search"), root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if injected.Env["TLS_PEM"] != "" {
+		t.Fatal("file-bound value landed in env map")
+	}
+	var envBody, pemBody string
+	filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+		if info != nil && info.Name() == "credentials.env" {
+			data, _ := os.ReadFile(p)
+			envBody = string(data)
+		}
+		if info != nil && info.Name() == "TLS_PEM.secret" {
+			data, _ := os.ReadFile(p)
+			pemBody = string(data)
+		}
+		return nil
+	})
+	if strings.Contains(envBody, "BEGIN") {
+		t.Fatalf("env file leaked file content: %q", envBody)
+	}
+	if pemBody != pem {
+		t.Fatalf("secret file content: %q", pemBody)
+	}
 }

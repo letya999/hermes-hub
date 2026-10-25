@@ -1,7 +1,9 @@
 package toolhub
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
@@ -15,6 +17,25 @@ import (
 )
 
 func (c *ControlPlane) prepareSource(ctx context.Context, auth identity.Envelope, args map[string]any) (map[string]any, error) {
+	if _, supplied := args["credentials"]; supplied && api.ArgString(args, "remote_url") == "" {
+		return nil, fmt.Errorf("%w: credentials is only supported with remote_url; source installs use connection_recipe", api.ErrInvalid)
+	}
+	if raw, ok := args["connection_recipe"]; ok {
+		data, err := json.Marshal(raw)
+		if err != nil {
+			return nil, api.ErrInvalid
+		}
+		var recipe api.ConnectionRecipe
+		decoder := json.NewDecoder(bytes.NewReader(data))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&recipe); err != nil {
+			return nil, api.ErrInvalid
+		}
+		if err := recipe.Validate(); err != nil {
+			return nil, err
+		}
+		ctx = context.WithValue(ctx, api.ConnectionRecipeContextKey{}, recipe)
+	}
 	if _, requested := args["telegram_send"]; requested {
 		return c.prepareTelegramSend(ctx, auth, args)
 	}
@@ -32,10 +53,10 @@ func (c *ControlPlane) prepareSource(ctx context.Context, auth identity.Envelope
 			if err := c.refreshBrokerRequest(ctx, auth, &existing); err != nil {
 				return nil, err
 			}
-			if err := c.refreshCredentialForm(&existing); err != nil {
+			if err := c.refreshCredentialForm(ctx, auth, &existing); err != nil {
 				return nil, err
 			}
-			if err := c.refreshConfirmation(&existing); err != nil {
+			if err := c.refreshConfirmation(ctx, auth, &existing); err != nil {
 				return nil, err
 			}
 			return c.statusBody(existing, false), nil
@@ -290,7 +311,8 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 	}
 	review := api.SourceReview{}
 	var err error
-	if existing, ok := c.Store.reusableSelfInstallDefinition(auth, source, preparing.DefinitionID, preparing.DefinitionVersion); !shared && selected == nil && ok && c.selfInstallUsable(existing) && completeToolSchemas(existing) && selfInstallContractIntact(existing) && !api.DeploySecretRequired(existing) {
+	_, explicitRecipe := ctx.Value(api.ConnectionRecipeContextKey{}).(api.ConnectionRecipe)
+	if existing, ok := c.Store.reusableSelfInstallDefinition(auth, source, preparing.DefinitionID, preparing.DefinitionVersion); !explicitRecipe && !shared && selected == nil && ok && c.selfInstallUsable(existing) && completeToolSchemas(existing) && selfInstallContractIntact(existing) && !api.DeploySecretRequired(existing) {
 		review = api.SourceReview{Definition: existing, Permissions: api.ToolNames(existing), Effects: api.EffectNames(existing), ReviewDigest: existing.Source.ReviewDigest}
 	} else {
 		if c.Reviewer == nil {
@@ -389,6 +411,11 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 	if review.Recipe != nil {
 		copyRecipe := *review.Recipe
 		onboarding.Recipe = &copyRecipe
+		digest, err := c.Store.PutRecipe(copyRecipe)
+		if err != nil {
+			return failPrepare(err)
+		}
+		onboarding.RecipeDigest = digest
 		onboarding.Required = credentialHintsForRecipe(review.Definition, review.Recipe.Connection)
 	}
 	// Recipe hints can name required inputs the secret-name heuristic missed —
@@ -399,6 +426,7 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 		onboarding.Phase = api.PhaseAwaitingCreds
 		onboarding.FormNonce = api.RandomNonce()
 		onboarding.FormExpires = c.now().Add(c.ttl())
+		c.armWizard(&onboarding)
 		onboarding.ConfirmationNonce = ""
 		onboarding.ConfirmationExpires = time.Time{}
 	}
@@ -425,14 +453,31 @@ func recipeCredentialSources(recipe *api.RecipeResolution) []string {
 // copy are rebuilt from that source alone; the registered definition and the
 // reviewed broker contract stay unchanged.
 func (c *ControlPlane) rebuildCredentialSource(onboarding *api.Onboarding, source string) error {
-	if onboarding == nil || onboarding.Recipe == nil {
+	recipe := c.recipeOf(*onboarding)
+	if onboarding == nil || recipe == nil {
 		return fmt.Errorf("%w: credential_source %q has no discovered recipe to filter", api.ErrInvalid, source)
 	}
-	filtered, sources := api.FilterConnectionSource(onboarding.Recipe.Connection, source)
-	if len(filtered.Fields) == 0 && len(onboarding.Recipe.Connection.Fields) > 0 {
+	filtered, sources := api.FilterConnectionSource(recipe.Connection, source)
+	if len(filtered.Fields) == 0 && len(recipe.Connection.Fields) > 0 {
 		return fmt.Errorf("%w: credential_source %q not among %s", api.ErrInvalid, source, strings.Join(sources, ", "))
 	}
-	onboarding.Recipe.Connection = filtered
+	recipe.Connection = filtered
+	// The owner's pick is evidence on the credential ladder, not a silent
+	// rewrite: every surviving field gains an R7 (owner words) entry naming
+	// the confirmed source so re-resolution can explain the contract.
+	for _, field := range filtered.Fields {
+		required, secret := field.Required, field.Secret
+		recipe.Ledger = append(recipe.Ledger, api.LedgerEntry{
+			Source: "owner", Ref: source, Rank: api.RankR7,
+			Claim: api.Claim{Field: field.Name, Required: &required, Secret: &secret, Delivery: field.Delivery, Target: field.Target},
+		})
+	}
+	digest, err := c.Store.PutRecipe(*recipe)
+	if err != nil {
+		return err
+	}
+	onboarding.Recipe = recipe
+	onboarding.RecipeDigest = digest
 	defForHints := api.ToolDefinition{Credentials: filtered.CredentialInputs()}
 	if onboarding.Definition != nil {
 		onboarding.Definition.Credentials = defForHints.Credentials
@@ -520,4 +565,19 @@ func selfInstallArtifactPresent(definition api.ToolDefinition) bool {
 	defer root.Close()
 	info, err := root.Lstat(api.ArtifactObjectName(digest))
 	return err == nil && info.Mode().IsRegular()
+}
+
+// recipeOf resolves an onboarding's recipe: the in-memory copy when present,
+// otherwise the content-addressed store entry referenced by its digest.
+func (c *ControlPlane) recipeOf(onboarding api.Onboarding) *api.RecipeResolution {
+	if onboarding.Recipe != nil {
+		return onboarding.Recipe
+	}
+	if c.Store == nil || onboarding.RecipeDigest == "" {
+		return nil
+	}
+	if resolution, err := c.Store.Recipe(onboarding.RecipeDigest); err == nil {
+		return &resolution
+	}
+	return nil
 }

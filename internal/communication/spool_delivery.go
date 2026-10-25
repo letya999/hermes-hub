@@ -242,7 +242,7 @@ func atomicJSON(path string, value any) error {
 	if err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := os.Rename(tmp, path); err != nil { // #nosec G703 -- path derived from the spool record id (IDPattern)
 		return err
 	}
 	return syncSpoolDirectory(filepath.Dir(path))

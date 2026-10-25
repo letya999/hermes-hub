@@ -60,10 +60,24 @@ func (c *ControlPlane) admitWithBrokerCredential(ctx context.Context, auth ident
 			resultErr = errors.Join(resultErr, fmt.Errorf("%w: temporary Broker lease release: %v", api.ErrIsolation, err))
 		}
 	}()
-	if len(injection.Mounts) != 0 {
-		return api.ToolDefinition{}, fmt.Errorf("%w: credentialed tools/list does not support Broker file mounts", api.ErrIsolation)
+	ctx = api.WithProbeOptions(ctx, api.ProbeOptions{Mounts: injection.Mounts})
+	if definition.Source.Digest == "" && onboarding.Recipe != nil && onboarding.Recipe.Connection.AuthBeforeToolsList {
+		if c.Reviewer == nil {
+			return api.ToolDefinition{}, fmt.Errorf("%w: deferred source reviewer unavailable", api.ErrIsolation)
+		}
+		recipe := onboarding.Recipe.Connection
+		recipe.AuthBeforeToolsList = false
+		ctx = context.WithValue(ctx, api.ConnectionRecipeContextKey{}, recipe)
+		ctx = api.WithProbeOptions(ctx, api.ProbeOptions{Values: injection.Environment, Mounts: injection.Mounts, AllowNetwork: true})
+		var review api.SourceReview
+		review, err = c.Reviewer(ctx, onboarding.Recipe.Source, nil)
+		admitted = review.Definition
+		admitted.CredentialContractID = definition.CredentialContractID
+		admitted.CredentialContractRevision = definition.CredentialContractRevision
+		admitted.CredentialContractEnv = api.CloneMap(definition.CredentialContractEnv)
+	} else {
+		admitted, err = c.AdmitWithCredentials(ctx, definition, injection.Environment)
 	}
-	admitted, err = c.AdmitWithCredentials(ctx, definition, injection.Environment)
 	if err != nil {
 		// The upstream error can echo a submitted StringSession. Keep it out of
 		// onboarding state and channel responses.
@@ -132,8 +146,14 @@ func brokerRuntimeInjector(controlConfig, runtimeConfig *credentialbroker.Config
 		// block or a Confluence block): a complete group satisfies the member
 		// keys of the other alternatives, but never missing standalone keys.
 		if !effective.Definition.CredentialsSatisfied(func(name string) bool { return environment[name] != "" }) {
+			var missing []string
+			for _, input := range effective.Definition.Credentials {
+				if input.Required && environment[input.Name] == "" {
+					missing = append(missing, input.Name)
+				}
+			}
 			_ = release(false, false)
-			return api.CredentialInjection{}, fmt.Errorf("%w: %w: broker delivery does not satisfy %s", api.ErrIsolation, api.ErrCredentialDelivery, effective.Definition.DefinitionID)
+			return api.CredentialInjection{}, fmt.Errorf("%w: %w: broker delivery does not satisfy %s; not delivered: %s", api.ErrIsolation, api.ErrCredentialDelivery, effective.Definition.DefinitionID, strings.Join(missing, ", "))
 		}
 		for _, input := range effective.Credential.Keys {
 			if environment[input] != "" || api.GroupedCredentialInput(effective.Definition, input) {
@@ -148,6 +168,7 @@ func brokerRuntimeInjector(controlConfig, runtimeConfig *credentialbroker.Config
 			_ = release(false, false)
 			return api.CredentialInjection{}, fmt.Errorf("%w: %w: broker delivery %s", api.ErrIsolation, api.ErrCredentialDelivery, input)
 		}
+		proxy := api.ProxyStubPlan(effective, environment)
 		mounts := make([]api.Mount, 0, len(materialized.Mounts))
 		var checkpoint func() error
 		for _, mount := range materialized.Mounts {
@@ -156,20 +177,99 @@ func brokerRuntimeInjector(controlConfig, runtimeConfig *credentialbroker.Config
 				checkpoint = func() error { return release(true, true) }
 			}
 		}
-		return api.CredentialInjection{Environment: environment, Mounts: mounts, Checkpoint: checkpoint, Cleanup: func() error {
+		injection := api.CredentialInjection{Environment: environment, Mounts: mounts, Proxy: proxy, Checkpoint: checkpoint, Cleanup: func() error {
 			clear(environment)
 			clear(materialized.Env)
 			return release(false, false)
-		}}, nil
+		}}
+		if err := materializeOAuthStateView(effective.Definition.OAuth, &injection); err != nil {
+			_ = injection.Cleanup()
+			return api.CredentialInjection{}, err
+		}
+		return injection, nil
 	}
 }
 
+// teamBrokerInjector wraps the runtime injector with the lazy per-member
+// grant mint a shared (team-owned) credential needs: the reference cannot
+// pin one grant, so the member's binding mints its own on first use, signed
+// as the manager of the credential's owning context and attributed to the
+// member. The minted id lands in the binding grant ledger — durable, so
+// disable, remove, rotation, member purge and team drop retire exactly the
+// grants they created. The shared reference itself is never mutated.
+func teamBrokerInjector(store *Store, controlConfig, runtimeConfig *credentialbroker.Config) api.CredentialInjector {
+	inner := brokerRuntimeInjector(controlConfig, runtimeConfig)
+	return func(ctx context.Context, effective api.EffectiveBinding) (api.CredentialInjection, error) {
+		reference := effective.Credential
+		if reference == nil || reference.Backend != "credential-broker" || reference.BrokerContextID == "" {
+			return inner(ctx, effective)
+		}
+		if store == nil || controlConfig == nil {
+			return api.CredentialInjection{}, fmt.Errorf("%w: team broker grant store unavailable", api.ErrIsolation)
+		}
+		if reference.BrokerGrantID != "" {
+			return inner(ctx, effective)
+		}
+		grantID, err := ensureTeamGrant(ctx, store, controlConfig, effective)
+		if err != nil {
+			return api.CredentialInjection{}, err
+		}
+		clone := *reference
+		clone.BrokerGrantID = grantID
+		effective.Credential = &clone
+		return inner(ctx, effective)
+	}
+}
+
+// ensureTeamGrant returns the binding's live grant against the shared
+// credential, minting one when the ledger has none. The grant request names
+// the credential's owning context — the broker rejects any other — while
+// principal, runtime, binding and workload stay the member's own.
+func ensureTeamGrant(ctx context.Context, store *Store, controlConfig *credentialbroker.Config, effective api.EffectiveBinding) (string, error) {
+	reference := effective.Credential
+	if grant, ok := store.BrokerGrantFor(effective.Binding.ToolBindingID, reference.CredentialRefID); ok {
+		return grant.GrantID, nil
+	}
+	if effective.WorkloadID == "" {
+		return "", fmt.Errorf("%w: workload identity", api.ErrIsolation)
+	}
+	control, err := controlConfig.NewContextManaged(effectiveBrokerEnvelope(effective), "broker:control")
+	if err != nil {
+		return "", err
+	}
+	execution := "dedicated"
+	if effective.Connection != nil && effective.Connection.Metadata["shareable"] == "connection" {
+		execution = "shared"
+	}
+	grant, err := control.Grant(ctx, reference.Locator, brokerv1.GrantRequest{
+		ContractID: reference.BrokerContractID, ContractRevision: reference.BrokerContractRevision,
+		PrincipalID: effective.Binding.PrincipalID, ContextID: reference.BrokerContextID, RuntimeID: effective.Binding.RuntimeID,
+		BindingID: effective.Binding.ToolBindingID, WorkloadID: effective.WorkloadID, Execution: execution,
+		IdempotencyKey: api.DeterministicID("teamgrant", effective.Binding.ToolBindingID, reference.CredentialRefID),
+	})
+	if err != nil {
+		return "", err
+	}
+	return store.RecordBrokerGrant(api.BrokerBindingGrant{
+		BindingID: effective.Binding.ToolBindingID, ConnectionID: reference.ConnectionID,
+		CredentialRefID: reference.CredentialRefID, ContextID: reference.BrokerContextID,
+		GrantID: grant.ID, PolicyVersion: effective.Binding.PolicyVersion,
+	})
+}
+
 func effectiveBrokerEnvelope(effective api.EffectiveBinding) identity.Envelope {
+	contextID := effective.Binding.ContextID
+	if effective.Credential != nil && effective.Credential.BrokerContextID != "" {
+		// The broker keys context-owned credentials and their grants to the
+		// owning context: acquire and materialize must present it or the
+		// grant's identity check denies the member's own context.
+		contextID = effective.Credential.BrokerContextID
+	}
 	return identity.Envelope{
 		Schema: identity.Schema, PrincipalID: effective.Binding.PrincipalID,
-		ExternalIdentityID: effective.Binding.PrincipalID, ContextID: effective.Binding.ContextID,
-		RuntimeID: effective.Binding.RuntimeID, ConversationID: effective.Binding.ContextID,
-		DeliveryTargetID: effective.Binding.ContextID, PolicyVersion: effective.Binding.PolicyVersion,
+		ExternalIdentityID: effective.Binding.PrincipalID, ContextID: contextID,
+		RuntimeID: effective.Binding.RuntimeID, ConversationID: contextID,
+		DeliveryTargetID: contextID, PolicyVersion: effective.Binding.PolicyVersion,
 	}
 }
 

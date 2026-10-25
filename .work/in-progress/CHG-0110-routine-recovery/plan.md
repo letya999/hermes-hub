@@ -1,4 +1,4 @@
-# CHG-0110 — Routine recovery and bounded history
+# CHG-0110 â€” Routine recovery and bounded history
 
 ## Incident
 

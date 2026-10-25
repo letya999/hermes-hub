@@ -9,7 +9,7 @@ import (
 
 func TestDevRuntimeImageUsesOnlyExactOperatorSelection(t *testing.T) {
 	root := t.TempDir()
-	fallback := "hermes-hub:0.3.0-dev"
+	fallback := "hermes-hub:0.4.0-dev"
 	if got, err := devRuntimeImage(root, "alice", "dev", fallback); err != nil || got != fallback {
 		t.Fatalf("missing marker: %q %v", got, err)
 	}
@@ -23,7 +23,7 @@ func TestDevRuntimeImageUsesOnlyExactOperatorSelection(t *testing.T) {
 	if got, err := devRuntimeImage(root, "alice", "dev", fallback); err != nil || got != "hermes-hub-dev-alice-hermes-runtime:local" {
 		t.Fatalf("valid marker: %q %v", got, err)
 	}
-	if got, err := devRuntimeImage(root, "alice", "prod", "hermes-hub:0.3.0-prod"); err != nil || got != "hermes-hub:0.3.0-prod" {
+	if got, err := devRuntimeImage(root, "alice", "prod", "hermes-hub:0.4.0-prod"); err != nil || got != "hermes-hub:0.4.0-prod" {
 		t.Fatalf("prod used dev image: %q %v", got, err)
 	}
 	if err := os.WriteFile(path, []byte("foreign/image:latest\n"), 0600); err != nil {
@@ -36,7 +36,7 @@ func TestDevRuntimeImageUsesOnlyExactOperatorSelection(t *testing.T) {
 
 func TestDevScriptImageUsesOnlyExactOperatorSelection(t *testing.T) {
 	root := t.TempDir()
-	fallback := "hermes-hub:0.3.0-dev"
+	fallback := "hermes-hub:0.4.0-dev"
 	if got, err := devScriptImage(root, "alice", "dev", fallback); err != nil || got != fallback {
 		t.Fatalf("missing marker: %q %v", got, err)
 	}
@@ -50,7 +50,7 @@ func TestDevScriptImageUsesOnlyExactOperatorSelection(t *testing.T) {
 	if got, err := devScriptImage(root, "alice", "dev", fallback); err != nil || got != "hermes-hub-dev-alice-communication-hub:local" {
 		t.Fatalf("valid marker: %q %v", got, err)
 	}
-	if got, err := devScriptImage(root, "alice", "prod", "hermes-hub:0.3.0-prod"); err != nil || got != "hermes-hub:0.3.0-prod" {
+	if got, err := devScriptImage(root, "alice", "prod", "hermes-hub:0.4.0-prod"); err != nil || got != "hermes-hub:0.4.0-prod" {
 		t.Fatalf("prod used dev image: %q %v", got, err)
 	}
 	// A runtime pin never substitutes for the script image.

@@ -144,6 +144,9 @@ func RenderEnvironment(dir, root, environment string) error {
 		if err = EnrollSiblingRuntimeTokens(dir, environment); err != nil {
 			return err
 		}
+		if err = EnrollSiblingModelRelayAdmins(dir, environment); err != nil {
+			return err
+		}
 	}
 	// FAL_KEY belongs to hub-media: image/video generation always goes
 	// through the service, so the runtime never needs the provider credential.
@@ -167,12 +170,12 @@ func RenderEnvironment(dir, root, environment string) error {
 		return err
 	}
 	if s.CapabilityMode == "managed" {
-		modelKey := secrets["OPENAI_API_KEY"]
-		if modelKey == "" {
-			modelKey = orgSecrets["OPENAI_API_KEY"]
+		relayAuth, err := ReadSecrets(filepath.Join(dir, "model-relay.auth"))
+		if err != nil {
+			return err
 		}
 		managedEnv := map[string]string{
-			"OPENAI_API_KEY": modelKey, "HUB_TOOLHUB_ENDPOINT": "http://toolhub:8090/mcp",
+			"OPENAI_API_KEY": relayAuth["HUB_MODEL_RELAY_AUTH"], "HUB_TOOLHUB_ENDPOINT": "http://toolhub:8090/mcp",
 		}
 		// Spawned runtimes live on a route-less internal network: every
 		// reviewed outbound hop goes through the egress relay by proxy env.
@@ -253,7 +256,7 @@ func RenderEnvironment(dir, root, environment string) error {
 	if err = HealUserSoul(dir, filepath.Join(root, "config", "SOUL.md")); err != nil {
 		return err
 	}
-	if err = writeSoulEffective(dir, s); err != nil {
+	if err = MaterializeSoulEffective(dir, s); err != nil {
 		return err
 	}
 	for _, p := range []string{"hermes." + environment + ".yaml", "SOUL.md", filepath.Join("generated", "soul-effective."+environment+".md")} {
@@ -269,7 +272,7 @@ func RenderEnvironment(dir, root, environment string) error {
 
 // removeIfExists deletes path when present; a missing file is not an error.
 func removeIfExists(path string) error {
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) { // #nosec G703 -- internal render path
 		return err
 	}
 	return nil
@@ -405,11 +408,15 @@ func writeToolHubFiles(dir string, s Settings) error {
 
 func writeHonchoConfig(dir string, s Settings) error {
 	if !s.Honcho || strings.TrimSpace(s.HonchoURL) == "" {
-		return nil
+		err := os.Remove(filepath.Join(dir, "hermes", "honcho.json"))
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
 	}
 	body, err := json.Marshal(M{
 		"baseUrl": s.HonchoURL,
-		"hosts":   M{"hermes": M{"enabled": true, "aiPeer": "hermes", "peerName": s.User, "workspace": "hermes"}},
+		"hosts":   M{"hermes": M{"enabled": true, "aiPeer": "hermes", "peerName": s.User, "workspace": "hermes-" + s.User}},
 	})
 	if err != nil {
 		return err
@@ -455,5 +462,5 @@ func atomic(path string, b []byte) error {
 	if err = f.Close(); err != nil {
 		return err
 	}
-	return os.Rename(name, path)
+	return os.Rename(name, path) // #nosec G703 -- temp file renamed onto a rendered path under the owned space dir
 }

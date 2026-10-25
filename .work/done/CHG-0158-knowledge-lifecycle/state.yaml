@@ -1,0 +1,24 @@
+schema: 1
+change: CHG-0158
+title: M16 knowledge-lifecycle
+status: done
+branch: feat/m16-runtime-discipline
+updated: 2026-10-25
+phase: done
+adr: ADR-0074
+spec: SPEC-0071
+github_issue: 249
+implementation_status: live_verified
+local_contract_progress_percent: 100
+validation:
+  just_check: passed
+  own_go_statement_coverage_percent: 86.15
+  race_tests: passed
+  docs_check: passed
+  configuration_contract: passed
+  live_acceptance: passed
+live_evidence:
+  - "User-accepted 2026-10-25 via real Telegram + real model: knowledge_list/search/read answer with provenance from staged source"
+  - "Follow-up fix 2026-10-25: knowledge selections admitted for artem_two (policy rev5, profile rev7); runbook staged for artem_main and artem_two after the acceptance-time 'absent' lifecycle left the root empty"
+limitations:
+  - Source baseline includes inherited uncommitted OAuth work; never commit that work.

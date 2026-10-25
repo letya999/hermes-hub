@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/agenttools"
 	"github.com/letya999/hermes-hub/internal/communication"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"gopkg.in/yaml.v3"
@@ -42,8 +43,10 @@ type applyRoutineSpec struct {
 type applySpec struct {
 	Routines  []applyRoutineSpec `yaml:"routines"`
 	Knowledge []struct {
-		Name   string `yaml:"name"`
-		Source string `yaml:"source"`
+		Name    string `yaml:"name"`
+		Source  string `yaml:"source"`
+		Context string `yaml:"context"`
+		State   string `yaml:"state"`
 	} `yaml:"knowledge"`
 }
 
@@ -92,12 +95,62 @@ func applyFile(spoolDir, stateDir, profile, path string) (ApplyReport, error) {
 		return rep, fmt.Errorf("apply requires --state <dir> for knowledge entries")
 	}
 	knowledge := map[string][]byte{}
+	snapshots := map[string]map[string][]byte{}
 	totalBytes := 0
 	for _, k := range cfg.Knowledge {
 		if seen["knowledge:"+k.Name] || !knowledgeName(k.Name) {
 			return rep, fmt.Errorf("invalid or duplicate knowledge name %q", k.Name)
 		}
 		seen["knowledge:"+k.Name] = true
+		if k.Context != "" || k.State != "" {
+			if !identity.ValidID(k.Context) {
+				return rep, fmt.Errorf("invalid knowledge context")
+			}
+			if k.State != "present" && k.State != "stale" && k.State != "unavailable" && k.State != "absent" {
+				return rep, fmt.Errorf("invalid knowledge state")
+			}
+			if k.State != "present" {
+				continue
+			}
+			folder := k.Source
+			if !filepath.IsAbs(folder) {
+				folder = filepath.Join(filepath.Dir(path), folder)
+			}
+			files := map[string][]byte{}
+			err := filepath.Walk(folder, func(name string, info os.FileInfo, err error) error {
+				if err != nil {
+					return err
+				}
+				if info.Mode()&os.ModeSymlink != 0 {
+					return fmt.Errorf("knowledge source must not contain symlinks")
+				}
+				if info.IsDir() {
+					return nil
+				}
+				if len(files) >= 128 {
+					return fmt.Errorf("knowledge folder exceeds 128 documents")
+				}
+				body, err := readKnowledgeSource(name)
+				if err != nil {
+					return err
+				}
+				totalBytes += len(body)
+				if totalBytes > 32<<20 {
+					return fmt.Errorf("apply knowledge exceeds 32 MiB aggregate limit")
+				}
+				rel, err := filepath.Rel(folder, name)
+				if err != nil {
+					return err
+				}
+				files[filepath.ToSlash(rel)] = body
+				return nil
+			})
+			if err != nil {
+				return rep, fmt.Errorf("knowledge %q: %w", k.Name, err)
+			}
+			snapshots[k.Name] = files
+			continue
+		}
 		source := k.Source
 		if !filepath.IsAbs(source) {
 			source = filepath.Join(filepath.Dir(path), source)
@@ -120,6 +173,13 @@ func applyFile(spoolDir, stateDir, profile, path string) (ApplyReport, error) {
 		rep.Routines[r.ID] = action
 	}
 	for _, k := range cfg.Knowledge {
+		if k.Context != "" || k.State != "" {
+			if _, err := agenttools.StageKnowledgeSource(stateDir, profile, k.Context, k.Name, k.State, snapshots[k.Name]); err != nil {
+				return rep, err
+			}
+			rep.Knowledge[k.Name] = k.State
+			continue
+		}
 		action, err := writeKnowledge(stateDir, profile, k.Name, knowledge[k.Name])
 		if err != nil {
 			return rep, fmt.Errorf("knowledge %q: %w", k.Name, err)

@@ -42,7 +42,7 @@ func (c DockerMCPCatalog) Lookup(ctx context.Context, lookup RecipeLookup) ([]Re
 		}
 		SourceURL := firstString(entry, "source", "upstream")
 		source, err := ParseGitHubSource(SourceURL)
-		if err != nil || source.Repository != lookup.Repository || source.Subfolder != lookup.Subfolder || source.CommitSHA != lookup.CommitSHA {
+		if err != nil || source.Repository != lookup.Repository || source.Subfolder != lookup.Subfolder {
 			continue
 		}
 		image := firstString(entry, "image", "identifier")
@@ -53,7 +53,14 @@ func (c DockerMCPCatalog) Lookup(ctx context.Context, lookup RecipeLookup) ([]Re
 		if command := StringArray(entry["command"]); len(command) > 0 {
 			launch.Entrypoint = command
 		}
-		candidate := RecipeCandidate{Repository: source.Repository, Subfolder: source.Subfolder, CommitSHA: source.CommitSHA, Launch: launch, Connection: ConnectionFromDockerEntry(entry), Evidence: launch.Evidence}
+		launchRank, credentialRank := producerRanks("docker-mcp")
+		candidate := RecipeCandidate{Repository: source.Repository, Subfolder: source.Subfolder, CommitSHA: source.CommitSHA, Launch: launch, Connection: ConnectionFromDockerEntry(entry), Evidence: launch.Evidence, Source: "docker-mcp", LaunchRank: launchRank, CredentialRank: credentialRank}
+		if source.CommitSHA != lookup.CommitSHA {
+			// A repo-matched entry pinned to another commit is catalog
+			// evidence: the resolver flags it ignored in the source ledger.
+			candidates = append(candidates, candidate)
+			continue
+		}
 		if completed, ok := CompleteRecipeCandidate(ctx, c.Client, candidate, lookup); ok {
 			candidates = append(candidates, completed)
 		}

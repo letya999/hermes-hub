@@ -12,6 +12,7 @@ import (
 // Source, recipe and OCI evidence are produced by the pipeline; the operator
 // supplies only the MCP's declared contract (tools, effects and env names).
 type ArtifactImportConfig struct {
+	OAuth                      *OAuthRecipe
 	DefinitionID               string
 	Version                    string
 	Language                   string
@@ -33,6 +34,11 @@ type ArtifactImportConfig struct {
 	// ContextSources merges additional pinned repositories into the build
 	// context for upstream vendoring steps a tree fetch cannot reproduce.
 	ContextSources []ArtifactOverlay
+	// Toolsets/DefaultEnabled/DefaultExcluded carry the catalog's staged
+	// projection surface into the admitted definition.
+	Toolsets        map[string][]string
+	DefaultEnabled  []string
+	DefaultExcluded []string
 }
 
 type ImportedArtifact struct {
@@ -42,6 +48,7 @@ type ImportedArtifact struct {
 }
 
 type artifactReviewContract struct {
+	OAuth                      *OAuthRecipe `json:",omitempty"`
 	DefinitionID               string
 	Version                    string
 	Image                      string
@@ -93,7 +100,7 @@ func ReviewDigest(source ArtifactSource, recipe ArtifactRecipe, artifact StoredO
 		Recipe   ArtifactRecipe
 		Artifact StoredOCIArtifact
 		Contract artifactReviewContract
-	}{Source: source, Recipe: recipe, Artifact: artifact, Contract: artifactReviewContract{config.DefinitionID, config.Version, config.Image, config.Tools, config.Credentials, config.CredentialGroups, config.CredentialContractID, config.CredentialContractRevision, config.CredentialContractEnv, config.Environment, config.RuntimeEnvironment, config.ProxyEnvironment, config.Workload, config.Execution, config.Health, config.ContextSources}}
+	}{Source: source, Recipe: recipe, Artifact: artifact, Contract: artifactReviewContract{config.OAuth, config.DefinitionID, config.Version, config.Image, config.Tools, config.Credentials, config.CredentialGroups, config.CredentialContractID, config.CredentialContractRevision, config.CredentialContractEnv, config.Environment, config.RuntimeEnvironment, config.ProxyEnvironment, config.Workload, config.Execution, config.Health, config.ContextSources}}
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return "", err
@@ -107,6 +114,7 @@ func ReviewDigestForImported(imported ImportedArtifact) (string, error) {
 		Tag: imported.Definition.Source.ReleaseTag, Asset: imported.Definition.Source.ReleaseAsset, AssetDigest: imported.Definition.Source.AssetDigest,
 		PackageRegistry: imported.Definition.Source.PackageRegistry, PackageName: imported.Definition.Source.PackageName, PackageVersion: imported.Definition.Source.PackageVersion}
 	config := ArtifactImportConfig{
+		OAuth:        imported.Definition.OAuth,
 		DefinitionID: imported.Definition.DefinitionID, Version: imported.Definition.Version,
 		Image: imported.Definition.Source.Image, Tools: imported.Definition.Tools,
 		Entrypoint:  append([]string{imported.Definition.Source.Command}, imported.Definition.Source.Args...),

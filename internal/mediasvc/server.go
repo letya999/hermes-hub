@@ -50,6 +50,13 @@ func Serve(cfg Config) (http.Handler, error) {
 	}
 	// Requeue jobs orphaned by a restart; a "running" record is retried once.
 	for _, j := range store.list() {
+		if j.Kind == "video" && j.RemoteID == "" && (j.Status == "submitting" || j.Status == "running") {
+			j.Status, j.Error = "uncertain", errSubmissionUncertain.Error()
+			if err := store.put(j); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		if j.Status == "queued" || j.Status == "running" {
 			j.Status = "queued"
 			_ = store.put(j)
@@ -98,7 +105,7 @@ func (s *service) transcriptions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxUpload)
-	if err := r.ParseMultipartForm(s.cfg.MaxUpload); err != nil {
+	if err := r.ParseMultipartForm(s.cfg.MaxUpload); err != nil { // #nosec G120 -- body is bounded by MaxBytesReader above
 		writeError(w, http.StatusBadRequest, "invalid multipart form")
 		return
 	}
@@ -313,7 +320,7 @@ func (s *service) imagesEdits(w http.ResponseWriter, r *http.Request) {
 	}
 	const maxEditSource = 16 << 20
 	r.Body = http.MaxBytesReader(w, r.Body, maxEditSource)
-	if err := r.ParseMultipartForm(maxEditSource); err != nil {
+	if err := r.ParseMultipartForm(maxEditSource); err != nil { // #nosec G120 -- body is bounded by MaxBytesReader above
 		writeError(w, http.StatusRequestEntityTooLarge, "invalid multipart form")
 		return
 	}
@@ -405,7 +412,7 @@ func (s *service) jobsRoot(w http.ResponseWriter, r *http.Request) {
 		var upload []byte
 		if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
 			r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxSource)
-			if err := r.ParseMultipartForm(s.cfg.MaxSource); err != nil {
+			if err := r.ParseMultipartForm(s.cfg.MaxSource); err != nil { // #nosec G120 -- body is bounded by MaxBytesReader above
 				writeError(w, http.StatusRequestEntityTooLarge, "upload too large")
 				return
 			}
@@ -533,7 +540,7 @@ func (s *service) jobItem(w http.ResponseWriter, r *http.Request) {
 		}
 		http.ServeFile(w, r, filepath.Join(s.jobs.dirOf(j.ID), name))
 	case file == "" && r.Method == http.MethodDelete:
-		if j.Status == "running" {
+		if j.Status == "running" || j.Status == "submitting" {
 			writeError(w, http.StatusConflict, "job is running")
 			return
 		}
@@ -545,7 +552,7 @@ func (s *service) jobItem(w http.ResponseWriter, r *http.Request) {
 }
 
 func saveBounded(dst string, src io.Reader, limit int64) error {
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600) // #nosec G703 -- dst is an internal job path
 	if err != nil {
 		return err
 	}

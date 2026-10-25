@@ -17,14 +17,14 @@ import (
 // container carrying the owning compose-project label is drained, a foreign
 // container's logs never reach the diagnostics file. Run with:
 //
-//	HUB_DIAG_IMAGE=hermes-hub:0.3.0-dev go test -tags integration -run TestCollectRealDocker ./internal/diagnostics
+//	HUB_DIAG_IMAGE=hermes-hub:0.4.0-dev go test -tags integration -run TestCollectRealDocker ./internal/diagnostics
 func TestCollectRealDockerScopesToProject(t *testing.T) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("docker not installed")
 	}
 	image := os.Getenv("HUB_DIAG_IMAGE")
 	if image == "" {
-		image = "hermes-hub:0.3.0-dev"
+		image = "hermes-hub:0.4.0-dev"
 	}
 	if _, err := Docker(context.Background(), "image", "inspect", image); err != nil {
 		t.Skipf("image %s unavailable: %v", image, err)

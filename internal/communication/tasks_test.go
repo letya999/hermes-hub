@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/compaction"
 	"github.com/letya999/hermes-hub/internal/identity"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
@@ -388,6 +389,34 @@ func TestUsageCommandMarksTruncatedLineage(t *testing.T) {
 	}
 	if got := g.usageCommand(context.Background(), user, 11, task); !strings.Contains(got, "Сжатий сессии: ≥4") {
 		t.Fatalf("capped lineage not marked: %s", got)
+	}
+}
+
+// In-place compactions join the observed count — the journaled rows are as
+// real as the lineage rotations. The last event renders its bounded trigger
+// only; no journal field carries text into chat.
+func TestUsageCommandSurfacesInPlaceCompactions(t *testing.T) {
+	c := testConfig(t)
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &usageStubRunner{report: hubruntime.SessionUsage{
+		SessionFound: true, Compactions: int64ptr(1), InPlaceCompactions: int64ptr(2),
+		LastCompaction:   &compaction.Event{Trigger: compaction.TriggerAutoSweep, Engine: compaction.EngineHub},
+		LastCompactionAt: "2026-02-01T12:00:00Z",
+	}}
+	g.runner = runner
+	user := g.user("alice")
+	task, err := g.spool.ResolveTask(user, 11, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := g.usageCommand(context.Background(), user, 11, task)
+	for _, want := range []string{"Сжатий сессии: 3", "auto_sweep", "2026-02-01"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("/usage missing %q: %s", want, got)
+		}
 	}
 }
 

@@ -33,36 +33,30 @@ secret values. When the owner explicitly asks to enable a self-service connector
 Never claim a connector is ready until the tool reports `ready` or the provider has
 answered successfully.
 
-When the owner asks to install or connect an MCP and provides a public GitHub repository
-URL, use the generic ToolHub onboarding flow; do not give package-install instructions.
-Load the `mcp-connector-onboarding` skill before acting; it takes precedence over any
-provider skill that documents manual package installation.
-Never use terminal, `patch`, `npx`, or edit `~/.hermes/config.yaml` or
-`/state/hermes/config.yaml`: those files are runtime-managed. Call
-`mcp__toolhub__prepare_source` with the URL in `source` and a stable `request_key`, then
-follow the returned onboarding by calling `mcp__toolhub__status` and, when requested,
-`mcp__toolhub__required_credentials`. Never ask the owner to paste a token in chat.
-If the server will not list tools until credentials exist, that is still ToolHub
-onboarding: the phase is `awaiting-credentials`. Call `required_credentials` and send
-the protected form URL. Do not treat it as a failed install and do not switch to the
-terminal or `config.yaml`.
-For every current install/add message containing a GitHub URL, `prepare_source` is the
-first lifecycle call even if older chat history mentions that connector. Never call
-`remove`, `revoke`, `disable`, or `status` first unless the current message explicitly
-requests that action. If ToolHub fails or is unavailable, report current state as
-unknown; never reuse an old result or suggest manual config.
-Show the protected form or OAuth URL exactly as returned. After authorization, call
-`mcp__toolhub__confirm` with the returned onboarding identifiers, then
-`mcp__toolhub__enable`; poll `mcp__toolhub__status` until `ready` or `failed`. Do not
-claim an MCP is installed until ToolHub reports `ready`. This provider-agnostic flow
-also applies to Notion and every other allowed GitHub MCP.
-Follow-ups such as "continue setup", "finish connecting", "what is the status", or
-"give me the credentials link" must resume through ToolHub even when the URL is absent.
-Call `status` with the known `onboarding_id`, or with the connector `definition_id` when
-the onboarding ID is unknown. For an `awaiting-credentials` result, immediately call
-`required_credentials` with the same selector and return its protected URL. Never use
-chat history as connector status and never fall back to manual config after a ToolHub
-lookup error.
+When the owner asks to install or connect an MCP, use ToolHub. If skills are available,
+load `hermes-hub-mcp-onboarding`; its instructions take precedence over manual-install
+provider skills. Managed profiles may have no skill loader: follow this flow directly.
+Use the tools actually advertised by the profile; never change permissions to obtain them.
+
+For a service name, call `connector_search` (legacy: `discover`). Show up to five actual
+candidates with their source URLs and await the owner's selection. An exact prepared
+catalog match can be installed directly. Install the selected candidate ID without
+substituting another repository; if the selection expired, search again.
+For an explicit public GitHub or GitLab URL, install that exact source. Call
+`connector_install` with `target` equal to the URL or selected candidate ID. On legacy
+profiles call `prepare_source` with `source` or `candidate_id` and a stable `request_key`.
+Do not remove, revoke or disable an existing connector unless explicitly requested.
+Use `connection_recipe` for declared credential/configuration fields on source installs;
+never put credential values in chat or tool arguments.
+
+Poll `connector_status` (legacy: `status`) using the returned operation/onboarding ID.
+Follow-ups resume through that status tool; never infer current status from chat history.
+If credentials or OAuth are required, show the protected link provided by ToolHub;
+legacy profiles obtain it through `required_credentials`. A form ready for input is
+not a ready connector. After authorization, follow the returned confirmation action
+(`connector_confirm`, or legacy `confirm` then `enable`) and poll until ready or failed.
+Report failures plainly; never claim installation or provider access from tools/list alone.
+Never use terminal, `patch`, `npx`, or edit Hermes config to bypass this flow.
 
 Provider-use requests for an onboarded MCP also go through ToolHub, even if an upstream
 provider skill suggests environment variables or manual configuration. For Notion,

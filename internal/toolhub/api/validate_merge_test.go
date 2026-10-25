@@ -55,6 +55,15 @@ func TestCredentialReferenceValidate(t *testing.T) {
 	if err := broker.Validate(); err == nil {
 		t.Fatal("invalid broker env accepted")
 	}
+	broker.BrokerEnv = map[string]string{"API_TOKEN": "BROKER_API_TOKEN"}
+	broker.BrokerContextID = "ctx-team-1"
+	if err := broker.Validate(); err != nil {
+		t.Fatalf("broker context ref: %v", err)
+	}
+	broker.BrokerContextID = "not valid!!"
+	if err := broker.Validate(); err == nil {
+		t.Fatal("invalid broker context accepted")
+	}
 	if CredentialReferenceID("conn-1", 3) == "" {
 		t.Fatal("deterministic ref id empty")
 	}

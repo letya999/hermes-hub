@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "change": "CHG-0140",
+  "title": "Broker: dynamic contract registration (hub ADR-0067 / SPEC-0065)",
+  "description": "Динамическая регистрация credential contracts через control API",
+  "status": "in_progress",
+  "last_updated": "2026-10-20",
+  "adr": "ADR-0067 (hub numbering; broker-local ADR-0008)",
+  "spec": "SPEC-0065",
+  "done": [
+    "broker: contractRecord mutation + RegisterContract + replay-восстановление",
+    "httpapi: POST /v1/contracts; client: RegisterContract",
+    "тесты: регистрация, идемпотентность, конфликт digest, запрет routes/oauth/state/shared, рестарт, аудит, audience",
+    "ADR-0008 (hub ADR-0067), scope.md, api-contract.md, openapi.json, spec credential-broker-dynamic-contracts",
+    "hub-side integration completed and live-verified as CHG-0107 (dynamic contracts + ToolHub synthesis)"
+  ],
+  "current": "Реализовано и интегрировано (CHG-0107); остаётся гейт модуля",
+  "next": [
+    "полный just check модуля на Linux-раннере (race/coverage не запускались локально на Windows)"
+  ],
+  "evidence": [
+    "plan.md",
+    ".work/done/CHG-0107-dynamic-contracts/state.yaml"
+  ],
+  "review": {
+    "open": [],
+    "resolved": []
+  }
+}

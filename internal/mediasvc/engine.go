@@ -507,7 +507,7 @@ func probe(ctx context.Context, client *http.Client, url, key string) bool {
 	if until, ok := probeCache.Load(url); ok && probeNowFn().Before(until.(time.Time)) {
 		return true
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil) // #nosec G704 -- configured model endpoint probe
 	if err != nil {
 		return false
 	}
@@ -517,8 +517,9 @@ func probe(ctx context.Context, client *http.Client, url, key string) bool {
 	probeClient := &http.Client{Timeout: 3 * time.Second}
 	if client != nil {
 		probeClient.Transport = client.Transport
+		probeClient.CheckRedirect = client.CheckRedirect
 	}
-	resp, err := probeClient.Do(req)
+	resp, err := probeClient.Do(req) // #nosec G704 -- configured model endpoint probe
 	if err != nil {
 		return false
 	}

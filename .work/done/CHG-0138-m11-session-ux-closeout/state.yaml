@@ -1,0 +1,38 @@
+schema: 1
+change: CHG-0138
+title: M11 closeout — stop/cancel, archive UX, live progress, e2e harness
+status: done
+branch: feat/m12-telegram-channel-ux
+base: dev
+updated: 2026-10-15
+phase: done
+github_issues: [217, 218, 219, 194, 193]
+slices:
+  - S1: /stop cancels active jobs of the resolved session via RequestCancel;
+    /cancel <job-id> resolves the stale references in approval/edited replies;
+    both advertised in /help and the Telegram menu
+  - S2: /archive [id|имя] retires a session and closes its forum topic;
+    /archived lists names+dates; /use restores by id or name and reopens the
+    topic; an occupied topic restores the session unbound without stealing
+    the binding
+  - S3: progressTick every 5s re-arms typing and edits the single durable
+    status message with elapsed time; JobMapping.ChatID/StatusText keep the
+    routing and latest status line durable across restarts
+  - S4: TestAllCommandsStayDeterministic proves no slash command enters the
+    model queue; e2e runner baked into the hub image; docs record the
+    one-command mock-server harness and the no-live-claim boundary
+  - S5: progressTick skips jobs that never reached admission (RunID == "");
+    a dead supervisor/wake path can no longer farm typing+status edits
+    forever. Root cause of the live incident: stale bin/hubctl.exe
+    rendered compose without the supervisor service while the env still
+    pointed at http://supervisor:8876 — rebuilt binary + hubctl up
+    restored the service
+validation:
+  - go test ./internal/communication/ — green
+  - just check — green (coverage 85.30%, race/vet/staticcheck/docs/actionlint)
+  - hubctl up --user local --env dev — green; all containers healthy,
+    e2e runner present in image, progressTick/reopenForumTopic in binary,
+    polling logs clean
+notes:
+  - live Telegram acceptance of /stop, /cancel, /archive, /archived and
+    progress edits remains unverified — needs the owner's bot/group

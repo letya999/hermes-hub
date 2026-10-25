@@ -22,10 +22,11 @@ type profilesFile struct {
 // profileOverlay carries only scalar/small settings — never secret literals.
 // model_fallbacks entries reference secrets by env name via key_env.
 type profileOverlay struct {
-	Owners   []string `yaml:"owners,omitempty"`
-	Model    string   `yaml:"model,omitempty"`
-	ModelURL string   `yaml:"model_url,omitempty"`
-	Cliproxy string   `yaml:"cliproxy,omitempty"`
+	Owners              []string `yaml:"owners,omitempty"`
+	Model               string   `yaml:"model,omitempty"`
+	ModelURL            string   `yaml:"model_url,omitempty"`
+	Cliproxy            string   `yaml:"cliproxy,omitempty"`
+	CliproxyCredentials string   `yaml:"cliproxy_credentials,omitempty"`
 }
 
 // applyProfiles loads spaces/profiles.yaml relative to the space dir and
@@ -60,12 +61,25 @@ func applyProfiles(s *Settings, dir string) error {
 	// default -> named (sorted) and each later layer wins over earlier ones.
 	ownModel, ownCliproxy := s.Model != "", s.Cliproxy != ""
 	ownModelURL := s.ModelURL != ""
+	ownCredentials := s.CliproxyCredentials != ""
 	ordered := slices.DeleteFunc(slices.Clone(names), func(n string) bool { return n == "default" })
 	ordered = append([]string{"default"}, ordered...)
+	groups := map[string]string{}
 	for _, name := range ordered {
 		o, ok := pf.Profiles[name]
 		if !ok || (name != "default" && !slices.Contains(o.Owners, s.User)) {
 			continue
+		}
+		if name != "default" {
+			for field, value := range map[string]string{"model": o.Model, "model_url": o.ModelURL, "cliproxy": o.Cliproxy, "cliproxy_credentials": o.CliproxyCredentials} {
+				if value == "" {
+					continue
+				}
+				if previous := groups[field]; previous != "" && previous != value {
+					return fmt.Errorf("profiles.yaml: conflicting group assignments for %s", field)
+				}
+				groups[field] = value
+			}
 		}
 		if !ownModel && o.Model != "" {
 			s.Model = o.Model
@@ -75,6 +89,9 @@ func applyProfiles(s *Settings, dir string) error {
 		}
 		if !ownModelURL && o.ModelURL != "" {
 			s.ModelURL = o.ModelURL
+		}
+		if !ownCredentials && o.CliproxyCredentials != "" {
+			s.CliproxyCredentials = o.CliproxyCredentials
 		}
 	}
 	return nil

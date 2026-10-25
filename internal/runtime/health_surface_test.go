@@ -103,3 +103,10 @@ func TestHealthDegradesReadinessOnBadSurface(t *testing.T) {
 		t.Fatalf("readiness with clean probe = %q", health.HermesReadiness)
 	}
 }
+
+func TestRuntimeDiagnosticsServerBoundsHeaderReads(t *testing.T) {
+	server := runtimeDiagnosticsServer("0.0.0.0:0", nil)
+	if server.ReadHeaderTimeout <= 0 {
+		t.Fatal("diagnostics server has no header timeout")
+	}
+}

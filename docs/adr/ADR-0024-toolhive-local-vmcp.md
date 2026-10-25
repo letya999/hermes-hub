@@ -14,6 +14,6 @@ replaceable connector runner, but vMCP is not the production identity or authori
 boundary. The project-owned Go boundary resolves scope and binding while delegating OCI,
 protocol-scheme command and remote lifecycle to `thv`.
 
-Reconsider only after the acceptance suite in [the audit](../toolhive-vmcp-audit.md)
+Reconsider only after the acceptance suite in [the audit](../../.work/done/CHG-0035-toolhive-vmcp-audit/audit.md)
 passes on the target Linux VPS. This decision requires no migration; rollback is the
 unchanged direct Hermes configuration.

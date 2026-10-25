@@ -8,6 +8,14 @@ import (
 	"time"
 )
 
+// cloneOnboarding is the store's copy boundary for mutable record fields:
+// the remove ladder mutates Finalizers in place, so the map and callers
+// must never share its backing array.
+func cloneOnboarding(o api.Onboarding) api.Onboarding {
+	o.Finalizers = slices.Clone(o.Finalizers)
+	return o
+}
+
 func (s *Store) PutGrant(grant api.Grant) error {
 	if err := grant.Validate(); err != nil {
 		return err
@@ -70,7 +78,7 @@ func (s *Store) PutOnboarding(onboarding api.Onboarding) error {
 		return err
 	}
 	s.mu.Lock()
-	s.onboardings[onboarding.OnboardingID] = onboarding
+	s.onboardings[onboarding.OnboardingID] = cloneOnboarding(onboarding)
 	s.mu.Unlock()
 	return s.persist()
 }
@@ -204,6 +212,28 @@ func (s *Store) sharedForeignConnection(principalID, connectionID string) bool {
 	return ok && connection.Metadata["shared_policy"] != "" && connection.Owner.ID != principalID
 }
 
+// teamConnectionCoversLocked admits a member to a team-owned connection: the
+// owner ref names the team and membership is read from the stored record on
+// every call, so member removal takes effect without mutating bindings.
+func (s *Store) teamConnectionCoversLocked(auth identity.Envelope, connection api.Connection) bool {
+	if connection.Owner.Type != api.TeamOwner {
+		return false
+	}
+	team, ok := s.teams[connection.Owner.ID]
+	return ok && team.IsMember(auth.PrincipalID)
+}
+
+// teamMemberWritesLocked reports whether a call through this connection may
+// carry write-effect tools: non-team connections keep their existing surface,
+// team members need the operator's write policy on the team record.
+func (s *Store) teamMemberWritesLocked(auth identity.Envelope, effective api.EffectiveBinding) bool {
+	if effective.Connection == nil || effective.Connection.Owner.Type != api.TeamOwner {
+		return true
+	}
+	team, ok := s.teams[effective.Connection.Owner.ID]
+	return ok && team.CanWrite(auth.PrincipalID)
+}
+
 func (s *Store) RequireCatalogAccess(auth identity.Envelope, definition api.ToolDefinition) error {
 	if err := auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion); err != nil {
 		return fmt.Errorf("%w: %v", api.ErrUnauthorized, err)
@@ -302,6 +332,17 @@ func (s *Store) AllowedControlOperations(auth identity.Envelope) (map[string]boo
 		if err != nil {
 			return allowed, err
 		}
+		// The connectors bundle replaces the legacy per-operation projection
+		// with the unified nine-tool surface.
+		if profile.Connectors == api.ConnectorsPersonal || profile.Connectors == api.ConnectorsPersonalTeam {
+			for _, tool := range api.ConnectorTools {
+				allowed[tool] = true
+			}
+			return allowed, nil
+		}
+		if profile.Connectors == api.ConnectorsNone {
+			return allowed, nil
+		}
 		for _, operation := range profile.ControlOperations {
 			if slices.Contains(api.ControlOperations, operation) {
 				allowed[operation] = true
@@ -344,7 +385,7 @@ func (s *Store) OnboardingFor(auth identity.Envelope, id string) (api.Onboarding
 	if onboarding.PrincipalID != auth.PrincipalID || onboarding.ContextID != auth.ContextID || onboarding.RuntimeID != auth.RuntimeID || onboarding.PolicyVersion != auth.PolicyVersion {
 		return api.Onboarding{}, fmt.Errorf("%w: onboarding owner", api.ErrUnauthorized)
 	}
-	return onboarding, nil
+	return cloneOnboarding(onboarding), nil
 }
 
 func (s *Store) FindOnboardingByKey(auth identity.Envelope, key string) (api.Onboarding, bool) {

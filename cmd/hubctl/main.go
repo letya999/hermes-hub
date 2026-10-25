@@ -40,7 +40,7 @@ func warmTTLFlag(f *flag.FlagSet) *time.Duration {
 
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		fmt.Println("hubctl 0.3.0: init | org-init | migrate-spaces | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | artifact | build | dev-rebuild | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | grant | governance | capability | context | memory | skill | routine | apply\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nConnector controllers: local-controller (fixed Telegram) or generic-controller (trusted artifact)\nSee README.md for account setup and private VPS access.")
+		fmt.Println("hubctl 0.4.0: init | org-init | migrate-spaces | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | artifact | build | dev-rebuild | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | grant | governance | capability | context | memory | skill | routine | apply\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nConnector controllers: local-controller (fixed Telegram) or generic-controller (trusted artifact)\nSee README.md for account setup and private VPS access.")
 		return nil
 	}
 	op := args[0]
@@ -109,6 +109,9 @@ func run(ctx context.Context, args []string) error {
 	}
 	if op == "secret" {
 		return runSecret(ctx, args[1:])
+	}
+	if op == "credentials" {
+		return runCredentials(ctx, args[1:])
 	}
 	if op == "grant" {
 		return runGrant(ctx, args[1:])
@@ -201,7 +204,7 @@ func run(ctx context.Context, args []string) error {
 	userSource := f.String("user-source", "", "legacy user directory")
 	orgSource := f.String("organization-source", "", "legacy organization directory")
 	spacesRoot := f.String("spaces", "spaces", "root containing context homes for the host supervisor")
-	supervisorImage := f.String("runtime-image", "hermes-hub:0.3.0-prod", "pinned runtime image for the host supervisor")
+	supervisorImage := f.String("runtime-image", "hermes-hub:0.4.0-prod", "pinned runtime image for the host supervisor")
 	supervisorListen := f.String("supervisor-listen", "127.0.0.1:8876", "private host supervisor address")
 	supervisorWildcard := f.Bool("supervisor-allow-wildcard-listen", false, "permit binding the supervisor control plane on all interfaces")
 	supervisorAuth := f.String("supervisor-auth", supervisorAuthFromEnv(), "private supervisor token")
@@ -278,6 +281,8 @@ func run(ctx context.Context, args []string) error {
 			return stack.InitEnvironmentWithOrganization(*dir, *profile, *environment, *organization)
 		}
 		return stack.InitEnvironment(*dir, *profile, *environment)
+	case "group-init":
+		return stack.InitGroupEnvironment(*dir, *profile, *environment, *organization)
 	case "org-init":
 		if *organization == "" {
 			return fmt.Errorf("org-init requires --org")
@@ -357,6 +362,24 @@ func run(ctx context.Context, args []string) error {
 			return fmt.Errorf("configuration incomplete:\n- %s", strings.Join(issues, "\n- "))
 		}
 		if op == "doctor" {
+			if s.CapabilityMode == "managed" {
+				modelSecrets := map[string]string{}
+				for key, value := range orgSecrets {
+					modelSecrets[key] = value
+				}
+				for key, value := range secrets {
+					modelSecrets[key] = value
+				}
+				plan, err := stack.ModelDoctor(*dir, s, modelSecrets)
+				if err != nil {
+					return err
+				}
+				for _, line := range plan {
+					fmt.Println(line)
+				}
+			}
+			fmt.Printf("Effective model: owner=%s model=%s endpoint=%s proxy=%q credential_scope=%q (empty: shared proxy / undeclared legacy credential scope).\n", s.User, s.Model, s.ModelURL, s.Cliproxy, s.CliproxyCredentials)
+			fmt.Println("Model restart policy: rendered registry changes hot-reload in the owner's relay; provider env/auth changes require recreating that relay; proxy placement changes require that owner's relay/proxy; a changed runtime model applies at the next owner runtime spawn.")
 			if *live {
 				key := secrets["OPENAI_API_KEY"]
 				if key == "" {
@@ -366,11 +389,11 @@ func run(ctx context.Context, args []string) error {
 					return fmt.Errorf("model catalog redirects are not followed")
 				}}
 				composePath := filepath.Join(*dir, "generated", "compose."+*environment+".yaml")
-				if _, statErr := os.Stat(composePath); os.IsNotExist(statErr) {
+				if _, statErr := os.Stat(composePath); os.IsNotExist(statErr) { // #nosec G703 -- operator-supplied project dir
 					composePath = filepath.Join(*dir, "compose."+*environment+".yaml")
 				}
 				portLookup := doctorPortLookup(*dir, func(ctx context.Context, env, args []string) ([]byte, error) {
-					cmd := exec.CommandContext(ctx, "docker", args...)
+					cmd := exec.CommandContext(ctx, "docker", args...) // #nosec G702 -- fixed docker executable, argv without shell
 					cmd.Env = env
 					return cmd.CombinedOutput()
 				})
@@ -394,13 +417,13 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 	composePath := filepath.Join(abs, "generated", "compose."+*environment+".yaml")
-	if _, statErr := os.Stat(composePath); os.IsNotExist(statErr) {
+	if _, statErr := os.Stat(composePath); os.IsNotExist(statErr) { // #nosec G703 -- operator-supplied project dir
 		composePath = filepath.Join(abs, "compose."+*environment+".yaml")
 	}
 	prefix := []string{"compose", "-f", composePath}
 	composeEnv := supervisorComposeEnv(abs)
 	dockerCmd := func(args ...string) *exec.Cmd {
-		cmd := exec.CommandContext(ctx, "docker", args...)
+		cmd := exec.CommandContext(ctx, "docker", args...) // #nosec G702 -- fixed docker executable, argv without shell
 		cmd.Env = composeEnv
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
@@ -464,14 +487,14 @@ func run(ctx context.Context, args []string) error {
 			}
 			dockerfile := filepath.Join(rootAbs, "docker", "Dockerfile")
 			for _, stage := range []string{"cli-tools", "cell-proxy"} {
-				image := "hermes-hub-" + stage + ":0.3.0-" + *environment
+				image := "hermes-hub-" + stage + ":0.4.0-" + *environment
 				if err := dockerCmd("build", "--target", stage, "-t", image, "-f", dockerfile, rootAbs).Run(); err != nil {
 					return fmt.Errorf("build %s: %w", image, err)
 				}
 			}
 			if *environment == "dev" && (len(f.Args()) == 0 || slices.Contains(f.Args(), "cliproxy")) {
 				for _, pin := range []string{"dev-runtime-image", "dev-script-image"} {
-					if err := os.Remove(filepath.Join(abs, "generated", pin)); err != nil && !os.IsNotExist(err) {
+					if err := os.Remove(filepath.Join(abs, "generated", pin)); err != nil && !os.IsNotExist(err) { // #nosec G703 -- operator-supplied project dir
 						return err
 					}
 				}
@@ -479,6 +502,17 @@ func run(ctx context.Context, args []string) error {
 		}
 		if op == "build" {
 			return nil
+		}
+		s, readErr := stack.ReadEnvironment(*dir, *environment)
+		if readErr != nil {
+			return readErr
+		}
+		if s.RendersInfra() && (len(f.Args()) == 0 || slices.Contains(f.Args(), "credential-broker")) {
+			for _, vol := range []string{"hermes-credential-broker-recovery-", "hermes-credential-broker-recovery-key-"} {
+				if err := dockerCmd("volume", "create", vol+*environment).Run(); err != nil {
+					return fmt.Errorf("provision broker recovery volume: %w", err)
+				}
+			}
 		}
 		upArgs := []string{"up", "-d", "--wait", "--wait-timeout", "180", "--force-recreate", "--remove-orphans"}
 		if *noBuild {
@@ -564,7 +598,7 @@ func supervisorComposeEnv(dir string) []string {
 }
 
 func dockerOutput(ctx context.Context, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd := exec.CommandContext(ctx, "docker", args...) // #nosec G702 -- fixed docker executable, argv without shell
 	cmd.Env = dockerCLIEnv()
 	return cmd.CombinedOutput()
 }
