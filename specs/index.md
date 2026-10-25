@@ -7,6 +7,7 @@ record it points to. `archive/` holds only pre-renumbering originals.
 
 | Specification | Status |
 |---|---|
+| [SPEC-0075](active/SPEC-0075-outbound-exposure.md) | Frozen: outbound exposure primitive — named endpoints, per-binding tunnel workloads, Broker credentials, sish/cloudflared profiles, bounds and audit (M18 #145) |
 | [SPEC-0074](active/SPEC-0074-goal-mode.md) | Draft: persistent /goal mode — dual engine, judge modes, spool continuation |
 | [SPEC-0073](active/SPEC-0073-manual-compaction.md) | Draft: manual compaction — dual engine, upstream semantics, turn-boundary safety |
 | [SPEC-0072](active/SPEC-0072-compression-policy-status.md) | Draft: automatic compaction policy, relay routing, hub sweep, honest status |

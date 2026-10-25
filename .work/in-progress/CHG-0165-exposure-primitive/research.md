@@ -59,14 +59,27 @@ TXT+fingerprint custom domains); gofrp.org docs (token/OIDC auth,
 
 ## Decision (in ADR-0077)
 
-Provider-abstracted primitive, `cloudflared` as the reference provider:
-least new infrastructure (no VPS, no hub-side certs), per-tunnel tokens give
-fail-closed naming, and it unblocks ADR-0054's deferred live acceptance plus
-shrinks #146 to zone delegation + hostname API calls. `sish` is the defined
-second provider for operators who do not accept edge termination — with the
-explicit caveat that the hub must namespace names itself. `frp` is the
-recorded fallback for TCP-class exposure (CF Spectrum is paid; public raw TCP
-on free CF is not available).
+Weighed on the owner criteria — reliability, autonomy, security, cost:
+
+- `sish` (self-hosted VPS) is the reference provider. Autonomy: commodity
+  infra the operator owns, no third-party account or DNS delegation, and
+  any VPS/DNS provider is swappable. Security: plaintext stays inside the
+  operator trust domain — `?t=` link material never crosses a managed edge.
+  Simplicity favours reliability for a single-owner hub: no provider API
+  client at all, the "attach name" operation is the SSH session itself, and
+  the client is a stock ssh — minimal supply-chain surface. Synergy: the
+  same SSH-server domain knowledge feeds #148. Caveat recorded: sish does
+  not isolate subdomains per key, so the hub must namespace names (per-user
+  zone or verified custom domain — mechanism is a SPEC detail). Cost: a VPS
+  (~$0–5/mo; Oracle-class always-free tiers qualify) plus the domain that
+  #146 already presumes.
+- `cloudflared` is the defined alternate for operators without a VPS: best
+  free managed path, account-side names fail closed, but it is a
+  control-plane dependency (CF account + domain on CF DNS + API token) and
+  terminates TLS at a third-party edge that can read unspent link tokens.
+- `frp` is the recorded fallback for TCP-class exposure (CF Spectrum is
+  paid; public raw TCP on free CF is unavailable). ngrok/zrok/bore/quick
+  tunnels deferred per the matrix above.
 
 ## Open questions for the SPEC stage
 

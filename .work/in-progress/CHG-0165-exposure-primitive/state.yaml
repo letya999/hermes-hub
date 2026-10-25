@@ -6,17 +6,17 @@ branch: feat/m18-exposure-hosting-ssh
 updated: 2026-10-25
 phase: design-complete
 adr: ADR-0077
-spec: pending
+spec: SPEC-0075
 requirements: []
 depends_on: []
 github_milestone: M18
 github_issue: 145
-design_status: proposed
+design_status: accepted
 implementation_status: not_started
 slices:
   S1-provider-research: green
   S2-adr-0077: green
-  S3-spec-0075: not_started
+  S3-spec-0075: green
   S4-impl-chgs: not_started
 validation:
   documents: pending
@@ -26,10 +26,10 @@ validation:
   live_acceptance: not_started
 evidence:
   - research.md provider matrix and isolation analysis
-  - ADR-0077 proposed
+  - ADR-0077 accepted on owner criteria: sish reference, cloudflared alternate
+  - SPEC-0075 frozen (R1-R8, acceptance A1-A8)
 remaining:
-  - owner decision on ADR-0077 (provider fork D4/D6)
-  - SPEC-0075 draft
   - implementation CHG creation
 limitations:
   - live acceptance (ADR-0054 deferred items) requires a deployed tunnel
+  - sish path requires an operator VPS + domain before live acceptance
