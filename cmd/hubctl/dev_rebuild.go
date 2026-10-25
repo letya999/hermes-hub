@@ -20,15 +20,15 @@ func devService(name string) (devServiceSpec, bool) {
 	switch name {
 	case "communication-hub", "credential-broker", "hub-media", "toolhub":
 		source := map[string]string{"communication-hub": "./cmd/communication", "credential-broker": "./cmd/credential-broker", "hub-media": "./cmd/hub-media", "toolhub": "./cmd/toolhub"}[name]
-		base := "hermes-hub:0.3.0-dev"
+		base := "hermes-hub:0.4.0-dev"
 		if name == "toolhub" {
 			base += "-control"
 		}
 		return devServiceSpec{name, source, base}, true
 	case "workload-controller", "supervisor":
-		return devServiceSpec{"hubctl", "./cmd/hubctl", "hermes-hub:0.3.0-dev-control"}, true
+		return devServiceSpec{"hubctl", "./cmd/hubctl", "hermes-hub:0.4.0-dev-control"}, true
 	case "hermes-runtime":
-		return devServiceSpec{"hub-runtime", "./cmd/runtime", "hermes-hub:0.3.0-dev"}, true
+		return devServiceSpec{"hub-runtime", "./cmd/runtime", "hermes-hub:0.4.0-dev"}, true
 	}
 	return devServiceSpec{}, false
 }

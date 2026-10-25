@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.0 — media services, connector platform and runtime discipline — 2026-10-25
+
 - Media generation sidecar `hub-media` (CHG-0063, SPEC-0040): image and video
   generation moved out of the user runtime into a standalone service sharing
   `internal/mediasvc` with `hub-stt`/`hub-tts`. Sync endpoints

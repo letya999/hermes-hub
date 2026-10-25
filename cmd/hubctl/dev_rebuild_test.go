@@ -91,10 +91,10 @@ func TestDevRebuildCompilesAndStartsOnlySelectedService(t *testing.T) {
 		t.Fatalf("unrelated images rebuilt: %s", calls)
 	}
 	for _, tc := range []struct{ service, source, base string }{
-		{"toolhub", "./cmd/toolhub", "hermes-hub:0.3.0-dev-control"},
-		{"credential-broker", "./cmd/credential-broker", "hermes-hub:0.3.0-dev"},
-		{"workload-controller", "./cmd/hubctl", "hermes-hub:0.3.0-dev-control"},
-		{"hermes-runtime", "./cmd/runtime", "hermes-hub:0.3.0-dev"},
+		{"toolhub", "./cmd/toolhub", "hermes-hub:0.4.0-dev-control"},
+		{"credential-broker", "./cmd/credential-broker", "hermes-hub:0.4.0-dev"},
+		{"workload-controller", "./cmd/hubctl", "hermes-hub:0.4.0-dev-control"},
+		{"hermes-runtime", "./cmd/runtime", "hermes-hub:0.4.0-dev"},
 	} {
 		before, _ := os.ReadFile(log)
 		if err := runDevRebuild(context.Background(), []string{"--dir", dir, "--root", "../..", tc.service}); err != nil {

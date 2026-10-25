@@ -1,6 +1,6 @@
 ---
 description: Operator runbook — stack lifecycle, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
-last_verified: 2026-10-24
+last_verified: 2026-10-25
 ---
 
 # Operations
@@ -226,7 +226,7 @@ handoff on restart.
 
 ## Images and builds
 
-Two build targets share layers: core `hermes-hub:0.3.0-<env>` and
+Two build targets share layers: core `hermes-hub:0.4.0-<env>` and
 `-control` (adds Docker CLI + ToolHive; only toolhub + workload-controller).
 Optional trees (Playwright browsers, messaging/google/voice extras, Google/
 Atlassian/Telegram-account Python) stay out of the default image — own

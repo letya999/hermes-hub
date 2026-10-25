@@ -1,6 +1,6 @@
 ---
 description: supervisor — per-space runtime spawner/manager; owns warm pools, docker exec agent-tools path, control channel.
-last_verified: 2026-10-20
+last_verified: 2026-10-25
 ---
 
 # supervisor
@@ -12,7 +12,7 @@ the shared space network.
 
 ## Surface
 
-- `--spaces /spaces --env <env> --runtime-image hermes-hub:0.3.0-<env>`
+- `--spaces /spaces --env <env> --runtime-image hermes-hub:0.4.0-<env>`
 - `--supervisor-listen 0.0.0.0:8876` (inside the stack; clients use
   `http://supervisor:8876` — `s.SupervisorURL`)
 - `--supervisor-allow-wildcard-listen` (explicit opt-in to bind 0.0.0.0)

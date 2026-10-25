@@ -253,11 +253,7 @@ func runMCPProbeIO(cmd *exec.Cmd, reap func()) ([]ToolSpec, error) {
 	}
 	defer stop()
 	enc := json.NewEncoder(stdin)
-	for _, msg := range []any{
-		map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]any{"protocolVersion": "2024-11-05", "capabilities": map[string]any{}, "clientInfo": map[string]any{"name": "hub-artifact-preflight", "version": "0.3.0"}}},
-		map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"},
-		map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
-	} {
+	for _, msg := range preflightProbeMessages() {
 		if err := enc.Encode(msg); err != nil {
 			stop()
 			return nil, fmt.Errorf("%w: MCP preflight write: %v: %s", ErrIsolation, err, stderr.String())
@@ -271,6 +267,16 @@ func runMCPProbeIO(cmd *exec.Cmd, reap func()) ([]ToolSpec, error) {
 		return nil, fmt.Errorf("%w: MCP tools/list: %v: %s", ErrIsolation, err, stderr.String())
 	}
 	return tools, nil
+}
+
+// preflightProbeMessages is the fixed stdio handshake an admitted artifact must
+// answer before its tool list is trusted.
+func preflightProbeMessages() []any {
+	return []any{
+		map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]any{"protocolVersion": "2024-11-05", "capabilities": map[string]any{}, "clientInfo": map[string]any{"name": "hub-artifact-preflight", "version": "0.4.0"}}},
+		map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"},
+		map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+	}
 }
 
 // NetworkProbeToolList is the last-resort probe for artifacts whose entrypoint

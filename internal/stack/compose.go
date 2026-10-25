@@ -198,7 +198,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		}
 	}
 	// Core and control targets share BuildKit layers; only control needs Docker.
-	common := M{"image": "hermes-hub:0.3.0-" + s.Environment, "init": true, "restart": "unless-stopped", "user": fmt.Sprintf("10001:%d", max(0, os.Getgid())), "read_only": true, "cap_drop": []string{"ALL"}, "security_opt": []string{"no-new-privileges:true"}, "shm_size": "1gb", "tmpfs": []string{"/tmp:uid=10001,gid=10001,mode=1777"}, "extra_hosts": M{"host.docker.internal": "host-gateway"}, "logging": M{"driver": "local", "options": M{"max-size": "10m", "max-file": "3"}}}
+	common := M{"image": "hermes-hub:0.4.0-" + s.Environment, "init": true, "restart": "unless-stopped", "user": fmt.Sprintf("10001:%d", max(0, os.Getgid())), "read_only": true, "cap_drop": []string{"ALL"}, "security_opt": []string{"no-new-privileges:true"}, "shm_size": "1gb", "tmpfs": []string{"/tmp:uid=10001,gid=10001,mode=1777"}, "extra_hosts": M{"host.docker.internal": "host-gateway"}, "logging": M{"driver": "local", "options": M{"max-size": "10m", "max-file": "3"}}}
 	coreBuild := M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile", "target": s.Environment}
 	runtimeService := cloneMap(common)
 	runtimeService["env_file"] = runtimeEnvFiles
@@ -290,9 +290,9 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	containerSupervisor := infra && includeGateway && s.ExecutionMode == "supervisor" && s.SupervisorURL == "http://supervisor:8876"
 	if containerSupervisor {
 		svc := cloneMap(common)
-		svc["image"] = "hermes-hub:0.3.0-" + s.Environment + "-control"
+		svc["image"] = "hermes-hub:0.4.0-" + s.Environment + "-control"
 		svc["build"] = M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile", "target": s.Environment + "-control"}
-		svc["entrypoint"] = []string{"hubctl", "supervisor", "--spaces", "/spaces", "--env", s.Environment, "--runtime-image", "hermes-hub:0.3.0-" + s.Environment, "--supervisor-listen", "0.0.0.0:8876", "--supervisor-allow-wildcard-listen"}
+		svc["entrypoint"] = []string{"hubctl", "supervisor", "--spaces", "/spaces", "--env", s.Environment, "--runtime-image", "hermes-hub:0.4.0-" + s.Environment, "--supervisor-listen", "0.0.0.0:8876", "--supervisor-allow-wildcard-listen"}
 		svc["environment"] = M{"HUB_SUPERVISOR_AUTH": "${HUB_SUPERVISOR_AUTH:?set HUB_SUPERVISOR_AUTH or provision supervisor.auth for this stack}", "HUB_SUPERVISOR_HOST_SPACES": filepath.ToSlash(filepath.Dir(dir)), "HOME": "/tmp", "TZ": s.Timezone}
 		svc["volumes"] = []any{dockerSock,
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Dir(dir)), "target": "/spaces"},
@@ -425,7 +425,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			toolhubEnv["HUB_TOOLHUB_TOKENS_FILE"] = "/run/toolhub-tokens.json"
 		}
 		toolhub := cloneMap(common)
-		toolhub["image"] = "hermes-hub:0.3.0-" + s.Environment + "-control"
+		toolhub["image"] = "hermes-hub:0.4.0-" + s.Environment + "-control"
 		toolhub["build"] = M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile", "target": s.Environment + "-control"}
 		toolhub["entrypoint"] = []string{"toolhub"}
 		toolhub["env_file"] = []any{M{"path": filepath.ToSlash(filepath.Join(dir, "runtime.auth")), "format": "raw"}, M{"path": filepath.ToSlash(filepath.Join(dir, "toolhub.auth")), "format": "raw"}}
@@ -589,7 +589,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 				svc := cloneMap(common)
 				// Dedicated image tag: sharing the hub tag would let the
 				// last build overwrite the image other services run.
-				svc["image"] = "hermes-hub-" + role + ":0.3.0-" + s.Environment
+				svc["image"] = "hermes-hub-" + role + ":0.4.0-" + s.Environment
 				svc["build"] = M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile." + role}
 				engine := "command"
 				if role == "stt" {
@@ -759,9 +759,9 @@ func cliControllerSection(s Settings, dir string) api.CLIControllerConfig {
 		// The rendered tag resolves to the immutable image ID at controller
 		// start; cells are created from that content reference, never the
 		// moving tag.
-		ToolsImage:    "hermes-hub-cli-tools:0.3.0-" + s.Environment,
+		ToolsImage:    "hermes-hub-cli-tools:0.4.0-" + s.Environment,
 		CellInit:      "/usr/local/bin/cellinit",
-		ProxyImage:    "hermes-hub-cell-proxy:0.3.0-" + s.Environment,
+		ProxyImage:    "hermes-hub-cell-proxy:0.4.0-" + s.Environment,
 		AllowedEgress: egress,
 		Ceiling:       api.ExecutionPolicy{TimeoutSeconds: 60, OutputBytes: 262144, CPUMillis: 2000, MemoryMiB: 2048, MaxPIDs: 128, Egress: egress},
 		Approved:      approved,

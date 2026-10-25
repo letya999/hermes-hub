@@ -548,13 +548,13 @@ func TestTelegramAuthDefaultsOnWithTelegramIngress(t *testing.T) {
 	services := Compose(s, "/source", dir)["services"].(M)
 	gw := services["communication-hub"].(M)
 	// QR login lives in the one communication-hub build — no variant image.
-	if gw["image"] != "hermes-hub:0.3.0-dev" {
+	if gw["image"] != "hermes-hub:0.4.0-dev" {
 		t.Fatalf("gateway must run the standard image: %#v", gw["image"])
 	}
 	if gw["environment"].(M)["HUB_TELEGRAM_AUTH_ENABLED"] != "true" {
 		t.Fatalf("auth not enabled by default: %#v", gw["environment"])
 	}
-	if services["credential-broker"].(M)["image"] != "hermes-hub:0.3.0-dev" {
+	if services["credential-broker"].(M)["image"] != "hermes-hub:0.4.0-dev" {
 		t.Fatal("broker must run the standard image")
 	}
 	files := gw["env_file"].([]any)

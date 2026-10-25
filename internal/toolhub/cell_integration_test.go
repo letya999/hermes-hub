@@ -148,7 +148,7 @@ func TestCLICellRealDocker(t *testing.T) {
 		t.Fatalf("installation leaked to another caller: %v %+v", err, resp)
 	}
 	if proxy := os.Getenv("HUB_CLI_REGISTRY_PROXY_IMAGE"); proxy != "" {
-		c.config.CLI.ToolsImage = api.EnvOr("HUB_CLI_REGISTRY_TOOLS_IMAGE", "hermes-hub:0.3.0-dev")
+		c.config.CLI.ToolsImage = api.EnvOr("HUB_CLI_REGISTRY_TOOLS_IMAGE", "hermes-hub:0.4.0-dev")
 		c.config.CLI.ProxyImage = proxy
 		c.config.CLI.Ceiling.Egress = []string{"pypi.org", "files.pythonhosted.org"}
 		install = req("uv", "tool", "install", "--python", "/opt/hermes/.venv/bin/python3", "--no-python-downloads", "ruff==0.11.13")
