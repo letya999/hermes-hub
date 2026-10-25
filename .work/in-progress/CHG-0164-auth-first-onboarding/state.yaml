@@ -19,8 +19,8 @@ slices:
   S3-coverage: done
   S4-docs-records: done
 validation:
-  documents: pending
-  just_check: not_run
+  documents: passed
+  just_check: passed
   docker_check: deferred_by_owner
   red_team: done
   live_acceptance: deferred_needs_owner_instruction
@@ -32,9 +32,10 @@ evidence:
   - "toolhub: TestAuthFirstRetryReusesBuiltArtifact — rejected credential persists built evidence; rotate re-runs only credentialed tools/list via AdmitWithCredentials (reviewer count stays 1)"
   - "toolhub: TestConcurrentBrokerAdmissionStaysOwnerScoped (-race) — two owners converge to awaiting-confirm, no cross-owner reads"
   - "regression: full go test ./internal/toolhub/... green (158s + 94s)"
+  - "gates: devcheck docs green; just check green (go coverage 86.58%, lint/vet/staticcheck/gosec/actionlint/config-check)"
+  - "commits: 7691059 code+tests, cf52068 docs+records"
 remaining:
   - Live real-MCP auth-first run (requires owner instruction; Docker deferred)
-  - just check + devcheck docs
 limitations:
   - Built-evidence reuse covers the identical pinned artifact only; a recipe
     or source change starts a new onboarding generation.
