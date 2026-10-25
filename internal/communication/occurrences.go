@@ -87,7 +87,7 @@ func (g *Gateway) ownsRoutineEnvelope(job Job, canonical identity.Envelope) bool
 		}
 		canonical.ConversationID = job.ConversationID
 	}
-	return job.Envelope == canonical
+	return job.Envelope.Equal(canonical)
 }
 
 // routineConversationOf resolves the schedule-pinned conversation for a

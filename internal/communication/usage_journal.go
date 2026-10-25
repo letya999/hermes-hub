@@ -40,6 +40,7 @@ type UsageTotals struct {
 	Jobs             int   `json:"jobs"`
 	InputTokens      int64 `json:"input_tokens"`
 	OutputTokens     int64 `json:"output_tokens"`
+	RuntimeMS        int64 `json:"runtime_ms,omitempty"`
 }
 
 func usagePath(root string) string { return filepath.Join(root, "usage.jsonl") }
@@ -49,6 +50,7 @@ func usagePath(root string) string { return filepath.Join(root, "usage.jsonl") }
 func (s *Spool) RecordUsage(job Job, runID string, report hubruntime.SessionUsage) error {
 	entry := usageEntry{Version: 2, ScopeID: job.ScopeID, ContextID: job.ContextID, JobID: job.ID, RunID: runID, SessionID: report.SessionID, Model: report.Model, MeasuredAt: report.FetchedAt, InputCounter: report.InputTokens, OutputCounter: report.OutputTokens}
 	entry.ActorID = job.ActorID
+	entry.DurationMS = report.DurationMS
 	if entry.MeasuredAt.IsZero() {
 		entry.MeasuredAt = time.Now().UTC()
 	}

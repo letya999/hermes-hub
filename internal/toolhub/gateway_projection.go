@@ -140,7 +140,7 @@ func (g *Gateway) notifyPrepareDone(ctx context.Context, auth identity.Envelope,
 	}
 	g.mu.Unlock()
 	for _, projection := range list {
-		if projection.auth != auth {
+		if !envelopeEqual(projection.auth, auth) {
 			continue
 		}
 		for session := range projection.server.Sessions() {
@@ -192,4 +192,10 @@ func (g *Gateway) refreshProjection(projection *gatewayProjection) error {
 	}
 	projection.tools = next
 	return nil
+}
+
+// envelopeEqual compares two envelopes field-for-field; Envelope.Scopes made
+// the struct non-comparable.
+func envelopeEqual(a, b identity.Envelope) bool {
+	return reflect.DeepEqual(a, b)
 }

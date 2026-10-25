@@ -254,7 +254,7 @@ func (e *Engine) DispatchDueOccurrences(now time.Time, authorize func(commodel.J
 }
 
 func ValidateOccurrence(o commodel.RoutineOccurrence, caller identity.Envelope, channelFor func(id string) OccurrenceChannel) error {
-	if len(o.ScheduleID) > 80 || !commodel.IDPattern.MatchString(o.ScheduleID) || o.Revision == 0 || o.DueAt.IsZero() || caller != o.Job.Envelope || caller.Validate(o.Job.UserID, o.Job.ContextID, o.Job.RuntimeID, o.Job.PolicyVersion) != nil || o.Job.ActorID != caller.PrincipalID || o.Job.ScopeID != "user:"+o.Job.UserID {
+	if len(o.ScheduleID) > 80 || !commodel.IDPattern.MatchString(o.ScheduleID) || o.Revision == 0 || o.DueAt.IsZero() || !caller.Equal(o.Job.Envelope) || caller.Validate(o.Job.UserID, o.Job.ContextID, o.Job.RuntimeID, o.Job.PolicyVersion) != nil || o.Job.ActorID != caller.PrincipalID || o.Job.ScopeID != "user:"+o.Job.UserID {
 		return errors.New("invalid occurrence ownership")
 	}
 	ch := channelFor(o.Job.Channel)

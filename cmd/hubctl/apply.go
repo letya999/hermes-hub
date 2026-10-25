@@ -12,6 +12,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/agenttools"
 	"github.com/letya999/hermes-hub/internal/communication"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/stack"
 	"gopkg.in/yaml.v3"
 )
 
@@ -19,6 +20,8 @@ import (
 type ApplyReport struct {
 	Routines  map[string]string `json:"routines"`
 	Knowledge map[string]string `json:"knowledge"`
+	Space     map[string]string `json:"space"`
+	Converged bool              `json:"converged"`
 }
 
 type applyRoutineSpec struct {
@@ -40,7 +43,13 @@ type applyRoutineSpec struct {
 	Expect         string   `yaml:"expect"`
 }
 
+type applySpaceSpec struct {
+	Agent     yaml.Node `yaml:"agent"`
+	Workspace yaml.Node `yaml:"workspace"`
+}
+
 type applySpec struct {
+	Version   int                `yaml:"version"`
 	Routines  []applyRoutineSpec `yaml:"routines"`
 	Knowledge []struct {
 		Name    string `yaml:"name"`
@@ -48,10 +57,11 @@ type applySpec struct {
 		Context string `yaml:"context"`
 		State   string `yaml:"state"`
 	} `yaml:"knowledge"`
+	Space *applySpaceSpec `yaml:"space"`
 }
 
-func applyFile(spoolDir, stateDir, profile, path string) (ApplyReport, error) {
-	rep := ApplyReport{Routines: map[string]string{}, Knowledge: map[string]string{}}
+func applyFile(spoolDir, stateDir, profile, path, spaceDir string) (ApplyReport, error) {
+	rep := ApplyReport{Routines: map[string]string{}, Knowledge: map[string]string{}, Space: map[string]string{}}
 	body, err := readApplySource(path)
 	if err != nil {
 		return rep, err
@@ -66,15 +76,13 @@ func applyFile(spoolDir, stateDir, profile, path string) (ApplyReport, error) {
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return rep, fmt.Errorf("apply requires exactly one YAML document")
 	}
+	if cfg.Version > 2 {
+		return rep, fmt.Errorf("apply manifest version %d is not supported (max 2)", cfg.Version)
+	}
 	if !identity.ValidID(profile) {
 		return rep, fmt.Errorf("invalid user")
 	}
-	unlock, err := communication.LockSpool(spoolDir)
-	if err != nil {
-		return rep, err
-	}
-	defer unlock()
-	spool, err := communication.OpenSpool(spoolDir)
+	spool, err := communication.InspectSpool(spoolDir)
 	if err != nil {
 		return rep, err
 	}
@@ -165,6 +173,27 @@ func applyFile(spoolDir, stateDir, profile, path string) (ApplyReport, error) {
 		}
 		knowledge[k.Name] = body
 	}
+	var spaceDocs map[string][]byte
+	if cfg.Space != nil {
+		spaceDocs, err = desiredSpaceDocs(cfg.Space, spaceDir)
+		if err != nil {
+			return rep, fmt.Errorf("space: %w", err)
+		}
+	}
+	unlock, err := communication.LockSpool(spoolDir)
+	if err != nil {
+		return rep, err
+	}
+	defer unlock()
+	spool, err = communication.OpenSpool(spoolDir)
+	if err != nil {
+		return rep, err
+	}
+	for _, r := range cfg.Routines {
+		if _, err := routineAction(spool, profile, r, false); err != nil {
+			return rep, err
+		}
+	}
 	for _, r := range cfg.Routines {
 		action, err := applyRoutine(spool, profile, r)
 		if err != nil {
@@ -186,7 +215,138 @@ func applyFile(spoolDir, stateDir, profile, path string) (ApplyReport, error) {
 		}
 		rep.Knowledge[k.Name] = action
 	}
+	for name, body := range spaceDocs {
+		action, err := writeSpaceFile(spaceDir, name, body)
+		if err != nil {
+			return rep, fmt.Errorf("%s: %w", name, err)
+		}
+		rep.Space[name] = action
+	}
+	// A successful apply leaves actual state equal to desired — whether it
+	// needed writes or not. Per-entry actions carry the changed/unchanged
+	// distinction; converged reports the post-apply invariant.
+	rep.Converged = true
 	return rep, nil
+}
+
+// desiredSpaceDocs renders the manifest's space docs and validates the desired
+// pair through the real space reader before anything is written. A doc absent
+// from the manifest is not managed: the current file is the validation
+// baseline and stays untouched. Returns only the docs the manifest nominated.
+func desiredSpaceDocs(space *applySpaceSpec, dir string) (map[string][]byte, error) {
+	info, err := os.Stat(dir)
+	if dir == "" || err != nil || !info.IsDir() {
+		return nil, fmt.Errorf("--dir must name an existing space")
+	}
+	pair := map[string][]byte{}
+	managed := map[string][]byte{}
+	for name, node := range map[string]*yaml.Node{"agent.yaml": &space.Agent, "workspace.yaml": &space.Workspace} {
+		path := filepath.Join(dir, name)
+		if node.Kind == 0 {
+			b, err := os.ReadFile(path)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", name, err)
+			}
+			pair[name] = b
+			continue
+		}
+		var generic any
+		if err := node.Decode(&generic); err != nil {
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+		if err := rejectSecretKeys(name, generic); err != nil {
+			return nil, err
+		}
+		b, err := yaml.Marshal(node)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+		pair[name], managed[name] = b, b
+	}
+	tmp, err := os.MkdirTemp("", "apply-space")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmp)
+	for name, b := range pair {
+		if err := os.WriteFile(filepath.Join(tmp, name), b, 0o600); err != nil {
+			return nil, err
+		}
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, "scope.yaml")); err == nil {
+		if err := os.WriteFile(filepath.Join(tmp, "scope.yaml"), b, 0o600); err != nil {
+			return nil, err
+		}
+	}
+	if _, err := stack.Read(tmp); err != nil {
+		return nil, err
+	}
+	return managed, nil
+}
+
+// rejectSecretKeys fails on keys shaped like secret material anywhere in the
+// doc — manifests must never carry tokens/keys; secrets live in *.env files.
+func rejectSecretKeys(name string, v any) error {
+	m, ok := v.(map[string]any)
+	if !ok {
+		if list, ok := v.([]any); ok {
+			for _, sub := range list {
+				if err := rejectSecretKeys(name, sub); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	for k, sub := range m {
+		lk := strings.ToLower(k)
+		if lk == "secrets" || strings.HasSuffix(lk, "_token") || strings.HasSuffix(lk, "_key") || strings.HasSuffix(lk, "_secret") {
+			return fmt.Errorf("%s: secret-looking key %q is not allowed in manifests", name, k)
+		}
+		if err := rejectSecretKeys(name, sub); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// writeSpaceFile converges one space doc atomically (temp + rename, 0600).
+func writeSpaceFile(dir, name string, body []byte) (string, error) {
+	path := filepath.Join(dir, name)
+	prev, err := os.ReadFile(path)
+	if err == nil && bytes.Equal(prev, body) {
+		return "unchanged", nil
+	}
+	temp := fmt.Sprintf(".%s.apply-%d", name, time.Now().UnixNano())
+	tempPath := filepath.Join(dir, temp)
+	f, err := os.OpenFile(tempPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(tempPath)
+	err = writeSyncFile(f, body)
+	closeErr := f.Close()
+	if err != nil {
+		return "", err
+	}
+	if closeErr != nil {
+		return "", closeErr
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return "", err
+	}
+	if prev == nil {
+		return "created", nil
+	}
+	return "updated", nil
+}
+
+// writeSyncFile is a seam for fault injection in tests.
+var writeSyncFile = func(f *os.File, body []byte) error {
+	if _, err := f.Write(body); err != nil {
+		return err
+	}
+	return f.Sync()
 }
 
 func applyRoutine(spool *communication.Spool, profile string, r applyRoutineSpec) (string, error) {

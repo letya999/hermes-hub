@@ -614,6 +614,21 @@ func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, task Task, c
 			job.ScopeID = "group:" + user.ID
 		}
 	}
+	if g.config.Supervised {
+		holds, err := g.masterHolds(ctx)
+		if err != nil {
+			return err
+		}
+		for _, hold := range holds {
+			if hold.PrincipalID == job.PrincipalID && hold.ContextID == job.ContextID {
+				if hold.Active {
+					// controlLoop transfers the hold notice; retrying this update would block other users.
+					return nil
+				}
+				job.OperationalEpoch = hold.Epoch
+			}
+		}
+	}
 	if _, err := g.spool.Enqueue(job); err != nil {
 		return err
 	}
@@ -637,7 +652,7 @@ func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, task Task, c
 // It carries the durable binding identity only — never the prompt — and logs
 // its failures instead of affecting the accepted update.
 func (g *Gateway) wakeRuntime(job Job) {
-	request := hubruntime.ExecuteRequest{Envelope: job.Envelope, OrganizationID: job.OrganizationID, UserID: job.UserID, ActorID: job.ActorID, ScopeID: job.ScopeID, Channel: "communication", Trigger: "wake"}
+	request := hubruntime.ExecuteRequest{OperationalEpoch: job.OperationalEpoch, Envelope: job.Envelope, OrganizationID: job.OrganizationID, UserID: job.UserID, ActorID: job.ActorID, ScopeID: job.ScopeID, Channel: "communication", Trigger: "wake"}
 	body, err := json.Marshal(request)
 	if err != nil {
 		return

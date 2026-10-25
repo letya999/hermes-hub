@@ -21,6 +21,19 @@ var (
 // work ledger. Unknown inspection failures never authorize idle shutdown.
 func (m *Manager) ReconcileHealth(ctx context.Context, now time.Time) {
 	m.mu.Lock()
+	holds := make([]AdministrativeHold, 0, len(m.holds))
+	for _, hold := range m.holds {
+		if hold.Active {
+			holds = append(holds, hold)
+		}
+	}
+	m.mu.Unlock()
+	for _, hold := range holds {
+		bounded, cancel := context.WithTimeout(ctx, 45*time.Second)
+		_ = m.containHeldScope(bounded, hold)
+		cancel()
+	}
+	m.mu.Lock()
 	keys := make([]string, 0, len(m.items))
 	for key := range m.items {
 		keys = append(keys, key)
@@ -142,7 +155,7 @@ func (m *Manager) reconcileUnconfirmed(ctx context.Context, now time.Time) {
 	m.mu.Lock()
 	var targets []jobRecord
 	for _, record := range m.jobs {
-		if !record.Unconfirmed || terminalRunStatus(record.Status) || record.UnconfirmedSince.IsZero() {
+		if !record.Unconfirmed || terminalRunStatus(record.Status) || record.UnconfirmedSince.IsZero() || !m.operationallyCurrentLocked(record) {
 			continue
 		}
 		if now.Sub(record.UnconfirmedSince) < 30*time.Second {
@@ -178,6 +191,12 @@ func (m *Manager) reconcileUnconfirmed(ctx context.Context, now time.Time) {
 // runtime generation. Events land through the same durable path as a live
 // stream, so a replayed or late terminal outcome settles the record once.
 func (m *Manager) reconcileJob(ctx context.Context, record jobRecord) {
+	m.mu.Lock()
+	current := m.operationallyCurrentLocked(record)
+	m.mu.Unlock()
+	if !current {
+		return
+	}
 	binding, err := m.bindingFor(record.Request)
 	if err != nil {
 		return
@@ -238,6 +257,9 @@ func (m *Manager) reconcileJob(ctx context.Context, record jobRecord) {
 }
 
 func (m *Manager) runtimeDesiredLocked(entry *runtimeEntry) bool {
+	if m.holds[holdKey(entry.PrincipalID, entry.ContextID)].Active {
+		return false
+	}
 	if _, ok := m.pins[runtimeKey(Binding{PrincipalID: entry.PrincipalID, ContextID: entry.ContextID, RuntimeMode: entry.RuntimeMode})]; ok {
 		return true
 	}
@@ -245,7 +267,7 @@ func (m *Manager) runtimeDesiredLocked(entry *runtimeEntry) bool {
 		return true
 	}
 	for _, record := range m.jobs {
-		if record.Request.PrincipalID == entry.PrincipalID && record.Request.ContextID == entry.ContextID && !terminalRunStatus(record.Status) {
+		if record.Request.PrincipalID == entry.PrincipalID && record.Request.ContextID == entry.ContextID && !terminalRunStatus(record.Status) && m.operationallyCurrentLocked(record) {
 			return true
 		}
 	}
@@ -258,7 +280,7 @@ func (m *Manager) RecoverMissingWork(ctx context.Context) {
 	m.mu.Lock()
 	var requests []jobRecord
 	for _, record := range m.jobs {
-		if terminalRunStatus(record.Status) {
+		if terminalRunStatus(record.Status) || !m.operationallyCurrentLocked(record) {
 			continue
 		}
 		for _, entry := range m.items {
@@ -282,7 +304,7 @@ func (m *Manager) RecoverMissingWork(ctx context.Context) {
 		m.mu.Lock()
 		entry := m.items[key]
 		latest := m.jobs[executeJobKey(record.Request)]
-		if entry == nil || !recoverableRuntime(entry.Runtime) || terminalRunStatus(latest.Status) {
+		if entry == nil || !recoverableRuntime(entry.Runtime) || terminalRunStatus(latest.Status) || !m.operationallyCurrentLocked(latest) {
 			m.mu.Unlock()
 			lock.Unlock()
 			recoveryLock.Unlock()

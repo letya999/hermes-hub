@@ -153,7 +153,7 @@ func ValidateScheduleDraft(in commodel.Schedule, caller identity.Envelope, hooks
 	if in.Probe != nil && strings.ContainsFunc(in.Probe.URL, func(r rune) bool { return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) }) {
 		return errors.New("probe URL contains invisible or control characters")
 	}
-	if len(in.ScheduleID) > 80 || !commodel.IDPattern.MatchString(in.ScheduleID) || caller != in.Envelope || caller.Validate(in.UserID, in.Envelope.ContextID, in.Envelope.RuntimeID, in.Envelope.PolicyVersion) != nil {
+	if len(in.ScheduleID) > 80 || !commodel.IDPattern.MatchString(in.ScheduleID) || !caller.Equal(in.Envelope) || caller.Validate(in.UserID, in.Envelope.ContextID, in.Envelope.RuntimeID, in.Envelope.PolicyVersion) != nil {
 		return errors.New("invalid schedule ownership")
 	}
 	if in.JobKind != "" && in.JobKind != "agent" && in.JobKind != "script" && in.JobKind != "reminder" && in.JobKind != "watcher" && in.JobKind != "check" && in.JobKind != "digest" && in.JobKind != "brief" && in.JobKind != "event" {

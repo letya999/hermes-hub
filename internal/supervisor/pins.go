@@ -33,7 +33,7 @@ func (m *Manager) SetPin(request hubruntime.ExecuteRequest, enabled bool) error 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	previous, exists := m.pins[key]
-	if exists && previous.Envelope != request.Envelope {
+	if exists && !previous.Envelope.Equal(request.Envelope) {
 		return errors.New("pin ownership mismatch")
 	}
 	request.Text = ""
@@ -95,7 +95,7 @@ func (m *Manager) ReconcilePins(ctx context.Context) {
 		m.mu.Lock()
 		saved, exists := m.pins[key]
 		entry := m.items[key]
-		needed := exists && saved.Envelope == request.Envelope && (entry == nil || entry.restored || entry.State == Stopped || recoverableRuntime(entry.Runtime))
+		needed := exists && saved.Envelope.Equal(request.Envelope) && (entry == nil || entry.restored || entry.State == Stopped || recoverableRuntime(entry.Runtime))
 		if needed && entry != nil && recoverableRuntime(entry.Runtime) {
 			entry.restored = true
 		}

@@ -92,6 +92,7 @@ func (g *Gateway) controlLoop(ctx context.Context) {
 	defer ticker.Stop()
 	var lastCompact time.Time
 	for {
+		_ = g.syncMasterNotices(ctx)
 		g.controlOne(ctx)
 		if g.now().Sub(lastCompact) >= time.Hour {
 			retention := g.config.SpoolRetention

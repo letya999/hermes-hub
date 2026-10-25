@@ -51,6 +51,9 @@ type Gateway struct {
 	// /v1/cli-jobs/release route uses it for job-end task-cell teardown.
 	CLIRelease  func(context.Context, api.CliReleaseRequest) error
 	projections map[string]*gatewayProjection
+	// adminMu serializes diagnostics calls; adminLast paces them (issue 141).
+	adminMu   sync.Mutex
+	adminLast time.Time
 }
 
 type gatewayProjection struct {
@@ -102,6 +105,9 @@ func (g *Gateway) Handler() (http.Handler, error) {
 	mux.Handle("/v1/operations/", http.HandlerFunc(g.serveOperation))
 	mux.Handle("/v1/tool-call", http.HandlerFunc(g.serveToolCall))
 	mux.Handle("/v1/cli-jobs/release", http.HandlerFunc(g.serveCLIJobRelease))
+	mux.Handle("/v1/admin/onboardings", http.HandlerFunc(g.serveAdminOnboardings))
+	mux.Handle("/v1/admin/diagnose/", http.HandlerFunc(g.serveAdminDiagnose))
+	mux.Handle("/v1/admin/inspect-source", http.HandlerFunc(g.serveAdminInspectSource))
 	mux.Handle("/credentials/", http.HandlerFunc(g.serveCredentials))
 	mux.Handle("/confirm/", http.HandlerFunc(g.serveConfirm))
 	mux.Handle("/remove/", http.HandlerFunc(g.serveRemove))

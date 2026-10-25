@@ -37,7 +37,7 @@ func TestJobRecordHasNoPromptText(t *testing.T) {
 	if record.Request.Text != "" {
 		t.Fatal("request text persisted")
 	}
-	if record.Request.Envelope != request.Envelope {
+	if !record.Request.Envelope.Equal(request.Envelope) {
 		t.Fatal("durable identity lost")
 	}
 }
@@ -145,13 +145,13 @@ func TestTerminalJobsCompacted(t *testing.T) {
 	if compacted.Status != "completed" || compacted.Response.RunID != "run-old" || compacted.UpdatedAt != aged.UpdatedAt {
 		t.Fatalf("compacted record lost status/run_id/finished_at: %+v", compacted)
 	}
-	if compacted.Request.Envelope != (identity.Envelope{}) || compacted.Response.Text != "" {
+	if !compacted.Request.Envelope.Equal(identity.Envelope{}) || compacted.Response.Text != "" {
 		t.Fatalf("compacted record retained identity/content: %+v", compacted)
 	}
-	if got := restored.jobs[executeJobKey(fresh)]; got.Request.Envelope == (identity.Envelope{}) || got.Response.Text != "result" {
+	if got := restored.jobs[executeJobKey(fresh)]; got.Request.Envelope.Equal(identity.Envelope{}) || got.Response.Text != "result" {
 		t.Fatal("recent terminal record compacted early")
 	}
-	if got := restored.jobs[executeJobKey(live)]; got.Request.Envelope == (identity.Envelope{}) {
+	if got := restored.jobs[executeJobKey(live)]; got.Request.Envelope.Equal(identity.Envelope{}) {
 		t.Fatal("live record compacted")
 	}
 }
@@ -171,7 +171,7 @@ func TestSweepCompactsTerminalJobs(t *testing.T) {
 	m.sweep(context.Background(), time.Now().UTC())
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.jobs[executeJobKey(request)].Request.Envelope != (identity.Envelope{}) {
+	if !m.jobs[executeJobKey(request)].Request.Envelope.Equal(identity.Envelope{}) {
 		t.Fatal("sweep did not compact aged terminal job")
 	}
 }
@@ -201,7 +201,7 @@ func TestJobsStatusUsesStoredAuthorityAndHidesPrompt(t *testing.T) {
 			var payload struct {
 				Identity identity.Envelope `json:"identity"`
 			}
-			if json.Unmarshal(response.Body.Bytes(), &payload) != nil || payload.Identity != request.Envelope {
+			if json.Unmarshal(response.Body.Bytes(), &payload) != nil || !payload.Identity.Equal(request.Envelope) {
 				t.Fatal("stored audience lost")
 			}
 		}

@@ -1,11 +1,13 @@
 ---
 description: Architectural decisions and clearly marked proposals; append new records when changing direction.
-last_verified: 2026-10-24
+last_verified: 2026-10-25
 ---
 # Decisions
 
 | Record | Decision |
 |---|---|
+| [ADR-0077](ADR-0077-ops-admin-delivery.md) | Ops/admin plane — file-read usage export, versioned space manifests, polling watch, rollout pins, admin token scope, isolated replay |
+| [ADR-0076](ADR-0076-operational-protection.md) | Proposed: M17 hardening, owned resources, budgets, containment and personal supervision |
 | [ADR-0075](ADR-0075-dual-engine-context-control.md) | Proposed: grant-selected dual engines for manual/automatic compaction and goal mode; sidecar transport to pinned upstream primitives |
 | [ADR-0074](ADR-0074-session-runtime-discipline.md) | Session & runtime discipline: group scopes, knowledge lifecycle, stable session identity with runaway token ceiling, memory boundary, todo contract, idle-proof, goal bootstrap, archive bounds (renumbered from a duplicate ADR-0072) |
 | [ADR-0073](ADR-0073-model-provider-boundaries.md) | Model & provider layer boundaries (renumbered from a duplicate ADR-0072) |

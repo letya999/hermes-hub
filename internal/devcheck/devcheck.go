@@ -283,6 +283,20 @@ func Project(root string) error {
 		"done/CHG-0106-m13-auth-mcpb":                true,
 		"done/CHG-0127-m13-p0-connector-path":        true,
 		"done/CHG-0127-watcher-failure-visibility":   true,
+		// Parallel issuance on the M17 branch and dev; disambiguated by
+		// directory name like the historical set above.
+		"done/CHG-0148-connector-discovery-onboarding": true,
+		"done/CHG-0148-usage-export":                   true,
+		"done/CHG-0149-connector-recovery-and-guide":   true,
+		"done/CHG-0149-space-manifest":                 true,
+		"done/CHG-0150-job-watch":                      true,
+		"done/CHG-0150-m15-completion":                 true,
+		"in-progress/CHG-0151-archive-bounds":          true,
+		"done/CHG-0151-image-rollout":                  true,
+		"done/CHG-0152-admin-diagnostics":              true,
+		"done/CHG-0152-todo-contract":                  true,
+		"done/CHG-0153-incident-replay":                true,
+		"done/CHG-0153-memory-boundary":                true,
 	}
 	// Living docs whose verified date predates their last edit. Entries leave
 	// this list only through a real content review in CHG-0136 phase 3 —

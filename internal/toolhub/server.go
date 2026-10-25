@@ -375,6 +375,9 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 		}
 		gateway.AuditWrite = func(event string, fields map[string]string) error {
 			record := audit.NewEvent("tool-call", fields["principal_id"], fields["outcome"])
+			if event == "admin.diagnostics" {
+				record.PrincipalID, record.Outcome, record.Name = fields["admin"], "read", fields["target"]
+			}
 			record.ContextID = fields["context_id"]
 			record.RuntimeID = fields["runtime_id"]
 			record.ConnectionID = fields["connection_id"]

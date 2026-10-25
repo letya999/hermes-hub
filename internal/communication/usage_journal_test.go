@@ -109,6 +109,10 @@ func TestRunOutcomeMetersTerminalJob(t *testing.T) {
 	if totals.Jobs != 1 || totals.InputTokens != 10 || totals.OutputTokens != 5 {
 		t.Fatalf("usage not journaled: %+v", totals)
 	}
+	records, err := ReadUsageJournal(s.root)
+	if err != nil || len(records) != 1 || records[0].DurationMS == nil || *records[0].DurationMS < 0 {
+		t.Fatalf("terminal attempt has no measured duration: %+v %v", records, err)
+	}
 
 	// A usage endpoint that is down must not fail the run.
 	job2 := job

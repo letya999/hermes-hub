@@ -126,7 +126,11 @@ func (c *genericController) handler(token string) http.Handler {
 			writeGenericReceipt(w, workload)
 			return
 		}
-		if err := c.config.Budget.Acquire(r.Context(), plan.WorkloadID); err != nil {
+		// Slot release needs c.mu; never hold it while waiting for capacity.
+		c.mu.Unlock()
+		budgetErr := c.config.Budget.Acquire(r.Context(), plan.WorkloadID)
+		c.mu.Lock()
+		if budgetErr != nil {
 			http.Error(w, "workload budget unavailable", http.StatusServiceUnavailable)
 			return
 		}

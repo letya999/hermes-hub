@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"reflect"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -13,6 +15,7 @@ import (
 const Schema = 1
 
 var idPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,39}$`)
+var scopePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 
 type Envelope struct {
 	Schema             int    `json:"identity_schema"`
@@ -29,6 +32,20 @@ type Envelope struct {
 	CapabilityProfile string `json:"capability_profile,omitempty"`
 	Environment       string `json:"environment,omitempty"`
 	Generation        uint64 `json:"generation,omitempty"`
+	// Scopes grants the bearer extra read-only surfaces (issue 141); only
+	// "admin" is defined. Envelope-bearing endpoints ignore unknown scopes.
+	Scopes []string `json:"scopes,omitempty"`
+}
+
+// HasScope reports whether the enrolled envelope carries the named scope.
+func (e Envelope) HasScope(scope string) bool {
+	return slices.Contains(e.Scopes, scope)
+}
+
+// Equal compares envelopes field-for-field. Envelope grew Scopes (a slice) in
+// issue 141 and is no longer comparable with ==; call sites use Equal.
+func (e Envelope) Equal(o Envelope) bool {
+	return reflect.DeepEqual(e, o)
 }
 
 func ValidID(id string) bool { return idPattern.MatchString(id) }
@@ -81,6 +98,14 @@ func (e Envelope) Validate(principal, context, runtime, policy string) error {
 	if e.CapabilityProfile != "" || e.Environment != "" || e.Generation != 0 {
 		if !ValidID(e.CapabilityProfile) || (e.Environment != "dev" && e.Environment != "prod") || e.Generation == 0 {
 			return errors.New("invalid managed capability identity")
+		}
+	}
+	if len(e.Scopes) > 8 {
+		return errors.New("invalid identity")
+	}
+	for _, scope := range e.Scopes {
+		if !scopePattern.MatchString(scope) {
+			return errors.New("invalid identity")
 		}
 	}
 	return nil

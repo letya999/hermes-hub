@@ -58,6 +58,15 @@ tool call crosses. Listens `0.0.0.0:8090`, host-bound to `127.0.0.1:8090`.
   sessions (sliding 15 min, 2 h cap), polls JPEG frames and forwards a
   bounded browser-tool allowlist — scripting, network, file and close tools
   are denied.
+- **Admin diagnostics** (`admin.go`, ADR-0077): a `hermes-admin` principal
+  enrolled in `toolhub-tokens.json` with `"scopes": ["admin"]` gets read-only
+  forensics — `GET /v1/admin/onboardings`, `GET /v1/admin/diagnose/<id>`,
+  `POST /v1/admin/inspect-source` (bounded file list + literal-grep snippets
+  of the pinned upstream commit; never whole file bodies, credentials,
+  nonces or wizard codes). Calls are serialized, paced ≥1 s apart and
+  audit-tagged `admin.diagnostics`. A control-plane bearer +
+  `X-Hub-Principal` cannot reach them: the scope must live on the presented
+  token itself.
 
 ## State
 
