@@ -1,0 +1,37 @@
+schema: 1
+change: CHG-0167
+title: Per-user subdomains — DNS/TLS addressing design pass
+status: in_progress
+branch: feat/m18-exposure-dns
+updated: 2026-10-25
+phase: design-complete
+adr: ADR-0078
+spec: SPEC-0077
+requirements: []
+depends_on:
+  - CHG-0165
+  - CHG-0166
+github_milestone: M18
+github_issue: 146
+design_status: proposed
+implementation_status: not_started
+slices:
+  S1-provider-tls-research: green
+  S2-adr-0078: green
+  S3-spec-0077: not_started
+  S4-impl-chgs: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence:
+  - research.md provider matrix (regru/DO/GCP), REG.API IP-allowlist and TTL findings, TLS fork analysis
+  - ADR-0078 proposed: delegated hub.<domain> reference, per-user wildcard via hub-side DNS-01 to sish
+remaining:
+  - ADR-0078 acceptance decision
+  - SPEC-0077 freeze, then implementation CHGs
+limitations:
+  - live acceptance needs a real domain + provider accounts and a deployed sish VPS
+  - regru-direct profile is unreachable from dynamic-IP executors by provider design (fail-closed, documented)
