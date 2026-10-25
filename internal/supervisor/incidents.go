@@ -110,6 +110,7 @@ func (m *Manager) recordIncidentLocked(entry *runtimeEntry, class string) {
 	if entry.incidents == nil {
 		entry.incidents = map[string]Incident{}
 	}
+	m.queuePersonalWakeLocked(personalEntryKey(entry), class)
 	if incident, ok := entry.incidents[class]; ok {
 		incident.Count++
 		incident.LastAt = now

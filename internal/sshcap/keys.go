@@ -2,9 +2,12 @@ package sshcap
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -43,6 +46,9 @@ func (s *Service) signers(ctx context.Context, alias string, h *Host) ([]ssh.Sig
 func (s *Service) withCertificate(ctx context.Context, alias string, h *Host, signer ssh.Signer) (ssh.Signer, error) {
 	if h.CertificateRef == "" {
 		return signer, nil
+	}
+	if strings.HasPrefix(h.CertificateRef, "ca:") {
+		return s.mintCertificate(alias, h, signer)
 	}
 	raw, cleanup, err := s.resolveKey(ctx, alias, h, h.CertificateRef, "SSH_CERTIFICATE")
 	if err != nil {
@@ -127,4 +133,52 @@ func (s *Service) materializeKey(ctx context.Context, alias, grantID, envName st
 		return nil, nil, fmt.Errorf("%w: broker lease did not deliver %s", ErrUnavailable, envName)
 	}
 	return []byte(value), release, nil
+}
+
+// mintCertificate signs the dial-time public key with an operator-placed CA
+// key (certificate_ref "ca:<relative path>"). The CA key never leaves the
+// read-only config dir, the image, chat or tool results; each minted cert is
+// a fresh short-lived user certificate for the remote account — revocation
+// is stopping issuance. Serial and principals land in the bounded SSH
+// receipt; static file:/broker: certificate_ref stays the fallback.
+const sshCertTTL = 10 * time.Minute
+
+func (s *Service) mintCertificate(alias string, h *Host, signer ssh.Signer) (ssh.Signer, error) {
+	raw, err := s.readCredentialFile(strings.TrimPrefix(h.CertificateRef, "ca:"))
+	if err != nil {
+		return nil, err
+	}
+	defer clear(raw)
+	caSigner, err := ssh.ParsePrivateKey(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%w: host %q ca key does not parse", ErrUnavailable, alias)
+	}
+	var serial [8]byte
+	var nonce [32]byte
+	if _, err := rand.Read(serial[:]); err != nil {
+		return nil, fmt.Errorf("%w: host %q cert serial unavailable", ErrUnavailable, alias)
+	}
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return nil, fmt.Errorf("%w: host %q cert nonce unavailable", ErrUnavailable, alias)
+	}
+	now := time.Now()
+	cert := &ssh.Certificate{
+		Key:             signer.PublicKey(),
+		Serial:          binary.BigEndian.Uint64(serial[:]),
+		CertType:        ssh.UserCert,
+		KeyId:           "hub-" + alias,
+		ValidPrincipals: []string{h.User},
+		ValidAfter:      uint64(now.Add(-time.Minute).Unix()), // #nosec G115 -- wall clock is positive
+		ValidBefore:     uint64(now.Add(sshCertTTL).Unix()),   // #nosec G115 -- wall clock is positive
+		Nonce:           nonce[:],
+	}
+	if err := cert.SignCert(rand.Reader, caSigner); err != nil {
+		return nil, fmt.Errorf("%w: host %q ca signing failed", ErrUnavailable, alias)
+	}
+	certSigner, err := ssh.NewCertSigner(cert, signer)
+	if err != nil {
+		return nil, fmt.Errorf("%w: host %q cert signer failed", ErrUnavailable, alias)
+	}
+	s.auditEvent("ssh-cert", alias, "ok", fmt.Sprintf("serial=%d principals=%s ttl=%ds", cert.Serial, strings.Join(cert.ValidPrincipals, ","), int(sshCertTTL/time.Second)))
+	return certSigner, nil
 }

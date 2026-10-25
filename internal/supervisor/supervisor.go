@@ -119,6 +119,11 @@ type Config struct {
 	// observations, never authority to stop anything.
 	Stats func(context.Context, []string) (map[string]ContainerStat, error)
 	Now   func() time.Time
+	// Decide is the personal-supervisor model seam (#328): one bounded,
+	// allowlisted request per coalesced wake, server-validated decisions.
+	// Nil disables the reviewer entirely — watchdog and containment never
+	// depend on it.
+	Decide func(context.Context, PersonalRequest) (PersonalDecision, error)
 	// AllowWildcardListen permits Serve to bind a non-loopback control-plane
 	// address; without it wildcard or empty hosts are refused.
 	AllowWildcardListen bool
@@ -190,23 +195,27 @@ type runtimeEntry struct {
 	consecutiveUncertain int
 	readinessBadSince    time.Time
 	lastRemediatedAt     time.Time
+	personalRestart      bool
 }
 
 type Manager struct {
-	holds     map[string]AdministrativeHold
-	pins      map[string]hubruntime.ExecuteRequest
-	orphans   []OrphanRuntime
-	cfg       Config
-	mu        sync.Mutex
-	items     map[string]*runtimeEntry
-	locks     map[string]*sync.Mutex
-	sem       chan struct{}
-	slots     map[string]struct{}
-	gen       uint64
-	leaseSeq  uint64
-	statePath string
-	jobs      map[string]jobRecord
-	watchdog  WatchdogMetrics
+	holds           map[string]AdministrativeHold
+	pins            map[string]hubruntime.ExecuteRequest
+	orphans         []OrphanRuntime
+	cfg             Config
+	mu              sync.Mutex
+	items           map[string]*runtimeEntry
+	locks           map[string]*sync.Mutex
+	sem             chan struct{}
+	slots           map[string]struct{}
+	gen             uint64
+	leaseSeq        uint64
+	statePath       string
+	jobs            map[string]jobRecord
+	watchdog        WatchdogMetrics
+	personalPending map[string]*personalWake
+	personalRunning map[string]bool
+	wakeNotify      chan struct{}
 }
 
 type persistedManager struct {
@@ -256,6 +265,9 @@ func Serve(ctx context.Context, manager *Manager, listen string) error {
 		}
 	}
 	server := &http.Server{Addr: listen, Handler: diagnostics.HTTP("supervisor", manager.Handler()), ReadHeaderTimeout: 5 * time.Second, MaxHeaderBytes: 64 * 1024}
+	if manager.cfg.Decide != nil {
+		go manager.personalLoop(ctx)
+	}
 	go func() {
 		interval := min(manager.cfg.WarmTTL/2, 5*time.Second)
 		if interval < time.Second {
@@ -366,7 +378,12 @@ func New(cfg Config) (*Manager, error) {
 	if cfg.AdminAuth == "" {
 		cfg.AdminAuth = os.Getenv("HUB_SUPERVISOR_ADMIN_AUTH")
 	}
-	m := &Manager{holds: map[string]AdministrativeHold{}, pins: map[string]hubruntime.ExecuteRequest{}, cfg: cfg, items: map[string]*runtimeEntry{}, locks: map[string]*sync.Mutex{}, sem: make(chan struct{}, cfg.MaxConcurrent), slots: map[string]struct{}{}, jobs: map[string]jobRecord{}, statePath: filepath.Join(cfg.StateDir, "supervisor.json")}
+	// The personal supervisor is opt-in: a configured model name activates
+	// the relay decider; without it the machinery never calls a model.
+	if cfg.Decide == nil && os.Getenv("HUB_PERSONAL_MODEL") != "" {
+		cfg.Decide = relayDecide
+	}
+	m := &Manager{holds: map[string]AdministrativeHold{}, pins: map[string]hubruntime.ExecuteRequest{}, cfg: cfg, items: map[string]*runtimeEntry{}, locks: map[string]*sync.Mutex{}, sem: make(chan struct{}, cfg.MaxConcurrent), slots: map[string]struct{}{}, jobs: map[string]jobRecord{}, personalPending: map[string]*personalWake{}, personalRunning: map[string]bool{}, wakeNotify: make(chan struct{}, 1), statePath: filepath.Join(cfg.StateDir, "supervisor.json")}
 	if err := m.load(); err != nil {
 		return nil, err
 	}

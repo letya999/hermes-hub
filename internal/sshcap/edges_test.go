@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net"
@@ -193,3 +194,66 @@ type nilListener struct{}
 func (l *nilListener) Accept() (net.Conn, error) { return nil, net.ErrClosed }
 func (l *nilListener) Close() error              { return nil }
 func (l *nilListener) Addr() net.Addr            { return &net.TCPAddr{IP: net.ParseIP("127.0.0.1")} }
+
+func TestSSHCAMintsShortLivedCert(t *testing.T) {
+	// An operator-placed CA key lets certificate_ref: "ca:keys/ca" mint a
+	// fresh short-lived user cert per dial — sshd trusts only that CA.
+	_, caPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caSigner, err := ssh.NewSignerFromKey(caPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Wrong CA must fail: the sshd only trusts caSigner.
+	_, wrongPriv, _ := ed25519.GenerateKey(rand.Reader)
+	opts := sshdOpts{caKey: caSigner.PublicKey(), exec: func(cmd string) (string, string, int) { return "ca-ok", "", 0 }}
+	f := openFixture(t, opts, Grants{}, "    commands: [\"uptime\"]\n    certificate_ref: \"ca:keys/ca\"\n", "")
+	wrongBlock, _ := ssh.MarshalPrivateKey(wrongPriv, "")
+	if err = os.WriteFile(filepath.Join(f.cfgDir, "keys", "ca"), pem.EncodeToMemory(wrongBlock), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.svc.Exec(context.Background(), "box", "uptime"); err == nil {
+		t.Fatal("cert signed by wrong CA accepted")
+	}
+	// Right CA mints a cert the sshd accepts.
+	caBlock, _ := ssh.MarshalPrivateKey(caPriv, "")
+	if err = os.WriteFile(filepath.Join(f.cfgDir, "keys", "ca"), pem.EncodeToMemory(caBlock), 0600); err != nil {
+		t.Fatal(err)
+	}
+	res, err := f.svc.Exec(context.Background(), "box", "uptime")
+	if err != nil || res.Stdout != "ca-ok" {
+		t.Fatalf("ca-signed cert rejected: %v %+v", err, res)
+	}
+	// The minted cert is bounded and names the remote user as principal.
+	keyPEM, _ := os.ReadFile(filepath.Join(f.cfgDir, "keys", "id_ed25519"))
+	clientSigner, err := ssh.ParsePrivateKey(keyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := f.svc.mintCertificate("box", f.svc.cfg.Hosts["box"], clientSigner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, ok := signer.PublicKey().(*ssh.Certificate)
+	if !ok {
+		t.Fatal("minted signer does not present a certificate")
+	}
+	if len(cert.ValidPrincipals) != 1 || cert.ValidPrincipals[0] != "tester" {
+		t.Fatalf("wrong principals: %v", cert.ValidPrincipals)
+	}
+	if ttl := time.Until(time.Unix(int64(cert.ValidBefore), 0)); ttl <= 0 || ttl > 15*time.Minute {
+		t.Fatalf("unbounded cert validity: %v", ttl)
+	}
+	// The mint lands a bounded receipt: serial and principals, never key data.
+	found := false
+	for _, e := range f.auditEvents(t) {
+		if e.Kind == "ssh" && strings.HasPrefix(e.Receipt, "ssh-cert") && strings.Contains(e.Receipt, fmt.Sprintf("serial=%d", cert.Serial)) && strings.Contains(e.Receipt, "tester") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("no ssh-cert receipt with serial+principal")
+	}
+}

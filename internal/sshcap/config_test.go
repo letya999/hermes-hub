@@ -105,3 +105,20 @@ func TestFingerprintPinning(t *testing.T) {
 		t.Fatal("unpinned key accepted")
 	}
 }
+
+func TestCertificateRefAcceptsCAScheme(t *testing.T) {
+	yaml := validYAML(t) + "    certificate_ref: \"ca:keys/ca\"\n"
+	if _, err := Load(writeConfigFile(t, yaml)); err != nil {
+		t.Fatalf("ca: certificate_ref rejected: %v", err)
+	}
+	// ca: must stay inside the config dir like file:.
+	bad := validYAML(t) + "    certificate_ref: \"ca:../escape\"\n"
+	if _, err := Load(writeConfigFile(t, bad)); err == nil {
+		t.Fatal("ca: path escape accepted")
+	}
+	// key_ref stays file:/broker: only.
+	bad = strings.Replace(validYAML(t), "file:keys/id_ed25519", "ca:keys/id", 1)
+	if _, err := Load(writeConfigFile(t, bad)); err == nil {
+		t.Fatal("ca: key_ref accepted")
+	}
+}

@@ -203,10 +203,11 @@ func (h *Host) validate(alias string) error {
 			continue
 		}
 		scheme, rest, ok := strings.Cut(ref, ":")
-		if !ok || (scheme != "file" && scheme != "broker") {
+		ca := ref == h.CertificateRef && scheme == "ca"
+		if !ok || (scheme != "file" && scheme != "broker" && !ca) {
 			return fmt.Errorf("%w: host %q credential ref must be file: or broker: scheme", ErrInvalid, alias)
 		}
-		if scheme == "file" {
+		if scheme == "file" || ca {
 			if rest == "" || !fs.ValidPath(rest) || strings.HasPrefix(rest, "/") || strings.Contains(rest, "\\") {
 				return fmt.Errorf("%w: host %q file credential ref must stay inside the config dir", ErrInvalid, alias)
 			}

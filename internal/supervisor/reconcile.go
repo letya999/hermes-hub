@@ -118,7 +118,11 @@ func (m *Manager) ReconcileHealth(ctx context.Context, now time.Time) {
 			// A live typed lease means a job, stream, approval or lifecycle
 			// is in flight — restarting now would kill it, so remediation
 			// waits for a free runtime rather than racing the lease holder.
-			remediate = wedged && len(current.leases) == 0 && current.consecutiveUncertain >= 2 &&
+			// A verified personal-supervisor restart request bypasses the
+			// timing gates only — ownership and lease checks still apply.
+			personal := current.personalRestart && ownership == "verified" && len(current.leases) == 0
+			current.personalRestart = false
+			remediate = personal || wedged && len(current.leases) == 0 && current.consecutiveUncertain >= 2 &&
 				now.Sub(current.readinessBadSince) >= wedgedReadinessWindow &&
 				now.Sub(current.lastRemediatedAt) >= wedgedRemediationCooldown
 			if remediate {

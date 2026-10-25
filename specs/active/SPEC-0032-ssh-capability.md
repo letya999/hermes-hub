@@ -24,7 +24,12 @@ closed; render refuses a space that enables `ssh` without a valid config.
 `key_ref`/`certificate_ref` resolve either `file:` below the read-only config
 directory or `broker:` grant IDs materialized through Credential Broker with
 the runtime adapter identity (`ssh-<alias>` binding, short-lived lease,
-release after materialization). Plaintext keys never touch disk outside the
+release after materialization). `certificate_ref` also accepts `ca:` naming
+an operator-placed CA private key in the config dir: each dial mints a fresh
+short-lived (10 minute) user certificate for the remote account — revocation
+is stopping issuance. Serial and principals land in the bounded `ssh-cert`
+receipt; the CA key never reaches the image, chat, tool results or argv.
+Plaintext keys never touch disk outside the
 config dir, env, chat or the audit ledger.
 
 Commands match an anchored `*` allowlist after a single-line/4 KiB bound; sudo

@@ -14,11 +14,12 @@ github_issues: [141, 195, 197, 198, 206, 326, 327, 328, 329]
 design_status: in_progress
 implementation_status: in_progress
 slices:
-  S1-original-surfaces: in_progress
-  S2-owned-resources: in_progress
-  S3-budgets-admission: in_progress
-  S4-master-containment: in_progress
-  S5-personal-supervision: not_started
+  S1-original-surfaces: done
+  S2-owned-resources: done
+  S3-budgets-admission: done
+  S4-master-containment: done
+  S5-personal-supervision: done
+  S6-ssh-ca-minting: done
 validation:
   documents: passed_before_latest_updates
   just_check: pending_after_changes
@@ -49,5 +50,8 @@ evidence:
   - Measurements: .work/in-progress/CHG-0164-m17-code-closeout/measurements.md (sweep ~57ms/20 runtimes, reserve+settle ~55ms, 20-scope claim ~18ms).
   - Targeted race gates pass for supervisor, communication, ToolHub and commodel.
   - Six changed packages passed their complete test suites; the communication wake fixture was updated for the hold projection and passes its targeted regression.
-remaining: [implementation, regression_tests, documentation, final_just_check]
+  - #328: event-driven personal supervisor — coalesced per-scope wakes, one in-flight Decide, scope-local server-validated ops (inspect/renew/pause/restart/escalate), 30-min renew bound, stale-generation denial, bounded review chaining (2) and drain (64), Decide-error applies nothing, audited personal-applied/denied signal lines, opt-in relayDecide via HUB_PERSONAL_MODEL + HUB_MANAGED_MODEL_URL (+OPENAI_API_KEY).
+  - #142: certificate_ref "ca:<file>" mints fresh short-lived (10 min) user certs per dial from an operator CA key in the read-only config dir; serial+principals audited in bounded ssh-cert receipts; wrong-CA rejection and TTL/principal bounds covered end-to-end against the in-process sshd.
+  - Race gates green for supervisor and sshcap after the additions; gosec/staticcheck/vet/gofmt/docs/integration-build clean.
+remaining: [final_just_check, live_docker_evidence, issue_closeout]
 limitations: [no_Docker_or_live_actions_authorized]

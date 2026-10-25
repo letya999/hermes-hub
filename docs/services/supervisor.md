@@ -56,6 +56,21 @@ spaces dir at `/spaces`, project `config/` read-only, and the host
   `WatchdogMetrics` (in-memory counters).
 - `HUB_MAX_RUNTIMES_PER_PRINCIPAL` caps live runtimes one principal may own;
   unset means the global `MaxConcurrent` semaphore is the only cap.
+- Personal supervisor (#328): opt-in via `HUB_PERSONAL_MODEL` +
+  `HUB_MANAGED_MODEL_URL` (+ `OPENAI_API_KEY` bearer). Incident recording
+  queues one coalesced wake per scope on a notify channel; `personalLoop`
+  drains it — no retained resource, no actionable incident means no model
+  call and no polling. One in-flight `Decide` per scope; the request carries
+  allowlisted fields only (ids, generation, state, incident classes, lease
+  consumers, remaining mandate). Decisions are narrow and validated
+  server-side: `inspect|renew|pause|restart|escalate` — renew bounded to
+  30 minutes ahead and scope-local leases only, restart marks the runtime
+  for the next *verified* remediation sweep (ownership/lease checks still
+  apply), pause sets the idle deadline, escalate records a durable
+  `escalated` incident for #329 notice. Stale-generation decisions and
+  `Decide` errors apply nothing; `review` follow-ups cap at 2 per chain and
+  the drain itself is bounded at 64. Every decision lands one
+  `personal-applied`/`personal-denied` line in `signals.jsonl`.
 
 ## Boundaries
 
