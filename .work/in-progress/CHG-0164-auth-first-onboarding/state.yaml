@@ -1,0 +1,44 @@
+schema: 1
+change: CHG-0164
+title: Auth-first onboarding completion (issue #293)
+status: in_progress
+branch: feat/m18-exposure-hosting-ssh
+updated: 2026-10-25
+phase: validation
+adr: ADR-0076
+spec: ~
+requirements: [issue-293]
+depends_on: []
+github_milestone: M18 — Exposure, Hosting & SSH
+github_issue: 293
+design_status: accepted
+implementation_status: in_progress
+slices:
+  S1-interactive-marker: done
+  S2-retry-no-rebuild: done
+  S3-coverage: done
+  S4-docs-records: done
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: deferred_by_owner
+  red_team: done
+  live_acceptance: deferred_needs_owner_instruction
+evidence:
+  - "api: TestInteractiveRecipeClassifiesUnsupported — recipe parses/validates, merge+filter preserve the marker"
+  - "api: TestSourceReviewInteractiveFailsUnsupported — reviewer returns ErrUnsupportedAuth before fetch/build"
+  - "api: TestSourceReviewCarriesBuiltEvidenceOnProbeFailure — non-gate probe failure keeps built def evidence; ordinary crash is not an auth gate"
+  - "toolhub: TestConnectorInstallInteractiveIsUnsupportedAuth — connector_install with interactive recipe -> code=unsupported_auth"
+  - "toolhub: TestAuthFirstRetryReusesBuiltArtifact — rejected credential persists built evidence; rotate re-runs only credentialed tools/list via AdmitWithCredentials (reviewer count stays 1)"
+  - "toolhub: TestConcurrentBrokerAdmissionStaysOwnerScoped (-race) — two owners converge to awaiting-confirm, no cross-owner reads"
+  - "regression: full go test ./internal/toolhub/... green (158s + 94s)"
+remaining:
+  - Live real-MCP auth-first run (requires owner instruction; Docker deferred)
+  - just check + devcheck docs
+limitations:
+  - Built-evidence reuse covers the identical pinned artifact only; a recipe
+    or source change starts a new onboarding generation.
+  - Persisted built draft carries no Tools/ToolContractDigest — tools_confirmed
+    stays false until a real credentialed tools/list succeeds.
+  - Published (non-CAS) artifacts re-pull on retry rather than reusing state —
+    correct since there is no local build to preserve.
