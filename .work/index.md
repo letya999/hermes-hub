@@ -16,6 +16,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0165](in-progress/CHG-0165-exposure-primitive/plan.md) | M18 #145: outbound exposure design pass — research + ADR-0077 proposed (cloudflared reference, sish second) |
 | [CHG-0164](in-progress/CHG-0164-auth-first-onboarding/plan.md) | M18 #293: auth-first onboarding completion — retry without rebuild, interactive marker |
 | [CHG-0162](in-progress/CHG-0162-goal-mode-engines/plan.md) | #311 persistent /goal mode — dual engine, judge modes (design proposed, implementation not started) |
 | [CHG-0156](in-progress/CHG-0156-goal-bootstrap/plan.md) | M16 #213: goal-bootstrap; live acceptance pending |
