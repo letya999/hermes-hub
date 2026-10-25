@@ -71,7 +71,7 @@ func pack(version string) error {
 	}
 	defer checksums.Close()
 	for _, name := range outputs {
-		body, err := os.ReadFile(name)
+		body, err := os.ReadFile(name) // #nosec G703 -- output names from the package manifest
 		if err != nil {
 			return err
 		}
@@ -88,7 +88,7 @@ func build(output, pkg, goos, goarch string) error {
 }
 
 func zipSources(name string) (result error) {
-	file, err := os.Create(name)
+	file, err := os.Create(name) // #nosec G703 -- output names from the package manifest
 	if err != nil {
 		return err
 	}
@@ -125,7 +125,7 @@ func zipSources(name string) (result error) {
 			if err != nil {
 				return err
 			}
-			source, err := os.Open(path)
+			source, err := os.Open(path) // #nosec G122 -- walked path inside the package source tree
 			if err != nil {
 				return err
 			}

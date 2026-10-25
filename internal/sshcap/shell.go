@@ -216,7 +216,7 @@ func (s *Service) ShellRead(id string, offset uint64) (*ShellReadResult, error) 
 		lost = sh.base - start
 		start = sh.base
 	}
-	idx := int(start - sh.base)
+	idx := int(start - sh.base) // #nosec G115 -- index is clamped to the ring bounds above
 	data := ""
 	if idx < len(sh.ring) {
 		data = string(sh.ring[idx:])

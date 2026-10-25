@@ -1,12 +1,5 @@
 [
   {
-    "id": "google-workspace",
-    "name": "Google Workspace",
-    "reason": "No reviewed exact-source generic MCP recipe and Broker contract for Calendar, Drive, Gmail, Docs, Sheets and Slides together; the prepared google-calendar entry covers Calendar only.",
-    "runbook": "docs/prepared-connectors.md#blocked-bundle-entries",
-    "handoff": "Google Workspace bundle installation is blocked. Use the existing opt-in Google Workspace path or request review of an exact MCP source and OAuth contract; never paste credentials in chat."
-  },
-  {
     "id": "slack",
     "name": "Slack personal data",
     "reason": "The pinned korotovsky/slack-mcp-server source lacks a reviewed generic Broker overlay, per-user user-token preflight and live read/write split; the existing Slack App and ToolHub Slack OAuth paths are separate.",
@@ -19,5 +12,12 @@
     "reason": "No exact CareerGo MCP source revision, license, tool contract or verified JobFetch import API is selected; an external business service must remain opt-in.",
     "runbook": "docs/prepared-connectors.md#blocked-bundle-entries",
     "handoff": "CareerGo and JobFetch import are blocked until an exact MCP source and provider contract are reviewed. Continue using an explicitly configured external MCP if available."
+  },
+  {
+    "id": "agent-browser",
+    "name": "agent-browser (Vercel)",
+    "reason": "Upstream ships an npm package and a native Rust binary via postinstall only; a working connector image needs the compiled binary plus Chrome for Testing baked in. No reviewed CI-built image exists yet, so the recipe is staged here instead of admitting a build that cannot run a browser.",
+    "runbook": "docs/prepared-connectors.md#blocked-bundle-entries",
+    "handoff": "agent-browser installation is blocked until the hub CI publishes a pinned connector image (native binary plus Chrome). Use the playwright-mcp entry for a managed browser; the reviewed agent-browser recipe is documented in the runbook."
   }
 ]

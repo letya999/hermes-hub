@@ -13,10 +13,12 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type EndpointConfig struct {
@@ -32,9 +34,79 @@ type EndpointConfig struct {
 	RecipeCatalogs []api.RecipeCatalog
 	BrokerControl  *credentialbroker.Config
 	BrokerRuntime  *credentialbroker.Config
-	Release        func(context.Context, string) error
+	Release        func(context.Context, api.ControllerRelease) error
 	// CLIRelease drops bounded-cli cells by principal/binding/job selector.
 	CLIRelease func(context.Context, api.CliReleaseRequest) error
+}
+
+func scopedLabelOps(project string, query func(context.Context, map[string]string) (map[string][]string, error), purge func(context.Context, string, string, map[string]string) error) (func(context.Context, map[string]string) (map[string][]string, error), func(context.Context, string, string, map[string]string) error) {
+	return func(ctx context.Context, selector map[string]string) (map[string][]string, error) {
+			scoped := map[string]string{}
+			for key, value := range selector {
+				scoped[key] = value
+			}
+			scoped["hermes-hub.scope"] = project
+			return query(ctx, scoped)
+		}, func(ctx context.Context, kind, name string, selector map[string]string) error {
+			scoped := map[string]string{}
+			for key, value := range selector {
+				scoped[key] = value
+			}
+			scoped["hermes-hub.scope"] = project
+			return purge(ctx, kind, name, scoped)
+		}
+}
+
+// scopedLabelScan pins the full-label scan to this deployment's scope the
+// same way scopedLabelOps pins query and purge — the reconciler's orphan
+// pass only ever sees objects this deployment labelled.
+func scopedLabelScan(project string, scan func(context.Context, map[string]string) ([]api.LabeledResource, error)) func(context.Context, map[string]string) ([]api.LabeledResource, error) {
+	return func(ctx context.Context, selector map[string]string) ([]api.LabeledResource, error) {
+		scoped := map[string]string{}
+		for key, value := range selector {
+			scoped[key] = value
+		}
+		scoped["hermes-hub.scope"] = project
+		return scan(ctx, scoped)
+	}
+}
+
+// surfaceProbe is the production live-surface seam: remote MCP connections
+// are re-listed through the SSRF-guarded probe carrying the stored
+// credential env; every other transport replays the admitted definition
+// surface — the drift pin was minted from it, so a definition rewrite still
+// trips the check and an unobservable endpoint skips rather than wedging
+// the pass.
+func surfaceProbe(secrets credstore.Backend, store *Store, probe func(context.Context, api.ToolDefinition, map[string]string) ([]api.ToolSpec, error)) func(context.Context, api.Connection, api.ToolDefinition) ([]api.ToolSpec, error) {
+	return func(ctx context.Context, connection api.Connection, definition api.ToolDefinition) ([]api.ToolSpec, error) {
+		if definition.Transport != api.RemoteMCP {
+			return definition.Tools, nil
+		}
+		var env map[string]string
+		if secrets != nil && connection.CredentialRefID != "" {
+			if ref, ok := store.credentialFor(connection.CredentialRefID); ok && ref.Locator != "" {
+				if values, err := secrets.Get(ref.Locator, store.credentialOwner(connection.ConnectionID)); err == nil {
+					env = values
+				}
+			}
+		}
+		tools, err := probe(ctx, definition, env)
+		if err != nil {
+			return definition.Tools, nil
+		}
+		return tools, nil
+	}
+}
+
+// wrapKeepRelease adapts the controller releaser to the backend's keep-state
+// release hook: backend probe cleanup never purges state volumes.
+func wrapKeepRelease(release func(context.Context, api.ControllerRelease) error) func(context.Context, string) error {
+	if release == nil {
+		return nil
+	}
+	return func(ctx context.Context, workloadID string) error {
+		return release(ctx, api.ControllerRelease{WorkloadID: workloadID})
+	}
 }
 
 func EndpointConfigFromEnv() (EndpointConfig, error) {
@@ -130,7 +202,7 @@ func EndpointConfigFromEnv() (EndpointConfig, error) {
 		TokensFile: os.Getenv("HUB_TOOLHUB_TOKENS_FILE"),
 		Backend: api.RoutingBackend{
 			Provider: api.PersonalProviderBackend{},
-			MCP:      api.MCPBackend{Token: os.Getenv("TOOLHIVE_VMCP_TOKEN"), AdmissionVerifier: admission, AdmissionRelease: release, Root: api.EnvOr("HUB_STATE", "/state")},
+			MCP:      api.MCPBackend{Token: os.Getenv("TOOLHIVE_VMCP_TOKEN"), AdmissionVerifier: admission, AdmissionRelease: wrapKeepRelease(release), Root: api.CredentialStagingRoot()},
 			CLI:      cli,
 			Agent:    agentBackendFromEnv(),
 		},
@@ -179,6 +251,21 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 	if (config.BrokerControl == nil) != (config.BrokerRuntime == nil) {
 		return nil, fmt.Errorf("%w: Credential Broker control/runtime configuration must be paired", api.ErrInvalid)
 	}
+	if config.BrokerControl != nil && store.BrokerRevoke == nil {
+		// Member grants against a team-shared credential live in the credential's
+		// owning context, so retirement signs as that context's manager.
+		controlConfig := *config.BrokerControl
+		endpointAuth := config.Auth
+		store.BrokerRevoke = func(ctx context.Context, grant api.BrokerBindingGrant) error {
+			auth := endpointAuth
+			auth.ContextID, auth.ConversationID, auth.DeliveryTargetID = grant.ContextID, grant.ContextID, grant.ContextID
+			control, err := controlConfig.NewContextManaged(auth, "broker:control")
+			if err != nil {
+				return err
+			}
+			return control.Do(ctx, http.MethodPost, "/v1/grants/"+url.PathEscape(grant.GrantID)+"/revoke", nil, nil)
+		}
+	}
 	tokens := map[string]identity.Envelope{config.Token: config.Auth}
 	if config.TokensFile != "" {
 		extra, err := loadTokenEnvelopes(config.TokensFile)
@@ -212,8 +299,17 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 	if err != nil {
 		return nil, err
 	}
-	gateway.Injector = mergeCredentialInjectors(injector, brokerRuntimeInjector(config.BrokerControl, config.BrokerRuntime), config.BrokerControl != nil)
-	control := &ControlPlane{Store: store, Secrets: secrets, Listen: config.Listen, WorkloadRoot: api.EnvOr("HUB_STATE", ""), DiagnosticsDir: api.EnvOr("HUB_DIAGNOSTICS_DIR", ""), Broker: config.BrokerControl, BrokerRuntime: config.BrokerRuntime, RecipeCatalogs: config.RecipeCatalogs, Release: config.Release, CLIRelease: config.CLIRelease}
+	gateway.Injector = mergeCredentialInjectors(injector, teamBrokerInjector(store, config.BrokerControl, config.BrokerRuntime), config.BrokerControl != nil)
+	control := &ControlPlane{Store: store, Secrets: secrets, Listen: config.Listen, WorkloadRoot: api.EnvOr("HUB_STATE", ""), CredentialStagingRoot: api.CredentialStagingRoot(), DiagnosticsDir: api.EnvOr("HUB_DIAGNOSTICS_DIR", ""), Broker: config.BrokerControl, BrokerRuntime: config.BrokerRuntime, RecipeCatalogs: config.RecipeCatalogs, Release: config.Release, CLIRelease: config.CLIRelease}
+	// HUB_DEBUG_FINALIZER_DELAY_MS stalls each remove-ladder step so a live
+	// kill lands mid-ladder and restart-resume can be verified on the stack.
+	if ms, err := strconv.Atoi(os.Getenv("HUB_DEBUG_FINALIZER_DELAY_MS")); err == nil && ms > 0 {
+		control.FinalizerStepDelay = time.Duration(ms) * time.Millisecond
+	}
+	if project := os.Getenv("HUB_DOCKER_SCOPE"); project != "" {
+		control.LabelQuery, control.LabelPurge = scopedLabelOps(project, api.DockerLabelQuery, api.DockerLabelPurge)
+		control.LabelScan = scopedLabelScan(project, api.DockerLabelScan)
+	}
 	if ready := readinessBackend(config.Backend); ready != nil {
 		control.Ready = func(ctx context.Context, effective api.EffectiveBinding) (readyErr error) {
 			if gateway.Injector == nil {
@@ -243,6 +339,9 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 	}
 	control.SourceResolver = api.ResolveGitHubSource
 	control.FormOrigin = api.FormOriginForListen(config.Listen)
+	if public := api.PublicOrigin(); public != "" {
+		control.FormOrigin = public
+	}
 	artifacts, seccomp := api.ControlArtifactPaths(control.WorkloadRoot)
 	control.Reviewer = api.DefaultSourceReviewerWithCatalogs(artifacts, seccomp, control.RecipeCatalogs)
 	cliArtifacts, err := CLIArtifactPipelineFromEnv()
@@ -256,8 +355,15 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 		}
 		return api.AdmitWithSubmittedCredentials(ctx, artifacts, definition, secrets)
 	}
+	control.SurfaceProbe = surfaceProbe(secrets, store, func(ctx context.Context, definition api.ToolDefinition, env map[string]string) ([]api.ToolSpec, error) {
+		probe, err := api.ProbeRemoteMCP(ctx, definition, env)
+		if err != nil {
+			return nil, err
+		}
+		return probe.Tools, nil
+	})
 	control.OAuth = oauth.NewBroker(secrets, []string{control.origin() + "/oauth/callback"})
-	gateway.OAuthRefresh = remoteOAuthRefresh(secrets, control.OAuth)
+	gateway.OAuthRefresh = remoteOAuthRefresh(secrets, control.OAuth, store)
 	control.Injector = gateway.Injector
 	control.PrepareDone = gateway.notifyPrepareDone
 	control.Governance = gateway.Governance
@@ -272,6 +378,9 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 			record.ContextID = fields["context_id"]
 			record.RuntimeID = fields["runtime_id"]
 			record.ConnectionID = fields["connection_id"]
+			record.SenderID = fields["sender_id"]
+			record.TeamID = fields["team_id"]
+			record.BindingID = fields["binding_id"]
 			record.PolicyRevision = fields["policy_version"]
 			record.JobID = fields["job_id"]
 			record.HermesRunID = fields["hermes_run_id"]
@@ -306,6 +415,23 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 type projectionEndpoint struct {
 	http.Handler
 	gateway *Gateway
+}
+
+func (e *projectionEndpoint) ResumeRemovals(ctx context.Context) error {
+	return e.gateway.Control.ResumeRemovals(ctx)
+}
+
+// Reconcile runs one convergence pass: orphan purge, credential liveness,
+// recipe/credential-recipe drift and the live surface check — the single
+// production reconciler #285 schedules beside the removal retry loop.
+func (e *projectionEndpoint) Reconcile(ctx context.Context) error {
+	return e.gateway.Control.NewReconciler().ScanOnce(ctx)
+}
+
+// PublicHandler is the opt-in public listener surface — only human-action
+// routes, no control or gateway paths.
+func (e *projectionEndpoint) PublicHandler() http.Handler {
+	return e.gateway.PublicMux()
 }
 
 func (h *projectionEndpoint) RefreshProjection() error { return h.gateway.RefreshProjection() }
@@ -398,8 +524,18 @@ func credentialServicesFromEnv() (credstore.Backend, api.CredentialInjector, err
 	if err != nil {
 		return nil, nil, err
 	}
-	return backend, func(ctx context.Context, effective api.EffectiveBinding) (api.CredentialInjection, error) {
+	return backend, LocalCredentialInjector(backend), nil
+}
+
+// LocalCredentialInjector materializes admitted credentials from the local
+// encrypted store. Proxy-delivered inputs emit only the hub-managed stub in
+// env; the egress-proxy plan rides along on the injection.
+func LocalCredentialInjector(backend credstore.Backend) api.CredentialInjector {
+	return func(ctx context.Context, effective api.EffectiveBinding) (api.CredentialInjection, error) {
 		env, err := api.DecryptAuthorized(backend, effective)
-		return api.CredentialInjection{Environment: env}, err
-	}, nil
+		if err != nil {
+			return api.CredentialInjection{}, err
+		}
+		return api.CredentialInjection{Environment: env, Proxy: api.ProxyStubPlan(effective, env)}, nil
+	}
 }

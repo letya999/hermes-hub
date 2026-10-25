@@ -63,7 +63,7 @@ func TestControlProjectionRevokeOnOpenMCPSession(t *testing.T) {
 	t.Cleanup(server.Close)
 	alice := mcpConnect(t, server.URL, aliceToken)
 	bob := mcpConnect(t, server.URL, bobToken)
-	if listed, err := alice.ListTools(t.Context(), nil); err != nil || len(listed.Tools) != 0 {
+	if listed, err := alice.ListTools(t.Context(), nil); err != nil || len(listed.Tools) != 1 || !toolListed(listed, "system_guide") {
 		t.Fatalf("zero profile disclosed tools: %+v, %v", listed, err)
 	}
 	for _, name := range []string{"prepare_source", "diagnostics", "invoke"} {
@@ -80,10 +80,10 @@ func TestControlProjectionRevokeOnOpenMCPSession(t *testing.T) {
 	if err := putGrant(t, store, grant); err != nil {
 		t.Fatal(err)
 	}
-	if listed, err := alice.ListTools(t.Context(), nil); err != nil || len(listed.Tools) != 1 || listed.Tools[0].Name != "status" {
+	if listed, err := alice.ListTools(t.Context(), nil); err != nil || len(listed.Tools) != 2 || !toolListed(listed, "status") || !toolListed(listed, "system_guide") {
 		t.Fatalf("exact control projection: %+v, %v", listed, err)
 	}
-	if listed, err := bob.ListTools(t.Context(), nil); err != nil || len(listed.Tools) != 0 {
+	if listed, err := bob.ListTools(t.Context(), nil); err != nil || len(listed.Tools) != 1 || !toolListed(listed, "system_guide") {
 		t.Fatalf("cross-user control projection: %+v, %v", listed, err)
 	}
 	if body, err := callControl(t, alice, "status", map[string]any{"onboarding_id": onboarding.OnboardingID}); err != nil || body["phase"] != api.PhasePreparing {
@@ -100,7 +100,7 @@ func TestControlProjectionRevokeOnOpenMCPSession(t *testing.T) {
 	if _, err := callControl(t, alice, "status", map[string]any{"onboarding_id": onboarding.OnboardingID}); err == nil {
 		t.Fatal("open MCP session admitted revoked operation")
 	}
-	if listed, err := alice.ListTools(t.Context(), nil); err != nil || len(listed.Tools) != 0 || alice.ID() != id {
+	if listed, err := alice.ListTools(t.Context(), nil); err != nil || len(listed.Tools) != 1 || !toolListed(listed, "system_guide") || alice.ID() != id {
 		t.Fatalf("revoked projection/session: %+v, %v", listed, err)
 	}
 	if backendCalls.Load() != 0 {

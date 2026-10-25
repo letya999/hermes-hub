@@ -68,6 +68,29 @@ func TestGenerateArtifactRecipeLanguages(t *testing.T) {
 	}
 }
 
+// Restricted workloads run on an internal network whose only egress is the
+// environment-proxy squid. httplib2 (google-api-python-client's transport)
+// silently ignores *_proxy env without PySocks, so every Python artifact gets
+// it unconditionally — inert where no proxy env is set.
+func TestGenerateArtifactRecipePythonInstallsProxySupport(t *testing.T) {
+	base := "example/toolchain@sha256:" + strings.Repeat("a", 64)
+	_, contextBytes, err := GenerateArtifactRecipe(languageContext(t, map[string]string{
+		"requirements.txt": "httplib2==0.32.0",
+		"main.py":          "print('fixture')",
+	}), "", base, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := readArtifactContext(contextBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dockerfile := string(files[".hub/Dockerfile"])
+	if !strings.Contains(dockerfile, "pip install PySocks==") {
+		t.Fatalf("python recipe lacks PySocks:\n%s", dockerfile)
+	}
+}
+
 func TestDetectRecipeLanguageDockerfileDisambiguates(t *testing.T) {
 	base := "example/toolchain@sha256:" + strings.Repeat("a", 64)
 	// A Python monorepo carrying a dev-only root package.json (ru-marketplace-mcp

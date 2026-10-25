@@ -15,6 +15,9 @@ import (
 type remoteProbeResult struct {
 	Tools      []ToolSpec
 	AuthNeeded bool
+	// Scopes carries the WWW-Authenticate challenge scope on a 401 — the
+	// resource's own demand, which outranks PRM scopes_supported.
+	Scopes []string
 }
 
 // ProbeRemoteMCP proves the endpoint speaks MCP: a real initialize handshake
@@ -31,17 +34,21 @@ func ProbeRemoteMCP(ctx context.Context, definition ToolDefinition, env map[stri
 	}
 	client := RemoteHTTPClient(endpoint, headers)
 	var lastStatus int
+	var challenge string
 	inner := client.Transport
 	client.Transport = RoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		response, err := inner.RoundTrip(request)
 		if response != nil {
 			lastStatus = response.StatusCode
+			if lastStatus == http.StatusUnauthorized {
+				challenge = response.Header.Get("WWW-Authenticate")
+			}
 		}
 		return response, err
 	})
 	session, err := connectRemoteMCP(ctx, endpoint, client)
 	if err != nil {
-		return remoteProbeResult{AuthNeeded: lastStatus == http.StatusUnauthorized || lastStatus == http.StatusForbidden}, fmt.Errorf("%w: remote MCP handshake: %v", ErrUnauthorized, sanitizeRemoteError(err))
+		return remoteProbeResult{AuthNeeded: lastStatus == http.StatusUnauthorized || lastStatus == http.StatusForbidden, Scopes: challengeScopes(challenge)}, fmt.Errorf("%w: remote MCP handshake: %v", ErrUnauthorized, sanitizeRemoteError(err))
 	}
 	defer session.Close()
 	var tools []ToolSpec
@@ -52,7 +59,7 @@ func ProbeRemoteMCP(ctx context.Context, definition ToolDefinition, env map[stri
 		if tool == nil || !McpToolNamePattern.MatchString(tool.Name) {
 			continue
 		}
-		spec := ToolSpec{Name: tool.Name, Effect: RemoteToolEffect(tool.Name)}
+		spec := ToolSpec{Name: tool.Name, Effect: RemoteAnnotatedEffect(tool)}
 		if tool.Description != "" {
 			spec.Description = tool.Description
 			if len(spec.Description) > 1024 {
@@ -76,6 +83,28 @@ func ProbeRemoteMCP(ctx context.Context, definition ToolDefinition, env map[stri
 	}
 	slices.SortFunc(tools, func(a, b ToolSpec) int { return strings.Compare(a.Name, b.Name) })
 	return remoteProbeResult{Tools: tools}, nil
+}
+
+// challengeParam reads one Bearer WWW-Authenticate parameter (RFC6750 §3);
+// the scheme word is dropped first so it cannot contaminate the first key.
+func challengeParam(header, name string) string {
+	rest := header
+	if i := strings.IndexByte(rest, ' '); i >= 0 {
+		rest = rest[i+1:]
+	}
+	for _, part := range strings.Split(rest, ",") {
+		key, value, ok := strings.Cut(strings.TrimSpace(part), "=")
+		if ok && strings.EqualFold(strings.TrimSpace(key), name) {
+			return strings.Trim(value, `"`)
+		}
+	}
+	return ""
+}
+
+// challengeScopes returns the challenge's scope= demand — space-separated
+// inside quotes.
+func challengeScopes(header string) []string {
+	return strings.Fields(challengeParam(header, "scope"))
 }
 
 type RoundTripFunc func(*http.Request) (*http.Response, error)
@@ -121,6 +150,16 @@ var remoteWriteVerbs = map[string]bool{
 	"approve": true, "reject": true, "schedule": true, "deploy": true,
 	"publish": true, "subscribe": true, "notify": true, "transfer": true,
 	"provision": true, "destroy": true, "edit": true, "insert": true,
+}
+
+// RemoteAnnotatedEffect fails closed: only an explicit readOnlyHint=true
+// annotation (without destructiveHint) classifies a remote tool read.
+func RemoteAnnotatedEffect(tool *mcp.Tool) Effect {
+	if tool != nil && tool.Annotations != nil && tool.Annotations.ReadOnlyHint &&
+		!(tool.Annotations.DestructiveHint != nil && *tool.Annotations.DestructiveHint) {
+		return ReadEffect
+	}
+	return WriteEffect
 }
 
 // RemoteToolEffect classifies on name segments only — provider text is

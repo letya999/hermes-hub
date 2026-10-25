@@ -16,5 +16,5 @@ last_verified: "2026-09-18"
 обоснованное будущее изменение; запрещает незаметно принести платформу вместо маленького сервиса.
 Публиковать только sanitised fixtures; настоящие credentials передавать через защищённую форму.
 
-[Git workflow](docs/engineering/git-workflow.md) описывает ветки и review.
-[Testing](docs/engineering/testing.md) объясняет пирамиду и границы E2E.
+[Git workflow](../../docs/services/credential-broker/engineering/git-workflow.md) описывает ветки и review.
+[Testing](../../docs/services/credential-broker/engineering/testing.md) объясняет пирамиду и границы E2E.

@@ -6,7 +6,8 @@
 /.local/
 /dist/
 /bin/
-coverage.out
+coverage.out*
+
 cov-*.out
 /coverage
 /.playwright-mcp/
@@ -29,3 +30,10 @@ docker/observability/.secrets/
 .work/**/verify/
 /.work/bin/
 /.work/*.mcpb
+/.work/tmp/
+/.work/tmp-*/
+/internal/.local/
+# Store snapshots and container images contain live principal/state data;
+# evidence belongs in .work/done/<chg>/evidence.md as redacted receipts.
+.work/**/store*.snapshot.json
+.work/**/governance.snapshot.json

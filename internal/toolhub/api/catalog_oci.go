@@ -9,9 +9,10 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"path"
 	"strings"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/netguard"
 )
 
 func ExactCommitMetadata(value any) string {
@@ -109,28 +110,6 @@ func ContainsFold(values []string, wanted string) bool {
 		}
 	}
 	return false
-}
-
-func recipeImageHints(launch LaunchRecipe, files map[string][]byte) []string {
-	var hints []string
-	add := func(value string) {
-		value = strings.Trim(value, "\"'`.,;()[]{}<>")
-		if _, err := ParseOCIReference(value); err == nil {
-			hints = AppendUnique(hints, value)
-		}
-	}
-	add(launch.Artifact)
-	for name, data := range files {
-		base := strings.ToLower(path.Base(name))
-		lowerName := strings.ToLower(name)
-		if !strings.HasPrefix(base, "dockerfile") && base != "server.json" && base != "manifest.json" && base != "compose.yaml" && base != "compose.yml" && !strings.HasPrefix(base, "docker-compose.") && !strings.HasPrefix(lowerName, ".github/workflows/") && !strings.Contains(lowerName, "/.github/workflows/") {
-			continue
-		}
-		for _, token := range strings.Fields(string(data)) {
-			add(token)
-		}
-	}
-	return hints
 }
 
 type OciRegistryClient struct {
@@ -358,7 +337,7 @@ func OciHTTPClient(registry, endpointHost string) *http.Client {
 		allowed["auth.docker.io"] = true
 		allowed["auth.docker.com"] = true
 	}
-	return &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(request *http.Request, _ []*http.Request) error {
+	return &http.Client{Transport: netguard.Transport(false), Timeout: 15 * time.Second, CheckRedirect: func(request *http.Request, _ []*http.Request) error {
 		host := strings.ToLower(request.URL.Hostname())
 		redirectAllowed := allowed[host]
 		if registry == "registry-1.docker.io" && strings.HasSuffix(host, ".cloudfront.docker.com") {

@@ -68,6 +68,10 @@ type Caps struct {
 	Typing         bool // presence/typing indicators while a job runs
 	Destinations   bool // routine destinations bound to provider targets
 	RoutineOrigin  bool // routine-origin jobs carry origin_job_id upstream
+	// Actions marks a channel that renders actionable affordances for human
+	// action links; adapters without it receive the same notice with the
+	// link as plain message text.
+	Actions bool
 }
 
 // ErrUncertain marks a delivery whose outcome the provider did not

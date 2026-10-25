@@ -1,0 +1,33 @@
+{
+  "target": "modelcontextprotocol/memory",
+  "subject": {
+    "kind": "mcp-container",
+    "ref": "modelcontextprotocol/memory@sha256:268d38eac6367482225dabeb56d687b9c498a975827b8314e008fb26ba65f0f6"
+  },
+  "provenance": [
+    "recorded upstream README/env contract"
+  ],
+  "entries": [
+    {
+      "claim": {
+        "attribute": "entrypoint",
+        "value": "[\"node\", \"dist/index.js\"]"
+      },
+      "source": "README.md",
+      "ref": "README.md@mcpServers",
+      "rank": "hint"
+    },
+    {
+      "claim": {
+        "field": "MEMORY_FILE_PATH",
+        "required": false,
+        "secret": false,
+        "delivery": "env"
+      },
+      "source": "README.md",
+      "ref": "README.md@env",
+      "rank": "R6"
+    }
+  ],
+  "expect_digest": "sha256:77751bb7d60e1eb752ef0dcdbe3bc7cf96dfb59f3f71aa0c35f4f9eaa7a61326"
+}

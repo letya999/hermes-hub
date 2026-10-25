@@ -323,7 +323,7 @@ func NoSymlinkPath(path string) error {
 			continue
 		}
 		current = filepath.Join(current, part)
-		info, err := os.Lstat(current)
+		info, err := os.Lstat(current) // #nosec G703 -- walk over the toolhub root
 		if err != nil {
 			return fmt.Errorf("%w: CLI path: %v", ErrInvalid, err)
 		}

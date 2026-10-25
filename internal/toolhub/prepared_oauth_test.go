@@ -21,6 +21,28 @@ import (
 )
 
 func TestPreparedOAuthHandoffAndCallback(t *testing.T) {
+	testOAuthHandoffAndCallback(t, false)
+}
+
+func TestRecipeOAuthHandoffWithoutCatalog(t *testing.T) {
+	testOAuthHandoffAndCallback(t, true)
+}
+
+func testOAuthHandoffAndCallback(t *testing.T, fromRecipe bool) {
+	var noticed []map[string]any
+	noticer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/prepare-outcome" {
+			var payload map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			noticed = append(noticed, payload)
+		}
+		w.WriteHeader(200)
+	}))
+	defer noticer.Close()
+	t.Setenv("HUB_COMMUNICATION_CONTROL_URL", noticer.URL)
+	t.Setenv("HUB_COMMUNICATION_AUTH", "tok")
+	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:9999")
+
 	entry, matched, err := api.PreparedForRepository("https://github.com/nspady/google-calendar-mcp", "")
 	if err != nil || !matched || entry.OAuth == nil {
 		t.Fatal("reviewed OAuth entry missing", err)
@@ -28,6 +50,18 @@ func TestPreparedOAuthHandoffAndCallback(t *testing.T) {
 	d := statefulContainerDefinition()
 	d.DefinitionID, d.Version = entry.ID, "1.0.0"
 	d.Source.Repository, d.Source.CommitSHA = entry.Source.Repository, entry.Source.CommitSHA
+	host, providerName := "accounts.google.com", "recipe"
+	if fromRecipe {
+		d.Source.Repository = "https://github.com/example/files-mcp"
+		d.Source.CommitSHA = strings.Repeat("a", 40)
+		host, providerName = "identity.example.com", "recipe"
+		d.OAuth = &api.OAuthRecipe{AuthorizeURL: "https://identity.example.com/authorize", TokenURL: "https://identity.example.com/token", Scopes: entry.OAuth.Scopes, ClientInput: entry.OAuth.ClientInput, ClientSections: []string{"installed", "web"}, StateTarget: entry.StateTarget, TokenFile: entry.OAuth.TokenFile, TokenTemplate: map[string]any{"normal": map[string]any{"access_token": "$oauth.ACCESS_TOKEN", "refresh_token": "$oauth.REFRESH_TOKEN", "expiry_date": "$oauth.EXPIRES_AT_UNIX_MS", "token_type": "$oauth.TOKEN_TYPE", "scope": "$oauth.OAUTH_SCOPE"}}, ProbeTool: "list-calendars"}
+	}
+	if fromRecipe {
+		if err := json.Unmarshal([]byte(`{"registered_redirect_sections":["web"]}`), d.OAuth); err != nil {
+			t.Fatal(err)
+		}
+	}
 	d.Credentials = []api.CredentialInput{{Name: entry.OAuth.ClientInput, Required: true}}
 	d.CredentialContractID, d.CredentialContractRevision = entry.ContractID, entry.ContractRevision
 	d.CredentialContractEnv = map[string]string{entry.OAuth.ClientInput: entry.OAuth.ClientInput}
@@ -74,17 +108,25 @@ func TestPreparedOAuthHandoffAndCallback(t *testing.T) {
 	if err != nil || body["phase"] != api.PhaseAwaitingOAuth {
 		t.Fatalf("handoff: %v %v", body, err)
 	}
-	authURL, _ := url.Parse(body["authorization_url"].(string))
-	if authURL.Host != "accounts.google.com" || authURL.Query().Get("scope") != "https://www.googleapis.com/auth/calendar.readonly" || authURL.Query().Get("code_challenge") == "" {
+	authURL, _ := url.Parse(providerAuthURLOf(t, store, on.OnboardingID))
+	if authURL.Host != host || authURL.Query().Get("scope") != "https://www.googleapis.com/auth/calendar.readonly" || authURL.Query().Get("code_challenge") == "" {
 		t.Fatal("unsafe or incorrect OAuth URL")
+	}
+	var link string
+	for _, payload := range noticed {
+		if u, _ := payload["form_url"].(string); strings.Contains(u, "/connect/"+on.OnboardingID+"?k=") {
+			link = u
+		}
+	}
+	if link == "" || strings.Contains(link, "accounts.google.com") || strings.Contains(link, "state=") {
+		t.Fatalf("no wizard /connect/ link reached the channel: %v", noticed)
 	}
 	var concurrent sync.WaitGroup
 	for range 4 {
 		concurrent.Add(1)
 		go func() {
 			defer concurrent.Done()
-			body, err := c.ensurePreparedOAuth(t.Context(), auth, on, d)
-			if err != nil || body["authorization_url"] != authURL.String() {
+			if _, err := c.ensurePreparedOAuth(t.Context(), auth, on, d, false); err != nil || providerAuthURLOf(t, store, on.OnboardingID) != authURL.String() {
 				t.Errorf("concurrent handoff changed URL: %v", err)
 			}
 		}()
@@ -96,11 +138,12 @@ func TestPreparedOAuthHandoffAndCallback(t *testing.T) {
 	c.oauthFlows.mu.Lock()
 	clear(c.oauthFlows.flows) // simulate a ToolHub restart while the browser link is outstanding
 	c.oauthFlows.mu.Unlock()
-	resumed, err := c.status(auth, map[string]any{"onboarding_id": on.OnboardingID})
-	if err != nil || resumed["phase"] != api.PhaseAwaitingOAuth || resumed["authorization_url"] == authURL.String() {
+	resumed, err := c.status(context.Background(), auth, map[string]any{"onboarding_id": on.OnboardingID})
+	newRaw := providerAuthURLOf(t, store, on.OnboardingID)
+	if err != nil || resumed["phase"] != api.PhaseAwaitingOAuth || newRaw == "" || newRaw == authURL.String() {
 		t.Fatal("status did not reissue lost OAuth link", err)
 	}
-	authURL, _ = url.Parse(resumed["authorization_url"].(string))
+	authURL, _ = url.Parse(newRaw)
 	state := authURL.Query().Get("state")
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/token" || r.FormValue("code_verifier") == "" || r.FormValue("client_id") != "fixture.apps.googleusercontent.com" {
@@ -111,7 +154,8 @@ func TestPreparedOAuthHandoffAndCallback(t *testing.T) {
 	}))
 	defer provider.Close()
 	c.oauthFlows.mu.Lock()
-	c.oauthFlows.flows[state].broker.Providers["google"] = oauth.Provider{Name: "google", AuthorizeURL: provider.URL + "/authorize", TokenURL: provider.URL + "/token"}
+	c.oauthFlows.flows[state].broker.HTTP = provider.Client()
+	c.oauthFlows.flows[state].broker.Providers[providerName] = oauth.Provider{Name: providerName, AuthorizeURL: provider.URL + "/authorize", TokenURL: provider.URL + "/token"}
 	c.oauthFlows.mu.Unlock()
 	c.OAuth = oauth.NewBroker(secrets, []string{c.origin() + "/oauth/callback"})
 	gateway := &Gateway{Control: c}
@@ -133,8 +177,10 @@ func TestPreparedOAuthHandoffAndCallback(t *testing.T) {
 	}
 	response := httptest.NewRecorder()
 	gateway.serveOAuthCallback(response, request(http.MethodGet, callback))
-	if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" {
-		t.Fatal("callback failed", response.Code, response.Body.String())
+	// A live wizard nonce sends the user back onto the same stable link —
+	// it now renders the waiting/enabled state instead of a dead-end page.
+	if response.Code != http.StatusSeeOther || !strings.Contains(response.Header().Get("Location"), "/connect/"+on.OnboardingID+"?k=") {
+		t.Fatal("callback did not return to the wizard link", response.Code, response.Header().Get("Location"), response.Body.String())
 	}
 	if checkpoints != 1 {
 		t.Fatal("state was not checkpointed exactly once")
@@ -154,7 +200,7 @@ func TestPreparedOAuthHandoffAndCallback(t *testing.T) {
 	if stored.Phase != api.PhaseEnabled || stored.ProviderAuthorizationURL != "" {
 		t.Fatal("onboarding did not resume")
 	}
-	if _, err := c.ensurePreparedOAuth(t.Context(), auth, stored, d); err == nil || !strings.Contains(err.Error(), "existing token state") {
+	if _, err := c.ensurePreparedOAuth(t.Context(), auth, stored, d, false); err == nil || !strings.Contains(err.Error(), "existing token state") {
 		t.Fatal("existing token was overwritten", err)
 	}
 	if err := os.Remove(filepath.Join(stateDir, entry.OAuth.TokenFile)); err != nil {
@@ -163,16 +209,16 @@ func TestPreparedOAuthHandoffAndCallback(t *testing.T) {
 	if err := os.WriteFile(clientFile, []byte(`{"web":{"client_id":"fixture","client_secret":"fixture","redirect_uris":["http://wrong.example/callback"]}}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.ensurePreparedOAuth(t.Context(), auth, stored, d); !errors.Is(err, api.ErrInvalid) {
+	if _, err := c.ensurePreparedOAuth(t.Context(), auth, stored, d, false); !errors.Is(err, api.ErrInvalid) {
 		t.Fatal("unregistered web callback accepted", err)
 	}
 }
 
 func TestPreparedOAuthRejectsUnreviewedAdapter(t *testing.T) {
 	for _, mutate := range []func(*api.PreparedOAuth){
-		func(a *api.PreparedOAuth) { a.Scopes = []string{"https://www.googleapis.com/auth/calendar"} },
+		func(a *api.PreparedOAuth) { a.Scopes = nil },
 		func(a *api.PreparedOAuth) { a.TokenFile = "../other.json" },
-		func(a *api.PreparedOAuth) { a.TokenFormat = "unreviewed" },
+		func(a *api.PreparedOAuth) { a.TokenTemplate = map[string]any{"token": "$exec.unreviewed"} },
 	} {
 		var entries []api.PreparedEntry
 		if err := json.Unmarshal(api.PreparedCatalogJSON, &entries); err != nil {

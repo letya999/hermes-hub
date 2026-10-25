@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/diagnostics"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
+	"github.com/letya999/hermes-hub/internal/stack"
 	"net"
 	"net/http"
 	"os"
@@ -227,7 +228,7 @@ func Serve(ctx context.Context, manager *Manager, listen string) error {
 			}
 		}
 	}()
-	go func() {
+	go func() { // #nosec G118 -- detached reconcile worker
 		<-ctx.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -502,11 +503,23 @@ func (m *Manager) bindingFor(request hubruntime.ExecuteRequest) (Binding, error)
 	if strings.HasPrefix(request.ScopeID, "organization:") {
 		contextID = strings.TrimPrefix(request.ScopeID, "organization:")
 	}
-	if !strings.HasPrefix(request.ScopeID, "user:") && !strings.HasPrefix(request.ScopeID, "organization:") {
+	if strings.HasPrefix(request.ScopeID, "group:") {
+		contextID = strings.TrimPrefix(request.ScopeID, "group:")
+		if request.PrincipalID != contextID || request.UserID != contextID || request.ActorID != contextID || request.RuntimeID != contextID {
+			return Binding{}, errors.New("group principal mismatch")
+		}
+	}
+	if !strings.HasPrefix(request.ScopeID, "user:") && !strings.HasPrefix(request.ScopeID, "organization:") && !strings.HasPrefix(request.ScopeID, "group:") {
 		return Binding{}, errors.New("invalid scope")
 	}
 	if request.ContextID != contextID || request.UserID == "" || request.ActorID == "" || request.PolicyVersion == "" || !validID(contextID) || request.OrganizationID == "" || request.RuntimeID == "" {
 		return Binding{}, errors.New("invalid runtime binding")
+	}
+	if strings.HasPrefix(request.ScopeID, "group:") {
+		scope, err := stack.ReadScope(filepath.Join(m.cfg.SpacesRoot, contextID))
+		if err != nil || scope.Kind != stack.GroupScope || scope.ID != contextID {
+			return Binding{}, errors.New("group requires a dedicated group home")
+		}
 	}
 	organizationRoot := ""
 	if strings.HasPrefix(request.ScopeID, "user:") && request.OrganizationID != "" && request.OrganizationID != "personal" {
@@ -567,7 +580,7 @@ func (m *Manager) allocatePortLocked(key string) (int, error) {
 			used[port] = struct{}{}
 		}
 	}
-	start := int(hashNumber(key) % uint32(m.cfg.PortRange))
+	start := int(hashNumber(key) % uint32(m.cfg.PortRange)) // #nosec G115 -- result is bounded by the PortRange modulo
 	for i := 0; i < m.cfg.PortRange; i++ {
 		candidate := m.cfg.PortBase + (start+i)%m.cfg.PortRange
 		if _, busy := used[candidate]; !busy {

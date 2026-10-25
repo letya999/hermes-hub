@@ -127,6 +127,14 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		contextID = organizationID
 	}
 	runtimeEnv := M{"HUB_SHARED_GID": fmt.Sprint(max(0, os.Getgid())), "HUB_ORG_SCOPED": fmt.Sprint(s.OrgScoped()), "HUB_ORG_ACTIONS": strings.Join(s.effectiveOrgActions(), ","), "HUB_TOOLS_RO": strings.Join(s.readOnlyCapabilities(), ","), "HUB_SELF_ENV_KEYS": strings.Join(runtimeSelfEnvKeys(s), ","), "HUB_PROTECTED_ENV_KEYS": strings.Join(runtimeProtectedEnvKeys(s), ","), "HERMES_HOME": "/state/hermes", "HOME": "/state/home", "HUB_STATE": "/state", "HUB_WORKSPACE": "/workspace", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": "/state/toolhub/store.json", "HUB_FEATURES": strings.Join(s.featureList(), ","), "HUB_RUNTIME_LISTEN": "0.0.0.0:8080", "TZ": s.Timezone, "HUB_BROWSER": fmt.Sprint(s.Has("browser")), "HUB_MEET": fmt.Sprint(s.Has("meet")), "GITLAB_HOST": host, "GOOGLE_EMAIL": s.GoogleEmail, "GOOGLE_OAUTH_REDIRECT_URI": fmt.Sprintf("http://localhost:%d/oauth2callback", s.OAuthPort), "PYTHONDONTWRITEBYTECODE": "1", "XDG_CACHE_HOME": "/state/cache", "HERMES_AGENT_NOTIFY_INTERVAL": "60", "HUB_TOOL_POLICY": "/config/tool-policy.json", "HUB_TOOL_MANIFEST": "/config/tool-manifest.json"}
+	if s.Workspace.Goal != "" {
+		runtimeEnv["HUB_BOOTSTRAP_GOAL"] = s.Workspace.Goal
+		runtimeEnv["HUB_BOOTSTRAP_REVISION"] = fmt.Sprint(s.Workspace.BootstrapRevision)
+	}
+	runtimeEnv["HUB_SCOPE_KIND"] = string(UserScope)
+	if scope, err := ReadScope(dir); err == nil && scope.Kind == GroupScope {
+		runtimeEnv["HUB_SCOPE_KIND"] = string(GroupScope)
+	}
 	if s.ExecutionMode != "supervisor" {
 		runtimeEnv["HUB_RUNTIME_GENERATION"] = "static-" + s.User + "-" + s.Environment
 	}
@@ -160,10 +168,18 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			}
 		}
 	}
+	// The declared context-control section rides env so the materialized
+	// effective config and the in-container attestation reconstruct identical
+	// bytes. Absent means the reviewed zero template — nothing is rendered.
+	if ctx := s.managedContextConfig(); ctx != nil {
+		if contextJSON, err := json.Marshal(ctx); err == nil {
+			runtimeEnv["HUB_MANAGED_CONTEXT"] = string(contextJSON)
+		}
+	}
 	if s.OrgScoped() && s.CapabilityMode != "managed" {
 		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(s.OrganizationDocsDir), "target": "/org", "read_only": true})
 	}
-	if s.CapabilityMode != "managed" && strings.TrimSpace(s.GlobalSkillsDir) != "" {
+	if s.CapabilityMode != "managed" {
 		// The mounted dir is the per-space filtered copy materialized by
 		// Render: feature-gated bundled skills are absent entirely when the
 		// feature is off, so they cannot be read or followed by prompt.
@@ -182,7 +198,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		}
 	}
 	// Core and control targets share BuildKit layers; only control needs Docker.
-	common := M{"image": "hermes-hub:0.3.0-" + s.Environment, "init": true, "restart": "unless-stopped", "user": fmt.Sprintf("10001:%d", max(0, os.Getgid())), "read_only": true, "cap_drop": []string{"ALL"}, "security_opt": []string{"no-new-privileges:true"}, "shm_size": "1gb", "tmpfs": []string{"/tmp:uid=10001,gid=10001,mode=1777"}, "extra_hosts": []string{"host.docker.internal:host-gateway"}, "logging": M{"driver": "local", "options": M{"max-size": "10m", "max-file": "3"}}}
+	common := M{"image": "hermes-hub:0.4.0-" + s.Environment, "init": true, "restart": "unless-stopped", "user": fmt.Sprintf("10001:%d", max(0, os.Getgid())), "read_only": true, "cap_drop": []string{"ALL"}, "security_opt": []string{"no-new-privileges:true"}, "shm_size": "1gb", "tmpfs": []string{"/tmp:uid=10001,gid=10001,mode=1777"}, "extra_hosts": M{"host.docker.internal": "host-gateway"}, "logging": M{"driver": "local", "options": M{"max-size": "10m", "max-file": "3"}}}
 	coreBuild := M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile", "target": s.Environment}
 	runtimeService := cloneMap(common)
 	runtimeService["env_file"] = runtimeEnvFiles
@@ -190,7 +206,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	runtimeService["volumes"] = stateVolumes
 	runtimeService["ports"] = ports
 	if s.CapabilityMode == "managed" {
-		runtimeService["extra_hosts"] = []string{}
+		runtimeService["extra_hosts"] = M{}
 		runtimeService["tmpfs"] = append(slices.Clone(common["tmpfs"].([]string)),
 			"/state/hermes/skills:ro,mode=0555", "/state/hermes/hooks:ro,mode=0555", "/state/hermes/plugins:ro,mode=0555",
 			"/state/hermes/skill-bundles:ro,mode=0555", "/state/hermes/scripts:ro,mode=0555",
@@ -245,6 +261,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	hostRoot := "/state=" + hostRuntimeDir
 	brokerMaterializedVolume := "hermes-hub-" + s.User + "-" + s.Environment + "-broker-materialized"
 	brokerMaterializedMount := M{"type": "volume", "source": "broker-materialized", "target": "/run/broker-materialized"}
+	// Per-call credential material (credentials.env, <name>.secret) stages on
+	// tmpfs shared by ToolHub and the workload controller — it must never
+	// reach the persistent state bind or the host disk.
+	credStagingVolume := "hermes-hub-" + s.User + "-" + s.Environment + "-cred-staging"
+	credStagingMount := M{"type": "volume", "source": "cred-staging", "target": "/run/cred-staging"}
 	brokerURL := "https://credential-broker:8787"
 	brokerCA := "/run/broker-secrets/server.crt"
 	// Broker keys and the CA certificate live in per-service named volumes: the
@@ -269,9 +290,9 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	containerSupervisor := infra && includeGateway && s.ExecutionMode == "supervisor" && s.SupervisorURL == "http://supervisor:8876"
 	if containerSupervisor {
 		svc := cloneMap(common)
-		svc["image"] = "hermes-hub:0.3.0-" + s.Environment + "-control"
+		svc["image"] = "hermes-hub:0.4.0-" + s.Environment + "-control"
 		svc["build"] = M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile", "target": s.Environment + "-control"}
-		svc["entrypoint"] = []string{"hubctl", "supervisor", "--spaces", "/spaces", "--env", s.Environment, "--runtime-image", "hermes-hub:0.3.0-" + s.Environment, "--supervisor-listen", "0.0.0.0:8876", "--supervisor-allow-wildcard-listen"}
+		svc["entrypoint"] = []string{"hubctl", "supervisor", "--spaces", "/spaces", "--env", s.Environment, "--runtime-image", "hermes-hub:0.4.0-" + s.Environment, "--supervisor-listen", "0.0.0.0:8876", "--supervisor-allow-wildcard-listen"}
 		svc["environment"] = M{"HUB_SUPERVISOR_AUTH": "${HUB_SUPERVISOR_AUTH:?set HUB_SUPERVISOR_AUTH or provision supervisor.auth for this stack}", "HUB_SUPERVISOR_HOST_SPACES": filepath.ToSlash(filepath.Dir(dir)), "HOME": "/tmp", "TZ": s.Timezone}
 		svc["volumes"] = []any{dockerSock,
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Dir(dir)), "target": "/spaces"},
@@ -297,10 +318,13 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			cliproxyURL = "http://cliproxy-" + s.User + ":8317"
 		}
 		modelRelay["environment"] = M{
-			"HUB_MODEL_RELAY_REGISTRY": "/run/models.yaml",
+			"HUB_MODEL_RELAY_REGISTRY": "/run/model-config/models.yaml",
 			"HUB_MODEL_RELAY_STATE":    "/run/model-state/model-select.json",
 			"HUB_MODEL_RELAY_OWNER":    s.User,
 			"HUB_MODEL_RELAY_CLIPROXY": cliproxyURL,
+		}
+		for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_MODEL_", "model", "hermes-model-relay") {
+			modelRelay["environment"].(M)[key] = value
 		}
 		modelRelay["env_file"] = []any{
 			M{"path": filepath.ToSlash(filepath.Join(dir, "runtime."+s.Environment+".env")), "format": "raw"},
@@ -308,10 +332,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			M{"path": filepath.ToSlash(filepath.Join(dir, "model-relay.auth")), "format": "raw"},
 		}
 		modelRelay["volumes"] = []any{
-			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "models."+s.Environment+".yaml")), "target": "/run/models.yaml", "read_only": true},
+			brokerSecrets("model"),
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "model-registry", s.Environment)), "target": "/run/model-config", "read_only": true},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "model-relay")), "target": "/run/model-state"},
 		}
-		modelRelay["extra_hosts"] = []string{}
+		modelRelay["extra_hosts"] = M{}
 		// A stable per-space alias on the shared network lets the gateway of
 		// the same space call its own relay (owner model switching) without
 		// colliding with other spaces' model-relay service names.
@@ -319,7 +344,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		services["model-relay"] = modelRelay
 		toolhubRelay := cloneMap(common)
 		toolhubRelay["entrypoint"] = []string{"hub-runtime", "toolhub-relay"}
-		toolhubRelay["extra_hosts"] = []string{}
+		toolhubRelay["extra_hosts"] = M{}
 		toolhubRelay["networks"] = M{sharedNetworkName: M{}, managedAgentNetwork(s): M{"aliases": []string{"toolhub"}}}
 		services["toolhub-relay"] = toolhubRelay
 		if len(egressHosts) > 0 {
@@ -329,7 +354,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			egressRelay := cloneMap(common)
 			egressRelay["entrypoint"] = []string{"hub-runtime", "egress-relay"}
 			egressRelay["environment"] = M{"HUB_EGRESS_RELAY_HOSTS": strings.Join(egressHosts, ",")}
-			egressRelay["extra_hosts"] = []string{}
+			egressRelay["extra_hosts"] = M{}
 			egressRelay["networks"] = M{sharedNetworkName: M{}, managedAgentNetwork(s): M{"aliases": []string{"egress-relay"}}}
 			services["egress-relay"] = egressRelay
 		}
@@ -343,7 +368,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		cliproxy["networks"] = sharedNetworks
 		services["cliproxy"] = cliproxy
 
-		toolhubEnv := M{"HUB_STATE": "/state", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_RUNTIME_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": "/state/toolhub/store.json", "HUB_AUDIT_LEDGER": "/state/toolhub/audit.jsonl", "HUB_CREDENTIAL_STORE": "/state/credentials/store.enc", "HUB_CREDENTIAL_KEY_FILE": "/state/credential.key", "HUB_TOOLHUB_LISTEN": "0.0.0.0:8090", "HUB_TOOLHIVE_ADMISSION_ENDPOINT": "http://workload-controller:8545/admit", "HUB_ARTIFACT_DIR": "/state/artifacts", "HUB_BUILD_SECCOMP": "/opt/hub/seccomp/seccomp-buildkit-rootless.json", "HUB_BUILD_CACHE": "1", "HUB_RECIPE_CATALOGS": "mcp-registry,toolhive,docker-mcp,docker-hub,ghcr", "HUB_DOCKER_HOST_ROOT": hostRoot, "HUB_BROKER_MATERIALIZED_VOLUME": brokerMaterializedVolume, "HOME": "/tmp", "TZ": s.Timezone, "HUB_COMMUNICATION_CONTROL_URL": "http://communication-hub:8081", "HUB_TOOL_GOVERNANCE": "/state/toolhub/governance.json"}
+		toolhubEnv := M{"HUB_STATE": "/state", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_RUNTIME_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": "/state/toolhub/store.json", "HUB_AUDIT_LEDGER": "/state/toolhub/audit.jsonl", "HUB_CREDENTIAL_STORE": "/state/credentials/store.enc", "HUB_CREDENTIAL_KEY_FILE": "/state/credential.key", "HUB_TOOLHUB_LISTEN": "0.0.0.0:8090", "HUB_TOOLHIVE_ADMISSION_ENDPOINT": "http://workload-controller:8545/admit", "HUB_ARTIFACT_DIR": "/state/artifacts", "HUB_BUILD_SECCOMP": "/opt/hub/seccomp/seccomp-buildkit-rootless.json", "HUB_BUILD_CACHE": "1", "HUB_RECIPE_CATALOGS": "mcp-registry,toolhive,docker-mcp,docker-hub,ghcr,github-search", "HUB_DOCKER_HOST_ROOT": hostRoot, "HUB_BROKER_MATERIALIZED_VOLUME": brokerMaterializedVolume, "HUB_CRED_STAGING": "/run/cred-staging", "HUB_CRED_STAGING_VOLUME": credStagingVolume, "HOME": "/tmp", "TZ": s.Timezone, "HUB_COMMUNICATION_CONTROL_URL": "http://communication-hub:8081", "HUB_TOOL_GOVERNANCE": "/state/toolhub/governance.json"}
 		if s.CapabilityMode == "managed" {
 			toolhubEnv["HUB_CAPABILITY_MODE"] = s.CapabilityMode
 			toolhubEnv["HUB_CAPABILITY_PROFILE_ID"] = s.CapabilityProfileID
@@ -380,7 +405,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// the boundary — owner argv still lands in a mountless sandbox.
 		toolhubEnv["HUB_CLI_ALLOWLIST"] = "rg,bash"
 		toolhubEnv["HUB_DOCKER_AGENT_NET"] = managedAgentNetwork(s)
-		toolhubVolumes := []any{stateBind, brokerSecrets("toolhub"), brokerMaterializedMount}
+		toolhubVolumes := []any{stateBind, brokerSecrets("toolhub"), brokerMaterializedMount, credStagingMount}
 		if s.usesDockerSocket() {
 			toolhubVolumes = append(toolhubVolumes, dockerSock)
 		}
@@ -400,7 +425,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			toolhubEnv["HUB_TOOLHUB_TOKENS_FILE"] = "/run/toolhub-tokens.json"
 		}
 		toolhub := cloneMap(common)
-		toolhub["image"] = "hermes-hub:0.3.0-" + s.Environment + "-control"
+		toolhub["image"] = "hermes-hub:0.4.0-" + s.Environment + "-control"
 		toolhub["build"] = M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile", "target": s.Environment + "-control"}
 		toolhub["entrypoint"] = []string{"toolhub"}
 		toolhub["env_file"] = []any{M{"path": filepath.ToSlash(filepath.Join(dir, "runtime.auth")), "format": "raw"}, M{"path": filepath.ToSlash(filepath.Join(dir, "toolhub.auth")), "format": "raw"}}
@@ -427,8 +452,8 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// host paths for the sibling container through the /spaces mapping.
 		spacesHostDir := filepath.ToSlash(filepath.Dir(dir))
 		spacesBind := M{"type": "bind", "source": spacesHostDir, "target": "/spaces", "read_only": true}
-		controller["environment"] = M{"HUB_STATE": "/state", "HUB_DOCKER_HOST_ROOT": hostRoot + ",/spaces=" + spacesHostDir, "HUB_BROKER_MATERIALIZED_VOLUME": brokerMaterializedVolume, "HUB_CONTROLLER_REMOTE": "1", "HUB_DOCKER_SCOPE": dockerScope, "HUB_DOCKER_AGENT_NET": managedAgentNetwork(s), "HOME": "/tmp", "TZ": s.Timezone}
-		controllerVolumes := []any{stateBind, brokerMaterializedMount, spacesBind}
+		controller["environment"] = M{"HUB_STATE": "/state", "HUB_DOCKER_HOST_ROOT": hostRoot + ",/spaces=" + spacesHostDir, "HUB_BROKER_MATERIALIZED_VOLUME": brokerMaterializedVolume, "HUB_CRED_STAGING": "/run/cred-staging", "HUB_CRED_STAGING_VOLUME": credStagingVolume, "HUB_CONTROLLER_REMOTE": "1", "HUB_DOCKER_SCOPE": dockerScope, "HUB_DOCKER_AGENT_NET": managedAgentNetwork(s), "HOME": "/tmp", "TZ": s.Timezone}
+		controllerVolumes := []any{stateBind, brokerMaterializedMount, credStagingMount, spacesBind}
 		if s.usesDockerSocket() {
 			controllerVolumes = append(controllerVolumes, dockerSock)
 		}
@@ -437,10 +462,10 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		services["workload-controller"] = controller
 
 		broker := cloneMap(common)
-		broker["entrypoint"] = []string{"credential-broker", "serve", "--config", "/var/lib/credential-broker/config.json"}
+		broker["entrypoint"] = []string{"credential-broker", "serve", "--config", "/var/lib/credential-broker/config.json", "--state-witness-dir", "/var/lib/credential-broker-recovery"}
 		// The dedicated tmpfs volume lets Broker leases reach ToolHub and the
 		// controller without exposing Broker's encrypted store to MCP workloads.
-		broker["volumes"] = []any{M{"type": "volume", "source": "broker-state", "target": "/var/lib/credential-broker"}, brokerMaterializedMount}
+		broker["volumes"] = []any{M{"type": "volume", "source": "broker-state", "target": "/var/lib/credential-broker"}, M{"type": "volume", "source": "broker-recovery", "target": "/var/lib/credential-broker-recovery"}, M{"type": "volume", "source": "broker-recovery-key", "target": "/var/lib/credential-broker-recovery-key"}, brokerMaterializedMount}
 		broker["ports"] = []string{"127.0.0.1:8787:8787"}
 		broker["networks"] = sharedNetworks
 		// Personal loopback deployment: the connect link opens the credential form
@@ -451,16 +476,17 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	}
 
 	// cliproxy: dedicated gives a secondary space its own proxy instance,
-	// reachable as cliproxy-<user> on both networks — the space-local plain
-	// "cliproxy" name keeps resolving the shared infra instance.
+	// reachable as cliproxy-<user> on both networks. The service is named
+	// after the owner so its implicit Compose aliases can never collide
+	// with the shared infra "cliproxy" name on the runtime network.
 	if !infra && s.Cliproxy == "dedicated" {
 		cliproxy := cloneMap(common)
 		cliproxy["build"] = coreBuild
 		cliproxy["entrypoint"] = []string{"cli-proxy-api", "-config", "/cliproxy/config.yaml"}
 		cliproxy["volumes"] = []any{M{"type": "bind", "source": hostCliproxyDir, "target": "/cliproxy"}}
-		alias := []string{"cliproxy-" + s.User}
-		cliproxy["networks"] = M{"default": M{"aliases": alias}, sharedNetworkName: M{"aliases": alias}}
-		services["cliproxy"] = cliproxy
+		name := "cliproxy-" + s.User
+		cliproxy["networks"] = M{"default": M{"aliases": []string{name}}, sharedNetworkName: M{"aliases": []string{name}}}
+		services[name] = cliproxy
 	}
 
 	if infra && includeGateway && (s.Has("telegram") || s.Has("slack_app")) {
@@ -534,6 +560,12 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			gatewayEnvironment["HUB_COMMUNICATION_TOKENS_FILE"] = "/config/toolhub-tokens.json"
 			gateway["volumes"] = append(gateway["volumes"].([]any), M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "toolhub-tokens.json")), "target": "/config/toolhub-tokens.json", "read_only": true})
 		}
+		// Per-principal relay routing for /model: the shared gateway resolves
+		// the caller's own relay URL + admin bearer from this enrolled file.
+		if info, err := os.Stat(filepath.Join(dir, "model-relay-admins.json")); err == nil && info.Mode().IsRegular() {
+			gatewayEnvironment["HUB_MODEL_RELAY_ADMINS_FILE"] = "/config/model-relay-admins.json"
+			gateway["volumes"] = append(gateway["volumes"].([]any), M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "model-relay-admins.json")), "target": "/config/model-relay-admins.json", "read_only": true})
+		}
 		if supervisorURL == "" {
 			gateway["depends_on"] = M{"hermes-runtime": M{"condition": "service_healthy"}}
 		}
@@ -557,7 +589,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 				svc := cloneMap(common)
 				// Dedicated image tag: sharing the hub tag would let the
 				// last build overwrite the image other services run.
-				svc["image"] = "hermes-hub-" + role + ":0.3.0-" + s.Environment
+				svc["image"] = "hermes-hub-" + role + ":0.4.0-" + s.Environment
 				svc["build"] = M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile." + role}
 				engine := "command"
 				if role == "stt" {
@@ -612,6 +644,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			// points at a mounted runner script).
 			"HUB_MEDIA_ENGINES":        "${HUB_MEDIA_ENGINES:-}",
 			"HUB_MEDIA_MODEL_ROUTES":   "${HUB_MEDIA_MODEL_ROUTES:-}",
+			"HUB_MEDIA_PROVIDERS":      "${HUB_MEDIA_PROVIDERS:-}",
 			"HUB_MEDIA_COMMAND":        "${HUB_MEDIA_COMMAND:-}",
 			"HUB_MEDIA_UPSTREAM":       "${HUB_MEDIA_UPSTREAM:-http://cliproxy:8317}",
 			"HUB_MEDIA_QUEUE_UPSTREAM": "${HUB_MEDIA_QUEUE_UPSTREAM:-}",
@@ -657,6 +690,9 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	// Secondary spaces still declare broker-secrets-runtime: the supervisor
 	// mounts it by project-derived name into that user's spawned runtimes.
 	volumes := M{"broker-secrets-runtime": M{}}
+	if s.CapabilityMode == "managed" {
+		volumes["broker-secrets-model"] = M{}
+	}
 	result := M{"name": "hermes-hub-" + s.User + "-" + s.Environment, "services": services, "volumes": volumes}
 	if infra {
 		volumes["communication-hub-data"] = M{}
@@ -668,7 +704,10 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			brokerState = override
 		}
 		volumes["broker-state"] = M{"external": true, "name": brokerState}
+		volumes["broker-recovery"] = M{"external": true, "name": "hermes-credential-broker-recovery-" + s.Environment}
+		volumes["broker-recovery-key"] = M{"external": true, "name": "hermes-credential-broker-recovery-key-" + s.Environment}
 		volumes["broker-materialized"] = M{"name": brokerMaterializedVolume, "driver": "local", "driver_opts": M{"type": "tmpfs", "device": "tmpfs", "o": "size=64m,uid=10001,gid=10001,mode=0700"}}
+		volumes["cred-staging"] = M{"name": credStagingVolume, "driver": "local", "driver_opts": M{"type": "tmpfs", "device": "tmpfs", "o": "size=64m,uid=10001,gid=10001,mode=0700"}}
 		volumes["broker-secrets-toolhub"] = M{}
 		volumes["broker-secrets-communication"] = M{}
 		if s.Has("transcription") {
@@ -720,9 +759,9 @@ func cliControllerSection(s Settings, dir string) api.CLIControllerConfig {
 		// The rendered tag resolves to the immutable image ID at controller
 		// start; cells are created from that content reference, never the
 		// moving tag.
-		ToolsImage:    "hermes-hub-cli-tools:0.3.0-" + s.Environment,
+		ToolsImage:    "hermes-hub-cli-tools:0.4.0-" + s.Environment,
 		CellInit:      "/usr/local/bin/cellinit",
-		ProxyImage:    "hermes-hub-cell-proxy:0.3.0-" + s.Environment,
+		ProxyImage:    "hermes-hub-cell-proxy:0.4.0-" + s.Environment,
 		AllowedEgress: egress,
 		Ceiling:       api.ExecutionPolicy{TimeoutSeconds: 60, OutputBytes: 262144, CPUMillis: 2000, MemoryMiB: 2048, MaxPIDs: 128, Egress: egress},
 		Approved:      approved,

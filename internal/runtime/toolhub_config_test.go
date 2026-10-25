@@ -91,6 +91,29 @@ func TestMaterializeOptionsFromEnvCarriesNativeToolsets(t *testing.T) {
 	}
 }
 
+func TestMaterializeOptionsFromEnvCarriesManagedContext(t *testing.T) {
+	t.Setenv("HUB_MANAGED_CONTEXT", "")
+	opts, err := materializeOptionsFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.Context != nil {
+		t.Fatalf("empty env produced context: %+v", opts.Context)
+	}
+	t.Setenv("HUB_MANAGED_CONTEXT", `{"compression":{"threshold_tokens":150000},"goals_engine":"hub","goals_max_turns":10}`)
+	opts, err = materializeOptionsFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.Context == nil || opts.Context.GoalsEngine != "hub" || opts.Context.GoalsMaxTurns != 10 || opts.Context.Compression["threshold_tokens"] != float64(150000) {
+		t.Fatalf("managed context lost in env transit: %+v", opts.Context)
+	}
+	t.Setenv("HUB_MANAGED_CONTEXT", `{`)
+	if _, err := materializeOptionsFromEnv(); err == nil {
+		t.Fatal("invalid managed context env accepted")
+	}
+}
+
 func TestToolHubAutostartBinaryPrefersShippedName(t *testing.T) {
 	old := lookPath
 	t.Cleanup(func() { lookPath = old })

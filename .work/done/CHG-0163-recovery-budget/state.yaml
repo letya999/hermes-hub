@@ -1,0 +1,21 @@
+schema: 1
+change: CHG-0163
+title: Stop repeated observation after durable budget notice
+status: done
+updated: 2026-10-25
+validation:
+  regression: passed_race
+  just_check: passed_coverage_86.55
+  dev_deployment: passed
+evidence:
+  - "2026-10-25: complete just check exited 0; race/shuffle tests, 86.55% own statement coverage, format/vet/tidy/staticcheck/gosec, docs/actionlint and deployment configuration contract all passed."
+  - "2026-10-25: targeted race tests passed for observation, recovery, goal routing, revoked group access and status/progress delivery."
+  - "2026-10-25: fixed a race in the goal notification test's fake.sent reads, confirmed by the race detector before repair."
+  - "hubctl dev-rebuild --dir spaces/local --env dev communication-hub: exit 0; running image matches hermes-hub-dev-local-communication-hub:local sha256:f480fcd269be932485abdcaad9758f9f106cb71518a325402807229e0e20afd3."
+  - "HTTP /v1/goals without credentials returns expected 401; container running with zero restarts. No standalone health endpoint is configured."
+  - "After deployment the two stale synthetic mappings retain pre-restart timestamps and uncertain status, with no new job events across multiple former retry intervals. Existing notices remain delivered; no input or external message replay."
+  - "Safe live log inspection: two stale synthetic unknown admissions repeatedly occupied workers after their recovery budget; no user message contents recorded."
+  - "Two relay header timeouts found; inspected Telegram status and error receipts confirm delivery for one affected run."
+remaining: []
+limitations:
+  - "No new external Telegram messages or live model requests were sent for acceptance. Observed upstream header timeouts may recur; timeout settings were not changed without evidence of a configuration defect."

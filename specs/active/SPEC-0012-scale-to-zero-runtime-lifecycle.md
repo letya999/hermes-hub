@@ -1,5 +1,5 @@
 ---
-status: active
+status: active (warm-idle default superseded: 30 min per SPEC-0053/ADR-0036, not five minutes)
 title: Scale-to-zero Hermes runtime lifecycle
 ---
 

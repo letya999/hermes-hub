@@ -91,6 +91,70 @@ func TestSetAcceptsReviewedTypes(t *testing.T) {
 	}
 }
 
+func TestSetAcceptsContextControlKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	for _, tc := range []struct {
+		key   string
+		value string
+	}{
+		{"features.compact.engine", "auto"},
+		{"features.compact.engine", "hub"},
+		{"features.compact.engine", "native"},
+		{"features.compact.engine", "auto"},
+		{"goals.engine", "auto"},
+		{"goals.engine", "hub"},
+		{"goals.engine", "native"},
+		{"goals.engine", "auto"},
+		{"goals.judge", "auto"},
+		{"goals.judge", "aux"},
+		{"goals.judge", "main"},
+		{"goals.judge", "self"},
+		{"goals.judge", "auto"},
+		{"goals.max_turns", "12"},
+		{"compression.hub_sweep.enabled", "true"},
+		{"compression.hub_sweep.threshold_tokens", "220000"},
+		{"compression.hub_sweep.cooldown_seconds", "600"},
+		{"compression.hub_sweep.precompute", "false"},
+	} {
+		if _, err := Set(path, tc.key, tc.value); err != nil {
+			t.Fatalf("%s=%s rejected: %v", tc.key, tc.value, err)
+		}
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded["features.compact.engine"] != "auto" || loaded["goals.judge"] != "auto" ||
+		loaded["goals.max_turns"] != int64(12) || loaded["compression.hub_sweep.threshold_tokens"] != int64(220000) {
+		t.Fatalf("context keys: %v", loaded)
+	}
+}
+
+func TestSetRejectsOutOfRangeContextControl(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	for _, tc := range []struct{ key, value string }{
+		{"features.compact.engine", "provider"},
+		{"features.compact.engine", "cloud"},
+		{"goals.engine", "cron"},
+		{"goals.judge", "frontier"},
+		{"goals.max_turns", "0"},
+		{"goals.max_turns", "500"},
+		{"compression.hub_sweep.threshold_tokens", "1"},
+		{"compression.hub_sweep.cooldown_seconds", "-5"},
+		{"compression.hub_sweep.enabled", "loud"},
+		{"compression.hub_sweep", "true"},
+		{"goals.engines", "hub"},
+		{"features.compact.engines", "hub"},
+	} {
+		if _, err := Set(path, tc.key, tc.value); err == nil {
+			t.Fatalf("%s=%s accepted", tc.key, tc.value)
+		}
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("rejected context keys wrote the overlay")
+	}
+}
+
 func TestLoadRejectsTamperedOverlay(t *testing.T) {
 	path := filepath.Join(t.TempDir(), FileName)
 	for _, body := range []string{

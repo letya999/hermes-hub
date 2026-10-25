@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/url"
-	"path"
 	"slices"
 	"strings"
 
@@ -44,20 +43,51 @@ func (entry PreparedEntry) BrokerContract() (contract.Contract, error) {
 	return result, nil
 }
 
+// Catalog tiers: T0 entries are reviewed and ship CI-built images pinned by
+// digest; T1 entries come from deterministic registry imports an operator
+// confirmed; T2 is the arbitrary-source path, experimental and async.
+const (
+	TierT0 = "t0"
+	TierT1 = "t1"
+	TierT2 = "t2"
+)
+
+// PinnedImage is the CI-built OCI reference a T0/T1 entry admits: the digest
+// is the install authority, provenance and SBOM point at its attestations.
+type PinnedImage struct {
+	Ref        string `json:"ref"`
+	Digest     string `json:"digest"`
+	Provenance string `json:"provenance,omitempty"`
+	SBOM       string `json:"sbom,omitempty"`
+}
+
 type PreparedEntry struct {
-	ID                 string                     `json:"id"`
-	Aliases            []string                   `json:"aliases,omitempty"`
-	Name               string                     `json:"name"`
-	Source             ArtifactSource             `json:"source"`
-	License            string                     `json:"license"`
-	Language           string                     `json:"language"`
-	PythonExtras       []string                   `json:"python_extras,omitempty"`
-	Entrypoint         []string                   `json:"entrypoint"`
-	Connection         ConnectionRecipe           `json:"connection"`
-	ContractID         string                     `json:"contract_id"`
-	ContractRevision   int                        `json:"contract_revision"`
-	Stateful           bool                       `json:"stateful"`
-	StateTarget        string                     `json:"state_target,omitempty"`
+	ID      string   `json:"id"`
+	Aliases []string `json:"aliases,omitempty"`
+	Name    string   `json:"name"`
+	// Tier defaults to t0 for embedded reviewed entries; the catalog may pin
+	// it explicitly, and T0 entries require an image digest.
+	Tier  string       `json:"tier,omitempty"`
+	Image *PinnedImage `json:"image,omitempty"`
+	// Toolsets/DefaultEnabled/DefaultExcluded stage the projected surface:
+	// install projects the default read set, other sets join on enable.
+	Toolsets         map[string][]string `json:"toolsets,omitempty"`
+	DefaultEnabled   []string            `json:"default_enabled,omitempty"`
+	DefaultExcluded  []string            `json:"default_excluded,omitempty"`
+	Source           ArtifactSource      `json:"source"`
+	License          string              `json:"license"`
+	Language         string              `json:"language"`
+	PythonExtras     []string            `json:"python_extras,omitempty"`
+	Entrypoint       []string            `json:"entrypoint"`
+	Connection       ConnectionRecipe    `json:"connection"`
+	ContractID       string              `json:"contract_id"`
+	ContractRevision int                 `json:"contract_revision"`
+	Stateful         bool                `json:"stateful"`
+	StateTarget      string              `json:"state_target,omitempty"`
+	// Budgets raises the default execution budget for heavyweight entries —
+	// headless Chromium needs more memory, pids and /dev/shm than the 512
+	// MiB/64 pid default. Values still pass the global execution bounds.
+	Budgets            *PreparedBudgets           `json:"budgets,omitempty"`
 	Environment        []string                   `json:"environment,omitempty"`
 	RuntimeEnvironment map[string]string          `json:"runtime_environment,omitempty"`
 	ProxyEnvironment   []string                   `json:"proxy_environment,omitempty"`
@@ -80,15 +110,30 @@ type PreparedEntry struct {
 	ContextSources []ArtifactOverlay `json:"context_sources,omitempty"`
 	// TCPForwards declares companion loopback forwards; each target_env must
 	// be an env-delivered connection field carrying a host:port endpoint.
-	TCPForwards      []TCPForward     `json:"tcp_forwards,omitempty"`
-	Egress           []string         `json:"egress"`
-	CredentialGroups [][]string       `json:"credential_groups,omitempty"`
-	ReadTools        []string         `json:"read_tools"`
-	ProbeTool        string           `json:"probe_tool,omitempty"`
-	ProbeTools       []ProbeCandidate `json:"probe_tools,omitempty"`
-	OAuth            *PreparedOAuth   `json:"oauth,omitempty"`
-	Runbook          string           `json:"runbook"`
-	Handoff          string           `json:"handoff"`
+	TCPForwards []TCPForward `json:"tcp_forwards,omitempty"`
+	Egress      []string     `json:"egress"`
+	// EgressClass carries the proxy policy shape: "web" for browser entries
+	// (arbitrary HTTPS through the deny-first proxy); under "web" the egress
+	// list is reviewed extra deny entries and may be empty.
+	EgressClass      string     `json:"egress_class,omitempty"`
+	CredentialGroups [][]string `json:"credential_groups,omitempty"`
+	ReadTools        []string   `json:"read_tools"`
+	ProbeTool        string     `json:"probe_tool,omitempty"`
+	// ProbeArgs carries the reviewed literal arguments a read probe needs —
+	// browser_tabs rejects a bare call because "action" is required even to
+	// list. Only scalar values are allowed; secrets can never land here.
+	ProbeArgs  map[string]any   `json:"probe_args,omitempty"`
+	ProbeTools []ProbeCandidate `json:"probe_tools,omitempty"`
+	OAuth      *PreparedOAuth   `json:"oauth,omitempty"`
+	Runbook    string           `json:"runbook"`
+	Handoff    string           `json:"handoff"`
+}
+
+type PreparedBudgets struct {
+	CPUMillis  int `json:"cpu_millis,omitempty"`
+	MemoryMiB  int `json:"memory_mib,omitempty"`
+	MaxPIDs    int `json:"max_pids,omitempty"`
+	ShmSizeMiB int `json:"shm_size_mib,omitempty"`
 }
 
 // Blocked entries are discoverable bundle slots, not installation authority.
@@ -131,19 +176,36 @@ func BlockedCatalog() ([]BlockedEntry, error) {
 // credential env var was actually delivered — for connectors whose credential
 // groups are alternatives (Jira block or Confluence block, not both).
 type ProbeCandidate struct {
-	Tool string `json:"tool"`
-	Env  string `json:"env"`
+	Tool string         `json:"tool"`
+	Env  string         `json:"env"`
+	Args map[string]any `json:"args,omitempty"`
 }
 
 // PreparedOAuth is reviewed source-specific token delivery, not a guess from
 // a tool's error text. The authorization-code exchange itself stays generic.
-type PreparedOAuth struct {
-	Provider     string   `json:"provider"`
-	Scopes       []string `json:"scopes"`
-	ClientInput  string   `json:"client_input"`
-	TokenFile    string   `json:"token_file"`
-	TokenAccount string   `json:"token_account"`
-	TokenFormat  string   `json:"token_format"`
+type PreparedOAuth = OAuthRecipe
+
+// validProbeArgs bounds reviewed probe literals: a handful of scalar
+// arguments, never nested objects that could smuggle a payload past review.
+func validProbeArgs(args map[string]any) bool {
+	if len(args) > 8 {
+		return false
+	}
+	for key, value := range args {
+		if !identity.ValidID(key) {
+			return false
+		}
+		switch v := value.(type) {
+		case string:
+			if len(v) > 256 || strings.ContainsAny(v, "\x00\r\n") {
+				return false
+			}
+		case bool, float64:
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func PreparedCatalog() ([]PreparedEntry, error) {
@@ -184,8 +246,11 @@ func ParsePreparedCatalog(data []byte) ([]PreparedEntry, error) {
 		for _, field := range entry.Connection.Fields {
 			requiredFields[field.Name] = field.Required
 		}
+		if len(entry.ProbeArgs) > 0 && entry.ProbeTool == "" || !validProbeArgs(entry.ProbeArgs) {
+			return nil, fmt.Errorf("%w: prepared probe args", ErrInvalid)
+		}
 		for _, candidate := range entry.ProbeTools {
-			if !slices.Contains(entry.ReadTools, candidate.Tool) || !requiredFields[candidate.Env] {
+			if !slices.Contains(entry.ReadTools, candidate.Tool) || !requiredFields[candidate.Env] || !validProbeArgs(candidate.Args) {
 				return nil, fmt.Errorf("%w: prepared probe candidate must be a reviewed read tool gated on a required field", ErrInvalid)
 			}
 		}
@@ -221,7 +286,7 @@ func ParsePreparedCatalog(data []byte) ([]PreparedEntry, error) {
 					stateFile = stateFile || file.Name == a.TokenFile && file.JSON
 				}
 			}
-			if !entry.Stateful || !found || a.Provider != "google" || len(a.Scopes) != 1 || a.Scopes[0] != "https://www.googleapis.com/auth/calendar.readonly" || a.TokenFormat != "google-calendar-account-map" || a.TokenFile == "" || path.Base(a.TokenFile) != a.TokenFile || strings.ContainsAny(a.TokenFile, "\\\x00\r\n") || !stateFile || !identity.ValidID(a.TokenAccount) {
+			if !entry.Stateful || !found || a.Validate() != nil || a.StateTarget != entry.StateTarget || !stateFile {
 				return nil, fmt.Errorf("%w: prepared OAuth handoff", ErrInvalid)
 			}
 		}
@@ -261,8 +326,17 @@ func ParsePreparedCatalog(data []byte) ([]PreparedEntry, error) {
 			}
 		}
 		config := NormalizeArtifactImportConfig(entry.Apply(DefaultSelfInstallConfig(entry.Source)))
+		if entry.Tier != "" && entry.Tier != TierT0 && entry.Tier != TierT1 && entry.Tier != TierT2 {
+			return nil, fmt.Errorf("prepared %s: %w: unknown tier", entry.ID, ErrInvalid)
+		}
+		imageDigest := "sha256:" + string(bytes.Repeat([]byte("a"), 64))
+		if entry.Image != nil {
+			// The catalog pin is the definition's admitted image digest; the
+			// validation placeholder otherwise stands in for the CI value.
+			imageDigest = entry.Image.Digest
+		}
 		definition := ToolDefinition{Schema: SchemaVersion, DefinitionID: entry.ID, Version: config.Version, Transport: ContainerMCP,
-			Source:      DefinitionSource{Image: config.Image, Digest: "sha256:" + string(bytes.Repeat([]byte("a"), 64)), ContextSources: append([]ArtifactOverlay(nil), entry.ContextSources...)},
+			Source:      DefinitionSource{Image: config.Image, Digest: imageDigest, ContextSources: append([]ArtifactOverlay(nil), entry.ContextSources...)},
 			Credentials: config.Credentials, CredentialGroups: config.CredentialGroups, CredentialContractID: config.CredentialContractID, CredentialContractRevision: config.CredentialContractRevision, CredentialContractEnv: config.CredentialContractEnv,
 			Environment: config.Environment, RuntimeEnvironment: config.RuntimeEnvironment, ProxyEnvironment: config.ProxyEnvironment, Tools: config.Tools, Workload: config.Workload, Execution: config.Execution, Health: config.Health}
 		if err := definition.Validate(); err != nil {
@@ -305,6 +379,10 @@ func PreparedCredentialGate(source ArtifactSource) error {
 	return &CredentialGate{Names: names, Detail: "Provider login is required before this MCP can list tools; enter credentials in the protected Broker form, then verify the read probe."}
 }
 
+// preparedLookup is the catalog seam admission paths call; tests pin a
+// catalog entry here without touching the embedded catalog.
+var preparedLookup = PreparedForSource
+
 func PreparedForSource(source ArtifactSource) (PreparedEntry, bool, error) {
 	entries, err := PreparedCatalog()
 	for _, entry := range entries {
@@ -331,6 +409,7 @@ func PreparedForRepository(repository, subfolder string) (PreparedEntry, bool, e
 
 func (entry PreparedEntry) Apply(config ArtifactImportConfig) ArtifactImportConfig {
 	config.Language = entry.Language
+	config.OAuth = entry.OAuth
 	// The generator still infers the binary and upstream argv tail; the
 	// reviewed argv may only extend that inferred prefix (read-only flags and
 	// similar gates), never point the launch at a different binary.
@@ -349,12 +428,50 @@ func (entry PreparedEntry) Apply(config ArtifactImportConfig) ArtifactImportConf
 	config.ProxyEnvironment = append([]string(nil), entry.ProxyEnvironment...)
 	config.ContextSources = append([]ArtifactOverlay(nil), entry.ContextSources...)
 	config.Execution.Egress = append([]string(nil), entry.Egress...)
+	config.Execution.EgressClass = entry.EgressClass
 	config.Execution.TCPForwards = append([]TCPForward(nil), entry.TCPForwards...)
 	config.Workload.Stateful = entry.Stateful
+	if entry.Budgets != nil {
+		if entry.Budgets.CPUMillis > 0 {
+			config.Execution.CPUMillis = entry.Budgets.CPUMillis
+		}
+		if entry.Budgets.MemoryMiB > 0 {
+			config.Execution.MemoryMiB = entry.Budgets.MemoryMiB
+		}
+		if entry.Budgets.MaxPIDs > 0 {
+			config.Execution.MaxPIDs = entry.Budgets.MaxPIDs
+		}
+		if entry.Budgets.ShmSizeMiB > 0 {
+			config.Execution.ShmSizeMiB = entry.Budgets.ShmSizeMiB
+		}
+	}
+	// A stateful target the Broker contract does not manage is workload
+	// state: it becomes a per-connection named volume cleaned by the same
+	// finalizer ladder as every other connector (browser profiles are the
+	// first consumer; google-style broker state keeps its host dir).
+	if entry.Stateful && entry.StateTarget != "" && !slices.ContainsFunc(config.Execution.Mounts, func(m Mount) bool { return m.Target == entry.StateTarget }) {
+		if brokerContract, contractErr := entry.BrokerContract(); contractErr == nil && (brokerContract.State == nil || brokerContract.State.Target != entry.StateTarget) {
+			config.Execution.Mounts = append(config.Execution.Mounts, Mount{Source: "connection-state", Target: entry.StateTarget})
+		}
+	}
+	config.Toolsets = map[string][]string{}
+	for set, tools := range entry.Toolsets {
+		config.Toolsets[set] = append([]string(nil), tools...)
+	}
+	config.DefaultEnabled = append([]string(nil), entry.DefaultEnabled...)
+	config.DefaultExcluded = append([]string(nil), entry.DefaultExcluded...)
+	if entry.Image != nil {
+		// Definitions carry the repository separately from the digest pin:
+		// "repo@sha256:…" splits into Image + Digest at admission.
+		config.Image, _, _ = strings.Cut(entry.Image.Ref, "@")
+	}
 	return config
 }
 
 func (entry PreparedEntry) Overlay(connection ConnectionRecipe) ConnectionRecipe {
+	if connection.OAuth == nil {
+		connection.OAuth = entry.OAuth
+	}
 	reviewed := map[string]bool{}
 	for _, field := range entry.Connection.Fields {
 		reviewed[field.Name] = true

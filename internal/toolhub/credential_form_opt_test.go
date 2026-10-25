@@ -66,7 +66,9 @@ func TestLoopbackFormOptionalFieldsAndDemote(t *testing.T) {
 	post.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec = httptest.NewRecorder()
 	gateway.serveCredentials(rec, post)
-	if rec.Code != http.StatusOK {
+	// A live wizard nonce turns the accepted submit into a redirect onto the
+	// stable /connect link; without one the legacy result page still serves.
+	if rec.Code != http.StatusOK && rec.Code != http.StatusSeeOther {
 		t.Fatalf("demoted submit rejected: %d %s", rec.Code, rec.Body.String())
 	}
 	stored, err := store.onboarding(onboarding.OnboardingID)

@@ -42,7 +42,7 @@ func AuditExecutionSpool(spool, user string) (ExecutionReport, error) {
 			return report, err
 		}
 		entries, err := folder.ReadDir(-1)
-		folder.Close()
+		_ = folder.Close()
 		if err != nil {
 			return report, err
 		}
@@ -92,7 +92,7 @@ func AuditExecutionSpool(spool, user string) (ExecutionReport, error) {
 			return report, err
 		}
 		entries, err := folder.ReadDir(-1)
-		folder.Close()
+		_ = folder.Close()
 		if err != nil {
 			return report, err
 		}
@@ -151,7 +151,7 @@ func SelectExecution(dir string, selection stack.ExecutionSelection, audit Execu
 	if err != nil {
 		return audit, errors.New("another execution selection is active")
 	}
-	lock.Close()
+	_ = lock.Close()
 	defer root.Remove(".execution-lock")
 	body, err := json.MarshalIndent(selection, "", "  ")
 	if err != nil {

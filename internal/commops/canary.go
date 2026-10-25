@@ -209,7 +209,7 @@ func (e *Engine) journal(now time.Time, class string) {
 			if len(lines) > journalKeep {
 				lines = lines[len(lines)-journalKeep:]
 			}
-			_ = os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
+			_ = os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600) // #nosec G703 -- canary journal under the engine root
 		}
 	}
 }

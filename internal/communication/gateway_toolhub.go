@@ -156,18 +156,49 @@ func (g *Gateway) toolHubConnectorsHTTP(user User) (string, bool) {
 			Transport    string   `json:"transport"`
 			Tools        []string `json:"tools"`
 		} `json:"connectors"`
+		Inventory []api.OperationCandidate `json:"inventory"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&payload); err != nil {
 		return "", false
 	}
-	if len(payload.Connectors) == 0 {
+	if len(payload.Connectors) == 0 && len(payload.Inventory) == 0 {
 		return "\nКоннекторы ToolHub: нет.", true
 	}
 	lines := []string{"", "Коннекторы ToolHub:"}
+	represented := map[string]bool{}
+	for _, item := range payload.Inventory {
+		label := item.DefinitionID
+		if item.Transport != "" {
+			label += " [" + item.Transport + "]"
+		}
+		for _, projected := range payload.Connectors {
+			if projected.DefinitionID == item.DefinitionID {
+				label = connectorLine(projected.DefinitionID, projected.Transport, projected.Tools)
+				represented[item.DefinitionID] = true
+				break
+			}
+		}
+		if item.ConnectionStatus != "" {
+			label += " — connection " + string(item.ConnectionStatus)
+		}
+		if item.CredentialVisibility != "" {
+			label += "; credential " + item.CredentialVisibility
+		}
+		if item.HealthCause != "" {
+			label += "; " + item.HealthCause
+		}
+		if !item.CredentialCheckedAt.IsZero() {
+			label += "; credential checked " + item.CredentialCheckedAt.UTC().Format(time.RFC3339)
+		}
+		lines = append(lines, "- "+label)
+	}
 	for _, c := range payload.Connectors {
+		if represented[c.DefinitionID] {
+			continue
+		}
 		label := c.Transport
 		if label == "" {
-			label = "mcp"
+			label = "unknown"
 		}
 		lines = append(lines, "- "+connectorLine(c.DefinitionID, label, c.Tools))
 	}
@@ -369,7 +400,7 @@ func connectionList(user User) string {
 			}
 		}
 		if len(missing) == 0 {
-			lines = append(lines, service.Name+" — готово")
+			lines = append(lines, service.Name+" — настроено; работоспособность не проверена")
 		} else {
 			lines = append(lines, service.Name+" — нужны настройки: "+strings.Join(missing, ", "))
 		}

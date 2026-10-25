@@ -80,7 +80,7 @@ func forwardProxyURL() string {
 func serveTCPForward(ctx context.Context, listener net.Listener, proxy, target string) {
 	go func() {
 		<-ctx.Done()
-		listener.Close()
+		_ = listener.Close()
 	}()
 	for {
 		conn, err := listener.Accept()
@@ -123,26 +123,26 @@ func connectViaProxy(ctx context.Context, proxy, target string) (net.Conn, error
 		return nil, err
 	}
 	if err := raw.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
-		raw.Close()
+		_ = raw.Close()
 		return nil, err
 	}
 	if _, err := fmt.Fprintf(raw, "CONNECT %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: hermes-companion\r\n\r\n", target, target); err != nil {
-		raw.Close()
+		_ = raw.Close()
 		return nil, err
 	}
 	reader := bufio.NewReaderSize(raw, 4096)
 	response, err := http.ReadResponse(reader, &http.Request{Method: http.MethodConnect})
 	if err != nil {
-		raw.Close()
+		_ = raw.Close()
 		return nil, err
 	}
-	response.Body.Close()
+	_ = response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		raw.Close()
+		_ = raw.Close()
 		return nil, fmt.Errorf("proxy refused connect: %s", response.Status)
 	}
 	if err := raw.SetDeadline(time.Time{}); err != nil {
-		raw.Close()
+		_ = raw.Close()
 		return nil, err
 	}
 	return &bufferedConn{Conn: raw, reader: reader}, nil

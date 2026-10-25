@@ -133,6 +133,13 @@ func (t *Tools) Server() *mcp.Server {
 	for _, op := range []string{"list", "read", "write", "search"} {
 		add("file_"+op, "Bounded "+op+" on workspace or read-only archive; updates require revision from read")
 	}
+	for _, op := range []string{"knowledge_list", "knowledge_read", "knowledge_search"} {
+		for _, tool := range HubToolsDefinition().Tools {
+			if tool.Name == op {
+				add(op, tool.Description)
+			}
+		}
+	}
 	add("service_catalog", "List connectors and optional services this runtime can offer, with required env key names, self-service flag and status. Catalog presence means 'can be enabled', not 'connected' — report a connector as usable only when status=ready or its tools are actually present on your tool list; status=available/missing-credentials/host-managed/policy-disabled all mean it is NOT currently usable. Never returns secrets.")
 	add("service_enable", "After a direct owner request, enable one self-service catalog feature. A public GitHub repository is not a feature name: do not install it here, in the terminal, or in config.yaml. If credentials are missing, always returns input=protected-form with form_url; never ask the owner for KEY=value in chat.")
 	add("service_disable", "After a direct owner request, disable one ToolHub binding without deleting its historical owner or credential metadata.")
@@ -151,6 +158,11 @@ func (t *Tools) Server() *mcp.Server {
 	add("archive_create", "Pack listed workspace files into a new zip under artifacts/. Paths must be distinct existing regular files; the destination must not exist.")
 	add("archive_unpack", "Unpack a workspace zip into a new directory under artifacts/unpacked/<name>. Encrypted, symlink, and non-file entries are rejected; the target must not exist.")
 	add("inbox_fetch", "Materialize a file the user sent to the chat. Set id to the staged file id from the [file ... inbox=<id>] metadata line. The file lands under inbox/; a zip is unpacked into inbox/<id>/files/ without keeping the archive. Call this before reading or inspecting an inbound file.")
+	add("context_status", "Show this session's context control state: effective sweep threshold with declared/default provenance, journaled compaction count and last event, and the live transcript token estimate. Unknown values are null, never estimated from transcript text.")
+	add("context_compact", "Compact this session's transcript at a turn boundary. here keeps that many trailing exchanges verbatim; focus steers the summary; prune only strips tool outputs with zero model calls; preview reports would_method without mutating. A busy session refuses deterministically; queue=true parks the request for the next turn boundary. The result is metadata only — never summary text.")
+	for _, op := range []string{"goal_set", "goal_status", "goal_pause", "goal_resume", "goal_clear"} {
+		add(op, "Goal mode: "+strings.TrimPrefix(op, "goal_")+" operates on this conversation's persistent goal record — the same record /goal manages. set takes text; status reports turns/verdict; pause/resume/clear control the bounded continuation loop.")
+	}
 	add("settings_get", "Show runtime self-settings: the manageable key allowlist, current overrides and effective values. Settings never include credential values.")
 	add("settings_set", "Set one manageable runtime setting (compression, display, image_gen model/delivery) or reset it with an empty value. The change applies after the scheduled runtime restart.")
 	if t.session().ImageGranted() {

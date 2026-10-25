@@ -296,7 +296,7 @@ func preserveLegacyUserMCP(dir, user string) error {
 	if path == "" {
 		path = filepath.Join(dir, "runtime", "toolhub", "governance.json")
 	}
-	if _, err := os.Stat(path); err == nil {
+	if _, err := os.Stat(path); err == nil { // #nosec G703 -- path built under the migration workspace
 		return nil // existing policy document is authoritative; never widen it
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err

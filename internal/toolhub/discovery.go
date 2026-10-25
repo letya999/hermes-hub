@@ -105,7 +105,9 @@ func (c *ControlPlane) discover(ctx context.Context, auth identity.Envelope, que
 		warnings = append(warnings, searchWarnings...)
 		candidates = api.AppendDiscovered(candidates, found)
 		if len(candidates) < 5 {
-			found, searchWarnings = api.SearchCatalogSources(lookupCtx, c.RecipeCatalogs, query, true)
+			fallbackCtx, fallbackCancel := context.WithTimeout(ctx, 15*time.Second)
+			defer fallbackCancel()
+			found, searchWarnings = api.SearchCatalogSources(fallbackCtx, c.RecipeCatalogs, query, true)
 			warnings = append(warnings, searchWarnings...)
 			candidates = api.AppendDiscovered(candidates, found)
 		}

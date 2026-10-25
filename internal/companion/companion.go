@@ -126,7 +126,7 @@ func Run(ctx context.Context, file string) error {
 		mux.Handle("/mcp", Protect(handler, token))
 	}
 	srv := &http.Server{Addr: c.Listen, Handler: mux, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
-	go func() {
+	go func() { // #nosec G118 -- graceful shutdown needs a fresh context after ctx cancellation
 		<-ctx.Done()
 		stop, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()

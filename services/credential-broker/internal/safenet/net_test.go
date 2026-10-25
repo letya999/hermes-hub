@@ -40,7 +40,7 @@ func TestFixedTLSNoRedirectNoEnvProxy(t *testing.T) {
 	up := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		if r.URL.Path == "/redirect" {
-			http.Redirect(w, r, "https://example.invalid/", 302)
+			http.Redirect(w, r, "https://example.invalid/", http.StatusFound)
 			return
 		}
 		w.WriteHeader(204)

@@ -8,6 +8,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/compaction"
 )
 
 // UsageRequest resolves measured session usage on the runtime that owns the
@@ -54,8 +56,13 @@ type SessionUsage struct {
 	// CompactionsTruncated marks the lineage walk stopped at the hop cap with
 	// more ancestors present; consumers render Compactions as a lower bound
 	// (≥N) instead of an exact count.
-	CompactionsTruncated bool   `json:"compactions_truncated,omitempty"`
-	LastActive           string `json:"last_active,omitempty"`
+	CompactionsTruncated bool `json:"compactions_truncated,omitempty"`
+	// InPlaceCompactions and LastCompaction come only from the compaction
+	// journal — transcript-carrier compactions leave no lineage row, so they
+	// surface here or nowhere. Nil count means the journal recorded none.
+	InPlaceCompactions *int64            `json:"in_place_compactions"`
+	LastCompaction     *compaction.Event `json:"last_compaction,omitempty"`
+	LastActive         string            `json:"last_active,omitempty"`
 }
 
 const usageSourceHermesSessionDB = "hermes_session_db"
@@ -117,7 +124,40 @@ func (s *runtimeHTTP) measureUsage(ctx context.Context, request UsageRequest) (S
 	report.SessionFound = true
 	usageFillSession(&report, row)
 	usageFillLineage(ctx, client, base, auth, &report, row)
+	usageFillJournal(&report)
 	return report, nil
+}
+
+// usageFillJournal layers journaled in-place compactions onto the measured
+// report. The journal is the only witness for in-place events; its absence or
+// a read failure leaves the lineage view intact rather than fabricating.
+func usageFillJournal(report *SessionUsage) {
+	j, err := compaction.Open(env("HUB_STATE", "/state"))
+	if err != nil {
+		return
+	}
+	events, err := j.Events(report.SessionID)
+	if err != nil || len(events) == 0 {
+		return
+	}
+	var count int64
+	var last *compaction.Event
+	for i := range events {
+		if events[i].FailureClass != "" {
+			continue
+		}
+		count++
+		last = &events[i]
+	}
+	report.InPlaceCompactions = &count
+	if last == nil {
+		return
+	}
+	report.LastCompaction = last
+	stamp := last.At.UTC().Format(time.RFC3339)
+	if stamp > report.LastCompactionAt {
+		report.LastCompactionAt = stamp
+	}
 }
 
 func usageSessionMissing(err error) bool {

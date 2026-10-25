@@ -52,7 +52,7 @@ func (t *Tools) effectiveSettings() map[string]any {
 	if configPath == "" {
 		configPath = "/state/hermes/config.yaml"
 	}
-	body, err := os.ReadFile(configPath) // #nosec G304 -- the mounted effective config path.
+	body, err := os.ReadFile(configPath) // #nosec G304 G703 -- the mounted effective config path.
 	if err != nil {
 		return nil
 	}

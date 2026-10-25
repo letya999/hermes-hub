@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,7 +78,7 @@ func Backup(home, user, out string, spoolDir string) error {
 			if err != nil {
 				return err
 			}
-			return addFile(zipw, hashes, filepath.ToSlash(relPath), path)
+			return addFile(zipw, hashes, filepath.ToSlash(relPath), path, absHome)
 		})
 	}
 	for _, rel := range []string{"hermes", "workspace", "connections", "skills"} {
@@ -89,7 +90,7 @@ func Backup(home, user, out string, spoolDir string) error {
 	toolhub := filepath.Join(absHome, "runtime", "toolhub", "store.json")
 	if _, err := os.Stat(toolhub); err == nil {
 		includes = append(includes, "toolhub")
-		if err := addFile(zipw, hashes, "runtime/toolhub/store.json", toolhub); err != nil {
+		if err := addFile(zipw, hashes, "runtime/toolhub/store.json", toolhub, absHome); err != nil {
 			_ = zipw.Close()
 			return err
 		}
@@ -101,6 +102,11 @@ func Backup(home, user, out string, spoolDir string) error {
 				continue
 			}
 			includes = append(includes, "spool/"+rel)
+			spoolRoot, rootErr := os.OpenRoot(spoolDir)
+			if rootErr != nil {
+				_ = zipw.Close()
+				return rootErr
+			}
 			_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 				if err != nil || info.IsDir() {
 					return err
@@ -109,8 +115,31 @@ func Backup(home, user, out string, spoolDir string) error {
 				if err != nil {
 					return err
 				}
-				return addFile(zipw, hashes, "spool/"+filepath.ToSlash(relPath), path)
+				body, err := spoolRoot.ReadFile(relPath)
+				if err != nil {
+					return err
+				}
+				var record struct {
+					PrincipalID string `json:"principal_id"`
+					ContextID   string `json:"context_id"`
+					Job         struct {
+						PrincipalID string `json:"principal_id"`
+						ContextID   string `json:"context_id"`
+					} `json:"job"`
+				}
+				if json.Unmarshal(body, &record) != nil {
+					return nil
+				}
+				owner, context := record.PrincipalID, record.ContextID
+				if rel == "occurrences" {
+					owner, context = record.Job.PrincipalID, record.Job.ContextID
+				}
+				if owner != user || context != user {
+					return nil
+				}
+				return addFile(zipw, hashes, "spool/"+filepath.ToSlash(relPath), path, spoolDir)
 			})
+			_ = spoolRoot.Close()
 		}
 	}
 	manifest := Manifest{Schema: Schema, User: user, ContextID: user, CreatedAt: time.Now().UTC(), Includes: includes, Excludes: []string{"plaintext-secrets", "credential-store"}, SHA256: hashes}
@@ -267,7 +296,7 @@ func Restore(home, user, archive, spoolDir string) error {
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(filepath.Join(dest, "store.json"), body, 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(dest, "store.json"), body, 0600); err != nil { // #nosec G703 -- operator-managed context root
 			return err
 		}
 	}
@@ -297,12 +326,16 @@ func Purge(home, user, confirm string) (PurgeReport, error) {
 }
 
 func MemoryFiles(home string) ([]string, error) {
-	root := filepath.Join(home, "hermes", "memories")
-	entries, err := os.ReadDir(root)
+	root, err := memoryRoot(home)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
+		return nil, err
+	}
+	defer root.Close()
+	entries, err := fs.ReadDir(root.FS(), ".")
+	if err != nil {
 		return nil, err
 	}
 	names := []string{}
@@ -319,7 +352,21 @@ func DeleteMemory(home, name string) error {
 	if name == "" || strings.Contains(name, "..") || strings.ContainsAny(name, `/\`) {
 		return errors.New("invalid memory name")
 	}
-	return os.Remove(filepath.Join(home, "hermes", "memories", name))
+	root, err := memoryRoot(home)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	return root.Remove(name)
+}
+
+func memoryRoot(home string) (*os.Root, error) {
+	root, err := os.OpenRoot(home)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	return root.OpenRoot("hermes/memories")
 }
 
 func restoreSpoolRel(name string) (string, bool) {
@@ -354,8 +401,24 @@ func writeZipFile(f *zip.File, target string) error {
 	return closeErr
 }
 
-func addFile(zipw *zip.Writer, hashes map[string]string, name, path string) error {
-	body, err := os.ReadFile(path)
+func addFile(zipw *zip.Writer, hashes map[string]string, name, path, scope string) error {
+	root, err := os.OpenRoot(scope)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	rel, err := filepath.Rel(scope, path)
+	if err != nil {
+		return err
+	}
+	info, err := root.Lstat(rel)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("backup source is not a regular file")
+	}
+	body, err := root.ReadFile(rel)
 	if err != nil {
 		return err
 	}

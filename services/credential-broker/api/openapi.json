@@ -323,7 +323,7 @@
           "body_sha256",
           "actor"
         ],
-        "description": "Purpose-separated Ed25519 assertion, NOT JWT; exact signature contract in docs/architecture/api-contract.md."
+        "description": "Purpose-separated Ed25519 assertion, NOT JWT; exact signature contract in docs/services/credential-broker/architecture/api-contract.md."
       },
       "CreateRequest": {
         "type": "object",

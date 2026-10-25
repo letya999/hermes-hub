@@ -480,6 +480,73 @@ func TestReconcileReplaysIdempotencyKeyWhenRunIDUnknown(t *testing.T) {
 	}
 }
 
+// A pre-admission failure never wrote a runtime receipt, and the durable
+// record strips the prompt by design — a readmit refusal (409) is permanent.
+// The job must be named failed instead of re-asking the runtime forever.
+func TestReconcileSettlesLostAdmission(t *testing.T) {
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	b := binding(root)
+	runtime, err := m.Ensure(context.Background(), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", controlTestPolicy(t, root)), JobID: "job-lost", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "idem-lost", Text: "private"}
+	if _, _, err = m.beginJob(request); err != nil {
+		t.Fatal(err)
+	}
+	if err = m.bindJobGeneration(request, runtime.Generation); err != nil {
+		t.Fatal(err)
+	}
+	uncertain := hubruntime.ExecuteResponse{JobID: request.JobID, RuntimeGeneration: runtime.Generation, Status: "uncertain", LastEvent: "run.unknown"}
+	if err = m.finishJobGeneration(request, uncertain, "uncertain", runtime.Generation); err != nil {
+		t.Fatal(err)
+	}
+	var readmitCalls atomic.Int64
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/readmit" {
+			readmitCalls.Add(1)
+			w.WriteHeader(http.StatusConflict)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer api.Close()
+	m.mu.Lock()
+	m.items[runtimeKey(b)].Address = api.URL
+	record := m.jobs[request.JobID]
+	record.UnconfirmedSince = time.Now().Add(-time.Minute)
+	m.jobs[request.JobID] = record
+	m.mu.Unlock()
+	m.reconcileUnconfirmed(context.Background(), time.Now())
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		m.mu.Lock()
+		status := m.jobs[request.JobID].Status
+		m.mu.Unlock()
+		if status == "failed" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	m.mu.Lock()
+	finished := m.jobs[request.JobID]
+	m.mu.Unlock()
+	if finished.Status != "failed" || finished.Response.LastEvent != "run.failed" {
+		t.Fatalf("record after readmit refusal = %+v", finished)
+	}
+	// The verdict settles once: a later sweep must not re-ask the runtime.
+	m.reconcileUnconfirmed(context.Background(), time.Now())
+	time.Sleep(50 * time.Millisecond)
+	if readmitCalls.Load() != 1 {
+		t.Fatalf("readmit calls = %d, want exactly 1", readmitCalls.Load())
+	}
+}
+
 // A still-unconfirmed observe must not accumulate a lease per attempt: the
 // record itself pins the runtime as desired while its outcome is open.
 func TestReconcileAttemptLeaseReleasedWhenUnresolved(t *testing.T) {

@@ -1,0 +1,41 @@
+schema: 1
+change: CHG-0145
+title: Single-link onboarding wizard
+status: done
+branch: feat/m14-toolhub-connector-platform-merge
+updated: 2026-10-21
+phase: done
+slices:
+  wizard-nonce: done
+  serve-connect-wizard: done
+  notice-quieting: done
+  regression-tests: done
+validation:
+  documents: done
+  just_check: pass
+  docker_check: not_run
+  live_acceptance: partial
+notes: >
+  Wizard link /connect/<id>?k=<nonce> armed at every interactive mint site
+  (newOnboarding both branches, credential form mint/remint, broker request
+  mint/admission/reuse, allow_writes pending-confirm, prepared and remote
+  OAuth handoff, remote credentialed admit). serveConnect ?k= dispatches to
+  serveWizard: credential GET/POST shares the /credentials pipeline
+  (submitCredentialForm), confirm GET/POST runs finishAuthorization or
+  applyConfirmedWrites for PendingWrites and redirects back to the same
+  URL, OAuth GET renders the shared interstitial (self-refreshing) and POST
+  shares serveOAuthPaste. GET in awaiting-credentials with a live broker
+  request runs refreshBrokerRequest so a submitted broker form flips the
+  page to confirm on the same URL; pending requests render a broker-hop
+  page with meta refresh. preparing/review/confirmed render a waiting
+  page; enabled/failed render terminal pages. /oauth/callback success
+  303-redirects to the wizard link when a live nonce exists. Successful
+  credential submit redirects back to the wizard link. OAuth flow reuse
+  renews WizardExpires. Comm-hub: a wizard-link notice edits the existing
+  prepare message in place instead of stacking; confirm notice text keeps
+  the URL; continuation copy treats it as already-sent. go test ./...
+  green except an earlier gofmt miss — fixed; devcheck green.
+remaining:
+  - real-install acceptance happens on the next user install: unit and
+    handler-level coverage plus a rebuilt dev stack verify every phase
+    render, but no fresh provider OAuth was driven end-to-end here

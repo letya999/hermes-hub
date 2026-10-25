@@ -92,6 +92,98 @@ func EnrollSiblingRuntimeTokens(spaceDir, environment string) error {
 	return writeFileInPlace(path, body)
 }
 
+// EnrollSiblingModelRelayAdmins writes each managed sibling space's
+// HUB_MODEL_RELAY_ADMIN into this infra owner's model-relay-admins.json,
+// keyed by principal id. The shared communication-hub uses it to route /model
+// to the caller's own relay — the relay still re-checks the token, so a
+// leaked or wrong entry can only ever select a model its owner granted.
+//
+// Same contract as EnrollSiblingRuntimeTokens: spaces-parent only, owner
+// excluded, in-place update so a bind mount keeps serving the new contents.
+func EnrollSiblingModelRelayAdmins(spaceDir, environment string) error {
+	spaceDir, err := filepath.Abs(spaceDir)
+	if err != nil {
+		return err
+	}
+	parent := filepath.Dir(spaceDir)
+	if filepath.Base(parent) != "spaces" {
+		return nil
+	}
+	path := filepath.Join(spaceDir, "model-relay-admins.json")
+	entries := map[string]relayAdminEntry{}
+	siblings, err := os.ReadDir(parent)
+	if err != nil {
+		return err
+	}
+	for _, sibling := range siblings {
+		if !sibling.IsDir() {
+			continue
+		}
+		sibDir := filepath.Join(parent, sibling.Name())
+		if sameDir(sibDir, spaceDir) {
+			continue
+		}
+		settings, readErr := ReadEnvironment(sibDir, environment)
+		if readErr != nil || settings.CapabilityMode != "managed" {
+			continue
+		}
+		values, authErr := ReadSecrets(filepath.Join(sibDir, "model-relay.auth"))
+		if authErr != nil {
+			continue
+		}
+		if admin := strings.TrimSpace(values["HUB_MODEL_RELAY_ADMIN"]); usableRuntimeToken(admin) {
+			entries[settings.User] = relayAdminEntry{
+				URL:   "http://model-relay-" + settings.User + ":8318",
+				Admin: admin,
+			}
+		}
+	}
+	if len(entries) == 0 {
+		info, statErr := os.Lstat(path)
+		if statErr == nil && info.Mode().IsRegular() {
+			return os.Remove(path)
+		}
+		return nil
+	}
+	if sameAdminMap(path, entries) {
+		return nil
+	}
+	body, err := json.MarshalIndent(entries, "", "  ")
+	if err != nil {
+		return err
+	}
+	body = append(body, '\n')
+	return writeFileInPlace(path, body)
+}
+
+// relayAdminEntry is one principal's row in model-relay-admins.json: the
+// relay's shared-network URL and its owner admin bearer. The URL is derived
+// from the same alias convention compose renders, not from user input.
+type relayAdminEntry struct {
+	URL   string `json:"url"`
+	Admin string `json:"admin"`
+}
+
+func sameAdminMap(path string, entries map[string]relayAdminEntry) bool {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var current map[string]relayAdminEntry
+	if json.Unmarshal(body, &current) != nil || current == nil {
+		return false
+	}
+	left, err := json.Marshal(current)
+	if err != nil {
+		return false
+	}
+	right, err := json.Marshal(entries)
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(left, right)
+}
+
 func runtimeTokenEnvelope(s Settings) (identity.Envelope, error) {
 	contextID := s.User
 	if s.OrgScoped() {

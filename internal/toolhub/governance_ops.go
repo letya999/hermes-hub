@@ -115,7 +115,7 @@ func (g *Gateway) serveGrantAck(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
-		_, _ = io.WriteString(w, grantAckPage(grant, nonce))
+		_, _ = io.WriteString(w, grantAckPage(grant, nonce)) // #nosec G705 -- grantAckPage escapes interpolated values
 		return
 	}
 	if r.Method != http.MethodPost {

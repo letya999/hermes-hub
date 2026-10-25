@@ -35,6 +35,9 @@ type cellDockerFake struct {
 	volumes    map[string]bool
 	calls      [][]string
 	execCalls  [][]string
+	// stdinPayloads records every `docker exec -i ... write` body — the
+	// cred-proxy rules channel keeps secrets off argv and host disk.
+	stdinPayloads [][]byte
 	// inspectDrift mutates the inspected record for the named container —
 	// the daemon-side lie a drifted or hostile cell would produce.
 	inspectDrift func(name string, container *genericContainer)
@@ -332,6 +335,27 @@ func (f *cellDockerFake) commandExit(ctx context.Context, sink io.Writer, binary
 	return 0, nil
 }
 
+// commandStdin covers the `docker exec -i <cellinit> write` channel the
+// cred-proxy rules arrive on; the payload is recorded so tests can assert the
+// rules body without it ever touching a host file.
+func (f *cellDockerFake) commandStdin(ctx context.Context, stdin io.Reader, binary string, args ...string) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if binary != "docker" || len(args) < 4 || args[0] != "exec" {
+		return nil, fmt.Errorf("unexpected stdin seam %s %v", binary, args)
+	}
+	f.execCalls = append(f.execCalls, append([]string(nil), args...))
+	body, err := io.ReadAll(stdin)
+	if err != nil {
+		return nil, err
+	}
+	f.stdinPayloads = append(f.stdinPayloads, body)
+	if f.failDocker != nil {
+		return nil, f.failDocker
+	}
+	return []byte(""), nil
+}
+
 // execArgs returns the in-cell argv of every recorded docker exec.
 func (f *cellDockerFake) execArgv() [][]string {
 	f.mu.Lock()
@@ -402,11 +426,12 @@ func cellFixture(t *testing.T, mutate func(*api.CLIControllerConfig)) (*genericC
 	}
 	fake := newCellDockerFake()
 	c := &genericController{
-		config:      GenericControllerConfig{StateRoot: root, SeccompProfile: seccomp, CLI: cfg, MaxActive: 8, IdleTTLSeconds: 300},
-		command:     fake.run,
-		commandExit: fake.commandExit,
-		workloads:   map[string]genericWorkload{},
-		registry:    newCellRegistry(),
+		config:       GenericControllerConfig{StateRoot: root, SeccompProfile: seccomp, CLI: cfg, MaxActive: 8, IdleTTLSeconds: 300},
+		command:      fake.run,
+		commandExit:  fake.commandExit,
+		commandStdin: fake.commandStdin,
+		workloads:    map[string]genericWorkload{},
+		registry:     newCellRegistry(),
 	}
 	return c, fake
 }

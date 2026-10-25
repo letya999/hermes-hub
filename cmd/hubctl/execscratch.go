@@ -41,7 +41,7 @@ func runExecScratch(ctx context.Context) error {
 	}
 	inputs := filepath.Join(scratch, "inputs")
 	for _, dir := range []string{scratch, outputs, inputs} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
+		if err := os.MkdirAll(dir, 0o700); err != nil { // #nosec G703 -- dirs derived from the owned scratch workdir
 			return fmt.Errorf("exec-scratch dirs: %w", err)
 		}
 	}
@@ -144,15 +144,15 @@ func unpackInputs(b64, dir string) error {
 		if !strings.HasPrefix(target, filepath.Clean(dir)+string(filepath.Separator)) {
 			continue
 		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil { // #nosec G703 -- target verified under the scratch dir above
 			return err
 		}
-		out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G703 -- target verified under the scratch dir above
 		if err != nil {
 			return err
 		}
 		_, err = io.CopyN(out, reader, header.Size)
-		out.Close()
+		_ = out.Close()
 		if err != nil {
 			return err
 		}
@@ -164,7 +164,7 @@ func unpackInputs(b64, dir string) error {
 func packOutputs(dir string) string {
 	var buf bytes.Buffer
 	writer := tar.NewWriter(&buf)
-	_ = filepath.WalkDir(dir, func(p string, entry fs.DirEntry, err error) error {
+	_ = filepath.WalkDir(dir, func(p string, entry fs.DirEntry, err error) error { // #nosec G703 -- walk of the owned scratch dir
 		if err != nil || p == dir || !entry.Type().IsRegular() {
 			return nil
 		}
@@ -176,7 +176,7 @@ func packOutputs(dir string) string {
 		if err != nil {
 			return nil
 		}
-		data, err := os.ReadFile(p)
+		data, err := os.ReadFile(p) // #nosec G122 -- walked path stays inside the owned scratch dir
 		if err != nil {
 			return nil
 		}

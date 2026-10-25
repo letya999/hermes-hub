@@ -3,6 +3,7 @@ package toolhub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -51,6 +52,7 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 			}
 		}
 		effective.CredentialMounts = append([]api.Mount(nil), injection.Mounts...)
+		effective.ProxyGrants = append([]api.ProxyGrant(nil), injection.Proxy...)
 		callCtx, cancel := context.WithTimeout(ctx, time.Duration(effective.Definition.Execution.TimeoutSeconds)*time.Second)
 		defer cancel()
 		var result api.BackendResult
@@ -63,7 +65,9 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 		}
 		// An OAuth-managed remote connection whose token was just rejected gets
 		// one refresh-and-retry: a renewed bearer re-injects from the locator.
-		if callErr != nil && envOK && g.OAuthRefresh != nil && effective.Connection != nil && effective.Connection.Metadata["oauth_provider"] != "" {
+		// insufficient_scope is a granted-set shortfall — only re-consent fixes
+		// it, so the refresh path is skipped.
+		if callErr != nil && envOK && !errors.Is(callErr, api.ErrReconsent) && g.OAuthRefresh != nil && effective.Connection != nil && effective.Connection.Metadata["oauth_provider"] != "" {
 			if refreshed, refreshErr := g.OAuthRefresh(callCtx, effective); refreshErr == nil && refreshed && g.Injector != nil {
 				if fresh, injErr := g.Injector(ctx, effective); injErr == nil {
 					if fresh.Cleanup != nil {
@@ -75,6 +79,9 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 		}
 		if callErr != nil {
 			_ = g.audit("deny", mergeAudit(auditFields(auth, projected, effective, "backend-error"), corr))
+			if scrubbed := scrubLoopbackOAuthURL(callErr.Error()); scrubbed != callErr.Error() {
+				return errors.New(scrubbed)
+			}
 			return callErr
 		}
 		if injection.Checkpoint != nil && !result.IsError {
@@ -100,9 +107,17 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 				return fmt.Errorf("%w: backend content output", api.ErrInvalid)
 			}
 		}
+		// A backend's own interactive OAuth (desktop loopback like
+		// http://localhost:8000/oauth2callback) is unreachable for the user
+		// through any channel — managed sign-in runs through onboarding.
+		for _, content := range result.Content {
+			if tc, ok := content.(*mcp.TextContent); ok {
+				tc.Text = scrubLoopbackOAuthURL(tc.Text)
+			}
+		}
 		out = &mcp.CallToolResult{IsError: result.IsError, StructuredContent: result.Structured, Content: result.Content}
 		if result.Text != "" && len(out.Content) == 0 {
-			out.Content = []mcp.Content{&mcp.TextContent{Text: result.Text}}
+			out.Content = []mcp.Content{&mcp.TextContent{Text: scrubLoopbackOAuthURL(result.Text)}}
 		}
 		fields := auditFields(auth, projected, effective, "allow")
 		if receipt := api.SafeReceipt(result.Receipt); receipt != "" {
@@ -132,6 +147,7 @@ func (g *Gateway) CallAuthorized(ctx context.Context, auth identity.Envelope, na
 func auditFields(auth identity.Envelope, projected api.ProjectedTool, effective api.EffectiveBinding, outcome string) map[string]string {
 	fields := map[string]string{
 		"principal_id":   auth.PrincipalID,
+		"sender_id":      auth.ExternalIdentityID,
 		"context_id":     auth.ContextID,
 		"runtime_id":     auth.RuntimeID,
 		"policy_version": auth.PolicyVersion,
@@ -152,6 +168,9 @@ func auditFields(auth identity.Envelope, projected api.ProjectedTool, effective 
 	if effective.Connection != nil {
 		fields["connection_id"] = effective.Connection.ConnectionID
 		fields["connection_revision"] = fmt.Sprint(effective.Connection.Revision)
+		if effective.Connection.Owner.Type == api.TeamOwner {
+			fields["team_id"] = effective.Connection.Owner.ID
+		}
 	}
 	if effective.Credential != nil {
 		fields["credential_revision"] = fmt.Sprint(effective.Credential.Revision)

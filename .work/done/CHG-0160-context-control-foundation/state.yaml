@@ -1,0 +1,41 @@
+schema: 1
+change: CHG-0160
+title: M17 context-control foundation
+status: done
+branch: feat/m16-dev-merge
+updated: 2026-10-25
+phase: done
+adr: ADR-0075
+spec: SPEC-0072
+requirements: [R1, R2, R3, R4, R5, R6, R7, R8]
+depends_on: []
+github_milestone: M17 — pending
+github_issue: 310
+design_status: proposed
+implementation_status: locally_verified
+slices:
+  S1.1-grant-setting-plumbing: done
+  S1.2-sidecar-transport: done
+  S1.3-compaction-journal-status: done
+  S1.4-between-jobs-sweep: done
+validation:
+  documents: passed
+  just_check: passed_2026-10-25
+  focused_tests: passed_2026-10-25
+  own_go_statement_coverage_percent: 86.52
+  race_tests: passed_2026-10-25_runtime_package
+  docs_check: passed_2026-10-25
+  docker_check: not_run
+  live_acceptance: passed_2026-10-25
+evidence:
+  - "go test ./internal/compaction ./internal/runtime ./internal/agenttools ./internal/communication ./internal/stack: green; just check green (coverage 86.52%)"
+  - "live dev stack 2026-10-25: declared compression.hub_sweep{enabled,threshold_tokens:32768} rendered into HUB_MANAGED_CONTEXT inside the spawned runtime container"
+  - "live sweep: three real commits (method archive_and_compact) at 35k/41k/49k tokens_before; refusals lease_held and cooldown (1800s) journaled with failure_class"
+  - "live folding proof: state.db messages show 150/34/22 rows marked active=0 per compacted session, bounded tail retained; notice_consumed_at set"
+  - "live relay auth fix: summarizer/judge calls send Authorization Bearer OPENAI_API_KEY — real judge returned done verdict"
+  - "sweep engine: threshold provenance, cheapest-first stages, journal + refusal rows, post-compact notice, engine grant"
+remaining: []
+limitations:
+  - "ADR-0075 is Proposed; SPECs are Draft until owner acceptance."
+  - "journal records tokens_after_est as null on commits — post-compact estimate not captured (cosmetic gap, follow-up)"
+  - "docker_check / image publish not run; dev-overlay rebuilds only"

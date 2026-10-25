@@ -184,7 +184,7 @@ func TestProviderCompositionAndProtectedFiles(t *testing.T) {
 	caFile := filepath.Join(root, "ca.pem")
 	_ = os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: up.Certificate().Raw}), 0600)
 	configs := []ProviderConfig{{ID: "vault", Type: "vault_kv2", URL: up.URL, Mount: "kv", Prefix: "broker", Namespace: "team", TokenFile: tokenFile, CAFile: caFile, AllowedCIDRs: []string{"127.0.0.1/32"}}, {ID: "k8s", Type: "kubernetes", URL: up.URL, Namespace: "team", TokenFile: tokenFile, CAFile: caFile, AllowedCIDRs: []string{"127.0.0.1/32"}}}
-	reg, e := assembleProviders(configs, make([]byte, 32))
+	reg, e := assembleProviders(configs, make([]byte, 32), "", nil)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -195,7 +195,7 @@ func TestProviderCompositionAndProtectedFiles(t *testing.T) {
 		}
 	}
 	for _, configs := range [][]ProviderConfig{{{ID: "../bad", Type: "local"}}, {{ID: "a", Type: "local", Directory: filepath.Join(root, "a")}, {ID: "a", Type: "local", Directory: filepath.Join(root, "b")}}, {{ID: "v", Type: "vault_kv2", URL: "http://vault.example"}}, {{ID: "v", Type: "vault_kv2", URL: "https://vault.example", AllowedCIDRs: []string{"0.0.0.0/0"}}}, {{ID: "v", Type: "vault_kv2", URL: "https://vault.example", CAFile: "/missing"}}, {{ID: "v", Type: "unknown", URL: "https://vault.example"}}} {
-		if _, e := assembleProviders(configs, make([]byte, 32)); e == nil {
+		if _, e := assembleProviders(configs, make([]byte, 32), "", nil); e == nil {
 			t.Fatal("bad providers")
 		}
 	}

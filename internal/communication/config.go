@@ -36,6 +36,7 @@ type Config struct {
 	Supervised         bool   `yaml:"-"`
 	OrganizationID     string `yaml:"organization_id"`
 	Users              []User `yaml:"users"`
+	Groups             Groups `yaml:"groups,omitempty"`
 	TelegramToken      string `yaml:"-"`
 	APIBaseURL         string `yaml:"api_base_url,omitempty"`
 	SlackSigningSecret string `yaml:"-"`
@@ -178,7 +179,7 @@ func (c Config) Validate() error {
 	if len(c.Users) == 0 {
 		return errors.New("at least one user is required")
 	}
-	return nil
+	return c.validateGroups()
 }
 
 func pathsOverlap(a, b string) bool {
@@ -199,7 +200,7 @@ func pathsOverlap(a, b string) bool {
 // LoadYAML reads a host-owned mapping. Secret values belong in env files.
 func LoadYAML(path string) (Config, error) {
 	var c Config
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) // #nosec G703 -- operator config path
 	if err != nil {
 		return c, err
 	}

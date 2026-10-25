@@ -1,11 +1,9 @@
 package toolhub
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
-	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -19,35 +17,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/oauth"
 )
 
-func TestGoogleOAuthFormAcceptsFileOrExplicitValues(t *testing.T) {
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	file, _ := writer.CreateFormFile("google_oauth_file", "client_secret.json")
-	_, _ = file.Write([]byte(`{"installed":{"client_id":"id","client_secret":"secret"}}`))
-	_ = writer.Close()
-	req := httptest.NewRequest(http.MethodPost, "/", &body)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-	if err := req.ParseMultipartForm(64 << 10); err != nil {
-		t.Fatal(err)
-	}
-	if value, err := googleOAuthFormValue(req); err != nil || !strings.Contains(value, `"client_id":"id"`) {
-		t.Fatalf("file value=%q err=%v", value, err)
-	}
-
-	body.Reset()
-	writer = multipart.NewWriter(&body)
-	_ = writer.WriteField("google_oauth_client_id", "id")
-	_ = writer.WriteField("google_oauth_client_secret", "secret")
-	_ = writer.Close()
-	manual := httptest.NewRequest(http.MethodPost, "/", &body)
-	manual.Header.Set("Content-Type", writer.FormDataContentType())
-	if err := manual.ParseMultipartForm(64 << 10); err != nil {
-		t.Fatal(err)
-	}
-	if value, err := googleOAuthFormValue(manual); err != nil || !strings.Contains(value, `"client_secret":"secret"`) {
-		t.Fatalf("manual value=%q err=%v", value, err)
-	}
-
+func TestCredentialFormFiltersRuntimeDefaults(t *testing.T) {
 	hints := credentialFormHints([]api.CredentialHint{{Name: "GOOGLE_OAUTH_CREDENTIALS"}, {Name: "HOST"}, {Name: "PORT"}, {Name: "TRANSPORT"}})
 	if len(hints) != 1 || hints[0].Name != "GOOGLE_OAUTH_CREDENTIALS" {
 		t.Fatalf("visible hints=%+v", hints)
@@ -123,7 +93,7 @@ func TestControlErrorPathsGrantsAndOAuthCallback(t *testing.T) {
 	if _, err := control.Invoke(context.Background(), aliceAuth(), "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": "wrong"}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("bad nonce: %v", err)
 	}
-	if _, err := control.Invoke(context.Background(), aliceAuth(), "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": st["nonce"], "tools": []any{"missing-tool"}}); !errors.Is(err, api.ErrUnauthorized) {
+	if _, err := control.Invoke(context.Background(), aliceAuth(), "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, store, prepared["onboarding_id"]), "tools": []any{"missing-tool"}}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("tool escalation: %v", err)
 	}
 	direct := catalogReadDefinition()
@@ -286,11 +256,10 @@ func TestControlErrorPathsGrantsAndOAuthCallback(t *testing.T) {
 	if _, err := control.Invoke(context.Background(), aliceAuth(), "revoke", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	preview, err := control.Invoke(context.Background(), aliceAuth(), "remove", map[string]any{"onboarding_id": prepared["onboarding_id"]})
-	if err != nil {
+	if _, err := control.Invoke(context.Background(), aliceAuth(), "remove", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Invoke(context.Background(), aliceAuth(), "remove", map[string]any{"onboarding_id": prepared["onboarding_id"], "remove_nonce": preview["remove_nonce"]}); err != nil {
+	if _, err := control.Invoke(context.Background(), aliceAuth(), "remove", map[string]any{"onboarding_id": prepared["onboarding_id"], "remove_nonce": removeNonceOf(t, store, prepared["onboarding_id"])}); err != nil {
 		t.Fatal(err)
 	}
 	hints := credentialHints(api.ToolDefinition{Credentials: []api.CredentialInput{{Name: "OAUTH_TOKEN", Required: true}, {Name: "HOST", Required: true}, {Name: "OPTIONAL", Required: false}, {Name: "CALL_TOKEN", Required: true, PerRequest: true}}})
@@ -348,11 +317,10 @@ func TestControlEnableMaterializeRevokeAndGrantValidation(t *testing.T) {
 		t.Fatalf("bob enable catalog without grant: %v", err)
 	}
 
-	status, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]})
-	if err != nil {
+	if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": status["nonce"]}); err != nil {
+	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, store, prepared["onboarding_id"])}); err != nil {
 		t.Fatal(err)
 	}
 	onboarding, err := store.onboarding(prepared["onboarding_id"].(string))
@@ -403,11 +371,10 @@ func TestControlEnableMaterializeRevokeAndGrantValidation(t *testing.T) {
 	if err := control.SubmitCredentials(credOn.OnboardingID, credOn.FormNonce, map[string]string{"TOKEN": "rotate-secret"}); err != nil {
 		t.Fatal(err)
 	}
-	credStatus, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": credOn.OnboardingID})
-	if err != nil {
+	if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": credOn.OnboardingID}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": credOn.OnboardingID, "nonce": credStatus["nonce"]}); err != nil {
+	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": credOn.OnboardingID, "nonce": confirmNonceOf(t, store, credOn.OnboardingID)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": credOn.OnboardingID}); err != nil {
@@ -536,7 +503,7 @@ func (c *ControlPlane) publicationForCheck(definition api.ToolDefinition) api.De
 func TestStatusBodyExposesNextAction(t *testing.T) {
 	control := &ControlPlane{Store: NewStore(), Listen: "127.0.0.1:0"}
 	confirm := control.statusBody(api.Onboarding{OnboardingID: "onboard-1", Phase: api.PhaseAwaitingConfirm, ConfirmationNonce: "nonce-1"}, false)
-	if confirm["next_action"] != "confirm" || confirm["nonce"] != "nonce-1" || confirm["instructions"] == "" {
+	if confirm["next_action"] != "confirm" || confirm["confirmation_sent"] != true {
 		t.Fatalf("awaiting-confirm status lacks next step: %v", confirm)
 	}
 	enable := control.statusBody(api.Onboarding{OnboardingID: "onboard-1", Phase: api.PhaseConfirmed}, false)

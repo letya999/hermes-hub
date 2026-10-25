@@ -95,7 +95,7 @@ func testTelegramSendRetainsOwnerSession(t *testing.T, managed bool) {
 	}))
 	defer server.Close()
 	cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
-	c := &ControlPlane{Store: NewStore(), Broker: &cfg, BrokerRuntime: &cfg, Release: func(context.Context, string) error { return nil }}
+	c := &ControlPlane{Store: NewStore(), Broker: &cfg, BrokerRuntime: &cfg, Release: func(context.Context, api.ControllerRelease) error { return nil }}
 	// Require readiness so the normal Broker version-upgrade path mints a new
 	// binding grant instead of the legacy no-controller shortcut.
 	c.Ready = func(context.Context, api.EffectiveBinding) error { return nil }
@@ -190,6 +190,12 @@ func testTelegramSendRetainsOwnerSession(t *testing.T, managed bool) {
 		t.Fatalf("enable: %v %v", body, err)
 	}
 	upgrade, _ = c.Store.OnboardingFor(auth, upgrade.OnboardingID)
+	// Write tools stay unprojected until writes are explicitly enabled on the
+	// onboarding; the send upgrade stands in for an already-approved one.
+	upgrade.WritesEnabled = true
+	if err := c.Store.PutOnboarding(upgrade); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := resolve(auth, original.BindingID); err == nil {
 		t.Fatal("old binding still authorized")
 	}

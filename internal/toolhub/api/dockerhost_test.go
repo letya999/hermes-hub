@@ -6,6 +6,7 @@ import (
 
 func TestDockerBindSource(t *testing.T) {
 	t.Setenv("HUB_BROKER_MATERIALIZED_VOLUME", "")
+	t.Setenv("HUB_CRED_STAGING_VOLUME", "")
 	cases := []struct {
 		name string
 		root string
@@ -27,6 +28,18 @@ func TestDockerBindSource(t *testing.T) {
 				t.Fatalf("dockerBindSource(%q) = %q, want %q", tc.path, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestDockerBindSourceFailsClosedWhenCredStagingVolumeMissing(t *testing.T) {
+	t.Setenv("HUB_DOCKER_HOST_ROOT", "")
+	t.Setenv("HUB_BROKER_MATERIALIZED_VOLUME", "")
+	t.Setenv("HUB_CRED_STAGING_VOLUME", "missing-cred-staging-volume-for-test")
+	if got := DockerBindSource("/run/cred-staging/per-user/alice/alice/svc-mcp/NAME.secret"); got != "" {
+		t.Fatalf("unresolved staging source used: %q", got)
+	}
+	if got := DockerBindSource("/unrelated/path"); got != "/unrelated/path" {
+		t.Fatalf("unrelated path changed: %q", got)
 	}
 }
 

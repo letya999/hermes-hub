@@ -76,6 +76,10 @@ func synthesizeContract(definition api.ToolDefinition) (contract.Contract, error
 			kind = "json"
 		}
 		fields = append(fields, contract.Field{ID: fid, Label: input.Name, Kind: kind, Required: required, MaxBytes: 16384})
+		if definition.OAuth != nil && input.Name == definition.OAuth.ClientInput {
+			fields[len(fields)-1].Kind = "json"
+			fields[len(fields)-1].MaxBytes = 65536
+		}
 		if input.Delivery == "file" {
 			// The value mounts read-only at Target; the env var carries the
 			// in-container path, matching the local materializer's contract.
@@ -84,10 +88,15 @@ func synthesizeContract(definition api.ToolDefinition) (contract.Contract, error
 		}
 		deliveries = append(deliveries, contract.Delivery{Type: "env", Field: fid, Target: input.Name})
 	}
+	var state *contract.State
+	if a := definition.OAuth; a != nil {
+		state = &contract.State{Target: a.StateTarget, Files: []contract.StateFile{{Name: a.TokenFile, MaxBytes: 65536, JSON: true}}}
+	}
 	canonical, _ := json.Marshal(struct {
 		F []contract.Field    `json:"f"`
 		D []contract.Delivery `json:"d"`
-	}{fields, deliveries})
+		S *contract.State     `json:"s,omitempty"`
+	}{fields, deliveries, state})
 	// A definition pinning a contract missing from the broker catalog registers
 	// the synthesized contract under that pinned id; otherwise the id is
 	// content-addressed so retries and identical credential shapes dedupe.
@@ -104,7 +113,7 @@ func synthesizeContract(definition api.ToolDefinition) (contract.Contract, error
 	if len(title) > 120 {
 		title = title[:120]
 	}
-	return contract.Contract{ID: id, Revision: revision, Title: title, Fields: fields, Deliveries: deliveries, AllowShared: definition.Workload.Class == api.Shared && definition.Workload.Sharable}, nil
+	return contract.Contract{ID: id, Revision: revision, Title: title, Fields: fields, Deliveries: deliveries, State: state, AllowShared: definition.Workload.Class == api.Shared && definition.Workload.Sharable}, nil
 }
 
 // brokerExtras lists declared optional inputs the bound contract does not

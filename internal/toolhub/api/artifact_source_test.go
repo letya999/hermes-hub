@@ -536,12 +536,14 @@ func TestArtifactContextIsolation(t *testing.T) {
 // without weakening it (observed: ru-marketplace-mcp build blocked).
 func TestArtifactAutoBuildPathExcludesTestTrees(t *testing.T) {
 	for name, want := range map[string]bool{
-		"packages/mcp-core/tests/test_redact.py":   false,
-		"tests/test_server.py":                     false,
-		"src/test/util.py":                         false,
-		"packages/mcp-core/src/mcp_core/redact.py": true,
-		"pyproject.toml":                           true,
-		"server.py":                                true,
+		"packages/mcp-core/tests/test_redact.py":      false,
+		"tests/test_server.py":                        false,
+		"src/test/util.py":                            false,
+		"src/connectors/__tests__/dsn-parser.test.ts": false,
+		"pkg/__test__/fixture.go":                     false,
+		"packages/mcp-core/src/mcp_core/redact.py":    true,
+		"pyproject.toml":                              true,
+		"server.py":                                   true,
 	} {
 		if got := artifactAutoBuildPath(name); got != want {
 			t.Fatalf("artifactAutoBuildPath(%q) = %v, want %v", name, got, want)

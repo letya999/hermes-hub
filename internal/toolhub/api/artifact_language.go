@@ -268,7 +268,11 @@ func GenerateArtifactRecipe(contextBytes []byte, language, baseImage string, ent
 				return ArtifactRecipe{}, nil, fmt.Errorf("%w: Python extra is not source-declared", ErrInvalid)
 			}
 		}
-		lines = append(lines, "RUN "+runPrefix+"python -m venv /opt/venv")
+		lines = append(lines, "RUN "+runPrefix+"python -m venv /opt/venv",
+			// httplib2 (google-api-python-client's transport) only honours the
+			// *_proxy environment when the socks module exists, so restricted
+			// workloads need it to egress through the environment proxy.
+			"RUN "+runPrefix+"/opt/venv/bin/pip install PySocks==1.7.1")
 		if files["requirements.txt"] != nil {
 			lines = append(lines, "RUN "+runPrefix+"/opt/venv/bin/pip install -r requirements.txt")
 			locks = []string{"requirements.txt"}

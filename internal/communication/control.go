@@ -127,6 +127,10 @@ func (g *Gateway) controlOne(ctx context.Context) {
 			continue
 		}
 		preAdmission := mapping.RunID == ""
+		if mapping.Control.Action == "approve" && g.authorizeGroupMapping(mapping) != nil {
+			mapping.CancelRequested = true
+			mapping.Control = &PendingControl{Caller: mapping.Control.Caller, Action: "cancel", State: "pending"}
+		}
 		reconciling := mapping.Control.State == "uncertain" && !preAdmission
 		control := *mapping.Control
 		control.NextAttemptAt = time.Now().Add(5 * time.Second)

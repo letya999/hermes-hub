@@ -33,6 +33,9 @@ func CloneMap(values map[string]string) map[string]string {
 }
 
 func ParseGitHubSource(raw string) (ArtifactSource, error) {
+	if strings.HasPrefix(strings.TrimSpace(raw), "https://gitlab.com/") {
+		return parseGitLabSource(raw, true)
+	}
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || u.Scheme != "https" || !strings.EqualFold(u.Host, "github.com") || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
 		return ArtifactSource{}, fmt.Errorf("%w: public GitHub URL and exact commit SHA required", ErrInvalid)

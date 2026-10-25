@@ -1,5 +1,5 @@
 ---
-status: active
+status: active (five-minute idle superseded: warm TTL is 30 min per SPEC-0053/ADR-0036)
 title: Per-context communication execution rollout and rollback
 ---
 

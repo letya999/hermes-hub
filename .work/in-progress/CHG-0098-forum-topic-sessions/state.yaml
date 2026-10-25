@@ -2,7 +2,7 @@ schema: 1
 change: CHG-0098
 title: Forum topic per session (issue #220)
 status: in_progress
-branch: feat/m12-telegram-channel-ux
+branch: feat/m12-telegram-channel-ux (merged into dev; branch deleted — code in dev history)
 base: dev
 updated: 2026-10-14
 phase: implementation

@@ -3,8 +3,13 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/credentialbroker"
+	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/netguard"
+	"github.com/letya999/hermes-hub/internal/stack"
 	"io"
 	"log"
 	"mime"
@@ -23,12 +28,25 @@ import (
 
 // modelHop is one upstream in the ordered fallback ladder.
 type modelHop struct {
-	name   string
-	base   string // fixed scheme://host[:port]; the request path appends
-	keyEnv string
-	model  string // provider-side model id; empty forwards the request model
-	mu     sync.Mutex
-	cool   time.Time
+	*modelHealth
+	keyFor    func(context.Context) (string, error)
+	transport http.RoundTripper
+	name      string
+	base      string // fixed scheme://host[:port]; the request path appends
+	keyEnv    string
+	model     string // provider-side model id; empty forwards the request model
+}
+
+type modelHealth struct {
+	mu   sync.Mutex
+	cool time.Time
+}
+
+// down reports whether the provider is still inside its cooldown window.
+func (h *modelHealth) down(now time.Time) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return !h.cool.IsZero() && h.cool.After(now)
 }
 
 var (
@@ -43,6 +61,9 @@ func parseModelHops(spec string) ([]*modelHop, error) {
 		spec = "cliproxy=http://cliproxy:8317"
 	}
 	var hops []*modelHop
+	if len(strings.Split(spec, ",")) > 8 {
+		return nil, fmt.Errorf("model relay supports at most eight hops")
+	}
 	seen := map[string]bool{}
 	for _, entry := range strings.Split(spec, ",") {
 		name, rest, ok := strings.Cut(strings.TrimSpace(entry), "=")
@@ -61,7 +82,7 @@ func parseModelHops(spec string) ([]*modelHop, error) {
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || strings.Contains(u.Path, "..") {
 			return nil, fmt.Errorf("model hop %q needs a fixed http(s) base URL", name)
 		}
-		hops = append(hops, &modelHop{name: name, base: strings.TrimRight(u.String(), "/"), keyEnv: keyEnv})
+		hops = append(hops, &modelHop{modelHealth: &modelHealth{}, name: name, base: strings.TrimRight(u.String(), "/"), keyEnv: keyEnv})
 	}
 	return hops, nil
 }
@@ -103,6 +124,10 @@ func retryableModelStatus(status int) bool {
 // forwards arbitrary paths, methods, hosts or query strings, and never follows
 // upstream redirects.
 func modelRelayHandler(hops []*modelHop, selectedModel string) (http.Handler, error) {
+	hopTimeout, total, err := modelRelayLimits()
+	if err != nil {
+		return nil, err
+	}
 	if len(hops) == 0 {
 		return nil, fmt.Errorf("model relay requires at least one upstream")
 	}
@@ -115,10 +140,13 @@ func modelRelayHandler(hops []*modelHop, selectedModel string) (http.Handler, er
 	}}
 
 	call := func(ctx context.Context, method, path, auth, ctype string, body []byte) (*modelHop, *http.Response, error) {
-		return modelCall(ctx, client, hops, method, path, auth, ctype, body)
+		return modelCall(ctx, client, hops, method, path, auth, ctype, body, hopTimeout)
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), total)
+		defer cancel()
+		r = r.WithContext(ctx)
 		chat := r.Method == http.MethodPost && r.URL.Path == "/v1/chat/completions"
 		catalog := r.Method == http.MethodGet && r.URL.Path == "/v1/models"
 		hopsHealth := r.Method == http.MethodGet && r.URL.Path == "/v1/hops"
@@ -202,7 +230,7 @@ func modelRelayHandler(hops []*modelHop, selectedModel string) (http.Handler, er
 		}
 		w.Header().Set("X-Model-Hop", hop.name)
 		w.WriteHeader(resp.StatusCode)
-		_, _ = io.Copy(w, resp.Body)
+		copyModelBody(w, resp)
 		_ = resp.Body.Close()
 	}), nil
 }
@@ -248,28 +276,15 @@ func requestsSelectedModel(body []byte, selected string) bool {
 
 // Registry mode serves the reviewed relay contract from a rendered
 // models.yaml instead of the static HUB_MODEL_RELAY_UPSTREAMS list.
-type relayRegistryFile struct {
-	Providers map[string]relayProvider `yaml:"providers"`
-	Models    map[string]relayModel    `yaml:"models"`
-}
+type relayRegistryFile = stack.ModelRegistry
+type relayModel = stack.ModelEntry
 
-type relayProvider struct {
-	URL    string `yaml:"url"`
-	KeyEnv string `yaml:"key_env"`
-}
-
-type relayModel struct {
-	Owners []string `yaml:"owners"`
-	Ladder []struct {
-		Provider string `yaml:"provider"`
-		Model    string `yaml:"model"`
-	} `yaml:"ladder"`
-}
-
-func modelCall(ctx context.Context, client *http.Client, hops []*modelHop, method, path, auth, ctype string, body []byte) (*modelHop, *http.Response, error) {
+func modelCall(ctx context.Context, client *http.Client, hops []*modelHop, method, path, auth, ctype string, body []byte, hopTimeout time.Duration) (*modelHop, *http.Response, error) {
+	bounded := *client
 	for _, hop := range hops {
+		started := time.Now()
 		if !hop.available(time.Now()) {
-			log.Printf("model-relay hop=%s path=%s skipped (cooldown)", hop.name, path)
+			log.Printf("model-relay hop=%s path=%s skipped (cooldown)", hop.name, path) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
 			continue
 		}
 		hopBody := body
@@ -278,64 +293,148 @@ func modelCall(ctx context.Context, client *http.Client, hops []*modelHop, metho
 				hopBody = remapped
 			}
 		}
-		req, err := http.NewRequestWithContext(ctx, method, hop.base+path, bytes.NewReader(hopBody))
+		// Runaway ceiling only: well above the managed compaction trigger so
+		// in-loop compression stays the primary bound.
+		if method == http.MethodPost && path == "/v1/chat/completions" && !withinModelBudget(hopBody) {
+			return hop, &http.Response{StatusCode: http.StatusRequestEntityTooLarge, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"error":{"code":"context_budget_exceeded","message":"request exceeds conservative token ceiling"}}`))}, nil
+		}
+		target := hop.base + path
+		if base, err := url.Parse(hop.base); err == nil && strings.Trim(base.Path, "/") != "" {
+			target = hop.base + strings.TrimPrefix(path, "/v1")
+		}
+		req, err := http.NewRequestWithContext(ctx, method, target, bytes.NewReader(hopBody)) // #nosec G704 -- configured upstream hop
 		if err != nil {
 			return nil, nil, err
 		}
 		if ctype != "" {
 			req.Header.Set("Content-Type", ctype)
 		}
-		if hop.keyEnv != "" {
-			req.Header.Set("Authorization", "Bearer "+os.Getenv(hop.keyEnv))
+		if hop.keyFor != nil {
+			credentialContext, cancel := context.WithTimeout(ctx, hopTimeout)
+			key, err := hop.keyFor(credentialContext)
+			cancel()
+			if err != nil {
+				hop.fail()
+				log.Printf("model-relay hop=%s path=%s credential unavailable", hop.name, path) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
+				continue
+			}
+			req.Header.Set("Authorization", "Bearer "+key)
+		} else if hop.keyEnv != "" {
+			key := os.Getenv(hop.keyEnv)
+			if key == "" {
+				hop.fail()
+				log.Printf("model-relay hop=%s path=%s credential unavailable", hop.name, path) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
+				continue
+			}
+			req.Header.Set("Authorization", "Bearer "+key)
 		} else if auth != "" {
 			req.Header.Set("Authorization", auth)
 		}
-		resp, err := client.Do(req)
+		bounded.Transport = client.Transport
+		if hop.transport != nil {
+			bounded.Transport = hop.transport
+		}
+		bounded.Timeout = hopTimeout - time.Since(started)
+		if bounded.Timeout <= 0 {
+			hop.fail()
+			continue
+		}
+		resp, err := bounded.Do(req) // #nosec G704 -- configured upstream hop
 		if err != nil {
 			hop.fail()
-			log.Printf("model-relay hop=%s path=%s transport error: %v", hop.name, path, err)
+			log.Printf("model-relay hop=%s path=%s transport error: %v", hop.name, path, err) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
 			continue
 		}
 		// Redirects are denied and quota/account exhaustion falls through;
 		// both park the hop for the cooldown window.
 		if (resp.StatusCode >= 300 && resp.StatusCode < 400) || retryableModelStatus(resp.StatusCode) {
 			hop.fail()
-			log.Printf("model-relay hop=%s path=%s status=%d", hop.name, path, resp.StatusCode)
+			log.Printf("model-relay hop=%s path=%s status=%d", hop.name, path, resp.StatusCode) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
 			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 			_ = resp.Body.Close()
 			continue
 		}
-		log.Printf("model-relay hop=%s path=%s status=%d", hop.name, path, resp.StatusCode)
+		log.Printf("model-relay hop=%s path=%s status=%d", hop.name, path, resp.StatusCode) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
 		return hop, resp, nil
 	}
 	return nil, nil, fmt.Errorf("all model upstreams failed")
 }
 
+// modelTokenCeiling refuses requests no provider window could serve. It sits
+// above compression.threshold_tokens (200000) so Hermes in-loop compaction
+// handles long sessions first and the gate only fires on runaway growth.
+const modelTokenCeiling = 262144
+
+func withinModelBudget(body []byte) bool {
+	var output struct {
+		MaxTokens           int64 `json:"max_tokens"`
+		MaxCompletionTokens int64 `json:"max_completion_tokens"`
+	}
+	if json.Unmarshal(body, &output) != nil {
+		return false
+	}
+	reserve := max(int64(8192), output.MaxTokens, output.MaxCompletionTokens)
+	if reserve > modelTokenCeiling {
+		return false
+	}
+	// Worst case ~6 UTF-8/JSON bytes per token (escapes, CJK); conservative.
+	return int64(len(body))/6+reserve <= modelTokenCeiling
+}
+
 // rewriteModelField swaps the top-level "model" value; non-JSON bodies pass through.
 func rewriteModelField(body []byte, model string) ([]byte, error) {
-	var doc map[string]any
+	var doc map[string]json.RawMessage
 	if err := json.Unmarshal(body, &doc); err != nil {
 		return body, nil
 	}
-	doc["model"] = model
+	doc["model"], _ = json.Marshal(model)
 	return json.Marshal(doc)
+}
+
+type modelStreamWriter struct{ http.ResponseWriter }
+
+func (w modelStreamWriter) Write(p []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(p)
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	return n, err
+}
+func copyModelBody(w http.ResponseWriter, response *http.Response) {
+	if strings.HasPrefix(response.Header.Get("Content-Type"), "text/event-stream") {
+		_, _ = io.Copy(modelStreamWriter{w}, response.Body)
+		return
+	}
+	_, _ = io.Copy(w, response.Body)
 }
 
 // relayRegistry owns the mounted models.yaml, the owner's current selection
 // file and per-model hop ladders (so cooldown state survives re-reads).
 type relayRegistry struct {
+	broker    credentialbroker.Config
 	path      string
 	statePath string
 	owner     string
 	admin     string
+	auth      string
 	mu        sync.Mutex
 	mtime     time.Time
 	reg       *relayRegistryFile
 	ladders   map[string][]*modelHop
+	health    map[string]*modelHealth
 }
 
 func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (http.Handler, error) {
-	r := &relayRegistry{path: registryPath, statePath: statePath, owner: owner, admin: admin, ladders: map[string][]*modelHop{}}
+	hopTimeout, total, err := modelRelayLimits()
+	if err != nil {
+		return nil, err
+	}
+	r := &relayRegistry{path: registryPath, statePath: statePath, owner: owner, admin: admin, auth: os.Getenv("HUB_MODEL_RELAY_AUTH"), ladders: map[string][]*modelHop{}}
+	brokerConfig, err := credentialbroker.FromEnv("HUB_CREDENTIAL_BROKER_MODEL_")
+	if err != nil {
+		return nil, err
+	}
+	r.broker = brokerConfig
 	if _, err := r.current(); err != nil {
 		return nil, err
 	}
@@ -345,17 +444,35 @@ func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (ht
 		return http.ErrUseLastResponse
 	}}
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		ctx, cancel := context.WithTimeout(req.Context(), total)
+		defer cancel()
+		req = req.WithContext(ctx)
 		// Same review-contract fences as the env relay: fixed paths only, no
 		// query strings, absolute-form targets or protocol upgrades.
 		known := (req.Method == http.MethodPost && req.URL.Path == "/v1/chat/completions") ||
-			(req.Method == http.MethodGet && (req.URL.Path == "/v1/models" || req.URL.Path == "/v1/hops" || req.URL.Path == "/v1/quota")) ||
+			(req.Method == http.MethodGet && (req.URL.Path == "/v1/models" || req.URL.Path == "/v1/hops" || req.URL.Path == "/v1/quota" || req.URL.Path == "/v1/model" || req.URL.Path == "/v1/registry")) ||
 			(req.Method == http.MethodPut && req.URL.Path == "/v1/model")
 		if !known || req.URL.RawPath != "" || req.URL.RawQuery != "" || req.URL.Scheme != "" || req.URL.Host != "" || req.Header.Get("Upgrade") != "" {
 			http.NotFound(w, req)
 			return
 		}
-		if req.Method == http.MethodPut && req.URL.Path == "/v1/model" {
+		if r.auth != "" && req.Method == http.MethodGet && (req.URL.Path == "/v1/models" || req.URL.Path == "/v1/hops") {
+			authorized := subtle.ConstantTimeCompare([]byte(req.Header.Get("Authorization")), []byte("Bearer "+r.auth)) == 1
+			if !authorized && r.admin != "" {
+				authorized = subtle.ConstantTimeCompare([]byte(req.Header.Get("Authorization")), []byte("Bearer "+r.admin)) == 1
+			}
+			if !authorized {
+				log.Printf("model-relay owner=%s outcome=deny reason=metadata-caller", r.owner)
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+		}
+		if req.URL.Path == "/v1/model" {
 			r.serveSelect(w, req)
+			return
+		}
+		if req.Method == http.MethodGet && req.URL.Path == "/v1/registry" {
+			r.serveRegistry(w, req)
 			return
 		}
 		if req.Method == http.MethodGet && req.URL.Path == "/v1/quota" {
@@ -370,7 +487,7 @@ func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (ht
 		if req.Method == http.MethodGet && req.URL.Path == "/v1/models" {
 			names := make([]map[string]string, 0, len(file.Models))
 			for name, entry := range file.Models {
-				if r.granted(entry) {
+				if r.granted(file, entry) {
 					names = append(names, map[string]string{"id": name})
 				}
 			}
@@ -380,6 +497,11 @@ func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (ht
 			return
 		}
 		chat := req.Method == http.MethodPost && req.URL.Path == "/v1/chat/completions"
+		if chat && r.auth != "" && subtle.ConstantTimeCompare([]byte(req.Header.Get("Authorization")), []byte("Bearer "+r.auth)) != 1 {
+			log.Printf("model-relay owner=%s outcome=deny reason=caller", r.owner)
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 		hopsHealth := req.Method == http.MethodGet && req.URL.Path == "/v1/hops"
 		if !chat && !hopsHealth {
 			http.NotFound(w, req)
@@ -425,7 +547,11 @@ func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (ht
 			_ = json.NewEncoder(w).Encode(map[string]any{"hops": states})
 			return
 		}
-		hop, resp, err := modelCall(req.Context(), client, hops, req.Method, req.URL.Path, req.Header.Get("Authorization"), req.Header.Get("Content-Type"), body)
+		providerAuth := req.Header.Get("Authorization")
+		if r.auth != "" {
+			providerAuth = ""
+		}
+		hop, resp, err := modelCall(req.Context(), client, hops, req.Method, req.URL.Path, providerAuth, req.Header.Get("Content-Type"), body, hopTimeout)
 		if err != nil {
 			http.Error(w, "model route unavailable", http.StatusBadGateway)
 			return
@@ -435,7 +561,7 @@ func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (ht
 		}
 		w.Header().Set("X-Model-Hop", hop.name)
 		w.WriteHeader(resp.StatusCode)
-		_, _ = io.Copy(w, resp.Body)
+		copyModelBody(w, resp)
 		_ = resp.Body.Close()
 	}), nil
 }
@@ -456,32 +582,148 @@ func (r *relayRegistry) current() (*relayRegistryFile, error) {
 		return nil, err
 	}
 	var reg relayRegistryFile
-	if err := yaml.Unmarshal(b, &reg); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(b))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&reg); err != nil {
+		return nil, fmt.Errorf("invalid model registry")
+	}
+	if decoder.Decode(new(any)) != io.EOF {
+		return nil, fmt.Errorf("invalid model registry trailing document")
+	}
+	if err := reg.Validate(); err != nil {
 		return nil, err
 	}
 	r.reg, r.mtime, r.ladders = &reg, info.ModTime(), map[string][]*modelHop{}
+	r.health = map[string]*modelHealth{}
 	return r.reg, nil
 }
 
-func (r *relayRegistry) granted(entry relayModel) bool {
-	return len(entry.Owners) == 0 || slices.Contains(entry.Owners, r.owner)
+func (r *relayRegistry) granted(file *relayRegistryFile, entry relayModel) bool {
+	if !entry.Allows(r.owner) {
+		return false
+	}
+	for _, hop := range entry.Ladder {
+		provider := file.Providers[hop.Provider]
+		if !provider.Allows(r.owner) {
+			return false
+		}
+	}
+	return true
+}
+
+// grantedProviders returns the accounts the owner can reach: providers wired
+// into at least one granted model's ladder. Ad-hoc catalog selections are
+// limited to this set — a provider that exists in the file but not on a
+// granted ladder stays unreachable.
+func (r *relayRegistry) grantedProviders(file *relayRegistryFile) map[string]bool {
+	set := map[string]bool{}
+	for _, entry := range file.Models {
+		if !r.granted(file, entry) {
+			continue
+		}
+		for _, ref := range entry.Ladder {
+			set[ref.Provider] = true
+		}
+	}
+	return set
+}
+
+// switchLevel resolves the owner's switch grant: switch[owner], then the "*"
+// fallback, then "logical" — the long-standing default where only granted
+// registry names are selectable.
+func (r *relayRegistry) switchLevel(file *relayRegistryFile) string {
+	if level, ok := file.Switch[r.owner]; ok {
+		return level
+	}
+	if level, ok := file.Switch["*"]; ok {
+		return level
+	}
+	return "logical"
+}
+
+// catalogProvider finds which granted account actually serves a model id. A
+// "provider/model" argument pins the account; a bare id resolves against each
+// granted provider's live catalog in sorted order. Empty when nothing serves
+// it — the caller then denies the switch.
+func (r *relayRegistry) catalogProvider(ctx context.Context, file *relayRegistryFile, name string) string {
+	hopsByProvider, providers := r.providerHops(file)
+	if provider, model, ok := strings.Cut(name, "/"); ok {
+		hop := hopsByProvider[provider]
+		if hop == nil {
+			return ""
+		}
+		if slices.Contains(r.providerCatalog(ctx, hop), model) {
+			return provider
+		}
+		return ""
+	}
+	for _, provider := range providers {
+		if hop := hopsByProvider[provider]; hop != nil && slices.Contains(r.providerCatalog(ctx, hop), name) {
+			return provider
+		}
+	}
+	return ""
+}
+
+// providerHops returns one live hop per granted provider (sorted names) so a
+// caller can query each account's upstream catalog.
+func (r *relayRegistry) providerHops(file *relayRegistryFile) (map[string]*modelHop, []string) {
+	hopsByProvider := map[string]*modelHop{}
+	var providers []string
+	names := make([]string, 0, len(file.Models))
+	for name, entry := range file.Models {
+		if r.granted(file, entry) {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		hops := r.ladderFor(file, name, file.Models[name])
+		for i, ref := range file.Models[name].Ladder {
+			if _, seen := hopsByProvider[ref.Provider]; !seen && i < len(hops) && hops[i].name == ref.Provider {
+				hopsByProvider[ref.Provider] = hops[i]
+				providers = append(providers, ref.Provider)
+			}
+		}
+	}
+	slices.Sort(providers)
+	return hopsByProvider, providers
 }
 
 // hopsFor picks the logical model to serve: an explicitly granted name in the
 // request, then the owner's saved selection, then "default", then the first
 // granted model in sorted order.
 func (r *relayRegistry) hopsFor(file *relayRegistryFile, requested string) (string, []*modelHop, error) {
-	for _, name := range []string{requested, r.selection(), "default"} {
+	if requested == file.RuntimeModel {
+		requested = ""
+	}
+	if r.auth != "" && requested != "" {
+		entry, ok := file.Models[requested]
+		if !ok || !r.granted(file, entry) {
+			log.Printf("model-relay owner=%s outcome=deny reason=model", r.owner)
+			return "", nil, fmt.Errorf("model not granted")
+		}
+	}
+	sel := r.selection()
+	for _, name := range []string{requested, sel.Model, "default"} {
 		if name == "" {
 			continue
 		}
-		if entry, ok := file.Models[name]; ok && r.granted(entry) {
+		if entry, ok := file.Models[name]; ok && r.granted(file, entry) {
 			return name, r.ladderFor(file, name, entry), nil
+		}
+		// An ad-hoc catalog selection resolves to a single-hop ladder on the
+		// account it was persisted for — still validated against the live
+		// registry and the current switch grant so a revoked provider or a
+		// downgraded grant can never serve it.
+		if name == sel.Model && sel.Provider != "" && r.switchLevel(file) == "catalog" && r.grantedProviders(file)[sel.Provider] {
+			entry := relayModel{Ladder: []stack.ModelHopRef{{Provider: sel.Provider, Model: sel.Model}}}
+			return sel.Model, r.ladderFor(file, sel.Model, entry), nil
 		}
 	}
 	names := make([]string, 0, len(file.Models))
 	for name, entry := range file.Models {
-		if r.granted(entry) {
+		if r.granted(file, entry) {
 			names = append(names, name)
 		}
 	}
@@ -495,49 +737,92 @@ func (r *relayRegistry) hopsFor(file *relayRegistryFile, requested string) (stri
 func (r *relayRegistry) ladderFor(file *relayRegistryFile, name string, entry relayModel) []*modelHop {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if hops, ok := r.ladders[name]; ok {
+	if hops, ok := r.ladders[name]; ok && file == r.reg {
 		return hops
 	}
 	var hops []*modelHop
 	for _, ref := range entry.Ladder {
 		p := file.Providers[ref.Provider]
+		if ref.Provider == "cliproxy" && p.KeyEnv == "" && r.auth != "" {
+			p.KeyEnv = "OPENAI_API_KEY"
+		}
 		base := strings.TrimRight(p.URL, "/")
 		if ref.Provider == "cliproxy" && base == "" {
+			p.AllowPrivate = true
 			base = "http://cliproxy:8317"
 			if v := strings.TrimSpace(os.Getenv("HUB_MODEL_RELAY_CLIPROXY")); v != "" {
 				base = strings.TrimRight(v, "/")
 			}
 		}
-		hops = append(hops, &modelHop{name: ref.Provider, base: base, keyEnv: p.KeyEnv, model: ref.Model})
+		health := &modelHealth{}
+		if file == r.reg {
+			if shared := r.health[ref.Provider]; shared != nil {
+				health = shared
+			} else {
+				r.health[ref.Provider] = health
+			}
+		}
+		hop := &modelHop{modelHealth: health, name: ref.Provider, base: base, keyEnv: p.KeyEnv, model: ref.Model}
+		if grant := p.BrokerGrants[r.owner]; grant != "" {
+			target := p.CredentialEnv
+			actor := identity.Envelope{Schema: identity.Schema, PrincipalID: r.owner, ContextID: r.owner, RuntimeID: r.owner, ExternalIdentityID: r.owner, ConversationID: "model-relay", DeliveryTargetID: "model-relay", PolicyVersion: "model-relay"}
+			binding := "model-relay-" + ref.Provider
+			hop.keyFor = func(ctx context.Context) (string, error) {
+				return r.broker.ResolveEnv(ctx, actor, binding, "model-relay", grant, target)
+			}
+		}
+		hop.transport = netguard.Transport(p.AllowPrivate)
+		if p.AllowPrivate {
+			hop.transport = netguard.LocalTransport()
+		}
+		if transport, ok := hop.transport.(*http.Transport); ok {
+			transport.Proxy = nil
+		}
+		hops = append(hops, hop)
 	}
-	r.ladders[name] = hops
+	if file == r.reg {
+		r.ladders[name] = hops
+	}
 	return hops
 }
 
-func (r *relayRegistry) selection() string {
+// relaySelection is the owner's persisted choice: a logical model name, or a
+// provider-side catalog model pinned to the granted account that serves it.
+type relaySelection struct {
+	Model    string `json:"model"`
+	Provider string `json:"provider,omitempty"`
+}
+
+func (r *relayRegistry) selection() relaySelection {
 	b, err := os.ReadFile(r.statePath) // #nosec G304 -- state path is operator-mounted
 	if err != nil {
-		return ""
+		return relaySelection{}
 	}
-	var sel struct {
-		Model string `json:"model"`
-	}
+	var sel relaySelection
 	if json.Unmarshal(b, &sel) != nil {
-		return ""
+		return relaySelection{}
 	}
-	return sel.Model
+	return sel
 }
 
 // serveSelect is the owner-facing model switch: admin-token authenticated,
-// grant-checked and persisted into the mounted selection file.
+// grant-checked and persisted into the mounted selection file. GET reports
+// the effective selection so the owner can see what their traffic resolves to.
 func (r *relayRegistry) serveSelect(w http.ResponseWriter, req *http.Request) {
 	if r.admin == "" || req.Header.Get("Authorization") != "Bearer "+r.admin {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	var sel struct {
-		Model string `json:"model"`
+	if req.Method == http.MethodGet {
+		sel := r.selection()
+		if sel.Model == "" {
+			sel.Model = "default"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(sel)
+		return
 	}
+	var sel relaySelection
 	if json.NewDecoder(io.LimitReader(req.Body, 1<<16)).Decode(&sel) != nil || sel.Model == "" {
 		http.Error(w, "invalid model request", http.StatusBadRequest)
 		return
@@ -547,12 +832,29 @@ func (r *relayRegistry) serveSelect(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "model registry unavailable", http.StatusBadGateway)
 		return
 	}
-	entry, ok := file.Models[sel.Model]
-	if !ok || !r.granted(entry) {
+	level := r.switchLevel(file)
+	if level == "none" {
+		http.Error(w, "model switching not granted", http.StatusForbidden)
+		return
+	}
+	if entry, ok := file.Models[sel.Model]; ok && r.granted(file, entry) {
+		sel.Provider = ""
+	} else if level == "catalog" {
+		sel.Provider = r.catalogProvider(req.Context(), file, sel.Model)
+		if sel.Provider == "" {
+			http.Error(w, "model not granted", http.StatusForbidden)
+			return
+		}
+		// A qualified "provider/model" argument pins the account but persists
+		// the bare upstream id — it is the id the provider expects.
+		if _, model, ok := strings.Cut(sel.Model, "/"); ok {
+			sel.Model = model
+		}
+	} else {
 		http.Error(w, "model not granted", http.StatusForbidden)
 		return
 	}
-	body, _ := json.Marshal(map[string]string{"model": sel.Model})
+	body, _ := json.Marshal(sel)
 	persisted := false
 	if err := os.MkdirAll(filepath.Dir(r.statePath), 0700); err == nil {
 		if tmp, err := os.CreateTemp(filepath.Dir(r.statePath), ".sel-*"); err == nil {
@@ -571,6 +873,124 @@ func (r *relayRegistry) serveSelect(w http.ResponseWriter, req *http.Request) {
 	_, _ = w.Write(body)
 }
 
+// serveRegistry reports the owner's granted models with their ordered account
+// ladders — the account view behind /model. Admin-bearer only: provider URLs,
+// env key names and grants stay in the mounted file and never cross the wire.
+func (r *relayRegistry) serveRegistry(w http.ResponseWriter, req *http.Request) {
+	if r.admin == "" || req.Header.Get("Authorization") != "Bearer "+r.admin {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	file, err := r.current()
+	if err != nil {
+		http.Error(w, "model registry unavailable", http.StatusBadGateway)
+		return
+	}
+	type hop struct {
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+		Down     bool   `json:"down,omitempty"`
+	}
+	type model struct {
+		Name   string `json:"name"`
+		Ladder []hop  `json:"ladder"`
+	}
+	models := make([]model, 0, len(file.Models))
+	hopByProvider := map[string]*modelHop{}
+	var providers []string
+	for name, entry := range file.Models {
+		if !r.granted(file, entry) {
+			continue
+		}
+		ladder := make([]hop, 0, len(entry.Ladder))
+		hops := r.ladderFor(file, name, entry)
+		for i, ref := range entry.Ladder {
+			h := hop{Provider: ref.Provider, Model: ref.Model}
+			if health := r.health[ref.Provider]; health != nil && health.down(time.Now()) {
+				h.Down = true
+			}
+			ladder = append(ladder, h)
+			if _, seen := hopByProvider[ref.Provider]; !seen {
+				providers = append(providers, ref.Provider)
+				hopByProvider[ref.Provider] = nil
+				if i < len(hops) && hops[i].name == ref.Provider {
+					hopByProvider[ref.Provider] = hops[i]
+				}
+			}
+		}
+		models = append(models, model{Name: name, Ladder: ladder})
+	}
+	slices.SortFunc(models, func(a, b model) int { return strings.Compare(a.Name, b.Name) })
+	type account struct {
+		Provider string   `json:"provider"`
+		Down     bool     `json:"down,omitempty"`
+		Catalog  []string `json:"catalog,omitempty"`
+	}
+	accounts := make([]account, 0, len(providers))
+	for _, name := range providers {
+		a := account{Provider: name}
+		if health := r.health[name]; health != nil && health.down(time.Now()) {
+			a.Down = true
+		}
+		if upstream := hopByProvider[name]; upstream != nil {
+			a.Catalog = r.providerCatalog(req.Context(), upstream)
+		}
+		accounts = append(accounts, a)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"models": models, "accounts": accounts, "switch": r.switchLevel(file)})
+}
+
+// providerCatalog lists what an upstream account can actually serve — the
+// /v1/models of that provider, fetched with the hop's own credentials. The
+// hop transport stays pinned and redirect-free like regular traffic; a
+// failed or empty answer means no catalog rather than a relay error.
+func (r *relayRegistry) providerCatalog(ctx context.Context, hop *modelHop) []string {
+	target := hop.base + "/v1/models"
+	if base, err := url.Parse(hop.base); err == nil && strings.Trim(base.Path, "/") != "" {
+		target = hop.base + "/models"
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil) // #nosec G704 -- configured upstream hop
+	if err != nil {
+		return nil
+	}
+	switch {
+	case hop.keyFor != nil:
+		key, err := hop.keyFor(ctx)
+		if err != nil {
+			return nil
+		}
+		req.Header.Set("Authorization", "Bearer "+key)
+	case hop.keyEnv != "":
+		if key := os.Getenv(hop.keyEnv); key != "" {
+			req.Header.Set("Authorization", "Bearer "+key)
+		}
+	}
+	client := &http.Client{Transport: hop.transport, Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := client.Do(req) // #nosec G704 -- configured upstream hop
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	var doc struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&doc) != nil || resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	out := make([]string, 0, len(doc.Data))
+	for _, m := range doc.Data {
+		if m.ID != "" {
+			out = append(out, m.ID)
+		}
+	}
+	return out
+}
+
 // requestedModel returns the logical model name in the request body, if any.
 func requestedModel(body []byte) string {
 	var doc struct {
@@ -585,6 +1005,9 @@ func requestedModel(body []byte) string {
 // modelRelayHandlerFromEnv picks the relay mode: a mounted models.yaml
 // registry when HUB_MODEL_RELAY_REGISTRY is set, else the static env ladder.
 func modelRelayHandlerFromEnv() (http.Handler, error) {
+	if _, _, err := modelRelayLimits(); err != nil {
+		return nil, err
+	}
 	if registry := strings.TrimSpace(os.Getenv("HUB_MODEL_RELAY_REGISTRY")); registry != "" {
 		state := strings.TrimSpace(os.Getenv("HUB_MODEL_RELAY_STATE"))
 		if state == "" {
@@ -592,7 +1015,7 @@ func modelRelayHandlerFromEnv() (http.Handler, error) {
 		}
 		admin := strings.TrimSpace(os.Getenv("HUB_MODEL_RELAY_ADMIN"))
 		if file := strings.TrimSpace(os.Getenv("HUB_MODEL_RELAY_ADMIN_FILE")); admin == "" && file != "" {
-			if b, err := os.ReadFile(file); err == nil { // #nosec G304 -- token path is operator-mounted
+			if b, err := os.ReadFile(file); err == nil { // #nosec G304 G703 -- token path is operator-mounted
 				admin = strings.TrimSpace(string(b))
 			}
 		}
@@ -609,13 +1032,40 @@ func modelRelayHandlerFromEnv() (http.Handler, error) {
 	return modelRelayHandler(hops, model)
 }
 
+func modelRelayLimits() (time.Duration, time.Duration, error) {
+	// The hop bound covers the whole exchange incl. a streaming body — agentic
+	// completions legitimately run tens of seconds, so the default is the full
+	// request budget rather than a tight first-byte ceiling.
+	hop, total := 2*time.Minute, 2*time.Minute
+	for _, item := range []struct {
+		key     string
+		value   *time.Duration
+		maximum time.Duration
+	}{
+		{"HUB_MODEL_RELAY_HOP_TIMEOUT", &hop, 5 * time.Minute},
+		{"HUB_MODEL_RELAY_TIMEOUT", &total, 10 * time.Minute},
+	} {
+		if raw := os.Getenv(item.key); raw != "" {
+			value, err := time.ParseDuration(raw)
+			if err != nil || value <= 0 || value > item.maximum {
+				return 0, 0, fmt.Errorf("invalid %s bound", item.key)
+			}
+			*item.value = value
+		}
+	}
+	if hop > total {
+		return 0, 0, fmt.Errorf("model hop timeout exceeds total timeout")
+	}
+	return hop, total, nil
+}
+
 func runModelRelay(ctx context.Context) error {
 	handler, err := modelRelayHandlerFromEnv()
 	if err != nil {
 		return err
 	}
 	server := &http.Server{Addr: "0.0.0.0:8318", Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: time.Minute}
-	go func() {
+	go func() { // #nosec G118 -- graceful shutdown needs a fresh context after ctx cancellation
 		<-ctx.Done()
 		stop, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()

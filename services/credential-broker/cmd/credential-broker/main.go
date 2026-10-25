@@ -24,6 +24,25 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 	case "version":
 		_, e := fmt.Fprintln(out, version)
 		return e
+	case "migrate-recovery":
+		fs := flag.NewFlagSet("migrate-recovery", flag.ContinueOnError)
+		fs.SetOutput(out)
+		path := fs.String("config", "", "absolute configuration path")
+		if e := fs.Parse(args[1:]); e != nil {
+			return e
+		}
+		if *path == "" || fs.NArg() != 0 {
+			return fmt.Errorf("--config is required")
+		}
+		cfg, e := app.ReadConfig(*path)
+		if e != nil {
+			return e
+		}
+		if e := app.MigrateRecovery(cfg); e != nil {
+			return e
+		}
+		_, e = fmt.Fprintln(out, "Recovery migration complete.")
+		return e
 	case "init":
 		fs := flag.NewFlagSet("init", flag.ContinueOnError)
 		fs.SetOutput(out)
@@ -47,6 +66,7 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 		fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 		fs.SetOutput(out)
 		path := fs.String("config", "", "absolute configuration path")
+		stateWitnessDir := fs.String("state-witness-dir", "", "absolute independent state witness directory")
 		if e := fs.Parse(args[1:]); e != nil {
 			return e
 		}
@@ -56,6 +76,9 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 		cfg, e := app.ReadConfig(*path)
 		if e != nil {
 			return e
+		}
+		if *stateWitnessDir != "" {
+			cfg.StateWitnessDir = *stateWitnessDir
 		}
 		if args[0] == "check-config" {
 			_, e = fmt.Fprintln(out, "Configuration syntax is valid. Adapter credentials, TLS and contract readiness are verified at service startup.")

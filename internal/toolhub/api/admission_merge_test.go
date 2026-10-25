@@ -156,10 +156,10 @@ func TestControllerEnvSeams(t *testing.T) {
 	if err != nil || releaser == nil {
 		t.Fatalf("releaser seam: %v", err)
 	}
-	if err := releaser(context.Background(), ""); err == nil {
+	if err := releaser(context.Background(), ControllerRelease{}); err == nil {
 		t.Fatal("empty workload release accepted")
 	}
-	if err := releaser(context.Background(), "w-1"); err == nil {
+	if err := releaser(context.Background(), ControllerRelease{WorkloadID: "w-1"}); err == nil {
 		t.Fatal("release to dead endpoint succeeded")
 	}
 }

@@ -185,7 +185,7 @@ func (c telegram) PrepareRoutine(in *commodel.Schedule, caller identity.Envelope
 }
 
 func (c telegram) Caps() Caps {
-	return Caps{Typing: true, EditableStatus: true, Artifacts: true, Destinations: true, RoutineOrigin: true}
+	return Caps{Typing: true, EditableStatus: true, Artifacts: true, Destinations: true, RoutineOrigin: true, Actions: true}
 }
 
 func (c telegram) SendPresence(ctx context.Context, chatID, topicID int64) error {

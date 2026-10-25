@@ -16,6 +16,25 @@ func privateDir(t *testing.T) string {
 	}
 	return d
 }
+
+func TestSyncDirRejectsNonDirectoryAndSymlink(t *testing.T) {
+	d := privateDir(t)
+	file, link := filepath.Join(d, "file"), filepath.Join(d, "link")
+	if err := os.WriteFile(file, []byte("synthetic"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(d, link); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{file, link} {
+		if err := SyncDir(path); err == nil {
+			t.Errorf("SyncDir accepted non-directory or symlink: %s", filepath.Base(path))
+		}
+	}
+	if err := SyncDir(d); err != nil {
+		t.Fatal(err)
+	}
+}
 func TestFiles(t *testing.T) {
 	d := privateDir(t)
 	if Dir(d) != nil {

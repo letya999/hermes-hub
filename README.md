@@ -87,12 +87,14 @@ another user; dev uses the next port. Docker Compose rejects accidental host-por
 | Native desktop / Drafts.app | Authenticated bridge to a trusted native stdio MCP server |
 | Other services | Arbitrary configured stdio/HTTP MCP; external services remain external |
 
-Default features are workspace, browser, hh, web and deep_research. Image generation is the separate opt-in `image_gen` feature: provider, model, and delivery are configured there. Delivery `workspace` keeps the file in that user's workspace; delivery `url` returns the provider URL. All account integrations are opt-in.
+Default `workspace.yaml` wishes cover workspace, browser, hh, web and deep_research
+— wishes select a backend but admit nothing without a ToolHub grant. Image generation
+is the separate opt-in `image_gen` feature: provider, model, and delivery are configured there. Delivery `workspace` keeps the file in that user's workspace; delivery `url` returns the provider URL. All account integrations are opt-in.
 The frozen per-capability matrix — availability, surface, credentials,
 limits and revocation — is [SPEC-0040](specs/active/SPEC-0040-capability-profile.md).
 The accepted default-deny successor is [SPEC-0041](specs/active/SPEC-0041-default-deny-capabilities.md)
 with [isolation and acceptance requirements](specs/active/SPEC-0042-capability-isolation-and-proof.md).
-Implementation is in progress; the [audit](docs/capability-boundary-audit.md) and
+Implementation is in progress; the [audit](.work/in-progress/CHG-0065-capability-enforcement/audit.md) and
 [phased plan](.work/in-progress/CHG-0065-capability-enforcement/plan.md) separate
 current evidence from the target guarantees.
 Hermes works without CareerGo and JobFetch. If you run an external MCP service, add
@@ -125,6 +127,7 @@ must be validated on the deployment host; see the delivery evidence before rollo
 
 Persistent communication rollout uses `hubctl execution-audit` and
 `hubctl select-execution` per context. The supervised gateway sends durable jobs to
-the host supervisor, which starts the exact user's Hermes home, holds active leases,
-and gracefully shuts compute down after the default five-minute idle window.
+the container supervisor (control image), which starts the exact user's Hermes home,
+holds active leases, and gracefully shuts compute down after the default
+30-minute warm TTL.
 See [operations](docs/operations.md) for drain, rollout, rollback and native cron prerequisites.

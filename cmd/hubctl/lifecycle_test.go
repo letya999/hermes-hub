@@ -82,7 +82,7 @@ func TestLifecycleAndFailurePropagation(t *testing.T) {
 		}
 	}
 	failedConfig, _ := os.ReadFile(log)
-	if strings.Contains(string(failedConfig), "image prune") || strings.Contains(string(failedConfig), " build") || strings.Contains(string(failedConfig), " up -d") {
+	if strings.Contains(string(failedConfig), "image prune") || strings.Contains(string(failedConfig), " build") || strings.Contains(string(failedConfig), " up -d") || strings.Contains(string(failedConfig), "volume create") {
 		t.Fatalf("invalid configuration caused Docker mutation: %s", failedConfig)
 	}
 	t.Setenv("HUB_FAIL_MATCH", "")
@@ -109,6 +109,12 @@ func TestLifecycleAndFailurePropagation(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(log)
+	createRecovery := strings.Index(string(b), "volume create hermes-credential-broker-recovery-prod")
+	createRecoveryKey := strings.Index(string(b), "volume create hermes-credential-broker-recovery-key-prod")
+	startServices := strings.Index(string(b), " up -d")
+	if createRecovery < 0 || createRecoveryKey < 0 || startServices < 0 || createRecovery > startServices || createRecoveryKey > startServices {
+		t.Fatal("up did not provision the independent recovery volumes before starting services")
+	}
 	if !strings.Contains(string(b), "ps --filter label=com.docker.compose.service=cliproxy") {
 		t.Fatal("up skipped the shared model proxy alias check")
 	}

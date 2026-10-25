@@ -1,0 +1,35 @@
+schema: 1
+change: CHG-0116
+title: Watcher probe pipeline
+status: done
+branch: feat/issue-248-watcher-probe-pipeline
+worktree: hermes-hub-248
+updated: 2026-10-18
+phase: implementation
+adr: ADR-0045
+spec: SPEC-0059
+requirements: [R1.1, R1.2, R1.3, R2.1, R2.2, R2.3, R3.1, R3.2, R4.1]
+depends_on: [CHG-0100, CHG-0101]
+github_issue: 248
+design_status: accepted
+implementation_status: in_progress
+slices:
+  S1-extract: done
+  S2-isolated-scripts: done
+  S3-recipes: done
+  S4-agent-surface: done
+  S5-verification: in_progress
+validation:
+  documents: done
+  just_check: pending
+  docker_check: not_run
+  just_security: pending
+  red_team: not_started
+  live_acceptance: not_started
+evidence:
+  - unit tests green in communication/supervisor/agenttools/cmd-communication
+  - fixed pre-existing red: nil Timing deref on every: schedules, graceful exhaustion, interval anchor persistence
+notes: >
+  kind=render, per-site recipe growth, intent-based LLM diff filtering and
+  MCP connector live acceptance (#257) are out of scope for this change.
+closeout: retroactive-triage-2026-10-20

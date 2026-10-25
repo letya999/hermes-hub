@@ -267,7 +267,9 @@ var mcpRawMutationTools = map[string][]string{
 // for an organization-owned directory (always read-only); `to` is an
 // absolute container path outside the reserved roots.
 type Workspace struct {
-	Mounts []Mount `yaml:"mounts,omitempty"`
+	Mounts            []Mount `yaml:"mounts,omitempty"`
+	Goal              string  `yaml:"goal,omitempty" json:"goal,omitempty"`
+	BootstrapRevision uint64  `yaml:"bootstrap_revision,omitempty" json:"bootstrap_revision,omitempty"`
 }
 
 type Mount struct {

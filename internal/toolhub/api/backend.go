@@ -117,9 +117,29 @@ func MergeEgressHosts(egress []string, hosts []string) []string {
 	return merged
 }
 
+// ProxyStubValue is the only value a proxy-delivered credential ever shows
+// in workload environment: the real value stays with the Credential Broker,
+// and the egress proxy resolves the reference at request time.
+const ProxyStubValue = "hub-managed"
+
+// ProxyGrant is one egress-proxy plan entry: which env stub the workload
+// sees, the credential reference the proxy resolves, the allowlisted hosts
+// the real value may be injected toward, and the value plus prefix the
+// cred-proxy writes into its rules file. Value travels the same trusted
+// plan channel as CliBrokeredCred.Value — never container env, argv, mounts
+// or receipts.
+type ProxyGrant struct {
+	EnvName   string   `json:"env_name"`
+	Reference string   `json:"reference"`
+	Hosts     []string `json:"hosts"`
+	Prefix    string   `json:"prefix,omitempty"`
+	Value     string   `json:"value"`
+}
+
 type CredentialInjection struct {
 	Environment map[string]string
 	Mounts      []Mount
+	Proxy       []ProxyGrant
 	Cleanup     func() error
 	// Checkpoint is called only after the backend has successfully quiesced
 	// a workload using Broker state. Cleanup on a failed call never snapshots.
@@ -246,11 +266,19 @@ func (b MCPBackend) EnsureReady(ctx context.Context, effective EffectiveBinding,
 	if err != nil {
 		return err
 	}
+	if a := effective.Definition.OAuth; a != nil {
+		prepared.ProbeTool = a.ProbeTool
+		prepared.ProbeArgs = a.ProbeArgs
+		prepared.ProbeTools = nil
+		matched = true
+	}
 	if matched && (prepared.ProbeTool != "" || len(prepared.ProbeTools) > 0) {
 		probeName := prepared.ProbeTool
+		probeArgs := prepared.ProbeArgs
 		for _, candidate := range prepared.ProbeTools {
 			if environment[candidate.Env] != "" {
 				probeName = candidate.Tool
+				probeArgs = candidate.Args
 				break
 			}
 		}
@@ -258,9 +286,20 @@ func (b MCPBackend) EnsureReady(ctx context.Context, effective EffectiveBinding,
 			if tool.Name != probeName || probeName == "" {
 				continue
 			}
-			result, probeErr := b.CallEnv(ctx, effective, tool, map[string]any{}, environment)
+			if tool.Effect != ReadEffect {
+				return fmt.Errorf("%w: readiness probe must be read-only", ErrUnauthorized)
+			}
+			result, probeErr := b.CallEnv(ctx, effective, tool, probeArgs, environment)
 			if probeErr == nil && result.IsError {
-				probeErr = fmt.Errorf("%w: provider read probe failed", ErrUnauthorized)
+				detail := strings.TrimSpace(result.Text)
+				if runes := []rune(detail); len(runes) > 256 {
+					detail = string(runes[:256])
+				}
+				if detail == "" {
+					probeErr = fmt.Errorf("%w: provider read probe failed", ErrUnauthorized)
+				} else {
+					probeErr = fmt.Errorf("%w: provider read probe failed: %s", ErrUnauthorized, detail)
+				}
 			}
 			if probeErr != nil && len(effective.CredentialMounts) == 0 && b.AdmissionRelease != nil {
 				probeErr = errors.Join(probeErr, b.AdmissionRelease(context.Background(), effective.WorkloadID))
@@ -289,39 +328,20 @@ func (b MCPBackend) EnsureReady(ctx context.Context, effective EffectiveBinding,
 		}
 		return nil
 	}
-	var previous []byte
-	var hadPrevious bool
-	if len(environment) > 0 && strings.TrimSpace(b.Root) != "" {
-		workspace, workspaceErr := OpenWorkloadWorkspace(b.Root, effective, injectJobID(ctx, effective))
-		if workspaceErr == nil && workspace.Path != "" {
-			previous, workspaceErr = os.ReadFile(filepath.Join(workspace.Path, "credentials.env"))
-			hadPrevious = workspaceErr == nil
-		}
-	}
-	path, unlock, err := writeAuthorizedFilesPersistent(ctx, b.Root, effective, environment)
+	wipe, err := WriteAuthorizedFiles(ctx, b.Root, effective, environment)
 	if err != nil {
 		return err
 	}
+	defer func() { readyErr = errors.Join(readyErr, wipe()) }()
 	// Keep the admission plan and the local receipt check on the same extended
 	// egress view; admit applies the identical merge for the submitted plan.
 	effective.Definition.Execution.Egress = MergeEgressHosts(effective.Definition.Execution.Egress, CredentialEgressHosts(environment))
 	receipt, err := b.Admit(ctx, effective, environment)
 	if err != nil {
-		restoreAuthorizedFile(path, previous, hadPrevious)
-		if unlock != nil {
-			_ = unlock()
-		}
 		return fmt.Errorf("%w: workload controller: %v", ErrIsolation, err)
 	}
 	if err := receipt.Validate(effective); err != nil {
-		restoreAuthorizedFile(path, previous, hadPrevious)
-		if unlock != nil {
-			_ = unlock()
-		}
 		return fmt.Errorf("%w: workload controller: %v", ErrIsolation, err)
-	}
-	if unlock != nil {
-		_ = unlock()
 	}
 	return nil
 }
@@ -385,7 +405,7 @@ func (b MCPBackend) Call(ctx context.Context, effective EffectiveBinding, tool T
 }
 
 func (b MCPBackend) CallEnv(ctx context.Context, effective EffectiveBinding, tool ToolSpec, arguments map[string]any, environment map[string]string) (BackendResult, error) {
-	if strings.HasPrefix(effective.Definition.DefinitionID, "google-workspace-") {
+	if effective.Definition.Transport == RemoteMCP && strings.HasPrefix(effective.Definition.DefinitionID, "google-workspace-") {
 		return (GoogleWorkspaceBackend{HTTP: b.HTTPClient}).CallEnv(ctx, effective, tool, arguments, environment)
 	}
 	if effective.Definition.Transport == RemoteMCP && remoteDefinitionEndpoint(effective) {
@@ -462,6 +482,11 @@ func (b MCPBackend) CallEnv(ctx context.Context, effective EffectiveBinding, too
 	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
 		return BackendResult{}, err
+	}
+	// A nil map marshals as arguments:null and strict servers (the Node MCP
+	// SDK) reject the literal — send an empty record for no-arg calls.
+	if arguments == nil {
+		arguments = map[string]any{}
 	}
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: tool.Name, Arguments: arguments})
 	closeErr := session.Close()

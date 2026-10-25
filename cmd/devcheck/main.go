@@ -34,8 +34,9 @@ func run(args []string) error {
 			dir  string
 			pkgs []string
 		}{{".", []string{"./cmd/...", "./internal/..."}}, {"services/credential-broker", []string{"./..."}}} {
-			argv := append([]string{"run", "github.com/securego/gosec/v2/cmd/gosec@v2.29.0", "-quiet", "-exclude-generated", "-exclude=G101,G204,G301,G302,G304,G306"}, scan.pkgs...)
+			argv := append([]string{"run", "github.com/securego/gosec/v2/cmd/gosec@v2.29.1-0.20261022115301-1cbfd7e6488c", "-quiet", "-exclude-generated", "-exclude=G101,G204,G301,G302,G304,G306"}, scan.pkgs...)
 			cmd := exec.Command("go", argv...)
+			cmd.Env = append(os.Environ(), "GOWORK=off")
 			cmd.Dir, cmd.Stdout, cmd.Stderr = scan.dir, os.Stdout, os.Stderr
 			if err = cmd.Run(); err != nil {
 				return fmt.Errorf("gosec %s: %w", scan.dir, err)
@@ -111,6 +112,22 @@ func run(args []string) error {
 		err = devcheck.ToolHubGatewayContract(context.Background())
 	case len(args) == 1 && args[0] == "toolhub-hermes-contract":
 		err = devcheck.ToolHubHermesContract(context.Background())
+	case len(args) == 3 && args[0] == "connector-build":
+		err = devcheck.ConnectorBuild(context.Background(), args[1], args[2])
+	case len(args) == 2 && args[0] == "connector-ref":
+		var ref string
+		ref, err = devcheck.ConnectorPublishRef(context.Background(), args[1])
+		if err == nil {
+			fmt.Println(ref)
+		}
+	case len(args) == 5 && args[0] == "connector-pin":
+		err = devcheck.ConnectorPin(context.Background(), args[1], args[2], args[3], args[4])
+	case len(args) == 2 && args[0] == "connector-bench":
+		var runs int
+		runs, err = strconv.Atoi(args[1])
+		if err == nil {
+			err = devcheck.ConnectorBench(context.Background(), runs, os.Stdout)
+		}
 	case len(args) == 4 && args[0] == "mcp-bench":
 		calls, parseErr := strconv.Atoi(args[3])
 		if parseErr != nil {
@@ -119,7 +136,7 @@ func run(args []string) error {
 			err = devcheck.MCPBench(context.Background(), args[1], args[2], calls, os.Stdout)
 		}
 	default:
-		err = fmt.Errorf("usage: devcheck docs|format|gosec|coverage FILE MINIMUM [PACKAGE-MINIMUM]|covergo FILE MINIMUM [PACKAGE-MINIMUM]|docker-build IMAGE TARGET|docker-pull IMAGE TARGET|docker-publish TARGET|docker-clean [--deep]|docker-smoke IMAGE|hermes-contract IMAGE|hermes-native-contract IMAGE|supervisor-contract IMAGE|tts-cache-contract IMAGE|hermes-capability-contract IMAGE|managed-network-canary IMAGE|managed-supervisor-canary IMAGE|scratch-workload-canary IMAGE|gateway-lifecycle IMAGE|toolhub-contract|toolhub-gateway-contract|toolhub-hermes-contract|mcp-bench URL TOOL CALLS")
+		err = fmt.Errorf("usage: devcheck docs|format|gosec|coverage FILE MINIMUM [PACKAGE-MINIMUM]|covergo FILE MINIMUM [PACKAGE-MINIMUM]|docker-build IMAGE TARGET|docker-pull IMAGE TARGET|docker-publish TARGET|docker-clean [--deep]|docker-smoke IMAGE|hermes-contract IMAGE|hermes-native-contract IMAGE|supervisor-contract IMAGE|tts-cache-contract IMAGE|hermes-capability-contract IMAGE|managed-network-canary IMAGE|managed-supervisor-canary IMAGE|scratch-workload-canary IMAGE|gateway-lifecycle IMAGE|toolhub-contract|toolhub-gateway-contract|toolhub-hermes-contract|mcp-bench URL TOOL CALLS|connector-build ID OUTDIR|connector-ref ID|connector-pin ID PINFILE REF CATALOG|connector-bench RUNS")
 	}
 	return err
 }

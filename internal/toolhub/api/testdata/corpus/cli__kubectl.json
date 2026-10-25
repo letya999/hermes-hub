@@ -1,0 +1,22 @@
+{
+  "target": "cli/kubectl",
+  "subject": {
+    "kind": "cli",
+    "ref": "cli/kubectl@sha256:7a7f09de08e3dc01c5bbf90657ecc83d5c2da9f5791f1ebe84132b95422878dc"
+  },
+  "provenance": [
+    "bounded-cli recipe: language-convention entrypoint"
+  ],
+  "entries": [
+    {
+      "claim": {
+        "attribute": "entrypoint",
+        "value": "[\"kubectl\"]"
+      },
+      "source": "--help",
+      "ref": "cli/kubectl",
+      "rank": "L6"
+    }
+  ],
+  "expect_digest": "sha256:da19cbaf8cb6ad85c73a2ed5536989d8b950be435a7f88b0e89bd5ec36413bec"
+}

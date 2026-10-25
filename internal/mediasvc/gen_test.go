@@ -21,6 +21,81 @@ import (
 var testPNG = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 1, 2, 3}
 var testMP4 = []byte{0, 0, 0, 24, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm', 1, 2}
 
+func TestMediaRestartQuarantinesUncertainSubmission(t *testing.T) {
+	for _, status := range []string{"submitting", "running"} {
+		directory := t.TempDir()
+		store, err := newJobStore(directory)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.put(&Job{ID: "job-uncertain", Status: status, Kind: "video", Model: "portrait", Prompt: "fixture"}); err != nil {
+			t.Fatal(err)
+		}
+		_, err = Serve(Config{Role: RoleMedia, Engine: "command", Command: "missing-fixture-command", Auth: "fixture", Workers: 1, DataDir: directory})
+		if err != nil {
+			t.Fatal(err)
+		}
+		job, err := store.get("job-uncertain")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if job.Status != "uncertain" || !strings.Contains(job.Error, "submission") {
+			t.Errorf("%s orphan could be replayed or left pending: status=%s err=%s", status, job.Status, job.Error)
+		}
+	}
+}
+
+type observedSubmission struct {
+	fakeGen
+	before func()
+}
+
+func (f *observedSubmission) Submit(ctx context.Context, request GenRequest) (SubmitHandle, error) {
+	f.before()
+	return f.fakeGen.Submit(ctx, request)
+}
+
+func TestMediaSubmissionPersistsIntentBeforeProviderCall(t *testing.T) {
+	engine := &observedSubmission{fakeGen: fakeGen{pollDone: true, result: GenResult{Data: testMP4, Mime: "video/mp4"}}}
+	service := newMediaService(t, engine)
+	job := &Job{ID: "job-intent", Status: "queued", Kind: "video", Model: "portrait", Prompt: "fixture"}
+	if err := service.jobs.put(job); err != nil {
+		t.Fatal(err)
+	}
+	engine.before = func() {
+		stored, err := service.jobs.get(job.ID)
+		if err != nil || stored.Status != "submitting" {
+			t.Errorf("external submit preceded durable intent: status=%v err=%v", stored, err)
+		}
+	}
+	service.runGenJob(t.Context(), job)
+	stored, err := service.jobs.get(job.ID)
+	if err != nil || stored.Status != "done" || stored.RemoteID != "req-1" || engine.submits.Load() != 1 {
+		t.Errorf("submission state failed: job=%v err=%v", stored, err)
+	}
+}
+
+type uncertainSubmission struct{ fakeGen }
+
+func (f *uncertainSubmission) Submit(context.Context, GenRequest) (SubmitHandle, error) {
+	f.submits.Add(1)
+	return SubmitHandle{}, errSubmissionUncertain
+}
+
+func TestMediaSubmissionUnknownOutcomeIsDurablyUncertain(t *testing.T) {
+	engine := &uncertainSubmission{}
+	service := newMediaService(t, engine)
+	job := &Job{ID: "job-unknown", Status: "queued", Kind: "video", Model: "portrait", Prompt: "fixture"}
+	if err := service.jobs.put(job); err != nil {
+		t.Fatal(err)
+	}
+	service.runGenJob(t.Context(), job)
+	stored, err := service.jobs.get(job.ID)
+	if err != nil || stored.Status != "uncertain" || !strings.Contains(stored.Error, "uncertain") || engine.submits.Load() != 1 {
+		t.Errorf("uncertain submission can be retried: status=%v err=%v", stored, err)
+	}
+}
+
 type fakeGen struct {
 	result     GenResult
 	err        error
@@ -661,6 +736,22 @@ func TestMediaJobPendingResultIs409(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete: %d", resp.StatusCode)
+	}
+	if err := s.jobs.put(&Job{ID: "job-pend", Status: "submitting", Kind: "video"}); err != nil {
+		t.Fatal(err)
+	}
+	req, _ = http.NewRequest(http.MethodDelete, srv.URL+"/v1/jobs/job-pend", nil)
+	authReq(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Errorf("in-flight submission deleted: status=%d", resp.StatusCode)
+	}
+	if _, err := s.jobs.get("job-pend"); err != nil {
+		t.Error("deleted durable submission intent before provider outcome")
 	}
 }
 

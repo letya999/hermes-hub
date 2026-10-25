@@ -15,6 +15,8 @@ var (
 	maxUnpackBytes   = int64(1 << 30)
 )
 
+const maxUnpackEntryBytes = int64(8 << 20)
+
 func (t *Tools) archiveCreate(ws *os.Root, r Input) (map[string]any, error) {
 	if !safe(r.Path) || !strings.HasPrefix(r.Path, "artifacts/") || !strings.HasSuffix(strings.ToLower(r.Path), ".zip") {
 		return nil, errors.New("output must be an artifacts/*.zip path")
@@ -141,6 +143,9 @@ func unpackZip(ws *os.Root, zr *zip.Reader, target string) (int, error) {
 	}
 	var declared uint64
 	for _, entry := range zr.File {
+		if entry.UncompressedSize64 > uint64(maxUnpackEntryBytes) {
+			return 0, errors.New("archive entry exceeds the 8 MiB artifact limit")
+		}
 		if entry.UncompressedSize64 > uint64(maxUnpackBytes)-declared {
 			return 0, errors.New("archive exceeds the unpacked size limit")
 		}

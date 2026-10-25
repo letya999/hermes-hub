@@ -57,7 +57,8 @@ type Message struct {
 	Photo             []TGMedia            `json:"photo,omitempty"`
 }
 type TGUser struct {
-	ID int64 `json:"id"`
+	ID       int64  `json:"id"`
+	Username string `json:"username"`
 }
 type TGDirectTopic struct {
 	TopicID int64 `json:"topic_id"`
@@ -116,6 +117,7 @@ type TelegramFile struct {
 
 type TelegramAPI interface {
 	GetUpdates(context.Context, int64, int) ([]Update, error)
+	GetMe(context.Context) (TGUser, error)
 	SendMessage(context.Context, int64, int64, string, string) error
 	SendDocument(context.Context, int64, int64, string, string, []byte) error
 	SendPhoto(context.Context, int64, int64, string, string, []byte) error
@@ -154,7 +156,7 @@ func (t *telegramAPI) call(ctx context.Context, method string, payload any, resu
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+"/bot"+t.token+"/"+method, bytes.NewReader(b))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+"/bot"+t.token+"/"+method, bytes.NewReader(b)) // #nosec G704 -- configured Telegram API base URL
 	if err != nil {
 		return err
 	}
@@ -163,7 +165,7 @@ func (t *telegramAPI) call(ctx context.Context, method string, payload any, resu
 }
 
 func (t *telegramAPI) callRequest(req *http.Request, result any) error {
-	response, err := t.client.Do(req)
+	response, err := t.client.Do(req) // #nosec G704 -- request built on the configured Telegram API base URL
 	if err != nil {
 		return err
 	}
@@ -205,6 +207,11 @@ var telegramConflictBackoff = time.Minute
 func (t *telegramAPI) GetUpdates(ctx context.Context, offset int64, timeout int) ([]Update, error) {
 	var result []Update
 	err := t.call(ctx, "getUpdates", map[string]any{"offset": offset, "timeout": timeout, "allowed_updates": []string{"message", "edited_message", "callback_query"}}, &result)
+	return result, err
+}
+func (t *telegramAPI) GetMe(ctx context.Context) (TGUser, error) {
+	var result TGUser
+	err := t.call(ctx, "getMe", nil, &result)
 	return result, err
 }
 func (t *telegramAPI) SendMessage(ctx context.Context, chatID, topicID int64, text, parseMode string) error {

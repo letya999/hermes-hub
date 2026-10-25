@@ -527,7 +527,7 @@ func loadKey(opts Options) ([]byte, error) {
 		if err := safePath(opts.KeyFile); err != nil {
 			return nil, err
 		}
-		body, err := os.ReadFile(opts.KeyFile) // #nosec G304 -- key path is checked for symlink components.
+		body, err := os.ReadFile(opts.KeyFile) // #nosec G304 G703 -- key path is checked for symlink components.
 		if err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrKey, err)
 		}
@@ -665,7 +665,7 @@ func safePath(path string) error {
 			continue
 		}
 		current = filepath.Join(current, part)
-		info, err := os.Lstat(current)
+		info, err := os.Lstat(current) // #nosec G703 -- walk over the credential store root
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}

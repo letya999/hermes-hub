@@ -1,10 +1,12 @@
 ---
 description: Run the supervisor in the existing control image, retaining the Docker CLI and explicit host bind mapping.
-last_verified: 2026-10-14
+last_verified: 2026-10-20
 ---
 # ADR-0040: Single-stack supervisor
 
-Status: accepted direction, 2026-10-14; deployment acceptance pending.
+Status: accepted direction, 2026-10-14. Deployment acceptance recorded in
+[CHG-0097](../../.work/done/CHG-0097-single-stack-supervisor/plan.md): container
+supervisor wake/restart verified live.
 
 The owner requested one main Docker stack, on-demand user runtimes, and removal
 of unnecessary Windows services. This selects a smaller implementation than the

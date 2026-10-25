@@ -92,6 +92,10 @@ func normalizeConnection(recipe ConnectionRecipe) ConnectionRecipe {
 }
 
 func mergeConnection(left, right ConnectionRecipe) ConnectionRecipe {
+	left.AuthBeforeToolsList = left.AuthBeforeToolsList || right.AuthBeforeToolsList
+	if left.OAuth == nil {
+		left.OAuth = right.OAuth
+	}
 	left.Fields = append(left.Fields, right.Fields...)
 	left.Alternatives = append(left.Alternatives, right.Alternatives...)
 	return normalizeConnection(left)
@@ -131,10 +135,13 @@ func ConnectionSources(recipe ConnectionRecipe) []string {
 // selects every example-env file whatever directory it lives in. The second
 // return value lists every distinct source present, sorted.
 func FilterConnectionSource(recipe ConnectionRecipe, source string) (ConnectionRecipe, []string) {
-	var filtered ConnectionRecipe
+	filtered := ConnectionRecipe{AuthBeforeToolsList: recipe.AuthBeforeToolsList}
 	for _, field := range recipe.Fields {
 		if matchConnectionSource(field.Source, source) {
 			filtered.Fields = append(filtered.Fields, field)
+			if recipe.OAuth != nil && field.Name == recipe.OAuth.ClientInput {
+				filtered.OAuth = recipe.OAuth
+			}
 		}
 	}
 	return filtered, ConnectionSources(recipe)
@@ -180,6 +187,7 @@ func MergeConnectionForDefinition(recipe ConnectionRecipe, definition *ToolDefin
 		return
 	}
 	definition.Credentials = nil
+	definition.OAuth = recipe.OAuth
 	definition.Credentials = append(definition.Credentials, recipe.CredentialInputs()...)
 }
 

@@ -7,14 +7,19 @@
 package mediasvc
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	brokeridentity "github.com/letya999/credential-broker/identity"
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
 )
 
@@ -46,6 +51,7 @@ type Config struct {
 	// list of provider candidates (HUB_MEDIA_MODEL_ROUTES).
 	Engines       []string
 	Routes        map[string][]RouteHop
+	Providers     map[string]MediaProvider
 	Command       string // command engine argv0
 	Upstream      string // remote engine base URL, e.g. http://speaches:8000
 	UpstreamKey   string
@@ -75,6 +81,14 @@ type Config struct {
 	JobTimeout    time.Duration // async job max runtime
 	MaxUpload     int64         // sync upload cap
 	MaxSource     int64         // async source/result cap
+}
+
+// MediaProvider separates each engine's endpoint and credential reference.
+type MediaProvider struct {
+	QueueUpstream string `json:"queue_upstream"`
+	BrokerGrant   string `json:"broker_grant"`
+	Upstream      string `json:"upstream"`
+	KeyEnv        string `json:"key_env"`
 }
 
 // ConfigFromEnv keeps every knob in one place; the role is fixed by the
@@ -137,16 +151,58 @@ func ConfigFromEnv(role string) (Config, error) {
 	if c.Workers < 1 {
 		c.Workers = 1
 	}
+	if raw := os.Getenv("HUB_MEDIA_PROVIDERS"); raw != "" {
+		decoder := json.NewDecoder(strings.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&c.Providers); err != nil {
+			return c, errors.New("invalid HUB_MEDIA_PROVIDERS configuration")
+		}
+		if decoder.Decode(new(any)) != io.EOF {
+			return c, errors.New("invalid HUB_MEDIA_PROVIDERS trailing data")
+		}
+	}
+	names := c.Engines
+	if len(names) == 0 {
+		names = []string{c.Engine}
+	}
+	known := map[string]bool{}
+	for _, name := range names {
+		if known[name] {
+			return c, errors.New("duplicate media engine")
+		}
+		known[name] = true
+	}
+	for name, provider := range c.Providers {
+		if provider.BrokerGrant != "" && (provider.KeyEnv != "" || !brokeridentity.ValidID(provider.BrokerGrant)) {
+			return c, errors.New("media provider needs one valid credential reference")
+		}
+		if !known[name] {
+			return c, errors.New("provider configuration names an unconfigured engine")
+		}
+		for _, endpoint := range []string{provider.Upstream, provider.QueueUpstream} {
+			if endpoint == "" {
+				continue
+			}
+			u, err := url.Parse(endpoint)
+			if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+				return c, errors.New("media provider needs a fixed upstream URL without credentials")
+			}
+		}
+		if provider.KeyEnv != "" && !regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`).MatchString(provider.KeyEnv) {
+			return c, errors.New("media provider key_env is not an env name")
+		}
+	}
 	switch c.Engine {
+	case "comfy":
 	case "remote":
-		if c.Upstream == "" {
+		if c.Upstream == "" && c.Providers[c.Engine].Upstream == "" {
 			return c, errors.New("HUB_MEDIA_UPSTREAM is required for the remote engine")
 		}
 	case "fal":
 		if c.Role != RoleMedia {
 			return c, errors.New("HUB_MEDIA_ENGINE=fal is a media engine")
 		}
-		if c.UpstreamKey == "" && os.Getenv("FAL_KEY") == "" && c.BrokerGrant == "" {
+		if c.UpstreamKey == "" && os.Getenv("FAL_KEY") == "" && c.BrokerGrant == "" && c.Providers[c.Engine].KeyEnv == "" && c.Providers[c.Engine].BrokerGrant == "" {
 			return c, errors.New("HUB_MEDIA_UPSTREAM_KEY, FAL_KEY or HUB_MEDIA_BROKER_GRANT is required for the fal engine")
 		}
 		if c.Upstream == "" {
@@ -220,10 +276,16 @@ func parseRoutes(raw string, engines []string) (map[string][]RouteHop, error) {
 		if !ok || logical == "" {
 			return nil, fmt.Errorf("HUB_MEDIA_MODEL_ROUTES: bad entry %q", entry)
 		}
+		if _, exists := out[logical]; exists {
+			return nil, errors.New("duplicate media model route")
+		}
+		if len(strings.Split(hopsRaw, ",")) > 8 {
+			return nil, errors.New("media routes allow at most eight hops")
+		}
 		var hops []RouteHop
 		for _, hop := range strings.Split(hopsRaw, ",") {
 			engine, model, ok := strings.Cut(strings.TrimSpace(hop), ":")
-			if !ok || model == "" || !known[engine] {
+			if !ok || model == "" || !known[engine] || strings.Contains(model, "..") || !regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$`).MatchString(model) {
 				return nil, fmt.Errorf("HUB_MEDIA_MODEL_ROUTES: bad hop %q in %q", hop, logical)
 			}
 			hops = append(hops, RouteHop{Engine: engine, Model: model})

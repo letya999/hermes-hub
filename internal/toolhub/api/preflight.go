@@ -14,6 +14,9 @@ import (
 // runs tools/list with the MCP runtime profile (not the BuildKit bootstrap
 // profile), and restamps the review packet with that confirmed contract.
 func PreflightImportedArtifact(ctx context.Context, imported ImportedArtifact, artifactsDir string) (ImportedArtifact, ConfirmedToolContract, error) {
+	if err := declaredCredentialGate(ctx); err != nil {
+		return imported, ConfirmedToolContract{}, err
+	}
 	if _, err := StoredArtifactLoader(ctx, artifactsDir, imported.Artifact.ArchiveDigest, imported.Definition.Source.Image, 8<<30); err != nil {
 		return ImportedArtifact{}, ConfirmedToolContract{}, err
 	}
@@ -57,6 +60,9 @@ func PreflightPublishedArtifact(ctx context.Context, imported ImportedArtifact) 
 	if imported.Definition.Source.ArchiveDigest != "" || imported.Definition.Source.Repository == "" || !DigestPattern.MatchString(imported.Definition.Source.Digest) {
 		return ImportedArtifact{}, ConfirmedToolContract{}, fmt.Errorf("%w: published artifact evidence required", ErrInvalid)
 	}
+	if err := declaredCredentialGate(ctx); err != nil {
+		return imported, ConfirmedToolContract{}, err
+	}
 	if err := PublishedImagePull(ctx, imported.Definition.Source.Image, imported.Definition.Source.Digest); err != nil {
 		return ImportedArtifact{}, ConfirmedToolContract{}, err
 	}
@@ -89,9 +95,10 @@ func PreflightPublishedArtifact(ctx context.Context, imported ImportedArtifact) 
 }
 
 var authErrorEnvVar = regexp.MustCompile(`\b(?:set|missing|provide|export)\s+(?:the\s+)?(?:environment\s+(?:variable|variable\s+name)\s+)?([A-Z][A-Z0-9_]{2,63})\b|\b([A-Z][A-Z0-9_]{2,63})\s+(?:is\s+required|environment\s+variable\s+is\s+required|not\s+set|must\s+be\s+set)`)
-var authFailureText = regexp.MustCompile(`(?i)authentication required|must be provided|must be set|is required|not set|missing credential`)
+var authFailureText = regexp.MustCompile(`(?i)authentication required|must be provided|must be set|is required|environment variables are required|not set|missing credential`)
 var envNameInText = regexp.MustCompile(`\b[A-Z][A-Z0-9_]{2,63}\b`)
 var bothCredentialPair = regexp.MustCompile(`both\s+([A-Z][A-Z0-9_]{2,63})\s+and\s+([A-Z][A-Z0-9_]{2,63})`)
+var parenthesizedCredentials = regexp.MustCompile(`\(([^()]{1,512})\)`)
 
 // CredentialGate is an isolated tools/list that never started because the
 // server named the secrets it needs first. It is not an empty catalog and not
@@ -103,6 +110,20 @@ type CredentialGate struct {
 	Detail string
 }
 
+func declaredCredentialGate(ctx context.Context) error {
+	recipe, _ := ctx.Value(ConnectionRecipeContextKey{}).(ConnectionRecipe)
+	if !recipe.AuthBeforeToolsList {
+		return nil
+	}
+	var names []string
+	for _, field := range recipe.Fields {
+		if field.Required {
+			names = append(names, field.Name)
+		}
+	}
+	return &CredentialGate{Names: names, Detail: "The connection recipe requires authentication before tools/list."}
+}
+
 func (e *CredentialGate) Error() string {
 	if e == nil {
 		return "MCP refused tools/list until credentials exist"
@@ -112,9 +133,8 @@ func (e *CredentialGate) Error() string {
 
 func (e *CredentialGate) Unwrap() error { return ErrIsolation }
 
-// authErrorCredentialNames extracts secret-shaped env names a failed server
-// printed in its auth error. Only TOKEN/SECRET/KEY-style names are promoted:
-// plain config variables mentioned in usage text are not credentials.
+// authErrorCredentialNames extracts connection inputs named in a startup auth
+// error; unrelated runtime variables and usage text never become form fields.
 func authErrorCredentialNames(err error) []string {
 	if err == nil {
 		return nil
@@ -143,7 +163,8 @@ func authErrorCredentialNames(err error) []string {
 }
 
 func rememberAuthCredential(names *[]string, seen map[string]bool, name string) {
-	if name == "" || seen[name] || !SecretName(name) || !CredentialPattern.MatchString(name) {
+	connectionInput := SecretName(name) || strings.HasSuffix(name, "_URL") || strings.HasSuffix(name, "_USERNAME")
+	if name == "" || seen[name] || !connectionInput || !CredentialPattern.MatchString(name) {
 		return
 	}
 	seen[name] = true
@@ -164,6 +185,22 @@ func credentialAlternativeGroups(text string, names []string) [][]string {
 	known := map[string]bool{}
 	for _, name := range names {
 		known[name] = true
+	}
+	// Parenthesized alternatives retain shared URLs and paired username/password.
+	var alternatives [][]string
+	for _, match := range parenthesizedCredentials.FindAllStringSubmatch(text, 8) {
+		var group []string
+		for _, name := range envNameInText.FindAllString(match[1], 8) {
+			if known[name] && !slices.Contains(group, name) {
+				group = append(group, name)
+			}
+		}
+		if len(group) > 0 && !slices.ContainsFunc(alternatives, func(existing []string) bool { return slices.Equal(existing, group) }) {
+			alternatives = append(alternatives, group)
+		}
+	}
+	if len(alternatives) >= 2 {
+		return alternatives
 	}
 	paired := map[string]bool{}
 	seen := map[string]bool{}
@@ -218,7 +255,7 @@ func CredentialGateFrom(imported ImportedArtifact, err error) (ImportedArtifact,
 	}
 	for index := range imported.Definition.Credentials {
 		input := &imported.Definition.Credentials[index]
-		if named[input.Name] && SecretName(input.Name) {
+		if named[input.Name] {
 			input.Required = true
 		}
 	}
@@ -341,7 +378,9 @@ func AdmitWithSubmittedCredentials(ctx context.Context, artifactsDir string, def
 	imported := ImportedArtifact{Definition: definition}
 	probeCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
-	probeCtx = WithProbeOptions(probeCtx, ProbeOptions{Values: secrets, AllowNetwork: true})
+	opts := ProbeOptionsFrom(ctx)
+	opts.Values, opts.AllowNetwork = secrets, true
+	probeCtx = WithProbeOptions(probeCtx, opts)
 	list := LocalMCPToolList
 	if imported.Definition.Source.NetworkTransport != "" {
 		list = NetworkMCPToolList

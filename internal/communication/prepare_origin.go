@@ -18,6 +18,7 @@ import (
 type prepareOrigin struct {
 	ConversationID   string `json:"conversation_id"`
 	DeliveryTargetID string `json:"delivery_target_id,omitempty"`
+	Channel          string `json:"channel,omitempty"`
 	ChatID           int64  `json:"chat_id"`
 	TopicID          int64  `json:"topic_id,omitempty"`
 }

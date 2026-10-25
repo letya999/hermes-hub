@@ -23,6 +23,7 @@ const Limit = 2 * 1024 * 1024
 type Input struct {
 	OriginJobID        string         `json:"origin_job_id,omitempty"`
 	DestinationTaskID  string         `json:"destination_task_id,omitempty"`
+	Context            string         `json:"context,omitempty"`
 	View               string         `json:"view,omitempty"`
 	exportBytes        []byte         // Private create-only scratch transport; absent from MCP input.
 	Path               string         `json:"path,omitempty"`
@@ -49,6 +50,12 @@ type Input struct {
 	HistoryLimit       int            `json:"history_limit,omitempty"`
 	HistoryCursor      string         `json:"history_cursor,omitempty"`
 	PreviewLimit       int            `json:"preview_limit,omitempty"`
+	Here               int            `json:"here,omitempty"`
+	Focus              string         `json:"focus,omitempty"`
+	Engine             string         `json:"engine,omitempty"`
+	Prune              bool           `json:"prune,omitempty"`
+	Preview            bool           `json:"preview,omitempty"`
+	Queue              bool           `json:"queue,omitempty"`
 	Timing             map[string]any `json:"timing,omitempty"`
 	Limit              int            `json:"limit,omitempty"`
 	Cursor             string         `json:"cursor,omitempty"`

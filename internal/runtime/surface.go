@@ -336,13 +336,13 @@ func probeModel(ctx context.Context, config surfaceConfig) string {
 	if key == "" {
 		return "unavailable"
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(base, "/")+"/models", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(base, "/")+"/models", nil) // #nosec G704 -- configured model base URL
 	if err != nil {
 		return "unavailable"
 	}
 	req.Header.Set("Authorization", "Bearer "+key)
 	client := &http.Client{Timeout: 1500 * time.Millisecond, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	response, err := client.Do(req)
+	response, err := client.Do(req) // #nosec G704 -- configured model base URL
 	if err != nil {
 		return "unavailable"
 	}

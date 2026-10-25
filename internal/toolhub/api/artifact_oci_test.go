@@ -6,6 +6,8 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -159,5 +161,24 @@ func TestOCIArtifactRejectsMissingOrDriftingEvidence(t *testing.T) {
 	}
 	if _, err := VerifyOCIArtifact(bytes.NewReader([]byte("invalid")), 7, 1000); err == nil {
 		t.Fatal("invalid tar accepted")
+	}
+}
+
+func TestOciHTTPClientBlocksPrivateRegistry(t *testing.T) {
+	client := OciHTTPClient("10.0.0.1", "10.0.0.1")
+	if _, err := client.Get("https://10.0.0.1/v2/"); err == nil || !strings.Contains(err.Error(), "netguard") {
+		t.Fatal("private registry dial not blocked", err)
+	}
+}
+
+// CHG-0127 S0.6: a value that would inject a sibling line must fail the
+// write, not land in the workload's env file.
+func TestWriteWorkloadEnvFileRejectsControlChars(t *testing.T) {
+	dir := t.TempDir()
+	if err := WriteWorkloadEnvFile(dir, map[string]string{"GOOD": "1", "EVIL": "x\nINJECTED=1"}); err == nil {
+		t.Fatal("newline value written to env file")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "credentials.env")); !os.IsNotExist(err) {
+		t.Fatal("env file materialized despite rejected value")
 	}
 }

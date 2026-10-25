@@ -106,7 +106,7 @@ func TestGatewayMCPWireRechecksBindingAndRejectsAuthorityArguments(t *testing.T)
 	}
 	defer session.Close()
 	tools, err := session.ListTools(context.Background(), nil)
-	if err != nil || len(tools.Tools) != 2 {
+	if err != nil || len(tools.Tools) != 3 || !toolListed(tools, "system_guide") {
 		t.Fatalf("tools/list=%+v err=%v", tools, err)
 	}
 	name := api.ProjectedToolName("google-work", "1.0.0", "search")
@@ -290,7 +290,7 @@ func TestContainerMCPUsesControllerEndpointWithoutConnection(t *testing.T) {
 	}
 }
 
-func TestContainerMCPEnsureReadyPersistsAuthorizedEnvironment(t *testing.T) {
+func TestContainerMCPEnsureReadyWipesAuthorizedEnvironment(t *testing.T) {
 	definition := statefulContainerDefinition()
 	root := t.TempDir()
 	effective := api.EffectiveBinding{
@@ -315,8 +315,8 @@ func TestContainerMCPEnsureReadyPersistsAuthorizedEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(workspace.Path, "credentials.env")); err != nil {
-		t.Fatalf("ready credentials were removed: %v", err)
+	if _, err := os.Stat(filepath.Join(workspace.Path, "credentials.env")); !os.IsNotExist(err) {
+		t.Errorf("ready credentials persisted after admission: %v", err)
 	}
 	denied := backend
 	denied.AdmissionVerifier = func(context.Context, api.EffectiveBinding) (api.AdmissionReceipt, error) {
@@ -325,9 +325,8 @@ func TestContainerMCPEnsureReadyPersistsAuthorizedEnvironment(t *testing.T) {
 	if err := denied.EnsureReady(context.Background(), effective, map[string]string{"SERVICE_TOKEN": "new-secret"}); err == nil {
 		t.Fatal("denied readiness accepted")
 	}
-	data, _ := os.ReadFile(filepath.Join(workspace.Path, "credentials.env"))
-	if string(data) != "SERVICE_TOKEN=fixture-secret" {
-		t.Fatalf("failed readiness replaced active credentials: %q", data)
+	if _, err := os.Stat(filepath.Join(workspace.Path, "credentials.env")); !os.IsNotExist(err) {
+		t.Errorf("failed readiness left credentials: %v", err)
 	}
 	fresh := denied
 	fresh.Root = t.TempDir()

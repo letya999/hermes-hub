@@ -37,11 +37,14 @@ func TestPreparedTelegramEventTools(t *testing.T) {
 
 func TestPreparedCatalogAndGeneratedRecipes(t *testing.T) {
 	entries, err := api.PreparedCatalog()
-	if err != nil || len(entries) != 11 {
+	if err != nil || len(entries) != 13 {
 		t.Fatalf("catalog: %d %v", len(entries), err)
 	}
 	for _, entry := range entries {
 		t.Run(entry.ID, func(t *testing.T) {
+			if entry.Image != nil {
+				t.Skip("image-pinned entries admit the pinned image, not a generated recipe")
+			}
 			files := map[string]string{"package.json": `{"bin":{"first":"build/index.js","alias":"./build/index.js"}}`, "package-lock.json": "{}"}
 			if entry.ID == "notion" {
 				files["package.json"] = `{"bin":{"notion":"bin/cli.mjs"}}`
@@ -57,6 +60,9 @@ func TestPreparedCatalogAndGeneratedRecipes(t *testing.T) {
 			}
 			if entry.ID == "telegram" {
 				files = map[string]string{"pyproject.toml": "[project]\nname = \"telegram-mcp\"\n\n[project.scripts]\ntelegram-mcp = \"main:main\"\n\n[project.optional-dependencies]\nproxy = [\"python-socks>=2.4.3\"]\n"}
+			}
+			if entry.ID == "google-workspace" {
+				files = map[string]string{"pyproject.toml": "[project]\nname = \"workspace-mcp\"\n[project.scripts]\nworkspace-mcp = \"main:main\"\n"}
 			}
 			if entry.Language == "rust" {
 				files = map[string]string{"Cargo.toml": "[package]\nname = \"txttsql-mcp\"\n", "Cargo.lock": "{}", "src/main.rs": "fn main() {}"}

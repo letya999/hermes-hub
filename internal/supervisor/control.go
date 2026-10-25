@@ -442,7 +442,12 @@ func (m *Manager) authorizeApproval(request hubruntime.RunControl) error {
 }
 
 func (m *Manager) authorizeCurrentPolicy(request hubruntime.ExecuteRequest) error {
-	if request.ActorID != request.PrincipalID || request.ScopeID != "user:"+request.UserID {
+	allowedScope := request.ScopeID == "user:"+request.UserID
+	if request.ScopeID == "group:"+request.UserID {
+		scope, err := stack.ReadScope(filepath.Join(m.cfg.SpacesRoot, request.UserID))
+		allowedScope = err == nil && scope.Kind == stack.GroupScope && scope.ID == request.UserID
+	}
+	if request.ActorID != request.PrincipalID || !allowedScope {
 		return errors.New("approval actor/scope mismatch")
 	}
 	root := filepath.Join(m.cfg.SpacesRoot, request.UserID)

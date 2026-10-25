@@ -1,0 +1,48 @@
+schema: 1
+change: CHG-0102
+title: Owner brief
+status: done
+branch: refactor/comm-plane-separation
+updated: 2026-10-19
+phase: implementation
+adr: ADR-0041
+spec: SPEC-0054
+requirements: [R4.1, R4.2, R4.3]
+depends_on: [CHG-0100]
+github_milestone: M12 — Proactive Automation
+github_issue: 250
+design_status: accepted
+implementation_status: in_progress
+slices:
+  S4.1-snapshot-dispatch: green
+  S4.2-pause-cursor: green
+  S4.3-quiet-dedup-race: green
+validation:
+  documents: updated
+  just_check: pass
+  docker_check: not_run
+  red_team: recorded
+  live_acceptance: pass
+evidence:
+  - "job_kind=brief: snapshot = changed watch sources (source_ids filter, authorize recheck, unavailable named) + open tasks (<=16); empty slot -> deterministic delivery, no model"
+  - "non-empty slot admits one child job id 'brief-'+occurrenceID (avoids routine- prefix cancellation), routine conversation, [untrusted snapshot] prefix"
+  - "digestPath cursor (Generations/LastDigestAt/Errors) prevents re-reporting; cursor written after enqueue so crash replay redelivers the same durable effect"
+  - "validation: brief accepts source_ids, rejects probe; notify_mode=agent stays watcher/check-only"
+  - "quiet_from/quiet_to defers the whole brief slot: occurrence stays pending, fires after the window inside catch-up, else settles missed — a model call cannot ride a delivery not_before"
+  - "unavailable-source dedup: same failure episode named once via cursor.Errors; later slots carry only the count in the deterministic footer (digest semantics)"
+  - "catalog hub-agent-tools@5.0.1: routine_create description names kind=brief contract (sources scope, empty deterministic, quiet deferral)"
+  - "send-time re-authorization already covered both effects: cron jobs re-check at claim (gateway_delivery.go), occurrence-ref deliveries re-check at send (occurrenceRefAuthorizedLocked)"
+  - "tests: TestBriefEmptySlotNoModel, TestBriefChangeAdmitsOneJob, TestBriefUnavailableNamed, TestBriefForeignWatchesExcluded, TestBriefListsOpenTasks, TestBriefCursorAdvances, TestBriefSourceIDsScope, TestBriefRevokedStaysQuietAndRestartDedups, TestBriefQuietDefersSlot, TestBriefUnavailableErrorDeduped, TestBriefTwoWorkersSingleJob"
+  - "go test ./internal/communication (-race incl. two-worker) — ok; go test ./internal/agenttools — ok"
+  - "just check: PASS — gofmt, vet, mod tidy, staticcheck, gosec, docs, actionlint, deployment contract; Go statement coverage 86.17% (>=85%)"
+  - "live A6 on spaces/local dev stack: hubctl dev-rebuild communication-hub -> running container on hermes-hub-dev-local-communication-hub:local sha256:be0fe81e6726; API 401 unauth / 200 auth"
+  - "live A6: watcher watch-zen-chg102 (http probe https://api.github.com/zen, expect=changed, every:60s) fired a real change -> telegram-sent watch-routine-6ddf0d09... at 17:08:11Z"
+  - "live A6: brief-chg102 (source_ids=[watch-zen-chg102], every:120s) slot 17:08:18Z admitted exactly one agent job routine-16d13e8b...; runtime outcome completed 17:09:10Z; ONE composed overview (646 chars) telegram-sent to real chat 480637186 — not a notification stream"
+  - "live A6: fixtures retired via owner API DELETE 204 (brief-chg102, watch-zen-chg102); drift log 'occurrence job binding drift' is the pre-existing admitted-job reconciliation guard, job still ran once"
+remaining:
+  - "issue #250 evidence comment (after PR)"
+limitations:
+  - "brief snapshot sections are watch changes + open tasks; provider sections (calendar etc.) deferred per plan"
+  - "no dedicated length field: brief length/section intent rides the instruction text; deterministic sections stay bounded (<=16 lines, bounded values)"
+  - "a quiet window longer than catch_up_window settles the slot missed instead of delivering late"
+closeout: retroactive-triage-2026-10-20

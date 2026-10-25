@@ -102,6 +102,10 @@ func (s *runtimeHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.observe(w, r)
 	case "/v1/control":
 		s.control(w, r)
+	case "/v1/compact":
+		s.compact(w, r)
+	case "/v1/goal":
+		s.goal(w, r)
 	case "/v1/restart":
 		s.restart(w, r)
 	case "/v1/restart-request":
@@ -252,6 +256,9 @@ func (s *runtimeHTTP) executePersistent(ctx context.Context, request ExecuteRequ
 }
 
 func (s *runtimeHTTP) executePersistentEvents(ctx context.Context, request ExecuteRequest, emit func(ExecuteResponse) error) (ExecuteResponse, error) {
+	if err := s.ensureBootstrap(ctx, request); err != nil {
+		return ExecuteResponse{Status: "failed", LastEvent: "bootstrap.not_ready"}, err
+	}
 	first, sawTool := s.admitAndObserve(ctx, request, emit)
 	if errors.Is(first.err, errAdmissionReceipt) || !retryColdWake(first.response, first.err, first.elapsed, sawTool) {
 		return first.response, first.err
@@ -295,7 +302,11 @@ func validateExecuteRequest(request ExecuteRequest) error {
 	if request.OrganizationID != organization {
 		return errors.New("runtime scope mismatch")
 	}
-	if request.ScopeID != "user:"+user && request.ScopeID != "organization:"+organization {
+	allowedScope := request.ScopeID == "user:"+user || request.ScopeID == "organization:"+organization
+	if os.Getenv("HUB_SCOPE_KIND") == "group" {
+		allowedScope = request.ScopeID == "group:"+user
+	}
+	if !allowedScope {
 		return errors.New("runtime scope mismatch")
 	}
 	if request.Channel == "" || request.Trigger == "" || request.IdempotencyKey == "" {

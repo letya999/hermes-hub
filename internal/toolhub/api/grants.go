@@ -31,7 +31,11 @@ const (
 	PhaseDisabled         string    = "disabled"
 	PhaseRevoked          string    = "revoked"
 	PhaseRemoved          string    = "removed"
-	PhaseFailed           string    = "failed"
+	// PhaseCleanupIncomplete marks a remove whose cleanup did not converge:
+	// no removed tombstone until every step succeeded, and a bare retry
+	// resumes the remaining work without another confirmation.
+	PhaseCleanupIncomplete string = "cleanup_incomplete"
+	PhaseFailed            string = "failed"
 )
 
 var ControlOperations = []string{"discover", "prepare_source", "status", "required_credentials", "confirm", "enable", "rotate", "disable", "revoke", "remove", "diagnostics", "grant_request", "install_shared"}
@@ -84,6 +88,10 @@ type CredentialHint struct {
 	// Source names the metadata file the field was discovered from when the
 	// hint came from a connection recipe (server.json, .env.example, ...).
 	Source string `json:"source,omitempty"`
+	// Format is a recipe-declared regex the submitted value must match, and
+	// MaxLength its byte bound — both enforced at the submit boundary.
+	Format    string `json:"format,omitempty"`
+	MaxLength int    `json:"max_length,omitempty"`
 }
 
 type Onboarding struct {
@@ -117,31 +125,55 @@ type Onboarding struct {
 	// RemoveNonce/RemoveExpires arm the destructive remove: the first call
 	// previews and issues the nonce; only a follow-up remove carrying it
 	// deletes credentials, workloads and state.
-	RemoveNonce              string    `json:"remove_nonce,omitempty"`
-	RemoveExpires            time.Time `json:"remove_expires,omitempty"`
-	IdempotencyKey           string    `json:"idempotency_key,omitempty"`
-	FormNonce                string    `json:"form_nonce,omitempty"`
-	FormExpires              time.Time `json:"form_expires,omitempty"`
-	Locator                  string    `json:"locator,omitempty"`
-	CredentialOwner          string    `json:"credential_owner,omitempty"`
-	BrokerRequestID          string    `json:"broker_request_id,omitempty"`
-	BrokerAttempts           int       `json:"broker_attempts,omitempty"`
-	BrokerCredentialID       string    `json:"broker_credential_id,omitempty"`
-	BrokerRotateCredentialID string    `json:"broker_rotate_credential_id,omitempty"`
-	BrokerGrantID            string    `json:"broker_grant_id,omitempty"`
-	BrokerContractID         string    `json:"broker_contract_id,omitempty"`
-	BrokerContractRevision   int       `json:"broker_contract_revision,omitempty"`
-	BrokerAuthorizationURL   string    `json:"broker_authorization_url,omitempty"`
+	RemoveNonce   string    `json:"remove_nonce,omitempty"`
+	RemoveExpires time.Time `json:"remove_expires,omitempty"`
+	// Finalizers is the convergent remove ladder: each named step is
+	// idempotent and recorded so a retry resumes at the first incomplete
+	// step and connector_status shows where a cleanup is stuck.
+	Finalizers []Finalizer `json:"finalizers,omitempty"`
+	// RemoveReceipt is the verified-zero summary emitted once every label
+	// query across Docker, Broker and the filesystem reports no leftovers.
+	RemoveReceipt string `json:"remove_receipt,omitempty"`
+	// RemoveFootprint counts labelled resources found when the remove
+	// started; the receipt reports what the ladder purged.
+	RemoveFootprint          map[string]int `json:"remove_footprint,omitempty"`
+	IdempotencyKey           string         `json:"idempotency_key,omitempty"`
+	FormNonce                string         `json:"form_nonce,omitempty"`
+	FormExpires              time.Time      `json:"form_expires,omitempty"`
+	Locator                  string         `json:"locator,omitempty"`
+	CredentialOwner          string         `json:"credential_owner,omitempty"`
+	BrokerRequestID          string         `json:"broker_request_id,omitempty"`
+	BrokerAttempts           int            `json:"broker_attempts,omitempty"`
+	BrokerCredentialID       string         `json:"broker_credential_id,omitempty"`
+	BrokerRotateCredentialID string         `json:"broker_rotate_credential_id,omitempty"`
+	BrokerGrantID            string         `json:"broker_grant_id,omitempty"`
+	BrokerContractID         string         `json:"broker_contract_id,omitempty"`
+	BrokerContractRevision   int            `json:"broker_contract_revision,omitempty"`
+	BrokerAuthorizationURL   string         `json:"broker_authorization_url,omitempty"`
 	// ChannelAuthURL is the sign-in link the communication plane minted for
 	// this request (e.g. a QR page); when set it outranks the Broker form as
 	// the link the agent should hand to the user.
-	ChannelAuthURL           string `json:"channel_auth_url,omitempty"`
-	ProviderAuthorizationURL string `json:"provider_authorization_url,omitempty"`
+	ChannelAuthURL string `json:"channel_auth_url,omitempty"`
+	// WizardNonce/WizardExpires arm the stable single-link setup page
+	// (/connect/<id>?k=): one URL renders every interactive phase in place —
+	// credential intake, confirmation and the provider OAuth hop — so the
+	// channel carries one link instead of a rotating set of one-time links.
+	// Per-step nonces still gate each mutation; the nonce alone is a
+	// view/resume capability and dies with the onboarding's terminal phase.
+	WizardNonce              string    `json:"wizard_nonce,omitempty"`
+	WizardExpires            time.Time `json:"wizard_expires,omitempty"`
+	ProviderAuthorizationURL string    `json:"provider_authorization_url,omitempty"`
 	// OAuthProvider names the broker slot that minted this onboarding's
 	// credential. Set only for OAuth-managed connections so the call path
 	// knows a rejected call may be refreshed and retried once.
 	OAuthProvider string `json:"oauth_provider,omitempty"`
-	SupersededBy  string `json:"superseded_by,omitempty"`
+	// Device-flow session started from the /device page: the broker-side
+	// pending entry is keyed by DeviceCode; user code and verification URI are
+	// display data so the page can re-render after a reload.
+	DeviceCode         string `json:"device_code,omitempty"`
+	DeviceUserCode     string `json:"device_user_code,omitempty"`
+	DeviceVerification string `json:"device_verification,omitempty"`
+	SupersededBy       string `json:"superseded_by,omitempty"`
 	// AdmissionPending means tools/list has not run because the server named
 	// required secrets and exited first. The definition is a draft until the
 	// protected form is submitted and the probe succeeds.
@@ -149,16 +181,30 @@ type Onboarding struct {
 	Error            string `json:"error,omitempty"`
 	// ErrorCode is the stable machine-readable companion of Error; it is set
 	// from the failure cause via ErrorCode() and survives snapshot reloads.
-	ErrorCode string            `json:"error_code,omitempty"`
-	Recipe    *RecipeResolution `json:"recipe,omitempty"`
+	ErrorCode string `json:"error_code,omitempty"`
+	// RecipeDigest references the content-addressed recipe stored under
+	// snapshot recipes/<sha256>; the resolution itself is never embedded.
+	RecipeDigest string            `json:"recipe_digest,omitempty"`
+	Recipe       *RecipeResolution `json:"-"`
+	// EmbeddedRecipe carries pre-digest records that stored the resolution
+	// inline under "recipe"; store load re-homes it under its content digest
+	// and clears the field, so it is never serialized again.
+	EmbeddedRecipe *RecipeResolution `json:"recipe,omitempty"`
 	// CredentialSources records every distinct metadata source the recipe
 	// discovered credential declarations in. When several are present the
 	// caller may ask the user which one to trust and replay prepare_source
 	// with credential_source.
-	CredentialSources []string        `json:"credential_sources,omitempty"`
-	Revision          uint64          `json:"revision"`
-	CreatedAt         time.Time       `json:"created_at"`
-	Definition        *ToolDefinition `json:"definition,omitempty"`
+	CredentialSources []string `json:"credential_sources,omitempty"`
+	// WritesEnabled means write-effect tools of this connector may project
+	// and dispatch. Default off: connector_allow_writes(on) flips it only
+	// through the protected confirm link.
+	WritesEnabled bool `json:"writes_enabled,omitempty"`
+	// PendingWrites marks a live connector whose confirm link currently arms
+	// a write-enable instead of a first bind.
+	PendingWrites bool            `json:"pending_writes,omitempty"`
+	Revision      uint64          `json:"revision"`
+	CreatedAt     time.Time       `json:"created_at"`
+	Definition    *ToolDefinition `json:"definition,omitempty"`
 }
 
 func OperatorGrant(kind GrantKind, principal, definitionID, version string) Grant {
@@ -258,6 +304,29 @@ func (p SharedCredentialPolicy) Validate() error {
 	return nil
 }
 
+// A team must carry an operator confirmation: members gain real call
+// authorization through the record, so a self-declared team is refused.
+func (t Team) Validate() error {
+	if t.Confirmation == nil {
+		return fmt.Errorf("%w: team record", ErrInvalid)
+	}
+	return nil
+}
+
+// IsMember answers the only question a call path needs: membership is
+// evaluated per call against the stored record, so a removed member loses
+// access without touching stored bindings first.
+func (t Team) IsMember(principalID string) bool {
+	return t.Status == ActiveStatus && slices.Contains(t.Members, principalID)
+}
+
+// CanWrite gates the write-effect surface for a member: the operator's
+// team-wide allow-writes flag or a named write_members entry opens it;
+// membership alone never does.
+func (t Team) CanWrite(principalID string) bool {
+	return t.IsMember(principalID) && (t.AllowWrites || slices.Contains(t.WriteMembers, principalID))
+}
+
 func (o Onboarding) Validate() error {
 	if o.Schema != SchemaVersion || !identity.ValidID(o.OnboardingID) || !identity.ValidID(o.PrincipalID) || !identity.ValidID(o.ContextID) || !identity.ValidID(o.RuntimeID) || !identity.ValidID(o.PolicyVersion) || o.Revision == 0 {
 		return fmt.Errorf("%w: onboarding identity", ErrInvalid)
@@ -266,7 +335,7 @@ func (o Onboarding) Validate() error {
 		return fmt.Errorf("%w: onboarding mode", ErrInvalid)
 	}
 	switch o.Phase {
-	case PhasePreparing, PhaseReview, PhaseAwaitingCreds, PhaseAwaitingConfirm, PhaseAwaitingOAuth, PhaseConfirmed, PhaseEnabled, PhaseDisabled, PhaseRevoked, PhaseRemoved, PhaseFailed:
+	case PhasePreparing, PhaseReview, PhaseAwaitingCreds, PhaseAwaitingConfirm, PhaseAwaitingOAuth, PhaseConfirmed, PhaseEnabled, PhaseDisabled, PhaseRevoked, PhaseRemoved, PhaseCleanupIncomplete, PhaseFailed:
 	default:
 		return fmt.Errorf("%w: onboarding phase", ErrInvalid)
 	}

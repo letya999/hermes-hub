@@ -34,6 +34,14 @@ func taskConversation(chatID int64, taskID string) string {
 	return commodel.TaskConversation(chatID, taskID)
 }
 
+func taskPeer(user User, chatID int64) string {
+	peer := chatID
+	if len(user.TelegramIDs) > 0 {
+		peer = user.TelegramIDs[0]
+	}
+	return "telegram-" + strconv.FormatInt(peer, 10)
+}
+
 func defaultTask(user User, chatID int64) Task { return commodel.DefaultTask(user, chatID) }
 
 // validTaskName bounds operator-chosen labels; they never reach a provider.
@@ -200,7 +208,7 @@ func (s *Spool) CreateTask(user User, chatID, topicID int64, name string, makeCu
 			}
 		}
 	}
-	task := Task{Schema: 1, TaskID: taskID, Name: name, PrincipalID: user.ID, ContextID: user.ID, Channel: "telegram_bot", Peer: "telegram-" + strconv.FormatInt(user.TelegramIDs[0], 10), ChatID: chatID, TopicID: topicID, ConversationID: taskConversation(chatID, taskID), NameAuto: auto, CreatedAt: now, UpdatedAt: now}
+	task := Task{Schema: 1, TaskID: taskID, Name: name, PrincipalID: user.ID, ContextID: user.ID, Channel: "telegram_bot", Peer: taskPeer(user, chatID), ChatID: chatID, TopicID: topicID, ConversationID: taskConversation(chatID, taskID), NameAuto: auto, CreatedAt: now, UpdatedAt: now}
 	if err := s.materializeTaskLocked(task); err != nil {
 		return Task{}, false, err
 	}
@@ -258,7 +266,7 @@ func (s *Spool) ResolveTask(user User, chatID, topicID int64, adoptTopic bool) (
 		}
 		now := time.Now().UTC()
 		taskID = newTaskID()
-		task := Task{Schema: 1, TaskID: taskID, Name: "topic-" + strconv.FormatInt(topicID, 10), PrincipalID: user.ID, ContextID: user.ID, Channel: "telegram_bot", Peer: "telegram-" + strconv.FormatInt(user.TelegramIDs[0], 10), ChatID: chatID, TopicID: topicID, ConversationID: taskConversation(chatID, taskID), CreatedAt: now, UpdatedAt: now}
+		task := Task{Schema: 1, TaskID: taskID, Name: "topic-" + strconv.FormatInt(topicID, 10), PrincipalID: user.ID, ContextID: user.ID, Channel: "telegram_bot", Peer: taskPeer(user, chatID), ChatID: chatID, TopicID: topicID, ConversationID: taskConversation(chatID, taskID), CreatedAt: now, UpdatedAt: now}
 		if err := s.materializeTaskLocked(task); err != nil {
 			return Task{}, err
 		}

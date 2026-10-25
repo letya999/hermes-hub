@@ -402,12 +402,29 @@ func (g *Gateway) usageCommand(ctx context.Context, user User, sender int64, tas
 	}
 	lines := []string{"Расход сессии: вход " + usageNum(report.InputTokens) + ", выход " + usageNum(report.OutputTokens) +
 		", кэш " + usageNum(report.CacheReadTokens) + "/" + usageNum(report.CacheWriteTokens) + "."}
-	compactions := usageNum(report.Compactions)
+	// Observed compactions = measured lineage rotations plus journaled
+	// in-place events; either side unknown leaves the whole count unknown.
+	var observed *int64
+	if report.Compactions != nil || report.InPlaceCompactions != nil {
+		total := int64(0)
+		if report.Compactions != nil {
+			total += *report.Compactions
+		}
+		if report.InPlaceCompactions != nil {
+			total += *report.InPlaceCompactions
+		}
+		observed = &total
+	}
+	compactions := usageNum(observed)
 	if report.CompactionsTruncated && report.Compactions != nil {
 		// Hop-capped lineage is a lower bound, never a silent truncation.
 		compactions = "≥" + compactions
 	}
-	contextLine := "Сжатий сессии: " + compactions + usageSuffix(report.LastCompactionAt) + "."
+	lastEvent := ""
+	if report.LastCompaction != nil {
+		lastEvent = " (" + report.LastCompaction.Trigger + ")"
+	}
+	contextLine := "Сжатий сессии: " + compactions + lastEvent + usageSuffix(report.LastCompactionAt) + "."
 	if report.ContextTokens != nil && report.ContextWindow != nil && *report.ContextWindow > 0 {
 		contextLine = "Контекст: " + strconv.FormatInt(*report.ContextTokens, 10) + "/" + strconv.FormatInt(*report.ContextWindow, 10) +
 			" (" + strconv.FormatInt(*report.ContextTokens*100/(*report.ContextWindow), 10) + "%). " + contextLine
@@ -469,18 +486,19 @@ func itoa64(v int64) string {
 	return strconv.FormatInt(v, 10)
 }
 
-// modelCommand implements /model: list the owner's granted logical models and
-// switch the selection through the space's own model-relay admin endpoint.
-// The bearer comes from model-relay.auth (HUB_MODEL_RELAY_ADMIN) — the relay
-// re-checks grants, so the command can never widen access.
-func modelCommand(ctx context.Context, text string) string {
-	base := strings.TrimSpace(os.Getenv("HUB_MODEL_RELAY_URL"))
+// modelCommand implements /model: list the caller's granted logical models
+// and switch the selection through the caller's own model-relay admin
+// endpoint. A single-owner gateway keeps the HUB_MODEL_RELAY_URL env path; a
+// shared gateway resolves principal → {relay URL, admin bearer} from the
+// enrolled model-relay-admins.json. The relay re-checks grants, so the
+// command can never widen access; an unmapped principal gets no relay at all.
+func modelCommand(ctx context.Context, principal, text string) string {
+	base, admin := modelRelayFor(principal)
 	if base == "" {
 		return "Переключение моделей недоступно: в этом пространстве нет управляемого релея."
 	}
-	admin := strings.TrimSpace(os.Getenv("HUB_MODEL_RELAY_ADMIN"))
 	call := func(ctx context.Context, method, path string, body []byte) (int, []byte) {
-		req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(base, "/")+path, bytes.NewReader(body))
+		req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(base, "/")+path, bytes.NewReader(body)) // #nosec G704 -- internal control endpoint
 		if err != nil {
 			return 0, nil
 		}
@@ -491,7 +509,7 @@ func modelCommand(ctx context.Context, text string) string {
 			req.Header.Set("Authorization", "Bearer "+admin)
 		}
 		client := &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-		resp, err := client.Do(req)
+		resp, err := client.Do(req) // #nosec G704 -- internal control endpoint
 		if err != nil {
 			return 0, nil
 		}
@@ -517,7 +535,18 @@ func modelCommand(ctx context.Context, text string) string {
 		for _, m := range catalog.Data {
 			names = append(names, m.ID)
 		}
-		return "Модели: " + strings.Join(names, ", ") + ". Переключить: /model <имя>."
+		var current modelSelection
+		if scode, sbody := call(ctx, http.MethodGet, "/v1/model", nil); scode == http.StatusOK {
+			_ = json.Unmarshal(sbody, &current)
+		}
+		if view := modelAccountView(ctx, call, current); view != "" {
+			return view
+		}
+		currentName := ""
+		if current.Model != "" {
+			currentName = " Текущая: " + current.Model + "."
+		}
+		return "Модели: " + strings.Join(names, ", ") + "." + currentName + " Переключить: /model <имя>."
 	}
 	name := fields[1]
 	payload, _ := json.Marshal(map[string]string{"model": name})
@@ -530,4 +559,153 @@ func modelCommand(ctx context.Context, text string) string {
 	default:
 		return "Переключение недоступно: релей отклонил запрос."
 	}
+}
+
+// modelRelayFor resolves which relay a /model caller owns. The env pair is
+// the reviewed single-space contract; the admins file is the shared-gateway
+// path the stack renders for managed siblings. The file is read per call so
+// an in-place enrollment update is picked up without a gateway restart.
+func modelRelayFor(principal string) (base, admin string) {
+	if env := strings.TrimSpace(os.Getenv("HUB_MODEL_RELAY_URL")); env != "" {
+		return env, strings.TrimSpace(os.Getenv("HUB_MODEL_RELAY_ADMIN"))
+	}
+	path := strings.TrimSpace(os.Getenv("HUB_MODEL_RELAY_ADMINS_FILE"))
+	if path == "" || principal == "" {
+		return "", ""
+	}
+	body, err := os.ReadFile(path) // #nosec G703 -- HUB_MODEL_RELAY_ADMINS_FILE is operator-rendered service config, not request input
+	if err != nil {
+		return "", ""
+	}
+	var entries map[string]struct {
+		URL   string `json:"url"`
+		Admin string `json:"admin"`
+	}
+	if json.Unmarshal(body, &entries) != nil {
+		return "", ""
+	}
+	entry, ok := entries[principal]
+	if !ok || strings.TrimSpace(entry.URL) == "" {
+		return "", ""
+	}
+	return strings.TrimSpace(entry.URL), strings.TrimSpace(entry.Admin)
+}
+
+// modelSelection mirrors the relay's /v1/model answer: a logical name, or a
+// provider-side catalog id pinned to the account that serves it.
+type modelSelection struct {
+	Model    string `json:"model"`
+	Provider string `json:"provider,omitempty"`
+}
+
+// modelAccountView renders /model's account view from the relay's /v1/registry.
+// Every printed name is directly usable as a /model argument: logical rows by
+// their registry name, account extras as provider/model. The relay's switch
+// grant steers the footer and the extras — below catalog level the account
+// catalog is not advertised because those ids cannot be selected. Empty when
+// the relay predates the endpoint; the caller then falls back to the plain
+// catalog.
+func modelAccountView(ctx context.Context, call func(context.Context, string, string, []byte) (int, []byte), current modelSelection) string {
+	code, body := call(ctx, http.MethodGet, "/v1/registry", nil)
+	if code != http.StatusOK {
+		return ""
+	}
+	var registry struct {
+		Switch string `json:"switch"`
+		Models []struct {
+			Name   string `json:"name"`
+			Ladder []struct {
+				Provider string `json:"provider"`
+				Model    string `json:"model"`
+				Down     bool   `json:"down,omitempty"`
+			} `json:"ladder"`
+		} `json:"models"`
+		Accounts []struct {
+			Provider string   `json:"provider"`
+			Down     bool     `json:"down,omitempty"`
+			Catalog  []string `json:"catalog,omitempty"`
+		} `json:"accounts"`
+	}
+	if json.Unmarshal(body, &registry) != nil || len(registry.Models) == 0 {
+		return ""
+	}
+	if registry.Switch == "" {
+		registry.Switch = "logical"
+	}
+	footer := "Переключить: /model <имя>."
+	switch registry.Switch {
+	case "catalog":
+		footer = "Переключить: /model <имя> или <аккаунт>/<модель>."
+	case "none":
+		footer = "Переключение моделей отключено."
+	}
+	var out strings.Builder
+	if len(registry.Accounts) > 0 {
+		out.WriteString("Аккаунты:")
+		for _, a := range registry.Accounts {
+			out.WriteString("\n• " + a.Provider)
+			if a.Down {
+				out.WriteString(" (недоступен)")
+			}
+			out.WriteString(":")
+			wired := map[string]bool{}
+			for _, m := range registry.Models {
+				for i, hop := range m.Ladder {
+					if hop.Provider != a.Provider {
+						continue
+					}
+					wired[hop.Model] = true
+					role := "запасной"
+					if i == 0 {
+						role = "основной"
+					}
+					out.WriteString("\n    " + m.Name + " → " + hop.Model + " — " + role)
+					if m.Name == current.Model || (hop.Model == current.Model && a.Provider == current.Provider && current.Provider != "") {
+						out.WriteString(" ← текущая")
+					}
+				}
+			}
+			if registry.Switch == "catalog" {
+				var extra []string
+				for _, id := range a.Catalog {
+					if wired[id] {
+						continue
+					}
+					entry := a.Provider + "/" + id
+					if id == current.Model && a.Provider == current.Provider {
+						entry += " ← текущая"
+					}
+					extra = append(extra, entry)
+				}
+				if len(extra) > 0 {
+					out.WriteString("\n    ещё: " + strings.Join(extra, ", "))
+				}
+			}
+		}
+		out.WriteString("\n" + footer)
+		return out.String()
+	}
+	for _, m := range registry.Models {
+		if out.Len() > 0 {
+			out.WriteString("\n")
+		}
+		out.WriteString("• " + m.Name)
+		if m.Name == current.Model {
+			out.WriteString(" — текущая")
+		}
+		out.WriteString(":")
+		for i, hop := range m.Ladder {
+			role := "запасной"
+			if i == 0 {
+				role = "основной"
+			}
+			out.WriteString("\n    " + hop.Provider + " → " + hop.Model + " (" + role)
+			if hop.Down {
+				out.WriteString(", недоступен")
+			}
+			out.WriteString(")")
+		}
+		out.WriteString("\n")
+	}
+	return out.String() + footer
 }

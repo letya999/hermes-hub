@@ -61,7 +61,7 @@ func pdfBytes(text string) ([]byte, error) {
 	var kids []int
 	for _, page := range glyphs {
 		var content strings.Builder
-		content.WriteString("BT\n/F1 12 Tf\n48 740 Td\n")
+		content.WriteString("BT\n/F1 12 Tf\n14 TL\n48 740 Td\n")
 		for i, line := range page {
 			if i > 0 {
 				content.WriteString("T*\n")

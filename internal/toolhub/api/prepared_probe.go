@@ -56,11 +56,11 @@ func StartPreparedProbeProxyWithDocker(ctx context.Context, egress []string, run
 	}
 	defer os.Remove(file.Name())
 	if _, err := file.WriteString(config); err != nil {
-		file.Close()
+		_ = file.Close()
 		return fail(err)
 	}
 	if err := file.Chmod(0644); err != nil {
-		file.Close()
+		_ = file.Close()
 		return fail(err)
 	}
 	if err := file.Close(); err != nil {

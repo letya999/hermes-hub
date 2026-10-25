@@ -2,6 +2,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/tls"
@@ -68,21 +69,26 @@ type OAuthConfig struct {
 	AuthorizeParameters map[string]string `json:"authorize_parameters,omitempty"`
 }
 type Config struct {
-	Listen          string           `json:"listen"`
-	PublicOrigin    string           `json:"public_origin"`
-	APIHosts        []string         `json:"api_hosts,omitempty"`
-	DataDir         string           `json:"data_dir"`
-	RuntimeDir      string           `json:"runtime_dir"`
-	MasterKeyFile   string           `json:"master_key_file"`
-	ContractsDir    string           `json:"contracts_dir"`
-	TLSCertFile     string           `json:"tls_cert_file,omitempty"`
-	TLSKeyFile      string           `json:"tls_key_file,omitempty"`
-	DevHTTP         bool             `json:"dev_http"`
-	MaxLedgerBytes  int64            `json:"max_ledger_bytes"`
-	TrustedKeys     []KeyConfig      `json:"trusted_keys"`
-	Providers       []ProviderConfig `json:"providers"`
-	ExternalAliases []AliasConfig    `json:"external_aliases,omitempty"`
-	OAuthProviders  []OAuthConfig    `json:"oauth_providers,omitempty"`
+	Listen            string           `json:"listen"`
+	PublicOrigin      string           `json:"public_origin"`
+	APIHosts          []string         `json:"api_hosts,omitempty"`
+	DataDir           string           `json:"data_dir"`
+	StateWitnessDir   string           `json:"state_witness_dir,omitempty"`
+	RecoveryDir       string           `json:"recovery_dir,omitempty"`
+	RecoveryAnchorDir string           `json:"recovery_anchor_dir,omitempty"`
+	RecoveryKeyFile   string           `json:"recovery_key_file,omitempty"`
+	RecoveryIdentity  string           `json:"recovery_identity,omitempty"`
+	RuntimeDir        string           `json:"runtime_dir"`
+	MasterKeyFile     string           `json:"master_key_file"`
+	ContractsDir      string           `json:"contracts_dir"`
+	TLSCertFile       string           `json:"tls_cert_file,omitempty"`
+	TLSKeyFile        string           `json:"tls_key_file,omitempty"`
+	DevHTTP           bool             `json:"dev_http"`
+	MaxLedgerBytes    int64            `json:"max_ledger_bytes"`
+	TrustedKeys       []KeyConfig      `json:"trusted_keys"`
+	Providers         []ProviderConfig `json:"providers"`
+	ExternalAliases   []AliasConfig    `json:"external_aliases,omitempty"`
+	OAuthProviders    []OAuthConfig    `json:"oauth_providers,omitempty"`
 	// DirectForm skips the trusted-channel confirmation code and opens the
 	// credential form on first visit. Personal loopback deployments only;
 	// BROKER_DIRECT_FORM=1 enables it without editing this file.
@@ -103,6 +109,14 @@ func ReadConfig(path string) (Config, error) {
 	}
 	if c.MaxLedgerBytes == 0 {
 		c.MaxLedgerBytes = 64 << 20
+	}
+	if c.RecoveryDir == "" && (c.RecoveryAnchorDir != "" || c.RecoveryKeyFile != "" || c.RecoveryIdentity != "") {
+		return c, errors.New("partial recovery configuration")
+	}
+	if c.RecoveryDir != "" {
+		if err := validateRecoveryLayout(c); err != nil {
+			return c, err
+		}
 	}
 	if _, _, e := net.SplitHostPort(c.Listen); e != nil {
 		return c, errors.New("invalid listen address")
@@ -154,14 +168,23 @@ func netPolicy(ca string, cidrs []string) (safenet.Policy, error) {
 	}
 	return p, nil
 }
-func assembleProviders(config []ProviderConfig, master []byte) (provider.Registry, error) {
+func assembleProviders(config []ProviderConfig, master []byte, recoveryDir string, recoveryKey []byte) (provider.Registry, error) {
+	if recoveryDir != "" && len(recoveryKey) != 32 {
+		return nil, errors.New("recovery key required")
+	}
 	out := provider.Registry{}
 	for _, p := range config {
 		if !identity.ValidID(p.ID) || out[p.ID] != nil {
 			return nil, errors.New("duplicate or invalid provider ID")
 		}
 		if p.Type == "local" {
-			l, e := provider.NewLocal(p.ID, p.Directory, seal.Derive(master, "provider/"+p.ID))
+			var l *provider.Local
+			var e error
+			if recoveryDir != "" {
+				l, e = provider.NewRecoverableLocal(p.ID, p.Directory, filepath.Join(recoveryDir, "providers", p.ID), seal.Derive(master, "provider/"+p.ID), seal.Derive(recoveryKey, "provider/"+p.ID))
+			} else {
+				l, e = provider.NewLocal(p.ID, p.Directory, seal.Derive(master, "provider/"+p.ID))
+			}
 			if e != nil {
 				return nil, e
 			}
@@ -195,9 +218,13 @@ type Service struct {
 	Handler *httpapi.Server
 	TLS     *tls.Config
 	Config  Config
+	ledger  *journal.Journal
 }
 
 func Build(c Config) (*Service, error) {
+	if c.RecoveryDir == "" && (c.RecoveryAnchorDir != "" || c.RecoveryKeyFile != "" || c.RecoveryIdentity != "") {
+		return nil, errors.New("partial recovery configuration")
+	}
 	if c.DevHTTP {
 		h, _, e := net.SplitHostPort(c.Listen)
 		if e != nil || h != "127.0.0.1" && h != "::1" {
@@ -216,7 +243,38 @@ func Build(c Config) (*Service, error) {
 		return nil, e
 	}
 	defer clear(master)
-	providers, e := assembleProviders(c.Providers, master)
+	var recoveryKey []byte
+	if c.RecoveryDir != "" {
+		if err := validateRecoveryLayout(c); err != nil {
+			return nil, err
+		}
+		rawRecoveryKey, err := securefs.ReadKey(c.RecoveryKeyFile)
+		if err != nil {
+			return nil, err
+		}
+		defer clear(rawRecoveryKey)
+		if bytes.Equal(rawRecoveryKey, master) {
+			return nil, errors.New("recovery key must differ from master key")
+		}
+		recoveryKey = seal.Derive(rawRecoveryKey, "identity/"+c.RecoveryIdentity)
+		defer clear(recoveryKey)
+	}
+	witnessDir := c.StateWitnessDir
+	if witnessDir == "" {
+		witnessDir = filepath.Dir(c.MasterKeyFile)
+	}
+	initialized, e := readStateWitness(witnessDir)
+	if e != nil {
+		return nil, e
+	}
+	targetInitialized := initialized
+	if !initialized && witnessDir != filepath.Dir(c.MasterKeyFile) {
+		initialized, e = readStateWitness(filepath.Dir(c.MasterKeyFile))
+		if e != nil {
+			return nil, e
+		}
+	}
+	providers, e := assembleProviders(c.Providers, master, c.RecoveryDir, recoveryKey)
 	if e != nil {
 		return nil, e
 	}
@@ -305,9 +363,18 @@ func Build(c Config) (*Service, error) {
 			return nil, e
 		}
 	}
-	ledger, e := journal.Open(c.DataDir, seal.Derive(master, "ledger"), c.MaxLedgerBytes)
+	var ledger *journal.Journal
+	if c.RecoveryDir != "" {
+		ledger, e = journal.OpenReplicatedAnchored(c.DataDir, filepath.Join(c.RecoveryDir, "journal"), c.RecoveryAnchorDir, seal.Derive(master, "ledger"), seal.Derive(recoveryKey, "ledger"), c.MaxLedgerBytes)
+	} else {
+		ledger, e = journal.Open(c.DataDir, seal.Derive(master, "ledger"), c.MaxLedgerBytes)
+	}
 	if e != nil {
 		return nil, e
+	}
+	if initialized && len(ledger.Records()) == 0 {
+		_ = ledger.Close()
+		return nil, ErrStateRecoveryRequired
 	}
 	m, e := materialize.New(c.RuntimeDir, !c.DevHTTP)
 	if e != nil {
@@ -325,7 +392,13 @@ func Build(c Config) (*Service, error) {
 		_ = b.Close()
 		return nil, e
 	}
-	return &Service{Broker: b, Handler: handler, TLS: tlsConfig, Config: c}, nil
+	if !targetInitialized {
+		if e := securefs.Create(witnessDir, "state-initialized", []byte(stateWitnessVersion), 0600); e != nil {
+			_ = b.Close()
+			return nil, ErrStateRecoveryRequired
+		}
+	}
+	return &Service{Broker: b, Handler: handler, TLS: tlsConfig, Config: c, ledger: ledger}, nil
 }
 func (s *Service) Run(ctx context.Context, listener net.Listener) error {
 	server := &http.Server{Handler: s.Handler, TLSConfig: s.TLS, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 25 * time.Second, WriteTimeout: 25 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}

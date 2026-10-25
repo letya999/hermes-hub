@@ -20,6 +20,7 @@ type ScopeKind string
 const (
 	OrganizationScope ScopeKind = "organization"
 	UserScope         ScopeKind = "user"
+	GroupScope        ScopeKind = "group"
 )
 
 // Scope is the small, host-owned identity file shared by every space.
@@ -30,7 +31,7 @@ type Scope struct {
 }
 
 func (s Scope) Validate() error {
-	if (s.Kind != UserScope && s.Kind != OrganizationScope) || !idPattern.MatchString(s.ID) {
+	if (s.Kind != UserScope && s.Kind != OrganizationScope && s.Kind != GroupScope) || !idPattern.MatchString(s.ID) {
 		return fmt.Errorf("scope kind and id are invalid")
 	}
 	if s.Kind == UserScope && s.Organization != "" && !idPattern.MatchString(s.Organization) {
@@ -74,7 +75,7 @@ func noSymlinkPath(path string) error {
 			continue
 		}
 		current = filepath.Join(current, part)
-		info, err := os.Lstat(current)
+		info, err := os.Lstat(current) // #nosec G703 -- walk over the scope root
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}

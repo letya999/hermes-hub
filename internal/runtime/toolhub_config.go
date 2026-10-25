@@ -42,6 +42,14 @@ func materializeOptionsFromEnv() (stack.MaterializeOptions, error) {
 			return stack.MaterializeOptions{}, fmt.Errorf("invalid HUB_MANAGED_IMAGE_GEN: %w", err)
 		}
 	}
+	var contextCfg *stack.ContextConfig
+	if raw := strings.TrimSpace(os.Getenv("HUB_MANAGED_CONTEXT")); raw != "" {
+		var decoded stack.ContextConfig
+		if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+			return stack.MaterializeOptions{}, fmt.Errorf("invalid HUB_MANAGED_CONTEXT: %w", err)
+		}
+		contextCfg = &decoded
+	}
 	selfSettingsPath := ""
 	if os.Getenv("HUB_CAPABILITY_MODE") == "managed" {
 		selfSettingsPath = filepath.Join(state, selfsettings.FileName)
@@ -56,6 +64,7 @@ func materializeOptionsFromEnv() (stack.MaterializeOptions, error) {
 		NativeToolsets:     envList("HUB_NATIVE_TOOLSETS"),
 		Web:                web,
 		ImageGen:           imageGen,
+		Context:            contextCfg,
 		SelfSettingsPath:   selfSettingsPath,
 	}, nil
 }

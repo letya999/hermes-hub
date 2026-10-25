@@ -138,6 +138,52 @@ func TestMCPRegistryCatalogMatchesRepositoryCommitAndSubfolder(t *testing.T) {
 	}
 }
 
+// Issue #282: a repository-matched registry claim that cannot bind to the
+// pinned commit is still catalog evidence — it must reach the resolver so the
+// ledger records it ignored instead of the lookup looking like it never ran.
+func TestMCPRegistryCatalogKeepsRejectedClaimsForLedger(t *testing.T) {
+	const commit = "0123456789abcdef0123456789abcdef01234567"
+	const other = "89abcdef0123456789abcdef0123456789abcdef"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"servers":[{"server":{"name":"weather","repository":{"url":"https://github.com/acme/weather"},"remotes":[{"url":"https://mcp.example/weather"}],"_meta":{"commit":"` + other + `"}}}]}`))
+	}))
+	defer server.Close()
+	lookup := RecipeLookup{Repository: "https://github.com/acme/weather", CommitSHA: commit, Owner: "acme", Name: "weather"}
+	candidates, err := (MCPRegistryCatalog{Endpoint: server.URL, Client: server.Client()}).Lookup(context.Background(), lookup)
+	if err != nil || len(candidates) != 1 {
+		t.Fatalf("repository-matched claim dropped before the ledger: %#v %v", candidates, err)
+	}
+	if CandidateMatches(candidates[0], ArtifactSource{Repository: lookup.Repository, CommitSHA: commit}) || candidates[0].CommitSHA != other {
+		t.Fatalf("foreign-commit claim must surface unverified: %+v", candidates[0])
+	}
+	if candidates[0].LaunchRank != RankL3 || candidates[0].CredentialRank != RankR2 {
+		t.Fatalf("registry claim lost its ladder ranks: %+v", candidates[0])
+	}
+}
+
+// Issue #282: a Docker MCP entry for this repository pinned to another commit
+// is ledger evidence ("catalog covers the repo, not this revision"). Dropping
+// it in the adapter makes catalog-first resolution invisible.
+func TestDockerMCPCatalogKeepsForeignCommitEntriesForLedger(t *testing.T) {
+	const commit = "0123456789abcdef0123456789abcdef01234567"
+	const other = "89abcdef0123456789abcdef0123456789abcdef"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"registry":{"weather":{"source":"https://github.com/acme/weather/tree/` + other + `","image":"mcp/weather:1.0.0","secrets":[{"env":"API_TOKEN"}]}}}`))
+	}))
+	defer server.Close()
+	lookup := RecipeLookup{Repository: "https://github.com/acme/weather", CommitSHA: commit, Owner: "acme", Name: "weather"}
+	candidates, err := (DockerMCPCatalog{Endpoint: server.URL, Client: server.Client()}).Lookup(context.Background(), lookup)
+	if err != nil || len(candidates) != 1 {
+		t.Fatalf("foreign-commit catalog entry dropped before the ledger: %#v %v", candidates, err)
+	}
+	if candidates[0].CommitSHA != other || CandidateMatches(candidates[0], ArtifactSource{Repository: lookup.Repository, CommitSHA: commit}) {
+		t.Fatalf("foreign-commit entry must surface unverified: %+v", candidates[0])
+	}
+	if candidates[0].LaunchRank != RankL2 || candidates[0].CredentialRank != RankR4 {
+		t.Fatalf("Docker MCP claim lost its ladder ranks: %+v", candidates[0])
+	}
+}
+
 func TestToolHiveCatalogHandlesNotFoundAndRepositoryMatchedRemote(t *testing.T) {
 	const commit = "0123456789abcdef0123456789abcdef01234567"
 	requests := 0

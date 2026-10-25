@@ -86,6 +86,12 @@ func (t *Tools) call(ctx context.Context, name string, r Input, ws, ar, org *os.
 		return t.ServiceEnable(r)
 	case "service_disable":
 		return t.ServiceDisable(r)
+	case "context_status":
+		return t.ContextStatus(ctx, r)
+	case "context_compact":
+		return t.ContextCompact(ctx, r)
+	case "goal_set", "goal_status", "goal_pause", "goal_resume", "goal_clear":
+		return t.Goal(ctx, name, r)
 	case "settings_get":
 		return t.SettingsGet(r)
 	case "settings_set":

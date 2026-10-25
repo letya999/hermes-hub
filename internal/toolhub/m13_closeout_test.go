@@ -177,7 +177,7 @@ func TestRemoveRequiresExplicitConfirmation(t *testing.T) {
 	if preview["requires_confirmation"] != true {
 		t.Fatalf("bare remove did not request confirmation: %v", preview)
 	}
-	nonce, _ := preview["remove_nonce"].(string)
+	nonce := removeNonceOf(t, store, onboardingID)
 	if nonce == "" {
 		t.Fatalf("preview returned no confirmation token: %v", preview)
 	}
@@ -436,11 +436,10 @@ func TestSharedConnectorResolvesOneWorkload(t *testing.T) {
 		if err := control.SubmitCredentials(onboardingID, onboarding.FormNonce, map[string]string{"GOOGLE_TOKEN": "ignored"}); err != nil {
 			t.Fatalf("%s submit: %v", principal, err)
 		}
-		status, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": onboardingID})
-		if err != nil {
+		if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": onboardingID}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": onboardingID, "nonce": status["nonce"]}); err != nil {
+		if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": onboardingID, "nonce": confirmNonceOf(t, store, onboardingID)}); err != nil {
 			t.Fatalf("%s confirm: %v", principal, err)
 		}
 		enabled, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": onboardingID})
@@ -522,11 +521,10 @@ func TestSharedConnectorMemberLifecycleIsScoped(t *testing.T) {
 		if err := control.SubmitCredentials(onboardingID, onboarding.FormNonce, map[string]string{"GOOGLE_TOKEN": "ignored"}); err != nil {
 			t.Fatal(err)
 		}
-		status, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": onboardingID})
-		if err != nil {
+		if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": onboardingID}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": onboardingID, "nonce": status["nonce"]}); err != nil {
+		if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": onboardingID, "nonce": confirmNonceOf(t, store, onboardingID)}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": onboardingID}); err != nil {
@@ -620,11 +618,10 @@ func TestSharedWorkloadSurvivesMemberDisable(t *testing.T) {
 		if err := control.SubmitCredentials(onboardingID, onboarding.FormNonce, map[string]string{"GOOGLE_TOKEN": "ignored"}); err != nil {
 			t.Fatal(err)
 		}
-		status, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": onboardingID})
-		if err != nil {
+		if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": onboardingID}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": onboardingID, "nonce": status["nonce"]}); err != nil {
+		if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": onboardingID, "nonce": confirmNonceOf(t, store, onboardingID)}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": onboardingID}); err != nil {
@@ -717,11 +714,10 @@ func TestSharedMemberRemoveKeepsSharedRecords(t *testing.T) {
 		if err := control.SubmitCredentials(onboardingID, onboarding.FormNonce, map[string]string{"GOOGLE_TOKEN": "ignored"}); err != nil {
 			t.Fatal(err)
 		}
-		status, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": onboardingID})
-		if err != nil {
+		if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": onboardingID}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": onboardingID, "nonce": status["nonce"]}); err != nil {
+		if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": onboardingID, "nonce": confirmNonceOf(t, store, onboardingID)}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": onboardingID}); err != nil {
@@ -733,11 +729,10 @@ func TestSharedMemberRemoveKeepsSharedRecords(t *testing.T) {
 	onboarding1 := enableMember("u01")
 	member0 := identity.TelegramEnvelope("u00", 9, "u00-runtime", "policy-1")
 
-	preview, err := control.Invoke(context.Background(), member0, "remove", map[string]any{"onboarding_id": onboarding0.OnboardingID})
-	if err != nil {
+	if _, err := control.Invoke(context.Background(), member0, "remove", map[string]any{"onboarding_id": onboarding0.OnboardingID}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Invoke(context.Background(), member0, "remove", map[string]any{"onboarding_id": onboarding0.OnboardingID, "remove_nonce": preview["remove_nonce"]}); err != nil {
+	if _, err := control.Invoke(context.Background(), member0, "remove", map[string]any{"onboarding_id": onboarding0.OnboardingID, "remove_nonce": removeNonceOf(t, store, onboarding0.OnboardingID)}); err != nil {
 		t.Fatal(err)
 	}
 	store.mu.RLock()
@@ -827,11 +822,10 @@ func TestRemoveDeletesCredentialCiphertext(t *testing.T) {
 	if owner == "" {
 		owner = auth.PrincipalID
 	}
-	status, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": id})
-	if err != nil {
+	if _, err := control.Invoke(context.Background(), auth, "status", map[string]any{"onboarding_id": id}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": id, "nonce": status["nonce"]}); err != nil {
+	if _, err := control.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": id, "nonce": confirmNonceOf(t, store, id)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := control.Invoke(context.Background(), auth, "enable", map[string]any{"onboarding_id": id}); err != nil {
@@ -841,11 +835,10 @@ func TestRemoveDeletesCredentialCiphertext(t *testing.T) {
 		t.Fatalf("credential never stored: %v", err)
 	}
 
-	preview, err := control.Invoke(context.Background(), auth, "remove", map[string]any{"onboarding_id": id})
-	if err != nil {
+	if _, err := control.Invoke(context.Background(), auth, "remove", map[string]any{"onboarding_id": id}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Invoke(context.Background(), auth, "remove", map[string]any{"onboarding_id": id, "remove_nonce": preview["remove_nonce"]}); err != nil {
+	if _, err := control.Invoke(context.Background(), auth, "remove", map[string]any{"onboarding_id": id, "remove_nonce": removeNonceOf(t, store, id)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := secrets.Info(locator, owner); err == nil {
@@ -919,7 +912,7 @@ func TestCredentialHintsPropagateFileDelivery(t *testing.T) {
 // The loopback form must accept a file upload for a file-delivery field —
 // the value stored is the uploaded content, not a pasted path.
 func TestCredentialFormAcceptsFileField(t *testing.T) {
-	markup := credentialFieldMarkup(api.CredentialHint{Name: "CLIENT_JSON", Type: "json", Secret: true, Delivery: "file", Target: "/run/mcp-secrets/client.json"})
+	markup := credentialFieldMarkup(api.CredentialHint{Name: "CLIENT_JSON", Type: "json", Secret: true, Delivery: "file", Target: "/run/mcp-secrets/client.json"}, api.ConnectionField{}, "")
 	if !strings.Contains(markup, `type="file"`) {
 		t.Fatalf("file delivery did not render a file input: %s", markup)
 	}

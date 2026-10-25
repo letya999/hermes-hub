@@ -384,6 +384,29 @@ func TestComposeMountsCommunicationUsersWhenPresent(t *testing.T) {
 // writer lives next to readSpace.
 func saveSpace(dir string, settings Settings) error { return WriteSpace(dir, settings) }
 
+func TestComposeMountsModelRelayAdminsWhenPresent(t *testing.T) {
+	t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", "http://host.docker.internal:8765")
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "model-relay-admins.json"), []byte(`{"alice":{"url":"http://model-relay-alice:8318","admin":"x"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := Settings{Schema: 1, Environment: "dev", User: "infra", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("telegram"), Ingress: testIngress("telegram")}
+	gateway := Compose(s, dir, dir)["services"].(M)["communication-hub"].(M)
+	if gateway["environment"].(M)["HUB_MODEL_RELAY_ADMINS_FILE"] != "/config/model-relay-admins.json" {
+		t.Fatalf("admins file env missing: %#v", gateway["environment"])
+	}
+	mounted := false
+	for _, raw := range gateway["volumes"].([]any) {
+		volume := raw.(M)
+		if volume["target"] == "/config/model-relay-admins.json" && volume["read_only"] == true && volume["type"] == "bind" {
+			mounted = true
+		}
+	}
+	if !mounted {
+		t.Fatalf("admins file not mounted: %#v", gateway["volumes"])
+	}
+}
+
 func TestTelegramGatewayAndPersonalMCPAreIndependent(t *testing.T) {
 	s := Settings{Schema: 1, Environment: "prod", User: "me", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
 	s.Tools, s.Ingress = testTools("telegram"), testIngress("telegram")
@@ -525,13 +548,13 @@ func TestTelegramAuthDefaultsOnWithTelegramIngress(t *testing.T) {
 	services := Compose(s, "/source", dir)["services"].(M)
 	gw := services["communication-hub"].(M)
 	// QR login lives in the one communication-hub build — no variant image.
-	if gw["image"] != "hermes-hub:0.3.0-dev" {
+	if gw["image"] != "hermes-hub:0.4.0-dev" {
 		t.Fatalf("gateway must run the standard image: %#v", gw["image"])
 	}
 	if gw["environment"].(M)["HUB_TELEGRAM_AUTH_ENABLED"] != "true" {
 		t.Fatalf("auth not enabled by default: %#v", gw["environment"])
 	}
-	if services["credential-broker"].(M)["image"] != "hermes-hub:0.3.0-dev" {
+	if services["credential-broker"].(M)["image"] != "hermes-hub:0.4.0-dev" {
 		t.Fatal("broker must run the standard image")
 	}
 	files := gw["env_file"].([]any)
@@ -587,7 +610,7 @@ func TestComposeKeepsDockerInControlImage(t *testing.T) {
 		t.Fatal(err)
 	}
 	coreStage, controlStage, found := strings.Cut(string(dockerfile), "FROM runtime AS control")
-	if !found || strings.Contains(coreStage, "COPY --from=dockercli") || strings.Contains(coreStage, "git init /slack") || !strings.Contains(controlStage, "COPY --from=dockercli") || !strings.Contains(coreStage, "--mount=type=cache,id=hermes-go-build") || !strings.Contains(coreStage, "FROM golang:1.27.2-bookworm AS cliproxy_build") {
+	if !found || strings.Contains(coreStage, "COPY --from=dockercli") || strings.Contains(coreStage, "git init /slack") || !strings.Contains(controlStage, "COPY --from=dockercli") || !strings.Contains(coreStage, "--mount=type=cache,id=hermes-go-build") || !strings.Contains(coreStage, "FROM golang:1.27.3-bookworm AS cliproxy_build") {
 		t.Fatal("Docker CLI or Slack MCP included in default runtime")
 	}
 }

@@ -102,7 +102,7 @@ func toUnicodeCMap(used map[uint16]rune) string {
 		fmt.Fprintf(&b, "%d beginbfchar\n", end-start)
 		for _, gid := range ids[start:end] {
 			r := used[gid]
-			fmt.Fprintf(&b, "<%04X> <%04X>\n", gid, uint16(r))
+			fmt.Fprintf(&b, "<%04X> <%04X>\n", gid, uint16(r)) // #nosec G115 -- cmap codepoints are 16-bit by spec
 		}
 		b.WriteString("endbfchar\n")
 	}
@@ -194,7 +194,7 @@ func parseCmap4(b []byte, out map[rune]uint16) error {
 	for i := 0; i < segCount; i++ {
 		end := uint32(binary.BigEndian.Uint16(b[endCount+2*i : endCount+2*i+2]))
 		start := uint32(binary.BigEndian.Uint16(b[startCount+2*i : startCount+2*i+2]))
-		delta := int32(int16(binary.BigEndian.Uint16(b[idDelta+2*i : idDelta+2*i+2])))
+		delta := int32(int16(binary.BigEndian.Uint16(b[idDelta+2*i : idDelta+2*i+2]))) // #nosec G115 -- cmap deltas are defined int16 per spec
 		rangeOff := int(binary.BigEndian.Uint16(b[idRange+2*i : idRange+2*i+2]))
 		if start == 0xFFFF {
 			continue
@@ -202,7 +202,7 @@ func parseCmap4(b []byte, out map[rune]uint16) error {
 		for c := start; c <= end; c++ {
 			var gid uint16
 			if rangeOff == 0 {
-				gid = uint16(int32(c) + delta)
+				gid = uint16(int32(c) + delta) // #nosec G115 -- cmap arithmetic is defined mod 2^16 per spec
 			} else {
 				pos := idRange + 2*i + rangeOff + 2*int(c-start)
 				if pos+2 > len(b) {
@@ -210,11 +210,11 @@ func parseCmap4(b []byte, out map[rune]uint16) error {
 				}
 				gid = binary.BigEndian.Uint16(b[pos : pos+2])
 				if gid != 0 {
-					gid = uint16(int32(gid) + delta)
+					gid = uint16(int32(gid) + delta) // #nosec G115 -- cmap arithmetic is defined mod 2^16 per spec
 				}
 			}
 			if gid != 0 {
-				out[rune(c)] = gid
+				out[rune(c)] = gid // #nosec G115 -- cmap codepoints are 16-bit by spec
 			}
 		}
 	}
@@ -244,7 +244,7 @@ func parseCmap12(b []byte, out map[rune]uint16) error {
 		for c := start; c <= end; c++ {
 			g := glyph + (c - start)
 			if g > 0 && g <= 0xFFFF {
-				out[rune(c)] = uint16(g)
+				out[rune(c)] = uint16(g) // #nosec G115 -- value is range-checked to 16 bits above
 			}
 		}
 	}

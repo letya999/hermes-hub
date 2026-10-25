@@ -78,7 +78,7 @@ func writeFile(args []string) error {
 	switch len(args) {
 	case 1:
 		var err error
-		data, err = io.ReadAll(io.LimitReader(os.Stdin, 4096))
+		data, err = io.ReadAll(io.LimitReader(os.Stdin, 300*1024))
 		if err != nil {
 			return err
 		}
@@ -87,7 +87,7 @@ func writeFile(args []string) error {
 	default:
 		return fmt.Errorf("write: want <path> [content]")
 	}
-	return os.WriteFile(filepath.Clean(args[0]), data, 0o600)
+	return os.WriteFile(filepath.Clean(args[0]), data, 0o600) // #nosec G703 -- fixed cellinit argv written by the hub spawn
 }
 
 // strayPIDs lists every pid that is neither pid1 nor the caller. Exec'd tool
@@ -136,7 +136,7 @@ func check(args []string) error {
 	if len(args) != 2 {
 		return fmt.Errorf("check: want <path> <token>")
 	}
-	data, err := os.ReadFile(filepath.Clean(args[0])) // #nosec G304 -- path is operator-chosen.
+	data, err := os.ReadFile(filepath.Clean(args[0])) // #nosec G304 G703 -- path is operator-chosen.
 	if err != nil {
 		return err
 	}
@@ -170,6 +170,7 @@ func clean(args []string) error {
 // tool cell never exposes a secret.
 func credProxy(args []string) error {
 	var rulesPath, listen string
+	rulesTimeout := 15 * time.Second
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "--rules" && i+1 < len(args):
@@ -177,6 +178,13 @@ func credProxy(args []string) error {
 			i++
 		case args[i] == "--listen" && i+1 < len(args):
 			listen = args[i+1]
+			i++
+		case args[i] == "--rules-timeout" && i+1 < len(args):
+			d, err := time.ParseDuration(args[i+1])
+			if err != nil {
+				return fmt.Errorf("cred-proxy: --rules-timeout: %v", err)
+			}
+			rulesTimeout = d
 			i++
 		}
 	}
@@ -186,7 +194,10 @@ func credProxy(args []string) error {
 	if listen == "" {
 		listen = ":3128"
 	}
-	rules, err := readProxyRules(rulesPath)
+	// The controller injects the rules into this container's tmpfs after
+	// start: docker cp cannot write a read-only rootfs, so the file arrives
+	// via `cellinit write` on exec — wait for it instead of dying.
+	rules, err := waitProxyRules(rulesPath, rulesTimeout)
 	if err != nil {
 		return err
 	}
@@ -218,7 +229,7 @@ type proxyHandler struct {
 }
 
 func readProxyRules(path string) (map[string]proxyRule, error) {
-	data, err := os.ReadFile(filepath.Clean(path)) // #nosec G304 -- operator config.
+	data, err := os.ReadFile(filepath.Clean(path)) // #nosec G304 G703 -- operator config.
 	if err != nil {
 		return nil, err
 	}
@@ -231,6 +242,22 @@ func readProxyRules(path string) (map[string]proxyRule, error) {
 		rules[strings.ToLower(host)] = proxyRule{Headers: headers, Scheme: "https"}
 	}
 	return rules, nil
+}
+
+// waitProxyRules polls until the rules file parses — the controller writes it
+// into the sidecar tmpfs after the proxy process is already running.
+func waitProxyRules(path string, timeout time.Duration) (map[string]proxyRule, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		rules, err := readProxyRules(path)
+		if err == nil {
+			return rules, nil
+		}
+		if !time.Now().Before(deadline) {
+			return nil, fmt.Errorf("cred-proxy: rules: %w", err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 func (h *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {

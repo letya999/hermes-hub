@@ -44,6 +44,8 @@ type SubmitHandle struct {
 	Model    string `json:"model,omitempty"`
 }
 
+var errSubmissionUncertain = errors.New("media submission outcome uncertain; inspect provider before retrying")
+
 type GenRequest struct {
 	Kind       string // "image" | "video"
 	Model      string
@@ -94,6 +96,9 @@ func (r *genRouter) Generate(ctx context.Context, req GenRequest) (GenResult, er
 			return out, nil
 		}
 		log.Printf("hub-media model=%s engine=%s failed: %v", req.Model, hop.Engine, err)
+		if errors.Is(err, errSubmissionUncertain) {
+			return GenResult{}, err
+		}
 		last = err
 	}
 	return GenResult{}, fmt.Errorf("all media providers failed for %q (%v)", req.Model, last)
@@ -125,6 +130,9 @@ func (r *genRouter) Submit(ctx context.Context, req GenRequest) (SubmitHandle, e
 		h, err := eng.Submit(ctx, hopReq)
 		if err != nil {
 			log.Printf("hub-media model=%s engine=%s submit failed: %v", req.Model, hop.Engine, err)
+			if errors.Is(err, errSubmissionUncertain) {
+				return SubmitHandle{}, err
+			}
 			last = err
 			continue
 		}
@@ -158,6 +166,9 @@ func (r *genRouter) Poll(ctx context.Context, h SubmitHandle, model string) (Gen
 type commandGen struct{ command string }
 
 func (e commandGen) Generate(ctx context.Context, req GenRequest) (GenResult, error) {
+	if len(req.Source) > 0 {
+		return GenResult{}, errors.New("command engine does not support edits")
+	}
 	cmd := exec.CommandContext(ctx, e.command)
 	cmd.Env = append(os.Environ(),
 		"HUB_MEDIA_REQUEST_MODEL="+req.Model,
@@ -194,12 +205,44 @@ func genEngine(c Config) (GenEngine, error) {
 }
 
 func genEngineNamed(c Config, name string) (GenEngine, error) {
+	provider, explicit := c.Providers[name]
+	if name != c.Engine && (name == "remote" || name == "comfy") && (!explicit || provider.Upstream == "") {
+		return nil, errors.New("secondary custom media engine requires its own provider endpoint")
+	}
+	if !explicit && name == "fal" && name != c.Engine {
+		c.Upstream, c.QueueUpstream, c.UpstreamKey, c.BrokerGrant = "https://fal.run", "", "", ""
+	}
+	if explicit {
+		c.QueueUpstream = provider.QueueUpstream
+		c.BrokerGrant = ""
+		c.UpstreamKey = ""
+		if provider.BrokerGrant != "" {
+			c.BrokerGrant = provider.BrokerGrant
+		}
+		if provider.Upstream != "" {
+			c.Upstream = provider.Upstream
+		}
+		if provider.KeyEnv != "" {
+			c.UpstreamKey = os.Getenv(provider.KeyEnv)
+			if c.UpstreamKey == "" {
+				return nil, errors.New("media provider key_env is unavailable")
+			}
+		}
+	}
 	client := &http.Client{Timeout: 5 * time.Minute}
 	resolve, err := c.mediaKeyResolver()
 	if err != nil {
 		return nil, err
 	}
+	if explicit && resolve == nil {
+		resolve = staticKey(c.UpstreamKey)
+	}
 	switch name {
+	case "comfy":
+		if resolve == nil {
+			resolve = staticKey(c.UpstreamKey)
+		}
+		return newComfyGen(c, client, resolve)
 	case "remote":
 		if resolve == nil {
 			resolve = staticKey(firstNonEmpty(c.UpstreamKey, envOr("OPENAI_API_KEY", "")))
@@ -213,7 +256,10 @@ func genEngineNamed(c Config, name string) (GenEngine, error) {
 		if queue == "" {
 			queue = falQueueBase(c.Upstream)
 		}
-		return &falGen{base: c.Upstream, queue: queue, keyFor: resolve, client: client}, nil
+		return &falGen{base: c.Upstream, queue: queue, keyFor: resolve, client: client,
+			fetch: func(ctx context.Context, raw string) ([]byte, string, error) {
+				return fetchResult(ctx, raw, c.FetchHosts, maxGenResultBytes)
+			}}, nil
 	case "command":
 		if strings.TrimSpace(c.Command) == "" {
 			return nil, errors.New("HUB_MEDIA_COMMAND is required for the command engine")
@@ -289,7 +335,7 @@ func (e *remoteGen) Generate(ctx context.Context, req GenRequest) (GenResult, er
 	if err != nil {
 		return GenResult{}, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL(e.base, "/images/generations"), bytes.NewReader(payload))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL(e.base, "/images/generations"), bytes.NewReader(payload)) // #nosec G704 -- configured generation API base
 	if err != nil {
 		return GenResult{}, err
 	}
@@ -323,7 +369,7 @@ func (e *remoteGen) edit(ctx context.Context, req GenRequest, key string) (GenRe
 	if err := form.Close(); err != nil {
 		return GenResult{}, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL(e.base, "/images/edits"), &body)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL(e.base, "/images/edits"), &body) // #nosec G704 -- configured generation API base
 	if err != nil {
 		return GenResult{}, err
 	}
@@ -358,13 +404,13 @@ func (e *remoteGen) chatImage(ctx context.Context, req GenRequest, key string) (
 	if err != nil {
 		return GenResult{}, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL(e.base, "/chat/completions"), bytes.NewReader(payload))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL(e.base, "/chat/completions"), bytes.NewReader(payload)) // #nosec G704 -- configured generation API base
 	if err != nil {
 		return GenResult{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	e.authorize(httpReq, key)
-	resp, err := e.client.Do(httpReq)
+	resp, err := e.client.Do(httpReq) // #nosec G704 -- configured generation API base
 	if err != nil {
 		return GenResult{}, err
 	}
@@ -404,7 +450,7 @@ func (e *remoteGen) authorize(req *http.Request, key string) {
 }
 
 func (e *remoteGen) readImages(req *http.Request) (GenResult, error) {
-	resp, err := e.client.Do(req)
+	resp, err := e.client.Do(req) // #nosec G704 -- configured generation API base
 	if err != nil {
 		return GenResult{}, err
 	}
@@ -477,13 +523,13 @@ func (e *falGen) Generate(ctx context.Context, req GenRequest) (GenResult, error
 	if err != nil {
 		return GenResult{}, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(e.base, "/")+"/"+req.Model, bytes.NewReader(payload))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(e.base, "/")+"/"+req.Model, bytes.NewReader(payload)) // #nosec G704 -- configured generation API base
 	if err != nil {
 		return GenResult{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Key "+key)
-	resp, err := e.client.Do(httpReq)
+	resp, err := e.client.Do(httpReq) // #nosec G704 -- configured generation API base
 	if err != nil {
 		return GenResult{}, err
 	}
@@ -537,12 +583,15 @@ func (e *falGen) Submit(ctx context.Context, req GenRequest) (SubmitHandle, erro
 	httpReq.Header.Set("Authorization", "Key "+key)
 	resp, err := e.client.Do(httpReq)
 	if err != nil {
-		return SubmitHandle{}, err
+		return SubmitHandle{}, errSubmissionUncertain
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return SubmitHandle{}, err
+		return SubmitHandle{}, errSubmissionUncertain
+	}
+	if resp.StatusCode >= 500 {
+		return SubmitHandle{}, errSubmissionUncertain
 	}
 	if resp.StatusCode != http.StatusOK {
 		return SubmitHandle{}, fmt.Errorf("fal queue submit HTTP %d", resp.StatusCode)
@@ -551,7 +600,7 @@ func (e *falGen) Submit(ctx context.Context, req GenRequest) (SubmitHandle, erro
 		RequestID string `json:"request_id"`
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil || parsed.RequestID == "" {
-		return SubmitHandle{}, errors.New("fal queue returned no request id")
+		return SubmitHandle{}, errSubmissionUncertain
 	}
 	return SubmitHandle{RemoteID: parsed.RequestID}, nil
 }

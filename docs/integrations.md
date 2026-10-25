@@ -1,932 +1,288 @@
 ---
-description: Connector contracts, scope rules and source pins.
-last_verified: 2026-10-07
+description: Upstream pins and provider contracts — Hermes API, broker env layout, per-provider OAuth/auth contracts, web/doc/image capabilities.
+last_verified: 2026-10-20
 ---
+
 # Integration contracts
 
-Local STT pins faster-whisper 1.2.1 with PyAV 18.1.0 in both the runtime and
-standalone STT image. PyAV 19 removed the decoder argument used by that
-faster-whisper release. The native contract and standalone STT CI gate decode
-a synthetic WAV without network access so dependency skew cannot silently pass.
-
-Manager instructions for the owner's local PC:
-[local-accounts-manager.md](local-accounts-manager.md). Local deployment is
-prepared, not logged in; existing Hermes defaults are unchanged.
-
-## Official Google Workspace remote MCP
-
-Use `hubctl connector connect --provider google --official-mcp --product gmail`
-with the same absolute registry/ciphertext/key paths as below. Products:
-calendar, gmail, drive, docs, sheets, slides. Each product gets a separate
-connection and read-only OAuth scopes. `--account` accepts the expected Google
-subject or a verified email. Supply CLIENT_ID/CLIENT_SECRET in a protected
-local `--client-file`, not chat or argv. For a Web OAuth client register exactly
-`http://127.0.0.1:8543/callback` and use `--callback-port 8543`.
-Open the printed authorization URL and complete consent yourself.
-
-These are Google-managed `https://<product>mcp.googleapis.com/mcp/v1` services,
-not the bundled third-party Workspace MCP. Google's
-[official setup](https://developers.google.com/workspace/guides/configure-mcp-servers)
-currently requires Developer Preview access, a Cloud project, underlying APIs
-and their MCP services enabled, and OAuth consent/client configuration. Each
-service must be enabled for the same project as the OAuth client. Discovery
-rejects an inaccessible/empty service; it is not assumed to work from a token.
-Provider schemas are snapshotted and validated locally without remote $ref
-fetches. New/unknown and mutation tools are excluded from read grants.
-Calendar writes remain the separate verified REST `--write` grant below.
-Refresh/revoke use the same commands; no real Cloud account has been tested.
-
-## ToolHub personal Telegram account MCP
-
-Python workloads are supported behind the existing container-MCP admission
-boundary. `docker/telegram-account.Dockerfile` is a standalone Python image
-with the pinned Telegram/Telethon virtualenv; it does not `FROM` the hub
-image. Build it from the repository root, then use the actual image digest
-in an operator deployment manifest. Do not substitute a mutable tag or a
-guessed digest. The upstream hash-locked `proxy` extra is enabled so
-Telethon can use an HTTP CONNECT proxy; no dependency version is guessed.
-
-The ToolHive controller must be deployed/configured first. It receives
-workspace_path, pinned image/sidecars and limits, must mount that exact path
-as writable connection-state at `/run/connector`, wrap the image's stdio MCP,
-and return its validated running enforcement receipt. Configure absolute
-HUB_STATE, HUB_TOOLHIVE_ADMISSION_ENDPOINT and any required private vMCP token.
-The public/model path never receives Docker access, session strings or env files.
-Drain existing per-user container workloads before upgrading the new connection-
-isolated path/identity scheme, then explicitly reconnect them. Old state is not
-deleted or automatically copied across connections. The controller must preserve
-private ownership compatible with the adapter's UID 10001; do not chmod secrets
-world-readable to make an incorrectly owned bind mount work.
-The owner-selected PC now has real ToolHive v0.48.0 discovery and authenticated
-Go `connector local-controller` admission evidence. The fixed local controller
-uses separate pinned Squid egress with Telegram's published IPv4 CIDRs; direct
-TCP is blackholed by an internal Docker network. MCP discovery and network
-checks do not establish real user login or message reads. A physical protected
-user-home deployment is used because AppData staging was not consistently visible
-through Docker Desktop/WSL. The account worker and user login helper mount only
-their respective connection-state/input directory, never Google input or key files.
-
-Locally prepare a protected file containing only TELEGRAM_API_ID,
-TELEGRAM_API_HASH and TELEGRAM_SESSION_STRING (from your own Telegram app and
-interactive session setup). Do not send this file through chat. Import using
-`hubctl connector connect --provider telegram --account <numeric-user-id>
---connection <unique-id> --from-file <protected-session-file>
---deployment-file <operator-manifest.json> --endpoint <private-toolhive-mcp>`
-and the standard absolute registry/ciphertext/key paths. The host command
-verifies the session's get_me identity before saving a binding. A bot session
-or different user is rejected. Read tools: get_account, list_dialogs,
-get_messages, search_messages and get_chat_info. `get_messages` uses Telegram's
-real history API with bounded before/after cursors, and `search_messages` can
-search globally or in one chat, so old messages are not limited to newly arrived
-updates. Dialogs include the user's private chats, groups and channels; bot
-peers are excluded. Message text is untrusted and media is reported as metadata,
-not downloaded. `--write` creates a separate explicit send_message/reply_message/
-delete_message grant; the server independently checks it. Credentials are loaded
-per call and wiped by Go after execution; there is no unattended login.
-
-`connector revoke` immediately blocks local calls and revokes ciphertext.
-To invalidate the imported session at Telegram itself, explicitly terminate
-it in Telegram Devices. Telegram does not use OAuth refresh. The pinned adapter
-has completed a live self-message send, reply and deletion through restricted
-Docker egress on a separate owner-approved account, with message-ID and deletion
-`pts` receipts. This does not validate write access through the read-only prepared
-Broker entry or provider-side session termination.
-
-## ToolHub command boundary
-
-ToolHub direct CLI/container command validation rejects shell executables,
-including Windows `.exe` variants, and `.bat`/`.cmd` shell scripts. Arguments
-are literal argv; repository instructions never authorize host shell execution.
-
-### Generic artifact pipeline — implementation in progress
-
-The Git source helper accepts only a canonical public GitHub repository and an
-exact lowercase 40-character commit SHA. It verifies commit/tree/blob identity
-and produces a bounded in-memory context without ambient credentials.
-`FetchRepositoryArtifactContext` automatically chooses permitted regular files
-from the verified tree, excluding sensitive paths before fetching their contents.
-It uses two GitHub API requests and exact-SHA raw file URLs with Git blob-ID
-checks, instead of consuming an API request for every file. Automatic downloads
-use batches of at most eight requests while retaining deterministic tar order
-and the total byte/time budgets. Filename filtering
-does not replace the still-required content secret scan. The scan treats a
-token-shaped match whose secret body is one repeated character as a placeholder
-fixture (upstream tests commonly embed `ghp_xxxx...`-style strings) and does
-not block on it; any varied body still fails closed.
-`GenerateArtifactRecipe` generates a pinned-base Dockerfile for conventional
-Python, Node, Go and Rust manifests; when no reviewed base is supplied it selects
-the repository-pinned digest for the detected language. An upstream Dockerfile
-is not required.
-Node requires `package-lock.json` or `pnpm-lock.yaml`; pnpm recipes use pinned
-pnpm 10.32.1 and frozen installation. Conventional pnpm monorepositories can
-select a unique `*-mcp` package with a declared bin; other layouts remain explicit.
-Several `bin` aliases resolving to the same file count as one published server;
-only distinct bin targets remain ambiguous.
-When runtime egress was not explicitly reviewed, import proposes HTTPS hosts
-from standard `servers` entries in bundled `*openapi*.json` files. The hosts are
-included in the immutable review digest; missing, malformed, credentialed,
-port-qualified or oversized declarations fail closed.
-Rust requires `Cargo.lock`; ambiguous servers
-require literal entrypoint selection.
-Python packages with several console commands select the command matching the
-project name when present; otherwise selection remains explicit. Generated
-contexts are deterministic and validated against SHA-256 file digests.
-Python/Go manifest byte pinning does not
-yet guarantee fully locked transitive dependencies.
-
-Generated recipes clear the base image's inherited `CMD` before setting their
-literal `ENTRYPOINT`. `VerifyOCIArtifact` checks a bounded OCI tar archive without
-host extraction: SHA-256 blobs, descriptor sizes, one Linux platform, config and
-layer references, and attestation subjects matching the runnable manifest. It
-supports BuildKit legacy/OCI-artifact storage, embedded descriptor data,
-SLSA v0.2/v1 provenance and SPDX 2.2/2.3 SBOM evidence, following the
-[Docker attestation format](https://docs.docker.com/build/metadata/attestations/attestation-storage/).
-Layout-index, content-index, runnable-manifest and image-config digests remain
-separate. This is integrity/presence validation, not a full SBOM schema audit,
-layer unpacking verification, proof of honest provenance, or trusted admission.
-
-`PersistOCIArtifact` stores verified archives in an existing administrator-owned
-absolute directory. Objects are addressed by the SHA-256 of the exact archive
-bytes and published without replacement only after a complete write, sync and
-OCI check. Concurrent identical uploads reuse one object; corruption, symlinks,
-cancellation and oversized inputs fail closed. `OpenStoredOCIArtifact` rechecks
-checksum and evidence before returning a reader. These are private quarantine
-objects, not enabled catalog entries; content secret scans, authenticated build
-receipts and capability approval remain required. Workloads must never mount
-this host directory. The directory is not created by this API.
-
-The repository now pins the separately reviewed rootless BuildKit bootstrap
-policy `rootless-buildkit-bootstrap-v1` in `docker/seccomp-buildkit-rootless.json`.
-Hermes accepts that profile only at its exact SHA-256 and generates a fixed Docker create plan: immutable
-BuildKit image digest, non-root user, network none or internal-only proxy routing, read-only root, no binds or
-devices, bounded CPU/memory/PIDs/tmpfs, capability drop with only SETUID/SETGID,
-`systempaths=unconfined` and `--oci-worker-no-process-sandbox` for RootlessKit
-`newuidmap`/`newgidmap` bootstrap. Privileged and `seccomp=unconfined` workers
-are forbidden. This is a builder-only bootstrap exception; the MCP runtime
-uses `docker/seccomp-mcp-runtime.json` (Docker default syscalls, not the
-BuildKit SETUID bootstrap and not `seccomp=unconfined`) and still rejects
-SETUID capabilities, unconfined seccomp, privileged mode, host
-network/PID, Docker socket and host mounts. The integration gate also
-proves the controlled dependency path: the builder is attached only to an
-internal network, while a pinned ToolHive egress proxy is dual-attached and
-permits an explicit TLS package-host allowlist. The builder daemon resolves
-`docker.io` through a generated `buildkitd.toml` mirror list (`mirror.gcr.io`
-first, Hub as fallback) so anonymous Hub rate limits cannot stall every
-build; digest-pinned bases keep integrity on either path. A real pinned base-image build
-exported an OCI archive with SLSA provenance and SPDX SBOM from a pinned scanner.
-Restricted BuildKit is allowed 25 minutes so a conventional Rust recipe can finish cargo
-through the allowlist proxy; the MCP runtime timeout is unchanged.
-and the archive passed the integrity/evidence verifier. `hubctl artifact import`
-now drives exact-SHA discovery, automatic Python/Node/Go/Rust recipe generation,
-the restricted BuildKit build and quarantine packet creation. The packet carries
-source/recipe/archive/provenance/SBOM/review digests but remains untrusted until
-an operator runs `hubctl artifact preflight` (live `tools/list` against the
-loaded image under the MCP runtime profile, HOME on tmpfs, not the BuildKit
-bootstrap) and then `hubctl artifact approve` with `--contract` JSON from that
-`preflight-list` or a review manifest that already matched one
-(`review-manifest`). Claimed `ArtifactImportConfig` tools
-are a preview only and cannot register. Preflight restamps the review digest
-from the confirmed tools without rebuilding the OCI archive. Approve
-`--review-digest` must match `ImportedReviewDigest` of that restamped packet. Registration is
-immutable and rejects review-packet or tool-contract drift. `LoadStoredOCIArtifact` imports a
-verified archive into the local Linux Docker image store without ambient Docker
-credentials. Admission resolves the reviewed image the same way: when the
-pinned tag is absent from the daemon (for example after an image prune) the
-controller reloads it from `<state_root>/artifacts` by the definition's
-archive digest before falling back to a digest-pinned registry pull, and
-fails closed when no verified archive exists. `WorkloadBudget` provides a FIFO active-process cap and idle
-reclaim hook, while `RuntimeSecurityProfile` is the pre-start fail-closed
-contract for any ToolHive adapter. Credential-bearing onboarding uses the same
-generic admission path before publishing a new projection and restores the
-previous workload credential file if admission fails.
-
-M5.3 also exposes a secret-free `RecipeResolver` before source review. It pins
-the repository, optional subfolder and commit, reads only bounded declarations,
-and returns Launch/Connection Recipes with file-digest evidence. Matching
-catalog adapters are queried concurrently, but repository owner/name and the
-selected commit must match; a name-only hit is ignored. Docker/Compose are
-parsed as declarations: one MCP service may be selected, sidecars are recorded
-for review, and host mounts, privileged mode, host namespaces and shell
-healthchecks fail closed. Upstream Dockerfile `RUN` options are parsed as
-instruction tokens after continuations are folded; `type=cache` mounts are
-inert metadata while secret, bind, ssh, tmpfs, typeless or unknown mounts,
-host/insecure/privileged options and Docker socket references mark the recipe
-`review` and force the generated `.hub` build fallback. Inside that fallback
-the upstream Dockerfile remains inert metadata: its last exec-form
-`ENTRYPOINT`/`CMD` may only disambiguate Go trees with several `main`
-packages (basename match against the selected directory or the `go.mod`
-module basename) and supply the matched binary's default arguments.
-The isolated `tools/list` preflight retries once with declared-but-optional
-secrets as placeholders. A successful retry proves they gate server startup
-and promotes them to required onboarding inputs. If both probes fail and the
-server's own error names the secret env vars it needs, onboarding does not
-record an empty catalog and does not invent a tool contract: it opens the
-protected form for those names, and an either/or sentence stays alternative
-groups on that form. The groups persist on the definition as
-`credential_groups`; onboarding submits, binding resolution and workload
-admission all accept one complete group instead of demanding every declared
-required name. `tools/list` runs again only after the form is submitted,
-with the real values and with network egress on that second probe — plus,
-for a reviewed prepared entry that declares `preflight_network`, on the
-placeholder-only first probe when the server must reach its API (a remote
-schema fetch at startup) before it can answer `tools/list` at all. An
-error that names no secret stays a hard failure — except one bounded case: a
-server that answers `tools/list` with a valid response carrying zero tools
-while the definition already declares required inputs (mcp-atlassian lists
-nothing until `JIRA_*`/`CONFLUENCE_*` config exists). That answered-empty
-result is gated on the declared required names, grouped into either/or
-PREFIX_* alternatives when several product suites are declared (Jira or
-Confluence satisfies mcp-atlassian); a process that died before answering, or
-a definition with no required inputs, still fails the review. Placeholder
-values in `.env.example`/compose env entries (`https://your-company.…`,
-`your.email@example.com`, `*_here`) mark non-secret fields as required
-onboarding inputs, so connection config the author demands can be collected;
-real defaults (`https://gitlab.com`) stay metadata. Recipes are status
-metadata, not authorization or
-execution; the existing preflight `tools/list`, Credential Broker, ToolHive and
-runtime reconnect gates remain authoritative.
-
-`.mcp.json` and `.env.example` are read only for names and launch metadata;
-their values are never returned and those files are not passed to BuildKit.
-Names that cannot be user-supplied connection credentials are excluded from
-connection fields entirely: `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`/`ALL_PROXY`
-are injected by the workload runtime, and `TEST_*`/`*_TEST`/`*_TEST_*` fixtures
-belong to upstream test suites. Servers that ignore the standard proxy
-variables can declare their own names in the reviewed definition's
-`proxy_environment` (for example `SLACK_MCP_PROXY`): only `*_PROXY` names are
-accepted, and the workload runtime always fills them with the controller-owned
-egress proxy URL — an artifact or owner can never choose the proxy destination.
-Import also scans the repository source for custom proxy env reads
-(`os.Getenv`/`LookupEnv` in Go, `process.env.X` in Node, `os.environ`/`getenv`
-in Python, `env::var`/`var_os` in Rust, plus dotenv/Dockerfile assignments) and
-merges `*_PROXY` names into `proxy_environment`; vendored trees, test fixtures
-and placeholder names are excluded, so discovery produces review candidates —
-never values.
-A pinned entrypoint that selects a network transport (`--transport sse|http`)
-is first probed over `stdio`: servers that still answer `tools/list` keep the
-rewrite, and the companion launches them on stdio exactly as the preflight
-probe does. Servers that cannot answer stdio are re-probed over their declared
-transport — the real server runs detached with its original args while a
-`hubctl mcp-bridge` sidecar attached to its network namespace relays
-stdin/stdout MCP to the discovered loopback listener; a confirmed list marks
-`source.network_transport` (`sse`/`http`/`streamable-http`). At runtime the
-companion then spawns the child unchanged and connects as an MCP client over
-the loopback endpoint it discovers in the workload's own network namespace —
-HTTP/SSE only ever travels on loopback inside the isolated workload, the
-bridge HTTP client never honors proxy environment, and the authenticated
-companion/relay front stays the only externally visible endpoint. Heuristic env sources
-(`.env.example`, Compose
-`environment`) mark only secret-class names required; an uncommented empty
-non-secret knob stays optional, while explicit manifest `isRequired` flags are
-authoritative. Required credentials must be covered by a Credential
-Broker contract whose deliveries produce the matching env names; one contract
-field may deliver the same secret under several env spellings when upstream
-declarations disagree. Deliveries targeting optional declared inputs are wired
-into the workload env mapping as well, so optional values entered at onboarding
-reach the server; a definition bound before this rule is backfilled on the next
-`prepare_source` from the same contract. Contracts come from two sources: the
-operator may install reviewed contracts under the broker `contracts_dir`, and
-ToolHub synthesizes and registers `dyn-` contracts over the signed
-`broker:control` API for declared inputs that are contract-coverable — `env`
-(empty), `file` and `json` deliveries. Local-plane inputs (`http_header`,
-`brokered`, OAuth-minted, per-request) are satisfied by their own planes and
-never need a contract. A Sharable `Shared` definition synthesizes an
-`allow_shared` contract; routes, broker-side OAuth and broker state stay
-operator-only. Runtime materialization rejects a missing delivery
-for any referenced input, even when another input produced a file mount. A
-file-credential workload must pass admission before its binding is projected;
-writable state is checkpointed only after that workload is stopped. Cleanup
-without a completed stop does not claim quiescence.
-
-Re-onboarding the same definition rotates the single owner connection in place
-instead of opening a second one, for local and broker credentials alike; the
-rotated credential record keeps its contract, env mapping and broker grant, and
-the superseded binding is revoked before the replacement is enabled. A revoked
-binding blocks only its own deterministic ID, so a fresh onboarding can bind a
-new connection after a revoke. Credential values that are HTTPS URLs extend the
-workload's pinned egress ACL at readiness time, since endpoints such as a
-self-hosted API base URL are collected in the credential form after the
-definition digest is frozen. Onboarding status responses carry `next_action`
-and `instructions` so clients can drive the phase machine without guessing.
-
-External recipe adapters are opt-in through `HUB_RECIPE_CATALOGS`, a
-comma-separated allowlist of `mcp-registry`, `toolhive`, `docker-mcp`,
-`smithery`, `docker-hub`, `ghcr` and `github-search`;
-`HUB_RECIPE_CATALOGS=all` enables all seven. GitHub search is a source-only
-fallback after registry candidates and never supplies installation authority.
-The adapters use fixed public endpoints. Smithery additionally requires the
-operator-selected environment variable named by `HUB_SMITHERY_TOKEN_ENV`
-(default `SMITHERY_API_KEY`); its bearer value is request-only. GHCR package
-listing may require an operator-selected `HUB_GHCR_TOKEN_ENV`; that token is
-sent only to `api.github.com` and never enters a recipe. Docker Hub namespace
-and tag search uses the official Hub API, while image metadata is verified
-through the OCI distribution API.
-GitHub repository search can use an optional `HUB_GITHUB_SEARCH_TOKEN_ENV`;
-without it, the public API's stricter search rate limit applies.
-
-Catalog hits must correlate to the pinned repository/subfolder/commit.
-Container hits are accepted only after the OCI registry returns an immutable
-manifest, a GitHub source/repository label, the exact revision, and both
-provenance and SBOM evidence (OCI referrers or embedded Docker attestation
-manifests). The published image path pulls and preflights that exact digest
-before the review packet is stored; if it cannot pass, the existing restricted
-GitHub BuildKit fallback remains. Connection recipes contain only field names,
-types, required/secret flags and delivery targets; Smithery camelCase JSON
-fields are normalized to safe env names while retaining their JSON target.
-
-Live acceptance also exercised the Docker MCP Catalog
-`mcp/sequentialthinking@sha256:cd3174b2ecf37738654cf7671fb1b719a225c40a78274817da00c4241f465e5f`
-from `modelcontextprotocol/servers` at commit
-`82064568802e542c3924560aef2cb421b4ce436c`, through ToolHive 0.49.0:
-`initialize` and `tools/list` returned the real sequential-thinking tool.
-
-The ToolHub endpoint keeps a separate stateful MCP server for each authenticated
-owner token. Projection changes update that server and emit
-`notifications/tools/list_changed` to open sessions. The endpoint also reloads
-the persisted store, so changes made by a separate tools process reach it
-without restarting Hermes. The old serve-runtime restart watcher is removed.
-The pinned-Hermes fixture confirms remove/restore notification and an active
-run surviving refresh; #74 still requires full lifecycle and production evidence.
-
-The stdio companion speaks newline JSON-RPC. Go SDK v1.7 first sends
-`server/discover`; servers that neither implement it nor return JSON-RPC
-method-not-found (notably `rust-mcp-filesystem`) would hang the handshake.
-The companion therefore synthesizes `-32601` for `server/discover` and falls
-back to `initialize` without sending that RPC to the child.
-
-Live SHA import → preflight contract → `docker_fallback` + stock ToolHive →
-Hermes `tools/list` and one safe `tools/call` (2026-09-16, local Docker 29.4.3,
-ToolHive 0.49.0, Hermes 0.21.0): Serena `704e8c3d1929bdd74bf0c8eee1596aeddf03fdb2`
-`mcp__serena__initial_instructions` (“You have semantic coding tools”); Context7
-`b653c3a07d7936bdc4c23fc1c88903120e0ece77` `mcp__context7__resolve_library_id`
-(`/reactjs/react.dev`); Go `mark3labs/mcp-filesystem-server`
-`ba3f07f22c309d932fa9b1cebe1eb7c55fcbb83b` `mcp__go_filesystem__list_allowed_directories`
-(`/state`); Rust `rust-mcp-stack/rust-mcp-filesystem`
-`ef4797360ea03eec5375e03a6f10d092dfc6a5e0` `mcp__rust_filesystem__list_allowed_directories`
-(`/state`). Isolated MCP still sees only `/state`, not `spaces/<user>` files or
-skills; that grant is issue #103, distinct from catalog-default #81.
-Live Docker 95-plus-5 is 100 sequential unique networks/volumes/containers
-(95 distinct env-files + 5 shared); 100 concurrent MCP+ToolHive stacks are
-not claimed (Docker Desktop IPAM).
-
-Start the generic admission endpoint with `hubctl connector
-generic-controller`; its JSON config contains the trusted definition, absolute
-ToolHive/seccomp paths and bounded `max_active`/`idle_ttl_seconds` values. It
-creates an owned internal network, one pinned egress proxy container and one ToolHive
-workload per workload ID, injects credential references through ToolHive's
-environment secret provider (values never enter RunConfig), and returns a
-loopback MCP endpoint only after Docker inspection proves the digest, limits,
-non-root user, read-only root, dropped capabilities, no-new-privileges,
-seccomp, private network and volume topology. Generic MVP rejects host state
-mounts and shared workloads with credentials; stateful fallback workloads use
-only controller-owned named volumes. It checks `thv run --help`
-before any MCP starts. Stock ToolHive v0.48.0 does not expose all required
-create-time security flags, so the controller fails closed rather than applying
-an unsafe post-start update. The gateway may use the controller receipt's
-private endpoint for credential-free bindings.
-
-For user-authorized self-install deployments, set `dynamic_definitions: true`
-once on the authenticated loopback controller. Each admission then carries the
-complete immutable ToolHub definition; the controller reruns trusted-artifact,
-transport, proxy-image, credential-class and execution-policy validation. This
-removes per-MCP controller rewrites or restarts without accepting an arbitrary
-command, mutable image or unauthenticated plan. Omit the option to retain the
-single operator-pinned definition mode.
-
-For a local MVP with stock ToolHive, set `docker_fallback: true` explicitly in
-that controller config. If `thv run` lacks the create-time profile flags, the
-controller then creates the reviewed artifact itself with Docker's pre-start
-limits, read-only root, non-root user, dropped capabilities, NNP, seccomp and
-internal-only network. A Linux ELF copy of `hubctl` runs the
-artifact's immutable entrypoint through the existing companion bridge on the
-internal network without a forwarding token. Because
-Docker Desktop does not publish ports from an `--internal` network, a separate
-bounded relay container holds `HERMES_BRIDGE_TOKEN`, publishes a loopback port
-and forwards only the authenticated `/mcp` path; it is not a general proxy.
-Windows `hubctl.exe` and any PE file are rejected as `bridge_binary`. Set
-`bridge_binary` to a Linux ELF or run `hubctl artifact linux-bridge --output
-<path>`. ToolHive is still used for the private
-remote proxy, forwarding header and lifecycle. The fallback is intentionally
-limited to one workload per binding: credentials are read from an owner
-workspace `credentials.env`, validated against the definition, and passed to
-Docker with `--env-file`; state is kept in per-workload named volumes. Shared
-stateful or credential-bearing MCPs stay denied. Idle cleanup keeps stateful
-volumes and deletes stateless ones. Docker inspect refuses an MCP container
-that received a forwarding secret.
-
-A definition's execution policy may also declare `tcp_forwards`: reviewed
-companion loopback listeners that relay native TCP (the PostgreSQL wire
-protocol, SSH) through the workload's CONNECT proxy to credential-bound
-`host:port` endpoints held in named environment variables. Only the
-docker-fallback path implements them — the companion runs inside the workload
-network there — so a stock ToolHive admission fails closed when forwards are
-declared instead of silently promising connectivity it cannot provide.
-Non-secret `*_ENDPOINT` and `*_ENDPOINT_<n>` credential values join the egress
-ACL at readiness the same way `*_URL` HTTPS endpoints do, so one reviewed
-destination feeds both the Squid ACL and the forwarder; the model cannot
-choose destinations through tool arguments.
-Do not label an artifact trusted on the basis of recipe validation or a claimed
-tool list alone. Track remaining evidence in
-`.work/done/CHG-0025-trusted-artifacts/verification.md`.
-
-## ToolHub Calendar (M5 stage 2)
-
-`hubctl connector connect` uses protected `--client-file` containing CLIENT_ID
-and CLIENT_SECRET, `--account` with the expected Google subject ID, and a unique
-`--connection`. Supply absolute `--toolhub-store`, `--store` and `--key-file`
-outside the source checkout. The key must be outside the ciphertext directory.
-The command prints an authorization URL, waits for a loopback callback and
-verifies the account before creating a read binding. `--write` is an explicit
-separate mutation connection/grant; it does not upgrade a read connection.
-Only open the authorization URL when live login is explicitly intended.
-
-`connector status` lists metadata. `connector call --tool <projected-name>
---from-file <arguments.json>` uses shipped authorization and ciphertext injection.
-Arguments are calendar_id, event_id for get/update/delete, event_json for
-create/update, and optional page_token for list. Attendee add/remove/change is
-an explicit update with the desired attendees array. Listing is paginated at
-100 events; follow nextPageToken. No arbitrary API URL is accepted.
-
-`connector refresh --connection <id> --client-file <protected-file>` rotates
-only that connection's OAuth token. `connector revoke --connection <id>` denies
-new calls first and then requests Google revocation; provider cleanup failures
-are reported without restoring access. Restart a failed connect rather than
-replaying a used callback. A revoked connection requires a new connection ID.
-Unset HUB_TOOLHUB_* to retain the unchanged generated-MCP compatibility path.
-Calendar API v3 and Google OIDC/OAuth contracts are documented at
-[Calendar](https://developers.google.com/workspace/calendar/api/v3/reference/events),
-[OAuth](https://developers.google.com/identity/protocols/oauth2/web-server) and
-[OIDC](https://developers.google.com/identity/openid-connect/openid-connect).
-Current verification uses official-shaped local HTTP fixtures, not live Google.
-
-## Credential Broker
-
-The copied Broker source is a standalone module under
-`services/credential-broker`. Use `just credential-broker-check` for its full
-unit/race/coverage/build gate and `just credential-broker-docker-check` for its
-minimal image build. The Hermes runtime image contains the binary, but no Broker
-service is enabled by default: its config, private signer keys, provider data,
-contracts and runtime materialization paths must be provisioned explicitly.
-
-The Broker's public Go SDK signs exact method, URI, body and canonical identity.
-The adapters are ToolHub (`broker:control`), Communication Hub
-(`broker:approve`) and the runtime materializer (`broker:runtime`). Do not pass
-`api/v1.Materialized` through Hermes messages, MCP projections or job/audit
-ledgers. Set `HUB_CREDENTIAL_BROKER_CONTROL_*`,
-`HUB_CREDENTIAL_BROKER_APPROVE_*` and `HUB_CREDENTIAL_BROKER_RUNTIME_*` URL,
-key-file, key-ID and issuer variables to enable Broker-only credentials. The
-signing key files must be private files visible in the corresponding Hub
-containers; no key is committed to the repository.
-
-For every credential-bearing MCP definition, the contract fields
-`credential_contract_id`, `credential_contract_revision` and an explicit
-`credential_contract_env` mapping are bound at review/bind time — either from a
-covering catalog/`contracts_dir` contract or from a `dyn-` contract ToolHub
-registers from the declared inputs. ToolHub creates the Broker request and
-grant, Communication Hub accepts `/credentials <request-id> <code>`, and the
-runtime acquires/materializes/releases a lease. The generated Compose stack
-sets `BROKER_DIRECT_FORM=1` on the broker service, so the connect link opens
-the credential form directly and the `/credentials` approval step is skipped;
-remove the variable (or set `direct_form` back in the broker config) to
-restore the trusted-channel confirmation required by the broker spec. If a
-connect link expires before submission, ToolHub issues a fresh request on the
-next status poll, so the user simply follows the new link. Existing local
-credential
-records are intentionally rejected once Broker mode is enabled, so migration
-is explicit and cannot silently mix ownership systems. ENV deliveries are
-supported. File deliveries use a reviewed read-only runtime mount and a
-per-call ToolHive/Docker workload; the controller removes that workload before
-the Broker lease is released. Enable them only when the Broker materialization
-directory is an explicitly shared, non-symlinked runtime path visible to the
-ToolHub/controller and Docker daemon. Without that mount root, file delivery
-fails closed. The copied source and its MIT license remain separate from Hermes'
-AGPL-3.0-only code.
-
-## SSH capability
-
-`ssh` is a hub-owned opt-in capability (issue #42, SPEC-0032), not an upstream
-MCP server. The hub tools process dials `golang.org/x/crypto/ssh` directly and
-uses `github.com/pkg/sftp` for remote files. Enabling `ssh` mounts
-`spaces/<user>/connections/ssh` read-only at `/state/ssh` and validates
-`config.yaml` at render time; a malformed or missing config fails the render.
-
-`config.yaml` binds everything the model must not choose: host aliases,
-host/port/user, pinned `host_keys` (authorized-key lines or `sha256:`
-fingerprints), `key_ref`/`certificate_ref` (`file:` under the config dir or
-`broker:` grant IDs), read/write command allowlists, read/write path
-allowlists, `sudo` (`never` or `passwordless`), timeouts, output/read bounds
-and named tunnel endpoints. The model only names an alias plus the command,
-path, shell or tunnel name.
-
-`broker:` refs are materialized per dial: the runtime adapter signs
-`broker:control` acquire and `broker:runtime` materialize/release with an
-`ssh-<alias>` binding and a short-lived lease. The runtime adapter key must
-therefore be trusted for both audiences when broker refs are used; `file:`
-refs need no broker. Privileged effects are stacked features: `ssh_write`
-(write commands + atomic file writes), `ssh_shell` (bounded PTY sessions) and
-`ssh_tunnel` (loopback-only managed forwards to configured endpoints). Each is
-denied without its feature. Operations append `ssh` audit events with a
-bounded receipt and never carry output or secret material.
-
-## ToolHub Slack data (M5 stage 2)
-
-Use the same protected connector CLI with `--provider slack --workspace T...`
-and `--account U...` (or W...); neither email nor display name is an identity.
-`--write` creates an independent chat:write grant. Read requests use search:read
-and the four conversation-history scopes. OAuth PKCE requests only user_scope;
-client authentication uses Basic auth. A bot token co-returned with authed_user
-is discarded. Slack App SLACK_BOT_TOKEN/SIGNING_SECRET/APP_TOKEN remain solely
-communication credentials and cannot enable these tools.
-
-Read tools are search(query,cursor), history(channel,cursor), replies(channel,ts,
-cursor); they request 15 results and expose provider pagination. Write tools are
-send(channel,text), reply(channel,ts,text), update(channel,ts,text). Channel IDs
-must be canonical C/G/D IDs; thread/message timestamps are validated. No bot
-posting or username/icon impersonation is supported. auth.test rechecks the bound
-workspace and user on every call. HTTP 429/errors are reported without retrying a
-mutation. Review an uncertain send in Slack before retrying. Revoke blocks new
-calls locally first, then requests auth.revoke; failed external cleanup is reported.
-Protected workflows and HTTP fixtures do not prove a live Slack workspace login.
-Official contracts: [OAuth](https://docs.slack.dev/authentication/using-pkce),
-[user tokens](https://docs.slack.dev/reference/methods/oauth.v2.access/),
-[account verification](https://docs.slack.dev/reference/methods/auth.test/).
-
-## Documents and images
-
-The standard profile is hub MCP tools on `hubctl tools`. Hermes
-`869228cab4a8276d3b4c78da9d9939670c47bd0f` (`0.21.0`) has no document toolset.
-Its local vision backend reads any container path, and its `image_generate`
-tool returns a remote Fal URL. Those native toolsets stay off
-`platform_toolsets`. [ADR-0027](adr/ADR-0027-workspace-document-image-profile.md),
-[ADR-0028](adr/ADR-0028-configurable-image-capability.md),
-[ADR-0029](adr/ADR-0029-bounded-pdf-office-webp.md),
-[ADR-0030](adr/ADR-0030-cliproxy-image-routes.md), and
-[SPEC-0032](../specs/active/SPEC-0033-document-image-profile.md) are the
-contract.
-
-| Effect | Tool | Formats and result | Credential |
-|---|---|---|---|
-| Read one document | `document_extract` | txt, md, csv, html, pdf, xlsx, pptx; htm is html | none |
-| Create one document | `document_create` | txt, md, csv, html, pdf, xlsx, pptx under `artifacts/documents/` | none |
-| Edit one document | `document_edit` | one existing file under `artifacts/documents/` | none |
-| Convert one document | `document_convert` | new txt, md, html, pdf, xlsx, or pptx file; csv only from xlsx | none |
-| Inspect one image | `image_inspect` | png, jpeg, webp | model endpoint, `OPENAI_API_KEY` |
-| Convert one image | `image_convert` | png, jpeg, and webp, locally, new file under `artifacts/images/` | none |
-| Generate one image | `image_generate` | grant selects provider, model, and delivery | `hub-media` service |
-| Edit one image | `image_edit` | one workspace png, jpeg, or webp; webp is sent as png; fal has no edit | `hub-media` service |
-| Submit one video | `video_generate` | async job on `hub-media`, returns a job id | `hub-media` service |
-| Fetch one media job | `media_fetch` | job status; a finished job stages under `artifacts/videos/` | `hub-media` service |
-| Delete one artifact | `artifact_remove` | one file under `artifacts/documents/`, `artifacts/images/`, or `artifacts/videos/` | none |
-
-Rejected documents: doc, docx, xls, ppt, odt, rtf, epub, pages. The extension
-xslx is rejected. Rejected images: gif, bmp, svg, tif, tiff, heic, avif. HTML
-extract drops well-formed script, style, noscript, and comments. HTML create
-and edit escape plain text into an article. pdf is wrapped text with an
-embedded Go Regular font. Extract reads text-showing operators and fails closed
-on an encrypted PDF. There is no OCR. xlsx is one worksheet of inline CSV text.
-pptx splits slides on a blank line. Edit of those three replaces the file.
-Conversion copies extracted text into the target. It does not render Markdown
-into a designed layout and it does not keep spreadsheet formulas. webp uses
-`github.com/HugoSmits86/nativewebp` v1.3.0. The PDF font comes from
-`golang.org/x/image` v0.46.0. `file_write` remains the draft path.
-
-Bounds fail closed. A document is at most 2 MiB and 20 pages of 3000 runes, with
-concurrency 2 and a 5 second deadline. An image is at most 5 MiB, 4096 pixels on
-an edge, and 4000000 pixels. Inspect and image conversion allow concurrency 2
-and 30 seconds. Generate and edit allow concurrency 1 and 60 seconds. A prompt
-is 1 to 2000 runes. The call does not queue.
-
-`image_gen` is off by default and is not self-service. Settings accept three
-fields. Empty fields render as provider `cliproxy`, model `gpt-image-2`, and
-delivery `workspace`.
-
-```yaml
-image_gen:
-  provider: cliproxy # cliproxy or fal
-  model: gpt-image-2 # or chat, or one allowlisted id
-  delivery: workspace # workspace or url
-```
-
-`model: chat` sends `model.default` only when that id is on the provider
-allowlist. Any other model must be listed. CLIProxy, pinned in the image at
-`ba7e55836dee959e93ec6d41395865d9ec535086`, has two calls. `gpt-image-1.5`,
-`gpt-image-2`, `grok-imagine-image`, `grok-imagine-image-quality`, and
-`grok-imagine-image-2.0` post one JSON body to
-`{model.base_url}/images/generations` with model, prompt, n 1, size
-`1024x1024`, and response_format. Edit posts one multipart body to
-`/images/edits` with those fields and one `image` file.
-`gemini-2.5-flash-image`, `gemini-3-pro-image`, `gemini-3-pro-image-preview`,
-`gemini-3.1-flash-image`, and `gemini-3.1-flash-image-preview` post one JSON
-body to `{model.base_url}/chat/completions` with the model, one user message,
-modalities `image` and `text`, and `image_config.aspect_ratio` `1:1`. Edit
-sends that message as text plus one image_url data URI. The image is read from
-`choices[0].message.images`. A data URL becomes file bytes and is not returned
-as a provider URL. A chat model such as `gemini-3.7-flash-high` is rejected
-before a request. The credential is `OPENAI_API_KEY`. The image pin above is
-unchanged.
-
-Provider `fal` allows `fal-ai/flux-2/klein/9b` only. The hub posts prompt,
-image_size `square_hd`, num_inference_steps 4, output_format png, and
-enable_safety_checker false to `https://fal.run/fal-ai/flux-2/klein/9b`.
-`num_images` is not sent. `FAL_KEY` is the credential. Fal edit is rejected.
-A new Fal model is an allowlist entry with that same catalog body, not a free
-string.
-
-Delivery `workspace` checks one image and writes `artifacts/images/`. The
-provider URL is not returned. Delivery `url` returns one provider http(s) URL
-and writes nothing; bytes alone are not published as a URL. The call still
-requires an image name. Redirects are refused. A download host other than the
-configured endpoint must be public HTTPS. An unknown provider, model, delivery,
-or field fails before a request.
-
-Enabling the feature writes the normalized section into the mounted Hermes
-config. On a rendered stack the call runs in the `hub-media` sidecar
-([SPEC-0040](../specs/active/SPEC-0040-media-generation-service.md)): compose
-adds the service on the internal network with no published port,
-`HUB_MEDIA_URL`/`HUB_MEDIA_AUTH` on the runtime, and `media.auth` plus the
-`HUB_CREDENTIAL_BROKER_MEDIA_*` client env on the service. Provider
-credentials are never written to an env file: `hub-media` materializes them
-per call from the Credential Broker grant named by `HUB_MEDIA_BROKER_GRANT`
-(identity `media`/`hermes-media`, read-only `broker-secrets-media` keypair
-volume, short in-memory cache with the lease released right after
-materialization). The runtime env never contains `FAL_KEY`. Engines are
-`remote` (any
-OpenAI-compatible upstream such as CLIProxy, default upstream
-`http://cliproxy:8317`), `fal` (`fal.run` images, `queue.fal.run` video
-jobs) and `command` (a local runner: `HUB_MEDIA_COMMAND` reads the prompt on
-stdin, writes media bytes to stdout, model/kind/size arrive via
-`HUB_MEDIA_REQUEST_*` env — the self-hosted slot for wrapper scripts).
-`HUB_MEDIA_ENGINES` lists engines in fallback order and
-`HUB_MEDIA_MODEL_ROUTES` maps a logical model id to ordered
-`engine:provider_id` hops; every attempt is logged and a job persists the
-accepting engine's handle so restarts resume polling without resubmitting.
-Images answer synchronously; video submits return a job id for
-`media_fetch`, persist under `HUB_MEDIA_DATA`, resume provider polling after a
-restart and expire by `HUB_MEDIA_JOB_TTL`. Outside a stack the embedded
-direct-provider path stays as fallback and `FAL_KEY` enters the runtime env
-only for provider `fal`. Disabling the
-feature omits the section and the keys even if the secrets file
-still has the lines. The config never contains a key value. Inspect keeps using
-the model credential. Each call rereads the mounted file. A missing provider or
-a revoked section fails the next generate or edit call. `image_generate` and
-`image_edit` leave `tools/list` on the next process start. A missing config
-does not take down the hub MCP server.
-
-Files stay in the invoking user's workspace. Another user's root, an absolute
-path, and `..` fail closed. `document_edit` refuses every path outside
-`artifacts/documents/`. Artifacts remain after the session ends. Removal is
-`artifact_remove` or a purge that confirms the same user. The work runs in the
-existing `hubctl tools` process. It is not an always-on GPU or office service.
-Word, old binary Office files, and a general office converter are not in the
-base image. The zip reader for xlsx and pptx does not create or unpack a user
-archive.
-
-An httptest double of these endpoints is not a live provider call.
-
-## Web search and research
-
-The web capability is the upstream Hermes `web` toolset (`web_search`,
-`web_extract`), configured — not reimplemented — by the hub. Provider code
-lives upstream in `plugins/web/<vendor>/provider.py`; the hub never embeds a
-search vendor client or an HTML extractor.
-
-Two features control it per space (`settings.yaml` `features`, removable per
-org through `scope.yaml`; both are init defaults):
-
-- `web` — enables the toolset and mounts the `hub-web` plugin. Without it
-  `web_search`/`web_extract` do not exist in the runtime at all —
-  `agent.disabled_toolsets: [web]` additionally strips them from platforms
-  whose toolset falls back to an upstream composite (e.g. `api_server`) —
-  provider env keys leave the self-env allowlist, the plugin is not mounted,
-  and a `web:` settings block is a validation error.
-- `deep_research` — requires `web`; mounts the bundled
-  `deep-research-embedded` skill into the space's `generated/skills` and
-  removes it from `skills.disabled`. Without it the skill is absent from the
-  runtime, not merely hidden.
-
-`settings.yaml` `web:` selects providers and policy; every field is optional
-and only set fields reach the rendered config:
-
-```yaml
-web:
-  backend: ""              # shared provider, e.g. tavily
-  search_backend: ""       # search override (the default engine): tavily,
-                           # exa, parallel, perplexity, firecrawl, searxng,
-                           # brave-free, ddgs, keenable, xai, nous
-  extract_backend: ""      # extract override: tavily, exa, parallel,
-                           # perplexity, firecrawl, keenable
-  search_providers: []     # engines web_search_multi may fan out to; the
-                           # default search_backend is always allowed
-  keyless_fallback: true   # anonymous free-tier ring as last resort
-  keyless_rescue: true     # one-shot keyless retry of a failed keyed call
-  extract_char_limit: 15000
-  provider_tier: {}        # exa/parallel/firecrawl/keenable: free|paid
-  cache_enabled: true
-  cache_ttl_minutes: 20
-  cache_exempt_hosts: []   # exact, *.wildcard, or domain suffix
-  research:                # bounds the deep-research-embedded skill reads
-    max_rounds: 2          # ceiling 16
-    queries_per_round: 3   # ceiling 5
-    pages_per_round: 4     # ceiling 8
-    max_pages: 12          # ceiling 100
-    max_pages_per_host: 3  # ceiling 10; source diversity cap
-    deadline_minutes: 10   # ceiling 240; ≥60 or an explicit long/deep
-                           # request runs durably via hub routines —
-                           # one bounded round per wake, resuming from
-                           # research/<slug>/state.json across restarts
-```
-
-When `web` is enabled the hub also mounts `config/plugins/hub-web` read-only
-at `/opt/hermes/plugins/hub-web`, an upstream backend plugin that adds three
-tools to the `web` toolset (so the same feature gate and
-`agent.disabled_toolsets` cover them):
-
-- `web_providers` — answers "which search engines exist here": every
-  registered provider with availability (keyed/keyless), which are in
-  `search_providers`, and which is the default.
-- `web_search_multi` — `query` plus optional `providers` list and `limit`
-  (per-provider cap 10). No `providers` runs the default `search_backend`;
-  `["all"]` or a list fans out to those configured engines in parallel
-  (bounded: 8 providers, 60 s wall clock). Results are tagged with every
-  provider that returned them and deduplicated by normalized URL; providers
-  that fail are named in `providers_failed` without failing the call —
-  `partial_failure` marks the mixed case. Names outside `search_providers`
-  are rejected, so a prompt cannot steer queries to unapproved vendors.
-- `web_cache` — `status`/`prune`/`clear` for the on-disk `web_extract` cache
-  (`$HERMES_HOME/cache/web`, i.e. `spaces/<user>/hermes/cache/web` on the
-  host). Upstream TTL-gates reads but never deletes files; prune drops
-  expired/missing/out-of-root index entries plus orphaned `*.cache.md`
-  files, clear wipes it. Search answers are in-memory only and need nothing.
-  Tool-output spillover (`cache/spillover`) is already reaped hourly by
-  upstream housekeeping at 24h; deep-research state lives in the owner's
-  `workspace/research/<slug>/` and is deleted like any workspace file.
-
-Provider keys and endpoints are runtime secrets: `secrets.<env>.env` or the
-protected self-env form delivers `TAVILY_API_KEY`, `EXA_API_KEY`,
-`PARALLEL_API_KEY`, `PERPLEXITY_API_KEY`, `FIRECRAWL_API_KEY`,
-`FIRECRAWL_API_URL`, `BRAVE_SEARCH_API_KEY`, `KEENABLE_API_KEY`,
-`SEARXNG_URL`, `XAI_API_KEY` (plus optional `TAVILY_BASE_URL`,
-`PERPLEXITY_BASE_URL`). They never appear in prompts, tool arguments, or
-results; `hubctl doctor` names a missing required env for `searxng` and
-`firecrawl`. With no key at all, `ddgs` and the keyless ring keep search and
-extraction working anonymously; no browser profile participates.
-
-The bundled `deep-research-embedded` skill (`config/skills/`) is the bounded
-research workflow — a state machine on disk under `research/<slug>/`:
-perspective-driven `plan.yaml`, a `sources.yaml` URL registry, distilled
-`notes/` (every claim with its URL), a `gaps.md` queue that drives the next
-round's queries, then outline → per-section drafts → a cited `report.md`
-with `Sources` and an explicit `Limitations` section, followed by a verify
-pass that marks unsourced claims. Each round reconstructs state from disk
-rather than accumulating pages in context, so depth scales without context
-rot; long runs execute one round per durable hub-routine wake and resume
-cold from `state.json`. Bounds come from `web.research` and can only tighten
-the ceilings. Pages and snippets are untrusted data: instructions inside
-them are never executed, URLs carrying credential-like parameters are
-refused, and private-network targets, redirected payloads, oversized or
-binary bodies, and unsupported schemes fail closed upstream. The anonymous
-`browser_guest` profile is the documented fallback only when extraction
-cannot satisfy a needed source.
-[SPEC-0035](../specs/active/SPEC-0035-web-research.md) is the contract.
+The connector install/review pipeline and the prepared catalog live in
+docs/prepared-connectors.md; ops procedures in docs/operations.md; the
+authorization model in docs/rbac.md. This file is the pin + contract
+reference — what we integrate with, at what revision, under what shape.
+
+## Pins
 
 | Component | Source / pin | Contract |
 |---|---|---|
-| Hermes | [nousresearch/hermes-agent](https://github.com/nousresearch/hermes-agent), `869228cab4a8276d3b4c78da9d9939670c47bd0f` (`0.21.0`) | CLI, gateway, config.yaml, MCP, Meet plugin; opt-in authenticated API server. Pin predates upstream separation of tool-level `isError` results from transport failures for the MCP circuit breaker (PRs 67340/17016 closed unmerged, 68455 open); hub-side tools already mark expected failures as `isError`, and the pin is revisited once an upstream fix lands — residual risk tracked under CHG-0093 |
-| Documents and images | Hub `hubctl tools`; default provider `cliproxy`, Fal model `fal-ai/flux-2/klein/9b` | [SPEC-0032](../specs/active/SPEC-0033-document-image-profile.md); provider, model, and delivery; workspace file or provider URL |
-| Web search and research | Hermes `web` toolset `web_search`/`web_extract`; provider plugins tavily, exa, parallel, perplexity, firecrawl, searxng, brave-free, ddgs, keenable, xai; hub `hub-web` plugin adds `web_providers` + `web_search_multi` fan-out + `web_cache` cleanup | [SPEC-0035](../specs/active/SPEC-0035-web-research.md); `web:` settings select provider/policy; keys via runtime secrets; bounded `deep-research-embedded` skill |
-| Telegram account | [letya999/telegram-mcp](https://github.com/letya999/telegram-mcp), `26f1632b2b07cca16fa8f172fe645477921db9ed` | Python stdio; prepared Broker entry defaults to `TELEGRAM_EXPOSED_TOOLS=read-only`; bot token stays separate |
-| Telegram bot channel | Telegram Bot API through `hub-communication` | Channel adapter; sender allowlist and durable reply outbox |
-| Slack App channel | Slack Events API through `hub-communication` | Official `v0` HMAC request verification; workspace+sender mapping; not Slack data tools |
-| Google | Official `https://<product>mcp.googleapis.com/mcp/v1` (ADR-0019); the third-party Workspace MCP is not in the default hub image | ToolHub remote read grants per product |
-| Slack | [korotovsky/slack-mcp-server](https://github.com/korotovsky/slack-mcp-server), `b88c0de3f706f4f07337c9eda7133c736d1c9524` | stdio, OAuth user token, channel posting allowlist |
-| Playwright | [microsoft/playwright-mcp](https://github.com/microsoft/playwright-mcp), npm `@playwright/mcp@0.0.80` | Hub-owned stdio: `browser` attaches to the per-user persistent Chromium over loopback CDP, `browser_guest` runs isolated; mutation tools exist only with the `browser_act` feature; output lands in `workspace/browser` under size/type limits |
-| GitHub | [official MCP](https://github.com/github/github-mcp-server) | https://api.githubcopilot.com/mcp/ + bearer (`GITHUB_TOKEN`) |
-| Atlassian | [`sooperset/mcp-atlassian`](https://github.com/sooperset/mcp-atlassian), `74bdaa8f1d28783cccfe99f7b4d75e6dc947cf76` | Dedicated `docker/mcp-atlassian.Dockerfile`; Jira Cloud API token via `JIRA_URL`, `JIRA_USERNAME`, `JIRA_API_TOKEN` |
-| GitLab | Debian `glab` package from the pinned runtime distribution | CLI; `GITLAB_TOKEN` PAT and optional `GITLAB_HOST` |
-| HH | [official API](https://api.hh.ru/openapi/redoc) | GET /vacancies, /vacancies/{id}, /resumes/mine; POST /negotiations |
-| Memory Bank | [letya999/memory_bank_setup](https://github.com/letya999/memory_bank_setup), `2eb4e41968b86dae4c192dd9f9cff5b72c9d754f` | Documentation separation and change-folder conventions |
+| Hermes | nousresearch/hermes-agent `869228cab4a8276d3b4c78da9d9939670c47bd0f` (0.21.0) | ADR-0012; pin predates upstream tool-`isError`/transport split (PRs 67340/17016 closed unmerged, 68455 open) — hub tools already mark expected failures as `isError`; residual risk CHG-0093 |
+| Local STT | faster-whisper 1.2.1 + PyAV 18.1.0 in runtime and standalone STT image | PyAV 19 removed the decoder arg that release uses; native + STT CI gates decode a synthetic WAV offline so skew cannot pass |
+| CLIProxy | image-pinned `ba7e55836dee959e93ec6d41395865d9ec535086` | model/image relay upstream |
+| ToolHive | `ghcr.io/stacklok/toolhive:v0.48.0` @ `sha256:f1adc609e11e5f60fd5a27d23e7a63eb14dcfee13f3c0b2f1741680a64fcea5d` | container executor for ToolHub workloads (ADR-0013); cellinit/cred-proxy are built from this repo, not upstream |
+| Telegram account | letya999/telegram-mcp `26f1632b2b07cca16fa8f172fe645477921db9ed` | Python stdio; prepared Broker entry defaults `TELEGRAM_EXPOSED_TOOLS=read-only`; bot token stays separate; the unrelated PyPI `telegram-mcp` is deliberately not used |
+| Telegram bot channel | Telegram Bot API via `hub-communication` | channel adapter; sender allowlist + durable outbox |
+| Slack App channel | Slack Events API via `hub-communication` | official `v0` HMAC request verification; workspace+sender mapping; not Slack data tools |
+| Google | official `https://<product>mcp.googleapis.com/mcp/v1` (ADR-0019) | ToolHub remote read grants per product; third-party Workspace MCP is not in the default image |
+| Slack data | korotovsky/slack-mcp-server `b88c0de3f706f4f07337c9eda7133c736d1c9524` | stdio, OAuth user token, channel posting allowlist |
+| Playwright | microsoft/playwright-mcp, npm `@playwright/mcp@0.0.80` | hub-owned stdio; `browser` attaches to per-user persistent Chromium over loopback CDP, `browser_guest` isolated; mutation tools only under `browser_act` |
+| GitHub | official remote MCP | `https://api.githubcopilot.com/mcp/` + `GITHUB_TOKEN` bearer |
+| Atlassian | sooperset/mcp-atlassian `74bdaa8f1d28783cccfe99f7b4d75e6dc947cf76` | dedicated `docker/mcp-atlassian.Dockerfile`; Jira via `JIRA_URL`/`JIRA_USERNAME`/`JIRA_API_TOKEN` (Confluence supported upstream, preset enables Jira only; no Rovo endpoint) |
+| GitLab | Debian `glab` from the pinned runtime distribution | CLI; `GITLAB_TOKEN` PAT + optional `GITLAB_HOST` |
+| HH | api.hh.ru/openapi/redoc | GET /vacancies, /vacancies/{id}, /resumes/mine; POST /negotiations |
+| Memory Bank | letya999/memory_bank_setup `2eb4e41968b86dae4c192dd9f9cff5b72c9d754f` | documentation separation conventions |
 
-The GitHub row is the opt-in remote MCP only (`https://api.githubcopilot.com/mcp/`
-with a `GITHUB_TOKEN` bearer), registered per owner through `prepare_source`
-`remote_url` (SPEC-0045): the endpoint must be a public HTTPS MCP destination —
-private names, IP literals, redirects and non-MCP responses are refused — the
-token is collected by the protected loopback form and injected as
-`Authorization: Bearer` on the admitted call only. It is independent of `prepare_source`
-self-install, which only inspects the pinned repository as metadata and builds
-from the generated `.hub` recipe, never the upstream Dockerfile. The two paths
-also keep separate credentials: the remote connector takes `GITHUB_TOKEN`,
-while a source install declares its own env inputs (for github-mcp-server the
-`GITHUB_PERSONAL_ACCESS_TOKEN`). Interactive OAuth inside a workload is not
-supported. The isolated preflight promotes a declared secret to a required
-input when `tools/list` proves startup needs it. When the server will not
-speak MCP until a real credential is present, the same protected form collects
-it and the confirming `tools/list` uses that value. A Credential Broker
-contract remains the path where one is reviewed, including a broker-provisioned
-OAuth grant.
-
-Telegram has two independent paths: `hub-communication` is the Bot API channel adapter,
-while `telegram_user` is the personal-account MCP data/action connector. Enabling one does
-not enable the other. Telegram account access is installed from its pinned Git repository:
-the unrelated PyPI package named telegram-mcp is deliberately not used. Each Python MCP has a separate locked virtualenv
-because Telegram and Hermes depend on incompatible MCP major versions. Upstream lockfiles
-are honored. The Meet browser supplement has a separately pinned requirements lock.
-APT system packages follow the pinned Debian release's repositories and security updates;
-this is not a bit-for-bit reproducible OS build.
-
-## Organization and user MCP connections
-
-Standalone users may define `mcp_servers` in their own settings. In organization
-scope, only the host-owned `spaces/<org>/scope.yaml` can define MCP servers;
-the user can only narrow the approved set by denying entries in `tools:` (`name: off`). Every organization MCP
-must be listed in `read_only_mcp` and have a non-empty `tools.include` allowlist. The
-allowlist is passed to Hermes, so shared organization credentials are reserved for
-explicitly selected read-only tools. Write-capable servers need their own upstream
-permissions and should not be granted as a shared organization connection. Built-in
-hub-owned mutations are separately gated by `org_actions`.
-
-## External MCP connections
-
-Add user-owned connections in workspace.yaml's `mcp:` map and select them with a
-`tools:` entry (`via: mcp-raw`), then add secrets independently to the
-selected secrets.dev.env or secrets.prod.env. Example external service:
-
-```yaml
-mcp:
-  career:
-    url: https://your-career-host.example/mcp
-    headers:
-      Authorization: Bearer ${CAREER_TOKEN}
-  local_tool:
-    command: node
-    args: [/workspace/tools/server.cjs]
-    env:
-      TOOL_TOKEN: ${TOOL_TOKEN}
-tools:
-  career: mcp-raw:career
-  local_tool: mcp-raw:local_tool
-```
-
-These are examples, not preconfigured endpoints. Remote MCP needs an actual MCP server;
-an arbitrary REST API is not automatically MCP. StdIO executables and their dependencies
-must exist inside the agent image or selected workspace. No automatic unpinned package
-installation is performed. `doctor` detects missing referenced credentials.
-Native memory, skills and hooks are described in SETUP.md; user configuration passes
-through to Hermes without replacing its extension system. Organization skills use the
-upstream `skills.external_dirs` setting and are mounted read-only from the organization
-home; same-named user skills take precedence in a user-scoped job.
-Connector credentials are supplied by `hubctl secret set` or an explicit owner
-`KEY=value` chat message intercepted before Hermes. Values are encrypted at rest
-and never returned in catalog, audit or replies. The hub `env_update` tool remains
-only for the explicit personal-terminal overlay; it is not a host `.env` editor and
-cannot alter organization-owned keys.
-
-OAuth for Google, Slack and Atlassian uses the official authorization and token
-URLs recorded in SPEC-0020. Remote MCP discovers `authorization_endpoint` and
-`token_endpoint` via RFC 9728 and RFC 8414. Tokens persist only in the encrypted
-store. Live provider login is a later milestone.
-
-`communication-hub` never mounts scope homes. Its opt-in `telegram_auth` build
-temporarily holds a fresh Telegram MTProto session in memory while the owner
-confirms QR login, then sends it through an owner-signed, Telegram-only Broker
-request. It never writes the session to the channel spool or logs. All other
-provider credentials remain outside the gateway. The hub sends
-the immutable job envelope to `hermes-runtime` over a private Bearer-authenticated HTTP
-contract. Runtime binding rejects mismatched user, organization, actor or scope before
-opening a path; failed and uncertain results are not blindly replayed.
-
-HeadHunter application requests use form fields vacancy_id/resume_id/message. Only HTTP
-201 marks `sent: true`; receipt Location is preserved. A timeout may mean the send
-succeeded; inspect negotiations before retrying. OAuth grants, already-applied errors,
-required tests and CAPTCHA remain platform responsibilities.
-
-Native bridges forward MCP tools and their schemas; they do not forward resources,
-prompts, sampling or elicitation. A native MCP requiring those features is not compatible
-with this limited bridge. Remote providers are maintained upstream and can change their
-contracts independently; verify them after upgrades.
+Local manager instructions for the owner's PC: docs/local-accounts-manager.md.
+Each Python MCP has a separate locked virtualenv (Telegram and Hermes need
+incompatible MCP majors). APT packages follow the pinned Debian repos; not a
+bit-for-bit reproducible OS build.
 
 ## Pinned Hermes API contract
 
-The exact image pin is validated before a runtime adapter is built. The reproducible
-probe is `go run -tags integration ./cmd/devcheck hermes-contract hermes-hub:test`
-(run by `just docker-check`). It starts `hermes gateway run --no-supervise --force`
-with an isolated state volume and verifies `/v1/capabilities`, durable
-`Idempotency-Key` replay/conflict for `/v1/runs`, run status and SSE events, stop and
-approval error semantics, `/api/sessions` resume after restart, `/api/jobs` cron
-coexistence and non-terminal run recovery as `interrupted`. It also checks the image's
-Hermes version and Git commit; a mock server is never used as evidence.
+The image pin is validated before a runtime adapter builds. Reproducible
+probe: `go run -tags integration ./cmd/devcheck hermes-contract
+hermes-hub:test` (part of `just docker-check`) — starts `hermes gateway run
+--no-supervise --force` on an isolated volume and verifies
+`/v1/capabilities`, durable `Idempotency-Key` replay/conflict for
+`/v1/runs`, run status + SSE events, stop/approval error semantics,
+`/api/sessions` resume after restart, `/api/jobs` cron coexistence, and
+non-terminal recovery as `interrupted`; plus image Hermes version and git
+commit. A mock is never evidence.
 
-The pinned capabilities report Bearer authentication, `split_runtime=false`, 24-hour
-run-idempotency retention, session continuity headers `X-Hermes-Session-Id` and
-`X-Hermes-Session-Key`, and no CORS, admin-config, memory-write, audio or realtime
-voice API. Because tools execute on the API-server host, this API is an internal,
-opt-in compatibility surface and does not replace the private Go runtime boundary.
+Pinned capabilities: Bearer auth, `split_runtime=false`, 24 h run-idempotency
+retention, `X-Hermes-Session-Id`/`X-Hermes-Session-Key` continuity headers;
+no CORS, admin-config, memory-write, audio or realtime-voice API. Because
+tools execute on the API-server host, this API is an internal opt-in
+compatibility surface, not the private Go boundary's replacement.
 
-Google Workspace reads use the official remote MCP (ADR-0019). The settings
-`google` feature still describes the legacy third-party stdio server, which is
-not in the default hub image. Atlassian uses the pinned upstream
-`mcp-atlassian` stdio server from `docker/mcp-atlassian.Dockerfile`.
-For Jira Cloud, the owner supplies `JIRA_URL`, `JIRA_USERNAME` and `JIRA_API_TOKEN`;
-the server talks directly to Jira REST APIs and does not use the Atlassian Rovo endpoint.
-The upstream server also supports Confluence, but this preset currently enables Jira only.
-GitLab uses `glab`, not MCP. Provider content never grants permission to create, edit,
-send, merge or trigger operations.
+## Credential Broker
+
+Copied source is the standalone module under `services/credential-broker`
+(MIT, separate from Hermes' AGPL-3.0-only). `just credential-broker-check`
+runs its full unit/race/coverage/build gate, `credential-broker-docker-check`
+its minimal image. No Broker service is enabled by default — config, signer
+keys, provider data, contracts and materialization paths are provisioned
+explicitly.
+
+The Go SDK signs exact method, URI, body and canonical identity. Adapter
+audiences: ToolHub `broker:control`, Communication Hub `broker:approve`,
+runtime materializer `broker:runtime`. Enable per audience with
+`HUB_CREDENTIAL_BROKER_{CONTROL,APPROVE,RUNTIME}_{URL,KEY_FILE,KEY_ID,ISSUER}`
+— all three audiences required; signing keys live as private files inside
+the matching Hub container, never in the repo. `api/v1.Materialized` never
+passes through Hermes messages, MCP projections or job/audit ledgers.
+
+Every credential-bearing definition binds `credential_contract_id`,
+`credential_contract_revision` and an explicit `credential_contract_env`
+mapping at review/bind — from a covering catalog/`contracts_dir` contract or
+a `dyn-` contract ToolHub registers over `broker:control` for declared
+`env`/`file`/`json` inputs (local-plane inputs — `http_header`, `brokered`,
+OAuth-minted, per-request — are satisfied by their own planes and never need
+a contract; a `Sharable` definition synthesizes `allow_shared`). Flow:
+ToolHub creates the broker request+grant, the gateway accepts
+`/credentials <request-id> <code>` (or the direct form — rendered compose
+sets `BROKER_DIRECT_FORM=1`; remove it to restore the spec's trusted-channel
+confirmation), the runtime acquires/materializes/releases a lease. An expired
+connect link reissues on the next `status` poll. Existing local credential
+records are rejected once Broker mode is on — migration is explicit.
+Runtime materialization rejects a missing delivery for any referenced input.
+
+ENV deliveries are supported. File deliveries use a reviewed read-only
+runtime mount and a per-call workload the controller removes before the
+lease releases — enable only when the broker materialization dir is an
+explicitly shared, non-symlinked path visible to controller and daemon
+(`credential_mount_root`); without it file delivery fails closed.
+
+## Google Workspace remote MCP
+
+`hubctl connector connect --provider google --official-mcp --product gmail`
+with absolute registry/ciphertext/key paths. Products: calendar, gmail,
+drive, docs, sheets — separate connection + read-only OAuth scopes each.
+`--account` = expected Google subject or verified email; CLIENT_ID/SECRET
+via protected `--client-file` (never chat/argv). Web OAuth client registers
+exactly `http://127.0.0.1:8543/callback` (`--callback-port 8543`).
+
+These are Google-managed services; official setup needs Developer Preview,
+a Cloud project with the underlying APIs + MCP services enabled (same
+project as the OAuth client) and consent config. Discovery rejects an
+inaccessible/empty service. Provider schemas are snapshotted and validated
+locally without remote `$ref` fetches; new/unknown and mutation tools are
+excluded from read grants. Refresh/revoke use the same commands. No real
+Cloud account has been tested.
+
+## Personal Telegram account MCP
+
+`docker/telegram-account.Dockerfile` builds the standalone pinned
+Telethon virtualenv — never `FROM` the hub image; deploy by digest, not tag.
+Controller path and local-controller evidence are in
+docs/prepared-connectors.md. Import via `hubctl connector connect --provider
+telegram --account <numeric-id> --connection <id> --from-file
+<protected-session-file> --deployment-file <manifest> --endpoint <mcp>`;
+the command verifies `get_me` identity before saving — a bot session or
+wrong user is rejected. Read tools: get_account, list_dialogs, get_messages
+(bounded before/after cursors over real history API), search_messages,
+get_chat_info; bot peers excluded; message text is untrusted, media is
+metadata-only. `--write` creates a separate explicit grant the server
+checks independently. Credentials load per call, wiped after; no unattended
+login. `connector revoke` blocks local calls and revokes ciphertext;
+invalidating the MTProto session needs Telegram Devices explicitly.
+
+## Calendar (ToolHub, M5 stage 2)
+
+`hubctl connector connect --provider google …` with `--client-file`
+(CLIENT_ID/SECRET), `--account` subject, unique `--connection`; key file
+outside ciphertext dir. Prints auth URL, waits loopback callback, verifies
+account before creating a read binding. `--write` is a separate mutation
+grant — never upgrades read. `connector call` args: `calendar_id`,
+`event_id`, `event_json`, `page_token`; list paginates 100/page via
+nextPageToken; no arbitrary API URLs. `connector refresh` rotates only that
+connection's token; `revoke` denies calls first, then requests Google
+revocation. Verification to date uses official-shaped fixtures, not live
+Google.
+
+## Slack data (ToolHub, M5 stage 2)
+
+`--provider slack --workspace T... --account U...|W...` — never
+email/display-name identity. `--write` is an independent `chat:write` grant.
+OAuth PKCE requests user_scope only; Basic client auth; a co-returned bot
+token is discarded. Slack App `SLACK_BOT_TOKEN`/`SIGNING_SECRET`/`APP_TOKEN`
+are communication credentials only — they cannot enable data tools. Reads:
+`search`, `history`, `replies` (15/page, provider pagination); writes:
+`send`, `reply`, `update` — canonical C/G/D ids + validated timestamps, no
+bot posting or username/icon impersonation. `auth.test` rechecks bound
+workspace+user per call; 429/errors report without mutation retry — review
+an uncertain send in Slack itself. Revoke blocks locally first, then
+requests `auth.revoke`. Fixtures do not prove a live workspace login.
+
+## Documents and images
+
+Hub `hubctl tools` surface; pinned Hermes has no document toolset and its
+native vision/`image_generate` stay off `platform_toolsets`. Contract:
+ADR-0027/0028/0029/0030 + SPEC-0033. Full tool/effect matrix in
+docs/tools.md — bounds here:
+
+- Documents: txt/md/csv/html/pdf/xlsx/pptx; rejected doc/docx/xls/ppt/odt/
+  rtf/epub/pages (+`xslx` typo). Images: png/jpeg/webp; rejected gif/bmp/
+  svg/tif/tiff/heic/avif. No OCR; pdf is wrapped text with embedded Go
+  Regular font; xlsx = one worksheet inline CSV; pptx splits slides on
+  blank line; conversions copy extracted text (no layout, no formulas).
+  webp via `nativewebp` v1.3.0, PDF font `x/image` v0.46.0.
+- Bounds fail closed: doc ≤2 MiB / 20 pages × 3000 runes; image ≤5 MiB /
+  4096 px edge / 4 Mpx; concurrency 2 / 5 s; inspect+convert 30 s;
+  generate/edit concurrency 1 / 60 s; prompt 1–2000 runes; no queue.
+- Scope: invoking user's workspace only — another user's root, absolute
+  paths, `..` fail closed; `document_edit` confined to
+  `artifacts/documents/`; removal via `artifact_remove` or confirmed purge.
+- `image_gen` is off by default, not self-service. Settings fields:
+  `provider: cliproxy|fal`, `model`, `delivery: workspace|url`. `model:
+  chat` → `model.default` only when allowlisted. CLIProxy allowlist posts
+  `/images/generations` (gpt-image-* , grok-imagine-*) or `/chat/completions`
+  (gemini-*-image*, `image_config.aspect_ratio 1:1`); fal allows only
+  `fal-ai/flux-2/klein/9b` posting prompt+`square_hd`+4 steps+png to
+  `fal.run` (`FAL_KEY`, no edit). `delivery: url` returns one provider
+  http(s) URL — redirect refused, download host must be public HTTPS or the
+  configured endpoint.
+- On a rendered stack calls run in the `hub-media` sidecar (SPEC-0061):
+  internal-network only, `media.auth` bearer, credentials materialized per
+  call from broker grant `HUB_MEDIA_BROKER_GRANT` — never env. Engines
+  `remote`/`fal`/`command` via `HUB_MEDIA_ENGINE`; `HUB_MEDIA_ENGINES`
+  fallback order + `HUB_MEDIA_MODEL_ROUTES` logical→engine hops; video jobs
+  durable under `HUB_MEDIA_DATA` with `HUB_MEDIA_JOB_TTL`, resume provider
+  polling after restart. A missing provider or revoked section fails the
+  next call; `image_generate`/`image_edit` leave `tools/list` on next start.
+- An httptest double of these endpoints is not a live provider call.
+
+## Web search and research
+
+Upstream Hermes `web` toolset (`web_search`, `web_extract`) — configured,
+not reimplemented; provider code lives upstream in `plugins/web/<vendor>`,
+the hub embeds no vendor client. Features: `web` mounts `config/plugins/
+hub-web` read-only and enables the toolset (absent = the tools do not exist;
+`agent.disabled_toolsets` strips them from composite toolsets too);
+`deep_research` requires `web` and mounts the `deep-research-embedded`
+skill. `web:` settings (schema-1) select providers/policy — see the
+Settings `WebSettings` block: backend/search_backend/extract_backend,
+`search_providers` fan-out list, `keyless_fallback`/`keyless_rescue`,
+`extract_char_limit`, `provider_tier`, `cache_*`, `research.*` bounds
+(ceilings only — settings can tighten, never widen).
+
+`hub-web` adds three tools inside the same toolset/gate: `web_providers`
+(inventory), `web_search_multi` (`providers` list or `["all"]`, ≤8
+providers, 60 s, tagged+deduped, `providers_failed`/`partial_failure`,
+off-list names rejected), `web_cache` (`status`/`prune`/`clear` of
+`$HERMES_HOME/cache/web`).
+
+Keys/endpoints are runtime secrets via `secrets.<env>.env` or the self-env
+form: `TAVILY_API_KEY`, `EXA_API_KEY`, `PARALLEL_API_KEY`,
+`PERPLEXITY_API_KEY`, `FIRECRAWL_API_KEY`/`_URL`, `BRAVE_SEARCH_API_KEY`,
+`KEENABLE_API_KEY`, `SEARXNG_URL`, `XAI_API_KEY` (+`TAVILY_BASE_URL`,
+`PERPLEXITY_BASE_URL`). Never in prompts/args/results; `doctor` names a
+missing required env for searxng/firecrawl. Keyless `ddgs` + ring keep it
+working anonymously; no browser profile participates.
+
+`deep-research-embedded` (`config/skills/`) is the on-disk state machine:
+`plan.yaml` → `sources.yaml` → `notes/` → `gaps.md` → drafts → cited
+`report.md` + verify pass; one round per durable routine wake, resumes from
+`research/<slug>/state.json`. Pages are untrusted data — embedded
+instructions never execute; credential-like URL params refused; private-
+network targets/redirects/oversized/binary bodies fail closed upstream.
+`browser_guest` is the documented fallback when extraction cannot satisfy a
+source. Contract: SPEC-0035.
+
+## Organization and user MCP
+
+Standalone users define `mcp_servers` in their own config. In org scope
+only host-owned `spaces/<org>/scope.yaml` defines them; users narrow by
+`tools: {name: off}`. Every org MCP must sit in `read_only_mcp` with a
+non-empty `tools.include` allowlist passed to Hermes — shared org
+credentials are reserved for explicitly selected read-only tools;
+write-capable servers belong on their own upstream permissions. Built-in
+hub mutations are separately gated by `org_actions`.
+
+## External MCP connections
+
+User-owned connections go in `workspace.yaml`'s `mcp:` map + a `tools:`
+`mcp-raw:` entry; secrets land in `secrets.<env>.env`:
+
+```yaml
+mcp:
+  career: {url: https://your-career-host.example/mcp,
+           headers: {Authorization: Bearer ${CAREER_TOKEN}}}
+  local_tool: {command: node, args: [/workspace/tools/server.cjs],
+               env: {TOOL_TOKEN: ${TOOL_TOKEN}}}
+tools: {career: mcp-raw:career, local_tool: mcp-raw:local_tool}
+```
+
+Examples, not endpoints. An arbitrary REST API is not MCP. StdIO
+executables + deps must exist in the agent image/workspace; no automatic
+unpinned installs. `doctor` detects missing referenced credentials. Skills:
+org skills mount via `skills.external_dirs` read-only; same-named user
+skills take precedence. Connector credentials come via `hubctl secret set`
+or the intercepted owner `KEY=value` message — encrypted at rest, never
+returned in catalog/audit/replies; `env_update` remains only the personal-
+terminal overlay, never a host `.env` editor or org-key writer.
+
+OAuth for Google/Slack/Atlassian uses the official URLs in SPEC-0020;
+remote MCP discovers `authorization_endpoint`/`token_endpoint` via RFC 9728
++ RFC 8414; tokens persist only in the encrypted store.
+
+## Misc contract rules
+
+- `communication-hub` never mounts scope homes. Its `telegram_auth`
+  path (compiled in, default-on for telegram stacks, `telegram_auth:
+  false` opts out) holds a fresh MTProto session in memory only while the owner
+  confirms QR login, then signs a Telegram-only broker request — the
+  session never enters spool, logs or files. The gateway sends the
+  immutable job envelope to `hermes-runtime` over private Bearer HTTP;
+  binding rejects mismatched user/org/actor/scope before opening a path;
+  failed/uncertain results are never blindly replayed.
+- HeadHunter apply: fields `vacancy_id`/`resume_id`/`message`; only HTTP
+  201 is `sent: true` (receipt Location preserved — a timeout may still
+  mean sent; inspect negotiations before retry). OAuth grants,
+  already-applied, tests and CAPTCHA are platform responsibilities.
+- Native bridges forward tools + schemas only — never resources, prompts,
+  sampling or elicitation; an MCP needing those is incompatible. Remote
+  providers change contracts independently — re-verify after upgrades.
+- Provider content never grants permission to create/edit/send/merge/
+  trigger anything.
+- ToolHub CLI/container command validation rejects shell executables
+  (incl. Windows `.exe`) and `.bat`/`.cmd`; arguments are literal argv —
+  repository instructions never authorize host shell execution.

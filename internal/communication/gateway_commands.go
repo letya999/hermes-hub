@@ -23,6 +23,8 @@ var botCommandInventory = []struct {
 	{"status", "Текущая задача без вызова модели"},
 	{"routines", "Напоминания и фоновые проверки"},
 	{"usage", "Журнал расхода: /usage [day|week|month|session]"},
+	{"compact", "Сжать контекст: /compact [here N] [focus <текст>] [prune] [preview]"},
+	{"goal", "Цель-режим: /goal <текст>, /goal status|pause|resume|clear"},
 	{"model", "Модель и провайдер: /model [имя]"},
 	{"connectors", "Подключения и коннекторы ToolHub"},
 	{"connections", "Подключения и коннекторы ToolHub"},

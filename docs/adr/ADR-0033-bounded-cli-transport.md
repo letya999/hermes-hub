@@ -5,7 +5,7 @@ last_verified: 2026-10-08
 # ADR-0033: Bounded CLI through ToolHub admission, not through Hermes config
 
 Status: accepted, 2026-10-08. Milestone 9 (M8); owner instructed the full
-milestone per SPEC-0047.
+milestone per SPEC-0062 (formerly SPEC-0047).
 
 ## Context
 

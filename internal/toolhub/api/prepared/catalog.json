@@ -1,16 +1,16 @@
 [
   {
-    "id": "notion", "name": "Notion", "license": "MIT",
+    "id": "notion", "name": "Notion", "license": "MIT", "tier": "t1",
     "source": {"repository": "https://github.com/makenotion/notion-mcp-server", "commit_sha": "730ae781ba28beeaf0865025a3f2ed4c25ea2387"},
     "language": "node", "entrypoint": ["node", "/app/bin/cli.mjs"],
     "connection": {"fields": [{"name": "NOTION_TOKEN", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "NOTION_TOKEN"}]},
-    "contract_id": "notion-token", "contract_revision": 1, "stateful": false,
+    "contract_id": "notion-token", "contract_revision": 2, "stateful": false,
     "egress": ["api.notion.com"], "read_tools": ["API-get-self", "API-post-search", "API-retrieve-a-page"], "probe_tool": "API-get-self",
     "runbook": "docs/prepared-connectors.md#notion",
     "handoff": "Install https://github.com/makenotion/notion-mcp-server; reuse my existing Notion connection. Enter NOTION_TOKEN only in the protected Broker form. Verify a read of the shared root/pages; do not create or edit pages."
   },
   {
-    "id": "google-calendar", "name": "Google Calendar", "license": "MIT",
+    "id": "google-calendar", "name": "Google Calendar", "license": "MIT", "tier": "t1",
     "source": {"repository": "https://github.com/nspady/google-calendar-mcp", "commit_sha": "7c788f58e8b00db66ddd0eccd81fdc3dda0ecf9b"},
     "language": "node", "entrypoint": ["node", "/app/build/index.js"],
     "connection": {"fields": [{"name": "GOOGLE_OAUTH_CREDENTIALS", "type": "json", "required": true, "secret": true, "delivery": "file", "target": "/run/mcp-secrets/google/client.json"}]},
@@ -19,22 +19,72 @@
     "runtime_environment": {"GOOGLE_CALENDAR_MCP_TOKEN_PATH": "/home/mcp/.config/google-calendar/runtime_session.json"},
     "preflight_files": {"GOOGLE_OAUTH_CREDENTIALS": {"installed":{"client_id":"preflight.apps.googleusercontent.com","client_secret":"preflight","redirect_uris":["http://localhost"]}}},
     "egress": ["accounts.google.com", "oauth2.googleapis.com", "www.googleapis.com"], "read_tools": ["list-calendars", "list-events"], "probe_tool": "list-calendars",
-    "oauth": {"provider": "google", "scopes": ["https://www.googleapis.com/auth/calendar.readonly"], "client_input": "GOOGLE_OAUTH_CREDENTIALS", "token_file": "runtime_session.json", "token_account": "normal", "token_format": "google-calendar-account-map"},
+    "oauth": {"authorize_url":"https://accounts.google.com/o/oauth2/v2/auth", "token_url":"https://oauth2.googleapis.com/token", "scopes": ["https://www.googleapis.com/auth/calendar.readonly"], "client_input": "GOOGLE_OAUTH_CREDENTIALS", "client_sections":["installed","web"], "registered_redirect_sections":["web"], "access_type":"offline", "prompt":"consent", "state_target":"/home/mcp/.config/google-calendar", "token_file": "runtime_session.json", "probe_tool":"list-calendars", "token_template":{"normal":{"access_token":"$oauth.ACCESS_TOKEN","refresh_token":"$oauth.REFRESH_TOKEN","expiry_date":"$oauth.EXPIRES_AT_UNIX_MS","token_type":"$oauth.TOKEN_TYPE","scope":"$oauth.OAUTH_SCOPE"}}},
     "runbook": "docs/prepared-connectors.md#google-calendar",
     "handoff": "Install https://github.com/nspady/google-calendar-mcp; reuse my existing OAuth client and token state through Broker. Never paste OAuth JSON or tokens in chat. Verify list-calendars and list-events for my account."
   },
   {
-    "id": "github", "name": "GitHub", "license": "MIT",
+    "id": "google-workspace", "name": "Google Workspace", "license": "MIT", "tier": "t1",
+    "source": {"repository":"https://github.com/taylorwilsdon/google_workspace_mcp","commit_sha":"af866c34a1d5d9429b09d7fe5572b07be299b844"},
+    "language":"python",
+    "entrypoint":["/opt/venv/bin/workspace-mcp","--transport","stdio","--single-user","--permissions","calendar:readonly","drive:readonly","gmail:readonly","docs:readonly","sheets:readonly","slides:readonly","tasks:readonly"],
+    "connection":{"fields":[
+      {"name":"GOOGLE_CLIENT_SECRET_PATH","type":"json","required":true,"secret":true,"delivery":"file","target":"/run/mcp-secrets/client.json"},
+      {"name":"USER_GOOGLE_EMAIL","type":"email","required":true,"secret":false,"delivery":"env","target":"USER_GOOGLE_EMAIL"}
+    ]},
+    "contract_id":"workspace-file-session","contract_revision":1,"stateful":true,
+    "state_target":"/home/mcp/.google_workspace_mcp/credentials",
+    "runtime_environment":{"MCP_SINGLE_USER_MODE":"1","WORKSPACE_MCP_CREDENTIALS_DIR":"/home/mcp/.google_workspace_mcp/credentials","WORKSPACE_MCP_LOG_LEVEL":"WARNING"},
+    "preflight_environment":{"USER_GOOGLE_EMAIL":"fixture@example.com"},
+    "preflight_files":{"GOOGLE_CLIENT_SECRET_PATH":{"installed":{"client_id":"preflight.apps.googleusercontent.com","client_secret":"preflight","redirect_uris":["http://localhost"]}}},
+    "egress":["accounts.google.com","oauth2.googleapis.com","www.googleapis.com","gmail.googleapis.com","drive.googleapis.com","docs.googleapis.com","sheets.googleapis.com","slides.googleapis.com","tasks.googleapis.com"],
+    "read_tools":["list_calendars","get_events"],"probe_tool":"list_calendars",
+    "oauth":{
+      "authorize_url":"https://accounts.google.com/o/oauth2/v2/auth","token_url":"https://oauth2.googleapis.com/token",
+      "scopes":["openid","https://www.googleapis.com/auth/userinfo.email","https://www.googleapis.com/auth/userinfo.profile","https://www.googleapis.com/auth/calendar.readonly","https://www.googleapis.com/auth/drive.readonly","https://www.googleapis.com/auth/gmail.readonly","https://www.googleapis.com/auth/documents.readonly","https://www.googleapis.com/auth/spreadsheets.readonly","https://www.googleapis.com/auth/presentations.readonly","https://www.googleapis.com/auth/tasks.readonly"],
+      "client_input":"GOOGLE_CLIENT_SECRET_PATH","client_sections":["installed","web"],"registered_redirect_sections":["web"],"access_type":"offline","prompt":"consent",
+      "state_target":"/home/mcp/.google_workspace_mcp/credentials","token_file":"runtime_session.json","account_input":"USER_GOOGLE_EMAIL","probe_tool":"list_calendars",
+      "token_template":{"token":"$oauth.ACCESS_TOKEN","refresh_token":"$oauth.REFRESH_TOKEN","token_uri":"$oauth.TOKEN_URL","client_id":"$client.ID","client_secret":"$client.SECRET","scopes":"$oauth.SCOPES","expiry":"$oauth.EXPIRES_AT_RFC3339"}
+    },
+    "runbook":"docs/prepared-connectors.md#google-workspace",
+    "handoff":"Install https://github.com/taylorwilsdon/google_workspace_mcp through the reviewed read-only recipe. Upload the OAuth client JSON and account email only in the protected Broker form, then approve the requested Google scopes in the browser. Verify list_calendars; no provider writes are authorized."
+  },
+  {
+    "id": "github", "name": "GitHub", "license": "MIT", "tier": "t1",
     "source": {"repository": "https://github.com/github/github-mcp-server", "commit_sha": "85598ba6e1256f7ebf4867b95d63b833c4549264"},
     "language": "go", "entrypoint": ["/app/mcp-server", "stdio"],
     "connection": {"fields": [{"name": "GITHUB_PERSONAL_ACCESS_TOKEN", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "GITHUB_PERSONAL_ACCESS_TOKEN"}]},
     "contract_id": "github-pat", "contract_revision": 1, "stateful": false,
+    "toolsets": {
+      "context": ["get_me", "get_teams", "get_team_members"],
+      "repos": ["search_repositories", "get_file_contents", "list_commits", "search_code", "search_commits", "get_commit", "get_file_blame", "list_branches", "list_tags", "get_tag", "list_releases", "get_latest_release", "get_release_by_tag", "list_starred_repositories", "list_repository_collaborators", "create_or_update_file", "create_repository", "fork_repository", "create_branch", "push_files", "delete_file", "star_repository", "unstar_repository", "delete_repository"],
+      "git": ["get_repository_tree"],
+      "issues": ["issue_read", "search_issues", "list_issues", "list_issue_types", "list_issue_fields", "issue_write", "add_issue_comment", "update_issue_comment", "sub_issue_write"],
+      "pull_requests": ["pull_request_read", "list_pull_requests", "search_pull_requests", "merge_pull_request", "update_pull_request_branch", "create_pull_request", "update_pull_request", "pull_request_review_write", "add_comment_to_pending_review", "add_reply_to_pull_request_comment"],
+      "users": ["search_users"],
+      "orgs": ["search_orgs"],
+      "copilot": ["assign_copilot_to_issue", "request_copilot_review", "assign_copilot_to_issue_with_intent"],
+      "notifications": ["list_notifications", "get_notification_details", "dismiss_notification", "mark_all_notifications_read", "manage_notification_subscription", "manage_repository_notification_subscription"],
+      "discussions": ["list_discussions", "get_discussion", "get_discussion_comments", "list_discussion_categories", "discussion_comment_write"],
+      "actions": ["actions_list", "actions_get", "get_job_logs", "actions_run_trigger"],
+      "code_quality": ["get_code_quality_finding"],
+      "code_security": ["get_code_scanning_alert", "list_code_scanning_alerts"],
+      "secret_protection": ["get_secret_scanning_alert", "list_secret_scanning_alerts"],
+      "dependabot": ["get_dependabot_alert", "list_dependabot_alerts"],
+      "security_advisories": ["list_global_security_advisories", "get_global_security_advisory", "list_repository_security_advisories", "list_org_repository_security_advisories"],
+      "gists": ["list_gists", "get_gist", "create_gist", "update_gist"],
+      "projects": ["projects_list", "projects_get", "projects_write"],
+      "labels": ["get_label", "list_label", "label_write"],
+      "stargazers": ["list_starred_repositories", "star_repository", "unstar_repository"],
+      "governance": ["repository_ruleset_read", "custom_properties_read", "create_repository_ruleset", "custom_properties_write"]
+    },
+    "default_enabled": ["get_me", "get_teams", "get_team_members", "search_repositories", "get_file_contents", "list_commits", "search_code", "search_commits", "get_commit", "get_file_blame", "list_branches", "list_tags", "get_tag", "list_releases", "get_latest_release", "get_release_by_tag", "list_starred_repositories", "list_repository_collaborators", "issue_read", "search_issues", "list_issues", "list_issue_types", "list_issue_fields", "pull_request_read", "list_pull_requests", "search_pull_requests", "search_users"],
     "egress": ["api.github.com"], "read_tools": ["get_me", "get_file_contents"], "probe_tool": "get_me",
     "runbook": "docs/prepared-connectors.md#github",
     "handoff": "Install https://github.com/github/github-mcp-server; reuse my existing Broker token. Verify get_me and a read of an authorized repository. Build with the generated Go recipe. Do not mutate issues, pull requests or files."
   },
   {
-    "id": "gitlab", "name": "GitLab", "license": "MIT",
+    "id": "gitlab", "name": "GitLab", "license": "MIT", "tier": "t1",
     "source": {"repository": "https://github.com/zereight/gitlab-mcp", "commit_sha": "3e826c33a0c9a6cf4b5626450cbfa668f0984bd0"},
     "language": "node", "entrypoint": ["node", "/app/build/index.js"],
     "connection": {"fields": [
@@ -52,7 +102,7 @@
     "handoff": "Install https://github.com/zereight/gitlab-mcp; reuse or rotate my existing Broker connection. Confirm the HTTPS GITLAB_API_URL in the protected form; for a plain-HTTP self-hosted host give the real host:port as GITLAB_ENDPOINT and point GITLAB_API_URL at the managed forward http://127.0.0.1:18929. Then verify whoami on that host. Do not create another owner connection or change provider data."
   },
   {
-    "id": "atlassian", "name": "Atlassian (Jira + Confluence)", "license": "MIT",
+    "id": "atlassian", "name": "Atlassian (Jira + Confluence)", "license": "MIT", "tier": "t1",
     "source": {"repository": "https://github.com/sooperset/mcp-atlassian", "commit_sha": "0a5d2427144d72f5aade07d4fabd385421cec401"},
     "language": "python", "entrypoint": ["/opt/venv/bin/mcp-atlassian"],
     "connection": {"fields": [
@@ -71,7 +121,7 @@
     "handoff": "Install https://github.com/sooperset/mcp-atlassian; reuse or rotate my existing Broker connection. Fill the Jira block, the Confluence block or both in the protected Broker form; each URL host becomes an egress destination. Verify jira_get_all_projects or confluence_list_page_templates, then do not change provider data without an explicit instruction."
   },
   {
-    "id": "txttsql", "name": "TXT-to-SQL (primary SQL)", "license": "AGPL-3.0-only",
+    "id": "txttsql", "name": "TXT-to-SQL (primary SQL)", "license": "AGPL-3.0-only", "tier": "t1",
     "source": {"repository": "https://github.com/letya999/txttsql-mcp", "commit_sha": "da0e9acad492ae6e27cda6659ceaf1efb9f00ba7"},
     "language": "rust", "entrypoint": ["/app/target/release/txttsql-mcp", "--config", "/app/config.toml"],
     "connection": {"fields": [
@@ -85,7 +135,7 @@
       {"name": "TXTTSQL_CONFIG", "type": "file", "required": false, "secret": true, "delivery": "file", "target": "/app/config.toml"},
       {"name": "TXTTSQL_CA_FILE", "type": "pem", "required": false, "secret": false, "delivery": "file", "target": "/run/txttsql/ca.pem"}
     ]},
-    "contract_id": "txttsql-sql", "contract_revision": 1, "stateful": false,
+    "contract_id": "txttsql-sql", "contract_revision": 2, "stateful": false,
     "tcp_forwards": [
       {"listen": 15432, "target_env": "TXTTSQL_ENDPOINT"},
       {"listen": 15433, "target_env": "TXTTSQL_ENDPOINT_2"},
@@ -97,7 +147,7 @@
     "handoff": "Install https://github.com/letya999/txttsql-mcp as the reviewed read-only SQL engine. In the protected Broker form paste the sources JSON pointing each source at its managed forward (127.0.0.1:15432/15433/15434) and give the real host:port endpoints; database names, schemas and roles stay inside the sources JSON, not tool arguments. Verify list_sources, then do not change provider data without an explicit instruction."
   },
   {
-    "id": "dbhub", "aliases": ["sql"], "name": "DBHub (fallback SQL)", "license": "MIT",
+    "id": "dbhub", "aliases": ["sql"], "name": "DBHub (fallback SQL)", "license": "MIT", "tier": "t1",
     "source": {"repository": "https://github.com/bytebase/dbhub", "commit_sha": "8c09c868894f1ea011565ec35215ac36e5638c1f"},
     "language": "node", "entrypoint": ["node", "/app/dist/index.js"],
     "connection": {"fields": [
@@ -123,7 +173,7 @@
     "handoff": "Install https://github.com/bytebase/dbhub as the fallback read-only SQL engine. In the protected Broker form paste the DSN aimed at the managed forward (127.0.0.1:15432) and give the real host:port endpoint; a read-only database role is mandatory because env-mode DBHub runs without its TOML read-only policy. Verify a SELECT against the real database, then do not change provider data without an explicit instruction."
   },
   {
-    "id": "grafana", "name": "Grafana", "license": "Apache-2.0",
+    "id": "grafana", "name": "Grafana", "license": "Apache-2.0", "tier": "t1",
     "source": {"repository": "https://github.com/grafana/mcp-grafana", "commit_sha": "45cfa5d0288fbe0a26a01d7129b9a641ca738546"},
     "language": "go", "entrypoint": ["/app/mcp-server", "--enabled-tools=search,datasource,dashboard,folder,alerting,prometheus,loki", "--disable-write"],
     "connection": {"fields": [
@@ -144,7 +194,7 @@
     "handoff": "Install https://github.com/grafana/mcp-grafana with my existing Grafana service account. In the protected Broker form give the Grafana base URL and service account token, optionally the organization ID; for a plain-HTTP Grafana also give the real host:port endpoint and set the URL to the managed forward http://127.0.0.1:13000. Verify list_datasources and a bounded read; dashboard or datasource changes stay a separate explicit instruction."
   },
   {
-    "id": "prometheus", "name": "Prometheus", "license": "Apache-2.0",
+    "id": "prometheus", "name": "Prometheus", "license": "Apache-2.0", "tier": "t1",
     "source": {"repository": "https://github.com/prometheus/prometheus-mcp", "commit_sha": "cd0e5527617abd4cd8ec360ad901c002304ab247"},
     "language": "go", "entrypoint": ["/app/mcp-server"],
     "connection": {"fields": [
@@ -165,7 +215,7 @@
     "handoff": "Install https://github.com/prometheus/prometheus-mcp with my Prometheus endpoint. In the protected Broker form give the Prometheus base URL and, for a plain-HTTP target, the real host:port endpoint with the URL set to the managed forward http://127.0.0.1:19090. Verify list_targets and a bounded query; TSDB admin tools stay disabled."
   },
   {
-    "id": "datalens", "name": "DataLens", "license": "MIT",
+    "id": "datalens", "name": "DataLens", "license": "MIT", "tier": "t1",
     "source": {"repository": "https://github.com/datalens-tech/datalens-mcp", "commit_sha": "96b3d6baf8839c4ff5ef4adb4c10a720c5c00e74"},
     "language": "node", "entrypoint": ["node", "/app/dist/index.js"],
     "connection": {"fields": [
@@ -182,7 +232,7 @@
     "handoff": "Install https://github.com/datalens-tech/datalens-mcp; reuse or rotate my existing Broker connection. In the protected Broker form give the organization ID and the Authorization header value — Bearer <iam-token> for cloud (IAM tokens expire in 12h) or OAuth <token> with an API URL override for an internal installation. Verify list_commands and one read through invoke_read_command, for example getWorkbooksList. Workbook, dashboard and entry changes stay a separate explicit instruction."
   },
   {
-    "id": "telegram", "name": "Personal Telegram", "license": "Apache-2.0",
+    "id": "telegram", "name": "Personal Telegram", "license": "Apache-2.0", "tier": "t1",
     "source": {"repository": "https://github.com/letya999/telegram-mcp", "commit_sha": "26f1632b2b07cca16fa8f172fe645477921db9ed"},
     "language": "python", "python_extras": ["proxy"], "entrypoint": ["/opt/venv/bin/telegram-mcp"],
     "connection": {"fields": [
@@ -200,5 +250,33 @@
     "probe_tool": "list_accounts",
     "runbook": "docs/prepared-connectors.md#personal-telegram",
     "handoff": "Call prepare_source once with https://github.com/letya999/telegram-mcp. Enter API ID, API hash, a personal StringSession and expected numeric user ID only in the protected Broker form. Verify list_accounts and a bounded history read. Bot credentials and provider writes are outside this read-only entry."
+  },
+  {
+    "id": "playwright-mcp", "aliases": ["browser"], "name": "Managed browser (Playwright MCP)", "license": "Apache-2.0",
+    "tier": "t0",
+    "image": {"ref": "localhost:5543/playwright-mcp@sha256:9b46b8e593e6b72c7f3f8c4aed20e624331358f1e099d2f8705bd59283504925", "digest": "sha256:9b46b8e593e6b72c7f3f8c4aed20e624331358f1e099d2f8705bd59283504925", "provenance": "sha256:50fc6b71dd8fc1ea2eda515f31ccce9c33bba63bcb812f31c772e76aee916bf2", "sbom": "sha256:50fc6b71dd8fc1ea2eda515f31ccce9c33bba63bcb812f31c772e76aee916bf2"},
+    "source": {"repository": "https://github.com/microsoft/playwright-mcp", "commit_sha": "ab6d67cbf8b619338f096980806fdbe29432cc4d"},
+    "language": "node",
+    "entrypoint": ["node", "/app/prelaunch.js", "--headless", "--browser", "chromium", "--no-sandbox", "--user-data-dir", "/state/browser-profile", "--output-dir", "/state/browser-profile/downloads", "--output-max-size", "268435456", "--block-service-workers", "--idle-timeout", "900000", "--caps", "vision,pdf"],
+    "connection": {"fields": [
+      {"name": "PLAYWRIGHT_MCP_STORAGE_STATE", "type": "json", "required": false, "secret": true, "delivery": "file", "target": "/run/mcp-secrets/browser/storage-state.json"},
+      {"name": "PLAYWRIGHT_MCP_ALLOWED_ORIGINS", "type": "string", "required": false, "secret": false, "delivery": "env", "target": "PLAYWRIGHT_MCP_ALLOWED_ORIGINS"},
+      {"name": "PLAYWRIGHT_MCP_BLOCKED_ORIGINS", "type": "string", "required": false, "secret": false, "delivery": "env", "target": "PLAYWRIGHT_MCP_BLOCKED_ORIGINS"}
+    ]},
+    "contract_id": "browser-session", "contract_revision": 1, "stateful": true,
+    "state_target": "/state/browser-profile",
+    "budgets": {"cpu_millis": 2000, "memory_mib": 2048, "max_pids": 256, "shm_size_mib": 1024},
+    "egress_class": "web",
+    "toolsets": {
+      "act": ["browser_click", "browser_drag", "browser_drop", "browser_hover", "browser_type", "browser_fill_form", "browser_press_key", "browser_select_option", "browser_file_upload", "browser_handle_dialog", "browser_mouse_click_xy", "browser_mouse_down", "browser_mouse_drag_xy", "browser_mouse_move_xy", "browser_mouse_up", "browser_mouse_wheel"],
+      "eval": ["browser_evaluate", "browser_run_code_unsafe"],
+      "network": ["browser_network_requests", "browser_network_request"]
+    },
+    "default_enabled": ["browser_navigate", "browser_navigate_back", "browser_tabs", "browser_snapshot", "browser_take_screenshot", "browser_wait_for", "browser_console_messages", "browser_resize", "browser_close", "browser_pdf_save", "browser_find"],
+    "default_excluded": ["browser_click", "browser_drag", "browser_drop", "browser_hover", "browser_type", "browser_fill_form", "browser_press_key", "browser_select_option", "browser_file_upload", "browser_handle_dialog", "browser_mouse_click_xy", "browser_mouse_down", "browser_mouse_drag_xy", "browser_mouse_move_xy", "browser_mouse_up", "browser_mouse_wheel", "browser_evaluate", "browser_run_code_unsafe", "browser_network_requests", "browser_network_request"],
+    "read_tools": ["browser_navigate", "browser_navigate_back", "browser_tabs", "browser_snapshot", "browser_take_screenshot", "browser_wait_for", "browser_console_messages", "browser_resize", "browser_close", "browser_pdf_save", "browser_find"],
+    "probe_tool": "browser_tabs", "probe_args": {"action": "list"},
+    "runbook": "docs/prepared-connectors.md#playwright-mcp",
+    "handoff": "Install https://github.com/microsoft/playwright-mcp as an isolated per-connection browser workload. The profile persists on the connection state volume; the workload browses the open web only through the audited deny-first proxy. Manual login happens in the owner-only viewer link, never in chat; an optional Playwright storage_state.json and origin restrictions go through the protected Broker form. Read and navigation tools project by default; interaction tools need connector_allow_writes plus the act toolset, eval and network tools their own toolsets."
   }
 ]

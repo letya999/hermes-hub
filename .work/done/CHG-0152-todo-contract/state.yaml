@@ -1,0 +1,23 @@
+schema: 1
+change: CHG-0152
+title: M16 todo-contract
+status: done
+branch: feat/m16-runtime-discipline
+updated: 2026-10-25
+phase: done
+adr: ADR-0074
+spec: SPEC-0071
+github_issue: 183
+implementation_status: live_verified
+local_contract_progress_percent: 100
+validation:
+  just_check: passed
+  own_go_statement_coverage_percent: 86.15
+  race_tests: passed
+  docs_check: passed
+  configuration_contract: passed
+  live_acceptance: passed
+live_evidence:
+  - "User-accepted 2026-10-25 via real Telegram + real model: todo_list working items persist in-session and clear on /new (revision 0 contract)"
+limitations:
+  - Source baseline includes inherited uncommitted OAuth work; never commit that work.

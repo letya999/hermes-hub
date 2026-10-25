@@ -146,7 +146,7 @@ func extensionFromResponse(resp *http.Response, u *url.URL) string {
 // decodeAudio converts any ffmpeg-readable input into 16 kHz mono PCM wav —
 // the single format every STT engine consumes.
 func decodeAudio(ctx context.Context, src, dst string) error {
-	cmd := exec.CommandContext(ctx, "ffmpeg", "-nostdin", "-y", "-i", src, "-vn", "-ac", "1", "-ar", "16000", "-f", "wav", dst)
+	cmd := exec.CommandContext(ctx, "ffmpeg", "-nostdin", "-y", "-i", src, "-vn", "-ac", "1", "-ar", "16000", "-f", "wav", dst) // #nosec G702 -- fixed ffmpeg executable on internal temp paths
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("audio decode failed: %s", strings.TrimSpace(string(out)))
 	}

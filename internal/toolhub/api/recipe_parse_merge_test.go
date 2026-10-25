@@ -226,3 +226,15 @@ lowercase_key is ignored
 		t.Fatal("lowercase name collected")
 	}
 }
+
+func TestDocumentationSkipsExampleCredentialValues(t *testing.T) {
+	recipe := ParseDocumentationCredentials([]byte("Set `KASPI_API_KEY` to `YOUR_API_KEY`.\n{\"KASPI_API_KEY\":\"YOUR_API_KEY\"}\nexport KASPI_API_KEY=YOUR_API_KEY\n"), "README.md")
+	if len(recipe.Fields) == 0 {
+		t.Fatal("actual input missing")
+	}
+	for _, field := range recipe.Fields {
+		if field.Name != "KASPI_API_KEY" {
+			t.Fatalf("example value became an input: %+v", field)
+		}
+	}
+}

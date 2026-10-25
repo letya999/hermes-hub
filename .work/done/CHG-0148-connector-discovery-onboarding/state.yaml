@@ -1,0 +1,23 @@
+schema: 1
+change: CHG-0148
+title: Conversational discovery and credential onboarding
+status: done
+branch: feat/m14-toolhub-connector-platform-merge
+updated: 2026-10-22
+phase: complete
+validation:
+  just_check: passed
+  go_coverage: 86.22
+  docker_prebuilt: passed_edge_fallback_old_revision
+  docker_clean: passed
+  live_acceptance: passed_to_form_or_confirmation
+  authenticated_provider_access: not_attempted
+  model_led_chat: not_replayed
+evidence:
+  - All thirteen selected MCPs reached protected forms or no-credential confirmation; see acceptance.md.
+  - Live five-candidate discovery and exact Notion candidate selection retained the source commit.
+  - Public GitLab retrieval and source build passed; selected upstream failed on incompatible MCP dependencies.
+  - Final dev ToolHub image and endpoint verified; existing dev profile instructions regenerated.
+  - Exact-value scan of 1800 tracked/addable files and staged diff found no runtime tokens.
+  - Tokens were not rotated as explicitly instructed by the user.
+remaining: []
