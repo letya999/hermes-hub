@@ -3,6 +3,7 @@ package stack
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/exposure"
 	"github.com/letya999/hermes-hub/internal/sshcap"
 	"gopkg.in/yaml.v3"
 	"os"
@@ -66,6 +67,13 @@ func RenderEnvironment(dir, root, environment string) error {
 		// runtime whose ssh tools would all deny.
 		if _, err = sshcap.Load(filepath.Join(dir, "connections", "ssh", "config.yaml")); err != nil {
 			return fmt.Errorf("ssh config: %w", err)
+		}
+	}
+	if s.Has("exposure") {
+		// Same fail-closed contract: a broken exposure config must stop the
+		// render rather than ship silently-denying exposure tools.
+		if _, err = exposure.Load(filepath.Join(dir, "connections", "exposure", "config.yaml")); err != nil {
+			return fmt.Errorf("exposure config: %w", err)
 		}
 	}
 	if s.CapabilityMode != "managed" && strings.TrimSpace(s.GlobalSkillsDir) == "" {

@@ -44,9 +44,9 @@ func testManager(t *testing.T, p Provider) (*Manager, *audit.Ledger) {
 		t.Fatal(err)
 	}
 	m := NewManager(cfg, ManagerOptions{
-		Provider:    p,
-		Auth:        identity.Envelope{PrincipalID: "alice", ContextID: "user:alice", RuntimeID: "rt-1", PolicyVersion: "pol-1"},
-		Ledger:      ledger,
+		Provider: p,
+		Auth:     identity.Envelope{PrincipalID: "alice", ContextID: "user:alice", RuntimeID: "rt-1", PolicyVersion: "pol-1"},
+		Ledger:   ledger,
 	})
 	return m, ledger
 }
@@ -205,6 +205,36 @@ func TestManagerReapLifetime(t *testing.T) {
 	last := events[len(events)-1]
 	if last.Outcome != "close" {
 		t.Fatalf("reap receipt: %+v", last)
+	}
+}
+
+func TestManagerReapsExpiredInBackground(t *testing.T) {
+	p := &fakeProvider{}
+	now := time.Now()
+	current := now
+	cfg, err := Load(writeConfig(t, validSishYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(cfg, ManagerOptions{
+		Provider:     p,
+		Now:          func() time.Time { return current },
+		ReapInterval: 20 * time.Millisecond,
+	})
+	defer m.Shutdown()
+	if _, err := m.Open(context.Background(), "demo"); err != nil {
+		t.Fatal(err)
+	}
+	current = now.Add(cfg.Lifetime() + time.Second)
+	deadline := time.Now().Add(3 * time.Second)
+	for len(m.List()) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("expired tunnel was not reaped in the background")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(p.closed) != 1 {
+		t.Fatalf("provider close: %v", p.closed)
 	}
 }
 

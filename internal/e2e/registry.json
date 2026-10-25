@@ -2000,5 +2000,57 @@
     "prerequisites": "Тестовый managed-профиль; отдельные fixtures, без рабочих данных",
     "level": "contract",
     "cleanup": "Удалить только созданные тестом ресурсы; восстановить исходную настройку"
+  },
+  {
+    "id": "E2E-155",
+    "surface": "hub",
+    "name": "exposure_list",
+    "title": "exposure_list",
+    "action": "Вызвать exposure_list на тестовом exposure-конфиге с fake-провайдером.",
+    "expected": "Список живых экспозиций без provider handles.",
+    "package": "agenttools",
+    "test": "TestExposureListStatusCloseViaToolCall",
+    "prerequisites": "Тестовый exposure-конфиг; fake-провайдер, без реального VPS",
+    "level": "contract",
+    "cleanup": "Закрыть созданные экспозиции; удалить временный конфиг"
+  },
+  {
+    "id": "E2E-156",
+    "surface": "hub",
+    "name": "exposure_status",
+    "title": "exposure_status",
+    "action": "Вызвать exposure_status по имени открытого endpoint.",
+    "expected": "Публичное имя, target и expires_at живого туннеля.",
+    "package": "agenttools",
+    "test": "TestExposureListStatusCloseViaToolCall",
+    "prerequisites": "Тестовый exposure-конфиг; fake-провайдер, без реального VPS",
+    "level": "contract",
+    "cleanup": "Закрыть созданные экспозиции; удалить временный конфиг"
+  },
+  {
+    "id": "E2E-157",
+    "surface": "hub",
+    "name": "exposure_open",
+    "title": "exposure_open",
+    "action": "Вызвать exposure_open по имени endpoint из reviewed-конфига.",
+    "expected": "Туннель открыт; публичное имя составлено хабом из конфига, не из аргументов.",
+    "package": "agenttools",
+    "test": "TestExposureListStatusCloseViaToolCall",
+    "prerequisites": "Тестовый exposure-конфиг; fake-провайдер, без реального VPS",
+    "level": "contract",
+    "cleanup": "Закрыть созданные экспозиции; удалить временный конфиг"
+  },
+  {
+    "id": "E2E-158",
+    "surface": "hub",
+    "name": "exposure_close",
+    "title": "exposure_close",
+    "action": "Вызвать exposure_close по имени живого endpoint.",
+    "expected": "Туннель закрыт; запись снята из списка.",
+    "package": "agenttools",
+    "test": "TestExposureListStatusCloseViaToolCall",
+    "prerequisites": "Тестовый exposure-конфиг; fake-провайдер, без реального VPS",
+    "level": "contract",
+    "cleanup": "Закрыть созданные экспозиции; удалить временный конфиг"
   }
 ]

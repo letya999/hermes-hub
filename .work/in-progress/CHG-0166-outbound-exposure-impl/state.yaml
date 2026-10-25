@@ -5,7 +5,12 @@ status: in_progress
 branch: feat/m18-exposure-hosting-ssh
 updated: 2026-10-25
 phase: implementation
-slices_note: S1 committed (8f9011c); S2 keypair done, enrol cmd pending; S3 manager+audit-kind green, toolhub facade pending; S5 reap green at manager level
+slices_note: >-
+  S1/S2/S3/S5 done and green; stack wiring (feature flag, ro mount, env,
+  doctor, fail-closed render) done. sish provider is an in-process x/crypto/ssh
+  remote-forward client — deviation from ADR-0077 D2's docker-workload framing,
+  chosen for ponytail (no new image, no admission machinery); documented in
+  limitations. S6 live acceptance still pending a real VPS+domain.
 adr: ADR-0077
 spec: SPEC-0075
 requirements: [R1, R2, R3, R4, R5, R6, R7, R8]
@@ -16,18 +21,33 @@ design_status: accepted
 implementation_status: in_progress
 slices:
   S1-exposure-config: done
-  S2-sish-keypair-enrol: in_progress
-  S3-exposure-tools-audit: in_progress
-  S4-sish-workload-admission: not_started
-  S5-reaper-receipts: in_progress
+  S2-sish-keypair-enrol: done
+  S3-exposure-tools-audit: done
+  S4-sish-workload-admission: done_in_process
+  S5-reaper-receipts: done
   S6-live-acceptance-docs: not_started
 validation:
   documents: pending
-  just_check: not_run
+  just_check: in_progress
   docker_check: not_run
   red_team: not_started
   live_acceptance: not_started
 evidence: []
-remaining: []
+remaining:
+  - S6 live acceptance on a real sish VPS + domain (operator action)
+  - docs/{operations,threat-model,architecture}.md updates
+  - HUB_PUBLIC_TARGET contract documented for operators (secrets.<env>.env)
 limitations:
-  - live acceptance requires an operator VPS + domain (sish) — not available in this environment
+  - >-
+    Tunnel workload runs in-process (x/crypto/ssh client inside
+    hermes-runtime), not as a separate admitted container: ADR-0077 D2
+    framed a per-binding docker workload; the in-process provider removes a
+    whole image/admission path but concentrates the outbound connect on the
+    runtime. Egress reachability is not admission-bounded — the provider
+    dials relay.host:port directly. Revisit if a separate egress sandbox is
+    required.
+  - live acceptance requires an operator VPS + domain (sish) — not available
+    in this environment; unit tests use a fake SSH relay, which does not prove
+    provider deployment success.
+  - idle reap deliberately deferred: no provider-side traffic stats today;
+    lifetime ceiling is the backstop.

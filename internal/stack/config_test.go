@@ -77,7 +77,8 @@ func TestRenderAllFeatures(t *testing.T) {
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
-	writeSSHConfig(t, d) // the all-features render includes ssh; it fails closed without a config
+	writeSSHConfig(t, d)      // the all-features render includes ssh; it fails closed without a config
+	writeExposureConfig(t, d) // same contract for the exposure family
 	s, _ := Read(d)
 	s.Model = "test"
 	s.ModelURL = "http://host.docker.internal:8317/v1"

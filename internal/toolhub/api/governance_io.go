@@ -80,6 +80,7 @@ func SeedInventory() []ToolSection {
 		hub("hub:image_gen", EffectMutate),
 		hub("hub:hh", EffectMutate),
 		hub("hub:ssh", EffectExec),
+		hub("hub:exposure", EffectExec), // public endpoints: restrictive default, like ssh
 		hub("hub:terminal", EffectExec), // restrictive default, like native:terminal
 		hub("hub:web", EffectMutate),
 		// The two mutable per-principal surfaces.

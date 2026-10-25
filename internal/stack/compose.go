@@ -93,6 +93,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// file: credentials — is operator-owned and read-only inside the runtime.
 		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "connections", "ssh")), "target": "/state/ssh", "read_only": true})
 	}
+	if s.Has("exposure") {
+		// The reviewed exposure config — provider, relay, endpoints and any
+		// file: key — is operator-owned and read-only inside the runtime.
+		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "connections", "exposure")), "target": "/state/exposure", "read_only": true})
+	}
 	for _, m := range s.Workspace.Mounts {
 		source, readOnly, err := s.resolveMount(m)
 		if err != nil {

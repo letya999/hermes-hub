@@ -42,6 +42,9 @@ type ManagerOptions struct {
 	Auth     identity.Envelope
 	Ledger   *audit.Ledger
 	Now      func() time.Time
+	// ReapInterval sets the background lifetime-reap cadence; zero keeps the
+	// default minute.
+	ReapInterval time.Duration
 }
 
 // Manager owns the open exposures of one principal — name-only opens against
@@ -55,6 +58,8 @@ type Manager struct {
 
 	mu      sync.Mutex
 	tunnels map[string]*Tunnel
+	done    chan struct{}
+	stopped chan struct{}
 }
 
 func NewManager(cfg *Config, opts ManagerOptions) *Manager {
@@ -62,8 +67,38 @@ func NewManager(cfg *Config, opts ManagerOptions) *Manager {
 	if now == nil {
 		now = time.Now
 	}
-	return &Manager{cfg: cfg, provider: opts.Provider, auth: opts.Auth,
-		ledger: opts.Ledger, now: now, tunnels: map[string]*Tunnel{}}
+	interval := opts.ReapInterval
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	m := &Manager{cfg: cfg, provider: opts.Provider, auth: opts.Auth,
+		ledger: opts.Ledger, now: now, tunnels: map[string]*Tunnel{},
+		done: make(chan struct{}), stopped: make(chan struct{})}
+	go func() {
+		defer close(m.stopped)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-m.done:
+				return
+			case <-ticker.C:
+				m.Reap(context.Background())
+			}
+		}
+	}()
+	return m
+}
+
+// Shutdown stops the background reaper. Idempotent; live tunnels die with
+// the process via their provider handles.
+func (m *Manager) Shutdown() {
+	select {
+	case <-m.done:
+	default:
+		close(m.done)
+	}
+	<-m.stopped
 }
 
 // Open starts the tunnel workload for a declared endpoint. Re-opening a live

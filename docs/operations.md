@@ -1,6 +1,6 @@
 ---
 description: Operator runbook — stack lifecycle, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
-last_verified: 2026-10-24
+last_verified: 2026-10-25
 ---
 
 # Operations
@@ -154,6 +154,33 @@ hub-toolhub; that listener serves only human-action paths (control/gateway
 → 404) and the gateway accepts an https `form_url` only when host equals the
 configured origin exactly. `hubctl connector link --onboarding <id>` prints a
 pending URL; `--confirm` completes an awaiting-confirmation onboarding.
+
+## Outbound exposure (tunnels)
+
+Opt-in per environment: `features.exposure` + a reviewed
+`connections/exposure/config.yaml` (provider `sish`, pinned relay host keys,
+`zone`, `key_ref` file:/broker:, bounds, named endpoints). Render fails
+closed without a valid config; the config mounts read-only at
+`/state/exposure` and `HUB_EXPOSURE_CONFIG` is wired into the runtime env.
+`hubctl exposure enrol --dir <space>` materializes the relay keypair
+(file refs) or stages a broker grant (broker refs) and prints VPS enrolment
+steps — it never prints the private half.
+
+The agent gets `exposure_list/status/open/close` — name-only: bind,
+target and public name are composed by the hub from the reviewed config
+(`<endpoint>.<zone>.<relay.domain>`), never from tool arguments.
+`access: ro` keeps list/status and denies open/close. Every transition is
+audited (`audit/exposure.jsonl`); opens are capped by `max_exposures` and
+reaped at `lifetime_seconds` (background reaper; idle reap deferred until a
+provider-side traffic signal exists).
+
+`hub_public_listener` targets resolve through `HUB_PUBLIC_TARGET` —
+set it to toolhub's public-listener address (e.g. `HUB_PUBLIC_LISTEN=0.0.0.0:8091`
+on hub-toolhub plus `HUB_PUBLIC_TARGET=toolhub:8091` in `secrets.<env>.env`
+so it reaches the runtime env). It fronts the same restricted human-action
+surface as the public listener; it is not a second public surface. Live
+sish acceptance requires the operator VPS + domain and is tracked in
+CHG-0166.
 
 ## Broker operations
 

@@ -178,5 +178,6 @@ func (t *Tools) Server() *mcp.Server {
 		add(op, op+": official API operation; hh_apply sends externally")
 	}
 	t.registerSSH(s)
+	t.registerExposure(s)
 	return s
 }

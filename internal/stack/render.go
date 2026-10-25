@@ -43,8 +43,14 @@ func Config(s Settings) M {
 			e["HUB_SSH_WRITE"] = fmt.Sprint(s.Has("ssh_write"))
 			e["HUB_SSH_SHELL"] = fmt.Sprint(s.Has("ssh_shell"))
 			e["HUB_SSH_TUNNEL"] = fmt.Sprint(s.Has("ssh_tunnel"))
+		}
+		if s.Has("exposure") {
+			e["HUB_EXPOSURE_CONFIG"] = "/state/exposure/config.yaml"
+		}
+		if s.Has("ssh") || s.Has("exposure") {
 			// The runtime is already a provisioned broker adapter; the tools
-			// process acquires/materializes SSH keys through the same identity.
+			// process acquires/materializes capability keys through the same
+			// identity — SSH host keys and exposure tunnel credentials alike.
 			for _, key := range []string{"URL", "KEY_FILE", "KEY_ID", "ISSUER", "CA_FILE"} {
 				e["HUB_CREDENTIAL_BROKER_RUNTIME_"+key] = "${HUB_CREDENTIAL_BROKER_RUNTIME_" + key + "}"
 			}

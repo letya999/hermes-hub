@@ -123,6 +123,10 @@ func HubToolsDefinition() api.ToolDefinition {
 			tool("ssh_tunnel_open", "ssh.tunnel", "Open a tunnel through a declared SSH host when the tunnel grant is active.", api.WriteEffect, use("tunnel", "ssh"), str("host"), str("name")),
 			tool("ssh_tunnel_list", "ssh.tunnel_list", "List open SSH tunnels.", api.ReadEffect, use("tunnel", "ssh")),
 			tool("ssh_tunnel_close", "ssh.tunnel_close", "Close an SSH tunnel.", api.WriteEffect, use("tunnel", "ssh"), str("id")),
+			tool("exposure_list", "exposure.list", "List live public exposures on this runtime.", api.ReadEffect, use("list", "exposure")),
+			tool("exposure_status", "exposure.status", "Show one live public exposure by endpoint name.", api.ReadEffect, use("read", "exposure"), str("name")),
+			tool("exposure_open", "exposure.open", "Open one declared endpoint's public tunnel.", api.WriteEffect, use("open", "exposure"), str("name")),
+			tool("exposure_close", "exposure.close", "Close one live public exposure by endpoint name.", api.WriteEffect, use("close", "exposure"), str("name")),
 		},
 	}
 }

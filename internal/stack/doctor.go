@@ -67,6 +67,11 @@ func DoctorScope(s Settings, userSecrets, orgSecrets map[string]string) []string
 			issues = append(issues, "create connections/ssh/config.yaml for ssh (see docs/operations.md)")
 		}
 	}
+	if s.Has("exposure") && s.SpaceDir != "" {
+		if info, err := os.Lstat(filepath.Join(s.SpaceDir, "connections", "exposure", "config.yaml")); err != nil || !info.Mode().IsRegular() {
+			issues = append(issues, "create connections/exposure/config.yaml for exposure (see docs/operations.md)")
+		}
+	}
 	for name, server := range s.MCP {
 		for _, values := range []map[string]string{server.Headers, server.Env} {
 			for _, value := range values {
