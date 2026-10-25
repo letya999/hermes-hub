@@ -54,6 +54,18 @@ func TestValidation(t *testing.T) {
 		t.Fatal("wildcard owner accepted")
 	}
 }
+func TestExposureFeatureRegistered(t *testing.T) {
+	found := false
+	for _, f := range Features {
+		if f.Name == "exposure" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("exposure feature flag missing")
+	}
+}
+
 func TestRenderAllFeatures(t *testing.T) {
 	d := t.TempDir()
 	root := t.TempDir()

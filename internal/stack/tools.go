@@ -410,6 +410,9 @@ func LegacyFeatureTools(features []string) (map[string]ToolEntry, []string, erro
 	for _, feature := range features {
 		switch {
 		case feature == "workspace":
+		// exposure wires no `tools:`/`ingress:` entries — its surface lives
+		// on the ToolHub facade and its workload on the admission path.
+		case feature == "exposure":
 		case feature == "telegram" || feature == "slack_app":
 			ingress = append(ingress, feature)
 		case featureToolMigration[feature].Via != "":

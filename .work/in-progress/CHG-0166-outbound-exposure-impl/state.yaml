@@ -1,0 +1,32 @@
+schema: 1
+change: CHG-0166
+title: Outbound exposure primitive — implementation
+status: in_progress
+branch: feat/m18-exposure-hosting-ssh
+updated: 2026-10-25
+phase: implementation
+adr: ADR-0077
+spec: SPEC-0075
+requirements: [R1, R2, R3, R4, R5, R6, R7, R8]
+depends_on: [CHG-0165]
+github_milestone: M18
+github_issue: 145
+design_status: accepted
+implementation_status: in_progress
+slices:
+  S1-exposure-config: not_started
+  S2-sish-keypair-enrol: not_started
+  S3-exposure-tools-audit: not_started
+  S4-sish-workload-admission: not_started
+  S5-reaper-receipts: not_started
+  S6-live-acceptance-docs: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining: []
+limitations:
+  - live acceptance requires an operator VPS + domain (sish) — not available in this environment
