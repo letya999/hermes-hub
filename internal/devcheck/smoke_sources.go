@@ -214,7 +214,7 @@ func supervisorDesiredSourcesSmoke(ctx context.Context, m *supervisor.Manager, b
 	}
 	for range 2 {
 		if err := spool.DispatchDueOccurrences(time.Now(), func(job communication.Job) error {
-			if job.Envelope != template.Envelope {
+			if !job.Envelope.Equal(template.Envelope) {
 				return fmt.Errorf("routine authority changed")
 			}
 			return nil
