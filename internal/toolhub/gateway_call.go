@@ -10,8 +10,34 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"log/slog"
+	"os"
+	"strconv"
 	"time"
 )
+
+// chargeRunCall counts a call against its run (job) correlation;
+// HUB_TOOL_CALLS_PER_RUN bounds per-run fan-out.
+func (g *Gateway) chargeRunCall(corr api.CallCorrelation) error {
+	if corr.JobID == "" {
+		return nil
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.runCap == 0 {
+		g.runCap, _ = strconv.Atoi(os.Getenv("HUB_TOOL_CALLS_PER_RUN"))
+		if g.runCap == 0 {
+			g.runCap = 256
+		}
+	}
+	if g.runCalls == nil {
+		g.runCalls = map[string]int{}
+	}
+	if g.runCalls[corr.JobID] >= g.runCap {
+		return fmt.Errorf("%w: run tool-call ceiling", api.ErrUnauthorized)
+	}
+	g.runCalls[corr.JobID]++
+	return nil
+}
 
 func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedName string, arguments map[string]any) (*mcp.CallToolResult, error) {
 	corr := api.CallCorrelationFrom(ctx)
@@ -19,6 +45,9 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 		corr.ToolCallID = api.NewToolCallID()
 	}
 	ctx = api.WithCallCorrelation(ctx, corr)
+	if err := g.chargeRunCall(corr); err != nil {
+		return nil, err
+	}
 	var out *mcp.CallToolResult
 	err := g.Store.AuthorizeProjectedCall(auth, projectedName, arguments, g.admitGoverned(auth, func(projected api.ProjectedTool, effective api.EffectiveBinding) error {
 		if auth.CapabilityProfile != "" && g.AuditWrite == nil {

@@ -1,6 +1,6 @@
 ---
 description: supervisor — per-space runtime spawner/manager; owns warm pools, docker exec agent-tools path, control channel.
-last_verified: 2026-10-25
+last_verified: 2026-10-26
 ---
 
 # supervisor
@@ -46,6 +46,16 @@ spaces dir at `/spaces`, project `config/` read-only, and the host
   successful no-op — next lease spawns fresh. Secondary spaces
   (`infra: false`) render no `hermes-runtime` service; the infra owner drops
   it when `HUB_RUNTIME_SUPERVISOR_URL` is configured.
+- `/v1/runtimes` entries expose a read-only `consumers` projection (lease
+  kind, owner class, expiry) and `wait_reason` for expected waits — parked
+  approvals/streams are reported, not remediated. Genuine anomalies append
+  one bounded line per class to `signals.jsonl` under the supervisor state
+  dir and keep a persisted per-runtime incident record.
+- One bounded `docker stats --no-stream` call per watchdog sweep samples
+  owned containers' CPU/memory; sweep cost is reported through
+  `WatchdogMetrics` (in-memory counters).
+- `HUB_MAX_RUNTIMES_PER_PRINCIPAL` caps live runtimes one principal may own;
+  unset means the global `MaxConcurrent` semaphore is the only cap.
 
 ## Boundaries
 

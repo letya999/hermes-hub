@@ -40,6 +40,13 @@ evidence:
   - Source hits and diagnostic error DTOs no longer echo adjacent source bytes or arbitrary provider/controller error text.
   - Scope rotation survives spool reopening; queued MCP admission no longer blocks release control.
   - Failed MCP cleanup retains capacity until verified removal succeeds.
+  - #326: lease consumers/renewal/generation fencing, expected-wait classification, bounded incident ledger + signals.jsonl, one-call-per-sweep docker stats seam, WatchdogMetrics.
+  - #326: shared stateless connectors track active consumer bindings; release/reconcile/idle-reap respect live consumers; persistent retention validated.
+  - #326: bounded MCP recovery budget — three recoveries degrade the connection.
+  - #327: budget.json atomic reservation/settlement ledger; reconcile closes crash-orphaned demand; unmeasured usage counts unknown at estimate.
+  - #327: ceilings — pending per-scope/total, daily scope tokens, spool bytes, outbox deliveries, per-run tool calls, per-principal runtimes.
+  - #327: control deliveries claim first and bypass the ordinary outbox cap; aged background jobs promote to foreground.
+  - Measurements: .work/in-progress/CHG-0164-m17-code-closeout/measurements.md (sweep ~57ms/20 runtimes, reserve+settle ~55ms, 20-scope claim ~18ms).
   - Targeted race gates pass for supervisor, communication, ToolHub and commodel.
   - Six changed packages passed their complete test suites; the communication wake fixture was updated for the hold projection and passes its targeted regression.
 remaining: [implementation, regression_tests, documentation, final_just_check]

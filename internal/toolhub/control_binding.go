@@ -443,7 +443,12 @@ func (c *ControlPlane) releaseBindingWorkloads(onboarding api.Onboarding, purge 
 	}
 	switch definition.Workload.Class {
 	case api.Shared:
-		release(api.WorkloadInstanceID(definition.DefinitionID, api.Shared, "", ""))
+		// Consumer-aware release: a shared workload's demand is the set of
+		// active bindings on its definition. Releasing this binding removes
+		// one consumer; the shared process stays alive while others remain.
+		if c.Store.SharedConsumers(definition.DefinitionID, definition.Version, onboarding.BindingID) == 0 {
+			release(api.WorkloadInstanceID(definition.DefinitionID, api.Shared, "", ""))
+		}
 	case api.PerUser:
 		ownerID := binding.ToolBindingID
 		if binding.ConnectionID != "" {

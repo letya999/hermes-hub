@@ -175,6 +175,11 @@ func (c *genericController) CleanupIdle(ctx context.Context, now time.Time) []st
 		if !ok {
 			continue
 		}
+		// Persistent retention pins a stateless shared workload: consumer
+		// demand is explicit, and idleness alone never reaps the process.
+		if workload.plan.Definition.Workload.Retention == "persistent" {
+			continue
+		}
 		if err := c.removeWorkload(ctx, workload, workload.plan.Definition.Workload.Stateful); err != nil {
 			continue
 		}

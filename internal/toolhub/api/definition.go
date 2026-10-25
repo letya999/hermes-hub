@@ -403,6 +403,9 @@ func (d ToolDefinition) Validate() error {
 	default:
 		return fmt.Errorf("%w: shareable mode", ErrInvalid)
 	}
+	if d.Workload.Retention == "persistent" && (d.Workload.Class != Shared || d.Workload.Stateful) {
+		return fmt.Errorf("%w: persistent retention needs a stateless shared workload", ErrInvalid)
+	}
 	if d.Workload.Class == PerJob && d.Workload.Stateful && !HasMountSource(d.Execution.Mounts, "job-state") {
 		return fmt.Errorf("%w: stateful per-job workload needs job-state", ErrInvalid)
 	}

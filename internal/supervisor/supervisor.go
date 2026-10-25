@@ -51,15 +51,35 @@ const (
 	LeaseUncertain LeaseKind = "uncertain"
 )
 
+// A lease is the persisted record of one lifecycle consumer's demand on a
+// runtime generation: who holds it, under which trusted scope and why, how
+// long the hold is valid, and the last health observed while it was held.
+// The fields stay backend-neutral — nothing here encodes Docker semantics —
+// so the same consumer registry maps onto k3s or microVM supervisors later.
 type Lease struct {
-	ID          string    `json:"id"`
-	Kind        LeaseKind `json:"kind"`
-	PrincipalID string    `json:"principal_id"`
-	ContextID   string    `json:"context_id"`
-	RuntimeMode string    `json:"runtime_mode"`
-	Generation  string    `json:"generation"`
-	Owner       string    `json:"owner,omitempty"`
-	ExpiresAt   time.Time `json:"expires_at,omitempty"`
+	ID             string    `json:"id"`
+	Kind           LeaseKind `json:"kind"`
+	PrincipalID    string    `json:"principal_id"`
+	ContextID      string    `json:"context_id"`
+	RuntimeMode    string    `json:"runtime_mode"`
+	Generation     string    `json:"generation"`
+	Owner          string    `json:"owner,omitempty"`
+	Scope          string    `json:"scope,omitempty"`
+	Reason         string    `json:"reason,omitempty"`
+	ObservedHealth string    `json:"observed_health,omitempty"`
+	RenewedAt      time.Time `json:"renewed_at,omitempty"`
+	ExpiresAt      time.Time `json:"expires_at,omitempty"`
+}
+
+// LeaseConsumer is the allowlisted status projection of a lease: identity and
+// lifecycle only, never request payloads, auth material or environment data.
+type LeaseConsumer struct {
+	ID        string    `json:"id"`
+	Kind      LeaseKind `json:"kind"`
+	Owner     string    `json:"owner,omitempty"`
+	Scope     string    `json:"scope,omitempty"`
+	Reason    string    `json:"reason,omitempty"`
+	ExpiresAt time.Time `json:"expires_at,omitempty"`
 }
 
 // DefaultWarmTTL is the project idle-retention default; a shorter window
@@ -78,20 +98,27 @@ type Config struct {
 	Environment    string
 	WarmTTL        time.Duration
 	MaxConcurrent  int
-	CPU            string
-	Memory         string
-	PIDs           int
-	RuntimePort    int
-	PortBase       int
-	PortRange      int
-	HTTP           *http.Client
+	// MaxPerPrincipal bounds live runtimes owned by one principal; zero
+	// leaves the global MaxConcurrent semaphore as the only capacity cap.
+	MaxPerPrincipal int
+	CPU             string
+	Memory          string
+	PIDs            int
+	RuntimePort     int
+	PortBase        int
+	PortRange       int
+	HTTP            *http.Client
 	// StreamHTTP serves run-stream calls: no total timeout, bounded header
 	// wait; the request context carries the run budget and the body an idle
 	// deadline.
 	StreamHTTP *http.Client
 	Probe      func(context.Context, string, string) error
 	Command    func(context.Context, ...string) ([]byte, error)
-	Now        func() time.Time
+	// Stats samples resource counters for owned containers in one bounded
+	// call per watchdog sweep. A nil sampler records nothing; failures are
+	// observations, never authority to stop anything.
+	Stats func(context.Context, []string) (map[string]ContainerStat, error)
+	Now   func() time.Time
 	// AllowWildcardListen permits Serve to bind a non-loopback control-plane
 	// address; without it wildcard or empty hosts are refused.
 	AllowWildcardListen bool
@@ -102,6 +129,7 @@ type Binding struct {
 	ContextID        string
 	RuntimeID        string
 	RuntimeMode      string
+	ScopeID          string
 	UserID           string
 	OrganizationID   string
 	PolicyVersion    string
@@ -142,6 +170,14 @@ type Runtime struct {
 	LastUsed     time.Time         `json:"last_used"`
 	IdleDeadline time.Time         `json:"idle_deadline,omitempty"`
 	Managed      bool              `json:"managed,omitempty"`
+	// Consumers and WaitReason are read projections, never persisted state:
+	// they describe live demand at read time and stay empty on disk.
+	Consumers  []LeaseConsumer `json:"consumers,omitempty"`
+	WaitReason string          `json:"wait_reason,omitempty"`
+	// Resource counters sampled once per watchdog sweep; reporting only, they
+	// never feed remediation decisions.
+	CPUPercent float64 `json:"cpu_percent,omitempty"`
+	MemBytes   int64   `json:"mem_bytes,omitempty"`
 }
 
 type runtimeEntry struct {
@@ -149,6 +185,7 @@ type runtimeEntry struct {
 	binding              Binding
 	auth                 string
 	leases               map[string]Lease
+	incidents            map[string]Incident
 	restored             bool
 	consecutiveUncertain int
 	readinessBadSince    time.Time
@@ -169,6 +206,7 @@ type Manager struct {
 	leaseSeq  uint64
 	statePath string
 	jobs      map[string]jobRecord
+	watchdog  WatchdogMetrics
 }
 
 type persistedManager struct {
@@ -182,9 +220,10 @@ type persistedManager struct {
 }
 
 type persistedRuntime struct {
-	Binding Binding          `json:"binding,omitempty"`
-	Runtime Runtime          `json:"runtime"`
-	Leases  map[string]Lease `json:"leases,omitempty"`
+	Binding   Binding             `json:"binding,omitempty"`
+	Runtime   Runtime             `json:"runtime"`
+	Leases    map[string]Lease    `json:"leases,omitempty"`
+	Incidents map[string]Incident `json:"incidents,omitempty"`
 }
 
 type jobRecord struct {
@@ -281,6 +320,9 @@ func New(cfg Config) (*Manager, error) {
 	if cfg.MaxConcurrent <= 0 {
 		cfg.MaxConcurrent = 8
 	}
+	if value, parseErr := strconv.Atoi(strings.TrimSpace(os.Getenv("HUB_MAX_RUNTIMES_PER_PRINCIPAL"))); parseErr == nil && value > 0 {
+		cfg.MaxPerPrincipal = value
+	}
 	if cfg.CPU == "" {
 		cfg.CPU = "2"
 	}
@@ -317,6 +359,9 @@ func New(cfg Config) (*Manager, error) {
 		cfg.Command = func(ctx context.Context, args ...string) ([]byte, error) {
 			return exec.CommandContext(ctx, cfg.Docker, args...).CombinedOutput()
 		}
+	}
+	if cfg.Stats == nil {
+		cfg.Stats = dockerStatsCommand(cfg.Command)
 	}
 	if cfg.AdminAuth == "" {
 		cfg.AdminAuth = os.Getenv("HUB_SUPERVISOR_ADMIN_AUTH")
@@ -391,7 +436,7 @@ func (m *Manager) load() error {
 		if item.Binding.PrincipalID != "" && runtimeKey(item.Binding) != key {
 			return errors.New("persisted binding mismatch")
 		}
-		m.items[key] = &runtimeEntry{Runtime: item.Runtime, binding: item.Binding, leases: item.Leases, restored: true}
+		m.items[key] = &runtimeEntry{Runtime: item.Runtime, binding: item.Binding, leases: item.Leases, incidents: item.Incidents, restored: true}
 	}
 	if dirty {
 		return m.persistLocked()
@@ -402,7 +447,7 @@ func (m *Manager) load() error {
 func (m *Manager) persistLocked() error {
 	state := persistedManager{Holds: m.holds, Pins: m.pins, Generation: m.gen, LeaseSeq: m.leaseSeq, Items: make([]persistedRuntime, 0, len(m.items)), Jobs: m.jobs, Orphans: m.orphans}
 	for _, item := range m.items {
-		state.Items = append(state.Items, persistedRuntime{Runtime: item.Runtime, Binding: item.binding, Leases: item.leases})
+		state.Items = append(state.Items, persistedRuntime{Runtime: item.Runtime, Binding: item.binding, Leases: item.leases, Incidents: item.incidents})
 	}
 	b, err := json.Marshal(state)
 	if err != nil {
@@ -475,7 +520,10 @@ func (m *Manager) Status(binding Binding) (Runtime, bool, error) {
 	if !ok {
 		return Runtime{PrincipalID: binding.PrincipalID, ContextID: binding.ContextID, RuntimeID: binding.RuntimeID, State: Stopped}, false, nil
 	}
-	return runtime.Runtime, true, nil
+	status := runtime.Runtime
+	status.Consumers = runtime.consumers()
+	status.WaitReason = m.expectedWaitLocked(runtime)
+	return status, true, nil
 }
 
 func (m *Manager) Handler() http.Handler { return http.HandlerFunc(m.serveHTTP) }
@@ -493,7 +541,10 @@ func (m *Manager) list(w http.ResponseWriter, r *http.Request) {
 	m.mu.Lock()
 	values := make([]Runtime, 0, len(m.items))
 	for _, item := range m.items {
-		values = append(values, item.Runtime)
+		runtime := item.Runtime
+		runtime.Consumers = item.consumers()
+		runtime.WaitReason = m.expectedWaitLocked(item)
+		values = append(values, runtime)
 	}
 	m.mu.Unlock()
 	writeJSON(w, http.StatusOK, values)
@@ -536,7 +587,7 @@ func (m *Manager) bindingFor(request hubruntime.ExecuteRequest) (Binding, error)
 	if strings.HasPrefix(request.ScopeID, "user:") && request.OrganizationID != "" && request.OrganizationID != "personal" {
 		organizationRoot = filepath.Join(m.cfg.SpacesRoot, request.OrganizationID)
 	}
-	return m.normalize(Binding{PrincipalID: request.PrincipalID, ContextID: contextID, RuntimeID: request.RuntimeID, RuntimeMode: "gateway", UserID: request.UserID, OrganizationID: request.OrganizationID, PolicyVersion: request.PolicyVersion, OrganizationRoot: organizationRoot})
+	return m.normalize(Binding{PrincipalID: request.PrincipalID, ContextID: contextID, RuntimeID: request.RuntimeID, RuntimeMode: "gateway", ScopeID: request.ScopeID, UserID: request.UserID, OrganizationID: request.OrganizationID, PolicyVersion: request.PolicyVersion, OrganizationRoot: organizationRoot})
 }
 
 func runtimeKey(binding Binding) string {

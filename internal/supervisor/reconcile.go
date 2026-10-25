@@ -20,6 +20,7 @@ var (
 // ReconcileHealth inspects actual runtime state independently from the desired
 // work ledger. Unknown inspection failures never authorize idle shutdown.
 func (m *Manager) ReconcileHealth(ctx context.Context, now time.Time) {
+	started := time.Now()
 	m.mu.Lock()
 	holds := make([]AdministrativeHold, 0, len(m.holds))
 	for _, hold := range m.holds {
@@ -120,6 +121,9 @@ func (m *Manager) ReconcileHealth(ctx context.Context, now time.Time) {
 			remediate = wedged && len(current.leases) == 0 && current.consecutiveUncertain >= 2 &&
 				now.Sub(current.readinessBadSince) >= wedgedReadinessWindow &&
 				now.Sub(current.lastRemediatedAt) >= wedgedRemediationCooldown
+			if remediate {
+				m.recordIncidentLocked(current, "wedged")
+			}
 			if desired && recoverableRuntime(current.Runtime) && current.FailureGeneration != current.Generation {
 				m.recordRuntimeFailureLocked(&current.Runtime)
 			}
@@ -146,6 +150,46 @@ func (m *Manager) ReconcileHealth(ctx context.Context, now time.Time) {
 		}
 		lock.Unlock()
 	}
+	m.sampleStats(ctx)
+	m.mu.Lock()
+	m.watchdog.Sweeps++
+	m.watchdog.Entries = len(keys)
+	m.watchdog.LastSweepAt = now
+	m.watchdog.LastSweepMS = time.Since(started).Milliseconds()
+	m.mu.Unlock()
+}
+
+// sampleStats takes one bounded resource reading for every owned container
+// per sweep. A failed or absent sampler records nothing and never feeds
+// remediation decisions — stats are reporting, not authority.
+func (m *Manager) sampleStats(ctx context.Context) {
+	if m.cfg.Stats == nil {
+		return
+	}
+	m.mu.Lock()
+	containers := make([]string, 0, len(m.items))
+	for _, entry := range m.items {
+		if entry.Container != "" && entry.State != Stopped {
+			containers = append(containers, entry.Container)
+		}
+	}
+	m.mu.Unlock()
+	if len(containers) == 0 {
+		return
+	}
+	statsCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	stats, err := m.cfg.Stats(statsCtx, containers)
+	cancel()
+	if err != nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, entry := range m.items {
+		if stat, ok := stats[entry.Container]; ok {
+			entry.CPUPercent, entry.MemBytes = stat.CPUPercent, stat.MemBytes
+		}
+	}
 }
 
 // reconcileUnconfirmed retries observation for jobs whose outcome was never
@@ -171,6 +215,15 @@ func (m *Manager) reconcileUnconfirmed(ctx context.Context, now time.Time) {
 			// rather than left unknown forever.
 			timeout := hubruntime.ExecuteResponse{JobID: record.Request.JobID, RunID: record.Response.RunID, SessionID: record.Response.SessionID, RuntimeGeneration: record.Generation, Status: "failed", LastEvent: "run.timeout"}
 			_ = m.finishJobGeneration(record.Request, timeout, "failed", record.Generation)
+			m.mu.Lock()
+			for _, entry := range m.items {
+				if entry.PrincipalID == record.Request.PrincipalID && entry.ContextID == record.Request.ContextID {
+					m.recordIncidentLocked(entry, "timeout")
+					break
+				}
+			}
+			_ = m.persistLocked()
+			m.mu.Unlock()
 			continue
 		}
 		lock := m.lockFor("observation:" + executeJobKey(record.Request))

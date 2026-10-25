@@ -1114,12 +1114,53 @@ func (s *Store) Authorize(auth identity.Envelope, bindingID string, admit func(a
 		return err
 	}
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	effective, err := s.resolveLocked(auth, bindingID)
+	s.mu.RUnlock()
+	if err != nil {
+		return err
+	}
+	if err := s.noteRecovery(effective); err != nil {
+		return err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	effective, err = s.resolveLocked(auth, bindingID)
 	if err != nil {
 		return err
 	}
 	return admit(effective)
+}
+
+// noteRecovery bounds connector respawns: an admission whose recorded
+// workload is known but not running is a restart, and restarts are counted
+// on the connection. Exhausting the budget degrades the connection instead
+// of restart-looping — a human re-enables it after fixing the cause. An
+// absent workload record is first demand, not recovery.
+func (s *Store) noteRecovery(effective api.EffectiveBinding) error {
+	const recoveryBudget = 3
+	if effective.Connection == nil || effective.WorkloadID == "" {
+		return nil
+	}
+	s.mu.Lock()
+	workload, known := s.workloads[effective.WorkloadID]
+	if !known || workload.Status == api.RunningStatus || workload.Status == api.StartingStatus {
+		s.mu.Unlock()
+		return nil
+	}
+	connection, ok := s.connections[effective.Connection.ConnectionID]
+	if !ok {
+		s.mu.Unlock()
+		return nil
+	}
+	connection.RecoveryCount++
+	s.connections[connection.ConnectionID] = connection
+	exhausted := connection.RecoveryCount >= recoveryBudget
+	s.mu.Unlock()
+	if exhausted {
+		_, _ = s.markDegradedIfCurrent(connection.ConnectionID, &connection, "", "")
+		return fmt.Errorf("%w: recovery budget exhausted", api.ErrDegraded)
+	}
+	return s.persist()
 }
 
 func (s *Store) resolveLocked(auth identity.Envelope, bindingID string) (api.EffectiveBinding, error) {
@@ -1300,6 +1341,40 @@ type snapshot struct {
 	BrokerGrants        []api.BrokerBindingGrant        `json:"broker_grants,omitempty"`
 	CapabilityChanges   []api.CapabilityChange          `json:"capability_changes,omitempty"`
 	BindingChanges      []bindingChange                 `json:"binding_changes,omitempty"`
+}
+
+// SharedConsumers counts the active bindings that still consume one shared
+// workload: the persisted binding registry is the consumer ledger for a
+// shared workload, so demand survives a restart of both the hub and the
+// controller process. exceptBindingID excludes the binding being released.
+func (s *Store) SharedConsumers(definitionID, version, exceptBindingID string) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.sharedConsumersLocked(definitionID, version, exceptBindingID)
+}
+
+// SharedBindingConsumed reports whether a labelled binding belongs to a
+// shared workload that still has live consumers — the guard the reconciler
+// applies before purging an orphan whose spawning connection is gone.
+func (s *Store) SharedBindingConsumed(bindingID string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	binding, ok := s.bindings[bindingID]
+	if !ok || binding.WorkloadClass != api.Shared {
+		return false
+	}
+	return s.sharedConsumersLocked(binding.DefinitionID, binding.DefinitionVersion, "") > 0
+}
+
+func (s *Store) sharedConsumersLocked(definitionID, version, exceptBindingID string) int {
+	count := 0
+	for _, binding := range s.bindings {
+		if binding.ToolBindingID == exceptBindingID || binding.Status != api.ActiveStatus || binding.DefinitionID != definitionID || binding.DefinitionVersion != version || binding.WorkloadClass != api.Shared {
+			continue
+		}
+		count++
+	}
+	return count
 }
 
 func (s *Store) stopAffectedLocked(connectionID string) []string {

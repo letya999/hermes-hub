@@ -159,6 +159,18 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 		m.mu.Unlock()
 		return Runtime{}, errors.New("owned orphan runtimes require inspection before new capacity")
 	}
+	if !slotHeld && m.cfg.MaxPerPrincipal > 0 {
+		live := 0
+		for k, entry := range m.items {
+			if k != key && entry.PrincipalID == binding.PrincipalID && (entry.State == Starting || entry.State == Ready || entry.State == Idle || entry.State == Busy) {
+				live++
+			}
+		}
+		if live >= m.cfg.MaxPerPrincipal {
+			m.mu.Unlock()
+			return Runtime{}, errors.New("per-principal runtime ceiling reached")
+		}
+	}
 	m.mu.Unlock()
 	if !slotHeld {
 		select {

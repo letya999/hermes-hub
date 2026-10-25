@@ -1,6 +1,6 @@
 ---
 description: communication-hub — channel gateway: Telegram/Slack adapters, inbound routing, credential forms, spool, control API.
-last_verified: 2026-10-24
+last_verified: 2026-10-26
 ---
 
 # communication-hub
@@ -27,7 +27,13 @@ everything entering or leaving the human conversation. Listens
   control, sibling-runtime calls authenticated by `toolhub-tokens.json`
   (`HUB_COMMUNICATION_TOKENS_FILE`).
 - **Spool**: durable outbound queue on the `communication-hub-data` volume
-  (`HUB_COMMUNICATION_SPOOL=/data`).
+  (`HUB_COMMUNICATION_SPOOL=/data`). Every admitted job holds exactly one
+  reservation in `budget.json` (written before the job file, settled once at
+  terminal outcome; unmeasured usage settles at the estimate and counts as
+  `unknown`). Fair claim rotates by scope and promotes background jobs parked
+  past the 5-minute aging bound. Control deliveries (approvals, marked
+  control sends) claim ahead of ordinary replies and are exempt from the
+  ordinary outbox cap.
 
 ## Key env
 
@@ -48,6 +54,12 @@ starting with `/` both run it, so mock replies land in `mock-sent` and
 never enqueue an agent job,
 `HUB_STT_URL`/`HUB_TTS_URL` + `media.auth` when `transcription` is on,
 `HUB_CREDENTIAL_BROKER_APPROVE_*` (broker client for approvals).
+
+Admission ceilings (host-only, read at spool open): `HUB_SPOOL_MAX_PENDING_PER_SCOPE`
+(default 16), `HUB_SPOOL_MAX_PENDING_TOTAL` (128), `HUB_SCOPE_TOKEN_DAILY`
+(0 = unsettled+reserved token ceiling off), `HUB_SPOOL_MAX_BYTES` (256 MiB
+pending-queue storage), `HUB_SPOOL_MAX_DELIVERIES` (1024 ordinary pending
+outbox entries; control lane exempt).
 
 ## Boundaries
 

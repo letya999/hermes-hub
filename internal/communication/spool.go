@@ -95,6 +95,11 @@ type Spool struct {
 	// mutex and root; it owns the schedules/occurrences/watchers/digests
 	// subtrees and borrows the rest of the spool through its Deps seam.
 	rt *routines.Engine
+	// budget is the atomic reservation/settlement ledger (budget.json);
+	// budgetBroken marks an unreadable ledger so admission fails closed.
+	budget       *budgetLedger
+	budgetBroken error
+	limits       spoolLimits
 }
 
 // Notify exposes the coalesced wake channel. Buffered with capacity one: a
@@ -154,7 +159,12 @@ func InspectSpool(root string) (*Spool, error) {
 }
 
 func openSpool(root string, create bool) (*Spool, error) {
-	s := &Spool{root: root, secret: map[string]string{}, inFlight: map[string]string{}, notify: make(chan struct{}, 1)}
+	s := &Spool{root: root, secret: map[string]string{}, inFlight: map[string]string{}, notify: make(chan struct{}, 1), budget: &budgetLedger{Reservations: map[string]reservation{}, Scopes: map[string]*scopeBudget{}}, limits: limitsFromEnv()}
+	if ledger, err := loadBudget(root); err != nil {
+		s.budgetBroken = err
+	} else {
+		s.budget = ledger
+	}
 	for _, dir := range []string{"pending", "running", "done", "failed", "outbox/pending", "outbox/sending", "outbox/done", "outbox/failed", "mappings", "mappings/by-key", "conversations", "events", "occurrences", "schedules", "tasks", "tasks/current", "tasks/topic", "callbacks", "inbound", "watchers", "digests", "mock-sent", "mock-links", "tmp", "goals"} {
 		if !create {
 			continue
@@ -200,7 +210,9 @@ func (s *Spool) recover() error {
 	if err := s.recoverStreamEvents(); err != nil {
 		return err
 	}
-	return nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reconcileBudgetLocked()
 }
 
 func (s *Spool) recoverJobs() error {
@@ -637,6 +649,17 @@ func (s *Spool) enqueueLocked(job Job) (bool, error) {
 		job.TextSHA256 = hex.EncodeToString(h[:])
 		job.Text = ""
 	}
+	// Reconcile before reserving: unmapped completions and crash-window
+	// orphans release their reservation here, so stale demand never blocks
+	// fresh admission.
+	if err := s.reconcileBudgetLocked(); err != nil {
+		return false, err
+	}
+	// The ledger reserves before the job file exists: a crash between the two
+	// leaves an open reservation reconcile releases — never unpriced work.
+	if err := s.reserveLocked(job); err != nil {
+		return false, err
+	}
 	if err := atomicJSON(filepath.Join(s.root, "pending", spoolFileID(job.ID)+".json"), job); err != nil {
 		return false, err
 	}
@@ -708,13 +731,18 @@ func (s *Spool) ClaimJob() (*Job, error) {
 		return nil, err
 	}
 	type candidate struct {
-		name string
-		job  Job
+		name   string
+		job    Job
+		parked time.Time
 	}
 	var candidates []candidate
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil, err
 		}
 		b, err := os.ReadFile(filepath.Join(s.root, "pending", entry.Name()))
 		if err != nil {
@@ -724,7 +752,7 @@ func (s *Spool) ClaimJob() (*Job, error) {
 		if err := json.Unmarshal(b, &job); err != nil {
 			return nil, err
 		}
-		candidates = append(candidates, candidate{entry.Name(), job})
+		candidates = append(candidates, candidate{entry.Name(), job, info.ModTime()})
 	}
 	var cursor struct {
 		Scope string `json:"scope"`
@@ -738,6 +766,13 @@ func (s *Spool) ClaimJob() (*Job, error) {
 		return nil, err
 	}
 	// Rotate scopes durably before prioritizing interactive work within one scope.
+	// A background job parked longer than agingAfter counts as foreground:
+	// steady interactive traffic can never starve scheduled work forever.
+	agingAfter := 5 * time.Minute
+	now := time.Now().UTC()
+	background := func(c candidate) bool {
+		return c.job.Trigger == "cron" && now.Sub(c.parked) < agingAfter
+	}
 	sort.SliceStable(candidates, func(i, j int) bool {
 		a, b := candidates[i].job, candidates[j].job
 		ak, bk := jobContextKey(a.PrincipalID, a.ContextID), jobContextKey(b.PrincipalID, b.ContextID)
@@ -747,8 +782,8 @@ func (s *Spool) ClaimJob() (*Job, error) {
 			}
 			return ak < bk
 		}
-		if (a.Trigger == "cron") != (b.Trigger == "cron") {
-			return a.Trigger != "cron"
+		if background(candidates[i]) != background(candidates[j]) {
+			return !background(candidates[i])
 		}
 		return candidates[i].name < candidates[j].name
 	})

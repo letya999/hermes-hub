@@ -54,6 +54,10 @@ type Gateway struct {
 	// adminMu serializes diagnostics calls; adminLast paces them (issue 141).
 	adminMu   sync.Mutex
 	adminLast time.Time
+	// runCalls bounds tool fan-out per admitted run: the count is in-memory —
+	// a restart forgives the budget, which matches the per-run contract.
+	runCalls map[string]int
+	runCap   int
 }
 
 type gatewayProjection struct {
@@ -323,7 +327,8 @@ func (g *Gateway) serveToolCall(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "tool is not a projected read tool", http.StatusForbidden)
 		return
 	}
-	result, err := g.call(r.Context(), auth, body.Tool, body.Arguments)
+	corr := api.HeaderCorrelation(r.Header.Get(api.HeaderJobID), r.Header.Get(api.HeaderRunID))
+	result, err := g.call(api.WithCallCorrelation(r.Context(), corr), auth, body.Tool, body.Arguments)
 	if err != nil {
 		http.Error(w, "tool call failed", http.StatusBadGateway)
 		return

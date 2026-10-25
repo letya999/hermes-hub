@@ -210,6 +210,11 @@ func (s *Spool) updateMappingLocked(jobID string, outcome RunOutcome, status str
 	if err := s.writeMappingLocked(mapping); err != nil {
 		return err
 	}
+	if terminal {
+		if err := s.settleReservationLocked(jobID); err != nil {
+			return err
+		}
+	}
 	if !mappingHoldsContext(mapping) {
 		key := jobContextKey(mapping.PrincipalID, mapping.ContextID)
 		if s.inFlight[key] == mapping.JobID {
