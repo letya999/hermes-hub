@@ -377,6 +377,17 @@ func (c *ControlPlane) completeBrokerAdmission(ctx context.Context, auth identit
 		latest.Phase = api.PhaseAwaitingCreds
 		latest.Error = "Проверка не прошла. " + credentialProbeFailure(err)
 		latest.ErrorCode = api.OpCodeProbeFailed
+		if admitted.Source.ArchiveDigest != "" {
+			// Built evidence survives a rejected credential so rotation only
+			// re-runs the tools/list probe instead of rebuilding the artifact.
+			// Tools and tool-contract digests stay empty — confirmation still
+			// waits for a real credentialed tools/list.
+			admitted.Tools = nil
+			admitted.Source.ToolContractDigest = ""
+			admitted.Source.ToolContractSource = ""
+			latest.Definition = &admitted
+			latest.DefinitionID, latest.DefinitionVersion = admitted.DefinitionID, admitted.Version
+		}
 	} else {
 		latest.Definition = &admitted
 		latest.DefinitionID, latest.DefinitionVersion = admitted.DefinitionID, admitted.Version
