@@ -23,7 +23,14 @@ func MaterializeSoulEffective(dir string, s Settings) error {
 		return err
 	}
 	body := strings.TrimRight(string(persona), "\n") + "\n\n" + ChannelContract
-	return atomic(filepath.Join(dir, "generated", "soul-effective."+s.Environment+".md"), []byte(body))
+	path := filepath.Join(dir, "generated", "soul-effective."+s.Environment+".md")
+	if err := atomic(path, []byte(body)); err != nil {
+		return err
+	}
+	// The file mounts read-only into a uid-10001 runtime: like the sibling
+	// hermes-effective materialization it must stay world-readable past
+	// atomic's 0600, or the container dies on SOUL.md permission denied.
+	return os.Chmod(path, 0644)
 }
 
 // writeModelRegistry materializes the merged spaces/org/user models.yaml into

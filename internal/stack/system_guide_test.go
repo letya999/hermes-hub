@@ -36,6 +36,32 @@ func TestSystemGuideRejectsCustomCatalogContentsInReservedDirectory(t *testing.T
 	}
 }
 
+// The materialized effective SOUL mounts read-only into a uid-10001 runtime:
+// writing it through atomic() leaves 0600 and the container dies on
+// "open /state/hermes/SOUL.md: permission denied". Every rewrite — render or
+// spawn — must leave it world-readable like the sibling hermes-effective.
+func TestMaterializeSoulEffectiveStaysContainerReadable(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "generated"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SOUL.md"), []byte("# persona\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := MaterializeSoulEffective(dir, Settings{Environment: "dev"}); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(filepath.Join(dir, "generated", "soul-effective.dev.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm()&0004 == 0 {
+			t.Fatalf("soul-effective not readable by the runtime uid: %v", info.Mode())
+		}
+	}
+}
+
 func TestSystemGuideRoutingSurvivesCustomPersona(t *testing.T) {
 	for _, mode := range []string{"", "managed"} {
 		for _, env := range []string{"dev", "prod"} {
