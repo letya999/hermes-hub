@@ -194,6 +194,9 @@ func mergeAudit(fields map[string]string, corr api.CallCorrelation) map[string]s
 }
 
 func (g *Gateway) audit(event string, fields map[string]string) error {
+	if event == "admin.diagnostics" && (g == nil || g.AuditWrite == nil) {
+		return errors.New("durable administrative audit required")
+	}
 	var err error
 	if g != nil && g.AuditWrite != nil {
 		err = g.AuditWrite(event, fields)

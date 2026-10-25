@@ -73,6 +73,7 @@ type Config struct {
 	HostSpacesRoot string
 	StateDir       string
 	RuntimeAuth    string
+	AdminAuth      string
 	Environment    string
 	WarmTTL        time.Duration
 	MaxConcurrent  int
@@ -154,6 +155,7 @@ type runtimeEntry struct {
 }
 
 type Manager struct {
+	holds     map[string]AdministrativeHold
 	pins      map[string]hubruntime.ExecuteRequest
 	orphans   []OrphanRuntime
 	cfg       Config
@@ -169,6 +171,7 @@ type Manager struct {
 }
 
 type persistedManager struct {
+	Holds      map[string]AdministrativeHold        `json:"holds,omitempty"`
 	Pins       map[string]hubruntime.ExecuteRequest `json:"pins,omitempty"`
 	Orphans    []OrphanRuntime                      `json:"orphans,omitempty"`
 	Generation uint64                               `json:"generation"`
@@ -184,6 +187,7 @@ type persistedRuntime struct {
 }
 
 type jobRecord struct {
+	OperationalEpoch uint64                     `json:"operational_epoch,omitempty"`
 	Dispatching      bool                       `json:"dispatching,omitempty"`
 	CancelRequested  bool                       `json:"cancel_requested,omitempty"`
 	Controls         map[string]controlRecord   `json:"controls,omitempty"`
@@ -313,7 +317,10 @@ func New(cfg Config) (*Manager, error) {
 			return exec.CommandContext(ctx, cfg.Docker, args...).CombinedOutput()
 		}
 	}
-	m := &Manager{pins: map[string]hubruntime.ExecuteRequest{}, cfg: cfg, items: map[string]*runtimeEntry{}, locks: map[string]*sync.Mutex{}, sem: make(chan struct{}, cfg.MaxConcurrent), slots: map[string]struct{}{}, jobs: map[string]jobRecord{}, statePath: filepath.Join(cfg.StateDir, "supervisor.json")}
+	if cfg.AdminAuth == "" {
+		cfg.AdminAuth = os.Getenv("HUB_SUPERVISOR_ADMIN_AUTH")
+	}
+	m := &Manager{holds: map[string]AdministrativeHold{}, pins: map[string]hubruntime.ExecuteRequest{}, cfg: cfg, items: map[string]*runtimeEntry{}, locks: map[string]*sync.Mutex{}, sem: make(chan struct{}, cfg.MaxConcurrent), slots: map[string]struct{}{}, jobs: map[string]jobRecord{}, statePath: filepath.Join(cfg.StateDir, "supervisor.json")}
 	if err := m.load(); err != nil {
 		return nil, err
 	}
@@ -333,6 +340,9 @@ func (m *Manager) load() error {
 		return fmt.Errorf("invalid supervisor state: %w", err)
 	}
 	m.gen, m.leaseSeq, m.orphans = state.Generation, state.LeaseSeq, state.Orphans
+	if state.Holds != nil {
+		m.holds = state.Holds
+	}
 	for key, request := range state.Pins {
 		if request.Text != "" || request.Envelope.Validate(request.PrincipalID, request.ContextID, request.RuntimeID, request.PolicyVersion) != nil || key != pinKey(request) {
 			return errors.New("invalid persisted operator pin")
@@ -389,7 +399,7 @@ func (m *Manager) load() error {
 }
 
 func (m *Manager) persistLocked() error {
-	state := persistedManager{Pins: m.pins, Generation: m.gen, LeaseSeq: m.leaseSeq, Items: make([]persistedRuntime, 0, len(m.items)), Jobs: m.jobs, Orphans: m.orphans}
+	state := persistedManager{Holds: m.holds, Pins: m.pins, Generation: m.gen, LeaseSeq: m.leaseSeq, Items: make([]persistedRuntime, 0, len(m.items)), Jobs: m.jobs, Orphans: m.orphans}
 	for _, item := range m.items {
 		state.Items = append(state.Items, persistedRuntime{Runtime: item.Runtime, Binding: item.binding, Leases: item.leases})
 	}

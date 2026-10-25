@@ -313,6 +313,10 @@ func TestWorkerReObservesUnknownAdmission(t *testing.T) {
 	}
 	var resumed atomic.Int64
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/holds" && r.Method == http.MethodGet && r.Header.Get("Authorization") == "Bearer secret" {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
 		if r.URL.Path != "/v1/resume" {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -325,7 +329,7 @@ func TestWorkerReObservesUnknownAdmission(t *testing.T) {
 	}))
 	defer api.Close()
 	transport := &fakeAPI{}
-	g := &Gateway{spool: s, api: transport, runner: HTTPRunner{URL: api.URL, Auth: "secret", Spool: s, JobsAPI: true}, config: Config{RuntimeURL: api.URL, Supervised: true, Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}}, now: time.Now}
+	g := &Gateway{spool: s, api: transport, runner: HTTPRunner{URL: api.URL, Auth: "secret", Spool: s, JobsAPI: true}, config: Config{RuntimeURL: api.URL, RuntimeAuth: "secret", Supervised: true, Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}}, now: time.Now}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { defer close(done); g.worker(ctx) }()

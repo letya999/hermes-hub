@@ -1,0 +1,46 @@
+schema: 1
+change: CHG-0163
+title: M17 code closeout and operational protection
+status: in_progress
+branch: feat/m17-ops-admin-delivery
+updated: 2026-10-25
+phase: implementation
+adr: ADR-0076
+spec: SPEC-0075
+requirements: [R1, R2, R3, R4, R5]
+depends_on: []
+github_milestone: M17 — Ops, Admin & Delivery
+github_issues: [141, 195, 197, 198, 206, 326, 327, 328, 329]
+design_status: in_progress
+implementation_status: in_progress
+slices:
+  S1-original-surfaces: in_progress
+  S2-owned-resources: in_progress
+  S3-budgets-admission: in_progress
+  S4-master-containment: in_progress
+  S5-personal-supervision: not_started
+validation:
+  documents: passed_before_latest_updates
+  just_check: pending_after_changes
+  prior_baseline_coverage: 86.25_percent
+  targeted_race: passed_2026_10_25
+  docker_check: deferred_by_owner
+  live_acceptance: deferred_by_owner
+evidence:
+  - Duration regression red then green through HTTPRunner and the actual usage writer.
+  - Invalid-space-manifest no-spool-mutation regression and existing apply tests pass.
+  - Admin audit-failure regression red then green for all three diagnostics routes.
+  - Canary rollback, cleanup retention and atomic pin replacement regressions red then green.
+  - Master hold authority/input boundary, restart admission denial and versioned administrative resume tests pass.
+  - Master containment verifies owned immutable resources, retries after restart, and refuses resume until containment completes.
+  - Old queued jobs, wakes and mapped outbox replies are fenced; new messages carry a fresh immutable admission epoch.
+  - Hold notices transfer durably to the gateway outbox before acknowledgement and survive administrative resume.
+  - Delivery-aware watch distinguishes pending, delivered and uncertain outcomes without printing reply content.
+  - Admin diagnostics require a durable ledger and preserve administrator and target through the real endpoint writer.
+  - Source hits and diagnostic error DTOs no longer echo adjacent source bytes or arbitrary provider/controller error text.
+  - Scope rotation survives spool reopening; queued MCP admission no longer blocks release control.
+  - Failed MCP cleanup retains capacity until verified removal succeeds.
+  - Targeted race gates pass for supervisor, communication, ToolHub and commodel.
+  - Six changed packages passed their complete test suites; the communication wake fixture was updated for the hold projection and passes its targeted regression.
+remaining: [implementation, regression_tests, documentation, final_just_check]
+limitations: [no_Docker_or_live_actions_authorized]

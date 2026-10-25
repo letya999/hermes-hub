@@ -55,15 +55,31 @@ type adminOnboardingView struct {
 }
 
 func adminOnboardingOf(o api.Onboarding) adminOnboardingView {
+	code := o.ErrorCode
+	switch code {
+	case "", api.OpCodeAmbiguousTarget, api.OpCodeAmbiguousEntrypoint, api.OpCodeAmbiguousCredentialContract, api.OpCodeUnsupportedAuth, api.OpCodeProbeFailed, api.OpCodeCleanupIncomplete, api.OpCodeNotPermitted, api.OpCodeQuota, "unsupported_credential_contract":
+	default:
+		code = "unclassified_failure"
+	}
+	if code == "" && o.Error != "" {
+		code = "unclassified_failure"
+	}
+	finalizers := make([]api.Finalizer, 0, len(o.Finalizers))
+	for _, f := range o.Finalizers {
+		if f.Error != "" {
+			f.Error = "recorded failure"
+		}
+		finalizers = append(finalizers, f)
+	}
 	required := make([]adminField, 0, len(o.Required))
 	for _, h := range o.Required {
 		required = append(required, adminField{Name: h.Name})
 	}
 	return adminOnboardingView{
 		OnboardingID: o.OnboardingID, PrincipalID: o.PrincipalID, Phase: o.Phase,
-		Error: o.Error, ErrorCode: o.ErrorCode, DefinitionID: o.DefinitionID,
+		Error: strings.ReplaceAll(code, "_", " "), ErrorCode: code, DefinitionID: o.DefinitionID,
 		SourceURL: o.SourceURL, CommitSHA: o.CommitSHA,
-		Required: required, Finalizers: o.Finalizers,
+		Required: required, Finalizers: finalizers,
 	}
 }
 
@@ -120,7 +136,10 @@ func (g *Gateway) serveAdminInspectSource(w http.ResponseWriter, r *http.Request
 	}
 	g.adminGate()
 	defer g.adminDone()
-	_ = g.audit("admin.diagnostics", map[string]string{"admin": auth.PrincipalID, "target": "inspect:" + req.OnboardingID})
+	if err := g.audit("admin.diagnostics", map[string]string{"admin": auth.PrincipalID, "target": "inspect:" + req.OnboardingID}); err != nil {
+		http.Error(w, "audit unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	onboarding, err := g.Store.OnboardingRecord(req.OnboardingID)
 	if errors.Is(err, api.ErrNotFound) {
 		http.NotFound(w, r)
@@ -154,10 +173,9 @@ func (g *Gateway) serveAdminInspectSource(w http.ResponseWriter, r *http.Request
 		if req.Grep != "" && len(hits) < 64 {
 			if body, err := io.ReadAll(tr); err == nil {
 				if at := bytes.Index(body, []byte(req.Grep)); at >= 0 {
-					end := min(at+64, len(body))
 					hits = append(hits, adminInspectHit{
 						Path:    hdr.Name,
-						Snippet: strings.ReplaceAll(string(body[at:end]), "\n", " "),
+						Snippet: req.Grep,
 					})
 				}
 			}
@@ -183,7 +201,10 @@ func (g *Gateway) serveAdminOnboardings(w http.ResponseWriter, r *http.Request) 
 	}
 	g.adminGate()
 	defer g.adminDone()
-	_ = g.audit("admin.diagnostics", map[string]string{"admin": auth.PrincipalID, "target": "onboardings"})
+	if err := g.audit("admin.diagnostics", map[string]string{"admin": auth.PrincipalID, "target": "onboardings"}); err != nil {
+		http.Error(w, "audit unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	list, err := g.Store.ListOnboardings()
 	if err != nil {
 		http.Error(w, "registry unavailable", http.StatusServiceUnavailable)
@@ -218,7 +239,10 @@ func (g *Gateway) serveAdminDiagnose(w http.ResponseWriter, r *http.Request) {
 	}
 	g.adminGate()
 	defer g.adminDone()
-	_ = g.audit("admin.diagnostics", map[string]string{"admin": auth.PrincipalID, "target": id})
+	if err := g.audit("admin.diagnostics", map[string]string{"admin": auth.PrincipalID, "target": id}); err != nil {
+		http.Error(w, "audit unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	onboarding, err := g.Store.OnboardingRecord(id)
 	if errors.Is(err, api.ErrNotFound) {
 		http.NotFound(w, r)

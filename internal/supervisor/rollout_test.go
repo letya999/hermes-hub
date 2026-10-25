@@ -1,6 +1,7 @@
 package supervisor
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -8,6 +9,35 @@ import (
 	"testing"
 	"time"
 )
+
+func TestRolloutPinsReplaceAtomically(t *testing.T) {
+	dir := t.TempDir()
+	pins := RolloutPins{Envs: map[string]RolloutEnv{"prod": {Current: RolloutPin{Image: "img:old"}}}}
+	if err := WriteRolloutPins(dir, pins); err != nil {
+		t.Fatal(err)
+	}
+	path := rolloutPinsPath(dir)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(dir, "previous-inode.json")
+	if err := os.Link(path, alias); err != nil {
+		t.Fatal(err)
+	}
+	pins.Envs["prod"] = RolloutEnv{Current: RolloutPin{Image: "img:new"}}
+	if err := WriteRolloutPins(dir, pins); err != nil {
+		t.Fatal(err)
+	}
+	oldInode, err := os.ReadFile(alias)
+	if err != nil || !bytes.Equal(oldInode, before) {
+		t.Fatalf("pin writer modified the published inode: %s %v", oldInode, err)
+	}
+	after, err := ReadRolloutPins(dir)
+	if err != nil || after.Envs["prod"].Current.Image != "img:new" {
+		t.Fatalf("replacement not published: %+v %v", after, err)
+	}
+}
 
 func TestRolloutPinsRoundTrip(t *testing.T) {
 	dir := t.TempDir()

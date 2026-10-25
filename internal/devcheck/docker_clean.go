@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/supervisor"
 )
 
 // dockerRunner executes one docker CLI call and returns its combined output.
@@ -90,6 +92,30 @@ func cliDocker(ctx context.Context, args ...string) ([]byte, error) {
 // compose files; "test" is always kept because docker-check produces it.
 func activeImageTags(root string) (map[string]bool, error) {
 	keep := map[string]bool{"test": true}
+	spaces, err := filepath.Glob(filepath.Join(root, "spaces", "*", "generated", "image-pins.json"))
+	if err != nil {
+		return nil, err
+	}
+	for _, path := range spaces {
+		pins, err := supervisor.ReadRolloutPins(filepath.Dir(filepath.Dir(path)))
+		if err != nil {
+			return nil, fmt.Errorf("cannot safely clean images: %w", err)
+		}
+		for _, env := range pins.Envs {
+			images := []string{env.Current.Image}
+			if env.Previous != nil {
+				images = append(images, env.Previous.Image)
+			}
+			if env.Canary != nil {
+				images = append(images, env.Canary.Image)
+			}
+			for _, image := range images {
+				if tag, ok := strings.CutPrefix(image, "hermes-hub:"); ok {
+					keep[tag] = true
+				}
+			}
+		}
+	}
 	for _, pattern := range []string{
 		filepath.Join(root, "spaces", "*", "compose*.yaml"),
 		filepath.Join(root, "spaces", "*", "compose*.yml"),

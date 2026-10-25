@@ -27,16 +27,17 @@ const maxPromptBytes = 2 * 1024 * 1024
 // ExecuteRequest is the private communication-hub to runtime contract.
 type ExecuteRequest struct {
 	identity.Envelope
-	JobID          string `json:"job_id"`
-	OrganizationID string `json:"organization_id"`
-	UserID         string `json:"user_id"`
-	ActorID        string `json:"actor_id"`
-	ScopeID        string `json:"scope_id"`
-	Channel        string `json:"channel"`
-	Trigger        string `json:"trigger"`
-	IdempotencyKey string `json:"idempotency_key"`
-	Text           string `json:"text"`
-	InboundID      string `json:"inbound_id,omitempty"`
+	OperationalEpoch uint64 `json:"operational_epoch,omitempty"`
+	JobID            string `json:"job_id"`
+	OrganizationID   string `json:"organization_id"`
+	UserID           string `json:"user_id"`
+	ActorID          string `json:"actor_id"`
+	ScopeID          string `json:"scope_id"`
+	Channel          string `json:"channel"`
+	Trigger          string `json:"trigger"`
+	IdempotencyKey   string `json:"idempotency_key"`
+	Text             string `json:"text"`
+	InboundID        string `json:"inbound_id,omitempty"`
 	// Instructions is the hub-pinned presentation guidance for this admitted
 	// run (ephemeral system prompt upstream). It is never a synthetic user
 	// message and never carries authorization.

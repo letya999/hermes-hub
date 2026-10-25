@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/commodel"
@@ -107,6 +108,61 @@ func (o watchOptions) fetchMapping() (string, error) {
 	return m.Status, nil
 }
 
+func (o watchOptions) deliveryStatus() (string, error) {
+	if o.SpoolDir == "" {
+		return "", nil
+	}
+	pending, delivered, uncertain := false, false, false
+	for _, state := range []string{"pending", "sending", "failed", "done"} {
+		entries, err := os.ReadDir(filepath.Join(o.SpoolDir, "outbox", state))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+				continue
+			}
+			body, err := os.ReadFile(filepath.Join(o.SpoolDir, "outbox", state, entry.Name()))
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			} // The delivery worker may move this entry.
+			if err != nil {
+				return "", err
+			}
+			var delivery struct {
+				JobID string `json:"job_id"`
+			}
+			if err := json.Unmarshal(body, &delivery); err != nil {
+				return "", err
+			}
+			if delivery.JobID != o.Job {
+				continue
+			}
+			switch state {
+			case "failed":
+				uncertain = true
+			case "done":
+				delivered = true
+			default:
+				pending = true
+			}
+		}
+	}
+	if uncertain {
+		return "uncertain", nil
+	}
+	if pending {
+		return "pending", nil
+	}
+	if delivered {
+		return "delivered", nil
+	}
+	return "", nil
+}
+
 func runWatch(ctx context.Context, out io.Writer, o watchOptions) error {
 	if o.Scope != "" {
 		return runWatchScope(ctx, out, o)
@@ -116,7 +172,7 @@ func runWatch(ctx context.Context, out io.Writer, o watchOptions) error {
 		ctx, cancel = context.WithTimeout(ctx, o.Timeout)
 		defer cancel()
 	}
-	last := ""
+	last, lastDelivery := "", ""
 	for {
 		var status string
 		var err error
@@ -132,7 +188,15 @@ func runWatch(ctx context.Context, out io.Writer, o watchOptions) error {
 			last = status
 			fmt.Fprintf(out, "%s job %s %s\n", time.Now().UTC().Format(time.RFC3339), o.Job, status)
 		}
-		if watchTerminal(status) {
+		delivery, err := o.deliveryStatus()
+		if err != nil {
+			return err
+		}
+		if delivery != "" && delivery != lastDelivery {
+			lastDelivery = delivery
+			fmt.Fprintf(out, "%s job %s delivery %s\n", time.Now().UTC().Format(time.RFC3339), o.Job, delivery)
+		}
+		if watchTerminal(status) && delivery != "pending" {
 			return nil
 		}
 		select {

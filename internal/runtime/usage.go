@@ -23,6 +23,8 @@ type UsageRequest struct {
 // upstream API carries no authoritative value; consumers must render null as
 // "unknown" and never estimate from transcript text or billed totals.
 type SessionUsage struct {
+	// DurationMS is the measured gateway attempt wall time, not session age.
+	DurationMS        *int64    `json:"duration_ms,omitempty"`
 	Object            string    `json:"object"`
 	DeclaredSessionID string    `json:"declared_session_id"`
 	SessionID         string    `json:"session_id"`

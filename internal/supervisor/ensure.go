@@ -18,6 +18,12 @@ import (
 )
 
 func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) {
+	m.mu.Lock()
+	held := m.holds[holdKey(binding.PrincipalID, binding.ContextID)].Active
+	m.mu.Unlock()
+	if held {
+		return Runtime{}, errors.New("administrative hold")
+	}
 	binding, err := m.normalize(binding)
 	if err != nil {
 		return Runtime{}, err

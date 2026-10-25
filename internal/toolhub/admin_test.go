@@ -8,11 +8,13 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/audit"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
@@ -50,10 +52,20 @@ func adminFixture(t *testing.T, audits *[]string) (*Gateway, http.Handler) {
 			"alice-principal-token-0000000000000": auth,
 		},
 	}
-	if audits != nil {
-		g.Audit = func(event string, fields map[string]string) {
+	ledger, err := audit.Open(filepath.Join(t.TempDir(), "admin-audit.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.AuditWrite = func(event string, fields map[string]string) error {
+		record := audit.NewEvent("tool-call", fields["admin"], "read")
+		record.Name = fields["target"]
+		if err := ledger.Append(record); err != nil {
+			return err
+		}
+		if audits != nil {
 			*audits = append(*audits, event+":"+fields["admin"]+":"+fields["target"])
 		}
+		return nil
 	}
 	handler, err := g.Handler()
 	if err != nil {
@@ -118,8 +130,8 @@ func TestAdminDiagnoseCrossPrincipal(t *testing.T) {
 			t.Fatalf("diagnose leaked capability field %q: %s", banned, body)
 		}
 	}
-	// Finalizer detail is the forensic payload.
-	if !strings.Contains(body, "workload") || !strings.Contains(body, "rm timeout") {
+	// Keep lifecycle metadata, but never echo arbitrary controller prose.
+	if !strings.Contains(body, "workload") || !strings.Contains(body, "recorded failure") || strings.Contains(body, "rm timeout") {
 		t.Fatalf("finalizers missing: %s", body)
 	}
 	if w := adminCall(handler, "alice-principal-token-0000000000000", http.MethodGet, "/v1/admin/diagnose/ob-1", ""); w.Code != http.StatusForbidden {
@@ -160,8 +172,9 @@ func TestAdminInspectSource(t *testing.T) {
 	// Real repository tars interleave directory entries; they must not stop
 	// the traversal.
 	_ = tw.WriteHeader(&tar.Header{Name: "pkg/", Typeflag: tar.TypeDir, Mode: 0755})
-	_ = tw.WriteHeader(&tar.Header{Name: "server.go", Mode: 0644, Size: int64(len("package main // uses API_TOKEN\n"))})
-	_, _ = tw.Write([]byte("package main // uses API_TOKEN\n"))
+	sourceText := "package main // uses API_TOKEN=synthetic-source-secret\n"
+	_ = tw.WriteHeader(&tar.Header{Name: "server.go", Mode: 0644, Size: int64(len(sourceText))})
+	_, _ = tw.Write([]byte(sourceText))
 	_ = tw.WriteHeader(&tar.Header{Name: "README.md", Mode: 0644, Size: int64(len("# example mcp\n"))})
 	_, _ = tw.Write([]byte("# example mcp\n"))
 	_ = tw.Close()
@@ -187,6 +200,9 @@ func TestAdminInspectSource(t *testing.T) {
 	// Whole file bodies must not ship back — only bounded hits.
 	if strings.Contains(body, "package main") {
 		t.Fatalf("inspect leaked file body: %s", body)
+	}
+	if strings.Contains(body, "synthetic-source-secret") {
+		t.Error("source inspection disclosed a credential value beside a declaration")
 	}
 	for _, denied := range [][]any{
 		{"alice-principal-token-0000000000000", http.StatusForbidden},

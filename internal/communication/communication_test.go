@@ -844,6 +844,10 @@ func TestAcceptedJobWakesSupervisedRuntime(t *testing.T) {
 	var wakes []map[string]any
 	wake := make(chan map[string]any, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/holds" && r.Method == http.MethodGet && r.Header.Get("Authorization") == "Bearer secret" {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
 		if r.URL.Path == "/v1/wake" && r.Header.Get("Authorization") == "Bearer secret" {
 			var body map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&body)

@@ -1,11 +1,12 @@
 ---
 description: Architectural decisions and clearly marked proposals; append new records when changing direction.
-last_verified: 2026-10-20
+last_verified: 2026-10-25
 ---
 # Decisions
 
 | Record | Decision |
 |---|---|
+| [ADR-0076](ADR-0076-operational-protection.md) | Proposed: M17 hardening, owned resources, budgets, containment and personal supervision |
 | [ADR-0072](ADR-0072-ops-admin-delivery.md) | Ops/admin plane — file-read usage export, versioned space manifests, polling watch, rollout pins, admin token scope, isolated replay |
 | [ADR-0071](ADR-0071-dynamic-session-contract.md) | Bounded owner-only dynamic JSON session contracts |
 | [ADR-0070](ADR-0070-recipe-oauth.md) | Recipe-driven OAuth and lease-local token file views |

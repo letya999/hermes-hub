@@ -144,8 +144,21 @@ func LockSpool(root string) (func(), error) {
 // OpenSpool opens queue directories without classifying in-progress work.
 // Offline mutations must hold LockSpool until every write completes.
 func OpenSpool(root string) (*Spool, error) {
+	return openSpool(root, true)
+}
+
+// InspectSpool constructs query state without creating or repairing files.
+// Callers must acquire LockSpool and reopen before any mutation.
+func InspectSpool(root string) (*Spool, error) {
+	return openSpool(root, false)
+}
+
+func openSpool(root string, create bool) (*Spool, error) {
 	s := &Spool{root: root, secret: map[string]string{}, inFlight: map[string]string{}, notify: make(chan struct{}, 1)}
 	for _, dir := range []string{"pending", "running", "done", "failed", "outbox/pending", "outbox/sending", "outbox/done", "outbox/failed", "mappings", "mappings/by-key", "conversations", "events", "occurrences", "schedules", "tasks", "tasks/current", "tasks/topic", "callbacks", "inbound", "watchers", "digests", "mock-sent", "mock-links", "tmp"} {
+		if !create {
+			continue
+		}
 		if err := os.MkdirAll(filepath.Join(root, dir), 0700); err != nil {
 			return nil, err
 		}
@@ -713,11 +726,31 @@ func (s *Spool) ClaimJob() (*Job, error) {
 		}
 		candidates = append(candidates, candidate{entry.Name(), job})
 	}
-	// Interactive work outranks routine occurrences inside one context: a due
-	// cron job must not claim the context ahead of a user who just typed.
+	var cursor struct {
+		Scope string `json:"scope"`
+	}
+	cursorPath := filepath.Join(s.root, "admission-cursor.json")
+	if body, err := os.ReadFile(cursorPath); err == nil {
+		if err := json.Unmarshal(body, &cursor); err != nil {
+			return nil, err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	// Rotate scopes durably before prioritizing interactive work within one scope.
 	sort.SliceStable(candidates, func(i, j int) bool {
 		a, b := candidates[i].job, candidates[j].job
-		return jobContextKey(a.PrincipalID, a.ContextID) == jobContextKey(b.PrincipalID, b.ContextID) && a.Trigger != "cron" && b.Trigger == "cron"
+		ak, bk := jobContextKey(a.PrincipalID, a.ContextID), jobContextKey(b.PrincipalID, b.ContextID)
+		if ak != bk {
+			if (ak > cursor.Scope) != (bk > cursor.Scope) {
+				return ak > cursor.Scope
+			}
+			return ak < bk
+		}
+		if (a.Trigger == "cron") != (b.Trigger == "cron") {
+			return a.Trigger != "cron"
+		}
+		return candidates[i].name < candidates[j].name
 	})
 	for _, entry := range candidates {
 		name := entry.name
@@ -741,6 +774,10 @@ func (s *Spool) ClaimJob() (*Job, error) {
 			continue // Context serialization is per key; other contexts stay claimable.
 		}
 		to := filepath.Join(s.root, "running", name)
+		cursor.Scope = key
+		if err := atomicJSON(cursorPath, cursor); err != nil {
+			return nil, err
+		}
 		if err := os.Rename(pending, to); err != nil {
 			return nil, err
 		}

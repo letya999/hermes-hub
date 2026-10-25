@@ -55,6 +55,7 @@ func runImage(ctx context.Context, out io.Writer, dir, env string, smoke func(co
 			return err
 		}
 		e.Current = target
+		e.Canary = nil
 		pins.Envs[env] = e
 		return supervisor.WriteRolloutPins(dir, pins)
 	case "canary":

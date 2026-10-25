@@ -144,6 +144,9 @@ func (e *Engine) ListSchedules(caller identity.Envelope) ([]commodel.Schedule, e
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	entries, err := os.ReadDir(filepath.Join(e.root, "schedules"))
+	if os.IsNotExist(err) {
+		return []commodel.Schedule{}, nil
+	}
 	if err != nil {
 		return nil, err
 	}

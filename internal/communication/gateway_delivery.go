@@ -221,6 +221,29 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 			return
 		}
 		if found {
+			if g.config.Supervised {
+				holds, holdErr := g.masterHolds(ctx)
+				if holdErr != nil {
+					delivery.BlockedBy = "control_unavailable"
+					delivery.NotBefore = g.now().Add(5 * time.Second)
+					if g.spool.UpdateSending(*delivery) == nil {
+						_ = g.spool.RetryDelivery(delivery.ID)
+					}
+					return
+				}
+				for _, hold := range holds {
+					if hold.PrincipalID == mapping.PrincipalID && hold.ContextID == mapping.ContextID && (hold.Active || hold.Epoch != mapping.OperationalEpoch) {
+						delivery.BlockedBy = "stale_epoch"
+						if hold.Active {
+							delivery.BlockedBy = "administrative_hold"
+						}
+						if g.spool.UpdateSending(*delivery) == nil {
+							_ = g.spool.UncertainDelivery(delivery.ID)
+						}
+						return
+					}
+				}
+			}
 			user := g.user(mapping.PrincipalID)
 			current := user.Envelope(1)
 			if !user.Enabled || user.ID != mapping.PrincipalID || current.RuntimeID != mapping.RuntimeID || current.PolicyVersion != mapping.PolicyVersion || (delivery.DeliveryTargetID != "" && delivery.DeliveryTargetID != mapping.DeliveryTargetID) {

@@ -15,11 +15,29 @@ import (
 )
 
 func (m *Manager) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/v1/admin/holds" {
+		m.administrativeHold(w, r)
+		return
+	}
 	if !m.authorized(r) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
 	switch r.URL.Path {
+	case "/v1/holds":
+		if r.Method != http.MethodGet {
+			writeJSON(w, 405, map[string]string{"error": "method not allowed"})
+			return
+		}
+		m.mu.Lock()
+		holds := make([]AdministrativeHold, 0, len(m.holds))
+		for _, hold := range m.holds {
+			holds = append(holds, hold)
+		}
+		m.mu.Unlock()
+		writeJSON(w, 200, holds)
+	case "/v1/holds/ack":
+		m.ackHoldNotice(w, r)
 	case "/healthz":
 		if r.Method != http.MethodGet {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -89,6 +107,13 @@ func (m *Manager) wake(w http.ResponseWriter, r *http.Request) {
 	binding, err := m.bindingFor(request)
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	m.mu.Lock()
+	hold := m.holds[holdKey(request.PrincipalID, request.ContextID)]
+	m.mu.Unlock()
+	if hold.Active || request.OperationalEpoch != hold.Epoch {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "administrative admission fence"})
 		return
 	}
 	runtime, err := m.Ensure(r.Context(), binding)

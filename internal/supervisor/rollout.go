@@ -72,7 +72,23 @@ func WriteRolloutPins(spaceDir string, pins RolloutPins) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(rolloutPinsPath(spaceDir), body, 0o600)
+	f, err := os.CreateTemp(filepath.Dir(rolloutPinsPath(spaceDir)), ".image-pins-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.Write(body); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), rolloutPinsPath(spaceDir))
 }
 
 // validImageRef confines a pin to an OCI-style reference charset so the file

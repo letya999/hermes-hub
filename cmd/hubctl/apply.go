@@ -79,12 +79,7 @@ func applyFile(spoolDir, stateDir, profile, path, spaceDir string) (ApplyReport,
 	if !identity.ValidID(profile) {
 		return rep, fmt.Errorf("invalid user")
 	}
-	unlock, err := communication.LockSpool(spoolDir)
-	if err != nil {
-		return rep, err
-	}
-	defer unlock()
-	spool, err := communication.OpenSpool(spoolDir)
+	spool, err := communication.InspectSpool(spoolDir)
 	if err != nil {
 		return rep, err
 	}
@@ -130,6 +125,20 @@ func applyFile(spoolDir, stateDir, profile, path, spaceDir string) (ApplyReport,
 		spaceDocs, err = desiredSpaceDocs(cfg.Space, spaceDir)
 		if err != nil {
 			return rep, fmt.Errorf("space: %w", err)
+		}
+	}
+	unlock, err := communication.LockSpool(spoolDir)
+	if err != nil {
+		return rep, err
+	}
+	defer unlock()
+	spool, err = communication.OpenSpool(spoolDir)
+	if err != nil {
+		return rep, err
+	}
+	for _, r := range cfg.Routines {
+		if _, err := routineAction(spool, profile, r, false); err != nil {
+			return rep, err
 		}
 	}
 	for _, r := range cfg.Routines {
