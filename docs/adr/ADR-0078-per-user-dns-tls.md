@@ -4,7 +4,8 @@ last_verified: 2026-10-25
 ---
 # ADR-0078: Per-user subdomains — DNS/TLS addressing layer
 
-Status: Proposed 2026-10-25 — design for issue #146 (M18). Evidence:
+Status: Accepted 2026-10-25 — design for issue #146 (M18); owner directed
+implementation the same day. Evidence:
 `.work/in-progress/CHG-0167-dns-tls-addressing/research.md`.
 Upstream: consumes ADR-0077 D6 (sish terminates TLS on the operator VPS).
 

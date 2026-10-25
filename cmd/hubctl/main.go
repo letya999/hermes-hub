@@ -113,6 +113,9 @@ func run(ctx context.Context, args []string) error {
 	if op == "exposure" {
 		return runExposure(ctx, args[1:])
 	}
+	if op == "dns" {
+		return runDNS(ctx, args[1:])
+	}
 	if op == "credentials" {
 		return runCredentials(ctx, args[1:])
 	}

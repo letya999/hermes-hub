@@ -6,20 +6,20 @@ branch: feat/m18-exposure-dns
 updated: 2026-10-25
 phase: design-complete
 adr: ADR-0078
-spec: SPEC-0077
+spec: SPEC-0076
 requirements: []
 depends_on:
   - CHG-0165
   - CHG-0166
 github_milestone: M18
 github_issue: 146
-design_status: proposed
-implementation_status: not_started
+design_status: accepted
+implementation_status: in_progress
 slices:
   S1-provider-tls-research: green
   S2-adr-0078: green
-  S3-spec-0077: not_started
-  S4-impl-chgs: not_started
+  S3-spec-0076: green
+  S4-impl-chgs: in_progress
 validation:
   documents: pending
   just_check: not_run
@@ -30,8 +30,7 @@ evidence:
   - research.md provider matrix (regru/DO/GCP), REG.API IP-allowlist and TTL findings, TLS fork analysis
   - ADR-0078 proposed: delegated hub.<domain> reference, per-user wildcard via hub-side DNS-01 to sish
 remaining:
-  - ADR-0078 acceptance decision
-  - SPEC-0077 freeze, then implementation CHGs
+  - implementation CHG-0168 slices
 limitations:
   - live acceptance needs a real domain + provider accounts and a deployed sish VPS
   - regru-direct profile is unreachable from dynamic-IP executors by provider design (fail-closed, documented)

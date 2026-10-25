@@ -1,6 +1,6 @@
 # CHG-0167: Per-user subdomains — DNS/TLS addressing design pass (M18, issue #146)
 
-Chain: `docs/adr/ADR-0078-per-user-dns-tls.md` -> `specs/active/SPEC-0077-*` (after ADR acceptance)
+Chain: `docs/adr/ADR-0078-per-user-dns-tls.md` -> `specs/active/SPEC-0076-*` (after ADR acceptance)
 -> this plan -> `state.yaml`. Evidence: `research.md`.
 Consumes: ADR-0077/SPEC-0075 (#145). Blocks: #147 hosting layer.
 
@@ -40,7 +40,7 @@ Provider-neutral contract, four declarative profiles, delegated
 `hub.<domain>` reference path, per-user wildcard certs hub-issued via
 DNS-01 and pushed to sish, regru static-IP precondition fail-closed.
 
-### S3 SPEC-0077 draft — next
+### S3 SPEC-0076 draft — next
 
 Freeze: record contract (`Ensure`/`Remove`/`WaitAuthoritative`, typed
 errors, effective-TTL reporting), profile schema (provider kind, zone,

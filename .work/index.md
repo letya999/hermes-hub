@@ -16,7 +16,8 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
-| [CHG-0167](in-progress/CHG-0167-dns-tls-addressing/plan.md) | M18 #146: per-user subdomains design pass — research + ADR-0078 proposed (provider-neutral DNS, per-user wildcard via DNS-01 to sish) |
+| [CHG-0168](in-progress/CHG-0168-dns-tls-impl/plan.md) | M18 #146: SPEC-0076 implementation — dns contract, regru/DO/GCP clients, ACME DNS-01 issuer + sish push, hubctl/doctor |
+| [CHG-0167](in-progress/CHG-0167-dns-tls-addressing/plan.md) | M18 #146: per-user subdomains design pass — research + ADR-0078 accepted (provider-neutral DNS, per-user wildcard via DNS-01 to sish) |
 | [CHG-0166](in-progress/CHG-0166-outbound-exposure-impl/plan.md) | M18 #145: SPEC-0075 implementation — reviewed config, sish provider, manager, agenttools/stack wiring |
 | [CHG-0165](in-progress/CHG-0165-exposure-primitive/plan.md) | M18 #145: outbound exposure design pass — research + ADR-0077 accepted (sish reference, cloudflared alternate) |
 | [CHG-0164](in-progress/CHG-0164-auth-first-onboarding/plan.md) | M18 #293: auth-first onboarding completion — retry without rebuild, interactive marker |

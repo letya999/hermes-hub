@@ -6,7 +6,7 @@ last_verified: 2026-10-25
 
 | Record | Decision |
 |---|---|
-| [ADR-0078](ADR-0078-per-user-dns-tls.md) | Proposed: per-user subdomains — provider-neutral DNS record contract over regru/DO/delegated GCP+DO profiles, hub-issued per-user wildcard via DNS-01 pushed to sish |
+| [ADR-0078](ADR-0078-per-user-dns-tls.md) | Accepted: per-user subdomains — provider-neutral DNS record contract over regru/DO/delegated GCP+DO profiles, hub-issued per-user wildcard via DNS-01 pushed to sish |
 | [ADR-0077](ADR-0077-outbound-exposure.md) | Accepted: named public endpoints over opt-in per-binding tunnel workloads — sish reference provider, cloudflared managed alternate; Broker credentials, name-only agent surface |
 | [ADR-0076](ADR-0076-auth-first-admission-contract.md) | Proposed: built-evidence reuse on auth-first credential retry; `interactive` recipe marker classifies unsupported interactive auth |
 | [ADR-0075](ADR-0075-dual-engine-context-control.md) | Proposed: grant-selected dual engines for manual/automatic compaction and goal mode; sidecar transport to pinned upstream primitives |

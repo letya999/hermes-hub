@@ -7,6 +7,7 @@ record it points to. `archive/` holds only pre-renumbering originals.
 
 | Specification | Status |
 |---|---|
+| [SPEC-0076](active/SPEC-0076-per-user-dns-tls.md) | Frozen: per-user subdomains — provider-neutral DNS contract, four profiles, per-user wildcard via DNS-01 to sish, Broker credentials (M18 #146) |
 | [SPEC-0075](active/SPEC-0075-outbound-exposure.md) | Frozen: outbound exposure primitive — named endpoints, per-binding tunnel workloads, Broker credentials, sish/cloudflared profiles, bounds and audit (M18 #145) |
 | [SPEC-0074](active/SPEC-0074-goal-mode.md) | Draft: persistent /goal mode — dual engine, judge modes, spool continuation |
 | [SPEC-0073](active/SPEC-0073-manual-compaction.md) | Draft: manual compaction — dual engine, upstream semantics, turn-boundary safety |
