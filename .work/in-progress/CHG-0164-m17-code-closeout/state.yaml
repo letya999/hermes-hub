@@ -22,11 +22,11 @@ slices:
   S6-ssh-ca-minting: done
 validation:
   documents: passed_before_latest_updates
-  just_check: pending_after_changes
+  just_check: running
   prior_baseline_coverage: 86.25_percent
   targeted_race: passed_2026_10_25
-  docker_check: deferred_by_owner
-  live_acceptance: deferred_by_owner
+  docker_check: not_run_image_lane
+  live_acceptance: passed_2026_10_26_host_canaries
 evidence:
   - Duration regression red then green through HTTPRunner and the actual usage writer.
   - Invalid-space-manifest no-spool-mutation regression and existing apply tests pass.
@@ -53,5 +53,7 @@ evidence:
   - #328: event-driven personal supervisor — coalesced per-scope wakes, one in-flight Decide, scope-local server-validated ops (inspect/renew/pause/restart/escalate), 30-min renew bound, stale-generation denial, bounded review chaining (2) and drain (64), Decide-error applies nothing, audited personal-applied/denied signal lines, opt-in relayDecide via HUB_PERSONAL_MODEL + HUB_MANAGED_MODEL_URL (+OPENAI_API_KEY).
   - #142: certificate_ref "ca:<file>" mints fresh short-lived (10 min) user certs per dial from an operator CA key in the read-only config dir; serial+principals audited in bounded ssh-cert receipts; wrong-CA rejection and TTL/principal bounds covered end-to-end against the in-process sshd.
   - Race gates green for supervisor and sshcap after the additions; gosec/staticcheck/vet/gofmt/docs/integration-build clean.
-remaining: [final_just_check, live_docker_evidence, issue_closeout]
-limitations: [no_Docker_or_live_actions_authorized]
+  - 2026-10-26 live host canaries on real Docker (current tree, local runtime image): managed-supervisor-canary (spawn/internal-network/relay control/isolation attestation/restart+rollover/teardown), managed-network-canary (no default route, relay-only egress, sibling isolation), scratch-workload-canary (non-root read-only sandbox), TestDockerScratchExecPausedQuarantine — all passed.
+  - #329 fix: personal restart flag now requires `desired`, closing a hole where a model restart could revive a held scope while containment hit a transient removal failure (TestSupervisorPersonalCannotRestartHeldScope red→green).
+remaining: [final_just_check, issue_closeout]
+limitations: [docker_image_lane_not_run_host_canaries_only]

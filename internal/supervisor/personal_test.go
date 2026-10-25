@@ -312,6 +312,53 @@ func TestSupervisorRestartHonoredBySweep(t *testing.T) {
 	}
 }
 
+// A personal restart must never defeat an administrative hold: the master
+// hold is lifecycle authority, so a flagged scope is contained, not revived.
+func TestSupervisorPersonalCannotRestartHeldScope(t *testing.T) {
+	t.Setenv("HUB_SUPERVISOR_ADMIN_AUTH", "synthetic-admin-authority")
+	var restarts atomic.Int64
+	var started atomic.Bool
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "run" {
+			started.Store(true)
+		}
+		if args[0] == "inspect" && !started.Load() {
+			return nil, errors.New("not found")
+		}
+		if args[0] == "restart" {
+			restarts.Add(1)
+		}
+		if args[0] == "rm" {
+			return nil, errors.New("removal denied")
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	m.cfg.Decide = func(_ context.Context, req PersonalRequest) (PersonalDecision, error) {
+		return PersonalDecision{Action: "restart"}, nil
+	}
+	if _, err := m.Ensure(context.Background(), binding(root)); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/admin/holds", strings.NewReader(`{"principal_id":"alice","context_id":"alice","reason":"manual"}`))
+	request.Header.Set("Authorization", "Bearer synthetic-admin-authority")
+	w := httptest.NewRecorder()
+	m.Handler().ServeHTTP(w, request)
+	if w.Code != http.StatusOK && w.Code != http.StatusAccepted {
+		t.Fatalf("hold rejected: %d %s", w.Code, w.Body.String())
+	}
+	m.mu.Lock()
+	m.recordIncidentLocked(m.items["alice\x00alice\x00gateway"], "uncertain")
+	m.mu.Unlock()
+	m.drainPersonal(context.Background())
+	m.ReconcileHealth(context.Background(), m.cfg.Now())
+	if restarts.Load() != 0 {
+		t.Fatalf("personal restart defeated an administrative hold: %d restarts", restarts.Load())
+	}
+	if !m.holds["alice:alice"].Active {
+		t.Fatal("personal decision cleared the master hold")
+	}
+}
+
 // An escalate decision records an incident, which queues another wake —
 // the drain must still terminate instead of consuming its own output.
 func TestSupervisorEscalateDoesNotSelfLoop(t *testing.T) {
