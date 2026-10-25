@@ -98,6 +98,18 @@ type Settings struct {
 	// cache and keyless policy, and the deep-research bounds the bundled
 	// skill enforces. Empty keeps upstream autodetect and defaults.
 	Web WebSettings `yaml:"web,omitempty"`
+	// Compression declares bounded compression.* policy leaves (the
+	// selfsettings allowlist, provisioned at render time) plus the
+	// hub_sweep between-jobs policy.
+	Compression map[string]any `yaml:"compression,omitempty"`
+	// Context carries the compaction-engine grant. The yaml key is `context`
+	// (not `features`) because schema-1 files already own `features:` as a
+	// legacy string list; it renders to features.compact in the effective
+	// config, matching the selfsettings overlay path.
+	Context      ContextSection `yaml:"context,omitempty"`
+	Goals        ContextGoals   `yaml:"goals,omitempty"`
+	SummaryModel string         `yaml:"summary_model,omitempty"`
+	JudgeModel   string         `yaml:"judge_model,omitempty"`
 }
 
 // DefaultGlobalSkillsDir resolves the bundled catalog without changing operator rights.
@@ -444,6 +456,9 @@ func (s Settings) Validate() error {
 		}
 	}
 	if err := s.Web.validate(); err != nil {
+		return err
+	}
+	if err := s.validateContext(); err != nil {
 		return err
 	}
 	if s.BrowserPort < 1024 || s.BrowserPort > 65535 || s.OAuthPort > 65535 || s.BrowserPort == s.OAuthPort {

@@ -168,6 +168,14 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			}
 		}
 	}
+	// The declared context-control section rides env so the materialized
+	// effective config and the in-container attestation reconstruct identical
+	// bytes. Absent means the reviewed zero template — nothing is rendered.
+	if ctx := s.managedContextConfig(); ctx != nil {
+		if contextJSON, err := json.Marshal(ctx); err == nil {
+			runtimeEnv["HUB_MANAGED_CONTEXT"] = string(contextJSON)
+		}
+	}
 	if s.OrgScoped() && s.CapabilityMode != "managed" {
 		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(s.OrganizationDocsDir), "target": "/org", "read_only": true})
 	}

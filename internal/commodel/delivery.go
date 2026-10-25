@@ -24,15 +24,18 @@ type Job struct {
 	// TaskID/TopicID pin the durable task binding at acceptance: every reply,
 	// progress event, approval, artifact and voice note returns to the same
 	// task/topic. Model output never re-routes them.
-	TaskID       string    `json:"task_id,omitempty"`
-	TopicID      int64     `json:"topic_id,omitempty"`
-	SlackChannel string    `json:"slack_channel,omitempty"`
-	SlackThread  string    `json:"slack_thread,omitempty"`
-	Text         string    `json:"text,omitempty"`
-	InboundID    string    `json:"inbound_id,omitempty"`
-	Sensitive    bool      `json:"sensitive"`
-	TextSHA256   string    `json:"text_sha256,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
+	TaskID       string `json:"task_id,omitempty"`
+	TopicID      int64  `json:"topic_id,omitempty"`
+	SlackChannel string `json:"slack_channel,omitempty"`
+	SlackThread  string `json:"slack_thread,omitempty"`
+	Text         string `json:"text,omitempty"`
+	InboundID    string `json:"inbound_id,omitempty"`
+	Sensitive    bool   `json:"sensitive"`
+	TextSHA256   string `json:"text_sha256,omitempty"`
+	// GoalEpoch pins a goal-mode turn to the record epoch it was queued under;
+	// a claim whose epoch no longer matches the active goal no-ops (SPEC-0074).
+	GoalEpoch int64     `json:"goal_epoch,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type Delivery struct {

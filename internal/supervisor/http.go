@@ -50,6 +50,10 @@ func (m *Manager) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		m.artifactHTTP(w, r)
 	case "/v1/usage":
 		m.usageHTTP(w, r)
+	case "/v1/compact":
+		m.compactHTTP(w, r)
+	case "/v1/goal":
+		m.goalHTTP(w, r)
 	case "/v1/script":
 		m.scriptHTTP(w, r)
 	default:
@@ -420,6 +424,89 @@ func (m *Manager) usageHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if request.JobID != "" {
 		upstream.Header.Set("X-Hub-Job-ID", request.JobID)
+	}
+	m.forwardRuntimeRequest(w, r, upstream, binding)
+}
+
+// compactHTTP forwards one bounded compaction request to the runtime bound to
+// the request envelope. Unlike usage it mutates session state, so it always
+// acquires: a stopped runtime spawns exactly like a message would spawn it,
+// and the lifecycle lease pins it for the call.
+func (m *Manager) compactHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 128*1024)
+	defer r.Body.Close()
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "request body too large"})
+		return
+	}
+	var request hubruntime.CompactRequest
+	if json.Unmarshal(body, &request) != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	binding, err := m.bindingFor(request.ExecuteRequest)
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	lease, runtime, err := m.Acquire(r.Context(), binding, LeaseLifecycle)
+	if err != nil || runtime.Address == "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "runtime unavailable"})
+		return
+	}
+	defer m.ReleaseLease(lease.ID)
+	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost, runtime.Address+"/v1/compact", bytes.NewReader(body))
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime unavailable"})
+		return
+	}
+	if request.JobID != "" {
+		upstream.Header.Set("X-Hub-Job-ID", request.JobID)
+	}
+	m.forwardRuntimeRequest(w, r, upstream, binding)
+}
+
+// goalHTTP forwards one bounded goal request to the runtime bound to the
+// request envelope. Goal verbs mutate session state (set/pause/resume/clear,
+// evaluation), so it always acquires — a stopped runtime spawns under a
+// lifecycle lease exactly like compact.
+func (m *Manager) goalHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 128*1024)
+	defer r.Body.Close()
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "request body too large"})
+		return
+	}
+	var request hubruntime.GoalRequest
+	if json.Unmarshal(body, &request) != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	binding, err := m.bindingFor(request.ExecuteRequest)
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	lease, runtime, err := m.Acquire(r.Context(), binding, LeaseLifecycle)
+	if err != nil || runtime.Address == "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "runtime unavailable"})
+		return
+	}
+	defer m.ReleaseLease(lease.ID)
+	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost, runtime.Address+"/v1/goal", bytes.NewReader(body))
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime unavailable"})
+		return
 	}
 	m.forwardRuntimeRequest(w, r, upstream, binding)
 }

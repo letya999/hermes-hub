@@ -1,6 +1,6 @@
 ---
 description: Telegram bot channel — adapter contract, file/usage/voice surfaces, QR auth page, limits.
-last_verified: 2026-10-20
+last_verified: 2026-10-25
 ---
 
 # Channel: Telegram (bot API)
@@ -35,7 +35,17 @@ scope/context/session; v1 legacy totals counted separately; a reset or
 missing counter reads `unknown` — no invented prices/durations) plus
 configured provider quota. `/usage session` queries the live session —
 explicit, two-query limit, may wake its runtime. `/status`, `/routines`,
-`/watches`, `/connectors`, `/voice` are deterministic reads. `/credentials`,
+`/watches`, `/connectors`, `/voice` are deterministic reads. `/compact` and
+`/compress` run one bounded session compaction through `POST /v1/compact`
+(here/focus/prune/preview args; busy sessions refuse or queue). `/goal
+<text>|status|pause|resume|clear` manages the persistent per-conversation
+goal through `POST /v1/goal`; set queues a kickoff turn. Kickoff, resume and
+continuations retain the originating sender, chat and topic, including the
+dedicated group scope outside topics mode. Only goal turns from the current
+epoch reach the judge; ordinary messages preempt pending turns without being
+judged, and `/goal resume` restarts the loop. Group authorization denials at
+dispatch log the job ID, channel and a fixed reason without message content.
+`/credentials`,
 `/confirm`, `/remove`, `/connect`, `/device` mint or render the `?t=`
 human-action pages.
 
@@ -48,6 +58,10 @@ runtime answers, stage into the outbox, and arrive as photos/documents/
 videos with per-artifact progress (SPEC-0037). `MEDIA:`/`VOICE:` reply
 markers: docs/tools.md. `ErrUncertain` records uncertainty instead of a
 duplicate-retry; cancellation cannot recall a Telegram-accepted message.
+Unknown run outcomes are observed without replaying input. After the recovery
+budget expires and its one-time uncertainty notice is durable in the outbox,
+automatic observation stops; the outcome stays unknown, including when the
+notice's delivery itself is uncertain.
 
 ## QR login page (telegram_auth, compiled in)
 

@@ -275,6 +275,40 @@ func TestManagedRelayFailureRemovesSidecar(t *testing.T) {
 	}
 }
 
+func TestManagedMaterializeCarriesDeclaredContext(t *testing.T) {
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("ok"), nil }, nil)
+	writeManagedFixtures(t, root)
+	settings, err := stack.ReadEnvironment(root, "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.Compression = map[string]any{"threshold_tokens": 150000}
+	settings.Context = stack.ContextSection{Compact: stack.ContextCompact{Engine: "hub"}}
+	settings.Goals = stack.ContextGoals{Engine: "hub", Judge: "aux", MaxTurns: 10}
+	settings.SummaryModel = "small-summary"
+	settingsBody, err := yaml.Marshal(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "settings.yaml"), settingsBody, 0600); err != nil {
+		t.Fatal(err)
+	}
+	configPath, err := m.materializeHermesConfig(binding(root), "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	for _, want := range []string{"threshold_tokens: 150000", "engine: hub", "judge: aux", "max_turns: 10", "model: small-summary"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("materialized config missing %q:\n%s", want, text)
+		}
+	}
+}
+
 func TestManagedReapRemovesRuntimeAndSidecar(t *testing.T) {
 	var removed []string
 	command := func(_ context.Context, args ...string) ([]byte, error) {

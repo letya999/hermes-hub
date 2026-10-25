@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/compaction"
 )
 
 var signalRuntimeProcess = func() {
@@ -63,7 +65,11 @@ func (s *runtimeHTTP) admitHermesRun(ctx context.Context, request ExecuteRequest
 		}
 		input += "\nSaved incoming file: " + rel + ". Read or extract this file before answering."
 	}
-	payload := hermesRunBody{Input: input, SessionID: sessionIDFor(request), Instructions: request.Instructions}
+	sessionID := sessionIDFor(request)
+	if notice := compaction.TakeNotice(env("HUB_STATE", "/state"), sessionID); notice != nil {
+		input += "\n[hub: context compacted (" + notice.Trigger + ") at " + notice.At.UTC().Format(time.RFC3339) + "; earlier turns were folded into a summary]"
+	}
+	payload := hermesRunBody{Input: input, SessionID: sessionID, Instructions: request.Instructions}
 	// Only supervisor-owned jobs support metadata-only admission recovery.
 	if request.JobID != "" {
 		var err error
@@ -99,7 +105,76 @@ func (s *runtimeHTTP) postHermesRun(ctx context.Context, request ExecuteRequest,
 		markRunStart(admission.RunID)
 	}
 	known := ExecuteResponse{JobID: request.JobID, SessionID: sessionID, RunID: admission.RunID, RuntimeGeneration: os.Getenv("HUB_RUNTIME_GENERATION"), Status: "running", LastEvent: "run.admitted", EventID: "admitted"}
-	return s.observeHermesRunWindow(ctx, known, emit, runStart)
+	response, err := s.observeHermesRunWindow(ctx, known, emit, runStart)
+	s.observeCompactions(context.Background(), response.SessionID)
+	// The sweep compacts between jobs — async so a real archive_and_compact
+	// can never delay the completed response the caller is waiting on.
+	go s.sweepAfterJob(context.Background(), response.SessionID) // #nosec G118 -- detached sweep intentionally outlives the request context
+	return response, err
+}
+
+// sweepSummarize is the production summarizer the sweep calls; a package
+// variable so tests can replace the relay call.
+var sweepSummarize = compaction.RelaySummarize
+
+// sweepAfterJob runs the between-jobs compaction policy for a finished job's
+// session. Disabled declarations return immediately; every other outcome
+// (commit, refusal, error) is the journal's business, never the caller's.
+func (s *runtimeHTTP) sweepAfterJob(ctx context.Context, sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	stateDir := env("HUB_STATE", "/state")
+	mc := compaction.ManagedContextFromEnv()
+	gate := mc.SweepGate()
+	model := mc.SummaryModel
+	if model == "" {
+		model = os.Getenv("HUB_MANAGED_MODEL_ID")
+	}
+	// A queued manual compact owns the boundary first — it was asked for
+	// explicitly, and a commit makes the scheduled sweep unnecessary.
+	if pending := compaction.TakePending(stateDir, sessionID); pending != nil {
+		result, err := compaction.Compact(ctx, compaction.CompactOptions{
+			StateDir: stateDir, SessionID: sessionID, Holder: compactHolder,
+			Trigger: compaction.TriggerManual, Engine: pending.Engine, ResolvedModel: model,
+			Threshold: gate.Threshold, TailCount: sweepTailCount,
+			Args: pending.Args, Now: time.Now().UTC, Summarize: compactSummarize,
+		})
+		if err == nil && result.Applied {
+			return
+		}
+	}
+	if !gate.Enabled || !mc.HubCompactGranted() {
+		return
+	}
+	_, _ = compaction.Sweep(ctx, compaction.SweepOptions{
+		StateDir: stateDir, SessionID: sessionID,
+		ResolvedModel: model, Gate: gate, Now: time.Now().UTC,
+		Summarize: sweepSummarize, TailCount: sweepTailCount,
+	})
+}
+
+// sweepTailCount is the verbatim tail each compaction keeps: recent turns
+// stay lossless while the folded prefix carries the summary.
+const sweepTailCount = 8
+
+// observeCompactions journals the in-place compactions a finished job's
+// transcript proves happened — upstream's in-loop compression leaves no
+// hub-side event otherwise. Best-effort: a failed scan or journal append
+// must never turn a completed job into an error.
+func (s *runtimeHTTP) observeCompactions(ctx context.Context, sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	scan, err := compaction.ScanCompactions(ctx, sessionID)
+	if err != nil {
+		return
+	}
+	j, err := compaction.Open(env("HUB_STATE", "/state"))
+	if err != nil {
+		return
+	}
+	_, _ = j.Observe(sessionID, *scan)
 }
 
 func (s *runtimeHTTP) observeHermesRun(ctx context.Context, known ExecuteResponse, emit func(ExecuteResponse) error) (ExecuteResponse, error) {

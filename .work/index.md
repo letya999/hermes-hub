@@ -17,8 +17,6 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 | Change | State |
 |---|---|
 | [CHG-0162](in-progress/CHG-0162-goal-mode-engines/plan.md) | #311 persistent /goal mode — dual engine, judge modes (design proposed, implementation not started) |
-| [CHG-0161](in-progress/CHG-0161-manual-compact-engines/plan.md) | #309 manual /compact — dual engine behind grants (design proposed, implementation not started) |
-| [CHG-0160](in-progress/CHG-0160-context-control-foundation/plan.md) | #310 compaction policy + sidecar foundation + journal/status + sweep (design proposed, implementation not started) |
 | [CHG-0156](in-progress/CHG-0156-goal-bootstrap/plan.md) | M16 #213: goal-bootstrap; live acceptance pending |
 | [CHG-0151](in-progress/CHG-0151-archive-bounds/plan.md) | M16 #151: archive-bounds; live acceptance pending |
 | [CHG-0147](in-progress/CHG-0147-m14-acceptance/plan.md) | Milestone 14 acceptance and connector lifecycle repair |
@@ -48,6 +46,9 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0163](done/CHG-0163-recovery-budget/plan.md) | Done 2026-10-25: stop stale observations after budget notice; gateway deployed; just check passed, coverage 86.55% |
+| [CHG-0161](done/CHG-0161-manual-compact-engines/plan.md) | Done 2026-10-25: #309 manual /compact|/compress — dual engine behind grants; live: hub summary 19928→2398 via relay, native archive_and_compact, preview/queue/busy-refusal paths verified end-to-end |
+| [CHG-0160](done/CHG-0160-context-control-foundation/plan.md) | Done 2026-10-25: #310 compaction policy + sidecar + journal/status + between-jobs sweep — live accepted on dev stack (3 real folds, lease/cooldown refusals journaled) |
 | [CHG-0159](done/CHG-0159-group-modes/plan.md) | Done 2026-10-25: #207 follow-up per-group topics/mention modes — live accepted on real Telegram (topics → per-topic sessions in sender home, mention → getMe-default tag into dedicated space) |
 | [CHG-0158](done/CHG-0158-knowledge-lifecycle/plan.md) | Done 2026-10-25: M16 #249 knowledge-lifecycle — live accepted, issue closed |
 | [CHG-0152](done/CHG-0152-todo-contract/plan.md) | Done 2026-10-25: M16 #183 todo-contract — live accepted, issue closed |

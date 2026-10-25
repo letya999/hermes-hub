@@ -50,6 +50,10 @@ type MaterializeOptions struct {
 	// expected config at attestation, so both sides compute identical bytes.
 	// Empty disables the overlay.
 	SelfSettingsPath string
+	// Context is the normalized context-control declaration (SPEC-0072):
+	// merged onto the materialized config and re-merged onto the expected
+	// config at attestation. Nil means the reviewed zero template.
+	Context *ContextConfig
 }
 
 // MaterializeHermesConfig renders the effective Hermes config on the host so
@@ -117,7 +121,10 @@ func ApplyHermesConfig(configPath string, opts MaterializeOptions) error {
 			return err
 		}
 	}
-	return applyToolHubConfigWith(configPath, opts)
+	if err := applyToolHubConfigWith(configPath, opts); err != nil {
+		return err
+	}
+	return applyContextConfig(configPath, opts.Context)
 }
 
 func hubCommunicationEnv() M {
@@ -202,6 +209,29 @@ func validateManagedSourceConfig(configPath string, opts MaterializeOptions) err
 	return nil
 }
 
+// applyContextConfig merges the declared context-control section onto the
+// materialized config. It runs after the managed source validation and the
+// ToolHub merge, so context keys can never be mistaken for template drift.
+func applyContextConfig(configPath string, ctx *ContextConfig) error {
+	if ctx == nil {
+		return nil
+	}
+	body, err := os.ReadFile(configPath) // #nosec G304 -- materialized path
+	if err != nil {
+		return err
+	}
+	var config M
+	if err := yaml.Unmarshal(body, &config); err != nil {
+		return err
+	}
+	mergeContextConfig(config, ctx)
+	updated, err := yaml.Marshal(config)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(configPath, updated, 0660) // #nosec G703 -- operator config path
+}
+
 // applySelfSettings merges the runtime-owned settings overlay onto the
 // materialized effective config, still inside the caller's atomic window.
 // Re-validation on load means a hand-edited overlay fails materialization
@@ -276,6 +306,10 @@ func ValidateManagedEffectiveConfig(configPath string, s Settings, opts Material
 	if opts.ToolHubReconnect {
 		expected["approvals"] = M{"mcp_reload_confirm": false}
 	}
+	// The declared context merges before the runtime-owned overlay: a
+	// settings_set override must win over the provisioned value on both
+	// sides of the attestation.
+	mergeContextConfig(expected, opts.Context)
 	if opts.SelfSettingsPath != "" {
 		values, err := selfsettings.Load(opts.SelfSettingsPath)
 		if err != nil {

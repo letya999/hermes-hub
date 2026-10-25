@@ -112,6 +112,9 @@ func runDevRebuild(ctx context.Context, args []string) (retErr error) {
 			return err
 		}
 	}
+	if err := stageDevCompanions(service, rootAbs, companions); err != nil {
+		return err
+	}
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
@@ -171,4 +174,18 @@ func runDevRebuild(ctx context.Context, args []string) (retErr error) {
 		return fmt.Errorf("start %s: %w; previous service restored", service, err)
 	}
 	return nil
+}
+
+// stageDevCompanions copies non-Go runtime assets the overlay needs onto the
+// service's /usr/local/bin. The base image predates them, so dev-rebuild must
+// stage them just like the full Dockerfile does.
+func stageDevCompanions(service, root, dest string) error {
+	if service != "hermes-runtime" {
+		return nil
+	}
+	src, err := os.ReadFile(filepath.Join(root, "docker", "hub-sidecar"))
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dest, "hub-sidecar"), src, 0o755) // #nosec G703 -- dest is the private MkdirTemp build's companions directory; basename is fixed.
 }

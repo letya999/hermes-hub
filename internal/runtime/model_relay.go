@@ -124,7 +124,7 @@ func retryableModelStatus(status int) bool {
 // forwards arbitrary paths, methods, hosts or query strings, and never follows
 // upstream redirects.
 func modelRelayHandler(hops []*modelHop, selectedModel string) (http.Handler, error) {
-	_, total, err := modelRelayLimits()
+	hopTimeout, total, err := modelRelayLimits()
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +140,7 @@ func modelRelayHandler(hops []*modelHop, selectedModel string) (http.Handler, er
 	}}
 
 	call := func(ctx context.Context, method, path, auth, ctype string, body []byte) (*modelHop, *http.Response, error) {
-		return modelCall(ctx, client, hops, method, path, auth, ctype, body)
+		return modelCall(ctx, client, hops, method, path, auth, ctype, body, hopTimeout)
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -279,13 +279,8 @@ func requestsSelectedModel(body []byte, selected string) bool {
 type relayRegistryFile = stack.ModelRegistry
 type relayModel = stack.ModelEntry
 
-func modelCall(ctx context.Context, client *http.Client, hops []*modelHop, method, path, auth, ctype string, body []byte) (*modelHop, *http.Response, error) {
+func modelCall(ctx context.Context, client *http.Client, hops []*modelHop, method, path, auth, ctype string, body []byte, hopTimeout time.Duration) (*modelHop, *http.Response, error) {
 	bounded := *client
-	bounded.Timeout = 30 * time.Second
-	if timeout, err := time.ParseDuration(os.Getenv("HUB_MODEL_RELAY_HOP_TIMEOUT")); err == nil && timeout > 0 {
-		bounded.Timeout = timeout
-	}
-	hopTimeout := bounded.Timeout
 	for _, hop := range hops {
 		started := time.Now()
 		if !hop.available(time.Now()) {
@@ -430,7 +425,7 @@ type relayRegistry struct {
 }
 
 func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (http.Handler, error) {
-	_, total, err := modelRelayLimits()
+	hopTimeout, total, err := modelRelayLimits()
 	if err != nil {
 		return nil, err
 	}
@@ -556,7 +551,7 @@ func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (ht
 		if r.auth != "" {
 			providerAuth = ""
 		}
-		hop, resp, err := modelCall(req.Context(), client, hops, req.Method, req.URL.Path, providerAuth, req.Header.Get("Content-Type"), body)
+		hop, resp, err := modelCall(req.Context(), client, hops, req.Method, req.URL.Path, providerAuth, req.Header.Get("Content-Type"), body, hopTimeout)
 		if err != nil {
 			http.Error(w, "model route unavailable", http.StatusBadGateway)
 			return
@@ -1038,7 +1033,10 @@ func modelRelayHandlerFromEnv() (http.Handler, error) {
 }
 
 func modelRelayLimits() (time.Duration, time.Duration, error) {
-	hop, total := 30*time.Second, 2*time.Minute
+	// The hop bound covers the whole exchange incl. a streaming body — agentic
+	// completions legitimately run tens of seconds, so the default is the full
+	// request budget rather than a tight first-byte ceiling.
+	hop, total := 2*time.Minute, 2*time.Minute
 	for _, item := range []struct {
 		key     string
 		value   *time.Duration

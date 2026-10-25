@@ -1,0 +1,41 @@
+schema: 1
+change: CHG-0161
+title: M17 manual compact — dual engine
+status: done
+branch: feat/m16-dev-merge
+updated: 2026-10-25
+phase: done
+adr: ADR-0075
+spec: SPEC-0073
+requirements: [R1, R2, R3, R4, R5, R6, R7, R8, R9]
+depends_on: [CHG-0160]
+github_milestone: M17 — pending
+github_issue: 309
+design_status: proposed
+implementation_status: locally_verified
+slices:
+  S2.1-engine-interface-selection: done
+  S2.2-hub-engine-pipeline: done
+  S2.3-native-engine: done
+  S2.4-channel-toolhub-surface: done
+validation:
+  documents: passed
+  just_check: passed_by_stages_2026-10-25_coverage_86.54
+  docker_check: passed_2026-10-25
+  red_team: not_started
+  live_acceptance: passed_2026-10-25
+evidence:
+  - "2026-10-25 just docker-check: image builds, runtime smoke, pinned Hermes contract, real gateway idle/cold restore, capability/network/supervisor/scratch isolation and quarantine tests passed; no external Telegram/provider account used."
+  - "2026-10-25: just check completed race/shuffle tests and coverage (86.54%); gosec false positive in private dev-rebuild staging documented; just lint docs-check config-check then passed. Only a nosec rationale comment changed after coverage."
+  - "go test ./internal/compaction ./internal/runtime ./internal/supervisor ./internal/communication ./internal/agenttools: green"
+  - "live sidecar probe + native prune/compress against pinned upstream image: pass"
+  - "supervisor /v1/compact forward + gateway /compact|/compress -> /v1/compact (never /v1/runs)"
+  - "2026-10-25 live channel (mock->gateway->supervisor->runtime->relay): /compact committed method=summary ~19928->~2398 tok; /compact focus committed ~8287->~7594; /compact native committed archive_and_compact ~7682->~9566; /compress alias routed"
+  - "2026-10-25 live: /compact preview -> 'would be summary; ~31265 tok'; /compact queue -> queued ack + pending executed at next job boundary; busy refusal 'session busy, add queue'; drop_checkpoint 544->261; nothing_to_compress named refusal"
+  - "journal rows carry trigger=manual, engine, method and tokens_after_est for hub/native commits"
+remaining: []
+limitations:
+  - "ADR-0075 is Proposed; SPECs are Draft until owner acceptance."
+  - "Native engine needs the pinned upstream symbols; absent -> unsupported refusal."
+  - "provider outage surfaces as raw 'compact returned HTTP 500' instead of a named refusal (cosmetic UX gap, follow-up)"
+  - "preview reports the size-based method while commit may answer nothing_to_compress on a sub-tail session (contract gap worth documenting)"

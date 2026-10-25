@@ -585,6 +585,10 @@ func (g *Gateway) dispatchChannelCommand(ctx context.Context, user User, task Ta
 				_ = g.queueDeliveryChannel(context.Background(), deliveryKey+"-usage", channel, chatID, topic, answer)
 			}()
 			return reply("Измеряю расход и квоту…")
+		case "compact", "compress":
+			return g.compactCommand(ctx, user, task, channel, chatID, topic, sender, deliveryKey, text)
+		case "goal":
+			return g.goalCommand(ctx, user, task, channel, chatID, topic, sender, deliveryKey, text)
 		case "connections", "connection", "connectors":
 			return reply(g.connectionsCommand(user, sender))
 		case "watches":
@@ -612,6 +616,11 @@ func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, task Task, c
 	}
 	if _, err := g.spool.Enqueue(job); err != nil {
 		return err
+	}
+	if job.Trigger == "message" {
+		// Owner work preempts queued goal turns: bump the epoch so pending
+		// continuations no-op at claim (SPEC-0074).
+		g.preemptGoalTurns(user.ID, task.ConversationID)
 	}
 	if g.config.Supervised {
 		// The runtime spawn overlaps the gateway's own work (SPEC-0053 R2.1);

@@ -1,6 +1,6 @@
 ---
 description: System overview — roles, component map, networks, lifecycle; details live in services/, rbac.md, spaces.md and the ADRs.
-last_verified: 2026-10-24
+last_verified: 2026-10-25
 ---
 
 # Architecture
@@ -146,6 +146,17 @@ in-loop compaction; the hub does not assemble or inject replacement context.
 Admission receipts retain the exact original payload for metadata-only
 recovery. Long-lived conversations stay bounded through Hermes compression
 and explicit `/new`, not hub-side context replacement.
+
+M17 context control (ADR-0075, SPEC-0072/0073/0074) layers bounded hub
+management on top: `/compact`/`context_compact` runs a dual-engine
+compaction at turn boundaries (native Hermes compressor or the hub cascade:
+prune tool outputs → summarize head → keep verbatim tail), an opt-in sweep
+compacts between jobs at a declared threshold, and a journal records every
+event and named refusal. `/goal`/`goal_*` persist a per-conversation
+objective that continues across turns: each completed turn is judged
+(aux/main model call or the self `GOAL_STATUS:` marker), a verified `done`
+notifies with bounded evidence, and epoch-stamped continuation jobs stale
+out on preemption so the loop can never spin unboundedly.
 
 Every relayed chat-completions request is checked after hop/model rewriting.
 The conservative ceiling is 256k estimated tokens — deliberately above the

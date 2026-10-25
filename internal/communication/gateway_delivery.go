@@ -48,11 +48,19 @@ func (g *Gateway) worker(ctx context.Context) {
 		}
 		if job, err := g.spool.ClaimJob(); err == nil && job != nil {
 			if job.Text != "" && g.authorizeGroupMapping(mappingFromJob(*job, g.now())) != nil {
+				log.Printf("gateway job_id=%q channel=%q status=denied reason=group_authorization", job.ID, job.Channel)
 				_ = g.spool.FailJob(job.ID)
 				continue
 			}
 			if job.Trigger == "cron" && job.Text != "" && g.authorizeOccurrence(*job) != nil {
 				_ = g.spool.FailJob(job.ID)
+				continue
+			}
+			if job.Trigger == "goal" && !g.goalTurnClaimable(*job) {
+				// A turn queued under a superseded epoch (or a cleared/paused
+				// goal) no-ops: the model is never invoked for a goal that
+				// already moved on (SPEC-0074).
+				_ = g.spool.CompleteJob(job.ID)
 				continue
 			}
 			g.busy.Add(1)
@@ -92,11 +100,11 @@ func (g *Gateway) worker(ctx context.Context) {
 					_ = g.spool.RecordOutcome(job.ID, RunOutcome{JobID: job.ID, SessionID: outcome.SessionID, RunID: outcome.RunID, RuntimeGeneration: outcome.RuntimeGeneration, Status: "uncertain", LastEvent: "run.unknown"})
 				}
 				_ = g.spool.FailJob(job.ID)
-				// A plain run.failed on a user message is usually a transient
-				// model/provider outage: retry once as a fresh run before
-				// telling the owner. Uncertain outcomes reconcile instead.
+				// A plain run.failed on a user message or goal turn is usually
+				// a transient model/provider outage: retry once as a fresh run
+				// before telling the owner. Uncertain outcomes reconcile instead.
 				retried := false
-				if retryableMessageFailure(*job, outcome.Status, runErr) {
+				if retryableJobFailure(*job, outcome.Status, runErr) {
 					retry := *job
 					retry.ID = job.ID + "-r1"
 					retry.IdempotencyKey = job.IdempotencyKey + "-r1"
@@ -108,7 +116,17 @@ func (g *Gateway) worker(ctx context.Context) {
 						}
 					}
 				}
+				// A goal turn that failed for good must not leave the record
+				// "active" with nothing queued — that zombie reports live in
+				// /goal status while the loop never runs again.
+				goalPaused := false
+				if !retried && job.Trigger == "goal" && !errors.Is(runErr, ErrUncertain) && outcome.Status != "uncertain" {
+					goalPaused = g.pauseGoalAfterRunFailure(*job)
+				}
 				key, message := "job-"+job.ID+"-error", failureMessage(job.ID, outcome.Status)
+				if goalPaused {
+					message += " Цель приостановлена — /goal resume продолжит."
+				}
 				if errors.Is(runErr, ErrUncertain) || outcome.Status == "uncertain" {
 					key = "job-" + job.ID + "-uncertain"
 					message = "Исход задачи пока неизвестен. Повторный запуск может продублировать действие. ID: " + job.ID
@@ -158,6 +176,7 @@ func (g *Gateway) worker(ctx context.Context) {
 				_ = g.spool.EnqueueDelivery(Delivery{ID: "job-" + job.ID + "-response", JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: response, Format: formatMarkdown, Artifacts: outcome.Artifacts, Voice: outcome.Voice, CreatedAt: g.now().UTC()})
 				_ = g.spool.CompleteJob(job.ID)
 				g.maybeAutoTitle(ctx, *job)
+				g.goalAfterJob(ctx, *job, response)
 			}
 			g.recordJob(*job, outcome)
 			if job.Sensitive {
@@ -173,11 +192,11 @@ func (g *Gateway) worker(ctx context.Context) {
 	}
 }
 
-// retryableMessageFailure bounds automatic retries to plain user messages
-// whose run simply failed; uncertain outcomes reconcile, cancels and
+// retryableJobFailure bounds automatic retries to user messages and goal
+// turns whose run simply failed; uncertain outcomes reconcile, cancels and
 // interrupts are intentional, and cron/prepare continuations report instead.
-func retryableMessageFailure(job Job, status string, err error) bool {
-	if job.Trigger != "message" || strings.HasSuffix(job.ID, "-r1") {
+func retryableJobFailure(job Job, status string, err error) bool {
+	if (job.Trigger != "message" && job.Trigger != "goal") || strings.HasSuffix(job.ID, "-r1") {
 		return false
 	}
 	if errors.Is(err, ErrUncertain) || status == "uncertain" || status == "cancelled" || status == "interrupted" {

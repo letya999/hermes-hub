@@ -1,6 +1,6 @@
 ---
 description: Complete agent-visible tool surface — toolhub control tools, connector_* facade, hub:tools catalog, effect/grant requirements, delivery directives.
-last_verified: 2026-10-24
+last_verified: 2026-10-25
 ---
 
 # Tool surface
@@ -54,6 +54,8 @@ Grouped by capability resource (internal/agenttools/capability.go):
 | files | `file_list`, `file_read`, `file_write`, `file_search` | admitted workspace scope; `file_write` is revision-guarded |
 | services | `service_catalog` (read), `service_enable`, `service_disable` | self-service catalog only; enable needs explicit owner request, never returns credentials, refuses org-scoped changes |
 | settings | `settings_get`, `settings_set` | manageable key allowlist; secrets never shown; applies after scheduled restart |
+| context | `context_status`, `context_compact` | bounded session view (threshold/journal/live estimate) and turn-boundary compaction; busy sessions refuse deterministically, `queue` parks; results are metadata only |
+| goals | `goal_set`, `goal_status`, `goal_pause`, `goal_resume`, `goal_clear` | persistent per-conversation goal record — same durable record `/goal` manages; bounded continuation loop with verified completion |
 | routines | `routine_create`, `routine_list`, `routine_get`, `routine_edit`, `routine_delete` | five-tool public surface; see docs/routines.md |
 | watches | `watch_subscribe`, `watch_list`, `watch_pause`, `watch_delete` | scheduled probes: http/mcp_tool/script/command/render/service kinds |
 | documents | `document_extract`, `document_create`, `document_edit`, `document_convert` | txt, md, csv, html, pdf, xlsx, pptx |

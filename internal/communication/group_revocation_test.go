@@ -1,7 +1,10 @@
 package communication
 
 import (
+	"bytes"
 	"context"
+	"log"
+	"strings"
 	"testing"
 	"time"
 )
@@ -31,9 +34,16 @@ func TestRevokedGroupMemberCannotDispatchOrReceiveQueuedWork(t *testing.T) {
 			}
 			g.config.Groups[0].Members = []int64{22}
 			if stage == "dispatch" {
+				var logs bytes.Buffer
+				previous := log.Writer()
+				log.SetOutput(&logs)
+				t.Cleanup(func() { log.SetOutput(previous) })
 				ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 				defer cancel()
 				g.worker(ctx)
+				if !strings.Contains(logs.String(), "status=denied reason=group_authorization") || strings.Contains(logs.String(), "private group question") {
+					t.Fatalf("missing safe denial diagnostic: %s", logs.String())
+				}
 				runner.mu.Lock()
 				defer runner.mu.Unlock()
 				if len(runner.seen) != 0 {

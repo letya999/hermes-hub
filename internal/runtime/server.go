@@ -102,6 +102,10 @@ func (s *runtimeHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.observe(w, r)
 	case "/v1/control":
 		s.control(w, r)
+	case "/v1/compact":
+		s.compact(w, r)
+	case "/v1/goal":
+		s.goal(w, r)
 	case "/v1/restart":
 		s.restart(w, r)
 	case "/v1/restart-request":

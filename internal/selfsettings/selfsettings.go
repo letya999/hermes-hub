@@ -53,10 +53,21 @@ var keys = map[string]validator{
 	"compression.proactive_prune_min_reclaim_tokens":    intRange(0, 1_048_576),
 	"compression.micro_compact_every_n_turns":           intRange(1, 1000),
 	"compression.micro_compact_defrag_threshold_tokens": intRange(0, 2_097_152),
-	"display.busy_input_mode":                           choice("queue", "interrupt"),
-	"display.long_running_notifications":                boolValue,
-	"image_gen.model":                                   choice(imageModels...),
-	"image_gen.delivery":                                choice("workspace", "url"),
+	// Context control (SPEC-0072/0074): engine selection stays a bounded
+	// choice — it can only reorder reviewed engines, never open a new
+	// backend — and sweep/judge bounds cannot exceed the reviewed ceilings.
+	"features.compact.engine":                choice("auto", "hub", "native"),
+	"goals.engine":                           choice("auto", "hub", "native"),
+	"goals.judge":                            choice("auto", "aux", "main", "self"),
+	"goals.max_turns":                        intRange(1, 50),
+	"compression.hub_sweep.enabled":          boolValue,
+	"compression.hub_sweep.threshold_tokens": intRange(32_768, 2_097_152),
+	"compression.hub_sweep.cooldown_seconds": intRange(0, 86_400),
+	"compression.hub_sweep.precompute":       boolValue,
+	"display.busy_input_mode":                choice("queue", "interrupt"),
+	"display.long_running_notifications":     boolValue,
+	"image_gen.model":                        choice(imageModels...),
+	"image_gen.delivery":                     choice("workspace", "url"),
 }
 
 // imageModels is the model list the reviewed cliproxy provider can actually
@@ -163,6 +174,16 @@ func choice(items ...string) validator {
 		}
 		return nil, fmt.Errorf("must be one of %s", strings.Join(items, ", "))
 	}
+}
+
+// ValidatePath exposes one allowlist check for declared-time consumers
+// (settings.yaml context blocks): same named error, same canonical value.
+func ValidatePath(path string, raw any) (any, error) {
+	check, ok := keys[path]
+	if !ok {
+		return nil, fmt.Errorf("setting %q is not manageable", path)
+	}
+	return check(raw)
 }
 
 // Load reads and re-validates the overlay. A hand-edited or corrupt file

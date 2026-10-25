@@ -147,7 +147,6 @@ func TestModelHopDeadlineIncludesCredentialResolution(t *testing.T) {
 	var calls atomic.Int32
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1); _, _ = io.WriteString(w, `{"choices":[]}`) }))
 	defer provider.Close()
-	t.Setenv("HUB_MODEL_RELAY_HOP_TIMEOUT", "40ms")
 	hops, err := parseModelHops("credential=" + provider.URL + ",fallback=" + provider.URL)
 	if err != nil {
 		t.Fatal(err)
@@ -156,7 +155,7 @@ func TestModelHopDeadlineIncludesCredentialResolution(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	started := time.Now()
-	hop, response, err := modelCall(ctx, provider.Client(), hops, http.MethodPost, "/v1/chat/completions", "", "application/json", []byte(`{"model":"fixture"}`))
+	hop, response, err := modelCall(ctx, provider.Client(), hops, http.MethodPost, "/v1/chat/completions", "", "application/json", []byte(`{"model":"fixture"}`), 40*time.Millisecond)
 	if response != nil {
 		_ = response.Body.Close()
 	}
@@ -250,6 +249,21 @@ func TestModelRelayRegistryRejectsForeignCallerAndUnknownModels(t *testing.T) {
 	}
 	if calls.Load() != 0 {
 		t.Fatalf("denied calls reached provider: %d", calls.Load())
+	}
+}
+
+// The default per-hop bound covers the whole exchange including a streamed
+// body — agentic completions routinely run tens of seconds, so the default
+// must match the request budget, not clip healthy responses mid-stream.
+func TestModelRelayDefaultHopBoundCoversLongCompletions(t *testing.T) {
+	t.Setenv("HUB_MODEL_RELAY_HOP_TIMEOUT", "")
+	t.Setenv("HUB_MODEL_RELAY_TIMEOUT", "")
+	hop, total, err := modelRelayLimits()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hop < time.Minute || hop > total {
+		t.Fatalf("default hop bound %s clips long completions (total %s)", hop, total)
 	}
 }
 

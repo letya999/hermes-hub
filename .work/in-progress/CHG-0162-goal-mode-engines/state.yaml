@@ -3,8 +3,8 @@ change: CHG-0162
 title: M17 goal mode — dual engine
 status: in_progress
 branch: feat/m16-dev-merge
-updated: 2026-10-24
-phase: design-complete
+updated: 2026-10-25
+phase: implemented
 adr: ADR-0075
 spec: SPEC-0074
 requirements: [R1, R2, R3, R4, R5, R6, R7, R8, R9]
@@ -12,20 +12,40 @@ depends_on: [CHG-0160, CHG-0161]
 github_milestone: M17 — pending
 github_issue: 311
 design_status: proposed
-implementation_status: not_started
+implementation_status: implemented
 slices:
-  S3.1-hub-goal-record-loop: not_started
-  S3.2-judge-modes: not_started
-  S3.3-native-engine: not_started
-  S3.4-channel-toolhub-surface: not_started
+  S3.1-hub-goal-record-loop: done
+  S3.2-judge-modes: done
+  S3.3-native-engine: done
+  S3.4-channel-toolhub-surface: done
 validation:
-  documents: pending
-  just_check: not_run
-  docker_check: not_run
+  documents: passed
+  just_check: passed_by_stages_2026-10-25_coverage_86.54
+  docker_check: passed_2026-10-25
   red_team: not_started
   live_acceptance: not_started
-evidence: []
-remaining: []
+evidence:
+  - "2026-10-25: gateway routing fixes deployed via hubctl dev-rebuild --dir spaces/local --env dev communication-hub; overlay sha256:f480fcd269be932485abdcaad9758f9f106cb71518a325402807229e0e20afd3 running, /v1/goals unauthenticated boundary returns 401. External goal acceptance remains separate."
+  - "2026-10-25 just docker-check: image builds, runtime smoke, pinned Hermes contract, real gateway idle/cold restore, capability/network/supervisor/scratch isolation and quarantine tests passed; no external Telegram/provider account used."
+  - "2026-10-25: just check completed race/shuffle tests and coverage (86.54%); gosec false positive in private dev-rebuild staging documented; just lint docs-check config-check then passed. Only a nosec rationale comment changed after coverage."
+  - "2026-10-25 first just check exposed a race in TestGoalAfterJobContinueEnqueuesNext's observation (judge entry before queue persistence). Test now checks the completed hook synchronously; 10 race-enabled repetitions passed."
+  - "2026-10-25 go test -race ./internal/communication -run 'TestGoal|TestRevokedGroupMemberCannotDispatchOrReceiveQueuedWork' -count=1: passed; devcheck docs: passed."
+  - "2026-10-25 native runtime request regression: set/status/pause/resume/evaluate/clear preserve group delivery target and scope; red then race suite green."
+  - "2026-10-25 regression red/green: goal kickoff, continuation and resume retain sender/chat/topic/scope in private, topics and mention modes; continuation no longer targets telegram-0."
+  - "2026-10-25 regression red/green: ordinary message/cron results and stale goal epochs do not invoke the judge or mutate the goal record."
+  - "2026-10-25 regression red/green: group dispatch denial logs only job ID, channel and fixed reason; revoked work remains denied."
+  - "go test ./internal/runtime ./internal/communication ./internal/agenttools: green"
+  - "live sidecar goal_dispatch/goal_evaluate vs pinned upstream: set/status/pause/resume/clear + turn-counted evaluate"
+  - "native max_turns honored; upstream record mirrored; unsupported module -> named refusal, compaction ops unaffected"
+  - "goal loop: epoch-stamped continuations, stale-claim no-op, owner preemption, done/blocked/budget/failure-streak stops"
+  - "records keyed (principal, conversation): synthetic default task cannot leak goals across chats"
+  - "2026-10-25 live failure root-caused: run goal-t-4563be49-e1-dmdszt59bfd5 died on HTTP 502 'model route unavailable' — modelCall hardcoded a 30 s per-hop bound while modelRelayLimits's validated hop timeout was discarded; cliproxy-artem_two exceeded it, the single hop cooled 60 s and every retry saw 502. Fixed: handlers pass the validated bound into modelCall and the default rose to 2 m (= request budget; doc updated). Second defect: a terminally failed goal turn never reached goal post-processing, leaving the record zombie-active with nothing queued. Fixed: retryableJobFailure retries goal turns once, pauseGoalAfterRunFailure parks the record with a bounded reason and the error delivery carries a /goal resume hint."
+  - "2026-10-25 regression red/green: TestModelRelayDefaultHopBoundCoversLongCompletions, TestGoalTurnRunFailureRetriesThenPauses (paused record, one retry, one resume-hinted error). go test -race ./internal/communication ./internal/runtime green; just check passed at 86.52%."
+  - "2026-10-25 live resume acceptance: /goal resume on t-4563be49 enqueued a turn that ran ~40 s; run ended 502. New code behaved correctly end-to-end — automatic -r1 retry, then goal record paused with last_reason 'run failed' and a single error delivery carrying the /goal resume hint. Root cause of the 502s traced further: relay had been recreated onto the stale base image hermes-hub:0.3.0-dev (2026-10-22), whose registry path predates the cliproxy->OPENAI_API_KEY mapping, so the relay forwarded the relay-auth token upstream -> cliproxy 'Invalid API key' -> hop cooldown -> 502s. Fixed by building hub-runtime dev overlays per user space (hermes-hub-dev-<user>-model-relay:local) and recreating both relays; relay->cliproxy end-to-end POST now returns 200. Default ladder model also moved to gemini-3-flash in models.yaml + generated registries after gemini-3.8-flash-high started returning upstream 401 (other catalog models verified 200)."
+  - "2026-10-25 second live resume: turn ran ~3 min, then cliproxy answered 200 at exactly 2m0s — the relay's 2 m request bound fired context-deadline at the same instant, parked the hop, and r1 died on the cooldown. Goal record correctly paused again. Raised per-space env to the validated ceilings HUB_MODEL_RELAY_HOP_TIMEOUT=5m / HUB_MODEL_RELAY_TIMEOUT=10m (modelRelayLimits caps), relays recreated onto the dev overlays; relay->cliproxy smoke 200."
+  - "2026-10-25 third live resume: FIRST goal turn completed end-to-end (2849-char reply, judge verdict continue, turns_used=1) — but the queued continuation died instantly on 'empty Hermes prompt': hub-engine GoalResult has no ContinuationPrompt (native-sidecar field only), so goalAfterJob enqueued a textless job. Fixed per SPEC-0074 R3b: empty prompt now restates goal + last verdict reason. Red test TestGoalAfterJobHubContinueRestatesGoal -> green; communication-hub dev overlay rebuilt and healthy."
+remaining:
+  - "real /goal turn to completion in the dev stack (record is paused awaiting /goal resume)"
 limitations:
   - "ADR-0075 is Proposed; SPECs are Draft until owner acceptance."
   - "v1 exposes only set/status/pause/resume/clear; gates/draft/wait/subgoal are named refusals."

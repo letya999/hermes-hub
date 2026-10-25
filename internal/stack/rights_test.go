@@ -97,6 +97,8 @@ func TestPolicyVersionChangesOnRightsFields(t *testing.T) {
 		"DraftsURL":             func(s *Settings) { s.DraftsURL = "http://drafts" },
 		"ImageGen":              func(s *Settings) { s.ImageGen.Provider = "fal" },
 		"Web":                   func(s *Settings) { s.Web.Backend = "tavily" },
+		"Context":               func(s *Settings) { s.Context.Compact.Engines = []string{"hub"} },
+		"Goals":                 func(s *Settings) { s.Goals.Engine = "native" },
 		"gov": func(s *Settings) {
 			s.gov = &toolGovernance{decisions: map[string]api.PolicyDecision{
 				"file": {Effect: api.RuleDeny},

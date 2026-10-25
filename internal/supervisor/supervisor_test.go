@@ -2127,3 +2127,115 @@ func TestRunArgsPassesStallTimeout(t *testing.T) {
 		t.Fatalf("run args missing stall timeout: %s", strings.Join(rawArgs, " "))
 	}
 }
+
+// /v1/compact forwards to the runtime owning the request envelope's binding
+// with that binding's credential; it is a mutating call, so a stopped runtime
+// is ensured under a lifecycle lease exactly like a message would spawn it.
+func TestCompactForwardReachesOwningRuntime(t *testing.T) {
+	var gotAuth, gotConversation string
+	var gotHere float64
+	runtimeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/compact" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		gotAuth = r.Header.Get("Authorization")
+		var request hubruntime.CompactRequest
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		gotConversation = request.ConversationID
+		gotHere = float64(request.Here)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"applied":true,"method":"summary","messages_before":9,"messages_after":3}`))
+	}))
+	defer runtimeAPI.Close()
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
+	normalized, err := m.normalize(binding(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Container: "container-1", Address: runtimeAPI.URL, State: Idle}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
+	m.mu.Unlock()
+	envelope := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
+	envelope.ConversationID = "telegram-11-t-aabbccdd"
+	request := hubruntime.CompactRequest{ExecuteRequest: hubruntime.ExecuteRequest{Envelope: envelope, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "compact", IdempotencyKey: "compact"}, Here: 2}
+	body, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := func(target, auth string, body []byte) *httptest.ResponseRecorder {
+		httpRequest := httptest.NewRequest(http.MethodPost, target, bytes.NewReader(body))
+		httpRequest.Header.Set("Authorization", "Bearer "+auth)
+		recorder := httptest.NewRecorder()
+		m.Handler().ServeHTTP(recorder, httpRequest)
+		return recorder
+	}
+	recorder := call("/v1/compact", "secret", body)
+	if recorder.Code != http.StatusOK || gotConversation != "telegram-11-t-aabbccdd" || gotAuth != "Bearer secret" || gotHere != 2 {
+		t.Fatalf("forward status=%d conversation=%q auth=%q here=%v body=%q", recorder.Code, gotConversation, gotAuth, gotHere, recorder.Body.String())
+	}
+	if recorder := call("/v1/compact", "wrong", body); recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized=%d", recorder.Code)
+	}
+	foreign := request
+	foreign.UserID = "bob"
+	foreignBody, _ := json.Marshal(foreign)
+	if recorder := call("/v1/compact", "secret", foreignBody); recorder.Code != http.StatusConflict {
+		t.Fatalf("foreign binding=%d", recorder.Code)
+	}
+}
+
+// /v1/goal forwards to the runtime owning the request envelope's binding with
+// that binding's credential; goal verbs mutate session state, so a stopped
+// runtime is ensured under a lifecycle lease exactly like compact.
+func TestGoalForwardReachesOwningRuntime(t *testing.T) {
+	var gotAuth, gotOp string
+	runtimeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/goal" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		gotAuth = r.Header.Get("Authorization")
+		var request hubruntime.GoalRequest
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		gotOp = request.Op
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"engine":"hub","kickoff_prompt":"Goal: finish the report","max_turns":20}`))
+	}))
+	defer runtimeAPI.Close()
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
+	normalized, err := m.normalize(binding(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	m.items[runtimeKey(normalized)] = &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "generation-1", Container: "container-1", Address: runtimeAPI.URL, State: Idle}, binding: normalized, auth: "secret", leases: map[string]Lease{}}
+	m.mu.Unlock()
+	envelope := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
+	envelope.ConversationID = "telegram-11-t-aabbccdd"
+	request := hubruntime.GoalRequest{ExecuteRequest: hubruntime.ExecuteRequest{Envelope: envelope, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "goal", IdempotencyKey: "goal"}, Op: "set", Text: "finish the report"}
+	body, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := func(target, auth string, body []byte) *httptest.ResponseRecorder {
+		httpRequest := httptest.NewRequest(http.MethodPost, target, bytes.NewReader(body))
+		httpRequest.Header.Set("Authorization", "Bearer "+auth)
+		recorder := httptest.NewRecorder()
+		m.Handler().ServeHTTP(recorder, httpRequest)
+		return recorder
+	}
+	recorder := call("/v1/goal", "secret", body)
+	if recorder.Code != http.StatusOK || gotOp != "set" || gotAuth != "Bearer secret" {
+		t.Fatalf("forward status=%d op=%q auth=%q body=%q", recorder.Code, gotOp, gotAuth, recorder.Body.String())
+	}
+	if recorder := call("/v1/goal", "wrong", body); recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized=%d", recorder.Code)
+	}
+	foreign := request
+	foreign.UserID = "bob"
+	foreignBody, _ := json.Marshal(foreign)
+	if recorder := call("/v1/goal", "secret", foreignBody); recorder.Code != http.StatusConflict {
+		t.Fatalf("foreign binding=%d", recorder.Code)
+	}
+}

@@ -19,7 +19,7 @@ func TestModelTokenPreflightDoesNotSend(t *testing.T) {
 	defer upstream.Close()
 	hop := &modelHop{modelHealth: &modelHealth{}, name: "test", base: upstream.URL}
 	body := []byte(`{"model":"test","messages":[{"role":"user","content":"` + strings.Repeat("x", 1600*1024) + `"}]}`)
-	_, response, err := modelCall(context.Background(), upstream.Client(), []*modelHop{hop}, "POST", "/v1/chat/completions", "", "application/json", body)
+	_, response, err := modelCall(context.Background(), upstream.Client(), []*modelHop{hop}, "POST", "/v1/chat/completions", "", "application/json", body, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestModelTokenPreflightPassesCompressibleRequest(t *testing.T) {
 	defer upstream.Close()
 	hop := &modelHop{modelHealth: &modelHealth{}, name: "test", base: upstream.URL}
 	body := []byte(`{"model":"test","messages":[{"role":"user","content":"` + strings.Repeat("x", 200000) + `"}]}`)
-	_, response, err := modelCall(context.Background(), upstream.Client(), []*modelHop{hop}, "POST", "/v1/chat/completions", "", "application/json", body)
+	_, response, err := modelCall(context.Background(), upstream.Client(), []*modelHop{hop}, "POST", "/v1/chat/completions", "", "application/json", body, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}

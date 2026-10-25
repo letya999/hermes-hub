@@ -60,6 +60,15 @@ var settingsFieldRights = map[string]string{
 	"DraftsURL":             "DraftsURL",
 	"ImageGen":              "ImageGen",
 	"Web":                   "Web",
+	// Compression values, aux model identities and judge choice are knobs and
+	// model identity — no grants, no hash move. The engine declarations are
+	// grants: narrowing context.compact.engines or goals.engine must move the
+	// policy hash so stale bindings cannot keep a retired backend.
+	"Compression":  "",
+	"SummaryModel": "",
+	"JudgeModel":   "",
+	"Context":      "Context",
+	"Goals":        "Goals",
 	// The evaluated tool-governance view is itself a grant fence: its decisions
 	// decide which sections may render and which are capped to read-only.
 	"gov": "Governance",
@@ -106,6 +115,8 @@ type rightsView struct {
 	DraftsURL             string                        `json:"drafts_url,omitempty"`
 	ImageGen              media.ImageGen                `json:"image_gen"`
 	Web                   WebSettings                   `json:"web"`
+	Context               *ContextSection               `json:"context,omitempty"`
+	Goals                 *ContextGoals                 `json:"goals,omitempty"`
 	Governance            map[string]api.PolicyDecision `json:"governance,omitempty"`
 }
 
@@ -141,6 +152,14 @@ func rightsProjection(s Settings) rightsView {
 	}
 	if s.gov != nil {
 		view.Governance = s.gov.decisions
+	}
+	// Engine grants move the hash only when actually declared — an empty
+	// block must not re-key every existing binding's policy version.
+	if s.Context.Compact.Engine != "" || len(s.Context.Compact.Engines) > 0 {
+		view.Context = &s.Context
+	}
+	if s.Goals != (ContextGoals{}) {
+		view.Goals = &s.Goals
 	}
 	if s.defaultGlobalSkills {
 		view.GlobalSkillsDir = ""

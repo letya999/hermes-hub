@@ -190,6 +190,7 @@ func (m *Manager) materializeHermesConfig(binding Binding, env string) (string, 
 		NativeToolsets:     settings.NativeCarveouts(),
 		Web:                settings.Web,
 		ImageGen:           settings.ManagedImageGenGrant(),
+		Context:            settings.ManagedContextConfig(),
 	}
 	if settings.CapabilityMode == "managed" {
 		opts.SelfSettingsPath = filepath.Join(binding.ContextRoot, "managed", env, "runtime", selfsettings.FileName)

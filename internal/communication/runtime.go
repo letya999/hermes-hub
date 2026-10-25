@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/compaction"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
@@ -503,4 +504,68 @@ func runtimeRestart(url, auth string, supervised bool) func(context.Context, hub
 		}
 		return nil
 	}
+}
+
+// Compact posts one bounded compaction request to the runtime that owns the
+// request envelope's conversation. It is a control call, not a run: no spool
+// mapping, no streaming, and the allowlisted result projection back.
+func (r HTTPRunner) Compact(ctx context.Context, request hubruntime.CompactRequest) (compaction.CompactResult, error) {
+	body, err := json.Marshal(request)
+	if err != nil {
+		return compaction.CompactResult{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(r.URL, "/")+"/v1/compact", bytes.NewReader(body))
+	if err != nil {
+		return compaction.CompactResult{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+r.Auth)
+	if request.JobID != "" {
+		req.Header.Set("X-Hub-Job-ID", request.JobID)
+	}
+	response, err := r.client().Do(req)
+	if err != nil {
+		return compaction.CompactResult{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return compaction.CompactResult{}, fmt.Errorf("compact returned HTTP %d", response.StatusCode)
+	}
+	var result compaction.CompactResult
+	if err := json.NewDecoder(io.LimitReader(response.Body, 64*1024)).Decode(&result); err != nil {
+		return compaction.CompactResult{}, errors.New("runtime returned an invalid compact response")
+	}
+	return result, nil
+}
+
+// Goal posts one bounded goal request to the runtime that owns the request
+// envelope's conversation. It is a control call, not a run: no spool mapping,
+// no streaming, and the allowlisted result projection back.
+func (r HTTPRunner) Goal(ctx context.Context, request hubruntime.GoalRequest) (hubruntime.GoalResult, error) {
+	body, err := json.Marshal(request)
+	if err != nil {
+		return hubruntime.GoalResult{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(r.URL, "/")+"/v1/goal", bytes.NewReader(body))
+	if err != nil {
+		return hubruntime.GoalResult{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+r.Auth)
+	if request.JobID != "" {
+		req.Header.Set("X-Hub-Job-ID", request.JobID)
+	}
+	response, err := r.client().Do(req)
+	if err != nil {
+		return hubruntime.GoalResult{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return hubruntime.GoalResult{}, fmt.Errorf("goal returned HTTP %d", response.StatusCode)
+	}
+	var result hubruntime.GoalResult
+	if err := json.NewDecoder(io.LimitReader(response.Body, 64*1024)).Decode(&result); err != nil {
+		return hubruntime.GoalResult{}, errors.New("runtime returned an invalid goal response")
+	}
+	return result, nil
 }
