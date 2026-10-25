@@ -25,7 +25,8 @@ type watchOptions struct {
 	SupervisorURL  string
 	SupervisorAuth string
 	Interval       time.Duration
-	Timeout        time.Duration // overall deadline for job mode; 0 = none
+	Timeout        time.Duration // overall deadline; 0 = none
+	DeliveryGrace  time.Duration // terminal→outbox-record grace; 0 = 5*Interval
 	Client         *http.Client
 }
 
@@ -108,6 +109,40 @@ func (o watchOptions) fetchMapping() (string, error) {
 	return m.Status, nil
 }
 
+// fetchScopeMappings returns per-job states for the scope's durable mappings;
+// the spool is the only source needed — no supervisor call.
+func (o watchOptions) fetchScopeMappings() (map[string]string, error) {
+	entries, err := os.ReadDir(filepath.Join(o.SpoolDir, "mappings"))
+	if errors.Is(err, os.ErrNotExist) {
+		return map[string]string{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	states := map[string]string{}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(o.SpoolDir, "mappings", entry.Name()))
+		if errors.Is(err, os.ErrNotExist) {
+			continue // rotated mid-scan
+		}
+		if err != nil {
+			return nil, err
+		}
+		var m commodel.JobMapping
+		if err := json.Unmarshal(b, &m); err != nil {
+			continue // torn read during a write; retry next tick
+		}
+		if m.PrincipalID != o.Scope || m.JobID == "" {
+			continue
+		}
+		states[m.JobID] = m.Status
+	}
+	return states, nil
+}
+
 func (o watchOptions) deliveryStatus() (string, error) {
 	if o.SpoolDir == "" {
 		return "", nil
@@ -163,16 +198,29 @@ func (o watchOptions) deliveryStatus() (string, error) {
 	return "", nil
 }
 
-func runWatch(ctx context.Context, out io.Writer, o watchOptions) error {
-	if o.Scope != "" {
-		return runWatchScope(ctx, out, o)
+// deliveryGrace bounds how long a terminal job keeps waiting for its outbox
+// record: supervisor completion and the gateway's durable write are not atomic.
+func (o watchOptions) deliveryGrace() time.Duration {
+	if o.DeliveryGrace > 0 {
+		return o.DeliveryGrace
 	}
+	if o.Interval > 0 {
+		return 5 * o.Interval
+	}
+	return 5 * time.Second
+}
+
+func runWatch(ctx context.Context, out io.Writer, o watchOptions) error {
 	if o.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, o.Timeout)
 		defer cancel()
 	}
+	if o.Scope != "" {
+		return runWatchScope(ctx, out, o)
+	}
 	last, lastDelivery := "", ""
+	var terminalNoRecord time.Time
 	for {
 		var status string
 		var err error
@@ -197,7 +245,17 @@ func runWatch(ctx context.Context, out io.Writer, o watchOptions) error {
 			fmt.Fprintf(out, "%s job %s delivery %s\n", time.Now().UTC().Format(time.RFC3339), o.Job, delivery)
 		}
 		if watchTerminal(status) && delivery != "pending" {
-			return nil
+			if delivery != "" {
+				return nil
+			}
+			if terminalNoRecord.IsZero() {
+				terminalNoRecord = time.Now()
+			}
+			if time.Since(terminalNoRecord) >= o.deliveryGrace() {
+				return nil
+			}
+		} else {
+			terminalNoRecord = time.Time{}
 		}
 		select {
 		case <-ctx.Done():
@@ -207,12 +265,19 @@ func runWatch(ctx context.Context, out io.Writer, o watchOptions) error {
 	}
 }
 
-// runWatchScope streams per-runtime state transitions for a scope; it has no
-// terminal state of its own and ends when the caller cancels (clean exit).
+// runWatchScope streams per-runtime (supervisor) or per-job (spool) state
+// transitions for a scope; it has no terminal state of its own and ends when
+// the caller cancels or the deadline hits.
 func runWatchScope(ctx context.Context, out io.Writer, o watchOptions) error {
 	last := map[string]string{}
+	kind := "job"
+	fetch := func(context.Context) (map[string]string, error) { return o.fetchScopeMappings() }
+	if o.SupervisorURL != "" {
+		kind = "runtime"
+		fetch = o.fetchRuntimes
+	}
 	for {
-		states, err := o.fetchRuntimes(ctx)
+		states, err := fetch(ctx)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				return nil
@@ -222,10 +287,10 @@ func runWatchScope(ctx context.Context, out io.Writer, o watchOptions) error {
 			}
 			return err
 		}
-		for ctxID, state := range states {
-			if last[ctxID] != state {
-				last[ctxID] = state
-				fmt.Fprintf(out, "%s runtime %s %s\n", time.Now().UTC().Format(time.RFC3339), ctxID, state)
+		for id, state := range states {
+			if last[id] != state {
+				last[id] = state
+				fmt.Fprintf(out, "%s %s %s %s\n", time.Now().UTC().Format(time.RFC3339), kind, id, state)
 			}
 		}
 		select {

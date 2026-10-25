@@ -124,7 +124,7 @@ func runImage(ctx context.Context, out io.Writer, dir, env string, smoke func(co
 // operators cannot interleave a pin shift.
 func lockImagePins(dir string) (func(), error) {
 	lockDir := filepath.Join(dir, "generated")
-	if err := os.MkdirAll(lockDir, 0o700); err != nil {
+	if err := os.MkdirAll(lockDir, 0o700); err != nil { // #nosec G703 -- operator-supplied --dir, fixed subdir
 		return nil, err
 	}
 	lock := flock.New(filepath.Join(lockDir, ".image-pins.lock"))

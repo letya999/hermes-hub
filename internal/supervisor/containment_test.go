@@ -93,7 +93,7 @@ func TestMasterResumeDoesNotReviveFencedDemand(t *testing.T) {
 	m.reconcileUnconfirmed(t.Context(), time.Now())
 	observation := m.lockFor("observation:" + job.JobID)
 	observation.Lock()
-	observation.Unlock()
+	defer observation.Unlock()
 	if calls != 0 {
 		t.Errorf("fenced recovery reached Docker: %d calls", calls)
 	}

@@ -1,6 +1,6 @@
 ---
 description: hubctl — host-side control CLI: stack lifecycle, builds, spaces, grants, connector controllers.
-last_verified: 2026-10-22
+last_verified: 2026-10-25
 ---
 
 # hubctl

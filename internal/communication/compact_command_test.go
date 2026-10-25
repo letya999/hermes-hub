@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -53,7 +54,7 @@ func TestCompactArgsParse(t *testing.T) {
 			Here: args.Here, Focus: args.Focus, Prune: args.Prune,
 			Preview: args.Preview, Engine: args.Engine, BusyPolicy: args.BusyPolicy,
 		}
-		if got != tc.want {
+		if !reflect.DeepEqual(got, tc.want) {
 			t.Fatalf("%q: got %+v want %+v", tc.text, got, tc.want)
 		}
 	}

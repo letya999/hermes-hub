@@ -61,8 +61,11 @@ authenticated identity, never arguments.
 Operator ops surface (ADR-0077): `hubctl usage --spool <dir> [--days N]
 [--actor u] [--model m]` aggregates the durable `usage.jsonl` journal per
 scope and actor — read-only, tolerant of a torn tail. `hubctl watch
-(--job <id> | --scope <user>) (--spool <dir> | --supervisor-url <url>)`
-prints timestamped transitions until terminal. `hubctl image
+(--job <id> | --scope <user>) (--spool <dir> | --supervisor-url <url>)
+[--timeout <d>]` prints timestamped transitions until terminal; job mode
+additionally reports outbox delivery (pending/delivered/uncertain) and waits
+through the completion→outbox gap, and `--scope` falls back to per-job spool
+mappings when no supervisor URL is given. `hubctl image
 promote|revert|canary|status --dir <space> --env <env>` moves the runtime
 image pin only behind a passing smoke and always keeps the last-known-good
 pin for one-command revert. `hubctl replay export --job <id> --spool <dir>

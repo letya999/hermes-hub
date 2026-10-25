@@ -211,6 +211,56 @@ func TestWatchScopeTransitions(t *testing.T) {
 	}
 }
 
+func TestWatchScopeFromSpool(t *testing.T) {
+	spool := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(spool, "mappings"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(id, principal, status string) {
+		b, _ := json.Marshal(commodel.JobMapping{JobID: id, PrincipalID: principal, Status: status})
+		if err := os.WriteFile(filepath.Join(spool, "mappings", id+".json"), b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("a1", "u1", "running")
+	write("b1", "u2", "running")
+	var out bytes.Buffer
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		done <- runWatch(ctx, &out, watchOptions{Scope: "u1", SpoolDir: spool, Interval: time.Millisecond})
+	}()
+	time.Sleep(30 * time.Millisecond)
+	write("a1", "u1", "completed")
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("watch scope from spool: %v", err)
+	}
+	text := out.String()
+	if !strings.Contains(text, "a1 running") || !strings.Contains(text, "a1 completed") {
+		t.Fatalf("spool scope transitions missing: %q", text)
+	}
+	if strings.Contains(text, "b1") || strings.Contains(text, "u2") {
+		t.Fatalf("foreign scope leaked: %q", text)
+	}
+}
+
+func TestWatchTimeoutFlag(t *testing.T) {
+	spool := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(spool, "mappings"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err := run(t.Context(), []string{"watch", "--job", "j1", "--spool", spool, "--interval", "1ms", "--timeout", "30ms"})
+	if err == nil {
+		t.Fatal("--timeout flag did not bound the watch")
+	}
+	err = run(t.Context(), []string{"watch", "--scope", "u1", "--spool", spool, "--interval", "1ms", "--timeout", "30ms"})
+	if err == nil {
+		t.Fatal("--timeout flag did not bound a scope watch")
+	}
+}
+
 func TestWatchDispatchValidation(t *testing.T) {
 	for _, args := range [][]string{
 		{"watch"},

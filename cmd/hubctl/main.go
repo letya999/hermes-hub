@@ -187,16 +187,17 @@ func run(ctx context.Context, args []string) error {
 		supervisorURL := f.String("supervisor-url", "", "supervisor HTTP base URL")
 		supervisorAuth := f.String("supervisor-auth", "", "supervisor bearer token")
 		interval := f.Duration("interval", time.Second, "poll interval")
+		timeout := f.Duration("timeout", 0, "overall deadline (e.g. 30s); 0 = wait until done/ctrl-c")
 		if err := f.Parse(args[1:]); err != nil {
 			return err
 		}
 		if (*job == "") == (*scope == "") || f.NArg() != 0 || (*spoolDir == "" && *supervisorURL == "") {
-			return fmt.Errorf("usage: hubctl watch (--job <id> | --scope <user>) (--spool <dir> | --supervisor-url <url> [--supervisor-auth <tok>])")
+			return fmt.Errorf("usage: hubctl watch (--job <id> | --scope <user>) (--spool <dir> | --supervisor-url <url> [--supervisor-auth <tok>]) [--timeout <d>]")
 		}
 		return runWatch(ctx, os.Stdout, watchOptions{
 			Job: *job, Scope: *scope, SpoolDir: *spoolDir,
 			SupervisorURL: *supervisorURL, SupervisorAuth: *supervisorAuth,
-			Interval: *interval, Client: http.DefaultClient,
+			Interval: *interval, Timeout: *timeout, Client: http.DefaultClient,
 		})
 	}
 	if op == "image" {

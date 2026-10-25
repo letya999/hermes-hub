@@ -273,8 +273,8 @@ func desiredSpaceDocs(space *applySpaceSpec, dir string) (map[string][]byte, err
 			return nil, err
 		}
 	}
-	if b, err := os.ReadFile(filepath.Join(dir, "scope.yaml")); err == nil {
-		if err := os.WriteFile(filepath.Join(tmp, "scope.yaml"), b, 0o600); err != nil {
+	if b, err := os.ReadFile(filepath.Join(dir, "scope.yaml")); err == nil { // #nosec G304 -- operator-supplied space dir
+		if err := os.WriteFile(filepath.Join(tmp, "scope.yaml"), b, 0o600); err != nil { // #nosec G703 -- MkdirTemp staging dir, fixed filename
 			return nil, err
 		}
 	}
