@@ -272,7 +272,11 @@ func (m *Manager) Reap(ctx context.Context, now time.Time) error {
 	m.mu.Unlock()
 	for _, key := range keys {
 		lock := m.lockFor(key)
-		lock.Lock()
+		// A request-held key lock (a spawn parked on a full capacity semaphore)
+		// must not wedge the sweep: the entry stays reapable next tick.
+		if !lock.TryLock() {
+			continue
+		}
 		m.mu.Lock()
 		runtime := m.items[key]
 		if runtime == nil || (runtime.State != Idle && (runtime.State != Degraded || runtime.IdleDeadline.IsZero())) || m.runtimeDesiredLocked(runtime) || runtime.RuntimeHealth == "unknown" || runtime.Ownership == "unverified" || runtime.IdleDeadline.After(now) {

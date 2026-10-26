@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -922,5 +923,175 @@ func TestDockerCommandDeadlineBoundsBackgroundSweeps(t *testing.T) {
 	}, func(context.Context, string, string) error { return nil })
 	if _, err := m.command(context.Background(), "ps"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A spawn parked on the capacity semaphore holds the runtime key lock; the
+// health sweep must skip that entry instead of wedging the whole watchdog.
+func TestReconcileHealthSkipsHeldRuntimeLock(t *testing.T) {
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	b := binding(root)
+	if _, err := m.Ensure(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	lock := m.lockFor(runtimeKey(b))
+	lock.Lock()
+	defer lock.Unlock()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		m.ReconcileHealth(context.Background(), time.Now())
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reconcile wedged behind a held runtime lock")
+	}
+}
+
+// The post-probe re-lock can race a fresh spawn hold the same way: the entry
+// update is skipped for this tick rather than stalling the sweep.
+func TestReconcileHealthSkipsHeldRuntimeLockOnUpdate(t *testing.T) {
+	probing := make(chan struct{})
+	release := make(chan struct{})
+	armed := make(chan struct{})
+	var once sync.Once
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "inspect" && len(args) > 2 && args[2] == "{{.State.Status}}" {
+			select {
+			case <-armed:
+				once.Do(func() { close(probing) })
+				<-release
+				return []byte("running"), nil
+			default:
+			}
+		}
+		if args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	b := binding(root)
+	if _, err := m.Ensure(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	close(armed)
+	lock := m.lockFor(runtimeKey(b))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		m.ReconcileHealth(context.Background(), time.Now())
+	}()
+	select {
+	case <-probing:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reconcile never probed")
+	}
+	lock.Lock()
+	defer lock.Unlock()
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reconcile wedged behind a held runtime lock on update")
+	}
+}
+
+// The same held key lock must not wedge the idle reaper: capacity behind a
+// parked spawn still drains on the next pass.
+func TestReapSkipsHeldRuntimeLock(t *testing.T) {
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	b := binding(root)
+	if _, err := m.Ensure(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ReleaseBinding(b); err != nil {
+		t.Fatal(err)
+	}
+	key := runtimeKey(b)
+	m.mu.Lock()
+	entry := m.items[key]
+	entry.IdleDeadline = m.cfg.Now().Add(-time.Minute)
+	entry.RuntimeHealth = "running"
+	entry.Ownership = "verified"
+	m.mu.Unlock()
+	lock := m.lockFor(key)
+	lock.Lock()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = m.Reap(context.Background(), m.cfg.Now())
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		lock.Unlock()
+		t.Fatal("reap wedged behind a held runtime lock")
+	}
+	m.mu.Lock()
+	state := m.items[key].State
+	m.mu.Unlock()
+	if state != Idle {
+		lock.Unlock()
+		t.Fatalf("held entry mutated during skip: %s", state)
+	}
+	lock.Unlock()
+	if err := m.Reap(context.Background(), m.cfg.Now()); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if state := m.items[key].State; state != Stopped {
+		t.Fatalf("released entry was not reaped: %s", state)
+	}
+}
+
+// Orphan cleanup runs inside the sweep before health and reap: a key lock
+// held by a parked spawn must not wedge orphan collection either.
+func TestReapOrphansSkipsHeldRuntimeLock(t *testing.T) {
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	b := binding(root)
+	runtime, err := m.Ensure(context.Background(), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := runtimeKey(b)
+	request := hubruntime.ExecuteRequest{PrincipalID: b.PrincipalID, ContextID: b.ContextID}
+	m.mu.Lock()
+	m.jobs["job-orphan"] = jobRecord{Request: request, Generation: "gen-old", Status: "completed"}
+	m.orphans = []OrphanRuntime{{Container: "deadbeef12", Name: "orphan-x", ContextKey: hex.EncodeToString(hashBytes(key)), Generation: "gen-old"}}
+	m.mu.Unlock()
+	lock := m.lockFor(key)
+	lock.Lock()
+	defer lock.Unlock()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		m.ReapOrphans(context.Background())
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("orphan reap wedged behind a held runtime lock")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.orphans) != 1 {
+		t.Fatalf("orphan unexpectedly removed under a held lock (generation %s)", runtime.Generation)
 	}
 }
