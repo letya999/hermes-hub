@@ -9,6 +9,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/companion"
 	"github.com/letya999/hermes-hub/internal/devcheck"
 	"github.com/letya999/hermes-hub/internal/diagnostics"
+	"github.com/letya999/hermes-hub/internal/hosting"
 	"github.com/letya999/hermes-hub/internal/migration"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/supervisor"
@@ -52,6 +53,27 @@ func run(ctx context.Context, args []string) error {
 	}
 	if op == "artifact" {
 		return runArtifact(ctx, args[1:])
+	}
+	if op == "hosting-init" {
+		if len(args) != 1 {
+			return fmt.Errorf("hosting-init accepts no arguments")
+		}
+		return hosting.InitVolume("/sites")
+	}
+	if op == "hosting" {
+		f := flag.NewFlagSet("hosting", flag.ContinueOnError)
+		config := f.String("config", "", "operator hosting deployment config")
+		if err := f.Parse(args[1:]); err != nil {
+			return err
+		}
+		if f.NArg() != 0 || *config == "" {
+			return fmt.Errorf("hosting requires --config")
+		}
+		cfg, err := hosting.LoadDeployment(*config)
+		if err != nil {
+			return err
+		}
+		return hosting.Run(ctx, cfg)
 	}
 	if op == "relay" {
 		f := flag.NewFlagSet("relay", flag.ContinueOnError)

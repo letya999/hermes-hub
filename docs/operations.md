@@ -1,6 +1,6 @@
 ---
 description: Operator runbook — stack lifecycle, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
-last_verified: 2026-10-25
+last_verified: 2026-10-26
 ---
 
 # Operations
@@ -578,3 +578,7 @@ Source-only verification never proves that a running image contains these
 changes. M16 local work does not build, deploy, restart or contact a real account;
 image/channel/provider acceptance must be recorded separately after an authorized
 rollout.
+
+## Site hosting
+
+Configure reviewed `hosting.slots` and exposure before render/doctor. Dynamic hosting requires an approved digest-pinned minimal image for the fixed go-http binary and explicit runsc/Kata; no runtime fallback. Preserve site and coordination volumes during recovery. See [hosting operations and recovery](services/hosting.md); native runtime/sish/browser checks are separate prerequisites.

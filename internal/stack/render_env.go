@@ -404,6 +404,10 @@ func writeToolHubFiles(dir string, s Settings) error {
 	}
 	token := strings.TrimSpace(string(key))
 	controller := M{"state_root": "/state", "toolhive_binary": "/usr/local/bin/thv", "seccomp_profile": "/opt/hub/seccomp/seccomp-mcp-runtime.json", "docker_fallback": true, "bridge_binary": "/usr/local/bin/hubctl", "credential_mount_root": "/run/broker-materialized", "dynamic_definitions": true, "max_active": 8, "idle_ttl_seconds": 1800, "cli": cliControllerSection(s, dir)}
+
+	if err := writeHostingFiles(dir, s); err != nil {
+		return err
+	}
 	body, err := json.MarshalIndent(controller, "", "  ")
 	if err != nil {
 		return err

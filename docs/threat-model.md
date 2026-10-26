@@ -1,6 +1,6 @@
 ---
 description: Threat model for scoped scale-to-zero runtimes and future organization isolation.
-last_verified: 2026-10-25
+last_verified: 2026-10-26
 ---
 # Threat model
 
@@ -154,3 +154,7 @@ Related: [ADR-0013](adr/ADR-0013-toolhub-security-boundary.md),
 [SPEC-0010](../specs/active/SPEC-0010-stable-identifiers.md),
 [SPEC-0020](../specs/active/SPEC-0020-credentials-and-connectors.md),
 and issues #11, #12, #20-#28, #46-#51.
+
+## Hosted user code
+
+Hosted content is untrusted and has its own origin. Fragment shares exchange into host-only cookies; ambient Hub credentials never reach app relay. Dynamic code requires the inspected non-root secure-runtime envelope, no network/secret defaults and bounded lifetime/resources. Filesystem, revision, route, audit and fleet gates fail closed. Native kernel/browser/sish guarantees require real acceptance; see [hosting boundary](services/hosting.md).

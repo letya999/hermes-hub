@@ -2052,5 +2052,57 @@
     "prerequisites": "Тестовый exposure-конфиг; fake-провайдер, без реального VPS",
     "level": "contract",
     "cleanup": "Закрыть созданные экспозиции; удалить временный конфиг"
+  },
+  {
+    "id": "E2E-159",
+    "surface": "hub",
+    "name": "site_publish",
+    "title": "site_publish",
+    "action": "Publish prebuilt files to an own private slot through agenttools and the real private HTTP API.",
+    "expected": "Revision 1 ready; no external URL, Docker or tunnel execution.",
+    "package": "agenttools",
+    "test": "TestSiteToolsPublishListStatusUnpublish",
+    "prerequisites": "Synthetic temp workspace/store and httptest private API; not live sish/runtime/browser proof",
+    "level": "contract",
+    "cleanup": "Close temporary HTTP server and store; remove only synthetic temp directories"
+  },
+  {
+    "id": "E2E-160",
+    "surface": "hub",
+    "name": "site_list",
+    "title": "site_list",
+    "action": "List own slots after publish and after unpublish.",
+    "expected": "One own slot then an empty list; no raw share tokens or provider handles.",
+    "package": "agenttools",
+    "test": "TestSiteToolsPublishListStatusUnpublish",
+    "prerequisites": "Synthetic temp workspace/store and httptest private API; not live sish/runtime/browser proof",
+    "level": "contract",
+    "cleanup": "Close temporary HTTP server and store; remove only synthetic temp directories"
+  },
+  {
+    "id": "E2E-161",
+    "surface": "hub",
+    "name": "site_status",
+    "title": "site_status",
+    "action": "Read the committed own site revision status.",
+    "expected": "Safe ready metadata for revision 1; no token_hash.",
+    "package": "agenttools",
+    "test": "TestSiteToolsPublishListStatusUnpublish",
+    "prerequisites": "Synthetic temp workspace/store and httptest private API; not live sish/runtime/browser proof",
+    "level": "contract",
+    "cleanup": "Close temporary HTTP server and store; remove only synthetic temp directories"
+  },
+  {
+    "id": "E2E-162",
+    "surface": "hub",
+    "name": "site_unpublish",
+    "title": "site_unpublish",
+    "action": "Unpublish the expected own revision and list again.",
+    "expected": "Durable revoke precedes cleanup; the removed slot is absent from list.",
+    "package": "agenttools",
+    "test": "TestSiteToolsPublishListStatusUnpublish",
+    "prerequisites": "Synthetic temp workspace/store and httptest private API; not live sish/runtime/browser proof",
+    "level": "contract",
+    "cleanup": "Close temporary HTTP server and store; remove only synthetic temp directories"
   }
 ]

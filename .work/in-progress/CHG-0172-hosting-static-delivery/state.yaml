@@ -1,0 +1,35 @@
+schema: 1
+change: CHG-0172
+title: Agent exposure and static hosting recovery
+status: in_progress
+branch: feat/m18-exposure-hosting
+updated: 2026-10-26
+phase: implementation
+adr: ADR-0079
+spec: SPEC-0077
+requirements: [R1, R2, R5, R8, R9]
+depends_on: [CHG-0170, CHG-0171, CHG-0166, CHG-0168]
+github_milestone: M18
+github_issue: 147
+design_status: accepted
+implementation_status: in_progress
+slices:
+  H3.1-agent-contract: implemented_pending_gates
+  H3.2-exposure-delegation: implemented_pending_gates
+  H3.3-stack-recovery: implemented_pending_gates
+validation:
+  documents: pass
+  just_check: pass
+  coverage: 86.03_statements_package_floor_75_held
+  docker_check: not_run_owner_instruction
+  red_team: self_review_negative_contracts_native_pending
+  live_acceptance: not_started
+evidence:
+  - Four site tools use scoped private publishing API with strict structured input
+  - Compose renders separate web init optional controller and per-env credentials
+  - Owner zone lock fences dev and prod external hostname ownership
+  - Sish tunnels reconcile from durable site intent without per-publish DNS operations
+remaining:
+  - Finish gates and actual sish TLS reconnect acceptance in CHG-0174
+limitations:
+  - Generated Compose and fake relay tests do not prove deployed routing

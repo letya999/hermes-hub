@@ -117,6 +117,7 @@ var featureToolMigration = map[string]ToolEntry{
 	// stay name-only on the hub surface; the tunnel workload itself admits
 	// through the controller path, never the executor's network.
 	"exposure": {Via: ToolViaToolHub},
+	"hosting":  {Via: ToolViaToolHub},
 }
 
 var featureToggleMigration = map[string][2]string{

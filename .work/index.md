@@ -16,6 +16,11 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0174](in-progress/CHG-0174-hosting-acceptance/plan.md) | M18 #147 H5: hosting acceptance/current docs — A1–A11 code/runtime/browser/sish evidence; offline gates green, native acceptance pending |
+| [CHG-0173](in-progress/CHG-0173-hosting-dynamic/plan.md) | M18 #147 H4: one admitted stateless go-http profile, secure runtime/relay, restart/finalizers; implemented, offline gates green, native acceptance pending |
+| [CHG-0172](in-progress/CHG-0172-hosting-static-delivery/plan.md) | M18 #147 H3: static agent/stack/exposure delivery and independent recovery; implemented, offline gates green, native acceptance pending |
+| [CHG-0171](in-progress/CHG-0171-hosting-web-access/plan.md) | M18 #147 H2: static serving, artifact bootstrap/session gate, HTTP bounds/audit; implemented, offline gates green, native acceptance pending |
+| [CHG-0170](in-progress/CHG-0170-hosting-store/plan.md) | M18 #147 H1: owner-bound slots, confined immutable snapshots, quota and crash recovery; implemented, offline gates green, native acceptance pending |
 | [CHG-0168](in-progress/CHG-0168-dns-tls-impl/plan.md) | M18 #146: SPEC-0076 implementation — dns contract, regru/DO/GCP clients, ACME DNS-01 issuer + sish push, hubctl/doctor |
 | [CHG-0167](in-progress/CHG-0167-dns-tls-addressing/plan.md) | M18 #146: per-user subdomains design pass — research + ADR-0078 accepted (provider-neutral DNS, per-user wildcard via DNS-01 to sish) |
 | [CHG-0166](in-progress/CHG-0166-outbound-exposure-impl/plan.md) | M18 #145: SPEC-0075 implementation — reviewed config, sish provider, manager, agenttools/stack wiring |
@@ -51,6 +56,8 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0175](done/CHG-0175-coverage-profile-safety/plan.md) | Done 2026-10-26: M18 #147 verification prerequisite — malformed coverage locations rejected, per-package profiles isolated, statement-free packages skipped; covergo green 86.03% |
+| [CHG-0169](done/CHG-0169-site-hosting-design/plan.md) | M18 #147: research including pinned Haloy review; ADR-0079 accepted, SPEC-0077 frozen, implementation CHG-0170–0174 allocated; design only |
 | [CHG-0163](done/CHG-0163-recovery-budget/plan.md) | Done 2026-10-25: stop stale observations after budget notice; gateway deployed; just check passed, coverage 86.55% |
 | [CHG-0161](done/CHG-0161-manual-compact-engines/plan.md) | Done 2026-10-25: #309 manual /compact|/compress — dual engine behind grants; live: hub summary 19928→2398 via relay, native archive_and_compact, preview/queue/busy-refusal paths verified end-to-end |
 | [CHG-0160](done/CHG-0160-context-control-foundation/plan.md) | Done 2026-10-25: #310 compaction policy + sidecar + journal/status + between-jobs sweep — live accepted on dev stack (3 real folds, lease/cooldown refusals journaled) |

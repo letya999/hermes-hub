@@ -90,6 +90,15 @@ func TestRenderAllFeatures(t *testing.T) {
 		featureNames = append(featureNames, f.Name)
 	}
 	s.Tools, s.Ingress = testTools(featureNames...), testIngress(featureNames...)
+	s.Hosting = HostingSettings{Slots: []string{"site"}}
+	exposurePath := filepath.Join(d, "connections", "exposure", "config.yaml")
+	exposureBody, exposureErr := os.ReadFile(exposurePath)
+	if exposureErr != nil {
+		t.Fatal(exposureErr)
+	}
+	if err := os.WriteFile(exposurePath, []byte(strings.ReplaceAll(string(exposureBody), "zone: alice", "zone: me")), 0600); err != nil {
+		t.Fatal(err)
+	}
 	if err := saveSpace(d, s); err != nil {
 		t.Fatal(err)
 	}

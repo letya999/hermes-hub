@@ -22,18 +22,21 @@ import (
 // Root scopes file: credential refs to the reviewed config directory;
 // Broker + Auth drive broker: key_ref leases.
 type ProviderOptions struct {
-	Root   *os.Root
-	Broker credentialbroker.Config
-	Auth   identity.Envelope
-	Public string
+	MaxConnections    int
+	ConnectionTimeout time.Duration
+	Root              *os.Root
+	Broker            credentialbroker.Config
+	Auth              identity.Envelope
+	Public            string
 }
 
 // SishProvider implements Provider as an in-process SSH remote forward —
 // the workload `ssh -R <bind>:443:<target>` performs, expressed over
 // x/crypto/ssh so no extra binary or container admission is required.
 type SishProvider struct {
-	cfg  *Config
-	opts ProviderOptions
+	slots chan struct{}
+	cfg   *Config
+	opts  ProviderOptions
 
 	mu   sync.Mutex
 	live map[string]*sishTunnel
@@ -41,16 +44,22 @@ type SishProvider struct {
 }
 
 type sishTunnel struct {
-	client *ssh.Client
-	ln     net.Listener
-	target string
-	done   chan struct{}
+	slots   chan struct{}
+	timeout time.Duration
+	client  *ssh.Client
+	ln      net.Listener
+	target  string
+	done    chan struct{}
 }
 
 // NewSishProvider binds the provider to the reviewed config; the file:
 // credential resolves per Open from Root.
 func NewSishProvider(cfg *Config, opts ProviderOptions) *SishProvider {
-	return &SishProvider{cfg: cfg, opts: opts, live: map[string]*sishTunnel{}}
+	p := &SishProvider{cfg: cfg, opts: opts, live: map[string]*sishTunnel{}}
+	if opts.MaxConnections > 0 {
+		p.slots = make(chan struct{}, min(opts.MaxConnections, 1024))
+	}
+	return p
 }
 
 // Open dials the relay, requests the remote forward for spec.Bind and
@@ -77,6 +86,14 @@ func (p *SishProvider) Open(ctx context.Context, spec Spec) (string, error) {
 		HostKeyCallback: p.cfg.Relay.hostKeyCallback(),
 		Timeout:         15 * time.Second,
 	}
+	deadline := time.Now().Add(15 * time.Second)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	if err = conn.SetDeadline(deadline); err != nil {
+		_ = conn.Close()
+		return "", ErrUnavailable
+	}
 	c, chans, reqs, err := ssh.NewClientConn(conn, addr, clientConfig)
 	if err != nil {
 		_ = conn.Close()
@@ -88,13 +105,20 @@ func (p *SishProvider) Open(ctx context.Context, spec Spec) (string, error) {
 		_ = client.Close()
 		return "", fmt.Errorf("%w: remote forward %q refused", ErrDenied, spec.Bind)
 	}
-	tn := &sishTunnel{client: client, ln: ln, target: target, done: make(chan struct{})}
+	if err = conn.SetDeadline(time.Time{}); err != nil {
+		_ = c.Close()
+		return "", ErrUnavailable
+	}
+	tn := &sishTunnel{slots: p.slots, timeout: p.opts.ConnectionTimeout, client: client, ln: ln, target: target, done: make(chan struct{})}
 	p.mu.Lock()
 	p.next++
 	handle := fmt.Sprintf("sish-%d", p.next)
 	p.live[handle] = tn
 	p.mu.Unlock()
 	go tn.serve()
+	if p.opts.ConnectionTimeout > 0 {
+		go tn.keepalive()
+	}
 	return handle, nil
 }
 
@@ -130,15 +154,31 @@ func (tn *sishTunnel) serve() {
 		if err != nil {
 			return
 		}
-		go tn.splice(inbound)
+		if tn.slots != nil {
+			select {
+			case tn.slots <- struct{}{}:
+			default:
+				_ = inbound.Close()
+				continue
+			}
+			go func(conn net.Conn) { defer func() { <-tn.slots }(); tn.splice(conn) }(inbound)
+		} else {
+			go tn.splice(inbound)
+		}
 	}
 }
 
 func (tn *sishTunnel) splice(inbound net.Conn) {
+	if tn.timeout > 0 {
+		_ = inbound.SetDeadline(time.Now().Add(tn.timeout))
+	}
 	target, err := (&net.Dialer{Timeout: 10 * time.Second}).Dial("tcp", tn.target)
 	if err != nil {
 		_ = inbound.Close()
 		return
+	}
+	if tn.timeout > 0 {
+		_ = target.SetDeadline(time.Now().Add(tn.timeout))
 	}
 	go func() {
 		_, _ = io.Copy(target, inbound)
@@ -236,5 +276,51 @@ func (r *Relay) hostKeyCallback() ssh.HostKeyCallback {
 			}
 		}
 		return fmt.Errorf("%w: relay host key is not pinned", ErrDenied)
+	}
+}
+
+// Alive reports whether a forward's accept loop still exists; hosting reconciles lost SSH connections.
+func (p *SishProvider) Alive(handle string) bool {
+	p.mu.Lock()
+	tn, ok := p.live[handle]
+	p.mu.Unlock()
+	if !ok {
+		return false
+	}
+	select {
+	case <-tn.done:
+		return false
+	default:
+		return true
+	}
+}
+
+// Bound detection of a silent relay loss so reconciliation can restore the route.
+func (tn *sishTunnel) keepalive() {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-tn.done:
+			return
+		case <-ticker.C:
+			done := make(chan error, 1)
+			go func() { _, _, err := tn.client.SendRequest("keepalive@openssh.com", true, nil); done <- err }()
+			timer := time.NewTimer(5 * time.Second)
+			select {
+			case <-tn.done:
+				timer.Stop()
+				return
+			case err := <-done:
+				timer.Stop()
+				if err != nil {
+					_ = tn.client.Close()
+					return
+				}
+			case <-timer.C:
+				_ = tn.client.Close()
+				return
+			}
+		}
 	}
 }

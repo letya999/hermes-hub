@@ -179,5 +179,6 @@ func (t *Tools) Server() *mcp.Server {
 	}
 	t.registerSSH(s)
 	t.registerExposure(s)
+	t.registerHosting(s)
 	return s
 }

@@ -44,6 +44,10 @@ func Config(s Settings) M {
 			e["HUB_SSH_SHELL"] = fmt.Sprint(s.Has("ssh_shell"))
 			e["HUB_SSH_TUNNEL"] = fmt.Sprint(s.Has("ssh_tunnel"))
 		}
+		if s.Has("hosting") {
+			e["HUB_HOSTING_URL"] = "http://" + hostingName(s) + ":8182"
+			e["HUB_HOSTING_TOKEN_FILE"] = "/run/hosting.key"
+		}
 		if s.Has("exposure") {
 			e["HUB_EXPOSURE_CONFIG"] = "/state/exposure/config.yaml"
 		}

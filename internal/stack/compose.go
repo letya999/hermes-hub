@@ -695,6 +695,16 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	// Secondary spaces still declare broker-secrets-runtime: the supervisor
 	// mounts it by project-derived name into that user's spawned runtimes.
 	volumes := M{"broker-secrets-runtime": M{}}
+	if s.Has("hosting") {
+		hostingVolumes := runtimeService["volumes"].([]any)
+		addHosting(services, volumes, s, dir, common, runtimeEnv, &hostingVolumes)
+		hostingService := services[hostingName(s)].(M)
+		for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_RUNTIME_", "runtime", "hermes-runtime-adapter") {
+			hostingService["environment"].(M)[key] = value
+		}
+		hostingService["volumes"] = append(hostingService["volumes"].([]any), brokerSecrets("runtime"))
+		runtimeService["volumes"] = hostingVolumes
+	}
 	if s.CapabilityMode == "managed" {
 		volumes["broker-secrets-model"] = M{}
 	}

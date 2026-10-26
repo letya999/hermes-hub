@@ -1,0 +1,26 @@
+schema: 1
+change: CHG-0175
+title: Coverage profile location safety
+status: done
+branch: feat/m18-exposure-hosting
+updated: 2026-10-26
+phase: done
+depends_on: []
+github_milestone: M18
+github_issue: 147
+design_status: accepted
+implementation_status: done
+slices:
+  S1-malformed-location: done
+validation:
+  unit: pass
+  go_check: pass_86.03_statements_package_floor_75_held
+  documents: pass
+  docker_check: not_run_owner_instruction
+evidence:
+  - Prior aggregate contained a truncated three-column location row and parseCoverage sliced at index minus one
+  - parseCoverage rejects missing separators via LastIndexByte guard; malformed rows still fail by package name
+  - CoverAll skips only errEmptyCoverage header-only profiles (statement-free no-test package such as internal/systemguide)
+  - Real covergo run passes at 86.03 percent statements with the per-package 75 floor enforced
+limitations:
+  - Does not claim a malformed upstream profile is valid

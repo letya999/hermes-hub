@@ -22,6 +22,11 @@ import (
 const Limit = 2 * 1024 * 1024
 
 type Input struct {
+	Mode               string         `json:"mode,omitempty"`
+	Access             string         `json:"access,omitempty"`
+	Profile            string         `json:"profile,omitempty"`
+	RequestID          string         `json:"request_id,omitempty"`
+	LifetimeSeconds    int            `json:"lifetime_seconds,omitempty"`
 	OriginJobID        string         `json:"origin_job_id,omitempty"`
 	DestinationTaskID  string         `json:"destination_task_id,omitempty"`
 	Context            string         `json:"context,omitempty"`

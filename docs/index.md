@@ -1,6 +1,6 @@
 ---
 description: Current documentation index and Memory Bank navigation.
-last_verified: 2026-10-23
+last_verified: 2026-10-26
 ---
 # Documentation
 
@@ -50,6 +50,7 @@ last_verified: 2026-10-23
 | [services/hubctl.md](services/hubctl.md) | Operator CLI — render/up/down, secrets, migrations, connector host ops |
 | [services/runtime.md](services/runtime.md) | Agent container process and relay modes |
 | [services/toolhub.md](services/toolhub.md) | Capability gateway — admission, governance, lifecycle, audit |
+| [services/hosting.md](services/hosting.md) | Per-user static sites, fragment shares and isolated stateless applications |
 | [services/communication.md](services/communication.md) | Channel gateway — adapters, spool, `?t=` links |
 | [services/supervisor.md](services/supervisor.md) | Scale-to-zero spawner — warm pools, control routing |
 | [services/credential-broker/](services/credential-broker/index.md) | Copied MIT credential-authority module — русскоязычный под-дерево: architecture, engineering, operations, product, documentation |

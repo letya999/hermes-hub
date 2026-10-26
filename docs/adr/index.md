@@ -1,11 +1,12 @@
 ---
 description: Architectural decisions and clearly marked proposals; append new records when changing direction.
-last_verified: 2026-10-25
+last_verified: 2026-10-26
 ---
 # Decisions
 
 | Record | Decision |
 |---|---|
+| [ADR-0079](ADR-0079-user-scoped-site-hosting.md) | Accepted: user-scoped hosting over existing controller/ToolHub and sish/DNS; static-first, isolated dynamic profile, revocable artifact links; no Haloy fork (M18 #147) |
 | [ADR-0078](ADR-0078-per-user-dns-tls.md) | Accepted: per-user subdomains — provider-neutral DNS record contract over regru/DO/delegated GCP+DO profiles, hub-issued per-user wildcard via DNS-01 pushed to sish |
 | [ADR-0077](ADR-0077-outbound-exposure.md) | Accepted: named public endpoints over opt-in per-binding tunnel workloads — sish reference provider, cloudflared managed alternate; Broker credentials, name-only agent surface |
 | [ADR-0076](ADR-0076-auth-first-admission-contract.md) | Proposed: built-evidence reuse on auth-first credential retry; `interactive` recipe marker classifies unsupported interactive auth |

@@ -1,0 +1,40 @@
+schema: 1
+change: CHG-0173
+title: Admitted stateless dynamic hosting
+status: in_progress
+branch: feat/m18-exposure-hosting
+updated: 2026-10-26
+phase: implementation
+adr: ADR-0079
+spec: SPEC-0077
+requirements: [R7, R8, R9, R10]
+depends_on: [CHG-0170, CHG-0171, CHG-0172]
+github_milestone: M18
+github_issue: 147
+design_status: accepted
+implementation_status: in_progress
+slices:
+  H4.1-persistent-workload-contract: implemented
+  H4.2-envelope-inspect-relay: implemented
+  H4.3-restart-finalizers: implemented
+validation:
+  documents: pass
+  just_check: pass
+  coverage: 86.03_statements_package_floor_75_held
+  docker_check: not_run_owner_instruction
+  red_team: self_review_negative_contracts_native_pending
+  live_acceptance: not_started
+evidence:
+  - Hosting-only Go controller admits pinned go-http through explicit runsc or kata
+  - Pre-start and post-start inspect reject unsafe mounts caps devices networks credentials and limits
+  - Network-none OCI exec relay has fixed destination and bounded requests responses
+  - Non-dumpable Linux PID1 executes the committed /work/app ELF and enforces immutable expiry
+  - Publish rejects a missing or non-ELF app before snapshot work and marks it executable at commit
+  - Serialized fleet reservation bounds global workloads and owner overlap across environments
+  - TestHostingFleetConcurrentCapacityAndOwnerScope and profile drift negatives cover controller contracts
+  - Profile corrected to go-http per ADR-0079 amendment of 2026-10-26; Python runtime and env surface removed
+remaining:
+  - Run actual native resource isolation exhaustion and lifecycle canaries in CHG-0174
+limitations:
+  - No real runtime invoked and no runsc or Kata isolation claim
+  - Broker application env and writable persistent app data remain unsupported

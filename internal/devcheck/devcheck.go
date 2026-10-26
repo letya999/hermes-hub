@@ -20,6 +20,8 @@ import (
 	"time"
 )
 
+var errEmptyCoverage = errors.New("empty coverage profile")
+
 type coverBlock struct {
 	statements int
 	covered    bool
@@ -57,7 +59,11 @@ func parseCoverage(name string) (map[string]coverBlock, error) {
 		}
 		merged := blocks[fields[0]]
 		if merged.pkg == "" {
-			file := fields[0][:strings.IndexByte(fields[0], ':')]
+			separator := strings.LastIndexByte(fields[0], ':')
+			if separator <= 0 {
+				return nil, fmt.Errorf("invalid coverage location")
+			}
+			file := fields[0][:separator]
 			if i := strings.LastIndexByte(file, '/'); i >= 0 {
 				merged.pkg = file[:i]
 			} else {
@@ -74,7 +80,7 @@ func parseCoverage(name string) (map[string]coverBlock, error) {
 		return nil, err
 	}
 	if len(blocks) == 0 {
-		return nil, fmt.Errorf("empty coverage profile")
+		return nil, errEmptyCoverage
 	}
 	return blocks, nil
 }
@@ -175,13 +181,44 @@ func CoverAll(profile string, minimum, packageMinimum float64, listPackages func
 		_ = out.Close()
 		return 0, err
 	}
-	tmp := profile + ".tmp"
 	for _, pkg := range packages {
-		if err := testPackage(pkg, tmp); err != nil {
+		temporaryDir := filepath.Dir(profile)
+		if temporaryDir == "." {
+			temporaryDir = filepath.Join(".work", "tmp")
+			if err := os.MkdirAll(temporaryDir, 0700); err != nil {
+				_ = out.Close()
+				return 0, err
+			}
+		}
+		file, err := os.CreateTemp(temporaryDir, "coverage-package-*.out")
+		if err != nil {
 			_ = out.Close()
 			return 0, err
 		}
+		tmp := file.Name()
+		if err = file.Close(); err != nil {
+			_ = os.Remove(tmp)
+			_ = out.Close()
+			return 0, err
+		}
+
+		if err := testPackage(pkg, tmp); err != nil {
+			_ = os.Remove(tmp)
+			_ = out.Close()
+			return 0, err
+		}
+		if _, err := parseCoverage(tmp); err != nil {
+			_ = os.Remove(tmp)
+			if errors.Is(err, errEmptyCoverage) {
+				// Statement-free package (no test files): valid profile with
+				// nothing to merge. Malformed profiles still fail the gate.
+				continue
+			}
+			_ = out.Close()
+			return 0, fmt.Errorf("package %s coverage: %w", pkg, err)
+		}
 		body, err := os.ReadFile(tmp)
+		_ = os.Remove(tmp)
 		if err != nil {
 			_ = out.Close()
 			return 0, err
@@ -197,7 +234,6 @@ func CoverAll(profile string, minimum, packageMinimum float64, listPackages func
 			}
 		}
 	}
-	_ = os.Remove(tmp)
 	if err := out.Close(); err != nil {
 		return 0, err
 	}

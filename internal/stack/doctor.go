@@ -26,6 +26,7 @@ func DoctorScope(s Settings, userSecrets, orgSecrets map[string]string) []string
 		secrets[key] = value
 	}
 	issues := []string{}
+	issues = append(issues, hostingIssues(s)...)
 	for key, value := range userSecrets {
 		if _, exists := secrets[key]; exists {
 			issues = append(issues, "secret key duplicated between organization and user scope: "+key)

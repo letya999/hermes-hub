@@ -1,0 +1,36 @@
+schema: 1
+change: CHG-0171
+title: Static serving artifact access and HTTP bounds
+status: in_progress
+branch: feat/m18-exposure-hosting
+updated: 2026-10-26
+phase: implementation
+adr: ADR-0079
+spec: SPEC-0077
+requirements: [R5, R6, R9, R10]
+depends_on: [CHG-0170]
+github_milestone: M18
+github_issue: 147
+design_status: accepted
+implementation_status: in_progress
+slices:
+  H2.1-host-listeners-static: implemented_pending_gates
+  H2.2-share-browser-boundary: implemented_pending_gates
+  H2.3-bounds-audit: implemented_pending_gates
+validation:
+  documents: pass
+  just_check: pass
+  coverage: 86.03_statements_package_floor_75_held
+  docker_check: not_run_owner_instruction
+  red_team: self_review_negative_contracts_native_pending
+  live_acceptance: not_started
+evidence:
+  - Exact Host gate protects static range HEAD conditional and dynamic responses
+  - Fragment exchange bootstrap CSP and host-only revision session are implemented
+  - TestApplicationCookiesExcludeAmbientAndOtherRevisions denies ambient Hub credentials
+  - Serve audit records status outcome bytes duration with admission reservation
+remaining:
+  - Finish offline gates
+  - Run real browser assets CSP cookie and revocation acceptance under CHG-0174
+limitations:
+  - Browser behavior not executed under current Docker restriction

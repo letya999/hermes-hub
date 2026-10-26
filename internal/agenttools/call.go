@@ -153,6 +153,8 @@ func (t *Tools) call(ctx context.Context, name string, r Input, ws, ar, org *os.
 		return t.API(ctx, name, r)
 	case "ssh_hosts", "ssh_exec", "ssh_read", "ssh_write", "ssh_shell_open", "ssh_shell_send", "ssh_shell_read", "ssh_shell_close", "ssh_tunnel_open", "ssh_tunnel_list", "ssh_tunnel_close":
 		return t.sshDispatch(ctx, name, r)
+	case "site_publish", "site_unpublish", "site_list", "site_status":
+		return t.hostingCall(ctx, name, r, ws)
 	case "exposure_list", "exposure_status", "exposure_open", "exposure_close":
 		return t.exposureDispatch(ctx, name, r)
 	default:

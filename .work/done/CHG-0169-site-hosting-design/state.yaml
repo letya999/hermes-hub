@@ -1,0 +1,65 @@
+schema: 1
+change: CHG-0169
+title: User-scoped site hosting design pass
+status: done
+branch: feat/m18-exposure-hosting
+updated: 2026-10-26
+phase: done
+adr: ADR-0079
+spec: SPEC-0077
+requirements: [R1, R2, R3, R4, R5, R6, R7, R8, R9, R10]
+depends_on: [CHG-0165, CHG-0166, CHG-0167, CHG-0168]
+github_milestone: M18
+github_issue: 147
+design_status: accepted
+implementation_status: not_started
+slices:
+  S1-research: green
+  S2-adr-proposed: green
+  S3-spec-draft: green
+  S4-validation: green_with_gate_limitation
+  S5-ecosystem-research: green
+  S6-haloy-source-review: green_with_verification_limits
+  S7-accept-freeze-implementation-handoff: green
+validation:
+  documents: pass
+  just_check: interrupted_before_config_check_to_avoid_docker
+  go_check: failed_coverage_parser_panic_after_all_package_tests_passed
+  lint: pass
+  docs_check: pass
+  followup_documents: pass
+  haloy_review_documents: pass
+  docker_check: not_run_owner_instruction
+  red_team: design_only
+  live_acceptance: not_started
+evidence:
+  - Base 5c19f3e; separate worktree and branch; source worktree changes untouched
+  - research.md records local code anchors and checked primary documentation
+  - ADR-0079 Proposed and SPEC-0077 Draft; no implementation or dependencies changed
+  - devcheck docs and git diff --check pass
+  - just lint docs-check passes (format, vet, tidy diff, staticcheck, gosec, docs, actionlint)
+  - just check attempted; stopped during Go gate because later config-check invokes docker compose config
+  - just go-check completed all package tests successfully; coverage aggregation panicked at internal/devcheck/devcheck.go:60 (slice bounds out of range)
+  - coverage threshold is unverified; no aggregate coverage percentage claimed
+  - ecosystem-research.md records three Context7 resolve/query pairs and upstream GitHub/provider documentation
+  - ready-made candidates include artifact-site, Fragments, Dokku, Coolify, OpenSandbox, Caddy and Cloudflare official templates
+  - proposed MVP refined to complete static path first, one python-http profile next, one writer and explicit runsc/Kata
+  - community coverage includes HN, Reddit, DEV, author Medium/Substack, Habr and arXiv; X original fetch 403 and Archive lookup unavailable
+  - follow-up devcheck docs and git diff --check pass; no production/test/dependency changes, prior full-gate limitation retained
+  - Go-native follow-up checks Haloy, SwiftWave, Orbita and Tsuru; Haloy retained as concrete lifecycle-adapter candidate, compatibility unproven
+  - haloy-review.md supersedes the open Haloy candidate decision at pinned commit 3cd1d500394a81532970dc4cdb57e02d77b2be62
+  - Haloy unchanged adapter cannot express mandatory pre-start envelope; fork would change core lifecycle/network/serving paths; prefer existing controller extension
+  - Haloy selected unit/race tests pass except one Windows-incompatible wildcard-cert fixture; proxy passes with that single explicit skip
+  - Haloy Linux-target static govulncheck exits 3 with 12 symbol-reachable findings; 10 depend on local Go 1.27.0 and two are Docker advisories; no exploitation claim
+  - clone remains unmodified; no Docker actions, Haloy install, dependency additions or source extraction
+  - Owner accepted researched direction on 2026-10-26 and requested issue ADR SPEC changes states transition
+  - ADR-0079 accepted and SPEC-0077 frozen; CHG-0170 through CHG-0174 allocated with ordered plans and separate states
+  - Design complete only; successor implementation and live evidence remain not_started and issue 147 remains open
+remaining: []
+limitations:
+  - no Docker operations by owner instruction
+  - upstream exposure runs inside Hermes and lacks durable tunnel reconciliation
+  - live sish and DNS/TLS acceptance are pending in predecessor records
+  - stateless dynamic apps only; writable persistent disk needs a quota contract
+  - runsc/Kata availability and runtime-specific isolation/resource behavior unverified; no implicit runc fallback proposed
+  - full just check is not green; config-check requires Docker and coverage parser fails independently of documentation changes

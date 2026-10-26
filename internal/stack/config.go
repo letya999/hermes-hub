@@ -16,6 +16,7 @@ import (
 // Package stack generates a private, per-user Hermes deployment.
 
 type Settings struct {
+	Hosting              HostingSettings `yaml:"hosting,omitempty"`
 	defaultGlobalSkills  bool
 	ExecutionMode        string `yaml:"-"`
 	SupervisorURL        string `yaml:"-"`
@@ -152,6 +153,7 @@ var Features = []Feature{
 	{"atlassian", []string{"JIRA_URL", "JIRA_USERNAME", "JIRA_API_TOKEN"}, "Direct mcp-atlassian Jira MCP; optional Confluence credentials can be added later"},
 	{"desktop", []string{"DESKTOP_TOKEN"}, "Authenticated companion on a native Windows/macOS/Linux desktop"},
 	{"drafts", []string{"DRAFTS_TOKEN"}, "Authenticated companion for the macOS Drafts app"},
+	{"hosting", nil, "Owner-bound immutable static and isolated dynamic sites; requires reviewed hosting config and exposure"},
 	{"exposure", nil, "Named outbound public endpoints over a per-binding tunnel workload (sish/cloudflared); requires a reviewed connections/exposure/config.yaml"},
 }
 var idPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,39}$`)
