@@ -571,7 +571,8 @@ func selfInstallArtifactPresent(definition api.ToolDefinition) bool {
 // otherwise the content-addressed store entry referenced by its digest.
 func (c *ControlPlane) recipeOf(onboarding api.Onboarding) *api.RecipeResolution {
 	if onboarding.Recipe != nil {
-		return onboarding.Recipe
+		cloned := api.CloneResolution(*onboarding.Recipe)
+		return &cloned
 	}
 	if c.Store == nil || onboarding.RecipeDigest == "" {
 		return nil

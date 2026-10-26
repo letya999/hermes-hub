@@ -175,6 +175,114 @@ func TestAuthFirstRetryReusesBuiltArtifact(t *testing.T) {
 	}
 }
 
+// The deferred credentialed review feeds the stored recipe's connection back
+// to the resolver through the request context, where provenance stamping and
+// merge compaction write into field slices. Those writes must never reach the
+// stored recipe or the in-memory onboarding recipe — the recipe stays bound
+// to its content digest.
+func TestAuthFirstDeferredReviewCannotMutateStoredRecipe(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	key := filepath.Join(root, "broker.private")
+	if err := os.WriteFile(key, private, 0600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var response any
+		switch r.Method + " " + r.URL.Path {
+		case "POST /v1/credentials/credential_1/grants":
+			response = brokerv1.Grant{ID: "grant_a", Active: true}
+		case "POST /v1/leases":
+			response = brokerv1.Lease{ID: "lease_1"}
+		case "POST /v1/runtime/leases/lease_1/materialize":
+			response = brokerv1.Materialized{Env: map[string]string{"CUSTOM_TOKEN": "synthetic-token"}}
+		case "POST /v1/runtime/leases/lease_1/release", "POST /v1/grants/grant_a/revoke":
+			response = struct{}{}
+		case "GET /v1/credentials/credential_1":
+			response = brokerv1.Credential{Status: "active", ConnectionID: "conn_1", ConsumerID: "auth-first-mcp"}
+		default:
+			t.Errorf("unexpected broker call %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	auth := aliceAuth()
+	draft := statefulContainerDefinition()
+	draft.DefinitionID = "auth-first-mcp"
+	draft.Source.Image = ""
+	draft.Source.Digest = ""
+	draft.Source.Repository = "https://github.com/example/auth-first-mcp"
+	draft.Source.CommitSHA = strings.Repeat("a", 40)
+	draft.Credentials = []api.CredentialInput{{Name: "CUSTOM_TOKEN", Required: true, Delivery: "env"}}
+	draft.CredentialContractID, draft.CredentialContractRevision = "env-auth", 1
+	draft.CredentialContractEnv = map[string]string{"CUSTOM_TOKEN": "CUSTOM_TOKEN"}
+
+	store := NewStore()
+	recipe := &api.RecipeResolution{
+		Source:     api.ArtifactSource{Repository: draft.Source.Repository, CommitSHA: draft.Source.CommitSHA},
+		State:      "ready",
+		Connection: api.ConnectionRecipe{AuthBeforeToolsList: true, Fields: []api.ConnectionField{{Name: "CUSTOM_TOKEN", Required: true, Delivery: "env"}}},
+	}
+	digest, err := store.PutRecipe(*recipe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	onboarding := api.Onboarding{
+		Schema: api.SchemaVersion, OnboardingID: "onboard-alias",
+		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
+		Mode: api.OnboardingSelfInstall, Phase: api.PhaseAwaitingCreds, Revision: 1,
+		AdmissionPending: true, Definition: &draft, BrokerRequestID: "request_1",
+		Recipe: recipe, RecipeDigest: digest,
+	}
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	cfg := credentialbroker.Config{URL: server.URL, KeyFile: key, KeyID: "toolhub", Issuer: "hermes-toolhub"}
+	control := &ControlPlane{
+		Store: store, Broker: &cfg, BrokerRuntime: &cfg, Now: time.Now,
+		Reviewer: func(ctx context.Context, _ api.ArtifactSource, _ *api.RecipeCandidate) (api.SourceReview, error) {
+			// A real resolver stamps provenance on the context recipe's
+			// fields (connectionWithSource) before merging catalog claims.
+			if recipe, ok := ctx.Value(api.ConnectionRecipeContextKey{}).(api.ConnectionRecipe); ok {
+				for i := range recipe.Fields {
+					recipe.Fields[i].Source = "install-recipe"
+				}
+			}
+			return api.SourceReview{}, errors.New("server rejected the submitted token")
+		},
+		AdmitWithCredentials: func(_ context.Context, d api.ToolDefinition, _ map[string]string) (api.ToolDefinition, error) {
+			return d, nil
+		},
+	}
+	if err := control.completeBrokerAdmission(context.Background(), auth, &onboarding, "credential_1"); err != nil {
+		t.Fatalf("admission: %v", err)
+	}
+	stored, err := store.Recipe(digest)
+	if err != nil {
+		t.Fatalf("stored recipe lost: %v", err)
+	}
+	if stored.Connection.Fields[0].Source != "" {
+		t.Fatalf("deferred review stamped the stored recipe: %+v", stored.Connection.Fields[0])
+	}
+	if onboarding.Recipe.Connection.Fields[0].Source != "" {
+		t.Fatalf("deferred review stamped the onboarding recipe: %+v", onboarding.Recipe.Connection.Fields[0])
+	}
+	path := filepath.Join(t.TempDir(), "store.json")
+	if err := store.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatalf("store must survive the deferred-review mutation: %v", err)
+	}
+}
+
 // Two owners racing the serialized admission path must converge on their own
 // durable records: no cross-owner reads, no lost updates, distinct results.
 func TestConcurrentBrokerAdmissionStaysOwnerScoped(t *testing.T) {

@@ -18,8 +18,8 @@ func TestStoreRecipeSurvivesCallerMutation(t *testing.T) {
 	store := NewStore()
 	trueValue := true
 	resolution := api.RecipeResolution{
-		Source: api.ArtifactSource{Repository: "https://github.com/acme/weather", CommitSHA: strings.Repeat("1", 40)},
-		Launch: api.LaunchRecipe{Artifact: "ghcr.io/acme/weather@sha256:" + strings.Repeat("2", 64), Transport: api.ContainerMCP},
+		Source:   api.ArtifactSource{Repository: "https://github.com/acme/weather", CommitSHA: strings.Repeat("1", 40)},
+		Launch:   api.LaunchRecipe{Artifact: "ghcr.io/acme/weather@sha256:" + strings.Repeat("2", 64), Transport: api.ContainerMCP},
 		State:    "ready",
 		Egress:   []string{"api.example"},
 		Trust:    api.TrustT2,
@@ -116,5 +116,30 @@ func TestStoreRecipeReadReturnsIsolatedCopy(t *testing.T) {
 	}
 	if len(reread.Connection.Fields) != 1 || reread.Connection.Fields[0].Source != "" {
 		t.Fatalf("read-side mutation reached the stored recipe: %+v", reread.Connection.Fields)
+	}
+}
+
+// recipeOf hands the live onboarding recipe to callers that filter and
+// extend it (rebuildCredentialSource rewrites connection and appends ledger
+// claims). Returning the embedded pointer lets those writes drift the
+// in-memory recipe away from the onboarding's own recipe_digest.
+func TestRecipeOfReturnsIsolatedOnboardingRecipe(t *testing.T) {
+	store := NewStore()
+	control := &ControlPlane{Store: store}
+	onboarding := api.Onboarding{
+		Recipe: &api.RecipeResolution{
+			State:      "ready",
+			Connection: api.ConnectionRecipe{Fields: []api.ConnectionField{{Name: "WEATHER_TOKEN", Type: "token", Required: true}}},
+			Ledger:     []api.LedgerEntry{{Source: "repo", Claim: api.Claim{Field: "WEATHER_TOKEN"}}},
+		},
+	}
+	recipe := control.recipeOf(onboarding)
+	if recipe == nil {
+		t.Fatal("recipeOf returned nil for an embedded recipe")
+	}
+	recipe.Connection.Fields[0].Source = "owner"
+	recipe.Ledger = append(recipe.Ledger, api.LedgerEntry{Source: "owner", Claim: api.Claim{Field: "WEATHER_ORG"}})
+	if onboarding.Recipe.Connection.Fields[0].Source != "" || len(onboarding.Recipe.Ledger) != 1 {
+		t.Fatalf("recipeOf caller mutated the embedded recipe: %+v", onboarding.Recipe.Connection.Fields[0])
 	}
 }

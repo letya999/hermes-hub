@@ -65,7 +65,7 @@ func (c *ControlPlane) admitWithBrokerCredential(ctx context.Context, auth ident
 		if c.Reviewer == nil {
 			return api.ToolDefinition{}, fmt.Errorf("%w: deferred source reviewer unavailable", api.ErrIsolation)
 		}
-		recipe := onboarding.Recipe.Connection
+		recipe := api.CloneResolution(*onboarding.Recipe).Connection
 		recipe.AuthBeforeToolsList = false
 		ctx = context.WithValue(ctx, api.ConnectionRecipeContextKey{}, recipe)
 		ctx = api.WithProbeOptions(ctx, api.ProbeOptions{Values: injection.Environment, Mounts: injection.Mounts, AllowNetwork: true})
