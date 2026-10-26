@@ -1,6 +1,6 @@
 ---
 description: Operator runbook — stack lifecycle, user onboarding, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
-last_verified: 2026-10-26
+last_verified: 2026-11-02
 ---
 
 # Operations
@@ -262,6 +262,16 @@ so it reaches the runtime env). It fronts the same restricted human-action
 surface as the public listener; it is not a second public surface. Live
 sish acceptance requires the operator VPS + domain and is tracked in
 CHG-0166.
+
+Relay image pin: upstream sish sends a hostname in the `forwarded-tcpip`
+originator field, which strict Go SSH clients reject — every delivered
+connection fails until it is fixed (upstream issue 387 / PR 388). Deploy
+the relay from the reviewed fork image
+`ghcr.io/letya999/sish:v3.0.5-originaddr.1`
+(digest `sha256:cdb3195c71d4c69dcc5447def23fb552b9f933324843dc184c955b1b370470a1`,
+source branch `letya999/sish:fix/forwarded-tcpip-origin-addr`) until a
+released upstream contains the correction; then repin to the upstream
+release tag.
 
 ## Per-user DNS/TLS addressing
 
