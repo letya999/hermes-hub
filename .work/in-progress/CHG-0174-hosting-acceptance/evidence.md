@@ -52,3 +52,49 @@ limits, browser cookie/CSP behavior and sish reconnection.
 No code was copied from Haloy. The existing Go admission/controller and standard
 library are reused. Broker application-env delivery remains unsupported and no
 implicit secret inheritance is enabled. There is no issue closure or deployment.
+
+## Live acceptance run 2026-11-02 (dev stack, spaces/local)
+
+Tool path: `tools-exec` one-shot runtime container with `HUB_HOSTING_URL`
+pointing at the dev hosting control listener and the operator token file;
+data plane reached at 127.0.0.1:8181 and through a real sish reverse tunnel.
+
+- `site_publish` static `site1` -> ready rev1, origin https://site1.local.sish.test,
+  share link URL with fragment token; state and audit (admitted+complete) persisted on volume.
+- Link flow over data plane: `GET /` without cookie returned bootstrap page
+  (no-referrer, strict CSP, fragment-clearing script); `POST /_hosting/exchange`
+  with matching Origin and token returned 204 plus `__Host-hub-site` cookie;
+  authenticated `GET /` and `GET /hello.txt` returned real snapshot content.
+- Negative link flow: missing cookie 404, wrong token 404, missing Origin 404,
+  deep link without cookie 404.
+- Control API: POST-only, bearer token required, Origin enforced.
+- Self-healing: sish restart lost the route; exposure reconcile re-established
+  the tunnel in about 30 seconds.
+- `site_publish` public `site2` requires `authorized:true` (denied without);
+  identical request_id replay returned the stored result, no new revision.
+- Public site2 served real content over HTTP and HTTPS through sish (200/200).
+- Stale `expected_revision:9` -> conflict; republish with `expected_revision:1`
+  -> rev2, new share token; previous link token rejected (404) after rotation.
+- Confinement: `../escape`, `/abs/x`, `a\b`, NUL-containing, `site1/../site2`,
+  `.` all denied before serve.
+- Slot allowlist: unlisted name `site3` refused (quota exceeded).
+- Dynamic `mode:dynamic, profile:go-http` -> `hosting unavailable` (fail closed:
+  no executor/controller configured in this stack).
+- Private access: site2 republished private rev2; external fetch returns 404.
+- `site_unpublish` requires matching `expected_revision` (conflict on mismatch);
+  with rev2 -> removed:true, list clean, external route 404.
+- Restart recovery: `docker restart` of hosting preserved site1 rev2 ready.
+
+### sish findings (exposure-side, issue 145)
+
+- sish `:443` bind performs raw TLS passthrough; provider must bind `:80`
+  terminate semantics so sish terminates TLS and forwards plain HTTP.
+  Fixed in `internal/exposure/sish.go` with test updates.
+- Upstream sish `sshmuxer/requests.go` builds forwarded-tcpip payload with a
+  hostname in `OriginAddr`; RFC 4254 requires an IP and x/crypto rejects the
+  channel (502). Verified by patching a local sish build: the same Hermes
+  provider then worked end to end. Candidate upstream issue/PR exists in
+  `.work/tmp/sish-build/`; no Hermes change depends on the patch.
+- Defect unrelated to hosting but found via live restart: recipe store digest
+  corruption through shared-slice mutation; fixed via CloneResolution with
+  regression tests in `internal/toolhub`.
