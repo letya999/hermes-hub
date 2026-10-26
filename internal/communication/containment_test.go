@@ -33,8 +33,17 @@ func TestMasterNoticeQueuesBeforeAcknowledgement(t *testing.T) {
 			var body struct {
 				NoticeID string `json:"notice_id"`
 			}
-			if json.NewDecoder(r.Body).Decode(&body) != nil || body.NoticeID != "hold-alice-alice-1" {
-				t.Error("acknowledged an unroutable owner notice")
+			if json.NewDecoder(r.Body).Decode(&body) != nil {
+				w.WriteHeader(409)
+				return
+			}
+			if body.NoticeID == "hold-unknown-unknown-1" {
+				// Unroutable principal: acknowledged as undeliverable, never queued.
+				w.WriteHeader(200)
+				return
+			}
+			if body.NoticeID != "hold-alice-alice-1" {
+				t.Error("acknowledged an unexpected notice")
 				w.WriteHeader(409)
 				return
 			}
@@ -69,6 +78,57 @@ func TestMasterNoticeQueuesBeforeAcknowledgement(t *testing.T) {
 	entries, err := os.ReadDir(filepath.Join(c.SpoolDir, "outbox", "pending"))
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("owner notice missing, duplicated or misrouted: entries=%d %v", len(entries), err)
+	}
+}
+
+func TestMasterNoticeAcksUndeliverable(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	c := testConfig(t)
+	var acks atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer synthetic-service" {
+			t.Error("notice request lost service authority")
+			w.WriteHeader(401)
+			return
+		}
+		switch r.URL.Path {
+		case "/v1/holds":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[{"principal_id":"nobody","context_id":"nobody","active":true,"epoch":1,"reason":"manual","notice_id":"hold-nobody-nobody-1","notice_pending":true}]`))
+		case "/v1/holds/ack":
+			var body struct {
+				NoticeID string `json:"notice_id"`
+			}
+			if json.NewDecoder(r.Body).Decode(&body) != nil || body.NoticeID != "hold-nobody-nobody-1" {
+				w.WriteHeader(409)
+				return
+			}
+			acks.Add(1)
+			cancel()
+			w.WriteHeader(200)
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+	c.Supervised = true
+	c.RuntimeURL = srv.URL
+	c.RuntimeAuth = "synthetic-service"
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.controlLoop(ctx)
+	if acks.Load() != 1 {
+		t.Fatalf("undeliverable notice was not acknowledged: %d", acks.Load())
+	}
+	entries, err := os.ReadDir(filepath.Join(c.SpoolDir, "outbox", "pending"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("undeliverable notice reached the outbox: %d entries", len(entries))
 	}
 }
 

@@ -65,29 +65,41 @@ func (g *Gateway) syncMasterNotices(ctx context.Context) error {
 		}
 		user, ok := g.configUser(hold.PrincipalID)
 		if !ok || len(user.TelegramIDs) == 0 {
+			// No channel can ever carry this notice: acknowledge it as closed
+			// rather than spinning the poll loop on it forever.
+			if err := ackHoldNotice(ctx, client, base, g.config.RuntimeAuth, hold.NoticeID); err != nil {
+				return err
+			}
 			continue
 		}
 		text := "Работа приостановлена администратором (" + hold.Reason + "). Для возобновления обратитесь к администратору. Уже выполненные внешние действия не отменены; неопределённые результаты требуют проверки."
 		if err := g.queueDelivery(ctx, hold.NoticeID, user.TelegramIDs[0], 0, text); err != nil {
 			return err
 		}
-		body, _ := json.Marshal(struct {
-			NoticeID string `json:"notice_id"`
-		}{hold.NoticeID})
-		ack, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/holds/ack", bytes.NewReader(body))
-		if err != nil {
+		if err := ackHoldNotice(ctx, client, base, g.config.RuntimeAuth, hold.NoticeID); err != nil {
 			return err
 		}
-		ack.Header.Set("Authorization", "Bearer "+g.config.RuntimeAuth)
-		ack.Header.Set("Content-Type", "application/json")
-		result, err := client.Do(ack)
-		if err != nil {
-			return err
-		}
-		_ = result.Body.Close()
-		if result.StatusCode != 200 {
-			return errors.New("hold notice acknowledgement unavailable")
-		}
+	}
+	return nil
+}
+
+func ackHoldNotice(ctx context.Context, client *http.Client, base, auth, noticeID string) error {
+	body, _ := json.Marshal(struct {
+		NoticeID string `json:"notice_id"`
+	}{noticeID})
+	ack, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/holds/ack", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	ack.Header.Set("Authorization", "Bearer "+auth)
+	ack.Header.Set("Content-Type", "application/json")
+	result, err := client.Do(ack)
+	if err != nil {
+		return err
+	}
+	_ = result.Body.Close()
+	if result.StatusCode != 200 {
+		return errors.New("hold notice acknowledgement unavailable")
 	}
 	return nil
 }

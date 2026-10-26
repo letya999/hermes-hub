@@ -26,6 +26,10 @@ everything entering or leaving the human conversation. Listens
 - **Control API** on the same listener: `prepare-outcome` callbacks, routines
   control, sibling-runtime calls authenticated by `toolhub-tokens.json`
   (`HUB_COMMUNICATION_TOKENS_FILE`).
+- **Master hold notices**: polls supervisor `/v1/holds` once per control tick;
+  a routable notice is durably enqueued (Telegram) then acknowledged via
+  `/v1/holds/ack`. A notice with no configured delivery channel is
+  acknowledged immediately — undeliverable notices never wedge pending.
 - **Spool**: durable outbound queue on the `communication-hub-data` volume
   (`HUB_COMMUNICATION_SPOOL=/data`). Every admitted job holds exactly one
   reservation in `budget.json` (written before the job file, settled once at
