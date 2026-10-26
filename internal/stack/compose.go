@@ -293,7 +293,18 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		svc["image"] = "hermes-hub:0.4.0-" + s.Environment + "-control"
 		svc["build"] = M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile", "target": s.Environment + "-control"}
 		svc["entrypoint"] = []string{"hubctl", "supervisor", "--spaces", "/spaces", "--env", s.Environment, "--runtime-image", "hermes-hub:0.4.0-" + s.Environment, "--supervisor-listen", "0.0.0.0:8876", "--supervisor-allow-wildcard-listen"}
-		svc["environment"] = M{"HUB_SUPERVISOR_AUTH": "${HUB_SUPERVISOR_AUTH:?set HUB_SUPERVISOR_AUTH or provision supervisor.auth for this stack}", "HUB_SUPERVISOR_HOST_SPACES": filepath.ToSlash(filepath.Dir(dir)), "HOME": "/tmp", "TZ": s.Timezone}
+		svc["environment"] = M{"HUB_SUPERVISOR_AUTH": "${HUB_SUPERVISOR_AUTH:?set HUB_SUPERVISOR_AUTH or provision supervisor.auth for this stack}", "HUB_SUPERVISOR_HOST_SPACES": filepath.ToSlash(filepath.Dir(dir)), "HOME": "/tmp", "TZ": s.Timezone,
+			// Opt-in authorities stay disabled unless the operator provisions
+			// them: admin holds need a separate authority token; the personal
+			// supervisor needs a managed model endpoint + model name.
+			"HUB_SUPERVISOR_ADMIN_AUTH": "${HUB_SUPERVISOR_ADMIN_AUTH:-}",
+			"HUB_PERSONAL_MODEL":        "${HUB_PERSONAL_MODEL:-}",
+			"HUB_MANAGED_MODEL_URL":     "${HUB_MANAGED_MODEL_URL:-}",
+			"OPENAI_API_KEY":            "${OPENAI_API_KEY:-}",
+			// Run-budget knobs are operator-tunable for drills and squeeze
+			// tests; empty resolves to the code defaults (30m / 60s).
+			"HUB_RUN_BUDGET":  "${HUB_RUN_BUDGET:-}",
+			"HUB_STREAM_IDLE": "${HUB_STREAM_IDLE:-}"}
 		svc["volumes"] = []any{dockerSock,
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Dir(dir)), "target": "/spaces"},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(projectRoot, "config")), "target": "/config", "read_only": true},
