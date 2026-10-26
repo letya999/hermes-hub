@@ -7,6 +7,8 @@ record it points to. `archive/` holds only pre-renumbering originals.
 
 | Specification | Status |
 |---|---|
+| [SPEC-0081](active/SPEC-0081-shared-acquisition.md) | Frozen: shared source acquisition — boundary-keyed pool, conditional HTTP, cursors/gap visibility, per-event filters, hook intake (M23 #332) |
+| [SPEC-0080](active/SPEC-0080-standing-assignments.md) | Frozen: standing assignments — durable owner intent, plan reconcile, fenced wakes, messenger control (M23 #324) |
 | [SPEC-0079](active/SPEC-0079-user-scoped-site-hosting.md) | Frozen: user-scoped hosting — static/dynamic isolation, publication, quotas, artifact access and durable lifecycle; CHG-0170–0174 (M18 #147) |
 | [SPEC-0078](active/SPEC-0078-per-user-dns-tls.md) | Frozen: per-user subdomains — provider-neutral DNS contract, four profiles, per-user wildcard via DNS-01 to sish, Broker credentials (M18 #146) |
 | [SPEC-0077](active/SPEC-0077-outbound-exposure.md) | Frozen: outbound exposure primitive — named endpoints, per-binding tunnel workloads, Broker credentials, sish/cloudflared profiles, bounds and audit (M18 #145) |

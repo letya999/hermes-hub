@@ -1,0 +1,29 @@
+schema: 1
+change: CHG-0181
+title: m23-live-acceptance
+status: in_progress
+branch: feat/m23-proactive-assignments
+updated: 2026-10-27
+phase: design-complete
+adr: ADR-0082
+spec: SPEC-0080+SPEC-0081
+requirements: [R3.x]
+depends_on: []
+github_milestone: M23 — Backlog Proactive Assignments
+github_issue: 324,332
+design_status: accepted
+implementation_status: not_started
+slices:
+  S4.1-dev-stack-wiring: not_started
+  S4.2-lifecycle-live-run: not_started
+  S4.3-pipeline-evidence: not_started
+  S4.4-slack-slice: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining: []
+limitations: []

@@ -1,0 +1,29 @@
+schema: 1
+change: CHG-0179
+title: acquisition-pipeline
+status: in_progress
+branch: feat/m23-proactive-assignments
+updated: 2026-10-27
+phase: design-complete
+adr: ADR-0082
+spec: SPEC-0081
+requirements: [R1.1..R1.8,R2.1..R2.4]
+depends_on: []
+github_milestone: M23 — Backlog Proactive Assignments
+github_issue: 332
+design_status: accepted
+implementation_status: not_started
+slices:
+  S2.1-acquisition-conditional-backoff: not_started
+  S2.2-cursors-gap: not_started
+  S2.3-event-filter: not_started
+  S2.4-hook-intake: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining: []
+limitations: []

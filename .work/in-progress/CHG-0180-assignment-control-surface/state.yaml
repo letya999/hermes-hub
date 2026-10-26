@@ -1,0 +1,28 @@
+schema: 1
+change: CHG-0180
+title: assignment-control-surface
+status: in_progress
+branch: feat/m23-proactive-assignments
+updated: 2026-10-27
+phase: design-complete
+adr: ADR-0082
+spec: SPEC-0080
+requirements: [R2.1..R2.6]
+depends_on: []
+github_milestone: M23 — Backlog Proactive Assignments
+github_issue: 324
+design_status: accepted
+implementation_status: not_started
+slices:
+  S3.1-rest-status-card: not_started
+  S3.2-agent-tools: not_started
+  S3.3-chat-commands-authorize: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining: []
+limitations: []
