@@ -305,7 +305,7 @@ func TestSishProviderBrokerKeyRef(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer p.Close(context.Background(), handle)
-	if got := d.deliver(t, "demo.z:443", "ping"); got != "ping" {
+	if got := d.deliver(t, "demo.z:80", "ping"); got != "ping" {
 		t.Fatalf("forward returned %q", got)
 	}
 	if released.Load() < 1 {
@@ -345,7 +345,7 @@ func TestSishProviderServiceTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer p.Close(context.Background(), handle)
-	if got := d.deliver(t, "demo.z:443", "ping"); got != "ping" {
+	if got := d.deliver(t, "demo.z:80", "ping"); got != "ping" {
 		t.Fatalf("service target forward returned %q", got)
 	}
 }
@@ -364,7 +364,7 @@ func TestSishProviderHubListenerTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer p2.Close(context.Background(), handle)
-	if got := d.deliver(t, "demo.z:443", "ping"); got != "ping" {
+	if got := d.deliver(t, "demo.z:80", "ping"); got != "ping" {
 		t.Fatalf("hub listener forward returned %q", got)
 	}
 }
@@ -378,7 +378,7 @@ func TestSishProviderOpenForwardClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := d.deliver(t, "demo.z:443", "ping"); got != "ping" {
+	if got := d.deliver(t, "demo.z:80", "ping"); got != "ping" {
 		t.Fatalf("forward returned %q", got)
 	}
 	if err = p.Close(context.Background(), handle); err != nil {

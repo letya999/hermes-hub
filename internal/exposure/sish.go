@@ -31,8 +31,11 @@ type ProviderOptions struct {
 }
 
 // SishProvider implements Provider as an in-process SSH remote forward —
-// the workload `ssh -R <bind>:443:<target>` performs, expressed over
+// the workload `ssh -R <bind>:80:<target>` performs, expressed over
 // x/crypto/ssh so no extra binary or container admission is required.
+// The remote-forward port is fixed to 80: sish treats :443 binds as raw
+// TLS passthrough (the target must speak TLS), while :80 makes it
+// terminate TLS at the edge and forward plain HTTP to the target.
 type SishProvider struct {
 	slots chan struct{}
 	cfg   *Config
@@ -100,7 +103,7 @@ func (p *SishProvider) Open(ctx context.Context, spec Spec) (string, error) {
 		return "", fmt.Errorf("%w: relay handshake: %v", ErrUnavailable, err)
 	}
 	client := ssh.NewClient(c, chans, reqs)
-	ln, err := client.Listen("tcp", net.JoinHostPort(spec.Bind, "443"))
+	ln, err := client.Listen("tcp", net.JoinHostPort(spec.Bind, "80"))
 	if err != nil {
 		_ = client.Close()
 		return "", fmt.Errorf("%w: remote forward %q refused", ErrDenied, spec.Bind)
