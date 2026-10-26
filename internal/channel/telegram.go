@@ -215,7 +215,7 @@ func (c telegram) DeliverArtifact(ctx context.Context, delivery *commodel.Delive
 }
 
 func (c telegram) ValidateOccurrence(o commodel.RoutineOccurrence, caller identity.Envelope) error {
-	if o.Job.ChatID <= 0 || caller != identity.TelegramEnvelope(o.Job.UserID, o.Job.ChatID, o.Job.RuntimeID, o.Job.PolicyVersion) {
+	if o.Job.ChatID <= 0 || !caller.Equal(identity.TelegramEnvelope(o.Job.UserID, o.Job.ChatID, o.Job.RuntimeID, o.Job.PolicyVersion)) {
 		return errors.New("invalid occurrence ownership")
 	}
 	return nil

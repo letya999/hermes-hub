@@ -40,7 +40,7 @@ func warmTTLFlag(f *flag.FlagSet) *time.Duration {
 
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		fmt.Println("hubctl 0.4.0: init | org-init | migrate-spaces | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | artifact | build | dev-rebuild | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | grant | governance | capability | context | memory | skill | routine | apply\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nConnector controllers: local-controller (fixed Telegram) or generic-controller (trusted artifact)\nSee README.md for account setup and private VPS access.")
+		fmt.Println("hubctl 0.4.0: init | org-init | migrate-spaces | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | artifact | build | dev-rebuild | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | grant | governance | capability | context | memory | skill | routine | apply | usage | watch | image | replay\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nConnector controllers: local-controller (fixed Telegram) or generic-controller (trusted artifact)\nSee README.md for account setup and private VPS access.")
 		return nil
 	}
 	op := args[0]
@@ -152,17 +152,118 @@ func run(ctx context.Context, args []string) error {
 		profile := f.String("user", "me", "person identifier")
 		spoolDir := f.String("spool", "", "communication spool")
 		stateDir := f.String("state", "", "runtime state dir (knowledge target)")
+		spaceDir := f.String("dir", "", "space directory (required by the space: section)")
 		if err := f.Parse(args[1:]); err != nil {
 			return err
 		}
 		if *file == "" || *spoolDir == "" {
 			return fmt.Errorf("apply requires -f <file> and --spool <dir>")
 		}
-		rep, err := applyFile(*spoolDir, *stateDir, *profile, *file)
+		rep, err := applyFile(*spoolDir, *stateDir, *profile, *file, *spaceDir)
 		if err != nil {
 			return err
 		}
 		return json.NewEncoder(os.Stdout).Encode(rep)
+	}
+	if op == "usage" {
+		f := flag.NewFlagSet("usage", flag.ContinueOnError)
+		spoolDir := f.String("spool", "", "communication spool dir holding usage.jsonl")
+		days := f.Int("days", 0, "window in days (0 = all records)")
+		actor := f.String("actor", "", "aggregate only this actor/user id")
+		model := f.String("model", "", "aggregate only this model id")
+		if err := f.Parse(args[1:]); err != nil {
+			return err
+		}
+		if *spoolDir == "" || f.NArg() != 0 {
+			return fmt.Errorf("usage requires --spool <dir> and no positional arguments")
+		}
+		return runUsage(os.Stdout, *spoolDir, time.Duration(*days)*24*time.Hour, *actor, *model)
+	}
+	if op == "watch" {
+		f := flag.NewFlagSet("watch", flag.ContinueOnError)
+		job := f.String("job", "", "job id to watch to terminal")
+		scope := f.String("scope", "", "user scope to watch (runtime transitions)")
+		spoolDir := f.String("spool", "", "communication spool dir (durable mapping source)")
+		supervisorURL := f.String("supervisor-url", "", "supervisor HTTP base URL")
+		supervisorAuth := f.String("supervisor-auth", "", "supervisor bearer token")
+		interval := f.Duration("interval", time.Second, "poll interval")
+		timeout := f.Duration("timeout", 0, "overall deadline (e.g. 30s); 0 = wait until done/ctrl-c")
+		if err := f.Parse(args[1:]); err != nil {
+			return err
+		}
+		if (*job == "") == (*scope == "") || f.NArg() != 0 || (*spoolDir == "" && *supervisorURL == "") {
+			return fmt.Errorf("usage: hubctl watch (--job <id> | --scope <user>) (--spool <dir> | --supervisor-url <url> [--supervisor-auth <tok>]) [--timeout <d>]")
+		}
+		return runWatch(ctx, os.Stdout, watchOptions{
+			Job: *job, Scope: *scope, SpoolDir: *spoolDir,
+			SupervisorURL: *supervisorURL, SupervisorAuth: *supervisorAuth,
+			Interval: *interval, Timeout: *timeout, Client: http.DefaultClient,
+		})
+	}
+	if op == "image" {
+		dir, environment := "", "prod"
+		subArgs := args[1:]
+		var kept []string
+		for i := 0; i < len(subArgs); i++ {
+			switch subArgs[i] {
+			case "--dir":
+				if i+1 >= len(subArgs) {
+					return fmt.Errorf("image: --dir requires a value")
+				}
+				dir, i = subArgs[i+1], i+1
+			case "--env":
+				if i+1 >= len(subArgs) {
+					return fmt.Errorf("image: --env requires a value")
+				}
+				environment, i = subArgs[i+1], i+1
+			default:
+				kept = append(kept, subArgs[i])
+			}
+		}
+		if environment != "dev" && environment != "prod" {
+			return fmt.Errorf("image requires --env dev|prod")
+		}
+		return runImage(ctx, os.Stdout, dir, environment, devcheck.DockerSmoke, kept)
+	}
+	if op == "replay" {
+		if len(args) < 2 {
+			return fmt.Errorf("usage: hubctl replay export --job <id> --spool <dir> [-o <dir>] | hubctl replay run --bundle <file> --replay-dir <dir> [--runtime-url <url>]")
+		}
+		switch args[1] {
+		case "export":
+			f := flag.NewFlagSet("replay export", flag.ContinueOnError)
+			job := f.String("job", "", "durable job id to export")
+			spoolDir := f.String("spool", "", "communication spool dir holding the job")
+			spaceDir := f.String("space", "", "space dir for non-secret doc snapshot")
+			outDir := f.String("o", "", "output dir for bundle.json")
+			promptFile := f.String("prompt-file", "", "prompt file for sensitive jobs (verified against recorded digest)")
+			if err := f.Parse(args[2:]); err != nil {
+				return err
+			}
+			if *job == "" || *spoolDir == "" || *outDir == "" || f.NArg() != 0 {
+				return fmt.Errorf("usage: hubctl replay export --job <id> --spool <dir> [--space <dir>] -o <dir> [--prompt-file <f>]")
+			}
+			return runReplayExport(os.Stdout, replayExportOpts{
+				JobID: *job, SpoolDir: *spoolDir, SpaceDir: *spaceDir, OutDir: *outDir, PromptFile: *promptFile,
+			})
+		case "run":
+			f := flag.NewFlagSet("replay run", flag.ContinueOnError)
+			bundle := f.String("bundle", "", "bundle.json produced by replay export")
+			replayDir := f.String("replay-dir", "", "isolated dir for replay spool + mock captures")
+			runtimeURL := f.String("runtime-url", "", "optional replay supervisor URL (/v1/execute)")
+			runtimeAuth := f.String("runtime-auth", "", "optional bearer token for --runtime-url")
+			if err := f.Parse(args[2:]); err != nil {
+				return err
+			}
+			if *bundle == "" || *replayDir == "" || f.NArg() != 0 {
+				return fmt.Errorf("usage: hubctl replay run --bundle <file> --replay-dir <dir> [--runtime-url <url> [--runtime-auth <tok>]]")
+			}
+			return runReplayRun(os.Stdout, replayRunOpts{
+				BundlePath: *bundle, ReplayDir: *replayDir, RuntimeURL: *runtimeURL, RuntimeAuth: *runtimeAuth,
+			})
+		default:
+			return fmt.Errorf("replay: unknown subcommand %q (export|run)", args[1])
+		}
 	}
 	if op == "spool" {
 		f := flag.NewFlagSet("spool", flag.ContinueOnError)

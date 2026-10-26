@@ -1,6 +1,6 @@
 ---
 description: supervisor — per-space runtime spawner/manager; owns warm pools, docker exec agent-tools path, control channel.
-last_verified: 2026-10-25
+last_verified: 2026-10-26
 ---
 
 # supervisor
@@ -46,6 +46,36 @@ spaces dir at `/spaces`, project `config/` read-only, and the host
   successful no-op — next lease spawns fresh. Secondary spaces
   (`infra: false`) render no `hermes-runtime` service; the infra owner drops
   it when `HUB_RUNTIME_SUPERVISOR_URL` is configured.
+- `/v1/runtimes` entries expose a read-only `consumers` projection (lease
+  kind, owner class, expiry) and `wait_reason` for expected waits — parked
+  approvals/streams are reported, not remediated. Genuine anomalies append
+  one bounded line per class to `signals.jsonl` under the supervisor state
+  dir and keep a persisted per-runtime incident record.
+- One bounded `docker stats --no-stream` call per watchdog sweep samples
+  owned containers' CPU/memory; sweep cost is reported through
+  `WatchdogMetrics` (in-memory counters).
+- The watchdog runs two loops on the same tick interval: a detection sweep
+  (orphans, health probes, lease/uncertain expiry, compaction, reap) and a
+  reconcile loop (spawn/recovery Ensure). A slow Ensure can never delay
+  crash/health detection for the rest of the fleet; each pass stays bounded
+  at 150s and per-runtime locks serialize remediation against Ensure.
+- `HUB_MAX_RUNTIMES_PER_PRINCIPAL` caps live runtimes one principal may own;
+  unset means the global `MaxConcurrent` semaphore is the only cap.
+- Personal supervisor (#328): opt-in via `HUB_PERSONAL_MODEL` +
+  `HUB_MANAGED_MODEL_URL` (+ `OPENAI_API_KEY` bearer). Incident recording
+  queues one coalesced wake per scope on a notify channel; `personalLoop`
+  drains it — no retained resource, no actionable incident means no model
+  call and no polling. One in-flight `Decide` per scope; the request carries
+  allowlisted fields only (ids, generation, state, incident classes, lease
+  consumers, remaining mandate). Decisions are narrow and validated
+  server-side: `inspect|renew|pause|restart|escalate` — renew bounded to
+  30 minutes ahead and scope-local leases only, restart marks the runtime
+  for the next *verified* remediation sweep (ownership/lease checks still
+  apply), pause sets the idle deadline, escalate records a durable
+  `escalated` incident for #329 notice. Stale-generation decisions and
+  `Decide` errors apply nothing; `review` follow-ups cap at 2 per chain and
+  the drain itself is bounded at 64. Every decision lands one
+  `personal-applied`/`personal-denied` line in `signals.jsonl`.
 
 ## Boundaries
 

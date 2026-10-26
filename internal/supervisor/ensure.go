@@ -18,6 +18,12 @@ import (
 )
 
 func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) {
+	m.mu.Lock()
+	held := m.holds[holdKey(binding.PrincipalID, binding.ContextID)].Active
+	m.mu.Unlock()
+	if held {
+		return Runtime{}, errors.New("administrative hold")
+	}
 	binding, err := m.normalize(binding)
 	if err != nil {
 		return Runtime{}, err
@@ -153,6 +159,18 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 		m.mu.Unlock()
 		return Runtime{}, errors.New("owned orphan runtimes require inspection before new capacity")
 	}
+	if !slotHeld && m.cfg.MaxPerPrincipal > 0 {
+		live := 0
+		for k, entry := range m.items {
+			if k != key && entry.PrincipalID == binding.PrincipalID && (entry.State == Starting || entry.State == Ready || entry.State == Idle || entry.State == Busy) {
+				live++
+			}
+		}
+		if live >= m.cfg.MaxPerPrincipal {
+			m.mu.Unlock()
+			return Runtime{}, errors.New("per-principal runtime ceiling reached")
+		}
+	}
 	m.mu.Unlock()
 	if !slotHeld {
 		select {
@@ -176,7 +194,7 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 	}
 	address := m.runtimeAddress(container, port, managed)
 	m.gen++
-	logical := &runtimeEntry{Runtime: Runtime{PrincipalID: binding.PrincipalID, ContextID: binding.ContextID, RuntimeID: binding.RuntimeID, RuntimeMode: binding.RuntimeMode, Generation: fmt.Sprintf("gen-%d", m.gen), Container: container, Address: address, State: Starting, Leases: 1, LastUsed: m.cfg.Now(), Managed: managed}, auth: binding.runtimeAuth, leases: map[string]Lease{}}
+	logical := &runtimeEntry{Runtime: Runtime{PrincipalID: binding.PrincipalID, ContextID: binding.ContextID, RuntimeID: binding.RuntimeID, RuntimeMode: binding.RuntimeMode, Generation: fmt.Sprintf("gen-%d", m.gen), Container: container, Address: address, State: Starting, ImageSource: imageSourceOf(binding, m.environment(), m.cfg.Image), Leases: 1, LastUsed: m.cfg.Now(), Managed: managed}, auth: binding.runtimeAuth, leases: map[string]Lease{}}
 	logical.binding = binding
 	for id, lease := range lifecycle {
 		lease.Generation = logical.Generation
@@ -524,7 +542,7 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	if value := strings.TrimSpace(os.Getenv("HUB_RUN_STALL_TIMEOUT")); value != "" {
 		args = append(args, "-e", "HUB_RUN_STALL_TIMEOUT="+value)
 	}
-	image, err := devRuntimeImage(binding.ContextRoot, binding.UserID, env, m.cfg.Image)
+	image, _, err := resolveRuntimeImage(binding.ContextRoot, binding.UserID, binding.ContextID, env, m.cfg.Image)
 	if err != nil {
 		return nil, err
 	}
@@ -604,7 +622,7 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 	if value := strings.TrimSpace(os.Getenv("HUB_RUN_STALL_TIMEOUT")); value != "" {
 		args = append(args, "-e", "HUB_RUN_STALL_TIMEOUT="+value)
 	}
-	image, err := devRuntimeImage(binding.ContextRoot, binding.UserID, env, m.cfg.Image)
+	image, _, err := resolveRuntimeImage(binding.ContextRoot, binding.UserID, binding.ContextID, env, m.cfg.Image)
 	if err != nil {
 		return nil, err
 	}
@@ -640,7 +658,7 @@ func (m *Manager) ensureManagedInfra(ctx context.Context, binding Binding, setti
 
 func (m *Manager) spawnControlRelay(ctx context.Context, binding Binding, container string, port int, generation, agentNet string) error {
 	relay := container + "-ctl"
-	image, err := devRuntimeImage(binding.ContextRoot, binding.UserID, m.cfg.Environment, m.cfg.Image)
+	image, _, err := resolveRuntimeImage(binding.ContextRoot, binding.UserID, binding.ContextID, m.cfg.Environment, m.cfg.Image)
 	if err != nil {
 		return err
 	}

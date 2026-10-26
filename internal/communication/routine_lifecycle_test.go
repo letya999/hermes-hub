@@ -523,7 +523,7 @@ func TestRoutineHistorySurvivesDetailCompaction(t *testing.T) {
 	}
 	for _, age := range []time.Duration{0, time.Hour, 49 * time.Hour} {
 		if age > 0 {
-			if err := s.Compact(in.NextDue.Add(age), 14*24*time.Hour); err != nil {
+			if err := s.Compact(in.NextDue.Add(age), 14*24*time.Hour, CompactLimits{}); err != nil {
 				t.Fatal(err)
 			}
 		}

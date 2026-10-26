@@ -151,7 +151,7 @@ func TestSpoolTaskStoreRoundTrip(t *testing.T) {
 	if err := s.CompleteJob("job-a"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Compact(time.Now().Add(time.Hour), 0); err != nil {
+	if err := s.Compact(time.Now().Add(time.Hour), 0, CompactLimits{}); err != nil {
 		t.Fatal(err)
 	}
 }

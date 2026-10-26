@@ -1,6 +1,8 @@
 package communication
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -95,6 +97,11 @@ type Spool struct {
 	// mutex and root; it owns the schedules/occurrences/watchers/digests
 	// subtrees and borrows the rest of the spool through its Deps seam.
 	rt *routines.Engine
+	// budget is the atomic reservation/settlement ledger (budget.json);
+	// budgetBroken marks an unreadable ledger so admission fails closed.
+	budget       *budgetLedger
+	budgetBroken error
+	limits       spoolLimits
 }
 
 // Notify exposes the coalesced wake channel. Buffered with capacity one: a
@@ -144,8 +151,26 @@ func LockSpool(root string) (func(), error) {
 // OpenSpool opens queue directories without classifying in-progress work.
 // Offline mutations must hold LockSpool until every write completes.
 func OpenSpool(root string) (*Spool, error) {
-	s := &Spool{root: root, secret: map[string]string{}, inFlight: map[string]string{}, notify: make(chan struct{}, 1)}
+	return openSpool(root, true)
+}
+
+// InspectSpool constructs query state without creating or repairing files.
+// Callers must acquire LockSpool and reopen before any mutation.
+func InspectSpool(root string) (*Spool, error) {
+	return openSpool(root, false)
+}
+
+func openSpool(root string, create bool) (*Spool, error) {
+	s := &Spool{root: root, secret: map[string]string{}, inFlight: map[string]string{}, notify: make(chan struct{}, 1), budget: &budgetLedger{Reservations: map[string]reservation{}, Scopes: map[string]*scopeBudget{}}, limits: limitsFromEnv()}
+	if ledger, err := loadBudget(root); err != nil {
+		s.budgetBroken = err
+	} else {
+		s.budget = ledger
+	}
 	for _, dir := range []string{"pending", "running", "done", "failed", "outbox/pending", "outbox/sending", "outbox/done", "outbox/failed", "mappings", "mappings/by-key", "conversations", "events", "occurrences", "schedules", "tasks", "tasks/current", "tasks/topic", "callbacks", "inbound", "watchers", "digests", "mock-sent", "mock-links", "tmp", "goals"} {
+		if !create {
+			continue
+		}
 		if err := os.MkdirAll(filepath.Join(root, dir), 0700); err != nil {
 			return nil, err
 		}
@@ -187,7 +212,9 @@ func (s *Spool) recover() error {
 	if err := s.recoverStreamEvents(); err != nil {
 		return err
 	}
-	return nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reconcileBudgetLocked()
 }
 
 func (s *Spool) recoverJobs() error {
@@ -302,10 +329,19 @@ func (s *Spool) rebuildIdempotencyIndex() error {
 	return nil
 }
 
+// CompactLimits bound the hot terminal dirs and the compressed archive on top
+// of the time-based retention: a burst inside the window still cannot grow
+// the spool without bound.
+type CompactLimits struct {
+	MaxTerminalFiles int   // per terminal dir; overflow archives oldest-first
+	ArchiveMaxBytes  int64 // total archive dir; oldest bundles evicted first
+	MaxUsageEntries  int   // usage.jsonl lines; 0 = usageJournalMaxEntries
+}
+
 // Compact drops terminal spool history older than retention (SPEC-0053 R2.3):
 // done records and aged terminal mappings plus their idempotency index
 // entries. Non-terminal records and open approvals are never touched.
-func (s *Spool) Compact(now time.Time, retention time.Duration) error {
+func (s *Spool) Compact(now time.Time, retention time.Duration, limits CompactLimits) error {
 	cutoff := now.Add(-retention)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -313,10 +349,30 @@ func (s *Spool) Compact(now time.Time, retention time.Duration) error {
 		info, err := os.Stat(path)
 		return err == nil && info.ModTime().Before(cutoff)
 	}
-	if err := s.compactAgedLocked(filepath.Join(s.root, "done"), aged); err != nil {
+	for _, dir := range []string{"done", filepath.Join("outbox", "done"), filepath.Join("outbox", "failed")} {
+		if err := s.compactDirLocked(dir, aged, nil, limits.MaxTerminalFiles, now); err != nil {
+			return err
+		}
+	}
+	if err := s.compactDirLocked("failed", aged, s.failedTerminalLocked, limits.MaxTerminalFiles, now); err != nil {
 		return err
 	}
-	if err := s.compactReceiptsLocked(aged); err != nil {
+	live, err := s.liveDeliveryIDsLocked()
+	if err != nil {
+		return err
+	}
+	receiptClosed := func(name string) bool {
+		b, err := os.ReadFile(filepath.Join(s.root, "events", name))
+		var receipt streamReceipt
+		if err != nil || json.Unmarshal(b, &receipt) != nil || receipt.Delivery == nil {
+			return true
+		}
+		return !live[spoolFileID(receipt.Delivery.ID)]
+	}
+	if err := s.compactDirLocked("events", aged, receiptClosed, limits.MaxTerminalFiles, now); err != nil {
+		return err
+	}
+	if err := s.compactUsageLocked(now, retention, limits.MaxUsageEntries); err != nil {
 		return err
 	}
 	if err := s.compactOccurrencesLocked(now, retention); err != nil {
@@ -349,12 +405,55 @@ func (s *Spool) Compact(now time.Time, retention time.Duration) error {
 		if live {
 			continue
 		}
-		if err := os.Remove(path); err != nil {
+		if err := s.archiveTerminalLocked("mappings", entry.Name(), now); err != nil {
 			return err
 		}
 		if strings.TrimSpace(mapping.IdempotencyKey) != "" {
 			_ = os.Remove(s.idempotencyIndexPath(mapping.IdempotencyKey))
 		}
+	}
+	return s.purgeArchivesLocked(now, retention, limits.ArchiveMaxBytes)
+}
+
+// purgeArchivesLocked drops gzip bundles older than retention and evicts the
+// oldest first while the archive exceeds its byte cap.
+func (s *Spool) purgeArchivesLocked(now time.Time, retention time.Duration, maxBytes int64) error {
+	dir := filepath.Join(s.root, "archive")
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	type bundle struct {
+		name string
+		mod  time.Time
+		size int64
+	}
+	var files []bundle
+	var total int64
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl.gz") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		files = append(files, bundle{entry.Name(), info.ModTime(), info.Size()})
+		total += info.Size()
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].mod.Before(files[j].mod) })
+	cutoff := now.Add(-retention)
+	for _, f := range files {
+		if !f.mod.Before(cutoff) && !(maxBytes > 0 && total > maxBytes) {
+			break
+		}
+		if err := os.Remove(filepath.Join(dir, f.name)); err != nil {
+			return err
+		}
+		total -= f.size
 	}
 	return nil
 }
@@ -504,33 +603,225 @@ func (s *Spool) compactOccurrencesLocked(now time.Time, retention time.Duration)
 	return nil
 }
 
-func (s *Spool) compactAgedLocked(dir string, aged func(string) bool) error {
-	entries, err := os.ReadDir(dir)
+// usageJournalMaxEntries bounds the live metering journal when no explicit
+// cap is configured.
+const usageJournalMaxEntries = 1 << 16
+
+// compactUsageLocked rewrites usage.jsonl keeping records inside retention
+// plus the newest record per session — the delta baseline a still-open
+// session needs. Evicted records go to a compressed archive bundle. Over the
+// entry cap, oldest non-baselines drop first and oldest baselines last.
+func (s *Spool) compactUsageLocked(now time.Time, retention time.Duration, maxEntries int) error {
+	if err := s.repairUsageTailLocked(); err != nil {
+		return err
+	}
+	entries, err := s.usageEntriesLocked()
 	if err != nil {
 		return err
 	}
+	cutoff := now.Add(-retention)
+	baseline := map[int]bool{}
+	lastForKey := map[string]int{}
+	for i := range entries {
+		e := &entries[i]
+		if e.Version == 2 && e.SessionID != "" {
+			lastForKey[e.ScopeID+"\x00"+e.ContextID+"\x00"+e.SessionID] = i
+		}
+	}
+	for _, i := range lastForKey {
+		baseline[i] = true
+	}
+	var keep, evicted []usageEntry
+	keepBaseline := map[int]bool{}
+	for i, e := range entries {
+		if e.MeasuredAt.Before(cutoff) && !baseline[i] {
+			evicted = append(evicted, e)
+			continue
+		}
+		keepBaseline[len(keep)] = baseline[i]
+		keep = append(keep, e)
+	}
+	max := maxEntries
+	if max <= 0 {
+		max = usageJournalMaxEntries
+	}
+	if need := len(keep) - max; need > 0 {
+		var survivors []usageEntry
+		for i, e := range keep {
+			if need > 0 && !keepBaseline[i] {
+				evicted = append(evicted, e)
+				need--
+				continue
+			}
+			survivors = append(survivors, e)
+		}
+		if len(survivors) > max {
+			evicted = append(evicted, survivors[:len(survivors)-max]...)
+			survivors = survivors[len(survivors)-max:]
+		}
+		keep = survivors
+	}
+	if len(evicted) == 0 {
+		return nil
+	}
+	var buf bytes.Buffer
+	for _, e := range evicted {
+		body, err := json.Marshal(e)
+		if err != nil {
+			return err
+		}
+		buf.Write(append(body, '\n'))
+	}
+	if err := s.appendArchiveLocked("usage-"+now.UTC().Format("20060102")+".jsonl.gz", buf.Bytes()); err != nil {
+		return err
+	}
+	tmp := usagePath(s.root) + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	for _, e := range keep {
+		body, err := json.Marshal(e)
+		if err != nil {
+			_ = f.Close()
+			return err
+		}
+		if _, err := f.Write(append(body, '\n')); err != nil {
+			_ = f.Close()
+			return err
+		}
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, usagePath(s.root))
+}
+
+// failedTerminalLocked reports whether a record under failed/ has no path
+// back to observation: its mapping is gone or terminal. Uncertain mappings
+// keep the record hot for RequeueObservations.
+func (s *Spool) failedTerminalLocked(name string) bool {
+	b, err := os.ReadFile(filepath.Join(s.root, "failed", name))
+	var job Job
+	if err != nil || json.Unmarshal(b, &job) != nil {
+		return false
+	}
+	mapping, err := s.loadMappingLocked(job.ID)
+	if errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+	if err != nil {
+		return false
+	}
+	return terminalStatus(mapping.Status)
+}
+
+// compactDirLocked archives entries older than the aged cutoff and, while the
+// dir still exceeds max files, evicts oldest archivable entries first. guard
+// filters which files may leave the hot dir at all; nil means all of them.
+func (s *Spool) compactDirLocked(dir string, aged func(string) bool, guard func(string) bool, max int, now time.Time) error {
+	entries, err := os.ReadDir(filepath.Join(s.root, dir))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	total := 0
+	type candidate struct {
+		name string
+		mod  time.Time
+	}
+	var rest []candidate
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
-		path := filepath.Join(dir, entry.Name())
+		if guard != nil && !guard(entry.Name()) {
+			continue
+		}
+		total++
+		path := filepath.Join(s.root, dir, entry.Name())
 		if aged(path) {
-			if err := os.Remove(path); err != nil {
+			if err := s.archiveTerminalLocked(dir, entry.Name(), now); err != nil {
 				return err
 			}
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		rest = append(rest, candidate{entry.Name(), info.ModTime()})
+	}
+	if max <= 0 || total <= max || len(rest) == 0 {
+		return nil
+	}
+	sort.Slice(rest, func(i, j int) bool { return rest[i].mod.Before(rest[j].mod) })
+	evict := total - max
+	if evict > len(rest) {
+		evict = len(rest)
+	}
+	for _, c := range rest[:evict] {
+		if err := s.archiveTerminalLocked(dir, c.name, now); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-// compactReceiptsLocked drops aged event receipts except those whose delivery
-// record is still pending or in flight — those are live state, not history.
-func (s *Spool) compactReceiptsLocked(aged func(string) bool) error {
+// archiveTerminalLocked appends one record to the day's gzip bundle under
+// archive/ then removes the original — history compresses into a few files a
+// day instead of thousands of tiny JSONs.
+func (s *Spool) archiveTerminalLocked(dir, name string, now time.Time) error {
+	src := filepath.Join(s.root, dir, name)
+	body, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	flat := strings.ReplaceAll(dir, string(filepath.Separator), "-")
+	if err := s.appendArchiveLocked(flat+"-"+now.UTC().Format("20060102")+".jsonl.gz", append(body, '\n')); err != nil {
+		return err
+	}
+	return os.Remove(src)
+}
+
+// appendArchiveLocked writes payload as one gzip member into a bundle under
+// archive/, so repeated appends stay readable as concatenated JSONL.
+func (s *Spool) appendArchiveLocked(name string, payload []byte) error {
+	bundle := filepath.Join(s.root, "archive", name)
+	if err := os.MkdirAll(filepath.Join(s.root, "archive"), 0700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(bundle, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	gz := gzip.NewWriter(f)
+	if _, err := gz.Write(payload); err != nil {
+		_ = gz.Close()
+		_ = f.Close()
+		return err
+	}
+	if err := gz.Close(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// liveDeliveryIDsLocked lists outbox records still pending or in flight; an
+// event receipt stays hot while its delivery is not terminal.
+func (s *Spool) liveDeliveryIDsLocked() (map[string]bool, error) {
 	live := map[string]bool{}
 	for _, dir := range []string{"outbox/pending", "outbox/sending"} {
 		entries, err := os.ReadDir(filepath.Join(s.root, dir))
 		if err != nil {
-			return err
+			return nil, err
 		}
 		for _, entry := range entries {
 			if !entry.IsDir() {
@@ -538,29 +829,7 @@ func (s *Spool) compactReceiptsLocked(aged func(string) bool) error {
 			}
 		}
 	}
-	entries, err := os.ReadDir(filepath.Join(s.root, "events"))
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		path := filepath.Join(s.root, "events", entry.Name())
-		if !aged(path) {
-			continue
-		}
-		if b, err := os.ReadFile(path); err == nil {
-			var receipt streamReceipt
-			if json.Unmarshal(b, &receipt) == nil && receipt.Delivery != nil && live[spoolFileID(receipt.Delivery.ID)] {
-				continue
-			}
-		}
-		if err := os.Remove(path); err != nil {
-			return err
-		}
-	}
-	return nil
+	return live, nil
 }
 
 func recoverFiles(from, to string) error {
@@ -623,6 +892,17 @@ func (s *Spool) enqueueLocked(job Job) (bool, error) {
 		h := sha256.Sum256([]byte(job.Text))
 		job.TextSHA256 = hex.EncodeToString(h[:])
 		job.Text = ""
+	}
+	// Reconcile before reserving: unmapped completions and crash-window
+	// orphans release their reservation here, so stale demand never blocks
+	// fresh admission.
+	if err := s.reconcileBudgetLocked(); err != nil {
+		return false, err
+	}
+	// The ledger reserves before the job file exists: a crash between the two
+	// leaves an open reservation reconcile releases — never unpriced work.
+	if err := s.reserveLocked(job); err != nil {
+		return false, err
 	}
 	if err := atomicJSON(filepath.Join(s.root, "pending", spoolFileID(job.ID)+".json"), job); err != nil {
 		return false, err
@@ -695,13 +975,18 @@ func (s *Spool) ClaimJob() (*Job, error) {
 		return nil, err
 	}
 	type candidate struct {
-		name string
-		job  Job
+		name   string
+		job    Job
+		parked time.Time
 	}
 	var candidates []candidate
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil, err
 		}
 		b, err := os.ReadFile(filepath.Join(s.root, "pending", entry.Name()))
 		if err != nil {
@@ -711,13 +996,40 @@ func (s *Spool) ClaimJob() (*Job, error) {
 		if err := json.Unmarshal(b, &job); err != nil {
 			return nil, err
 		}
-		candidates = append(candidates, candidate{entry.Name(), job})
+		candidates = append(candidates, candidate{entry.Name(), job, info.ModTime()})
 	}
-	// Interactive work outranks routine occurrences inside one context: a due
-	// cron job must not claim the context ahead of a user who just typed.
+	var cursor struct {
+		Scope string `json:"scope"`
+	}
+	cursorPath := filepath.Join(s.root, "admission-cursor.json")
+	if body, err := os.ReadFile(cursorPath); err == nil {
+		if err := json.Unmarshal(body, &cursor); err != nil {
+			return nil, err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	// Rotate scopes durably before prioritizing interactive work within one scope.
+	// A background job parked longer than agingAfter counts as foreground:
+	// steady interactive traffic can never starve scheduled work forever.
+	agingAfter := 5 * time.Minute
+	now := time.Now().UTC()
+	background := func(c candidate) bool {
+		return c.job.Trigger == "cron" && now.Sub(c.parked) < agingAfter
+	}
 	sort.SliceStable(candidates, func(i, j int) bool {
 		a, b := candidates[i].job, candidates[j].job
-		return jobContextKey(a.PrincipalID, a.ContextID) == jobContextKey(b.PrincipalID, b.ContextID) && a.Trigger != "cron" && b.Trigger == "cron"
+		ak, bk := jobContextKey(a.PrincipalID, a.ContextID), jobContextKey(b.PrincipalID, b.ContextID)
+		if ak != bk {
+			if (ak > cursor.Scope) != (bk > cursor.Scope) {
+				return ak > cursor.Scope
+			}
+			return ak < bk
+		}
+		if background(candidates[i]) != background(candidates[j]) {
+			return !background(candidates[i])
+		}
+		return candidates[i].name < candidates[j].name
 	})
 	for _, entry := range candidates {
 		name := entry.name
@@ -741,6 +1053,10 @@ func (s *Spool) ClaimJob() (*Job, error) {
 			continue // Context serialization is per key; other contexts stay claimable.
 		}
 		to := filepath.Join(s.root, "running", name)
+		cursor.Scope = key
+		if err := atomicJSON(cursorPath, cursor); err != nil {
+			return nil, err
+		}
 		if err := os.Rename(pending, to); err != nil {
 			return nil, err
 		}

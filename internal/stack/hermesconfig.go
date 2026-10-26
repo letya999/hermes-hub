@@ -388,13 +388,9 @@ func applySelfServicesFrom(configPath, servicesPath string) error {
 	if err != nil || len(features) == 0 {
 		return err
 	}
-	body, err := os.ReadFile(configPath) // #nosec G304 -- materialized path
+	config, err := readHermesConfigMap(configPath)
 	if err != nil {
 		return err
-	}
-	var config map[string]any
-	if err := yaml.Unmarshal(body, &config); err != nil {
-		return fmt.Errorf("read Hermes config: %w", err)
 	}
 	servers, ok := config["mcp_servers"].(map[string]any)
 	if !ok {
@@ -417,6 +413,20 @@ func applySelfServicesFrom(configPath, servicesPath string) error {
 	return os.WriteFile(configPath, updated, 0660)
 }
 
+// readHermesConfigMap loads the materialized config as a non-nil map: an
+// empty file unmarshals to nil and later merge writes would panic.
+func readHermesConfigMap(configPath string) (M, error) {
+	body, err := os.ReadFile(configPath) // #nosec G304 -- materialized path
+	if err != nil {
+		return nil, err
+	}
+	config := M{}
+	if err := yaml.Unmarshal(body, &config); err != nil {
+		return nil, fmt.Errorf("read Hermes config: %w", err)
+	}
+	return config, nil
+}
+
 func applyToolHubConfigWith(configPath string, opts MaterializeOptions) error {
 	endpoint := opts.ToolHubEndpoint
 	if endpoint == "" {
@@ -435,13 +445,9 @@ func applyToolHubConfigWith(configPath string, opts MaterializeOptions) error {
 	if !opts.RuntimeAuthPresent {
 		return fmt.Errorf("HUB_TOOLHUB_TOKEN_ENV %s is empty", tokenEnv)
 	}
-	body, err := os.ReadFile(configPath) // #nosec G304 -- materialized path
+	config, err := readHermesConfigMap(configPath)
 	if err != nil {
 		return err
-	}
-	var config map[string]any
-	if err := yaml.Unmarshal(body, &config); err != nil {
-		return fmt.Errorf("read Hermes config: %w", err)
 	}
 	servers, ok := config["mcp_servers"].(map[string]any)
 	if !ok {

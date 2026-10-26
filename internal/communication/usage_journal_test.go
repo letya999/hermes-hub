@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -74,6 +75,72 @@ func TestUsageJournalDedupesAndTotals(t *testing.T) {
 	}
 }
 
+func TestUsageJournalConcurrentSettlement(t *testing.T) {
+	s, err := NewSpool(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := hubruntime.SessionUsage{SessionFound: true, SessionID: "sess-1", InputTokens: int64ptr(10), OutputTokens: int64ptr(5)}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := s.RecordUsage(testJob("j-1", "user:alice"), "run-1", report); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	records, err := ReadUsageJournal(s.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("concurrent settlement double-recorded: %d records", len(records))
+	}
+}
+
+// Replaying an already-settled (job, run) stays one record; a retry under a
+// new run id is a separate attempt and must count on its own. Reopening the
+// spool proves both survive restart.
+func TestUsageJournalAttemptsAcrossReplay(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewSpool(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := hubruntime.SessionUsage{SessionFound: true, SessionID: "sess-1", InputTokens: int64ptr(10), OutputTokens: int64ptr(5)}
+	if err := s.RecordUsage(testJob("j-1", "user:alice"), "run-1", report); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordUsage(testJob("j-1", "user:alice"), "run-1", report); err != nil {
+		t.Fatal(err)
+	}
+	retry := hubruntime.SessionUsage{SessionFound: true, SessionID: "sess-1", InputTokens: int64ptr(30), OutputTokens: int64ptr(10)}
+	if err := s.RecordUsage(testJob("j-1", "user:alice"), "run-2", retry); err != nil {
+		t.Fatal(err)
+	}
+	s2, err := NewSpool(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s2.RecordUsage(testJob("j-1", "user:alice"), "run-1", report); err != nil {
+		t.Fatal(err)
+	}
+	records, err := ReadUsageJournal(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("replay/retry accounting wrong: %d records, want 2", len(records))
+	}
+	usage := AggregateUsage(records, time.Time{}, "", "")
+	if usage.Totals.UnknownJobs != 0 || usage.Totals.Jobs != 2 {
+		t.Fatalf("unexpected totals after replay: %+v", usage.Totals)
+	}
+}
+
 // A completed run is metered once: the runner asks the measured usage and the
 // journal records it against the job's scope. Metering never fails the job.
 func TestRunOutcomeMetersTerminalJob(t *testing.T) {
@@ -108,6 +175,10 @@ func TestRunOutcomeMetersTerminalJob(t *testing.T) {
 	}
 	if totals.Jobs != 1 || totals.InputTokens != 10 || totals.OutputTokens != 5 {
 		t.Fatalf("usage not journaled: %+v", totals)
+	}
+	records, err := ReadUsageJournal(s.root)
+	if err != nil || len(records) != 1 || records[0].DurationMS == nil || *records[0].DurationMS < 0 {
+		t.Fatalf("terminal attempt has no measured duration: %+v %v", records, err)
 	}
 
 	// A usage endpoint that is down must not fail the run.

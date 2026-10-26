@@ -144,6 +144,9 @@ func (e *Engine) ListSchedules(caller identity.Envelope) ([]commodel.Schedule, e
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	entries, err := os.ReadDir(filepath.Join(e.root, "schedules"))
+	if os.IsNotExist(err) {
+		return []commodel.Schedule{}, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -344,7 +347,7 @@ func (e *Engine) OccurrenceCurrentLocked(o commodel.RoutineOccurrence) bool {
 	if os.IsNotExist(err) {
 		return true // PutOccurrence also accepts externally owned recurrence clocks.
 	}
-	return err == nil && schedule.Revision == o.Revision && schedule.Envelope == o.Job.Envelope
+	return err == nil && schedule.Revision == o.Revision && schedule.Envelope.Equal(o.Job.Envelope)
 }
 
 func (e *Engine) TickSchedules(now time.Time, nativeCron string, authorize func(commodel.Job) error) error {

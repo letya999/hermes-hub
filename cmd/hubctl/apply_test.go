@@ -56,10 +56,10 @@ knowledge:
 	}
 	// Knowledge targets the runtime state dir; a spec carrying knowledge
 	// without --state is an error, never a silent spool write.
-	if _, err := applyFile(spoolDir, "", "alice", cfg); err == nil {
+	if _, err := applyFile(spoolDir, "", "alice", cfg, ""); err == nil {
 		t.Fatal("knowledge spec accepted without state dir")
 	}
-	rep, err := applyFile(spoolDir, stateDir, "alice", cfg)
+	rep, err := applyFile(spoolDir, stateDir, "alice", cfg, "")
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -80,7 +80,7 @@ knowledge:
 		t.Fatalf("knowledge file: %v %q", err, body)
 	}
 	// Reapplying the same file creates nothing — it is a pure no-op.
-	rep, err = applyFile(spoolDir, stateDir, "alice", cfg)
+	rep, err = applyFile(spoolDir, stateDir, "alice", cfg, "")
 	if err != nil {
 		t.Fatalf("reapply: %v", err)
 	}
@@ -113,7 +113,7 @@ routines:
 	if err := os.WriteFile(cfg, []byte(yaml2), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := applyFile(spoolDir, stateDir, "alice", cfg); err == nil {
+	if _, err := applyFile(spoolDir, stateDir, "alice", cfg, ""); err == nil {
 		t.Fatal("divergent reapply silently succeeded")
 	}
 	// A new schedule id in the same file still applies.
@@ -133,7 +133,7 @@ routines:
 	if err := os.WriteFile(cfg, []byte(yaml3), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rep, err = applyFile(spoolDir, stateDir, "alice", cfg)
+	rep, err = applyFile(spoolDir, stateDir, "alice", cfg, "")
 	if err != nil || rep.Routines["deploy-check"] != "created" {
 		t.Fatalf("additive apply: %v %+v", err, rep)
 	}
@@ -142,7 +142,7 @@ routines:
 	if err := os.WriteFile(bad, []byte("routines:\n  - organization_id: personal\n    runtime_id: alice\n    policy_version: policy-1\n    chat_id: 11\n    channel: telegram_bot\n    id: x\n    expression: not-cron\n    input: hi\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := applyFile(spoolDir, stateDir, "alice", bad); err == nil {
+	if _, err := applyFile(spoolDir, stateDir, "alice", bad, ""); err == nil {
 		t.Fatal("invalid routine accepted")
 	}
 	// kind=check needs a live baseline probe the offline path cannot run;
@@ -151,7 +151,7 @@ routines:
 	if err := os.WriteFile(chk, []byte("routines:\n  - organization_id: personal\n    runtime_id: alice\n    policy_version: policy-1\n    chat_id: 11\n    channel: telegram_bot\n    id: chk1\n    kind: check\n    expression: \"0 * * * *\"\n    input: c\n    url: https://example.com/x\n    expect: changed\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := applyFile(spoolDir, stateDir, "alice", chk); err == nil {
+	if _, err := applyFile(spoolDir, stateDir, "alice", chk, ""); err == nil {
 		t.Fatal("check routine accepted without baseline")
 	}
 	// The hubctl surface: `hubctl apply -f cfg --spool dir --user alice`.

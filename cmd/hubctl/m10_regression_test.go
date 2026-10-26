@@ -52,7 +52,7 @@ func TestM10RegressionApplyDoesNotRecoverLiveOutbox(t *testing.T) {
 	if err := os.WriteFile(file, []byte("{}"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := applyFile(spoolDir, stateDir, "alice", file); err != nil {
+	if _, err := applyFile(spoolDir, stateDir, "alice", file, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(spoolDir, "outbox", "sending", "live-delivery.json")); err != nil {

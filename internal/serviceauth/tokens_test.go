@@ -32,6 +32,31 @@ func TestParseTokenEnvelopes(t *testing.T) {
 	}
 }
 
+func TestScopedTokenEnvelope(t *testing.T) {
+	token := strings.Repeat("c", 32)
+	body := `{"` + token + `":{"identity_schema":1,"principal_id":"hermes-admin","external_identity_id":"mock-1","context_id":"hermes-admin","runtime_id":"hermes-admin","conversation_id":"mock-1","delivery_target_id":"mock-1","policy_version":"policy-1","scopes":["admin"]}}`
+	entries, err := ParseTokenEnvelopes([]byte(body))
+	if err != nil {
+		t.Fatalf("scoped envelope rejected: %v", err)
+	}
+	env := entries[token]
+	if !env.HasScope("admin") || env.HasScope("write") {
+		t.Fatalf("scopes: %+v", env.Scopes)
+	}
+	for _, test := range []struct{ name, scopes string }{
+		{"bad scope token", `"scopes":["Admin"]`},
+		{"scope with space", `"scopes":["adm in"]`},
+		{"too many scopes", `"scopes":["a","b","c","d","e","f","g","h","i"]`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			bad := strings.Replace(body, `"scopes":["admin"]`, test.scopes, 1)
+			if _, err := ParseTokenEnvelopes([]byte(bad)); err == nil {
+				t.Fatal("invalid scopes accepted")
+			}
+		})
+	}
+}
+
 func TestReadTokenEnvelopes(t *testing.T) {
 	dir := t.TempDir()
 	if _, err := ReadTokenEnvelopes(filepath.Join(dir, "missing.json")); err == nil {

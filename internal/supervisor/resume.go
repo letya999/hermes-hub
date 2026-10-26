@@ -25,7 +25,7 @@ func (m *Manager) resume(w http.ResponseWriter, r *http.Request) {
 	m.mu.Lock()
 	record, ok := m.jobs[executeJobKey(request)]
 	m.mu.Unlock()
-	if !ok || record.Request.Envelope != request.Envelope || record.Request.ScopeID != request.ScopeID || record.Request.UserID != request.UserID || record.Request.ActorID != request.ActorID || record.Request.OrganizationID != request.OrganizationID || record.Request.IdempotencyKey != request.IdempotencyKey {
+	if !ok || !record.Request.Envelope.Equal(request.Envelope) || record.Request.ScopeID != request.ScopeID || record.Request.UserID != request.UserID || record.Request.ActorID != request.ActorID || record.Request.OrganizationID != request.OrganizationID || record.Request.IdempotencyKey != request.IdempotencyKey {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "job ownership mismatch"})
 		return
 	}
@@ -96,7 +96,7 @@ func (m *Manager) rebindJobObservation(request hubruntime.ExecuteRequest, expect
 	key := executeJobKey(request)
 	latest, ok := m.jobs[key]
 	entry := m.items[runtimeKey(Binding{PrincipalID: runtime.PrincipalID, ContextID: runtime.ContextID, RuntimeMode: runtime.RuntimeMode})]
-	if !ok || entry == nil || entry.Generation != runtime.Generation || latest.Request.Envelope != request.Envelope || latest.Response.RunID != expected.Response.RunID || latest.Response.SessionID != expected.Response.SessionID {
+	if !ok || entry == nil || entry.Generation != runtime.Generation || !latest.Request.Envelope.Equal(request.Envelope) || latest.Response.RunID != expected.Response.RunID || latest.Response.SessionID != expected.Response.SessionID {
 		return jobRecord{}, errors.New("observation binding changed")
 	}
 	if terminalRunStatus(latest.Status) {

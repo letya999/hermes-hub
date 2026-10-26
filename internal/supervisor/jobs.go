@@ -18,7 +18,7 @@ func (m *Manager) CompactJobs(now time.Time) {
 	defer m.mu.Unlock()
 	dirty := false
 	for key, record := range m.jobs {
-		if !terminalRunStatus(record.Status) || now.Sub(record.UpdatedAt) < 24*time.Hour || record.Request.Envelope == (identity.Envelope{}) {
+		if !terminalRunStatus(record.Status) || now.Sub(record.UpdatedAt) < 24*time.Hour || record.Request.Envelope.Equal(identity.Envelope{}) {
 			continue
 		}
 		m.jobs[key] = jobRecord{Fingerprint: record.Fingerprint, Status: record.Status, UpdatedAt: record.UpdatedAt, Response: hubruntime.ExecuteResponse{JobID: record.Response.JobID, RunID: record.Response.RunID, Status: record.Response.Status}}

@@ -1,6 +1,6 @@
 # CHG-0149: Connector recovery and system guide
 
-Chain: ADR-0072 -> SPEC-0069 R1-R10 -> this plan/state.yaml.
+Chain: ADR-0077 -> SPEC-0076 R1-R10 -> this plan/state.yaml.
 
 ## Goal
 

@@ -6,7 +6,7 @@ New milestones follow the [milestone playbook](milestone-playbook.md) and its
 [templates](templates/change-plan.md).
 
 Numbering: `CHG-<NNNN>` is unique and sequential. A handful of historical
-collisions (0015, 0026, 0027, 0031, 0039, 0047, 0074, 0105, 0106, 0127) predate
+collisions (0015, 0026, 0027, 0031, 0039, 0047, 0074, 0105, 0106, 0127, 0148, 0149, 0150, 0151, 0152, 0153) predate
 the docs-check gate and stay for reference stability — rows below disambiguate
 by directory name. Milestone numbers are not chronological either (M19/M12/M8
 labels appear out of order, and the connector platform was called M13 while its
@@ -41,6 +41,19 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 |---|---|
 | [CHG-0037](done/CHG-0037-toolhub-closeout/plan.md) | Abandoned: ToolHub closeout umbrella superseded by later per-issue CHGs |
 | [CHG-0031](done/CHG-0031-docker-disk-diagnosis/plan.md) | Abandoned: read-only diagnosis superseded by CHG-0031-docker-reclaim findings |
+
+## Done — M17 ops, admin & delivery
+
+| Change | State |
+|---|---|
+| [CHG-0165](done/CHG-0165-m17-ops-hardening/plan.md) | Done 2026-10-26: M17 ops hardening — undeliverable-notice ack, detection/reconcile sweep split, graceful Serve drain, bounded spool retention (72h + count/byte caps + gzip archive) + usage/signal journal bounds + holds-poll backoff, onboarding runbook; live-verified on dev hub; metric watchers → #354; coverage 86.59% |
+| [CHG-0164](done/CHG-0164-m17-code-closeout/plan.md) | Done 2026-10-26: M17 closeout — #326 watchdog/owned lifecycle, #327 budgets/fair admission, #328 event-driven personal supervisor, #329 hold-gate fix, #142 SSH CA minting; live Docker canaries pass; all M17 issues closed; coverage 86.24% |
+| [CHG-0153](done/CHG-0153-incident-replay/plan.md) | Issue #206: `hubctl replay export` sanitized bundle (digest-verified prompt for sensitive jobs) + `replay run` on an isolated spool with channel forced to mock + divergence line (SPEC-0076 R6) |
+| [CHG-0152](done/CHG-0152-admin-diagnostics/plan.md) | Issue #141: `scopes:["admin"]` on enrolled bearers, serialized + paced `/v1/admin/onboardings|diagnose|inspect-source`, audit-tagged; capability fields never leave (SPEC-0076 R5) |
+| [CHG-0151](done/CHG-0151-image-rollout/plan.md) | Issue #198: `generated/image-pins.json`, smoke-gated promote/revert/canary, spawn-time resolution, forged-pin read rejection (SPEC-0076 R4) |
+| [CHG-0150](done/CHG-0150-job-watch/plan.md) | Issue #197b: `hubctl watch` — timestamped job/runtime transitions from spool mapping or supervisor (SPEC-0076 R3) |
+| [CHG-0149](done/CHG-0149-space-manifest/plan.md) | Issue #197a: `apply -f` `space:` block converges agent.yaml/workspace.yaml — validate-before-write, idempotent, secrets rejected (SPEC-0076 R2) |
+| [CHG-0148](done/CHG-0148-usage-export/plan.md) | Issue #195: `hubctl usage` — per-scope/per-actor window aggregation of `usage.jsonl`, torn-tail tolerant (SPEC-0076 R1) |
 
 ## Done — M13+ platform and fixes
 

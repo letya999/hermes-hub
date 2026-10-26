@@ -104,7 +104,7 @@ func TestControlWorkerDurableApprovalAndNoBlindRetry(t *testing.T) {
 			t.Errorf("intent not persisted before dispatch: %+v %v", mapping.Control, err)
 		}
 		var request hubruntime.RunControl
-		if json.NewDecoder(r.Body).Decode(&request) != nil || request.Envelope != job.Envelope || request.RequestID != "one" || request.Choice != "once" {
+		if json.NewDecoder(r.Body).Decode(&request) != nil || !request.Envelope.Equal(job.Envelope) || request.RequestID != "one" || request.Choice != "once" {
 			t.Errorf("wrong control: %+v", request)
 		}
 		w.WriteHeader(http.StatusBadGateway)
@@ -222,7 +222,7 @@ func TestControlWorkerRecoversLostApprovalByReadOnlyQuery(t *testing.T) {
 	decisions, queries := 0, 0
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var c hubruntime.RunControl
-		if json.NewDecoder(r.Body).Decode(&c) != nil || c.Envelope != job.Envelope || c.RunID != event.RunID || c.RuntimeGeneration != event.RuntimeGeneration {
+		if json.NewDecoder(r.Body).Decode(&c) != nil || !c.Envelope.Equal(job.Envelope) || c.RunID != event.RunID || c.RuntimeGeneration != event.RuntimeGeneration {
 			t.Error("lost original binding")
 		}
 		if !c.Reconcile {

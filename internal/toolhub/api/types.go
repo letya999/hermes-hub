@@ -235,6 +235,12 @@ type WorkloadPolicy struct {
 	// shares one credential and one workload (Shared). Empty means a
 	// connector is not team-shareable.
 	Shareable string `json:"shareable,omitempty"`
+	// Retention declares how long a consumerless workload may live:
+	// "" or "demand" (default) reaps when no active binding consumes it,
+	// "warm" keeps it for the idle TTL, "persistent" keeps a stateless
+	// shared workload running regardless of idleness. Persistent is
+	// valid only for Shared-class stateless workloads.
+	Retention string `json:"retention,omitempty"`
 }
 
 // Bounded-cli cell lifecycle tiers (WorkloadPolicy.Lifecycle).
@@ -320,26 +326,32 @@ type CredentialReference struct {
 }
 
 type Connection struct {
-	Schema               int               `json:"schema"`
-	ConnectionID         string            `json:"connection_id"`
-	Owner                OwnerRef          `json:"owner"`
-	DefinitionID         string            `json:"definition_id"`
-	CredentialRefID      string            `json:"credential_ref,omitempty"`
-	Revision             uint64            `json:"revision"`
-	Status               Status            `json:"status"`
-	CredentialVisibility string            `json:"credential_visibility,omitempty"`
-	CredentialCheckedAt  time.Time         `json:"credential_checked_at,omitempty"`
-	HealthCause          string            `json:"health_cause,omitempty"`
-	CredentialRetryAt    time.Time         `json:"credential_retry_at,omitempty"`
-	CredentialRetryCount int               `json:"credential_retry_count,omitempty"`
-	RecipeRetryAt        time.Time         `json:"recipe_retry_at,omitempty"`
-	RecipeRetryCount     int               `json:"recipe_retry_count,omitempty"`
-	CredRecipeRetryAt    time.Time         `json:"cred_recipe_retry_at,omitempty"`
-	CredRecipeRetryCount int               `json:"cred_recipe_retry_count,omitempty"`
-	SurfaceRetryAt       time.Time         `json:"surface_retry_at,omitempty"`
-	SurfaceRetryCount    int               `json:"surface_retry_count,omitempty"`
-	TerminalExposure     bool              `json:"terminal_exposure,omitempty"`
-	Metadata             map[string]string `json:"metadata,omitempty"`
+	Schema               int       `json:"schema"`
+	ConnectionID         string    `json:"connection_id"`
+	Owner                OwnerRef  `json:"owner"`
+	DefinitionID         string    `json:"definition_id"`
+	CredentialRefID      string    `json:"credential_ref,omitempty"`
+	Revision             uint64    `json:"revision"`
+	Status               Status    `json:"status"`
+	CredentialVisibility string    `json:"credential_visibility,omitempty"`
+	CredentialCheckedAt  time.Time `json:"credential_checked_at,omitempty"`
+	HealthCause          string    `json:"health_cause,omitempty"`
+	CredentialRetryAt    time.Time `json:"credential_retry_at,omitempty"`
+	CredentialRetryCount int       `json:"credential_retry_count,omitempty"`
+	RecipeRetryAt        time.Time `json:"recipe_retry_at,omitempty"`
+	RecipeRetryCount     int       `json:"recipe_retry_count,omitempty"`
+	CredRecipeRetryAt    time.Time `json:"cred_recipe_retry_at,omitempty"`
+	CredRecipeRetryCount int       `json:"cred_recipe_retry_count,omitempty"`
+	SurfaceRetryAt       time.Time `json:"surface_retry_at,omitempty"`
+	SurfaceRetryCount    int       `json:"surface_retry_count,omitempty"`
+	// RecoveryWindowStart and RecoveryCount bound connector respawns: each
+	// admission that restarts a known-but-not-running workload increments
+	// the counter inside its window, and exhaustion degrades the connection
+	// instead of restart-looping. Additive, persisted, backend-neutral.
+	RecoveryWindowStart time.Time         `json:"recovery_window_start,omitempty"`
+	RecoveryCount       int               `json:"recovery_count,omitempty"`
+	TerminalExposure    bool              `json:"terminal_exposure,omitempty"`
+	Metadata            map[string]string `json:"metadata,omitempty"`
 }
 
 // BrokerBindingGrant records one minted Credential Broker grant against a

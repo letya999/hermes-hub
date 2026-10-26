@@ -796,7 +796,7 @@ func TestCompactionKeepsNonTerminal(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = os.Chtimes(filepath.Join(root, "pending", "new-job.json"), old, old)
-	if err := s.Compact(time.Now(), 336*time.Hour); err != nil {
+	if err := s.Compact(time.Now(), 336*time.Hour, CompactLimits{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(s.mappingPath("old-done")); !errors.Is(err, os.ErrNotExist) {
@@ -841,7 +841,7 @@ func TestCompactionKeepsPendingReceipts(t *testing.T) {
 	if err := atomicJSON(filepath.Join(root, "outbox", "pending", "job-x-event-live.json"), Delivery{ID: "job-x-event-live", Channel: "telegram_bot", ChatID: 11, Text: "x"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Compact(time.Now(), 336*time.Hour); err != nil {
+	if err := s.Compact(time.Now(), 336*time.Hour, CompactLimits{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(kept); err != nil {

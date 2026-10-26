@@ -37,6 +37,10 @@ func (m *Manager) beginJob(request hubruntime.ExecuteRequest) (hubruntime.Execut
 	fingerprint := executeFingerprint(request)
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	hold := m.holds[holdKey(request.PrincipalID, request.ContextID)]
+	if hold.Active || request.OperationalEpoch != hold.Epoch {
+		return hubruntime.ExecuteResponse{}, false, errors.New("administrative hold")
+	}
 	if previous, ok := m.jobs[key]; ok {
 		if previous.Fingerprint != fingerprint {
 			return hubruntime.ExecuteResponse{}, false, errors.New("job identity already used with different payload")
@@ -51,7 +55,7 @@ func (m *Manager) beginJob(request hubruntime.ExecuteRequest) (hubruntime.Execut
 	}
 	metadata := request
 	metadata.Text = ""
-	m.jobs[key] = jobRecord{Request: metadata, Fingerprint: fingerprint, Status: "running", Phase: phaseAccepted, UpdatedAt: time.Now().UTC()}
+	m.jobs[key] = jobRecord{OperationalEpoch: hold.Epoch, Request: metadata, Fingerprint: fingerprint, Status: "running", Phase: phaseAccepted, UpdatedAt: time.Now().UTC()}
 	if err := m.persistLocked(); err != nil {
 		delete(m.jobs, key)
 		return hubruntime.ExecuteResponse{}, false, err
@@ -119,6 +123,10 @@ func (m *Manager) finishJobGenerationLocked(request hubruntime.ExecuteRequest, r
 		return errors.New("job identity is required")
 	}
 	if record, ok := m.jobs[key]; ok {
+		hold := m.holds[holdKey(record.Request.PrincipalID, record.Request.ContextID)]
+		if hold.Active || record.OperationalEpoch != hold.Epoch {
+			return errors.New("administrative effect fence")
+		}
 		if terminalRunStatus(record.Status) && status != record.Status {
 			return errors.New("job already terminal")
 		}
@@ -197,7 +205,13 @@ func (m *Manager) finishJobGenerationLocked(request hubruntime.ExecuteRequest, r
 					entry.State, entry.IdleDeadline = Idle, m.cfg.Now().Add(m.cfg.WarmTTL)
 				}
 			}
-			if status == "uncertain" {
+			// Wedge budget: count each distinct unconfirmed outcome once — a
+			// fresh uncertain transition, or a run.timeout naming, which is
+			// itself an outcome the runtime never confirmed. A terminal event
+			// actually observed from the runtime is the only reset.
+			unconfirmed := (status == "uncertain" && previous.Status != "uncertain") ||
+				(response.LastEvent == "run.timeout" && previous.Response.LastEvent != "run.timeout")
+			if unconfirmed {
 				entry.consecutiveUncertain++
 			} else if terminalRunStatus(status) {
 				entry.consecutiveUncertain = 0

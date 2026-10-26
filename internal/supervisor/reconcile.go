@@ -20,6 +20,20 @@ var (
 // ReconcileHealth inspects actual runtime state independently from the desired
 // work ledger. Unknown inspection failures never authorize idle shutdown.
 func (m *Manager) ReconcileHealth(ctx context.Context, now time.Time) {
+	started := time.Now()
+	m.mu.Lock()
+	holds := make([]AdministrativeHold, 0, len(m.holds))
+	for _, hold := range m.holds {
+		if hold.Active {
+			holds = append(holds, hold)
+		}
+	}
+	m.mu.Unlock()
+	for _, hold := range holds {
+		bounded, cancel := context.WithTimeout(ctx, 45*time.Second)
+		_ = m.containHeldScope(bounded, hold)
+		cancel()
+	}
 	m.mu.Lock()
 	keys := make([]string, 0, len(m.items))
 	for key := range m.items {
@@ -104,9 +118,18 @@ func (m *Manager) ReconcileHealth(ctx context.Context, now time.Time) {
 			// A live typed lease means a job, stream, approval or lifecycle
 			// is in flight — restarting now would kill it, so remediation
 			// waits for a free runtime rather than racing the lease holder.
-			remediate = wedged && len(current.leases) == 0 && current.consecutiveUncertain >= 2 &&
+			// A verified personal-supervisor restart request bypasses the
+			// timing gates only — ownership and lease checks still apply.
+			// An undesired scope (administrative hold, no demand) is never
+			// restarted: containment authority outranks any advisory request.
+			personal := desired && current.personalRestart && ownership == "verified" && len(current.leases) == 0
+			current.personalRestart = false
+			remediate = personal || wedged && len(current.leases) == 0 && current.consecutiveUncertain >= 2 &&
 				now.Sub(current.readinessBadSince) >= wedgedReadinessWindow &&
 				now.Sub(current.lastRemediatedAt) >= wedgedRemediationCooldown
+			if remediate {
+				m.recordIncidentLocked(current, "wedged")
+			}
 			if desired && recoverableRuntime(current.Runtime) && current.FailureGeneration != current.Generation {
 				m.recordRuntimeFailureLocked(&current.Runtime)
 			}
@@ -133,6 +156,46 @@ func (m *Manager) ReconcileHealth(ctx context.Context, now time.Time) {
 		}
 		lock.Unlock()
 	}
+	m.sampleStats(ctx)
+	m.mu.Lock()
+	m.watchdog.Sweeps++
+	m.watchdog.Entries = len(keys)
+	m.watchdog.LastSweepAt = now
+	m.watchdog.LastSweepMS = time.Since(started).Milliseconds()
+	m.mu.Unlock()
+}
+
+// sampleStats takes one bounded resource reading for every owned container
+// per sweep. A failed or absent sampler records nothing and never feeds
+// remediation decisions — stats are reporting, not authority.
+func (m *Manager) sampleStats(ctx context.Context) {
+	if m.cfg.Stats == nil {
+		return
+	}
+	m.mu.Lock()
+	containers := make([]string, 0, len(m.items))
+	for _, entry := range m.items {
+		if entry.Container != "" && entry.State != Stopped {
+			containers = append(containers, entry.Container)
+		}
+	}
+	m.mu.Unlock()
+	if len(containers) == 0 {
+		return
+	}
+	statsCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	stats, err := m.cfg.Stats(statsCtx, containers)
+	cancel()
+	if err != nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, entry := range m.items {
+		if stat, ok := stats[entry.Container]; ok {
+			entry.CPUPercent, entry.MemBytes = stat.CPUPercent, stat.MemBytes
+		}
+	}
 }
 
 // reconcileUnconfirmed retries observation for jobs whose outcome was never
@@ -142,7 +205,7 @@ func (m *Manager) reconcileUnconfirmed(ctx context.Context, now time.Time) {
 	m.mu.Lock()
 	var targets []jobRecord
 	for _, record := range m.jobs {
-		if !record.Unconfirmed || terminalRunStatus(record.Status) || record.UnconfirmedSince.IsZero() {
+		if !record.Unconfirmed || terminalRunStatus(record.Status) || record.UnconfirmedSince.IsZero() || !m.operationallyCurrentLocked(record) {
 			continue
 		}
 		if now.Sub(record.UnconfirmedSince) < 30*time.Second {
@@ -158,6 +221,15 @@ func (m *Manager) reconcileUnconfirmed(ctx context.Context, now time.Time) {
 			// rather than left unknown forever.
 			timeout := hubruntime.ExecuteResponse{JobID: record.Request.JobID, RunID: record.Response.RunID, SessionID: record.Response.SessionID, RuntimeGeneration: record.Generation, Status: "failed", LastEvent: "run.timeout"}
 			_ = m.finishJobGeneration(record.Request, timeout, "failed", record.Generation)
+			m.mu.Lock()
+			for _, entry := range m.items {
+				if entry.PrincipalID == record.Request.PrincipalID && entry.ContextID == record.Request.ContextID {
+					m.recordIncidentLocked(entry, "timeout")
+					break
+				}
+			}
+			_ = m.persistLocked()
+			m.mu.Unlock()
 			continue
 		}
 		lock := m.lockFor("observation:" + executeJobKey(record.Request))
@@ -178,6 +250,12 @@ func (m *Manager) reconcileUnconfirmed(ctx context.Context, now time.Time) {
 // runtime generation. Events land through the same durable path as a live
 // stream, so a replayed or late terminal outcome settles the record once.
 func (m *Manager) reconcileJob(ctx context.Context, record jobRecord) {
+	m.mu.Lock()
+	current := m.operationallyCurrentLocked(record)
+	m.mu.Unlock()
+	if !current {
+		return
+	}
 	binding, err := m.bindingFor(record.Request)
 	if err != nil {
 		return
@@ -238,6 +316,9 @@ func (m *Manager) reconcileJob(ctx context.Context, record jobRecord) {
 }
 
 func (m *Manager) runtimeDesiredLocked(entry *runtimeEntry) bool {
+	if m.holds[holdKey(entry.PrincipalID, entry.ContextID)].Active {
+		return false
+	}
 	if _, ok := m.pins[runtimeKey(Binding{PrincipalID: entry.PrincipalID, ContextID: entry.ContextID, RuntimeMode: entry.RuntimeMode})]; ok {
 		return true
 	}
@@ -245,7 +326,7 @@ func (m *Manager) runtimeDesiredLocked(entry *runtimeEntry) bool {
 		return true
 	}
 	for _, record := range m.jobs {
-		if record.Request.PrincipalID == entry.PrincipalID && record.Request.ContextID == entry.ContextID && !terminalRunStatus(record.Status) {
+		if record.Request.PrincipalID == entry.PrincipalID && record.Request.ContextID == entry.ContextID && !terminalRunStatus(record.Status) && m.operationallyCurrentLocked(record) {
 			return true
 		}
 	}
@@ -258,7 +339,7 @@ func (m *Manager) RecoverMissingWork(ctx context.Context) {
 	m.mu.Lock()
 	var requests []jobRecord
 	for _, record := range m.jobs {
-		if terminalRunStatus(record.Status) {
+		if terminalRunStatus(record.Status) || !m.operationallyCurrentLocked(record) {
 			continue
 		}
 		for _, entry := range m.items {
@@ -282,7 +363,7 @@ func (m *Manager) RecoverMissingWork(ctx context.Context) {
 		m.mu.Lock()
 		entry := m.items[key]
 		latest := m.jobs[executeJobKey(record.Request)]
-		if entry == nil || !recoverableRuntime(entry.Runtime) || terminalRunStatus(latest.Status) {
+		if entry == nil || !recoverableRuntime(entry.Runtime) || terminalRunStatus(latest.Status) || !m.operationallyCurrentLocked(latest) {
 			m.mu.Unlock()
 			lock.Unlock()
 			recoveryLock.Unlock()

@@ -91,14 +91,20 @@ func (g *Gateway) controlLoop(ctx context.Context) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	var lastCompact time.Time
+	var lastNoticeSync time.Time
+	pendingNotice := true // first pass always syncs
 	for {
+		if pendingNotice || g.now().Sub(lastNoticeSync) >= 10*time.Second {
+			pendingNotice, _ = g.syncMasterNotices(ctx)
+			lastNoticeSync = g.now()
+		}
 		g.controlOne(ctx)
 		if g.now().Sub(lastCompact) >= time.Hour {
 			retention := g.config.SpoolRetention
 			if retention <= 0 {
-				retention = 336 * time.Hour
+				retention = 72 * time.Hour
 			}
-			_ = g.spool.Compact(g.now(), retention)
+			_ = g.spool.Compact(g.now(), retention, CompactLimits{MaxTerminalFiles: g.config.SpoolMaxFiles, ArchiveMaxBytes: g.config.SpoolMaxArchiveBytes, MaxUsageEntries: g.config.SpoolMaxUsageEntries})
 			lastCompact = g.now()
 		}
 		select {
