@@ -128,7 +128,7 @@ func addHosting(services, volumes M, s Settings, dir string, common M, runtimeEn
 	volumes["hosting-zone"] = M{"name": "hermes-hub-hosting-zone-" + s.User, "labels": M{"hermes-hub.hosting.owner": s.User}}
 	volumes["hosting-sites"] = M{"name": hostingVolume(s), "labels": M{"hermes-hub.hosting.owner": s.User, "hermes-hub.hosting.env": s.Environment, "hermes-hub.scope": "hermes-hub-" + s.User + "-" + s.Environment}}
 	init := cloneMap(common)
-	init["image"] = "hermes-hub:0.3.0-" + s.Environment + "-control"
+	init["image"] = "hermes-hub:0.4.0-" + s.Environment + "-control"
 	init["entrypoint"] = []string{"hubctl", "hosting-init"}
 	init["command"] = []string{}
 	init["user"] = "0:0"
