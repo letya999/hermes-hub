@@ -1,6 +1,6 @@
 ---
 description: Threat model for scoped scale-to-zero runtimes and future organization isolation.
-last_verified: 2026-10-24
+last_verified: 2026-10-26
 ---
 # Threat model
 
@@ -90,6 +90,9 @@ leased only for current work and is not an authorization source.
 | Expired confirmation or replayed nonce | Single-use nonce with TTL; replay and expiry fail closed | Onboarding id and deny reason | #102 |
 | Replayed, forged or cross-operation human-action link | `?t=` tokens resolve only the stored nonce of that onboarding and operation; replay/expiry answer 410 and token-less POSTs deny | Onboarding id, link path and deny/410 outcome | #283 |
 | Public listener exposes control or gateway routes | The opt-in public surface registers only the human-action paths; all other routes 404, and the gateway accepts https `form_url` only for the exact configured origin host | Route registration and 404 outcome | #283 |
+| Exposure endpoint escapes its reviewed names or targets | `exposure_*` takes only an endpoint name; bind, public name and target are composed by the hub from the reviewed config (`<endpoint>.<zone>.<relay.domain>`), unknown names deny, opens are capped and lifetime-reaped, and the relay host key is pinned | Endpoint name, outcome and denial reason in `audit/exposure.jsonl` | #145 |
+| Exposure relay credential leaks or an unpinned relay impersonates | Relay keys live behind `key_ref` (file confined to the config dir, or a Broker lease materialized transiently and released); unpinned relay host keys fail closed | Grant/lease acquisition and release; no key material in argv, env, ledger or tool results | #145 |
+| Exposure tunnel fronts more than the human-action surface | `hub_public_listener` resolves only to the restricted public-listener mux; control/gateway paths stay 404 | Route registration and 404 outcome | #145 |
 | Action link lands on the wrong channel or reaches the model | The notice routes to the initiating job's channel; link tokens, nonces, OAuth state and device codes are swept from every control-op result | Channel id and delivery outcome; no tokens in results | #283 |
 | Credential persisted before the server accepts it | The read-only `tools/list` probe precedes any ciphertext, connection or Broker write; a failed probe re-renders the form with no residue | Probe result and persistence outcome | #283 |
 | Device-flow session or pasted redirect stolen mid-flow | Device codes live server-side keyed to the onboarding; pasted redirects re-validate `state` and the registered origin through the same PKCE callback | Onboarding id and flow outcome | #283 |
@@ -151,3 +154,7 @@ Related: [ADR-0013](adr/ADR-0013-toolhub-security-boundary.md),
 [SPEC-0010](../specs/active/SPEC-0010-stable-identifiers.md),
 [SPEC-0020](../specs/active/SPEC-0020-credentials-and-connectors.md),
 and issues #11, #12, #20-#28, #46-#51.
+
+## Hosted user code
+
+Hosted content is untrusted and has its own origin. Fragment shares exchange into host-only cookies; ambient Hub credentials never reach app relay. Dynamic code requires the inspected non-root secure-runtime envelope, no network/secret defaults and bounded lifetime/resources. Filesystem, revision, route, audit and fleet gates fail closed. Native kernel/browser/sish guarantees require real acceptance; see [hosting boundary](services/hosting.md).

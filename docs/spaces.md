@@ -1,6 +1,6 @@
 ---
 description: spaces/<id>/ layout — settings.yaml, generated configs, secrets/env files, state dirs, and what is hand-edited vs rendered.
-last_verified: 2026-10-24
+last_verified: 2026-10-26
 ---
 
 # Spaces
@@ -146,3 +146,7 @@ references in `models.yaml`; see [model-relay](services/model-relay.md). Re-rend
 only affected spaces. Model registry edits reload after rendering; provider env
 rotation recreates that owner's relay; Broker rotation resolves on the next call
 without a relay restart. Model identity changes apply to the next owner runtime.
+
+## Hosting policy
+
+Opt-in `hosting` uses `hosting.slots` (up to four), optional digest-pinned `hosting.image` and explicit `hosting.runtime` (`runsc` or `kata`) in agent settings. These are rights-bearing fields. Published sites live in per-user/env named volumes, not the full workspace mount. See [hosting](services/hosting.md).

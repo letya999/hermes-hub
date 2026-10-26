@@ -113,6 +113,11 @@ var featureToolMigration = map[string]ToolEntry{
 	"telegram_user": {Via: ToolViaMCP},
 	"desktop":       {Via: ToolViaMCP},
 	"drafts":        {Via: ToolViaMCP},
+	// exposure is a ToolHub capability family like ssh/hh: agent-facing ops
+	// stay name-only on the hub surface; the tunnel workload itself admits
+	// through the controller path, never the executor's network.
+	"exposure": {Via: ToolViaToolHub},
+	"hosting":  {Via: ToolViaToolHub},
 }
 
 var featureToggleMigration = map[string][2]string{

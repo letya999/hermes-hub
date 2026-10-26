@@ -3,6 +3,7 @@ package stack
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/exposure"
 	"github.com/letya999/hermes-hub/internal/sshcap"
 	"gopkg.in/yaml.v3"
 	"os"
@@ -66,6 +67,13 @@ func RenderEnvironment(dir, root, environment string) error {
 		// runtime whose ssh tools would all deny.
 		if _, err = sshcap.Load(filepath.Join(dir, "connections", "ssh", "config.yaml")); err != nil {
 			return fmt.Errorf("ssh config: %w", err)
+		}
+	}
+	if s.Has("exposure") {
+		// Same fail-closed contract: a broken exposure config must stop the
+		// render rather than ship silently-denying exposure tools.
+		if _, err = exposure.Load(filepath.Join(dir, "connections", "exposure", "config.yaml")); err != nil {
+			return fmt.Errorf("exposure config: %w", err)
 		}
 	}
 	if s.CapabilityMode != "managed" && strings.TrimSpace(s.GlobalSkillsDir) == "" {
@@ -396,6 +404,10 @@ func writeToolHubFiles(dir string, s Settings) error {
 	}
 	token := strings.TrimSpace(string(key))
 	controller := M{"state_root": "/state", "toolhive_binary": "/usr/local/bin/thv", "seccomp_profile": "/opt/hub/seccomp/seccomp-mcp-runtime.json", "docker_fallback": true, "bridge_binary": "/usr/local/bin/hubctl", "credential_mount_root": "/run/broker-materialized", "dynamic_definitions": true, "max_active": 8, "idle_ttl_seconds": 1800, "cli": cliControllerSection(s, dir)}
+
+	if err := writeHostingFiles(dir, s); err != nil {
+		return err
+	}
 	body, err := json.MarshalIndent(controller, "", "  ")
 	if err != nil {
 		return err

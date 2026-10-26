@@ -1297,7 +1297,7 @@ func (s *Store) PutRecipe(resolution api.RecipeResolution) (string, error) {
 	s.mu.Lock()
 	_, known := s.recipes[digest]
 	if !known {
-		s.recipes[digest] = resolution
+		s.recipes[digest] = api.CloneResolution(resolution)
 	}
 	s.mu.Unlock()
 	if known {
@@ -1320,7 +1320,7 @@ func (s *Store) Recipe(digest string) (api.RecipeResolution, error) {
 	if !ok {
 		return api.RecipeResolution{}, api.ErrNotFound
 	}
-	return resolution, nil
+	return api.CloneResolution(resolution), nil
 }
 
 type snapshot struct {

@@ -1,11 +1,15 @@
 ---
 description: Architectural decisions and clearly marked proposals; append new records when changing direction.
-last_verified: 2026-10-25
+last_verified: 2026-10-26
 ---
 # Decisions
 
 | Record | Decision |
 |---|---|
+| [ADR-0081](ADR-0081-user-scoped-site-hosting.md) | Accepted: user-scoped hosting over existing controller/ToolHub and sish/DNS; static-first, isolated dynamic profile, revocable artifact links; no Haloy fork (M18 #147, renumbered from a duplicate ADR-0079) |
+| [ADR-0080](ADR-0080-per-user-dns-tls.md) | Accepted: per-user subdomains — provider-neutral DNS record contract over regru/DO/delegated GCP+DO profiles, hub-issued per-user wildcard via DNS-01 pushed to sish (renumbered from a duplicate ADR-0078) |
+| [ADR-0079](ADR-0079-outbound-exposure.md) | Accepted: named public endpoints over opt-in per-binding tunnel workloads — sish reference provider, cloudflared managed alternate; Broker credentials, name-only agent surface (renumbered from a duplicate ADR-0077) |
+| [ADR-0078](ADR-0078-auth-first-admission-contract.md) | Proposed: built-evidence reuse on auth-first credential retry; `interactive` recipe marker classifies unsupported interactive auth (renumbered from a duplicate ADR-0076) |
 | [ADR-0077](ADR-0077-ops-admin-delivery.md) | Ops/admin plane — file-read usage export, versioned space manifests, polling watch, rollout pins, admin token scope, isolated replay |
 | [ADR-0076](ADR-0076-operational-protection.md) | Proposed: M17 hardening, owned resources, budgets, containment and personal supervision |
 | [ADR-0075](ADR-0075-dual-engine-context-control.md) | Proposed: grant-selected dual engines for manual/automatic compaction and goal mode; sidecar transport to pinned upstream primitives |

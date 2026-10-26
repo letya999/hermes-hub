@@ -1,0 +1,48 @@
+schema: 1
+change: CHG-0174
+title: Hosting acceptance and operating contract
+status: in_progress
+branch: feat/m18-exposure-hosting
+updated: 2026-11-02
+phase: live_acceptance
+adr: ADR-0081
+spec: SPEC-0079
+requirements: [R1, R2, R3, R4, R5, R6, R7, R8, R9, R10]
+depends_on: [CHG-0170, CHG-0171, CHG-0172, CHG-0173]
+github_milestone: M18
+github_issue: 147
+design_status: accepted
+implementation_status: in_progress
+slices:
+  H5.1-gates-current-docs: implemented
+  H5.2-static-browser-sish: implemented_live_local_sish
+  H5.3-dynamic-native-closure: fail_closed_proven_positive_sandbox_pending
+validation:
+  documents: pass
+  just_check: pass
+  coverage: 86.08_statements_package_floor_75_held
+  docker_check: not_run_owner_instruction
+  red_team: self_review_negative_contracts_live_confirmed
+  live_acceptance: recorded_2026-11-02
+evidence:
+  - Current architecture tools spaces operations threat model testing and validation link service hosting contract
+  - Code regression and native runtime browser sish acceptance remain explicitly separated
+  - Issue 147 stays open until all required native acceptance is recorded
+  - just check equivalent green 2026-10-26: covergo 86.03 statements floor 75 held, format vet tidy staticcheck gosec docs-check config-check actionlint and race tests pass
+  - Dynamic profile corrected to go-http per ADR-0081 amendment; publish rejects missing or non-ELF app before snapshot
+  - Live acceptance 2026-11-02 on dev stack (spaces/local, real Docker, tools-exec one-shot runtime): site_publish/list/status/unpublish exercised end to end
+  - A2: stale expected_revision conflict; identical request_id replay returned same revision without new revision; republish produced rev2
+  - A3: traversal, absolute, Windows-separator, NUL, dot and mixed traversal paths all denied before serve
+  - A4 partial: unlisted site name refused by slot allowlist (quota exceeded); concurrent reservation not exercised
+  - A5: missing/invalid link token 404; revoked token after rev2 returns 404 on exchange; wrong-Host (port-mismatched) requests do not match site
+  - A9 partial: docker restart of hosting preserved site1 rev2 ready state; unpublish removed site and external route returns 404
+  - A11: real sish reverse tunnel end to end - HTTPS bootstrap page, wildcard cert CN=*.local.sish.test, token exchange, real index.html over public and link sites; sish restart self-healed route via reconcile in ~30s; unpublish left external 404
+  - Dynamic go-http correctly refused closed: hosting unavailable with no executor/controller configured (fail-closed, per ADR-0081 no fallback)
+  - Two defects found and fixed during acceptance: exposure provider bound sish listener on :443 which sish treats as raw TLS passthrough (must be :80 terminate semantics); upstream sish sshmuxer sends non-IP OriginAddr in forwarded-tcpip payload rejected by strict x/crypto client - verified fixed via patched sish binary, upstream issue/PR candidate prepared separately, no Hermes code depends on the patch
+  - Recipe store digest corruption found via live restart failure (persisted recipe digest mismatch): shared-slice aliasing mutations post-persist; fixed with CloneResolution at store boundaries plus regression tests
+remaining:
+  - A1 two-owner boundary, A4 concurrent reservation, A6 real browser/SW, A7/A8 positive sandbox executor, A10 rate/audit budgets: not exercised, require second identity, browser, sandboxed executor or load harness
+  - Issue 147 closure additionally requires upstream sish fix decision (fork/issue/PR) or pinned sish release containing the OriginAddr correction, plus Linux VPS confirmation
+limitations:
+  - Live evidence is local dev stack with loopback sish; production-domain DNS/TLS belongs to issue 146
+  - Dynamic positive path unproven until a digest-pinned image and runsc/kata executor are configured

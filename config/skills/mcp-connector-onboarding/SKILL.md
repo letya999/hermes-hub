@@ -66,8 +66,9 @@ package-management instructions.
   credential flow. Pass a documented `connection_recipe` to `prepare_source`
   when needed. Do not change permissions or use the terminal to obtain missing
   tools. Report the legacy `phase` accurately: `awaiting-credentials` means the
-  form is ready; `awaiting-confirm` means confirmation is pending, not that
-  provider access has been verified.
+  form is ready — for auth-first connectors it can be ready before the artifact
+  exists; `awaiting-confirm` means confirmation is pending, not that provider
+  access has been verified.
 
 - `target` is the connector's name, alias, source URL, repository basename, or
   registry name — ToolHub resolves it against the caller's own connectors. An
@@ -83,7 +84,9 @@ package-management instructions.
 - `state: failed` carries a typed `code` (`ambiguous_target`,
   `unresolved_target`, `unsupported_auth`, `probe_failed`, `cleanup_incomplete`,
   `not_permitted`, `quota`). Report `summary` plainly and retry the same call
-  only when the code is retryable.
+  only when the code is retryable. `unsupported_auth` means the server
+  authenticates in its own interactive terminal or browser context — no
+  credential form exists for it; offer alternatives instead of retrying.
 - Write-effect tools stay hidden until `connector_allow_writes` with `on: true`
   is confirmed by the user through the link; `on: false` applies immediately.
 - `connector_remove` is destructive but convergent: the first call sends a

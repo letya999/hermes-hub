@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"slices"
@@ -92,6 +93,9 @@ func (c *ControlPlane) connectorInstall(ctx context.Context, auth identity.Envel
 			}
 			op.State = api.OpStateFailed
 			op.ErrorCode = api.OpCodeProbeFailed
+			if errors.Is(err, api.ErrUnsupportedAuth) {
+				op.ErrorCode = api.OpCodeUnsupportedAuth
+			}
 			if persistErr := c.Store.PutOperation(op); persistErr != nil {
 				return api.OperationResult{}, persistErr
 			}
@@ -125,6 +129,9 @@ func (c *ControlPlane) connectorInstall(ctx context.Context, auth identity.Envel
 		op.State = api.OpStateDone
 	} else if onboarding.Phase == api.PhaseFailed {
 		op.State, op.ErrorCode = api.OpStateFailed, api.OpCodeProbeFailed
+		if onboarding.ErrorCode == api.OpCodeUnsupportedAuth {
+			op.ErrorCode = api.OpCodeUnsupportedAuth
+		}
 		result.Code = op.ErrorCode
 		result.Summary += ": " + onboarding.Error
 	} else {

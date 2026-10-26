@@ -1,0 +1,53 @@
+schema: 1
+change: CHG-0168
+title: Per-user DNS/TLS implementation
+status: in_progress
+branch: feat/m18-exposure-dns
+updated: 2026-10-25
+phase: verification
+adr: ADR-0080
+spec: SPEC-0078
+requirements:
+  - R1
+  - R2
+  - R3
+  - R4
+  - R5
+  - R6
+  - R7
+  - R8
+depends_on:
+  - CHG-0167
+github_milestone: M18
+github_issue: 146
+design_status: accepted
+implementation_status: implemented
+slices:
+  S1-contract-config: done
+  S2-provider-clients: done
+  S3-acme-delivery: done
+  S4-hubctl-doctor-wiring: done
+validation:
+  documents: done
+  just_check: pass (covergo 86.60% total; internal/dns 86.6%; staticcheck+gosec+vet+tidy clean)
+  docker_check: not_applicable
+  red_team: not_started
+  live_acceptance: not_started
+evidence:
+  - internal/dns contract + config + propagation check (dns.go, config.go)
+  - provider clients regru/digitalocean/gcloud against httptest fakes; A/AAAA/TXT, ErrAuth taxonomy, Options.Timeout
+  - regru EffectiveTTL reports zone SOA TTL (no per-record TTL in REG.API)
+  - ACME DNS-01 issuer (x/crypto/acme) + 0600 cert Store + PushCert RemoteWriter seam
+  - credential Resolver: file:/broker refs, Acquire->Materialize->Release per call
+  - hubctl dns check|ensure|remove|records|cert|push|delegate-check
+  - zone binding: <user> must equal reviewed exposure config zone label; denials audited
+  - ACME account key persisted connections/dns/acme-account.key (0600)
+  - renewal: skip while >30d valid; renew-failed audit alert; live cert untouched
+  - doctor flags invalid dns profile (regru without static_egress_ip)
+  - audit kind "dns"; events on ensure/remove/cert/denied; push audited via sshcap ssh events
+remaining:
+  - live acceptance per profile (separate evidence)
+limitations:
+  - live acceptance needs real provider accounts + sish VPS
+  - CLI provider calls pass Options{Timeout} only when set; default unbounded like http.DefaultClient
+  - per-host on-demand issuance (certmagic fallback) documented in ADR-0080, not implemented
