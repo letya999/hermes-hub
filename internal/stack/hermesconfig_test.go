@@ -18,6 +18,30 @@ func writeSelfServicesState(t *testing.T, dir, body string) string {
 	return path
 }
 
+func TestApplyHermesConfigEmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	effective := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(effective, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	err := ApplyHermesConfig(effective, MaterializeOptions{
+		ToolHubEndpoint:    "http://toolhub:8090/mcp",
+		ToolHubTokenEnv:    "HUB_RUNTIME_AUTH",
+		RuntimeAuthPresent: true,
+		Context:            &ContextConfig{CompactEngine: "auto"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(effective)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "http://toolhub:8090/mcp") {
+		t.Fatalf("empty config did not gain toolhub entry: %s", body)
+	}
+}
+
 func TestMaterializeHermesConfigAddsToolHubServer(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source.yaml")
