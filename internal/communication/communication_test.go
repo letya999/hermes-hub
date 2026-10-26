@@ -289,8 +289,11 @@ func TestConfigFromEnvSpoolKnobs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.SpoolRetention != 336*time.Hour {
-		t.Fatalf("default retention must be 336h: %v", config.SpoolRetention)
+	if config.SpoolRetention != 72*time.Hour {
+		t.Fatalf("default retention must be 72h: %v", config.SpoolRetention)
+	}
+	if config.SpoolMaxFiles != 2048 || config.SpoolMaxArchiveBytes != 64<<20 {
+		t.Fatalf("default limits: %d %d", config.SpoolMaxFiles, config.SpoolMaxArchiveBytes)
 	}
 }
 

@@ -47,9 +47,9 @@ func (g *Gateway) masterHolds(ctx context.Context) ([]masterHold, error) {
 
 // syncMasterNotices transfers a durable hold notice to the existing outbox
 // before acknowledging it. Neither step needs the contained Hermes runtime.
-func (g *Gateway) syncMasterNotices(ctx context.Context) error {
+func (g *Gateway) syncMasterNotices(ctx context.Context) (bool, error) {
 	if !g.config.Supervised || g.config.RuntimeURL == "" {
-		return nil
+		return false, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
@@ -57,30 +57,32 @@ func (g *Gateway) syncMasterNotices(ctx context.Context) error {
 	base := strings.TrimRight(g.config.RuntimeURL, "/")
 	holds, err := g.masterHolds(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
+	pending := false
 	for _, hold := range holds {
 		if !hold.NoticePending || hold.NoticeID == "" {
 			continue
 		}
+		pending = true
 		user, ok := g.configUser(hold.PrincipalID)
 		if !ok || len(user.TelegramIDs) == 0 {
 			// No channel can ever carry this notice: acknowledge it as closed
 			// rather than spinning the poll loop on it forever.
 			if err := ackHoldNotice(ctx, client, base, g.config.RuntimeAuth, hold.NoticeID); err != nil {
-				return err
+				return pending, err
 			}
 			continue
 		}
 		text := "Работа приостановлена администратором (" + hold.Reason + "). Для возобновления обратитесь к администратору. Уже выполненные внешние действия не отменены; неопределённые результаты требуют проверки."
 		if err := g.queueDelivery(ctx, hold.NoticeID, user.TelegramIDs[0], 0, text); err != nil {
-			return err
+			return pending, err
 		}
 		if err := ackHoldNotice(ctx, client, base, g.config.RuntimeAuth, hold.NoticeID); err != nil {
-			return err
+			return pending, err
 		}
 	}
-	return nil
+	return pending, nil
 }
 
 func ackHoldNotice(ctx context.Context, client *http.Client, base, auth, noticeID string) error {

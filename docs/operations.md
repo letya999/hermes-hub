@@ -1,6 +1,6 @@
 ---
-description: Operator runbook — stack lifecycle, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
-last_verified: 2026-10-25
+description: Operator runbook — stack lifecycle, user onboarding, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
+last_verified: 2026-10-26
 ---
 
 # Operations
@@ -24,6 +24,69 @@ mode also needs `HUB_SUPERVISOR_AUTH` or a provisioned `supervisor.auth`.
 `up` rejects a second `communication-hub` on the same Telegram bot token and
 a second cliproxy on the shared alias — stop the conflicting gateway
 intentionally.
+
+## User onboarding — the capability ceremony
+
+A new space renders and boots, but **renders no tools until capability
+records exist**: `workspace.yaml` wishes admit nothing, the shared ToolHub
+store is the authority, and a managed runtime binds a profile published for
+its exact `{principal, context, runtime, environment, generation}` tuple.
+Skip the ceremony and the user gets an agent with an empty tool surface.
+
+1. **Scaffold** — `hubctl init --user <id>` writes `spaces/<id>`:
+   `agent.yaml` (operator-owned), `workspace.yaml` (capability wishes),
+   `scope.yaml`, `secrets.{dev,prod}.env`, `SOUL.md`, state dirs. Init never
+   overwrites; a fleet default lives in `policies/agent-default.yaml` /
+   `policies/workspace-default.yaml` when present.
+2. **agent.yaml** — set `model` and `model_url`. Managed mode requires
+   `model_url: http://model-relay:8318/v1`, `capability_mode: managed`, the
+   `capability_profile_id` you will publish below, and
+   `capability_generation` (start at 1). Ports are allocated at init; pick
+   free `oauth_port`/`browser_port` when they collide. Under managed mode
+   only carve-out toolsets may go `via: native`, hooks/memory/native
+   extensions are rejected, and raw MCP on a personal space is forbidden.
+3. **workspace.yaml** — the wish list (`tools:` map). Keep the template:
+   `file/documents/images/hh` via `toolhub`, `todo/memory/web/deep_research`
+   native, `browser: mcp`. Wishes still admit nothing — step 5 does.
+4. **Secrets** — fill `secrets.<env>.env` (`OPENAI_API_KEY` at minimum —
+   the model relay authenticates upstream with it). Never commit or paste
+   this file.
+5. **Capability records** — publish into the infra space's protected store
+   (`spaces/<infra>/runtime/toolhub/store.json`; the space whose agent.yaml
+   has `infra: true` or unset):
+   - ceiling policy: `hubctl capability --kind policy --file policy.json
+     --toolhub-store <store> --confirm` (the `policy_id` the profile binds)
+   - profile: review a draft first with `--kind preview --file profile.json
+     --toolhub-store <store>` (read-only old→new diff), then
+     `--kind profile --file profile.json --confirm`. The record's
+     `principal_id`/`context_id`/`runtime_id`/`environment`/`generation`
+     must equal the agent.yaml binding.
+   - agent-tools surface: `hubctl capability --kind agent-tools --principal
+     <id> --context <id> --runtime <id> --policy-version <v>
+     --toolhub-store <store>` — registers the reviewed hub-tools catalog
+     definition and enables it for the identity.
+   Every record prints a review digest first and refuses without
+   `--confirm`; the store re-checks issuer identity at admission.
+6. **Channel routing** — for Telegram delivery add the user to the infra
+   space's `communication.users.yaml` (`id`, `runtime_id`, `telegram_ids`,
+   `features`, `policy_version`) — no entry, no routed jobs; an entry with
+   empty `telegram_ids` still jobs but cannot notify.
+7. **Bring up** — `hubctl doctor --user <id>`, then
+   `hubctl up --user <id> --env dev|prod`. Up renders `generated/` (compose,
+   `tool-policy`, `tool-manifest`, hermes config), mints `runtime.auth`,
+   and enrolls sibling `toolhub-tokens.json`/`model-relay-admins.json`.
+   The supervised runtime spawns on first demand (pin or job).
+8. **Verify tool surface** — `docker exec <runtime> cat
+   /config/tool-manifest.json` shows the projected manifest;
+   `hubctl tools --workspace <dir>` lists the reviewed vocabulary. A user
+   whose tools are all missing means step 5's profile doesn't match the
+   rendered generation/env — compare `policy_version` and `generation`.
+
+**Revocation**: release runtime pins (`DELETE /v1/pins` on the supervisor
+or let TTL reap), `hubctl down --user <id>`, remove the
+`communication.users.yaml` entry, publish a new profile/policy revision
+with `status: revoked` (revisions only ever move forward — never edit the
+old record in place), then archive or delete `spaces/<id>`.
 
 ## Diagnostics
 

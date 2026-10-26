@@ -96,6 +96,10 @@ type Incident struct {
 	LastAt  time.Time `json:"last_at"`
 }
 
+// signalJournalMaxBytes bounds the append-only signal journal; past it the
+// file rotates to signals.jsonl.1 so forensics stay finite.
+const signalJournalMaxBytes = 4 << 20
+
 // signalPath is the append-only local watchdog signal journal beside
 // supervisor.json; it shares the state root and its ignore rules.
 func (m *Manager) signalPath() string {
@@ -118,6 +122,9 @@ func (m *Manager) recordIncidentLocked(entry *runtimeEntry, class string) {
 		return
 	}
 	entry.incidents[class] = Incident{Class: class, Count: 1, FirstAt: now, LastAt: now}
+	if info, err := os.Stat(m.signalPath()); err == nil && info.Size() > signalJournalMaxBytes {
+		_ = os.Rename(m.signalPath(), m.signalPath()+".1")
+	}
 	file, err := os.OpenFile(m.signalPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		return

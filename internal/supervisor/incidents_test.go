@@ -353,3 +353,25 @@ func TestWatchdogStatsAndSweepMetrics(t *testing.T) {
 		t.Fatalf("sweeps=%d, want 3", got)
 	}
 }
+
+// The signal journal rotates at a size bound, keeping one generation of
+// history — incident forensics stay finite on a months-old hub.
+func TestSignalJournalRotatesAtSizeBound(t *testing.T) {
+	m, _ := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
+	if err := os.WriteFile(m.signalPath(), make([]byte, signalJournalMaxBytes+1), 0600); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	entry := &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "gen-1", State: Busy}, leases: map[string]Lease{}}
+	m.items["alice\x00alice\x00gateway"] = entry
+	m.recordIncidentLocked(entry, "uncertain")
+	m.mu.Unlock()
+	rotated := m.signalPath() + ".1"
+	if info, err := os.Stat(rotated); err != nil || info.Size() != signalJournalMaxBytes+1 {
+		t.Fatalf("journal did not rotate: %v", err)
+	}
+	body, err := os.ReadFile(m.signalPath())
+	if err != nil || !strings.Contains(string(body), "uncertain") {
+		t.Fatalf("new journal missing the fresh incident: %v", err)
+	}
+}

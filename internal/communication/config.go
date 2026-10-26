@@ -78,8 +78,14 @@ type Config struct {
 	// (principal_id, context_id), different contexts run in parallel (ADR-0025).
 	Workers int `yaml:"-"`
 	// SpoolRetention bounds how long terminal spool history is kept; zero
-	// means the 336-hour default (SPEC-0053 R2.3).
+	// means the 72-hour default (SPEC-0053 R2.3).
 	SpoolRetention time.Duration `yaml:"-"`
+	// SpoolMaxFiles caps terminal records per spool directory; overflow is
+	// archived oldest-first. SpoolMaxArchiveBytes caps the compressed archive.
+	// SpoolMaxUsageEntries caps live metering-journal lines.
+	SpoolMaxFiles        int   `yaml:"-"`
+	SpoolMaxArchiveBytes int64 `yaml:"-"`
+	SpoolMaxUsageEntries int   `yaml:"-"`
 	// MockDir relocates mock-channel capture outside the production spool;
 	// empty keeps the historical spool/mock-* location (SPEC-0053 R2.3).
 	MockDir string `yaml:"-"`
@@ -248,6 +254,7 @@ func ConfigFromEnv() (Config, error) {
 		}
 		config.Workers = workersFromEnv()
 		config.SpoolRetention = spoolRetentionFromEnv()
+		config.SpoolMaxFiles, config.SpoolMaxArchiveBytes, config.SpoolMaxUsageEntries = spoolLimitsFromEnv()
 		config.MockDir = os.Getenv("HUB_MOCK_DIR")
 		fillChannelSecrets(&config)
 		return config, nil
@@ -291,6 +298,7 @@ func ConfigFromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	config.SpoolMaxFiles, config.SpoolMaxArchiveBytes, config.SpoolMaxUsageEntries = spoolLimitsFromEnv()
 	fillChannelSecrets(&config)
 	return config, nil
 }
@@ -339,12 +347,19 @@ func validateServiceEndpoint(name string, endpoint ServiceEndpoint) error {
 }
 
 // spoolRetentionFromEnv reads HUB_SPOOL_RETENTION as a duration; the default
-// is 336 hours (SPEC-0053 R2.3).
+// is 72 hours so a modest multi-user host never accumulates unbounded history.
 func spoolRetentionFromEnv() time.Duration {
 	if d, err := time.ParseDuration(strings.TrimSpace(os.Getenv("HUB_SPOOL_RETENTION"))); err == nil && d > 0 {
 		return d
 	}
-	return 336 * time.Hour
+	return 72 * time.Hour
+}
+
+// spoolLimitsFromEnv reads the count/byte caps applied at compaction; the
+// defaults bound each terminal dir, the archive, and the metering journal
+// for a 20-user host.
+func spoolLimitsFromEnv() (int, int64, int) {
+	return intFromEnv("HUB_SPOOL_MAX_FILES", 2048), int64(intFromEnv("HUB_SPOOL_MAX_ARCHIVE_BYTES", 64<<20)), intFromEnv("HUB_SPOOL_MAX_USAGE_ENTRIES", usageJournalMaxEntries)
 }
 
 // durationSecondsFromEnv reads a seconds-valued duration (HUB_STT_TIMEOUT).

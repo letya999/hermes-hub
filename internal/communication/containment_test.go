@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -130,6 +131,118 @@ func TestMasterNoticeAcksUndeliverable(t *testing.T) {
 	if len(entries) != 0 {
 		t.Fatalf("undeliverable notice reached the outbox: %d entries", len(entries))
 	}
+}
+
+// The notice loop must idle when the hold set is clean: it polls fast only
+// while a pending notice exists, otherwise the 1s control tick would spam
+// /v1/holds forever.
+func TestSyncMasterNoticesReportsPending(t *testing.T) {
+	c := testConfig(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/holds":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[{"principal_id":"alice","context_id":"alice","active":true,"epoch":1,"reason":"manual"},{"principal_id":"bob","context_id":"bob","active":true,"epoch":1,"reason":"manual","notice_id":"n-1","notice_pending":true}]`))
+		case "/v1/holds/ack":
+			w.WriteHeader(200)
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+	c.Supervised = true
+	c.RuntimeURL = srv.URL
+	c.RuntimeAuth = "synthetic-service"
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := g.syncMasterNotices(t.Context())
+	if err != nil || !pending {
+		t.Fatalf("pending notice not reported: %v %v", pending, err)
+	}
+}
+
+// With a clean hold set the control loop must idle the supervisor poll: one
+// sync per idle window, not one per second — the 1s tick exists for the
+// delivery pipeline, not for holds.
+func TestNoticePollIdlesWhenClean(t *testing.T) {
+	c := testConfig(t)
+	var polls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		polls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer srv.Close()
+	c.Supervised = true
+	c.RuntimeURL = srv.URL
+	c.RuntimeAuth = "synthetic-service"
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	now := time.Unix(1000, 0)
+	g.now = func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go g.controlLoop(ctx)
+	time.Sleep(2500 * time.Millisecond)
+	if got := polls.Load(); got != 1 {
+		t.Fatalf("idle loop polled holds %d times in 2.5s", got)
+	}
+	mu.Lock()
+	now = now.Add(11 * time.Second)
+	mu.Unlock()
+	time.Sleep(2500 * time.Millisecond)
+	if got := polls.Load(); got != 2 {
+		t.Fatalf("stale window did not re-poll: %d", got)
+	}
+}
+
+// The hourly compaction must apply the configured journal cap, not the
+// built-in default — a small deployment limit has to reach the spool.
+func TestControlLoopCompactsWithConfiguredLimits(t *testing.T) {
+	c := testConfig(t)
+	c.SpoolMaxUsageEntries = 3
+	c.SpoolMaxFiles = 2048
+	c.SpoolMaxArchiveBytes = 64 << 20
+	now := time.Now()
+	if err := os.MkdirAll(c.SpoolDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Create(filepath.Join(c.SpoolDir, "usage.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 6 {
+		e := usageEntry{Version: 2, ScopeID: "user:alice", ContextID: "c", SessionID: "s", JobID: "j" + string(rune('0'+i)), RunID: "r" + string(rune('0'+i)), MeasuredAt: now.Add(-time.Duration(i) * time.Hour)}
+		body, _ := json.Marshal(e)
+		if _, err := f.Write(append(body, '\n')); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go g.controlLoop(ctx)
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		entries, err := g.spool.usageEntriesLocked()
+		if err == nil && len(entries) <= 3 {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	entries, _ := g.spool.usageEntriesLocked()
+	t.Fatalf("journal not capped at configured limit: %d entries", len(entries))
 }
 
 func TestMasterHoldFencesOutbox(t *testing.T) {

@@ -26,10 +26,12 @@ everything entering or leaving the human conversation. Listens
 - **Control API** on the same listener: `prepare-outcome` callbacks, routines
   control, sibling-runtime calls authenticated by `toolhub-tokens.json`
   (`HUB_COMMUNICATION_TOKENS_FILE`).
-- **Master hold notices**: polls supervisor `/v1/holds` once per control tick;
-  a routable notice is durably enqueued (Telegram) then acknowledged via
-  `/v1/holds/ack`. A notice with no configured delivery channel is
-  acknowledged immediately — undeliverable notices never wedge pending.
+- **Master hold notices**: the control loop syncs supervisor `/v1/holds` on
+  boot and every second while a notice is pending; a clean hold set backs off
+  to a ~10 s poll. A routable notice is durably enqueued (Telegram) then
+  acknowledged via `/v1/holds/ack`. A notice with no configured delivery
+  channel is acknowledged immediately — undeliverable notices never wedge
+  pending.
 - **Spool**: durable outbound queue on the `communication-hub-data` volume
   (`HUB_COMMUNICATION_SPOOL=/data`). Every admitted job holds exactly one
   reservation in `budget.json` (written before the job file, settled once at
@@ -64,6 +66,19 @@ Admission ceilings (host-only, read at spool open): `HUB_SPOOL_MAX_PENDING_PER_S
 (0 = unsettled+reserved token ceiling off), `HUB_SPOOL_MAX_BYTES` (256 MiB
 pending-queue storage), `HUB_SPOOL_MAX_DELIVERIES` (1024 ordinary pending
 outbox entries; control lane exempt).
+
+Retention and storage bounds (hourly compaction): `HUB_SPOOL_RETENTION`
+(default 72h) ages terminal records out of `done/`, `failed/`,
+`outbox/{done,failed}/`, `events/` and terminal `mappings/` into daily
+gzip bundles under `archive/` — history compresses instead of disappearing.
+`HUB_SPOOL_MAX_FILES` (default 2048) caps each terminal dir's record count
+inside the window; `HUB_SPOOL_MAX_ARCHIVE_BYTES` (default 64 MiB) evicts the
+oldest bundles. `usage.jsonl` is rewritten keeping the retention window plus
+the newest record per session (the delta baseline a live session needs);
+`HUB_SPOOL_MAX_USAGE_ENTRIES` (default 65536) bounds it, oldest non-baseline
+records leaving first. Uncertain `failed/` jobs awaiting re-observation,
+receipts for in-flight deliveries, live job mappings and pending/running
+work are never compacted.
 
 ## Boundaries
 
