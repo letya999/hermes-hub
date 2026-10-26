@@ -93,6 +93,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// file: credentials — is operator-owned and read-only inside the runtime.
 		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "connections", "ssh")), "target": "/state/ssh", "read_only": true})
 	}
+	if s.Has("exposure") {
+		// The reviewed exposure config — provider, relay, endpoints and any
+		// file: key — is operator-owned and read-only inside the runtime.
+		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "connections", "exposure")), "target": "/state/exposure", "read_only": true})
+	}
 	for _, m := range s.Workspace.Mounts {
 		source, readOnly, err := s.resolveMount(m)
 		if err != nil {
@@ -701,6 +706,16 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	// Secondary spaces still declare broker-secrets-runtime: the supervisor
 	// mounts it by project-derived name into that user's spawned runtimes.
 	volumes := M{"broker-secrets-runtime": M{}}
+	if s.Has("hosting") {
+		hostingVolumes := runtimeService["volumes"].([]any)
+		addHosting(services, volumes, s, dir, common, runtimeEnv, &hostingVolumes)
+		hostingService := services[hostingName(s)].(M)
+		for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_RUNTIME_", "runtime", "hermes-runtime-adapter") {
+			hostingService["environment"].(M)[key] = value
+		}
+		hostingService["volumes"] = append(hostingService["volumes"].([]any), brokerSecrets("runtime"))
+		runtimeService["volumes"] = hostingVolumes
+	}
 	if s.CapabilityMode == "managed" {
 		volumes["broker-secrets-model"] = M{}
 	}

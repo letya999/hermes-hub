@@ -3,6 +3,7 @@ package agenttools
 import (
 	"fmt"
 	"github.com/gofrs/flock"
+	"github.com/letya999/hermes-hub/internal/exposure"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/media"
 	"github.com/letya999/hermes-hub/internal/sshcap"
@@ -21,6 +22,11 @@ import (
 const Limit = 2 * 1024 * 1024
 
 type Input struct {
+	Mode               string         `json:"mode,omitempty"`
+	Access             string         `json:"access,omitempty"`
+	Profile            string         `json:"profile,omitempty"`
+	RequestID          string         `json:"request_id,omitempty"`
+	LifetimeSeconds    int            `json:"lifetime_seconds,omitempty"`
 	OriginJobID        string         `json:"origin_job_id,omitempty"`
 	DestinationTaskID  string         `json:"destination_task_id,omitempty"`
 	Context            string         `json:"context,omitempty"`
@@ -117,6 +123,9 @@ type Tools struct {
 	SSH               *sshcap.Service
 	SSHGrants         sshcap.Grants
 	sshErr            error
+	Exposure          *exposure.Manager
+	exposureErr       error
+	exposureProvider  exposure.Provider
 	Restart           func() error
 	CommunicationURL  string
 	CommunicationAuth string
@@ -199,6 +208,7 @@ func OpenRoots(workspace, archive, organization string) (*Tools, error) {
 	}
 	t := &Tools{Workspace: w, Archive: a, Organization: o, OrgScoped: o != nil, OrgActions: parseActions(os.Getenv("HUB_ORG_ACTIONS")), ReadOnlyTools: readOnlyToolNames(parseActions(os.Getenv("HUB_TOOLS_RO"))), ToolPolicy: toolPolicy, StateDir: stateDir, ToolHub: toolHubStore, ToolHubAuth: toolHubAuth, Restart: func() error { return restartRuntime(stateDir) }, CommunicationURL: strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_CONTROL_URL")), CommunicationAuth: communicationAuth, Media: media.New(w), lock: flock.New(filepath.Join(workspace, ".hub-writer.lock")), envLock: flock.New(filepath.Join(stateDir, ".self-env.lock")), HHURL: "https://api.hh.ru", HHKey: os.Getenv("HH_TOKEN"), UserAgent: os.Getenv("HH_USER_AGENT"), HHEnabled: os.Getenv("HUB_HH_ENABLED") == "true", HTTP: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	t.openSSH()
+	t.openExposure()
 	return t, nil
 }
 
@@ -283,6 +293,12 @@ func runtimeEnvelope() identity.Envelope {
 func (t *Tools) Close() {
 	if t.SSH != nil {
 		t.SSH.Close()
+	}
+	if t.Exposure != nil {
+		t.Exposure.Shutdown()
+	}
+	if p, ok := t.exposureProvider.(interface{ Shutdown() }); ok {
+		p.Shutdown()
 	}
 	_ = t.Workspace.Close()
 	if t.Archive != nil {

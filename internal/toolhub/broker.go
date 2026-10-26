@@ -80,8 +80,10 @@ func (c *ControlPlane) admitWithBrokerCredential(ctx context.Context, auth ident
 	}
 	if err != nil {
 		// The upstream error can echo a submitted StringSession. Keep it out of
-		// onboarding state and channel responses.
-		return api.ToolDefinition{}, fmt.Errorf("%w: authenticated tools/list failed", api.ErrIsolation)
+		// onboarding state and channel responses. The built definition rides
+		// back with the error so a rejected credential does not discard the
+		// unchanged artifact's evidence.
+		return admitted, fmt.Errorf("%w: authenticated tools/list failed", api.ErrIsolation)
 	}
 	return admitted, nil
 }

@@ -25,6 +25,14 @@ func (c *genericController) handler(token string) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		if c.config.HostingOnly && r.URL.Path != "/hosting" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.URL.Path == "/hosting" {
+			c.hostingHTTP(w, r)
+			return
+		}
 		if r.URL.Path == "/release" {
 			var release api.ControllerRelease
 			decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))

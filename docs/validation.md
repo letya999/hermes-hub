@@ -1,6 +1,6 @@
 ---
 description: What counts as evidence, and the standing list of what is not yet proven. Dated per-change evidence lives in .work/done/CHG-*/evidence.md.
-last_verified: 2026-10-20
+last_verified: 2026-10-26
 ---
 
 # Validation policy and acceptance boundary
@@ -77,3 +77,7 @@ Things a reader must NOT assume work until separately proven live:
 | CHG-0016 scale-to-zero | [.work/done/CHG-0016-scale-to-zero-runtimes/evidence.md](../.work/done/CHG-0016-scale-to-zero-runtimes/evidence.md) |
 | M1 compatibility | [.work/done/CHG-0018-communication-runtime-migration/evidence.md](../.work/done/CHG-0018-communication-runtime-migration/evidence.md) |
 | CHG-0019/0020/0021 ToolHub M2 | `.work/done/CHG-001{9,20,21}-*/evidence.md` |
+
+## Hosting evidence boundary
+
+Store/HTTP/controller contract tests exercise real Go boundaries with synthetic data. They do not establish runsc/Kata resource enforcement, actual volume-subpath support, sish TLS/reconnection or browser CSP/cookie behavior. Those remain separate native acceptance checks; issue #147 cannot close from static-only or mocked executor success. See [hosting](services/hosting.md).

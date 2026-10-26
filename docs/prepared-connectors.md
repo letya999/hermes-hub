@@ -1,6 +1,6 @@
 ---
 description: Connector pipeline — review/build/admission contract, lifecycle, recipe ledger, tiers, and per-connector prepared entries.
-last_verified: 2026-10-22
+last_verified: 2026-10-25
 ---
 
 # Prepared connectors
@@ -22,7 +22,16 @@ Broker form before building, pulling or probing the artifact. After enrollment,
 a temporary owner-bound grant resumes the saved recipe, builds the artifact and
 executes real `tools/list`. The resulting definition retains the approved Broker
 contract. A failed probe remains unconfirmed; arbitrary startup failures do not
-become successful installations.
+become successful installations. A rejected credential keeps the built artifact
+on the draft — `rotate` re-runs only the credentialed `tools/list` against the
+stored OCI object instead of rebuilding an unchanged artifact, while `Tools`
+and the tool-contract digest stay empty until the real list succeeds.
+
+A `connection_recipe` may instead declare `"interactive": true` when the server
+authenticates inside its own terminal or browser-profile context. That is an
+explicitly unsupported scenario: review fails with `unsupported_auth` before any
+form, build or pull — no fake form is fabricated. Prepared entries that are
+known to be interactive stay in `prepared/blocked.json`.
 
 Status reports `form_ready`, `artifact_ready` (a pinned local image digest) and
 `tools_confirmed` separately. A form-ready draft can have no image and no tools.

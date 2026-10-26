@@ -1,11 +1,14 @@
 package stack
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	_ "time/tzdata"
+
+	"github.com/letya999/hermes-hub/internal/dns"
 )
 
 func slackEventsHostPort(s Settings) int {
@@ -23,6 +26,7 @@ func DoctorScope(s Settings, userSecrets, orgSecrets map[string]string) []string
 		secrets[key] = value
 	}
 	issues := []string{}
+	issues = append(issues, hostingIssues(s)...)
 	for key, value := range userSecrets {
 		if _, exists := secrets[key]; exists {
 			issues = append(issues, "secret key duplicated between organization and user scope: "+key)
@@ -65,6 +69,16 @@ func DoctorScope(s Settings, userSecrets, orgSecrets map[string]string) []string
 	if s.Has("ssh") && s.SpaceDir != "" {
 		if info, err := os.Lstat(filepath.Join(s.SpaceDir, "connections", "ssh", "config.yaml")); err != nil || !info.Mode().IsRegular() {
 			issues = append(issues, "create connections/ssh/config.yaml for ssh (see docs/operations.md)")
+		}
+	}
+	if s.Has("exposure") && s.SpaceDir != "" {
+		if info, err := os.Lstat(filepath.Join(s.SpaceDir, "connections", "exposure", "config.yaml")); err != nil || !info.Mode().IsRegular() {
+			issues = append(issues, "create connections/exposure/config.yaml for exposure (see docs/operations.md)")
+		}
+	}
+	if s.SpaceDir != "" {
+		if _, err := dns.Load(filepath.Join(s.SpaceDir, "connections", "dns", "config.yaml")); err != nil && !errors.Is(err, os.ErrNotExist) {
+			issues = append(issues, "dns profile invalid: "+err.Error()+" (regru needs static_egress_ip or a delegated hub.<domain> profile)")
 		}
 	}
 	for name, server := range s.MCP {

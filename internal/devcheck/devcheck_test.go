@@ -133,6 +133,28 @@ func TestCoverAll(t *testing.T) {
 	}
 }
 
+func TestCoverAllSkipsStatementFreePackage(t *testing.T) {
+	name := filepath.Join(t.TempDir(), "coverage.out")
+	actual, err := CoverAll(name, 50, 0,
+		func() ([]string, error) { return []string{"pkg/a", "pkg/empty"}, nil },
+		func(pkg, out string) error {
+			if pkg == "pkg/empty" {
+				return os.WriteFile(out, []byte("mode: set\n"), 0600)
+			}
+			return os.WriteFile(out, []byte("mode: count\na.go:1.1,2.1 4 1\n"), 0600)
+		})
+	if err != nil || actual != 100 {
+		t.Fatalf("statement-free package rejected: %v (%.2f)", err, actual)
+	}
+	if _, err = CoverAll(filepath.Join(t.TempDir(), "coverage.out"), 0, 0,
+		func() ([]string, error) { return []string{"pkg/bad"}, nil },
+		func(pkg, out string) error {
+			return os.WriteFile(out, []byte("mode: count\nmalformed\n"), 0600)
+		}); err == nil {
+		t.Fatal("malformed package profile merged")
+	}
+}
+
 func TestProjectAndFormat(t *testing.T) {
 	if err := Project(t.TempDir()); err == nil {
 		t.Fatal("missing project files accepted")

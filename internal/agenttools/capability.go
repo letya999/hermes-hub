@@ -123,6 +123,14 @@ func HubToolsDefinition() api.ToolDefinition {
 			tool("ssh_tunnel_open", "ssh.tunnel", "Open a tunnel through a declared SSH host when the tunnel grant is active.", api.WriteEffect, use("tunnel", "ssh"), str("host"), str("name")),
 			tool("ssh_tunnel_list", "ssh.tunnel_list", "List open SSH tunnels.", api.ReadEffect, use("tunnel", "ssh")),
 			tool("ssh_tunnel_close", "ssh.tunnel_close", "Close an SSH tunnel.", api.WriteEffect, use("tunnel", "ssh"), str("id")),
+			tool("site_list", "hosting.list", "List own hosted sites without share tokens.", api.ReadEffect, use("list", "hosting")),
+			tool("site_status", "hosting.status", "Show own site state and revision.", api.ReadEffect, use("read", "hosting"), str("name")),
+			tool("site_unpublish", "hosting.unpublish", "Revoke and remove an own site revision.", api.WriteEffect, use("remove", "hosting"), str("name"), str("request_id"), arg("expected_revision", "integer", true)),
+			tool("site_publish", "hosting.publish", "Publish prebuilt workspace files to an own site slot.", api.WriteEffect, append(use("publish", "hosting"), use("read", "files", "path")...), str("name"), path, str("request_id"), arg("expected_revision", "integer", true), opt("mode"), opt("access"), opt("profile"), arg("lifetime_seconds", "integer", false), arg("authorized", "boolean", false)),
+			tool("exposure_list", "exposure.list", "List live public exposures on this runtime.", api.ReadEffect, use("list", "exposure")),
+			tool("exposure_status", "exposure.status", "Show one live public exposure by endpoint name.", api.ReadEffect, use("read", "exposure"), str("name")),
+			tool("exposure_open", "exposure.open", "Open one declared endpoint's public tunnel.", api.WriteEffect, use("open", "exposure"), str("name")),
+			tool("exposure_close", "exposure.close", "Close one live public exposure by endpoint name.", api.WriteEffect, use("close", "exposure"), str("name")),
 		},
 	}
 }

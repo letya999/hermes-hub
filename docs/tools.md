@@ -1,6 +1,6 @@
 ---
 description: Complete agent-visible tool surface — toolhub control tools, connector_* facade, hub:tools catalog, effect/grant requirements, delivery directives.
-last_verified: 2026-10-25
+last_verified: 2026-10-26
 ---
 
 # Tool surface
@@ -199,3 +199,7 @@ content changes/deletion invalidate the next turn's cached knowledge reply.
 Private immutable traces are retained for audit and never injected as retrieval
 results. External connectors require their own real contract acceptance;
 no embeddings service or database is required.
+
+## Site tools
+
+The `hosting` tool family exposes `site_publish`, `site_unpublish`, `site_list`, `site_status`. Publish takes a prebuilt workspace path, declared slot, request ID and expected revision; public access requires explicit authorization. Owner/env, image and runtime are trusted configuration. See [hosting workflow](services/hosting.md).

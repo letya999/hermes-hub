@@ -68,10 +68,15 @@ type ConnectionAlternative struct {
 }
 
 type ConnectionRecipe struct {
-	AuthBeforeToolsList bool                    `json:"auth_before_tools_list,omitempty"`
-	OAuth               *OAuthRecipe            `json:"oauth,omitempty"`
-	Fields              []ConnectionField       `json:"fields,omitempty"`
-	Alternatives        []ConnectionAlternative `json:"alternatives,omitempty"`
+	AuthBeforeToolsList bool `json:"auth_before_tools_list,omitempty"`
+	// Interactive declares that the server authenticates inside its own
+	// interactive terminal or browser-profile context — an explicitly
+	// unsupported scenario: review rejects it with ErrUnsupportedAuth
+	// instead of fabricating a credential form.
+	Interactive  bool                    `json:"interactive,omitempty"`
+	OAuth        *OAuthRecipe            `json:"oauth,omitempty"`
+	Fields       []ConnectionField       `json:"fields,omitempty"`
+	Alternatives []ConnectionAlternative `json:"alternatives,omitempty"`
 }
 
 func (r ConnectionRecipe) Validate() error {

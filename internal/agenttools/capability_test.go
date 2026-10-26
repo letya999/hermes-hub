@@ -34,6 +34,18 @@ func TestRoutineDiscoveryExplainsSameDeterministicContract(t *testing.T) {
 	}
 }
 
+func TestExposureToolsInCatalog(t *testing.T) {
+	names := map[string]bool{}
+	for _, tool := range HubToolsDefinition().Tools {
+		names[tool.Name] = true
+	}
+	for _, want := range []string{"exposure_list", "exposure_status", "exposure_open", "exposure_close"} {
+		if !names[want] {
+			t.Fatal("catalog spec missing:", want)
+		}
+	}
+}
+
 func TestHubToolsDefinitionValidatesSandboxed(t *testing.T) {
 	d := HubToolsDefinition()
 	if err := d.Validate(); err != nil {

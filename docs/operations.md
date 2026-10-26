@@ -236,6 +236,80 @@ hub-toolhub; that listener serves only human-action paths (control/gateway
 configured origin exactly. `hubctl connector link --onboarding <id>` prints a
 pending URL; `--confirm` completes an awaiting-confirmation onboarding.
 
+## Outbound exposure (tunnels)
+
+Opt-in per environment: `features.exposure` + a reviewed
+`connections/exposure/config.yaml` (provider `sish`, pinned relay host keys,
+`zone`, `key_ref` file:/broker:, bounds, named endpoints). Render fails
+closed without a valid config; the config mounts read-only at
+`/state/exposure` and `HUB_EXPOSURE_CONFIG` is wired into the runtime env.
+`hubctl exposure enrol --dir <space>` materializes the relay keypair
+(file refs) or stages a broker grant (broker refs) and prints VPS enrolment
+steps — it never prints the private half.
+
+The agent gets `exposure_list/status/open/close` — name-only: bind,
+target and public name are composed by the hub from the reviewed config
+(`<endpoint>.<zone>.<relay.domain>`), never from tool arguments.
+`access: ro` keeps list/status and denies open/close. Every transition is
+audited (`audit/exposure.jsonl`); opens are capped by `max_exposures` and
+reaped at `lifetime_seconds` (background reaper; idle reap deferred until a
+provider-side traffic signal exists).
+
+`hub_public_listener` targets resolve through `HUB_PUBLIC_TARGET` —
+set it to toolhub's public-listener address (e.g. `HUB_PUBLIC_LISTEN=0.0.0.0:8091`
+on hub-toolhub plus `HUB_PUBLIC_TARGET=toolhub:8091` in `secrets.<env>.env`
+so it reaches the runtime env). It fronts the same restricted human-action
+surface as the public listener; it is not a second public surface. Live
+sish acceptance requires the operator VPS + domain and is tracked in
+CHG-0166.
+
+## Per-user DNS/TLS addressing
+
+Opt-in per environment: a reviewed `connections/dns/config.yaml` selects
+the profile — `provider` (`regru`, `digitalocean`, `gcloud`), `zone` (the
+DNS zone the provider API writes), `base` (public suffix for names),
+`credential_ref` (`file:` map or `broker:` grant; materialized per call,
+released after — never in argv/env/logs/ledger), plus quirks:
+`static_egress_ip` for pure reg.ru (REG.API requires a panel IP
+allowlist; the profile refuses to load without it — delegate
+`hub.<domain>` instead on dynamic IPs), `name_servers` for delegated
+profiles, `project`/`managed_zone` for gcloud.
+
+Supported profiles: pure reg.ru (zone on reg.ru NS, static-IP executor),
+pure DigitalOcean (whole zone on DO NS), reg.ru-parent + `hub.<domain>`
+delegated to GCP Cloud DNS or to DO nameservers. For delegated profiles
+`zone` is the parent domain, `base` is `hub.<domain>`; one-time bootstrap
+is the parent-side NS records, then `hubctl dns delegate-check` verifies
+live NS answers against `name_servers`.
+
+Commands (all `--dir` owner dir): `dns check` prints the profile without
+secrets; `dns ensure --ip <addr> <user>` writes the onboarding wildcard
+`A` record `*.<user>`; `dns remove --ip <addr> <user>` tears it down;
+`dns records` lists zone records; `dns cert --acme <dir-url> <user>`
+issues the per-user wildcard `*.<user>.<base>` over ACME DNS-01
+(`_acme-challenge` TXT via the same contract) into
+`connections/dns/certs/`; `dns push --alias <ssh-host> [--cert-dir
+<dir>] <user>` delivers `<user>.{crt,key}.pem` into the sish
+`--https-certificate-directory` over the reviewed `connections/ssh`
+capability (atomic SFTP write, audited `ssh` events).
+
+The `<user>` positional is bound, not free-form: it must equal the `zone`
+label in the space's reviewed `connections/exposure/config.yaml`, so one
+space's operator run cannot write or certify another user's names.
+Denials are audited (`dns` kind, outcome `denied`). Exposure open/close
+makes no DNS call — wildcard records and certs exist independently of
+tunnel lifecycle.
+
+TLS lifecycle: `dns cert` is the renewal driver — it skips issuance while
+the stored leaf has more than 30 days of validity and re-issues inside
+that window; a failed renewal keeps the live cert and appends a
+`renew-failed` audit event. The ACME account key is persisted once at
+`connections/dns/acme-account.key` (0600). Provider calls carry an
+explicit timeout (`dns.Options.Timeout`); propagation to the zone's own
+nameservers is polled by `dns.WaitAuthoritative` to a caller deadline.
+Live acceptance — a real domain per profile plus a deployed sish — is
+separate evidence and is not asserted from httptest fixtures.
+
 ## Broker operations
 
 Enablement env layout is in docs/integrations.md; provisioning detail per
@@ -585,3 +659,7 @@ Source-only verification never proves that a running image contains these
 changes. M16 local work does not build, deploy, restart or contact a real account;
 image/channel/provider acceptance must be recorded separately after an authorized
 rollout.
+
+## Site hosting
+
+Configure reviewed `hosting.slots` and exposure before render/doctor. Dynamic hosting requires an approved digest-pinned minimal image for the fixed go-http binary and explicit runsc/Kata; no runtime fallback. Preserve site and coordination volumes during recovery. See [hosting operations and recovery](services/hosting.md); native runtime/sish/browser checks are separate prerequisites.

@@ -54,6 +54,18 @@ func TestValidation(t *testing.T) {
 		t.Fatal("wildcard owner accepted")
 	}
 }
+func TestExposureFeatureRegistered(t *testing.T) {
+	found := false
+	for _, f := range Features {
+		if f.Name == "exposure" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("exposure feature flag missing")
+	}
+}
+
 func TestRenderAllFeatures(t *testing.T) {
 	d := t.TempDir()
 	root := t.TempDir()
@@ -65,7 +77,8 @@ func TestRenderAllFeatures(t *testing.T) {
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
-	writeSSHConfig(t, d) // the all-features render includes ssh; it fails closed without a config
+	writeSSHConfig(t, d)      // the all-features render includes ssh; it fails closed without a config
+	writeExposureConfig(t, d) // same contract for the exposure family
 	s, _ := Read(d)
 	s.Model = "test"
 	s.ModelURL = "http://host.docker.internal:8317/v1"
@@ -77,6 +90,15 @@ func TestRenderAllFeatures(t *testing.T) {
 		featureNames = append(featureNames, f.Name)
 	}
 	s.Tools, s.Ingress = testTools(featureNames...), testIngress(featureNames...)
+	s.Hosting = HostingSettings{Slots: []string{"site"}}
+	exposurePath := filepath.Join(d, "connections", "exposure", "config.yaml")
+	exposureBody, exposureErr := os.ReadFile(exposurePath)
+	if exposureErr != nil {
+		t.Fatal(exposureErr)
+	}
+	if err := os.WriteFile(exposurePath, []byte(strings.ReplaceAll(string(exposureBody), "zone: alice", "zone: me")), 0600); err != nil {
+		t.Fatal(err)
+	}
 	if err := saveSpace(d, s); err != nil {
 		t.Fatal(err)
 	}

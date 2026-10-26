@@ -41,6 +41,12 @@ func run(args []string) int {
 	}
 	var err error
 	switch args[1] {
+	case "site-relay":
+		err = siteRelay(os.Stdin, os.Stdout)
+	case "site-go":
+		err = siteGo(args[2:])
+	case "site-canary":
+		err = siteCanary()
 	case "pause":
 		err = pause()
 	case "write":
