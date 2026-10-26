@@ -268,12 +268,12 @@ func Serve(ctx context.Context, manager *Manager, listen string) error {
 	if manager.cfg.Decide != nil {
 		go manager.personalLoop(ctx)
 	}
+	sweepInterval := min(manager.cfg.WarmTTL/2, 5*time.Second)
+	if sweepInterval < time.Second {
+		sweepInterval = time.Second
+	}
 	go func() {
-		interval := min(manager.cfg.WarmTTL/2, 5*time.Second)
-		if interval < time.Second {
-			interval = time.Second
-		}
-		ticker := time.NewTicker(interval)
+		ticker := time.NewTicker(sweepInterval)
 		defer ticker.Stop()
 		for {
 			select {
@@ -281,6 +281,20 @@ func Serve(ctx context.Context, manager *Manager, listen string) error {
 				return
 			case now := <-ticker.C:
 				manager.sweep(ctx, now)
+			}
+		}
+	}()
+	go func() {
+		// Spawns and restarts dominate the 150s budget; on their own loop a
+		// slow Ensure can never delay health detection for the fleet.
+		ticker := time.NewTicker(sweepInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				manager.reconcileWork(ctx)
 			}
 		}
 	}()
@@ -498,12 +512,6 @@ func (m *Manager) sweep(ctx context.Context, now time.Time) {
 	m.ReapOrphans(sweepCtx)
 	m.ReconcileHealth(sweepCtx, now)
 	if sweepCtx.Err() == nil {
-		m.RecoverMissingWork(sweepCtx)
-	}
-	if sweepCtx.Err() == nil {
-		m.ReconcilePins(sweepCtx)
-	}
-	if sweepCtx.Err() == nil {
 		m.ExpireApprovals(sweepCtx, now)
 		m.reconcileUnconfirmed(sweepCtx, now)
 		m.ExpireUncertain(sweepCtx, now)
@@ -511,6 +519,15 @@ func (m *Manager) sweep(ctx context.Context, now time.Time) {
 	}
 	if sweepCtx.Err() == nil {
 		_ = m.Reap(sweepCtx, now)
+	}
+}
+
+func (m *Manager) reconcileWork(ctx context.Context) {
+	workCtx, cancel := context.WithTimeout(ctx, 150*time.Second)
+	defer cancel()
+	m.RecoverMissingWork(workCtx)
+	if workCtx.Err() == nil {
+		m.ReconcilePins(workCtx)
 	}
 }
 

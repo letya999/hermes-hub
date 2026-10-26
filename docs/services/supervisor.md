@@ -54,6 +54,11 @@ spaces dir at `/spaces`, project `config/` read-only, and the host
 - One bounded `docker stats --no-stream` call per watchdog sweep samples
   owned containers' CPU/memory; sweep cost is reported through
   `WatchdogMetrics` (in-memory counters).
+- The watchdog runs two loops on the same tick interval: a detection sweep
+  (orphans, health probes, lease/uncertain expiry, compaction, reap) and a
+  reconcile loop (spawn/recovery Ensure). A slow Ensure can never delay
+  crash/health detection for the rest of the fleet; each pass stays bounded
+  at 150s and per-runtime locks serialize remediation against Ensure.
 - `HUB_MAX_RUNTIMES_PER_PRINCIPAL` caps live runtimes one principal may own;
   unset means the global `MaxConcurrent` semaphore is the only cap.
 - Personal supervisor (#328): opt-in via `HUB_PERSONAL_MODEL` +
