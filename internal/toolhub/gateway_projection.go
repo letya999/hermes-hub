@@ -89,6 +89,14 @@ func (g *Gateway) addProjectedTool(server *mcp.Server, auth identity.Envelope, p
 		schema = tool.InputSchema
 	}
 	server.AddTool(&mcp.Tool{Name: name, Description: tool.Description, InputSchema: schema}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// Per-request correlation rides in the HTTP headers; the streamable
+		// session detaches the outer request context, so RequestExtra.Header
+		// is the only carrier that reaches the tool call itself.
+		if extra := request.GetExtra(); extra != nil && extra.Header != nil {
+			if corr := api.HeaderCorrelation(extra.Header.Get(api.HeaderJobID), extra.Header.Get(api.HeaderRunID)); corr.JobID != "" || corr.HermesRunID != "" {
+				ctx = api.WithCallCorrelation(ctx, corr)
+			}
+		}
 		arguments := map[string]any{}
 		if len(request.Params.Arguments) > 0 {
 			if err := json.Unmarshal(request.Params.Arguments, &arguments); err != nil {

@@ -205,7 +205,13 @@ func (m *Manager) finishJobGenerationLocked(request hubruntime.ExecuteRequest, r
 					entry.State, entry.IdleDeadline = Idle, m.cfg.Now().Add(m.cfg.WarmTTL)
 				}
 			}
-			if status == "uncertain" {
+			// Wedge budget: count each distinct unconfirmed outcome once — a
+			// fresh uncertain transition, or a run.timeout naming, which is
+			// itself an outcome the runtime never confirmed. A terminal event
+			// actually observed from the runtime is the only reset.
+			unconfirmed := (status == "uncertain" && previous.Status != "uncertain") ||
+				(response.LastEvent == "run.timeout" && previous.Response.LastEvent != "run.timeout")
+			if unconfirmed {
 				entry.consecutiveUncertain++
 			} else if terminalRunStatus(status) {
 				entry.consecutiveUncertain = 0

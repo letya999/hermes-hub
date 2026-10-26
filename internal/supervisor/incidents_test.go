@@ -252,6 +252,45 @@ func TestManagedTimeoutOneIncident(t *testing.T) {
 	}
 }
 
+// An outcome that never confirmed inside its run budget is named failed —
+// but nothing about the runtime was verified healthy in doing so. The wedge
+// budget counts timeouts as unconfirmed outcomes; otherwise an
+// unresponsive-but-running runtime could never reach remediation, because
+// the timeout itself would zero the counter that gated it.
+func TestTimeoutCountsTowardWedgeBudget(t *testing.T) {
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	b := binding(root)
+	runtime, err := m.Ensure(context.Background(), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", "policy-1"), JobID: "timeout-wedge", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", IdempotencyKey: "timeout-wedge", Text: "work"}
+	if _, _, err := m.beginJob(request); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.bindJobGeneration(request, runtime.Generation); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	record := m.jobs[request.JobID]
+	record.Status, record.Phase, record.Unconfirmed = "uncertain", phaseRunning, true
+	record.UnconfirmedSince = m.cfg.Now().Add(-2 * hubruntime.RunBudget())
+	m.jobs[request.JobID] = record
+	m.mu.Unlock()
+	m.reconcileUnconfirmed(context.Background(), m.cfg.Now())
+	m.mu.Lock()
+	got := m.items[runtimeKey(b)].consecutiveUncertain
+	m.mu.Unlock()
+	if got < 1 {
+		t.Fatalf("timeout naming reset the wedge budget: consecutiveUncertain=%d", got)
+	}
+}
+
 // The watchdog samples host resource counters once per sweep for every owned
 // runtime — a single bounded call, never a per-container stream — and exposes
 // its own overhead as metrics so supervision cost stays measurable.
