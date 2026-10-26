@@ -265,14 +265,21 @@ func Serve(ctx context.Context, manager *Manager, listen string) error {
 		}
 	}
 	server := &http.Server{Addr: listen, Handler: diagnostics.HTTP("supervisor", manager.Handler()), ReadHeaderTimeout: 5 * time.Second, MaxHeaderBytes: 64 * 1024}
+	var loops sync.WaitGroup
 	if manager.cfg.Decide != nil {
-		go manager.personalLoop(ctx)
+		loops.Add(1)
+		go func() {
+			defer loops.Done()
+			manager.personalLoop(ctx)
+		}()
 	}
 	sweepInterval := min(manager.cfg.WarmTTL/2, 5*time.Second)
 	if sweepInterval < time.Second {
 		sweepInterval = time.Second
 	}
+	loops.Add(1)
 	go func() {
+		defer loops.Done()
 		ticker := time.NewTicker(sweepInterval)
 		defer ticker.Stop()
 		for {
@@ -284,7 +291,9 @@ func Serve(ctx context.Context, manager *Manager, listen string) error {
 			}
 		}
 	}()
+	loops.Add(1)
 	go func() {
+		defer loops.Done()
 		// Spawns and restarts dominate the 150s budget; on their own loop a
 		// slow Ensure can never delay health detection for the fleet.
 		ticker := time.NewTicker(sweepInterval)
@@ -307,6 +316,9 @@ func Serve(ctx context.Context, manager *Manager, listen string) error {
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
+	// Do not report the service stopped while an in-flight pass may still
+	// write spool/control state underneath a shutting-down caller.
+	loops.Wait()
 	return nil
 }
 
