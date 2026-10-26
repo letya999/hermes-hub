@@ -194,6 +194,35 @@ type RecipeResolution struct {
 	Ledger []LedgerEntry `json:"ledger,omitempty"`
 }
 
+// CloneResolution returns a deep copy of a resolution's mutable surface.
+// Resolutions are content-addressed in the store, but the resolver mutates
+// field slices in place — provenance stamping on fields and alternative
+// fields, merge/overlay compaction and appends, ledger rewrites, in-place
+// warning sorts — so a struct copy that keeps sharing those backing arrays
+// would corrupt the stored recipe under its already-computed digest.
+func CloneResolution(r RecipeResolution) RecipeResolution {
+	r.Connection.Fields = slices.Clone(r.Connection.Fields)
+	r.Connection.Alternatives = slices.Clone(r.Connection.Alternatives)
+	for i := range r.Connection.Alternatives {
+		r.Connection.Alternatives[i].Fields = slices.Clone(r.Connection.Alternatives[i].Fields)
+	}
+	r.Ledger = slices.Clone(r.Ledger)
+	for i := range r.Ledger {
+		r.Ledger[i].Claim.Required = cloneBool(r.Ledger[i].Claim.Required)
+		r.Ledger[i].Claim.Secret = cloneBool(r.Ledger[i].Claim.Secret)
+	}
+	r.Warnings = slices.Clone(r.Warnings)
+	return r
+}
+
+func cloneBool(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
 // ResolutionDigest content-addresses a resolution: the same claims, warnings
 // and evidence always encode to the same bytes, so the digest deduplicates.
 func ResolutionDigest(resolution RecipeResolution) (string, error) {
