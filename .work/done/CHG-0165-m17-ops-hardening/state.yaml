@@ -1,7 +1,7 @@
 schema: 1
 change: CHG-0165
 title: M17 ops hardening — notices, sweep split, bounded retention
-status: in_progress
+status: done
 branch: feat/m17-dev-merge
 updated: 2026-10-26
 phase: acceptance
@@ -12,26 +12,30 @@ depends_on: [CHG-0164]
 github_milestone: M17 — Ops, Admin & Delivery
 github_issues: [354]
 design_status: accepted
-implementation_status: in_progress
+implementation_status: complete
 slices:
-  S1-undeliverable-ack: accepted
-  S2-sweep-split: accepted
-  S3-bounded-retention: in_progress
-  S4-onboarding-runbook: green
+  S1-undeliverable-ack: done
+  S2-sweep-split: done
+  S3-bounded-retention: done
+  S4-onboarding-runbook: done
   S5-watcher-gap-issue: done
 validation:
-  documents: pending
-  just_check: not_run
+  documents: passed
+  just_check: passed_2026_10_26
   docker_check: not_run_image_lane
   red_team: not_started
-  live_acceptance: partial_2026_10_26
+  live_acceptance: passed_2026_10_26
 evidence:
   - "dad3cfb ack undeliverable hold notices; live: hold on channel-less principal cleared notice_pending in ~3s, zero outbox entries"
   - "821e56f sweep split; live: kill detected <=5s during active pin reconcile, runtime restarted ~32s later"
+  - "5ee2412 graceful Serve drain; race suite green (was TempDir cleanup flake)"
+  - "18e3f32 bounded retention; live: 238 MiB -> 113 MiB, ~20k hot files -> ~600 + 7 valid gzip bundles, hold polls ~1/10s"
+  - "just check 2026-10-26: tests all green, coverage 86.59%, format/vet/tidy/staticcheck/gosec/docs/actionlint/deploy-contract pass"
+  - "soak: 7 synthetic runtimes idle ~548-620 MiB each under 2 GiB limits, crash counters low, spool bounded"
   - "issue #354 filed for metric anomaly watchers (latency/5xx/sessions/CPU-RAM thresholds)"
-remaining:
-  - "retention: full just check + commit"
-  - "soak fleet observation (memory/crash counters/disk growth)"
+remaining: []
 limitations:
   - "archive bundles are append-per-day gzip members; reading requires gzip -d over concatenated streams"
   - "usage.jsonl all-time totals now cover the live window; older records live in archive/ bundles"
+  - "image/containers CI lanes run on push, not locally"
+  - "metric-anomaly watchers (latency/5xx/session thresholds) are follow-up issue #354, not in M17 scope"

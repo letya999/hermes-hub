@@ -16,7 +16,6 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
-| [CHG-0165](in-progress/CHG-0165-m17-ops-hardening/plan.md) | M17 ops hardening: undeliverable-notice ack, sweep split, bounded retention + gzip archive, onboarding runbook; watcher gap → #354 |
 | [CHG-0162](in-progress/CHG-0162-goal-mode-engines/plan.md) | #311 persistent /goal mode — dual engine, judge modes (design proposed, implementation not started) |
 | [CHG-0156](in-progress/CHG-0156-goal-bootstrap/plan.md) | M16 #213: goal-bootstrap; live acceptance pending |
 | [CHG-0151](in-progress/CHG-0151-archive-bounds/plan.md) | M16 #151: archive-bounds; live acceptance pending |
@@ -47,6 +46,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0165](done/CHG-0165-m17-ops-hardening/plan.md) | Done 2026-10-26: M17 ops hardening — undeliverable-notice ack, detection/reconcile sweep split, graceful Serve drain, bounded spool retention (72h + count/byte caps + gzip archive) + usage/signal journal bounds + holds-poll backoff, onboarding runbook; live-verified on dev hub; metric watchers → #354; coverage 86.59% |
 | [CHG-0164](done/CHG-0164-m17-code-closeout/plan.md) | Done 2026-10-26: M17 closeout — #326 watchdog/owned lifecycle, #327 budgets/fair admission, #328 event-driven personal supervisor, #329 hold-gate fix, #142 SSH CA minting; live Docker canaries pass; all M17 issues closed; coverage 86.24% |
 | [CHG-0153](done/CHG-0153-incident-replay/plan.md) | Issue #206: `hubctl replay export` sanitized bundle (digest-verified prompt for sensitive jobs) + `replay run` on an isolated spool with channel forced to mock + divergence line (SPEC-0076 R6) |
 | [CHG-0152](done/CHG-0152-admin-diagnostics/plan.md) | Issue #141: `scopes:["admin"]` on enrolled bearers, serialized + paced `/v1/admin/onboardings|diagnose|inspect-source`, audit-tagged; capability fields never leave (SPEC-0076 R5) |
