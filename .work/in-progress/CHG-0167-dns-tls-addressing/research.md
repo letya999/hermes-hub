@@ -1,7 +1,7 @@
 # Research: DNS/TLS addressing layer (issue #146)
 
 Date: 2026-10-25. Scope: provider-neutral DNS record contract over the four
-mandated profiles, plus the TLS fork ADR-0077 D6 handed down. Feeds ADR-0078.
+mandated profiles, plus the TLS fork ADR-0079 D6 handed down. Feeds ADR-0080.
 
 ## DNS provider matrix
 
@@ -36,7 +36,7 @@ subzone, managed zones).
   deadline. ACME's own remote validation is the real DNS-01 gate; the
   pre-check exists to fail fast and to report honestly.
 
-## TLS fork (input from ADR-0077 D6)
+## TLS fork (input from ADR-0079 D6)
 
 sish terminates TLS on the operator VPS. Its cert handling: certmagic
 on-demand ACME (`--https-ondemand-certificate-email`, TLS-ALPN-01/HTTP-01
@@ -64,7 +64,7 @@ Options weighed:
   `digitalocean`, `gcloud` providers if a fallback is ever wanted).
   Cert+key travel once per renewal over the existing SSH channel to the
   VPS cert directory; the VPS holds zero provider credentials. Selected.
-- **Hub-terminated TLS.** Rejected — reopens ADR-0077 D6 and puts public
+- **Hub-terminated TLS.** Rejected — reopens ADR-0079 D6 and puts public
   plaintext in the hub process for no gain.
 
 Wildcard depth: `*.hub.<domain>` covers one label only. Issue naming
@@ -114,9 +114,9 @@ tool results, logs or ledger DTOs.
    reviewed space config; a request for an unbound label fails closed.
 4. sish side: `--banned-subdomains` + hub-composed bind names keep the
    relay from serving unallocated names; sish-level name claims outside a
-   user's zone were already a hub responsibility (ADR-0077 D4).
+   user's zone were already a hub responsibility (ADR-0079 D4).
 
-## Decision summary (in ADR-0078)
+## Decision summary (in ADR-0080)
 
 Provider-neutral record contract over four profiles; delegated `hub.<domain>`
 zones preferred (scoped creds, no IP allowlist); regru-direct valid only

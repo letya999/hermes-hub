@@ -2,7 +2,7 @@
 description: Accepted user-scoped static and dynamic hosting behind exposure endpoints, isolated admitted workloads, bounded snapshots and revocable artifact share links.
 last_verified: 2026-10-26
 ---
-# ADR-0079: User-scoped site hosting
+# ADR-0081: User-scoped site hosting
 
 Status: Accepted 2026-10-26 — owner accepted the researched hosting direction
 after the Haloy source review and directed the ADR/SPEC/CHG/state transition
@@ -14,7 +14,7 @@ Expanded evidence:
 (Context7, upstream code, provider architecture and community field reports).
 Pinned source follow-up:
 [Haloy review](../../.work/done/CHG-0169-site-hosting-design/haloy-review.md).
-Consumes ADR-0077/SPEC-0075 and ADR-0078/SPEC-0076.
+Consumes ADR-0079/SPEC-0077 and ADR-0080/SPEC-0078.
 
 ## Context
 
@@ -23,7 +23,7 @@ that survive the chat. Existing exposure declares endpoint targets; DNS supplies
 `<site>.<user>.<base>` and per-user wildcard TLS at sish. The base is normally
 `hub.<domain>`; hosting never invents another suffix or performs per-site DNS.
 Current exposure runs in Hermes and keeps live state in memory. Its in-process
-SSH implementation differs from ADR-0077's admitted workload framing, and live
+SSH implementation differs from ADR-0079's admitted workload framing, and live
 sish acceptance remains pending. Hosting cannot inherit chat lifetime or assert
 that these target guarantees have already been demonstrated.
 
@@ -42,7 +42,7 @@ that these target guarantees have already been demonstrated.
   or proxies to one admitted dynamic site through an isolated per-site relay.
   Its private authenticated control listener is never an exposure target.
   sish retains TLS termination. This explicitly adds an application web tier
-  behind the primitive, qualifying ADR-0077 D1 without changing its ban on
+  behind the primitive, qualifying ADR-0079 D1 without changing its ban on
   exposing hub control/gateway surfaces.
 - **D3 — Exposure composition.** A published slot reserves one named endpoint
   under the bound zone. Trusted hosting reconciliation creates a restricted
@@ -107,7 +107,7 @@ that these target guarantees have already been demonstrated.
   Revoke prevents new server reads, not use of bytes already downloaded.
 - **D9 — Budgets and audit.** Trusted policy bounds storage/sites/CPU/RAM,
   publish/serve rates and lifetime; users only narrow it. Contract defaults
-  and acceptance boundaries are in SPEC-0077. MVP has one writer/replica per
+  and acceptance boundaries are in SPEC-0079. MVP has one writer/replica per
   user/env; CLI and agent submit through its private API. An exclusive store
   lock fences competing processes; no distributed store/counters. Serialize
   quota and revision changes, reserve overlap during replacement. Emit safe
@@ -169,7 +169,7 @@ Defines a Go hosting service and a persistent workload class for implementation;
 optional app images stay outside the base image. No new framework, database or
 queue. No upstream Hermes patch. Browser origin boundaries, network isolation,
 resource limits and relay behavior need real executor/sish evidence. Existing
-DNS/TLS fixtures are not proof of live addressing. SPEC-0077 is frozen with
+DNS/TLS fixtures are not proof of live addressing. SPEC-0079 is frozen with
 this acceptance. Implementation is split into CHG-0170 (store), CHG-0171
 (serving/access), CHG-0172 (static delivery), CHG-0173 (dynamic admission)
 and CHG-0174 (acceptance). No Haloy dependency, new database or queue.
@@ -183,4 +183,4 @@ release carries a workspace-built static Linux ELF at the fixed name `app`;
 the admitted PID1 executes `/work/app`, which listens on `127.0.0.1:8080`.
 Dropping the interpreter removes a second runtime class and its image/env
 surface for zero contract gain; all other D11 boundaries are unchanged.
-SPEC-0077 carries the same amendment.
+SPEC-0079 carries the same amendment.

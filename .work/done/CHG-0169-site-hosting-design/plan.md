@@ -1,7 +1,7 @@
 # CHG-0169: User-scoped hosting design pass (M18 #147)
 
-Chain: research.md → [ADR-0079](../../../docs/adr/ADR-0079-user-scoped-site-hosting.md)
-(Accepted) → [SPEC-0077](../../../specs/active/SPEC-0077-user-scoped-site-hosting.md)
+Chain: research.md → [ADR-0081](../../../docs/adr/ADR-0081-user-scoped-site-hosting.md)
+(Accepted) → [SPEC-0079](../../../specs/active/SPEC-0079-user-scoped-site-hosting.md)
 (Frozen) → this completed design plan → state.yaml → CHG-0170–0174.
 Expanded source comparison: [ecosystem-research.md](ecosystem-research.md).
 Pinned Haloy architecture/adoption review: [haloy-review.md](haloy-review.md).
@@ -10,7 +10,7 @@ Base `5c19f3e`; worktree `hermes-hub-m18-hosting`; branch `feat/m18-exposure-hos
 ## Goal / scope
 
 Resolve dynamic isolation, serving/access, storage, budgets and lifecycle before
-code. Read ADR-0077/0078, SPEC-0075/0076 and CHG-0165–0168 first. Keep their
+code. Read ADR-0079/0078, SPEC-0077/0076 and CHG-0177–0168 first. Keep their
 accepted records immutable and their pending live evidence explicit.
 Initial pass changed only research/ADR/SPEC/CHG and indexes. On 2026-10-26 the
 owner accepted the researched direction and requested the current issue be
@@ -28,9 +28,9 @@ or runtime changes belong to this design CHG.
    Haloy follow-up completed: clone at pinned commit, critical-path source
    review, selected unit/race tests and static scan. Prefer existing controller
    extension; no unmodified adapter or lifecycle fork, no code extraction yet.
-2. ADR-0079 accepted after owner review: admitted site workload, per-user Go web tier, immutable
+2. ADR-0081 accepted after owner review: admitted site workload, per-user Go web tier, immutable
    volume snapshots, expiring revocable bearer links, explicit public mode.
-3. SPEC-0077 frozen after acceptance: identity, agent surface, transaction/recovery,
+3. SPEC-0079 frozen after acceptance: identity, agent surface, transaction/recovery,
    isolation, budget defaults and A1–A11 acceptance design.
 4. Synchronize indexes, run docs gate and `just check`; record unavailable gates
    honestly. Design complete; move this CHG to done, leave implementation and

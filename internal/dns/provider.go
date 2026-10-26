@@ -6,7 +6,7 @@ import (
 )
 
 // Options tunes provider construction; BaseURL overrides the API endpoint
-// in tests. Timeout caps each provider HTTP call (SPEC-0076 R8 bounds).
+// in tests. Timeout caps each provider HTTP call (SPEC-0078 R8 bounds).
 type Options struct {
 	HTTPClient *http.Client
 	BaseURL    string

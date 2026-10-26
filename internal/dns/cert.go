@@ -19,7 +19,7 @@ import (
 )
 
 // Store keeps issued cert/key pairs as 0600 files under a control-home
-// directory (SPEC-0076 R7).
+// directory (SPEC-0078 R7).
 type Store struct{ Dir string }
 
 func (s *Store) paths(user string) (cert, key string) {
@@ -80,7 +80,7 @@ func (s *Store) Expiry(user string) (time.Time, error) {
 }
 
 // Issuer runs ACME DNS-01 for per-user wildcard certificates through the
-// configured record provider (SPEC-0076 R5).
+// configured record provider (SPEC-0078 R5).
 type Issuer struct {
 	Dir      string
 	Key      *ecdsa.PrivateKey

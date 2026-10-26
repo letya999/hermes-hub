@@ -5,8 +5,8 @@ status: in_progress
 branch: feat/m18-exposure-hosting
 updated: 2026-10-26
 phase: implementation
-adr: ADR-0079
-spec: SPEC-0077
+adr: ADR-0081
+spec: SPEC-0079
 requirements: [R5, R6, R9, R10]
 depends_on: [CHG-0170]
 github_milestone: M18

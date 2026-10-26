@@ -217,8 +217,8 @@ snapshot/hash/reconcile/readiness; готовый код пока не извл�
 на deployment-хосте; чужие цифры не превращены в обещания для hub.
 Не проверены runsc/Kata на текущем executor и их tmpfs/inode/network поведение.
 Не доказаны sish hostname claims/Host preservation, browser share handshake,
-или живой publish/unpublish. Новые proposed решения остаются в ADR-0079,
-на момент исследования SPEC-0077 была Draft. Обновление 2026-10-26: владелец
-принял направление, ADR-0079 Accepted, SPEC-0077 Frozen; implementation
+или живой publish/unpublish. Новые proposed решения остаются в ADR-0081,
+на момент исследования SPEC-0079 была Draft. Обновление 2026-10-26: владелец
+принял направление, ADR-0081 Accepted, SPEC-0079 Frozen; implementation
 CHG-0170–0174 выделены с отдельными plan/state. Исполнение и live evidence
 не становятся завершёнными от принятия дизайна.

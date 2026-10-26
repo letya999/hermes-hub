@@ -54,7 +54,7 @@ func (c *Config) validate() error {
 	}
 	switch c.Provider {
 	case "regru":
-		// REG.API mandates a panel IP allowlist (SPEC-0076 R6): without a
+		// REG.API mandates a panel IP allowlist (SPEC-0078 R6): without a
 		// declared static egress IP the profile is unreachable — fail closed.
 		if net.ParseIP(c.StaticEgressIP) == nil {
 			return ErrDenied

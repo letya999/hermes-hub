@@ -5,11 +5,11 @@ status: in_progress
 branch: feat/m18-exposure-dns
 updated: 2026-10-25
 phase: design-complete
-adr: ADR-0078
-spec: SPEC-0076
+adr: ADR-0080
+spec: SPEC-0078
 requirements: []
 depends_on:
-  - CHG-0165
+  - CHG-0177
   - CHG-0166
 github_milestone: M18
 github_issue: 146
@@ -28,7 +28,7 @@ validation:
   live_acceptance: not_started
 evidence:
   - research.md provider matrix (regru/DO/GCP), REG.API IP-allowlist and TTL findings, TLS fork analysis
-  - ADR-0078 proposed: delegated hub.<domain> reference, per-user wildcard via hub-side DNS-01 to sish
+  - ADR-0080 proposed: delegated hub.<domain> reference, per-user wildcard via hub-side DNS-01 to sish
 remaining:
   - implementation CHG-0168 slices
 limitations:

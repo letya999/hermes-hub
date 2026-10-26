@@ -1,6 +1,6 @@
 # CHG-0168: Per-user DNS/TLS implementation (M18, issue #146)
 
-Chain: ADR-0078 (accepted) -> SPEC-0076 (frozen) -> this plan -> `state.yaml`.
+Chain: ADR-0080 (accepted) -> SPEC-0078 (frozen) -> this plan -> `state.yaml`.
 
 ## Goal
 
@@ -33,7 +33,7 @@ exposure render path, `dns` audit events.
 
 ## Acceptance
 
-SPEC-0076 A1..A8 — real Go boundaries, shared contract tests, docs,
+SPEC-0078 A1..A8 — real Go boundaries, shared contract tests, docs,
 local gate. Live acceptance per profile is separate evidence.
 
 ## Out of scope

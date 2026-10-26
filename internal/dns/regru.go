@@ -98,7 +98,7 @@ func (c *regruClient) Ensure(ctx context.Context, rec Record) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	// REG.API has no per-record TTL — report the zone SOA TTL (SPEC-0076 R1).
+	// REG.API has no per-record TTL — report the zone SOA TTL (SPEC-0078 R1).
 	res := Result{Record: rec}
 	if recs, lerr := c.listRR(ctx); lerr == nil {
 		for _, rr := range recs {

@@ -13,7 +13,7 @@ import (
 )
 
 // Resolver turns a credential_ref into a materialized key map for one
-// operation (SPEC-0076 R3).
+// operation (SPEC-0078 R3).
 type Resolver struct {
 	Root   fs.FS
 	Auth   identity.Envelope

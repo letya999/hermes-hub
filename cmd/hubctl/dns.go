@@ -21,7 +21,7 @@ import (
 )
 
 // runDNS implements `hubctl dns <check|ensure|remove|records|cert|push|delegate-check>` — the operator surface
-// of the per-user addressing layer (SPEC-0076). DNS credentials resolve
+// of the per-user addressing layer (SPEC-0078). DNS credentials resolve
 // through Resolver per call; nothing secret reaches stdout.
 func runDNS(ctx context.Context, args []string) error {
 	f := flag.NewFlagSet("dns", flag.ContinueOnError)
@@ -193,7 +193,7 @@ func runDNS(ctx context.Context, args []string) error {
 	return fmt.Errorf("unknown dns subcommand %q", args[0])
 }
 
-// boundZone enforces SPEC-0076 R4: <user> must equal the zone label bound in
+// boundZone enforces SPEC-0078 R4: <user> must equal the zone label bound in
 // the space's reviewed exposure config. Missing config = unbound = denied.
 func boundZone(dir, user string) error {
 	ecfg, err := exposure.Load(filepath.Join(dir, "connections", "exposure", "config.yaml"))

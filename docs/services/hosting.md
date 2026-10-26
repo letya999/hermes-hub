@@ -7,8 +7,8 @@ last_verified: 2026-10-26
 The opt-in `hosting` feature adds a Go web/publishing service independent of
 Hermes. Source: `internal/hosting`, `internal/stack/hosting.go`,
 `internal/agenttools/hosting.go`, and the hosting-only ToolHub controller.
-Decision: [ADR-0079](../adr/ADR-0079-user-scoped-site-hosting.md); requirements:
-[SPEC-0077](../../specs/active/SPEC-0077-user-scoped-site-hosting.md).
+Decision: [ADR-0081](../adr/ADR-0081-user-scoped-site-hosting.md); requirements:
+[SPEC-0079](../../specs/active/SPEC-0079-user-scoped-site-hosting.md).
 The implementation has offline contract tests; native runtime, browser and
 sish acceptance remain separate deployment prerequisites. Do not interpret
 rendered Compose or inspect fixtures as proof of isolation.

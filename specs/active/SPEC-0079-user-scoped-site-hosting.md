@@ -2,11 +2,11 @@
 description: Frozen acceptance contract for user-scoped static and dynamic sites, isolated workloads, bounded storage, lifecycle and artifact share links.
 last_verified: 2026-10-26
 ---
-# SPEC-0077: User-scoped site hosting
+# SPEC-0079: User-scoped site hosting
 
-Frozen: 2026-10-26. Decision: ADR-0079 Accepted.
+Frozen: 2026-10-26. Decision: ADR-0081 Accepted.
 Amended 2026-10-26: the MVP-D profile is `go-http` — a workspace-built static
-Linux ELF at `app` run on `127.0.0.1:8080` — per the ADR-0079 amendment;
+Linux ELF at `app` run on `127.0.0.1:8080` — per the ADR-0081 amendment;
 `python-http` wording below is superseded, all other requirements unchanged.
 Design: CHG-0169; implementation: CHG-0170–0174; issue #147 (M18).
 Requirements below define the accepted target, not current behavior.
@@ -76,7 +76,7 @@ no Haloy deployment stack or lifecycle fork is selected.
   Static GET/HEAD only, disable listings/dotfiles/traversal; dynamic routes
   only to the admitted revision through a per-site restricted relay.
   Redirects never use untrusted Host; no generic forward proxy or HTTP CONNECT.
-- **R6 Access / browser.** Link mode implements ADR-0079 D7: >=256-bit opaque
+- **R6 Access / browser.** Link mode implements ADR-0081 D7: >=256-bit opaque
   secret, hash at rest, owner/site/revision/epoch/expiry binding, fragment
   bootstrap with POST exchange, host-only Secure HttpOnly `__Host-` cookie,
   no-referrer and no-store for bootstrap/access responses. Clear fragment

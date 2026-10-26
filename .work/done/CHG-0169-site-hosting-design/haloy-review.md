@@ -33,7 +33,7 @@ operations, deployment/history, discovery/updater/events, healthcheck,
 certificates, proxy/router/transports, control socket/snapshot/reconcile,
 logging/storage, тесты этих границ и CI. Не каждый из 136 production-файлов
 проанализирован одинаково построчно; глубина сосредоточена на путях,
-которые определяют совместимость с SPEC-0077.
+которые определяют совместимость с SPEC-0079.
 
 Инвентаризация: 136 production Go files, 22 429 физических строк вместе с
 комментариями/пустыми строками; 69 test files, 15 755 физических строк.
@@ -52,7 +52,7 @@ fork или extraction, а не просто `go get`.
 
 ## Сопоставление с requirements
 
-| SPEC-0077 | Что даёт Haloy | Что остаётся у нас / конфликт |
+| SPEC-0079 | Что даёт Haloy | Что остаётся у нас / конфликт |
 |---|---|---|
 | R1 identity | Один bearer token daemon-admin, app names | Trusted owner/env/zone, per-user namespace и cross-user authorization отсутствуют |
 | R2 tools | Deploy/list/stop/logs/exec API и CLI | Name-only agent surface, strict manifest, idempotency/revision и безопасные DTO нужны отдельно |
@@ -310,7 +310,7 @@ Diagnostic logs находятся только в ignored `.work/tmp/` task wor
 
 ## Последствие для ADR/SPEC
 
-На момент завершения source review ADR-0079 был Proposed, SPEC-0077 Draft.
+На момент завершения source review ADR-0081 был Proposed, SPEC-0079 Draft.
 Обновление по принятому владельцем решению 2026-10-26: ADR Accepted,
 SPEC Frozen; реализация выделена в CHG-0170–0174. Предыдущий открытый вопрос
 «restricted Haloy adapter или расширение нашего controller» закрыт этим

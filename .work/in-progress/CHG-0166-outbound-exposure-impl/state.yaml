@@ -8,13 +8,13 @@ phase: implementation
 slices_note: >-
   S1/S2/S3/S5 done and green; stack wiring (feature flag, ro mount, env,
   doctor, fail-closed render) done. sish provider is an in-process x/crypto/ssh
-  remote-forward client — deviation from ADR-0077 D2's docker-workload framing,
+  remote-forward client — deviation from ADR-0079 D2's docker-workload framing,
   chosen for ponytail (no new image, no admission machinery); documented in
   limitations. S6 live acceptance still pending a real VPS+domain.
-adr: ADR-0077
-spec: SPEC-0075
+adr: ADR-0079
+spec: SPEC-0077
 requirements: [R1, R2, R3, R4, R5, R6, R7, R8]
-depends_on: [CHG-0165]
+depends_on: [CHG-0177]
 github_milestone: M18
 github_issue: 145
 design_status: accepted
@@ -40,7 +40,7 @@ remaining:
 limitations:
   - >-
     Tunnel workload runs in-process (x/crypto/ssh client inside
-    hermes-runtime), not as a separate admitted container: ADR-0077 D2
+    hermes-runtime), not as a separate admitted container: ADR-0079 D2
     framed a per-binding docker workload; the in-process provider removes a
     whole image/admission path but concentrates the outbound connect on the
     runtime. Egress reachability is not admission-bounded — the provider

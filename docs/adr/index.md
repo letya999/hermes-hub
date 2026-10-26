@@ -6,10 +6,10 @@ last_verified: 2026-10-26
 
 | Record | Decision |
 |---|---|
-| [ADR-0079](ADR-0079-user-scoped-site-hosting.md) | Accepted: user-scoped hosting over existing controller/ToolHub and sish/DNS; static-first, isolated dynamic profile, revocable artifact links; no Haloy fork (M18 #147) |
-| [ADR-0078](ADR-0078-per-user-dns-tls.md) | Accepted: per-user subdomains — provider-neutral DNS record contract over regru/DO/delegated GCP+DO profiles, hub-issued per-user wildcard via DNS-01 pushed to sish |
-| [ADR-0077](ADR-0077-outbound-exposure.md) | Accepted: named public endpoints over opt-in per-binding tunnel workloads — sish reference provider, cloudflared managed alternate; Broker credentials, name-only agent surface |
-| [ADR-0076](ADR-0076-auth-first-admission-contract.md) | Proposed: built-evidence reuse on auth-first credential retry; `interactive` recipe marker classifies unsupported interactive auth |
+| [ADR-0081](ADR-0081-user-scoped-site-hosting.md) | Accepted: user-scoped hosting over existing controller/ToolHub and sish/DNS; static-first, isolated dynamic profile, revocable artifact links; no Haloy fork (M18 #147) |
+| [ADR-0080](ADR-0080-per-user-dns-tls.md) | Accepted: per-user subdomains — provider-neutral DNS record contract over regru/DO/delegated GCP+DO profiles, hub-issued per-user wildcard via DNS-01 pushed to sish |
+| [ADR-0079](ADR-0079-outbound-exposure.md) | Accepted: named public endpoints over opt-in per-binding tunnel workloads — sish reference provider, cloudflared managed alternate; Broker credentials, name-only agent surface |
+| [ADR-0078](ADR-0078-auth-first-admission-contract.md) | Proposed: built-evidence reuse on auth-first credential retry; `interactive` recipe marker classifies unsupported interactive auth |
 | [ADR-0075](ADR-0075-dual-engine-context-control.md) | Proposed: grant-selected dual engines for manual/automatic compaction and goal mode; sidecar transport to pinned upstream primitives |
 | [ADR-0074](ADR-0074-session-runtime-discipline.md) | Session & runtime discipline: group scopes, knowledge lifecycle, stable session identity with runaway token ceiling, memory boundary, todo contract, idle-proof, goal bootstrap, archive bounds (renumbered from a duplicate ADR-0072) |
 | [ADR-0073](ADR-0073-model-provider-boundaries.md) | Model & provider layer boundaries (renumbered from a duplicate ADR-0072) |

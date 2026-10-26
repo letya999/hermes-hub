@@ -1,5 +1,5 @@
 // Package dns implements the provider-neutral record contract for the
-// per-user addressing layer (ADR-0078/SPEC-0076). Control-plane only.
+// per-user addressing layer (ADR-0080/SPEC-0078). Control-plane only.
 package dns
 
 import (

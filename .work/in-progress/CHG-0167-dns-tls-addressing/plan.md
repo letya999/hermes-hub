@@ -1,8 +1,8 @@
 # CHG-0167: Per-user subdomains — DNS/TLS addressing design pass (M18, issue #146)
 
-Chain: `docs/adr/ADR-0078-per-user-dns-tls.md` -> `specs/active/SPEC-0076-*` (after ADR acceptance)
+Chain: `docs/adr/ADR-0080-per-user-dns-tls.md` -> `specs/active/SPEC-0078-*` (after ADR acceptance)
 -> this plan -> `state.yaml`. Evidence: `research.md`.
-Consumes: ADR-0077/SPEC-0075 (#145). Blocks: #147 hosting layer.
+Consumes: ADR-0079/SPEC-0077 (#145). Blocks: #147 hosting layer.
 
 ## Goal
 
@@ -13,7 +13,7 @@ cross-user naming.
 
 ## Read before coding
 
-1. AGENTS.md, docs/adr/ADR-0077 (D4/D6), specs/active/SPEC-0075,
+1. AGENTS.md, docs/adr/ADR-0079 (D4/D6), specs/active/SPEC-0077,
    internal/exposure/{config,sish,enrol}.go (zone label, key_ref, SSH
    channel), internal/credentialbroker/client.go (`NewForBinding`),
    internal/sshcap/ (exec/files for VPS delivery).
@@ -22,7 +22,7 @@ cross-user naming.
 ## Preconditions and rules
 
 - Design pass only in this CHG: research, ADR, SPEC, impl-CHG list.
-- No implementation until ADR-0078 is accepted and SPEC is frozen.
+- No implementation until ADR-0080 is accepted and SPEC is frozen.
 - DNS credentials never leave the Broker pattern; no provider SDK guess —
   clients are minimal HTTPS+JSON per documented APIs only.
 
@@ -34,13 +34,13 @@ cross-user naming.
 propagation semantics, TLS fork (wildcard vs per-host, challenge types),
 executor placement, cross-user chain.
 
-### S2 ADR-0078 — done (Proposed)
+### S2 ADR-0080 — done (Proposed)
 
 Provider-neutral contract, four declarative profiles, delegated
 `hub.<domain>` reference path, per-user wildcard certs hub-issued via
 DNS-01 and pushed to sish, regru static-IP precondition fail-closed.
 
-### S3 SPEC-0076 draft — next
+### S3 SPEC-0078 draft — next
 
 Freeze: record contract (`Ensure`/`Remove`/`WaitAuthoritative`, typed
 errors, effective-TTL reporting), profile schema (provider kind, zone,
@@ -72,7 +72,7 @@ profile; live acceptance per profile on the real accounts.
 
 ## Acceptance
 
-ADR-0078 Proposed → owner decision; then per-SPEC acceptance IDs.
+ADR-0080 Proposed → owner decision; then per-SPEC acceptance IDs.
 
 ## Out of scope
 

@@ -1,6 +1,6 @@
 # CHG-0170: Hosting slots, immutable releases and quota (M18 #147, H1)
 
-Chain: ADR-0079 D1/D5/D6/D9 → SPEC-0077 R1–R4/R8–R10 → this plan → state.yaml.
+Chain: ADR-0081 D1/D5/D6/D9 → SPEC-0079 R1–R4/R8–R10 → this plan → state.yaml.
 Evidence: [design research](../../done/CHG-0169-site-hosting-design/research.md),
 [Haloy review](../../done/CHG-0169-site-hosting-design/haloy-review.md).
 Previous: CHG-0169. Next: CHG-0171. Branch: feat/m18-exposure-hosting.
@@ -13,8 +13,8 @@ stage is an internal prerequisite, not a published hosting feature.
 
 ## Read before coding
 
-README.md, docs/index.md, docs/architecture.md, docs/testing.md; ADR-0077–0079,
-SPEC-0075–0077; design research and haloy-review.md; following stage plans.
+README.md, docs/index.md, docs/architecture.md, docs/testing.md; ADR-0079–0079,
+SPEC-0077–0077; design research and haloy-review.md; following stage plans.
 Use Go/stdlib and existing patterns; no Haloy dependency, DB, queue or Docker.
 
 ## Preconditions and implementation boundary

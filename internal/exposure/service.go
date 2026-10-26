@@ -10,7 +10,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/identity"
 )
 
-// Provider starts and stops one tunnel workload per open exposure (ADR-0077
+// Provider starts and stops one tunnel workload per open exposure (ADR-0079
 // D2). The docker-backed implementation lands with admission wiring (S4).
 type Provider interface {
 	Open(ctx context.Context, spec Spec) (handle string, err error)

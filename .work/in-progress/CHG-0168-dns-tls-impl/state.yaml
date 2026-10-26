@@ -5,8 +5,8 @@ status: in_progress
 branch: feat/m18-exposure-dns
 updated: 2026-10-25
 phase: verification
-adr: ADR-0078
-spec: SPEC-0076
+adr: ADR-0080
+spec: SPEC-0078
 requirements:
   - R1
   - R2
@@ -50,4 +50,4 @@ remaining:
 limitations:
   - live acceptance needs real provider accounts + sish VPS
   - CLI provider calls pass Options{Timeout} only when set; default unbounded like http.DefaultClient
-  - per-host on-demand issuance (certmagic fallback) documented in ADR-0078, not implemented
+  - per-host on-demand issuance (certmagic fallback) documented in ADR-0080, not implemented

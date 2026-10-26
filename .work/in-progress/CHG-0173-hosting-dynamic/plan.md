@@ -1,6 +1,6 @@
 # CHG-0173: Admitted stateless dynamic sites (M18 #147, H4)
 
-Chain: ADR-0079 D4/D5/D6/D10/D11 → SPEC-0077 R7–R10 → plan → state.yaml.
+Chain: ADR-0081 D4/D5/D6/D10/D11 → SPEC-0079 R7–R10 → plan → state.yaml.
 Requires CHG-0170–0172 code; live predecessor proof tracked by CHG-0174.
 Next: CHG-0174. Evidence: design research and pinned Haloy review in CHG-0169.
 
@@ -104,7 +104,7 @@ Shared fleet/zone metadata locks coordinate limits and address ownership; no
 app content or secrets are shared through those coordination volumes.
 
 Profile correction 2026-10-26: the first admitted profile is `go-http`, not
-`python-http` (ADR-0079 amendment; SPEC-0077 amended). The release carries a
+`python-http` (ADR-0081 amendment; SPEC-0079 amended). The release carries a
 workspace-built static Linux ELF at `app`; PID1 executes `/work/app` on
 `127.0.0.1:8080`. Publish rejects a missing or non-ELF `app` before snapshot
 work and marks the committed binary executable.

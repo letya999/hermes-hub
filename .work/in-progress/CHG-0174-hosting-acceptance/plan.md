@@ -1,6 +1,6 @@
 # CHG-0174: Hosting acceptance and operating contract (M18 #147, H5)
 
-Chain: ADR-0079 → SPEC-0077 R1–R10/A1–A11 → plan → state.yaml.
+Chain: ADR-0081 → SPEC-0079 R1–R10/A1–A11 → plan → state.yaml.
 Requires CHG-0170–0173; predecessor live exposure/DNS evidence must be checked.
 
 ## Goal / prerequisites

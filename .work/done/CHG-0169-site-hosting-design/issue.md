@@ -11,7 +11,7 @@ the design does not implement hosting or establish live guarantees.
 
 ## Decision and research
 
-- ADR-0079: Accepted. SPEC-0077: Frozen 2026-10-26.
+- ADR-0081: Accepted. SPEC-0079: Frozen 2026-10-26.
 - CHG-0169: completed design/research only, under `.work/done/`.
 - Worktree `hermes-hub-m18-hosting`, branch `feat/m18-exposure-hosting`, based
   on `5c19f3e` from `feat/m18-exposure-dns`; predecessor work is not assumed merged.
@@ -25,8 +25,8 @@ the design does not implement hosting or establish live guarantees.
   snapshot/hash/reconciliation/readiness patterns; no Haloy code/dependency added.
 - Documents are currently local to the worktree; no commit/push is implied by
   this issue update. Canonical paths:
-  `docs/adr/ADR-0079-user-scoped-site-hosting.md`,
-  `specs/active/SPEC-0077-user-scoped-site-hosting.md`,
+  `docs/adr/ADR-0081-user-scoped-site-hosting.md`,
+  `specs/active/SPEC-0079-user-scoped-site-hosting.md`,
   `.work/done/CHG-0169-site-hosting-design/{research,ecosystem-research,haloy-review}.md`.
 
 ## Accepted scope
@@ -58,7 +58,7 @@ the design does not implement hosting or establish live guarantees.
   delete a newer revision. No daemon-wide image/volume pruning.
 - Per-user/site storage, count, compute, rate, concurrency, body/time/bandwidth
   bounds and allowlisted bounded durable audit, including admission pressure.
-  Exact defaults and A1–A11 acceptance are frozen in SPEC-0077.
+  Exact defaults and A1–A11 acceptance are frozen in SPEC-0079.
 
 ## Implementation stages and states
 

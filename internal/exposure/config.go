@@ -1,5 +1,5 @@
 // Package exposure implements the named outbound-exposure primitive
-// (ADR-0077/SPEC-0075): a reviewed per-owner config declares named endpoints
+// (ADR-0079/SPEC-0077): a reviewed per-owner config declares named endpoints
 // that map a public URL to a declared internal target through an
 // outbound-only tunnel workload. The agent only ever names an endpoint.
 package exposure

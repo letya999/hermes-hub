@@ -8,11 +8,11 @@ Follow-up requested by the owner:
 [ecosystem-research.md](ecosystem-research.md) records Context7, ready-made
 GitHub solutions, provider architecture and the requested community searches.
 Its MVP sequence and secure-runtime recommendation refine the initial findings
-below; ADR-0079 and SPEC-0077 have been reconciled with that follow-up.
+below; ADR-0081 and SPEC-0079 have been reconciled with that follow-up.
 
 ## Existing contracts and observed gaps
 
-Read first: ADR-0077/SPEC-0075, CHG-0165/0166; ADR-0078/SPEC-0076,
+Read first: ADR-0079/SPEC-0077, CHG-0177/0166; ADR-0080/SPEC-0078,
 CHG-0167/0168. Then README, docs/index, architecture, cell-proxy and code.
 
 - `internal/exposure/config.go`: reviewed endpoint names, max 16 declared,
@@ -72,7 +72,7 @@ Exposure and hosting reserve the same name/cap atomically; a pre-existing
 manual endpoint is a conflict, never overwritten. Hosting owns durable tunnel
 intent and reopens bounded tunnel leases until the site expires. This adds a
 private web tier behind sish, not TLS termination or a hub public control proxy.
-It is an explicit scoped addition to ADR-0077 D1's no-public-proxy wording.
+It is an explicit scoped addition to ADR-0079 D1's no-public-proxy wording.
 
 [sish docs](https://docs.ssi.sh/) document HTTP forwarding, but do not prove
 this deployment preserves original Host headers. Exact Host routing, unknown
@@ -155,12 +155,12 @@ the operational budget, not unbounded JSONL growth.
 ## Design outcome / remaining evidence
 
 Acceptance update 2026-10-26: following the research below and pinned Haloy
-review, owner accepted the direction. ADR-0079 is Accepted, SPEC-0077 Frozen;
+review, owner accepted the direction. ADR-0081 is Accepted, SPEC-0079 Frozen;
 implementation plans/states are CHG-0170–0174. Historical proposal wording below
 records the research stage, not the current acceptance status. No implementation
 or live guarantee is claimed by completing this design CHG.
 
-Propose ADR-0079 and draft SPEC-0077; freeze only after owner acceptance.
+Propose ADR-0081 and draft SPEC-0079; freeze only after owner acceptance.
 Implementation stages: slot/snapshot/quota → static + access gate →
 agent/exposure reconciliation (complete static MVP) → admitted dynamic
 lifecycle → live isolation acceptance. One writer/replica and one initial

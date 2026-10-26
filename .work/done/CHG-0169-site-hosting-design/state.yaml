@@ -5,10 +5,10 @@ status: done
 branch: feat/m18-exposure-hosting
 updated: 2026-10-26
 phase: done
-adr: ADR-0079
-spec: SPEC-0077
+adr: ADR-0081
+spec: SPEC-0079
 requirements: [R1, R2, R3, R4, R5, R6, R7, R8, R9, R10]
-depends_on: [CHG-0165, CHG-0166, CHG-0167, CHG-0168]
+depends_on: [CHG-0177, CHG-0166, CHG-0167, CHG-0168]
 github_milestone: M18
 github_issue: 147
 design_status: accepted
@@ -35,7 +35,7 @@ validation:
 evidence:
   - Base 5c19f3e; separate worktree and branch; source worktree changes untouched
   - research.md records local code anchors and checked primary documentation
-  - ADR-0079 Proposed and SPEC-0077 Draft; no implementation or dependencies changed
+  - ADR-0081 Proposed and SPEC-0079 Draft; no implementation or dependencies changed
   - devcheck docs and git diff --check pass
   - just lint docs-check passes (format, vet, tidy diff, staticcheck, gosec, docs, actionlint)
   - just check attempted; stopped during Go gate because later config-check invokes docker compose config
@@ -53,7 +53,7 @@ evidence:
   - Haloy Linux-target static govulncheck exits 3 with 12 symbol-reachable findings; 10 depend on local Go 1.27.0 and two are Docker advisories; no exploitation claim
   - clone remains unmodified; no Docker actions, Haloy install, dependency additions or source extraction
   - Owner accepted researched direction on 2026-10-26 and requested issue ADR SPEC changes states transition
-  - ADR-0079 accepted and SPEC-0077 frozen; CHG-0170 through CHG-0174 allocated with ordered plans and separate states
+  - ADR-0081 accepted and SPEC-0079 frozen; CHG-0170 through CHG-0174 allocated with ordered plans and separate states
   - Design complete only; successor implementation and live evidence remain not_started and issue 147 remains open
 remaining: []
 limitations:

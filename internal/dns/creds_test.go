@@ -21,7 +21,7 @@ import (
 
 // file: refs read a JSON env-map below the config root; broker: refs run
 // acquire -> materialize -> release and return the materialized env map
-// (SPEC-0076 R3). No credential may surface anywhere else.
+// (SPEC-0078 R3). No credential may surface anywhere else.
 func TestResolveCredentials(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

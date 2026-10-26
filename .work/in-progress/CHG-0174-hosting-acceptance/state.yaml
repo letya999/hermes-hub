@@ -5,8 +5,8 @@ status: in_progress
 branch: feat/m18-exposure-hosting
 updated: 2026-10-26
 phase: implementation
-adr: ADR-0079
-spec: SPEC-0077
+adr: ADR-0081
+spec: SPEC-0079
 requirements: [R1, R2, R3, R4, R5, R6, R7, R8, R9, R10]
 depends_on: [CHG-0170, CHG-0171, CHG-0172, CHG-0173]
 github_milestone: M18
@@ -29,7 +29,7 @@ evidence:
   - Code regression and native runtime browser sish acceptance remain explicitly separated
   - Issue 147 stays open until all required native acceptance is recorded
   - just check equivalent green 2026-10-26: covergo 86.03 statements floor 75 held, format vet tidy staticcheck gosec docs-check config-check actionlint and race tests pass
-  - Dynamic profile corrected to go-http per ADR-0079 amendment; publish rejects missing or non-ELF app before snapshot
+  - Dynamic profile corrected to go-http per ADR-0081 amendment; publish rejects missing or non-ELF app before snapshot
 remaining:
   - Run H5.2 and H5.3 only on a permitted deployment surface
   - Record actual A1 through A11 evidence before issue closure

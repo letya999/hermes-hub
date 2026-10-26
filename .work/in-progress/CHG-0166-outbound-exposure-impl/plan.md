@@ -1,8 +1,8 @@
 # CHG-0166: Outbound exposure primitive — implementation (M18, issue #145)
 
-Chain: `docs/adr/ADR-0077-outbound-exposure.md` D1-D7 -> `specs/active/SPEC-0075-outbound-exposure.md` R1-R8
--> this plan -> `state.yaml`. Evidence: `../CHG-0165-exposure-primitive/research.md`.
-Previous stage: `CHG-0165` (design). Next stage: #146 (DNS/TLS).
+Chain: `docs/adr/ADR-0079-outbound-exposure.md` D1-D7 -> `specs/active/SPEC-0077-outbound-exposure.md` R1-R8
+-> this plan -> `state.yaml`. Evidence: `../CHG-0177-exposure-primitive/research.md`.
+Previous stage: `CHG-0177` (design). Next stage: #146 (DNS/TLS).
 
 ## Goal
 
@@ -12,7 +12,7 @@ through `exposure_*` tools with Broker-held credentials, bounds and audit.
 
 ## Read before coding
 
-1. ADR-0077, SPEC-0075, internal/sshcap/{config,tunnel,keys}.go,
+1. ADR-0079, SPEC-0077, internal/sshcap/{config,tunnel,keys}.go,
    internal/audit/audit.go, internal/toolhub/connector_facade.go,
    docs/prepared-connectors.md (admission, tcp_forwards, credential delivery).
 2. Issues #145 (this), #146/#147/#148 (downstream).
@@ -112,7 +112,7 @@ state.yaml evidence; VPS availability is a precondition, report honestly.
 
 ## Acceptance
 
-A1..A8 from SPEC-0075. Live acceptance (S6) is separate evidence.
+A1..A8 from SPEC-0077. Live acceptance (S6) is separate evidence.
 
 ## Out of scope
 

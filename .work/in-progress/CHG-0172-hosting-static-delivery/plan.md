@@ -1,6 +1,6 @@
 # CHG-0172: Agent workflow, exposure and static recovery (M18 #147, H3)
 
-Chain: ADR-0079 D1–D3/D5/D11 → SPEC-0077 R1/R2/R5/R8/R9 → plan → state.yaml.
+Chain: ADR-0081 D1–D3/D5/D11 → SPEC-0079 R1/R2/R5/R8/R9 → plan → state.yaml.
 Requires CHG-0170/0171 and exposure/DNS code from CHG-0166/0168.
 Next: CHG-0173; release acceptance CHG-0174.
 
@@ -9,7 +9,7 @@ Next: CHG-0173; release acceptance CHG-0174.
 Complete MVP-S wiring: build files in workspace → publish slot → return ready
 URL; list/status/unpublish work; hosting/tunnel outlive Hermes. No success URL
 until actual route readiness. Static delivery is useful but does not close #147.
-Read accepted ADR-0079/frozen SPEC-0077, predecessor plans and Haloy review.
+Read accepted ADR-0081/frozen SPEC-0079, predecessor plans and Haloy review.
 
 ## Ordered slices (red then green; one commit each)
 

@@ -19,7 +19,7 @@ import (
 	"time"
 )
 
-// The shared provider contract (SPEC-0076 R1/R2): Ensure upserts relative
+// The shared provider contract (SPEC-0078 R1/R2): Ensure upserts relative
 // names into the configured zone, Remove deletes, List reads back, and
 // provider errors map onto the typed taxonomy. Each profile gets an
 // httptest fake speaking its real wire format.
@@ -353,7 +353,7 @@ func TestRegruEffectiveTTLFromSOA(t *testing.T) {
 }
 
 // Provider auth failures map onto ErrAuth so callers can tell credential
-// problems from transient ones (SPEC-0076 R8 sanitized taxonomy).
+// problems from transient ones (SPEC-0078 R8 sanitized taxonomy).
 func TestProviderErrorTaxonomy(t *testing.T) {
 	bad := map[string]func(t *testing.T) (*Config, map[string]string, Options){
 		"digitalocean": func(t *testing.T) (*Config, map[string]string, Options) {

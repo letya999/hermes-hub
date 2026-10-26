@@ -1,6 +1,6 @@
 # CHG-0171: Static serving, artifact access and HTTP bounds (M18 #147, H2)
 
-Chain: ADR-0079 D2/D7–D9 → SPEC-0077 R5/R6/R9/R10 → plan → state.yaml.
+Chain: ADR-0081 D2/D7–D9 → SPEC-0079 R5/R6/R9/R10 → plan → state.yaml.
 Previous: CHG-0170 (required). Next: CHG-0172. Evidence:
 [Haloy review](../../done/CHG-0169-site-hosting-design/haloy-review.md).
 

@@ -5,8 +5,8 @@ status: in_progress
 branch: feat/m18-exposure-hosting
 updated: 2026-10-26
 phase: implementation
-adr: ADR-0079
-spec: SPEC-0077
+adr: ADR-0081
+spec: SPEC-0079
 requirements: [R7, R8, R9, R10]
 depends_on: [CHG-0170, CHG-0171, CHG-0172]
 github_milestone: M18
@@ -32,7 +32,7 @@ evidence:
   - Publish rejects a missing or non-ELF app before snapshot work and marks it executable at commit
   - Serialized fleet reservation bounds global workloads and owner overlap across environments
   - TestHostingFleetConcurrentCapacityAndOwnerScope and profile drift negatives cover controller contracts
-  - Profile corrected to go-http per ADR-0079 amendment of 2026-10-26; Python runtime and env surface removed
+  - Profile corrected to go-http per ADR-0081 amendment of 2026-10-26; Python runtime and env surface removed
 remaining:
   - Run actual native resource isolation exhaustion and lifecycle canaries in CHG-0174
 limitations:
