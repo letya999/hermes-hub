@@ -84,6 +84,10 @@ type Engine struct {
 	// coalescing shares one fetch inside a tick and is cleared per sweep so
 	// a re-due occurrence never sees a stale body (SPEC-0081 R2.1).
 	acquireBurst map[string][]byte
+	// acquireInflight collapses concurrent fetches for one (principal,url)
+	// inside a sweep: followers wait on done and read the burst body or the
+	// leader's error — the pool issues one fetch per sweep, never two.
+	acquireInflight map[string]*acquireFlight
 }
 
 // NewEngine builds the engine; the owner fills every Deps field.

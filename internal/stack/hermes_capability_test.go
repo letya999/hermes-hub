@@ -715,3 +715,23 @@ func TestManagedEgressRelayRenders(t *testing.T) {
 		t.Fatal("image_gen block accepted without the grant in transit")
 	}
 }
+
+// TestAssignmentToolhubFamily: the standing-assignment surface is a
+// deliverable ToolHub capability family — a space may wish assignments:
+// toolhub, the wish maps to the assignments capability, and the control
+// plane host opens exactly like routines (SPEC-0080 R2.3).
+func TestAssignmentToolhubFamily(t *testing.T) {
+	s := Settings{Schema: 1, User: "alice", Environment: "dev", CapabilityMode: "managed",
+		CapabilityProfileID: "alice-default", CapabilityGeneration: 1,
+		Tools: map[string]ToolEntry{"assignments": {Via: ToolViaToolHub}}}
+	if err := s.validateTools(); err != nil {
+		t.Fatalf("assignments: toolhub must validate: %v", err)
+	}
+	if got := ToolHubCapabilityID("assignments"); got != "assignments" {
+		t.Fatalf("capability id = %q", got)
+	}
+	hosts := managedEgressHosts(s, t.TempDir())
+	if !slices.Contains(hosts, "communication-hub") {
+		t.Fatalf("assignments must open the control plane egress: %v", hosts)
+	}
+}

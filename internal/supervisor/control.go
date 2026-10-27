@@ -441,16 +441,10 @@ func (m *Manager) authorizeApproval(request hubruntime.RunControl) error {
 	return m.authorizeCurrentPolicy(request.ExecuteRequest)
 }
 
-func (m *Manager) authorizeCurrentPolicy(request hubruntime.ExecuteRequest) error {
-	allowedScope := request.ScopeID == "user:"+request.UserID
-	if request.ScopeID == "group:"+request.UserID {
-		scope, err := stack.ReadScope(filepath.Join(m.cfg.SpacesRoot, request.UserID))
-		allowedScope = err == nil && scope.Kind == stack.GroupScope && scope.ID == request.UserID
-	}
-	if request.ActorID != request.PrincipalID || !allowedScope {
-		return errors.New("approval actor/scope mismatch")
-	}
-	root := filepath.Join(m.cfg.SpacesRoot, request.UserID)
+// loadSelected reads the space's own settings file for userID without the
+// organization merge: callers compare identity fields before merging policy.
+func (m *Manager) loadSelected(userID string) (stack.Settings, error) {
+	root := filepath.Join(m.cfg.SpacesRoot, userID)
 	found := false
 	for _, name := range []string{"settings.yaml", "agent.yaml"} {
 		info, err := os.Lstat(filepath.Join(root, name))
@@ -460,42 +454,33 @@ func (m *Manager) authorizeCurrentPolicy(request hubruntime.ExecuteRequest) erro
 		}
 	}
 	if !found {
-		return errors.New("current settings unavailable")
+		return stack.Settings{}, errors.New("current settings unavailable")
 	}
-	// Check organization selection before loading its policy.
-	selected, err := stack.Read(root)
-	if err != nil {
-		return err
-	}
-	selectedOrg := selected.Organization
-	if selectedOrg == "" {
-		selectedOrg = "personal"
-	}
-	if selected.User != request.UserID || selectedOrg != request.OrganizationID {
-		return errors.New("approval organization changed")
-	}
+	return stack.Read(root)
+}
+
+// resolveSettings applies the organization merge and this environment's
+// adjustments so a derived policy version hashes exactly what a render would.
+func (m *Manager) resolveSettings(selected stack.Settings) (stack.Settings, error) {
+	settings := selected
 	if selected.Organization != "" {
 		orgRoot := filepath.Join(m.cfg.SpacesRoot, selected.Organization)
 		for _, name := range []string{"scope.yaml", "settings.yaml"} {
 			info, e := os.Lstat(filepath.Join(orgRoot, name))
 			if e != nil && !os.IsNotExist(e) {
-				return e
+				return stack.Settings{}, e
 			}
 			if e == nil && (!info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > 1024*1024) {
-				return errors.New("organization policy unavailable")
+				return stack.Settings{}, errors.New("organization policy unavailable")
 			}
 		}
-	}
-	settings := selected
-	if selected.Organization != "" {
-		orgRoot := filepath.Join(m.cfg.SpacesRoot, selected.Organization)
 		org, e := stack.ReadOrganization(orgRoot)
 		if e != nil {
-			return e
+			return stack.Settings{}, e
 		}
 		settings, e = stack.ApplyOrganization(org, settings, orgRoot)
 		if e != nil {
-			return e
+			return stack.Settings{}, e
 		}
 	}
 	settings.Environment = m.environment()
@@ -513,6 +498,47 @@ func (m *Manager) authorizeCurrentPolicy(request hubruntime.ExecuteRequest) erro
 		settings.DefaultGlobalSkillsDir(filepath.Join(filepath.Dir(m.cfg.SpacesRoot), "config", "skills"))
 	}
 	if err := settings.Validate(); err != nil {
+		return stack.Settings{}, err
+	}
+	return settings, nil
+}
+
+// currentPolicyVersion computes the policy hash the space would render today;
+// "" means the settings cannot be resolved and the caller must not guess.
+func (m *Manager) currentPolicyVersion(userID string) string {
+	selected, err := m.loadSelected(userID)
+	if err != nil {
+		return ""
+	}
+	settings, err := m.resolveSettings(selected)
+	if err != nil {
+		return ""
+	}
+	return stack.PolicyVersion(settings)
+}
+
+func (m *Manager) authorizeCurrentPolicy(request hubruntime.ExecuteRequest) error {
+	allowedScope := request.ScopeID == "user:"+request.UserID
+	if request.ScopeID == "group:"+request.UserID {
+		scope, err := stack.ReadScope(filepath.Join(m.cfg.SpacesRoot, request.UserID))
+		allowedScope = err == nil && scope.Kind == stack.GroupScope && scope.ID == request.UserID
+	}
+	if request.ActorID != request.PrincipalID || !allowedScope {
+		return errors.New("approval actor/scope mismatch")
+	}
+	selected, err := m.loadSelected(request.UserID)
+	if err != nil {
+		return err
+	}
+	selectedOrg := selected.Organization
+	if selectedOrg == "" {
+		selectedOrg = "personal"
+	}
+	if selected.User != request.UserID || selectedOrg != request.OrganizationID {
+		return errors.New("approval organization changed")
+	}
+	settings, err := m.resolveSettings(selected)
+	if err != nil {
 		return err
 	}
 	organization := settings.Organization

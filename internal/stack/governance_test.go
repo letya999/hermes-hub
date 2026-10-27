@@ -115,6 +115,28 @@ func TestGovernanceExplicitWishDenied(t *testing.T) {
 	}
 }
 
+// TestGovernanceAssignmentsSection: the assignments wish is a governed hub
+// section — `assignments: toolhub` must resolve to a known inventory entry
+// (SPEC-0080), not fail as an unknown section.
+func TestGovernanceAssignmentsSection(t *testing.T) {
+	d := t.TempDir()
+	if err := Init(d, "me"); err != nil {
+		t.Fatal(err)
+	}
+	wsPath := filepath.Join(d, "workspace.yaml")
+	wsBody, err := os.ReadFile(wsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wsBody = []byte(strings.Replace(string(wsBody), "  images: toolhub", "  images: toolhub\n  assignments: toolhub", 1))
+	if err := os.WriteFile(wsPath, wsBody, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Read(d); err != nil {
+		t.Fatalf("assignments: toolhub must be a known section: %v", err)
+	}
+}
+
 func TestGovernanceMigrationPreservesSelection(t *testing.T) {
 	d := t.TempDir()
 	if err := Init(d, "me"); err != nil {

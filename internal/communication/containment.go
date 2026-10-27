@@ -21,6 +21,28 @@ type masterHold struct {
 	NoticePending bool   `json:"notice_pending"`
 }
 
+// holdsSnapshot returns the last fetched hold projection — the pure read
+// the spool's under-lock admission check needs (no I/O under the lock).
+func (g *Gateway) holdsSnapshot() []masterHold {
+	g.holdsMu.Lock()
+	defer g.holdsMu.Unlock()
+	return g.holdsLast
+}
+
+// refreshHolds fetches the hold projection at the public enqueue boundary;
+// enqueueLocked itself only reads the snapshot so no caller waits on I/O
+// while holding the spool lock.
+func (g *Gateway) refreshHolds(ctx context.Context) error {
+	holds, err := g.masterHolds(ctx)
+	if err != nil {
+		return err
+	}
+	g.holdsMu.Lock()
+	g.holdsLast = holds
+	g.holdsMu.Unlock()
+	return nil
+}
+
 func (g *Gateway) masterHolds(ctx context.Context) ([]masterHold, error) {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()

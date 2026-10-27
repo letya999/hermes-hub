@@ -327,8 +327,47 @@ func (e *Engine) RecordRoutineFailure(scheduleID, digest string) (bool, error) {
 		return false, nil
 	}
 	item.LastFailureSHA256 = digest
+	item.PendingFailureSHA256 = ""
 	item.UpdatedAt = time.Now().UTC()
 	return true, e.atomicJSON(e.SchedulePath(scheduleID), item)
+}
+
+// MarkRoutineFailurePending stamps the in-flight failure-notice digest and
+// reports whether a notice must be enqueued: false when this exact failure
+// was already delivered (LastFailureSHA256) or already has a notice in
+// flight. The marker releases when the notice dies unconfirmed, so a dead
+// notice never silences the next identical failure.
+func (e *Engine) MarkRoutineFailurePending(scheduleID, digest string) (bool, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	item, err := e.LoadScheduleLocked(scheduleID)
+	if os.IsNotExist(err) {
+		return true, nil
+	}
+	if err != nil {
+		return true, err
+	}
+	if digest != "" && (item.LastFailureSHA256 == digest || item.PendingFailureSHA256 == digest) {
+		return false, nil
+	}
+	item.PendingFailureSHA256 = digest
+	item.UpdatedAt = time.Now().UTC()
+	return true, e.atomicJSON(e.SchedulePath(scheduleID), item)
+}
+
+// ReleaseRoutineFailurePending clears the in-flight marker when its notice
+// died unconfirmed — only while the marker still names that failure, so a
+// newer failure's marker is never lost.
+func (e *Engine) ReleaseRoutineFailurePending(scheduleID, digest string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	item, err := e.LoadScheduleLocked(scheduleID)
+	if err != nil || digest == "" || item.PendingFailureSHA256 != digest {
+		return err
+	}
+	item.PendingFailureSHA256 = ""
+	item.UpdatedAt = time.Now().UTC()
+	return e.atomicJSON(e.SchedulePath(scheduleID), item)
 }
 
 // ClearRoutineFailure drops the stored failure digest after a success so the

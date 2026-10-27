@@ -214,23 +214,49 @@ func (e *Engine) probeOne(ctx context.Context, o commodel.RoutineOccurrence, now
 				e.AcquireSubscribeLocked(o.Job.PrincipalID, schedule.Probe.URL, schedule.ScheduleID, next.Sub(now), now)
 			}
 		}
+		key := acquireKey(o.Job.PrincipalID, schedule.Probe.URL)
 		cached, hit := e.AcquirePeekLocked(o.Job.PrincipalID, schedule.Probe.URL, now)
 		blocked := false
+		var flight *acquireFlight
+		leader := false
 		if !hit {
 			if st, aerr := e.loadAcquireLocked(o.Job.PrincipalID, schedule.Probe.URL); aerr == nil && st.NextPollAt.After(now) {
 				blocked = true
+			} else if f, ok := e.acquireInflight[key]; ok {
+				flight = f
+			} else {
+				if e.acquireInflight == nil {
+					e.acquireInflight = map[string]*acquireFlight{}
+				}
+				flight = &acquireFlight{done: make(chan struct{})}
+				e.acquireInflight[key] = flight
+				leader = true
 			}
 		}
 		e.mu.Unlock()
-		if hit {
+		switch {
+		case hit:
 			body = cached
-		} else if blocked {
+		case blocked:
 			fetchErr = errors.New("source is in retry-after backoff")
-		} else {
-			ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			defer cancel()
-			body, fetchErr = fetch(ctx, schedule.Probe.URL)
+		case !leader:
+			// Another occurrence is already fetching this source for this
+			// sweep: wait for it, then serve the burst body or its error —
+			// the pool never issues a second fetch (SPEC-0081 R2.1).
+			<-flight.done
 			e.mu.Lock()
+			if b, ok := e.acquireBurst[key]; ok {
+				body = b
+			} else if fetchErr = flight.err; fetchErr == nil {
+				fetchErr = errors.New("shared acquisition fetch failed")
+			}
+			e.mu.Unlock()
+		default:
+			ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			body, fetchErr = fetch(ctx, schedule.Probe.URL)
+			cancel()
+			e.mu.Lock()
+			flight.err = fetchErr
 			if fetchErr == nil {
 				_ = e.AcquireRecordLocked(o.Job.PrincipalID, schedule.Probe.URL, body, now)
 			} else {
@@ -239,6 +265,10 @@ func (e *Engine) probeOne(ctx context.Context, o commodel.RoutineOccurrence, now
 					e.AcquireBackoffLocked(o.Job.PrincipalID, schedule.Probe.URL, now.Add(ra.Delay), now)
 				}
 			}
+			if e.acquireInflight[key] == flight {
+				delete(e.acquireInflight, key)
+			}
+			close(flight.done)
 			e.mu.Unlock()
 		}
 	}
@@ -511,13 +541,18 @@ func (e *Engine) notifyProbeFailureLocked(o commodel.RoutineOccurrence, reason s
 	if err != nil {
 		return
 	}
-	digest := RoutineFailureDigest(o.Job.ID, reason)
-	if item.LastFailureSHA256 == digest {
+	text := item.Input + "\nprobe failed: " + reason
+	digest := RoutineFailureDigest(o.Job.ID, text)
+	if item.LastFailureSHA256 == digest || item.PendingFailureSHA256 == digest {
 		return
 	}
-	item.LastFailureSHA256 = digest
+	// The delivered digest is recorded only when the notice reaches the
+	// owner (gateway deliverOne); the pending marker stands while the notice
+	// is in flight and releases if it dies unconfirmed, so a dead notice
+	// never silences the next identical failure.
+	item.PendingFailureSHA256 = digest
 	item.UpdatedAt = now.UTC()
-	d := commodel.Delivery{ID: "watch-fail-" + o.Job.ID, OccurrenceID: o.Job.ID, Channel: o.Job.Channel, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, ChatID: o.Job.ChatID, TaskID: o.Job.TaskID, TopicID: o.Job.TopicID, SlackChannel: o.Job.SlackChannel, SlackThread: o.Job.SlackThread, Text: item.Input + "\nprobe failed: " + reason, NotBefore: QuietDefer(item, now), CreatedAt: now.UTC()}
+	d := commodel.Delivery{ID: "watch-fail-" + o.Job.ID, OccurrenceID: o.Job.ID, Channel: o.Job.Channel, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, ChatID: o.Job.ChatID, TaskID: o.Job.TaskID, TopicID: o.Job.TopicID, SlackChannel: o.Job.SlackChannel, SlackThread: o.Job.SlackThread, Text: text, NotBefore: QuietDefer(item, now), CreatedAt: now.UTC()}
 	if nd, err := e.normalizeDelivery(d); err == nil {
 		_ = e.deps.EnqueueDelivery(nd)
 	}
@@ -528,10 +563,10 @@ func (e *Engine) notifyProbeFailureLocked(o commodel.RoutineOccurrence, reason s
 // success so the next failure episode notifies again. e.mu must be held.
 func (e *Engine) clearProbeFailureLocked(scheduleID string) {
 	item, err := e.LoadScheduleLocked(scheduleID)
-	if err != nil || item.LastFailureSHA256 == "" {
+	if err != nil || (item.LastFailureSHA256 == "" && item.PendingFailureSHA256 == "") {
 		return
 	}
-	item.LastFailureSHA256 = ""
+	item.LastFailureSHA256, item.PendingFailureSHA256 = "", ""
 	item.UpdatedAt = time.Now().UTC()
 	_ = e.atomicJSON(e.SchedulePath(scheduleID), item)
 }

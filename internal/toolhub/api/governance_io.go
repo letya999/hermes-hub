@@ -75,6 +75,7 @@ func SeedInventory() []ToolSection {
 		hub("hub:images", EffectMutate),
 		hub("hub:artifacts", EffectMutate),
 		hub("hub:routines", EffectMutate),
+		hub("hub:assignments", EffectMutate),
 		hub("hub:services", EffectMutate),
 		hub("hub:settings", EffectMutate),
 		hub("hub:image_gen", EffectMutate),

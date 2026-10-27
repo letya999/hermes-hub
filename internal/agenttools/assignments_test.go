@@ -132,3 +132,87 @@ func TestAssignmentDispatchPublishedOps(t *testing.T) {
 		}
 	}
 }
+
+// TestAssignmentCallSurfacesReply (SPEC-0080 R2.3): the call must carry the
+// verified principal, reject non-2xx, and hand the decoded reply to the
+// agent — a silent {"status":"ok"} would hide every failure.
+func TestAssignmentCallSurfacesReply(t *testing.T) {
+	var gotPrincipal, gotContentType string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPrincipal = r.Header.Get("X-Hub-Principal")
+		gotContentType = r.Header.Get("Content-Type")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"assignment_id":"asg-9","state":"active","revision":4}`)
+	}))
+	defer server.Close()
+	t.Setenv("HUB_PRINCIPAL_ID", "alice")
+	v := fixture(t)
+	v.CommunicationURL, v.CommunicationAuth = server.URL, "token"
+	out, err := v.Assignment(context.Background(), "assignment_get", Input{ID: "asg-9"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPrincipal != "alice" {
+		t.Fatalf("assignment call dropped the verified principal: %q", gotPrincipal)
+	}
+	result, ok := out["result"].(map[string]any)
+	if !ok || result["assignment_id"] != "asg-9" {
+		t.Fatalf("reply body not surfaced to the agent: %+v", out)
+	}
+	server.Close()
+	reject := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = io.WriteString(w, `{"error":"revision mismatch"}`)
+	}))
+	defer reject.Close()
+	v.CommunicationURL = reject.URL
+	if _, err := v.Assignment(context.Background(), "assignment_pause", Input{ID: "asg-9", ExpectedRevision: 1}); err == nil {
+		t.Fatal("HTTP 409 must surface as an error, not silent ok")
+	}
+	_ = gotContentType
+}
+
+// TestAssignmentCapabilityIDsProjectable: a managed capability profile picks
+// one tool name per (capability_id, connection) — two tools sharing a
+// capability_id can never both be selected, so every catalog tool needs its
+// own id inside its family (SPEC-0080 R2.3).
+func TestAssignmentCapabilityIDsProjectable(t *testing.T) {
+	seen := map[string]string{}
+	assignments := 0
+	for _, tool := range HubToolsDefinition().Tools {
+		if strings.HasPrefix(tool.Name, "assignment_") {
+			assignments++
+			if family, _, _ := strings.Cut(tool.CapabilityID, "."); family != "assignments" {
+				t.Fatalf("%s escapes the assignments family: %q", tool.Name, tool.CapabilityID)
+			}
+		}
+		if other, dup := seen[tool.CapabilityID]; dup {
+			t.Fatalf("%s shares capability %q with %s — unprojectable", tool.Name, tool.CapabilityID, other)
+		}
+		seen[tool.CapabilityID] = tool.Name
+	}
+	if assignments != 10 {
+		t.Fatalf("expected 10 assignment capabilities, got %d", assignments)
+	}
+}
+
+// TestAssignmentToolsOnDirectMCP: the direct MCP server must publish the
+// same assignment_* set the ToolHub catalog advertises — unmanaged runtimes
+// reach assignments only through this surface.
+func TestAssignmentToolsOnDirectMCP(t *testing.T) {
+	client, close := connectHub(t, fixture(t))
+	defer close()
+	list, err := client.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, tool := range list.Tools {
+		seen[tool.Name] = true
+	}
+	for _, tool := range HubToolsDefinition().Tools {
+		if strings.HasPrefix(tool.Name, "assignment_") && !seen[tool.Name] {
+			t.Errorf("%s missing from direct MCP server", tool.Name)
+		}
+	}
+}

@@ -61,6 +61,24 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 			}
 		}
 	}
+	if current != nil && current.PolicyVersion != "" && binding.PolicyVersion != "" && current.PolicyVersion != binding.PolicyVersion && (current.State == Ready || current.State == Idle || current.State == Busy || current.restored) {
+		snapshot := current.Runtime
+		m.mu.Unlock()
+		log.Printf("runtime %s policy rotated: replacing stale generation", snapshot.Container)
+		if err := m.removeOwnedRuntime(ctx, snapshot); err != nil {
+			return Runtime{}, errors.New("stale-policy runtime removal failed")
+		}
+		m.mu.Lock()
+		current = m.items[key]
+		if current != nil && current.Generation == snapshot.Generation {
+			current.State = Stopped
+			current.restored = false
+			if err := m.persistLocked(); err != nil {
+				m.mu.Unlock()
+				return Runtime{}, err
+			}
+		}
+	}
 	if current != nil && (current.State == Degraded || current.State == Stopped || recoverableRuntime(current.Runtime)) && !current.CrashWindowStart.IsZero() && m.cfg.Now().Sub(current.CrashWindowStart) < 10*time.Minute {
 		if current.CrashCount >= 3 || m.cfg.Now().Before(current.NextRetryAt) {
 			result := current.Runtime
@@ -194,7 +212,7 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 	}
 	address := m.runtimeAddress(container, port, managed)
 	m.gen++
-	logical := &runtimeEntry{Runtime: Runtime{PrincipalID: binding.PrincipalID, ContextID: binding.ContextID, RuntimeID: binding.RuntimeID, RuntimeMode: binding.RuntimeMode, Generation: fmt.Sprintf("gen-%d", m.gen), Container: container, Address: address, State: Starting, ImageSource: imageSourceOf(binding, m.environment(), m.cfg.Image), Leases: 1, LastUsed: m.cfg.Now(), Managed: managed}, auth: binding.runtimeAuth, leases: map[string]Lease{}}
+	logical := &runtimeEntry{Runtime: Runtime{PrincipalID: binding.PrincipalID, ContextID: binding.ContextID, RuntimeID: binding.RuntimeID, RuntimeMode: binding.RuntimeMode, Generation: fmt.Sprintf("gen-%d", m.gen), PolicyVersion: binding.PolicyVersion, Container: container, Address: address, State: Starting, ImageSource: imageSourceOf(binding, m.environment(), m.cfg.Image), Leases: 1, LastUsed: m.cfg.Now(), Managed: managed}, auth: binding.runtimeAuth, leases: map[string]Lease{}}
 	logical.binding = binding
 	for id, lease := range lifecycle {
 		lease.Generation = logical.Generation

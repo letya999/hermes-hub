@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 )
 
@@ -68,6 +70,8 @@ func (t *Tools) Assignment(ctx context.Context, op string, r Input) (map[string]
 }
 
 // assignmentCall performs one control-plane request and decodes the reply.
+// The verified principal travels as X-Hub-Principal — the assignment plane
+// authorizes the caller on it, exactly like the routine surface.
 func (t *Tools) assignmentCall(ctx context.Context, method, path string, payload any) (map[string]any, error) {
 	var body io.Reader
 	if payload != nil {
@@ -84,6 +88,7 @@ func (t *Tools) assignmentCall(ctx context.Context, method, path string, payload
 	if t.CommunicationAuth != "" {
 		req.Header.Set("Authorization", "Bearer "+t.CommunicationAuth)
 	}
+	req.Header.Set("X-Hub-Principal", os.Getenv("HUB_PRINCIPAL_ID"))
 	client := t.HTTP
 	if client == nil {
 		client = http.DefaultClient
@@ -93,6 +98,19 @@ func (t *Tools) assignmentCall(ctx context.Context, method, path string, payload
 		return nil, err
 	}
 	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode/100 != 2 {
+		return nil, fmt.Errorf("assignment hub rejected the request (HTTP %d): %s", resp.StatusCode, strings.TrimSpace(string(raw[:min(len(raw), 1024)])))
+	}
 	out := map[string]any{"status": "ok"}
+	if len(raw) > 0 {
+		var decoded any
+		if err := json.Unmarshal(raw, &decoded); err == nil {
+			out["result"] = decoded
+		}
+	}
 	return out, nil
 }

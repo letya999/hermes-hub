@@ -167,14 +167,18 @@ type Runtime struct {
 	RuntimeID    string            `json:"runtime_id"`
 	RuntimeMode  string            `json:"runtime_mode"`
 	Generation   string            `json:"generation"`
-	Container    string            `json:"container"`
-	Address      string            `json:"address"`
-	State        State             `json:"state"`
-	ImageSource  string            `json:"image_source,omitempty"`
-	Leases       int               `json:"leases"`
-	LastUsed     time.Time         `json:"last_used"`
-	IdleDeadline time.Time         `json:"idle_deadline,omitempty"`
-	Managed      bool              `json:"managed,omitempty"`
+	// PolicyVersion records the policy hash this generation was spawned with so
+	// a later Ensure can detect a rotated policy and replace the runtime
+	// instead of reusing one whose own envelope gate would reject the request.
+	PolicyVersion string    `json:"policy_version,omitempty"`
+	Container     string    `json:"container"`
+	Address       string    `json:"address"`
+	State         State     `json:"state"`
+	ImageSource   string    `json:"image_source,omitempty"`
+	Leases        int       `json:"leases"`
+	LastUsed      time.Time `json:"last_used"`
+	IdleDeadline  time.Time `json:"idle_deadline,omitempty"`
+	Managed       bool      `json:"managed,omitempty"`
 	// Consumers and WaitReason are read projections, never persisted state:
 	// they describe live demand at read time and stay empty on disk.
 	Consumers  []LeaseConsumer `json:"consumers,omitempty"`

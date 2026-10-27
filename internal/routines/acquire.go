@@ -103,6 +103,8 @@ func (e *Engine) AcquireRecordLocked(principal, url string, body []byte, now tim
 }
 
 // resetAcquireBurstLocked drops sweep bodies before a fresh probe pass.
+// In-flight slots are never cleared here: a leader finishing late still
+// closes its done channel and deletes only its own entry.
 func (e *Engine) resetAcquireBurstLocked() {
 	e.acquireBurst = map[string][]byte{}
 }
@@ -160,6 +162,14 @@ func (e *Engine) AcquireBackoffLocked(principal, url string, until, now time.Tim
 	}
 	st.NextPollAt = until.UTC()
 	_ = e.writeAcquireLocked(st)
+}
+
+// acquireFlight is the in-flight singleflight slot: done closes when the
+// leader's fetch settles; err is written before close so followers observe
+// the leader's failure instead of issuing a second fetch.
+type acquireFlight struct {
+	done chan struct{}
+	err  error
 }
 
 // RetryAfterError wraps a transient fetch failure with its source-declared

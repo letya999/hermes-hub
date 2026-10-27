@@ -316,6 +316,13 @@ func ValidateScheduleDraft(in commodel.Schedule, caller identity.Envelope, hooks
 		} else if in.Probe.Script != "" {
 			return errors.New("script requires a script or command probe kind")
 		}
+		if in.Probe.Filter != "" {
+			// The event gate is a script too (SPEC-0081 R4.1): an
+			// uncompilable filter must fail here, not silently at poll time.
+			if err := hooks.Script(in.Probe.Filter); err != nil {
+				return fmt.Errorf("probe filter does not compile: %w", err)
+			}
+		}
 		if err := validateProbeNeeds(in.Probe); err != nil {
 			return err
 		}

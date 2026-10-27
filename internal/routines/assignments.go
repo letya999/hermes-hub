@@ -212,9 +212,20 @@ func (e *Engine) admitAssignmentWakeLocked(assignmentID string, now time.Time) b
 	if err != nil {
 		return false
 	}
+	if item.State != "active" {
+		// Paused, completed, cancelled or failed assignments never reach
+		// the model (SPEC-0080 R2.2).
+		return false
+	}
 	limit := item.Grants.MaxWakesPerDay
 	if limit == 0 {
 		limit = commodel.AssignmentDefaultWakesPerDay
+	}
+	// The counter is per owner-day: a stale WakeDay rolls over before the
+	// limit check, otherwise the budget stays spent forever.
+	day := now.UTC().Format("2006-01-02")
+	if item.Checkpoint.WakeDay != day {
+		item.Checkpoint.WakeDay, item.Checkpoint.WakesToday = day, 0
 	}
 	if item.Checkpoint.WakesToday >= limit {
 		return false
@@ -224,6 +235,12 @@ func (e *Engine) admitAssignmentWakeLocked(assignmentID string, now time.Time) b
 	item.Checkpoint.LastWakeAt = now.UTC()
 	item.UpdatedAt = now.UTC()
 	return e.atomicJSON(e.AssignmentPath(item.AssignmentID), item) == nil
+}
+
+// AdmitAssignmentWakeLocked exposes the wake fence to the durable spool's
+// event fan-out; the engine and the spool share one lock (e.mu == s.mu).
+func (e *Engine) AdmitAssignmentWakeLocked(assignmentID string, now time.Time) bool {
+	return e.admitAssignmentWakeLocked(assignmentID, now)
 }
 
 // ResumeAssignment re-arms a paused assignment's artifacts (SPEC-0080 R1.5).

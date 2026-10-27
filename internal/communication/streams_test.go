@@ -2,6 +2,7 @@ package communication
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -831,5 +833,194 @@ func TestHookIntakeEndpoint(t *testing.T) {
 	}
 	if w = destinationRequest(g, http.MethodPost, "/v1/hooks/bob-hook", `{"events":[]}`); w.Code != http.StatusNotFound {
 		t.Fatalf("foreign hook must 404, got %d", w.Code)
+	}
+}
+
+// SPEC-0081 R4.1 — a filter that fails to evaluate must not silently admit
+// the event: the occurrence settles failed, the event stays unseen for a
+// later retry, and nothing reaches the sink.
+func TestEventFilterErrorFailsClosed(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	sched, err := s.CreateSchedule(Schedule{ScheduleID: "str-failclosed", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "watch dms", JobKind: "event", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc", Filter: `emit("keep")`}}, caller, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.probeScript = func(_ context.Context, _ RoutineOccurrence, _, _ string, _ bool, _ []string) (string, error) {
+		return "", errors.New("script runtime exploded")
+	}
+	now := time.Now().UTC()
+	body := []byte(`{"events":[{"id":"x1","text":"boss pinged you"}]}`)
+	o.ScheduleID = "str-failclosed"
+	o.Job.Trigger = "cron"
+	o.State = "probing"
+	if err := atomicJSON(filepath.Join(s.root, "occurrences", occurrenceID(o)+".json"), o); err != nil {
+		t.Fatal(err)
+	}
+	s.settleEvents(o, sched, body, now, nil, g.authorizeOccurrence)
+	if d, _ := s.ClaimDelivery(); d != nil {
+		t.Fatalf("filter error admitted the event: %+v", d)
+	}
+	st, err := s.EventStateOf("str-failclosed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.seen("x1") {
+		t.Fatal("filter error must not mark the event seen — it would never retry")
+	}
+	if st.LastError == "" {
+		t.Fatal("filter error must land on the durable state for /watches")
+	}
+	raw, err := os.ReadFile(filepath.Join(s.root, "occurrences", occurrenceID(o)+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var live RoutineOccurrence
+	if err := json.Unmarshal(raw, &live); err != nil || live.State != "failed" {
+		t.Fatalf("filter error must settle the occurrence failed: %+v %v", live, err)
+	}
+}
+
+// SPEC-0081 R4.1 — the per-event filter performs I/O (the script runs in a
+// disposable runtime over HTTP); holding the spool lock across it starves
+// every other writer for the whole script duration.
+func TestEventFilterRunsOutsideSpoolLock(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	sched, err := s.CreateSchedule(Schedule{ScheduleID: "str-lockfree", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "watch dms", JobKind: "event", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc", Filter: `emit("keep")`}}, caller, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	s.probeScript = func(_ context.Context, _ RoutineOccurrence, _, _ string, _ bool, _ []string) (string, error) {
+		once.Do(func() { close(started) })
+		<-release
+		return "keep", nil
+	}
+	now := time.Now().UTC()
+	body := []byte(`{"events":[{"id":"y1","text":"deploy finished"}]}`)
+	o.ScheduleID = "str-lockfree"
+	o.Job.Trigger = "cron"
+	o.State = "probing"
+	if err := atomicJSON(filepath.Join(s.root, "occurrences", occurrenceID(o)+".json"), o); err != nil {
+		t.Fatal(err)
+	}
+	settled := make(chan struct{})
+	go func() {
+		s.settleEvents(o, sched, body, now, nil, g.authorizeOccurrence)
+		close(settled)
+	}()
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("filter script never ran")
+	}
+	read := make(chan struct{})
+	go func() {
+		_, _ = s.EventStateOf("str-lockfree")
+		close(read)
+	}()
+	select {
+	case <-read:
+	case <-time.After(2 * time.Second):
+		t.Fatal("spool lock held across the filter script")
+	}
+	close(release)
+	select {
+	case <-settled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("settle never finished")
+	}
+	if d, _ := s.ClaimDelivery(); d == nil {
+		t.Fatal("kept event must deliver after the filter releases")
+	}
+}
+
+// SPEC-0081 R4.1 — an uncompilable filter is rejected at create time so the
+// schedule never persists a gate that can only fail-open at poll time.
+func TestEventFilterValidationAtCreate(t *testing.T) {
+	s, o, _ := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	mk := func(id, filter string) Schedule {
+		return Schedule{ScheduleID: id, Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "watch dms", JobKind: "event", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc", Filter: filter}}
+	}
+	if _, err := s.CreateSchedule(mk("f-good", `emit("keep")`), caller, ""); err != nil {
+		t.Fatalf("valid filter rejected: %v", err)
+	}
+	if _, err := s.CreateSchedule(mk("f-bad", `emit("keep"`), caller, ""); err == nil {
+		t.Fatal("uncompilable filter accepted at create")
+	}
+	if _, err := s.CreateSchedule(mk("f-empty", ""), caller, ""); err != nil {
+		t.Fatalf("absent filter must stay valid: %v", err)
+	}
+}
+
+// SPEC-0081 R4.1 — stream delivery applies the same per-event gate as poll
+// delivery: a dropped event is marked seen without reaching the sink.
+func TestStreamPollOnceAppliesFilter(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	sched, err := s.CreateSchedule(Schedule{ScheduleID: "strf", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "watch dms", JobKind: "event", Delivery: "stream", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc", Filter: `emit("drop" if "noise" in input else "keep")`}}, caller, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.probeScript = func(_ context.Context, _ RoutineOccurrence, _, input string, _ bool, _ []string) (string, error) {
+		if strings.Contains(input, "noise") {
+			return "drop", nil
+		}
+		return "keep", nil
+	}
+	toolCall := func(context.Context, string, *WatchProbe) ([]byte, error) {
+		return []byte(`{"events":[{"id":"n1","text":"noise spam"},{"id":"k1","text":"boss pinged you"}]}`), nil
+	}
+	if _, blocked := g.streamPollOnce(context.Background(), sched, toolCall); blocked {
+		t.Fatal("healthy filtered poll reported blocked")
+	}
+	d, err := s.ClaimDelivery()
+	if err != nil || d == nil {
+		t.Fatalf("kept stream event must deliver: %+v %v", d, err)
+	}
+	if strings.Contains(d.Text, "noise") {
+		t.Fatalf("dropped event must not reach the sink: %q", d.Text)
+	}
+	st, _ := s.EventStateOf("strf")
+	if !st.seen("n1") {
+		t.Fatal("dropped stream event must be marked seen")
+	}
+}
+
+// SPEC-0081 R4.1 — a stream filter that cannot evaluate fails closed:
+// events stay unseen for a retry and the round reports blocked so the loop
+// paces instead of hot-spinning.
+func TestStreamPollOnceFilterErrorBlocks(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	sched, err := s.CreateSchedule(Schedule{ScheduleID: "strfe", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "watch dms", JobKind: "event", Delivery: "stream", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc", Filter: `emit("keep")`}}, caller, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.probeScript = func(_ context.Context, _ RoutineOccurrence, _, _ string, _ bool, _ []string) (string, error) {
+		return "", errors.New("script runtime exploded")
+	}
+	toolCall := func(context.Context, string, *WatchProbe) ([]byte, error) {
+		return []byte(`{"events":[{"id":"e1","text":"boss pinged you"}]}`), nil
+	}
+	if _, blocked := g.streamPollOnce(context.Background(), sched, toolCall); !blocked {
+		t.Fatal("failed filter must block the round")
+	}
+	if d, _ := s.ClaimDelivery(); d != nil {
+		t.Fatalf("filter error admitted a stream event: %+v", d)
+	}
+	st, err := s.EventStateOf("strfe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.seen("e1") {
+		t.Fatal("filter error must not mark the stream event seen")
+	}
+	if st.LastError == "" {
+		t.Fatal("filter error must land on the durable state for /watches")
 	}
 }

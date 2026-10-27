@@ -189,6 +189,7 @@ var toolhubFamilies = map[string]bool{
 	"images": true, "artifacts": true, "routines": true, "services": true,
 	"hh": true, "ssh": true, "image_gen": true, "terminal": true,
 	"code_exec": true, "web": true, "settings": true, "exposure": true, "hosting": true,
+	"assignments": true,
 }
 
 // mcpConnectors are builtin MCP-provided capabilities: rendered directly only
@@ -230,6 +231,7 @@ var toolhubCapabilityID = map[string]string{
 	"services": "services", "hh": "hh", "ssh": "ssh", "image_gen": "image_gen",
 	"terminal": "terminal", "code_exec": "terminal", "web": "web",
 	"settings": "settings", "exposure": "exposure", "hosting": "hosting",
+	"assignments": "assignments",
 }
 
 // ToolHubCapabilityID reports the executor capability family a `via: toolhub`

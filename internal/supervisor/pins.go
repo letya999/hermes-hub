@@ -83,6 +83,20 @@ func (m *Manager) ReconcilePins(ctx context.Context) {
 	}
 	m.mu.Unlock()
 	for _, request := range requests {
+		// A pin written under a superseded policy must not respawn the runtime
+		// with the stale hash: restamp it to the space's current policy first.
+		if current := m.currentPolicyVersion(request.UserID); current != "" && request.PolicyVersion != current {
+			request.PolicyVersion = current
+			m.mu.Lock()
+			if _, exists := m.pins[pinKey(request)]; exists {
+				m.pins[pinKey(request)] = request
+				if err := m.persistLocked(); err != nil {
+					m.mu.Unlock()
+					continue
+				}
+			}
+			m.mu.Unlock()
+		}
 		binding, err := m.bindingFor(request)
 		if err != nil {
 			continue

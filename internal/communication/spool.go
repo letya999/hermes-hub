@@ -93,6 +93,20 @@ type Spool struct {
 	// prefetched need results). Nil fails the probe — a script probe without
 	// the supervisor never runs in-process.
 	probeScript func(ctx context.Context, o RoutineOccurrence, src, input string, mountSpace bool, needs []string) (string, error)
+	// refreshHolds, when set (supervised mode), fetches the supervisor's
+	// hold projection at the public enqueue boundary — outside the spool
+	// lock. holdsSnapshot reads the last projection under the lock: an
+	// active hold suppresses the job, a settled hold stamps its operational
+	// epoch so supervisor admission and delivery gating evaluate the epoch
+	// the job was queued under — not a zero value that fails every fence
+	// (SPEC-0053).
+	refreshHolds  func(ctx context.Context) error
+	holdsSnapshot func() []masterHold
+	// resolveChannel, when set, binds engine channel lookups to the owning
+	// gateway's user registry: RouteBlockedNotice retargets to the owner's
+	// verified home only when the real binding is resolvable — the nil-
+	// gateway fallback stays for the pure validation methods.
+	resolveChannel func(id string) routines.OccurrenceChannel
 	// rt is the routines engine (internal/routines) sharing this spool's
 	// mutex and root; it owns the schedules/occurrences/watchers/digests
 	// subtrees and borrows the rest of the spool through its Deps seam.
@@ -187,9 +201,14 @@ func openSpool(root string, create bool) (*Spool, error) {
 		NormalizeDelivery: normalizeDelivery,
 		WriteJSONAtomic:   atomicJSON,
 		Signal:            s.signal,
-		ChannelFor:        func(id string) routines.OccurrenceChannel { return channelFor(nil, id) },
-		ProbeScript:       func() routines.ProbeScriptFunc { return s.probeScript },
-		SettleEvents:      s.settleEvents,
+		ChannelFor: func(id string) routines.OccurrenceChannel {
+			if s.resolveChannel != nil {
+				return s.resolveChannel(id)
+			}
+			return channelFor(nil, id)
+		},
+		ProbeScript:  func() routines.ProbeScriptFunc { return s.probeScript },
+		SettleEvents: s.settleEvents,
 	})
 	return s, nil
 }
@@ -849,6 +868,13 @@ func recoverFiles(from, to string) error {
 }
 
 func (s *Spool) Enqueue(job Job) (bool, error) {
+	if s.refreshHolds != nil {
+		// The hold projection is I/O — refresh at the boundary before the
+		// lock so inner producers and other writers never stall on it.
+		if err := s.refreshHolds(context.Background()); err != nil {
+			return false, err
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.enqueueLocked(job)
@@ -867,6 +893,19 @@ func (s *Spool) enqueueLocked(job Job) (bool, error) {
 		}
 		if job.Trigger != "cron" {
 			job.Envelope.ConversationID = task.ConversationID
+		}
+	}
+	if s.holdsSnapshot != nil {
+		for _, hold := range s.holdsSnapshot() {
+			if hold.PrincipalID != job.PrincipalID || hold.ContextID != job.ContextID {
+				continue
+			}
+			if hold.Active {
+				// Administrative hold: the enqueue is accepted but suppressed —
+				// the same fence enqueueChannelJob applies before dispatch.
+				return true, nil
+			}
+			job.OperationalEpoch = hold.Epoch
 		}
 	}
 	fingerprint := jobFingerprint(job)

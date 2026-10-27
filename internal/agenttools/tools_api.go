@@ -147,6 +147,15 @@ func (t *Tools) Server() *mcp.Server {
 		"watch_subscribe", "watch_list", "watch_pause", "watch_delete"} {
 		add(op, routineDescriptions[op])
 	}
+	for _, op := range []string{"assignment_plan", "assignment_create", "assignment_list", "assignment_get",
+		"assignment_update", "assignment_apply", "assignment_pause", "assignment_resume",
+		"assignment_cancel", "assignment_complete"} {
+		for _, tool := range HubToolsDefinition().Tools {
+			if tool.Name == op {
+				add(op, tool.Description)
+			}
+		}
+	}
 	add("document_extract", "Extract text from one workspace document. Supported formats: txt, md, csv, html, pdf, xlsx, pptx. Unsupported: doc, docx, xls, ppt, odt, rtf, epub, pages. This does not update the file.")
 	add("document_create", "Create a new document under artifacts/documents. Supported formats: txt, md, csv, html, pdf, xlsx, pptx. html escapes the supplied plain text into a page and rejects markup input; use file_write for raw html. pdf, xlsx, and pptx store the supplied text. Does not update an existing file and is separate from file_write.")
 	add("document_edit", "Replace the text of one existing file under artifacts/documents. Supported formats: txt, md, csv, html, pdf, xlsx, pptx. html escapes the supplied plain text and rejects markup input. pdf, xlsx, and pptx are rewritten from the new text. Does not create a file.")

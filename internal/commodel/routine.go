@@ -125,8 +125,13 @@ type Schedule struct {
 	LastDeliveryState   string      `json:"last_delivery_state,omitempty"`
 	// LastFailureSHA256 dedupes owner-facing error deliveries: a routine that
 	// fails every tick with the same normalized error notifies once, and a
-	// success clears it so the next failure notifies again.
+	// success clears it so the next failure notifies again. It is recorded
+	// only once the failure notice is actually delivered.
 	LastFailureSHA256 string `json:"last_failure_sha256,omitempty"`
+	// PendingFailureSHA256 marks a failure notice still in flight: identical
+	// failures enqueue nothing while it stands, and a notice that dies in
+	// outbox/failed releases it so the next identical failure notifies again.
+	PendingFailureSHA256 string `json:"pending_failure_sha256,omitempty"`
 	// BlockedAt/BlockedReason mark a schedule the tick can no longer advance:
 	// the owner sees state "blocked" in routine_get and must edit or delete it.
 	BlockedAt     time.Time     `json:"blocked_at,omitempty"`

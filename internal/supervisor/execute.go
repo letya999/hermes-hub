@@ -383,7 +383,7 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 		if status == "" && response.StatusCode/100 != 2 {
 			status = "uncertain"
 			event := "run.unknown"
-			if response.StatusCode == http.StatusBadRequest || response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden || response.StatusCode == http.StatusUnprocessableEntity {
+			if response.StatusCode == http.StatusBadRequest || response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden || response.StatusCode == http.StatusConflict || response.StatusCode == http.StatusUnprocessableEntity {
 				status = "failed"
 				event = "run.failed"
 			}

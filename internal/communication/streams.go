@@ -241,13 +241,14 @@ func (g *Gateway) streamPollOnce(ctx context.Context, schedule Schedule, toolCal
 // so the loop can pace instead of hot-spinning.
 func (s *Spool) settleStreamEvents(schedule Schedule, body []byte, now time.Time, probeErr error, authorize func(Job) error) ([]Event, bool) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	live, err := s.loadScheduleLocked(schedule.ScheduleID)
 	if err != nil || live.Revision != schedule.Revision || !streamActive(&live, now) {
+		s.mu.Unlock()
 		return nil, true
 	}
 	st, err := s.loadEventStateLocked(schedule.ScheduleID)
 	if err != nil {
+		s.mu.Unlock()
 		return nil, true
 	}
 	if probeErr != nil {
@@ -256,16 +257,19 @@ func (s *Spool) settleStreamEvents(schedule Schedule, body []byte, now time.Time
 			st.Degraded = true
 		}
 		_ = atomicJSON(s.eventPath(schedule.ScheduleID), st)
+		s.mu.Unlock()
 		return nil, true
 	}
 	job := Job{Envelope: schedule.Envelope, OrganizationID: schedule.OrganizationID, UserID: schedule.UserID, ActorID: schedule.ActorID, ScopeID: schedule.ScopeID, Channel: schedule.Channel, ChatID: schedule.ChatID, TaskID: schedule.TaskID, TopicID: schedule.TopicID, SlackChannel: schedule.SlackChannel, SlackThread: schedule.SlackThread, Text: schedule.Input, Trigger: "cron", CreatedAt: now.UTC()}
 	if authorize != nil && authorize(job) != nil {
 		st.LastError = "routine owner unavailable"
 		_ = atomicJSON(s.eventPath(schedule.ScheduleID), st)
+		s.mu.Unlock()
 		return nil, true
 	}
 	events, err := extractEvents(schedule.Probe, body)
 	if err != nil {
+		s.mu.Unlock()
 		return nil, true
 	}
 	if len(events) == 0 {
@@ -273,6 +277,7 @@ func (s *Spool) settleStreamEvents(schedule Schedule, body []byte, now time.Time
 		st.LastSuccess = now
 		st.LastError = ""
 		_ = atomicJSON(s.eventPath(schedule.ScheduleID), st)
+		s.mu.Unlock()
 		return nil, false
 	}
 	fresh := []Event{}
@@ -290,7 +295,57 @@ func (s *Spool) settleStreamEvents(schedule Schedule, body []byte, now time.Time
 	seed := "stream-" + sourceID + "-" + watchHash(strings.Join(ids, "|"))[:16]
 	job.ID = seed
 	job.IdempotencyKey = seed
-	overflowed := s.fanoutEventsLocked(&st, schedule, job, fresh, seed, schedule.ScheduleID, now)
+	s.mu.Unlock()
+
+	// The stream path applies the same deterministic per-event gate as the
+	// occurrence path (SPEC-0081 R4.1), outside the spool lock — the script
+	// runs in the disposable runtime under a synthetic occurrence carrying
+	// the owner's envelope. A filter that cannot evaluate fails closed:
+	// events stay unseen and the round reports blocked so the loop paces.
+	var verdicts map[string]string
+	var filterErr error
+	if live.Probe != nil && live.Probe.Filter != "" && s.probeScript != nil {
+		verdicts = make(map[string]string, len(fresh))
+		proxy := RoutineOccurrence{ScheduleID: live.ScheduleID, DueAt: now, Job: job}
+		for _, ev := range fresh {
+			verdict, verr := s.probeScript(context.Background(), proxy, live.Probe.Filter, ev.Text, false, nil)
+			if verr != nil {
+				filterErr = verr
+				break
+			}
+			verdicts[ev.ID] = strings.TrimSpace(verdict)
+		}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// The schedule may have been paused or re-probed while the filter ran;
+	// re-validate before admitting anything to the sink.
+	live, err = s.loadScheduleLocked(schedule.ScheduleID)
+	if err != nil || live.Revision != schedule.Revision || !streamActive(&live, now) {
+		return nil, true
+	}
+	st, err = s.loadEventStateLocked(schedule.ScheduleID)
+	if err != nil {
+		return nil, true
+	}
+	if filterErr != nil {
+		st.LastError = boundedWatchText(filterErr.Error())
+		_ = atomicJSON(s.eventPath(schedule.ScheduleID), st)
+		return nil, true
+	}
+	kept := make([]Event, 0, len(fresh))
+	for _, ev := range fresh {
+		if st.seen(ev.ID) {
+			continue
+		}
+		if verdicts[ev.ID] == "drop" {
+			st.markSeen(ev.ID, now)
+			continue
+		}
+		kept = append(kept, ev)
+	}
+	overflowed := s.fanoutEventsLocked(&st, schedule, job, kept, seed, schedule.ScheduleID, now)
 	_ = atomicJSON(s.eventPath(schedule.ScheduleID), st)
 	return overflowed, false
 }

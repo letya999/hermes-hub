@@ -317,7 +317,7 @@ func managedEgressHosts(s Settings, dir string) []string {
 			continue
 		}
 		switch name {
-		case "routines", "services":
+		case "routines", "services", "assignments":
 			hosts["communication-hub"] = true
 		case "hh":
 			hosts["api.hh.ru"] = true
