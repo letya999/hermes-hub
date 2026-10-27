@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/letya999/hermes-hub/internal/locale"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
@@ -663,7 +664,7 @@ func TestGoalSetNamedRefusal(t *testing.T) {
 
 // /help advertises the goal command alongside the other session controls.
 func TestHelpAdvertisesGoal(t *testing.T) {
-	if !strings.Contains(commandHelp(), "/goal — ") {
+	if !strings.Contains(commandHelp(locale.LangRU), "/goal — ") {
 		t.Fatal("/goal missing from command help")
 	}
 }

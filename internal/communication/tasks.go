@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/letya999/hermes-hub/internal/commodel"
+	"github.com/letya999/hermes-hub/internal/locale"
 )
 
 // Task is a durable owner/context-scoped conversation unit. The binding is
@@ -168,7 +169,7 @@ func (s *Spool) CreateTask(user User, chatID, topicID int64, name string, makeCu
 	name = strings.TrimSpace(name)
 	auto := name == ""
 	if auto {
-		name = "сессия " + time.Now().UTC().Format("02.01 15:04")
+		name = locale.T(locale.LangOf(user.WorkspaceDir), "task.autoname-pattern", time.Now().UTC().Format("02.01 15:04"))
 	}
 	if !validTaskName(name) {
 		return Task{}, false, errors.New("invalid task name")
@@ -806,9 +807,9 @@ func (s *Spool) StyleForRun(job Job) (string, error) {
 	return style, nil
 }
 
-func taskLabel(task Task) string {
+func taskLabel(lang locale.Lang, task Task) string {
 	if task.TaskID == defaultTaskID {
-		return "default (основной)"
+		return "default (" + locale.T(lang, "label.primary") + ")"
 	}
 	return fmt.Sprintf("%s (%s)", task.Name, task.TaskID)
 }

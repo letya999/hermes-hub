@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/commodel"
+	"github.com/letya999/hermes-hub/internal/locale"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
@@ -110,6 +111,10 @@ func (s *Spool) RecordStreamEvent(job Job, event hubruntime.ExecuteResponse) err
 		s.mu.Unlock()
 		return errors.New("terminal result cannot change")
 	}
+	lang := locale.Fallback()
+	if s.langOf != nil {
+		lang = s.langOf(mapping.PrincipalID)
+	}
 	hash := sha256.Sum256([]byte(job.ID + "\x00" + event.EventID))
 	path := filepath.Join(s.root, "events", hex.EncodeToString(hash[:])+".json")
 	var receipt streamReceipt
@@ -131,25 +136,25 @@ func (s *Spool) RecordStreamEvent(job Job, event hubruntime.ExecuteResponse) err
 		case event.Status == "completed":
 			text, id, markdown = event.Text, "job-"+job.ID+"-response", true
 		case terminalStatus(event.Status):
-			text, id = failureMessage(job.ID, event.Status), "job-"+job.ID+"-error"
+			text, id = failureMessage(lang, job.ID, event.Status), "job-"+job.ID+"-error"
 			if event.Status == "cancelled" && mapping.ApprovalID != "" && !mapping.ApprovalDeadline.IsZero() && !time.Now().Before(mapping.ApprovalDeadline) {
+				key := "job.approval-expired"
 				if mapping.Control != nil && mapping.Control.Choice == "deny" {
-					text = "Подтверждение действия отклонено — задача отменена. ID: " + job.ID
-				} else {
-					text = "Подтверждение действия истекло — задача отменена. ID: " + job.ID
+					key = "job.approval-denied"
 				}
+				text = locale.T(lang, key, job.ID)
 			}
 		case event.LastEvent == "approval.request":
-			text = "Требуется подтверждение действия."
+			text = locale.T(lang, "job.approval-needed")
 			if event.ApprovalSummary != "" {
 				text += "\n" + event.ApprovalSummary
 			}
-			text += "\nДействует до " + receipt.ApprovalDeadline.Format("15:04 UTC") + "; затем задача будет отменена."
-			text += "\n/approve " + job.ID + " " + event.ApprovalID + " <choice>\nВарианты: " + strings.Join(event.ApprovalChoices, ", ") + "\nОтмена: /cancel " + job.ID
+			text += "\n" + locale.T(lang, "job.approval-window", receipt.ApprovalDeadline.Format("15:04 UTC"))
+			text += "\n" + locale.T(lang, "job.approval-hint", job.ID, event.ApprovalID, strings.Join(event.ApprovalChoices, ", "), job.ID)
 		case event.LastEvent == "tool.start" || event.LastEvent == "tool.end" || event.LastEvent == "run.started":
 			text, markdown = strings.TrimSpace(event.Text), true
 			if text == "" && event.LastEvent == "run.started" {
-				text = "Выполняю запрос."
+				text = locale.T(lang, "chat.working")
 			}
 			if text == strings.TrimSpace(mapping.Result) {
 				text = ""

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
@@ -26,6 +26,7 @@ import (
 // Tasks are owner-scoped by construction: the resolved user is the only
 // authority.
 func (g *Gateway) newTaskCommand(ctx context.Context, user User, chatID, topic int64, text string) (string, int64) {
+	lang := locale.LangOf(user.WorkspaceDir)
 	fields := strings.Fields(text)
 	name := strings.TrimSpace(strings.TrimPrefix(text, fields[0]))
 	bind := topic
@@ -34,10 +35,10 @@ func (g *Gateway) newTaskCommand(ctx context.Context, user User, chatID, topic i
 	}
 	created, isNew, err := g.spool.CreateTask(user, chatID, bind, name, true)
 	if err != nil {
-		return "Задача отклонена: " + err.Error(), topic
+		return locale.T(lang, "task.rejected", err.Error()), topic
 	}
 	if !isNew {
-		return "Задача уже есть — переключился на неё: " + taskLabel(created) + ".", topic
+		return locale.T(lang, "task.exists", taskLabel(lang, created)), topic
 	}
 	replyTopic, freshTopic := topic, false
 	if chatID < 0 {
@@ -48,19 +49,19 @@ func (g *Gateway) newTaskCommand(ctx context.Context, user User, chatID, topic i
 		}
 		if !freshTopic && topic != 0 {
 			if err := g.spool.RebindTaskTopic(user, chatID, created.TaskID, topic); err != nil {
-				return "Задача создана и выбрана: " + taskLabel(created) + ". Топик не привязан: " + err.Error() + ".", topic
+				return locale.T(lang, "task.created", taskLabel(lang, created)) + " " + locale.T(lang, "task.topic-bind-failed", err.Error()), topic
 			}
 			created.TopicID = topic
 		}
 	}
-	answer := "Задача создана и выбрана: " + taskLabel(created) + "."
+	answer := locale.T(lang, "task.created", taskLabel(lang, created))
 	if created.NameAuto {
-		answer += " Название появится автоматически после первых сообщений."
+		answer += " " + locale.T(lang, "task.autoname")
 	}
 	if freshTopic {
-		answer += " Для неё создан отдельный топик."
+		answer += " " + locale.T(lang, "task.topic-created")
 	} else if created.TopicID != 0 {
-		answer += " Этот топик теперь привязан к ней."
+		answer += " " + locale.T(lang, "task.topic-bound")
 	}
 	return answer, replyTopic
 }
@@ -68,25 +69,26 @@ func (g *Gateway) newTaskCommand(ctx context.Context, user User, chatID, topic i
 // useCommand implements /use <id|имя|default>: switch the chat's current
 // session. Posting afterwards follows the selected task's conversation.
 func (g *Gateway) useCommand(ctx context.Context, user User, chatID int64, text string) string {
+	lang := locale.LangOf(user.WorkspaceDir)
 	fields := strings.Fields(text)
 	if len(fields) < 2 {
-		return "Используйте /use <id|имя|default>."
+		return locale.T(lang, "task.use-usage")
 	}
 	selector := strings.Join(fields[1:], " ")
 	selected, err := g.spool.UseTask(user, chatID, selector)
 	if err == nil {
-		return "Текущая задача: " + taskLabel(selected) + "."
+		return locale.T(lang, "task.current", taskLabel(lang, selected))
 	}
 	restored, rebound, uerr := g.spool.UnarchiveTask(user, chatID, selector)
 	if uerr != nil {
-		return "Задача не найдена: " + err.Error()
+		return locale.T(lang, "task.not-found", err.Error())
 	}
 	if rebound && chatID < 0 {
 		if err := g.api.ReopenForumTopic(ctx, chatID, restored.TopicID); err != nil {
 			log.Printf("gateway forum topic reopen failed chat=%d topic=%d: %v", chatID, restored.TopicID, err)
 		}
 	}
-	return "Сессия " + taskLabel(restored) + " восстановлена из архива и выбрана текущей."
+	return locale.T(lang, "task.restored", taskLabel(lang, restored))
 }
 
 // deleteCommand implements /delete [id|имя]: bare removes the current task,
@@ -95,6 +97,7 @@ func (g *Gateway) useCommand(ctx context.Context, user User, chatID int64, text 
 // delivered to the group root instead. The upstream Hermes session is kept
 // for audit; only the registry record and routing are removed.
 func (g *Gateway) deleteCommand(ctx context.Context, user User, chatID, topic int64, task Task, text string) (string, int64) {
+	lang := locale.LangOf(user.WorkspaceDir)
 	fields := strings.Fields(text)
 	selector := task.TaskID
 	if len(fields) >= 2 {
@@ -102,7 +105,7 @@ func (g *Gateway) deleteCommand(ctx context.Context, user User, chatID, topic in
 	}
 	deleted, err := g.spool.DeleteTaskBySelector(user, chatID, selector)
 	if err != nil {
-		return "Не удалось удалить: " + err.Error(), topic
+		return locale.T(lang, "task.delete-failed", err.Error()), topic
 	}
 	replyTopic := topic
 	if deleted.TopicID != 0 && chatID < 0 {
@@ -113,7 +116,7 @@ func (g *Gateway) deleteCommand(ctx context.Context, user User, chatID, topic in
 			replyTopic = 0
 		}
 	}
-	return "Задача " + taskLabel(deleted) + " удалена, текущая — default. Её Hermes-сессия сохранена наверху для аудита.", replyTopic
+	return locale.T(lang, "task.deleted", taskLabel(lang, deleted)), replyTopic
 }
 
 // archiveCommand implements /archive [id|имя]: retire the resolved or
@@ -121,39 +124,41 @@ func (g *Gateway) deleteCommand(ctx context.Context, user User, chatID, topic in
 // the archive state; the Hermes session itself is kept for audit and /use
 // can restore it.
 func (g *Gateway) archiveCommand(ctx context.Context, user User, chatID int64, task Task, text string) string {
+	lang := locale.LangOf(user.WorkspaceDir)
 	if fields := strings.Fields(text); len(fields) >= 2 {
 		addressed, err := g.spool.TaskBySelector(user, chatID, strings.Join(fields[1:], " "))
 		if err != nil {
-			return "Задача не найдена: " + err.Error()
+			return locale.T(lang, "task.not-found", err.Error())
 		}
 		task = addressed
 	}
 	archived, err := g.spool.ArchiveTask(user, chatID, task.TaskID)
 	if err != nil {
-		return "Не удалось архивировать: " + err.Error()
+		return locale.T(lang, "task.archive-failed", err.Error())
 	}
 	if archived.TopicID != 0 && chatID < 0 {
 		if err := g.api.CloseForumTopic(ctx, chatID, archived.TopicID); err != nil {
 			log.Printf("gateway forum topic close failed chat=%d topic=%d: %v", chatID, archived.TopicID, err)
 		}
 	}
-	return "Сессия " + taskLabel(archived) + " заархивирована (" + archived.UpdatedAt.UTC().Format("02.01.2006 15:04") + " UTC). Восстановить: /use " + archived.TaskID + "."
+	return locale.T(lang, "task.archived", taskLabel(lang, archived), archived.UpdatedAt.UTC().Format("02.01.2006 15:04"), archived.TaskID)
 }
 
 // archivedCommand implements /archived: list archived sessions with dates.
 func (g *Gateway) archivedCommand(user User, chatID int64) string {
+	lang := locale.LangOf(user.WorkspaceDir)
 	tasks, err := g.spool.ListArchivedTasks(user, chatID)
 	if err != nil {
-		return "Список архива недоступен."
+		return locale.T(lang, "task.archive-list-failed")
 	}
 	if len(tasks) == 0 {
-		return "Архив пуст."
+		return locale.T(lang, "task.archive-empty")
 	}
-	lines := []string{"Архив сессий:"}
+	lines := []string{locale.T(lang, "task.archive-title")}
 	for _, task := range tasks {
-		line := "— " + taskLabel(task)
+		line := "— " + taskLabel(lang, task)
 		if !task.UpdatedAt.IsZero() {
-			line += " — архив " + task.UpdatedAt.UTC().Format("02.01.2006 15:04") + " UTC"
+			line += locale.T(lang, "task.archived-at", task.UpdatedAt.UTC().Format("02.01.2006 15:04"))
 		}
 		lines = append(lines, line)
 	}
@@ -164,21 +169,22 @@ func (g *Gateway) archivedCommand(user User, chatID int64) string {
 // resolved session. A queued job is cancelled locally; an admitted run still
 // goes through the runtime control loop for confirmation.
 func (g *Gateway) stopCommand(user User, task Task, callerForJob func(string) identity.Envelope) string {
+	lang := locale.LangOf(user.WorkspaceDir)
 	jobs, err := g.spool.ActiveJobsForTask(user.ID, task.TaskID)
 	if err != nil {
-		return "Не удалось проверить активные задачи."
+		return locale.T(lang, "stop.check-failed")
 	}
 	if len(jobs) == 0 {
-		return "В этой сессии нет активной работы."
+		return locale.T(locale.LangOf(user.WorkspaceDir), "stop.none")
 	}
 	lines := []string{}
 	for _, job := range jobs {
 		updated, err := g.spool.RequestCancel(job.JobID, callerForJob(job.JobID))
 		if err != nil {
-			lines = append(lines, job.JobID+": отмена недоступна.")
+			lines = append(lines, locale.T(lang, "stop.cancel-unavailable", job.JobID))
 			continue
 		}
-		lines = append(lines, "Останавливаю "+job.JobID+" (состояние: "+updated.Status+").")
+		lines = append(lines, locale.T(lang, "stop.stopping", job.JobID, updated.Status))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -203,19 +209,20 @@ func (g *Gateway) forumTopicCreated(user User, chatID, topicID int64, name strin
 }
 
 func (g *Gateway) taskStatus(user User, task Task) string {
-	answer := "Текущая задача: " + taskLabel(task) + "."
+	lang := locale.LangOf(user.WorkspaceDir)
+	answer := locale.T(lang, "task.current", taskLabel(lang, task))
 	if !task.CreatedAt.IsZero() {
-		answer += " Создана " + task.CreatedAt.UTC().Format("02.01.2006 15:04") + " UTC."
+		answer += " " + locale.T(lang, "task.created-at", task.CreatedAt.UTC().Format("02.01.2006 15:04"))
 	}
 	if task.NameAuto {
-		answer += " Название будет присвоено автоматически."
+		answer += " " + locale.T(lang, "task.autoname-later")
 	}
 	if task.TopicID != 0 {
-		answer += " Топик #" + itoa64(task.TopicID) + "."
+		answer += " " + locale.T(lang, "task.topic-ref", itoa64(task.TopicID))
 	}
 	mapping, found, err := g.spool.SessionFor(user.ID, user.ID, task.ConversationID)
 	if err == nil && found && mapping.SessionID != "" {
-		answer += " Сессия: " + mapping.SessionID + "."
+		answer += " " + locale.T(lang, "task.session-ref", mapping.SessionID)
 	}
 	return answer + g.surfaceLines(user) + g.healthLines(user)
 }
@@ -238,6 +245,7 @@ type runtimeSurface struct {
 // principal/context — a sibling's missing tools never leak. An unreachable
 // supervisor adds nothing: status stays available when supervision is not.
 func (g *Gateway) surfaceLines(user User) string {
+	lang := locale.LangOf(user.WorkspaceDir)
 	if strings.TrimSpace(g.config.RuntimeURL) == "" || strings.TrimSpace(g.config.RuntimeAuth) == "" {
 		return ""
 	}
@@ -254,9 +262,9 @@ func (g *Gateway) surfaceLines(user User) string {
 	}
 	var lines []string
 	if len(surface.MissingTools) > 0 {
-		lines = append(lines, "", "Недоступно:")
+		lines = append(lines, "", locale.T(lang, "surface.missing-title"))
 		for _, name := range surface.MissingTools {
-			lines = append(lines, "- "+name+" — инструмент не раздаётся.")
+			lines = append(lines, locale.T(lang, "surface.missing-tool", name))
 		}
 	}
 	keys := make([]string, 0, len(surface.ToolReasons))
@@ -268,7 +276,7 @@ func (g *Gateway) surfaceLines(user User) string {
 		lines = append(lines, "- "+key+": "+surface.ToolReasons[key]+".")
 	}
 	if surface.ModelStatus == "model_not_found" {
-		lines = append(lines, "Модель не найдена в каталоге провайдера (model_not_found).")
+		lines = append(lines, locale.T(lang, "surface.model-not-found"))
 	}
 	if len(lines) == 0 {
 		return ""
@@ -330,29 +338,30 @@ func (g *Gateway) residentSurface(ctx context.Context) *runtimeSurface {
 // with the current one marked. Archived tasks stay in the spool for audit but
 // are not listed.
 func (g *Gateway) sessionsCommand(user User, chatID int64) string {
+	lang := locale.LangOf(user.WorkspaceDir)
 	tasks, err := g.spool.ListTasks(user, chatID)
 	if err != nil {
-		return "Не удалось получить список задач."
+		return locale.T(lang, "task.list-failed")
 	}
 	current, resolveErr := g.spool.ResolveTask(user, chatID, 0, false)
 	if resolveErr != nil {
-		return "Не удалось получить список задач."
+		return locale.T(lang, "task.list-failed")
 	}
-	lines := []string{"Сессии:"}
+	lines := []string{locale.T(lang, "task.sessions-title")}
 	for _, task := range tasks {
-		line := "- " + taskLabel(task)
+		line := "- " + taskLabel(lang, task)
 		if !task.CreatedAt.IsZero() {
 			line += " — " + task.CreatedAt.UTC().Format("02.01 15:04")
 		}
 		if task.TaskID == current.TaskID {
-			line += " — текущая"
+			line += " — " + locale.T(lang, "task.sessions-current")
 		}
 		if task.TopicID != 0 {
-			line += " (топик #" + itoa64(task.TopicID) + ")"
+			line += locale.T(lang, "task.sessions-topic", itoa64(task.TopicID))
 		}
 		lines = append(lines, line)
 	}
-	lines = append(lines, "Переключение: /use <id|имя|default>. Новая: /new [имя]. Удалить: /delete [id|имя].")
+	lines = append(lines, locale.T(lang, "task.sessions-hint"))
 	return strings.Join(lines, "\n")
 }
 
@@ -361,11 +370,12 @@ func (g *Gateway) sessionsCommand(user User, chatID int64) string {
 // measured upstream fields are rendered; missing counters print "unknown"
 // instead of an estimate.
 func (g *Gateway) usageCommand(ctx context.Context, user User, sender int64, task Task) string {
+	lang := locale.LangOf(user.WorkspaceDir)
 	runner, ok := g.runner.(interface {
 		SessionUsage(context.Context, hubruntime.ExecuteRequest) (hubruntime.SessionUsage, error)
 	})
 	if !ok {
-		return "Измерение расхода недоступно для этого исполнителя."
+		return locale.T(lang, "usage.unsupported")
 	}
 	envelope := user.Envelope(sender)
 	envelope.ConversationID = task.ConversationID
@@ -393,15 +403,14 @@ func (g *Gateway) usageCommand(ctx context.Context, user User, sender int64, tas
 	}
 	if err != nil {
 		if usageTransient(err) {
-			return "Измерение расхода недоступно: сессионный рантайм не поднялся. Повторите /usage через минуту."
+			return locale.T(lang, "usage.transient")
 		}
-		return "Измерение расхода недоступно: " + err.Error()
+		return locale.T(lang, "usage.error", err.Error())
 	}
 	if !report.SessionFound {
-		return "Задача " + taskLabel(task) + ": постоянная Hermes-сессия ещё не создана."
+		return locale.T(lang, "usage.no-session", taskLabel(lang, task))
 	}
-	lines := []string{"Расход сессии: вход " + usageNum(report.InputTokens) + ", выход " + usageNum(report.OutputTokens) +
-		", кэш " + usageNum(report.CacheReadTokens) + "/" + usageNum(report.CacheWriteTokens) + "."}
+	lines := []string{locale.T(lang, "usage.session-line", usageNum(report.InputTokens), usageNum(report.OutputTokens), usageNum(report.CacheReadTokens), usageNum(report.CacheWriteTokens))}
 	// Observed compactions = measured lineage rotations plus journaled
 	// in-place events; either side unknown leaves the whole count unknown.
 	var observed *int64
@@ -424,20 +433,20 @@ func (g *Gateway) usageCommand(ctx context.Context, user User, sender int64, tas
 	if report.LastCompaction != nil {
 		lastEvent = " (" + report.LastCompaction.Trigger + ")"
 	}
-	contextLine := "Сжатий сессии: " + compactions + lastEvent + usageSuffix(report.LastCompactionAt) + "."
+	contextLine := locale.T(lang, "usage.compactions", compactions, lastEvent, usageSuffix(lang, report.LastCompactionAt))
 	if report.ContextTokens != nil && report.ContextWindow != nil && *report.ContextWindow > 0 {
-		contextLine = "Контекст: " + strconv.FormatInt(*report.ContextTokens, 10) + "/" + strconv.FormatInt(*report.ContextWindow, 10) +
-			" (" + strconv.FormatInt(*report.ContextTokens*100/(*report.ContextWindow), 10) + "%). " + contextLine
+		contextLine = locale.T(lang, "usage.context-line", strconv.FormatInt(*report.ContextTokens, 10), strconv.FormatInt(*report.ContextWindow, 10), strconv.FormatInt(*report.ContextTokens*100/(*report.ContextWindow), 10)) + " " + contextLine
 	}
 	lines = append(lines, contextLine)
 	if totals, err := g.spool.UsageTotals("user:" + user.ID); err == nil && totals.Jobs > 0 {
-		lines = append(lines, "Всего по журналу: "+strconv.Itoa(totals.Jobs)+" запусков, вход "+strconv.FormatInt(totals.InputTokens, 10)+", выход "+strconv.FormatInt(totals.OutputTokens, 10)+".")
+		lines = append(lines, locale.T(lang, "usage.totals-line", totals.Jobs, totals.InputTokens, totals.OutputTokens))
 	}
-	lines = append(lines, g.quotaLines(ctx)...)
+	lines = append(lines, g.quotaLines(ctx, lang)...)
 	return strings.Join(lines, "\n")
 }
 
-func (g *Gateway) journalUsage(user User, command string) string {
+func (g *Gateway) journalUsage(user User, command string) (string, bool) {
+	lang := locale.LangOf(user.WorkspaceDir)
 	fields := strings.Fields(command)
 	var since time.Time
 	model := ""
@@ -453,13 +462,13 @@ func (g *Gateway) journalUsage(user User, command string) string {
 				continue
 			}
 		}
-		return "Используйте /usage [day|week|month] [model=<id>] или /usage session."
+		return "", false
 	}
 	totals, err := g.spool.UsageTotalsSince("user:"+user.ID, since, model)
 	if err != nil {
-		return "Журнал расхода недоступен."
+		return locale.T(lang, "usage.journal-failed"), true
 	}
-	return fmt.Sprintf("Журнал: %d попыток; измерено вход %d, выход %d. Неполных измерений: %d; старых записей без точного учёта: %d. Первичных снимков сессии: %d (могут включать более ранний расход).", totals.Jobs, totals.InputTokens, totals.OutputTokens, totals.UnknownJobs, totals.LegacyJobs, totals.InitialSnapshots)
+	return locale.T(lang, "usage.journal-totals", totals.Jobs, totals.InputTokens, totals.OutputTokens, totals.UnknownJobs, totals.LegacyJobs, totals.InitialSnapshots), true
 }
 
 // usageTransient reports lookup-path failures worth one retry: the runtime is
@@ -475,11 +484,11 @@ func usageNum(v *int64) string {
 	return strconv.FormatInt(*v, 10)
 }
 
-func usageSuffix(at string) string {
+func usageSuffix(lang locale.Lang, at string) string {
 	if at == "" {
 		return ""
 	}
-	return ", последнее " + at
+	return locale.T(lang, "usage.last-suffix", at)
 }
 
 func itoa64(v int64) string {
@@ -492,10 +501,11 @@ func itoa64(v int64) string {
 // shared gateway resolves principal → {relay URL, admin bearer} from the
 // enrolled model-relay-admins.json. The relay re-checks grants, so the
 // command can never widen access; an unmapped principal gets no relay at all.
-func modelCommand(ctx context.Context, principal, text string) string {
-	base, admin := modelRelayFor(principal)
+func modelCommand(ctx context.Context, user User, text string) string {
+	lang := locale.LangOf(user.WorkspaceDir)
+	base, admin := modelRelayFor(user.ID)
 	if base == "" {
-		return "Переключение моделей недоступно: в этом пространстве нет управляемого релея."
+		return locale.T(lang, "model.no-relay")
 	}
 	call := func(ctx context.Context, method, path string, body []byte) (int, []byte) {
 		req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(base, "/")+path, bytes.NewReader(body)) // #nosec G704 -- internal control endpoint
@@ -521,7 +531,7 @@ func modelCommand(ctx context.Context, principal, text string) string {
 	if len(fields) < 2 {
 		code, body := call(ctx, http.MethodGet, "/v1/models", nil)
 		if code != http.StatusOK {
-			return "Список моделей недоступен: релей не отвечает."
+			return locale.T(lang, "model.list-failed")
 		}
 		var catalog struct {
 			Data []struct {
@@ -529,7 +539,7 @@ func modelCommand(ctx context.Context, principal, text string) string {
 			} `json:"data"`
 		}
 		if json.Unmarshal(body, &catalog) != nil || len(catalog.Data) == 0 {
-			return "Список моделей пуст."
+			return locale.T(lang, "model.list-empty")
 		}
 		var names []string
 		for _, m := range catalog.Data {
@@ -539,25 +549,25 @@ func modelCommand(ctx context.Context, principal, text string) string {
 		if scode, sbody := call(ctx, http.MethodGet, "/v1/model", nil); scode == http.StatusOK {
 			_ = json.Unmarshal(sbody, &current)
 		}
-		if view := modelAccountView(ctx, call, current); view != "" {
+		if view := modelAccountView(ctx, call, lang, current); view != "" {
 			return view
 		}
 		currentName := ""
 		if current.Model != "" {
-			currentName = " Текущая: " + current.Model + "."
+			currentName = locale.T(lang, "model.current-suffix", current.Model)
 		}
-		return "Модели: " + strings.Join(names, ", ") + "." + currentName + " Переключить: /model <имя>."
+		return locale.T(lang, "model.list-line", strings.Join(names, ", "), currentName)
 	}
 	name := fields[1]
 	payload, _ := json.Marshal(map[string]string{"model": name})
 	code, _ := call(ctx, http.MethodPut, "/v1/model", payload)
 	switch code {
 	case http.StatusOK:
-		return "Модель переключена: " + name + ". Новые запросы пойдут через её лесенку."
+		return locale.T(lang, "model.switched", name)
 	case http.StatusForbidden:
-		return "Нет права на модель " + name + "."
+		return locale.T(lang, "model.denied", name)
 	default:
-		return "Переключение недоступно: релей отклонил запрос."
+		return locale.T(lang, "model.switch-failed")
 	}
 }
 
@@ -605,7 +615,7 @@ type modelSelection struct {
 // catalog is not advertised because those ids cannot be selected. Empty when
 // the relay predates the endpoint; the caller then falls back to the plain
 // catalog.
-func modelAccountView(ctx context.Context, call func(context.Context, string, string, []byte) (int, []byte), current modelSelection) string {
+func modelAccountView(ctx context.Context, call func(context.Context, string, string, []byte) (int, []byte), lang locale.Lang, current modelSelection) string {
 	code, body := call(ctx, http.MethodGet, "/v1/registry", nil)
 	if code != http.StatusOK {
 		return ""
@@ -632,20 +642,20 @@ func modelAccountView(ctx context.Context, call func(context.Context, string, st
 	if registry.Switch == "" {
 		registry.Switch = "logical"
 	}
-	footer := "Переключить: /model <имя>."
+	footer := locale.T(lang, "model.footer-name")
 	switch registry.Switch {
 	case "catalog":
-		footer = "Переключить: /model <имя> или <аккаунт>/<модель>."
+		footer = locale.T(lang, "model.footer-account")
 	case "none":
-		footer = "Переключение моделей отключено."
+		footer = locale.T(lang, "model.switching-off")
 	}
 	var out strings.Builder
 	if len(registry.Accounts) > 0 {
-		out.WriteString("Аккаунты:")
+		out.WriteString(locale.T(lang, "model.accounts-title"))
 		for _, a := range registry.Accounts {
 			out.WriteString("\n• " + a.Provider)
 			if a.Down {
-				out.WriteString(" (недоступен)")
+				out.WriteString(locale.T(lang, "model.unavailable-mark"))
 			}
 			out.WriteString(":")
 			wired := map[string]bool{}
@@ -655,13 +665,13 @@ func modelAccountView(ctx context.Context, call func(context.Context, string, st
 						continue
 					}
 					wired[hop.Model] = true
-					role := "запасной"
+					role := locale.T(lang, "model.role-backup")
 					if i == 0 {
-						role = "основной"
+						role = locale.T(lang, "model.role-primary")
 					}
 					out.WriteString("\n    " + m.Name + " → " + hop.Model + " — " + role)
 					if m.Name == current.Model || (hop.Model == current.Model && a.Provider == current.Provider && current.Provider != "") {
-						out.WriteString(" ← текущая")
+						out.WriteString(locale.T(lang, "model.current-mark"))
 					}
 				}
 			}
@@ -673,12 +683,12 @@ func modelAccountView(ctx context.Context, call func(context.Context, string, st
 					}
 					entry := a.Provider + "/" + id
 					if id == current.Model && a.Provider == current.Provider {
-						entry += " ← текущая"
+						entry += locale.T(lang, "model.current-mark")
 					}
 					extra = append(extra, entry)
 				}
 				if len(extra) > 0 {
-					out.WriteString("\n    ещё: " + strings.Join(extra, ", "))
+					out.WriteString("\n    " + locale.T(lang, "model.more") + strings.Join(extra, ", "))
 				}
 			}
 		}
@@ -691,17 +701,17 @@ func modelAccountView(ctx context.Context, call func(context.Context, string, st
 		}
 		out.WriteString("• " + m.Name)
 		if m.Name == current.Model {
-			out.WriteString(" — текущая")
+			out.WriteString(locale.T(lang, "model.current-inline"))
 		}
 		out.WriteString(":")
 		for i, hop := range m.Ladder {
-			role := "запасной"
+			role := locale.T(lang, "model.role-backup")
 			if i == 0 {
-				role = "основной"
+				role = locale.T(lang, "model.role-primary")
 			}
 			out.WriteString("\n    " + hop.Provider + " → " + hop.Model + " (" + role)
 			if hop.Down {
-				out.WriteString(", недоступен")
+				out.WriteString(locale.T(lang, "model.down-inline"))
 			}
 			out.WriteString(")")
 		}

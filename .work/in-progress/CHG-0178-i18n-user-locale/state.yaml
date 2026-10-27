@@ -1,0 +1,43 @@
+schema: 1
+change: CHG-0178
+title: Channel-agnostic user locale (i18n + a11y)
+status: in_progress
+branch: feat/i18n-user-locale
+updated: 2026-10-27
+phase: implementation
+adr: ADR-0082
+spec: ~
+requirements: [owner-direction-2026-10-27]
+depends_on: []
+github_milestone: ~
+github_issue: ~
+design_status: accepted
+implementation_status: in_progress
+slices:
+  S0-locale-core-and-ladder: done
+  S1-command-surfaces: done
+  S2-progress-background: pending
+  S3-hub-html-a11y: pending
+  S4-broker-pages: pending
+  S5-llm-prompts-contracts: pending
+  S6-operator-tooling: pending
+  S7-voice-fixtures-glossary-docs: pending
+validation:
+  documents: pending
+  just_check: pending
+  docker_check: deferred_no_image_change
+  red_team: pending
+  live_acceptance: pending
+evidence:
+  - "locale: internal/locale package — Lang/Parse/T, prefs ladder, 4 catalogs, parity+interpolation tests green"
+  - "gateway: /language+picker, Delivery.Lang, HUB_USER_LANG, setMyCommands×4, detect ladder; TestMain pins HUB_DEFAULT_LANG=ru for historical assertions"
+  - "internal/communication user-facing literals localized: commands, stream/goal/compact/worker/progress/broker/media/slack/hold/toolhub/prepare notices; remaining Cyrillic is model-facing (S5) or HTML (S3)"
+  - "go test ./internal/locale ./internal/communication — green (75s)"
+remaining:
+  - S2 progress/fon: server_observe, commops health/canary, model_relay_quota, routines/digests, channel/slack+telegram, agenttools next_step
+  - S3 HTML: telegram_auth.go, credential_forms.go, control_http + a11y
+  - S4 broker webtext + ?lang= propagation
+  - S5 LLM prompts → EN + lang hint (prepareContinuation, gateway_goal.go:268)
+  - S6 operator tooling; S7 TTS/fixtures/glossary/docs + just check
+limitations:
+  - Model-facing prompts and HTML pages remain Russian until S5/S3

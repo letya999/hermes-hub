@@ -4,47 +4,49 @@ import (
 	"context"
 	"strings"
 
+	"github.com/letya999/hermes-hub/internal/locale"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
 // botCommandInventory is the single source of truth for supported slash
 // commands: it feeds both the Telegram menu (registered on every startup, so
 // stale scope registrations left by other adapters cannot linger) and /help.
+// DescKey is the catalog entry rendered per the recipient's language.
 var botCommandInventory = []struct {
-	Command     string
-	Description string
+	Command string
+	DescKey string
 }{
-	{"start", "Подключиться к своему Hermes-пространству"},
-	{"new", "Новая сессия (отдельный контекст): /new [имя]"},
-	{"sessions", "Список сессий с датами"},
-	{"use", "Переключиться на сессию: /use <id|имя|default>"},
-	{"delete", "Удалить сессию: /delete [id|имя]"},
-	{"session", "Текущая сессия: имя, дата, session id"},
-	{"status", "Текущая задача без вызова модели"},
-	{"routines", "Напоминания и фоновые проверки"},
-	{"usage", "Журнал расхода: /usage [day|week|month|session]"},
-	{"compact", "Сжать контекст: /compact [here N] [focus <текст>] [prune] [preview]"},
-	{"goal", "Цель-режим: /goal <текст>, /goal status|pause|resume|clear"},
-	{"model", "Модель и провайдер: /model [имя]"},
-	{"connectors", "Подключения и коннекторы ToolHub"},
-	{"connections", "Подключения и коннекторы ToolHub"},
-	{"watches", "Подписки на события коннекторов"},
-	{"credentials", "Код брокера: /credentials <request-id> <code>"},
-	{"approve", "Подтверждение: /approve <job-id> <request-id> <choice>"},
-	{"stop", "Остановить выполнение текущей сессии"},
-	{"cancel", "Отменить задачу: /cancel <job-id>"},
-	{"archive", "Архивировать сессию: /archive [id|имя]"},
-	{"archived", "Архивные сессии с датами"},
+	{"start", "menu.desc.start"},
+	{"new", "menu.desc.new"},
+	{"sessions", "menu.desc.sessions"},
+	{"use", "menu.desc.use"},
+	{"delete", "menu.desc.delete"},
+	{"session", "menu.desc.session"},
+	{"status", "menu.desc.status"},
+	{"routines", "menu.desc.routines"},
+	{"usage", "menu.desc.usage"},
+	{"compact", "menu.desc.compact"},
+	{"goal", "menu.desc.goal"},
+	{"model", "menu.desc.model"},
+	{"connectors", "menu.desc.connectors"},
+	{"connections", "menu.desc.connections"},
+	{"watches", "menu.desc.watches"},
+	{"credentials", "menu.desc.credentials"},
+	{"approve", "menu.desc.approve"},
+	{"stop", "menu.desc.stop"},
+	{"cancel", "menu.desc.cancel"},
+	{"archive", "menu.desc.archive"},
+	{"archived", "menu.desc.archived"},
 }
 
 // commandHelp is the authoritative inventory of supported slash commands;
 // unknown commands are answered with it instead of reaching the model, so a
 // typo can never produce a fabricated confirmation.
-func commandHelp() string {
+func commandHelp(lang locale.Lang) string {
 	var b strings.Builder
-	b.WriteString("Команды:")
+	b.WriteString(locale.T(lang, "help.title"))
 	for _, c := range botCommandInventory {
-		b.WriteString("\n/" + c.Command + " — " + c.Description)
+		b.WriteString("\n/" + c.Command + " — " + locale.T(lang, c.DescKey))
 	}
 	return b.String()
 }
@@ -84,6 +86,6 @@ func (g *Gateway) maybeAutoTitle(ctx context.Context, job Job) {
 		if job.ChatID < 0 && job.TopicID != 0 {
 			_ = g.api.EditForumTopic(ctx, job.ChatID, job.TopicID, strings.TrimSpace(report.Title))
 		}
-		_ = g.spool.EnqueueDelivery(Delivery{ID: "task-" + job.TaskID + "-title", IdempotencyKey: "task-" + job.TaskID + "-title", Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: "Сессия автоматически названа: «" + strings.TrimSpace(report.Title) + "».", CreatedAt: g.now().UTC()})
+		_ = g.spool.EnqueueDelivery(Delivery{ID: "task-" + job.TaskID + "-title", IdempotencyKey: "task-" + job.TaskID + "-title", Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: locale.T(locale.LangOf(g.user(job.UserID).WorkspaceDir), "chat.auto-titled", strings.TrimSpace(report.Title)), CreatedAt: g.now().UTC()})
 	}
 }

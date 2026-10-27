@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
@@ -98,7 +99,7 @@ func (g *Gateway) handlePrepareOutcome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	loginURL := g.telegramAuthInvite(caller, request)
-	notice := prepareOutcomeNotice(request, loginURL)
+	notice := prepareOutcomeNotice(locale.LangOf(user.WorkspaceDir), request, loginURL)
 	key := prepareOutcomeKey(request, loginURL)
 	if err := g.deliverPrepareNotice(user, caller, key, notice, request, loginURL != ""); err != nil {
 		http.Error(w, "prepare outcome rejected", http.StatusBadRequest)
@@ -129,7 +130,7 @@ func (g *Gateway) handleViewerNotice(w http.ResponseWriter, caller identity.Enve
 	}
 	sum := sha256.Sum256([]byte(viewer))
 	key := "viewer-" + request.ConnectionID + "-" + hex.EncodeToString(sum[:4])
-	notice := "Откройте интерактивную сессию браузера: " + viewer + " Вход на сайты выполняется только на этой странице — пароли в чат не отправляйте."
+	notice := locale.T(locale.LangOf(user.WorkspaceDir), "prepare.viewer", viewer)
 	route := prepareOutcomeRequest{OnboardingID: request.ConnectionID, Phase: "viewer", FormURL: viewer}
 	if err := g.deliverPrepareNotice(user, caller, key, notice, route, true); err != nil {
 		http.Error(w, "viewer notice rejected", http.StatusBadRequest)
@@ -164,83 +165,77 @@ func knownPrepareEvent(event string) bool {
 	}
 }
 
-func prepareOutcomeNotice(request prepareOutcomeRequest, loginURL string) string {
+func prepareOutcomeNotice(lang locale.Lang, request prepareOutcomeRequest, loginURL string) string {
 	repo := strings.TrimSpace(request.Repository)
 	if repo == "" {
-		repo = "репозиторий"
+		repo = locale.T(lang, "prepare.repo-fallback")
+	}
+	reason := func() string {
+		if detail := strings.TrimSpace(request.Detail); detail != "" {
+			return locale.T(lang, "prepare.reason", detail)
+		}
+		return ""
 	}
 	switch request.Event {
 	case "prepare-started":
-		return "Принял установку MCP для " + repo + ": скачиваю, собираю образ и проверяю. Это занимает несколько минут — напишу, когда понадобится форма или будет результат."
+		return locale.T(lang, "prepare.started", repo)
 	case "credentials-check":
-		return "Данные из формы приняты. Проверяю их у сервера и запускаю MCP — обычно до минуты."
+		return locale.T(lang, "prepare.creds-check")
 	case "credentials-rejected":
-		text := "Проверка данных для " + repo + " не прошла."
-		if detail := strings.TrimSpace(request.Detail); detail != "" {
-			text += " Причина: " + detail
-		}
-		return text + " Форма на этой странице жива — можно исправить и отправить ещё раз."
+		return locale.T(lang, "prepare.creds-rejected", repo) + reason() + locale.T(lang, "prepare.creds-rejected-tail")
 	case "binding-failed":
-		text := "Данные для " + repo + " сохранены, но запуск не завершился."
-		if detail := strings.TrimSpace(request.Detail); detail != "" {
-			text += " Причина: " + detail
-		}
-		return text + " Напишите в чат «продолжи» — повторное подтверждение пройдёт без формы."
+		return locale.T(lang, "prepare.binding-failed", repo) + reason() + locale.T(lang, "prepare.binding-failed-tail")
 	}
 	// A removal preview keeps the onboarding's prior phase, so the link path —
 	// not the phase — names the pending human action.
 	if remove := actionLink(request.FormURL, "/remove/"); remove != "" {
-		return "Удаление MCP для " + repo + " ждёт подтверждения. Подтвердите по ссылке: " + remove
+		return locale.T(lang, "prepare.remove-confirm", repo, remove)
 	}
 	switch request.Phase {
 	case "awaiting-credentials":
 		if request.CredentialIntake == "telegram_qr" && loginURL != "" {
-			text := "Для подключения Telegram откройте на этом компьютере: " + loginURL + " Введите API ID и API hash, затем создайте QR и подтвердите вход в приложении Telegram. После входа напишите боту «продолжи подключение Telegram». Сессию в чат отправлять не нужно."
+			text := locale.T(lang, "prepare.tg-qr", loginURL)
 			if request.FormURL != "" {
-				text += " Запасная форма: " + request.FormURL
+				text += locale.T(lang, "prepare.form-fallback", request.FormURL)
 			}
 			return text
 		}
-		text := "Подготовка MCP для " + repo + " собрала образ. Сервер ждёт данные в защищённой форме."
+		text := locale.T(lang, "prepare.image-ready", repo)
 		if formURL := strings.TrimSpace(request.FormURL); formURL != "" {
-			text += " Откройте её на этом компьютере: " + formURL
+			text += locale.T(lang, "prepare.form-open", formURL)
 		} else {
-			text += " Ссылка на защищённую форму придёт следующим сообщением."
+			text += locale.T(lang, "prepare.form-next")
 		}
-		return text + " Токен в чат отправлять не нужно."
+		return text + locale.T(lang, "prepare.no-token")
 	case "failed":
-		text := "Подготовка MCP для " + repo + " не завершилась."
-		if detail := strings.TrimSpace(request.Detail); detail != "" {
-			text += " Причина: " + detail
-		}
-		return text
+		return locale.T(lang, "prepare.failed", repo) + reason()
 	case "awaiting-confirm":
-		text := "Подготовка MCP для " + repo + " готова к подтверждению."
+		text := locale.T(lang, "prepare.ready-confirm", repo)
 		if confirm := actionLink(request.FormURL, "/confirm/"); confirm != "" {
-			return text + " Подтвердите подключение по ссылке: " + confirm
+			return text + locale.T(lang, "prepare.confirm-link", confirm)
 		}
 		// The stable wizard link already sits in the edited message — the
 		// replacement text must keep it or the user loses the only URL.
 		if wizardLink(request.FormURL) {
-			return text + " Подтвердите подключение по ссылке: " + strings.TrimSpace(request.FormURL)
+			return text + locale.T(lang, "prepare.confirm-link", strings.TrimSpace(request.FormURL))
 		}
-		return text + " Продолжаю подключение."
+		return text + locale.T(lang, "prepare.continuing")
 	case "awaiting-oauth":
-		text := "MCP для " + repo + " ждёт входа у провайдера."
+		text := locale.T(lang, "prepare.oauth-wait", repo)
 		if connect := actionLink(request.FormURL, "/connect/"); connect != "" {
-			return text + " Откройте страницу авторизации: " + connect
+			return text + locale.T(lang, "prepare.oauth-open", connect)
 		}
 		if device := actionLink(request.FormURL, "/device/"); device != "" {
-			return text + " Откройте страницу входа по коду: " + device
+			return text + locale.T(lang, "prepare.device-open", device)
 		}
 		return text
 	case "enabled":
 		if request.Tools > 0 {
-			return "MCP для " + repo + " подключён: " + strconv.Itoa(request.Tools) + " инструментов в рантайме."
+			return locale.T(lang, "prepare.enabled-tools", repo, request.Tools)
 		}
-		return "MCP для " + repo + " подключён."
+		return locale.T(lang, "prepare.enabled", repo)
 	default:
-		return "Подготовка MCP для " + repo + " завершилась с фазой " + request.Phase + "."
+		return locale.T(lang, "prepare.unknown-phase", repo, request.Phase)
 	}
 }
 

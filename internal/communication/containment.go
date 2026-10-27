@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/locale"
 )
 
 type masterHold struct {
@@ -74,7 +76,7 @@ func (g *Gateway) syncMasterNotices(ctx context.Context) (bool, error) {
 			}
 			continue
 		}
-		text := "Работа приостановлена администратором (" + hold.Reason + "). Для возобновления обратитесь к администратору. Уже выполненные внешние действия не отменены; неопределённые результаты требуют проверки."
+		text := locale.T(locale.LangOf(user.WorkspaceDir), "hold.notice", hold.Reason)
 		if err := g.queueDelivery(ctx, hold.NoticeID, user.TelegramIDs[0], 0, text); err != nil {
 			return pending, err
 		}
