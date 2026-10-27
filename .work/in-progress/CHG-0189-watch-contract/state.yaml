@@ -29,8 +29,10 @@ slices:
     evidence: POST /v1/routines/{id}/sample owner-scoped; watch_sample op in dispatch/catalog/docs/e2e E2E-174; per-source errors surfaced; candidate-filter dry run; no durable side effects
 gates:
   unit_focused: green (agenttools, communication, stack, commodel — targeted runs)
-  just_check: pending
-  live_artem_main: pending
+  just_check: green (86.14% coverage; cmd/toolhub TempDir flake passed on rerun)
+  live_projection: green (114 tools incl. 6 watch_* + sources + watch_sample for artem_two; policies rev12/rev10, profiles rev14/rev15, bindings 5.3.1)
+  live_sample_smoke: green (POST /sample on tg-github-harness-stream-v1 returned raw event JSON + verdict, no side effects)
+  live_agent_e2e: pending (user telegram retest)
 notes:
   - Global routine floor 60s untouched; cadence is per-source via stream probe only.
   - SPEC-0081 R1.6 cursor/next_cursor envelope semantics now held by the stream path too.
