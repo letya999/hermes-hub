@@ -6,6 +6,7 @@ last_verified: 2026-10-26
 
 | Record | Decision |
 |---|---|
+| [ADR-0083](ADR-0083-lean-images-capability-packs.md) | Proposed: lean role images — hub-core/control/runtime/browser split, browser + voice extracted to per-space images, pruned upstream tree, declared capabilities pulled on demand (M26 #371–#380, M27 #383–#390) |
 | [ADR-0082](ADR-0082-standing-assignments.md) | Accepted: standing assignments — durable owner-intent record reconciling to routine artifacts, shared acquisition inside verified boundaries, deterministic filters gating model wakes (M23 #324/#332) |
 | [ADR-0081](ADR-0081-user-scoped-site-hosting.md) | Accepted: user-scoped hosting over existing controller/ToolHub and sish/DNS; static-first, isolated dynamic profile, revocable artifact links; no Haloy fork (M18 #147, renumbered from a duplicate ADR-0079) |
 | [ADR-0080](ADR-0080-per-user-dns-tls.md) | Accepted: per-user subdomains — provider-neutral DNS record contract over regru/DO/delegated GCP+DO profiles, hub-issued per-user wildcard via DNS-01 pushed to sish (renumbered from a duplicate ADR-0078) |

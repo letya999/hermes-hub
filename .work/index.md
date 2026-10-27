@@ -16,6 +16,12 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0187](in-progress/CHG-0187-m26-acceptance/plan.md) | M26 #380 S5: live acceptance — voice/browser/Meet on dev stack, budget gates, before/after sizes + CVEs, docs current |
+| [CHG-0186](in-progress/CHG-0186-browser-sidecar/plan.md) | M26 #378 S4: hub-browser sidecar — per-space container, internal CDP, authenticated noVNC, runtime without Chromium/X11 |
+| [CHG-0185](in-progress/CHG-0185-hub-core-split/plan.md) | M26 #377 S3: hub-core/hub-control role images — Go binaries only, no interpreters/browsers, compose per-service image split |
+| [CHG-0184](in-progress/CHG-0184-voice-consolidation/plan.md) | M26 #375 S2: voice consolidation — whisper/espeak out of hub images, service URLs only, hashed STT/TTS requirements |
+| [CHG-0183](in-progress/CHG-0183-image-hygiene/plan.md) | M26 #373 S1: hygiene — bytecode venv stage, upstream tree prune + .git->SHA file, static noVNC, setuid/e2e/apt cleanup |
+| [CHG-0182](in-progress/CHG-0182-image-budget-gate/plan.md) | M26 #371 S0: image budget gate — baseline evidence frozen, devcheck image-budget check, CI wiring |
 | [CHG-0174](in-progress/CHG-0174-hosting-acceptance/plan.md) | M18 #147 H5: hosting acceptance/current docs — A1–A11 code/runtime/browser/sish evidence; offline gates green, native acceptance pending |
 | [CHG-0173](in-progress/CHG-0173-hosting-dynamic/plan.md) | M18 #147 H4: one admitted stateless go-http profile, secure runtime/relay, restart/finalizers; implemented, offline gates green, native acceptance pending |
 | [CHG-0172](in-progress/CHG-0172-hosting-static-delivery/plan.md) | M18 #147 H3: static agent/stack/exposure delivery and independent recovery; implemented, offline gates green, native acceptance pending |

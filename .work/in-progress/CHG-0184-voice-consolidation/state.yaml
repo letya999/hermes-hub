@@ -1,0 +1,27 @@
+schema: 1
+change: CHG-0184
+title: Voice consolidation
+status: in_progress
+branch: feat/m26-lean-images
+updated: 2026-10-27
+phase: design-complete
+adr: ADR-0083
+spec: SPEC-0082
+requirements: [R2.1, R2.2, R2.3]
+depends_on: [CHG-0183]
+github_milestone: M26 — Lean Role Images
+github_issue: 375
+design_status: accepted
+implementation_status: not_started
+slices:
+  S2.1-single-voice-path: not_started
+  S2.2-hashed-stt-tts: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining: []
+limitations: []
