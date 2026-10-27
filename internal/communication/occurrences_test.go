@@ -353,6 +353,41 @@ func TestFetchWatchRetryAfter(t *testing.T) {
 	}
 }
 
+// GitHub-style rate limiting answers 403, not 429: an explicit Retry-After
+// header must still fence further polls (SPEC-0081 R2.2).
+func TestFetchWatchForbiddenRetryAfter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "90")
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+	g := &Gateway{watchHTTP: server.Client()}
+	_, err := g.fetchWatch(context.Background(), server.URL)
+	var ra *routines.RetryAfterError
+	if !errors.As(err, &ra) || ra.Delay != 90*time.Second {
+		t.Fatalf("403 with Retry-After must surface a typed retry-after: %v", err)
+	}
+}
+
+// GitHub's primary limit answers 403 without Retry-After: an exhausted
+// X-RateLimit budget must back off until the declared reset, not poll every
+// tick into a guaranteed failure (SPEC-0081 R2.2).
+func TestFetchWatchForbiddenRateLimitReset(t *testing.T) {
+	reset := time.Now().Add(2 * time.Minute).Unix()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(reset, 10))
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+	g := &Gateway{watchHTTP: server.Client()}
+	_, err := g.fetchWatch(context.Background(), server.URL)
+	var ra *routines.RetryAfterError
+	if !errors.As(err, &ra) || ra.Delay <= 0 || ra.Delay > 3*time.Minute {
+		t.Fatalf("403 with exhausted rate limit must back off until reset: %v", err)
+	}
+}
+
 // The gateway tick wires schedules -> dispatch -> probing: a watcher created
 // through the schedule path is probed by the loop itself, not only by tests
 // calling ProbeDueOccurrences by hand.
