@@ -150,10 +150,15 @@ type Schedule struct {
 	// Delivery selects how an event subscription is fed: empty/"poll" fires
 	// one occurrence per cron tick, "stream" runs a hub-owned bounded
 	// long-poll loop against the probe tool instead (no occurrences).
-	Delivery      string    `json:"delivery,omitempty"`
-	NativeCronRef string    `json:"native_cron_ref,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	Delivery      string `json:"delivery,omitempty"`
+	NativeCronRef string `json:"native_cron_ref,omitempty"`
+	// AssignmentID marks a schedule provisioned by an assignment apply;
+	// WakePrompt prefixes agent-sink evidence jobs with the specialist's
+	// instructions (SPEC-0080). Both are engine-stamped, never draft-set.
+	AssignmentID string    `json:"assignment_id,omitempty"`
+	WakePrompt   string    `json:"wake_prompt,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 // RoutineDraft is the POST /v1/routines boundary: it carries only the fields

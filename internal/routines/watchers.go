@@ -376,6 +376,11 @@ func (e *Engine) SettleProbe(o commodel.RoutineOccurrence, schedule commodel.Sch
 				// quiet window suppresses it outright — capped, same as the
 				// daily-limit suppression above.
 				live.State = "capped"
+			} else if schedule.AssignmentID != "" && !e.admitAssignmentWakeLocked(schedule.AssignmentID, now) {
+				// Assignment-owned wakes are fenced at admission: paused,
+				// cancelled or over-budget assignments never reach the model
+				// (SPEC-0080 R2.2).
+				live.State = "capped"
 			} else {
 				// Semantic escalation is opt-in per revision: the change
 				// evidence reaches the model flagged untrusted, through the
@@ -383,6 +388,9 @@ func (e *Engine) SettleProbe(o commodel.RoutineOccurrence, schedule commodel.Sch
 				// (SPEC-0054 R2.3).
 				admitted := live.Job
 				admitted.Envelope.ConversationID = RoutineConversation(live.ScheduleID)
+				if schedule.WakePrompt != "" {
+					text = schedule.WakePrompt + "\n---\n" + text
+				}
 				admitted.Text = "[untrusted watcher evidence] " + text
 				if _, err := e.deps.EnqueueJob(admitted); err != nil {
 					return

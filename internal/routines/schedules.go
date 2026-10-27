@@ -78,6 +78,12 @@ func (e *Engine) CreateScheduleAt(in commodel.Schedule, caller identity.Envelope
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	return e.createScheduleAtLocked(in, caller, nativeCron, initialValue, now, routingUser...)
+}
+
+// createScheduleAtLocked is CreateScheduleAt's critical section: callers hold
+// e.mu (assignment reconcile provisions several artifacts in one section).
+func (e *Engine) createScheduleAtLocked(in commodel.Schedule, caller identity.Envelope, nativeCron string, initialValue *string, now time.Time, routingUser ...commodel.User) (commodel.Schedule, error) {
 	if len(routingUser) > 0 && (in.OriginJobID != "" || in.DestinationTaskID != "") {
 		var err error
 		in, err = e.BindRoutineDestinationLocked(in, caller, routingUser[0])
@@ -241,6 +247,12 @@ func (e *Engine) PauseSchedule(id string, caller identity.Envelope, expected ...
 func (e *Engine) DeleteSchedule(id string, caller identity.Envelope, expected ...uint64) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	return e.deleteScheduleLocked(id, caller, expected...)
+}
+
+// deleteScheduleLocked is DeleteSchedule's critical section (orphaned
+// assignment artifacts are removed inside the reconcile section).
+func (e *Engine) deleteScheduleLocked(id string, caller identity.Envelope, expected ...uint64) error {
 	item, err := e.LoadScheduleLocked(id)
 	if err != nil {
 		return err
