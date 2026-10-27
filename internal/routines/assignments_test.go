@@ -324,3 +324,61 @@ func TestAssignmentWakeFenced(t *testing.T) {
 		t.Fatalf("unset grant must fall back to the default budget, got %d", len(wakes))
 	}
 }
+
+// TestAssignmentListOwnerScoped (SPEC-0080 R1.6/R3.1): list returns only the
+// caller's records — a foreign principal sees an empty set, never an error
+// that would reveal existence.
+func TestAssignmentListOwnerScoped(t *testing.T) {
+	e := testEngine(t)
+	for _, id := range []string{"asg-test050", "asg-test051"} {
+		if _, _, err := e.CreateAssignment(newTestAssignment(id), assignmentCaller()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	other := newTestAssignment("asg-test052")
+	other.Envelope = assignmentForeignCaller()
+	if _, _, err := e.CreateAssignment(other, assignmentForeignCaller()); err != nil {
+		t.Fatal(err)
+	}
+	mine, err := e.ListAssignments(assignmentCaller())
+	if err != nil || len(mine) != 2 {
+		t.Fatalf("owner must see exactly own assignments: %d %v", len(mine), err)
+	}
+	theirs, err := e.ListAssignments(assignmentForeignCaller())
+	if err != nil || len(theirs) != 1 || theirs[0].AssignmentID != "asg-test052" {
+		t.Fatalf("foreign list must contain only own records: %+v", theirs)
+	}
+}
+
+// TestAssignmentGrantsNarrowOnly (SPEC-0080 R2.4): a plan update may narrow
+// grants freely, but widening requires an authorization stamped at the
+// plan's own revision — the agent can never widen on its own.
+func TestAssignmentGrantsNarrowOnly(t *testing.T) {
+	e := testEngine(t)
+	in := newTestAssignment("asg-test060")
+	in.Grants.MaxWakesPerDay = 10
+	if _, _, err := e.CreateAssignment(in, assignmentCaller()); err != nil {
+		t.Fatal(err)
+	}
+	narrower := *in.Plan
+	narrower.Revision = 2
+	got, err := e.UpdateAssignmentPlan("asg-test060", narrower, commodel.AssignmentGrants{MaxWakesPerDay: 5}, assignmentCaller())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Grants.MaxWakesPerDay != 5 || got.Plan.Revision != 2 {
+		t.Fatalf("narrowing must apply: %+v", got.Grants)
+	}
+	wider := narrower
+	wider.Revision = 3
+	if _, err := e.UpdateAssignmentPlan("asg-test060", wider, commodel.AssignmentGrants{MaxWakesPerDay: 50}, assignmentCaller()); err == nil {
+		t.Fatal("widening without authorize must be refused")
+	}
+	if err := e.AuthorizeAssignmentGrants("asg-test060", 3, commodel.AssignmentGrants{MaxWakesPerDay: 50}, assignmentCaller()); err != nil {
+		t.Fatal(err)
+	}
+	got, err = e.UpdateAssignmentPlan("asg-test060", wider, commodel.AssignmentGrants{MaxWakesPerDay: 50}, assignmentCaller())
+	if err != nil || got.Grants.MaxWakesPerDay != 50 {
+		t.Fatalf("authorized widening must apply: %+v %v", got.Grants, err)
+	}
+}

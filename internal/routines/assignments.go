@@ -80,6 +80,36 @@ func (e *Engine) LoadAssignment(id string, caller identity.Envelope) (commodel.A
 	return e.assignmentForCallerLocked(id, caller)
 }
 
+// ListAssignments returns the caller's records only (SPEC-0080 R3.1):
+// foreign records are filtered out, never surfaced as errors.
+func (e *Engine) ListAssignments(caller identity.Envelope) ([]commodel.Assignment, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	entries, err := os.ReadDir(filepath.Join(e.root, "assignments"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out []commodel.Assignment
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		var item commodel.Assignment
+		b, err := os.ReadFile(filepath.Join(e.root, "assignments", entry.Name()))
+		if err != nil || json.Unmarshal(b, &item) != nil || item.AssignmentID == "" {
+			continue
+		}
+		if item.Envelope.PrincipalID != caller.PrincipalID || item.Envelope.ContextID != caller.ContextID {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
 // ApplyAssignment reconciles the plan into owned routine artifacts
 // (SPEC-0080 R1.4): deterministic per-name schedule ids, durable receipts,
 // idempotent replay.
@@ -127,6 +157,41 @@ func (e *Engine) ApplyAssignment(id string, caller identity.Envelope) (commodel.
 	item.Revision++
 	item.UpdatedAt = now
 	return item, e.atomicJSON(e.AssignmentPath(id), item)
+}
+
+// UpdateAssignmentPlan stores a new authorized plan generation; grants may
+// only narrow unless authorized at the plan's own revision (SPEC-0080 R2.4).
+func (e *Engine) UpdateAssignmentPlan(id string, plan commodel.AssignmentPlan, grants commodel.AssignmentGrants, caller identity.Envelope) (commodel.Assignment, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	item, err := e.assignmentForCallerLocked(id, caller)
+	if err != nil {
+		return commodel.Assignment{}, err
+	}
+	if grants.MaxWakesPerDay > item.Grants.MaxWakesPerDay && item.GrantsAuthorizedRev != plan.Revision {
+		return commodel.Assignment{}, errors.New("grant widening requires owner authorization at the plan revision")
+	}
+	item.Plan = &plan
+	item.Grants = grants
+	item.Revision++
+	item.UpdatedAt = time.Now().UTC()
+	return item, e.atomicJSON(e.AssignmentPath(id), item)
+}
+
+// AuthorizeAssignmentGrants is the owner chat-command path stamping the plan
+// revision whose widening was explicitly confirmed (SPEC-0080 R2.4).
+func (e *Engine) AuthorizeAssignmentGrants(id string, planRev uint64, grants commodel.AssignmentGrants, caller identity.Envelope) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	item, err := e.assignmentForCallerLocked(id, caller)
+	if err != nil {
+		return err
+	}
+	item.GrantsAuthorizedRev = planRev
+	item.Grants = grants
+	item.Revision++
+	item.UpdatedAt = time.Now().UTC()
+	return e.atomicJSON(e.AssignmentPath(id), item)
 }
 
 // admitAssignmentWakeLocked is the claim-before-wake fence for

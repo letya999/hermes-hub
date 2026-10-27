@@ -101,6 +101,10 @@ type AssignmentCheckpoint struct {
 // not set MaxWakesPerDay (SPEC-0080 R2.3).
 const AssignmentDefaultWakesPerDay = 20
 
+// AssignmentMaxSources bounds plan sources when the owner did not set
+// MaxSources (SPEC-0080 R2.3).
+const AssignmentMaxSources = 8
+
 // AssignmentScheduleID derives the deterministic artifact id a source name
 // provisions to (SPEC-0080 R1.4).
 func AssignmentScheduleID(assignmentID, name string) string {
