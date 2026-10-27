@@ -86,6 +86,10 @@ func SeedInventory() []ToolSection {
 		hub("hub:exposure", EffectExec), // public endpoints: restrictive default, like ssh
 		hub("hub:terminal", EffectExec), // restrictive default, like native:terminal
 		hub("hub:web", EffectMutate),
+		// SPEC-0083 R5.2: governed skills surface — reads and mutations are
+		// separately grantable; mutations still land as drafts.
+		hub("hub:skills", EffectRead),
+		hub("hub:skills_manage", EffectMutate),
 		// The two mutable per-principal surfaces.
 		{ID: SectionUserMCP, Owner: OwnerUser, Effect: EffectCredential, Default: RuleDeny},
 		{ID: SectionOrgMCP, Owner: OwnerOrg, Official: true, Prepared: true, Effect: EffectMutate, Default: RuleAllow},

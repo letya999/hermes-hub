@@ -36,6 +36,7 @@ type Input struct {
 	Root               string         `json:"root,omitempty"`
 	Text               string         `json:"text,omitempty"`
 	Revision           string         `json:"revision,omitempty"`
+	Version            string         `json:"version,omitempty"`
 	Query              string         `json:"query,omitempty"`
 	Format             string         `json:"format,omitempty"`
 	Name               string         `json:"name,omitempty"`
@@ -70,6 +71,7 @@ type Input struct {
 	Command            string         `json:"command,omitempty"`
 	Data               string         `json:"data,omitempty"`
 	Offset             uint64         `json:"offset,omitempty"`
+	Source             string         `json:"source,omitempty"`
 	Key                string         `json:"key,omitempty"`
 	Value              string         `json:"value,omitempty"`
 	Paths              []string       `json:"paths,omitempty"`
@@ -133,9 +135,13 @@ type Tools struct {
 	Restart           func() error
 	CommunicationURL  string
 	CommunicationAuth string
-	Media             *media.Session
-	mu                sync.Mutex
-	lock, envLock     *flock.Flock
+	// Skill paths: SkillsEffective is the read-only mounted effective view
+	// (/skills), SkillsStore the writable owner store (HUB_SKILLS_STORE),
+	// SkillsOrg the writable org store when org-bound (HUB_SKILLS_ORG).
+	SkillsEffective, SkillsStore, SkillsOrg string
+	Media                                   *media.Session
+	mu                                      sync.Mutex
+	lock, envLock                           *flock.Flock
 }
 
 var signalRuntime = func(process *os.Process) {
@@ -210,7 +216,7 @@ func OpenRoots(workspace, archive, organization string) (*Tools, error) {
 		}
 		return nil, err
 	}
-	t := &Tools{Workspace: w, Archive: a, Organization: o, OrgScoped: o != nil, OrgActions: parseActions(os.Getenv("HUB_ORG_ACTIONS")), ReadOnlyTools: readOnlyToolNames(parseActions(os.Getenv("HUB_TOOLS_RO"))), ToolPolicy: toolPolicy, StateDir: stateDir, ToolHub: toolHubStore, ToolHubAuth: toolHubAuth, Restart: func() error { return restartRuntime(stateDir) }, CommunicationURL: strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_CONTROL_URL")), CommunicationAuth: communicationAuth, Media: media.New(w), lock: flock.New(filepath.Join(workspace, ".hub-writer.lock")), envLock: flock.New(filepath.Join(stateDir, ".self-env.lock")), HHURL: "https://api.hh.ru", HHKey: os.Getenv("HH_TOKEN"), UserAgent: os.Getenv("HH_USER_AGENT"), HHEnabled: os.Getenv("HUB_HH_ENABLED") == "true", HTTP: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	t := &Tools{Workspace: w, Archive: a, Organization: o, OrgScoped: o != nil, OrgActions: parseActions(os.Getenv("HUB_ORG_ACTIONS")), ReadOnlyTools: readOnlyToolNames(parseActions(os.Getenv("HUB_TOOLS_RO"))), ToolPolicy: toolPolicy, StateDir: stateDir, ToolHub: toolHubStore, ToolHubAuth: toolHubAuth, Restart: func() error { return restartRuntime(stateDir) }, CommunicationURL: strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_CONTROL_URL")), CommunicationAuth: communicationAuth, SkillsEffective: os.Getenv("HUB_SKILLS_EFFECTIVE"), SkillsStore: os.Getenv("HUB_SKILLS_STORE"), SkillsOrg: os.Getenv("HUB_SKILLS_ORG"), Media: media.New(w), lock: flock.New(filepath.Join(workspace, ".hub-writer.lock")), envLock: flock.New(filepath.Join(stateDir, ".self-env.lock")), HHURL: "https://api.hh.ru", HHKey: os.Getenv("HH_TOKEN"), UserAgent: os.Getenv("HH_USER_AGENT"), HHEnabled: os.Getenv("HUB_HH_ENABLED") == "true", HTTP: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	t.openSSH()
 	t.openExposure()
 	return t, nil

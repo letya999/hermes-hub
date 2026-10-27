@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/letya999/hermes-hub/internal/skillstore"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
 // writeStoreSkill drops a minimal valid skill into a store root.
@@ -119,6 +120,44 @@ func TestComposeMountsEffectiveViewReadOnly(t *testing.T) {
 	}
 	if skillsMount["source"] != filepath.ToSlash(GeneratedEffectiveSkillsDir(dir)) {
 		t.Fatalf("/skills must bind generated/skills-effective, got %v", skillsMount["source"])
+	}
+}
+
+// R5.1: the runtime gets a writable owner store at /skills-store plus the
+// env contract telling the executor which path is which — same in both modes.
+func TestComposeMountsWritableSkillsStore(t *testing.T) {
+	dir := t.TempDir()
+	s := validSettings()
+	svc := RuntimeService(s, "", dir)
+	var storeMount map[string]any
+	for _, volume := range svc["volumes"].([]any) {
+		m, ok := volume.(M)
+		if !ok {
+			continue
+		}
+		if m["target"] == "/skills-store" {
+			storeMount = map[string]any{"source": m["source"], "read_only": m["read_only"]}
+		}
+	}
+	if storeMount == nil {
+		t.Fatal("owner skills store not mounted at /skills-store")
+	}
+	if storeMount["read_only"] == true {
+		t.Fatal("owner skills store must be writable")
+	}
+	if storeMount["source"] != filepath.ToSlash(filepath.Join(dir, "skills")) {
+		t.Fatalf("/skills-store must bind the space store, got %v", storeMount["source"])
+	}
+	env := svc["environment"].(M)
+	if env["HUB_SKILLS_STORE"] != "/skills-store" || env["HUB_SKILLS_EFFECTIVE"] != "/skills" {
+		t.Fatalf("skills env contract missing: %v", env)
+	}
+	// Managed mode renders the same contract.
+	s.CapabilityMode = "managed"
+	s.ExecutionMode = "supervisor"
+	menv := RuntimeService(s, "", dir)["environment"].(M)
+	if menv["HUB_SKILLS_STORE"] != "/skills-store" {
+		t.Fatal("managed compose missing HUB_SKILLS_STORE")
 	}
 }
 
@@ -345,6 +384,104 @@ func TestConfigRendersEmptySkillsSectionInBothModes(t *testing.T) {
 		}
 		if len(skills) != 0 {
 			t.Fatalf("mode=%q: skills must render empty (no external_dirs/disabled): %#v", mode, skills)
+		}
+	}
+}
+
+// R5.2: the skills read/mutate split is a grantable section pair and maps
+// `via: toolhub` entries onto the executor capability families.
+func TestSkillGovernanceSections(t *testing.T) {
+	inventory := map[string]api.ToolSection{}
+	for _, section := range api.SeedInventory() {
+		inventory[section.ID] = section
+	}
+	read, ok := inventory["hub:skills"]
+	if !ok || read.Default != api.RuleAllow || !read.Official {
+		t.Fatalf("hub:skills section missing or wrong: %+v", read)
+	}
+	manage, ok := inventory["hub:skills_manage"]
+	if !ok || manage.Default != api.RuleAllow || !manage.Official {
+		t.Fatalf("hub:skills_manage section missing or wrong: %+v", manage)
+	}
+	if ToolHubCapabilityID("skills") != "skills" || ToolHubCapabilityID("skills_manage") != "skills_manage" {
+		t.Fatal("toolhub capability map missing skills families")
+	}
+}
+
+// The toolhub container mounts the effective view read-only so the managed
+// projection can inject the eligible-names enum into skill.name (R5.1).
+func TestToolhubSeesEffectiveIndexForSkillEnum(t *testing.T) {
+	dir := t.TempDir()
+	s := validSettings()
+	s.CapabilityMode = "managed"
+	s.ExecutionMode = "supervisor"
+	services := Compose(s, "", dir)["services"].(M)
+	toolhub, ok := services["toolhub"].(M)
+	if !ok {
+		t.Fatal("toolhub service missing")
+	}
+	if toolhub["environment"].(M)["HUB_SKILLS_EFFECTIVE"] == "" {
+		t.Fatal("toolhub missing HUB_SKILLS_EFFECTIVE")
+	}
+	found := false
+	for _, volume := range toolhub["volumes"].([]any) {
+		m, ok := volume.(M)
+		if ok && m["target"] == toolhub["environment"].(M)["HUB_SKILLS_EFFECTIVE"] {
+			found = true
+			if m["read_only"] != true {
+				t.Fatal("effective view must be read-only inside toolhub")
+			}
+			if m["source"] != filepath.ToSlash(filepath.Join(dir, "generated", "skills-effective")) {
+				t.Fatalf("effective mount must bind generated/skills-effective, got %v", m["source"])
+			}
+		}
+	}
+	if !found {
+		t.Fatal("toolhub does not mount the effective skills view")
+	}
+}
+
+// Org-bound spaces mount the writable org store beside the user store so
+// propose_to_org can land a draft there (SPEC-0083 R5.2); the mount appears
+// only when the space is org-scoped.
+func TestComposeMountsOrgSkillsStoreWhenOrgScoped(t *testing.T) {
+	dir := t.TempDir()
+	s := validSettings()
+	s.Organization = "acme"
+	s.OrganizationDir = t.TempDir()
+	s.OrganizationSkillsDir = filepath.Join(s.OrganizationDir, "skills")
+	s.OrganizationRole = "admin"
+	var storeMount M
+	for _, volume := range RuntimeService(s, "", dir)["volumes"].([]any) {
+		if m, ok := volume.(M); ok && m["target"] == "/skills-store-org" {
+			storeMount = m
+		}
+	}
+	if storeMount == nil {
+		t.Fatal("org-bound runtime must mount the org skills store")
+	}
+	if storeMount["read_only"] == true {
+		t.Fatal("org skills store must be writable for org drafts")
+	}
+	if storeMount["source"] != filepath.ToSlash(s.OrganizationSkillsDir) {
+		t.Fatalf("/skills-store-org must bind the org store, got %v", storeMount["source"])
+	}
+	if RuntimeService(s, "", dir)["environment"].(M)["HUB_SKILLS_ORG"] != "/skills-store-org" {
+		t.Fatal("runtime env missing HUB_SKILLS_ORG")
+	}
+	// R5.4: org publish authorization needs the bound member's role inside
+	// the runtime — without it skill-apply must refuse org mutations.
+	if RuntimeService(s, "", dir)["environment"].(M)["HUB_ORGANIZATION_ROLE"] != "admin" {
+		t.Fatal("runtime env missing HUB_ORGANIZATION_ROLE")
+	}
+	// A non-org space must not see the mount or the role at all.
+	s2 := validSettings()
+	if _, ok := RuntimeService(s2, "", dir)["environment"].(M)["HUB_ORGANIZATION_ROLE"]; ok {
+		t.Fatal("non-org space must not carry an org role")
+	}
+	for _, volume := range RuntimeService(s2, "", dir)["volumes"].([]any) {
+		if m, ok := volume.(M); ok && m["target"] == "/skills-store-org" {
+			t.Fatal("non-org space must not mount an org store")
 		}
 	}
 }

@@ -132,6 +132,30 @@ Available here | Verification**. Include a brief reason and supported next
 step for unavailable entries. An empty list means "nothing returned by this
 scope/surface", unless a complete authoritative inventory proves more.
 
+## Agent skills
+
+Skills are governed content: a skill is a `SKILL.md` (frontmatter +
+instructions) plus optional resource files. The live tree is the read-only
+effective view `/skills`; owner-writable drafts live in `/skills-store`, and
+organization drafts in `/skills-store-org` (org-bound spaces only).
+
+Five tools cover the surface. `skill` invokes a skill by name and returns its
+frontmatter-stripped instructions plus resource file *names* — resource
+contents are read only through `skill_view`. `skills_search`, `skills_list`
+and `skill_view` are reads against the effective view. `skill_manage` is the
+only mutation tool and **always creates a draft**; it never changes the live
+tree directly.
+
+Publication is a human act: after `skill_manage`, communication delivers a
+nonce-protected approval card (`confirm_url`; `link_sent=false` means the
+draft exists but the card was not delivered). The owner's click relays to the
+runtime `/v1/skill-apply`, which is the sole mutator of the mounted stores.
+Replayed or cross-user card links fail. `patch`/`edit` carry `base_revision`
+for optimistic concurrency. `propose_to_org` lands an organization draft;
+org publish requires an owner/admin organization role at apply time —
+`hubctl skill promote` is the operator path. Every draft passes the
+deterministic scan pipeline before it can be published.
+
 ## Status and evidence
 
 - Operation `done`: that requested action completed.

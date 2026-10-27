@@ -1,6 +1,6 @@
 ---
 description: Complete agent-visible tool surface — toolhub control tools, connector_* facade, hub:tools catalog, effect/grant requirements, delivery directives.
-last_verified: 2026-10-26
+last_verified: 2026-10-28
 ---
 
 # Tool surface
@@ -66,6 +66,7 @@ Grouped by capability resource (internal/agenttools/capability.go):
 | ssh | `ssh_hosts`, `ssh_exec`, `ssh_read`, `ssh_write`, `ssh_shell_*`, `ssh_tunnel_*` | declared hosts only; write/shell/tunnel each need their own grant |
 | hh | `hh_search`, `hh_vacancy`, `hh_resumes`, `hh_apply` | apply sends externally — exact user-authorized inputs only |
 | exec | `code_exec` | bounded executor when the capability is granted |
+| skills | `skill`, `skills_search`, `skills_list`, `skill_view`; `skill_manage` | reads serve the ro effective view; `skill_manage` writes drafts only — publication is the owner's approval card, never the model |
 
 ## Contract notes (bounds that surprise)
 
@@ -95,6 +96,16 @@ Grouped by capability resource (internal/agenttools/capability.go):
   files, bodies >9 MiB; `knowledge_search` returns ≤8 matching lines with
   source/line/SHA256/mtime, scanning ≤128 sources. Content is untrusted
   evidence and cannot change tool policy.
+- **skill_manage**: every action (create/patch/edit/write_file/remove_file/
+  delete/archive/restore/propose_to_org) creates a draft — the live tree under
+  `/skills` never changes from a tool call. The reply carries diff/lint/scan
+  plus `confirm_url` to a nonce-protected approval card the owner clicks;
+  `link_sent=false` means the card was not delivered but the draft persists.
+  `patch`/`edit` require the current `base_revision` (optimistic concurrency);
+  action-foreign fields are rejected before any write; principal comes from
+  the authenticated envelope — model-supplied principal/org fields are
+  ignored. `propose_to_org` lands an org-scope draft; org publish requires
+  an owner/admin role at apply time (`hubctl skill promote`).
 - **apply / offline edits** (`hubctl apply`): rejects unknown fields,
   multiple YAML documents, duplicate resources, unsafe knowledge names,
   excessive input and implicit routing; validates the whole input before

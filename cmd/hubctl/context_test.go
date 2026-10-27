@@ -7,6 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/letya999/hermes-hub/internal/skillstore"
+	"github.com/letya999/hermes-hub/internal/stack"
+	"gopkg.in/yaml.v3"
 )
 
 func TestContextMemorySkillRoutineCLI(t *testing.T) {
@@ -183,6 +187,69 @@ func TestContextMemorySkillRoutineCLI(t *testing.T) {
 	}
 	if err := run(ctx, []string{"memory", "list", "--dir", dir, "--user", "owner"}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// skill promote publishes an org-store draft on behalf of a bound member;
+// the member's org role gates it exactly like runtime skill-apply (R5.4).
+func TestSkillPromotePublishesOrgDraft(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	dir := filepath.Join(root, "spaces", "me")
+	orgDir := filepath.Join(root, "spaces", "acme")
+	if err := run(ctx, []string{"org-init", "--org", "acme", "--org-dir", orgDir, "--user", "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(ctx, []string{"init", "--dir", dir, "--user", "owner", "--org", "acme"}); err != nil {
+		t.Fatal(err)
+	}
+	orgStore, err := skillstore.Open(filepath.Join(orgDir, "skills"), skillstore.ScopeOrg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft, err := orgStore.CreateDraft("team-skill", skillstore.Tree{
+		skillstore.SkillFile: {Data: []byte("---\nname: team-skill\ndescription: t\n---\n\nTeam body.\n")},
+	}, skillstore.DraftMeta{Author: "agent", Reason: "proposal"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run(ctx, []string{"skill", "promote", "--dir", dir, "--user", "owner", "--id", draft.ID}); err != nil {
+		t.Fatalf("owner promote failed: %v", err)
+	}
+	if _, err := orgStore.Tree("team-skill"); err != nil {
+		t.Fatalf("org draft not promoted: %v", err)
+	}
+	// A plain member cannot promote.
+	memberDraft, err := orgStore.CreateDraft("team-skill-2", skillstore.Tree{
+		skillstore.SkillFile: {Data: []byte("---\nname: team-skill-2\ndescription: t\n---\n\nTwo.\n")},
+	}, skillstore.DraftMeta{Author: "agent", Reason: "proposal"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	memberDir := filepath.Join(root, "spaces", "joe")
+	if err := run(ctx, []string{"init", "--dir", memberDir, "--user", "joe", "--org", "acme"}); err != nil {
+		t.Fatal(err)
+	}
+	// Make joe a plain member in the org scope.
+	orgSettings, err := stack.ReadOrganization(orgDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orgSettings.Members["joe"] = "member"
+	raw, err := yaml.Marshal(orgSettings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"settings.yaml", "scope.yaml"} {
+		if err := os.WriteFile(filepath.Join(orgDir, name), raw, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := run(ctx, []string{"skill", "promote", "--dir", memberDir, "--user", "joe", "--id", memberDraft.ID}); err == nil {
+		t.Fatal("member promoted an org draft")
+	}
+	if _, err := orgStore.Tree("team-skill-2"); err == nil {
+		t.Fatal("member's draft went live in the org store")
 	}
 }
 

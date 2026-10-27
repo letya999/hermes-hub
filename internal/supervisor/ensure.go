@@ -481,6 +481,16 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	}
 	args = append(args, "--mount", "type=bind,src="+stack.GeneratedEffectiveSkillsDir(binding.ContextRoot)+",dst=/skills,readonly")
 	args = append(args, "--tmpfs", "/state/hermes/skills:ro,mode=0555")
+	// R5.1: the owner store is writable beside the read-only effective view;
+	// the env contract tells the executor which path is which. skill_manage
+	// writes drafts here — never into /skills.
+	args = append(args, "--mount", "type=bind,src="+filepath.Join(binding.ContextRoot, "skills")+",dst=/skills-store")
+	args = append(args, "-e", "HUB_SKILLS_STORE=/skills-store", "-e", "HUB_SKILLS_EFFECTIVE=/skills")
+	// R5.2: org-bound spawns also mount the writable org store for org drafts;
+	// HUB_SKILLS_ORG reaches the env through the rendered service contract.
+	if spawnSettings.OrgScoped() && spawnSettings.OrganizationSkillsDir != "" {
+		args = append(args, "--mount", "type=bind,src="+spawnSettings.OrganizationSkillsDir+",dst=/skills-store-org")
+	}
 	// Same contract for hub plugins: materialize the feature-filtered copy at
 	// spawn and mount each plugin read-only into upstream's bundled plugins
 	// dir, where kind=backend manifests auto-load. A disabled feature leaves
@@ -605,6 +615,12 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 		return nil, fmt.Errorf("effective skills view: %w", err)
 	}
 	args = append(args, "--mount", "type=bind,src="+stack.GeneratedEffectiveSkillsDir(binding.ContextRoot)+",dst=/skills,readonly")
+	// R5.1: identical to unmanaged — owner store writable at /skills-store.
+	args = append(args, "--mount", "type=bind,src="+filepath.Join(managedDir, "skills")+",dst=/skills-store")
+	args = append(args, "-e", "HUB_SKILLS_STORE=/skills-store", "-e", "HUB_SKILLS_EFFECTIVE=/skills")
+	if settings.OrgScoped() && settings.OrganizationSkillsDir != "" {
+		args = append(args, "--mount", "type=bind,src="+settings.OrganizationSkillsDir+",dst=/skills-store-org")
+	}
 	effectiveConfig, err := m.materializeHermesConfig(binding, env)
 	if err != nil {
 		return nil, err

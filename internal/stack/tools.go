@@ -230,6 +230,7 @@ var toolhubCapabilityID = map[string]string{
 	"services": "services", "hh": "hh", "ssh": "ssh", "image_gen": "image_gen",
 	"terminal": "terminal", "code_exec": "terminal", "web": "web",
 	"settings": "settings", "exposure": "exposure", "hosting": "hosting",
+	"skills": "skills", "skills_manage": "skills_manage",
 }
 
 // ToolHubCapabilityID reports the executor capability family a `via: toolhub`

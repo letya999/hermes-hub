@@ -387,18 +387,27 @@ func (s *Store) retainRevision(name string, tree Tree) error {
 	return nil
 }
 
-// Rollback republishes a retained revision as a new revision, restoring
-// the exec flags recorded beside that revision.
-func (s *Store) Rollback(name, rev string) (string, error) {
+// RevisionTree reads a retained revision without republishing it.
+func (s *Store) RevisionTree(name, rev string) (Tree, error) {
 	tree, err := loadTree(filepath.Join(s.root, revisionsDir, name, rev))
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	for _, path := range readExecList(filepath.Join(s.root, revisionsDir, name, rev+".exec")) {
 		if f, ok := tree[path]; ok {
 			f.Exec = true
 			tree[path] = f
 		}
+	}
+	return tree, nil
+}
+
+// Rollback republishes a retained revision as a new revision, restoring
+// the exec flags recorded beside that revision.
+func (s *Store) Rollback(name, rev string) (string, error) {
+	tree, err := s.RevisionTree(name, rev)
+	if err != nil {
+		return "", err
 	}
 	back, err := s.publish(name, tree, IndexMeta{Author: "user", Source: "rollback"}, true)
 	if err == nil {
@@ -433,8 +442,9 @@ func (s *Store) Archive(name, reason, absorbedInto, actor string) error {
 	return nil
 }
 
-// Restore moves the newest archive entry back to the live location.
-func (s *Store) Restore(name string) error {
+// RestoreAt restores a specific archive stamp; empty stamp means newest.
+// A live skill under the same name conflicts — archive it first.
+func (s *Store) RestoreAt(name, stamp string) error {
 	unlock, err := s.lock(name)
 	if err != nil {
 		return err
@@ -443,27 +453,64 @@ func (s *Store) Restore(name string) error {
 	if _, err := os.Stat(s.dir(name)); err == nil {
 		return fmt.Errorf("%w: live skill already exists", ErrConflict)
 	}
-	entries, err := os.ReadDir(filepath.Join(s.root, archiveDir, name))
-	if errors.Is(err, os.ErrNotExist) {
-		return ErrNotFound
-	}
-	if err != nil {
-		return err
-	}
-	var newest string
-	for _, e := range entries {
-		if e.IsDir() && e.Name() > newest {
-			newest = e.Name()
+	if stamp == "" {
+		entries, err := os.ReadDir(filepath.Join(s.root, archiveDir, name))
+		if errors.Is(err, os.ErrNotExist) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if e.IsDir() && e.Name() > stamp {
+				stamp = e.Name()
+			}
+		}
+		if stamp == "" {
+			return ErrNotFound
 		}
 	}
-	if newest == "" {
-		return ErrNotFound
-	}
-	if err := os.Rename(filepath.Join(s.root, archiveDir, name, newest), s.dir(name)); err != nil {
+	if err := os.Rename(filepath.Join(s.root, archiveDir, name, stamp), s.dir(name)); err != nil {
 		return err
 	}
 	s.audit("restored", name)
 	return nil
+}
+
+// Restore moves the newest archive entry back to the live location.
+func (s *Store) Restore(name string) error {
+	return s.RestoreAt(name, "")
+}
+
+// ArchiveTree reads an archived entry without touching it; stamp "" selects
+// the newest. Returns the tree and the stamp it came from.
+func (s *Store) ArchiveTree(name, stamp string) (Tree, string, error) {
+	base := filepath.Join(s.root, archiveDir, name)
+	if stamp == "" {
+		entries, err := os.ReadDir(base)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, "", ErrNotFound
+		}
+		if err != nil {
+			return nil, "", err
+		}
+		for _, e := range entries {
+			if e.IsDir() && e.Name() > stamp {
+				stamp = e.Name()
+			}
+		}
+		if stamp == "" {
+			return nil, "", ErrNotFound
+		}
+	}
+	tree, err := loadTree(filepath.Join(base, stamp))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, "", ErrNotFound
+		}
+		return nil, "", err
+	}
+	return tree, stamp, nil
 }
 
 // swapDir atomically replaces target with the prepared tmp dir. On Windows

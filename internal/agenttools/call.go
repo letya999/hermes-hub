@@ -48,6 +48,15 @@ func (t *Tools) ExecCall(ctx context.Context, name string, arguments map[string]
 	if name == "image_inspect" && len(r.Paths) > 0 {
 		return nil, errors.New("use images_inspect for capability-admitted image sets")
 	}
+	if name == "skill_manage" {
+		if reason := t.toolPolicyDeny(name); reason != "" {
+			return nil, errors.New(reason)
+		}
+		if t.ReadOnlyTools[name] {
+			return nil, fmt.Errorf("%s is read-only on this runtime", name)
+		}
+		return t.skillManage(ctx, arguments)
+	}
 	ws, ar, org, done, err := t.scopedRoots(name, &r, scopes)
 	if err != nil {
 		return nil, err
@@ -161,6 +170,8 @@ func (t *Tools) call(ctx context.Context, name string, r Input, ws, ar, org *os.
 		return t.hostingCall(ctx, name, r, ws)
 	case "exposure_list", "exposure_status", "exposure_open", "exposure_close":
 		return t.exposureDispatch(ctx, name, r)
+	case "skill", "skills_search", "skills_list", "skill_view", "skill_manage":
+		return t.skillCall(ctx, name, r)
 	default:
 		return nil, fmt.Errorf("unknown tool %q", name)
 	}

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/skillstore"
 	"github.com/letya999/hermes-hub/internal/skillstore/scan"
+	"github.com/letya999/hermes-hub/internal/stack"
 )
 
 func runContext(_ context.Context, args []string) error {
@@ -104,7 +106,7 @@ func runMemory(_ context.Context, args []string) error {
 
 func runSkill(_ context.Context, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("skill requires list, show, install, drafts, approve, reject, rollback, archive or restore")
+		return fmt.Errorf("skill requires list, show, install, drafts, approve, reject, rollback, archive, restore or promote")
 	}
 	sub := args[0]
 	f := flag.NewFlagSet("skill", flag.ContinueOnError)
@@ -254,6 +256,29 @@ func runSkill(_ context.Context, args []string) error {
 			return err
 		}
 		_, err = st.Rollback(*name, *to)
+		return err
+	case "promote":
+		if *id == "" {
+			return fmt.Errorf("skill promote requires --id")
+		}
+		s, err := stack.ReadEnvironment(abs, "prod")
+		if err != nil {
+			return err
+		}
+		if s.OrganizationSkillsDir == "" {
+			return errors.New("skill promote: space is not bound to an organization skills store")
+		}
+		// Same gate as runtime /v1/skill-apply: org publish needs owner/admin.
+		switch s.OrganizationRole {
+		case "owner", "admin":
+		default:
+			return fmt.Errorf("skill promote requires an owner/admin role, got %q", s.OrganizationRole)
+		}
+		st, err := skillstore.Open(s.OrganizationSkillsDir, skillstore.ScopeOrg)
+		if err != nil {
+			return err
+		}
+		_, err = st.PublishDraft(*id, *profile)
 		return err
 	default:
 		return fmt.Errorf("unknown skill command %q", sub)

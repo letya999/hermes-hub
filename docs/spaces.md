@@ -1,6 +1,6 @@
 ---
 description: spaces/<id>/ layout — settings.yaml, generated configs, secrets/env files, state dirs, and what is hand-edited vs rendered.
-last_verified: 2026-10-27
+last_verified: 2026-10-28
 ---
 
 # Spaces
@@ -71,7 +71,8 @@ mcp:
   effective skills view `generated/skills-effective/` (platform > org > user,
   mounted read-only at `/skills` — sources are `config/skills/`,
   `<org>/skills/` and `spaces/<user>/skills/`; `skills/` is the user-scope
-  store), feature-gated plugins (`generated/plugins/<name>` mounts read-only
+  store — bind-mounted rw at `/skills-store`, org scope rw at
+  `/skills-store-org` on org-bound spaces only), feature-gated plugins (`generated/plugins/<name>` mounts read-only
   into `/opt/hermes/plugins/` — `source "bundled"`, kind "backend",
   auto-loads, agent-untouchable).
 - `connections/` — connector materialization output.

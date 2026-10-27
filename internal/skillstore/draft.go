@@ -20,6 +20,9 @@ type DraftMeta struct {
 	SessionID    string         `json:"session_id,omitempty"`
 	Reason       string         `json:"reason"`
 	BaseRevision string         `json:"base_revision,omitempty"`
+	Action       string         `json:"action,omitempty"` // ""|publish|archive|restore
+	AbsorbedInto string         `json:"absorbed_into,omitempty"`
+	RestoreStamp string         `json:"restore_stamp,omitempty"`
 	Tainted      bool           `json:"tainted,omitempty"`
 	TaintSources []string       `json:"taint_sources,omitempty"` // web|inbound|connector|git
 	ScanVerdict  string         `json:"scan_verdict,omitempty"`
@@ -163,10 +166,18 @@ func (s *Store) PublishDraft(id, approver string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	rev, err := s.publish(d.Name, tree, IndexMeta{
-		Author: approver, Source: "draft:" + d.Meta.Author,
-		BaseRevision: d.Meta.BaseRevision, SessionID: d.Meta.SessionID,
-	}, true)
+	rev := ""
+	switch d.Meta.Action {
+	case "archive":
+		err = s.Archive(d.Name, d.Meta.Reason, d.Meta.AbsorbedInto, approver)
+	case "restore":
+		err = s.RestoreAt(d.Name, d.Meta.RestoreStamp)
+	default:
+		rev, err = s.publish(d.Name, tree, IndexMeta{
+			Author: approver, Source: "draft:" + d.Meta.Author,
+			BaseRevision: d.Meta.BaseRevision, SessionID: d.Meta.SessionID,
+		}, true)
+	}
 	if err != nil {
 		return "", err
 	}

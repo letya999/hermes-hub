@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/media"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"io"
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -180,5 +182,63 @@ func (t *Tools) Server() *mcp.Server {
 	t.registerSSH(s)
 	t.registerExposure(s)
 	t.registerHosting(s)
+	t.registerSkills(s)
 	return s
+}
+
+// registerSkills exposes the governed skills surface (SPEC-0083 R5.1). The
+// skill.name enum is filled from the mounted effective index so the model
+// sees exactly the names it may activate; the executor still re-validates.
+func (t *Tools) registerSkills(s *mcp.Server) {
+	names := []string{}
+	if idx, err := t.effectiveIndex(); err == nil {
+		for _, e := range idx.Skills {
+			names = append(names, e.Name)
+		}
+	}
+	slices.Sort(names)
+	enum, _ := json.Marshal(names)
+	skillSchema := json.RawMessage(`{"type":"object","properties":{"name":{"type":"string","enum":` + string(enum) + `},"args":{"type":"string"}},"required":["name"],"additionalProperties":false}`)
+	add := func(spec api.ToolSpec) {
+		tool := &mcp.Tool{Name: spec.Name, Description: spec.Description}
+		if len(spec.InputSchema) > 0 {
+			tool.InputSchema = spec.InputSchema
+		}
+		mcp.AddTool(s, tool, func(ctx context.Context, req *mcp.CallToolRequest, r Input) (*mcp.CallToolResult, map[string]any, error) {
+			var out any
+			var err error
+			if spec.Name == "skill_manage" {
+				// Input cannot carry the action fields — ExecCall re-validates
+				// the raw map, identical to the ToolHub-admitted path.
+				var args map[string]any
+				if uerr := json.Unmarshal(req.Params.Arguments, &args); uerr != nil {
+					return nil, nil, uerr
+				}
+				out, err = t.ExecCall(ctx, spec.Name, args, nil)
+			} else {
+				out, err = t.Call(ctx, spec.Name, r)
+			}
+			if err != nil {
+				return nil, nil, err
+			}
+			result, ok := out.(map[string]any)
+			if !ok {
+				return nil, nil, fmt.Errorf("tool %s returned a non-object result", spec.Name)
+			}
+			return nil, result, nil
+		})
+	}
+	for _, spec := range HubToolsDefinition().Tools {
+		family, _, _ := strings.Cut(spec.CapabilityID, ".")
+		if family != "skills" && family != "skills_manage" {
+			continue
+		}
+		if spec.Name == "skill" {
+			spec.InputSchema = skillSchema
+		}
+		if spec.Name == "skill_manage" {
+			spec.InputSchema, _ = json.Marshal(api.CliInputSchema(spec))
+		}
+		add(spec)
+	}
 }

@@ -2293,3 +2293,86 @@ func TestGoalForwardReachesOwningRuntime(t *testing.T) {
 		t.Fatalf("foreign binding=%d", recorder.Code)
 	}
 }
+
+// TestRunArgsMountsWritableSkillsStore checks the R5.1 runtime contract:
+// the effective view stays read-only at /skills while the owner store is
+// writable at /skills-store, and the env contract tells the executor both.
+func TestRunArgsMountsWritableSkillsStore(t *testing.T) {
+	t.Setenv("HUB_ENV", "dev")
+	m, root := testManager(t, func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil }, nil)
+	ctx := filepath.Join(root, "spaces", "bob")
+	for _, name := range []string{"runtime", "hermes", "workspace", "skills"} {
+		if err := os.MkdirAll(filepath.Join(ctx, name), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, body := range map[string]string{"runtime.auth": "HUB_RUNTIME_AUTH=secret\n", "hermes.dev.yaml": "model: {}", "runtime.dev.env": "OPENAI_API_KEY=k\n"} {
+		if err := os.WriteFile(filepath.Join(ctx, name), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rawArgs, err := m.runArgs(binding(ctx), "hermes-context-bob", 19001)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(rawArgs, " ")
+	want := "type=bind,src=" + filepath.Join(ctx, "skills") + ",dst=/skills-store"
+	if !strings.Contains(joined, want) {
+		t.Fatalf("run args missing writable skills store mount: %s", joined)
+	}
+	for _, env := range []string{"HUB_SKILLS_STORE=/skills-store", "HUB_SKILLS_EFFECTIVE=/skills"} {
+		if !strings.Contains(joined, env) {
+			t.Fatalf("run args missing %s: %s", env, joined)
+		}
+	}
+	// The effective mount must still be read-only.
+	if strings.Contains(joined, "dst=/skills,") && !strings.Contains(joined, "dst=/skills,readonly") {
+		t.Fatalf("effective view lost its read-only flag: %s", joined)
+	}
+}
+
+// R5.2: org-bound spawns mount the writable org store at /skills-store-org
+// and export HUB_SKILLS_ORG; personal spaces get neither.
+func TestRunArgsMountsOrgSkillsStoreWhenOrgScoped(t *testing.T) {
+	t.Setenv("HUB_ENV", "dev")
+	m, root := testManager(t, func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil }, nil)
+	ctx := filepath.Join(root, "spaces", "bob")
+	for _, name := range []string{"runtime", "hermes", "workspace", "skills"} {
+		if err := os.MkdirAll(filepath.Join(ctx, name), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	orgDir := filepath.Join(root, "spaces", "acme")
+	for _, name := range []string{"docs", "skills"} {
+		if err := os.MkdirAll(filepath.Join(orgDir, name), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	orgSettings := "schema: 1\norganization: acme\nmembers:\n  bob: owner\nfeatures: [workspace]\n"
+	if err := os.WriteFile(filepath.Join(orgDir, "settings.yaml"), []byte(orgSettings), 0600); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"settings.yaml":   "schema: 1\nuser: bob\norganization: acme\nfeatures: [workspace]\nbrowser_port: 6080\noauth_port: 8000\n",
+		"runtime.auth":    "HUB_RUNTIME_AUTH=secret\n",
+		"hermes.dev.yaml": "model: {}",
+		"runtime.dev.env": "OPENAI_API_KEY=k\n",
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(ctx, name), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rawArgs, err := m.runArgs(binding(ctx), "hermes-context-bob", 19001)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(rawArgs, " ")
+	want := "type=bind,src=" + filepath.Join(orgDir, "skills") + ",dst=/skills-store-org"
+	if !strings.Contains(joined, want) {
+		t.Fatalf("org-bound run args missing org store mount: %s", joined)
+	}
+	if !strings.Contains(joined, "HUB_SKILLS_ORG=/skills-store-org") {
+		t.Fatalf("org-bound run args missing HUB_SKILLS_ORG: %s", joined)
+	}
+}

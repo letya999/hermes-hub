@@ -45,6 +45,7 @@ type Gateway struct {
 	transcriber  Transcriber
 	synthesizer  Synthesizer
 	forms        formRegistry
+	drafts       skillDraftRegistry
 	telegramAuth *telegramAuthState
 	quota        quotaTracker
 	// contentUntil bounds the explicit content-capture window: inside it

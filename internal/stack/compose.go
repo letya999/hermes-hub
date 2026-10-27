@@ -188,6 +188,19 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	// Render: platform > org > user, with gated platform skills absent
 	// entirely when the feature is off.
 	stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(GeneratedEffectiveSkillsDir(dir)), "target": "/skills", "read_only": true})
+	// R5.1: the owner store is writable beside the read-only view; env tells
+	// the executor which path is which. Drafts never touch /skills.
+	stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "skills")), "target": "/skills-store"})
+	runtimeEnv["HUB_SKILLS_STORE"] = "/skills-store"
+	runtimeEnv["HUB_SKILLS_EFFECTIVE"] = "/skills"
+	// R5.2: org-bound spaces also mount the writable org store so org
+	// proposals land as drafts there; absent on personal spaces.
+	if s.OrgScoped() && s.OrganizationSkillsDir != "" {
+		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(s.OrganizationSkillsDir), "target": "/skills-store-org"})
+		runtimeEnv["HUB_SKILLS_ORG"] = "/skills-store-org"
+		// R5.4: the bound member's role gates org publishes at apply time.
+		runtimeEnv["HUB_ORGANIZATION_ROLE"] = s.OrganizationRole
+	}
 	if s.CapabilityMode != "managed" {
 		for name, feature := range hubGatedPlugins {
 			if !s.Has(feature) {
@@ -426,7 +439,9 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// the boundary — owner argv still lands in a mountless sandbox.
 		toolhubEnv["HUB_CLI_ALLOWLIST"] = "rg,bash"
 		toolhubEnv["HUB_DOCKER_AGENT_NET"] = managedAgentNetwork(s)
-		toolhubVolumes := []any{stateBind, brokerSecrets("toolhub"), brokerMaterializedMount, credStagingMount}
+		toolhubEnv["HUB_SKILLS_EFFECTIVE"] = "/skills-effective"
+		toolhubVolumes := []any{stateBind, brokerSecrets("toolhub"), brokerMaterializedMount, credStagingMount,
+			M{"type": "bind", "source": filepath.ToSlash(GeneratedEffectiveSkillsDir(dir)), "target": "/skills-effective", "read_only": true}}
 		if s.usesDockerSocket() {
 			toolhubVolumes = append(toolhubVolumes, dockerSock)
 		}

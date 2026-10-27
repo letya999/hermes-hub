@@ -1,0 +1,25 @@
+chg: CHG-0192
+title: M24 #360 S5 — ToolHub skill tools + draft approval cards + hubctl
+issue: 360
+status: done
+slices:
+  S5.1-agenttools-skills: done
+  store-action-kinds: done
+  mounts-env: done
+  S5.2-definitions-sections-enum: done
+  S5.3-confirm-card: done
+  S5.4-org-drafts: done
+  S5.5-hubctl: done
+  S5.6-docs: done
+  S5.7-e2e-registry: done
+verification: "go test touched packages green; just check green (coverage 86.09%); docker gates not run (out of scope this session)"
+notes: >
+  Executor runs in-container (tools-exec/tools-daemon); reads use /skills
+  effective view + index.json, writes go to /skills-store (rw bind of
+  spaces/<u>/skills). Publish is human-only: communication mints a
+  loopback nonce page; POST relays to runtime /v1/skill-apply which is the
+  only mutator path. Org scope is gated on HUB_ORGANIZATION_ROLE
+  (owner/admin) and writes /skills-store-org; hubctl skill promote is the
+  operator path for org drafts. Catalog bumped to hub-agent-tools@5.1.0
+  (5 skill tools), unmanaged MCP surface handles skill_manage through the
+  same ExecCall path as the managed executor.
