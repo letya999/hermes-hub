@@ -240,25 +240,37 @@ func prepareOutcomeNotice(lang locale.Lang, request prepareOutcomeRequest, login
 	}
 }
 
-func prepareContinuation(request prepareOutcomeRequest) string {
+// prepareContinuation composes the model-facing service message that resumes
+// the agent after a settled prepare outcome. The instruction stays English —
+// a neutral scaffold the model follows reliably — and the owner's language
+// travels as an explicit hint so the visible reply lands in the user's own
+// language instead of drifting to the instruction language.
+func prepareContinuation(request prepareOutcomeRequest, lang locale.Lang) string {
 	repo := strings.TrimSpace(request.Repository)
 	if repo == "" {
-		repo = "репозиторий"
+		repo = "repository"
 	}
-	text := "Служебное продолжение установки MCP. prepare_source для " + repo + " закончился, фаза " + request.Phase + ", onboarding_id " + request.OnboardingID + ". Вызови mcp__toolhub__status с этим onboarding_id. Если фаза awaiting-credentials, вызови mcp__toolhub__required_credentials и отправь пользователю form_url. Не проси токен в чат. Не используй терминал и не меняй config.yaml."
+	text := "Service continuation of an MCP install. prepare_source for " + repo + " finished, phase " + request.Phase + ", onboarding_id " + request.OnboardingID + ". Call mcp__toolhub__status with this onboarding_id. If the phase is awaiting-credentials, call mcp__toolhub__required_credentials and send the user form_url. Do not ask for a token in chat. Do not use the terminal and do not edit config.yaml."
 	if request.Phase == "awaiting-oauth" && actionLink(request.FormURL, "/connect/") != "" {
-		text = "Служебное продолжение установки MCP. Ссылка авторизации для " + repo + " уже отправлена пользователю в статусном сообщении выше — скажи ему открыть её и войти у провайдера; ссылку в чат не дублируй и не конструируй. Если фаза стала enabled, сообщи о подключении. Если пользователь просит ссылку или сообщает, что она не работает, вызови mcp__toolhub__status с onboarding_id " + request.OnboardingID + " и resend=true — в чат придёт свежее сообщение со ссылкой. Не проси токен в чат. Не используй терминал и не меняй config.yaml."
+		text = "Service continuation of an MCP install. The authorization link for " + repo + " was already sent to the user in the status message above — tell them to open it and sign in at the provider; do not repost or construct the link in chat. If the phase became enabled, announce the connection. If the user asks for the link or reports it does not work, call mcp__toolhub__status with onboarding_id " + request.OnboardingID + " and resend=true — the chat will get a fresh message with the link. Do not ask for a token in chat. Do not use the terminal and do not edit config.yaml."
 	}
 	if request.Phase == "awaiting-confirm" && actionLink(request.FormURL, "/confirm/") != "" {
-		text = "Служебное продолжение установки MCP. Ссылка подтверждения для " + repo + " уже отправлена пользователю отдельным сообщением — скажи открыть её. Если он не видит ссылку или она истекла, вызови mcp__toolhub__status с onboarding_id " + request.OnboardingID + " и resend=true: канал отправит новое сообщение. Не конструируй ссылку и не проси данные в чат."
+		text = "Service continuation of an MCP install. The confirmation link for " + repo + " was already sent to the user in a separate message — tell them to open it. If they cannot see the link or it expired, call mcp__toolhub__status with onboarding_id " + request.OnboardingID + " and resend=true: the channel will send a new message. Do not construct the link and do not ask for data in chat."
 	}
 	if request.Phase == "awaiting-credentials" && strings.TrimSpace(request.FormURL) != "" {
-		text = "Служебное продолжение установки MCP. Пользователю уже отправлена ссылка на форму для " + repo + ", onboarding_id " + request.OnboardingID + ". Не отправляй другую ссылку и не выдумывай ошибку сети. Если пользователь пишет, что форма не приняла токен, вызови mcp__toolhub__status и перескажи error. Не проси токен в чат. Не используй терминал и не меняй config.yaml."
+		text = "Service continuation of an MCP install. The user was already sent the form link for " + repo + ", onboarding_id " + request.OnboardingID + ". Do not send another link and do not invent a network error. If the user says the form rejected the token, call mcp__toolhub__status and relay the error. Do not ask for a token in chat. Do not use the terminal and do not edit config.yaml."
 	}
 	if wizardLink(request.FormURL) && (request.Phase == "awaiting-credentials" || request.Phase == "awaiting-confirm" || request.Phase == "awaiting-oauth") {
-		text = "Служебное продолжение установки MCP " + repo + ", фаза " + request.Phase + ". Вся установка идёт на одной странице: ссылка пользователю уже отправлена, скажи ему вернуться на ту же ссылку — страница сама покажет текущий шаг (форма, подтверждение или вход Google). Других сообщений, кнопок или ссылок подтверждения нет, не упоминай их. Если ссылка не открывается или истекла, вызови mcp__toolhub__status с onboarding_id " + request.OnboardingID + " и resend=true. Ответь одним коротким сообщением. Не конструируй ссылку и не проси данные в чат."
+		text = "Service continuation of an MCP install " + repo + ", phase " + request.Phase + ". The whole setup happens on one page: the link was already sent to the user — tell them to return to that same link; the page itself shows the current step (form, confirmation or Google sign-in). There are no other messages, buttons or confirmation links — do not mention any. If the link does not open or expired, call mcp__toolhub__status with onboarding_id " + request.OnboardingID + " and resend=true. Reply with one short message. Do not construct links and do not ask for data in chat."
 	}
-	return text
+	return text + modelLangHint(lang)
+}
+
+// modelLangHint appends the owner's language to a model-facing instruction:
+// English stays the instruction scaffold while the visible reply is pinned to
+// the user's own language.
+func modelLangHint(lang locale.Lang) string {
+	return " The user's language is " + locale.Names[lang] + " (" + string(lang) + "); answer the user in that language."
 }
 
 // actionLink returns the validated human-action URL when its path carries the
@@ -428,7 +440,7 @@ func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key,
 		Envelope: envelope, ID: key, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID,
 		ScopeID: "user:" + user.ID, Channel: channelName, Trigger: "prepare", IdempotencyKey: key,
 		ChatID: chatID, TaskID: bound.TaskID, TopicID: topicID,
-		Text: prepareContinuation(request), CreatedAt: now,
+		Text: prepareContinuation(request, locale.LangOf(user.WorkspaceDir)), CreatedAt: now,
 	}
 	// The outcome key tracks the action link, not this job's payload: a
 	// resend under a stable wizard link can carry a drifted envelope or

@@ -86,7 +86,9 @@ func (g *Gateway) goalVerb(ctx context.Context, user User, task Task, sender int
 		if !found {
 			return reply(locale.T(lang, "goal.none"))
 		}
-		prompt := "resume"
+		// Hub-engine resumes restate no upstream prompt: the synthesized kick
+		// carries the owner's language hint like every model-facing text.
+		prompt := "Resume the goal and continue working toward it." + modelLangHint(locale.LangOf(user.WorkspaceDir))
 		if goal.Engine == "native" {
 			// Upstream is authoritative — the verb moves its record and the
 			// mirrored state (plus resume's continuation prompt) comes back.
@@ -265,7 +267,7 @@ func (g *Gateway) goalAfterJob(ctx context.Context, job Job, response string) {
 		// SPEC-0074 R3b: hub-engine evaluations carry no continuation_prompt —
 		// the next turn restates the goal and the verdict reason; an empty
 		// prompt would fail as "empty Hermes prompt" before any dispatch.
-		prompt = "Цель: " + goal.Text + "\nВердикт предыдущего хода: " + goal.LastReason + "\nПродолжай работу над целью."
+		prompt = "Goal: " + goal.Text + "\nPrevious turn verdict: " + goal.LastReason + "\nContinue working toward the goal." + modelLangHint(locale.LangOf(user.WorkspaceDir))
 	}
 	_ = g.enqueueGoalTurn(user, task, job.Channel, job.ChatID, sender, goal, prompt)
 }

@@ -45,7 +45,7 @@ func Init(root string) error {
 		clear(priv)
 		c.TrustedKeys = append(c.TrustedKeys, KeyConfig{ID: v.id, Issuer: v.issuer, PublicKeyFile: filepath.Join(root, "keys", v.id+".public"), Audiences: []string{v.audience}})
 	}
-	cc := contract.Contract{ID: "github-pat", Revision: 1, Title: "GitHub: personal token", Storage: "local", Fields: []contract.Field{{ID: "token", Label: "GitHub token", Kind: "secret", Required: true, MaxBytes: 4096}}, Deliveries: []contract.Delivery{{Type: "env", Field: "token", Target: "GITHUB_PERSONAL_ACCESS_TOKEN"}}, AllowShared: false}
+	cc := contract.Contract{ID: "github-pat", Revision: 1, Title: "GitHub: personal token", TitleI18n: map[string]string{"ru": "GitHub: персональный токен", "kk": "GitHub: жеке токен", "es": "GitHub: token de acceso personal"}, Storage: "local", Fields: []contract.Field{{ID: "token", Label: "GitHub token", LabelI18n: map[string]string{"ru": "Токен GitHub", "kk": "GitHub токені", "es": "Token de GitHub"}, Kind: "secret", Required: true, MaxBytes: 4096}}, Deliveries: []contract.Delivery{{Type: "env", Field: "token", Target: "GITHUB_PERSONAL_ACCESS_TOKEN"}}, AllowShared: false}
 	if e := WriteJSON(filepath.Join(root, "contracts/github-pat.json"), cc); e != nil {
 		return e
 	}

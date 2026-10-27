@@ -149,6 +149,35 @@ func TestBrowserSubmitSuccessLocalized(t *testing.T) {
 	}
 }
 
+// A contract's deployer-declared title_i18n/label_i18n resolve per request
+// language; languages the contract does not translate keep the base text.
+func TestBrowserFormLocalizesContractText(t *testing.T) {
+	c := apiContract()
+	c.TitleI18n = map[string]string{"es": "Token de API revisado"}
+	c.Fields[0].LabelI18n = map[string]string{"es": "Token de acceso personal"}
+	f := fixtureHTTP(t, c, safenet.Policy{}, nil)
+	w := f.api("POST", "/v1/requests", "broker:control", actor, v1.CreateRequest{
+		ContractID: c.ID, ContractRevision: c.Revision, ConnectionID: "gitlab", OnboardingID: "onboard1",
+		IdempotencyKey: "es_i18n_key", OwnerKind: "user",
+	})
+	r := parseResponse[v1.Request](t, w, http.StatusCreated)
+	cookie, _ := f.pair(r)
+	req := f.request("GET", "/connect/"+r.ID+"?lang=es", "", actor, nil)
+	req.AddCookie(cookie)
+	if body := f.serve(req).Body.String(); !strings.Contains(body, "Token de API revisado") || !strings.Contains(body, "Token de acceso personal") {
+		t.Fatalf("es form did not render i18n text:\n%s", body)
+	}
+	req = f.request("GET", "/connect/"+r.ID+"?lang=kk", "", actor, nil)
+	req.AddCookie(cookie)
+	body := f.serve(req).Body.String()
+	if !strings.Contains(body, "API token") {
+		t.Fatalf("kk form must fall back to base label:\n%s", body)
+	}
+	if strings.Contains(body, "Token de API revisado") {
+		t.Fatal("kk form leaked the es title")
+	}
+}
+
 // An OAuth contract's submit lands on the authorizing redirect, which must
 // carry ?lang= forward so the hop page keeps the negotiated language.
 func TestBrowserAuthorizingRedirectKeepsLang(t *testing.T) {

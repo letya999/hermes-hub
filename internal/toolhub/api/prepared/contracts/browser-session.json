@@ -2,11 +2,21 @@
   "id": "browser-session",
   "revision": 1,
   "title": "Browser session import and origin bounds",
+  "title_i18n": {
+    "ru": "Импорт сессии браузера и границы origin",
+    "kk": "Браузер сессиясын импорттау және origin шекаралары",
+    "es": "Importación de sesión de navegador y límites de origen"
+  },
   "storage": "local",
   "fields": [
     {
       "id": "storage_state",
       "label": "Playwright storage_state.json — optional session import",
+      "label_i18n": {
+        "ru": "Playwright storage_state.json — необязательный импорт сессии",
+        "kk": "Playwright storage_state.json — міндетті емес сессия импорты",
+        "es": "storage_state.json de Playwright: importación de sesión opcional"
+      },
       "kind": "json",
       "required": false,
       "max_bytes": 65536
@@ -14,6 +24,11 @@
     {
       "id": "allowed_origins",
       "label": "Semicolon-separated trusted origins (optional, not a security boundary)",
+      "label_i18n": {
+        "ru": "Доверенные origin через точку с запятой (необязательно, не граница безопасности)",
+        "kk": "Сенімді origin тізімі нүктелі үтірмен (міндетті емес, қауіпсіздік шекарасы емес)",
+        "es": "Orígenes de confianza separados por punto y coma (opcional, no es límite de seguridad)"
+      },
       "kind": "string",
       "required": false,
       "max_bytes": 4096
@@ -21,6 +36,11 @@
     {
       "id": "blocked_origins",
       "label": "Semicolon-separated blocked origins, evaluated before the allowlist",
+      "label_i18n": {
+        "ru": "Заблокированные origin через точку с запятой, проверяются до allowlist",
+        "kk": "Блокталған origin тізімі нүктелі үтірмен, allowlist-тен бұрын тексеріледі",
+        "es": "Orígenes bloqueados separados por punto y coma, evaluados antes de la lista blanca"
+      },
       "kind": "string",
       "required": false,
       "max_bytes": 4096

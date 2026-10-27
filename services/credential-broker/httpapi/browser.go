@@ -86,6 +86,13 @@ func (s *Server) browser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		lang := browserLang(r)
+		view.Title = contract.Localize(view.TitleI18n, lang, view.Title)
+		for i := range view.Fields {
+			view.Fields[i].Label = view.Fields[i].LabelFor(lang)
+		}
+		for i := range view.Extra {
+			view.Extra[i].Label = view.Extra[i].LabelFor(lang)
+		}
 		http.SetCookie(w, &http.Cookie{Name: s.cookieName(), Value: raw, Path: "/", HttpOnly: true, Secure: !s.cfg.DevHTTP, SameSite: http.SameSiteLaxMode, MaxAge: 900}) // #nosec G124 -- DevHTTP is restricted to loopback; production requires HTTPS and Secure cookies.
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_ = formPage.Execute(w, struct {

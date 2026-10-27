@@ -9,6 +9,7 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
@@ -195,7 +196,7 @@ func (c telegram) SendPresence(ctx context.Context, chatID, topicID int64) error
 func (c telegram) DeliverArtifact(ctx context.Context, delivery *commodel.Delivery, ref hubruntime.ArtifactRef) error {
 	deps := c.d
 	if ref.Error != "" {
-		return deps.API().SendMessage(ctx, delivery.ChatID, delivery.TopicID, LimitTelegramText("Файл не удалось доставить: "+ref.Name), "")
+		return deps.API().SendMessage(ctx, delivery.ChatID, delivery.TopicID, LimitTelegramText(locale.T(delivery.Lang, "artifact.failed", ref.Name)), "")
 	}
 	data, err := deps.ReadDeliveryBlob(delivery.ID, ref.Blob)
 	if err != nil {

@@ -19,7 +19,7 @@ slices:
   S2-progress-background: done
   S3-hub-html-a11y: done
   S4-broker-pages: done
-  S5-llm-prompts-contracts: pending
+  S5-llm-prompts-contracts: done
   S6-operator-tooling: pending
   S7-voice-fixtures-glossary-docs: pending
 validation:
@@ -39,10 +39,16 @@ evidence:
   - "go test ./internal/{toolhub,communication,locale} — green (110s/230s); zero Cyrillic literals in toolhub non-test files"
   - "S4: credential-broker own webText catalog (en/ru/kk/es, 20 keys) in httpapi/webtext.go — standalone module cannot import internal/locale; browserLang = ?lang= > Accept-Language(q-ranked) > en; formPage template localized with ?lang= on approve-check/submit/oauth actions and authorizing redirect; success(w,lang); dev-seeded contract title → EN; hub forwards lang into BrokerAuthorizationURL (brokerHopPage + ?request= redirect)"
   - "broker just check in Docker (golang:1.27.3-bookworm, module is linux-only): gofmt/vet/openapi/archtest/secrets/docs/race+build green, coverage 89.83% (all pkgs ≥85%)"
+  - "S5: model-facing prompts → EN + modelLangHint(locale.LangOf(workspace)): prepareContinuation (all 5 branches), goalAfterJob fallback, 'resume' kick; instruction body is English, hint carries native self-name + code"
+  - "telegram DeliverArtifact failure localized via artifact.failed ×4 catalogs using delivery.Lang"
+  - "contract schema: Field.LabelI18n + Contract.TitleI18n (≤8 entries, tag regex, ≤240 bytes); Localize exact→base-tag→base-text; Extra.Validate validates label_i18n; SessionView.TitleI18n carried through OpenSession; browser resolves Title/Labels per-request lang"
+  - "all 13 prepared contracts carry ru/kk/es title_i18n + label_i18n with English base (google-file-session flipped); prepared_i18n_test enforces translations + English base + env-name labels exempt; app/init.go demo seed translated"
+  - "openapi.json regenerated: Field.label_i18n + Contract.title_i18n as string-map objects; drift check green"
+  - "broker check in Docker green again after schema change: coverage 89.89% (all pkgs ≥85%)"
 remaining:
-  - S5 LLM prompts → EN + lang hint (prepareContinuation, gateway_goal.go:268)
-  - S6 operator tooling; S7 TTS/fixtures/glossary/docs + just check
+  - S6 operator tooling (hubctl FormatStatus/ApplyChat 'Статус:' strings, scripts, docker py)
+  - S7 TTS_VOICE_{RU,KK,ES} map, e2e/devcheck fixtures, examples/contracts i18n decision, glossary + docs re-verify
 limitations:
-  - Model-facing prompts remain Russian until S5; viewer title stays English product name; broker-callback persisted Error uses operator fallback (no request context)
+  - Model-facing prompts are English + explicit lang hint; viewer title stays English product name; broker-callback persisted Error uses operator fallback (no request context)
   - Broker /oauth/callback success page resolves lang via Accept-Language (provider redirect carries no ?lang=) — same browser, honest fallback
-  - Contract Title/Field.Label and examples/contracts are deployer-authored data — rendered verbatim, not localized
+  - examples/contracts/*.json stay deployer-authored verbatim (deferred to S7 docs decision); secrets.go/hubctl 'Статус:' strings are operator surfaces → S6
