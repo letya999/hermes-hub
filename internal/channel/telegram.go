@@ -169,10 +169,21 @@ func (c telegram) JobEnvelope(user commodel.User, chatID, sender int64) identity
 }
 
 func (c telegram) RouteBlockedNotice(item commodel.Schedule, d *commodel.Delivery) {
-	target := item.Envelope.DeliveryTargetID
+	// The notice goes to the owner's CURRENT verified binding — the durable
+	// envelope target may be stale (the chat remapped to another principal
+	// since enrollment), and a stale binding is exactly what may have caused
+	// the block.
+	owner := c.d.UserByPrincipal(item.Envelope.PrincipalID)
+	if len(owner.TelegramIDs) == 0 {
+		// No verified home: clear the address so normalize refuses the
+		// notice instead of rerouting it to the stale chat.
+		d.ConversationID, d.DeliveryTargetID, d.ChatID = "", "", 0
+		return
+	}
+	target := "telegram-" + strconv.FormatInt(owner.TelegramIDs[0], 10)
 	d.ConversationID, d.DeliveryTargetID = target, target
 	d.TaskID, d.TopicID = "", 0
-	d.ChatID, _ = strconv.ParseInt(strings.TrimPrefix(target, "telegram-"), 10, 64)
+	d.ChatID = owner.TelegramIDs[0]
 }
 
 func (c telegram) PrepareRoutine(in *commodel.Schedule, caller identity.Envelope) (identity.Envelope, error) {

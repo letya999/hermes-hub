@@ -181,9 +181,11 @@ and the `/assignments` `/assignment <id> …` chat commands.
 HTTP-polling schedules share a per-sweep acquisition pool keyed by
 `(principal, url)` (SPEC-0081): same-owner subscribers of one URL cause
 one fetch per probe sweep, never across principals, never stale across
-sweeps. A source `Retry-After` (HTTP 429/503) is persisted durably and
-fences later polls until the deadline; durable subscriber state tracks
-`fetched_at`, `next_poll_at`, `failures` and `gap_count`.
+sweeps. A source `Retry-After` (HTTP 429/503, plus GitHub-style 403 with
+`Retry-After` or an exhausted `X-RateLimit-Remaining`/`X-RateLimit-Reset`
+budget) is persisted durably and fences later polls until the deadline;
+durable subscriber state tracks `fetched_at`, `next_poll_at`, `failures`
+and `gap_count`.
 
 `kind=hook` schedules carry a `hook:<label>` url and take no fetch: an
 authenticated owner-scoped `POST /v1/hooks/<schedule-id>` writes the body

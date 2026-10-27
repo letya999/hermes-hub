@@ -153,6 +153,12 @@ func (e *Engine) ApplyAssignment(id string, caller identity.Envelope) (commodel.
 			created, cerr = e.createScheduleAtLocked(draft, caller, "", nil, now)
 		}
 		if cerr != nil {
+			// Persist the partial reconciliation before reporting the error:
+			// artifacts already created must stay reachable through receipts
+			// or pause/cancel can never fence them (SPEC-0080 R1.8).
+			item.State = "waiting"
+			item.UpdatedAt = now
+			_ = e.atomicJSON(e.AssignmentPath(id), item)
 			return commodel.Assignment{}, cerr
 		}
 		item.Applied[src.Name] = commodel.AssignmentReceipt{ScheduleID: created.ScheduleID, IntentSHA: ScheduleIntent(draft), Action: "created"}

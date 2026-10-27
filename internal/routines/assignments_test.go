@@ -425,3 +425,43 @@ func TestAssignmentAppliedScheduleTicks(t *testing.T) {
 		t.Fatal("applied assignment schedule produced no occurrence on tick")
 	}
 }
+
+// TestAssignmentApplyPartialFailureKeepsReceipts (SPEC-0080 R1.8, live M23
+// evidence): a plan whose second source fails validation must still persist
+// the receipts of the sources already reconciled — otherwise the artifact is
+// an orphan: it fires but lifecycle verbs can never reach it (observed live:
+// apply error left a firing watcher with zero receipts and pause was a no-op).
+func TestAssignmentApplyPartialFailureKeepsReceipts(t *testing.T) {
+	e := testEngine(t)
+	in := newTestAssignment("asg-test080")
+	in.Plan.Sources = append(in.Plan.Sources, commodel.AssignmentSource{
+		Name: "inbox", Schedule: commodel.RoutineDraft{
+			Timezone: "UTC", Expression: "every:5m", JobKind: "watcher",
+			Probe: &commodel.WatchProbe{Kind: "hook"}, Input: "inbox", Channel: "telegram_bot", ChatID: 1,
+		},
+	})
+	if _, _, err := e.CreateAssignment(in, assignmentCaller()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.ApplyAssignment("asg-test080", assignmentCaller()); err == nil {
+		t.Fatal("broken second source must fail the apply")
+	}
+	got, err := e.LoadAssignment("asg-test080", assignmentCaller())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc, ok := got.Applied["page"]
+	if !ok || rc.ScheduleID == "" {
+		t.Fatalf("receipts of reconciled sources must survive the failure: %+v", got.Applied)
+	}
+	if got.State != "waiting" {
+		t.Fatalf("partial apply must leave the assignment waiting, got %q", got.State)
+	}
+	if err := e.PauseAssignment("asg-test080", assignmentCaller()); err != nil {
+		t.Fatal(err)
+	}
+	sched, err := e.LoadScheduleLocked(rc.ScheduleID)
+	if err != nil || !sched.Paused {
+		t.Fatalf("pause must reach the partial artifact: %v %+v", err, sched)
+	}
+}
