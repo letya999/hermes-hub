@@ -126,46 +126,28 @@ func TestSystemGuideMaterializedWithEmptyOrCustomSkillCatalog(t *testing.T) {
 	}
 }
 
-func TestSystemGuideMountUsesNativeLoaderOnlyOutsideManagedMode(t *testing.T) {
+func TestSystemGuideReachesEffectiveViewInBothModes(t *testing.T) {
 	for _, mode := range []string{"", "managed"} {
 		s := validSettings()
 		s.CapabilityMode, s.GlobalSkillsDir = mode, ""
 		dir := t.TempDir()
-		if err := MaterializeGlobalSkills(dir, s); err != nil {
+		if _, err := MaterializeEffectiveSkills(dir, s); err != nil {
 			t.Fatal(err)
 		}
-		mounted := false
-		for _, volume := range RuntimeService(s, "", dir)["volumes"].([]any) {
-			if m, ok := volume.(M); ok && m["target"] == "/opt/hub/skills" {
-				mounted = true
-				if m["read_only"] != true {
-					t.Fatal("reference skill mount writable")
-				}
-			}
-		}
-		if mounted != (mode != "managed") {
-			t.Errorf("mode=%q: native skill mounted=%v", mode, mounted)
-		}
-		if mode == "managed" {
-			if _, err := os.Stat(GeneratedSkillsDir(dir)); !os.IsNotExist(err) {
-				t.Fatal("managed mode created native skills instead of ToolHub reference")
-			}
+		body, err := os.ReadFile(filepath.Join(GeneratedEffectiveSkillsDir(dir), "hermes-hub-system-guide", "SKILL.md"))
+		if err != nil || string(body) != systemguide.Skill {
+			t.Fatalf("mode=%q: platform guide missing from the effective view: %v", mode, err)
 		}
 	}
 }
 
-func TestSystemGuideNativeLoaderConfiguredWithoutCustomCatalog(t *testing.T) {
+func TestSystemGuideLoaderDisabledWithoutCustomCatalog(t *testing.T) {
 	s := validSettings()
 	s.GlobalSkillsDir = ""
-	skills := Config(s)["skills"].(M)
-	found := false
-	if dirs, ok := skills["external_dirs"].([]string); ok {
-		for _, dir := range dirs {
-			found = found || dir == "/opt/hub/skills"
-		}
-	}
-	if !found {
-		t.Fatal("mandatory skill mounted but absent from native loader search path")
+	// SPEC-0083 R2.6: no external_dirs in either mode — the effective view
+	// mounts read-only at /skills instead of feeding the upstream loader.
+	if len(Config(s)["skills"].(M)) != 0 {
+		t.Fatal("unmanaged native skill loader enabled")
 	}
 	s.CapabilityMode = "managed"
 	if len(Config(s)["skills"].(M)) != 0 {

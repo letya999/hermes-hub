@@ -184,12 +184,10 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	if s.OrgScoped() && s.CapabilityMode != "managed" {
 		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(s.OrganizationDocsDir), "target": "/org", "read_only": true})
 	}
-	if s.CapabilityMode != "managed" {
-		// The mounted dir is the per-space filtered copy materialized by
-		// Render: feature-gated bundled skills are absent entirely when the
-		// feature is off, so they cannot be read or followed by prompt.
-		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(GeneratedSkillsDir(dir)), "target": "/opt/hub/skills", "read_only": true})
-	}
+	// The mounted dir is the read-only effective view materialized by
+	// Render: platform > org > user, with gated platform skills absent
+	// entirely when the feature is off.
+	stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(GeneratedEffectiveSkillsDir(dir)), "target": "/skills", "read_only": true})
 	if s.CapabilityMode != "managed" {
 		for name, feature := range hubGatedPlugins {
 			if !s.Has(feature) {
@@ -216,6 +214,13 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			"/state/hermes/skills:ro,mode=0555", "/state/hermes/hooks:ro,mode=0555", "/state/hermes/plugins:ro,mode=0555",
 			"/state/hermes/skill-bundles:ro,mode=0555", "/state/hermes/scripts:ro,mode=0555",
 			"/state/hermes/bin:ro,mode=0555", "/state/hermes/node:ro,mode=0555", "/state/hermes/lsp:ro,mode=0555")
+	}
+	if s.CapabilityMode != "managed" {
+		// Same seal managed mode applies: upstream skills-sync tolerates an
+		// empty read-only /state/hermes/skills, so the agent never gets a
+		// writable skill path (SPEC-0083 R2.6/D13).
+		runtimeService["tmpfs"] = append(slices.Clone(common["tmpfs"].([]string)),
+			"/state/hermes/skills:ro,mode=0555")
 	}
 	runtimeService["command"] = []string{"serve"}
 	if !s.Has("telegram") && s.NativeCron != "unmigrated" {

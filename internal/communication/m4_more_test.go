@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/skills"
 )
 
 func TestSlackPostMessageAndGatewayDelivery(t *testing.T) {
@@ -151,9 +150,6 @@ func TestCronExpressionsAndSlackLinks(t *testing.T) {
 	}
 	if OccurrenceID(RoutineOccurrence{ScheduleID: "x", Revision: 1, DueAt: now}) == "" {
 		t.Fatal("occurrence id")
-	}
-	if _, err := skills.CopyLimited(bytes.NewReader([]byte("skill"))); err != nil {
-		t.Fatal(err)
 	}
 	hashed := identity.SlackIdentity(strings.Repeat("t", 40), strings.Repeat("u", 40))
 	if !identity.ValidID(hashed) || hashed == "slack-"+strings.Repeat("t", 40)+"-"+strings.Repeat("u", 40) {
@@ -419,20 +415,5 @@ func TestScheduleValidateAndNativeTickSkip(t *testing.T) {
 	}
 	if err := s.TickSchedules(time.Now().UTC(), "unmigrated", g.authorizeOccurrence); err != nil {
 		t.Fatal(err)
-	}
-	home := t.TempDir()
-	if err := os.MkdirAll(home+"/hermes/skills", 0700); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := skills.Install(home, "notes", "", "user", []byte("# Notes\nfirst"), false, caller); err == nil {
-		t.Fatal("consent skipped")
-	}
-	first, err := skills.Install(home, "notes", "https://example.invalid/notes", "user", []byte("# Notes\nfirst"), true, caller)
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := skills.Install(home, "notes", "https://example.invalid/notes", "user", []byte("# Notes\nsecond"), true, caller)
-	if err != nil || second.EnabledRevision != first.EnabledRevision+1 || second.RollbackRevision != first.EnabledRevision {
-		t.Fatal(second, err)
 	}
 }

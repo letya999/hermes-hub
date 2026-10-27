@@ -406,7 +406,7 @@ func initScopeEnvironment(dir, profile, environment, organization string, kind S
 			return err
 		}
 	}
-	for _, name := range []string{"hermes/memories", "hermes/skills", "hermes/sessions", "hermes/hooks", "hermes/plugins", "connections/google", "connections/telegram", "connections/browser", "connections/ssh/keys", "workspace", "workspace/browser", "archive", "generated"} {
+	for _, name := range []string{"hermes/memories", "hermes/skills", "hermes/sessions", "hermes/hooks", "hermes/plugins", "connections/google", "connections/telegram", "connections/browser", "connections/ssh/keys", "workspace", "workspace/browser", "archive", "generated", "skills"} {
 		if err := os.MkdirAll(filepath.Join(dir, name), 0700); err != nil {
 			return err
 		}

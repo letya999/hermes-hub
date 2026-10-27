@@ -51,7 +51,9 @@ func TestPeerScopeHomesAndCollisionRules(t *testing.T) {
 func TestRenderedServiceBoundaries(t *testing.T) {
 	s := Settings{Schema: 1, Environment: "prod", User: "artem", Organization: "acme", Tools: testTools("workspace", "telegram"), Ingress: testIngress("workspace", "telegram"), OrganizationDir: "/host/spaces/acme", OrganizationDocsDir: "/host/spaces/acme/docs", OrganizationSkillsDir: "/host/spaces/acme/hermes/skills", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
 	config := Config(s)
-	if got := Config(s)["skills"].(M)["external_dirs"].([]string); len(got) != 2 || got[0] != "/org/hermes/skills" || got[1] != "/opt/hub/skills" {
+	// SPEC-0083 R2.6: the upstream loader renders empty; skills arrive only
+	// via the hub-built read-only /skills mount.
+	if got := Config(s)["skills"].(M); len(got) != 0 {
 		t.Fatal(got)
 	}
 	services := Compose(s, "/source", "/host/spaces/artem")["services"].(M)

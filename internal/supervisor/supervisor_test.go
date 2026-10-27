@@ -1809,9 +1809,15 @@ func TestRunArgsMountsHubSkills(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(rawArgs, " ")
-	generated := filepath.Join(root, "generated", "skills")
-	if !strings.Contains(joined, "src="+generated+",dst=/opt/hub/skills,readonly") {
-		t.Fatalf("run args missing filtered skills mount: %s", joined)
+	generated := filepath.Join(root, "generated", "skills-effective")
+	if !strings.Contains(joined, "src="+generated+",dst=/skills,readonly") {
+		t.Fatalf("run args missing effective skills mount: %s", joined)
+	}
+	if strings.Contains(joined, "/opt/hub/skills") {
+		t.Fatalf("legacy skills mount still rendered: %s", joined)
+	}
+	if !strings.Contains(joined, "--tmpfs /state/hermes/skills:ro,mode=0555") {
+		t.Fatalf("run args missing sealed hermes skills dir: %s", joined)
 	}
 	if _, err := os.Stat(filepath.Join(generated, "deep-research-embedded")); !os.IsNotExist(err) {
 		t.Fatal("spawn mounted gated skill without the deep_research feature")
@@ -1836,9 +1842,29 @@ func TestRunArgsMountsHubSkills(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined = strings.Join(rawBob, " ")
-	bobGenerated := filepath.Join(ctx, "generated", "skills")
-	if !strings.Contains(joined, "src="+bobGenerated+",dst=/opt/hub/skills,readonly") {
-		t.Fatalf("run args missing default filtered skills mount: %s", joined)
+	bobGenerated := filepath.Join(ctx, "generated", "skills-effective")
+	if !strings.Contains(joined, "src="+bobGenerated+",dst=/skills,readonly") {
+		t.Fatalf("run args missing default effective skills mount: %s", joined)
+	}
+}
+
+func TestRunArgsFailsWhenEffectiveSkillsCannotBuild(t *testing.T) {
+	t.Setenv("HUB_ENV", "dev")
+	m, root := testManager(t, func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil }, nil)
+	if err := os.WriteFile(filepath.Join(root, "hermes.dev.yaml"), []byte("model: {}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// A broken published skill makes the view build fail; the spawn must
+	// refuse rather than start a runtime without its skill contract.
+	bad := filepath.Join(root, "skills", "broken")
+	if err := os.MkdirAll(bad, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bad, "SKILL.md"), []byte("no frontmatter"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.runArgs(binding(root), "hermes-context-test", 19000); err == nil {
+		t.Fatal("spawn proceeded without a buildable effective skills view")
 	}
 }
 

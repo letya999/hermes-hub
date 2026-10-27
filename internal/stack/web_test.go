@@ -122,9 +122,10 @@ func TestWebFeatureGatesCapability(t *testing.T) {
 	if _, ok := cfg["web"]; ok {
 		t.Fatal("web section rendered without web feature")
 	}
-	disabled := cfg["skills"].(M)["disabled"].([]string)
-	if !slices.Contains(disabled, "deep-research-embedded") {
-		t.Fatal("deep-research-embedded not disabled without deep_research feature")
+	// Gated skills are excluded at materialization (the /skills mount); the
+	// rendered loader config stays empty — no disabled list to bypass.
+	if skills := cfg["skills"].(M); len(skills) != 0 {
+		t.Fatalf("skills loader config rendered: %#v", skills)
 	}
 	agent, ok := cfg["agent"].(M)
 	if !ok || !slices.Contains(agent["disabled_toolsets"].([]string), "web") {
@@ -139,8 +140,8 @@ func TestWebFeatureGatesCapability(t *testing.T) {
 	if !slices.Contains(cli, "web") {
 		t.Fatal("web toolset missing with web feature")
 	}
-	if disabled, ok := cfg["skills"].(M)["disabled"]; ok && slices.Contains(disabled.([]string), "deep-research-embedded") {
-		t.Fatal("deep-research-embedded disabled despite deep_research feature")
+	if skills := cfg["skills"].(M); len(skills) != 0 {
+		t.Fatalf("skills loader config rendered: %#v", skills)
 	}
 	agent, ok = cfg["agent"].(M)
 	if !ok {

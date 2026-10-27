@@ -7,17 +7,12 @@ import (
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/media"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
-	"path/filepath"
 	"slices"
 )
 
 func Config(s Settings) M {
 	if s.CapabilityMode == "managed" {
 		return managedHermesConfig(s)
-	}
-	organizationSkills := s.OrganizationSkillsDir
-	if organizationSkills == "" && s.OrganizationDir != "" {
-		organizationSkills = filepath.Join(s.OrganizationDir, "hermes", "skills")
 	}
 	servers := M{}
 	// The hub executor server is the hub:tools section: governance can cut it
@@ -132,26 +127,10 @@ func Config(s Settings) M {
 		return !s.govAllows("native:" + entry)
 	})
 	slices.Sort(toolsets)
+	// SPEC-0083 R2.6/D13: the runtime sees the hub-built effective view at the
+	// read-only /skills mount; the upstream loader gets nothing to scan and
+	// the sealed /state/hermes/skills stays empty.
 	skills := M{}
-	external := []string{}
-	if organizationSkills != "" {
-		external = append(external, "/org/hermes/skills")
-	}
-	external = append(external, "/opt/hub/skills")
-	if len(external) > 0 {
-		skills["external_dirs"] = external
-	}
-	// Defense in depth: the filtered /opt/hub/skills mount already excludes
-	// gated skills; disabled additionally blocks a same-named org skill.
-	var disabled []string
-	for skill, feature := range webGatedSkills {
-		if !s.Has(feature) {
-			disabled = append(disabled, skill)
-		}
-	}
-	if len(disabled) > 0 {
-		skills["disabled"] = disabled
-	}
 	memory := M{"memory_enabled": s.Memory || s.toolEntry("memory").enabled(), "user_profile_enabled": s.Memory || s.toolEntry("memory").enabled()}
 	// Keep long-running connector work alive when a user sends a follow-up. Hermes'
 	// default interrupt mode cancels the active MCP call; queue mode preserves FIFO

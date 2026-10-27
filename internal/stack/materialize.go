@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/letya999/hermes-hub/internal/skillstore"
 	"github.com/letya999/hermes-hub/internal/systemguide"
 
 	"gopkg.in/yaml.v3"
@@ -100,6 +101,26 @@ func GeneratedSkillsDir(dir string) string {
 	return filepath.Join(dir, "generated", "skills")
 }
 
+// GeneratedEffectiveSkillsDir is the per-space read-only effective view built
+// by MaterializeEffectiveSkills and mounted at /skills.
+func GeneratedEffectiveSkillsDir(dir string) string {
+	return filepath.Join(dir, "generated", "skills-effective")
+}
+
+// MaterializeEffectiveSkills stages the platform tier and builds the
+// agent-visible effective view at generated/skills-effective (SPEC-0083 R2.5).
+func MaterializeEffectiveSkills(dir string, s Settings) (*skillstore.EffectiveIndex, error) {
+	if err := MaterializeGlobalSkills(dir, s); err != nil {
+		return nil, err
+	}
+	sources := []skillstore.Source{{Name: "platform", Dir: GeneratedSkillsDir(dir)}}
+	if s.OrgScoped() && s.OrganizationDir != "" {
+		sources = append(sources, skillstore.Source{Name: "org", Dir: filepath.Join(s.OrganizationDir, "skills")})
+	}
+	sources = append(sources, skillstore.Source{Name: "user", Dir: filepath.Join(dir, "skills")})
+	return skillstore.Build(GeneratedEffectiveSkillsDir(dir), sources)
+}
+
 // GeneratedPluginsDir is the per-space filtered hub-plugin tree materialized
 // by MaterializeHubPlugins; each gated plugin mounts read-only at
 // /opt/hermes/plugins/<name>, which upstream discovers as a bundled backend.
@@ -178,9 +199,6 @@ func MaterializeHubPlugins(dir, root string, s Settings) error {
 // disabled. The container then sees exactly the skills this space may run;
 // skills.disabled in the rendered config blocks the same names as a fallback.
 func MaterializeGlobalSkills(dir string, s Settings) error {
-	if s.CapabilityMode == "managed" {
-		return nil
-	}
 	src := strings.TrimSpace(s.GlobalSkillsDir)
 	dest := GeneratedSkillsDir(dir)
 	if filepath.Clean(src) == filepath.Clean(dest) {

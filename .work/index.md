@@ -16,6 +16,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0189](in-progress/CHG-0189-unified-skill-store/plan.md) | M24 #357 S2: unified skill store + read-only effective view — store landed, mount wiring in progress |
 | [CHG-0188](in-progress/CHG-0188-skills-platform-design/plan.md) | M24 #356 S1: skills platform design — ADR-0084 + SPEC-0083 + Hermes pin spike verified (design complete) |
 | [CHG-0187](in-progress/CHG-0187-m26-acceptance/plan.md) | M26 #380 S5: live acceptance — voice/browser/Meet on dev stack, budget gates, before/after sizes + CVEs, docs current |
 | [CHG-0186](in-progress/CHG-0186-browser-sidecar/plan.md) | M26 #378 S4: hub-browser sidecar — per-space container, internal CDP, authenticated noVNC, runtime without Chromium/X11 |

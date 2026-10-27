@@ -267,7 +267,7 @@ func ApplyOrganization(o OrganizationSettings, s Settings, orgDir string) (Setti
 	s.MCP = mcp
 	s.OrganizationDir = orgDir
 	s.OrganizationDocsDir = docsDir
-	s.OrganizationSkillsDir = filepath.Join(orgDir, "hermes", "skills")
+	s.OrganizationSkillsDir = filepath.Join(orgDir, "skills")
 	s.OrganizationRole = role
 	s.OrgActions = append([]string(nil), o.OrgActions...)
 	return s, nil
@@ -373,7 +373,7 @@ func InitOrganization(dir, organization, owner string) error {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	for _, name := range []string{"docs", "hermes/memories", "hermes/skills", "hermes/sessions", "hermes/hooks", "hermes/plugins", "connections", "workspace", "archive", "generated"} {
+	for _, name := range []string{"docs", "hermes/memories", "hermes/skills", "hermes/sessions", "hermes/hooks", "hermes/plugins", "connections", "workspace", "archive", "generated", "skills"} {
 		if err := os.MkdirAll(filepath.Join(dir, name), 0700); err != nil {
 			return err
 		}

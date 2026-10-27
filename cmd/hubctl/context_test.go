@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,16 +56,25 @@ func TestContextMemorySkillRoutineCLI(t *testing.T) {
 		t.Fatal(err)
 	}
 	skill := filepath.Join(t.TempDir(), "SKILL.md")
-	if err := os.WriteFile(skill, []byte("# Demo\nList files."), 0600); err != nil {
+	if err := os.WriteFile(skill, []byte("---\nname: demo\ndescription: demo skill\n---\n\n# Demo\nList files.\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := run(ctx, []string{"skill", "install", "--dir", dir, "--user", "owner", "--name", "demo", "--from-file", skill, "--consent"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := run(ctx, []string{"skill", "list", "--dir", dir, "--user", "owner"}); err != nil {
+	listed := captureOutput(t, func() error {
+		return run(ctx, []string{"skill", "list", "--dir", dir, "--user", "owner"})
+	})
+	if !strings.Contains(listed, `"demo"`) {
+		t.Fatalf("skill list lost the published skill: %s", listed)
+	}
+	if err := run(ctx, []string{"skill", "show", "--dir", dir, "--user", "owner", "--name", "demo"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := run(ctx, []string{"skill", "revoke", "--dir", dir, "--user", "owner", "--name", "demo"}); err != nil {
+	if err := run(ctx, []string{"skill", "archive", "--dir", dir, "--user", "owner", "--name", "demo"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(ctx, []string{"skill", "restore", "--dir", dir, "--user", "owner", "--name", "demo"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := run(ctx, []string{"context", "purge", "--dir", dest, "--user", "owner", "--confirm", "owner"}); err != nil {
@@ -96,8 +106,59 @@ func TestContextMemorySkillRoutineCLI(t *testing.T) {
 	if err := run(ctx, []string{"skill", "install", "--dir", dir, "--user", "owner", "--name", "demo"}); err == nil {
 		t.Fatal("skill install without file")
 	}
-	if err := run(ctx, []string{"skill", "install", "--dir", dir, "--user", "owner", "--name", "demo", "--from-file", skill}); err == nil {
-		t.Fatal("skill install without consent")
+	// Without --consent the skill lands as an inactive draft, not an error.
+	if err := run(ctx, []string{"skill", "install", "--dir", dir, "--user", "owner", "--name", "demo", "--from-file", skill}); err != nil {
+		t.Fatal(err)
+	}
+	drafts := captureOutput(t, func() error {
+		return run(ctx, []string{"skill", "drafts", "--dir", dir, "--user", "owner"})
+	})
+	if !strings.Contains(drafts, `"demo"`) {
+		t.Fatalf("no-consent install did not land as a draft: %s", drafts)
+	}
+	var dlist []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal([]byte(drafts), &dlist); err != nil || len(dlist) == 0 {
+		t.Fatalf("drafts output not decodable: %v %s", err, drafts)
+	}
+	if err := run(ctx, []string{"skill", "approve", "--dir", dir, "--user", "owner", "--id", dlist[0].ID}); err != nil {
+		t.Fatal(err)
+	}
+	shown := captureOutput(t, func() error {
+		return run(ctx, []string{"skill", "show", "--dir", dir, "--user", "owner", "--name", dlist[0].Name})
+	})
+	if !strings.Contains(shown, `"demo"`) {
+		t.Fatalf("approved draft not active: %s", shown)
+	}
+	// A second unconsented install drafts again; reject drops it.
+	if err := run(ctx, []string{"skill", "install", "--dir", dir, "--user", "owner", "--name", "demo", "--from-file", skill}); err != nil {
+		t.Fatal(err)
+	}
+	drafts2 := captureOutput(t, func() error {
+		return run(ctx, []string{"skill", "drafts", "--dir", dir, "--user", "owner"})
+	})
+	var dlist2 []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(drafts2), &dlist2); err != nil || len(dlist2) == 0 {
+		t.Fatalf("second draft missing: %v %s", err, drafts2)
+	}
+	if err := run(ctx, []string{"skill", "reject", "--dir", dir, "--user", "owner", "--id", dlist2[0].ID}); err != nil {
+		t.Fatal(err)
+	}
+	drafts3 := captureOutput(t, func() error {
+		return run(ctx, []string{"skill", "drafts", "--dir", dir, "--user", "owner"})
+	})
+	if strings.Contains(drafts3, dlist2[0].ID) {
+		t.Fatalf("rejected draft still listed: %s", drafts3)
+	}
+	if err := run(ctx, []string{"skill", "rollback", "--dir", dir, "--user", "owner", "--name", "demo"}); err == nil {
+		t.Fatal("rollback without --to")
+	}
+	if err := run(ctx, []string{"skill", "rollback", "--dir", dir, "--user", "owner", "--name", "demo", "--to", "deadbeef"}); err == nil || strings.Contains(err.Error(), "unknown skill command") {
+		t.Fatalf("rollback to a missing revision must reach the store: %v", err)
 	}
 	if err := run(ctx, []string{"routine", "list"}); err == nil {
 		t.Fatal("routine without spool")

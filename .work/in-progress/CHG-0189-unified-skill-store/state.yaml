@@ -1,0 +1,44 @@
+schema: 1
+change: CHG-0189
+title: Unified skill store and effective view
+status: in_progress
+branch: feat/m24-agent-skills
+updated: 2026-10-27
+phase: verification
+adr: ADR-0084
+spec: SPEC-0083
+requirements: [R2.1, R2.2, R2.3, R2.4, R2.5, R2.6, R2.7, R2.8, R2.9]
+depends_on: [CHG-0188]
+github_milestone: M24 — Agent Skills Platform
+github_issue: 357
+design_status: accepted
+implementation_status: done_pending_verification
+slices:
+  S2.1-2.5-store-core: green
+  S2.6-effective-view-wiring: green
+  S2.7-init-org-migration: green
+  S2.8-platform-skill-rename: green
+  S2.9-hubctl-skill: green
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_applicable_no_docker_this_session
+  red_team: pending
+  live_acceptance: deferred_to_m24.13
+evidence:
+  - internal/skillstore landed: layout, strict/lenient parse, revision hash (paths+bytes+exec), flock + atomic swap, drafts (.draft.json), quotas, archive/restore, index.json, effective view builder with precedence + notices
+  - package coverage 85.2% statements (>= 85% gate)
+  - MaterializeEffectiveSkills builds generated/skills-effective from platform > org > user; compose mounts it ro at /skills in both modes; /state/hermes/skills empty ro tmpfs in both modes; /opt/hub/skills and skills.external_dirs removed
+  - supervisor runArgs + managedRunArgs build the view and fail spawn on error; mounts /skills ro in both modes
+  - RenderEnvironment migrates legacy <space>/hermes/skills via MigrateLegacySpaceWithPlatform (bundled platform copies dropped) and <org>/hermes/skills via MigrateLegacyOrg (publishes)
+  - Init/InitOrganization/migration ensureDirs create skills/; validateDestination allowlist updated
+  - config/skills/mcp-connector-onboarding renamed to hermes-hub-mcp-onboarding (dir matches frontmatter)
+  - hubctl skill: list/show/install(consent->publish|no-consent->draft)/drafts/approve/reject/rollback/archive/restore on internal/skillstore; hardcoded telegram-1 envelope removed; internal/skills package deleted
+  - skills/ already in contextlife backup/restore/purge lists (pre-existing)
+known_regressions:
+  - internal/communication TestTickSchedulesExpiredWindowExistingOccurrenceAndSlackUser panics on committed base 80ea6d8; fixed by uncommitted m23-live-wake changes in the main worktree — out of M24 scope, must not be ported
+remaining:
+  - just check + devcheck docs at milestone delivery
+limitations:
+  - catalog source `hermes` (bundled upstream skills) is R3.4 — not part of M24.2
+  - no Docker gates this session; mount assertions proven via rendered output tests

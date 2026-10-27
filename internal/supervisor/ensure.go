@@ -470,13 +470,17 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	}
 	if strings.TrimSpace(spawnSettings.GlobalSkillsDir) == "" {
 		spawnSettings.DefaultGlobalSkillsDir(filepath.Join(filepath.Dir(filepath.Dir(binding.ContextRoot)), "config", "skills"))
+		// Same contract as RenderEnvironment: a defaulted platform catalog is
+		// created empty so its absence never breaks the spawn.
+		if err := os.MkdirAll(spawnSettings.GlobalSkillsDir, 0755); err != nil {
+			return nil, fmt.Errorf("platform skills dir: %w", err)
+		}
 	}
-	if err := stack.MaterializeGlobalSkills(binding.ContextRoot, spawnSettings); err != nil {
-		log.Printf("supervisor skills materialization skipped: %v", err)
+	if _, err := stack.MaterializeEffectiveSkills(binding.ContextRoot, spawnSettings); err != nil {
+		return nil, fmt.Errorf("effective skills view: %w", err)
 	}
-	if info, err := os.Stat(stack.GeneratedSkillsDir(binding.ContextRoot)); err == nil && info.IsDir() {
-		args = append(args, "--mount", "type=bind,src="+stack.GeneratedSkillsDir(binding.ContextRoot)+",dst=/opt/hub/skills,readonly")
-	}
+	args = append(args, "--mount", "type=bind,src="+stack.GeneratedEffectiveSkillsDir(binding.ContextRoot)+",dst=/skills,readonly")
+	args = append(args, "--tmpfs", "/state/hermes/skills:ro,mode=0555")
 	// Same contract for hub plugins: materialize the feature-filtered copy at
 	// spawn and mount each plugin read-only into upstream's bundled plugins
 	// dir, where kind=backend manifests auto-load. A disabled feature leaves
@@ -589,6 +593,18 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 	for _, name := range []struct{ source, target string }{{"runtime", "/state"}, {"hermes", "/state/hermes"}, {"home", "/state/home"}, {"cache", "/state/cache"}, {"workspace", "/workspace"}} {
 		args = append(args, "--mount", "type=bind,src="+filepath.Join(managedDir, name.source)+",dst="+name.target)
 	}
+	// Same skill contract as unmanaged spawns: the hub-built effective view
+	// mounts read-only at /skills and a failed build refuses the spawn.
+	if strings.TrimSpace(settings.GlobalSkillsDir) == "" {
+		settings.DefaultGlobalSkillsDir(filepath.Join(filepath.Dir(filepath.Dir(binding.ContextRoot)), "config", "skills"))
+		if err := os.MkdirAll(settings.GlobalSkillsDir, 0755); err != nil {
+			return nil, fmt.Errorf("platform skills dir: %w", err)
+		}
+	}
+	if _, err := stack.MaterializeEffectiveSkills(binding.ContextRoot, settings); err != nil {
+		return nil, fmt.Errorf("effective skills view: %w", err)
+	}
+	args = append(args, "--mount", "type=bind,src="+stack.GeneratedEffectiveSkillsDir(binding.ContextRoot)+",dst=/skills,readonly")
 	effectiveConfig, err := m.materializeHermesConfig(binding, env)
 	if err != nil {
 		return nil, err

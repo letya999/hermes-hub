@@ -12,7 +12,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/communication"
 	"github.com/letya999/hermes-hub/internal/contextlife"
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/skills"
+	"github.com/letya999/hermes-hub/internal/skillstore"
 )
 
 func runContext(_ context.Context, args []string) error {
@@ -103,16 +103,18 @@ func runMemory(_ context.Context, args []string) error {
 
 func runSkill(_ context.Context, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("skill requires list, install or revoke")
+		return fmt.Errorf("skill requires list, show, install, drafts, approve, reject, rollback, archive or restore")
 	}
 	sub := args[0]
 	f := flag.NewFlagSet("skill", flag.ContinueOnError)
 	dir := f.String("dir", "", "private deployment directory")
 	profile := f.String("user", "me", "person identifier")
 	name := f.String("name", "", "skill name")
+	id := f.String("id", "", "draft id")
 	from := f.String("from-file", "", "SKILL.md path")
 	source := f.String("source", "", "source URL")
-	consent := f.Bool("consent", false, "owner consent to activate")
+	to := f.String("to", "", "target revision for rollback")
+	consent := f.Bool("consent", false, "owner consent to publish; without it the install lands as a draft")
 	if err := f.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -123,14 +125,45 @@ func runSkill(_ context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	caller := identity.Envelope{Schema: identity.Schema, PrincipalID: *profile, ExternalIdentityID: "telegram-1", ContextID: *profile, RuntimeID: *profile, ConversationID: "telegram-1", DeliveryTargetID: "telegram-1", PolicyVersion: "policy-1"}
 	switch sub {
 	case "list":
-		items, err := skills.Advertised(abs)
+		st, err := skillstore.Open(filepath.Join(abs, "skills"), skillstore.ScopeUser)
 		if err != nil {
 			return err
 		}
-		return json.NewEncoder(os.Stdout).Encode(items)
+		names, err := st.Names()
+		if err != nil {
+			return err
+		}
+		idx, err := st.Index()
+		if err != nil {
+			return err
+		}
+		type item struct {
+			Name     string `json:"name"`
+			Revision string `json:"revision"`
+		}
+		out := make([]item, 0, len(names))
+		for _, n := range names {
+			out = append(out, item{Name: n, Revision: idx.Skills[n].Revision})
+		}
+		return json.NewEncoder(os.Stdout).Encode(out)
+	case "show":
+		if *name == "" {
+			return fmt.Errorf("skill show requires --name")
+		}
+		st, err := skillstore.Open(filepath.Join(abs, "skills"), skillstore.ScopeUser)
+		if err != nil {
+			return err
+		}
+		m, rev, err := st.Manifest(*name)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(struct {
+			*skillstore.Manifest
+			Revision string `json:"revision"`
+		}{m, rev})
 	case "install":
 		if *name == "" || *from == "" {
 			return fmt.Errorf("skill install requires --name and --from-file")
@@ -139,16 +172,86 @@ func runSkill(_ context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		rec, err := skills.Install(abs, *name, *source, "user", body, *consent, caller)
+		if _, _, err := skillstore.ParseSkillMD(*name, body, false); err != nil {
+			return err
+		}
+		st, err := skillstore.Open(filepath.Join(abs, "skills"), skillstore.ScopeUser)
 		if err != nil {
 			return err
 		}
-		return json.NewEncoder(os.Stdout).Encode(rec)
-	case "revoke":
-		if *name == "" {
-			return fmt.Errorf("skill revoke requires --name")
+		tree := skillstore.Tree{skillstore.SkillFile: skillstore.File{Data: body}}
+		if !*consent {
+			d, err := st.CreateDraft(*name, tree, skillstore.DraftMeta{Author: "operator"})
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(os.Stdout).Encode(d)
 		}
-		return skills.Revoke(abs, *name, caller)
+		rev, err := st.Publish(*name, tree, skillstore.IndexMeta{Author: "operator", Source: "import", Origin: &skillstore.Origin{URL: *source}})
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(struct {
+			Name     string `json:"name"`
+			Revision string `json:"revision"`
+		}{*name, rev})
+	case "archive":
+		if *name == "" {
+			return fmt.Errorf("skill archive requires --name")
+		}
+		st, err := skillstore.Open(filepath.Join(abs, "skills"), skillstore.ScopeUser)
+		if err != nil {
+			return err
+		}
+		return st.Archive(*name, "operator archive", "", *profile)
+	case "restore":
+		if *name == "" {
+			return fmt.Errorf("skill restore requires --name")
+		}
+		st, err := skillstore.Open(filepath.Join(abs, "skills"), skillstore.ScopeUser)
+		if err != nil {
+			return err
+		}
+		return st.Restore(*name)
+	case "drafts":
+		st, err := skillstore.Open(filepath.Join(abs, "skills"), skillstore.ScopeUser)
+		if err != nil {
+			return err
+		}
+		drafts, err := st.Drafts()
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(drafts)
+	case "approve":
+		if *id == "" {
+			return fmt.Errorf("skill approve requires --id")
+		}
+		st, err := skillstore.Open(filepath.Join(abs, "skills"), skillstore.ScopeUser)
+		if err != nil {
+			return err
+		}
+		_, err = st.PublishDraft(*id, *profile)
+		return err
+	case "reject":
+		if *id == "" {
+			return fmt.Errorf("skill reject requires --id")
+		}
+		st, err := skillstore.Open(filepath.Join(abs, "skills"), skillstore.ScopeUser)
+		if err != nil {
+			return err
+		}
+		return st.RejectDraft(*id)
+	case "rollback":
+		if *name == "" || *to == "" {
+			return fmt.Errorf("skill rollback requires --name and --to")
+		}
+		st, err := skillstore.Open(filepath.Join(abs, "skills"), skillstore.ScopeUser)
+		if err != nil {
+			return err
+		}
+		_, err = st.Rollback(*name, *to)
+		return err
 	default:
 		return fmt.Errorf("unknown skill command %q", sub)
 	}

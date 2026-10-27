@@ -103,6 +103,12 @@ func TestManagedRunArgsUseIsolatedAgentNetwork(t *testing.T) {
 			t.Fatalf("sealed extension root %s missing", name)
 		}
 	}
+	if !slices.Contains(args, "type=bind,src="+stack.GeneratedEffectiveSkillsDir(root)+",dst=/skills,readonly") {
+		t.Fatalf("managed run args missing the read-only effective view mount: %s", joined)
+	}
+	if _, err := os.Stat(filepath.Join(stack.GeneratedEffectiveSkillsDir(root), "hermes-hub-system-guide", "SKILL.md")); err != nil {
+		t.Fatalf("managed spawn did not build the effective view: %v", err)
+	}
 	for _, want := range []string{"HUB_CAPABILITY_MODE=managed", "HUB_CAPABILITY_PROFILE_ID=alice-default", "HUB_CAPABILITY_GENERATION=1", "HUB_MANAGED_MODEL_URL=http://model-relay:8318/v1", "HUB_RUNTIME_GENERATION=gen-1"} {
 		if !slices.Contains(args, want) {
 			t.Fatalf("managed environment missing %s", want)

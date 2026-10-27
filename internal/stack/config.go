@@ -113,9 +113,9 @@ type Settings struct {
 	JudgeModel   string         `yaml:"judge_model,omitempty"`
 }
 
-// DefaultGlobalSkillsDir resolves the bundled catalog without changing operator rights.
+// DefaultGlobalSkillsDir resolves the platform catalog without changing operator rights.
 func (s *Settings) DefaultGlobalSkillsDir(dir string) {
-	if s.CapabilityMode != "managed" && strings.TrimSpace(s.GlobalSkillsDir) == "" {
+	if strings.TrimSpace(s.GlobalSkillsDir) == "" {
 		s.GlobalSkillsDir = dir
 		s.defaultGlobalSkills = true
 	}

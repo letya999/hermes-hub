@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/exposure"
+	"github.com/letya999/hermes-hub/internal/skillstore"
 	"github.com/letya999/hermes-hub/internal/sshcap"
 	"gopkg.in/yaml.v3"
 	"os"
@@ -76,7 +77,7 @@ func RenderEnvironment(dir, root, environment string) error {
 			return fmt.Errorf("exposure config: %w", err)
 		}
 	}
-	if s.CapabilityMode != "managed" && strings.TrimSpace(s.GlobalSkillsDir) == "" {
+	if strings.TrimSpace(s.GlobalSkillsDir) == "" {
 		s.DefaultGlobalSkillsDir(filepath.Join(root, "config", "skills"))
 		if err := os.MkdirAll(s.GlobalSkillsDir, 0755); err != nil {
 			return err
@@ -96,6 +97,19 @@ func RenderEnvironment(dir, root, environment string) error {
 	for _, name := range []string{"archive", "runtime", "runtime/artifacts", "runtime/toolhub", "runtime/credentials", "runtime/materialized", "broker", "broker/keys", "broker/tls", "cliproxy", "hermes", "hermes/memories", "hermes/skills", "connections", "connections/google", "connections/telegram", "connections/browser", "connections/ssh/keys", "home", "cache", "workspace", "workspace/browser", "workspace/artifacts", "workspace/artifacts/documents", "workspace/artifacts/images", "skills"} {
 		if err = os.MkdirAll(filepath.Join(dir, name), 0700); err != nil {
 			return err
+		}
+	}
+	// Pre-M24 spaces keep authored skills under hermes/skills; the unified
+	// store at skills/ is authoritative now. Idempotent: consented registry
+	// entries publish, unrecorded content lands as drafts (SPEC-0083 R2.7).
+	if _, err = skillstore.MigrateLegacySpaceWithPlatform(dir, s.GlobalSkillsDir, true); err != nil {
+		return fmt.Errorf("legacy skills migration: %w", err)
+	}
+	// Same move for the organization tier: legacy <org>/hermes/skills content
+	// lands in the unified <org>/skills store (SPEC-0083 R2.7).
+	if s.OrgScoped() && s.OrganizationDir != "" {
+		if _, err = skillstore.MigrateLegacyOrg(s.OrganizationDir, true); err != nil {
+			return fmt.Errorf("organization skills migration: %w", err)
 		}
 	}
 	if s.CapabilityMode == "managed" {
@@ -253,7 +267,7 @@ func RenderEnvironment(dir, root, environment string) error {
 	if err = writeToolManifest(dir, s); err != nil {
 		return err
 	}
-	if err = MaterializeGlobalSkills(dir, s); err != nil {
+	if _, err = MaterializeEffectiveSkills(dir, s); err != nil {
 		return err
 	}
 	if err = MaterializeHubPlugins(dir, root, s); err != nil {
