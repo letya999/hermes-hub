@@ -16,10 +16,6 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
-| [CHG-0181](in-progress/CHG-0181-m23-live-acceptance/plan.md) | M23 #324/#332 stage 4: live acceptance — multi-source dev-stack run, restart/cancel/dedup/privacy evidence; design complete |
-| [CHG-0180](in-progress/CHG-0180-assignment-control-surface/plan.md) | M23 #324 stage 3: REST /v1/assignments + agent tools + chat commands (owner-only grant authorize); design complete |
-| [CHG-0179](in-progress/CHG-0179-acquisition-pipeline/plan.md) | M23 #332 stage 2: shared acquisition pool, conditional HTTP, cursors/gaps, event filter script, hook intake; design complete |
-| [CHG-0178](in-progress/CHG-0178-assignment-plane/plan.md) | M23 #324 stage 1: durable assignment record, plan reconcile, lifecycle fencing and wake budget; design complete |
 | [CHG-0174](in-progress/CHG-0174-hosting-acceptance/plan.md) | M18 #147 H5: hosting acceptance/current docs — A1–A11 code/runtime/browser/sish evidence; offline gates green, native acceptance pending |
 | [CHG-0173](in-progress/CHG-0173-hosting-dynamic/plan.md) | M18 #147 H4: one admitted stateless go-http profile, secure runtime/relay, restart/finalizers; implemented, offline gates green, native acceptance pending |
 | [CHG-0172](in-progress/CHG-0172-hosting-static-delivery/plan.md) | M18 #147 H3: static agent/stack/exposure delivery and independent recovery; implemented, offline gates green, native acceptance pending |
@@ -55,6 +51,15 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 |---|---|
 | [CHG-0037](done/CHG-0037-toolhub-closeout/plan.md) | Abandoned: ToolHub closeout umbrella superseded by later per-issue CHGs |
 | [CHG-0031](done/CHG-0031-docker-disk-diagnosis/plan.md) | Abandoned: read-only diagnosis superseded by CHG-0031-docker-reclaim findings |
+
+## Done — M23 proactive assignments
+
+| Change | State |
+|---|---|
+| [CHG-0181](done/CHG-0181-m23-live-acceptance/plan.md) | Done 2026-10-27: M23 stage 4 — live acceptance on dev stack: multi-source apply (http+hook), occurrence→probe→change→dispatched→telegram-sent, hook intake 401/404/202, pause quiet / resume catch-up / restart durable / cancel tombstones + re-apply 409, cross-principal 404; live bugs fixed (actor/scope/org stamps, idle-hook no_change); slack leg not run (no creds); coverage 86.08% |
+| [CHG-0180](done/CHG-0180-assignment-control-surface/plan.md) | Done 2026-10-27: M23 #324 stage 3 — REST /v1/assignments CRUD+lifecycle+dry-run+complete, assignment_* agent tools (expected_revision CAS, no authorize arg), /assignments + /assignment chat commands incl. owner-only authorize |
+| [CHG-0179](done/CHG-0179-acquisition-pipeline/plan.md) | Done 2026-10-27: M23 #332 stage 2 — per-sweep acquisition pool keyed (principal,url), durable Retry-After backoff, cursor+gap surfacing on EventState, per-event filter keep/drop/urgent, durable hook inbox + /v1/hooks intake |
+| [CHG-0178](done/CHG-0178-assignment-plane/plan.md) | Done 2026-10-27: M23 #324 stage 1 — durable commodel.Assignment, idempotent create by intent hash, plan reconcile → deterministic schedules with receipts + -rN regeneration, lifecycle propagation + revision-fenced wakes, narrow-only grants |
 
 ## Done — M17 ops, admin & delivery
 
