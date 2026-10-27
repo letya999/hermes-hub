@@ -138,6 +138,12 @@ instructions are generated from the allowed projection, not an unconditional
 description of all installed services. Operator observability remains outside the
 agent projection and must not become a hidden agent escape route.
 
+Superseded clause (appended 2026-10-27): the skills part of this paragraph —
+"approved skills can be listed or read only with those grants" — is superseded by
+SPEC-0083 (ADR-0084, M24 #356–#368): skills are delivered through a hub-owned
+read-only effective view and ToolHub tools, never through a writable home; the
+"no authority from skill text" rule is unchanged.
+
 ## Acceptance matrix
 
 Each row needs a reproducible test/evidence reference in the implementation CHG.

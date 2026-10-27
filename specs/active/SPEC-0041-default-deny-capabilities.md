@@ -187,6 +187,11 @@ All rows start disabled. This table states intended routing, not automatic grant
 | Diagnostics and connector lifecycle | Explicit grants; operator diagnostics remain available outside the agent projection |
 | Model/CLIProxy configuration | Human control flow only; organization/personal/mixed routing remains issue 185; no agent self-switching |
 
+Superseded row (appended 2026-10-27): the "Skills" family above is superseded by
+SPEC-0083 (ADR-0084, M24 #356–#368): hub-owned per-owner skill stores, a read-only
+effective view, draft-first writes and grant-only authority replace the
+list/view/install routing sketched here.
+
 Organization bundle candidates from the owner's request: GitLab, GitHub, Atlassian,
 Slack, personal Telegram, one of txttsql/dbhub, Grafana, Prometheus, DataLens,
 Google Calendar and Notion. Later candidates: Metabase, Sentry, Google Analytics,
