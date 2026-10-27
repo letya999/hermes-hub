@@ -20,7 +20,7 @@ slices:
   S3-hub-html-a11y: done
   S4-broker-pages: done
   S5-llm-prompts-contracts: done
-  S6-operator-tooling: pending
+  S6-operator-tooling: done
   S7-voice-fixtures-glossary-docs: pending
 validation:
   documents: pending
@@ -45,10 +45,14 @@ evidence:
   - "all 13 prepared contracts carry ru/kk/es title_i18n + label_i18n with English base (google-file-session flipped); prepared_i18n_test enforces translations + English base + env-name labels exempt; app/init.go demo seed translated"
   - "openapi.json regenerated: Field.label_i18n + Contract.title_i18n as string-map objects; drift check green"
   - "broker check in Docker green again after schema change: coverage 89.89% (all pkgs ≥85%)"
+  - "S6: locale.Operator() (HUB_LANG→LANG→HUB_DEFAULT_LANG→en); FormatStatus(lang,...) with op.status-only/op.names-status ×4 catalogs; hubctl set/delete/expose/rotate pass locale.Operator(); all 3 ApplyChat rejection paths localized (FormatStatus(nil,'rejected'))"
+  - "operator scripts localized: local-accounts.ps1 (25 strings → _T tables ×4 langs + lang ladder HUB_LANG>LANG>UI culture), start-local-accounts.ps1 passes -e HUB_LANG into docker run + localized banner, telegram-account-login.py _T table (10 keys) + _t via HUB_LANG normalized by wrapper; BOM/LF preserved on ps1"
+  - "internal/devcheck/scripts_i18n_test.go: flags Cyrillic at Write-Host/throw/Read-Host/getpass/print/ValueError call sites + requires HUB_LANG + all 4 lang tables per script"
+  - "go test ./internal/{secrets,locale,devcheck} ./cmd/hubctl — green; ps1 parse-clean via PSParser, py ast.parse ok"
 remaining:
-  - S6 operator tooling (hubctl FormatStatus/ApplyChat 'Статус:' strings, scripts, docker py)
   - S7 TTS_VOICE_{RU,KK,ES} map, e2e/devcheck fixtures, examples/contracts i18n decision, glossary + docs re-verify
 limitations:
   - Model-facing prompts are English + explicit lang hint; viewer title stays English product name; broker-callback persisted Error uses operator fallback (no request context)
   - Broker /oauth/callback success page resolves lang via Accept-Language (provider redirect carries no ?lang=) — same browser, honest fallback
-  - examples/contracts/*.json stay deployer-authored verbatim (deferred to S7 docs decision); secrets.go/hubctl 'Статус:' strings are operator surfaces → S6
+  - examples/contracts/*.json stay deployer-authored verbatim (deferred to S7 docs decision)
+  - Operator scripts resolve HUB_LANG>LANG>OS culture (ps1) / HUB_LANG passed through by wrapper (py); no workspace context — env-only, EN default

@@ -237,6 +237,34 @@ func TestFallbackEnv(t *testing.T) {
 	}
 }
 
+// Operator tooling (hubctl, scripts) has no workspace, so its language comes
+// from the operator's own environment: explicit HUB_LANG wins, then the
+// standard LC_ALL/LANG ladder, then the hub fallback.
+func TestOperatorLang(t *testing.T) {
+	t.Setenv("HUB_LANG", "")
+	t.Setenv("LC_ALL", "")
+	t.Setenv("LANG", "")
+	if Operator() != Fallback() {
+		t.Fatalf("empty env = %q, want fallback %q", Operator(), Fallback())
+	}
+	t.Setenv("LANG", "kk_KZ.UTF-8")
+	if Operator() != LangKK {
+		t.Fatalf("LANG = %q", Operator())
+	}
+	t.Setenv("LC_ALL", "es-ES")
+	if Operator() != LangES {
+		t.Fatalf("LC_ALL beats LANG = %q", Operator())
+	}
+	t.Setenv("HUB_LANG", "ru-RU")
+	if Operator() != LangRU {
+		t.Fatalf("HUB_LANG wins = %q", Operator())
+	}
+	t.Setenv("HUB_LANG", "xx")
+	if Operator() != LangES {
+		t.Fatalf("unknown HUB_LANG falls through = %q", Operator())
+	}
+}
+
 func TestNamesCoverAll(t *testing.T) {
 	for _, l := range All {
 		if Names[l] == "" {

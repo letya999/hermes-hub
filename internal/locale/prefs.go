@@ -60,6 +60,18 @@ func StorePrefs(workspaceDir string, p Prefs) error {
 	return os.WriteFile(prefsPath(workspaceDir), data, 0600)
 }
 
+// Operator resolves the local console language for tooling that has no user
+// workspace: an explicit HUB_LANG wins, then the standard LC_ALL/LANG ladder,
+// then the hub fallback. Unknown values fall through to the next rung.
+func Operator() Lang {
+	for _, key := range []string{"HUB_LANG", "LC_ALL", "LANG"} {
+		if l, ok := Parse(os.Getenv(key)); ok {
+			return l
+		}
+	}
+	return Fallback()
+}
+
 // LangOf returns the persisted language, or Default when nothing supported is
 // stored — corrupt or unknown values degrade to the default, never panic.
 func LangOf(workspaceDir string) Lang {

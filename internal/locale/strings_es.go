@@ -52,6 +52,10 @@ func init() {
 		"slack.artifact-ready":  "Archivo listo: %s — guardado en el workspace; la entrega de archivos a Slack aún no está disponible",
 		"slack.artifact-failed": "No se pudo entregar el archivo: %s",
 		"artifact.failed":       "No se pudo entregar el archivo: %s",
+
+		// Consola del operador (hubctl, scripts locales).
+		"op.names-status":       "Nombres: %s. Estado: %s.",
+		"op.status-only":        "Estado: %s.",
 		"slack.secret-rejected": "Los secretos enviados por el canal de Slack App se rechazan.",
 		"hold.notice":           "Trabajo suspendido por el administrador (%s). Para reanudarlo, contacta con el administrador. Las acciones externas ya realizadas no se revierten; los resultados inciertos requieren verificación.",
 
