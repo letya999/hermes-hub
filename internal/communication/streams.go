@@ -222,6 +222,14 @@ func streamProbe(probe *WatchProbe) *WatchProbe {
 	if probe == nil {
 		return nil
 	}
+	return streamProbeWithin(probe, 30*time.Second)
+}
+
+// streamProbeWithin clamps owner-declared wait bounds so the connector call
+// returns before the caller's budget expires: a bound at or past the budget
+// turns every round into a context deadline and the subscription goes silent.
+func streamProbeWithin(probe *WatchProbe, budget time.Duration) *WatchProbe {
+	cap := float64(budget/time.Second) - 5
 	p := *probe
 	args := make(map[string]any, len(probe.Args)+1)
 	for k, v := range probe.Args {
@@ -231,15 +239,31 @@ func streamProbe(probe *WatchProbe) *WatchProbe {
 	if strings.Contains(p.Tool, "settled") {
 		if _, ok := p.Args["max_wait_ms"]; !ok {
 			p.Args["max_wait_ms"] = 20000
+		} else if v := argSeconds(p.Args["max_wait_ms"]); v > cap*1000 {
+			p.Args["max_wait_ms"] = int(cap * 1000)
 		}
 		return &p
 	}
 	if strings.Contains(p.Tool, "wait") || strings.Contains(p.Tool, "new_message") {
 		if _, ok := p.Args["timeout"]; !ok {
 			p.Args["timeout"] = 20
+		} else if v := argSeconds(p.Args["timeout"]); v > cap {
+			p.Args["timeout"] = int(cap)
 		}
 	}
 	return &p
+}
+
+// argSeconds reads a numeric wait bound from either JSON (float64) or a
+// literal (int) argument; non-numeric values return 0 and pass through.
+func argSeconds(v any) float64 {
+	switch n := v.(type) {
+	case float64:
+		return n
+	case int:
+		return float64(n)
+	}
+	return 0
 }
 
 // sourceLabel identifies one fan-out input for state and attribution: the
@@ -349,7 +373,10 @@ func (g *Gateway) sampleRoutine(ctx context.Context, id string, caller identity.
 	if sched.Envelope.PrincipalID != caller.PrincipalID {
 		return watchSample{}, ErrRoutineNotOwned
 	}
-	results := g.probeRound(ctx, sched, toolCall)
+	bounded := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
+		return toolCall(ctx, principal, streamProbeWithin(probe, 15*time.Second))
+	}
+	results := g.probeRound(ctx, sched, bounded)
 	out := watchSample{ScheduleID: id, Sources: make([]sampleSourceReport, 0, len(results))}
 	probe := sched.Probe
 	filter := probe.Filter

@@ -445,6 +445,30 @@ func TestWatchSampleReturnsRawEventsAndVerdicts(t *testing.T) {
 	}
 }
 
+// The sample path owns a 15s call budget; owner wait bounds larger than the
+// budget must be clamped before the toolCall is issued or every sample call
+// ends in a context deadline.
+func TestWatchSampleClampsWaitBoundsToBudget(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	sched, err := s.CreateSchedule(Schedule{ScheduleID: "str-sample-clamp", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "watch", JobKind: "event", Delivery: "stream", Sink: "notify",
+		Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait_for_new_message-a", Args: map[string]any{"timeout": 50}}}, caller, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen float64
+	toolCall := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
+		seen = argSeconds(probe.Args["timeout"])
+		return []byte(`{"event": false, "reason": "timeout"}`), nil
+	}
+	if _, err := g.sampleRoutine(context.Background(), sched.ScheduleID, caller, "", toolCall); err != nil {
+		t.Fatal(err)
+	}
+	if seen <= 0 || seen >= 15 {
+		t.Fatalf("sample must clamp wait bounds under its 15s budget, got %v", seen)
+	}
+}
+
 // watch_sample's filter argument dry-runs a CANDIDATE gate over the same
 // sample — the agent evaluates a new filter against real event shapes
 // before committing it to the watch.
@@ -886,6 +910,37 @@ func TestStreamProbeWaitBounds(t *testing.T) {
 	plain := streamProbe(&WatchProbe{Kind: "mcp_tool", Tool: "hub-mail-events-abc"})
 	if len(plain.Args) != 0 {
 		t.Fatalf("non-wait tool args mutated: %v", plain.Args)
+	}
+}
+
+// Owner-declared wait bounds above the stream call budget must clamp, not
+// bypass: a wait arg at or past the budget turns every round into a context
+// deadline and the subscription never sees another event.
+func TestStreamProbeClampsOversizedWaitBounds(t *testing.T) {
+	clamped := streamProbe(&WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait_for_new_message-a", Args: map[string]any{"timeout": 50}})
+	if v := argSeconds(clamped.Args["timeout"]); v <= 0 || v >= 30 {
+		t.Fatalf("timeout 50 must clamp under the call budget: %v", clamped.Args)
+	}
+	clamped = streamProbe(&WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait_for_new_message-a", Args: map[string]any{"timeout": 30}})
+	if v := argSeconds(clamped.Args["timeout"]); v <= 0 || v >= 30 {
+		t.Fatalf("timeout 30 races the call budget: %v", clamped.Args)
+	}
+	clamped = streamProbe(&WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait_for_settled_message-a", Args: map[string]any{"max_wait_ms": 40000}})
+	if v := argSeconds(clamped.Args["max_wait_ms"]); v <= 0 || v >= 30000 {
+		t.Fatalf("max_wait_ms 40000 must clamp under the call budget: %v", clamped.Args)
+	}
+}
+
+// The sample path runs probe rounds under a tighter 15s budget; wait bounds
+// valid for the 30s loop must still fit inside it.
+func TestStreamProbeClampsForSampleBudget(t *testing.T) {
+	clamped := streamProbeWithin(&WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait_for_new_message-a", Args: map[string]any{"timeout": 25}}, 15*time.Second)
+	if v := argSeconds(clamped.Args["timeout"]); v <= 0 || v >= 15 {
+		t.Fatalf("timeout 25 must clamp under the 15s sample budget: %v", clamped.Args)
+	}
+	clamped = streamProbeWithin(&WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait_for_settled_message-a", Args: map[string]any{"max_wait_ms": 25000}}, 15*time.Second)
+	if v := argSeconds(clamped.Args["max_wait_ms"]); v <= 0 || v >= 15000 {
+		t.Fatalf("max_wait_ms 25000 must clamp under the 15s sample budget: %v", clamped.Args)
 	}
 }
 
