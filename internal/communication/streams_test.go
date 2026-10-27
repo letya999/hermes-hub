@@ -406,7 +406,7 @@ func TestEventCursorCaptured(t *testing.T) {
 func TestEventFilterDropsBeforeFanout(t *testing.T) {
 	s, o, g := occurrenceFixture(t)
 	caller := o.Job.Envelope
-	sched, err := s.CreateSchedule(Schedule{ScheduleID: "str-filter", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "watch dms", JobKind: "event", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc", Filter: `emit("drop" if "noise" in input else "keep")`}}, caller, "")
+	sched, err := s.CreateSchedule(Schedule{ScheduleID: "str-filter", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "watch dms", JobKind: "event", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc", Filter: `emit("drop" if "noise" in input() else "keep")`}}, caller, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1035,7 +1035,7 @@ func TestEventFilterValidationAtCreate(t *testing.T) {
 func TestStreamPollOnceAppliesFilter(t *testing.T) {
 	s, o, g := occurrenceFixture(t)
 	caller := o.Job.Envelope
-	sched, err := s.CreateSchedule(Schedule{ScheduleID: "strf", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "watch dms", JobKind: "event", Delivery: "stream", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc", Filter: `emit("drop" if "noise" in input else "keep")`}}, caller, "")
+	sched, err := s.CreateSchedule(Schedule{ScheduleID: "strf", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "watch dms", JobKind: "event", Delivery: "stream", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc", Filter: `emit("drop" if "noise" in input() else "keep")`}}, caller, "")
 	if err != nil {
 		t.Fatal(err)
 	}
