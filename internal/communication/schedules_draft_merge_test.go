@@ -1,6 +1,7 @@
 package communication
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -70,6 +71,47 @@ func TestValidateScheduleDraftBranches(t *testing.T) {
 		}},
 		{"min interval http", func(s *Schedule) { s.Probe.MinIntervalSeconds = 30 }},
 		{"filter non-event", func(s *Schedule) { s.Probe.Filter = "print('keep')" }},
+		{"sources non-stream", func(s *Schedule) {
+			s.JobKind = "event"
+			s.Sink = "notify"
+			s.Probe = &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc", Sources: []WatchProbeSource{{Args: map[string]any{"chat_id": 1}}}}
+		}},
+		{"sources non-mcp", func(s *Schedule) {
+			s.JobKind = "event"
+			s.Sink = "notify"
+			s.Delivery = "stream"
+			s.Probe = &WatchProbe{Kind: "http", URL: "https://x/y", Sources: []WatchProbeSource{{}}}
+		}},
+		{"sources overflow", func(s *Schedule) {
+			s.JobKind = "event"
+			s.Sink = "notify"
+			s.Delivery = "stream"
+			s.Probe = &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc", Sources: make([]WatchProbeSource, 33)}
+		}},
+		{"source bad tool", func(s *Schedule) {
+			s.JobKind = "event"
+			s.Sink = "notify"
+			s.Delivery = "stream"
+			s.Probe = &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc", Sources: []WatchProbeSource{{Tool: "bad!!"}}}
+		}},
+		{"source bad name", func(s *Schedule) {
+			s.JobKind = "event"
+			s.Sink = "notify"
+			s.Delivery = "stream"
+			s.Probe = &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc", Sources: []WatchProbeSource{{Name: "!!bad"}}}
+		}},
+		{"source args huge", func(s *Schedule) {
+			s.JobKind = "event"
+			s.Sink = "notify"
+			s.Delivery = "stream"
+			s.Probe = &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc", Sources: []WatchProbeSource{{Args: map[string]any{"pad": strings.Repeat("x", 9*1024)}}}}
+		}},
+		{"source poll no cadence", func(s *Schedule) {
+			s.JobKind = "event"
+			s.Sink = "notify"
+			s.Delivery = "stream"
+			s.Probe = &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc", Sources: []WatchProbeSource{{Tool: "hub-feed-poll-abc"}}}
+		}},
 		{"probe url long", func(s *Schedule) { s.Probe.URL = "https://x/" + string(make([]byte, 2100)) }},
 		{"probe kind bad", func(s *Schedule) { s.Probe.Kind = "carrier-pigeon" }},
 		{"github probe bad", func(s *Schedule) { s.Probe = &WatchProbe{Kind: "github_issue", URL: "https://not-github/x"} }},
@@ -133,6 +175,16 @@ func TestValidateScheduleDraftBranches(t *testing.T) {
 			s.JobKind = "event"
 			s.Sink = "notify"
 			s.Probe = &WatchProbe{Kind: "mcp_tool", Tool: "hub-feed-poll-abc", Filter: "print('keep')"}
+		},
+		"event stream sources": func(s *Schedule) {
+			s.JobKind = "event"
+			s.Sink = "agent"
+			s.Delivery = "stream"
+			s.Probe = &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc", Args: map[string]any{"timeout": 20},
+				Sources: []WatchProbeSource{
+					{Name: "alpha", Args: map[string]any{"chat_id": 1}},
+					{Name: "beta", Tool: "hub-tg-wait-settled-xyz", Args: map[string]any{"chat_id": 2}},
+				}}
 		},
 	} {
 		d := valid

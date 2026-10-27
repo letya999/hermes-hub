@@ -45,6 +45,11 @@ type EventState struct {
 	Cursor    string    `json:"cursor,omitempty"`
 	GapCount  int       `json:"gap_count,omitempty"`
 	LastGapAt time.Time `json:"last_gap_at,omitempty"`
+	// SourceCursors/SourceErrors carry the same contract per fan-out input
+	// of a multi-source subscription, keyed by the source label — one dead
+	// connector must not reset healthy siblings' cursors or health.
+	SourceCursors map[string]string `json:"source_cursors,omitempty"`
+	SourceErrors  map[string]string `json:"source_errors,omitempty"`
 }
 
 func (s *Spool) eventPath(id string) string {
@@ -197,9 +202,26 @@ func extractEvents(probe *WatchProbe, body []byte) ([]Event, error) {
 		if id == "" {
 			id = watchHash(string(raw))
 		}
-		events = append(events, Event{ID: id, Text: boundedWatchText(text), Requeue: requeue})
+		rawText := ""
+		if item != nil {
+			var compact bytes.Buffer
+			if json.Compact(&compact, raw) == nil {
+				rawText = boundedWatchText(compact.String())
+			}
+		}
+		events = append(events, Event{ID: id, Text: boundedWatchText(text), Raw: rawText, Requeue: requeue})
 	}
 	return events, nil
+}
+
+// filterInput is what the keep|drop|urgent script reads via input(): the
+// compacted event JSON when the source item decoded as an object, else the
+// plain text — connector fields stay visible to scope filters.
+func filterInput(ev Event) string {
+	if ev.Raw != "" {
+		return ev.Raw
+	}
+	return ev.Text
 }
 
 // settleEvents lands one event occurrence: unseen events fan out to the
@@ -273,7 +295,7 @@ func (s *Spool) settleEvents(o RoutineOccurrence, schedule Schedule, body []byte
 	if schedule.Probe != nil && schedule.Probe.Filter != "" && s.probeScript != nil {
 		verdicts = make(map[string]string, len(fresh))
 		for _, ev := range fresh {
-			verdict, verr := s.probeScript(context.Background(), live, schedule.Probe.Filter, ev.Text, false, nil)
+			verdict, verr := s.probeScript(context.Background(), live, schedule.Probe.Filter, filterInput(ev), false, nil)
 			if verr != nil {
 				filterErr = verr
 				break
@@ -367,7 +389,11 @@ func (s *Spool) fanoutEventsLocked(st *EventState, schedule Schedule, job Job, f
 			}
 			texts := []string{}
 			for _, ev := range bundled {
-				texts = append(texts, "• "+ev.Text)
+				line := "• " + ev.Text
+				if ev.Source != "" {
+					line = "• [" + ev.Source + "] " + ev.Text
+				}
+				texts = append(texts, line)
 			}
 			bundleJob := job
 			bundleJob.ID = seed

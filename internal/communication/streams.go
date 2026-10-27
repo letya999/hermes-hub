@@ -8,8 +8,16 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/identity"
 )
+
+// streamSourceConcurrency bounds the parallel wait/poll calls one
+// multi-source round holds open — beyond it, remaining inputs run in the
+// next rounds' slots (the subscription still merges one wake per round).
+const streamSourceConcurrency = 8
 
 // streamSource reloads the schedule each poll round so pause, snooze,
 // delete or owner changes stop the loop on live durable state.
@@ -234,12 +242,155 @@ func streamProbe(probe *WatchProbe) *WatchProbe {
 	return &p
 }
 
-// streamPollOnce runs one bounded wait-call through the probe path and
-// settles the batch; overflowed events get a best-effort requeue call that
-// carries only the connector-native identifier, never owner content (R5.3).
+// sourceLabel identifies one fan-out input for state and attribution: the
+// declared name, else its position — stable across restarts because the
+// sources list is part of the probe revision.
+func sourceLabel(i int, src WatchProbeSource) string {
+	if src.Name != "" {
+		return src.Name
+	}
+	return "s" + strconv.Itoa(i)
+}
+
+// probeForSource merges one fan-out input onto the probe: the shared Args
+// are the base, the source's own Args override keys, and a source Tool
+// narrows to a sibling read of the same backend.
+func probeForSource(probe *WatchProbe, src WatchProbeSource) *WatchProbe {
+	p := *probe
+	if src.Tool != "" {
+		p.Tool = src.Tool
+	}
+	args := make(map[string]any, len(probe.Args)+len(src.Args))
+	for k, v := range probe.Args {
+		args[k] = v
+	}
+	for k, v := range src.Args {
+		args[k] = v
+	}
+	p.Args = args
+	p.Sources = nil
+	return &p
+}
+
+// sourceResult is one fan-out input's round outcome, labelled for
+// per-source cursor, error and event attribution.
+type sourceResult struct {
+	label string
+	body  []byte
+	err   error
+}
+
+// sampleSourceReport is one fan-out input's bounded look at what the
+// connector emits: up to four events with their raw connector JSON, the
+// source's own error when it failed, and the candidate filter's verdict
+// per event id. watch_sample returns these without touching dedup or the
+// sink — inspecting shape must never wake the agent or consume events.
+type sampleSourceReport struct {
+	Source   string            `json:"source"`
+	Events   []sampleEvent     `json:"events,omitempty"`
+	Error    string            `json:"error,omitempty"`
+	Verdicts map[string]string `json:"verdicts,omitempty"`
+}
+
+type sampleEvent struct {
+	ID   string `json:"id"`
+	Text string `json:"text,omitempty"`
+	Raw  string `json:"raw,omitempty"`
+}
+
+type watchSample struct {
+	ScheduleID string               `json:"schedule_id"`
+	Sources    []sampleSourceReport `json:"sources"`
+}
+
+// probeRound runs one bounded round over the probe's acquisition inputs:
+// a single unlabelled result for a plain probe, or one result per source
+// under bounded concurrency for probe.sources. The caller's toolCall sets
+// the per-call budget and wait-bound injection.
+func (g *Gateway) probeRound(ctx context.Context, schedule Schedule, toolCall func(context.Context, string, *WatchProbe) ([]byte, error)) []sourceResult {
+	probe := schedule.Probe
+	if len(probe.Sources) == 0 {
+		body, err := toolCall(ctx, schedule.Envelope.PrincipalID, probe)
+		return []sourceResult{{body: body, err: err}}
+	}
+	results := make([]sourceResult, len(probe.Sources))
+	var wg sync.WaitGroup
+	slots := make(chan struct{}, streamSourceConcurrency)
+	for i, src := range probe.Sources {
+		results[i].label = sourceLabel(i, src)
+		wg.Add(1)
+		go func(i int, src WatchProbeSource) {
+			defer wg.Done()
+			select {
+			case slots <- struct{}{}:
+				defer func() { <-slots }()
+			case <-ctx.Done():
+				results[i].err = ctx.Err()
+				return
+			}
+			body, err := toolCall(ctx, schedule.Envelope.PrincipalID, probeForSource(probe, src))
+			results[i].body, results[i].err = body, err
+		}(i, src)
+	}
+	wg.Wait()
+	return results
+}
+
+// sampleRoutine is the owner-facing read behind POST /v1/routines/{id}
+// /sample and watch_sample: one bounded probe round through the caller's
+// toolCall, returning each source's event shape (id/text/raw) plus the
+// watch filter's verdict per event id. It carries no durable side
+// effects: no seen-set writes, no cursor moves, no sink admission.
+func (g *Gateway) sampleRoutine(ctx context.Context, id string, caller identity.Envelope, filterOverride string, toolCall func(context.Context, string, *WatchProbe) ([]byte, error)) (watchSample, error) {
+	sched, err := g.spool.scheduleByID(id)
+	if err != nil {
+		return watchSample{}, err
+	}
+	if sched.Envelope.PrincipalID != caller.PrincipalID {
+		return watchSample{}, ErrRoutineNotOwned
+	}
+	results := g.probeRound(ctx, sched, toolCall)
+	out := watchSample{ScheduleID: id, Sources: make([]sampleSourceReport, 0, len(results))}
+	probe := sched.Probe
+	filter := probe.Filter
+	if filterOverride != "" {
+		filter = filterOverride
+	}
+	job := Job{Envelope: sched.Envelope, OrganizationID: sched.OrganizationID, UserID: sched.UserID, ActorID: sched.ActorID, ScopeID: sched.ScopeID, Channel: sched.Channel, ChatID: sched.ChatID, TaskID: sched.TaskID, TopicID: sched.TopicID, SlackChannel: sched.SlackChannel, SlackThread: sched.SlackThread, Text: sched.Input, Trigger: "cron", CreatedAt: g.now().UTC()}
+	proxy := RoutineOccurrence{ScheduleID: id, DueAt: job.CreatedAt, Job: job}
+	for _, res := range results {
+		rep := sampleSourceReport{Source: res.label}
+		if res.err != nil {
+			rep.Error = boundedWatchText(res.err.Error())
+			out.Sources = append(out.Sources, rep)
+			continue
+		}
+		events, _ := extractEvents(probe, res.body)
+		for _, ev := range events {
+			rep.Events = append(rep.Events, sampleEvent{ID: ev.ID, Text: ev.Text, Raw: ev.Raw})
+			if filter != "" && g.spool.probeScript != nil {
+				if rep.Verdicts == nil {
+					rep.Verdicts = map[string]string{}
+				}
+				verdict, _ := g.spool.probeScript(ctx, proxy, filter, filterInput(ev), false, nil)
+				rep.Verdicts[ev.ID] = strings.TrimSpace(verdict)
+			}
+		}
+		out.Sources = append(out.Sources, rep)
+	}
+	return out, nil
+}
+
+// streamPollOnce runs one bounded round through the probe path and settles
+// the batch; overflowed events get a best-effort requeue call that carries
+// only the connector-native identifier, never owner content (R5.3). With
+// probe.sources the round fans out over every input under a bounded
+// concurrency and still merges one settle — dedup and the filter see each
+// event scoped by its source label so connector id namespaces never
+// collide across inputs.
 func (g *Gateway) streamPollOnce(ctx context.Context, schedule Schedule, toolCall func(context.Context, string, *WatchProbe) ([]byte, error)) ([]Event, bool) {
-	body, err := toolCall(ctx, schedule.Envelope.PrincipalID, schedule.Probe)
-	overflowed, blocked := g.spool.settleStreamEvents(schedule, body, g.now().UTC(), err, g.authorizeOccurrence)
+	results := g.probeRound(ctx, schedule, toolCall)
+	overflowed, blocked := g.spool.settleStreamResults(schedule, results, g.now().UTC(), g.authorizeOccurrence)
 	for _, ev := range overflowed {
 		if schedule.Probe == nil || schedule.Probe.RequeueTool == "" {
 			break
@@ -253,15 +404,21 @@ func (g *Gateway) streamPollOnce(ctx context.Context, schedule Schedule, toolCal
 	return overflowed, blocked
 }
 
-// settleStreamEvents settles one stream poll batch without any occurrence:
-// the stream loop owns the schedule end to end, so the durable record is
-// the event state plus the emitted jobs/deliveries. Job and delivery ids
-// are deterministic from the schedule id and the batch's event ids, which
-// makes a replayed batch a no-op. Returns events the sink could not admit
-// for best-effort connector requeue outside the lock, plus whether the
-// round was blocked (probe error, lost authorization, or malformed body)
-// so the loop can pace instead of hot-spinning.
+// settleStreamEvents is the single-probe settle: the unlabelled result
+// keeps legacy unscoped event ids and the flat Cursor field.
 func (s *Spool) settleStreamEvents(schedule Schedule, body []byte, now time.Time, probeErr error, authorize func(Job) error) ([]Event, bool) {
+	return s.settleStreamResults(schedule, []sourceResult{{body: body, err: probeErr}}, now, authorize)
+}
+
+// settleStreamResults settles one stream round across every fan-out input
+// (or the single unlabelled probe, when label is empty — keeping legacy
+// unscoped event ids and the flat Cursor field for old state files).
+// Events dedupe per source label, cursor and error state are written per
+// source, and the round still merges into one filter pass and one sink
+// admission — multi-source batches cost one wake, not one per input. A
+// dead input is isolated to its own SourceErrors entry; only a round where
+// every input failed blocks the loop.
+func (s *Spool) settleStreamResults(schedule Schedule, results []sourceResult, now time.Time, authorize func(Job) error) ([]Event, bool) {
 	s.mu.Lock()
 	live, err := s.loadScheduleLocked(schedule.ScheduleID)
 	if err != nil || live.Revision != schedule.Revision || !streamActive(&live, now) {
@@ -273,9 +430,19 @@ func (s *Spool) settleStreamEvents(schedule Schedule, body []byte, now time.Time
 		s.mu.Unlock()
 		return nil, true
 	}
-	if probeErr != nil {
-		st.LastError = boundedWatchText(probeErr.Error())
-		if authError(probeErr) {
+	failed := 0
+	var firstErr error
+	for _, res := range results {
+		if res.err != nil {
+			failed++
+			if firstErr == nil {
+				firstErr = res.err
+			}
+		}
+	}
+	if failed == len(results) {
+		st.LastError = boundedWatchText(firstErr.Error())
+		if authError(firstErr) {
 			st.Degraded = true
 		}
 		_ = atomicJSON(s.eventPath(schedule.ScheduleID), st)
@@ -289,17 +456,40 @@ func (s *Spool) settleStreamEvents(schedule Schedule, body []byte, now time.Time
 		s.mu.Unlock()
 		return nil, true
 	}
-	events, err := extractEvents(schedule.Probe, body)
-	if err != nil {
-		s.mu.Unlock()
-		return nil, true
-	}
 	var env struct {
 		Cursor string `json:"next_cursor"`
 	}
+	sourceErrs := map[string]string{}
+	sourceCursors := map[string]string{}
 	cursor := ""
-	if json.Unmarshal(body, &env) == nil {
-		cursor = env.Cursor
+	events := []Event{}
+	for _, res := range results {
+		if res.err != nil {
+			sourceErrs[res.label] = boundedWatchText(res.err.Error())
+			if authError(res.err) {
+				st.Degraded = true
+			}
+			continue
+		}
+		extracted, exErr := extractEvents(schedule.Probe, res.body)
+		if exErr != nil {
+			s.mu.Unlock()
+			return nil, true
+		}
+		if json.Unmarshal(res.body, &env) == nil && env.Cursor != "" {
+			if res.label == "" {
+				cursor = env.Cursor
+			} else {
+				sourceCursors[res.label] = env.Cursor
+			}
+		}
+		for _, ev := range extracted {
+			if res.label != "" {
+				ev.Source = res.label
+				ev.ID = res.label + "|" + ev.ID
+			}
+			events = append(events, ev)
+		}
 	}
 	if len(events) == 0 {
 		// A healthy empty poll still proves liveness for /watches.
@@ -337,7 +527,7 @@ func (s *Spool) settleStreamEvents(schedule Schedule, body []byte, now time.Time
 		verdicts = make(map[string]string, len(fresh))
 		proxy := RoutineOccurrence{ScheduleID: live.ScheduleID, DueAt: now, Job: job}
 		for _, ev := range fresh {
-			verdict, verr := s.probeScript(context.Background(), proxy, live.Probe.Filter, ev.Text, false, nil)
+			verdict, verr := s.probeScript(context.Background(), proxy, live.Probe.Filter, filterInput(ev), false, nil)
 			if verr != nil {
 				filterErr = verr
 				break
@@ -359,6 +549,17 @@ func (s *Spool) settleStreamEvents(schedule Schedule, body []byte, now time.Time
 		return nil, true
 	}
 	st.Cursor = cursor
+	for label, c := range sourceCursors {
+		if st.SourceCursors == nil {
+			st.SourceCursors = map[string]string{}
+		}
+		st.SourceCursors[label] = c
+	}
+	if len(sourceErrs) > 0 {
+		st.SourceErrors = sourceErrs
+	} else {
+		st.SourceErrors = nil
+	}
 	if filterErr != nil {
 		st.LastError = boundedWatchText(filterErr.Error())
 		_ = atomicJSON(s.eventPath(schedule.ScheduleID), st)

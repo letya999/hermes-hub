@@ -329,6 +329,26 @@ func ValidateScheduleDraft(in commodel.Schedule, caller identity.Envelope, hooks
 				return fmt.Errorf("probe filter does not compile: %w", err)
 			}
 		}
+		if len(in.Probe.Sources) > 32 {
+			return errors.New("probe sources exceed bounds")
+		}
+		if len(in.Probe.Sources) > 0 && (in.JobKind != "event" || in.Delivery != "stream") {
+			return errors.New("probe sources fan out only on a stream event subscription")
+		}
+		for _, src := range in.Probe.Sources {
+			if src.Tool != "" && !probeToolPattern.MatchString(src.Tool) {
+				return errors.New("invalid probe source tool name")
+			}
+			if src.Name != "" && !commodel.IDPattern.MatchString(src.Name) {
+				return errors.New("invalid probe source name")
+			}
+			if src.Args != nil {
+				b, err := json.Marshal(src.Args)
+				if err != nil || len(b) > 8*1024 {
+					return errors.New("probe source args exceed bounds")
+				}
+			}
+		}
 		if err := validateProbeNeeds(in.Probe); err != nil {
 			return err
 		}
@@ -338,8 +358,16 @@ func ValidateScheduleDraft(in commodel.Schedule, caller identity.Envelope, hooks
 				return errors.New("GitHub issue probe needs its public REST issue URL")
 			}
 		}
-		if in.Delivery == "stream" && in.Probe.Kind == "mcp_tool" && !commodel.WaitCapableProbeTool(in.Probe.Tool) && in.Probe.MinIntervalSeconds == 0 {
-			return errors.New("stream delivery on a plain poll tool requires probe.min_interval_seconds; wait-style tools (wait/settled/new_message) hold the call open and need none")
+		if in.Delivery == "stream" && in.Probe.Kind == "mcp_tool" && in.Probe.MinIntervalSeconds == 0 {
+			waitCapable := commodel.WaitCapableProbeTool(in.Probe.Tool)
+			for _, src := range in.Probe.Sources {
+				if src.Tool != "" && !commodel.WaitCapableProbeTool(src.Tool) {
+					waitCapable = false
+				}
+			}
+			if !waitCapable {
+				return errors.New("stream delivery on a plain poll tool requires probe.min_interval_seconds; wait-style tools (wait/settled/new_message) hold the call open and need none")
+			}
 		}
 		if in.Probe.MinIntervalSeconds != 0 && in.Delivery != "stream" {
 			return errors.New("probe.min_interval_seconds is a stream-delivery cadence contract")

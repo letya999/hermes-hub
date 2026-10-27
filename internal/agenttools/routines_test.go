@@ -687,10 +687,85 @@ func TestWatchSubscribeForwardsFilterAndMinInterval(t *testing.T) {
 			declared[a.Name] = true
 		}
 	}
-	for _, want := range []string{"delivery", "filter", "min_interval_seconds"} {
+	for _, want := range []string{"delivery", "filter", "min_interval_seconds", "sources"} {
 		if !declared[want] {
 			t.Fatalf("watch_subscribe schema missing %q", want)
 		}
+	}
+}
+
+// watch_subscribe fans one subscription out over several acquisition
+// inputs: the sources JSON array lands on probe.sources so the stream loop
+// merges one wake per round instead of one watch per chat.
+func TestWatchSubscribeForwardsSources(t *testing.T) {
+	v := fixture(t)
+	t.Setenv("HUB_PRINCIPAL_ID", "alice")
+	var request map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		_, _ = w.Write([]byte(`{"schedule_id":"groups-watch"}`))
+	}))
+	defer server.Close()
+	v.CommunicationURL = server.URL
+	sources := `[{"name":"alpha","args":{"chat_id":1}},{"name":"beta","tool":"hub-tg-wait-settled-xyz","args":{"chat_id":2}}]`
+	if _, err := v.Routine(context.Background(), "watch_subscribe", Input{ID: "groups-watch", Timezone: "UTC", Expression: "* * * * *", Text: "watch groups", Tool: "hub-tg-wait-abc", Delivery: "stream", Sink: "agent", Args: `{"timeout":20}`, Sources: sources}); err != nil {
+		t.Fatal(err)
+	}
+	probe, _ := request["probe"].(map[string]any)
+	list, ok := probe["sources"].([]any)
+	if !ok || len(list) != 2 {
+		t.Fatalf("sources lost: %v", probe)
+	}
+	first, _ := list[0].(map[string]any)
+	second, _ := list[1].(map[string]any)
+	if first["name"] != "alpha" || second["tool"] != "hub-tg-wait-settled-xyz" {
+		t.Fatalf("source fields mangled: %v", list)
+	}
+	if _, err := v.Routine(context.Background(), "watch_subscribe", Input{ID: "groups-watch2", Timezone: "UTC", Expression: "* * * * *", Text: "w", Tool: "hub-tg-wait-abc", Delivery: "stream", Sources: `{oops`}); err == nil {
+		t.Fatal("malformed sources JSON accepted")
+	}
+}
+
+// watch_sample POSTs to the schedule's /sample route, forwarding a
+// candidate filter for dry-run verdicts — it is the agent's window into
+// the connector's real event shape before it commits a gate.
+func TestWatchSamplePostsToSampleRoute(t *testing.T) {
+	v := fixture(t)
+	t.Setenv("HUB_PRINCIPAL_ID", "alice")
+	var gotPath, gotMethod string
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotMethod = r.URL.Path, r.Method
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		if strings.HasSuffix(r.URL.Path, "/sample") {
+			_, _ = w.Write([]byte(`{"schedule_id":"w1","sources":[{"source":"alpha","events":[{"id":"m1","raw":"{\"chat_id\":-1}"}],"verdicts":{"m1":"keep"}}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`[{"schedule_id":"w1","job_kind":"event"}]`))
+	}))
+	defer server.Close()
+	v.CommunicationURL = server.URL
+	out, err := v.Routine(context.Background(), "watch_sample", Input{ID: "w1", Filter: `emit("keep")`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotMethod != http.MethodPost || !strings.HasSuffix(gotPath, "/v1/routines/w1/sample") {
+		t.Fatalf("sample routed wrong: %s %s", gotMethod, gotPath)
+	}
+	if gotBody["filter"] != `emit("keep")` {
+		t.Fatalf("candidate filter not forwarded: %v", gotBody)
+	}
+	res, _ := out["result"].(map[string]any)
+	sources, _ := res["sources"].([]any)
+	if len(sources) != 1 {
+		t.Fatalf("sample response not surfaced: %v", out)
+	}
+	// A non-event routine must not be samplable through the watch surface.
+	v.CommunicationURL = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`[{"schedule_id":"rem1","job_kind":"reminder"}]`))
+	})).URL
+	if _, err := v.Routine(context.Background(), "watch_sample", Input{ID: "rem1"}); err == nil {
+		t.Fatal("reminder accepted through watch_sample")
 	}
 }
 
@@ -815,7 +890,7 @@ func TestWatchResumeRoutesResume(t *testing.T) {
 // The call dispatcher routes watch_* names into the routine transport.
 func TestWatchToolsDispatch(t *testing.T) {
 	v := fixture(t)
-	for _, name := range []string{"watch_subscribe", "watch_list", "watch_pause", "watch_resume", "watch_delete"} {
+	for _, name := range []string{"watch_subscribe", "watch_list", "watch_pause", "watch_resume", "watch_delete", "watch_sample"} {
 		_, err := v.call(context.Background(), name, Input{}, nil, nil, nil)
 		if err == nil || !strings.Contains(err.Error(), "routines require HUB_COMMUNICATION_CONTROL_URL") {
 			t.Fatalf("%s not dispatched to Routine: %v", name, err)
@@ -836,7 +911,7 @@ func TestWatchToolsPublished(t *testing.T) {
 	for _, tool := range list.Tools {
 		names[tool.Name] = true
 	}
-	for _, want := range []string{"watch_subscribe", "watch_list", "watch_pause", "watch_resume", "watch_delete"} {
+	for _, want := range []string{"watch_subscribe", "watch_list", "watch_pause", "watch_resume", "watch_delete", "watch_sample"} {
 		if !names[want] {
 			t.Fatalf("%s not published on the MCP server", want)
 		}
@@ -849,7 +924,7 @@ func TestWatchToolsInCatalog(t *testing.T) {
 	for _, spec := range HubToolsDefinition().Tools {
 		names[spec.Name] = true
 	}
-	for _, want := range []string{"watch_subscribe", "watch_list", "watch_pause", "watch_resume", "watch_delete"} {
+	for _, want := range []string{"watch_subscribe", "watch_list", "watch_pause", "watch_resume", "watch_delete", "watch_sample"} {
 		if !names[want] {
 			t.Fatalf("%s missing from catalog", want)
 		}

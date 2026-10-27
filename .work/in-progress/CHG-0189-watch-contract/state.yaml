@@ -20,7 +20,13 @@ slices:
     evidence: commodel.WaitCapableProbeTool + WatchProbe.min_interval_seconds (5..3600, stream-only); streamPoll sleeps declared cadence; next_cursor persisted on stream batches
   s4_surface:
     state: green
-    evidence: watch_resume in catalog/dispatch/MCP/docs; catalog 5.3.0 with delivery/filter/min_interval_seconds on watch_subscribe
+    evidence: watch_resume in catalog/dispatch/MCP/docs; catalog 5.3.1 with delivery/filter/min_interval_seconds/sources on watch_subscribe
+  s5_multi_source:
+    state: green
+    evidence: probe.sources fanout ≤32 under concurrency 8; per-source cursors/errors/dedup (label|id); merged batch → one wake with [label] attribution; Event.Raw compacted JSON feeds filters via input()
+  s6_sample:
+    state: green
+    evidence: POST /v1/routines/{id}/sample owner-scoped; watch_sample op in dispatch/catalog/docs/e2e E2E-174; per-source errors surfaced; candidate-filter dry run; no durable side effects
 gates:
   unit_focused: green (agenttools, communication, stack, commodel — targeted runs)
   just_check: pending
@@ -29,3 +35,4 @@ notes:
   - Global routine floor 60s untouched; cadence is per-source via stream probe only.
   - SPEC-0081 R1.6 cursor/next_cursor envelope semantics now held by the stream path too.
   - Existing lifecycle fixtures gained min_interval_seconds=60 — fixture update, no relaxation.
+  - Catalog bumped 5.3.0→5.3.1: sources arg + watch_sample + input()/emit contract in description and prompt contract.

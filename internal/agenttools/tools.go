@@ -113,6 +113,10 @@ type Input struct {
 	// cadence for stream delivery on poll-style tools.
 	Filter             string `json:"filter,omitempty"`
 	MinIntervalSeconds int    `json:"min_interval_seconds,omitempty"`
+	// Sources fans one subscription out over several acquisition inputs: a
+	// JSON array string of {name?,tool?,args} entries merged onto the
+	// probe's tool+args per stream round.
+	Sources string `json:"sources,omitempty"`
 }
 type Tools struct {
 	Workspace, Archive, Organization *os.Root

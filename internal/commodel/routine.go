@@ -57,6 +57,22 @@ type WatchProbe struct {
 	// successful rounds. Required on stream schedules whose tool is not
 	// wait-capable — wait tools hold the call open and pace themselves.
 	MinIntervalSeconds int64 `json:"min_interval_seconds,omitempty"`
+	// Sources fans one subscription out over several acquisition inputs
+	// (SPEC-0081 shared acquisition): each entry is probed in bounded
+	// parallel per stream round and the batches merge into one wake.
+	// Args below is the shared base; a source overrides keys with its own
+	// Args and may narrow to a different Tool in the same backend.
+	Sources []WatchProbeSource `json:"sources,omitempty"`
+}
+
+// WatchProbeSource is one acquisition input inside a shared event
+// subscription: same tool by default (Args overrides merge onto the
+// probe's Args) or a sibling tool when Tool is set. Name labels the
+// source for per-source state and bundle attribution.
+type WatchProbeSource struct {
+	Name string         `json:"name,omitempty"`
+	Tool string         `json:"tool,omitempty"`
+	Args map[string]any `json:"args,omitempty"`
 }
 
 // ProbeNeed is one hub-prefetched read-tool call for a script probe.
@@ -253,6 +269,13 @@ type RoutineOccurrence struct {
 type Event struct {
 	ID   string
 	Text string
+	// Raw is the bounded compacted JSON of the source item when it decoded
+	// as an object — the filter's input() so connector fields beyond the
+	// text (chat_id, sender, url) stay visible to keep|drop|urgent.
+	Raw string
+	// Source labels the fan-out input that produced the event inside a
+	// multi-source subscription (empty for single-probe watches).
+	Source string
 	// Requeue carries the connector-native identifier arguments for the
 	// requeue hook when the event exposes them.
 	Requeue map[string]any

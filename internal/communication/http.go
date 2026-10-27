@@ -1,6 +1,7 @@
 package communication
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -345,6 +346,27 @@ func (g *Gateway) handleRoutineItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
+	case r.Method == http.MethodPost && action == "sample":
+		var req struct {
+			Filter string `json:"filter"`
+		}
+		if r.ContentLength > 0 && decodeJSON(r, &req) != nil {
+			http.Error(w, "invalid sample request", http.StatusBadRequest)
+			return
+		}
+		toolCall := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
+			return g.toolCallProbeWithin(ctx, principal, streamProbe(probe), 15*time.Second)
+		}
+		sample, err := g.sampleRoutine(r.Context(), id, caller, req.Filter, toolCall)
+		if err != nil {
+			status := http.StatusBadRequest
+			if errors.Is(err, ErrRoutineNotOwned) {
+				status = http.StatusForbidden
+			}
+			http.Error(w, err.Error(), status)
+			return
+		}
+		writeJSON(w, sample)
 	case r.Method == http.MethodPost && (action == "" || action == "resume"):
 		var patch map[string]json.RawMessage
 		if decodeJSON(r, &patch) != nil {

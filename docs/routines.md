@@ -182,6 +182,31 @@ fence. One subscription should cover the broadest scope the source tool
 offers (e.g. account-wide args); narrowing belongs to `filter` — durable
 dedup rejects repeats before they can spend a wake.
 
+`probe.sources` fans one watch out over up to 32 inputs —
+`[{name?, tool?, args}, …]` merged onto the base `tool`/`args` (source keys
+win; `tool` may point at a sibling read tool; unnamed sources get stable
+positional labels `s0`, `s1`, …). Sources are stream-only. Each source owns
+an independent durable cursor, error and dedup namespace (`label|native-id`
+so connectors reusing ids cannot collide); one round polls all sources
+under a bounded concurrency of 8, merges survivors into a single filter
+pass and a single wake, while a failed source records `source_errors`
+without starving the rest — an all-source failure blocks the round.
+Agent-sink bundles attribute every event as `[label] text`.
+
+`filter` receives the whole event, not only text: `input()` returns
+compacted connector JSON whenever the source item is object-shaped (all
+fields — `chat_id`, `sender_id`, `url`, …), falling back to plain text for
+scalar items. The script must call `input()` as a function and end with
+exactly one `emit("keep"|"drop"|"urgent")`.
+
+`watch_sample` (`POST /v1/routines/{id}/sample`, owner-scoped) runs one
+bounded probe round and returns per-source raw event JSON plus per-source
+errors — never treating a dead connector as an empty result. An optional
+`{"filter": "…"}` body dry-runs a candidate filter and reports the verdict
+per sampled event. Sampling writes no seen marks, advances no cursor,
+sends nothing and never wakes the model — it is the schema-discovery and
+filter-dry-run step before committing a filter to a broad-scope watch.
+
 ## Standing assignments
 
 A standing assignment (`asg-*`, `internal/commodel.Assignment`) is the
@@ -340,7 +365,7 @@ clock occurrences; inspect event_state for current health/error.
 
 ## Deployment and manual acceptance
 
-The catalog is hub-agent-tools@5.3.0. Old definitions remain immutable. Register
+The catalog is hub-agent-tools@5.3.1. Old definitions remain immutable. Register
 the new version and, for managed spaces, deliberately repin selected tools in the protected profile,
 preserving scopes, denies and limits. routine_edit requires routines.update and
 the update:routines tuple for all four actions. Do not translate a former

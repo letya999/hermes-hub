@@ -128,6 +128,27 @@ func TestExtractEventsBurstRequeueAndText(t *testing.T) {
 	}
 }
 
+// A text-carrying event still exposes its connector fields to the filter:
+// Raw keeps the compacted item JSON (chat_id here) even though Text holds
+// only the message body — otherwise source-scope filters are unwritable.
+func TestExtractEventsRawKeepsConnectorFields(t *testing.T) {
+	body := `{"id": "m1", "text": "hello github.com/x", "chat_id": -1001234, "sender_id": 42}`
+	events, err := extractEvents(&WatchProbe{Kind: "mcp_tool"}, []byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("want one event, got %+v", events)
+	}
+	ev := events[0]
+	if ev.Text != "hello github.com/x" {
+		t.Fatalf("text: %q", ev.Text)
+	}
+	if !strings.Contains(ev.Raw, `"chat_id":-1001234`) || !strings.Contains(ev.Raw, `"sender_id":42`) {
+		t.Fatalf("raw dropped connector fields: %q", ev.Raw)
+	}
+}
+
 // S6.3 — a stream batch fans out to the owner outbox with no occurrence in
 // play, and an identical re-poll is fully deduped.
 func TestSettleStreamEventsNotify(t *testing.T) {
@@ -186,6 +207,325 @@ func TestSettleStreamEventsAgentSink(t *testing.T) {
 	s.settleStreamEvents(sched, body, now.Add(time.Second), nil, g.authorizeOccurrence)
 	if job, err := s.ClaimJob(); err != nil || job != nil {
 		t.Fatal("replayed stream batch woke the agent again")
+	}
+}
+
+// The stream path feeds the same raw JSON to the filter as the poll path:
+// input() carries connector fields, not only the extracted text.
+func TestStreamFilterInputPrefersRawJSON(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	sched, err := s.CreateSchedule(Schedule{ScheduleID: "str-raw2", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "watch groups", JobKind: "event", Delivery: "stream", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc", Filter: `emit("drop" if "-1001" not in input() else "keep")`}}, caller, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotInput string
+	s.probeScript = func(ctx context.Context, o RoutineOccurrence, src, input string, mountSpace bool, needs []string) (string, error) {
+		gotInput = input
+		return "keep", nil
+	}
+	body := []byte(`{"event": true, "id": "e9", "text": "ping", "chat_id": -1001234, "sender_id": 7}`)
+	s.settleStreamEvents(sched, body, time.Now().UTC(), nil, g.authorizeOccurrence)
+	if !strings.Contains(gotInput, `"chat_id":-1001234`) {
+		t.Fatalf("stream filter input lacks connector fields: %q", gotInput)
+	}
+}
+
+// probe.sources fans one subscription out over several acquisition inputs:
+// every source is probed inside its own bounded call, the batches merge
+// through one dedup/filter/sink, and the whole window costs one agent
+// wake — never one per source.
+func TestStreamSourcesFanoutMergesOneWake(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	sched, err := s.CreateSchedule(Schedule{ScheduleID: "str-multi", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "watch groups", JobKind: "event", Delivery: "stream", Sink: "agent",
+		Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc", Args: map[string]any{"timeout": 20},
+			Sources: []WatchProbeSource{
+				{Name: "alpha", Args: map[string]any{"chat_id": float64(1)}},
+				{Name: "beta", Args: map[string]any{"chat_id": float64(2)}},
+			}}}, caller, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	called := map[int]bool{}
+	toolCall := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch probe.Args["chat_id"] {
+		case float64(1):
+			called[1] = true
+			return []byte(`{"event": true, "id": "m1", "text": "alpha ping", "chat_id": 1, "next_cursor": "ca1"}`), nil
+		case float64(2):
+			called[2] = true
+			return []byte(`{"event": true, "id": "m1", "text": "beta ping", "chat_id": 2, "next_cursor": "cb1"}`), nil
+		}
+		return []byte(`{"event": false}`), nil
+	}
+	_, blocked := g.streamPollOnce(context.Background(), sched, toolCall)
+	if blocked {
+		t.Fatal("healthy multi-source round reported blocked")
+	}
+	if !called[1] || !called[2] {
+		t.Fatalf("fan-out missed sources: %v", called)
+	}
+	job, err := s.ClaimJob()
+	if err != nil || job == nil {
+		t.Fatal("merged multi-source batch admitted no job")
+	}
+	// Both sources surface in one bundle: identical connector ids in
+	// different chats must not dedup against each other, and the agent
+	// sees which input each event came from.
+	if !strings.Contains(job.Text, "alpha ping") || !strings.Contains(job.Text, "beta ping") {
+		t.Fatalf("bundle dropped a source's event: %q", job.Text)
+	}
+	if !strings.Contains(job.Text, "[alpha]") || !strings.Contains(job.Text, "[beta]") {
+		t.Fatalf("bundle lost source attribution: %q", job.Text)
+	}
+	if job2, err := s.ClaimJob(); err != nil || job2 != nil {
+		t.Fatal("one batch produced more than one agent wake")
+	}
+	st, _ := s.EventStateOf("str-multi")
+	if st.SourceCursors["alpha"] != "ca1" || st.SourceCursors["beta"] != "cb1" {
+		t.Fatalf("per-source cursors not persisted: %+v", st.SourceCursors)
+	}
+	// A replayed round dedupes per source — no second wake.
+	g.streamPollOnce(context.Background(), sched, toolCall)
+	if job2, err := s.ClaimJob(); err != nil || job2 != nil {
+		t.Fatal("replayed multi-source batch woke the agent again")
+	}
+}
+
+// A source may narrow to a sibling read tool, and an unnamed source still
+// gets a stable positional label so its cursor survives restarts.
+func TestStreamSourceToolOverrideAndPositionalLabel(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	sched, err := s.CreateSchedule(Schedule{ScheduleID: "str-mixed", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "watch mixed", JobKind: "event", Delivery: "stream",
+		Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc", MinIntervalSeconds: 60,
+			Sources: []WatchProbeSource{
+				{Args: map[string]any{"chat_id": float64(1)}},
+				{Name: "rss", Tool: "hub-rss-read", Args: map[string]any{"feed": "f"}},
+			}}}, caller, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	tools := map[string]bool{}
+	toolCall := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		tools[probe.Tool] = true
+		if probe.Tool == "hub-rss-read" {
+			return []byte(`{"event": true, "id": "r1", "text": "rss item", "next_cursor": "cr1"}`), nil
+		}
+		return []byte(`{"event": true, "id": "t1", "text": "tg item", "next_cursor": "ct1"}`), nil
+	}
+	_, blocked := g.streamPollOnce(context.Background(), sched, toolCall)
+	if blocked {
+		t.Fatal("round blocked")
+	}
+	if !tools["hub-tg-wait-abc"] || !tools["hub-rss-read"] {
+		t.Fatalf("source tool override not honored: %v", tools)
+	}
+	st, _ := s.EventStateOf("str-mixed")
+	if st.SourceCursors["rss"] != "cr1" {
+		t.Fatalf("named source cursor missing: %+v", st.SourceCursors)
+	}
+	if st.SourceCursors["s0"] != "ct1" {
+		t.Fatalf("unnamed source needs a stable label: %+v", st.SourceCursors)
+	}
+}
+
+// One dead source must not starve healthy siblings: the round still
+// settles the good batch, the failure is attributed to its own label in
+// the durable state, and the loop stays unblocked.
+func TestStreamSourcesPartialFailureIsolated(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	sched, err := s.CreateSchedule(Schedule{ScheduleID: "str-partial", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "watch groups", JobKind: "event", Delivery: "stream", Sink: "agent",
+		Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc",
+			Sources: []WatchProbeSource{
+				{Name: "alive", Args: map[string]any{"chat_id": float64(1)}},
+				{Name: "dead", Args: map[string]any{"chat_id": float64(9)}},
+			}}}, caller, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolCall := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
+		if probe.Args["chat_id"] == float64(9) {
+			return nil, errors.New("connector exploded")
+		}
+		return []byte(`{"event": true, "id": "m1", "text": "still here"}`), nil
+	}
+	_, blocked := g.streamPollOnce(context.Background(), sched, toolCall)
+	if blocked {
+		t.Fatal("partial failure must not block the round")
+	}
+	job, err := s.ClaimJob()
+	if err != nil || job == nil || !strings.Contains(job.Text, "still here") {
+		t.Fatalf("healthy source's event lost to a sibling failure: %+v %v", job, err)
+	}
+	st, _ := s.EventStateOf("str-partial")
+	if !strings.Contains(st.SourceErrors["dead"], "exploded") {
+		t.Fatalf("source failure not attributed: %+v", st.SourceErrors)
+	}
+	// A fully failed round is the one that degrades and blocks.
+	dead := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
+		return nil, errors.New("all down")
+	}
+	if _, blocked := g.streamPollOnce(context.Background(), sched, dead); !blocked {
+		t.Fatal("all-failed round must block so the loop paces")
+	}
+}
+
+// watch_sample runs one bounded probe round and returns the raw event
+// shape per source with candidate-filter verdicts — the agent inspects
+// what a connector emits before committing keep|drop|urgent logic, and
+// the sample never fans out or marks anything seen.
+func TestWatchSampleReturnsRawEventsAndVerdicts(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	sched, err := s.CreateSchedule(Schedule{ScheduleID: "str-sample", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "watch groups", JobKind: "event", Delivery: "stream", Sink: "agent",
+		Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc", Filter: `emit("keep")`,
+			Sources: []WatchProbeSource{
+				{Name: "alpha", Args: map[string]any{"chat_id": float64(1)}},
+				{Name: "beta", Args: map[string]any{"chat_id": float64(2)}},
+			}}}, caller, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolCall := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
+		if probe.Args["chat_id"] == float64(1) {
+			return []byte(`{"event": true, "id": "m1", "text": "ping", "chat_id": -1001, "sender_id": 7}`), nil
+		}
+		return []byte(`{"event": false, "reason": "timeout"}`), nil
+	}
+	var filterInputSeen string
+	s.probeScript = func(ctx context.Context, o RoutineOccurrence, src, input string, mountSpace bool, needs []string) (string, error) {
+		filterInputSeen = input
+		return "keep", nil
+	}
+	sample, err := g.sampleRoutine(context.Background(), sched.ScheduleID, caller, "", toolCall)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sample.Sources) != 2 {
+		t.Fatalf("sample must report per source: %+v", sample.Sources)
+	}
+	alpha := sample.Sources[0]
+	if alpha.Source != "alpha" || len(alpha.Events) != 1 {
+		t.Fatalf("alpha sample wrong: %+v", alpha)
+	}
+	if !strings.Contains(alpha.Events[0].Raw, `"chat_id":-1001`) {
+		t.Fatalf("sample lost the raw event fields the filter needs: %+v", alpha.Events[0])
+	}
+	if alpha.Verdicts["m1"] != "keep" {
+		t.Fatalf("candidate filter verdict missing: %+v", alpha.Verdicts)
+	}
+	if !strings.Contains(filterInputSeen, `"chat_id"`) {
+		t.Fatalf("filter ran on text, not raw JSON: %q", filterInputSeen)
+	}
+	if beta := sample.Sources[1]; len(beta.Events) != 0 || beta.Error != "" {
+		t.Fatalf("timeout source should report an empty event list, not an error: %+v", beta)
+	}
+	// Sampling never wakes the agent or marks events seen.
+	if job, err := s.ClaimJob(); err != nil || job != nil {
+		t.Fatal("sample fanned out to the sink")
+	}
+	st, _ := s.EventStateOf("str-sample")
+	if len(st.Seen) != 0 {
+		t.Fatal("sample marked events seen")
+	}
+	// A foreign caller must not probe someone else's connector — sampling
+	// is owner-only like every other routine control.
+	mallory := identity.TelegramEnvelope("mallory", 99, "mallory", "policy-1")
+	if _, err := g.sampleRoutine(context.Background(), sched.ScheduleID, mallory, "", toolCall); err == nil {
+		t.Fatal("foreign caller sampled an owned watch")
+	}
+}
+
+// watch_sample's filter argument dry-runs a CANDIDATE gate over the same
+// sample — the agent evaluates a new filter against real event shapes
+// before committing it to the watch.
+func TestWatchSampleRunsCandidateFilter(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	sched, err := s.CreateSchedule(Schedule{ScheduleID: "str-cand", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "watch groups", JobKind: "event", Delivery: "stream", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc"}}, caller, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolCall := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
+		return []byte(`{"event": true, "id": "m1", "text": "ping", "chat_id": -1001}`), nil
+	}
+	var gotSrc string
+	s.probeScript = func(ctx context.Context, o RoutineOccurrence, src, input string, mountSpace bool, needs []string) (string, error) {
+		gotSrc = src
+		return "drop", nil
+	}
+	sample, err := g.sampleRoutine(context.Background(), sched.ScheduleID, caller, `emit("drop" if "-9999" in input() else "keep")`, toolCall)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotSrc == "" {
+		t.Fatal("candidate filter never ran")
+	}
+	if sample.Sources[0].Verdicts["m1"] != "drop" {
+		t.Fatalf("candidate verdict lost: %+v", sample.Sources[0])
+	}
+}
+
+// POST /v1/routines/{id}/sample is the owner-facing wire for watch_sample:
+// a failed source surfaces its own error entry instead of pretending the
+// source is quiet.
+func TestWatchSampleHTTPRouteReportsSourceErrors(t *testing.T) {
+	c := testConfig(t)
+	c.ControlAuth = "control-token"
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.api = &fakeAPI{}
+	handler := g.Handler()
+	post := func(path, body, principal string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer control-token")
+		req.Header.Set("X-Hub-Principal", principal)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+	create := `{"schedule_id":"samp-http","timezone":"UTC","expression":"* * * * *","input":"watch groups","job_kind":"event","delivery":"stream","probe":{"kind":"mcp_tool","tool":"hub-tg-wait-abc","sources":[{"name":"alpha","args":{"chat_id":1}}]}}`
+	if rec := post("/v1/routines", create, "alice"); rec.Code != http.StatusOK {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+	}
+	rec := post("/v1/routines/samp-http/sample", `{}`, "alice")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("sample: %d %s", rec.Code, rec.Body.String())
+	}
+	var sample struct {
+		ScheduleID string `json:"schedule_id"`
+		Sources    []struct {
+			Source string `json:"source"`
+			Error  string `json:"error"`
+		} `json:"sources"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &sample); err != nil {
+		t.Fatal(err)
+	}
+	if sample.ScheduleID != "samp-http" || len(sample.Sources) != 1 || sample.Sources[0].Source != "alpha" {
+		t.Fatalf("sample shape lost: %s", rec.Body.String())
+	}
+	// No live connector in tests: the source's failure must surface in its
+	// own error field, not as a silent empty batch.
+	if sample.Sources[0].Error == "" {
+		t.Fatalf("dead source reported as quiet: %s", rec.Body.String())
+	}
+	// Foreign principal is denied — control auth rejects the unknown
+	// caller before the routine-ownership check ever runs.
+	if rec := post("/v1/routines/samp-http/sample", `{}`, "mallory"); rec.Code == http.StatusOK {
+		t.Fatalf("foreign caller sampled: %s", rec.Body.String())
 	}
 }
 
@@ -462,6 +802,34 @@ func TestEventFilterUrgentBypassesQuiet(t *testing.T) {
 	d, err := s.ClaimDelivery()
 	if err != nil || d == nil || !d.NotBefore.IsZero() {
 		t.Fatalf("urgent event must bypass the quiet window: %+v %v", d, err)
+	}
+}
+
+// The filter script reads input() — it must receive the event's compacted
+// raw JSON (connector fields like chat_id), not just the text, or source
+// scope filters are unwritable.
+func TestEventFilterInputPrefersRawJSON(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	sched, err := s.CreateSchedule(Schedule{ScheduleID: "str-raw", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "watch dms", JobKind: "event", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc", Filter: `emit("keep")`}}, caller, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotInput string
+	s.probeScript = func(ctx context.Context, o RoutineOccurrence, src, input string, mountSpace bool, needs []string) (string, error) {
+		gotInput = input
+		return "keep", nil
+	}
+	body := []byte(`{"id":"e1","text":"ping","chat_id":-1001234,"sender_id":7}`)
+	o.ScheduleID = "str-raw"
+	o.Job.Trigger = "cron"
+	o.State = "probing"
+	if err := atomicJSON(filepath.Join(s.root, "occurrences", occurrenceID(o)+".json"), o); err != nil {
+		t.Fatal(err)
+	}
+	s.settleEvents(o, sched, body, time.Now().UTC(), nil, g.authorizeOccurrence)
+	if !strings.Contains(gotInput, `"chat_id":-1001234`) {
+		t.Fatalf("filter input lacks connector fields: %q", gotInput)
 	}
 }
 

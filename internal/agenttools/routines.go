@@ -28,11 +28,12 @@ var routineDescriptions = map[string]string{
 	"routine_snooze":  "Snooze one owned routine until expression (RFC3339); this updates the existing schedule ID.",
 	"routine_pause":   "Pause an owned routine; already queued occurrences recheck its state before execution.",
 	"routine_delete":  "Retire an owned routine; the same schedule ID cannot reactivate it. This does not recall messages already sent.",
-	"watch_subscribe": "Subscribe to a source's events via one projected read tool (args is a JSON object string). Subscribe once at the broadest scope the tool offers — e.g. account-wide args — then narrow with filter, a Starlark script emitting keep|drop|urgent per event; do not create one watch per chat or channel. sink=notify sends one message per new event; sink=agent wakes the agent once per batch with events flagged untrusted. delivery=stream keeps one bounded wait-call outstanding for wait-style tools (name contains wait/settled/new_message); a plain poll tool also needs min_interval_seconds (5..3600). Dedup is durable; a connector auth failure marks the watch degraded. Manage with watch_list/watch_pause/watch_resume/watch_delete and routine_edit update.",
+	"watch_subscribe": "Subscribe to a source's events via one projected read tool (args is a JSON object string). For several chats/feeds pass sources — a JSON array of up to 32 {name?,tool?,args} merged onto tool+args: one watch fans out, dedups per source and wakes once per merged batch; never one watch per chat. filter is REQUIRED when the source scope exceeds the user's ask — a Starlark script where input() returns the event JSON (all connector fields, not only text) ending with emit(\"keep\"|\"drop\"|\"urgent\"); inspect the real event shape first via watch_sample or one direct tool call. sink=notify sends per event; sink=agent one wake per batch, events untrusted. delivery=stream for wait-style tools (wait/settled/new_message); a poll tool also needs min_interval_seconds (5..3600). Manage via watch_list/pause/resume/delete and routine_edit.",
 	"watch_list":      "List owned event subscriptions only — reminders, watchers and other routines are not included.",
 	"watch_pause":     "Pause one owned event subscription by schedule id.",
 	"watch_resume":    "Resume one paused owned event subscription by schedule id.",
 	"watch_delete":    "Delete one owned event subscription by schedule id; this does not recall messages already sent.",
+	"watch_sample":    "Run one bounded probe round on an owned event watch and return what each source emitted: events with their raw connector JSON (the same payload the filter's input() receives), per-source errors, and the watch filter's keep|drop|urgent verdict per event. Pass filter to dry-run a candidate script against the live shape before editing the watch. Use it to inspect event fields before writing or tuning filter; sampling never wakes the agent, marks events, or sends anything.",
 }
 
 func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any, error) {
@@ -124,7 +125,7 @@ func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any
 	}
 	var method, path string
 	var payload any
-	if op == "watch_list" || op == "watch_pause" || op == "watch_resume" || op == "watch_delete" {
+	if op == "watch_list" || op == "watch_pause" || op == "watch_resume" || op == "watch_delete" || op == "watch_sample" {
 		// Watch ops are scoped to event-kind routines; pause/resume/delete
 		// verify the target kind before mutating (SPEC-0054 R5.5).
 		items, err := t.routineItems(ctx, principal)
@@ -152,12 +153,17 @@ func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any
 			method, path = http.MethodPost, "/v1/routines/"+r.ID+"/pause"
 		} else if op == "watch_resume" {
 			method, path = http.MethodPost, "/v1/routines/"+r.ID+"/resume"
+		} else if op == "watch_sample" {
+			method, path = http.MethodPost, "/v1/routines/"+r.ID+"/sample"
+			if r.Filter != "" {
+				payload = map[string]any{"filter": r.Filter}
+			}
 		} else {
 			method, path = http.MethodDelete, "/v1/routines/"+r.ID
 		}
 	}
 	switch op {
-	case "watch_list", "watch_pause", "watch_resume", "watch_delete":
+	case "watch_list", "watch_pause", "watch_resume", "watch_delete", "watch_sample":
 		// Resolved above: watch_list already returned; pause/resume/delete
 		// paths set.
 	case "routine_list":
@@ -187,6 +193,13 @@ func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any
 		}
 		if r.MinIntervalSeconds > 0 {
 			create["probe"].(map[string]any)["min_interval_seconds"] = r.MinIntervalSeconds
+		}
+		if r.Sources != "" {
+			var sources []any
+			if err := json.Unmarshal([]byte(r.Sources), &sources); err != nil {
+				return nil, errors.New("watch sources must be a JSON array of {name?,tool?,args}")
+			}
+			create["probe"].(map[string]any)["sources"] = sources
 		}
 		if r.Sink != "" {
 			create["sink"] = r.Sink

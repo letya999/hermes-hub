@@ -1859,6 +1859,19 @@
     "cleanup": "Удалить только созданные тестом ресурсы; восстановить исходную настройку"
   },
   {
+    "id": "E2E-174",
+    "surface": "hub",
+    "name": "watch_sample",
+    "title": "watch_sample",
+    "action": "Через watch_sample запустить bounded-пробу event-подписки и dry-run кандидатного фильтра.",
+    "expected": "POST на /v1/routines/{id}/sample с телом filter; не-event id через watch_sample отклонён.",
+    "package": "agenttools",
+    "test": "TestWatchSamplePostsToSampleRoute",
+    "prerequisites": "Тестовый managed-профиль; отдельные fixtures, без рабочих данных",
+    "level": "contract",
+    "cleanup": "Удалить только созданные тестом ресурсы; восстановить исходную настройку"
+  },
+  {
     "id": "E2E-144",
     "surface": "hub",
     "name": "routine_get",
