@@ -23,6 +23,7 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("/v1/tasks", g.handleTasks)
 	mux.HandleFunc("/v1/tasks/", g.handleTasks)
 	mux.HandleFunc("/v1/inbound/", g.handleInbound)
+	mux.HandleFunc("/v1/hooks/", g.handleHooks)
 	mux.HandleFunc("/v1/mock/message", g.handleMockMessage)
 	mux.HandleFunc("/v1/mock/outbox", g.handleMockOutbox)
 	mux.HandleFunc("/v1/credential-forms", g.handleCredentialFormRequest)
@@ -402,6 +403,34 @@ func (g *Gateway) handleInbound(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func (g *Gateway) handleHooks(w http.ResponseWriter, r *http.Request) {
+	caller, ok := g.authorizeControl(r)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/v1/hooks/")
+	body, err := io.ReadAll(io.LimitReader(r.Body, 64*1024))
+	if err != nil || len(body) == 0 {
+		http.Error(w, "bad payload", http.StatusBadRequest)
+		return
+	}
+	card, err := g.spool.GetRoutine(id, caller)
+	if err != nil || card.Schedule.Probe == nil || card.Schedule.Probe.Kind != "hook" {
+		http.NotFound(w, r)
+		return
+	}
+	if err := g.spool.rt.IntakeHook(id, body, g.now().UTC()); err != nil {
+		http.Error(w, "intake failed", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
 }
 
 func decodeJSON(r *http.Request, v any) error {

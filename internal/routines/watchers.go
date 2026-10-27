@@ -107,6 +107,9 @@ func (e *Engine) ProbeDueOccurrences(now time.Time, fetch func(context.Context, 
 }
 
 func (e *Engine) ProbeDueOccurrencesContext(ctx context.Context, now time.Time, authorize func(commodel.Job) error, fetch func(context.Context, string) ([]byte, error), toolCall func(context.Context, string, *commodel.WatchProbe) ([]byte, error), serviceCall func(context.Context, string, *commodel.WatchProbe) ([]byte, error)) error {
+	e.mu.Lock()
+	e.resetAcquireBurstLocked()
+	e.mu.Unlock()
 	return e.ProcessProactive(ctx, "probing", func(o commodel.RoutineOccurrence) { e.probeOne(ctx, o, now, authorize, fetch, toolCall, serviceCall) })
 }
 
@@ -176,6 +179,12 @@ func (e *Engine) probeOne(ctx context.Context, o commodel.RoutineOccurrence, now
 		} else {
 			body, fetchErr = toolCall(ctx, o.Job.PrincipalID, schedule.Probe)
 		}
+	} else if schedule.Probe.Kind == "hook" {
+		// Inbound hook (SPEC-0081 R5.1): the compared body is a staged
+		// inbox payload written durably by IntakeHook — no fetch happens.
+		e.mu.Lock()
+		body = e.popHookLocked(o.ScheduleID)
+		e.mu.Unlock()
 	} else if schedule.Probe.Kind == "render" || schedule.Probe.Kind == "service" {
 		// Registered-service probe: an operator-declared endpoint (external
 		// renderer, parser API) answers for the probe; the response body

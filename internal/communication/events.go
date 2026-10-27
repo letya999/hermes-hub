@@ -2,6 +2,7 @@ package communication
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,6 +38,12 @@ type EventState struct {
 	// event fan-out (SPEC-0054 R2.2).
 	NotifyDay   string `json:"notify_day,omitempty"`
 	NotifyCount int    `json:"notify_count,omitempty"`
+	// Cursor is the source-declared resume token for the next poll
+	// (SPEC-0081 R3.1); GapCount/LastGapAt make seen-set eviction visible —
+	// the subscription can no longer prove dedup for the evicted range.
+	Cursor    string    `json:"cursor,omitempty"`
+	GapCount  int       `json:"gap_count,omitempty"`
+	LastGapAt time.Time `json:"last_gap_at,omitempty"`
 }
 
 func (s *Spool) eventPath(id string) string {
@@ -84,10 +91,16 @@ func (st EventState) seen(id string) bool {
 
 const eventSeenCap = 512
 
-func (st *EventState) markSeen(id string) {
+func (st *EventState) markSeen(id string, now time.Time) {
 	st.Seen = append(st.Seen, id)
 	if len(st.Seen) > eventSeenCap {
-		st.Seen = st.Seen[len(st.Seen)-eventSeenCap:]
+		dropped := len(st.Seen) - eventSeenCap
+		st.Seen = st.Seen[dropped:]
+		// The evicted ids can no longer prove dedup: surface the loss as a
+		// durable gap instead of silently weakening the subscription
+		// (SPEC-0081 R3.2).
+		st.GapCount += dropped
+		st.LastGapAt = now.UTC()
 	}
 }
 
@@ -214,11 +227,34 @@ func (s *Spool) settleEvents(o RoutineOccurrence, schedule Schedule, body []byte
 		_ = atomicJSON(path, live)
 		return nil
 	}
+	var env struct {
+		Cursor string `json:"next_cursor"`
+	}
+	if json.Unmarshal(body, &env) == nil {
+		st.Cursor = env.Cursor
+	}
 	fresh := []Event{}
 	for _, ev := range events {
 		if !st.seen(ev.ID) {
 			fresh = append(fresh, ev)
 		}
+	}
+	if schedule.Probe != nil && schedule.Probe.Filter != "" && s.probeScript != nil {
+		// Deterministic per-event gate before fan-out (SPEC-0081 R4.1):
+		// "drop" marks the event seen without delivering it.
+		kept := fresh[:0]
+		for _, ev := range fresh {
+			verdict, _ := s.probeScript(context.Background(), live, schedule.Probe.Filter, ev.Text, false, nil)
+			switch strings.TrimSpace(verdict) {
+			case "drop":
+				st.markSeen(ev.ID, now)
+				continue
+			case "urgent":
+				ev.Urgent = true
+			}
+			kept = append(kept, ev)
+		}
+		fresh = kept
 	}
 	overflowed := s.fanoutEventsLocked(&st, schedule, live.Job, fresh, live.Job.ID, live.ScheduleID, now)
 	live.State = "dispatched"
@@ -260,7 +296,7 @@ func (s *Spool) fanoutEventsLocked(st *EventState, schedule Schedule, job Job, f
 			}
 		}
 		for _, ev := range bundled {
-			st.markSeen(ev.ID)
+			st.markSeen(ev.ID, now)
 		}
 		return nil
 	}
@@ -289,7 +325,11 @@ func (s *Spool) fanoutEventsLocked(st *EventState, schedule Schedule, job Job, f
 			// later poll once the owner-day rolls over.
 			continue
 		}
-		d, err := normalizeDelivery(Delivery{ID: fmt.Sprintf("event-%s-%s", seed, watchHash(ev.ID)[:16]), OccurrenceID: seed, Channel: job.Channel, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: job.Text + "\n" + ev.Text, NotBefore: quietDefer(schedule, now), CreatedAt: now.UTC()})
+		notBefore := quietDefer(schedule, now)
+		if ev.Urgent {
+			notBefore = time.Time{}
+		}
+		d, err := normalizeDelivery(Delivery{ID: fmt.Sprintf("event-%s-%s", seed, watchHash(ev.ID)[:16]), OccurrenceID: seed, Channel: job.Channel, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: job.Text + "\n" + ev.Text, NotBefore: notBefore, CreatedAt: now.UTC()})
 		if err != nil {
 			return nil
 		}
@@ -301,7 +341,7 @@ func (s *Spool) fanoutEventsLocked(st *EventState, schedule Schedule, job Job, f
 			continue
 		}
 		st.NotifyCount++
-		st.markSeen(ev.ID)
+		st.markSeen(ev.ID, now)
 		admitted++
 	}
 	st.LastSuccess = now

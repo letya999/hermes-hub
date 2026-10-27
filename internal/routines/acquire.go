@@ -8,7 +8,11 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/commodel"
 )
 
 // AcquireState is the durable shared-acquisition record (SPEC-0081): one
@@ -38,10 +42,6 @@ func acquireKey(principal, url string) string {
 
 func (e *Engine) acquirePath(key string) string {
 	return filepath.Join(e.root, "acquire", key+".json")
-}
-
-func (e *Engine) acquireBodyPath(key string) string {
-	return filepath.Join(e.root, "acquire", key+".body")
 }
 
 func (e *Engine) loadAcquireLocked(principal, url string) (AcquireState, error) {
@@ -75,47 +75,79 @@ func (e *Engine) AcquireSubscribeLocked(principal, url, scheduleID string, inter
 	_ = e.writeAcquireLocked(st)
 }
 
-// AcquirePeekLocked returns the shared body while it is fresh for the
-// fastest subscriber and no retry-after backoff is in effect.
+// AcquirePeekLocked returns the body fetched earlier in this probe sweep —
+// coalescing never serves a body fetched by a previous sweep (SPEC-0081
+// R2.1). Durable retry-after backoff still fences peeks across sweeps.
 func (e *Engine) AcquirePeekLocked(principal, url string, now time.Time) ([]byte, bool) {
-	st, err := e.loadAcquireLocked(principal, url)
-	if err != nil || st.FetchedAt.IsZero() || st.NextPollAt.After(now) {
+	if st, err := e.loadAcquireLocked(principal, url); err == nil && st.NextPollAt.After(now) {
 		return nil, false
 	}
-	window := time.Duration(math.MaxInt64)
-	for _, iv := range st.Subscribers {
-		if d := time.Duration(iv) * time.Second; d < window {
-			window = d
-		}
-	}
-	if window == time.Duration(math.MaxInt64) || now.Sub(st.FetchedAt) > window {
-		return nil, false
-	}
-	body, err := os.ReadFile(e.acquireBodyPath(st.Key))
-	if err != nil {
-		return nil, false
-	}
-	return body, true
+	body, ok := e.acquireBurst[acquireKey(principal, url)]
+	return body, ok
 }
 
-// AcquireRecordLocked stores the fetched body and advances the cursor.
+// AcquireRecordLocked caches the body for the rest of this sweep and stamps
+// the durable fetch timestamp.
 func (e *Engine) AcquireRecordLocked(principal, url string, body []byte, now time.Time) error {
 	key := acquireKey(principal, url)
+	if e.acquireBurst == nil {
+		e.acquireBurst = map[string][]byte{}
+	}
+	e.acquireBurst[key] = body
 	st, err := e.loadAcquireLocked(principal, url)
 	if err != nil {
 		st = AcquireState{Key: key, PrincipalID: principal, URL: url}
 	}
-	if err := os.MkdirAll(filepath.Dir(e.acquireBodyPath(key)), 0700); err != nil {
-		return err
-	}
-	if err := os.WriteFile(e.acquireBodyPath(key)+".tmp", body, 0600); err != nil {
-		return err
-	}
-	if err := os.Rename(e.acquireBodyPath(key)+".tmp", e.acquireBodyPath(key)); err != nil {
-		return err
-	}
 	st.FetchedAt = now.UTC()
 	return e.writeAcquireLocked(st)
+}
+
+// resetAcquireBurstLocked drops sweep bodies before a fresh probe pass.
+func (e *Engine) resetAcquireBurstLocked() {
+	e.acquireBurst = map[string][]byte{}
+}
+
+// IntakeHook durably stages one inbound hook payload in the schedule's
+// inbox directory (SPEC-0081 R5.1). Files survive restart; probeOne drains
+// the oldest payload per tick.
+func (e *Engine) IntakeHook(scheduleID string, body []byte, now time.Time) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	dir := filepath.Join(e.root, "hooks", commodel.FileID(scheduleID))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	sum := sha256.Sum256(append([]byte(scheduleID+"\x00"), body...))
+	name := hex.EncodeToString(sum[:16]) + ".json"
+	return os.WriteFile(filepath.Join(dir, name), body, 0o600)
+}
+
+// HookPendingCount reports staged payloads awaiting the next probe tick.
+func (e *Engine) HookPendingCount(scheduleID string) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	entries, err := os.ReadDir(filepath.Join(e.root, "hooks", commodel.FileID(scheduleID)))
+	if err != nil {
+		return 0
+	}
+	return len(entries)
+}
+
+// popHookLocked removes and returns the oldest staged payload, or nil.
+func (e *Engine) popHookLocked(scheduleID string) []byte {
+	dir := filepath.Join(e.root, "hooks", commodel.FileID(scheduleID))
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) == 0 {
+		return nil
+	}
+	slices.SortFunc(entries, func(a, b os.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
+	path := filepath.Join(dir, entries[0].Name())
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	_ = os.Remove(path)
+	return body
 }
 
 // AcquireBackoffLocked records a Retry-After/backoff deadline; peeks return

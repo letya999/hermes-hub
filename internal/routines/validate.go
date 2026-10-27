@@ -200,6 +200,10 @@ func ValidateScheduleDraft(in commodel.Schedule, caller identity.Envelope, hooks
 			if err := validMCPProbe(in.Probe); err != nil {
 				return err
 			}
+		} else if in.Probe.Kind == "hook" {
+			if u, err := url.Parse(in.Probe.URL); err != nil || u.Scheme != "hook" {
+				return errors.New("hook probe needs a hook:<label> url")
+			}
 		} else if in.Probe.Kind != "command" && in.Probe.Kind != "service" {
 			u, err := url.Parse(in.Probe.URL)
 			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
@@ -269,7 +273,7 @@ func ValidateScheduleDraft(in commodel.Schedule, caller identity.Envelope, hooks
 		if len(in.Probe.URL) > 2048 {
 			return errors.New("probe URL exceeds limit")
 		}
-		if in.Probe.Kind != "" && in.Probe.Kind != "http" && in.Probe.Kind != "github_issue" && in.Probe.Kind != "mcp_tool" && in.Probe.Kind != "script" && in.Probe.Kind != "command" && in.Probe.Kind != "render" && in.Probe.Kind != "service" {
+		if in.Probe.Kind != "" && in.Probe.Kind != "http" && in.Probe.Kind != "github_issue" && in.Probe.Kind != "mcp_tool" && in.Probe.Kind != "script" && in.Probe.Kind != "command" && in.Probe.Kind != "render" && in.Probe.Kind != "service" && in.Probe.Kind != "hook" {
 			return errors.New("invalid probe kind")
 		}
 		if in.Probe.Kind == "render" || in.Probe.Kind == "service" {

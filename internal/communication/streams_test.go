@@ -3,6 +3,7 @@ package communication
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/identity"
 )
 
 // S6.1 — delivery=stream is an event-only mcp_tool mode; poll is the
@@ -251,6 +254,139 @@ func TestStreamPollOnceDelivers(t *testing.T) {
 	st, err := s.EventStateOf("str5")
 	if err != nil || st.LastSuccess.IsZero() {
 		t.Fatalf("healthy empty poll not recorded: %+v %v", st, err)
+	}
+}
+
+// SPEC-0081 R3.2 — when the durable seen-set rolls past its cap, the evicted
+// range surfaces as a counted gap instead of silently losing dedup proof.
+func TestEventGapSurfacedOnSeenEviction(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	sched, err := s.CreateSchedule(Schedule{ScheduleID: "str-gap", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "watch dms", JobKind: "event", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc"}}, caller, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	for batch := 0; batch < 3; batch++ {
+		var items []string
+		for i := 0; i < 8; i++ {
+			items = append(items, fmt.Sprintf(`{"id":"b%d-e%d","text":"m%d-%d"}`, batch, i, batch, i))
+		}
+		body := []byte(`{"events":[` + strings.Join(items, ",") + `]}`)
+		o2 := o
+		o2.Job.ID = fmt.Sprintf("occ-gap-%d", batch)
+		putOccurrence := filepath.Join(s.root, "occurrences", occurrenceID(o2)+".json")
+		o2.State = "probing"
+		if err := atomicJSON(putOccurrence, o2); err != nil {
+			t.Fatal(err)
+		}
+		s.settleEvents(o2, sched, body, now.Add(time.Duration(batch)*time.Minute), nil, g.authorizeOccurrence)
+	}
+	// Force the seen-set past its cap in one state write to prove the
+	// eviction path counts the dropped range durably.
+	s.mu.Lock()
+	st, _ := s.loadEventStateLocked("str-gap")
+	for i := 0; i < eventSeenCap+10; i++ {
+		st.markSeen(fmt.Sprintf("fill-%d", i), now)
+	}
+	_ = atomicJSON(s.eventPath("str-gap"), st)
+	s.mu.Unlock()
+	got, err := s.EventStateOf("str-gap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GapCount == 0 || got.LastGapAt.IsZero() {
+		t.Fatalf("evicted seen range must surface as a gap: %+v", got)
+	}
+}
+
+// SPEC-0081 R3.1 — a source-declared resume cursor lands on the durable
+// event state so the next poll can continue exactly where the source left
+// off.
+func TestEventCursorCaptured(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	sched, err := s.CreateSchedule(Schedule{ScheduleID: "str-cur", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "watch dms", JobKind: "event", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc"}}, caller, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	body := []byte(`{"events":[{"id":"e1","text":"m1"}],"next_cursor":"cursor-42"}`)
+	o.ScheduleID = "str-cur"
+	o.Job.Trigger = "cron"
+	o.State = "probing"
+	if err := atomicJSON(filepath.Join(s.root, "occurrences", occurrenceID(o)+".json"), o); err != nil {
+		t.Fatal(err)
+	}
+	s.settleEvents(o, sched, body, now, nil, g.authorizeOccurrence)
+	st, err := s.EventStateOf("str-cur")
+	if err != nil || st.Cursor != "cursor-42" {
+		t.Fatalf("cursor not captured: %+v %v", st, err)
+	}
+}
+
+// SPEC-0081 R4.1 — a deterministic filter script gates each event before the
+// sink sees it: dropped events are marked seen without delivery, urgent
+// ones bypass the quiet window.
+func TestEventFilterDropsBeforeFanout(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	sched, err := s.CreateSchedule(Schedule{ScheduleID: "str-filter", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "watch dms", JobKind: "event", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc", Filter: `emit("drop" if "noise" in input else "keep")`}}, caller, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.probeScript = func(ctx context.Context, o RoutineOccurrence, src, input string, mountSpace bool, needs []string) (string, error) {
+		if strings.Contains(input, "noise") {
+			return "drop", nil
+		}
+		return "keep", nil
+	}
+	now := time.Now().UTC()
+	body := []byte(`{"events":[{"id":"n1","text":"noise spam"},{"id":"k1","text":"boss pinged you"}]}`)
+	o.ScheduleID = "str-filter"
+	o.Job.Trigger = "cron"
+	o.State = "probing"
+	if err := atomicJSON(filepath.Join(s.root, "occurrences", occurrenceID(o)+".json"), o); err != nil {
+		t.Fatal(err)
+	}
+	s.settleEvents(o, sched, body, now, nil, g.authorizeOccurrence)
+	d, err := s.ClaimDelivery()
+	if err != nil || d == nil {
+		t.Fatalf("kept event must deliver: %+v %v", d, err)
+	}
+	if strings.Contains(d.Text, "noise") {
+		t.Fatalf("dropped event must not reach the sink: %q", d.Text)
+	}
+	st, _ := s.EventStateOf("str-filter")
+	if !st.seen("n1") {
+		t.Fatal("dropped event must be marked seen so it never refires")
+	}
+}
+
+// SPEC-0081 R4.1 — an urgent verdict bypasses the quiet window and reaches
+// the owner immediately.
+func TestEventFilterUrgentBypassesQuiet(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	sched, err := s.CreateSchedule(Schedule{ScheduleID: "str-urgent", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "watch dms", JobKind: "event", QuietFrom: "00:00", QuietTo: "23:59", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc", Filter: `emit("urgent")`}}, caller, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.probeScript = func(ctx context.Context, o RoutineOccurrence, src, input string, mountSpace bool, needs []string) (string, error) {
+		return "urgent", nil
+	}
+	now := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
+	body := []byte(`{"events":[{"id":"u1","text":"production is down"}]}`)
+	o.ScheduleID = "str-urgent"
+	o.Job.Trigger = "cron"
+	o.State = "probing"
+	if err := atomicJSON(filepath.Join(s.root, "occurrences", occurrenceID(o)+".json"), o); err != nil {
+		t.Fatal(err)
+	}
+	s.settleEvents(o, sched, body, now, nil, g.authorizeOccurrence)
+	d, err := s.ClaimDelivery()
+	if err != nil || d == nil || !d.NotBefore.IsZero() {
+		t.Fatalf("urgent event must bypass the quiet window: %+v %v", d, err)
 	}
 }
 
@@ -634,5 +770,66 @@ func TestWatchesMarksStream(t *testing.T) {
 	out := g.watchesCommand(user, 11)
 	if !strings.Contains(out, "wm") || !strings.Contains(out, ", stream") {
 		t.Fatalf("stream delivery not rendered: %q", out)
+	}
+}
+
+// TestHookIntakeEndpoint (SPEC-0081 R5.2): POST /v1/hooks/<id> stages the
+// posted body in the schedule's durable inbox — only for the owning caller
+// and only for probe.kind=hook schedules.
+func TestHookIntakeEndpoint(t *testing.T) {
+	c := testConfig(t)
+	c.ControlAuth = "control-token"
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
+	sched := Schedule{ScheduleID: "hook-1", Envelope: env, UserID: "alice", Enabled: true, Timezone: "UTC", Expression: "* * * * *", JobKind: "event", Channel: "telegram_bot", ChatID: 11, Probe: &WatchProbe{Kind: "hook", URL: "hook:github"}}
+	if err := atomicJSON(g.spool.rt.SchedulePath("hook-1"), sched); err != nil {
+		t.Fatal(err)
+	}
+	w := destinationRequest(g, http.MethodPost, "/v1/hooks/hook-1", `{"events":[{"id":"h1","text":"push"}]}`)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("hook intake rejected: %d %s", w.Code, w.Body.String())
+	}
+	if got := g.spool.rt.HookPendingCount("hook-1"); got != 1 {
+		t.Fatalf("payload not staged: %d", got)
+	}
+	// Non-hook schedules reject intake.
+	plain := sched
+	plain.ScheduleID = "plain-1"
+	plain.Probe = &WatchProbe{Kind: "http", URL: "https://example.com"}
+	if err := atomicJSON(g.spool.rt.SchedulePath("plain-1"), plain); err != nil {
+		t.Fatal(err)
+	}
+	w = destinationRequest(g, http.MethodPost, "/v1/hooks/plain-1", `{"events":[]}`)
+	if w.Code == http.StatusAccepted {
+		t.Fatal("intake accepted a non-hook schedule")
+	}
+	// Unauthorized callers never reach intake.
+	r := httptest.NewRequest(http.MethodPost, "/v1/hooks/hook-1", strings.NewReader(`{"events":[]}`))
+	w = httptest.NewRecorder()
+	g.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated intake must 401, got %d", w.Code)
+	}
+	// Empty payloads are rejected.
+	if w = destinationRequest(g, http.MethodPost, "/v1/hooks/hook-1", ""); w.Code == http.StatusAccepted {
+		t.Fatal("empty payload accepted")
+	}
+	// GET is not intake.
+	if w = destinationRequest(g, http.MethodGet, "/v1/hooks/hook-1", ""); w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET must 405, got %d", w.Code)
+	}
+	// A foreign principal's hook schedule stays invisible.
+	bob := sched
+	bob.ScheduleID = "bob-hook"
+	bob.Envelope = identity.TelegramEnvelope("bob", 22, "bob", "policy-1")
+	bob.UserID = "bob"
+	if err := atomicJSON(g.spool.rt.SchedulePath("bob-hook"), bob); err != nil {
+		t.Fatal(err)
+	}
+	if w = destinationRequest(g, http.MethodPost, "/v1/hooks/bob-hook", `{"events":[]}`); w.Code != http.StatusNotFound {
+		t.Fatalf("foreign hook must 404, got %d", w.Code)
 	}
 }

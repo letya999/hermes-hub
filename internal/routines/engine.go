@@ -80,6 +80,10 @@ type Engine struct {
 	// mappingDriftReported warns once per process about a corrupt active
 	// occurrence binding.
 	mappingDriftReported map[string]bool
+	// acquireBurst holds fetched bodies for the current probe sweep only:
+	// coalescing shares one fetch inside a tick and is cleared per sweep so
+	// a re-due occurrence never sees a stale body (SPEC-0081 R2.1).
+	acquireBurst map[string][]byte
 }
 
 // NewEngine builds the engine; the owner fills every Deps field.

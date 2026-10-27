@@ -37,6 +37,11 @@ type WatchProbe struct {
 	// chain sees the DOM (SPEC-0059 R5.4).
 	Steps   []RenderStep `json:"steps,omitempty"`
 	WaitFor string       `json:"wait_for,omitempty"`
+	// Filter is the deterministic per-event gate for event subscriptions
+	// (SPEC-0081 R4.1): an isolated script reading the event JSON and
+	// emitting keep|drop|urgent. Dropped events are marked seen without
+	// fan-out; urgent events bypass quiet windows and daily caps.
+	Filter string `json:"filter,omitempty"`
 }
 
 // ProbeNeed is one hub-prefetched read-tool call for a script probe.
@@ -231,4 +236,7 @@ type Event struct {
 	// Requeue carries the connector-native identifier arguments for the
 	// requeue hook when the event exposes them.
 	Requeue map[string]any
+	// Urgent is set by a deterministic filter verdict: the event bypasses
+	// quiet windows and daily caps (SPEC-0081 R4.1).
+	Urgent bool `json:"urgent,omitempty"`
 }
