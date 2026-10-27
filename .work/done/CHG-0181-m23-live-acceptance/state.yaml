@@ -12,7 +12,7 @@ depends_on: []
 github_milestone: M23 — Backlog Proactive Assignments
 github_issue: 324,332
 design_status: accepted
-implementation_status: in_progress
+implementation_status: done
 slices:
   S4.1-dev-stack-wiring: done
   S4.2-lifecycle-live-run: done
@@ -20,7 +20,7 @@ slices:
   S4.4-slack-slice: blocked_no_credentials
 validation:
   documents: pending
-  just_check: not_run
+  just_check: pass (coverage 86.08%)
   docker_check: dev-rebuild path used (hubctl dev-rebuild, not full image gate)
   red_team: partial
   live_acceptance: done
