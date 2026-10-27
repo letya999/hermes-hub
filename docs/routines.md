@@ -1,6 +1,6 @@
 ---
 description: Routine business tools, interval windows, lifecycle, authorization and delivery evidence.
-last_verified: 2026-10-19
+last_verified: 2026-10-27
 ---
 # Routines
 
