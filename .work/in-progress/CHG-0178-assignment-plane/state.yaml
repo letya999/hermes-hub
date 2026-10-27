@@ -4,7 +4,7 @@ title: assignment-plane
 status: in_progress
 branch: feat/m23-proactive-assignments
 updated: 2026-10-27
-phase: design-complete
+phase: implementation-done
 adr: ADR-0082
 spec: SPEC-0080
 requirements: [R1.1..R1.9]
@@ -12,17 +12,21 @@ depends_on: []
 github_milestone: M23 — Backlog Proactive Assignments
 github_issue: 324
 design_status: accepted
-implementation_status: not_started
+implementation_status: done
 slices:
-  S1.1-assignment-record-store: not_started
-  S1.2-plan-reconcile: not_started
-  S1.3-lifecycle-fencing-budget: not_started
+  S1.1-assignment-record-store: done
+  S1.2-plan-reconcile: done
+  S1.3-lifecycle-fencing-budget: done
 validation:
   documents: pending
   just_check: not_run
   docker_check: not_run
   red_team: not_started
   live_acceptance: not_started
-evidence: []
+evidence:
+  - "commodel.Assignment + engine store, idempotent create by intent hash"
+  - "plan reconcile -> deterministic asg-<id>-<name> schedules, receipts kept/replaced, retired ids get -rN generation"
+  - "lifecycle propagates (pause/resume/cancel/complete); wakes fenced by revision; owner-scoped list; narrow-only grant updates"
+  - "unit: TestAssignment* in internal/routines + communication green"
 remaining: []
 limitations: []

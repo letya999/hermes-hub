@@ -149,6 +149,49 @@ settle into the new revision.
   `delivery=stream` internals are in architecture.md §Jobs, runs and
   events.
 
+## Standing assignments
+
+A standing assignment (`asg-*`, `internal/commodel.Assignment`) is the
+durable owner instruction behind a set of routine artifacts (SPEC-0080).
+It binds the verified owner envelope — never a Hermes session — and is
+managed through `POST/GET /v1/assignments`, the `assignment_*` agent tools
+and the `/assignments` `/assignment <id> …` chat commands.
+
+- Create stores intent verbatim plus a validated plan (`sources` +
+  optional `specialist`). Replayed creates dedupe on the intent hash.
+- `apply` reconciles the plan into deterministic schedule ids
+  (`asg-<assignment>-<source>`), stamping the owner envelope, actor,
+  scope and organization onto every artifact; receipts record
+  `created|kept|replaced|removed` per source so re-apply is idempotent
+  and a retired id is recreated with a `-rN` generation suffix, never
+  resurrected.
+- Lifecycle propagates to artifacts: pause/resume flip the applied
+  schedules, cancel/complete tombstone them and fence the record
+  terminal; wakes are admitted per assignment revision, so a paused or
+  re-planned assignment never wakes a stale specialist job.
+- Mutations carry `expected_revision` CAS. Grants (`max_wakes_per_day`,
+  `max_sources`) only narrow through APIs — widening requires the
+  chat-only `/assignment <id> authorize` verb, which stamps the plan
+  revision as authorized.
+- Every route and command is owner-scoped: foreign principals get the
+  same 404/refusal as a missing record.
+
+## Source acquisition
+
+HTTP-polling schedules share a per-sweep acquisition pool keyed by
+`(principal, url)` (SPEC-0081): same-owner subscribers of one URL cause
+one fetch per probe sweep, never across principals, never stale across
+sweeps. A source `Retry-After` (HTTP 429/503) is persisted durably and
+fences later polls until the deadline; durable subscriber state tracks
+`fetched_at`, `next_poll_at`, `failures` and `gap_count`.
+
+`kind=hook` schedules carry a `hook:<label>` url and take no fetch: an
+authenticated owner-scoped `POST /v1/hooks/<schedule-id>` writes the body
+into the schedule's durable inbox (`data/hooks/<schedule>/`), and each
+probing occurrence drains the oldest staged payload into normal event
+settlement. An empty inbox is an idle tick (`no_change`), not a probe
+failure. Intake is restart-safe because staged payloads live on disk.
+
 ## Schedules and windows
 
 | Expression | Meaning |

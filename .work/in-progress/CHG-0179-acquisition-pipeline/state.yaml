@@ -4,7 +4,7 @@ title: acquisition-pipeline
 status: in_progress
 branch: feat/m23-proactive-assignments
 updated: 2026-10-27
-phase: design-complete
+phase: implementation-done
 adr: ADR-0082
 spec: SPEC-0081
 requirements: [R1.1..R1.8,R2.1..R2.4]
@@ -12,18 +12,22 @@ depends_on: []
 github_milestone: M23 — Backlog Proactive Assignments
 github_issue: 332
 design_status: accepted
-implementation_status: not_started
+implementation_status: done
 slices:
-  S2.1-acquisition-conditional-backoff: not_started
-  S2.2-cursors-gap: not_started
-  S2.3-event-filter: not_started
-  S2.4-hook-intake: not_started
+  S2.1-acquisition-conditional-backoff: done
+  S2.2-cursors-gap: done
+  S2.3-event-filter: done
+  S2.4-hook-intake: done
 validation:
   documents: pending
   just_check: not_run
   docker_check: not_run
   red_team: not_started
   live_acceptance: not_started
-evidence: []
+evidence:
+  - "per-sweep acquisition pool keyed (principal,url); Retry-After persisted from HTTP 429/503"
+  - "cursor + gap_count/last_gap_at surfaced on EventState; deterministic per-event filter keep/drop/urgent"
+  - "durable hook inbox IntakeHook + POST /v1/hooks/<id> owner-scoped; idle inbox settles no_change"
+  - "unit: TestAcquirePool*, TestHook*, TestCursorGap*, filter tests green; live: /v1/hooks 401/404/202 legs verified"
 remaining: []
 limitations: []
