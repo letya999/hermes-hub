@@ -24,6 +24,8 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("/v1/tasks/", g.handleTasks)
 	mux.HandleFunc("/v1/inbound/", g.handleInbound)
 	mux.HandleFunc("/v1/hooks/", g.handleHooks)
+	mux.HandleFunc("/v1/assignments", g.handleAssignments)
+	mux.HandleFunc("/v1/assignments/", g.handleAssignmentItem)
 	mux.HandleFunc("/v1/mock/message", g.handleMockMessage)
 	mux.HandleFunc("/v1/mock/outbox", g.handleMockOutbox)
 	mux.HandleFunc("/v1/credential-forms", g.handleCredentialFormRequest)

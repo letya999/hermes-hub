@@ -29,6 +29,8 @@ var botCommandInventory = []struct {
 	{"connectors", "Подключения и коннекторы ToolHub"},
 	{"connections", "Подключения и коннекторы ToolHub"},
 	{"watches", "Подписки на события коннекторов"},
+	{"assignments", "Постоянные поручения: список и состояние"},
+	{"assignment", "Поручение: /assignment <id> status|pause|resume|cancel|complete|authorize"},
 	{"credentials", "Код брокера: /credentials <request-id> <code>"},
 	{"approve", "Подтверждение: /approve <job-id> <request-id> <choice>"},
 	{"stop", "Остановить выполнение текущей сессии"},

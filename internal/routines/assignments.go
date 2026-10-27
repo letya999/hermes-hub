@@ -277,6 +277,27 @@ func (e *Engine) CancelAssignment(id string, caller identity.Envelope) error {
 	return e.atomicJSON(e.AssignmentPath(id), item)
 }
 
+// CompleteAssignment retires sources like cancel but lands in the terminal
+// "completed" state (SPEC-0080 R1.5) — the owner marks the watch finished.
+func (e *Engine) CompleteAssignment(id string, caller identity.Envelope) (commodel.Assignment, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	item, err := e.assignmentForCallerLocked(id, caller)
+	if err != nil {
+		return commodel.Assignment{}, err
+	}
+	now := time.Now().UTC()
+	for _, rc := range item.Applied {
+		if err := e.deleteScheduleLocked(rc.ScheduleID, item.Envelope); err != nil {
+			return commodel.Assignment{}, err
+		}
+	}
+	item.State = "completed"
+	item.Revision++
+	item.UpdatedAt = now
+	return item, e.atomicJSON(e.AssignmentPath(id), item)
+}
+
 // PauseAssignment flips an applied assignment to paused (SPEC-0080 R1.5).
 func (e *Engine) PauseAssignment(id string, caller identity.Envelope, expected ...uint64) error {
 	e.mu.Lock()

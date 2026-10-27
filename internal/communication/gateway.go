@@ -593,6 +593,10 @@ func (g *Gateway) dispatchChannelCommand(ctx context.Context, user User, task Ta
 			return reply(g.connectionsCommand(user, sender))
 		case "watches":
 			return reply(g.watchesCommand(user, sender))
+		case "assignments":
+			return reply(g.assignmentsCommand(user, sender))
+		case "assignment":
+			return reply(g.assignmentCommand(user, sender, text))
 		case "help":
 			return reply(commandHelp())
 		default:

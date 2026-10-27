@@ -101,6 +101,10 @@ type Input struct {
 	QuietTo    string   `json:"quiet_to,omitempty"`
 	DailyLimit int      `json:"daily_limit,omitempty"`
 	MaxRetries int      `json:"max_retries,omitempty"`
+	// Plan carries an assignment plan as a JSON object string; Title names
+	// the assignment for the owner. Intent rides the existing Text field.
+	Plan  string `json:"plan,omitempty"`
+	Title string `json:"title,omitempty"`
 	Sink       string   `json:"sink,omitempty"`
 	Delivery   string   `json:"delivery,omitempty"`
 	Args       string   `json:"args,omitempty"`
