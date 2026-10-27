@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/routines"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
@@ -30,6 +32,10 @@ func (g *Gateway) fetchWatch(ctx context.Context, url string) ([]byte, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusTooManyRequests {
+		secs, _ := strconv.Atoi(strings.TrimSpace(resp.Header.Get("Retry-After")))
+		return nil, &routines.RetryAfterError{Cause: fmt.Errorf("probe status %d", resp.StatusCode), Delay: time.Duration(secs) * time.Second}
+	}
 	if resp.StatusCode/100 != 2 {
 		return nil, fmt.Errorf("probe status %d", resp.StatusCode)
 	}

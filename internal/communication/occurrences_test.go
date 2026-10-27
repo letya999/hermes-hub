@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/routines"
 )
 
 func occurrenceFixture(t *testing.T) (*Spool, RoutineOccurrence, *Gateway) {
@@ -333,6 +334,22 @@ func TestFetchWatchBounded(t *testing.T) {
 	defer bad.Close()
 	if _, err := g.fetchWatch(context.Background(), bad.URL); err == nil {
 		t.Fatal("non-2xx probe treated as a value")
+	}
+}
+
+// A source-declared Retry-After must reach the engine as a typed hint so the
+// shared acquisition pool can fence further polls (SPEC-0081 R2.2).
+func TestFetchWatchRetryAfter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "120")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+	g := &Gateway{watchHTTP: server.Client()}
+	_, err := g.fetchWatch(context.Background(), server.URL)
+	var ra *routines.RetryAfterError
+	if !errors.As(err, &ra) || ra.Delay != 120*time.Second {
+		t.Fatalf("429 must surface a typed retry-after: %v", err)
 	}
 }
 

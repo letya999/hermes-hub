@@ -186,9 +186,41 @@ func (e *Engine) probeOne(ctx context.Context, o commodel.RoutineOccurrence, now
 			body, fetchErr = serviceCall(ctx, o.Job.PrincipalID, schedule.Probe)
 		}
 	} else {
-		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-		body, fetchErr = fetch(ctx, schedule.Probe.URL)
+		// Shared acquisition (SPEC-0081): a fresh pooled body serves
+		// same-principal subscribers without a second fetch.
+		e.mu.Lock()
+		if loc, lerr := time.LoadLocation(schedule.Timezone); lerr == nil {
+			if next, nerr := NextSchedule(schedule, loc, now); nerr == nil {
+				e.AcquireSubscribeLocked(o.Job.PrincipalID, schedule.Probe.URL, schedule.ScheduleID, next.Sub(now), now)
+			}
+		}
+		cached, hit := e.AcquirePeekLocked(o.Job.PrincipalID, schedule.Probe.URL, now)
+		blocked := false
+		if !hit {
+			if st, aerr := e.loadAcquireLocked(o.Job.PrincipalID, schedule.Probe.URL); aerr == nil && st.NextPollAt.After(now) {
+				blocked = true
+			}
+		}
+		e.mu.Unlock()
+		if hit {
+			body = cached
+		} else if blocked {
+			fetchErr = errors.New("source is in retry-after backoff")
+		} else {
+			ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			body, fetchErr = fetch(ctx, schedule.Probe.URL)
+			e.mu.Lock()
+			if fetchErr == nil {
+				_ = e.AcquireRecordLocked(o.Job.PrincipalID, schedule.Probe.URL, body, now)
+			} else {
+				var ra *RetryAfterError
+				if errors.As(fetchErr, &ra) {
+					e.AcquireBackoffLocked(o.Job.PrincipalID, schedule.Probe.URL, now.Add(ra.Delay), now)
+				}
+			}
+			e.mu.Unlock()
+		}
 	}
 	if o.JobKind == "event" {
 		for _, ev := range e.deps.SettleEvents(o, schedule, body, now, fetchErr, authorize) {
