@@ -1,11 +1,11 @@
 schema: 1
-change: CHG-0178
+change: CHG-0189
 title: Channel-agnostic user locale (i18n + a11y)
 status: done
 branch: feat/i18n-user-locale
 updated: 2026-10-27
 phase: closeout
-adr: ADR-0082
+adr: ADR-0084
 spec: ~
 requirements: [owner-direction-2026-10-27]
 depends_on: []
@@ -52,7 +52,7 @@ evidence:
   - "S7: Synthesizer.Synthesize(ctx, lang, text); HTTPSynthesizer.Voices map + voiceFor(lang)→Voice fallback; HUB_TTS_VOICE_{EN,RU,KK,ES} env parse into Config.TTSVoices; sendVoiceReply passes delivery.Lang; compose passes the 5 vars into communication-hub unchanged; sidecar already accepts per-request voice (req.Voice)"
   - "examples/contracts flipped to English base + ru/kk/es i18n maps (12 files, per-file EOL preserved); examples_test now enforces English base + full i18n parity with prepared catalog"
   - "terminology review: kk 'Қырдылғы' gibberish → 'Есептік деректерді енгізу'; kk 'сеанс' outlier → 'сессия'; kk menu.desc.status тапсырма→сессия; ru 'задача' vs en 'session' drift documented as accepted (pre-existing product wording, both terms user-visible since /new)"
-  - "docs: ADR-0082 D5/D6 wording aligned to implementation (hint format, operator ladders, TTS voices); media.md documents HUB_TTS_VOICE_* selection; glossary.md gains lang/locale row"
+  - "docs: ADR-0084 D5/D6 wording aligned to implementation (hint format, operator ladders, TTS voices); media.md documents HUB_TTS_VOICE_* selection; glossary.md gains lang/locale row"
   - "red-team: corrupt/foreign prefs fall back without panic; SourceChosen resists later hints; lang: callback writes only the resolved acting user's workspace; ?lang= injection payloads rejected by allowlist on both resolvers (TestPageLangRejectsInjectionTags + broker table); picker never reaches unverified senders or non-owner group paths (absence pinned in TestGatewayEdgeRepliesLocalized)"
 remaining:
   - none — all slices S0..S7 implemented

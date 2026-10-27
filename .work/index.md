@@ -69,7 +69,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
-| [CHG-0178](done/CHG-0178-i18n-user-locale/plan.md) | Done 2026-10-27: channel-agnostic user locale — en default + ru/kk/es, workspace prefs + detection ladder + /language picker, all deterministic surfaces localized (chat, HTML, broker pages, operator tooling), model prompts EN + lang hint, per-language TTS voices, contract i18n schema; just check green 86.32%, broker check 89.89%; live channel acceptance not run |
+| [CHG-0189](done/CHG-0189-i18n-user-locale/plan.md) | Done 2026-10-27: channel-agnostic user locale — en default + ru/kk/es, workspace prefs + detection ladder + /language picker, all deterministic surfaces localized (chat, HTML, broker pages, operator tooling), model prompts EN + lang hint, per-language TTS voices, contract i18n schema; just check green 86.32%, broker check 89.89%; live channel acceptance not run |
 | [CHG-0175](done/CHG-0175-coverage-profile-safety/plan.md) | Done 2026-10-26: M18 #147 verification prerequisite — malformed coverage locations rejected, per-package profiles isolated, statement-free packages skipped; covergo green 86.03% |
 | [CHG-0169](done/CHG-0169-site-hosting-design/plan.md) | M18 #147: research including pinned Haloy review; ADR-0081 accepted, SPEC-0079 frozen, implementation CHG-0170–0174 allocated; design only |
 | [CHG-0163](done/CHG-0163-recovery-budget/plan.md) | Done 2026-10-25: stop stale observations after budget notice; gateway deployed; just check passed, coverage 86.55% |
