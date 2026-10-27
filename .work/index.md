@@ -16,6 +16,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0191](in-progress/CHG-0191-skill-security/plan.md) | M24 #359 S4: skill security pipeline — deterministic scanner, taint, publish gate, audit |
 | [CHG-0190](in-progress/CHG-0190-native-default-deny/plan.md) | M24 #358 S3: native Hermes capabilities default-deny — inventory deny, no implicit base list, skills/curator sealed; hermes catalog source deferred (no Docker this session) |
 | [CHG-0189](in-progress/CHG-0189-unified-skill-store/plan.md) | M24 #357 S2: unified skill store + read-only effective view — landed, just check green |
 | [CHG-0188](in-progress/CHG-0188-skills-platform-design/plan.md) | M24 #356 S1: skills platform design — ADR-0084 + SPEC-0083 + Hermes pin spike verified (design complete) |

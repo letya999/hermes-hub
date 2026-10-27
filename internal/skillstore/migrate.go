@@ -1,6 +1,7 @@
 package skillstore
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -126,7 +127,15 @@ func migrateLegacy(dir string, apply, consentAll bool, platform *Store) (*Migrat
 				return nil, err
 			}
 			if _, err := st.Publish(name, tree, IndexMeta{Author: "operator", Source: "legacy"}); err != nil {
-				return nil, err
+				if !errors.Is(err, ErrScanCritical) {
+					return nil, err
+				}
+				// consent predates the pipeline; unsafe content degrades to draft (R4.4)
+				if _, derr := st.CreateDraft(name, tree, DraftMeta{Author: "import", Reason: "legacy migration degraded: " + err.Error()}); derr != nil {
+					return nil, derr
+				}
+				rep.Drafted = append(rep.Drafted, name)
+				continue
 			}
 			rep.Published = append(rep.Published, name)
 		default:

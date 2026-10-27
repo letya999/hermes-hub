@@ -13,6 +13,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/contextlife"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/skillstore"
+	"github.com/letya999/hermes-hub/internal/skillstore/scan"
 )
 
 func runContext(_ context.Context, args []string) error {
@@ -172,6 +173,7 @@ func runSkill(_ context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
+		body, nredact := scan.RedactSecrets(body)
 		if _, _, err := skillstore.ParseSkillMD(*name, body, false); err != nil {
 			return err
 		}
@@ -194,7 +196,8 @@ func runSkill(_ context.Context, args []string) error {
 		return json.NewEncoder(os.Stdout).Encode(struct {
 			Name     string `json:"name"`
 			Revision string `json:"revision"`
-		}{*name, rev})
+			Redacted int    `json:"redacted"`
+		}{*name, rev, nredact})
 	case "archive":
 		if *name == "" {
 			return fmt.Errorf("skill archive requires --name")

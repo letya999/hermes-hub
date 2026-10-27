@@ -8,19 +8,22 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/skillstore/scan"
 )
 
 // DraftMeta is the provenance envelope every draft carries (R4.4):
 // author kind, session, reason, base revision, sticky taint and scan
 // verdict. Values come from the hub caller — never from skill text.
 type DraftMeta struct {
-	Author       string   `json:"author"` // user|agent|review|import|git|operator
-	SessionID    string   `json:"session_id,omitempty"`
-	Reason       string   `json:"reason"`
-	BaseRevision string   `json:"base_revision,omitempty"`
-	Tainted      bool     `json:"tainted,omitempty"`
-	TaintSources []string `json:"taint_sources,omitempty"` // web|inbound|connector|git
-	ScanVerdict  string   `json:"scan_verdict,omitempty"`
+	Author       string         `json:"author"` // user|agent|review|import|git|operator
+	SessionID    string         `json:"session_id,omitempty"`
+	Reason       string         `json:"reason"`
+	BaseRevision string         `json:"base_revision,omitempty"`
+	Tainted      bool           `json:"tainted,omitempty"`
+	TaintSources []string       `json:"taint_sources,omitempty"` // web|inbound|connector|git
+	ScanVerdict  string         `json:"scan_verdict,omitempty"`
+	ScanFindings []scan.Finding `json:"scan_findings,omitempty"`
 }
 
 // Draft is a pending unpublished change under .drafts/<id>/.
@@ -50,6 +53,9 @@ func (s *Store) CreateDraft(name string, tree Tree, meta DraftMeta) (*Draft, err
 	if n := s.draftsToday(); n >= MaxDraftsPerDay {
 		return nil, fmt.Errorf("%w: %d drafts today (max %d)", ErrQuota, n, MaxDraftsPerDay)
 	}
+	report := scanTree(tree)
+	meta.ScanVerdict = report.Verdict()
+	meta.ScanFindings = boundFindings(report)
 	d := &Draft{
 		ID:   strings.ToLower(stampNow()) + "-" + randSuffix(),
 		Name: name, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
@@ -59,10 +65,17 @@ func (s *Store) CreateDraft(name string, tree Tree, meta DraftMeta) (*Draft, err
 	if err := writeTree(dir, tree); err != nil {
 		return nil, err
 	}
+	if execs := execPaths(tree); len(execs) > 0 {
+		if err := writeJSONFile(filepath.Join(dir, ".exec"), mustJSON(execs)); err != nil {
+			_ = os.RemoveAll(dir)
+			return nil, err
+		}
+	}
 	if err := writeJSONFile(filepath.Join(dir, ".draft.json"), mustJSON(d)); err != nil {
 		_ = os.RemoveAll(dir)
 		return nil, err
 	}
+	s.audit("draft_created", name)
 	return d, nil
 }
 
@@ -125,6 +138,12 @@ func (s *Store) loadDraft(id string) (*Draft, Tree, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	for _, p := range readExecList(filepath.Join(dir, ".exec")) {
+		if f, ok := tree[p]; ok {
+			f.Exec = true
+			tree[p] = f
+		}
+	}
 	return &d, tree, nil
 }
 
@@ -133,19 +152,29 @@ func (s *Store) LoadDraft(id string) (*Draft, Tree, error) { return s.loadDraft(
 
 // PublishDraft applies a draft through the publish path and consumes it.
 // The draft survives a failed publish so the owner can fix or reject it.
+// A named approver is required — an empty approver is "auto-publish",
+// which drafts never allow (R4.4). Critical scan findings refuse even
+// with an approver (publish scans again).
 func (s *Store) PublishDraft(id, approver string) (string, error) {
+	if approver == "" {
+		return "", fmt.Errorf("%w: approver required", ErrNeedsReview)
+	}
 	d, tree, err := s.loadDraft(id)
 	if err != nil {
 		return "", err
 	}
-	rev, err := s.Publish(d.Name, tree, IndexMeta{
+	rev, err := s.publish(d.Name, tree, IndexMeta{
 		Author: approver, Source: "draft:" + d.Meta.Author,
 		BaseRevision: d.Meta.BaseRevision, SessionID: d.Meta.SessionID,
-	})
+	}, true)
 	if err != nil {
 		return "", err
 	}
-	return rev, os.RemoveAll(s.draftDir(id))
+	if err := os.RemoveAll(s.draftDir(id)); err != nil {
+		return "", err
+	}
+	s.audit("draft_published", d.Name)
+	return rev, nil
 }
 
 // RejectDraft removes a draft without touching the live skill.
@@ -153,5 +182,13 @@ func (s *Store) RejectDraft(id string) error {
 	if !draftIDPattern.MatchString(id) {
 		return fmt.Errorf("%w: bad draft id %q", ErrInvalid, id)
 	}
-	return os.RemoveAll(s.draftDir(id))
+	name := id
+	if d, _, err := s.loadDraft(id); err == nil {
+		name = d.Name
+	}
+	if err := os.RemoveAll(s.draftDir(id)); err != nil {
+		return err
+	}
+	s.audit("draft_rejected", name)
+	return nil
 }

@@ -185,3 +185,28 @@ func TestContextMemorySkillRoutineCLI(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestImportRedactsSecretWithWarning(t *testing.T) {
+	dir := t.TempDir()
+	skill := filepath.Join(t.TempDir(), "SKILL.md")
+	body := "---\nname: demo\ndescription: demo\n---\n\nANTHROPIC_API_KEY=sk-ant-api03-aabbccddeeff1122334455\n"
+	if err := os.WriteFile(skill, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out := captureOutput(t, func() error {
+		return run(context.Background(), []string{"skill", "install", "--dir", dir, "--user", "owner", "--name", "demo", "--from-file", skill, "--consent"})
+	})
+	if !strings.Contains(out, `"redacted":1`) {
+		t.Fatalf("install did not report redaction: %s", out)
+	}
+	stored, err := os.ReadFile(filepath.Join(dir, "skills", "demo", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(stored), "sk-ant-api03") {
+		t.Fatal("secret value stored unredacted")
+	}
+	if !strings.Contains(string(stored), "<REDACTED>") {
+		t.Fatalf("redaction marker missing: %s", stored)
+	}
+}

@@ -53,12 +53,14 @@ const (
 var (
 	namePattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
-	ErrNotFound    = errors.New("skill not found")
-	ErrConflict    = errors.New("stale base revision")
-	ErrReserved    = errors.New("name is reserved for platform skills")
-	ErrInvalid     = errors.New("invalid skill")
-	ErrQuota       = errors.New("skill quota exceeded")
-	ErrDraftExists = errors.New("draft already exists")
+	ErrNotFound     = errors.New("skill not found")
+	ErrConflict     = errors.New("stale base revision")
+	ErrReserved     = errors.New("name is reserved for platform skills")
+	ErrInvalid      = errors.New("invalid skill")
+	ErrQuota        = errors.New("skill quota exceeded")
+	ErrDraftExists  = errors.New("draft already exists")
+	ErrScanCritical = errors.New("scan found critical findings")
+	ErrNeedsReview  = errors.New("skill requires draft review before publishing")
 )
 
 // ValidName reports whether name is an agentskills.io-compliant name:
@@ -201,7 +203,7 @@ func loadTree(dir string) (Tree, error) {
 		if rel == "." {
 			return nil
 		}
-		if d.Name() == ".draft.json" {
+		if d.Name() == ".draft.json" || d.Name() == ".exec" {
 			return nil // draft metadata is hub-private
 		}
 		if d.IsDir() {
@@ -292,8 +294,13 @@ func writeTree(dir string, tree Tree) error {
 
 // Publish retains the outgoing revision and atomically swaps the live
 // directory. An identical save is a no-op returning the current revision;
-// a stale BaseRevision conflicts.
+// a stale BaseRevision conflicts. Script-bearing trees are refused — they
+// must pass the draft+approve path instead (R4.4).
 func (s *Store) Publish(name string, tree Tree, meta IndexMeta) (string, error) {
+	return s.publish(name, tree, meta, false)
+}
+
+func (s *Store) publish(name string, tree Tree, meta IndexMeta, viaDraft bool) (string, error) {
 	if !ValidName(name) {
 		return "", fmt.Errorf("%w: name %q must be lowercase segments joined by hyphens", ErrInvalid, name)
 	}
@@ -305,6 +312,13 @@ func (s *Store) Publish(name string, tree Tree, meta IndexMeta) (string, error) 
 	}
 	if _, _, err := ParseSkillMD(name, tree[SkillFile].Data, false); err != nil {
 		return "", err
+	}
+	report := scanTree(tree)
+	if report.Verdict() == "critical" {
+		return "", scanError(report)
+	}
+	if !viaDraft && hasScripts(tree) {
+		return "", fmt.Errorf("%w: scripts/ present — publish via draft approval", ErrNeedsReview)
 	}
 	unlock, err := s.lock(name)
 	if err != nil {
@@ -350,6 +364,7 @@ func (s *Store) Publish(name string, tree Tree, meta IndexMeta) (string, error) 
 	if err := s.record(name, rev, meta); err != nil {
 		return "", err
 	}
+	s.audit("published", name)
 	return rev, nil
 }
 
@@ -385,7 +400,11 @@ func (s *Store) Rollback(name, rev string) (string, error) {
 			tree[path] = f
 		}
 	}
-	return s.Publish(name, tree, IndexMeta{Author: "user", Source: "rollback"})
+	back, err := s.publish(name, tree, IndexMeta{Author: "user", Source: "rollback"}, true)
+	if err == nil {
+		s.audit("rolled_back", name)
+	}
+	return back, err
 }
 
 // Archive moves the live skill into .archive/<name>/<ts>/ and removes it
@@ -407,7 +426,11 @@ func (s *Store) Archive(name, reason, absorbedInto, actor string) error {
 	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
 		return err
 	}
-	return os.Rename(src, dest)
+	if err := os.Rename(src, dest); err != nil {
+		return err
+	}
+	s.audit("archived", name)
+	return nil
 }
 
 // Restore moves the newest archive entry back to the live location.
@@ -436,7 +459,11 @@ func (s *Store) Restore(name string) error {
 	if newest == "" {
 		return ErrNotFound
 	}
-	return os.Rename(filepath.Join(s.root, archiveDir, name, newest), s.dir(name))
+	if err := os.Rename(filepath.Join(s.root, archiveDir, name, newest), s.dir(name)); err != nil {
+		return err
+	}
+	s.audit("restored", name)
+	return nil
 }
 
 // swapDir atomically replaces target with the prepared tmp dir. On Windows

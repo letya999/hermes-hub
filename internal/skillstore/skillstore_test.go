@@ -155,10 +155,15 @@ func TestTreeSafety(t *testing.T) {
 		t.Logf("symlink unavailable: %v", err)
 	}
 
-	// Exec bit survives publish -> load round trip.
+	// Exec bit survives publish -> load round trip. Script-bearing trees
+	// publish only through the draft+approve path (R4.4).
 	withExec := skillTree("x")
 	withExec["scripts/run.sh"] = File{Data: []byte("#!/bin/sh\n"), Exec: true}
-	if _, err := s.Publish("demo", withExec, IndexMeta{Author: "u"}); err != nil {
+	execDraft, err := s.CreateDraft("demo", withExec, DraftMeta{Author: "u", Reason: "exec test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PublishDraft(execDraft.ID, "operator:u"); err != nil {
 		t.Fatal(err)
 	}
 	loaded, err := s.Tree("demo")
@@ -638,8 +643,12 @@ func TestRevisionAndIndex(t *testing.T) {
 
 	s := newStore(t, ScopeUser)
 	withExec := skillTree("v1")
-	withExec["scripts/r.sh"] = File{Data: []byte("s"), Exec: true}
-	rev1, err := s.Publish("demo", withExec, IndexMeta{Author: "import", Source: "git", SessionID: "sess-9"})
+	withExec["scripts/r.sh"] = File{Data: []byte("#!/bin/sh\ns"), Exec: true}
+	gitDraft, err := s.CreateDraft("demo", withExec, DraftMeta{Author: "import", Reason: "git install", SessionID: "sess-9"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rev1, err := s.PublishDraft(gitDraft.ID, "operator:qa")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -648,7 +657,7 @@ func TestRevisionAndIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec, ok := idx.Skills["demo"]
-	if !ok || rec.Revision != rev1 || rec.Source != "git" || rec.Author != "import" || rec.SessionID != "sess-9" {
+	if !ok || rec.Revision != rev1 || rec.Source != "draft:import" || rec.Author != "operator:qa" || rec.SessionID != "sess-9" {
 		t.Fatalf("index record: %+v", rec)
 	}
 
