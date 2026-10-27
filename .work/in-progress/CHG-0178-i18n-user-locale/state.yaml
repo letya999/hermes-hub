@@ -18,7 +18,7 @@ slices:
   S1-command-surfaces: done
   S2-progress-background: done
   S3-hub-html-a11y: done
-  S4-broker-pages: pending
+  S4-broker-pages: done
   S5-llm-prompts-contracts: pending
   S6-operator-tooling: pending
   S7-voice-fixtures-glossary-docs: pending
@@ -37,9 +37,12 @@ evidence:
   - "go test ./internal/{communication,channel,commops,runtime,agenttools,routines} — green; S2-scope files have zero Cyrillic literals"
   - "S3: locale.Negotiate (Accept-Language); all toolhub HTML pages localized (91 keys page.*/cred.* ×4 catalogs); pageLang = ?lang= > Accept-Language > fallback; lang propagated via redirects, device link, oauth flow.lang; langLink stamps ?lang= on toolhub URLs in chat notices; aria-live on wait/status regions; toolhub TestMain pins ru"
   - "go test ./internal/{toolhub,communication,locale} — green (110s/230s); zero Cyrillic literals in toolhub non-test files"
+  - "S4: credential-broker own webText catalog (en/ru/kk/es, 20 keys) in httpapi/webtext.go — standalone module cannot import internal/locale; browserLang = ?lang= > Accept-Language(q-ranked) > en; formPage template localized with ?lang= on approve-check/submit/oauth actions and authorizing redirect; success(w,lang); dev-seeded contract title → EN; hub forwards lang into BrokerAuthorizationURL (brokerHopPage + ?request= redirect)"
+  - "broker just check in Docker (golang:1.27.3-bookworm, module is linux-only): gofmt/vet/openapi/archtest/secrets/docs/race+build green, coverage 89.83% (all pkgs ≥85%)"
 remaining:
-  - S4 broker webtext
   - S5 LLM prompts → EN + lang hint (prepareContinuation, gateway_goal.go:268)
   - S6 operator tooling; S7 TTS/fixtures/glossary/docs + just check
 limitations:
   - Model-facing prompts remain Russian until S5; viewer title stays English product name; broker-callback persisted Error uses operator fallback (no request context)
+  - Broker /oauth/callback success page resolves lang via Accept-Language (provider redirect carries no ?lang=) — same browser, honest fallback
+  - Contract Title/Field.Label and examples/contracts are deployer-authored data — rendered verbatim, not localized

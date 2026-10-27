@@ -595,7 +595,7 @@ func (g *Gateway) serveConnect(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if request := r.URL.Query().Get("request"); request != "" && request == onboarding.BrokerRequestID && onboarding.BrokerAuthorizationURL != "" {
-		http.Redirect(w, r, onboarding.BrokerAuthorizationURL, http.StatusFound)
+		http.Redirect(w, r, onboarding.BrokerAuthorizationURL+"?lang="+string(pageLang(r)), http.StatusFound)
 		return
 	}
 	http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -639,7 +639,7 @@ func oauthInterstitialPage(onboarding api.Onboarding, state string, lang locale.
 // the page forwards there and meta-refreshes — a submitted request flips the
 // phase and the reload lands on the confirm step of the same wizard URL.
 func brokerHopPage(onboarding api.Onboarding, lang locale.Lang) string {
-	return `<!doctype html><html lang="` + html.EscapeString(string(lang)) + `"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="8"><title>` + html.EscapeString(locale.T(lang, "page.connect-title")) + `</title><style>:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:28px;letter-spacing:-.02em}p{margin:0 0 22px;color:#52606d;line-height:1.6}a.btn{display:block;text-align:center;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font-weight:700;text-decoration:none}</style><main><h1>` + html.EscapeString(locale.T(lang, "page.broker-h1")) + `</h1><p>` + html.EscapeString(locale.T(lang, "page.broker-body")) + `</p><a class="btn" rel="noopener noreferrer" href="` + html.EscapeString(onboarding.BrokerAuthorizationURL) + `">` + html.EscapeString(locale.T(lang, "page.broker-btn")) + `</a></main></html>`
+	return `<!doctype html><html lang="` + html.EscapeString(string(lang)) + `"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="8"><title>` + html.EscapeString(locale.T(lang, "page.connect-title")) + `</title><style>:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:28px;letter-spacing:-.02em}p{margin:0 0 22px;color:#52606d;line-height:1.6}a.btn{display:block;text-align:center;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font-weight:700;text-decoration:none}</style><main><h1>` + html.EscapeString(locale.T(lang, "page.broker-h1")) + `</h1><p>` + html.EscapeString(locale.T(lang, "page.broker-body")) + `</p><a class="btn" rel="noopener noreferrer" href="` + html.EscapeString(onboarding.BrokerAuthorizationURL+"?lang="+string(lang)) + `">` + html.EscapeString(locale.T(lang, "page.broker-btn")) + `</a></main></html>`
 }
 
 // serveWizard renders the stable single-link setup page: ?k= carries the

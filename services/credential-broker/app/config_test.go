@@ -31,6 +31,25 @@ func devConfig(t *testing.T) Config {
 	}
 	return c
 }
+
+// The dev scaffold seeds an English contract title so the demo install
+// matches the hub's English-default UI language.
+func TestInitSeededContractIsEnglish(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "installation")
+	if e := Init(root); e != nil {
+		t.Fatal(e)
+	}
+	raw, e := os.ReadFile(filepath.Join(root, "contracts", "github-pat.json"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	for _, r := range string(raw) {
+		if r >= 'А' && r <= 'я' || r == 'Ё' || r == 'ё' {
+			t.Fatalf("seeded contract carries non-English text: %s", raw)
+		}
+	}
+}
+
 func TestInitConfigAndRun(t *testing.T) {
 	c := devConfig(t)
 	root := filepath.Dir(c.MasterKeyFile)

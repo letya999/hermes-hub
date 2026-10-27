@@ -845,7 +845,7 @@ func TestConnectLinkRedirectsToProviderURL(t *testing.T) {
 	br.Host = "127.0.0.1"
 	brRec := httptest.NewRecorder()
 	gateway.serveConnect(brRec, br)
-	if brRec.Code != http.StatusFound || brRec.Header().Get("Location") != brokerOn.BrokerAuthorizationURL {
+	if brRec.Code != http.StatusFound || brRec.Header().Get("Location") != brokerOn.BrokerAuthorizationURL+"?lang=ru" {
 		t.Fatalf("broker connect redirect=%d %q", brRec.Code, brRec.Header().Get("Location"))
 	}
 	_ = client

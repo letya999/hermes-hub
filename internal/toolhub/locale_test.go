@@ -300,12 +300,23 @@ func TestToolHubPagesLocalized(t *testing.T) {
 
 	seed(api.Onboarding{
 		OnboardingID: "onb-hop", Phase: api.PhaseAwaitingCreds,
+		BrokerRequestID:        "r1",
 		BrokerAuthorizationURL: "https://broker.example.com/connect/r1",
 		WizardNonce:            "wk7", WizardExpires: time.Now().Add(hour),
 	})
 	rec = get(g.serveConnect, "/connect/onb-hop?k=wk7&lang=es", "")
 	assertPage("wizard-broker-hop", rec, "es",
 		page("page.connect-title"), page("page.broker-h1"), page("page.broker-body"), page("page.broker-btn"))
+	// The broker is a separate origin with its own negotiation: the hop must
+	// forward the resolved page language, and the chat-side ?request= link
+	// must keep it through the redirect.
+	if !strings.Contains(rec.Body.String(), "broker.example.com/connect/r1?lang=es") {
+		t.Errorf("broker hop link dropped lang: %s", rec.Body.String())
+	}
+	rec = get(g.serveConnect, "/connect/onb-hop?request=r1&lang=es", "")
+	if rec.Code != http.StatusFound || !strings.Contains(rec.Header().Get("Location"), "lang=es") {
+		t.Errorf("broker ?request= redirect dropped lang: %d %q", rec.Code, rec.Header().Get("Location"))
+	}
 
 	// --- OAuth: the provider-hop interstitial under the stable link and via
 	// the ?state= hop; a dead flow redirects back to the wizard with lang kept.
