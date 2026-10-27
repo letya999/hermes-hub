@@ -92,69 +92,6 @@ func TestCoverageGate(t *testing.T) {
 	}
 }
 
-func TestCoverAllPackageFloor(t *testing.T) {
-	name := filepath.Join(t.TempDir(), "coverage.out")
-	_, err := CoverAll(name, 0, 50,
-		func() ([]string, error) { return []string{"pkg/a"}, nil },
-		func(pkg, out string) error {
-			return os.WriteFile(out, []byte("mode: count\ngithub.com/letya999/hermes-hub/internal/pa/x.go:1.1,2.1 9 1\ngithub.com/letya999/hermes-hub/internal/pb/y.go:1.1,2.1 5 0\n"), 0600)
-		})
-	if err == nil {
-		t.Fatal("CoverAll ignored package floor")
-	}
-}
-
-func TestCoverAll(t *testing.T) {
-	name := filepath.Join(t.TempDir(), "coverage.out")
-	packages := []string{"pkg/a", "pkg/b"}
-	listed := 0
-	tested := map[string]bool{}
-	actual, err := CoverAll(name, 85, 0,
-		func() ([]string, error) {
-			listed++
-			return packages, nil
-		},
-		func(pkg, out string) error {
-			tested[pkg] = true
-			body := "mode: count\na.go:1.1,2.1 84 0\nb.go:1.1,2.1 16 0\n"
-			if pkg == "pkg/b" {
-				body = "mode: count\na.go:1.1,2.1 84 1\nb.go:1.1,2.1 16 1\n"
-			}
-			return os.WriteFile(out, []byte(body), 0600)
-		})
-	if err != nil {
-		t.Fatalf("CoverAll: %v", err)
-	}
-	if listed != 1 || len(tested) != 2 || !tested["pkg/a"] || !tested["pkg/b"] {
-		t.Fatalf("packages not exercised: listed=%d tested=%v", listed, tested)
-	}
-	if actual != 100 {
-		t.Fatalf("union coverage = %.2f, want 100", actual)
-	}
-}
-
-func TestCoverAllSkipsStatementFreePackage(t *testing.T) {
-	name := filepath.Join(t.TempDir(), "coverage.out")
-	actual, err := CoverAll(name, 50, 0,
-		func() ([]string, error) { return []string{"pkg/a", "pkg/empty"}, nil },
-		func(pkg, out string) error {
-			if pkg == "pkg/empty" {
-				return os.WriteFile(out, []byte("mode: set\n"), 0600)
-			}
-			return os.WriteFile(out, []byte("mode: count\na.go:1.1,2.1 4 1\n"), 0600)
-		})
-	if err != nil || actual != 100 {
-		t.Fatalf("statement-free package rejected: %v (%.2f)", err, actual)
-	}
-	if _, err = CoverAll(filepath.Join(t.TempDir(), "coverage.out"), 0, 0,
-		func() ([]string, error) { return []string{"pkg/bad"}, nil },
-		func(pkg, out string) error {
-			return os.WriteFile(out, []byte("mode: count\nmalformed\n"), 0600)
-		}); err == nil {
-		t.Fatal("malformed package profile merged")
-	}
-}
-
 func TestProjectAndFormat(t *testing.T) {
 	if err := Project(t.TempDir()); err == nil {
 		t.Fatal("missing project files accepted")

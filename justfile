@@ -11,8 +11,16 @@ export COMPOSE_BAKE := "true"
 default:
     @just --list
 
-# Complete local CI; no Node/Jest orchestration.
+# Complete local CI; no Node/Jest orchestration. The legs are independent, so
+# on Windows they run in parallel like the CI jobs: wall time is the slowest
+# leg (~go-check) instead of the serial sum. A failing leg still exits
+# nonzero — re-run it alone (just lint) for an unmixed log.
+[unix]
 check: go-check lint docs-check config-check
+
+[windows]
+check:
+    $p = @('go-check','lint','docs-check','config-check') | ForEach-Object { Start-Process -NoNewWindow -PassThru -FilePath just -ArgumentList $_ }; $p | Wait-Process; $rc = 0; $p | ForEach-Object { if ($_.ExitCode -ne 0) { $rc = $_.ExitCode } }; exit $rc
 
 # Actual Compose interpolation/schema validation with synthetic credentials;
 # no daemon, containers, provider accounts or user spaces are accessed.

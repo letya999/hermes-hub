@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
-	"strings"
 
 	"github.com/letya999/hermes-hub/internal/devcheck"
 )
@@ -20,7 +19,15 @@ func main() {
 	}
 }
 
-var coverAll = devcheck.CoverAll
+// coverTest runs the whole suite in one invocation like a CI shard
+// (.github/workflows/ci.yml): go test parallelizes package binaries across
+// GOMAXPROCS and merges the -coverpkg=./... profiles natively. The old
+// per-package loop re-linked and ran the same instrumented binary 49 times
+// serially (15-20 min locally).
+var coverTest = func(profile string) *exec.Cmd {
+	return exec.Command("go", "test", "-race", "-shuffle=on", "-count=1", "-timeout=10m",
+		"-coverpkg=./...", "-coverprofile="+profile, "./...")
+}
 
 func run(args []string) error {
 	var err error
@@ -56,24 +63,17 @@ func run(args []string) error {
 		if parseErr != nil {
 			err = parseErr
 		} else {
-			actual, checkErr := coverAll(args[1], minimum, pkgMin,
-				func() ([]string, error) {
-					listed, listErr := exec.Command("go", "list", "./...").Output()
-					if listErr != nil {
-						return nil, listErr
-					}
-					return strings.Fields(string(listed)), nil
-				},
-				func(pkg, out string) error {
-					test := exec.Command("go", "test", "-race", "-shuffle=on", "-count=1", "-coverpkg=./...", "-coverprofile="+out, pkg)
-					test.Stdout = os.Stdout
-					test.Stderr = os.Stderr
-					return test.Run()
-				})
-			if checkErr != nil {
-				err = checkErr
+			test := coverTest(args[1])
+			test.Stdout, test.Stderr = os.Stdout, os.Stderr
+			if testErr := test.Run(); testErr != nil {
+				err = testErr
 			} else {
-				fmt.Printf("Go statement coverage: %.2f%%\n", actual)
+				actual, checkErr := devcheck.CoverageGate(args[1], minimum, pkgMin)
+				if checkErr != nil {
+					err = checkErr
+				} else {
+					fmt.Printf("Go statement coverage: %.2f%%\n", actual)
+				}
 			}
 		}
 	case len(args) == 2 && args[0] == "docker-smoke":

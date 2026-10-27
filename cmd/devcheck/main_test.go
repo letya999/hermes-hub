@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -55,23 +56,27 @@ func TestRunCoverageAndValidation(t *testing.T) {
 			t.Fatalf("accepted %#v", args)
 		}
 	}
+	lowProfile := filepath.Join(t.TempDir(), "low.out")
+	if err := os.WriteFile(lowProfile, []byte("mode: atomic\na/x.go:1.1,2.1 96 1\ngithub.com/letya999/hermes-hub/internal/pa/x.go:1.1,2.1 4 0\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	called := false
-	var gotPkgMin float64
-	old := coverAll
-	coverAll = func(name string, minimum, packageMinimum float64, listPackages func() ([]string, error), testPackage func(pkg, out string) error) (float64, error) {
+	old := coverTest
+	coverTest = func(name string) *exec.Cmd {
 		called = true
-		gotPkgMin = packageMinimum
-		if name != profile || minimum != 85 {
-			t.Fatalf("coverAll(%q, %v)", name, minimum)
+		if name != profile && name != lowProfile {
+			t.Fatalf("coverTest(%q)", name)
 		}
-		return 99, nil
+		return exec.Command("go", "version")
 	}
-	t.Cleanup(func() { coverAll = old })
-	if err := run([]string{"covergo", profile, "85"}); err != nil || !called || gotPkgMin != 0 {
-		t.Fatalf("covergo: err=%v called=%v pkgMin=%v", err, called, gotPkgMin)
+	t.Cleanup(func() { coverTest = old })
+	if err := run([]string{"covergo", profile, "85"}); err != nil || !called {
+		t.Fatalf("covergo: err=%v called=%v", err, called)
 	}
-	if err := run([]string{"covergo", profile, "85", "50"}); err != nil || gotPkgMin != 50 {
-		t.Fatalf("covergo pkgmin: err=%v pkgMin=%v", err, gotPkgMin)
+	// The package floor runs against the real gate on the merged profile now:
+	// global 96% passes, but the internal package at 0% trips the 50 floor.
+	if err := run([]string{"covergo", lowProfile, "85", "50"}); err == nil {
+		t.Fatal("covergo accepted an internal package below the floor")
 	}
 	if err := run([]string{"covergo", profile, "85", "bad"}); err == nil {
 		t.Fatal("covergo accepted invalid package minimum")
@@ -90,6 +95,23 @@ func TestRunCoverageAndValidation(t *testing.T) {
 	}
 	if err := run([]string{"gateway-lifecycle", "test-image"}); err == nil {
 		t.Fatal("integration-only gateway lifecycle accepted without build tag")
+	}
+}
+
+// The coverage gate must run the suite batched, like a CI shard: one go test
+// invocation over ./... so package binaries parallelize across GOMAXPROCS and
+// profiles merge natively. A per-package loop re-links the same
+// -coverpkg=./... binary per package (49 serial instrumented runs locally).
+func TestCoverTestBatchesWholeSuite(t *testing.T) {
+	var cmd *exec.Cmd = coverTest("profile.out")
+	joined := strings.Join(cmd.Args, " ")
+	for _, want := range []string{"-race", "-shuffle=on", "-count=1", "-timeout=10m", "-coverpkg=./...", "-coverprofile=profile.out"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("coverTest missing %q: %v", want, cmd.Args)
+		}
+	}
+	if cmd.Args[len(cmd.Args)-1] != "./..." {
+		t.Fatalf("coverTest must run the whole suite in one invocation, got %v", cmd.Args)
 	}
 }
 
