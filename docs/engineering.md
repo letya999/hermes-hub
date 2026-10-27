@@ -1,6 +1,6 @@
 ---
 description: Engineering rules — Go conventions, gates, pins, change process, boundaries on dependencies.
-last_verified: 2026-10-20
+last_verified: 2026-10-27
 ---
 
 # Engineering rules
@@ -42,6 +42,12 @@ a separate copied Go module (MIT) kept out of the flatten.
   says what is intentionally deferred.
 - Regression tests are mandatory for file-isolation, concurrency,
   authorization or HTTP-contract changes.
+- Agent-tool contract changes ship in one changeset: tool description,
+  prompt-contract guidance (`internal/stack/prompt_contract.go`),
+  `docs/tools.md` and `docs/routines.md` entries, and a bumped immutable
+  `hub-agent-tools` catalog version — followed by a deliberate repin and
+  runtime respawn on managed spaces. The suite fails a cataloged tool
+  missing from `docs/tools.md`.
 - Red→green where the probity hook applies: behavioral assertion failure
   first, then the implementation.
 

@@ -1,6 +1,6 @@
 ---
 description: Complete agent-visible tool surface — toolhub control tools, connector_* facade, hub:tools catalog, effect/grant requirements, delivery directives.
-last_verified: 2026-10-26
+last_verified: 2026-10-27
 ---
 
 # Tool surface
@@ -57,7 +57,9 @@ Grouped by capability resource (internal/agenttools/capability.go):
 | context | `context_status`, `context_compact` | bounded session view (threshold/journal/live estimate) and turn-boundary compaction; busy sessions refuse deterministically, `queue` parks; results are metadata only |
 | goals | `goal_set`, `goal_status`, `goal_pause`, `goal_resume`, `goal_clear` | persistent per-conversation goal record — same durable record `/goal` manages; bounded continuation loop with verified completion |
 | routines | `routine_create`, `routine_list`, `routine_get`, `routine_edit`, `routine_delete` | five-tool public surface; see docs/routines.md |
-| watches | `watch_subscribe`, `watch_list`, `watch_pause`, `watch_delete` | scheduled probes: http/mcp_tool/script/command/render/service kinds |
+| watches | `watch_subscribe`, `watch_list`, `watch_pause`, `watch_resume`, `watch_delete` | event subscriptions (job_kind=event, mcp_tool probe only); `sink=notify|agent`, `delivery=stream` (bounded wait for wait-style tools; poll-style tools need `min_interval_seconds` 5–3600), `filter` Starlark keep\|drop\|urgent per event; see docs/routines.md |
+| assignments | `assignment_plan`, `assignment_create`, `assignment_list`, `assignment_get`, `assignment_update`, `assignment_apply`, `assignment_pause`, `assignment_resume`, `assignment_cancel`, `assignment_complete` | durable multi-source mandates (SPEC-0080); CAS via expected_revision; owner-only grant widening |
+| exposure | `exposure_list`, `exposure_status`, `exposure_open`, `exposure_close` | live public tunnels on this runtime; open/close act on declared endpoints only |
 | documents | `document_extract`, `document_create`, `document_edit`, `document_convert` | txt, md, csv, html, pdf, xlsx, pptx |
 | images | `image_inspect`, `images_inspect`, `image_convert`; `image_generate`, `image_edit` | generate/edit absent until the `image_gen` grant is active; png/jpeg/webp |
 | artifacts | `archive_create`, `archive_unpack`, `artifact_remove` | artifacts/ scope |

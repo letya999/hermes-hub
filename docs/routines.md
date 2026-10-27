@@ -149,6 +149,39 @@ settle into the new revision.
   `delivery=stream` internals are in architecture.md §Jobs, runs and
   events.
 
+## Event subscriptions (watches)
+
+A watch is an event-kind schedule subscribed to one `mcp_tool` source through
+`watch_subscribe`: its probe is `{kind:mcp_tool, tool, args}` and the sink is
+`notify` (one message per fresh event) or `agent` (one job per batch, events
+flagged untrusted). The probe never calls a model — unchanged sources and
+`filter`-dropped events cost zero model wakes. `filter` is a Starlark script
+evaluated per fresh event emitting `keep|drop|urgent`; an unevaluable filter
+fails closed — events stay unseen and the round records an error.
+
+`delivery=stream` runs one supervised loop per schedule holding one bounded
+wait-call outstanding (a default bound is injected when the tool declares
+none). Wait-style tools — names containing `wait`/`settled`/`new_message` —
+are bounded long-polls and need no interval; a plain poll tool must declare
+`probe.min_interval_seconds` (5..3600 s) as its source cadence contract,
+which the loop sleeps between successful rounds. Validation rejects stream
+on non-`mcp_tool` probes and on poll tools without a declared interval; it
+also rejects probes on non-probe job kinds, pointing agent-kind misuse at
+`watch_subscribe`. The cron expression anchors liveness bookkeeping only —
+it is not the poll cadence — and the global one-minute floor for ordinary
+scheduled routines is unchanged.
+
+Events dedupe durably per schedule revision; `next_cursor` persists for
+restart resume; batch settlement fans out once — sink=agent wakes the model
+once per batch, not per event, honoring quiet windows, daily limits and
+assignment wake budgets. Connector auth failures mark the subscription
+`degraded` instead of emitting fake empties. `watch_list`, `watch_pause`,
+`watch_resume` and `watch_delete` are scoped to event-kind schedules;
+`routine_edit` update/pause/resume manages them under the same revision
+fence. One subscription should cover the broadest scope the source tool
+offers (e.g. account-wide args); narrowing belongs to `filter` — durable
+dedup rejects repeats before they can spend a wake.
+
 ## Standing assignments
 
 A standing assignment (`asg-*`, `internal/commodel.Assignment`) is the
@@ -307,13 +340,14 @@ clock occurrences; inspect event_state for current health/error.
 
 ## Deployment and manual acceptance
 
-The catalog is hub-agent-tools@5.0.1. Old definitions remain immutable. Register
+The catalog is hub-agent-tools@5.3.0. Old definitions remain immutable. Register
 the new version and, for managed spaces, deliberately repin selected tools in the protected profile,
 preserving scopes, denies and limits. routine_edit requires routines.update and
 the update:routines tuple for all four actions. Do not translate a former
 pause-only or snooze-only selection into this broader edit grant automatically.
 Delete remains a separate capability. Old private operations still serve already
-pinned definitions; current MCP discovery shows only the five tools. No provider connection or
+pinned definitions; current MCP discovery shows the five routine tools plus the
+watch and assignment families. No provider connection or
 external write grant is created by a catalog upgrade.
 
 Use the [operations rebuild procedure](operations.md). Runtime dev overlays

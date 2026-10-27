@@ -1,0 +1,31 @@
+schema: 1
+change: CHG-0189
+title: Watch tool contract discipline + event-watch discoverability
+status: in_progress
+branch: fix/m23-live-wake
+updated: 2026-10-28
+phase: implementation
+adr: ADR-0082
+spec: SPEC-0081
+issues: ["#324", "#332"]
+slices:
+  s1_contract_discipline:
+    state: green
+    evidence: tools_docs_test.go — every HubToolsDefinition tool must appear in docs/tools.md; AGENTS.md + engineering.md record the single-changeset rule
+  s2_discoverability:
+    state: green
+    evidence: prompt_contract.go monitoring paragraph + snapshot test; routine_create/watch_subscribe descriptions; validate.go probe-kind and probe-args refusals point to watch_subscribe
+  s3_per_source_cadence:
+    state: green
+    evidence: commodel.WaitCapableProbeTool + WatchProbe.min_interval_seconds (5..3600, stream-only); streamPoll sleeps declared cadence; next_cursor persisted on stream batches
+  s4_surface:
+    state: green
+    evidence: watch_resume in catalog/dispatch/MCP/docs; catalog 5.3.0 with delivery/filter/min_interval_seconds on watch_subscribe
+gates:
+  unit_focused: green (agenttools, communication, stack, commodel — targeted runs)
+  just_check: pending
+  live_artem_main: pending
+notes:
+  - Global routine floor 60s untouched; cadence is per-source via stream probe only.
+  - SPEC-0081 R1.6 cursor/next_cursor envelope semantics now held by the stream path too.
+  - Existing lifecycle fixtures gained min_interval_seconds=60 — fixture update, no relaxation.

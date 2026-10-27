@@ -16,6 +16,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0189](in-progress/CHG-0189-watch-contract/plan.md) | M23 #324/#332 follow-up: tool-contract discipline rule, watch_subscribe discoverability (prompt/descriptions/semantic refusal), per-source stream cadence (min_interval_seconds 5..3600), stream cursor persistence, watch_resume + catalog 5.3.0, docs-coverage test |
 | [CHG-0187](in-progress/CHG-0187-m26-acceptance/plan.md) | M26 #380 S5: live acceptance — voice/browser/Meet on dev stack, budget gates, before/after sizes + CVEs, docs current |
 | [CHG-0186](in-progress/CHG-0186-browser-sidecar/plan.md) | M26 #378 S4: hub-browser sidecar — per-space container, internal CDP, authenticated noVNC, runtime without Chromium/X11 |
 | [CHG-0185](in-progress/CHG-0185-hub-core-split/plan.md) | M26 #377 S3: hub-core/hub-control role images — Go binaries only, no interpreters/browsers, compose per-service image split |

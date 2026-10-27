@@ -1,6 +1,7 @@
 package communication
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -256,6 +257,78 @@ func TestStreamPollOnceDelivers(t *testing.T) {
 	st, err := s.EventStateOf("str5")
 	if err != nil || st.LastSuccess.IsZero() {
 		t.Fatalf("healthy empty poll not recorded: %+v %v", st, err)
+	}
+}
+
+// A plain poll tool on a stream honors its declared min_interval between
+// rounds: an immediate-returning poll would otherwise hot-spin.
+func TestStreamPollPacesByMinInterval(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	_, err := s.CreateSchedule(Schedule{ScheduleID: "str-pace", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "watch feed", JobKind: "event", Delivery: "stream", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-feed-poll-abc", MinIntervalSeconds: 3600}}, caller, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	toolCall := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
+		calls++
+		return []byte(`{"events":[]}`), nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	g.streamPoll(ctx, "str-pace", toolCall)
+	if calls != 1 {
+		t.Fatalf("stream poll ignored the declared cadence: %d calls", calls)
+	}
+}
+
+// A multi-event batch admits exactly one agent job carrying every event's
+// text as raw UTF-8 bytes, and a replayed batch admits nothing more.
+func TestStreamBatchOneJobUTF8(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	sched, err := s.CreateSchedule(Schedule{ScheduleID: "str-utf", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "watch groups", JobKind: "event", Delivery: "stream", Sink: "agent", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc"}}, caller, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"events":[{"event_id":"a","text":"Смотри: github.com/x — топ!"},{"event_id":"b","text":"Проверка байтов Юникода"},{"event_id":"c","text":"plain"}]}`)
+	now := time.Now().UTC()
+	s.settleStreamEvents(sched, body, now, nil, g.authorizeOccurrence)
+	job, err := s.ClaimJob()
+	if err != nil || job == nil {
+		t.Fatal("stream batch admitted no job")
+	}
+	for _, want := range []string{"Смотри: github.com/x — топ!", "Проверка байтов Юникода", "plain"} {
+		if !bytes.Contains([]byte(job.Text), []byte(want)) {
+			t.Fatalf("batch job dropped event text %q: %q", want, job.Text)
+		}
+	}
+	if extra, err := s.ClaimJob(); err != nil || extra != nil {
+		t.Fatal("one batch admitted more than one job")
+	}
+	s.settleStreamEvents(sched, body, now.Add(time.Second), nil, g.authorizeOccurrence)
+	if extra, err := s.ClaimJob(); err != nil || extra != nil {
+		t.Fatal("replayed batch admitted a job")
+	}
+}
+
+// A stream batch persists the source cursor like the occurrence path does,
+// so a restart resumes acquisition rather than re-reading from scratch.
+func TestStreamBatchPersistsCursor(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	sched, err := s.CreateSchedule(Schedule{ScheduleID: "str-cur", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "watch feed", JobKind: "event", Delivery: "stream", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc"}}, caller, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"events":[{"event_id":"e1","text":"hi"}],"next_cursor":"cur-42"}`)
+	s.settleStreamEvents(sched, body, time.Now().UTC(), nil, g.authorizeOccurrence)
+	st, err := s.EventStateOf("str-cur")
+	if err != nil || st.Cursor != "cur-42" {
+		t.Fatalf("stream batch dropped the cursor: %+v %v", st, err)
+	}
+	if d, err := s.ClaimDelivery(); err != nil || d == nil {
+		t.Fatal("cursor batch dropped its event")
 	}
 }
 

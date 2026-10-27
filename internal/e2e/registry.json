@@ -2234,5 +2234,18 @@
     "prerequisites": "Synthetic communication hub fixture; no live model or channel needed",
     "level": "contract",
     "cleanup": "Remove only the synthetic assignment records created by the test"
+},
+  {
+    "id": "E2E-173",
+    "surface": "hub",
+    "name": "watch_resume",
+    "title": "watch_resume",
+    "action": "Через watch_resume возобновить свою приостановленную event-подписку; попытка на другой вид рутины отклоняется.",
+    "expected": "Event-подписка возобновлена; не-event id через watch_resume отклонён.",
+    "package": "agenttools",
+    "test": "TestWatchResumeRoutesResume",
+    "prerequisites": "Тестовый managed-профиль; отдельные fixtures, без рабочих данных",
+    "level": "contract",
+    "cleanup": "Удалить только созданные тестом ресурсы; восстановить исходную настройку"
 }
 ]

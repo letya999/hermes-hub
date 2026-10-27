@@ -144,7 +144,7 @@ func (t *Tools) Server() *mcp.Server {
 	add("service_enable", "After a direct owner request, enable one self-service catalog feature. A public GitHub repository is not a feature name: do not install it here, in the terminal, or in config.yaml. If credentials are missing, always returns input=protected-form with form_url; never ask the owner for KEY=value in chat.")
 	add("service_disable", "After a direct owner request, disable one ToolHub binding without deleting its historical owner or credential metadata.")
 	for _, op := range []string{"routine_create", "routine_list", "routine_edit", "routine_delete", "routine_get",
-		"watch_subscribe", "watch_list", "watch_pause", "watch_delete"} {
+		"watch_subscribe", "watch_list", "watch_pause", "watch_resume", "watch_delete"} {
 		add(op, routineDescriptions[op])
 	}
 	for _, op := range []string{"assignment_plan", "assignment_create", "assignment_list", "assignment_get",

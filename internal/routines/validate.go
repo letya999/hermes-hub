@@ -165,6 +165,9 @@ func ValidateScheduleDraft(in commodel.Schedule, caller identity.Envelope, hooks
 	if in.JobKind == "brief" && in.Probe != nil {
 		return errors.New("a brief aggregates sources and carries no probe")
 	}
+	if in.Probe != nil && in.JobKind != "watcher" && in.JobKind != "check" && in.JobKind != "event" {
+		return errors.New("a probe requires a watcher, check or event schedule; for source event subscriptions use watch_subscribe")
+	}
 	if in.MaxRetries != 0 && (in.JobKind != "check" || in.MaxRetries < 0 || in.MaxRetries > 8) {
 		return errors.New("max_retries is a check bound between 0 and 8")
 	}
@@ -316,6 +319,9 @@ func ValidateScheduleDraft(in commodel.Schedule, caller identity.Envelope, hooks
 		} else if in.Probe.Script != "" {
 			return errors.New("script requires a script or command probe kind")
 		}
+		if in.Probe.Filter != "" && in.JobKind != "event" {
+			return errors.New("a probe filter gates event subscriptions only")
+		}
 		if in.Probe.Filter != "" {
 			// The event gate is a script too (SPEC-0081 R4.1): an
 			// uncompilable filter must fail here, not silently at poll time.
@@ -331,6 +337,15 @@ func ValidateScheduleDraft(in commodel.Schedule, caller identity.Envelope, hooks
 			if err != nil || u.Scheme != "https" || u.Host != "api.github.com" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || in.Probe.Regex != "" || !regexp.MustCompile(`^/repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[1-9][0-9]*$`).MatchString(u.Path) {
 				return errors.New("GitHub issue probe needs its public REST issue URL")
 			}
+		}
+		if in.Delivery == "stream" && in.Probe.Kind == "mcp_tool" && !commodel.WaitCapableProbeTool(in.Probe.Tool) && in.Probe.MinIntervalSeconds == 0 {
+			return errors.New("stream delivery on a plain poll tool requires probe.min_interval_seconds; wait-style tools (wait/settled/new_message) hold the call open and need none")
+		}
+		if in.Probe.MinIntervalSeconds != 0 && in.Delivery != "stream" {
+			return errors.New("probe.min_interval_seconds is a stream-delivery cadence contract")
+		}
+		if in.Probe.MinIntervalSeconds != 0 && (in.Probe.MinIntervalSeconds < 5 || in.Probe.MinIntervalSeconds > 3600) {
+			return errors.New("probe.min_interval_seconds must be 5 through 3600 seconds")
 		}
 	}
 	if in.JobKind == "script" && hooks.Script(in.Input) != nil {

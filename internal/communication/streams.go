@@ -2,6 +2,7 @@ package communication
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -39,6 +40,15 @@ func (s *Spool) scheduleByID(id string) (Schedule, error) {
 	return s.loadScheduleLocked(id)
 }
 
+// streamMinInterval is the probe's declared source cadence: seconds between
+// stream rounds for a poll-style tool. Wait-style tools pace themselves.
+func streamMinInterval(probe *WatchProbe) time.Duration {
+	if probe == nil {
+		return 0
+	}
+	return time.Duration(probe.MinIntervalSeconds) * time.Second
+}
+
 // streamBackoff paces consecutive failures 1s → 30s so a dead connector
 // costs one bounded retry at a time for the subscription's whole life.
 func streamBackoff(failures int) time.Duration {
@@ -67,6 +77,18 @@ func (g *Gateway) streamPoll(ctx context.Context, id string, toolCall func(conte
 		}
 		if !blocked {
 			failures = 0
+			// The source's declared cadence (probe.min_interval_seconds)
+			// paces plain polls; wait-style tools hold the call open and
+			// carry no interval, so they fall through to the next round.
+			if interval := streamMinInterval(sched.Probe); interval > 0 {
+				timer := time.NewTimer(interval)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				case <-timer.C:
+				}
+			}
 			continue
 		}
 		failures++
@@ -272,6 +294,13 @@ func (s *Spool) settleStreamEvents(schedule Schedule, body []byte, now time.Time
 		s.mu.Unlock()
 		return nil, true
 	}
+	var env struct {
+		Cursor string `json:"next_cursor"`
+	}
+	cursor := ""
+	if json.Unmarshal(body, &env) == nil {
+		cursor = env.Cursor
+	}
 	if len(events) == 0 {
 		// A healthy empty poll still proves liveness for /watches.
 		st.LastSuccess = now
@@ -329,6 +358,7 @@ func (s *Spool) settleStreamEvents(schedule Schedule, body []byte, now time.Time
 	if err != nil {
 		return nil, true
 	}
+	st.Cursor = cursor
 	if filterErr != nil {
 		st.LastError = boundedWatchText(filterErr.Error())
 		_ = atomicJSON(s.eventPath(schedule.ScheduleID), st)

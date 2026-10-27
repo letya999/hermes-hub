@@ -33,7 +33,7 @@ func HubToolsDefinition() api.ToolDefinition {
 	return api.ToolDefinition{
 		Schema:       api.SchemaVersion,
 		DefinitionID: HubToolsDefinitionID,
-		Version:      "5.2.0",
+		Version:      "5.3.0",
 		Transport:    api.AgentTools,
 		Source:       api.DefinitionSource{},
 		Workload: api.WorkloadPolicy{
@@ -77,9 +77,10 @@ func HubToolsDefinition() api.ToolDefinition {
 			tool("routine_get", "routines.get", routineDescriptions["routine_get"], api.ReadEffect, use("list", "routines"), str("id"), arg("include", "array", false), arg("history_limit", "integer", false), opt("history_cursor"), arg("preview_limit", "integer", false)),
 			tool("routine_edit", "routines.update", routineDescriptions["routine_edit"], api.WriteEffect, use("update", "routines"), str("id"), str("action"), arg("expected_revision", "integer", true), arg("patch", "object", false), opt("until"), opt("origin_job_id")),
 			tool("routine_delete", "routines.delete", routineDescriptions["routine_delete"], api.WriteEffect, use("delete", "routines"), str("id"), arg("expected_revision", "integer", true)),
-			tool("watch_subscribe", "watches.create", routineDescriptions["watch_subscribe"], api.WriteEffect, use("create", "watches"), str("id"), str("timezone"), str("expression"), str("text"), str("tool"), opt("sink"), opt("args")),
+			tool("watch_subscribe", "watches.create", routineDescriptions["watch_subscribe"], api.WriteEffect, use("create", "watches"), str("id"), str("timezone"), str("expression"), str("text"), str("tool"), opt("sink"), opt("args"), opt("delivery"), opt("filter"), arg("min_interval_seconds", "integer", false)),
 			tool("watch_list", "watches.list", routineDescriptions["watch_list"], api.ReadEffect, use("list", "watches")),
 			tool("watch_pause", "watches.pause", routineDescriptions["watch_pause"], api.WriteEffect, use("update", "watches"), str("id")),
+			tool("watch_resume", "watches.resume", routineDescriptions["watch_resume"], api.WriteEffect, use("update", "watches"), str("id")),
 			tool("watch_delete", "watches.delete", routineDescriptions["watch_delete"], api.WriteEffect, use("delete", "watches"), str("id")),
 			// Standing assignments (SPEC-0080 R2.3): the agent plans and
 			// steers; the owner alone widens grants via chat authorize —

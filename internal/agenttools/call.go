@@ -98,7 +98,7 @@ func (t *Tools) call(ctx context.Context, name string, r Input, ws, ar, org *os.
 		return t.SettingsSet(r)
 	case "routine_create", "routine_list", "routine_edit", "routine_update", "routine_pause", "routine_snooze", "routine_delete",
 		"routine_get", "routine_resume", "routine_history", "routine_preview",
-		"watch_subscribe", "watch_list", "watch_pause", "watch_delete":
+		"watch_subscribe", "watch_list", "watch_pause", "watch_resume", "watch_delete":
 		return t.Routine(ctx, name, r)
 	case "assignment_plan", "assignment_create", "assignment_list", "assignment_get",
 		"assignment_update", "assignment_apply", "assignment_pause", "assignment_resume",

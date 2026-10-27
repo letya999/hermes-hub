@@ -1,10 +1,20 @@
 package commodel
 
 import (
+	"strings"
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
 )
+
+// WaitCapableProbeTool reports whether a projected tool is a bounded
+// long-poll by its name contract (wait/settled/new_message): such tools
+// hold the call until a batch or deadline, so a stream loop needs no
+// inter-round pacing. Any other mcp_tool probe is a plain poll and must
+// declare MinIntervalSeconds for stream delivery.
+func WaitCapableProbeTool(name string) bool {
+	return strings.Contains(name, "settled") || strings.Contains(name, "wait") || strings.Contains(name, "new_message")
+}
 
 // WatchProbe is a bounded deterministic probe: one http(s) GET; the compared
 // value is the first capture group of Regex, or the whole bounded body.
@@ -42,6 +52,11 @@ type WatchProbe struct {
 	// emitting keep|drop|urgent. Dropped events are marked seen without
 	// fan-out; urgent events bypass quiet windows and daily caps.
 	Filter string `json:"filter,omitempty"`
+	// MinIntervalSeconds declares the source's cadence contract for
+	// delivery=stream polls: the stream loop waits this long between
+	// successful rounds. Required on stream schedules whose tool is not
+	// wait-capable — wait tools hold the call open and pace themselves.
+	MinIntervalSeconds int64 `json:"min_interval_seconds,omitempty"`
 }
 
 // ProbeNeed is one hub-prefetched read-tool call for a script probe.

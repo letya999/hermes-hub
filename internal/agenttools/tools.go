@@ -108,6 +108,11 @@ type Input struct {
 	Sink     string `json:"sink,omitempty"`
 	Delivery string `json:"delivery,omitempty"`
 	Args     string `json:"args,omitempty"`
+	// Filter is the deterministic per-event Starlark gate for event
+	// subscriptions (probe.filter); MinIntervalSeconds declares the source
+	// cadence for stream delivery on poll-style tools.
+	Filter             string `json:"filter,omitempty"`
+	MinIntervalSeconds int    `json:"min_interval_seconds,omitempty"`
 }
 type Tools struct {
 	Workspace, Archive, Organization *os.Root
