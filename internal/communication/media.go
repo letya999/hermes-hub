@@ -47,7 +47,7 @@ type Transcriber interface {
 }
 
 type Synthesizer interface {
-	Synthesize(ctx context.Context, text string) ([]byte, string, error)
+	Synthesize(ctx context.Context, lang locale.Lang, text string) ([]byte, string, error)
 }
 
 func commandSynthesizer(command string) Synthesizer {
@@ -72,9 +72,9 @@ func serviceTranscriber(base, auth, command string, timeout time.Duration) Trans
 	return CommandTranscriber{Command: command, Timeout: timeout}
 }
 
-func serviceSynthesizer(base, auth, voice, command string) Synthesizer {
+func serviceSynthesizer(base, auth, voice string, voices map[locale.Lang]string, command string) Synthesizer {
 	if strings.TrimSpace(base) != "" {
-		return HTTPSynthesizer{Base: strings.TrimRight(base, "/"), Auth: auth, Voice: voice, Timeout: 30 * time.Second}
+		return HTTPSynthesizer{Base: strings.TrimRight(base, "/"), Auth: auth, Voice: voice, Voices: voices, Timeout: 30 * time.Second}
 	}
 	return commandSynthesizer(command)
 }
@@ -124,7 +124,7 @@ type CommandSynthesizer struct {
 	Timeout time.Duration
 }
 
-func (c CommandSynthesizer) Synthesize(ctx context.Context, text string) ([]byte, string, error) {
+func (c CommandSynthesizer) Synthesize(ctx context.Context, _ locale.Lang, text string) ([]byte, string, error) {
 	if c.Command == "" || strings.TrimSpace(text) == "" {
 		return nil, "", errors.New("tts is not configured")
 	}
@@ -374,11 +374,19 @@ type HTTPSynthesizer struct {
 	Base    string
 	Auth    string
 	Voice   string
+	Voices  map[locale.Lang]string
 	Timeout time.Duration
 	client  *http.Client
 }
 
-func (c HTTPSynthesizer) Synthesize(ctx context.Context, text string) ([]byte, string, error) {
+func (c HTTPSynthesizer) voiceFor(lang locale.Lang) string {
+	if v := c.Voices[lang]; v != "" {
+		return v
+	}
+	return c.Voice
+}
+
+func (c HTTPSynthesizer) Synthesize(ctx context.Context, lang locale.Lang, text string) ([]byte, string, error) {
 	if c.Base == "" || strings.TrimSpace(text) == "" {
 		return nil, "", errors.New("tts is not configured")
 	}
@@ -387,7 +395,7 @@ func (c HTTPSynthesizer) Synthesize(ctx context.Context, text string) ([]byte, s
 	}
 	jobCtx, cancel := context.WithTimeout(ctx, c.Timeout)
 	defer cancel()
-	payload, err := json.Marshal(map[string]string{"model": "tts-1", "voice": c.Voice, "input": text, "response_format": "opus"})
+	payload, err := json.Marshal(map[string]string{"model": "tts-1", "voice": c.voiceFor(lang), "input": text, "response_format": "opus"})
 	if err != nil {
 		return nil, "", err
 	}

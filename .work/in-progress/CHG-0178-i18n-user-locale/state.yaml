@@ -21,7 +21,7 @@ slices:
   S4-broker-pages: done
   S5-llm-prompts-contracts: done
   S6-operator-tooling: done
-  S7-voice-fixtures-glossary-docs: pending
+  S7-voice-fixtures-glossary-docs: done
 validation:
   documents: pending
   just_check: passed
@@ -49,10 +49,15 @@ evidence:
   - "operator scripts localized: local-accounts.ps1 (25 strings → _T tables ×4 langs + lang ladder HUB_LANG>LANG>UI culture), start-local-accounts.ps1 passes -e HUB_LANG into docker run + localized banner, telegram-account-login.py _T table (10 keys) + _t via HUB_LANG normalized by wrapper; BOM/LF preserved on ps1"
   - "internal/devcheck/scripts_i18n_test.go: flags Cyrillic at Write-Host/throw/Read-Host/getpass/print/ValueError call sites + requires HUB_LANG + all 4 lang tables per script"
   - "go test ./internal/{secrets,locale,devcheck} ./cmd/hubctl — green; ps1 parse-clean via PSParser, py ast.parse ok"
+  - "S7: Synthesizer.Synthesize(ctx, lang, text); HTTPSynthesizer.Voices map + voiceFor(lang)→Voice fallback; HUB_TTS_VOICE_{EN,RU,KK,ES} env parse into Config.TTSVoices; sendVoiceReply passes delivery.Lang; compose passes the 5 vars into communication-hub unchanged; sidecar already accepts per-request voice (req.Voice)"
+  - "examples/contracts flipped to English base + ru/kk/es i18n maps (12 files, per-file EOL preserved); examples_test now enforces English base + full i18n parity with prepared catalog"
+  - "terminology review: kk 'Қырдылғы' gibberish → 'Есептік деректерді енгізу'; kk 'сеанс' outlier → 'сессия'; kk menu.desc.status тапсырма→сессия; ru 'задача' vs en 'session' drift documented as accepted (pre-existing product wording, both terms user-visible since /new)"
+  - "docs: ADR-0082 D5/D6 wording aligned to implementation (hint format, operator ladders, TTS voices); media.md documents HUB_TTS_VOICE_* selection; glossary.md gains lang/locale row"
 remaining:
-  - S7 TTS_VOICE_{RU,KK,ES} map, e2e/devcheck fixtures, examples/contracts i18n decision, glossary + docs re-verify
+  - none — all slices S0..S7 implemented
 limitations:
   - Model-facing prompts are English + explicit lang hint; viewer title stays English product name; broker-callback persisted Error uses operator fallback (no request context)
   - Broker /oauth/callback success page resolves lang via Accept-Language (provider redirect carries no ?lang=) — same browser, honest fallback
-  - examples/contracts/*.json stay deployer-authored verbatim (deferred to S7 docs decision)
+  - examples/contracts follow the same convention as the prepared catalog: English base + ru/kk/es i18n maps
   - Operator scripts resolve HUB_LANG>LANG>OS culture (ps1) / HUB_LANG passed through by wrapper (py); no workspace context — env-only, EN default
+  - Russian catalog keeps the historical «задача» wording where English canonical says "session" — accepted drift, both terms are established for the same concept

@@ -458,7 +458,7 @@ func (g *Gateway) sendVoiceReply(ctx context.Context, delivery Delivery, text st
 		// Third-party upload is skipped unless a future explicit upload worker is configured.
 		return errors.New("voice upload is not configured")
 	}
-	audio, _, err := g.synthesizer.Synthesize(ctx, text)
+	audio, _, err := g.synthesizer.Synthesize(ctx, delivery.Lang, text)
 	if err != nil || len(audio) == 0 || len(audio) > mediaSizeLimit {
 		log.Printf("gateway voice synth failed delivery_id=%q err=%v bytes=%d", delivery.ID, err, len(audio))
 		return errors.New("tts failed")

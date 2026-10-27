@@ -52,13 +52,18 @@ core, not to one adapter.
 - **D5 — LLM-bound text is English instruction plus a language hint.**
   Deterministic service prompts sent to the model (continuation prompts,
   goal verdict wrappers, next_step guidance) are rewritten in English with an
-  explicit `User language: <lang>` line; the model renders in language
-  itself. Credential contract `title`/`label` gain `*_i18n` maps with
-  fallback to the English field.
+  explicit hint naming the user's language self-name and code
+  (`The user's language is <self-name> (<code>); answer the user in that
+  language.`); the model renders in language itself. Credential contract
+  `title`/`label` gain `*_i18n` maps with fallback to the English field, and
+  TTS replies pick a per-language voice from `HUB_TTS_VOICE_{EN,RU,KK,ES}`
+  falling back to `HUB_TTS_VOICE`.
 - **D6 — Operator tooling follows the operator's locale, not any user's.**
-  `hubctl`, `internal/secrets` status strings, PowerShell bootstrap scripts
-  and the Telegram account-login helper resolve `HUB_LANG` -> `LANG` -> OS UI
-  culture -> English.
+  Go surfaces (`hubctl`, `internal/secrets` status strings) resolve
+  `HUB_LANG` -> `LC_ALL`/`LANG` -> `HUB_DEFAULT_LANG` -> English; the
+  PowerShell bootstrap scripts resolve `HUB_LANG` -> `LC_ALL`/`LANG` -> OS UI
+  culture -> English and pass the normalized tag into the Telegram
+  account-login container as `HUB_LANG`.
 - **D7 — No string-sniffing of own output.** Behavior never depends on the
   text of a rendered message; the `/usage` journal prefix check is replaced
   by a typed signal before localization lands.

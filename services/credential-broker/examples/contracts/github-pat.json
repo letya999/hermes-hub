@@ -9,7 +9,12 @@
       "label": "GitHub personal access token",
       "kind": "secret",
       "required": true,
-      "max_bytes": 4096
+      "max_bytes": 4096,
+      "label_i18n": {
+        "ru": "Персональный токен доступа GitHub",
+        "kk": "GitHub жеке қол жеткізу токені",
+        "es": "Token de acceso personal de GitHub"
+      }
     }
   ],
   "allow_shared": false,
@@ -19,5 +24,10 @@
       "field": "token",
       "target": "GITHUB_PERSONAL_ACCESS_TOKEN"
     }
-  ]
+  ],
+  "title_i18n": {
+    "ru": "GitHub: персональный токен",
+    "kk": "GitHub: жеке токен",
+    "es": "GitHub: token personal"
+  }
 }

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"gopkg.in/yaml.v3"
@@ -46,26 +47,27 @@ type Config struct {
 	// toolhub-tokens.json: sibling-space runtime tokens enrolled there are
 	// equally valid control-plane bearers. The principal still comes from
 	// X-Hub-Principal — the token only proves the caller is a hub service.
-	ControlTokensFile string        `yaml:"-"`
-	controlAuthExtra  []string      `yaml:"-"`
-	ListenAddr        string        `yaml:"-"`
-	FormOrigin        string        `yaml:"-"`
-	NativeCron        string        `yaml:"-"`
-	STTCommand        string        `yaml:"-"`
-	TTSCommand        string        `yaml:"-"`
-	STTURL            string        `yaml:"-"`
-	STTAuth           string        `yaml:"-"`
-	TTSURL            string        `yaml:"-"`
-	TTSAuth           string        `yaml:"-"`
-	TTSVoice          string        `yaml:"-"`
-	TTSUploadURL      string        `yaml:"-"`
-	STTTimeout        time.Duration `yaml:"-"`
-	MediaMaxDuration  int           `yaml:"-"`
-	SpoolDir          string        `yaml:"spool_dir"`
-	RuntimeURL        string        `yaml:"-"`
-	RuntimeAuth       string        `yaml:"-"`
-	PollTimeout       time.Duration `yaml:"-"`
-	HermesCommand     string        `yaml:"-"`
+	ControlTokensFile string                 `yaml:"-"`
+	controlAuthExtra  []string               `yaml:"-"`
+	ListenAddr        string                 `yaml:"-"`
+	FormOrigin        string                 `yaml:"-"`
+	NativeCron        string                 `yaml:"-"`
+	STTCommand        string                 `yaml:"-"`
+	TTSCommand        string                 `yaml:"-"`
+	STTURL            string                 `yaml:"-"`
+	STTAuth           string                 `yaml:"-"`
+	TTSURL            string                 `yaml:"-"`
+	TTSAuth           string                 `yaml:"-"`
+	TTSVoice          string                 `yaml:"-"`
+	TTSVoices         map[locale.Lang]string `yaml:"-"`
+	TTSUploadURL      string                 `yaml:"-"`
+	STTTimeout        time.Duration          `yaml:"-"`
+	MediaMaxDuration  int                    `yaml:"-"`
+	SpoolDir          string                 `yaml:"spool_dir"`
+	RuntimeURL        string                 `yaml:"-"`
+	RuntimeAuth       string                 `yaml:"-"`
+	PollTimeout       time.Duration          `yaml:"-"`
+	HermesCommand     string                 `yaml:"-"`
 	// ToolHubURL is the ToolHub control address (e.g. http://toolhub:8090)
 	// used by /connections when the local registry is unavailable in
 	// broker-approve mode. The caller's token comes from ControlTokensFile.
@@ -413,6 +415,14 @@ func fillChannelSecrets(config *Config) {
 	config.TTSURL = os.Getenv("HUB_TTS_URL")
 	config.TTSAuth = envOr("HUB_TTS_AUTH", os.Getenv("HUB_MEDIA_AUTH"))
 	config.TTSVoice = os.Getenv("HUB_TTS_VOICE")
+	for _, lang := range []locale.Lang{locale.LangEN, locale.LangRU, locale.LangKK, locale.LangES} {
+		if voice := strings.TrimSpace(os.Getenv("HUB_TTS_VOICE_" + strings.ToUpper(string(lang)))); voice != "" {
+			if config.TTSVoices == nil {
+				config.TTSVoices = map[locale.Lang]string{}
+			}
+			config.TTSVoices[lang] = voice
+		}
+	}
 	config.TTSUploadURL = os.Getenv("HUB_TTS_UPLOAD_URL")
 	config.ToolHubURL = strings.TrimRight(strings.TrimSpace(os.Getenv("HUB_TOOLHUB_URL")), "/")
 }

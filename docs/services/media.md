@@ -38,6 +38,11 @@ for model caches. In-container healthcheck: `hub-media health` hits
 (`/usr/local/bin/hub-stt`, `hub-tts`); when the URL is set the sidecar wins at
 selection time — an in-process command worker, not a second transport.
 
+The gateway picks the synthesis voice per reply language:
+`HUB_TTS_VOICE_<LANG>` (`EN`/`RU`/`KK`/`ES`) overrides `HUB_TTS_VOICE`, which
+stays the default for unmapped languages. With `transcription` on, compose
+passes all five variables to communication-hub unchanged.
+
 ## Model routing and independent accounts
 
 `HUB_MEDIA_ENGINES=remote,comfy,fal` builds an ordered router.

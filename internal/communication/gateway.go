@@ -116,7 +116,7 @@ func New(config Config) (*Gateway, error) {
 			slackUsers[link.Key()] = user
 		}
 	}
-	synthesizer := serviceSynthesizer(config.TTSURL, config.TTSAuth, config.TTSVoice, config.TTSCommand)
+	synthesizer := serviceSynthesizer(config.TTSURL, config.TTSAuth, config.TTSVoice, config.TTSVoices, config.TTSCommand)
 	runner := Runner(HermesRunner{Command: config.HermesCommand})
 	if config.RuntimeURL != "" {
 		runner = HTTPRunner{URL: config.RuntimeURL, Auth: config.RuntimeAuth, Spool: spool, JobsAPI: config.Supervised, Voice: synthesizer != nil}

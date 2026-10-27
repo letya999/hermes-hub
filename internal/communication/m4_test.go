@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -36,7 +37,7 @@ type stubTTS struct {
 	err   error
 }
 
-func (s stubTTS) Synthesize(context.Context, string) ([]byte, string, error) {
+func (s stubTTS) Synthesize(context.Context, locale.Lang, string) ([]byte, string, error) {
 	return s.audio, "audio/ogg", s.err
 }
 
@@ -494,7 +495,7 @@ func TestCommandTranscriberAndSynthesizerRejectEmpty(t *testing.T) {
 	if _, err := (CommandTranscriber{}).Transcribe(context.Background(), "x", "audio/ogg"); err == nil {
 		t.Fatal("empty stt command accepted")
 	}
-	if _, _, err := (CommandSynthesizer{}).Synthesize(context.Background(), "hi"); err == nil {
+	if _, _, err := (CommandSynthesizer{}).Synthesize(context.Background(), locale.LangEN, "hi"); err == nil {
 		t.Fatal("empty tts command accepted")
 	}
 	dir := t.TempDir()
@@ -521,7 +522,7 @@ func TestCommandTranscriberAndSynthesizerRejectEmpty(t *testing.T) {
 	if err != nil || text != "transcribed-ok" {
 		t.Fatalf("stt worker: %q %v", text, err)
 	}
-	audio, mime, err := (CommandSynthesizer{Command: ttsPath}).Synthesize(context.Background(), "hello")
+	audio, mime, err := (CommandSynthesizer{Command: ttsPath}).Synthesize(context.Background(), locale.LangEN, "hello")
 	if err != nil || mime != "audio/ogg" || !strings.Contains(string(audio), "ogg-audio") {
 		t.Fatalf("tts worker: %q %s %v", audio, mime, err)
 	}
@@ -569,7 +570,7 @@ func TestHTTPTranscriberAndSynthesizerHitSidecar(t *testing.T) {
 	}
 
 	tts := HTTPSynthesizer{Base: upstream.URL, Auth: "tok", Voice: "ru"}
-	audio, mime, err := tts.Synthesize(context.Background(), "привет")
+	audio, mime, err := tts.Synthesize(context.Background(), locale.LangRU, "привет")
 	if err != nil || mime != "audio/ogg" || string(audio) != "opus-bytes" {
 		t.Fatalf("sidecar tts: %v", err)
 	}
@@ -584,7 +585,7 @@ func TestHTTPTranscriberAndSynthesizerHitSidecar(t *testing.T) {
 	if dead.Healthy(context.Background()) {
 		t.Fatal("dead sidecar reported ready")
 	}
-	if _, _, err := (HTTPSynthesizer{Base: "http://127.0.0.1:1", Timeout: time.Second}).Synthesize(context.Background(), "hi"); err == nil {
+	if _, _, err := (HTTPSynthesizer{Base: "http://127.0.0.1:1", Timeout: time.Second}).Synthesize(context.Background(), locale.LangEN, "hi"); err == nil {
 		t.Fatal("dead tts synthesized")
 	}
 }
@@ -593,7 +594,7 @@ func TestServiceURLBeatsCommandSelection(t *testing.T) {
 	if _, ok := serviceTranscriber("http://x", "a", "missing-binary", 0).(HTTPTranscriber); !ok {
 		t.Fatal("stt url did not select the sidecar client")
 	}
-	if _, ok := serviceSynthesizer("", "", "", "cmd").(CommandSynthesizer); !ok {
+	if _, ok := serviceSynthesizer("", "", "", nil, "cmd").(CommandSynthesizer); !ok {
 		t.Fatal("empty tts url did not fall back to command")
 	}
 	c := testConfig(t)
