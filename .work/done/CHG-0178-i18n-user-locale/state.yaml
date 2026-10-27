@@ -1,10 +1,10 @@
 schema: 1
 change: CHG-0178
 title: Channel-agnostic user locale (i18n + a11y)
-status: in_progress
+status: done
 branch: feat/i18n-user-locale
 updated: 2026-10-27
-phase: implementation
+phase: closeout
 adr: ADR-0082
 spec: ~
 requirements: [owner-direction-2026-10-27]
@@ -12,7 +12,7 @@ depends_on: []
 github_milestone: ~
 github_issue: ~
 design_status: accepted
-implementation_status: in_progress
+implementation_status: done
 slices:
   S0-locale-core-and-ladder: done
   S1-command-surfaces: done
@@ -23,11 +23,11 @@ slices:
   S6-operator-tooling: done
   S7-voice-fixtures-glossary-docs: done
 validation:
-  documents: pending
+  documents: passed
   just_check: passed
   docker_check: deferred_no_image_change
-  red_team: pending
-  live_acceptance: pending
+  red_team: passed
+  live_acceptance: not_run_no_live_channel
 evidence:
   - "locale: internal/locale package — Lang/Parse/T, prefs ladder, 4 catalogs, parity+interpolation tests green"
   - "gateway: /language+picker, Delivery.Lang, HUB_USER_LANG, setMyCommands×4, detect ladder; TestMain pins HUB_DEFAULT_LANG=ru for historical assertions"
@@ -53,6 +53,7 @@ evidence:
   - "examples/contracts flipped to English base + ru/kk/es i18n maps (12 files, per-file EOL preserved); examples_test now enforces English base + full i18n parity with prepared catalog"
   - "terminology review: kk 'Қырдылғы' gibberish → 'Есептік деректерді енгізу'; kk 'сеанс' outlier → 'сессия'; kk menu.desc.status тапсырма→сессия; ru 'задача' vs en 'session' drift documented as accepted (pre-existing product wording, both terms user-visible since /new)"
   - "docs: ADR-0082 D5/D6 wording aligned to implementation (hint format, operator ladders, TTS voices); media.md documents HUB_TTS_VOICE_* selection; glossary.md gains lang/locale row"
+  - "red-team: corrupt/foreign prefs fall back without panic; SourceChosen resists later hints; lang: callback writes only the resolved acting user's workspace; ?lang= injection payloads rejected by allowlist on both resolvers (TestPageLangRejectsInjectionTags + broker table); picker never reaches unverified senders or non-owner group paths (absence pinned in TestGatewayEdgeRepliesLocalized)"
 remaining:
   - none — all slices S0..S7 implemented
 limitations:

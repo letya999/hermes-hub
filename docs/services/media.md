@@ -1,6 +1,6 @@
 ---
 description: hub-media, hub-stt, hub-tts — media sidecars carrying provider credentials; sync image gen plus durable async jobs.
-last_verified: 2026-10-24
+last_verified: 2026-10-27
 ---
 
 # media services (hub-media, hub-stt, hub-tts)

@@ -669,6 +669,13 @@ func TestGatewayEdgeRepliesLocalized(t *testing.T) {
 	if len(fake.callbackAnswers) != 1 || fake.callbackAnswers[0] != wantText(t, locale.LangES, "chat.approve-denied") {
 		t.Fatalf("callback answers=%q", fake.callbackAnswers)
 	}
+	// The language picker is only queued after a sender resolves to a user;
+	// unverified strangers and every edge path above must never receive it.
+	for _, l := range []locale.Lang{locale.LangEN, locale.LangRU, locale.LangKK, locale.LangES} {
+		if strings.Contains(joined, locale.T(l, "lang.choose")) {
+			t.Errorf("picker text leaked to an edge-path reply: %q", joined)
+		}
+	}
 }
 
 // The live progress line renders its fallback text and elapsed suffix in the

@@ -24,6 +24,10 @@ func TestBrowserLangResolution(t *testing.T) {
 		{"kk", "es", "kk"},
 		{"fr", "ru", "ru"},
 		{"ru-RU", "", "ru"},
+		// Injection payloads never reach the markup: the allowlist only
+		// admits en/ru/kk/es, anything else resolves via the header ladder.
+		{`%22%3E%3Cscript%3Ealert(1)%3C/script%3E`, "", "en"},
+		{`en%22%20onclick%3Devil`, "", "en"},
 	}
 	for _, tc := range cases {
 		r := httptest.NewRequest("GET", "/connect/x?lang="+tc.query, nil)

@@ -8,7 +8,7 @@ Status: Accepted 2026-10-27 — owner directed the four-language migration
 (en default; ru, kk, es-ES), the workspace-not-identity preference location,
 the evidence-ladder detection, and full coverage including operator tooling
 and the Credential Broker. Evidence:
-[CHG-0178](../../.work/in-progress/CHG-0178-i18n-user-locale/plan.md).
+[CHG-0178](../../.work/done/CHG-0178-i18n-user-locale/plan.md).
 
 ## Context
 

@@ -458,3 +458,16 @@ func TestToolHubPagesLocalized(t *testing.T) {
 	// The re-rendered form carries the public probe error, page-side only.
 	assertPage("probe-rerender", rec, "es", page("page.probe-title"), locale.T(locale.LangES, "cred.tools-empty"))
 }
+
+// ?lang= is a trust-boundary input: only allowlisted tags resolve; injection
+// payloads fall through the ladder so no attacker bytes reach the markup.
+func TestPageLangRejectsInjectionTags(t *testing.T) {
+	for _, payload := range []string{`"><script>alert(1)</script>`, `en" onclick="evil`, "xx", "ru;drop"} {
+		r := httptest.NewRequest(http.MethodGet, "/credentials/x?t=t&lang="+url.QueryEscape(payload), nil)
+		if got := pageLang(r); got == locale.Lang(payload) {
+			t.Fatalf("payload %q resolved as a language", payload)
+		} else if got != locale.Fallback() {
+			t.Fatalf("payload %q resolved to %q, want fallback", payload, got)
+		}
+	}
+}

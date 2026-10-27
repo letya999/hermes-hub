@@ -16,7 +16,6 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
-| [CHG-0178](in-progress/CHG-0178-i18n-user-locale/plan.md) | Channel-agnostic user locale (en default + ru/kk/es): workspace prefs, detection ladder, /language picker, all deterministic surfaces localized |
 | [CHG-0174](in-progress/CHG-0174-hosting-acceptance/plan.md) | M18 #147 H5: hosting acceptance/current docs — A1–A11 code/runtime/browser/sish evidence; offline gates green, native acceptance pending |
 | [CHG-0173](in-progress/CHG-0173-hosting-dynamic/plan.md) | M18 #147 H4: one admitted stateless go-http profile, secure runtime/relay, restart/finalizers; implemented, offline gates green, native acceptance pending |
 | [CHG-0172](in-progress/CHG-0172-hosting-static-delivery/plan.md) | M18 #147 H3: static agent/stack/exposure delivery and independent recovery; implemented, offline gates green, native acceptance pending |
@@ -70,6 +69,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0178](done/CHG-0178-i18n-user-locale/plan.md) | Done 2026-10-27: channel-agnostic user locale — en default + ru/kk/es, workspace prefs + detection ladder + /language picker, all deterministic surfaces localized (chat, HTML, broker pages, operator tooling), model prompts EN + lang hint, per-language TTS voices, contract i18n schema; just check green 86.32%, broker check 89.89%; live channel acceptance not run |
 | [CHG-0175](done/CHG-0175-coverage-profile-safety/plan.md) | Done 2026-10-26: M18 #147 verification prerequisite — malformed coverage locations rejected, per-package profiles isolated, statement-free packages skipped; covergo green 86.03% |
 | [CHG-0169](done/CHG-0169-site-hosting-design/plan.md) | M18 #147: research including pinned Haloy review; ADR-0081 accepted, SPEC-0079 frozen, implementation CHG-0170–0174 allocated; design only |
 | [CHG-0163](done/CHG-0163-recovery-budget/plan.md) | Done 2026-10-25: stop stale observations after budget notice; gateway deployed; just check passed, coverage 86.55% |

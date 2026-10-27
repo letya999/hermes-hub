@@ -124,7 +124,7 @@ green; honest report of untested live-channel behavior.
 
 ## Done checklist
 
-- [ ] Slices S0–S7 implemented with red-first tests.
-- [ ] `just check` green; coverage >=85%.
-- [ ] Translations reviewed for terminology consistency (glossary in doc.go).
-- [ ] Docs + ADR index updated; state.yaml evidence recorded.
+- [x] Slices S0–S7 implemented with red-first tests.
+- [x] `just check` green; coverage >=85% (hub 86.32%, broker 89.89%).
+- [x] Translations reviewed for terminology consistency (glossary in doc.go).
+- [x] Docs + ADR index updated; state.yaml evidence recorded.
