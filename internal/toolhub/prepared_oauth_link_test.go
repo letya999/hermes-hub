@@ -114,7 +114,7 @@ func TestConnectStateLinkRedirectsDeadFlowToWizard(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/connect/onboard_dead_state?state=dead-state", nil)
 	req.Host = "127.0.0.1"
 	(&Gateway{Control: &ControlPlane{Store: store, Now: time.Now, FormOrigin: "http://127.0.0.1:8090"}}).serveConnect(rec, req)
-	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "http://127.0.0.1:8090/connect/onboard_dead_state?k=wiz-key" {
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "http://127.0.0.1:8090/connect/onboard_dead_state?k=wiz-key&lang=ru" {
 		t.Fatalf("dead-flow hop must redirect to the wizard link: %d %q", rec.Code, rec.Header().Get("Location"))
 	}
 }

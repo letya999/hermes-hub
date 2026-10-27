@@ -244,3 +244,26 @@ func TestNamesCoverAll(t *testing.T) {
 		}
 	}
 }
+
+func TestNegotiate(t *testing.T) {
+	cases := []struct {
+		header string
+		want   Lang
+		ok     bool
+	}{
+		{"", "", false},
+		{"en-US,en;q=0.9", LangEN, true},
+		{"ru;q=0.8,kk;q=0.9", LangKK, true},
+		{"fr-FR,fr;q=0.9", "", false},
+		{"es-ES,es;q=0.8,en;q=0.5", LangES, true},
+		{"de, ru", LangRU, true},
+		{"*;q=0.1", "", false},
+		{"en;q=0", "", false},
+	}
+	for _, c := range cases {
+		got, ok := Negotiate(c.header)
+		if got != c.want || ok != c.ok {
+			t.Errorf("Negotiate(%q)=%q,%v want %q,%v", c.header, got, ok, c.want, c.ok)
+		}
+	}
+}

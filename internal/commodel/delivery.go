@@ -89,12 +89,12 @@ type Delivery struct {
 	// Kind marks non-approval interactive deliveries (e.g. "lang-picker") whose
 	// buttons carry self-describing callbacks: they need no approval-record
 	// reconciliation at send time, unlike approval keyboards.
-	Kind               string           `json:"kind,omitempty"`
-	ApprovalJobID      string           `json:"approval_job_id,omitempty"`
-	ApprovalID         string           `json:"approval_id,omitempty"`
-	ApprovalRunID      string           `json:"approval_run_id,omitempty"`
-	ApprovalGeneration string           `json:"approval_generation,omitempty"`
-	TelegramMessageID  int              `json:"telegram_message_id,omitempty"`
+	Kind               string `json:"kind,omitempty"`
+	ApprovalJobID      string `json:"approval_job_id,omitempty"`
+	ApprovalID         string `json:"approval_id,omitempty"`
+	ApprovalRunID      string `json:"approval_run_id,omitempty"`
+	ApprovalGeneration string `json:"approval_generation,omitempty"`
+	TelegramMessageID  int    `json:"telegram_message_id,omitempty"`
 	// EditMessageID targets a status message already delivered: the delivery
 	// worker edits it instead of sending a new message (SPEC-0053 R2.2).
 	EditMessageID int `json:"edit_message_id,omitempty"`

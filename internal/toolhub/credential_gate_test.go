@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/http/httptest"
@@ -238,7 +239,7 @@ func TestCredentialGateDefersRegistrationUntilSubmittedSecrets(t *testing.T) {
 	if err != nil || !strings.Contains(noted.Error, "один полный набор") || strings.Contains(noted.Error, "one") {
 		t.Fatalf("form rejection was not recorded: %+v %v", noted.Error, err)
 	}
-	if strings.Contains(credentialFieldMarkup(api.CredentialHint{Name: "SLACK_MCP_XOXP_TOKEN", AlternativeGroup: 2}, api.ConnectionField{}, ""), "required") {
+	if strings.Contains(credentialFieldMarkup(api.CredentialHint{Name: "SLACK_MCP_XOXP_TOKEN", AlternativeGroup: 2}, api.ConnectionField{}, "", locale.LangRU), "required") {
 		t.Fatal("alternative field is required")
 	}
 	nonce := stored.FormNonce
@@ -280,24 +281,24 @@ func TestCredentialSubmitPageDoesNotClaimSavedSecrets(t *testing.T) {
 		fmt.Errorf("%w: expired form", api.ErrUnauthorized),
 		fmt.Errorf("%w: tools/list with the submitted credentials failed", api.ErrIsolation),
 	} {
-		_, _, message := credentialSubmitPage(err)
+		_, _, message := credentialSubmitPage(err, locale.LangRU)
 		if strings.Contains(message, "Данные сохранены") {
 			t.Fatalf("page claims a save: %s", message)
 		}
 	}
-	if _, _, message := credentialSubmitPage(fmt.Errorf("%w: incomplete credential alternative: SLACK_MCP_XOXD_TOKEN", api.ErrInvalid)); !strings.Contains(message, "не все поля") || !strings.Contains(message, "SLACK MCP XOXD TOKEN") {
+	if _, _, message := credentialSubmitPage(fmt.Errorf("%w: incomplete credential alternative: SLACK_MCP_XOXD_TOKEN", api.ErrInvalid), locale.LangRU); !strings.Contains(message, "не все поля") || !strings.Contains(message, "SLACK MCP XOXD TOKEN") {
 		t.Fatal(message)
 	}
-	if _, title, message := credentialSubmitPage(fmt.Errorf("%w: tools/list empty: {\"message\":\"Authentication failed - check your Slack tokens\",\"stacktrace\":\"long\"}", api.ErrIsolation)); title != "Проверка не прошла" || !strings.Contains(message, "Authentication failed") || strings.Contains(message, "stacktrace") || strings.Contains(message, "Данные сохранены") {
+	if _, title, message := credentialSubmitPage(fmt.Errorf("%w: tools/list empty: {\"message\":\"Authentication failed - check your Slack tokens\",\"stacktrace\":\"long\"}", api.ErrIsolation), locale.LangRU); title != "Проверка не прошла" || !strings.Contains(message, "Authentication failed") || strings.Contains(message, "stacktrace") || strings.Contains(message, "Данные сохранены") {
 		t.Fatalf("probe page=%s %s", title, message)
 	}
-	if _, title, message := credentialSubmitPage(fmt.Errorf("%w: %w", errCredentialSaved, fmt.Errorf("%w: credential broker credential", api.ErrUnauthorized))); title != "Подключение не завершено" || !strings.Contains(message, "Данные сохранены") || strings.Contains(message, "больше не действует") || strings.Contains(message, "не сохранён") {
+	if _, title, message := credentialSubmitPage(fmt.Errorf("%w: %w", errCredentialSaved, fmt.Errorf("%w: credential broker credential", api.ErrUnauthorized)), locale.LangRU); title != "Подключение не завершено" || !strings.Contains(message, "Данные сохранены") || strings.Contains(message, "больше не действует") || strings.Contains(message, "не сохранён") {
 		t.Fatalf("saved secret page=%s %s", title, message)
 	}
-	if _, _, message := credentialSubmitPage(fmt.Errorf("%w: immutable definition slack-mcp-server@0.0.2", api.ErrConflict)); strings.Contains(message, "Данные сохранены") || !strings.Contains(message, "не сохранён") {
+	if _, _, message := credentialSubmitPage(fmt.Errorf("%w: immutable definition slack-mcp-server@0.0.2", api.ErrConflict), locale.LangRU); strings.Contains(message, "Данные сохранены") || !strings.Contains(message, "не сохранён") {
 		t.Fatal(message)
 	}
-	if intro := credentialFormIntro([]api.CredentialHint{{Name: "GOOGLE_OAUTH_CREDENTIALS"}}); !strings.Contains(intro, "защищённом хранилище") {
+	if intro := credentialFormIntro([]api.CredentialHint{{Name: "GOOGLE_OAUTH_CREDENTIALS"}}, locale.LangRU); !strings.Contains(intro, "защищённом хранилище") {
 		t.Fatal(intro)
 	}
 }
@@ -367,7 +368,7 @@ func TestCredentialGateConfirmsLocalSecretWithoutBroker(t *testing.T) {
 	control.AdmitWithCredentials = func(context.Context, api.ToolDefinition, map[string]string) (api.ToolDefinition, error) {
 		return admittedGateDefinition("0.0.2", "channels_list"), nil
 	}
-	if err := control.AuthorizeCredentials(t.Context(), preparing.OnboardingID, stored.FormNonce, map[string]string{"SLACK_MCP_XOXP_TOKEN": "xoxp-real-token-value"}); err != nil {
+	if err := control.AuthorizeCredentials(t.Context(), preparing.OnboardingID, stored.FormNonce, map[string]string{"SLACK_MCP_XOXP_TOKEN": "xoxp-real-token-value"}, locale.LangRU); err != nil {
 		t.Fatal(err)
 	}
 	stored, _ = store.onboarding(preparing.OnboardingID)

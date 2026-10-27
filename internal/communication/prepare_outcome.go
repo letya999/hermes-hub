@@ -130,7 +130,8 @@ func (g *Gateway) handleViewerNotice(w http.ResponseWriter, caller identity.Enve
 	}
 	sum := sha256.Sum256([]byte(viewer))
 	key := "viewer-" + request.ConnectionID + "-" + hex.EncodeToString(sum[:4])
-	notice := locale.T(locale.LangOf(user.WorkspaceDir), "prepare.viewer", viewer)
+	lang := locale.LangOf(user.WorkspaceDir)
+	notice := locale.T(lang, "prepare.viewer", langLink(viewer, lang))
 	route := prepareOutcomeRequest{OnboardingID: request.ConnectionID, Phase: "viewer", FormURL: viewer}
 	if err := g.deliverPrepareNotice(user, caller, key, notice, route, true); err != nil {
 		http.Error(w, "viewer notice rejected", http.StatusBadRequest)
@@ -189,20 +190,20 @@ func prepareOutcomeNotice(lang locale.Lang, request prepareOutcomeRequest, login
 	// A removal preview keeps the onboarding's prior phase, so the link path —
 	// not the phase — names the pending human action.
 	if remove := actionLink(request.FormURL, "/remove/"); remove != "" {
-		return locale.T(lang, "prepare.remove-confirm", repo, remove)
+		return locale.T(lang, "prepare.remove-confirm", repo, langLink(remove, lang))
 	}
 	switch request.Phase {
 	case "awaiting-credentials":
 		if request.CredentialIntake == "telegram_qr" && loginURL != "" {
 			text := locale.T(lang, "prepare.tg-qr", loginURL)
 			if request.FormURL != "" {
-				text += locale.T(lang, "prepare.form-fallback", request.FormURL)
+				text += locale.T(lang, "prepare.form-fallback", langLink(request.FormURL, lang))
 			}
 			return text
 		}
 		text := locale.T(lang, "prepare.image-ready", repo)
 		if formURL := strings.TrimSpace(request.FormURL); formURL != "" {
-			text += locale.T(lang, "prepare.form-open", formURL)
+			text += locale.T(lang, "prepare.form-open", langLink(formURL, lang))
 		} else {
 			text += locale.T(lang, "prepare.form-next")
 		}
@@ -212,21 +213,21 @@ func prepareOutcomeNotice(lang locale.Lang, request prepareOutcomeRequest, login
 	case "awaiting-confirm":
 		text := locale.T(lang, "prepare.ready-confirm", repo)
 		if confirm := actionLink(request.FormURL, "/confirm/"); confirm != "" {
-			return text + locale.T(lang, "prepare.confirm-link", confirm)
+			return text + locale.T(lang, "prepare.confirm-link", langLink(confirm, lang))
 		}
 		// The stable wizard link already sits in the edited message — the
 		// replacement text must keep it or the user loses the only URL.
 		if wizardLink(request.FormURL) {
-			return text + locale.T(lang, "prepare.confirm-link", strings.TrimSpace(request.FormURL))
+			return text + locale.T(lang, "prepare.confirm-link", langLink(strings.TrimSpace(request.FormURL), lang))
 		}
 		return text + locale.T(lang, "prepare.continuing")
 	case "awaiting-oauth":
 		text := locale.T(lang, "prepare.oauth-wait", repo)
 		if connect := actionLink(request.FormURL, "/connect/"); connect != "" {
-			return text + locale.T(lang, "prepare.oauth-open", connect)
+			return text + locale.T(lang, "prepare.oauth-open", langLink(connect, lang))
 		}
 		if device := actionLink(request.FormURL, "/device/"); device != "" {
-			return text + locale.T(lang, "prepare.device-open", device)
+			return text + locale.T(lang, "prepare.device-open", langLink(device, lang))
 		}
 		return text
 	case "enabled":
@@ -269,6 +270,14 @@ func actionLink(raw, prefix string) string {
 		return ""
 	}
 	return strings.TrimSpace(raw)
+}
+
+// langLink stamps the recipient's language onto a toolhub link so the page
+// opens in the same language as the chat. Toolhub pages are multi-principal
+// and cannot see workspace prefs, so the language travels in the URL. The
+// links here always carry an auth query (?k=/?t=), so & is the separator.
+func langLink(link string, lang locale.Lang) string {
+	return link + "&lang=" + string(lang)
 }
 
 // wizardLink reports whether the action URL is the stable single-link wizard

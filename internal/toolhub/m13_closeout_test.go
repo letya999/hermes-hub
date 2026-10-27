@@ -18,6 +18,7 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/credstore"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
@@ -912,7 +913,7 @@ func TestCredentialHintsPropagateFileDelivery(t *testing.T) {
 // The loopback form must accept a file upload for a file-delivery field —
 // the value stored is the uploaded content, not a pasted path.
 func TestCredentialFormAcceptsFileField(t *testing.T) {
-	markup := credentialFieldMarkup(api.CredentialHint{Name: "CLIENT_JSON", Type: "json", Secret: true, Delivery: "file", Target: "/run/mcp-secrets/client.json"}, api.ConnectionField{}, "")
+	markup := credentialFieldMarkup(api.CredentialHint{Name: "CLIENT_JSON", Type: "json", Secret: true, Delivery: "file", Target: "/run/mcp-secrets/client.json"}, api.ConnectionField{}, "", locale.LangRU)
 	if !strings.Contains(markup, `type="file"`) {
 		t.Fatalf("file delivery did not render a file input: %s", markup)
 	}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"log"
 	"regexp"
@@ -283,18 +284,18 @@ func pickDuplicatedAlternative(groups []map[string]string) (map[string]string, b
 	return hits[0], true
 }
 
-func (c *ControlPlane) noteFormRejection(onboarding api.Onboarding, err error) {
+func (c *ControlPlane) noteFormRejection(onboarding api.Onboarding, err error, lang locale.Lang) {
 	if c == nil || c.Store == nil || err == nil || !errors.Is(err, api.ErrInvalid) {
 		return
 	}
-	onboarding.Error = credentialFormRejection(err)
+	onboarding.Error = credentialFormRejection(err, lang)
 	onboarding.Revision++
 	if persistErr := c.Store.PutOnboarding(onboarding); persistErr != nil {
 		log.Printf("toolhub: form rejection on %s not recorded: %v", onboarding.OnboardingID, persistErr)
 	}
 }
 
-func credentialFormRejection(err error) string {
+func credentialFormRejection(err error, lang locale.Lang) string {
 	if err == nil {
 		return ""
 	}
@@ -302,15 +303,15 @@ func credentialFormRejection(err error) string {
 	switch {
 	case strings.Contains(text, "incomplete credential alternative"):
 		if missing := missingAlternativeNames(text); missing != "" {
-			return "В выбранном наборе заполнены не все поля. Не заполнено: " + missing + "."
+			return locale.T(lang, "cred.alt-partial-names", missing)
 		}
-		return "В выбранном наборе заполнены не все поля."
+		return locale.T(lang, "cred.alt-partial")
 	case strings.Contains(text, "choose one credential alternative"):
-		return "Нужен один полный набор полей."
+		return locale.T(lang, "cred.alt-one")
 	case strings.Contains(text, "unrecognized credential alternative"):
-		return "Это поле не входит в рецепт сервера."
+		return locale.T(lang, "cred.alt-unknown")
 	case strings.Contains(text, "missing "):
-		return "Не заполнено обязательное поле."
+		return locale.T(lang, "cred.missing")
 	default:
 		return api.PublicPrepareError(err)
 	}
@@ -335,7 +336,7 @@ func missingAlternativeNames(text string) string {
 
 // credentialProbeFailure is the text shown on the form and stored for the
 // channel. It keeps the server's message and drops stack traces.
-func credentialProbeFailure(err error) string {
+func credentialProbeFailure(err error, lang locale.Lang) string {
 	text := api.PublicPrepareError(err)
 	if text == "" {
 		return ""
@@ -363,7 +364,7 @@ func credentialProbeFailure(err error) string {
 		}
 	}
 	if strings.Contains(text, "tools/list empty") {
-		return "Сервер не ответил списком инструментов."
+		return locale.T(lang, "cred.tools-empty")
 	}
 	if len(messages) > 0 {
 		return messages[len(messages)-1]
@@ -459,6 +460,12 @@ func (c *ControlPlane) refreshConfirmation(ctx context.Context, auth identity.En
 }
 
 func (c *ControlPlane) SubmitCredentials(onboardingID, nonce string, values map[string]string) error {
+	return c.submitCredentials(onboardingID, nonce, values, locale.Fallback())
+}
+
+// submitCredentials is the lang-aware body; the exported wrapper keeps the
+// non-HTTP callers (binding retry, tests) on the operator fallback.
+func (c *ControlPlane) submitCredentials(onboardingID, nonce string, values map[string]string, lang locale.Lang) error {
 	if c == nil || c.Store == nil || c.Secrets == nil {
 		return fmt.Errorf("%w: credential store", api.ErrInvalid)
 	}
@@ -480,7 +487,7 @@ func (c *ControlPlane) SubmitCredentials(onboardingID, nonce string, values map[
 	}
 	filtered, err := filterSubmittedCredentials(onboarding.Required, values)
 	if err != nil {
-		c.noteFormRejection(onboarding, err)
+		c.noteFormRejection(onboarding, err, lang)
 		return err
 	}
 	// Optional inputs filled on the same form are stored and delivered like any
@@ -503,7 +510,7 @@ func (c *ControlPlane) SubmitCredentials(onboardingID, nonce string, values map[
 		if c.AdmitWithCredentials == nil {
 			return fmt.Errorf("%w: credential admission probe is not configured", api.ErrInvalid)
 		}
-		onboarding.Error = "Проверяю поля у сервера."
+		onboarding.Error = locale.T(lang, "cred.checking")
 		onboarding.Revision++
 		if err := c.Store.PutOnboarding(onboarding); err != nil {
 			return err
@@ -513,7 +520,7 @@ func (c *ControlPlane) SubmitCredentials(onboardingID, nonce string, values map[
 		api.DeliverPrepareEvent(context.Background(), authEnv, onboarding, "credentials-check")
 		admitted, admitErr := c.AdmitWithCredentials(context.Background(), definition, filtered)
 		if admitErr != nil {
-			failure := "Проверка не прошла. " + credentialProbeFailure(admitErr)
+			failure := locale.T(lang, "cred.failed", credentialProbeFailure(admitErr, lang))
 			if persistErr := c.persistFailure(onboarding, failure, admitErr); persistErr != admitErr {
 				return persistErr
 			}
@@ -523,11 +530,11 @@ func (c *ControlPlane) SubmitCredentials(onboardingID, nonce string, values map[
 			return fmt.Errorf("%w: %s", api.ErrIsolation, failure)
 		}
 		if regErr := c.registerAdmittedDefinition(&admitted, onboarding.PrincipalID); regErr != nil {
-			return c.persistFailure(onboarding, credentialProbeFailure(regErr), regErr)
+			return c.persistFailure(onboarding, credentialProbeFailure(regErr, lang), regErr)
 		}
 		if admitted.Workload.Class == api.Shared {
 			if err := c.Store.PromoteToCatalog(admitted.DefinitionID, admitted.Version, onboarding.PrincipalID); err != nil {
-				return c.persistFailure(onboarding, credentialProbeFailure(err), err)
+				return c.persistFailure(onboarding, credentialProbeFailure(err, lang), err)
 			}
 		}
 		onboarding.Definition = &admitted
@@ -560,7 +567,7 @@ func (c *ControlPlane) SubmitCredentials(onboardingID, nonce string, values map[
 		definition, defErr := c.definitionOf(onboarding)
 		if defErr == nil && definition.Transport == api.RemoteMCP && len(definition.Credentials) > 0 {
 			if _, probeErr := c.AdmitWithCredentials(context.Background(), definition, filtered); probeErr != nil {
-				failure := "Проверка не прошла. " + credentialProbeFailure(probeErr)
+				failure := locale.T(lang, "cred.failed", credentialProbeFailure(probeErr, lang))
 				if persistErr := c.persistFailure(onboarding, failure, probeErr); persistErr != probeErr {
 					return persistErr
 				}
@@ -603,8 +610,8 @@ var errCredentialProbe = errors.New("credential probe rejected")
 
 // AuthorizeCredentials treats the protected form submission as the user's
 // confirmation and completes the binding without another model round-trip.
-func (c *ControlPlane) AuthorizeCredentials(ctx context.Context, onboardingID, nonce string, values map[string]string) error {
-	if err := c.SubmitCredentials(onboardingID, nonce, values); err != nil {
+func (c *ControlPlane) AuthorizeCredentials(ctx context.Context, onboardingID, nonce string, values map[string]string, lang locale.Lang) error {
+	if err := c.submitCredentials(onboardingID, nonce, values, lang); err != nil {
 		return err
 	}
 	if err := c.finishAuthorization(ctx, onboardingID); err != nil {

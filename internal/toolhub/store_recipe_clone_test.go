@@ -18,8 +18,8 @@ func TestStoreRecipeSurvivesCallerMutation(t *testing.T) {
 	store := NewStore()
 	trueValue := true
 	resolution := api.RecipeResolution{
-		Source: api.ArtifactSource{Repository: "https://github.com/acme/weather", CommitSHA: strings.Repeat("1", 40)},
-		Launch: api.LaunchRecipe{Artifact: "ghcr.io/acme/weather@sha256:" + strings.Repeat("2", 64), Transport: api.ContainerMCP},
+		Source:   api.ArtifactSource{Repository: "https://github.com/acme/weather", CommitSHA: strings.Repeat("1", 40)},
+		Launch:   api.LaunchRecipe{Artifact: "ghcr.io/acme/weather@sha256:" + strings.Repeat("2", 64), Transport: api.ContainerMCP},
 		State:    "ready",
 		Egress:   []string{"api.example"},
 		Trust:    api.TrustT2,

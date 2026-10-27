@@ -1,8 +1,8 @@
 package communication
 
 import (
-	"github.com/letya999/hermes-hub/internal/locale"
 	"context"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"strconv"
 	"strings"
 	"time"
@@ -10,8 +10,6 @@ import (
 	"github.com/letya999/hermes-hub/internal/compaction"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
-
-
 
 // parseCompactArgs translates the channel grammar into the runtime request's
 // argument subset. `here` without a number defaults to 2 retained exchanges,

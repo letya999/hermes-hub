@@ -8,6 +8,8 @@ package locale
 import (
 	"fmt"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -58,6 +60,46 @@ func Parse(tag string) (Lang, bool) {
 	}
 	l := Lang(tag)
 	return l, supported[l]
+}
+
+// Negotiate resolves an HTTP Accept-Language header to a supported Lang by
+// q-value order; tags without q count as 1.0 and "*" or unsupported tags are
+// skipped. ok is false when nothing usable was offered.
+func Negotiate(header string) (Lang, bool) {
+	type choice struct {
+		lang Lang
+		q    float64
+	}
+	var choices []choice
+	for _, part := range strings.Split(header, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		tag, q := part, 1.0
+		if i := strings.Index(part, ";"); i >= 0 {
+			tag = strings.TrimSpace(part[:i])
+			for _, param := range strings.Split(part[i+1:], ";") {
+				param = strings.TrimSpace(param)
+				if strings.HasPrefix(param, "q=") {
+					if v, err := strconv.ParseFloat(param[2:], 64); err == nil {
+						q = v
+					}
+				}
+			}
+		}
+		if tag == "*" || q <= 0 {
+			continue
+		}
+		if l, ok := Parse(tag); ok {
+			choices = append(choices, choice{l, q})
+		}
+	}
+	if len(choices) == 0 {
+		return "", false
+	}
+	sort.SliceStable(choices, func(i, j int) bool { return choices[i].q > choices[j].q })
+	return choices[0].lang, true
 }
 
 // T renders key in lang with fmt.Sprintf arguments. A missing translation

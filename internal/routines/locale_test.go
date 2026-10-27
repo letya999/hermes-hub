@@ -30,13 +30,13 @@ func newLocaleEngine(t *testing.T, delivered *[]commodel.Delivery) (*Engine, str
 			}
 			return os.WriteFile(path, b, 0600)
 		},
-		ChannelFor:      func(string) OccurrenceChannel { return stubChannel{} },
-		EnqueueJob:      func(j commodel.Job) (bool, error) { return true, nil },
-		EnqueueDelivery: func(d commodel.Delivery) error { *delivered = append(*delivered, d); return nil },
+		ChannelFor:        func(string) OccurrenceChannel { return stubChannel{} },
+		EnqueueJob:        func(j commodel.Job) (bool, error) { return true, nil },
+		EnqueueDelivery:   func(d commodel.Delivery) error { *delivered = append(*delivered, d); return nil },
 		NormalizeDelivery: func(d commodel.Delivery) (commodel.Delivery, error) { return d, nil },
-		Signal:          func() {},
-		ListTasks:       func(string) ([]commodel.Task, error) { return nil, nil },
-		LangOf:          func(string) locale.Lang { return locale.LangES },
+		Signal:            func() {},
+		ListTasks:         func(string) ([]commodel.Task, error) { return nil, nil },
+		LangOf:            func(string) locale.Lang { return locale.LangES },
 	})
 	return e, root
 }

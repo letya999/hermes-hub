@@ -17,14 +17,14 @@ slices:
   S0-locale-core-and-ladder: done
   S1-command-surfaces: done
   S2-progress-background: done
-  S3-hub-html-a11y: pending
+  S3-hub-html-a11y: done
   S4-broker-pages: pending
   S5-llm-prompts-contracts: pending
   S6-operator-tooling: pending
   S7-voice-fixtures-glossary-docs: pending
 validation:
   documents: pending
-  just_check: pending
+  just_check: passed
   docker_check: deferred_no_image_change
   red_team: pending
   live_acceptance: pending
@@ -35,10 +35,11 @@ evidence:
   - "go test ./internal/locale ./internal/communication — green (75s)"
   - "S2: slack artifact via Delivery.Lang; commops Owner.Lang (health/canary) wired in ops_wiring; agenttools next_step + runtime quota/progress via LangOf(HUB_WORKSPACE); routines digests+blocked via Deps.LangOf→spool.langOf; runtime TestMain pins HUB_DEFAULT_LANG=ru"
   - "go test ./internal/{communication,channel,commops,runtime,agenttools,routines} — green; S2-scope files have zero Cyrillic literals"
+  - "S3: locale.Negotiate (Accept-Language); all toolhub HTML pages localized (91 keys page.*/cred.* ×4 catalogs); pageLang = ?lang= > Accept-Language > fallback; lang propagated via redirects, device link, oauth flow.lang; langLink stamps ?lang= on toolhub URLs in chat notices; aria-live on wait/status regions; toolhub TestMain pins ru"
+  - "go test ./internal/{toolhub,communication,locale} — green (110s/230s); zero Cyrillic literals in toolhub non-test files"
 remaining:
-  - S3 HTML: telegram_auth.go, credential_forms.go, control_http + a11y
-  - S4 broker webtext + ?lang= propagation
+  - S4 broker webtext
   - S5 LLM prompts → EN + lang hint (prepareContinuation, gateway_goal.go:268)
   - S6 operator tooling; S7 TTS/fixtures/glossary/docs + just check
 limitations:
-  - Model-facing prompts and HTML pages remain Russian until S5/S3
+  - Model-facing prompts remain Russian until S5; viewer title stays English product name; broker-callback persisted Error uses operator fallback (no request context)

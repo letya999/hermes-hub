@@ -5,6 +5,8 @@ package communication
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1070,8 +1072,7 @@ func TestCompactCommandLocalized(t *testing.T) {
 
 type compactStubRunner struct {
 	fakeRunner
-	result compaction.CompactResult
-	err    error
+	err error
 }
 
 func (c *compactStubRunner) Compact(_ context.Context, _ hubruntime.CompactRequest) (compaction.CompactResult, error) {
@@ -1207,9 +1208,9 @@ func TestWorkerFailureNoticesLocalized(t *testing.T) {
 		return Job{Envelope: env, ID: id, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: trigger, IdempotencyKey: id + "-key", ChatID: 11, TaskID: task.TaskID, Text: "x", GoalEpoch: 3, CreatedAt: time.Now().UTC()}
 	}
 	g.runner = &scriptedRunner{outcomes: map[string]RunOutcome{
-		"w-interr":   {Status: "interrupted", LastEvent: "run.interrupted"},
-		"w-goal":     {Status: "cancelled", LastEvent: "run.cancelled"},
-		"w-uncertain": {Status: "uncertain", RunID: "run-9", LastEvent: "run.unknown"},
+		"w-interr":     {Status: "interrupted", LastEvent: "run.interrupted"},
+		"w-goal":       {Status: "cancelled", LastEvent: "run.cancelled"},
+		"w-uncertain":  {Status: "uncertain", RunID: "run-9", LastEvent: "run.unknown"},
 		"w-uncertain2": {Status: "uncertain", LastEvent: "run.unknown"},
 	}}
 	for _, id := range []string{"w-interr", "w-goal", "w-uncertain", "w-uncertain2"} {
@@ -1552,17 +1553,17 @@ func TestPrepareOutcomeNoticesLocalized(t *testing.T) {
 		{prepareOutcomeRequest{Event: "credentials-rejected", Repository: repo, Detail: "bad"}, "", want("prepare.creds-rejected", repo) + want("prepare.reason", "bad") + want("prepare.creds-rejected-tail")},
 		{prepareOutcomeRequest{Event: "credentials-rejected", Repository: repo}, "", want("prepare.creds-rejected", repo) + want("prepare.creds-rejected-tail")},
 		{prepareOutcomeRequest{Event: "binding-failed", Repository: repo, Detail: "x"}, "", want("prepare.binding-failed", repo) + want("prepare.reason", "x") + want("prepare.binding-failed-tail")},
-		{prepareOutcomeRequest{FormURL: "http://127.0.0.1:1/remove/z?k=1", Repository: repo}, "", want("prepare.remove-confirm", repo, "http://127.0.0.1:1/remove/z?k=1")},
-		{prepareOutcomeRequest{Phase: "awaiting-credentials", CredentialIntake: "telegram_qr", Repository: repo, FormURL: form}, "http://127.0.0.1:9/tg?t=1", want("prepare.tg-qr", "http://127.0.0.1:9/tg?t=1") + want("prepare.form-fallback", form)},
+		{prepareOutcomeRequest{FormURL: "http://127.0.0.1:1/remove/z?k=1", Repository: repo}, "", want("prepare.remove-confirm", repo, "http://127.0.0.1:1/remove/z?k=1&lang=es")},
+		{prepareOutcomeRequest{Phase: "awaiting-credentials", CredentialIntake: "telegram_qr", Repository: repo, FormURL: form}, "http://127.0.0.1:9/tg?t=1", want("prepare.tg-qr", "http://127.0.0.1:9/tg?t=1") + want("prepare.form-fallback", form+"&lang=es")},
 		{prepareOutcomeRequest{Phase: "awaiting-credentials", CredentialIntake: "telegram_qr", Repository: repo}, "http://127.0.0.1:9/tg?t=1", want("prepare.tg-qr", "http://127.0.0.1:9/tg?t=1")},
-		{prepareOutcomeRequest{Phase: "awaiting-credentials", Repository: repo, FormURL: form}, "", want("prepare.image-ready", repo) + want("prepare.form-open", form) + want("prepare.no-token")},
+		{prepareOutcomeRequest{Phase: "awaiting-credentials", Repository: repo, FormURL: form}, "", want("prepare.image-ready", repo) + want("prepare.form-open", form+"&lang=es") + want("prepare.no-token")},
 		{prepareOutcomeRequest{Phase: "awaiting-credentials", Repository: repo}, "", want("prepare.image-ready", repo) + want("prepare.form-next") + want("prepare.no-token")},
 		{prepareOutcomeRequest{Phase: "failed", Repository: repo, Detail: "d"}, "", want("prepare.failed", repo) + want("prepare.reason", "d")},
-		{prepareOutcomeRequest{Phase: "awaiting-confirm", Repository: repo, FormURL: "http://127.0.0.1:1/confirm/c?k=1"}, "", want("prepare.ready-confirm", repo) + want("prepare.confirm-link", "http://127.0.0.1:1/confirm/c?k=1")},
-		{prepareOutcomeRequest{Phase: "awaiting-confirm", Repository: repo, FormURL: "http://127.0.0.1:1/connect/w?k=1"}, "", want("prepare.ready-confirm", repo) + want("prepare.confirm-link", "http://127.0.0.1:1/connect/w?k=1")},
+		{prepareOutcomeRequest{Phase: "awaiting-confirm", Repository: repo, FormURL: "http://127.0.0.1:1/confirm/c?k=1"}, "", want("prepare.ready-confirm", repo) + want("prepare.confirm-link", "http://127.0.0.1:1/confirm/c?k=1&lang=es")},
+		{prepareOutcomeRequest{Phase: "awaiting-confirm", Repository: repo, FormURL: "http://127.0.0.1:1/connect/w?k=1"}, "", want("prepare.ready-confirm", repo) + want("prepare.confirm-link", "http://127.0.0.1:1/connect/w?k=1&lang=es")},
 		{prepareOutcomeRequest{Phase: "awaiting-confirm", Repository: repo}, "", want("prepare.ready-confirm", repo) + want("prepare.continuing")},
-		{prepareOutcomeRequest{Phase: "awaiting-oauth", Repository: repo, FormURL: "http://127.0.0.1:1/connect/o?k=1"}, "", want("prepare.oauth-wait", repo) + want("prepare.oauth-open", "http://127.0.0.1:1/connect/o?k=1")},
-		{prepareOutcomeRequest{Phase: "awaiting-oauth", Repository: repo, FormURL: "http://127.0.0.1:1/device/d?k=1"}, "", want("prepare.oauth-wait", repo) + want("prepare.device-open", "http://127.0.0.1:1/device/d?k=1")},
+		{prepareOutcomeRequest{Phase: "awaiting-oauth", Repository: repo, FormURL: "http://127.0.0.1:1/connect/o?k=1"}, "", want("prepare.oauth-wait", repo) + want("prepare.oauth-open", "http://127.0.0.1:1/connect/o?k=1&lang=es")},
+		{prepareOutcomeRequest{Phase: "awaiting-oauth", Repository: repo, FormURL: "http://127.0.0.1:1/device/d?k=1"}, "", want("prepare.oauth-wait", repo) + want("prepare.device-open", "http://127.0.0.1:1/device/d?k=1&lang=es")},
 		{prepareOutcomeRequest{Phase: "awaiting-oauth", Repository: repo}, "", want("prepare.oauth-wait", repo)},
 		{prepareOutcomeRequest{Phase: "enabled", Repository: repo, Tools: 3}, "", want("prepare.enabled-tools", repo, 3)},
 		{prepareOutcomeRequest{Phase: "enabled", Repository: repo}, "", want("prepare.enabled", repo)},
@@ -1600,8 +1601,8 @@ func TestPrepareOutcomeNoticesLocalized(t *testing.T) {
 	if err := json.Unmarshal(body, &d); err != nil {
 		t.Fatal(err)
 	}
-	if d.Text != want("prepare.viewer", viewer) {
-		t.Errorf("viewer text=%q want %q", d.Text, want("prepare.viewer", viewer))
+	if d.Text != want("prepare.viewer", viewer+"&lang=es") {
+		t.Errorf("viewer text=%q want %q", d.Text, want("prepare.viewer", viewer+"&lang=es"))
 	}
 }
 
@@ -2115,5 +2116,122 @@ func TestRoutineBlockedNoticeLangWired(t *testing.T) {
 	}
 	if !strings.Contains(d.Text, strings.Split(wantText(t, locale.LangES, "routines.blocked", "r-one", "bad cron"), "bad cron")[0]) {
 		t.Fatalf("notice %q", d.Text)
+	}
+}
+
+// The protected credential form renders in the owner's workspace language and
+// declares it on the html element.
+func TestCredentialFormPageLocalized(t *testing.T) {
+	c := baseTestConfig(t)
+	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce := "nonce-1"
+	sum := sha256.Sum256([]byte(nonce))
+	g.forms.m["form-1"] = credentialForm{OwnerID: "alice", Keys: []string{"GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET"}, NonceHash: hex.EncodeToString(sum[:]), ExpiresAt: g.now().Add(time.Minute)}
+	req := httptest.NewRequest(http.MethodGet, "http://localhost/credentials/form-1?nonce="+nonce, nil)
+	req.Host = "localhost"
+	rec := httptest.NewRecorder()
+	g.serveCredentialForm(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("form page=%d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `<html lang="es"`) {
+		t.Fatalf("html lang missing: %q", body[:200])
+	}
+	for _, key := range []string{"form.title", "form.heading", "form.save", "form.google-hint"} {
+		if !strings.Contains(body, wantText(t, locale.LangES, key)) {
+			t.Errorf("page missing %q (%q)", key, wantText(t, locale.LangES, key))
+		}
+	}
+
+	sum2 := sha256.Sum256([]byte("nonce-2"))
+	g.forms.m["form-2"] = credentialForm{OwnerID: "alice", Keys: []string{"GITHUB_TOKEN"}, NonceHash: hex.EncodeToString(sum2[:]), ExpiresAt: g.now().Add(time.Minute)}
+	post := httptest.NewRequest(http.MethodPost, "http://localhost/credentials/form-2?nonce=nonce-2", strings.NewReader("GITHUB_TOKEN=ghp_x"))
+	post.Host = "localhost"
+	post.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec = httptest.NewRecorder()
+	g.serveCredentialForm(rec, post)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save page=%d", rec.Code)
+	}
+	body = rec.Body.String()
+	for _, key := range []string{"form.saved-title", "form.saved-body"} {
+		if !strings.Contains(body, wantText(t, locale.LangES, key)) {
+			t.Errorf("saved page missing %q", key)
+		}
+	}
+}
+
+// The Telegram QR pages follow the owner's workspace language, declare it on
+// <html> and expose a polite live region for the auto-refreshing status.
+func TestTelegramAuthPageLocalized(t *testing.T) {
+	c := baseTestConfig(t)
+	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
+	c.FormOrigin = "http://localhost:8081"
+	c.BrokerApprove = credentialbroker.Config{URL: "https://broker.example"}
+	c.TelegramAuthEnabled = true
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := c.Users[0].Envelope(11)
+	link := g.telegramAuthInvite(owner, prepareOutcomeRequest{Phase: "awaiting-credentials", CredentialIntake: "telegram_qr", BrokerRequestID: "request_1"})
+	if link == "" {
+		t.Fatal("no invite link")
+	}
+	id := strings.TrimPrefix(link, c.FormOrigin+"/telegram-auth/")
+	a := g.authAttempt(id)
+
+	page := httptest.NewRecorder()
+	claim := httptest.NewRequest(http.MethodGet, "http://localhost/telegram-auth/"+id, nil)
+	claim.Host = "localhost"
+	g.serveTelegramAuth(page, claim)
+	body := page.Body.String()
+	if !strings.Contains(body, `lang="es"`) {
+		t.Fatalf("claim page lang: %q", body[:160])
+	}
+	for _, key := range []string{"tgauth.title", "tgauth.claim-warn", "tgauth.claim-start"} {
+		if !strings.Contains(body, wantText(t, locale.LangES, key)) {
+			t.Errorf("claim missing %q", key)
+		}
+	}
+
+	render := func(status string) string {
+		a.mu.Lock()
+		a.status = status
+		a.accountName = "Alice"
+		a.accountID = 42
+		a.mu.Unlock()
+		rec := httptest.NewRecorder()
+		g.telegramAuthPage(rec, id, a)
+		return rec.Body.String()
+	}
+	wantKeys := map[string][]string{
+		"new":               {"tgauth.api-hint", "tgauth.create-qr"},
+		"qr":                {"tgauth.scan-hint", "tgauth.qr-alt", "tgauth.cancel"},
+		"password":          {"tgauth.password-hint", "tgauth.password-label", "tgauth.continue"},
+		"ready":             {"tgauth.connect-account"},
+		"checking-password": {"tgauth.checking"},
+		"saving":            {"tgauth.saving"},
+		"done":              {"tgauth.done"},
+		"failed":            {"tgauth.failed"},
+	}
+	for status, keys := range wantKeys {
+		body = render(status)
+		if !strings.Contains(body, `lang="es"`) || !strings.Contains(body, `aria-live="polite"`) {
+			t.Errorf("%s: lang/live region missing", status)
+		}
+		for _, key := range keys {
+			if !strings.Contains(body, wantText(t, locale.LangES, key)) {
+				t.Errorf("%s missing %q", status, key)
+			}
+		}
+	}
+	if !strings.Contains(render("ready"), "Alice") {
+		t.Error("ready page lost the account name")
 	}
 }
