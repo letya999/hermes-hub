@@ -60,7 +60,12 @@ func (g *Gateway) telegramDeps() channel.TelegramDeps {
 		SendVoice:        func(ctx context.Context, d Delivery, text string) error { return g.sendVoiceReply(ctx, d, text) },
 		SendMarkdown:     func(ctx context.Context, d *Delivery) error { return g.sendTelegramMarkdown(ctx, d) },
 		UserByChat:       func(chatID int64) (User, bool) { u, ok := g.users[chatID]; return u, ok },
-		UserByPrincipal:  func(id string) User { return g.user(id) },
+		UserByPrincipal: func(id string) User {
+			if g == nil {
+				return User{}
+			}
+			return g.user(id)
+		},
 		OwnsRoutineEnvelope: func(job Job, canonical identity.Envelope) bool {
 			return g.ownsRoutineEnvelope(job, canonical)
 		},

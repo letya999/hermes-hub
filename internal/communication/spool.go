@@ -93,6 +93,11 @@ type Spool struct {
 	// prefetched need results). Nil fails the probe — a script probe without
 	// the supervisor never runs in-process.
 	probeScript func(ctx context.Context, o RoutineOccurrence, src, input string, mountSpace bool, needs []string) (string, error)
+	// resolveChannel, when set, binds engine channel lookups to the owning
+	// gateway's user registry: RouteBlockedNotice retargets to the owner's
+	// verified home only when the real binding is resolvable — the nil-
+	// gateway fallback stays for the pure validation methods.
+	resolveChannel func(id string) routines.OccurrenceChannel
 	// rt is the routines engine (internal/routines) sharing this spool's
 	// mutex and root; it owns the schedules/occurrences/watchers/digests
 	// subtrees and borrows the rest of the spool through its Deps seam.
@@ -187,9 +192,14 @@ func openSpool(root string, create bool) (*Spool, error) {
 		NormalizeDelivery: normalizeDelivery,
 		WriteJSONAtomic:   atomicJSON,
 		Signal:            s.signal,
-		ChannelFor:        func(id string) routines.OccurrenceChannel { return channelFor(nil, id) },
-		ProbeScript:       func() routines.ProbeScriptFunc { return s.probeScript },
-		SettleEvents:      s.settleEvents,
+		ChannelFor: func(id string) routines.OccurrenceChannel {
+			if s.resolveChannel != nil {
+				return s.resolveChannel(id)
+			}
+			return channelFor(nil, id)
+		},
+		ProbeScript:  func() routines.ProbeScriptFunc { return s.probeScript },
+		SettleEvents: s.settleEvents,
 	})
 	return s, nil
 }

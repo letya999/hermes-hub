@@ -28,7 +28,8 @@ func occurrenceFixture(t *testing.T) (*Spool, RoutineOccurrence, *Gateway) {
 	}
 	job := Job{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), UserID: "alice", ActorID: "alice", ScopeID: "user:alice", OrganizationID: "personal", Channel: "telegram_bot", ChatID: 11, Text: "scheduled work"}
 	o := RoutineOccurrence{ScheduleID: "schedule-one", Revision: 1, DueAt: time.Unix(100, 0), Job: job}
-	g := &Gateway{spool: s, config: Config{OrganizationID: "personal"}, users: map[int64]User{11: {ID: "alice", Enabled: true}}, now: func() time.Time { return time.Unix(90, 0) }}
+	g := &Gateway{spool: s, config: Config{OrganizationID: "personal", Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}}, users: map[int64]User{11: {ID: "alice", Enabled: true}}, now: func() time.Time { return time.Unix(90, 0) }}
+	s.resolveChannel = func(id string) routines.OccurrenceChannel { return g.channel(id) }
 	return s, o, g
 }
 

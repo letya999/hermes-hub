@@ -23,6 +23,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/diagnostics"
 	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/routines"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
@@ -124,6 +125,7 @@ func New(config Config) (*Gateway, error) {
 	g := &Gateway{config: config, users: users, slackUsers: slackUsers, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: restart, now: time.Now, transcriber: serviceTranscriber(config.STTURL, config.STTAuth, config.STTCommand, config.STTTimeout), synthesizer: synthesizer, forms: formRegistry{m: map[string]credentialForm{}}}
 	spool.JobDone = g.toolHubJobDone
 	spool.probeScript = g.runProbeScript
+	spool.resolveChannel = func(id string) routines.OccurrenceChannel { return g.channel(id) }
 	if config.TelegramAuthEnabled {
 		// Enabled by default on telegram stacks: missing Broker/form-origin
 		// prerequisites degrade to no QR invites instead of refusing to start.
