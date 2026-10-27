@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/commodel"
+	"github.com/letya999/hermes-hub/internal/locale"
 )
 
 type digestReceipt struct {
@@ -19,6 +20,7 @@ type digestReceipt struct {
 }
 
 func (e *Engine) dispatchDigestLocked(o commodel.RoutineOccurrence, now time.Time, authorize func(commodel.Job) error) error {
+	lang := e.langOf(o.Job.PrincipalID)
 	path := filepath.Join(e.root, "occurrences", occurrenceID(o)+".digest-result")
 	var receipt digestReceipt
 	if body, err := os.ReadFile(path); err == nil {
@@ -79,11 +81,11 @@ func (e *Engine) dispatchDigestLocked(o commodel.RoutineOccurrence, now time.Tim
 					continue
 				}
 				cursor.Errors[st.ScheduleID] = errorID
-				lastSuccess := "нет успешных проверок"
+				lastSuccess := locale.T(lang, "routines.watch-no-success")
 				if !st.LastSuccess.IsZero() {
 					lastSuccess = st.LastSuccess.UTC().Format(time.RFC3339)
 				}
-				lines = append(lines, "• "+BoundedWatchText(owner.Input)+": источник недоступен; последние данные "+lastSuccess)
+				lines = append(lines, locale.T(lang, "routines.watch-unavailable", BoundedWatchText(owner.Input), lastSuccess))
 				continue
 			}
 			delete(cursor.Errors, st.ScheduleID)
@@ -104,9 +106,9 @@ func (e *Engine) dispatchDigestLocked(o commodel.RoutineOccurrence, now time.Tim
 			}
 		}
 		if len(lines) == 0 {
-			message := "Новых изменений нет."
+			message := locale.T(lang, "routines.no-changes")
 			if unavailable > 0 {
-				message += fmt.Sprintf(" Источников недоступно: %d.", unavailable)
+				message += locale.T(lang, "routines.unavailable-count", unavailable)
 			}
 			lines = append(lines, message)
 		}
@@ -130,6 +132,7 @@ func (e *Engine) dispatchDigestLocked(o commodel.RoutineOccurrence, now time.Tim
 // non-empty one is composed by the model with the snapshot flagged
 // untrusted.
 func (e *Engine) dispatchBriefLocked(o commodel.RoutineOccurrence, now time.Time, authorize func(commodel.Job) error) error {
+	lang := e.langOf(o.Job.PrincipalID)
 	cursor, err := e.LoadDigestCursorLocked(o.ScheduleID)
 	if err != nil {
 		return err
@@ -173,11 +176,11 @@ func (e *Engine) dispatchBriefLocked(o commodel.RoutineOccurrence, now time.Time
 				continue
 			}
 			cursor.Errors[st.ScheduleID] = errorID
-			lastSuccess := "нет успешных проверок"
+			lastSuccess := locale.T(lang, "routines.watch-no-success")
 			if !st.LastSuccess.IsZero() {
 				lastSuccess = st.LastSuccess.UTC().Format(time.RFC3339)
 			}
-			lines = append(lines, "• "+BoundedWatchText(owner.Input)+": источник недоступен; последние данные "+lastSuccess)
+			lines = append(lines, locale.T(lang, "routines.watch-unavailable", BoundedWatchText(owner.Input), lastSuccess))
 			continue
 		}
 		delete(cursor.Errors, st.ScheduleID)
@@ -210,9 +213,9 @@ func (e *Engine) dispatchBriefLocked(o commodel.RoutineOccurrence, now time.Time
 		open++
 	}
 	if len(lines) == 0 {
-		message := "Новых изменений нет."
+		message := locale.T(lang, "routines.no-changes")
 		if unavailable > 0 {
-			message += fmt.Sprintf(" Источников недоступно: %d.", unavailable)
+			message += locale.T(lang, "routines.unavailable-count", unavailable)
 		}
 		d, err := e.normalizeDelivery(commodel.Delivery{ID: "brief-" + o.Job.ID, OccurrenceID: o.Job.ID, Channel: o.Job.Channel, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, ChatID: o.Job.ChatID, TaskID: o.Job.TaskID, TopicID: o.Job.TopicID, SlackChannel: o.Job.SlackChannel, SlackThread: o.Job.SlackThread, Text: o.Job.Text + "\n" + message, CreatedAt: now.UTC()})
 		if err != nil {

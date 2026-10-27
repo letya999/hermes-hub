@@ -16,7 +16,7 @@ implementation_status: in_progress
 slices:
   S0-locale-core-and-ladder: done
   S1-command-surfaces: done
-  S2-progress-background: pending
+  S2-progress-background: done
   S3-hub-html-a11y: pending
   S4-broker-pages: pending
   S5-llm-prompts-contracts: pending
@@ -33,8 +33,9 @@ evidence:
   - "gateway: /language+picker, Delivery.Lang, HUB_USER_LANG, setMyCommands×4, detect ladder; TestMain pins HUB_DEFAULT_LANG=ru for historical assertions"
   - "internal/communication user-facing literals localized: commands, stream/goal/compact/worker/progress/broker/media/slack/hold/toolhub/prepare notices; remaining Cyrillic is model-facing (S5) or HTML (S3)"
   - "go test ./internal/locale ./internal/communication — green (75s)"
+  - "S2: slack artifact via Delivery.Lang; commops Owner.Lang (health/canary) wired in ops_wiring; agenttools next_step + runtime quota/progress via LangOf(HUB_WORKSPACE); routines digests+blocked via Deps.LangOf→spool.langOf; runtime TestMain pins HUB_DEFAULT_LANG=ru"
+  - "go test ./internal/{communication,channel,commops,runtime,agenttools,routines} — green; S2-scope files have zero Cyrillic literals"
 remaining:
-  - S2 progress/fon: server_observe, commops health/canary, model_relay_quota, routines/digests, channel/slack+telegram, agenttools next_step
   - S3 HTML: telegram_auth.go, credential_forms.go, control_http + a11y
   - S4 broker webtext + ?lang= propagation
   - S5 LLM prompts → EN + lang hint (prepareContinuation, gateway_goal.go:268)

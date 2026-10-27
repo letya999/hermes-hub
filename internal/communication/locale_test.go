@@ -2066,3 +2066,54 @@ func TestLanguageCommandSendsOnePicker(t *testing.T) {
 		t.Fatalf("expected exactly one picker keyboard, got %d", len(fake.keyboards))
 	}
 }
+
+// The ops wiring stamps the owner's workspace language into commops.Owner so
+// /status health text and canary notices render in that language.
+func TestOpsWiringUsesWorkspaceLang(t *testing.T) {
+	c := baseTestConfig(t)
+	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.api = &fakeAPI{}
+	if got := g.healthLines(c.Users[0]); !strings.Contains(got, wantText(t, locale.LangES, "ops.health-empty")) {
+		t.Fatalf("health %q", got)
+	}
+	g.recordCanary(context.Background(), time.Now(), "timeout")
+	var texts []string
+	for {
+		d, err := g.spool.ClaimDelivery()
+		if err != nil || d == nil {
+			break
+		}
+		texts = append(texts, d.Text)
+	}
+	want := wantText(t, locale.LangES, "ops.canary-failing", "timeout")
+	if len(texts) != 1 || !strings.Contains(texts[0], want) {
+		t.Fatalf("notices=%v want %q", texts, want)
+	}
+}
+
+// The routines engine resolves notice language through the spool's principal
+// resolver — a blocked schedule reaches the owner already localized.
+func TestRoutineBlockedNoticeLangWired(t *testing.T) {
+	c := baseTestConfig(t)
+	pinLang(t, c.Users[0].WorkspaceDir, locale.LangES)
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.api = &fakeAPI{}
+	item := commodel.Schedule{ScheduleID: "r-one", Envelope: c.Users[0].Envelope(11), Channel: "telegram_bot"}
+	if err := g.spool.rt.BlockScheduleLocked(&item, "bad cron", g.now()); err != nil {
+		t.Fatal(err)
+	}
+	d, err := g.spool.ClaimDelivery()
+	if err != nil || d == nil {
+		t.Fatalf("no blocked delivery: %v", err)
+	}
+	if !strings.Contains(d.Text, strings.Split(wantText(t, locale.LangES, "routines.blocked", "r-one", "bad cron"), "bad cron")[0]) {
+		t.Fatalf("notice %q", d.Text)
+	}
+}

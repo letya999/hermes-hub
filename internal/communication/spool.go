@@ -194,6 +194,12 @@ func openSpool(root string, create bool) (*Spool, error) {
 		ChannelFor:        func(id string) routines.OccurrenceChannel { return channelFor(nil, id) },
 		ProbeScript:       func() routines.ProbeScriptFunc { return s.probeScript },
 		SettleEvents:      s.settleEvents,
+		LangOf: func(p string) locale.Lang {
+			if s.langOf != nil {
+				return s.langOf(p)
+			}
+			return locale.Fallback()
+		},
 	})
 	return s, nil
 }

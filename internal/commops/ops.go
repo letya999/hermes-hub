@@ -9,6 +9,8 @@ package commops
 import (
 	"context"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/locale"
 )
 
 // Owner is the ops-plane view of the configured principal: identity plus
@@ -17,6 +19,9 @@ import (
 type Owner struct {
 	ID          string
 	TelegramIDs []int64
+	// Lang is the owner's resolved workspace language; empty degrades to the
+	// hub default.
+	Lang locale.Lang
 }
 
 // Mapping is the ops-plane view of one durable job mapping — only the

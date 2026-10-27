@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/locale"
 )
 
 // HealthLines renders the caller-scoped operational block for /status
@@ -34,22 +36,26 @@ func (e *Engine) HealthLines(owner Owner) string {
 	if totals, err := e.Deps.UsageTotals("user:"+owner.ID, since); err == nil && totals.Jobs > 0 {
 		avgTokens = totals.InputTokens / int64(totals.Jobs)
 	}
+	lang := owner.Lang
+	if lang == "" {
+		lang = locale.Fallback()
+	}
 	if len(latencies) == 0 && unconfirmed == 0 && failed == 0 && restarts == 0 && avgTokens == 0 {
-		return "\nЗдоровье (24ч): пока нет данных."
+		return locale.T(lang, "ops.health-empty")
 	}
 	parts := []string{}
 	if len(latencies) > 0 {
 		sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
-		parts = append(parts, "p50 "+latencyLabel(latencies[percentileIndex(len(latencies), 50)])+", p95 "+latencyLabel(latencies[percentileIndex(len(latencies), 95)]))
+		parts = append(parts, locale.T(lang, "ops.health-latency", latencyLabel(lang, latencies[percentileIndex(len(latencies), 50)]), latencyLabel(lang, latencies[percentileIndex(len(latencies), 95)])))
 	}
-	parts = append(parts, "неподтверждённых "+strconv.Itoa(unconfirmed)+", ошибок "+strconv.Itoa(failed))
+	parts = append(parts, locale.T(lang, "ops.health-jobs", unconfirmed, failed))
 	if restarts > 0 {
-		parts = append(parts, "перезапусков рантайма "+strconv.Itoa(restarts))
+		parts = append(parts, locale.T(lang, "ops.health-restarts", restarts))
 	}
 	if avgTokens > 0 {
-		parts = append(parts, "вход ≈"+strconv.FormatInt(avgTokens, 10)+" токенов/вызов")
+		parts = append(parts, locale.T(lang, "ops.health-tokens", avgTokens))
 	}
-	return "\nЗдоровье (24ч): " + strings.Join(parts, "; ") + "."
+	return locale.T(lang, "ops.health-line", strings.Join(parts, "; "))
 }
 
 // percentileIndex is the nearest-rank index for a sorted slice.
@@ -64,6 +70,6 @@ func percentileIndex(n, p int) int {
 	return idx - 1
 }
 
-func latencyLabel(d time.Duration) string {
-	return strconv.FormatFloat(d.Seconds(), 'f', 1, 64) + "с"
+func latencyLabel(lang locale.Lang, d time.Duration) string {
+	return strconv.FormatFloat(d.Seconds(), 'f', 1, 64) + locale.T(lang, "ops.health-sec")
 }

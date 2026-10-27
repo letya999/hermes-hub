@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/locale"
 )
 
 // Provider quota is measured through the pinned CLIProxyAPI management API:
@@ -30,11 +32,12 @@ func (r *relayRegistry) serveQuota(w http.ResponseWriter, req *http.Request) {
 		base = strings.TrimRight(strings.TrimSpace(os.Getenv("HUB_MODEL_RELAY_CLIPROXY")), "/")
 	}
 	key := strings.TrimSpace(os.Getenv("HUB_CLIPROXY_MGMT_KEY"))
+	lang := locale.LangOf(os.Getenv("HUB_WORKSPACE"))
 	var lines []string
 	if base == "" || key == "" {
-		lines = []string{"Лимиты подписки: источник не настроен на сервере."}
-	} else if fetched, err := fetchQuotaLines(req.Context(), base, key, strings.TrimSpace(os.Getenv("HUB_CLIPROXY_AUTH_INDEX"))); err != nil {
-		lines = []string{"Лимиты подписки: недоступно (" + err.Error() + ")."}
+		lines = []string{locale.T(lang, "quota.unconfigured")}
+	} else if fetched, err := fetchQuotaLines(req.Context(), base, key, strings.TrimSpace(os.Getenv("HUB_CLIPROXY_AUTH_INDEX")), lang); err != nil {
+		lines = []string{locale.T(lang, "quota.unavailable", err.Error())}
 	} else {
 		lines = fetched
 	}
@@ -50,7 +53,7 @@ type cliproxyAuthFile struct {
 	Disabled  bool   `json:"disabled"`
 }
 
-func fetchQuotaLines(ctx context.Context, base, key, wantIndex string) ([]string, error) {
+func fetchQuotaLines(ctx context.Context, base, key, wantIndex string, lang locale.Lang) ([]string, error) {
 	client := &http.Client{Timeout: 15 * time.Second}
 	var files struct {
 		Files []cliproxyAuthFile `json:"files"`
@@ -60,7 +63,7 @@ func fetchQuotaLines(ctx context.Context, base, key, wantIndex string) ([]string
 	}
 	file, found := pickAuthFile(files.Files, wantIndex)
 	if !found {
-		return nil, errors.New("нет активного OAuth-аккаунта Antigravity")
+		return nil, errors.New(locale.T(lang, "quota.no-account"))
 	}
 	payload := map[string]any{
 		"auth_index": file.AuthIndex,
@@ -80,7 +83,7 @@ func fetchQuotaLines(ctx context.Context, base, key, wantIndex string) ([]string
 		return nil, err
 	}
 	if call.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("апстрим вернул HTTP %d", call.StatusCode)
+		return nil, fmt.Errorf("%s", locale.T(lang, "quota.upstream", call.StatusCode))
 	}
 	var summary struct {
 		Groups []struct {
@@ -93,17 +96,17 @@ func fetchQuotaLines(ctx context.Context, base, key, wantIndex string) ([]string
 		} `json:"groups"`
 	}
 	if err := json.Unmarshal([]byte(call.Body), &summary); err != nil || len(summary.Groups) == 0 {
-		return nil, errors.New("квота не распознана")
+		return nil, errors.New(locale.T(lang, "quota.unparsed"))
 	}
 	label := file.Email
 	if label == "" {
 		label = file.Provider
 	}
-	lines := []string{"Лимиты подписки (" + label + "):"}
+	lines := []string{locale.T(lang, "quota.title", label)}
 	for _, group := range summary.Groups {
 		parts := []string{}
 		for _, bucket := range group.Buckets {
-			parts = append(parts, bucket.Window+" "+strconv.FormatFloat(bucket.RemainingFraction*100, 'f', 1, 64)+"%"+quotaResetSuffix(bucket.ResetTime))
+			parts = append(parts, bucket.Window+" "+strconv.FormatFloat(bucket.RemainingFraction*100, 'f', 1, 64)+"%"+quotaResetSuffix(lang, bucket.ResetTime))
 		}
 		lines = append(lines, "  "+group.DisplayName+": "+strings.Join(parts, ", ")+".")
 	}
@@ -127,12 +130,12 @@ func pickAuthFile(files []cliproxyAuthFile, wantIndex string) (cliproxyAuthFile,
 	return cliproxyAuthFile{}, false
 }
 
-func quotaResetSuffix(at string) string {
+func quotaResetSuffix(lang locale.Lang, at string) string {
 	when, err := time.Parse(time.RFC3339, at)
 	if err != nil {
 		return ""
 	}
-	return " (сброс " + when.UTC().Format("02.01 15:04") + " UTC)"
+	return locale.T(lang, "quota.reset", when.UTC().Format("02.01 15:04"))
 }
 
 // managementCall is a JSON round-trip against the cliproxy management API with

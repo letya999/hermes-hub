@@ -13,6 +13,7 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
 )
 
 var ErrScheduleConflict = errors.New("schedule id conflicts with an existing or retired intent")
@@ -521,7 +522,7 @@ func (e *Engine) BlockScheduleLocked(item *commodel.Schedule, reason string, now
 	digest := hex.EncodeToString(sum[:])
 	if item.LastFailureSHA256 != digest {
 		item.LastFailureSHA256 = digest
-		text := "Рутина «" + item.ScheduleID + "» остановлена: " + reason + ". Откройте её через routine_get, исправьте и сделайте resume — или удалите."
+		text := locale.T(e.langOf(item.Envelope.PrincipalID), "routines.blocked", item.ScheduleID, reason)
 		d := commodel.Delivery{ID: "routine-blocked-" + item.ScheduleID + "-" + digest[:8], IdempotencyKey: "routine-blocked-" + item.ScheduleID + "-" + digest[:8], Channel: item.Channel, ConversationID: item.Envelope.ConversationID, DeliveryTargetID: item.Envelope.DeliveryTargetID, ChatID: item.ChatID, TaskID: item.TaskID, TopicID: item.TopicID, SlackChannel: item.SlackChannel, SlackThread: item.SlackThread, Text: text, CreatedAt: now.UTC()}
 		if ch := e.channelFor(item.Channel); ch != nil {
 			// The notice goes to the owner's verified home, never to the
