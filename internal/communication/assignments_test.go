@@ -153,6 +153,15 @@ func TestAssignmentCompleteVerb(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil || created.AssignmentID == "" {
 		t.Fatalf("create failed: %d %s", w.Code, w.Body.String())
 	}
+	// The applied artifact must carry the gateway org + owner actor/scope —
+	// otherwise every occurrence fails owner authorization at tick time.
+	scheds, err := g.spool.ListSchedules(g.users[11].Envelope(11))
+	if err != nil || len(scheds) != 1 {
+		t.Fatalf("applied schedule missing: %v", err)
+	}
+	if scheds[0].OrganizationID != "personal" || scheds[0].ActorID != "alice" || scheds[0].ScopeID != "user:alice" {
+		t.Fatalf("artifact missing owner/org stamps: %+v", scheds[0])
+	}
 	w = destinationRequest(g, http.MethodPost, "/v1/assignments/"+created.AssignmentID+"/complete", `{}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("complete failed: %d %s", w.Code, w.Body.String())

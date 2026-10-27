@@ -19,6 +19,10 @@ type Assignment struct {
 	Intent     string `json:"intent"`
 	IntentHash string `json:"intent_hash"`
 	Title      string `json:"title"`
+	// OrganizationID scopes the assignment's artifacts to the creating
+	// gateway's org; reconcile stamps it onto every provisioned schedule so
+	// occurrence authorization matches an ordinary owner routine.
+	OrganizationID string `json:"organization_id,omitempty"`
 	// State: draft|active|waiting|paused|completed|cancelled|failed
 	// (SPEC-0080 R1.2). waiting = applied but a link is blocked or missing.
 	State string `json:"state"`

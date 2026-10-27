@@ -2,7 +2,10 @@ package routines
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -184,5 +187,91 @@ func TestHookIntakeDrainsInbox(t *testing.T) {
 	}
 	if len(settled) != 1 || !strings.Contains(string(settled[0]), "push to main") {
 		t.Fatalf("hook payload must reach event settlement: %v", settled)
+	}
+}
+
+// TestHookIdleTickSettlesQuietly (SPEC-0081 R5.1): an empty hook inbox is a
+// normal idle tick, not a probe failure — the occurrence lands no_change,
+// no failure notice and no bogus baseline seed.
+func TestHookIdleTickSettlesQuietly(t *testing.T) {
+	e := testEngine(t)
+	env := assignmentCaller()
+	now := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
+	sched := watcherDraft("hook:github").Schedule()
+	sched.ScheduleID = "w-hook-idle"
+	sched.Envelope = env
+	sched.UserID = "alice"
+	sched.Enabled = true
+	sched.Probe.Kind = "hook"
+	if err := e.atomicJSON(e.SchedulePath(sched.ScheduleID), sched); err != nil {
+		t.Fatal(err)
+	}
+	var deliveries []commodel.Delivery
+	e.deps.EnqueueDelivery = func(d commodel.Delivery) error { deliveries = append(deliveries, d); return nil }
+	o := watchOccurrence("w-hook-idle", "watcher", sched.Revision, env, now.Add(-time.Minute))
+	putOccurrenceState(t, e, e.root, o, "probing")
+	if err := e.ProbeDueOccurrencesContext(context.Background(), now, nil, func(context.Context, string) ([]byte, error) { return nil, errors.New("must not fetch") }, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(e.root, "occurrences", occurrenceID(o)+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var live commodel.RoutineOccurrence
+	if err := json.Unmarshal(body, &live); err != nil {
+		t.Fatal(err)
+	}
+	if live.State == "failed" || live.State == "dispatched" {
+		t.Fatalf("idle hook tick must not fail or dispatch: %s", live.State)
+	}
+	if live.State != "no_change" {
+		t.Fatalf("idle hook tick must settle no_change: %s", live.State)
+	}
+	if len(deliveries) != 0 {
+		t.Fatalf("idle hook tick must not notify: %d deliveries", len(deliveries))
+	}
+}
+
+// TestHookIdleEventTickSettlesQuietly (SPEC-0081 R5.1): an empty hook inbox
+// on an event schedule must not fail the tick — settlement receives a
+// well-formed empty event envelope and the occurrence completes without
+// deliveries.
+func TestHookIdleEventTickSettlesQuietly(t *testing.T) {
+	e := testEngine(t)
+	env := assignmentCaller()
+	now := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
+	sched := watcherDraft("hook:github").Schedule()
+	sched.ScheduleID = "w-hook-evt-idle"
+	sched.Envelope = env
+	sched.UserID = "alice"
+	sched.Enabled = true
+	sched.JobKind = "event"
+	sched.Probe.Kind = "hook"
+	if err := e.atomicJSON(e.SchedulePath(sched.ScheduleID), sched); err != nil {
+		t.Fatal(err)
+	}
+	var settled [][]byte
+	var errs []error
+	e.deps.SettleEvents = func(o commodel.RoutineOccurrence, sched commodel.Schedule, body []byte, at time.Time, probeErr error, authorize func(commodel.Job) error) []commodel.Event {
+		settled = append(settled, body)
+		errs = append(errs, probeErr)
+		return nil
+	}
+	o := watchOccurrence("w-hook-evt-idle", "event", sched.Revision, env, now.Add(-time.Minute))
+	putOccurrenceState(t, e, e.root, o, "probing")
+	if err := e.ProbeDueOccurrencesContext(context.Background(), now, nil, func(context.Context, string) ([]byte, error) { return nil, errors.New("must not fetch") }, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(settled) != 1 {
+		t.Fatalf("idle event hook must still settle once: %d", len(settled))
+	}
+	if errs[0] != nil {
+		t.Fatalf("idle event hook must not report a probe error: %v", errs[0])
+	}
+	var env1 struct {
+		Events []json.RawMessage `json:"events"`
+	}
+	if json.Unmarshal(settled[0], &env1) != nil || len(env1.Events) != 0 {
+		t.Fatalf("idle event hook must settle with an empty event envelope: %q", settled[0])
 	}
 }

@@ -182,9 +182,20 @@ func (e *Engine) probeOne(ctx context.Context, o commodel.RoutineOccurrence, now
 	} else if schedule.Probe.Kind == "hook" {
 		// Inbound hook (SPEC-0081 R5.1): the compared body is a staged
 		// inbox payload written durably by IntakeHook — no fetch happens.
+		// An empty inbox is a normal idle tick, not a probe failure.
 		e.mu.Lock()
 		body = e.popHookLocked(o.ScheduleID)
 		e.mu.Unlock()
+		if len(body) == 0 {
+			if o.JobKind == "event" {
+				// Event settlement still runs once so the occurrence
+				// terminates — with a well-formed empty envelope.
+				body = []byte(`{"events":[]}`)
+			} else {
+				e.SettleHookIdle(o, now, authorize)
+				return
+			}
+		}
 	} else if schedule.Probe.Kind == "render" || schedule.Probe.Kind == "service" {
 		// Registered-service probe: an operator-declared endpoint (external
 		// renderer, parser API) answers for the probe; the response body
@@ -312,6 +323,30 @@ func (e *Engine) ApplyProbeResultLocked(result ProbeResult) error {
 		}
 	}
 	return e.atomicJSON(filepath.Join(e.root, "occurrences", occurrenceID(o)+".json"), o)
+}
+
+// SettleHookIdle lands an empty-inbox hook tick as no_change: there was no
+// staged payload to compare — never a failure, never a notification
+// (SPEC-0081 R5.1).
+func (e *Engine) SettleHookIdle(o commodel.RoutineOccurrence, now time.Time, authorize func(commodel.Job) error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	path := filepath.Join(e.root, "occurrences", occurrenceID(o)+".json")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var live commodel.RoutineOccurrence
+	if json.Unmarshal(body, &live) != nil || live.State != "probing" {
+		return
+	}
+	if !e.OccurrenceCurrentLocked(live) || (authorize != nil && authorize(live.Job) != nil) {
+		live.State = "cancelled"
+		_ = e.atomicJSON(path, live)
+		return
+	}
+	live.State = "no_change"
+	_ = e.atomicJSON(path, live)
 }
 
 func (e *Engine) SettleProbe(o commodel.RoutineOccurrence, schedule commodel.Schedule, value, hash string, now time.Time, probeErr error, authorize func(commodel.Job) error) {

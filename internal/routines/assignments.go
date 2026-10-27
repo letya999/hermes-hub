@@ -130,6 +130,11 @@ func (e *Engine) ApplyAssignment(id string, caller identity.Envelope) (commodel.
 		draft.AssignmentID = item.AssignmentID
 		draft.Envelope = item.Envelope
 		draft.UserID = item.Envelope.PrincipalID
+		// Occurrence ownership (ValidateOccurrence) demands the actor/scope
+		// pair of an owner routine — without them every tick skips silently.
+		draft.ActorID = item.Envelope.PrincipalID
+		draft.ScopeID = "user:" + item.Envelope.PrincipalID
+		draft.OrganizationID = item.OrganizationID
 		if item.Plan.Specialist != nil {
 			draft.WakePrompt = item.Plan.Specialist.Instructions
 		}

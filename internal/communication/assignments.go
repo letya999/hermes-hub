@@ -43,17 +43,18 @@ func (g *Gateway) handleAssignments(w http.ResponseWriter, r *http.Request) {
 	now := g.now().UTC()
 	sum := sha256.Sum256([]byte(caller.PrincipalID + "\x00" + req.Intent))
 	item := commodel.Assignment{
-		AssignmentID: "asg-" + newID(),
-		Revision:     1,
-		Envelope:     caller,
-		Intent:       req.Intent,
-		IntentHash:   hex.EncodeToString(sum[:]),
-		Title:        req.Title,
-		State:        "draft",
-		Plan:         req.Plan,
-		Grants:       req.Grants,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		AssignmentID:   "asg-" + newID(),
+		Revision:       1,
+		Envelope:       caller,
+		OrganizationID: g.config.OrganizationID,
+		Intent:         req.Intent,
+		IntentHash:     hex.EncodeToString(sum[:]),
+		Title:          req.Title,
+		State:          "draft",
+		Plan:           req.Plan,
+		Grants:         req.Grants,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 	created, _, err := g.spool.rt.CreateAssignment(item, caller)
 	if err != nil {

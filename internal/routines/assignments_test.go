@@ -56,6 +56,8 @@ func testEngine(t *testing.T) *Engine {
 		NormalizeDelivery: func(d commodel.Delivery) (commodel.Delivery, error) { return d, nil },
 		EnqueueJob:        func(commodel.Job) (bool, error) { return true, nil },
 		EnqueueDelivery:   func(commodel.Delivery) error { return nil },
+		Signal:            func() {},
+		ChannelFor:        func(string) OccurrenceChannel { return stubChannel{} },
 		Hooks: DraftHooks{
 			Channel: func(commodel.Schedule) error { return nil },
 			Script:  func(string) error { return nil },
@@ -380,5 +382,46 @@ func TestAssignmentGrantsNarrowOnly(t *testing.T) {
 	got, err = e.UpdateAssignmentPlan("asg-test060", wider, commodel.AssignmentGrants{MaxWakesPerDay: 50}, assignmentCaller())
 	if err != nil || got.Grants.MaxWakesPerDay != 50 {
 		t.Fatalf("authorized widening must apply: %+v %v", got.Grants, err)
+	}
+}
+
+// TestAssignmentAppliedScheduleTicks (SPEC-0080 A3.1): an applied source
+// schedule must produce occurrences on the live tick — the draft has to
+// carry the ownership fields ValidateOccurrence enforces (actor, scope).
+func TestAssignmentAppliedScheduleTicks(t *testing.T) {
+	e := testEngine(t)
+	in := newTestAssignment("asg-test070")
+	in.OrganizationID = "org-1"
+	if _, _, err := e.CreateAssignment(in, assignmentCaller()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.ApplyAssignment("asg-test070", assignmentCaller()); err != nil {
+		t.Fatal(err)
+	}
+	items, err := e.ListSchedules(assignmentCaller())
+	if err != nil || len(items) != 1 {
+		t.Fatalf("applied schedule missing: %v %v", err, items)
+	}
+	authorized := false
+	authorize := func(j commodel.Job) error {
+		if j.OrganizationID != "org-1" || j.ActorID != "alice" || j.ScopeID != "user:alice" {
+			return errors.New("occurrence job missing owner stamps")
+		}
+		authorized = true
+		return nil
+	}
+	now := items[0].NextDue.Add(time.Second)
+	if err := e.TickSchedules(now, "", authorize); err != nil {
+		t.Fatal(err)
+	}
+	if !authorized {
+		t.Fatal("authorize saw no occurrence job")
+	}
+	reloaded, err := e.ListSchedules(assignmentCaller())
+	if err != nil || len(reloaded) != 1 {
+		t.Fatal(err)
+	}
+	if reloaded[0].LastOccurrenceID == "" {
+		t.Fatal("applied assignment schedule produced no occurrence on tick")
 	}
 }
