@@ -7,6 +7,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
 func boolPtr(v bool) *bool { return &v }
@@ -349,6 +352,19 @@ func TestWebSettingsRoundTripThroughSpaceFiles(t *testing.T) {
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
+	// R3.1: the native web toolset is a wish plus a grant now.
+	wsPath := filepath.Join(d, "workspace.yaml")
+	ws, err := os.ReadFile(wsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws = []byte(strings.Replace(string(ws), "  # web: native", "  web: {via: native}", 1))
+	if err := os.WriteFile(wsPath, ws, 0600); err != nil {
+		t.Fatal(err)
+	}
+	seedGovernance(t, d, func(doc *api.Governance) {
+		activeToolGrant(t, doc, "me", "native:web", time.Hour)
+	})
 	s, err := Read(d)
 	if err != nil {
 		t.Fatal(err)

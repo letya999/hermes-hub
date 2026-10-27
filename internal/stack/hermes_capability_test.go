@@ -10,8 +10,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/media"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"gopkg.in/yaml.v3"
 )
 
@@ -598,6 +600,13 @@ func TestManagedEgressRelayRenders(t *testing.T) {
 	if err := WriteSpace(dir, settings); err != nil {
 		t.Fatal(err)
 	}
+	// Native toolsets are default-deny (SPEC-0083 R3.1): grant the fixture's
+	// native selections before render.
+	seedGovernance(t, dir, func(doc *api.Governance) {
+		for _, section := range []string{"native:web", "native:search", "native:memory", "native:todo"} {
+			activeToolGrant(t, doc, "alice", section, time.Hour)
+		}
+	})
 	// A provider key must reach the managed runtime env — the spawned
 	// container has no other path to it.
 	if err := os.WriteFile(filepath.Join(dir, "secrets.dev.env"), []byte("OPENAI_API_KEY=k-test\nKEENABLE_API_KEY=kk-test\n"), 0600); err != nil {
@@ -713,5 +722,73 @@ func TestManagedEgressRelayRenders(t *testing.T) {
 	attestOpts.ImageGen = media.ImageGen{}
 	if err := ValidateManagedEffectiveConfig(effectivePath, validate, attestOpts); err == nil {
 		t.Fatal("image_gen block accepted without the grant in transit")
+	}
+}
+
+// SPEC-0083 R3.3: the native skills toolset is always off — the hub-built
+// read-only view at /skills replaces upstream loading entirely, so `skills`
+// is not a carve-out and a wish plus active grant still cannot lift it onto
+// a platform list or off the denylist.
+func TestNativeSkillsToolsetAlwaysDenied(t *testing.T) {
+	if slices.Contains(NativeCarveoutToolsets(), "skills") {
+		t.Fatal("skills is a reviewed carve-out — must never be re-enableable")
+	}
+	if err := ValidateNativeToolsets([]string{"skills"}); err == nil {
+		t.Fatal("skills accepted as a native carve-out")
+	}
+	d := t.TempDir()
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "config"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config", "SOUL.md"), []byte("soul"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Init(d, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Read(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Model, s.ModelURL = "test", "http://model.invalid/v1"
+	// A `skills: {via: native}` wish can be persisted but never renders —
+	// validation refuses it before any grant question.
+	s.Tools = map[string]ToolEntry{"skills": {Via: ToolViaNative}}
+	if err := saveSpace(d, s); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenderEnvironment(d, root, "prod"); err == nil || !strings.Contains(err.Error(), "not a reviewed native toolset") {
+		t.Fatalf("skills wish rendered: %v", err)
+	}
+	s.Tools = map[string]ToolEntry{}
+	if err := saveSpace(d, s); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenderEnvironment(d, root, "prod"); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(d, "generated", "hermes.prod.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg M
+	if err := yaml.Unmarshal(body, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	disabled := cfg["agent"].(M)["disabled_toolsets"].([]any)
+	if !slices.Contains(disabled, "skills") {
+		t.Fatalf("skills toolset left the denylist under a grant: %v", disabled)
+	}
+	for platform, list := range cfg["platform_toolsets"].(M) {
+		if slices.Contains(list.([]any), "skills") {
+			t.Fatalf("skills toolset emitted for platform %s", platform)
+		}
+	}
+	if cfg["curator"].(M)["enabled"] != false {
+		t.Fatal("unmanaged render must pin the curator off")
+	}
+	if _, err := os.Stat(filepath.Join(d, "hermes", ".no-bundled-skills")); err != nil {
+		t.Fatalf("bundled-skills marker missing after render: %v", err)
 	}
 }

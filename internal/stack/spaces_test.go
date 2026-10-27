@@ -18,6 +18,7 @@ func TestIndependentSpacesAndExternalMCP(t *testing.T) {
 				t.Fatal(err)
 			}
 			s, _ := ReadEnvironment(d, environment)
+			s.Memory = true // memory_enabled flag is a settings property, not a native toolset grant
 			s.MCP = map[string]MCPServer{"external": {URL: "https://service.invalid/mcp", Headers: map[string]string{"Authorization": "Bearer ${EXTERNAL_TOKEN}"}, Auth: "oauth"}, "local": {Command: "node", Args: []string{"/workspace/custom.cjs"}, Env: map[string]string{"KEY": "${KEY}"}, Timeout: 42}}
 			s.Hooks = map[string]any{"post_tool_call": []any{map[string]any{"command": "/workspace/hook.sh"}}}
 			if err := s.Validate(); err != nil {

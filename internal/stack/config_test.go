@@ -7,6 +7,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
 func TestInitNeverOverwrites(t *testing.T) {
@@ -102,6 +105,15 @@ func TestRenderAllFeatures(t *testing.T) {
 	if err := saveSpace(d, s); err != nil {
 		t.Fatal(err)
 	}
+	// All-features render: grant every native section the fixture selects —
+	// native Hermes toolsets are default-deny (SPEC-0083 R3.1).
+	seedGovernance(t, d, func(doc *api.Governance) {
+		for name, entry := range s.Tools {
+			if entry.Via == ToolViaNative {
+				activeToolGrant(t, doc, "me", "native:"+name, time.Hour)
+			}
+		}
+	})
 	if err := Render(d, root); err != nil {
 		t.Fatal(err)
 	}

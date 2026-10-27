@@ -35,11 +35,11 @@ type Notice struct {
 // EffectiveIndex is materialized as index.json beside the view and pinned
 // per session (R6.5).
 type EffectiveIndex struct {
-	Schema    int       `json:"schema"`
-	Revision  string    `json:"revision"`
-	Built     string    `json:"built"`
-	Skills    []Entry   `json:"skills"`
-	Notices   []Notice  `json:"notices,omitempty"`
+	Schema   int      `json:"schema"`
+	Revision string   `json:"revision"`
+	Built    string   `json:"built"`
+	Skills   []Entry  `json:"skills"`
+	Notices  []Notice `json:"notices,omitempty"`
 }
 
 // Build composes the effective view under dest: only winning skills are

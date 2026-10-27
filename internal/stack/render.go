@@ -91,7 +91,9 @@ func Config(s Settings) M {
 	}
 	// vision and image_gen stay off this list. The hub MCP tools are the
 	// workspace-confined profile; the native local tools are not.
-	toolsets := []string{"terminal", "file", "web", "skills", "todo", "cronjob", "messaging", "memory", "session_search"}
+	// SPEC-0083 R3.2: no implicit native base list — a toolset reaches the
+	// render only via an explicit tools: wish that survives governance.
+	toolsets := []string{}
 	for name, entry := range s.Tools {
 		mapped := name
 		if name == "meet" {
@@ -99,6 +101,11 @@ func Config(s Settings) M {
 		}
 		switch entry.Via {
 		case ToolViaNative:
+			// SPEC-0083 R3.3: the native skills loader is always off — the
+			// hub-built read-only view at /skills is the only skill path.
+			if name == "skills" {
+				continue
+			}
 			if !slices.Contains(toolsets, mapped) {
 				toolsets = append(toolsets, mapped)
 			}
@@ -166,7 +173,7 @@ func Config(s Settings) M {
 		}
 		deniedToolsets = append(deniedToolsets, name)
 	}
-	cfg := M{"model": M{"default": s.Model, "provider": "custom", "base_url": s.ModelURL, "api_key": "${OPENAI_API_KEY}"}, "terminal": M{"backend": "local", "cwd": "/workspace", "timeout": 120}, "timeouts": M{"tools": M{"sequential_call": 1800, "concurrent_batch": 1800}}, "platform_toolsets": platforms, "agent": M{"disabled_toolsets": deniedToolsets}, "plugins": M{"enabled": []string{}}, "mcp_servers": servers, "skills": skills, "display": display, "stt": M{"enabled": s.Has("transcription"), "provider": "local", "language": "", "local": M{"model": "small"}}, "timezone": s.Timezone, "hooks": s.Hooks, "memory": memory}
+	cfg := M{"model": M{"default": s.Model, "provider": "custom", "base_url": s.ModelURL, "api_key": "${OPENAI_API_KEY}"}, "terminal": M{"backend": "local", "cwd": "/workspace", "timeout": 120}, "timeouts": M{"tools": M{"sequential_call": 1800, "concurrent_batch": 1800}}, "platform_toolsets": platforms, "agent": M{"disabled_toolsets": deniedToolsets}, "plugins": M{"enabled": []string{}}, "mcp_servers": servers, "skills": skills, "display": display, "stt": M{"enabled": s.Has("transcription"), "provider": "local", "language": "", "local": M{"model": "small"}}, "curator": M{"enabled": false}, "timezone": s.Timezone, "hooks": s.Hooks, "memory": memory}
 	cfg["auxiliary"] = M{"vision": M{"provider": "main", "timeout": 30, "download_timeout": 15, "max_concurrency": media.InspectConcurrency}}
 	if s.Has("web") {
 		if web := s.Web.config(); len(web) > 0 {

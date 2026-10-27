@@ -686,7 +686,6 @@ func TestQuotas(t *testing.T) {
 
 	// Skills-per-owner cap — fill with a temp store to keep this fast.
 	s2 := newStore(t, ScopeUser)
-	names := []string{}
 	for i := 0; i < MaxSkills; i++ {
 		dir := filepath.Join(s2.Root(), fmt.Sprintf("s%04d", i))
 		if err := os.MkdirAll(dir, 0755); err != nil {
@@ -695,7 +694,6 @@ func TestQuotas(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dir, SkillFile), []byte("x"), 0644); err != nil {
 			t.Fatal(err)
 		}
-		names = append(names, fmt.Sprintf("s%04d", i))
 	}
 	full := skillTree("x")
 	full[SkillFile] = File{Data: []byte("---\nname: one-more\ndescription: \"d\"\n---\n")}
@@ -796,6 +794,9 @@ func TestMigrateLegacy(t *testing.T) {
 	rep, err = MigrateLegacySpace(space, true)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(rep.Published) != 1 || len(rep.Drafted) != 1 || len(rep.Skipped) != 1 {
+		t.Fatalf("apply report: %+v", rep)
 	}
 	s := mustStore(t, space)
 	if names, _ := s.Names(); len(names) != 1 || names[0] != "consented" {

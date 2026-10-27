@@ -99,6 +99,14 @@ func RenderEnvironment(dir, root, environment string) error {
 			return err
 		}
 	}
+	// SPEC-0083 R3.3: upstream must never seed bundled skills into the
+	// runtime home — the hub-built effective view at /skills is the only
+	// skill path. The marker suppresses upstream seeding beyond its
+	// hardcoded essentials; the /skills mount and the disabled `skills`
+	// toolset close the rest.
+	if err = os.WriteFile(filepath.Join(dir, "hermes", ".no-bundled-skills"), []byte("# hub-managed: upstream bundled-skill seeding stays off (SPEC-0083 R3.3)\n"), 0600); err != nil {
+		return err
+	}
 	// Pre-M24 spaces keep authored skills under hermes/skills; the unified
 	// store at skills/ is authoritative now. Idempotent: consented registry
 	// entries publish, unrecorded content lands as drafts (SPEC-0083 R2.7).

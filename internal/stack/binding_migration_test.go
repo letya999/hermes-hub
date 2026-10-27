@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/toolhub"
 )
@@ -146,6 +147,11 @@ func TestUpMigratesAfterRightsChange(t *testing.T) {
 	if err := saveSpace(dir, settings); err != nil {
 		t.Fatal(err)
 	}
+	// Native toolsets are default-deny (SPEC-0083 R3.1): the rights change is
+	// only applied when a grant covers the wished section.
+	seedGovernance(t, dir, func(doc *api.Governance) {
+		activeToolGrant(t, doc, "alice", "native:file", time.Hour)
+	})
 	if err := RenderEnvironment(dir, root, "prod"); err != nil {
 		t.Fatal(err)
 	}

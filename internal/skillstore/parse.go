@@ -10,30 +10,30 @@ import (
 // Manifest is the normalized SKILL.md frontmatter view (D2 compat fields
 // folded into Requires/Settings).
 type Manifest struct {
-	Name                   string
-	Description            string
-	License                string
-	AllowedTools           []string
-	Platforms              []string
-	Requires               Requires
-	DisableModelInvocation bool
-	UserInvocable          *bool
-	ArgumentHint           string
+	Name                    string
+	Description             string
+	License                 string
+	AllowedTools            []string
+	Platforms               []string
+	Requires                Requires
+	DisableModelInvocation  bool
+	UserInvocable           *bool
+	ArgumentHint            string
 	AllowImplicitInvocation *bool
-	Settings               []SettingSpec
-	Metadata               map[string]any
+	Settings                []SettingSpec
+	Metadata                map[string]any
 }
 
 // Requires aggregates cross-format capability/env/bin requirements.
 type Requires struct {
-	Toolsets             []string
-	Tools                []string
-	FallbackForToolsets  []string
-	FallbackForTools     []string
-	Env                  []EnvRequirement
-	Bins                 []string
-	Connectors           []string
-	Deps                 []string
+	Toolsets            []string
+	Tools               []string
+	FallbackForToolsets []string
+	FallbackForTools    []string
+	Env                 []EnvRequirement
+	Bins                []string
+	Connectors          []string
+	Deps                []string
 }
 
 // EnvRequirement is a named credential/env need — names only, never values.
@@ -66,14 +66,14 @@ func ParseSkillMD(dir string, body []byte, lenient bool) (*Manifest, []string, e
 		return nil, nil, fmt.Errorf("%w: unterminated frontmatter", ErrInvalid)
 	}
 	var fm struct {
-		Name                   string   `yaml:"name"`
-		Description            string   `yaml:"description"`
-		Platforms              []string `yaml:"platforms"`
-		DisableModelInvocation bool     `yaml:"disable-model-invocation"`
-		UserInvocable          *bool    `yaml:"user-invocable"`
-		ArgumentHint           string   `yaml:"argument-hint"`
-		AllowedTools           []string `yaml:"allowed-tools"`
-		AllowedToolsAlt        []string `yaml:"allowed_tools"`
+		Name                   string           `yaml:"name"`
+		Description            string           `yaml:"description"`
+		Platforms              []string         `yaml:"platforms"`
+		DisableModelInvocation bool             `yaml:"disable-model-invocation"`
+		UserInvocable          *bool            `yaml:"user-invocable"`
+		ArgumentHint           string           `yaml:"argument-hint"`
+		AllowedTools           []string         `yaml:"allowed-tools"`
+		AllowedToolsAlt        []string         `yaml:"allowed_tools"`
 		RequiredEnv            []EnvRequirement `yaml:"required_environment_variables"`
 		Metadata               map[string]any   `yaml:"metadata"`
 	}

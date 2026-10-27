@@ -21,7 +21,7 @@ slices:
   S2.9-hubctl-skill: green
 validation:
   documents: pending
-  just_check: not_run
+  just_check: passed_2026-10-27_86.09pct_coverage
   docker_check: not_applicable_no_docker_this_session
   red_team: pending
   live_acceptance: deferred_to_m24.13
@@ -36,7 +36,11 @@ evidence:
   - hubctl skill: list/show/install(consent->publish|no-consent->draft)/drafts/approve/reject/rollback/archive/restore on internal/skillstore; hardcoded telegram-1 envelope removed; internal/skills package deleted
   - skills/ already in contextlife backup/restore/purge lists (pre-existing)
 known_regressions:
-  - internal/communication TestTickSchedulesExpiredWindowExistingOccurrenceAndSlackUser panics on committed base 80ea6d8; fixed by uncommitted m23-live-wake changes in the main worktree — out of M24 scope, must not be ported
+  - internal/communication blocked-notice path panicked on the committed base
+    (nil *Gateway baked into spool channel deps). Minimal port of the owner's
+    uncommitted m23 fix applied here — nil-guard in UserByPrincipal plus
+    spool.resolveChannel wiring — because the panic blocks `just check` on
+    this branch. The m23 pending-marker machinery was NOT ported.
 remaining:
   - just check + devcheck docs at milestone delivery
 limitations:

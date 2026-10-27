@@ -1,6 +1,6 @@
 ---
 description: spaces/<id>/ layout — settings.yaml, generated configs, secrets/env files, state dirs, and what is hand-edited vs rendered.
-last_verified: 2026-10-26
+last_verified: 2026-10-27
 ---
 
 # Spaces
@@ -39,6 +39,13 @@ strips every mutation path the backend can honor — write tools denied in the
 executor, `browser` loses mutation tools, `mcp-raw` gains `tools.exclude`;
 on `native` it is a validation error (upstream grants toolsets whole).
 
+Every `native:*` governance section is deny-by-default (SPEC-0083 R3.1): a
+`tools:` wish only marks visibility — the toolset renders when an active
+ToolHub grant covers `native:<name>` (`hubctl governance --kind grant`),
+otherwise the read fails closed. The native `skills` toolset is never
+grantable: the hub-built effective view at `/skills` replaces upstream
+loading in both modes, and the curator stays disabled.
+
 ```yaml
 tools:
   terminal: native            # upstream toolset inside the runtime
@@ -60,8 +67,11 @@ mcp:
 
 - `compose.<env>.yaml` — the per-space compose (`internal/stack/compose.go`).
 - `hermes.<env>.yaml` — upstream Hermes config.
-- `generated/` — merged models.yaml (`model-registry/<env>/models.yaml`), filtered global
-  skills, feature-gated plugins (`generated/plugins/<name>` mounts read-only
+- `generated/` — merged models.yaml (`model-registry/<env>/models.yaml`), the
+  effective skills view `generated/skills-effective/` (platform > org > user,
+  mounted read-only at `/skills` — sources are `config/skills/`,
+  `<org>/skills/` and `spaces/<user>/skills/`; `skills/` is the user-scope
+  store), feature-gated plugins (`generated/plugins/<name>` mounts read-only
   into `/opt/hermes/plugins/` — `source "bundled"`, kind "backend",
   auto-loads, agent-untouchable).
 - `connections/` — connector materialization output.
