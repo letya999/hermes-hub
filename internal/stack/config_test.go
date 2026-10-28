@@ -146,11 +146,14 @@ func TestRenderAllFeatures(t *testing.T) {
 			t.Fatalf("browser_act must extend the %s allowlist: %#v", name, server["tools"])
 		}
 	}
-	if args := servers["browser"].(M)["args"].([]string); !slices.Contains(args, "--cdp-endpoint") {
-		t.Fatalf("persistent browser must attach to the per-user CDP profile: %v", args)
+	// SPEC-0082 R4.3/R4.4: the persistent browser server reaches the sidecar's
+	// CDP-attached instance; the guest server reaches the isolated instance —
+	// the profile never leaves the browser container either way.
+	if url := servers["browser"].(M)["url"]; url != "http://browser-me:8931/mcp" {
+		t.Fatalf("persistent browser must attach to the sidecar CDP instance: %v", url)
 	}
-	if args := servers["browser_guest"].(M)["args"].([]string); !slices.Contains(args, "--isolated") {
-		t.Fatalf("guest browser must use an in-memory profile: %v", args)
+	if url := servers["browser_guest"].(M)["url"]; url != "http://browser-me:8932/mcp" {
+		t.Fatalf("guest browser must reach the isolated sidecar instance: %v", url)
 	}
 	s.Tools, s.Ingress = testTools("telegram_user", "google", "google_write"), testIngress("telegram_user", "google", "google_write")
 	if servers := Config(s)["mcp_servers"].(M); len(servers) != 1 || servers["hub"] == nil {
@@ -629,15 +632,12 @@ func TestComposeKeepsDockerInControlImage(t *testing.T) {
 	if services["workload-controller"].(M)["image"] != control["image"] || services["hermes-runtime"].(M)["image"] != "hermes-hub:0.4.0-prod" {
 		t.Fatal("Docker consumers and Hermes runtime use the wrong images")
 	}
-	// R1.5: shm_size exists for the agent browser workload only; daemons do
-	// not get a gigabyte of shared memory they never touch.
+	// R1.5/R4: shm_size exists for the browser sidecar's Chromium workload
+	// only; daemons and the runtime do not get shared memory they never touch.
 	for name, service := range services {
 		_, hasShm := service.(M)["shm_size"]
-		if name == "hermes-runtime" && !hasShm {
-			t.Fatal("hermes-runtime lost shm_size")
-		}
-		if name != "hermes-runtime" && hasShm {
-			t.Fatalf("shm_size leaks onto %s — scope it to the runtime", name)
+		if !strings.HasPrefix(name, "browser-") && hasShm {
+			t.Fatalf("shm_size leaks onto %s — scope it to the browser sidecar", name)
 		}
 	}
 	_, file, _, ok := runtime.Caller(0)

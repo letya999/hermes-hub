@@ -49,7 +49,6 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "hermes")), "target": "/state/hermes"},
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "connections", "google")), "target": "/state/google"},
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "connections", "telegram")), "target": "/state/telegram"},
-		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "connections", "browser")), "target": "/state/browser"},
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "home")), "target": "/state/home"},
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "cache")), "target": "/state/cache"},
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "workspace")), "target": "/workspace"},
@@ -106,11 +105,10 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(source), "target": m.To, "read_only": readOnly})
 	}
 	ports := []string{}
-	if s.Has("browser") || s.Has("meet") {
-		ports = append(ports, fmt.Sprintf("127.0.0.1:%d:6080", s.BrowserPort))
-	}
-	// Legacy self-service connectors use this callback; managed connectors are
-	// admitted through the control plane and do not expose it from Hermes.
+	// SPEC-0082 R4.2: the noVNC publish lives on the browser sidecar, not the
+	// runtime — the runtime carries no display surface at all. The OAuth port
+	// stays: legacy self-service connectors use this callback; managed
+	// connectors are admitted through the control plane and do not expose it.
 	if s.CapabilityMode != "managed" {
 		ports = append(ports, fmt.Sprintf("127.0.0.1:%d:8000", s.OAuthPort))
 	}
@@ -137,6 +135,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		runtimeEnv["HUB_BOOTSTRAP_REVISION"] = fmt.Sprint(s.Workspace.BootstrapRevision)
 	}
 	runtimeEnv["HUB_SCOPE_KIND"] = string(UserScope)
+	if s.Has("browser") || s.Has("meet") {
+		// R4.3: the browser lives in the per-space sidecar; the runtime's
+		// browser_cdp tool and health probe attach over the internal alias.
+		runtimeEnv["BROWSER_CDP_URL"] = "http://browser-" + s.User + ":9222"
+	}
 	if scope, err := ReadScope(dir); err == nil && scope.Kind == GroupScope {
 		runtimeEnv["HUB_SCOPE_KIND"] = string(GroupScope)
 	}
@@ -219,9 +222,8 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	// The service builds its own agent tag: renders that drop hermes-runtime
 	// (supervisor/managed) get the image through the explicit hubctl build.
 	runtimeService["build"] = imageBuild(s.Environment)
-	// SPEC-0082 R1.5: shm_size exists for the agent browser workload only;
-	// daemons do not get shared memory they never touch.
-	runtimeService["shm_size"] = "1gb"
+	// SPEC-0082 R4.1: the Chromium workload lives in the browser sidecar —
+	// shm_size moved there with it; the runtime allocates none.
 	runtimeService["env_file"] = runtimeEnvFiles
 	runtimeService["environment"] = runtimeEnv
 	runtimeService["volumes"] = stateVolumes
@@ -275,6 +277,41 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		}
 	}
 	services := M{"hermes-runtime": runtimeService}
+	// SPEC-0082 R4: the per-space browser sidecar owns the headed-Chromium
+	// display stack. CDP binds inside the container and is reachable only on
+	// the space network through the browser-<user> alias; the sole published
+	// port is authenticated noVNC on host loopback.
+	if s.Has("browser") || s.Has("meet") {
+		browserService := cloneMap(common)
+		browserService["image"] = "hermes-hub:0.4.0-" + s.Environment + "-browser"
+		browserService["build"] = imageBuild(s.Environment + "-browser")
+		browserService["shm_size"] = "1gb"
+		browserService["ports"] = []string{fmt.Sprintf("127.0.0.1:%d:6080", s.BrowserPort)}
+		browserService["environment"] = M{"HUB_MEET": fmt.Sprint(s.Has("meet"))}
+		browserVolumes := []any{
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "connections", "browser")), "target": "/state/browser"},
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "workspace")), "target": "/workspace"},
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "browser-novnc.passwd")), "target": "/run/novnc.pass", "read_only": true},
+		}
+		if s.Has("meet") {
+			// The node shares the runtime's meetings dir so auth_state and
+			// out_dir RPC paths resolve identically on both containers; the
+			// rendered token lands at upstream's default token_path, mounted
+			// read-only — NodeServer reuses it and never writes.
+			browserVolumes = append(browserVolumes,
+				M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "hermes", "workspace", "meetings")), "target": "/state/hermes/workspace/meetings"},
+				M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "meet-node-token.json")), "target": "/state/hermes/workspace/meetings/node_token.json", "read_only": true})
+		}
+		browserService["volumes"] = browserVolumes
+		if s.CapabilityMode == "managed" {
+			// Managed runtimes spawn onto the private per-space agent network;
+			// the sidecar lives only there so CDP stays unreachable off-space.
+			browserService["networks"] = M{managedAgentNetwork(s): M{"aliases": []string{"browser-" + s.User}}}
+		} else {
+			browserService["networks"] = M{"default": M{"aliases": []string{"browser-" + s.User}}}
+		}
+		services["browser-"+s.User] = browserService
+	}
 	hostRuntimeDir := filepath.ToSlash(filepath.Join(dir, "runtime"))
 	hostCliproxyDir := filepath.ToSlash(filepath.Join(dir, "cliproxy"))
 	stateBind := M{"type": "bind", "source": hostRuntimeDir, "target": "/state"}

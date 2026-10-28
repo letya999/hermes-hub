@@ -132,6 +132,53 @@ func TestNoLibnodeInImage(t *testing.T) {
 	}
 }
 
+// SPEC-0082 R4.1/R4.3: the browser display stack leaves the runtime image for
+// the dedicated hub-browser stage — Xvfb, fluxbox, authenticated x11vnc,
+// vendored noVNC, Chromium, playwright-mcp and the Meet node venv.
+func TestBrowserImageContents(t *testing.T) {
+	runtime := dockerfileStage(t, "runtime")
+	for _, banned := range []string{"chromium", "xvfb", "fluxbox", "x11vnc", "websockify", "/opt/browser", "DISPLAY"} {
+		if strings.Contains(runtime, banned) {
+			t.Errorf("runtime image still carries browser artifact %q", banned)
+		}
+	}
+	browser := dockerfileStage(t, "browser")
+	for _, want := range []string{
+		"chromium", "xvfb", "fluxbox", "x11vnc", "websockify", "x11-utils",
+		"/opt/browser", "/opt/novnc", "meet-requirements.txt", "playwright",
+		"hub-runtime",
+	} {
+		if !strings.Contains(browser, want) {
+			t.Errorf("browser image missing %q", want)
+		}
+	}
+	// R1.4: noVNC is a pinned static tarball, never the Debian package (its
+	// nodejs/libnode dependency chain is banned everywhere).
+	if !strings.Contains(browser, "noVNC") || !strings.Contains(browser, "sha256sum") {
+		t.Error("browser image must vendor the pinned noVNC tarball with hash verification")
+	}
+	for _, banned := range []string{" novnc", "libnode"} {
+		if strings.Contains(browser, banned) {
+			t.Errorf("browser image must not install %q", banned)
+		}
+	}
+	// The upstream plugin tree gives the Meet NodeServer its modules without
+	// the full agent venv.
+	if !strings.Contains(browser, "plugins/google_meet") {
+		t.Error("browser image must carry the google_meet plugin tree for the node server")
+	}
+	// prod/dev-browser are the build targets compose and CI publish.
+	source, err := os.ReadFile("../../docker/Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stage := range []string{"prod-browser", "dev-browser"} {
+		if !strings.Contains(string(source), "AS "+stage) {
+			t.Errorf("stage %q missing — compose/CI build target would not resolve", stage)
+		}
+	}
+}
+
 func TestE2EBinaryOnlyInDevImage(t *testing.T) {
 	// The e2e harness is a developer tool; shipping it in prod hands every
 	// agent container an extra exec surface for nothing.

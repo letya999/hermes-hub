@@ -173,10 +173,11 @@ func TestDocumentImageProfile(t *testing.T) {
 		t.Fatal("unknown image provider accepted")
 	}
 
-	browser := Config(Settings{Tools: testTools("browser"), Ingress: testIngress("browser"), Model: "m", ModelURL: "http://model.invalid/v1"})
-	args := browser["mcp_servers"].(M)["browser"].(M)["args"].([]string)
-	if !slices.Contains(args, "vision,pdf") {
-		t.Fatal(args)
+	browser := Config(Settings{User: "me", Tools: testTools("browser"), Ingress: testIngress("browser"), Model: "m", ModelURL: "http://model.invalid/v1"})
+	// R4.3: vision+pdf caps ride the sidecar's playwright-mcp launch flags;
+	// the rendered server is a URL endpoint on the space-internal alias.
+	if url := browser["mcp_servers"].(M)["browser"].(M)["url"]; url != "http://browser-me:8931/mcp" {
+		t.Fatal(url)
 	}
 
 	sourceDir := t.TempDir()

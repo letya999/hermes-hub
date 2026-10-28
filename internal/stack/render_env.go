@@ -1,6 +1,8 @@
 package stack
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/exposure"
@@ -224,6 +226,9 @@ func RenderEnvironment(dir, root, environment string) error {
 	if err = writeToolHubFiles(dir, s); err != nil {
 		return err
 	}
+	if err = writeBrowserFiles(dir, s); err != nil {
+		return err
+	}
 	outputs := map[string]any{"hermes." + environment + ".yaml": Config(s), "compose." + environment + ".yaml": Compose(s, root, dir)}
 	// Generated files are reproducible; secrets and agent memories are never overwritten.
 	for name, v := range outputs {
@@ -276,6 +281,63 @@ func RenderEnvironment(dir, root, environment string) error {
 		return err
 	}
 	return nil
+}
+
+// writeBrowserFiles provisions the per-space browser secrets the sidecar
+// mounts read-only: the noVNC password (x11vnc -passwdfile) and, for meet
+// spaces, the token upstream's NodeServer serves plus the runtime-side node
+// registry entry — generated once, never rotated by a re-render.
+func writeBrowserFiles(dir string, s Settings) error {
+	if !s.Has("browser") && !s.Has("meet") {
+		return nil
+	}
+	if err := ensureTokenFile(filepath.Join(dir, "browser-novnc.passwd")); err != nil {
+		return err
+	}
+	if !s.Has("meet") {
+		return nil
+	}
+	tokenPath := filepath.Join(dir, "meet-node-token.json")
+	if _, err := os.Lstat(tokenPath); os.IsNotExist(err) {
+		value := make([]byte, 32)
+		if _, err = rand.Read(value); err != nil {
+			return err
+		}
+		body, err := json.Marshal(M{"token": hex.EncodeToString(value)})
+		if err != nil {
+			return err
+		}
+		if err = os.WriteFile(tokenPath, body, 0600); err != nil {
+			return err
+		}
+	} else if err != nil {
+		return err
+	}
+	tokenData, err := os.ReadFile(tokenPath)
+	if err != nil {
+		return err
+	}
+	var tokenDoc struct {
+		Token string `json:"token"`
+	}
+	if err = json.Unmarshal(tokenData, &tokenDoc); err != nil || tokenDoc.Token == "" {
+		return fmt.Errorf("meet node token file is unreadable")
+	}
+	// Seed the runtime-side registry: plugins.google_meet.node.registry
+	// resolves node='auto' through $HERMES_HOME/workspace/meetings/nodes.json.
+	// The sidecar's token file holds the same secret, so the entry is
+	// pre-approved without the operator running `meet node approve`.
+	nodesPath := filepath.Join(dir, "hermes", "workspace", "meetings", "nodes.json")
+	name := "browser-" + s.User
+	nodes := M{"nodes": M{name: M{"url": "ws://" + name + ":18789", "token": tokenDoc.Token}}}
+	body, err := json.MarshalIndent(nodes, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err = os.MkdirAll(filepath.Dir(nodesPath), 0770); err != nil {
+		return err
+	}
+	return atomic(nodesPath, append(body, '\n'))
 }
 
 // removeIfExists deletes path when present; a missing file is not an error.

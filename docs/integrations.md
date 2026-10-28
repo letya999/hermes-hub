@@ -15,7 +15,7 @@ reference — what we integrate with, at what revision, under what shape.
 | Component | Source / pin | Contract |
 |---|---|---|
 | Hermes | nousresearch/hermes-agent `869228cab4a8276d3b4c78da9d9939670c47bd0f` (0.21.0) | ADR-0012; pin predates upstream tool-`isError`/transport split (PRs 67340/17016 closed unmerged, 68455 open) — hub tools already mark expected failures as `isError`; residual risk CHG-0093 |
-| Local STT | faster-whisper 1.2.1 + PyAV 18.1.0 in runtime and standalone STT image | PyAV 19 removed the decoder arg that release uses; native + STT CI gates decode a synthetic WAV offline so skew cannot pass |
+| Local STT | faster-whisper 1.2.1 + PyAV 18.1.0 in the standalone STT image | PyAV 19 removed the decoder arg that release uses; native + STT CI gates decode a synthetic WAV offline so skew cannot pass |
 | CLIProxy | image-pinned `ba7e55836dee959e93ec6d41395865d9ec535086` | model/image relay upstream |
 | ToolHive | `ghcr.io/stacklok/toolhive:v0.48.0` @ `sha256:f1adc609e11e5f60fd5a27d23e7a63eb14dcfee13f3c0b2f1741680a64fcea5d` | container executor for ToolHub workloads (ADR-0013); cellinit/cred-proxy are built from this repo, not upstream |
 | Telegram account | letya999/telegram-mcp `26f1632b2b07cca16fa8f172fe645477921db9ed` | Python stdio; prepared Broker entry defaults `TELEGRAM_EXPOSED_TOOLS=read-only`; bot token stays separate; the unrelated PyPI `telegram-mcp` is deliberately not used |
@@ -23,7 +23,7 @@ reference — what we integrate with, at what revision, under what shape.
 | Slack App channel | Slack Events API via `hub-communication` | official `v0` HMAC request verification; workspace+sender mapping; not Slack data tools |
 | Google | official `https://<product>mcp.googleapis.com/mcp/v1` (ADR-0019) | ToolHub remote read grants per product; third-party Workspace MCP is not in the default image |
 | Slack data | korotovsky/slack-mcp-server `b88c0de3f706f4f07337c9eda7133c736d1c9524` | stdio, OAuth user token, channel posting allowlist |
-| Playwright | microsoft/playwright-mcp, npm `@playwright/mcp@0.0.80` | hub-owned stdio; `browser` attaches to per-user persistent Chromium over loopback CDP, `browser_guest` isolated; mutation tools only under `browser_act` |
+| Playwright | microsoft/playwright-mcp, npm `@playwright/mcp@0.0.80` | streamable HTTP served by the per-space `browser-<user>` sidecar; `browser` attaches the per-user persistent Chromium over internal CDP, `browser_guest` runs `--isolated`; mutation tools only under `browser_act` |
 | GitHub | official remote MCP | `https://api.githubcopilot.com/mcp/` + `GITHUB_TOKEN` bearer |
 | Atlassian | sooperset/mcp-atlassian `74bdaa8f1d28783cccfe99f7b4d75e6dc947cf76` | dedicated `docker/mcp-atlassian.Dockerfile`; Jira via `JIRA_URL`/`JIRA_USERNAME`/`JIRA_API_TOKEN` (Confluence supported upstream, preset enables Jira only; no Rovo endpoint) |
 | GitLab | Debian `glab` from the pinned runtime distribution | CLI; `GITLAB_TOKEN` PAT + optional `GITLAB_HOST` |

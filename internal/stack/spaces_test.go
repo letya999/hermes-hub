@@ -36,25 +36,27 @@ func TestIndependentSpacesAndExternalMCP(t *testing.T) {
 			compose := Compose(s, "/source", d)
 			configs = append(configs, compose)
 			services := compose["services"].(M)
-			if len(services) != 5 {
+			// Six services: runtime + core/control daemons + the browser
+			// sidecar the default feature set enables.
+			if len(services) != 6 {
 				t.Fatal("embedded service")
 			}
 			if _, ok := services["communication-hub"]; ok {
 				t.Fatal("gateway started without a messaging feature")
 			}
 			// Each role image is built exactly once: runtime carries its own,
-			// cliproxy the core, toolhub the control target.
+			// cliproxy the core, toolhub the control, the sidecar the browser.
 			builds := 0
 			for name, svc := range services {
 				if b, ok := svc.(M)["build"]; ok {
 					builds++
-					if (name != "toolhub" || b.(M)["target"] != environment+"-control") && (name != "cliproxy" || b.(M)["target"] != environment+"-core") && (name != "hermes-runtime" || b.(M)["target"] != environment) {
+					if (name != "toolhub" || b.(M)["target"] != environment+"-control") && (name != "cliproxy" || b.(M)["target"] != environment+"-core") && (name != "hermes-runtime" || b.(M)["target"] != environment) && (name != "browser-"+owner || b.(M)["target"] != environment+"-browser") {
 						t.Fatal(name, b)
 					}
 				}
 			}
-			if builds != 3 {
-				t.Fatal("expected runtime, core and control build sections, got", builds)
+			if builds != 4 {
+				t.Fatal("expected runtime, core, control and browser build sections, got", builds)
 			}
 			if strings.Contains(strings.Join(Doctor(s, map[string]string{}), " "), "EXTERNAL_TOKEN") == false {
 				t.Fatal("missing connector secret not reported")
