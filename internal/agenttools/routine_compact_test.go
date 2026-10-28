@@ -238,7 +238,7 @@ func TestRoutineListTransportsSearchQuery(t *testing.T) {
 // admit the new selection set (SPEC-0080 R2.3).
 func TestAssignmentCatalogVersion(t *testing.T) {
 	definition := HubToolsDefinition()
-	if definition.Version != "5.3.1" {
-		t.Fatalf("catalog version = %s, want 5.3.1 with watch contract args", definition.Version)
+	if definition.Version != "5.6.0" {
+		t.Fatalf("catalog version = %s, want 5.6.0 with skills + watch contract args", definition.Version)
 	}
 }

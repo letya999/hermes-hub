@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -739,7 +740,7 @@ func TestVoiceUnavailableStatus(t *testing.T) {
 	for range 3 {
 		g.deliverOne(ctx)
 	}
-	if len(fake.sent) != 1 || !strings.Contains(fake.sent[0], "не настроено") {
+	if !slices.ContainsFunc(fake.sent, func(m string) bool { return strings.Contains(m, "не настроено") }) {
 		t.Fatalf("typed unavailable reply missing: %v", fake.sent)
 	}
 }

@@ -739,7 +739,7 @@ Known traps from live acceptance:
   and DNS round-robins owner traffic to the wrong instance (random 401s).
   Owner-scoped names/aliases only; verify with `getent` as above.
 - **Stale container images mask everything.** `dev-rebuild` the service
-  before trusting evidence — a pre-change `hermes-hub:0.3.0-dev` supervisor,
+  before trusting evidence — a pre-change `hermes-hub:0.4.0-dev` supervisor,
   toolhub, relay or hub-media silently shows old behavior. Check
   `docker inspect` shows a `…:local` overlay image under `.Config.Image`.
 - **Default `HUB_MODEL_RELAY_HOP_TIMEOUT` (30 s) is shorter than a

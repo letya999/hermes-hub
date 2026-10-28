@@ -58,9 +58,9 @@ func TestApplyEnvMediaLangVoices(t *testing.T) {
 // delivery language selects the voice.
 func TestServiceSynthesizerCarriesLangVoices(t *testing.T) {
 	voices := map[locale.Lang]string{locale.LangKK: "aidar"}
-	syn, ok := serviceSynthesizer("http://tts", "tok", "xenia", voices, "").(HTTPSynthesizer)
+	syn, ok := serviceSynthesizer("http://tts", "tok", "xenia", voices).(HTTPSynthesizer)
 	if !ok {
-		t.Fatalf("url did not select http synthesizer: %T", serviceSynthesizer("http://tts", "tok", "xenia", voices, ""))
+		t.Fatalf("url did not select http synthesizer: %T", serviceSynthesizer("http://tts", "tok", "xenia", voices))
 	}
 	if syn.Voices[locale.LangKK] != "aidar" {
 		t.Fatalf("lang voices not propagated: %v", syn.Voices)

@@ -7,6 +7,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
 // browserSpace renders a browser-enabled space's compose services.
@@ -186,6 +189,9 @@ func TestRenderMaterializesBrowserSecrets(t *testing.T) {
 	if err := Init(d, "alice"); err != nil {
 		t.Fatal(err)
 	}
+	seedGovernance(t, d, func(doc *api.Governance) {
+		activeToolGrant(t, doc, "alice", "native:meet", time.Hour)
+	})
 	settings, err := Read(d)
 	if err != nil {
 		t.Fatal(err)

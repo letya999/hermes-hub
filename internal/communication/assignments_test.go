@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/letya999/hermes-hub/internal/commodel"
+	"github.com/letya999/hermes-hub/internal/locale"
 )
 
 // TestAssignmentAPIRoundTrip (SPEC-0080 R2.1/R2.2): create→apply→get→pause→
@@ -246,7 +247,7 @@ func TestAssignmentCommandDispatch(t *testing.T) {
 	if len(fake.sent) != 2 || !strings.HasPrefix(fake.sent[1], "Поручение недоступно") {
 		t.Fatalf("/assignment did not route: %v", fake.sent)
 	}
-	help := commandHelp()
+	help := commandHelp(locale.LangRU)
 	if !strings.Contains(help, "/assignments — ") || !strings.Contains(help, "/assignment — ") {
 		t.Fatalf("help inventory missing assignment commands: %q", help)
 	}
