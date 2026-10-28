@@ -199,6 +199,7 @@ func (t *Tools) skillView(r Input) (any, error) {
 	if truncated {
 		content = content[:skillViewMaxBytes]
 	}
+	_ = skillstore.RecordUsage(t.SkillsStore, name, "view", path)
 	return map[string]any{"name": name, "path": path, "content": string(content), "truncated": truncated}, nil
 }
 
@@ -230,9 +231,14 @@ func (t *Tools) skillsList(r Input) (any, error) {
 		if r.Source != "" && e.Source != r.Source {
 			continue
 		}
-		entries = append(entries, map[string]any{
+		entry := map[string]any{
 			"name": e.Name, "description": e.Description, "source": e.Source,
-		})
+		}
+		// R12.5: counters only — event detail never leaves the store.
+		if u, err := skillstore.Usage(t.SkillsStore, e.Name); err == nil {
+			entry["stats"] = u.Stats
+		}
+		entries = append(entries, entry)
 	}
 	offset := len(entries)
 	if r.Offset < uint64(len(entries)) {
@@ -676,5 +682,8 @@ func (t *Tools) skillInvoke(ctx context.Context, r Input) (any, error) {
 			}
 		}
 	}
+	// R12.5: activation is journaled by the hub into the owner store —
+	// the client has no write path to usage counters.
+	_ = skillstore.RecordUsage(t.SkillsStore, name, "use", "")
 	return result, nil
 }

@@ -95,6 +95,32 @@ func TestDraftStoresScanFindings(t *testing.T) {
 	}
 }
 
+// R12.1: lint findings land on the draft as advisory metadata — they never
+// block publication (only Critical does).
+func TestDraftCarriesAdvisoryLintFindings(t *testing.T) {
+	s := newStore(t, ScopeUser)
+	bad := Tree{SkillFile: File{Data: []byte("---\nname: demo\ndescription: \"This skill does demo things.\"\n---\n\nx")}}
+	d, err := s.CreateDraft("demo", bad, DraftMeta{Author: "agent", Reason: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawLint bool
+	for _, f := range d.Meta.ScanFindings {
+		if f.RuleID == "desc.imperative" {
+			sawLint = true
+			if f.Severity == "critical" {
+				t.Fatalf("lint must stay advisory: %+v", f)
+			}
+		}
+	}
+	if !sawLint {
+		t.Fatalf("advisory lint findings missing: %+v", d.Meta.ScanFindings)
+	}
+	if _, err := s.PublishDraft(d.ID, "operator:anna"); err != nil {
+		t.Fatalf("advisory findings must not block publish: %v", err)
+	}
+}
+
 func TestAuditOmitsSkillContent(t *testing.T) {
 	s := newStore(t, ScopeUser)
 	secret := "UNIQUE_SKILL_BODY_MARKER_12345"
@@ -177,5 +203,47 @@ func TestMigrateLegacyConsentedButCriticalDrafts(t *testing.T) {
 	drafts, _ := s.Drafts()
 	if len(drafts) != 1 || drafts[0].Meta.ScanVerdict != "critical" {
 		t.Fatalf("expected critical draft: %+v", drafts)
+	}
+}
+
+// R12.1: reference lint runs against the real tree — a nested link is an
+// advisory finding on the draft (dead links already fail validation).
+func TestDraftCarriesReferenceLintFindings(t *testing.T) {
+	s := newStore(t, ScopeUser)
+	tree := Tree{
+		SkillFile:           File{Data: []byte("---\nname: demo\ndescription: Use when testing.\n---\n\nsee [g](references/a/b.md)")},
+		"references/a/b.md": File{Data: []byte("nested")},
+	}
+	d, err := s.CreateDraft("demo", tree, DraftMeta{Author: "agent", Reason: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saw bool
+	for _, f := range d.Meta.ScanFindings {
+		if f.RuleID == "refs.depth" {
+			saw = true
+		}
+	}
+	if !saw {
+		t.Fatalf("refs.depth finding absent: %+v", d.Meta.ScanFindings)
+	}
+}
+
+// R12.1: a resolvable reference must not be flagged — the lint sees the
+// real tree paths, not just the file count.
+func TestDraftResolvableReferenceStaysClean(t *testing.T) {
+	s := newStore(t, ScopeUser)
+	tree := Tree{
+		SkillFile:             File{Data: []byte("---\nname: demo\ndescription: Use when testing.\n---\n\nsee [g](references/guide.md)")},
+		"references/guide.md": File{Data: []byte("ok")},
+	}
+	d, err := s.CreateDraft("demo", tree, DraftMeta{Author: "agent", Reason: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range d.Meta.ScanFindings {
+		if f.RuleID == "refs.missing" {
+			t.Fatalf("existing reference flagged missing: %+v", f)
+		}
 	}
 }

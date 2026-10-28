@@ -12,8 +12,9 @@ import (
 // in errors (R4.3: reports are bounded, content-free).
 const maxReportedFindings = 100
 
-// scanTree converts a skill tree into scan inputs and runs the scanner.
-func scanTree(tree Tree) scan.Report {
+// scanTree converts a skill tree into scan inputs, runs the scanner and
+// appends advisory lint findings (R12.1) under the skill's dir name.
+func scanTree(name string, tree Tree) scan.Report {
 	paths := make([]string, 0, len(tree))
 	for p := range tree {
 		paths = append(paths, p)
@@ -23,7 +24,17 @@ func scanTree(tree Tree) scan.Report {
 	for i, p := range paths {
 		inputs[i] = scan.Input{Path: p, Data: tree[p].Data, Exec: tree[p].Exec}
 	}
-	return scan.Scan(inputs)
+	r := scan.Scan(inputs)
+	if m, _, err := ParseSkillMD(name, tree[SkillFile].Data, true); err == nil {
+		r.Findings = append(r.Findings, scan.Lint(name, scan.LintInput{
+			Name:        m.Name,
+			Description: m.Description,
+			Body:        string(tree[SkillFile].Data),
+			Files:       len(tree),
+			Paths:       paths,
+		})...)
+	}
+	return r
 }
 
 // boundFindings caps a report for storage in metadata.

@@ -9,10 +9,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/communication"
 	"github.com/letya999/hermes-hub/internal/contextlife"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/skilleval"
 	"github.com/letya999/hermes-hub/internal/skillstore"
 	"github.com/letya999/hermes-hub/internal/skillstore/gitsource"
 	"github.com/letya999/hermes-hub/internal/skillstore/scan"
@@ -107,7 +109,7 @@ func runMemory(_ context.Context, args []string) error {
 
 func runSkill(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("skill requires list, show, install, update, sources, drafts, approve, reject, rollback, archive, restore or promote")
+		return fmt.Errorf("skill requires list, show, install, update, sources, drafts, approve, reject, rollback, archive, restore, promote, stats or eval")
 	}
 	sub := args[0]
 	f := flag.NewFlagSet("skill", flag.ContinueOnError)
@@ -352,6 +354,31 @@ func runSkill(ctx context.Context, args []string) error {
 			return err
 		}
 		return st.RejectDraft(*id)
+	case "eval":
+		skillDir := filepath.Join(abs, "skills", *name)
+		rep, err := skilleval.Eval(ctx, skillDir, *name, skilleval.HTTPRunner{URL: os.Getenv("HUB_SKILL_EVAL_URL")})
+		if err != nil {
+			return err
+		}
+		body, err := json.Marshal(rep)
+		if err != nil {
+			return err
+		}
+		tmp := filepath.Join(".work", "tmp")
+		if err := os.MkdirAll(tmp, 0755); err != nil {
+			return err
+		}
+		path := filepath.Join(tmp, "skill-eval-"+*name+"-"+time.Now().UTC().Format("20060102T150405Z")+".json")
+		if err := os.WriteFile(path, body, 0600); err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(rep)
+	case "stats":
+		u, err := skillstore.Usage(filepath.Join(abs, "skills"), *name)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(u.Stats)
 	case "rollback":
 		if *name == "" || *to == "" {
 			return fmt.Errorf("skill rollback requires --name and --to")

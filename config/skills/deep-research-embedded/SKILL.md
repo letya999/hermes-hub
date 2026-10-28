@@ -1,6 +1,6 @@
 ---
 name: deep-research-embedded
-description: "Bounded multi-round deep web research: scope a brief, decompose into a plan, run iterative search/extract rounds driven by open gaps, keep structured notes and a source registry on disk, then synthesize an outlined, fully cited report. Long runs continue across scheduled routine wakes."
+description: "Use for deep research: bounded multi-round web research that scopes a brief, decomposes into a plan, iterates search/extract rounds driven by open gaps, keeps structured notes and a source registry on disk, then synthesizes a fully cited report."
 license: AGPL-3.0-only
 metadata:
   hermes:

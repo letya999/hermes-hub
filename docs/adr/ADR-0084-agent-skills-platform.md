@@ -163,6 +163,27 @@ the boundary.
   hub-owned sidecar `.origin.json`
   (`{source_id,url,ref,commit,path,tree_sha,scan,fetched_at}`) kept out of
   draft trees — agent-authored content cannot forge origin.
+- **R12 mechanism (CHG-0198).** Draft lint is a sibling pass of the scanner:
+  `scan.Lint` emits advisory `Finding`s (name charset/dir match, imperative
+  description ≤1024 with ~250 advisory, no "This skill" prefix, body ≤500
+  lines, ≤60 files, no incident-log shape, references one level deep and
+  existing) — severity never reaches critical, so lint informs the approval
+  card without blocking it; dead links and spec violations stay hard
+  draft-validation errors. Usage telemetry is a hub-owned journal at
+  `.state/usage/<skill>.json` (`stats` counters plus a bounded event tail);
+  `skill()` activation and `skill_view` file reads journal `use`/`view`
+  server-side — the agent has no write path. `skills_list` projects the
+  counters as `stats`; `hubctl skill stats` prints them. Eval fixtures ship
+  inside the skill (`evals/triggers.json`, `evals/evals.json` — evidence
+  required per case); `hubctl skill eval` materializes an isolated
+  temporary space and scores validation accuracy through an injectable
+  runner (production: `HUB_SKILL_EVAL_URL` returning run receipts whose
+  `skill` tool calls mark activation); an unavailable model is reported
+  `model_unavailable`, never fabricated. Platform skills lint clean and
+  ship trigger suites; deep-research bounds remain enforced in
+  `WebResearchBounds` ceilings, not skill prose. R11 (self-evolving
+  skills) is deferred post-MVP — the journal file format is forward-
+  compatible with its outcome kinds.
 
 ## Invariants
 

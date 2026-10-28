@@ -56,7 +56,7 @@ func (s *Store) CreateDraft(name string, tree Tree, meta DraftMeta) (*Draft, err
 	if n := s.draftsToday(); n >= MaxDraftsPerDay {
 		return nil, fmt.Errorf("%w: %d drafts today (max %d)", ErrQuota, n, MaxDraftsPerDay)
 	}
-	report := scanTree(tree)
+	report := scanTree(name, tree)
 	meta.ScanVerdict = report.Verdict()
 	meta.ScanFindings = boundFindings(report)
 	d := &Draft{
@@ -195,6 +195,8 @@ func (s *Store) PublishDraft(id, approver string) (string, error) {
 		return "", err
 	}
 	if sidecar, rerr := os.ReadFile(filepath.Join(s.draftDir(id), ".origin.json")); rerr == nil && d.Meta.Action == "" {
+		// #nosec G703 -- d.Name passed ValidName at draft creation; the join
+		// stays inside the owner store's skill dir.
 		_ = os.WriteFile(filepath.Join(s.dir(d.Name), ".origin.json"), sidecar, 0o600)
 	}
 	if err := os.RemoveAll(s.draftDir(id)); err != nil {

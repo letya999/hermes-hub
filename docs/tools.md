@@ -66,7 +66,7 @@ Grouped by capability resource (internal/agenttools/capability.go):
 | ssh | `ssh_hosts`, `ssh_exec`, `ssh_read`, `ssh_write`, `ssh_shell_*`, `ssh_tunnel_*` | declared hosts only; write/shell/tunnel each need their own grant |
 | hh | `hh_search`, `hh_vacancy`, `hh_resumes`, `hh_apply` | apply sends externally — exact user-authorized inputs only |
 | exec | `code_exec` | bounded executor when the capability is granted; optional `skill` leases that skill's stored credentials into the one call |
-| skills | `skill`, `skills_search`, `skills_list`, `skill_view`; `skill_manage` | reads serve the ro effective view; `skill_manage` writes drafts only — publication is the owner's approval card, never the model |
+| skills | `skill`, `skills_search`, `skills_list`, `skill_view`; `skill_manage` | reads serve the ro effective view; `skills_list` entries carry hub-journaled usage counters (`stats`); `skill_manage` writes drafts only — publication is the owner's approval card, never the model |
 
 ## Contract notes (bounds that surprise)
 
@@ -124,6 +124,15 @@ Grouped by capability resource (internal/agenttools/capability.go):
   upstream moves without importing. All three run inside a bounded git cell
   (https egress to the repo host only); `install`/`update` land as drafts
   with `.origin.json` provenance and still need the owner's card.
+- **skill usage telemetry**: `skill()` activations and `skill_view` file
+  reads are journaled by the hub into the owner store's `.state/usage/`
+  (uses, helped, failed, trigger misses, last_used — bounded counters, no
+  content). The agent has no write path to these events; `skills_list`
+  exposes the counters as `stats` and `hubctl skill stats --name <skill>`
+  prints them. `evals/triggers.json` + `evals/evals.json` ship inside a
+  skill for `hubctl skill eval` — an isolated temp-space run scored through
+  an operator eval endpoint (`HUB_SKILL_EVAL_URL`); unavailable models are
+  reported, not fabricated.
 - **code_exec `skill` arg + credentials**: `skill()` reports
   `readiness.setup_needed` with a `form_url` to the protected credential form
   when declared `requires.credentials` lack stored values; a hard requirement

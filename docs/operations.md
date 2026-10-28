@@ -556,6 +556,29 @@ leases it into `GIT_TOKEN` for the cell); the operator path takes
 `GIT_TOKEN` from the environment. Tokens never enter URLs, argv, git
 config, logs or `.origin.json`.
 
+## Skill quality: lint, stats, evals
+
+Every draft carries advisory lint findings in `ScanFindings` (name/dir,
+imperative description ≤1024 with ~250 advisory, ≤500-line body, ≤60
+files, references one level deep, no incident-log shape) — they inform
+the approval card but never block it; dead links stay hard errors.
+
+`hubctl skill stats --dir spaces/<u> --name <s>` prints the hub-journaled
+counters (uses, helped, failed, trigger_misses, last_used) from
+`.state/usage/` — the agent cannot write these events; activations and
+resource reads journal server-side.
+
+`hubctl skill eval --dir spaces/<u> --name <s>` reads `evals/triggers.json`
+and `evals/evals.json` inside the skill, materializes an isolated temp
+space containing only that skill, and scores validation accuracy through
+`HUB_SKILL_EVAL_URL` — an operator eval endpoint that runs each prompt
+against a real model and returns the run receipt (`skill` tool calls mark
+activation). Reports land under `.work/tmp/`; without the endpoint every
+leg reports `model_unavailable` — never a fabricated pass. Platform
+skills ship their trigger suites under `config/skills/*/evals/` and
+`internal/systemguide/evals/`; lint-cleanliness and fixture validity are
+enforced by tests.
+
 ## SSH capability operations
 
 `ssh` entry in `workspace.yaml` `tools:`; `ssh_write`/`ssh_shell`/`ssh_tunnel`

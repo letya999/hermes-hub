@@ -179,6 +179,13 @@ func (s *Store) Manifest(name string) (*Manifest, string, error) {
 	return m, Revision(tree), nil
 }
 
+// LoadTree reads one skill directory from disk into a Tree — the same
+// walk publish uses (dot-free, no symlinks), so eval sandboxes and git
+// imports see the same shape.
+func LoadTree(dir string) (Tree, error) {
+	return loadTree(dir)
+}
+
 // loadTree reads a skill directory into memory.
 func loadTree(dir string) (Tree, error) {
 	tree := Tree{}
@@ -339,7 +346,7 @@ func (s *Store) publish(name string, tree Tree, meta IndexMeta, viaDraft bool) (
 	if _, _, err := ParseSkillMD(name, tree[SkillFile].Data, false); err != nil {
 		return "", err
 	}
-	report := scanTree(tree)
+	report := scanTree(name, tree)
 	if report.Verdict() == "critical" {
 		return "", scanError(report)
 	}

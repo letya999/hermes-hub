@@ -2312,5 +2312,18 @@
     "prerequisites": "Synthetic skill store + stubbed /v1/skill-git + /v1/skill-drafts fixtures; no live git or channel needed",
     "level": "contract",
     "cleanup": "Remove only the synthetic skill trees and drafts created by the test"
+},
+  {
+    "id": "E2E-179",
+    "surface": "hub",
+    "name": "skill eval runner",
+    "title": "hubctl skill eval — isolated space + trigger scoring",
+    "action": "Run hubctl skill eval against a skill with evals/triggers.json through a stubbed eval endpoint.",
+    "expected": "An isolated temp space holds only the named skill; validation accuracy is scored from skill tool calls in run receipts; an absent endpoint reports model_unavailable rather than fabricating a pass; the report persists under .work/tmp/.",
+    "package": "hubctl",
+    "test": "TestSkillEvalRunsTriggersAgainstEndpoint",
+    "prerequisites": "Synthetic store + httptest eval endpoint; live model legs belong to the operator acceptance (#368)",
+    "level": "contract",
+    "cleanup": "Remove only the synthetic stores and temp eval spaces created by the test"
 }
 ]

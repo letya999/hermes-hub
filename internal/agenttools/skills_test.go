@@ -1206,3 +1206,62 @@ func TestServerExposesSkillToolsWithNameEnum(t *testing.T) {
 		t.Fatalf("skill name enum must reflect the effective index: %v", enum)
 	}
 }
+
+// R12.5: skill activation journals a use event in the owner store — the
+// counter is written by the hub, never by the client (A11).
+func TestSkillInvokeJournalsUse(t *testing.T) {
+	tools, dir := skillSpace(t, skillTree(demoSkillMD, nil))
+	execJSON(t, tools, "skill", map[string]any{"name": "demo-skill"})
+	u, err := skillstore.Usage(filepath.Join(dir, "skills"), "demo-skill")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Stats.Uses != 1 || u.Stats.LastUsed == "" {
+		t.Fatalf("usage %+v", u.Stats)
+	}
+}
+
+// R12.5: a resource read journals a view event; a bare listing does not.
+func TestSkillViewJournalsReads(t *testing.T) {
+	tools, dir := skillSpace(t, skillTree(demoSkillMD, map[string]string{"references/guide.md": "g"}))
+	execJSON(t, tools, "skill_view", map[string]any{"name": "demo-skill"})
+	u, err := skillstore.Usage(filepath.Join(dir, "skills"), "demo-skill")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(u.Events) != 0 {
+		t.Fatalf("bare listing must not journal: %+v", u.Events)
+	}
+	execJSON(t, tools, "skill_view", map[string]any{"name": "demo-skill", "path": "references/guide.md"})
+	u, err = skillstore.Usage(filepath.Join(dir, "skills"), "demo-skill")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(u.Events) != 1 || u.Events[0].Kind != "view" {
+		t.Fatalf("events %+v", u.Events)
+	}
+}
+
+// R12.5: skills_list entries carry the hub-owned usage counters — shape
+// only, no event detail.
+func TestSkillsListCarriesUsageStats(t *testing.T) {
+	tools, dir := skillSpace(t, skillTree(demoSkillMD, nil))
+	store := filepath.Join(dir, "skills")
+	if err := skillstore.RecordUsage(store, "demo-skill", "use", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := skillstore.RecordUsage(store, "demo-skill", "helped", "note kept private"); err != nil {
+		t.Fatal(err)
+	}
+	page := execJSON(t, tools, "skills_list", map[string]any{})
+	skills, _ := page["skills"].([]any)
+	entry, _ := skills[0].(map[string]any)
+	stats, _ := entry["stats"].(map[string]any)
+	if stats["uses"] != float64(1) || stats["helped"] != float64(1) || stats["last_used"] == "" {
+		t.Fatalf("stats %+v", stats)
+	}
+	raw, _ := json.Marshal(page)
+	if strings.Contains(string(raw), "note kept private") {
+		t.Fatal("event detail leaked into skills_list")
+	}
+}
