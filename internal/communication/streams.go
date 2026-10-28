@@ -19,6 +19,20 @@ import (
 // next rounds' slots (the subscription still merges one wake per round).
 const streamSourceConcurrency = 8
 
+// streamWaitBudget shapes each source's connector-side wait bound (cap is
+// budget-5s split across the round's inputs); streamCallBudget is the
+// whole tool-call deadline — larger, because a serialized connector queues
+// waits behind other watches' holds. sampleCallBudget similarly tolerates
+// a queued wait behind live streams; sampleWaitBudget keeps the probe's
+// own hold short.
+const (
+	streamWaitBudget = 30 * time.Second
+	streamWaitCap    = 25 * time.Second
+	streamCallBudget = 60 * time.Second
+	sampleWaitBudget = 15 * time.Second
+	sampleCallBudget = 45 * time.Second
+)
+
 // streamSource reloads the schedule each poll round so pause, snooze,
 // delete or owner changes stop the loop on live durable state.
 func (g *Gateway) streamSource(id string) (Schedule, error) {
@@ -211,7 +225,7 @@ func (s *Spool) streamIDs(now time.Time) map[string]bool {
 // streamToolCall runs one stream call under a 30s budget (bounded wait
 // tools hold the call near a batch) with the wait bound injected.
 func (g *Gateway) streamToolCall(ctx context.Context, principalID string, probe *WatchProbe) ([]byte, error) {
-	return g.toolCallProbeWithin(ctx, principalID, streamProbe(probe), 30*time.Second)
+	return g.toolCallProbeWithin(ctx, principalID, streamProbe(probe), streamCallBudget)
 }
 
 // streamProbe returns the probe with a wait bound inside the call budget
@@ -222,14 +236,17 @@ func streamProbe(probe *WatchProbe) *WatchProbe {
 	if probe == nil {
 		return nil
 	}
-	return streamProbeWithin(probe, 30*time.Second)
+	return streamProbeWithin(probe, streamWaitBudget, 1)
 }
 
 // streamProbeWithin clamps owner-declared wait bounds so the connector call
 // returns before the caller's budget expires: a bound at or past the budget
 // turns every round into a context deadline and the subscription goes silent.
-func streamProbeWithin(probe *WatchProbe, budget time.Duration) *WatchProbe {
-	cap := float64(budget/time.Second) - 5
+// share divides the bound across the round's fan-out inputs: a serialized
+// connector serves one wait at a time, so N inputs each holding the full
+// cap overflow the round.
+func streamProbeWithin(probe *WatchProbe, budget time.Duration, share int) *WatchProbe {
+	cap := float64(budget/time.Second-5) / float64(share)
 	p := *probe
 	args := make(map[string]any, len(probe.Args)+1)
 	for k, v := range probe.Args {
@@ -246,7 +263,7 @@ func streamProbeWithin(probe *WatchProbe, budget time.Duration) *WatchProbe {
 	}
 	if strings.Contains(p.Tool, "wait") || strings.Contains(p.Tool, "new_message") {
 		if _, ok := p.Args["timeout"]; !ok {
-			p.Args["timeout"] = 20
+			p.Args["timeout"] = int(min(20, cap))
 		} else if v := argSeconds(p.Args["timeout"]); v > cap {
 			p.Args["timeout"] = int(cap)
 		}
@@ -329,14 +346,16 @@ type watchSample struct {
 
 // probeRound runs one bounded round over the probe's acquisition inputs:
 // a single unlabelled result for a plain probe, or one result per source
-// under bounded concurrency for probe.sources. The caller's toolCall sets
-// the per-call budget and wait-bound injection.
-func (g *Gateway) probeRound(ctx context.Context, schedule Schedule, toolCall func(context.Context, string, *WatchProbe) ([]byte, error)) []sourceResult {
+// under bounded concurrency for probe.sources. waitBudget shapes each
+// source's wait bound so the round's serialized waits fit the caller's
+// per-call budget; the caller's toolCall sets that budget.
+func (g *Gateway) probeRound(ctx context.Context, schedule Schedule, waitBudget time.Duration, toolCall func(context.Context, string, *WatchProbe) ([]byte, error)) []sourceResult {
 	probe := schedule.Probe
 	if len(probe.Sources) == 0 {
-		body, err := toolCall(ctx, schedule.Envelope.PrincipalID, probe)
+		body, err := toolCall(ctx, schedule.Envelope.PrincipalID, streamProbeWithin(probe, waitBudget, 1))
 		return []sourceResult{{body: body, err: err}}
 	}
+	share := min(len(probe.Sources), streamSourceConcurrency)
 	results := make([]sourceResult, len(probe.Sources))
 	var wg sync.WaitGroup
 	slots := make(chan struct{}, streamSourceConcurrency)
@@ -352,7 +371,7 @@ func (g *Gateway) probeRound(ctx context.Context, schedule Schedule, toolCall fu
 				results[i].err = ctx.Err()
 				return
 			}
-			body, err := toolCall(ctx, schedule.Envelope.PrincipalID, probeForSource(probe, src))
+			body, err := toolCall(ctx, schedule.Envelope.PrincipalID, streamProbeWithin(probeForSource(probe, src), waitBudget, share))
 			results[i].body, results[i].err = body, err
 		}(i, src)
 	}
@@ -373,10 +392,7 @@ func (g *Gateway) sampleRoutine(ctx context.Context, id string, caller identity.
 	if sched.Envelope.PrincipalID != caller.PrincipalID {
 		return watchSample{}, ErrRoutineNotOwned
 	}
-	bounded := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
-		return toolCall(ctx, principal, streamProbeWithin(probe, 15*time.Second))
-	}
-	results := g.probeRound(ctx, sched, bounded)
+	results := g.probeRound(ctx, sched, sampleWaitBudget, toolCall)
 	out := watchSample{ScheduleID: id, Sources: make([]sampleSourceReport, 0, len(results))}
 	probe := sched.Probe
 	filter := probe.Filter
@@ -416,7 +432,7 @@ func (g *Gateway) sampleRoutine(ctx context.Context, id string, caller identity.
 // event scoped by its source label so connector id namespaces never
 // collide across inputs.
 func (g *Gateway) streamPollOnce(ctx context.Context, schedule Schedule, toolCall func(context.Context, string, *WatchProbe) ([]byte, error)) ([]Event, bool) {
-	results := g.probeRound(ctx, schedule, toolCall)
+	results := g.probeRound(ctx, schedule, streamWaitBudget, toolCall)
 	overflowed, blocked := g.spool.settleStreamResults(schedule, results, g.now().UTC(), g.authorizeOccurrence)
 	for _, ev := range overflowed {
 		if schedule.Probe == nil || schedule.Probe.RequeueTool == "" {

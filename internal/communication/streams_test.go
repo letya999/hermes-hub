@@ -934,13 +934,65 @@ func TestStreamProbeClampsOversizedWaitBounds(t *testing.T) {
 // The sample path runs probe rounds under a tighter 15s budget; wait bounds
 // valid for the 30s loop must still fit inside it.
 func TestStreamProbeClampsForSampleBudget(t *testing.T) {
-	clamped := streamProbeWithin(&WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait_for_new_message-a", Args: map[string]any{"timeout": 25}}, 15*time.Second)
+	clamped := streamProbeWithin(&WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait_for_new_message-a", Args: map[string]any{"timeout": 25}}, 15*time.Second, 1)
 	if v := argSeconds(clamped.Args["timeout"]); v <= 0 || v >= 15 {
 		t.Fatalf("timeout 25 must clamp under the 15s sample budget: %v", clamped.Args)
 	}
-	clamped = streamProbeWithin(&WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait_for_settled_message-a", Args: map[string]any{"max_wait_ms": 25000}}, 15*time.Second)
+	clamped = streamProbeWithin(&WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait_for_settled_message-a", Args: map[string]any{"max_wait_ms": 25000}}, 15*time.Second, 1)
 	if v := argSeconds(clamped.Args["max_wait_ms"]); v <= 0 || v >= 15000 {
 		t.Fatalf("max_wait_ms 25000 must clamp under the 15s sample budget: %v", clamped.Args)
+	}
+}
+
+// Fan-out sources share one serialized connector downstream: N sources
+// each waiting the full per-call cap overflow the round budget — the last
+// queued call always lands past its deadline. Each source's wait bound
+// must take its share of the budget instead.
+func TestStreamProbeSharesWaitBudgetAcrossSources(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	sched, err := s.CreateSchedule(Schedule{ScheduleID: "share", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "watch", JobKind: "event", Delivery: "stream", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait_for_new_message-a", Args: map[string]any{"timeout": 20}, Sources: []WatchProbeSource{{Name: "a", Args: map[string]any{"chat_id": 1}}, {Name: "b", Args: map[string]any{"chat_id": 2}}}}}, caller, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	timeouts := map[string]float64{}
+	toolCall := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
+		mu.Lock()
+		timeouts[fmt.Sprint(probe.Args["chat_id"])] = argSeconds(probe.Args["timeout"])
+		mu.Unlock()
+		return []byte(`{"event": false}`), nil
+	}
+	g.streamPollOnce(context.Background(), sched, toolCall)
+	for label, v := range timeouts {
+		if v <= 0 || v > 13 {
+			t.Fatalf("source %s wait bound %v must share the round budget: %v", label, v, timeouts)
+		}
+	}
+	sched2, err := s.CreateSchedule(Schedule{ScheduleID: "share-def", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "watch", JobKind: "event", Delivery: "stream", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait_for_new_message-a", Sources: []WatchProbeSource{{Name: "a", Args: map[string]any{"chat_id": 1}}, {Name: "b", Args: map[string]any{"chat_id": 2}}}}}, caller, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	timeouts = map[string]float64{}
+	g.streamPollOnce(context.Background(), sched2, toolCall)
+	for label, v := range timeouts {
+		if v <= 0 || v > 13 {
+			t.Fatalf("source %s default wait bound %v must share the round budget: %v", label, v, timeouts)
+		}
+	}
+}
+
+// A serialized connector holds one wait at a time: a stream call queued
+// behind another watch's wait must still fit its budget, so the call
+// budget must cover at least two full wait windows plus margin. Live
+// evidence: with several watches on one connector, 30s calls alternated
+// successes with context-deadline errors until the budget grew.
+func TestStreamCallBudgetCoversSerializedWaits(t *testing.T) {
+	if streamCallBudget <= 2*streamWaitCap {
+		t.Fatalf("stream call budget %v cannot cover a queued serialized wait window %v", streamCallBudget, streamWaitCap)
+	}
+	if sampleCallBudget <= 15*time.Second {
+		t.Fatalf("sample call budget %v cannot cover a queued wait plus the probe itself", sampleCallBudget)
 	}
 }
 

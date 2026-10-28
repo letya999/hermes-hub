@@ -355,7 +355,7 @@ func (g *Gateway) handleRoutineItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		toolCall := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
-			return g.toolCallProbeWithin(ctx, principal, probe, 15*time.Second)
+			return g.toolCallProbeWithin(ctx, principal, probe, sampleCallBudget)
 		}
 		sample, err := g.sampleRoutine(r.Context(), id, caller, req.Filter, toolCall)
 		if err != nil {
