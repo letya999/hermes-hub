@@ -71,3 +71,26 @@ huggingface-hub/protobuf unpinned in image.
 
 77 images / 55.9GB (30.9GB reclaimable); 29 `hermes-hub-dev-*` overlay tags;
 volumes 17.8GB (96% reclaimable); build cache 18.6GB.
+
+## Scanner availability (2026-10-27 update)
+
+Trivy/Grype per-image CVE counts were not collected: no scanner is installed
+locally and the session directive forbids Docker delivery work. The gate ships
+fail-closed regardless; scanner baselines remain a CI-side acceptance item for
+CHG-0187 (recorded in state.yaml limitations).
+
+## Budget gate contract (implemented)
+
+- `go run ./cmd/devcheck image-budget IMAGE ROLE` (roles: core, control,
+  runtime, browser). Missing/uninspectable image fails closed (R0.3).
+- Size: `docker image inspect .Size` against `imageRoleBudgets` in
+  internal/devcheck/image_budget.go (single role->budget map).
+- Probe: `docker run --rm --entrypoint /bin/sh IMAGE -c <budgetProbe>` prints
+  `binary|tree|setuid PATH` records; verdict rejects setuid on every role and
+  binary/tree findings on core/control. Trees (e.g. /usr/lib/chromium,
+  /opt/hermes/.venv, /usr/lib/python3, /usr/local/lib/node_modules) survive
+  binary renames.
+- CI: `image` job publishes `<target>-core`/`<target>-browser` alongside
+  `<target>`/`<target>-control` and runs image-budget on all four pulls.
+- Role images not yet built locally are pending: the gate is designed and
+  unit-tested, first real-image evidence arrives with the CI image job.

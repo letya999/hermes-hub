@@ -49,7 +49,6 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "hermes")), "target": "/state/hermes"},
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "connections", "google")), "target": "/state/google"},
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "connections", "telegram")), "target": "/state/telegram"},
-		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "connections", "browser")), "target": "/state/browser"},
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "home")), "target": "/state/home"},
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "cache")), "target": "/state/cache"},
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "workspace")), "target": "/workspace"},
@@ -106,11 +105,10 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(source), "target": m.To, "read_only": readOnly})
 	}
 	ports := []string{}
-	if s.Has("browser") || s.Has("meet") {
-		ports = append(ports, fmt.Sprintf("127.0.0.1:%d:6080", s.BrowserPort))
-	}
-	// Legacy self-service connectors use this callback; managed connectors are
-	// admitted through the control plane and do not expose it from Hermes.
+	// SPEC-0082 R4.2: the noVNC publish lives on the browser sidecar, not the
+	// runtime — the runtime carries no display surface at all. The OAuth port
+	// stays: legacy self-service connectors use this callback; managed
+	// connectors are admitted through the control plane and do not expose it.
 	if s.CapabilityMode != "managed" {
 		ports = append(ports, fmt.Sprintf("127.0.0.1:%d:8000", s.OAuthPort))
 	}
@@ -137,6 +135,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		runtimeEnv["HUB_BOOTSTRAP_REVISION"] = fmt.Sprint(s.Workspace.BootstrapRevision)
 	}
 	runtimeEnv["HUB_SCOPE_KIND"] = string(UserScope)
+	if s.Has("browser") || s.Has("meet") {
+		// R4.3: the browser lives in the per-space sidecar; the runtime's
+		// browser_cdp tool and health probe attach over the internal alias.
+		runtimeEnv["BROWSER_CDP_URL"] = "http://browser-" + s.User + ":9222"
+	}
 	if scope, err := ReadScope(dir); err == nil && scope.Kind == GroupScope {
 		runtimeEnv["HUB_SCOPE_KIND"] = string(GroupScope)
 	}
@@ -213,10 +216,25 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(GeneratedPluginsDir(dir), name)), "target": "/opt/hermes/plugins/" + name, "read_only": true})
 		}
 	}
-	// Core and control targets share BuildKit layers; only control needs Docker.
-	common := M{"image": "hermes-hub:0.4.0-" + s.Environment, "init": true, "restart": "unless-stopped", "user": fmt.Sprintf("10001:%d", max(0, os.Getgid())), "read_only": true, "cap_drop": []string{"ALL"}, "security_opt": []string{"no-new-privileges:true"}, "shm_size": "1gb", "tmpfs": []string{"/tmp:uid=10001,gid=10001,mode=1777"}, "extra_hosts": M{"host.docker.internal": "host-gateway"}, "logging": M{"driver": "local", "options": M{"max-size": "10m", "max-file": "3"}}}
-	coreBuild := M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile", "target": s.Environment}
-	runtimeService := cloneMap(common)
+	// SPEC-0082 R3: role commons — daemons run the lean core image, Docker
+	// consumers the control image, only hermes-runtime keeps the agent image.
+	common := M{"init": true, "restart": "unless-stopped", "user": fmt.Sprintf("10001:%d", max(0, os.Getgid())), "read_only": true, "cap_drop": []string{"ALL"}, "security_opt": []string{"no-new-privileges:true"}, "tmpfs": []string{"/tmp:uid=10001,gid=10001,mode=1777"}, "extra_hosts": M{"host.docker.internal": "host-gateway"}, "logging": M{"driver": "local", "options": M{"max-size": "10m", "max-file": "3"}}}
+	coreCommon := cloneMap(common)
+	coreCommon["image"] = "hermes-hub:0.4.0-" + s.Environment + "-core"
+	controlCommon := cloneMap(common)
+	controlCommon["image"] = "hermes-hub:0.4.0-" + s.Environment + "-control"
+	runtimeCommon := cloneMap(common)
+	runtimeCommon["image"] = "hermes-hub:0.4.0-" + s.Environment
+	imageBuild := func(target string) M {
+		return M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile", "target": target}
+	}
+	coreBuild := imageBuild(s.Environment + "-core")
+	runtimeService := cloneMap(runtimeCommon)
+	// The service builds its own agent tag: renders that drop hermes-runtime
+	// (supervisor/managed) get the image through the explicit hubctl build.
+	runtimeService["build"] = imageBuild(s.Environment)
+	// SPEC-0082 R4.1: the Chromium workload lives in the browser sidecar —
+	// shm_size moved there with it; the runtime allocates none.
 	runtimeService["env_file"] = runtimeEnvFiles
 	runtimeService["environment"] = runtimeEnv
 	runtimeService["volumes"] = stateVolumes
@@ -277,6 +295,47 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		}
 	}
 	services := M{"hermes-runtime": runtimeService}
+	// SPEC-0082 R4: the per-space browser sidecar owns the headed-Chromium
+	// display stack. CDP binds inside the container and is reachable only on
+	// the space network through the browser-<user> alias; the sole published
+	// port is authenticated noVNC on host loopback.
+	if s.Has("browser") || s.Has("meet") {
+		browserService := cloneMap(common)
+		browserService["image"] = "hermes-hub:0.4.0-" + s.Environment + "-browser"
+		browserService["build"] = imageBuild(s.Environment + "-browser")
+		browserService["shm_size"] = "1gb"
+		// SPEC-0083 R1: bounded like toolhub — Chromium under Xvfb plus two
+		// pw-mcp processes plus the meet NodeServer is the heaviest per-space
+		// workload; the 1gb shm counts against the memory limit.
+		browserService["cpus"] = "2.0"
+		browserService["mem_limit"] = "3g"
+		browserService["pids_limit"] = 256
+		browserService["ports"] = []string{fmt.Sprintf("127.0.0.1:%d:6080", s.BrowserPort)}
+		browserService["environment"] = M{"HUB_MEET": fmt.Sprint(s.Has("meet"))}
+		browserVolumes := []any{
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "connections", "browser")), "target": "/state/browser"},
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "workspace")), "target": "/workspace"},
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "browser-novnc.passwd")), "target": "/run/novnc.pass", "read_only": true},
+		}
+		if s.Has("meet") {
+			// The node shares the runtime's meetings dir so auth_state and
+			// out_dir RPC paths resolve identically on both containers; the
+			// rendered token lands at upstream's default token_path, mounted
+			// read-only — NodeServer reuses it and never writes.
+			browserVolumes = append(browserVolumes,
+				M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "hermes", "workspace", "meetings")), "target": "/state/hermes/workspace/meetings"},
+				M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "meet-node-token.json")), "target": "/state/hermes/workspace/meetings/node_token.json", "read_only": true})
+		}
+		browserService["volumes"] = browserVolumes
+		if s.CapabilityMode == "managed" {
+			// Managed runtimes spawn onto the private per-space agent network;
+			// the sidecar lives only there so CDP stays unreachable off-space.
+			browserService["networks"] = M{managedAgentNetwork(s): M{"aliases": []string{"browser-" + s.User}}}
+		} else {
+			browserService["networks"] = M{"default": M{"aliases": []string{"browser-" + s.User}}}
+		}
+		services["browser-"+s.User] = browserService
+	}
 	hostRuntimeDir := filepath.ToSlash(filepath.Join(dir, "runtime"))
 	hostCliproxyDir := filepath.ToSlash(filepath.Join(dir, "cliproxy"))
 	stateBind := M{"type": "bind", "source": hostRuntimeDir, "target": "/state"}
@@ -312,9 +371,8 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	sharedNetworks := []string{"default", sharedNetworkName}
 	containerSupervisor := infra && includeGateway && s.ExecutionMode == "supervisor" && s.SupervisorURL == "http://supervisor:8876"
 	if containerSupervisor {
-		svc := cloneMap(common)
-		svc["image"] = "hermes-hub:0.4.0-" + s.Environment + "-control"
-		svc["build"] = M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile", "target": s.Environment + "-control"}
+		svc := cloneMap(controlCommon)
+		svc["build"] = imageBuild(s.Environment + "-control")
 		svc["entrypoint"] = []string{"hubctl", "supervisor", "--spaces", "/spaces", "--env", s.Environment, "--runtime-image", "hermes-hub:0.4.0-" + s.Environment, "--supervisor-listen", "0.0.0.0:8876", "--supervisor-allow-wildcard-listen"}
 		svc["environment"] = M{"HUB_SUPERVISOR_AUTH": "${HUB_SUPERVISOR_AUTH:?set HUB_SUPERVISOR_AUTH or provision supervisor.auth for this stack}", "HUB_SUPERVISOR_HOST_SPACES": filepath.ToSlash(filepath.Dir(dir)), "HOME": "/tmp", "TZ": s.Timezone,
 			// Opt-in authorities stay disabled unless the operator provisions
@@ -341,7 +399,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		egressHosts = managedEgressHosts(s, dir)
 	}
 	if s.CapabilityMode == "managed" {
-		modelRelay := cloneMap(common)
+		modelRelay := cloneMap(coreCommon)
 		modelRelay["entrypoint"] = []string{"hub-runtime", "model-relay"}
 		// The merged models.yaml (spaces -> org -> user layers) mounts
 		// read-only; provider key_env names resolve from the space's own
@@ -376,7 +434,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// colliding with other spaces' model-relay service names.
 		modelRelay["networks"] = M{sharedNetworkName: M{"aliases": []string{"model-relay-" + s.User}}, managedAgentNetwork(s): M{}}
 		services["model-relay"] = modelRelay
-		toolhubRelay := cloneMap(common)
+		toolhubRelay := cloneMap(coreCommon)
 		toolhubRelay["entrypoint"] = []string{"hub-runtime", "toolhub-relay"}
 		toolhubRelay["extra_hosts"] = M{}
 		toolhubRelay["networks"] = M{sharedNetworkName: M{}, managedAgentNetwork(s): M{"aliases": []string{"toolhub"}}}
@@ -385,7 +443,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			// The managed agent network has no default route; the reviewed
 			// web/sibling reachability for the runtime goes through this
 			// allowlisted forward proxy and nowhere else.
-			egressRelay := cloneMap(common)
+			egressRelay := cloneMap(coreCommon)
 			egressRelay["entrypoint"] = []string{"hub-runtime", "egress-relay"}
 			egressRelay["environment"] = M{"HUB_EGRESS_RELAY_HOSTS": strings.Join(egressHosts, ",")}
 			egressRelay["extra_hosts"] = M{}
@@ -394,7 +452,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		}
 	}
 	if infra {
-		cliproxy := cloneMap(common)
+		cliproxy := cloneMap(coreCommon)
 		cliproxy["build"] = coreBuild
 		cliproxy["entrypoint"] = []string{"cli-proxy-api", "-config", "/cliproxy/config.yaml"}
 		cliproxy["volumes"] = []any{M{"type": "bind", "source": hostCliproxyDir, "target": "/cliproxy"}}
@@ -462,9 +520,8 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "toolhub-tokens.json")), "target": "/run/toolhub-tokens.json", "read_only": true})
 			toolhubEnv["HUB_TOOLHUB_TOKENS_FILE"] = "/run/toolhub-tokens.json"
 		}
-		toolhub := cloneMap(common)
-		toolhub["image"] = "hermes-hub:0.4.0-" + s.Environment + "-control"
-		toolhub["build"] = M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile", "target": s.Environment + "-control"}
+		toolhub := cloneMap(controlCommon)
+		toolhub["build"] = imageBuild(s.Environment + "-control")
 		toolhub["entrypoint"] = []string{"toolhub"}
 		toolhub["env_file"] = []any{M{"path": filepath.ToSlash(filepath.Join(dir, "runtime.auth")), "format": "raw"}, M{"path": filepath.ToSlash(filepath.Join(dir, "toolhub.auth")), "format": "raw"}}
 		toolhub["environment"] = toolhubEnv
@@ -482,8 +539,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		toolhub["pids_limit"] = 128
 		services["toolhub"] = toolhub
 
-		controller := cloneMap(common)
-		controller["image"] = toolhub["image"]
+		controller := cloneMap(controlCommon)
 		controller["entrypoint"] = []string{"hubctl", "connector", "generic-controller", "--config", "/state/generic-controller.json", "--listen", "0.0.0.0:8545", "--token-file", "/state/generic-controller.key"}
 		// The controller resolves principal-scoped cell binds inside /spaces —
 		// a read-only view of the whole spaces root — and translates them to
@@ -499,7 +555,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		controller["ports"] = []string{"127.0.0.1:8545:8545"}
 		services["workload-controller"] = controller
 
-		broker := cloneMap(common)
+		broker := cloneMap(coreCommon)
 		broker["entrypoint"] = []string{"credential-broker", "serve", "--config", "/var/lib/credential-broker/config.json", "--state-witness-dir", "/var/lib/credential-broker-recovery"}
 		// The dedicated tmpfs volume lets Broker leases reach ToolHub and the
 		// controller without exposing Broker's encrypted store to MCP workloads.
@@ -518,7 +574,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	// after the owner so its implicit Compose aliases can never collide
 	// with the shared infra "cliproxy" name on the runtime network.
 	if !infra && s.Cliproxy == "dedicated" {
-		cliproxy := cloneMap(common)
+		cliproxy := cloneMap(coreCommon)
 		cliproxy["build"] = coreBuild
 		cliproxy["entrypoint"] = []string{"cli-proxy-api", "-config", "/cliproxy/config.yaml"}
 		cliproxy["volumes"] = []any{M{"type": "bind", "source": hostCliproxyDir, "target": "/cliproxy"}}
@@ -532,7 +588,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		if s.ExecutionMode != "" {
 			supervisorURL = s.SupervisorURL
 		}
-		gateway := cloneMap(common)
+		gateway := cloneMap(coreCommon)
 		gateway["entrypoint"] = []string{"communication-hub"}
 		gatewayEnvFiles := []any{M{"path": filepath.ToSlash(filepath.Join(dir, "communication."+s.Environment+".env")), "format": "raw"}}
 		if s.Has("telegram_auth") {
@@ -561,19 +617,15 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			gatewayEnvFiles = append(gatewayEnvFiles, M{"path": filepath.ToSlash(filepath.Join(dir, "model-relay.auth")), "format": "raw"})
 		}
 		if s.Has("transcription") {
+			// SPEC-0082 R2: voice is service-only — the gateway talks to the
+			// dedicated hub-stt/hub-tts services or reports voice unavailable.
 			gatewayEnvironment["HUB_STT_URL"] = "http://hub-stt:8090"
 			gatewayEnvironment["HUB_TTS_URL"] = "http://hub-tts:8090"
-			// The embedded command workers stay configured as the documented
-			// fallback; when the URL is set the sidecar wins at selection time.
-			gatewayEnvironment["HUB_STT_COMMAND"] = "/usr/local/bin/hub-stt"
-			gatewayEnvironment["HUB_TTS_COMMAND"] = "/usr/local/bin/hub-tts"
 			// Per-language voice overrides reach the gateway unchanged; the
 			// sidecar's own env carries the installed-voice list.
 			for _, key := range []string{"HUB_TTS_VOICE", "HUB_TTS_VOICE_EN", "HUB_TTS_VOICE_RU", "HUB_TTS_VOICE_KK", "HUB_TTS_VOICE_ES"} {
 				gatewayEnvironment[key] = "${" + key + ":-}"
 			}
-			gatewayEnvironment["HF_HOME"] = "/data/hf"
-			gatewayEnvironment["XDG_CACHE_HOME"] = "/data/cache"
 			gatewayEnvFiles = append(gatewayEnvFiles, M{"path": filepath.ToSlash(filepath.Join(dir, "media.auth")), "format": "raw"})
 		}
 		if s.ExecutionMode != "" {
@@ -692,7 +744,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	// configured the engines fall back to env keys — meaningful only outside
 	// the rendered stack, since compose no longer mounts a media env file.
 	if infra && s.Has("image_gen") {
-		mediaSvc := cloneMap(common)
+		mediaSvc := cloneMap(coreCommon)
 		mediaSvc["entrypoint"] = []string{"hub-media"}
 		mediaEnv := M{
 			"HUB_MEDIA_LISTEN": "0.0.0.0:8090",

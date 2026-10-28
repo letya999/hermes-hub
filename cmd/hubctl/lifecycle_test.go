@@ -164,3 +164,45 @@ func TestLifecycleAndFailurePropagation(t *testing.T) {
 		t.Fatal("missing env accepted")
 	}
 }
+
+func TestBuildCoversRuntimeTagWhenRuntimeNotRendered(t *testing.T) {
+	// SPEC-0082 R3: supervisor/managed renders drop hermes-runtime, so no
+	// compose build section produces the spawned-runtime tag. hubctl must
+	// build it explicitly, the same way it builds the cell images.
+	d := filepath.Join(t.TempDir(), "space")
+	if err := stack.InitEnvironment(d, "owner", "prod"); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := stack.Read(d)
+	s.Model, s.ModelURL = "test", "http://model.invalid/v1"
+	s.Ingress = append(s.Ingress, "telegram")
+	if err := stack.WriteSpace(d, s); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte("OPENAI_API_KEY=fake-for-test\nTELEGRAM_BOT_TOKEN=synthetic-bot\nTELEGRAM_ALLOWED_USERS=11\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(d, stack.ExecutionPath("prod")), []byte(`{"schema":1,"user":"owner","environment":"prod","mode":"supervisor","supervisor_url":"http://host.docker.internal:8876","native_cron":"disabled","compatibility_release":"0.4.0"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	log := filepath.Join(bin, "args")
+	name := "docker"
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HUB_TEST_LOG\"\n"
+	if runtime.GOOS == "windows" {
+		name = "docker.cmd"
+		script = "@echo off\r\n>>\"%HUB_TEST_LOG%\" echo %*\r\nexit /b 0\r\n"
+	}
+	if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("HUB_TEST_LOG", log)
+	if err := run(context.Background(), []string{"build", "--dir", d, "--root", "../.."}); err != nil {
+		t.Fatal(err)
+	}
+	calls, _ := os.ReadFile(log)
+	if !strings.Contains(string(calls), "build --target prod -t hermes-hub:0.4.0-prod") {
+		t.Fatalf("supervisor render left the spawned-runtime tag unbuilt: %s", calls)
+	}
+}

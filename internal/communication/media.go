@@ -50,33 +50,24 @@ type Synthesizer interface {
 	Synthesize(ctx context.Context, lang locale.Lang, text string) ([]byte, string, error)
 }
 
-func commandSynthesizer(command string) Synthesizer {
-	if strings.TrimSpace(command) == "" {
-		return nil
-	}
-	return CommandSynthesizer{Command: command, Timeout: 30 * time.Second}
-}
-
-// serviceTranscriber prefers the standalone STT service when its URL is
-// configured; the embedded command worker stays as the fallback path.
-func serviceTranscriber(base, auth, command string, timeout time.Duration) Transcriber {
+// serviceTranscriber selects the standalone STT service or nothing — voice is
+// service-only (SPEC-0082 R2), so a missing URL reports the typed unavailable
+// status rather than falling back to an in-image worker binary.
+func serviceTranscriber(base, auth string, timeout time.Duration) Transcriber {
 	if timeout <= 0 {
 		timeout = defaultSTTTimeout
 	}
 	if strings.TrimSpace(base) != "" {
 		return HTTPTranscriber{Base: strings.TrimRight(base, "/"), Auth: auth, Timeout: timeout}
 	}
-	if strings.TrimSpace(command) == "" {
-		return nil
-	}
-	return CommandTranscriber{Command: command, Timeout: timeout}
+	return nil
 }
 
-func serviceSynthesizer(base, auth, voice string, voices map[locale.Lang]string, command string) Synthesizer {
+func serviceSynthesizer(base, auth, voice string, voices map[locale.Lang]string) Synthesizer {
 	if strings.TrimSpace(base) != "" {
 		return HTTPSynthesizer{Base: strings.TrimRight(base, "/"), Auth: auth, Voice: voice, Voices: voices, Timeout: 30 * time.Second}
 	}
-	return commandSynthesizer(command)
+	return nil
 }
 
 // commandAvailable reports whether the configured worker binary can actually

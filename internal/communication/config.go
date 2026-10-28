@@ -52,8 +52,6 @@ type Config struct {
 	ListenAddr        string                 `yaml:"-"`
 	FormOrigin        string                 `yaml:"-"`
 	NativeCron        string                 `yaml:"-"`
-	STTCommand        string                 `yaml:"-"`
-	TTSCommand        string                 `yaml:"-"`
 	STTURL            string                 `yaml:"-"`
 	STTAuth           string                 `yaml:"-"`
 	TTSURL            string                 `yaml:"-"`
@@ -434,8 +432,9 @@ func fillChannelSecrets(config *Config) {
 	config.TelegramAuthAPIID = os.Getenv("HUB_TELEGRAM_AUTH_API_ID")
 	config.TelegramAuthAPIHash = os.Getenv("HUB_TELEGRAM_AUTH_API_HASH")
 	config.NativeCron = os.Getenv("HUB_NATIVE_CRON")
-	config.STTCommand = os.Getenv("HUB_STT_COMMAND")
-	config.TTSCommand = os.Getenv("HUB_TTS_COMMAND")
+	// SPEC-0082 R2: transcription/synthesis is service-only (HUB_STT_URL /
+	// HUB_TTS_URL). The in-image command workers are gone; the gateway reports
+	// the typed unavailable status when no URL is configured.
 	config.STTURL = os.Getenv("HUB_STT_URL")
 	config.STTAuth = envOr("HUB_STT_AUTH", os.Getenv("HUB_MEDIA_AUTH"))
 	config.TTSURL = os.Getenv("HUB_TTS_URL")

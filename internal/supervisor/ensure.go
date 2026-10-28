@@ -308,6 +308,35 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 		}
 		return Runtime{}, fmt.Errorf("start runtime: %w: %s", runErr, firstLine(string(out)))
 	}
+	if managedSettings.Has("browser") || managedSettings.Has("meet") {
+		// SPEC-0083 R2: the sidecar sleeps between uses; `docker start` is
+		// idempotent — running is a no-op, a slept one resumes before the
+		// runtime probes readiness. A failed start is the same severity class
+		// as a missing space network: fail the spawn and reclaim.
+		if err := m.ensureBrowserSidecar(ctx, binding.UserID); err != nil {
+			cleanupErr := m.removeOwnedRuntime(ctx, logical.Runtime)
+			m.markDegraded(key)
+			if cleanupErr == nil || errors.Is(cleanupErr, ErrRuntimeMissing) {
+				m.releaseSlot(key)
+			}
+			return Runtime{}, err
+		}
+	}
+	if !managed && (managedSettings.Has("browser") || managedSettings.Has("meet")) {
+		// The browser sidecar answers as browser-<user> on the space's compose
+		// default network; spawned runtimes join the shared net only, so
+		// dual-home them here. Managed runtimes already sit on the agent net
+		// the sidecar aliases into.
+		spaceNet := "hermes-hub-" + binding.UserID + "-" + m.environment() + "_default"
+		if out, connectErr := m.command(ctx, "network", "connect", spaceNet, container); connectErr != nil {
+			cleanupErr := m.removeOwnedRuntime(ctx, logical.Runtime)
+			m.markDegraded(key)
+			if cleanupErr == nil || errors.Is(cleanupErr, ErrRuntimeMissing) {
+				m.releaseSlot(key)
+			}
+			return Runtime{}, fmt.Errorf("attach browser network %s (run hubctl up for this space): %w: %s", spaceNet, connectErr, firstLine(string(out)))
+		}
+	}
 	if err = m.ready(ctx, address, binding.runtimeAuth); err != nil {
 		cleanupErr := m.removeOwnedRuntime(ctx, logical.Runtime)
 		m.markDegraded(key)
@@ -469,7 +498,7 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 			args = append(args, "-e", key+"="+fmt.Sprint(service["environment"].(stack.M)[key]))
 		}
 	}
-	for _, mount := range []struct{ source, target string }{{"runtime", "/state"}, {"hermes", "/state/hermes"}, {"connections/google", "/state/google"}, {"connections/telegram", "/state/telegram"}, {"connections/browser", "/state/browser"}, {"home", "/state/home"}, {"cache", "/state/cache"}, {"workspace", "/workspace"}, {"archive", "/archive"}} {
+	for _, mount := range []struct{ source, target string }{{"runtime", "/state"}, {"hermes", "/state/hermes"}, {"connections/google", "/state/google"}, {"connections/telegram", "/state/telegram"}, {"home", "/state/home"}, {"cache", "/state/cache"}, {"workspace", "/workspace"}, {"archive", "/archive"}} {
 		value := "type=bind,src=" + filepath.Join(binding.ContextRoot, filepath.FromSlash(mount.source)) + ",dst=" + mount.target
 		if mount.target == "/archive" {
 			value += ",readonly"
@@ -566,7 +595,7 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 			args = append(args, "--mount", "type=bind,src="+file.source+",dst="+file.target+",readonly")
 		}
 	}
-	args = append(args, "--add-host", "host.docker.internal:host-gateway", "--tmpfs", "/tmp:uid=10001,gid=10001,mode=1777", "--shm-size", "1gb")
+	args = append(args, "--add-host", "host.docker.internal:host-gateway", "--tmpfs", "/tmp:uid=10001,gid=10001,mode=1777")
 	args = append(args, "-e", "HUB_RUNTIME_LISTEN=0.0.0.0:"+strconv.Itoa(m.cfg.RuntimePort), "-e", "HUB_STATE=/state", "-e", "HUB_WORKSPACE=/workspace", "-e", "HERMES_HOME=/state/hermes", "-e", "HOME=/state/home", "-e", "HUB_USER_ID="+binding.UserID, "-e", "HUB_ORGANIZATION_ID="+binding.OrganizationID, "-e", "HUB_RUNTIME_ID="+binding.RuntimeID, "-e", "HUB_POLICY_VERSION="+binding.PolicyVersion, "-e", "API_SERVER_ENABLED=true", "-e", "API_SERVER_HOST=127.0.0.1", "-e", "API_SERVER_PORT=8642")
 	if generation != "" {
 		args = append(args, "-e", "HUB_RUNTIME_GENERATION="+generation)
@@ -659,7 +688,7 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 		args = append(args, "--mount", "type=bind,src="+manifest+",dst=/config/tool-manifest.json,readonly")
 		args = append(args, "-e", "HUB_TOOL_MANIFEST=/config/tool-manifest.json")
 	}
-	args = append(args, "--tmpfs", "/tmp:uid=10001,gid=10001,mode=1777", "--shm-size", "1gb")
+	args = append(args, "--tmpfs", "/tmp:uid=10001,gid=10001,mode=1777")
 	for _, name := range managedExtensionRootTmpfs {
 		args = append(args, "--tmpfs", "/state/hermes/"+name+":ro,mode=0555")
 	}

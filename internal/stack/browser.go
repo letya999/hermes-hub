@@ -24,26 +24,20 @@ var browserMutationTools = []string{
 	"browser_mouse_move_xy", "browser_mouse_up", "browser_mouse_wheel",
 }
 
-func browserServer(guest, act bool) M {
-	args := []string{"/opt/browser/node_modules/@playwright/mcp/cli.js",
-		"--caps", "vision,pdf",
-		"--output-dir", "/workspace/browser",
-		"--output-max-size", "268435456",
-		"--block-service-workers"}
+// SPEC-0082 R4.3: the playwright-mcp processes live in the per-space browser
+// sidecar. The persistent instance attaches the signed-in Chromium over CDP;
+// the guest instance launches an isolated Chromium that can never reach the
+// owner profile — each answers streamable HTTP on its own port.
+func browserServer(user string, guest, act bool) M {
+	port := "8931"
 	if guest {
-		// Isolated launches its own Chromium with an in-memory profile: it
-		// cannot reach /state/browser cookies, storage or the CDP session.
-		args = append(args, "--isolated", "--executable-path", "/usr/bin/chromium", "--no-sandbox")
-	} else {
-		args = append(args, "--cdp-endpoint", "http://127.0.0.1:9222")
+		port = "8932"
 	}
 	include := slices.Clone(browserReadTools)
 	if act {
 		include = append(include, browserMutationTools...)
 	}
-	server := stdio("node", args, nil)
-	server["tools"] = MCPTools{Include: include}
-	return server
+	return M{"url": "http://browser-" + user + ":" + port + "/mcp", "timeout": 120, "tools": MCPTools{Include: include}}
 }
 
 func env(names ...string) M {

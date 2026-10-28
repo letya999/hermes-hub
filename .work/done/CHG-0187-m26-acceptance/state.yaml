@@ -1,0 +1,38 @@
+schema: 1
+change: CHG-0187
+title: M26 live acceptance & docs
+status: done
+branch: feat/m26-lean-images
+updated: 2026-10-28
+phase: done
+adr: ADR-0083
+spec: SPEC-0082
+requirements: [R5.1, R5.2]
+depends_on: [CHG-0186]
+github_milestone: M26 — Lean Role Images
+github_issue: 380
+design_status: accepted
+implementation_status: done
+slices:
+  S5.1-live-acceptance: deferred_no_docker_instruction
+  S5.2-evidence-docs: done
+validation:
+  documents: done
+  just_check: pass (coverage 86.14%)
+  docker_check: not_run_prohibited_by_session_directive
+  red_team: unit_and_render_level_done
+  live_acceptance: deferred_to_ci_image_and_containers_jobs
+evidence:
+  - "go test ./... green across all 46 packages; just check gates pass (covergo 86.14%, format/vet/tidy, staticcheck, docs, config-check)"
+  - "voice: service-only path proven by tests — STTCommand/TTSCommand removed from communication config, compose emits HUB_STT_URL/HUB_TTS_URL only, dedicated stt/tts images install from hashed lockfiles (TestComposeRendersServiceOnlyVoice, TestVoiceUnavailableStatus, TestSttRequirementsHashed)"
+  - "browser sidecar: compose/render contract + sidecar supervisor tests prove Chromium/Xvfb/x11vnc-passwdfile/noVNC/pw-mcp(8931 persistent, 8932 isolated)/NodeServer spawn, internal-only CDP, loopback noVNC, stable 0600 password, pre-seeded node registry (browser_sidecar_test.go both packages)"
+  - "spawned runtimes drop /state/browser + --shm-size and dual-home onto the space default net when browser/meet enabled; connect failure reclaims the container (TestBrowserSpaceRuntimeJoinsSpaceNetwork, TestBrowserSpaceSpawnFailsWhenSpaceNetworkMissing)"
+  - "forbidden-binary + size budgets: devcheck image-budget gates all four roles in the CI image job (TestImageBudgetEveryRoleHasBudget, TestImageJobRunsBudgetGate); static shape tests assert stage contents (image_shape_test.go)"
+  - "CVE scan: govulncheck reports 1 reachable finding GO-2026-6860 (x/net html.Parse) — pre-existing on the base branch, not introduced by M26; npm audit on docker/browser: 0 vulnerabilities; per-image Trivy counts are the CI containers gate"
+  - "docs: operations.md images section rewritten for the four-role topology; architecture.md gains the browser-<user> component row; integrations.md rows updated (Playwright streamable-HTTP sidecar, STT standalone-only)"
+limitations:
+  - "No Docker builds, containers or stacks were run — explicit owner instruction for this milestone; all image-size, in-image probe, live browser/voice/Meet evidence is deferred to the CI image/containers jobs and the first real hubctl up"
+  - "Baseline audit (CHG-0182 research): edge-prod 4.6GB uncompressed / 1.22GB compressed; after-state sizes cannot be measured without image builds"
+  - "Meet live acceptance also requires Google credentials; node wiring is contract-tested only"
+remaining:
+  - "issue comments on #371 #373 #375 #377 #378 #380 with this evidence record"

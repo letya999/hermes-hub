@@ -326,8 +326,6 @@ func TestTickSchedulesExpiredWindowExistingOccurrenceAndSlackUser(t *testing.T) 
 	if err := gw.handleUpdate(context.Background(), Update{UpdateID: 77, Message: &Message{From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Voice: &TGMedia{FileID: "big", MimeType: "audio/ogg", FileSize: 12, Duration: 1}}}); err != nil {
 		t.Fatal(err)
 	}
-	c.STTCommand = "false"
-	c.TTSCommand = "false"
 	if _, err := New(c); err != nil {
 		t.Fatal(err)
 	}

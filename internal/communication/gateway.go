@@ -126,13 +126,13 @@ func New(config Config) (*Gateway, error) {
 			slackUsers[link.Key()] = user
 		}
 	}
-	synthesizer := serviceSynthesizer(config.TTSURL, config.TTSAuth, config.TTSVoice, config.TTSVoices, config.TTSCommand)
+	synthesizer := serviceSynthesizer(config.TTSURL, config.TTSAuth, config.TTSVoice, config.TTSVoices)
 	runner := Runner(HermesRunner{Command: config.HermesCommand})
 	if config.RuntimeURL != "" {
 		runner = HTTPRunner{URL: config.RuntimeURL, Auth: config.RuntimeAuth, Spool: spool, JobsAPI: config.Supervised, Voice: synthesizer != nil}
 	}
 	restart := runtimeRestart(config.RuntimeURL, config.RuntimeAuth, config.Supervised)
-	g := &Gateway{config: config, users: users, slackUsers: slackUsers, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: restart, now: time.Now, transcriber: serviceTranscriber(config.STTURL, config.STTAuth, config.STTCommand, config.STTTimeout), synthesizer: synthesizer, forms: formRegistry{m: map[string]credentialForm{}}}
+	g := &Gateway{config: config, users: users, slackUsers: slackUsers, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: restart, now: time.Now, transcriber: serviceTranscriber(config.STTURL, config.STTAuth, config.STTTimeout), synthesizer: synthesizer, forms: formRegistry{m: map[string]credentialForm{}}}
 	spool.JobDone = g.toolHubJobDone
 	spool.probeScript = g.runProbeScript
 	spool.resolveChannel = func(id string) routines.OccurrenceChannel { return g.channel(id) }

@@ -591,11 +591,11 @@ func TestHTTPTranscriberAndSynthesizerHitSidecar(t *testing.T) {
 }
 
 func TestServiceURLBeatsCommandSelection(t *testing.T) {
-	if _, ok := serviceTranscriber("http://x", "a", "missing-binary", 0).(HTTPTranscriber); !ok {
+	if _, ok := serviceTranscriber("http://x", "a", 0).(HTTPTranscriber); !ok {
 		t.Fatal("stt url did not select the sidecar client")
 	}
-	if _, ok := serviceSynthesizer("", "", "", nil, "cmd").(CommandSynthesizer); !ok {
-		t.Fatal("empty tts url did not fall back to command")
+	if serviceSynthesizer("", "", "", nil) != nil {
+		t.Fatal("empty tts url must not select a worker")
 	}
 	c := testConfig(t)
 	c.STTURL = "http://hub-stt:8090"
@@ -639,39 +639,36 @@ func TestVoiceReadinessWithSidecarURL(t *testing.T) {
 
 func TestVoiceReadinessReportedSeparately(t *testing.T) {
 	ctx := context.Background()
-	self, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	// Neither worker configured: both directions read unavailable.
 	if mediaReady(nil, "", "") {
 		t.Fatal("missing transcriber reported ready")
 	}
 
-	// Resolvable STT binary only: incoming ready, outgoing still unavailable.
+	// STT URL configured: incoming ready (service health), outgoing still
+	// unavailable until a TTS URL exists.
 	c := testConfig(t)
-	c.STTCommand = self
+	c.STTURL = "http://127.0.0.1:1"
 	g, err := New(c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !mediaReady(g.transcriber, c.STTCommand, c.STTURL) {
-		t.Fatal("stt binary not ready")
+	if g.transcriber == nil {
+		t.Fatal("stt url did not select the service client")
 	}
-	if mediaReady(g.synthesizer, c.TTSCommand, c.TTSURL) {
+	if mediaReady(g.synthesizer, "", c.TTSURL) {
 		t.Fatal("unconfigured tts reported ready")
 	}
 
-	// Resolvable TTS binary: outgoing ready.
+	// TTS URL configured: outgoing selects the service client.
 	c = testConfig(t)
-	c.TTSCommand = self
+	c.TTSURL = "http://127.0.0.1:1"
 	g, err = New(c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !mediaReady(g.synthesizer, c.TTSCommand, c.TTSURL) {
-		t.Fatal("tts binary not ready")
+	if g.synthesizer == nil {
+		t.Fatal("tts url did not select the service client")
 	}
 	// A parked upload URL keeps the synthesizer out of the send path.
 	c.TTSUploadURL = "https://example.invalid/upload"
@@ -679,7 +676,10 @@ func TestVoiceReadinessReportedSeparately(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mediaReady(g.synthesizer, c.TTSCommand, c.TTSURL) && strings.TrimSpace(g.config.TTSUploadURL) == "" {
+	if g.synthesizer == nil {
+		t.Fatal("tts url did not select the service client")
+	}
+	if mediaReady(g.synthesizer, "", c.TTSURL) && strings.TrimSpace(g.config.TTSUploadURL) == "" {
 		t.Fatal("parked upload must read unavailable")
 	}
 
@@ -701,5 +701,45 @@ func TestVoiceReadinessReportedSeparately(t *testing.T) {
 	}
 	if len(fake.sent) != 1 || !strings.Contains(fake.sent[0], "не настроено") {
 		t.Fatalf("unconfigured stt reply: %v", fake.sent)
+	}
+}
+
+// SPEC-0082 R2: voice is service-only. A stray HUB_STT_COMMAND/HUB_TTS_COMMAND
+// must no longer resurrect an in-image worker — the gateway reports the typed
+// unavailable status instead of execing a missing binary.
+func TestVoiceUnavailableStatus(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TELEGRAM_BOT_TOKEN", "token")
+	t.Setenv("TELEGRAM_ALLOWED_USERS", "11")
+	t.Setenv("HUB_STT_COMMAND", self)
+	t.Setenv("HUB_TTS_COMMAND", self)
+	config, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.SpoolDir = t.TempDir()
+	config.Users[0].StateDir = t.TempDir()
+	config.Users[0].WorkspaceDir = t.TempDir()
+	g, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.transcriber != nil || g.synthesizer != nil {
+		t.Fatalf("command envs must not select workers: %T %T", g.transcriber, g.synthesizer)
+	}
+	fake := &fakeAPI{}
+	g.api = fake
+	ctx := context.Background()
+	if err := g.handleUpdate(ctx, Update{UpdateID: 10, Message: &Message{From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Voice: &TGMedia{FileID: "v2", MimeType: "audio/ogg", FileSize: 12, Duration: 1}}}); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		g.deliverOne(ctx)
+	}
+	if len(fake.sent) != 1 || !strings.Contains(fake.sent[0], "не настроено") {
+		t.Fatalf("typed unavailable reply missing: %v", fake.sent)
 	}
 }

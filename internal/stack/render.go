@@ -78,10 +78,10 @@ func Config(s Settings) M {
 	// capability.
 	if s.Has("browser") {
 		if s.govAllows(api.SectionHubBrowser) {
-			servers["browser"] = browserServer(false, s.Has("browser_act"))
+			servers["browser"] = browserServer(s.User, false, s.Has("browser_act"))
 		}
 		if s.govAllows("hub:browser_guest") {
-			servers["browser_guest"] = browserServer(true, s.Has("browser_act"))
+			servers["browser_guest"] = browserServer(s.User, true, s.Has("browser_act"))
 		}
 	}
 	// Connectors run behind the ToolHub admission boundary; only via: mcp-raw

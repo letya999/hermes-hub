@@ -97,6 +97,9 @@ type Config struct {
 	AdminAuth      string
 	Environment    string
 	WarmTTL        time.Duration
+	// BrowserIdleTTL is the grace a per-space browser sidecar stays up after
+	// its last runtime is gone; the sweep stops it once the deadline passes.
+	BrowserIdleTTL time.Duration
 	MaxConcurrent  int
 	// MaxPerPrincipal bounds live runtimes owned by one principal; zero
 	// leaves the global MaxConcurrent semaphore as the only capacity cap.
@@ -220,6 +223,10 @@ type Manager struct {
 	personalPending map[string]*personalWake
 	personalRunning map[string]bool
 	wakeNotify      chan struct{}
+	// sidecarIdle holds per-container idle deadlines for browser sidecars
+	// whose space has no live runtime; in-memory only — a restart grants one
+	// grace period, never a premature stop.
+	sidecarIdle map[string]time.Time
 }
 
 type persistedManager struct {
@@ -358,6 +365,9 @@ func New(cfg Config) (*Manager, error) {
 	}
 	if cfg.WarmTTL <= 0 {
 		cfg.WarmTTL = DefaultWarmTTL
+	}
+	if cfg.BrowserIdleTTL <= 0 {
+		cfg.BrowserIdleTTL = DefaultBrowserIdleTTL
 	}
 	if cfg.MaxConcurrent <= 0 {
 		cfg.MaxConcurrent = 8
@@ -535,6 +545,7 @@ func (m *Manager) sweep(ctx context.Context, now time.Time) {
 	}
 	if sweepCtx.Err() == nil {
 		_ = m.Reap(sweepCtx, now)
+		m.ReapIdleBrowserSidecars(sweepCtx, now)
 	}
 }
 

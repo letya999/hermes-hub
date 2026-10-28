@@ -190,7 +190,9 @@ func HermesNativeContract(ctx context.Context, image string) error {
 	if err != nil || !strings.Contains(string(version), hermesContractVersion) {
 		return fmt.Errorf("pinned Hermes version check failed")
 	}
-	commit, err := out("exec", name, "git", "-c", "safe.directory=/opt/hermes", "-C", "/opt/hermes", "rev-parse", "HEAD")
+	// The runtime image ships /opt/hermes/.hermes-rev (written at build before
+	// .git is pruned); upstream revision proof no longer needs a git binary.
+	commit, err := out("exec", name, "cat", "/opt/hermes/.hermes-rev")
 	if err != nil || strings.TrimSpace(string(commit)) != hermesContractPin {
 		return fmt.Errorf("pinned Hermes commit check failed")
 	}
@@ -275,12 +277,8 @@ func HermesNativeContract(ctx context.Context, image string) error {
 	if err := expectHermesHTTP(ctx, out, name, key, http.MethodGet, "/api/sessions/"+sessionID, http.StatusOK); err != nil {
 		return fmt.Errorf("session resume after restart failed: %w", err)
 	}
-	if err := sttDecodeSmoke(ctx, image, "/opt/hermes/.venv/bin/python"); err != nil {
-		return err
-	}
-	if err := fasterWhisperFixtureSmoke(ctx, image); err != nil {
-		fmt.Printf("faster-whisper fixture on shipped image unavailable: %v\n", err)
-	}
+	// SPEC-0082 R2: faster-whisper left the runtime image; its decode contract
+	// runs against the dedicated STT image (TestSTTDecodeContract).
 	fmt.Printf("Pinned Hermes %s API contract passed: sessions, idempotency, SSE, stop, approvals, cron coexistence, restart\n", hermesContractVersion)
 	return nil
 }
@@ -525,66 +523,4 @@ assert len(decode_audio(b)) == 16000
 		return fmt.Errorf("shipped faster-whisper/PyAV cannot decode WAV: %w: %s", err, out)
 	}
 	return nil
-}
-
-func fasterWhisperFixtureSmoke(ctx context.Context, image string) error {
-	id, err := exec.CommandContext(ctx, "docker", "image", "inspect", "--format", "{{.Id}}", image).Output()
-	if err != nil {
-		return err
-	}
-	src, err := spokenFixtureWAV()
-	if err != nil {
-		return err
-	}
-	dir, err := os.MkdirTemp("", "whisper-fixture-")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(dir)
-	if err := os.Chmod(dir, 0755); err != nil {
-		return err
-	}
-	data, err := os.ReadFile(src)
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(dir, "hello.wav"), data, 0644); err != nil {
-		return err
-	}
-	cmd := exec.CommandContext(ctx, "docker", "run", "--rm", "--entrypoint", "/usr/local/bin/hub-stt", "-v", dir+":/fixture:ro", image, "/fixture/hello.wav", "audio/wav")
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	fmt.Printf("faster-whisper image=%s hub-stt stdout=%s stderr=%s\n", strings.TrimSpace(string(id)), strings.TrimSpace(string(out)), strings.TrimSpace(stderr.String()))
-	if err != nil {
-		return fmt.Errorf("hub-stt adapter: %w: stdout=%s stderr=%s", err, out, stderr.String())
-	}
-	transcript := strings.TrimSpace(string(out))
-	if transcript == "" {
-		return errors.New("empty hub-stt transcript for spoken fixture audio")
-	}
-	fmt.Printf("faster-whisper hub-stt on shipped image produced a transcript %q\n", transcript)
-	return nil
-}
-
-func spokenFixtureWAV() (string, error) {
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		return "", errors.New("runtime caller for spoken fixture")
-	}
-	path := filepath.Join(filepath.Dir(file), "testdata", "hello.wav")
-	if _, err := os.Stat(path); err != nil {
-		return "", err
-	}
-	return path, nil
-}
-
-func whisperTranscript(out string) string {
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "TRANSCRIPT=") {
-			return strings.TrimSpace(strings.TrimPrefix(line, "TRANSCRIPT="))
-		}
-	}
-	return ""
 }

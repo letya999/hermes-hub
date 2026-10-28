@@ -96,6 +96,11 @@ func TestRunCoverageAndValidation(t *testing.T) {
 	if err := run([]string{"gateway-lifecycle", "test-image"}); err == nil {
 		t.Fatal("integration-only gateway lifecycle accepted without build tag")
 	}
+	// image-budget must reach the fail-closed gate (missing image is an error),
+	// not fall through to the usage message.
+	if err := run([]string{"image-budget", "hermes-hub:nope-missing", "core"}); err == nil || strings.Contains(err.Error(), "usage:") {
+		t.Fatalf("image-budget did not reach the gate: %v", err)
+	}
 }
 
 // The coverage gate must run the suite batched, like a CI shard: one go test

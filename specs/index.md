@@ -7,7 +7,8 @@ record it points to. `archive/` holds only pre-renumbering originals.
 
 | Specification | Status |
 |---|---|
-| [SPEC-0083](active/SPEC-0084-agent-skills-platform.md) | Frozen: agent skills platform — store/effective view, default-deny natives, security pipeline, tools, disclosure, resources, secrets, profiles, git installs, evolution, quality, acceptance (M24 #356–#368) |
+| [SPEC-0084](active/SPEC-0084-agent-skills-platform.md) | Frozen: agent skills platform — store/effective view, default-deny natives, security pipeline, tools, disclosure, resources, secrets, profiles, git installs, evolution, quality, acceptance (M24 #356–#368) |
+| [SPEC-0083](active/SPEC-0083-browser-sidecar-lifecycle.md) | Frozen: browser sidecar lifecycle — resource ceiling, spawn auto-start, idle sleep after grace (ADR-0083 D8/D9, CHG-0190) |
 | [SPEC-0081](active/SPEC-0081-shared-acquisition.md) | Frozen: shared source acquisition — boundary-keyed pool, conditional HTTP, cursors/gap visibility, per-event filters, hook intake (M23 #332) |
 | [SPEC-0082](active/SPEC-0082-image-role-budgets.md) | Frozen: image role budgets — per-image size SLOs, forbidden binaries, hygiene, voice consolidation, hub-core split, browser sidecar, acceptance (M26 #371–#380) |
 | [SPEC-0080](active/SPEC-0080-standing-assignments.md) | Frozen: standing assignments — durable owner intent, plan reconcile, fenced wakes, messenger control (M23 #324) |
