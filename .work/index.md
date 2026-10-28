@@ -16,6 +16,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0199](in-progress/CHG-0199-m24-live-acceptance/plan.md) | M24 #368 S13: live acceptance — standalone controller + real cli-exec git legs (partial: Telegram/managed legs blocked on credentials) |
 | [CHG-0187](in-progress/CHG-0187-m26-acceptance/plan.md) | M26 #380 S5: live acceptance — voice/browser/Meet on dev stack, budget gates, before/after sizes + CVEs, docs current |
 | [CHG-0186](in-progress/CHG-0186-browser-sidecar/plan.md) | M26 #378 S4: hub-browser sidecar — per-space container, internal CDP, authenticated noVNC, runtime without Chromium/X11 |
 | [CHG-0185](in-progress/CHG-0185-hub-core-split/plan.md) | M26 #377 S3: hub-core/hub-control role images — Go binaries only, no interpreters/browsers, compose per-service image split |

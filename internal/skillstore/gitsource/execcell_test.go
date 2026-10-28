@@ -120,6 +120,7 @@ func TestExecCellFetchesCommitAndExportsTree(t *testing.T) {
 			{"-c", "filter.lfs.required=false"},
 			{"-c", "filter.lfs.smudge="},
 			{"-c", "filter.lfs.clean="},
+			{"-c", "safe.directory=" + cellWorkDir},
 		} {
 			found := false
 			for i := 0; i+1 < len(req.Args); i++ {
@@ -392,6 +393,44 @@ func TestExecCellRejectsSymlinkAndGitlinkEntries(t *testing.T) {
 				t.Fatalf("%s entry must be rejected", tc.name)
 			}
 		})
+	}
+}
+
+func TestExecCellSkipsTarMetadataEntries(t *testing.T) {
+	mirror := filepath.Join(t.TempDir(), "97393e7e6b5ab8df.git")
+	if err := os.MkdirAll(mirror, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	w := tar.NewWriter(&buf)
+	longName := "skills/pdf/references/" + strings.Repeat("deep", 30) + "/SKILL.md"
+	for _, hdr := range []*tar.Header{
+		{Name: "pax_global_header", Typeflag: tar.TypeXGlobalHeader},
+		{Name: "skills/pdf/", Mode: 0o755, Typeflag: tar.TypeDir},
+		{Name: longName, Mode: 0o644, Size: 1, Typeflag: tar.TypeReg},
+		{Name: "skills/pdf/SKILL.md", Mode: 0o644, Size: 1, Typeflag: tar.TypeReg},
+	} {
+		if err := w.WriteHeader(hdr); err != nil {
+			t.Fatal(err)
+		}
+		if hdr.Size > 0 {
+			if _, err := w.Write([]byte("x")); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	stub := &cliExecStub{mirror: mirror, tar: buf.Bytes(),
+		outs: map[string]string{"ls-remote": strings.Repeat("ab", 20) + "\trefs/heads/main\n"}}
+	cell := ExecCell{Exec: stub.run, Principal: "alice", ContextID: "alice"}
+	got, err := cell.Fetch(context.Background(), FetchRequest{Mirror: mirror, Repo: "https://github.com/o/r", Ref: "main", Path: "skills/pdf"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Tree) != 2 || string(got.Tree["skills/pdf/SKILL.md"].Data) != "x" || string(got.Tree[longName].Data) != "x" {
+		t.Fatalf("tree %v", got.Tree)
 	}
 }
 

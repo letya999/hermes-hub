@@ -237,6 +237,10 @@ func (c ExecCell) request(req FetchRequest, host string, sub []string) api.CliEx
 		"-c", "filter.lfs.required=false",
 		"-c", "filter.lfs.smudge=",
 		"-c", "filter.lfs.clean=",
+		// The mirror bind's mountpoint is owned by the cell host, not the
+		// exec uid — git's dubious-ownership guard must be scoped to /work
+		// or every repo-touching call fails "not in a git directory".
+		"-c", "safe.directory=" + cellWorkDir,
 		"-C", cellWorkDir,
 	}
 	var env []string
@@ -300,8 +304,14 @@ func parseExport(name string) (skillstore.Tree, error) {
 		if err != nil {
 			return nil, ErrInvalid
 		}
-		// Only regular files may enter a skill store — symlinks and
-		// gitlinks (mode 0160000) are rejected, not skipped (R10.5).
+		// git archive wraps the file payload in a global pax header and
+		// directory entries; both carry no content and are skipped (the
+		// reader already folds per-file pax/GNU long-name records into the
+		// next header). Anything else that is not a regular file —
+		// symlinks and gitlinks (mode 0160000) — is rejected (R10.5).
+		if hdr.Typeflag == tar.TypeXGlobalHeader || hdr.Typeflag == tar.TypeDir {
+			continue
+		}
 		if hdr.Typeflag != tar.TypeReg || hdr.Mode&0o170000 == 0o160000 {
 			return nil, fmt.Errorf("%w: archive entry %q", ErrInvalid, hdr.Name)
 		}
