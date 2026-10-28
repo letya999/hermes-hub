@@ -2,6 +2,7 @@ package skillstore
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -146,4 +147,75 @@ func foldCompat(m *Manifest) {
 			}
 		}
 	}
+	for _, dep := range strs(m.Metadata["deps"]) {
+		if norm := normalizeDep(dep); norm != "" {
+			m.Requires.Deps = append(m.Requires.Deps, norm)
+		}
+	}
+}
+
+// depPattern is the R7.4 dependency allowlist shape: a pip:/npm:/system:
+// scheme, a package-name charset, and an optional version constraint that
+// admits no spaces, URLs or shell syntax — anything else is dropped.
+var depPattern = regexp.MustCompile(`^(pip|npm|system):[A-Za-z0-9][A-Za-z0-9._-]*([<>=!~@][A-Za-z0-9.*+<>=,!~|-]*)?$`)
+
+// runnerPinRE recognizes exactly one pinned runner invocation —
+// `uv run --with <pkg>@<ver>` or `npx -y <pkg>@<ver>` — and captures the
+// pinned spec. Unpinned runners, extra flags and shell-shaped package
+// strings never match (R7.4).
+var (
+	uvPinRE  = regexp.MustCompile(`^uv run --with ([A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9.*+<>=,!~|-]+)$`)
+	npxPinRE = regexp.MustCompile(`^npx -y ([A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9.*+<>=,!~|-]+)$`)
+)
+
+// normalizeDep maps a declaration to its allowlisted dep spec: runner pins
+// fold into the pip:/npm: schemes, already-scheme-shaped entries pass
+// through unchanged, everything else returns "" and is dropped.
+func normalizeDep(dep string) string {
+	if m := uvPinRE.FindStringSubmatch(dep); m != nil {
+		return "pip:" + m[1]
+	}
+	if m := npxPinRE.FindStringSubmatch(dep); m != nil {
+		return "npm:" + m[1]
+	}
+	if depPattern.MatchString(dep) {
+		return dep
+	}
+	return ""
+}
+
+func validDep(dep string) bool { return depPattern.MatchString(dep) }
+
+// pep723Deps extracts PEP 723 `dependencies` items from scripts/*.py files
+// (R7.4). Entries are bare package specs — validated after the pip: prefix;
+// injection-shaped lines drop silently like metadata.deps entries.
+func pep723Deps(tree Tree) []string {
+	deps := []string{}
+	for path, f := range tree {
+		if !strings.HasPrefix(path, "scripts/") || !strings.HasSuffix(path, ".py") {
+			continue
+		}
+		inBlock, inList := false, false
+		for _, line := range strings.Split(string(f.Data), "\n") {
+			trimmed := strings.TrimSpace(strings.TrimPrefix(line, "#"))
+			switch {
+			case !inBlock && strings.HasPrefix(trimmed, "/// script"):
+				inBlock = true
+			case inBlock && strings.HasPrefix(trimmed, "///"):
+				inBlock = false
+			case inBlock && strings.HasPrefix(trimmed, "dependencies"):
+				inList = true
+			case inBlock && inList:
+				if strings.Contains(trimmed, "]") {
+					inList = false
+					continue
+				}
+				name := strings.Trim(strings.TrimSpace(strings.TrimSuffix(trimmed, ",")), `"'`)
+				if dep := "pip:" + name; validDep(dep) {
+					deps = append(deps, dep)
+				}
+			}
+		}
+	}
+	return deps
 }

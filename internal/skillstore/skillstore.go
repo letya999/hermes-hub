@@ -254,6 +254,32 @@ func validateTree(tree Tree) error {
 	if total > MaxTreeBytes {
 		return fmt.Errorf("%w: tree exceeds %d bytes", ErrQuota, MaxTreeBytes)
 	}
+	return lintRefs(tree)
+}
+
+// markdownLink matches [text](target) links; target is group 1.
+var markdownLink = regexp.MustCompile(`\[[^\]]*\]\(([^)\s]+)`)
+
+// lintRefs enforces one-level references (D1/R7.1): SKILL.md links must
+// resolve to existing tree files; other files may not chain to tree files.
+// External and anchor links pass.
+func lintRefs(tree Tree) error {
+	for path, f := range tree {
+		isSkillMD := path == SkillFile
+		for _, m := range markdownLink.FindAllStringSubmatch(string(f.Data), -1) {
+			target := m[1]
+			if strings.Contains(target, "://") || strings.HasPrefix(target, "#") {
+				continue
+			}
+			if isSkillMD {
+				if _, ok := tree[target]; !ok {
+					return fmt.Errorf("%w: SKILL.md link %q does not resolve inside the skill", ErrInvalid, target)
+				}
+			} else {
+				return fmt.Errorf("%w: %s links to %q — resource files may not chain", ErrInvalid, path, target)
+			}
+		}
+	}
 	return nil
 }
 

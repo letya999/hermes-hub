@@ -145,6 +145,22 @@ func skillCapabilities(s Settings) skillstore.Capabilities {
 	for name := range s.MCP {
 		caps.Connectors[name] = true
 	}
+	// Script execution rides the caller's grants only: the terminal carveout
+	// is the documented exec surface, off by default (R7.5).
+	caps.ExecGrant = caps.Toolsets["terminal"]
+	// Dep schemes resolve only through operator-allowed surfaces: pip/npm map
+	// onto cli_registries, system: needs at least one configured toolbox
+	// layer (R7.4).
+	caps.Registries = map[string]bool{}
+	for _, registry := range s.CLIRegistries {
+		switch registry {
+		case "pypi":
+			caps.Registries["pip"] = true
+		case "npm":
+			caps.Registries["npm"] = true
+		}
+	}
+	caps.Registries["system"] = len(s.CLIToolboxes) > 0
 	return caps
 }
 

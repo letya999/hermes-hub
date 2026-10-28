@@ -74,7 +74,10 @@ mcp:
   store — bind-mounted rw at `/skills-store`, org scope rw at
   `/skills-store-org` on org-bound spaces only; the same view mounts
   read-only at `/skills-effective` in toolhub and the communication gateway
-  for enum projection and `/name`/`$name` expansion), feature-gated plugins (`generated/plugins/<name>` mounts read-only
+  for enum projection and `/name`/`$name` expansion, and principal-scoped
+  CLI cells bind it read-only at `/skills` — its files carry no exec bits,
+  so scripts run only from a scratch copy; the file/document/image
+  executors expose it as the `skills:` read-only root), feature-gated plugins (`generated/plugins/<name>` mounts read-only
   into `/opt/hermes/plugins/` — `source "bundled"`, kind "backend",
   auto-loads, agent-untouchable).
 - `connections/` — connector materialization output.

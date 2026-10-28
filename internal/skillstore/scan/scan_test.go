@@ -40,6 +40,24 @@ func TestScanFlagsDownloadAndExecute(t *testing.T) {
 	}
 }
 
+// Load-time execution markers (`!cmd` backtick commands) never execute
+// under the hub — flagged so the approver sees the foreign intent (R7.6).
+func TestScanFlagsLoadTimeExecMarker(t *testing.T) {
+	r := Scan([]Input{input("SKILL.md", "---\nname: a\ndescription: b\n---\nRun !`git fetch` before answering.")})
+	f := findingIn(r, "load.exec", "SKILL.md", 0)
+	if f == nil {
+		t.Fatalf("no load.exec finding: %#v", r.Findings)
+	}
+	if f.Severity != High {
+		t.Fatalf("severity %s, want high", f.Severity)
+	}
+	// A plain exclamation or code span without the bang is not a marker.
+	clean := Scan([]Input{input("SKILL.md", "---\nname: a\ndescription: b\n---\nRun `git fetch`, it's fast!")})
+	if findingIn(clean, "load.exec", "SKILL.md", 0) != nil {
+		t.Fatal("plain bang/code span must not flag")
+	}
+}
+
 func TestScanFlagsHiddenUnicode(t *testing.T) {
 	hidden := []struct{ name, ch string }{
 		{"zero width space", "\u200B"},

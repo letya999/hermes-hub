@@ -16,10 +16,6 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
-| [CHG-0191](in-progress/CHG-0191-skill-security/plan.md) | M24 #359 S4: skill security pipeline — deterministic scanner, taint, publish gate, audit |
-| [CHG-0190](in-progress/CHG-0190-native-default-deny/plan.md) | M24 #358 S3: native Hermes capabilities default-deny — inventory deny, no implicit base list, skills/curator sealed; hermes catalog source deferred (no Docker this session) |
-| [CHG-0189](in-progress/CHG-0189-unified-skill-store/plan.md) | M24 #357 S2: unified skill store + read-only effective view — landed, just check green |
-| [CHG-0188](in-progress/CHG-0188-skills-platform-design/plan.md) | M24 #356 S1: skills platform design — ADR-0084 + SPEC-0083 + Hermes pin spike verified (design complete) |
 | [CHG-0187](in-progress/CHG-0187-m26-acceptance/plan.md) | M26 #380 S5: live acceptance — voice/browser/Meet on dev stack, budget gates, before/after sizes + CVEs, docs current |
 | [CHG-0186](in-progress/CHG-0186-browser-sidecar/plan.md) | M26 #378 S4: hub-browser sidecar — per-space container, internal CDP, authenticated noVNC, runtime without Chromium/X11 |
 | [CHG-0185](in-progress/CHG-0185-hub-core-split/plan.md) | M26 #377 S3: hub-core/hub-control role images — Go binaries only, no interpreters/browsers, compose per-service image split |
@@ -66,8 +62,13 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0194](done/CHG-0194-skill-resources/plan.md) | Done 2026-10-28: M24 #362 S7 — resources+scripts: skill_view bounded (32 KiB, SKILL.md+references/templates/examples only); one-level markdown-link lint; load.exec scanner rule; metadata.deps + uv/npx pins + PEP 723 → validated deps, DepsMissing render stamp; skills: ro root for file/document/image executors (OpenRoots wires HUB_SKILLS_EFFECTIVE); principal cells bind generated/skills-effective ro at /skills, effective view carries no exec bits — scripts run only from scratch copies; skill() reports readiness incl. instructions_only; catalog hub-agent-tools@5.2.0; coverage 86.13% |
 | [CHG-0193](done/CHG-0193-skill-disclosure/plan.md) | Done 2026-10-28: M24 #361 S6 — progressive disclosure: readiness-stamped effective index (toolsets/connectors/platform → Eligible/Hidden/Missing, revision re-hashed over visibility); tier-0 <available_skills> in soul-effective (escaped, 200-char cap, >20 → names+search hint); lexical skills_search (name/desc/tags/body, RU+EN, exact-name first); harness /name args + $name refs with $ARGUMENTS/$0..$n, ≤5 refs, dedupe + one-time <skills_catalog_updated> per session; gateway mounts /skills-effective ro; coverage 86.12% |
 | [CHG-0192](done/CHG-0192-skill-tools/plan.md) | Done 2026-10-28: M24 #360 S5 — five governed skill tools (skill/skills_search/skills_list/skill_view/skill_manage) in managed+unmanaged parity; draft-only writes with base_revision fencing; nonce approval cards → runtime /v1/skill-apply sole mutator + rollback; org drafts gated on HUB_ORGANIZATION_ROLE owner/admin, hubctl skill promote; catalog hub-agent-tools@5.1.0; coverage 86.09% |
+| [CHG-0191](done/CHG-0191-skill-security/plan.md) | Done 2026-10-27: M24 #359 S4 — deterministic scan pipeline: line rules (secret/injection/exfil/load.exec), taint, publish gate, audit; commit bcfa667 (closeout bookkeeping completed 2026-10-28) |
+| [CHG-0190](done/CHG-0190-native-default-deny/plan.md) | Done 2026-10-27: M24 #358 S3 — native Hermes capabilities default-deny: inventory deny, no implicit base list, skills/curator sealed, .no-bundled-skills; commit 6eb440e (closeout bookkeeping completed 2026-10-28) |
+| [CHG-0189](done/CHG-0189-unified-skill-store/plan.md) | Done 2026-10-27: M24 #357 S2 — unified skillstore: drafts/revisions/archives/quotas, legacy migration, effective read-only view at /skills; commit 6ada0ef (closeout bookkeeping completed 2026-10-28) |
+| [CHG-0188](done/CHG-0188-skills-platform-design/plan.md) | Done 2026-10-27: M24 #356 S1 — skills platform design: ADR-0084 + SPEC-0083 + Hermes pin spike verified; commit b3375d1 (closeout bookkeeping completed 2026-10-28) |
 
 ## Done — M23 proactive assignments
 

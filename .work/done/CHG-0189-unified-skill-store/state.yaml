@@ -1,7 +1,7 @@
 schema: 1
 change: CHG-0189
 title: Unified skill store and effective view
-status: in_progress
+status: done
 branch: feat/m24-agent-skills
 updated: 2026-10-27
 phase: verification
@@ -12,7 +12,7 @@ depends_on: [CHG-0188]
 github_milestone: M24 — Agent Skills Platform
 github_issue: 357
 design_status: accepted
-implementation_status: done_pending_verification
+implementation_status: done
 slices:
   S2.1-2.5-store-core: green
   S2.6-effective-view-wiring: green

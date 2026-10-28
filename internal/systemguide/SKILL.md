@@ -163,6 +163,19 @@ Explicit `/name args` and inline `$name` references expand harness-side into
 per session and hidden or ineligible references produce a visible error.
 A catalog publish mid-session arrives as one `<skills_catalog_updated>` note.
 
+Resources and execution: `skill_view path=` reads bounded text only from
+`references/`, `templates/` and `examples/` (plus `SKILL.md`); scripts and
+assets are binary/tree data, not skill_view output. The same effective view
+is reachable as the read-only `skills:` root for `file_list`/`file_read`/
+`file_search` and as a `skills:<name>/<path>` prefix for `document_extract`
+and `image_inspect`; writes through it always fail, and copying a file into
+the workspace is an explicit `file_write`. A skill whose `requires` deps the
+operator surface cannot resolve reports `deps_missing`; a script-bearing
+skill without an execution grant is `instructions_only` — its `skill()`
+response still returns instructions. Scripts never execute inside `/skills`:
+the tree carries no exec bits, cells mount it read-only, and a script runs
+only after it is copied onto cell scratch (`/work`) — never in place.
+
 ## Status and evidence
 
 - Operation `done`: that requested action completed.

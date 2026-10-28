@@ -35,14 +35,27 @@ type Entry struct {
 	// explicit invocation reports Missing.
 	Eligible bool     `json:"eligible"`
 	Missing  []string `json:"missing,omitempty"`
+	// DepsMissing lists declared deps whose scheme the operator surface
+	// cannot resolve — a readiness signal, not an eligibility veto (R7.4).
+	DepsMissing []string `json:"deps_missing,omitempty"`
+	// HasScripts marks a script-bearing tree (stamped at Build); without an
+	// execution grant the skill is instructions-only (R7.5).
+	HasScripts       bool `json:"has_scripts,omitempty"`
+	InstructionsOnly bool `json:"instructions_only,omitempty"`
 }
 
 // Capabilities is the space's granted capability surface as the renderer
-// knows it: native toolsets, connector names, target platform.
+// knows it: native toolsets, connector names, target platform, and the
+// dep schemes resolvable through operator-allowed registries/toolboxes.
 type Capabilities struct {
 	Toolsets   map[string]bool
 	Connectors map[string]bool
 	Platform   string
+	// Registries maps dep scheme (pip|npm|system) to resolvable.
+	Registries map[string]bool
+	// ExecGrant marks a granted exec surface for skill scripts — today the
+	// terminal toolset carveout (native:terminal, off by default, R7.5).
+	ExecGrant bool
 }
 
 // ApplyReadiness stamps Eligible/Missing on every entry (R6.1): declared
@@ -66,7 +79,15 @@ func (idx *EffectiveIndex) ApplyReadiness(caps Capabilities) {
 		if len(e.Platforms) > 0 && !slices.Contains(e.Platforms, caps.Platform) {
 			e.Missing = append(e.Missing, "platform:"+strings.Join(e.Platforms, "|"))
 		}
+		e.DepsMissing = nil
+		for _, dep := range e.Requires.Deps {
+			scheme, _, _ := strings.Cut(dep, ":")
+			if !caps.Registries[scheme] {
+				e.DepsMissing = append(e.DepsMissing, dep)
+			}
+		}
 		e.Eligible = len(e.Missing) == 0
+		e.InstructionsOnly = e.HasScripts && !caps.ExecGrant
 	}
 	// The session pin tracks what the catalog actually shows: a grant flip
 	// changes visibility without touching any skill body (R6.3).
@@ -145,15 +166,17 @@ func Build(dest string, sources []Source) (*EffectiveIndex, error) {
 				return nil, fmt.Errorf("source %s skill %s: %w", src.Name, name, err)
 			}
 			won[name] = true
+			m.Requires.Deps = append(m.Requires.Deps, pep723Deps(tree)...)
 			entry := Entry{
-				Name: name, Description: m.Description, Source: src.Name,
+				HasScripts: hasScripts(tree),
+				Name:       name, Description: m.Description, Source: src.Name,
 				Revision: Revision(tree), Tags: m.Tags, Requires: m.Requires,
 				Platforms: m.Platforms, Eligible: true,
 				Hidden: m.DisableModelInvocation ||
 					(m.AllowImplicitInvocation != nil && !*m.AllowImplicitInvocation),
 			}
 			idx.Skills = append(idx.Skills, entry)
-			if err := writeTree(filepath.Join(dest, name), tree); err != nil {
+			if err := writeTree(filepath.Join(dest, name), noexecTree(tree)); err != nil {
 				return nil, err
 			}
 			rev[name+"/SKILL.md"] = File{Data: []byte(entry.Revision)}
@@ -161,6 +184,18 @@ func Build(dest string, sources []Source) (*EffectiveIndex, error) {
 	}
 	idx.Revision = Revision(rev)
 	return idx, writeJSONFile(filepath.Join(dest, "index.json"), mustJSON(idx))
+}
+
+// noexecTree strips the exec flags a source store tracks for its scripts:
+// effective-view files are data, so the ro mount never serves a runnable
+// artifact — execution starts from a scratch copy (R7.2).
+func noexecTree(tree Tree) Tree {
+	out := make(Tree, len(tree))
+	for path, f := range tree {
+		f.Exec = false
+		out[path] = f
+	}
+	return out
 }
 
 // WriteIndex persists index.json beside a built effective view — used by

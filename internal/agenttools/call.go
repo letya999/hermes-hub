@@ -114,6 +114,14 @@ func (t *Tools) call(ctx context.Context, name string, r Input, ws, ar, org *os.
 		"assignment_cancel", "assignment_complete":
 		return t.Assignment(ctx, name, r)
 	case "document_extract":
+		if rel, ok := strings.CutPrefix(r.Path, "skills:"); ok {
+			// R7.3: skills: is a read-only logical root over the effective
+			// view; copying to the workspace stays an explicit file op.
+			if t.Skills == nil {
+				return nil, errors.New("skills root is not configured")
+			}
+			return media.New(t.Skills).Extract(ctx, rel)
+		}
 		return session().Extract(ctx, r.Path)
 	case "document_create":
 		return session().Create(ctx, r.Name, r.Format, r.Text)
@@ -134,6 +142,9 @@ func (t *Tools) call(ctx context.Context, name string, r Input, ws, ar, org *os.
 	case "knowledge_read":
 		return t.knowledgeRead(ctx, r)
 	case "image_inspect", "images_inspect":
+		if rel, ok := strings.CutPrefix(r.Path, "skills:"); ok {
+			return media.New(t.Skills).Inspect(ctx, rel)
+		}
 		if len(r.Paths) > 0 {
 			return session().InspectMany(ctx, r.Paths)
 		}

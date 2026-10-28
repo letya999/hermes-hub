@@ -1,9 +1,12 @@
 package agenttools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -37,7 +40,12 @@ func skillSpace(t *testing.T, tree skillstore.Tree) (*Tools, string) {
 	if _, err := skillstore.Build(eff, []skillstore.Source{{Name: "user", Dir: st.Root()}}); err != nil {
 		t.Fatal(err)
 	}
-	return &Tools{SkillsEffective: eff, SkillsStore: st.Root(), StateDir: dir}, dir
+	skillsRoot, err := os.OpenRoot(eff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = skillsRoot.Close() })
+	return &Tools{SkillsEffective: eff, SkillsStore: st.Root(), Skills: skillsRoot, StateDir: dir}, dir
 }
 
 func skillTree(body string, extra map[string]string) skillstore.Tree {
@@ -185,6 +193,159 @@ func TestSkillViewListsAndReadsFiles(t *testing.T) {
 	old := execJSON(t, tools, "skill_view", map[string]any{"name": "demo-skill", "version": rev1, "path": "SKILL.md"})
 	if got, _ := old["content"].(string); !strings.Contains(got, "Do the thing.") {
 		t.Fatalf("revision read got %q", got)
+	}
+}
+
+// skill_view serves bounded text from the resource dirs only (R7.1): scripts,
+// assets and dotfiles are reached through the skills: root, not text views.
+func TestSkillViewBoundsResourceReads(t *testing.T) {
+	fat := strings.Repeat("x", 40*1024)
+	tree := skillTree(demoSkillMD, map[string]string{
+		"references/guide.txt":  fat + "TAIL-MARKER",
+		"templates/skeleton.md": "tmpl-body",
+		"examples/usage.md":     "example-body",
+		"scripts/run.py":        "print(1)",
+		"assets/blob.bin":       "BIN",
+	})
+	tools, dir := skillSpace(t, skillTree(demoSkillMD, nil))
+	// scripts/ publish goes through the draft gate (R4.4).
+	st, err := skillstore.Open(filepath.Join(dir, "skills"), skillstore.ScopeUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := st.CreateDraft("demo-skill", tree, skillstore.DraftMeta{Author: "u"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.PublishDraft(d.ID, "u"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := skillstore.Build(filepath.Join(dir, "generated", "skills-effective"), []skillstore.Source{{Name: "user", Dir: st.Root()}}); err != nil {
+		t.Fatal(err)
+	}
+	view := execJSON(t, tools, "skill_view", map[string]any{"name": "demo-skill", "path": "references/guide.txt"})
+	content, _ := view["content"].(string)
+	if strings.Contains(content, "TAIL-MARKER") || len(content) > 33*1024 {
+		t.Fatalf("view must cap oversized resource text, got %d bytes", len(content))
+	}
+	if view["truncated"] != true {
+		t.Fatalf("capped view must flag truncation: %v", view)
+	}
+	for _, path := range []string{"scripts/run.py", "assets/blob.bin", "hidden/notes.md"} {
+		if _, err := tools.ExecCall(context.Background(), "skill_view", map[string]any{"name": "demo-skill", "path": path}, nil); err == nil {
+			t.Fatalf("path %q must not be text-viewable", path)
+		}
+	}
+	// templates/ and examples/ are resource dirs too (R7.1).
+	for path, want := range map[string]string{"templates/skeleton.md": "tmpl-body", "examples/usage.md": "example-body"} {
+		view := execJSON(t, tools, "skill_view", map[string]any{"name": "demo-skill", "path": path})
+		if got, _ := view["content"].(string); got != want {
+			t.Fatalf("%s: %q", path, got)
+		}
+	}
+	// SKILL.md stays readable (activation/diff review uses it).
+	view = execJSON(t, tools, "skill_view", map[string]any{"name": "demo-skill", "path": "SKILL.md"})
+	if got, _ := view["content"].(string); !strings.Contains(got, "Demo") {
+		t.Fatalf("SKILL.md read: %q", got)
+	}
+}
+
+// skill() reports execution readiness: a script-bearing skill without an
+// exec grant is "instructions only" (R7.5); deps_missing rides the report.
+func TestSkillReportsReadiness(t *testing.T) {
+	tree := skillTree(demoSkillMD, map[string]string{
+		"scripts/run.py": "print(1)",
+	})
+	tools, dir := skillSpace(t, skillTree(demoSkillMD, nil))
+	st, err := skillstore.Open(filepath.Join(dir, "skills"), skillstore.ScopeUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := st.CreateDraft("demo-skill", tree, skillstore.DraftMeta{Author: "u"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.PublishDraft(d.ID, "u"); err != nil {
+		t.Fatal(err)
+	}
+	eff := filepath.Join(dir, "generated", "skills-effective")
+	idx, err := skillstore.Build(eff, []skillstore.Source{{Name: "user", Dir: st.Root()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The runtime index arrives readiness-stamped; no exec grant here.
+	idx.ApplyReadiness(skillstore.Capabilities{
+		Toolsets: map[string]bool{}, Connectors: map[string]bool{},
+		Platform: "linux", Registries: map[string]bool{},
+	})
+	if err := skillstore.WriteIndex(eff, idx); err != nil {
+		t.Fatal(err)
+	}
+	result := execJSON(t, tools, "skill", map[string]any{"name": "demo-skill"})
+	readiness, _ := result["readiness"].(map[string]any)
+	if readiness == nil {
+		t.Fatalf("skill() must report readiness: %v", result)
+	}
+	if readiness["has_scripts"] != true || readiness["instructions_only"] != true {
+		t.Fatalf("script skill without exec grant must be instructions_only: %v", readiness)
+	}
+}
+
+// The skills: root gives hub executors a read-only view of the effective
+// tree (R7.3): file ops take root:"skills", document/image executors take a
+// skills:<name>/<path> prefix; writes always reject.
+func TestSkillsRootIsReadOnlyForExecutors(t *testing.T) {
+	tools, _ := skillSpace(t, skillTree(demoSkillMD, map[string]string{
+		"references/guide.txt": "guide-body",
+		"assets/blob.txt":      "blob-body",
+	}))
+	if tools.Skills == nil {
+		t.Fatal("skills root must open on the effective view")
+	}
+	read, err := tools.Call(context.Background(), "file_read", Input{Root: "skills", Path: "demo-skill/references/guide.txt"})
+	if err != nil {
+		t.Fatalf("file_read skills: %v", err)
+	}
+	if got, _ := read.(map[string]any)["text"].(string); got != "guide-body" {
+		t.Fatalf("file_read skills: %q", got)
+	}
+	list, err := tools.Call(context.Background(), "file_list", Input{Root: "skills", Path: "demo-skill"})
+	if err != nil || len(list.(map[string]any)["items"].([]map[string]any)) == 0 {
+		t.Fatalf("file_list skills: %v %v", list, err)
+	}
+	if _, err := tools.Call(context.Background(), "file_write", Input{Root: "skills", Path: "demo-skill/x.txt", Text: "x"}); err == nil {
+		t.Fatal("skills: must reject writes")
+	}
+	// document_extract reads assets through the skills: prefix.
+	doc, err := tools.Call(context.Background(), "document_extract", Input{Path: "skills:demo-skill/assets/blob.txt"})
+	if err != nil {
+		t.Fatalf("document_extract skills: %v", err)
+	}
+	if got, _ := doc.(map[string]any)["text"].(string); got != "blob-body" {
+		t.Fatalf("document_extract skills: %q", got)
+	}
+	// image_inspect takes the same prefix (R7.3 names image executors too).
+	var pngBuf bytes.Buffer
+	if err := png.Encode(&pngBuf, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatal(err)
+	}
+	img := skillTree("---\nname: img-skill\ndescription: i\n---\nbody\n", map[string]string{"assets/pic.png": pngBuf.String()})
+	st, _ := skillstore.Open(tools.SkillsStore, skillstore.ScopeUser)
+	d, err := st.CreateDraft("img-skill", img, skillstore.DraftMeta{Author: "u"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.PublishDraft(d.ID, "u"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := skillstore.Build(tools.SkillsEffective, []skillstore.Source{{Name: "user", Dir: st.Root()}}); err != nil {
+		t.Fatal(err)
+	}
+	// image_inspect is a provider call: reaching the model-config error
+	// proves the skills: prefix resolved and the bytes were read.
+	_, err = tools.Call(context.Background(), "image_inspect", Input{Path: "skills:img-skill/assets/pic.png"})
+	if err == nil || !strings.Contains(err.Error(), "media profile config") {
+		t.Fatalf("skills: prefix must route image reads, got %v", err)
 	}
 }
 
@@ -860,7 +1021,8 @@ func TestSkillManageDiffShowsRealChange(t *testing.T) {
 // OpenRoots reads the runtime skills env contract (HUB_SKILLS_*) so the
 // executor serves the mounts compose/supervisor actually placed.
 func TestOpenRootsReadsSkillsEnv(t *testing.T) {
-	t.Setenv("HUB_SKILLS_EFFECTIVE", "/skills")
+	eff := t.TempDir()
+	t.Setenv("HUB_SKILLS_EFFECTIVE", eff)
 	t.Setenv("HUB_SKILLS_STORE", "/skills-store")
 	t.Setenv("HUB_SKILLS_ORG", "/skills-store-org")
 	ws := t.TempDir()
@@ -869,8 +1031,12 @@ func TestOpenRootsReadsSkillsEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tools.Close()
-	if tools.SkillsEffective != "/skills" || tools.SkillsStore != "/skills-store" || tools.SkillsOrg != "/skills-store-org" {
+	if tools.SkillsEffective != eff || tools.SkillsStore != "/skills-store" || tools.SkillsOrg != "/skills-store-org" {
 		t.Fatalf("skills env not picked up: %+v", tools)
+	}
+	// The effective mount also becomes the skills: executor root (R7.3).
+	if tools.Skills == nil {
+		t.Fatal("OpenRoots must open the effective view as the skills: root")
 	}
 }
 

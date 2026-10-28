@@ -77,6 +77,24 @@ func (c *genericController) cellWorkspaceBind(req api.CliExecRequest) (hostPath 
 	}
 }
 
+// cellSkillsBind resolves the host path bound read-only at /skills: the
+// principal's rendered effective skills view, mounted only for
+// principal-scoped cells. The daemon interprets bind sources on the host, so
+// the container-local path goes through DockerBindSource like /work does.
+func (c *genericController) cellSkillsBind(req api.CliExecRequest) string {
+	if req.Workspace.Scope != "principal" || c.config.CLI.SpacesRoot == "" {
+		return ""
+	}
+	path := filepath.Join(c.config.CLI.SpacesRoot, req.Principal, "generated", "skills-effective")
+	if !api.ContainedPath(c.config.CLI.SpacesRoot, path) || api.NoSymlinkPath(path) != nil {
+		return ""
+	}
+	if info, err := os.Stat(path); err != nil || !info.IsDir() {
+		return ""
+	}
+	return api.DockerBindSource(path)
+}
+
 // cellArgv assembles the docker create argv for a cell. Every isolation claim
 // the receipt later makes is set here and verified back from inspect.
 func (c *genericController) cellArgv(req api.CliExecRequest, cell *cliCell, runtime string) []string {
@@ -129,6 +147,9 @@ func (c *genericController) cellArgv(req api.CliExecRequest, cell *cliCell, runt
 	// The helper is mounted ro from the controller-visible copy; the daemon
 	// resolves the host path so the cell never sees controller state.
 	args = append(args, "--mount", "type=bind,source="+c.cellInitHost()+",target="+cellInitGuest+",readonly")
+	if cell.skillsHost != "" {
+		args = append(args, "--mount", "type=bind,source="+cell.skillsHost+",target="+cellSkillsGuest+",readonly")
+	}
 	if cell.workHost != "" {
 		mount := "type=bind,source=" + cell.workHost + ",target=" + cellWorkGuest
 		if !cell.workRW {
@@ -276,6 +297,9 @@ func cellProfileProblem(container genericContainer, cell *cliCell, seccomp, stat
 	// inside a cell. Tmpfs lands in .Mounts on the classic image store and
 	// only in HostConfig.Tmpfs on containerd-store daemons; both count.
 	wantMounts := map[string]bool{cellInitGuest: true, "/tmp": true, cellWorkGuest: true}
+	if cell.skillsHost != "" {
+		wantMounts[cellSkillsGuest] = true
+	}
 	if cell.installPackages {
 		wantMounts[cellHomeGuest] = true
 		wantMounts[cellUserTmpGuest] = true
@@ -296,6 +320,10 @@ func cellProfileProblem(container genericContainer, cell *cliCell, seccomp, stat
 		case cellInitGuest:
 			if mount.Type != "bind" || mount.RW || mount.Source != api.DockerBindSource(filepath.Join(stateRoot, "cli-cellinit")) {
 				return "cellinit-mount"
+			}
+		case cellSkillsGuest:
+			if mount.Type != "bind" || mount.RW || mount.Source != cell.skillsHost {
+				return "skills-mount"
 			}
 		case cellWorkGuest:
 			if cell.workHost == "" {

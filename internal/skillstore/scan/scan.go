@@ -86,6 +86,9 @@ var rules = []lineRule{
 	{"enc.base64", Medium, regexp.MustCompile(`[A-Za-z0-9+/]{120,}={0,2}`)},
 	{"enc.data_uri", High, regexp.MustCompile(`(?i)data:(text|image|application)/[a-z]+;base64`)},
 	{"unicode.homoglyph", High, regexp.MustCompile(`[a-zA-Z][а-яёА-ЯЁ]|[а-яёА-ЯЁ][a-zA-Z]`)},
+	// R7.6: Claude-style !`command` load-time execution markers. The hub
+	// never executes them — the finding makes the foreign intent visible.
+	{"load.exec", High, regexp.MustCompile("!`[^`\\n]+`")},
 }
 
 // shebangInterpreter returns the lowercased interpreter of a #! line:

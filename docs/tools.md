@@ -51,7 +51,7 @@ Grouped by capability resource (internal/agenttools/capability.go):
 
 | Group | Tools | Notes |
 |---|---|---|
-| files | `file_list`, `file_read`, `file_write`, `file_search` | admitted workspace scope; `file_write` is revision-guarded |
+| files | `file_list`, `file_read`, `file_write`, `file_search` | admitted workspace scope; `file_write` is revision-guarded; `root=skills` opens the read-only effective skills view |
 | services | `service_catalog` (read), `service_enable`, `service_disable` | self-service catalog only; enable needs explicit owner request, never returns credentials, refuses org-scoped changes |
 | settings | `settings_get`, `settings_set` | manageable key allowlist; secrets never shown; applies after scheduled restart |
 | context | `context_status`, `context_compact` | bounded session view (threshold/journal/live estimate) and turn-boundary compaction; busy sessions refuse deterministically, `queue` parks; results are metadata only |
@@ -70,6 +70,12 @@ Grouped by capability resource (internal/agenttools/capability.go):
 
 ## Contract notes (bounds that surprise)
 
+- **skills:**: the file tools take `root=skills` as a fourth read-only root —
+  the effective skills view (`/skills`), never writable; `document_extract`
+  and `image_inspect` reach it as a `skills:<name>/<path>` path prefix.
+  Copying a skill resource into the workspace stays an explicit `file_write`
+  on the workspace root. Scripts under `skills:` are data: they carry no
+  exec bits and run only from a scratch copy inside a cell.
 - **inbox_fetch**: an incoming transfer lands in `inbox/<id>/files/`; ZIPs
   extract there and a `inbox/<id>/receipt.json` is stored *before* the staged
   copy is acknowledged — retry reuses the receipt, never re-downloads.

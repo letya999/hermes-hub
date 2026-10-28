@@ -1,7 +1,7 @@
 schema: 1
 change: CHG-0190
 title: Native Hermes capabilities default-deny
-status: in_progress
+status: done
 branch: feat/m24-agent-skills
 updated: 2026-10-27
 phase: implementation
@@ -12,7 +12,7 @@ depends_on: [CHG-0189]
 github_milestone: M24 — Agent Skills Platform
 github_issue: 358
 design_status: accepted
-implementation_status: in_progress
+implementation_status: done
 slices:
   S3.1-inventory-deny: done
   S3.2-no-implicit-base-list: done

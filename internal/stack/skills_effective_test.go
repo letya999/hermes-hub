@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -136,6 +137,94 @@ func TestMaterializeEffectiveSkillsStampsReadiness(t *testing.T) {
 	}
 	if !byName(idx).Eligible || len(byName(idx).Missing) != 0 {
 		t.Fatalf("granted toolset+connector must be eligible: %+v", byName(idx))
+	}
+}
+
+// Declared deps are a readiness signal: unmet schemes (registry not
+// operator-allowed, no toolbox for system:) report deps_missing without
+// making the skill catalog-ineligible (R7.4/R7.5).
+func TestMaterializeEffectiveSkillsStampsDepsMissing(t *testing.T) {
+	dir := t.TempDir()
+	s := validSettings()
+	s.GlobalSkillsDir = t.TempDir()
+	s.CLIRegistries = []string{"pypi"}
+	body := "---\nname: depful\ndescription: d\nmetadata:\n  deps: [pip:requests, npm:left-pad, system:ffmpeg]\n---\nbody\n"
+	if err := os.MkdirAll(filepath.Join(dir, "skills", "depful"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "skills", "depful", "SKILL.md"), []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	idx, err := MaterializeEffectiveSkills(dir, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var e skillstore.Entry
+	for _, it := range idx.Skills {
+		if it.Name == "depful" {
+			e = it
+		}
+	}
+	if !e.Eligible {
+		t.Fatalf("deps are a signal, not eligibility: %+v", e)
+	}
+	if !slices.Equal(e.DepsMissing, []string{"npm:left-pad", "system:ffmpeg"}) {
+		t.Fatalf("deps_missing = %v", e.DepsMissing)
+	}
+	// Operator-allowed npm + a toolbox satisfy the rest.
+	s.CLIRegistries = append(s.CLIRegistries, "npm")
+	s.CLIToolboxes = map[string][]string{"base": {"img@sha256:abc"}}
+	idx, err = MaterializeEffectiveSkills(dir, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range idx.Skills {
+		if it.Name == "depful" && len(it.DepsMissing) != 0 {
+			t.Fatalf("allowed registries+toolbox clear deps_missing: %v", it.DepsMissing)
+		}
+	}
+}
+
+// A script-bearing skill reports instructions_only unless the caller holds an
+// exec grant — the terminal toolset carveout is that surface (R7.5).
+func TestMaterializeEffectiveSkillsStampsInstructionsOnly(t *testing.T) {
+	dir := t.TempDir()
+	s := validSettings()
+	s.GlobalSkillsDir = t.TempDir()
+	root := filepath.Join(dir, "skills", "scripty")
+	if err := os.MkdirAll(filepath.Join(root, "scripts"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	for path, body := range map[string]string{
+		"SKILL.md":     "---\nname: scripty\ndescription: d\n---\nbody\n",
+		"scripts/r.sh": "echo hi",
+	} {
+		if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(path)), []byte(body), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	idx, err := MaterializeEffectiveSkills(dir, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := func(idx *skillstore.EffectiveIndex) skillstore.Entry {
+		for _, e := range idx.Skills {
+			if e.Name == "scripty" {
+				return e
+			}
+		}
+		return skillstore.Entry{}
+	}
+	if e := byName(idx); !e.HasScripts || !e.InstructionsOnly {
+		t.Fatalf("no exec grant -> instructions_only: %+v", e)
+	}
+	s.Tools = map[string]ToolEntry{"terminal": {Via: ToolViaNative}}
+	idx, err = MaterializeEffectiveSkills(dir, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e := byName(idx); !e.HasScripts || e.InstructionsOnly {
+		t.Fatalf("terminal grant clears instructions_only: %+v", e)
 	}
 }
 

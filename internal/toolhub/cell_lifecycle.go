@@ -103,7 +103,8 @@ func (c *genericController) createCell(ctx context.Context, req api.CliExecReque
 	cell := &cliCell{
 		name: "cli-" + cellHash(image+api.RandomNonce()), key: key, principal: req.Principal, bindingID: req.BindingID,
 		jobID: req.JobID, lifecycle: lifecycle, image: image, runtime: runtime,
-		workHost: workHost, workRW: workRW, toolset: append([]string(nil), toolset...),
+		workHost: workHost, workRW: workRW, skillsHost: c.cellSkillsBind(req),
+		toolset:         append([]string(nil), toolset...),
 		installPackages: req.InstallPackages,
 		canary:          api.RandomNonce(), created: time.Now(), lastUse: time.Now(), execSlot: make(chan struct{}, 1),
 	}

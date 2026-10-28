@@ -33,7 +33,7 @@ func HubToolsDefinition() api.ToolDefinition {
 	return api.ToolDefinition{
 		Schema:       api.SchemaVersion,
 		DefinitionID: HubToolsDefinitionID,
-		Version:      "5.1.0",
+		Version:      "5.2.0",
 		Transport:    api.AgentTools,
 		Source:       api.DefinitionSource{},
 		Workload: api.WorkloadPolicy{

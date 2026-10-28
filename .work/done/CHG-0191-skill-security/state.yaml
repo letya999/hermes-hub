@@ -1,7 +1,7 @@
 schema: 1
 change: CHG-0191
 title: Skill security pipeline
-status: in_progress
+status: done
 branch: feat/m24-agent-skills
 updated: 2026-10-27
 phase: implementation
@@ -11,7 +11,7 @@ requirements: [R4.1, R4.2, R4.3, R4.4, R4.5, R4.6, R4.7]
 depends_on: [CHG-0189]
 github_milestone: M24 — Agent Skills Platform
 github_issue: 359
-implementation_status: in_progress
+implementation_status: done
 validation:
   just_check: not_run
   docker_check: not_applicable_no_docker_this_session

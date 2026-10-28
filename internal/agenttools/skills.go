@@ -186,10 +186,29 @@ func (t *Tools) skillView(r Input) (any, error) {
 		return map[string]any{"name": name, "files": files}, nil
 	}
 	file, ok := tree[path]
-	if !ok {
+	if !ok || !skillViewable(path) {
 		return nil, fmt.Errorf("%w: %s", errSkillNotFound, path)
 	}
-	return map[string]any{"name": name, "path": path, "content": string(file.Data)}, nil
+	content := file.Data
+	truncated := len(content) > skillViewMaxBytes
+	if truncated {
+		content = content[:skillViewMaxBytes]
+	}
+	return map[string]any{"name": name, "path": path, "content": string(content), "truncated": truncated}, nil
+}
+
+// skillViewMaxBytes bounds one resource view so a fat file cannot blow up the
+// activation context (R7.1).
+const skillViewMaxBytes = 32 * 1024
+
+// skillViewable reports whether a tree path may be returned as text — SKILL.md
+// and the resource dirs only; scripts/assets live on the skills: root (R7.1).
+func skillViewable(path string) bool {
+	if path == skillstore.SkillFile {
+		return true
+	}
+	dir, _, _ := strings.Cut(path, "/")
+	return dir == "references" || dir == "templates" || dir == "examples"
 }
 
 // skillsList pages the effective index 20 at a time (R5 contract).
@@ -515,5 +534,13 @@ func (t *Tools) skillInvoke(ctx context.Context, r Input) (any, error) {
 		"skill_dir": "/skills/" + name,
 		"body":      body,
 		"resources": resources,
+		// R7.5: scripts ride only the caller's grants — without an exec
+		// grant the skill is instructions only.
+		"readiness": map[string]any{
+			"missing":           entry.Missing,
+			"deps_missing":      entry.DepsMissing,
+			"has_scripts":       entry.HasScripts,
+			"instructions_only": entry.InstructionsOnly,
+		},
 	}, nil
 }
