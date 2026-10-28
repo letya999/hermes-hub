@@ -42,18 +42,19 @@ func TestIndependentSpacesAndExternalMCP(t *testing.T) {
 			if _, ok := services["communication-hub"]; ok {
 				t.Fatal("gateway started without a messaging feature")
 			}
-			// Build the shared core once and the Docker-enabled control once.
+			// Each role image is built exactly once: runtime carries its own,
+			// cliproxy the core, toolhub the control target.
 			builds := 0
 			for name, svc := range services {
 				if b, ok := svc.(M)["build"]; ok {
 					builds++
-					if (name != "toolhub" || b.(M)["target"] != environment+"-control") && (name != "cliproxy" || b.(M)["target"] != environment) {
+					if (name != "toolhub" || b.(M)["target"] != environment+"-control") && (name != "cliproxy" || b.(M)["target"] != environment+"-core") && (name != "hermes-runtime" || b.(M)["target"] != environment) {
 						t.Fatal(name, b)
 					}
 				}
 			}
-			if builds != 2 {
-				t.Fatal("expected core and control build sections, got", builds)
+			if builds != 3 {
+				t.Fatal("expected runtime, core and control build sections, got", builds)
 			}
 			if strings.Contains(strings.Join(Doctor(s, map[string]string{}), " "), "EXTERNAL_TOKEN") == false {
 				t.Fatal("missing connector secret not reported")

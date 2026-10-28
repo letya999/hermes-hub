@@ -202,10 +202,26 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(GeneratedPluginsDir(dir), name)), "target": "/opt/hermes/plugins/" + name, "read_only": true})
 		}
 	}
-	// Core and control targets share BuildKit layers; only control needs Docker.
-	common := M{"image": "hermes-hub:0.4.0-" + s.Environment, "init": true, "restart": "unless-stopped", "user": fmt.Sprintf("10001:%d", max(0, os.Getgid())), "read_only": true, "cap_drop": []string{"ALL"}, "security_opt": []string{"no-new-privileges:true"}, "shm_size": "1gb", "tmpfs": []string{"/tmp:uid=10001,gid=10001,mode=1777"}, "extra_hosts": M{"host.docker.internal": "host-gateway"}, "logging": M{"driver": "local", "options": M{"max-size": "10m", "max-file": "3"}}}
-	coreBuild := M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile", "target": s.Environment}
-	runtimeService := cloneMap(common)
+	// SPEC-0082 R3: role commons — daemons run the lean core image, Docker
+	// consumers the control image, only hermes-runtime keeps the agent image.
+	common := M{"init": true, "restart": "unless-stopped", "user": fmt.Sprintf("10001:%d", max(0, os.Getgid())), "read_only": true, "cap_drop": []string{"ALL"}, "security_opt": []string{"no-new-privileges:true"}, "tmpfs": []string{"/tmp:uid=10001,gid=10001,mode=1777"}, "extra_hosts": M{"host.docker.internal": "host-gateway"}, "logging": M{"driver": "local", "options": M{"max-size": "10m", "max-file": "3"}}}
+	coreCommon := cloneMap(common)
+	coreCommon["image"] = "hermes-hub:0.4.0-" + s.Environment + "-core"
+	controlCommon := cloneMap(common)
+	controlCommon["image"] = "hermes-hub:0.4.0-" + s.Environment + "-control"
+	runtimeCommon := cloneMap(common)
+	runtimeCommon["image"] = "hermes-hub:0.4.0-" + s.Environment
+	imageBuild := func(target string) M {
+		return M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile", "target": target}
+	}
+	coreBuild := imageBuild(s.Environment + "-core")
+	runtimeService := cloneMap(runtimeCommon)
+	// The service builds its own agent tag: renders that drop hermes-runtime
+	// (supervisor/managed) get the image through the explicit hubctl build.
+	runtimeService["build"] = imageBuild(s.Environment)
+	// SPEC-0082 R1.5: shm_size exists for the agent browser workload only;
+	// daemons do not get shared memory they never touch.
+	runtimeService["shm_size"] = "1gb"
 	runtimeService["env_file"] = runtimeEnvFiles
 	runtimeService["environment"] = runtimeEnv
 	runtimeService["volumes"] = stateVolumes
@@ -294,9 +310,8 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	sharedNetworks := []string{"default", sharedNetworkName}
 	containerSupervisor := infra && includeGateway && s.ExecutionMode == "supervisor" && s.SupervisorURL == "http://supervisor:8876"
 	if containerSupervisor {
-		svc := cloneMap(common)
-		svc["image"] = "hermes-hub:0.4.0-" + s.Environment + "-control"
-		svc["build"] = M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile", "target": s.Environment + "-control"}
+		svc := cloneMap(controlCommon)
+		svc["build"] = imageBuild(s.Environment + "-control")
 		svc["entrypoint"] = []string{"hubctl", "supervisor", "--spaces", "/spaces", "--env", s.Environment, "--runtime-image", "hermes-hub:0.4.0-" + s.Environment, "--supervisor-listen", "0.0.0.0:8876", "--supervisor-allow-wildcard-listen"}
 		svc["environment"] = M{"HUB_SUPERVISOR_AUTH": "${HUB_SUPERVISOR_AUTH:?set HUB_SUPERVISOR_AUTH or provision supervisor.auth for this stack}", "HUB_SUPERVISOR_HOST_SPACES": filepath.ToSlash(filepath.Dir(dir)), "HOME": "/tmp", "TZ": s.Timezone,
 			// Opt-in authorities stay disabled unless the operator provisions
@@ -323,7 +338,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		egressHosts = managedEgressHosts(s, dir)
 	}
 	if s.CapabilityMode == "managed" {
-		modelRelay := cloneMap(common)
+		modelRelay := cloneMap(coreCommon)
 		modelRelay["entrypoint"] = []string{"hub-runtime", "model-relay"}
 		// The merged models.yaml (spaces -> org -> user layers) mounts
 		// read-only; provider key_env names resolve from the space's own
@@ -358,7 +373,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// colliding with other spaces' model-relay service names.
 		modelRelay["networks"] = M{sharedNetworkName: M{"aliases": []string{"model-relay-" + s.User}}, managedAgentNetwork(s): M{}}
 		services["model-relay"] = modelRelay
-		toolhubRelay := cloneMap(common)
+		toolhubRelay := cloneMap(coreCommon)
 		toolhubRelay["entrypoint"] = []string{"hub-runtime", "toolhub-relay"}
 		toolhubRelay["extra_hosts"] = M{}
 		toolhubRelay["networks"] = M{sharedNetworkName: M{}, managedAgentNetwork(s): M{"aliases": []string{"toolhub"}}}
@@ -367,7 +382,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			// The managed agent network has no default route; the reviewed
 			// web/sibling reachability for the runtime goes through this
 			// allowlisted forward proxy and nowhere else.
-			egressRelay := cloneMap(common)
+			egressRelay := cloneMap(coreCommon)
 			egressRelay["entrypoint"] = []string{"hub-runtime", "egress-relay"}
 			egressRelay["environment"] = M{"HUB_EGRESS_RELAY_HOSTS": strings.Join(egressHosts, ",")}
 			egressRelay["extra_hosts"] = M{}
@@ -376,7 +391,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		}
 	}
 	if infra {
-		cliproxy := cloneMap(common)
+		cliproxy := cloneMap(coreCommon)
 		cliproxy["build"] = coreBuild
 		cliproxy["entrypoint"] = []string{"cli-proxy-api", "-config", "/cliproxy/config.yaml"}
 		cliproxy["volumes"] = []any{M{"type": "bind", "source": hostCliproxyDir, "target": "/cliproxy"}}
@@ -440,9 +455,8 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "toolhub-tokens.json")), "target": "/run/toolhub-tokens.json", "read_only": true})
 			toolhubEnv["HUB_TOOLHUB_TOKENS_FILE"] = "/run/toolhub-tokens.json"
 		}
-		toolhub := cloneMap(common)
-		toolhub["image"] = "hermes-hub:0.4.0-" + s.Environment + "-control"
-		toolhub["build"] = M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile", "target": s.Environment + "-control"}
+		toolhub := cloneMap(controlCommon)
+		toolhub["build"] = imageBuild(s.Environment + "-control")
 		toolhub["entrypoint"] = []string{"toolhub"}
 		toolhub["env_file"] = []any{M{"path": filepath.ToSlash(filepath.Join(dir, "runtime.auth")), "format": "raw"}, M{"path": filepath.ToSlash(filepath.Join(dir, "toolhub.auth")), "format": "raw"}}
 		toolhub["environment"] = toolhubEnv
@@ -460,8 +474,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		toolhub["pids_limit"] = 128
 		services["toolhub"] = toolhub
 
-		controller := cloneMap(common)
-		controller["image"] = toolhub["image"]
+		controller := cloneMap(controlCommon)
 		controller["entrypoint"] = []string{"hubctl", "connector", "generic-controller", "--config", "/state/generic-controller.json", "--listen", "0.0.0.0:8545", "--token-file", "/state/generic-controller.key"}
 		// The controller resolves principal-scoped cell binds inside /spaces —
 		// a read-only view of the whole spaces root — and translates them to
@@ -477,7 +490,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		controller["ports"] = []string{"127.0.0.1:8545:8545"}
 		services["workload-controller"] = controller
 
-		broker := cloneMap(common)
+		broker := cloneMap(coreCommon)
 		broker["entrypoint"] = []string{"credential-broker", "serve", "--config", "/var/lib/credential-broker/config.json", "--state-witness-dir", "/var/lib/credential-broker-recovery"}
 		// The dedicated tmpfs volume lets Broker leases reach ToolHub and the
 		// controller without exposing Broker's encrypted store to MCP workloads.
@@ -496,7 +509,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	// after the owner so its implicit Compose aliases can never collide
 	// with the shared infra "cliproxy" name on the runtime network.
 	if !infra && s.Cliproxy == "dedicated" {
-		cliproxy := cloneMap(common)
+		cliproxy := cloneMap(coreCommon)
 		cliproxy["build"] = coreBuild
 		cliproxy["entrypoint"] = []string{"cli-proxy-api", "-config", "/cliproxy/config.yaml"}
 		cliproxy["volumes"] = []any{M{"type": "bind", "source": hostCliproxyDir, "target": "/cliproxy"}}
@@ -510,7 +523,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		if s.ExecutionMode != "" {
 			supervisorURL = s.SupervisorURL
 		}
-		gateway := cloneMap(common)
+		gateway := cloneMap(coreCommon)
 		gateway["entrypoint"] = []string{"communication-hub"}
 		gatewayEnvFiles := []any{M{"path": filepath.ToSlash(filepath.Join(dir, "communication."+s.Environment+".env")), "format": "raw"}}
 		if s.Has("telegram_auth") {
@@ -539,14 +552,10 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			gatewayEnvFiles = append(gatewayEnvFiles, M{"path": filepath.ToSlash(filepath.Join(dir, "model-relay.auth")), "format": "raw"})
 		}
 		if s.Has("transcription") {
+			// SPEC-0082 R2: voice is service-only — the gateway talks to the
+			// dedicated hub-stt/hub-tts services or reports voice unavailable.
 			gatewayEnvironment["HUB_STT_URL"] = "http://hub-stt:8090"
 			gatewayEnvironment["HUB_TTS_URL"] = "http://hub-tts:8090"
-			// The embedded command workers stay configured as the documented
-			// fallback; when the URL is set the sidecar wins at selection time.
-			gatewayEnvironment["HUB_STT_COMMAND"] = "/usr/local/bin/hub-stt"
-			gatewayEnvironment["HUB_TTS_COMMAND"] = "/usr/local/bin/hub-tts"
-			gatewayEnvironment["HF_HOME"] = "/data/hf"
-			gatewayEnvironment["XDG_CACHE_HOME"] = "/data/cache"
 			gatewayEnvFiles = append(gatewayEnvFiles, M{"path": filepath.ToSlash(filepath.Join(dir, "media.auth")), "format": "raw"})
 		}
 		if s.ExecutionMode != "" {
@@ -650,7 +659,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	// configured the engines fall back to env keys — meaningful only outside
 	// the rendered stack, since compose no longer mounts a media env file.
 	if infra && s.Has("image_gen") {
-		mediaSvc := cloneMap(common)
+		mediaSvc := cloneMap(coreCommon)
 		mediaSvc["entrypoint"] = []string{"hub-media"}
 		mediaEnv := M{
 			"HUB_MEDIA_LISTEN": "0.0.0.0:8090",

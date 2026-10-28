@@ -13,9 +13,9 @@ var restrictedRoles = map[string]bool{"core": true, "control": true}
 // imageRoleBudgets are SPEC-0082 uncompressed size budgets in bytes; docker
 // reports decimal GB so the budgets are decimal too — the tighter reading.
 var imageRoleBudgets = map[string]int64{
-	"core":     250_000_000,
-	"control":  350_000_000,
-	"runtime":  1_300_000_000,
+	"core":    250_000_000,
+	"control": 350_000_000,
+	"runtime": 1_300_000_000,
 	"browser": 1_000_000_000,
 }
 

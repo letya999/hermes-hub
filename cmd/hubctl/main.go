@@ -621,6 +621,22 @@ func run(ctx context.Context, args []string) error {
 					return fmt.Errorf("build %s: %w", image, err)
 				}
 			}
+			// Spawned runtimes resolve the agent tag at container start.
+			// Supervisor and managed renders drop the hermes-runtime service,
+			// so no compose build section produces the tag there — build it
+			// explicitly like the cell images above.
+			envSettings, readErr := stack.ReadEnvironment(*dir, *environment)
+			if readErr != nil {
+				return readErr
+			}
+			if envSettings.RendersInfra() {
+				if _, rendered := stack.Compose(envSettings, rootAbs, abs)["services"].(stack.M)["hermes-runtime"]; !rendered {
+					image := "hermes-hub:0.4.0-" + *environment
+					if err := dockerCmd("build", "--target", *environment, "-t", image, "-f", dockerfile, rootAbs).Run(); err != nil {
+						return fmt.Errorf("build %s: %w", image, err)
+					}
+				}
+			}
 			if *environment == "dev" && (len(f.Args()) == 0 || slices.Contains(f.Args(), "cliproxy")) {
 				for _, pin := range []string{"dev-runtime-image", "dev-script-image"} {
 					if err := os.Remove(filepath.Join(abs, "generated", pin)); err != nil && !os.IsNotExist(err) { // #nosec G703 -- operator-supplied project dir

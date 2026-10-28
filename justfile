@@ -68,9 +68,15 @@ release version:
 docker-check target="prod":
     go run ./cmd/devcheck docker-build hermes-hub:test {{target}}
     go run ./cmd/devcheck docker-build hermes-hub:test-control {{target}}-control
+    go run ./cmd/devcheck docker-build hermes-hub:test-core {{target}}-core
+    go run ./cmd/devcheck docker-build hermes-hub:test-browser {{target}}-browser
     go run ./cmd/devcheck docker-build hermes-hub-cli-tools:test cli-tools
     go run ./cmd/devcheck docker-build hermes-hub-cell-proxy:test cell-proxy
     docker run --rm --entrypoint docker hermes-hub:test-control --version
+    go run ./cmd/devcheck image-budget hermes-hub:test-core core
+    go run ./cmd/devcheck image-budget hermes-hub:test-control control
+    go run ./cmd/devcheck image-budget hermes-hub:test runtime
+    go run ./cmd/devcheck image-budget hermes-hub:test-browser browser
     go run ./cmd/devcheck docker-smoke hermes-hub:test
     go run -tags integration ./cmd/devcheck hermes-contract hermes-hub:test
     go test -tags integration -run TestHubStdioReminderContract -count=1 ./internal/stack
@@ -86,12 +92,18 @@ docker-check target="prod":
 docker-pull target="prod":
     go run ./cmd/devcheck docker-pull hermes-hub:test {{target}}
     go run ./cmd/devcheck docker-pull hermes-hub:test-control {{target}}-control
+    go run ./cmd/devcheck docker-pull hermes-hub:test-core {{target}}-core
+    go run ./cmd/devcheck docker-pull hermes-hub:test-browser {{target}}-browser
     go run ./cmd/devcheck docker-pull hermes-hub-cli-tools:test cli-tools
     go run ./cmd/devcheck docker-pull hermes-hub-cell-proxy:test cell-proxy
 
 # Same gate as docker-check but on the pulled image: no local build stage.
 docker-check-prebuilt target="prod": (docker-pull target)
     docker run --rm --entrypoint docker hermes-hub:test-control --version
+    go run ./cmd/devcheck image-budget hermes-hub:test-core core
+    go run ./cmd/devcheck image-budget hermes-hub:test-control control
+    go run ./cmd/devcheck image-budget hermes-hub:test runtime
+    go run ./cmd/devcheck image-budget hermes-hub:test-browser browser
     go run ./cmd/devcheck docker-smoke hermes-hub:test
     go run -tags integration ./cmd/devcheck hermes-contract hermes-hub:test
     go test -tags integration -run TestHubStdioReminderContract -count=1 ./internal/stack
