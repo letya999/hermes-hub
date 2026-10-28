@@ -4,11 +4,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
 )
 
 // handleAssignments serves POST (create, optional apply) and GET (owner
@@ -186,24 +186,24 @@ func (g *Gateway) assignmentPlanUpdate(w http.ResponseWriter, r *http.Request, i
 
 // assignmentsCommand answers /assignments (SPEC-0080 R2.5): the owner's
 // standing assignments with state and blocking reasons.
-func (g *Gateway) assignmentsCommand(user User, sender int64) string {
+func (g *Gateway) assignmentsCommand(user User, sender int64, lang locale.Lang) string {
 	items, err := g.spool.rt.ListAssignments(user.Envelope(sender))
 	if err != nil {
-		return "Список поручений недоступен."
+		return locale.T(lang, "assignment.list-unavailable")
 	}
-	lines := []string{"Постоянные поручения:"}
+	lines := []string{locale.T(lang, "assignment.list-title")}
 	for _, item := range items {
 		line := item.AssignmentID + " — " + item.Title + ", " + item.State
 		if item.Blocked != "" {
 			line += " (" + item.Blocked + ")"
 		}
 		if item.Checkpoint.WakesToday > 0 {
-			line += ", пробуждений сегодня: " + strconv.Itoa(item.Checkpoint.WakesToday)
+			line += ", " + locale.T(lang, "assignment.wakes-today", item.Checkpoint.WakesToday)
 		}
 		lines = append(lines, line)
 	}
 	if len(items) == 0 {
-		lines = append(lines, "Пока нет.")
+		lines = append(lines, locale.T(lang, "assignment.list-empty"))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -212,24 +212,24 @@ func (g *Gateway) assignmentsCommand(user User, sender int64) string {
 // status|pause|resume|cancel|complete steer the record; authorize stamps
 // the current plan revision as grant-authorized — the only grant-widening
 // path, unreachable over REST or agent tools.
-func (g *Gateway) assignmentCommand(user User, sender int64, text string) string {
+func (g *Gateway) assignmentCommand(user User, sender int64, text string, lang locale.Lang) string {
 	fields := strings.Fields(text)
 	if len(fields) < 3 {
-		return "Используйте /assignment <id> status|pause|resume|cancel|complete|authorize."
+		return locale.T(lang, "assignment.usage")
 	}
 	caller := user.Envelope(sender)
 	id, verb := fields[1], fields[2]
 	item, err := g.spool.rt.LoadAssignment(id, caller)
 	if err != nil {
-		return "Поручение недоступно."
+		return locale.T(lang, "assignment.unavailable")
 	}
 	switch verb {
 	case "status":
-		out := id + " — " + item.State + ", ревизия " + strconv.FormatUint(item.Revision, 10)
+		out := locale.T(lang, "assignment.status", id, item.State, item.Revision)
 		if item.Blocked != "" {
 			out += ", " + item.Blocked
 		}
-		out += ", пробуждений сегодня: " + strconv.Itoa(item.Checkpoint.WakesToday)
+		out += ", " + locale.T(lang, "assignment.wakes-today", item.Checkpoint.WakesToday)
 		return out
 	case "pause":
 		err = g.spool.rt.PauseAssignment(id, caller)
@@ -242,10 +242,10 @@ func (g *Gateway) assignmentCommand(user User, sender int64, text string) string
 	case "authorize":
 		err = g.spool.rt.AuthorizeAssignmentGrants(id, item.Plan.Revision, item.Grants, caller)
 	default:
-		return "Неизвестное действие " + verb + "."
+		return locale.T(lang, "assignment.unknown-verb", verb)
 	}
 	if err != nil {
-		return "Действие отклонено: " + verb + "."
+		return locale.T(lang, "assignment.rejected", verb)
 	}
-	return "Поручение " + id + ": " + verb + " принято."
+	return locale.T(lang, "assignment.accepted", id, verb)
 }

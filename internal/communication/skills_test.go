@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/skillstore"
 )
 
@@ -503,5 +504,56 @@ func TestConfigFromEnvSkillsDir(t *testing.T) {
 	}
 	if config.SkillsDir != "/skills-effective" {
 		t.Fatalf("HUB_SKILLS_EFFECTIVE not mapped: %q", config.SkillsDir)
+	}
+}
+
+// Skill dispatch replies render in the caller's workspace locale: hidden or
+// ineligible skills get a localized "unavailable", a repeat activation gets
+// the localized "already active" note (R6.5).
+func TestSlashSkillRepliesLocalized(t *testing.T) {
+	c := testConfig(t)
+	pinLang(t, c.Users[0].WorkspaceDir, locale.LangEN)
+	skillsDir := t.TempDir()
+	writeEffectiveSkill(t, skillsDir, "quiet-one", "hidden", "body\n", "disable-model-invocation: true\n")
+	writeEffectiveSkill(t, skillsDir, "deploy-app", "dep", "body\n", "")
+	sealEffectiveIndex(t, skillsDir, nil)
+	// A catalog entry whose body vanished reads as unavailable too.
+	raw, err := os.ReadFile(filepath.Join(skillsDir, "index.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	extra := strings.TrimSuffix(string(raw), "]}") + `,{"name":"ghost","description":"d","source":"user","revision":"r","eligible":true}]}`
+	if err := os.WriteFile(filepath.Join(skillsDir, "index.json"), []byte(extra), 0644); err != nil {
+		t.Fatal(err)
+	}
+	c.SkillsDir = skillsDir
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{}
+	g.api, g.runner = fake, &fakeRunner{}
+	send := func(id int, text string) {
+		upd := Update{UpdateID: id, Message: &Message{MessageID: id, From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Text: text}}
+		if err := g.handleUpdate(context.Background(), upd); err != nil {
+			t.Fatal(err)
+		}
+	}
+	send(1, "/quiet-one")
+	send(2, "/deploy-app")
+	send(3, "/deploy-app")
+	send(4, "/ghost")
+	for range 8 {
+		g.deliverOne(context.Background())
+	}
+	joined := strings.Join(fake.sent, "\n")
+	if !strings.Contains(joined, "Skill /quiet-one is unavailable.") {
+		t.Errorf("en unavailable reply wrong: %q", joined)
+	}
+	if !strings.Contains(joined, "Skill /ghost is unavailable.") {
+		t.Errorf("en activation-error reply wrong: %q", joined)
+	}
+	if !strings.Contains(joined, "Skill deploy-app is already active in this session.") {
+		t.Errorf("en already-active reply wrong: %q", joined)
 	}
 }

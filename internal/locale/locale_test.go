@@ -203,6 +203,12 @@ func TestEnglishKeysPresent(t *testing.T) {
 		"chat.routines-title", "chat.routines-empty", "chat.usage-busy",
 		"chat.usage-measuring", "chat.secrets-rejected", "chat.secrets-form",
 		"chat.bot-conflict", "chat.auto-titled",
+		"chat.skill-unavailable", "chat.skill-active",
+		// Assignment replies.
+		"assignment.list-unavailable", "assignment.list-title", "assignment.wakes-today",
+		"assignment.list-empty", "assignment.usage", "assignment.unavailable",
+		"assignment.status", "assignment.unknown-verb", "assignment.rejected",
+		"assignment.accepted",
 		// Routine listing fragments.
 		"routine.active", "routine.paused", "routine.done", "routine.missed",
 		"routine.unconfirmed", "routine.delivered", "routine.no-upcoming",

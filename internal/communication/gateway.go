@@ -648,9 +648,9 @@ func (g *Gateway) dispatchChannelCommand(ctx context.Context, user User, task Ta
 		case "watches":
 			return reply(g.watchesCommand(user, sender))
 		case "assignments":
-			return reply(g.assignmentsCommand(user, sender))
+			return reply(g.assignmentsCommand(user, sender, lang))
 		case "assignment":
-			return reply(g.assignmentCommand(user, sender, text))
+			return reply(g.assignmentCommand(user, sender, text, lang))
 		case "language":
 			fields := strings.Fields(text)
 			if len(fields) == 1 {
@@ -677,7 +677,7 @@ func (g *Gateway) dispatchChannelCommand(ctx context.Context, user User, task Ta
 					return reply(locale.T(lang, "chat.unknown-command", command, commandHelp(lang)))
 				}
 				if e.Hidden || !e.Eligible {
-					return reply("Скилл /" + command + " недоступен.")
+					return reply(locale.T(lang, "chat.skill-unavailable", command))
 				}
 				principalID := user.Envelope(sender).PrincipalID
 				session := g.skillSessionFor(principalID, task.TaskID, idx)
@@ -688,12 +688,12 @@ func (g *Gateway) dispatchChannelCommand(ctx context.Context, user User, task Ta
 				}
 				g.skillMu.Unlock()
 				if already {
-					return reply("Скилл " + command + " уже активен в этой сессии.")
+					return reply(locale.T(lang, "chat.skill-active", command))
 				}
 				args := strings.Fields(text)
 				expanded, err := g.skillActivationText(e, args[1:])
 				if err != nil {
-					return reply("Скилл /" + command + " недоступен.")
+					return reply(locale.T(lang, "chat.skill-unavailable", command))
 				}
 				return g.enqueueChannelJob(ctx, user, task, channel, deliveryKey+"-skill", deliveryKey+":skill:"+command, chatID, 0, expanded, sender, "")
 			}

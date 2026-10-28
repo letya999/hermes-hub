@@ -6,10 +6,13 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/internal/routines"
 )
 
 // TestAssignmentAPIRoundTrip (SPEC-0080 R2.1/R2.2): create→apply→get→pause→
@@ -192,15 +195,15 @@ func TestAssignmentCommands(t *testing.T) {
 	}
 	id := created.AssignmentID
 
-	out := g.assignmentsCommand(user, 11)
+	out := g.assignmentsCommand(user, 11, locale.LangRU)
 	if !strings.Contains(out, id) || !strings.Contains(out, "active") {
 		t.Fatalf("list command missing assignment: %q", out)
 	}
-	out = g.assignmentCommand(user, 11, "/assignment "+id+" status")
+	out = g.assignmentCommand(user, 11, "/assignment "+id+" status", locale.LangRU)
 	if !strings.Contains(out, "active") {
 		t.Fatalf("status command wrong: %q", out)
 	}
-	out = g.assignmentCommand(user, 11, "/assignment "+id+" pause")
+	out = g.assignmentCommand(user, 11, "/assignment "+id+" pause", locale.LangRU)
 	item, _ := g.spool.rt.LoadAssignment(id, user.Envelope(11))
 	if !strings.Contains(out, "pause") && item.State != "paused" {
 		t.Fatalf("pause command failed: %q state=%s", out, item.State)
@@ -209,15 +212,77 @@ func TestAssignmentCommands(t *testing.T) {
 		t.Fatalf("pause command did not pause: %s", item.State)
 	}
 	// authorize stamps the plan revision — the only grant-widening verb.
-	out = g.assignmentCommand(user, 11, "/assignment "+id+" authorize")
+	out = g.assignmentCommand(user, 11, "/assignment "+id+" authorize", locale.LangRU)
 	item, _ = g.spool.rt.LoadAssignment(id, user.Envelope(11))
 	if !strings.Contains(out, "authorize") || item.GrantsAuthorizedRev != item.Plan.Revision {
 		t.Fatalf("authorize did not stamp plan revision: %+v (out=%q)", item, out)
 	}
 	// Foreign sender gets a refusal, not the record.
-	out = g.assignmentCommand(user, 99, "/assignment "+id+" status")
+	out = g.assignmentCommand(user, 99, "/assignment "+id+" status", locale.LangRU)
 	if strings.Contains(out, "active") {
 		t.Fatalf("foreign sender saw the assignment: %q", out)
+	}
+}
+
+// TestAssignmentCommandsLocalized: the same replies render in the caller's
+// workspace locale — the catalog supplies every fixed string, the record
+// tokens (state, verb) stay verbatim.
+func TestAssignmentCommandsLocalized(t *testing.T) {
+	c := testConfig(t)
+	c.ControlAuth = "control-token"
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := g.users[11]
+	out := g.assignmentsCommand(user, 11, locale.LangEN)
+	if !strings.Contains(out, "None yet.") {
+		t.Errorf("en empty list wrong: %q", out)
+	}
+
+	w := destinationRequest(g, http.MethodPost, "/v1/assignments", `{"title":"prices","intent":"watch prices","apply":true,"plan":{"sources":[{"name":"page","schedule":{"channel":"telegram_bot","chat_id":11,"timezone":"UTC","expression":"every:15m","job_kind":"watcher","input":"w","probe":{"kind":"http","url":"https://example.com/p"}}}],"specialist":{"instructions":"report changes"}}}`)
+	var created commodel.Assignment
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil || created.AssignmentID == "" {
+		t.Fatalf("create failed: %d %s", w.Code, w.Body.String())
+	}
+	id := created.AssignmentID
+	g.spool.rt.AdmitAssignmentWakeLocked(id, time.Now())
+
+	out = g.assignmentsCommand(user, 11, locale.LangEN)
+	if !strings.Contains(out, "Standing assignments:") || !strings.Contains(out, id) || !strings.Contains(out, "wakes today") {
+		t.Errorf("en list wrong: %q", out)
+	}
+	out = g.assignmentCommand(user, 11, "/assignment "+id+" status", locale.LangEN)
+	if !strings.Contains(out, "revision") || !strings.Contains(out, "wakes today") {
+		t.Errorf("en status wrong: %q", out)
+	}
+	out = g.assignmentCommand(user, 11, "/assignment "+id+" pause", locale.LangEN)
+	if !strings.Contains(out, "accepted") {
+		t.Errorf("en pause reply wrong: %q", out)
+	}
+	out = g.assignmentCommand(user, 11, "/assignment "+id+" bogus", locale.LangEN)
+	if !strings.Contains(out, "Unknown action") {
+		t.Errorf("en unknown-verb wrong: %q", out)
+	}
+	out = g.assignmentCommand(user, 11, "/assignment "+id+" cancel", locale.LangEN)
+	out = g.assignmentCommand(user, 11, "/assignment "+id+" cancel", locale.LangEN)
+	if !strings.Contains(out, "rejected") {
+		t.Errorf("en rejected-verb wrong: %q", out)
+	}
+	out = g.assignmentCommand(user, 11, "/assignment", locale.LangEN)
+	if !strings.Contains(out, "Use /assignment") {
+		t.Errorf("en usage wrong: %q", out)
+	}
+	out = g.assignmentCommand(user, 11, "/assignment asg-missing status", locale.LangEN)
+	if !strings.Contains(out, "unavailable") {
+		t.Errorf("en unavailable wrong: %q", out)
+	}
+
+	// A store that cannot list — engine rooted at an invalid path — surfaces
+	// the localized unavailable reply rather than a panic.
+	g.spool.rt = routines.NewEngine("bad\x00root", &sync.Mutex{}, routines.Deps{})
+	if out = g.assignmentsCommand(user, 11, locale.LangEN); !strings.Contains(out, "unavailable") {
+		t.Errorf("en list-unavailable wrong: %q", out)
 	}
 }
 
