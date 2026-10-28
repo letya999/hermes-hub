@@ -6,6 +6,7 @@ import (
 	brokerv1 "github.com/letya999/credential-broker/api/v1"
 	brokerclient "github.com/letya999/credential-broker/client"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/url"
@@ -375,7 +376,7 @@ func (c *ControlPlane) completeBrokerAdmission(ctx context.Context, auth identit
 	latest.FormNonce, latest.FormExpires = "", time.Time{}
 	if err != nil {
 		latest.Phase = api.PhaseAwaitingCreds
-		latest.Error = "Проверка не прошла. " + credentialProbeFailure(err)
+		latest.Error = locale.T(locale.Fallback(), "cred.failed", credentialProbeFailure(err, locale.Fallback()))
 		latest.ErrorCode = api.OpCodeProbeFailed
 		if admitted.Source.ArchiveDigest != "" {
 			// Built evidence survives a rejected credential so rotation only

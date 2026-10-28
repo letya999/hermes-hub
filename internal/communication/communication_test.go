@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 
 	"github.com/letya999/hermes-hub/internal/credstore"
@@ -29,6 +30,14 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+// The package's historical fixtures assert the Russian strings that predated
+// i18n; pinning the hub default to ru keeps those assertions meaningful while
+// per-user behavior is exercised by explicit prefs/hints in locale_test.go.
+func TestMain(m *testing.M) {
+	_ = os.Setenv("HUB_DEFAULT_LANG", "ru")
+	os.Exit(m.Run())
+}
 
 type forumOp struct {
 	method string
@@ -261,10 +270,30 @@ func (f *fakeRunner) Run(_ context.Context, job Job, user User) (string, error) 
 
 func testConfig(t *testing.T) Config {
 	t.Helper()
+	c := baseTestConfig(t)
+	// Historical fixtures assert the pre-i18n Russian strings; a chosen
+	// preference keeps the picker silent and the language pinned.
+	pinLang(t, c.Users[0].WorkspaceDir, locale.LangRU)
+	return c
+}
+
+// baseTestConfig is testConfig without the language pin — locale tests need
+// the real first-contact state.
+func baseTestConfig(t *testing.T) Config {
+	t.Helper()
 	root := t.TempDir()
 	_ = os.MkdirAll(filepath.Join(root, "alice", "state"), 0700)
 	_ = os.MkdirAll(filepath.Join(root, "alice", "workspace"), 0700)
 	return Config{OrganizationID: "personal", TelegramToken: "token", SpoolDir: filepath.Join(root, "spool"), PollTimeout: time.Second, Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}, StateDir: filepath.Join(root, "alice", "state"), WorkspaceDir: filepath.Join(root, "alice", "workspace"), Features: []string{"workspace", "github"}, ConfiguredEnv: map[string]bool{"GITHUB_TOKEN": true}}}}
+}
+
+// pinLang seeds a workspace preference for fixtures that predate the locale
+// ladder: explicit chosen state silences first-contact picker/detect noise.
+func pinLang(t *testing.T, workspaceDir string, lang locale.Lang) {
+	t.Helper()
+	if err := locale.StorePrefs(workspaceDir, locale.Prefs{Lang: lang, Source: locale.SourceChosen}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // SPEC-0053 R2.3: spool retention and the mock-capture directory are

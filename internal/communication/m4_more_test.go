@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -364,7 +365,7 @@ func TestMediaAudioCaptionLimitsAndHTTPErrorBranches(t *testing.T) {
 	if _, err := (CommandTranscriber{Command: "false", Timeout: time.Nanosecond}).Transcribe(context.Background(), "x", "audio/ogg"); err == nil {
 		t.Fatal("stt timeout accepted")
 	}
-	if _, _, err := (CommandSynthesizer{Command: "false"}).Synthesize(context.Background(), "hi"); err == nil {
+	if _, _, err := (CommandSynthesizer{Command: "false"}).Synthesize(context.Background(), locale.LangEN, "hi"); err == nil {
 		t.Fatal("empty tts accepted")
 	}
 	req := httptest.NewRequest(http.MethodGet, "/v1/routines", nil)

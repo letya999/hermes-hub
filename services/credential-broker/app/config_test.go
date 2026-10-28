@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"net"
 	"net/http"
@@ -14,7 +15,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
+	"github.com/letya999/credential-broker/contract"
 	"github.com/letya999/credential-broker/internal/securefs"
 	"github.com/letya999/credential-broker/provider"
 )
@@ -31,6 +34,36 @@ func devConfig(t *testing.T) Config {
 	}
 	return c
 }
+
+// The dev scaffold seeds an English contract title so the demo install
+// matches the hub's English-default UI language.
+func TestInitSeededContractIsEnglish(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "installation")
+	if e := Init(root); e != nil {
+		t.Fatal(e)
+	}
+	raw, e := os.ReadFile(filepath.Join(root, "contracts", "github-pat.json"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	var c contract.Contract
+	if e := json.Unmarshal(raw, &c); e != nil {
+		t.Fatal(e)
+	}
+	for _, base := range []string{c.Title, c.Fields[0].Label} {
+		for _, r := range base {
+			if unicode.Is(unicode.Cyrillic, r) {
+				t.Fatalf("seeded base text not English: %q", base)
+			}
+		}
+	}
+	for _, lang := range []string{"ru", "kk", "es"} {
+		if c.TitleI18n[lang] == "" || c.Fields[0].LabelI18n[lang] == "" {
+			t.Fatalf("seeded contract misses %s translations", lang)
+		}
+	}
+}
+
 func TestInitConfigAndRun(t *testing.T) {
 	c := devConfig(t)
 	root := filepath.Dir(c.MasterKeyFile)

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/routines"
 )
 
@@ -116,6 +117,9 @@ type Spool struct {
 	budget       *budgetLedger
 	budgetBroken error
 	limits       spoolLimits
+	// langOf resolves the job owner's workspace language for user-facing
+	// stream texts; nil falls back to the hub default.
+	langOf func(principalID string) locale.Lang
 }
 
 // Notify exposes the coalesced wake channel. Buffered with capacity one: a
@@ -209,6 +213,12 @@ func openSpool(root string, create bool) (*Spool, error) {
 		},
 		ProbeScript:  func() routines.ProbeScriptFunc { return s.probeScript },
 		SettleEvents: s.settleEvents,
+		LangOf: func(p string) locale.Lang {
+			if s.langOf != nil {
+				return s.langOf(p)
+			}
+			return locale.Fallback()
+		},
 	})
 	return s, nil
 }

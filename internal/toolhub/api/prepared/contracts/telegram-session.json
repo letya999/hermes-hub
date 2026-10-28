@@ -2,19 +2,84 @@
   "id": "telegram-session",
   "revision": 2,
   "title": "Personal Telegram MTProto session (separate from the bot)",
+  "title_i18n": {
+    "ru": "Личная MTProto-сессия Telegram (отдельно от бота)",
+    "kk": "Telegram жеке MTProto сессиясы (боттан бөлек)",
+    "es": "Sesión MTProto personal de Telegram (separada del bot)"
+  },
   "storage": "local",
   "fields": [
-    {"id": "api_id", "label": "Telegram API ID from my.telegram.org/apps", "kind": "string", "required": true, "max_bytes": 20},
-    {"id": "api_hash", "label": "Telegram API hash", "kind": "secret", "required": true, "max_bytes": 128},
-    {"id": "session", "label": "Personal StringSession (never bot token)", "kind": "secret", "required": true, "max_bytes": 8192},
-    {"id": "expected_user_id", "label": "Expected numeric Telegram user ID", "kind": "string", "required": true, "max_bytes": 20}
+    {
+      "id": "api_id",
+      "label": "Telegram API ID from my.telegram.org/apps",
+      "label_i18n": {
+        "ru": "Telegram API ID с my.telegram.org/apps",
+        "kk": "my.telegram.org/apps-тен алынған Telegram API ID",
+        "es": "API ID de Telegram de my.telegram.org/apps"
+      },
+      "kind": "string",
+      "required": true,
+      "max_bytes": 20
+    },
+    {
+      "id": "api_hash",
+      "label": "Telegram API hash",
+      "label_i18n": {
+        "ru": "Telegram API hash",
+        "kk": "Telegram API hash",
+        "es": "API hash de Telegram"
+      },
+      "kind": "secret",
+      "required": true,
+      "max_bytes": 128
+    },
+    {
+      "id": "session",
+      "label": "Personal StringSession (never bot token)",
+      "label_i18n": {
+        "ru": "Личная StringSession (никогда не токен бота)",
+        "kk": "Жеке StringSession (ешқашан бот токені емес)",
+        "es": "StringSession personal (nunca un token de bot)"
+      },
+      "kind": "secret",
+      "required": true,
+      "max_bytes": 8192
+    },
+    {
+      "id": "expected_user_id",
+      "label": "Expected numeric Telegram user ID",
+      "label_i18n": {
+        "ru": "Ожидаемый числовой ID пользователя Telegram",
+        "kk": "Telegram пайдаланушысының күтілетін сандық ID-і",
+        "es": "ID numérico esperado del usuario de Telegram"
+      },
+      "kind": "string",
+      "required": true,
+      "max_bytes": 20
+    }
   ],
   "intake": "telegram_qr",
   "allow_shared": false,
   "deliveries": [
-    {"type": "env", "field": "api_id", "target": "TELEGRAM_API_ID"},
-    {"type": "env", "field": "api_hash", "target": "TELEGRAM_API_HASH"},
-    {"type": "env", "field": "session", "target": "TELEGRAM_SESSION_STRING"},
-    {"type": "env", "field": "expected_user_id", "target": "TELEGRAM_EXPECTED_USER_ID"}
+    {
+      "type": "env",
+      "field": "api_id",
+      "target": "TELEGRAM_API_ID"
+    },
+    {
+      "type": "env",
+      "field": "api_hash",
+      "target": "TELEGRAM_API_HASH"
+    },
+    {
+      "type": "env",
+      "field": "session",
+      "target": "TELEGRAM_SESSION_STRING"
+    },
+    {
+      "type": "env",
+      "field": "expected_user_id",
+      "target": "TELEGRAM_EXPECTED_USER_ID"
+    }
   ]
 }

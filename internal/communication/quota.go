@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/locale"
 )
 
 // Provider quota is owned by the space's model-relay, which holds the CLIProxy
@@ -28,10 +30,10 @@ type quotaTracker struct {
 
 // quotaLines returns rendered subscription-limit lines for /usage. Missing
 // relay configuration is silent; fetch failures return one honest line.
-func (g *Gateway) quotaLines(ctx context.Context) []string {
+func (g *Gateway) quotaLines(ctx context.Context, lang locale.Lang) []string {
 	base := strings.TrimRight(strings.TrimSpace(os.Getenv("HUB_MODEL_RELAY_URL")), "/")
 	if base == "" {
-		return []string{"Лимиты подписки: источник не настроен на сервере."}
+		return []string{locale.T(lang, "quota.unconfigured")}
 	}
 	g.quota.mu.Lock()
 	cached, at := g.quota.cache, g.quota.at
@@ -39,9 +41,9 @@ func (g *Gateway) quotaLines(ctx context.Context) []string {
 	if !at.IsZero() && g.now().Sub(at) < quotaCacheTTL {
 		return cached
 	}
-	lines, err := fetchQuotaLines(ctx, base, strings.TrimSpace(os.Getenv("HUB_MODEL_RELAY_ADMIN")))
+	lines, err := fetchQuotaLines(ctx, base, strings.TrimSpace(os.Getenv("HUB_MODEL_RELAY_ADMIN")), lang)
 	if err != nil {
-		lines = []string{"Лимиты подписки: недоступно (" + err.Error() + ")."}
+		lines = []string{locale.T(lang, "quota.unavailable", err.Error())}
 	}
 	g.quota.mu.Lock()
 	g.quota.cache, g.quota.at = lines, g.now()
@@ -49,7 +51,7 @@ func (g *Gateway) quotaLines(ctx context.Context) []string {
 	return lines
 }
 
-func fetchQuotaLines(ctx context.Context, base, admin string) ([]string, error) {
+func fetchQuotaLines(ctx context.Context, base, admin string, lang locale.Lang) ([]string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v1/quota", nil) // #nosec G704 -- configured internal quota endpoint
 	if err != nil {
 		return nil, err
@@ -64,13 +66,13 @@ func fetchQuotaLines(ctx context.Context, base, admin string) ([]string, error) 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("релей вернул HTTP %d", resp.StatusCode)
+		return nil, fmt.Errorf("%s", locale.T(lang, "quota.http-error", resp.StatusCode))
 	}
 	var payload struct {
 		Lines []string `json:"lines"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil || len(payload.Lines) == 0 {
-		return nil, fmt.Errorf("квота не распознана")
+		return nil, fmt.Errorf("%s", locale.T(lang, "quota.unparsed"))
 	}
 	return payload.Lines, nil
 }

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/locale"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
@@ -438,7 +439,7 @@ func TestQuotaLinesRendersMeasuredBuckets(t *testing.T) {
 	}
 	t.Setenv("HUB_MODEL_RELAY_URL", server.URL)
 	t.Setenv("HUB_MODEL_RELAY_ADMIN", "relay-test")
-	lines := g.quotaLines(context.Background())
+	lines := g.quotaLines(context.Background(), locale.LangRU)
 	joined := strings.Join(lines, "\n")
 	for _, want := range []string{"u@example.com", "Gemini Models", "92.4%", "07.10"} {
 		if !strings.Contains(joined, want) {
@@ -446,7 +447,7 @@ func TestQuotaLinesRendersMeasuredBuckets(t *testing.T) {
 		}
 	}
 	// Cache hit: the second call returns the same lines without re-fetching.
-	if again := g.quotaLines(context.Background()); strings.Join(again, "\n") != joined {
+	if again := g.quotaLines(context.Background(), locale.LangRU); strings.Join(again, "\n") != joined {
 		t.Fatal("quota cache missed")
 	}
 	if relayCalls != 1 {
@@ -461,12 +462,12 @@ func TestQuotaLinesDisabledOrFailing(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("HUB_MODEL_RELAY_URL", "")
-	if lines := g.quotaLines(context.Background()); len(lines) != 1 || !strings.Contains(lines[0], "не настроен") {
+	if lines := g.quotaLines(context.Background(), locale.LangRU); len(lines) != 1 || !strings.Contains(lines[0], "не настроен") {
 		t.Fatalf("unconfigured quota status: %v", lines)
 	}
 	t.Setenv("HUB_MODEL_RELAY_URL", "http://127.0.0.1:1")
 	t.Setenv("HUB_MODEL_RELAY_ADMIN", "k")
-	lines := g.quotaLines(context.Background())
+	lines := g.quotaLines(context.Background(), locale.LangRU)
 	if len(lines) != 1 || !strings.Contains(lines[0], "недоступно") {
 		t.Fatalf("failure not reported honestly: %v", lines)
 	}
@@ -474,9 +475,11 @@ func TestQuotaLinesDisabledOrFailing(t *testing.T) {
 
 func TestSetMyCommandsRegistersEveryScope(t *testing.T) {
 	var mu struct {
-		scopes   []string
-		commands []map[string]string
+		scopes    []string
+		langs     []string
+		byVariant map[string][]map[string]string
 	}
+	mu.byVariant = map[string][]map[string]string{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/bottoken/setMyCommands" {
 			w.WriteHeader(http.StatusNotFound)
@@ -485,10 +488,12 @@ func TestSetMyCommandsRegistersEveryScope(t *testing.T) {
 		var payload struct {
 			Commands []map[string]string `json:"commands"`
 			Scope    map[string]string   `json:"scope"`
+			Lang     string              `json:"language_code"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&payload)
 		mu.scopes = append(mu.scopes, payload.Scope["type"])
-		mu.commands = payload.Commands
+		mu.langs = append(mu.langs, payload.Lang)
+		mu.byVariant[payload.Lang] = payload.Commands
 		_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
 	}))
 	defer server.Close()
@@ -502,18 +507,26 @@ func TestSetMyCommandsRegistersEveryScope(t *testing.T) {
 			t.Fatalf("scope %s not registered: %v", scope, mu.scopes)
 		}
 	}
-	if len(mu.commands) != len(botCommandInventory) {
-		t.Fatalf("menu size %d != inventory %d", len(mu.commands), len(botCommandInventory))
-	}
-	for i, c := range botCommandInventory {
-		if mu.commands[i]["command"] != c.Command || mu.commands[i]["description"] != c.Description {
-			t.Fatalf("menu drifted from inventory at %d: %v", i, mu.commands[i])
+	// The menu is localized per supported language so the client's app locale
+	// picks the right variant without the hub knowing each user's preference.
+	for _, l := range locale.All {
+		if !slices.Contains(mu.langs, string(l)) {
+			t.Fatalf("language %s not registered: %v", l, mu.langs)
+		}
+		for i, c := range botCommandInventory {
+			got := mu.byVariant[string(l)][i]
+			if got["command"] != c.Command || got["description"] != locale.T(l, c.DescKey) {
+				t.Fatalf("menu drifted from inventory at %d for %s: %v", i, l, got)
+			}
 		}
 	}
-	// /help renders exactly the registered inventory.
-	help := commandHelp()
+	if len(mu.byVariant[""]) != len(botCommandInventory) {
+		t.Fatalf("fallback menu size %d != inventory %d", len(mu.byVariant[""]), len(botCommandInventory))
+	}
+	// /help renders exactly the registered inventory for the user's language.
+	help := commandHelp(locale.LangRU)
 	for _, c := range botCommandInventory {
-		if !strings.Contains(help, "/"+c.Command+" — "+c.Description) {
+		if !strings.Contains(help, "/"+c.Command+" — "+locale.T(locale.LangRU, c.DescKey)) {
 			t.Fatalf("help missing /%s", c.Command)
 		}
 	}
@@ -918,7 +931,7 @@ func TestAllCommandsStayDeterministic(t *testing.T) {
 // The control commands /stop and /cancel are advertised in /help and the
 // registered Telegram menu like every other supported command.
 func TestStopCancelInCommandInventory(t *testing.T) {
-	help := commandHelp()
+	help := commandHelp(locale.LangRU)
 	for _, cmd := range []string{"/stop", "/cancel", "/archive", "/archived"} {
 		if !strings.Contains(help, cmd+" ") && !strings.Contains(help, cmd+"\n") {
 			t.Fatalf("command %s absent from help:\n%s", cmd, help)

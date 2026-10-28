@@ -714,6 +714,11 @@ func TestTranscriptionWiresHubSTTAndDockerfile(t *testing.T) {
 	if env["HUB_TTS_COMMAND"] != "/usr/local/bin/hub-tts" {
 		t.Fatalf("HUB_TTS_COMMAND=%v", env["HUB_TTS_COMMAND"])
 	}
+	for _, key := range []string{"HUB_TTS_VOICE", "HUB_TTS_VOICE_EN", "HUB_TTS_VOICE_RU", "HUB_TTS_VOICE_KK", "HUB_TTS_VOICE_ES"} {
+		if env[key] != "${"+key+":-}" {
+			t.Fatalf("gateway does not pass %s through: %v", key, env[key])
+		}
+	}
 	// Two dedicated services and images — not one binary with a role flag.
 	for role, dockerfile := range map[string]string{"hub-stt": "docker/Dockerfile.stt", "hub-tts": "docker/Dockerfile.tts"} {
 		svc, ok := services[role].(M)

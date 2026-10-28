@@ -18,6 +18,7 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/channel"
 	"github.com/letya999/hermes-hub/internal/envstore"
+	"github.com/letya999/hermes-hub/internal/locale"
 )
 
 // Slack IM/channel ids (D…/C…/G…) are not identity.ValidID; they are only a
@@ -202,7 +203,7 @@ func (g *Gateway) ingestSlackEvent(ctx context.Context, teamID, eventID, eventTy
 	}
 	envelope := user.SlackEnvelope(teamID, slackUser)
 	if envstore.LooksLikeEnv(text) {
-		return g.spool.EnqueueDelivery(Delivery{ID: "slack-" + eventID + "-secret", IdempotencyKey: "slack-" + eventID + "-secret", Channel: "slack_app", ConversationID: envelope.ConversationID, DeliveryTargetID: envelope.DeliveryTargetID, SlackChannel: channel, SlackThread: threadTS, Text: "Секреты в Slack App канале отклонены.", CreatedAt: g.now().UTC()})
+		return g.spool.EnqueueDelivery(Delivery{ID: "slack-" + eventID + "-secret", IdempotencyKey: "slack-" + eventID + "-secret", Channel: "slack_app", ConversationID: envelope.ConversationID, DeliveryTargetID: envelope.DeliveryTargetID, SlackChannel: channel, SlackThread: threadTS, Text: locale.T(locale.LangOf(user.WorkspaceDir), "slack.secret-rejected"), CreatedAt: g.now().UTC()})
 	}
 	job := Job{Envelope: envelope, ID: "slack-" + eventID, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: "slack_app", Trigger: "message", IdempotencyKey: "slack:" + eventID, Text: text, SlackChannel: channel, SlackThread: threadTS, CreatedAt: g.now().UTC()}
 	_, err := g.spool.Enqueue(job)

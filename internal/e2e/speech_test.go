@@ -3,13 +3,14 @@ package e2e
 import (
 	"context"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"os"
 	"testing"
 )
 
 type syntheticSpeech struct{ fail bool }
 
-func (s syntheticSpeech) Synthesize(context.Context, string) ([]byte, string, error) {
+func (s syntheticSpeech) Synthesize(context.Context, locale.Lang, string) ([]byte, string, error) {
 	if s.fail {
 		return nil, "", errors.New("synthetic failure")
 	}

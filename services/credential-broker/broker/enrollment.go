@@ -165,7 +165,7 @@ func (b *Broker) OpenSession(id, raw string) (v1.SessionView, string, error) {
 		}
 	}
 	c := b.catalog[r.ContractKey]
-	view := v1.SessionView{RequestID: id, Title: c.Title, Status: r.View.Status, Code: b.sessionCode(raw), Approved: s.Approved, OAuth: c.OAuthProvider != ""}
+	view := v1.SessionView{RequestID: id, Title: c.Title, TitleI18n: c.TitleI18n, Status: r.View.Status, Code: b.sessionCode(raw), Approved: s.Approved, OAuth: c.OAuthProvider != ""}
 	if s.Approved {
 		view.Fields = append(view.Fields, c.Fields...)
 		if r.Extra != nil {

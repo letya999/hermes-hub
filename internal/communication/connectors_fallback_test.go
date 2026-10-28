@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
 )
 
 // /connections falls back to ToolHub's /v1/connectors when the local
@@ -133,7 +134,7 @@ func TestConnectorLineCompactsProjectedNames(t *testing.T) {
 		"hub-github-mcp-server-search-code-5eea4643",
 		"hub-github-mcp-server-search-issues-bfd1c434",
 	}
-	got := connectorLine("github-mcp-server", "container-mcp", names)
+	got := connectorLine(locale.LangRU, "github-mcp-server", "container-mcp", names)
 	if !strings.Contains(got, "github-mcp-server [container-mcp] — 7 инструментов") {
 		t.Fatalf("line=%q", got)
 	}
@@ -143,7 +144,7 @@ func TestConnectorLineCompactsProjectedNames(t *testing.T) {
 	if strings.Contains(got, "search-issues") {
 		t.Fatalf("long inventory must collapse after 3 examples: %q", got)
 	}
-	short := connectorLine("hub-agent-tools", "agent-tools", []string{"file_read", "file_write"})
+	short := connectorLine(locale.LangRU, "hub-agent-tools", "agent-tools", []string{"file_read", "file_write"})
 	if !strings.Contains(short, "2 инструментов: file_read, file_write") {
 		t.Fatalf("short line=%q", short)
 	}

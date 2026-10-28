@@ -545,6 +545,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			// fallback; when the URL is set the sidecar wins at selection time.
 			gatewayEnvironment["HUB_STT_COMMAND"] = "/usr/local/bin/hub-stt"
 			gatewayEnvironment["HUB_TTS_COMMAND"] = "/usr/local/bin/hub-tts"
+			// Per-language voice overrides reach the gateway unchanged; the
+			// sidecar's own env carries the installed-voice list.
+			for _, key := range []string{"HUB_TTS_VOICE", "HUB_TTS_VOICE_EN", "HUB_TTS_VOICE_RU", "HUB_TTS_VOICE_KK", "HUB_TTS_VOICE_ES"} {
+				gatewayEnvironment[key] = "${" + key + ":-}"
+			}
 			gatewayEnvironment["HF_HOME"] = "/data/hf"
 			gatewayEnvironment["XDG_CACHE_HOME"] = "/data/cache"
 			gatewayEnvFiles = append(gatewayEnvFiles, M{"path": filepath.ToSlash(filepath.Join(dir, "media.auth")), "format": "raw"})

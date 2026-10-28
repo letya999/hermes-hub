@@ -46,7 +46,7 @@ func TestModelCommandSwitchesThroughRelay(t *testing.T) {
 	t.Setenv("HUB_MODEL_RELAY_URL", relay.URL)
 	t.Setenv("HUB_MODEL_RELAY_ADMIN", "admintoken")
 
-	out := modelCommand(context.Background(), "alice", "/model")
+	out := modelCommand(context.Background(), User{ID: "alice"}, "/model")
 	if strings.HasPrefix(out, "\n") || strings.HasPrefix(out, " ") {
 		t.Fatalf("reply starts with whitespace: %q", out)
 	}
@@ -67,14 +67,14 @@ func TestModelCommandSwitchesThroughRelay(t *testing.T) {
 	if strings.Contains(out, "ещё: cliproxy/gemini-3-flash") || strings.Contains(out, "ещё: openai/gpt-5-mini") {
 		t.Fatalf("wired models duplicated into the extra catalog: %q", out)
 	}
-	out = modelCommand(context.Background(), "alice", "/model turbo")
+	out = modelCommand(context.Background(), User{ID: "alice"}, "/model turbo")
 	if gotAuth != "Bearer admintoken" || gotModel != "turbo" {
 		t.Fatalf("switch call malformed: auth=%q model=%q", gotAuth, gotModel)
 	}
 	if !strings.Contains(out, "turbo") {
 		t.Fatalf("switch not confirmed: %q", out)
 	}
-	out = modelCommand(context.Background(), "alice", "/model secret-model")
+	out = modelCommand(context.Background(), User{ID: "alice"}, "/model secret-model")
 	if !strings.Contains(strings.ToLower(out), "нет права") && !strings.Contains(out, "недоступн") {
 		t.Fatalf("denied switch misreported: %q", out)
 	}
@@ -104,7 +104,7 @@ func TestModelCommandSwitchLevelView(t *testing.T) {
 		t.Setenv("HUB_MODEL_RELAY_URL", relay.URL)
 		t.Setenv("HUB_MODEL_RELAY_ADMIN", "admintoken")
 		t.Setenv("HUB_MODEL_RELAY_ADMINS_FILE", "")
-		return modelCommand(context.Background(), "alice", "/model")
+		return modelCommand(context.Background(), User{ID: "alice"}, "/model")
 	}
 	out := run("catalog")
 	if !strings.Contains(out, "ещё: cliproxy/gemini-2.5-pro ← текущая") {
@@ -129,7 +129,7 @@ func TestModelCommandSwitchLevelView(t *testing.T) {
 func TestModelCommandWithoutRelay(t *testing.T) {
 	t.Setenv("HUB_MODEL_RELAY_URL", "")
 	t.Setenv("HUB_MODEL_RELAY_ADMINS_FILE", "")
-	out := modelCommand(context.Background(), "alice", "/model turbo")
+	out := modelCommand(context.Background(), User{ID: "alice"}, "/model turbo")
 	if !strings.Contains(out, "недоступн") {
 		t.Fatalf("missing relay not reported: %q", out)
 	}
@@ -153,7 +153,7 @@ func TestModelCommandListsWithoutRegistryEndpoint(t *testing.T) {
 	t.Setenv("HUB_MODEL_RELAY_URL", relay.URL)
 	t.Setenv("HUB_MODEL_RELAY_ADMIN", "admintoken")
 
-	out := modelCommand(context.Background(), "alice", "/model")
+	out := modelCommand(context.Background(), User{ID: "alice"}, "/model")
 	if !strings.Contains(out, "default") || !strings.Contains(out, "turbo") || !strings.Contains(out, "Текущая") {
 		t.Fatalf("plain catalog not shown: %q", out)
 	}
@@ -199,14 +199,14 @@ func TestModelCommandResolvesCallerRelay(t *testing.T) {
 	t.Setenv("HUB_MODEL_RELAY_ADMIN", "")
 	t.Setenv("HUB_MODEL_RELAY_ADMINS_FILE", path)
 
-	out := modelCommand(context.Background(), "alice", "/model")
+	out := modelCommand(context.Background(), User{ID: "alice"}, "/model")
 	if !strings.Contains(out, "default") || !strings.Contains(out, "turbo") {
 		t.Fatalf("alice's catalog not listed: %q", out)
 	}
 	if bobHit {
 		t.Fatal("alice's /model reached bob's relay")
 	}
-	out = modelCommand(context.Background(), "alice", "/model turbo")
+	out = modelCommand(context.Background(), User{ID: "alice"}, "/model turbo")
 	if gotAuth != "Bearer alice-admin" || gotModel != "turbo" {
 		t.Fatalf("switch used wrong relay credentials: auth=%q model=%q", gotAuth, gotModel)
 	}
@@ -215,7 +215,7 @@ func TestModelCommandResolvesCallerRelay(t *testing.T) {
 	}
 
 	// An unknown principal must not fall through to a sibling's relay.
-	out = modelCommand(context.Background(), "carol", "/model")
+	out = modelCommand(context.Background(), User{ID: "carol"}, "/model")
 	if !strings.Contains(out, "недоступн") {
 		t.Fatalf("unmapped principal not rejected: %q", out)
 	}

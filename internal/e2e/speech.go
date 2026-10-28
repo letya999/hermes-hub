@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"context"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"os"
 	"regexp"
 	"strings"
@@ -11,7 +12,7 @@ import (
 
 // Speech checks the real adapters separately from Telegram update reception.
 func speechCase(ctx context.Context, tts communication.Synthesizer, stt communication.Transcriber) (string, string) {
-	audio, mime, err := tts.Synthesize(ctx, "Тест номер сорок два")
+	audio, mime, err := tts.Synthesize(ctx, locale.LangRU, "Тест номер сорок два")
 	if err != nil || len(audio) == 0 {
 		return "FAIL", "speech synthesis failed"
 	}

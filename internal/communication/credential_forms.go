@@ -21,6 +21,7 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/stack"
 )
@@ -217,15 +218,16 @@ func (g *Gateway) serveCredentialForm(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		lang := locale.LangOf(g.user(form.OwnerID).WorkspaceDir)
 		var body strings.Builder
-		body.WriteString("<!doctype html><meta name=\"referrer\" content=\"no-referrer\"><title>Hermes credentials</title><h1>Protected connector setup</h1><form method=post>")
+		body.WriteString("<!doctype html><html lang=\"" + string(lang) + "\"><meta name=\"referrer\" content=\"no-referrer\"><title>" + html.EscapeString(locale.T(lang, "form.title")) + "</title><h1>" + html.EscapeString(locale.T(lang, "form.heading")) + "</h1><form method=post>")
 		body.WriteString("<input type=hidden name=nonce value=\"" + html.EscapeString(nonce) + "\">")
 		for _, key := range form.Keys {
 			body.WriteString("<label>" + html.EscapeString(key) + "<input type=password name=\"" + html.EscapeString(key) + "\" autocomplete=off required></label><br>")
 		}
-		body.WriteString("<button type=submit>Save securely</button></form>")
+		body.WriteString("<button type=submit>" + html.EscapeString(locale.T(lang, "form.save")) + "</button></form>")
 		if slices.Contains(form.Keys, "GOOGLE_OAUTH_CLIENT_ID") || slices.Contains(form.Keys, "GOOGLE_OAUTH_CLIENT_SECRET") {
-			body.WriteString("<p>После сохранения Hermes продолжит подключение Google и покажет официальный OAuth URL. Client secret не отправляйте в чат.</p>")
+			body.WriteString("<p>" + html.EscapeString(locale.T(lang, "form.google-hint")) + "</p>")
 		}
 		_, _ = io.WriteString(w, body.String())
 		return
@@ -263,7 +265,8 @@ func (g *Gateway) serveCredentialForm(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = io.WriteString(w, "<!doctype html><title>Saved</title><p>Credentials saved securely. Return to Hermes and continue the connection.</p>")
+	lang := locale.LangOf(g.user(form.OwnerID).WorkspaceDir)
+	_, _ = io.WriteString(w, "<!doctype html><html lang=\""+string(lang)+"\"><title>"+html.EscapeString(locale.T(lang, "form.saved-title"))+"</title><p>"+html.EscapeString(locale.T(lang, "form.saved-body"))+"</p>")
 }
 
 func (g *Gateway) persistCredentialForm(r *http.Request, form credentialForm, values map[string]string) error {

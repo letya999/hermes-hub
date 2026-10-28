@@ -24,7 +24,7 @@ func TestBrowserFormMarksRequiredAndRendersExtras(t *testing.T) {
 	})
 	r := parseResponse[v1.Request](t, w, http.StatusCreated)
 	cookie, csrf := f.pair(r)
-	req := f.request("GET", "/connect/"+r.ID, "", actor, nil)
+	req := f.request("GET", "/connect/"+r.ID+"?lang=ru", "", actor, nil)
 	req.AddCookie(cookie)
 	w = f.serve(req)
 	body := w.Body.String()

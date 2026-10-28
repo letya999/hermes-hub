@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
 )
 
 // grant_request is the in-conversation half of the unlock ceremony. The host
@@ -143,10 +144,10 @@ func (g *Gateway) serveGrantAck(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	if updateErr != nil || !acknowledged {
 		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = io.WriteString(w, credentialResultPage("Grant not activated", "The request nonce is missing, expired or already rotated. Return to the conversation and request the grant again."))
+		_, _ = io.WriteString(w, credentialResultPage("Grant not activated", "The request nonce is missing, expired or already rotated. Return to the conversation and request the grant again.", locale.LangEN))
 		return
 	}
-	_, _ = io.WriteString(w, credentialResultPage("Grant activated", "The tool access grant is active until its expiry. Return to the conversation."))
+	_, _ = io.WriteString(w, credentialResultPage("Grant activated", "The tool access grant is active until its expiry. Return to the conversation.", locale.LangEN))
 }
 
 func grantAckPage(grant *api.ToolGrant, nonce string) string {

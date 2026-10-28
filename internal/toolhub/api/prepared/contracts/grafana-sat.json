@@ -2,11 +2,21 @@
   "id": "grafana-sat",
   "revision": 1,
   "title": "Grafana service account token",
+  "title_i18n": {
+    "ru": "Токен сервисной учётной записи Grafana",
+    "kk": "Grafana сервис аккаунтының токені",
+    "es": "Token de cuenta de servicio de Grafana"
+  },
   "storage": "local",
   "fields": [
     {
       "id": "url",
       "label": "Grafana base URL (for example https://grafana.example.com)",
+      "label_i18n": {
+        "ru": "Базовый URL Grafana (например https://grafana.example.com)",
+        "kk": "Grafana негізгі URL-і (мысалы https://grafana.example.com)",
+        "es": "URL base de Grafana (por ejemplo https://grafana.example.com)"
+      },
       "kind": "string",
       "required": true,
       "max_bytes": 2048
@@ -14,6 +24,11 @@
     {
       "id": "token",
       "label": "Grafana service account token",
+      "label_i18n": {
+        "ru": "Токен сервисной учётной записи Grafana",
+        "kk": "Grafana сервис аккаунтының токені",
+        "es": "Token de cuenta de servicio de Grafana"
+      },
       "kind": "secret",
       "required": true,
       "max_bytes": 4096
@@ -21,6 +36,11 @@
     {
       "id": "org_id",
       "label": "Grafana organization ID (optional; pins all API calls to that org)",
+      "label_i18n": {
+        "ru": "ID организации Grafana (необязательно; закрепляет все вызовы API за этой организацией)",
+        "kk": "Grafana ұйымы ID-і (міндетті емес; барлық API шақыруды сол ұйымға бекітеді)",
+        "es": "ID de organización de Grafana (opcional; fija todas las llamadas a esa organización)"
+      },
       "kind": "string",
       "required": false,
       "max_bytes": 32
@@ -28,6 +48,11 @@
     {
       "id": "endpoint",
       "label": "Managed forward target host:port for plain-HTTP Grafana (optional; HTTPS URLs need no endpoint)",
+      "label_i18n": {
+        "ru": "Адрес управляемого форварда host:port для Grafana по plain-HTTP (необязательно; для HTTPS не нужен)",
+        "kk": "Plain-HTTP Grafana үшін басқарылатын форвард host:port (міндетті емес; HTTPS URL-ге керек емес)",
+        "es": "Destino del reenvío gestionado host:port para Grafana HTTP plano (opcional; las URL HTTPS no lo necesitan)"
+      },
       "kind": "string",
       "required": false,
       "max_bytes": 256

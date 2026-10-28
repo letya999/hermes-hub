@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/locale"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
@@ -199,7 +200,7 @@ func TestCompressAliasRoutesPreview(t *testing.T) {
 
 // /help advertises the compact command alongside the other session controls.
 func TestHelpAdvertisesCompact(t *testing.T) {
-	if !strings.Contains(commandHelp(), "/compact — ") {
+	if !strings.Contains(commandHelp(locale.LangRU), "/compact — ") {
 		t.Fatal("/compact missing from command help")
 	}
 }

@@ -1,11 +1,12 @@
 ---
 description: Architectural decisions and clearly marked proposals; append new records when changing direction.
-last_verified: 2026-10-26
+last_verified: 2026-10-27
 ---
 # Decisions
 
 | Record | Decision |
 |---|---|
+| [ADR-0084](ADR-0084-channel-agnostic-user-locale.md) | Accepted: channel-agnostic user locale — canonical EN catalog with generated ru/kk/es, workspace preferences.json, evidence ladder + /language picker, Delivery.Lang, HUB_USER_LANG, LLM language hints |
 | [ADR-0083](ADR-0083-lean-images-capability-packs.md) | Proposed: lean role images — hub-core/control/runtime/browser split, browser + voice extracted to per-space images, pruned upstream tree, declared capabilities pulled on demand (M26 #371–#380, M27 #383–#390) |
 | [ADR-0082](ADR-0082-standing-assignments.md) | Accepted: standing assignments — durable owner-intent record reconciling to routine artifacts, shared acquisition inside verified boundaries, deterministic filters gating model wakes (M23 #324/#332) |
 | [ADR-0081](ADR-0081-user-scoped-site-hosting.md) | Accepted: user-scoped hosting over existing controller/ToolHub and sish/DNS; static-first, isolated dynamic profile, revocable artifact links; no Haloy fork (M18 #147, renumbered from a duplicate ADR-0079) |

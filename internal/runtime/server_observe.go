@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/compaction"
+	"github.com/letya999/hermes-hub/internal/locale"
 )
 
 var signalRuntimeProcess = func() {
@@ -313,7 +314,7 @@ func (s *runtimeHTTP) observeHermesRunWindow(ctx context.Context, known ExecuteR
 				} else if event.Event == "tool.completed" {
 					update.LastEvent = "tool.end"
 				}
-				update.Text = toolProgressText(event)
+				update.Text = toolProgressText(event, locale.LangOf(os.Getenv("HUB_WORKSPACE")))
 				update.ToolName = event.Tool
 			default:
 				continue // Never project deltas, arguments, prompts or traces into chat.
@@ -355,9 +356,9 @@ func approvalSummaryText(event nativeRunEvent) string {
 	return text
 }
 
-func toolProgressText(event nativeRunEvent) string {
+func toolProgressText(event nativeRunEvent, lang locale.Lang) string {
 	if event.Error {
-		return "Шаг завершился ошибкой; проверяю причину."
+		return locale.T(lang, "progress.tool-error")
 	}
 	tool := strings.ReplaceAll(event.Tool, "__", "_")
 	completed := event.Event == "tool.end" || event.Event == "tool.completed"
@@ -366,35 +367,35 @@ func toolProgressText(event nativeRunEvent) string {
 		if completed {
 			switch toolResultPhase(event) {
 			case "preparing":
-				return "MCP: шаг 1/4 принят — сборка ещё идёт в фоне. Итог придёт отдельным сообщением."
+				return locale.T(lang, "mcp.step1-accepted")
 			case "failed":
-				return "MCP: подготовка не завершилась. Смотрю причину."
+				return locale.T(lang, "mcp.step1-failed")
 			case "awaiting-credentials", "awaiting-confirm":
-				return "MCP: шаг 1/4 вернул ответ. Дальше статус и защищённая форма, если она нужна."
+				return locale.T(lang, "mcp.step1-awaiting")
 			default:
-				return "MCP: шаг 1/4 вернул ответ. Если фаза ещё preparing, сборка продолжается в фоне."
+				return locale.T(lang, "mcp.step1-answered")
 			}
 		}
-		return "MCP: шаг 1/4 — проверяю репозиторий и собираю изолированный образ. Обычно 2–15 минут."
+		return locale.T(lang, "mcp.step1-started")
 	case strings.HasSuffix(tool, "toolhub_required_credentials"):
 		if completed {
-			return "MCP: шаг 2/4 завершён — безопасная ссылка авторизации готова."
+			return locale.T(lang, "mcp.step2-done")
 		}
-		return "MCP: шаг 2/4 — готовлю безопасную авторизацию."
+		return locale.T(lang, "mcp.step2-started")
 	case strings.HasSuffix(tool, "toolhub_confirm"):
 		if completed {
-			return "MCP: шаг 3/4 завершён — учётные данные подтверждены."
+			return locale.T(lang, "mcp.step3-done")
 		}
-		return "MCP: шаг 3/4 — подтверждаю сохранённые учётные данные."
+		return locale.T(lang, "mcp.step3-started")
 	case strings.HasSuffix(tool, "toolhub_enable"):
 		if completed {
-			return "MCP: шаг 4/4 завершён — инструменты подключены без рестарта."
+			return locale.T(lang, "mcp.step4-done")
 		}
-		return "MCP: шаг 4/4 — запускаю workload и подключаю инструменты без рестарта."
+		return locale.T(lang, "mcp.step4-started")
 	case strings.HasSuffix(tool, "toolhub_invoke"):
-		return "MCP подключён — проверяю реальный вызов провайдера."
+		return locale.T(lang, "mcp.invoke-check")
 	case completed:
-		return "Шаг завершён, продолжаю."
+		return locale.T(lang, "progress.tool-done")
 	default:
 		return ""
 	}

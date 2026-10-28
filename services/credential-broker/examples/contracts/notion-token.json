@@ -1,15 +1,20 @@
 {
   "id": "notion-token",
   "revision": 1,
-  "title": "Notion: токен интеграции",
+  "title": "Notion: integration token",
   "storage": "local",
   "fields": [
     {
       "id": "token",
-      "label": "Токен интеграции Notion",
+      "label": "Notion integration token",
       "kind": "secret",
       "required": true,
-      "max_bytes": 4096
+      "max_bytes": 4096,
+      "label_i18n": {
+        "ru": "Токен интеграции Notion",
+        "kk": "Notion интеграциясының токені",
+        "es": "Token de integración de Notion"
+      }
     }
   ],
   "allow_shared": false,
@@ -19,5 +24,10 @@
       "field": "token",
       "target": "NOTION_TOKEN"
     }
-  ]
+  ],
+  "title_i18n": {
+    "ru": "Notion: токен интеграции",
+    "kk": "Notion: интеграция токені",
+    "es": "Notion: token de integración"
+  }
 }
