@@ -1,6 +1,6 @@
 ---
 description: Upstream pins and provider contracts — Hermes API, broker env layout, per-provider OAuth/auth contracts, web/doc/image capabilities.
-last_verified: 2026-10-20
+last_verified: 2026-10-28
 ---
 
 # Integration contracts

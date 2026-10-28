@@ -1,6 +1,6 @@
 ---
 description: Operator runbook — stack lifecycle, user onboarding, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
-last_verified: 2026-11-02
+last_verified: 2026-10-28
 ---
 
 # Operations
@@ -391,14 +391,21 @@ handoff on restart.
 
 ## Images and builds
 
-Two build targets share layers: core `hermes-hub:0.4.0-<env>` and
-`-control` (adds Docker CLI + ToolHive; only toolhub + workload-controller).
-Optional trees (Playwright browsers, messaging/google/voice extras, Google/
-Atlassian/Telegram-account Python) stay out of the default image — own
-Dockerfiles under `docker/`. Generated compose carries exactly one core
-`build:` (cliproxy) and one control `build:` (toolhub); everything else
-references those tags — raw `docker compose build` would repeat the
-Dockerfile per service.
+Four role images share the staged Dockerfile (SPEC-0082):
+`hermes-hub:0.4.0-<env>-core` (control-plane daemons: cliproxy,
+communication-hub, supervisor, relays), `…-control` (adds Docker CLI +
+ToolHive; only toolhub + workload-controller), `hermes-hub:0.4.0-<env>`
+(the agent runtime — Python venv + node, no browser or voice stack), and
+`hermes-hub:0.4.0-<env>-browser` (per-space sidecar: headed Chromium under
+Xvfb, authenticated x11vnc, static noVNC, playwright-mcp, google_meet
+NodeServer). Optional trees (messaging/google extras, Google/Atlassian/
+Telegram-account Python, voice STT/TTS) stay out of the role images — own
+Dockerfiles under `docker/`. Generated compose carries one `build:` per
+role (cliproxy/core, toolhub/control, hermes-runtime, browser-<user>);
+everything else references those tags — raw `docker compose build` would
+repeat the Dockerfile per service. CI's `image` job publishes all four
+role tags and fails the build when `devcheck image-budget` finds a role
+over its SPEC-0082 size ceiling or carrying a forbidden artifact.
 
 Entry points (`just`, `hubctl build`/`up`) force `DOCKER_BUILDKIT=1`,
 `COMPOSE_DOCKER_CLI_BUILD=1`, `COMPOSE_BAKE=true`; `hubctl` prunes

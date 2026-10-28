@@ -1,6 +1,6 @@
 ---
 description: System overview — roles, component map, networks, lifecycle; details live in services/, rbac.md, spaces.md and the ADRs.
-last_verified: 2026-10-26
+last_verified: 2026-10-28
 ---
 
 # Architecture
@@ -28,6 +28,7 @@ and tools.
 | `toolhub` | Capability gateway: governance evaluation, connector lifecycle, audit | [toolhub.md](services/toolhub.md) |
 | `credential-broker` | Standalone credential authority (copied MIT module) | [credential-broker.md](services/credential-broker/index.md) |
 | `hub-stt`/`hub-tts`/`hub-media` | Speech + media sidecars, bearer-auth internal API | [media.md](services/media.md) |
+| `browser-<user>` | Per-space browser sidecar: headed Chromium under Xvfb, authenticated noVNC, playwright-mcp endpoints, google_meet node; CDP stays on the space network | [runtime.md](services/runtime.md) |
 | `cellinit`/`cell-proxy`/`mcp-bridge` | Disposable workload cells + loopback relays | [cell-proxy.md](services/cell-proxy.md) |
 | `model-relay` | Per-space model selection + provider ladder | [model-relay.md](services/model-relay.md) |
 | `hubctl` | Operator CLI: render/up/down, secrets, migrations, connector host ops | [hubctl.md](services/hubctl.md) |

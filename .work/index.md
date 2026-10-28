@@ -17,12 +17,6 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 | Change | State |
 |---|---|
 | [CHG-0189](in-progress/CHG-0189-watch-contract/plan.md) | M23 #324/#332 follow-up: tool-contract discipline rule, watch_subscribe discoverability (prompt/descriptions/semantic refusal), per-source stream cadence (min_interval_seconds 5..3600), stream cursor persistence, watch_resume + catalog 5.3.0, docs-coverage test |
-| [CHG-0187](in-progress/CHG-0187-m26-acceptance/plan.md) | M26 #380 S5: live acceptance — voice/browser/Meet on dev stack, budget gates, before/after sizes + CVEs, docs current |
-| [CHG-0186](in-progress/CHG-0186-browser-sidecar/plan.md) | M26 #378 S4: hub-browser sidecar — per-space container, internal CDP, authenticated noVNC, runtime without Chromium/X11 |
-| [CHG-0185](in-progress/CHG-0185-hub-core-split/plan.md) | M26 #377 S3: hub-core/hub-control role images — Go binaries only, no interpreters/browsers, compose per-service image split |
-| [CHG-0184](in-progress/CHG-0184-voice-consolidation/plan.md) | M26 #375 S2: voice consolidation — whisper/espeak out of hub images, service URLs only, hashed STT/TTS requirements |
-| [CHG-0183](in-progress/CHG-0183-image-hygiene/plan.md) | M26 #373 S1: hygiene — bytecode venv stage, upstream tree prune + .git->SHA file, static noVNC, setuid/e2e/apt cleanup |
-| [CHG-0182](in-progress/CHG-0182-image-budget-gate/plan.md) | M26 #371 S0: image budget gate — baseline evidence frozen, devcheck image-budget check, CI wiring |
 | [CHG-0174](in-progress/CHG-0174-hosting-acceptance/plan.md) | M18 #147 H5: hosting acceptance/current docs — A1–A11 code/runtime/browser/sish evidence; offline gates green, native acceptance pending |
 | [CHG-0173](in-progress/CHG-0173-hosting-dynamic/plan.md) | M18 #147 H4: one admitted stateless go-http profile, secure runtime/relay, restart/finalizers; implemented, offline gates green, native acceptance pending |
 | [CHG-0172](in-progress/CHG-0172-hosting-static-delivery/plan.md) | M18 #147 H3: static agent/stack/exposure delivery and independent recovery; implemented, offline gates green, native acceptance pending |
@@ -58,6 +52,17 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 |---|---|
 | [CHG-0037](done/CHG-0037-toolhub-closeout/plan.md) | Abandoned: ToolHub closeout umbrella superseded by later per-issue CHGs |
 | [CHG-0031](done/CHG-0031-docker-disk-diagnosis/plan.md) | Abandoned: read-only diagnosis superseded by CHG-0031-docker-reclaim findings |
+
+## Done — M26 Lean Role Images
+
+| Change | State |
+|---|---|
+| [CHG-0187](done/CHG-0187-m26-acceptance/plan.md) | Done 2026-10-28: M26 #380 S5: evidence record + docs (operations images section, architecture component map, integrations rows); just check pass coverage 86.14%; live acceptance deferred — no Docker per owner instruction, image-size/probe/live-browser evidence rides the CI image+containers jobs |
+| [CHG-0186](done/CHG-0186-browser-sidecar/plan.md) | Done 2026-10-28: M26 #378 S4: hub-browser sidecar — browser stage + prod/dev-browser targets, hub-runtime browser subcommand (Xvfb/fluxbox/x11vnc-passwdfile/noVNC/chromium-CDP + pw-mcp 8931 persistent & 8932 isolated + meet NodeServer), runtime drops the display stack, browser MCP over streamable HTTP, CDP internal-only + noVNC loopback, spawned runtimes dual-home onto the space net and lose /state/browser + --shm-size |
+| [CHG-0185](done/CHG-0185-hub-core-split/plan.md) | Done 2026-10-28: M26 #377 S3: role images — core stage (Go binaries only), control = core + docker/thv, compose per-service role commons, runtime keeps its own build tag, dev-rebuild maps daemons to -dev-core, shm_size scoped to runtime |
+| [CHG-0184](done/CHG-0184-voice-consolidation/plan.md) | Done 2026-10-28: M26 #375 S2: voice consolidation — STTCommand/TTSCommand removed (service URLs only), dedicated stt/tts images on hashed lockfiles, whisper/espeak and command envs out of hub images |
+| [CHG-0183](done/CHG-0183-image-hygiene/plan.md) | Done 2026-10-28: M26 #373 S1: hygiene — python_build stage (UV_COMPILE_BYTECODE, hashed aiohttp layer), upstream tree pruned to editable modules with .hermes-rev marker, Debian novnc dropped (libnode gone), e2e dev-only, setuid strips |
+| [CHG-0182](done/CHG-0182-image-budget-gate/plan.md) | Done 2026-10-28: M26 #371 S0: image budget gate — devcheck image-budget (size ceiling + forbidden-artifact probe + fail-closed), CI image job gates all four roles, baseline audit frozen in research.md |
 
 ## Done — M23 proactive assignments
 
