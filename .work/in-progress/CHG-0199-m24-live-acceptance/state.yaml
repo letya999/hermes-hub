@@ -6,7 +6,7 @@ slices:
   S13.1-standalone-controller: done
   S13.2-live-git-legs: done
   S13.3-live-eval-leg: done
-  S13.4-evidence-closeout: in-progress
+  S13.4-evidence-closeout: done
 evidence:
   - "controller: hubctl connector generic-controller @127.0.0.1:18545, scope m24-accept, skillgit@1.0.0 approved for github.com only, token>=32 chars via file"
   - "candidates: GET github.com/anthropics/skills bare URL -> real ls-remote --symref + ls-tree -r in cli-exec cells -> 20 candidates, commit dbd4588f9e10, source_id 82a901da1b9bedec"
@@ -26,8 +26,8 @@ limitations:
   - "controller ran host-native (no compose render): HUB_DOCKER_SCOPE=m24-accept set, published ports untouched; cell images are the same dev tags the stack uses"
   - "full scenario requires a dedicated stack with parameterized ports or CI infra — follow-up needed to close #368 fully"
 validation:
-  just_check: pending
+  just_check: pass (coverage 86.12%, fixes included, b4f850a)
   live_acceptance: partial_honest
 remaining:
-  - "re-run just check with the two live-found fixes"
-  - "commit fixes + evidence; issue comment on #368"
+  - "full-stack window: re-run org/catalog/managed/Telegram scenario when the main dev stack is free or CI provides a dedicated stack (ports are hardcoded; two infra stacks cannot share one daemon today)"
+  - "#368 stays open — evidence comment posted 2026-10-28"
