@@ -16,6 +16,16 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0213](in-progress/CHG-0213-org-knowledge-brain/plan.md) | M20 stage 10 (optional): org shared brain — read-only OpenKnowledge over org material |
+| [CHG-0212](in-progress/CHG-0212-memory-migration-eval/plan.md) | M20 stage 9: Honcho/native export to cards, memory-eval fixture, `memory vacuum` |
+| [CHG-0211](in-progress/CHG-0211-knowledge-ui-edge/plan.md) | M20 stage 8: loopback `ui_port` + SSH tunnel docs; M18 edge hook |
+| [CHG-0210](in-progress/CHG-0210-openknowledge-mcp/plan.md) | M20 stage 7: OK MCP read/write capability split (`knowledge_ui` / `knowledge_ui_write`) |
+| [CHG-0209](in-progress/CHG-0209-openknowledge-service/plan.md) | M20 stage 6: pinned single-replica OpenKnowledge service per space |
+| [CHG-0208](in-progress/CHG-0208-memory-card-contract/plan.md) | M20 stage 5: `memory_card` fact/truth/merge contract + memory-zone write guards |
+| [CHG-0207](in-progress/CHG-0207-memory-search/plan.md) | M20 stage 4: `memory_search` BM25+link-graph, scope confinement, maintenance pass |
+| [CHG-0206](in-progress/CHG-0206-memory-night-rollup/plan.md) | M20 stage 3: hub-owned nightly rollup — summaries, evidence facts, Compiled Truth, CORE edits |
+| [CHG-0205](in-progress/CHG-0205-daily-leaf-ingest/plan.md) | M20 stage 2: verbatim daily leaf ingest from the communication plane |
+| [CHG-0204](in-progress/CHG-0204-vault-layout/plan.md) | M20 stage 1: `spaces/<id>/vault/` git substrate, `memory_vault` feature, CORE injection |
 | [CHG-0199](in-progress/CHG-0199-m24-live-acceptance/plan.md) | M24 #368 S13: live acceptance — standalone controller + real cli-exec git legs (partial: Telegram/managed legs blocked on credentials) |
 | [CHG-0189](in-progress/CHG-0189-watch-contract/plan.md) | M23 #324/#332 follow-up: tool-contract discipline rule, watch_subscribe discoverability (prompt/descriptions/semantic refusal), per-source stream cadence (min_interval_seconds 5..3600), stream cursor persistence, watch_resume + catalog 5.3.0, docs-coverage test |
 | [CHG-0174](in-progress/CHG-0174-hosting-acceptance/plan.md) | M18 #147 H5: hosting acceptance/current docs — A1–A11 code/runtime/browser/sish evidence; offline gates green, native acceptance pending |
@@ -31,6 +41,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 | [CHG-0162](in-progress/CHG-0162-goal-mode-engines/plan.md) | #311 persistent /goal mode — dual engine, judge modes (design proposed, implementation not started) |
 | [CHG-0156](in-progress/CHG-0156-goal-bootstrap/plan.md) | M16 #213: goal-bootstrap; live acceptance pending |
 | [CHG-0151](in-progress/CHG-0151-archive-bounds/plan.md) | M16 #151: archive-bounds; live acceptance pending |
+
 | [CHG-0147](in-progress/CHG-0147-m14-acceptance/plan.md) | Milestone 14 acceptance and connector lifecycle repair |
 | [CHG-0144](in-progress/CHG-0144-recipe-oauth/plan.md) | Recipe-driven OAuth for prepared and runtime MCP installation |
 | [CHG-0143](in-progress/CHG-0143-oauth-viewer-link-flows/plan.md) | OAuth resend rotation, broker grant-epoch fix, viewer-link relay — retroactive record for the uncommitted branch diff |

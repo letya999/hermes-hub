@@ -6,6 +6,7 @@ last_verified: 2026-10-27
 
 | Record | Decision |
 |---|---|
+| [ADR-0086](ADR-0086-memory-vault-openknowledge.md) | Proposed: per-space markdown memory vault (leaves/cards/summaries/CORE) with deterministic nightly rollup, plus OpenKnowledge as opt-in knowledge surface (M20, renumbered from a duplicate ADR-0073) |
 | [ADR-0085](ADR-0085-agent-skills-platform.md) | Proposed: agent skills platform — agentskills.io format, hub-owned per-owner stores, read-only effective view, draft-first writes, grant-only authority, native default-deny, brokered secrets, curated self-evolution, pinned git installs (M24 #356–#368) |
 | [ADR-0084](ADR-0084-channel-agnostic-user-locale.md) | Accepted: channel-agnostic user locale — canonical EN catalog with generated ru/kk/es, workspace preferences.json, evidence ladder + /language picker, Delivery.Lang, HUB_USER_LANG, LLM language hints |
 | [ADR-0083](ADR-0083-lean-images-capability-packs.md) | Proposed: lean role images — hub-core/control/runtime/browser split, browser + voice extracted to per-space images, pruned upstream tree, declared capabilities pulled on demand (M26 #371–#380, M27 #383–#390) |
@@ -19,6 +20,7 @@ last_verified: 2026-10-27
 | [ADR-0075](ADR-0075-dual-engine-context-control.md) | Proposed: grant-selected dual engines for manual/automatic compaction and goal mode; sidecar transport to pinned upstream primitives |
 | [ADR-0074](ADR-0074-session-runtime-discipline.md) | Session & runtime discipline: group scopes, knowledge lifecycle, stable session identity with runaway token ceiling, memory boundary, todo contract, idle-proof, goal bootstrap, archive bounds (renumbered from a duplicate ADR-0072) |
 | [ADR-0073](ADR-0073-model-provider-boundaries.md) | Model & provider layer boundaries (renumbered from a duplicate ADR-0072) |
+
 | [ADR-0072](ADR-0072-connector-recovery-and-system-guide.md) | Owner-bound encrypted recovery, truthful inventory and mandatory reference guidance |
 | [ADR-0071](ADR-0071-dynamic-session-contract.md) | Bounded owner-only dynamic JSON session contracts |
 | [ADR-0070](ADR-0070-recipe-oauth.md) | Recipe-driven OAuth and lease-local token file views |
