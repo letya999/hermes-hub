@@ -65,7 +65,7 @@ Grouped by capability resource (internal/agenttools/capability.go):
 | knowledge | `knowledge_list`, `knowledge_search`, `knowledge_read` | read-only staged sources; content returns as output, never lands in workspace |
 | ssh | `ssh_hosts`, `ssh_exec`, `ssh_read`, `ssh_write`, `ssh_shell_*`, `ssh_tunnel_*` | declared hosts only; write/shell/tunnel each need their own grant |
 | hh | `hh_search`, `hh_vacancy`, `hh_resumes`, `hh_apply` | apply sends externally — exact user-authorized inputs only |
-| exec | `code_exec` | bounded executor when the capability is granted |
+| exec | `code_exec` | bounded executor when the capability is granted; optional `skill` leases that skill's stored credentials into the one call |
 | skills | `skill`, `skills_search`, `skills_list`, `skill_view`; `skill_manage` | reads serve the ro effective view; `skill_manage` writes drafts only — publication is the owner's approval card, never the model |
 
 ## Contract notes (bounds that surprise)
@@ -111,7 +111,23 @@ Grouped by capability resource (internal/agenttools/capability.go):
   action-foreign fields are rejected before any write; principal comes from
   the authenticated envelope — model-supplied principal/org fields are
   ignored. `propose_to_org` lands an org-scope draft; org publish requires
-  an owner/admin role at apply time (`hubctl skill promote`).
+  an owner/admin role at apply time (`hubctl skill promote`). The exception is
+  `configure`: it writes the owner's private `.state/settings` (keys ⊆ the
+  skill's declared `metadata.hermes.config`) — not a draft, since it never
+  touches the skill tree.
+- **code_exec `skill` arg + credentials**: `skill()` reports
+  `readiness.setup_needed` with a `form_url` to the protected credential form
+  when declared `requires.credentials` lack stored values; a hard requirement
+  (`hard: true`) makes the skill ineligible until stored. Submitted values
+  persist under the owner store's `.state/credentials/<skill>.json` bound to
+  (principal, skill) — never `self-env.json`. A `code_exec` call carrying
+  `skill:"<name>"` leases exactly the declared names into that one sandbox
+  call's env through the stdin exec protocol — never argv, container config,
+  tool results, logs or audit. Declared names are the only ones leased;
+  undeclared `.state` entries and ineligible skills lease nothing.
+  `metadata.hermes.config` declares non-secret per-user settings that
+  `skill()` surfaces effective (stored-or-default); `skill_manage`
+  `configure` writes them to `.state/settings`.
 - **apply / offline edits** (`hubctl apply`): rejects unknown fields,
   multiple YAML documents, duplicate resources, unsafe knowledge names,
   excessive input and implicit routing; validates the whole input before

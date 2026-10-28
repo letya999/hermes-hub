@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/skillstore"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"io/fs"
@@ -75,6 +76,7 @@ func runExecScratch(ctx context.Context) error {
 		"PATH=/usr/local/bin:/usr/bin:/bin", "HOME=" + scratch, "TMPDIR=/tmp",
 		"INPUTS=" + inputs, "OUTPUTS=" + outputs, "USER=sandbox",
 	}
+	cmd.Env = append(cmd.Env, scratchSkillEnv(request.Env)...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &boundedWriter{w: &stdout, max: 256 << 10}
 	cmd.Stderr = &boundedWriter{w: &stderr, max: 256 << 10}
@@ -93,6 +95,24 @@ func runExecScratch(ctx context.Context) error {
 		}
 	}
 	return emit()
+}
+
+// scratchSkillEnv filters the stdin skill-env lease (R8.3): only env-shaped,
+// non-reserved names pass, and nothing may shadow the sanitized workload env
+// (PATH/HOME/TMPDIR/INPUTS/OUTPUTS/USER) or hub/broker infrastructure names.
+func scratchSkillEnv(env map[string]string) []string {
+	if len(env) > 16 {
+		return nil
+	}
+	owned := map[string]bool{"PATH": true, "HOME": true, "TMPDIR": true, "INPUTS": true, "OUTPUTS": true, "USER": true}
+	out := make([]string, 0, len(env))
+	for name, value := range env {
+		if !skillstore.ValidCredentialName(name) || skillstore.ReservedSecretName(name) || owned[name] {
+			continue
+		}
+		out = append(out, name+"="+value)
+	}
+	return out
 }
 
 // boundedWriter caps captured output; excess bytes are dropped so a hostile

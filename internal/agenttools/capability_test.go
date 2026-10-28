@@ -67,3 +67,24 @@ func TestHubToolsDefinitionValidatesSandboxed(t *testing.T) {
 		t.Fatal("code_exec missing from the hub catalog")
 	}
 }
+
+// R8.3: code_exec's optional `skill` argument is the schema-only lease marker
+// — the agent names the skill, the executor resolves the one-call env.
+func TestCodeExecDeclaresSkillLeaseArgument(t *testing.T) {
+	d := HubToolsDefinition()
+	for _, tool := range d.Tools {
+		if tool.Name != "code_exec" {
+			continue
+		}
+		for _, a := range tool.Arguments {
+			if a.Name == "skill" {
+				if a.Required {
+					t.Fatal("skill lease must be optional")
+				}
+				return
+			}
+		}
+		t.Fatalf("code_exec arguments lack skill: %+v", tool.Arguments)
+	}
+	t.Fatal("code_exec missing from the hub catalog")
+}

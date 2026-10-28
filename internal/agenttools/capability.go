@@ -33,7 +33,7 @@ func HubToolsDefinition() api.ToolDefinition {
 	return api.ToolDefinition{
 		Schema:       api.SchemaVersion,
 		DefinitionID: HubToolsDefinitionID,
-		Version:      "5.2.0",
+		Version:      "5.3.0",
 		Transport:    api.AgentTools,
 		Source:       api.DefinitionSource{},
 		Workload: api.WorkloadPolicy{
@@ -115,10 +115,10 @@ func HubToolsDefinition() api.ToolDefinition {
 				CapabilityID: "terminal.exec",
 				Effect:       api.WriteEffect,
 				Sandboxed:    true,
-				Description:  "Run a bounded script in a disposable container: read-only inputs from the admitted scope, private scratch, no network; exported files land under the scope.",
+				Description:  "Run a bounded script in a disposable container: read-only inputs from the admitted scope, private scratch, no network; exported files land under the scope. Optional `skill` leases that skill's stored credentials into this one call — nothing else ever sees them.",
 				Uses:         append(append(use("exec", "terminal"), use("read", "files", "path")...), use("write", "files", "path")...),
 				Arguments: []api.CLIArgument{
-					arg("command", "string", true), arg("path", "string", true),
+					arg("command", "string", true), arg("path", "string", true), opt("skill"),
 				},
 			},
 			tool("hh_search", "hh.search", "Search HeadHunter vacancies for the authorized query.", api.ReadEffect, use("read", "hh"), str("query"), api.CLIArgument{Name: "page", Type: "integer"}),

@@ -3,12 +3,34 @@ package communication
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/skillstore"
 )
+
+// The gateway reads its owner skill store path from the environment so
+// skill-scoped credential forms can persist under .state (R8.2).
+func TestConfigFromEnvSkillsStore(t *testing.T) {
+	t.Setenv("TELEGRAM_BOT_TOKEN", "token")
+	t.Setenv("TELEGRAM_ALLOWED_USERS", "11")
+	t.Setenv("HUB_SKILLS_EFFECTIVE", "/skills-effective")
+	t.Setenv("HUB_SKILLS_STORE", "/skills-store")
+	config, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.SkillsDir != "/skills-effective" || config.SkillsStore != "/skills-store" {
+		t.Fatalf("skill dirs not wired: %+v", config)
+	}
+}
 
 // writeEffectiveSkill stages one skill the way the materialized read-only
 // view presents it: <dir>/<name>/SKILL.md. sealEffectiveIndex then writes the
@@ -70,6 +92,95 @@ func sealEffectiveIndex(t *testing.T, dir string, ineligible map[string]bool) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, "index.json"), body, 0644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// R8.2: `service: "skill:<name>"` scopes the protected credential form to
+// the skill's declared credentials — values persist into the owner store's
+// .state/credentials, bound to (principal, skill); undeclared keys reject.
+func TestSkillCredentialFormFlow(t *testing.T) {
+	c := testConfig(t)
+	skillsDir := t.TempDir()
+	writeEffectiveSkill(t, skillsDir, "demo", "d", "b", "")
+	body := `{"schema":1,"revision":"r1","skills":[{"name":"demo","description":"d","source":"user","revision":"r","eligible":true,"requires":{"credentials":[{"name":"API_KEY"}]}}]}`
+	if err := os.WriteFile(filepath.Join(skillsDir, "index.json"), []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	c.SkillsDir = skillsDir
+	c.SkillsStore = t.TempDir()
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := g.user("alice")
+	keys, err := g.formKeys(user, "skill:demo", nil)
+	if err != nil || len(keys) != 1 || keys[0] != "API_KEY" {
+		t.Fatalf("declared keys=%v err=%v", keys, err)
+	}
+	if _, err := g.formKeys(user, "skill:demo", []string{"UNDECLARED"}); err == nil {
+		t.Fatal("undeclared credential name accepted")
+	}
+	if _, err := g.formKeys(user, "skill:absent", nil); err == nil {
+		t.Fatal("unknown skill accepted")
+	}
+	form := credentialForm{OwnerID: "alice", Skill: "demo", Keys: []string{"API_KEY"}}
+	request := httptest.NewRequest(http.MethodPost, "/credentials/x", nil)
+	if err := g.persistCredentialForm(request, form, map[string]string{"API_KEY": "s3cr3t"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := skillstore.ReadCredentials(c.SkillsStore, "demo")
+	if err != nil || got["API_KEY"] != "s3cr3t" {
+		t.Fatalf("stored credentials: %v %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(c.Users[0].StateDir, "self-env.json")); err == nil {
+		t.Fatal("skill credentials must never land in the runtime env store")
+	}
+}
+
+// The skill-scoped form must carry the skill name through to persistence —
+// a form minted for skill:demo persists under .state/credentials/demo.json,
+// not the runtime env store.
+func TestSkillCredentialFormCarriesSkillScope(t *testing.T) {
+	c := testConfig(t)
+	c.FormOrigin = "http://127.0.0.1:8081"
+	skillsDir := t.TempDir()
+	writeEffectiveSkill(t, skillsDir, "demo", "d", "b", "")
+	body := `{"schema":1,"revision":"r1","skills":[{"name":"demo","description":"d","source":"user","revision":"r","eligible":true,"requires":{"credentials":[{"name":"API_KEY"}]}}]}`
+	if err := os.WriteFile(filepath.Join(skillsDir, "index.json"), []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	c.SkillsDir = skillsDir
+	c.SkillsStore = t.TempDir()
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	form, err := g.createCredentialForm(identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), []string{"API_KEY"}, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, _ := url.Parse(form.FormURL)
+	g.forms.mu.Lock()
+	var stored credentialForm
+	for _, f := range g.forms.m {
+		stored = f
+	}
+	g.forms.mu.Unlock()
+	if stored.Skill != "demo" {
+		t.Fatalf("form lost skill scope: %+v", stored)
+	}
+	// The served POST persists to .state — prove the loop end to end.
+	saved := httptest.NewRequest(http.MethodPost, parsed.RequestURI(), strings.NewReader("API_KEY=s3cr3t&nonce="+parsed.Query().Get("nonce")))
+	saved.Host = "127.0.0.1:8081"
+	saved.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	g.Handler().ServeHTTP(rec, saved)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("form save status=%d", rec.Code)
+	}
+	got, err := skillstore.ReadCredentials(c.SkillsStore, "demo")
+	if err != nil || got["API_KEY"] != "s3cr3t" {
+		t.Fatalf("end-to-end persist: %v %v", got, err)
 	}
 }
 

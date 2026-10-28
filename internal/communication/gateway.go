@@ -793,7 +793,7 @@ func (g *Gateway) interceptSecret(ctx context.Context, user User, updateID int, 
 			values[key] = ""
 		}
 		slices.Sort(keys)
-		if form, formErr := g.createCredentialForm(user.Envelope(user.TelegramIDs[0]), keys); formErr == nil {
+		if form, formErr := g.createCredentialForm(user.Envelope(user.TelegramIDs[0]), keys, ""); formErr == nil {
 			reply = "Введите данные только в защищённой форме: " + form.FormURL
 		}
 	}

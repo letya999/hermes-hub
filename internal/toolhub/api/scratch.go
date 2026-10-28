@@ -14,9 +14,12 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/skillstore"
 )
 
 // ScratchPending quarantines bindings whose last sandbox stop was never
@@ -107,6 +110,11 @@ type ScratchExecRequest struct {
 	Command        string `json:"command"`
 	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
 	InputsTar      string `json:"inputs_tar_base64,omitempty"`
+	// Env carries the one-call skill credential lease (R8.3): the control
+	// side fills it from the (principal, skill) store and the workload
+	// appends validated entries to its sanitized env. Never argv, never
+	// container config — stdin only.
+	Env map[string]string `json:"env,omitempty"`
 }
 
 // ScratchExecResult is the sandbox runner's bounded response. ExportTar holds
@@ -229,7 +237,7 @@ func DockerScratchExec(dockerArgv []string, container func(EffectiveBinding) (st
 		}
 		lease, cancel := context.WithTimeout(ctx, time.Duration(timeout+15)*time.Second)
 		defer cancel()
-		body, _ := json.Marshal(ScratchExecRequest{Command: command, TimeoutSeconds: timeout, InputsTar: inputsB64})
+		body, _ := json.Marshal(ScratchExecRequest{Command: command, TimeoutSeconds: timeout, InputsTar: inputsB64, Env: skillLeaseEnv(request)})
 		args := []string{"run", "--name", name, "--network", "none", "--read-only",
 			"--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--user", "10001:10001",
 			"--tmpfs", "/scratch:rw,exec,size=64m", "--tmpfs", "/outputs:rw,size=64m", "--tmpfs", "/tmp:rw,size=16m",
@@ -268,6 +276,64 @@ func DockerScratchExec(dockerArgv []string, container func(EffectiveBinding) (st
 		}
 		return AgentExecResult{Result: summary}, nil
 	}
+}
+
+// skillLeaseEnv resolves the one-call credential lease for a `skill` argument
+// (R8.3): the effective index names the credentials an eligible skill
+// declares; the owner store's .state holds the values. Only the intersection
+// travels on the stdin request — a missing store, unknown or ineligible
+// skill, malformed name or empty lease degrades to no env, never an error.
+func skillLeaseEnv(request AgentExecRequest) map[string]string {
+	skill, _ := request.Arguments["skill"].(string)
+	storeDir := os.Getenv("HUB_SKILLS_STORE")
+	indexDir := os.Getenv("HUB_SKILLS_EFFECTIVE")
+	if !skillstore.ValidName(skill) || storeDir == "" || indexDir == "" {
+		return nil
+	}
+	body, err := os.ReadFile(filepath.Join(indexDir, "index.json")) // #nosec G304 G703 -- operator-mounted effective view, fixed filename
+	if err != nil {
+		return nil
+	}
+	var idx struct {
+		Skills []struct {
+			Name     string `json:"name"`
+			Eligible bool   `json:"eligible"`
+			Requires struct {
+				Credentials []struct {
+					Name string `json:"name"`
+				} `json:"credentials"`
+			} `json:"requires"`
+		} `json:"skills"`
+	}
+	if json.Unmarshal(body, &idx) != nil {
+		return nil
+	}
+	declared := map[string]bool{}
+	for _, e := range idx.Skills {
+		if e.Name != skill || !e.Eligible {
+			continue
+		}
+		for _, c := range e.Requires.Credentials {
+			declared[c.Name] = true
+		}
+	}
+	if len(declared) == 0 {
+		return nil
+	}
+	stored, err := skillstore.ReadCredentials(storeDir, skill)
+	if err != nil {
+		return nil
+	}
+	env := map[string]string{}
+	for name, value := range stored {
+		if declared[name] {
+			env[name] = value
+		}
+	}
+	if len(env) == 0 {
+		return nil
+	}
+	return env
 }
 
 // confirmStopped removes the named executor and verifies the removal: only a

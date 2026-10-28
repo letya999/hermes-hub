@@ -71,7 +71,10 @@ mcp:
   effective skills view `generated/skills-effective/` (platform > org > user,
   mounted read-only at `/skills` — sources are `config/skills/`,
   `<org>/skills/` and `spaces/<user>/skills/`; `skills/` is the user-scope
-  store — bind-mounted rw at `/skills-store`, org scope rw at
+  store — bind-mounted rw at `/skills-store` in the runtime and the
+  communication gateway (skill credential forms persist under its private
+  `.state/`), read-only at `/skills-store` in toolhub for one-call
+  credential leases, org scope rw at
   `/skills-store-org` on org-bound spaces only; the same view mounts
   read-only at `/skills-effective` in toolhub and the communication gateway
   for enum projection and `/name`/`$name` expansion, and principal-scoped

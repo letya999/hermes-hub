@@ -127,13 +127,13 @@ func MaterializeEffectiveSkills(dir string, s Settings) (*skillstore.EffectiveIn
 	// R6.1: readiness is stamped at render — Settings knows the granted
 	// toolsets/connectors; the runtime mounts whatever this build decided,
 	// so the catalog the model sees matches policy exactly.
-	idx.ApplyReadiness(skillCapabilities(s))
+	idx.ApplyReadiness(skillCapabilities(dir, s))
 	return idx, skillstore.WriteIndex(GeneratedEffectiveSkillsDir(dir), idx)
 }
 
 // skillCapabilities derives the granted capability surface a skill's
 // `requires` block is checked against (R6.1).
-func skillCapabilities(s Settings) skillstore.Capabilities {
+func skillCapabilities(dir string, s Settings) skillstore.Capabilities {
 	caps := skillstore.Capabilities{
 		Toolsets:   map[string]bool{},
 		Connectors: map[string]bool{},
@@ -161,6 +161,23 @@ func skillCapabilities(s Settings) skillstore.Capabilities {
 		}
 	}
 	caps.Registries["system"] = len(s.CLIToolboxes) > 0
+	// R8.2/R8.5: per-skill stored credential names (never values) satisfy
+	// declared requires.credentials at render.
+	caps.SkillCreds = map[string]map[string]bool{}
+	credsDir := filepath.Join(dir, "skills", ".state", "credentials")
+	if files, err := os.ReadDir(credsDir); err == nil {
+		for _, f := range files {
+			skill := strings.TrimSuffix(f.Name(), ".json")
+			stored, err := skillstore.ReadCredentials(filepath.Join(dir, "skills"), skill)
+			if err != nil {
+				continue
+			}
+			caps.SkillCreds[skill] = map[string]bool{}
+			for name := range stored {
+				caps.SkillCreds[skill][name] = true
+			}
+		}
+	}
 	return caps
 }
 

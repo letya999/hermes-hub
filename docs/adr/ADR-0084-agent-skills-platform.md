@@ -130,6 +130,21 @@ the boundary.
   Rejected: SPEC-0041's "text grants nothing" stays; wishes + ToolHub grants
   remain the only two keys.
 
+## Amendments
+
+- **D10 mechanism (CHG-0195).** "Through the credential broker" resolves to a
+  (principal, skill)-bound store at `skills/.state/credentials/<skill>.json`
+  — the broker module is forbidden to be a canonical secret store, so the
+  owner store holds the values (0600, names `^[A-Z][A-Z0-9_]*$`, never
+  `self-env.json`). The *cell lease* is `ScratchExecRequest.env` on the
+  stdin channel into `docker run -i … hubctl exec-scratch` — the same
+  property class as broker materializers, with the sandbox-side filter
+  (env-shaped names, no hub/broker prefixes, no shadowing of the sanitized
+  env, ≤16) as the declarative delivery contract. ToolHub resolves the
+  lease from the ro `/skills-store` mount intersected with the effective
+  index's declared names; ineligible skills and absent stores lease
+  nothing, and revocation is a file delete.
+
 ## Invariants
 
 - No writable skill path exists in any runtime mode; spawn fails if the

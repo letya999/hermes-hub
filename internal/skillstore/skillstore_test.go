@@ -1,6 +1,7 @@
 package skillstore
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -714,11 +715,218 @@ metadata:
 		len(m.Requires.Tools) != 1 || len(m.Requires.FallbackForToolsets) != 1 {
 		t.Fatalf("hermes requires not folded: %+v", m.Requires)
 	}
-	if len(m.Requires.Env) != 2 || m.Requires.Env[0].Name != "API_KEY" || m.Requires.Env[1].Name != "TOKEN" {
-		t.Fatalf("env requirements not folded: %+v", m.Requires.Env)
+	if len(m.Requires.Credentials) != 2 || m.Requires.Credentials[0].Name != "API_KEY" || m.Requires.Credentials[1].Name != "TOKEN" {
+		t.Fatalf("env requirements not folded: %+v", m.Requires.Credentials)
 	}
 	if len(m.Requires.Bins) != 1 || m.Requires.Bins[0] != "jq" {
 		t.Fatalf("openclaw bins not folded: %+v", m.Requires.Bins)
+	}
+}
+
+// R8.1: credential requirements normalize to requires.credentials[] from
+// the cross-format fields; hub/broker-owned names are never declarable.
+func TestParseCredentials(t *testing.T) {
+	body := `---
+name: creds
+description: "d"
+requires:
+  credentials:
+    - name: SKILL_API_KEY
+      prompt: "key for the service"
+      hard: true
+    - STRIPE_TOKEN
+  env: [LEGACY_ENV]
+required_environment_variables:
+  - name: SECONDARY_KEY
+metadata:
+  hermes:
+    requires_env: [HERMES_DECLARED]
+  openclaw:
+    requires:
+      env: [OC_ENV]
+---`
+	m, _, err := ParseSkillMD("creds", []byte(body), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]EnvRequirement{}
+	for _, c := range m.Requires.Credentials {
+		got[c.Name] = c
+	}
+	for _, name := range []string{"SKILL_API_KEY", "STRIPE_TOKEN", "LEGACY_ENV", "SECONDARY_KEY", "HERMES_DECLARED", "OC_ENV"} {
+		if _, ok := got[name]; !ok {
+			t.Fatalf("credential %q not folded: %+v", name, m.Requires.Credentials)
+		}
+	}
+	if !got["SKILL_API_KEY"].Hard || got["SKILL_API_KEY"].Prompt == "" {
+		t.Fatalf("hard/prompt lost: %+v", got["SKILL_API_KEY"])
+	}
+	if got["STRIPE_TOKEN"].Hard {
+		t.Fatalf("bare string must not default hard")
+	}
+}
+
+// metadata.hermes.config declares non-secret per-user settings (R8.4):
+// object values carry description/default/prompt, bare strings fold to a
+// default-only spec.
+func TestParseSettingsConfig(t *testing.T) {
+	body := `---
+name: conf
+description: "d"
+metadata:
+  hermes:
+    config:
+      MAX_RESULTS: {description: "cap on results", default: "10", prompt: "how many"}
+      OUTPUT_DIR: "exports"
+---`
+	m, _, err := ParseSkillMD("conf", []byte(body), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]SettingSpec{}
+	for _, s := range m.Settings {
+		got[s.Key] = s
+	}
+	if got["MAX_RESULTS"].Default != "10" || got["MAX_RESULTS"].Description == "" || got["MAX_RESULTS"].Prompt == "" {
+		t.Fatalf("setting spec lost: %+v", m.Settings)
+	}
+	if got["OUTPUT_DIR"].Default != "exports" {
+		t.Fatalf("bare-string setting must fold to a default: %+v", got["OUTPUT_DIR"])
+	}
+}
+
+// Reserved names belong to the hub and the broker: a skill declaring them
+// is rejected, not laundered into a lease request (R8.1).
+func TestParseCredentialsReservedNames(t *testing.T) {
+	body := `---
+name: creds
+description: "d"
+requires:
+  credentials: [HUB_PRINCIPAL_ID]
+---`
+	if _, _, err := ParseSkillMD("creds", []byte(body), true); err == nil {
+		t.Fatal("hub-owned env name must be rejected")
+	}
+	body = strings.Replace(body, "HUB_PRINCIPAL_ID", "BROKER_SIGNING_KEY", 1)
+	if _, _, err := ParseSkillMD("creds", []byte(body), true); err == nil {
+		t.Fatal("broker-owned env name must be rejected")
+	}
+}
+
+// Declared settings ride the effective index so skill() can surface
+// per-user values without re-parsing frontmatter (R8.4).
+func TestBuildIndexCarriesSettings(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "src")
+	if err := os.MkdirAll(filepath.Join(dir, "conf"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	fm := "---\nname: conf\ndescription: d\nmetadata:\n  hermes:\n    config:\n      MAX_RESULTS: {default: \"10\"}\n---\nbody"
+	if err := os.WriteFile(filepath.Join(dir, "conf", "SKILL.md"), []byte(fm), 0644); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(t.TempDir(), "eff")
+	if _, err := Build(dest, []Source{{Name: "user", Dir: dir}}); err != nil {
+		t.Fatal(err)
+	}
+	var idx EffectiveIndex
+	body, err := os.ReadFile(filepath.Join(dest, "index.json"))
+	if err != nil || json.Unmarshal(body, &idx) != nil {
+		t.Fatalf("index unreadable: %v", err)
+	}
+	if len(idx.Skills) != 1 || len(idx.Skills[0].Settings) != 1 || idx.Skills[0].Settings[0].Key != "MAX_RESULTS" || idx.Skills[0].Settings[0].Default != "10" {
+		t.Fatalf("index entry lost settings: %+v", idx.Skills)
+	}
+}
+
+// Codex skills carry requirements in agents/openai.yaml (D2/R8.1): tools
+// and the implicit-invocation policy fold into the manifest at Build.
+func TestBuildCodexOpenAIYAML(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "src")
+	skill := Tree{
+		SkillFile:            File{Data: []byte("---\nname: codex\ndescription: d\n---\nbody")},
+		"agents/openai.yaml": File{Data: []byte("dependencies:\n  tools: [shell_exec, web_fetch]\npolicy:\n  allow_implicit_invocation: false\n")},
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "codex", "agents"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	for path, f := range skill {
+		if err := os.WriteFile(filepath.Join(dir, "codex", path), f.Data, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	idx, err := Build(filepath.Join(t.TempDir(), "eff"), []Source{{Name: "user", Dir: dir}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := idx.Skills[0]
+	if !slices.Equal(e.Requires.Tools, []string{"shell_exec", "web_fetch"}) {
+		t.Fatalf("codex tools not folded: %+v", e.Requires.Tools)
+	}
+	if !e.Hidden {
+		t.Fatal("allow_implicit_invocation:false must hide the skill")
+	}
+}
+
+// R8.5: a missing hard credential is an eligibility veto; a missing soft
+// one is a setup-needed readiness signal — the skill stays invocable.
+func TestReadinessCredentials(t *testing.T) {
+	user := newStore(t, ScopeUser)
+	must := func(name, extra string) {
+		tree := Tree{SkillFile: File{Data: []byte("---\nname: " + name + "\ndescription: d\n" + extra + "---\nb")}}
+		if _, err := user.Publish(name, tree, IndexMeta{Author: "x"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	must("hard-cred", "requires:\n  credentials:\n    - {name: API_KEY, hard: true}\n")
+	must("soft-cred", "requires:\n  credentials: [API_KEY]\n")
+	must("stored-cred", "requires:\n  credentials:\n    - {name: API_KEY, hard: true}\n")
+
+	idx, err := Build(filepath.Join(t.TempDir(), "eff"), []Source{{Name: "user", Dir: user.Root()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx.ApplyReadiness(Capabilities{
+		Platform:   "linux",
+		SkillCreds: map[string]map[string]bool{"stored-cred": {"API_KEY": true}},
+	})
+	by := map[string]Entry{}
+	for _, e := range idx.Skills {
+		by[e.Name] = e
+	}
+	if by["hard-cred"].Eligible || !slices.Contains(by["hard-cred"].Missing, "credential:API_KEY") {
+		t.Fatalf("missing hard cred must veto: %+v", by["hard-cred"])
+	}
+	if !by["soft-cred"].Eligible || !slices.Contains(by["soft-cred"].CredsMissing, "API_KEY") {
+		t.Fatalf("missing soft cred is setup-needed, not a veto: %+v", by["soft-cred"])
+	}
+	if !by["stored-cred"].Eligible || len(by["stored-cred"].CredsMissing) != 0 {
+		t.Fatalf("stored cred must satisfy: %+v", by["stored-cred"])
+	}
+}
+
+// R8.2: per-(principal,skill) secrets live under .state/credentials inside
+// the owner store — 0600 files the effective view never sees. Names must be
+// env-shaped; hub/broker-reserved and malformed names are refused.
+func TestSkillStateCredentials(t *testing.T) {
+	dir := t.TempDir()
+	if err := WriteCredentials(dir, "demo", map[string]string{"API_KEY": "s3cr3t"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadCredentials(dir, "demo")
+	if err != nil || got["API_KEY"] != "s3cr3t" {
+		t.Fatalf("roundtrip: %v %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".state", "credentials", "demo.json")); err != nil {
+		t.Fatalf("credentials file must exist: %v", err)
+	}
+	if err := WriteCredentials(dir, "demo", map[string]string{"HUB_TOKEN": "x"}); err == nil {
+		t.Fatal("reserved names must be refused")
+	}
+	if err := WriteCredentials(dir, "../evil", map[string]string{"A": "b"}); err == nil {
+		t.Fatal("invalid skill name must be refused")
+	}
+	if got, err := ReadCredentials(dir, "absent"); err != nil || len(got) != 0 {
+		t.Fatalf("absent skill must yield empty credentials: %v %v", got, err)
 	}
 }
 

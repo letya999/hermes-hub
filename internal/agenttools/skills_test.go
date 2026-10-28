@@ -291,6 +291,95 @@ func TestSkillReportsReadiness(t *testing.T) {
 	}
 }
 
+// R8.2/R8.5: a skill declaring a missing soft credential stays invocable
+// and surfaces "setup needed" — the missing names plus a protected form
+// link the owner can use to store them as (principal, skill) secrets.
+func TestSkillSetupNeeded(t *testing.T) {
+	form := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req["service"] != "skill:demo-skill" {
+			t.Errorf("form service must scope to the skill: %v", req)
+		}
+		_, _ = io.WriteString(w, `{"input":"protected-form","form_url":"http://comm.local/credentials/f1?nonce=n"}`)
+	}))
+	defer form.Close()
+
+	body := "---\nname: demo-skill\ndescription: d\nrequires:\n  credentials: [API_KEY]\n---\nbody\n"
+	tools, dir := skillSpace(t, skillTree(body, nil))
+	st, _ := skillstore.Open(filepath.Join(dir, "skills"), skillstore.ScopeUser)
+	d, err := st.CreateDraft("demo-skill", skillTree(body, nil), skillstore.DraftMeta{Author: "u"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.PublishDraft(d.ID, "u"); err != nil {
+		t.Fatal(err)
+	}
+	eff := filepath.Join(dir, "generated", "skills-effective")
+	idx, err := skillstore.Build(eff, []skillstore.Source{{Name: "user", Dir: st.Root()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx.ApplyReadiness(skillstore.Capabilities{Platform: "linux", SkillCreds: map[string]map[string]bool{}})
+	if err := skillstore.WriteIndex(eff, idx); err != nil {
+		t.Fatal(err)
+	}
+	tools.CommunicationURL = form.URL
+	tools.CommunicationAuth = "auth"
+	result := execJSON(t, tools, "skill", map[string]any{"name": "demo-skill"})
+	readiness, _ := result["readiness"].(map[string]any)
+	if readiness == nil {
+		t.Fatalf("skill() must report readiness: %v", result)
+	}
+	if readiness["setup_needed"] != true {
+		t.Fatalf("missing cred must flag setup_needed: %v", readiness)
+	}
+	names, _ := readiness["credentials_missing"].([]any)
+	if len(names) != 1 || names[0] != "API_KEY" {
+		t.Fatalf("missing names: %v", readiness)
+	}
+	if result["form_url"] != "http://comm.local/credentials/f1?nonce=n" {
+		t.Fatalf("form link: %v", result)
+	}
+}
+
+// R8.4: declared metadata.hermes.config keys surface in skill() as
+// effective per-user values (stored-or-default); the configure action writes
+// only .state/settings — never a draft — and rejects undeclared keys.
+func TestSkillSettingsSurfaceAndConfigure(t *testing.T) {
+	body := "---\nname: demo-skill\ndescription: d\nmetadata:\n  hermes:\n    config:\n      MAX_RESULTS: {default: \"10\"}\n---\nbody\n"
+	tools, dir := skillSpace(t, skillTree(body, nil))
+
+	invoke := func() map[string]any {
+		return execJSON(t, tools, "skill", map[string]any{"name": "demo-skill"})
+	}
+	settings, _ := invoke()["settings"].(map[string]any)
+	if settings["MAX_RESULTS"] != "10" {
+		t.Fatalf("default setting not surfaced: %v", settings)
+	}
+	out := execJSON(t, tools, "skill_manage", map[string]any{
+		"action": "configure", "name": "demo-skill",
+		"values": map[string]any{"MAX_RESULTS": "25"},
+	})
+	if out["stored"] != true {
+		t.Fatalf("configure did not report a write: %v", out)
+	}
+	settings, _ = invoke()["settings"].(map[string]any)
+	if settings["MAX_RESULTS"] != "25" {
+		t.Fatalf("stored setting not surfaced: %v", settings)
+	}
+	stored, err := skillstore.ReadSettings(filepath.Join(dir, "skills"), "demo-skill")
+	if err != nil || stored["MAX_RESULTS"] != "25" {
+		t.Fatalf("settings not in .state: %v %v", stored, err)
+	}
+	if _, err := tools.ExecCall(context.Background(), "skill_manage", map[string]any{
+		"action": "configure", "name": "demo-skill",
+		"values": map[string]any{"UNDECLARED": "x"},
+	}, nil); err == nil {
+		t.Fatal("configure accepted an undeclared setting key")
+	}
+}
+
 // The skills: root gives hub executors a read-only view of the effective
 // tree (R7.3): file ops take root:"skills", document/image executors take a
 // skills:<name>/<path> prefix; writes always reject.

@@ -176,6 +176,21 @@ response still returns instructions. Scripts never execute inside `/skills`:
 the tree carries no exec bits, cells mount it read-only, and a script runs
 only after it is copied onto cell scratch (`/work`) — never in place.
 
+Secrets and settings: skills declare credential *names* in
+`requires.credentials` (never values — SKILL.md cannot hold secrets and
+hub/broker-owned `HUB_*`/`BROKER_*` names are rejected at parse). A missing
+soft credential makes `skill()` report `readiness.setup_needed` with a
+`form_url` to the protected credential form; a `hard: true` requirement
+hides the skill until stored. The form writes
+`.state/credentials/<skill>.json` in the owner store, bound to
+(principal, skill) — never `self-env.json`. A `code_exec` call passing the
+`skill` argument leases exactly the declared names into that one sandbox
+call's env; undeclared store entries, ineligible skills and absent stores
+lease nothing. `metadata.hermes.config` declares non-secret per-user
+settings: `skill()` surfaces effective values (stored-or-default) and
+`skill_manage action=configure` writes `.state/settings` — private state,
+not a draft.
+
 ## Status and evidence
 
 - Operation `done`: that requested action completed.

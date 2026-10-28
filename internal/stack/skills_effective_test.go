@@ -140,6 +140,54 @@ func TestMaterializeEffectiveSkillsStampsReadiness(t *testing.T) {
 	}
 }
 
+// Stored .state credentials satisfy declared credential names at render:
+// a missing hard credential is the eligibility veto R8.5 requires; a stored
+// name satisfies without the value ever entering the index.
+func TestMaterializeEffectiveSkillsStampsCreds(t *testing.T) {
+	dir := t.TempDir()
+	s := validSettings()
+	s.GlobalSkillsDir = t.TempDir()
+	body := "---\nname: needy\ndescription: d\nrequires:\n  credentials:\n    - {name: API_KEY, hard: true}\n    - {name: FALLBACK_TOKEN}\n---\nbody\n"
+	if err := os.MkdirAll(filepath.Join(dir, "skills", "needy"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "skills", "needy", "SKILL.md"), []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	idx, err := MaterializeEffectiveSkills(dir, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var e skillstore.Entry
+	for _, it := range idx.Skills {
+		if it.Name == "needy" {
+			e = it
+		}
+	}
+	if e.Eligible || !slices.Contains(e.Missing, "credential:API_KEY") || !slices.Contains(e.CredsMissing, "FALLBACK_TOKEN") {
+		t.Fatalf("missing creds: %+v", e)
+	}
+	// Storing the hard name flips the entry to eligible-with-setup-needed.
+	if err := os.MkdirAll(filepath.Join(dir, "skills", ".state", "credentials"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "skills", ".state", "credentials", "needy.json"), []byte(`{"API_KEY":"v"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	idx, err = MaterializeEffectiveSkills(dir, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range idx.Skills {
+		if it.Name == "needy" {
+			e = it
+		}
+	}
+	if !e.Eligible || !slices.Contains(e.CredsMissing, "FALLBACK_TOKEN") {
+		t.Fatalf("stored hard cred must satisfy but soft stays signaled: %+v", e)
+	}
+}
+
 // Declared deps are a readiness signal: unmet schemes (registry not
 // operator-allowed, no toolbox for system:) report deps_missing without
 // making the skill catalog-ineligible (R7.4/R7.5).
@@ -704,6 +752,40 @@ func TestToolhubSeesEffectiveIndexForSkillEnum(t *testing.T) {
 	}
 }
 
+// The toolhub container mounts the owner skill store read-only so the
+// sandbox exec path can resolve (principal, skill) credential leases from
+// .state/credentials for exactly one call (R8.3).
+func TestToolhubMountsSkillStoreForLeaseResolution(t *testing.T) {
+	dir := t.TempDir()
+	s := validSettings()
+	s.CapabilityMode = "managed"
+	s.ExecutionMode = "supervisor"
+	services := Compose(s, "", dir)["services"].(M)
+	toolhub, ok := services["toolhub"].(M)
+	if !ok {
+		t.Fatal("toolhub service missing")
+	}
+	if toolhub["environment"].(M)["HUB_SKILLS_STORE"] != "/skills-store" {
+		t.Fatal("toolhub missing HUB_SKILLS_STORE")
+	}
+	found := false
+	for _, volume := range toolhub["volumes"].([]any) {
+		m, ok := volume.(M)
+		if ok && m["target"] == "/skills-store" {
+			found = true
+			if m["read_only"] != true {
+				t.Fatal("skill store must be read-only inside toolhub")
+			}
+			if m["source"] != filepath.ToSlash(filepath.Join(dir, "skills")) {
+				t.Fatalf("skill store must bind spaces/<user>/skills, got %v", m["source"])
+			}
+		}
+	}
+	if !found {
+		t.Fatal("toolhub does not mount the owner skill store")
+	}
+}
+
 // The communication gateway mounts the effective view read-only so `/name`
 // and `$name` harness expansion can resolve skills (R6.5).
 func TestGatewaySeesEffectiveViewForSkillExpansion(t *testing.T) {
@@ -734,6 +816,37 @@ func TestGatewaySeesEffectiveViewForSkillExpansion(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("gateway does not mount the effective skills view")
+	}
+}
+
+// The communication gateway mounts the owner skill store writable so
+// skill-scoped credential forms persist under .state/credentials (R8.2) —
+// the only writable mount it gets beyond its data volume.
+func TestGatewayMountsSkillStoreForCredentialForms(t *testing.T) {
+	dir := t.TempDir()
+	s := validSettings()
+	s.Ingress = []string{"telegram"}
+	services := Compose(s, "", dir)["services"].(M)
+	gateway, ok := services["communication-hub"].(M)
+	if !ok {
+		t.Fatal("communication-hub service missing")
+	}
+	env, _ := gateway["environment"].(M)
+	if env["HUB_SKILLS_STORE"] != "/skills-store" {
+		t.Fatal("gateway missing HUB_SKILLS_STORE")
+	}
+	found := false
+	for _, volume := range gateway["volumes"].([]any) {
+		m, ok := volume.(M)
+		if ok && m["target"] == "/skills-store" {
+			found = true
+			if m["source"] != filepath.ToSlash(filepath.Join(dir, "skills")) {
+				t.Fatalf("skill store must bind spaces/<user>/skills, got %v", m["source"])
+			}
+		}
+	}
+	if !found {
+		t.Fatal("gateway does not mount the owner skill store")
 	}
 }
 

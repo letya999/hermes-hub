@@ -33,6 +33,7 @@ var actionFields = map[string][]string{
 	"archive":        {"action", "name", "reason", "absorbed_into"},
 	"restore":        {"action", "name", "reason", "version"},
 	"propose_to_org": {"action", "name", "reason"},
+	"configure":      {"action", "name", "values"},
 }
 
 func (t *Tools) skillCall(ctx context.Context, name string, r Input) (any, error) {
@@ -256,6 +257,9 @@ func (t *Tools) skillManage(ctx context.Context, arguments map[string]any) (any,
 	if action == "propose_to_org" {
 		return t.proposeToOrg(ctx, name, arguments)
 	}
+	if action == "configure" {
+		return t.skillConfigure(name, arguments)
+	}
 	st, err := skillstore.Open(t.SkillsStore, skillstore.ScopeUser)
 	if err != nil {
 		return nil, err
@@ -434,6 +438,43 @@ func (t *Tools) proposeToOrg(ctx context.Context, name string, arguments map[str
 		"link_sent": link != "", "confirm_url": link}, nil
 }
 
+// skillConfigure writes non-secret per-user settings under .state/settings
+// (R8.4): private owner state like settings_set — no draft, no card. Only
+// keys the effective index declares for that skill may be written.
+func (t *Tools) skillConfigure(name string, arguments map[string]any) (any, error) {
+	idx, err := t.effectiveIndex()
+	if err != nil {
+		return nil, err
+	}
+	declared := map[string]bool{}
+	found := false
+	for _, e := range idx.Skills {
+		if e.Name != name {
+			continue
+		}
+		found = true
+		for _, s := range e.Settings {
+			declared[s.Key] = true
+		}
+	}
+	if !found {
+		return nil, errSkillNotFound
+	}
+	raw, _ := arguments["values"].(map[string]any)
+	values := map[string]string{}
+	for key, v := range raw {
+		if !declared[key] {
+			return nil, fmt.Errorf("%w: setting %q is not declared by skill %s", skillstore.ErrInvalid, key, name)
+		}
+		value, _ := v.(string)
+		values[key] = value
+	}
+	if err := skillstore.WriteSettings(t.SkillsStore, name, values); err != nil {
+		return nil, err
+	}
+	return map[string]any{"name": name, "stored": true, "keys": len(values)}, nil
+}
+
 func argString(args map[string]any, key string) string {
 	s, _ := args[key].(string)
 	return s
@@ -529,7 +570,7 @@ func (t *Tools) skillInvoke(ctx context.Context, r Input) (any, error) {
 		}
 	}
 	slices.Sort(resources)
-	return map[string]any{
+	result := map[string]any{
 		"name":      name,
 		"skill_dir": "/skills/" + name,
 		"body":      body,
@@ -541,6 +582,34 @@ func (t *Tools) skillInvoke(ctx context.Context, r Input) (any, error) {
 			"deps_missing":      entry.DepsMissing,
 			"has_scripts":       entry.HasScripts,
 			"instructions_only": entry.InstructionsOnly,
+			// R8.5: missing soft credentials are a setup-needed signal —
+			// the skill stays invocable; hard ones already vetoed above.
+			"setup_needed":        len(entry.CredsMissing) > 0,
+			"credentials_missing": entry.CredsMissing,
 		},
-	}, nil
+	}
+	// R8.4: declared settings surface as effective per-user values —
+	// the stored value wins, the declared default fills the rest.
+	if len(entry.Settings) > 0 {
+		stored, _ := skillstore.ReadSettings(t.SkillsStore, name)
+		settings := map[string]string{}
+		for _, spec := range entry.Settings {
+			value := spec.Default
+			if v, ok := stored[spec.Key]; ok {
+				value = v
+			}
+			settings[spec.Key] = value
+		}
+		result["settings"] = settings
+	}
+	// R8.2: the protected credential form is the only path that stores
+	// (principal, skill) secrets; the URL is delivery, never the value.
+	if len(entry.CredsMissing) > 0 {
+		if form, err := t.credentialForm(ctx, "skill:"+name, entry.CredsMissing); err == nil {
+			if url, ok := form["form_url"].(string); ok {
+				result["form_url"] = url
+			}
+		}
+	}
+	return result, nil
 }

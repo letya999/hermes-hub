@@ -32,18 +32,21 @@ type Requires struct {
 	Tools               []string
 	FallbackForToolsets []string
 	FallbackForTools    []string
-	Env                 []EnvRequirement
+	Credentials         []EnvRequirement `json:"credentials,omitempty"`
 	Bins                []string
 	Connectors          []string
 	Deps                []string
 }
 
 // EnvRequirement is a named credential/env need — names only, never values.
+// Hard marks the credential a hard dependency: a missing value hides the
+// skill instead of merely reporting "setup needed" (R8.5).
 type EnvRequirement struct {
 	Name        string `json:"name"`
 	Prompt      string `json:"prompt,omitempty"`
 	Help        string `json:"help,omitempty"`
 	RequiredFor string `json:"required_for,omitempty"`
+	Hard        bool   `json:"hard,omitempty"`
 }
 
 // SettingSpec is a non-secret per-user skill setting.
@@ -80,8 +83,10 @@ func ParseSkillMD(dir string, body []byte, lenient bool) (*Manifest, []string, e
 		RequiredEnv            []EnvRequirement `yaml:"required_environment_variables"`
 		AllowImplicit          *bool            `yaml:"allow_implicit_invocation"`
 		Requires               struct {
-			Toolsets   []string `yaml:"toolsets"`
-			Connectors []string `yaml:"connectors"`
+			Toolsets    []string `yaml:"toolsets"`
+			Connectors  []string `yaml:"connectors"`
+			Credentials []any    `yaml:"credentials"`
+			Env         []any    `yaml:"env"`
 		} `yaml:"requires"`
 		Metadata map[string]any `yaml:"metadata"`
 	}
@@ -99,8 +104,15 @@ func ParseSkillMD(dir string, body []byte, lenient bool) (*Manifest, []string, e
 	}
 	m.Requires.Toolsets = append(m.Requires.Toolsets, fm.Requires.Toolsets...)
 	m.Requires.Connectors = append(m.Requires.Connectors, fm.Requires.Connectors...)
-	m.Requires.Env = append(m.Requires.Env, fm.RequiredEnv...)
+	m.Requires.Credentials = append(m.Requires.Credentials, fm.RequiredEnv...)
+	m.Requires.Credentials = append(m.Requires.Credentials, credentialItems(fm.Requires.Credentials)...)
+	m.Requires.Credentials = append(m.Requires.Credentials, credentialItems(fm.Requires.Env)...)
 	foldCompat(m)
+	for _, cred := range m.Requires.Credentials {
+		if ReservedSecretName(cred.Name) {
+			return nil, nil, fmt.Errorf("%w: credential name %q is hub/broker-reserved", ErrInvalid, cred.Name)
+		}
+	}
 	warns := []string{}
 	if m.Name != dir {
 		if !lenient {
@@ -138,12 +150,29 @@ func foldCompat(m *Manifest) {
 		m.Requires.Toolsets = append(m.Requires.Toolsets, strs(h["requires_toolsets"])...)
 		m.Requires.Tools = append(m.Requires.Tools, strs(h["requires_tools"])...)
 		m.Requires.FallbackForToolsets = append(m.Requires.FallbackForToolsets, strs(h["fallback_for_toolsets"])...)
+		for _, env := range strs(h["requires_env"]) {
+			m.Requires.Credentials = append(m.Requires.Credentials, EnvRequirement{Name: env})
+		}
+		if config, ok := h["config"].(map[string]any); ok {
+			for key, spec := range config {
+				setting := SettingSpec{Key: key}
+				switch v := spec.(type) {
+				case string:
+					setting.Default = v
+				case map[string]any:
+					setting.Description, _ = v["description"].(string)
+					setting.Default, _ = v["default"].(string)
+					setting.Prompt, _ = v["prompt"].(string)
+				}
+				m.Settings = append(m.Settings, setting)
+			}
+		}
 	}
 	if oc, ok := m.Metadata["openclaw"].(map[string]any); ok {
 		if req, ok := oc["requires"].(map[string]any); ok {
 			m.Requires.Bins = append(m.Requires.Bins, strs(req["bins"])...)
 			for _, env := range strs(req["env"]) {
-				m.Requires.Env = append(m.Requires.Env, EnvRequirement{Name: env})
+				m.Requires.Credentials = append(m.Requires.Credentials, EnvRequirement{Name: env})
 			}
 		}
 	}
@@ -151,6 +180,55 @@ func foldCompat(m *Manifest) {
 		if norm := normalizeDep(dep); norm != "" {
 			m.Requires.Deps = append(m.Requires.Deps, norm)
 		}
+	}
+}
+
+// ReservedSecretName reports whether an env name belongs to the hub or the
+// credential broker (R8.1) — a skill declaring one would try to lease
+// hub-owned infrastructure values into cells.
+func ReservedSecretName(name string) bool {
+	return strings.HasPrefix(name, "HUB_") || strings.HasPrefix(name, "BROKER_")
+}
+
+// credentialItems accepts the two credential declaration shapes — a bare
+// name string or a {name,prompt,hard} object (R8.1).
+func credentialItems(items []any) []EnvRequirement {
+	out := []EnvRequirement{}
+	for _, item := range items {
+		switch v := item.(type) {
+		case string:
+			out = append(out, EnvRequirement{Name: v})
+		case map[string]any:
+			name, _ := v["name"].(string)
+			prompt, _ := v["prompt"].(string)
+			out = append(out, EnvRequirement{Name: name, Prompt: prompt, Hard: v["hard"] == true})
+		}
+	}
+	return out
+}
+
+// codexOpenAI folds Codex agents/openai.yaml into the manifest (D2/R8.1):
+// dependencies.tools widen requires.tools and
+// policy.allow_implicit_invocation gates the catalog's implicit surface.
+func codexOpenAI(tree Tree, m *Manifest) {
+	f, ok := tree["agents/openai.yaml"]
+	if !ok {
+		return
+	}
+	var cfg struct {
+		Dependencies struct {
+			Tools []string `yaml:"tools"`
+		} `yaml:"dependencies"`
+		Policy struct {
+			AllowImplicit *bool `yaml:"allow_implicit_invocation"`
+		} `yaml:"policy"`
+	}
+	if yaml.Unmarshal(f.Data, &cfg) != nil {
+		return
+	}
+	m.Requires.Tools = append(m.Requires.Tools, cfg.Dependencies.Tools...)
+	if cfg.Policy.AllowImplicit != nil {
+		m.AllowImplicitInvocation = cfg.Policy.AllowImplicit
 	}
 }
 

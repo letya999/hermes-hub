@@ -38,10 +38,17 @@ type Entry struct {
 	// DepsMissing lists declared deps whose scheme the operator surface
 	// cannot resolve — a readiness signal, not an eligibility veto (R7.4).
 	DepsMissing []string `json:"deps_missing,omitempty"`
+	// CredsMissing lists declared soft credentials absent from the owner's
+	// stored skill-secrets — a "setup needed" signal, not a veto; hard
+	// credentials join Missing instead (R8.5).
+	CredsMissing []string `json:"creds_missing,omitempty"`
 	// HasScripts marks a script-bearing tree (stamped at Build); without an
 	// execution grant the skill is instructions-only (R7.5).
 	HasScripts       bool `json:"has_scripts,omitempty"`
 	InstructionsOnly bool `json:"instructions_only,omitempty"`
+	// Settings are the declared non-secret per-user knobs (R8.4) — keys and
+	// defaults only; stored values live in the owner store's .state.
+	Settings []SettingSpec `json:"settings,omitempty"`
 }
 
 // Capabilities is the space's granted capability surface as the renderer
@@ -56,6 +63,9 @@ type Capabilities struct {
 	// ExecGrant marks a granted exec surface for skill scripts — today the
 	// terminal toolset carveout (native:terminal, off by default, R7.5).
 	ExecGrant bool
+	// SkillCreds maps a skill name to the credential names its owner has
+	// stored under .state/credentials — names only, never values (R8.2).
+	SkillCreds map[string]map[string]bool
 }
 
 // ApplyReadiness stamps Eligible/Missing on every entry (R6.1): declared
@@ -84,6 +94,17 @@ func (idx *EffectiveIndex) ApplyReadiness(caps Capabilities) {
 			scheme, _, _ := strings.Cut(dep, ":")
 			if !caps.Registries[scheme] {
 				e.DepsMissing = append(e.DepsMissing, dep)
+			}
+		}
+		e.CredsMissing = nil
+		for _, cred := range e.Requires.Credentials {
+			if caps.SkillCreds[e.Name][cred.Name] {
+				continue
+			}
+			if cred.Hard {
+				e.Missing = append(e.Missing, "credential:"+cred.Name)
+			} else {
+				e.CredsMissing = append(e.CredsMissing, cred.Name)
 			}
 		}
 		e.Eligible = len(e.Missing) == 0
@@ -166,11 +187,13 @@ func Build(dest string, sources []Source) (*EffectiveIndex, error) {
 				return nil, fmt.Errorf("source %s skill %s: %w", src.Name, name, err)
 			}
 			won[name] = true
+			codexOpenAI(tree, m)
 			m.Requires.Deps = append(m.Requires.Deps, pep723Deps(tree)...)
 			entry := Entry{
 				HasScripts: hasScripts(tree),
 				Name:       name, Description: m.Description, Source: src.Name,
 				Revision: Revision(tree), Tags: m.Tags, Requires: m.Requires,
+				Settings:  m.Settings,
 				Platforms: m.Platforms, Eligible: true,
 				Hidden: m.DisableModelInvocation ||
 					(m.AllowImplicitInvocation != nil && !*m.AllowImplicitInvocation),
