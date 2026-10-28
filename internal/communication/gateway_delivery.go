@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/diagnostics"
+	"github.com/letya999/hermes-hub/internal/locale"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
@@ -23,6 +24,28 @@ type editThrottle struct {
 
 func (g *Gateway) queueDelivery(ctx context.Context, key string, chatID, topicID int64, text string) error {
 	return g.queueDeliveryChannel(ctx, key, "telegram_bot", chatID, topicID, text)
+}
+
+// deliveryLang resolves the owning user's language for an outbound record.
+// Direct sends map the channel transport address back to the owner;
+// unresolvable targets fall back to the operator default.
+func (g *Gateway) deliveryLang(d *Delivery) locale.Lang {
+	principal := ""
+	if d.JobID != "" {
+		if m, ok, err := g.spool.Mapping(d.JobID); err == nil && ok {
+			principal = m.PrincipalID
+		}
+	} else if d.Channel == "mock" {
+		if owner, err := g.mockLinkOwner(d.ChatID); err == nil {
+			principal = owner
+		}
+	} else if u := g.userByChatID(d.ChatID); u.ID != "" {
+		principal = u.ID
+	}
+	if u := g.user(principal); u.ID != "" && u.WorkspaceDir != "" {
+		return locale.LangOf(u.WorkspaceDir)
+	}
+	return locale.Fallback()
 }
 
 // queueDeliveryChannel is queueDelivery for non-Telegram surfaces: command
@@ -123,15 +146,16 @@ func (g *Gateway) worker(ctx context.Context) {
 				if !retried && job.Trigger == "goal" && !errors.Is(runErr, ErrUncertain) && outcome.Status != "uncertain" {
 					goalPaused = g.pauseGoalAfterRunFailure(*job)
 				}
-				key, message := "job-"+job.ID+"-error", failureMessage(job.ID, outcome.Status)
+				lang := locale.LangOf(g.user(job.UserID).WorkspaceDir)
+				key, message := "job-"+job.ID+"-error", failureMessage(lang, job.ID, outcome.Status)
 				if goalPaused {
-					message += " Цель приостановлена — /goal resume продолжит."
+					message += " " + locale.T(lang, "job.goal-paused")
 				}
 				if errors.Is(runErr, ErrUncertain) || outcome.Status == "uncertain" {
 					key = "job-" + job.ID + "-uncertain"
-					message = "Исход задачи пока неизвестен. Повторный запуск может продублировать действие. ID: " + job.ID
+					message = locale.T(lang, "job.uncertain", job.ID)
 					if outcome.RunID != "" && g.config.RuntimeURL != "" {
-						message = "Проверяю исходную задачу после потери соединения. ID: " + job.ID
+						message = locale.T(lang, "job.recheck", job.ID)
 					}
 				}
 				// Routines dedupe owner-facing errors per schedule: an identical
@@ -261,7 +285,9 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 	if err != nil || delivery == nil {
 		return
 	}
-	if delivery.ApprovalJobID != "" || len(delivery.Buttons) > 0 {
+	delivery.Lang = g.deliveryLang(delivery)
+	_ = g.spool.UpdateSending(*delivery)
+	if delivery.ApprovalJobID != "" || (len(delivery.Buttons) > 0 && delivery.Kind == "") {
 		mapping, found, mapErr := g.spool.Mapping(delivery.ApprovalJobID)
 		if mapErr != nil || !found {
 			g.uncertainDelivery(*delivery)
@@ -481,7 +507,7 @@ func (g *Gateway) sendVoiceReply(ctx context.Context, delivery Delivery, text st
 		// Third-party upload is skipped unless a future explicit upload worker is configured.
 		return errors.New("voice upload is not configured")
 	}
-	audio, _, err := g.synthesizer.Synthesize(ctx, text)
+	audio, _, err := g.synthesizer.Synthesize(ctx, delivery.Lang, text)
 	if err != nil || len(audio) == 0 || len(audio) > mediaSizeLimit {
 		log.Printf("gateway voice synth failed delivery_id=%q err=%v bytes=%d", delivery.ID, err, len(audio))
 		return errors.New("tts failed")

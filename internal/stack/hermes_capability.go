@@ -44,7 +44,7 @@ func ManagedCapabilityInventory() (HermesCapabilityInventory, error) {
 // sub-agents whose literal toolsets bypass the denylist entirely, and
 // hermes-*/context_engine surfaces reopen API paths the boundary removed.
 var nativeCarveoutToolsets = map[string]bool{
-	"file": true, "terminal": true, "memory": true, "skills": true,
+	"file": true, "terminal": true, "memory": true,
 	"todo": true, "web": true, "search": true, "browser": true,
 	"image_gen": true, "video": true, "video_gen": true, "vision": true,
 	"kanban": true, "session_search": true, "cronjob": true,

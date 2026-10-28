@@ -17,17 +17,17 @@ import (
 )
 
 var formPage = template.Must(template.New("form").Parse(`<!doctype html>
-<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Подключение учётных данных</title><link rel="stylesheet" href="/form.css"></head>
+<html lang="{{.Lang}}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{.T.Title}}</title><link rel="stylesheet" href="/form.css"></head>
 <body><main><p class="eyebrow">HERMES · CREDENTIAL BROKER</p><h1>{{.View.Title}}</h1>
-{{if not .View.Approved}}<p>Подтвердите этот код в том же доверенном канале Communication Hub, где начали подключение. Одна ссылка сама по себе не даёт доступ к форме.</p><p class="code">{{.View.Code}}</p><p>Запрос: <code>{{.View.RequestID}}</code></p><p>После подтверждения обновите эту страницу.</p><a href="/connect/{{.View.RequestID}}">Проверить подтверждение</a>
-{{else if eq .View.Status "pending"}}<p>Значения будут переданы только брокеру и настроенному хранилищу, не в чат или модель.</p>
-<form method="post" enctype="multipart/form-data" action="/connect/{{.View.RequestID}}/submit"><input type="hidden" name="csrf" value="{{.CSRF}}">
-{{range .View.Fields}}<label for="f_{{.ID}}">{{.Label}} <small class="tag">{{if .Required}}обязательное{{else}}необязательное{{end}}</small></label>{{if or (eq .Kind "blob") (eq .Kind "json") (eq .Kind "pem")}}<input id="f_{{.ID}}" name="{{.ID}}" type="file" {{if .Required}}required{{end}}><small>До {{.MaxBytes}} байт. Имя загружаемого файла не используется как путь.</small>{{else}}<input id="f_{{.ID}}" name="{{.ID}}" type="{{if eq .Kind "secret"}}password{{else}}text{{end}}" autocomplete="off" spellcheck="false" maxlength="{{.MaxBytes}}" {{if .Required}}required{{end}}>{{end}}{{if .Required}}<label class="opt"><input type="checkbox" name="opt:{{.ID}}" value="1"> Поле не требуется — запустить без него</label>{{end}}{{end}}
-{{if .View.Extra}}<p>Необязательные параметры, объявленные источником:</p>{{range .View.Extra}}<label for="f_{{.ID}}">{{.Label}} <small class="tag">необязательное</small></label>{{if or (eq .Kind "blob") (eq .Kind "json") (eq .Kind "pem")}}<input id="f_{{.ID}}" name="{{.ID}}" type="file"><small>До {{.MaxBytes}} байт. Имя загружаемого файла не используется как путь.</small>{{else}}<input id="f_{{.ID}}" name="{{.ID}}" type="{{if eq .Kind "secret"}}password{{else}}text{{end}}" autocomplete="off" spellcheck="false" maxlength="{{.MaxBytes}}">{{end}}{{end}}{{end}}
-<button type="submit">Сохранить и продолжить</button>{{if .View.AnyRequired}}<button type="submit" formnovalidate>Отправить без проверки браузера</button>{{end}}</form>
-{{else if eq .View.Status "authorizing"}}<p>Файлы приняты. Подтвердите доступ у провайдера.</p><form method="post" action="/connect/{{.View.RequestID}}/oauth"><input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit">Перейти к авторизации</button></form>
-{{else}}<p>Авторизация обрабатывается. Повторное использование кода запрещено.</p>{{end}}
-<p class="foot">Ссылка ограничена по времени. Не отправляйте секреты через Telegram, Slack или обычные сообщения.</p><script src="/form.js" defer></script></main></body></html>`))
+{{if not .View.Approved}}<p>{{.T.ApproveHint}}</p><p class="code">{{.View.Code}}</p><p>{{.T.ApproveRequest}} <code>{{.View.RequestID}}</code></p><p>{{.T.ApproveRefresh}}</p><a href="/connect/{{.View.RequestID}}?lang={{.Lang}}">{{.T.ApproveCheck}}</a>
+{{else if eq .View.Status "pending"}}<p>{{.T.FormHint}}</p>
+<form method="post" enctype="multipart/form-data" action="/connect/{{.View.RequestID}}/submit?lang={{.Lang}}"><input type="hidden" name="csrf" value="{{.CSRF}}">
+{{range .View.Fields}}<label for="f_{{.ID}}">{{.Label}} <small class="tag">{{if .Required}}{{$.T.Required}}{{else}}{{$.T.Optional}}{{end}}</small></label>{{if or (eq .Kind "blob") (eq .Kind "json") (eq .Kind "pem")}}<input id="f_{{.ID}}" name="{{.ID}}" type="file" {{if .Required}}required{{end}}><small>{{printf $.T.FileHint .MaxBytes}}</small>{{else}}<input id="f_{{.ID}}" name="{{.ID}}" type="{{if eq .Kind "secret"}}password{{else}}text{{end}}" autocomplete="off" spellcheck="false" maxlength="{{.MaxBytes}}" {{if .Required}}required{{end}}>{{end}}{{if .Required}}<label class="opt"><input type="checkbox" name="opt:{{.ID}}" value="1"> {{$.T.Demote}}</label>{{end}}{{end}}
+{{if .View.Extra}}<p>{{.T.ExtraCaption}}</p>{{range .View.Extra}}<label for="f_{{.ID}}">{{.Label}} <small class="tag">{{$.T.Optional}}</small></label>{{if or (eq .Kind "blob") (eq .Kind "json") (eq .Kind "pem")}}<input id="f_{{.ID}}" name="{{.ID}}" type="file"><small>{{printf $.T.FileHint .MaxBytes}}</small>{{else}}<input id="f_{{.ID}}" name="{{.ID}}" type="{{if eq .Kind "secret"}}password{{else}}text{{end}}" autocomplete="off" spellcheck="false" maxlength="{{.MaxBytes}}">{{end}}{{end}}{{end}}
+<button type="submit">{{.T.Submit}}</button>{{if .View.AnyRequired}}<button type="submit" formnovalidate>{{.T.SubmitNoValidate}}</button>{{end}}</form>
+{{else if eq .View.Status "authorizing"}}<p>{{.T.Authorizing}}</p><form method="post" action="/connect/{{.View.RequestID}}/oauth?lang={{.Lang}}"><input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit">{{.T.OAuthBtn}}</button></form>
+{{else}}<p>{{.T.Processing}}</p>{{end}}
+<p class="foot">{{.T.Footer}}</p><script src="/form.js" defer></script></main></body></html>`))
 
 const css = `body{font:16px/1.6 system-ui,sans-serif;background:#f4f5f7;color:#17212b;margin:0}main{max-width:620px;margin:48px auto;padding:32px;background:white;border:1px solid #d9e0e7;border-radius:12px}h1{font-size:28px;line-height:1.2}.eyebrow,.foot,small{color:#546476}.eyebrow{letter-spacing:.08em;font-size:12px}.code{font:700 25px monospace;padding:16px;background:#eef3f7;overflow-wrap:anywhere}label{display:block;font-weight:600;margin-top:20px}input{display:block;box-sizing:border-box;width:100%;padding:10px;margin:8px 0;border:1px solid #98a7b5;border-radius:6px}button{margin-top:24px;padding:12px 18px;border:0;border-radius:6px;background:#153a54;color:white;cursor:pointer}small{display:block;font-size:12px}.foot{font-size:13px;border-top:1px solid #ddd;margin-top:28px;padding-top:16px}a{color:#154d74}code{overflow-wrap:anywhere}@media(max-width:700px){main{margin:16px;padding:20px}}`
 
@@ -71,7 +71,7 @@ func (s *Server) browser(w http.ResponseWriter, r *http.Request) {
 			fail(w, e)
 			return
 		}
-		s.success(w)
+		s.success(w, browserLang(r))
 		return
 	}
 	p := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
@@ -85,12 +85,22 @@ func (s *Server) browser(w http.ResponseWriter, r *http.Request) {
 			fail(w, e)
 			return
 		}
+		lang := browserLang(r)
+		view.Title = contract.Localize(view.TitleI18n, lang, view.Title)
+		for i := range view.Fields {
+			view.Fields[i].Label = view.Fields[i].LabelFor(lang)
+		}
+		for i := range view.Extra {
+			view.Extra[i].Label = view.Extra[i].LabelFor(lang)
+		}
 		http.SetCookie(w, &http.Cookie{Name: s.cookieName(), Value: raw, Path: "/", HttpOnly: true, Secure: !s.cfg.DevHTTP, SameSite: http.SameSiteLaxMode, MaxAge: 900}) // #nosec G124 -- DevHTTP is restricted to loopback; production requires HTTPS and Secure cookies.
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_ = formPage.Execute(w, struct {
 			View v1.SessionView
 			CSRF string
-		}{view, s.b.CSRF(raw, p[1])})
+			Lang string
+			T    webText
+		}{view, s.b.CSRF(raw, p[1]), lang, webTextFor(lang)})
 		return
 	}
 	if len(p) != 3 || r.Method != "POST" {
@@ -155,11 +165,11 @@ func (s *Server) browser(w http.ResponseWriter, r *http.Request) {
 	// Does not reveal credential IDs or values to a new/unapproved browser session.
 	view, _, e := s.b.OpenSession(p[1], s.cookie(r))
 	if e == nil && view.Status == "authorizing" {
-		w.Header().Set("Location", "/connect/"+p[1])
+		w.Header().Set("Location", "/connect/"+p[1]+"?lang="+browserLang(r))
 		w.WriteHeader(http.StatusSeeOther)
 		return
 	}
-	s.success(w)
+	s.success(w, browserLang(r))
 }
 func readForm(r *http.Request) (provider.Bundle, string, map[string]bool, error) {
 	mt, params, e := mime.ParseMediaType(r.Header.Get("Content-Type"))
@@ -223,8 +233,9 @@ func readForm(r *http.Request) (provider.Bundle, string, map[string]bool, error)
 	}
 	return values, csrf, demoted, nil
 }
-func (s *Server) success(w http.ResponseWriter) {
+func (s *Server) success(w http.ResponseWriter, lang string) {
+	t := webTextFor(lang)
 	http.SetCookie(w, &http.Cookie{Name: s.cookieName(), Value: "", Path: "/", HttpOnly: true, Secure: !s.cfg.DevHTTP, SameSite: http.SameSiteLaxMode, MaxAge: -1, Expires: time.Unix(1, 0)}) // #nosec G124 -- expires the same loopback-dev or HTTPS-production cookie.
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = io.WriteString(w, `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Готово</title><body><h1>Учётные данные приняты</h1><p>Вернитесь в чат. ToolHub может продолжить подключение автоматически. Сам MCP ещё должен пройти проверку готовности.</p></body></html>`)
+	_, _ = io.WriteString(w, `<!doctype html><html lang="`+template.HTMLEscapeString(lang)+`"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>`+template.HTMLEscapeString(t.DoneTitle)+`</title><body><h1>`+template.HTMLEscapeString(t.DoneH1)+`</h1><p>`+template.HTMLEscapeString(t.DoneBody)+`</p></body></html>`)
 }

@@ -1,6 +1,6 @@
 ---
 description: Every service runs the minimal image for its role; heavy capabilities (browser, local voice) become separate per-space images pulled only when enabled; Python installs are lockfile- or hash-pinned.
-last_verified: 2026-10-27
+last_verified: 2026-10-28
 ---
 # ADR-0083: Lean role images and capability packs — role images, browser sidecar, voice services only, pruned upstream tree, on-demand packs
 
@@ -103,3 +103,44 @@ build-arg only, desktop stack as a separate image), OpenDots (separate
   broker-held credentials — unchanged.
 - `optional-skills`, `plugins`, `skills` keep their upstream semantics;
   provider mutations still require concrete owner instructions.
+
+## Amendment — browser sidecar lifecycle (2026-10-28, CHG-0190)
+
+Accepted: the sidecar extracted by D4 became a resident compose service with
+`restart: unless-stopped` and no resource ceiling — a regression against the
+in-runtime stack it replaced, which died for free with the runtime's warm-TTL
+scale-to-zero. Two decisions close that gap:
+
+- **D8 — Sidecars sleep with their runtime.** The supervisor treats the
+  per-space browser sidecar as a warm resource of that space's runtime, not
+  project infrastructure. `Ensure` runs `docker start
+  hermes-hub-<user>-<env>-browser-<user>-1` for browser/meet spaces before the
+  spawn proceeds (idempotent: running is a no-op, stopped is revived, absent
+  fails the spawn with the same "run hubctl up" guidance as a missing space
+  network). The sweep stops a sidecar whose space has no live runtime —
+  supervisor-spawned entry or a compose `hermes-runtime` container — after a
+  grace (`--browser-idle-ttl`, default 15m, in-memory deadline). `docker stop`
+  is graceful SIGTERM so Chromium flushes its profile; `unless-stopped`
+  honours the manual stop; `hubctl up` or the next spawn re-raises it. This is
+  the open-duet `idle_minutes`/`auto_start` and hermes-fleet `idle_timeout`
+  pattern applied to a compose-owned container, and it restores the pre-split
+  posture where the browser stack cost nothing while the agent slept.
+- **D9 — The sidecar carries an explicit ceiling.** Chromium under Xvfb plus
+  two playwright-mcp processes plus the meet NodeServer is the heaviest
+  per-space workload we run: `cpus: "2.0"`, `mem_limit: "3g"` (the 1 GB shm
+  counts against it), `pids_limit: 256` — matching the toolhub precedent of
+  bounded per-service budgets.
+
+### Alternatives considered for the amendment
+
+- **Idle watcher inside `hub-runtime browser`** — rejected: it cannot observe
+  MCP/CDP client activity (pw-mcp holds a permanent CDP socket), so "idle"
+  would mean wall-clock since boot and would kill active sessions.
+- **Supervisor-owned sidecar spawn (drop compose ownership)** — rejected for
+  now: `docker run` would duplicate the compose mounts/env/volume contract in
+  a second place. Compose keeps owning the sidecar's shape; the supervisor
+  only toggles its run state under label/name verification. Revisit if
+  capability packs (D6) make sidecars fully dynamic.
+- **Stopping the sidecar the moment the last lease ends** — rejected: cold
+  Xvfb+Chromium boot is seconds; a short grace absorbs conversation gaps, and
+  matching it to the runtime warm model keeps semantics uniform.

@@ -22,9 +22,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg espeak-n
 # CPU-only torch wheel keeps the image lean; HUB_TTS_DEVICE=cuda needs a
 # cuda-built torch instead. Model + repo are baked under TORCH_HOME so no
 # network is needed at request time.
+# Hash-pinned lockfile (docker/tts-requirements.txt, uv pip compile
+# --generate-hashes against the pytorch cpu index): every wheel is verified
+# before install (SPEC-0082 R2.3).
+COPY docker/tts-requirements.txt /opt/tts-requirements.txt
 RUN for i in 1 2 3 4; do \
-      if pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu "torch==2.8.0" \
-         && pip install --no-cache-dir "omegaconf==2.3.0"; then break; fi; \
+      if pip install --no-cache-dir --require-hashes --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple -r /opt/tts-requirements.txt; then break; fi; \
       if [ "$i" = 4 ]; then exit 1; fi; sleep 10; \
     done
 ENV TORCH_HOME=/opt/torch

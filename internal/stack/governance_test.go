@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"gopkg.in/yaml.v3"
 )
 
 // seedGovernance writes a valid governance document into the space's
@@ -98,14 +96,21 @@ func TestGovernanceExplicitWishDenied(t *testing.T) {
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
-	// Default workspace selects `file: toolhub` and `web: native`; a global
-	// deny on either section must fail the whole read, not silently filter.
+	// Default workspace selects `file: toolhub`; a global deny on that section
+	// must fail the whole read, not silently filter. `web: native` is an
+	// explicit wish now (R3.1) — grant nothing and a deny must fail the read.
 	seedGovernance(t, d, func(doc *api.Governance) {
 		doc.Rules = append(doc.Rules, api.PolicyRule{RuleID: "deny-files", Scope: api.ScopeGlobal, Section: "hub:files", Effect: api.RuleDeny, Reason: "test deny", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1})
 	})
 	_, err := Read(d)
 	if err == nil || !strings.Contains(err.Error(), "hub:files") {
 		t.Fatalf("denied explicit tools entry admitted: %v", err)
+	}
+	wsPath := filepath.Join(d, "workspace.yaml")
+	wsBody, _ := os.ReadFile(wsPath)
+	wsBody = []byte(strings.Replace(string(wsBody), "  # web: native", "  web: {via: native}", 1))
+	if err := os.WriteFile(wsPath, wsBody, 0600); err != nil {
+		t.Fatal(err)
 	}
 	seedGovernance(t, d, func(doc *api.Governance) {
 		doc.Rules = append(doc.Rules, api.PolicyRule{RuleID: "deny-web", Scope: api.ScopeGlobal, Section: "native:web", Effect: api.RuleDeny, Reason: "test deny", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1})
@@ -185,33 +190,21 @@ func TestGovernanceImplicitSectionsFilteredAtRender(t *testing.T) {
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
-	// cronjob is an implicit unmanaged emission — not in the default
-	// workspace tools map — so its deny filters render output without failing
-	// the read.
+	// A native the space never wished for stays off even when a policy rule
+	// names it — and evaluating it must never fail the read (R3.1/R3.2).
+	// Unemitted sections are simply not on the render; govAllows reports the
+	// recorded decision only for evaluated sections.
 	seedGovernance(t, d, func(doc *api.Governance) {
 		doc.Rules = append(doc.Rules, api.PolicyRule{RuleID: "deny-cronjob", Scope: api.ScopeGlobal, Section: "native:cronjob", Effect: api.RuleDeny, Reason: "test", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1})
 	})
 	s, err := Read(d)
 	if err != nil {
-		t.Fatalf("implicit section deny must not fail the read: %v", err)
-	}
-	if s.govAllows("native:cronjob") {
-		t.Fatal("denied implicit section still allowed")
+		t.Fatalf("unwished native section deny must not fail the read: %v", err)
 	}
 	cfg := Config(s)
-	yamlBody, err := yaml.Marshal(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var rendered map[string]any
-	if err := yaml.Unmarshal(yamlBody, &rendered); err != nil {
-		t.Fatal(err)
-	}
-	agent, _ := rendered["agent"].(map[string]any)
-	enabled, _ := agent["enabled_toolsets"].([]any)
-	for _, name := range enabled {
-		if name == "cronjob" {
-			t.Fatal("denied toolset still emitted")
+	for _, channel := range []string{"cli", "local", "telegram", "api_server", "cron"} {
+		if sets := cfg["platform_toolsets"].(M)[channel].([]string); slices.Contains(sets, "cronjob") {
+			t.Fatalf("%s emitted denied cronjob: %v", channel, sets)
 		}
 	}
 }
@@ -348,14 +341,14 @@ func TestSectionForEntryMapping(t *testing.T) {
 func TestDenyDefaultSelections(t *testing.T) {
 	s := Settings{User: "alice", Tools: map[string]ToolEntry{
 		"terminal": {Via: ToolViaNative},
-		"file":     {Via: ToolViaNative},  // allow-default: not preserved
+		"file":     {Via: ToolViaNative},  // deny-default since R3.1: preserved
 		"gitea":    {Via: ToolViaMCPRaw},  // user_mcp: never preserved
 		"off":      {Via: ToolViaOff},     // disabled: skipped
 		"ssh":      {Via: ToolViaToolHub}, // hub:ssh is deny-default exec
 	}}
 	got := s.denyDefaultSelections(api.NewGovernance())
-	want := []string{"native:terminal"}
-	if len(got) != 1 || got[0] != want[0] {
+	want := []string{"native:file", "native:terminal"}
+	if !slices.Equal(got, want) {
 		t.Fatalf("preserved %v want %v", got, want)
 	}
 }
@@ -368,8 +361,8 @@ func TestImplicitToolsetSections(t *testing.T) {
 		t.Fatalf("managed implicit: %v", got)
 	}
 	plain := implicitToolsetSections(Settings{User: "alice"})
-	if !slices.Contains(plain, api.SectionHubTools) || !slices.Contains(plain, "native:terminal") {
-		t.Fatalf("unmanaged implicit: %v", plain)
+	if !slices.Equal(plain, []string{api.SectionHubTools}) {
+		t.Fatalf("unmanaged implicit must be hub tools only: %v", plain)
 	}
 	if slices.Contains(plain, "hub:browser_guest") {
 		t.Fatal("guest surface listed without browser")

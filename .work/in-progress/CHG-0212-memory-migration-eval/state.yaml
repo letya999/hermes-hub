@@ -1,0 +1,28 @@
+schema: 1
+change: CHG-0212
+title: Memory migration, eval fixture and hygiene
+status: in_progress
+branch: feat/m20-knowledge-memory
+updated: 2026-10-24
+phase: design-complete
+adr: ADR-0086
+spec: SPEC-0085
+requirements: [R9.1, R9.2, R9.3]
+depends_on: []
+github_milestone: M20 — Memory Vault and Knowledge Surface
+github_issue: 307
+design_status: accepted
+implementation_status: not_started
+slices:
+  S9.1-export: not_started
+  S9.2-eval-fixture: not_started
+  S9.3-vacuum: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining: []
+limitations: []

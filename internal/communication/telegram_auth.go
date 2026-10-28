@@ -26,6 +26,7 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/gotd/td/tgerr"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"rsc.io/qr"
 )
 
@@ -183,9 +184,10 @@ func (g *Gateway) serveTelegramAuth(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	if a.browser == "" && r.Method == http.MethodGet && len(parts) == 1 {
 		csrf := a.csrf
+		lang := g.telegramAuthLang(a)
 		a.mu.Unlock()
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = io.WriteString(w, `<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Telegram QR вход</title><main><h1>Telegram QR вход</h1><p>Продолжайте только если сами запросили подключение Telegram.</p><form method="post" action="/telegram-auth/`+parts[0]+`/claim"><input type="hidden" name="csrf" value="`+html.EscapeString(csrf)+`"><button>Начать</button></form></main></html>`) // #nosec G705 -- page interpolates only the validated session id and escaped csrf
+		_, _ = io.WriteString(w, `<!doctype html><html lang="`+string(lang)+`"><meta name="viewport" content="width=device-width,initial-scale=1"><title>`+html.EscapeString(locale.T(lang, "tgauth.title"))+`</title><main><h1>`+html.EscapeString(locale.T(lang, "tgauth.title"))+`</h1><p>`+html.EscapeString(locale.T(lang, "tgauth.claim-warn"))+`</p><form method="post" action="/telegram-auth/`+parts[0]+`/claim"><input type="hidden" name="csrf" value="`+html.EscapeString(csrf)+`"><button>`+html.EscapeString(locale.T(lang, "tgauth.claim-start"))+`</button></form></main></html>`) // #nosec G705 -- page interpolates only the validated session id and escaped csrf
 		return
 	}
 	if a.browser == "" && r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "claim" {
@@ -271,47 +273,54 @@ func (g *Gateway) serveTelegramAuth(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// telegramAuthLang resolves the page language from the attempt owner's
+// workspace preference; an unmapped owner keeps the operator default.
+func (g *Gateway) telegramAuthLang(a *telegramAuthAttempt) locale.Lang {
+	return locale.LangOf(g.user(a.owner.PrincipalID).WorkspaceDir)
+}
+
 func (g *Gateway) telegramAuthPage(w http.ResponseWriter, id string, a *telegramAuthAttempt) {
 	a.mu.Lock()
 	status, csrf, accountID, accountName := a.status, a.csrf, a.accountID, a.accountName
+	lang := g.telegramAuthLang(a)
 	a.mu.Unlock()
 	if status == "connecting" || status == "qr" || status == "checking-password" || status == "saving" {
 		w.Header().Set("Refresh", "3")
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	var b strings.Builder
-	b.WriteString(`<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Telegram QR вход</title><style>body{font:16px system-ui;margin:3rem auto;max-width:620px;padding:0 1rem;color:#17212b}input,button{display:block;margin:.75rem 0;padding:.7rem;font:inherit;max-width:100%;box-sizing:border-box}input{width:100%}img{width:min(520px,92vw);image-rendering:pixelated;background:#fff;padding:16px}p{line-height:1.5}</style><main><h1>Telegram QR вход</h1>`)
+	b.WriteString(`<!doctype html><html lang="` + string(lang) + `"><meta name="viewport" content="width=device-width,initial-scale=1"><title>` + html.EscapeString(locale.T(lang, "tgauth.title")) + `</title><style>body{font:16px system-ui;margin:3rem auto;max-width:620px;padding:0 1rem;color:#17212b}input,button{display:block;margin:.75rem 0;padding:.7rem;font:inherit;max-width:100%;box-sizing:border-box}input{width:100%}img{width:min(520px,92vw);image-rendering:pixelated;background:#fff;padding:16px}p{line-height:1.5}</style><main aria-live="polite"><h1>` + html.EscapeString(locale.T(lang, "tgauth.title")) + `</h1>`)
 	form := func(action string) {
 		b.WriteString(`<form method="post" action="/telegram-auth/` + id + `/` + action + `"><input type="hidden" name="csrf" value="` + html.EscapeString(csrf) + `">`)
 	}
 	switch status {
 	case "new":
-		b.WriteString(`<p>Введите API ID и API hash от my.telegram.org/apps. Они остаются только в памяти этого процесса до завершения входа.</p>`)
+		b.WriteString(`<p>` + html.EscapeString(locale.T(lang, "tgauth.api-hint")) + `</p>`)
 		form("start")
-		b.WriteString(`<label>API ID<input name="api_id" inputmode="numeric" required></label><label>API hash<input name="api_hash" type="password" autocomplete="off" required></label><button>Создать QR</button></form>`)
+		b.WriteString(`<label>API ID<input name="api_id" inputmode="numeric" required></label><label>API hash<input name="api_hash" type="password" autocomplete="off" required></label><button>` + html.EscapeString(locale.T(lang, "tgauth.create-qr")) + `</button></form>`)
 	case "connecting", "qr":
-		b.WriteString(`<p>Откройте Telegram → Настройки → Устройства → Подключить устройство и отсканируйте QR.</p>`)
+		b.WriteString(`<p>` + html.EscapeString(locale.T(lang, "tgauth.scan-hint")) + `</p>`)
 		if status == "qr" {
-			b.WriteString(`<img alt="QR код входа Telegram" src="/telegram-auth/` + id + `/qr.png">`)
+			b.WriteString(`<img alt="` + html.EscapeString(locale.T(lang, "tgauth.qr-alt")) + `" src="/telegram-auth/` + id + `/qr.png">`)
 		}
 		form("cancel")
-		b.WriteString(`<button>Отменить</button></form>`)
+		b.WriteString(`<button>` + html.EscapeString(locale.T(lang, "tgauth.cancel")) + `</button></form>`)
 	case "password":
-		b.WriteString(`<p>Telegram запросил пароль двухэтапной проверки.</p>`)
+		b.WriteString(`<p>` + html.EscapeString(locale.T(lang, "tgauth.password-hint")) + `</p>`)
 		form("password")
-		b.WriteString(`<label>Пароль Telegram<input name="password" type="password" autocomplete="current-password" required></label><button>Продолжить</button></form>`)
+		b.WriteString(`<label>` + html.EscapeString(locale.T(lang, "tgauth.password-label")) + `<input name="password" type="password" autocomplete="current-password" required></label><button>` + html.EscapeString(locale.T(lang, "tgauth.continue")) + `</button></form>`)
 	case "ready":
-		b.WriteString(`<p>Вход выполнен в аккаунт ` + html.EscapeString(accountName) + ` (ID ` + strconv.FormatInt(accountID, 10) + `). Подтвердите передачу новой сессии в Credential Broker.</p>`)
+		b.WriteString(`<p>` + html.EscapeString(locale.T(lang, "tgauth.ready", accountName, accountID)) + `</p>`)
 		form("save")
-		b.WriteString(`<button>Подключить аккаунт</button></form>`)
+		b.WriteString(`<button>` + html.EscapeString(locale.T(lang, "tgauth.connect-account")) + `</button></form>`)
 	case "checking-password":
-		b.WriteString(`<p>Проверяю пароль…</p>`)
+		b.WriteString(`<p>` + html.EscapeString(locale.T(lang, "tgauth.checking")) + `</p>`)
 	case "saving":
-		b.WriteString(`<p>Передаю сессию в Broker…</p>`)
+		b.WriteString(`<p>` + html.EscapeString(locale.T(lang, "tgauth.saving")) + `</p>`)
 	case "done":
-		b.WriteString(`<p>Сессия передана. Вернитесь в чат и напишите боту «продолжи подключение Telegram».</p>`)
+		b.WriteString(`<p>` + html.EscapeString(locale.T(lang, "tgauth.done")) + `</p>`)
 	default:
-		b.WriteString(`<p>Вход не завершён. Запросите новую ссылку подключения.</p>`)
+		b.WriteString(`<p>` + html.EscapeString(locale.T(lang, "tgauth.failed")) + `</p>`)
 	}
 	b.WriteString(`</main></html>`)
 	_, _ = io.WriteString(w, b.String())

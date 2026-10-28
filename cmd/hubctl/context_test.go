@@ -2,10 +2,15 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/letya999/hermes-hub/internal/skillstore"
+	"github.com/letya999/hermes-hub/internal/stack"
+	"gopkg.in/yaml.v3"
 )
 
 func TestContextMemorySkillRoutineCLI(t *testing.T) {
@@ -55,16 +60,25 @@ func TestContextMemorySkillRoutineCLI(t *testing.T) {
 		t.Fatal(err)
 	}
 	skill := filepath.Join(t.TempDir(), "SKILL.md")
-	if err := os.WriteFile(skill, []byte("# Demo\nList files."), 0600); err != nil {
+	if err := os.WriteFile(skill, []byte("---\nname: demo\ndescription: demo skill\n---\n\n# Demo\nList files.\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := run(ctx, []string{"skill", "install", "--dir", dir, "--user", "owner", "--name", "demo", "--from-file", skill, "--consent"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := run(ctx, []string{"skill", "list", "--dir", dir, "--user", "owner"}); err != nil {
+	listed := captureOutput(t, func() error {
+		return run(ctx, []string{"skill", "list", "--dir", dir, "--user", "owner"})
+	})
+	if !strings.Contains(listed, `"demo"`) {
+		t.Fatalf("skill list lost the published skill: %s", listed)
+	}
+	if err := run(ctx, []string{"skill", "show", "--dir", dir, "--user", "owner", "--name", "demo"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := run(ctx, []string{"skill", "revoke", "--dir", dir, "--user", "owner", "--name", "demo"}); err != nil {
+	if err := run(ctx, []string{"skill", "archive", "--dir", dir, "--user", "owner", "--name", "demo"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(ctx, []string{"skill", "restore", "--dir", dir, "--user", "owner", "--name", "demo"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := run(ctx, []string{"context", "purge", "--dir", dest, "--user", "owner", "--confirm", "owner"}); err != nil {
@@ -96,8 +110,59 @@ func TestContextMemorySkillRoutineCLI(t *testing.T) {
 	if err := run(ctx, []string{"skill", "install", "--dir", dir, "--user", "owner", "--name", "demo"}); err == nil {
 		t.Fatal("skill install without file")
 	}
-	if err := run(ctx, []string{"skill", "install", "--dir", dir, "--user", "owner", "--name", "demo", "--from-file", skill}); err == nil {
-		t.Fatal("skill install without consent")
+	// Without --consent the skill lands as an inactive draft, not an error.
+	if err := run(ctx, []string{"skill", "install", "--dir", dir, "--user", "owner", "--name", "demo", "--from-file", skill}); err != nil {
+		t.Fatal(err)
+	}
+	drafts := captureOutput(t, func() error {
+		return run(ctx, []string{"skill", "drafts", "--dir", dir, "--user", "owner"})
+	})
+	if !strings.Contains(drafts, `"demo"`) {
+		t.Fatalf("no-consent install did not land as a draft: %s", drafts)
+	}
+	var dlist []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal([]byte(drafts), &dlist); err != nil || len(dlist) == 0 {
+		t.Fatalf("drafts output not decodable: %v %s", err, drafts)
+	}
+	if err := run(ctx, []string{"skill", "approve", "--dir", dir, "--user", "owner", "--id", dlist[0].ID}); err != nil {
+		t.Fatal(err)
+	}
+	shown := captureOutput(t, func() error {
+		return run(ctx, []string{"skill", "show", "--dir", dir, "--user", "owner", "--name", dlist[0].Name})
+	})
+	if !strings.Contains(shown, `"demo"`) {
+		t.Fatalf("approved draft not active: %s", shown)
+	}
+	// A second unconsented install drafts again; reject drops it.
+	if err := run(ctx, []string{"skill", "install", "--dir", dir, "--user", "owner", "--name", "demo", "--from-file", skill}); err != nil {
+		t.Fatal(err)
+	}
+	drafts2 := captureOutput(t, func() error {
+		return run(ctx, []string{"skill", "drafts", "--dir", dir, "--user", "owner"})
+	})
+	var dlist2 []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(drafts2), &dlist2); err != nil || len(dlist2) == 0 {
+		t.Fatalf("second draft missing: %v %s", err, drafts2)
+	}
+	if err := run(ctx, []string{"skill", "reject", "--dir", dir, "--user", "owner", "--id", dlist2[0].ID}); err != nil {
+		t.Fatal(err)
+	}
+	drafts3 := captureOutput(t, func() error {
+		return run(ctx, []string{"skill", "drafts", "--dir", dir, "--user", "owner"})
+	})
+	if strings.Contains(drafts3, dlist2[0].ID) {
+		t.Fatalf("rejected draft still listed: %s", drafts3)
+	}
+	if err := run(ctx, []string{"skill", "rollback", "--dir", dir, "--user", "owner", "--name", "demo"}); err == nil {
+		t.Fatal("rollback without --to")
+	}
+	if err := run(ctx, []string{"skill", "rollback", "--dir", dir, "--user", "owner", "--name", "demo", "--to", "deadbeef"}); err == nil || strings.Contains(err.Error(), "unknown skill command") {
+		t.Fatalf("rollback to a missing revision must reach the store: %v", err)
 	}
 	if err := run(ctx, []string{"routine", "list"}); err == nil {
 		t.Fatal("routine without spool")
@@ -122,5 +187,93 @@ func TestContextMemorySkillRoutineCLI(t *testing.T) {
 	}
 	if err := run(ctx, []string{"memory", "list", "--dir", dir, "--user", "owner"}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// skill promote publishes an org-store draft on behalf of a bound member;
+// the member's org role gates it exactly like runtime skill-apply (R5.4).
+func TestSkillPromotePublishesOrgDraft(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	dir := filepath.Join(root, "spaces", "me")
+	orgDir := filepath.Join(root, "spaces", "acme")
+	if err := run(ctx, []string{"org-init", "--org", "acme", "--org-dir", orgDir, "--user", "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(ctx, []string{"init", "--dir", dir, "--user", "owner", "--org", "acme"}); err != nil {
+		t.Fatal(err)
+	}
+	orgStore, err := skillstore.Open(filepath.Join(orgDir, "skills"), skillstore.ScopeOrg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft, err := orgStore.CreateDraft("team-skill", skillstore.Tree{
+		skillstore.SkillFile: {Data: []byte("---\nname: team-skill\ndescription: t\n---\n\nTeam body.\n")},
+	}, skillstore.DraftMeta{Author: "agent", Reason: "proposal"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run(ctx, []string{"skill", "promote", "--dir", dir, "--user", "owner", "--id", draft.ID}); err != nil {
+		t.Fatalf("owner promote failed: %v", err)
+	}
+	if _, err := orgStore.Tree("team-skill"); err != nil {
+		t.Fatalf("org draft not promoted: %v", err)
+	}
+	// A plain member cannot promote.
+	memberDraft, err := orgStore.CreateDraft("team-skill-2", skillstore.Tree{
+		skillstore.SkillFile: {Data: []byte("---\nname: team-skill-2\ndescription: t\n---\n\nTwo.\n")},
+	}, skillstore.DraftMeta{Author: "agent", Reason: "proposal"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	memberDir := filepath.Join(root, "spaces", "joe")
+	if err := run(ctx, []string{"init", "--dir", memberDir, "--user", "joe", "--org", "acme"}); err != nil {
+		t.Fatal(err)
+	}
+	// Make joe a plain member in the org scope.
+	orgSettings, err := stack.ReadOrganization(orgDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orgSettings.Members["joe"] = stack.OrgMember{Role: "member"}
+	raw, err := yaml.Marshal(orgSettings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"settings.yaml", "scope.yaml"} {
+		if err := os.WriteFile(filepath.Join(orgDir, name), raw, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := run(ctx, []string{"skill", "promote", "--dir", memberDir, "--user", "joe", "--id", memberDraft.ID}); err == nil {
+		t.Fatal("member promoted an org draft")
+	}
+	if _, err := orgStore.Tree("team-skill-2"); err == nil {
+		t.Fatal("member's draft went live in the org store")
+	}
+}
+
+func TestImportRedactsSecretWithWarning(t *testing.T) {
+	dir := t.TempDir()
+	skill := filepath.Join(t.TempDir(), "SKILL.md")
+	body := "---\nname: demo\ndescription: demo\n---\n\nANTHROPIC_API_KEY=sk-ant-api03-aabbccddeeff1122334455\n"
+	if err := os.WriteFile(skill, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out := captureOutput(t, func() error {
+		return run(context.Background(), []string{"skill", "install", "--dir", dir, "--user", "owner", "--name", "demo", "--from-file", skill, "--consent"})
+	})
+	if !strings.Contains(out, `"redacted":1`) {
+		t.Fatalf("install did not report redaction: %s", out)
+	}
+	stored, err := os.ReadFile(filepath.Join(dir, "skills", "demo", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(stored), "sk-ant-api03") {
+		t.Fatal("secret value stored unredacted")
+	}
+	if !strings.Contains(string(stored), "<REDACTED>") {
+		t.Fatalf("redaction marker missing: %s", stored)
 	}
 }

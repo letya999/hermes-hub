@@ -1,0 +1,29 @@
+schema: 1
+change: CHG-0205
+title: Daily leaf ingest
+status: in_progress
+branch: feat/m20-knowledge-memory
+updated: 2026-10-24
+phase: design-complete
+adr: ADR-0086
+spec: SPEC-0085
+requirements: [R2.1, R2.2, R2.3, R2.4]
+depends_on: []
+github_milestone: M20 — Memory Vault and Knowledge Surface
+github_issue: 300
+design_status: accepted
+implementation_status: not_started
+slices:
+  S2.1-leaf-writer: not_started
+  S2.2-untrusted-marking: not_started
+  S2.3-scoped-commits: not_started
+  S2.4-wiring: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining: []
+limitations: []

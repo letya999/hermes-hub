@@ -1,12 +1,22 @@
 {
   "id": "google-file-session",
   "revision": 1,
-  "title": "Google: JSON и состояние авторизации",
+  "title": "Google: OAuth client JSON and authorization state",
+  "title_i18n": {
+    "ru": "Google: JSON и состояние авторизации",
+    "kk": "Google: OAuth клиенті JSON және авторизация күйі",
+    "es": "Google: JSON de cliente OAuth y estado de autorización"
+  },
   "storage": "local",
   "fields": [
     {
       "id": "client_json",
-      "label": "JSON OAuth-клиента",
+      "label": "OAuth client JSON",
+      "label_i18n": {
+        "ru": "JSON OAuth-клиента",
+        "kk": "OAuth клиенті JSON",
+        "es": "JSON de cliente OAuth"
+      },
       "kind": "json",
       "required": true,
       "max_bytes": 65536

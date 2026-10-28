@@ -382,15 +382,28 @@ func TestSupervisorCleansUpAfterStartFailure(t *testing.T) {
 	}
 }
 
-func TestSupervisorBrowserAndMeetStartFailures(t *testing.T) {
-	oldState := state
-	state = t.TempDir()
-	t.Cleanup(func() { state = oldState })
-	for _, tc := range []struct{ browser, meet string }{{"true", "false"}, {"false", "true"}} {
-		t.Setenv("HUB_BROWSER", tc.browser)
-		t.Setenv("HUB_MEET", tc.meet)
-		if err := supervise("idle"); err == nil {
-			t.Fatal("missing runtime executable accepted")
+// SPEC-0082 R4.3: browser and meet flags no longer gate runtime startup on a
+// local display stack — the sidecar owns it. Under either flag the runtime
+// must not spawn X/VNC/Chromium.
+func TestSupervisorBrowserFlagsStartNoDisplay(t *testing.T) {
+	spawned, restore := captureCommands(t)
+	defer restore()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer server.Close()
+	oldURL := browserURL
+	browserURL = server.URL
+	t.Cleanup(func() { browserURL = oldURL })
+	t.Setenv("HUB_BROWSER", "false")
+	t.Setenv("HUB_MEET", "true")
+	// The meet plugin-enable child is a stub that exits cleanly after the
+	// test helper delay; supervise may return its error — only the spawn set
+	// matters here.
+	_ = supervise("idle")
+	for _, child := range *spawned {
+		for _, banned := range []string{"Xvfb", "fluxbox", "x11vnc", "websockify", "chromium"} {
+			if strings.Contains(child.argv, banned) {
+				t.Fatalf("meet runtime spawned %s: %s", banned, child.argv)
+			}
 		}
 	}
 }
@@ -470,145 +483,6 @@ func TestTextOnlyContextStartsNoBrowser(t *testing.T) {
 		case "Xvfb", "fluxbox", "x11vnc", "websockify", "chromium":
 			t.Fatalf("text-only context started %s", name)
 		}
-	}
-}
-
-func TestBrowserStartsAfterReady(t *testing.T) {
-	oldState, oldCommand, oldURL, oldProbe := state, command, browserURL, displayProbe
-	oldNotify, oldStop := signalNotify, signalStop
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
-	defer server.Close()
-	state, browserURL = t.TempDir(), server.URL
-	displayBlocked := make(chan struct{})
-	allowExit := make(chan struct{})
-	command = func(string, ...string) *exec.Cmd {
-		cmd := exec.Command(os.Args[0], "-test.run=TestRuntimeHelperProcess")
-		cmd.Env = append(os.Environ(), "HUB_TEST_HELPER=1")
-		return cmd
-	}
-	displayProbe = func(string) error { <-displayBlocked; return nil }
-	signalNotify = func(ch chan os.Signal) {
-		go func() { <-allowExit; ch <- os.Interrupt }()
-	}
-	signalStop = func(chan os.Signal) {}
-	t.Cleanup(func() {
-		state, command, browserURL, displayProbe = oldState, oldCommand, oldURL, oldProbe
-		signalNotify, signalStop = oldNotify, oldStop
-	})
-	t.Setenv("HUB_BROWSER", "true")
-	t.Setenv("HUB_MEET", "false")
-	done := make(chan error, 1)
-	go func() { done <- supervise("idle") }()
-	marker := filepath.Join(state, "runtime.json")
-	ready := false
-	for range 500 {
-		select {
-		case err := <-done:
-			t.Fatalf("supervise exited before readiness: %v", err)
-		default:
-		}
-		if _, err := os.Stat(marker); err == nil {
-			ready = true
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if !ready {
-		t.Fatal("readiness marker waited on browser start")
-	}
-	close(allowExit)
-	close(displayBlocked)
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
-}
-
-// The deferred browser start is joined on shutdown: once supervise returns it
-// must not spawn the rest of the stack — children started after teardown would
-// leak past the defer that kills them.
-func TestDeferredBrowserStopsSpawningAfterShutdown(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
-	defer server.Close()
-	oldState, oldCommand, oldURL, oldProbe := state, command, browserURL, displayProbe
-	oldNotify, oldStop := signalNotify, signalStop
-	state, browserURL = t.TempDir(), server.URL
-	var mu sync.Mutex
-	var spawned []*exec.Cmd
-	command = func(name string, args ...string) *exec.Cmd {
-		cmd := exec.Command(os.Args[0], "-test.run=TestRuntimeHelperProcess")
-		cmd.Env = append(os.Environ(), "HUB_TEST_HELPER=1")
-		mu.Lock()
-		spawned = append(spawned, cmd)
-		mu.Unlock()
-		return cmd
-	}
-	displayBlocked := make(chan struct{})
-	allowExit := make(chan struct{})
-	displayProbe = func(string) error { <-displayBlocked; return nil }
-	signalNotify = func(ch chan os.Signal) {
-		go func() { <-allowExit; ch <- os.Interrupt }()
-	}
-	signalStop = func(chan os.Signal) {}
-	t.Cleanup(func() {
-		state, command, browserURL, displayProbe = oldState, oldCommand, oldURL, oldProbe
-		signalNotify, signalStop = oldNotify, oldStop
-	})
-	t.Setenv("HUB_BROWSER", "true")
-	t.Setenv("HUB_MEET", "false")
-	done := make(chan error, 1)
-	go func() { done <- supervise("idle") }()
-	marker := filepath.Join(state, "runtime.json")
-	for range 500 {
-		if _, err := os.Stat(marker); err == nil {
-			break
-		}
-		select {
-		case err := <-done:
-			t.Fatalf("supervise exited before readiness: %v", err)
-		case <-time.After(10 * time.Millisecond):
-		}
-	}
-	close(allowExit)
-	close(displayBlocked)
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("supervise did not join the deferred browser start")
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	for _, cmd := range spawned {
-		if cmd.ProcessState == nil {
-			t.Fatal("deferred browser child survived shutdown")
-		}
-	}
-}
-
-func TestSupervisorBrowserShutdown(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
-	defer server.Close()
-	oldState, oldCommand, oldURL, oldProbe := state, command, browserURL, displayProbe
-	oldNotify, oldStop := signalNotify, signalStop
-	state, browserURL = t.TempDir(), server.URL
-	command = func(string, ...string) *exec.Cmd {
-		cmd := exec.Command(os.Args[0], "-test.run=TestRuntimeHelperProcess")
-		cmd.Env = append(os.Environ(), "HUB_TEST_HELPER=1")
-		return cmd
-	}
-	displayProbe = func(string) error { return nil }
-	signalNotify = func(ch chan os.Signal) { ch <- os.Interrupt }
-	signalStop = func(chan os.Signal) {}
-	t.Cleanup(func() {
-		state, command, browserURL, displayProbe = oldState, oldCommand, oldURL, oldProbe
-		signalNotify, signalStop = oldNotify, oldStop
-	})
-	t.Setenv("HUB_BROWSER", "true")
-	t.Setenv("HUB_MEET", "false")
-	if err := supervise("idle"); err != nil {
-		t.Fatal(err)
 	}
 }
 

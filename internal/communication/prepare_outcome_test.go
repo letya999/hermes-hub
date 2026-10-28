@@ -13,6 +13,7 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
 )
 
 // CHG-0127 S0.3: confirmation and removal links ride the same notice channel
@@ -310,7 +311,7 @@ func TestPrepareOutcomeDeliversNoticeAndContinuation(t *testing.T) {
 			if strings.Contains(text, "Откройте её на этом компьютере: http://127.0.0.1:8090/credentials/onboard-form?nonce=abc") {
 				sawLink = true
 			}
-			if strings.Contains(text, "уже отправлена ссылка") && !strings.Contains(text, "отправь пользователю form_url") {
+			if strings.Contains(text, "already sent") && !strings.Contains(text, "send the user form_url") {
 				sawHold = true
 			}
 		}
@@ -673,8 +674,8 @@ func TestPrepareContinuationWizardConfirm(t *testing.T) {
 	request := prepareOutcomeRequest{OnboardingID: "onboard-wzc", Phase: "awaiting-confirm",
 		Repository: "https://github.com/example/mcp",
 		FormURL:    "http://127.0.0.1:8090/connect/onboard-wzc?k=0123456789abcdef0123456789abcdef"}
-	text := prepareContinuation(request)
-	if !strings.Contains(text, "уже отправлена") || strings.Contains(text, "required_credentials") {
+	text := prepareContinuation(request, locale.LangEN)
+	if !strings.Contains(text, "already sent") || strings.Contains(text, "required_credentials") {
 		t.Fatalf("continuation did not recognize the wizard link: %s", text)
 	}
 }

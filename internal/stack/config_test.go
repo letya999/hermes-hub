@@ -7,6 +7,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
 func TestInitNeverOverwrites(t *testing.T) {
@@ -73,7 +76,7 @@ func TestRenderAllFeatures(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(root, "config/SOUL.md"), []byte("original"), 0600)
 	gated := filepath.Join(root, "config", "skills", "deep-research-embedded")
 	_ = os.MkdirAll(gated, 0755)
-	_ = os.WriteFile(filepath.Join(gated, "SKILL.md"), []byte("name: deep-research-embedded"), 0600)
+	_ = os.WriteFile(filepath.Join(gated, "SKILL.md"), []byte("---\nname: deep-research-embedded\ndescription: gated fixture\n---\n"), 0600)
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
@@ -102,19 +105,28 @@ func TestRenderAllFeatures(t *testing.T) {
 	if err := saveSpace(d, s); err != nil {
 		t.Fatal(err)
 	}
+	// All-features render: grant every native section the fixture selects —
+	// native Hermes toolsets are default-deny (SPEC-0083 R3.1).
+	seedGovernance(t, d, func(doc *api.Governance) {
+		for name, entry := range s.Tools {
+			if entry.Via == ToolViaNative {
+				activeToolGrant(t, doc, "me", "native:"+name, time.Hour)
+			}
+		}
+	})
 	if err := Render(d, root); err != nil {
 		t.Fatal(err)
 	}
 	generatedConfig, err := os.ReadFile(filepath.Join(d, "generated", "hermes.prod.yaml"))
-	if err != nil || !strings.Contains(string(generatedConfig), "/opt/hub/skills") {
-		t.Fatalf("default global skills mount missing: %v %s", err, generatedConfig)
+	if err != nil || strings.Contains(string(generatedConfig), "/opt/hub/skills") {
+		t.Fatalf("legacy skills loader path still rendered: %v %s", err, generatedConfig)
 	}
 	generatedCompose, err := os.ReadFile(filepath.Join(d, "generated", "compose.prod.yaml"))
-	if err != nil || !strings.Contains(string(generatedCompose), filepath.ToSlash(filepath.Join(d, "generated", "skills"))) {
-		t.Fatalf("filtered global skills source missing: %v %s", err, generatedCompose)
+	if err != nil || !strings.Contains(string(generatedCompose), filepath.ToSlash(filepath.Join(d, "generated", "skills-effective"))) {
+		t.Fatalf("effective skills view mount missing: %v %s", err, generatedCompose)
 	}
-	if _, err := os.Stat(filepath.Join(d, "generated", "skills", "deep-research-embedded", "SKILL.md")); err != nil {
-		t.Fatalf("bundled deep-research skill not materialized: %v", err)
+	if _, err := os.Stat(filepath.Join(d, "generated", "skills-effective", "deep-research-embedded", "SKILL.md")); err != nil {
+		t.Fatalf("bundled deep-research skill not materialized into the view: %v", err)
 	}
 	cfg := Config(s)
 	display, ok := cfg["display"].(M)
@@ -146,11 +158,14 @@ func TestRenderAllFeatures(t *testing.T) {
 			t.Fatalf("browser_act must extend the %s allowlist: %#v", name, server["tools"])
 		}
 	}
-	if args := servers["browser"].(M)["args"].([]string); !slices.Contains(args, "--cdp-endpoint") {
-		t.Fatalf("persistent browser must attach to the per-user CDP profile: %v", args)
+	// SPEC-0082 R4.3/R4.4: the persistent browser server reaches the sidecar's
+	// CDP-attached instance; the guest server reaches the isolated instance —
+	// the profile never leaves the browser container either way.
+	if url := servers["browser"].(M)["url"]; url != "http://browser-me:8931/mcp" {
+		t.Fatalf("persistent browser must attach to the sidecar CDP instance: %v", url)
 	}
-	if args := servers["browser_guest"].(M)["args"].([]string); !slices.Contains(args, "--isolated") {
-		t.Fatalf("guest browser must use an in-memory profile: %v", args)
+	if url := servers["browser_guest"].(M)["url"]; url != "http://browser-me:8932/mcp" {
+		t.Fatalf("guest browser must reach the isolated sidecar instance: %v", url)
 	}
 	s.Tools, s.Ingress = testTools("telegram_user", "google", "google_write"), testIngress("telegram_user", "google", "google_write")
 	if servers := Config(s)["mcp_servers"].(M); len(servers) != 1 || servers["hub"] == nil {
@@ -569,15 +584,16 @@ func TestTelegramAuthDefaultsOnWithTelegramIngress(t *testing.T) {
 	}
 	services := Compose(s, "/source", dir)["services"].(M)
 	gw := services["communication-hub"].(M)
-	// QR login lives in the one communication-hub build — no variant image.
-	if gw["image"] != "hermes-hub:0.4.0-dev" {
-		t.Fatalf("gateway must run the standard image: %#v", gw["image"])
+	// QR login lives in the one communication-hub build — the daemon runs the
+	// lean core role image like every other non-agent service (SPEC-0082 R3).
+	if gw["image"] != "hermes-hub:0.4.0-dev-core" {
+		t.Fatalf("gateway must run the core image: %#v", gw["image"])
 	}
 	if gw["environment"].(M)["HUB_TELEGRAM_AUTH_ENABLED"] != "true" {
 		t.Fatalf("auth not enabled by default: %#v", gw["environment"])
 	}
-	if services["credential-broker"].(M)["image"] != "hermes-hub:0.4.0-dev" {
-		t.Fatal("broker must run the standard image")
+	if services["credential-broker"].(M)["image"] != "hermes-hub:0.4.0-dev-core" {
+		t.Fatal("broker must run the core image")
 	}
 	files := gw["env_file"].([]any)
 	if len(files) < 2 || files[1].(M)["path"] != filepath.ToSlash(authEnv) {
@@ -617,11 +633,24 @@ func TestComposeKeepsDockerInControlImage(t *testing.T) {
 			t.Fatalf("unbounded Docker logs for %s: %#v", name, logging)
 		}
 	}
-	if core["image"] == control["image"] || core["build"].(M)["target"] != "prod" || control["build"].(M)["target"] != "prod-control" {
-		t.Fatalf("core/control images not separated: core=%v control=%v", core["image"], control["image"])
+	// SPEC-0082 R3: daemons run the lean core image, Docker consumers the
+	// control image; only hermes-runtime keeps the agent image.
+	if core["image"] != "hermes-hub:0.4.0-prod-core" || core["build"].(M)["target"] != "prod-core" {
+		t.Fatalf("cliproxy not on the core role image: %#v", core["image"])
 	}
-	if services["workload-controller"].(M)["image"] != control["image"] || services["hermes-runtime"].(M)["image"] != core["image"] {
+	if control["image"] != "hermes-hub:0.4.0-prod-control" || control["build"].(M)["target"] != "prod-control" {
+		t.Fatalf("toolhub not on the control role image: %#v", control["image"])
+	}
+	if services["workload-controller"].(M)["image"] != control["image"] || services["hermes-runtime"].(M)["image"] != "hermes-hub:0.4.0-prod" {
 		t.Fatal("Docker consumers and Hermes runtime use the wrong images")
+	}
+	// R1.5/R4: shm_size exists for the browser sidecar's Chromium workload
+	// only; daemons and the runtime do not get shared memory they never touch.
+	for name, service := range services {
+		_, hasShm := service.(M)["shm_size"]
+		if !strings.HasPrefix(name, "browser-") && hasShm {
+			t.Fatalf("shm_size leaks onto %s — scope it to the browser sidecar", name)
+		}
 	}
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
@@ -631,9 +660,88 @@ func TestComposeKeepsDockerInControlImage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	coreStage, controlStage, found := strings.Cut(string(dockerfile), "FROM runtime AS control")
-	if !found || strings.Contains(coreStage, "COPY --from=dockercli") || strings.Contains(coreStage, "git init /slack") || !strings.Contains(controlStage, "COPY --from=dockercli") || !strings.Contains(coreStage, "--mount=type=cache,id=hermes-go-build") || !strings.Contains(coreStage, "FROM golang:1.27.3-bookworm AS cliproxy_build") {
-		t.Fatal("Docker CLI or Slack MCP included in default runtime")
+	coreStage, controlStage, found := strings.Cut(string(dockerfile), "FROM core AS control")
+	if i := strings.Index(controlStage, "\nFROM "); i >= 0 {
+		controlStage = controlStage[:i]
+	}
+	if !found || strings.Contains(controlStage, "COPY --from=python_build") || strings.Contains(coreStage, "git init /slack") || !strings.Contains(controlStage, "COPY --from=dockercli") || !strings.Contains(coreStage, "--mount=type=cache,id=hermes-go-build") || !strings.Contains(coreStage, "FROM golang:1.27.3-bookworm AS cliproxy_build") {
+		t.Fatal("Docker CLI or Python payload leaked across role boundary")
+	}
+}
+
+func TestNoServiceUsesRuntimeExceptRuntime(t *testing.T) {
+	// SPEC-0082 R3.2: the fat agent image is hermes-runtime's alone; every
+	// other service resolves to a lean role image or its own dedicated tag.
+	s := Settings{Schema: 1, Environment: "dev", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("telegram"), Ingress: testIngress("telegram")}
+	services := Compose(s, "/source", "/space")["services"].(M)
+	for name, raw := range services {
+		image, _ := raw.(M)["image"].(string)
+		switch {
+		case name == "hermes-runtime":
+			if image != "hermes-hub:0.4.0-dev" {
+				t.Fatalf("hermes-runtime lost the agent image: %q", image)
+			}
+			// The service builds its own tag: supervisor/managed renders drop
+			// hermes-runtime, so nothing else can carry this build section.
+			if raw.(M)["build"].(M)["target"] != "dev" {
+				t.Fatalf("hermes-runtime must build the %q target: %#v", "dev", raw.(M)["build"])
+			}
+		case name == "hub-stt" || name == "hub-tts":
+			if image != "hermes-hub-"+strings.TrimPrefix(name, "hub-")+":0.4.0-dev" {
+				t.Fatalf("%s lost its dedicated voice image: %q", name, image)
+			}
+		case name == "toolhub" || name == "workload-controller" || name == "supervisor":
+			if image != "hermes-hub:0.4.0-dev-control" {
+				t.Fatalf("%s not on the control image: %q", name, image)
+			}
+		default:
+			if image != "hermes-hub:0.4.0-dev-core" {
+				t.Fatalf("%s does not run a lean role image: %q", name, image)
+			}
+		}
+	}
+	// Managed mode spawns its own relays; image_gen adds hub-media; a
+	// dedicated cliproxy belongs to a secondary space. Same role rules.
+	managed := s
+	managed.CapabilityMode = "managed"
+	managed.CapabilityProfileID = "profile"
+	managed.CapabilityGeneration = 1
+	managed.Tools, managed.Ingress = testTools("telegram", "image_gen", "hosting"), testIngress("telegram", "image_gen", "hosting")
+	managedServices := Compose(managed, "/source", "/space")["services"].(M)
+	for name, raw := range managedServices {
+		image, _ := raw.(M)["image"].(string)
+		switch {
+		case name == "hub-stt" || name == "hub-tts":
+			continue
+		case name == "toolhub" || name == "workload-controller" || name == "supervisor" || strings.HasPrefix(name, "hosting-"):
+			if !strings.HasSuffix(image, "-control") {
+				t.Fatalf("%s not on the control image: %q", name, image)
+			}
+		default:
+			if image != "hermes-hub:0.4.0-dev-core" {
+				t.Fatalf("%s does not run a lean role image: %q", name, image)
+			}
+		}
+	}
+	secondary := Settings{Schema: 1, Environment: "dev", User: "bob", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("telegram"), Ingress: testIngress("telegram"), Cliproxy: "dedicated"}
+	for name, raw := range Compose(secondary, "/source", "/space2")["services"].(M) {
+		image, _ := raw.(M)["image"].(string)
+		if name == "cliproxy-bob" && image != "hermes-hub:0.4.0-dev-core" {
+			t.Fatalf("dedicated cliproxy not on the core image: %q", image)
+		}
+	}
+	// SPEC-0082 R3.3: healthchecks run a Go binary the role image carries —
+	// the lean images ship no curl, wget or shell-bound interpreters.
+	coreBinaries := map[string]bool{"hubctl": true, "hub-runtime": true, "toolhub": true, "communication-hub": true, "credential-broker": true, "hub-media": true, "cellinit": true, "cli-proxy-api": true}
+	for name, raw := range services {
+		check, ok := raw.(M)["healthcheck"].(M)
+		if !ok {
+			continue
+		}
+		test, _ := check["test"].([]string)
+		if len(test) < 2 || test[0] != "CMD" || !coreBinaries[test[1]] {
+			t.Fatalf("%s healthcheck does not invoke a role-image Go binary: %#v", name, check["test"])
+		}
 	}
 }
 
@@ -700,7 +808,7 @@ func TestSlackEventsPortCustomDevAndCollision(t *testing.T) {
 	}
 }
 
-func TestTranscriptionWiresHubSTTAndDockerfile(t *testing.T) {
+func TestComposeRendersServiceOnlyVoice(t *testing.T) {
 	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("telegram", "transcription"), Ingress: testIngress("telegram", "transcription")}
 	services := Compose(s, "/source", "/space")["services"].(M)
 	gw := services["communication-hub"].(M)
@@ -708,11 +816,17 @@ func TestTranscriptionWiresHubSTTAndDockerfile(t *testing.T) {
 	if env["HUB_STT_URL"] != "http://hub-stt:8090" || env["HUB_TTS_URL"] != "http://hub-tts:8090" {
 		t.Fatalf("gateway media urls: %v %v", env["HUB_STT_URL"], env["HUB_TTS_URL"])
 	}
-	if env["HUB_STT_COMMAND"] != "/usr/local/bin/hub-stt" {
-		t.Fatalf("HUB_STT_COMMAND=%v", env["HUB_STT_COMMAND"])
+	// SPEC-0082 R2: no in-image worker fallback survives — the gateway talks to
+	// the dedicated services or reports voice unavailable.
+	for _, key := range []string{"HUB_STT_COMMAND", "HUB_TTS_COMMAND", "HF_HOME", "XDG_CACHE_HOME"} {
+		if _, present := env[key]; present {
+			t.Fatalf("gateway still carries %s", key)
+		}
 	}
-	if env["HUB_TTS_COMMAND"] != "/usr/local/bin/hub-tts" {
-		t.Fatalf("HUB_TTS_COMMAND=%v", env["HUB_TTS_COMMAND"])
+	for _, key := range []string{"HUB_TTS_VOICE", "HUB_TTS_VOICE_EN", "HUB_TTS_VOICE_RU", "HUB_TTS_VOICE_KK", "HUB_TTS_VOICE_ES"} {
+		if env[key] != "${"+key+":-}" {
+			t.Fatalf("gateway does not pass %s through: %v", key, env[key])
+		}
 	}
 	// Two dedicated services and images — not one binary with a role flag.
 	for role, dockerfile := range map[string]string{"hub-stt": "docker/Dockerfile.stt", "hub-tts": "docker/Dockerfile.tts"} {
@@ -737,12 +851,15 @@ func TestTranscriptionWiresHubSTTAndDockerfile(t *testing.T) {
 	}
 	root := filepath.Join(filepath.Dir(file), "..", "..")
 	df, err := os.ReadFile(filepath.Join(root, "docker", "Dockerfile"))
-	if err != nil || !strings.Contains(string(df), "docker/hub-stt") {
-		t.Fatalf("Dockerfile missing hub-stt copy: %v", err)
+	if err != nil || strings.Contains(string(df), "docker/hub-stt") || strings.Contains(string(df), "docker/hub-tts") || strings.Contains(string(df), "faster-whisper") {
+		t.Fatalf("main image still ships the local voice fallback: %v", err)
 	}
-	stt, err := os.ReadFile(filepath.Join(root, "docker", "hub-stt"))
-	if err != nil || !strings.Contains(string(stt), "faster_whisper") {
-		t.Fatalf("hub-stt worker missing faster_whisper: %v", err)
+	// The command workers themselves must be gone: a lingering script is a
+	// dead exec path into a missing binary (SPEC-0082 R2).
+	for _, worker := range []string{"hub-stt", "hub-tts"} {
+		if _, err := os.Stat(filepath.Join(root, "docker", worker)); err == nil {
+			t.Fatalf("dead command worker docker/%s still present", worker)
+		}
 	}
 }
 

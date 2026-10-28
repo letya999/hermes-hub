@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/locale"
 )
 
 const (
@@ -45,36 +47,27 @@ type Transcriber interface {
 }
 
 type Synthesizer interface {
-	Synthesize(ctx context.Context, text string) ([]byte, string, error)
+	Synthesize(ctx context.Context, lang locale.Lang, text string) ([]byte, string, error)
 }
 
-func commandSynthesizer(command string) Synthesizer {
-	if strings.TrimSpace(command) == "" {
-		return nil
-	}
-	return CommandSynthesizer{Command: command, Timeout: 30 * time.Second}
-}
-
-// serviceTranscriber prefers the standalone STT service when its URL is
-// configured; the embedded command worker stays as the fallback path.
-func serviceTranscriber(base, auth, command string, timeout time.Duration) Transcriber {
+// serviceTranscriber selects the standalone STT service or nothing — voice is
+// service-only (SPEC-0082 R2), so a missing URL reports the typed unavailable
+// status rather than falling back to an in-image worker binary.
+func serviceTranscriber(base, auth string, timeout time.Duration) Transcriber {
 	if timeout <= 0 {
 		timeout = defaultSTTTimeout
 	}
 	if strings.TrimSpace(base) != "" {
 		return HTTPTranscriber{Base: strings.TrimRight(base, "/"), Auth: auth, Timeout: timeout}
 	}
-	if strings.TrimSpace(command) == "" {
-		return nil
-	}
-	return CommandTranscriber{Command: command, Timeout: timeout}
+	return nil
 }
 
-func serviceSynthesizer(base, auth, voice, command string) Synthesizer {
+func serviceSynthesizer(base, auth, voice string, voices map[locale.Lang]string) Synthesizer {
 	if strings.TrimSpace(base) != "" {
-		return HTTPSynthesizer{Base: strings.TrimRight(base, "/"), Auth: auth, Voice: voice, Timeout: 30 * time.Second}
+		return HTTPSynthesizer{Base: strings.TrimRight(base, "/"), Auth: auth, Voice: voice, Voices: voices, Timeout: 30 * time.Second}
 	}
-	return commandSynthesizer(command)
+	return nil
 }
 
 // commandAvailable reports whether the configured worker binary can actually
@@ -122,7 +115,7 @@ type CommandSynthesizer struct {
 	Timeout time.Duration
 }
 
-func (c CommandSynthesizer) Synthesize(ctx context.Context, text string) ([]byte, string, error) {
+func (c CommandSynthesizer) Synthesize(ctx context.Context, _ locale.Lang, text string) ([]byte, string, error) {
 	if c.Command == "" || strings.TrimSpace(text) == "" {
 		return nil, "", errors.New("tts is not configured")
 	}
@@ -149,25 +142,26 @@ func (g *Gateway) handleVoice(ctx context.Context, update Update, user User, mes
 		media = message.Audio
 	}
 	topic := messageTopicID(message)
+	lang := locale.LangOf(user.WorkspaceDir)
 	envelope := MediaEnvelope{FileID: media.FileID, MIME: media.MimeType, Size: media.FileSize, Duration: media.Duration, ConversationID: user.Envelope(message.From.ID).ConversationID, Provider: "telegram_bot"}
 	if err := rejectMedia(envelope, g.config.MediaMaxDuration); err != nil {
-		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-media", message.Chat.ID, topic, "Голосовое сообщение отклонено: слишком большое, длинное или неподдерживаемый тип.")
+		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-media", message.Chat.ID, topic, locale.T(lang, "media.voice-rejected"))
 	}
 	if g.transcriber == nil {
-		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-stt", message.Chat.ID, topic, "Распознавание речи не настроено на этом сервере. Отправьте текст.")
+		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-stt", message.Chat.ID, topic, locale.T(lang, "media.stt-missing"))
 	}
 	path, err := g.downloadTelegramMedia(ctx, media.FileID)
 	if path != "" {
 		defer os.Remove(path)
 	}
 	if err != nil {
-		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-media", message.Chat.ID, topic, "Не удалось загрузить голосовое сообщение.")
+		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-media", message.Chat.ID, topic, locale.T(lang, "media.download-failed"))
 	}
 	envelope.TempPath = path
 	transcript, sttErr := g.transcribe(ctx, path, envelope.MIME)
 	if sttErr != nil || strings.TrimSpace(transcript) == "" {
 		envelope.TranscriptStatus = "error"
-		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-stt", message.Chat.ID, topic, "Не удалось распознать голосовое сообщение. Отправьте текст.")
+		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-stt", message.Chat.ID, topic, locale.T(lang, "media.stt-failed"))
 	}
 	envelope.TranscriptStatus = "ok"
 	text := voiceInputText(transcript, message.Caption, envelope.MIME, envelope.Duration)
@@ -185,9 +179,11 @@ func (g *Gateway) handleFile(ctx context.Context, update Update, user User, mess
 	if media == nil {
 		return nil
 	}
+	lang := locale.LangOf(user.WorkspaceDir)
+	saveErr := locale.T(lang, "media.save-failed")
 	envelope := MediaEnvelope{FileID: media.FileID, MIME: media.MimeType, Size: media.FileSize, Duration: media.Duration, ConversationID: user.Envelope(message.From.ID).ConversationID, Provider: "telegram_bot"}
 	if envelope.Size > mediaSizeLimit {
-		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-file", message.Chat.ID, messageTopicID(message), "Файл слишком большой.")
+		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-file", message.Chat.ID, messageTopicID(message), locale.T(lang, "media.file-too-big"))
 	}
 	name := media.FileName
 	if name == "" {
@@ -196,33 +192,14 @@ func (g *Gateway) handleFile(ctx context.Context, update Update, user User, mess
 	inbox := ""
 	if path, err := g.downloadTelegramMedia(ctx, media.FileID); err == nil && path != "" {
 		defer os.Remove(path)
-		if staged, err := os.Open(path); err == nil {
-			if media.FileName == "" {
-				var header [512]byte
-				n, readErr := staged.Read(header[:])
-				_, seekErr := staged.Seek(0, io.SeekStart)
-				if readErr != nil && readErr != io.EOF || seekErr != nil {
-					_ = staged.Close()
-					return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-file", message.Chat.ID, messageTopicID(message), "Не удалось сохранить файл. Отправьте его ещё раз.")
-				}
-				switch http.DetectContentType(header[:n]) {
-				case "image/jpeg":
-					name += ".jpg"
-				case "image/png":
-					name += ".png"
-				case "image/webp":
-					name += ".webp"
-				}
-			}
-			rec := InboundRecord{ID: "in-" + strconv.Itoa(update.UpdateID), UserID: user.ID, ConversationID: envelope.ConversationID, Name: name, Mime: envelope.MIME, CreatedAt: time.Now().UTC()}
-			if err := g.spool.StageInbound(rec, staged); err == nil {
-				inbox = rec.ID
-			}
-			_ = staged.Close()
+		staged, replied, stageErr := g.stageTelegramFile(ctx, update, message, user, envelope, media, name, path, saveErr)
+		if replied || stageErr != nil {
+			return stageErr
 		}
+		inbox = staged
 	}
 	if inbox == "" {
-		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-file", message.Chat.ID, messageTopicID(message), "Не удалось сохранить файл. Отправьте его ещё раз.")
+		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-file", message.Chat.ID, messageTopicID(message), saveErr)
 	}
 	text := strings.TrimSpace(message.Caption)
 	meta := "[file name=" + name + " mime=" + envelope.MIME + " size=" + strconv.FormatInt(media.FileSize, 10)
@@ -238,13 +215,46 @@ func (g *Gateway) handleFile(ctx context.Context, update Update, user User, mess
 	return g.enqueueMediaJob(ctx, update, user, message, text, inbox)
 }
 
+// stageTelegramFile sniffs an image extension when Telegram sent no filename
+// and stages the download into the inbound spool. replied reports that the
+// user was already answered — a failed header probe rejects the file the same
+// way a failed stage does; any queue error is returned through err.
+func (g *Gateway) stageTelegramFile(ctx context.Context, update Update, message *Message, user User, envelope MediaEnvelope, media *TGMedia, name, path, saveErr string) (inbox string, replied bool, err error) {
+	staged, openErr := os.Open(path)
+	if openErr != nil {
+		return "", false, nil
+	}
+	defer staged.Close()
+	if media.FileName == "" {
+		var header [512]byte
+		n, readErr := staged.Read(header[:])
+		_, seekErr := staged.Seek(0, io.SeekStart)
+		if readErr != nil && readErr != io.EOF || seekErr != nil {
+			return "", true, g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-file", message.Chat.ID, messageTopicID(message), saveErr)
+		}
+		switch http.DetectContentType(header[:n]) {
+		case "image/jpeg":
+			name += ".jpg"
+		case "image/png":
+			name += ".png"
+		case "image/webp":
+			name += ".webp"
+		}
+	}
+	rec := InboundRecord{ID: "in-" + strconv.Itoa(update.UpdateID), UserID: user.ID, ConversationID: envelope.ConversationID, Name: name, Mime: envelope.MIME, CreatedAt: time.Now().UTC()}
+	if err := g.spool.StageInbound(rec, staged); err == nil {
+		inbox = rec.ID
+	}
+	return inbox, false, nil
+}
+
 // enqueueMediaJob resolves the inbound task binding (adopting a topic on the
 // verified first post) and admits the media job under it.
 func (g *Gateway) enqueueMediaJob(ctx context.Context, update Update, user User, message *Message, text, inboundID string) error {
 	topic := messageTopicID(message)
 	task, err := g.spool.ResolveTask(user, message.Chat.ID, topic, true)
 	if err != nil {
-		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, topic, "Не удалось открыть задачу.")
+		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, topic, locale.T(locale.LangOf(user.WorkspaceDir), "media.task-failed"))
 	}
 	return g.enqueueChannelJob(ctx, user, task, "telegram_bot", "telegram-"+strconv.Itoa(update.UpdateID), "telegram:"+strconv.Itoa(update.UpdateID), message.Chat.ID, message.MessageID, text, message.From.ID, inboundID)
 }
@@ -355,11 +365,19 @@ type HTTPSynthesizer struct {
 	Base    string
 	Auth    string
 	Voice   string
+	Voices  map[locale.Lang]string
 	Timeout time.Duration
 	client  *http.Client
 }
 
-func (c HTTPSynthesizer) Synthesize(ctx context.Context, text string) ([]byte, string, error) {
+func (c HTTPSynthesizer) voiceFor(lang locale.Lang) string {
+	if v := c.Voices[lang]; v != "" {
+		return v
+	}
+	return c.Voice
+}
+
+func (c HTTPSynthesizer) Synthesize(ctx context.Context, lang locale.Lang, text string) ([]byte, string, error) {
 	if c.Base == "" || strings.TrimSpace(text) == "" {
 		return nil, "", errors.New("tts is not configured")
 	}
@@ -368,7 +386,7 @@ func (c HTTPSynthesizer) Synthesize(ctx context.Context, text string) ([]byte, s
 	}
 	jobCtx, cancel := context.WithTimeout(ctx, c.Timeout)
 	defer cancel()
-	payload, err := json.Marshal(map[string]string{"model": "tts-1", "voice": c.Voice, "input": text, "response_format": "opus"})
+	payload, err := json.Marshal(map[string]string{"model": "tts-1", "voice": c.voiceFor(lang), "input": text, "response_format": "opus"})
 	if err != nil {
 		return nil, "", err
 	}

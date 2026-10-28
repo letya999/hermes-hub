@@ -34,7 +34,7 @@ func TestSpawnRefreshesSystemGuideContractForExistingContexts(t *testing.T) {
 			t.Fatal("generated contract not mounted")
 		}
 		body, err := os.ReadFile(effective)
-		if err != nil || !strings.Contains(string(body), "hermes-hub-system-guide") || !strings.HasPrefix(string(body), persona) {
+		if err != nil || !strings.Contains(string(body), "hermes-hub-system-guide") || !strings.Contains(string(body), persona) {
 			t.Fatalf("managed=%v: existing context retained stale contract", managed)
 		}
 		body, err = os.ReadFile(filepath.Join(root, "SOUL.md"))

@@ -9,7 +9,12 @@
       "label": "Provider API key",
       "kind": "secret",
       "required": true,
-      "max_bytes": 4096
+      "max_bytes": 4096,
+      "label_i18n": {
+        "ru": "Ключ API провайдера",
+        "kk": "Провайдердің API кілті",
+        "es": "Clave de API del proveedor"
+      }
     }
   ],
   "allow_shared": false,
@@ -19,5 +24,10 @@
       "field": "api_key",
       "target": "HUB_MEDIA_UPSTREAM_KEY"
     }
-  ]
+  ],
+  "title_i18n": {
+    "ru": "Ключ API провайдера генерации медиа (fal / OpenAI-совместимый)",
+    "kk": "Медиа генерация провайдерінің API кілті (fal / OpenAI-сәйкес)",
+    "es": "Clave de API del proveedor de generación de medios (fal / compatible con OpenAI)"
+  }
 }

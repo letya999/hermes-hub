@@ -28,6 +28,12 @@
           "label": {
             "type": "string"
           },
+          "label_i18n": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
           "kind": {
             "type": "string"
           },
@@ -207,6 +213,12 @@
           },
           "allow_shared": {
             "type": "boolean"
+          },
+          "title_i18n": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
           }
         },
         "additionalProperties": false,

@@ -94,6 +94,7 @@ func TestPolicyVersionChangesOnRightsFields(t *testing.T) {
 		"OrganizationDocsDir":   func(s *Settings) { s.OrganizationDocsDir = "/docs" },
 		"OrganizationSkillsDir": func(s *Settings) { s.OrganizationSkillsDir = "/oskills" },
 		"OrganizationRole":      func(s *Settings) { s.OrganizationRole = "member" },
+		"OrganizationProfile":   func(s *Settings) { s.OrganizationProfile = "analyst" },
 		"OrgActions":            func(s *Settings) { s.OrgActions = []string{"read"} },
 		"GoogleEmail":           func(s *Settings) { s.GoogleEmail = "a@b.c" },
 		"GitLabHost":            func(s *Settings) { s.GitLabHost = "gl.example" },

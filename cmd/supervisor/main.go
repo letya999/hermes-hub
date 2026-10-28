@@ -38,7 +38,12 @@ type supervisorArgs struct {
 	watch          bool
 	environment    string
 	warmTTL        time.Duration
+	browserIdleTTL time.Duration
 	max            int
+}
+
+func (o supervisorArgs) config() supervisor.Config {
+	return supervisor.Config{SpacesRoot: o.spaces, Image: o.image, Environment: o.environment, RuntimeAuth: o.auth, WarmTTL: o.warmTTL, BrowserIdleTTL: o.browserIdleTTL, MaxConcurrent: o.max, AllowWildcardListen: o.wildcardListen}
 }
 
 func parseSupervisorArgs(argv []string) (supervisorArgs, error) {
@@ -53,6 +58,7 @@ func parseSupervisorArgs(argv []string) (supervisorArgs, error) {
 	flags.BoolVar(&o.watch, "watch", false, "restart a crashed supervisor child within 10 seconds")
 	flags.StringVar(&o.environment, "env", envOr("HUB_ENV", "prod"), "runtime environment: dev or prod")
 	flags.DurationVar(&o.warmTTL, "warm-ttl", supervisor.DefaultWarmTTL, "idle runtime retention")
+	flags.DurationVar(&o.browserIdleTTL, "browser-idle-ttl", supervisor.DefaultBrowserIdleTTL, "idle browser sidecar retention before sleep")
 	flags.IntVar(&o.max, "max-concurrent", 8, "maximum running context runtimes")
 	if err := flags.Parse(argv); err != nil {
 		return o, err
@@ -156,7 +162,7 @@ func run() error {
 		return err
 	}
 	defer stopLog()
-	m, err := supervisor.New(supervisor.Config{SpacesRoot: o.spaces, Image: o.image, Environment: o.environment, RuntimeAuth: o.auth, WarmTTL: o.warmTTL, MaxConcurrent: o.max, AllowWildcardListen: o.wildcardListen})
+	m, err := supervisor.New(o.config())
 	if err != nil {
 		return err
 	}

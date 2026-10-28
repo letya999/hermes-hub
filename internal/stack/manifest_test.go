@@ -8,6 +8,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
 // SPEC-0053 R1.4/D6: render emits generated/tool-manifest.<env>.json naming
@@ -36,6 +39,9 @@ func TestManifestRendered(t *testing.T) {
 	if err := saveSpace(d, settings); err != nil {
 		t.Fatal(err)
 	}
+	seedGovernance(t, d, func(doc *api.Governance) {
+		activeToolGrant(t, doc, "alice", "native:file", time.Hour)
+	})
 	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte("OPENAI_API_KEY=model\nTELEGRAM_BOT_TOKEN=bot\nTELEGRAM_ALLOWED_USERS=11\n"), 0600); err != nil {
 		t.Fatal(err)
 	}

@@ -2,11 +2,21 @@
   "id": "prometheus-url",
   "revision": 2,
   "title": "Prometheus HTTP endpoint",
+  "title_i18n": {
+    "ru": "HTTP-endpoint Prometheus",
+    "kk": "Prometheus HTTP endpoint-і",
+    "es": "Endpoint HTTP de Prometheus"
+  },
   "storage": "local",
   "fields": [
     {
       "id": "url",
       "label": "Prometheus base URL (for example https://prometheus.example.com)",
+      "label_i18n": {
+        "ru": "Базовый URL Prometheus (например https://prometheus.example.com)",
+        "kk": "Prometheus негізгі URL-і (мысалы https://prometheus.example.com)",
+        "es": "URL base de Prometheus (por ejemplo https://prometheus.example.com)"
+      },
       "kind": "string",
       "required": true,
       "max_bytes": 2048
@@ -14,6 +24,11 @@
     {
       "id": "endpoint",
       "label": "Managed forward target host:port for plain-HTTP Prometheus (optional; HTTPS URLs need no endpoint)",
+      "label_i18n": {
+        "ru": "Адрес управляемого форварда host:port для Prometheus по plain-HTTP (необязательно; для HTTPS не нужен)",
+        "kk": "Plain-HTTP Prometheus үшін басқарылатын форвард host:port (міндетті емес; HTTPS URL-ге керек емес)",
+        "es": "Destino del reenvío gestionado host:port para Prometheus HTTP plano (opcional; las URL HTTPS no lo necesitan)"
+      },
       "kind": "string",
       "required": false,
       "max_bytes": 256

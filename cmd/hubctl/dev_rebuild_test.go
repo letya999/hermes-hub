@@ -41,6 +41,29 @@ func TestDevRebuildRejectsProdAndUnsupportedBeforeDocker(t *testing.T) {
 	}
 }
 
+func TestDevServiceRoleBases(t *testing.T) {
+	// SPEC-0082 R3: dev overlays build onto the service's role image —
+	// daemons onto -dev-core, Docker consumers onto -dev-control, the agent
+	// onto the runtime image.
+	for name, want := range map[string]string{
+		"communication-hub":   "hermes-hub:0.4.0-dev-core",
+		"credential-broker":   "hermes-hub:0.4.0-dev-core",
+		"hub-media":           "hermes-hub:0.4.0-dev-core",
+		"toolhub":             "hermes-hub:0.4.0-dev-control",
+		"workload-controller": "hermes-hub:0.4.0-dev-control",
+		"supervisor":          "hermes-hub:0.4.0-dev-control",
+		"hermes-runtime":      "hermes-hub:0.4.0-dev",
+	} {
+		spec, ok := devService(name)
+		if !ok {
+			t.Fatalf("devService(%s) not mapped", name)
+		}
+		if spec.base != want {
+			t.Fatalf("devService(%s).base = %q, want %q", name, spec.base, want)
+		}
+	}
+}
+
 func TestDevRebuildCompilesAndStartsOnlySelectedService(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "space")
 	if err := stack.InitEnvironment(dir, "owner", "dev"); err != nil {
@@ -92,8 +115,9 @@ func TestDevRebuildCompilesAndStartsOnlySelectedService(t *testing.T) {
 		t.Fatalf("unrelated images rebuilt: %s", calls)
 	}
 	for _, tc := range []struct{ service, source, base string }{
+		{"communication-hub", "./cmd/communication", "hermes-hub:0.4.0-dev-core"},
+		{"credential-broker", "./cmd/credential-broker", "hermes-hub:0.4.0-dev-core"},
 		{"toolhub", "./cmd/toolhub", "hermes-hub:0.4.0-dev-control"},
-		{"credential-broker", "./cmd/credential-broker", "hermes-hub:0.4.0-dev"},
 		{"workload-controller", "./cmd/hubctl", "hermes-hub:0.4.0-dev-control"},
 		{"hermes-runtime", "./cmd/runtime", "hermes-hub:0.4.0-dev"},
 	} {

@@ -1,0 +1,30 @@
+schema: 1
+change: CHG-0207
+title: memory_search, link graph and maintenance
+status: in_progress
+branch: feat/m20-knowledge-memory
+updated: 2026-10-24
+phase: design-complete
+adr: ADR-0086
+spec: SPEC-0085
+requirements: [R4.1, R4.2, R4.3, R4.4]
+depends_on: []
+github_milestone: M20 — Memory Vault and Knowledge Surface
+github_issue: 302
+design_status: accepted
+implementation_status: not_started
+slices:
+  S4.1-fts-index: not_started
+  S4.2-link-graph: not_started
+  S4.3-scope-degrade: not_started
+  S4.4-maintenance: not_started
+  S4.5-tool-exposure: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining: []
+limitations: []

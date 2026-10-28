@@ -93,7 +93,7 @@ func TestApplyCreatesFreshUserScopeAndIsRetryable(t *testing.T) {
 		}
 	}
 	destination := filepath.Join(root, "spaces", "alice")
-	for _, name := range []string{"scope.yaml", "hermes", "connections", "workspace", "archive", "generated"} {
+	for _, name := range []string{"scope.yaml", "hermes", "connections", "workspace", "archive", "generated", "skills"} {
 		if _, err := os.Stat(filepath.Join(destination, name)); err != nil {
 			t.Fatal(name, err)
 		}

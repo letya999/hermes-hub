@@ -20,9 +20,11 @@ func devService(name string) (devServiceSpec, bool) {
 	switch name {
 	case "communication-hub", "credential-broker", "hub-media", "toolhub":
 		source := map[string]string{"communication-hub": "./cmd/communication", "credential-broker": "./cmd/credential-broker", "hub-media": "./cmd/hub-media", "toolhub": "./cmd/toolhub"}[name]
-		base := "hermes-hub:0.4.0-dev"
+		// SPEC-0082 R3: daemons run the lean core image; only Docker
+		// consumers (toolhub, supervisor, workload-controller) need control.
+		base := "hermes-hub:0.4.0-dev-core"
 		if name == "toolhub" {
-			base += "-control"
+			base = "hermes-hub:0.4.0-dev-control"
 		}
 		return devServiceSpec{name, source, base}, true
 	case "workload-controller", "supervisor":

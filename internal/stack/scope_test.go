@@ -157,11 +157,11 @@ func TestOrganizationPolicyReachesRuntimeConfig(t *testing.T) {
 
 func TestOrganizationPolicyErrors(t *testing.T) {
 	server := MCPServer{URL: "https://org.invalid/mcp", Tools: &MCPTools{Include: []string{"read"}}}
-	valid := OrganizationSettings{Schema: 1, Organization: "acme", Members: map[string]string{"alice": "member"}, Features: []string{"workspace"}}
+	valid := OrganizationSettings{Schema: 1, Organization: "acme", Members: map[string]OrgMember{"alice": {Role: "member"}}, Features: []string{"workspace"}}
 	for _, bad := range []OrganizationSettings{
 		{Schema: 2, Organization: "acme"},
-		{Schema: 1, Organization: "acme", Members: map[string]string{"../alice": "member"}},
-		{Schema: 1, Organization: "acme", Members: map[string]string{"alice": "invalid"}},
+		{Schema: 1, Organization: "acme", Members: map[string]OrgMember{"../alice": {Role: "member"}}},
+		{Schema: 1, Organization: "acme", Members: map[string]OrgMember{"alice": {Role: "invalid"}}},
 		{Schema: 1, Organization: "acme", Features: []string{"workspace", "workspace"}},
 		{Schema: 1, Organization: "acme", Features: []string{"missing"}},
 		{Schema: 1, Organization: "acme", MCP: map[string]MCPServer{"org": {URL: "https://org.invalid/mcp"}}},
@@ -189,7 +189,7 @@ func TestOrganizationPolicyErrors(t *testing.T) {
 		t.Fatal("invalid org-init accepted")
 	}
 	user := Settings{Schema: 1, User: "alice", Organization: "acme", Tools: testTools("workspace"), Ingress: testIngress("workspace")}
-	org := OrganizationSettings{Schema: 1, Organization: "acme", Members: map[string]string{"alice": "member"}, Features: []string{"workspace"}}
+	org := OrganizationSettings{Schema: 1, Organization: "acme", Members: map[string]OrgMember{"alice": {Role: "member"}}, Features: []string{"workspace"}}
 	for _, bad := range []struct {
 		org OrganizationSettings
 		set Settings

@@ -260,6 +260,26 @@ jobs:
         env:
           HUB_DOCKER_CACHE_FROM: type=gha,scope=hermes-hub-${{ matrix.target }}
           HUB_DOCKER_CACHE_TO: type=gha,scope=hermes-hub-${{ matrix.target }}-control,mode=max
+      - if: matrix.target == 'dev' || matrix.target == 'prod'
+        run: |
+          go run ./cmd/devcheck docker-publish "${{ matrix.target }}-core"
+          go run ./cmd/devcheck docker-publish "${{ matrix.target }}-browser"
+        env:
+          HUB_DOCKER_CACHE_FROM: type=gha,scope=hermes-hub-${{ matrix.target }}
+          HUB_DOCKER_CACHE_TO: type=gha,scope=hermes-hub-${{ matrix.target }}-roles,mode=max
+      # SPEC-0082 R0: every built role image must pass its size budget and the
+      # forbidden-artifact probe before the image job is green.
+      - name: Role image budget gates
+        if: matrix.target == 'dev' || matrix.target == 'prod'
+        run: |
+          go run ./cmd/devcheck docker-pull "hermes-hub:test-${{ matrix.target }}-core" "${{ matrix.target }}-core"
+          go run ./cmd/devcheck image-budget "hermes-hub:test-${{ matrix.target }}-core" core
+          go run ./cmd/devcheck docker-pull "hermes-hub:test-${{ matrix.target }}-control" "${{ matrix.target }}-control"
+          go run ./cmd/devcheck image-budget "hermes-hub:test-${{ matrix.target }}-control" control
+          go run ./cmd/devcheck docker-pull "hermes-hub:test-${{ matrix.target }}" "${{ matrix.target }}"
+          go run ./cmd/devcheck image-budget "hermes-hub:test-${{ matrix.target }}" runtime
+          go run ./cmd/devcheck docker-pull "hermes-hub:test-${{ matrix.target }}-browser" "${{ matrix.target }}-browser"
+          go run ./cmd/devcheck image-budget "hermes-hub:test-${{ matrix.target }}-browser" browser
       - name: Verify baked TTS model without network
         if: matrix.target == 'tts'
         run: |

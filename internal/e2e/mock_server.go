@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -40,7 +41,7 @@ func mockPromptJobCase(ctx context.Context, client *http.Client, config communic
 			return "BLOCKED", "configured TTS and STT services required"
 		}
 		tts := communication.HTTPSynthesizer{Base: config.TTSURL, Auth: config.TTSAuth, Voice: config.TTSVoice}
-		audio, mime, err := tts.Synthesize(ctx, "Тест номер сорок два")
+		audio, mime, err := tts.Synthesize(ctx, locale.LangRU, "Тест номер сорок два")
 		if err != nil || len(audio) == 0 {
 			return "FAIL", "synthetic voice generation failed"
 		}

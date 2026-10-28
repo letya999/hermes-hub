@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/stack"
 )
 
@@ -55,6 +56,7 @@ func (r HermesRunner) Run(ctx context.Context, job Job, user User) (string, erro
 		"HUB_STATE="+user.StateDir,
 		"HUB_WORKSPACE="+user.WorkspaceDir,
 		"HUB_USER_ID="+user.ID,
+		"HUB_USER_LANG="+string(locale.LangOf(user.WorkspaceDir)),
 		"HUB_ORGANIZATION_ID="+job.OrganizationID,
 		"HUB_FEATURES="+strings.Join(user.Features, ","),
 		"HUB_DEFER_RUNTIME_RESTART=true",

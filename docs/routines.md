@@ -408,7 +408,7 @@ clock occurrences; inspect event_state for current health/error.
 
 ## Deployment and manual acceptance
 
-The catalog is hub-agent-tools@5.3.3. Old definitions remain immutable. Register
+The catalog is hub-agent-tools@5.7.0. Old definitions remain immutable. Register
 the new version and, for managed spaces, deliberately repin selected tools in the protected profile,
 preserving scopes, denies and limits. routine_edit requires routines.update and
 the update:routines tuple for all four actions. Do not translate a former

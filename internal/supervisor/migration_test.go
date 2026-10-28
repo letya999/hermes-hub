@@ -3,11 +3,13 @@ package supervisor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSupervisedRuntimeUsesDevEnvFile(t *testing.T) {
@@ -95,7 +97,7 @@ func TestSupervisedRuntimePreservesComposeEnvironmentAndConnectionPaths(t *testi
 		t.Fatal(err)
 	}
 	joined := strings.Join(args, " ")
-	for _, want := range []string{"--env-file " + filepath.Join(root, "runtime.prod.env"), "--env-file " + filepath.Join(root, "runtime.auth"), "dst=/scope,readonly", "dst=/state/hermes", "dst=/state/google", "dst=/state/telegram", "dst=/state/browser", "dst=/state/home", "dst=/workspace", "dst=/archive,readonly", "HUB_BROWSER=true", "HUB_FEATURES=browser,workspace", "HUB_STATE=/state", "--tmpfs /tmp:", "--add-host host.docker.internal:host-gateway"} {
+	for _, want := range []string{"--env-file " + filepath.Join(root, "runtime.prod.env"), "--env-file " + filepath.Join(root, "runtime.auth"), "dst=/scope,readonly", "dst=/state/hermes", "dst=/state/google", "dst=/state/telegram", "dst=/state/home", "dst=/workspace", "dst=/archive,readonly", "HUB_BROWSER=true", "HUB_FEATURES=browser,workspace", "BROWSER_CDP_URL=http://browser-alice:9222", "HUB_STATE=/state", "--tmpfs /tmp:", "--add-host host.docker.internal:host-gateway"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing %s", want)
 		}
@@ -106,7 +108,13 @@ func TestSupervisedRuntimePreservesComposeEnvironmentAndConnectionPaths(t *testi
 	if strings.Contains(joined, "synthetic-only") || strings.Contains(joined, "dst=/src") || strings.Contains(joined, "docker.sock") {
 		t.Fatal("secret/source/control exposed in arguments")
 	}
-	for _, target := range []string{"/state/hermes", "/state/google", "/state/browser", "/workspace"} {
+	// The browser stack lives in the per-space sidecar: the spawned runtime
+	// carries neither the profile mount nor the shared-memory budget for
+	// in-container Chromium (SPEC-0082 R4.1).
+	if strings.Contains(joined, "dst=/state/browser") || strings.Contains(joined, "--shm-size") {
+		t.Fatal("browser profile mount or shared memory leaked into the lean runtime")
+	}
+	for _, target := range []string{"/state/hermes", "/state/google", "/workspace"} {
 		count := 0
 		for _, arg := range args {
 			if strings.HasSuffix(arg, ",dst="+target) {
@@ -116,6 +124,313 @@ func TestSupervisedRuntimePreservesComposeEnvironmentAndConnectionPaths(t *testi
 		if count != 1 {
 			t.Fatalf("mount %s count=%d", target, count)
 		}
+	}
+}
+
+// Spawned unmanaged runtimes join only the shared control network; a browser
+// or meet space's sidecar answers on the space's own compose default net. The
+// spawn must dual-home the runtime so browser-<user> resolves (SPEC-0082 R4.2).
+func TestBrowserSpaceRuntimeJoinsSpaceNetwork(t *testing.T) {
+	for _, tc := range []struct {
+		user     string
+		features string
+	}{
+		{"alice", "workspace, browser"},
+		{"bob", "workspace, meet"},
+	} {
+		t.Run(tc.user, func(t *testing.T) {
+			var commands [][]string
+			m, _ := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+				cp := append([]string(nil), args...)
+				commands = append(commands, cp)
+				if args[0] == "inspect" {
+					return nil, os.ErrNotExist
+				}
+				return []byte("running"), nil
+			}, func(context.Context, string, string) error { return nil })
+			ctxRoot := filepath.Join(m.cfg.SpacesRoot, tc.user)
+			for _, name := range []string{"runtime", "hermes", "workspace"} {
+				if err := os.MkdirAll(filepath.Join(ctxRoot, name), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(ctxRoot, "runtime.auth"), []byte("HUB_RUNTIME_AUTH=secret\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			writeHermesSources(t, ctxRoot)
+			if err := os.WriteFile(filepath.Join(ctxRoot, "settings.yaml"), []byte("schema: 1\nuser: "+tc.user+"\ntimezone: UTC\nfeatures: ["+tc.features+"]\nbrowser_port: 6080\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			b := Binding{PrincipalID: tc.user, ContextID: tc.user, RuntimeID: tc.user, RuntimeMode: "gateway", UserID: tc.user, OrganizationID: "personal", PolicyVersion: "policy-1", ContextRoot: ctxRoot}
+			if _, err := m.Ensure(context.Background(), b); err != nil {
+				t.Fatal(err)
+			}
+			connect := -1
+			run := -1
+			for i, call := range commands {
+				if len(call) >= 4 && call[0] == "network" && call[1] == "connect" && call[2] == "hermes-hub-"+tc.user+"-prod_default" {
+					connect = i
+				}
+				if call[0] == "run" {
+					run = i
+				}
+			}
+			if run < 0 {
+				t.Fatal("runtime was not spawned")
+			}
+			if connect < 0 {
+				t.Fatal("browser-enabled spawn must connect the runtime to the space default network")
+			}
+			if connect < run {
+				t.Fatal("network connect must follow the run so the container exists")
+			}
+		})
+	}
+}
+
+// SPEC-0083 R2: a slept or just-rendered sidecar must be started before the
+// spawn proceeds — compose owns its shape, the supervisor owns its run state.
+func TestBrowserSpaceSpawnStartsSidecar(t *testing.T) {
+	for _, tc := range []struct {
+		user     string
+		features string
+	}{
+		{"alice", "workspace, browser"},
+		{"bob", "workspace, meet"},
+	} {
+		t.Run(tc.user, func(t *testing.T) {
+			var commands [][]string
+			m, _ := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+				commands = append(commands, append([]string(nil), args...))
+				if args[0] == "inspect" {
+					return nil, os.ErrNotExist
+				}
+				return []byte("running"), nil
+			}, func(context.Context, string, string) error { return nil })
+			ctxRoot := filepath.Join(m.cfg.SpacesRoot, tc.user)
+			for _, name := range []string{"runtime", "hermes", "workspace"} {
+				if err := os.MkdirAll(filepath.Join(ctxRoot, name), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(ctxRoot, "runtime.auth"), []byte("HUB_RUNTIME_AUTH=secret\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			writeHermesSources(t, ctxRoot)
+			if err := os.WriteFile(filepath.Join(ctxRoot, "settings.yaml"), []byte("schema: 1\nuser: "+tc.user+"\ntimezone: UTC\nfeatures: ["+tc.features+"]\nbrowser_port: 6080\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			b := Binding{PrincipalID: tc.user, ContextID: tc.user, RuntimeID: tc.user, RuntimeMode: "gateway", UserID: tc.user, OrganizationID: "personal", PolicyVersion: "policy-1", ContextRoot: ctxRoot}
+			if _, err := m.Ensure(context.Background(), b); err != nil {
+				t.Fatal(err)
+			}
+			sidecar := "hermes-hub-" + tc.user + "-prod-browser-" + tc.user + "-1"
+			start, run := -1, -1
+			for i, call := range commands {
+				if len(call) == 2 && call[0] == "start" && call[1] == sidecar {
+					start = i
+				}
+				if call[0] == "run" {
+					run = i
+				}
+			}
+			if run < 0 {
+				t.Fatal("runtime was not spawned")
+			}
+			if start < 0 {
+				t.Fatalf("spawn for a browser space must start the sidecar %s", sidecar)
+			}
+		})
+	}
+}
+
+// SPEC-0083 R2.2: a sidecar that cannot be started fails the spawn and
+// reclaims the runtime container, same as a missing space network.
+func TestBrowserSpaceSpawnFailsWhenSidecarStartFails(t *testing.T) {
+	var commands [][]string
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		commands = append(commands, append([]string(nil), args...))
+		if args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		if len(args) == 2 && args[0] == "start" {
+			return []byte("No such container"), errors.New("exit status 1")
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	if err := os.WriteFile(filepath.Join(root, "settings.yaml"), []byte("schema: 1\nuser: alice\ntimezone: UTC\nfeatures: [workspace, browser]\nbrowser_port: 6080\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Ensure(context.Background(), binding(root)); err == nil {
+		t.Fatal("spawn must fail when the sidecar cannot be started")
+	}
+	removed := false
+	for _, call := range commands {
+		if len(call) >= 2 && call[0] == "rm" {
+			removed = true
+		}
+	}
+	if !removed {
+		t.Fatal("orphaned runtime container was not reclaimed after sidecar start failure")
+	}
+}
+
+// If the space default network is absent (hubctl up never ran for this
+// browser space), the spawn must fail and reclaim the started container —
+// a runtime that cannot reach its sidecar is worse than no runtime.
+func TestBrowserSpaceSpawnFailsWhenSpaceNetworkMissing(t *testing.T) {
+	var commands [][]string
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		cp := append([]string(nil), args...)
+		commands = append(commands, cp)
+		if args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		if len(args) >= 2 && args[0] == "network" && args[1] == "connect" {
+			return []byte("no such network"), errors.New("exit status 1")
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	if err := os.WriteFile(filepath.Join(root, "settings.yaml"), []byte("schema: 1\nuser: alice\ntimezone: UTC\nfeatures: [workspace, browser]\nbrowser_port: 6080\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Ensure(context.Background(), binding(root)); err == nil {
+		t.Fatal("spawn without the space network must fail")
+	}
+	removed := false
+	for _, call := range commands {
+		if len(call) >= 2 && call[0] == "rm" {
+			removed = true
+		}
+	}
+	if !removed {
+		t.Fatal("orphaned runtime container was not reclaimed after connect failure")
+	}
+}
+
+// SPEC-0083 R3: a sidecar with no live runtime in its project sleeps after
+// the idle grace — it is a warm resource of the space's runtime, not
+// resident infrastructure.
+func TestReapIdleBrowserSidecars(t *testing.T) {
+	now := time.Unix(200, 0)
+	var commands [][]string
+	m, _ := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		commands = append(commands, append([]string(nil), args...))
+		if args[0] == "ps" {
+			return []byte(
+				"hermes-hub-alice-prod-browser-alice-1 browser-alice hermes-hub-alice-prod\n" +
+					"hermes-hub-bob-prod-browser-bob-1 browser-bob hermes-hub-bob-prod\n" +
+					"hermes-hub-bob-prod-hermes-runtime-1 hermes-runtime hermes-hub-bob-prod\n" +
+					"hermes-hub-carol-dev-browser-carol-1 browser-carol hermes-hub-carol-dev\n" +
+					"other-app-browser-1 browser-x other-app\n"), nil
+		}
+		return []byte("ok"), nil
+	}, func(context.Context, string, string) error { return nil })
+	m.cfg.Environment = "prod"
+	m.cfg.BrowserIdleTTL = time.Minute
+	ctx := context.Background()
+	m.ReapIdleBrowserSidecars(ctx, now)
+	stopCount := func() int {
+		n := 0
+		for _, call := range commands {
+			if len(call) == 2 && call[0] == "stop" {
+				n++
+			}
+		}
+		return n
+	}
+	if stopCount() != 0 {
+		t.Fatalf("first sighting must only mark the deadline: %v", commands)
+	}
+	m.ReapIdleBrowserSidecars(ctx, now.Add(2*time.Minute))
+	stops := map[string]bool{}
+	for _, call := range commands {
+		if len(call) == 2 && call[0] == "stop" {
+			stops[call[1]] = true
+		}
+	}
+	if !stops["hermes-hub-alice-prod-browser-alice-1"] {
+		t.Fatal("idle sidecar past grace must be stopped")
+	}
+	if stops["hermes-hub-bob-prod-browser-bob-1"] {
+		t.Fatal("sidecar must stay up while a compose hermes-runtime runs in its project")
+	}
+	if stops["hermes-hub-carol-dev-browser-carol-1"] {
+		t.Fatal("reaper must never touch another environment's project")
+	}
+	if stops["other-app-browser-1"] {
+		t.Fatal("reaper must never touch containers outside hermes-hub projects")
+	}
+	if m.sidecarIdle["other-app-browser-1"] != (time.Time{}) || m.sidecarIdle["hermes-hub-carol-dev-browser-carol-1"] != (time.Time{}) {
+		t.Fatal("foreign containers must never even be marked idle")
+	}
+	// A stopped sidecar drops its deadline; the map must not accumulate
+	// stale entries across sweeps.
+	if _, kept := m.sidecarIdle["hermes-hub-alice-prod-browser-alice-1"]; kept {
+		t.Fatal("a stopped sidecar must drop its deadline")
+	}
+}
+
+// SPEC-0083 R3.1: a supervisor-spawned runtime keeps its sidecar alive even
+// though no compose hermes-runtime container exists for the space.
+func TestSpawnedRuntimeKeepsSidecarAwake(t *testing.T) {
+	now := time.Unix(300, 0)
+	var commands [][]string
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		commands = append(commands, append([]string(nil), args...))
+		if args[0] == "ps" {
+			return []byte("hermes-hub-alice-prod-browser-alice-1 browser-alice hermes-hub-alice-prod\n"), nil
+		}
+		if args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	m.cfg.Environment = "prod"
+	m.cfg.BrowserIdleTTL = time.Minute
+	if err := os.WriteFile(filepath.Join(root, "settings.yaml"), []byte("schema: 1\nuser: alice\ntimezone: UTC\nfeatures: [workspace, browser]\nbrowser_port: 6080\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Idle first (marks a deadline), then a spawn — the returning runtime
+	// must clear the pending stop, not just skip new marks.
+	m.ReapIdleBrowserSidecars(context.Background(), now)
+	if _, err := m.Ensure(context.Background(), binding(root)); err != nil {
+		t.Fatal(err)
+	}
+	m.ReapIdleBrowserSidecars(context.Background(), now.Add(2*time.Minute))
+	for _, call := range commands {
+		if len(call) == 2 && call[0] == "stop" {
+			t.Fatalf("sidecar must stay up while its spawned runtime is alive: %v", call)
+		}
+	}
+}
+
+// SPEC-0083 R3.1: the sweep itself runs the sidecar reaper — an idle
+// sidecar dies on the supervisor's normal tick, not just under a direct
+// call.
+func TestSweepReapsIdleSidecar(t *testing.T) {
+	now := time.Unix(400, 0)
+	var commands [][]string
+	m, _ := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		commands = append(commands, append([]string(nil), args...))
+		if args[0] == "ps" && len(args) > 1 && strings.Contains(strings.Join(args[1:], " "), "com.docker.compose.project") {
+			return []byte("hermes-hub-alice-prod-browser-alice-1 browser-alice hermes-hub-alice-prod\n"), nil
+		}
+		return []byte(""), nil
+	}, func(context.Context, string, string) error { return nil })
+	m.cfg.Environment = "prod"
+	m.cfg.BrowserIdleTTL = time.Minute
+	ctx := context.Background()
+	m.sweep(ctx, now)
+	m.sweep(ctx, now.Add(2*time.Minute))
+	stopped := false
+	for _, call := range commands {
+		if len(call) == 2 && call[0] == "stop" && call[1] == "hermes-hub-alice-prod-browser-alice-1" {
+			stopped = true
+		}
+	}
+	if !stopped {
+		t.Fatalf("sweep must stop an idle sidecar past grace: %v", commands)
 	}
 }
 

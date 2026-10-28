@@ -19,6 +19,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/credstore"
 	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -66,7 +67,7 @@ func TestSetListDeleteOmitsValues(t *testing.T) {
 	if err != nil || len(listed) != 1 || listed[0].Name != "GOOGLE_TOKEN" {
 		t.Fatal(listed, err)
 	}
-	status := FormatStatus([]string{listed[0].Name}, listed[0].Status)
+	status := FormatStatus(locale.Operator(), []string{listed[0].Name}, listed[0].Status)
 	if strings.Contains(status, secret) || ContainsValue(status, map[string]string{"GOOGLE_TOKEN": secret}) {
 		t.Fatal(status)
 	}
@@ -80,6 +81,51 @@ func TestSetListDeleteOmitsValues(t *testing.T) {
 	listed, err = svc.List("alice")
 	if err != nil || len(listed) != 0 {
 		t.Fatalf("deleted still listed=%+v err=%v", listed, err)
+	}
+}
+
+// The operator-facing status line localizes its labels while the status
+// token itself stays a stable machine word.
+func TestFormatStatusLocalized(t *testing.T) {
+	want := map[locale.Lang]string{
+		locale.LangEN: "Names: A, B. Status: active.",
+		locale.LangRU: "Имена: A, B. Статус: active.",
+		locale.LangKK: "Аттары: A, B. Күйі: active.",
+		locale.LangES: "Nombres: A, B. Estado: active.",
+	}
+	for lang, wantText := range want {
+		if got := FormatStatus(lang, []string{"B", "A"}, "active"); got != wantText {
+			t.Errorf("%s: %q", lang, got)
+		}
+	}
+	if got := FormatStatus(locale.LangEN, nil, "key-rotated"); got != "Status: key-rotated." {
+		t.Fatalf("bare status: %q", got)
+	}
+	if got := FormatStatus(locale.LangRU, nil, "rejected"); got != "Статус: rejected." {
+		t.Fatalf("bare status ru: %q", got)
+	}
+}
+
+// ApplyChat's rejection status follows the operator language, not a fixed
+// language literal.
+func TestApplyChatRejectionLocalized(t *testing.T) {
+	svc := newService(t)
+	t.Setenv("HUB_LANG", "en")
+	_, message, err := svc.ApplyChat("alice", "=x")
+	if err == nil || message != "Status: rejected." {
+		t.Fatalf("en rejection=%q err=%v", message, err)
+	}
+	t.Setenv("HUB_LANG", "ru")
+	_, message, _ = svc.ApplyChat("alice", "=x")
+	if message != "Статус: rejected." {
+		t.Fatalf("ru rejection=%q", message)
+	}
+	_, message, _ = svc.ApplyChat("alice", "   ")
+	if message != "Статус: rejected." {
+		t.Fatalf("empty rejection=%q", message)
+	}
+	if _, message, _ = (*Service)(nil).ApplyChat("alice", "GOOGLE_TOKEN=x"); message != "Статус: rejected." {
+		t.Fatalf("backend rejection=%q", message)
 	}
 }
 

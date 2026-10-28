@@ -10,18 +10,20 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/locale"
 )
 
 // Only controlled status labels reach chat; upstream error text may contain credentials.
-func failureMessage(jobID, status string) string {
+func failureMessage(lang locale.Lang, jobID, status string) string {
+	key := "job.failed"
 	switch status {
 	case "cancelled":
-		return "Задача отменена (run.cancelled). ID: " + jobID
+		key = "job.cancelled"
 	case "interrupted":
-		return "Выполнение задачи прервано (run.interrupted). ID: " + jobID
-	default:
-		return "Не удалось завершить задачу: ошибка выполнения агента (run.failed). ID: " + jobID
+		key = "job.interrupted"
 	}
+	return locale.T(lang, key, jobID)
 }
 
 type ConversationMapping struct {

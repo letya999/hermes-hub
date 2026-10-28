@@ -9,14 +9,24 @@
       "label": "GitLab personal access token",
       "kind": "secret",
       "required": true,
-      "max_bytes": 4096
+      "max_bytes": 4096,
+      "label_i18n": {
+        "ru": "Персональный токен доступа GitLab",
+        "kk": "GitLab жеке қол жеткізу токені",
+        "es": "Token de acceso personal de GitLab"
+      }
     },
     {
       "id": "api_url",
       "label": "GitLab API URL (self-hosted, optional)",
       "kind": "string",
       "required": false,
-      "max_bytes": 2048
+      "max_bytes": 2048,
+      "label_i18n": {
+        "ru": "URL API GitLab (self-hosted, необязательно)",
+        "kk": "GitLab API URL (self-hosted, міндетті емес)",
+        "es": "URL de la API de GitLab (autoalojado, opcional)"
+      }
     }
   ],
   "allow_shared": false,
@@ -36,5 +46,10 @@
       "field": "api_url",
       "target": "GITLAB_API_URL"
     }
-  ]
+  ],
+  "title_i18n": {
+    "ru": "GitLab: персональный токен",
+    "kk": "GitLab: жеке токен",
+    "es": "GitLab: token personal"
+  }
 }

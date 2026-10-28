@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/serviceauth"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
@@ -21,24 +22,26 @@ import (
 // catalog plus the ToolHub tool inventory projected for this principal —
 // builtin agent tools, bounded CLIs, containerized and remote MCP servers.
 func (g *Gateway) connectionsCommand(user User, sender int64) string {
-	answer := connectionList(user)
+	lang := locale.LangOf(user.WorkspaceDir)
+	answer := connectionListWithLang(lang, user)
 	// The ToolHub store lives inside the ToolHub container; ask it over the
 	// control endpoint.
-	if lines, ok := g.toolHubConnectorsHTTP(user); ok {
+	if lines, ok := g.toolHubConnectorsHTTP(lang, user); ok {
 		return answer + lines
 	}
-	return answer + "\nКоннекторы ToolHub: реестр недоступен."
+	return answer + "\n" + locale.T(lang, "connectors.unavailable")
 }
 
 // watchesCommand answers /watches: the caller's event subscriptions with
 // source, sink, last success/error and degraded state — owner-scoped via
 // ListSchedules, so a sibling's subscriptions never render (SPEC-0054 R5.5).
 func (g *Gateway) watchesCommand(user User, sender int64) string {
+	lang := locale.LangOf(user.WorkspaceDir)
 	items, err := g.spool.ListSchedules(user.Envelope(sender))
 	if err != nil {
-		return "Список подписок недоступен."
+		return locale.T(lang, "watches.unavailable")
 	}
-	lines := []string{"Подписки на события:"}
+	lines := []string{locale.T(lang, "watches.title")}
 	count := 0
 	for _, item := range items {
 		if item.JobKind != "event" {
@@ -77,12 +80,12 @@ func (g *Gateway) watchesCommand(user User, sender int64) string {
 			}
 		}
 		if item.Paused || !item.Enabled {
-			line += ", пауза"
+			line += locale.T(lang, "watches.paused")
 		}
 		lines = append(lines, line)
 	}
 	if count == 0 {
-		lines = append(lines, "Пока нет.")
+		lines = append(lines, locale.T(lang, "watches.empty"))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -90,7 +93,7 @@ func (g *Gateway) watchesCommand(user User, sender int64) string {
 // connectorLine renders one ToolHub connector compactly: the hashed projected
 // names are stripped back to their readable form and long inventories collapse
 // to a count plus a few examples.
-func connectorLine(definitionID, transport string, names []string) string {
+func connectorLine(lang locale.Lang, definitionID, transport string, names []string) string {
 	clean := make([]string, 0, len(names))
 	for _, name := range names {
 		clean = append(clean, connectorToolName(definitionID, name))
@@ -100,9 +103,9 @@ func connectorLine(definitionID, transport string, names []string) string {
 		label += " [" + transport + "]"
 	}
 	if len(clean) <= 6 {
-		return label + " — " + strconv.Itoa(len(clean)) + " инструментов: " + strings.Join(clean, ", ")
+		return locale.T(lang, "connector.line", label, len(clean), strings.Join(clean, ", "))
 	}
-	return label + " — " + strconv.Itoa(len(clean)) + " инструментов: " + strings.Join(clean[:3], ", ") + ", …"
+	return locale.T(lang, "connector.line-tail", label, len(clean), strings.Join(clean[:3], ", "))
 }
 
 // connectorToolName strips the "hub-<definition>-" prefix and the trailing
@@ -123,7 +126,7 @@ func connectorToolName(definitionID, name string) string {
 // token from ControlTokensFile pins the caller's own principal; otherwise the
 // supervisor/owner bearer goes with X-Hub-Principal, matching ToolHub's
 // control-token contract. The header never substitutes for the token.
-func (g *Gateway) toolHubConnectorsHTTP(user User) (string, bool) {
+func (g *Gateway) toolHubConnectorsHTTP(lang locale.Lang, user User) (string, bool) {
 	base := strings.TrimRight(strings.TrimSpace(g.config.ToolHubURL), "/")
 	if base == "" {
 		return "", false
@@ -162,9 +165,9 @@ func (g *Gateway) toolHubConnectorsHTTP(user User) (string, bool) {
 		return "", false
 	}
 	if len(payload.Connectors) == 0 && len(payload.Inventory) == 0 {
-		return "\nКоннекторы ToolHub: нет.", true
+		return "\n" + locale.T(lang, "connectors.empty"), true
 	}
-	lines := []string{"", "Коннекторы ToolHub:"}
+	lines := []string{"", locale.T(lang, "connectors.title")}
 	represented := map[string]bool{}
 	for _, item := range payload.Inventory {
 		label := item.DefinitionID
@@ -173,7 +176,7 @@ func (g *Gateway) toolHubConnectorsHTTP(user User) (string, bool) {
 		}
 		for _, projected := range payload.Connectors {
 			if projected.DefinitionID == item.DefinitionID {
-				label = connectorLine(projected.DefinitionID, projected.Transport, projected.Tools)
+				label = connectorLine(lang, projected.DefinitionID, projected.Transport, projected.Tools)
 				represented[item.DefinitionID] = true
 				break
 			}
@@ -200,7 +203,7 @@ func (g *Gateway) toolHubConnectorsHTTP(user User) (string, bool) {
 		if label == "" {
 			label = "unknown"
 		}
-		lines = append(lines, "- "+connectorLine(c.DefinitionID, label, c.Tools))
+		lines = append(lines, "- "+connectorLine(lang, c.DefinitionID, label, c.Tools))
 	}
 	return strings.Join(lines, "\n"), true
 }
@@ -379,7 +382,11 @@ func (g *Gateway) toolHubJobDone(jobID, principalID string) {
 }
 
 func connectionList(user User) string {
-	lines := []string{"Подключения:"}
+	return connectionListWithLang(locale.LangOf(user.WorkspaceDir), user)
+}
+
+func connectionListWithLang(lang locale.Lang, user User) string {
+	lines := []string{locale.T(lang, "connections.title")}
 	for _, service := range stack.ServiceCatalog() {
 		if api.Contains(user.PolicyDisabled, service.Name) {
 			lines = append(lines, service.Name+" — policy-disabled")
@@ -387,9 +394,9 @@ func connectionList(user User) string {
 		}
 		if !api.Contains(user.Features, service.Name) {
 			if service.SelfService {
-				lines = append(lines, service.Name+" — доступен для включения; env: "+strings.Join(service.Requires, ", "))
+				lines = append(lines, service.Name+" — "+locale.T(lang, "connections.available", strings.Join(service.Requires, ", ")))
 			} else {
-				lines = append(lines, service.Name+" — host-managed")
+				lines = append(lines, service.Name+" — "+locale.T(lang, "connections.host-managed"))
 			}
 			continue
 		}
@@ -400,9 +407,9 @@ func connectionList(user User) string {
 			}
 		}
 		if len(missing) == 0 {
-			lines = append(lines, service.Name+" — настроено; работоспособность не проверена")
+			lines = append(lines, service.Name+" — "+locale.T(lang, "connections.configured"))
 		} else {
-			lines = append(lines, service.Name+" — нужны настройки: "+strings.Join(missing, ", "))
+			lines = append(lines, service.Name+" — "+locale.T(lang, "connections.needs-config", strings.Join(missing, ", ")))
 		}
 	}
 	return strings.Join(lines, "\n")

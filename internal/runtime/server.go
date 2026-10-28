@@ -117,6 +117,8 @@ func (s *runtimeHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.artifact(w, r)
 	case "/v1/usage":
 		s.usage(w, r)
+	case "/v1/skill-apply":
+		s.skillApply(w, r)
 	default:
 		writeRuntimeError(w, http.StatusNotFound, "not found")
 	}

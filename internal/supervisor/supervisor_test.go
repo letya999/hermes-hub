@@ -17,7 +17,34 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/identity"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
+
+// grantNativeToolset writes a governance document granting section to the
+// space — native Hermes toolsets are default-deny (SPEC-0083 R3.1), so a
+// feature wish only takes effect when an active grant covers it.
+func grantNativeToolset(t *testing.T, space, principal, section string) {
+	t.Helper()
+	doc := api.NewGovernance()
+	now := time.Now().UTC()
+	grant := api.NewToolGrant("grant-"+principal+"-"+strings.ReplaceAll(section, ":", "-"), principal, section, "test grant", "operator", now.Add(time.Hour), nil)
+	if err := api.Confirm(&grant, "operator", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := doc.PutToolGrant(grant, now); err != nil {
+		t.Fatal(err)
+	}
+	stamped, err := doc.RequestToolGrant(principal, grant.GrantID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := doc.AcknowledgeToolGrant(principal, grant.GrantID, stamped.RequestNonce, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := api.SaveGovernance(filepath.Join(space, "runtime", "toolhub", "governance.json"), doc); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // The idle-retention default must survive a process started with no explicit
 // flag: 30 minutes keeps short conversation gaps warm.
@@ -28,6 +55,18 @@ func TestDefaultWarmTTLIsThirtyMinutes(t *testing.T) {
 	}
 	if m.cfg.WarmTTL != 30*time.Minute {
 		t.Fatalf("default warm TTL=%s, want 30m", m.cfg.WarmTTL)
+	}
+}
+
+// SPEC-0083 R3.1: sidecar idle grace defaults to 15 minutes — shorter than
+// the runtime warm TTL because an idle browser stack costs real memory.
+func TestDefaultBrowserIdleTTLIsFifteenMinutes(t *testing.T) {
+	m, err := New(Config{SpacesRoot: t.TempDir(), RuntimeAuth: "secret", Image: "hermes:test", Command: func(context.Context, ...string) ([]byte, error) { return nil, nil }, Probe: func(context.Context, string, string) error { return nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.cfg.BrowserIdleTTL != 15*time.Minute {
+		t.Fatalf("default browser idle TTL=%s, want 15m", m.cfg.BrowserIdleTTL)
 	}
 }
 
@@ -1809,9 +1848,15 @@ func TestRunArgsMountsHubSkills(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(rawArgs, " ")
-	generated := filepath.Join(root, "generated", "skills")
-	if !strings.Contains(joined, "src="+generated+",dst=/opt/hub/skills,readonly") {
-		t.Fatalf("run args missing filtered skills mount: %s", joined)
+	generated := filepath.Join(root, "generated", "skills-effective")
+	if !strings.Contains(joined, "src="+generated+",dst=/skills,readonly") {
+		t.Fatalf("run args missing effective skills mount: %s", joined)
+	}
+	if strings.Contains(joined, "/opt/hub/skills") {
+		t.Fatalf("legacy skills mount still rendered: %s", joined)
+	}
+	if !strings.Contains(joined, "--tmpfs /state/hermes/skills:ro,mode=0555") {
+		t.Fatalf("run args missing sealed hermes skills dir: %s", joined)
 	}
 	if _, err := os.Stat(filepath.Join(generated, "deep-research-embedded")); !os.IsNotExist(err) {
 		t.Fatal("spawn mounted gated skill without the deep_research feature")
@@ -1836,9 +1881,29 @@ func TestRunArgsMountsHubSkills(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined = strings.Join(rawBob, " ")
-	bobGenerated := filepath.Join(ctx, "generated", "skills")
-	if !strings.Contains(joined, "src="+bobGenerated+",dst=/opt/hub/skills,readonly") {
-		t.Fatalf("run args missing default filtered skills mount: %s", joined)
+	bobGenerated := filepath.Join(ctx, "generated", "skills-effective")
+	if !strings.Contains(joined, "src="+bobGenerated+",dst=/skills,readonly") {
+		t.Fatalf("run args missing default effective skills mount: %s", joined)
+	}
+}
+
+func TestRunArgsFailsWhenEffectiveSkillsCannotBuild(t *testing.T) {
+	t.Setenv("HUB_ENV", "dev")
+	m, root := testManager(t, func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil }, nil)
+	if err := os.WriteFile(filepath.Join(root, "hermes.dev.yaml"), []byte("model: {}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// A broken published skill makes the view build fail; the spawn must
+	// refuse rather than start a runtime without its skill contract.
+	bad := filepath.Join(root, "skills", "broken")
+	if err := os.MkdirAll(bad, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bad, "SKILL.md"), []byte("no frontmatter"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.runArgs(binding(root), "hermes-context-test", 19000); err == nil {
+		t.Fatal("spawn proceeded without a buildable effective skills view")
 	}
 }
 
@@ -1884,6 +1949,7 @@ func TestRunArgsMountsHubPlugins(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ctx, "settings.yaml"), []byte(settings), 0600); err != nil {
 		t.Fatal(err)
 	}
+	grantNativeToolset(t, ctx, "alice", "native:web")
 	rawArgs, err = m.runArgs(binding(ctx), "hermes-context-alice", 19000)
 	if err != nil {
 		t.Fatal(err)
@@ -2237,5 +2303,88 @@ func TestGoalForwardReachesOwningRuntime(t *testing.T) {
 	foreignBody, _ := json.Marshal(foreign)
 	if recorder := call("/v1/goal", "secret", foreignBody); recorder.Code != http.StatusConflict {
 		t.Fatalf("foreign binding=%d", recorder.Code)
+	}
+}
+
+// TestRunArgsMountsWritableSkillsStore checks the R5.1 runtime contract:
+// the effective view stays read-only at /skills while the owner store is
+// writable at /skills-store, and the env contract tells the executor both.
+func TestRunArgsMountsWritableSkillsStore(t *testing.T) {
+	t.Setenv("HUB_ENV", "dev")
+	m, root := testManager(t, func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil }, nil)
+	ctx := filepath.Join(root, "spaces", "bob")
+	for _, name := range []string{"runtime", "hermes", "workspace", "skills"} {
+		if err := os.MkdirAll(filepath.Join(ctx, name), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, body := range map[string]string{"runtime.auth": "HUB_RUNTIME_AUTH=secret\n", "hermes.dev.yaml": "model: {}", "runtime.dev.env": "OPENAI_API_KEY=k\n"} {
+		if err := os.WriteFile(filepath.Join(ctx, name), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rawArgs, err := m.runArgs(binding(ctx), "hermes-context-bob", 19001)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(rawArgs, " ")
+	want := "type=bind,src=" + filepath.Join(ctx, "skills") + ",dst=/skills-store"
+	if !strings.Contains(joined, want) {
+		t.Fatalf("run args missing writable skills store mount: %s", joined)
+	}
+	for _, env := range []string{"HUB_SKILLS_STORE=/skills-store", "HUB_SKILLS_EFFECTIVE=/skills"} {
+		if !strings.Contains(joined, env) {
+			t.Fatalf("run args missing %s: %s", env, joined)
+		}
+	}
+	// The effective mount must still be read-only.
+	if strings.Contains(joined, "dst=/skills,") && !strings.Contains(joined, "dst=/skills,readonly") {
+		t.Fatalf("effective view lost its read-only flag: %s", joined)
+	}
+}
+
+// R5.2: org-bound spawns mount the writable org store at /skills-store-org
+// and export HUB_SKILLS_ORG; personal spaces get neither.
+func TestRunArgsMountsOrgSkillsStoreWhenOrgScoped(t *testing.T) {
+	t.Setenv("HUB_ENV", "dev")
+	m, root := testManager(t, func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil }, nil)
+	ctx := filepath.Join(root, "spaces", "bob")
+	for _, name := range []string{"runtime", "hermes", "workspace", "skills"} {
+		if err := os.MkdirAll(filepath.Join(ctx, name), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	orgDir := filepath.Join(root, "spaces", "acme")
+	for _, name := range []string{"docs", "skills"} {
+		if err := os.MkdirAll(filepath.Join(orgDir, name), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	orgSettings := "schema: 1\norganization: acme\nmembers:\n  bob: owner\nfeatures: [workspace]\n"
+	if err := os.WriteFile(filepath.Join(orgDir, "settings.yaml"), []byte(orgSettings), 0600); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"settings.yaml":   "schema: 1\nuser: bob\norganization: acme\nfeatures: [workspace]\nbrowser_port: 6080\noauth_port: 8000\n",
+		"runtime.auth":    "HUB_RUNTIME_AUTH=secret\n",
+		"hermes.dev.yaml": "model: {}",
+		"runtime.dev.env": "OPENAI_API_KEY=k\n",
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(ctx, name), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rawArgs, err := m.runArgs(binding(ctx), "hermes-context-bob", 19001)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(rawArgs, " ")
+	want := "type=bind,src=" + filepath.Join(orgDir, "skills") + ",dst=/skills-store-org"
+	if !strings.Contains(joined, want) {
+		t.Fatalf("org-bound run args missing org store mount: %s", joined)
+	}
+	if !strings.Contains(joined, "HUB_SKILLS_ORG=/skills-store-org") {
+		t.Fatalf("org-bound run args missing HUB_SKILLS_ORG: %s", joined)
 	}
 }

@@ -7,7 +7,10 @@ record it points to. `archive/` holds only pre-renumbering originals.
 
 | Specification | Status |
 |---|---|
-| [SPEC-0083](active/SPEC-0083-standing-assignment-mvp.md) | Frozen: executable standing-assignment MVP — cursor replay, filtered specialist wakes, durable progress and acceptance (M23 #324/#332) |
+| [SPEC-0086](active/SPEC-0086-standing-assignment-mvp.md) | Frozen: executable standing-assignment MVP — cursor replay, filtered specialist wakes, durable progress and acceptance (M23 #324/#332) |
+| [SPEC-0085](active/SPEC-0085-memory-vault-openknowledge.md) | Frozen: M20 memory vault (leaves, cards, summaries, CORE, rollup, search, write contract) and opt-in OpenKnowledge surface (renumbered from a duplicate SPEC-0070) |
+| [SPEC-0084](active/SPEC-0084-agent-skills-platform.md) | Frozen: agent skills platform — store/effective view, default-deny natives, security pipeline, tools, disclosure, resources, secrets, profiles, git installs, evolution, quality, acceptance (M24 #356–#368) |
+| [SPEC-0083](active/SPEC-0083-browser-sidecar-lifecycle.md) | Frozen: browser sidecar lifecycle — resource ceiling, spawn auto-start, idle sleep after grace (ADR-0083 D8/D9, CHG-0190) |
 | [SPEC-0081](active/SPEC-0081-shared-acquisition.md) | Frozen: shared source acquisition — boundary-keyed pool, conditional HTTP, cursors/gap visibility, per-event filters, hook intake (M23 #332) |
 | [SPEC-0082](active/SPEC-0082-image-role-budgets.md) | Frozen: image role budgets — per-image size SLOs, forbidden binaries, hygiene, voice consolidation, hub-core split, browser sidecar, acceptance (M26 #371–#380) |
 | [SPEC-0080](active/SPEC-0080-standing-assignments.md) | Frozen: standing assignments — durable owner intent, plan reconcile, fenced wakes, messenger control (M23 #324) |
@@ -21,6 +24,7 @@ record it points to. `archive/` holds only pre-renumbering originals.
 | [SPEC-0072](active/SPEC-0072-compression-policy-status.md) | Draft: automatic compaction policy, relay routing, hub sweep, honest status |
 | [SPEC-0071](active/SPEC-0071-session-runtime-discipline.md) | Frozen: session & runtime discipline (renumbered from a duplicate SPEC-0069) |
 | [SPEC-0070](active/SPEC-0070-model-provider-completion.md) | Frozen: model & provider layer completion (renumbered from a duplicate SPEC-0069) |
+
 | [SPEC-0069](active/SPEC-0069-connector-recovery-and-system-guide.md) | Frozen: connector recovery, access, inventory and mandatory guide delivery |
 | [SPEC-0068](active/SPEC-0068-dynamic-session-contract.md) | Frozen: bounded owner-only dynamic JSON sessions |
 | [SPEC-0067](active/SPEC-0067-recipe-oauth.md) | Frozen: recipe-driven OAuth installation |

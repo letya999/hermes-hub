@@ -16,14 +16,19 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
-| [CHG-0190](in-progress/CHG-0190-standing-assignment-mvp/plan.md) | M23 #324/#332: non-consuming cursor source, filtered batch wakes, specialist progress and runtime fences |
+| [CHG-0214](in-progress/CHG-0214-standing-assignment-mvp/plan.md) | M23 #324/#332: non-consuming cursor source, filtered batch wakes, specialist progress and runtime fences |
+| [CHG-0213](in-progress/CHG-0213-org-knowledge-brain/plan.md) | M20 stage 10 (optional): org shared brain — read-only OpenKnowledge over org material |
+| [CHG-0212](in-progress/CHG-0212-memory-migration-eval/plan.md) | M20 stage 9: Honcho/native export to cards, memory-eval fixture, `memory vacuum` |
+| [CHG-0211](in-progress/CHG-0211-knowledge-ui-edge/plan.md) | M20 stage 8: loopback `ui_port` + SSH tunnel docs; M18 edge hook |
+| [CHG-0210](in-progress/CHG-0210-openknowledge-mcp/plan.md) | M20 stage 7: OK MCP read/write capability split (`knowledge_ui` / `knowledge_ui_write`) |
+| [CHG-0209](in-progress/CHG-0209-openknowledge-service/plan.md) | M20 stage 6: pinned single-replica OpenKnowledge service per space |
+| [CHG-0208](in-progress/CHG-0208-memory-card-contract/plan.md) | M20 stage 5: `memory_card` fact/truth/merge contract + memory-zone write guards |
+| [CHG-0207](in-progress/CHG-0207-memory-search/plan.md) | M20 stage 4: `memory_search` BM25+link-graph, scope confinement, maintenance pass |
+| [CHG-0206](in-progress/CHG-0206-memory-night-rollup/plan.md) | M20 stage 3: hub-owned nightly rollup — summaries, evidence facts, Compiled Truth, CORE edits |
+| [CHG-0205](in-progress/CHG-0205-daily-leaf-ingest/plan.md) | M20 stage 2: verbatim daily leaf ingest from the communication plane |
+| [CHG-0204](in-progress/CHG-0204-vault-layout/plan.md) | M20 stage 1: `spaces/<id>/vault/` git substrate, `memory_vault` feature, CORE injection |
+| [CHG-0199](in-progress/CHG-0199-m24-live-acceptance/plan.md) | M24 #368 S13: live acceptance — standalone controller + real cli-exec git legs (partial: Telegram/managed legs blocked on credentials) |
 | [CHG-0189](in-progress/CHG-0189-watch-contract/plan.md) | M23 #324/#332 follow-up: tool-contract discipline rule, watch_subscribe discoverability (prompt/descriptions/semantic refusal), per-source stream cadence (min_interval_seconds 5..3600), stream cursor persistence, watch_resume + catalog 5.3.0, docs-coverage test |
-| [CHG-0187](in-progress/CHG-0187-m26-acceptance/plan.md) | M26 #380 S5: live acceptance — voice/browser/Meet on dev stack, budget gates, before/after sizes + CVEs, docs current |
-| [CHG-0186](in-progress/CHG-0186-browser-sidecar/plan.md) | M26 #378 S4: hub-browser sidecar — per-space container, internal CDP, authenticated noVNC, runtime without Chromium/X11 |
-| [CHG-0185](in-progress/CHG-0185-hub-core-split/plan.md) | M26 #377 S3: hub-core/hub-control role images — Go binaries only, no interpreters/browsers, compose per-service image split |
-| [CHG-0184](in-progress/CHG-0184-voice-consolidation/plan.md) | M26 #375 S2: voice consolidation — whisper/espeak out of hub images, service URLs only, hashed STT/TTS requirements |
-| [CHG-0183](in-progress/CHG-0183-image-hygiene/plan.md) | M26 #373 S1: hygiene — bytecode venv stage, upstream tree prune + .git->SHA file, static noVNC, setuid/e2e/apt cleanup |
-| [CHG-0182](in-progress/CHG-0182-image-budget-gate/plan.md) | M26 #371 S0: image budget gate — baseline evidence frozen, devcheck image-budget check, CI wiring |
 | [CHG-0174](in-progress/CHG-0174-hosting-acceptance/plan.md) | M18 #147 H5: hosting acceptance/current docs — A1–A11 code/runtime/browser/sish evidence; offline gates green, native acceptance pending |
 | [CHG-0173](in-progress/CHG-0173-hosting-dynamic/plan.md) | M18 #147 H4: one admitted stateless go-http profile, secure runtime/relay, restart/finalizers; implemented, offline gates green, native acceptance pending |
 | [CHG-0172](in-progress/CHG-0172-hosting-static-delivery/plan.md) | M18 #147 H3: static agent/stack/exposure delivery and independent recovery; implemented, offline gates green, native acceptance pending |
@@ -37,6 +42,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 | [CHG-0162](in-progress/CHG-0162-goal-mode-engines/plan.md) | #311 persistent /goal mode — dual engine, judge modes (design proposed, implementation not started) |
 | [CHG-0156](in-progress/CHG-0156-goal-bootstrap/plan.md) | M16 #213: goal-bootstrap; live acceptance pending |
 | [CHG-0151](in-progress/CHG-0151-archive-bounds/plan.md) | M16 #151: archive-bounds; live acceptance pending |
+
 | [CHG-0147](in-progress/CHG-0147-m14-acceptance/plan.md) | Milestone 14 acceptance and connector lifecycle repair |
 | [CHG-0144](in-progress/CHG-0144-recipe-oauth/plan.md) | Recipe-driven OAuth for prepared and runtime MCP installation |
 | [CHG-0143](in-progress/CHG-0143-oauth-viewer-link-flows/plan.md) | OAuth resend rotation, broker grant-epoch fix, viewer-link relay — retroactive record for the uncommitted branch diff |
@@ -59,6 +65,35 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 |---|---|
 | [CHG-0037](done/CHG-0037-toolhub-closeout/plan.md) | Abandoned: ToolHub closeout umbrella superseded by later per-issue CHGs |
 | [CHG-0031](done/CHG-0031-docker-disk-diagnosis/plan.md) | Abandoned: read-only diagnosis superseded by CHG-0031-docker-reclaim findings |
+
+## Done — M26 Lean Role Images
+
+| Change | State |
+|---|---|
+| [CHG-0190](done/CHG-0190-browser-sidecar-idle/plan.md) | Done 2026-10-28: M26 follow-up — browser sidecar lifecycle (ADR-0083 D8/D9, SPEC-0083): compose cpu/mem/pids ceiling, spawn auto-start (`docker start` before readiness, fail-closed + reclaim), sweep idle-sleep after `--browser-idle-ttl` 15m with live/compose-runtime and foreign-project guards; restores scale-to-zero economics for ~100-user fleets |
+| [CHG-0187](done/CHG-0187-m26-acceptance/plan.md) | Done 2026-10-28: M26 #380 S5: evidence record + docs (operations images section, architecture component map, integrations rows); just check pass coverage 86.14%; live acceptance deferred — no Docker per owner instruction, image-size/probe/live-browser evidence rides the CI image+containers jobs |
+| [CHG-0186](done/CHG-0186-browser-sidecar/plan.md) | Done 2026-10-28: M26 #378 S4: hub-browser sidecar — browser stage + prod/dev-browser targets, hub-runtime browser subcommand (Xvfb/fluxbox/x11vnc-passwdfile/noVNC/chromium-CDP + pw-mcp 8931 persistent & 8932 isolated + meet NodeServer), runtime drops the display stack, browser MCP over streamable HTTP, CDP internal-only + noVNC loopback, spawned runtimes dual-home onto the space net and lose /state/browser + --shm-size |
+| [CHG-0185](done/CHG-0185-hub-core-split/plan.md) | Done 2026-10-28: M26 #377 S3: role images — core stage (Go binaries only), control = core + docker/thv, compose per-service role commons, runtime keeps its own build tag, dev-rebuild maps daemons to -dev-core, shm_size scoped to runtime |
+| [CHG-0184](done/CHG-0184-voice-consolidation/plan.md) | Done 2026-10-28: M26 #375 S2: voice consolidation — STTCommand/TTSCommand removed (service URLs only), dedicated stt/tts images on hashed lockfiles, whisper/espeak and command envs out of hub images |
+| [CHG-0183](done/CHG-0183-image-hygiene/plan.md) | Done 2026-10-28: M26 #373 S1: hygiene — python_build stage (UV_COMPILE_BYTECODE, hashed aiohttp layer), upstream tree pruned to editable modules with .hermes-rev marker, Debian novnc dropped (libnode gone), e2e dev-only, setuid strips |
+| [CHG-0182](done/CHG-0182-image-budget-gate/plan.md) | Done 2026-10-28: M26 #371 S0: image budget gate — devcheck image-budget (size ceiling + forbidden-artifact probe + fail-closed), CI image job gates all four roles, baseline audit frozen in research.md |
+
+## Done — M24 agent skills platform
+
+| Change | State |
+|---|---|
+| [CHG-0198](done/CHG-0198-skill-quality/plan.md) | Done 2026-10-28: M24 #367 S12 — quality: scan.Lint advisory findings on every draft (name charset/dir, imperative desc ≤1024/~250, no This-skill prefix, body ≤500, ≤60 files, refs 1-deep+existing, no incident-log) wired through scanTree; .state/usage journal (bounded counters+events, hub-written on skill()/skill_view only) + skills_list stats + hubctl skill stats; skilleval package (triggers.json 60/40 deterministic split + runs/threshold, evals.json evidence-required cases, isolated temp-space Eval, HTTPRunner via HUB_SKILL_EVAL_URL, model_unavailable honest); hubctl skill eval → .work/tmp report; trigger suites shipped for the 3 platform skills + lint-clean descriptions; catalog hub-agent-tools@5.5.0; coverage 86.12% |
+| [CHG-0197](done/CHG-0197-skill-git-install/plan.md) | Done 2026-10-28: M24 #365 S10 — git installs: gitsource package (ParseSource https-only github/gitlab/gitlab_host, SourceID sha256[:16], Sources/RemoveSource registry); ExecCell GitOps over /cli-exec — hardened argv (hooksPath=/dev/null, protocol.file=never, no submodules/LFS), blobless fetch+ls-remote pin, origin-remote deepen for force-push ancestry, archive→Tree rejecting symlinks/gitlinks/../, token via GIT_TOKEN env + credential.helper only; skill-source cell scope binds <16-hex>.git mirror rw after ContainedPath+NoSymlinkPath+dir checks; skillgit@1.0.0 admitted as exact tuples per git host (git stays out of user_commands); comm-hub /v1/skill-git install/update/check_updates/sources/remove_source, grant→broker ResolveEnv→GIT_TOKEN; skill_manage install|update|check_updates + url/ref/path/grant, candidates passthrough, same approval card; discovery subdir-scoped ≤6 deep ≤2000 dirs, convention dirs first; .origin.json {source_id,url,ref,commit,path,tree_sha,scan,fetched_at} hub-private sidecar; hubctl skill install --url/update --name|--all/sources list|remove --id via toolhub.auth + GIT_TOKEN; catalog hub-agent-tools@5.4.0; coverage 86.14% |
+| [CHG-0196](done/CHG-0196-provisioning-profiles/plan.md) | Done 2026-10-28: M24 #364 S9 — provisioning profiles: extends chains with org-per-level override over policies/profiles + legacy *-default.yaml fallback as "default"; OrgMember {role, profile} + OrganizationSettings.default_profile (scalar marshal preserved); init --profile stamps agent/workspace, layout dirs, profile.lock (hashes+version); hubctl org sync-members idempotent dry-run-first bulk provisioning; effective SOUL contract→org→profile→user→catalog (persona-prefix assertions relaxed to containment); skills.yaml pins order first + ineligible→render error; grants.yaml → draft CapabilityPolicy revision via hubctl profile grants, authority only through capability --kind policy --confirm inside the org ceiling; hubctl profile diff|apply 3-way via lock (untouched update, customized kept+reported); org assignment beats forged profile.lock; coverage 86.13% |
+| [CHG-0195](done/CHG-0195-skill-secrets/plan.md) | Done 2026-10-28: M24 #363 S8 — secrets/settings: requires.credentials string/object normalization + compat aliases, reserved HUB_/BROKER_ names rejected; .state/credentials + .state/settings private atomic store bound to (principal, skill); hard-missing hides skill, soft-missing surfaces setup-needed + protected form URL in skill(); forms persist via gateway store mount, declared-name filtered; code_exec skill arg → declared ∩ stored env leased over stdin into exec-scratch (≤16, no reserved/sanitized shadowing, one call only); skill_manage configure writes declared settings only; catalog hub-agent-tools@5.3.0; coverage 86.14% |
+| [CHG-0194](done/CHG-0194-skill-resources/plan.md) | Done 2026-10-28: M24 #362 S7 — resources+scripts: skill_view bounded (32 KiB, SKILL.md+references/templates/examples only); one-level markdown-link lint; load.exec scanner rule; metadata.deps + uv/npx pins + PEP 723 → validated deps, DepsMissing render stamp; skills: ro root for file/document/image executors (OpenRoots wires HUB_SKILLS_EFFECTIVE); principal cells bind generated/skills-effective ro at /skills, effective view carries no exec bits — scripts run only from scratch copies; skill() reports readiness incl. instructions_only; catalog hub-agent-tools@5.2.0; coverage 86.13% |
+| [CHG-0193](done/CHG-0193-skill-disclosure/plan.md) | Done 2026-10-28: M24 #361 S6 — progressive disclosure: readiness-stamped effective index (toolsets/connectors/platform → Eligible/Hidden/Missing, revision re-hashed over visibility); tier-0 <available_skills> in soul-effective (escaped, 200-char cap, >20 → names+search hint); lexical skills_search (name/desc/tags/body, RU+EN, exact-name first); harness /name args + $name refs with $ARGUMENTS/$0..$n, ≤5 refs, dedupe + one-time <skills_catalog_updated> per session; gateway mounts /skills-effective ro; coverage 86.12% |
+| [CHG-0192](done/CHG-0192-skill-tools/plan.md) | Done 2026-10-28: M24 #360 S5 — five governed skill tools (skill/skills_search/skills_list/skill_view/skill_manage) in managed+unmanaged parity; draft-only writes with base_revision fencing; nonce approval cards → runtime /v1/skill-apply sole mutator + rollback; org drafts gated on HUB_ORGANIZATION_ROLE owner/admin, hubctl skill promote; catalog hub-agent-tools@5.1.0; coverage 86.09% |
+| [CHG-0203](done/CHG-0203-skill-security/plan.md) | Done 2026-10-27: M24 #359 S4 — deterministic scan pipeline: line rules (secret/injection/exfil/load.exec), taint, publish gate, audit; commit bcfa667 (closeout bookkeeping completed 2026-10-28) |
+| [CHG-0202](done/CHG-0202-native-default-deny/plan.md) | Done 2026-10-27: M24 #358 S3 — native Hermes capabilities default-deny: inventory deny, no implicit base list, skills/curator sealed, .no-bundled-skills; commit 6eb440e (closeout bookkeeping completed 2026-10-28) |
+| [CHG-0201](done/CHG-0201-unified-skill-store/plan.md) | Done 2026-10-27: M24 #357 S2 — unified skillstore: drafts/revisions/archives/quotas, legacy migration, effective read-only view at /skills; commit 6ada0ef (closeout bookkeeping completed 2026-10-28) |
+| [CHG-0200](done/CHG-0200-skills-platform-design/plan.md) | Done 2026-10-27: M24 #356 S1 — skills platform design: ADR-0085 + SPEC-0084 + Hermes pin spike verified; commit b3375d1 (closeout bookkeeping completed 2026-10-28) |
+
 
 ## Done — M23 proactive assignments
 
@@ -87,6 +122,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0191](done/CHG-0191-i18n-user-locale/plan.md) | Done 2026-10-27: channel-agnostic user locale — en default + ru/kk/es, workspace prefs + detection ladder + /language picker, all deterministic surfaces localized (chat, HTML, broker pages, operator tooling), model prompts EN + lang hint, per-language TTS voices, contract i18n schema; just check green 86.32%, broker check 89.89%; live channel acceptance not run |
 | [CHG-0175](done/CHG-0175-coverage-profile-safety/plan.md) | Done 2026-10-26: M18 #147 verification prerequisite — malformed coverage locations rejected, per-package profiles isolated, statement-free packages skipped; covergo green 86.03% |
 | [CHG-0169](done/CHG-0169-site-hosting-design/plan.md) | M18 #147: research including pinned Haloy review; ADR-0081 accepted, SPEC-0079 frozen, implementation CHG-0170–0174 allocated; design only |
 | [CHG-0163](done/CHG-0163-recovery-budget/plan.md) | Done 2026-10-25: stop stale observations after budget notice; gateway deployed; just check passed, coverage 86.55% |

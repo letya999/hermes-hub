@@ -2,11 +2,21 @@
   "id": "gitlab-pat",
   "revision": 2,
   "title": "GitLab PAT",
+  "title_i18n": {
+    "ru": "GitLab: персональный токен",
+    "kk": "GitLab: жеке токен",
+    "es": "GitLab: token de acceso personal"
+  },
   "storage": "local",
   "fields": [
     {
       "id": "token",
       "label": "GitLab personal access token",
+      "label_i18n": {
+        "ru": "Персональный токен GitLab",
+        "kk": "GitLab жеке кіру токені",
+        "es": "Token de acceso personal de GitLab"
+      },
       "kind": "secret",
       "required": true,
       "max_bytes": 4096
@@ -14,6 +24,11 @@
     {
       "id": "api_url",
       "label": "GitLab API URL (self-hosted, optional)",
+      "label_i18n": {
+        "ru": "URL API GitLab (self-hosted, необязательно)",
+        "kk": "GitLab API URL-і (өз серверінде, міндетті емес)",
+        "es": "URL de la API de GitLab (autoalojado, opcional)"
+      },
       "kind": "string",
       "required": false,
       "max_bytes": 2048
@@ -21,6 +36,11 @@
     {
       "id": "endpoint",
       "label": "GitLab endpoint host:port (plain-HTTP self-hosted, optional)",
+      "label_i18n": {
+        "ru": "Endpoint GitLab host:port (self-hosted по plain-HTTP, необязательно)",
+        "kk": "GitLab endpoint host:port (plain-HTTP өз серверінде, міндетті емес)",
+        "es": "Endpoint de GitLab host:port (autoalojado HTTP plano, opcional)"
+      },
       "kind": "string",
       "required": false,
       "max_bytes": 256

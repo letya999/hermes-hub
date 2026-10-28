@@ -8,6 +8,7 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
@@ -76,9 +77,9 @@ func (c slack) DeliverArtifact(ctx context.Context, delivery *commodel.Delivery,
 	if api == nil {
 		return errors.New("slack delivery is not configured")
 	}
-	note := "Файл готов: " + ref.Name + " — сохранён в workspace, доставка файлов в Slack пока не поддерживается"
+	note := locale.T(delivery.Lang, "slack.artifact-ready", ref.Name)
 	if ref.Error != "" {
-		note = "Файл не удалось доставить: " + ref.Name
+		note = locale.T(delivery.Lang, "slack.artifact-failed", ref.Name)
 	}
 	return api.PostMessage(ctx, delivery.SlackChannel, delivery.SlackThread, note)
 }

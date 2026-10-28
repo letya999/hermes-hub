@@ -39,8 +39,10 @@ func TestGovernanceEvaluateOrdering(t *testing.T) {
 	if d := doc.Evaluate("alice", "", "user_mcp", nil, now); d.Effect != api.RuleDeny || d.Via != "section" {
 		t.Fatalf("user_mcp default: %+v", d)
 	}
-	if d := doc.Evaluate("alice", "", "native:file", nil, now); !d.Allowed() {
-		t.Fatalf("native:file default: %+v", d)
+	// SPEC-0083 R3.1: every native toolset defaults to deny — a wish needs an
+	// active grant or an explicit allow rule to take effect.
+	if d := doc.Evaluate("alice", "", "native:file", nil, now); d.Effect != api.RuleDeny || d.Via != "section" {
+		t.Fatalf("native:file default must be deny: %+v", d)
 	}
 	if d := doc.Evaluate("alice", "", "imaginary:surface", nil, now); d.Effect != api.RuleDeny || d.Via != "unknown" {
 		t.Fatalf("unknown section: %+v", d)
@@ -73,7 +75,8 @@ func TestGovernanceEvaluateOrdering(t *testing.T) {
 	}
 	// Expired rules are inert.
 	doc.Rules = append(doc.Rules, api.PolicyRule{RuleID: "expired-deny", Scope: api.ScopeGlobal, Section: "native:file", Effect: api.RuleDeny, Reason: "x", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1, ExpiresAt: now.Add(-time.Hour)})
-	if d := doc.Evaluate("alice", "", "native:file", nil, now); !d.Allowed() {
+	// Inert means no deny-via-rule — the inventory floor still applies.
+	if d := doc.Evaluate("alice", "", "native:file", nil, now); d.Via == "deny" {
 		t.Fatalf("expired deny applied: %+v", d)
 	}
 }
@@ -554,6 +557,17 @@ func TestSeedInventoryIntegrity(t *testing.T) {
 	}
 	if _, ok := doc.Section("native:imaginary"); ok {
 		t.Fatal("unknown id resolved")
+	}
+}
+
+// SPEC-0083 R3.1: every native:* capability starts denied; only an explicit
+// workspace wish plus a grant admits it. Hub-owned sections keep their own
+// defaults.
+func TestSeedInventoryNativeSectionsDefaultDeny(t *testing.T) {
+	for _, sec := range api.SeedInventory() {
+		if strings.HasPrefix(sec.ID, "native:") && sec.Default != api.RuleDeny {
+			t.Fatalf("%s defaults to %s, want deny", sec.ID, sec.Default)
+		}
 	}
 }
 

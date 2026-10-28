@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,7 +16,6 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/skills"
 )
 
 func TestSlackPostMessageAndGatewayDelivery(t *testing.T) {
@@ -151,9 +151,6 @@ func TestCronExpressionsAndSlackLinks(t *testing.T) {
 	}
 	if OccurrenceID(RoutineOccurrence{ScheduleID: "x", Revision: 1, DueAt: now}) == "" {
 		t.Fatal("occurrence id")
-	}
-	if _, err := skills.CopyLimited(bytes.NewReader([]byte("skill"))); err != nil {
-		t.Fatal(err)
 	}
 	hashed := identity.SlackIdentity(strings.Repeat("t", 40), strings.Repeat("u", 40))
 	if !identity.ValidID(hashed) || hashed == "slack-"+strings.Repeat("t", 40)+"-"+strings.Repeat("u", 40) {
@@ -329,8 +326,6 @@ func TestTickSchedulesExpiredWindowExistingOccurrenceAndSlackUser(t *testing.T) 
 	if err := gw.handleUpdate(context.Background(), Update{UpdateID: 77, Message: &Message{From: &TGUser{ID: 11}, Chat: TGChat{ID: 11, Type: "private"}, Voice: &TGMedia{FileID: "big", MimeType: "audio/ogg", FileSize: 12, Duration: 1}}}); err != nil {
 		t.Fatal(err)
 	}
-	c.STTCommand = "false"
-	c.TTSCommand = "false"
 	if _, err := New(c); err != nil {
 		t.Fatal(err)
 	}
@@ -364,7 +359,7 @@ func TestMediaAudioCaptionLimitsAndHTTPErrorBranches(t *testing.T) {
 	if _, err := (CommandTranscriber{Command: "false", Timeout: time.Nanosecond}).Transcribe(context.Background(), "x", "audio/ogg"); err == nil {
 		t.Fatal("stt timeout accepted")
 	}
-	if _, _, err := (CommandSynthesizer{Command: "false"}).Synthesize(context.Background(), "hi"); err == nil {
+	if _, _, err := (CommandSynthesizer{Command: "false"}).Synthesize(context.Background(), locale.LangEN, "hi"); err == nil {
 		t.Fatal("empty tts accepted")
 	}
 	req := httptest.NewRequest(http.MethodGet, "/v1/routines", nil)
@@ -419,20 +414,5 @@ func TestScheduleValidateAndNativeTickSkip(t *testing.T) {
 	}
 	if err := s.TickSchedules(time.Now().UTC(), "unmigrated", g.authorizeOccurrence); err != nil {
 		t.Fatal(err)
-	}
-	home := t.TempDir()
-	if err := os.MkdirAll(home+"/hermes/skills", 0700); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := skills.Install(home, "notes", "", "user", []byte("# Notes\nfirst"), false, caller); err == nil {
-		t.Fatal("consent skipped")
-	}
-	first, err := skills.Install(home, "notes", "https://example.invalid/notes", "user", []byte("# Notes\nfirst"), true, caller)
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := skills.Install(home, "notes", "https://example.invalid/notes", "user", []byte("# Notes\nsecond"), true, caller)
-	if err != nil || second.EnabledRevision != first.EnabledRevision+1 || second.RollbackRevision != first.EnabledRevision {
-		t.Fatal(second, err)
 	}
 }

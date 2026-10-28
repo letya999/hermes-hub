@@ -28,9 +28,9 @@ func safe(p string) bool {
 	return fs.ValidPath(p) && !strings.Contains(p, "\\") && !strings.ContainsRune(p, 0)
 }
 func (t *Tools) root(name string) (*os.Root, error) {
-	return rootOf(name, t.Workspace, t.Archive, t.Organization)
+	return rootOf(name, t.Workspace, t.Archive, t.Organization, t.Skills)
 }
-func rootOf(name string, ws, ar, org *os.Root) (*os.Root, error) {
+func rootOf(name string, ws, ar, org, sk *os.Root) (*os.Root, error) {
 	switch name {
 	case "", "workspace":
 		return ws, nil
@@ -44,8 +44,13 @@ func rootOf(name string, ws, ar, org *os.Root) (*os.Root, error) {
 			return nil, fmt.Errorf("organization root is not configured")
 		}
 		return org, nil
+	case "skills":
+		if sk == nil {
+			return nil, fmt.Errorf("skills root is not configured")
+		}
+		return sk, nil
 	}
-	return nil, fmt.Errorf("root must be workspace, archive or organization")
+	return nil, fmt.Errorf("root must be workspace, archive, organization or skills")
 }
 func (t *Tools) File(op string, r Input) (map[string]any, error) {
 	return t.fileScoped(op, r, t.Workspace, t.Archive, t.Organization)
@@ -62,7 +67,7 @@ func (t *Tools) fileScoped(op string, r Input, ws, ar, org *os.Root) (map[string
 		}
 		defer t.lock.Unlock()
 	}
-	root, err := rootOf(r.Root, ws, ar, org)
+	root, err := rootOf(r.Root, ws, ar, org, t.Skills)
 	if err != nil {
 		return nil, err
 	}
@@ -136,7 +141,7 @@ func (t *Tools) fileScoped(op string, r Input, ws, ar, org *os.Root) (map[string
 	if op != "write" {
 		return nil, fmt.Errorf("unknown file operation")
 	}
-	if r.Root == "archive" || r.Root == "organization" {
+	if r.Root == "archive" || r.Root == "organization" || r.Root == "skills" {
 		return nil, fmt.Errorf("%s is read-only", r.Root)
 	}
 	if r.exportBytes == nil && (len(r.Text) > Limit || !utf8.ValidString(r.Text)) {
