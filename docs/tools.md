@@ -51,7 +51,7 @@ Grouped by capability resource (internal/agenttools/capability.go):
 
 | Group | Tools | Notes |
 |---|---|---|
-| files | `file_list`, `file_read`, `file_write`, `file_search` | admitted workspace scope; `file_write` is revision-guarded |
+| files | `file_list`, `file_read`, `file_write`, `file_search` | admitted workspace scope; `file_write` is revision-guarded; `root=skills` opens the read-only effective skills view |
 | services | `service_catalog` (read), `service_enable`, `service_disable` | self-service catalog only; enable needs explicit owner request, never returns credentials, refuses org-scoped changes |
 | settings | `settings_get`, `settings_set` | manageable key allowlist; secrets never shown; applies after scheduled restart |
 | context | `context_status`, `context_compact` | bounded session view (threshold/journal/live estimate) and turn-boundary compaction; busy sessions refuse deterministically, `queue` parks; results are metadata only |
@@ -67,10 +67,61 @@ Grouped by capability resource (internal/agenttools/capability.go):
 | knowledge | `knowledge_list`, `knowledge_search`, `knowledge_read` | read-only staged sources; content returns as output, never lands in workspace |
 | ssh | `ssh_hosts`, `ssh_exec`, `ssh_read`, `ssh_write`, `ssh_shell_*`, `ssh_tunnel_*` | declared hosts only; write/shell/tunnel each need their own grant |
 | hh | `hh_search`, `hh_vacancy`, `hh_resumes`, `hh_apply` | apply sends externally — exact user-authorized inputs only |
-| exec | `code_exec` | bounded executor when the capability is granted |
+| exec | `code_exec` | bounded executor when the capability is granted; optional `skill` leases that skill's stored credentials into the one call |
+| skills | `skill`, `skills_search`, `skills_list`, `skill_view`; `skill_manage` | reads serve the ro effective view; `skills_list` entries carry hub-journaled usage counters (`stats`); `skill_manage` writes drafts only — publication is the owner's approval card, never the model |
 
 ## Contract notes (bounds that surprise)
 
+- **skills:**: the file tools take `root=skills` as a fourth read-only root —
+  the effective skills view (`/skills`), never writable; `document_extract`
+  and `image_inspect` reach it as a `skills:<name>/<path>` path prefix.
+  Copying a skill resource into the workspace stays an explicit `file_write`
+  on the workspace root. Scripts under `skills:` are data: they carry no
+  exec bits and run only from a scratch copy inside a cell.
+- **skill_manage**: every action (create/patch/edit/write_file/remove_file/
+  delete/archive/restore/propose_to_org) creates a draft — the live tree under
+  `/skills` never changes from a tool call. The reply carries diff/lint/scan
+  plus `confirm_url` to a nonce-protected approval card the owner clicks;
+  `link_sent=false` means the card was not delivered but the draft persists.
+  `patch`/`edit` require the current `base_revision` (optimistic concurrency);
+  action-foreign fields are rejected before any write; principal comes from
+  the authenticated envelope — model-supplied principal/org fields are
+  ignored. `propose_to_org` lands an org-scope draft; org publish requires
+  an owner/admin role at apply time (`hubctl skill promote`). The exception is
+  `configure`: it writes the owner's private `.state/settings` (keys ⊆ the
+  skill's declared `metadata.hermes.config`) — not a draft, since it never
+  touches the skill tree. Three more actions import rather than author:
+  `install` takes an https GitHub/GitLab `url` (optional `ref`, `path`,
+  `name`, `grant` — a broker credential name for private repos, never a
+  token in the URL); a bare repository URL returns `candidates` of
+  discovered `SKILL.md` subtrees to retry with `path` instead of guessing.
+  `update` refetches one installed skill's pinned ref (`force_push:true`
+  flags rewritten upstream history) and `check_updates` lists pending
+  upstream moves without importing. All three run inside a bounded git cell
+  (https egress to the repo host only); `install`/`update` land as drafts
+  with `.origin.json` provenance and still need the owner's card.
+- **skill usage telemetry**: `skill()` activations and `skill_view` file
+  reads are journaled by the hub into the owner store's `.state/usage/`
+  (uses, helped, failed, trigger misses, last_used — bounded counters, no
+  content). The agent has no write path to these events; `skills_list`
+  exposes the counters as `stats` and `hubctl skill stats --name <skill>`
+  prints them. `evals/triggers.json` + `evals/evals.json` ship inside a
+  skill for `hubctl skill eval` — an isolated temp-space run scored through
+  an operator eval endpoint (`HUB_SKILL_EVAL_URL`); unavailable models are
+  reported, not fabricated.
+- **code_exec `skill` arg + credentials**: `skill()` reports
+  `readiness.setup_needed` with a `form_url` to the protected credential form
+  when declared `requires.credentials` lack stored values; a hard requirement
+  (`hard: true`) makes the skill ineligible until stored. Submitted values
+  persist under the owner store's `.state/credentials/<skill>.json` bound to
+  (principal, skill) — never `self-env.json`. A `code_exec` call carrying
+  `skill:"<name>"` leases exactly the declared names into that one sandbox
+  call's env through the stdin exec protocol — never argv, container config,
+  tool results, logs or audit. Declared names are the only ones leased;
+  undeclared `.state` entries and ineligible skills lease nothing.
+  `metadata.hermes.config` declares non-secret per-user settings that
+  `skill()` surfaces effective (stored-or-default); `skill_manage`
+  `configure` writes them to `.state/settings`.
 - **inbox_fetch**: an incoming transfer lands in `inbox/<id>/files/`; ZIPs
   extract there and a `inbox/<id>/receipt.json` is stored *before* the staged
   copy is acknowledged — retry reuses the receipt, never re-downloads.

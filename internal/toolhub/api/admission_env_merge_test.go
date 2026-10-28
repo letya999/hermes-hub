@@ -63,6 +63,33 @@ func TestCLIExecFromEnvContract(t *testing.T) {
 	status = 0
 }
 
+// CLIExecClient is the host-side constructor hubctl uses: explicit
+// endpoint+token instead of the container env pair; the /admit -> /cli-exec
+// derivation and privacy validation are the same contract.
+func TestCLIExecClientContract(t *testing.T) {
+	var gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/cli-exec" {
+			w.WriteHeader(404)
+			return
+		}
+		gotAuth = r.Header.Get("Authorization")
+		json.NewEncoder(w).Encode(CliExecResponse{Output: "hi", ExitCode: 0})
+	}))
+	defer server.Close()
+	if _, err := CLIExecClient("https://169.254.169.254/x", "tok"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("public endpoint: %v", err)
+	}
+	execFn, err := CLIExecClient(server.URL+"/admit", "tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := execFn(context.Background(), CliExecRequest{Command: "git"})
+	if err != nil || resp.Output != "hi" || gotAuth != "Bearer tok" {
+		t.Fatalf("exec: %v %+v auth %q", err, resp, gotAuth)
+	}
+}
+
 func TestCLIReleaseFromEnvContract(t *testing.T) {
 	var released CliReleaseRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

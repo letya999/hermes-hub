@@ -87,6 +87,7 @@ type Settings struct {
 	OrganizationSkillsDir string   `yaml:"-"`
 	SpaceDir              string   `yaml:"-"`
 	OrganizationRole      string   `yaml:"-"`
+	OrganizationProfile   string   `yaml:"-"`
 	OrgActions            []string `yaml:"-"`
 	// gov is the per-load tool-governance view (issue 139): the evaluated
 	// decisions and cap:read overrides the render consumers enforce. Nil when
@@ -113,9 +114,9 @@ type Settings struct {
 	JudgeModel   string         `yaml:"judge_model,omitempty"`
 }
 
-// DefaultGlobalSkillsDir resolves the bundled catalog without changing operator rights.
+// DefaultGlobalSkillsDir resolves the platform catalog without changing operator rights.
 func (s *Settings) DefaultGlobalSkillsDir(dir string) {
-	if s.CapabilityMode != "managed" && strings.TrimSpace(s.GlobalSkillsDir) == "" {
+	if strings.TrimSpace(s.GlobalSkillsDir) == "" {
 		s.GlobalSkillsDir = dir
 		s.defaultGlobalSkills = true
 	}

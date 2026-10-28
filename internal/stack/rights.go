@@ -54,6 +54,7 @@ var settingsFieldRights = map[string]string{
 	"OrganizationDocsDir":   "OrganizationDocsDir",
 	"OrganizationSkillsDir": "OrganizationSkillsDir",
 	"OrganizationRole":      "OrganizationRole",
+	"OrganizationProfile":   "OrganizationProfile",
 	"OrgActions":            "OrgActions",
 	"GoogleEmail":           "GoogleEmail",
 	"GitLabHost":            "GitLabHost",
@@ -110,6 +111,7 @@ type rightsView struct {
 	OrganizationDocsDir   string                        `json:"organization_docs_dir,omitempty"`
 	OrganizationSkillsDir string                        `json:"organization_skills_dir,omitempty"`
 	OrganizationRole      string                        `json:"organization_role,omitempty"`
+	OrganizationProfile   string                        `json:"organization_profile,omitempty"`
 	OrgActions            []string                      `json:"org_actions,omitempty"`
 	GoogleEmail           string                        `json:"google_email,omitempty"`
 	GitLabHost            string                        `json:"gitlab_host,omitempty"`
@@ -144,6 +146,7 @@ func rightsProjection(s Settings) rightsView {
 		OrganizationDocsDir:   s.OrganizationDocsDir,
 		OrganizationSkillsDir: s.OrganizationSkillsDir,
 		OrganizationRole:      s.OrganizationRole,
+		OrganizationProfile:   s.OrganizationProfile,
 		OrgActions:            s.OrgActions,
 		GoogleEmail:           s.GoogleEmail,
 		GitLabHost:            s.GitLabHost,

@@ -1358,7 +1358,7 @@ func TestCredentialFormRejectsReplayAndNonLoopbackRequests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	form, err := g.createCredentialForm(identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), []string{"GITHUB_TOKEN"})
+	form, err := g.createCredentialForm(identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), []string{"GITHUB_TOKEN"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1471,11 +1471,11 @@ func TestCredentialFormValidationAndOrigins(t *testing.T) {
 		t.Fatal(err)
 	}
 	g.forms.m = nil
-	if _, err := g.createCredentialForm(identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), []string{"GITHUB_TOKEN"}); err != nil {
+	if _, err := g.createCredentialForm(identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), []string{"GITHUB_TOKEN"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	g.forms.m["expired"] = credentialForm{OwnerID: "alice", ExpiresAt: time.Now().Add(-time.Minute)}
-	if _, err := g.createCredentialForm(identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), []string{"GITHUB_TOKEN"}); err != nil {
+	if _, err := g.createCredentialForm(identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), []string{"GITHUB_TOKEN"}, ""); err != nil {
 		t.Fatal(err)
 	}
 

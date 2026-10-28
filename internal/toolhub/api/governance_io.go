@@ -15,8 +15,10 @@ import (
 // SeedInventory is the built-in catalog of sections the platform can emit.
 // Anything rendered that is not inventoried lands as unknown → deny.
 func SeedInventory() []ToolSection {
-	native := func(name, effect, def string) ToolSection {
-		return ToolSection{ID: "native:" + name, Owner: OwnerHermes, Official: true, Effect: effect, Default: def}
+	// SPEC-0083 R3.1: every native:* section defaults to deny — visibility is
+	// a workspace wish plus an explicit grant, never an upstream default.
+	native := func(name, effect string) ToolSection {
+		return ToolSection{ID: "native:" + name, Owner: OwnerHermes, Official: true, Effect: effect, Default: RuleDeny}
 	}
 	hub := func(id, effect string) ToolSection {
 		return ToolSection{ID: id, Owner: OwnerHub, Official: true, Prepared: true, Effect: effect, Default: RuleAllow}
@@ -24,37 +26,37 @@ func SeedInventory() []ToolSection {
 	sections := []ToolSection{
 		// Native toolsets — the unmanaged emit list, the managed carve-out
 		// vocabulary and the pseudo-toolsets rendered as native config.
-		native("terminal", EffectExec, RuleDeny), // restrictive default (issue 139)
-		native("code_execution", EffectExec, RuleDeny),
-		native("file", EffectMutate, RuleAllow),
-		native("web", EffectRead, RuleAllow),
-		native("search", EffectRead, RuleAllow),
-		native("x_search", EffectRead, RuleAllow),
-		native("skills", EffectRead, RuleAllow),
-		native("todo", EffectMutate, RuleAllow),
-		native("cronjob", EffectMutate, RuleAllow),
-		native("messaging", EffectMutate, RuleAllow),
-		native("memory", EffectMutate, RuleAllow),
-		native("session_search", EffectRead, RuleAllow),
-		native("browser", EffectMutate, RuleAllow),
-		native("image_gen", EffectMutate, RuleAllow),
-		native("video", EffectRead, RuleAllow),
-		native("video_gen", EffectMutate, RuleAllow),
-		native("vision", EffectRead, RuleAllow),
-		native("kanban", EffectMutate, RuleAllow),
-		native("spotify", EffectMutate, RuleAllow),
-		native("homeassistant", EffectMutate, RuleAllow),
-		native("tts", EffectRead, RuleAllow),
-		native("feishu_doc", EffectMutate, RuleAllow),
-		native("feishu_drive", EffectMutate, RuleAllow),
-		native("clarify", EffectRead, RuleAllow),
-		native("debugging", EffectRead, RuleAllow),
-		native("project", EffectMutate, RuleAllow),
-		native("safe", EffectRead, RuleAllow),
+		native("terminal", EffectExec),
+		native("code_execution", EffectExec),
+		native("file", EffectMutate),
+		native("web", EffectRead),
+		native("search", EffectRead),
+		native("x_search", EffectRead),
+		native("skills", EffectRead),
+		native("todo", EffectMutate),
+		native("cronjob", EffectMutate),
+		native("messaging", EffectMutate),
+		native("memory", EffectMutate),
+		native("session_search", EffectRead),
+		native("browser", EffectMutate),
+		native("image_gen", EffectMutate),
+		native("video", EffectRead),
+		native("video_gen", EffectMutate),
+		native("vision", EffectRead),
+		native("kanban", EffectMutate),
+		native("spotify", EffectMutate),
+		native("homeassistant", EffectMutate),
+		native("tts", EffectRead),
+		native("feishu_doc", EffectMutate),
+		native("feishu_drive", EffectMutate),
+		native("clarify", EffectRead),
+		native("debugging", EffectRead),
+		native("project", EffectMutate),
+		native("safe", EffectRead),
 		// Pseudo entries rendered through the native config.
-		native("meet", EffectMutate, RuleAllow),
-		native("transcription", EffectRead, RuleAllow),
-		native("deep_research", EffectRead, RuleAllow),
+		native("meet", EffectMutate),
+		native("transcription", EffectRead),
+		native("deep_research", EffectRead),
 		// Hub-owned MCP surfaces rendered into the effective config.
 		hub(SectionHubTools, EffectMutate),
 		hub(SectionHubBrowser, EffectMutate),
@@ -85,6 +87,10 @@ func SeedInventory() []ToolSection {
 		hub("hub:exposure", EffectExec), // public endpoints: restrictive default, like ssh
 		hub("hub:terminal", EffectExec), // restrictive default, like native:terminal
 		hub("hub:web", EffectMutate),
+		// SPEC-0083 R5.2: governed skills surface — reads and mutations are
+		// separately grantable; mutations still land as drafts.
+		hub("hub:skills", EffectRead),
+		hub("hub:skills_manage", EffectMutate),
 		// The two mutable per-principal surfaces.
 		{ID: SectionUserMCP, Owner: OwnerUser, Effect: EffectCredential, Default: RuleDeny},
 		{ID: SectionOrgMCP, Owner: OwnerOrg, Official: true, Prepared: true, Effect: EffectMutate, Default: RuleAllow},

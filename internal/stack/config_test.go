@@ -7,6 +7,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
 func TestInitNeverOverwrites(t *testing.T) {
@@ -73,7 +76,7 @@ func TestRenderAllFeatures(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(root, "config/SOUL.md"), []byte("original"), 0600)
 	gated := filepath.Join(root, "config", "skills", "deep-research-embedded")
 	_ = os.MkdirAll(gated, 0755)
-	_ = os.WriteFile(filepath.Join(gated, "SKILL.md"), []byte("name: deep-research-embedded"), 0600)
+	_ = os.WriteFile(filepath.Join(gated, "SKILL.md"), []byte("---\nname: deep-research-embedded\ndescription: gated fixture\n---\n"), 0600)
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
@@ -102,19 +105,28 @@ func TestRenderAllFeatures(t *testing.T) {
 	if err := saveSpace(d, s); err != nil {
 		t.Fatal(err)
 	}
+	// All-features render: grant every native section the fixture selects —
+	// native Hermes toolsets are default-deny (SPEC-0083 R3.1).
+	seedGovernance(t, d, func(doc *api.Governance) {
+		for name, entry := range s.Tools {
+			if entry.Via == ToolViaNative {
+				activeToolGrant(t, doc, "me", "native:"+name, time.Hour)
+			}
+		}
+	})
 	if err := Render(d, root); err != nil {
 		t.Fatal(err)
 	}
 	generatedConfig, err := os.ReadFile(filepath.Join(d, "generated", "hermes.prod.yaml"))
-	if err != nil || !strings.Contains(string(generatedConfig), "/opt/hub/skills") {
-		t.Fatalf("default global skills mount missing: %v %s", err, generatedConfig)
+	if err != nil || strings.Contains(string(generatedConfig), "/opt/hub/skills") {
+		t.Fatalf("legacy skills loader path still rendered: %v %s", err, generatedConfig)
 	}
 	generatedCompose, err := os.ReadFile(filepath.Join(d, "generated", "compose.prod.yaml"))
-	if err != nil || !strings.Contains(string(generatedCompose), filepath.ToSlash(filepath.Join(d, "generated", "skills"))) {
-		t.Fatalf("filtered global skills source missing: %v %s", err, generatedCompose)
+	if err != nil || !strings.Contains(string(generatedCompose), filepath.ToSlash(filepath.Join(d, "generated", "skills-effective"))) {
+		t.Fatalf("effective skills view mount missing: %v %s", err, generatedCompose)
 	}
-	if _, err := os.Stat(filepath.Join(d, "generated", "skills", "deep-research-embedded", "SKILL.md")); err != nil {
-		t.Fatalf("bundled deep-research skill not materialized: %v", err)
+	if _, err := os.Stat(filepath.Join(d, "generated", "skills-effective", "deep-research-embedded", "SKILL.md")); err != nil {
+		t.Fatalf("bundled deep-research skill not materialized into the view: %v", err)
 	}
 	cfg := Config(s)
 	display, ok := cfg["display"].(M)

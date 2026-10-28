@@ -383,3 +383,13 @@ func TestInboundJobUsesChannelEnvelopeAndPresence(t *testing.T) {
 		t.Fatal("typing-capable channel got no accept-time presence")
 	}
 }
+
+// A spool built standalone (channelFor(nil, ...)) binds nil-gateway closures:
+// RouteBlockedNotice resolves the owner through UserByPrincipal, so a nil
+// gateway must report no verified home — not dereference it.
+func TestNilGatewayUserByPrincipalFailsClosed(t *testing.T) {
+	var g *Gateway
+	if u := g.telegramDeps().UserByPrincipal("alice"); u.ID != "" {
+		t.Fatalf("nil gateway resolved a user: %+v", u)
+	}
+}

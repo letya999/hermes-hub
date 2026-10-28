@@ -1,0 +1,30 @@
+chg: CHG-0196
+title: M24 #364 S9 — provisioning profiles
+issue: 364
+status: done
+slices:
+  S9.1-profile-resolution: done
+  S9.2-org-schema: done
+  S9.3-init-lock: done
+  S9.4-sync-members: done
+  S9.5-layered-soul: done
+  S9.6-grants-materialize: done
+  S9.7-skills-pins: done
+  S9.8-apply-diff: done
+  S9.9-docs: done
+verification: just check green (coverage 86.13%)
+notes: >
+  Design decisions: profile SOUL is a render-time layer (contract→org→
+  profile→user→catalog per R9.4), never stamped into the user file.
+  profile.lock covers stamped files only (agent.yaml, workspace.yaml).
+  grants.yaml materializes into a draft CapabilityPolicy revision via
+  `hubctl profile grants` (defaults swapped, ceiling untouched); authority
+  still requires `capability --kind policy --confirm` — nothing
+  auto-publishes. Members accepts scalar or {role, profile}; marshal stays
+  scalar when profile is empty. Legacy policies/*-default.yaml resolves as
+  profile "default". Org assignment (s.OrganizationProfile) wins over the
+  user-editable profile.lock at render so a member cannot pull an
+  unassigned profile. skills.yaml pins order first in the effective
+  catalog and ineligible pins are render-time errors. `profile apply`
+  three-ways stamped files vs lock vs new profile; org overlay resolves
+  through scope.yaml.

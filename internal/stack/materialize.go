@@ -1,28 +1,40 @@
 package stack
 
 import (
+	"encoding/json"
+
 	"github.com/letya999/hermes-hub/internal/selfsettings"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/letya999/hermes-hub/internal/skillstore"
 	"github.com/letya999/hermes-hub/internal/systemguide"
 
 	"gopkg.in/yaml.v3"
 )
 
-// MaterializeSoulEffective composes the effective SOUL (SPEC-0053 R1.8/D7): the
-// owner's persona file verbatim plus the hub-owned channel contract. It runs
-// after HealUserSoul so the persona it reads is the healed one. The output is
-// what the runtime mounts at /state/hermes/SOUL.md, so contract edits move
-// the session revision exactly once per render.
+// MaterializeSoulEffective composes the effective SOUL (SPEC-0053 R1.8/D7,
+// SPEC-0083 R9.4): the hub-owned channel contract, then the organization
+// instructions, the assigned provisioning profile's persona layer, the
+// owner's own file and the session-pinned skill catalog. It runs after
+// HealUserSoul so the persona it reads is the healed one; profile and org
+// SOUL files layer at render so org edits propagate without rewriting
+// user-owned files.
 func MaterializeSoulEffective(dir string, s Settings) error {
 	persona, err := os.ReadFile(filepath.Join(dir, "SOUL.md"))
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	body := strings.TrimRight(string(persona), "\n") + "\n\n" + ChannelContract
+	body := ChannelContract
+	if org := orgSoulLayer(s); org != "" {
+		body += "\n\n" + org
+	}
+	if profile := profileSoulLayer(dir, s); profile != "" {
+		body += "\n\n" + profile
+	}
+	body += "\n\n" + strings.TrimRight(string(persona), "\n") + tier0Block(dir)
 	path := filepath.Join(dir, "generated", "soul-effective."+s.Environment+".md")
 	if err := atomic(path, []byte(body)); err != nil {
 		return err
@@ -31,6 +43,29 @@ func MaterializeSoulEffective(dir string, s Settings) error {
 	// hermes-effective materialization it must stay world-readable past
 	// atomic's 0600, or the container dies on SOUL.md permission denied.
 	return os.Chmod(path, 0644)
+}
+
+// orgSoulLayer reads the organization's SOUL.md for the org→profile→user
+// layering (R9.4); absent or unreadable layers simply skip.
+func orgSoulLayer(s Settings) string {
+	if s.OrganizationDir == "" {
+		return ""
+	}
+	b, err := os.ReadFile(filepath.Join(s.OrganizationDir, "SOUL.md")) // #nosec G304 -- resolved org dir
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// profileSoulLayer reads the assigned provisioning profile's SOUL.md — org
+// assignment, stamped lock, or "default" per assignedProfileName.
+func profileSoulLayer(dir string, s Settings) string {
+	p, err := resolveProvisioningProfile(dir, s.OrganizationDir, assignedProfileName(dir, s))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(p.Soul))
 }
 
 // writeModelRegistry materializes the merged spaces/org/user models.yaml into
@@ -98,6 +133,167 @@ func materializeHermesConfig(dir string, s Settings) error {
 // MaterializeGlobalSkills and mounted at /opt/hub/skills.
 func GeneratedSkillsDir(dir string) string {
 	return filepath.Join(dir, "generated", "skills")
+}
+
+// GeneratedEffectiveSkillsDir is the per-space read-only effective view built
+// by MaterializeEffectiveSkills and mounted at /skills.
+func GeneratedEffectiveSkillsDir(dir string) string {
+	return filepath.Join(dir, "generated", "skills-effective")
+}
+
+// MaterializeEffectiveSkills stages the platform tier and builds the
+// agent-visible effective view at generated/skills-effective (SPEC-0083 R2.5).
+func MaterializeEffectiveSkills(dir string, s Settings) (*skillstore.EffectiveIndex, error) {
+	if err := MaterializeGlobalSkills(dir, s); err != nil {
+		return nil, err
+	}
+	sources := []skillstore.Source{{Name: "platform", Dir: GeneratedSkillsDir(dir)}}
+	if s.OrgScoped() && s.OrganizationDir != "" {
+		sources = append(sources, skillstore.Source{Name: "org", Dir: filepath.Join(s.OrganizationDir, "skills")})
+	}
+	sources = append(sources, skillstore.Source{Name: "user", Dir: filepath.Join(dir, "skills")})
+	idx, err := skillstore.Build(GeneratedEffectiveSkillsDir(dir), sources)
+	if err != nil {
+		return nil, err
+	}
+	// R6.1: readiness is stamped at render — Settings knows the granted
+	// toolsets/connectors; the runtime mounts whatever this build decided,
+	// so the catalog the model sees matches policy exactly.
+	idx.ApplyReadiness(skillCapabilities(dir, s))
+	pins, err := profileSkillPins(dir, s)
+	if err != nil {
+		return nil, err
+	}
+	if err := idx.Pin(pins); err != nil {
+		return nil, err
+	}
+	return idx, skillstore.WriteIndex(GeneratedEffectiveSkillsDir(dir), idx)
+}
+
+// profileSkillPins resolves the space's assigned provisioning profile and
+// reads its skills.yaml references for pinning (R9.6). The organization
+// assignment wins over the user-editable profile.lock, so a member cannot
+// pull in a profile they were never assigned.
+func profileSkillPins(dir string, s Settings) ([]skillstore.PinnedRef, error) {
+	p, err := resolveProvisioningProfile(dir, s.OrganizationDir, assignedProfileName(dir, s))
+	if err != nil {
+		return nil, err
+	}
+	return ProfileSkillPins(p)
+}
+
+// assignedProfileName is the render-time profile resolution: the org
+// assignment, then the init-stamped profile.lock, then "default".
+func assignedProfileName(dir string, s Settings) string {
+	if s.OrganizationProfile != "" {
+		return s.OrganizationProfile
+	}
+	if lock, err := readProvisioningLock(dir); err == nil && lock.Profile != "" {
+		return lock.Profile
+	}
+	return "default"
+}
+
+// skillCapabilities derives the granted capability surface a skill's
+// `requires` block is checked against (R6.1).
+func skillCapabilities(dir string, s Settings) skillstore.Capabilities {
+	caps := skillstore.Capabilities{
+		Toolsets:   map[string]bool{},
+		Connectors: map[string]bool{},
+		Platform:   "linux",
+	}
+	for _, name := range s.NativeCarveouts() {
+		caps.Toolsets[name] = true
+	}
+	for name := range s.MCP {
+		caps.Connectors[name] = true
+	}
+	// Script execution rides the caller's grants only: the terminal carveout
+	// is the documented exec surface, off by default (R7.5).
+	caps.ExecGrant = caps.Toolsets["terminal"]
+	// Dep schemes resolve only through operator-allowed surfaces: pip/npm map
+	// onto cli_registries, system: needs at least one configured toolbox
+	// layer (R7.4).
+	caps.Registries = map[string]bool{}
+	for _, registry := range s.CLIRegistries {
+		switch registry {
+		case "pypi":
+			caps.Registries["pip"] = true
+		case "npm":
+			caps.Registries["npm"] = true
+		}
+	}
+	caps.Registries["system"] = len(s.CLIToolboxes) > 0
+	// R8.2/R8.5: per-skill stored credential names (never values) satisfy
+	// declared requires.credentials at render.
+	caps.SkillCreds = map[string]map[string]bool{}
+	credsDir := filepath.Join(dir, "skills", ".state", "credentials")
+	if files, err := os.ReadDir(credsDir); err == nil {
+		for _, f := range files {
+			skill := strings.TrimSuffix(f.Name(), ".json")
+			stored, err := skillstore.ReadCredentials(filepath.Join(dir, "skills"), skill)
+			if err != nil {
+				continue
+			}
+			caps.SkillCreds[skill] = map[string]bool{}
+			for name := range stored {
+				caps.SkillCreds[skill][name] = true
+			}
+		}
+	}
+	return caps
+}
+
+// tier0Block renders the session-pinned <available_skills> catalog appended to
+// soul-effective (R6.2): eligible, implicit-visible skills only.
+func tier0Block(dir string) string {
+	raw, err := os.ReadFile(filepath.Join(GeneratedEffectiveSkillsDir(dir), "index.json"))
+	if err != nil {
+		return ""
+	}
+	var idx skillstore.EffectiveIndex
+	if err := json.Unmarshal(raw, &idx); err != nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n\n<available_skills revision=\"" + idx.Revision + "\">\n")
+	b.WriteString("These skills are available. Activate one with the skill tool before following its instructions; if a skill body left context (compaction), re-invoke skill to reload it. Discover more with skills_search; inspect bundled files with skill_view.\n")
+	count := 0
+	for _, e := range idx.Skills {
+		if !e.Hidden && e.Eligible {
+			count++
+		}
+	}
+	if count > 20 {
+		// Past ~20 entries the catalog degrades to names + a search hint so
+		// the tier-0 block stays inside its token budget (R6.2).
+		var names []string
+		for _, e := range idx.Skills {
+			if !e.Hidden && e.Eligible {
+				names = append(names, e.Name)
+			}
+		}
+		return b.String() + strings.Join(names, ", ") +
+			"\nDescriptions elided at this catalog size — call skills_search for details.\n</available_skills>\n"
+	}
+	for _, e := range idx.Skills {
+		if e.Hidden || !e.Eligible {
+			continue
+		}
+		b.WriteString("- " + e.Name + " [" + e.Source + "]: " + catalogDescription(e.Description) + "\n")
+	}
+	return b.String() + "</available_skills>\n"
+}
+
+// catalogDescription sanitizes an entry description for the tier-0 block:
+// markup is escaped so catalog text cannot inject prompt markup and the
+// text is capped at 200 chars (R6.6).
+func catalogDescription(desc string) string {
+	if len(desc) > 200 {
+		desc = desc[:200]
+	}
+	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
+	return r.Replace(desc)
 }
 
 // GeneratedPluginsDir is the per-space filtered hub-plugin tree materialized
@@ -178,9 +374,6 @@ func MaterializeHubPlugins(dir, root string, s Settings) error {
 // disabled. The container then sees exactly the skills this space may run;
 // skills.disabled in the rendered config blocks the same names as a fallback.
 func MaterializeGlobalSkills(dir string, s Settings) error {
-	if s.CapabilityMode == "managed" {
-		return nil
-	}
 	src := strings.TrimSpace(s.GlobalSkillsDir)
 	dest := GeneratedSkillsDir(dir)
 	if filepath.Clean(src) == filepath.Clean(dest) {

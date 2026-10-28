@@ -7,17 +7,12 @@ import (
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/media"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
-	"path/filepath"
 	"slices"
 )
 
 func Config(s Settings) M {
 	if s.CapabilityMode == "managed" {
 		return managedHermesConfig(s)
-	}
-	organizationSkills := s.OrganizationSkillsDir
-	if organizationSkills == "" && s.OrganizationDir != "" {
-		organizationSkills = filepath.Join(s.OrganizationDir, "hermes", "skills")
 	}
 	servers := M{}
 	// The hub executor server is the hub:tools section: governance can cut it
@@ -96,7 +91,9 @@ func Config(s Settings) M {
 	}
 	// vision and image_gen stay off this list. The hub MCP tools are the
 	// workspace-confined profile; the native local tools are not.
-	toolsets := []string{"terminal", "file", "web", "skills", "todo", "cronjob", "messaging", "memory", "session_search"}
+	// SPEC-0083 R3.2: no implicit native base list — a toolset reaches the
+	// render only via an explicit tools: wish that survives governance.
+	toolsets := []string{}
 	for name, entry := range s.Tools {
 		mapped := name
 		if name == "meet" {
@@ -104,6 +101,11 @@ func Config(s Settings) M {
 		}
 		switch entry.Via {
 		case ToolViaNative:
+			// SPEC-0083 R3.3: the native skills loader is always off — the
+			// hub-built read-only view at /skills is the only skill path.
+			if name == "skills" {
+				continue
+			}
 			if !slices.Contains(toolsets, mapped) {
 				toolsets = append(toolsets, mapped)
 			}
@@ -132,26 +134,10 @@ func Config(s Settings) M {
 		return !s.govAllows("native:" + entry)
 	})
 	slices.Sort(toolsets)
+	// SPEC-0083 R2.6/D13: the runtime sees the hub-built effective view at the
+	// read-only /skills mount; the upstream loader gets nothing to scan and
+	// the sealed /state/hermes/skills stays empty.
 	skills := M{}
-	external := []string{}
-	if organizationSkills != "" {
-		external = append(external, "/org/hermes/skills")
-	}
-	external = append(external, "/opt/hub/skills")
-	if len(external) > 0 {
-		skills["external_dirs"] = external
-	}
-	// Defense in depth: the filtered /opt/hub/skills mount already excludes
-	// gated skills; disabled additionally blocks a same-named org skill.
-	var disabled []string
-	for skill, feature := range webGatedSkills {
-		if !s.Has(feature) {
-			disabled = append(disabled, skill)
-		}
-	}
-	if len(disabled) > 0 {
-		skills["disabled"] = disabled
-	}
 	memory := M{"memory_enabled": s.Memory || s.toolEntry("memory").enabled(), "user_profile_enabled": s.Memory || s.toolEntry("memory").enabled()}
 	// Keep long-running connector work alive when a user sends a follow-up. Hermes'
 	// default interrupt mode cancels the active MCP call; queue mode preserves FIFO
@@ -187,7 +173,7 @@ func Config(s Settings) M {
 		}
 		deniedToolsets = append(deniedToolsets, name)
 	}
-	cfg := M{"model": M{"default": s.Model, "provider": "custom", "base_url": s.ModelURL, "api_key": "${OPENAI_API_KEY}"}, "terminal": M{"backend": "local", "cwd": "/workspace", "timeout": 120}, "timeouts": M{"tools": M{"sequential_call": 1800, "concurrent_batch": 1800}}, "platform_toolsets": platforms, "agent": M{"disabled_toolsets": deniedToolsets}, "plugins": M{"enabled": []string{}}, "mcp_servers": servers, "skills": skills, "display": display, "stt": M{"enabled": s.Has("transcription"), "provider": "local", "language": "", "local": M{"model": "small"}}, "timezone": s.Timezone, "hooks": s.Hooks, "memory": memory}
+	cfg := M{"model": M{"default": s.Model, "provider": "custom", "base_url": s.ModelURL, "api_key": "${OPENAI_API_KEY}"}, "terminal": M{"backend": "local", "cwd": "/workspace", "timeout": 120}, "timeouts": M{"tools": M{"sequential_call": 1800, "concurrent_batch": 1800}}, "platform_toolsets": platforms, "agent": M{"disabled_toolsets": deniedToolsets}, "plugins": M{"enabled": []string{}}, "mcp_servers": servers, "skills": skills, "display": display, "stt": M{"enabled": s.Has("transcription"), "provider": "local", "language": "", "local": M{"model": "small"}}, "curator": M{"enabled": false}, "timezone": s.Timezone, "hooks": s.Hooks, "memory": memory}
 	cfg["auxiliary"] = M{"vision": M{"provider": "main", "timeout": 30, "download_timeout": 15, "max_concurrency": media.InspectConcurrency}}
 	if s.Has("web") {
 		if web := s.Web.config(); len(web) > 0 {

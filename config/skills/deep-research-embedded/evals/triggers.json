@@ -1,0 +1,27 @@
+{
+  "split": 0.6,
+  "runs": 3,
+  "threshold": 0.5,
+  "queries": [
+    {"q": "deep research the small-modular-reactor market and cite sources", "expect": true},
+    {"q": "исследуй глубоко рынок электросамокатов с источниками", "expect": true},
+    {"q": "compare the major vector databases in depth with references", "expect": true},
+    {"q": "survey post-quantum TLS adoption across browsers — long research", "expect": true},
+    {"q": "investigate how EU AI Act enforcement evolved, with citations", "expect": true},
+    {"q": "разберись с источниками, как развивалась спецификация MCP", "expect": true},
+    {"q": "give me a cited overview of CRDT text-editing algorithms", "expect": true},
+    {"q": "research deeply which self-hosted GitLab CI runners scale best", "expect": true},
+    {"q": "long research: thermal throttling behavior across laptop SoCs", "expect": true},
+    {"q": "map the landscape of embedded durable-execution engines, cited", "expect": true},
+    {"q": "write a python script that merges two PDFs", "expect": false},
+    {"q": "what is the capital of Norway", "expect": false},
+    {"q": "install the GitHub MCP connector", "expect": false},
+    {"q": "summarize this chat so far", "expect": false},
+    {"q": "покажи статус моих коннекторов", "expect": false},
+    {"q": "rename the file draft.md to notes.md", "expect": false},
+    {"q": "search the web for today's EUR/USD rate", "expect": false},
+    {"q": "create a routine that pings me every morning", "expect": false},
+    {"q": "explain how the hub's skill drafts work", "expect": false},
+    {"q": "translate 'bonjour le monde' into Russian", "expect": false}
+  ]
+}

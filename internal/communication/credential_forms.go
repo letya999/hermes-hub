@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -23,6 +24,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/locale"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
+	"github.com/letya999/hermes-hub/internal/skillstore"
 	"github.com/letya999/hermes-hub/internal/stack"
 )
 
@@ -42,6 +44,9 @@ type credentialForm struct {
 	NonceHash string
 	ExpiresAt time.Time
 	Used      bool
+	// Skill scopes the form to one skill's declared credentials; values
+	// persist under the store's .state, never the runtime env (R8.2).
+	Skill string
 }
 
 type credentialFormRequest struct {
@@ -75,7 +80,11 @@ func (g *Gateway) handleCredentialFormRequest(w http.ResponseWriter, r *http.Req
 		http.Error(w, "credential form rejected", http.StatusBadRequest)
 		return
 	}
-	response, err := g.createCredentialForm(caller, keys)
+	skill := ""
+	if name, ok := strings.CutPrefix(request.Service, "skill:"); ok {
+		skill = name
+	}
+	response, err := g.createCredentialForm(caller, keys, skill)
 	if err != nil {
 		http.Error(w, "credential form unavailable", http.StatusServiceUnavailable)
 		return
@@ -85,6 +94,20 @@ func (g *Gateway) handleCredentialFormRequest(w http.ResponseWriter, r *http.Req
 
 func (g *Gateway) formKeys(user User, service string, requested []string) ([]string, error) {
 	allowed := map[string]bool{}
+	if skill, ok := strings.CutPrefix(service, "skill:"); ok {
+		for _, name := range g.skillCredentialNames(skill) {
+			allowed[name] = true
+		}
+		if len(allowed) == 0 {
+			return nil, errors.New("unknown skill or no declared credentials")
+		}
+		if len(requested) == 0 {
+			for name := range allowed {
+				requested = append(requested, name)
+			}
+		}
+		return dedupeCredentialKeys(allowed, requested)
+	}
 	for _, info := range stack.ServiceCatalog() {
 		if info.SelfService {
 			for _, key := range info.Requires {
@@ -105,6 +128,12 @@ func (g *Gateway) formKeys(user User, service string, requested []string) ([]str
 	if len(requested) == 0 {
 		return nil, errors.New("credential fields are required")
 	}
+	return dedupeCredentialKeys(allowed, requested)
+}
+
+// dedupeCredentialKeys filters the request to allowed names; a disallowed or
+// gateway-owned key rejects the whole request rather than degrading it.
+func dedupeCredentialKeys(allowed map[string]bool, requested []string) ([]string, error) {
 	seen := map[string]bool{}
 	keys := make([]string, 0, len(requested))
 	for _, key := range requested {
@@ -122,7 +151,44 @@ func (g *Gateway) formKeys(user User, service string, requested []string) ([]str
 	return keys, nil
 }
 
-func (g *Gateway) createCredentialForm(auth identity.Envelope, keys []string) (credentialFormResponse, error) {
+// skillCredentialNames returns the credential names a skill declares in the
+// mounted effective index — the only names a skill-scoped form may collect
+// (R8.2). Unknown/absent skills yield nothing.
+func (g *Gateway) skillCredentialNames(skill string) []string {
+	if g.config.SkillsDir == "" {
+		return nil
+	}
+	body, err := os.ReadFile(filepath.Join(g.config.SkillsDir, "index.json")) // #nosec G304 -- operator-mounted effective view
+	if err != nil {
+		return nil
+	}
+	var idx struct {
+		Skills []struct {
+			Name     string `json:"name"`
+			Requires struct {
+				Credentials []struct {
+					Name string `json:"name"`
+				} `json:"credentials"`
+			} `json:"requires"`
+		} `json:"skills"`
+	}
+	if json.Unmarshal(body, &idx) != nil {
+		return nil
+	}
+	for _, e := range idx.Skills {
+		if e.Name != skill {
+			continue
+		}
+		names := []string{}
+		for _, c := range e.Requires.Credentials {
+			names = append(names, c.Name)
+		}
+		return names
+	}
+	return nil
+}
+
+func (g *Gateway) createCredentialForm(auth identity.Envelope, keys []string, skill string) (credentialFormResponse, error) {
 	origin, err := g.formOrigin()
 	if err != nil {
 		return credentialFormResponse{}, err
@@ -145,7 +211,7 @@ func (g *Gateway) createCredentialForm(auth identity.Envelope, keys []string) (c
 			delete(g.forms.m, formID)
 		}
 	}
-	g.forms.m[id] = credentialForm{OwnerID: auth.PrincipalID, Envelope: auth, Keys: append([]string(nil), keys...), NonceHash: hex.EncodeToString(hash[:]), ExpiresAt: g.now().Add(credentialFormTTL)}
+	g.forms.m[id] = credentialForm{OwnerID: auth.PrincipalID, Envelope: auth, Keys: append([]string(nil), keys...), NonceHash: hex.EncodeToString(hash[:]), ExpiresAt: g.now().Add(credentialFormTTL), Skill: skill}
 	g.forms.mu.Unlock()
 	return credentialFormResponse{Input: "protected-form", FormURL: origin + "/credentials/" + id + "?nonce=" + url.QueryEscape(nonce), Fields: append([]string(nil), keys...)}, nil
 }
@@ -270,6 +336,11 @@ func (g *Gateway) serveCredentialForm(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) persistCredentialForm(r *http.Request, form credentialForm, values map[string]string) error {
+	// R8.2: a skill-scoped form stores (principal, skill) secrets under the
+	// store's private .state — never the runtime env store.
+	if form.Skill != "" {
+		return g.persistSkillCredentials(r, form, values)
+	}
 	if g.config.RuntimeURL != "" {
 		request := hubruntime.SelfEnvRequest{Envelope: form.Envelope, OrganizationID: g.config.OrganizationID, UserID: form.OwnerID, ActorID: form.OwnerID, ScopeID: "user:" + form.OwnerID, Values: values}
 		body, err := json.Marshal(request)
@@ -310,6 +381,16 @@ func (g *Gateway) persistCredentialForm(r *http.Request, form credentialForm, va
 		return g.restart(r.Context(), request)
 	}
 	return nil
+}
+
+// persistSkillCredentials lands a skill-scoped form's values under the owner
+// store's .state/credentials (R8.2); cells read them at exec time, so no
+// restart is needed. Managed deployments relay through /v1/skill-creds.
+func (g *Gateway) persistSkillCredentials(r *http.Request, form credentialForm, values map[string]string) error {
+	if strings.TrimSpace(g.config.SkillsStore) == "" {
+		return errors.New("skill store unavailable")
+	}
+	return skillstore.WriteCredentials(g.config.SkillsStore, form.Skill, values)
 }
 
 func communicationLoopbackHTTP(r *http.Request) bool {

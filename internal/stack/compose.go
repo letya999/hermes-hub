@@ -184,11 +184,22 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	if s.OrgScoped() && s.CapabilityMode != "managed" {
 		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(s.OrganizationDocsDir), "target": "/org", "read_only": true})
 	}
-	if s.CapabilityMode != "managed" {
-		// The mounted dir is the per-space filtered copy materialized by
-		// Render: feature-gated bundled skills are absent entirely when the
-		// feature is off, so they cannot be read or followed by prompt.
-		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(GeneratedSkillsDir(dir)), "target": "/opt/hub/skills", "read_only": true})
+	// The mounted dir is the read-only effective view materialized by
+	// Render: platform > org > user, with gated platform skills absent
+	// entirely when the feature is off.
+	stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(GeneratedEffectiveSkillsDir(dir)), "target": "/skills", "read_only": true})
+	// R5.1: the owner store is writable beside the read-only view; env tells
+	// the executor which path is which. Drafts never touch /skills.
+	stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "skills")), "target": "/skills-store"})
+	runtimeEnv["HUB_SKILLS_STORE"] = "/skills-store"
+	runtimeEnv["HUB_SKILLS_EFFECTIVE"] = "/skills"
+	// R5.2: org-bound spaces also mount the writable org store so org
+	// proposals land as drafts there; absent on personal spaces.
+	if s.OrgScoped() && s.OrganizationSkillsDir != "" {
+		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(s.OrganizationSkillsDir), "target": "/skills-store-org"})
+		runtimeEnv["HUB_SKILLS_ORG"] = "/skills-store-org"
+		// R5.4: the bound member's role gates org publishes at apply time.
+		runtimeEnv["HUB_ORGANIZATION_ROLE"] = s.OrganizationRole
 	}
 	if s.CapabilityMode != "managed" {
 		for name, feature := range hubGatedPlugins {
@@ -216,6 +227,13 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			"/state/hermes/skills:ro,mode=0555", "/state/hermes/hooks:ro,mode=0555", "/state/hermes/plugins:ro,mode=0555",
 			"/state/hermes/skill-bundles:ro,mode=0555", "/state/hermes/scripts:ro,mode=0555",
 			"/state/hermes/bin:ro,mode=0555", "/state/hermes/node:ro,mode=0555", "/state/hermes/lsp:ro,mode=0555")
+	}
+	if s.CapabilityMode != "managed" {
+		// Same seal managed mode applies: upstream skills-sync tolerates an
+		// empty read-only /state/hermes/skills, so the agent never gets a
+		// writable skill path (SPEC-0083 R2.6/D13).
+		runtimeService["tmpfs"] = append(slices.Clone(common["tmpfs"].([]string)),
+			"/state/hermes/skills:ro,mode=0555")
 	}
 	runtimeService["command"] = []string{"serve"}
 	if !s.Has("telegram") && s.NativeCron != "unmigrated" {
@@ -421,7 +439,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// the boundary — owner argv still lands in a mountless sandbox.
 		toolhubEnv["HUB_CLI_ALLOWLIST"] = "rg,bash"
 		toolhubEnv["HUB_DOCKER_AGENT_NET"] = managedAgentNetwork(s)
-		toolhubVolumes := []any{stateBind, brokerSecrets("toolhub"), brokerMaterializedMount, credStagingMount}
+		toolhubEnv["HUB_SKILLS_EFFECTIVE"] = "/skills-effective"
+		toolhubEnv["HUB_SKILLS_STORE"] = "/skills-store"
+		toolhubVolumes := []any{stateBind, brokerSecrets("toolhub"), brokerMaterializedMount, credStagingMount,
+			M{"type": "bind", "source": filepath.ToSlash(GeneratedEffectiveSkillsDir(dir)), "target": "/skills-effective", "read_only": true},
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "skills")), "target": "/skills-store", "read_only": true}}
 		if s.usesDockerSocket() {
 			toolhubVolumes = append(toolhubVolumes, dockerSock)
 		}
@@ -560,14 +582,29 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		if supervisorURL == "" {
 			gatewayEnvFiles = append(gatewayEnvFiles, M{"path": filepath.ToSlash(filepath.Join(dir, "runtime.auth")), "format": "raw"})
 			gatewayEnvironment["HUB_TOOLHUB_URL"] = "http://toolhub:8090"
+			// The skillgit ExecCell posts to the controller /cli-exec derived
+			// from this endpoint; toolhub.auth carries the admission token.
+			gatewayEnvFiles = append(gatewayEnvFiles, M{"path": filepath.ToSlash(filepath.Join(dir, "toolhub.auth")), "format": "raw"})
+			gatewayEnvironment["HUB_TOOLHIVE_ADMISSION_ENDPOINT"] = "http://workload-controller:8545/admit"
 		} else {
 			gatewayEnvironment["HUB_SUPERVISOR_AUTH"] = "${HUB_SUPERVISOR_AUTH:?set HUB_SUPERVISOR_AUTH or provision supervisor.auth for this stack}"
 			gatewayEnvironment["HUB_TOOLHUB_URL"] = "http://toolhub-control:8090"
 		}
+		// Harness-side /name and $name expansion reads the ro effective view
+		// (R6.5); same convention as the toolhub mount above. The owner store
+		// stays writable for skill-scoped credential forms (R8.2).
+		gatewayEnvironment["HUB_SKILLS_EFFECTIVE"] = "/skills-effective"
+		gatewayEnvironment["HUB_SKILLS_STORE"] = "/skills-store"
+		gatewayEnvironment["HUB_GITLAB_HOST"] = s.GitLabHost
 		gateway["env_file"] = gatewayEnvFiles
 		gateway["environment"] = gatewayEnvironment
 		gateway["networks"] = sharedNetworks
-		gateway["volumes"] = []any{M{"type": "volume", "source": "communication-hub-data", "target": "/data"}, brokerSecrets("communication")}
+		gateway["volumes"] = []any{
+			M{"type": "volume", "source": "communication-hub-data", "target": "/data"},
+			M{"type": "bind", "source": filepath.ToSlash(GeneratedEffectiveSkillsDir(dir)), "target": "/skills-effective", "read_only": true},
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "skills")), "target": "/skills-store"},
+			brokerSecrets("communication"),
+		}
 		// Sibling Telegram identities live in this file. TELEGRAM_ALLOWED_USERS
 		// stays the single infra-owner fallback when the file is absent.
 		usersFile := filepath.Join(dir, "communication.users.yaml")
@@ -777,6 +814,11 @@ func cliControllerSection(s Settings, dir string) api.CLIControllerConfig {
 	// and required for package managers that fetch toolchains from releases
 	// (uv managed-python, gh release download).
 	egress := []string{"127.0.0.1", "github.com", "api.github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com", "gitlab.com", "bitbucket.org", "codeberg.org"}
+	gitHosts := []string{"github.com", "gitlab.com"}
+	if s.GitLabHost != "" && s.GitLabHost != "gitlab.com" {
+		egress = append(egress, s.GitLabHost)
+		gitHosts = append(gitHosts, s.GitLabHost)
+	}
 	for _, registry := range s.CLIRegistries {
 		egress = append(egress, cliRegistryHosts[registry]...)
 	}
@@ -784,6 +826,13 @@ func cliControllerSection(s Settings, dir string) api.CLIControllerConfig {
 	approved := make([]api.CLIApproval, 0, len(definitions))
 	for _, definition := range definitions {
 		approved = append(approved, api.CLIApproval{DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, Command: definition.Source.Command, Execution: definition.Execution})
+	}
+	// The skillgit plan is admitted as exact tuples — one per git host the
+	// render knows — so git never reaches UserCommands, where an owner spec
+	// could run it without the hardened argv the gitsource runner emits.
+	for _, host := range gitHosts {
+		approved = append(approved, api.CLIApproval{DefinitionID: "skillgit", DefinitionVersion: "1.0.0", Command: "git",
+			Execution: api.ExecutionPolicy{TimeoutSeconds: 60, OutputBytes: 256 << 10, CPUMillis: 1000, MemoryMiB: 512, MaxPIDs: 64, Egress: []string{host}}})
 	}
 	return api.CLIControllerConfig{
 		AllowPackageInstall: len(s.CLIRegistries) > 0,

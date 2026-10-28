@@ -118,15 +118,34 @@ func ensureScope(dir string, want Scope) error {
 // OrganizationSettings is the host-owned policy overlay. It is never written
 // into a user's runtime volume.
 type OrganizationSettings struct {
-	Kind         ScopeKind            `yaml:"kind,omitempty"`
-	ID           string               `yaml:"id,omitempty"`
-	Schema       int                  `yaml:"schema"`
-	Organization string               `yaml:"organization"`
-	Members      map[string]string    `yaml:"members"`
-	Features     []string             `yaml:"features"`
-	MCP          map[string]MCPServer `yaml:"mcp_servers,omitempty"`
-	ReadOnlyMCP  []string             `yaml:"read_only_mcp,omitempty"`
-	OrgActions   []string             `yaml:"org_actions,omitempty"`
+	Kind           ScopeKind            `yaml:"kind,omitempty"`
+	ID             string               `yaml:"id,omitempty"`
+	Schema         int                  `yaml:"schema"`
+	Organization   string               `yaml:"organization"`
+	Members        map[string]OrgMember `yaml:"members"`
+	DefaultProfile string               `yaml:"default_profile,omitempty"`
+	Features       []string             `yaml:"features"`
+	MCP            map[string]MCPServer `yaml:"mcp_servers,omitempty"`
+	ReadOnlyMCP    []string             `yaml:"read_only_mcp,omitempty"`
+	OrgActions     []string             `yaml:"org_actions,omitempty"`
+}
+
+// OrgMember is one org member: a role plus an optional provisioning profile
+// assignment (SPEC-0083 R9.2).
+type OrgMember struct {
+	Role    string `yaml:"role"`
+	Profile string `yaml:"profile,omitempty"`
+}
+
+// UnmarshalYAML accepts the legacy scalar role (`alice: member`) and the
+// long form (`alice: {role: member, profile: sales}`) alike (R9.2).
+func (m *OrgMember) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		m.Role = value.Value
+		return nil
+	}
+	type plain OrgMember
+	return value.Decode((*plain)(m))
 }
 
 func (o OrganizationSettings) Validate() error {
@@ -139,12 +158,12 @@ func (o OrganizationSettings) Validate() error {
 	if o.ID != "" && o.ID != o.Organization {
 		return fmt.Errorf("organization scope id mismatch")
 	}
-	for user, role := range o.Members {
+	for user, member := range o.Members {
 		if !idPattern.MatchString(user) {
 			return fmt.Errorf("invalid organization member %q", user)
 		}
-		if role != "member" && role != "admin" && role != "owner" {
-			return fmt.Errorf("invalid role %q for organization member %q", role, user)
+		if member.Role != "member" && member.Role != "admin" && member.Role != "owner" {
+			return fmt.Errorf("invalid role %q for organization member %q", member.Role, user)
 		}
 	}
 	seen := map[string]bool{}
@@ -222,9 +241,14 @@ func ApplyOrganization(o OrganizationSettings, s Settings, orgDir string) (Setti
 	if o.Organization != s.Organization {
 		return s, fmt.Errorf("organization config mismatch: want %q", s.Organization)
 	}
-	role, ok := o.Members[s.User]
+	member, ok := o.Members[s.User]
 	if !ok {
 		return s, fmt.Errorf("user %q is not a member of organization %q", s.User, s.Organization)
+	}
+	role := member.Role
+	s.OrganizationProfile = member.Profile
+	if s.OrganizationProfile == "" {
+		s.OrganizationProfile = o.DefaultProfile
 	}
 	allowed := map[string]bool{}
 	for _, name := range o.Features {
@@ -267,7 +291,7 @@ func ApplyOrganization(o OrganizationSettings, s Settings, orgDir string) (Setti
 	s.MCP = mcp
 	s.OrganizationDir = orgDir
 	s.OrganizationDocsDir = docsDir
-	s.OrganizationSkillsDir = filepath.Join(orgDir, "hermes", "skills")
+	s.OrganizationSkillsDir = filepath.Join(orgDir, "skills")
 	s.OrganizationRole = role
 	s.OrgActions = append([]string(nil), o.OrgActions...)
 	return s, nil
@@ -373,7 +397,7 @@ func InitOrganization(dir, organization, owner string) error {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	for _, name := range []string{"docs", "hermes/memories", "hermes/skills", "hermes/sessions", "hermes/hooks", "hermes/plugins", "connections", "workspace", "archive", "generated"} {
+	for _, name := range []string{"docs", "hermes/memories", "hermes/skills", "hermes/sessions", "hermes/hooks", "hermes/plugins", "connections", "workspace", "archive", "generated", "skills"} {
 		if err := os.MkdirAll(filepath.Join(dir, name), 0700); err != nil {
 			return err
 		}
@@ -385,9 +409,9 @@ func InitOrganization(dir, organization, owner string) error {
 			return err
 		}
 	}
-	members := map[string]string{}
+	members := map[string]OrgMember{}
 	if owner != "" {
-		members[owner] = "owner"
+		members[owner] = OrgMember{Role: "owner"}
 	}
 	o := OrganizationSettings{
 		Kind: OrganizationScope, ID: organization, Schema: 1, Organization: organization, Members: members,

@@ -8,9 +8,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
+
+// skillSourceIDPattern is the only workspace payload a skill-source cell may
+// bind: one <16-hex>.git mirror directory under the principal's .sources.
+var skillSourceIDPattern = regexp.MustCompile(`^[0-9a-f]{16}\.git$`)
 
 // cellWorkspaceBind resolves the request's workspace into the host-side bind
 // source; the empty string means the cell mounts nothing at /work.
@@ -72,9 +77,43 @@ func (c *genericController) cellWorkspaceBind(req api.CliExecRequest) (hostPath 
 			return "", false, fmt.Errorf("%w: principal workspace is missing", api.ErrIsolation)
 		}
 		return api.DockerBindSource(path), access == "rw", nil
+	case "skill-source":
+		if req.Workspace.Access != "rw" {
+			return "", false, fmt.Errorf("%w: skill-source access", api.ErrInvalid)
+		}
+		if !skillSourceIDPattern.MatchString(req.Workspace.Path) {
+			return "", false, fmt.Errorf("%w: skill-source workspace id", api.ErrInvalid)
+		}
+		path := filepath.Join(cfg.SpacesRoot, req.Principal, "skills", ".sources", req.Workspace.Path)
+		if !api.ContainedPath(filepath.Join(cfg.SpacesRoot, req.Principal, "skills", ".sources"), path) || api.NoSymlinkPath(path) != nil {
+			return "", false, fmt.Errorf("%w: skill-source workspace path", api.ErrIsolation)
+		}
+		info, err := os.Stat(path)
+		if err != nil || !info.IsDir() {
+			return "", false, fmt.Errorf("%w: skill-source mirror is missing", api.ErrIsolation)
+		}
+		return api.DockerBindSource(path), true, nil
 	default:
 		return "", false, fmt.Errorf("%w: unknown workspace scope %q", api.ErrInvalid, scope)
 	}
+}
+
+// cellSkillsBind resolves the host path bound read-only at /skills: the
+// principal's rendered effective skills view, mounted only for
+// principal-scoped cells. The daemon interprets bind sources on the host, so
+// the container-local path goes through DockerBindSource like /work does.
+func (c *genericController) cellSkillsBind(req api.CliExecRequest) string {
+	if req.Workspace.Scope != "principal" || c.config.CLI.SpacesRoot == "" {
+		return ""
+	}
+	path := filepath.Join(c.config.CLI.SpacesRoot, req.Principal, "generated", "skills-effective")
+	if !api.ContainedPath(c.config.CLI.SpacesRoot, path) || api.NoSymlinkPath(path) != nil {
+		return ""
+	}
+	if info, err := os.Stat(path); err != nil || !info.IsDir() {
+		return ""
+	}
+	return api.DockerBindSource(path)
 }
 
 // cellArgv assembles the docker create argv for a cell. Every isolation claim
@@ -129,6 +168,9 @@ func (c *genericController) cellArgv(req api.CliExecRequest, cell *cliCell, runt
 	// The helper is mounted ro from the controller-visible copy; the daemon
 	// resolves the host path so the cell never sees controller state.
 	args = append(args, "--mount", "type=bind,source="+c.cellInitHost()+",target="+cellInitGuest+",readonly")
+	if cell.skillsHost != "" {
+		args = append(args, "--mount", "type=bind,source="+cell.skillsHost+",target="+cellSkillsGuest+",readonly")
+	}
 	if cell.workHost != "" {
 		mount := "type=bind,source=" + cell.workHost + ",target=" + cellWorkGuest
 		if !cell.workRW {
@@ -276,6 +318,9 @@ func cellProfileProblem(container genericContainer, cell *cliCell, seccomp, stat
 	// inside a cell. Tmpfs lands in .Mounts on the classic image store and
 	// only in HostConfig.Tmpfs on containerd-store daemons; both count.
 	wantMounts := map[string]bool{cellInitGuest: true, "/tmp": true, cellWorkGuest: true}
+	if cell.skillsHost != "" {
+		wantMounts[cellSkillsGuest] = true
+	}
 	if cell.installPackages {
 		wantMounts[cellHomeGuest] = true
 		wantMounts[cellUserTmpGuest] = true
@@ -296,6 +341,10 @@ func cellProfileProblem(container genericContainer, cell *cliCell, seccomp, stat
 		case cellInitGuest:
 			if mount.Type != "bind" || mount.RW || mount.Source != api.DockerBindSource(filepath.Join(stateRoot, "cli-cellinit")) {
 				return "cellinit-mount"
+			}
+		case cellSkillsGuest:
+			if mount.Type != "bind" || mount.RW || mount.Source != cell.skillsHost {
+				return "skills-mount"
 			}
 		case cellWorkGuest:
 			if cell.workHost == "" {

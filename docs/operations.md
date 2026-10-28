@@ -153,6 +153,12 @@ hubctl grant --user alice --toolhub-store /protected/toolhub/store.json \
     --kind control-operation --operation status --confirm
 hubctl capability --kind policy|profile --file reviewed.json \
     --toolhub-store <path> --confirm
+hubctl profile grants --dir spaces/<user> --profile <name> \
+    --policy org-policy.json --out draft.json                          # grants.yaml → draft defaults, ceiling untouched
+hubctl profile diff --dir spaces/<user>                                # 3-way plan via profile.lock
+hubctl profile apply --dir spaces/<user>                               # untouched files update; customized kept+reported
+hubctl org sync-members --org acme --org-dir spaces/acme \
+    --spaces spaces --dry-run                                          # report, then drop --dry-run to provision
 hubctl capability --kind group --file g.json --toolhub-store <path>   # validate+print digest only
 hubctl capability --kind preview --file draft.json --toolhub-store <path>  # old→new diff, never writes
 hubctl capability --kind tools --settings <space> \
@@ -523,6 +529,55 @@ private interface reachable from both host CLI and gateway container, with
 communication-hub + toolhub. Rollback: drain, `--execution-mode static`
 without URL (+`--native-cron unmigrated` if needed), keep same spool/home;
 do not reactivate native definitions already migrated to hub occurrences.
+
+## Skill git installs
+
+`hubctl skill install --dir spaces/<u> --url <https github/gitlab url>`
+fetches through the controller's bounded `/cli-exec` cell (plan
+`skillgit@1.0.0`, `git` on the cli-tools image — never an owner command;
+egress is exactly the repository host, hooks/protocol.file/submodules/LFS
+are off, fetch is `--depth=1 --filter=blob:none` into the per-owner bare
+mirror `skills/.sources/<id>.git`). The result is a scanned **draft** —
+approve it with `hubctl skill approve --id <d>` or the owner card. A repo
+URL without `/tree/<ref>/<path>` returns `candidates` instead of picking
+one; retry with `--path`. `--ref` pins a branch/tag to its resolved commit,
+`--name` overrides the draft name. `hubctl skill update --name <s>` (or
+`--all`) refetches tracked skills into new drafts and reports
+`force_push:true` on rewritten upstream history. `hubctl skill sources
+list` shows mirrors and the skills each feeds; `sources remove --id <id>`
+deletes the mirror — installed skills keep working but lose update
+tracking.
+
+Sources are https GitHub/GitLab only; a self-hosted GitLab needs
+`gitlab_host: <host>` in `workspace.yaml` — render adds its egress and the
+third `skillgit` approval tuple, then `hubctl up`.
+Authentication: agents name a broker credential with `grant` (the gateway
+leases it into `GIT_TOKEN` for the cell); the operator path takes
+`GIT_TOKEN` from the environment. Tokens never enter URLs, argv, git
+config, logs or `.origin.json`.
+
+## Skill quality: lint, stats, evals
+
+Every draft carries advisory lint findings in `ScanFindings` (name/dir,
+imperative description ≤1024 with ~250 advisory, ≤500-line body, ≤60
+files, references one level deep, no incident-log shape) — they inform
+the approval card but never block it; dead links stay hard errors.
+
+`hubctl skill stats --dir spaces/<u> --name <s>` prints the hub-journaled
+counters (uses, helped, failed, trigger_misses, last_used) from
+`.state/usage/` — the agent cannot write these events; activations and
+resource reads journal server-side.
+
+`hubctl skill eval --dir spaces/<u> --name <s>` reads `evals/triggers.json`
+and `evals/evals.json` inside the skill, materializes an isolated temp
+space containing only that skill, and scores validation accuracy through
+`HUB_SKILL_EVAL_URL` — an operator eval endpoint that runs each prompt
+against a real model and returns the run receipt (`skill` tool calls mark
+activation). Reports land under `.work/tmp/`; without the endpoint every
+leg reports `model_unavailable` — never a fabricated pass. Platform
+skills ship their trigger suites under `config/skills/*/evals/` and
+`internal/systemguide/evals/`; lint-cleanliness and fixture validity are
+enforced by tests.
 
 ## SSH capability operations
 

@@ -6,8 +6,13 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/skillstore"
 )
 
 // TestFakeDockerChild emulates the docker CLI surface DockerScratchExec
@@ -53,6 +58,156 @@ func TestFakeDockerChild(t *testing.T) {
 		os.Exit(0)
 	}
 	os.Exit(0)
+}
+
+// TestFakeDockerEnvChild answers the docker verbs like TestFakeDockerChild
+// but echoes the leased skill-env names (never values) back through stdout so
+// the parent can verify the stdin delivery contract.
+func TestFakeDockerEnvChild(t *testing.T) {
+	kind := ""
+	for _, a := range os.Args {
+		switch a {
+		case "exec-pack", "exec-scratch", "inspect", "rm":
+			if kind == "" {
+				kind = a
+			}
+		}
+	}
+	if kind == "" {
+		t.Skip("helper process")
+	}
+	switch kind {
+	case "inspect":
+		withFormat := false
+		for _, a := range os.Args {
+			if a == "-f" {
+				withFormat = true
+			}
+		}
+		if withFormat {
+			os.Stdout.WriteString("img:1\n")
+			os.Exit(0)
+		}
+		os.Exit(1)
+	case "exec-pack":
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		os.Stdout.WriteString("tarbytes")
+		os.Exit(0)
+	case "exec-scratch":
+		var request ScratchExecRequest
+		_ = json.NewDecoder(os.Stdin).Decode(&request)
+		names := []string{}
+		for name := range request.Env {
+			names = append(names, name)
+		}
+		slices.Sort(names)
+		_ = json.NewEncoder(os.Stdout).Encode(ScratchExecResult{ExitCode: 0, Stdout: "keys=" + strings.Join(names, ","), TreeStopped: true})
+		os.Exit(0)
+	case "rm":
+		os.Exit(0)
+	}
+	os.Exit(0)
+}
+
+// R8.3: a `skill` argument leases the stored (principal, skill) credentials
+// into the one-call sandbox env — intersected with the names the effective
+// index declares, so undeclared store entries never travel.
+func TestDockerScratchExecLeasesSkillEnv(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	storeDir := t.TempDir()
+	effDir := t.TempDir()
+	if err := skillstore.WriteCredentials(storeDir, "demo", map[string]string{"API_KEY": "s3cr3t", "EXTRA": "nope"}); err != nil {
+		t.Fatal(err)
+	}
+	index := `{"skills":[{"name":"demo","eligible":true,"requires":{"credentials":[{"name":"API_KEY"}]}}]}`
+	if err := os.WriteFile(filepath.Join(effDir, "index.json"), []byte(index), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_SKILLS_STORE", storeDir)
+	t.Setenv("HUB_SKILLS_EFFECTIVE", effDir)
+
+	effective := EffectiveBinding{Binding: ToolBinding{ToolBindingID: "bind-scratch-env", PrincipalID: "alice"}}
+	scratch := DockerScratchExec([]string{os.Args[0], "-test.run=TestFakeDockerEnvChild"}, FixedAgentContainer("rt-1"), nil)
+	res, err := scratch(ctx, effective, AgentExecRequest{
+		Tool:           "code_exec",
+		Arguments:      map[string]any{"command": "env", "path": "ws", "skill": "demo"},
+		Scopes:         []CapabilityScope{{PathArgument: "path", PathPrefix: "ws"}},
+		TimeoutSeconds: 30,
+	}, nil)
+	if err != nil {
+		t.Fatalf("scratch exec: %v", err)
+	}
+	summary, _ := res.Result.(map[string]any)
+	if summary["stdout"] != "keys=API_KEY" {
+		t.Fatalf("leased env names: %+v", summary)
+	}
+
+	// Revocation is a file delete: the next call for the same (principal,
+	// skill) resolves an empty lease — credentials never outlive storage.
+	if err := os.Remove(filepath.Join(storeDir, ".state", "credentials", "demo.json")); err != nil {
+		t.Fatal(err)
+	}
+	res, err = scratch(ctx, effective, AgentExecRequest{
+		Tool:           "code_exec",
+		Arguments:      map[string]any{"command": "env", "path": "ws", "skill": "demo"},
+		Scopes:         []CapabilityScope{{PathArgument: "path", PathPrefix: "ws"}},
+		TimeoutSeconds: 30,
+	}, nil)
+	if err != nil {
+		t.Fatalf("scratch exec after revoke: %v", err)
+	}
+	summary, _ = res.Result.(map[string]any)
+	if summary["stdout"] != "keys=" {
+		t.Fatalf("revoked credentials still leased: %+v", summary)
+	}
+}
+
+// R8.3 negatives: no skill argument, an ineligible skill and a skill with no
+// stored credentials all execute cleanly with an empty lease — the env
+// channel never carries undeclared or unearned secrets.
+func TestDockerScratchExecSkillEnvNegatives(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	storeDir := t.TempDir()
+	effDir := t.TempDir()
+	if err := skillstore.WriteCredentials(storeDir, "demo", map[string]string{"API_KEY": "s3cr3t"}); err != nil {
+		t.Fatal(err)
+	}
+	index := `{"skills":[{"name":"demo","eligible":false,"requires":{"credentials":[{"name":"API_KEY"}]}},{"name":"other","eligible":true,"requires":{"credentials":[{"name":"API_KEY"}]}}]}`
+	if err := os.WriteFile(filepath.Join(effDir, "index.json"), []byte(index), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_SKILLS_STORE", storeDir)
+	t.Setenv("HUB_SKILLS_EFFECTIVE", effDir)
+
+	effective := EffectiveBinding{Binding: ToolBinding{ToolBindingID: "bind-scratch-neg", PrincipalID: "alice"}}
+	scratch := DockerScratchExec([]string{os.Args[0], "-test.run=TestFakeDockerEnvChild"}, FixedAgentContainer("rt-1"), nil)
+	call := func(args map[string]any) map[string]any {
+		res, err := scratch(ctx, effective, AgentExecRequest{
+			Tool:           "code_exec",
+			Arguments:      args,
+			Scopes:         []CapabilityScope{{PathArgument: "path", PathPrefix: "ws"}},
+			TimeoutSeconds: 30,
+		}, nil)
+		if err != nil {
+			t.Fatalf("scratch exec: %v", err)
+		}
+		summary, _ := res.Result.(map[string]any)
+		return summary
+	}
+	if out := call(map[string]any{"command": "env", "path": "ws"}); out["stdout"] != "keys=" {
+		t.Fatalf("no-skill call leased env: %+v", out)
+	}
+	if out := call(map[string]any{"command": "env", "path": "ws", "skill": "demo"}); out["stdout"] != "keys=" {
+		t.Fatalf("ineligible skill leased env: %+v", out)
+	}
+	if out := call(map[string]any{"command": "env", "path": "ws", "skill": "other"}); out["stdout"] != "keys=" {
+		t.Fatalf("skill without stored creds leased env: %+v", out)
+	}
+	if out := call(map[string]any{"command": "env", "path": "ws", "skill": "../escape"}); out["stdout"] != "keys=" {
+		t.Fatalf("malformed skill name leased env: %+v", out)
+	}
 }
 
 // DockerScratchExec drives inspect → exec-pack → isolated run → confirmed

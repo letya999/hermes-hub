@@ -1,0 +1,28 @@
+chg: CHG-0193
+title: M24 #361 S6 — progressive disclosure and discovery
+issue: 361
+status: done
+slices:
+  S6.1-index-readiness: done
+  S6.2-tier0-catalog: done
+  S6.3-lexical-search: done
+  S6.4-harness-refs: done
+  S6.5-docs-state: done
+verification: done
+notes: >
+  Implemented per plan with two spec-literal deviations:
+  (a) R6.5 puts hidden references on the visible-error side, so /name and
+  $name on hidden skills error visibly — explicit invocation of hidden
+  skills remains via the `skill` tool only (R6.1). (b) Session activation
+  dedupe is in-memory per (principal, task) in the gateway — a gateway
+  restart mid-session may re-expand a $name body; acceptable for now and
+  cheaper than a new spool state file. Catalog revision is folded into
+  the session pin via ApplyReadiness so grant flips also trigger the
+  one-time <skills_catalog_updated> note. Tier-0 degrades to names at
+  >20 skills (descriptions are capped at 200 chars, so count is the
+  effective budget bound). Communication gateway mounts
+  generated/skills-effective read-only at /skills-effective via
+  HUB_SKILLS_EFFECTIVE.
+  Verified: just check green 2026-10-28 — go test ./... all packages,
+  coverage 86.12% (floor 85), devcheck format/docs, vet, tidy -diff,
+  staticcheck, gosec, actionlint, integration contract test.

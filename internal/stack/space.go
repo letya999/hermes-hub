@@ -359,7 +359,17 @@ func InitGroupEnvironment(dir, profile, environment, organization string) error 
 	return initScopeEnvironment(dir, profile, environment, organization, GroupScope)
 }
 
+// InitEnvironmentProvision is `hubctl init --profile`: an explicit operator
+// profile choice for a plain (non-org) space.
+func InitEnvironmentProvision(dir, profile, environment, provisionProfile string) error {
+	return initScopeEnvironmentProfile(dir, profile, environment, "", UserScope, provisionProfile)
+}
+
 func initScopeEnvironment(dir, profile, environment, organization string, kind ScopeKind) error {
+	return initScopeEnvironmentProfile(dir, profile, environment, organization, kind, "")
+}
+
+func initScopeEnvironmentProfile(dir, profile, environment, organization string, kind ScopeKind, provisionProfile string) error {
 	if environment != "dev" && environment != "prod" {
 		return fmt.Errorf("environment must be dev or prod")
 	}
@@ -382,11 +392,15 @@ func initScopeEnvironment(dir, profile, environment, organization string, kind S
 			return err
 		}
 	}
-	agentBody, err := renderDefaultAgent(dir, profile, organization, allocatePorts(dir))
+	provisioned, err := resolveInitProfile(dir, profile, organization, provisionProfile)
 	if err != nil {
 		return err
 	}
-	workspaceBody := policyTemplate(dir, "workspace-default.yaml", defaultWorkspaceYAML)
+	agentBody, err := renderAgent(provisioned.Agent, profile, organization, allocatePorts(dir))
+	if err != nil {
+		return err
+	}
+	workspaceBody := provisioned.Workspace
 	scopeBody, err := yaml.Marshal(Scope{Kind: kind, ID: profile, Organization: organization})
 	if err != nil {
 		return err
@@ -406,7 +420,7 @@ func initScopeEnvironment(dir, profile, environment, organization string, kind S
 			return err
 		}
 	}
-	for _, name := range []string{"hermes/memories", "hermes/skills", "hermes/sessions", "hermes/hooks", "hermes/plugins", "connections/google", "connections/telegram", "connections/browser", "connections/ssh/keys", "workspace", "workspace/browser", "archive", "generated"} {
+	for _, name := range []string{"hermes/memories", "hermes/skills", "hermes/sessions", "hermes/hooks", "hermes/plugins", "connections/google", "connections/telegram", "connections/browser", "connections/ssh/keys", "workspace", "workspace/browser", "archive", "generated", "skills"} {
 		if err := os.MkdirAll(filepath.Join(dir, name), 0700); err != nil {
 			return err
 		}
@@ -414,7 +428,12 @@ func initScopeEnvironment(dir, profile, environment, organization string, kind S
 	if err := os.WriteFile(filepath.Join(dir, "SOUL.md"), []byte(userSoulStub), 0600); err != nil {
 		return err
 	}
-	return nil
+	if err := createProfileLayout(dir, provisioned); err != nil {
+		return err
+	}
+	return writeProvisioningLock(dir, provisioned, map[string][]byte{
+		"agent.yaml": agentBody, "workspace.yaml": workspaceBody,
+	})
 }
 
 func ReadSecrets(path string) (map[string]string, error) {

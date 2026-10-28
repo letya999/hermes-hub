@@ -103,10 +103,9 @@ func implicitToolsetSections(s Settings) []string {
 	if s.CapabilityMode == "managed" {
 		return nil
 	}
+	// SPEC-0083 R3.2: the unmanaged native base list is gone — only the hub
+	// tools server and the conditional guest browser are implicit emissions.
 	out := []string{api.SectionHubTools}
-	for _, name := range []string{"terminal", "file", "web", "skills", "todo", "cronjob", "messaging", "memory", "session_search"} {
-		out = append(out, "native:"+name)
-	}
 	if s.toolEntry("browser").enabled() {
 		// The anonymous-profile guest server rides the browser entry but is a
 		// distinct emission surface with its own section.

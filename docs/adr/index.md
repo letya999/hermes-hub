@@ -6,6 +6,7 @@ last_verified: 2026-10-27
 
 | Record | Decision |
 |---|---|
+| [ADR-0085](ADR-0085-agent-skills-platform.md) | Proposed: agent skills platform — agentskills.io format, hub-owned per-owner stores, read-only effective view, draft-first writes, grant-only authority, native default-deny, brokered secrets, curated self-evolution, pinned git installs (M24 #356–#368) |
 | [ADR-0084](ADR-0084-channel-agnostic-user-locale.md) | Accepted: channel-agnostic user locale — canonical EN catalog with generated ru/kk/es, workspace preferences.json, evidence ladder + /language picker, Delivery.Lang, HUB_USER_LANG, LLM language hints |
 | [ADR-0083](ADR-0083-lean-images-capability-packs.md) | Proposed: lean role images — hub-core/control/runtime/browser split, browser + voice extracted to per-space images, pruned upstream tree, declared capabilities pulled on demand (M26 #371–#380, M27 #383–#390) |
 | [ADR-0082](ADR-0082-standing-assignments.md) | Accepted: standing assignments — durable owner-intent record reconciling to routine artifacts, shared acquisition inside verified boundaries, deterministic filters gating model wakes (M23 #324/#332) |
