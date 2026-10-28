@@ -62,6 +62,7 @@ def build():
     add('/v1/credentials/{credential_id}','delete','deleteCredential','Delete managed secret versions; preserve imported source')
     add('/v1/credentials/{credential_id}/revoke','post','revokeCredential','Fence local grants/leases; does not revoke upstream provider token')
     add('/v1/credentials/{credential_id}/grants','post','createGrant','Explicit binding grant','Grant','GrantRequest',status=201)
+    add('/v1/grants/{grant_id}','get','getGrant','Owner-visible grant status','Grant')
     add('/v1/grants/{grant_id}/revoke','post','revokeGrant','Revoke a single binding grant')
     add('/v1/leases','post','acquire','Acquire a bounded revision-bound lease','Lease','AcquireLease',status=201)
     add('/v1/runtime/leases/{lease_id}','get','inspectLease','Inspect own runtime lease','Lease',aud='broker:runtime')

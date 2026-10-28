@@ -77,7 +77,7 @@ func testTelegramSendRetainsOwnerSession(t *testing.T, managed bool) {
 			if json.NewDecoder(r.Body).Decode(&input) != nil || input.PrincipalID != "alice" || input.ContractID != entry.ContractID {
 				t.Error("grant crossed owner or contract")
 			}
-			_ = json.NewEncoder(w).Encode(brokerv1.Grant{ID: fmt.Sprintf("grant_%d", grants.Add(1))})
+			_ = json.NewEncoder(w).Encode(brokerv1.Grant{ID: fmt.Sprintf("grant_%d", grants.Add(1)), Active: true})
 		case r.Method == "POST" && r.URL.Path == "/v1/leases":
 			_ = json.NewEncoder(w).Encode(brokerv1.Lease{ID: "probe-lease"})
 		case r.Method == "POST" && r.URL.Path == "/v1/runtime/leases/probe-lease/materialize":

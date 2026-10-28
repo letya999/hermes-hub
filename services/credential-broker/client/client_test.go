@@ -40,6 +40,12 @@ func TestSigningAndSDKMethods(t *testing.T) {
 			t.Error(e)
 		}
 		body := "{}"
+		if r.URL.Path == "/v1/grants/grant1" {
+			if r.Method != http.MethodGet {
+				t.Errorf("grant lookup method: %s", r.Method)
+			}
+			body = `{"id":"grant1","active":true}`
+		}
 		if r.URL.Path == "/v1/contracts" {
 			body = "[]"
 		}
@@ -50,6 +56,9 @@ func TestSigningAndSDKMethods(t *testing.T) {
 		t.Fatal(e)
 	}
 	ctx := context.Background()
+	if got, err := c.GetGrant(ctx, "grant1"); err != nil || got.ID != "grant1" || !got.Active {
+		t.Fatalf("grant lookup: active=%t err=%v", got.Active, err)
+	}
 	checks := []func() error{func() error { _, e := c.CreateRequest(ctx, v1.CreateRequest{}); return e }, func() error { _, e := c.Request(ctx, "request1"); return e }, func() error { return c.Approve(ctx, "request1", "CODE") }, func() error { _, e := c.Grant(ctx, "cred1", v1.GrantRequest{}); return e }, func() error { _, e := c.Acquire(ctx, v1.AcquireLease{}); return e }, func() error { _, e := c.Events(ctx, 10); return e }, func() error { _, e := c.Contracts(ctx); return e }, func() error { return c.Revoke(ctx, "cred1") }, func() error { _, e := c.Materialize(ctx, "lease1"); return e }, func() error { return c.Release(ctx, "lease1", v1.RuntimeRelease{}) }, func() error { _, e := c.Renew(ctx, "lease1", 120); return e }}
 	for _, check := range checks {
 		if e := check(); e != nil {

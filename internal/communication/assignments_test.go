@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -55,7 +56,11 @@ func TestAssignmentAPIRoundTrip(t *testing.T) {
 	// Pause → resume → cancel lifecycle over REST — each verb must reach the
 	// durable state, not just return 200.
 	for _, step := range []struct{ action, want string }{{"pause", "paused"}, {"resume", "active"}, {"cancel", "cancelled"}} {
-		w = destinationRequest(g, http.MethodPost, "/v1/assignments/"+id+"/"+step.action, `{}`)
+		current, err := g.spool.rt.LoadAssignment(id, g.users[11].Envelope(11))
+		if err != nil {
+			t.Fatal(err)
+		}
+		w = destinationRequest(g, http.MethodPost, "/v1/assignments/"+id+"/"+step.action, `{"expected_revision":`+itoa(current.Revision)+`}`)
 		if w.Code != http.StatusOK && w.Code != http.StatusNoContent {
 			t.Fatalf("%s failed: %d %s", step.action, w.Code, w.Body.String())
 		}
@@ -162,13 +167,48 @@ func TestAssignmentCompleteVerb(t *testing.T) {
 	if scheds[0].OrganizationID != "personal" || scheds[0].ActorID != "alice" || scheds[0].ScopeID != "user:alice" {
 		t.Fatalf("artifact missing owner/org stamps: %+v", scheds[0])
 	}
-	w = destinationRequest(g, http.MethodPost, "/v1/assignments/"+created.AssignmentID+"/complete", `{}`)
+	w = destinationRequest(g, http.MethodPost, "/v1/assignments/"+created.AssignmentID+"/complete", `{"expected_revision":`+itoa(created.Revision)+`}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("complete failed: %d %s", w.Code, w.Body.String())
 	}
 	item, err := g.spool.rt.LoadAssignment(created.AssignmentID, g.users[11].Envelope(11))
 	if err != nil || item.State != "completed" {
 		t.Fatalf("not completed: %v %+v", err, item)
+	}
+}
+
+func TestAssignmentProgressRequiresRunningTriggerAndCanComplete(t *testing.T) {
+	c := testConfig(t)
+	c.ControlAuth = "control-token"
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := destinationRequest(g, http.MethodPost, "/v1/assignments", `{"intent":"watch for an answer","apply":true,"plan":{"revision":1,"sources":[{"name":"page","schedule":{"channel":"telegram_bot","chat_id":11,"timezone":"UTC","expression":"every:15m","job_kind":"watcher","input":"watch","probe":{"kind":"http","url":"https://example.com/p"}}}]}}`)
+	var item commodel.Assignment
+	if err := json.Unmarshal(w.Body.Bytes(), &item); err != nil || item.AssignmentID == "" {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	path := "/v1/assignments/" + item.AssignmentID + "/progress"
+	body := `{"expected_revision":` + itoa(item.Revision) + `,"job_id":"trigger-1","summary":"found the answer","finding":"source-1 says yes","next_step":"none","complete":true}`
+	w = destinationRequest(g, http.MethodPost, path, body)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("unbound progress accepted: %d", w.Code)
+	}
+	job := Job{ID: "trigger-1", Envelope: g.users[11].Envelope(11), AssignmentID: item.AssignmentID, AssignmentPlanRevision: item.AppliedRev}
+	if err := atomicJSON(filepath.Join(g.spool.root, "running", spoolFileID(job.ID)+".json"), job); err != nil {
+		t.Fatal(err)
+	}
+	w = destinationRequest(g, http.MethodPost, path, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("progress: %d %s", w.Code, w.Body.String())
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &item); err != nil || item.State != "completed" || item.Progress.Summary != "found the answer" || len(item.Progress.Findings) != 1 {
+		t.Fatalf("progress not durable: %v %+v", err, item)
+	}
+	w = destinationRequest(g, http.MethodPost, path, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("same trigger retry not idempotent: %d", w.Code)
 	}
 }
 
@@ -184,7 +224,7 @@ func TestAssignmentCommands(t *testing.T) {
 		t.Fatal(err)
 	}
 	user := g.users[11]
-	w := destinationRequest(g, http.MethodPost, "/v1/assignments", `{"title":"prices","intent":"watch prices","apply":true,"plan":{"sources":[{"name":"page","schedule":{"channel":"telegram_bot","chat_id":11,"timezone":"UTC","expression":"every:15m","job_kind":"watcher","input":"w","probe":{"kind":"http","url":"https://example.com/p"}}}],"specialist":{"instructions":"report changes"}}}`)
+	w := destinationRequest(g, http.MethodPost, "/v1/assignments", `{"title":"prices","intent":"watch prices","apply":true,"plan":{"sources":[{"name":"page","schedule":{"channel":"telegram_bot","chat_id":11,"timezone":"UTC","expression":"every:15m","job_kind":"watcher","input":"w","probe":{"kind":"http","url":"https://example.com/p"}}}],"specialist":{"instructions":"report changes"},"unavailable":[{"reference":"private community","reason":"membership required"}]}}`)
 	var created commodel.Assignment
 	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil || created.AssignmentID == "" {
 		t.Fatalf("create failed: %d %s", w.Code, w.Body.String())
@@ -196,7 +236,7 @@ func TestAssignmentCommands(t *testing.T) {
 		t.Fatalf("list command missing assignment: %q", out)
 	}
 	out = g.assignmentCommand(user, 11, "/assignment "+id+" status")
-	if !strings.Contains(out, "active") {
+	if !strings.Contains(out, "active") || !strings.Contains(out, "private community") || !strings.Contains(out, "membership required") {
 		t.Fatalf("status command wrong: %q", out)
 	}
 	out = g.assignmentCommand(user, 11, "/assignment "+id+" pause")
@@ -208,9 +248,9 @@ func TestAssignmentCommands(t *testing.T) {
 		t.Fatalf("pause command did not pause: %s", item.State)
 	}
 	// authorize stamps the plan revision — the only grant-widening verb.
-	out = g.assignmentCommand(user, 11, "/assignment "+id+" authorize")
+	out = g.assignmentCommand(user, 11, "/assignment "+id+" authorize 30 8")
 	item, _ = g.spool.rt.LoadAssignment(id, user.Envelope(11))
-	if !strings.Contains(out, "authorize") || item.GrantsAuthorizedRev != item.Plan.Revision {
+	if !strings.Contains(out, "authorize") || item.GrantsAuthorizedRev != item.Plan.Revision+1 || item.Grants.MaxWakesPerDay != 30 {
 		t.Fatalf("authorize did not stamp plan revision: %+v (out=%q)", item, out)
 	}
 	// Foreign sender gets a refusal, not the record.

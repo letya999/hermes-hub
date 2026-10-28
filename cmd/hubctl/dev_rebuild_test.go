@@ -20,6 +20,7 @@ func TestDevRebuildServiceBinaryMap(t *testing.T) {
 		"workload-controller": "hubctl",
 		"supervisor":          "hubctl",
 		"hermes-runtime":      "hub-runtime",
+		"model-relay":         "hub-runtime",
 	} {
 		spec, ok := devService(service)
 		if !ok || spec.binary != binary {

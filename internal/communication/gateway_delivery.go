@@ -177,7 +177,9 @@ func (g *Gateway) worker(ctx context.Context) {
 						_ = g.spool.ClearRoutineFailure(o.ScheduleID)
 					}
 				}
-				_ = g.spool.EnqueueDelivery(Delivery{ID: "job-" + job.ID + "-response", JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: response, Format: formatMarkdown, Artifacts: outcome.Artifacts, Voice: outcome.Voice, CreatedAt: g.now().UTC()})
+				if job.AssignmentID == "" || strings.TrimSpace(response) != "NO_ACTIONABLE_EVENT" {
+					_ = g.spool.EnqueueDelivery(Delivery{ID: "job-" + job.ID + "-response", JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: response, Format: formatMarkdown, Artifacts: outcome.Artifacts, Voice: outcome.Voice, CreatedAt: g.now().UTC()})
+				}
 				_ = g.spool.CompleteJob(job.ID)
 				g.maybeAutoTitle(ctx, *job)
 				g.goalAfterJob(ctx, *job, response)

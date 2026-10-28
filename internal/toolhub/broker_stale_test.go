@@ -93,6 +93,97 @@ func TestMaterializeBindingToleratesMissingOldGrant(t *testing.T) {
 	}
 }
 
+func TestMaterializeBindingRotatesRevokedGrantWithoutNewSecret(t *testing.T) {
+	keyPath := staleBrokerKey(t)
+	lookups, grants := 0, 0
+	failLookup := true
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/grants/grant_1":
+			lookups++
+			if failLookup {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_ = json.NewEncoder(w).Encode(brokerv1.Error{Code: "unavailable"})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(brokerv1.Grant{ID: "grant_1", Active: false})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/grants/grant_1/revoke":
+			_ = json.NewEncoder(w).Encode(map[string]any{})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/credentials/credential_1/grants":
+			grants++
+			_ = json.NewEncoder(w).Encode(brokerv1.Grant{ID: "grant_2", CredentialID: "credential_1", Active: true})
+		default:
+			brokerNotFound(w)
+		}
+	}))
+	defer server.Close()
+	auth := aliceAuth()
+	definition := remoteDefinition()
+	definition.CredentialContractID = "github-pat"
+	definition.CredentialContractRevision = 1
+	definition.CredentialContractEnv = map[string]string{"GOOGLE_TOKEN": "GOOGLE_TOKEN"}
+	store := NewStore()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	refID := api.CredentialReferenceID("conn-existing", 1)
+	bindID := api.DeterministicBindingID(auth.PrincipalID, auth.ContextID, auth.RuntimeID, definition.DefinitionID, definition.Version, "conn-existing", refID)
+	ref := api.CredentialReference{Schema: api.SchemaVersion, CredentialRefID: refID, ConnectionID: "conn-existing", Revision: 1, Backend: "credential-broker", Locator: "credential_1", Keys: []string{"GOOGLE_TOKEN"}, BrokerContractID: "github-pat", BrokerContractRevision: 1, BrokerEnv: map[string]string{"GOOGLE_TOKEN": "GOOGLE_TOKEN"}, BrokerGrantID: "grant_1", BrokerGrantPolicy: auth.PolicyVersion, BrokerGrantBinding: bindID, Status: api.ActiveStatus}
+	if err := store.PutCredentialReference(ref); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutConnection(api.Connection{Schema: api.SchemaVersion, ConnectionID: "conn-existing", Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: auth.PrincipalID}, DefinitionID: definition.DefinitionID, CredentialRefID: refID, Revision: 1, Status: api.ActiveStatus}); err != nil {
+		t.Fatal(err)
+	}
+	store.bindings[bindID] = api.ToolBinding{Schema: api.SchemaVersion, ToolBindingID: bindID, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ConnectionID: "conn-existing", ConnectionRevision: 1, CredentialRefID: refID, CredentialRevision: 1, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: api.ActiveStatus, Revision: 1, ProjectionRevision: 1}
+	cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
+	control := &ControlPlane{Store: store, Broker: &cfg, Now: time.Now, Ready: func(context.Context, api.EffectiveBinding) error { return nil }}
+	onboarding := api.Onboarding{OnboardingID: "onboard-reuse", Locator: "credential_1", BrokerCredentialID: "credential_1", Required: []api.CredentialHint{{Name: "GOOGLE_TOKEN"}}}
+	if _, err := control.materializeBinding(t.Context(), auth, onboarding, definition); err == nil || grants != 0 {
+		t.Fatalf("unavailable broker rotated live grant: grants=%d err=%v", grants, err)
+	}
+	failLookup = false
+	if _, err := control.materializeBinding(t.Context(), auth, onboarding, definition); err != nil {
+		t.Fatal(err)
+	}
+	_, current, err := store.OwnedConnection(auth, "conn-existing")
+	if err != nil || current.BrokerGrantID != "grant_2" || current.Locator != "credential_1" || lookups != 2 || grants != 1 {
+		t.Fatalf("grant recovery: lookup=%d grants=%d recovered=%t err=%v", lookups, grants, current.BrokerGrantID == "grant_2", err)
+	}
+}
+
+func TestEnsureBrokerGrantDoesNotReuseRevokedIdempotency(t *testing.T) {
+	keyPath := staleBrokerKey(t)
+	var keys []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/credentials/credential_1/grants" {
+			brokerNotFound(w)
+			return
+		}
+		var input brokerv1.GrantRequest
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			t.Error(err)
+		}
+		keys = append(keys, input.IdempotencyKey)
+		_ = json.NewEncoder(w).Encode(brokerv1.Grant{ID: []string{"grant_revoked", "grant_active"}[len(keys)-1], Active: len(keys) == 2})
+	}))
+	defer server.Close()
+	auth := aliceAuth()
+	definition := remoteDefinition()
+	definition.CredentialContractID = "github-pat"
+	definition.CredentialContractRevision = 1
+	cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
+	control := &ControlPlane{Broker: &cfg, Now: time.Now}
+	binding := api.ToolBinding{Schema: api.SchemaVersion, ToolBindingID: "binding1", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ConnectionID: "conn1", WorkloadClass: definition.Workload.Class}
+	onboarding := api.Onboarding{OnboardingID: "onboard1", BrokerCredentialID: "credential_1"}
+	grantID, err := control.ensureBrokerGrant(t.Context(), auth, definition, onboarding, binding)
+	if err != nil || grantID != "grant_active" || len(keys) != 2 || keys[0] == keys[1] {
+		t.Fatalf("revoked idempotency replay: active=%t attempts=%d distinct=%t err=%v", grantID == "grant_active", len(keys), len(keys) == 2 && keys[0] != keys[1], err)
+	}
+}
+
 // cutAuthorization revokes the broker credential recorded on the onboarding.
 // When the broker no longer holds that credential, revoke is a no-op outcome,
 // not an error that blocks the user-facing revoke/remove flow.

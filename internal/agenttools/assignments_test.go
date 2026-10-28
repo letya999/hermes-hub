@@ -24,6 +24,7 @@ func TestAssignmentToolsMapOps(t *testing.T) {
 		"assignment_resume":   {http.MethodPost, "/v1/assignments/asg-1/resume"},
 		"assignment_cancel":   {http.MethodPost, "/v1/assignments/asg-1/cancel"},
 		"assignment_complete": {http.MethodPost, "/v1/assignments/asg-1/complete"},
+		"assignment_progress": {http.MethodPost, "/v1/assignments/asg-1/progress"},
 	}
 	for op, want := range want {
 		t.Run(op, func(t *testing.T) {
@@ -51,7 +52,7 @@ func TestAssignmentToolsMapOps(t *testing.T) {
 func TestAssignmentToolRequiresRevision(t *testing.T) {
 	v := fixture(t)
 	v.CommunicationURL, v.CommunicationAuth = "http://127.0.0.1:1", "token"
-	for _, op := range []string{"assignment_update", "assignment_pause", "assignment_resume", "assignment_cancel", "assignment_complete", "assignment_apply"} {
+	for _, op := range []string{"assignment_update", "assignment_pause", "assignment_resume", "assignment_cancel", "assignment_complete", "assignment_apply", "assignment_progress"} {
 		if _, err := v.Assignment(context.Background(), op, Input{ID: "asg-1"}); err == nil || !strings.Contains(err.Error(), "expected_revision") {
 			t.Fatalf("%s must require expected_revision, got %v", op, err)
 		}
@@ -89,6 +90,13 @@ func TestAssignmentToolPayloads(t *testing.T) {
 	}
 	if upd["expected_revision"] != float64(7) || upd["plan"] == nil {
 		t.Fatalf("bad update payload: %s", gotBody)
+	}
+	if _, err := v.Assignment(context.Background(), "assignment_progress", Input{ID: "asg-1", ExpectedRevision: 8, JobID: "trigger-1", Summary: "done", Finding: "source confirmed", NextStep: "none", Complete: true}); err != nil {
+		t.Fatal(err)
+	}
+	var progress map[string]any
+	if err := json.Unmarshal(gotBody, &progress); err != nil || progress["job_id"] != "trigger-1" || progress["summary"] != "done" || progress["complete"] != true {
+		t.Fatalf("bad progress payload: %s (%v)", gotBody, err)
 	}
 }
 
@@ -191,8 +199,8 @@ func TestAssignmentCapabilityIDsProjectable(t *testing.T) {
 		}
 		seen[tool.CapabilityID] = tool.Name
 	}
-	if assignments != 10 {
-		t.Fatalf("expected 10 assignment capabilities, got %d", assignments)
+	if assignments != 11 {
+		t.Fatalf("expected 11 assignment capabilities, got %d", assignments)
 	}
 }
 

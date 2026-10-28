@@ -482,7 +482,7 @@ func (e *Engine) SettleProbe(o commodel.RoutineOccurrence, schedule commodel.Sch
 				// quiet window suppresses it outright — capped, same as the
 				// daily-limit suppression above.
 				live.State = "capped"
-			} else if schedule.AssignmentID != "" && !e.admitAssignmentWakeLocked(schedule.AssignmentID, now) {
+			} else if schedule.AssignmentID != "" && !e.admitAssignmentWakeLocked(schedule.AssignmentID, now, schedule.AssignmentPlanRevision) {
 				// Assignment-owned wakes are fenced at admission: paused,
 				// cancelled or over-budget assignments never reach the model
 				// (SPEC-0080 R2.2).
@@ -494,10 +494,12 @@ func (e *Engine) SettleProbe(o commodel.RoutineOccurrence, schedule commodel.Sch
 				// (SPEC-0054 R2.3).
 				admitted := live.Job
 				admitted.Envelope.ConversationID = RoutineConversation(live.ScheduleID)
-				if schedule.WakePrompt != "" {
-					text = schedule.WakePrompt + "\n---\n" + text
+				instruction := schedule.WakePrompt
+				if schedule.AssignmentID != "" && schedule.AssignmentPlanRevision != 0 {
+					assignment, _ := e.AssignmentForWakeLocked(schedule.AssignmentID, schedule.AssignmentPlanRevision)
+					instruction = fmt.Sprintf("Standing assignment %s (revision %d), trigger job %s.\nOwner intent: %s\nSpecialist instructions: %s\nProgress: %s\nNext step: %s\nAfter handling this trigger, call assignment_get then assignment_progress with this job ID, current expected_revision, summary, optional finding and next_step; complete only when the owner's completion condition is met.", assignment.AssignmentID, assignment.Revision, admitted.ID, assignment.Intent, instruction, assignment.Progress.Summary, assignment.Progress.NextStep)
 				}
-				admitted.Text = "[untrusted watcher evidence] " + text
+				admitted.Text = instruction + "\n[untrusted watcher evidence] " + text
 				if _, err := e.deps.EnqueueJob(admitted); err != nil {
 					return
 				}

@@ -1194,6 +1194,39 @@ func TestProfileRollbackRestoresOnlyReviewedSurface(t *testing.T) {
 // and the self-install pipeline. Bindings materialized through that pipeline
 // (provenance: the onboarding record under the same policy generation) project
 // and dispatch like unmanaged installs; everything else still fails closed.
+func TestSelfInstallProvenanceFollowsOnlyCredentialRotation(t *testing.T) {
+	s, auth, _, profile := managedStore(t)
+	profile.SelfInstall = true
+	old := api.ToolBinding{ToolBindingID: "bind-old", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, DefinitionID: "telegram-mcp", DefinitionVersion: "0.0.8", ConnectionID: "conn-telegram", CredentialRevision: 1, Status: api.RevokedStatus}
+	next := old
+	next.ToolBindingID, next.CredentialRevision, next.Status = "bind-next", 2, api.ActiveStatus
+	s.bindings[old.ToolBindingID], s.bindings[next.ToolBindingID] = old, next
+	s.onboardings["onboard-telegram"] = api.Onboarding{OnboardingID: "onboard-telegram", Mode: api.OnboardingSelfInstall, Phase: api.PhaseEnabled, BindingID: old.ToolBindingID, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion, WritesEnabled: true}
+	if !s.managedSelfInstallsLocked(auth, profile)[next.ToolBindingID] || !s.selfInstallWritesLocked(next.ToolBindingID) {
+		t.Fatal("rotated binding lost confirmed self-install authority")
+	}
+	restricted := s.onboardings["onboard-telegram"]
+	restricted.OnboardingID, restricted.WritesEnabled = "onboard-restricted", false
+	s.onboardings[restricted.OnboardingID] = restricted
+	if s.selfInstallWritesLocked(next.ToolBindingID) {
+		t.Fatal("ambiguous rotated provenance widened write authority")
+	}
+	for name, mutate := range map[string]func(*api.ToolBinding){
+		"connection": func(b *api.ToolBinding) { b.ConnectionID = "conn-other" },
+		"version":    func(b *api.ToolBinding) { b.DefinitionVersion = "0.0.9" },
+		"policy":     func(b *api.ToolBinding) { b.PolicyVersion = "policy-other" },
+		"owner":      func(b *api.ToolBinding) { b.PrincipalID = "bob" },
+	} {
+		candidate := next
+		candidate.ToolBindingID = "bind-" + name
+		mutate(&candidate)
+		s.bindings[candidate.ToolBindingID] = candidate
+		if s.managedSelfInstallsLocked(auth, profile)[candidate.ToolBindingID] {
+			t.Fatalf("%s inherited self-install authority", name)
+		}
+	}
+}
+
 func TestManagedSelfInstallAndControlOperations(t *testing.T) {
 	for _, mode := range []string{api.OnboardingSelfInstall, api.OnboardingRemote} {
 		t.Run(mode, func(t *testing.T) { testManagedSelfInstallAndControlOperations(t, mode) })

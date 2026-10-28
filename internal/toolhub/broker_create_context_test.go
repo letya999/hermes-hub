@@ -162,7 +162,7 @@ func TestBrokerGrantSharedCarriesContextManager(t *testing.T) {
 			cm := claims.Actor.ContextManager
 			contextManager = &cm
 			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(brokerv1.Grant{ID: "grant_1"})
+			_ = json.NewEncoder(w).Encode(brokerv1.Grant{ID: "grant_1", Active: true})
 			return
 		}
 		http.NotFound(w, r)

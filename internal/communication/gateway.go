@@ -65,8 +65,10 @@ type Gateway struct {
 	botName string
 	// holdsMu/holdsLast cache the supervisor's hold projection so the
 	// spool's under-lock admission check never performs I/O.
-	holdsMu   sync.Mutex
-	holdsLast []masterHold
+	holdsMu     sync.Mutex
+	holdsLast   []masterHold
+	streamMu    sync.Mutex
+	streamCalls map[string]*streamSharedCall
 }
 
 func New(config Config) (*Gateway, error) {
@@ -711,6 +713,9 @@ func (g *Gateway) progressTick(ctx context.Context) {
 		}
 		// Only an admitted run earns live progress: a queued or wedged job
 		// would farm typing and edits forever with nothing behind them.
+		if m.AssignmentID != "" {
+			continue
+		}
 		if m.RunID == "" {
 			continue
 		}

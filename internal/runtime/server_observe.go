@@ -200,7 +200,6 @@ func (s *runtimeHTTP) observeHermesRunWindow(ctx context.Context, known ExecuteR
 		defer closeStream()
 		events = nativeRunEvents(streamCtx, base, auth, admission.RunID)
 	}
-	progress := 0
 	lastApproval := ""
 	// Stall watchdog: a run whose Hermes-side update timestamp stops moving
 	// for stallTimeout is hung (e.g. a severed upstream model stream) — stop
@@ -304,10 +303,6 @@ func (s *runtimeHTTP) observeHermesRunWindow(ctx context.Context, known ExecuteR
 				}
 				update.EventID, lastApproval = "approval:"+event.RequestID, event.RequestID
 			case "tool.start", "tool.started", "tool.end", "tool.completed", "run.started":
-				if progress >= 10 {
-					continue
-				}
-				progress++
 				if event.Event == "tool.started" {
 					update.LastEvent = "tool.start"
 				} else if event.Event == "tool.completed" {

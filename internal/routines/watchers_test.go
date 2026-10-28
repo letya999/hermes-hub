@@ -176,7 +176,7 @@ func TestAgentEscalationRespectsQuiet(t *testing.T) {
 	if quietLive.State != "capped" {
 		t.Fatalf("quiet escalation must be capped, got %q", quietLive.State)
 	}
-	if len(d.jobs) != 1 || !strings.HasPrefix(d.jobs[0].Text, "[untrusted watcher evidence]") {
+	if len(d.jobs) != 1 || !strings.Contains(d.jobs[0].Text, "[untrusted watcher evidence]") {
 		t.Fatalf("loud schedule must enqueue exactly one evidence job, got %+v", d.jobs)
 	}
 	if len(d.deliveries) != 0 {

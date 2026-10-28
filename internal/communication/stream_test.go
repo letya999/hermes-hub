@@ -1819,3 +1819,27 @@ func TestRecoverySkipsStaleTerminalReceipt(t *testing.T) {
 		t.Fatal("stale delivery was re-enqueued")
 	}
 }
+
+func TestAssignmentSkipResultSendsNoStatusOrReply(t *testing.T) {
+	spool, job := streamJob(t)
+	if _, err := spool.ClaimJob(); err != nil {
+		t.Fatal(err)
+	}
+	job.AssignmentID = "asg-1"
+	progress := streamEvent(job)
+	progress.LastEvent, progress.EventID, progress.Text = "tool.start", "tool-1", "working"
+	if err := spool.RecordStreamEvent(job, progress); err != nil {
+		t.Fatal(err)
+	}
+	if delivery, err := spool.ClaimDelivery(); err != nil || delivery != nil {
+		t.Fatalf("assignment status leaked: %+v %v", delivery, err)
+	}
+	terminal := streamEvent(job)
+	terminal.Status, terminal.LastEvent, terminal.EventID, terminal.Text = "completed", "run.completed", "terminal:completed", "NO_ACTIONABLE_EVENT"
+	if err := spool.RecordStreamEvent(job, terminal); err != nil {
+		t.Fatal(err)
+	}
+	if delivery, err := spool.ClaimDelivery(); err != nil || delivery != nil {
+		t.Fatalf("skip result leaked: %+v %v", delivery, err)
+	}
+}

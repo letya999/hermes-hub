@@ -463,7 +463,14 @@ func (c *ControlPlane) materializeBinding(ctx context.Context, auth identity.Env
 	rotation := onboarding.BrokerRotateCredentialID != ""
 	if existing := c.Store.findBinding(auth, definition); existing != nil && existing.Status != api.RevokedStatus && !rotation {
 		connection, ref, err := c.Store.OwnedConnection(auth, existing.ConnectionID)
-		if onboarding.Locator == "" || err == nil && ref.Locator == onboarding.Locator && (!c.brokerCredentialRequired(definition, onboarding) || c.Store.brokerGrantReusable(auth, definition, ownerConnectionMatch{connection: connection, credential: ref})) {
+		grantUsable := true
+		if err == nil && c.brokerCredentialRequired(definition, onboarding) {
+			grantUsable, err = c.brokerGrantActive(ctx, auth, definition, ownerConnectionMatch{connection: connection, credential: ref})
+		}
+		if err != nil && onboarding.Locator != "" {
+			return api.ToolBinding{}, err
+		}
+		if onboarding.Locator == "" || err == nil && ref.Locator == onboarding.Locator && grantUsable {
 			if c.Ready != nil {
 				return c.Store.EnableReady(ctx, auth, definition.DefinitionID, definition.Version, c.Ready)
 			}

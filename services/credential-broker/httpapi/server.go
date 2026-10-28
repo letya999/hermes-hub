@@ -284,6 +284,8 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request, a identity.Actor, d
 		} else {
 			e = s.b.RevokeCredential(a, parts[2])
 		}
+	case len(parts) == 3 && parts[1] == "grants" && r.Method == "GET":
+		out, e = s.b.GetGrant(a, parts[2])
 	case len(parts) == 4 && parts[1] == "grants" && parts[3] == "revoke" && r.Method == "POST":
 		if !noBody(data) {
 			e = broker.ErrInvalid

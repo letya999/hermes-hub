@@ -33,7 +33,7 @@ func HubToolsDefinition() api.ToolDefinition {
 	return api.ToolDefinition{
 		Schema:       api.SchemaVersion,
 		DefinitionID: HubToolsDefinitionID,
-		Version:      "5.3.1",
+		Version:      "5.3.3",
 		Transport:    api.AgentTools,
 		Source:       api.DefinitionSource{},
 		Workload: api.WorkloadPolicy{
@@ -77,7 +77,7 @@ func HubToolsDefinition() api.ToolDefinition {
 			tool("routine_get", "routines.get", routineDescriptions["routine_get"], api.ReadEffect, use("list", "routines"), str("id"), arg("include", "array", false), arg("history_limit", "integer", false), opt("history_cursor"), arg("preview_limit", "integer", false)),
 			tool("routine_edit", "routines.update", routineDescriptions["routine_edit"], api.WriteEffect, use("update", "routines"), str("id"), str("action"), arg("expected_revision", "integer", true), arg("patch", "object", false), opt("until"), opt("origin_job_id")),
 			tool("routine_delete", "routines.delete", routineDescriptions["routine_delete"], api.WriteEffect, use("delete", "routines"), str("id"), arg("expected_revision", "integer", true)),
-			tool("watch_subscribe", "watches.create", routineDescriptions["watch_subscribe"], api.WriteEffect, use("create", "watches"), str("id"), str("timezone"), str("expression"), str("text"), str("tool"), opt("sink"), opt("args"), opt("delivery"), opt("filter"), opt("sources"), arg("min_interval_seconds", "integer", false)),
+			tool("watch_subscribe", "watches.create", routineDescriptions["watch_subscribe"], api.WriteEffect, use("create", "watches"), str("id"), str("timezone"), str("expression"), str("text"), str("tool"), opt("sink"), opt("args"), opt("delivery"), opt("filter"), opt("sources"), opt("cursor_arg"), arg("min_interval_seconds", "integer", false)),
 			tool("watch_list", "watches.list", routineDescriptions["watch_list"], api.ReadEffect, use("list", "watches")),
 			tool("watch_pause", "watches.pause", routineDescriptions["watch_pause"], api.WriteEffect, use("update", "watches"), str("id")),
 			tool("watch_resume", "watches.resume", routineDescriptions["watch_resume"], api.WriteEffect, use("update", "watches"), str("id")),
@@ -86,16 +86,17 @@ func HubToolsDefinition() api.ToolDefinition {
 			// Standing assignments (SPEC-0080 R2.3): the agent plans and
 			// steers; the owner alone widens grants via chat authorize —
 			// no authorize argument exists on any assignment tool.
-			tool("assignment_plan", "assignments.plan", "Dry-run an assignment plan before creating: pass plan as a JSON object {sources:[{name,schedule}],specialist:{instructions,reply}}; returns per-source verdicts, persists nothing. Always dry-run a new or changed plan first.", api.ReadEffect, use("plan", "assignments"), str("plan")),
-			tool("assignment_create", "assignments.create", "Create a standing assignment from a verbatim user intent (text). Optional title, plan (JSON) and queue=true to provision sources immediately. The assignment survives restarts; deterministic probes run before any model wake — unchanged sources never wake the specialist. Grants bound LLM spend (default daily wake cap 20).", api.WriteEffect, use("create", "assignments"), str("text"), opt("title"), opt("plan"), arg("queue", "boolean", false)),
+			tool("assignment_plan", "assignments.plan", "Dry-run an already-saved draft assignment plan before apply: pass plan as JSON {sources:[{name,schedule}],specialist:{instructions,reply},unavailable:[{reference,reason}]}. Returns per-source structural verdicts; persists nothing.", api.ReadEffect, use("plan", "assignments"), str("plan")),
+			tool("assignment_create", "assignments.create", "Immediately save the owner's verbatim intent as a durable draft before checking any sources. Pass text and optional title, omit plan and queue. Later use assignment_update to save bounded source-check batches, assignment_plan for structural dry-run, then assignment_apply. Grants bound LLM spend (default daily wake cap 20).", api.WriteEffect, use("create", "assignments"), str("text"), opt("title"), opt("plan"), arg("queue", "boolean", false)),
 			tool("assignment_list", "assignments.list", "List the owner's standing assignments: id, title, state (draft|active|waiting|paused|completed|cancelled|failed), blocked reason, durable counters.", api.ReadEffect, use("list", "assignments"), arg("limit", "integer", false), opt("cursor")),
 			tool("assignment_get", "assignments.get", "Read one assignment card: state, applied schedule receipts, plan revision, grants, checkpoint counters, blocked reason.", api.ReadEffect, use("list", "assignments"), str("id")),
-			tool("assignment_update", "assignments.update", "Replace an assignment's plan: pass plan (JSON) and expected_revision from get/list. Grants may only narrow — widening needs the owner's chat-side authorize, which no tool can perform.", api.WriteEffect, use("update", "assignments"), str("id"), str("plan"), arg("expected_revision", "integer", true)),
+			tool("assignment_update", "assignments.update", "Save an assignment draft's plan after each bounded source-check batch: plan JSON may include unavailable:[{reference,reason}]; include only verified accessible chats in probe.sources. Use expected_revision from get/list. Grant widening remains owner-only.", api.WriteEffect, use("update", "assignments"), str("id"), str("plan"), arg("expected_revision", "integer", true)),
 			tool("assignment_apply", "assignments.apply", "Provision or repair an assignment's schedule artifacts (idempotent). Requires expected_revision.", api.WriteEffect, use("update", "assignments"), str("id"), arg("expected_revision", "integer", true)),
 			tool("assignment_pause", "assignments.pause", "Pause an assignment and all its sources; wakes and deliveries stop until resume. Requires expected_revision.", api.WriteEffect, use("update", "assignments"), str("id"), arg("expected_revision", "integer", true)),
 			tool("assignment_resume", "assignments.resume", "Resume a paused assignment; schedules recompute their next due times. Requires expected_revision.", api.WriteEffect, use("update", "assignments"), str("id"), arg("expected_revision", "integer", true)),
 			tool("assignment_cancel", "assignments.delete", "Cancel an assignment — terminal: sources retire and stale effects stay fenced. Does not recall messages already sent. Requires expected_revision.", api.WriteEffect, use("delete", "assignments"), str("id"), arg("expected_revision", "integer", true)),
 			tool("assignment_complete", "assignments.complete", "Mark an assignment completed and retire its sources. Requires expected_revision.", api.WriteEffect, use("update", "assignments"), str("id"), arg("expected_revision", "integer", true)),
+			tool("assignment_progress", "assignments.progress", "Record one triggered specialist result: bounded summary, optional finding to accumulate, next_step, and complete=true only when the owner's completion condition is met. Requires this running trigger's job_id and the current expected_revision from assignment_get; retries for the same job are idempotent.", api.WriteEffect, use("update", "assignments"), str("id"), str("job_id"), str("summary"), opt("finding"), opt("next_step"), arg("complete", "boolean", false), arg("expected_revision", "integer", true)),
 			tool("document_extract", "documents.read", "Extract text from a document inside the admitted scope.", api.ReadEffect, use("read", "documents", "path"), path),
 			tool("document_create", "documents.create", "Create a document artifact from supplied text.", api.WriteEffect, use("create", "documents"), str("name"), str("format"), str("text")),
 			tool("document_edit", "documents.edit", "Replace the text of a document artifact inside the admitted scope.", api.WriteEffect, use("edit", "documents", "path"), path, str("text")),

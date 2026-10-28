@@ -498,7 +498,7 @@ func (e *Engine) TickSchedules(now time.Time, nativeCron string, authorize func(
 		if window <= 0 {
 			window = DefaultCatchUp
 		}
-		job := commodel.Job{Envelope: item.Envelope, OrganizationID: item.OrganizationID, UserID: item.UserID, ActorID: item.ActorID, ScopeID: item.ScopeID, Channel: item.Channel, ChatID: item.ChatID, TaskID: item.TaskID, TopicID: item.TopicID, SlackChannel: item.SlackChannel, SlackThread: item.SlackThread, Text: item.Input, Trigger: "cron"}
+		job := commodel.Job{Envelope: item.Envelope, OrganizationID: item.OrganizationID, UserID: item.UserID, ActorID: item.ActorID, ScopeID: item.ScopeID, Channel: item.Channel, ChatID: item.ChatID, TaskID: item.TaskID, TopicID: item.TopicID, SlackChannel: item.SlackChannel, SlackThread: item.SlackThread, Text: item.Input, Trigger: "cron", AssignmentID: item.AssignmentID, AssignmentPlanRevision: item.AssignmentPlanRevision}
 		occ := commodel.RoutineOccurrence{ScheduleID: item.ScheduleID, Revision: item.Revision, DueAt: due, JobKind: item.JobKind, Job: job, CatchUpWindow: window}
 		if err := ValidateOccurrence(occ, item.Envelope, e.deps.ChannelFor); err != nil {
 			continue

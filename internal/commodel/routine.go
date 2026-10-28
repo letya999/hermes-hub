@@ -53,10 +53,13 @@ type WatchProbe struct {
 	// fan-out; urgent events bypass quiet windows and daily caps.
 	Filter string `json:"filter,omitempty"`
 	// MinIntervalSeconds declares the source's cadence contract for
-	// delivery=stream polls: the stream loop waits this long between
-	// successful rounds. Required on stream schedules whose tool is not
+	// delivery=stream polls: minimum start-to-start cadence; read time counts. Required on stream schedules whose tool is not
 	// wait-capable — wait tools hold the call open and pace themselves.
 	MinIntervalSeconds int64 `json:"min_interval_seconds,omitempty"`
+	// CursorArg names the projected tool argument that receives the durable
+	// next_cursor from its previous successful stream round. Empty disables
+	// cursor feedback for legacy wait tools.
+	CursorArg string `json:"cursor_arg,omitempty"`
 	// Sources fans one subscription out over several acquisition inputs
 	// (SPEC-0081 shared acquisition): each entry is probed in bounded
 	// parallel per stream round and the batches merge into one wake.
@@ -196,10 +199,11 @@ type Schedule struct {
 	// AssignmentID marks a schedule provisioned by an assignment apply;
 	// WakePrompt prefixes agent-sink evidence jobs with the specialist's
 	// instructions (SPEC-0080). Both are engine-stamped, never draft-set.
-	AssignmentID string    `json:"assignment_id,omitempty"`
-	WakePrompt   string    `json:"wake_prompt,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	AssignmentID           string    `json:"assignment_id,omitempty"`
+	AssignmentPlanRevision uint64    `json:"assignment_plan_revision,omitempty"`
+	WakePrompt             string    `json:"wake_prompt,omitempty"`
+	CreatedAt              time.Time `json:"created_at"`
+	UpdatedAt              time.Time `json:"updated_at"`
 }
 
 // RoutineDraft is the POST /v1/routines boundary: it carries only the fields

@@ -22,6 +22,15 @@ import (
 
 // S6.1 — delivery=stream is an event-only mcp_tool mode; poll is the
 // default and other kinds reject it outright.
+func TestStreamWaitCannotBusyPoll(t *testing.T) {
+	if got := streamMinInterval(&WatchProbe{Kind: "mcp_tool", Tool: "wait_for_new_message"}); got < 5*time.Second {
+		t.Fatalf("immediate wait can busy-poll: interval=%s", got)
+	}
+	if got := streamMinInterval(&WatchProbe{MinIntervalSeconds: 60}); got != time.Minute {
+		t.Fatalf("declared cadence changed: %s", got)
+	}
+}
+
 func TestStreamDeliveryValidation(t *testing.T) {
 	s, o, _ := occurrenceFixture(t)
 	caller := o.Job.Envelope
@@ -293,6 +302,75 @@ func TestStreamSourcesFanoutMergesOneWake(t *testing.T) {
 	g.streamPollOnce(context.Background(), sched, toolCall)
 	if job2, err := s.ClaimJob(); err != nil || job2 != nil {
 		t.Fatal("replayed multi-source batch woke the agent again")
+	}
+}
+
+func TestStreamPollRefreshesHoldEpochBeforeWake(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	sched, err := s.CreateSchedule(Schedule{ScheduleID: "str-epoch", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "watch dms", JobKind: "event", Delivery: "stream", Sink: "agent", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc"}}, caller, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	refreshed := false
+	s.refreshHolds = func(context.Context) error { refreshed = true; return nil }
+	s.holdsSnapshot = func() []masterHold {
+		if !refreshed {
+			return nil
+		}
+		return []masterHold{{PrincipalID: "alice", ContextID: "alice", Epoch: 2}}
+	}
+	toolCall := func(context.Context, string, *WatchProbe) ([]byte, error) {
+		return []byte(`{"events":[{"id":"e1","text":"ping"}]}`), nil
+	}
+	if _, blocked := g.streamPollOnce(context.Background(), sched, toolCall); blocked {
+		t.Fatal("poll blocked")
+	}
+	job, err := s.ClaimJob()
+	if err != nil || job == nil || job.OperationalEpoch != 2 {
+		t.Fatalf("stream job lost current epoch: job=%+v err=%v", job, err)
+	}
+}
+
+func TestStreamCursorFeedsBackAndWaitsForOverflow(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	sched, err := s.CreateSchedule(Schedule{ScheduleID: "cursor-overflow", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "watch messages", JobKind: "event", Delivery: "stream", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-watch-chat-messages", CursorArg: "cursor", MinIntervalSeconds: 60}}, caller, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := []string{}
+	toolCall := func(_ context.Context, _ string, probe *WatchProbe) ([]byte, error) {
+		cursor, _ := probe.Args["cursor"].(string)
+		calls = append(calls, cursor)
+		if cursor == "" {
+			return []byte(`{"events":[],"next_cursor":"3"}`), nil
+		}
+		items := []map[string]any{}
+		for i := 4; i <= 13; i++ {
+			items = append(items, map[string]any{"id": i, "text": fmt.Sprintf("message %d", i)})
+		}
+		return json.Marshal(map[string]any{"events": items, "next_cursor": "13"})
+	}
+	if _, blocked := g.streamPollOnce(context.Background(), sched, toolCall); blocked {
+		t.Fatal("baseline blocked")
+	}
+	st, _ := s.EventStateOf(sched.ScheduleID)
+	if st.Cursor != "3" || len(st.Seen) != 0 {
+		t.Fatalf("baseline must only store high watermark: %+v", st)
+	}
+	g.streamPollOnce(context.Background(), sched, toolCall)
+	st, _ = s.EventStateOf(sched.ScheduleID)
+	if st.Cursor != "3" || len(st.Seen) != 8 {
+		t.Fatalf("overflow advanced cursor or lost admitted events: %+v", st)
+	}
+	g.streamPollOnce(context.Background(), sched, toolCall)
+	st, _ = s.EventStateOf(sched.ScheduleID)
+	if st.Cursor != "13" || len(st.Seen) != 10 {
+		t.Fatalf("replay did not drain overflow: %+v", st)
+	}
+	if strings.Join(calls, ",") != ",3,3" {
+		t.Fatalf("cursor feedback mismatch: %v", calls)
 	}
 }
 
@@ -643,6 +721,42 @@ func TestStreamPollPacesByMinInterval(t *testing.T) {
 	g.streamPoll(ctx, "str-pace", toolCall)
 	if calls != 1 {
 		t.Fatalf("stream poll ignored the declared cadence: %d calls", calls)
+	}
+}
+
+func TestStreamRoundDelayUsesStartToStartCadence(t *testing.T) {
+	probe := &WatchProbe{Kind: "mcp_tool", MinIntervalSeconds: 60}
+	if got := streamRoundDelay(probe, 12*time.Second); got != 48*time.Second {
+		t.Fatalf("next poll must start one minute after the last start: %s", got)
+	}
+	if got := streamRoundDelay(probe, 70*time.Second); got != 0 {
+		t.Fatalf("slow round must not add another interval: %s", got)
+	}
+}
+
+func TestStreamPollCountsReadTimeTowardCadence(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	_, err := s.CreateSchedule(Schedule{ScheduleID: "str-start-cadence", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "watch feed", JobKind: "event", Delivery: "stream", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-feed-poll-abc", MinIntervalSeconds: 5}}, caller, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	toolCall := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
+		calls++
+		if calls == 1 {
+			select {
+			case <-time.After(2 * time.Second):
+			case <-ctx.Done():
+			}
+		}
+		return []byte(`{"events":[]}`), nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 6500*time.Millisecond)
+	defer cancel()
+	g.streamPoll(ctx, "str-start-cadence", toolCall)
+	if calls < 2 {
+		t.Fatalf("read time did not count toward five-second cadence: %d calls", calls)
 	}
 }
 
@@ -1013,6 +1127,31 @@ func TestStreamToolCallInjectsBound(t *testing.T) {
 	}
 	if !strings.Contains(body, `"max_wait_ms":20000`) {
 		t.Fatalf("wait bound missing from stream tool call: %s", body)
+	}
+}
+
+func TestStreamCursorReadCoalescesWithinOwnerOnly(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		_, _ = w.Write([]byte(`{"text":"{\"events\":[],\"next_cursor\":\"3\"}","is_error":false}`))
+	}))
+	defer server.Close()
+	g := &Gateway{config: Config{ToolHubURL: server.URL, Supervised: true, RuntimeAuth: "tok"}}
+	probe := &WatchProbe{Kind: "mcp_tool", Tool: "hub-watch-chat-messages", CursorArg: "cursor", Args: map[string]any{"chat_id": 1, "cursor": "3"}}
+	for i := 0; i < 2; i++ {
+		if _, err := g.streamToolCall(context.Background(), "alice", probe); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("identical cursor reads were not shared: %d", calls.Load())
+	}
+	if _, err := g.streamToolCall(context.Background(), "bob", probe); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("cross-owner cursor read reused a body: %d", calls.Load())
 	}
 }
 
@@ -1570,5 +1709,53 @@ func TestStreamPollOnceFilterErrorBlocks(t *testing.T) {
 	}
 	if st.LastError == "" {
 		t.Fatal("filter error must land on the durable state for /watches")
+	}
+}
+
+func TestFourteenTelegramSourcesMergeOneCandidateBatch(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	sources := make([]WatchProbeSource, 14)
+	for i := range sources {
+		sources[i] = WatchProbeSource{Name: fmt.Sprintf("c%02d", i), Args: map[string]any{"chat_id": fmt.Sprintf("chat%02d", i)}}
+	}
+	schedule, err := s.CreateSchedule(Schedule{ScheduleID: "fourteen", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "watch repositories", JobKind: "event", Delivery: "stream", Sink: "agent", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-telegram-mcp-watch-chat-messages-9ba48454", CursorArg: "cursor", MinIntervalSeconds: 60, Filter: `emit("keep" if "github.com/" in input() else "drop")`, Sources: sources}}, caller, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.probeScript = func(_ context.Context, _ RoutineOccurrence, _, input string, _ bool, _ []string) (string, error) {
+		if strings.Contains(input, "github.com/") {
+			return "keep", nil
+		}
+		return "drop", nil
+	}
+	toolCall := func(_ context.Context, _ string, p *WatchProbe) ([]byte, error) {
+		name := p.Args["chat_id"].(string)
+		text := "ordinary message"
+		if name == "chat02" || name == "chat07" {
+			text = "https://github.com/owner/repo"
+		}
+		return []byte(fmt.Sprintf(`{"events":[{"id":"1","text":%q}],"next_cursor":"1"}`, text)), nil
+	}
+	if _, blocked := g.streamPollOnce(context.Background(), schedule, toolCall); blocked {
+		t.Fatal("healthy batch blocked")
+	}
+	state, err := s.EventStateOf(schedule.ScheduleID)
+	if err != nil || len(state.SourceCursors) != 14 {
+		t.Fatalf("source cursors=%d error=%v", len(state.SourceCursors), err)
+	}
+	job, err := s.ClaimJob()
+	if err != nil || job == nil {
+		t.Fatalf("candidate batch did not wake once: %v", err)
+	}
+	if !strings.Contains(job.Text, "c02") || !strings.Contains(job.Text, "c07") || strings.Contains(job.Text, "ordinary message") {
+		t.Fatal("candidate evidence or source attribution wrong")
+	}
+	if _, blocked := g.streamPollOnce(context.Background(), schedule, toolCall); blocked {
+		t.Fatal("replay blocked")
+	}
+	again, err := s.ClaimJob()
+	if err != nil || again != nil {
+		t.Fatalf("replay woke another job: %v %+v", err, again)
 	}
 }

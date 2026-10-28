@@ -19,6 +19,10 @@ import (
 // next rounds' slots (the subscription still merges one wake per round).
 const streamSourceConcurrency = 8
 
+// One gateway process may supervise many watches; cap simultaneous remote
+// calls across all of them so a large owner cannot saturate ToolHub.
+var streamToolSlots = make(chan struct{}, 16)
+
 // streamWaitBudget shapes each source's connector-side wait bound (cap is
 // budget-5s split across the round's inputs); streamCallBudget is the
 // whole tool-call deadline — larger, because a serialized connector queues
@@ -68,7 +72,11 @@ func streamMinInterval(probe *WatchProbe) time.Duration {
 	if probe == nil {
 		return 0
 	}
-	return time.Duration(probe.MinIntervalSeconds) * time.Second
+	return max(5*time.Second, time.Duration(probe.MinIntervalSeconds)*time.Second)
+}
+
+func streamRoundDelay(probe *WatchProbe, elapsed time.Duration) time.Duration {
+	return max(0, streamMinInterval(probe)-elapsed)
 }
 
 // streamBackoff paces consecutive failures 1s → 30s so a dead connector
@@ -93,16 +101,15 @@ func (g *Gateway) streamPoll(ctx context.Context, id string, toolCall func(conte
 		if err != nil {
 			return
 		}
+		started := time.Now()
 		_, blocked := g.streamPollOnce(ctx, sched, toolCall)
 		if ctx.Err() != nil {
 			return
 		}
 		if !blocked {
 			failures = 0
-			// The source's declared cadence (probe.min_interval_seconds)
-			// paces plain polls; wait-style tools hold the call open and
-			// carry no interval, so they fall through to the next round.
-			if interval := streamMinInterval(sched.Probe); interval > 0 {
+			// Keep the declared cadence from the start of the last round.
+			if interval := streamRoundDelay(sched.Probe, time.Since(started)); interval > 0 {
 				timer := time.NewTimer(interval)
 				select {
 				case <-ctx.Done():
@@ -225,6 +232,55 @@ func (s *Spool) streamIDs(now time.Time) map[string]bool {
 // streamToolCall runs one stream call under a 30s budget (bounded wait
 // tools hold the call near a batch) with the wait bound injected.
 func (g *Gateway) streamToolCall(ctx context.Context, principalID string, probe *WatchProbe) ([]byte, error) {
+	if probe.CursorArg == "" {
+		return g.streamToolCallLimited(ctx, principalID, probe)
+	}
+	args, err := json.Marshal(probe.Args)
+	if err != nil {
+		return nil, err
+	}
+	key := principalID + "\x00" + probe.Tool + "\x00" + string(args)
+	g.streamMu.Lock()
+	if g.streamCalls == nil {
+		g.streamCalls = map[string]*streamSharedCall{}
+	}
+	if existing := g.streamCalls[key]; existing != nil {
+		g.streamMu.Unlock()
+		select {
+		case <-existing.done:
+			return append([]byte(nil), existing.body...), existing.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	call := &streamSharedCall{done: make(chan struct{})}
+	g.streamCalls[key] = call
+	g.streamMu.Unlock()
+	call.body, call.err = g.streamToolCallLimited(ctx, principalID, probe)
+	close(call.done)
+	time.AfterFunc(time.Second, func() {
+		g.streamMu.Lock()
+		if g.streamCalls[key] == call {
+			delete(g.streamCalls, key)
+		}
+		g.streamMu.Unlock()
+	})
+	return append([]byte(nil), call.body...), call.err
+}
+
+type streamSharedCall struct {
+	done chan struct{}
+	body []byte
+	err  error
+}
+
+func (g *Gateway) streamToolCallLimited(ctx context.Context, principalID string, probe *WatchProbe) ([]byte, error) {
+	select {
+	case streamToolSlots <- struct{}{}:
+		defer func() { <-streamToolSlots }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 	return g.toolCallProbeWithin(ctx, principalID, streamProbe(probe), streamCallBudget)
 }
 
@@ -351,8 +407,14 @@ type watchSample struct {
 // per-call budget; the caller's toolCall sets that budget.
 func (g *Gateway) probeRound(ctx context.Context, schedule Schedule, waitBudget time.Duration, toolCall func(context.Context, string, *WatchProbe) ([]byte, error)) []sourceResult {
 	probe := schedule.Probe
+	state, stateErr := g.spool.EventStateOf(schedule.ScheduleID)
+	if stateErr != nil {
+		return []sourceResult{{err: stateErr}}
+	}
 	if len(probe.Sources) == 0 {
-		body, err := toolCall(ctx, schedule.Envelope.PrincipalID, streamProbeWithin(probe, waitBudget, 1))
+		call := streamProbeWithin(probe, waitBudget, 1)
+		withProbeCursor(call, state.Cursor)
+		body, err := toolCall(ctx, schedule.Envelope.PrincipalID, call)
 		return []sourceResult{{body: body, err: err}}
 	}
 	share := min(len(probe.Sources), streamSourceConcurrency)
@@ -371,12 +433,20 @@ func (g *Gateway) probeRound(ctx context.Context, schedule Schedule, waitBudget 
 				results[i].err = ctx.Err()
 				return
 			}
-			body, err := toolCall(ctx, schedule.Envelope.PrincipalID, streamProbeWithin(probeForSource(probe, src), waitBudget, share))
+			call := streamProbeWithin(probeForSource(probe, src), waitBudget, share)
+			withProbeCursor(call, state.SourceCursors[results[i].label])
+			body, err := toolCall(ctx, schedule.Envelope.PrincipalID, call)
 			results[i].body, results[i].err = body, err
 		}(i, src)
 	}
 	wg.Wait()
 	return results
+}
+
+func withProbeCursor(probe *WatchProbe, cursor string) {
+	if probe.CursorArg != "" && cursor != "" {
+		probe.Args[probe.CursorArg] = cursor
+	}
 }
 
 // sampleRoutine is the owner-facing read behind POST /v1/routines/{id}
@@ -391,6 +461,25 @@ func (g *Gateway) sampleRoutine(ctx context.Context, id string, caller identity.
 	}
 	if sched.Envelope.PrincipalID != caller.PrincipalID {
 		return watchSample{}, ErrRoutineNotOwned
+	}
+	if strings.Contains(sched.Probe.Tool, "settled") {
+		return watchSample{}, errors.New("sampling a consuming wait tool is unsafe; use a non-consuming cursor probe")
+	}
+	for _, src := range sched.Probe.Sources {
+		if strings.Contains(src.Tool, "settled") {
+			return watchSample{}, errors.New("sampling a consuming wait tool is unsafe; use a non-consuming cursor probe")
+		}
+	}
+	if sched.Probe.CursorArg != "" {
+		probe := *sched.Probe
+		probe.Args = make(map[string]any, len(sched.Probe.Args)+1)
+		for k, v := range sched.Probe.Args {
+			probe.Args[k] = v
+		}
+		// A dry-run with no durable cursor reads a small historical page
+		// to reveal the event shape; it never advances the live baseline.
+		probe.Args[probe.CursorArg] = "0"
+		sched.Probe = &probe
 	}
 	results := g.probeRound(ctx, sched, sampleWaitBudget, toolCall)
 	out := watchSample{ScheduleID: id, Sources: make([]sampleSourceReport, 0, len(results))}
@@ -408,15 +497,36 @@ func (g *Gateway) sampleRoutine(ctx context.Context, id string, caller identity.
 			out.Sources = append(out.Sources, rep)
 			continue
 		}
-		events, _ := extractEvents(probe, res.body)
+		events, exErr := extractEvents(probe, res.body)
+		if exErr != nil {
+			rep.Error = boundedWatchText(exErr.Error())
+			out.Sources = append(out.Sources, rep)
+			continue
+		}
+		if len(events) > 4 {
+			events = events[:4]
+		}
 		for _, ev := range events {
 			rep.Events = append(rep.Events, sampleEvent{ID: ev.ID, Text: ev.Text, Raw: ev.Raw})
-			if filter != "" && g.spool.probeScript != nil {
+			if filter != "" {
 				if rep.Verdicts == nil {
 					rep.Verdicts = map[string]string{}
 				}
-				verdict, _ := g.spool.probeScript(ctx, proxy, filter, filterInput(ev), false, nil)
-				rep.Verdicts[ev.ID] = strings.TrimSpace(verdict)
+				if g.spool.probeScript == nil {
+					rep.Error = "event filter unavailable"
+					break
+				}
+				verdict, err := g.spool.probeScript(ctx, proxy, filter, filterInput(ev), false, nil)
+				if err != nil {
+					rep.Error = boundedWatchText(err.Error())
+					break
+				}
+				verdict = strings.TrimSpace(verdict)
+				if verdict != "keep" && verdict != "drop" && verdict != "urgent" {
+					rep.Error = "invalid event filter verdict"
+					break
+				}
+				rep.Verdicts[ev.ID] = verdict
 			}
 		}
 		out.Sources = append(out.Sources, rep)
@@ -432,6 +542,11 @@ func (g *Gateway) sampleRoutine(ctx context.Context, id string, caller identity.
 // event scoped by its source label so connector id namespaces never
 // collide across inputs.
 func (g *Gateway) streamPollOnce(ctx context.Context, schedule Schedule, toolCall func(context.Context, string, *WatchProbe) ([]byte, error)) ([]Event, bool) {
+	if g.spool.refreshHolds != nil {
+		if err := g.spool.refreshHolds(ctx); err != nil {
+			return nil, true
+		}
+	}
 	results := g.probeRound(ctx, schedule, streamWaitBudget, toolCall)
 	overflowed, blocked := g.spool.settleStreamResults(schedule, results, g.now().UTC(), g.authorizeOccurrence)
 	for _, ev := range overflowed {
@@ -499,11 +614,10 @@ func (s *Spool) settleStreamResults(schedule Schedule, results []sourceResult, n
 		s.mu.Unlock()
 		return nil, true
 	}
-	var env struct {
-		Cursor string `json:"next_cursor"`
-	}
 	sourceErrs := map[string]string{}
 	sourceCursors := map[string]string{}
+	sourceEvents := map[string][]string{}
+	parseFailed := 0
 	cursor := ""
 	events := []Event{}
 	for _, res := range results {
@@ -516,6 +630,27 @@ func (s *Spool) settleStreamResults(schedule Schedule, results []sourceResult, n
 		}
 		extracted, exErr := extractEvents(schedule.Probe, res.body)
 		if exErr != nil {
+			st.LastError = boundedWatchText(exErr.Error())
+			_ = atomicJSON(s.eventPath(schedule.ScheduleID), st)
+			s.mu.Unlock()
+			return nil, true
+		}
+		var env struct {
+			Cursor        string `json:"next_cursor"`
+			CursorExpired bool   `json:"cursor_expired"`
+		}
+		if json.Unmarshal(res.body, &env) == nil && env.CursorExpired {
+			parseFailed++
+			sourceErrs[res.label] = "source cursor expired; owner must inspect the gap"
+			if st.SourceErrors[res.label] == "" {
+				st.GapCount++
+				st.LastGapAt = now.UTC()
+			}
+			continue
+		}
+		if schedule.Probe.CursorArg != "" && (json.Unmarshal(res.body, &env) != nil || env.Cursor == "") {
+			st.LastError = "cursor probe returned no next_cursor"
+			_ = atomicJSON(s.eventPath(schedule.ScheduleID), st)
 			s.mu.Unlock()
 			return nil, true
 		}
@@ -531,16 +666,32 @@ func (s *Spool) settleStreamResults(schedule Schedule, results []sourceResult, n
 				ev.Source = res.label
 				ev.ID = res.label + "|" + ev.ID
 			}
+			sourceEvents[res.label] = append(sourceEvents[res.label], ev.ID)
 			events = append(events, ev)
 		}
 	}
 	if len(events) == 0 {
 		// A healthy empty poll still proves liveness for /watches.
 		st.LastSuccess = now
-		st.LastError = ""
+		if parseFailed == 0 && len(sourceErrs) == 0 {
+			st.LastError = ""
+			st.Degraded = false
+		} else {
+			st.LastError = "one or more watch sources unavailable"
+		}
+		st.SourceErrors = sourceErrs
+		if cursor != "" {
+			st.Cursor = cursor
+		}
+		for label, c := range sourceCursors {
+			if st.SourceCursors == nil {
+				st.SourceCursors = map[string]string{}
+			}
+			st.SourceCursors[label] = c
+		}
 		_ = atomicJSON(s.eventPath(schedule.ScheduleID), st)
 		s.mu.Unlock()
-		return nil, false
+		return nil, parseFailed+failed == len(results)
 	}
 	fresh := []Event{}
 	ids := make([]string, 0, len(events))
@@ -550,11 +701,7 @@ func (s *Spool) settleStreamResults(schedule Schedule, results []sourceResult, n
 			fresh = append(fresh, ev)
 		}
 	}
-	sourceID := schedule.ScheduleID
-	if schedule.ProbeRevision > 0 {
-		sourceID += "-" + strconv.FormatUint(schedule.ProbeRevision, 10)
-	}
-	seed := "stream-" + sourceID + "-" + watchHash(strings.Join(ids, "|"))[:16]
+	seed := "stream2-" + strconv.Itoa(len(schedule.ScheduleID)) + "-" + schedule.ScheduleID + "-" + strconv.FormatUint(schedule.ProbeRevision, 10) + "-" + watchHash(strings.Join(ids, "|"))[:16]
 	job.ID = seed
 	job.IdempotencyKey = seed
 	s.mu.Unlock()
@@ -566,16 +713,27 @@ func (s *Spool) settleStreamResults(schedule Schedule, results []sourceResult, n
 	// events stay unseen and the round reports blocked so the loop paces.
 	var verdicts map[string]string
 	var filterErr error
-	if live.Probe != nil && live.Probe.Filter != "" && s.probeScript != nil {
+	if live.Probe != nil && live.Probe.Filter != "" {
 		verdicts = make(map[string]string, len(fresh))
+		if s.probeScript == nil {
+			filterErr = errors.New("event filter unavailable")
+		}
 		proxy := RoutineOccurrence{ScheduleID: live.ScheduleID, DueAt: now, Job: job}
 		for _, ev := range fresh {
+			if filterErr != nil {
+				break
+			}
 			verdict, verr := s.probeScript(context.Background(), proxy, live.Probe.Filter, filterInput(ev), false, nil)
 			if verr != nil {
 				filterErr = verr
 				break
 			}
-			verdicts[ev.ID] = strings.TrimSpace(verdict)
+			verdict = strings.TrimSpace(verdict)
+			if verdict != "keep" && verdict != "drop" && verdict != "urgent" {
+				filterErr = errors.New("invalid event filter verdict")
+				break
+			}
+			verdicts[ev.ID] = verdict
 		}
 	}
 
@@ -591,17 +749,11 @@ func (s *Spool) settleStreamResults(schedule Schedule, results []sourceResult, n
 	if err != nil {
 		return nil, true
 	}
-	st.Cursor = cursor
-	for label, c := range sourceCursors {
-		if st.SourceCursors == nil {
-			st.SourceCursors = map[string]string{}
-		}
-		st.SourceCursors[label] = c
-	}
 	if len(sourceErrs) > 0 {
 		st.SourceErrors = sourceErrs
 	} else {
 		st.SourceErrors = nil
+		st.Degraded = false
 	}
 	if filterErr != nil {
 		st.LastError = boundedWatchText(filterErr.Error())
@@ -617,9 +769,33 @@ func (s *Spool) settleStreamResults(schedule Schedule, results []sourceResult, n
 			st.markSeen(ev.ID, now)
 			continue
 		}
+		if verdicts[ev.ID] == "urgent" {
+			ev.Urgent = true
+		}
 		kept = append(kept, ev)
 	}
 	overflowed := s.fanoutEventsLocked(&st, schedule, job, kept, seed, schedule.ScheduleID, now)
+	if cursor != "" {
+		allSeen := true
+		for _, id := range sourceEvents[""] {
+			allSeen = allSeen && st.seen(id)
+		}
+		if allSeen {
+			st.Cursor = cursor
+		}
+	}
+	for label, c := range sourceCursors {
+		allSeen := true
+		for _, id := range sourceEvents[label] {
+			allSeen = allSeen && st.seen(id)
+		}
+		if allSeen {
+			if st.SourceCursors == nil {
+				st.SourceCursors = map[string]string{}
+			}
+			st.SourceCursors[label] = c
+		}
+	}
 	_ = atomicJSON(s.eventPath(schedule.ScheduleID), st)
 	return overflowed, false
 }

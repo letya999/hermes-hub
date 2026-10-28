@@ -1074,6 +1074,17 @@ func (s *Spool) ClaimJob() (*Job, error) {
 		name := entry.name
 		job := entry.job
 		pending := filepath.Join(s.root, "pending", name)
+		if job.AssignmentID != "" && job.AssignmentPlanRevision != 0 {
+			if _, ok := s.rt.AssignmentForWakeLocked(job.AssignmentID, job.AssignmentPlanRevision); !ok {
+				if err := s.updateMappingLocked(job.ID, RunOutcome{Status: "cancelled", LastEvent: "assignment.cancelled"}, "cancelled", true); err != nil {
+					return nil, err
+				}
+				if err := os.Rename(pending, filepath.Join(s.root, "failed", name)); err != nil {
+					return nil, err
+				}
+				continue
+			}
+		}
 		if job.Trigger == "cron" && strings.HasPrefix(job.ID, "routine-") {
 			body, err := os.ReadFile(filepath.Join(s.root, "occurrences", spoolFileID(job.ID)+".json"))
 			var o RoutineOccurrence

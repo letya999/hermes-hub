@@ -37,6 +37,7 @@ type Assignment struct {
 	// grants only while authorized at its own revision (SPEC-0080 R2.4).
 	GrantsAuthorizedRev uint64               `json:"grants_authorized_rev,omitempty"`
 	Checkpoint          AssignmentCheckpoint `json:"checkpoint"`
+	Progress            AssignmentProgress   `json:"progress"`
 	Blocked             string               `json:"blocked,omitempty"`
 	CancelledAt         *time.Time           `json:"cancelled_at,omitempty"`
 	CreatedAt           time.Time            `json:"created_at"`
@@ -55,9 +56,17 @@ type AssignmentReceipt struct {
 // AssignmentPlan is one authorized generation of the assignment's desired
 // artifacts and its wake specialist (SPEC-0080 R1.3).
 type AssignmentPlan struct {
-	Revision   uint64             `json:"revision"`
-	Sources    []AssignmentSource `json:"sources"`
-	Specialist *SpecialistSpec    `json:"specialist,omitempty"`
+	Revision    uint64                  `json:"revision"`
+	Sources     []AssignmentSource      `json:"sources"`
+	Specialist  *SpecialistSpec         `json:"specialist,omitempty"`
+	Unavailable []AssignmentUnavailable `json:"unavailable,omitempty"`
+}
+
+// AssignmentUnavailable records a checked source that could not be activated.
+// It remains visible in the owner card while accessible sources can run.
+type AssignmentUnavailable struct {
+	Reference string `json:"reference"`
+	Reason    string `json:"reason"`
 }
 
 // AssignmentSource names one owned routine artifact. The embedded draft is
@@ -99,6 +108,16 @@ type AssignmentCheckpoint struct {
 	NotifyDay         string    `json:"notify_day,omitempty"`
 	NoticesToday      int       `json:"notices_today,omitempty"`
 	LastError         string    `json:"last_error,omitempty"`
+}
+
+// AssignmentProgress is the specialist's bounded durable memory between
+// trigger jobs. Findings accumulate as short evidence-backed notes.
+type AssignmentProgress struct {
+	Summary   string    `json:"summary,omitempty"`
+	NextStep  string    `json:"next_step,omitempty"`
+	Findings  []string  `json:"findings,omitempty"`
+	LastJobID string    `json:"last_job_id,omitempty"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
 }
 
 // AssignmentDefaultWakesPerDay bounds specialist wakes when the owner did

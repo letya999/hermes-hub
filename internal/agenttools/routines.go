@@ -28,7 +28,7 @@ var routineDescriptions = map[string]string{
 	"routine_snooze":  "Snooze one owned routine until expression (RFC3339); this updates the existing schedule ID.",
 	"routine_pause":   "Pause an owned routine; already queued occurrences recheck its state before execution.",
 	"routine_delete":  "Retire an owned routine; the same schedule ID cannot reactivate it. This does not recall messages already sent.",
-	"watch_subscribe": "Subscribe to a source's events via one projected read tool (args is a JSON object string). For several chats/feeds pass sources — a JSON array of up to 32 {name?,tool?,args} merged onto tool+args: one watch fans out, dedups per source and wakes once per merged batch; never one watch per chat. filter is REQUIRED when the source scope exceeds the user's ask — a Starlark script where input() returns the event JSON (all connector fields, not only text) ending with emit(\"keep\"|\"drop\"|\"urgent\"); inspect the real event shape first via watch_sample or one direct tool call. sink=notify sends per event; sink=agent one wake per batch, events untrusted. delivery=stream for wait-style tools (wait/settled/new_message); a poll tool also needs min_interval_seconds (5..3600). Manage via watch_list/pause/resume/delete and routine_edit.",
+	"watch_subscribe": "Subscribe to a source's events via one projected read tool (args is a JSON object string). For several chats/feeds pass sources — a JSON array of up to 32 {name?,tool?,args} merged onto tool+args: one watch fans out, dedups per source and wakes once per merged batch. filter is REQUIRED when source scope exceeds the user's ask — a Starlark script where input() returns full bounded event JSON and emit(\"keep\"|\"drop\"|\"urgent\"). For cursor-based non-consuming reads set cursor_arg to the tool's cursor parameter: next_cursor is fed back per source only after its events are admitted or dropped. Telegram chat monitoring uses watch_chat_messages with cursor_arg=cursor and min_interval_seconds. Inspect event shape first with watch_sample or a direct read. sink=notify sends per event; sink=agent one wake per batch. delivery=stream for wait-style tools; a poll tool needs min_interval_seconds (5..3600). Manage via watch_list/pause/resume/delete and routine_edit.",
 	"watch_list":      "List owned event subscriptions only — reminders, watchers and other routines are not included.",
 	"watch_pause":     "Pause one owned event subscription by schedule id.",
 	"watch_resume":    "Resume one paused owned event subscription by schedule id.",
@@ -193,6 +193,9 @@ func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any
 		}
 		if r.MinIntervalSeconds > 0 {
 			create["probe"].(map[string]any)["min_interval_seconds"] = r.MinIntervalSeconds
+		}
+		if r.CursorArg != "" {
+			create["probe"].(map[string]any)["cursor_arg"] = r.CursorArg
 		}
 		if r.Sources != "" {
 			var sources []any

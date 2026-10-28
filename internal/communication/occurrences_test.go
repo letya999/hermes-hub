@@ -20,6 +20,19 @@ import (
 	"github.com/letya999/hermes-hub/internal/routines"
 )
 
+func TestStreamRefPreservesNumericScheduleSuffix(t *testing.T) {
+	const hash = "0123456789abcdef"
+	for id, want := range map[string]string{
+		"stream2-10-watch-2026-3-" + hash: "watch-2026",
+		"stream2-8-watch-p3-0-" + hash:    "watch-p3",
+		"stream-watch-3-" + hash:          "watch", // previously queued refs
+	} {
+		if got := streamRefScheduleID(id); got != want {
+			t.Fatalf("%s: got %q, want %q", id, got, want)
+		}
+	}
+}
+
 func occurrenceFixture(t *testing.T) (*Spool, RoutineOccurrence, *Gateway) {
 	t.Helper()
 	s, err := NewSpool(filepath.Join(t.TempDir(), "spool"))

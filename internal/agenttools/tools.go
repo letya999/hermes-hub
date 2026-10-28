@@ -105,6 +105,11 @@ type Input struct {
 	// the assignment for the owner. Intent rides the existing Text field.
 	Plan     string `json:"plan,omitempty"`
 	Title    string `json:"title,omitempty"`
+	JobID    string `json:"job_id,omitempty"`
+	Summary  string `json:"summary,omitempty"`
+	Finding  string `json:"finding,omitempty"`
+	NextStep string `json:"next_step,omitempty"`
+	Complete bool   `json:"complete,omitempty"`
 	Sink     string `json:"sink,omitempty"`
 	Delivery string `json:"delivery,omitempty"`
 	Args     string `json:"args,omitempty"`
@@ -113,6 +118,7 @@ type Input struct {
 	// cadence for stream delivery on poll-style tools.
 	Filter             string `json:"filter,omitempty"`
 	MinIntervalSeconds int    `json:"min_interval_seconds,omitempty"`
+	CursorArg          string `json:"cursor_arg,omitempty"`
 	// Sources fans one subscription out over several acquisition inputs: a
 	// JSON array string of {name?,tool?,args} entries merged onto the
 	// probe's tool+args per stream round.

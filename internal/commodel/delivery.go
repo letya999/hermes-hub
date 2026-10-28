@@ -11,17 +11,19 @@ import (
 // held only in memory by the spool and are intentionally absent from job files.
 type Job struct {
 	identity.Envelope
-	OperationalEpoch uint64 `json:"operational_epoch,omitempty"`
-	ID               string `json:"id"`
-	OrganizationID   string `json:"organization_id"`
-	UserID           string `json:"user_id"`
-	ActorID          string `json:"actor_id"`
-	ScopeID          string `json:"scope_id"`
-	Channel          string `json:"channel"`
-	Trigger          string `json:"trigger"`
-	IdempotencyKey   string `json:"idempotency_key"`
-	ChatID           int64  `json:"chat_id"`
-	MessageID        int    `json:"message_id"`
+	OperationalEpoch       uint64 `json:"operational_epoch,omitempty"`
+	ID                     string `json:"id"`
+	AssignmentID           string `json:"assignment_id,omitempty"`
+	AssignmentPlanRevision uint64 `json:"assignment_plan_revision,omitempty"`
+	OrganizationID         string `json:"organization_id"`
+	UserID                 string `json:"user_id"`
+	ActorID                string `json:"actor_id"`
+	ScopeID                string `json:"scope_id"`
+	Channel                string `json:"channel"`
+	Trigger                string `json:"trigger"`
+	IdempotencyKey         string `json:"idempotency_key"`
+	ChatID                 int64  `json:"chat_id"`
+	MessageID              int    `json:"message_id"`
 	// TaskID/TopicID pin the durable task binding at acceptance: every reply,
 	// progress event, approval, artifact and voice note returns to the same
 	// task/topic. Model output never re-routes them.

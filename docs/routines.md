@@ -1,6 +1,6 @@
 ---
 description: Routine business tools, interval windows, lifecycle, authorization and delivery evidence.
-last_verified: 2026-10-27
+last_verified: 2026-10-28
 ---
 # Routines
 
@@ -164,12 +164,16 @@ wait-call outstanding (a default bound is injected when the tool declares
 none). Wait-style tools — names containing `wait`/`settled`/`new_message` —
 are bounded long-polls and need no interval; a plain poll tool must declare
 `probe.min_interval_seconds` (5..3600 s) as its source cadence contract,
-which the loop sleeps between successful rounds. Validation rejects stream
+between starts of successful rounds (read time counts). Validation rejects stream
 on non-`mcp_tool` probes and on poll tools without a declared interval; it
 also rejects probes on non-probe job kinds, pointing agent-kind misuse at
 `watch_subscribe`. The cron expression anchors liveness bookkeeping only —
 it is not the poll cadence — and the global one-minute floor for ordinary
-scheduled routines is unchanged.
+scheduled routines is unchanged. Before each stream round, the hub refreshes the
+supervisor hold projection; a failed refresh blocks acquisition, and an admitted
+job carries the current operational epoch. Routine conversations remain stable
+per schedule and are hashed when a long schedule ID would exceed the runtime
+identity limit.
 
 Events dedupe durably per schedule revision; `next_cursor` persists for
 restart resume; batch settlement fans out once — sink=agent wakes the model
@@ -193,19 +197,34 @@ pass and a single wake, while a failed source records `source_errors`
 without starving the rest — an all-source failure blocks the round.
 Agent-sink bundles attribute every event as `[label] text`.
 
+For non-consuming cursor reads, set `probe.cursor_arg` to the projected tool's
+cursor parameter. The hub supplies the last durable `next_cursor` to each
+source's next call. A missing cursor lets the connector establish a silent
+high-watermark baseline; dropped events and successfully admitted events
+advance it, while overflow, filtering failure and sink failure leave it in
+place so the next poll replays the unhandled page. A source response without
+`next_cursor` fails closed. For Telegram group messages use the opt-in
+`watch_chat_messages` read tool (`cursor_arg=cursor`, `min_interval_seconds`
+set, one `sources` entry per chat, explicit `account` in multi-account mode);
+the old wait digest omits most group text.
+
 `filter` receives the whole event, not only text: `input()` returns
 compacted connector JSON whenever the source item is object-shaped (all
 fields — `chat_id`, `sender_id`, `url`, …), falling back to plain text for
 scalar items. The script must call `input()` as a function and end with
-exactly one `emit("keep"|"drop"|"urgent")`.
+exactly one `emit("keep"|"drop"|"urgent")`. Structured filters can use
+`event = json.decode(input())` and test fields such as `event["chat_id"]`
+and `event["text"]` rather than matching JSON substrings.
 
 `watch_sample` (`POST /v1/routines/{id}/sample`, owner-scoped) runs one
-bounded probe round and returns per-source raw event JSON plus per-source
+bounded probe round and returns up to four per-source raw event JSON items plus per-source
 errors — never treating a dead connector as an empty result. An optional
 `{"filter": "…"}` body dry-runs a candidate filter and reports the verdict
 per sampled event. Sampling writes no seen marks, advances no cursor,
 sends nothing and never wakes the model — it is the schema-discovery and
 filter-dry-run step before committing a filter to a broad-scope watch.
+Sampling a consuming `settled` wait is refused; a cursor probe samples a
+historical page without altering its live baseline.
 
 ## Standing assignments
 
@@ -215,8 +234,22 @@ It binds the verified owner envelope — never a Hermes session — and is
 managed through `POST/GET /v1/assignments`, the `assignment_*` agent tools
 and the `/assignments` `/assignment <id> …` chat commands.
 
+- Save the owner's intent as a draft immediately, before provider reads.
+  Check public Telegram sources in batches of at most four with non-consuming
+  `watch_chat_messages` bootstrap reads; persist checked accessible sources and
+  `plan.unavailable` entries with reasons through CAS-guarded plan updates.
+  Invite, discussion and website links require separate access checks and
+  cannot be declared active from their URLs. A late model failure leaves the
+  draft and the last saved source-check batch available for resumption.
+- Public `t.me/<username>` and `t.me/s/<username>` links in a Telegram cursor
+  plan are normalized to `chat_id=<username>`; private/invite links fail
+  validation before apply. One event source fans out over all verified chats
+  at the owner-requested `min_interval_seconds` and merges candidates into one specialist job.
 - Create stores intent verbatim plus a validated plan (`sources` +
-  optional `specialist`). Replayed creates dedupe on the intent hash.
+  optional `specialist`). Replayed creates require the same owner, intent,
+  title, plan and grants; direct creation cannot exceed default grants.
+  An assignment event source with `sink=agent` must declare a deterministic
+  `filter`, so raw source traffic cannot wake the specialist indiscriminately.
 - `apply` reconciles the plan into deterministic schedule ids
   (`asg-<assignment>-<source>`), stamping the owner envelope, actor,
   scope and organization onto every artifact; receipts record
@@ -225,12 +258,22 @@ and the `/assignments` `/assignment <id> …` chat commands.
   resurrected.
 - Lifecycle propagates to artifacts: pause/resume flip the applied
   schedules, cancel/complete tombstone them and fence the record
-  terminal; wakes are admitted per assignment revision, so a paused or
-  re-planned assignment never wakes a stale specialist job.
+  terminal; wakes are fenced by the applied plan generation at admission
+  and claim, so a paused or re-planned assignment cannot run a stale job.
+- For judgment-only candidate batches the specialist records progress and
+  returns exactly `NO_ACTIONABLE_EVENT` when none merit a notice; the gateway
+  suppresses that sentinel and routine status chatter. A useful finding is
+  delivered once through the usual bound Telegram job reply with the requested
+  mention. Failure notices remain visible.
+- The specialist receives the owner intent, previous summary and next step
+  with each filtered trigger. `assignment_progress` requires that running
+  trigger's job id and current assignment revision, and stores a bounded
+  summary, one new finding and next step; `complete=true` retires sources
+  only when the owner-defined completion condition is met.
 - Mutations carry `expected_revision` CAS. Grants (`max_wakes_per_day`,
   `max_sources`) only narrow through APIs — widening requires the
-  chat-only `/assignment <id> authorize` verb, which stamps the plan
-  revision as authorized.
+  chat-only `/assignment <id> authorize <max_wakes_per_day> <max_sources>`
+  verb, which accepts explicit limits for the next plan generation.
 - Every route and command is owner-scoped: foreign principals get the
   same 404/refusal as a missing record.
 
@@ -365,7 +408,7 @@ clock occurrences; inspect event_state for current health/error.
 
 ## Deployment and manual acceptance
 
-The catalog is hub-agent-tools@5.3.1. Old definitions remain immutable. Register
+The catalog is hub-agent-tools@5.3.3. Old definitions remain immutable. Register
 the new version and, for managed spaces, deliberately repin selected tools in the protected profile,
 preserving scopes, denies and limits. routine_edit requires routines.update and
 the update:routines tuple for all four actions. Do not translate a former

@@ -90,7 +90,7 @@ func TestStalledNativeReceiverIsBoundedAndCancellationClosesStream(t *testing.T)
 	}
 }
 
-func TestNativeSSEApprovalDedupProgressCapAndPrivatePayloads(t *testing.T) {
+func TestNativeSSEApprovalDedupContinuousProgressAndPrivatePayloads(t *testing.T) {
 	var polls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/events") {
@@ -136,7 +136,7 @@ func TestNativeSSEApprovalDedupProgressCapAndPrivatePayloads(t *testing.T) {
 		}
 		return nil
 	})
-	if err != nil || result.Status != "completed" || progress != 10 || approvals != 1 {
+	if err != nil || result.Status != "completed" || progress != 15 || approvals != 1 {
 		t.Fatalf("result=%+v progress=%d approvals=%d error=%v", result, progress, approvals, err)
 	}
 }

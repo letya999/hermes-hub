@@ -1,9 +1,17 @@
 ---
 description: "Долговечность, audit cursors, атомарность и известные пределы хранения."
-last_verified: "2026-10-20"
+last_verified: "2026-10-28"
 ---
 
 # Ledger и восстановление
+
+Physical storage compaction is lossless: each record is compressed before
+AEAD encryption, and a legacy ledger above one third of its configured limit
+is rewritten atomically on open. The sequence, plaintext hash chain, audit
+records, and independent recovery anchor remain unchanged. A separate lock
+file fences writers across inode replacement. The byte limit remains hard;
+if incompressible history fills it, mutations fail closed and require an
+operator-managed retention/archive policy. No audit event is silently removed.
 
 Один process владеет journal через flock. Каждая mutation содержит минимальное metadata-состояние и
 sanitised audit event. На диске запись AEAD-зашифрована; последовательность связывает номер и hash
@@ -16,7 +24,7 @@ sanitised audit event. На диске запись AEAD-зашифрована;
 процесс закрывает доступ. Автоматической обрезки или «починки» нет. При полном диске/лимите ledger
 нужна операторская процедура, а не бесконечные retry или разрешение доступа без аудита.
 
-Default limit 64 MiB, максимум 1 GiB. Полного event sourcing кластера, compaction и внешнего checkpoint
+Default limit 64 MiB, максимум 1 GiB. Полного event sourcing кластера, semantic compaction и внешнего checkpoint
 нет. Prefix rollback корректного зашифрованного журнала не определяется локальной hash-chain.
 Потерянные ответы после внешней provider записи могут оставить encrypted orphan; нет распределённой
 транзакции с Vault. Восстановление не должно автоматически удалять неизвестные provider paths.

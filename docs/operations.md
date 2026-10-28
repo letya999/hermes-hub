@@ -411,7 +411,7 @@ retag-orphans before/after and caps builder cache at 8 GB.
 compiles one Linux binary, overlays the dev image, recreates only that
 service; restores prior image on failure. Names: `communication-hub`,
 `credential-broker`, `hub-media`, `toolhub`, `workload-controller`,
-`supervisor`, `hermes-runtime` (supervisor mode records it for next spawn;
+`supervisor`, `hermes-runtime`, `model-relay` (supervisor mode records it for next spawn;
 a full `hubctl up` returns to base). Verify with `docker ps --filter
 name=hermes-hub-<user>-dev-<service>-1` → `…-dev-<service>:local` + `Up`.
 

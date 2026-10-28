@@ -454,6 +454,21 @@ func (c *ControlPlane) brokerCredentialRequired(definition api.ToolDefinition, o
 	return c != nil && c.Broker != nil && c.Broker.Enabled() && (definition.CredentialContractID != "" || onboarding.BrokerCredentialID != "")
 }
 
+func (c *ControlPlane) brokerGrantActive(ctx context.Context, auth identity.Envelope, definition api.ToolDefinition, match ownerConnectionMatch) (bool, error) {
+	if !c.Store.brokerGrantReusable(auth, definition, match) {
+		return false, nil
+	}
+	control, err := c.brokerControl(auth, definition.Workload.Class == api.Shared)
+	if err != nil {
+		return false, err
+	}
+	grant, err := control.GetGrant(ctx, match.credential.BrokerGrantID)
+	if err != nil {
+		return false, err
+	}
+	return grant.Active, nil
+}
+
 func (c *ControlPlane) ensureBrokerGrant(ctx context.Context, auth identity.Envelope, definition api.ToolDefinition, onboarding api.Onboarding, binding api.ToolBinding) (string, error) {
 	if c.Broker == nil || !c.Broker.Enabled() || onboarding.BrokerCredentialID == "" {
 		return "", fmt.Errorf("%w: credential broker credential", api.ErrUnauthorized)
@@ -477,14 +492,21 @@ func (c *ControlPlane) ensureBrokerGrant(ctx context.Context, auth identity.Enve
 	if binding.WorkloadClass == api.Shared {
 		execution = "shared"
 	}
-	grant, err := control.Grant(ctx, onboarding.BrokerCredentialID, brokerv1.GrantRequest{
+	request := brokerv1.GrantRequest{
 		ContractID: definition.CredentialContractID, ContractRevision: definition.CredentialContractRevision,
 		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID,
 		BindingID: binding.ToolBindingID, WorkloadID: workload.WorkloadID, Execution: execution,
 		IdempotencyKey: api.DeterministicID("grant", onboarding.OnboardingID, binding.ToolBindingID),
-	})
-	if err != nil {
-		return "", err
 	}
-	return grant.ID, nil
+	for attempt := 0; attempt < 2; attempt++ {
+		grant, err := control.Grant(ctx, onboarding.BrokerCredentialID, request)
+		if err != nil {
+			return "", err
+		}
+		if grant.Active {
+			return grant.ID, nil
+		}
+		request.IdempotencyKey = api.DeterministicID("grant-retry", request.IdempotencyKey, grant.ID)
+	}
+	return "", fmt.Errorf("%w: broker grant remained revoked", api.ErrUnauthorized)
 }

@@ -95,6 +95,17 @@ func newTestAssignment(id string) commodel.Assignment {
 	}
 }
 
+func TestAssignmentAgentEventRequiresFilter(t *testing.T) {
+	plan := &commodel.AssignmentPlan{Revision: 1, Sources: []commodel.AssignmentSource{{Name: "feed", Schedule: commodel.RoutineDraft{JobKind: "event", Sink: "agent", Probe: &commodel.WatchProbe{Kind: "mcp_tool", Tool: "read_events"}}}}}
+	if err := validateAssignmentSources(plan, commodel.AssignmentGrants{}); err == nil {
+		t.Fatal("unfiltered event source may wake the agent")
+	}
+	plan.Sources[0].Schedule.Probe.Filter = "emit('drop')"
+	if err := validateAssignmentSources(plan, commodel.AssignmentGrants{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestAssignmentCreateIdempotent (SPEC-0080 A1.2 seed): a replayed create
 // returns the existing record instead of a duplicate.
 func TestAssignmentCreateIdempotent(t *testing.T) {
@@ -109,6 +120,71 @@ func TestAssignmentCreateIdempotent(t *testing.T) {
 		t.Fatalf("replayed create must return the same assignment: %v replayed=%v", err, replayed)
 	}
 	_ = strings.TrimSpace
+}
+
+func TestAssignmentApplyRejectsMissingPlan(t *testing.T) {
+	e := testEngine(t)
+	in := newTestAssignment("asg-no-plan")
+	in.Plan = nil
+	if _, _, err := e.CreateAssignment(in, assignmentCaller()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.ApplyAssignment(in.AssignmentID, assignmentCaller()); err == nil {
+		t.Fatal("applying without a plan must be refused")
+	}
+}
+
+func TestAssignmentApplyReconcilesChangedAndRemovedSources(t *testing.T) {
+	e := testEngine(t)
+	in := newTestAssignment("asg-reconcile")
+	in.Plan.Sources = append(in.Plan.Sources, commodel.AssignmentSource{Name: "other", Schedule: watcherDraft("https://example.com/other")})
+	if _, _, err := e.CreateAssignment(in, assignmentCaller()); err != nil {
+		t.Fatal(err)
+	}
+	first, err := e.ApplyAssignment(in.AssignmentID, assignmentCaller())
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldPage, oldOther := first.Applied["page"].ScheduleID, first.Applied["other"].ScheduleID
+	plan := *first.Plan
+	plan.Revision++
+	plan.Sources = []commodel.AssignmentSource{{Name: "page", Schedule: watcherDraft("https://example.com/changed")}}
+	updated, err := e.UpdateAssignmentPlan(in.AssignmentID, plan, first.Grants, assignmentCaller())
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := e.ApplyAssignment(updated.AssignmentID, assignmentCaller())
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := second.Applied["page"]
+	if page.ScheduleID == oldPage || page.Action != "created" {
+		t.Fatalf("changed source kept its old schedule: %+v", page)
+	}
+	actual, err := e.LoadScheduleLocked(page.ScheduleID)
+	if err != nil || actual.Probe == nil || actual.Probe.URL != "https://example.com/changed" {
+		t.Fatalf("new plan not materialized: %+v %v", actual, err)
+	}
+	if _, err := e.LoadScheduleLocked(oldPage); err == nil {
+		t.Fatal("old source generation remains active")
+	}
+	if _, err := e.LoadScheduleLocked(oldOther); err == nil || second.Applied["other"].Action != "removed" {
+		t.Fatalf("removed source remains active: %+v %v", second.Applied["other"], err)
+	}
+}
+
+func TestAssignmentDefaultGrantCannotWidenNarrowGrant(t *testing.T) {
+	e := testEngine(t)
+	in := newTestAssignment("asg-grants-default")
+	in.Grants.MaxWakesPerDay = 1
+	if _, _, err := e.CreateAssignment(in, assignmentCaller()); err != nil {
+		t.Fatal(err)
+	}
+	plan := *in.Plan
+	plan.Revision++
+	if _, err := e.UpdateAssignmentPlan(in.AssignmentID, plan, commodel.AssignmentGrants{}, assignmentCaller()); err == nil {
+		t.Fatal("zero means the default 20 wakes, which widens the grant of one")
+	}
 }
 
 // TestAssignmentIntentOwnerOnly (SPEC-0080 A1.4): a foreign principal gets
@@ -376,12 +452,21 @@ func TestAssignmentGrantsNarrowOnly(t *testing.T) {
 	if _, err := e.UpdateAssignmentPlan("asg-test060", wider, commodel.AssignmentGrants{MaxWakesPerDay: 50}, assignmentCaller()); err == nil {
 		t.Fatal("widening without authorize must be refused")
 	}
-	if err := e.AuthorizeAssignmentGrants("asg-test060", 3, commodel.AssignmentGrants{MaxWakesPerDay: 50}, assignmentCaller()); err != nil {
+	if err := e.AuthorizeAssignmentGrants("asg-test060", 3, commodel.AssignmentGrants{MaxWakesPerDay: 50, MaxSources: 8}, assignmentCaller()); err != nil {
 		t.Fatal(err)
 	}
 	got, err = e.UpdateAssignmentPlan("asg-test060", wider, commodel.AssignmentGrants{MaxWakesPerDay: 50}, assignmentCaller())
 	if err != nil || got.Grants.MaxWakesPerDay != 50 {
 		t.Fatalf("authorized widening must apply: %+v %v", got.Grants, err)
+	}
+	widest := narrower
+	widest.Revision = 4
+	if err := e.AuthorizeAssignmentGrants("asg-test060", 4, commodel.AssignmentGrants{MaxWakesPerDay: 500, MaxSources: 16}, assignmentCaller()); err != nil {
+		t.Fatalf("owner-authorized grants above legacy bound must apply: %v", err)
+	}
+	got, err = e.UpdateAssignmentPlan("asg-test060", widest, commodel.AssignmentGrants{MaxWakesPerDay: 500, MaxSources: 16}, assignmentCaller())
+	if err != nil || got.Grants.MaxWakesPerDay != 500 {
+		t.Fatalf("high-volume grant widening must apply: %+v %v", got.Grants, err)
 	}
 }
 
@@ -463,5 +548,22 @@ func TestAssignmentApplyPartialFailureKeepsReceipts(t *testing.T) {
 	sched, err := e.LoadScheduleLocked(rc.ScheduleID)
 	if err != nil || !sched.Paused {
 		t.Fatalf("pause must reach the partial artifact: %v %+v", err, sched)
+	}
+}
+
+func TestTelegramAssignmentNormalizesOnlyPublicChatReferences(t *testing.T) {
+	plan := &commodel.AssignmentPlan{Revision: 1, Sources: []commodel.AssignmentSource{{Name: "tg", Schedule: commodel.RoutineDraft{Probe: &commodel.WatchProbe{Kind: "mcp_tool", Tool: "hub-telegram-mcp-watch-chat-messages-1234", Sources: []commodel.WatchProbeSource{{Name: "one", Args: map[string]any{"chat_id": "https://t.me/example_chat/123"}}, {Name: "two", Args: map[string]any{"chat_id": "https://t.me/s/other_chat"}}}}}}}}
+	if err := ValidateAssignmentPlan(plan, commodel.AssignmentGrants{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := plan.Sources[0].Schedule.Probe.Sources[0].Args["chat_id"]; got != "example_chat" {
+		t.Fatalf("first chat_id = %v", got)
+	}
+	if got := plan.Sources[0].Schedule.Probe.Sources[1].Args["chat_id"]; got != "other_chat" {
+		t.Fatalf("second chat_id = %v", got)
+	}
+	plan.Sources[0].Schedule.Probe.Sources[0].Args["chat_id"] = "https://t.me/+privateInvite"
+	if err := ValidateAssignmentPlan(plan, commodel.AssignmentGrants{}); err == nil {
+		t.Fatal("invite link was treated as a public chat")
 	}
 }

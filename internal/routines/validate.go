@@ -89,6 +89,12 @@ func validMCPProbe(probe *commodel.WatchProbe) error {
 	if probe.RequeueTool != "" && !probeToolPattern.MatchString(probe.RequeueTool) {
 		return errors.New("invalid requeue tool name")
 	}
+	if probe.CursorArg != "" {
+		_, supplied := probe.Args[probe.CursorArg]
+		if !probeToolPattern.MatchString(probe.CursorArg) || supplied {
+			return errors.New("invalid cursor argument")
+		}
+	}
 	if probe.Args != nil {
 		b, err := json.Marshal(probe.Args)
 		if err != nil || len(b) > 8*1024 {
@@ -336,6 +342,11 @@ func ValidateScheduleDraft(in commodel.Schedule, caller identity.Envelope, hooks
 			return errors.New("probe sources fan out only on a stream event subscription")
 		}
 		for _, src := range in.Probe.Sources {
+			if in.Probe.CursorArg != "" {
+				if _, supplied := src.Args[in.Probe.CursorArg]; supplied {
+					return errors.New("source args cannot set the managed cursor")
+				}
+			}
 			if src.Tool != "" && !probeToolPattern.MatchString(src.Tool) {
 				return errors.New("invalid probe source tool name")
 			}
@@ -371,6 +382,9 @@ func ValidateScheduleDraft(in commodel.Schedule, caller identity.Envelope, hooks
 		}
 		if in.Probe.MinIntervalSeconds != 0 && in.Delivery != "stream" {
 			return errors.New("probe.min_interval_seconds is a stream-delivery cadence contract")
+		}
+		if in.Probe.CursorArg != "" && in.Delivery != "stream" {
+			return errors.New("probe.cursor_arg requires stream delivery")
 		}
 		if in.Probe.MinIntervalSeconds != 0 && (in.Probe.MinIntervalSeconds < 5 || in.Probe.MinIntervalSeconds > 3600) {
 			return errors.New("probe.min_interval_seconds must be 5 through 3600 seconds")

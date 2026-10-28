@@ -163,6 +163,9 @@ func (s *Spool) RecordStreamEvent(job Job, event hubruntime.ExecuteResponse) err
 				}
 			}
 		}
+		if job.AssignmentID != "" && (strings.TrimSpace(text) == "NO_ACTIONABLE_EVENT" || event.LastEvent == "tool.start" || event.LastEvent == "tool.end" || event.LastEvent == "run.started") {
+			text = ""
+		}
 		if text != "" {
 			receipt.StatusDelivery = statusDelivery
 			receipt.Delivery = &Delivery{ID: id, JobID: job.ID, Channel: job.Channel, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: text, StreamPosition: receipt.Position, CreatedAt: time.Now().UTC()}

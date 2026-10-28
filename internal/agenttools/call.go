@@ -102,7 +102,7 @@ func (t *Tools) call(ctx context.Context, name string, r Input, ws, ar, org *os.
 		return t.Routine(ctx, name, r)
 	case "assignment_plan", "assignment_create", "assignment_list", "assignment_get",
 		"assignment_update", "assignment_apply", "assignment_pause", "assignment_resume",
-		"assignment_cancel", "assignment_complete":
+		"assignment_cancel", "assignment_complete", "assignment_progress":
 		return t.Assignment(ctx, name, r)
 	case "document_extract":
 		return session().Extract(ctx, r.Path)

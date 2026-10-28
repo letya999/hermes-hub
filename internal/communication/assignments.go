@@ -3,12 +3,17 @@ package communication
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/routines"
 )
 
 // handleAssignments serves POST (create, optional apply) and GET (owner
@@ -38,6 +43,10 @@ func (g *Gateway) handleAssignments(w http.ResponseWriter, r *http.Request) {
 	}
 	if decodeJSON(r, &req) != nil {
 		http.Error(w, "invalid assignment", http.StatusBadRequest)
+		return
+	}
+	if req.Apply && (req.Plan == nil || len(req.Plan.Sources) == 0) {
+		http.Error(w, "assignment plan needs a source", http.StatusBadRequest)
 		return
 	}
 	now := g.now().UTC()
@@ -97,6 +106,10 @@ func (g *Gateway) handleAssignmentItem(w http.ResponseWriter, r *http.Request) {
 		g.assignmentPlanUpdate(w, r, id, caller, item)
 		return
 	}
+	if action == "progress" && r.Method == http.MethodPost {
+		g.assignmentProgress(w, r, id, caller)
+		return
+	}
 	if r.Method != http.MethodPost || (action != "apply" && action != "pause" && action != "resume" && action != "cancel" && action != "complete") {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -105,24 +118,77 @@ func (g *Gateway) handleAssignmentItem(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cancelled is terminal", http.StatusConflict)
 		return
 	}
+	var control struct {
+		ExpectedRevision *uint64 `json:"expected_revision"`
+	}
+	if decodeJSON(r, &control) != nil {
+		http.Error(w, "invalid assignment control", http.StatusBadRequest)
+		return
+	}
+	if control.ExpectedRevision == nil || *control.ExpectedRevision != item.Revision {
+		http.Error(w, "revision conflict", http.StatusConflict)
+		return
+	}
 	switch action {
 	case "apply":
-		item, err = g.spool.rt.ApplyAssignment(id, caller)
+		item, err = g.spool.rt.ApplyAssignment(id, caller, *control.ExpectedRevision)
 	case "pause":
-		err = g.spool.rt.PauseAssignment(id, caller)
+		err = g.spool.rt.PauseAssignment(id, caller, *control.ExpectedRevision)
 	case "resume":
-		err = g.spool.rt.ResumeAssignment(id, caller)
+		err = g.spool.rt.ResumeAssignment(id, caller, *control.ExpectedRevision)
 	case "cancel":
-		err = g.spool.rt.CancelAssignment(id, caller)
+		err = g.spool.rt.CancelAssignment(id, caller, *control.ExpectedRevision)
 	case "complete":
-		item, err = g.spool.rt.CompleteAssignment(id, caller)
+		item, err = g.spool.rt.CompleteAssignment(id, caller, *control.ExpectedRevision)
 	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		status := http.StatusBadRequest
+		if errors.Is(err, routines.ErrRoutineRevision) {
+			status = http.StatusConflict
+		}
+		http.Error(w, err.Error(), status)
 		return
 	}
 	if action != "apply" {
 		item, _ = g.spool.rt.LoadAssignment(id, caller)
+	}
+	writeJSON(w, item)
+}
+
+func (g *Gateway) assignmentProgress(w http.ResponseWriter, r *http.Request, id string, caller identity.Envelope) {
+	var req struct {
+		ExpectedRevision uint64 `json:"expected_revision"`
+		JobID            string `json:"job_id"`
+		Summary          string `json:"summary"`
+		Finding          string `json:"finding"`
+		NextStep         string `json:"next_step"`
+		Complete         bool   `json:"complete"`
+	}
+	if decodeJSON(r, &req) != nil || req.ExpectedRevision == 0 || req.JobID == "" {
+		http.Error(w, "invalid progress", http.StatusBadRequest)
+		return
+	}
+	// A progress tool may update only the assignment that produced this
+	// currently running trigger. The job carries immutable engine-stamped
+	// assignment identity; no agent-supplied id can redirect the write.
+	var job Job
+	jobPath := filepath.Join(g.spool.root, "running", spoolFileID(req.JobID)+".json")
+	if raw, err := os.ReadFile(jobPath); err != nil || json.Unmarshal(raw, &job) != nil || job.ID != req.JobID || job.AssignmentID != id || job.PrincipalID != caller.PrincipalID || job.ContextID != caller.ContextID {
+		http.Error(w, "trigger job unavailable", http.StatusForbidden)
+		return
+	}
+	if item, err := g.spool.rt.LoadAssignment(id, caller); err != nil || item.AppliedRev != job.AssignmentPlanRevision {
+		http.Error(w, "assignment generation changed", http.StatusConflict)
+		return
+	}
+	item, err := g.spool.rt.RecordAssignmentProgress(id, caller, req.ExpectedRevision, req.JobID, req.Summary, req.Finding, req.NextStep, req.Complete)
+	if err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, routines.ErrRoutineRevision) {
+			status = http.StatusConflict
+		}
+		http.Error(w, err.Error(), status)
+		return
 	}
 	writeJSON(w, item)
 }
@@ -133,6 +199,13 @@ func (g *Gateway) assignmentPlanDryRun(w http.ResponseWriter, r *http.Request, c
 	var plan commodel.AssignmentPlan
 	if decodeJSON(r, &plan) != nil || len(plan.Sources) == 0 {
 		http.Error(w, "invalid plan", http.StatusBadRequest)
+		return
+	}
+	if plan.Revision == 0 {
+		plan.Revision = 1
+	}
+	if err := routines.ValidateAssignmentPlan(&plan, commodel.AssignmentGrants{}); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	verdicts := map[string]string{}
@@ -160,9 +233,9 @@ func (g *Gateway) assignmentPlanDryRun(w http.ResponseWriter, r *http.Request, c
 // (SPEC-0080 R2.4) — the chat /assignment authorize verb is the only path.
 func (g *Gateway) assignmentPlanUpdate(w http.ResponseWriter, r *http.Request, id string, caller identity.Envelope, item commodel.Assignment) {
 	var req struct {
-		Plan             commodel.AssignmentPlan   `json:"plan"`
-		Grants           commodel.AssignmentGrants `json:"grants"`
-		ExpectedRevision *uint64                   `json:"expected_revision"`
+		Plan             commodel.AssignmentPlan    `json:"plan"`
+		Grants           *commodel.AssignmentGrants `json:"grants"`
+		ExpectedRevision *uint64                    `json:"expected_revision"`
 	}
 	if decodeJSON(r, &req) != nil {
 		http.Error(w, "invalid plan", http.StatusBadRequest)
@@ -172,11 +245,17 @@ func (g *Gateway) assignmentPlanUpdate(w http.ResponseWriter, r *http.Request, i
 		http.Error(w, "revision conflict", http.StatusConflict)
 		return
 	}
-	updated, err := g.spool.rt.UpdateAssignmentPlan(id, req.Plan, req.Grants, caller)
+	grants := item.Grants
+	if req.Grants != nil {
+		grants = *req.Grants
+	}
+	updated, err := g.spool.rt.UpdateAssignmentPlan(id, req.Plan, grants, caller, *req.ExpectedRevision)
 	if err != nil {
 		status := http.StatusBadRequest
 		if strings.Contains(err.Error(), "authorization") {
 			status = http.StatusForbidden
+		} else if errors.Is(err, routines.ErrRoutineRevision) {
+			status = http.StatusConflict
 		}
 		http.Error(w, err.Error(), status)
 		return
@@ -230,6 +309,11 @@ func (g *Gateway) assignmentCommand(user User, sender int64, text string) string
 			out += ", " + item.Blocked
 		}
 		out += ", пробуждений сегодня: " + strconv.Itoa(item.Checkpoint.WakesToday)
+		if item.Plan != nil {
+			for _, source := range item.Plan.Unavailable {
+				out += "\n\u041d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u043e: " + source.Reference + " (" + source.Reason + ")"
+			}
+		}
 		return out
 	case "pause":
 		err = g.spool.rt.PauseAssignment(id, caller)
@@ -240,7 +324,15 @@ func (g *Gateway) assignmentCommand(user User, sender int64, text string) string
 	case "complete":
 		_, err = g.spool.rt.CompleteAssignment(id, caller)
 	case "authorize":
-		err = g.spool.rt.AuthorizeAssignmentGrants(id, item.Plan.Revision, item.Grants, caller)
+		if len(fields) != 5 || item.Plan == nil {
+			return "Используйте /assignment <id> authorize <max_wakes_per_day> <max_sources>."
+		}
+		wakes, e1 := strconv.Atoi(fields[3])
+		sources, e2 := strconv.Atoi(fields[4])
+		if e1 != nil || e2 != nil {
+			return "Неверные лимиты поручения."
+		}
+		err = g.spool.rt.AuthorizeAssignmentGrants(id, item.Plan.Revision+1, commodel.AssignmentGrants{MaxWakesPerDay: wakes, MaxSources: sources}, caller)
 	default:
 		return "Неизвестное действие " + verb + "."
 	}

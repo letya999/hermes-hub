@@ -149,7 +149,7 @@ func (t *Tools) Server() *mcp.Server {
 	}
 	for _, op := range []string{"assignment_plan", "assignment_create", "assignment_list", "assignment_get",
 		"assignment_update", "assignment_apply", "assignment_pause", "assignment_resume",
-		"assignment_cancel", "assignment_complete"} {
+		"assignment_cancel", "assignment_complete", "assignment_progress"} {
 		for _, tool := range HubToolsDefinition().Tools {
 			if tool.Name == op {
 				add(op, tool.Description)

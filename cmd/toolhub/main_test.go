@@ -360,7 +360,15 @@ func TestRunServesPublicSurface(t *testing.T) {
 	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:0")
 	t.Setenv("HUB_TOOLHIVE_ADMISSION_ENDPOINT", "")
 	t.Setenv("HUB_PUBLIC_LISTEN", publicAddr)
-	go func() { _ = run() }()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runWithContext(ctx) }()
+	defer func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Error(err)
+		}
+	}()
 	client := &http.Client{Timeout: 500 * time.Millisecond}
 	deadline := time.Now().Add(5 * time.Second)
 	for {

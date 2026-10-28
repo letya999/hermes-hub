@@ -1,13 +1,13 @@
 ---
-description: Connector pipeline — review/build/admission contract, lifecycle, recipe ledger, tiers, and per-connector prepared entries.
-last_verified: 2026-10-25
+description: Connector pipeline вЂ” review/build/admission contract, lifecycle, recipe ledger, tiers, and per-connector prepared entries.
+last_verified: 2026-10-28
 ---
 
 # Prepared connectors
 
 The reviewed catalog `internal/toolhub/api/prepared/catalog.json` records
 exact commits, licenses, entrypoints, credential overlays, Broker contracts,
-runtime settings, egress, read probes and user handoffs — data, never
+runtime settings, egress, read probes and user handoffs вЂ” data, never
 provider branches. Reviewed Broker contracts ship beside it under
 `prepared/contracts/` and validate with their entries. ToolHub registers the
 reviewed contract with the Broker before enrollment. Unprepared recipes use
@@ -23,14 +23,14 @@ a temporary owner-bound grant resumes the saved recipe, builds the artifact and
 executes real `tools/list`. The resulting definition retains the approved Broker
 contract. A failed probe remains unconfirmed; arbitrary startup failures do not
 become successful installations. A rejected credential keeps the built artifact
-on the draft — `rotate` re-runs only the credentialed `tools/list` against the
+on the draft вЂ” `rotate` re-runs only the credentialed `tools/list` against the
 stored OCI object instead of rebuilding an unchanged artifact, while `Tools`
 and the tool-contract digest stay empty until the real list succeeds.
 
 A `connection_recipe` may instead declare `"interactive": true` when the server
 authenticates inside its own terminal or browser-profile context. That is an
 explicitly unsupported scenario: review fails with `unsupported_auth` before any
-form, build or pull — no fake form is fabricated. Prepared entries that are
+form, build or pull вЂ” no fake form is fabricated. Prepared entries that are
 known to be interactive stay in `prepared/blocked.json`.
 
 Status reports `form_ready`, `artifact_ready` (a pinned local image digest) and
@@ -75,13 +75,13 @@ this contract does not infer undocumented authentication APIs.
 
 `context_sources` merges another exact-pinned repo into the build context
 under a declared prefix (the reviewed equivalent of an upstream vendoring
-step — same blob verification and path safety); overlay pins stamp the
+step вЂ” same blob verification and path safety); overlay pins stamp the
 definition and bind into the review digest. A `preflight_network` entry runs
 its unauthenticated `tools/list` probe with egress + placeholder credentials
 because the server must reach its API before answering; unprepared sources
 keep `--network none`. Live evidence: `.work/done/CHG-0036-*`.
 
-## Artifact pipeline (review → build → quarantine → preflight → approve)
+## Artifact pipeline (review в†’ build в†’ quarantine в†’ preflight в†’ approve)
 
 Conversational discovery searches the configured MCP catalogs, then GitHub
 with a separate timeout budget. The default stack enables `github-search`.
@@ -113,29 +113,29 @@ credential delivery and supply a reviewed recipe when necessary.
 `hubctl artifact import` drives the whole path:
 
 - **Source**: canonical public GitHub or gitlab.com URL + exact 40-char SHA;
-  GitHub uses two metadata API calls plus exact-SHA raw files in ≤8-request
+  GitHub uses two metadata API calls plus exact-SHA raw files in в‰¤8-request
   batches; GitLab uses its paginated tree and blob API. Both verify blob IDs
   and enforce bounded byte/time budgets; sensitive paths
-  excluded before fetch. Content secret scan still mandatory — a token-shaped
+  excluded before fetch. Content secret scan still mandatory вЂ” a token-shaped
   match whose body is one repeated char is a placeholder fixture; a varied
   body fails closed.
 - **Recipe**: `GenerateArtifactRecipe` builds pinned-base Dockerfiles for
   conventional Python/Node/Go/Rust manifests (repo-pinned digest base when
   none supplied; upstream Dockerfile never required). Lockfiles mandatory
-  (`package-lock`/`pnpm-lock` — pnpm 10.32.1 pinned, `Cargo.lock`, …).
-  Several `bin` aliases to one file = one server. Missing egress review →
+  (`package-lock`/`pnpm-lock` вЂ” pnpm 10.32.1 pinned, `Cargo.lock`, вЂ¦).
+  Several `bin` aliases to one file = one server. Missing egress review в†’
   HTTPS hosts proposed from bundled `*openapi*.json` `servers` entries,
   bound into the review digest; malformed/credentialed/oversized fail
   closed. Byte pinning does not yet fully lock transitive deps.
-- **Verify**: `VerifyOCIArtifact` checks a bounded OCI tar in memory —
+- **Verify**: `VerifyOCIArtifact` checks a bounded OCI tar in memory вЂ”
   SHA-256 blobs, sizes, one Linux platform, manifest/config/layer refs,
   SLSA v0.2/v1 provenance + SPDX 2.2/2.3 attestation subjects. Integrity/
-  presence only — not a schema audit or trusted admission.
+  presence only вЂ” not a schema audit or trusted admission.
   `PersistOCIArtifact` stores by archive SHA-256, publish-after-complete-
   write, no replacement; objects are private quarantine, never mounted by
   workloads; `OpenStoredOCIArtifact` re-verifies on read.
 - **Build**: rootless BuildKit under pinned seccomp
-  `docker/seccomp-buildkit-rootless.json` — exact-SHA acceptance, internal-
+  `docker/seccomp-buildkit-rootless.json` вЂ” exact-SHA acceptance, internal-
   only network, read-only root, no binds/devices, bounded cpu/mem/pids/
   tmpfs, only SETUID/SETGID caps, `systempaths=unconfined`,
   `--oci-worker-no-process-sandbox` (RootlessKit bootstrap); privileged and
@@ -147,7 +147,7 @@ credential delivery and supply a reviewed recipe when necessary.
 - **Admission**: `artifact preflight` runs a live `tools/list` against the
   loaded image under the MCP runtime profile (HOME tmpfs, not the BuildKit
   bootstrap); `artifact approve --contract <json>` from `preflight-list` or
-  a matching `review-manifest` — `--review-digest` must equal the restamped
+  a matching `review-manifest` вЂ” `--review-digest` must equal the restamped
   `ImportedReviewDigest`. Registration is immutable; contract drift rejects.
   Claimed import tools are preview-only, never register. `LoadStoredOCIArtifact`
   re-loads a verified archive into the daemon when the pinned tag is absent,
@@ -156,12 +156,12 @@ credential delivery and supply a reviewed recipe when necessary.
 ## Source resolution ledger (M13)
 
 Every consulted source (prepared catalog, MCP Registry, ToolHive, Docker MCP
-Catalog, `server.json`/MCPB, repo hints) records ranked claims — launch
-ladder L0–L6, credential ladder R0–R7 — with response digest + fetch time in
+Catalog, `server.json`/MCPB, repo hints) records ranked claims вЂ” launch
+ladder L0вЂ“L6, credential ladder R0вЂ“R7 вЂ” with response digest + fetch time in
 the resolution ledger. Catalogs outrank repo files; mismatched candidates
 stay flagged `ignored`; same-rank disagreement fails closed
 (`ambiguous_entrypoint`/`ambiguous_credential_contract`); `credential_source`
-records the confirmed origin. Recipes are content-addressed —
+records the confirmed origin. Recipes are content-addressed вЂ”
 `recipes/<sha256>` shared store, onboardings carry `recipe_digest`. Trust
 tier from the weakest winning rank: T0 prepared-only, T1 registry-grade +
 authoritative credentials, T2 heuristic. Golden corpus:
@@ -174,10 +174,10 @@ privileged, host namespaces, shell healthchecks fail closed. Upstream
 `RUN` mounts: `type=cache` inert; secret/bind/ssh/tmpfs/unknown mounts and
 host/insecure/privileged options mark `review` and force the `.hub`
 fallback (upstream Dockerfile then only disambiguates multi-main Go trees).
-`.mcp.json`/`.env.example` yield names and launch metadata only — values
+`.mcp.json`/`.env.example` yield names and launch metadata only вЂ” values
 never returned, files never reach BuildKit. `*_PROXY`/`TEST_*`/`*_TEST` env
 names are excluded from credential fields; deployer `*_PROXY` declarations
-join `proxy_environment` (always filled with the controller's egress URL —
+join `proxy_environment` (always filled with the controller's egress URL вЂ”
 artifact/owner can never pick the proxy). Source scanning for custom proxy
 reads (`os.Getenv`, `process.env`, `os.environ`, `env::var`, dotenv/
 Dockerfile assigns) merges `*_PROXY` names into `proxy_environment` as
@@ -185,7 +185,7 @@ review candidates, never values.
 
 ## Catalog adapters and tiers
 
-`HUB_RECIPE_CATALOGS` — comma allowlist of `mcp-registry`, `toolhive`,
+`HUB_RECIPE_CATALOGS` вЂ” comma allowlist of `mcp-registry`, `toolhive`,
 `docker-mcp`, `smithery`, `docker-hub`, `ghcr`, `github-search` (`all` =
 seven; github-search is source-only fallback, never install authority).
 Fixed public endpoints; Smithery bearer via `HUB_SMITHERY_TOKEN_ENV`
@@ -195,35 +195,35 @@ optional `HUB_GITHUB_SEARCH_TOKEN_ENV`. Container hits need an immutable
 manifest + GitHub source label + exact revision + provenance + SBOM.
 
 Entry `tier`: `t0` reviewed prepared (carries `image {ref, digest,
-provenance, sbom}` — the CI-built OCI pin, ADR-0057; runtime admission
+provenance, sbom}` вЂ” the CI-built OCI pin, ADR-0057; runtime admission
 verifies the pin, never rebuilds), `t1` operator-confirmed import
 (`hubctl connector import <ref>`: `mcp-registry:`/`docker:`/`toolhive:`/
 `mcpb:`/`hermes:`/`aqua:` refs; pure parse, `--confirm` stores the content-
 addressed recipe), `t2` arbitrary-source path. Entries may declare
-`toolsets`/`default_enabled`/`default_excluded` — install projects the
-default set; `connector_enable <t> toolsets=[…]` widens. `PrefetchPlan`
-warms pinned images inside the 8 GiB cap — evicts only `hermes-hub.*`
+`toolsets`/`default_enabled`/`default_excluded` вЂ” install projects the
+default set; `connector_enable <t> toolsets=[вЂ¦]` widens. `PrefetchPlan`
+warms pinned images inside the 8 GiB cap вЂ” evicts only `hermes-hub.*`
 labels.
 
 ## Lifecycle
 
-`discover` (≤5 candidates: prepared, artifact alternatives, registry
-name-matches; name/command ≠ authority) → `prepare_source` (candidate_id +
+`discover` (в‰¤5 candidates: prepared, artifact alternatives, registry
+name-matches; name/command в‰  authority) в†’ `prepare_source` (candidate_id +
 stable request_key; bounded ~90 s sync window then durable `preparing`
-record — detached work, outcome via `status`; channel notice + continuation
-job on finish) → `required_credentials` → protected Broker form → `confirm`
-(nonce) → `enable`. Direct `source` URL works registry-free; a prepared repo
+record вЂ” detached work, outcome via `status`; channel notice + continuation
+job on finish) в†’ `required_credentials` в†’ protected Broker form в†’ `confirm`
+(nonce) в†’ `enable`. Direct `source` URL works registry-free; a prepared repo
 URL selects its reviewed commit, explicit `/commit/<sha>` keeps the generic
-path — both re-resolve and re-review.
+path вЂ” both re-resolve and re-review.
 
 - `status` carries `next_action`+`instructions`; retries reuse request key;
   `selector` (definition id / repo URL / basename) fails closed with
   `ambiguous_target` candidates. Re-onboarding rotates the owner connection
-  in place — superseded binding revokes before replacement enables.
+  in place вЂ” superseded binding revokes before replacement enables.
 - Probe-with-secrets: first `tools/list` runs placeholder creds, no egress
   (or egress for `preflight_network`); post-submit it re-runs with real
   values + egress. A `tools/list` that fails naming required envs opens the
-  protected form for exactly those names (either/or → alternative groups,
+  protected form for exactly those names (either/or в†’ alternative groups,
   stored as `credential_groups`); an answered-empty list is acceptable only
   for definitions declaring required inputs (mcp-atlassian pattern);
   unclassified failure stays hard. `AdmissionPending` marks a definition
@@ -232,7 +232,7 @@ path — both re-resolve and re-review.
   ACL at readiness (`*_URL`, `*_ENDPOINT*`); secrets/auth'd/query'd values
   cannot. `tcp_forwards` (reviewed companion loopback relays through the
   Squid CONNECT proxy to credential-bound `host:port`) are docker-fallback
-  only — stock ToolHive admission fails closed when declared.
+  only вЂ” stock ToolHive admission fails closed when declared.
 - `oauth` entries return `awaiting_oauth` + `authorization_url` (one-time
   loopback callback; token lands in the broker lease; `status` reissues an
   expired link; existing token files never overwritten). URL-mode
@@ -240,18 +240,21 @@ path — both re-resolve and re-review.
 - `rotate` re-enters the credential phase on the same onboarding (old
   workload stops first); `disable`/`revoke` flip reversibly-preserving vs
   blocking; `remove` is two-phase: preview + `remove_nonce`, nonce-carrying
-  repeat runs the finalizer ladder to verified-zero (`remove_receipt`) —
-  cleanup-incomplete stays visible in `connector_status`.
+  repeat runs the finalizer ladder to verified-zero (`remove_receipt`) вЂ”
+  cleanup-incomplete stays visible in `connector_status`. A same-version
+  credential rotation preserves a confirmed managed self-install grant only
+  for the same owner, connection and policy; a new definition version still
+  requires its own review.
 - Shared immutable artifacts are never deleted while another owner uses
-  them; a revoked binding blocks only its deterministic ID — fresh
+  them; a revoked binding blocks only its deterministic ID вЂ” fresh
   onboarding rebinds fine.
 - SSE/HTTP-transport servers: probed over stdio first; a confirmed stdio
   answer rewrites transport; otherwise `hubctl mcp-bridge` sidecar relays
-  stdio↔loopback inside the workload's netns (`source.network_transport`
+  stdioв†”loopback inside the workload's netns (`source.network_transport`
   recorded; bridge client never honors proxy env; HTTP/SSE stays loopback).
   Stdio companion synthesizes `-32601` for `server/discover` and falls back
   to `initialize` (rust-mcp-filesystem hangs otherwise).
-- Generic admission: `hubctl connector generic-controller` — trusted
+- Generic admission: `hubctl connector generic-controller` вЂ” trusted
   definition + ToolHive/seccomp paths + `max_active`/`idle_ttl_seconds` in
   JSON config; creates owned internal network + pinned egress proxy + one
   ToolHive workload per id, injects creds via ToolHive env secret provider
@@ -259,7 +262,7 @@ path — both re-resolve and re-review.
   limits/non-root/ro-root/caps/NNP/seccomp/net/volumes. Host-state mounts
   and shared+credentialed workloads rejected; stateful fallback uses
   controller-owned volumes. `dynamic_definitions: true` (loopback only)
-  makes each admission carry the full immutable definition — no per-MCP
+  makes each admission carry the full immutable definition вЂ” no per-MCP
   controller rewrite. `docker_fallback: true` (stock ToolHive gap): the
   controller applies the same create-time profile itself; companion bridge
   needs a Linux ELF `bridge_binary` (`hubctl artifact linux-bridge`), one
@@ -267,7 +270,7 @@ path — both re-resolve and re-review.
   volumes for stateful only; an MCP container receiving a forwarding secret
   fails inspect.
 - Trusted-artifact caveat: recipe validation + a claimed tool list is never
-  admission evidence — remaining verification tracked in
+  admission evidence вЂ” remaining verification tracked in
   `.work/done/CHG-0025-trusted-artifacts/verification.md`.
 - ToolHub endpoint holds one stateful MCP server per owner token;
   projection changes emit `notifications/tools/list_changed`; persisted
@@ -275,11 +278,11 @@ path — both re-resolve and re-review.
 
 ## Human action links (?t=)
 
-Every human-only step is a one-time `?t=<token>` page — `/credentials`,
+Every human-only step is a one-time `?t=<token>` page вЂ” `/credentials`,
 `/confirm`, `/remove`, `/connect`, `/device`: resolves the stored nonce of
-that onboarding+operation only; spent/expired → 410; POST without token
+that onboarding+operation only; spent/expired в†’ 410; POST without token
 rejected; each page re-checks principal/context/runtime. No link material
-ever reaches an agent-facing result. Delivered on the requesting channel —
+ever reaches an agent-facing result. Delivered on the requesting channel вЂ”
 `Caps().Actions` channels may render an affordance; others get the plain
 link. `HUB_PUBLIC_ORIGIN` (https) + `HUB_PUBLIC_LISTEN` host the pages on a
 second listener where control/gateway routes 404. `/connect` offers the
@@ -287,7 +290,7 @@ RFC 8628 device flow (`/device/<id>`) and a paste-the-redirect form
 validating `state`+origin. The credential form renders from the recipe
 ledger: pinned source, trust tier, egress hosts, per-field provenance +
 HTTPS `token_url` help; heuristic-only (R6) fields show as suggestions.
-Submitted values probe read-only before persisting — failure leaves no
+Submitted values probe read-only before persisting вЂ” failure leaves no
 ciphertext/connection/broker credential and re-renders values page-side.
 
 ## Bundle entries (per-connector notes)
@@ -299,27 +302,29 @@ Below: source, entry, contract, probe, handoff essence.
 ### personal-telegram
 
 Catalog id `telegram`; runtime definitions are `telegram-account-read`/`-write`.
-`letya999/telegram-mcp` pinned `26f1632b` — generated Python artifact,
+`letya999/telegram-mcp` pinned `5efcafb` вЂ” generated Python artifact,
 `proxy` extra, `/opt/venv/bin/telegram-mcp` stdio. Broker contract
 `telegram-session` (API ID/hash + StringSession + expected numeric user ID;
-server verifies before serving MCP). Connects before `tools/list` — first
+server verifies before serving MCP). Connects before `tools/list` вЂ” first
 prepare returns a credential request; `list_accounts` is the read probe.
 `TELEGRAM_EXPOSED_TOOLS=read-only` fixed, transcription off, per-owner
 workload with private egress proxy; upstream read-only does not filter bot
 peers (use the account adapter for that). Never reuse one StringSession
-across IPs — dedicated device per Hub (generate locally via the fork's
+across IPs вЂ” dedicated device per Hub (generate locally via the fork's
 `session_string_generator.py --qr`, `TELEGRAM_DEVICE_MODEL=hermes-hub
 ToolHub`; enter values only in the Broker form). With `ingress: [telegram]`
-the gateway offers a loopback QR page for `intake: telegram_qr` contracts —
+the gateway offers a loopback QR page for `intake: telegram_qr` contracts вЂ”
 session stays in memory, goes Broker-only; `telegram_auth: false` disables;
 API pair via `telegram-auth.<env>.env` (`HUB_TELEGRAM_AUTH_API_ID/HASH`).
 Rotation: new device session + `rotate` + form; terminate the old device in
-Telegram yourself. Send upgrade: `prepare_source` `{"onboarding_id":…,
-"telegram_send":true}` → `read-only+send_message` re-review on the same pin,
+Telegram yourself. Send upgrade: `prepare_source` `{"onboarding_id":вЂ¦,
+"telegram_send":true}` в†’ `read-only+send_message` re-review on the same pin,
 retains session, only `send_message` may be added; verify with a Saved
 Messages send (`chat_id:"me"`, unique `operation_id`). Event tools:
-`wait_for_new_message`/`wait_for_settled_message` bounded polls,
-`requeue_event` (id only), `incoming_feed_status` — `watch_subscribe`
+`wait_for_new_message`/`wait_for_settled_message` bounded polls;
+`watch_chat_messages` is a non-consuming, paged read of chat text with
+`next_cursor` for deterministic source filters,
+`requeue_event` (id only), `incoming_feed_status` вЂ” `watch_subscribe`
 polls them; `delivery=stream` holds one outstanding bounded wait per
 subscription (seconds, no persistent workload); dedup via durable seen-set;
 no always-on push. Never copy `.session`/OTP/API hash into repo or chat.
@@ -328,10 +333,10 @@ no always-on push. Never copy `.session`/OTP/API hash into repo or chat.
 
 The managed `browser` surface.
 
-`microsoft/playwright-mcp` `ab6d67cb` — T0 zero-build,
-`mcr.microsoft.com/playwright/mcp@sha256:6907…cb` with `--caps vision,pdf`
+`microsoft/playwright-mcp` `ab6d67cb` вЂ” T0 zero-build,
+`mcr.microsoft.com/playwright/mcp@sha256:6907вЂ¦cb` with `--caps vision,pdf`
 + bounded `--idle-timeout`. Per-connection isolated workload: own Chromium +
-`connection-state` profile + `downloads/`. `egress_class: web` — arbitrary
+`connection-state` profile + `downloads/`. `egress_class: web` вЂ” arbitrary
 HTTPS through audited per-workload proxy, deny-first on private/loopback/
 link-local/CGNAT/metadata/hub-internal + per-request DNS; connection-level
 `egress_allow`/`egress_deny` refine, deny wins. Default projection read-only
@@ -339,13 +344,13 @@ link-local/CGNAT/metadata/hub-internal + per-request DNS; connection-level
 `network` are separate toolsets hidden until enabled. Optional
 `browser-session` contract imports Playwright storage-state through the
 protected form. `connector_status` on a web connection mints a one-time
-short-TTL owner-bound viewer link (`GET /viewer/<conn>?t=` — 410 on reuse).
+short-TTL owner-bound viewer link (`GET /viewer/<conn>?t=` вЂ” 410 on reuse).
 `shm_size_mib` bounded (1024; never above workload memory).
 
 ### notion
 
 `makenotion/notion-mcp-server`, Node `bin/cli.mjs`. Contract `notion-token@2`
-→ `NOTION_TOKEN`. Share root/pages with the integration first; verify
+в†’ `NOTION_TOKEN`. Share root/pages with the integration first; verify
 identity + search + one page read; empty search usually means nothing
 shared. Never create/edit pages as a test.
 
@@ -360,9 +365,9 @@ Contract `google-file-session` (OAuth client JSON + owner/binding state;
 token path inside broker state mount; file creds read-only, mutable state
 checkpointed after writer stops). Token transfer is local owner-authorized
 only. With client JSON but no token, confirm returns the Google auth link
-(`calendar.readonly`; callback `http://127.0.0.1:8090/oauth/callback` —
+(`calendar.readonly`; callback `http://127.0.0.1:8090/oauth/callback` вЂ”
 browser on the Docker host). Verify `list-calendars` + bounded
-`list-events`. Expired token → diagnose or rotate, never a second
+`list-events`. Expired token в†’ diagnose or rotate, never a second
 connection. The Google Calendar API must be enabled in the OAuth client's
 Cloud project. Live dev acceptance on 2026-10-20 verified browser consent,
 confirmation, `list-calendars` and a one-day `list-events` read.
@@ -398,28 +403,28 @@ provider-account acceptance is tracked separately in CHG-0144.
 ### github
 
 `github/github-mcp-server`, generated Go recipe (main package + literal
-`stdio`). Contract `github-pat` → `GITHUB_PERSONAL_ACCESS_TOKEN`. OAuth/App
+`stdio`). Contract `github-pat` в†’ `GITHUB_PERSONAL_ACCESS_TOKEN`. OAuth/App
 needs a matching reviewed contract. Verify `get_me` + one authorized repo
 read; mutations are separate actions.
 
 ### gitlab
 
-`zereight/gitlab-mcp`, both bin aliases → `build/index.js`. Contract
+`zereight/gitlab-mcp`, both bin aliases в†’ `build/index.js`. Contract
 `gitlab-pat`: `GITLAB_PERSONAL_ACCESS_TOKEN` (+`GITLAB_TOKEN` alias),
 non-secret `GITLAB_API_URL`/`GITLAB_ENDPOINT` for plain-HTTP self-hosted
 behind managed loopback forward `18929`. Undeclared upstream env knobs stay
 optional. Entered HTTPS host joins egress; secrets/queries cannot. Verify
-whoami after rotation; on failure fix creds/host — never relax egress.
+whoami after rotation; on failure fix creds/host вЂ” never relax egress.
 
 ### atlassian
 
 `sooperset/mcp-atlassian`, `/opt/venv/bin/mcp-atlassian` stdio. Registers
-zero tools until config exists — the review collects the full six-field
+zero tools until config exists вЂ” the review collects the full six-field
 contract. `atlassian-env`: `JIRA_*` or `CONFLUENCE_*` complete block
 satisfies alternative groups (every field optional, but an empty submission
-rejected). `atlassian.net|com` pinned; each entered URL host joins egress —
+rejected). `atlassian.net|com` pinned; each entered URL host joins egress вЂ”
 self-hosted works unchanged. Probe follows the delivered block
-(`jira_get_all_projects`/`confluence_list_page_templates`) — a bad token
+(`jira_get_all_projects`/`confluence_list_page_templates`) вЂ” a bad token
 still passes `tools/list`; on failure rotate the same connection.
 
 ### txt-to-sql
@@ -427,27 +432,27 @@ still passes `tools/list`; on failure rotate the same connection.
 Catalog id `txttsql`; the primary SQL connector.
 
 `letya999/txttsql-mcp` (AGPL-3.0-only), Rust `/app/target/release/
-txttsql-mcp --config /app/config.toml` — repo builds into an immutable
+txttsql-mcp --config /app/config.toml` вЂ” repo builds into an immutable
 artifact, never mounted. Config resolve: existing `config.toml` wins, else
-`TXTTSQL_SOURCES` single-line JSON; missing → zero-source server that still
+`TXTTSQL_SOURCES` single-line JSON; missing в†’ zero-source server that still
 answers `initialize`/`tools/list`. Contract `txttsql-sql`: sources JSON +
 optional `TXTTSQL_PASSWORD_{1,2,3}` env refs, optional `config.toml`
 read-only at `/app/config.toml`, CA bundle `/run/txttsql/ca.pem`.
-`tcp_forwards` 15432–15434 relay through Squid CONNECT to credential-bound
-`TXTTSQL_ENDPOINT{,_2,_3}` — DSNs point at `127.0.0.1:<port>`, real
+`tcp_forwards` 15432вЂ“15434 relay through Squid CONNECT to credential-bound
+`TXTTSQL_ENDPOINT{,_2,_3}` вЂ” DSNs point at `127.0.0.1:<port>`, real
 endpoints live only in the form; catalog egress sentinel `127.0.0.1`; TLS
 verify makes the name an IP literal (`verify-ca`/`ca_file` per source).
 Read-only enforced server-side (upstream RO transactions +
 `allowed_schemas`/`allowed_tables`, `max_rows`, `timeout_seconds`,
-`max_connections`) — no write profile. Probe `list_sources`, then
+`max_connections`) вЂ” no write profile. Probe `list_sources`, then
 `list_tables` + one bounded SELECT.
 
 ### grafana
 
-`grafana/mcp-grafana` pinned (Apache-2.0), Go `/app/mcp-server` stdio only —
+`grafana/mcp-grafana` pinned (Apache-2.0), Go `/app/mcp-server` stdio only вЂ”
 upstream HTTP/SSE never enabled (auth disjoined from Grafana creds).
 Contract `grafana-sat`: `GRAFANA_URL`, `GRAFANA_SERVICE_ACCOUNT_TOKEN`,
-optional `GRAFANA_ORG_ID`, non-secret `GRAFANA_ENDPOINT` (real host:port →
+optional `GRAFANA_ORG_ID`, non-secret `GRAFANA_ENDPOINT` (real host:port в†’
 forward `13000`, URL field `http://127.0.0.1:13000`). `GRAFANA_SOCKS5_PROXY`
 deliberately claimed so scanning cannot inject the HTTP Squid URL into a
 socks5-only slot. `--enabled-tools=search,datasource,dashboard,folder,
@@ -470,13 +475,13 @@ Probe `list_targets` + one `query`; remote-write/admin are separate grants.
 
 The fallback SQL connector.
 
-`bytebase/dbhub` (MIT), pnpm workspace build → `node /app/dist/index.js`
-stdio; HTTP transport never enabled. Exits without config — reviewed
+`bytebase/dbhub` (MIT), pnpm workspace build в†’ `node /app/dist/index.js`
+stdio; HTTP transport never enabled. Exits without config вЂ” reviewed
 `preflight_environment` injects `DSN=sqlite:///:memory:` for the
 unauthenticated probe only. Legacy `READONLY`/`MAX_ROWS` env rejected:
-env-mode DBHub has no readonly policy — the DSN's database role must be
+env-mode DBHub has no readonly policy вЂ” the DSN's database role must be
 read-only (contract requirement). Contract `dbhub-sql`: `DSN`, `DBHUB_-
-ENDPOINT` + `DBHUB_SSH_ENDPOINT` → forwards `15432` (db) / `15433` (bastion),
+ENDPOINT` + `DBHUB_SSH_ENDPOINT` в†’ forwards `15432` (db) / `15433` (bastion),
 optional `SSH_USER`/`SSH_PASSWORD`/`SSH_PASSPHRASE`/`SSH_KEY`
 (`/run/dbhub/id_rsa`), `SSH_HOST`/`SSH_PORT`, CA `/run/dbhub/ca.pem`.
 Managed tunnel: `SSH_HOST=127.0.0.1 SSH_PORT=15433`. Verify `tools/list`,
@@ -484,14 +489,14 @@ one `SELECT 1` through the forward, the tunnel when SSH configured.
 
 ### datalens
 
-`datalens-tech/datalens-mcp` (MIT) pinned — `node /app/dist/index.js`.
+`datalens-tech/datalens-mcp` (MIT) pinned вЂ” `node /app/dist/index.js`.
 Five-tool gateway; upstream `x-mcp-scope` enforced server-side (write via
 `invoke_read_command` rejected by the server); effects from annotations;
 live schema verified fully classified (51/24/41, unclassified fails
 startup). Contract `datalens-auth`: `DATALENS_ORG_ID` (`x-dl-org-id` tenant
 pin), `DATALENS_API_AUTH_HEADER` (full value), optional `DATALENS_API_URL`
 (internal HTTPS joins egress; `OAuth <token>` vs cloud `Bearer <iam-token>`
-— 12 h rotation routine). Fixed: `DATALENS_YC_STATIC_AUTH=1`,
+вЂ” 12 h rotation routine). Fixed: `DATALENS_YC_STATIC_AUTH=1`,
 `DATALENS_MAX_RESPONSE_CHARS=100000`, `NODE_USE_ENV_PROXY=1` (calls cross
 the Squid ACL: `api.datalens.tech` + `registry.npmjs.org` upgrade notice).
 Declares `preflight_network` (schema fetch precedes MCP). Probe
@@ -502,6 +507,6 @@ privileged stay a separate instruction.
 
 `slack` (awaiting reviewed
 recipe + user-token overlay + preflight), `careergo` (no exact source/
-license/contract), `agent-browser` (no published runnable image —
+license/contract), `agent-browser` (no published runnable image вЂ”
 discoverable with reason/runbook, never installable; use playwright-mcp).
 Catalog placeholders grant nothing.

@@ -29,6 +29,8 @@ func devService(name string) (devServiceSpec, bool) {
 		return devServiceSpec{"hubctl", "./cmd/hubctl", "hermes-hub:0.4.0-dev-control"}, true
 	case "hermes-runtime":
 		return devServiceSpec{"hub-runtime", "./cmd/runtime", "hermes-hub:0.4.0-dev"}, true
+	case "model-relay":
+		return devServiceSpec{"hub-runtime", "./cmd/runtime", "hermes-hub:0.4.0-dev"}, true
 	}
 	return devServiceSpec{}, false
 }

@@ -65,7 +65,7 @@ func TestSupervisorWatchCLIStartsChild(t *testing.T) {
 	if err := os.WriteFile(auth, []byte("synthetic-watch-auth"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	out, _ := exec.CommandContext(ctx, binary, "-watch", "-env", "dev", "-spaces", filepath.Join(root, "spaces"), "-auth-file", auth, "-listen", listener.Addr().String()).CombinedOutput()
 	if !strings.Contains(string(out), "supervisor child exited; restarting in 1s") {

@@ -61,6 +61,8 @@ func TestCredentialBrokerOnboardingCreatesGrantAndOpaqueReference(t *testing.T) 
 				return
 			}
 			_ = json.NewEncoder(w).Encode(brokerv1.Grant{ID: "grant_1", CredentialID: "credential_1", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", BindingID: "binding_1", WorkloadID: "work_1", Execution: "dedicated", ContractID: "github-pat", ContractRevision: 1, PolicyVersion: "policy-1", Active: true})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/grants/grant_1":
+			_ = json.NewEncoder(w).Encode(brokerv1.Grant{ID: "grant_1", Active: true})
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/grants/grant_1/revoke":
 			grantRevocations++
 			_ = json.NewEncoder(w).Encode(map[string]any{})
@@ -1308,6 +1310,8 @@ func TestMaterializeBindingRegrantsForNewDefinitionVersion(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/grants/grant_1":
+			_ = json.NewEncoder(w).Encode(brokerv1.Grant{ID: "grant_1", Active: true})
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/grants/grant_1/revoke":
 			revoked = true
 			_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})

@@ -47,6 +47,7 @@ func (b *Broker) CreateGrant(a identity.Actor, credentialID string, in v1.GrantR
 	raw, _ := json.Marshal(in)
 	fp := seal.Digest(string(raw))
 	idem := requestKey(a, "grant/"+credentialID+"/"+in.IdempotencyKey)
+	var retire []grantRecord
 	for _, g := range b.grants {
 		if g.Idempotency == idem {
 			if g.Fingerprint != fp {
@@ -58,9 +59,16 @@ func (b *Broker) CreateGrant(a identity.Actor, credentialID string, in v1.GrantR
 			continue
 		}
 		if g.View.BindingID == in.BindingID && g.View.ContextID == in.ContextID && g.View.PrincipalID == in.PrincipalID {
+			if g.View.CredentialID == credentialID && g.View.RuntimeID == in.RuntimeID && g.View.WorkloadID == in.WorkloadID && g.View.PolicyVersion == a.PolicyVersion && g.View.Execution == in.Execution && g.ContractKey == ck {
+				return g.View, nil
+			}
 			return v1.Grant{}, ErrConflict
 		}
 		if g.View.WorkloadID == in.WorkloadID {
+			if in.Execution == "dedicated" && g.View.Execution == "dedicated" && g.View.CredentialID == credentialID && g.View.PrincipalID == in.PrincipalID && g.View.ContextID == in.ContextID && g.View.RuntimeID == in.RuntimeID && g.View.PolicyVersion == a.PolicyVersion && g.ContractKey == ck {
+				retire = append(retire, g)
+				continue
+			}
 			if in.Execution != "shared" || g.View.Execution != "shared" {
 				return v1.Grant{}, ErrDenied
 			}
@@ -73,6 +81,19 @@ func (b *Broker) CreateGrant(a identity.Actor, credentialID string, in v1.GrantR
 	}
 	if len(b.grants) >= 50000 {
 		return v1.Grant{}, ErrUnavailable
+	}
+	for _, old := range retire {
+		old.View.Active = false
+		ev := b.audit("grant.revoked", a)
+		ev.CredentialID, ev.GrantID, ev.BindingID, ev.WorkloadID = credentialID, old.View.ID, old.View.BindingID, old.View.WorkloadID
+		if _, err := b.commit(mutation{Audit: ev, Grant: &old}); err != nil {
+			return v1.Grant{}, err
+		}
+		for lid, lease := range b.leases {
+			if lease.View.GrantID == old.View.ID {
+				b.dropLease(lid)
+			}
+		}
 	}
 	g := grantRecord{View: v1.Grant{ID: newID("g"), CredentialID: credentialID, PrincipalID: in.PrincipalID, ContextID: in.ContextID, RuntimeID: in.RuntimeID, BindingID: in.BindingID, WorkloadID: in.WorkloadID, Execution: in.Execution, ContractID: target.ID, ContractRevision: target.Revision, PolicyVersion: a.PolicyVersion, Active: true}, ContractKey: ck, ContractDigest: target.Digest(), Idempotency: idem, Fingerprint: fp}
 	ev := b.audit("grant.created", a)
@@ -102,6 +123,22 @@ func DenyReason(e error) string {
 
 func grantMatches(a identity.Actor, g grantRecord) bool {
 	return g.View.Active && a.PrincipalID == g.View.PrincipalID && a.ContextID == g.View.ContextID && a.RuntimeID == g.View.RuntimeID && a.PolicyVersion == g.View.PolicyVersion && (a.BindingID == "" || a.BindingID == g.View.BindingID) && (a.WorkloadID == "" || a.WorkloadID == g.View.WorkloadID)
+}
+func (b *Broker) GetGrant(a identity.Actor, id string) (v1.Grant, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.live() {
+		return v1.Grant{}, ErrUnavailable
+	}
+	g, ok := b.grants[id]
+	if !ok {
+		return v1.Grant{}, ErrNotFound
+	}
+	c, ok := b.credentials[g.View.CredentialID]
+	if !ok || !managedBy(a, c) {
+		return v1.Grant{}, ErrNotFound
+	}
+	return g.View, nil
 }
 func (b *Broker) Acquire(a identity.Actor, in v1.AcquireLease) (v1.Lease, error) {
 	b.mu.Lock()

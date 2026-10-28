@@ -2,10 +2,15 @@ package journal
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -146,8 +151,17 @@ func TestFailClosedOnStorageFailure(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	_, _ = j.Append("fills", string(bytes.Repeat([]byte{'x'}, MaxRecord-400)))
-	if _, e = j.Append("over", string(bytes.Repeat([]byte{'x'}, 1000))); e == nil {
+	first, second := make([]byte, 700000), make([]byte, 400000)
+	if _, e = rand.Read(first); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = rand.Read(second); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = j.Append("fills", first); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = j.Append("over", second); e == nil {
 		t.Fatal("size cap")
 	}
 	if j.Healthy() {
@@ -168,5 +182,91 @@ func TestFailClosedOnStorageFailure(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(dir, "ledger.bin"), nil, 0644)
 	if _, e = Open(dir, k, 4<<20); e == nil {
 		t.Fatal("unsafe permissions")
+	}
+}
+
+func TestOpenCompactsLegacyAuditWithoutLosingRecords(t *testing.T) {
+	dir, key := setup(t)
+	j, err := Open(dir, key, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := ""
+	for i := 0; i < 500; i++ {
+		record := Record{Sequence: uint64(i + 1), Previous: prev, Kind: "audit", Data: json.RawMessage(fmt.Sprintf(`{"payload":%q}`, strings.Repeat("a", 1024)))}
+		plain, _ := json.Marshal(record)
+		enc, err := j.box.Seal(plain, []byte("ledger/v1"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var header [4]byte
+		binary.BigEndian.PutUint32(header[:], uint32(len(enc)))
+		if _, err := j.file.Write(header[:]); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := j.file.Write(enc); err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(plain)
+		prev = hex.EncodeToString(sum[:])
+	}
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.Stat(filepath.Join(dir, "ledger.bin"))
+	j, err = Open(dir, key, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, _ := os.Stat(filepath.Join(dir, "ledger.bin"))
+	if after.Size() >= before.Size()/2 {
+		t.Fatalf("audit was not compacted: before=%d after=%d", before.Size(), after.Size())
+	}
+	if len(j.Records()) != 500 {
+		t.Fatalf("lost audit records: %d", len(j.Records()))
+	}
+	if _, err := j.Append("audit", map[string]string{"payload": "next"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	j, err = Open(dir, key, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	if len(j.Records()) != 501 || j.Records()[500].Sequence != 501 {
+		t.Fatal("compacted journal did not replay and append")
+	}
+}
+
+func TestCompressedAuditTamperFailsClosed(t *testing.T) {
+	dir, key := setup(t)
+	j, err := Open(dir, key, 2<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.Append("audit", map[string]string{"payload": strings.Repeat("x", 4096)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "ledger.bin")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binary.BigEndian.Uint32(raw[:4])&(1<<31) == 0 {
+		t.Fatal("compressible audit was not compressed")
+	}
+	raw[len(raw)-1] ^= 1
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if opened, err := Open(dir, key, 2<<20); err == nil {
+		_ = opened.Close()
+		t.Fatal("tampered compressed audit accepted")
 	}
 }

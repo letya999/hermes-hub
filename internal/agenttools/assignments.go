@@ -25,6 +25,7 @@ var assignmentRoutes = map[string][2]string{
 	"assignment_resume":   {http.MethodPost, "/v1/assignments/{id}/resume"},
 	"assignment_cancel":   {http.MethodPost, "/v1/assignments/{id}/cancel"},
 	"assignment_complete": {http.MethodPost, "/v1/assignments/{id}/complete"},
+	"assignment_progress": {http.MethodPost, "/v1/assignments/{id}/progress"},
 }
 
 // Assignment dispatches the assignment_* ops onto the assignment REST
@@ -32,7 +33,7 @@ var assignmentRoutes = map[string][2]string{
 func (t *Tools) Assignment(ctx context.Context, op string, r Input) (map[string]any, error) {
 	route := assignmentRoutes[op]
 	switch op {
-	case "assignment_update", "assignment_apply", "assignment_pause", "assignment_resume", "assignment_cancel", "assignment_complete":
+	case "assignment_update", "assignment_apply", "assignment_pause", "assignment_resume", "assignment_cancel", "assignment_complete", "assignment_progress":
 		if r.ExpectedRevision == 0 {
 			return nil, errors.New("expected_revision from assignment_get or assignment_list is required")
 		}
@@ -65,6 +66,8 @@ func (t *Tools) Assignment(ctx context.Context, op string, r Input) (map[string]
 		payload = map[string]any{"plan": plan, "expected_revision": r.ExpectedRevision}
 	case "assignment_apply", "assignment_pause", "assignment_resume", "assignment_cancel", "assignment_complete":
 		payload = map[string]any{"expected_revision": r.ExpectedRevision}
+	case "assignment_progress":
+		payload = map[string]any{"expected_revision": r.ExpectedRevision, "job_id": r.JobID, "summary": r.Summary, "finding": r.Finding, "next_step": r.NextStep, "complete": r.Complete}
 	}
 	return t.assignmentCall(ctx, route[0], strings.ReplaceAll(route[1], "{id}", r.ID), payload)
 }

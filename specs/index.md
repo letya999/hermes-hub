@@ -7,6 +7,7 @@ record it points to. `archive/` holds only pre-renumbering originals.
 
 | Specification | Status |
 |---|---|
+| [SPEC-0083](active/SPEC-0083-standing-assignment-mvp.md) | Frozen: executable standing-assignment MVP — cursor replay, filtered specialist wakes, durable progress and acceptance (M23 #324/#332) |
 | [SPEC-0081](active/SPEC-0081-shared-acquisition.md) | Frozen: shared source acquisition — boundary-keyed pool, conditional HTTP, cursors/gap visibility, per-event filters, hook intake (M23 #332) |
 | [SPEC-0082](active/SPEC-0082-image-role-budgets.md) | Frozen: image role budgets — per-image size SLOs, forbidden binaries, hygiene, voice consolidation, hub-core split, browser sidecar, acceptance (M26 #371–#380) |
 | [SPEC-0080](active/SPEC-0080-standing-assignments.md) | Frozen: standing assignments — durable owner intent, plan reconcile, fenced wakes, messenger control (M23 #324) |

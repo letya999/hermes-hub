@@ -461,7 +461,7 @@ func (s *Store) definitionForConnection(connection api.Connection) (api.ToolDefi
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, binding := range s.bindings {
-		if binding.ConnectionID == connection.ConnectionID && binding.DefinitionVersion != "" {
+		if binding.ConnectionID == connection.ConnectionID && binding.Status == api.ActiveStatus && binding.DefinitionVersion != "" {
 			if definition, ok := s.definitions[definitionKey(connection.DefinitionID, binding.DefinitionVersion)]; ok {
 				return definition, nil
 			}
@@ -896,6 +896,35 @@ func (s *Store) markDegradedIfCurrent(connectionID string, expected *api.Connect
 		return true, err
 	}
 	return true, stopErr
+}
+
+func (s *Store) restoreApprovedSurfaceIfCurrent(expected api.Connection, pinned api.ToolBinding) (bool, error) {
+	s.mu.Lock()
+	connection, ok := s.connections[expected.ConnectionID]
+	binding, bound := s.bindings[pinned.ToolBindingID]
+	if !ok || !bound || connection.Revision != expected.Revision || connection.Status != api.DegradedStatus ||
+		connection.Metadata[api.LabelAcceptSurface] == "" || connection.Metadata[api.LabelAcceptRecipe] != "" ||
+		binding.ConnectionID != connection.ConnectionID || binding.Status != api.ActiveStatus || binding.ToolDigest != pinned.ToolDigest {
+		s.mu.Unlock()
+		return false, nil
+	}
+	delete(connection.Metadata, api.LabelAcceptSurface)
+	connection.Status = api.ActiveStatus
+	connection.Revision++
+	s.connections[connection.ConnectionID] = connection
+	s.noteConnectionStatusLocked(connection)
+	for id, candidate := range s.bindings {
+		if candidate.ConnectionID == connection.ConnectionID {
+			if candidate.Status == api.ActiveStatus && candidate.ToolDigest == pinned.ToolDigest {
+				candidate.ConnectionRevision = connection.Revision
+				candidate.Revision++
+			}
+			s.touchProjectionLocked(&candidate)
+			s.bindings[id] = candidate
+		}
+	}
+	s.mu.Unlock()
+	return true, s.persistAndNotify()
 }
 
 // ObserveDrift records a drift the reconciler resolved under an accept key;
