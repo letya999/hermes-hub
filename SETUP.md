@@ -221,12 +221,32 @@ Edit `spaces/acme/scope.yaml`:
 schema: 1
 organization: acme
 members:
-  artem: owner
+  artem: owner                          # legacy scalar role
+  bob:   {role: member, profile: sales} # structured role + profile
+default_profile: staff                  # members without a profile get this
 features: [workspace, browser, google, slack, atlassian]
 mcp_servers: {}
 read_only_mcp: []
 org_actions: []
 ```
+
+Organization profiles live at `spaces/acme/profiles/<name>/` and shadow
+platform `policies/profiles/<name>/` per file (see docs/spaces.md —
+provisioning profiles). Each profile carries `agent.yaml`, `workspace.yaml`,
+`SOUL.md`, `grants.yaml`, `skills.yaml`, `layout.yaml`; a member space inits
+with its assigned profile and layers org → profile → user in the effective
+SOUL. Bulk-create missing member spaces without touching existing ones:
+
+```bash
+./bin/hubctl-linux-amd64 org sync-members --org acme --org-dir spaces/acme --spaces spaces --dry-run
+./bin/hubctl-linux-amd64 org sync-members --org acme --org-dir spaces/acme --spaces spaces
+```
+
+Profile edits propagate through `hubctl profile diff|apply --dir spaces/<user>`
+(3-way against `profile.lock`; customized files are preserved and reported).
+A profile's `grants.yaml` becomes policy only via `hubctl profile grants` +
+the confirmed `hubctl capability --kind policy --confirm` publish, bounded
+by the organization ceiling.
 
 Add organization credentials to `spaces/acme/secrets.dev.env` or
 `secrets.prod.env`; add personal OAuth/API credentials only to the member's matching

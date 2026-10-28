@@ -153,6 +153,12 @@ hubctl grant --user alice --toolhub-store /protected/toolhub/store.json \
     --kind control-operation --operation status --confirm
 hubctl capability --kind policy|profile --file reviewed.json \
     --toolhub-store <path> --confirm
+hubctl profile grants --dir spaces/<user> --profile <name> \
+    --policy org-policy.json --out draft.json                          # grants.yaml → draft defaults, ceiling untouched
+hubctl profile diff --dir spaces/<user>                                # 3-way plan via profile.lock
+hubctl profile apply --dir spaces/<user>                               # untouched files update; customized kept+reported
+hubctl org sync-members --org acme --org-dir spaces/acme \
+    --spaces spaces --dry-run                                          # report, then drop --dry-run to provision
 hubctl capability --kind group --file g.json --toolhub-store <path>   # validate+print digest only
 hubctl capability --kind preview --file draft.json --toolhub-store <path>  # old→new diff, never writes
 hubctl capability --kind tools --settings <space> \

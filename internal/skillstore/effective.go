@@ -51,6 +51,42 @@ type Entry struct {
 	Settings []SettingSpec `json:"settings,omitempty"`
 }
 
+// PinnedRef is a provisioning profile's reference to a standard skill
+// (SPEC-0083 R9.6). Pinned skills order first in the effective catalog.
+type PinnedRef struct {
+	Name string `json:"name" yaml:"name"`
+}
+
+// Pin moves every referenced skill to the front of the catalog in reference
+// order. A reference that resolves to no eligible entry is a render-time
+// error (R9.6) — standard skills never silently drop.
+func (idx *EffectiveIndex) Pin(refs []PinnedRef) error {
+	first := []Entry{}
+	pinned := map[string]bool{}
+	for _, ref := range refs {
+		var match *Entry
+		for i := range idx.Skills {
+			if idx.Skills[i].Name == ref.Name {
+				match = &idx.Skills[i]
+				break
+			}
+		}
+		if match == nil || !match.Eligible {
+			return fmt.Errorf("pinned skill %q is not eligible", ref.Name)
+		}
+		pinned[match.Name] = true
+		first = append(first, *match)
+	}
+	rest := []Entry{}
+	for _, e := range idx.Skills {
+		if !pinned[e.Name] {
+			rest = append(rest, e)
+		}
+	}
+	idx.Skills = append(first, rest...)
+	return nil
+}
+
 // Capabilities is the space's granted capability surface as the renderer
 // knows it: native toolsets, connector names, target platform, and the
 // dep schemes resolvable through operator-allowed registries/toolboxes.

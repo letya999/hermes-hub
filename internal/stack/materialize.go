@@ -15,17 +15,26 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// MaterializeSoulEffective composes the effective SOUL (SPEC-0053 R1.8/D7): the
-// owner's persona file verbatim plus the hub-owned channel contract. It runs
-// after HealUserSoul so the persona it reads is the healed one. The output is
-// what the runtime mounts at /state/hermes/SOUL.md, so contract edits move
-// the session revision exactly once per render.
+// MaterializeSoulEffective composes the effective SOUL (SPEC-0053 R1.8/D7,
+// SPEC-0083 R9.4): the hub-owned channel contract, then the organization
+// instructions, the assigned provisioning profile's persona layer, the
+// owner's own file and the session-pinned skill catalog. It runs after
+// HealUserSoul so the persona it reads is the healed one; profile and org
+// SOUL files layer at render so org edits propagate without rewriting
+// user-owned files.
 func MaterializeSoulEffective(dir string, s Settings) error {
 	persona, err := os.ReadFile(filepath.Join(dir, "SOUL.md"))
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	body := strings.TrimRight(string(persona), "\n") + "\n\n" + ChannelContract + tier0Block(dir)
+	body := ChannelContract
+	if org := orgSoulLayer(s); org != "" {
+		body += "\n\n" + org
+	}
+	if profile := profileSoulLayer(dir, s); profile != "" {
+		body += "\n\n" + profile
+	}
+	body += "\n\n" + strings.TrimRight(string(persona), "\n") + tier0Block(dir)
 	path := filepath.Join(dir, "generated", "soul-effective."+s.Environment+".md")
 	if err := atomic(path, []byte(body)); err != nil {
 		return err
@@ -34,6 +43,29 @@ func MaterializeSoulEffective(dir string, s Settings) error {
 	// hermes-effective materialization it must stay world-readable past
 	// atomic's 0600, or the container dies on SOUL.md permission denied.
 	return os.Chmod(path, 0644)
+}
+
+// orgSoulLayer reads the organization's SOUL.md for the org→profile→user
+// layering (R9.4); absent or unreadable layers simply skip.
+func orgSoulLayer(s Settings) string {
+	if s.OrganizationDir == "" {
+		return ""
+	}
+	b, err := os.ReadFile(filepath.Join(s.OrganizationDir, "SOUL.md")) // #nosec G304 -- resolved org dir
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// profileSoulLayer reads the assigned provisioning profile's SOUL.md — org
+// assignment, stamped lock, or "default" per assignedProfileName.
+func profileSoulLayer(dir string, s Settings) string {
+	p, err := resolveProvisioningProfile(dir, s.OrganizationDir, assignedProfileName(dir, s))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(p.Soul))
 }
 
 // writeModelRegistry materializes the merged spaces/org/user models.yaml into
@@ -128,7 +160,38 @@ func MaterializeEffectiveSkills(dir string, s Settings) (*skillstore.EffectiveIn
 	// toolsets/connectors; the runtime mounts whatever this build decided,
 	// so the catalog the model sees matches policy exactly.
 	idx.ApplyReadiness(skillCapabilities(dir, s))
+	pins, err := profileSkillPins(dir, s)
+	if err != nil {
+		return nil, err
+	}
+	if err := idx.Pin(pins); err != nil {
+		return nil, err
+	}
 	return idx, skillstore.WriteIndex(GeneratedEffectiveSkillsDir(dir), idx)
+}
+
+// profileSkillPins resolves the space's assigned provisioning profile and
+// reads its skills.yaml references for pinning (R9.6). The organization
+// assignment wins over the user-editable profile.lock, so a member cannot
+// pull in a profile they were never assigned.
+func profileSkillPins(dir string, s Settings) ([]skillstore.PinnedRef, error) {
+	p, err := resolveProvisioningProfile(dir, s.OrganizationDir, assignedProfileName(dir, s))
+	if err != nil {
+		return nil, err
+	}
+	return ProfileSkillPins(p)
+}
+
+// assignedProfileName is the render-time profile resolution: the org
+// assignment, then the init-stamped profile.lock, then "default".
+func assignedProfileName(dir string, s Settings) string {
+	if s.OrganizationProfile != "" {
+		return s.OrganizationProfile
+	}
+	if lock, err := readProvisioningLock(dir); err == nil && lock.Profile != "" {
+		return lock.Profile
+	}
+	return "default"
 }
 
 // skillCapabilities derives the granted capability surface a skill's

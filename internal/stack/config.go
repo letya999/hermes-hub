@@ -87,6 +87,7 @@ type Settings struct {
 	OrganizationSkillsDir string   `yaml:"-"`
 	SpaceDir              string   `yaml:"-"`
 	OrganizationRole      string   `yaml:"-"`
+	OrganizationProfile   string   `yaml:"-"`
 	OrgActions            []string `yaml:"-"`
 	// gov is the per-load tool-governance view (issue 139): the evaluated
 	// decisions and cap:read overrides the render consumers enforce. Nil when

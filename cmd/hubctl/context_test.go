@@ -235,7 +235,7 @@ func TestSkillPromotePublishesOrgDraft(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	orgSettings.Members["joe"] = "member"
+	orgSettings.Members["joe"] = stack.OrgMember{Role: "member"}
 	raw, err := yaml.Marshal(orgSettings)
 	if err != nil {
 		t.Fatal(err)

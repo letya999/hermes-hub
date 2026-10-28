@@ -86,7 +86,7 @@ func TestSystemGuideRoutingSurvivesCustomPersona(t *testing.T) {
 				}
 			}
 			original, err := os.ReadFile(filepath.Join(dir, "SOUL.md"))
-			if err != nil || string(original) != persona || !strings.HasPrefix(string(body), strings.TrimSpace(persona)) {
+			if err != nil || string(original) != persona || !strings.Contains(string(body), strings.TrimSpace(persona)) {
 				t.Fatal("guide delivery overwrote custom persona")
 			}
 		}

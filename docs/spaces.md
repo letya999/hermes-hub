@@ -29,6 +29,45 @@ wrong file are rejected by name, not merged.
 | `runtime.auth`, `media.auth`, `model-relay.auth`, `toolhub-tokens.json`, `supervisor.auth` | operator | Bearer files — auth between services, never literal secrets in compose |
 | `communication.users.yaml` | operator | Sibling Telegram identities for the gateway; `TELEGRAM_ALLOWED_USERS` is the infra-owner fallback |
 | `telegram-auth.<env>.env` | operator | Telegram QR auth app API pair when `telegram_auth` is on (default for telegram stacks) |
+| `profile.lock` | host | init-stamped provisioning baseline: profile name, version and sha256 of each stamped file — the 3-way reference for `hubctl profile diff|apply`. Hand-editing it cannot widen an org assignment (the org member/default wins at render) |
+
+## Provisioning profiles (SPEC-0083 R9)
+
+A profile is a starting-state bundle resolved per space. Profiles live at
+`<hub-root>/policies/profiles/<name>/` and `<org>/profiles/<name>/`; an org
+copy shadows a platform profile of the same name per file, and `extends`
+chains resolve leaf→root:
+
+```
+profile.yaml    # {description, extends, version}
+agent.yaml      # runtime template (fallback: policies/agent-default.yaml)
+workspace.yaml  # tool wishes (fallback: policies/workspace-default.yaml)
+grants.yaml     # capability-rule template — drafts only
+SOUL.md         # persona layer (never stamped into the user file)
+skills.yaml     # standard skills: [name, name@revision, ...]
+layout.yaml     # extra dirs: {dirs: [a, b/c]}
+```
+
+Assignment resolution: `hubctl init --profile <name>` → the member's
+`{role, profile}` entry → `OrganizationSettings.default_profile` → `default`
+(which resolves to the legacy `*-default.yaml` templates). Members keep the
+legacy scalar form `alice: member` or the map form
+`alice: {role: member, profile: sales}`. Init stamps `agent.yaml` and
+`workspace.yaml`, creates `skills/`, writes `profile.lock` and materializes
+`layout.yaml` dirs (entries containing `..` are rejected). `hubctl org
+sync-members --org acme --org-dir <dir> [--spaces root] [--dry-run]` creates
+missing member spaces idempotently and never overwrites.
+
+The effective SOUL layers in order: channel contract → organization SOUL →
+profile SOUL → user SOUL → skill catalog. `skills.yaml` pins order first in
+the effective catalog; pinning a skill the space cannot run is a render-time
+error. `grants.yaml` only becomes authority through
+`hubctl profile grants` (renders a draft `CapabilityPolicy` revision with the
+rules as `defaults`, ceiling untouched) followed by the confirmed
+`hubctl capability --kind policy --confirm` publish — the store still
+rejects anything outside the organization ceiling. `hubctl profile diff` /
+`apply` three-way the stamped files against `profile.lock`: untouched files
+update, customized files are kept and reported.
 
 `tools:` backends: `native` (upstream toolset in-runtime — no per-call
 admission), `toolhub` (managed executor, per-call admission + audit +
