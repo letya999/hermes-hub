@@ -1,6 +1,8 @@
 package stack
 
 import (
+	"encoding/json"
+
 	"github.com/letya999/hermes-hub/internal/selfsettings"
 	"io/fs"
 	"os"
@@ -23,7 +25,7 @@ func MaterializeSoulEffective(dir string, s Settings) error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	body := strings.TrimRight(string(persona), "\n") + "\n\n" + ChannelContract
+	body := strings.TrimRight(string(persona), "\n") + "\n\n" + ChannelContract + tier0Block(dir)
 	path := filepath.Join(dir, "generated", "soul-effective."+s.Environment+".md")
 	if err := atomic(path, []byte(body)); err != nil {
 		return err
@@ -118,7 +120,84 @@ func MaterializeEffectiveSkills(dir string, s Settings) (*skillstore.EffectiveIn
 		sources = append(sources, skillstore.Source{Name: "org", Dir: filepath.Join(s.OrganizationDir, "skills")})
 	}
 	sources = append(sources, skillstore.Source{Name: "user", Dir: filepath.Join(dir, "skills")})
-	return skillstore.Build(GeneratedEffectiveSkillsDir(dir), sources)
+	idx, err := skillstore.Build(GeneratedEffectiveSkillsDir(dir), sources)
+	if err != nil {
+		return nil, err
+	}
+	// R6.1: readiness is stamped at render — Settings knows the granted
+	// toolsets/connectors; the runtime mounts whatever this build decided,
+	// so the catalog the model sees matches policy exactly.
+	idx.ApplyReadiness(skillCapabilities(s))
+	return idx, skillstore.WriteIndex(GeneratedEffectiveSkillsDir(dir), idx)
+}
+
+// skillCapabilities derives the granted capability surface a skill's
+// `requires` block is checked against (R6.1).
+func skillCapabilities(s Settings) skillstore.Capabilities {
+	caps := skillstore.Capabilities{
+		Toolsets:   map[string]bool{},
+		Connectors: map[string]bool{},
+		Platform:   "linux",
+	}
+	for _, name := range s.NativeCarveouts() {
+		caps.Toolsets[name] = true
+	}
+	for name := range s.MCP {
+		caps.Connectors[name] = true
+	}
+	return caps
+}
+
+// tier0Block renders the session-pinned <available_skills> catalog appended to
+// soul-effective (R6.2): eligible, implicit-visible skills only.
+func tier0Block(dir string) string {
+	raw, err := os.ReadFile(filepath.Join(GeneratedEffectiveSkillsDir(dir), "index.json"))
+	if err != nil {
+		return ""
+	}
+	var idx skillstore.EffectiveIndex
+	if err := json.Unmarshal(raw, &idx); err != nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n\n<available_skills revision=\"" + idx.Revision + "\">\n")
+	b.WriteString("These skills are available. Activate one with the skill tool before following its instructions; if a skill body left context (compaction), re-invoke skill to reload it. Discover more with skills_search; inspect bundled files with skill_view.\n")
+	count := 0
+	for _, e := range idx.Skills {
+		if !e.Hidden && e.Eligible {
+			count++
+		}
+	}
+	if count > 20 {
+		// Past ~20 entries the catalog degrades to names + a search hint so
+		// the tier-0 block stays inside its token budget (R6.2).
+		var names []string
+		for _, e := range idx.Skills {
+			if !e.Hidden && e.Eligible {
+				names = append(names, e.Name)
+			}
+		}
+		return b.String() + strings.Join(names, ", ") +
+			"\nDescriptions elided at this catalog size — call skills_search for details.\n</available_skills>\n"
+	}
+	for _, e := range idx.Skills {
+		if e.Hidden || !e.Eligible {
+			continue
+		}
+		b.WriteString("- " + e.Name + " [" + e.Source + "]: " + catalogDescription(e.Description) + "\n")
+	}
+	return b.String() + "</available_skills>\n"
+}
+
+// catalogDescription sanitizes an entry description for the tier-0 block:
+// markup is escaped so catalog text cannot inject prompt markup and the
+// text is capped at 200 chars (R6.6).
+func catalogDescription(desc string) string {
+	if len(desc) > 200 {
+		desc = desc[:200]
+	}
+	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
+	return r.Replace(desc)
 }
 
 // GeneratedPluginsDir is the per-space filtered hub-plugin tree materialized

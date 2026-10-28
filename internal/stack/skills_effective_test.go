@@ -65,6 +65,180 @@ func TestMaterializeEffectiveSkillsBuildsPrecedenceView(t *testing.T) {
 	}
 }
 
+// R6.1: render stamps eligibility — a skill requiring an ungranted toolset
+// or connector lands eligible:false with the missing piece named; a granted
+// toolset keeps it eligible.
+func TestMaterializeEffectiveSkillsStampsReadiness(t *testing.T) {
+	dir := t.TempDir()
+	s := validSettings()
+	s.GlobalSkillsDir = t.TempDir()
+	skillBody := "---\nname: needs-web\ndescription: d\nplatforms: [linux]\nrequires:\n  toolsets: [web]\n  connectors: [gitlab]\n---\nbody\n"
+	if err := os.MkdirAll(filepath.Join(dir, "skills", "needs-web"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "skills", "needs-web", "SKILL.md"), []byte(skillBody), 0644); err != nil {
+		t.Fatal(err)
+	}
+	byName := func(idx *skillstore.EffectiveIndex) skillstore.Entry {
+		for _, e := range idx.Skills {
+			if e.Name == "needs-web" {
+				return e
+			}
+		}
+		return skillstore.Entry{}
+	}
+	idx, err := MaterializeEffectiveSkills(dir, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if byName(idx).Eligible {
+		t.Fatalf("unmet requires must be ineligible: %+v", byName(idx))
+	}
+	if len(byName(idx).Missing) != 2 {
+		t.Fatalf("missing toolset+connector: %+v", byName(idx).Missing)
+	}
+	// index.json carries the stamped readiness too.
+	body, err := os.ReadFile(filepath.Join(GeneratedEffectiveSkillsDir(dir), "index.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var disk struct {
+		Skills []struct {
+			Name     string `json:"name"`
+			Eligible bool   `json:"eligible"`
+		} `json:"skills"`
+	}
+	if err := json.Unmarshal(body, &disk); err != nil {
+		t.Fatalf("index.json: %v", err)
+	}
+	for _, e := range disk.Skills {
+		if e.Name == "needs-web" && e.Eligible {
+			t.Fatal("stamped index.json must persist ineligible")
+		}
+	}
+	// A granted carve-out satisfies the toolset half.
+	if s.Tools == nil {
+		s.Tools = map[string]ToolEntry{}
+	}
+	s.Tools["web"] = ToolEntry{Via: ToolViaNative}
+	idx, err = MaterializeEffectiveSkills(dir, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if byName(idx).Eligible || len(byName(idx).Missing) != 1 || byName(idx).Missing[0] != "connector:gitlab" {
+		t.Fatalf("granted toolset narrows missing to the connector: %+v", byName(idx).Missing)
+	}
+	// A configured mcp: server satisfies the connector requirement.
+	s.MCP = map[string]MCPServer{"gitlab": {}}
+	idx, err = MaterializeEffectiveSkills(dir, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !byName(idx).Eligible || len(byName(idx).Missing) != 0 {
+		t.Fatalf("granted toolset+connector must be eligible: %+v", byName(idx))
+	}
+}
+
+// soul-effective carries a tier-0 <available_skills> block of the eligible,
+// implicit-visible catalog: hidden and ineligible skills stay out, markup in
+// descriptions is escaped (R6.2/R6.6).
+func TestSoulEffectiveCarriesTier0Catalog(t *testing.T) {
+	dir := t.TempDir()
+	s := validSettings()
+	s.GlobalSkillsDir = t.TempDir()
+	writeStoreSkill(t, filepath.Join(dir, "skills"), "demo", "does <script>alert(1)</script> things")
+	writeStoreSkill(t, filepath.Join(dir, "skills"), "hidden-one", "invisible")
+	writeStoreSkill(t, filepath.Join(dir, "skills"), "needy", "wants gitlab")
+	for name, fm := range map[string]string{
+		"hidden-one": "---\nname: hidden-one\ndescription: invisible\ndisable-model-invocation: true\n---\n\nbody\n",
+		"needy":      "---\nname: needy\ndescription: wants gitlab\nrequires:\n  connectors: [gitlab]\n---\n\nbody\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, "skills", name, "SKILL.md"), []byte(fm), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := MaterializeEffectiveSkills(dir, s); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SOUL.md"), []byte("# persona\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := MaterializeSoulEffective(dir, s); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "generated", "soul-effective."+s.Environment+".md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	if !strings.Contains(text, "<available_skills") {
+		t.Fatal("tier-0 catalog block missing")
+	}
+	for _, want := range []string{"demo", "revision="} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("tier-0 block missing %q", want)
+		}
+	}
+	for _, banned := range []string{"hidden-one", "needy", "<script>", "alert(1)</script>"} {
+		if strings.Contains(text, banned) {
+			t.Fatalf("tier-0 must exclude/escape %q", banned)
+		}
+	}
+}
+
+// Catalog descriptions are length-capped so a fat manifest cannot bloat or
+// break the tier-0 block (R6.6).
+func TestSoulEffectiveTier0CapsDescription(t *testing.T) {
+	dir := t.TempDir()
+	s := validSettings()
+	s.GlobalSkillsDir = t.TempDir()
+	writeStoreSkill(t, filepath.Join(dir, "skills"), "fat", strings.Repeat("x", 900)+"ENDMARKER")
+	if _, err := MaterializeEffectiveSkills(dir, s); err != nil {
+		t.Fatal(err)
+	}
+	if err := MaterializeSoulEffective(dir, s); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "generated", "soul-effective."+s.Environment+".md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "ENDMARKER") {
+		t.Fatal("over-long description must be truncated in the tier-0 block")
+	}
+}
+
+// With more than ~20 skills the tier-0 block collapses to names and a
+// skills_search hint instead of full descriptions (R6.2).
+func TestSoulEffectiveTier0LargeCatalogDegradesToNames(t *testing.T) {
+	dir := t.TempDir()
+	s := validSettings()
+	s.GlobalSkillsDir = t.TempDir()
+	for i := 0; i < 22; i++ {
+		writeStoreSkill(t, filepath.Join(dir, "skills"), "skill-"+string(rune('a'+i)), "unique-long-description-token-"+string(rune('a'+i)))
+	}
+	if _, err := MaterializeEffectiveSkills(dir, s); err != nil {
+		t.Fatal(err)
+	}
+	if err := MaterializeSoulEffective(dir, s); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "generated", "soul-effective."+s.Environment+".md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	if !strings.Contains(text, "skills_search") {
+		t.Fatal("large catalog must point at skills_search")
+	}
+	if strings.Contains(text, "unique-long-description-token-a") {
+		t.Fatal("degraded catalog must drop descriptions")
+	}
+	if !strings.Contains(text, "skill-a") {
+		t.Fatal("degraded catalog must still list names")
+	}
+}
+
 func TestMaterializeEffectiveSkillsOrgOverridesUser(t *testing.T) {
 	dir := t.TempDir()
 	orgDir := t.TempDir()
@@ -438,6 +612,39 @@ func TestToolhubSeesEffectiveIndexForSkillEnum(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("toolhub does not mount the effective skills view")
+	}
+}
+
+// The communication gateway mounts the effective view read-only so `/name`
+// and `$name` harness expansion can resolve skills (R6.5).
+func TestGatewaySeesEffectiveViewForSkillExpansion(t *testing.T) {
+	dir := t.TempDir()
+	s := validSettings()
+	s.Ingress = []string{"telegram"}
+	services := Compose(s, "", dir)["services"].(M)
+	gateway, ok := services["communication-hub"].(M)
+	if !ok {
+		t.Fatal("communication-hub service missing")
+	}
+	env, _ := gateway["environment"].(M)
+	if env["HUB_SKILLS_EFFECTIVE"] == "" {
+		t.Fatal("gateway missing HUB_SKILLS_EFFECTIVE")
+	}
+	found := false
+	for _, volume := range gateway["volumes"].([]any) {
+		m, ok := volume.(M)
+		if ok && m["target"] == env["HUB_SKILLS_EFFECTIVE"] {
+			found = true
+			if m["read_only"] != true {
+				t.Fatal("effective view must be read-only inside the gateway")
+			}
+			if m["source"] != filepath.ToSlash(filepath.Join(dir, "generated", "skills-effective")) {
+				t.Fatalf("effective mount must bind generated/skills-effective, got %v", m["source"])
+			}
+		}
+	}
+	if !found {
+		t.Fatal("gateway does not mount the effective skills view")
 	}
 }
 

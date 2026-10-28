@@ -41,13 +41,17 @@ type Gateway struct {
 	usageQueries atomic.Int32
 	usageWG      sync.WaitGroup
 	commandCtx   context.Context
-	now          func() time.Time
-	transcriber  Transcriber
-	synthesizer  Synthesizer
-	forms        formRegistry
-	drafts       skillDraftRegistry
-	telegramAuth *telegramAuthState
-	quota        quotaTracker
+	// skillActivated dedupes harness-side skill activation per
+	// (principal, task) for $name expansion (R6.5).
+	skillMu        sync.Mutex
+	skillActivated map[string]*skillSession
+	now            func() time.Time
+	transcriber    Transcriber
+	synthesizer    Synthesizer
+	forms          formRegistry
+	drafts         skillDraftRegistry
+	telegramAuth   *telegramAuthState
+	quota          quotaTracker
 	// contentUntil bounds the explicit content-capture window: inside it
 	// message logs carry redacted text, outside only lengths and IDs.
 	contentUntil time.Time
@@ -603,6 +607,32 @@ func (g *Gateway) dispatchChannelCommand(ctx context.Context, user User, task Ta
 		case "help":
 			return reply(commandHelp())
 		default:
+			if idx := g.skillIndex(); idx != nil {
+				e := skillEntry(idx, command)
+				if e == nil {
+					return reply("Неизвестная команда /" + command + ".\n\n" + commandHelp())
+				}
+				if e.Hidden || !e.Eligible {
+					return reply("Скилл /" + command + " недоступен.")
+				}
+				principalID := user.Envelope(sender).PrincipalID
+				session := g.skillSessionFor(principalID, task.TaskID, idx)
+				g.skillMu.Lock()
+				already := session.activatedSet()[command]
+				if !already {
+					session.Activated = append(session.Activated, command)
+				}
+				g.skillMu.Unlock()
+				if already {
+					return reply("Скилл " + command + " уже активен в этой сессии.")
+				}
+				args := strings.Fields(text)
+				expanded, err := g.skillActivationText(e, args[1:])
+				if err != nil {
+					return reply("Скилл /" + command + " недоступен.")
+				}
+				return g.enqueueChannelJob(ctx, user, task, channel, deliveryKey+"-skill", deliveryKey+":skill:"+command, chatID, 0, expanded, sender, "")
+			}
 			return reply("Неизвестная команда /" + command + ".\n\n" + commandHelp())
 		}
 	}
@@ -615,6 +645,7 @@ func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, task Task, c
 	}
 	envelope := ch.JobEnvelope(user, chatID, sender)
 	envelope.ConversationID = task.ConversationID
+	text = g.expandSkillRefs(envelope.PrincipalID, task.TaskID, text)
 	job := Job{Envelope: envelope, ID: id, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: channel, Trigger: "message", IdempotencyKey: idempotency, ChatID: chatID, MessageID: messageID, TaskID: task.TaskID, TopicID: task.TopicID, Text: text, InboundID: inboundID, Sensitive: false, CreatedAt: g.now().UTC()}
 	if channel == "telegram_bot" && chatID < 0 {
 		if group := g.groupFor(chatID); group == nil || group.Mode != "topics" {

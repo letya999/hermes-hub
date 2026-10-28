@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/letya999/hermes-hub/internal/skillstore"
 )
@@ -68,26 +69,93 @@ func (t *Tools) skillsSearch(r Input) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	matched := []skillstore.Entry{}
+	type hit struct {
+		e     skillstore.Entry
+		exact bool
+	}
+	matched := []hit{}
 	for _, e := range idx.Skills {
+		if e.Hidden || !e.Eligible {
+			continue
+		}
 		if r.Source != "" && e.Source != r.Source {
 			continue
 		}
-		if strings.Contains(e.Name, q) || strings.Contains(e.Description, q) {
-			matched = append(matched, e)
+		if ok, exact := t.searchMatch(e, q); ok {
+			matched = append(matched, hit{e: e, exact: exact})
 		}
 	}
+	slices.SortFunc(matched, func(a, b hit) int {
+		if a.exact != b.exact {
+			if a.exact {
+				return -1
+			}
+			return 1
+		}
+		return strings.Compare(a.e.Name, b.e.Name)
+	})
 	coverage := len(matched)
 	if len(matched) > limit {
 		matched = matched[:limit]
 	}
 	hits := []map[string]any{}
-	for _, e := range matched {
+	for _, m := range matched {
 		hits = append(hits, map[string]any{
-			"name": e.Name, "source": e.Source, "description": e.Description,
+			"name": m.e.Name, "source": m.e.Source, "description": m.e.Description,
 		})
 	}
 	return map[string]any{"hits": hits, "hasMore": coverage > len(hits), "coverage": coverage}, nil
+}
+
+// lexTokens splits on non-letter/non-digit — RU+EN share the same rule
+// (unicode letters), so no per-language dictionary is needed (R6.4).
+func lexTokens(text string) map[string]bool {
+	out := map[string]bool{}
+	for _, tok := range strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}) {
+		out[tok] = true
+	}
+	return out
+}
+
+// searchMatch reports whether the entry answers the query and whether the
+// query names it exactly (exact hits sort first, R6.4). Tokens match name,
+// description, tags and the skill body; a whole-phrase substring on
+// name/description also matches.
+func (t *Tools) searchMatch(e skillstore.Entry, q string) (bool, bool) {
+	exact := e.Name == q
+	if strings.Contains(e.Name, q) || strings.Contains(e.Description, q) {
+		return true, exact
+	}
+	tagToks := map[string]bool{}
+	for _, tag := range e.Tags {
+		for tok := range lexTokens(tag) {
+			tagToks[tok] = true
+		}
+	}
+	var bodyToks map[string]bool
+	for tok := range lexTokens(q) {
+		if tagToks[tok] {
+			return true, exact
+		}
+		if bodyToks == nil {
+			bodyToks = lexTokens(t.skillBody(e.Name))
+		}
+		if bodyToks[tok] {
+			return true, exact
+		}
+	}
+	return false, exact
+}
+
+func (t *Tools) skillBody(name string) string {
+	raw, err := os.ReadFile(filepath.Join(t.SkillsEffective, name, skillstore.SkillFile))
+	if err != nil {
+		return ""
+	}
+	body, _ := stripFrontmatter(raw)
+	return body
 }
 
 // skillView lists a skill's files or returns one file's text.
@@ -132,6 +200,9 @@ func (t *Tools) skillsList(r Input) (any, error) {
 	}
 	entries := []map[string]any{}
 	for _, e := range idx.Skills {
+		if e.Hidden || !e.Eligible {
+			continue
+		}
 		if r.Source != "" && e.Source != r.Source {
 			continue
 		}
@@ -404,6 +475,23 @@ func stripFrontmatter(raw []byte) (string, error) {
 
 func (t *Tools) skillInvoke(ctx context.Context, r Input) (any, error) {
 	name := strings.TrimSpace(r.Name)
+	idx, err := t.effectiveIndex()
+	if err != nil {
+		return nil, err
+	}
+	var entry *skillstore.Entry
+	for i := range idx.Skills {
+		if idx.Skills[i].Name == name {
+			entry = &idx.Skills[i]
+		}
+	}
+	if entry == nil {
+		return nil, errSkillNotFound
+	}
+	if !entry.Eligible {
+		return nil, fmt.Errorf("%w: skill %q is ineligible, missing %s",
+			skillstore.ErrInvalid, name, strings.Join(entry.Missing, ", "))
+	}
 	tree, err := t.effectiveTree(name)
 	if err != nil {
 		return nil, err

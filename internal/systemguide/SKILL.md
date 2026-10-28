@@ -156,6 +156,13 @@ org publish requires an owner/admin organization role at apply time —
 `hubctl skill promote` is the operator path. Every draft passes the
 deterministic scan pipeline before it can be published.
 
+Progressive disclosure: `soul-effective` carries a tier-0 `<available_skills>`
+catalog (name, source, description — hidden and ineligible entries excluded).
+Explicit `/name args` and inline `$name` references expand harness-side into
+`<skill_content>` with `$ARGUMENTS`/`$0..$n` substituted; activation dedupes
+per session and hidden or ineligible references produce a visible error.
+A catalog publish mid-session arrives as one `<skills_catalog_updated>` note.
+
 ## Status and evidence
 
 - Operation `done`: that requested action completed.

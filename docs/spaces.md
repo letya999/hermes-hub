@@ -72,7 +72,9 @@ mcp:
   mounted read-only at `/skills` — sources are `config/skills/`,
   `<org>/skills/` and `spaces/<user>/skills/`; `skills/` is the user-scope
   store — bind-mounted rw at `/skills-store`, org scope rw at
-  `/skills-store-org` on org-bound spaces only), feature-gated plugins (`generated/plugins/<name>` mounts read-only
+  `/skills-store-org` on org-bound spaces only; the same view mounts
+  read-only at `/skills-effective` in toolhub and the communication gateway
+  for enum projection and `/name`/`$name` expansion), feature-gated plugins (`generated/plugins/<name>` mounts read-only
   into `/opt/hermes/plugins/` — `source "bundled"`, kind "backend",
   auto-loads, agent-untouchable).
 - `connections/` — connector materialization output.

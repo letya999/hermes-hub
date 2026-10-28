@@ -94,6 +94,10 @@ type Config struct {
 	// schedule draft names a key; URLs never come from the probe, so internal
 	// addresses stay an explicit operator decision (SPEC-0059 R5.5).
 	ServiceEndpoints map[string]ServiceEndpoint `yaml:"service_endpoints,omitempty"`
+	// SkillsDir is the mounted read-only effective skill view (/skills) used
+	// for harness-side /name and $name expansion (SPEC-0083 R6.5); empty
+	// disables expansion entirely.
+	SkillsDir string `yaml:"-"`
 }
 
 // ServiceEndpoint is one registered probe service: the URL the hub POSTs
@@ -299,6 +303,7 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	config.SpoolMaxFiles, config.SpoolMaxArchiveBytes, config.SpoolMaxUsageEntries = spoolLimitsFromEnv()
+	config.SkillsDir = os.Getenv("HUB_SKILLS_EFFECTIVE")
 	fillChannelSecrets(&config)
 	return config, nil
 }

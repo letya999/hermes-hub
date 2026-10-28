@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -690,6 +691,111 @@ func TestServerExecutesSkillManageLikeToolHub(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "skills", ".drafts", out["draft_id"].(string), "SKILL.md")); err != nil {
 		t.Fatalf("draft missing: %v", err)
+	}
+}
+
+// Catalog surfaces hide ineligible and implicit-hidden skills; explicit
+// `skill` invocation still works for hidden ones and names the missing
+// requirements for ineligible ones (R6.1).
+func TestEligibleCatalogHidesUnmetAndHidden(t *testing.T) {
+	tools, dir := skillSpace(t, skillTree(demoSkillMD, nil))
+	st, err := skillstore.Open(tools.SkillsStore, skillstore.ScopeUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	must := func(name, fm string) {
+		tree := skillstore.Tree{skillstore.SkillFile: skillstore.File{Data: []byte("---\nname: " + name + "\ndescription: d\n" + fm + "---\nbody")}}
+		if _, err := st.Publish(name, tree, skillstore.IndexMeta{Author: "u", Source: "user"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	must("hidden-one", "disable-model-invocation: true\n")
+	must("needy", "requires:\n  connectors: [absent-connector]\n")
+	eff := tools.SkillsEffective
+	idx, err := skillstore.Build(eff, []skillstore.Source{{Name: "user", Dir: st.Root()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx.ApplyReadiness(skillstore.Capabilities{})
+	if err := skillstore.WriteIndex(eff, idx); err != nil {
+		t.Fatal(err)
+	}
+
+	listed := execJSON(t, tools, "skills_list", map[string]any{})
+	names := map[string]bool{}
+	for _, s := range listed["skills"].([]any) {
+		names[s.(map[string]any)["name"].(string)] = true
+	}
+	if !names["demo-skill"] || names["hidden-one"] || names["needy"] {
+		t.Fatalf("catalog must show only eligible visible skills: %v", names)
+	}
+	found := execJSON(t, tools, "skills_search", map[string]any{"query": "needy"})
+	if hits, _ := found["hits"].([]any); len(hits) != 0 {
+		t.Fatalf("ineligible skill must not surface in search: %v", hits)
+	}
+	hidden := execJSON(t, tools, "skills_search", map[string]any{"query": "hidden-one"})
+	if hits, _ := hidden["hits"].([]any); len(hits) != 0 {
+		t.Fatalf("implicit-hidden skill must not surface in search: %v", hits)
+	}
+	// Hidden-but-eligible still invokes explicitly.
+	if _, err := tools.ExecCall(context.Background(), "skill", map[string]any{"name": "hidden-one"}, nil); err != nil {
+		t.Fatalf("explicit invoke on hidden skill must work: %v", err)
+	}
+	// Ineligible invocation is an explicit error naming the gap.
+	if _, err := tools.ExecCall(context.Background(), "skill", map[string]any{"name": "needy"}, nil); err == nil {
+		t.Fatal("ineligible skill must refuse explicit invocation")
+	} else if !strings.Contains(err.Error(), "absent-connector") {
+		t.Fatalf("error must name the missing requirement: %v", err)
+	}
+	_ = dir
+}
+
+// Lexical search scores tags and a bounded body prefix, keeps exact-name
+// hits first and tokenizes RU+EN (R6.4).
+func TestSearchScoresTagsBodyAndExactName(t *testing.T) {
+	tools, _ := skillSpace(t, skillTree(demoSkillMD, nil))
+	st, err := skillstore.Open(tools.SkillsStore, skillstore.ScopeUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	must := func(name, fm, body string) {
+		tree := skillstore.Tree{skillstore.SkillFile: skillstore.File{Data: []byte("---\nname: " + name + "\ndescription: d\n" + fm + "---\n" + body)}}
+		if _, err := st.Publish(name, tree, skillstore.IndexMeta{Author: "u", Source: "user"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	must("gitlab-sync", "tags: [vcs]\n", "body")
+	must("sync-notes", "", "syncs your gitlab notes automatically")
+	must("ru-skill", "", "делает синхронизацию файлов")
+	eff := tools.SkillsEffective
+	idx, err := skillstore.Build(eff, []skillstore.Source{{Name: "user", Dir: st.Root()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := skillstore.WriteIndex(eff, idx); err != nil {
+		t.Fatal(err)
+	}
+
+	hitNames := func(query string) []string {
+		found := execJSON(t, tools, "skills_search", map[string]any{"query": query})
+		names := []string{}
+		for _, h := range found["hits"].([]any) {
+			names = append(names, h.(map[string]any)["name"].(string))
+		}
+		return names
+	}
+	if got := hitNames("vcs"); len(got) != 1 || got[0] != "gitlab-sync" {
+		t.Fatalf("tag match must surface gitlab-sync: %v", got)
+	}
+	got := hitNames("gitlab")
+	if !slices.Contains(got, "gitlab-sync") || !slices.Contains(got, "sync-notes") {
+		t.Fatalf("name and body-prefix matches expected: %v", got)
+	}
+	if got := hitNames("sync-notes"); got[0] != "sync-notes" {
+		t.Fatalf("exact-name hit must sort first: %v", got)
+	}
+	if got := hitNames("синхронизацию"); !slices.Contains(got, "ru-skill") {
+		t.Fatalf("RU tokenization must match body prefix: %v", got)
 	}
 }
 

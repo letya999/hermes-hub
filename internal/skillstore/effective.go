@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -16,11 +18,65 @@ type Source struct {
 
 // Entry is one effective skill as seen by the agent.
 type Entry struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Source      string `json:"source"`
-	Revision    string `json:"revision"`
-	Pinned      bool   `json:"pinned,omitempty"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Source      string   `json:"source"`
+	Revision    string   `json:"revision"`
+	Pinned      bool     `json:"pinned,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
+	Requires    Requires `json:"requires,omitempty"`
+	Platforms   []string `json:"platforms,omitempty"`
+	// Hidden means the skill is absent from implicit catalog surfaces but
+	// still invocable explicitly (disable-model-invocation or
+	// allow_implicit_invocation:false).
+	Hidden bool `json:"hidden,omitempty"`
+	// Eligible/Missing are stamped by ApplyReadiness from the space's
+	// granted capabilities — ineligible entries are hidden everywhere and
+	// explicit invocation reports Missing.
+	Eligible bool     `json:"eligible"`
+	Missing  []string `json:"missing,omitempty"`
+}
+
+// Capabilities is the space's granted capability surface as the renderer
+// knows it: native toolsets, connector names, target platform.
+type Capabilities struct {
+	Toolsets   map[string]bool
+	Connectors map[string]bool
+	Platform   string
+}
+
+// ApplyReadiness stamps Eligible/Missing on every entry (R6.1): declared
+// connectors and platforms are checked against the space's granted
+// capability surface. Env/bins/deps are readiness signals for the executor
+// surfaces, not eligibility — they cannot be verified at render.
+func (idx *EffectiveIndex) ApplyReadiness(caps Capabilities) {
+	for i := range idx.Skills {
+		e := &idx.Skills[i]
+		e.Missing = nil
+		for _, ts := range e.Requires.Toolsets {
+			if !caps.Toolsets[ts] {
+				e.Missing = append(e.Missing, "toolset:"+ts)
+			}
+		}
+		for _, c := range e.Requires.Connectors {
+			if !caps.Connectors[c] {
+				e.Missing = append(e.Missing, "connector:"+c)
+			}
+		}
+		if len(e.Platforms) > 0 && !slices.Contains(e.Platforms, caps.Platform) {
+			e.Missing = append(e.Missing, "platform:"+strings.Join(e.Platforms, "|"))
+		}
+		e.Eligible = len(e.Missing) == 0
+	}
+	// The session pin tracks what the catalog actually shows: a grant flip
+	// changes visibility without touching any skill body (R6.3).
+	rev := Tree{}
+	for _, e := range idx.Skills {
+		rev[e.Name+"/SKILL.md"] = File{Data: []byte(fmt.Sprintf(
+			"%s|eligible=%v|hidden=%v|missing=%s",
+			e.Revision, e.Eligible, e.Hidden, strings.Join(e.Missing, ",")))}
+	}
+	idx.Revision = Revision(rev)
 }
 
 // Notice reports a visibility event surfaced to an owner: a skill hidden
@@ -89,7 +145,13 @@ func Build(dest string, sources []Source) (*EffectiveIndex, error) {
 				return nil, fmt.Errorf("source %s skill %s: %w", src.Name, name, err)
 			}
 			won[name] = true
-			entry := Entry{Name: name, Description: m.Description, Source: src.Name, Revision: Revision(tree)}
+			entry := Entry{
+				Name: name, Description: m.Description, Source: src.Name,
+				Revision: Revision(tree), Tags: m.Tags, Requires: m.Requires,
+				Platforms: m.Platforms, Eligible: true,
+				Hidden: m.DisableModelInvocation ||
+					(m.AllowImplicitInvocation != nil && !*m.AllowImplicitInvocation),
+			}
 			idx.Skills = append(idx.Skills, entry)
 			if err := writeTree(filepath.Join(dest, name), tree); err != nil {
 				return nil, err
@@ -99,6 +161,12 @@ func Build(dest string, sources []Source) (*EffectiveIndex, error) {
 	}
 	idx.Revision = Revision(rev)
 	return idx, writeJSONFile(filepath.Join(dest, "index.json"), mustJSON(idx))
+}
+
+// WriteIndex persists index.json beside a built effective view — used by
+// render after ApplyReadiness stamps space-specific eligibility.
+func WriteIndex(dest string, idx *EffectiveIndex) error {
+	return writeJSONFile(filepath.Join(dest, "index.json"), mustJSON(idx))
 }
 
 func (idx *EffectiveIndex) skillsSource(name string) string {

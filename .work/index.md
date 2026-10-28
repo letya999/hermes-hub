@@ -66,6 +66,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0193](done/CHG-0193-skill-disclosure/plan.md) | Done 2026-10-28: M24 #361 S6 — progressive disclosure: readiness-stamped effective index (toolsets/connectors/platform → Eligible/Hidden/Missing, revision re-hashed over visibility); tier-0 <available_skills> in soul-effective (escaped, 200-char cap, >20 → names+search hint); lexical skills_search (name/desc/tags/body, RU+EN, exact-name first); harness /name args + $name refs with $ARGUMENTS/$0..$n, ≤5 refs, dedupe + one-time <skills_catalog_updated> per session; gateway mounts /skills-effective ro; coverage 86.12% |
 | [CHG-0192](done/CHG-0192-skill-tools/plan.md) | Done 2026-10-28: M24 #360 S5 — five governed skill tools (skill/skills_search/skills_list/skill_view/skill_manage) in managed+unmanaged parity; draft-only writes with base_revision fencing; nonce approval cards → runtime /v1/skill-apply sole mutator + rollback; org drafts gated on HUB_ORGANIZATION_ROLE owner/admin, hubctl skill promote; catalog hub-agent-tools@5.1.0; coverage 86.09% |
 
 ## Done — M23 proactive assignments

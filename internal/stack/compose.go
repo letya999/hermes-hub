@@ -579,10 +579,17 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			gatewayEnvironment["HUB_SUPERVISOR_AUTH"] = "${HUB_SUPERVISOR_AUTH:?set HUB_SUPERVISOR_AUTH or provision supervisor.auth for this stack}"
 			gatewayEnvironment["HUB_TOOLHUB_URL"] = "http://toolhub-control:8090"
 		}
+		// Harness-side /name and $name expansion reads the ro effective view
+		// (R6.5); same convention as the toolhub mount above.
+		gatewayEnvironment["HUB_SKILLS_EFFECTIVE"] = "/skills-effective"
 		gateway["env_file"] = gatewayEnvFiles
 		gateway["environment"] = gatewayEnvironment
 		gateway["networks"] = sharedNetworks
-		gateway["volumes"] = []any{M{"type": "volume", "source": "communication-hub-data", "target": "/data"}, brokerSecrets("communication")}
+		gateway["volumes"] = []any{
+			M{"type": "volume", "source": "communication-hub-data", "target": "/data"},
+			M{"type": "bind", "source": filepath.ToSlash(GeneratedEffectiveSkillsDir(dir)), "target": "/skills-effective", "read_only": true},
+			brokerSecrets("communication"),
+		}
 		// Sibling Telegram identities live in this file. TELEGRAM_ALLOWED_USERS
 		// stays the single infra-owner fallback when the file is absent.
 		usersFile := filepath.Join(dir, "communication.users.yaml")

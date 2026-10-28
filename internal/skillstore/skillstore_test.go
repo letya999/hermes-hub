@@ -355,6 +355,71 @@ func TestEffectiveView(t *testing.T) {
 	}
 }
 
+// Index entries carry the disclosure metadata the catalog filters on:
+// tags/platforms/requires for readiness, hidden flags for implicit
+// visibility; ApplyReadiness stamps eligible+missing from the caller's caps.
+func TestIndexReadinessMetadata(t *testing.T) {
+	user := newStore(t, ScopeUser)
+	front := func(name string, extra string) Tree {
+		return Tree{SkillFile: File{Data: []byte("---\nname: " + name + "\ndescription: d-" + name + "\n" + extra + "---\nbody")}}
+	}
+	must := func(name, extra string) {
+		if _, err := user.Publish(name, front(name, extra), IndexMeta{Author: "x", Source: "user"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	must("needs-terminal", "tags: [ops, shell]\nplatforms: [linux]\nrequires:\n  toolsets: [terminal]\n  connectors: [gitlab]\n")
+	must("needs-web", "requires:\n  toolsets: [web]\n")
+	must("quiet", "disable-model-invocation: true\n")
+	must("implicit-off", "allow_implicit_invocation: false\n")
+	must("wrong-os", "platforms: [windows]\n")
+
+	idx, err := Build(filepath.Join(t.TempDir(), "eff"), []Source{{Name: "user", Dir: user.Root()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]Entry{}
+	for _, e := range idx.Skills {
+		byName[e.Name] = e
+	}
+	if got := byName["needs-terminal"].Tags; len(got) != 2 || got[0] != "ops" {
+		t.Fatalf("tags: %+v", byName["needs-terminal"])
+	}
+	if got := byName["needs-terminal"].Requires.Toolsets; len(got) != 1 || got[0] != "terminal" {
+		t.Fatalf("requires.toolsets: %+v", byName["needs-terminal"].Requires)
+	}
+	if !byName["quiet"].Hidden || !byName["implicit-off"].Hidden {
+		t.Fatalf("hidden flags: quiet=%v implicit-off=%v", byName["quiet"].Hidden, byName["implicit-off"].Hidden)
+	}
+
+	preRevision := idx.Revision
+	idx.ApplyReadiness(Capabilities{
+		Toolsets:   map[string]bool{"terminal": true},
+		Connectors: map[string]bool{},
+		Platform:   "linux",
+	})
+	if idx.Revision == preRevision {
+		t.Fatal("readiness changes what the catalog shows — revision must move (R6.3)")
+	}
+	if by := map[string]Entry{}; true {
+		for _, e := range idx.Skills {
+			by[e.Name] = e
+		}
+		if by["needs-terminal"].Eligible || len(by["needs-terminal"].Missing) != 1 {
+			t.Fatalf("needs-terminal should miss connector: %+v", by["needs-terminal"])
+		}
+		if by["needs-web"].Eligible || len(by["needs-web"].Missing) != 1 {
+			t.Fatalf("needs-web must miss its toolset: %+v", by["needs-web"])
+		}
+		if !by["quiet"].Eligible || !by["implicit-off"].Eligible {
+			t.Fatal("hidden flags do not affect eligibility")
+		}
+		if by["wrong-os"].Eligible || len(by["wrong-os"].Missing) != 1 {
+			t.Fatalf("wrong-os must be ineligible: %+v", by["wrong-os"])
+		}
+	}
+}
+
 // TestBuildFailsOnMalformedSkill covers fail-closed view construction: a
 // broken SKILL.md anywhere in a source fails the whole build so the runtime
 // never sees a half-rendered catalog.

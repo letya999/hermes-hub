@@ -14,6 +14,7 @@ type Manifest struct {
 	Description             string
 	License                 string
 	AllowedTools            []string
+	Tags                    []string
 	Platforms               []string
 	Requires                Requires
 	DisableModelInvocation  bool
@@ -68,6 +69,7 @@ func ParseSkillMD(dir string, body []byte, lenient bool) (*Manifest, []string, e
 	var fm struct {
 		Name                   string           `yaml:"name"`
 		Description            string           `yaml:"description"`
+		Tags                   []string         `yaml:"tags"`
 		Platforms              []string         `yaml:"platforms"`
 		DisableModelInvocation bool             `yaml:"disable-model-invocation"`
 		UserInvocable          *bool            `yaml:"user-invocable"`
@@ -75,18 +77,27 @@ func ParseSkillMD(dir string, body []byte, lenient bool) (*Manifest, []string, e
 		AllowedTools           []string         `yaml:"allowed-tools"`
 		AllowedToolsAlt        []string         `yaml:"allowed_tools"`
 		RequiredEnv            []EnvRequirement `yaml:"required_environment_variables"`
-		Metadata               map[string]any   `yaml:"metadata"`
+		AllowImplicit          *bool            `yaml:"allow_implicit_invocation"`
+		Requires               struct {
+			Toolsets   []string `yaml:"toolsets"`
+			Connectors []string `yaml:"connectors"`
+		} `yaml:"requires"`
+		Metadata map[string]any `yaml:"metadata"`
 	}
 	_ = yaml.Unmarshal([]byte(rest[:end]), &fm)
 	m := &Manifest{
 		Name: fm.Name, Description: fm.Description,
-		Platforms:              fm.Platforms,
-		DisableModelInvocation: fm.DisableModelInvocation,
-		UserInvocable:          fm.UserInvocable,
-		ArgumentHint:           fm.ArgumentHint,
-		AllowedTools:           append(append([]string{}, fm.AllowedTools...), fm.AllowedToolsAlt...),
-		Metadata:               fm.Metadata,
+		Tags:                    fm.Tags,
+		Platforms:               fm.Platforms,
+		DisableModelInvocation:  fm.DisableModelInvocation,
+		UserInvocable:           fm.UserInvocable,
+		ArgumentHint:            fm.ArgumentHint,
+		AllowedTools:            append(append([]string{}, fm.AllowedTools...), fm.AllowedToolsAlt...),
+		AllowImplicitInvocation: fm.AllowImplicit,
+		Metadata:                fm.Metadata,
 	}
+	m.Requires.Toolsets = append(m.Requires.Toolsets, fm.Requires.Toolsets...)
+	m.Requires.Connectors = append(m.Requires.Connectors, fm.Requires.Connectors...)
 	m.Requires.Env = append(m.Requires.Env, fm.RequiredEnv...)
 	foldCompat(m)
 	warns := []string{}
