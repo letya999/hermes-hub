@@ -49,7 +49,8 @@ everything entering or leaving the human conversation. Listens
 (delivery targets), `HUB_TOOLHUB_URL` (`toolhub:8090` direct or
 `toolhub-control:8090` via supervisor), `HUB_TELEGRAM_AUTH_ENABLED`,
 `HUB_COMMUNICATION_CONFIG` (`communication.users.yaml` — sibling Telegram
-identities; `TELEGRAM_ALLOWED_USERS` is the infra-owner fallback),
+identities; `TELEGRAM_ALLOWED_USERS` is the bot-level allowlist and must
+contain every owner's numeric id),
 `HUB_MODEL_RELAY_URL` + `model-relay.auth` for a gateway rendered inside its
 own managed space, or `HUB_MODEL_RELAY_ADMINS_FILE` (enrolled
 `model-relay-admins.json`, principal → relay URL + admin bearer) for the
