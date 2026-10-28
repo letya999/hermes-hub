@@ -88,3 +88,28 @@ func TestCodeExecDeclaresSkillLeaseArgument(t *testing.T) {
 	}
 	t.Fatal("code_exec missing from the hub catalog")
 }
+
+// R10.6: skill_manage's git actions ride the same tool — url/ref/path/grant
+// are optional because the non-git actions still dominate the call shape.
+func TestSkillManageDeclaresGitArguments(t *testing.T) {
+	d := HubToolsDefinition()
+	for _, tool := range d.Tools {
+		if tool.Name != "skill_manage" {
+			continue
+		}
+		declared := map[string]bool{}
+		for _, a := range tool.Arguments {
+			declared[a.Name] = true
+		}
+		for _, want := range []string{"url", "ref", "path", "grant"} {
+			if !declared[want] {
+				t.Fatalf("skill_manage arguments lack %q: %+v", want, tool.Arguments)
+			}
+		}
+		if !strings.Contains(tool.Description, "install") {
+			t.Fatalf("skill_manage description hides the git actions: %q", tool.Description)
+		}
+		return
+	}
+	t.Fatal("skill_manage missing from the hub catalog")
+}

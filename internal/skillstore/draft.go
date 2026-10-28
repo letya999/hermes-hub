@@ -82,6 +82,19 @@ func (s *Store) CreateDraft(name string, tree Tree, meta DraftMeta) (*Draft, err
 	return d, nil
 }
 
+// DraftSidecar writes a hub-private file beside a draft's tree. The only
+// admitted name is .origin.json — git-install provenance that must survive
+// draft→publish without ever entering the agent-visible tree.
+func (s *Store) DraftSidecar(id, name string, data []byte) error {
+	if name != ".origin.json" || !draftIDPattern.MatchString(id) || len(data) > 16384 {
+		return fmt.Errorf("%w: draft sidecar", ErrInvalid)
+	}
+	if _, err := os.Stat(s.draftDir(id)); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(s.draftDir(id), name), data, 0o600)
+}
+
 // draftsToday counts drafts created today (draft ids embed the UTC stamp).
 func (s *Store) draftsToday() int {
 	entries, err := os.ReadDir(filepath.Join(s.root, draftsDir))
@@ -180,6 +193,9 @@ func (s *Store) PublishDraft(id, approver string) (string, error) {
 	}
 	if err != nil {
 		return "", err
+	}
+	if sidecar, rerr := os.ReadFile(filepath.Join(s.draftDir(id), ".origin.json")); rerr == nil && d.Meta.Action == "" {
+		_ = os.WriteFile(filepath.Join(s.dir(d.Name), ".origin.json"), sidecar, 0o600)
 	}
 	if err := os.RemoveAll(s.draftDir(id)); err != nil {
 		return "", err

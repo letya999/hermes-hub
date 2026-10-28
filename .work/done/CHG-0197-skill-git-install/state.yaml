@@ -1,0 +1,20 @@
+change: CHG-0197
+issue: 365
+title: M24 #365 S10 — install skills from git repositories
+status: done
+slices:
+  S10.1-parse-source: done
+  S10.2-registry: done
+  S10.3-gitops-execcell: done
+  S10.4-discovery: done
+  S10.5-install-draft: done
+  S10.6-update-check: done
+  S10.7-hubctl: done
+  S10.8-skill-manage: done
+  S10.9-docs: done
+notes:
+  - "ExecCell: hardened argv + skill-source scope + GIT_TOKEN env-only; unit-tested, no live fetch yet (#368 acceptance)."
+  - "catalog hub-agent-tools@5.4.0 for skill_manage install|update|check_updates + url/ref/path/grant args."
+  - "hubctl: install --url [--ref --path --name], update --name|--all, sources list|remove --id; toolhub.auth fallback + GIT_TOKEN env for private repos."
+  - "comm-hub /v1/skill-git: install/update/check_updates/sources/remove_source; grant -> broker ResolveEnv -> GIT_TOKEN."
+  - "discovery: subdir-scoped, depth<=6, <=2000 dirs, convention dirs ranked first; .origin.json carries tree_sha + scan verdict."

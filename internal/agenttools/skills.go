@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -34,6 +35,9 @@ var actionFields = map[string][]string{
 	"restore":        {"action", "name", "reason", "version"},
 	"propose_to_org": {"action", "name", "reason"},
 	"configure":      {"action", "name", "values"},
+	"install":        {"action", "url", "ref", "path", "name", "grant", "reason"},
+	"update":         {"action", "name", "reason"},
+	"check_updates":  {"action"},
 }
 
 func (t *Tools) skillCall(ctx context.Context, name string, r Input) (any, error) {
@@ -254,6 +258,9 @@ func (t *Tools) skillManage(ctx context.Context, arguments map[string]any) (any,
 	}
 	name := strings.TrimSpace(argString(arguments, "name"))
 	content := argString(arguments, "content")
+	if action == "install" || action == "update" || action == "check_updates" {
+		return t.skillGit(ctx, action, arguments)
+	}
 	if action == "propose_to_org" {
 		return t.proposeToOrg(ctx, name, arguments)
 	}
@@ -342,6 +349,64 @@ func (t *Tools) skillManage(ctx context.Context, arguments map[string]any) (any,
 		"scan":        map[string]any{"verdict": d.Meta.ScanVerdict, "findings": d.Meta.ScanFindings},
 		"link_sent":   link != "",
 		"confirm_url": link,
+	}, nil
+}
+
+// skillGit relays a git-source action to the gateway's /v1/skill-git — the
+// agent never runs git itself (R10.3); an install/update draft gets the
+// same protected approval card as every other write.
+func (t *Tools) skillGit(ctx context.Context, action string, arguments map[string]any) (any, error) {
+	payload := map[string]string{"action": action}
+	for _, key := range []string{"url", "ref", "path", "name", "grant"} {
+		if v := argString(arguments, key); v != "" {
+			payload[key] = v
+		}
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(t.CommunicationURL, "/")+"/v1/skill-git", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Authorization", "Bearer "+t.CommunicationAuth)
+	request.Header.Set("X-Hub-Principal", os.Getenv("HUB_PRINCIPAL_ID"))
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode/100 != 2 {
+		slim, _ := io.ReadAll(io.LimitReader(response.Body, 4<<10))
+		return nil, fmt.Errorf("skill-git %s: %s: %s", action, response.Status, strings.TrimSpace(string(slim)))
+	}
+	var out struct {
+		DraftID    string `json:"draft_id"`
+		Name       string `json:"name"`
+		ForcePush  bool   `json:"force_push"`
+		Reports    []any  `json:"reports"`
+		Candidates []any  `json:"candidates"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	if action == "check_updates" {
+		return map[string]any{"reports": out.Reports}, nil
+	}
+	if out.DraftID == "" {
+		return map[string]any{"candidates": out.Candidates}, nil
+	}
+	link := t.skillDraftLink(ctx, map[string]string{
+		"draft_id": out.DraftID, "skill_name": out.Name, "scope": "user",
+		"summary":    argString(arguments, "reason"),
+		"provenance": "git " + argString(arguments, "url"),
+	})
+	return map[string]any{
+		"draft_id": out.DraftID, "name": out.Name, "state": "draft",
+		"force_push": out.ForcePush,
+		"link_sent":  link != "", "confirm_url": link,
 	}, nil
 }
 

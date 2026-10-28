@@ -8,9 +8,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
+
+// skillSourceIDPattern is the only workspace payload a skill-source cell may
+// bind: one <16-hex>.git mirror directory under the principal's .sources.
+var skillSourceIDPattern = regexp.MustCompile(`^[0-9a-f]{16}\.git$`)
 
 // cellWorkspaceBind resolves the request's workspace into the host-side bind
 // source; the empty string means the cell mounts nothing at /work.
@@ -72,6 +77,22 @@ func (c *genericController) cellWorkspaceBind(req api.CliExecRequest) (hostPath 
 			return "", false, fmt.Errorf("%w: principal workspace is missing", api.ErrIsolation)
 		}
 		return api.DockerBindSource(path), access == "rw", nil
+	case "skill-source":
+		if req.Workspace.Access != "rw" {
+			return "", false, fmt.Errorf("%w: skill-source access", api.ErrInvalid)
+		}
+		if !skillSourceIDPattern.MatchString(req.Workspace.Path) {
+			return "", false, fmt.Errorf("%w: skill-source workspace id", api.ErrInvalid)
+		}
+		path := filepath.Join(cfg.SpacesRoot, req.Principal, "skills", ".sources", req.Workspace.Path)
+		if !api.ContainedPath(filepath.Join(cfg.SpacesRoot, req.Principal, "skills", ".sources"), path) || api.NoSymlinkPath(path) != nil {
+			return "", false, fmt.Errorf("%w: skill-source workspace path", api.ErrIsolation)
+		}
+		info, err := os.Stat(path)
+		if err != nil || !info.IsDir() {
+			return "", false, fmt.Errorf("%w: skill-source mirror is missing", api.ErrIsolation)
+		}
+		return api.DockerBindSource(path), true, nil
 	default:
 		return "", false, fmt.Errorf("%w: unknown workspace scope %q", api.ErrInvalid, scope)
 	}

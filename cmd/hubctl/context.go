@@ -14,6 +14,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/contextlife"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/skillstore"
+	"github.com/letya999/hermes-hub/internal/skillstore/gitsource"
 	"github.com/letya999/hermes-hub/internal/skillstore/scan"
 	"github.com/letya999/hermes-hub/internal/stack"
 )
@@ -104,9 +105,9 @@ func runMemory(_ context.Context, args []string) error {
 	}
 }
 
-func runSkill(_ context.Context, args []string) error {
+func runSkill(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("skill requires list, show, install, drafts, approve, reject, rollback, archive, restore or promote")
+		return fmt.Errorf("skill requires list, show, install, update, sources, drafts, approve, reject, rollback, archive, restore or promote")
 	}
 	sub := args[0]
 	f := flag.NewFlagSet("skill", flag.ContinueOnError)
@@ -116,7 +117,11 @@ func runSkill(_ context.Context, args []string) error {
 	id := f.String("id", "", "draft id")
 	from := f.String("from-file", "", "SKILL.md path")
 	source := f.String("source", "", "source URL")
+	url := f.String("url", "", "git repository URL")
+	ref := f.String("ref", "", "git ref override")
+	path := f.String("path", "", "skill subtree inside the repository")
 	to := f.String("to", "", "target revision for rollback")
+	all := f.Bool("all", false, "apply the action to every tracked skill")
 	consent := f.Bool("consent", false, "owner consent to publish; without it the install lands as a draft")
 	if err := f.Parse(args[1:]); err != nil {
 		return err
@@ -168,6 +173,26 @@ func runSkill(_ context.Context, args []string) error {
 			Revision string `json:"revision"`
 		}{m, rev})
 	case "install":
+		if *url != "" {
+			// Git path: the bounded cell fetches; the result is a scanned
+			// draft (or discovery candidates) — never a direct publish.
+			st, err := skillstore.Open(filepath.Join(abs, "skills"), skillstore.ScopeUser)
+			if err != nil {
+				return err
+			}
+			cell, err := skillGitCell(abs, *profile)
+			if err != nil {
+				return err
+			}
+			out, err := gitsource.Install(ctx, st, gitsource.InstallOptions{
+				URL: *url, Ref: *ref, Path: *path, Name: *name,
+				Meta: skillstore.DraftMeta{Author: "operator", Reason: "git install " + *url},
+			}, cell)
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(os.Stdout).Encode(out)
+		}
 		if *name == "" || *from == "" {
 			return fmt.Errorf("skill install requires --name and --from-file")
 		}
@@ -200,6 +225,43 @@ func runSkill(_ context.Context, args []string) error {
 			Revision string `json:"revision"`
 			Redacted int    `json:"redacted"`
 		}{*name, rev, nredact})
+	case "update":
+		if *name == "" && !*all {
+			return fmt.Errorf("skill update requires --name or --all")
+		}
+		st, err := skillstore.Open(filepath.Join(abs, "skills"), skillstore.ScopeUser)
+		if err != nil {
+			return err
+		}
+		cell, err := skillGitCell(abs, *profile)
+		if err != nil {
+			return err
+		}
+		if *all {
+			var results []gitsource.UpdateResult
+			names, err := st.Names()
+			if err != nil {
+				return err
+			}
+			for _, n := range names {
+				if _, err := gitsource.ReadOrigin(st, n); err != nil {
+					continue
+				}
+				out, err := gitsource.Update(ctx, st, n, cell,
+					skillstore.DraftMeta{Author: "operator", Reason: "git update " + n})
+				if err != nil {
+					return err
+				}
+				results = append(results, out)
+			}
+			return json.NewEncoder(os.Stdout).Encode(results)
+		}
+		out, err := gitsource.Update(ctx, st, *name, cell,
+			skillstore.DraftMeta{Author: "operator", Reason: "git update " + *name})
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(out)
 	case "archive":
 		if *name == "" {
 			return fmt.Errorf("skill archive requires --name")
@@ -218,6 +280,49 @@ func runSkill(_ context.Context, args []string) error {
 			return err
 		}
 		return st.Restore(*name)
+	case "sources":
+		if len(args) < 2 {
+			return fmt.Errorf("skill sources requires list or remove")
+		}
+		if err := f.Parse(args[2:]); err != nil {
+			return err
+		}
+		// The leading positional ("list"/"remove") stalls flag parsing, so
+		// --dir resolves only now — recompute the deployment path.
+		if *dir == "" {
+			*dir = filepath.Join("spaces", *profile)
+		}
+		if abs, err = filepath.Abs(*dir); err != nil {
+			return err
+		}
+		st, err := skillstore.Open(filepath.Join(abs, "skills"), skillstore.ScopeUser)
+		if err != nil {
+			return err
+		}
+		switch args[1] {
+		case "list":
+			out, err := gitsource.Sources(st)
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(os.Stdout).Encode(out)
+		case "remove":
+			var affected []string
+			if infos, _ := gitsource.Sources(st); infos != nil {
+				for _, info := range infos {
+					if info.ID == *id {
+						affected = info.Skills
+					}
+				}
+			}
+			removed, err := gitsource.RemoveSource(st, *id)
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{"removed": removed, "skills": affected})
+		default:
+			return fmt.Errorf("unknown skill sources command %q", args[1])
+		}
 	case "drafts":
 		st, err := skillstore.Open(filepath.Join(abs, "skills"), skillstore.ScopeUser)
 		if err != nil {

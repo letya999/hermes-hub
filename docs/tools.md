@@ -114,7 +114,16 @@ Grouped by capability resource (internal/agenttools/capability.go):
   an owner/admin role at apply time (`hubctl skill promote`). The exception is
   `configure`: it writes the owner's private `.state/settings` (keys ⊆ the
   skill's declared `metadata.hermes.config`) — not a draft, since it never
-  touches the skill tree.
+  touches the skill tree. Three more actions import rather than author:
+  `install` takes an https GitHub/GitLab `url` (optional `ref`, `path`,
+  `name`, `grant` — a broker credential name for private repos, never a
+  token in the URL); a bare repository URL returns `candidates` of
+  discovered `SKILL.md` subtrees to retry with `path` instead of guessing.
+  `update` refetches one installed skill's pinned ref (`force_push:true`
+  flags rewritten upstream history) and `check_updates` lists pending
+  upstream moves without importing. All three run inside a bounded git cell
+  (https egress to the repo host only); `install`/`update` land as drafts
+  with `.origin.json` provenance and still need the owner's card.
 - **code_exec `skill` arg + credentials**: `skill()` reports
   `readiness.setup_needed` with a `form_url` to the protected credential form
   when declared `requires.credentials` lack stored values; a hard requirement

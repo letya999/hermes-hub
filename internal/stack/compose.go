@@ -577,6 +577,10 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		if supervisorURL == "" {
 			gatewayEnvFiles = append(gatewayEnvFiles, M{"path": filepath.ToSlash(filepath.Join(dir, "runtime.auth")), "format": "raw"})
 			gatewayEnvironment["HUB_TOOLHUB_URL"] = "http://toolhub:8090"
+			// The skillgit ExecCell posts to the controller /cli-exec derived
+			// from this endpoint; toolhub.auth carries the admission token.
+			gatewayEnvFiles = append(gatewayEnvFiles, M{"path": filepath.ToSlash(filepath.Join(dir, "toolhub.auth")), "format": "raw"})
+			gatewayEnvironment["HUB_TOOLHIVE_ADMISSION_ENDPOINT"] = "http://workload-controller:8545/admit"
 		} else {
 			gatewayEnvironment["HUB_SUPERVISOR_AUTH"] = "${HUB_SUPERVISOR_AUTH:?set HUB_SUPERVISOR_AUTH or provision supervisor.auth for this stack}"
 			gatewayEnvironment["HUB_TOOLHUB_URL"] = "http://toolhub-control:8090"
@@ -586,6 +590,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// stays writable for skill-scoped credential forms (R8.2).
 		gatewayEnvironment["HUB_SKILLS_EFFECTIVE"] = "/skills-effective"
 		gatewayEnvironment["HUB_SKILLS_STORE"] = "/skills-store"
+		gatewayEnvironment["HUB_GITLAB_HOST"] = s.GitLabHost
 		gateway["env_file"] = gatewayEnvFiles
 		gateway["environment"] = gatewayEnvironment
 		gateway["networks"] = sharedNetworks
@@ -804,6 +809,11 @@ func cliControllerSection(s Settings, dir string) api.CLIControllerConfig {
 	// and required for package managers that fetch toolchains from releases
 	// (uv managed-python, gh release download).
 	egress := []string{"127.0.0.1", "github.com", "api.github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com", "gitlab.com", "bitbucket.org", "codeberg.org"}
+	gitHosts := []string{"github.com", "gitlab.com"}
+	if s.GitLabHost != "" && s.GitLabHost != "gitlab.com" {
+		egress = append(egress, s.GitLabHost)
+		gitHosts = append(gitHosts, s.GitLabHost)
+	}
 	for _, registry := range s.CLIRegistries {
 		egress = append(egress, cliRegistryHosts[registry]...)
 	}
@@ -811,6 +821,13 @@ func cliControllerSection(s Settings, dir string) api.CLIControllerConfig {
 	approved := make([]api.CLIApproval, 0, len(definitions))
 	for _, definition := range definitions {
 		approved = append(approved, api.CLIApproval{DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, Command: definition.Source.Command, Execution: definition.Execution})
+	}
+	// The skillgit plan is admitted as exact tuples — one per git host the
+	// render knows — so git never reaches UserCommands, where an owner spec
+	// could run it without the hardened argv the gitsource runner emits.
+	for _, host := range gitHosts {
+		approved = append(approved, api.CLIApproval{DefinitionID: "skillgit", DefinitionVersion: "1.0.0", Command: "git",
+			Execution: api.ExecutionPolicy{TimeoutSeconds: 60, OutputBytes: 256 << 10, CPUMillis: 1000, MemoryMiB: 512, MaxPIDs: 64, Egress: []string{host}}})
 	}
 	return api.CLIControllerConfig{
 		AllowPackageInstall: len(s.CLIRegistries) > 0,

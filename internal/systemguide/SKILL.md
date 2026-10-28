@@ -191,6 +191,18 @@ settings: `skill()` surfaces effective values (stored-or-default) and
 `skill_manage action=configure` writes `.state/settings` — private state,
 not a draft.
 
+Git installs: `skill_manage action=install` takes an https GitHub/GitLab
+repository `url` (optional `ref`, `path`, `name`; `grant` names a broker
+credential for private repos — never a token in the URL). The hub fetches
+through a bounded cell into a per-owner mirror, scans the export and lands
+a draft with `.origin.json` provenance — an approval card still gates
+publication. A bare repository URL returns `candidates` (discovered
+`SKILL.md` subtrees) instead of guessing; retry with `path`.
+`action=update` re-fetches one installed skill's tracked commit —
+`force_push: true` means upstream history rewound — and `check_updates`
+reports pending updates without importing. Source removal deletes the
+mirror and drops update tracking.
+
 ## Status and evidence
 
 - Operation `done`: that requested action completed.

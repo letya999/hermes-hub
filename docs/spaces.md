@@ -122,6 +122,13 @@ mcp:
   executors expose it as the `skills:` read-only root), feature-gated plugins (`generated/plugins/<name>` mounts read-only
   into `/opt/hermes/plugins/` — `source "bundled"`, kind "backend",
   auto-loads, agent-untouchable).
+  Under the user store, `skills/.sources/<id>.git` are the per-owner bare
+  git mirrors that pin each installed-from-git skill to a commit (source id
+  = sha256(repo-url)[:16]); a published skill's `.origin.json` records
+  `{source_id,url,ref,commit,path,tree_sha,scan,fetched_at}` as hub-private provenance —
+  it never enters the effective view or a draft tree. `hubctl skill
+  sources remove` deletes a mirror and drops update tracking for the skills
+  it fed.
 - `connections/` — connector materialization output.
 
 ## State (runtime-writable)

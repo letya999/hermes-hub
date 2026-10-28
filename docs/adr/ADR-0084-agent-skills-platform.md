@@ -1,6 +1,6 @@
 ---
 description: Agent skills are a hub-owned capability — agentskills.io format, per-owner stores (spaces/<user>/skills, <org>/skills, config/skills), read-only effective view, draft-first writes, grant-only authority, default-deny natives, brokered secrets, draft-first evolution, pinned git installs.
-last_verified: 2026-10-27
+last_verified: 2026-10-28
 ---
 # ADR-0084: Agent skills platform — hub-owned stores, effective view, drafts, grants, curated evolution
 
@@ -144,6 +144,25 @@ the boundary.
   lease from the ro `/skills-store` mount intersected with the effective
   index's declared names; ineligible skills and absent stores lease
   nothing, and revocation is a file delete.
+- **R10 mechanism (CHG-0197).** Git execution lands in the bounded
+  `/cli-exec` cell as the immutable plan `skillgit@1.0.0` — `git` stays out
+  of `user_commands`; the controller admits exact tuples per allowed host
+  (github.com, gitlab.com, `gitlab_host`). The cell's single rw workspace
+  is the owner mirror `skills/.sources/<id>.git` behind the `skill-source`
+  scope; egress is exactly the repo host; fetch is blobless
+  (`--depth=1 --filter=blob:none`) and export is `git archive` into the
+  bound dir — no working tree ever exists. Credentials ride `GIT_TOKEN`
+  env plus a `credential.helper` shell function inside the cell — broker
+  `grant` names lease it gateway-side, the operator path exports it
+  directly; the token never reaches argv, the remote URL, `.git/config`,
+  logs or `.origin.json`. Discovery prefers names-only `ls-tree` so a
+  multi-skill repository returns candidates instead of importing blobs
+  blindly. Discovery honors a repo subtree, caps at 2000 directories and
+  depth 6, skips `.git`/`node_modules`, and ranks convention dirs
+  (`.agents/skills`, `skills`, `.claude/skills`) first. Provenance is the
+  hub-owned sidecar `.origin.json`
+  (`{source_id,url,ref,commit,path,tree_sha,scan,fetched_at}`) kept out of
+  draft trees — agent-authored content cannot forge origin.
 
 ## Invariants
 

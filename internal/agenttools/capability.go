@@ -33,7 +33,7 @@ func HubToolsDefinition() api.ToolDefinition {
 	return api.ToolDefinition{
 		Schema:       api.SchemaVersion,
 		DefinitionID: HubToolsDefinitionID,
-		Version:      "5.3.0",
+		Version:      "5.4.0",
 		Transport:    api.AgentTools,
 		Source:       api.DefinitionSource{},
 		Workload: api.WorkloadPolicy{
@@ -151,8 +151,8 @@ func HubToolsDefinition() api.ToolDefinition {
 			tool("skills_search", "skills.read", "Search the eligible skill catalog by name and description; returns name, source and short description.", api.ReadEffect, use("read", "skills"), str("query"), api.CLIArgument{Name: "limit", Type: "integer"}, opt("source")),
 			tool("skills_list", "skills.read", "List eligible skills in pages of 20 with source and description.", api.ReadEffect, use("read", "skills"), opt("source"), api.CLIArgument{Name: "offset", Type: "integer"}),
 			tool("skill_view", "skills.read", "Inspect one skill: file listing or bounded file text; version reads a retained revision.", api.ReadEffect, use("read", "skills"), str("name"), opt("path"), opt("version")),
-			tool("skill_manage", "skills_manage.manage", "Propose a skill change: create/patch/edit/write_file/remove_file/delete/archive/restore/propose_to_org. Every action returns a draft with diff, lint and scan — nothing goes live without the owner's approval card.", api.WriteEffect, use("manage", "skills_manage"),
-				str("action"), str("name"), str("reason"), opt("content"), opt("category"), opt("old_string"), opt("new_string"), opt("file_path"), opt("base_revision"), opt("absorbed_into"), opt("version")),
+			tool("skill_manage", "skills_manage.manage", "Propose a skill change: create/patch/edit/write_file/remove_file/delete/archive/restore/propose_to_org, install/update from a GitHub or GitLab URL, check_updates. Every mutating action returns a draft with diff, lint and scan — nothing goes live without the owner's approval card.", api.WriteEffect, use("manage", "skills_manage"),
+				str("action"), str("name"), str("reason"), opt("content"), opt("category"), opt("old_string"), opt("new_string"), opt("file_path"), opt("base_revision"), opt("absorbed_into"), opt("version"), opt("url"), opt("ref"), opt("path"), opt("grant")),
 		},
 	}
 }

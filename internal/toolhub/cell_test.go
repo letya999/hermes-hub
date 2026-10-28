@@ -1117,6 +1117,58 @@ func TestCellWorkspacePrincipalManagedLayout(t *testing.T) {
 	}
 }
 
+// R10.3/R10.4: a skill-source cell binds exactly one owner mirror —
+// <principal>/skills/.sources/<id>.git — read-write; the id is a fixed
+// 16-hex source identity so no other store path is reachable.
+func TestCellSkillSourceBind(t *testing.T) {
+	c, _ := cellFixture(t, nil)
+	root := t.TempDir()
+	mirror := filepath.Join(root, "alice", "skills", ".sources", "97393e7e6b5ab8df.git")
+	if err := os.MkdirAll(mirror, 0755); err != nil {
+		t.Fatal(err)
+	}
+	c.config.CLI.SpacesRoot = root
+	req := api.CliExecRequest{Principal: "alice", Workspace: api.CliWorkspace{Scope: "skill-source", Path: "97393e7e6b5ab8df.git", Access: "rw"}}
+	got, rw, err := c.cellWorkspaceBind(req)
+	if err != nil || !rw {
+		t.Fatalf("skill-source bind: %v rw=%v", err, rw)
+	}
+	if !strings.HasSuffix(filepath.ToSlash(got), "alice/skills/.sources/97393e7e6b5ab8df.git") {
+		t.Fatalf("mirror bind resolved to %q", got)
+	}
+}
+
+func TestCellSkillSourceBindRejects(t *testing.T) {
+	c, _ := cellFixture(t, nil)
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "alice", "skills", ".sources", "97393e7e6b5ab8df.git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	c.config.CLI.SpacesRoot = root
+	bad := func(path, access string) {
+		t.Helper()
+		req := api.CliExecRequest{Principal: "alice", Workspace: api.CliWorkspace{Scope: "skill-source", Path: path, Access: access}}
+		if _, _, err := c.cellWorkspaceBind(req); err == nil {
+			t.Fatalf("path %q access %q must be rejected", path, access)
+		}
+	}
+	bad("../etc.git", "rw")             // traversal outside .sources
+	bad("not-a-source-id.git", "rw")    // not a source id
+	bad("97393e7e6b5ab8df.git/x", "rw") // below the mirror root
+	bad("97393e7e6b5ab8df.git", "ro")   // mirrors are fetch targets: rw only
+	bad("aaaaaaaaaaaaaaaa.git", "rw")   // valid shape, missing dir
+	c.config.CLI.SpacesRoot = ""
+	bad("97393e7e6b5ab8df.git", "rw") // no spaces root
+	// A symlinked mirror resolves inside Stat but binds outside .sources.
+	c.config.CLI.SpacesRoot = root
+	outside := t.TempDir()
+	link := filepath.Join(root, "alice", "skills", ".sources", "bbbbbbbbbbbbbbbb.git")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	bad("bbbbbbbbbbbbbbbb.git", "rw")
+}
+
 // R7.2: a principal-scoped cell mounts the principal's effective skills view
 // read-only at /skills; the mount must satisfy the cell profile check and
 // never appear for cells without a rendered view or a principal scope.

@@ -530,6 +530,32 @@ communication-hub + toolhub. Rollback: drain, `--execution-mode static`
 without URL (+`--native-cron unmigrated` if needed), keep same spool/home;
 do not reactivate native definitions already migrated to hub occurrences.
 
+## Skill git installs
+
+`hubctl skill install --dir spaces/<u> --url <https github/gitlab url>`
+fetches through the controller's bounded `/cli-exec` cell (plan
+`skillgit@1.0.0`, `git` on the cli-tools image — never an owner command;
+egress is exactly the repository host, hooks/protocol.file/submodules/LFS
+are off, fetch is `--depth=1 --filter=blob:none` into the per-owner bare
+mirror `skills/.sources/<id>.git`). The result is a scanned **draft** —
+approve it with `hubctl skill approve --id <d>` or the owner card. A repo
+URL without `/tree/<ref>/<path>` returns `candidates` instead of picking
+one; retry with `--path`. `--ref` pins a branch/tag to its resolved commit,
+`--name` overrides the draft name. `hubctl skill update --name <s>` (or
+`--all`) refetches tracked skills into new drafts and reports
+`force_push:true` on rewritten upstream history. `hubctl skill sources
+list` shows mirrors and the skills each feeds; `sources remove --id <id>`
+deletes the mirror — installed skills keep working but lose update
+tracking.
+
+Sources are https GitHub/GitLab only; a self-hosted GitLab needs
+`gitlab_host: <host>` in `workspace.yaml` — render adds its egress and the
+third `skillgit` approval tuple, then `hubctl up`.
+Authentication: agents name a broker credential with `grant` (the gateway
+leases it into `GIT_TOKEN` for the cell); the operator path takes
+`GIT_TOKEN` from the environment. Tokens never enter URLs, argv, git
+config, logs or `.origin.json`.
+
 ## SSH capability operations
 
 `ssh` entry in `workspace.yaml` `tools:`; `ssh_write`/`ssh_shell`/`ssh_tunnel`

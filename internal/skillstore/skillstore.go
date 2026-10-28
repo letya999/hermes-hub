@@ -203,8 +203,8 @@ func loadTree(dir string) (Tree, error) {
 		if rel == "." {
 			return nil
 		}
-		if d.Name() == ".draft.json" || d.Name() == ".exec" {
-			return nil // draft metadata is hub-private
+		if d.Name() == ".draft.json" || d.Name() == ".exec" || d.Name() == ".origin.json" {
+			return nil // draft metadata and git provenance are hub-private
 		}
 		if d.IsDir() {
 			return nil

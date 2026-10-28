@@ -2299,5 +2299,18 @@
     "prerequisites": "Synthetic skill store + communication card fixture; no live model or channel needed",
     "level": "contract",
     "cleanup": "Remove only the synthetic skill trees and drafts created by the test"
+},
+  {
+    "id": "E2E-178",
+    "surface": "hub",
+    "name": "skill_manage git actions",
+    "title": "skill_manage install|update|check_updates (git relay)",
+    "action": "Install/update a skill from a git URL and check for upstream moves through the governed relay.",
+    "expected": "Git never runs in the runtime — actions relay to the gateway's bounded cell; install/update land as drafts with .origin.json provenance and approval cards; a bare repo URL returns candidates; check_updates reports without importing.",
+    "package": "agenttools",
+    "test": "TestSkillManageInstallRelaysToSkillGit",
+    "prerequisites": "Synthetic skill store + stubbed /v1/skill-git + /v1/skill-drafts fixtures; no live git or channel needed",
+    "level": "contract",
+    "cleanup": "Remove only the synthetic skill trees and drafts created by the test"
 }
 ]
