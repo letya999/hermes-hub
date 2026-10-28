@@ -1,0 +1,31 @@
+schema: 1
+change: CHG-0190
+title: browser sidecar idle lifecycle
+status: done
+branch: feat/m26-lean-images
+updated: 2026-10-28
+phase: done
+adr: ADR-0083
+spec: SPEC-0083
+requirements: [R1.1, R1.2, R2.1, R2.2, R2.3, R3.1, R3.2, R3.3, R3.4, R3.5, R4.1]
+depends_on: [CHG-0186]
+github_milestone: M26 — Lean Role Images
+github_issue: null
+design_status: accepted
+implementation_status: done
+slices:
+  S1-compose-limits: done
+  S2-auto-start: done
+  S3-idle-reaper: done
+  S4-config-flag: done
+  S5-docs: done
+validation:
+  documents: done
+  just_check: pass (coverage 86.17%)
+  docker_check: unavailable_no_docker_instruction
+  live_acceptance: deferred_to_ci_no_docker_instruction
+evidence:
+  - "compose renders cpus 2.0 / mem_limit 3g / pids_limit 256 on browser-<user>, managed + unmanaged (TestBrowserSidecarResourceLimits)"
+  - "spawn issues docker start <project>-browser-<user>-1 for browser and meet spaces; failed start fails the spawn and reclaims the runtime (TestBrowserSpaceSpawnStartsSidecar, TestBrowserSpaceSpawnFailsWhenSidecarStartFails)"
+  - "sweep stops an idle sidecar past --browser-idle-ttl (15m default), keeps it under a live spawned or compose runtime, clears a pending stop on runtime return, never touches foreign or other-env projects (TestReapIdleBrowserSidecars, TestSpawnedRuntimeKeepsSidecarAwake, TestSweepReapsIdleSidecar)"
+  - "flag default + parse + Config wiring covered (TestDefaultBrowserIdleTTLIsFifteenMinutes, TestSupervisorFlagDefaults)"

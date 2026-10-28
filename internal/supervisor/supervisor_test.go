@@ -31,6 +31,18 @@ func TestDefaultWarmTTLIsThirtyMinutes(t *testing.T) {
 	}
 }
 
+// SPEC-0083 R3.1: sidecar idle grace defaults to 15 minutes — shorter than
+// the runtime warm TTL because an idle browser stack costs real memory.
+func TestDefaultBrowserIdleTTLIsFifteenMinutes(t *testing.T) {
+	m, err := New(Config{SpacesRoot: t.TempDir(), RuntimeAuth: "secret", Image: "hermes:test", Command: func(context.Context, ...string) ([]byte, error) { return nil, nil }, Probe: func(context.Context, string, string) error { return nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.cfg.BrowserIdleTTL != 15*time.Minute {
+		t.Fatalf("default browser idle TTL=%s, want 15m", m.cfg.BrowserIdleTTL)
+	}
+}
+
 // The runtime memory default must cover Hermes plus the lazy browser stack:
 // 2g leaves headroom for Chromium without changing warm-retention semantics.
 func TestDefaultMemoryIsTwoGigabytes(t *testing.T) {

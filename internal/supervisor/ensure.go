@@ -308,6 +308,20 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 		}
 		return Runtime{}, fmt.Errorf("start runtime: %w: %s", runErr, firstLine(string(out)))
 	}
+	if managedSettings.Has("browser") || managedSettings.Has("meet") {
+		// SPEC-0083 R2: the sidecar sleeps between uses; `docker start` is
+		// idempotent — running is a no-op, a slept one resumes before the
+		// runtime probes readiness. A failed start is the same severity class
+		// as a missing space network: fail the spawn and reclaim.
+		if err := m.ensureBrowserSidecar(ctx, binding.UserID); err != nil {
+			cleanupErr := m.removeOwnedRuntime(ctx, logical.Runtime)
+			m.markDegraded(key)
+			if cleanupErr == nil || errors.Is(cleanupErr, ErrRuntimeMissing) {
+				m.releaseSlot(key)
+			}
+			return Runtime{}, err
+		}
+	}
 	if !managed && (managedSettings.Has("browser") || managedSettings.Has("meet")) {
 		// The browser sidecar answers as browser-<user> on the space's compose
 		// default network; spawned runtimes join the shared net only, so

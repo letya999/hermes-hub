@@ -286,6 +286,12 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		browserService["image"] = "hermes-hub:0.4.0-" + s.Environment + "-browser"
 		browserService["build"] = imageBuild(s.Environment + "-browser")
 		browserService["shm_size"] = "1gb"
+		// SPEC-0083 R1: bounded like toolhub — Chromium under Xvfb plus two
+		// pw-mcp processes plus the meet NodeServer is the heaviest per-space
+		// workload; the 1gb shm counts against the memory limit.
+		browserService["cpus"] = "2.0"
+		browserService["mem_limit"] = "3g"
+		browserService["pids_limit"] = 256
 		browserService["ports"] = []string{fmt.Sprintf("127.0.0.1:%d:6080", s.BrowserPort)}
 		browserService["environment"] = M{"HUB_MEET": fmt.Sprint(s.Has("meet"))}
 		browserVolumes := []any{

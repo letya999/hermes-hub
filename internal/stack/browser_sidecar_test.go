@@ -260,6 +260,36 @@ func TestRenderMaterializesBrowserSecrets(t *testing.T) {
 	}
 }
 
+// SPEC-0083 R1: the sidecar is the heaviest per-space workload — it carries
+// an explicit cpu/memory/pids ceiling like toolhub, so one runaway Chromium
+// cannot starve the host or its neighbours.
+func TestBrowserSidecarResourceLimits(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		s    Settings
+	}{
+		{"unmanaged", Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Model: "test", ModelURL: "http://model.invalid/v1", Tools: testTools("browser"), Ingress: testIngress("browser")}},
+		{"managed", Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Model: "test", ModelURL: "http://model-relay:8318/v1", CapabilityMode: "managed", CapabilityProfileID: "managed-dev", CapabilityGeneration: 1, Tools: testTools("browser"), Ingress: testIngress("browser")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			services := Compose(tc.s, t.TempDir(), t.TempDir())["services"].(M)
+			sidecar, ok := services["browser-"+tc.s.User].(M)
+			if !ok {
+				t.Fatalf("browser sidecar missing: %#v", services)
+			}
+			if sidecar["cpus"] != "2.0" {
+				t.Fatalf("sidecar must cap cpu: %v", sidecar["cpus"])
+			}
+			if sidecar["mem_limit"] != "3g" {
+				t.Fatalf("sidecar must cap memory (shm counts against it): %v", sidecar["mem_limit"])
+			}
+			if sidecar["pids_limit"] != 256 {
+				t.Fatalf("sidecar must cap pids: %v", sidecar["pids_limit"])
+			}
+		})
+	}
+}
+
 // Managed spaces reach the sidecar through the private agent network — the
 // same per-space isolation the spawned runtime gets (SPEC-0082 R4.2).
 func TestManagedBrowserSidecarOnAgentNetwork(t *testing.T) {

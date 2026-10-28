@@ -407,6 +407,19 @@ repeat the Dockerfile per service. CI's `image` job publishes all four
 role tags and fails the build when `devcheck image-budget` finds a role
 over its SPEC-0082 size ceiling or carrying a forbidden artifact.
 
+The browser sidecar is a warm resource, not resident infrastructure
+(SPEC-0083): capped at `cpus 2.0 / mem_limit 3g / pids_limit 256` (its 1 GB
+shm counts against the memory limit), it sleeps once its space has no live
+runtime — spawned or a compose `hermes-runtime` — for
+`hub-supervisor -browser-idle-ttl` (default 15m). `docker stop` is a
+graceful SIGTERM so Chromium flushes `connections/browser`; `unless-stopped`
+honours the stop and the next spawn's `docker start` (issued by `Ensure` for
+browser/meet spaces before readiness) revives it transparently — profile,
+cookies and logins survive. `hubctl up` re-raises it as usual. Expected
+noise: the runtime's container healthcheck probes CDP whenever the browser
+marker is set, so the runtime shows `unhealthy` while its sidecar is
+asleep or restarting — transient, clears on wake.
+
 Entry points (`just`, `hubctl build`/`up`) force `DOCKER_BUILDKIT=1`,
 `COMPOSE_DOCKER_CLI_BUILD=1`, `COMPOSE_BAKE=true`; `hubctl` prunes
 retag-orphans before/after and caps builder cache at 8 GB.
