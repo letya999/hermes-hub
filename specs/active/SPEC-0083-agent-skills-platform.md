@@ -1,7 +1,9 @@
 # SPEC-0083: Agent skills platform (M24)
 
 Frozen: 2026-10-27. Implements GitHub milestone 25 "M24 — Agent Skills
-Platform", issues #356–#368 (M24.1–M24.13). Decision:
+Platform", issues #356–#368 (M24.1–M24.13). Deferred 2026-10-28: #366
+(M24.11 self-evolution, R11) is out of the MVP scope — removed from the
+GitHub milestone; R11/A11 stay here for the follow-up milestone. Decision:
 [ADR-0084](../../docs/adr/ADR-0084-agent-skills-platform.md). Supersedes the
 SPEC-0041 CP-07 "Skills" row and the skills clause of SPEC-0042 (notes
 appended to both). Issue bodies name this record SPEC-0082/ADR-0083; M26
@@ -201,7 +203,7 @@ took those numbers first — this is the same document under free numbers.
 - R10.7: `hubctl skill sources list|remove`; removal deletes the mirror and
   drops update tracking with a warning.
 
-### R11 — self-evolving skills (M24.11, #366)
+### R11 — self-evolving skills (M24.11, #366) — DEFERRED post-MVP
 
 - R11.1: Usage events (activation, resource reads, run outcome, corrections)
   are recorded by ToolHub — unforgeable, no public write endpoint;
@@ -264,7 +266,7 @@ took those numbers first — this is the same document under free numbers.
 | A8 | R8.* | Canary test: secret never in env/results/logs/audit; lease scoped to (principal, skill, call); setup-needed flow; revocation; settings injection. |
 | A9 | R9.* | Profile init/sync-members/apply/diff on fixtures; layered SOUL order; org-ceiling rejection; legacy members unchanged. |
 | A10 | R10.* | URL validation rejects non-HTTPS/userinfo/redirects; pinned-commit install + origin record; multi-skill selection; canary token absent from disk/config/logs; diff draft + force-push flag; no `.git`/`.origin.json` in agent view. |
-| A11 | R11.* | Trigger/idle rules; one-change + view-before-patch; evidence/exclusion classes; tainted-draft path; stale/archive/merge; auto mode boundary; client cannot write usage events. |
+| A11 | R11.* | DEFERRED with #366 — post-MVP. Trigger/idle rules; one-change + view-before-patch; evidence/exclusion classes; tainted-draft path; stale/archive/merge; auto mode boundary; client cannot write usage events. |
 | A12 | R12.* | Lint rules red→green; trigger split stability; grader requires evidence; stats shape; hub skills pass lint. |
 | A13 | all | Live acceptance per #368: org + 2 members + personal space, managed and unmanaged, recorded in `state.yaml` with redacted receipts; `just check` green; docs re-verified; all M24 issues closed with evidence; CHGs moved to `.work/done/`. |
 
