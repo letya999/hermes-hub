@@ -82,7 +82,7 @@ func gatewayLifecycleSmoke(ctx context.Context, image, providerURL string) error
 				return err
 			}
 		}
-		settings := "schema: 1\nuser: " + name + "\ntimezone: UTC\nbrowser_port: 6080\noauth_port: 8000\nfeatures: [workspace, telegram]\nmodel: gpt-4o-mini\nmodel_url: " + providerURL + "\n"
+		settings := "schema: 1\nuser: " + name + "\ntimezone: UTC\nbrowser_port: 6080\noauth_port: 8000\nfeatures: [workspace, telegram]\nnative_toolsets: [terminal]\nmodel: gpt-4o-mini\nmodel_url: " + providerURL + "\n"
 		if err := os.WriteFile(filepath.Join(dir, "settings.yaml"), []byte(settings), 0600); err != nil {
 			return err
 		}

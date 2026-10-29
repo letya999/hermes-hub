@@ -20,7 +20,8 @@ from urllib.request import Request, urlopen
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PIN = sys.argv[1]
-assert Path("/opt/hermes/.git/HEAD").read_text().strip() == PIN, "wrong upstream pin"
+# .git is pruned at build; .hermes-rev keeps the pinned revision proof.
+assert Path("/opt/hermes/.hermes-rev").read_text().strip() == PIN, "wrong upstream pin"
 home = Path(os.environ["HERMES_HOME"])
 home.mkdir(parents=True, exist_ok=True)
 Path(os.environ["HOME"]).mkdir(parents=True, exist_ok=True)

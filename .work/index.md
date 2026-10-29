@@ -16,6 +16,18 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0226](in-progress/CHG-0226-storage-migration-acceptance/plan.md) | Storage reliability MVP: Явная миграция и итоговая приёмка ограниченного хранения; design accepted, implementation not started |
+| [CHG-0225](in-progress/CHG-0225-runtime-revision-reconcile/plan.md) | Storage reliability MVP: Долговечная сверка проекций и понятные причины runtime-сбоев; design accepted, implementation not started |
+| [CHG-0224](in-progress/CHG-0224-toolhub-state-confirmation/plan.md) | Storage reliability MVP: Сохранность ToolHub и доверенное подтверждение пользователя; design accepted, implementation not started |
+| [CHG-0223](in-progress/CHG-0223-storage-budget-maintenance/plan.md) | Storage reliability MVP: Полный учёт объёма и безопасное операторское обслуживание; design accepted, implementation not started |
+| [CHG-0222](in-progress/CHG-0222-spool-durable-handoff/plan.md) | Storage reliability MVP: Один receipt для результата, доставки и обработки source batch; design accepted, implementation not started |
+| [CHG-0221](in-progress/CHG-0221-bounded-control-audit/plan.md) | Storage reliability MVP: Ограниченный обязательный audit и честные исходы действий; design accepted, implementation not started |
+| [CHG-0220](in-progress/CHG-0220-broker-object-lifecycle/plan.md) | Storage reliability MVP: Управляемые версии secret objects и безопасный GC; design accepted, implementation not started |
+| [CHG-0219](in-progress/CHG-0219-broker-sqlcipher-store/plan.md) | Storage reliability MVP: Таблицы состояния и постраничный audit Broker; design accepted, implementation not started |
+| [CHG-0218](in-progress/CHG-0218-broker-sqlcipher-proof/plan.md) | Storage reliability MVP: Gate сборки и аварийной атомарности SQLCipher; design accepted, implementation not started |
+| [CHG-0217](in-progress/CHG-0217-diagnostic-log-durability/plan.md) | Storage reliability MVP: Ротация, курсоры и ограниченный trace диагностики; design accepted, implementation not started |
+| [CHG-0216](in-progress/CHG-0216-event-state-isolation/plan.md) | Storage reliability MVP: Изоляция курсоров и безопасная очистка event records; design accepted, implementation not started |
+| [CHG-0215](in-progress/CHG-0215-broker-recovery-head/plan.md) | Storage reliability MVP: Надёжная текущая голова recovery брокера; design accepted, implementation not started |
 | [CHG-0214](in-progress/CHG-0214-standing-assignment-mvp/plan.md) | M23 #324/#332: non-consuming cursor source, filtered batch wakes, specialist progress and runtime fences |
 | [CHG-0213](in-progress/CHG-0213-org-knowledge-brain/plan.md) | M20 stage 10 (optional): org shared brain — read-only OpenKnowledge over org material |
 | [CHG-0212](in-progress/CHG-0212-memory-migration-eval/plan.md) | M20 stage 9: Honcho/native export to cards, memory-eval fixture, `memory vacuum` |

@@ -330,6 +330,18 @@ func TestReapIdleBrowserSidecars(t *testing.T) {
 	m.cfg.BrowserIdleTTL = time.Minute
 	ctx := context.Background()
 	m.ReapIdleBrowserSidecars(ctx, now)
+	// docker ps renders .Labels as a comma-joined string, not a map — index on
+	// it errors client-side and silently disables the reaper in production.
+	// The template must use the .Label accessor.
+	var psFormat string
+	for _, call := range commands {
+		if call[0] == "ps" {
+			psFormat = call[len(call)-1]
+		}
+	}
+	if !strings.Contains(psFormat, `{{.Label "com.docker.compose.service"}}`) || strings.Contains(psFormat, "index .Labels") {
+		t.Fatalf("ps format must use .Label accessors, got %q", psFormat)
+	}
 	stopCount := func() int {
 		n := 0
 		for _, call := range commands {

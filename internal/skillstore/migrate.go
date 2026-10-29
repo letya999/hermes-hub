@@ -97,16 +97,12 @@ func migrateLegacy(dir string, apply, consentAll bool, platform *Store) (*Migrat
 		drafted[d.Name] = true
 	}
 
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		name := e.Name()
+	migrateOne := func(skillDir, name string) error {
 		if platform != nil {
 			if pt, err := platform.Tree(name); err == nil {
-				if lt, lerr := loadTree(filepath.Join(legacyDir, name)); lerr == nil && Revision(lt) == Revision(pt) {
+				if lt, lerr := loadTree(skillDir); lerr == nil && Revision(lt) == Revision(pt) {
 					rep.Skipped = append(rep.Skipped, name) // bundled copy, not user content
-					continue
+					return nil
 				}
 			}
 		}
@@ -122,31 +118,70 @@ func migrateLegacy(dir string, apply, consentAll bool, platform *Store) (*Migrat
 				rep.Drafted = append(rep.Drafted, name)
 			}
 		case consented[name] || consentAll:
-			tree, err := loadTree(filepath.Join(legacyDir, name))
+			tree, err := loadTree(skillDir)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			if _, err := st.Publish(name, tree, IndexMeta{Author: "operator", Source: "legacy"}); err != nil {
 				if !errors.Is(err, ErrScanCritical) {
-					return nil, err
+					return err
 				}
 				// consent predates the pipeline; unsafe content degrades to draft (R4.4)
 				if _, derr := st.CreateDraft(name, tree, DraftMeta{Author: "import", Reason: "legacy migration degraded: " + err.Error()}); derr != nil {
-					return nil, derr
+					return derr
 				}
 				rep.Drafted = append(rep.Drafted, name)
-				continue
+				return nil
 			}
 			rep.Published = append(rep.Published, name)
 		default:
-			tree, err := loadTree(filepath.Join(legacyDir, name))
+			tree, err := loadTree(skillDir)
 			if err != nil {
-				return nil, err
+				return err
 			}
-			if _, err := st.CreateDraft(name, tree, DraftMeta{Author: "import", Reason: "legacy migration"}); err != nil {
-				return nil, err
+			if _, err := st.createDraft(name, tree, DraftMeta{Author: "import", Reason: "legacy migration"}, false); err != nil {
+				if errors.Is(err, ErrInvalid) {
+					// Malformed legacy content (e.g. upstream bundled skills
+					// written before the stricter validation rules) must not
+					// block render; the tree stays on disk for the operator.
+					rep.Skipped = append(rep.Skipped, name+": "+err.Error())
+					return nil
+				}
+				return err
 			}
 			rep.Drafted = append(rep.Drafted, name)
+		}
+		return nil
+	}
+
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		// Upstream seeded bundled skills under category dirs (hermes/skills/
+		// <category>/<skill>); a dir without SKILL.md is a category, so each
+		// nested dir is handled as its own candidate.
+		if _, err := os.Stat(filepath.Join(legacyDir, name, SkillFile)); err != nil {
+			sub, serr := os.ReadDir(filepath.Join(legacyDir, name))
+			if serr != nil {
+				return nil, serr
+			}
+			for _, se := range sub {
+				if !se.IsDir() {
+					continue
+				}
+				if _, err := os.Stat(filepath.Join(legacyDir, name, se.Name(), SkillFile)); err != nil {
+					continue
+				}
+				if err := migrateOne(filepath.Join(legacyDir, name, se.Name()), se.Name()); err != nil {
+					return nil, err
+				}
+			}
+			continue
+		}
+		if err := migrateOne(filepath.Join(legacyDir, name), name); err != nil {
+			return nil, err
 		}
 	}
 	return rep, nil

@@ -289,7 +289,7 @@ func TestBrowserSidecarResourceLimits(t *testing.T) {
 			if sidecar["mem_limit"] != "3g" {
 				t.Fatalf("sidecar must cap memory (shm counts against it): %v", sidecar["mem_limit"])
 			}
-			if sidecar["pids_limit"] != 256 {
+			if sidecar["pids_limit"] != 512 {
 				t.Fatalf("sidecar must cap pids: %v", sidecar["pids_limit"])
 			}
 		})
@@ -303,7 +303,8 @@ func TestManagedBrowserSidecarOnAgentNetwork(t *testing.T) {
 		Model: "test", ModelURL: "http://model.invalid/v1", CapabilityMode: "managed",
 		CapabilityProfileID: "managed-dev", CapabilityGeneration: 1,
 		Tools: testTools("browser"), Ingress: testIngress("browser")}
-	services := Compose(s, t.TempDir(), t.TempDir())["services"].(M)
+	rendered := Compose(s, t.TempDir(), t.TempDir())
+	services := rendered["services"].(M)
 	sidecar, ok := services["browser-alice"].(M)
 	if !ok {
 		t.Fatalf("managed space must render the browser sidecar: %#v", services)
@@ -314,5 +315,24 @@ func TestManagedBrowserSidecarOnAgentNetwork(t *testing.T) {
 	}
 	if _, ok := nets["default"]; ok {
 		t.Fatalf("managed sidecar must not sit on the project default network: %v", nets)
+	}
+	// Internal networks silently drop published ports, so the noVNC loopback
+	// publish needs a dedicated publishable network that only this sidecar
+	// joins — CDP stays reachable only via the internal agent network.
+	pub, ok := nets["browser-publish"]
+	if !ok {
+		t.Fatalf("managed sidecar must join a publishable noVNC network: %v", nets)
+	}
+	if aliases, _ := pub.(M)["aliases"].([]string); len(aliases) > 0 {
+		t.Fatalf("publish network must not carry the CDP alias: %v", pub)
+	}
+	def, ok := rendered["networks"].(M)["browser-publish"].(M)
+	if !ok || def["internal"] == true {
+		t.Fatalf("browser-publish must be rendered as a non-internal network: %v", rendered["networks"])
+	}
+	// The sidecar's MCP servers allowlist Host verbatim — the render must tell
+	// the image which alias:port callers send.
+	if got, _ := sidecar["environment"].(M)["HUB_BROWSER_HOST"].(string); got != "browser-"+s.User {
+		t.Fatalf("sidecar env must carry its DNS alias for MCP allowed-hosts: %v", sidecar["environment"])
 	}
 }

@@ -309,9 +309,9 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// workload; the 1gb shm counts against the memory limit.
 		browserService["cpus"] = "2.0"
 		browserService["mem_limit"] = "3g"
-		browserService["pids_limit"] = 256
+		browserService["pids_limit"] = 512
 		browserService["ports"] = []string{fmt.Sprintf("127.0.0.1:%d:6080", s.BrowserPort)}
-		browserService["environment"] = M{"HUB_MEET": fmt.Sprint(s.Has("meet"))}
+		browserService["environment"] = M{"HUB_MEET": fmt.Sprint(s.Has("meet")), "HUB_BROWSER_HOST": "browser-" + s.User}
 		browserVolumes := []any{
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "connections", "browser")), "target": "/state/browser"},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "workspace")), "target": "/workspace"},
@@ -329,8 +329,14 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		browserService["volumes"] = browserVolumes
 		if s.CapabilityMode == "managed" {
 			// Managed runtimes spawn onto the private per-space agent network;
-			// the sidecar lives only there so CDP stays unreachable off-space.
-			browserService["networks"] = M{managedAgentNetwork(s): M{"aliases": []string{"browser-" + s.User}}}
+			// CDP stays reachable only through it. Internal networks silently
+			// drop published ports, so the sidecar also joins a dedicated
+			// publishable network (nothing else attaches) for the loopback
+			// noVNC port.
+			browserService["networks"] = M{
+				managedAgentNetwork(s): M{"aliases": []string{"browser-" + s.User}},
+				"browser-publish":      M{},
+			}
 		} else {
 			browserService["networks"] = M{"default": M{"aliases": []string{"browser-" + s.User}}}
 		}
@@ -850,6 +856,9 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	}
 	if s.CapabilityMode == "managed" {
 		result["networks"].(M)[managedAgentNetwork(s)] = M{"name": managedAgentNetwork(s), "internal": true}
+		if s.Has("browser") || s.Has("meet") {
+			result["networks"].(M)["browser-publish"] = M{}
+		}
 	}
 	return result
 }

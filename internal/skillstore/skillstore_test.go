@@ -1273,6 +1273,164 @@ func TestMigrateLegacy(t *testing.T) {
 	}
 }
 
+func TestMigrateLegacyNestedCategories(t *testing.T) {
+	// Pre-M24 upstream seeded bundled skills under hermes/skills/<category>/<skill>
+	// with a DESCRIPTION.md marker per category; migration must recurse into
+	// category dirs instead of failing on the missing top-level SKILL.md.
+	space := t.TempDir()
+	legacy := filepath.Join(space, "hermes", "skills")
+	put := func(rel, name, body string) {
+		t.Helper()
+		dir := filepath.Join(legacy, filepath.FromSlash(rel))
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, SkillFile), []byte(body), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cat := filepath.Join(legacy, "devops")
+	if err := os.MkdirAll(cat, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cat, "DESCRIPTION.md"), []byte("# devops\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	put("devops/sdlc-review", "sdlc-review", "---\nname: sdlc-review\ndescription: \"d\"\n---\n")
+	put("devops/ship-it", "ship-it", "---\nname: ship-it\ndescription: \"d\"\n---\n")
+	put("flat-skill", "flat-skill", "---\nname: flat-skill\ndescription: \"d\"\n---\n")
+
+	rep, err := MigrateLegacySpace(space, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Published) != 0 || len(rep.Skipped) != 0 {
+		t.Fatalf("unrecorded content must draft: %+v", rep)
+	}
+	if len(rep.Drafted) != 3 {
+		t.Fatalf("want 3 drafted leaf skills, got %+v", rep)
+	}
+	drafts, err := mustStore(t, space).Drafts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, d := range drafts {
+		names[d.Name] = true
+	}
+	for _, want := range []string{"sdlc-review", "ship-it", "flat-skill"} {
+		if !names[want] {
+			t.Fatalf("missing drafted %q: %v", want, names)
+		}
+	}
+}
+
+func TestMigrateLegacyNestedBundledCopies(t *testing.T) {
+	// Nested category copies matching the platform catalog by leaf name and
+	// revision are upstream content, not user data: they must be skipped.
+	space := t.TempDir()
+	platform := t.TempDir()
+	body := "---\nname: bundled\ndescription: shipped copy\n---\n"
+	writeTree := func(dir string) {
+		t.Helper()
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, SkillFile), []byte(body), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTree(filepath.Join(platform, "bundled"))
+	writeTree(filepath.Join(space, "hermes", "skills", "devops", "bundled"))
+
+	rep, err := MigrateLegacySpaceWithPlatform(space, platform, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Skipped) != 1 || rep.Skipped[0] != "bundled" {
+		t.Fatalf("bundled nested copy must be skipped: %+v", rep)
+	}
+	if len(rep.Published) != 0 || len(rep.Drafted) != 0 {
+		t.Fatalf("bundled copy must not enter the store: %+v", rep)
+	}
+}
+
+func TestMigrateLegacyInvalidSkillSkipped(t *testing.T) {
+	// A legacy skill that fails validation (e.g. upstream bundled content with
+	// chained resource links) must not abort migration or block render — it is
+	// recorded as skipped and the valid siblings still migrate.
+	space := t.TempDir()
+	legacy := filepath.Join(space, "hermes", "skills")
+	put := func(name string, files map[string]string) {
+		t.Helper()
+		dir := filepath.Join(legacy, name)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		for rel, body := range files {
+			p := filepath.Join(dir, filepath.FromSlash(rel))
+			if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, []byte(body), 0644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	put("broken", map[string]string{
+		"SKILL.md":        "---\nname: broken\ndescription: \"d\"\n---\nsee [a](references/a.md)\n",
+		"references/a.md": "chains to [b](references/b.md)\n",
+		"references/b.md": "# b\n",
+	})
+	put("good", map[string]string{"SKILL.md": "---\nname: good\ndescription: \"d\"\n---\n"})
+
+	rep, err := MigrateLegacySpace(space, true)
+	if err != nil {
+		t.Fatalf("invalid sibling must not abort migration: %v", err)
+	}
+	if len(rep.Drafted) != 1 || rep.Drafted[0] != "good" {
+		t.Fatalf("valid skill must still draft: %+v", rep)
+	}
+	if len(rep.Skipped) != 1 || !strings.Contains(rep.Skipped[0], "broken") {
+		t.Fatalf("invalid skill must be recorded skipped: %+v", rep)
+	}
+}
+
+func TestMigrateLegacyIgnoresDraftQuota(t *testing.T) {
+	// Migration is a one-time bulk import: a full daily draft quota must not
+	// block it (upstream bundled corpora exceed MaxDraftsPerDay).
+	space := t.TempDir()
+	legacy := filepath.Join(space, "hermes", "skills")
+	dir := filepath.Join(legacy, "one")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	body := "---\nname: one\ndescription: \"d\"\n---\n"
+	if err := os.WriteFile(filepath.Join(dir, SkillFile), []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	today := strings.ToLower(stampNow())[:8]
+	for i := 0; i < MaxDraftsPerDay; i++ {
+		id := fmt.Sprintf("%s-%02d", today, i)
+		dd := filepath.Join(space, "skills", draftsDir, id)
+		if err := os.MkdirAll(dd, 0755); err != nil {
+			t.Fatal(err)
+		}
+		meta := fmt.Sprintf(`{"id":%q,"name":"filler-%02d","created_at":"t","meta":{"author":"x","reason":"r"}}`, id, i)
+		if err := os.WriteFile(filepath.Join(dd, ".draft.json"), []byte(meta), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rep, err := MigrateLegacySpace(space, true)
+	if err != nil {
+		t.Fatalf("migration must bypass the per-day draft quota: %v", err)
+	}
+	if len(rep.Drafted) != 1 || rep.Drafted[0] != "one" {
+		t.Fatalf("want the legacy skill drafted: %+v", rep)
+	}
+}
+
 func TestMigrateDropsBundledCopies(t *testing.T) {
 	space := t.TempDir()
 	platform := t.TempDir()

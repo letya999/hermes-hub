@@ -638,7 +638,7 @@ func run(ctx context.Context, args []string) error {
 					return err
 				}
 			}
-			if s.Has("telegram") {
+			if telegramOwnershipCheckApplies(s) {
 				secrets, secretErr := stack.ReadSecrets(filepath.Join(*dir, "secrets."+*environment+".env"))
 				if secretErr != nil {
 					return secretErr

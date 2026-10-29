@@ -130,6 +130,13 @@ scale-to-zero. Two decisions close that gap:
   per-space workload we run: `cpus: "2.0"`, `mem_limit: "3g"` (the 1 GB shm
   counts against it), `pids_limit: 256` — matching the toolhub precedent of
   bounded per-service budgets.
+- **D9 addendum (live acceptance):** 256 was sized against the persistent
+  Chromium stack alone, which already occupies ~223 kernel tasks with Xvfb,
+  x11vnc, websockify and both pw-mcp servers. The SPEC-0082 R4.4 guest
+  endpoint on :8932 launches a second isolated Chromium whose thread burst
+  dies on `pthread_create: Resource temporarily unavailable` under 256. The
+  rendered ceiling is raised to `pids_limit: 512` — still bounded, with
+  headroom for the guest browser.
 
 ### Alternatives considered for the amendment
 

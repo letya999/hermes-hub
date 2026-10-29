@@ -399,17 +399,38 @@ func DockerSmoke(ctx context.Context, image string) error {
 		return err
 	}
 	name := fmt.Sprintf("hermes-smoke-%x", suffix)
+	// SPEC-0082 R4: the display stack lives in the dedicated browser image,
+	// not the runtime. Smoke mirrors the compose topology — sidecar plus
+	// runtime on a scratch network — and the runtime health probe reaches
+	// CDP over BROWSER_CDP_URL exactly as it does on the space network.
+	sidecar := name + "-browser"
+	net := name + "-net"
 	run := func(args ...string) error {
 		cmd := exec.CommandContext(ctx, "docker", args...)
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 		return cmd.Run()
 	}
 	defer exec.Command("docker", "rm", "-f", name).Run()
+	defer exec.Command("docker", "rm", "-f", sidecar).Run()
+	defer exec.Command("docker", "network", "rm", net).Run()
+	dir, err := os.MkdirTemp("", "novnc-pass")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	pass := filepath.Join(dir, "novnc.pass")
+	if err := os.WriteFile(pass, []byte("smoke"), 0o600); err != nil {
+		return err
+	}
 	checks := [][]string{
 		{"run", "--rm", "--entrypoint", "hermes", image, "--version"},
 		{"run", "--rm", "--entrypoint", "glab", image, "--version"},
 		{"run", "--rm", "--entrypoint", "/opt/hermes/.venv/bin/python", image, "-c", "import sqlite3; assert sqlite3.sqlite_version_info >= (3,53,4)"},
-		{"run", "-d", "--name", name, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--shm-size", "1g", "--tmpfs", "/tmp:mode=1777", "--tmpfs", "/state:uid=10001,gid=10001,mode=0700", "--tmpfs", "/workspace:uid=10001,gid=10001,mode=0700", "-e", "HUB_BROWSER=true", image, "idle"},
+		{"network", "create", net},
+		// browser-<user> sidecar per compose.go: the image CMD is already
+		// `browser`; the read-only novnc password bind matches the render.
+		{"run", "-d", "--name", sidecar, "--network", net, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--shm-size", "1g", "--tmpfs", "/tmp:mode=1777", "--tmpfs", "/state:uid=10001,gid=10001,mode=0700", "--tmpfs", "/workspace:uid=10001,gid=10001,mode=0700", "--mount", "type=bind,source=" + filepath.ToSlash(pass) + ",target=/run/novnc.pass,readonly", image + "-browser"},
+		{"run", "-d", "--name", name, "--network", net, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--shm-size", "1g", "--tmpfs", "/tmp:mode=1777", "--tmpfs", "/state:uid=10001,gid=10001,mode=0700", "--tmpfs", "/workspace:uid=10001,gid=10001,mode=0700", "-e", "HUB_BROWSER=true", "-e", "BROWSER_CDP_URL=http://" + sidecar + ":9222", image, "idle"},
 	}
 	for _, args := range checks {
 		if err := run(args...); err != nil {

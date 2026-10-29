@@ -38,7 +38,7 @@ func (m *Manager) ensureBrowserSidecar(ctx context.Context, userID string) error
 // supervisor restart grants one grace period, never a premature stop.
 func (m *Manager) ReapIdleBrowserSidecars(ctx context.Context, now time.Time) {
 	out, err := m.command(ctx, "ps", "--filter", "label=com.docker.compose.project",
-		"--format", "{{.Names}} {{index .Labels \"com.docker.compose.service\"}} {{index .Labels \"com.docker.compose.project\"}}")
+		"--format", "{{.Names}} {{.Label \"com.docker.compose.service\"}} {{.Label \"com.docker.compose.project\"}}")
 	if err != nil {
 		return // best-effort; next sweep retries
 	}

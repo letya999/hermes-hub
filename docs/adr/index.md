@@ -6,6 +6,8 @@ last_verified: 2026-10-27
 
 | Record | Decision |
 |---|---|
+| [ADR-0088](ADR-0088-bounded-control-journals.md) | Accepted: bounded file journals/receipts, typed cursors, safe audit and diagnostics; implementation planned in CHG-0216–0226 |
+| [ADR-0087](ADR-0087-broker-bounded-sqlcipher-store.md) | Accepted direction: Broker-only SQLCipher, strict recovery head and object lifecycle; native/fault gate before migration (CHG-0215–0226) |
 | [ADR-0086](ADR-0086-memory-vault-openknowledge.md) | Proposed: per-space markdown memory vault (leaves/cards/summaries/CORE) with deterministic nightly rollup, plus OpenKnowledge as opt-in knowledge surface (M20, renumbered from a duplicate ADR-0073) |
 | [ADR-0085](ADR-0085-agent-skills-platform.md) | Proposed: agent skills platform — agentskills.io format, hub-owned per-owner stores, read-only effective view, draft-first writes, grant-only authority, native default-deny, brokered secrets, curated self-evolution, pinned git installs (M24 #356–#368) |
 | [ADR-0084](ADR-0084-channel-agnostic-user-locale.md) | Accepted: channel-agnostic user locale — canonical EN catalog with generated ru/kk/es, workspace preferences.json, evidence ladder + /language picker, Delivery.Lang, HUB_USER_LANG, LLM language hints |

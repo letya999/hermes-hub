@@ -9,7 +9,10 @@ import (
 	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"io/fs"
+	"net"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -478,8 +481,8 @@ func superviseOnce(mode string) (bool, error) {
 
 // superviseBrowser runs the per-space browser sidecar (SPEC-0082 R4, ADR-0083
 // D3): the headed-Chromium display stack that used to live inside the runtime.
-// Chromium binds CDP on all container interfaces — reachability is governed by
-// the space-internal network, never by a published port. x11vnc authenticates
+// Chromium keeps CDP on loopback — a hub-runtime TCP relay serves :9222 on the
+// space-internal network, never a published port. x11vnc authenticates
 // against the mounted password file and noVNC's HTTP/WS bridge is the only
 // host-published surface (loopback, by Compose).
 func superviseBrowser() error {
@@ -489,6 +492,17 @@ func superviseBrowser() error {
 	}
 	profile := filepath.Join(state, "browser")
 	if err := os.MkdirAll(profile, 0770); err != nil {
+		return err
+	}
+	// Only /state/browser binds into the sidecar — /state itself is read-only,
+	// so the image's HOME=/state/home is unusable. Chromium's crashpad,
+	// Fluxbox's init db and fontconfig all need a writable home; it lives
+	// inside the persistent profile mount.
+	home := filepath.Join(profile, "home")
+	if err := os.MkdirAll(home, 0700); err != nil {
+		return err
+	}
+	if err := os.Setenv("HOME", home); err != nil {
 		return err
 	}
 	if err := clearBrowserLocks(profile); err != nil {
@@ -510,12 +524,21 @@ func superviseBrowser() error {
 		{"fluxbox"},
 		{"x11vnc", "-display", ":99", "-localhost", "-forever", "-shared", "-passwdfile", "/run/novnc.pass"},
 		{"websockify", "--web=/opt/novnc", "0.0.0.0:6080", "127.0.0.1:5900"},
-		{"chromium", "--no-sandbox", "--no-first-run", "--disable-dev-shm-usage", "--password-store=basic", "--user-data-dir=" + profile, "--remote-debugging-port=9222", "--remote-debugging-address=0.0.0.0", "about:blank"},
+		{"chromium", "--no-sandbox", "--no-first-run", "--disable-dev-shm-usage", "--password-store=basic", "--user-data-dir=" + profile, "--remote-debugging-port=9223", "about:blank"},
 	} {
 		if err := start(proc[0], proc[1:]...); err != nil {
 			return err
 		}
 	}
+	// Chrome ≥126 ignores --remote-debugging-address: DevTools binds loopback
+	// only. Chromium therefore runs on 127.0.0.1:9223 and this relay keeps the
+	// spec contract — CDP on :9222 across the space network, never published.
+	relay, err := net.Listen("tcp", ":9222") // #nosec G102 -- contract: CDP serves the space network, never published
+	if err != nil {
+		return err
+	}
+	defer relay.Close()
+	go serveCDPRelay(relay, "127.0.0.1:9223")
 	if err := waitForBrowser(nil); err != nil {
 		return err
 	}
@@ -526,8 +549,8 @@ func superviseBrowser() error {
 	// profile, no /state/browser access, no shared CDP session.
 	mcp := "/opt/browser/node_modules/@playwright/mcp/cli.js"
 	for _, args := range [][]string{
-		{mcp, "--host", "0.0.0.0", "--port", "8931", "--caps", "vision,pdf", "--output-dir", "/workspace/browser", "--output-max-size", "268435456", "--block-service-workers", "--cdp-endpoint", "http://127.0.0.1:9222"},
-		{mcp, "--host", "0.0.0.0", "--port", "8932", "--caps", "vision,pdf", "--output-dir", "/workspace/browser", "--output-max-size", "268435456", "--block-service-workers", "--isolated", "--executable-path", "/usr/bin/chromium", "--no-sandbox"},
+		{mcp, "--host", "0.0.0.0", "--port", "8931", "--allowed-hosts", mcpAllowedHosts("8931"), "--caps", "vision,pdf", "--output-dir", "/workspace/browser", "--output-max-size", "268435456", "--block-service-workers", "--cdp-endpoint", "http://127.0.0.1:9223"},
+		{mcp, "--host", "0.0.0.0", "--port", "8932", "--allowed-hosts", mcpAllowedHosts("8932"), "--caps", "vision,pdf", "--output-dir", "/workspace/browser", "--output-max-size", "268435456", "--block-service-workers", "--isolated", "--executable-path", "/usr/bin/chromium", "--no-sandbox"},
 	} {
 		if err := start("node", args...); err != nil {
 			return err
@@ -567,6 +590,24 @@ func superviseBrowser() error {
 	}
 }
 
+// serveCDPRelay reverse-proxies the loopback CDP target — Chrome ≥126 binds
+// DevTools on loopback only and rejects non-IP Host headers, so the space
+// network reaches Chromium through here while it keeps seeing a loopback
+// Host. ReverseProxy carries the WebSocket upgrade DevTools needs.
+func serveCDPRelay(ln net.Listener, target string) {
+	upstream, err := url.Parse("http://" + target)
+	if err != nil {
+		return
+	}
+	proxy := &httputil.ReverseProxy{
+		Rewrite: func(r *httputil.ProxyRequest) {
+			r.SetURL(upstream)
+			r.Out.Host = upstream.Host
+		},
+	}
+	_ = http.Serve(ln, proxy) // #nosec G114 -- DevTools WebSockets are long-lived; idle/write timeouts would sever CDP sessions
+}
+
 func hermesGatewayEnvironment() map[string]string {
 	return map[string]string{
 		"API_SERVER_ENABLED":    "true",
@@ -578,6 +619,13 @@ func hermesGatewayEnvironment() map[string]string {
 		"HERMES_EXEC_ASK":              "true",
 		"HERMES_DISABLE_LAZY_INSTALLS": "1",
 	}
+}
+
+// mcpAllowedHosts is the single host:port the playwright-mcp DNS-rebinding
+// check accepts — req.headers.host is compared verbatim against it, so the
+// compose alias clients dial must appear with its port.
+func mcpAllowedHosts(port string) string {
+	return net.JoinHostPort(os.Getenv("HUB_BROWSER_HOST"), port)
 }
 
 func clearDisplayLocks(paths ...string) error {

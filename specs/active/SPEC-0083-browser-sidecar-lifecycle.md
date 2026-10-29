@@ -10,8 +10,11 @@ does not hold idle browser stacks resident.
 ### R1 — Resource ceiling on the browser sidecar
 
 - R1.1: Rendered `browser-<user>` services carry `cpus: "2.0"`,
-  `mem_limit: "3g"` and `pids_limit: 256` alongside the existing
+  `mem_limit: "3g"` and `pids_limit: 512` alongside the existing
   `shm_size: "1gb"` (shm usage counts against the memory limit).
+  *(errata: 256 was live-measured as insufficient — the persistent stack
+  alone holds ~223 tasks and the SPEC-0082 R4.4 guest Chromium cannot
+  launch; see ADR-0083 D9 addendum.)*
 - R1.2: Limits apply to managed and unmanaged renders identically.
 
 ### R2 — Auto-start on spawn

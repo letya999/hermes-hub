@@ -7,6 +7,8 @@ record it points to. `archive/` holds only pre-renumbering originals.
 
 | Specification | Status |
 |---|---|
+| [SPEC-0088](active/SPEC-0088-bounded-control-journals.md) | Frozen: bounded root-plane journals, receipts, diagnostics and maintenance; implementation not started |
+| [SPEC-0087](active/SPEC-0087-broker-bounded-storage.md) | Frozen: Broker recovery, SQLCipher proof, normalized state/audit and provider lifecycle; implementation not started |
 | [SPEC-0086](active/SPEC-0086-standing-assignment-mvp.md) | Frozen: executable standing-assignment MVP — cursor replay, filtered specialist wakes, durable progress and acceptance (M23 #324/#332) |
 | [SPEC-0085](active/SPEC-0085-memory-vault-openknowledge.md) | Frozen: M20 memory vault (leaves, cards, summaries, CORE, rollup, search, write contract) and opt-in OpenKnowledge surface (renumbered from a duplicate SPEC-0070) |
 | [SPEC-0084](active/SPEC-0084-agent-skills-platform.md) | Frozen: agent skills platform — store/effective view, default-deny natives, security pipeline, tools, disclosure, resources, secrets, profiles, git installs, evolution, quality, acceptance (M24 #356–#368) |

@@ -1,0 +1,43 @@
+schema: 1
+change: CHG-0215
+title: "Надёжная текущая голова recovery брокера"
+status: in_progress
+branch: fix/m23-live-wake
+updated: "2026-10-28"
+phase: design-complete
+adr: ADR-0087
+spec: SPEC-0087
+requirements: [R1]
+depends_on: []
+workstream: storage-reliability-mvp
+github_milestone: null
+github_issue: null
+design_status: accepted
+implementation_status: not_started
+readiness: ready_after_rebaseline
+slices:
+  S191.1-recovery-regressions: not_started
+  S191.2-versioned-head: not_started
+  S191.3-legacy-adoption: not_started
+validation:
+  documents: passed
+  planning_package: passed
+  planning_just_check: failed
+  just_check: not_run
+  module_check: not_run
+  security: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+planning_evidence:
+  - "2026-10-28: go run ./cmd/devcheck docs passed before and after package creation."
+  - "12 YAML states parsed with existing gopkg.in/yaml.v3; 36 slices matched plans; dependency DAG checked."
+  - "All new Markdown links resolve; file bounds/whitespace and git diff --check passed."
+  - "All pre-existing content of the three edited indexes preserved; production code not edited."
+  - "just check failed in unchanged internal/mediasvc TestComfyVideoResumesPersistedHandleWithoutSubmission: Windows temporary file lock; coverage metadata write also failed."
+  - "Targeted go test -race -run '^TestComfyVideoResumesPersistedHandleWithoutSubmission$' -count=1 ./internal/mediasvc passed; full just check remains failed, aggregate coverage unverified."
+remaining:
+  - "Implementation and all runtime acceptance remain outstanding."
+limitations:
+  - "Planning record only; no production code or live state changed."

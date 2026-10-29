@@ -47,13 +47,20 @@ func (s *Store) draftDir(id string) string {
 
 // CreateDraft stores a new draft tree; nothing becomes active.
 func (s *Store) CreateDraft(name string, tree Tree, meta DraftMeta) (*Draft, error) {
+	return s.createDraft(name, tree, meta, true)
+}
+
+// createDraft with quota=false is reserved for bulk imports (legacy
+// migration): the per-day cap bounds agent/user churn, not a one-time
+// operator-driven import of pre-existing content.
+func (s *Store) createDraft(name string, tree Tree, meta DraftMeta, quota bool) (*Draft, error) {
 	if s.scope != ScopePlatform && ReservedName(name) {
 		return nil, fmt.Errorf("%w: %q", ErrReserved, name)
 	}
 	if err := validateTree(tree); err != nil {
 		return nil, err
 	}
-	if n := s.draftsToday(); n >= MaxDraftsPerDay {
+	if n := s.draftsToday(); quota && n >= MaxDraftsPerDay {
 		return nil, fmt.Errorf("%w: %d drafts today (max %d)", ErrQuota, n, MaxDraftsPerDay)
 	}
 	report := scanTree(name, tree)
