@@ -184,7 +184,7 @@ func TestPrefsRoundTripAndLadder(t *testing.T) {
 func TestEnglishKeysPresent(t *testing.T) {
 	for _, key := range []string{
 		// Language picker and /language.
-		"lang.choose", "lang.saved", "lang.detected", "lang.status", "lang.unknown",
+		"lang.choose", "lang.saved", "lang.detected", "lang.unknown",
 		// Command menu descriptions.
 		"menu.desc.start", "menu.desc.new", "menu.desc.sessions", "menu.desc.use",
 		"menu.desc.delete", "menu.desc.session", "menu.desc.status", "menu.desc.routines",
@@ -199,9 +199,9 @@ func TestEnglishKeysPresent(t *testing.T) {
 		"chat.approve-usage", "chat.approve-denied", "chat.approve-saved",
 		"chat.approve-scope", "chat.creds-usage", "chat.creds-saved",
 		"chat.creds-expired", "chat.started", "chat.cancel-usage",
-		"chat.cancel-state", "chat.cancel-scope", "chat.routines-unavail",
-		"chat.routines-title", "chat.routines-empty", "chat.usage-busy",
-		"chat.usage-measuring", "chat.secrets-rejected", "chat.secrets-form",
+		"chat.cancel-scope", "chat.routines-unavail",
+		"chat.routines-title", "chat.routines-empty",
+		"chat.secrets-rejected", "chat.secrets-form",
 		"chat.bot-conflict", "chat.auto-titled",
 		"chat.skill-unavailable", "chat.skill-active",
 		// Assignment replies.
@@ -209,7 +209,14 @@ func TestEnglishKeysPresent(t *testing.T) {
 		"assignment.list-empty", "assignment.usage", "assignment.unavailable",
 		"assignment.unavailable-source",
 		"assignment.status", "assignment.unknown-verb", "assignment.rejected",
-		"assignment.accepted",
+		"assignment.accepted", "assignment.authorize-usage", "assignment.bad-limits",
+		// Skill draft approval card.
+		"draft.card-title", "draft.card-heading", "draft.field-skill",
+		"draft.field-scope", "draft.field-change", "draft.field-findings",
+		"draft.field-provenance", "draft.publish", "draft.reject",
+		"draft.rejected-title", "draft.rejected-body", "draft.handled-title",
+		"draft.handled-body", "draft.published-title", "draft.published-body",
+		"draft.undo-button", "draft.undone-title", "draft.undone-body",
 		// Routine listing fragments.
 		"routine.active", "routine.paused", "routine.done", "routine.missed",
 		"routine.unconfirmed", "routine.delivered", "routine.no-upcoming",

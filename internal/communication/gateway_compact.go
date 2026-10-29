@@ -70,9 +70,10 @@ type compactRunner interface {
 // envelope and the task's stable conversation to POST /v1/compact — the slash
 // command itself is never enqueued as a run. Replies carry only the
 // allowlisted result projection.
-func (g *Gateway) compactCommand(ctx context.Context, user User, task Task, channel string, chatID, topic, sender int64, deliveryKey, text string) error {
+func (g *Gateway) compactCommand(ctx context.Context, user User, task Task, route commandRoute, deliveryKey, text string) error {
+	topic, sender := route.topic, route.sender
 	reply := func(answer string) error {
-		return g.queueDeliveryChannel(ctx, deliveryKey+"-reply", channel, chatID, topic, answer)
+		return g.queueCommandReply(ctx, deliveryKey+"-reply", route, topic, answer)
 	}
 	lang := locale.LangOf(user.WorkspaceDir)
 	args, ok := parseCompactArgs(text)
@@ -113,7 +114,7 @@ func (g *Gateway) compactCommand(ctx context.Context, user User, task Task, chan
 		if err != nil {
 			answer = locale.T(lang, "compact.unavailable", err.Error())
 		}
-		_ = g.queueDeliveryChannel(context.Background(), deliveryKey+"-compact", channel, chatID, topic, answer)
+		_ = g.queueCommandReply(context.Background(), deliveryKey+"-compact", route, topic, answer)
 	}()
 	return reply(locale.T(lang, "compact.working"))
 }

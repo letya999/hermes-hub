@@ -257,10 +257,41 @@ func TestAssignmentCommands(t *testing.T) {
 	if !strings.Contains(out, "authorize") || item.GrantsAuthorizedRev != item.Plan.Revision+1 || item.Grants.MaxWakesPerDay != 30 {
 		t.Fatalf("authorize did not stamp plan revision: %+v (out=%q)", item, out)
 	}
+	// Bad authorize forms answer in the caller's language, not a hardcoded one.
+	if out = g.assignmentCommand(user, 11, "/assignment "+id+" authorize", locale.LangRU); out != locale.T(locale.LangRU, "assignment.authorize-usage") {
+		t.Fatalf("authorize usage = %q, want %q", out, locale.T(locale.LangRU, "assignment.authorize-usage"))
+	}
+	if out = g.assignmentCommand(user, 11, "/assignment "+id+" authorize x y", locale.LangEN); out != locale.T(locale.LangEN, "assignment.bad-limits") {
+		t.Fatalf("bad limits = %q, want %q", out, locale.T(locale.LangEN, "assignment.bad-limits"))
+	}
 	// Foreign sender gets a refusal, not the record.
 	out = g.assignmentCommand(user, 99, "/assignment "+id+" status", locale.LangRU)
 	if strings.Contains(out, "active") {
 		t.Fatalf("foreign sender saw the assignment: %q", out)
+	}
+}
+
+// The assignment wake bundle is model-facing: it pins the owner's stored
+// language like the per-run instructions do (ADR-0084 D5).
+func TestAssignmentWakeBundleLangHint(t *testing.T) {
+	s, o, _ := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	asg := commodel.Assignment{AssignmentID: "asg1", Title: "prices", Intent: "watch prices", State: "active", AppliedRev: 1, Envelope: caller, Plan: &commodel.AssignmentPlan{Revision: 1}}
+	if _, _, err := s.rt.CreateAssignment(asg, caller); err != nil {
+		t.Fatal(err)
+	}
+	s.langOf = func(string) locale.Lang { return locale.LangES }
+	st := &EventState{}
+	schedule := Schedule{ScheduleID: "ev-asg", AssignmentID: "asg1", AssignmentPlanRevision: 1, Sink: "agent", Timezone: "UTC"}
+	s.mu.Lock()
+	s.fanoutEventsLocked(st, schedule, o.Job, []Event{{ID: "e1", Text: "one"}}, "seed-1", "ev-asg", time.Now().UTC())
+	s.mu.Unlock()
+	job, err := s.ClaimJob()
+	if err != nil || job == nil {
+		t.Fatal("assignment wake admitted no bundle job")
+	}
+	if !strings.Contains(job.Text, "language is Español (es)") {
+		t.Fatalf("bundle missing owner language hint: %q", job.Text)
 	}
 }
 

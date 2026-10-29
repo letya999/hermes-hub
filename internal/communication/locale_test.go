@@ -1001,30 +1001,31 @@ func TestCompactCommandLocalized(t *testing.T) {
 	ctx := context.Background()
 	user := c.Users[0]
 	task := Task{TaskID: "t1", ConversationID: "telegram-11"}
+	route := commandRoute{channel: "telegram_bot", chatID: 11, sender: 11}
 
 	// Bad args show the localized usage line.
-	if err := g.compactCommand(ctx, user, task, "telegram_bot", 11, 0, 11, "c1", "/compact bogus-token"); err != nil {
+	if err := g.compactCommand(ctx, user, task, route, "c1", "/compact bogus-token"); err != nil {
 		t.Fatal(err)
 	}
 	// Without a compact-capable runner the reply reports unavailability.
-	if err := g.compactCommand(ctx, user, task, "telegram_bot", 11, 0, 11, "c2", "/compact"); err != nil {
+	if err := g.compactCommand(ctx, user, task, route, "c2", "/compact"); err != nil {
 		t.Fatal(err)
 	}
 	// With a runner but a saturated gate the reply reports busy.
 	g.runner = &compactStubRunner{}
 	g.usageQueries.Add(3)
-	if err := g.compactCommand(ctx, user, task, "telegram_bot", 11, 0, 11, "c3", "/compact"); err != nil {
+	if err := g.compactCommand(ctx, user, task, route, "c3", "/compact"); err != nil {
 		t.Fatal(err)
 	}
 	g.usageQueries.Add(-3)
 	// Happy path: immediate "working" reply, then the async result line.
-	if err := g.compactCommand(ctx, user, task, "telegram_bot", 11, 0, 11, "c4", "/compact here"); err != nil {
+	if err := g.compactCommand(ctx, user, task, route, "c4", "/compact here"); err != nil {
 		t.Fatal(err)
 	}
 	g.usageWG.Wait()
 	// A runner error surfaces as the localized availability line.
 	g.runner = &compactStubRunner{err: errors.New("transport down")}
-	if err := g.compactCommand(ctx, user, task, "telegram_bot", 11, 0, 11, "c5", "/compact"); err != nil {
+	if err := g.compactCommand(ctx, user, task, route, "c5", "/compact"); err != nil {
 		t.Fatal(err)
 	}
 	g.usageWG.Wait()
@@ -1611,6 +1612,119 @@ func TestPrepareOutcomeNoticesLocalized(t *testing.T) {
 	if d.Text != want("prepare.viewer", viewer+"&lang=es") {
 		t.Errorf("viewer text=%q want %q", d.Text, want("prepare.viewer", viewer+"&lang=es"))
 	}
+}
+
+// Slack has no command pipeline — /language is intercepted at ingest, stores
+// the choice and answers on the same Slack thread in the stored language.
+func TestSlackLanguageCommand(t *testing.T) {
+	c := testConfig(t)
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := c.Users[0]
+	g.slackUsers["t1/u1"] = user
+	slackText := func(t *testing.T, eventID, suffix string) string {
+		t.Helper()
+		body, err := os.ReadFile(filepath.Join(c.SpoolDir, "outbox", "pending", commodel.FileID("slack-"+eventID+"-"+suffix)+".json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var d Delivery
+		if err := json.Unmarshal(body, &d); err != nil {
+			t.Fatal(err)
+		}
+		if d.SlackChannel != "D001" || d.SlackThread != "1700000000.000001" || d.Channel != "slack_app" {
+			t.Fatalf("slack routing fields wrong: %+v", d)
+		}
+		return d.Text
+	}
+	if err := g.ingestSlackEvent(context.Background(), "T1", "ev-lang", "message", "", "U1", "/language es", "D001", "im", "", "", "", "1700000000.000001"); err != nil {
+		t.Fatal(err)
+	}
+	if p := locale.LoadPrefs(c.Users[0].WorkspaceDir); p.Lang != locale.LangES || p.Source != locale.SourceChosen {
+		t.Fatalf("prefs = %+v, want es/chosen", p)
+	}
+	if got := slackText(t, "ev-lang", "reply"); got != locale.T(locale.LangES, "lang.saved", locale.Names[locale.LangES]) {
+		t.Fatalf("set reply = %q", got)
+	}
+	// Bare /language answers with the picker text — Slack renders no buttons.
+	if err := g.ingestSlackEvent(context.Background(), "T1", "ev-lang2", "message", "", "U1", "/language", "D001", "im", "", "", "", "1700000000.000001"); err != nil {
+		t.Fatal(err)
+	}
+	if got := slackText(t, "ev-lang2", "lang"); got != locale.T(locale.LangES, "lang.choose") {
+		t.Fatalf("picker reply = %q", got)
+	}
+	// Unknown code is rejected in the stored language, not queued as a job.
+	if err := g.ingestSlackEvent(context.Background(), "T1", "ev-lang3", "message", "", "U1", "/language xx", "D001", "im", "", "", "", "1700000000.000001"); err != nil {
+		t.Fatal(err)
+	}
+	if got := slackText(t, "ev-lang3", "reply"); got != locale.T(locale.LangES, "lang.unknown", "xx") {
+		t.Fatalf("unknown reply = %q", got)
+	}
+}
+
+// Command replies beyond /language ride the same route: a task command and
+// the async /usage result both land on the Slack thread, not telegram.
+func TestSlackCommandRepliesRoute(t *testing.T) {
+	c := testConfig(t)
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := c.Users[0]
+	g.slackUsers["t1/u1"] = user
+	slackFile := func(t *testing.T, name string) Delivery {
+		t.Helper()
+		body, err := os.ReadFile(filepath.Join(c.SpoolDir, "outbox", "pending", commodel.FileID(name)+".json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var d Delivery
+		if err := json.Unmarshal(body, &d); err != nil {
+			t.Fatal(err)
+		}
+		if d.SlackChannel != "D001" || d.SlackThread != "1700000000.000001" || d.Channel != "slack_app" {
+			t.Fatalf("slack routing fields wrong: %+v", d)
+		}
+		return d
+	}
+	if err := g.ingestSlackEvent(context.Background(), "T1", "ev-new", "message", "", "U1", "/new focus", "D001", "im", "", "", "", "1700000000.000001"); err != nil {
+		t.Fatal(err)
+	}
+	if d := slackFile(t, "slack-ev-new-reply"); d.Text == "" {
+		t.Fatal("/new reply missing")
+	}
+	if err := g.ingestSlackEvent(context.Background(), "T1", "ev-del", "message", "", "U1", "/delete focus", "D001", "im", "", "", "", "1700000000.000001"); err != nil {
+		t.Fatal(err)
+	}
+	if d := slackFile(t, "slack-ev-del-reply"); d.Text == "" {
+		t.Fatal("/delete reply missing")
+	}
+	if err := g.ingestSlackEvent(context.Background(), "T1", "ev-compact", "message", "", "U1", "/compact", "D001", "im", "", "", "", "1700000000.000001"); err != nil {
+		t.Fatal(err)
+	}
+	if d := slackFile(t, "slack-ev-compact-reply"); d.Text == "" {
+		t.Fatal("/compact reply missing")
+	}
+	// The async compact result lands on the same thread.
+	g.runner = &compactStubRunner{}
+	if err := g.ingestSlackEvent(context.Background(), "T1", "ev-compact2", "message", "", "U1", "/compact", "D001", "im", "", "", "", "1700000000.000001"); err != nil {
+		t.Fatal(err)
+	}
+	g.usageWG.Wait()
+	slackFile(t, "slack-ev-compact2-compact")
+	if err := g.ingestSlackEvent(context.Background(), "T1", "ev-goal", "message", "", "U1", "/goal status", "D001", "im", "", "", "", "1700000000.000001"); err != nil {
+		t.Fatal(err)
+	}
+	if d := slackFile(t, "slack-ev-goal-reply"); d.Text == "" {
+		t.Fatal("/goal reply missing")
+	}
+	if err := g.ingestSlackEvent(context.Background(), "T1", "ev-usage", "message", "", "U1", "/usage session", "D001", "im", "", "", "", "1700000000.000001"); err != nil {
+		t.Fatal(err)
+	}
+	g.usageWG.Wait()
+	slackFile(t, "slack-ev-usage-usage")
 }
 
 // /broker-approve reports both broker outcomes in the workspace language:

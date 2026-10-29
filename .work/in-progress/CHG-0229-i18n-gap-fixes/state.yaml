@@ -1,0 +1,46 @@
+schema: 1
+change: CHG-0229
+title: "i18n gap fixes — model lang pin, skill-draft card, assignment replies, Slack commands"
+status: in_progress
+branch: fix/m23-live-wake
+updated: "2026-10-30"
+phase: implementation
+adr: ADR-0084
+spec: null
+requirements: []
+depends_on: [CHG-0191]
+workstream: i18n
+github_milestone: null
+github_issue: null
+design_status: accepted
+implementation_status: implemented
+readiness: validating
+slices:
+  S229.1-model-lang-pin: done
+  S229.2-skill-draft-card: done
+  S229.3-assignment-replies: done
+  S229.4-slack-commands: done
+  S229.5-stale-keys: done
+  S229.6-wake-hint: done
+decisions:
+  - "lang hint gated on mapping.RoutineOriginVersion >= 1 — legacy records must replay byte-identical instructions under their idempotency key (TestHTTPRunnerPinsRoutineOriginPerNewMappingAndPreservesLegacyReplay)"
+  - "commandRoute carries verified return-path ids (telegram chat/topic/sender, slack channel/thread + conversation/delivery-target) so replies never trust command text"
+  - "/language saved/unknown replies reuse the -reply delivery key, not -lang: telegram's Resolve ladder already claims -lang for the auto-picker on pre-pref messages"
+  - "slack has no language hint source yet; users reach the picker via bare /language (ADR-0084 D3 permits)"
+completed:
+  - "per-run modelLangHint in HTTPRunner.RunOutcome (workspace-persisted owner language)"
+  - "18 draft.* keys localized across en/ru/kk/es; card + publish/reject/handled/undone pages render <html lang> and catalog text"
+  - "assignment.authorize-usage + assignment.bad-limits localized ×4"
+  - "slack '/'-text dispatches dispatchChannelCommand; new/delete/usage/compact/goal/language replies keep SlackChannel/SlackThread routing incl. async results"
+  - "lang.status, chat.cancel-state, chat.usage-busy, chat.usage-measuring removed from all catalogs"
+  - "assignment wake bundle appends modelLangHint(s.langOf(owner))"
+  - "docs/channels/slack.md limit row updated (commands dispatched; slash payloads not wired)"
+verification:
+  - "go test ./internal/communication — green"
+  - "go test ./internal/locale — green"
+  - "just go-check — green, own Go statement coverage 86.29% (>=85, package floor 75)"
+  - "just lint / docs-check / config-check — green"
+  - "flake note: mediasvc comfy resume + toolhub reconciler hit Windows file-lock races twice under full-suite load; both green standalone and in the final run, unrelated to this diff"
+limitations:
+  - "Slack language detection source (users.info) not implemented — picker is the only entry"
+  - "live Slack workspace acceptance not run — HMAC fixtures only"

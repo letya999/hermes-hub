@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
 )
 
 // skillDraft is one pending skill-store mutation awaiting the owner's click on
@@ -128,11 +129,12 @@ func (g *Gateway) serveSkillDraft(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	lang := locale.LangOf(g.user(draft.OwnerID).WorkspaceDir)
 
 	if r.Method == http.MethodPost {
 		switch r.URL.Query().Get("action") {
 		case "publish":
-			g.skillDraftPublish(w, r, id, draft)
+			g.skillDraftPublish(w, r, id, draft, lang)
 			return
 		case "reject":
 			if draft.State != "pending" {
@@ -140,10 +142,10 @@ func (g *Gateway) serveSkillDraft(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			g.setDraftState(id, "rejected")
-			_, _ = io.WriteString(w, "<!doctype html><title>Отклонено</title><p>Черновик «"+html.EscapeString(draft.SkillName)+"» отклонён — ничего не опубликовано.</p>")
+			_, _ = io.WriteString(w, "<!doctype html><html lang=\""+string(lang)+"\"><title>"+html.EscapeString(locale.T(lang, "draft.rejected-title"))+"</title><p>"+html.EscapeString(locale.T(lang, "draft.rejected-body", draft.SkillName))+"</p>")
 			return
 		case "undo":
-			g.skillDraftUndo(w, r, id, draft)
+			g.skillDraftUndo(w, r, id, draft, lang)
 			return
 		default:
 			http.Error(w, "unknown action", http.StatusBadRequest)
@@ -151,23 +153,23 @@ func (g *Gateway) serveSkillDraft(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if draft.State != "pending" {
-		_, _ = io.WriteString(w, "<!doctype html><title>Обработано</title><p>Этот черновик уже обработан ("+html.EscapeString(draft.State)+").</p>")
+		_, _ = io.WriteString(w, "<!doctype html><html lang=\""+string(lang)+"\"><title>"+html.EscapeString(locale.T(lang, "draft.handled-title"))+"</title><p>"+html.EscapeString(locale.T(lang, "draft.handled-body", draft.State))+"</p>")
 		return
 	}
 	var body strings.Builder
-	body.WriteString("<!doctype html><meta name=\"referrer\" content=\"no-referrer\"><title>Черновик навыка</title><h1>Карточка черновика навыка</h1>")
-	body.WriteString("<p><b>Навык:</b> " + html.EscapeString(draft.SkillName) + " &nbsp; <b>Область:</b> " + html.EscapeString(draft.Scope) + "</p>")
+	body.WriteString("<!doctype html><html lang=\"" + string(lang) + "\"><meta name=\"referrer\" content=\"no-referrer\"><title>" + html.EscapeString(locale.T(lang, "draft.card-title")) + "</title><h1>" + html.EscapeString(locale.T(lang, "draft.card-heading")) + "</h1>")
+	body.WriteString("<p><b>" + html.EscapeString(locale.T(lang, "draft.field-skill")) + "</b> " + html.EscapeString(draft.SkillName) + " &nbsp; <b>" + html.EscapeString(locale.T(lang, "draft.field-scope")) + "</b> " + html.EscapeString(draft.Scope) + "</p>")
 	if draft.Summary != "" {
-		body.WriteString("<p><b>Изменение:</b> " + html.EscapeString(draft.Summary) + "</p>")
+		body.WriteString("<p><b>" + html.EscapeString(locale.T(lang, "draft.field-change")) + "</b> " + html.EscapeString(draft.Summary) + "</p>")
 	}
 	if draft.Diff != "" {
 		body.WriteString("<h2>Diff</h2><pre>" + html.EscapeString(draft.Diff) + "</pre>")
 	}
-	body.WriteString("<p><b>Результаты проверки:</b> " + html.EscapeString(draft.Findings) + "</p>")
-	body.WriteString("<p><b>Происхождение:</b> <span class=\"provenance\">" + html.EscapeString(draft.Provenance) + "</span></p>")
+	body.WriteString("<p><b>" + html.EscapeString(locale.T(lang, "draft.field-findings")) + "</b> " + html.EscapeString(draft.Findings) + "</p>")
+	body.WriteString("<p><b>" + html.EscapeString(locale.T(lang, "draft.field-provenance")) + "</b> <span class=\"provenance\">" + html.EscapeString(draft.Provenance) + "</span></p>")
 	query := "?nonce=" + url.QueryEscape(nonce)
-	body.WriteString("<form method=post action=\"" + query + "&action=publish\"><button type=submit>Publish</button></form>")
-	body.WriteString("<form method=post action=\"" + query + "&action=reject\"><button type=submit>Reject</button></form>")
+	body.WriteString("<form method=post action=\"" + query + "&action=publish\"><button type=submit>" + html.EscapeString(locale.T(lang, "draft.publish")) + "</button></form>")
+	body.WriteString("<form method=post action=\"" + query + "&action=reject\"><button type=submit>" + html.EscapeString(locale.T(lang, "draft.reject")) + "</button></form>")
 	_, _ = io.WriteString(w, body.String())
 }
 
@@ -220,7 +222,7 @@ func (g *Gateway) setDraftState(id, state string) {
 // skillDraftPublish relays the confirmed apply to the runtime container — the
 // only place /skills-store is mounted writable — then re-arms exactly one
 // undo under a fresh nonce.
-func (g *Gateway) skillDraftPublish(w http.ResponseWriter, r *http.Request, id string, draft skillDraft) {
+func (g *Gateway) skillDraftPublish(w http.ResponseWriter, r *http.Request, id string, draft skillDraft, lang locale.Lang) {
 	if draft.State != "pending" {
 		http.Error(w, "draft already handled", http.StatusConflict)
 		return
@@ -236,12 +238,12 @@ func (g *Gateway) skillDraftPublish(w http.ResponseWriter, r *http.Request, id s
 		return
 	}
 	var body strings.Builder
-	body.WriteString("<!doctype html><title>Опубликовано</title><p>Черновик «" + html.EscapeString(draft.SkillName) + "» опубликован.</p>")
-	body.WriteString("<form method=post action=\"?nonce=" + url.QueryEscape(fresh) + "&action=undo\"><button type=submit>Откатить (undo)</button></form>")
+	body.WriteString("<!doctype html><html lang=\"" + string(lang) + "\"><title>" + html.EscapeString(locale.T(lang, "draft.published-title")) + "</title><p>" + html.EscapeString(locale.T(lang, "draft.published-body", draft.SkillName)) + "</p>")
+	body.WriteString("<form method=post action=\"?nonce=" + url.QueryEscape(fresh) + "&action=undo\"><button type=submit>" + html.EscapeString(locale.T(lang, "draft.undo-button")) + "</button></form>")
 	_, _ = io.WriteString(w, body.String())
 }
 
-func (g *Gateway) skillDraftUndo(w http.ResponseWriter, r *http.Request, id string, draft skillDraft) {
+func (g *Gateway) skillDraftUndo(w http.ResponseWriter, r *http.Request, id string, draft skillDraft, lang locale.Lang) {
 	if draft.State != "published" {
 		http.Error(w, "nothing to undo", http.StatusConflict)
 		return
@@ -251,7 +253,7 @@ func (g *Gateway) skillDraftUndo(w http.ResponseWriter, r *http.Request, id stri
 		return
 	}
 	g.setDraftState(id, "undone")
-	_, _ = io.WriteString(w, "<!doctype html><title>Откачено</title><p>Навык «"+html.EscapeString(draft.SkillName)+"» возвращён к предыдущей ревизии.</p>")
+	_, _ = io.WriteString(w, "<!doctype html><html lang=\""+string(lang)+"\"><title>"+html.EscapeString(locale.T(lang, "draft.undone-title"))+"</title><p>"+html.EscapeString(locale.T(lang, "draft.undone-body", draft.SkillName))+"</p>")
 }
 
 // runtimeSkillApply is the control call into the runtime container's

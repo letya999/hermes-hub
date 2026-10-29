@@ -326,12 +326,12 @@ func (g *Gateway) assignmentCommand(user User, sender int64, text string, lang l
 		_, err = g.spool.rt.CompleteAssignment(id, caller)
 	case "authorize":
 		if len(fields) != 5 || item.Plan == nil {
-			return "Используйте /assignment <id> authorize <max_wakes_per_day> <max_sources>."
+			return locale.T(lang, "assignment.authorize-usage")
 		}
 		wakes, e1 := strconv.Atoi(fields[3])
 		sources, e2 := strconv.Atoi(fields[4])
 		if e1 != nil || e2 != nil {
-			return "Неверные лимиты поручения."
+			return locale.T(lang, "assignment.bad-limits")
 		}
 		err = g.spool.rt.AuthorizeAssignmentGrants(id, item.Plan.Revision+1, commodel.AssignmentGrants{MaxWakesPerDay: wakes, MaxSources: sources}, caller)
 	default:

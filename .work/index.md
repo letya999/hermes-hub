@@ -16,6 +16,8 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0229](in-progress/CHG-0229-i18n-gap-fixes/plan.md) | i18n follow-up to CHG-0191: model lang pin per run, localized skill-draft card + assignment replies, Slack slash-command dispatch, stale catalog keys; implemented, validating |
+| [CHG-0228](in-progress/CHG-0228-skills-view-lifecycle/plan.md) | Skills platform: live view rebuild after publish, stale cleanup, draft eval, honest inventory, credential refs; implemented, validating |
 | [CHG-0226](in-progress/CHG-0226-storage-migration-acceptance/plan.md) | Storage reliability MVP: Явная миграция и итоговая приёмка ограниченного хранения; design accepted, implementation not started |
 | [CHG-0225](in-progress/CHG-0225-runtime-revision-reconcile/plan.md) | Storage reliability MVP: Долговечная сверка проекций и понятные причины runtime-сбоев; design accepted, implementation not started |
 | [CHG-0224](in-progress/CHG-0224-toolhub-state-confirmation/plan.md) | Storage reliability MVP: Сохранность ToolHub и доверенное подтверждение пользователя; design accepted, implementation not started |

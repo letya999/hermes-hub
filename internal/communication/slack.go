@@ -205,6 +205,16 @@ func (g *Gateway) ingestSlackEvent(ctx context.Context, teamID, eventID, eventTy
 	if envstore.LooksLikeEnv(text) {
 		return g.spool.EnqueueDelivery(Delivery{ID: "slack-" + eventID + "-secret", IdempotencyKey: "slack-" + eventID + "-secret", Channel: "slack_app", ConversationID: envelope.ConversationID, DeliveryTargetID: envelope.DeliveryTargetID, SlackChannel: channel, SlackThread: threadTS, Text: locale.T(locale.LangOf(user.WorkspaceDir), "slack.secret-rejected"), CreatedAt: g.now().UTC()})
 	}
+	if strings.HasPrefix(text, "/") {
+		// Commands answer on the verified sender's thread: the Slack ids ride
+		// the route, the conversation identity comes from the envelope.
+		task, taskErr := g.spool.ResolveTask(user, 0, 0, false)
+		if taskErr != nil {
+			return taskErr
+		}
+		route := commandRoute{channel: "slack_app", conversationID: envelope.ConversationID, deliveryTargetID: envelope.DeliveryTargetID, slackChannel: channel, slackThread: threadTS}
+		return g.dispatchChannelCommand(ctx, user, task, route, "slack-"+eventID, text)
+	}
 	job := Job{Envelope: envelope, ID: "slack-" + eventID, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: "slack_app", Trigger: "message", IdempotencyKey: "slack:" + eventID, Text: text, SlackChannel: channel, SlackThread: threadTS, CreatedAt: g.now().UTC()}
 	_, err := g.spool.Enqueue(job)
 	return err

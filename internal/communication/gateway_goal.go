@@ -22,12 +22,12 @@ type goalRunner interface {
 // command itself is never enqueued as a run. A set persists the durable
 // (principal, conversation) record and queues the kickoff as an ordinary
 // spool job with the goal trigger (SPEC-0074).
-func (g *Gateway) goalCommand(ctx context.Context, user User, task Task, channel string, chatID, topic, sender int64, deliveryKey, text string) error {
+func (g *Gateway) goalCommand(ctx context.Context, user User, task Task, route commandRoute, deliveryKey, text string) error {
 	reply := func(answer string) error {
-		return g.queueDeliveryChannel(ctx, deliveryKey+"-reply", channel, chatID, topic, answer)
+		return g.queueCommandReply(ctx, deliveryKey+"-reply", route, route.topic, answer)
 	}
 	verb, arg := parseGoalArgs(text)
-	answer, err := g.goalVerb(ctx, user, task, sender, channel, chatID, verb, arg)
+	answer, err := g.goalVerb(ctx, user, task, route.sender, route.channel, route.chatID, verb, arg)
 	if err != nil {
 		return err
 	}

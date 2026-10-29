@@ -66,11 +66,16 @@ func (r HTTPRunner) Run(ctx context.Context, job Job, _ User) (string, error) {
 func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error) {
 	startedAt := time.Now()
 	origin := ""
+	langHint := false
 	if r.Spool != nil {
 		mapping, ok, err := r.Spool.Mapping(job.ID)
 		if err != nil {
 			return RunOutcome{}, err
 		}
+		// Mappings written before the instruction-pinning era replay
+		// byte-identical instructions under their idempotency key; the owner
+		// language pin rides only current-generation records.
+		langHint = ok && mapping.RoutineOriginVersion >= 1
 		if ok && mapping.RoutineOriginVersion == 1 && mapping.MatchesJob(job) {
 			if ch := channelFor(nil, job.Channel); ch != nil && ch.Caps().RoutineOrigin {
 				body, _ := json.Marshal(map[string]string{"origin_job_id": job.ID})
@@ -121,6 +126,14 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 			instructions += "\n"
 		}
 		instructions += "To answer with a voice message, put `VOICE: <spoken text>` on its own line in the reply — the channel synthesizes and sends it as a voice message; when VOICE: is the only line, the reply is voice-only and no text message is sent. Do that when the user asks for a spoken or voice answer; otherwise answer in text. Synthesized audio is never stored."
+	}
+	// The owner's stored language is per-run data too: the model answers in
+	// it regardless of the prompt's own language (ADR-0084 D5).
+	if langHint && r.Spool.langOf != nil {
+		if instructions != "" {
+			instructions += "\n"
+		}
+		instructions += strings.TrimSpace(modelLangHint(r.Spool.langOf(job.UserID)))
 	}
 	body, err := json.Marshal(hubruntime.ExecuteRequest{
 		OperationalEpoch: job.OperationalEpoch,

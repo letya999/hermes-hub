@@ -421,7 +421,8 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 		_ = g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-lang", message.Chat.ID, messageTopicID(message), locale.T(lang, "lang.detected", locale.Names[lang]))
 	case "picker":
 		locale.StoreResult(user.WorkspaceDir, lang, action)
-		_ = g.languagePicker(ctx, "telegram_bot", message.Chat.ID, messageTopicID(message), "telegram-"+strconv.Itoa(update.UpdateID), lang)
+		route := commandRoute{channel: "telegram_bot", chatID: message.Chat.ID, topic: messageTopicID(message), sender: message.From.ID}
+		_ = g.languagePicker(ctx, route, messageTopicID(message), "telegram-"+strconv.Itoa(update.UpdateID), lang)
 	}
 	if os.Getenv("HUB_DIAGNOSTICS_ENABLED") != "false" {
 		visible := text
@@ -456,7 +457,8 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 		if taskErr != nil {
 			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, topic, locale.T(locale.LangOf(user.WorkspaceDir), "chat.task-open-failed"))
 		}
-		return g.dispatchChannelCommand(ctx, user, task, "telegram_bot", message.Chat.ID, topic, message.From.ID, "telegram-"+strconv.Itoa(update.UpdateID), text)
+		route := commandRoute{channel: "telegram_bot", chatID: message.Chat.ID, topic: topic, sender: message.From.ID}
+		return g.dispatchChannelCommand(ctx, user, task, route, "telegram-"+strconv.Itoa(update.UpdateID), text)
 	}
 	if message.Voice != nil || message.Audio != nil {
 		return g.handleVoice(ctx, update, user, message)
@@ -479,14 +481,35 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 	return g.enqueueChannelJob(ctx, user, task, "telegram_bot", "telegram-"+strconv.Itoa(update.UpdateID), "telegram:"+strconv.Itoa(update.UpdateID), message.Chat.ID, message.MessageID, text, message.From.ID, "")
 }
 
+// commandRoute is the verified return path for a channel command reply:
+// telegram fills chatID/topic/sender, slack fills the string ids; the
+// conversation ids come from the verified sender envelope — never the
+// command text.
+type commandRoute struct {
+	channel          string
+	chatID           int64
+	topic            int64
+	sender           int64
+	conversationID   string
+	deliveryTargetID string
+	slackChannel     string
+	slackThread      string
+}
+
+// queueCommandReply enqueues a command answer on the route that carried the
+// command — Slack threads need their channel ids, telegram needs chat/topic.
+func (g *Gateway) queueCommandReply(_ context.Context, key string, route commandRoute, topicID int64, text string) error {
+	return g.spool.EnqueueDelivery(Delivery{ID: key, IdempotencyKey: key, Channel: route.channel, ChatID: route.chatID, TopicID: topicID, SlackChannel: route.slackChannel, SlackThread: route.slackThread, ConversationID: route.conversationID, DeliveryTargetID: route.deliveryTargetID, Text: text, CreatedAt: g.now().UTC()})
+}
+
 // dispatchChannelCommand runs one slash command for an already authenticated
-// caller, whatever channel carried it (Telegram update, mock inject). The
-// caller identity is the verified envelope principal — never the command
-// text. deliveryKey namespaces the reply's outbox idempotency ids; sender is
-// the verified channel sender used for job envelopes. channel is the
-// registered delivery channel the reply must leave through.
-func (g *Gateway) dispatchChannelCommand(ctx context.Context, user User, task Task, channel string, chatID, topic, sender int64, deliveryKey, text string) error {
+// caller, whatever channel carried it (Telegram update, mock inject, Slack
+// event). The caller identity is the verified envelope principal — never
+// the command text. deliveryKey namespaces the reply's outbox idempotency
+// ids; route.sender is the verified channel sender used for job envelopes.
+func (g *Gateway) dispatchChannelCommand(ctx context.Context, user User, task Task, route commandRoute, deliveryKey, text string) error {
 	{
+		channel, chatID, topic, sender := route.channel, route.chatID, route.topic, route.sender
 		lang := locale.LangOf(user.WorkspaceDir)
 		command := strings.ToLower(strings.TrimPrefix(strings.Fields(text)[0], "/"))
 		if at := strings.IndexByte(command, '@'); at >= 0 {
@@ -504,7 +527,7 @@ func (g *Gateway) dispatchChannelCommand(ctx context.Context, user User, task Ta
 			return env
 		}
 		reply := func(answer string) error {
-			return g.queueDeliveryChannel(ctx, deliveryKey+"-reply", channel, chatID, topic, answer)
+			return g.queueCommandReply(ctx, deliveryKey+"-reply", route, topic, answer)
 		}
 		switch command {
 		case "approve":
@@ -539,14 +562,14 @@ func (g *Gateway) dispatchChannelCommand(ctx context.Context, user User, task Ta
 			return reply(locale.T(lang, "chat.started"))
 		case "new":
 			answer, replyTopic := g.newTaskCommand(ctx, user, chatID, topic, text)
-			return g.queueDeliveryChannel(ctx, deliveryKey+"-reply", channel, chatID, replyTopic, answer)
+			return g.queueCommandReply(ctx, deliveryKey+"-reply", route, replyTopic, answer)
 		case "sessions":
 			return reply(g.sessionsCommand(user, chatID))
 		case "use":
 			return reply(g.useCommand(ctx, user, chatID, text))
 		case "delete":
 			answer, replyTopic := g.deleteCommand(ctx, user, chatID, topic, task, text)
-			return g.queueDeliveryChannel(ctx, deliveryKey+"-reply", channel, chatID, replyTopic, answer)
+			return g.queueCommandReply(ctx, deliveryKey+"-reply", route, replyTopic, answer)
 		case "archive":
 			return reply(g.archiveCommand(ctx, user, chatID, task, text))
 		case "archived":
@@ -638,13 +661,13 @@ func (g *Gateway) dispatchChannelCommand(ctx context.Context, user User, task Ta
 				} else {
 					answer = g.usageCommand(usageCtx, user, sender, task)
 				}
-				_ = g.queueDeliveryChannel(context.Background(), deliveryKey+"-usage", channel, chatID, topic, answer)
+				_ = g.queueCommandReply(context.Background(), deliveryKey+"-usage", route, topic, answer)
 			}()
 			return reply(locale.T(lang, "usage.measuring"))
 		case "compact", "compress":
-			return g.compactCommand(ctx, user, task, channel, chatID, topic, sender, deliveryKey, text)
+			return g.compactCommand(ctx, user, task, route, deliveryKey, text)
 		case "goal":
-			return g.goalCommand(ctx, user, task, channel, chatID, topic, sender, deliveryKey, text)
+			return g.goalCommand(ctx, user, task, route, deliveryKey, text)
 		case "connections", "connection", "connectors":
 			return reply(g.connectionsCommand(user, sender))
 		case "watches":
@@ -660,7 +683,7 @@ func (g *Gateway) dispatchChannelCommand(ctx context.Context, user User, task Ta
 				if _, action := locale.Resolve(user.WorkspaceDir, ""); action == "picker" {
 					locale.StoreResult(user.WorkspaceDir, lang, "picker")
 				}
-				return g.languagePicker(ctx, channel, chatID, topic, deliveryKey, lang)
+				return g.languagePicker(ctx, route, topic, deliveryKey, lang)
 			}
 			if len(fields) == 2 {
 				if picked, ok := locale.Parse(fields[1]); ok {
@@ -707,9 +730,9 @@ func (g *Gateway) dispatchChannelCommand(ctx context.Context, user User, task Ta
 // languagePicker shows the supported languages. Channels with action
 // affordances get one button per language; the prompt text is still
 // self-sufficient so text-only channels can answer with /language <code>.
-func (g *Gateway) languagePicker(_ context.Context, channel string, chatID, topic int64, deliveryKey string, lang locale.Lang) error {
-	d := Delivery{ID: deliveryKey + "-lang", IdempotencyKey: deliveryKey + "-lang", Channel: channel, ChatID: chatID, TopicID: topic, Kind: "lang-picker", Text: locale.T(lang, "lang.choose"), CreatedAt: g.now().UTC()}
-	if ch := g.channel(channel); ch != nil && ch.Caps().Actions {
+func (g *Gateway) languagePicker(_ context.Context, route commandRoute, topic int64, deliveryKey string, lang locale.Lang) error {
+	d := Delivery{ID: deliveryKey + "-lang", IdempotencyKey: deliveryKey + "-lang", Channel: route.channel, ChatID: route.chatID, TopicID: topic, SlackChannel: route.slackChannel, SlackThread: route.slackThread, ConversationID: route.conversationID, DeliveryTargetID: route.deliveryTargetID, Kind: "lang-picker", Text: locale.T(lang, "lang.choose"), CreatedAt: g.now().UTC()}
+	if ch := g.channel(route.channel); ch != nil && ch.Caps().Actions {
 		for _, l := range locale.All {
 			d.Buttons = append(d.Buttons, DeliveryButton{Text: locale.Names[l], Data: "lang:" + string(l)})
 		}

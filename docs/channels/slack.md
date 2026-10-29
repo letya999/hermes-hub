@@ -1,6 +1,6 @@
 ---
 description: Slack App channel — Events API ingress, HMAC verification, workspace mapping, limits.
-last_verified: 2026-10-20
+last_verified: 2026-10-30
 ---
 
 # Channel: Slack (Events API)
@@ -26,6 +26,9 @@ different identity planes.
 
 ## Limits
 
-Events-only ingress (no slash commands surface); thread/message timestamps
-validated; no username/icon impersonation. Live workspace acceptance is an
-explicit gate — HMAC fixtures do not prove it.
+Events-only ingress: `/`-prefixed IM text runs through the shared command
+dispatcher (`dispatchChannelCommand`) so `/language`, `/new`, `/compact` and
+friends answer on the originating channel/thread, but Slack slash-command and
+shortcut payloads are not wired; thread/message timestamps validated; no
+username/icon impersonation. Live workspace acceptance is an explicit gate —
+HMAC fixtures do not prove it.
