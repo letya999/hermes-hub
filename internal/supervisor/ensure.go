@@ -65,7 +65,9 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 		snapshot := current.Runtime
 		m.mu.Unlock()
 		log.Printf("runtime %s policy rotated: replacing stale generation", snapshot.Container)
-		if err := m.removeOwnedRuntime(ctx, snapshot); err != nil {
+		// A verified-absent container already satisfies the removal goal;
+		// only a real removal failure blocks the rotated spawn.
+		if err := m.removeOwnedRuntime(ctx, snapshot); err != nil && !errors.Is(err, ErrRuntimeMissing) {
 			return Runtime{}, errors.New("stale-policy runtime removal failed")
 		}
 		m.mu.Lock()

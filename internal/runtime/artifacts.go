@@ -207,6 +207,20 @@ func extractVoiceLines(text string) (string, string) {
 // matching artifacts bucket when it does not already live under
 // artifacts/{documents,images,videos}. Containment, regular-file and size
 // checks are the same contract the artifact endpoint enforces.
+func underDir(root, path string) bool {
+	return root != "" && (path == root || strings.HasPrefix(path, root+string(os.PathSeparator)))
+}
+
+// mediaCacheRoot resolves the upstream media cache (<hermes>/cache): MCP
+// image/audio blocks land there and surface as absolute MEDIA: markers —
+// legitimate delivery sources that live outside the workspace tree.
+func mediaCacheRoot() string {
+	resolved, err := filepath.EvalSymlinks(filepath.Join(env("HERMES_HOME", filepath.Join(state, "hermes")), "cache"))
+	if err != nil {
+		return ""
+	}
+	return resolved
+}
 func stageMediaArtifact(raw string) (ArtifactRef, bool) {
 	if raw == "" || len(raw) > 1024 || strings.ContainsRune(raw, 0) {
 		return ArtifactRef{}, false
@@ -245,7 +259,7 @@ func stageMediaArtifact(raw string) (ArtifactRef, bool) {
 			}
 		}
 	}
-	if err != nil || resolved != resolvedRoot && !strings.HasPrefix(resolved, resolvedRoot+string(os.PathSeparator)) {
+	if err != nil || !underDir(resolvedRoot, resolved) && !underDir(mediaCacheRoot(), resolved) {
 		return ArtifactRef{}, false
 	}
 	info, err := os.Stat(resolved)

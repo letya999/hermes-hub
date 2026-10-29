@@ -424,7 +424,12 @@ browser/meet spaces before readiness) revives it transparently — profile,
 cookies and logins survive. `hubctl up` re-raises it as usual. Expected
 noise: the runtime's container healthcheck probes CDP whenever the browser
 marker is set, so the runtime shows `unhealthy` while its sidecar is
-asleep or restarting — transient, clears on wake.
+asleep or restarting — transient, clears on wake. Managed runtimes get
+their `browser`/`browser_guest` MCP servers rendered directly into the
+managed config from the reviewed `browser`/`browser_act` capability
+(same `hub:browser`/`hub:browser_guest` governance gate, no connector
+or catalog round-trip); `HUB_MANAGED_BROWSER` carries the grant to
+in-container materialization so the attested config matches.
 
 Entry points (`just`, `hubctl build`/`up`) force `DOCKER_BUILDKIT=1`,
 `COMPOSE_DOCKER_CLI_BUILD=1`, `COMPOSE_BAKE=true`; `hubctl` prunes

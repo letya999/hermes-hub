@@ -430,3 +430,30 @@ func TestArtifactEndpointBoundsAndMime(t *testing.T) {
 		t.Fatalf("badjson=%d", rec.Code)
 	}
 }
+
+func TestStageMediaArtifactStagesUpstreamMediaCache(t *testing.T) {
+	ws, st := t.TempDir(), t.TempDir()
+	oldW := workspace
+	workspace = ws
+	defer func() { workspace = oldW }()
+	t.Setenv("HERMES_HOME", filepath.Join(st, "hermes"))
+	// Upstream caches MCP image/audio blocks under <hermes>/cache/... and emits
+	// an absolute MEDIA:<path> marker; that tree sits outside /workspace yet is
+	// a legitimate delivery source.
+	cacheFile := writeArtifact(t, filepath.Join(st, "hermes", "cache", "images"), "img_x.png", "png-bytes")
+	ref, ok := stageMediaArtifact(cacheFile)
+	if !ok || ref.Name != "img_x.png" || ref.Mime != "image/png" {
+		t.Fatalf("media-cache ref=%+v ok=%v", ref, ok)
+	}
+	if _, err := os.Stat(filepath.Join(artifactRoot(), "images", "img_x.png")); err != nil {
+		t.Fatalf("staged copy missing: %v", err)
+	}
+	// A cache path must not escape containment via symlink to outside.
+	outside := writeArtifact(t, filepath.Join(st, "outside"), "secret.txt", "nope")
+	link := filepath.Join(st, "hermes", "cache", "images", "linked.png")
+	if err := os.Symlink(outside, link); err == nil {
+		if ref, ok := stageMediaArtifact(link); ok {
+			t.Fatalf("cache symlink escaped containment: %+v", ref)
+		}
+	}
+}

@@ -191,6 +191,11 @@ func (m *Manager) materializeHermesConfig(binding Binding, env string) (string, 
 		Web:                settings.Web,
 		ImageGen:           settings.ManagedImageGenGrant(),
 		Context:            settings.ManagedContextConfig(),
+		// The reviewed render's browser admission is the sole authority the
+		// attestation replays; without it the source-vs-template check
+		// rejects every browser-carrying managed config.
+		Browser: settings.ManagedBrowserGrant(),
+		User:    settings.User,
 	}
 	if settings.CapabilityMode == "managed" {
 		opts.SelfSettingsPath = filepath.Join(binding.ContextRoot, "managed", env, "runtime", selfsettings.FileName)

@@ -336,3 +336,24 @@ func TestManagedBrowserSidecarOnAgentNetwork(t *testing.T) {
 		t.Fatalf("sidecar env must carry its DNS alias for MCP allowed-hosts: %v", sidecar["environment"])
 	}
 }
+
+// Managed runtimes read managed/<env>/workspace, not <space>/workspace —
+// screenshots and downloads the sidecar writes under /workspace must land on
+// the same tree or delivery can never see them.
+func TestManagedBrowserSidecarMountsManagedWorkspace(t *testing.T) {
+	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
+		Model: "test", ModelURL: "http://model.invalid/v1", CapabilityMode: "managed",
+		CapabilityProfileID: "managed-dev", CapabilityGeneration: 1,
+		Tools: testTools("browser"), Ingress: testIngress("browser")}
+	services := Compose(s, t.TempDir(), t.TempDir())["services"].(M)
+	sidecar := services["browser-"+s.User].(M)
+	var source string
+	for _, raw := range sidecar["volumes"].([]any) {
+		if m := raw.(M); m["target"] == "/workspace" {
+			source, _ = m["source"].(string)
+		}
+	}
+	if !strings.HasSuffix(filepath.ToSlash(source), "managed/prod/workspace") {
+		t.Fatalf("managed sidecar must mount managed/prod/workspace, got %q", source)
+	}
+}

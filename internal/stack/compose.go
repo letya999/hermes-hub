@@ -175,6 +175,15 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 				runtimeEnv["HUB_MANAGED_IMAGE_GEN"] = string(imageGenJSON)
 			}
 		}
+		// Same contract for the browser sidecar grant: which endpoints the
+		// reviewed render admitted and whether mutation tools joined the
+		// surface. The in-container attestation replays these decisions
+		// instead of re-reading governance state the agent could edit.
+		if grant := s.managedBrowserGrant(); grant != (BrowserGrant{}) {
+			if grantJSON, err := json.Marshal(grant); err == nil {
+				runtimeEnv["HUB_MANAGED_BROWSER"] = string(grantJSON)
+			}
+		}
 	}
 	// The declared context-control section rides env so the materialized
 	// effective config and the in-container attestation reconstruct identical
@@ -312,9 +321,17 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		browserService["pids_limit"] = 512
 		browserService["ports"] = []string{fmt.Sprintf("127.0.0.1:%d:6080", s.BrowserPort)}
 		browserService["environment"] = M{"HUB_MEET": fmt.Sprint(s.Has("meet")), "HUB_BROWSER_HOST": "browser-" + s.User}
+		// Sidecar downloads/screenshots must land where the agent's own
+		// workspace resolves: managed runtimes bind managed/<env>/workspace,
+		// unmanaged ones the space root — mounting the other tree strands
+		// every browser artifact outside the delivery path.
+		browserWorkspace := filepath.Join(dir, "workspace")
+		if s.CapabilityMode == "managed" {
+			browserWorkspace = filepath.Join(dir, "managed", s.Environment, "workspace")
+		}
 		browserVolumes := []any{
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "connections", "browser")), "target": "/state/browser"},
-			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "workspace")), "target": "/workspace"},
+			M{"type": "bind", "source": filepath.ToSlash(browserWorkspace), "target": "/workspace"},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "browser-novnc.passwd")), "target": "/run/novnc.pass", "read_only": true},
 		}
 		if s.Has("meet") {

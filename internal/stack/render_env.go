@@ -123,7 +123,7 @@ func RenderEnvironment(dir, root, environment string) error {
 		}
 	}
 	if s.CapabilityMode == "managed" {
-		for _, name := range []string{"runtime", "hermes", "home", "cache", "workspace"} {
+		for _, name := range []string{"runtime", "hermes", "home", "cache", "workspace", "skills"} {
 			if err = os.MkdirAll(filepath.Join(dir, "managed", s.Environment, name), 0700); err != nil {
 				return err
 			}
@@ -220,6 +220,12 @@ func RenderEnvironment(dir, root, environment string) error {
 			managedEnv["HTTP_PROXY"] = "http://egress-relay:8319"
 			managedEnv["HTTPS_PROXY"] = "http://egress-relay:8319"
 			managedEnv["NO_PROXY"] = "toolhub,model-relay,egress-relay,localhost,127.0.0.1"
+			if s.Has("browser") {
+				// The browser MCP sidecar is internal like the relays:
+				// proxying it through egress breaks the streamable-HTTP
+				// handshake (the relay rightly refuses arbitrary forwards).
+				managedEnv["NO_PROXY"] += ",browser-" + s.User
+			}
 			managedEnv["HUB_EGRESS_PROXY"] = "http://egress-relay:8319"
 			for _, key := range s.Web.envKeys() {
 				if value := secrets[key]; value != "" {

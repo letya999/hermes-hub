@@ -592,6 +592,13 @@ func run(ctx context.Context, args []string) error {
 				fmt.Println("Selected model is present in the provider catalog.")
 				return nil
 			}
+			skillLines, err := stack.SkillDoctor(*dir)
+			if err != nil {
+				return err
+			}
+			for _, line := range skillLines {
+				fmt.Println(line)
+			}
 			fmt.Println("Configuration valid. OAuth sessions, provider permissions and Docker runtime require live verification.")
 			return nil
 		}

@@ -1091,3 +1091,87 @@ func TestBrowserGuestReservedAndMountsPerUser(t *testing.T) {
 		t.Fatal("user MCP claimed the reserved browser_guest name")
 	}
 }
+
+func TestManagedRenderProvisionsSkillsStoreDir(t *testing.T) {
+	dir, root := t.TempDir(), t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "config"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config", "SOUL.md"), []byte("soul"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Init(dir, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := Read(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.Model = "test"
+	settings.ModelURL = "http://model-relay:8318/v1"
+	settings.CapabilityMode = "managed"
+	settings.CapabilityProfileID = "p"
+	settings.CapabilityGeneration = 1
+	settings.Tools, settings.Ingress = testTools("workspace"), testIngress("workspace")
+	if err := saveSpace(dir, settings); err != nil {
+		t.Fatal(err)
+	}
+	selection := `{"schema":1,"user":"alice","environment":"prod","mode":"supervisor","supervisor_url":"http://localhost:8876","native_cron":"disabled","compatibility_release":"0.3.0"}`
+	if err := os.WriteFile(filepath.Join(dir, ExecutionPath("prod")), []byte(selection), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "secrets.prod.env"), []byte("OPENAI_API_KEY=model\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenderEnvironment(dir, root, "prod"); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"runtime", "hermes", "home", "cache", "workspace", "skills"} {
+		if _, err := os.Stat(filepath.Join(dir, "managed", "prod", name)); err != nil {
+			t.Fatalf("managed dir %q missing: %v", name, err)
+		}
+	}
+}
+
+func TestManagedRenderNoProxyCoversBrowserSidecar(t *testing.T) {
+	dir, root := t.TempDir(), t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "config"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config", "SOUL.md"), []byte("soul"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Init(dir, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := Read(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.Model = "test"
+	settings.ModelURL = "http://model-relay:8318/v1"
+	settings.CapabilityMode = "managed"
+	settings.CapabilityProfileID = "p"
+	settings.CapabilityGeneration = 1
+	settings.Tools, settings.Ingress = testTools("browser", "hh=toolhub"), testIngress("browser")
+	if err := saveSpace(dir, settings); err != nil {
+		t.Fatal(err)
+	}
+	selection := `{"schema":1,"user":"alice","environment":"prod","mode":"supervisor","supervisor_url":"http://localhost:8876","native_cron":"disabled","compatibility_release":"0.3.0"}`
+	if err := os.WriteFile(filepath.Join(dir, ExecutionPath("prod")), []byte(selection), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "secrets.prod.env"), []byte("OPENAI_API_KEY=model\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenderEnvironment(dir, root, "prod"); err != nil {
+		t.Fatal(err)
+	}
+	env, err := os.ReadFile(filepath.Join(dir, "managed-runtime.prod.env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(env), "NO_PROXY=") || !strings.Contains(string(env), "browser-alice") {
+		t.Fatalf("managed NO_PROXY must keep browser-alice sidecar direct: %q", env)
+	}
+}

@@ -474,3 +474,45 @@ features: [workspace]
 		t.Fatalf("managed org-bound run args missing HUB_SKILLS_ORG: %s", joined)
 	}
 }
+
+// The host-side materialization for a managed space must carry the render's
+// browser grant into the effective config the spawned runtime mounts: the
+// review surface (governance decisions, browser_act) is evaluated on the
+// fully loaded Settings here, never re-derived in the container.
+func TestManagedMaterializeCarriesBrowserGrant(t *testing.T) {
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("ok"), nil }, nil)
+	writeManagedFixtures(t, root)
+	settings, err := stack.ReadEnvironment(root, "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.Tools = map[string]stack.ToolEntry{"browser": {Via: stack.ToolViaMCP, Tools: map[string]bool{"act": true}}}
+	settingsBody, err := yaml.Marshal(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "settings.yaml"), settingsBody, 0600); err != nil {
+		t.Fatal(err)
+	}
+	source, err := yaml.Marshal(stack.Config(settings))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "hermes.prod.yaml"), source, 0600); err != nil {
+		t.Fatal(err)
+	}
+	configPath, err := m.materializeHermesConfig(binding(root), "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	for _, want := range []string{"browser-alice:8931/mcp", "browser-alice:8932/mcp", "browser_click", "toolhub"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("materialized config missing %q:\n%s", want, text)
+		}
+	}
+}

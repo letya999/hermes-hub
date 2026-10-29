@@ -51,6 +51,43 @@ func TestCLIWorkflow(t *testing.T) {
 	}
 }
 
+// hubctl doctor surfaces the effective-view skills report: entries the agent
+// catalog hides (ineligible, hidden) are still operator-visible.
+func TestDoctorPrintsSkillsSection(t *testing.T) {
+	ctx := context.Background()
+	dir := filepath.Join(t.TempDir(), "owner")
+	if err := run(ctx, []string{"init", "--dir", dir, "--user", "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	agentPath := filepath.Join(dir, "agent.yaml")
+	raw, err := os.ReadFile(agentPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := strings.Replace(string(raw), `model: ""`, `model: "m1"`, 1)
+	cfg = strings.Replace(cfg, `model_url: ""`, `model_url: "http://model-relay:8318/v1"`, 1)
+	if err := os.WriteFile(agentPath, []byte(cfg), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "secrets.prod.env"), []byte("OPENAI_API_KEY=fake\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	idxDir := filepath.Join(dir, "generated", "skills-effective")
+	if err := os.MkdirAll(idxDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	idx := `{"schema":1,"revision":"r1","skills":[{"name":"stuck","source":"user","eligible":false,"missing":["connector:gitlab"]}]}`
+	if err := os.WriteFile(filepath.Join(idxDir, "index.json"), []byte(idx), 0644); err != nil {
+		t.Fatal(err)
+	}
+	out := captureOutput(t, func() error {
+		return run(ctx, []string{"doctor", "--dir", dir})
+	})
+	if !strings.Contains(out, "Skills: 1 effective") || !strings.Contains(out, `stuck [user] INELIGIBLE, missing: connector:gitlab`) {
+		t.Fatalf("doctor missing skills report:\n%s", out)
+	}
+}
+
 func TestCLIOrganizationWorkflow(t *testing.T) {
 	root := t.TempDir()
 	org := filepath.Join(root, "organizations", "acme")
