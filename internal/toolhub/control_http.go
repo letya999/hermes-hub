@@ -822,7 +822,7 @@ func (g *Gateway) serveViewerPage(w http.ResponseWriter, r *http.Request, connec
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
-	_, _ = io.WriteString(w, `<!doctype html><html lang="`+html.EscapeString(string(lang))+`"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Browser viewer</title><style>`+
+	_, _ = io.WriteString(w, `<!doctype html><html lang="`+html.EscapeString(string(lang))+`"><meta name="viewport" content="width=device-width,initial-scale=1"><title>`+html.EscapeString(locale.T(lang, "page.viewer-title"))+`</title><style>`+
 		`:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}`+
 		`body{margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:16px}main{width:min(1024px,100%)}`+
 		`h1{font-size:20px;margin:0 0 8px}p{color:#52606d;line-height:1.5;margin:0 0 12px}`+
@@ -830,7 +830,7 @@ func (g *Gateway) serveViewerPage(w http.ResponseWriter, r *http.Request, connec
 		`#bar button{border:0;border-radius:8px;padding:9px 16px;background:#175cd3;color:#fff;font:inherit;cursor:pointer}`+
 		`#screen{width:100%;background:#17202a;border-radius:12px;cursor:crosshair;display:block}`+
 		`#status{color:#98a2b3;font-size:13px;margin-top:8px}</style>`+
-		`<main><h1>Browser viewer — `+html.EscapeString(connectionID)+`</h1>`+
+		`<main><h1>`+html.EscapeString(locale.T(lang, "page.viewer-title")+" — "+connectionID)+`</h1>`+
 		`<p>`+html.EscapeString(locale.T(lang, "page.viewer-hint"))+`</p>`+
 		`<div id="bar"><input id="url" placeholder="https://…" autocomplete="off" aria-label="`+html.EscapeString(locale.T(lang, "page.viewer-open"))+`"><button id="go">`+html.EscapeString(locale.T(lang, "page.viewer-open"))+`</button></div>`+
 		`<img id="screen" alt="`+html.EscapeString(locale.T(lang, "page.viewer-alt"))+`"><div id="status" aria-live="polite"></div></main>`+

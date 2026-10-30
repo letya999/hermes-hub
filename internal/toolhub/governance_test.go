@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
 )
 
 var govRuleSeq int
@@ -512,6 +513,22 @@ func TestServeGrantAckForm(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode == 200 {
 		t.Fatal("replayed nonce accepted")
+	}
+}
+
+// The protected grant page is localized like every other human surface
+// (ADR-0084): the catalog picks the language, never a hardcoded English
+// literal.
+func TestGrantAckPageLocalized(t *testing.T) {
+	grant := &api.ToolGrant{GrantID: "grant-1", PrincipalID: "alice", Section: "connectors", Reason: "enable gitlab", Status: api.GrantPending, ExpiresAt: time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)}
+	page := grantAckPage(grant, "nonce-1", locale.LangRU)
+	for _, want := range []string{"Выдать доступ", "Раздел", "Причина"} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("ru grant page missing %q", want)
+		}
+	}
+	if strings.Contains(page, "Grant access") || strings.Contains(page, `lang="en"`) {
+		t.Fatal("ru grant page carries hardcoded English")
 	}
 }
 

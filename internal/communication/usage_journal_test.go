@@ -10,11 +10,25 @@ import (
 	"testing"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/locale"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
 func testJob(id, scope string) Job {
 	return Job{ID: id, ScopeID: scope}
+}
+
+// Missing usage counters must render through the catalog, not a hardcoded
+// "unknown" (ADR-0084: every user-visible string is localized).
+func TestUsageNumLocalized(t *testing.T) {
+	var missing *int64
+	if got := usageNum(locale.LangRU, missing); got != "неизвестно" {
+		t.Fatalf("ru unknown value = %q", got)
+	}
+	v := int64(7)
+	if got := usageNum(locale.LangRU, &v); got != "7" {
+		t.Fatalf("present counter = %q", got)
+	}
 }
 
 func TestUsageJournalDedupesAndTotals(t *testing.T) {

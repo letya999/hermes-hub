@@ -45,6 +45,28 @@ func TestUnknownHostNoRead(t *testing.T) {
 		t.Fatalf("unknown host %d", w.Code)
 	}
 }
+// The anonymous bootstrap page negotiates Accept-Language like every other
+// human surface (ADR-0084): no hardcoded English literals.
+func TestShareBootstrapLocalized(t *testing.T) {
+	s, _ := fixture(t)
+	site := publishLink(t, s)
+	u, err := url.Parse(site.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("GET", "https://"+u.Host+"/", nil)
+	req.Header.Set("Accept-Language", "ru")
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("bootstrap %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "Открыть общий сайт") || strings.Contains(body, "Open shared site") {
+		t.Fatalf("bootstrap not localized: %q", body[:120])
+	}
+}
+
 func TestShareBootstrapAndEpoch(t *testing.T) {
 	s, _ := fixture(t)
 	site := publishLink(t, s)

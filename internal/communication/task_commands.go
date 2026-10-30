@@ -410,7 +410,7 @@ func (g *Gateway) usageCommand(ctx context.Context, user User, sender int64, tas
 	if !report.SessionFound {
 		return locale.T(lang, "usage.no-session", taskLabel(lang, task))
 	}
-	lines := []string{locale.T(lang, "usage.session-line", usageNum(report.InputTokens), usageNum(report.OutputTokens), usageNum(report.CacheReadTokens), usageNum(report.CacheWriteTokens))}
+	lines := []string{locale.T(lang, "usage.session-line", usageNum(lang, report.InputTokens), usageNum(lang, report.OutputTokens), usageNum(lang, report.CacheReadTokens), usageNum(lang, report.CacheWriteTokens))}
 	// Observed compactions = measured lineage rotations plus journaled
 	// in-place events; either side unknown leaves the whole count unknown.
 	var observed *int64
@@ -424,7 +424,7 @@ func (g *Gateway) usageCommand(ctx context.Context, user User, sender int64, tas
 		}
 		observed = &total
 	}
-	compactions := usageNum(observed)
+	compactions := usageNum(lang, observed)
 	if report.CompactionsTruncated && report.Compactions != nil {
 		// Hop-capped lineage is a lower bound, never a silent truncation.
 		compactions = "≥" + compactions
@@ -477,9 +477,9 @@ func usageTransient(err error) bool {
 	return strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "502") || strings.Contains(err.Error(), "503")
 }
 
-func usageNum(v *int64) string {
+func usageNum(lang locale.Lang, v *int64) string {
 	if v == nil {
-		return "unknown"
+		return locale.T(lang, "usage.unknown")
 	}
 	return strconv.FormatInt(*v, 10)
 }

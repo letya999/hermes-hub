@@ -1,0 +1,43 @@
+schema: 1
+change: CHG-0235
+title: Localize remaining hardcoded user-facing strings
+status: in_progress
+branch: fix/m23-live-wake
+updated: 2026-10-30
+phase: validation
+adr: ADR-0084
+spec: none
+requirements: [localized-user-strings]
+depends_on: []
+github_milestone: pending
+github_issue: pending
+design_status: accepted
+implementation_status: done
+slices:
+  S1-grant-ack-page: done
+  S2-viewer-title: done
+  S3-usage-placeholder: done
+  S4-hosting-bootstrap: done
+  S5-rule-records: done
+validation:
+  documents: "devcheck docs green"
+  just_check: "affected packages green: locale, hosting, toolhub (49s),
+    communication (91s); full-repo just_check not re-run"
+  docker_check: not_run
+  red_team: not_applicable
+  live_acceptance: not_applicable
+evidence:
+  - "TestGrantAckPageLocalized red->green: grant page renders ru catalog
+    strings, no lang=en literal"
+  - "TestToolHubPagesLocalized viewer assertion switched to
+    page.viewer-title red->green"
+  - "TestUsageNumLocalized red->green: nil counter -> usage.unknown"
+  - "TestShareBootstrapLocalized red->green: Accept-Language ru ->
+    localized bootstrap"
+  - "catalog parity green across en/ru/kk/es (page.grant-* x11,
+    page.viewer-title, usage.unknown, hosting.bootstrap-* x3)"
+remaining:
+  - full just_check run
+limitations:
+  - "anonymous hosting page negotiates Accept-Language only; a user whose
+    browser sends an unsupported tag gets the operator fallback"

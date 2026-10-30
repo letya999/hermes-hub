@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"mime"
 	"net/http"
@@ -17,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/locale"
 )
 
 type responseAudit struct {
@@ -42,9 +45,24 @@ func (w *responseAudit) Write(p []byte) (int, error) {
 func (w *responseAudit) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 const cookieName = "__Host-hub-site"
-const bootstrap = `<!doctype html><meta name="referrer" content="no-referrer"><title>Open shared site</title><body><script>
-(async()=>{const token=location.hash.slice(1);history.replaceState(null,"",location.pathname+location.search);if(!token){document.body.textContent="Open the original share link.";return;}const r=await fetch("/_hosting/exchange",{method:"POST",headers:{"Content-Type":"text/plain"},body:token,credentials:"same-origin"});if(r.ok){location.reload()}else{document.body.textContent="Link unavailable."}})();
+
+// bootstrapLang resolves the anonymous page locale from Accept-Language; the
+// share link carries no identity, so the operator fallback is the last word.
+func bootstrapLang(r *http.Request) locale.Lang {
+	if lang, ok := locale.Negotiate(r.Header.Get("Accept-Language")); ok {
+		return lang
+	}
+	return locale.Fallback()
+}
+
+func bootstrapPage(lang locale.Lang) string {
+	title := html.EscapeString(locale.T(lang, "hosting.bootstrap-title"))
+	noToken, _ := json.Marshal(locale.T(lang, "hosting.bootstrap-no-token"))
+	unavailable, _ := json.Marshal(locale.T(lang, "hosting.bootstrap-unavailable"))
+	return `<!doctype html><meta name="referrer" content="no-referrer"><title>` + title + `</title><body><script>
+(async()=>{const token=location.hash.slice(1);history.replaceState(null,"",location.pathname+location.search);if(!token){document.body.textContent=` + string(noToken) + `;return;}const r=await fetch("/_hosting/exchange",{method:"POST",headers:{"Content-Type":"text/plain"},body:token,credentials:"same-origin"});if(r.ok){location.reload()}else{document.body.textContent=` + string(unavailable) + `}})();
 </script>`
+}
 
 func (s *Service) session(r record) string {
 	expires := minTime(s.now().Add(time.Hour), minTime(r.ShareExpires, r.ExpiresAt)).Unix()
@@ -203,7 +221,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		if req.Method == "GET" && req.URL.Path == "/" {
 			securityHeaders(w, true)
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			_, _ = io.WriteString(w, bootstrap)
+			_, _ = io.WriteString(w, bootstrapPage(bootstrapLang(req)))
 			return
 		}
 		http.NotFound(w, req)

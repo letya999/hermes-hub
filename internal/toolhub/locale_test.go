@@ -407,7 +407,7 @@ func TestToolHubPagesLocalized(t *testing.T) {
 	}
 	rec = get(g.serveViewer, "/viewer/conn-browser?t="+nonce+"&lang=es", "")
 	assertPage("viewer", rec, "es",
-		"Browser viewer", page("page.viewer-hint"), page("page.viewer-open"),
+		page("page.viewer-title"), page("page.viewer-hint"), page("page.viewer-open"),
 		page("page.viewer-retry"), page("page.viewer-alt"), `aria-live="polite"`)
 
 	// A spent viewer link is the gone page too.

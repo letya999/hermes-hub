@@ -34,6 +34,12 @@ immutable decisions in docs/adr/, frozen requirements in specs/, task state in .
 - `devcheck docs` (part of `just check`) enforces unique ADR/SPEC/CHG numbering, index↔file
   sync and `last_verified` ≥ last commit. Editing a doc obliges re-verifying it against code;
   keep statuses honest — a done CHG moves to .work/done/ with an index row the same day.
+- Every user-visible string is localized through internal/locale — no hardcoded
+  language literals in handlers, pages or command replies, including units and
+  placeholder words like "unknown". Render via locale.T(lang, key) with keys in
+  all four catalogs (en/ru/kk/es); resolve lang with pageLang(r)/Negotiate on
+  HTTP surfaces and locale.LangOf(workspace) in chat paths. A new key without
+  all four translations fails the catalog-parity test.
 - Do not claim integration success from mock tests. Do not add a provider with a guessed API.
 - Keep integrations opt-in. User namespace is spaces/<user>; dev/prod is Docker/env selection with separate volumes. No unsolicited framework/database/queue dependencies.
 
