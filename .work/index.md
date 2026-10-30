@@ -16,7 +16,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
-| [CHG-0234](in-progress/CHG-0234-conversation-parallel-lanes/plan.md) | Parallel session lanes per context: conversation-keyed inFlight, fairness per context, per-context cap below upstream Hermes cap; design proposed, implementation not started |
+| [CHG-0234](in-progress/CHG-0234-conversation-parallel-lanes/plan.md) | Parallel session lanes per context: conversation-keyed inFlight, fairness per context, per-context cap below upstream Hermes cap; implementing |
 | [CHG-0231](in-progress/CHG-0231-mcp-onboarding-repair/plan.md) | MCP onboarding: immutable reviewed contract revisions, digest gate, failed form cleanup and explicit bind conflicts; validating |
 | [CHG-0232](in-progress/CHG-0232-runtime-credential-diagnostics/plan.md) | Caller runtime skill ref leases and allowlisted spawn diagnostics; validating |
 | [CHG-0229](in-progress/CHG-0229-i18n-gap-fixes/plan.md) | i18n follow-up to CHG-0191: model lang pin per run, localized skill-draft card + assignment replies, Slack slash-command dispatch, stale catalog keys; implemented, validating |

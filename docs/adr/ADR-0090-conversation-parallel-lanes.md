@@ -5,7 +5,7 @@ last_verified: "2026-10-30"
 
 # ADR-0090: Параллельные сессии внутри контекста (conversation lanes)
 
-Status: proposed; implementation planned in CHG-0234.
+Status: accepted; implementation in CHG-0234.
 Дата решения: 2026-10-30.
 
 Связи: [ADR-0025](ADR-0025-context-parallel-gateway-workers.md) (уточняется,

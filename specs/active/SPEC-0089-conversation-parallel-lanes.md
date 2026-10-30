@@ -1,9 +1,11 @@
 ---
-status: draft — pending owner acceptance; on freeze SPEC-0012 rule 4 is superseded
+status: frozen (supersedes SPEC-0012 rule 4)
 title: Parallel session lanes per context
 ---
 
 # SPEC-0089: Параллельные сессии внутри контекста (conversation lanes)
+
+Frozen: 2026-10-30, после принятия ADR-0090 владельцем.
 
 Supplements SPEC-0012 (правило 4), SPEC-0013, SPEC-0053 — без переписывания
 их истории. Design: [ADR-0090](../../docs/adr/ADR-0090-conversation-parallel-lanes.md).

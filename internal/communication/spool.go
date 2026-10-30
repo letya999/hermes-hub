@@ -73,9 +73,10 @@ type Spool struct {
 	root   string
 	mu     sync.Mutex
 	secret map[string]string
-	// inFlight maps (principal, context) to the job currently allowed to run;
-	// held until the job's mapping reaches a terminal status. In-memory only,
-	// rebuilt from durable mappings on startup (ADR-0025).
+	// inFlight maps (principal, context, conversation) to the job currently
+	// allowed to run; held until the job's mapping reaches a terminal status.
+	// In-memory only, rebuilt from durable mappings on startup (ADR-0090,
+	// amends ADR-0025).
 	inFlight        map[string]string
 	proactiveFlight map[string]bool
 	activeMappings  map[string]bool // Lazily rebuilt; only this spool's writer changes mappings.
@@ -320,7 +321,7 @@ func (s *Spool) rebuildMappings() error {
 				}
 			}
 			if mapping, err := s.loadMappingLocked(job.ID); err == nil && mappingHoldsContext(mapping) {
-				s.inFlight[jobContextKey(mapping.PrincipalID, mapping.ContextID)] = job.ID
+				s.inFlight[jobContextKey(mapping.PrincipalID, mapping.ContextID, mapping.ConversationID)] = job.ID
 			}
 		}
 	}
@@ -1068,7 +1069,7 @@ func (s *Spool) ClaimJob() (*Job, error) {
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
 		a, b := candidates[i].job, candidates[j].job
-		ak, bk := jobContextKey(a.PrincipalID, a.ContextID), jobContextKey(b.PrincipalID, b.ContextID)
+		ak, bk := jobFairKey(a.PrincipalID, a.ContextID), jobFairKey(b.PrincipalID, b.ContextID)
 		if ak != bk {
 			if (ak > cursor.Scope) != (bk > cursor.Scope) {
 				return ak > cursor.Scope
@@ -1108,12 +1109,21 @@ func (s *Spool) ClaimJob() (*Job, error) {
 				continue
 			}
 		}
-		key := jobContextKey(job.PrincipalID, job.ContextID)
+		// ponytail: parallel lanes share one home and runtime — workspace
+		// writes are last-writer-wins, the browser sidecar is single and a
+		// runtime restart hits every lane (ADR-0090 D5). Upgrade paths:
+		// per-session workspace views, a browser lane, per-lane wedge
+		// accounting.
+		key := jobContextKey(job.PrincipalID, job.ContextID, job.ConversationID)
 		if holder, busy := s.inFlight[key]; busy && holder != job.ID {
-			continue // Context serialization is per key; other contexts stay claimable.
+			continue // Serialization is per conversation lane; other lanes stay claimable.
+		}
+		fairKey := jobFairKey(job.PrincipalID, job.ContextID)
+		if s.inFlight[key] != job.ID && s.limits.MaxParallelPerContext > 0 && s.contextLanesHeldLocked(fairKey) >= s.limits.MaxParallelPerContext {
+			continue // Context at its session cap; the lane waits like a busy key (ADR-0090 R3).
 		}
 		to := filepath.Join(s.root, "running", name)
-		cursor.Scope = key
+		cursor.Scope = fairKey
 		if err := atomicJSON(cursorPath, cursor); err != nil {
 			return nil, err
 		}

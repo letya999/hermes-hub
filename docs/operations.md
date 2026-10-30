@@ -1,6 +1,6 @@
 ---
 description: Operator runbook — stack lifecycle, user onboarding, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
-last_verified: 2026-10-29
+last_verified: 2026-10-30
 ---
 
 # Operations
@@ -528,6 +528,16 @@ archive holds 48 h detail + dedup receipt for the retention period; catch-up
 (investigate before clearing). `HUB_MOCK_DIR` keeps mock/e2e capture out of
 the production spool. Never delete uncertain mappings/leases to force a
 retry — the original run may already have acted externally.
+
+Concurrency: in-flight serialization is per conversation lane
+`(principal, context, conversation)` — forum topics and DM tasks of one
+user run in parallel inside the shared context runtime, FIFO inside each
+conversation (ADR-0090, amends ADR-0025). `HUB_CONTEXT_MAX_PARALLEL` (8)
+caps a context's lanes below the upstream Hermes `max_concurrent_runs`
+(10); `HUB_COMMUNICATION_WORKERS` (32) bounds the pool; fair rotation
+still rotates by scope so one owner's sessions cannot crowd out others.
+Ceilings: shared workspace/`MEMORY.md` is last-writer-wins across lanes;
+one browser sidecar per space; a runtime restart hits all its lanes.
 
 Gateway/session ops: `/new`, `/use`, `/delete`, `/sessions`, `/session`
 manage per-task sessions (each task = own durable Hermes session; forum

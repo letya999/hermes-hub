@@ -1,6 +1,6 @@
 ---
 description: spaces/<id>/ layout — settings.yaml, generated configs, secrets/env files, state dirs, and what is hand-edited vs rendered.
-last_verified: 2026-10-29
+last_verified: 2026-10-30
 ---
 
 # Spaces

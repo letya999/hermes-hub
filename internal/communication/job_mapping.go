@@ -218,7 +218,7 @@ func (s *Spool) updateMappingLocked(jobID string, outcome RunOutcome, status str
 		}
 	}
 	if !mappingHoldsContext(mapping) {
-		key := jobContextKey(mapping.PrincipalID, mapping.ContextID)
+		key := jobContextKey(mapping.PrincipalID, mapping.ContextID, mapping.ConversationID)
 		if s.inFlight[key] == mapping.JobID {
 			delete(s.inFlight, key)
 		}
@@ -242,10 +242,21 @@ func mappingHoldsContext(mapping JobMapping) bool {
 	return mapping.RunID != "" && mapping.SessionID != "" && mapping.RuntimeGeneration != ""
 }
 
-// jobContextKey mirrors the supervisor runtime key without the fixed gateway
-// runtime mode: work is serialized per (principal, context), parallel across
-// different keys (ADR-0025).
-func jobContextKey(principal, contextID string) string {
+// jobContextKey is the in-flight lane key: work is serialized per
+// (principal, context, conversation) — each conversation is its own Hermes
+// session (ADR-0090, amends ADR-0025). A job without a conversation id
+// degrades to the context key.
+func jobContextKey(principal, contextID, conversationID string) string {
+	if conversationID == "" {
+		return principal + "\x00" + contextID
+	}
+	return principal + "\x00" + contextID + "\x00" + conversationID
+}
+
+// jobFairKey scopes claim rotation to (principal, context): a burst of
+// conversations from one owner shares that owner's scheduling quantum
+// instead of outnumbering other owners' lanes (ADR-0090 R4).
+func jobFairKey(principal, contextID string) string {
 	return principal + "\x00" + contextID
 }
 
@@ -257,6 +268,19 @@ func (s *Spool) releaseInFlightLocked(jobID string) {
 			delete(s.inFlight, key)
 		}
 	}
+}
+
+// contextLanesHeldLocked counts lanes held under one fairness scope; the
+// cap keeps a single context below the upstream Hermes run ceiling
+// (ADR-0090 R3). s.mu must be held.
+func (s *Spool) contextLanesHeldLocked(fairKey string) int {
+	held := 0
+	for key := range s.inFlight {
+		if key == fairKey || strings.HasPrefix(key, fairKey+"\x00") {
+			held++
+		}
+	}
+	return held
 }
 
 func (s *Spool) SessionFor(principal, context, conversation string) (ConversationMapping, bool, error) {

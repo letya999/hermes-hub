@@ -7,7 +7,7 @@ record it points to. `archive/` holds only pre-renumbering originals.
 
 | Specification | Status |
 |---|---|
-| [SPEC-0089](active/SPEC-0089-conversation-parallel-lanes.md) | Draft: parallel sessions inside one context — lane per conversation, fairness per context, per-context cap below upstream (ADR-0090, CHG-0234); on freeze supersedes SPEC-0012 rule 4 |
+| [SPEC-0089](active/SPEC-0089-conversation-parallel-lanes.md) | Frozen: parallel sessions inside one context — lane per conversation, fairness per context, per-context cap below upstream (ADR-0090, CHG-0234); supersedes SPEC-0012 rule 4 |
 | [SPEC-0088](active/SPEC-0088-bounded-control-journals.md) | Frozen: bounded root-plane journals, receipts, diagnostics and maintenance; implementation not started |
 | [SPEC-0087](active/SPEC-0087-broker-bounded-storage.md) | Frozen: Broker recovery, SQLCipher proof, normalized state/audit and provider lifecycle; implementation not started |
 | [SPEC-0086](active/SPEC-0086-standing-assignment-mvp.md) | Frozen: executable standing-assignment MVP — cursor replay, filtered specialist wakes, durable progress and acceptance (M23 #324/#332) |
@@ -85,7 +85,7 @@ record it points to. `archive/` holds only pre-renumbering originals.
 | [SPEC-0015](active/SPEC-0015-run-controls.md) | Durable cancellation and approval ownership, dispatch and expiry |
 | [SPEC-0014](active/SPEC-0014-job-runtime-mappings.md) | Durable job, session, run and runtime mappings |
 | [SPEC-0013](active/SPEC-0013-routines-and-runtime-wake.md) | Hub-owned routines wake sleeping context runtimes |
-| [SPEC-0012](active/SPEC-0012-scale-to-zero-runtime-lifecycle.md) | Scale-to-zero lifecycle for isolated context runtimes; idle default superseded by 30-min warm TTL (SPEC-0053) |
+| [SPEC-0012](active/SPEC-0012-scale-to-zero-runtime-lifecycle.md) | Scale-to-zero lifecycle for isolated context runtimes; idle default superseded by 30-min warm TTL (SPEC-0053); rule 4 per-context serialization superseded by per-conversation lanes (SPEC-0089) |
 | [SPEC-0011](active/SPEC-0011-hermes-api-contract.md) | Pinned Hermes API contract for sessions and runs |
 | [SPEC-0010](active/SPEC-0010-stable-identifiers.md) | Stable identity, context, runtime, conversation and connection identifiers |
 | [SPEC-0009](active/SPEC-0009-scoped-homes-and-service-boundaries.md) | Implemented scoped homes and communication-hub boundary; migration remains explicit |

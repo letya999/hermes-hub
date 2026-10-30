@@ -103,15 +103,20 @@ type spoolLimits struct {
 	// MaxDeliveries bounds ordinary pending outbox entries; control-plane
 	// deliveries claim a reserved lane and are exempt.
 	MaxDeliveries int
+	// MaxParallelPerContext caps conversation lanes held by one context;
+	// default 8 stays below the upstream Hermes max_concurrent_runs (10) so
+	// a pre-admission 429 is unreachable in steady state (ADR-0090 R3).
+	MaxParallelPerContext int
 }
 
 func limitsFromEnv() spoolLimits {
 	return spoolLimits{
-		MaxPendingPerScope: intFromEnv("HUB_SPOOL_MAX_PENDING_PER_SCOPE", 16),
-		MaxPendingTotal:    intFromEnv("HUB_SPOOL_MAX_PENDING_TOTAL", 128),
-		ScopeTokenDaily:    int64(intFromEnv("HUB_SCOPE_TOKEN_DAILY", 0)),
-		MaxBytes:           int64(intFromEnv("HUB_SPOOL_MAX_BYTES", 256<<20)),
-		MaxDeliveries:      intFromEnv("HUB_SPOOL_MAX_DELIVERIES", 1024),
+		MaxPendingPerScope:    intFromEnv("HUB_SPOOL_MAX_PENDING_PER_SCOPE", 16),
+		MaxPendingTotal:       intFromEnv("HUB_SPOOL_MAX_PENDING_TOTAL", 128),
+		ScopeTokenDaily:       int64(intFromEnv("HUB_SCOPE_TOKEN_DAILY", 0)),
+		MaxBytes:              int64(intFromEnv("HUB_SPOOL_MAX_BYTES", 256<<20)),
+		MaxDeliveries:         intFromEnv("HUB_SPOOL_MAX_DELIVERIES", 1024),
+		MaxParallelPerContext: intFromEnv("HUB_CONTEXT_MAX_PARALLEL", 8),
 	}
 }
 

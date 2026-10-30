@@ -1956,7 +1956,7 @@ func TestEnvHelpers(t *testing.T) {
 		t.Fatal("workersFromEnv set")
 	}
 	t.Setenv("HUB_COMMUNICATION_WORKERS", "0")
-	if workersFromEnv() != 4 {
+	if workersFromEnv() != 32 {
 		t.Fatal("workersFromEnv fallback")
 	}
 }

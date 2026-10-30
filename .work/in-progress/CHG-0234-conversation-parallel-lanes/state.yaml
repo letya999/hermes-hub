@@ -2,28 +2,31 @@ schema: 1
 change: CHG-0234
 title: Parallel session lanes per context (conversation-keyed gateway serialization)
 status: in_progress
-branch: feat/conversation-parallel-lanes
+branch: fix/m23-live-wake
 updated: 2026-10-30
-phase: design
+phase: implementation
 adr: ADR-0090
 spec: SPEC-0089
 requirements: [conversation-parallel-lanes]
 depends_on: []
 github_milestone: pending
 github_issue: pending
-design_status: proposed
-implementation_status: not_started
+design_status: accepted
+implementation_status: in_progress
 slices:
-  S1-lane-key-conversation: not_started
-  S2-per-context-cap: not_started
-  S3-worker-default: not_started
-  S4-docs-spec-flips: not_started
+  S1-lane-key-conversation: done
+  S2-per-context-cap: done
+  S3-worker-default: done
+  S4-docs-spec-flips: done
   S5-live-acceptance: not_started
 validation:
-  documents: pending
-  just_check: not_run
+  documents: done
+  just_check: "docs-check/lint/config-check green; go-check fails only on
+    unrelated Windows temp file-lock flakes (mediasvc comfy, toolhub removal
+    reconciler, goal retry delivery — all pass standalone; communication
+    package ok under -race -shuffle in both full runs)"
   docker_check: not_run
-  red_team: not_started
+  red_team: reviewed_in_tests
   live_acceptance: not_started
 evidence:
   - "upstream pin 869228cab: executor thread per /v1/runs run, per-run

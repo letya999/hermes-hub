@@ -421,13 +421,15 @@ func intFromEnv(name string, fallback int) int {
 	return fallback
 }
 
-// workersFromEnv bounds the job worker pool; default 4 keeps it under the
-// supervisor's default runtime cap. Context serialization is unaffected.
+// workersFromEnv bounds the job worker pool; default 32 gives conversation
+// lanes (ADR-0090) headroom — workers are goroutines holding an HTTP stream.
+// Concurrency is still capped per context by HUB_CONTEXT_MAX_PARALLEL and
+// globally by this pool.
 func workersFromEnv() int {
 	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_WORKERS"))); err == nil && n > 0 {
 		return n
 	}
-	return 4
+	return 32
 }
 
 func fillChannelSecrets(config *Config) {
