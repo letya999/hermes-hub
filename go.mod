@@ -7,7 +7,7 @@ require (
 	github.com/andybalholm/cascadia v1.3.3
 	github.com/gofrs/flock v0.13.0
 	github.com/google/jsonschema-go v0.4.3
-	github.com/gotd/td v0.162.0
+	github.com/gotd/td v0.163.0
 	github.com/k2-fsa/sherpa-onnx-go v1.13.8
 	github.com/letya999/credential-broker v0.0.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
