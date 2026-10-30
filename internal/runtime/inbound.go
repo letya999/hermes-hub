@@ -27,16 +27,24 @@ func fetchInbound(ctx context.Context, id string) (string, error) {
 		tokenEnv = "HUB_RUNTIME_AUTH"
 	}
 	client := &http.Client{Transport: inboundBearer{token: os.Getenv(tokenEnv), base: http.DefaultTransport}}
-	session, err := mcp.NewClient(&mcp.Implementation{Name: "hub-inbound", Version: "1"}, nil).Connect(ctx, &mcp.StreamableClientTransport{Endpoint: toolHubEndpoint(), HTTPClient: client}, nil)
-	if err != nil {
-		return "", err
+	call := func(name string) (*mcp.CallToolResult, error) {
+		session, err := mcp.NewClient(&mcp.Implementation{Name: "hub-inbound", Version: "1"}, nil).Connect(ctx, &mcp.StreamableClientTransport{Endpoint: toolHubEndpoint(), HTTPClient: client}, nil)
+		if err != nil {
+			return nil, err
+		}
+		defer session.Close()
+		return session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: map[string]any{"id": id}})
 	}
-	defer session.Close()
-	definition := agenttools.HubToolsDefinition()
-	name := api.ProjectedToolName(definition.DefinitionID, definition.Version, "inbox_fetch")
-	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: map[string]any{"id": id}})
+	result, err := call("inbox_fetch")
 	if err != nil || result == nil || result.IsError {
-		return "", errors.New("inbound file could not be saved")
+		// Managed profiles publish the tool under its canonical name; older
+		// publications and unmanaged spaces expose the connector-style
+		// projected name instead.
+		definition := agenttools.HubToolsDefinition()
+		result, err = call(api.ProjectedToolName(definition.DefinitionID, definition.Version, "inbox_fetch"))
+		if err != nil || result == nil || result.IsError {
+			return "", errors.New("inbound file could not be saved")
+		}
 	}
 	data, _ := result.StructuredContent.(map[string]any)
 	rel, _ := data["path"].(string)

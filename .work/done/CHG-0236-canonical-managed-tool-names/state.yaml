@@ -1,0 +1,26 @@
+schema: 1
+change: CHG-0236
+title: Canonical managed tool names (inbound fetch + catalog apply)
+status: done
+branch: fix/m23-live-wake
+updated: 2026-10-30
+phase: done
+adr: none
+spec: none
+requirements: []
+depends_on: [CHG-0233]
+github_issue: pending
+design_status: accepted
+implementation_status: accepted
+slices:
+  S1-inbound-canonical-name: accepted
+  S2-catalog-apply-name: accepted
+  S3-live-rebind-respawn: accepted
+validation:
+  documents: verified-live
+  just_check: run
+notes: >-
+  just check red only on pre-existing gates: gofmt on 5 files unformatted at
+  HEAD (hosting/http_test.go, locale/strings_{en,es,kk,ru}.go) and Windows
+  file-lock flake in internal/mediasvc (passes standalone). No dependency
+  changes — just security not required.
