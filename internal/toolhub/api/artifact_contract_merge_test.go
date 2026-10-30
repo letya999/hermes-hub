@@ -53,6 +53,40 @@ func TestConfirmedToolContractLifecycle(t *testing.T) {
 	}
 }
 
+func TestPreflightToolListHonorsCuratedReadTools(t *testing.T) {
+	// A prepared connector's curated read_tools declares read semantics the
+	// upstream server fails to annotate (POST search/query endpoints). The
+	// probe's fail-closed write verdict is upgraded for curated names only.
+	imported := ImportedArtifact{Definition: ToolDefinition{
+		Schema: SchemaVersion, DefinitionID: "notion-mcp-server", Version: "1.0.0", Transport: ContainerMCP,
+		Source:    DefinitionSource{Image: "img", Digest: "sha256:" + strings.Repeat("b", 64), Repository: "https://github.com/makenotion/notion-mcp-server"},
+		Execution: ExecutionPolicy{TimeoutSeconds: 5, OutputBytes: 1024, CPUMillis: 1, MemoryMiB: 1, MaxPIDs: 1, Egress: []string{"api.notion.com"}},
+		Tools:     []ToolSpec{{Name: "API-post-search", Effect: WriteEffect}},
+	}}
+	probed := []ToolSpec{
+		{Name: "API-post-search", Effect: WriteEffect},
+		{Name: "API-query-data-source", Effect: WriteEffect},
+		{Name: "API-delete-a-block", Effect: WriteEffect},
+	}
+	contract, err := ApplyPreflightToolList(&imported, probed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	effects := map[string]Effect{}
+	for _, tool := range contract.Tools {
+		effects[tool.Name] = tool.Effect
+	}
+	if effects["API-post-search"] != ReadEffect {
+		t.Fatalf("curated read tool stayed write: %+v", contract.Tools)
+	}
+	if effects["API-query-data-source"] != ReadEffect {
+		t.Fatalf("curated read tool stayed write: %+v", contract.Tools)
+	}
+	if effects["API-delete-a-block"] != WriteEffect {
+		t.Fatalf("genuine write tool flipped: %+v", contract.Tools)
+	}
+}
+
 func TestConfirmedToolContractValidation(t *testing.T) {
 	if _, err := ConfirmedToolContractDigest(ConfirmedToolContract{Source: "guessed", Tools: []ToolSpec{{Name: "t", Effect: ReadEffect}}}); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("untrusted source: %v", err)

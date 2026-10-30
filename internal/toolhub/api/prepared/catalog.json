@@ -5,7 +5,7 @@
     "language": "node", "entrypoint": ["node", "/app/bin/cli.mjs"],
     "connection": {"fields": [{"name": "NOTION_TOKEN", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "NOTION_TOKEN"}]},
     "contract_id": "notion-token", "contract_revision": 3, "stateful": false,
-    "egress": ["api.notion.com"], "read_tools": ["API-get-self", "API-post-search", "API-retrieve-a-page"], "probe_tool": "API-get-self",
+    "egress": ["api.notion.com"], "read_tools": ["API-get-self", "API-post-search", "API-query-data-source", "API-retrieve-a-page"], "probe_tool": "API-get-self",
     "runbook": "docs/prepared-connectors.md#notion",
     "handoff": "Install https://github.com/makenotion/notion-mcp-server; reuse my existing Notion connection. Enter NOTION_TOKEN only in the protected Broker form. Verify a read of the shared root/pages; do not create or edit pages."
   },

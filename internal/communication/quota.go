@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -21,32 +20,48 @@ import (
 const quotaCacheTTL = 5 * time.Minute
 
 // quotaTracker caches rendered /usage quota lines behind their own lock so
-// the fetch path never touches gateway state.
+// the fetch path never touches gateway state. Entries are keyed by the
+// resolved relay identity — principals on different relays (shared gateway)
+// must never see each other's subscription snapshot.
 type quotaTracker struct {
 	mu    sync.Mutex
-	cache []string
+	cache map[string]quotaEntry
+}
+
+type quotaEntry struct {
+	lines []string
 	at    time.Time
 }
 
-// quotaLines returns rendered subscription-limit lines for /usage. Missing
-// relay configuration is silent; fetch failures return one honest line.
-func (g *Gateway) quotaLines(ctx context.Context, lang locale.Lang) []string {
-	base := strings.TrimRight(strings.TrimSpace(os.Getenv("HUB_MODEL_RELAY_URL")), "/")
+// quotaLines returns rendered subscription-limit lines for /usage. The relay
+// is resolved exactly like /model: the single-owner env pair, else the shared
+// admins file keyed by principal. Missing relay configuration is silent;
+// fetch failures return one honest line.
+func (g *Gateway) quotaLines(ctx context.Context, lang locale.Lang, principals ...string) []string {
+	principal := ""
+	if len(principals) > 0 {
+		principal = principals[0]
+	}
+	base, admin := modelRelayFor(principal)
 	if base == "" {
 		return []string{locale.T(lang, "quota.unconfigured")}
 	}
+	key := base + "\x00" + admin
 	g.quota.mu.Lock()
-	cached, at := g.quota.cache, g.quota.at
+	cached, ok := g.quota.cache[key]
 	g.quota.mu.Unlock()
-	if !at.IsZero() && g.now().Sub(at) < quotaCacheTTL {
-		return cached
+	if ok && g.now().Sub(cached.at) < quotaCacheTTL {
+		return cached.lines
 	}
-	lines, err := fetchQuotaLines(ctx, base, strings.TrimSpace(os.Getenv("HUB_MODEL_RELAY_ADMIN")), lang)
+	lines, err := fetchQuotaLines(ctx, strings.TrimRight(base, "/"), admin, lang)
 	if err != nil {
 		lines = []string{locale.T(lang, "quota.unavailable", err.Error())}
 	}
 	g.quota.mu.Lock()
-	g.quota.cache, g.quota.at = lines, g.now()
+	if g.quota.cache == nil {
+		g.quota.cache = map[string]quotaEntry{}
+	}
+	g.quota.cache[key] = quotaEntry{lines: lines, at: g.now()}
 	g.quota.mu.Unlock()
 	return lines
 }

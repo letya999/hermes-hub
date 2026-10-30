@@ -1,6 +1,6 @@
 ---
 description: model-relay — per-space model selection endpoint for managed spaces; layered models.yaml, owner switch bearer, cliproxy upstream.
-last_verified: 2026-10-28
+last_verified: 2026-10-31
 ---
 
 # model-relay
@@ -116,8 +116,8 @@ Every ladder has 1–8 ordered hops. Auth/quota failures, server failures and
 transport failures put that account on a 60-second cooldown and try the next
 declared hop. Other HTTP statuses pass through. Each attempt/skip is logged
 without request contents or keys. `GET /v1/hops` exposes the selected ladder's
-cooldown under owner/admin authentication. Defaults are 3 minutes per hop
-(`HUB_MODEL_RELAY_HOP_TIMEOUT`, maximum 5 minutes) and 4 minutes 15 seconds for the whole
+cooldown under owner/admin authentication. Defaults are 5 minutes per hop
+(`HUB_MODEL_RELAY_HOP_TIMEOUT`, maximum 5 minutes) and 6 minutes for the whole
 request (`HUB_MODEL_RELAY_TIMEOUT`, maximum 10 minutes); hop cannot exceed total.
 The hop bound covers the entire exchange, including a streamed body. A transport
 timeout allows one bounded recovery attempt after cooldown on a later request;

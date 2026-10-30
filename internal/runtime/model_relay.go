@@ -1084,10 +1084,11 @@ func modelRelayHandlerFromEnv() (http.Handler, error) {
 }
 
 func modelRelayLimits() (time.Duration, time.Duration, error) {
-	// The hop bound covers the whole exchange incl. a streaming body — agentic
-	// completions legitimately run tens of seconds, so the default is the full
-	// request budget rather than a tight first-byte ceiling.
-	hop, total := 3*time.Minute, 4*time.Minute+15*time.Second
+	// The hop bound covers the whole exchange incl. a streaming body — long
+	// generations (a whole book rendered in one completion) legitimately run
+	// minutes, so the default is the capped maximum rather than a tighter
+	// ceiling; the total budget leaves room for one retried fast-failing hop.
+	hop, total := 5*time.Minute, 6*time.Minute
 	for _, item := range []struct {
 		key     string
 		value   *time.Duration

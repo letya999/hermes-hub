@@ -660,7 +660,7 @@ func (g *Gateway) dispatchChannelCommand(ctx context.Context, user User, task Ta
 				defer cancel()
 				answer := journal
 				if overview {
-					answer += "\n" + strings.Join(g.quotaLines(usageCtx, lang), "\n")
+					answer += "\n" + strings.Join(g.quotaLines(usageCtx, lang, user.ID), "\n")
 				} else {
 					answer = g.usageCommand(usageCtx, user, sender, task)
 				}

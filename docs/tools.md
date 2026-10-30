@@ -1,6 +1,6 @@
 ---
 description: Complete agent-visible tool surface — toolhub control tools, connector_* facade, hub:tools catalog, effect/grant requirements, delivery directives.
-last_verified: "2026-10-30"
+last_verified: "2026-10-31"
 ---
 
 # Tool surface
@@ -197,7 +197,11 @@ Grouped by capability resource (internal/agenttools/capability.go):
 Reply-level markers the channel consumes (set in the tools server
 instructions): `MEDIA: <workspace path>` attaches a file; `VOICE: <text>`
 sends a voice message on voice-capable channels (voice-only when it's the
-whole reply; synthesized audio is never stored).
+whole reply; synthesized audio is never stored). At run end the runtime
+also delivers files produced under `artifacts/documents`, `artifacts/images`
+and `artifacts/videos`, plus a root-level workspace file carrying a
+deliverable extension (.html, .pdf, .png, .mp4) — staged into its bucket
+automatically.
 
 ## Standing rules (from the tool instructions)
 

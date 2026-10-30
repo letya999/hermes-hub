@@ -646,3 +646,43 @@ func TestInstallResolvesSkillsShSlug(t *testing.T) {
 		t.Fatalf("unmatched slug must surface candidates: %+v %v", res2, err)
 	}
 }
+
+// R10.6: an unmoved ref reports up_to_date instead of manufacturing a
+// vacuous draft — repeated `skill update` must not fill .drafts with noise.
+func TestUpdateUnmovedRefReportsUpToDate(t *testing.T) {
+	root := t.TempDir()
+	st, err := skillstore.Open(root, skillstore.ScopeUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit := strings.Repeat("c1", 20)
+	fake := &fakeGit{commit: commit, tree: skillstore.Tree{
+		"skills/pdf/SKILL.md": {Data: []byte("---\nname: pdf\ndescription: pdf\n---\nv1")},
+	}}
+	res, err := Install(context.Background(), st, InstallOptions{
+		URL: "https://github.com/anthropics/skills", Path: "skills/pdf",
+		Meta: skillstore.DraftMeta{Author: "test"},
+	}, fake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.PublishDraft(res.DraftID, "owner"); err != nil {
+		t.Fatal(err)
+	}
+	upd, err := Update(context.Background(), st, "pdf", fake, skillstore.DraftMeta{Author: "git"})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if !upd.UpToDate || upd.DraftID != "" {
+		t.Fatalf("unmoved ref must report up_to_date with no draft: %+v", upd)
+	}
+	drafts, err := st.Drafts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range drafts {
+		if d.Name == "pdf" && d.ID != res.DraftID {
+			t.Fatalf("update manufactured a noise draft: %+v", d)
+		}
+	}
+}

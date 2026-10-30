@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -509,6 +511,83 @@ func TestUsageOverviewIncludesQuotaWithoutBlockingPoll(t *testing.T) {
 	}
 	if len(fake.sent) != 2 || !strings.Contains(fake.sent[1], "Журнал:") || !strings.Contains(fake.sent[1], "Лимиты подписки") || !strings.Contains(fake.sent[1], "weekly 75.0%") {
 		t.Fatalf("overview missing journal or quota: %v", fake.sent)
+	}
+	g.usageWG.Wait()
+}
+
+func TestUsageCommandResolvesQuotaThroughCallerRelay(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/quota" || r.Header.Get("Authorization") != "Bearer relay-a" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"lines": []string{"Лимиты A: weekly 10%"}})
+	}))
+	defer server.Close()
+	admins := map[string]map[string]string{"alice": {"url": server.URL, "admin": "relay-a"}}
+	body, _ := json.Marshal(admins)
+	path := filepath.Join(t.TempDir(), "model-relay-admins.json")
+	if err := os.WriteFile(path, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_MODEL_RELAY_URL", "")
+	t.Setenv("HUB_MODEL_RELAY_ADMIN", "")
+	t.Setenv("HUB_MODEL_RELAY_ADMINS_FILE", path)
+
+	c := testConfig(t)
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{}
+	g.api, g.runner = fake, &usageStubRunner{report: hubruntime.SessionUsage{
+		SessionFound: true, DeclaredSessionID: "sess", InputTokens: int64ptr(1), OutputTokens: int64ptr(1), Source: "hermes-session",
+	}}
+	user := g.user("alice")
+	task, err := g.spool.ResolveTask(user, 11, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := g.usageCommand(context.Background(), user, 11, task)
+	if !strings.Contains(got, "Лимиты A") {
+		t.Fatalf("/usage skipped the caller's own relay: %s", got)
+	}
+}
+
+func TestUsageOverviewResolvesQuotaThroughCallerRelay(t *testing.T) {
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/quota" || r.Header.Get("Authorization") != "Bearer relay-a" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"lines": []string{"Лимиты A: weekly 10%"}})
+	}))
+	defer relay.Close()
+	admins := map[string]map[string]string{"alice": {"url": relay.URL, "admin": "relay-a"}}
+	body, _ := json.Marshal(admins)
+	path := filepath.Join(t.TempDir(), "model-relay-admins.json")
+	if err := os.WriteFile(path, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_MODEL_RELAY_URL", "")
+	t.Setenv("HUB_MODEL_RELAY_ADMIN", "")
+	t.Setenv("HUB_MODEL_RELAY_ADMINS_FILE", path)
+	g, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{}
+	g.api, g.runner = fake, &fakeRunner{}
+	if err := g.handleUpdate(context.Background(), taskUpdate(1, 1, "/usage", 11, 0)); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for len(fake.sent) < 2 && time.Now().Before(deadline) {
+		g.deliverOne(context.Background())
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(fake.sent) != 2 || !strings.Contains(fake.sent[1], "Лимиты A") {
+		t.Fatalf("overview skipped the caller's own relay: %v", fake.sent)
 	}
 	g.usageWG.Wait()
 }

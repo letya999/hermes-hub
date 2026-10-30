@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/letya999/hermes-hub/internal/skillstore/gitsource"
+	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
@@ -35,9 +36,11 @@ func skillGitCell(dir, principal string) (gitsource.ExecCell, error) {
 }
 
 // skillGitToken reads the controller admission token rendered into the
-// space's toolhub.auth (KEY=value lines, mode 0600).
+// infra-owner's toolhub.auth (KEY=value lines, mode 0600). The shared
+// workload-controller authenticates only the infra space's key, so a
+// secondary space's own token file must not be presented.
 func skillGitToken(dir string) (string, error) {
-	body, err := os.ReadFile(filepath.Join(dir, "toolhub.auth")) // #nosec G703 -- operator-supplied deployment dir
+	body, err := os.ReadFile(filepath.Join(stack.InfraSpaceDir(dir), "toolhub.auth")) // #nosec G703 -- operator-supplied deployment dir
 	if err != nil {
 		return "", fmt.Errorf("skill git: admission token unavailable (is the stack rendered?): %w", err)
 	}

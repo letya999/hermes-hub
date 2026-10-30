@@ -396,3 +396,39 @@ func TestSkillGitCellTokenFromEnv(t *testing.T) {
 		t.Fatal("GIT_TOKEN never reached the cell env")
 	}
 }
+
+// The shared workload-controller authenticates only the infra-owner's key —
+// a secondary space's own toolhub.auth token is rejected (401). The
+// operator path resolves the infra sibling's file the same way the shared
+// governance document does.
+func TestSkillGitTokenInfraSibling(t *testing.T) {
+	root := t.TempDir()
+	spaces := filepath.Join(root, "spaces")
+	local := filepath.Join(spaces, "local")
+	member := filepath.Join(spaces, "member")
+	for _, d := range []string{local, member} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(local, "agent.yaml"), []byte("user: me\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(member, "agent.yaml"), []byte("infra: false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(local, "toolhub.auth"), []byte("HUB_TOOLHIVE_ADMISSION_TOKEN=infra-tok\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(member, "toolhub.auth"), []byte("HUB_TOOLHIVE_ADMISSION_TOKEN=member-tok\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tok, err := skillGitToken(member)
+	if err != nil || tok != "infra-tok" {
+		t.Fatalf("secondary space must present the infra token, got %q err=%v", tok, err)
+	}
+	tok, err = skillGitToken(local)
+	if err != nil || tok != "infra-tok" {
+		t.Fatalf("infra space presents its own token, got %q err=%v", tok, err)
+	}
+}

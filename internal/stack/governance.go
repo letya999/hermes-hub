@@ -92,6 +92,37 @@ func governanceDocPath(spaceDir string) string {
 	return own
 }
 
+// InfraSpaceDir resolves which space owns the shared control plane for a
+// spaces/ layout: the caller itself when it renders infra, else the first
+// sibling that does, else the caller. Host-side callers (hubctl skill git)
+// must present the infra-owner's credentials to the shared controller.
+func InfraSpaceDir(dir string) string {
+	if spaceRendersInfra(dir) {
+		return dir
+	}
+	parent := filepath.Dir(dir)
+	if filepath.Base(parent) != "spaces" {
+		return dir
+	}
+	siblings, err := os.ReadDir(parent)
+	if err != nil {
+		return dir
+	}
+	names := []string{}
+	for _, sibling := range siblings {
+		if sibling.IsDir() {
+			names = append(names, sibling.Name())
+		}
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		if name != filepath.Base(dir) && spaceRendersInfra(filepath.Join(parent, name)) {
+			return filepath.Join(parent, name)
+		}
+	}
+	return dir
+}
+
 // spaceRendersInfra peeks at a space's own files for the infra flag without
 // running Read — full settings load would recurse into governance
 // resolution. The flag lives in agent.yaml (split layout) or settings.yaml

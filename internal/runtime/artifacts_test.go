@@ -182,6 +182,45 @@ func TestExtractMediaArtifactsStagesWorkspaceFiles(t *testing.T) {
 	}
 }
 
+// A deliverable written at the workspace root — the observed book task saved
+// psihologiya_vliyaniya_chaldini.html beside the artifacts/ tree — must still
+// reach the chat: the run-end scan stages it under the matching bucket.
+// Working files (notes, scratch, unknown extensions) stay undelivered.
+func TestScanArtifactsStagesTopLevelDeliverables(t *testing.T) {
+	dir := t.TempDir()
+	old := workspace
+	workspace = dir
+	defer func() { workspace = old }()
+	writeArtifact(t, artifactRoot(), "documents/listed.pdf", "in-tree")
+	writeArtifact(t, dir, "book.html", "<html>book</html>")
+	writeArtifact(t, dir, "chart.png", "png-bytes")
+	writeArtifact(t, dir, "clip.mp4", "mp4-bytes")
+	writeArtifact(t, dir, "report.pdf", "pdf-bytes")
+	writeArtifact(t, dir, "todo.md", "working notes")
+	writeArtifact(t, dir, "scratch.py", "print(1)")
+	writeArtifact(t, dir, ".env", "TOKEN=x")
+	oldDeliverable := writeArtifact(t, dir, "old-report.pdf", "stale")
+	if err := os.Chtimes(oldDeliverable, time.Now().Add(-time.Hour), time.Now().Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	got := scanArtifacts(time.Now().Add(-time.Minute))
+	var paths []string
+	for _, ref := range got {
+		paths = append(paths, ref.Path)
+		if ref.Error != "" {
+			t.Fatalf("scan produced an error ref: %+v", ref)
+		}
+	}
+	want := []string{"documents/book.html", "documents/listed.pdf", "documents/report.pdf", "images/chart.png", "videos/clip.mp4"}
+	if strings.Join(paths, "|") != strings.Join(want, "|") {
+		t.Fatalf("top-level deliverables not staged: %v", paths)
+	}
+	staged, err := os.ReadFile(filepath.Join(artifactRoot(), "documents", "book.html"))
+	if err != nil || string(staged) != "<html>book</html>" {
+		t.Fatalf("staged copy missing: %v %q", err, staged)
+	}
+}
+
 func TestExtractMediaArtifactsDropsEmptyAndDupes(t *testing.T) {
 	dir := t.TempDir()
 	old := workspace

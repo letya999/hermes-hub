@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -452,6 +454,93 @@ func TestQuotaLinesRendersMeasuredBuckets(t *testing.T) {
 	}
 	if relayCalls != 1 {
 		t.Fatalf("relay re-fetched inside cache TTL: %d", relayCalls)
+	}
+}
+
+func TestQuotaLinesResolvesSharedGatewayRelayPerPrincipal(t *testing.T) {
+	relayCalls := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		relayCalls[r.Header.Get("Authorization")]++
+		if r.URL.Path != "/v1/quota" || r.Header.Get("Authorization") != "Bearer relay-a" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"lines": []string{"Лимиты A: weekly 10%"}})
+	}))
+	defer server.Close()
+
+	admins := map[string]map[string]string{
+		"alice": {"url": server.URL, "admin": "relay-a"},
+	}
+	body, _ := json.Marshal(admins)
+	path := filepath.Join(t.TempDir(), "model-relay-admins.json")
+	if err := os.WriteFile(path, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_MODEL_RELAY_URL", "")
+	t.Setenv("HUB_MODEL_RELAY_ADMIN", "")
+	t.Setenv("HUB_MODEL_RELAY_ADMINS_FILE", path)
+
+	c := testConfig(t)
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := g.quotaLines(context.Background(), locale.LangRU, "alice")
+	if joined := strings.Join(lines, "\n"); !strings.Contains(joined, "Лимиты A") {
+		t.Fatalf("shared-gateway relay not resolved: %v", lines)
+	}
+	if lines := g.quotaLines(context.Background(), locale.LangRU, "bob"); len(lines) != 1 || !strings.Contains(lines[0], "не настроен") {
+		t.Fatalf("unmapped principal must report unconfigured: %v", lines)
+	}
+	if relayCalls["Bearer relay-a"] != 1 {
+		t.Fatalf("unmapped principal fetched a foreign relay: %v", relayCalls)
+	}
+}
+
+func TestQuotaLinesCacheIsIsolatedPerPrincipal(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var lines []string
+		switch r.Header.Get("Authorization") {
+		case "Bearer relay-a":
+			lines = []string{"Лимиты A: weekly 10%"}
+		case "Bearer relay-b":
+			lines = []string{"Лимиты B: weekly 20%"}
+		default:
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"lines": lines})
+	}))
+	defer server.Close()
+
+	admins := map[string]map[string]string{
+		"alice": {"url": server.URL, "admin": "relay-a"},
+		"bob":   {"url": server.URL, "admin": "relay-b"},
+	}
+	body, _ := json.Marshal(admins)
+	path := filepath.Join(t.TempDir(), "model-relay-admins.json")
+	if err := os.WriteFile(path, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_MODEL_RELAY_URL", "")
+	t.Setenv("HUB_MODEL_RELAY_ADMIN", "")
+	t.Setenv("HUB_MODEL_RELAY_ADMINS_FILE", path)
+
+	c := testConfig(t)
+	bobRoot := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(bobRoot, "state"), 0700)
+	_ = os.MkdirAll(filepath.Join(bobRoot, "workspace"), 0700)
+	c.Users = append(c.Users, User{ID: "bob", Enabled: true, TelegramIDs: []int64{22}, StateDir: filepath.Join(bobRoot, "state"), WorkspaceDir: filepath.Join(bobRoot, "workspace")})
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lines := g.quotaLines(context.Background(), locale.LangRU, "alice"); !strings.Contains(strings.Join(lines, "\n"), "Лимиты A") {
+		t.Fatalf("alice quota missing: %v", lines)
+	}
+	if lines := g.quotaLines(context.Background(), locale.LangRU, "bob"); !strings.Contains(strings.Join(lines, "\n"), "Лимиты B") {
+		t.Fatalf("bob received another principal's cached quota: %v", lines)
 	}
 }
 

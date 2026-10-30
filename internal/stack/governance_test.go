@@ -456,3 +456,51 @@ func TestGovViewAbsent(t *testing.T) {
 		t.Fatal("forced ro on unviewed settings")
 	}
 }
+
+// The shared workload-controller lives on the infra-owner's compose project;
+// a secondary space's operator calls must present the infra sibling's
+// credentials. InfraSpaceDir mirrors governanceDocPath's precedence: own
+// space when it renders the control plane, else the infra sibling, else own.
+func TestInfraSpaceDir(t *testing.T) {
+	root := t.TempDir()
+	spaces := filepath.Join(root, "spaces")
+	local := filepath.Join(spaces, "local")
+	member := filepath.Join(spaces, "member")
+	for _, d := range []string{local, member} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(local, "agent.yaml"), []byte("user: me\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(member, "agent.yaml"), []byte("infra: false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := InfraSpaceDir(member); got != local {
+		t.Fatalf("member must resolve the infra sibling, got %s", got)
+	}
+	if got := InfraSpaceDir(local); got != local {
+		t.Fatalf("infra space resolves itself, got %s", got)
+	}
+	// Outside a spaces/ layout the space answers for itself.
+	lone := filepath.Join(root, "lone")
+	if err := os.MkdirAll(lone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := InfraSpaceDir(lone); got != lone {
+		t.Fatalf("standalone dir resolves itself, got %s", got)
+	}
+	// No infra sibling on record: fail back to the caller, never error out.
+	root2 := t.TempDir()
+	lonely := filepath.Join(root2, "spaces", "solo")
+	if err := os.MkdirAll(lonely, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(lonely, "agent.yaml"), []byte("infra: false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := InfraSpaceDir(lonely); got != lonely {
+		t.Fatalf("no infra sibling falls back to caller, got %s", got)
+	}
+}

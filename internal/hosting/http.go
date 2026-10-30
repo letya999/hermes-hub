@@ -221,7 +221,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		if req.Method == "GET" && req.URL.Path == "/" {
 			securityHeaders(w, true)
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			_, _ = io.WriteString(w, bootstrapPage(bootstrapLang(req)))
+			_, _ = io.WriteString(w, bootstrapPage(bootstrapLang(req))) // #nosec G705 -- interpolations are html.EscapeString'd or json.Marshal'd into textContent
 			return
 		}
 		http.NotFound(w, req)

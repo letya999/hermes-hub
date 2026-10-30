@@ -441,7 +441,7 @@ func (g *Gateway) usageCommand(ctx context.Context, user User, sender int64, tas
 	if totals, err := g.spool.UsageTotals("user:" + user.ID); err == nil && totals.Jobs > 0 {
 		lines = append(lines, locale.T(lang, "usage.totals-line", totals.Jobs, totals.InputTokens, totals.OutputTokens))
 	}
-	lines = append(lines, g.quotaLines(ctx, lang)...)
+	lines = append(lines, g.quotaLines(ctx, lang, user.ID)...)
 	return strings.Join(lines, "\n")
 }
 

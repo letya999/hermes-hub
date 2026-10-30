@@ -213,7 +213,8 @@ took those numbers first — this is the same document under free numbers.
 - R10.6: Install/update produce scanned drafts with `.origin.json`
   (source id, origin URL, ref, commit, path, tree hash, fetched_at, scan
   verdict) excluded from the agent view; `update` fetches the tracked ref,
-  diffs, flags force-push; `check_updates` reports without importing.
+  diffs, flags force-push, and reports `up_to_date` without a draft when
+  the ref did not move; `check_updates` reports without importing.
 - R10.7: `hubctl skill sources list|remove`; removal deletes the mirror and
   drops update tracking with a warning.
 

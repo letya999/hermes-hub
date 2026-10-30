@@ -232,6 +232,10 @@ func Update(ctx context.Context, st *skillstore.Store, name string, git GitOps, 
 		return UpdateResult{}, err
 	}
 	out := UpdateResult{Name: name, Commit: got.Commit, PrevCommit: origin.Commit, ForcePush: got.ForcePush}
+	if got.Commit == origin.Commit {
+		out.UpToDate = true
+		return out, nil
+	}
 	skill, dropped := exportTree(got.Tree, origin.Path)
 	current, err := st.Tree(name)
 	if err != nil {

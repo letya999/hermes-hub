@@ -1,6 +1,6 @@
 ---
 description: Operator runbook — stack lifecycle, user onboarding, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
-last_verified: 2026-10-30
+last_verified: 2026-10-31
 ---
 
 # Operations
@@ -576,13 +576,18 @@ fetches through the controller's bounded `/cli-exec` cell (plan
 `skillgit@1.0.0`, `git` on the cli-tools image — never an owner command;
 egress is exactly the repository host, hooks/protocol.file/submodules/LFS
 are off, fetch is `--depth=1 --filter=blob:none` into the per-owner bare
-mirror `skills/.sources/<id>.git`). The result is a scanned **draft** —
+mirror `skills/.sources/<id>.git`). The shared workload-controller
+authenticates only the infra-owner's admission token: `--dir` pointing at
+a secondary space resolves the sibling that renders the control plane
+(`infra:` absent/true) and presents its `toolhub.auth` — the target
+space's own token is never accepted. The result is a scanned **draft** —
 approve it with `hubctl skill approve --id <d>` or the owner card. A repo
 URL without `/tree/<ref>/<path>` returns `candidates` instead of picking
 one; retry with `--path`. `--ref` pins a branch/tag to its resolved commit,
 `--name` overrides the draft name. `hubctl skill update --name <s>` (or
-`--all`) refetches tracked skills into new drafts and reports
-`force_push:true` on rewritten upstream history. `hubctl skill sources
+`--all`) refetches tracked skills into new drafts, reports
+`force_push:true` on rewritten upstream history and `up_to_date:true`
+without a draft when the tracked ref did not move. `hubctl skill sources
 list` shows mirrors and the skills each feeds; `sources remove --id <id>`
 deletes the mirror — installed skills keep working but lose update
 tracking.
