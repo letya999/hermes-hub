@@ -1,6 +1,6 @@
 ---
 description: Complete agent-visible tool surface — toolhub control tools, connector_* facade, hub:tools catalog, effect/grant requirements, delivery directives.
-last_verified: "2026-10-28"
+last_verified: "2026-10-30"
 ---
 
 # Tool surface
@@ -31,6 +31,14 @@ profile's `control_operations` allowlist:
 | `diagnostics` | Caller-scoped, bounded, redacted log lines + workload health — the only agent-visible log surface |
 | `grant_request` | Request a grant the profile does not yet carry |
 | `install_shared` | Install a shared/team connection |
+
+Three further tools sit beside the allowlist (ADR-0089):
+
+| Tool | Purpose |
+|---|---|
+| `system_guide` | Static reference document — concepts and formats, no account data; always projected |
+| `tools_list` | Live caller-scoped inventory — exact admitted names re-read on every call, including tools enabled in this or another session. Compact `{name, definition, effect}` entries plus `controls`; `query` filters names, `name` returns one full spec with `input_schema`. Always projected |
+| `invoke` | Dispatch one admitted projected tool by exact `{tool, arguments}` through the same `AuthorizeProjectedCall` admission — for names the client's cached tools/list has not yet refreshed. Projected with the connectors bundle (`connectors` = `personal`/`personal+team`) or an explicit `invoke` grant |
 
 ## connector_* — unified facade
 
@@ -68,7 +76,7 @@ Grouped by capability resource (internal/agenttools/capability.go):
 | ssh | `ssh_hosts`, `ssh_exec`, `ssh_read`, `ssh_write`, `ssh_shell_*`, `ssh_tunnel_*` | declared hosts only; write/shell/tunnel each need their own grant |
 | hh | `hh_search`, `hh_vacancy`, `hh_resumes`, `hh_apply` | apply sends externally — exact user-authorized inputs only |
 | exec | `code_exec` | bounded executor when the capability is granted; optional `skill` leases that skill's stored credentials into the one call |
-| skills | `skill`, `skills_search`, `skills_list`, `skill_view`; `skill_manage` | reads serve the ro effective view; `skills_list` entries carry hub-journaled usage counters (`stats`); `skill_manage` writes drafts only — publication is the owner's approval card, never the model |
+| skills | `skill`, `skills_search`, `skills_list`, `skill_view`; `skill_manage` | reads serve the ro effective view; `skills_list` is the honest inventory — entries carry `eligible`, ineligible ones name their `missing` requirements, plus hub-journaled usage counters (`stats`); the tier-0 prompt block only counts ineligible skills (`+N unavailable`); `skill_manage` writes drafts only — publication is the owner's approval card, never the model |
 
 ## Contract notes (bounds that surprise)
 
@@ -83,6 +91,9 @@ Grouped by capability resource (internal/agenttools/capability.go):
   `/skills` never changes from a tool call. The reply carries diff/lint/scan
   plus `confirm_url` to a nonce-protected approval card the owner clicks;
   `link_sent=false` means the card was not delivered but the draft persists.
+  Cards persist across gateway restarts (nonce hashes only, beside the
+  spool), stay valid for 72h, and a rejected apply reports the runtime's
+  reason on the card instead of a bare failure.
   `patch`/`edit` require the current `base_revision` (optimistic concurrency);
   action-foreign fields are rejected before any write; principal comes from
   the authenticated envelope — model-supplied principal/org fields are
@@ -90,16 +101,32 @@ Grouped by capability resource (internal/agenttools/capability.go):
   an owner/admin role at apply time (`hubctl skill promote`). The exception is
   `configure`: it writes the owner's private `.state/settings` (keys ⊆ the
   skill's declared `metadata.hermes.config`) — not a draft, since it never
-  touches the skill tree. Three more actions import rather than author:
+  touches the skill tree. Four more actions import rather than author:
   `install` takes an https GitHub/GitLab `url` (optional `ref`, `path`,
   `name`, `grant` — a broker credential name for private repos, never a
   token in the URL); a bare repository URL returns `candidates` of
-  discovered `SKILL.md` subtrees to retry with `path` instead of guessing.
+  discovered `SKILL.md` subtrees to retry with `path` instead of guessing —
+  a repo whose `SKILL.md` sits at the root appears as `path:"."` and
+  installs the whole tree under its frontmatter name. Registry pages work
+  too — `https://www.skills.sh/<owner>/<repo>/<skill>` resolves the named
+  skill against the GitHub repository's candidates. Whatever the source,
+  the draft lands under the SKILL.md frontmatter name — publish requires
+  name == dir, and only an explicit `name` argument overrides it.
   `update` refetches one installed skill's pinned ref (`force_push:true`
   flags rewritten upstream history) and `check_updates` lists pending
   upstream moves without importing. All three run inside a bounded git cell
   (https egress to the repo host only); `install`/`update` land as drafts
   with `.origin.json` provenance and still need the owner's card.
+  `install_local` imports a package already staged in the workspace — an
+  inbox download, an unpacked archive or a checkout: `path` names the
+  workspace-relative directory, zip or standalone `SKILL.md`/markdown file
+  (for a package holding several skills, point `path` at the intended
+  root); `name` overrides the frontmatter-derived draft name. It runs the
+  same import pipeline — dot-prefixed paths (repo plumbing like `.github`,
+  `.claude`) are dropped and reported in `dropped_dot_paths`/draft notes,
+  foreign resource links that resolve inside the tree are admitted and
+  audited in `notes`, binaries survive — and lands as an `imported` draft
+  with the same owner approval card.
 - **skill usage telemetry**: `skill()` activations and `skill_view` file
   reads are journaled by the hub into the owner store's `.state/usage/`
   (uses, helped, failed, trigger misses, last_used — bounded counters, no
@@ -107,7 +134,8 @@ Grouped by capability resource (internal/agenttools/capability.go):
   exposes the counters as `stats` and `hubctl skill stats --name <skill>`
   prints them. `evals/triggers.json` + `evals/evals.json` ship inside a
   skill for `hubctl skill eval` — an isolated temp-space run scored through
-  an operator eval endpoint (`HUB_SKILL_EVAL_URL`); unavailable models are
+  an operator eval endpoint (`HUB_SKILL_EVAL_URL`); `--id <draft>` scores an
+  unpublished draft tree for the pre-publish check. Unavailable models are
   reported, not fabricated.
 - **code_exec `skill` arg + credentials**: `skill()` reports
   `readiness.setup_needed` with a `form_url` to the protected credential form
@@ -118,7 +146,11 @@ Grouped by capability resource (internal/agenttools/capability.go):
   `skill:"<name>"` leases exactly the declared names into that one sandbox
   call's env through the stdin exec protocol — never argv, container config,
   tool results, logs or audit. Declared names are the only ones leased;
-  undeclared `.state` entries and ineligible skills lease nothing.
+  undeclared `.state` entries and ineligible skills lease nothing. A
+  credential may declare `ref: <ENV_KEY>` to reuse an already-configured
+  self-env key (e.g. a connector's PAT) instead of a per-skill duplicate —
+  the lease resolves through the same allowlist-checked self-env file and a
+  stored per-skill value still wins.
   `metadata.hermes.config` declares non-secret per-user settings that
   `skill()` surfaces effective (stored-or-default); `skill_manage`
   `configure` writes them to `.state/settings`.

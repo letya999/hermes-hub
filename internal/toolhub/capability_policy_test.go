@@ -687,7 +687,7 @@ func TestManagedRevocationOnOpenMCPSession(t *testing.T) {
 	t.Cleanup(server.Close)
 	client := mcpConnect(t, server.URL, aliceToken)
 	id := client.ID()
-	if listed, err := client.ListTools(t.Context(), nil); err != nil || len(listed.Tools) != 2 || !toolListed(listed, "workspace_read") || !toolListed(listed, "system_guide") {
+	if listed, err := client.ListTools(t.Context(), nil); err != nil || len(listed.Tools) != 3 || !toolListed(listed, "workspace_read") || !toolListed(listed, "system_guide") || !toolListed(listed, "tools_list") {
 		t.Fatalf("list: %+v %v", listed, err)
 	}
 	args := &mcp.CallToolParams{Name: "workspace_read", Arguments: map[string]any{"path": "docs/a", "scope": "workspace"}}
@@ -702,7 +702,7 @@ func TestManagedRevocationOnOpenMCPSession(t *testing.T) {
 	if _, err := client.CallTool(t.Context(), args); err == nil {
 		t.Fatal("open session retained revoked capability")
 	}
-	if listed, err := client.ListTools(t.Context(), nil); err != nil || len(listed.Tools) != 1 || !toolListed(listed, "system_guide") || client.ID() != id {
+	if listed, err := client.ListTools(t.Context(), nil); err != nil || len(listed.Tools) != 2 || !toolListed(listed, "system_guide") || !toolListed(listed, "tools_list") || client.ID() != id {
 		t.Fatalf("revoke projection/session: %+v %v", listed, err)
 	}
 	if calls.Load() != 1 {

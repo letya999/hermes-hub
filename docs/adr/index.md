@@ -1,11 +1,13 @@
 ---
 description: Architectural decisions and clearly marked proposals; append new records when changing direction.
-last_verified: 2026-10-27
+last_verified: 2026-10-30
 ---
 # Decisions
 
 | Record | Decision |
 |---|---|
+| [ADR-0090](ADR-0090-conversation-parallel-lanes.md) | Proposed: parallel sessions inside one context — lane key (principal, context, conversation), fairness per context, per-context cap below upstream; amends ADR-0025 (CHG-0234) |
+| [ADR-0089](ADR-0089-live-tool-inventory.md) | Accepted: live caller-scoped tool inventory — `tools_list` on the store path plus managed-profile `invoke`; no prompt catalog, deferred hydration or vMCP boundary (CHG-0233) |
 | [ADR-0088](ADR-0088-bounded-control-journals.md) | Accepted: bounded file journals/receipts, typed cursors, safe audit and diagnostics; implementation planned in CHG-0216–0226 |
 | [ADR-0087](ADR-0087-broker-bounded-sqlcipher-store.md) | Accepted direction: Broker-only SQLCipher, strict recovery head and object lifecycle; native/fault gate before migration (CHG-0215–0226) |
 | [ADR-0086](ADR-0086-memory-vault-openknowledge.md) | Proposed: per-space markdown memory vault (leaves/cards/summaries/CORE) with deterministic nightly rollup, plus OpenKnowledge as opt-in knowledge surface (M20, renumbered from a duplicate ADR-0073) |

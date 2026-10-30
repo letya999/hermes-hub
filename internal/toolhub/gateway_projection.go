@@ -69,6 +69,7 @@ func (g *Gateway) projectedServer(auth identity.Envelope) (*mcp.Server, map[stri
 	server.AddTool(&mcp.Tool{Name: "system_guide", Description: "Read the Hermes Hub system guide: concepts, MCP/connector/CLI formats, ownership, access, inventory and recovery evidence. Static documentation; no account data or mutations.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: systemguide.Skill}}}, nil
 	})
+	g.addToolsListTool(server, auth)
 	tools := make(map[string]api.ToolSpec, len(projected))
 	for _, projectedTool := range projected {
 		g.addProjectedTool(server, auth, projectedTool)

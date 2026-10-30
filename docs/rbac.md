@@ -1,6 +1,6 @@
 ---
 description: Authorization model — principals, sections, evaluation order, grants, capability policies, profiles, teams, connector lifecycle.
-last_verified: 2026-10-20
+last_verified: 2026-10-30
 ---
 
 # RBAC, grants and capability policy
@@ -79,6 +79,11 @@ paths cannot mint authority. Grant lifecycle is `pending` → `active` →
 `discover`, `prepare_source`, `status`, `required_credentials`, `confirm`,
 `enable`, `rotate`, `disable`, `revoke`, `remove`, `diagnostics`,
 `grant_request`, `install_shared` — plus `invoke` for actual tool calls.
+`invoke` is admitted under a managed profile as part of the connectors
+bundle (`personal` / `personal+team`); under `connectors: ""` the strict
+`control_operations` allowlist stands (ADR-0089). `system_guide` and
+`tools_list` are always projected and never grant anything — both only
+expose the caller's own admitted surface.
 
 ## Capability policy (org ceiling)
 
