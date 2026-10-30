@@ -13,10 +13,14 @@ import (
 var ErrInvalid = errors.New("invalid skill source")
 
 // Source is the canonical form of an accepted repository URL (R10.1).
+// Slug names the requested skill when the locator came from a package
+// registry page (skills.sh) rather than a git URL — it resolves against
+// discovered candidates instead of addressing a repo subtree.
 type Source struct {
 	Repo string `json:"repo"` // canonical https clone URL
 	Ref  string `json:"ref,omitempty"`
 	Path string `json:"path,omitempty"`
+	Slug string `json:"slug,omitempty"`
 }
 
 // ParseSource validates raw into a canonical Source.
@@ -26,6 +30,25 @@ func ParseSource(raw, gitlabHost string) (Source, error) {
 		return Source{}, ErrInvalid
 	}
 	host := strings.ToLower(u.Host)
+	// skills.sh is a package registry, not a git host: its pages name a
+	// skill slug under an owner/repo pair that lives on GitHub. The pair
+	// re-validates through the github.com branch below; the remaining
+	// segments become the requested skill slug.
+	if host == "www.skills.sh" {
+		parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+		if len(parts) < 2 {
+			return Source{}, ErrInvalid
+		}
+		src, err := ParseSource("https://github.com/"+parts[0]+"/"+parts[1], gitlabHost)
+		if err != nil {
+			return Source{}, ErrInvalid
+		}
+		src.Slug = strings.Join(parts[2:], "/")
+		if !validSubfolder(src.Slug) {
+			return Source{}, ErrInvalid
+		}
+		return src, nil
+	}
 	if host != "github.com" && host != "gitlab.com" && host != strings.ToLower(gitlabHost) {
 		return Source{}, ErrInvalid
 	}

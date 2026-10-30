@@ -300,9 +300,12 @@ func (c *ControlPlane) latestPrepareRecord(auth identity.Envelope, stub api.Onbo
 }
 
 func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Envelope, preparing api.Onboarding, source api.ArtifactSource, requestKey string, selected *api.RecipeCandidate, shared bool, credentialSource string) (map[string]any, error) {
+	activeID := preparing.OnboardingID
 	failPrepare := func(err error) (map[string]any, error) {
-		if latest, latestErr := c.Store.onboarding(preparing.OnboardingID); latestErr == nil && latest.Phase == api.PhasePreparing {
+		if latest, latestErr := c.Store.onboarding(activeID); latestErr == nil && (latest.Phase == api.PhasePreparing || latest.Phase == api.PhaseAwaitingCreds || latest.Phase == api.PhaseAwaitingConfirm) {
 			latest.Phase = api.PhaseFailed
+			latest.FormNonce = ""
+			latest.FormExpires = time.Time{}
 			if persistErr := c.persistFailure(latest, api.PublicPrepareError(err), err); persistErr != err {
 				return nil, persistErr
 			}
@@ -394,6 +397,7 @@ func (c *ControlPlane) finishSelfInstall(ctx context.Context, auth identity.Enve
 	if err != nil {
 		return failPrepare(err)
 	}
+	activeID = onboarding.OnboardingID
 	if onboarding.OnboardingID != preparing.OnboardingID {
 		// A patch bump or a reviewed definition id shifted the deterministic
 		// key; callers holding the stub id follow SupersededBy to the result.

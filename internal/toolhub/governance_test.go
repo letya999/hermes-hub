@@ -187,8 +187,10 @@ func TestGovernanceStoreFailClosed(t *testing.T) {
 	if err := store.Update(time.Now(), func(*api.Governance) error { return nil }); err == nil {
 		t.Fatal("corrupt doc overwritten by Update")
 	}
-	// A schema-valid but invalid document fails validation on load.
-	if err := os.WriteFile(path, []byte(`{"schema":1,"revision":1,"inventory":[]}`), 0600); err != nil {
+	// A schema-valid but invalid document fails validation on load — an
+	// identity-invalid revision survives reconcileInventory's healing of
+	// merely missing sections and still fails closed.
+	if err := os.WriteFile(path, []byte(`{"schema":1,"revision":0,"inventory":[]}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Load(); !errors.Is(err, api.ErrInvalid) {

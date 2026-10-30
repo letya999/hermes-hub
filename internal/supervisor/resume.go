@@ -50,7 +50,7 @@ func (m *Manager) resume(w http.ResponseWriter, r *http.Request) {
 	defer observationLock.Unlock()
 	lease, runtime, err := m.Acquire(r.Context(), binding, LeaseStream)
 	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "runtime unavailable"})
+		writeRuntimeFailure(w, http.StatusServiceUnavailable, err)
 		return
 	}
 	if err := m.attachJobLease(lease.ID, executeJobKey(request)); err != nil {

@@ -116,7 +116,7 @@ func (c ExecCell) Fetch(ctx context.Context, req FetchRequest) (FetchResult, err
 	if _, err = c.git(ctx, req, host, archiveArgs...); err != nil {
 		return FetchResult{}, err
 	}
-	if result.Tree, err = parseExport(filepath.Join(req.Mirror, exportTarName)); err != nil {
+	if result.Tree, result.Dropped, err = parseExport(filepath.Join(req.Mirror, exportTarName), req.Path); err != nil {
 		return FetchResult{}, err
 	}
 	return result, nil
@@ -283,26 +283,43 @@ func (c ExecCell) workspace(req FetchRequest) api.CliWorkspace {
 	return api.CliWorkspace{Scope: "skill-source", Path: filepath.Base(req.Mirror), Access: "rw"}
 }
 
+// exportTransportMax bounds the archive the cell produces. It deliberately
+// exceeds the skill-tree byte quota: vendored noise (node_modules) is
+// filtered while streaming, so an archive may carry bytes the selected
+// skill tree never keeps.
+const exportTransportMax = 4 * skillstore.MaxTreeBytes
+
 // parseExport turns the archive tar the cell wrote under the mirror into a
-// Tree.
-func parseExport(name string) (skillstore.Tree, error) {
+// Tree. Reserved/vendored paths are skipped while streaming — before the
+// tree quota applies — and returned relative to prefix for the import
+// audit.
+func parseExport(name, prefix string) (skillstore.Tree, []string, error) {
 	f, err := os.Open(name) // #nosec G703 -- mirror path is built from a validated source id
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer func() {
 		_ = f.Close()
 		_ = os.Remove(name)
 	}()
-	tr := tar.NewReader(io.LimitReader(f, skillstore.MaxTreeBytes+64<<10))
+	// The bound lives on the archive file, not a truncated reader — a
+	// LimitReader cut mid-entry surfaces as a bare parse error, and a cut
+	// inside tar padding silently yields an empty tree.
+	if st, err := f.Stat(); err != nil {
+		return nil, nil, err
+	} else if st.Size() > exportTransportMax {
+		return nil, nil, fmt.Errorf("%w: archive exceeds %d MiB transport bound", ErrInvalid, exportTransportMax>>20)
+	}
+	tr := tar.NewReader(f)
 	tree := skillstore.Tree{}
+	var dropped []string
 	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
-			return tree, nil
+			return tree, dropped, nil
 		}
 		if err != nil {
-			return nil, ErrInvalid
+			return nil, nil, ErrInvalid
 		}
 		// git archive wraps the file payload in a global pax header and
 		// directory entries; both carry no content and are skipped (the
@@ -313,14 +330,22 @@ func parseExport(name string) (skillstore.Tree, error) {
 			continue
 		}
 		if hdr.Typeflag != tar.TypeReg || hdr.Mode&0o170000 == 0o160000 {
-			return nil, fmt.Errorf("%w: archive entry %q", ErrInvalid, hdr.Name)
+			return nil, nil, fmt.Errorf("%w: archive entry %q", ErrInvalid, hdr.Name)
 		}
 		if strings.HasPrefix(hdr.Name, "../") {
-			return nil, fmt.Errorf("%w: archive path %q", ErrInvalid, hdr.Name)
+			return nil, nil, fmt.Errorf("%w: archive path %q", ErrInvalid, hdr.Name)
+		}
+		rel := hdr.Name
+		if prefix != "" {
+			rel = strings.TrimPrefix(rel, strings.TrimSuffix(prefix, "/")+"/")
+		}
+		if hasDotSegment(rel) {
+			dropped = append(dropped, rel)
+			continue
 		}
 		data, err := io.ReadAll(tr)
 		if err != nil {
-			return nil, ErrInvalid
+			return nil, nil, ErrInvalid
 		}
 		tree[hdr.Name] = skillstore.File{Data: data, Exec: hdr.Mode&0o111 != 0}
 	}

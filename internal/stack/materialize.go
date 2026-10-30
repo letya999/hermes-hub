@@ -2,6 +2,9 @@ package stack
 
 import (
 	"encoding/json"
+	"fmt"
+
+	"github.com/letya999/hermes-hub/internal/envstore"
 
 	"github.com/letya999/hermes-hub/internal/selfsettings"
 	"io/fs"
@@ -143,6 +146,13 @@ func GeneratedEffectiveSkillsDir(dir string) string {
 	return filepath.Join(dir, "generated", "skills-effective")
 }
 
+// GeneratedSkillsMetaDir holds the render-time view snapshot (capabilities
+// and pins) that a post-publish rebuild replays; mounted read-only into the
+// runtime at /skills-meta.
+func GeneratedSkillsMetaDir(dir string) string {
+	return filepath.Join(dir, "generated", "skills-meta")
+}
+
 // MaterializeEffectiveSkills stages the platform tier and builds the
 // agent-visible effective view at generated/skills-effective (SPEC-0083 R2.5).
 func MaterializeEffectiveSkills(dir string, s Settings) (*skillstore.EffectiveIndex, error) {
@@ -161,12 +171,19 @@ func MaterializeEffectiveSkills(dir string, s Settings) (*skillstore.EffectiveIn
 	// R6.1: readiness is stamped at render — Settings knows the granted
 	// toolsets/connectors; the runtime mounts whatever this build decided,
 	// so the catalog the model sees matches policy exactly.
-	idx.ApplyReadiness(skillCapabilities(dir, s))
+	caps := skillCapabilities(dir, s)
+	idx.ApplyReadiness(caps)
 	pins, err := profileSkillPins(dir, s)
 	if err != nil {
 		return nil, err
 	}
 	if err := idx.Pin(pins); err != nil {
+		return nil, err
+	}
+	// Persist the inputs a post-publish rebuild replays: the capability
+	// snapshot and pins — the runtime can refresh the view after apply
+	// without re-resolving space settings it cannot see.
+	if err := skillstore.WriteViewMeta(GeneratedSkillsMetaDir(dir), skillstore.ViewMeta{Capabilities: caps, Pins: pins}); err != nil {
 		return nil, err
 	}
 	return idx, skillstore.WriteIndex(GeneratedEffectiveSkillsDir(dir), idx)
@@ -226,6 +243,16 @@ func skillCapabilities(dir string, s Settings) skillstore.Capabilities {
 		}
 	}
 	caps.Registries["system"] = len(s.CLIToolboxes) > 0
+	// R8.2: a credential `ref` resolves against the owner-configured
+	// self-env keys — names only, under the same allowlist the runtime
+	// enforces, so a ref can never reach a protected or runtime-owned key.
+	caps.EnvKeys = map[string]bool{}
+	if values, err := envstore.Load(filepath.Join(dir, "runtime", envstore.FileName),
+		strings.Join(runtimeSelfEnvKeys(s), ","), strings.Join(runtimeProtectedEnvKeys(s), ",")); err == nil {
+		for key := range values {
+			caps.EnvKeys[key] = true
+		}
+	}
 	// R8.2/R8.5: per-skill stored credential names (never values) satisfy
 	// declared requires.credentials at render.
 	caps.SkillCreds = map[string]map[string]bool{}
@@ -260,11 +287,21 @@ func tier0Block(dir string) string {
 	var b strings.Builder
 	b.WriteString("\n\n<available_skills revision=\"" + idx.Revision + "\">\n")
 	b.WriteString("These skills are available. Activate one with the skill tool before following its instructions; if a skill body left context (compaction), re-invoke skill to reload it. Discover more with skills_search; inspect bundled files with skill_view.\n")
-	count := 0
+	count, unavailable := 0, 0
 	for _, e := range idx.Skills {
-		if !e.Hidden && e.Eligible {
+		switch {
+		case !e.Hidden && e.Eligible:
 			count++
+		case !e.Eligible:
+			unavailable++
 		}
+	}
+	// Ineligible skills enter the prompt only as a counter: the agent learns
+	// they exist and can inspect them via skills_list, without spending
+	// tokens on names it cannot invoke.
+	foot := ""
+	if unavailable > 0 {
+		foot = fmt.Sprintf("+%d unavailable (skills_list)\n", unavailable)
 	}
 	if count > 20 {
 		// Past ~20 entries the catalog degrades to names + a search hint so
@@ -276,7 +313,8 @@ func tier0Block(dir string) string {
 			}
 		}
 		return b.String() + strings.Join(names, ", ") +
-			"\nDescriptions elided at this catalog size — call skills_search for details.\n</available_skills>\n"
+			"\nDescriptions elided at this catalog size — call skills_search for details.\n" +
+			foot + "</available_skills>\n"
 	}
 	for _, e := range idx.Skills {
 		if e.Hidden || !e.Eligible {
@@ -284,7 +322,7 @@ func tier0Block(dir string) string {
 		}
 		b.WriteString("- " + e.Name + " [" + e.Source + "]: " + catalogDescription(e.Description) + "\n")
 	}
-	return b.String() + "</available_skills>\n"
+	return b.String() + foot + "</available_skills>\n"
 }
 
 // catalogDescription sanitizes an entry description for the tier-0 block:

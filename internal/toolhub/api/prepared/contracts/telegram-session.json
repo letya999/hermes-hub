@@ -1,6 +1,6 @@
 {
   "id": "telegram-session",
-  "revision": 2,
+  "revision": 3,
   "title": "Personal Telegram MTProto session (separate from the bot)",
   "title_i18n": {
     "ru": "Личная MTProto-сессия Telegram (отдельно от бота)",

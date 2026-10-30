@@ -1,6 +1,6 @@
 {
   "id": "datalens-auth",
-  "revision": 1,
+  "revision": 2,
   "title": "DataLens organization and Authorization header",
   "title_i18n": {
     "ru": "Организация DataLens и заголовок Authorization",

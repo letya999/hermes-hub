@@ -1,6 +1,7 @@
 package communication
 
 import (
+	"log"
 	"net/http"
 	"strings"
 
@@ -38,11 +39,12 @@ func (g *Gateway) handleSkillGit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid skill-git request", http.StatusBadRequest)
 		return
 	}
-	if strings.TrimSpace(g.config.SkillsStore) == "" {
+	storeDir := g.skillStoreDirFor(caller.PrincipalID)
+	if strings.TrimSpace(storeDir) == "" {
 		http.Error(w, "skill store unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	st, err := skillstore.Open(g.config.SkillsStore, skillstore.ScopeUser)
+	st, err := skillstore.Open(storeDir, skillstore.ScopeUser)
 	if err != nil {
 		http.Error(w, "skill store unavailable", http.StatusServiceUnavailable)
 		return
@@ -60,6 +62,7 @@ func (g *Gateway) handleSkillGit(w http.ResponseWriter, r *http.Request) {
 			Meta:       skillstore.DraftMeta{Author: "agent", Reason: "git install " + request.URL, SessionID: caller.RuntimeID},
 		}, cell)
 		if err != nil {
+			log.Printf("skill-git install failed principal=%s: %v", caller.PrincipalID, err)
 			http.Error(w, "install failed", http.StatusBadGateway)
 			return
 		}

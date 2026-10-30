@@ -43,6 +43,32 @@ func TestSkillSourceRejectsNonHTTPSAndUserinfo(t *testing.T) {
 	}
 }
 
+// skills.sh package pages are skill locators, not git URLs: the third path
+// segment names the skill and the owner/repo pair maps to the GitHub
+// repository that carries it.
+func TestParseSourceResolvesSkillsShLocator(t *testing.T) {
+	src, err := ParseSource("https://www.skills.sh/letya999/grill-my-resume-as-manager/grill-my-resume-as-manager", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if src.Repo != "https://github.com/letya999/grill-my-resume-as-manager" || src.Slug != "grill-my-resume-as-manager" {
+		t.Fatalf("skills.sh locator must map to the github repo plus slug: %+v", src)
+	}
+	src, err = ParseSource("https://www.skills.sh/owner/multi-repo", "")
+	if err != nil || src.Repo != "https://github.com/owner/multi-repo" || src.Slug != "" {
+		t.Fatalf("a repo-level skills.sh page maps to the bare repo: %+v %v", src, err)
+	}
+	for _, raw := range []string{
+		"https://www.skills.sh/onlyowner",
+		"https://www.skills.sh/o/r/../escape",
+		"https://www.skills.sh/o/r/x?y=1",
+	} {
+		if _, err := ParseSource(raw, ""); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("ParseSource(%q) must fail", raw)
+		}
+	}
+}
+
 func TestParseSourceAcceptsConfiguredGitLabHost(t *testing.T) {
 	src, err := ParseSource("https://gitlab.acme.corp/team/skills/-/tree/v1/x", "gitlab.acme.corp")
 	if err != nil {

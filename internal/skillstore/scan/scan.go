@@ -69,7 +69,7 @@ var rules = []lineRule{
 	{"unicode.hidden", High, regexp.MustCompile(`[\x{200B}-\x{200F}\x{202A}-\x{202E}\x{2060}-\x{2064}\x{2066}-\x{2069}\x{FEFF}]`)},
 	// R4.1: prompt-injection / instruction hijack, including payloads
 	// hidden inside HTML or markdown comments.
-	{"inject.hijack", Critical, regexp.MustCompile(`(?i)ignore\s+(all\s+|any\s+|the\s+)?(previous|prior|above)\s+instructions|do\s+not\s+(mention|tell)|don'?t\s+(mention|tell)|skip\s+(the\s+)?(approval|review)|bypass\s+(the\s+)?(approval|review)|new\s+instructions\s*:|system\s+prompt`)},
+	{"inject.hijack", Critical, regexp.MustCompile(`(?i)ignore\s+(all\s+|any\s+|the\s+)?(previous|prior|above)\s+instructions|do\s+not\s+(mention|tell)|don'?t\s+(mention|tell)|skip\s+(the\s+)?(approval|review)|bypass\s+(the\s+)?(approval|review)|new\s+instructions\s*:|(?:reveal|print|forget|ignore|override|extract)[\w\s'’"*-]{0,40}system\s+prompt|system\s+prompt\s*:|new\s+system\s+prompt`)},
 	// R4.1: literal secrets — PEM blocks, KEY=VALUE assignments with a
 	// real-looking value, bearer tokens. Placeholders (<...>, ${...})
 	// contain chars outside the value class, so docs stay clean.
@@ -126,14 +126,19 @@ var scriptInterpreters = map[string]bool{
 func Scan(inputs []Input) Report {
 	r := Report{Scanned: len(inputs)}
 	for _, in := range inputs {
+		binary := bytes.IndexByte(in.Data, 0) >= 0
 		lines := strings.Split(string(in.Data), "\n")
-		for i, line := range lines {
-			for _, rule := range rules {
-				if rule.re.MatchString(line) {
-					r.Findings = append(r.Findings, Finding{
-						RuleID: rule.id, Severity: rule.severity,
-						File: in.Path, Line: i + 1,
-					})
+		// Content rules read text only — random bytes in an image or
+		// font form curl|sh shapes and mixed-script runs by accident.
+		if !binary {
+			for i, line := range lines {
+				for _, rule := range rules {
+					if rule.re.MatchString(line) {
+						r.Findings = append(r.Findings, Finding{
+							RuleID: rule.id, Severity: rule.severity,
+							File: in.Path, Line: i + 1,
+						})
+					}
 				}
 			}
 		}

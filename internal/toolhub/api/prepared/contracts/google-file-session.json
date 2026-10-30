@@ -1,6 +1,6 @@
 {
   "id": "google-file-session",
-  "revision": 1,
+  "revision": 2,
   "title": "Google: OAuth client JSON and authorization state",
   "title_i18n": {
     "ru": "Google: JSON и состояние авторизации",

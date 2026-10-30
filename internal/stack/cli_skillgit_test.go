@@ -88,6 +88,35 @@ func TestGatewayReachesCliExec(t *testing.T) {
 	}
 }
 
+// The supervised branch must wire the same admission pair: skillgit cells run
+// gateway-side regardless of execution mode, so dropping the endpoint there
+// makes /v1/skill-git fail closed for every managed principal.
+func TestSupervisedGatewayReachesCliExec(t *testing.T) {
+	dir := t.TempDir()
+	s := validSettings()
+	s.Ingress = []string{"telegram"}
+	s.ExecutionMode = "supervisor"
+	s.SupervisorURL = "http://host.docker.internal:8876"
+	services := Compose(s, "", dir)["services"].(M)
+	gateway, ok := services["communication-hub"].(M)
+	if !ok {
+		t.Fatal("communication-hub service missing")
+	}
+	env := gateway["environment"].(M)
+	if env["HUB_TOOLHIVE_ADMISSION_ENDPOINT"] != "http://workload-controller:8545/admit" {
+		t.Fatalf("supervised gateway cannot derive /cli-exec: %v", env["HUB_TOOLHIVE_ADMISSION_ENDPOINT"])
+	}
+	var authed bool
+	for _, raw := range gateway["env_file"].([]any) {
+		if raw.(M)["path"] == filepath.ToSlash(filepath.Join(dir, "toolhub.auth")) {
+			authed = true
+		}
+	}
+	if !authed {
+		t.Fatal("supervised gateway env_file missing toolhub.auth — no admission token")
+	}
+}
+
 func TestGatewaySeesGitLabHost(t *testing.T) {
 	dir := t.TempDir()
 	s := validSettings()

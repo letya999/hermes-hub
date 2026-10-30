@@ -7,9 +7,11 @@
 package skillstore
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -210,8 +212,8 @@ func loadTree(dir string) (Tree, error) {
 		if rel == "." {
 			return nil
 		}
-		if d.Name() == ".draft.json" || d.Name() == ".exec" || d.Name() == ".origin.json" {
-			return nil // draft metadata and git provenance are hub-private
+		if d.Name() == ".draft.json" || d.Name() == ".exec" || d.Name() == ".origin.json" || d.Name() == ".imported" {
+			return nil // draft metadata, provenance and import markers are hub-private
 		}
 		if d.IsDir() {
 			return nil
@@ -236,32 +238,36 @@ func loadTree(dir string) (Tree, error) {
 	return tree, nil
 }
 
-// validateTree enforces path safety and quotas on an in-memory tree.
-func validateTree(tree Tree) error {
+// validateTreeMode enforces path safety and quotas on an in-memory tree,
+// plus the import mode (R10.9): foreign
+// packages carry link shapes the authored contract bans, so a tree marked
+// imported relaxes the chain rule to "links resolve inside the tree" and
+// reports the admitted ones as notes instead of refusing the draft.
+func validateTreeMode(tree Tree, foreign bool) ([]string, error) {
 	if len(tree) == 0 || tree[SkillFile].Data == nil {
-		return fmt.Errorf("%w: SKILL.md is required", ErrInvalid)
+		return nil, fmt.Errorf("%w: SKILL.md is required", ErrInvalid)
 	}
 	if len(tree) > MaxFiles {
-		return fmt.Errorf("%w: %d files (max %d)", ErrQuota, len(tree), MaxFiles)
+		return nil, fmt.Errorf("%w: %d files (max %d)", ErrQuota, len(tree), MaxFiles)
 	}
 	var total int64
 	for path, f := range tree {
 		if err := validRelPath(path); err != nil {
-			return err
+			return nil, err
 		}
 		size := int64(len(f.Data))
 		if size > MaxFileBytes {
-			return fmt.Errorf("%w: %s is %d bytes (max %d)", ErrQuota, path, len(f.Data), MaxFileBytes)
+			return nil, fmt.Errorf("%w: %s is %d bytes (max %d)", ErrQuota, path, len(f.Data), MaxFileBytes)
 		}
 		if path == SkillFile && size > MaxSkillMDBytes {
-			return fmt.Errorf("%w: SKILL.md is %d bytes (max %d)", ErrQuota, size, MaxSkillMDBytes)
+			return nil, fmt.Errorf("%w: SKILL.md is %d bytes (max %d)", ErrQuota, size, MaxSkillMDBytes)
 		}
 		total += size
 	}
 	if total > MaxTreeBytes {
-		return fmt.Errorf("%w: tree exceeds %d bytes", ErrQuota, MaxTreeBytes)
+		return nil, fmt.Errorf("%w: tree exceeds %d bytes", ErrQuota, MaxTreeBytes)
 	}
-	return lintRefs(tree)
+	return lintRefs(tree, foreign)
 }
 
 // markdownLink matches [text](target) links; target is group 1.
@@ -269,25 +275,79 @@ var markdownLink = regexp.MustCompile(`\[[^\]]*\]\(([^)\s]+)`)
 
 // lintRefs enforces one-level references (D1/R7.1): SKILL.md links must
 // resolve to existing tree files; other files may not chain to tree files.
-// External and anchor links pass.
-func lintRefs(tree Tree) error {
-	for path, f := range tree {
-		isSkillMD := path == SkillFile
+// External and anchor links pass. Script/code files are skipped — a
+// `[\w+](x)` regex literal inside a .py/.sh helper is not a markdown link
+// and must not trip the chain check.
+//
+// Foreign (imported) trees replace the chain ban with the rule the runtime
+// actually needs — every local link must resolve inside the tree,
+// evaluated against the linking file's own directory. SKILL.md dead links
+// still refuse: the entry document must not point nowhere. Admitted
+// foreign links come back as notes the owner sees on the draft card.
+func lintRefs(tree Tree, foreign bool) ([]string, error) {
+	var notes []string
+	admitted := 0
+	for file, f := range tree {
+		// Opaque payloads hold bytes that look like links by accident; code
+		// files hold regex literals — neither carries a markdown link.
+		if scriptFile(file) || bytes.IndexByte(f.Data, 0) >= 0 {
+			continue
+		}
+		isSkillMD := file == SkillFile
 		for _, m := range markdownLink.FindAllStringSubmatch(string(f.Data), -1) {
 			target := m[1]
 			if strings.Contains(target, "://") || strings.HasPrefix(target, "#") {
 				continue
 			}
+			// A link fragment names an anchor inside the target file, not a
+			// path component — file#section resolves to file.
+			target, _, _ = strings.Cut(target, "#")
 			if isSkillMD {
-				if _, ok := tree[target]; !ok {
-					return fmt.Errorf("%w: SKILL.md link %q does not resolve inside the skill", ErrInvalid, target)
+				resolved := target
+				if foreign {
+					resolved = resolveLink(file, target)
 				}
-			} else {
-				return fmt.Errorf("%w: %s links to %q — resource files may not chain", ErrInvalid, path, target)
+				if _, ok := tree[resolved]; !ok {
+					return nil, fmt.Errorf("%w: SKILL.md link %q does not resolve inside the skill", ErrInvalid, target)
+				}
+				continue
 			}
+			if !foreign {
+				return nil, fmt.Errorf("%w: %s links to %q — resource files may not chain", ErrInvalid, file, target)
+			}
+			if resolved := resolveLink(file, target); resolved != "" {
+				if _, ok := tree[resolved]; ok {
+					admitted++
+					continue
+				}
+			}
+			notes = append(notes, fmt.Sprintf("%s links to %q — does not resolve inside the skill", file, target))
 		}
 	}
-	return nil
+	if admitted > 0 {
+		notes = append([]string{fmt.Sprintf("%d resource-file links admitted resolving inside the tree (foreign import)", admitted)}, notes...)
+	}
+	return notes, nil
+}
+
+// resolveLink maps a link target written inside file's directory to a
+// root-relative tree key; "" means the target leaves the skill root.
+func resolveLink(file, target string) string {
+	rel := pathpkg.Clean(pathpkg.Join(pathpkg.Dir(file), target))
+	if rel == ".." || strings.HasPrefix(rel, "../") || strings.HasPrefix(rel, "/") || rel == "." {
+		return ""
+	}
+	return rel
+}
+
+// scriptFile reports whether the path is code, where [text](target) can be a
+// regex or string literal rather than a markdown link.
+func scriptFile(path string) bool {
+	switch filepath.Ext(path) {
+	case ".py", ".sh", ".cjs":
+		return true
+	}
+	return false
 }
 
 // validRelPath enforces portable slash paths inside a skill tree.
@@ -330,26 +390,26 @@ func writeTree(dir string, tree Tree) error {
 // a stale BaseRevision conflicts. Script-bearing trees are refused — they
 // must pass the draft+approve path instead (R4.4).
 func (s *Store) Publish(name string, tree Tree, meta IndexMeta) (string, error) {
-	return s.publish(name, tree, meta, false)
+	return s.publish(name, tree, meta, false, false)
 }
 
-func (s *Store) publish(name string, tree Tree, meta IndexMeta, viaDraft bool) (string, error) {
+func (s *Store) publish(name string, tree Tree, meta IndexMeta, viaDraft, foreign bool) (string, error) {
 	if !ValidName(name) {
 		return "", fmt.Errorf("%w: name %q must be lowercase segments joined by hyphens", ErrInvalid, name)
 	}
 	if s.scope != ScopePlatform && ReservedName(name) {
 		return "", fmt.Errorf("%w: %q", ErrReserved, name)
 	}
-	if err := validateTree(tree); err != nil {
+	if _, err := validateTreeMode(tree, foreign); err != nil {
 		return "", err
 	}
 	if _, _, err := ParseSkillMD(name, tree[SkillFile].Data, false); err != nil {
 		return "", err
 	}
-	report := scanTree(name, tree)
-	if report.Verdict() == "critical" {
-		return "", scanError(report)
-	}
+	// MVP: scan findings are advisory only — CreateDraft already records
+	// them on the approval card, and the named approver is the gate. The
+	// publish-time critical block returns once the scanner's rule quality
+	// justifies refusing on its own (SPEC-0084 R4.4 suspended).
 	if !viaDraft && hasScripts(tree) {
 		return "", fmt.Errorf("%w: scripts/ present — publish via draft approval", ErrNeedsReview)
 	}
@@ -397,12 +457,40 @@ func (s *Store) publish(name string, tree Tree, meta IndexMeta, viaDraft bool) (
 	if err := s.record(name, rev, meta); err != nil {
 		return "", err
 	}
+	if err := s.setImportMarker(name, foreign); err != nil {
+		return "", err
+	}
 	s.audit("published", name)
 	return rev, nil
 }
 
+// importMarker is the hub-private sidecar recording that this content was
+// admitted under the foreign (imported) link rule — it travels with the
+// tree into .revisions/ so rollback restores with the same admission mode.
+const importMarker = ".imported"
+
+// setImportMarker writes or clears the live skill's admission marker.
+func (s *Store) setImportMarker(name string, imported bool) error {
+	marker := filepath.Join(s.dir(name), importMarker)
+	if imported {
+		return os.WriteFile(marker, []byte("1\n"), 0o600)
+	}
+	if err := os.Remove(marker); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+// importMarked reports whether a retained revision was admitted foreign.
+func (s *Store) importMarked(name, rev string) bool {
+	_, err := os.Stat(filepath.Join(s.root, revisionsDir, name, rev+importMarker))
+	return err == nil
+}
+
 // retainRevision snapshots the outgoing live tree into
-// .revisions/<name>/<rev> so Rollback can restore it (R2.5).
+// .revisions/<name>/<rev> so Rollback can restore it (R2.5). The live
+// .imported marker — the outgoing tree's admission mode — is retained
+// beside the revision like the exec list.
 func (s *Store) retainRevision(name string, tree Tree) error {
 	if len(tree) == 0 {
 		return nil
@@ -411,6 +499,11 @@ func (s *Store) retainRevision(name string, tree Tree) error {
 	dir := filepath.Join(s.root, revisionsDir, name, rev)
 	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
 		if err := writeTree(dir, tree); err != nil {
+			return err
+		}
+	}
+	if _, err := os.Stat(filepath.Join(s.dir(name), importMarker)); err == nil {
+		if err := os.WriteFile(dir+importMarker, []byte("1\n"), 0o600); err != nil {
 			return err
 		}
 	}
@@ -436,13 +529,24 @@ func (s *Store) RevisionTree(name, rev string) (Tree, error) {
 }
 
 // Rollback republishes a retained revision as a new revision, restoring
-// the exec flags recorded beside that revision.
+// the exec flags recorded beside that revision. An empty revision targets
+// the state before the first publish — absence — so the live skill is
+// archived (recoverable via Restore, never deleted).
 func (s *Store) Rollback(name, rev string) (string, error) {
+	if rev == "" {
+		if err := s.Archive(name, "undo", "", "approver"); err != nil {
+			return "", err
+		}
+		s.audit("rolled_back", name)
+		return "", nil
+	}
 	tree, err := s.RevisionTree(name, rev)
 	if err != nil {
 		return "", err
 	}
-	back, err := s.publish(name, tree, IndexMeta{Author: "user", Source: "rollback"}, true)
+	// Restoring a retained revision is not re-authoring: its admission mode
+	// travels with it, so a foreign revision restores under foreign rules.
+	back, err := s.publish(name, tree, IndexMeta{Author: "user", Source: "rollback"}, true, s.importMarked(name, rev))
 	if err == nil {
 		s.audit("rolled_back", name)
 	}

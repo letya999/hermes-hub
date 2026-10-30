@@ -205,6 +205,16 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "skills")), "target": "/skills-store"})
 	runtimeEnv["HUB_SKILLS_STORE"] = "/skills-store"
 	runtimeEnv["HUB_SKILLS_EFFECTIVE"] = "/skills"
+	// Post-publish rebuild contract: /v1/skill-apply recomposes the view in
+	// place — the platform tier and the render snapshot mount read-only,
+	// the view itself a second writable bind beside the agent's ro /skills.
+	stateVolumes = append(stateVolumes,
+		M{"type": "bind", "source": filepath.ToSlash(GeneratedSkillsDir(dir)), "target": "/skills-platform", "read_only": true},
+		M{"type": "bind", "source": filepath.ToSlash(GeneratedEffectiveSkillsDir(dir)), "target": "/skills-effective-rw"},
+		M{"type": "bind", "source": filepath.ToSlash(GeneratedSkillsMetaDir(dir)), "target": "/skills-meta", "read_only": true})
+	runtimeEnv["HUB_SKILLS_PLATFORM"] = "/skills-platform"
+	runtimeEnv["HUB_SKILLS_EFFECTIVE_RW"] = "/skills-effective-rw"
+	runtimeEnv["HUB_SKILLS_META"] = "/skills-meta"
 	// R5.2: org-bound spaces also mount the writable org store so org
 	// proposals land as drafts there; absent on personal spaces.
 	if s.OrgScoped() && s.OrganizationSkillsDir != "" {
@@ -525,6 +535,29 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		toolhubVolumes := []any{stateBind, brokerSecrets("toolhub"), brokerMaterializedMount, credStagingMount,
 			M{"type": "bind", "source": filepath.ToSlash(GeneratedEffectiveSkillsDir(dir)), "target": "/skills-effective", "read_only": true},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "skills")), "target": "/skills-store", "read_only": true}}
+		// Per-principal skill leases (R8.3): a shared toolhub resolves each
+		// caller's index+store under per-principal read-only roots — sibling
+		// credentials never come from the owner's mounts. Spaces without a
+		// rendered view are skipped to avoid host bind-creation.
+		if parent := filepath.Dir(dir); filepath.Base(parent) == "spaces" {
+			toolhubEnv["HUB_SKILLS_BY_PRINCIPAL"] = "/skills-effective-by"
+			toolhubEnv["HUB_SKILLS_STORE_BY"] = "/skills-store-by"
+			if siblings, err := os.ReadDir(parent); err == nil {
+				for _, sibling := range siblings {
+					if !sibling.IsDir() {
+						continue
+					}
+					view := filepath.Join(parent, sibling.Name(), "generated", "skills-effective")
+					if info, err := os.Stat(view); err == nil && info.IsDir() {
+						toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(view), "target": "/skills-effective-by/" + sibling.Name(), "read_only": true})
+					}
+					store := filepath.Join(parent, sibling.Name(), "skills")
+					if info, err := os.Stat(store); err == nil && info.IsDir() {
+						toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(store), "target": "/skills-store-by/" + sibling.Name(), "read_only": true})
+					}
+				}
+			}
+		}
 		if s.usesDockerSocket() {
 			toolhubVolumes = append(toolhubVolumes, dockerSock)
 		}
@@ -620,7 +653,14 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 				gatewayEnvFiles = append(gatewayEnvFiles, M{"path": filepath.ToSlash(authEnv), "format": "raw"})
 			}
 		}
-		gatewayEnvironment := M{"HUB_USER_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_FEATURES": strings.Join(s.featureList(), ","), "HUB_RUNTIME_URL": "http://hermes-runtime:8080", "HUB_RUNTIME_SUPERVISOR_URL": "${HUB_RUNTIME_SUPERVISOR_URL}", "HUB_COMMUNICATION_SPOOL": "/data", "HUB_CONFIGURED_ENV": strings.Join(configuredEnvKeys(s, dir), ","), "HUB_NATIVE_CRON": s.NativeCron, "HUB_DIAGNOSTICS_ENABLED": fmt.Sprint(s.DiagnosticsEnabled())}
+		// Supervised spaces have no hermes-runtime compose service — the
+		// gateway's control calls (holds, control, skill-apply) all live on the
+		// supervisor mux, which routes them to the owning managed runtime.
+		gatewayRuntimeURL := "http://hermes-runtime:8080"
+		if supervisorURL != "" {
+			gatewayRuntimeURL = supervisorURL
+		}
+		gatewayEnvironment := M{"HUB_USER_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_FEATURES": strings.Join(s.featureList(), ","), "HUB_RUNTIME_URL": gatewayRuntimeURL, "HUB_RUNTIME_SUPERVISOR_URL": "${HUB_RUNTIME_SUPERVISOR_URL}", "HUB_COMMUNICATION_SPOOL": "/data", "HUB_CONFIGURED_ENV": strings.Join(configuredEnvKeys(s, dir), ","), "HUB_NATIVE_CRON": s.NativeCron, "HUB_DIAGNOSTICS_ENABLED": fmt.Sprint(s.DiagnosticsEnabled())}
 		if s.Has("telegram") {
 			gatewayEnvironment["HUB_TELEGRAM_AUTH_ENABLED"] = fmt.Sprint(s.Has("telegram_auth"))
 		}
@@ -657,14 +697,14 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		if supervisorURL == "" {
 			gatewayEnvFiles = append(gatewayEnvFiles, M{"path": filepath.ToSlash(filepath.Join(dir, "runtime.auth")), "format": "raw"})
 			gatewayEnvironment["HUB_TOOLHUB_URL"] = "http://toolhub:8090"
-			// The skillgit ExecCell posts to the controller /cli-exec derived
-			// from this endpoint; toolhub.auth carries the admission token.
-			gatewayEnvFiles = append(gatewayEnvFiles, M{"path": filepath.ToSlash(filepath.Join(dir, "toolhub.auth")), "format": "raw"})
-			gatewayEnvironment["HUB_TOOLHIVE_ADMISSION_ENDPOINT"] = "http://workload-controller:8545/admit"
 		} else {
 			gatewayEnvironment["HUB_SUPERVISOR_AUTH"] = "${HUB_SUPERVISOR_AUTH:?set HUB_SUPERVISOR_AUTH or provision supervisor.auth for this stack}"
 			gatewayEnvironment["HUB_TOOLHUB_URL"] = "http://toolhub-control:8090"
 		}
+		// The skillgit ExecCell posts to the controller /cli-exec derived
+		// from this endpoint; toolhub.auth carries the admission token.
+		gatewayEnvFiles = append(gatewayEnvFiles, M{"path": filepath.ToSlash(filepath.Join(dir, "toolhub.auth")), "format": "raw"})
+		gatewayEnvironment["HUB_TOOLHIVE_ADMISSION_ENDPOINT"] = "http://workload-controller:8545/admit"
 		// Harness-side /name and $name expansion reads the ro effective view
 		// (R6.5); same convention as the toolhub mount above. The owner store
 		// stays writable for skill-scoped credential forms (R8.2).
@@ -698,6 +738,34 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		if info, err := os.Stat(filepath.Join(dir, "model-relay-admins.json")); err == nil && info.Mode().IsRegular() {
 			gatewayEnvironment["HUB_MODEL_RELAY_ADMINS_FILE"] = "/config/model-relay-admins.json"
 			gateway["volumes"] = append(gateway["volumes"].([]any), M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "model-relay-admins.json")), "target": "/config/model-relay-admins.json", "read_only": true})
+		}
+		// Per-principal skill catalogs: every space's generated effective view
+		// mounts under /skills-effective-by/<space> so a shared gateway
+		// resolves /name and $name against the caller's own index (R6.5
+		// multi-principal). Spaces without a rendered view are skipped —
+		// a missing bind source would otherwise create the dir on the host.
+		if parent := filepath.Dir(dir); filepath.Base(parent) == "spaces" {
+			gatewayEnvironment["HUB_SKILLS_BY_PRINCIPAL"] = "/skills-effective-by"
+			gatewayEnvironment["HUB_SKILLS_STORE_BY"] = "/skills-store-by"
+			if siblings, err := os.ReadDir(parent); err == nil {
+				for _, sibling := range siblings {
+					if !sibling.IsDir() {
+						continue
+					}
+					view := filepath.Join(parent, sibling.Name(), "generated", "skills-effective")
+					if info, err := os.Stat(view); err == nil && info.IsDir() {
+						gateway["volumes"] = append(gateway["volumes"].([]any), M{"type": "bind", "source": filepath.ToSlash(view), "target": "/skills-effective-by/" + sibling.Name(), "read_only": true})
+					}
+					// /v1/skill-git resolves the caller's store here; publish
+					// still applies through the owning runtime (R5.3). The
+					// mount stays writable — drafts and .sources mirrors are
+					// created in place so the runtime sees them instantly.
+					store := filepath.Join(parent, sibling.Name(), "skills")
+					if info, err := os.Stat(store); err == nil && info.IsDir() {
+						gateway["volumes"] = append(gateway["volumes"].([]any), M{"type": "bind", "source": filepath.ToSlash(store), "target": "/skills-store-by/" + sibling.Name()})
+					}
+				}
+			}
 		}
 		if supervisorURL == "" {
 			gateway["depends_on"] = M{"hermes-runtime": M{"condition": "service_healthy"}}

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -22,6 +23,7 @@ import (
 // ls-remote reports the pinned head.
 type skillGitStub struct {
 	store  string
+	stores map[string]string
 	commit string
 	tar    []byte
 	names  string
@@ -38,7 +40,11 @@ func (s *skillGitStub) run(_ context.Context, req api.CliExecRequest) (api.CliEx
 		}
 	}
 	if strings.Contains(joined, "-o /work/.export.tar") {
-		mirror := filepath.Join(s.store, ".sources", req.Workspace.Path)
+		store := s.store
+		if s.stores != nil {
+			store = s.stores[req.Principal]
+		}
+		mirror := filepath.Join(store, ".sources", req.Workspace.Path)
 		if err := os.WriteFile(filepath.Join(mirror, ".export.tar"), s.tar, 0o644); err != nil { // #nosec G703 -- test path under t.TempDir
 			return api.CliExecResponse{}, err
 		}
@@ -112,6 +118,116 @@ func TestSkillGitInstallProducesDraft(t *testing.T) {
 		if rq.Principal != "alice" || rq.Plan.DefinitionID != "skillgit" {
 			t.Fatalf("request identity %+v", rq)
 		}
+	}
+}
+
+// Multi-principal: an install from a sibling principal must write the draft
+// and .sources mirror into THEIR mounted store — the owner's store stays
+// untouched and a principal with no mounted store is refused.
+func TestSkillGitInstallPerPrincipalStore(t *testing.T) {
+	c := testConfig(t)
+	c.ControlAuth = "control-token"
+	owner := t.TempDir()
+	root := t.TempDir()
+	aliceDir := filepath.Join(root, "alice")
+	bobDir := filepath.Join(root, "bob")
+	if err := os.MkdirAll(aliceDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(bobDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	c.SkillsStore = owner
+	c.SkillsStoreByDir = root
+	c.Users = append(c.Users,
+		User{ID: "bob", Enabled: true, TelegramIDs: []int64{22}, StateDir: t.TempDir(), WorkspaceDir: t.TempDir()},
+		User{ID: "carol", Enabled: true, TelegramIDs: []int64{33}, StateDir: t.TempDir(), WorkspaceDir: t.TempDir()})
+	commit := strings.Repeat("cd", 20)
+	stub := &skillGitStub{stores: map[string]string{"alice": aliceDir, "bob": bobDir},
+		commit: commit, tar: skillGitTar(t, map[string]string{"skills/pdf/SKILL.md": testSkillMD})}
+	c.CLIExec = stub.run
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"action":"install","url":"https://github.com/o/r/tree/main/skills/pdf"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skill-git", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer control-token")
+	req.Header.Set("X-Hub-Principal", "bob")
+	result := httptest.NewRecorder()
+	g.Handler().ServeHTTP(result, req)
+	if result.Code != http.StatusOK {
+		t.Fatalf("install status=%d body=%s", result.Code, result.Body.String())
+	}
+	if entries, _ := os.ReadDir(filepath.Join(bobDir, ".drafts")); len(entries) != 1 {
+		t.Fatalf("draft missing from bob's store: %v", entries)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(owner, ".drafts")); len(entries) != 0 {
+		t.Fatal("sibling install leaked into the owner's store")
+	}
+	// A principal with no mounted store dir is refused, never redirected to
+	// the owner's store.
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/skill-git", strings.NewReader(body))
+	req2.Header.Set("Authorization", "Bearer control-token")
+	req2.Header.Set("X-Hub-Principal", "carol")
+	result2 := httptest.NewRecorder()
+	g.Handler().ServeHTTP(result2, req2)
+	if result2.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unmounted principal status=%d body=%s", result2.Code, result2.Body.String())
+	}
+}
+
+// A failed install is silent in the response by design, but the gateway must
+// log the bounded error for the operator — otherwise managed-stack failures
+// are undiagnosable (live M24 acceptance needed this).
+func TestSkillGitInstallFailureLogged(t *testing.T) {
+	c := testConfig(t)
+	c.ControlAuth = "control-token"
+	c.SkillsStore = t.TempDir()
+	// A stub whose ls-remote fails drives Install into the error branch.
+	stub := &skillGitStub{store: c.SkillsStore, codes: map[string]int{"ls-remote": 128}}
+	c.CLIExec = stub.run
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(prev)
+	body := `{"action":"install","url":"https://github.com/o/r/tree/main/skills/pdf"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skill-git", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer control-token")
+	req.Header.Set("X-Hub-Principal", "alice")
+	result := httptest.NewRecorder()
+	g.Handler().ServeHTTP(result, req)
+	if result.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", result.Code)
+	}
+	if !strings.Contains(buf.String(), "skill-git install failed") || !strings.Contains(buf.String(), "alice") {
+		t.Fatalf("install failure not logged with principal: %q", buf.String())
+	}
+}
+
+// Without a per-principal root the owner store is reachable only by the
+// owner: a sibling caller must be refused, not silently redirected.
+func TestSkillGitInstallSiblingWithoutRootRefused(t *testing.T) {
+	c := testConfig(t)
+	c.ControlAuth = "control-token"
+	c.SkillsStore = t.TempDir()
+	c.Users = append(c.Users, User{ID: "bob", Enabled: true, TelegramIDs: []int64{22}, StateDir: t.TempDir(), WorkspaceDir: t.TempDir()})
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"action":"install","url":"https://github.com/o/r/tree/main/skills/pdf"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/skill-git", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer control-token")
+	req.Header.Set("X-Hub-Principal", "bob")
+	result := httptest.NewRecorder()
+	g.Handler().ServeHTTP(result, req)
+	if result.Code != http.StatusServiceUnavailable {
+		t.Fatalf("sibling without a mounted store must be refused, got %d %s", result.Code, result.Body.String())
 	}
 }
 

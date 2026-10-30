@@ -16,21 +16,53 @@ import (
 // reaches the model. Activated content arrives wrapped in <skill_content>
 // with $ARGUMENTS/$0..$n substituted and the re-load instruction attached.
 
-// skillIndex loads the mounted effective index; a missing index means "no
-// skills" — the caller falls back to the plain unknown-command reply.
-func (g *Gateway) skillIndex() *skillstore.EffectiveIndex {
-	if g.config.SkillsDir == "" {
-		return nil
+// skillIndex loads the effective index for the calling principal; a missing
+// index means "no skills" — the caller falls back to the plain
+// unknown-command reply. With a by-principal root configured each principal
+// resolves <root>/<principal>/; otherwise the owner's single mount is the
+// legacy fallback. The returned dir feeds skillActivationText.
+func (g *Gateway) skillIndex(principalID string) (*skillstore.EffectiveIndex, string) {
+	var dir string
+	if root := g.config.SkillsByPrincipalDir; root != "" {
+		dir = filepath.Join(root, principalID)
+	} else if len(g.config.Users) > 0 && principalID == g.config.Users[0].ID {
+		// The single legacy mount is the owner's view — sibling principals
+		// without a mounted catalog must not read it.
+		dir = g.config.SkillsDir
 	}
-	body, err := os.ReadFile(filepath.Join(g.config.SkillsDir, "index.json"))
+	if dir == "" {
+		return nil, ""
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "index.json"))
 	if err != nil {
-		return nil
+		return nil, ""
 	}
 	var idx skillstore.EffectiveIndex
 	if err := json.Unmarshal(body, &idx); err != nil {
-		return nil
+		return nil, ""
 	}
-	return &idx
+	return &idx, dir
+}
+
+// skillStoreDirFor resolves the writable store for the calling principal the
+// same way skillIndex resolves its view: with a by-principal root each caller
+// writes under <root>/<id>; a principal without a mounted store is refused
+// rather than creating a stray tree under the root. Without a root only the
+// owner's single SkillsStore is reachable — siblings must never write into
+// it (a sibling install would bind the caller's .sources inside the owner's
+// tree).
+func (g *Gateway) skillStoreDirFor(principalID string) string {
+	if root := g.config.SkillsStoreByDir; root != "" {
+		dir := filepath.Join(root, principalID)
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			return dir
+		}
+		return ""
+	}
+	if len(g.config.Users) > 0 && principalID == g.config.Users[0].ID {
+		return g.config.SkillsStore
+	}
+	return ""
 }
 
 func skillEntry(idx *skillstore.EffectiveIndex, name string) *skillstore.Entry {
@@ -47,8 +79,8 @@ func skillEntry(idx *skillstore.EffectiveIndex, name string) *skillstore.Entry {
 
 // skillActivationText reads the skill body, applies $ARGUMENTS/$0..$n
 // substitution and wraps it for the job envelope.
-func (g *Gateway) skillActivationText(e *skillstore.Entry, args []string) (string, error) {
-	raw, err := os.ReadFile(filepath.Join(g.config.SkillsDir, e.Name, skillstore.SkillFile))
+func (g *Gateway) skillActivationText(dir string, e *skillstore.Entry, args []string) (string, error) {
+	raw, err := os.ReadFile(filepath.Join(dir, e.Name, skillstore.SkillFile))
 	if err != nil {
 		return "", err
 	}
@@ -86,7 +118,7 @@ func (g *Gateway) skillSessionFor(principalID, taskID string, idx *skillstore.Ef
 // skill appends a <skill_content> activation block, stopping at the first
 // token that names no skill (R6.5). Activations dedupe per session.
 func (g *Gateway) expandSkillRefs(principalID, taskID, text string) string {
-	idx := g.skillIndex()
+	idx, dir := g.skillIndex(principalID)
 	if idx == nil {
 		return text
 	}
@@ -139,7 +171,7 @@ func (g *Gateway) expandSkillRefs(principalID, taskID, text string) string {
 		if activated[e.Name] {
 			continue
 		}
-		block, err := g.skillActivationText(e, nil)
+		block, err := g.skillActivationText(dir, e, nil)
 		if err != nil {
 			continue
 		}

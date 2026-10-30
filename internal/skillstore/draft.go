@@ -25,6 +25,8 @@ type DraftMeta struct {
 	RestoreStamp string         `json:"restore_stamp,omitempty"`
 	Tainted      bool           `json:"tainted,omitempty"`
 	TaintSources []string       `json:"taint_sources,omitempty"` // web|inbound|connector|git
+	Imported     bool           `json:"imported,omitempty"`
+	ImportNotes  []string       `json:"import_notes,omitempty"`
 	ScanVerdict  string         `json:"scan_verdict,omitempty"`
 	ScanFindings []scan.Finding `json:"scan_findings,omitempty"`
 }
@@ -57,9 +59,11 @@ func (s *Store) createDraft(name string, tree Tree, meta DraftMeta, quota bool) 
 	if s.scope != ScopePlatform && ReservedName(name) {
 		return nil, fmt.Errorf("%w: %q", ErrReserved, name)
 	}
-	if err := validateTree(tree); err != nil {
+	notes, err := validateTreeMode(tree, meta.Imported)
+	if err != nil {
 		return nil, err
 	}
+	meta.ImportNotes = append(meta.ImportNotes, notes...)
 	if n := s.draftsToday(); quota && n >= MaxDraftsPerDay {
 		return nil, fmt.Errorf("%w: %d drafts today (max %d)", ErrQuota, n, MaxDraftsPerDay)
 	}
@@ -196,7 +200,7 @@ func (s *Store) PublishDraft(id, approver string) (string, error) {
 		rev, err = s.publish(d.Name, tree, IndexMeta{
 			Author: approver, Source: "draft:" + d.Meta.Author,
 			BaseRevision: d.Meta.BaseRevision, SessionID: d.Meta.SessionID,
-		}, true)
+		}, true, d.Meta.Imported)
 	}
 	if err != nil {
 		return "", err

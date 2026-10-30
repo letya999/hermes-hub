@@ -142,6 +142,26 @@ func TestGovernanceAssignmentsSection(t *testing.T) {
 	}
 }
 
+// TestGovernanceSkillsSections: the skill families are governed hub sections —
+// the default workspace wishes `skills`/`skills_manage` must resolve to the
+// hub:skills / hub:skills_manage inventory entries (SPEC-0084), not fail as
+// unknown capability families.
+func TestGovernanceSkillsSections(t *testing.T) {
+	d := t.TempDir()
+	if err := Init(d, "me"); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Read(d)
+	if err != nil {
+		t.Fatalf("skills wishes must resolve to known sections: %v", err)
+	}
+	for _, name := range []string{"skills", "skills_manage"} {
+		if entry, ok := s.Tools[name]; !ok || entry.Via != ToolViaToolHub {
+			t.Fatalf("default workspace must wish %s: toolhub, got %+v", name, s.Tools[name])
+		}
+	}
+}
+
 func TestGovernanceMigrationPreservesSelection(t *testing.T) {
 	d := t.TempDir()
 	if err := Init(d, "me"); err != nil {
@@ -333,6 +353,55 @@ func TestSectionForEntryMapping(t *testing.T) {
 	org := Settings{User: "alice", Organization: "acme"}
 	if got := org.sectionForEntry("gitea", ToolEntry{Via: ToolViaMCPRaw}); got != api.SectionOrgMCP {
 		t.Fatalf("org mcp-raw: %s", got)
+	}
+}
+
+// TestGovernanceDocPathInfraSibling: the shared document lives in the infra
+// space's runtime dir — a secondary space (infra: false) must reach it, not
+// the alphabetically-first sibling's leftover doc. The infra space itself
+// always resolves its own dir (seed target), never a sibling's.
+func TestGovernanceDocPathInfraSibling(t *testing.T) {
+	spaces := filepath.Join(t.TempDir(), "spaces")
+	write := func(space, rel, body string) {
+		path := filepath.Join(spaces, space, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	doc := filepath.Join("runtime", "toolhub", "governance.json")
+	write("artem_main", "agent.yaml", "schema: 2\nuser: artem_main\ninfra: false\n")
+	write("artem_main", doc, "{}")
+	write("local", "settings.yaml", "user: local\n")
+	write("local", doc, "{}")
+	write("artem_two", "agent.yaml", "schema: 2\nuser: artem_two\ninfra: false\n")
+
+	want := filepath.Join(spaces, "local", doc)
+	if got := governanceDocPath(filepath.Join(spaces, "artem_two")); got != want {
+		t.Fatalf("secondary picked %q, want infra doc %q", got, want)
+	}
+	// A secondary's leftover own doc is last resort, never authority over the
+	// infra document.
+	write("artem_two", doc, "{}")
+	if got := governanceDocPath(filepath.Join(spaces, "artem_two")); got != want {
+		t.Fatalf("secondary own doc shadowed the infra doc: %q", got)
+	}
+	// The infra space resolves its own dir whether the file exists or not.
+	if got := governanceDocPath(filepath.Join(spaces, "local")); got != want {
+		t.Fatalf("infra space doc path: %q", got)
+	}
+	os.Remove(filepath.Join(spaces, "local", doc))
+	if got := governanceDocPath(filepath.Join(spaces, "local")); got != want {
+		t.Fatalf("infra space seed target must be its own dir: %q", got)
+	}
+	// With no infra sibling at all, a secondary falls back to any documented
+	// sibling, then its own dir.
+	other := filepath.Join(spaces, "artem_two")
+	os.Remove(filepath.Join(spaces, "artem_two", doc))
+	if got := governanceDocPath(other); got != filepath.Join(spaces, "artem_main", doc) {
+		t.Fatalf("no infra sibling: fallback should be a documented sibling: %q", got)
 	}
 }
 

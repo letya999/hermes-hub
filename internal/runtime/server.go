@@ -55,6 +55,37 @@ type SelfEnvRequest struct {
 	Values         map[string]string `json:"values"`
 }
 
+// SkillApplyRequest is the protected-card-to-runtime contract for skill draft
+// publish/rollback (SPEC-0083 R5.3). It is never sent through Hermes jobs or
+// exposed as a model tool; the supervisor uses the envelope fields only to
+// route to the owning runtime, the runtime consumes the apply fields.
+type SkillApplyRequest struct {
+	identity.Envelope
+	OrganizationID string `json:"organization_id"`
+	UserID         string `json:"user_id"`
+	ActorID        string `json:"actor_id"`
+	ScopeID        string `json:"scope_id"`
+	Action         string `json:"action"`
+	DraftID        string `json:"draft_id"`
+	SkillName      string `json:"skill_name"`
+	Scope          string `json:"scope"`
+	BaseRevision   string `json:"base_revision"`
+	Approver       string `json:"approver"`
+}
+
+// SkillCredsRequest is the protected-form-to-runtime contract for skill
+// credential delivery (SPEC-0084 R8.2). The supervisor uses the envelope
+// fields only to route to the owning runtime, which consumes skill+values.
+type SkillCredsRequest struct {
+	identity.Envelope
+	OrganizationID string            `json:"organization_id"`
+	UserID         string            `json:"user_id"`
+	ActorID        string            `json:"actor_id"`
+	ScopeID        string            `json:"scope_id"`
+	Skill          string            `json:"skill"`
+	Values         map[string]string `json:"values"`
+}
+
 type ExecuteResponse struct {
 	Text              string   `json:"text"`
 	JobID             string   `json:"job_id,omitempty"`
@@ -119,6 +150,10 @@ func (s *runtimeHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.usage(w, r)
 	case "/v1/skill-apply":
 		s.skillApply(w, r)
+	case "/v1/skill-creds":
+		s.skillCreds(w, r)
+	case "/v1/skill-ref-lease":
+		s.skillRefLease(w, r)
 	default:
 		writeRuntimeError(w, http.StatusNotFound, "not found")
 	}

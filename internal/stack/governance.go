@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
+	"gopkg.in/yaml.v3"
 	"os"
 	"path/filepath"
 	"slices"
@@ -39,15 +40,18 @@ type toolGovernance struct {
 }
 
 // governanceDocPath resolves the shared governance document: the
-// HUB_TOOL_GOVERNANCE pin wins, then the space's own runtime dir (the infra
-// space), then any sibling space's copy (secondary spaces reach the shared
-// ToolHub policy), falling back to the space-local path as the seed target.
+// HUB_TOOL_GOVERNANCE pin wins; the infra space always resolves its own
+// runtime dir (the seed target and document authority); a secondary space
+// reaches the infra sibling's copy first, then its own leftover doc, then
+// any documented sibling, falling back to the space-local path as the seed
+// target. Alphabetical sibling order never outranks the infra marker — a
+// stale doc on a secondary space must not shadow the shared policy.
 func governanceDocPath(spaceDir string) string {
 	if pinned := os.Getenv("HUB_TOOL_GOVERNANCE"); pinned != "" {
 		return pinned
 	}
 	own := filepath.Join(spaceDir, "runtime", "toolhub", "governance.json")
-	if _, err := os.Stat(own); err == nil {
+	if spaceRendersInfra(spaceDir) {
 		return own
 	}
 	parent := filepath.Dir(spaceDir)
@@ -60,15 +64,54 @@ func governanceDocPath(spaceDir string) string {
 				}
 			}
 			slices.Sort(names)
+			fallback := ""
 			for _, name := range names {
-				candidate := filepath.Join(parent, name, "runtime", "toolhub", "governance.json")
-				if _, err := os.Stat(candidate); err == nil {
+				if name == filepath.Base(spaceDir) {
+					continue
+				}
+				dir := filepath.Join(parent, name)
+				candidate := filepath.Join(dir, "runtime", "toolhub", "governance.json")
+				if _, err := os.Stat(candidate); err != nil {
+					continue
+				}
+				if spaceRendersInfra(dir) {
 					return candidate
 				}
+				if fallback == "" {
+					fallback = candidate
+				}
+			}
+			if _, err := os.Stat(own); err == nil {
+				return own
+			}
+			if fallback != "" {
+				return fallback
 			}
 		}
 	}
 	return own
+}
+
+// spaceRendersInfra peeks at a space's own files for the infra flag without
+// running Read — full settings load would recurse into governance
+// resolution. The flag lives in agent.yaml (split layout) or settings.yaml
+// (legacy single file); absence means the space renders the shared control
+// plane — Settings.RendersInfra semantics.
+func spaceRendersInfra(dir string) bool {
+	for _, name := range []string{"agent.yaml", "settings.yaml"} {
+		body, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			continue
+		}
+		var probe struct {
+			Infra *bool `yaml:"infra"`
+		}
+		if err := yaml.Unmarshal(body, &probe); err != nil {
+			continue
+		}
+		return probe.Infra == nil || *probe.Infra
+	}
+	return false
 }
 
 // sectionForEntry maps an enabled tools entry to its governance section.

@@ -390,8 +390,8 @@ func (m *Manager) lease(w http.ResponseWriter, r *http.Request) {
 	}
 	lease, runtime, err := m.Acquire(r.Context(), binding, payload.Kind)
 	if err != nil {
-		log.Printf("acquire failed for %s/%s: %v", binding.PrincipalID, binding.ContextID, err)
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		log.Printf("acquire failed principal=%s context=%s class=%s", binding.PrincipalID, binding.ContextID, runtimeFailureClass(err))
+		writeRuntimeFailure(w, http.StatusServiceUnavailable, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, struct {

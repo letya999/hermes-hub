@@ -138,6 +138,36 @@ func TestSkillCredentialFormFlow(t *testing.T) {
 	}
 }
 
+// R8.2 multi-principal: a skill-scoped form resolves the CALLER's effective
+// view — a sibling's skill the owner lacks must still mint its form.
+func TestSkillCredentialFormReadsCallerView(t *testing.T) {
+	c := testConfig(t)
+	byRoot := t.TempDir()
+	ownerDir := filepath.Join(byRoot, "alice")
+	sibDir := filepath.Join(byRoot, "bob")
+	if err := os.MkdirAll(ownerDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	sealEffectiveIndex(t, ownerDir, nil)
+	if err := os.MkdirAll(sibDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"schema":1,"revision":"r1","skills":[{"name":"demo","description":"d","source":"user","revision":"r","eligible":true,"requires":{"credentials":[{"name":"API_KEY"}]}}]}`
+	if err := os.WriteFile(filepath.Join(sibDir, "index.json"), []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	c.SkillsByPrincipalDir = byRoot
+	c.SkillsStore = t.TempDir()
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, err := g.formKeys(User{ID: "bob"}, "skill:demo", nil)
+	if err != nil || len(keys) != 1 || keys[0] != "API_KEY" {
+		t.Fatalf("sibling skill credentials unresolved: keys=%v err=%v", keys, err)
+	}
+}
+
 // The skill-scoped form must carry the skill name through to persistence —
 // a form minted for skill:demo persists under .state/credentials/demo.json,
 // not the runtime env store.
@@ -498,12 +528,162 @@ func TestConfigFromEnvSkillsDir(t *testing.T) {
 	t.Setenv("TELEGRAM_BOT_TOKEN", "token")
 	t.Setenv("TELEGRAM_ALLOWED_USERS", "11")
 	t.Setenv("HUB_SKILLS_EFFECTIVE", "/skills-effective")
+	t.Setenv("HUB_SKILLS_BY_PRINCIPAL", "/skills-effective-by")
 	config, err := ConfigFromEnv()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if config.SkillsDir != "/skills-effective" {
 		t.Fatalf("HUB_SKILLS_EFFECTIVE not mapped: %q", config.SkillsDir)
+	}
+	if config.SkillsByPrincipalDir != "/skills-effective-by" {
+		t.Fatalf("HUB_SKILLS_BY_PRINCIPAL not mapped: %q", config.SkillsByPrincipalDir)
+	}
+}
+
+// The shared gateway resolves each principal's own effective view for `/name`:
+// the sibling caller's skill expands from their index, the owner's same-named
+// skill is never consulted, and a skill absent from the caller's index answers
+// unknown-command — never the owner's content (multi-principal isolation).
+func TestSlashSkillResolvesSiblingPrincipalView(t *testing.T) {
+	c := testConfig(t)
+	bobWorkspace := t.TempDir()
+	pinLang(t, bobWorkspace, locale.LangRU)
+	c.Users = append(c.Users, User{ID: "bob", Enabled: true, TelegramIDs: []int64{22},
+		StateDir: t.TempDir(), WorkspaceDir: bobWorkspace, Features: []string{"workspace"}})
+	byRoot := t.TempDir()
+	ownerDir := filepath.Join(byRoot, "alice")
+	sibDir := filepath.Join(byRoot, "bob")
+	writeEffectiveSkill(t, ownerDir, "owner-only", "d", "OWNER BODY\n", "")
+	writeEffectiveSkill(t, ownerDir, "shared-name", "d", "ALICE VERSION\n", "")
+	sealEffectiveIndex(t, ownerDir, nil)
+	writeEffectiveSkill(t, sibDir, "bob-skill", "d", "BOB BODY\n", "")
+	writeEffectiveSkill(t, sibDir, "shared-name", "d", "BOB VERSION\n", "")
+	sealEffectiveIndex(t, sibDir, nil)
+	c.SkillsByPrincipalDir = byRoot
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{}
+	g.api, g.runner = fake, &fakeRunner{}
+	g.now = func() time.Time { return time.Unix(100, 0) }
+	send := func(id int, from, chat int64, text string) {
+		upd := Update{UpdateID: id, Message: &Message{MessageID: id, From: &TGUser{ID: from}, Chat: TGChat{ID: chat, Type: "private"}, Text: text}}
+		if err := g.handleUpdate(context.Background(), upd); err != nil {
+			t.Fatal(err)
+		}
+	}
+	claimAll := func() string {
+		var expanded strings.Builder
+		for {
+			job, _ := g.spool.ClaimJob()
+			if job == nil {
+				return expanded.String()
+			}
+			expanded.WriteString(job.Text)
+			expanded.WriteByte('\n')
+			if err := g.spool.CompleteJob(job.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	var sb strings.Builder
+	send(1, 22, 22, "/bob-skill")
+	sb.WriteString(claimAll())
+	send(2, 22, 22, "/shared-name")
+	sb.WriteString(claimAll())
+	send(3, 22, 22, "/owner-only")
+	sb.WriteString(claimAll())
+	send(4, 11, 11, "/shared-name")
+	sb.WriteString(claimAll())
+	got := sb.String()
+	if strings.Count(got, "BOB BODY") != 1 {
+		t.Fatalf("bob's own skill must expand exactly once: %q", got)
+	}
+	if strings.Count(got, "BOB VERSION") != 1 || strings.Count(got, "ALICE VERSION") != 1 {
+		t.Fatalf("shared-name must resolve per-principal (bob+alice): %q", got)
+	}
+	for range 8 {
+		g.deliverOne(context.Background())
+	}
+	joined := strings.Join(fake.sent, "\n")
+	t.Logf("sent replies: %s", joined)
+	if !strings.Contains(joined, "/owner-only") {
+		t.Fatalf("owner-only skill must answer unknown-command for bob: %q", joined)
+	}
+}
+
+// Without a by-principal root the single mounted view belongs to the owner:
+// a sibling principal must get unknown-command, not the owner's catalog.
+func TestSlashSkillLegacyMountIsOwnerOnly(t *testing.T) {
+	c := testConfig(t)
+	bobWorkspace := t.TempDir()
+	pinLang(t, bobWorkspace, locale.LangRU)
+	c.Users = append(c.Users, User{ID: "bob", Enabled: true, TelegramIDs: []int64{22},
+		StateDir: t.TempDir(), WorkspaceDir: bobWorkspace, Features: []string{"workspace"}})
+	skillsDir := t.TempDir()
+	writeEffectiveSkill(t, skillsDir, "owner-skill", "d", "OWNER BODY\n", "")
+	sealEffectiveIndex(t, skillsDir, nil)
+	c.SkillsDir = skillsDir
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{}
+	g.api, g.runner = fake, &fakeRunner{}
+	send := func(id int, from, chat int64, text string) {
+		upd := Update{UpdateID: id, Message: &Message{MessageID: id, From: &TGUser{ID: from}, Chat: TGChat{ID: chat, Type: "private"}, Text: text}}
+		if err := g.handleUpdate(context.Background(), upd); err != nil {
+			t.Fatal(err)
+		}
+	}
+	send(1, 22, 22, "/owner-skill")
+	for range 4 {
+		g.deliverOne(context.Background())
+	}
+	joined := strings.Join(fake.sent, "\n")
+	if !strings.Contains(joined, "/owner-skill") {
+		t.Fatalf("sibling must not resolve the owner's catalog: %q", joined)
+	}
+	if job, _ := g.spool.ClaimJob(); job != nil && strings.Contains(job.Text, "OWNER BODY") {
+		t.Fatalf("owner skill content leaked into sibling job: %q", job.Text)
+	}
+}
+
+// `$name` expansion uses the caller's own index too: a sibling principal's
+// reference expands their skill, never the owner's same-named one.
+func TestDollarSkillRefsResolveSiblingPrincipalView(t *testing.T) {
+	c := testConfig(t)
+	bobWorkspace := t.TempDir()
+	pinLang(t, bobWorkspace, locale.LangRU)
+	c.Users = append(c.Users, User{ID: "bob", Enabled: true, TelegramIDs: []int64{22},
+		StateDir: t.TempDir(), WorkspaceDir: bobWorkspace, Features: []string{"workspace"}})
+	byRoot := t.TempDir()
+	ownerDir := filepath.Join(byRoot, "alice")
+	sibDir := filepath.Join(byRoot, "bob")
+	writeEffectiveSkill(t, ownerDir, "shared-name", "d", "ALICE VERSION\n", "")
+	sealEffectiveIndex(t, ownerDir, nil)
+	writeEffectiveSkill(t, sibDir, "shared-name", "d", "BOB VERSION\n", "")
+	sealEffectiveIndex(t, sibDir, nil)
+	c.SkillsByPrincipalDir = byRoot
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{}
+	g.api, g.runner = fake, &fakeRunner{}
+	g.now = func() time.Time { return time.Unix(100, 0) }
+	upd := Update{UpdateID: 1, Message: &Message{MessageID: 1, From: &TGUser{ID: 22}, Chat: TGChat{ID: 22, Type: "private"}, Text: "run $shared-name"}}
+	if err := g.handleUpdate(context.Background(), upd); err != nil {
+		t.Fatal(err)
+	}
+	job, _ := g.spool.ClaimJob()
+	if job == nil {
+		t.Fatal("message must enqueue")
+	}
+	if !strings.Contains(job.Text, "BOB VERSION") || strings.Contains(job.Text, "ALICE VERSION") {
+		t.Fatalf("$name must expand from bob's view: %q", job.Text)
 	}
 }
 
@@ -555,5 +735,65 @@ func TestSlashSkillRepliesLocalized(t *testing.T) {
 	}
 	if !strings.Contains(joined, "Skill deploy-app is already active in this session.") {
 		t.Errorf("en already-active reply wrong: %q", joined)
+	}
+}
+
+// R8.2 managed: a skill-scoped form on a supervised gateway relays values to
+// the owning runtime's /v1/skill-creds — the gateway never writes the managed
+// store itself.
+func TestSkillCredentialFormManagedRelay(t *testing.T) {
+	var gotSkill, gotValue, gotPath string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		var request struct {
+			Skill  string            `json:"skill"`
+			Values map[string]string `json:"values"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		gotSkill, gotValue = request.Skill, request.Values["API_KEY"]
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"state": "applied"})
+	}))
+	defer upstream.Close()
+	c := testConfig(t)
+	c.RuntimeURL = upstream.URL
+	c.RuntimeAuth = "runtime-secret"
+	c.SkillsStore = t.TempDir()
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	form := credentialForm{OwnerID: "alice", Skill: "demo", Keys: []string{"API_KEY"}}
+	request := httptest.NewRequest(http.MethodPost, "/credentials/x", nil)
+	if err := g.persistCredentialForm(request, form, map[string]string{"API_KEY": "s3cr3t"}); err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/v1/skill-creds" || gotSkill != "demo" || gotValue != "s3cr3t" {
+		t.Fatalf("relay reached %s skill=%s value=%s", gotPath, gotSkill, gotValue)
+	}
+	if stored, _ := skillstore.ReadCredentials(c.SkillsStore, "demo"); len(stored) != 0 {
+		t.Fatalf("supervised gateway wrote a local store: %v", stored)
+	}
+}
+
+// A non-2xx relay answer must surface as a persist error — the user must not
+// see "saved" while the runtime dropped the write.
+func TestSkillCredentialFormManagedRelayFailure(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "runtime rejected skill credentials", http.StatusBadGateway)
+	}))
+	defer upstream.Close()
+	c := testConfig(t)
+	c.RuntimeURL = upstream.URL
+	c.RuntimeAuth = "runtime-secret"
+	c.SkillsStore = t.TempDir()
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	form := credentialForm{OwnerID: "alice", Skill: "demo", Keys: []string{"API_KEY"}}
+	request := httptest.NewRequest(http.MethodPost, "/credentials/x", nil)
+	if err := g.persistCredentialForm(request, form, map[string]string{"API_KEY": "s3cr3t"}); err == nil {
+		t.Fatal("failed relay reported saved")
 	}
 }

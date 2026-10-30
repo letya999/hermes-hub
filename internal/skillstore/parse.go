@@ -47,6 +47,10 @@ type EnvRequirement struct {
 	Help        string `json:"help,omitempty"`
 	RequiredFor string `json:"required_for,omitempty"`
 	Hard        bool   `json:"hard,omitempty"`
+	// Ref names an already-configured self-env key (e.g. a connector's PAT)
+	// whose value satisfies this need without a duplicated per-skill
+	// secret (R8.2). A stored per-skill value still wins when both exist.
+	Ref string `json:"ref,omitempty"`
 }
 
 // SettingSpec is a non-secret per-user skill setting.
@@ -56,6 +60,10 @@ type SettingSpec struct {
 	Default     string `json:"default,omitempty"`
 	Prompt      string `json:"prompt,omitempty"`
 }
+
+// credRefPattern bounds a credential ref to the env-key shape self-env
+// accepts — anything else can never resolve and is an author bug.
+var credRefPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 
 // ParseSkillMD parses SKILL.md frontmatter. lenient=true tolerates
 // foreign-format deviations and reports them as warnings; lenient=false
@@ -111,6 +119,9 @@ func ParseSkillMD(dir string, body []byte, lenient bool) (*Manifest, []string, e
 	for _, cred := range m.Requires.Credentials {
 		if ReservedSecretName(cred.Name) {
 			return nil, nil, fmt.Errorf("%w: credential name %q is hub/broker-reserved", ErrInvalid, cred.Name)
+		}
+		if cred.Ref != "" && !lenient && !credRefPattern.MatchString(cred.Ref) {
+			return nil, nil, fmt.Errorf("%w: credential ref %q must be an env key (A-Z0-9_)", ErrInvalid, cred.Ref)
 		}
 	}
 	warns := []string{}
@@ -201,7 +212,8 @@ func credentialItems(items []any) []EnvRequirement {
 		case map[string]any:
 			name, _ := v["name"].(string)
 			prompt, _ := v["prompt"].(string)
-			out = append(out, EnvRequirement{Name: name, Prompt: prompt, Hard: v["hard"] == true})
+			ref, _ := v["ref"].(string)
+			out = append(out, EnvRequirement{Name: name, Prompt: prompt, Hard: v["hard"] == true, Ref: ref})
 		}
 	}
 	return out

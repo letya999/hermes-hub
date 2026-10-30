@@ -16,10 +16,16 @@ import (
 // wildcards). It is not a generic CONNECT server — tunnels open to port 443
 // on allowlisted hosts only, and plain HTTP forwarding requires an absolute
 // URI whose host is listed. Everything else fails closed.
+// egressRelayResponseTimeout bounds how long the relay waits for upstream
+// response headers. Control-plane calls legitimately span minutes — a
+// skill-git install is a sequence of bounded 60s cells — so the cap sits
+// above that budget; the caller's own context still ends each request early.
+var egressRelayResponseTimeout = 10 * time.Minute
+
 func egressRelayHandler(allow map[string]bool) http.Handler {
 	transport := &http.Transport{
 		DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
-		ResponseHeaderTimeout: 30 * time.Second,
+		ResponseHeaderTimeout: egressRelayResponseTimeout,
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodConnect {

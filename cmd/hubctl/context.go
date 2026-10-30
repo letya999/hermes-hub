@@ -118,11 +118,13 @@ func runSkill(ctx context.Context, args []string) error {
 	name := f.String("name", "", "skill name")
 	id := f.String("id", "", "draft id")
 	from := f.String("from-file", "", "SKILL.md path")
+	fromPkg := f.String("from", "", "local package path: directory, zip archive or SKILL.md file")
 	source := f.String("source", "", "source URL")
 	url := f.String("url", "", "git repository URL")
 	ref := f.String("ref", "", "git ref override")
 	path := f.String("path", "", "skill subtree inside the repository")
 	to := f.String("to", "", "target revision for rollback")
+	env := f.String("env", "prod", "dev or prod")
 	all := f.Bool("all", false, "apply the action to every tracked skill")
 	consent := f.Bool("consent", false, "owner consent to publish; without it the install lands as a draft")
 	if err := f.Parse(args[1:]); err != nil {
@@ -134,6 +136,18 @@ func runSkill(ctx context.Context, args []string) error {
 	abs, err := filepath.Abs(*dir)
 	if err != nil {
 		return err
+	}
+	// A live-store mutation must refresh the agent-visible view the same
+	// way /v1/skill-apply does; a failed rebuild warns, it does not undo
+	// the applied store change.
+	refresh := func() {
+		s, err := stack.ReadEnvironment(abs, *env)
+		if err != nil {
+			return
+		}
+		if _, err := stack.MaterializeEffectiveSkills(abs, s); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: skills view rebuild: %v\n", err)
+		}
 	}
 	switch sub {
 	case "list":
@@ -195,8 +209,38 @@ func runSkill(ctx context.Context, args []string) error {
 			}
 			return json.NewEncoder(os.Stdout).Encode(out)
 		}
+		if *fromPkg != "" {
+			// Local import: a staged directory, zip archive or standalone
+			// SKILL.md goes through the same imported-draft pipeline as the
+			// agent's install_local — consent publishes, otherwise a draft.
+			st, err := skillstore.Open(filepath.Join(abs, "skills"), skillstore.ScopeUser)
+			if err != nil {
+				return err
+			}
+			lname, tree, notes, err := skillLocalImport(*fromPkg, *name)
+			if err != nil {
+				return err
+			}
+			d, err := st.CreateDraft(lname, tree, skillstore.DraftMeta{Author: "operator",
+				Imported: true, ImportNotes: notes, Reason: "local import " + *fromPkg})
+			if err != nil {
+				return err
+			}
+			if !*consent {
+				return json.NewEncoder(os.Stdout).Encode(d)
+			}
+			rev, err := st.PublishDraft(d.ID, *profile)
+			if err != nil {
+				return err
+			}
+			refresh()
+			return json.NewEncoder(os.Stdout).Encode(struct {
+				Name     string `json:"name"`
+				Revision string `json:"revision"`
+			}{lname, rev})
+		}
 		if *name == "" || *from == "" {
-			return fmt.Errorf("skill install requires --name and --from-file")
+			return fmt.Errorf("skill install requires --name, --from-file or --from")
 		}
 		body, err := os.ReadFile(*from)
 		if err != nil {
@@ -222,6 +266,7 @@ func runSkill(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
+		refresh()
 		return json.NewEncoder(os.Stdout).Encode(struct {
 			Name     string `json:"name"`
 			Revision string `json:"revision"`
@@ -272,7 +317,11 @@ func runSkill(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		return st.Archive(*name, "operator archive", "", *profile)
+		if err := st.Archive(*name, "operator archive", "", *profile); err != nil {
+			return err
+		}
+		refresh()
+		return nil
 	case "restore":
 		if *name == "" {
 			return fmt.Errorf("skill restore requires --name")
@@ -281,7 +330,11 @@ func runSkill(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		return st.Restore(*name)
+		if err := st.Restore(*name); err != nil {
+			return err
+		}
+		refresh()
+		return nil
 	case "sources":
 		if len(args) < 2 {
 			return fmt.Errorf("skill sources requires list or remove")
@@ -344,6 +397,9 @@ func runSkill(ctx context.Context, args []string) error {
 			return err
 		}
 		_, err = st.PublishDraft(*id, *profile)
+		if err == nil {
+			refresh()
+		}
 		return err
 	case "reject":
 		if *id == "" {
@@ -355,8 +411,23 @@ func runSkill(ctx context.Context, args []string) error {
 		}
 		return st.RejectDraft(*id)
 	case "eval":
-		skillDir := filepath.Join(abs, "skills", *name)
-		rep, err := skilleval.Eval(ctx, skillDir, *name, skilleval.HTTPRunner{URL: os.Getenv("HUB_SKILL_EVAL_URL")})
+		skillName := *name
+		skillDir := filepath.Join(abs, "skills", skillName)
+		if *id != "" {
+			// Evaluating a draft scores the unpublished tree — the
+			// pre-publish check the approval gate exists for.
+			st, err := skillstore.Open(filepath.Join(abs, "skills"), skillstore.ScopeUser)
+			if err != nil {
+				return err
+			}
+			d, _, err := st.LoadDraft(*id)
+			if err != nil {
+				return err
+			}
+			skillName = d.Name
+			skillDir = filepath.Join(abs, "skills", ".drafts", d.ID)
+		}
+		rep, err := skilleval.Eval(ctx, skillDir, skillName, skilleval.HTTPRunner{URL: os.Getenv("HUB_SKILL_EVAL_URL")})
 		if err != nil {
 			return err
 		}
@@ -368,7 +439,7 @@ func runSkill(ctx context.Context, args []string) error {
 		if err := os.MkdirAll(tmp, 0755); err != nil {
 			return err
 		}
-		path := filepath.Join(tmp, "skill-eval-"+*name+"-"+time.Now().UTC().Format("20060102T150405Z")+".json")
+		path := filepath.Join(tmp, "skill-eval-"+skillName+"-"+time.Now().UTC().Format("20060102T150405Z")+".json")
 		if err := os.WriteFile(path, body, 0600); err != nil {
 			return err
 		}
@@ -388,6 +459,9 @@ func runSkill(ctx context.Context, args []string) error {
 			return err
 		}
 		_, err = st.Rollback(*name, *to)
+		if err == nil {
+			refresh()
+		}
 		return err
 	case "promote":
 		if *id == "" {
@@ -411,6 +485,9 @@ func runSkill(ctx context.Context, args []string) error {
 			return err
 		}
 		_, err = st.PublishDraft(*id, *profile)
+		if err == nil {
+			refresh()
+		}
 		return err
 	default:
 		return fmt.Errorf("unknown skill command %q", sub)

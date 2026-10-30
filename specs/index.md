@@ -7,6 +7,7 @@ record it points to. `archive/` holds only pre-renumbering originals.
 
 | Specification | Status |
 |---|---|
+| [SPEC-0089](active/SPEC-0089-conversation-parallel-lanes.md) | Draft: parallel sessions inside one context — lane per conversation, fairness per context, per-context cap below upstream (ADR-0090, CHG-0234); on freeze supersedes SPEC-0012 rule 4 |
 | [SPEC-0088](active/SPEC-0088-bounded-control-journals.md) | Frozen: bounded root-plane journals, receipts, diagnostics and maintenance; implementation not started |
 | [SPEC-0087](active/SPEC-0087-broker-bounded-storage.md) | Frozen: Broker recovery, SQLCipher proof, normalized state/audit and provider lifecycle; implementation not started |
 | [SPEC-0086](active/SPEC-0086-standing-assignment-mvp.md) | Frozen: executable standing-assignment MVP — cursor replay, filtered specialist wakes, durable progress and acceptance (M23 #324/#332) |

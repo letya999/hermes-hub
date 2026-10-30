@@ -717,9 +717,18 @@ func TestConfigFromYAMLEnvBranch(t *testing.T) {
 	}
 	t.Setenv("HUB_COMMUNICATION_CONFIG", path)
 	t.Setenv("TELEGRAM_BOT_TOKEN", "token")
+	t.Setenv("HUB_SKILLS_EFFECTIVE", "/skills-effective")
+	t.Setenv("HUB_SKILLS_BY_PRINCIPAL", "/skills-effective-by")
+	t.Setenv("HUB_SKILLS_STORE", "/skills-store")
 	c, err := ConfigFromEnv()
 	if err != nil || c.Users[0].ID != "alice" || c.TelegramToken != "token" {
 		t.Fatal(c, err)
+	}
+	// The YAML branch must still honor the container skill mounts — the
+	// shared deployment (users.yaml present) is exactly where /name and
+	// $name expansion matters.
+	if c.SkillsDir != "/skills-effective" || c.SkillsByPrincipalDir != "/skills-effective-by" || c.SkillsStore != "/skills-store" {
+		t.Fatalf("skill dirs dropped in the YAML branch: %+v", c)
 	}
 }
 

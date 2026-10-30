@@ -1,6 +1,6 @@
 ---
 description: Operator runbook — stack lifecycle, user onboarding, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
-last_verified: 2026-10-28
+last_verified: 2026-10-29
 ---
 
 # Operations
@@ -381,9 +381,13 @@ never in the general archive. `down` never deletes homes; `purge` needs
 Memory: native files under `spaces/<id>/hermes/memories` (`MEMORY.md`,
 `USER.md`) — `hubctl memory list` / `hubctl memory delete --name`. Honcho is
 optional (`honcho` + `honcho_url`); its failure must not break ordinary
-Hermes memory. Skills install into `spaces/<id>/hermes/skills` without
-rebuild; `hubctl skill install --consent` scans SKILL.md and refuses
-provider-mutation text.
+Hermes memory. Skills live in the owner store `spaces/<id>/skills` —
+publication, archive, restore, rollback and promote rebuild the read-only
+effective view (`generated/skills-effective`) in place, so a running runtime
+sees the new catalog on its next call without respawn or manual render;
+`hubctl skill install --consent` scans SKILL.md and records findings —
+MVP advisory mode: the approval gate is the named approver, not the
+scanner, until rule quality justifies a publish-time block.
 
 ## Backup
 
@@ -575,11 +579,40 @@ tracking.
 
 Sources are https GitHub/GitLab only; a self-hosted GitLab needs
 `gitlab_host: <host>` in `workspace.yaml` — render adds its egress and the
-third `skillgit` approval tuple, then `hubctl up`.
+third `skillgit` approval tuple, then `hubctl up`. Registry locators also
+work: `https://www.skills.sh/<owner>/<repo>[/<skill>]` maps to the GitHub
+repository and resolves `<skill>` against the discovered candidates — an
+unmatched slug returns the candidate list instead of guessing.
+The export itself is a bounded transport (32 MiB archive cap): repo
+plumbing and vendored `node_modules` are filtered while streaming and
+named in `dropped_dot_paths`/draft notes, so a vendored repo never exhausts
+the skill-tree byte quota; an archive over the transport bound fails with
+a quota error, not a bare `invalid skill source`.
 Authentication: agents name a broker credential with `grant` (the gateway
 leases it into `GIT_TOKEN` for the cell); the operator path takes
 `GIT_TOKEN` from the environment. Tokens never enter URLs, argv, git
 config, logs or `.origin.json`.
+
+## Skill local installs
+
+`hubctl skill install --dir spaces/<u> --from <path>` imports a package
+already on disk — a directory containing `SKILL.md`, a `.zip` archive or a
+standalone markdown/`SKILL.md` file — through the same imported-draft
+pipeline the agent's `install_local` uses. The name comes from the
+`SKILL.md` frontmatter (`--name` overrides; path basename is the
+fallback). Without `--consent` the result is a draft the owner approves
+with `skill approve --id`; `--consent` publishes immediately.
+
+Imports are *foreign* packages, not authored trees: dot-prefixed paths
+(`.github`, `.claude`, `.gitignore`, a spoofed `.origin.json`) are dropped
+and summarized in draft `import_notes`; resource-file links that resolve
+inside the package are admitted and audited in `notes` instead of
+rejected — dead links out of `SKILL.md` itself stay hard errors. Zip
+extraction is bounded (entry count/bytes, path traversal and special
+files refused); binary payloads like images in `assets/` survive intact.
+Inside a runtime the agent reaches the same path with
+`skill_manage action=install_local` and a workspace-relative `path` —
+inbox downloads staged by `inbox_fetch`, unpacked archives, checkouts.
 
 ## Skill quality: lint, stats, evals
 
@@ -594,7 +627,9 @@ counters (uses, helped, failed, trigger_misses, last_used) from
 resource reads journal server-side.
 
 `hubctl skill eval --dir spaces/<u> --name <s>` reads `evals/triggers.json`
-and `evals/evals.json` inside the skill, materializes an isolated temp
+and `evals/evals.json` inside the skill — `--id <draft>` evaluates the
+unpublished `.drafts/<id>` tree instead, the pre-publish check the approval
+gate exists for. It materializes an isolated temp
 space containing only that skill, and scores validation accuracy through
 `HUB_SKILL_EVAL_URL` — an operator eval endpoint that runs each prompt
 against a real model and returns the run receipt (`skill` tool calls mark

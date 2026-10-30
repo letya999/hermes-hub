@@ -1,6 +1,6 @@
 {
   "id": "notion-token",
-  "revision": 2,
+  "revision": 3,
   "title": "Notion integration token",
   "title_i18n": {
     "ru": "Токен интеграции Notion",

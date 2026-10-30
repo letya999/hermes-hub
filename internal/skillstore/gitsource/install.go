@@ -32,10 +32,13 @@ type FetchRequest struct {
 }
 
 // FetchResult is the exported repo tree plus the resolved immutable commit.
+// Dropped names reserved/vendored archive paths the transport filtered out
+// before the tree quota even applied.
 type FetchResult struct {
 	Commit    string
 	ForcePush bool
 	Tree      skillstore.Tree
+	Dropped   []string
 }
 
 // GitOps is the runner seam: production executes hardened git inside a
@@ -71,12 +74,15 @@ type InstallOptions struct {
 }
 
 // InstallResult reports the produced draft or the candidates a multi-skill
-// repository requires choosing from.
+// repository requires choosing from. Dropped lists dot paths the export
+// filtered out; Notes carries the draft's import audit lines.
 type InstallResult struct {
 	DraftID    string      `json:"draft_id,omitempty"`
 	Name       string      `json:"name,omitempty"`
 	Commit     string      `json:"commit,omitempty"`
 	SourceID   string      `json:"source_id,omitempty"`
+	Dropped    []string    `json:"dropped_dot_paths,omitempty"`
+	Notes      []string    `json:"import_notes,omitempty"`
 	Candidates []Candidate `json:"candidates,omitempty"`
 }
 
@@ -84,6 +90,13 @@ type InstallResult struct {
 func SourceID(repo string) string {
 	h := sha256.Sum256([]byte(repo))
 	return hex.EncodeToString(h[:])[:16]
+}
+
+// clearStaleMirrorLock removes a shallow.lock a killed fetch cell left
+// behind — it bricks every later depth-limited fetch ("Unable to create
+// shallow.lock") while carrying no live state; the mirror is single-owner.
+func clearStaleMirrorLock(mirror string) {
+	_ = os.Remove(filepath.Join(mirror, "shallow.lock")) // #nosec G703 -- mirror path is built from a validated source id
 }
 
 // Install fetches the source tree and creates a scanned draft pinned to the
@@ -104,29 +117,75 @@ func Install(ctx context.Context, st *skillstore.Store, opts InstallOptions, git
 	if err := os.MkdirAll(mirror, 0o755); err != nil {
 		return InstallResult{}, err
 	}
-	got, err := git.Fetch(ctx, FetchRequest{Mirror: mirror, Repo: src.Repo, Ref: src.Ref, Path: src.Path, Names: src.Path == ""})
+	clearStaleMirrorLock(mirror)
+	// "." selects the repository root itself: the whole tree is the skill,
+	// so the fetch exports everything and no subtree filter applies.
+	rootSkill := src.Path == "."
+	reqPath := src.Path
+	if rootSkill {
+		reqPath = ""
+	}
+	got, err := git.Fetch(ctx, FetchRequest{Mirror: mirror, Repo: src.Repo, Ref: src.Ref, Path: reqPath, Names: src.Path == ""})
 	if err != nil {
 		return InstallResult{}, err
 	}
 	var candidate Candidate
-	if src.Path != "" {
+	switch {
+	case rootSkill:
+		if opts.Name != "" {
+			candidate.Name = opts.Name
+		} else {
+			candidate.Name = rootSkillName(src.Repo, got.Tree)
+		}
+	case src.Path != "":
 		candidate = Candidate{Path: src.Path, Name: path.Base(src.Path)}
 		if opts.Name != "" {
 			candidate.Name = opts.Name
 		}
-	} else {
-		return InstallResult{Commit: got.Commit, SourceID: id, Candidates: DiscoverSkills(got.Tree, "")}, nil
-	}
-	skill := skillstore.Tree{}
-	prefix := ""
-	if candidate.Path != "" {
-		prefix = strings.TrimSuffix(candidate.Path, "/") + "/"
-	}
-	for file, f := range got.Tree {
-		if rel, ok := strings.CutPrefix(file, prefix); ok && rel != "" {
-			skill[rel] = f
+	default:
+		candidates := DiscoverSkills(got.Tree, "")
+		// Discovery fetched names only, so the root candidate gets the
+		// repo basename — "." alone tells the caller nothing.
+		for i := range candidates {
+			if candidates[i].Path == "." {
+				candidates[i].Name = path.Base(src.Repo)
+			}
+		}
+		// A registry slug resolves against the discovered candidates —
+		// exactly one match installs; none or several still return the
+		// list so the caller can pick explicitly.
+		if src.Slug == "" {
+			return InstallResult{Commit: got.Commit, SourceID: id, Candidates: candidates}, nil
+		}
+		var found []Candidate
+		for _, c := range candidates {
+			if c.Name == src.Slug {
+				found = append(found, c)
+			}
+		}
+		if len(found) != 1 {
+			return InstallResult{Commit: got.Commit, SourceID: id, Candidates: candidates}, nil
+		}
+		candidate = found[0]
+		if candidate.Path == "." {
+			candidate.Path = ""
+		}
+		got, err = git.Fetch(ctx, FetchRequest{Mirror: mirror, Repo: src.Repo, Ref: src.Ref, Path: candidate.Path})
+		if err != nil {
+			return InstallResult{}, err
+		}
+		if candidate.Path == "" {
+			candidate.Name = rootSkillName(src.Repo, got.Tree)
 		}
 	}
+	skill, dropped := exportTree(got.Tree, candidate.Path)
+	if opts.Name == "" {
+		// The frontmatter name is authoritative — publish requires
+		// name == dir, so a repo directory name is only a fallback.
+		candidate.Name = skillstore.NameFromTree(skill, candidate.Name)
+	}
+	opts.Meta.Imported = true
+	opts.Meta.ImportNotes = dropNotes(append(got.Dropped, dropped...))
 	draft, err := st.CreateDraft(candidate.Name, skill, opts.Meta)
 	if err != nil {
 		return InstallResult{}, err
@@ -141,6 +200,12 @@ func Install(ctx context.Context, st *skillstore.Store, opts InstallOptions, git
 		return InstallResult{}, err
 	}
 	return InstallResult{DraftID: draft.ID, Name: candidate.Name, Commit: got.Commit, SourceID: id}, nil
+}
+
+// dropNotes summarizes the filtered dot paths for the draft card —
+// hub-reserved names and repo plumbing never reach the skill tree.
+func dropNotes(dropped []string) []string {
+	return skillstore.DropNotes(dropped)
 }
 
 // UpdateResult reports an update draft or that the ref did not move.
@@ -161,26 +226,20 @@ func Update(ctx context.Context, st *skillstore.Store, name string, git GitOps, 
 		return UpdateResult{}, err
 	}
 	mirror := filepath.Join(st.Root(), ".sources", origin.SourceID+".git")
+	clearStaleMirrorLock(mirror)
 	got, err := git.Fetch(ctx, FetchRequest{Mirror: mirror, Repo: origin.URL, Ref: origin.Ref, Path: origin.Path, PrevCommit: origin.Commit})
 	if err != nil {
 		return UpdateResult{}, err
 	}
 	out := UpdateResult{Name: name, Commit: got.Commit, PrevCommit: origin.Commit, ForcePush: got.ForcePush}
-	skill := skillstore.Tree{}
-	prefix := ""
-	if origin.Path != "" {
-		prefix = strings.TrimSuffix(origin.Path, "/") + "/"
-	}
-	for file, f := range got.Tree {
-		if rel, ok := strings.CutPrefix(file, prefix); ok && rel != "" {
-			skill[rel] = f
-		}
-	}
+	skill, dropped := exportTree(got.Tree, origin.Path)
 	current, err := st.Tree(name)
 	if err != nil {
 		return UpdateResult{}, err
 	}
 	meta.BaseRevision = skillstore.Revision(current)
+	meta.Imported = true
+	meta.ImportNotes = dropNotes(append(got.Dropped, dropped...))
 	draft, err := st.CreateDraft(name, skill, meta)
 	if err != nil {
 		return UpdateResult{}, err
@@ -198,6 +257,52 @@ func Update(ctx context.Context, st *skillstore.Store, name string, git GitOps, 
 	}
 	out.DraftID = draft.ID
 	return out, nil
+}
+
+// exportTree selects prefix's subtree out of an exported repo tree; "" is
+// the whole repository. Dot-segment paths are dropped and reported —
+// dot-space is hub-reserved (.origin.json, .state, .drafts) and repo
+// plumbing like .github/ or .gitignore is never skill content.
+func exportTree(tree skillstore.Tree, prefix string) (skillstore.Tree, []string) {
+	out := skillstore.Tree{}
+	var dropped []string
+	if prefix != "" {
+		prefix = strings.TrimSuffix(prefix, "/") + "/"
+	}
+	for file, f := range tree {
+		rel, ok := strings.CutPrefix(file, prefix)
+		if !ok || rel == "" {
+			continue
+		}
+		if hasDotSegment(rel) {
+			dropped = append(dropped, rel)
+			continue
+		}
+		out[rel] = f
+	}
+	return out, dropped
+}
+
+func hasDotSegment(p string) bool {
+	for _, seg := range strings.Split(p, "/") {
+		// Dot-space is hub-reserved and repo plumbing (.github, .origin.json)
+		// is never skill content; node_modules is reproducible vendored
+		// noise that would otherwise exhaust the file/byte quotas.
+		if seg == ".." || strings.HasPrefix(seg, ".") || seg == "node_modules" {
+			return true
+		}
+	}
+	return false
+}
+
+// rootSkillName resolves a root install's skill name: the SKILL.md
+// frontmatter is authoritative (publish requires name == dir); the repo
+// basename is the fallback when frontmatter is absent or unreadable.
+func rootSkillName(repo string, tree skillstore.Tree) string {
+	if m, _, err := skillstore.ParseSkillMD("", tree[skillstore.SkillFile].Data, true); err == nil && m.Name != "" {
+		return m.Name
+	}
+	return path.Base(repo)
 }
 
 // treeDigest is the origin record's content hash of the exported tree.

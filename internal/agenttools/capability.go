@@ -33,7 +33,7 @@ func HubToolsDefinition() api.ToolDefinition {
 	return api.ToolDefinition{
 		Schema:       api.SchemaVersion,
 		DefinitionID: HubToolsDefinitionID,
-		Version:      "5.7.0",
+		Version:      "5.9.0",
 		Transport:    api.AgentTools,
 		Source:       api.DefinitionSource{},
 		Workload: api.WorkloadPolicy{
@@ -152,9 +152,9 @@ func HubToolsDefinition() api.ToolDefinition {
 			// lands as a draft — publication is a human confirmation.
 			tool("skill", "skills.invoke", "Activate a skill by name: returns its frontmatter-stripped instructions, resource file names (never contents) and the read-only skill directory.", api.ReadEffect, use("invoke", "skills"), str("name"), opt("args")),
 			tool("skills_search", "skills.search", "Search the eligible skill catalog by name and description; returns name, source and short description.", api.ReadEffect, use("read", "skills"), str("query"), api.CLIArgument{Name: "limit", Type: "integer"}, opt("source")),
-			tool("skills_list", "skills.read", "List eligible skills in pages of 20 with source, description and usage counters.", api.ReadEffect, use("read", "skills"), opt("source"), api.CLIArgument{Name: "offset", Type: "integer"}),
+			tool("skills_list", "skills.read", "List catalog skills in pages of 20 with source, description and usage counters; entries carry eligible and unavailable ones name their missing requirements.", api.ReadEffect, use("read", "skills"), opt("source"), api.CLIArgument{Name: "offset", Type: "integer"}),
 			tool("skill_view", "skills.view", "Inspect one skill: file listing or bounded file text; version reads a retained revision.", api.ReadEffect, use("read", "skills"), str("name"), opt("path"), opt("version")),
-			tool("skill_manage", "skills_manage.manage", "Propose a skill change: create/patch/edit/write_file/remove_file/delete/archive/restore/propose_to_org, install/update from a GitHub or GitLab URL, check_updates. Every mutating action returns a draft with diff, lint and scan — nothing goes live without the owner's approval card.", api.WriteEffect, use("manage", "skills_manage"),
+			tool("skill_manage", "skills_manage.manage", "Propose a skill change: create/patch/edit/write_file/remove_file/delete/archive/restore/propose_to_org, install/update from a GitHub or GitLab URL, install_local from a workspace path (directory, zip archive or SKILL.md file), check_updates. Every mutating action returns a draft with diff, lint and scan — nothing goes live without the owner's approval card.", api.WriteEffect, use("manage", "skills_manage"),
 				str("action"), str("name"), str("reason"), opt("content"), opt("category"), opt("old_string"), opt("new_string"), opt("file_path"), opt("base_revision"), opt("absorbed_into"), opt("version"), opt("url"), opt("ref"), opt("path"), opt("grant")),
 		},
 	}

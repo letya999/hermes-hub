@@ -1,6 +1,6 @@
 {
   "id": "gitlab-pat",
-  "revision": 2,
+  "revision": 3,
   "title": "GitLab PAT",
   "title_i18n": {
     "ru": "GitLab: персональный токен",

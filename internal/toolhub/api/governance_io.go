@@ -194,10 +194,31 @@ func LoadGovernance(path string) (*Governance, error) {
 	if err := decoder.Decode(&g); err != nil {
 		return nil, fmt.Errorf("%w: governance document: %v", ErrInvalid, err)
 	}
+	g.reconcileInventory()
 	if err := g.Validate(); err != nil {
 		return nil, err
 	}
 	return &g, nil
+}
+
+// reconcileInventory aligns a persisted document with the shipped section
+// catalog: sections added after the seed are appended with shipped axes, and
+// the default of an inventoried section tracks the shipped posture — section
+// defaults are code-shipped, never operator-mutable, so a doc seeded before a
+// posture flip cannot silently keep the old floor. Sections the catalog no
+// longer ships stay: their rules and history still evaluate.
+func (g *Governance) reconcileInventory() {
+	byID := make(map[string]int, len(g.Inventory))
+	for i, section := range g.Inventory {
+		byID[section.ID] = i
+	}
+	for _, section := range SeedInventory() {
+		if i, ok := byID[section.ID]; ok {
+			g.Inventory[i].Default = section.Default
+		} else {
+			g.Inventory = append(g.Inventory, section)
+		}
+	}
 }
 
 // SaveGovernance writes the document under a flock + atomic rename, the same

@@ -7,16 +7,20 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/locale"
+	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
 // skillDraft is one pending skill-store mutation awaiting the owner's click on
@@ -40,8 +44,51 @@ type skillDraft struct {
 }
 
 type skillDraftRegistry struct {
-	mu sync.Mutex
-	m  map[string]skillDraft
+	mu   sync.Mutex
+	m    map[string]skillDraft
+	path string // empty: memory-only (tests)
+}
+
+// The registry persists beside the spool — a gateway restart used to murder
+// every pending approval card and the owner's click landed on a bare 401.
+// Only nonce hashes are stored; the nonce itself stays in the link.
+func (r *skillDraftRegistry) load(path string, now func() time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.path = path
+	r.m = map[string]skillDraft{}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	if json.Unmarshal(body, &r.m) != nil || r.m == nil {
+		r.m = map[string]skillDraft{}
+		return
+	}
+	for id, d := range r.m {
+		if now().After(d.ExpiresAt) {
+			delete(r.m, id)
+		}
+	}
+}
+
+// persistLocked snapshots the registry atomically; callers hold r.mu. A
+// write failure degrades to pre-persistence behavior (cards die on
+// restart) rather than failing the owner's action, so it only logs.
+func (r *skillDraftRegistry) persistLocked() {
+	if r.path == "" {
+		return
+	}
+	body, err := json.Marshal(r.m)
+	if err != nil {
+		return
+	}
+	tmp := r.path + ".tmp"
+	if err := os.WriteFile(tmp, body, 0o600); err != nil {
+		log.Printf("skill draft registry persist: %v", err)
+		return
+	}
+	_ = os.Rename(tmp, r.path)
 }
 
 type skillDraftRequest struct {
@@ -55,7 +102,11 @@ type skillDraftRequest struct {
 	BaseRevision string `json:"base_revision"`
 }
 
-const skillDraftTTL = 30 * time.Minute
+// Cards are the only path that turns a draft into a published skill, and
+// drafts on disk never expire — a 30-minute link window just made owners
+// re-issue installs. 72h bounds a leaked bearer link's window while letting
+// the owner click whenever the card actually reaches them.
+const skillDraftTTL = 72 * time.Hour
 
 func (g *Gateway) handleSkillDraftRequest(w http.ResponseWriter, r *http.Request) {
 	caller, ok := g.authorizeControl(r)
@@ -104,6 +155,7 @@ func (g *Gateway) handleSkillDraftRequest(w http.ResponseWriter, r *http.Request
 		State:        "pending",
 		ExpiresAt:    g.now().Add(skillDraftTTL),
 	}
+	g.drafts.persistLocked()
 	g.drafts.mu.Unlock()
 	writeJSON(w, map[string]string{"input": "protected-form", "form_url": origin + "/skill-drafts/" + id + "?nonce=" + url.QueryEscape(nonce)})
 }
@@ -207,6 +259,7 @@ func (g *Gateway) rotateNonce(id string) (string, error) {
 	}
 	draft.NonceHash = hex.EncodeToString(hash[:])
 	g.drafts.m[id] = draft
+	g.drafts.persistLocked()
 	return nonce, nil
 }
 
@@ -216,6 +269,7 @@ func (g *Gateway) setDraftState(id, state string) {
 	if draft, ok := g.drafts.m[id]; ok {
 		draft.State = state
 		g.drafts.m[id] = draft
+		g.drafts.persistLocked()
 	}
 }
 
@@ -228,7 +282,7 @@ func (g *Gateway) skillDraftPublish(w http.ResponseWriter, r *http.Request, id s
 		return
 	}
 	if err := g.runtimeSkillApply(r, draft, "publish"); err != nil {
-		http.Error(w, "apply failed", http.StatusBadGateway)
+		http.Error(w, "apply failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	g.setDraftState(id, "published")
@@ -249,7 +303,7 @@ func (g *Gateway) skillDraftUndo(w http.ResponseWriter, r *http.Request, id stri
 		return
 	}
 	if err := g.runtimeSkillApply(r, draft, "rollback"); err != nil {
-		http.Error(w, "rollback failed", http.StatusBadGateway)
+		http.Error(w, "rollback failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	g.setDraftState(id, "undone")
@@ -258,13 +312,20 @@ func (g *Gateway) skillDraftUndo(w http.ResponseWriter, r *http.Request, id stri
 
 // runtimeSkillApply is the control call into the runtime container's
 // /v1/skill-apply; communication itself never touches the store.
+// skillApplyTimeout bounds the apply/rollback relay into the supervisor.
+// It must cover a cold runtime spawn, which takes far longer than a warm
+// publish.
+var skillApplyTimeout = 2 * time.Minute
+
 func (g *Gateway) runtimeSkillApply(r *http.Request, draft skillDraft, action string) error {
 	if g.config.RuntimeURL == "" {
 		return errors.New("runtime not configured")
 	}
-	payload, err := json.Marshal(map[string]string{
-		"action": action, "draft_id": draft.DraftID, "skill_name": draft.SkillName,
-		"scope": draft.Scope, "base_revision": draft.BaseRevision, "approver": draft.OwnerID,
+	payload, err := json.Marshal(hubruntime.SkillApplyRequest{
+		Envelope: draft.Envelope, OrganizationID: g.config.OrganizationID,
+		UserID: draft.OwnerID, ActorID: draft.OwnerID, ScopeID: "user:" + draft.OwnerID,
+		Action: action, DraftID: draft.DraftID, SkillName: draft.SkillName,
+		Scope: draft.Scope, BaseRevision: draft.BaseRevision, Approver: draft.OwnerID,
 	})
 	if err != nil {
 		return err
@@ -275,13 +336,23 @@ func (g *Gateway) runtimeSkillApply(r *http.Request, draft skillDraft, action st
 	}
 	request.Header.Set("Authorization", "Bearer "+g.config.RuntimeAuth)
 	request.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: 15 * time.Second}).Do(request)
+	response, err := (&http.Client{Timeout: skillApplyTimeout}).Do(request)
 	if err != nil {
 		return err
 	}
 	defer response.Body.Close()
 	if response.StatusCode/100 != 2 {
-		return errors.New("runtime rejected skill apply")
+		// The runtime's 409 body carries the real reason (frontmatter
+		// mismatch, consumed draft, base conflict); a bare "apply failed"
+		// leaves the owner with no way to fix the draft.
+		var detail struct {
+			Error string `json:"error"`
+		}
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		if json.Unmarshal(body, &detail) == nil && detail.Error != "" {
+			return fmt.Errorf("runtime rejected skill apply: %s", detail.Error)
+		}
+		return fmt.Errorf("runtime rejected skill apply (status %d)", response.StatusCode)
 	}
 	return nil
 }

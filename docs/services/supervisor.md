@@ -1,6 +1,6 @@
 ---
 description: supervisor — per-space runtime spawner/manager; owns warm pools, docker exec agent-tools path, control channel.
-last_verified: 2026-10-26
+last_verified: 2026-10-30
 ---
 
 # supervisor
@@ -39,13 +39,16 @@ spaces dir at `/spaces`, project `config/` read-only, and the host
 - Every spawned runtime joins the shared network where `toolhub`,
   `credential-broker` and `cliproxy` resolve to the single instances.
 - Route every control-plane call (`/v1/jobs`, `/v1/resume`, `/v1/control`,
-  `/v1/self-env`, `/v1/restart`, `/v1/restart-request`) to the correct
+  `/v1/self-env`, `/v1/skill-ref-lease`, `/v1/restart`, `/v1/restart-request`) to the correct
   user's spawned runtime by the job's durable identity; the
   restart-after-delivery hook carries the same identity so the spawned
   Hermes bounces per turn. A restart for an absent/stopped runtime is a
   successful no-op — next lease spawns fresh. Secondary spaces
   (`infra: false`) render no `hermes-runtime` service; the infra owner drops
   it when `HUB_RUNTIME_SUPERVISOR_URL` is configured.
+  Skill ref leases require the exact principal, context, runtime and policy
+  of a running generation. Spawn failures return an allowlisted `class`:
+  `hold`, `backoff`, `policy_rotation`, `spawn` or `unavailable`.
 - `/v1/runtimes` entries expose a read-only `consumers` projection (lease
   kind, owner class, expiry) and `wait_reason` for expected waits — parked
   approvals/streams are reported, not remediated. Genuine anomalies append

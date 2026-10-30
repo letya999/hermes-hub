@@ -1,6 +1,7 @@
 package skillstore
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -102,6 +103,9 @@ type Capabilities struct {
 	// SkillCreds maps a skill name to the credential names its owner has
 	// stored under .state/credentials — names only, never values (R8.2).
 	SkillCreds map[string]map[string]bool
+	// EnvKeys marks self-env keys configured for this space — the set a
+	// credential `ref` may resolve against; names only (R8.2).
+	EnvKeys map[string]bool
 }
 
 // ApplyReadiness stamps Eligible/Missing on every entry (R6.1): declared
@@ -135,6 +139,11 @@ func (idx *EffectiveIndex) ApplyReadiness(caps Capabilities) {
 		e.CredsMissing = nil
 		for _, cred := range e.Requires.Credentials {
 			if caps.SkillCreds[e.Name][cred.Name] {
+				continue
+			}
+			// R8.2: a ref resolves against configured self-env keys — the
+			// shared PAT pattern needs no per-skill secret copy.
+			if cred.Ref != "" && caps.EnvKeys[cred.Ref] {
 				continue
 			}
 			if cred.Hard {
@@ -235,10 +244,27 @@ func Build(dest string, sources []Source) (*EffectiveIndex, error) {
 					(m.AllowImplicitInvocation != nil && !*m.AllowImplicitInvocation),
 			}
 			idx.Skills = append(idx.Skills, entry)
-			if err := writeTree(filepath.Join(dest, name), noexecTree(tree)); err != nil {
+			dst := filepath.Join(dest, name)
+			if err := os.RemoveAll(dst); err != nil {
+				return nil, fmt.Errorf("materialize %s: %w", name, err)
+			}
+			if err := writeTree(dst, noexecTree(tree)); err != nil {
 				return nil, err
 			}
 			rev[name+"/SKILL.md"] = File{Data: []byte(entry.Revision)}
+		}
+	}
+	// Skills that left every source must leave the view. Bind mounts pin
+	// the destination inode, so clean in place — never swap the directory
+	// itself or running containers keep the stale copy.
+	if prev, err := os.ReadDir(dest); err == nil {
+		for _, e := range prev {
+			if e.Name() == "index.json" || won[e.Name()] {
+				continue
+			}
+			if err := os.RemoveAll(filepath.Join(dest, e.Name())); err != nil {
+				return nil, fmt.Errorf("clean stale %s: %w", e.Name(), err)
+			}
 		}
 	}
 	idx.Revision = Revision(rev)
@@ -261,6 +287,73 @@ func noexecTree(tree Tree) Tree {
 // render after ApplyReadiness stamps space-specific eligibility.
 func WriteIndex(dest string, idx *EffectiveIndex) error {
 	return writeJSONFile(filepath.Join(dest, "index.json"), mustJSON(idx))
+}
+
+// ReadIndex loads the materialized index.json from a built effective view.
+func ReadIndex(dest string) (*EffectiveIndex, error) {
+	body, err := os.ReadFile(filepath.Join(dest, "index.json"))
+	if err != nil {
+		return nil, err
+	}
+	var idx EffectiveIndex
+	if err := json.Unmarshal(body, &idx); err != nil {
+		return nil, err
+	}
+	return &idx, nil
+}
+
+// ViewMeta is the render-time snapshot a post-publish rebuild needs:
+// the capability surface that stamped readiness plus the profile pins
+// that ordered the catalog. It lives outside the view itself — the
+// agent-facing tree serves skills only.
+type ViewMeta struct {
+	Capabilities Capabilities `json:"capabilities"`
+	Pins         []PinnedRef  `json:"pins,omitempty"`
+}
+
+const viewMetaFile = "viewmeta.json"
+
+// WriteViewMeta persists the snapshot beside the view (metaDir is the
+// generated/skills-meta dir, mounted read-only into the runtime).
+func WriteViewMeta(metaDir string, meta ViewMeta) error {
+	if err := os.MkdirAll(metaDir, 0755); err != nil {
+		return err
+	}
+	return writeJSONFile(filepath.Join(metaDir, viewMetaFile), mustJSON(meta))
+}
+
+// LoadViewMeta reads the persisted snapshot; an absent file is a zero
+// surface so a view built before this contract still rebuilds safely.
+func LoadViewMeta(metaDir string) (ViewMeta, error) {
+	body, err := os.ReadFile(filepath.Join(metaDir, viewMetaFile))
+	if err != nil {
+		return ViewMeta{}, err
+	}
+	var meta ViewMeta
+	if err := json.Unmarshal(body, &meta); err != nil {
+		return ViewMeta{}, err
+	}
+	return meta, nil
+}
+
+// RebuildEffective refreshes an existing view after a store mutation
+// (publish/rollback/archive): rebuild the trees, restamp readiness from
+// the persisted capability snapshot, reapply pins, rewrite index.json.
+// The destination is updated in place so running bind mounts see it.
+func RebuildEffective(dest string, sources []Source, metaDir string) (*EffectiveIndex, error) {
+	idx, err := Build(dest, sources)
+	if err != nil {
+		return nil, err
+	}
+	meta, err := LoadViewMeta(metaDir)
+	if err != nil {
+		return nil, fmt.Errorf("view meta: %w", err)
+	}
+	idx.ApplyReadiness(meta.Capabilities)
+	if err := idx.Pin(meta.Pins); err != nil {
+		return nil, err
+	}
+	return idx, WriteIndex(dest, idx)
 }
 
 func (idx *EffectiveIndex) skillsSource(name string) string {

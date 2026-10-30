@@ -189,7 +189,7 @@ var toolhubFamilies = map[string]bool{
 	"images": true, "artifacts": true, "routines": true, "services": true,
 	"hh": true, "ssh": true, "image_gen": true, "terminal": true,
 	"code_exec": true, "web": true, "settings": true, "exposure": true, "hosting": true,
-	"assignments": true,
+	"assignments": true, "skills": true, "skills_manage": true,
 }
 
 // mcpConnectors are builtin MCP-provided capabilities: rendered directly only

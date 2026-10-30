@@ -529,6 +529,12 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 		return nil, fmt.Errorf("effective skills view: %w", err)
 	}
 	args = append(args, "--mount", "type=bind,src="+stack.GeneratedEffectiveSkillsDir(binding.ContextRoot)+",dst=/skills,readonly")
+	// Post-publish rebuild contract: the platform tier and the render
+	// snapshot mount read-only; the view gets a second writable bind so
+	// /v1/skill-apply can recompose it in place without a respawn.
+	args = append(args, "--mount", "type=bind,src="+stack.GeneratedSkillsDir(binding.ContextRoot)+",dst=/skills-platform,readonly")
+	args = append(args, "--mount", "type=bind,src="+stack.GeneratedEffectiveSkillsDir(binding.ContextRoot)+",dst=/skills-effective-rw")
+	args = append(args, "--mount", "type=bind,src="+stack.GeneratedSkillsMetaDir(binding.ContextRoot)+",dst=/skills-meta,readonly")
 	args = append(args, "--tmpfs", "/state/hermes/skills:ro,mode=0555")
 	// R5.1: the owner store is writable beside the read-only effective view;
 	// the env contract tells the executor which path is which. skill_manage
@@ -664,8 +670,16 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 		return nil, fmt.Errorf("effective skills view: %w", err)
 	}
 	args = append(args, "--mount", "type=bind,src="+stack.GeneratedEffectiveSkillsDir(binding.ContextRoot)+",dst=/skills,readonly")
-	// R5.1: identical to unmanaged — owner store writable at /skills-store.
-	args = append(args, "--mount", "type=bind,src="+filepath.Join(managedDir, "skills")+",dst=/skills-store")
+	// Post-publish rebuild contract: the platform tier and the render
+	// snapshot mount read-only; the view gets a second writable bind so
+	// /v1/skill-apply can recompose it in place without a respawn.
+	args = append(args, "--mount", "type=bind,src="+stack.GeneratedSkillsDir(binding.ContextRoot)+",dst=/skills-platform,readonly")
+	args = append(args, "--mount", "type=bind,src="+stack.GeneratedEffectiveSkillsDir(binding.ContextRoot)+",dst=/skills-effective-rw")
+	args = append(args, "--mount", "type=bind,src="+stack.GeneratedSkillsMetaDir(binding.ContextRoot)+",dst=/skills-meta,readonly")
+	// R5.1: identical to unmanaged — the owner store (not a private managed
+	// copy) is writable at /skills-store so drafts, publishes and the
+	// effective view all see the same store.
+	args = append(args, "--mount", "type=bind,src="+filepath.Join(binding.ContextRoot, "skills")+",dst=/skills-store")
 	args = append(args, "-e", "HUB_SKILLS_STORE=/skills-store", "-e", "HUB_SKILLS_EFFECTIVE=/skills")
 	if settings.OrgScoped() && settings.OrganizationSkillsDir != "" {
 		args = append(args, "--mount", "type=bind,src="+settings.OrganizationSkillsDir+",dst=/skills-store-org")

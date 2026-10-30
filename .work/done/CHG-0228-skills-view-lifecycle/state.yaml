@@ -1,0 +1,34 @@
+schema: 1
+change: CHG-0228
+title: "Skills platform — live view lifecycle, draft eval, honest inventory, credential refs"
+status: done
+branch: ""
+updated: "2026-10-30"
+phase: implementation
+adr: ADR-0085
+spec: SPEC-0084
+requirements: [R5, R6, R8]
+depends_on: []
+workstream: skills-platform
+github_milestone: null
+github_issue: null
+design_status: accepted
+implementation_status: implemented
+readiness: done
+slices:
+  S228.1-view-rebuild: done
+  S228.2-stale-cleanup: done
+  S228.3-draft-eval: done
+  S228.4-honest-inventory: done
+  S228.5-credential-ref: done
+validation:
+  documents: passed
+  planning_package: not_run
+  planning_just_check: passed
+  just_check: passed
+  module_check: not_run
+  security: not_run
+  docker_check: not_run
+  red_team: not_started
+# just check: go-check + lint + docs-check + config-check all pass;
+# Go statement coverage 86.27%. Docker gates run in CI, not locally.

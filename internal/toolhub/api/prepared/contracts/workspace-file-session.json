@@ -1,6 +1,6 @@
 {
   "id": "workspace-file-session",
-  "revision": 1,
+  "revision": 2,
   "title": "Workspace: OAuth client and account session",
   "title_i18n": {
     "ru": "Workspace: OAuth-клиент и сессия аккаунта",

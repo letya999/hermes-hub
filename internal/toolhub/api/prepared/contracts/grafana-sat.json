@@ -1,6 +1,6 @@
 {
   "id": "grafana-sat",
-  "revision": 1,
+  "revision": 2,
   "title": "Grafana service account token",
   "title_i18n": {
     "ru": "Токен сервисной учётной записи Grafana",

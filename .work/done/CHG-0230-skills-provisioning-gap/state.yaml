@@ -1,0 +1,58 @@
+schema: 1
+change: CHG-0230
+title: "Skills platform — capability provisioning + governance lifecycle gaps"
+status: done
+branch: "fix/m23-live-wake"
+updated: "2026-10-30"
+phase: implementation
+adr: ADR-0085
+spec: SPEC-0084
+requirements: [R5]
+depends_on: [CHG-0228]
+workstream: skills-platform
+github_milestone: null
+github_issue: null
+design_status: accepted
+implementation_status: implemented
+readiness: done
+slices:
+  S230.1-families-wish: done
+  S230.2-inventory-reconcile: done
+  S230.3-docpath-infra: done
+  S230.4-ops-unblock: done
+validation:
+  documents: not_run
+  planning_package: not_run
+  planning_just_check: passed
+  just_check: passed
+  module_check: not_run
+  security: not_run
+  docker_check: not_run
+  red_team: not_started
+# Focused tests pass (stack governance + toolhub/api governance suites).
+# Live evidence: profiles artem_main rev18 / artem_two rev17 project all 5
+# skill tools admitted; manifests project skills+skills_manage; dev-rebuilt
+# toolhub, supervisor and per-space runtime images carry the fix.
+
+live_debug_2026-10-30:
+  symptom: "503 projection unavailable on /mcp; toolhub MCP parked; zero toolhub tools in managed runtimes"
+  root_cause: >
+    PolicyVersion(settings) rotates on any settings change (skills wishes added).
+    Token envelopes are minted at the CURRENT manifest pv, but capability
+    profiles and active bindings stay pinned at the pre-rotation pv.
+    manifestWrite migration uses the STALE on-disk manifest pv as `from`, so it
+    missed the live pv (a65c/3df8); profiles are not migrated at all.
+    capabilityProfileLocked requires profile.PolicyVersion == envelope pv ->
+    whole managed surface denied.
+  operational_fix: >
+    MigrateBindings artem_two a65c->45167d, artem_main 3df8->bdc121d (+ orphan
+    connector bindings telegram-mcp/datalens/slack/notion/prometheus moved to
+    live pvs); republished profiles artem_two-default rev18 @45167d,
+    artem_main-default rev19 @bdc121d.
+  verified: >
+    Live MCP handshake from inside both runtimes: initialize 200 + tools/list
+    shows 62 (artem_two) / 50 (artem_main) tools incl. all 5 skill tools.
+  code_gap_remaining: >
+    manifestWrite must migrate capability profiles alongside bindings and
+    detect the pv active bindings actually sit at (not only previous manifest
+    pv), or pv rotations keep bricking managed surfaces silently.

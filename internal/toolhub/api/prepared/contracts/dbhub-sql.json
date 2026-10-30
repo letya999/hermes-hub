@@ -1,6 +1,6 @@
 {
   "id": "dbhub-sql",
-  "revision": 1,
+  "revision": 2,
   "title": "DBHub database connection",
   "title_i18n": {
     "ru": "Подключение к базе данных DBHub",

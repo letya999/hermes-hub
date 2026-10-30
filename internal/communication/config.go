@@ -94,6 +94,11 @@ type Config struct {
 	// schedule draft names a key; URLs never come from the probe, so internal
 	// addresses stay an explicit operator decision (SPEC-0059 R5.5).
 	ServiceEndpoints map[string]ServiceEndpoint `yaml:"service_endpoints,omitempty"`
+	// SkillsByPrincipalDir is the per-principal effective-view root: each
+	// subdirectory <principal>/ holds one space's generated skills-effective
+	// tree, letting the shared gateway resolve `/name` and `$name` against the
+	// caller's own catalog instead of the owner's (M24 acceptance).
+	SkillsByPrincipalDir string `yaml:"-"`
 	// SkillsDir is the mounted read-only effective skill view (/skills) used
 	// for harness-side /name and $name expansion (SPEC-0083 R6.5); empty
 	// disables expansion entirely.
@@ -102,6 +107,12 @@ type Config struct {
 	// credential forms persist under its private .state dir (R8.2). Empty
 	// disables the unmanaged persist path — managed relays via RuntimeURL.
 	SkillsStore string `yaml:"-"`
+	// SkillsStoreByDir is the per-principal writable-store root: each
+	// subdirectory <principal>/ is that space's skills/ store so /v1/skill-git
+	// writes drafts and .sources mirrors into the CALLER's store — publish
+	// still applies through the owning runtime (R5.3). Empty means only the
+	// owner's single SkillsStore is reachable.
+	SkillsStoreByDir string `yaml:"-"`
 	// CLIExec submits bounded git invocations to the controller /cli-exec;
 	// nil fails every skill-git action closed (R10.3).
 	CLIExec api.CLIExecFunc `yaml:"-"`
@@ -275,6 +286,10 @@ func ConfigFromEnv() (Config, error) {
 		config.SpoolRetention = spoolRetentionFromEnv()
 		config.SpoolMaxFiles, config.SpoolMaxArchiveBytes, config.SpoolMaxUsageEntries = spoolLimitsFromEnv()
 		config.MockDir = os.Getenv("HUB_MOCK_DIR")
+		config.SkillsDir = os.Getenv("HUB_SKILLS_EFFECTIVE")
+		config.SkillsByPrincipalDir = os.Getenv("HUB_SKILLS_BY_PRINCIPAL")
+		config.SkillsStoreByDir = os.Getenv("HUB_SKILLS_STORE_BY")
+		config.SkillsStore = os.Getenv("HUB_SKILLS_STORE")
 		fillChannelSecrets(&config)
 		return config, nil
 	}
@@ -319,6 +334,8 @@ func ConfigFromEnv() (Config, error) {
 	}
 	config.SpoolMaxFiles, config.SpoolMaxArchiveBytes, config.SpoolMaxUsageEntries = spoolLimitsFromEnv()
 	config.SkillsDir = os.Getenv("HUB_SKILLS_EFFECTIVE")
+	config.SkillsByPrincipalDir = os.Getenv("HUB_SKILLS_BY_PRINCIPAL")
+	config.SkillsStoreByDir = os.Getenv("HUB_SKILLS_STORE_BY")
 	config.SkillsStore = os.Getenv("HUB_SKILLS_STORE")
 	config.GitLabHost = os.Getenv("HUB_GITLAB_HOST")
 	config.CLIExec, err = api.CLIExecFromEnv()

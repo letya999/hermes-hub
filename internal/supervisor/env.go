@@ -44,13 +44,13 @@ func (m *Manager) selfEnv(w http.ResponseWriter, r *http.Request) {
 	}
 	lease, runtime, err := m.Acquire(r.Context(), binding, LeaseLifecycle)
 	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "runtime unavailable"})
+		writeRuntimeFailure(w, http.StatusServiceUnavailable, err)
 		return
 	}
 	defer m.ReleaseLease(lease.ID)
 	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost, runtime.Address+"/v1/self-env", bytes.NewReader(body))
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime unavailable"})
+		writeRuntimeFailure(w, http.StatusBadGateway, err)
 		return
 	}
 	upstream.Header.Set("Authorization", "Bearer "+binding.runtimeAuth)
@@ -58,12 +58,122 @@ func (m *Manager) selfEnv(w http.ResponseWriter, r *http.Request) {
 	upstream.Header.Set("X-Hub-Job-ID", "credential-form")
 	response, err := m.cfg.HTTP.Do(upstream)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime unavailable"})
+		writeRuntimeFailure(w, http.StatusBadGateway, err)
 		return
 	}
 	defer response.Body.Close()
 	result, err := io.ReadAll(io.LimitReader(response.Body, 128*1024+1))
 	if err != nil || len(result) > 128*1024 {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime response unavailable"})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, _ = w.Write(result)
+}
+
+// skillApply relays the protected draft card's publish/rollback to the owning
+// runtime's /v1/skill-apply. Communication posts to the supervisor because a
+// managed runtime lives on its own agent network; the envelope resolves the
+// owning binding the same way credential forms do.
+func (m *Manager) skillApply(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	defer r.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(r.Body, 128*1024))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	var request hubruntime.SkillApplyRequest
+	if json.Unmarshal(body, &request) != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	job := hubruntime.ExecuteRequest{Envelope: request.Envelope, OrganizationID: request.OrganizationID, UserID: request.UserID, ActorID: request.ActorID, ScopeID: request.ScopeID, Channel: "communication", Trigger: "skill-apply", JobID: "skill-apply", IdempotencyKey: "skill-apply-" + request.DraftID, Text: "skill draft apply"}
+	binding, err := m.bindingFor(job)
+	if err != nil {
+		log.Printf("supervisor skill-apply binding rejected principal=%s context=%s scope=%s: %v", request.PrincipalID, request.ContextID, request.ScopeID, err)
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "invalid runtime scope"})
+		return
+	}
+	lease, runtime, err := m.Acquire(r.Context(), binding, LeaseLifecycle)
+	if err != nil {
+		writeRuntimeFailure(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	defer m.ReleaseLease(lease.ID)
+	var response *http.Response
+	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost, runtime.Address+"/v1/skill-apply", bytes.NewReader(body))
+	if err == nil {
+		upstream.Header.Set("Authorization", "Bearer "+binding.runtimeAuth)
+		upstream.Header.Set("Content-Type", "application/json")
+		upstream.Header.Set("X-Hub-Job-ID", "skill-apply")
+		response, err = m.cfg.HTTP.Do(upstream)
+	}
+	if err != nil {
+		writeRuntimeFailure(w, http.StatusBadGateway, err)
+		return
+	}
+	defer response.Body.Close()
+	result, err := io.ReadAll(io.LimitReader(response.Body, 128*1024+1))
+	if err != nil || len(result) > 128*1024 {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime response unavailable"})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, _ = w.Write(result)
+}
+
+// skillCreds relays a skill-scoped credential form's values to the owning
+// runtime's /v1/skill-creds (SPEC-0084 R8.2).
+func (m *Manager) skillCreds(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	defer r.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(r.Body, 128*1024))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	var request hubruntime.SkillCredsRequest
+	if json.Unmarshal(body, &request) != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	job := hubruntime.ExecuteRequest{Envelope: request.Envelope, OrganizationID: request.OrganizationID, UserID: request.UserID, ActorID: request.ActorID, ScopeID: request.ScopeID, Channel: "communication", Trigger: "skill-creds", JobID: "skill-creds", IdempotencyKey: "skill-creds-" + request.Skill, Text: "skill credential delivery"}
+	binding, err := m.bindingFor(job)
+	if err != nil {
+		log.Printf("supervisor skill-creds binding rejected principal=%s context=%s scope=%s: %v", request.PrincipalID, request.ContextID, request.ScopeID, err)
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "invalid runtime scope"})
+		return
+	}
+	lease, runtime, err := m.Acquire(r.Context(), binding, LeaseLifecycle)
+	if err != nil {
+		writeRuntimeFailure(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	defer m.ReleaseLease(lease.ID)
+	var response *http.Response
+	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost, runtime.Address+"/v1/skill-creds", bytes.NewReader(body))
+	if err == nil {
+		upstream.Header.Set("Authorization", "Bearer "+binding.runtimeAuth)
+		upstream.Header.Set("Content-Type", "application/json")
+		upstream.Header.Set("X-Hub-Job-ID", "skill-creds")
+		response, err = m.cfg.HTTP.Do(upstream)
+	}
+	if err != nil {
+		writeRuntimeFailure(w, http.StatusBadGateway, err)
+		return
+	}
+	defer response.Body.Close()
+	result, _ := io.ReadAll(io.LimitReader(response.Body, 128*1024+1))
+	if len(result) > 128*1024 {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime response unavailable"})
 		return
 	}

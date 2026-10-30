@@ -24,6 +24,8 @@ tools:
   # deep_research: native # bundled bounded deep-research skill; needs web
   browser: mcp        # playwright read/navigate; tools: {act: true} adds mutations
   hh: toolhub
+  skills: toolhub        # agent skills catalog: search/list/view/invoke
+  skills_manage: toolhub # skill drafts + owner-approved publish
   # terminal: native   # relaxed grant: full workspace reach, no call audit
   # code_exec: toolhub # sandboxed execution in a disposable container
   # ssh: {via: toolhub, access: ro}

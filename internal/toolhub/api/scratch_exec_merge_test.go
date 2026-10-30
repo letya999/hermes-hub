@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -210,6 +212,92 @@ func TestDockerScratchExecSkillEnvNegatives(t *testing.T) {
 	}
 }
 
+// R8.2: a credential ref leases the value of an already-configured self-env
+// key under the declared name — the shared-PAT pattern without a per-skill
+// duplicate. A stored per-skill value still wins.
+func TestDockerScratchExecLeasesCredentialRef(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	storeDir := t.TempDir()
+	effDir := t.TempDir()
+	stateDir := t.TempDir()
+	index := `{"skills":[{"name":"shared","eligible":true,"requires":{"credentials":[{"name":"GH_PAT","ref":"GITHUB_TOKEN"},{"name":"OWN","ref":"MISSING_KEY"}]}}]}`
+	if err := os.WriteFile(filepath.Join(effDir, "index.json"), []byte(index), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "self-env.json"), []byte(`{"GITHUB_TOKEN":"tok-shared","OPENAI_API_KEY":"sk"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_SKILLS_STORE", storeDir)
+	t.Setenv("HUB_SKILLS_EFFECTIVE", effDir)
+	t.Setenv("HUB_STATE", stateDir)
+	t.Setenv("HUB_SELF_ENV_KEYS", "GITHUB_TOKEN,OPENAI_API_KEY")
+	t.Setenv("HUB_PROTECTED_ENV_KEYS", "")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/skill-ref-lease" {
+			t.Error("wrong lease endpoint")
+		}
+		var lease struct {
+			PrincipalID string `json:"principal_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&lease); err != nil {
+			t.Error(err)
+		}
+		if lease.PrincipalID != "alice" {
+			t.Errorf("wrong lease principal: %s", lease.PrincipalID)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"GITHUB_TOKEN": "tok-shared"})
+	}))
+	defer server.Close()
+	t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", server.URL)
+	t.Setenv("HUB_COMMUNICATION_AUTH", "test-auth")
+
+	effective := EffectiveBinding{Binding: ToolBinding{ToolBindingID: "bind-scratch-ref", PrincipalID: "alice"}}
+	scratch := DockerScratchExec([]string{os.Args[0], "-test.run=TestFakeDockerEnvChild"}, FixedAgentContainer("rt-1"), nil)
+	res, err := scratch(ctx, effective, AgentExecRequest{
+		Tool:           "code_exec",
+		Arguments:      map[string]any{"command": "env", "path": "ws", "skill": "shared"},
+		Scopes:         []CapabilityScope{{PathArgument: "path", PathPrefix: "ws"}},
+		TimeoutSeconds: 30,
+	}, nil)
+	if err != nil {
+		t.Fatalf("scratch exec: %v", err)
+	}
+	summary, _ := res.Result.(map[string]any)
+	// GH_PAT resolves through the ref; OWN's ref points at an unconfigured
+	// key and leases nothing.
+	if summary["stdout"] != "keys=GH_PAT" {
+		t.Fatalf("ref lease: %+v", summary)
+	}
+}
+
+func TestSkillRefNeverReadsForeignLocalState(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "self-env.json"), []byte(`{"GITHUB_TOKEN":"owner-secret"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_STATE", stateDir)
+	t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", "")
+	t.Setenv("HUB_COMMUNICATION_AUTH", "")
+	storeRoot, indexRoot := t.TempDir(), t.TempDir()
+	bobStore, bobIndex := filepath.Join(storeRoot, "bob"), filepath.Join(indexRoot, "bob")
+	if err := os.MkdirAll(bobStore, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(bobIndex, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bobIndex, "index.json"), []byte(`{"skills":[{"name":"shared","eligible":true,"requires":{"credentials":[{"name":"GH_PAT","ref":"GITHUB_TOKEN"}]}}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_SKILLS_BY_PRINCIPAL", indexRoot)
+	t.Setenv("HUB_SKILLS_STORE_BY", storeRoot)
+	env := skillLeaseEnv(t.Context(), EffectiveBinding{Binding: ToolBinding{PrincipalID: "bob", ContextID: "bob", RuntimeID: "bob", PolicyVersion: "p"}}, AgentExecRequest{Arguments: map[string]any{"skill": "shared"}})
+	if len(env) != 0 {
+		t.Fatalf("foreign principal received a ref lease")
+	}
+}
+
 // DockerScratchExec drives inspect → exec-pack → isolated run → confirmed
 // removal, all over the fixed docker verbs; guards fail closed before docker.
 func TestDockerScratchExecContract(t *testing.T) {
@@ -247,5 +335,51 @@ func TestDockerScratchExecContract(t *testing.T) {
 	summary, _ := res.Result.(map[string]any)
 	if summary["exit_code"] != 0 || summary["stdout"] != "done" || summary["stopped"] != true || summary["tree_stopped"] != true {
 		t.Fatalf("summary: %+v", summary)
+	}
+}
+
+// R8.3 multi-principal: the lease resolves the CALLER's index+store — a
+// sibling's credential names/values never come from the owner's mounts.
+func TestDockerScratchExecSkillEnvPerPrincipal(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	ownerStore, ownerEff := t.TempDir(), t.TempDir()
+	bobEff := filepath.Join(t.TempDir(), "bob")
+	bobStore := filepath.Join(t.TempDir(), "bob")
+	if err := skillstore.WriteCredentials(ownerStore, "demo", map[string]string{"API_KEY": "own3r"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := skillstore.WriteCredentials(bobStore, "demo", map[string]string{"BOB_KEY": "b0bv4l"}); err != nil {
+		t.Fatal(err)
+	}
+	ownerIndex := `{"skills":[{"name":"demo","eligible":true,"requires":{"credentials":[{"name":"API_KEY"}]}}]}`
+	bobIndex := `{"skills":[{"name":"demo","eligible":true,"requires":{"credentials":[{"name":"BOB_KEY"}]}}]}`
+	for _, pair := range [][2]string{{filepath.Join(ownerEff, "index.json"), ownerIndex}, {filepath.Join(bobEff, "index.json"), bobIndex}} {
+		if err := os.MkdirAll(filepath.Dir(pair[0]), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(pair[0], []byte(pair[1]), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("HUB_SKILLS_STORE", ownerStore)
+	t.Setenv("HUB_SKILLS_EFFECTIVE", ownerEff)
+	t.Setenv("HUB_SKILLS_BY_PRINCIPAL", filepath.Dir(bobEff))
+	t.Setenv("HUB_SKILLS_STORE_BY", filepath.Dir(bobStore))
+
+	effective := EffectiveBinding{Binding: ToolBinding{ToolBindingID: "bind-scratch-pp", PrincipalID: "bob"}}
+	scratch := DockerScratchExec([]string{os.Args[0], "-test.run=TestFakeDockerEnvChild"}, FixedAgentContainer("rt-1"), nil)
+	res, err := scratch(ctx, effective, AgentExecRequest{
+		Tool:           "code_exec",
+		Arguments:      map[string]any{"command": "env", "path": "ws", "skill": "demo"},
+		Scopes:         []CapabilityScope{{PathArgument: "path", PathPrefix: "ws"}},
+		TimeoutSeconds: 30,
+	}, nil)
+	if err != nil {
+		t.Fatalf("scratch exec: %v", err)
+	}
+	summary, _ := res.Result.(map[string]any)
+	if summary["stdout"] != "keys=BOB_KEY" {
+		t.Fatalf("sibling lease resolved owner mounts: %+v", summary)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"sync"
 
 	"github.com/letya999/hermes-hub/internal/skillstore"
 )
@@ -63,6 +64,40 @@ func (s *runtimeHTTP) skillApply(w http.ResponseWriter, r *http.Request) {
 		writeRuntimeError(w, http.StatusBadRequest, "unknown action")
 		return
 	}
+	// The store changed — refresh the agent-visible view in place so the
+	// next turn sees the new catalog without a respawn (R6.5). A rebuild
+	// failure must not mask the applied mutation: the draft is consumed
+	// and the next spawn rebuilds anyway, so report the stale view.
+	out := map[string]string{"state": "applied", "revision": rev}
+	if err := rebuildEffectiveView(); err != nil {
+		out["view"] = "stale: " + err.Error()
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"state": "applied", "revision": rev})
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+// viewRebuild serializes applies so two publishes cannot interleave their
+// in-place view writes (a loser's temp files would hit the winner's sweep).
+var viewRebuild sync.Mutex
+
+// rebuildEffectiveView recomposes the agent-visible view in place after a
+// store mutation, from the mounted sources and the render-time capability
+// snapshot. No-op when the view contract is not mounted — the next spawn
+// still rebuilds it.
+func rebuildEffectiveView() error {
+	dest := os.Getenv("HUB_SKILLS_EFFECTIVE_RW")
+	if dest == "" {
+		return nil
+	}
+	sources := []skillstore.Source{
+		{Name: "platform", Dir: os.Getenv("HUB_SKILLS_PLATFORM")},
+	}
+	if org := os.Getenv("HUB_SKILLS_ORG"); org != "" {
+		sources = append(sources, skillstore.Source{Name: "org", Dir: org})
+	}
+	sources = append(sources, skillstore.Source{Name: "user", Dir: os.Getenv("HUB_SKILLS_STORE")})
+	viewRebuild.Lock()
+	defer viewRebuild.Unlock()
+	_, err := skillstore.RebuildEffective(dest, sources, os.Getenv("HUB_SKILLS_META"))
+	return err
 }

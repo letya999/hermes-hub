@@ -190,6 +190,56 @@ func TestGovernanceIO(t *testing.T) {
 	}
 }
 
+// TestGovernanceInventoryReconcile: a document seeded before a section shipped
+// must not keep that section permanently denied as "unknown". Load reconciles
+// the persisted inventory with the shipped catalog — new sections appear with
+// shipped defaults and inventoried defaults track the shipped posture (section
+// defaults are code-shipped, not operator-mutable; posture narrows only through
+// rules). Extra sections the catalog no longer ships are kept, rules untouched.
+func TestGovernanceInventoryReconcile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "runtime", "toolhub", "governance.json")
+	now := time.Now()
+	// Simulate a pre-skills seed: strip the skill sections entirely and flip
+	// an existing inventoried default back to a stale shipped posture.
+	stale := NewGovernance()
+	kept := stale.Inventory[:0]
+	for _, section := range stale.Inventory {
+		if section.ID == "hub:skills" || section.ID == "hub:skills_manage" {
+			continue
+		}
+		if section.ID == "native:skills" {
+			section.Default = RuleAllow
+		}
+		kept = append(kept, section)
+	}
+	stale.Inventory = kept
+	stale.Inventory = append(stale.Inventory, ToolSection{ID: "hub:legacy", Owner: OwnerHermes, Effect: EffectRead, Default: RuleAllow})
+	if err := SaveGovernance(path, stale); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadGovernance(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	section, ok := loaded.Section("hub:skills")
+	if !ok {
+		t.Fatal("new shipped section missing after reconcile")
+	}
+	if !section.Official || !section.Prepared {
+		t.Fatalf("reconciled section lacks shipped trust flags: %+v", section)
+	}
+	if d := loaded.Evaluate("alice", "", "hub:skills", nil, now); !d.Allowed() {
+		t.Fatalf("hub:skills must evaluate its shipped default, not unknown-deny: %+v", d)
+	}
+	if section, _ := loaded.Section("native:skills"); section.Default != RuleDeny {
+		t.Fatalf("stale inventoried default not synced to shipped posture: %+v", section)
+	}
+	if _, ok := loaded.Section("hub:legacy"); !ok {
+		t.Fatal("unshipped extra section dropped")
+	}
+}
+
 func TestSectionTrustAndDecisionEffects(t *testing.T) {
 	cases := []struct {
 		s    ToolSection

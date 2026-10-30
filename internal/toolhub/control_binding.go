@@ -9,6 +9,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/oauth"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -82,6 +83,10 @@ func (c *ControlPlane) bindReviewedContract(ctx context.Context, auth identity.E
 		return err
 	}
 	bound := definition.CredentialContractID
+	reviewed, prepared, err := api.PreparedContractFor(bound, definition.CredentialContractRevision)
+	if err != nil {
+		return err
+	}
 	best := -1
 	bestExtra := 0
 	var bestEnv map[string]string
@@ -108,6 +113,10 @@ func (c *ControlPlane) bindReviewedContract(ctx context.Context, auth identity.E
 		// an older revision of the same contract still present in the broker.
 		if definition.CredentialContractRevision > 0 && candidate.Revision != definition.CredentialContractRevision {
 			continue
+		}
+		if prepared && candidate.Digest() != reviewed.Digest() {
+			log.Printf("toolhub contract revision conflict id=%s revision=%d stage=bind", bound, definition.CredentialContractRevision)
+			return fmt.Errorf("%w: contract revision conflict %s@%d", api.ErrConflict, bound, definition.CredentialContractRevision)
 		}
 		if definition.Workload.Class == api.Shared && !candidate.AllowShared {
 			continue
@@ -153,39 +162,46 @@ func (c *ControlPlane) bindReviewedContract(ctx context.Context, auth identity.E
 	// credentials instead would overflow the broker's contract bounds on
 	// noisy upstream metadata and lose the reviewed delivery mapping.
 	if bound != "" && definition.CredentialContractRevision > 0 {
-		if reviewed, ok, rerr := api.PreparedContractFor(bound, definition.CredentialContractRevision); rerr == nil && ok {
-			if stored, rerr := control.RegisterContract(ctx, reviewed); rerr == nil {
-				contracts = append(contracts, stored)
-				for i, candidate := range contracts {
-					if candidate.ID != bound || candidate.Revision != definition.CredentialContractRevision {
+		if prepared {
+			stored, rerr := control.RegisterContract(ctx, reviewed)
+			if rerr != nil {
+				var brokerErr *brokerclient.APIError
+				if errors.As(rerr, &brokerErr) && brokerErr.Status == http.StatusConflict {
+					log.Printf("toolhub contract revision conflict id=%s revision=%d stage=register", bound, definition.CredentialContractRevision)
+					return fmt.Errorf("%w: contract revision conflict %s@%d", api.ErrConflict, bound, definition.CredentialContractRevision)
+				}
+				return fmt.Errorf("register credential broker contract %s@%d: %w", bound, definition.CredentialContractRevision, rerr)
+			}
+			contracts = append(contracts, stored)
+			for i, candidate := range contracts {
+				if candidate.ID != bound || candidate.Revision != definition.CredentialContractRevision {
+					continue
+				}
+				env := api.CloneMap(definition.CredentialContractEnv)
+				if env == nil {
+					env = map[string]string{}
+				}
+				delivered := map[string]bool{}
+				for _, delivery := range candidate.Deliveries {
+					target := delivery.Target
+					if delivery.Type != "env" {
+						target = delivery.EnvName
+					}
+					if target == "" {
 						continue
 					}
-					env := api.CloneMap(definition.CredentialContractEnv)
-					if env == nil {
-						env = map[string]string{}
+					delivered[target] = true
+					if declared[target] && env[target] == "" {
+						env[target] = target
 					}
-					delivered := map[string]bool{}
-					for _, delivery := range candidate.Deliveries {
-						target := delivery.Target
-						if delivery.Type != "env" {
-							target = delivery.EnvName
-						}
-						if target == "" {
-							continue
-						}
-						delivered[target] = true
-						if declared[target] && env[target] == "" {
-							env[target] = target
-						}
-					}
-					if definition.CredentialsSatisfied(func(name string) bool { return delivered[env[name]] }) {
-						definition.CredentialContractID = contracts[i].ID
-						definition.CredentialContractRevision = contracts[i].Revision
-						definition.CredentialContractEnv = env
-						return nil
-					}
-					break
 				}
+				if definition.CredentialsSatisfied(func(name string) bool { return delivered[env[name]] }) {
+					definition.CredentialContractID = contracts[i].ID
+					definition.CredentialContractRevision = contracts[i].Revision
+					definition.CredentialContractEnv = env
+					return nil
+				}
+				break
 			}
 		}
 	}

@@ -69,8 +69,8 @@ func TestCredentialGateRegistersPinnedContract(t *testing.T) {
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/contracts":
 			var c contract.Contract
-			if err := json.NewDecoder(r.Body).Decode(&c); err != nil || c.ID != "telegram-session" || c.Revision != 2 {
-				t.Errorf("registered contract is not the reviewed telegram-session@2: %+v %v", c, err)
+			if err := json.NewDecoder(r.Body).Decode(&c); err != nil || c.ID != "telegram-session" || c.Revision != 3 {
+				t.Errorf("registered contract is not the reviewed telegram-session@3: %+v %v", c, err)
 			}
 			registered.Store(true)
 			w.WriteHeader(http.StatusCreated)
@@ -179,8 +179,8 @@ func TestPreparedTelegramUsesBrokerBeforeAuthenticatedToolList(t *testing.T) {
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/contracts":
 			var c contract.Contract
-			if err := json.NewDecoder(r.Body).Decode(&c); err != nil || c.ID != "telegram-session" || c.Revision != 2 {
-				t.Errorf("registered contract is not the reviewed telegram-session@2: %+v %v", c, err)
+			if err := json.NewDecoder(r.Body).Decode(&c); err != nil || c.ID != "telegram-session" || c.Revision != 3 {
+				t.Errorf("registered contract is not the reviewed telegram-session@3: %+v %v", c, err)
 			}
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(c)

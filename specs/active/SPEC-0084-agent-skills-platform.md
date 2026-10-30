@@ -72,9 +72,11 @@ took those numbers first — this is the same document under free numbers.
   network calls flagged, binaries rejected outside size-capped `assets/`.
 - R4.3: `draft.json` carries author, session id, source refs, `tainted` +
   taint sources, scan report, base revision.
-- R4.4: Publish gate: critical finding refuses with named file/line/rule;
-  tainted or script-bearing drafts can never auto-publish; approver sees
-  findings + provenance.
+- R4.4: Publish gate: approver sees findings + provenance; tainted or
+  script-bearing drafts can never auto-publish. SUSPENDED for MVP: the
+  critical-finding refuse is disabled — scan results are advisory on the
+  approval card until scanner rule quality justifies enforcement (foreign
+  imports FP on docstrings, binaries and regex literals).
 - R4.5: Quotas: max skills per owner, 256 files / 1 MiB per file / 8 MiB per
   bundle, SKILL.md size, drafts per day.
 - R4.6: Audit events for draft/publish/reject/rollback/archive and scan
@@ -95,21 +97,29 @@ took those numbers first — this is the same document under free numbers.
   always produce drafts — never a live change.
 - R5.4: Draft approval cards (summary, diff, findings, provenance) with
   Publish/Reject via the existing protected confirmation link; undo
-  restores the previous revision; replay/cross-principal use fails.
+  restores the previous revision; replay/cross-principal use fails. The
+  card registry persists beside the spool (nonce hashes only) so a
+  gateway restart cannot strand pending links; cards expire after 72h,
+  and a rejected apply reports the runtime's reason on the card.
 - R5.5: `propose_to_org` creates an org draft publishable only by org
   admin/owner; `hubctl skill drafts|approve|reject|rollback|archive|
   restore|promote` mirror the flow.
 
 ### R6 — progressive disclosure and discovery (M24.6, #361)
 
-- R6.1: Readiness filters the catalog: platform fit, required
-  toolsets/tools, connector and credential dependencies, grants;
-  `disable-model-invocation` / `allow_implicit_invocation:false` hides a
-  skill from implicit catalog (explicit invocation still works).
+- R6.1: Readiness filters the implicit catalog (tier-0 block and
+  `skills_search`): platform fit, required toolsets/tools, connector and
+  credential dependencies, grants; `disable-model-invocation` /
+  `allow_implicit_invocation:false` hides a skill from implicit catalog
+  (explicit invocation still works). `skills_list` is the honest
+  inventory: ineligible entries are listed flagged `eligible:false` with
+  their missing requirement names.
 - R6.2: Tier-0 `<available_skills>` block in `soul-effective` with
   name/source/description + spec behavioral instruction; inline when
   ≤ ~20 skills / ~3.5k tokens, else pinned-first + names + search hint;
-  omitted entirely when no eligible skills.
+  omitted entirely when no eligible skills. Ineligible skills enter the
+  block only as a bare `+N unavailable (skills_list)` counter — never
+  names or descriptions.
 - R6.3: Session-pinned catalog revision; mid-session changes arrive as one
   note; prefix is byte-stable within a session.
 - R6.4: Lexical search (name/description 2×, tags, exact-name first,
@@ -145,8 +155,12 @@ took those numbers first — this is the same document under free numbers.
   `requires.connectors[]` from Hermes/openclaw/Codex fields; a skill cannot
   declare hub/broker secret names.
 - R8.2: `skill()` surfaces "setup needed" with a protected form link;
-  values store as broker skill-secrets bound to (principal, skill) or as
-  references to existing connector credentials.
+  values store as broker skill-secrets bound to (principal, skill). A
+  credential may instead declare `ref: <ENV_KEY>` — a reference to an
+  already-configured self-env key (e.g. a connector's PAT): readiness
+  treats a configured ref as satisfied and the lease resolves the ref'd
+  value through the same policy-checked self-env file; a stored per-skill
+  value always wins.
 - R8.3: Declared names lease into the env of the cell running that skill's
   script, for that call only — never into Hermes env, tool results, argv,
   logs or audit; a declared broker delivery method follows the broker's

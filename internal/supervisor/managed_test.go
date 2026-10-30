@@ -409,13 +409,42 @@ func TestManagedRunArgsMountsWritableSkillsStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(args, " ")
-	want := "type=bind,src=" + filepath.Join(root, "managed", "prod", "skills") + ",dst=/skills-store"
+	want := "type=bind,src=" + filepath.Join(root, "skills") + ",dst=/skills-store"
 	if !strings.Contains(joined, want) {
 		t.Fatalf("managed run args missing writable skills store mount: %s", joined)
+	}
+	// The owner store — not a private managed/<env>/skills copy — so drafts,
+	// publishes and the effective view all see the same store.
+	if strings.Contains(joined, "managed"+string(filepath.Separator)+"prod"+string(filepath.Separator)+"skills") {
+		t.Fatal("managed /skills-store must not bind the private managed store")
 	}
 	for _, env := range []string{"HUB_SKILLS_STORE=/skills-store", "HUB_SKILLS_EFFECTIVE=/skills"} {
 		if !strings.Contains(joined, env) {
 			t.Fatalf("managed run args missing %s", env)
+		}
+	}
+}
+
+// The post-publish rebuild contract rides managed spawns too: platform
+// staging read-only, the view a second writable bind, the render snapshot.
+func TestManagedRunArgsMountsViewRebuildContract(t *testing.T) {
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("ok"), nil }, nil)
+	writeManagedFixtures(t, root)
+	bound, err := m.normalize(binding(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, err := m.runArgsWithGeneration(bound, "hub-test-container", 0, "gen-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"type=bind,src=" + stack.GeneratedSkillsDir(root) + ",dst=/skills-platform,readonly",
+		"type=bind,src=" + stack.GeneratedEffectiveSkillsDir(root) + ",dst=/skills-effective-rw",
+		"type=bind,src=" + stack.GeneratedSkillsMetaDir(root) + ",dst=/skills-meta,readonly",
+	} {
+		if !slices.Contains(args, want) {
+			t.Fatalf("managed run args missing %s", want)
 		}
 	}
 }

@@ -1,6 +1,6 @@
 {
   "id": "prometheus-url",
-  "revision": 2,
+  "revision": 3,
   "title": "Prometheus HTTP endpoint",
   "title_i18n": {
     "ru": "HTTP-endpoint Prometheus",

@@ -61,6 +61,28 @@ func TestDiscoverSkillsRanksConventionsFirst(t *testing.T) {
 	}
 }
 
+// A repository whose SKILL.md sits at the root is itself one skill;
+// discovery must surface it or bare-URL installs can never proceed.
+func TestDiscoverSkillsFindsRootSkill(t *testing.T) {
+	got := DiscoverSkills(tree(
+		"SKILL.md",
+		"references/a.md",
+		"nested/other/SKILL.md",
+	), "")
+	var root *Candidate
+	for i := range got {
+		if got[i].Path == "." {
+			root = &got[i]
+		}
+	}
+	if root == nil {
+		t.Fatalf("root SKILL.md not discovered: %v", got)
+	}
+	if len(got) != 2 {
+		t.Fatalf("candidates %v", got)
+	}
+}
+
 // R10.5: the walk is bounded at 2000 directories — a pathological tree
 // truncates deterministically at the lexical cutoff instead of scanning on.
 func TestDiscoverSkillsBoundsDirectoryCount(t *testing.T) {

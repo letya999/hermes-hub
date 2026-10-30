@@ -383,8 +383,12 @@ func TestComposeSupervisorModeOmitsResidentRuntime(t *testing.T) {
 	if _, ok := gateway["depends_on"]; ok {
 		t.Fatal("supervisor mode still depends on static runtime")
 	}
-	if files := gateway["env_file"].([]any); len(files) != 1 {
-		t.Fatalf("supervisor gateway received per-runtime auth file: %#v", files)
+	// The supervised gateway must not receive the per-runtime auth file —
+	// toolhub.auth is the controller-admission token, not a runtime auth.
+	for _, raw := range gateway["env_file"].([]any) {
+		if strings.HasSuffix(raw.(M)["path"].(string), "runtime.auth") {
+			t.Fatalf("supervisor gateway received per-runtime auth file: %#v", raw)
+		}
 	}
 	if gateway["environment"].(M)["HUB_SUPERVISOR_AUTH"] != "${HUB_SUPERVISOR_AUTH:?set HUB_SUPERVISOR_AUTH or provision supervisor.auth for this stack}" {
 		t.Fatal("supervisor auth placeholder missing")
@@ -414,6 +418,96 @@ func TestComposeMountsCommunicationUsersWhenPresent(t *testing.T) {
 	}
 	if !mounted {
 		t.Fatalf("users file not mounted: %#v", gateway["volumes"])
+	}
+}
+
+// Each space's generated effective view mounts under /skills-effective-by/<space>
+// so the shared gateway resolves /name and $name per calling principal; spaces
+// without a rendered view are skipped rather than bind-created on the host.
+func TestComposeMountsPerPrincipalSkillViews(t *testing.T) {
+	spacesRoot := filepath.Join(t.TempDir(), "spaces")
+	dir := filepath.Join(spacesRoot, "alice")
+	for _, space := range []string{"alice", "bob"} {
+		view := filepath.Join(spacesRoot, space, "generated", "skills-effective")
+		if err := os.MkdirAll(view, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(spacesRoot, "carol"), 0755); err != nil {
+		t.Fatal(err) // no generated view — must not be mounted
+	}
+	s := Settings{Schema: 1, Environment: "dev", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("telegram"), Ingress: testIngress("telegram")}
+	gateway := Compose(s, dir, dir)["services"].(M)["communication-hub"].(M)
+	if gateway["environment"].(M)["HUB_SKILLS_BY_PRINCIPAL"] != "/skills-effective-by" {
+		t.Fatalf("by-principal env missing: %#v", gateway["environment"])
+	}
+	mounted := map[string]bool{}
+	for _, raw := range gateway["volumes"].([]any) {
+		volume := raw.(M)
+		if target, ok := volume["target"].(string); ok && strings.HasPrefix(target, "/skills-effective-by/") {
+			mounted[strings.TrimPrefix(target, "/skills-effective-by/")] = true
+			if volume["read_only"] != true {
+				t.Fatalf("skill views must mount read-only: %#v", volume)
+			}
+		}
+	}
+	for _, want := range []string{"alice", "bob"} {
+		if !mounted[want] {
+			t.Fatalf("view for %q not mounted: %#v", want, gateway["volumes"])
+		}
+	}
+	if mounted["carol"] {
+		t.Fatalf("space without a generated view must not be mounted: %#v", gateway["volumes"])
+	}
+	// Outside a spaces/ root no sibling discovery happens — the dir layout is
+	// the contract, not "whatever sits next to the space dir".
+	elsewhere := filepath.Join(t.TempDir(), "elsewhere")
+	stray := filepath.Join(elsewhere, "alice")
+	if err := os.MkdirAll(filepath.Join(elsewhere, "bob", "generated", "skills-effective"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	strayGateway := Compose(s, stray, stray)["services"].(M)["communication-hub"].(M)
+	if _, ok := strayGateway["environment"].(M)["HUB_SKILLS_BY_PRINCIPAL"]; ok {
+		t.Fatal("by-principal env must not be set outside a spaces/ root")
+	}
+}
+
+// /v1/skill-git writes drafts + .sources mirrors into the CALLING principal's
+// store, so the shared gateway mounts each space's skills/ writable under
+// /skills-store-by/<space>; spaces without a store are skipped.
+func TestComposeMountsPerPrincipalSkillStores(t *testing.T) {
+	spacesRoot := filepath.Join(t.TempDir(), "spaces")
+	dir := filepath.Join(spacesRoot, "alice")
+	for _, space := range []string{"alice", "bob"} {
+		if err := os.MkdirAll(filepath.Join(spacesRoot, space, "skills"), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(spacesRoot, "carol"), 0755); err != nil {
+		t.Fatal(err) // no skills store — must not be mounted
+	}
+	s := Settings{Schema: 1, Environment: "dev", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("telegram"), Ingress: testIngress("telegram")}
+	gateway := Compose(s, dir, dir)["services"].(M)["communication-hub"].(M)
+	if gateway["environment"].(M)["HUB_SKILLS_STORE_BY"] != "/skills-store-by" {
+		t.Fatalf("store-by env missing: %#v", gateway["environment"])
+	}
+	mounted := map[string]bool{}
+	for _, raw := range gateway["volumes"].([]any) {
+		volume := raw.(M)
+		if target, ok := volume["target"].(string); ok && strings.HasPrefix(target, "/skills-store-by/") {
+			mounted[strings.TrimPrefix(target, "/skills-store-by/")] = true
+			if volume["read_only"] == true {
+				t.Fatalf("skill stores must mount writable — drafts and mirrors are created here: %#v", volume)
+			}
+		}
+	}
+	for _, want := range []string{"alice", "bob"} {
+		if !mounted[want] {
+			t.Fatalf("store for %q not mounted: %#v", want, gateway["volumes"])
+		}
+	}
+	if mounted["carol"] {
+		t.Fatalf("space without a skills store must not be mounted: %#v", gateway["volumes"])
 	}
 }
 
@@ -1173,5 +1267,50 @@ func TestManagedRenderNoProxyCoversBrowserSidecar(t *testing.T) {
 	}
 	if !strings.Contains(string(env), "NO_PROXY=") || !strings.Contains(string(env), "browser-alice") {
 		t.Fatalf("managed NO_PROXY must keep browser-alice sidecar direct: %q", env)
+	}
+}
+
+// R8.3 multi-principal: the skill-credential lease reads the CALLER's
+// index+store — toolhub mounts every space's effective view and skill
+// store read-only under per-principal roots, like the gateway does.
+func TestComposeMountsPerPrincipalSkillStoresForToolhub(t *testing.T) {
+	spacesRoot := filepath.Join(t.TempDir(), "spaces")
+	dir := filepath.Join(spacesRoot, "alice")
+	for _, space := range []string{"alice", "bob"} {
+		if err := os.MkdirAll(filepath.Join(spacesRoot, space, "generated", "skills-effective"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(spacesRoot, space, "skills"), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := Settings{Schema: 1, Environment: "dev", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("telegram"), Ingress: testIngress("telegram")}
+	services := Compose(s, dir, dir)["services"].(M)
+	toolhub, ok := services["toolhub"].(M)
+	if !ok {
+		t.Fatalf("toolhub service missing: %#v", services)
+	}
+	env := toolhub["environment"].(M)
+	if env["HUB_SKILLS_BY_PRINCIPAL"] != "/skills-effective-by" || env["HUB_SKILLS_STORE_BY"] != "/skills-store-by" {
+		t.Fatalf("per-principal envs missing: %#v", env)
+	}
+	effMount, storeMount := map[string]bool{}, map[string]bool{}
+	for _, raw := range toolhub["volumes"].([]any) {
+		volume := raw.(M)
+		target, _ := volume["target"].(string)
+		if name, ok := strings.CutPrefix(target, "/skills-effective-by/"); ok {
+			effMount[name] = true
+		}
+		if name, ok := strings.CutPrefix(target, "/skills-store-by/"); ok {
+			storeMount[name] = true
+			if volume["read_only"] != true {
+				t.Fatalf("skill stores must mount read-only: %#v", volume)
+			}
+		}
+	}
+	for _, want := range []string{"alice", "bob"} {
+		if !effMount[want] || !storeMount[want] {
+			t.Fatalf("principal %q missing mounts: eff=%v store=%v", want, effMount, storeMount)
+		}
 	}
 }

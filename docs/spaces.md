@@ -1,6 +1,6 @@
 ---
 description: spaces/<id>/ layout — settings.yaml, generated configs, secrets/env files, state dirs, and what is hand-edited vs rendered.
-last_verified: 2026-10-28
+last_verified: 2026-10-29
 ---
 
 # Spaces
@@ -95,6 +95,7 @@ tools:
   browser: mcp:playwright     # ToolHub-mediated connector
   gitea:   mcp-raw:gitea      # renders mcp.gitea below
   code_exec: off
+  skills:  toolhub            # skill catalog reads; skills_manage covers drafts+publish
   ssh:     {via: toolhub, access: ro, tools: {shell: false, tunnel: false}}
 ingress: [telegram]           # transport channels, never agent tools
 workspace:

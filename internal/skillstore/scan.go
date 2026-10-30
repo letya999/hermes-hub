@@ -1,7 +1,6 @@
 package skillstore
 
 import (
-	"fmt"
 	"slices"
 	"strings"
 
@@ -45,21 +44,9 @@ func boundFindings(r scan.Report) []scan.Finding {
 	return r.Findings
 }
 
-// scanError renders a critical report as a refusing error. Only file, line
-// and rule ids are included — never content.
-func scanError(r scan.Report) error {
-	parts := make([]string, 0, 5)
-	for _, f := range r.Findings {
-		if f.Severity != scan.Critical {
-			continue
-		}
-		parts = append(parts, fmt.Sprintf("%s:%d %s", f.File, f.Line, f.RuleID))
-		if len(parts) == 5 {
-			break
-		}
-	}
-	return fmt.Errorf("%w: %s", ErrScanCritical, strings.Join(parts, "; "))
-}
+// scanError rendered a critical report as a refusing error; it returns
+// when the publish-time critical block does (R4.4 suspended for MVP —
+// findings stay advisory on the draft card until scanner rules are tuned).
 
 // hasScripts reports whether the tree carries executable script files —
 // such skills may only publish through the draft+approve path (R4.4).

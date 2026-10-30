@@ -1,6 +1,6 @@
 {
   "id": "atlassian-env",
-  "revision": 2,
+  "revision": 3,
   "title": "Atlassian connection — fill the Jira block, the Confluence block, or both",
   "title_i18n": {
     "ru": "Подключение Atlassian — заполните блок Jira, блок Confluence или оба",

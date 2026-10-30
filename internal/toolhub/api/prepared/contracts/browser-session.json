@@ -1,6 +1,6 @@
 {
   "id": "browser-session",
-  "revision": 1,
+  "revision": 2,
   "title": "Browser session import and origin bounds",
   "title_i18n": {
     "ru": "Импорт сессии браузера и границы origin",

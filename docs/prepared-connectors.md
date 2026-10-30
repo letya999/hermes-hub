@@ -1,6 +1,6 @@
 ---
 description: Connector pipeline вЂ” review/build/admission contract, lifecycle, recipe ledger, tiers, and per-connector prepared entries.
-last_verified: 2026-10-28
+last_verified: 2026-10-30
 ---
 
 # Prepared connectors
@@ -12,6 +12,11 @@ provider branches. Reviewed Broker contracts ship beside it under
 `prepared/contracts/` and validate with their entries. ToolHub registers the
 reviewed contract with the Broker before enrollment. Unprepared recipes use
 a content-addressed contract synthesized from their declared deliveries.
+`prepared/digests.json` pins every reviewed Broker payload by `id@revision`;
+the Go check rejects changed content under an existing revision. Prepared
+definitions also compare the Broker catalog digest before binding. A mismatch
+returns `contract revision conflict`, and a failed prepare records `failed`
+and invalidates its credential form.
 
 ## Authentication before artifact execution
 
@@ -349,14 +354,13 @@ short-TTL owner-bound viewer link (`GET /viewer/<conn>?t=` вЂ” 410 on reuse)
 
 ### notion
 
-`makenotion/notion-mcp-server`, Node `bin/cli.mjs`. Contract `notion-token@2`
+`makenotion/notion-mcp-server`, Node `bin/cli.mjs`. Contract `notion-token@3`
 в†’ `NOTION_TOKEN`. Share root/pages with the integration first; verify
 identity + search + one page read; empty search usually means nothing
 shared. Never create/edit pages as a test.
 
-Revision 2 distinguishes the prepared contract from the Broker example's
-revision 1, whose labels and digest differ. Existing revision 1 connections
-remain pinned; new enrollment uses revision 2 without overwriting contracts.
+Revision 3 carries the localized reviewed payload. Existing revisions remain
+pinned; new enrollment uses revision 3 without overwriting their contracts.
 
 ### google-calendar
 

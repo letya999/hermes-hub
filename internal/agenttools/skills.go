@@ -36,6 +36,7 @@ var actionFields = map[string][]string{
 	"propose_to_org": {"action", "name", "reason"},
 	"configure":      {"action", "name", "values"},
 	"install":        {"action", "url", "ref", "path", "name", "grant", "reason"},
+	"install_local":  {"action", "path", "name", "reason"},
 	"update":         {"action", "name", "reason"},
 	"check_updates":  {"action"},
 }
@@ -217,7 +218,9 @@ func skillViewable(path string) bool {
 	return dir == "references" || dir == "templates" || dir == "examples"
 }
 
-// skillsList pages the effective index 20 at a time (R5 contract).
+// skillsList pages the effective index 20 at a time (R5 contract). It is the
+// honest inventory: ineligible entries are listed flagged eligible:false with
+// the missing requirement names — the tier-0 block only counts them.
 func (t *Tools) skillsList(r Input) (any, error) {
 	idx, err := t.effectiveIndex()
 	if err != nil {
@@ -225,7 +228,7 @@ func (t *Tools) skillsList(r Input) (any, error) {
 	}
 	entries := []map[string]any{}
 	for _, e := range idx.Skills {
-		if e.Hidden || !e.Eligible {
+		if e.Hidden {
 			continue
 		}
 		if r.Source != "" && e.Source != r.Source {
@@ -233,6 +236,10 @@ func (t *Tools) skillsList(r Input) (any, error) {
 		}
 		entry := map[string]any{
 			"name": e.Name, "description": e.Description, "source": e.Source,
+			"eligible": e.Eligible,
+		}
+		if !e.Eligible && len(e.Missing) > 0 {
+			entry["missing"] = e.Missing
 		}
 		// R12.5: counters only — event detail never leaves the store.
 		if u, err := skillstore.Usage(t.SkillsStore, e.Name); err == nil {
@@ -266,6 +273,9 @@ func (t *Tools) skillManage(ctx context.Context, arguments map[string]any) (any,
 	content := argString(arguments, "content")
 	if action == "install" || action == "update" || action == "check_updates" {
 		return t.skillGit(ctx, action, arguments)
+	}
+	if action == "install_local" {
+		return t.skillInstallLocal(ctx, arguments)
 	}
 	if action == "propose_to_org" {
 		return t.proposeToOrg(ctx, name, arguments)
@@ -355,6 +365,87 @@ func (t *Tools) skillManage(ctx context.Context, arguments map[string]any) (any,
 		"scan":        map[string]any{"verdict": d.Meta.ScanVerdict, "findings": d.Meta.ScanFindings},
 		"link_sent":   link != "",
 		"confirm_url": link,
+	}, nil
+}
+
+// skillInstallLocal imports a foreign package staged in the workspace —
+// a directory or a zip archive — into a draft the owner approves like
+// every other write (R10.9). The path stays inside the workspace root.
+func (t *Tools) skillInstallLocal(ctx context.Context, arguments map[string]any) (any, error) {
+	if t.Workspace == nil {
+		return nil, errors.New("workspace is not configured")
+	}
+	rel := strings.TrimSpace(argString(arguments, "path"))
+	if rel == "" || !safe(rel) {
+		return nil, fmt.Errorf("%w: a workspace-relative path is required", skillstore.ErrInvalid)
+	}
+	info, err := t.Workspace.Stat(rel)
+	if err != nil {
+		return nil, err
+	}
+	var pkg skillstore.Tree
+	var dropped []string
+	fallback := filepath.Base(rel)
+	if info.IsDir() {
+		sub, rerr := t.Workspace.OpenRoot(rel)
+		if rerr != nil {
+			return nil, rerr
+		}
+		defer sub.Close()
+		pkg, dropped, err = skillstore.ImportTree(sub.FS())
+	} else if strings.HasSuffix(strings.ToLower(rel), ".zip") {
+		var data []byte
+		data, err = t.Workspace.ReadFile(rel)
+		if err == nil {
+			fallback = strings.TrimSuffix(fallback, filepath.Ext(fallback))
+			pkg, dropped, err = skillstore.ImportZip(data)
+		}
+	} else {
+		var data []byte
+		data, err = t.Workspace.ReadFile(rel)
+		if err == nil {
+			pkg = skillstore.FileTree(data)
+			fallback = strings.TrimSuffix(fallback, filepath.Ext(fallback))
+			if fallback == "" || fallback == "SKILL" {
+				fallback = filepath.Base(filepath.Dir(rel))
+			}
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	roots := skillstore.SkillRoots(pkg)
+	if len(roots) == 0 {
+		return nil, fmt.Errorf("%w: no SKILL.md found under %s", skillstore.ErrInvalid, rel)
+	}
+	tree := skillstore.SelectTree(pkg, roots[0])
+	if roots[0] != "" {
+		fallback = filepath.Base(roots[0])
+	}
+	name := strings.TrimSpace(argString(arguments, "name"))
+	if name == "" {
+		name = skillstore.NameFromTree(tree, fallback)
+	}
+	st, err := skillstore.Open(t.SkillsStore, skillstore.ScopeUser)
+	if err != nil {
+		return nil, err
+	}
+	meta := skillstore.DraftMeta{Author: "agent", Imported: true, Reason: argString(arguments, "reason"),
+		SessionID: os.Getenv("HUB_RUNTIME_ID"), ImportNotes: skillstore.DropNotes(dropped)}
+	d, err := st.CreateDraft(name, tree, meta)
+	if err != nil {
+		return nil, err
+	}
+	link := t.skillDraftLink(ctx, map[string]string{
+		"draft_id": d.ID, "skill_name": name, "scope": "user",
+		"summary":    argString(arguments, "reason"),
+		"findings":   d.Meta.ScanVerdict,
+		"provenance": "workspace " + rel,
+	})
+	return map[string]any{
+		"draft_id": d.ID, "name": name, "state": "draft",
+		"dropped_dot_paths": dropped, "notes": d.Meta.ImportNotes,
+		"link_sent": link != "", "confirm_url": link,
 	}, nil
 }
 
@@ -641,6 +732,21 @@ func (t *Tools) skillInvoke(ctx context.Context, r Input) (any, error) {
 		}
 	}
 	slices.Sort(resources)
+	// R8.2/R8.5: the index stamp is render-time — stored credentials flip
+	// readiness live so a just-saved secret clears setup_needed without a
+	// view rebuild. Names only, never values.
+	credsMissing := entry.CredsMissing
+	if len(credsMissing) > 0 {
+		if stored, err := skillstore.ReadCredentials(t.SkillsStore, name); err == nil {
+			live := []string{}
+			for _, cred := range credsMissing {
+				if stored[cred] == "" {
+					live = append(live, cred)
+				}
+			}
+			credsMissing = live
+		}
+	}
 	result := map[string]any{
 		"name":      name,
 		"skill_dir": "/skills/" + name,
@@ -655,8 +761,8 @@ func (t *Tools) skillInvoke(ctx context.Context, r Input) (any, error) {
 			"instructions_only": entry.InstructionsOnly,
 			// R8.5: missing soft credentials are a setup-needed signal —
 			// the skill stays invocable; hard ones already vetoed above.
-			"setup_needed":        len(entry.CredsMissing) > 0,
-			"credentials_missing": entry.CredsMissing,
+			"setup_needed":        len(credsMissing) > 0,
+			"credentials_missing": credsMissing,
 		},
 	}
 	// R8.4: declared settings surface as effective per-user values —
@@ -675,8 +781,8 @@ func (t *Tools) skillInvoke(ctx context.Context, r Input) (any, error) {
 	}
 	// R8.2: the protected credential form is the only path that stores
 	// (principal, skill) secrets; the URL is delivery, never the value.
-	if len(entry.CredsMissing) > 0 {
-		if form, err := t.credentialForm(ctx, "skill:"+name, entry.CredsMissing); err == nil {
+	if len(credsMissing) > 0 {
+		if form, err := t.credentialForm(ctx, "skill:"+name, credsMissing); err == nil {
 			if url, ok := form["form_url"].(string); ok {
 				result["form_url"] = url
 			}

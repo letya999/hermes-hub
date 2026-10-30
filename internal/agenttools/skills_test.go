@@ -1,6 +1,7 @@
 package agenttools
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -46,6 +47,98 @@ func skillSpace(t *testing.T, tree skillstore.Tree) (*Tools, string) {
 	}
 	t.Cleanup(func() { _ = skillsRoot.Close() })
 	return &Tools{SkillsEffective: eff, SkillsStore: st.Root(), Skills: skillsRoot, StateDir: dir}, dir
+}
+
+// install_local imports a foreign package staged in the workspace (an
+// inbox download, an unpacked archive, a checkout): directory, zip or a
+// standalone SKILL.md all land as an imported draft with the same
+// approval card every write gets (R10.9).
+func TestSkillManageInstallLocal(t *testing.T) {
+	tools, _ := skillSpace(t, skillTree(demoSkillMD, nil))
+	wsdir := t.TempDir()
+	mk := func(rel, body string) {
+		full := filepath.Join(wsdir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	head := "---\nname: foreign-one\ndescription: d\n---\n\nbody"
+	mk("pkg/SKILL.md", head+"[guide](references/a.md)")
+	mk("pkg/references/a.md", "see [b](b.md)")
+	mk("pkg/references/b.md", "leaf")
+	mk("pkg/.claude/hooks.json", "{}")
+	ws, err := os.OpenRoot(wsdir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ws.Close() })
+	tools.Workspace = ws
+
+	out := execJSON(t, tools, "skill_manage", map[string]any{
+		"action": "install_local", "path": "pkg", "reason": "try it",
+	})
+	if out["state"] != "draft" || out["draft_id"] == "" || out["name"] != "foreign-one" {
+		t.Fatalf("install_local result: %v", out)
+	}
+	st, err := skillstore.Open(tools.SkillsStore, skillstore.ScopeUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft, tree, err := st.LoadDraft(out["draft_id"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tree["references/a.md"].Data == nil || tree[".claude/hooks.json"].Data != nil {
+		t.Fatalf("tree must keep payload and drop dot plumbing: %v", mapsOf(tree))
+	}
+	if !draft.Meta.Imported {
+		t.Fatalf("workspace import must be marked imported: %+v", draft.Meta)
+	}
+
+	// A zip staged in the workspace selects its single skill root itself.
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for n, b := range map[string]string{"repo-ref/SKILL.md": head, "repo-ref/notes.md": "n"} {
+		w, err := zw.Create(n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(b)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wsdir, "skill.zip"), buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out = execJSON(t, tools, "skill_manage", map[string]any{
+		"action": "install_local", "path": "skill.zip",
+	})
+	if out["draft_id"] == "" || out["name"] != "foreign-one" {
+		t.Fatalf("zip install_local: %v", out)
+	}
+
+	// A standalone markdown file is a one-file skill package.
+	mk("notes/SKILL.md", head)
+	out = execJSON(t, tools, "skill_manage", map[string]any{
+		"action": "install_local", "path": "notes/SKILL.md",
+	})
+	if out["draft_id"] == "" || out["name"] != "foreign-one" {
+		t.Fatalf("file install_local: %v", out)
+	}
+}
+
+func mapsOf(t skillstore.Tree) []string {
+	out := []string{}
+	for k := range t {
+		out = append(out, k)
+	}
+	return out
 }
 
 func skillTree(body string, extra map[string]string) skillstore.Tree {
@@ -944,9 +1037,11 @@ func TestServerExecutesSkillManageLikeToolHub(t *testing.T) {
 	}
 }
 
-// Catalog surfaces hide ineligible and implicit-hidden skills; explicit
-// `skill` invocation still works for hidden ones and names the missing
-// requirements for ineligible ones (R6.1).
+// Implicit catalog surfaces (tier-0, skills_search) hide ineligible and
+// implicit-hidden skills; skills_list is the honest inventory — it lists
+// ineligible entries flagged eligible:false with their missing requirement
+// names. Explicit `skill` invocation still works for hidden ones and names
+// the missing requirements for ineligible ones (R6.1).
 func TestEligibleCatalogHidesUnmetAndHidden(t *testing.T) {
 	tools, dir := skillSpace(t, skillTree(demoSkillMD, nil))
 	st, err := skillstore.Open(tools.SkillsStore, skillstore.ScopeUser)
@@ -972,12 +1067,24 @@ func TestEligibleCatalogHidesUnmetAndHidden(t *testing.T) {
 	}
 
 	listed := execJSON(t, tools, "skills_list", map[string]any{})
-	names := map[string]bool{}
+	byName := map[string]map[string]any{}
 	for _, s := range listed["skills"].([]any) {
-		names[s.(map[string]any)["name"].(string)] = true
+		m := s.(map[string]any)
+		byName[m["name"].(string)] = m
 	}
-	if !names["demo-skill"] || names["hidden-one"] || names["needy"] {
-		t.Fatalf("catalog must show only eligible visible skills: %v", names)
+	if byName["demo-skill"] == nil || byName["hidden-one"] != nil || byName["needy"] == nil {
+		t.Fatalf("list must show eligible + ineligible skills, hide implicit-hidden: %v", byName)
+	}
+	if byName["demo-skill"]["eligible"] != true {
+		t.Fatalf("eligible entry must be flagged eligible: %v", byName["demo-skill"])
+	}
+	needy := byName["needy"]
+	if needy["eligible"] != false {
+		t.Fatalf("ineligible entry must be flagged: %v", needy)
+	}
+	missing, _ := needy["missing"].([]any)
+	if len(missing) == 0 || !strings.Contains(fmt.Sprint(missing), "absent-connector") {
+		t.Fatalf("ineligible entry must name the gap: %v", needy)
 	}
 	found := execJSON(t, tools, "skills_search", map[string]any{"query": "needy"})
 	if hits, _ := found["hits"].([]any); len(hits) != 0 {
@@ -1263,5 +1370,89 @@ func TestSkillsListCarriesUsageStats(t *testing.T) {
 	raw, _ := json.Marshal(page)
 	if strings.Contains(string(raw), "note kept private") {
 		t.Fatal("event detail leaked into skills_list")
+	}
+}
+
+// R8.2/R8.5: stored credentials flip setup_needed live — the readiness the
+// tool reports must reflect the store now, not the render-time index stamp.
+func TestSkillReadinessReflectsStoredCreds(t *testing.T) {
+	body := "---\nname: demo-skill\ndescription: d\nrequires:\n  credentials: [API_KEY]\n---\nbody\n"
+	tools, dir := skillSpace(t, skillTree(body, nil))
+	st, _ := skillstore.Open(filepath.Join(dir, "skills"), skillstore.ScopeUser)
+	d, err := st.CreateDraft("demo-skill", skillTree(body, nil), skillstore.DraftMeta{Author: "u"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.PublishDraft(d.ID, "u"); err != nil {
+		t.Fatal(err)
+	}
+	eff := filepath.Join(dir, "generated", "skills-effective")
+	idx, err := skillstore.Build(eff, []skillstore.Source{{Name: "user", Dir: st.Root()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx.ApplyReadiness(skillstore.Capabilities{Platform: "linux", SkillCreds: map[string]map[string]bool{}})
+	if err := skillstore.WriteIndex(eff, idx); err != nil {
+		t.Fatal(err)
+	}
+	if err := skillstore.WriteCredentials(st.Root(), "demo-skill", map[string]string{"API_KEY": "s3cr3t"}); err != nil {
+		t.Fatal(err)
+	}
+	form := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"input":"protected-form","form_url":"http://comm.local/credentials/f1?nonce=n"}`)
+	}))
+	defer form.Close()
+	tools.CommunicationURL = form.URL
+	tools.CommunicationAuth = "auth"
+	result := execJSON(t, tools, "skill", map[string]any{"name": "demo-skill"})
+	readiness, _ := result["readiness"].(map[string]any)
+	if readiness == nil || readiness["setup_needed"] != false {
+		t.Fatalf("stored creds must clear setup_needed: %v", readiness)
+	}
+	if _, has := result["form_url"]; has {
+		t.Fatal("form minted for already-stored credentials")
+	}
+}
+
+// A partially-stored credential set must request only the missing names —
+// the form never re-asks for a secret already stored.
+func TestSkillReadinessFormAsksOnlyMissingCreds(t *testing.T) {
+	var requested []string
+	form := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Keys []string `json:"keys"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		requested = req.Keys
+		_, _ = io.WriteString(w, `{"input":"protected-form","form_url":"http://comm.local/credentials/f1?nonce=n"}`)
+	}))
+	defer form.Close()
+	body := "---\nname: demo-skill\ndescription: d\nrequires:\n  credentials: [API_KEY, OTHER_KEY]\n---\nbody\n"
+	tools, dir := skillSpace(t, skillTree(body, nil))
+	st, _ := skillstore.Open(filepath.Join(dir, "skills"), skillstore.ScopeUser)
+	d, err := st.CreateDraft("demo-skill", skillTree(body, nil), skillstore.DraftMeta{Author: "u"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.PublishDraft(d.ID, "u"); err != nil {
+		t.Fatal(err)
+	}
+	eff := filepath.Join(dir, "generated", "skills-effective")
+	idx, err := skillstore.Build(eff, []skillstore.Source{{Name: "user", Dir: st.Root()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx.ApplyReadiness(skillstore.Capabilities{Platform: "linux", SkillCreds: map[string]map[string]bool{}})
+	if err := skillstore.WriteIndex(eff, idx); err != nil {
+		t.Fatal(err)
+	}
+	if err := skillstore.WriteCredentials(st.Root(), "demo-skill", map[string]string{"API_KEY": "s3cr3t"}); err != nil {
+		t.Fatal(err)
+	}
+	tools.CommunicationURL = form.URL
+	tools.CommunicationAuth = "auth"
+	execJSON(t, tools, "skill", map[string]any{"name": "demo-skill"})
+	if len(requested) != 1 || requested[0] != "OTHER_KEY" {
+		t.Fatalf("form must ask only missing keys, got: %v", requested)
 	}
 }

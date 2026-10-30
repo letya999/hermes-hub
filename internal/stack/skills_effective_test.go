@@ -2,6 +2,7 @@ package stack
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -63,6 +64,38 @@ func TestMaterializeEffectiveSkillsBuildsPrecedenceView(t *testing.T) {
 	}
 	if sources["user-skill"] != "user" {
 		t.Fatalf("user skill missing from index: %#v", idx.Skills)
+	}
+}
+
+// The render persists the capability/pin snapshot the post-publish
+// rebuild replays — a runtime-side RebuildEffective must produce the
+// same index the render wrote.
+func TestMaterializeEffectiveSkillsPersistsViewMeta(t *testing.T) {
+	dir := t.TempDir()
+	s := validSettings()
+	s.GlobalSkillsDir = t.TempDir()
+	writeStoreSkill(t, filepath.Join(dir, "skills"), "user-skill", "from user")
+	idx, err := MaterializeEffectiveSkills(dir, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, err := skillstore.LoadViewMeta(GeneratedSkillsMetaDir(dir))
+	if err != nil {
+		t.Fatalf("view meta not persisted: %v", err)
+	}
+	if meta.Capabilities.Platform != "linux" {
+		t.Fatalf("capability snapshot missing: %+v", meta.Capabilities)
+	}
+	sources := []skillstore.Source{
+		{Name: "platform", Dir: GeneratedSkillsDir(dir)},
+		{Name: "user", Dir: filepath.Join(dir, "skills")},
+	}
+	rebuilt, err := skillstore.RebuildEffective(GeneratedEffectiveSkillsDir(dir), sources, GeneratedSkillsMetaDir(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rebuilt.Revision != idx.Revision || len(rebuilt.Skills) != len(idx.Skills) {
+		t.Fatalf("post-publish rebuild diverged from render: %s vs %s", rebuilt.Revision, idx.Revision)
 	}
 }
 
@@ -321,6 +354,12 @@ func TestSoulEffectiveCarriesTier0Catalog(t *testing.T) {
 			t.Fatalf("tier-0 must exclude/escape %q", banned)
 		}
 	}
+	// Ineligible skills are announced as a bare counter — the agent learns
+	// they exist and can inspect them via skills_list, but no names or
+	// descriptions enter the prompt.
+	if !strings.Contains(text, "+1 unavailable") {
+		t.Fatal("tier-0 must count the ineligible skill")
+	}
 }
 
 // Catalog descriptions are length-capped so a fat manifest cannot bloat or
@@ -342,6 +381,46 @@ func TestSoulEffectiveTier0CapsDescription(t *testing.T) {
 	}
 	if strings.Contains(string(body), "ENDMARKER") {
 		t.Fatal("over-long description must be truncated in the tier-0 block")
+	}
+}
+
+// A credential ref resolves against the owner's configured self-env keys at
+// render: the shared PAT satisfies the requirement without a per-skill
+// duplicate (R8.2).
+func TestMaterializeEffectiveSkillsResolvesCredentialRef(t *testing.T) {
+	dir := t.TempDir()
+	s := validSettings()
+	s.GlobalSkillsDir = t.TempDir()
+	writeStoreSkill(t, filepath.Join(dir, "skills"), "shared-pat", "uses the github token")
+	if err := os.WriteFile(filepath.Join(dir, "skills", "shared-pat", "SKILL.md"),
+		[]byte("---\nname: shared-pat\ndescription: uses the github token\nrequires:\n  credentials:\n    - {name: GH_PAT, hard: true, ref: OPENAI_API_KEY}\n---\n\nbody\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Without the env key configured the hard requirement vetoes the skill.
+	idx, err := MaterializeEffectiveSkills(dir, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range idx.Skills {
+		if e.Name == "shared-pat" && e.Eligible {
+			t.Fatalf("unconfigured ref must veto: %+v", e)
+		}
+	}
+	// Configuring the self-env key satisfies it.
+	if err := os.MkdirAll(filepath.Join(dir, "runtime"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "runtime", "self-env.json"), []byte(`{"OPENAI_API_KEY":"sk-test"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	idx, err = MaterializeEffectiveSkills(dir, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range idx.Skills {
+		if e.Name == "shared-pat" && !e.Eligible {
+			t.Fatalf("configured ref must satisfy the hard cred: %+v", e)
+		}
 	}
 }
 
@@ -373,6 +452,25 @@ func TestSoulEffectiveTier0LargeCatalogDegradesToNames(t *testing.T) {
 	}
 	if !strings.Contains(text, "skill-a") {
 		t.Fatal("degraded catalog must still list names")
+	}
+	// The unavailable counter survives the degraded form too.
+	writeStoreSkill(t, filepath.Join(dir, "skills"), "needy", "wants gitlab")
+	if err := os.WriteFile(filepath.Join(dir, "skills", "needy", "SKILL.md"),
+		[]byte("---\nname: needy\ndescription: wants gitlab\nrequires:\n  connectors: [gitlab]\n---\n\nbody\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := MaterializeEffectiveSkills(dir, s); err != nil {
+		t.Fatal(err)
+	}
+	if err := MaterializeSoulEffective(dir, s); err != nil {
+		t.Fatal(err)
+	}
+	body, err = os.ReadFile(filepath.Join(dir, "generated", "soul-effective."+s.Environment+".md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "+1 unavailable") {
+		t.Fatal("degraded catalog must still count ineligible skills")
 	}
 }
 
@@ -469,6 +567,37 @@ func TestComposeMountsWritableSkillsStore(t *testing.T) {
 	menv := RuntimeService(s, "", dir)["environment"].(M)
 	if menv["HUB_SKILLS_STORE"] != "/skills-store" {
 		t.Fatal("managed compose missing HUB_SKILLS_STORE")
+	}
+}
+
+// The post-publish rebuild contract: the runtime mounts the platform
+// staging dir read-only, the effective view a second time writable for
+// /v1/skill-apply's in-place rebuild, and the render snapshot read-only.
+func TestComposeMountsViewRebuildContract(t *testing.T) {
+	dir := t.TempDir()
+	s := validSettings()
+	mounts := map[string]M{}
+	for _, volume := range RuntimeService(s, "", dir)["volumes"].([]any) {
+		m, ok := volume.(M)
+		if !ok {
+			continue
+		}
+		mounts[fmt.Sprint(m["target"])] = m
+	}
+	if m := mounts["/skills-platform"]; m["read_only"] != true || m["source"] != filepath.ToSlash(GeneratedSkillsDir(dir)) {
+		t.Fatalf("platform staging mount missing or writable: %v", m)
+	}
+	if m := mounts["/skills-effective-rw"]; m["read_only"] != nil || m["source"] != filepath.ToSlash(GeneratedEffectiveSkillsDir(dir)) {
+		t.Fatalf("writable view bind missing: %v", m)
+	}
+	if m := mounts["/skills-meta"]; m["read_only"] != true || m["source"] != filepath.ToSlash(GeneratedSkillsMetaDir(dir)) {
+		t.Fatalf("view snapshot mount missing: %v", m)
+	}
+	env := RuntimeService(s, "", dir)["environment"].(M)
+	for _, key := range []string{"HUB_SKILLS_PLATFORM", "HUB_SKILLS_EFFECTIVE_RW", "HUB_SKILLS_META"} {
+		if env[key] == nil {
+			t.Fatalf("env %s missing from runtime contract", key)
+		}
 	}
 }
 

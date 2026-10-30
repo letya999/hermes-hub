@@ -60,6 +60,12 @@ func (m *Manager) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		m.wake(w, r)
 	case "/v1/self-env":
 		m.selfEnv(w, r)
+	case "/v1/skill-apply":
+		m.skillApply(w, r)
+	case "/v1/skill-creds":
+		m.skillCreds(w, r)
+	case "/v1/skill-ref-lease":
+		m.skillRefLease(w, r)
 	case "/v1/restart":
 		m.restartHTTP(w, r)
 	case "/v1/restart-request":
@@ -122,8 +128,8 @@ func (m *Manager) wake(w http.ResponseWriter, r *http.Request) {
 	}
 	runtime, err := m.Ensure(r.Context(), binding)
 	if err != nil {
-		log.Printf("wake failed for %s/%s: %v", binding.PrincipalID, binding.ContextID, err)
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		log.Printf("wake failed principal=%s context=%s class=%s", binding.PrincipalID, binding.ContextID, runtimeFailureClass(err))
+		writeRuntimeFailure(w, http.StatusServiceUnavailable, err)
 		return
 	}
 	// Wake is a warm-up peek, not a hold: the Ensure reference returns here so
@@ -169,7 +175,7 @@ func (m *Manager) restartHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	lease, runtime, err := m.Acquire(r.Context(), binding, LeaseLifecycle)
 	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "runtime unavailable"})
+		writeRuntimeFailure(w, http.StatusServiceUnavailable, err)
 		return
 	}
 	defer m.ReleaseLease(lease.ID)
@@ -299,7 +305,7 @@ func (m *Manager) restartRequestHTTP(w http.ResponseWriter, r *http.Request) {
 	m.mu.Unlock()
 	marker, err := http.NewRequestWithContext(r.Context(), http.MethodPost, address+"/v1/restart-request", nil)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime unavailable"})
+		writeRuntimeFailure(w, http.StatusBadGateway, err)
 		return
 	}
 	marker.Header.Set("Authorization", "Bearer "+auth)
@@ -308,7 +314,7 @@ func (m *Manager) restartRequestHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	response, err := m.cfg.HTTP.Do(marker)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime unavailable"})
+		writeRuntimeFailure(w, http.StatusBadGateway, err)
 		return
 	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64*1024))
@@ -388,7 +394,7 @@ func (m *Manager) artifactHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost, address+"/v1/artifact", bytes.NewReader(body))
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime unavailable"})
+		writeRuntimeFailure(w, http.StatusBadGateway, err)
 		return
 	}
 	if request.JobID != "" {
@@ -436,7 +442,7 @@ func (m *Manager) usageHTTP(w http.ResponseWriter, r *http.Request) {
 		lease, runtime, err = m.Acquire(r.Context(), binding, LeaseLifecycle)
 	}
 	if err != nil || runtime.Address == "" {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "runtime unavailable"})
+		writeRuntimeFailure(w, http.StatusServiceUnavailable, err)
 		return
 	}
 	if lease.ID != "" {
@@ -444,7 +450,7 @@ func (m *Manager) usageHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost, runtime.Address+"/v1/usage", bytes.NewReader(body))
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime unavailable"})
+		writeRuntimeFailure(w, http.StatusBadGateway, err)
 		return
 	}
 	if request.JobID != "" {
@@ -481,13 +487,13 @@ func (m *Manager) compactHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	lease, runtime, err := m.Acquire(r.Context(), binding, LeaseLifecycle)
 	if err != nil || runtime.Address == "" {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "runtime unavailable"})
+		writeRuntimeFailure(w, http.StatusServiceUnavailable, err)
 		return
 	}
 	defer m.ReleaseLease(lease.ID)
 	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost, runtime.Address+"/v1/compact", bytes.NewReader(body))
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime unavailable"})
+		writeRuntimeFailure(w, http.StatusBadGateway, err)
 		return
 	}
 	if request.JobID != "" {
@@ -524,13 +530,13 @@ func (m *Manager) goalHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	lease, runtime, err := m.Acquire(r.Context(), binding, LeaseLifecycle)
 	if err != nil || runtime.Address == "" {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "runtime unavailable"})
+		writeRuntimeFailure(w, http.StatusServiceUnavailable, err)
 		return
 	}
 	defer m.ReleaseLease(lease.ID)
 	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost, runtime.Address+"/v1/goal", bytes.NewReader(body))
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime unavailable"})
+		writeRuntimeFailure(w, http.StatusBadGateway, err)
 		return
 	}
 	m.forwardRuntimeRequest(w, r, upstream, binding)
@@ -543,7 +549,7 @@ func (m *Manager) forwardRuntimeRequest(w http.ResponseWriter, r *http.Request, 
 	upstream.Header.Set("Authorization", "Bearer "+binding.runtimeAuth)
 	response, err := m.cfg.HTTP.Do(upstream)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime unavailable"})
+		writeRuntimeFailure(w, http.StatusBadGateway, err)
 		return
 	}
 	defer response.Body.Close()

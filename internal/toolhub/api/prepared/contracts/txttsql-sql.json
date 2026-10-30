@@ -1,6 +1,6 @@
 {
   "id": "txttsql-sql",
-  "revision": 2,
+  "revision": 3,
   "title": "TXT-to-SQL database sources",
   "title_i18n": {
     "ru": "Источники базы данных TXT-to-SQL",

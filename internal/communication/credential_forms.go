@@ -13,7 +13,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -95,7 +94,7 @@ func (g *Gateway) handleCredentialFormRequest(w http.ResponseWriter, r *http.Req
 func (g *Gateway) formKeys(user User, service string, requested []string) ([]string, error) {
 	allowed := map[string]bool{}
 	if skill, ok := strings.CutPrefix(service, "skill:"); ok {
-		for _, name := range g.skillCredentialNames(skill) {
+		for _, name := range g.skillCredentialNames(user.ID, skill) {
 			allowed[name] = true
 		}
 		if len(allowed) == 0 {
@@ -152,27 +151,11 @@ func dedupeCredentialKeys(allowed map[string]bool, requested []string) ([]string
 }
 
 // skillCredentialNames returns the credential names a skill declares in the
-// mounted effective index — the only names a skill-scoped form may collect
+// caller's effective index — the only names a skill-scoped form may collect
 // (R8.2). Unknown/absent skills yield nothing.
-func (g *Gateway) skillCredentialNames(skill string) []string {
-	if g.config.SkillsDir == "" {
-		return nil
-	}
-	body, err := os.ReadFile(filepath.Join(g.config.SkillsDir, "index.json")) // #nosec G304 -- operator-mounted effective view
-	if err != nil {
-		return nil
-	}
-	var idx struct {
-		Skills []struct {
-			Name     string `json:"name"`
-			Requires struct {
-				Credentials []struct {
-					Name string `json:"name"`
-				} `json:"credentials"`
-			} `json:"requires"`
-		} `json:"skills"`
-	}
-	if json.Unmarshal(body, &idx) != nil {
+func (g *Gateway) skillCredentialNames(principalID, skill string) []string {
+	idx, _ := g.skillIndex(principalID)
+	if idx == nil {
 		return nil
 	}
 	for _, e := range idx.Skills {
@@ -383,10 +366,37 @@ func (g *Gateway) persistCredentialForm(r *http.Request, form credentialForm, va
 	return nil
 }
 
-// persistSkillCredentials lands a skill-scoped form's values under the owner
+// persistSkillCredentials lands a skill-scoped form's values in the owning
 // store's .state/credentials (R8.2); cells read them at exec time, so no
-// restart is needed. Managed deployments relay through /v1/skill-creds.
+// restart is needed. Managed deployments relay through /v1/skill-creds so the
+// owning runtime writes its own store; a standalone gateway writes its mount.
 func (g *Gateway) persistSkillCredentials(r *http.Request, form credentialForm, values map[string]string) error {
+	if g.config.RuntimeURL != "" {
+		payload, err := json.Marshal(hubruntime.SkillCredsRequest{
+			Envelope: form.Envelope, OrganizationID: g.config.OrganizationID,
+			UserID: form.OwnerID, ActorID: form.OwnerID, ScopeID: "user:" + form.OwnerID,
+			Skill: form.Skill, Values: values,
+		})
+		if err != nil {
+			return err
+		}
+		defer clear(payload)
+		request, err := http.NewRequestWithContext(r.Context(), http.MethodPost, strings.TrimRight(g.config.RuntimeURL, "/")+"/v1/skill-creds", bytes.NewReader(payload))
+		if err != nil {
+			return err
+		}
+		request.Header.Set("Authorization", "Bearer "+g.config.RuntimeAuth)
+		request.Header.Set("Content-Type", "application/json")
+		response, err := (&http.Client{Timeout: 15 * time.Second}).Do(request)
+		if err != nil {
+			return err
+		}
+		defer response.Body.Close()
+		if response.StatusCode/100 != 2 {
+			return errors.New("runtime rejected skill credentials")
+		}
+		return nil
+	}
 	if strings.TrimSpace(g.config.SkillsStore) == "" {
 		return errors.New("skill store unavailable")
 	}

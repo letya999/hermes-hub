@@ -21,6 +21,7 @@ func TestDevRebuildServiceBinaryMap(t *testing.T) {
 		"supervisor":          "hubctl",
 		"hermes-runtime":      "hub-runtime",
 		"model-relay":         "hub-runtime",
+		"egress-relay":        "hub-runtime",
 	} {
 		spec, ok := devService(service)
 		if !ok || spec.binary != binary {
@@ -53,6 +54,7 @@ func TestDevServiceRoleBases(t *testing.T) {
 		"workload-controller": "hermes-hub:0.4.0-dev-control",
 		"supervisor":          "hermes-hub:0.4.0-dev-control",
 		"hermes-runtime":      "hermes-hub:0.4.0-dev",
+		"egress-relay":        "hermes-hub:0.4.0-dev-core",
 	} {
 		spec, ok := devService(name)
 		if !ok {

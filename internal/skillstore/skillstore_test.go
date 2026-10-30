@@ -34,11 +34,36 @@ func TestPublishRejectsBrokenOrChainedRefs(t *testing.T) {
 		}
 	}
 	ok := Tree{
-		SkillFile:         File{Data: []byte(head + "[guide](references/a.md) and [docs](https://example.com) and [top](#top)")},
+		SkillFile:         File{Data: []byte(head + "[guide](references/a.md) and [sect](references/a.md#sec-1) and [docs](https://example.com) and [top](#top)")},
 		"references/a.md": File{Data: []byte("[ext](https://example.com) and [anchor](#a)")},
 	}
 	if _, err := s.Publish("demo", ok, IndexMeta{Author: "u", Source: "user"}); err != nil {
 		t.Fatalf("valid tree rejected: %v", err)
+	}
+}
+
+// Script files can't carry markdown links — a regex literal like `[\w+](x)`
+// in a .py helper is not a chained reference. Lint only inspects file types
+// where [text](target) is a real link (upstream anthropics skills trip this
+// on the git-install draft path).
+func TestCreateDraftSkipsLinkLintInScripts(t *testing.T) {
+	s := newStore(t, ScopeUser)
+	head := "---\nname: demo\ndescription: \"d\"\n---\n\n"
+	tree := Tree{
+		SkillFile:               File{Data: []byte(head + "[run](scripts/a.py)")},
+		"scripts/a.py":          File{Data: []byte("import re\nre.compile(r\"[\\\\w+](\\\\w+)\")\n")},
+		"scripts/b.sh":          File{Data: []byte("#!/bin/sh\necho \"[x](y.md)\"\n")},
+		"references/chained.md": File{Data: []byte("real markdown [next](references/c.md)")},
+		"references/c.md":       File{Data: []byte("leaf")},
+	}
+	if _, err := s.CreateDraft("demo", tree, DraftMeta{}); err == nil {
+		t.Fatal("chained markdown reference must still be rejected")
+	}
+	// Without the chained .md the script-shaped matches must not block.
+	delete(tree, "references/chained.md")
+	delete(tree, "references/c.md")
+	if _, err := s.CreateDraft("demo", tree, DraftMeta{}); err != nil {
+		t.Fatalf("script content rejected by markdown lint: %v", err)
 	}
 }
 
@@ -276,6 +301,134 @@ func TestDraftLifecycle(t *testing.T) {
 	}
 	if drafts, _ := s.Drafts(); len(drafts) != 0 {
 		t.Fatal("rejected draft still listed")
+	}
+}
+
+// A skill that leaves every source store must leave the effective view on
+// the next Build — an archived or deleted skill cannot stay readable at
+// /skills under its old directory.
+func TestBuildRemovesStaleViewDirs(t *testing.T) {
+	user := newStore(t, ScopeUser)
+	pub := func(name string) {
+		t.Helper()
+		tr := Tree{SkillFile: File{Data: []byte("---\nname: " + name + "\ndescription: \"d\"\n---\nbody")}}
+		if _, err := user.Publish(name, tr, IndexMeta{Author: "x", Source: "user"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pub("gone")
+	pub("kept")
+	dest := filepath.Join(t.TempDir(), "eff")
+	sources := []Source{{Name: "user", Dir: user.Root()}}
+	if _, err := Build(dest, sources); err != nil {
+		t.Fatal(err)
+	}
+	if err := user.Archive("gone", "test", "", "tester"); err != nil {
+		t.Fatal(err)
+	}
+	idx, err := Build(dest, sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "gone")); !os.IsNotExist(err) {
+		t.Fatal("archived skill directory must leave the effective view")
+	}
+	if _, err := os.Stat(filepath.Join(dest, "kept", SkillFile)); err != nil {
+		t.Fatal("kept skill missing from view")
+	}
+	for _, e := range idx.Skills {
+		if e.Name == "gone" {
+			t.Fatal("archived skill still in index")
+		}
+	}
+}
+
+// A republished skill must not keep files its new revision dropped —
+// the view mirrors the winning tree, not a union of every version.
+func TestBuildRemovesDroppedSkillFiles(t *testing.T) {
+	user := newStore(t, ScopeUser)
+	tr := Tree{
+		SkillFile:             File{Data: []byte("---\nname: s\ndescription: \"d\"\n---\nbody")},
+		"references/extra.md": File{Data: []byte("old")},
+	}
+	if _, err := user.Publish("s", tr, IndexMeta{Author: "x", Source: "user"}); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(t.TempDir(), "eff")
+	sources := []Source{{Name: "user", Dir: user.Root()}}
+	if _, err := Build(dest, sources); err != nil {
+		t.Fatal(err)
+	}
+	tr2 := Tree{SkillFile: File{Data: []byte("---\nname: s\ndescription: \"d2\"\n---\nbody")}}
+	if _, err := user.Publish("s", tr2, IndexMeta{Author: "x", Source: "user"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Build(dest, sources); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "s", "references", "extra.md")); !os.IsNotExist(err) {
+		t.Fatal("dropped file must leave the effective view")
+	}
+}
+
+// RebuildEffective is the post-publish path: /v1/skill-apply mutates the
+// mounted store and then refreshes the view in place using the render-time
+// capability snapshot — the agent's /skills tracks the store without a
+// respawn.
+func TestRebuildEffectiveRestampsView(t *testing.T) {
+	user := newStore(t, ScopeUser)
+	platform := newStore(t, ScopePlatform)
+	pub := func(s *Store, name, requires string) {
+		t.Helper()
+		body := "---\nname: " + name + "\ndescription: \"d\"\n" + requires + "---\nbody"
+		if _, err := s.Publish(name, Tree{SkillFile: File{Data: []byte(body)}}, IndexMeta{Author: "x", Source: "test"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pub(platform, "plat", "")
+	dest := filepath.Join(t.TempDir(), "eff")
+	metaDir := t.TempDir()
+	sources := []Source{{Name: "platform", Dir: platform.Root()}, {Name: "user", Dir: user.Root()}}
+	if _, err := Build(dest, sources); err != nil {
+		t.Fatal(err)
+	}
+	caps := Capabilities{
+		Toolsets:   map[string]bool{},
+		Connectors: map[string]bool{},
+		Platform:   "linux",
+		Registries: map[string]bool{},
+		SkillCreds: map[string]map[string]bool{},
+	}
+	if err := WriteViewMeta(metaDir, ViewMeta{Capabilities: caps}); err != nil {
+		t.Fatal(err)
+	}
+	// A publish lands after the initial build; the rebuild must surface it
+	// and stamp readiness from the snapshot.
+	pub(user, "fresh", "")
+	pub(user, "needs-term", "requires:\n  toolsets: [terminal]\n")
+	idx, err := RebuildEffective(dest, sources, metaDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]Entry{}
+	for _, e := range idx.Skills {
+		byName[e.Name] = e
+	}
+	if !byName["fresh"].Eligible {
+		t.Fatalf("new skill missing or ineligible: %+v", byName["fresh"])
+	}
+	if byName["needs-term"].Eligible || len(byName["needs-term"].Missing) == 0 {
+		t.Fatalf("readiness must be restamped: %+v", byName["needs-term"])
+	}
+	if _, err := os.Stat(filepath.Join(dest, "fresh", SkillFile)); err != nil {
+		t.Fatal("rebuilt view missing the new skill tree")
+	}
+	stored, err := ReadIndex(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Revision != idx.Revision {
+		t.Fatal("index.json on disk does not match the rebuilt index")
 	}
 }
 
@@ -766,6 +919,41 @@ metadata:
 	}
 }
 
+// R8.2: a credential may carry ref — the name of an already-configured
+// self-env key (e.g. the connector's PAT) that satisfies it without a
+// duplicated per-skill secret. A malformed ref is an author bug, not a
+// runtime surprise.
+func TestParseCredentialRef(t *testing.T) {
+	body := `---
+name: creds
+description: "d"
+requires:
+  credentials:
+    - {name: GH_PAT, ref: GITHUB_TOKEN}
+    - {name: BAD_REF, ref: lower-key}
+    - {name: OWN, ref: OWN}
+---`
+	m, _, err := ParseSkillMD("creds", []byte(body), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]EnvRequirement{}
+	for _, c := range m.Requires.Credentials {
+		got[c.Name] = c
+	}
+	if got["GH_PAT"].Ref != "GITHUB_TOKEN" {
+		t.Fatalf("ref not parsed: %+v", got["GH_PAT"])
+	}
+	// A self-reference is pointless but harmless — the stored value would
+	// satisfy it directly.
+	if got["OWN"].Ref != "OWN" {
+		t.Fatalf("self ref lost: %+v", got["OWN"])
+	}
+	if _, _, err := ParseSkillMD("creds", []byte(body), false); err == nil {
+		t.Fatal("malformed ref must fail strict parse")
+	}
+}
+
 // metadata.hermes.config declares non-secret per-user settings (R8.4):
 // object values carry description/default/prompt, bare strings fold to a
 // default-only spec.
@@ -880,6 +1068,10 @@ func TestReadinessCredentials(t *testing.T) {
 	must("hard-cred", "requires:\n  credentials:\n    - {name: API_KEY, hard: true}\n")
 	must("soft-cred", "requires:\n  credentials: [API_KEY]\n")
 	must("stored-cred", "requires:\n  credentials:\n    - {name: API_KEY, hard: true}\n")
+	// R8.2: a ref'd credential resolves against the space's configured
+	// self-env keys — the shared PAT pattern, no per-skill duplicate.
+	must("ref-cred", "requires:\n  credentials:\n    - {name: GH_PAT, hard: true, ref: GITHUB_TOKEN}\n")
+	must("ref-missing", "requires:\n  credentials:\n    - {name: GH_PAT, hard: true, ref: NO_SUCH_KEY}\n")
 
 	idx, err := Build(filepath.Join(t.TempDir(), "eff"), []Source{{Name: "user", Dir: user.Root()}})
 	if err != nil {
@@ -888,6 +1080,7 @@ func TestReadinessCredentials(t *testing.T) {
 	idx.ApplyReadiness(Capabilities{
 		Platform:   "linux",
 		SkillCreds: map[string]map[string]bool{"stored-cred": {"API_KEY": true}},
+		EnvKeys:    map[string]bool{"GITHUB_TOKEN": true},
 	})
 	by := map[string]Entry{}
 	for _, e := range idx.Skills {
@@ -901,6 +1094,12 @@ func TestReadinessCredentials(t *testing.T) {
 	}
 	if !by["stored-cred"].Eligible || len(by["stored-cred"].CredsMissing) != 0 {
 		t.Fatalf("stored cred must satisfy: %+v", by["stored-cred"])
+	}
+	if !by["ref-cred"].Eligible {
+		t.Fatalf("configured ref must satisfy the hard cred: %+v", by["ref-cred"])
+	}
+	if by["ref-missing"].Eligible || !slices.Contains(by["ref-missing"].Missing, "credential:GH_PAT") {
+		t.Fatalf("unconfigured ref must veto like any missing hard cred: %+v", by["ref-missing"])
 	}
 }
 
@@ -1484,6 +1683,26 @@ func TestMigrateLegacyOrg(t *testing.T) {
 	}
 	if names, _ := s.Names(); len(names) != 1 || names[0] != "runbook" {
 		t.Fatalf("org store: %v", names)
+	}
+}
+
+// SPEC-0084 R5.4: "undo restores the previous revision" — for a first
+// publish there is no previous revision, so the previous state is absence:
+// the protected card's undo posts base_revision="" and the store must
+// unpublish (archive) the live skill, not fail with a revision lookup.
+func TestRollbackEmptyRevisionUnpublishes(t *testing.T) {
+	s := mustStore(t, t.TempDir())
+	if _, err := s.Publish("demo", skillTree("v1"), IndexMeta{Author: "u"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Rollback("demo", ""); err != nil {
+		t.Fatalf("undo of a first publish must unpublish, got %v", err)
+	}
+	if names, _ := s.Names(); len(names) != 0 {
+		t.Fatalf("first-publish undo left the skill live: %v", names)
+	}
+	if err := s.Restore("demo"); err != nil {
+		t.Fatalf("archived undo target must stay restorable: %v", err)
 	}
 }
 

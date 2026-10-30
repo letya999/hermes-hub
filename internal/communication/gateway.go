@@ -135,6 +135,9 @@ func New(config Config) (*Gateway, error) {
 	}
 	restart := runtimeRestart(config.RuntimeURL, config.RuntimeAuth, config.Supervised)
 	g := &Gateway{config: config, users: users, slackUsers: slackUsers, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: restart, now: time.Now, transcriber: serviceTranscriber(config.STTURL, config.STTAuth, config.STTTimeout), synthesizer: synthesizer, forms: formRegistry{m: map[string]credentialForm{}}}
+	// Draft approval cards persist beside the spool so a restart does not
+	// murder pending links (nonce hashes only — the link stays the secret).
+	g.drafts.load(filepath.Join(config.SpoolDir, "skill-drafts.json"), g.now)
 	spool.JobDone = g.toolHubJobDone
 	spool.probeScript = g.runProbeScript
 	spool.resolveChannel = func(id string) routines.OccurrenceChannel { return g.channel(id) }
@@ -696,7 +699,8 @@ func (g *Gateway) dispatchChannelCommand(ctx context.Context, user User, task Ta
 		case "help":
 			return reply(commandHelp(lang))
 		default:
-			if idx := g.skillIndex(); idx != nil {
+			principalID := user.Envelope(sender).PrincipalID
+			if idx, dir := g.skillIndex(principalID); idx != nil {
 				e := skillEntry(idx, command)
 				if e == nil {
 					return reply(locale.T(lang, "chat.unknown-command", command, commandHelp(lang)))
@@ -704,7 +708,6 @@ func (g *Gateway) dispatchChannelCommand(ctx context.Context, user User, task Ta
 				if e.Hidden || !e.Eligible {
 					return reply(locale.T(lang, "chat.skill-unavailable", command))
 				}
-				principalID := user.Envelope(sender).PrincipalID
 				session := g.skillSessionFor(principalID, task.TaskID, idx)
 				g.skillMu.Lock()
 				already := session.activatedSet()[command]
@@ -716,7 +719,7 @@ func (g *Gateway) dispatchChannelCommand(ctx context.Context, user User, task Ta
 					return reply(locale.T(lang, "chat.skill-active", command))
 				}
 				args := strings.Fields(text)
-				expanded, err := g.skillActivationText(e, args[1:])
+				expanded, err := g.skillActivationText(dir, e, args[1:])
 				if err != nil {
 					return reply(locale.T(lang, "chat.skill-unavailable", command))
 				}

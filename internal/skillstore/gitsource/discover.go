@@ -34,6 +34,12 @@ func DiscoverSkills(tree skillstore.Tree, subdir string) []Candidate {
 		if len(out) >= maxDiscoverDirs {
 			break
 		}
+		// A root SKILL.md means the repo itself is one skill; "." is the
+		// sentinel path an install retry passes to select it.
+		if file == skillstore.SkillFile {
+			out = append(out, Candidate{Path: "."})
+			continue
+		}
 		if !strings.HasSuffix(file, "/SKILL.md") || (prefix != "" && !strings.HasPrefix(file, prefix)) {
 			continue
 		}

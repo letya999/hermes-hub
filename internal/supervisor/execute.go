@@ -300,9 +300,9 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 		// The job never reached a runtime: drop the record so a retry re-admits
 		// it instead of replaying a synthetic "uncertain" result. The cause is
 		// logged host-side; the caller only gets that the runtime is unavailable.
-		log.Printf("acquire failed for %s/%s: %v", binding.PrincipalID, binding.ContextID, err)
+		log.Printf("acquire failed principal=%s context=%s class=%s", binding.PrincipalID, binding.ContextID, runtimeFailureClass(err))
 		m.abandonJob(request)
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "runtime unavailable"})
+		writeRuntimeFailure(w, http.StatusServiceUnavailable, err)
 		return
 	}
 	if err := m.bindJobGeneration(request, runtime.Generation); err != nil {

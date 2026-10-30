@@ -434,6 +434,68 @@ func TestExecCellSkipsTarMetadataEntries(t *testing.T) {
 	}
 }
 
+// Vendored node_modules can outweigh the real skill payload — the
+// transport filters it while streaming the archive so a vendored repo
+// stays installable, and names the dropped paths for the import audit.
+func TestExecCellFiltersVendoredDuringExport(t *testing.T) {
+	mirror := filepath.Join(t.TempDir(), "97393e7e6b5ab8df.git")
+	if err := os.MkdirAll(mirror, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	w := tar.NewWriter(&buf)
+	for _, name := range []string{
+		"skills/html-book-bundler/SKILL.md",
+		"skills/html-book-bundler/node_modules/pkg/index.js",
+		"skills/html-book-bundler/node_modules/dep/dist/x.js",
+	} {
+		if err := w.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: 1, Typeflag: tar.TypeReg}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte("x")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	stub := &cliExecStub{mirror: mirror, tar: buf.Bytes(),
+		outs: map[string]string{"ls-remote": strings.Repeat("ab", 20) + "\trefs/heads/main\n"}}
+	cell := ExecCell{Exec: stub.run, Principal: "alice", ContextID: "alice"}
+	got, err := cell.Fetch(context.Background(), FetchRequest{Mirror: mirror, Repo: "https://github.com/o/r", Ref: "main", Path: "skills/html-book-bundler"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Tree) != 1 || got.Tree["skills/html-book-bundler/SKILL.md"].Data == nil {
+		t.Fatalf("vendored entries must not reach the tree: %v", got.Tree)
+	}
+	if len(got.Dropped) != 2 {
+		t.Fatalf("dropped entries must be named for the audit: %v", got.Dropped)
+	}
+	for _, d := range got.Dropped {
+		if strings.HasPrefix(d, "skills/") {
+			t.Fatalf("dropped names must be relative to the fetched path: %q", d)
+		}
+	}
+}
+
+// The archive is only a transport — vendored trees can outweigh the skill
+// quota — but when it exceeds its own bound the caller must see a quota
+// explanation, not a bare "invalid skill source" from a truncated parse.
+func TestExecCellOversizeArchiveReportsQuota(t *testing.T) {
+	mirror := filepath.Join(t.TempDir(), "97393e7e6b5ab8df.git")
+	if err := os.MkdirAll(mirror, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stub := &cliExecStub{mirror: mirror, tar: make([]byte, exportTransportMax+1),
+		outs: map[string]string{"ls-remote": strings.Repeat("ab", 20) + "\trefs/heads/main\n"}}
+	cell := ExecCell{Exec: stub.run, Principal: "alice", ContextID: "alice"}
+	_, err := cell.Fetch(context.Background(), FetchRequest{Mirror: mirror, Repo: "https://github.com/o/r", Ref: "main"})
+	if err == nil || !strings.Contains(err.Error(), "archive") {
+		t.Fatalf("oversize archive must report the transport bound, got %v", err)
+	}
+}
+
 func TestExecCellPropagatesGitFailure(t *testing.T) {
 	mirror := filepath.Join(t.TempDir(), "97393e7e6b5ab8df.git")
 	if err := os.MkdirAll(mirror, 0o755); err != nil {
