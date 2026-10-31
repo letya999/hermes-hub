@@ -204,12 +204,14 @@ func (o OrganizationSettings) Validate() error {
 
 func ReadOrganization(path string) (OrganizationSettings, error) {
 	var o OrganizationSettings
+	dir := ""
 	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		dir = path
 		scopePath, settingsPath := filepath.Join(path, "scope.yaml"), filepath.Join(path, "settings.yaml")
 		selected := scopePath
 		if scopeInfo, scopeErr := os.Stat(scopePath); scopeErr != nil {
 			selected = settingsPath
-		} else if settingsInfo, settingsErr := os.Stat(settingsPath); settingsErr == nil && settingsInfo.ModTime().After(scopeInfo.ModTime()) {
+		} else if settingsInfo, settingsErr := os.Stat(settingsPath); settingsErr == nil && !settingsInfo.ModTime().Before(scopeInfo.ModTime()) {
 			selected = settingsPath
 		}
 		path = selected
@@ -226,6 +228,17 @@ func ReadOrganization(path string) (OrganizationSettings, error) {
 	var extra any
 	if err = d.Decode(&extra); err != io.EOF {
 		return o, fmt.Errorf("one YAML document expected")
+	}
+	if dir != "" {
+		scope, scopeErr := ReadScope(dir)
+		if scopeErr == nil {
+			if (o.Kind != "" && o.Kind != scope.Kind) || (o.ID != "" && o.ID != scope.ID) {
+				return o, fmt.Errorf("organization identity mismatch")
+			}
+			o.Kind, o.ID = scope.Kind, scope.ID
+		} else if !errors.Is(scopeErr, os.ErrNotExist) {
+			return o, scopeErr
+		}
 	}
 	return o, o.Validate()
 }

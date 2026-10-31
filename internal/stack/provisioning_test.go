@@ -453,6 +453,12 @@ func TestOrgMemberCannotPullUnassignedProfile(t *testing.T) {
 	}
 	o.DefaultProfile = "staff"
 	saveYAML(t, filepath.Join(orgDir, "settings.yaml"), o)
+	stamp := time.Unix(1_700_000_000, 0)
+	for _, name := range []string{"scope.yaml", "settings.yaml"} {
+		if err := os.Chtimes(filepath.Join(orgDir, name), stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
+	}
 	writeProfileFile(t, filepath.Join(orgDir, "profiles", "staff"), "skills.yaml", "skills: [public-doc]\n")
 	writeProfileFile(t, filepath.Join(orgDir, "profiles", "admin"), "skills.yaml", "skills: [admin-console]\n")
 

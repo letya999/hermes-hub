@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDryRunAndApplyKeepSourcesAndMoveRuntimeState(t *testing.T) {
@@ -199,6 +200,12 @@ func TestActivateExistingOrganizationScope(t *testing.T) {
 	}
 	if err := activateScope(dir, dir, stack.OrganizationScope, "acme", "", ""); err != nil {
 		t.Fatal(err)
+	}
+	stamp := time.Unix(1_700_000_000, 0)
+	for _, name := range []string{"scope.yaml", "settings.yaml"} {
+		if err := os.Chtimes(filepath.Join(dir, name), stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
 	}
 	organization, err := stack.ReadOrganization(dir)
 	if err != nil || organization.Kind != stack.OrganizationScope || organization.ID != "acme" {
