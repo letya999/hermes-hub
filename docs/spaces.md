@@ -172,8 +172,11 @@ docs/tools.md; they are not shared personal-memory stores.
   assignment proposals — then closes any finished week/month/year whose
   summary is missing. With `knowledge_ui` on, one pinned
   `open-knowledge` container mounts the vault at `/data` on the
-  space-private network only (no published host port; the loopback edge
-  is a later stage). The runtime reaches it as the
+  space-private network; `ui_port` in `agent.yaml` is the only host
+  edge — a single loopback publish `127.0.0.1:<ui_port>` → 8080
+  (loopback-only `ui_bind`, no public path), for the owner reaching
+  the unauthenticated editor over `ssh -L` (SPEC-0085 R10). The runtime
+  reaches it as the
   `mcp__open_knowledge__*` read-only MCP surface — eight verified read
   verbs via `tools.include`, write verbs never registered (SPEC-0085
   R9). Edits landing outside the governed writer — the

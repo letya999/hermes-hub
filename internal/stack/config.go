@@ -80,6 +80,17 @@ type Settings struct {
 	OAuthPort           int    `yaml:"oauth_port"`
 	BrowserPort         int    `yaml:"browser_port"`
 	SlackEventsPort     int    `yaml:"slack_events_port,omitempty"`
+	// UIPort opts the knowledge_ui edge into a loopback publish
+	// (127.0.0.1:<ui_port> → OK's 8080). Zero keeps the container
+	// network-only — no host reachability at all.
+	UIPort int `yaml:"ui_port,omitempty"`
+	// UIBind is the publish address — loopback only; anything wider would
+	// expose the unauthenticated editor to the LAN.
+	UIBind string `yaml:"ui_bind,omitempty"`
+	// UIExpose is reserved for M18 — the named edge service that will mint
+	// one-time ?t= links. Setting it today is an honest validation error,
+	// so the key can never silently half-work before its contract lands.
+	UIExpose string `yaml:"ui_expose,omitempty"`
 	// Infra marks the space that renders the shared control plane (ToolHub,
 	// Credential Broker, workload-controller, cliproxy, communication-hub).
 	// Exactly one deployed space must render it; secondary spaces set
@@ -477,11 +488,30 @@ func (s Settings) Validate() error {
 	if s.BrowserPort < 1024 || s.BrowserPort > 65535 || s.OAuthPort > 65535 || s.BrowserPort == s.OAuthPort {
 		return fmt.Errorf("invalid or colliding host ports")
 	}
+	// R10.1: the unauthenticated OK editor may only ever bind loopback —
+	// a wider address is a hard validation error, not a warning.
+	if s.UIBind != "" && s.UIBind != "127.0.0.1" && s.UIBind != "::1" {
+		return fmt.Errorf("ui_bind must be loopback (127.0.0.1 or ::1), got %q", s.UIBind)
+	}
+	slackPort := 0
 	if s.Has("slack_app") {
-		port := slackEventsHostPort(s)
-		if port < 1024 || port > 65535 || port == s.BrowserPort || port == s.OAuthPort {
+		slackPort = slackEventsHostPort(s)
+		if slackPort < 1024 || slackPort > 65535 || slackPort == s.BrowserPort || slackPort == s.OAuthPort {
 			return fmt.Errorf("invalid or colliding host ports")
 		}
+	}
+	if s.UIPort > 0 {
+		if !s.Has("knowledge_ui") {
+			return fmt.Errorf("ui_port requires knowledge_ui")
+		}
+		if s.UIPort < 1024 || s.UIPort > 65535 || s.UIPort == s.BrowserPort || s.UIPort == s.OAuthPort || s.UIPort == slackPort {
+			return fmt.Errorf("invalid or colliding host ports")
+		}
+	}
+	// R10.3: ui_expose is the reserved M18 hook — it must fail honestly
+	// until the one-time-link edge contract is decided there.
+	if s.UIExpose != "" {
+		return fmt.Errorf("ui_expose is reserved for M18 and not implemented")
 	}
 	return nil
 }

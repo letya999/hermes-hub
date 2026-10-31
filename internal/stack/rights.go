@@ -29,9 +29,14 @@ var settingsFieldRights = map[string]string{
 	"OAuthPort":           "",
 	"BrowserPort":         "",
 	"SlackEventsPort":     "",
-	"Infra":               "",
-	"Diagnostics":         "",
-	"SpaceDir":            "",
+	// R10.1/R10.3: the UI host edge is a publish knob like the other ports —
+	// deployment state, not a grant; ui_expose is inert until M18 lands it.
+	"UIPort":      "",
+	"UIBind":      "",
+	"UIExpose":    "",
+	"Infra":       "",
+	"Diagnostics": "",
+	"SpaceDir":    "",
 
 	"CapabilityMode":        "CapabilityMode",
 	"CapabilityProfileID":   "CapabilityProfileID",

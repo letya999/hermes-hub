@@ -60,6 +60,9 @@ func SeedInventory() []ToolSection {
 		// memory_vault is a hub-side subsystem flag, not an agent toolset;
 		// it still opts in through the same wish + grant posture.
 		native("memory_vault", EffectRead),
+		// knowledge_ui is the same hub-side flag: wish + grant admit it; the
+		// section governs the read-only MCP projection (SPEC-0085 R9/R10).
+		native("knowledge_ui", EffectRead),
 		// Hub-owned MCP surfaces rendered into the effective config.
 		hub(SectionHubTools, EffectMutate),
 		hub(SectionHubBrowser, EffectMutate),

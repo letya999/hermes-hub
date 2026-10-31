@@ -69,6 +69,23 @@ gains sub-tree write scoping. The container env gained `PORT=8080`,
 non-loopback bind for space-net reachability) and `HOME=/tmp` (image
 HOME is on the read-only rootfs); `skip_preflight` keeps a down OK
 from stalling the runtime.
+Amended (M20.10, issue #306): R10 mechanics recorded — `ui_port` in
+`agent.yaml` renders the single publish `<ui_bind>:<ui_port>:8080` plus
+`OK_EXTERNAL_URL=http://localhost:<ui_port>`; `ui_bind` defaults to
+`127.0.0.1`, accepts `::1` (rendered `[::1]:<port>:8080`) and rejects
+anything wider as a hard `Validate` error. `ui_port` validates like the
+other host ports (1024–65535, no collision with browser/oauth/slack
+events) and refuses to render without `knowledge_ui`. R10.2's "hubctl
+status" is `hubctl doctor` — there is no separate status command;
+`KnowledgeDoctor` prints the edge, the `ssh -L` hint and a real TCP
+reachability probe (occupied port = listening; the probe cannot tell the
+editor from a squatter, but a true conflict already fails at compose
+publish). `ui_expose` is the reserved M18 key — set today it fails
+honestly at `Validate`; the M18 edge service decides the one-time `?t=`
+link auth/expiry contract there. Carry fix: `native:knowledge_ui` was
+missing from `SeedInventory` — a real space's wish denied as "section
+not in the tool inventory" and could never be granted or
+migration-preserved; it is now seeded deny-default like `memory_vault`.
 Requirements: [SPEC-0085](../../specs/active/SPEC-0085-memory-vault-openknowledge.md).
 Research: `.work/in-progress/CHG-0204-vault-layout/research.md`.
 

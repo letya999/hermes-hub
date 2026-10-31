@@ -405,6 +405,20 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// HOME lands on tmpfs: the image's /state/home sits on the read-only
 		// rootfs, while every durable OK path is project-local .ok/ under /data.
 		okService["environment"] = M{"OK_ALLOW_EXTERNAL": "1", "OK_BIND": "0.0.0.0", "PORT": "8080", "HOME": "/tmp"}
+		// R10.1: ui_port opts into one loopback publish — the only host
+		// reachability the unauthenticated editor ever gets; the owner
+		// tunnels in over ssh -L. Unset keeps the network-only stance.
+		if s.UIPort > 0 {
+			bind := s.UIBind
+			if bind == "" {
+				bind = "127.0.0.1"
+			}
+			if strings.Contains(bind, ":") {
+				bind = "[" + bind + "]"
+			}
+			okService["ports"] = []string{fmt.Sprintf("%s:%d:8080", bind, s.UIPort)}
+			okService["environment"].(M)["OK_EXTERNAL_URL"] = fmt.Sprintf("http://localhost:%d", s.UIPort)
+		}
 		if s.CapabilityMode == "managed" {
 			okService["networks"] = M{managedAgentNetwork(s): M{}}
 		} else {

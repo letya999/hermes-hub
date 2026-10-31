@@ -2,6 +2,7 @@ package stack
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -170,6 +171,21 @@ func TestExternalWritePolicyDocumented(t *testing.T) {
 	for _, want := range []string{"stale save", ".ok/local/conflicts.json", "silent overwrite"} {
 		if !strings.Contains(string(data), want) {
 			t.Errorf("operations.md lost the external-write policy clause %q", want)
+		}
+	}
+}
+
+// R10.2/R10.3: the runbook must document the loopback edge — the ssh tunnel
+// form, the no-public-exposure default, and the reserved ui_expose key whose
+// only contract today is the M18 one-time ?t= link design note.
+func TestM18HookDocumented(t *testing.T) {
+	data, err := os.ReadFile("../../docs/operations.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"ui_port", "ssh -L", "ui_bind", "ui_expose", "M18", "?t="} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("operations.md lost the UI-edge/M18 clause %q", want)
 		}
 	}
 }
@@ -343,6 +359,145 @@ func TestOKPathConfined(t *testing.T) {
 		if !strings.HasSuffix(filepath.ToSlash(fmt.Sprint(vol["source"])), "/vault") {
 			t.Fatalf("OK project root is not the space vault: %v", vol)
 		}
+	}
+}
+
+// R10.1: an opted-in ui_port publishes exactly one loopback binding and the
+// matching external URL — never a non-loopback address, never a second port.
+func TestUIPortLoopbackOnly(t *testing.T) {
+	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
+		Model: "test", ModelURL: "http://model.invalid/v1", UIPort: 8443,
+		Tools: testTools("knowledge_ui", "memory_vault"), Ingress: testIngress()}
+	svc := Compose(s, t.TempDir(), t.TempDir())["services"].(M)["open-knowledge"].(M)
+	ports, _ := svc["ports"].([]string)
+	if len(ports) != 1 || ports[0] != "127.0.0.1:8443:8080" {
+		t.Fatalf("ui_port must publish exactly 127.0.0.1:<ui_port>:8080: %v", ports)
+	}
+	env := svc["environment"].(M)
+	if env["OK_EXTERNAL_URL"] != "http://localhost:8443" {
+		t.Fatalf("OK_EXTERNAL_URL must be the owner-facing loopback URL: %v", env)
+	}
+
+	// An explicit ::1 bind publishes on IPv6 loopback — the only other
+	// address validation admits, so it must render rather than default.
+	s.UIBind = "::1"
+	svc = Compose(s, t.TempDir(), t.TempDir())["services"].(M)["open-knowledge"].(M)
+	ports, _ = svc["ports"].([]string)
+	if len(ports) != 1 || ports[0] != "[::1]:8443:8080" {
+		t.Fatalf("ui_bind ::1 must publish [::1]:<ui_port>:8080: %v", ports)
+	}
+}
+
+// R10.1/red-team: a non-loopback bind would put the unauthenticated editor
+// on the LAN — every spelling of a wider bind is a config validation error.
+func TestUIPortRejectsNonLoopback(t *testing.T) {
+	for _, bind := range []string{"0.0.0.0", "192.168.1.10", "example.internal", "localhost"} {
+		s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
+			Model: "test", ModelURL: "http://model.invalid/v1", UIPort: 8443, UIBind: bind,
+			Tools: testTools("knowledge_ui", "memory_vault"), Ingress: testIngress()}
+		if err := s.Validate(); err == nil {
+			t.Fatalf("ui_bind %q must be refused — only loopback may publish", bind)
+		}
+	}
+}
+
+// R10.1: ui_port is diagnosed exactly like the other host ports — out of
+// range, colliding with browser/oauth/slack events ports, or declared
+// without the feature it publishes are all validation errors, never a
+// silent remap.
+func TestUIPortCollisionDiagnostic(t *testing.T) {
+	base := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
+		Model: "test", ModelURL: "http://model.invalid/v1",
+		Tools: testTools("knowledge_ui", "memory_vault"), Ingress: testIngress()}
+	for _, port := range []int{80, 1023, 70000, 6080, 8000} {
+		s := base
+		s.UIPort = port
+		if err := s.Validate(); err == nil {
+			t.Fatalf("ui_port %d must be refused (range/collision)", port)
+		}
+	}
+	s := base
+	s.UIPort = 8443
+	if err := s.Validate(); err != nil {
+		t.Fatalf("a free ui_port must validate: %v", err)
+	}
+	s.Tools = testTools("memory_vault")
+	if err := s.Validate(); err == nil {
+		t.Fatal("ui_port without knowledge_ui must be refused — nothing would publish it")
+	}
+}
+
+// R10.3: ui_expose is the reserved M18 edge key — setting it fails honestly
+// today rather than silently doing nothing, and when M18 lands the same key
+// drives the named edge service / one-time ?t= link without a vocabulary
+// change.
+func TestUIExposeReservedForM18(t *testing.T) {
+	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
+		Model: "test", ModelURL: "http://model.invalid/v1", UIPort: 8443, UIExpose: "named-edge",
+		Tools: testTools("knowledge_ui", "memory_vault"), Ingress: testIngress()}
+	if err := s.Validate(); err == nil || !strings.Contains(err.Error(), "M18") {
+		t.Fatalf("ui_expose must fail as reserved-for-M18, got %v", err)
+	}
+}
+
+// R9/R10: native:knowledge_ui must be an inventoried deny-default section —
+// without it a real space's tools wish evaluates to "section not in the tool
+// inventory" and can never be granted, and the first-Read migration seed has
+// nothing to preserve.
+func TestKnowledgeUIInventoried(t *testing.T) {
+	for _, s := range api.SeedInventory() {
+		if s.ID == "native:knowledge_ui" {
+			if s.Default != api.RuleDeny {
+				t.Fatalf("native:knowledge_ui must be deny-default like every pseudo entry, got %s", s.Default)
+			}
+			return
+		}
+	}
+	t.Fatal("native:knowledge_ui missing from SeedInventory — the wish can never be admitted")
+}
+
+// R10.4/R10.2: doctor is the status surface — it must name the published
+// edge (bind, port, tunnel hint), probe loopback reachability honestly, and
+// refuse to bless a non-loopback bind even if one ever slipped past Validate.
+func TestDoctorUIPortChecks(t *testing.T) {
+	s := Settings{Tools: testTools("knowledge_ui", "memory_vault")}
+	if lines := KnowledgeDoctor(s); lines == nil || !strings.Contains(lines[0], "network-only") {
+		t.Fatalf("ui_port unset must report network-only: %v", lines)
+	}
+	s.UIBind = "0.0.0.0"
+	s.UIPort = 8443
+	if lines := KnowledgeDoctor(s); lines == nil || !strings.Contains(lines[0], "not loopback") {
+		t.Fatalf("a non-loopback bind must be refused, not probed: %v", lines)
+	}
+	s.UIBind = ""
+	lines := KnowledgeDoctor(s)
+	if len(lines) == 0 || !strings.Contains(lines[0], "localhost:8443") {
+		t.Fatalf("status must show the ui_port edge: %v", lines)
+	}
+	down := lines[len(lines)-1]
+	if !strings.Contains(down, "nothing listening") {
+		t.Fatalf("a free port must report the stack down, not imply health: %v", lines)
+	}
+}
+
+// The reachability probe is real: something already bound on the declared
+// port flips the last line to "listening" — TCP-level honesty, since a
+// squatter is indistinguishable from the editor here (a true conflict fails
+// loudly at compose publish). Feature off must report nothing at all.
+func TestDoctorUIPortReachable(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("cannot bind loopback: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+	port := ln.Addr().(*net.TCPAddr).Port
+	s := Settings{Tools: testTools("knowledge_ui", "memory_vault"), UIPort: port}
+	lines := KnowledgeDoctor(s)
+	if last := lines[len(lines)-1]; !strings.Contains(last, "listening") {
+		t.Fatalf("an occupied port must report listening: %v", lines)
+	}
+	if off := KnowledgeDoctor(Settings{UIPort: port}); off != nil {
+		t.Fatalf("feature off must be silent: %v", off)
 	}
 }
 

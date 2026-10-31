@@ -606,6 +606,9 @@ func run(ctx context.Context, args []string) error {
 			for _, line := range memoryLines {
 				fmt.Println(line)
 			}
+			for _, line := range stack.KnowledgeDoctor(s) {
+				fmt.Println(line)
+			}
 			fmt.Println("Configuration valid. OAuth sessions, provider permissions and Docker runtime require live verification.")
 			return nil
 		}

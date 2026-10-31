@@ -395,7 +395,20 @@ recoverable.
 
 With `knowledge_ui` on (requires `memory_vault`), one pinned `open-knowledge`
 container serves the OpenKnowledge editor over the vault — private space
-network only, no published host port (the loopback edge is a later stage).
+network only by default, no host reachability at all. Setting `ui_port` in
+`agent.yaml` opts into exactly one host publish, `127.0.0.1:<ui_port>` → the
+container's 8080 (the editor is unauthenticated, so loopback is the only
+safe edge). Reach it from another machine by tunneling in:
+`ssh -L <ui_port>:localhost:<ui_port> <host>`. `ui_bind` pins the publish
+address and is loopback-only (`127.0.0.1` or `::1`); a wider bind is a hard
+validation error, never a warning — there is no public exposure path.
+`ui_port` joins the other host ports in validation (1024–65535, no collision
+with browser/oauth/slack events ports) and requires `knowledge_ui`;
+`hubctl doctor` reports the edge, the tunnel hint and whether something is
+already listening. `ui_expose` is the reserved M18 hook: setting it fails
+honestly until the M18 edge service lands, which is where a shareable
+one-time `?t=` UI link (auth + expiry decided there) would hang off — never
+a silent partial exposure.
 Coexistence contract with hub writes: when the governed writer or rollup
 lands a commit while a document is open in the editor, OpenKnowledge keeps
 both versions — a stale save is *rejected* and retained under
