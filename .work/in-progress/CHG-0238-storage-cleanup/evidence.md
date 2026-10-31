@@ -26,6 +26,9 @@ keys, message bodies or audit records are copied into the repository.
   binary and 72 stale E2E files: 73 files / 53,701,192 bytes. One
   `settings-baseline` recovery marker was retained. The stopped gateway
   restarted and the spool plan then reported 4,225 files / 4,598,160 bytes.
+- CHG-0240 subsequently reset the local dev spool volume directly with Docker
+  under the owner's explicit loss-accepting instruction. The new volume has
+  three bootstrap files / 42 bytes; the gateway was rebuilt and restarted.
 - The oversized local ToolHub audit was recovered by CHG-0239: all 181,794
   records are preserved in a verified compressed archive and the active
   bounded ledger accepts new writes. The original uncompressed duplicate was

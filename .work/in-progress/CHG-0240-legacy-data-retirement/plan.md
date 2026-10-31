@@ -18,6 +18,10 @@ Date: 2026-10-31. Branch: `chore/storage-reliability-integration`.
    contracts, so automatic re-anchoring is not an available migration.
 5. Verify the active dev space with doctor/render, main local mock E2E and
    repository checks. Record remaining policy and migration limits exactly.
+6. Under the owner's explicit loss-accepting follow-up, delete only exact
+   unused Hermes Docker volumes after comparing all container mounts and
+   running Compose declarations. Reset the active local gateway spool volume
+   only after checking empty live queues; restore its dev image and endpoint.
 
 ## Boundaries
 

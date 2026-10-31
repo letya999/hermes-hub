@@ -45,3 +45,22 @@ credential dictionary names, file names from private storage or audit records.
 - Post-cleanup local ToolHub, Communication Hub and Broker containers and
   both dedicated owner proxies remained running. ToolHub and Communication
   Hub HTTP endpoints responded after the active config render.
+- Direct Docker inventory found 137 total volumes, 127 Hermes-named. Mounts
+  were checked across all 22 containers, including stopped containers; live
+  Compose volume declarations were also compared. A digest-bound exact-name
+  removal deleted 106 unused, unreferenced Hermes volumes, then three more
+  unused legacy Broker/ToolHub volumes. No broad volume/system prune was used.
+  Re-inventory found zero unused Hermes volumes; 28 Docker volumes remained
+  overall. Attached current Broker state/recovery and support volumes stayed.
+- Before the active gateway reset, pending/running jobs and pending/sending
+  deliveries were all zero. The exact `/data` volume attached to only the
+  local dev Communication Hub was checked by name, then its container was
+  stopped/removed and the volume deleted directly via Docker. `hubctl
+  dev-rebuild` only restored the required dev service image and Compose
+  configuration. The new volume contained three bootstrap files / 42 bytes
+  instead of 4,225 files / 4,598,160 bytes. The running image matched the
+  rebuilt dev tag, the authenticated tasks route returned 401 without a
+  bearer, and the local ToolHub and Broker remained up.
+- The 101 auto-review-blocked `spaces/local` files are host bind data, not
+  Docker volumes. Volume deletion cannot remove them. No Docker bind-mount
+  workaround was used for that rejected action.

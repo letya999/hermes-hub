@@ -4,7 +4,7 @@ title: Local legacy data retirement
 status: in_progress
 branch: chore/storage-reliability-integration
 updated: "2026-10-31"
-phase: verification
+phase: volume_reset_complete_policy_and_credentials_remaining
 adr: ADR-0088
 spec: SPEC-0088
 depends_on: [CHG-0238, CHG-0239]
@@ -14,6 +14,9 @@ validation:
   legacy_settings: migrated_22_retained_1
   active_space_doctor: passed
   active_space_render: passed
+  unused_docker_volumes: removed_109_verified_zero
+  active_gateway_spool_reset: passed_3_files_42_bytes
+  gateway_dev_image_and_http: passed
   e2e_core_mock: 122_pass_29_blocked_0_fail
   just_check: failed_windows_fork_exec
   sequential_gate: passed_86_23_percent
