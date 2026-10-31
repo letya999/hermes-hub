@@ -1,0 +1,20 @@
+schema: 1
+change: CHG-0238
+title: Reduce accumulated local storage safely
+status: in_progress
+branch: chore/storage-reliability-integration
+updated: "2026-10-31"
+phase: final_verification
+adr: ADR-0088
+spec: SPEC-0088
+depends_on: [CHG-0237]
+validation:
+  inventory: passed_with_policy_block
+  e2e_core_mock: 122_pass_29_blocked_0_fail
+  bounded_cli_cleanup: passed
+  local_dev_acceptance: passed
+  race: passed
+  just_check: passed_86_27_percent
+  credential_broker_check: passed_linux_90_3_percent
+  docker_reminder_contract: passed
+evidence: [evidence.md]

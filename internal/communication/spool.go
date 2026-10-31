@@ -665,10 +665,7 @@ func (s *Spool) compactOccurrencesLocked(now time.Time, retention time.Duration)
 		}
 	}
 	receipts, err := os.ReadDir(receiptDir)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
+	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	for _, entry := range receipts {
@@ -684,6 +681,42 @@ func (s *Spool) compactOccurrencesLocked(now time.Time, retention time.Duration)
 			if err := s.removeOwned(path); err != nil {
 				return err
 			}
+		}
+	}
+	// A settled occurrence no longer reads its crash-replay sidecars.
+	for _, entry := range entries {
+		if !entry.Type().IsRegular() {
+			continue
+		}
+		name := entry.Name()
+		for _, suffix := range []string{".probe-result", ".digest-result", ".script-output"} {
+			if !strings.HasSuffix(name, suffix) {
+				continue
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			if !info.ModTime().Before(now.Add(-retention)) {
+				break
+			}
+			base := strings.TrimSuffix(name, suffix) + ".json"
+			_, err = os.Lstat(filepath.Join(dir, base))
+			if err == nil {
+				break
+			}
+			if err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			if _, err := os.Lstat(filepath.Join(dir, "quarantine", base)); err == nil {
+				break
+			} else if !os.IsNotExist(err) {
+				return err
+			}
+			if err := s.removeOwned(filepath.Join(dir, name)); err != nil {
+				return err
+			}
+			break
 		}
 	}
 	return nil

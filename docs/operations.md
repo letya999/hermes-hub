@@ -161,12 +161,16 @@ logical bytes, file counts, byte/file limits, completeness and a safe status
 word per storage owner (`communication-spool`, `toolhub-state`); paths, object
 names and raw errors never leave the process. `hubctl storage cleanup --spool
 <dir> [--retention 72h]` is a dry-run by default: it emits a digest-bound plan
-(scope, aggregate files/bytes, `sha256:` digest — never the candidate list
-itself) over owner-regular files, rejecting planted symlinks. `--apply
+(scope, aggregate files/bytes, `sha256:` digest — never file names)
+over the owned tree, rejecting planted symlinks. `--apply
 --digest <sha256:...>` takes the spool writer lock, recomputes the plan and
 refuses a stale or foreign digest before running the bounded terminal
 compaction — aged done/failed records move to the archive, live
-pending/running state and open approvals are never touched.
+pending/running state and open approvals are never touched. Offline apply
+also uses the gateway's configured terminal-file, archive-byte and usage-entry
+limits, so overflow is archived even when its file mtime is recent.
+Orphaned routine crash-replay sidecars older than retention are removed only
+when their live occurrence is absent; quarantined occurrences keep theirs.
 
 ## Operator mutations require `--confirm`
 
@@ -573,9 +577,10 @@ Canary: `HUB_CANARY_INTERVAL` runs a periodic end-to-end mock-conversation
 probe requiring exactly one `file_list` receipt + delivered reply; journal
 `canary.jsonl` (1000 lines), one notice per new failure class + one recovery.
 
-Spool retention: hourly compaction past `HUB_SPOOL_RETENTION` (336 h) —
+Spool retention: hourly compaction past `HUB_SPOOL_RETENTION` (default 72 h) —
 live work, open approvals and in-flight receipts never removed. `occurrences`
-archive holds 48 h detail + dedup receipt for the retention period; catch-up
+archive holds 48 h detail + dedup receipt for the retention period; old
+orphaned probe/digest/script receipts are cleaned after retention. Catch-up
 ≤1 h, ≤16 occurrences per tick; malformed → `occurrences/quarantine`
 (investigate before clearing). `HUB_MOCK_DIR` keeps mock/e2e capture out of
 the production spool. Never delete uncertain mappings/leases to force a

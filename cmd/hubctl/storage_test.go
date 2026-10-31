@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -199,6 +200,41 @@ func TestCleanupApplyArchivesPlannedRecords(t *testing.T) {
 	entries, err := os.ReadDir(filepath.Join(spoolDir, "archive"))
 	if err != nil || len(entries) == 0 {
 		t.Fatalf("terminal record did not reach the archive bundle: %v", err)
+	}
+}
+
+func TestCleanupApplyEnforcesGatewayFileLimit(t *testing.T) {
+	t.Setenv("HUB_SPOOL_MAX_FILES", "2")
+	dir := t.TempDir()
+	if _, err := communication.OpenSpool(dir); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 3 {
+		path := filepath.Join(dir, "done", fmt.Sprintf("job-%d.json", i))
+		if err := os.WriteFile(path, []byte(`{"job_id":"done"}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var out bytes.Buffer
+	if err := runStorageCleanup(&out, dir, false, "", 72*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	var plan struct {
+		Digest string `json:"digest"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &plan); err != nil {
+		t.Fatal(err)
+	}
+	if err := runStorageCleanup(io.Discard, dir, true, plan.Digest, 72*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	files, err := os.ReadDir(filepath.Join(dir, "done"))
+	if err != nil || len(files) != 2 {
+		t.Fatalf("terminal files after bounded cleanup = %d, error = %v", len(files), err)
+	}
+	archive, err := os.ReadDir(filepath.Join(dir, "archive"))
+	if err != nil || len(archive) == 0 {
+		t.Fatalf("overflow was not archived: %v", err)
 	}
 }
 

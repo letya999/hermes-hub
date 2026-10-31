@@ -97,5 +97,5 @@ func runStorageCleanup(w io.Writer, spoolDir string, apply bool, planDigest stri
 	if fresh.Digest != planDigest {
 		return communication.ErrStalePlan
 	}
-	return spool.Compact(time.Now(), retention, communication.CompactLimits{})
+	return spool.Compact(time.Now(), retention, communication.CompactLimitsFromEnv())
 }

@@ -1,6 +1,6 @@
 ---
 description: Test pyramid and evidence rules — unit/race, contract probes, Docker gates, mock channels, live acceptance.
-last_verified: 2026-10-26
+last_verified: 2026-10-31
 ---
 
 # Testing
@@ -58,8 +58,8 @@ execution; warm-path checks keep tighter bounds.
 
 ## E2E runner
 
-`cmd/e2e` is the sequential capability runner (147 scenarios; `--scope
-core` = the 116 local/agent/credential-free cases, `--scope all` includes
+`cmd/e2e` is the sequential capability runner (182 scenarios; `--scope
+core` = the 151 local/agent/credential-free cases, `--scope all` includes
 31 account-dependent ones the owner opted out). A scenario definition is
 not evidence of a pass.
 

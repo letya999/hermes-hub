@@ -16,6 +16,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0238](in-progress/CHG-0238-storage-cleanup/plan.md) | Safe local storage cleanup: inventory, bounded offline spool maintenance and e2e acceptance in progress |
 | [CHG-0234](in-progress/CHG-0234-conversation-parallel-lanes/plan.md) | Parallel session lanes per context: conversation-keyed inFlight, fairness per context, per-context cap below upstream Hermes cap; implementing |
 | [CHG-0235](in-progress/CHG-0235-localized-user-strings/plan.md) | Localize last hardcoded user-facing strings: grant page, viewer title, /usage placeholder, hosting bootstrap + AGENTS.md rule; validating |
 | [CHG-0231](in-progress/CHG-0231-mcp-onboarding-repair/plan.md) | MCP onboarding: immutable reviewed contract revisions, digest gate, failed form cleanup and explicit bind conflicts; validating |

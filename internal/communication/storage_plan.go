@@ -20,7 +20,7 @@ var ErrStalePlan = errors.New("stale storage plan")
 
 // StoragePlan is the dry-run view of terminal compaction: a digest binding
 // the owner scope and every owned entry apply would see. It reports counts
-// and hashes only — never names.
+// and a digest only — never names.
 type StoragePlan struct {
 	Scope  string `json:"scope"`
 	Digest string `json:"digest"`

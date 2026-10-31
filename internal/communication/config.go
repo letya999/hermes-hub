@@ -409,6 +409,12 @@ func spoolLimitsFromEnv() (int, int64, int) {
 	return intFromEnv("HUB_SPOOL_MAX_FILES", 2048), int64(intFromEnv("HUB_SPOOL_MAX_ARCHIVE_BYTES", 64<<20)), intFromEnv("HUB_SPOOL_MAX_USAGE_ENTRIES", usageJournalMaxEntries)
 }
 
+// CompactLimitsFromEnv shares the gateway's retention bounds with offline cleanup.
+func CompactLimitsFromEnv() CompactLimits {
+	files, bytes, entries := spoolLimitsFromEnv()
+	return CompactLimits{MaxTerminalFiles: files, ArchiveMaxBytes: bytes, MaxUsageEntries: entries}
+}
+
 // durationSecondsFromEnv reads a seconds-valued duration (HUB_STT_TIMEOUT).
 func durationSecondsFromEnv(name string, fallback time.Duration) time.Duration {
 	if n := intFromEnv(name, 0); n > 0 {

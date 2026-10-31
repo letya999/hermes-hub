@@ -63,12 +63,13 @@ object names or raw errors are emitted.
 
 `hubctl storage cleanup --spool <dir> [--retention 72h]` defaults to dry-run:
 it inspects the owned tree read-only and emits a plan bound by a `sha256:`
-digest over the exact candidate set — aggregates only, never file names.
+digest over the tree state — aggregates only, never file names.
 Symlinks inside the owned tree are refused, not followed. `--apply` requires
 `--digest`: the command takes the spool writer lock, recomputes the plan and
 rejects a stale or foreign digest before the bounded terminal compaction
 archives aged done/failed records. Live pending/running records, open
-approvals and live receipts are never candidates.
+approvals and live receipts are never candidates. The offline apply uses the
+same terminal-file, archive-byte and usage-entry limits as gateway maintenance.
 
 ## Bounded trace
 
