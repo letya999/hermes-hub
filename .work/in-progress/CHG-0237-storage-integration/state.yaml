@@ -1,0 +1,25 @@
+schema: 1
+change: CHG-0237
+title: Integrate Storage reliability MVP into dev
+status: in_progress
+branch: chore/storage-reliability-integration
+updated: "2026-10-31"
+phase: merge-plan-complete
+adr: ADR-0088
+related_adrs: [ADR-0087]
+spec: SPEC-0088
+related_specs: [SPEC-0087]
+depends_on: []
+implementation_status: not_started
+validation:
+  merge_simulation: 26_text_conflicts_from_temporary_wip_snapshot
+  docs_check: passed
+  diff_check: passed
+  just_check: failed_toolhub_temp_file_access_denied
+  targeted_toolhub_retest: passed
+  docker_check: not_run
+  live_acceptance: not_started
+remaining:
+  - Preserve the source WIP in reviewable commits and merge into this branch.
+  - Resolve numbered records and all textual and semantic conflicts.
+  - Complete required gates before integration into dev.
