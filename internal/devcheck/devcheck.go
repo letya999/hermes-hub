@@ -438,7 +438,7 @@ func DockerSmoke(ctx context.Context, image string) error {
 		}
 	}
 	status := func(container string) string {
-		out, err := exec.CommandContext(ctx, "docker", "inspect", "--format", "{{.State.Status}}", container).Output()
+		out, err := exec.CommandContext(ctx, "docker", "inspect", "--format", smokeStatusFormat, container).Output()
 		if err != nil {
 			return "unknown"
 		}
@@ -458,6 +458,8 @@ func DockerSmoke(ctx context.Context, image string) error {
 	fmt.Println("Standalone Docker runtime smoke passed; no live provider calls")
 	return nil
 }
+
+const smokeStatusFormat = "{{if .State.Running}}running{{else}}{{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}}{{end}}"
 
 func smokeWaitHealthy(ctx context.Context, healthy func() bool, status func(string) string, containers []string, window time.Duration) error {
 	deadline := time.Now().Add(window)
