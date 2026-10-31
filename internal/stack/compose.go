@@ -314,6 +314,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		}
 	}
 	services := M{"hermes-runtime": runtimeService}
+	var composeSecrets M
 	// SPEC-0082 R4: the per-space browser sidecar owns the headed-Chromium
 	// display stack. CDP binds inside the container and is reachable only on
 	// the space network through the browser-<user> alias; the sole published
@@ -342,8 +343,13 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		browserVolumes := []any{
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "connections", "browser")), "target": "/state/browser"},
 			M{"type": "bind", "source": filepath.ToSlash(browserWorkspace), "target": "/workspace"},
-			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "browser-novnc.passwd")), "target": "/run/novnc.pass", "read_only": true},
 		}
+		// R4.2: the noVNC password reaches the sidecar as a compose secret
+		// owned by the container user. A plain bind of the 0600 host file was
+		// unreadable to uid 10001 and left x11vnc serving without a password;
+		// the engine's 0444 default keeps it readable if uid/mode are ignored.
+		browserService["secrets"] = []any{M{"source": "novnc-pass", "target": "novnc.pass", "uid": "10001", "gid": "10001", "mode": int64(0o400)}}
+		composeSecrets = M{"novnc-pass": M{"file": filepath.ToSlash(filepath.Join(dir, "browser-novnc.passwd"))}}
 		if s.Has("meet") {
 			// The node shares the runtime's meetings dir so auth_state and
 			// out_dir RPC paths resolve identically on both containers; the
@@ -905,6 +911,9 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		volumes["broker-secrets-model"] = M{}
 	}
 	result := M{"name": "hermes-hub-" + s.User + "-" + s.Environment, "services": services, "volumes": volumes}
+	if composeSecrets != nil {
+		result["secrets"] = composeSecrets
+	}
 	if infra {
 		volumes["communication-hub-data"] = M{}
 		// The broker store is a singleton per environment, not per host: a dev

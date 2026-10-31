@@ -522,7 +522,7 @@ func superviseBrowser() error {
 	}
 	for _, proc := range [][]string{
 		{"fluxbox"},
-		{"x11vnc", "-display", ":99", "-localhost", "-forever", "-shared", "-passwdfile", "/run/novnc.pass"},
+		{"x11vnc", "-display", ":99", "-localhost", "-forever", "-shared", "-passwdfile", "/run/secrets/novnc.pass"},
 		{"websockify", "--web=/opt/novnc", "0.0.0.0:6080", "127.0.0.1:5900"},
 		{"chromium", "--no-sandbox", "--no-first-run", "--disable-dev-shm-usage", "--password-store=basic", "--user-data-dir=" + profile, "--remote-debugging-port=9223", "about:blank"},
 	} {

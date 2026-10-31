@@ -62,10 +62,26 @@ func TestBrowserSidecarServiceRendered(t *testing.T) {
 	if workspaceMount == nil {
 		t.Fatal("sidecar must mount the workspace for downloads/artifacts")
 	}
-	// R4.2: noVNC authentication comes from a per-space secret file the
-	// sidecar mounts read-only — x11vnc must never run -nopw again.
-	if novncMount == nil || novncMount["read_only"] != true {
-		t.Fatalf("sidecar must mount the noVNC password read-only: %v", sidecar["volumes"])
+	// R4.2: noVNC authentication comes from a per-space secret delivered as a
+	// compose secret owned by the container user — a plain bind of the 0600
+	// host file was unreadable to uid 10001 and left x11vnc serving without a
+	// password, while 0444 defaults keep it readable even if uid/mode are
+	// ignored.
+	if novncMount != nil {
+		t.Fatalf("sidecar must not bind-mount the noVNC password: %v", novncMount)
+	}
+	var novncSecret M
+	for _, raw := range sidecar["secrets"].([]any) {
+		m := raw.(M)
+		if m["target"] == "novnc.pass" {
+			novncSecret = m
+		}
+	}
+	if novncSecret == nil || novncSecret["uid"] != "10001" || novncSecret["gid"] != "10001" {
+		t.Fatalf("sidecar must receive novnc.pass as a uid-10001 secret: %v", sidecar["secrets"])
+	}
+	if mode, ok := novncSecret["mode"].(int64); !ok || mode&0o077 != 0 {
+		t.Fatalf("novnc.pass secret must not be group/other-readable: %v", novncSecret["mode"])
 	}
 	for _, raw := range sidecar["volumes"].([]any) {
 		m := raw.(M)

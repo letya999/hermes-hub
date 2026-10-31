@@ -120,10 +120,10 @@ func TestBrowserSidecarCommandTree(t *testing.T) {
 	if strings.Contains(joined, "--remote-debugging-address") {
 		t.Fatalf("dead flag must not come back — the relay owns :9222:\n%s", joined)
 	}
-	// R4.2: noVNC requires authentication — x11vnc reads the mounted password
-	// file; -nopw must never appear again.
+	// R4.2: noVNC requires authentication — x11vnc reads the compose secret
+	// the sidecar user can actually open; -nopw must never appear again.
 	x11 := slices.IndexFunc(argvs, func(a string) bool { return strings.HasPrefix(a, "x11vnc") })
-	if x11 < 0 || !strings.Contains(argvs[x11], "-passwdfile /run/novnc.pass") {
+	if x11 < 0 || !strings.Contains(argvs[x11], "-passwdfile /run/secrets/novnc.pass") {
 		t.Fatalf("x11vnc must authenticate via the mounted password file:\n%s", joined)
 	}
 	if strings.Contains(joined, "-nopw") {

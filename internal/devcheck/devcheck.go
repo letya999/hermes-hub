@@ -429,7 +429,7 @@ func DockerSmoke(ctx context.Context, image string) error {
 		{"network", "create", net},
 		// browser-<user> sidecar per compose.go: the image CMD is already
 		// `browser`; the read-only novnc password bind matches the render.
-		{"run", "-d", "--name", sidecar, "--network", net, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--shm-size", "1g", "--tmpfs", "/tmp:mode=1777", "--tmpfs", "/state:uid=10001,gid=10001,mode=0700", "--tmpfs", "/workspace:uid=10001,gid=10001,mode=0700", "--mount", "type=bind,source=" + filepath.ToSlash(pass) + ",target=/run/novnc.pass,readonly", image + "-browser"},
+		{"run", "-d", "--name", sidecar, "--network", net, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--shm-size", "1g", "--tmpfs", "/tmp:mode=1777", "--tmpfs", "/state:uid=10001,gid=10001,mode=0700", "--tmpfs", "/workspace:uid=10001,gid=10001,mode=0700", "--mount", "type=bind,source=" + filepath.ToSlash(pass) + ",target=/run/secrets/novnc.pass,readonly", image + "-browser"},
 		{"run", "-d", "--name", name, "--network", net, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--shm-size", "1g", "--tmpfs", "/tmp:mode=1777", "--tmpfs", "/state:uid=10001,gid=10001,mode=0700", "--tmpfs", "/workspace:uid=10001,gid=10001,mode=0700", "-e", "HUB_BROWSER=true", "-e", "BROWSER_CDP_URL=http://" + sidecar + ":9222", image, "idle"},
 	}
 	for _, args := range checks {
