@@ -250,3 +250,22 @@ func StripRecalled(body string) string {
 	}
 	return b.String()
 }
+
+// FrontmatterStatus reads the status field strictly inside the leading ---
+// block — a body line like "- status: superseded" is data, not metadata, and
+// can never strike a card (SPEC-0085 R7.1 injection-inertness).
+func FrontmatterStatus(text string) string {
+	if !strings.HasPrefix(text, "---\n") {
+		return ""
+	}
+	end := strings.Index(text[4:], "\n---")
+	if end < 0 {
+		return ""
+	}
+	for _, line := range strings.Split(text[4:4+end], "\n") {
+		if k, v, ok := strings.Cut(line, ":"); ok && strings.TrimSpace(k) == "status" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}

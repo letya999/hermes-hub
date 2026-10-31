@@ -379,7 +379,19 @@ never in the general archive. `down` never deletes homes; `purge` needs
 `--confirm`.
 
 Memory: native files under `spaces/<id>/hermes/memories` (`MEMORY.md`,
-`USER.md`) — `hubctl memory list` / `hubctl memory delete --name`. Honcho is
+`USER.md`) — `hubctl memory list` / `hubctl memory delete --name`. The vault
+(`spaces/<id>/vault`) adds three verbs: `hubctl memory import` parses the
+native files into reviewable draft cards staged under
+`vault/runtime/memory/import` (directive candidates are review-only — nothing
+reaches `memory/CORE.md` automatically); only `import --apply` commits them
+through the governed writer, and re-import never clobbers an existing card.
+`hubctl memory eval --questions <set.json> [--out-dir .work/tmp]` runs the
+live question set through the model relay (`HUB_MODEL_RELAY_URL`/
+`HUB_MODEL_RELAY_AUTH`) with top-4 vault evidence as context and writes a
+timestamped judged report — relay failures are recorded per question, mocks
+never count as live. `hubctl memory vacuum` dry-runs the superseded purge
+set; only `vacuum --apply` deletes, and git history keeps everything
+recoverable. Honcho is
 optional (`honcho` + `honcho_url`); its failure must not break ordinary
 Hermes memory. Skills live in the owner store `spaces/<id>/skills` —
 publication, archive, restore, rollback and promote rebuild the read-only

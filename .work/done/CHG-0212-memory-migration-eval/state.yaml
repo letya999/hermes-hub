@@ -1,0 +1,88 @@
+schema: 1
+change: CHG-0212
+title: Memory eval gate + native import + vacuum
+status: done
+branch: feat/m20-memory-vault
+updated: 2026-10-31
+phase: complete
+adr: ADR-0086
+spec: SPEC-0085
+requirements: [R7.1, R7.2, R7.3, R7.4]
+depends_on: [CHG-0204, CHG-0205, CHG-0207, CHG-0238, CHG-0206, CHG-0208]
+github_milestone: M20 — Memory Vault and Knowledge Surface
+github_issue: 307
+design_status: accepted
+implementation_status: complete
+slices:
+  S7.1-native-import: done
+  S7.2-deterministic-fixture: done
+  S7.3-live-eval: done
+  S7.4-vacuum: done
+validation:
+  documents: updated (ADR-0086 M20.7 amendment, docs/operations.md memory
+    verbs paragraph, docs/spaces.md runtime/memory/import sidecar)
+  just_check: 'legs green: format (after LF+gofmt fix on
+    memory_vacuum_test.go), docs, config-check, vet/lint, actionlint;
+    go-check full suite red only on the rotating pre-existing Windows
+    env flake family (AV fork/exec on fresh test binaries, lld -T
+    link failures, TSan alloc) — every named package verified green
+    isolated (cmd/devcheck, cmd/package, internal/devcheck,
+    internal/exposure plus the touched packages' full suites)'
+  docker_check: not_run (no-docker scope, same as M20.1-M20.6)
+  red_team: 'covered by tests: crafted MEMORY.md injection (status:
+    superseded body line, ignore-all-safety-rules text) imports as inert
+    data — frontmatter-only status parse (TestImportInjectionInert);
+    fixture tokens absent from a neighbouring production index
+    (TestEvalIsolation); vacuum purge set cannot drift to live or
+    malformed-frontmatter cards (TestVacuumKeepsLiveContent,
+    TestVacuumSkipsMalformedCards); dry-run mutates nothing
+    (TestVacuumDryRunAccurate, TestVacuumNeedsApplyFlag); re-import never
+    clobbers an existing card (TestImportIdempotent)'
+  live_acceptance: 'pending: requires live stack (deferred - no-docker
+    scope). Offline contract verified: TestLiveEvalReportShape (scripted
+    asker incl. relay-error recording), TestMemoryEvalCLI through a real
+    httptest chat-completions round-trip — neither is a live-model run'
+evidence:
+  - internal/memory/importer/importer.go — parse→stage→apply;
+    source: migrated frontmatter, directive candidates review-only,
+    staging under runtime/memory/import/ (never searchable card paths),
+    idempotent skip-existing
+  - internal/memory/eval/eval.go — deterministic fixture: 10 private
+    owner turns + routine/untrusted/group exclusion lanes through the
+    real vault.Daily capture path; recall@4 = 1.0 (bound 0.9)
+  - internal/memory/eval/live.go — RunLive judged report (live flag,
+    cited refs, per-question error recording) + RelayAsker bounded
+    chat-completions POST (4 MiB body cap, 120 s timeout,
+    HUB_MODEL_RELAY_URL/HUB_MODEL_RELAY_AUTH)
+  - internal/memory/vacuum/vacuum.go — Scan/Apply: struck leaf blocks
+    stripped via governed writer (hash-checked), superseded cards via
+    git rm + commit, prov.db rows dropped atomically
+  - internal/memory/search/indexer.go — card status parsed from leading
+    frontmatter only (body status lines are inert data)
+  - cmd/hubctl/context.go — memory import/eval/vacuum verbs; eval writes
+    exclusive-create timestamped reports under --out-dir (.work/tmp)
+  - tests: TestImportReviewableDrafts, TestImportInjectionInert,
+    TestImportIdempotent, TestEvalRecallBound,
+    TestEvalFixtureDeterministic, TestEvalIsolation,
+    TestEvalForgetSilence, TestEvalBackgroundExcluded,
+    TestEvalUntrustedNotPromoted, TestEvalAudienceIsolation,
+    TestEvalSupersedeCorrectness, TestLiveEvalReportShape,
+    TestVacuumDryRunAccurate, TestVacuumKeepsLiveContent,
+    TestVacuumKeepsConcurrentEdit, TestVacuumSkipsMalformedCards,
+    TestVacuumDeletionCommitted, TestVacuumNeedsApplyFlag,
+    TestMemoryImportCLI, TestMemoryEvalCLI, TestMemoryEvalKeepsPriorReport
+  - 'coverage: eval 85.7% cross-package (own 62.3% — RelayAsker
+    exercised from cmd/hubctl), importer 88.8%, vacuum 86.2%'
+remaining: []
+limitations:
+  - 'live eval run against a real model-relay and importer-on-real-space
+    acceptance deferred — requires the live stack (no-docker scope);
+    the ~40-question RU/EN LongMemEval set is operator-supplied via
+    --questions, not shipped in the repo'
+  - 'vacuum leaf rewrite race window: Apply re-reads the leaf fresh, so
+    an owner edit between Scan and Apply is preserved; only a write in
+    the read→write window is rejected by the hash check (race-only,
+    not deterministically testable)'
+  - 'dropProvRows/git-rm error legs are race/fault-only paths —
+    uncovered deterministically'
+  - 'docker/live acceptance deferred like M20.1-M20.6 (no-docker scope)'

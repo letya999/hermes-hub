@@ -25,6 +25,21 @@ superseded` frontmatter for cards; every mutation and denial journals to
 `runtime/memory/writes.jsonl` with the authorizing turn's `SourceRef`;
 the `vault:` file root gates non-contract paths behind a stamped private
 run with case/fullwidth-folded zone names.
+Amended (M20.7, issue #307): R7 mechanics recorded — native import is a
+parse→stage→explicit-apply pipeline: drafts land under
+`runtime/memory/import/` (never in searchable card paths), directive-like
+sections become review-only candidates that never reach `CORE.md`
+automatically, re-import skips existing cards, and card `status:` is
+parsed from leading frontmatter only so injected body lines stay inert.
+The deterministic eval fixture seeds a real vault through `vault.Daily`,
+measures recall@4 ≥ 0.9 on a fresh index, and proves isolation by
+building a neighbor index. The live eval questions ride the model relay
+with top-4 index evidence as context; reports record per-question
+citations and relay errors, land under `.work/tmp` with exclusive-create
+names, and a mock relay never counts as live. Vacuum's dry-run is a pure
+scan; `--apply` strips struck leaf blocks through the governed writer,
+`git rm`s superseded cards, drops prov.db rows and commits — history
+keeps everything recoverable.
 Requirements: [SPEC-0085](../../specs/active/SPEC-0085-memory-vault-openknowledge.md).
 Research: `.work/in-progress/CHG-0204-vault-layout/research.md`.
 

@@ -159,8 +159,8 @@ docs/tools.md; they are not shared personal-memory stores.
   writer, runtime sidecars under `runtime/` (`.okignore`d, never
   committed: `prov.db`, `index/`, `run-scope/` (audience + provenance
   stamps), `night/` day states + `truth_pending`, `memory/forget.jsonl`
-  soft-forget strikes and `memory/writes.jsonl` the card-write audit
-  journal). Agent write access goes through the `memory_card` contract or
+  soft-forget strikes, `memory/writes.jsonl` the card-write audit
+  journal and `memory/import/` the staged native-import drafts). Agent write access goes through the `memory_card` contract or
   the `vault:` file root — both require a stamped private run and deny the
   governed zones (`memory/`, `runtime/`, dot paths); `library/` stays
   writable (SPEC-0085 R6). Mounts rw at `/vault` in the runtime and in the

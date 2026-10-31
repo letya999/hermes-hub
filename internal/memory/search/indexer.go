@@ -146,7 +146,7 @@ func (x *Indexer) markdownDocs(sources []source) []Doc {
 			EndLine:    len(strings.Split(text, "\n")),
 			Kind:       kind,
 			Audience:   "private",
-			Superseded: strings.Contains(text, "status: superseded"),
+			Superseded: memory.FrontmatterStatus(text) == "superseded",
 			Links:      linkRefs(text),
 			Text:       text,
 		})
