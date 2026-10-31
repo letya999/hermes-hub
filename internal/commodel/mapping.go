@@ -80,8 +80,12 @@ type JobMapping struct {
 	StyleSnapshotted bool   `json:"style_snapshotted,omitempty"`
 	// CoreSnapshot/CoreSnapshotted pin the admitted-run memory CORE block:
 	// a retried run reuses the snapshot instead of re-reading the vault.
-	CoreSnapshot      string `json:"core_snapshot,omitempty"`
-	CoreSnapshotted   bool   `json:"core_snapshotted,omitempty"`
+	CoreSnapshot    string `json:"core_snapshot,omitempty"`
+	CoreSnapshotted bool   `json:"core_snapshotted,omitempty"`
+	// RecallSnapshot/RecallSnapshotted pin the admitted-run lane-1 recall
+	// block (SPEC-0085 R4.2): a retried run reuses the same bytes.
+	RecallSnapshot    string `json:"recall_snapshot,omitempty"`
+	RecallSnapshotted bool   `json:"recall_snapshotted,omitempty"`
 	Status            string `json:"status"`
 	SessionID         string `json:"session_id,omitempty"`
 	RunID             string `json:"run_id,omitempty"`

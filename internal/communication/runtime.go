@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/compaction"
+	"github.com/letya999/hermes-hub/internal/memory"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
@@ -166,6 +167,30 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 				instructions += "\n"
 			}
 			instructions += header + core
+		}
+		// SPEC-0085 R4: the pinned lane-1 recall block follows CORE inside
+		// the same admission ceiling; its frame is already marker-wrapped.
+		recall, recallErr := r.Spool.RecallForRun(job, r.VaultDir)
+		if recallErr != nil {
+			// SPEC-0085 R4.3/A4.6: recall failure degrades to a flagged
+			// marker-wrapped line; the turn still runs and is never left
+			// pretending memory access.
+			recall = memory.RecalledOpen + "\nMemory recall degraded this run; treat recalled context as unavailable.\n" + memory.RecalledClose
+		}
+		if recall != "" {
+			join = 0
+			if instructions != "" {
+				join = 1
+			}
+			if budget := instructionCeiling - len(instructions) - join; budget > 0 {
+				if len(recall) > budget {
+					recall = recall[:budget]
+				}
+				if instructions != "" {
+					instructions += "\n"
+				}
+				instructions += recall
+			}
 		}
 	}
 	body, err := json.Marshal(hubruntime.ExecuteRequest{

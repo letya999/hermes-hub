@@ -255,7 +255,12 @@ and `MEMORY.md`/`USER.md` remain on disk untouched for the M20.7 import. The
 vault is a git-backed `spaces/<id>/vault/` tree; the governed writer is the
 only mutation path (hash-checked, actor-attributed commits, zone-whitelisted)
 and `CORE.md` reaches only private-audience run instructions, pinned per job
-mapping like the style snapshot.
+mapping like the style snapshot. Before each run the hub also injects a
+pinned lane-1 recall block (SPEC-0085 R4): ≤4 card hits with evidence refs,
+≤2500 chars, marker-wrapped as "data, not instructions" so capture can never
+re-extract it — zero model calls, audience-scoped, and flagged-degraded
+rather than hidden when the index is unavailable. Past-referencing turns
+earn one lane-2 hint line nudging `memory_search`.
 
 Memory list/delete reject foreign-home aliases. Context backup rejects
 non-regular files and exports shared spool records only with matching

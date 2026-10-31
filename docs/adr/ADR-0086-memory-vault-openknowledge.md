@@ -12,6 +12,12 @@ Amended (M20.2, issue #300): D11 extended — the gateway's `/vault` mount
 is read-write because the communication plane is the capture writer;
 capture ids derive from job ids for retry-safe capture; `Sensitive`
 jobs persist nothing.
+Amended (M20.4, issue #419): D13 composition recorded — the ≤2500-char
+budget caps the recall block itself (markers + frame + ≤4 card hits +
+the lane-2 hint); CORE keeps its own D12 ≤3600-char slice and both ride
+the same 4096-byte instructions ceiling with CORE yielding first. A
+recall/index failure degrades to a flagged marker-wrapped line and the
+run still executes.
 Requirements: [SPEC-0085](../../specs/active/SPEC-0085-memory-vault-openknowledge.md).
 Research: `.work/in-progress/CHG-0204-vault-layout/research.md`.
 

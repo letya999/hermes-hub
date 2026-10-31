@@ -156,8 +156,11 @@ docs/tools.md; they are not shared personal-memory stores.
 - `vault/` — the git-backed memory vault when `memory_vault` is on
   (ADR-0086): `memory/` markdown (`daily/`, `cards/`, `summaries/`,
   `CORE.md`, `schema.json`) committed by the governed writer, runtime
-  sidecars under `runtime/` (`.okignore`d, never committed). Mounts rw at
-  `/vault` in the runtime and read-only in the communication gateway.
+  sidecars under `runtime/` (`.okignore`d, never committed: `prov.db`,
+  `index/`, `run-scope/`). Mounts rw at `/vault` in the runtime and in
+  the communication gateway — the gateway is the capture writer and the
+  pre-turn recall/CORE pinning plane (SPEC-0085 R2/R4); the governed
+  writer keeps `runtime/` out of the agent's declared write surface.
 - `broker/` — broker materialization output; `cache/`, `cliproxy/` —
   service-local state; `managed/<env>/model-relay` — relay selection state.
 - `diagnostics/` — bounded log surface backing `mcp__toolhub__diagnostics`

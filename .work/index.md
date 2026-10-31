@@ -35,7 +35,6 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 | [CHG-0215](in-progress/CHG-0215-broker-recovery-head/plan.md) | Storage reliability MVP: Надёжная текущая голова recovery брокера; design accepted, implementation not started |
 | [CHG-0214](in-progress/CHG-0214-standing-assignment-mvp/plan.md) | M23 #324/#332: non-consuming cursor source, filtered batch wakes, specialist progress and runtime fences |
 | [CHG-0239](in-progress/CHG-0239-memory-provider-adapters/plan.md) | M20.11 #330: external provider adapters via seam — Hindsight adapter, replay migration, export-honcho |
-| [CHG-0238](in-progress/CHG-0238-memory-pre-turn-recall/plan.md) | M20.4 #419: pre-turn recall lane — zero-LLM, ≤4 hits ≤2500 chars, pinned per-run snapshot |
 | [CHG-0213](in-progress/CHG-0213-org-knowledge-brain/plan.md) | Deferred — Backlog Organization Knowledge milestone #308 (out of M20 scope): org shared brain |
 | [CHG-0212](in-progress/CHG-0212-memory-migration-eval/plan.md) | M20.7 #307: memory eval gate + native `MEMORY.md`/`USER.md` import + `memory vacuum` |
 | [CHG-0211](in-progress/CHG-0211-knowledge-ui-edge/plan.md) | M20.10 #306: loopback `ui_port` + SSH tunnel docs; M18 edge hook |
@@ -350,3 +349,4 @@ Open live follow-ups stay as GitHub issues, not stale CHG folders: #73
 acceptance evidence).
 | [CHG-0205](done/CHG-0205-daily-leaf-ingest/plan.md) | M20.2 #300: provenance-aware daily capture — prov.db sidecar, kind quarantine, untrusted transport flag, compaction flush, sensitive-exclusion |
 | [CHG-0207](done/CHG-0207-memory-search/plan.md) | M20.3 #302: memory_search — pure-Go BM25 (postings + top-k) + link graph over leaves/cards/summaries, lazy mtime+size index + persisted snapshot under runtime/memory/index, prov.db fallback evidence, run-scope audience confinement (fail-closed group, unforgeable via zone guard), honest degraded/unavailable, catalog 5.10.0, hubctl memory search --reindex + doctor stale line, benchmark ~1.4ms p95-equivalent on 10k worst case |
+| [CHG-0238](done/CHG-0238-memory-pre-turn-recall/plan.md) | M20.4 #419: pre-turn recall lane — zero-LLM card-only assembly (audience+Kinds via D6 index, ≤4 hits, evidence refs, recalled markers + "data, not instructions" frame, 2500-char cap), pinned RecallSnapshot on durable mapping (byte-identical retries), rides ExecuteRequest.Instructions after CORE inside 4096 B ceiling, flagged-degraded still-runs, EN/RU lane-2 hint on past-reference only, group/crafted scope zero private bytes |
