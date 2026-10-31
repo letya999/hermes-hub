@@ -680,13 +680,13 @@ func TestTelegramAuthDefaultsOnWithTelegramIngress(t *testing.T) {
 	gw := services["communication-hub"].(M)
 	// QR login lives in the one communication-hub build — the daemon runs the
 	// lean core role image like every other non-agent service (SPEC-0082 R3).
-	if gw["image"] != "hermes-hub:0.4.0-dev-core" {
+	if gw["image"] != "hermes-hub:0.5.0-dev-core" {
 		t.Fatalf("gateway must run the core image: %#v", gw["image"])
 	}
 	if gw["environment"].(M)["HUB_TELEGRAM_AUTH_ENABLED"] != "true" {
 		t.Fatalf("auth not enabled by default: %#v", gw["environment"])
 	}
-	if services["credential-broker"].(M)["image"] != "hermes-hub:0.4.0-dev-core" {
+	if services["credential-broker"].(M)["image"] != "hermes-hub:0.5.0-dev-core" {
 		t.Fatal("broker must run the core image")
 	}
 	files := gw["env_file"].([]any)
@@ -729,13 +729,13 @@ func TestComposeKeepsDockerInControlImage(t *testing.T) {
 	}
 	// SPEC-0082 R3: daemons run the lean core image, Docker consumers the
 	// control image; only hermes-runtime keeps the agent image.
-	if core["image"] != "hermes-hub:0.4.0-prod-core" || core["build"].(M)["target"] != "prod-core" {
+	if core["image"] != "hermes-hub:0.5.0-prod-core" || core["build"].(M)["target"] != "prod-core" {
 		t.Fatalf("cliproxy not on the core role image: %#v", core["image"])
 	}
-	if control["image"] != "hermes-hub:0.4.0-prod-control" || control["build"].(M)["target"] != "prod-control" {
+	if control["image"] != "hermes-hub:0.5.0-prod-control" || control["build"].(M)["target"] != "prod-control" {
 		t.Fatalf("toolhub not on the control role image: %#v", control["image"])
 	}
-	if services["workload-controller"].(M)["image"] != control["image"] || services["hermes-runtime"].(M)["image"] != "hermes-hub:0.4.0-prod" {
+	if services["workload-controller"].(M)["image"] != control["image"] || services["hermes-runtime"].(M)["image"] != "hermes-hub:0.5.0-prod" {
 		t.Fatal("Docker consumers and Hermes runtime use the wrong images")
 	}
 	// R1.5/R4: shm_size exists for the browser sidecar's Chromium workload
@@ -772,7 +772,7 @@ func TestNoServiceUsesRuntimeExceptRuntime(t *testing.T) {
 		image, _ := raw.(M)["image"].(string)
 		switch {
 		case name == "hermes-runtime":
-			if image != "hermes-hub:0.4.0-dev" {
+			if image != "hermes-hub:0.5.0-dev" {
 				t.Fatalf("hermes-runtime lost the agent image: %q", image)
 			}
 			// The service builds its own tag: supervisor/managed renders drop
@@ -781,15 +781,15 @@ func TestNoServiceUsesRuntimeExceptRuntime(t *testing.T) {
 				t.Fatalf("hermes-runtime must build the %q target: %#v", "dev", raw.(M)["build"])
 			}
 		case name == "hub-stt" || name == "hub-tts":
-			if image != "hermes-hub-"+strings.TrimPrefix(name, "hub-")+":0.4.0-dev" {
+			if image != "hermes-hub-"+strings.TrimPrefix(name, "hub-")+":0.5.0-dev" {
 				t.Fatalf("%s lost its dedicated voice image: %q", name, image)
 			}
 		case name == "toolhub" || name == "workload-controller" || name == "supervisor":
-			if image != "hermes-hub:0.4.0-dev-control" {
+			if image != "hermes-hub:0.5.0-dev-control" {
 				t.Fatalf("%s not on the control image: %q", name, image)
 			}
 		default:
-			if image != "hermes-hub:0.4.0-dev-core" {
+			if image != "hermes-hub:0.5.0-dev-core" {
 				t.Fatalf("%s does not run a lean role image: %q", name, image)
 			}
 		}
@@ -812,7 +812,7 @@ func TestNoServiceUsesRuntimeExceptRuntime(t *testing.T) {
 				t.Fatalf("%s not on the control image: %q", name, image)
 			}
 		default:
-			if image != "hermes-hub:0.4.0-dev-core" {
+			if image != "hermes-hub:0.5.0-dev-core" {
 				t.Fatalf("%s does not run a lean role image: %q", name, image)
 			}
 		}
@@ -820,7 +820,7 @@ func TestNoServiceUsesRuntimeExceptRuntime(t *testing.T) {
 	secondary := Settings{Schema: 1, Environment: "dev", User: "bob", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("telegram"), Ingress: testIngress("telegram"), Cliproxy: "dedicated"}
 	for name, raw := range Compose(secondary, "/source", "/space2")["services"].(M) {
 		image, _ := raw.(M)["image"].(string)
-		if name == "cliproxy-bob" && image != "hermes-hub:0.4.0-dev-core" {
+		if name == "cliproxy-bob" && image != "hermes-hub:0.5.0-dev-core" {
 			t.Fatalf("dedicated cliproxy not on the core image: %q", image)
 		}
 	}

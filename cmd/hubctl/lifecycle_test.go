@@ -182,7 +182,7 @@ func TestBuildCoversRuntimeTagWhenRuntimeNotRendered(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte("OPENAI_API_KEY=fake-for-test\nTELEGRAM_BOT_TOKEN=synthetic-bot\nTELEGRAM_ALLOWED_USERS=11\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(d, stack.ExecutionPath("prod")), []byte(`{"schema":1,"user":"owner","environment":"prod","mode":"supervisor","supervisor_url":"http://host.docker.internal:8876","native_cron":"disabled","compatibility_release":"0.4.0"}`), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(d, stack.ExecutionPath("prod")), []byte(`{"schema":1,"user":"owner","environment":"prod","mode":"supervisor","supervisor_url":"http://host.docker.internal:8876","native_cron":"disabled","compatibility_release":"0.5.0"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	bin := t.TempDir()
@@ -202,7 +202,7 @@ func TestBuildCoversRuntimeTagWhenRuntimeNotRendered(t *testing.T) {
 		t.Fatal(err)
 	}
 	calls, _ := os.ReadFile(log)
-	if !strings.Contains(string(calls), "build --target prod -t hermes-hub:0.4.0-prod") {
+	if !strings.Contains(string(calls), "build --target prod -t hermes-hub:0.5.0-prod") {
 		t.Fatalf("supervisor render left the spawned-runtime tag unbuilt: %s", calls)
 	}
 }

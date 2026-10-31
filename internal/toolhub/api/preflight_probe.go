@@ -273,7 +273,7 @@ func runMCPProbeIO(cmd *exec.Cmd, reap func()) ([]ToolSpec, error) {
 // answer before its tool list is trusted.
 func preflightProbeMessages() []any {
 	return []any{
-		map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]any{"protocolVersion": "2024-11-05", "capabilities": map[string]any{}, "clientInfo": map[string]any{"name": "hub-artifact-preflight", "version": "0.4.0"}}},
+		map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]any{"protocolVersion": "2024-11-05", "capabilities": map[string]any{}, "clientInfo": map[string]any{"name": "hub-artifact-preflight", "version": "0.5.0"}}},
 		map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"},
 		map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
 	}

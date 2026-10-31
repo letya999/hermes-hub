@@ -47,14 +47,14 @@ func TestDevServiceRoleBases(t *testing.T) {
 	// daemons onto -dev-core, Docker consumers onto -dev-control, the agent
 	// onto the runtime image.
 	for name, want := range map[string]string{
-		"communication-hub":   "hermes-hub:0.4.0-dev-core",
-		"credential-broker":   "hermes-hub:0.4.0-dev-core",
-		"hub-media":           "hermes-hub:0.4.0-dev-core",
-		"toolhub":             "hermes-hub:0.4.0-dev-control",
-		"workload-controller": "hermes-hub:0.4.0-dev-control",
-		"supervisor":          "hermes-hub:0.4.0-dev-control",
-		"hermes-runtime":      "hermes-hub:0.4.0-dev",
-		"egress-relay":        "hermes-hub:0.4.0-dev-core",
+		"communication-hub":   "hermes-hub:0.5.0-dev-core",
+		"credential-broker":   "hermes-hub:0.5.0-dev-core",
+		"hub-media":           "hermes-hub:0.5.0-dev-core",
+		"toolhub":             "hermes-hub:0.5.0-dev-control",
+		"workload-controller": "hermes-hub:0.5.0-dev-control",
+		"supervisor":          "hermes-hub:0.5.0-dev-control",
+		"hermes-runtime":      "hermes-hub:0.5.0-dev",
+		"egress-relay":        "hermes-hub:0.5.0-dev-core",
 	} {
 		spec, ok := devService(name)
 		if !ok {
@@ -117,11 +117,11 @@ func TestDevRebuildCompilesAndStartsOnlySelectedService(t *testing.T) {
 		t.Fatalf("unrelated images rebuilt: %s", calls)
 	}
 	for _, tc := range []struct{ service, source, base string }{
-		{"communication-hub", "./cmd/communication", "hermes-hub:0.4.0-dev-core"},
-		{"credential-broker", "./cmd/credential-broker", "hermes-hub:0.4.0-dev-core"},
-		{"toolhub", "./cmd/toolhub", "hermes-hub:0.4.0-dev-control"},
-		{"workload-controller", "./cmd/hubctl", "hermes-hub:0.4.0-dev-control"},
-		{"hermes-runtime", "./cmd/runtime", "hermes-hub:0.4.0-dev"},
+		{"communication-hub", "./cmd/communication", "hermes-hub:0.5.0-dev-core"},
+		{"credential-broker", "./cmd/credential-broker", "hermes-hub:0.5.0-dev-core"},
+		{"toolhub", "./cmd/toolhub", "hermes-hub:0.5.0-dev-control"},
+		{"workload-controller", "./cmd/hubctl", "hermes-hub:0.5.0-dev-control"},
+		{"hermes-runtime", "./cmd/runtime", "hermes-hub:0.5.0-dev"},
 	} {
 		before, _ := os.ReadFile(log)
 		if err := runDevRebuild(context.Background(), []string{"--dir", dir, "--root", "../..", tc.service}); err != nil {

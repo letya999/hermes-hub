@@ -31,7 +31,7 @@ func TestBrowserSidecarServiceRendered(t *testing.T) {
 	if !ok {
 		t.Fatalf("browser sidecar service missing: %#v", services)
 	}
-	if sidecar["image"] != "hermes-hub:0.4.0-prod-browser" {
+	if sidecar["image"] != "hermes-hub:0.5.0-prod-browser" {
 		t.Fatalf("sidecar must run the browser role image, got %v", sidecar["image"])
 	}
 	if sidecar["build"].(M)["target"] != "prod-browser" {

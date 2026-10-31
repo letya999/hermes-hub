@@ -41,7 +41,7 @@ func warmTTLFlag(f *flag.FlagSet) *time.Duration {
 
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		fmt.Println("hubctl 0.4.0: init | org-init | migrate-spaces | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | artifact | build | dev-rebuild | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | grant | governance | capability | context | memory | skill | routine | apply | usage | watch | image | replay\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nConnector controllers: local-controller (fixed Telegram) or generic-controller (trusted artifact)\nSee README.md for account setup and private VPS access.")
+		fmt.Println("hubctl 0.5.0: init | org-init | migrate-spaces | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | artifact | build | dev-rebuild | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | grant | governance | capability | context | memory | skill | routine | apply | usage | watch | image | replay\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nConnector controllers: local-controller (fixed Telegram) or generic-controller (trusted artifact)\nSee README.md for account setup and private VPS access.")
 		return nil
 	}
 	op := args[0]
@@ -390,7 +390,7 @@ func run(ctx context.Context, args []string) error {
 	userSource := f.String("user-source", "", "legacy user directory")
 	orgSource := f.String("organization-source", "", "legacy organization directory")
 	spacesRoot := f.String("spaces", "spaces", "root containing context homes for the host supervisor")
-	supervisorImage := f.String("runtime-image", "hermes-hub:0.4.0-prod", "pinned runtime image for the host supervisor")
+	supervisorImage := f.String("runtime-image", "hermes-hub:0.5.0-prod", "pinned runtime image for the host supervisor")
 	supervisorListen := f.String("supervisor-listen", "127.0.0.1:8876", "private host supervisor address")
 	supervisorWildcard := f.Bool("supervisor-allow-wildcard-listen", false, "permit binding the supervisor control plane on all interfaces")
 	supervisorAuth := f.String("supervisor-auth", supervisorAuthFromEnv(), "private supervisor token")
@@ -683,7 +683,7 @@ func run(ctx context.Context, args []string) error {
 			}
 			dockerfile := filepath.Join(rootAbs, "docker", "Dockerfile")
 			for _, stage := range []string{"cli-tools", "cell-proxy"} {
-				image := "hermes-hub-" + stage + ":0.4.0-" + *environment
+				image := "hermes-hub-" + stage + ":0.5.0-" + *environment
 				if err := dockerCmd("build", "--target", stage, "-t", image, "-f", dockerfile, rootAbs).Run(); err != nil {
 					return fmt.Errorf("build %s: %w", image, err)
 				}
@@ -698,7 +698,7 @@ func run(ctx context.Context, args []string) error {
 			}
 			if envSettings.RendersInfra() {
 				if _, rendered := stack.Compose(envSettings, rootAbs, abs)["services"].(stack.M)["hermes-runtime"]; !rendered {
-					image := "hermes-hub:0.4.0-" + *environment
+					image := "hermes-hub:0.5.0-" + *environment
 					if err := dockerCmd("build", "--target", *environment, "-t", image, "-f", dockerfile, rootAbs).Run(); err != nil {
 						return fmt.Errorf("build %s: %w", image, err)
 					}

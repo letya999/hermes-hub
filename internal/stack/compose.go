@@ -239,11 +239,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	// consumers the control image, only hermes-runtime keeps the agent image.
 	common := M{"init": true, "restart": "unless-stopped", "user": fmt.Sprintf("10001:%d", max(0, os.Getgid())), "read_only": true, "cap_drop": []string{"ALL"}, "security_opt": []string{"no-new-privileges:true"}, "tmpfs": []string{"/tmp:uid=10001,gid=10001,mode=1777"}, "extra_hosts": M{"host.docker.internal": "host-gateway"}, "logging": M{"driver": "local", "options": M{"max-size": "10m", "max-file": "3"}}}
 	coreCommon := cloneMap(common)
-	coreCommon["image"] = "hermes-hub:0.4.0-" + s.Environment + "-core"
+	coreCommon["image"] = "hermes-hub:0.5.0-" + s.Environment + "-core"
 	controlCommon := cloneMap(common)
-	controlCommon["image"] = "hermes-hub:0.4.0-" + s.Environment + "-control"
+	controlCommon["image"] = "hermes-hub:0.5.0-" + s.Environment + "-control"
 	runtimeCommon := cloneMap(common)
-	runtimeCommon["image"] = "hermes-hub:0.4.0-" + s.Environment
+	runtimeCommon["image"] = "hermes-hub:0.5.0-" + s.Environment
 	imageBuild := func(target string) M {
 		return M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile", "target": target}
 	}
@@ -321,7 +321,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	// port is authenticated noVNC on host loopback.
 	if s.Has("browser") || s.Has("meet") {
 		browserService := cloneMap(common)
-		browserService["image"] = "hermes-hub:0.4.0-" + s.Environment + "-browser"
+		browserService["image"] = "hermes-hub:0.5.0-" + s.Environment + "-browser"
 		browserService["build"] = imageBuild(s.Environment + "-browser")
 		browserService["shm_size"] = "1gb"
 		// SPEC-0083 R1: bounded like toolhub — Chromium under Xvfb plus two
@@ -412,7 +412,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	if containerSupervisor {
 		svc := cloneMap(controlCommon)
 		svc["build"] = imageBuild(s.Environment + "-control")
-		svc["entrypoint"] = []string{"hubctl", "supervisor", "--spaces", "/spaces", "--env", s.Environment, "--runtime-image", "hermes-hub:0.4.0-" + s.Environment, "--supervisor-listen", "0.0.0.0:8876", "--supervisor-allow-wildcard-listen"}
+		svc["entrypoint"] = []string{"hubctl", "supervisor", "--spaces", "/spaces", "--env", s.Environment, "--runtime-image", "hermes-hub:0.5.0-" + s.Environment, "--supervisor-listen", "0.0.0.0:8876", "--supervisor-allow-wildcard-listen"}
 		svc["environment"] = M{"HUB_SUPERVISOR_AUTH": "${HUB_SUPERVISOR_AUTH:?set HUB_SUPERVISOR_AUTH or provision supervisor.auth for this stack}", "HUB_SUPERVISOR_HOST_SPACES": filepath.ToSlash(filepath.Dir(dir)), "HOME": "/tmp", "TZ": s.Timezone,
 			// Opt-in authorities stay disabled unless the operator provisions
 			// them: admin holds need a separate authority token; the personal
@@ -796,7 +796,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 				svc := cloneMap(common)
 				// Dedicated image tag: sharing the hub tag would let the
 				// last build overwrite the image other services run.
-				svc["image"] = "hermes-hub-" + role + ":0.4.0-" + s.Environment
+				svc["image"] = "hermes-hub-" + role + ":0.5.0-" + s.Environment
 				svc["build"] = M{"context": filepath.ToSlash(projectRoot), "dockerfile": "docker/Dockerfile." + role}
 				engine := "command"
 				if role == "stt" {
@@ -994,9 +994,9 @@ func cliControllerSection(s Settings, dir string) api.CLIControllerConfig {
 		// The rendered tag resolves to the immutable image ID at controller
 		// start; cells are created from that content reference, never the
 		// moving tag.
-		ToolsImage:    "hermes-hub-cli-tools:0.4.0-" + s.Environment,
+		ToolsImage:    "hermes-hub-cli-tools:0.5.0-" + s.Environment,
 		CellInit:      "/usr/local/bin/cellinit",
-		ProxyImage:    "hermes-hub-cell-proxy:0.4.0-" + s.Environment,
+		ProxyImage:    "hermes-hub-cell-proxy:0.5.0-" + s.Environment,
 		AllowedEgress: egress,
 		Ceiling:       api.ExecutionPolicy{TimeoutSeconds: 60, OutputBytes: 262144, CPUMillis: 2000, MemoryMiB: 2048, MaxPIDs: 128, Egress: egress},
 		Approved:      approved,
