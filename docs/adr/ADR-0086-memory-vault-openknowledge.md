@@ -55,6 +55,20 @@ change as `hermes-owner` (excluding `.git/`, `.graph/`, `.ok/` and
 `runtime/` sidecars) and runs inside the rollup immediately before the
 first governed write, so a rollup commit can never absorb owner bytes
 under a system author.
+Amended (M20.9, issue #305): R9 mechanics recorded — the read surface
+renders as `mcp_servers.open_knowledge` with `tools.include` pinned to
+the eight verified read verbs at 0.88.2, on both render paths behind
+the `native:knowledge_ui` governance section. Verification corrected
+the plan's assumed list: `lint` is fully excluded (its `fix` arg
+mutates and include filters names only); `checkpoint`/`share_link`
+carry upstream `readOnlyHint` but persist git history / mint publishing
+URLs; `preview_url` auto-starts the server. `knowledge_ui_write` is
+refused on every tools spelling and tracked as #422 until upstream
+gains sub-tree write scoping. The container env gained `PORT=8080`,
+`OK_BIND=0.0.0.0` (the upstream allowExternal interlock requires a
+non-loopback bind for space-net reachability) and `HOME=/tmp` (image
+HOME is on the read-only rootfs); `skip_preflight` keeps a down OK
+from stalling the runtime.
 Requirements: [SPEC-0085](../../specs/active/SPEC-0085-memory-vault-openknowledge.md).
 Research: `.work/in-progress/CHG-0204-vault-layout/research.md`.
 
@@ -184,6 +198,27 @@ a provider seam with conformance, and soft forget.
   (`.ok/local/conflicts.json`, `stale-external-writes.json` recovery
   snapshots — verified at spike). Human UI edits carry owner provenance
   and always win the next rollup (`truth_pending`).
+
+  2026-11-01 amendment (M20.9): the container also serves the runtime a
+  read-only MCP surface — `mcp_servers.open_knowledge` →
+  `http://open-knowledge:8080/mcp` with `tools.include` pinned to the
+  eight verified read verbs at 0.88.2 (`audit`, `config`, `exec`,
+  `history`, `links`, `palette`, `search`, `skills`), identical on the
+  unmanaged and managed renders behind the `native:knowledge_ui`
+  section. The include list is the enforcement — mutation verbs never
+  register. Three verification corrections to the plan's assumed list:
+  `lint` is excluded entirely (its `fix` arg mutates and include
+  filters names, not args); `checkpoint` and `share_link` carry
+  upstream `readOnlyHint` yet persist git history / mint a publishing
+  URL; `preview_url` auto-starts the server on a cold call. `exec` is
+  admitted — upstream scopes it to a read-only shell allowlist inside
+  the container. `knowledge_ui_write` remains deferred (#422): upstream
+  has no sub-tree write scoping, so `memory_card` stays the only agent
+  write path. `skip_preflight` renders so a down OK fails calls
+  honestly without stalling the runtime. The service env gained
+  `PORT=8080` (dynamic otherwise), `OK_BIND=0.0.0.0` (the allowExternal
+  interlock requires it for non-loopback) and `HOME=/tmp` (the image
+  HOME sits on the read-only rootfs).
 
 - **D9. Human access is a loopback port, like browser/oauth today.**
   The compose service publishes `127.0.0.1:<ui_port>` per space

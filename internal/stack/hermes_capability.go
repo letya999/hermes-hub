@@ -235,6 +235,11 @@ func managedMCPServers(s Settings) M {
 			servers["browser_guest"] = browserServer(s.User, true, s.Has("browser_act"))
 		}
 	}
+	// SPEC-0085 R9: same hub-owned read surface as the unmanaged render —
+	// the native:knowledge_ui section decides whether the endpoint exists.
+	if s.Has("knowledge_ui") && s.govAllows("native:knowledge_ui") {
+		servers["open_knowledge"] = okServer()
+	}
 	return servers
 }
 

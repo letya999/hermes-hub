@@ -1,6 +1,6 @@
 ---
 description: Complete agent-visible tool surface — toolhub control tools, connector_* facade, hub:tools catalog, effect/grant requirements, delivery directives.
-last_verified: "2026-10-31"
+last_verified: "2026-11-01"
 ---
 
 # Tool surface
@@ -275,6 +275,21 @@ a hub-owned strike: `runtime/memory/forget.jsonl` for daily-leaf entries,
 `status: superseded` frontmatter for cards — excluded from search, lane-1
 recall and nightly promotion across restarts, visible only via
 `history:true` and git.
+
+With `knowledge_ui` on, the space's `open-knowledge` container also serves
+the runtime an `mcp__open_knowledge__*` read surface (SPEC-0085 R9): exactly
+the eight verified read verbs of the pinned release — `audit`, `config`,
+`exec` (upstream read-only shell allowlist), `history`, `links`, `palette`,
+`search`, `skills` — rendered as `tools.include`, so mutation verbs
+(`write`, `edit`, `delete`, `move`, `checkpoint`, `restore_version`,
+`import`, `install`, `preview_url`, `share_link`, and `lint` whose `fix`
+argument mutates) are never registered at all; a guessed call dies as an
+unregistered tool. `knowledge_ui_write` stays deferred and refused at
+validation until upstream gains per-path write scoping — `memory_card`
+remains the only agent write path. A down OK degrades honestly
+(`skip_preflight`: the runtime boots, calls surface the real error) and
+path args are confined to the vault root upstream plus the single `/data`
+mount structurally.
 
 Memory list/delete reject foreign-home aliases. Context backup rejects
 non-regular files and exports shared spool records only with matching

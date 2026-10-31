@@ -84,6 +84,12 @@ func Config(s Settings) M {
 			servers["browser_guest"] = browserServer(s.User, true, s.Has("browser_act"))
 		}
 	}
+	// SPEC-0085 R9: the OpenKnowledge grant is the hub-owned read surface over
+	// the vault — the verified include list renders here so mutation verbs are
+	// never registered with the runtime at all.
+	if s.Has("knowledge_ui") && s.govAllows("native:knowledge_ui") {
+		servers["open_knowledge"] = okServer()
+	}
 	// Connectors run behind the ToolHub admission boundary; only via: mcp-raw
 	// selections render raw mcp: definitions directly into mcp_servers.
 	for name, cfg := range rawMCPServers(s) {

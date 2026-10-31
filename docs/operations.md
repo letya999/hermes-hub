@@ -406,6 +406,10 @@ provenance and win the next rollup. OpenKnowledge's own state (`.ok/`,
 `.graph/`, `.git/ok/`) and every `runtime/` sidecar are `.okignore`d, so the
 editor indexes knowledge only. If the container is down, vault capture,
 recall and search are unaffected — nothing else depends on it.
+The same container serves the runtime a read-only MCP surface at
+`http://open-knowledge:8080/mcp` (`mcp__open_knowledge__*`): the eight
+verified read verbs via `tools.include`, mutation verbs never registered,
+`knowledge_ui_write` deferred until upstream per-path scoping (#422).
 Honcho is
 optional (`honcho` + `honcho_url`); its failure must not break ordinary
 Hermes memory. Skills live in the owner store `spaces/<id>/skills` —

@@ -399,8 +399,12 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "vault")), "target": "/data"},
 		}
 		// OK binds its container interface only so space-net peers can reach
-		// it; no host port is ever published in this stage (edge = CHG-0211).
-		okService["environment"] = M{"OK_ALLOW_EXTERNAL": "1"}
+		// it: a non-loopback bind needs the allowExternal consent interlock
+		// (upstream boot refuses it otherwise), and PORT pins the listener the
+		// mcp_servers URL points at — unset, OK picks a dynamic port.
+		// HOME lands on tmpfs: the image's /state/home sits on the read-only
+		// rootfs, while every durable OK path is project-local .ok/ under /data.
+		okService["environment"] = M{"OK_ALLOW_EXTERNAL": "1", "OK_BIND": "0.0.0.0", "PORT": "8080", "HOME": "/tmp"}
 		if s.CapabilityMode == "managed" {
 			okService["networks"] = M{managedAgentNetwork(s): M{}}
 		} else {
