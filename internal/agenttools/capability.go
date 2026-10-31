@@ -33,7 +33,7 @@ func HubToolsDefinition() api.ToolDefinition {
 	return api.ToolDefinition{
 		Schema:       api.SchemaVersion,
 		DefinitionID: HubToolsDefinitionID,
-		Version:      "5.10.0",
+		Version:      "5.11.0",
 		Transport:    api.AgentTools,
 		Source:       api.DefinitionSource{},
 		Workload: api.WorkloadPolicy{
@@ -108,6 +108,7 @@ func HubToolsDefinition() api.ToolDefinition {
 			tool("inbox_fetch", "inbox.fetch", "Materialize a file the user sent to the chat into workspace inbox/; a zip is unpacked from memory and never written as an archive.", api.WriteEffect, append(use("fetch", "inbound"), use("create", "files")...), str("id")),
 			tool("knowledge_list", "knowledge.list", "List read-only knowledge sources staged for this user on the hub.", api.ReadEffect, use("read", "knowledge")),
 			tool("memory_search", "memory.search", "Search the owner's memory vault: BM25 over daily leaves, cards and summaries with link-graph expansion. Arguments: query (required), limit, from, to (YYYY-MM-DD bounds on entry date), kinds (entry kinds), history:true includes superseded/forgotten. Every hit carries an evidence ref file:line-end — cite it, never answer from memory alone; status=degraded|unavailable is reported honestly.", api.ReadEffect, use("read", "memory"), str("query"), opt("limit"), opt("from"), opt("to"), arg("kinds", "array", false), arg("history", "boolean", false)),
+			tool("memory_card", "memory.write", "The only write path into the memory vault. Ops: remember (text[, name]) lands an inbox note searchable the same day; fact (card, text[, evidence]) appends a dated evidence line; truth (card, text) replaces the card's Compiled Truth through a hash-checked write; merge (card, to) folds one card into another; forget (id or card) soft-removes an entry or card from search, recall and promotion while keeping git history. merge/forget run only on a live owner-provenance turn — no argument grants that. Writes need a stamped private run; status=denied|invalid is honest, invalid carries errors and the corrected shape.", api.WriteEffect, use("write", "memory"), str("op"), opt("text"), opt("card"), opt("name"), opt("to"), opt("id"), opt("evidence"), arg("tags", "array", false)),
 			tool("knowledge_search", "knowledge.search", "Search read-only knowledge; excerpts include source, line and content hash.", api.ReadEffect, use("read", "knowledge"), str("query")),
 			tool("knowledge_read", "knowledge.read", "Read one staged knowledge source; the content returns as tool output and never lands in the workspace.", api.ReadEffect, use("read", "knowledge"), str("name")),
 			tool("image_convert", "images.convert", "Convert an image inside the admitted scope into a new artifact.", api.WriteEffect, append(use("convert", "images", "path"), use("create", "artifacts")...), str("name"), path, str("format")),

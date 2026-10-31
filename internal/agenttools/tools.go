@@ -129,6 +129,13 @@ type Input struct {
 	// JSON array string of {name?,tool?,args} entries merged onto the
 	// probe's tool+args per stream round.
 	Sources string `json:"sources,omitempty"`
+	// memory_card contract (SPEC-0085 R6): Op selects the write; Card/To
+	// name cards, Evidence anchors a fact to a captured entry, Tags sets
+	// frontmatter on created cards.
+	Op       string   `json:"op,omitempty"`
+	Card     string   `json:"card,omitempty"`
+	Evidence string   `json:"evidence,omitempty"`
+	Tags     []string `json:"tags,omitempty"`
 }
 type Tools struct {
 	Workspace, Archive, Organization *os.Root
@@ -165,6 +172,9 @@ type Tools struct {
 	Media         *media.Session
 	mu            sync.Mutex
 	lock, envLock *flock.Flock
+	// cardInvalids counts repeated identical malformed memory_card calls —
+	// R6.6's bounded-failure path escalates a retry loop to a refusal.
+	cardInvalids map[string]int
 }
 
 var signalRuntime = func(process *os.Process) {

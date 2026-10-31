@@ -91,7 +91,7 @@ func (g *Gateway) worker(ctx context.Context) {
 			// agent-read-only vault sidecar so memory_search confines the
 			// run; cleared on return, expired with the run budget.
 			if g.config.VaultDir != "" {
-				stampRunScope(g.config.VaultDir, job.ID, job.MemoryAudience())
+				stampRunScope(g.config.VaultDir, job.ID, job.MemoryAudience(), job.MemoryTurnProvenance())
 			}
 			var response string
 			var outcome RunOutcome

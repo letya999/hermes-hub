@@ -49,6 +49,7 @@ func (x *Indexer) Ensure() (*Index, bool, error) {
 	idx := &Index{}
 	blocks := x.leafBlocks()
 	provLines := x.provLines()
+	struck := memory.OpenForgetSet(filepath.Join(x.root, "runtime", "memory")).Set()
 	for _, e := range x.entries() {
 		d := Doc{
 			ID:         e.ID,
@@ -56,6 +57,7 @@ func (x *Indexer) Ensure() (*Index, bool, error) {
 			Kind:       string(e.Kind),
 			Audience:   string(e.Audience),
 			Provenance: string(e.Provenance),
+			Superseded: struck[e.ID],
 			Date:       e.ObservedAt.Format("2006-01-02"),
 			Links:      linkRefs(e.Body),
 		}
@@ -138,14 +140,15 @@ func (x *Indexer) markdownDocs(sources []source) []Doc {
 			kind = "summary"
 		}
 		out = append(out, Doc{
-			ID:       strings.TrimSuffix(filepath.Base(s.path), ".md"),
-			Path:     s.path,
-			Line:     1,
-			EndLine:  len(strings.Split(text, "\n")),
-			Kind:     kind,
-			Audience: "private",
-			Links:    linkRefs(text),
-			Text:     text,
+			ID:         strings.TrimSuffix(filepath.Base(s.path), ".md"),
+			Path:       s.path,
+			Line:       1,
+			EndLine:    len(strings.Split(text, "\n")),
+			Kind:       kind,
+			Audience:   "private",
+			Superseded: strings.Contains(text, "status: superseded"),
+			Links:      linkRefs(text),
+			Text:       text,
 		})
 	}
 	return out
@@ -184,6 +187,12 @@ func (x *Indexer) sources() ([]source, error) {
 	prov := filepath.Join(x.root, "runtime", "memory", "prov.db")
 	if info, err := os.Stat(prov); err == nil {
 		rel, _ := filepath.Rel(x.root, prov)
+		add(rel, info)
+	}
+	// The soft-forget sidecar is a fingerprint input too — a strike must
+	// invalidate the index on the next Ensure (R6.3: no stale hits).
+	if info, err := os.Stat(filepath.Join(x.root, "runtime", "memory", "forget.jsonl")); err == nil {
+		rel, _ := filepath.Rel(x.root, filepath.Join(x.root, "runtime", "memory", "forget.jsonl"))
 		add(rel, info)
 	}
 	root := filepath.Join(x.root, "memory")

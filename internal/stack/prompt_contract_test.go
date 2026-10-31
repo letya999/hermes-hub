@@ -49,3 +49,14 @@ func TestChannelContractNamesLiveToolInventory(t *testing.T) {
 		t.Error("channel contract must explain that a listed name absent from the visible tool list is callable through invoke")
 	}
 }
+
+// R6 contract guidance: the stable prompt names the memory write path and
+// its denial semantics — remember/fact/truth lanes plus the owner-turn rule
+// for merge/forget and the invalid-shape retry discipline.
+func TestChannelContractGuidesMemoryCard(t *testing.T) {
+	for _, want := range []string{"memory_card", "remember", "status=denied", "status=invalid"} {
+		if !strings.Contains(ChannelContract, want) {
+			t.Fatalf("contract missing %q", want)
+		}
+	}
+}

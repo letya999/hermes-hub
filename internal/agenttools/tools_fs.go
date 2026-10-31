@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -67,9 +68,28 @@ func (t *Tools) fileScoped(op string, r Input, ws, ar, org *os.Root) (map[string
 		}
 		defer t.lock.Unlock()
 	}
-	root, err := rootOf(r.Root, ws, ar, org, t.Skills)
-	if err != nil {
-		return nil, err
+	var vaultRoot *os.Root
+	if r.Root == "vault" {
+		_, live, _ := runCardAuth(t.VaultDir)
+		if t.VaultDir == "" || !live {
+			return nil, fmt.Errorf("vault root requires a stamped private run")
+		}
+		vr, err := os.OpenRoot(t.VaultDir)
+		if err != nil {
+			return nil, err
+		}
+		defer vr.Close()
+		vaultRoot = vr
+	}
+	var root *os.Root
+	if vaultRoot != nil {
+		root = vaultRoot
+	} else {
+		var err error
+		root, err = rootOf(r.Root, ws, ar, org, t.Skills)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if r.Path == "" {
 		r.Path = "."
@@ -144,6 +164,9 @@ func (t *Tools) fileScoped(op string, r Input, ws, ar, org *os.Root) (map[string
 	if r.Root == "archive" || r.Root == "organization" || r.Root == "skills" {
 		return nil, fmt.Errorf("%s is read-only", r.Root)
 	}
+	if r.Root == "vault" && !vaultWritable(r.Path) {
+		return nil, fmt.Errorf("governed zone — use memory_card")
+	}
 	if r.exportBytes == nil && (len(r.Text) > Limit || !utf8.ValidString(r.Text)) {
 		return nil, fmt.Errorf("text must be UTF-8 and <=2 MiB")
 	}
@@ -185,6 +208,27 @@ func (t *Tools) fileScoped(op string, r Input, ws, ar, org *os.Root) (map[string
 	}
 	return map[string]any{"path": r.Path, "revision": hash(content)}, nil
 }
+
+// vaultWritable is the R6.4 zone guard for the vault file root: memory/ and
+// runtime/ are contract-governed (memory_card and hub sidecars only) and dot
+// paths are never write surfaces; library/ and ordinary paths stay writable.
+// Segments compare folded — fullwidth ASCII to plain ASCII, case-insensitive.
+func vaultWritable(rel string) bool {
+	for _, seg := range strings.Split(path.Clean(rel), "/") {
+		var b strings.Builder
+		for _, r := range seg {
+			if r >= 0xFF01 && r <= 0xFF5E {
+				r -= 0xFEE0
+			}
+			b.WriteRune(unicode.ToLower(r))
+		}
+		if s := b.String(); s == "memory" || s == "runtime" || strings.HasPrefix(s, ".") {
+			return false
+		}
+	}
+	return true
+}
+
 func read(root *os.Root, p string) ([]byte, error) {
 	info, err := root.Lstat(p)
 	if err != nil {

@@ -61,14 +61,15 @@ func runScopeFile(vaultDir string) string {
 
 type runScopeMap struct {
 	Runs map[string]struct {
-		Audience string `json:"audience"`
-		Expires  string `json:"expires"`
+		Audience   string `json:"audience"`
+		Provenance string `json:"provenance"`
+		Expires    string `json:"expires"`
 	} `json:"runs"`
 }
 
 // stampRunScope records the dispatching job's audience. Failures are
 // best-effort: a missing stamp fails the tool closed to "group".
-func stampRunScope(vaultDir, jobID string, audience memory.Audience) {
+func stampRunScope(vaultDir, jobID string, audience memory.Audience, provenance memory.Provenance) {
 	if vaultDir == "" {
 		return
 	}
@@ -79,15 +80,17 @@ func stampRunScope(vaultDir, jobID string, audience memory.Audience) {
 	m := readRunScope(vaultDir)
 	if m.Runs == nil {
 		m.Runs = map[string]struct {
-			Audience string `json:"audience"`
-			Expires  string `json:"expires"`
+			Audience   string `json:"audience"`
+			Provenance string `json:"provenance"`
+			Expires    string `json:"expires"`
 		}{}
 	}
 	expires := time.Now().Add(hubruntime.RunBudget() + 5*time.Minute).UTC().Format(time.RFC3339)
 	m.Runs[jobID] = struct {
-		Audience string `json:"audience"`
-		Expires  string `json:"expires"`
-	}{Audience: string(audience), Expires: expires}
+		Audience   string `json:"audience"`
+		Provenance string `json:"provenance"`
+		Expires    string `json:"expires"`
+	}{Audience: string(audience), Provenance: string(provenance), Expires: expires}
 	writeRunScope(vaultDir, m)
 }
 

@@ -1443,3 +1443,31 @@ func TestIntentSinkErrorJournaled(t *testing.T) {
 		t.Fatalf("failed intent delivery not journaled: %q", body)
 	}
 }
+
+// R6.3: a struck entry never reaches the promotion prompt — soft forget
+// applies to the nightly lane too, not just search/recall.
+func TestStruckEntryNotPromoted(t *testing.T) {
+	root := fixture(t, []memory.Entry{
+		eligibleEntry("turn-1", "the supplier is bergamot-free z3"),
+		eligibleEntry("turn-2", "a second ordinary fact"),
+	})
+	if err := memory.OpenForgetSet(filepath.Join(root, "runtime", "memory")).Strike("turn-1"); err != nil {
+		t.Fatal(err)
+	}
+	var prompt string
+	if _, err := Run(context.Background(), root, dayNoon, Options{
+		Relay: func(ctx context.Context, system, user string) (string, error) {
+			prompt = user
+			return `{"summary":"s","facts":[]}`, nil
+		},
+		Now: dayNoon.Add(24 * time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(prompt, "bergamot-free") {
+		t.Fatalf("struck entry reached the promotion prompt: %q", prompt)
+	}
+	if !strings.Contains(prompt, "second ordinary fact") {
+		t.Fatalf("unstruck entry missing from prompt: %q", prompt)
+	}
+}

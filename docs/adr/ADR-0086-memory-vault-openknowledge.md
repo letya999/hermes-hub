@@ -18,6 +18,13 @@ the lane-2 hint); CORE keeps its own D12 ≤3600-char slice and both ride
 the same 4096-byte instructions ceiling with CORE yielding first. A
 recall/index failure degrades to a flagged marker-wrapped line and the
 run still executes.
+Amended (M20.6, issue #303): D7 mechanics recorded — run-scope stamps
+carry provenance for owner-turn binding; soft forget lands as
+`runtime/memory/forget.jsonl` strikes for entries and `status:
+superseded` frontmatter for cards; every mutation and denial journals to
+`runtime/memory/writes.jsonl` with the authorizing turn's `SourceRef`;
+the `vault:` file root gates non-contract paths behind a stamped private
+run with case/fullwidth-folded zone names.
 Requirements: [SPEC-0085](../../specs/active/SPEC-0085-memory-vault-openknowledge.md).
 Research: `.work/in-progress/CHG-0204-vault-layout/research.md`.
 
@@ -119,6 +126,24 @@ a provider seam with conformance, and soft forget.
   memory zones (`daily/`, `summaries/`, `cards/`) through existing
   ToolHub path scoping — the agent reads them and edits them only via
   the contract. `library/` and other vault paths stay writable.
+
+  2026-10-31 amendment (M20.6): the turn's authorization is the live
+  run-scope stamp, which now carries `provenance` beside `audience` —
+  `merge`/`forget` execute only when a live stamp holds owner
+  provenance, every live stamp must be private-audience (a concurrent
+  group run confines writes exactly like reads), and expired or
+  argument-claimed authorization is denied. The authorizing stamp's job
+  id is the `SourceRef` journaled to `runtime/memory/writes.jsonl` for
+  every mutation and every denial. Soft forget is two hub-owned marks:
+  `runtime/memory/forget.jsonl` strikes daily-leaf entry ids and a
+  governed `status: superseded` frontmatter write strikes cards — the
+  indexer sets `Doc.Superseded` from both, so struck records leave
+  search, lane-1 recall and promotion permanently and stay visible only
+  through `history:true` and git. The `vault:` file root gives the
+  agent `library/` and ordinary vault paths under a stamped private run
+  while denying `memory/`, `runtime/` and dot paths; zone names compare
+  with case and fullwidth folding so `MEMORY/`, `ｍｅｍｏｒｙ/` and
+  dot-segment tricks cannot alias the guard.
 
 - **D8. OpenKnowledge is the opt-in human UI over the same tree.**
   Feature `knowledge_ui` renders one `open-knowledge` container per

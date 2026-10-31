@@ -154,8 +154,8 @@ func TestSensitiveJobNotCaptured(t *testing.T) {
 // live stamp; any group run confines every in-flight call to "group".
 func TestRunScopeStamped(t *testing.T) {
 	vaultDir := t.TempDir()
-	stampRunScope(vaultDir, "j-priv", memory.AudiencePrivate)
-	stampRunScope(vaultDir, "j-grp", memory.AudienceGroup)
+	stampRunScope(vaultDir, "j-priv", memory.AudiencePrivate, memory.ProvenanceOwner)
+	stampRunScope(vaultDir, "j-grp", memory.AudienceGroup, memory.ProvenanceOwner)
 	data, err := os.ReadFile(filepath.Join(vaultDir, "runtime", "run-scope", "current"))
 	if err != nil {
 		t.Fatalf("stamp file: %v", err)
@@ -190,7 +190,7 @@ func TestRunScopeWorkerLifecycle(t *testing.T) {
 	g.config.VaultDir = root
 	job := Job{ID: "j-scope", Text: "hi", Channel: "telegram_bot", ScopeID: "group:me", UserID: "alice"}
 	g.config.VaultDir = root
-	stampRunScope(g.config.VaultDir, job.ID, job.MemoryAudience())
+	stampRunScope(g.config.VaultDir, job.ID, job.MemoryAudience(), job.MemoryTurnProvenance())
 	m := readRunScope(root)
 	if m.Runs["j-scope"].Audience != "group" {
 		t.Fatalf("group job stamped %+v", m.Runs["j-scope"])
@@ -198,5 +198,22 @@ func TestRunScopeWorkerLifecycle(t *testing.T) {
 	clearRunScope(g.config.VaultDir, job.ID)
 	if m := readRunScope(root); len(m.Runs) != 0 {
 		t.Fatalf("stamp not cleared: %+v", m.Runs)
+	}
+}
+
+// R6.2: the dispatch stamp also mints the turn's provenance — memory_card's
+// owner-binding reads it; a forwarded turn never mints "owner".
+func TestRunScopeStampsProvenance(t *testing.T) {
+	vaultDir := t.TempDir()
+	ownerJob := Job{ID: "j-own", Trigger: "message", Untrusted: false}
+	fwdJob := Job{ID: "j-fwd", Trigger: "message", Untrusted: true}
+	stampRunScope(vaultDir, ownerJob.ID, ownerJob.MemoryAudience(), ownerJob.MemoryTurnProvenance())
+	stampRunScope(vaultDir, fwdJob.ID, fwdJob.MemoryAudience(), fwdJob.MemoryTurnProvenance())
+	m := readRunScope(vaultDir)
+	if m.Runs["j-own"].Provenance != "owner" {
+		t.Fatalf("owner job stamped %+v", m.Runs["j-own"])
+	}
+	if m.Runs["j-fwd"].Provenance != "untrusted" {
+		t.Fatalf("forwarded job stamped %+v", m.Runs["j-fwd"])
 	}
 }

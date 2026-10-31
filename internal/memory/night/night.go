@@ -350,9 +350,13 @@ func eligibleText(root, leaf, dayKey string, tz *time.Location) (string, string,
 	if err != nil {
 		return "", "", nil
 	}
+	struck := memory.OpenForgetSet(filepath.Join(root, "runtime", "memory")).Set()
 	var b, own strings.Builder
 	blocks := map[string]string{}
 	for _, e := range entries {
+		if struck[e.ID] {
+			continue
+		}
 		if e.ObservedAt.In(tz).Format("2006-01-02") != dayKey || !e.PromotionEligible() {
 			continue
 		}

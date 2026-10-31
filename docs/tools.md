@@ -73,7 +73,7 @@ Grouped by capability resource (internal/agenttools/capability.go):
 | artifacts | `archive_create`, `archive_unpack`, `artifact_remove` | artifacts/ scope |
 | inbox | `inbox_fetch` | materialize a user-sent file into `inbox/`; zips unpack from memory |
 | knowledge | `knowledge_list`, `knowledge_search`, `knowledge_read` | read-only staged sources; content returns as output, never lands in workspace |
-| memory | `memory_search` | BM25 over daily leaves, cards and summaries with link-graph expansion; `query` required, `limit`/`from`/`to`/`kinds`/`history` optional; hits carry an `evidence` file:line-end ref — cite it, never answer from recall alone; `status` reports `ok`/`empty`/`degraded`/`unavailable` honestly; group-scope runs never see private entries |
+| memory | `memory_search`, `memory_card` | `memory_search`: BM25 over daily leaves, cards and summaries with link-graph expansion; `query` required, `limit`/`from`/`to`/`kinds`/`history` optional; hits carry an `evidence` file:line-end ref — cite it, never answer from recall alone; `status` reports `ok`/`empty`/`degraded`/`unavailable` honestly; group-scope runs never see private entries. `memory_card` is the only write path into the vault: `op` required — `remember` (text[, name]) lands an inbox note searchable the same day; `fact` (card, text[, evidence]) appends a dated evidence line; `truth` (card, text) replaces Compiled Truth via hash-checked write; `merge` (card, to) folds cards; `forget` (id or card) soft-removes from search, recall and promotion while keeping git history. `merge`/`forget` need a live owner-provenance turn — no argument grants it; every mutation and denial is journaled to `runtime/memory/writes.jsonl` with the authorizing turn's `source_ref`; `status=denied`/`invalid` are honest and `invalid` returns the corrected `shape` |
 | ssh | `ssh_hosts`, `ssh_exec`, `ssh_read`, `ssh_write`, `ssh_shell_*`, `ssh_tunnel_*` | declared hosts only; write/shell/tunnel each need their own grant |
 | hh | `hh_search`, `hh_vacancy`, `hh_resumes`, `hh_apply` | apply sends externally — exact user-authorized inputs only |
 | exec | `code_exec` | bounded executor when the capability is granted; optional `skill` leases that skill's stored credentials into the one call |
@@ -261,6 +261,20 @@ pinned lane-1 recall block (SPEC-0085 R4): ≤4 card hits with evidence refs,
 re-extract it — zero model calls, audience-scoped, and flagged-degraded
 rather than hidden when the index is unavailable. Past-referencing turns
 earn one lane-2 hint line nudging `memory_search`.
+
+Writes into the vault run through one contract surface: `memory_card`
+(SPEC-0085 R6). `memory/daily`, `memory/cards`, `memory/summaries`,
+`memory/CORE.md`, `memory/REVIEW.md` and `runtime/` are governed zones — the
+file tools deny writes there on the `vault:` root (segment names compare
+case- and fullwidth-folded; `library/` and ordinary paths stay writable, and
+the root itself requires a stamped private run). `merge`/`forget` execute
+only on a live owner-provenance turn bound to that turn's `SourceRef` — a
+replayed or argument-claimed authorization is denied, and every mutation
+and denial is journaled to `runtime/memory/writes.jsonl`. Soft forget is
+a hub-owned strike: `runtime/memory/forget.jsonl` for daily-leaf entries,
+`status: superseded` frontmatter for cards — excluded from search, lane-1
+recall and nightly promotion across restarts, visible only via
+`history:true` and git.
 
 Memory list/delete reject foreign-home aliases. Context backup rejects
 non-regular files and exports shared spool records only with matching

@@ -157,8 +157,13 @@ docs/tools.md; they are not shared personal-memory stores.
   (ADR-0086): `memory/` markdown (`daily/`, `cards/`, `summaries/`,
   `CORE.md`, `REVIEW.md`, `schema.json`) committed by the governed
   writer, runtime sidecars under `runtime/` (`.okignore`d, never
-  committed: `prov.db`, `index/`, `run-scope/`, `night/` day states +
-  `truth_pending`). Mounts rw at `/vault` in the runtime and in the
+  committed: `prov.db`, `index/`, `run-scope/` (audience + provenance
+  stamps), `night/` day states + `truth_pending`, `memory/forget.jsonl`
+  soft-forget strikes and `memory/writes.jsonl` the card-write audit
+  journal). Agent write access goes through the `memory_card` contract or
+  the `vault:` file root — both require a stamped private run and deny the
+  governed zones (`memory/`, `runtime/`, dot paths); `library/` stays
+  writable (SPEC-0085 R6). Mounts rw at `/vault` in the runtime and in the
   communication gateway — the gateway is the capture writer, the
   pre-turn recall/CORE pinning plane, and the nightly rollup driver
   (SPEC-0085 R2/R4/R5): at `memory_rollup_time` (agent settings,
