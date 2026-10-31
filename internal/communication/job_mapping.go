@@ -51,13 +51,13 @@ func (s *Spool) conversationPath(principal, context, conversation string) string
 }
 
 func (s *Spool) writeIdempotencyIndexLocked(key, jobID string) error {
-	return atomicJSON(s.idempotencyIndexPath(key), struct {
+	return s.writeJSON(s.idempotencyIndexPath(key), struct {
 		JobID string `json:"job_id"`
 	}{jobID})
 }
 
 func (s *Spool) writeMappingLocked(mapping JobMapping) error {
-	if err := atomicJSON(s.mappingPath(mapping.JobID), mapping); err != nil {
+	if err := s.writeJSON(s.mappingPath(mapping.JobID), mapping); err != nil {
 		return err
 	}
 	if s.activeMappings != nil {
@@ -177,7 +177,7 @@ func (s *Spool) updateMappingLocked(jobID string, outcome RunOutcome, status str
 	if outcome.SessionID != "" {
 		mapping.SessionID = outcome.SessionID
 		conversation := ConversationMapping{PrincipalID: mapping.PrincipalID, ContextID: mapping.ContextID, ConversationID: mapping.ConversationID, SessionID: outcome.SessionID, UpdatedAt: time.Now().UTC()}
-		if err := atomicJSON(s.conversationPath(mapping.PrincipalID, mapping.ContextID, mapping.ConversationID), conversation); err != nil {
+		if err := s.writeJSON(s.conversationPath(mapping.PrincipalID, mapping.ContextID, mapping.ConversationID), conversation); err != nil {
 			return err
 		}
 	}
@@ -309,4 +309,38 @@ func (s *Spool) RecordOutcome(jobID string, outcome RunOutcome) error {
 	}
 	terminal := status == "completed" || status == "failed" || status == "cancelled" || status == "interrupted"
 	return s.updateMappingLocked(jobID, outcome, status, terminal)
+}
+
+// A caller may repair an identical pending admission, never infer a missing run.
+func (s *Spool) jobAdmissionLocked(job Job) (bool, error) {
+	m, err := s.loadMappingLocked(job.ID)
+	if err == nil {
+		if !m.MatchesJob(job) || m.ChatID != job.ChatID || m.TaskID != job.TaskID || m.TopicID != job.TopicID || m.AssignmentID != job.AssignmentID {
+			return false, errors.New("source job mapping mismatch")
+		}
+		return true, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	path := filepath.Join(s.root, "pending", spoolFileID(job.ID)+".json")
+	body, err := readEventRecord(path)
+	if errors.Is(err, os.ErrNotExist) {
+		for _, dir := range []string{"running", "done", "failed"} {
+			if _, other := os.Lstat(filepath.Join(s.root, dir, spoolFileID(job.ID)+".json")); other == nil {
+				return false, errors.New("unmapped source job requires recovery")
+			} else if !errors.Is(other, os.ErrNotExist) {
+				return false, other
+			}
+		}
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	var stored Job
+	if strictEventJSON(body, &stored) != nil || stored.ID != job.ID || stored.IdempotencyKey != job.IdempotencyKey || jobFingerprint(stored) != jobFingerprint(job) || stored.ChatID != job.ChatID || stored.TaskID != job.TaskID || stored.TopicID != job.TopicID || stored.AssignmentID != job.AssignmentID || stored.AssignmentPlanRevision != job.AssignmentPlanRevision {
+		return false, errors.New("source pending job mismatch")
+	}
+	return true, s.writeMappingLocked(mappingFromJob(stored, stored.CreatedAt.UTC()))
 }

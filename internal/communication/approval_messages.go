@@ -13,10 +13,10 @@ func (s *Spool) trackApprovalMessage(d Delivery) error {
 		return errors.New("approval message receipt missing")
 	}
 	dir := filepath.Join(s.root, "approval-messages")
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := s.mkdirOwned(dir); err != nil {
 		return err
 	}
-	return atomicJSON(filepath.Join(dir, spoolFileID(d.ID)+".json"), d)
+	return s.writeJSON(filepath.Join(dir, spoolFileID(d.ID)+".json"), d)
 }
 
 // Only receipts of messages this gateway sent can be removed. Decisions still
@@ -50,7 +50,7 @@ func (g *Gateway) closeApprovalMessages(ctx context.Context) {
 			continue
 		}
 		if g.api.DeleteMessage(ctx, d.ChatID, d.TelegramMessageID) == nil {
-			_ = os.Remove(path)
+			_ = g.spool.removeOwned(path)
 		}
 	}
 }

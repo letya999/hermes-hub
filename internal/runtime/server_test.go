@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -238,7 +239,7 @@ func TestPersistentHermesPreservesFailedOutcomeMetadata(t *testing.T) {
 	}
 }
 
-func TestColdWakeRetriesOneFailedRunWithoutTools(t *testing.T) {
+func TestColdWakeMissingToolEventsDoesNotProvePreEffect(t *testing.T) {
 	runs := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -274,7 +275,7 @@ func TestColdWakeRetriesOneFailedRunWithoutTools(t *testing.T) {
 	t.Setenv("HUB_HERMES_API_HOST", host)
 	t.Setenv("HUB_HERMES_API_PORT", port)
 	result, err := (&runtimeHTTP{}).executePersistent(context.Background(), ExecuteRequest{ContextID: "alice", ConversationID: "telegram-1", IdempotencyKey: "wake-key", Text: "hello"})
-	if err != nil || result.Status != "completed" || result.Text != "awake" || result.RunID != "wake-2" || runs != 2 {
+	if err == nil || result.Status != "failed" || result.RunID != "wake-1" || runs != 1 {
 		t.Fatalf("result=%+v err=%v runs=%d", result, err, runs)
 	}
 }
@@ -801,6 +802,264 @@ func TestRuntimeRestartRequestWritesMarkerWithoutSignaling(t *testing.T) {
 		if w := attempt(); w.Code != http.StatusUnauthorized {
 			t.Fatalf("restart-request rejected with %d, want 401", w.Code)
 		}
+	}
+}
+
+func TestRestartMarkerCarriesCauseAndRejectsStaleGeneration(t *testing.T) {
+	t.Setenv("HUB_RUNTIME_AUTH", "runtime-secret")
+	t.Setenv("HUB_RUNTIME_GENERATION", "gen-2")
+	dir := t.TempDir()
+	oldState := state
+	state = dir
+	defer func() { state = oldState }()
+	handler := runtimeHandler()
+	post := func(body string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/v1/restart-request", strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer runtime-secret")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	newest := `{"operation_id":"projection-abc","reason":"tool_projection_change","revision":3,"generation":"gen-2"}`
+	if response := post(newest); response.Code != http.StatusOK {
+		t.Fatalf("new marker status=%d body=%s", response.Code, response.Body.String())
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "restart.request"))
+	if err != nil || !strings.Contains(string(body), `"operation_id":"projection-abc"`) || !strings.Contains(string(body), `"generation":"gen-2"`) {
+		t.Fatalf("marker cause missing: body=%q err=%v", body, err)
+	}
+	if response := post(newest); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"duplicate":true`) {
+		t.Errorf("duplicate marker status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := post(`{"operation_id":"projection-other","reason":"tool_projection_change","revision":3,"generation":"gen-2"}`); response.Code != http.StatusConflict {
+		t.Errorf("same revision, different operation status=%d", response.Code)
+	}
+	if response := post(`{"operation_id":"projection-old","reason":"tool_projection_change","revision":2,"generation":"gen-2"}`); response.Code != http.StatusConflict {
+		t.Errorf("older revision status=%d", response.Code)
+	}
+	if response := post(`{"operation_id":"projection-stale","reason":"tool_projection_change","revision":4,"generation":"gen-1"}`); response.Code != http.StatusConflict {
+		t.Errorf("stale generation status=%d", response.Code)
+	}
+	if after, err := os.ReadFile(filepath.Join(dir, "restart.request")); err != nil || string(after) != string(body) {
+		t.Errorf("rejected request changed marker: body=%q err=%v", after, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "restart.request"), []byte("corrupt"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if response := post(`{"operation_id":"projection-new","reason":"tool_projection_change","revision":4,"generation":"gen-2"}`); response.Code != http.StatusInternalServerError {
+		t.Errorf("corrupt marker status=%d", response.Code)
+	}
+	if after, err := os.ReadFile(filepath.Join(dir, "restart.request")); err != nil || string(after) != "corrupt" {
+		t.Errorf("corrupt marker overwritten: %q %v", after, err)
+	}
+	foreign := `{"operation_id":"projection-foreign","reason":"tool_projection_change","revision":2,"generation":"gen-1"}`
+	if err := os.WriteFile(filepath.Join(dir, "restart.request"), []byte(foreign), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if response := post(`{"operation_id":"projection-new","reason":"tool_projection_change","revision":4,"generation":"gen-2"}`); response.Code != http.StatusConflict {
+		t.Errorf("existing foreign generation status=%d", response.Code)
+	}
+	if after, err := os.ReadFile(filepath.Join(dir, "restart.request")); err != nil || string(after) != foreign {
+		t.Errorf("foreign generation marker overwritten: %q %v", after, err)
+	}
+}
+
+func TestRestartMarkerRejectsOversize(t *testing.T) {
+	t.Setenv("HUB_RUNTIME_AUTH", "runtime-secret")
+	dir := t.TempDir()
+	oldState := state
+	state = dir
+	defer func() { state = oldState }()
+	request := httptest.NewRequest(http.MethodPost, "/v1/restart-request", strings.NewReader(strings.Repeat("x", 4097)))
+	request.Header.Set("Authorization", "Bearer runtime-secret")
+	response := httptest.NewRecorder()
+	runtimeHandler().ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("oversize marker status=%d", response.Code)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "restart.request")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("oversize marker reached disk: %v", err)
+	}
+}
+
+func TestRestartMarkerRejectsMalformedOperation(t *testing.T) {
+	t.Setenv("HUB_RUNTIME_AUTH", "runtime-secret")
+	t.Setenv("HUB_RUNTIME_GENERATION", "gen-2")
+	dir := t.TempDir()
+	oldState := state
+	state = dir
+	defer func() { state = oldState }()
+	handler := runtimeHandler()
+	for _, body := range []string{
+		`{"operation_id":"projection-abc","reason":"tool_projection_change","revision":3,"generation":"gen-2"} {}`,
+		`{"operation_id":"../escape","reason":"tool_projection_change","revision":3,"generation":"gen-2"}`,
+		`{"operation_id":"projection-abc","reason":"manual","revision":3,"generation":"gen-2"}`,
+		`{"operation_id":"projection-abc","reason":"tool_projection_change","revision":0,"generation":"gen-2"}`,
+		`{"operation_id":"projection-abc","reason":"tool_projection_change","revision":3}`,
+		`{"operation_id":"projection-abc","reason":"tool_projection_change","revision":3,"generation":"gen-2","unknown":true}`,
+	} {
+		request := httptest.NewRequest(http.MethodPost, "/v1/restart-request", strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer runtime-secret")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest {
+			t.Errorf("malformed marker status=%d for %s", response.Code, body)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "restart.request")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("malformed marker reached disk: %v", err)
+	}
+}
+
+func TestRestartMarkerDoesNotFollowSymlink(t *testing.T) {
+	t.Setenv("HUB_RUNTIME_AUTH", "runtime-secret")
+	t.Setenv("HUB_RUNTIME_GENERATION", "gen-2")
+	dir := t.TempDir()
+	oldState := state
+	state = dir
+	defer func() { state = oldState }()
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(outside, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "restart.request")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/restart-request", strings.NewReader(`{"operation_id":"projection-new","reason":"tool_projection_change","revision":4,"generation":"gen-2"}`))
+	request.Header.Set("Authorization", "Bearer runtime-secret")
+	response := httptest.NewRecorder()
+	runtimeHandler().ServeHTTP(response, request)
+	if response.Code == http.StatusOK {
+		t.Fatalf("accepted symlink marker: %s", response.Body.String())
+	}
+	if after, err := os.ReadFile(outside); err != nil || len(after) != 0 {
+		t.Fatalf("outside file changed: %q %v", after, err)
+	}
+}
+
+func TestRestartMarkerConcurrentRevisionNeverRegresses(t *testing.T) {
+	t.Setenv("HUB_RUNTIME_AUTH", "runtime-secret")
+	t.Setenv("HUB_RUNTIME_GENERATION", "gen-2")
+	dir := t.TempDir()
+	oldState := state
+	state = dir
+	defer func() { state = oldState }()
+	handler := runtimeHandler()
+	for round := 0; round < 20; round++ {
+		if err := os.Remove(filepath.Join(dir, "restart.request")); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		for revision := 1; revision <= 16; revision++ {
+			wg.Add(1)
+			go func(revision int) {
+				defer wg.Done()
+				<-start
+				body := fmt.Sprintf(`{"operation_id":"projection-%d","reason":"tool_projection_change","revision":%d,"generation":"gen-2"}`, revision, revision)
+				request := httptest.NewRequest(http.MethodPost, "/v1/restart-request", strings.NewReader(body))
+				request.Header.Set("Authorization", "Bearer runtime-secret")
+				handler.ServeHTTP(httptest.NewRecorder(), request)
+			}(revision)
+		}
+		close(start)
+		wg.Wait()
+		body, err := os.ReadFile(filepath.Join(dir, "restart.request"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var marker restartMarker
+		if err := json.Unmarshal(body, &marker); err != nil || marker.Revision != 16 {
+			t.Fatalf("round %d final marker revision=%d err=%v body=%q", round, marker.Revision, err, body)
+		}
+	}
+}
+
+func TestRestartMarkerReaderSeesCompleteDocument(t *testing.T) {
+	t.Setenv("HUB_RUNTIME_AUTH", "runtime-secret")
+	t.Setenv("HUB_RUNTIME_GENERATION", "gen-2")
+	dir := t.TempDir()
+	oldState := state
+	state = dir
+	defer func() { state = oldState }()
+	handler := runtimeHandler()
+	post := func(revision int) {
+		body := fmt.Sprintf(`{"operation_id":"projection-%d","reason":"tool_projection_change","revision":%d,"generation":"gen-2"}`, revision, revision)
+		request := httptest.NewRequest(http.MethodPost, "/v1/restart-request", strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer runtime-secret")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("revision %d status=%d", revision, response.Code)
+		}
+	}
+	post(1)
+	stop := make(chan struct{})
+	invalid := make(chan string, 1)
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			body, err := os.ReadFile(filepath.Join(dir, "restart.request"))
+			if err != nil {
+				continue // Windows replacement can briefly deny a concurrent open.
+			}
+			var marker restartMarker
+			if json.Unmarshal(body, &marker) != nil || marker.Revision == 0 {
+				select {
+				case invalid <- fmt.Sprintf("body=%q err=%v", body, err):
+				default:
+				}
+				return
+			}
+		}
+	}()
+	for revision := 2; revision <= 300; revision++ {
+		post(revision)
+	}
+	close(stop)
+	select {
+	case result := <-invalid:
+		t.Fatalf("reader observed incomplete marker: %s", result)
+	default:
+	}
+}
+
+func TestRestartMarkerSyncFailurePreservesPrevious(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "restart.request")
+	if err := os.WriteFile(path, []byte("previous"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeRestartMarker(path, []byte("replacement"), func(*os.File) error { return errors.New("sync failed") }, func(string) error { return nil }); err == nil {
+		t.Fatal("sync failure was acknowledged")
+	}
+	if after, err := os.ReadFile(path); err != nil || string(after) != "previous" {
+		t.Fatalf("previous marker lost: %q %v", after, err)
+	}
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 1 {
+		t.Fatalf("temp marker leaked: %v %v", entries, err)
+	}
+}
+
+// A file-level sync alone does not guarantee the rename survives a crash:
+// the parent directory entry must be flushed as well, so a power loss cannot
+// silently drop an acknowledged marker.
+func TestRestartMarkerDirectorySync(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "restart.request")
+	synced := ""
+	if err := writeRestartMarker(path, []byte("armed"), func(f *os.File) error { return f.Sync() }, func(p string) error { synced = p; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if synced != dir {
+		t.Fatalf("parent directory not synced: %q", synced)
+	}
+	if err := writeRestartMarker(path, []byte("again"), func(f *os.File) error { return f.Sync() }, func(string) error { return errors.New("dir sync failed") }); err == nil {
+		t.Fatal("directory sync failure was acknowledged")
 	}
 }
 

@@ -1,0 +1,36 @@
+schema: 1
+change: CHG-0237
+title: Integrate Storage reliability MVP into dev
+status: done
+branch: chore/storage-reliability-integration
+updated: "2026-10-31"
+phase: completed_in_integration_branch
+adr: ADR-0088
+related_adrs: [ADR-0087]
+spec: SPEC-0088
+related_specs: [SPEC-0087]
+depends_on: []
+implementation_status: completed_for_imported_code
+validation:
+  merge_simulation: 26_text_conflicts_from_temporary_wip_snapshot
+  merge: 26_text_conflicts_resolved_in_main_worktree
+  source_snapshot: 87fbb198
+  go_compile: passed
+  docs_check: passed
+  diff_check: passed
+  gitleaks_staged: passed
+  just_check: passed_86_27_percent
+  broker_linux_check: passed_90_3_percent_min_package_86_3_percent
+  targeted_package_tests: passed
+  docker_build: passed_hubctl_scoped_build_and_six_dev_rebuilds
+  docker_check: not_run
+  docker_smoke: passed
+  supervisor_contract: passed
+  hermes_capability_contract: passed
+  managed_supervisor_canary: passed
+  hermes_contract: passed_including_five_minute_gateway_lifecycle
+  live_acceptance: passed_local_dev_endpoints_storage_status_broker_head_migration
+evidence: [evidence.md]
+follow_up:
+  - Production SQLCipher, secret GC and cutover remain CHG-0218 through CHG-0220 and CHG-0226.
+  - Rebind and respawn actual managed owner spaces when their settings profiles are available.

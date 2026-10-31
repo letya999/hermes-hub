@@ -39,8 +39,10 @@ type sshdOpts struct {
 // memFS is a shared in-memory SFTP backend: one map backs every connection so
 // writes persist across the per-call dials the service performs.
 type memFS struct {
-	mu    sync.Mutex
-	files map[string][]byte
+	mu            sync.Mutex
+	files         map[string][]byte
+	reads, writes int
+	afterRename   func()
 }
 
 func newMemFS() *memFS { return &memFS{files: map[string][]byte{}} }
@@ -48,6 +50,7 @@ func newMemFS() *memFS { return &memFS{files: map[string][]byte{}} }
 func (m *memFS) Fileread(r *sftp.Request) (io.ReaderAt, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.reads++
 	body, ok := m.files[r.Filepath]
 	if !ok {
 		return nil, os.ErrNotExist
@@ -83,6 +86,9 @@ func (w *memWriter) Close() error {
 }
 
 func (m *memFS) Filewrite(r *sftp.Request) (io.WriterAt, error) {
+	m.mu.Lock()
+	m.writes++
+	m.mu.Unlock()
 	return &memWriter{fs: m, path: r.Filepath}, nil
 }
 
@@ -97,6 +103,9 @@ func (m *memFS) Filecmd(r *sftp.Request) error {
 		}
 		m.files[r.Target] = body
 		delete(m.files, r.Filepath)
+		if m.afterRename != nil {
+			m.afterRename()
+		}
 	case "Remove":
 		if _, ok := m.files[r.Filepath]; !ok {
 			return os.ErrNotExist

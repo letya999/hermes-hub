@@ -34,7 +34,7 @@ func statStoreStamp(path string) (storeStamp, bool) {
 }
 
 func NewStore() *Store {
-	return &Store{definitions: map[string]api.ToolDefinition{}, connections: map[string]api.Connection{}, credentials: map[string]api.CredentialReference{}, bindings: map[string]api.ToolBinding{}, workloads: map[string]api.WorkloadInstance{}, projectionRevisions: map[string]uint64{}, grants: map[string]api.Grant{}, onboardings: map[string]api.Onboarding{}, operations: map[string]api.Operation{}, refreshLeases: map[string]api.RefreshLease{}, connStatus: map[string]api.Status{}, recipes: map[string]api.RecipeResolution{}, publications: map[string]api.DefinitionPublication{}, sharedPolicies: map[string]api.SharedCredentialPolicy{}, teams: map[string]api.Team{}, bindingBrokerGrants: map[string]api.BrokerBindingGrant{}, capabilityPolicies: map[string]api.CapabilityPolicy{}, capabilityProfiles: map[string]api.CapabilityProfile{}, exclusions: map[string]api.ProjectionExclusion{}}
+	return &Store{definitions: map[string]api.ToolDefinition{}, connections: map[string]api.Connection{}, credentials: map[string]api.CredentialReference{}, bindings: map[string]api.ToolBinding{}, workloads: map[string]api.WorkloadInstance{}, projectionRevisions: map[string]uint64{}, restartApplied: map[string]uint64{}, restartDigests: map[string]string{}, grants: map[string]api.Grant{}, onboardings: map[string]api.Onboarding{}, operations: map[string]api.Operation{}, refreshLeases: map[string]api.RefreshLease{}, connStatus: map[string]api.Status{}, recipes: map[string]api.RecipeResolution{}, publications: map[string]api.DefinitionPublication{}, sharedPolicies: map[string]api.SharedCredentialPolicy{}, teams: map[string]api.Team{}, bindingBrokerGrants: map[string]api.BrokerBindingGrant{}, capabilityPolicies: map[string]api.CapabilityPolicy{}, capabilityProfiles: map[string]api.CapabilityProfile{}, exclusions: map[string]api.ProjectionExclusion{}}
 }
 
 func (s *Store) Save(path string) error {
@@ -55,12 +55,26 @@ func (s *Store) saveLocked(path string) error {
 	if err := api.SafeStorePath(path + ".lock"); err != nil {
 		return err
 	}
+	marker := path + ".initialized"
+	if err := api.SafeStorePath(marker); err != nil {
+		return err
+	}
 	lock := flock.New(path + ".lock")
 	if err := lock.Lock(); err != nil {
 		return err
 	}
 	defer lock.Unlock()
+	markerInfo, markerErr := os.Lstat(marker)
+	if markerErr != nil && !os.IsNotExist(markerErr) {
+		return api.ErrInvalid
+	}
+	if markerErr == nil && !markerInfo.Mode().IsRegular() {
+		return api.ErrInvalid
+	}
 	previous, err := os.ReadFile(path) // #nosec G304 -- trusted, symlink-checked registry path.
+	if os.IsNotExist(err) && (s.savedPath == path || markerErr == nil) {
+		return api.ErrConflict
+	}
 	if err == nil && (s.savedPath != path || sha256.Sum256(previous) != s.diskDigest) {
 		return api.ErrConflict
 	}
@@ -68,7 +82,14 @@ func (s *Store) saveLocked(path string) error {
 		return err
 	}
 	s.compactLocked(time.Now())
-	state := snapshot{Schema: api.SchemaVersion, ProjectionRevisions: map[string]uint64{}, CapabilityChanges: s.capabilityChanges, BindingChanges: s.bindingChanges}
+	if s.installationID == "" {
+		id, err := newInstallationID()
+		if err != nil {
+			return err
+		}
+		s.installationID = id
+	}
+	state := snapshot{Schema: api.SchemaVersion, InstallationID: s.installationID, ProjectionRevisions: map[string]uint64{}, RestartApplied: map[string]uint64{}, RestartDigests: map[string]string{}, CapabilityChanges: s.capabilityChanges, BindingChanges: s.bindingChanges}
 	for _, d := range s.definitions {
 		state.Definitions = append(state.Definitions, d)
 	}
@@ -86,6 +107,12 @@ func (s *Store) saveLocked(path string) error {
 	}
 	for key, revision := range s.projectionRevisions {
 		state.ProjectionRevisions[key] = revision
+	}
+	for key, revision := range s.restartApplied {
+		state.RestartApplied[key] = revision
+	}
+	for key, digest := range s.restartDigests {
+		state.RestartDigests[key] = digest
 	}
 	for _, grant := range s.grants {
 		state.Grants = append(state.Grants, grant)
@@ -144,29 +171,60 @@ func (s *Store) saveLocked(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(filepath.Dir(path), ".toolhub-*")
+	counter, err := s.storageCounter(filepath.Dir(path))
 	if err != nil {
 		return err
 	}
-	tmp := f.Name()
-	defer os.Remove(tmp)
-	if err = f.Chmod(0600); err == nil {
-		_, err = f.Write(body)
+	write := func() error {
+		f, err := os.CreateTemp(filepath.Dir(path), ".toolhub-*")
+		if err != nil {
+			return err
+		}
+		tmp := f.Name()
+		defer os.Remove(tmp)
+		if err = f.Chmod(0600); err == nil {
+			_, err = f.Write(body)
+		}
+		if err == nil {
+			err = f.Sync()
+		}
+		if closeErr := f.Close(); err == nil {
+			err = closeErr
+		}
+		if err != nil {
+			return err
+		}
+		return os.Rename(tmp, path)
 	}
-	if err == nil {
-		err = f.Sync()
-	}
-	if closeErr := f.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := counter.Write(path, int64(len(body)), true, write); err != nil {
 		return err
 	}
 	s.savedPath, s.diskDigest = path, sha256.Sum256(body)
 	s.diskStamp, _ = statStoreStamp(path)
+	syncDirectory := s.syncDirectory
+	if syncDirectory == nil {
+		syncDirectory = syncHostingFleetDirectory
+	}
+	if err := syncDirectory(filepath.Dir(path)); err != nil {
+		return err
+	}
+	if markerErr != nil {
+		f, err := os.OpenFile(marker, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600) // #nosec G304 -- marker path was symlink-checked under the store lock
+		if err != nil {
+			return err
+		}
+		if err = f.Sync(); err != nil {
+			_ = f.Close()
+			return err
+		}
+		if err = f.Close(); err != nil {
+			return err
+		}
+		if err = syncDirectory(filepath.Dir(path)); err != nil {
+			return err
+		}
+	}
+	s.maintainStorageLocked(time.Now())
 	return nil
 }
 
@@ -269,6 +327,12 @@ func Load(path string) (*Store, error) {
 		}
 		store.projectionRevisions[key] = revision
 	}
+	for key, revision := range state.RestartApplied {
+		store.restartApplied[key] = revision
+	}
+	for key, digest := range state.RestartDigests {
+		store.restartDigests[key] = digest
+	}
 	for _, change := range state.BindingChanges {
 		if !identity.ValidID(change.BindingID) || change.FromPolicy == "" || change.ToPolicy == "" || change.Revision == 0 {
 			return nil, fmt.Errorf("%w: persisted binding change", api.ErrInvalid)
@@ -354,6 +418,7 @@ func Load(path string) (*Store, error) {
 		return nil, err
 	}
 	store.path = path
+	store.installationID = state.InstallationID
 	store.savedPath, store.diskDigest = path, sha256.Sum256(b)
 	store.diskStamp = stamp
 	return store, nil
@@ -443,6 +508,8 @@ func (s *Store) Reload() error {
 	s.bindings = fresh.bindings
 	s.workloads = fresh.workloads
 	s.projectionRevisions = fresh.projectionRevisions
+	s.restartApplied = fresh.restartApplied
+	s.restartDigests = fresh.restartDigests
 	s.grants = fresh.grants
 	s.onboardings = fresh.onboardings
 	s.publications = fresh.publications

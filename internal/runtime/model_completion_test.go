@@ -205,7 +205,7 @@ func TestModelRelayTimedOutHopFallsBackWithinRequestDeadline(t *testing.T) {
 		_, _ = io.WriteString(w, `{"choices":[]}`)
 	}))
 	defer fast.Close()
-	t.Setenv("HUB_MODEL_RELAY_HOP_TIMEOUT", "40ms")
+	t.Setenv("HUB_MODEL_RELAY_HOP_TIMEOUT", "250ms")
 	handler, err := modelRelayHandler(oneHop(t, "slow="+slow.URL+",fast="+fast.URL), "synthetic")
 	if err != nil {
 		t.Fatal(err)

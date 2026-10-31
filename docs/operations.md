@@ -93,13 +93,28 @@ old record in place), then archive or delete `spaces/<id>`.
 On by default. Each stack's ToolHub appends new stdout/stderr lines every
 15 s — scoped to its own project label plus runtime containers on that
 user's agent network — into `spaces/<user>/diagnostics/
-hermes-diagnostics.txt` (100 MB rollover, cursor prevents replay; bounded
+hermes-diagnostics.txt` (100 MiB active + at most three rotated files, seven-day
+retention; bounded
 per-pass and per-call so a stalled daemon cannot starve the cycle). Host
-supervisor mirrors its own logs to `.local/supervisor.log` (10 MB); the
+supervisor mirrors its own logs to `.local/diagnostics/supervisor.log` (10 MiB active +
+three rotated files); a persisted generation fences offset reuse. The
+mirror stays disabled if a host bind mount rejects the required directory
+permission change; supervisor still runs, but host diagnostics remain incomplete.
 collector copies only lines naming that space's owner as a whole token.
-Compose keeps Docker `local` rotation (10 MB × 3/container). Secrets are
-redacted at collection. Opt out: `diagnostics: false` in the infra space's
+Compose keeps Docker `local` rotation (10 MB × 3/container). Structured producers
+allowlist metadata; collection and agent projection exclude bodies/unknown fields
+before redaction and search. Source reads stream from oldest unread with timestamp
+and tie ordinal, never last-5000 tail. Data sync precedes atomic cursor replacement;
+replay keeps source_position. Source/cursor/rotation loss emits diagnostic_gap;
+unreadable stopped containers are not marked drained. Opt out: `diagnostics: false` in the infra space's
 `agent.yaml`, then `hubctl up`.
+
+Rotation requires the dedicated `.local/diagnostics/` directory bind; a single-file
+bind pins the obsolete inode. The directory contains diagnostics only, not host
+auth/control files. Existing stacks need an explicit re-render/recreate during
+CHG-0217 acceptance; do not deploy only a new collector against the legacy mount.
+Container/volume-loss proof and catalog rebind/respawn remain pending for managed
+spaces that have not been recreated with the new image.
 
 Gateway message logs carry IDs, status and `text_len` — never bodies;
 bracketed markers (`[voice message]`, `[credential input redacted]`) still
@@ -108,15 +123,16 @@ channel env + restart; clamped ≤1 h ahead, auto-reverts. Treat the combined
 file as private; `.local/` and `spaces/` are git-ignored — redact before
 sharing.
 
-Structured logs are JSON: `time`, `level`, `msg`, `component` plus
-`job_id`/`run_id`/`principal`/`status`. `hubctl trace <job_id> [--user]`
-merges supervisor + space logs + container logs by job identity, redacted;
+Structured lifecycle logs are JSON: `time`, `level`, `event`, `component` plus
+`job_id`/`run_id`/`principal`/`status`. `hubctl trace <job_id> [--user] --env dev|prod`
+merges only authority-bound supervisor/home/container metadata by exact job identity;
 cross-principal jobs are refused. `/status` reports caller-scoped health:
 p50/p95 receive→deliver latency, unconfirmed/failed counts, restart counter,
 average input tokens.
 
 Agent-visible diagnostics: `mcp__toolhub__diagnostics` returns the caller's
-own bounded, redacted lines and workload health, plus `excluded` projection
+own bounded lifecycle metadata across rotated files and workload health, plus
+`excluded` projection
 reasons (`policy_mismatch`, `disabled`, `revoked`, `stale`, `degraded`,
 `not_found`). Needs a `diagnostics` control-operation grant; scoped by
 authenticated identity, never arguments.
@@ -138,6 +154,19 @@ replays it on an isolated spool with the channel forced to mock, printing a
 divergence line. `hubctl apply -f` accepts a declarative `space:` block that
 converges `agent.yaml`/`workspace.yaml` through full stack validation —
 secrets keys are rejected by construction.
+
+Storage accounting (SPEC-0088): `hubctl storage status --spool <dir>
+--toolhub-store <path>` prints per-owner allowlisted aggregates only —
+logical bytes, file counts, byte/file limits, completeness and a safe status
+word per storage owner (`communication-spool`, `toolhub-state`); paths, object
+names and raw errors never leave the process. `hubctl storage cleanup --spool
+<dir> [--retention 72h]` is a dry-run by default: it emits a digest-bound plan
+(scope, aggregate files/bytes, `sha256:` digest — never the candidate list
+itself) over owner-regular files, rejecting planted symlinks. `--apply
+--digest <sha256:...>` takes the spool writer lock, recomputes the plan and
+refuses a stale or foreign digest before running the bounded terminal
+compaction — aged done/failed records move to the archive, live
+pending/running state and open approvals are never touched.
 
 ## Operator mutations require `--confirm`
 
@@ -227,6 +256,20 @@ rotates leave the connection `degraded`. `HUB_CREDENTIAL_STORE` must be set
 on `hub-toolhub` for decrypt-and-inject; it is inert on `hub-communication`
 (the gateway never opens the store or audit ledger).
 
+Legacy owner credential writes require the configured audit ledger. A Set batch
+uses one durable owner-scoped admission and completion reserve; validation runs
+before any write. An interrupted batch fences further credential mutations for
+that owner until reconciliation; another owner does not inherit that fence.
+Post-effect audit/backend/projection failures return `uncertain`, preserve
+ciphertext and quarantine attempted records as degraded, never delete them as
+rollback. Updating one value preserves siblings in a readable multi-key object;
+unreadable siblings are not implicitly replaced. Rotation must target a connection
+owned by the same owner. Invalid rotation still closes credential access; only a
+verified downgrade is a known failed execution. Delete/terminal-disable continue
+access revocation even if audit fails, and unverified cleanup returns uncertainty.
+`secret activity` shows operation/phase/auth/execution/delivery fields without
+credential dictionary names. This is not a migration or a live provider receipt.
+
 ## Human-action links
 
 `/credentials`, `/confirm`, `/remove`, `/connect`, `/device` are one-time
@@ -260,6 +303,14 @@ target and public name are composed by the hub from the reviewed config
 audited (`audit/exposure.jsonl`); opens are capped by `max_exposures` and
 reaped at `lifetime_seconds` (background reaper; idle reap deferred until a
 provider-side traffic signal exists).
+Open requires durable audit admission and completion reserve. An uncertain error
+or list/status `uncertain=true` requires reconciliation before repeating open;
+unknown effects still consume capacity. Requested close still attempts to stop
+access if audit fails and returns uncertainty instead of a confirmed receipt.
+Open also holds audit space for closing that exact resource. Verified close uses
+the hold, preserves an unknown opening as unknown, and permits a fresh resource
+admission. A failed close retains its admitted cleanup for a later requested stop;
+an unverified close never releases the durable target fence.
 
 `hub_public_listener` targets resolve through `HUB_PUBLIC_TARGET` —
 set it to toolhub's public-listener address (e.g. `HUB_PUBLIC_LISTEN=0.0.0.0:8091`
@@ -396,7 +447,8 @@ volume to encrypted storage. Ciphertext backups via `hubctl secret backup`
 must not include the key. Never `docker compose down --volumes` unless
 deleting data intentionally. Restore org and user homes separately; never
 merge memories, Telegram sessions or provider credentials. Back up the
-spool's `events/` with jobs/mappings/outbox — receipts repair incomplete
+spool's `event-state/`, `run-events/`, `provider-dedup/`, cursor initialization
+markers and `event-layout.json`/`events` format fence with jobs/mappings/outbox — receipts repair incomplete
 handoff on restart.
 
 ## Images and builds
@@ -554,20 +606,7 @@ from username/email/message-request.
 
 ## Per-context execution rollout
 
-`hubctl execution-audit --spool <dir> --user <u>` then
-`hubctl select-execution --dir spaces/<u> --env <e> --execution-mode
-supervisor --supervisor-url <url> --native-cron disabled
---compatibility-release 0.2.1 --apply`, then `hubctl up`. Drain first; the
-CLI refuses claimed/admitted jobs and uncertain outcomes; apply verifies the
-audited path is the stopped gateway's actual `/data` mount and requires zero
-enabled native cron jobs (checked against a disposable read-only home
-snapshot). Container deployment can select `http://supervisor:8876` —
-no host ports, private DNS (ADR-0040). Host mode needs the listener on a
-private interface reachable from both host CLI and gateway container, with
-`HUB_SUPERVISOR_AUTH` to both; on port change re-render and recreate
-communication-hub + toolhub. Rollback: drain, `--execution-mode static`
-without URL (+`--native-cron unmigrated` if needed), keep same spool/home;
-do not reactivate native definitions already migrated to hub occurrences.
+See [runtime operations](runtime-operations.md#per-context-execution-rollout).
 
 ## Skill git installs
 
@@ -666,9 +705,13 @@ the `ssh-key` contract with a per-dial lease under `ssh-<alias>` (needs both
 `broker:control` + `broker:runtime` audiences). Command/path allowlists are
 anchored, `*` the only wildcard; `sudo: passwordless` runs `sudo -n` only
 when the inner command matches. Shells/tunnels live in-runtime — restart
-closes them; tunnel listeners are loopback-only, never published. Every op
-appends a bounded receipt to `runtime/audit/ssh.jsonl` (exit codes, byte
-counts — never output or key material). Revoking a grant or deleting a host
+closes them; tunnel listeners are loopback-only, never published. Durable audit
+admission/reserve precedes effects; bounded receipts contain counts/IDs, never
+paths, output or key material. Uncertain outcomes require reconciliation before
+repeating; close still attempts access termination when audit fails.
+Successful shell/tunnel opens retain a scoped cleanup audit reserve until their
+verified closure; the hold survives other writers and journal rotation.
+Revoking a grant or deleting a host
 takes effect at the next dial. Bare-metal smoke: `hubctl tools` serves the
 same MCP surface over stdio against a real sshd
 (`HUB_USER_ID`, `HUB_STATE`, `HUB_SSH_CONFIG`, `HUB_SSH_*` feature vars) —
@@ -852,81 +895,7 @@ provider identity evidence; do not invent a universal identity endpoint.
 
 ## M16 runtime preparation and group scopes
 
-Optional managed-sandbox preparation lives in `workspace.yaml`:
-
-```yaml
-workspace:
-  goal: Prepare the workspace tools needed for this project.
-  bootstrap_revision: 1
-```
-
-Before an ordinary job, the runtime runs that goal once with its existing
-sandbox and egress grants. No host installer is invoked. `runtime/bootstrap.json`
-records `running`, `ready` or `failed`, the revision key, changed/added/deleted
-workspace paths and `changes_available`. `runtime/bootstrap-history/<key>.json`
-retains each goal/revision receipt across an explicit retry, including session/run
-IDs and the first 4096 runes of redacted output or failure. Detailed upstream
-history stays in that owner's Hermes session. Use increasing revisions for
-new attempts; never reuse a prior revision for a different preparation history.
-A workspace diff is bounded to 4096
-entries and 64 MiB of file content. The shared run budget bounds preparation;
-waiting callers can cancel independently. Failure blocks ordinary jobs and
-retains a partial diff when available. Inspect and repair deliberately, then
-increment `bootstrap_revision` to request a new attempt. Removing `goal` disables
-preparation; no data is migrated or deleted. The default manifest revision is 0.
-
-A configured group runs in one of two modes, chosen per chat in the host
-communication configuration:
-
-```yaml
-groups:
-  -1009999: topics         # personal interface: each forum topic = a session
-  -100123:                 # mention mode (the default)
-    space: team
-    members: [11, 22]      # optional; empty = every configured Telegram user
-    mention: '@helper'     # optional; empty = the bot's own @username
-```
-
-The same map accepts only the scalar mode (`topics`) when nothing else is
-needed, and keeps the legacy list-of-objects form working. An unconfigured
-group is always ignored.
-
-`topics` mode makes the group a personal interface: the sender is resolved
-through the ordinary `telegram_ids` user mapping, each forum topic adopts its
-own task/session inside the sender's personal home, and messages plus slash
-commands behave exactly like a private chat — no mention needed. Jobs carry
-the usual `user:<id>` authority and write the sender's own memory.
-
-`mention` mode keeps the bot a passive participant and requires a dedicated
-group home. Create it with
-`hubctl group-init --dir spaces/team --user team --env dev`.
-It refuses existing scopes and never converts a populated personal profile.
-In the host communication configuration, add a dedicated enabled `users` entry
-for `team` with its own state/workspace and no personal Telegram/Slack identity.
-
-Only configured members contribute to the bounded passive transcript (last
-16 excerpts, at most 512 runes each); with an empty `members` list every
-configured Telegram user counts as a member. A literal mention — the
-configured `mention` tag or, when unset, the bot's own @username resolved
-through `getMe` — starts an ordinary group job; slash commands retain their
-explicit command behavior. Passive messages do not wake the model or write
-personal memory. Recent source-event receipts are bounded to 256; admitted
-jobs retain durable idempotency mappings. The Telegram bot must actually
-receive the messages needed for this transcript; the Hub does not change
-account/privacy settings automatically. Edits do not restart work, and groups
-reject credential input.
-
-Group runtime authority is `group:<space>` and requires a matching group
-`scope.yaml`. Replies stay in the original group/topic; approval taps require
-the original actor and audience. Membership/policy are checked again before
-dispatch and delivery. Personal homes/memories are never copied into a group.
-Active execution, observation streams and pending approvals retain the existing
-typed leases; the idle deadline begins after the last release.
-
-Source-only verification never proves that a running image contains these
-changes. M16 local work does not build, deploy, restart or contact a real account;
-image/channel/provider acceptance must be recorded separately after an authorized
-rollout.
+See [runtime operations](runtime-operations.md#m16-runtime-preparation-and-group-scopes).
 
 ## Site hosting
 

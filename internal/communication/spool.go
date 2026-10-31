@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -19,6 +20,7 @@ import (
 	"github.com/gofrs/flock"
 	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/routines"
+	"github.com/letya999/hermes-hub/internal/storagebudget"
 )
 
 // approvalButtonsLocked persists one durable callback record per choice and
@@ -31,7 +33,7 @@ func (s *Spool) approvalButtonsLocked(jobID, requestID string, choices []string)
 		digest := sha256.Sum256([]byte(jobID + "\x00" + requestID + "\x00" + choice))
 		id := hex.EncodeToString(digest[0:12])
 		record := approvalCallback{JobID: jobID, RequestID: requestID, Choice: choice}
-		if err := atomicJSON(filepath.Join(s.root, "callbacks", id+".json"), record); err != nil {
+		if err := s.writeJSON(filepath.Join(s.root, "callbacks", id+".json"), record); err != nil {
 			return nil, err
 		}
 		buttons = append(buttons, DeliveryButton{Text: choice, Data: "a:" + id})
@@ -70,9 +72,11 @@ func (s *Spool) ApprovalCallback(data string) (jobID, requestID, choice string, 
 
 // Spool is a tiny durable queue for one host. Renames are its state machine.
 type Spool struct {
-	root   string
-	mu     sync.Mutex
-	secret map[string]string
+	readOnly bool
+	storage  *storagebudget.Counter
+	root     string
+	mu       sync.Mutex
+	secret   map[string]string
 	// inFlight maps (principal, context, conversation) to the job currently
 	// allowed to run; held until the job's mapping reaches a terminal status.
 	// In-memory only, rebuilt from durable mappings on startup (ADR-0090,
@@ -120,7 +124,8 @@ type Spool struct {
 	limits       spoolLimits
 	// langOf resolves the job owner's workspace language for user-facing
 	// stream texts; nil falls back to the hub default.
-	langOf func(principalID string) locale.Lang
+	langOf      func(principalID string) locale.Lang
+	archiveSync func(*os.File) error // Deterministic durability-fault seam; nil uses file.Sync.
 }
 
 // Notify exposes the coalesced wake channel. Buffered with capacity one: a
@@ -180,17 +185,58 @@ func InspectSpool(root string) (*Spool, error) {
 }
 
 func openSpool(root string, create bool) (*Spool, error) {
-	s := &Spool{root: root, secret: map[string]string{}, inFlight: map[string]string{}, notify: make(chan struct{}, 1), budget: &budgetLedger{Reservations: map[string]reservation{}, Scopes: map[string]*scopeBudget{}}, limits: limitsFromEnv()}
+	s := &Spool{readOnly: !create, root: root, secret: map[string]string{}, inFlight: map[string]string{}, notify: make(chan struct{}, 1), budget: &budgetLedger{Reservations: map[string]reservation{}, Scopes: map[string]*scopeBudget{}}, limits: limitsFromEnv()}
+	limits, limitsErr := spoolStorageLimits(s.limits)
+	if limitsErr != nil {
+		return nil, limitsErr
+	}
 	if ledger, err := loadBudget(root); err != nil {
 		s.budgetBroken = err
 	} else {
 		s.budget = ledger
 	}
-	for _, dir := range []string{"pending", "running", "done", "failed", "outbox/pending", "outbox/sending", "outbox/done", "outbox/failed", "mappings", "mappings/by-key", "conversations", "events", "occurrences", "schedules", "tasks", "tasks/current", "tasks/topic", "callbacks", "inbound", "watchers", "digests", "mock-sent", "mock-links", "tmp", "goals"} {
+	if create {
+		if body, err := readEventRecord(filepath.Join(root, "event-layout.json")); err == nil {
+			var layout eventLayout
+			if strictEventJSON(body, &layout) != nil || layout.Version != eventLayoutVersion {
+				return nil, errors.New("unknown event layout")
+			}
+			if layout.Complete {
+				for _, dir := range []string{"event-state", "run-events", "provider-dedup"} {
+					info, err := os.Lstat(filepath.Join(root, dir))
+					if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+						return nil, errors.New("initialized event directory missing or unsafe")
+					}
+				}
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+	}
+	for _, dir := range []string{"pending", "running", "done", "failed", "outbox/pending", "outbox/sending", "outbox/done", "outbox/failed", "mappings", "mappings/by-key", "conversations", "event-state", "run-events", "provider-dedup", "occurrences", "schedules", "tasks", "tasks/current", "tasks/topic", "callbacks", "inbound", "watchers", "digests", "mock-sent", "mock-links", "tmp", "goals"} {
 		if !create {
 			continue
 		}
 		if err := os.MkdirAll(filepath.Join(root, dir), 0700); err != nil {
+			return nil, err
+		}
+	}
+	_, rootErr := os.Lstat(root)
+	if create || !errors.Is(rootErr, os.ErrNotExist) {
+		var storageErr error
+		s.storage, storageErr = storagebudget.New(root, limits)
+		if storageErr != nil {
+			return nil, storageErr
+		}
+	}
+	if create {
+		for _, dir := range []string{"event-state", "run-events", "provider-dedup"} {
+			info, err := os.Lstat(filepath.Join(root, dir))
+			if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+				return nil, errors.New("unsafe event directory")
+			}
+		}
+		if err := s.migrateEventLayout(); err != nil {
 			return nil, err
 		}
 	}
@@ -204,8 +250,13 @@ func openSpool(root string, create bool) (*Spool, error) {
 		TopicTask:         s.topicTaskLocked,
 		WriteDeliveryBlob: s.WriteDeliveryBlob,
 		NormalizeDelivery: normalizeDelivery,
-		WriteJSONAtomic:   atomicJSON,
-		Signal:            s.signal,
+		WriteJSONAtomic:   s.writeJSON,
+		WriteBytes:        func(path string, body []byte) error { return s.writeBlob(path, body, false) },
+		MkdirAll:          s.mkdirOwnedClass,
+		Rename:            s.renameOwned,
+		Remove:            s.removeOwned,
+
+		Signal: s.signal,
 		ChannelFor: func(id string) routines.OccurrenceChannel {
 			if s.resolveChannel != nil {
 				return s.resolveChannel(id)
@@ -213,6 +264,7 @@ func openSpool(root string, create bool) (*Spool, error) {
 			return channelFor(nil, id)
 		},
 		ProbeScript:  func() routines.ProbeScriptFunc { return s.probeScript },
+		ResumeEvents: s.resumeOccurrenceBatch,
 		SettleEvents: s.settleEvents,
 		LangOf: func(p string) locale.Lang {
 			if s.langOf != nil {
@@ -230,7 +282,7 @@ func (s *Spool) recover() error {
 	if err := s.recoverJobs(); err != nil {
 		return err
 	}
-	if err := recoverFiles(filepath.Join(s.root, "outbox", "sending"), filepath.Join(s.root, "outbox", "failed")); err != nil {
+	if err := s.recoverFiles(filepath.Join(s.root, "outbox", "sending"), filepath.Join(s.root, "outbox", "failed")); err != nil {
 		return err
 	}
 	if err := s.rebuildMappings(); err != nil {
@@ -269,7 +321,7 @@ func (s *Spool) recoverJobs() error {
 				if mapping.Status == "completed" {
 					dir = "done"
 				}
-				if err := os.Rename(filepath.Join(from, name), filepath.Join(s.root, dir, name)); err != nil {
+				if err := s.renameOwned(filepath.Join(from, name), filepath.Join(s.root, dir, name)); err != nil {
 					return err
 				}
 				continue
@@ -282,12 +334,12 @@ func (s *Spool) recoverJobs() error {
 			if mapping.RunID != "" && mapping.SessionID != "" {
 				destination = "pending"
 			} // Observe the admitted run; never resubmit its prompt.
-			if err := os.Rename(filepath.Join(from, name), filepath.Join(s.root, destination, name)); err != nil {
+			if err := s.renameOwned(filepath.Join(from, name), filepath.Join(s.root, destination, name)); err != nil {
 				return err
 			}
 			continue
 		}
-		if err := os.Rename(filepath.Join(from, name), filepath.Join(to, name)); err != nil {
+		if err := s.renameOwned(filepath.Join(from, name), filepath.Join(to, name)); err != nil {
 			return err
 		}
 	}
@@ -392,14 +444,18 @@ func (s *Spool) Compact(now time.Time, retention time.Duration, limits CompactLi
 		return err
 	}
 	receiptClosed := func(name string) bool {
-		b, err := os.ReadFile(filepath.Join(s.root, "events", name))
+		b, err := os.ReadFile(filepath.Join(s.root, "run-events", name))
 		var receipt streamReceipt
-		if err != nil || json.Unmarshal(b, &receipt) != nil || receipt.Delivery == nil {
-			return true
+		if err != nil || json.Unmarshal(b, &receipt) != nil || receipt.JobID == "" || receipt.Position == 0 || receipt.Event.JobID != receipt.JobID || receipt.Event.EventID == "" {
+			return false
 		}
-		return !live[spoolFileID(receipt.Delivery.ID)]
+		if receipt.Delivery != nil && live[spoolFileID(receipt.Delivery.ID)] {
+			return false
+		}
+		mapping, err := s.loadMappingLocked(receipt.JobID)
+		return err == nil && terminalStatus(mapping.Status) && mapping.ApprovalState != "pending"
 	}
-	if err := s.compactDirLocked("events", aged, receiptClosed, limits.MaxTerminalFiles, now); err != nil {
+	if err := s.compactDirLocked("run-events", aged, receiptClosed, limits.MaxTerminalFiles, now); err != nil {
 		return err
 	}
 	if err := s.compactUsageLocked(now, retention, limits.MaxUsageEntries); err != nil {
@@ -439,7 +495,7 @@ func (s *Spool) Compact(now time.Time, retention time.Duration, limits CompactLi
 			return err
 		}
 		if strings.TrimSpace(mapping.IdempotencyKey) != "" {
-			_ = os.Remove(s.idempotencyIndexPath(mapping.IdempotencyKey))
+			_ = s.removeOwned(s.idempotencyIndexPath(mapping.IdempotencyKey))
 		}
 	}
 	return s.purgeArchivesLocked(now, retention, limits.ArchiveMaxBytes)
@@ -480,7 +536,7 @@ func (s *Spool) purgeArchivesLocked(now time.Time, retention time.Duration, maxB
 		if !f.mod.Before(cutoff) && !(maxBytes > 0 && total > maxBytes) {
 			break
 		}
-		if err := os.Remove(filepath.Join(dir, f.name)); err != nil {
+		if err := s.removeOwned(filepath.Join(dir, f.name)); err != nil {
 			return err
 		}
 		total -= f.size
@@ -572,20 +628,20 @@ func (s *Spool) compactOccurrencesLocked(now time.Time, retention time.Duration)
 		default:
 			continue
 		}
-		if err := os.MkdirAll(receiptDir, 0700); err != nil {
+		if err := s.mkdirOwned(receiptDir); err != nil {
 			return err
 		}
-		if err := os.MkdirAll(archiveDir, 0700); err != nil {
+		if err := s.mkdirOwned(archiveDir); err != nil {
 			return err
 		}
 		receiptPath := filepath.Join(receiptDir, entry.Name())
-		if err := atomicJSON(receiptPath, routineHistoryReceipt{ID: o.Job.ID, ScheduleID: o.ScheduleID, Envelope: o.Job.Envelope, Run: s.routineRunLocked(o, outcomes)}); err != nil {
+		if err := s.writeJSON(receiptPath, routineHistoryReceipt{ID: o.Job.ID, ScheduleID: o.ScheduleID, Envelope: o.Job.Envelope, Run: s.routineRunLocked(o, outcomes)}); err != nil {
 			return err
 		}
 		if err := os.Chtimes(receiptPath, info.ModTime(), info.ModTime()); err != nil {
 			return err
 		}
-		if err := os.Rename(path, filepath.Join(archiveDir, entry.Name())); err != nil {
+		if err := s.renameOwned(path, filepath.Join(archiveDir, entry.Name())); err != nil {
 			return err
 		}
 	}
@@ -603,7 +659,7 @@ func (s *Spool) compactOccurrencesLocked(now time.Time, retention time.Duration)
 			return err
 		}
 		if info.ModTime().Before(now.Add(-48 * time.Hour)) {
-			if err := os.Remove(path); err != nil {
+			if err := s.removeOwned(path); err != nil {
 				return err
 			}
 		}
@@ -625,7 +681,7 @@ func (s *Spool) compactOccurrencesLocked(now time.Time, retention time.Duration)
 			return err
 		}
 		if info.ModTime().Before(now.Add(-retention)) {
-			if err := os.Remove(path); err != nil {
+			if err := s.removeOwned(path); err != nil {
 				return err
 			}
 		}
@@ -705,30 +761,15 @@ func (s *Spool) compactUsageLocked(now time.Time, retention time.Duration, maxEn
 	if err := s.appendArchiveLocked("usage-"+now.UTC().Format("20060102")+".jsonl.gz", buf.Bytes()); err != nil {
 		return err
 	}
-	tmp := usagePath(s.root) + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
-	if err != nil {
-		return err
-	}
+	var retained bytes.Buffer
 	for _, e := range keep {
 		body, err := json.Marshal(e)
 		if err != nil {
-			_ = f.Close()
 			return err
 		}
-		if _, err := f.Write(append(body, '\n')); err != nil {
-			_ = f.Close()
-			return err
-		}
+		retained.Write(append(body, '\n'))
 	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp, usagePath(s.root))
+	return s.writeBlob(usagePath(s.root), retained.Bytes(), true)
 }
 
 // failedTerminalLocked reports whether a record under failed/ has no path
@@ -780,6 +821,7 @@ func (s *Spool) compactDirLocked(dir string, aged func(string) bool, guard func(
 			if err := s.archiveTerminalLocked(dir, entry.Name(), now); err != nil {
 				return err
 			}
+			total--
 			continue
 		}
 		info, err := entry.Info()
@@ -805,10 +847,16 @@ func (s *Spool) compactDirLocked(dir string, aged func(string) bool, guard func(
 }
 
 // archiveTerminalLocked appends one record to the day's gzip bundle under
-// archive/ then removes the original — history compresses into a few files a
-// day instead of thousands of tiny JSONs.
+// archive/ then removes the original after the archive is durable and verified.
 func (s *Spool) archiveTerminalLocked(dir, name string, now time.Time) error {
 	src := filepath.Join(s.root, dir, name)
+	info, err := os.Lstat(src)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("unsafe terminal record")
+	}
 	body, err := os.ReadFile(src)
 	if err != nil {
 		return err
@@ -817,31 +865,131 @@ func (s *Spool) archiveTerminalLocked(dir, name string, now time.Time) error {
 	if err := s.appendArchiveLocked(flat+"-"+now.UTC().Format("20060102")+".jsonl.gz", append(body, '\n')); err != nil {
 		return err
 	}
-	return os.Remove(src)
-}
-
-// appendArchiveLocked writes payload as one gzip member into a bundle under
-// archive/, so repeated appends stay readable as concatenated JSONL.
-func (s *Spool) appendArchiveLocked(name string, payload []byte) error {
-	bundle := filepath.Join(s.root, "archive", name)
-	if err := os.MkdirAll(filepath.Join(s.root, "archive"), 0700); err != nil {
+	if err := s.removeOwned(src); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(bundle, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	return syncSpoolDirectory(filepath.Dir(src))
+}
+
+// appendArchiveLocked commits an immutable, content-addressed gzip chunk.
+// Replaying a source after a crash reuses the same verified chunk.
+func (s *Spool) appendArchiveLocked(name string, payload []byte) error {
+	if filepath.Base(name) != name || strings.ContainsAny(name, "/\\") {
+		return errors.New("invalid archive name")
+	}
+	dir := filepath.Join(s.root, "archive")
+	if err := s.mkdirOwned(dir); err != nil {
+		return err
+	}
+	info, err := os.Lstat(dir)
 	if err != nil {
 		return err
 	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("unsafe archive directory")
+	}
+	archiveRoot, err := os.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+	defer archiveRoot.Close()
+	sum := sha256.Sum256(payload)
+	prefix := strings.TrimSuffix(name, ".jsonl.gz")
+	if i := strings.LastIndex(prefix, "-"); i >= 0 {
+		if _, err := time.Parse("20060102", prefix[i+1:]); err == nil {
+			prefix = prefix[:i]
+		}
+	}
+	bundle := prefix + "-" + hex.EncodeToString(sum[:]) + ".jsonl.gz"
+	verify := func(f *os.File) error {
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		gz, err := gzip.NewReader(f)
+		if err != nil {
+			return err
+		}
+		data, readErr := io.ReadAll(io.LimitReader(gz, int64(len(payload))+1))
+		closeErr := gz.Close()
+		if readErr != nil {
+			return readErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		if !bytes.Equal(data, payload) {
+			return errors.New("archive chunk verification failed")
+		}
+		return nil
+	}
+	syncFile := func(f *os.File) error {
+		if s.archiveSync != nil {
+			return s.archiveSync(f)
+		}
+		return f.Sync()
+	}
+	if info, err := archiveRoot.Lstat(bundle); err == nil {
+		if !info.Mode().IsRegular() {
+			return errors.New("unsafe archive chunk")
+		}
+		f, err := archiveRoot.OpenFile(bundle, os.O_RDWR, 0600)
+		if err != nil {
+			return err
+		}
+		verifyErr := verify(f)
+		if verifyErr == nil {
+			verifyErr = syncFile(f)
+		}
+		closeErr := f.Close()
+		if verifyErr != nil {
+			return verifyErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		return syncSpoolDirectory(dir)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	release, err := s.reserveStorage(int64(len(payload))+int64(len(payload))/100+1024, 1, true)
+	if err != nil {
+		return err
+	}
+	defer release()
+	f, err := os.CreateTemp(dir, ".archive-*")
+	if err != nil {
+		return err
+	}
+	temp := f.Name()
+	defer s.removeOwned(temp)
+	if err = f.Chmod(0600); err != nil {
+		_ = f.Close()
+		return err
+	}
 	gz := gzip.NewWriter(f)
-	if _, err := gz.Write(payload); err != nil {
+	if _, err = gz.Write(payload); err != nil {
 		_ = gz.Close()
 		_ = f.Close()
 		return err
 	}
-	if err := gz.Close(); err != nil {
+	if err = gz.Close(); err != nil {
 		_ = f.Close()
 		return err
 	}
-	return f.Close()
+	if err = syncFile(f); err == nil {
+		err = verify(f)
+	}
+	closeErr := f.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if err = archiveRoot.Rename(filepath.Base(temp), bundle); err != nil {
+		return err
+	}
+	return syncSpoolDirectory(dir)
 }
 
 // liveDeliveryIDsLocked lists outbox records still pending or in flight; an
@@ -862,7 +1010,7 @@ func (s *Spool) liveDeliveryIDsLocked() (map[string]bool, error) {
 	return live, nil
 }
 
-func recoverFiles(from, to string) error {
+func (s *Spool) recoverFiles(from, to string) error {
 	entries, err := os.ReadDir(from)
 	if err != nil {
 		return err
@@ -871,7 +1019,7 @@ func recoverFiles(from, to string) error {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
-		if err := os.Rename(filepath.Join(from, entry.Name()), filepath.Join(to, entry.Name())); err != nil {
+		if err := s.renameOwned(filepath.Join(from, entry.Name()), filepath.Join(to, entry.Name())); err != nil {
 			return err
 		}
 	}
@@ -932,6 +1080,16 @@ func (s *Spool) enqueueLocked(job Job) (bool, error) {
 	}
 	for _, dir := range []string{"pending", "running", "done", "failed"} {
 		if _, err := os.Stat(filepath.Join(s.root, dir, spoolFileID(job.ID)+".json")); err == nil {
+			if job.IdempotencyKey != "" {
+				confirmed, err := s.jobAdmissionLocked(job)
+				if err != nil {
+					return false, err
+				}
+				if !confirmed {
+					return false, errors.New("job admission unavailable")
+				}
+			}
+
 			return false, nil
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return false, err
@@ -954,7 +1112,7 @@ func (s *Spool) enqueueLocked(job Job) (bool, error) {
 	if err := s.reserveLocked(job); err != nil {
 		return false, err
 	}
-	if err := atomicJSON(filepath.Join(s.root, "pending", spoolFileID(job.ID)+".json"), job); err != nil {
+	if err := s.writeJSON(filepath.Join(s.root, "pending", spoolFileID(job.ID)+".json"), job); err != nil {
 		return false, err
 	}
 	if strings.TrimSpace(job.IdempotencyKey) != "" {
@@ -1090,11 +1248,20 @@ func (s *Spool) ClaimJob() (*Job, error) {
 				if err := s.updateMappingLocked(job.ID, RunOutcome{Status: "cancelled", LastEvent: "assignment.cancelled"}, "cancelled", true); err != nil {
 					return nil, err
 				}
-				if err := os.Rename(pending, filepath.Join(s.root, "failed", name)); err != nil {
+				if err := s.renameOwned(pending, filepath.Join(s.root, "failed", name)); err != nil {
 					return nil, err
 				}
 				continue
 			}
+		}
+		if job.Trigger == "cron" && strings.HasPrefix(job.ID, "batch2-") && !s.batchJobCurrentLocked(job) {
+			if err := s.updateMappingLocked(job.ID, RunOutcome{Status: "cancelled", LastEvent: "routine.cancelled"}, "cancelled", true); err != nil {
+				return nil, err
+			}
+			if err := s.renameOwned(pending, filepath.Join(s.root, "failed", name)); err != nil {
+				return nil, err
+			}
+			continue
 		}
 		if job.Trigger == "cron" && strings.HasPrefix(job.ID, "routine-") {
 			body, err := os.ReadFile(filepath.Join(s.root, "occurrences", spoolFileID(job.ID)+".json"))
@@ -1103,7 +1270,7 @@ func (s *Spool) ClaimJob() (*Job, error) {
 				if err := s.updateMappingLocked(job.ID, RunOutcome{Status: "cancelled", LastEvent: "routine.cancelled"}, "cancelled", true); err != nil {
 					return nil, err
 				}
-				if err := os.Rename(pending, filepath.Join(s.root, "failed", name)); err != nil {
+				if err := s.renameOwned(pending, filepath.Join(s.root, "failed", name)); err != nil {
 					return nil, err
 				}
 				continue
@@ -1124,10 +1291,10 @@ func (s *Spool) ClaimJob() (*Job, error) {
 		}
 		to := filepath.Join(s.root, "running", name)
 		cursor.Scope = fairKey
-		if err := atomicJSON(cursorPath, cursor); err != nil {
+		if err := s.writeJSON(cursorPath, cursor); err != nil {
 			return nil, err
 		}
-		if err := os.Rename(pending, to); err != nil {
+		if err := s.renameOwned(pending, to); err != nil {
 			return nil, err
 		}
 		mapping, mappingErr := s.loadMappingLocked(job.ID)
@@ -1140,17 +1307,21 @@ func (s *Spool) ClaimJob() (*Job, error) {
 			if mapping.Status == "completed" {
 				dir = "done"
 			}
-			if err := os.Rename(to, filepath.Join(s.root, dir, name)); err != nil {
+			if err := s.renameOwned(to, filepath.Join(s.root, dir, name)); err != nil {
 				return nil, err
 			}
 			continue
 		}
 		if mappingErr == nil && mapping.RunID != "" && mapping.SessionID != "" {
+			if job.TextSHA256 == "" {
+				sum := sha256.Sum256([]byte(job.Text))
+				job.TextSHA256 = hex.EncodeToString(sum[:])
+			}
 			job.Text = ""
 		} else if job.Sensitive {
 			job.Text = s.secret[job.ID]
 			if job.Text == "" {
-				_ = os.Rename(to, filepath.Join(s.root, "failed", name))
+				_ = s.renameOwned(to, filepath.Join(s.root, "failed", name))
 				return nil, errors.New("sensitive job payload unavailable after restart")
 			}
 		}
@@ -1169,7 +1340,7 @@ func (s *Spool) CompleteJob(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.releaseInFlightLocked(id)
-	if err := os.Rename(filepath.Join(s.root, "running", spoolFileID(id)+".json"), filepath.Join(s.root, "done", spoolFileID(id)+".json")); err != nil {
+	if err := s.renameOwned(filepath.Join(s.root, "running", spoolFileID(id)+".json"), filepath.Join(s.root, "done", spoolFileID(id)+".json")); err != nil {
 		return err
 	}
 	if _, err := s.loadMappingLocked(id); err == nil {
@@ -1189,9 +1360,9 @@ func (s *Spool) FailJob(id string) error {
 	fileID := spoolFileID(id)
 	if mapping, loadErr := s.loadMappingLocked(id); loadErr == nil && mapping.Status == "completed" {
 		s.releaseInFlightLocked(id)
-		return os.Rename(filepath.Join(s.root, "running", fileID+".json"), filepath.Join(s.root, "done", fileID+".json"))
+		return s.renameOwned(filepath.Join(s.root, "running", fileID+".json"), filepath.Join(s.root, "done", fileID+".json"))
 	}
-	err := os.Rename(filepath.Join(s.root, "running", fileID+".json"), filepath.Join(s.root, "failed", fileID+".json"))
+	err := s.renameOwned(filepath.Join(s.root, "running", fileID+".json"), filepath.Join(s.root, "failed", fileID+".json"))
 	if mapping, loadErr := s.loadMappingLocked(id); loadErr == nil {
 		// terminal outcomes release via updateMappingLocked; uncertain holds.
 		status := "failed"

@@ -25,12 +25,21 @@ profile's `control_operations` allowlist:
 | `prepare_source` | Prepare a source (GitHub repo URL, catalog entry) into a reviewable definition |
 | `status` | Onboarding/connection status incl. stuck cleanup step |
 | `required_credentials` | Credential hints for a prepared definition |
-| `confirm` | Execute the confirmed step behind a `?t=` link |
+| `confirm` | Read confirmation status; verified channel callback supplies human consent |
 | `enable` / `disable` / `revoke` / `remove` | Lifecycle transitions |
 | `rotate` | Re-issue a connection's credential via broker |
 | `diagnostics` | Caller-scoped, bounded, redacted log lines + workload health — the only agent-visible log surface |
 | `grant_request` | Request a grant the profile does not yet carry |
 | `install_shared` | Install a shared/team connection |
+
+For Telegram onboarding, `next_action=await_user_confirmation` means the owner
+presses the confirmation button in the original chat. Other channels currently
+cannot complete this step. A protected page shows the
+requested action, permissions, effects and status but cannot confirm it. The
+callback binds the human actor, action digest, revision and expiry. A model
+tool call, including `confirm` with a nonce, only reads status; enablement
+waits for the verified callback. An uncertain ToolHub operation keeps its
+`operation_id` for reconciliation before any repeat.
 
 Three further tools sit beside the allowlist (ADR-0089):
 

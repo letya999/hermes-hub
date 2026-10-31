@@ -90,7 +90,7 @@ func (s *Spool) saveGoalLocked(goal Goal) error {
 	goal.LastReason = boundGoalField(goal.LastReason, goalReasonLimit)
 	goal.Schema = 1
 	goal.UpdatedAt = now
-	return atomicJSON(s.goalPath(goal.PrincipalID, goal.ConversationID), goal)
+	return s.writeJSON(s.goalPath(goal.PrincipalID, goal.ConversationID), goal)
 }
 
 // boundGoalField truncates to limit bytes on a rune boundary — a byte-level
@@ -111,7 +111,7 @@ func boundGoalField(s string, limit int) string {
 func (s *Spool) ClearGoal(principal, conversationID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := os.Remove(s.goalPath(principal, conversationID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := s.removeOwned(s.goalPath(principal, conversationID)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	return nil

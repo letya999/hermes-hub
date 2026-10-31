@@ -16,24 +16,23 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
-| [CHG-0237](in-progress/CHG-0237-storage-integration/plan.md) | Storage reliability integration: conflict inventory, canonical record mapping and staged merge plan; planning complete, merge not started |
 | [CHG-0234](in-progress/CHG-0234-conversation-parallel-lanes/plan.md) | Parallel session lanes per context: conversation-keyed inFlight, fairness per context, per-context cap below upstream Hermes cap; implementing |
 | [CHG-0235](in-progress/CHG-0235-localized-user-strings/plan.md) | Localize last hardcoded user-facing strings: grant page, viewer title, /usage placeholder, hosting bootstrap + AGENTS.md rule; validating |
 | [CHG-0231](in-progress/CHG-0231-mcp-onboarding-repair/plan.md) | MCP onboarding: immutable reviewed contract revisions, digest gate, failed form cleanup and explicit bind conflicts; validating |
 | [CHG-0232](in-progress/CHG-0232-runtime-credential-diagnostics/plan.md) | Caller runtime skill ref leases and allowlisted spawn diagnostics; validating |
 | [CHG-0229](in-progress/CHG-0229-i18n-gap-fixes/plan.md) | i18n follow-up to CHG-0191: model lang pin per run, localized skill-draft card + assignment replies, Slack slash-command dispatch, stale catalog keys; implemented, validating |
 | [CHG-0226](in-progress/CHG-0226-storage-migration-acceptance/plan.md) | Storage reliability MVP: Явная миграция и итоговая приёмка ограниченного хранения; design accepted, implementation not started |
-| [CHG-0225](in-progress/CHG-0225-runtime-revision-reconcile/plan.md) | Storage reliability MVP: Долговечная сверка проекций и понятные причины runtime-сбоев; design accepted, implementation not started |
-| [CHG-0224](in-progress/CHG-0224-toolhub-state-confirmation/plan.md) | Storage reliability MVP: Сохранность ToolHub и доверенное подтверждение пользователя; design accepted, implementation not started |
-| [CHG-0223](in-progress/CHG-0223-storage-budget-maintenance/plan.md) | Storage reliability MVP: Полный учёт объёма и безопасное операторское обслуживание; design accepted, implementation not started |
-| [CHG-0222](in-progress/CHG-0222-spool-durable-handoff/plan.md) | Storage reliability MVP: Один receipt для результата, доставки и обработки source batch; design accepted, implementation not started |
-| [CHG-0221](in-progress/CHG-0221-bounded-control-audit/plan.md) | Storage reliability MVP: Ограниченный обязательный audit и честные исходы действий; design accepted, implementation not started |
+| [CHG-0225](in-progress/CHG-0225-runtime-revision-reconcile/plan.md) | Storage reliability MVP: Долговечная сверка проекций и понятные причины runtime-сбоев; implementation imported, validation in progress |
+| [CHG-0224](in-progress/CHG-0224-toolhub-state-confirmation/plan.md) | Storage reliability MVP: Сохранность ToolHub и доверенное подтверждение пользователя; implementation imported, validation in progress |
+| [CHG-0223](in-progress/CHG-0223-storage-budget-maintenance/plan.md) | Storage reliability MVP: Полный учёт объёма и безопасное операторское обслуживание; implementation imported, validation in progress |
+| [CHG-0222](in-progress/CHG-0222-spool-durable-handoff/plan.md) | Storage reliability MVP: Один receipt для результата, доставки и обработки source batch; implementation imported, validation in progress |
+| [CHG-0221](in-progress/CHG-0221-bounded-control-audit/plan.md) | Storage reliability MVP: Ограниченный обязательный audit и честные исходы действий; implementation imported, validation in progress |
 | [CHG-0220](in-progress/CHG-0220-broker-object-lifecycle/plan.md) | Storage reliability MVP: Управляемые версии secret objects и безопасный GC; design accepted, implementation not started |
 | [CHG-0219](in-progress/CHG-0219-broker-sqlcipher-store/plan.md) | Storage reliability MVP: Таблицы состояния и постраничный audit Broker; design accepted, implementation not started |
 | [CHG-0218](in-progress/CHG-0218-broker-sqlcipher-proof/plan.md) | Storage reliability MVP: Gate сборки и аварийной атомарности SQLCipher; design accepted, implementation not started |
-| [CHG-0217](in-progress/CHG-0217-diagnostic-log-durability/plan.md) | Storage reliability MVP: Ротация, курсоры и ограниченный trace диагностики; design accepted, implementation not started |
-| [CHG-0216](in-progress/CHG-0216-event-state-isolation/plan.md) | Storage reliability MVP: Изоляция курсоров и безопасная очистка event records; design accepted, implementation not started |
-| [CHG-0215](in-progress/CHG-0215-broker-recovery-head/plan.md) | Storage reliability MVP: Надёжная текущая голова recovery брокера; design accepted, implementation not started |
+| [CHG-0217](in-progress/CHG-0217-diagnostic-log-durability/plan.md) | Storage reliability MVP: Ротация, курсоры и ограниченный trace диагностики; implementation imported, validation in progress |
+| [CHG-0216](in-progress/CHG-0216-event-state-isolation/plan.md) | Storage reliability MVP: Изоляция курсоров и безопасная очистка event records; implementation imported, validation in progress |
+| [CHG-0215](in-progress/CHG-0215-broker-recovery-head/plan.md) | Storage reliability MVP: Надёжная текущая голова recovery брокера; implementation imported, validation in progress |
 | [CHG-0214](in-progress/CHG-0214-standing-assignment-mvp/plan.md) | M23 #324/#332: non-consuming cursor source, filtered batch wakes, specialist progress and runtime fences |
 | [CHG-0213](in-progress/CHG-0213-org-knowledge-brain/plan.md) | M20 stage 10 (optional): org shared brain — read-only OpenKnowledge over org material |
 | [CHG-0212](in-progress/CHG-0212-memory-migration-eval/plan.md) | M20 stage 9: Honcho/native export to cards, memory-eval fixture, `memory vacuum` |
@@ -82,6 +81,12 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 |---|---|
 | [CHG-0037](done/CHG-0037-toolhub-closeout/plan.md) | Abandoned: ToolHub closeout umbrella superseded by later per-issue CHGs |
 | [CHG-0031](done/CHG-0031-docker-disk-diagnosis/plan.md) | Abandoned: read-only diagnosis superseded by CHG-0031-docker-reclaim findings |
+
+## Done — Storage reliability integration
+
+| Change | State |
+|---|---|
+| [CHG-0237](done/CHG-0237-storage-integration/plan.md) | Done 2026-10-31: merged implemented Storage reliability MVP into the dev integration branch; `just check` 86.27%, Broker check 90.3%, scoped dev builds and Docker contracts passed. Production SQLCipher/GC/cutover remain separate design-stage CHGs. |
 
 ## Done — M26 Lean Role Images
 

@@ -1,6 +1,6 @@
 ---
 description: toolhub — capability gateway: tool admission, governance evaluation, connector lifecycle, audit ledger.
-last_verified: 2026-10-30
+last_verified: 2026-10-31
 ---
 
 # toolhub
@@ -59,6 +59,19 @@ tool call crosses. Listens `0.0.0.0:8090`, host-bound to `127.0.0.1:8090`.
   projection changes go to the supervisor as `POST /v1/restart-request`
   (identity triple = lookup key, not a grant); the runtime's own endpoint
   writes the deferred marker, applied immediately when idle.
+  The desired projection revision and last acknowledged restart revision are
+  stored in the ToolHub snapshot. After ToolHub restarts, an unacknowledged
+  revision is posted again; a previously acknowledged revision is not.
+  The snapshot also stores the acknowledged
+  semantic digest of tools, grants, connection and credential authority. A
+  revision change with the same digest advances the acknowledgement without
+  another restart. Managed profiles include admitted tools, effective scopes
+  and limits, control surface and runtime scope. Team bindings include this
+  caller's membership and write authority; unrelated member and observation
+  metadata does not change the digest. Unresolvable authority falls back to
+  revision-based restarts.
+  Each posted revision carries a stable operation ID and
+  `tool_projection_change` reason; retries reuse the same ID.
 - **Team connectors**: `shareable: credential` shares one team credential
   across per-member workloads; `shareable: connection` shares one credential
   and one workload. Each member binding lazily mints one Broker grant,
@@ -112,6 +125,27 @@ owner-matching connection. `connector_status` by current onboarding ID includes
 the same scoped candidate as `connector_list`. An `enabled`
 onboarding now suggests `diagnostics`, never `ready`: even an active registry
 record does not prove admission, workload readiness or provider access.
+Legacy `status` returns the same not-found text for a foreign and an unknown
+onboarding ID. Internal lookup reasons distinguish `scope`, `unknown`,
+`version` and `terminal` without placing those codes in the agent response;
+the remaining expiry/storage classifications are still pending CHG-0224.
+File-backed onboarding updates roll back the in-memory record if persistence
+fails before snapshot replacement, so a failed nonce refresh cannot appear in
+status. If directory sync fails after replacement, the error is reported and
+memory retains the same record as the replaced snapshot.
+For an awaiting-confirm onboarding, agent status now reports
+`next_action=await_user_confirmation`. The MCP `confirm` tool reads status
+without consuming a nonce or enabling a binding. Protected pages display the
+action and reject confirmation POSTs. Communication stores an opaque Telegram
+callback in its existing spool and verifies the sender, chat and expiry before
+using the service-only `/v1/confirmations` endpoint. ToolHub checks current
+enrollment and authority and atomically binds the verified actor, action digest,
+revision and expiry to one durable claim. The safe actor consent record is
+saved before binding work. Credential/OAuth/device submission waits for this
+separate consent. A failed or uncertain step can require a
+fresh link after expiry. A claim write failure before snapshot replacement
+restores the unused in-memory record; a directory-sync failure after
+replacement reports an error and retains the claimed record in memory.
 `GET /v1/connectors` now includes this same scoped `inventory` next to its
 existing projected `connectors` tool groups. `/connections` renders connection
 state even when no tools project and merges projected tools into that row.
@@ -157,10 +191,20 @@ All under `/state` (the space's `runtime/` bind):
 | Path | Contents |
 |---|---|
 | `toolhub/store.json` | onboarding records, connections, definitions |
+| `toolhub/store.json.initialized` | local initialization fence; a missing snapshot with this marker refuses an empty replacement |
 | `toolhub/audit.jsonl` | `HUB_AUDIT_LEDGER` — per-call decisions |
 | `toolhub/governance.json` | `HUB_TOOL_GOVERNANCE` — governance document |
 | `credentials/store.enc` | `HUB_CREDENTIAL_STORE` — sealed credential refs |
 | `artifacts/` | `HUB_ARTIFACT_DIR` — trusted connector artifacts |
+
+ToolHub writes `store.json` through a synced temporary file and rename, then
+syncs the parent directory and creates a synced initialization marker. A missing
+snapshot with a retained marker refuses a fresh empty Save; the same Store
+instance also refuses to rewrite a vanished snapshot. The directory sync is
+effective on Unix; the existing Windows sync helper is a no-op, so native
+filesystem durability still needs the isolated acceptance gate. If the entire
+volume and its marker disappear together, this local fence cannot prove that
+the installation was previously initialized.
 
 ## Key env
 
@@ -192,3 +236,66 @@ agent network), `HUB_CAPABILITY_MODE`/`_PROFILE_ID`/`_GENERATION`/`_ENVIRONMENT`
   network.
 - Model cannot issue grants; every authority record needs a matching human
   `Confirmation` digest (docs/rbac.md).
+
+## Shared audit capacity
+
+`internal/audit` preserves the initial JSONL file and adds consecutive
+`.v1-NNNNNN` segments under an inter-process writer lock. New segments cap at
+1 MiB, records at 16 KiB; the ledger admits at most 16 segments, 16 MiB and
+65536 records. There is no destructive TTL. At capacity, writes stop with an
+explicit error; export/recovery is an operator action. Corrupt/partial records,
+unknown schemas and missing segments fail closed without truncation.
+
+Scoped `ReadPage` returns at most 1000 events; `List` refuses histories that
+require pagination. Schema 2 operation records distinguish authorization, execution and delivery;
+legacy schema 1 records remain readable. `Ledger.Begin` persists admission and
+reserves one maximum completion plus its record/segment budget before returning.
+Reservations are recovered by every writer under the same lock. A matching
+unsettled target/correlation blocks another admission; `Pending` reports the
+scoped unknown intent without guessing whether another process is alive.
+
+For exposure opens and SSH shell/tunnel opens, `cleanup_action` reserves two
+additional maximum records (admission and completion). The hold survives a
+successful open and is reconstructed by a reopened writer. A `cleanup_of`
+record must match the opening action and complete scope, including generation;
+it spends only that resource's hold. One cleanup is admitted per opening.
+Only a durable succeeded cleanup releases the target fence. A prior unknown
+opening remains unknown; a confirmed close does not rewrite its history.
+
+Exposure uses this path: audit failure before open prevents the provider call;
+after-effect failure gives uncertain, preserves known handles and prevents blind
+reopen. List/status surface uncertain=true. A requested close still attempts to
+stop access if audit is unavailable, and reports uncertainty instead of success.
+SSH now admits exec, file, shell, tunnel and certificate operations before their
+effects, with bounded safe receipts and unknown-outcome fences; cleanup still
+attempts access termination if audit fails. Toolhub dispatch uses the same
+durable admission and conservative completion
+reserve for every call, including legacy projections. Missing audit prevents
+backend dispatch; a logger/observer cannot replace the writer. Scope-bound
+operation IDs fence repeated calls after recovery. Preflight failure completes
+as not_started, business errors are execution outcomes rather than auth deny,
+and post-dispatch/checkpoint/output/audit failures remain uncertain with their
+intent/reserve protected. Delivery is not_started until the transport sends it.
+
+The legacy owner credential service also admits batches, rotations, terminal
+exposure and authorized injection before their effects. Its mutation scope is the
+owner, so an unknown batch cannot be repeated under a different key list. Partial
+writes retain ciphertext and are quarantined; an audit failure never compensates
+by deleting the previous credential. Revocation continues through every access
+path even when its receipt is unavailable. Activity exposes typed operation fields
+without credential dictionary names. Broker storage and delivery remain separate.
+
+MCP uncertainty is an IsError application result with status=uncertain,
+operation_id and retryable=false; private backend payloads are withheld. The
+internal read-tool HTTP route returns 409 with the same safe fields, not a
+retryable gateway error. Reconcile the existing operation before any repeat.
+OAuth setup can refresh/retry once only if trusted backend code proves no
+business tools/call was dispatched. A post-dispatch HTTP status, provider error
+string or lost response never grants that proof. TLS, Origin and auth controls
+remain required. Receipts are reviewed producer identifiers/counts; auth-bearing
+URLs, serialized payloads and credential labels are rejected. Toolhub additionally
+accepts canonical identifier characters and the fixed validated CLI
+isolation/cell/runtime receipt format. Unknown controller labels are not serialized. An interrupted operation with no
+verified cleanup remains visible and fenced; no automatic provider inspection,
+cleanup or destructive retention is inferred. CHG-0221 acceptance remains pending.
+No rollout or live acceptance is implied.

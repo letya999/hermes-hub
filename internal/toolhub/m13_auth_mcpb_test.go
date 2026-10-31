@@ -299,9 +299,10 @@ func TestRemoteOAuthGenericFlow(t *testing.T) {
 		t.Fatalf("callback: %v", err)
 	}
 	onboarding := mustOnboarding(t, fix.store, onboardingID)
-	if onboarding.Phase != api.PhaseEnabled {
-		t.Fatalf("post-callback phase=%s err=%s", onboarding.Phase, onboarding.Error)
+	if onboarding.Phase != api.PhaseAwaitingConfirm || onboarding.ConfirmationUsed {
+		t.Fatalf("remote OAuth bypassed verified human consent: phase=%s used=%v", onboarding.Phase, onboarding.ConfirmationUsed)
 	}
+	finishAsHuman(t, fix.control, onboardingID)
 	listed, err := alice.ListTools(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -378,6 +379,7 @@ func TestRemoteOAuthRefreshRetriesCall(t *testing.T) {
 	if err := fix.control.completePreparedOAuth(context.Background(), authURL.Query().Get("state"), "oauth-code"); err != nil {
 		t.Fatalf("callback: %v", err)
 	}
+	finishAsHuman(t, fix.control, prepared["onboarding_id"].(string))
 	listed, err := alice.ListTools(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -427,6 +429,7 @@ func TestRemoteOAuthRefreshConcurrentRestore(t *testing.T) {
 	if err := fix.control.completePreparedOAuth(context.Background(), authURL.Query().Get("state"), "oauth-code"); err != nil {
 		t.Fatalf("callback: %v", err)
 	}
+	finishAsHuman(t, fix.control, prepared["onboarding_id"].(string))
 	onboarding := mustOnboarding(t, fix.store, prepared["onboarding_id"].(string))
 	caller := identity.Envelope{Schema: identity.Schema, PrincipalID: "alice", ExternalIdentityID: "alice", ContextID: "alice", RuntimeID: "runtime", ConversationID: "alice", DeliveryTargetID: "alice", PolicyVersion: onboarding.PolicyVersion}
 	connection, reference, err := fix.store.OwnedConnection(caller, onboarding.ConnectionID)
@@ -472,6 +475,7 @@ func onboardRemoteOAuth(t *testing.T, fixture *remoteOAuthFixture, fix *remoteCo
 	if err := fix.control.completePreparedOAuth(context.Background(), authURL.Query().Get("state"), "oauth-code"); err != nil {
 		t.Fatalf("callback: %v", err)
 	}
+	finishAsHuman(t, fix.control, prepared["onboarding_id"].(string))
 	onboarding := mustOnboarding(t, fix.store, prepared["onboarding_id"].(string))
 	caller := identity.Envelope{Schema: identity.Schema, PrincipalID: "alice", ExternalIdentityID: "alice", ContextID: "alice", RuntimeID: "runtime", ConversationID: "alice", DeliveryTargetID: "alice", PolicyVersion: onboarding.PolicyVersion}
 	connection, reference, err := fix.store.OwnedConnection(caller, onboarding.ConnectionID)
@@ -1006,6 +1010,7 @@ func TestRemoteSharedOAuthMemberCallsRefresh(t *testing.T) {
 	if err := fix.control.completePreparedOAuth(context.Background(), authURL.Query().Get("state"), "oauth-code"); err != nil {
 		t.Fatalf("callback: %v", err)
 	}
+	finishAsHuman(t, fix.control, prepared["onboarding_id"].(string))
 	owner := mustOnboarding(t, fix.store, prepared["onboarding_id"].(string))
 	if owner.Locator == "" {
 		t.Fatal("oauth onboarding stored no credential locator")
@@ -1030,9 +1035,7 @@ func TestRemoteSharedOAuthMemberCallsRefresh(t *testing.T) {
 	if _, err := callControl(t, bob, "status", map[string]any{"onboarding_id": bobOnb.OnboardingID}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := callControl(t, bob, "confirm", map[string]any{"onboarding_id": bobOnb.OnboardingID, "nonce": confirmNonceOf(t, fix.store, bobOnb.OnboardingID)}); err != nil {
-		t.Fatalf("bob confirm: %v", err)
-	}
+	confirmViaTrustedChannel(t, fix.server.URL, fix.store, bobOnb.OnboardingID)
 	if _, err := callControl(t, bob, "enable", map[string]any{"onboarding_id": bobOnb.OnboardingID}); err != nil {
 		t.Fatalf("bob enable: %v", err)
 	}
@@ -1246,6 +1249,7 @@ func TestInsufficientScopeDoesNotRefreshLoop(t *testing.T) {
 	if err := fix.control.completePreparedOAuth(context.Background(), authURL.Query().Get("state"), "oauth-code"); err != nil {
 		t.Fatalf("callback: %v", err)
 	}
+	finishAsHuman(t, fix.control, prepared["onboarding_id"].(string))
 	listed, err := alice.ListTools(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)

@@ -646,6 +646,7 @@ func TestGatewayStartupSkipsUnresolvableManagedToken(t *testing.T) {
 		Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 			return api.BackendResult{Text: "ok"}, nil
 		})}
+	attachGatewayAudit(t, g)
 	handler, err := g.Handler()
 	if err != nil {
 		t.Fatalf("one unresolvable managed token took the endpoint down: %v", err)
@@ -717,6 +718,7 @@ func TestManagedDispatchRequiresDurableAudit(t *testing.T) {
 		calls++
 		return api.BackendResult{}, nil
 	})}
+
 	args := map[string]any{"path": "docs/a", "scope": "workspace"}
 	if _, err := g.CallAuthorized(t.Context(), auth, "workspace_read", args); err == nil {
 		t.Fatal("missing durable audit allowed")

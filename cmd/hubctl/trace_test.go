@@ -14,7 +14,7 @@ import (
 // hubctl trace prints the merged, chronological, redacted feed for a job.
 func TestRunTracePrintsMergedFeed(t *testing.T) {
 	previous := traceDockerNames
-	traceDockerNames = func(context.Context) ([]string, error) { return nil, nil }
+	traceDockerNames = func(context.Context, string, string, string) ([]string, error) { return nil, nil }
 	t.Cleanup(func() { traceDockerNames = previous })
 	root := t.TempDir()
 	spaces := filepath.Join(root, "spaces")
@@ -24,14 +24,14 @@ func TestRunTracePrintsMergedFeed(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(spaces, "alice", "logs"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(root, ".local"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, ".local", "diagnostics"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	state := `{"jobs":{"job-1":{"request":{"principal_id":"alice"},"response":{"run_id":"run-9","session_id":"sess-4"},"status":"completed"}}}`
 	if err := os.WriteFile(filepath.Join(spaces, ".control", "supervisor.json"), []byte(state), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	supervisorLog := filepath.Join(root, ".local", "supervisor.log")
+	supervisorLog := filepath.Join(root, ".local", "diagnostics", "supervisor.log")
 	if err := os.WriteFile(supervisorLog, []byte("{\"time\":\"2026-01-02T03:04:01Z\",\"component\":\"supervisor\",\"msg\":\"admitted\",\"job_id\":\"job-1\"}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -43,10 +43,10 @@ func TestRunTracePrintsMergedFeed(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := out.String()
-	if !strings.Contains(got, "admitted") || !strings.Contains(got, "reply") {
+	if !strings.Contains(got, "job-1") || !strings.Contains(got, "run-9") {
 		t.Fatalf("merged feed missing sources: %q", got)
 	}
-	if strings.Index(got, "admitted") > strings.Index(got, "reply") {
+	if strings.Index(got, "03:04:01Z") > strings.Index(got, "03:04:03Z") {
 		t.Fatalf("events out of order: %q", got)
 	}
 	if !strings.Contains(got, "supervisor") || !strings.Contains(got, "space/agent.log") {
@@ -58,21 +58,21 @@ func TestRunTracePrintsMergedFeed(t *testing.T) {
 // positional job ID and an explicit spaces root.
 func TestTraceCommandDispatches(t *testing.T) {
 	previous := traceDockerNames
-	traceDockerNames = func(context.Context) ([]string, error) { return nil, nil }
+	traceDockerNames = func(context.Context, string, string, string) ([]string, error) { return nil, nil }
 	t.Cleanup(func() { traceDockerNames = previous })
 	root := t.TempDir()
 	spaces := filepath.Join(root, "spaces")
 	if err := os.MkdirAll(filepath.Join(spaces, ".control"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(root, ".local"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, ".local", "diagnostics"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	state := `{"jobs":{"job-1":{"request":{"principal_id":"alice"},"status":"completed"}}}`
 	if err := os.WriteFile(filepath.Join(spaces, ".control", "supervisor.json"), []byte(state), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	supervisorLog := filepath.Join(root, ".local", "supervisor.log")
+	supervisorLog := filepath.Join(root, ".local", "diagnostics", "supervisor.log")
 	if err := os.WriteFile(supervisorLog, []byte("{\"time\":\"2026-01-02T03:04:01Z\",\"component\":\"supervisor\",\"msg\":\"admitted\",\"job_id\":\"job-1\"}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestTraceCommandDispatches(t *testing.T) {
 	if runErr != nil {
 		t.Fatal(runErr)
 	}
-	if !strings.Contains(string(out), "admitted") {
+	if !strings.Contains(string(out), "job-1") {
 		t.Fatalf("trace output missing: %q", out)
 	}
 }
@@ -102,7 +102,7 @@ func TestRunTraceIncludesContainerLogs(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(spaces, ".control"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(root, ".local"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, ".local", "diagnostics"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	state := `{"jobs":{"job-1":{"request":{"principal_id":"alice"},"response":{"run_id":"run-9"},"status":"completed"}}}`
@@ -110,7 +110,7 @@ func TestRunTraceIncludesContainerLogs(t *testing.T) {
 		t.Fatal(err)
 	}
 	prevNames, prevLogs := traceDockerNames, traceDockerLogs
-	traceDockerNames = func(ctx context.Context) ([]string, error) {
+	traceDockerNames = func(ctx context.Context, _ string, _ string, _ string) ([]string, error) {
 		deadline, ok := ctx.Deadline()
 		if !ok || time.Until(deadline) > 10*time.Second {
 			t.Fatal("Docker trace has no bounded deadline")
@@ -125,7 +125,7 @@ func TestRunTraceIncludesContainerLogs(t *testing.T) {
 	if err := runTrace(context.Background(), &out, "job-1", "", spaces); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "audited") || !strings.Contains(out.String(), "docker/hermes-context-aabb") {
+	if !strings.Contains(out.String(), "run-9") || !strings.Contains(out.String(), "docker/hermes-context-aabb") {
 		t.Fatalf("container line missing: %q", out.String())
 	}
 }

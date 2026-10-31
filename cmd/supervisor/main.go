@@ -157,7 +157,7 @@ func run() error {
 		}
 		return watchSupervisor(ctx, executable, append(os.Args[1:], "-watch=false"))
 	}
-	stopLog, err := diagnostics.HostLog(filepath.Join(filepath.Dir(o.spaces), ".local", "supervisor.log"))
+	stopLog, err := diagnostics.HostLog(filepath.Join(filepath.Dir(o.spaces), ".local", "diagnostics", "supervisor.log"))
 	if err != nil {
 		return err
 	}

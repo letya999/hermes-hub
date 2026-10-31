@@ -24,6 +24,17 @@ import (
 const testSecret = "scan-secret-ORANGE-NINE-7721"
 
 func TestProtectedCredentialElicitationAndOAuth(t *testing.T) {
+	var pendingHumanNotice atomic.Bool
+	notices := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if json.NewDecoder(r.Body).Decode(&body) == nil && body["phase"] == api.PhaseAwaitingConfirm && body["confirmation"] != nil {
+			pendingHumanNotice.Store(true)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer notices.Close()
+	t.Setenv("HUB_COMMUNICATION_CONTROL_URL", notices.URL)
+	t.Setenv("HUB_COMMUNICATION_AUTH", testHumanControlToken)
 	key, err := credstore.GenerateKey()
 	if err != nil {
 		t.Fatal(err)
@@ -62,6 +73,7 @@ func TestProtectedCredentialElicitationAndOAuth(t *testing.T) {
 			return api.CredentialInjection{Environment: env, Cleanup: func() error { return nil }}, nil
 		},
 	}
+	attachGatewayAudit(t, gateway)
 	handler, err := gateway.Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -115,6 +127,9 @@ func TestProtectedCredentialElicitationAndOAuth(t *testing.T) {
 	if post.StatusCode != 200 || strings.Contains(string(posted), testSecret) {
 		t.Fatalf("form post=%d body=%s", post.StatusCode, posted)
 	}
+	if !strings.Contains(string(posted), "в исходном чате") || strings.Contains(string(posted), "MCP запущен и включён") {
+		t.Error("credential page reports enabled before verified human confirmation")
+	}
 	info, err := secrets.Info(mustOnboarding(t, store, prepared["onboarding_id"].(string)).Locator, "alice")
 	if err != nil || info.Status != credstore.StatusActive {
 		t.Fatalf("ciphertext info=%+v err=%v", info, err)
@@ -123,9 +138,16 @@ func TestProtectedCredentialElicitationAndOAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status["phase"] != api.PhaseEnabled {
-		t.Fatalf("credential form did not complete authorization: %v", status)
+	if status["phase"] != api.PhaseAwaitingConfirm {
+		t.Errorf("credential form bypassed trusted human consent: %v", status)
 	}
+	if !pendingHumanNotice.Load() {
+		t.Error("credential submission did not request actor-bound consent through channel")
+	}
+	if status["phase"] != api.PhaseAwaitingConfirm {
+		return
+	}
+	finishAsHuman(t, control, prepared["onboarding_id"].(string))
 	if err := control.SubmitCredentials(prepared["onboarding_id"].(string), nonceFromPath(formPath), map[string]string{"GOOGLE_TOKEN": testSecret}); err == nil {
 		t.Fatal("one-time credential form replay accepted")
 	}
@@ -161,8 +183,8 @@ func TestProtectedCredentialElicitationAndOAuth(t *testing.T) {
 	if _, err := expired.Invoke(context.Background(), auth, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, expired.Store, prepared["onboarding_id"])}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("expired confirmation: %v", err)
 	}
-	if _, err := callControl(t, alice, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, expired.Store, prepared["onboarding_id"])}); err == nil {
-		t.Fatal("replayed nonce accepted")
+	if body, err := callControl(t, alice, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, expired.Store, prepared["onboarding_id"])}); err != nil || body["phase"] != api.PhaseEnabled {
+		t.Fatalf("agent confirm changed terminal state: body=%v err=%v", body, err)
 	}
 
 	fixture := oauth.NewFixture()
@@ -189,6 +211,7 @@ func TestProtectedCredentialElicitationAndOAuth(t *testing.T) {
 	if location == "" {
 		t.Fatal("oauth authorize missing redirect")
 	}
+	pendingHumanNotice.Store(false)
 	cb, err := client.Get(location)
 	if err != nil {
 		t.Fatal(err)
@@ -197,6 +220,9 @@ func TestProtectedCredentialElicitationAndOAuth(t *testing.T) {
 	cb.Body.Close()
 	if strings.Contains(string(cbBody), testSecret) {
 		t.Fatal("oauth callback leaked test secret")
+	}
+	if latest := mustOnboarding(t, store, prepared["onboarding_id"].(string)); cb.StatusCode != http.StatusOK || latest.Phase != api.PhaseAwaitingConfirm || latest.ConfirmationUsed || !pendingHumanNotice.Load() {
+		t.Fatalf("OAuth must wait for verified actor: status=%d phase=%s used=%v notice=%v", cb.StatusCode, latest.Phase, latest.ConfirmationUsed, pendingHumanNotice.Load())
 	}
 }
 
@@ -375,6 +401,7 @@ func TestRotateRevokeCutsOpenSession(t *testing.T) {
 			return api.BackendResult{Text: "ok"}, nil
 		}),
 	}
+	attachGatewayAudit(t, gateway)
 	handler, err := gateway.Handler()
 	if err != nil {
 		t.Fatal(err)

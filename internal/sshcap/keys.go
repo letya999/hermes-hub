@@ -139,11 +139,21 @@ func (s *Service) materializeKey(ctx context.Context, alias, grantID, envName st
 // key (certificate_ref "ca:<relative path>"). The CA key never leaves the
 // read-only config dir, the image, chat or tool results; each minted cert is
 // a fresh short-lived user certificate for the remote account — revocation
-// is stopping issuance. Serial and principals land in the bounded SSH
+// is stopping issuance. Serial and TTL land in the bounded SSH
 // receipt; static file:/broker: certificate_ref stays the fallback.
 const sshCertTTL = 10 * time.Minute
 
-func (s *Service) mintCertificate(alias string, h *Host, signer ssh.Signer) (ssh.Signer, error) {
+func (s *Service) mintCertificate(alias string, h *Host, signer ssh.Signer) (result ssh.Signer, resultErr error) {
+	ticket, err := s.beginAudit("ssh.cert", alias, alias)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		ticket.finish(&resultErr)
+		if resultErr != nil {
+			result = nil
+		}
+	}()
 	raw, err := s.readCredentialFile(strings.TrimPrefix(h.CertificateRef, "ca:"))
 	if err != nil {
 		return nil, err
@@ -172,6 +182,7 @@ func (s *Service) mintCertificate(alias string, h *Host, signer ssh.Signer) (ssh
 		ValidBefore:     uint64(now.Add(sshCertTTL).Unix()),   // #nosec G115 -- wall clock is positive
 		Nonce:           nonce[:],
 	}
+	ticket.execution = "unknown"
 	if err := cert.SignCert(rand.Reader, caSigner); err != nil {
 		return nil, fmt.Errorf("%w: host %q ca signing failed", ErrUnavailable, alias)
 	}
@@ -179,6 +190,7 @@ func (s *Service) mintCertificate(alias string, h *Host, signer ssh.Signer) (ssh
 	if err != nil {
 		return nil, fmt.Errorf("%w: host %q cert signer failed", ErrUnavailable, alias)
 	}
-	s.auditEvent("ssh-cert", alias, "ok", fmt.Sprintf("serial=%d principals=%s ttl=%ds", cert.Serial, strings.Join(cert.ValidPrincipals, ","), int(sshCertTTL/time.Second)))
+	ticket.execution = "succeeded"
+	ticket.receipt = fmt.Sprintf("ssh-cert serial=%d ttl=%d", cert.Serial, int(sshCertTTL/time.Second))
 	return certSigner, nil
 }

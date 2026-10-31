@@ -39,6 +39,7 @@ type Journal struct {
 	lock     *os.File
 	legacy   bool
 	box      *seal.Box
+	identity []byte
 	seq      uint64
 	prev     string
 	size     int64
@@ -51,6 +52,10 @@ type Journal struct {
 }
 
 func Open(dir string, key []byte, limit int64) (*Journal, error) {
+	return openJournal(dir, key, limit, true)
+}
+
+func openJournal(dir string, key []byte, limit int64, compact bool) (*Journal, error) {
 	if limit < MaxRecord || limit > 1<<30 {
 		return nil, errors.New("invalid journal limit")
 	}
@@ -86,7 +91,7 @@ func Open(dir string, key []byte, limit int64) (*Journal, error) {
 	if fi.Mode().Perm()&0077 != 0 || fi.Size() > limit {
 		return fail(ErrUnavailable)
 	}
-	j := &Journal{file: f, lock: lock, box: box, limit: limit}
+	j := &Journal{file: f, lock: lock, box: box, identity: seal.Derive(key, "journal-store-key/v2"), limit: limit}
 	for {
 		var hdr [4]byte
 		n, err := io.ReadFull(f, hdr[:])
@@ -139,7 +144,7 @@ func Open(dir string, key []byte, limit int64) (*Journal, error) {
 	if err := securefs.SyncDir(dir); err != nil {
 		return fail(err)
 	}
-	if j.legacy && j.size > j.limit/3 {
+	if compact && j.legacy && j.size > j.limit/3 {
 		if err := j.compactLocked(); err != nil {
 			_ = j.file.Close()
 			_ = lock.Close()
@@ -210,7 +215,7 @@ func (j *Journal) Append(kind string, data any) (uint64, error) {
 	}
 	h := sha256.Sum256(plain)
 	if j.anchor != nil {
-		if err := j.anchor.commit(r.Sequence, hex.EncodeToString(h[:])); err != nil {
+		if err := j.anchor.writeHead(r.Sequence, hex.EncodeToString(h[:])); err != nil {
 			j.poisoned = true
 			return 0, ErrUnavailable
 		}
@@ -294,10 +299,13 @@ func (j *Journal) compactLocked() error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = os.Remove(filepath.Join(dir, name)) }()
-	if err := syscall.Flock(int(temp.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	fail := func(err error) error {
 		_ = temp.Close()
 		return err
+	}
+	defer func() { _ = os.Remove(filepath.Join(dir, name)) }()
+	if err := syscall.Flock(int(temp.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return fail(err)
 	}
 	writer := bufio.NewWriterSize(temp, 256<<10)
 	offsets := make([]int64, 0, len(j.records))
@@ -307,26 +315,22 @@ func (j *Journal) compactLocked() error {
 	for _, record := range j.records {
 		plain, err := json.Marshal(record)
 		if err != nil {
-			_ = temp.Close()
-			return err
+			return fail(err)
 		}
 		if record.Previous != prev {
-			_ = temp.Close()
-			return ErrUnavailable
+			return fail(ErrUnavailable)
 		}
 		sum := sha256.Sum256(plain)
 		prev = hex.EncodeToString(sum[:])
 		frame, compressed, err := j.frame(plain)
 		if err != nil {
-			_ = temp.Close()
-			return err
+			return fail(err)
 		}
 		if !compressed {
 			legacy = true
 		}
 		if _, err := writer.Write(frame); err != nil {
-			_ = temp.Close()
-			return err
+			return fail(err)
 		}
 		size += int64(len(frame))
 		offsets = append(offsets, size)
@@ -336,24 +340,19 @@ func (j *Journal) compactLocked() error {
 		return ErrUnavailable
 	}
 	if size >= j.size {
-		_ = temp.Close()
-		return nil
+		return fail(nil)
 	}
 	if err := writer.Flush(); err != nil {
-		_ = temp.Close()
-		return err
+		return fail(err)
 	}
 	if err := temp.Sync(); err != nil {
-		_ = temp.Close()
-		return err
+		return fail(err)
 	}
 	if _, err := temp.Seek(size, io.SeekStart); err != nil {
-		_ = temp.Close()
-		return err
+		return fail(err)
 	}
 	if err := os.Rename(filepath.Join(dir, name), filepath.Join(dir, "ledger.bin")); err != nil {
-		_ = temp.Close()
-		return err
+		return fail(err)
 	}
 	old := j.file
 	j.file, j.size, j.offsets, j.legacy = temp, size, offsets, legacy

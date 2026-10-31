@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/audit"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -14,6 +15,7 @@ import (
 // in a fixed ring buffer. Idle and absolute lifetimes are enforced by the
 // service reaper; the process exit marks the shell done.
 type shell struct {
+	operation *audit.Operation
 	id        string
 	alias     string
 	client    *ssh.Client
@@ -90,7 +92,7 @@ type ShellReadResult struct {
 
 // ShellOpen starts a PTY shell on an allowlisted host. The ssh_shell grant is
 // required; the shell counts against the shell cap, not the exec semaphore.
-func (s *Service) ShellOpen(ctx context.Context, alias string) (*ShellView, error) {
+func (s *Service) ShellOpen(ctx context.Context, alias string) (result *ShellView, resultErr error) {
 	if err := s.alive(); err != nil {
 		return nil, err
 	}
@@ -113,9 +115,31 @@ func (s *Service) ShellOpen(ctx context.Context, alias string) (*ShellView, erro
 		s.pendingShells--
 		s.mu.Unlock()
 	}()
+	ticket, err := s.beginAudit("ssh.shell_open", alias, alias)
+	if err != nil {
+		return nil, err
+	}
+	var opened *shell
+	defer func() {
+		ticket.finish(&resultErr)
+		if resultErr != nil {
+			result = nil
+			if opened != nil {
+				cleanup, cleanupErr := ticket.operation.BeginCleanup()
+				opened.close()
+				if cleanupErr == nil {
+					cleanupErr = cleanup.Complete("succeeded", "not_applicable", "close", "")
+				}
+				reportCleanup(cleanupErr)
+				s.mu.Lock()
+				delete(s.shells, opened.id)
+				s.mu.Unlock()
+			}
+		}
+	}()
 	client, err := s.dial(ctx, alias, h)
 	if err != nil {
-		s.auditEvent("ssh-shell", alias, "error", "dial failed")
+
 		return nil, err
 	}
 	session, err := client.NewSession()
@@ -141,12 +165,15 @@ func (s *Service) ShellOpen(ctx context.Context, alias string) (*ShellView, erro
 		_ = client.Close()
 		return nil, fmt.Errorf("%w: stdout: %v", ErrUnavailable, err)
 	}
+	ticket.execution = "unknown"
 	if err = session.Shell(); err != nil {
 		_ = session.Close()
 		_ = client.Close()
 		return nil, fmt.Errorf("%w: shell: %v", ErrUnavailable, err)
 	}
 	sh := &shell{id: newID("sh"), alias: alias, client: client, session: session, stdin: stdin, createdAt: time.Now(), lifetime: s.shellLifetime(), lastUsed: time.Now()}
+	opened = sh
+	sh.operation = ticket.operation
 	go func() {
 		_, _ = io.Copy(sh, out)
 		sh.mu.Lock()
@@ -161,7 +188,9 @@ func (s *Service) ShellOpen(ctx context.Context, alias string) (*ShellView, erro
 	}
 	s.shells[sh.id] = sh
 	s.mu.Unlock()
-	s.auditEvent("ssh-shell", alias, "ok", "shell "+sh.id+" opened")
+
+	ticket.execution = "succeeded"
+	ticket.receipt = "shell=" + sh.id
 	return sh.view(), nil
 }
 
@@ -172,7 +201,7 @@ func (sh *shell) view() *ShellView {
 }
 
 // ShellSend writes input to the shell. Input is bounded to 4 KiB per call.
-func (s *Service) ShellSend(id, data string) error {
+func (s *Service) ShellSend(id, data string) (resultErr error) {
 	if err := s.alive(); err != nil {
 		return err
 	}
@@ -190,16 +219,24 @@ func (s *Service) ShellSend(id, data string) error {
 	if closed {
 		return fmt.Errorf("%w: shell is closed", ErrClosed)
 	}
-	if _, err = sh.stdin.Write([]byte(data)); err != nil {
-		return fmt.Errorf("%w: shell write: %v", ErrUnavailable, err)
+	ticket, err := s.beginAudit("ssh.shell_send", sh.alias, id)
+	if err != nil {
+		return err
 	}
+	defer ticket.finish(&resultErr)
+	ticket.execution = "unknown"
+	if n, writeErr := sh.stdin.Write([]byte(data)); writeErr != nil || n != len(data) {
+		return fmt.Errorf("%w: shell write incomplete", ErrUnavailable)
+	}
+	ticket.execution = "succeeded"
+	ticket.receipt = fmt.Sprintf("bytes=%d", len(data))
 	return nil
 }
 
 // ShellRead returns new output from the ring at or after offset. Bytes dropped
 // by the fixed ring are reported as lost_bytes; the offset clamp never
 // rewinds below the ring base.
-func (s *Service) ShellRead(id string, offset uint64) (*ShellReadResult, error) {
+func (s *Service) ShellRead(id string, offset uint64) (result *ShellReadResult, resultErr error) {
 	if err := s.alive(); err != nil {
 		return nil, err
 	}
@@ -207,6 +244,16 @@ func (s *Service) ShellRead(id string, offset uint64) (*ShellReadResult, error) 
 	if err != nil {
 		return nil, err
 	}
+	ticket, err := s.beginAudit("ssh.shell_read", sh.alias, id)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		ticket.finish(&resultErr)
+		if resultErr != nil {
+			result = nil
+		}
+	}()
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 	sh.lastUsed = time.Now()
@@ -221,6 +268,8 @@ func (s *Service) ShellRead(id string, offset uint64) (*ShellReadResult, error) 
 	if idx < len(sh.ring) {
 		data = string(sh.ring[idx:])
 	}
+	ticket.execution = "succeeded"
+	ticket.receipt = fmt.Sprintf("bytes=%d", len(data))
 	return &ShellReadResult{ID: sh.id, Data: data, Next: sh.total, EOF: sh.eof, Lost: lost}, nil
 }
 
@@ -230,12 +279,16 @@ func (s *Service) ShellClose(id string) error {
 	if err != nil {
 		return err
 	}
+	cleanup, admissionErr := sh.operation.BeginCleanup()
 	sh.close()
 	s.mu.Lock()
 	delete(s.shells, id)
 	s.mu.Unlock()
-	s.auditEvent("ssh-shell", sh.alias, "ok", "shell "+id+" closed")
-	return nil
+
+	if admissionErr != nil {
+		return audit.ErrUncertain
+	}
+	return cleanup.Complete("succeeded", "not_applicable", "close", "shell="+id)
 }
 
 func (s *Service) shellByID(id string) (*shell, error) {

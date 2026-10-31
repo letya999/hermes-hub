@@ -34,9 +34,9 @@ type Gateway struct {
 	Audit                      func(event string, fields map[string]string)
 	AuditWrite                 func(event string, fields map[string]string) error
 	Injector                   api.CredentialInjector
-	// OAuthRefresh mints a new access token for a connection whose remote
-	// call was rejected, then reports whether a retry may carry a fresh
-	// bearer. Nil disables refresh-retry.
+	// OAuthRefresh restores a token only after a trusted backend proves setup
+	// authentication failed before tools/call dispatch. It never retries an
+	// uncertain business operation. Nil disables this setup recovery.
 	OAuthRefresh func(context.Context, api.EffectiveBinding) (bool, error)
 	Control      *ControlPlane
 	// governance is the host-owned tool policy document (issue 139). Nil
@@ -107,6 +107,7 @@ func (g *Gateway) Handler() (http.Handler, error) {
 	mux.Handle("/v1/connectors:install", http.HandlerFunc(g.serveConnectorInstall))
 	mux.Handle("/v1/connectors/", http.HandlerFunc(g.serveConnectorVerb))
 	mux.Handle("/v1/operations/", http.HandlerFunc(g.serveOperation))
+	mux.Handle("/v1/confirmations", http.HandlerFunc(g.serveHumanConfirmation))
 	mux.Handle("/v1/tool-call", http.HandlerFunc(g.serveToolCall))
 	mux.Handle("/v1/cli-jobs/release", http.HandlerFunc(g.serveCLIJobRelease))
 	mux.Handle("/v1/admin/onboardings", http.HandlerFunc(g.serveAdminOnboardings))
@@ -330,6 +331,12 @@ func (g *Gateway) serveToolCall(w http.ResponseWriter, r *http.Request) {
 	corr := api.HeaderCorrelation(r.Header.Get(api.HeaderJobID), r.Header.Get(api.HeaderRunID))
 	result, err := g.call(api.WithCallCorrelation(r.Context(), corr), auth, body.Tool, body.Arguments)
 	if err != nil {
+		if data := uncertainCallData(err); data != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(data)
+			return
+		}
 		http.Error(w, "tool call failed", http.StatusBadGateway)
 		return
 	}

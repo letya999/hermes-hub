@@ -259,6 +259,8 @@ func (m *Manager) applyRuntimeRestartLocked(ctx context.Context, runtime Runtime
 	}
 	m.mu.Lock()
 	entry.restored = false
+	entry.Runtime.PendingRestart = nil // The cause is spent once the restart applies.
+	_ = m.persistLocked()
 	m.mu.Unlock()
 	return true, nil
 }
@@ -281,8 +283,12 @@ func (m *Manager) restartRequestHTTP(w http.ResponseWriter, r *http.Request) {
 		PrincipalID string `json:"principal_id"`
 		ContextID   string `json:"context_id"`
 		RuntimeID   string `json:"runtime_id"`
+		Revision    uint64 `json:"revision"`
+		OperationID string `json:"operation_id"`
+		Reason      string `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || !validID(request.PrincipalID) || !validID(request.ContextID) {
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || !validID(request.PrincipalID) || !validID(request.ContextID) || (request.RuntimeID != "" && !validID(request.RuntimeID)) ||
+		(request.Revision != 0 || request.OperationID != "" || request.Reason != "") && (request.Revision == 0 || !validID(request.OperationID) || request.Reason != "tool_projection_change" || request.RuntimeID == "") {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid restart request"})
 		return
 	}
@@ -303,7 +309,16 @@ func (m *Manager) restartRequestHTTP(w http.ResponseWriter, r *http.Request) {
 	address, auth, idle := entry.Address, entry.auth, entry.State == Idle || entry.State == Ready
 	snapshot := entry.Runtime
 	m.mu.Unlock()
-	marker, err := http.NewRequestWithContext(r.Context(), http.MethodPost, address+"/v1/restart-request", nil)
+	var markerBody []byte
+	if request.OperationID != "" {
+		markerBody, _ = json.Marshal(struct {
+			OperationID string `json:"operation_id"`
+			Reason      string `json:"reason"`
+			Revision    uint64 `json:"revision"`
+			Generation  string `json:"generation"`
+		}{request.OperationID, request.Reason, request.Revision, snapshot.Generation})
+	}
+	marker, err := http.NewRequestWithContext(r.Context(), http.MethodPost, address+"/v1/restart-request", bytes.NewReader(markerBody))
 	if err != nil {
 		writeRuntimeFailure(w, http.StatusBadGateway, err)
 		return
@@ -322,6 +337,14 @@ func (m *Manager) restartRequestHTTP(w http.ResponseWriter, r *http.Request) {
 	if response.StatusCode != http.StatusOK {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "runtime marker refused"})
 		return
+	}
+	if !idle && request.OperationID != "" {
+		m.mu.Lock()
+		if current := m.items[runtimeKey(Binding{PrincipalID: snapshot.PrincipalID, ContextID: snapshot.ContextID, RuntimeMode: snapshot.RuntimeMode})]; current != nil && current.Generation == snapshot.Generation {
+			current.Runtime.PendingRestart = &RestartCause{Reason: request.Reason, OperationID: request.OperationID, Revision: request.Revision, Generation: snapshot.Generation}
+			_ = m.persistLocked()
+		}
+		m.mu.Unlock()
 	}
 	applied := false
 	if idle {

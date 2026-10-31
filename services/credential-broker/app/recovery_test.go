@@ -426,3 +426,42 @@ func TestRecoveryKeyMustSurvivePrimaryAndStayOutsideBackup(t *testing.T) {
 		})
 	}
 }
+
+func TestMigrateHeadConfigAndIndependentKey(t *testing.T) {
+	c := devConfig(t)
+	if err := MigrateHead(c); err == nil {
+		t.Fatal("partial recovery configuration accepted")
+	}
+	c.RecoveryDir = filepath.Join(t.TempDir(), "recovery")
+	c.RecoveryAnchorDir = filepath.Join(t.TempDir(), "anchor")
+	c.RecoveryKeyFile = filepath.Join(filepath.Dir(c.MasterKeyFile), "recovery.key")
+	c.RecoveryIdentity = "fixture/dev"
+	if err := MigrateHead(c); err == nil {
+		t.Fatal("missing recovery key accepted")
+	}
+	master, err := os.ReadFile(c.MasterKeyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(c.RecoveryKeyFile, master, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err = MigrateHead(c); err == nil {
+		t.Fatal("shared master/recovery key accepted")
+	}
+	if err = os.WriteFile(c.RecoveryKeyFile, bytes.Repeat([]byte{9}, 32), 0600); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := Build(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = svc.Broker.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err = MigrateHead(c); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

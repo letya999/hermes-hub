@@ -547,6 +547,9 @@ func (g *Gateway) streamPollOnce(ctx context.Context, schedule Schedule, toolCal
 			return nil, true
 		}
 	}
+	if handled, blocked := g.spool.resumeSourceBatch(schedule, g.now().UTC(), g.authorizeOccurrence); handled {
+		return nil, blocked
+	}
 	results := g.probeRound(ctx, schedule, streamWaitBudget, toolCall)
 	overflowed, blocked := g.spool.settleStreamResults(schedule, results, g.now().UTC(), g.authorizeOccurrence)
 	for _, ev := range overflowed {
@@ -577,6 +580,12 @@ func (s *Spool) settleStreamEvents(schedule Schedule, body []byte, now time.Time
 // dead input is isolated to its own SourceErrors entry; only a round where
 // every input failed blocks the loop.
 func (s *Spool) settleStreamResults(schedule Schedule, results []sourceResult, now time.Time, authorize func(Job) error) ([]Event, bool) {
+	if len(results) == 0 {
+		return nil, true
+	}
+	if handled, blocked := s.resumeSourceBatch(schedule, now, authorize); handled {
+		return nil, blocked
+	}
 	s.mu.Lock()
 	live, err := s.loadScheduleLocked(schedule.ScheduleID)
 	if err != nil || live.Revision != schedule.Revision || !streamActive(&live, now) {
@@ -603,14 +612,14 @@ func (s *Spool) settleStreamResults(schedule Schedule, results []sourceResult, n
 		if authError(firstErr) {
 			st.Degraded = true
 		}
-		_ = atomicJSON(s.eventPath(schedule.ScheduleID), st)
+		_ = s.writeEventStateLocked(schedule.ScheduleID, st)
 		s.mu.Unlock()
 		return nil, true
 	}
 	job := Job{Envelope: schedule.Envelope, OrganizationID: schedule.OrganizationID, UserID: schedule.UserID, ActorID: schedule.ActorID, ScopeID: schedule.ScopeID, Channel: schedule.Channel, ChatID: schedule.ChatID, TaskID: schedule.TaskID, TopicID: schedule.TopicID, SlackChannel: schedule.SlackChannel, SlackThread: schedule.SlackThread, Text: schedule.Input, Trigger: "cron", CreatedAt: now.UTC()}
 	if authorize != nil && authorize(job) != nil {
 		st.LastError = "routine owner unavailable"
-		_ = atomicJSON(s.eventPath(schedule.ScheduleID), st)
+		_ = s.writeEventStateLocked(schedule.ScheduleID, st)
 		s.mu.Unlock()
 		return nil, true
 	}
@@ -631,7 +640,7 @@ func (s *Spool) settleStreamResults(schedule Schedule, results []sourceResult, n
 		extracted, exErr := extractEvents(schedule.Probe, res.body)
 		if exErr != nil {
 			st.LastError = boundedWatchText(exErr.Error())
-			_ = atomicJSON(s.eventPath(schedule.ScheduleID), st)
+			_ = s.writeEventStateLocked(schedule.ScheduleID, st)
 			s.mu.Unlock()
 			return nil, true
 		}
@@ -650,7 +659,7 @@ func (s *Spool) settleStreamResults(schedule Schedule, results []sourceResult, n
 		}
 		if schedule.Probe.CursorArg != "" && (json.Unmarshal(res.body, &env) != nil || env.Cursor == "") {
 			st.LastError = "cursor probe returned no next_cursor"
-			_ = atomicJSON(s.eventPath(schedule.ScheduleID), st)
+			_ = s.writeEventStateLocked(schedule.ScheduleID, st)
 			s.mu.Unlock()
 			return nil, true
 		}
@@ -670,29 +679,7 @@ func (s *Spool) settleStreamResults(schedule Schedule, results []sourceResult, n
 			events = append(events, ev)
 		}
 	}
-	if len(events) == 0 {
-		// A healthy empty poll still proves liveness for /watches.
-		st.LastSuccess = now
-		if parseFailed == 0 && len(sourceErrs) == 0 {
-			st.LastError = ""
-			st.Degraded = false
-		} else {
-			st.LastError = "one or more watch sources unavailable"
-		}
-		st.SourceErrors = sourceErrs
-		if cursor != "" {
-			st.Cursor = cursor
-		}
-		for label, c := range sourceCursors {
-			if st.SourceCursors == nil {
-				st.SourceCursors = map[string]string{}
-			}
-			st.SourceCursors[label] = c
-		}
-		_ = atomicJSON(s.eventPath(schedule.ScheduleID), st)
-		s.mu.Unlock()
-		return nil, parseFailed+failed == len(results)
-	}
+
 	fresh := []Event{}
 	ids := make([]string, 0, len(events))
 	for _, ev := range events {
@@ -757,45 +744,12 @@ func (s *Spool) settleStreamResults(schedule Schedule, results []sourceResult, n
 	}
 	if filterErr != nil {
 		st.LastError = boundedWatchText(filterErr.Error())
-		_ = atomicJSON(s.eventPath(schedule.ScheduleID), st)
+		_ = s.writeEventStateLocked(schedule.ScheduleID, st)
 		return nil, true
 	}
-	kept := make([]Event, 0, len(fresh))
-	for _, ev := range fresh {
-		if st.seen(ev.ID) {
-			continue
-		}
-		if verdicts[ev.ID] == "drop" {
-			st.markSeen(ev.ID, now)
-			continue
-		}
-		if verdicts[ev.ID] == "urgent" {
-			ev.Urgent = true
-		}
-		kept = append(kept, ev)
+	if err := s.startSourceBatchLocked(&st, schedule, job, events, verdicts, seed, cursor, sourceCursors, sourceEvents, sourceErrs, now); err != nil {
+		return nil, true
 	}
-	overflowed := s.fanoutEventsLocked(&st, schedule, job, kept, seed, schedule.ScheduleID, now)
-	if cursor != "" {
-		allSeen := true
-		for _, id := range sourceEvents[""] {
-			allSeen = allSeen && st.seen(id)
-		}
-		if allSeen {
-			st.Cursor = cursor
-		}
-	}
-	for label, c := range sourceCursors {
-		allSeen := true
-		for _, id := range sourceEvents[label] {
-			allSeen = allSeen && st.seen(id)
-		}
-		if allSeen {
-			if st.SourceCursors == nil {
-				st.SourceCursors = map[string]string{}
-			}
-			st.SourceCursors[label] = c
-		}
-	}
-	_ = atomicJSON(s.eventPath(schedule.ScheduleID), st)
-	return overflowed, false
+	overflowed, err := s.applySourceBatchLocked(&st, schedule, now, authorize)
+	return overflowed, err != nil || parseFailed+failed == len(results)
 }

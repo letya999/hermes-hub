@@ -284,14 +284,15 @@ func TestAssignmentWakeBundleLangHint(t *testing.T) {
 	st := &EventState{}
 	schedule := Schedule{ScheduleID: "ev-asg", AssignmentID: "asg1", AssignmentPlanRevision: 1, Sink: "agent", Timezone: "UTC"}
 	s.mu.Lock()
-	s.fanoutEventsLocked(st, schedule, o.Job, []Event{{ID: "e1", Text: "one"}}, "seed-1", "ev-asg", time.Now().UTC())
+	err := s.startSourceBatchLocked(st, schedule, o.Job, []Event{{ID: "e1", Text: "one"}}, nil, "seed-1", "", nil, map[string][]string{"": {"e1"}}, nil, time.Now().UTC())
 	s.mu.Unlock()
-	job, err := s.ClaimJob()
-	if err != nil || job == nil {
-		t.Fatal("assignment wake admitted no bundle job")
+	if err != nil || st.PendingBatch == nil || len(st.PendingBatch.Jobs) != 1 {
+		t.Fatalf("assignment wake planned no bundle job: %v", err)
 	}
-	if !strings.Contains(job.Text, "language is Español (es)") {
-		t.Fatalf("bundle missing owner language hint: %q", job.Text)
+	for _, job := range st.PendingBatch.Jobs {
+		if !strings.Contains(job.Text, "language is Español (es)") {
+			t.Fatalf("bundle missing owner language hint: %q", job.Text)
+		}
 	}
 }
 
@@ -317,7 +318,15 @@ func TestAssignmentCommandsLocalized(t *testing.T) {
 		t.Fatalf("create failed: %d %s", w.Code, w.Body.String())
 	}
 	id := created.AssignmentID
-	g.spool.rt.AdmitAssignmentWakeLocked(id, time.Now())
+	g.spool.mu.Lock()
+	allowed, wakeErr := g.spool.rt.ReserveAssignmentWakeLocked(id, "localized-test-wake", time.Now(), created.Plan.Revision)
+	if wakeErr == nil && allowed {
+		wakeErr = g.spool.rt.SettleAssignmentWakeLocked(id, "localized-test-wake", created.Plan.Revision)
+	}
+	g.spool.mu.Unlock()
+	if wakeErr != nil || !allowed {
+		t.Fatalf("assignment wake: allowed=%v err=%v", allowed, wakeErr)
+	}
 
 	out = g.assignmentsCommand(user, 11, locale.LangEN)
 	if !strings.Contains(out, "Standing assignments:") || !strings.Contains(out, id) || !strings.Contains(out, "wakes today") {

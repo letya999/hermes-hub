@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -64,6 +65,11 @@ func runWithContext(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("load ToolHub store: %w", err)
 	}
+	if witness := strings.TrimSpace(os.Getenv("HUB_TOOLHUB_IDENTITY_WITNESS")); witness != "" {
+		if err := store.VerifyInstallationWitness(witness); err != nil {
+			return fmt.Errorf("ToolHub installation witness: %w", err)
+		}
+	}
 	handler, err := toolhub.NewEndpointHandler(config, store)
 	if err != nil {
 		return err
@@ -101,11 +107,14 @@ func runWithContext(ctx context.Context) error {
 			Owner:    os.Getenv("HUB_DIAGNOSTICS_OWNER"),
 		}
 		runBackground(func() {
-			diagnostics.Follow(ctx, filepath.Join(dir, "hermes-diagnostics.txt"), diagnostics.Docker, 15*time.Second, scope)
+			diagnostics.Follow(ctx, filepath.Join(dir, "hermes-diagnostics.txt"), nil, 15*time.Second, scope)
 		})
 	}
 	refresher := handler.(interface{ RefreshProjection() error })
 	restartNotify := api.RuntimeRestartNotifierFromEnv()
+	if restartNotify != nil {
+		restartNotify.State = store
+	}
 	runBackground(func() {
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()

@@ -1230,8 +1230,18 @@ func TestWorkerFailureNoticesLocalized(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Past the reconciliation window the owner is told the outcome is unknown.
-	g.now = func() time.Time { return time.Now().Add(hubruntime.RunBudget() + time.Minute) }
+	// The first uncertain observation starts the window; backdate only those
+	// two jobs to exercise the localized notice after reconciliation expires.
+	for _, id := range []string{"w-uncertain", "w-uncertain2"} {
+		mapping, found, err := g.spool.Mapping(id)
+		if err != nil || !found {
+			t.Fatalf("mapping %s: %v", id, err)
+		}
+		mapping.UncertainSince = time.Now().Add(-hubruntime.RunBudget() - time.Minute)
+		if err := atomicJSON(g.spool.mappingPath(id), mapping); err != nil {
+			t.Fatal(err)
+		}
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { defer close(done); g.worker(ctx) }()
