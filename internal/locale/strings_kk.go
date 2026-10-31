@@ -246,6 +246,7 @@ func init() {
 		"goal.err.engine-conflict": "белсенді мақсат басқа қозғалтқышта жүреді — алдымен /goal clear",
 		"goal.set":                 "Мақсат қойылды (қозғалтқыш %s, шек %d ход): %s",
 		"goal.achieved":            "Мақсат орындалды («%s») — %s. Дәлел: %s",
+		"memory.night-digest":      "Түнде есімде қалғаны:\n%s",
 
 		// Routine listing fragments.
 		"routine.completed":   "кесте аяқталды",

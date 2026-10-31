@@ -739,6 +739,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			// daily leaf capture (SPEC-0085 R2.1) — read-write; confinement
 			// lives in the governed Writer, not the mount.
 			gatewayEnvironment["HUB_VAULT"] = "/vault"
+			rollupAt := s.MemoryRollupTime
+			if rollupAt == "" {
+				rollupAt = "04:00"
+			}
+			gatewayEnvironment["HUB_MEMORY_ROLLUP_TIME"] = rollupAt
 			gateway["volumes"] = append(gateway["volumes"].([]any), M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "vault")), "target": "/vault"})
 		}
 		// Sibling Telegram identities live in this file. TELEGRAM_ALLOWED_USERS

@@ -31,6 +31,7 @@ var writeZones = []string{
 	"memory/cards/",
 	"memory/summaries/",
 	"memory/CORE.md",
+	"memory/REVIEW.md",
 }
 
 // Apply runs one governed write: confine → zone → hash-check → write →

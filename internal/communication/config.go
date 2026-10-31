@@ -107,6 +107,10 @@ type Config struct {
 	// private-audience CORE block in per-run instructions; empty means the
 	// memory_vault feature is off and no CORE is injected (SPEC-0085 R1.6).
 	VaultDir string `yaml:"-"`
+	// MemoryRollupTime is the space-local "HH:MM" the hub-owned nightly
+	// rollup fires at (memory.rollup_time, default 04:00); empty disables
+	// the job (SPEC-0085 R5.1).
+	MemoryRollupTime string `yaml:"-"`
 	// SkillsStore is the owner's writable skill store; skill-scoped
 	// credential forms persist under its private .state dir (R8.2). Empty
 	// disables the unmanaged persist path — managed relays via RuntimeURL.
@@ -294,6 +298,8 @@ func ConfigFromEnv() (Config, error) {
 		config.SkillsByPrincipalDir = os.Getenv("HUB_SKILLS_BY_PRINCIPAL")
 		config.SkillsStoreByDir = os.Getenv("HUB_SKILLS_STORE_BY")
 		config.SkillsStore = os.Getenv("HUB_SKILLS_STORE")
+		config.VaultDir = os.Getenv("HUB_VAULT")
+		config.MemoryRollupTime = os.Getenv("HUB_MEMORY_ROLLUP_TIME")
 		fillChannelSecrets(&config)
 		return config, nil
 	}
@@ -340,6 +346,7 @@ func ConfigFromEnv() (Config, error) {
 	config.SkillsDir = os.Getenv("HUB_SKILLS_EFFECTIVE")
 	config.SkillsByPrincipalDir = os.Getenv("HUB_SKILLS_BY_PRINCIPAL")
 	config.VaultDir = os.Getenv("HUB_VAULT")
+	config.MemoryRollupTime = os.Getenv("HUB_MEMORY_ROLLUP_TIME")
 	config.SkillsStoreByDir = os.Getenv("HUB_SKILLS_STORE_BY")
 	config.SkillsStore = os.Getenv("HUB_SKILLS_STORE")
 	config.GitLabHost = os.Getenv("HUB_GITLAB_HOST")

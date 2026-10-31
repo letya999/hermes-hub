@@ -246,6 +246,7 @@ func init() {
 		"goal.err.engine-conflict": "the active goal runs on another engine — /goal clear first",
 		"goal.set":                 "Goal set (engine %s, limit %d turns): %s",
 		"goal.achieved":            "Goal achieved («%s») — %s. Evidence: %s",
+		"memory.night-digest":      "What I remembered last night:\n%s",
 
 		// Routine listing fragments.
 		"routine.completed":   "schedule completed",

@@ -264,6 +264,7 @@ func init() {
 		"goal.err.engine-conflict": "el objetivo activo corre en otro motor — primero /goal clear",
 		"goal.set":                 "Objetivo fijado (motor %s, límite %d turnos): %s",
 		"goal.achieved":            "Objetivo logrado («%s») — %s. Evidencia: %s",
+		"memory.night-digest":      "Lo que recordé anoche:\n%s",
 
 		// Routine listing fragments.
 		"routine.completed":   "rutina completada",

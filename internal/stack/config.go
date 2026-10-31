@@ -51,19 +51,23 @@ type Settings struct {
 	Ingress []string             `yaml:"ingress,omitempty"`
 	// TelegramAuth is tri-state: nil auto-enables QR login whenever telegram
 	// ingress runs, true forces it on (still requires telegram), false opts out.
-	TelegramAuth    *bool                `yaml:"telegram_auth,omitempty"`
-	Workspace       Workspace            `yaml:"workspace,omitempty"`
-	MCP             map[string]MCPServer `yaml:"mcp_servers,omitempty"`
-	Hooks           map[string]any       `yaml:"hooks,omitempty"`
-	Memory          bool                 `yaml:"memory"`
-	Honcho          bool                 `yaml:"honcho,omitempty"`
-	HonchoURL       string               `yaml:"honcho_url,omitempty"`
-	GlobalSkillsDir string               `yaml:"global_skills_dir,omitempty"`
-	Schema          int                  `yaml:"schema"`
-	User            string               `yaml:"user"`
-	Organization    string               `yaml:"organization,omitempty"`
-	Model           string               `yaml:"model"`
-	ModelURL        string               `yaml:"model_url"`
+	TelegramAuth *bool                `yaml:"telegram_auth,omitempty"`
+	Workspace    Workspace            `yaml:"workspace,omitempty"`
+	MCP          map[string]MCPServer `yaml:"mcp_servers,omitempty"`
+	Hooks        map[string]any       `yaml:"hooks,omitempty"`
+	Memory       bool                 `yaml:"memory"`
+	// MemoryRollupTime is the space-local "HH:MM" the hub-owned nightly
+	// memory rollup fires at (SPEC-0085 R5.1); empty renders the 04:00
+	// default while memory_vault is enabled.
+	MemoryRollupTime string `yaml:"memory_rollup_time,omitempty"`
+	Honcho           bool   `yaml:"honcho,omitempty"`
+	HonchoURL        string `yaml:"honcho_url,omitempty"`
+	GlobalSkillsDir  string `yaml:"global_skills_dir,omitempty"`
+	Schema           int    `yaml:"schema"`
+	User             string `yaml:"user"`
+	Organization     string `yaml:"organization,omitempty"`
+	Model            string `yaml:"model"`
+	ModelURL         string `yaml:"model_url"`
 	// Cliproxy selects the proxy topology: "shared" (default) resolves the
 	// infra space's instance; "dedicated" renders a cliproxy per space.
 	Cliproxy            string `yaml:"cliproxy,omitempty"`

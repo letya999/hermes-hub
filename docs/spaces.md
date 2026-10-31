@@ -155,12 +155,17 @@ docs/tools.md; they are not shared personal-memory stores.
   `archive/` — read-only extracted archive; `inbox/` — user-file intake.
 - `vault/` — the git-backed memory vault when `memory_vault` is on
   (ADR-0086): `memory/` markdown (`daily/`, `cards/`, `summaries/`,
-  `CORE.md`, `schema.json`) committed by the governed writer, runtime
-  sidecars under `runtime/` (`.okignore`d, never committed: `prov.db`,
-  `index/`, `run-scope/`). Mounts rw at `/vault` in the runtime and in
-  the communication gateway — the gateway is the capture writer and the
-  pre-turn recall/CORE pinning plane (SPEC-0085 R2/R4); the governed
-  writer keeps `runtime/` out of the agent's declared write surface.
+  `CORE.md`, `REVIEW.md`, `schema.json`) committed by the governed
+  writer, runtime sidecars under `runtime/` (`.okignore`d, never
+  committed: `prov.db`, `index/`, `run-scope/`, `night/` day states +
+  `truth_pending`). Mounts rw at `/vault` in the runtime and in the
+  communication gateway — the gateway is the capture writer, the
+  pre-turn recall/CORE pinning plane, and the nightly rollup driver
+  (SPEC-0085 R2/R4/R5): at `memory_rollup_time` (agent settings,
+  `"HH:MM"` space-local, default 04:00) it folds the just-closed day —
+  promotions, directives, REVIEW journal, owner digest, intent→draft
+  assignment proposals — then closes any finished week/month/year whose
+  summary is missing.
 - `broker/` — broker materialization output; `cache/`, `cliproxy/` —
   service-local state; `managed/<env>/model-relay` — relay selection state.
 - `diagnostics/` — bounded log surface backing `mcp__toolhub__diagnostics`

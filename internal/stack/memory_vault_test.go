@@ -269,3 +269,32 @@ func TestRenderCreatesVaultTree(t *testing.T) {
 		t.Fatalf("render did not materialize the vault tree: %v", err)
 	}
 }
+
+// SPEC-0085 R5.1: the nightly rollup clock is the space-local
+// memory.rollup_time (default 04:00) — the gateway env carries it only
+// while the feature is on, an explicit setting wins, denied renders nothing.
+func TestMemoryRollupTimeRendered(t *testing.T) {
+	dir := t.TempDir()
+	envOf := func(s Settings) M {
+		gateway, ok := Compose(s, "", dir)["services"].(M)["communication-hub"].(M)
+		if !ok {
+			t.Fatal("communication-hub service missing")
+		}
+		env, _ := gateway["environment"].(M)
+		return env
+	}
+	s := validSettings()
+	s.Ingress = []string{"telegram"}
+	s.Tools = map[string]ToolEntry{"memory_vault": {Via: ToolViaNative}}
+	if got := envOf(s)["HUB_MEMORY_ROLLUP_TIME"]; got != "04:00" {
+		t.Fatalf("default rollup time = %v, want 04:00", got)
+	}
+	s.MemoryRollupTime = "02:30"
+	if got := envOf(s)["HUB_MEMORY_ROLLUP_TIME"]; got != "02:30" {
+		t.Fatalf("configured rollup time = %v, want 02:30", got)
+	}
+	s.Tools = map[string]ToolEntry{"memory_vault": {Via: ToolViaOff}}
+	if got := envOf(s)["HUB_MEMORY_ROLLUP_TIME"]; got != nil {
+		t.Fatalf("denied feature still renders rollup time: %v", got)
+	}
+}

@@ -24,6 +24,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/internal/memory/night"
 	"github.com/letya999/hermes-hub/internal/routines"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/vault"
@@ -35,7 +36,8 @@ type Gateway struct {
 	users        map[int64]User
 	slackUsers   map[string]User
 	spool        *Spool
-	memory       *vault.Daily // nil unless memory_vault mounts /vault
+	memory       *vault.Daily    // nil unless memory_vault mounts /vault
+	nightRelay   night.RelayFunc // nil → production model-relay binding
 	api          TelegramAPI
 	slack        SlackAPI
 	runner       Runner
@@ -230,6 +232,7 @@ func (g *Gateway) Run(ctx context.Context) error {
 	controlDone := make(chan struct{})
 	proactiveDone := make(chan struct{})
 	progressDone := make(chan struct{})
+	nightDone := make(chan struct{})
 	streamDone := g.startStreamLoops(workerCtx)
 	canaryDone := make(chan struct{})
 	go func() {
@@ -267,6 +270,21 @@ func (g *Gateway) Run(ctx context.Context) error {
 		}
 	}()
 	go func() {
+		defer close(nightDone)
+		// The rollup clock is HH:MM-granular — a minute tick is precise
+		// enough and keeps one rollup from ever overlapping the next.
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		for {
+			g.tickNightRollup(g.now())
+			select {
+			case <-workerCtx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	go func() {
 		defer close(deliveryDone)
 		g.deliveryLoop(workerCtx)
 	}()
@@ -277,6 +295,7 @@ func (g *Gateway) Run(ctx context.Context) error {
 		<-controlDone
 		<-proactiveDone
 		<-progressDone
+		<-nightDone
 		<-streamDone
 		<-canaryDone
 		g.usageWG.Wait()

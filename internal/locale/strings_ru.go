@@ -244,6 +244,7 @@ func init() {
 		"goal.err.engine-conflict": "активная цель работает на другом движке — сначала /goal clear",
 		"goal.set":                 "Цель поставлена (движок %s, лимит %d ходов): %s",
 		"goal.achieved":            "Цель достигнута («%s») — %s. Доказательство: %s",
+		"memory.night-digest":      "Что я запомнил за ночь:\n%s",
 
 		// Routine listing fragments.
 		"routine.completed":   "расписание завершено",

@@ -203,6 +203,22 @@ a provider seam with conformance, and soft forget.
   routine/assignment *proposals* for owner approval — never facts,
   never auto-activated.
 
+  2026-10-31 amendment (M20.5): the fired rollup folds the **last
+  closed local day** — a 04:00 tick on day D rolls up leaf D-1, so every
+  calendar leaf is complete when promoted and each is processed exactly
+  once; the last-run marker pins the run day, keeping once-per-day
+  firing. A day whose leaf has no eligible entries completes its day
+  state with zero model calls and writes no summary file — folds render
+  it as the explicit "(no data)" marker. Fold-up is a sweep inside the
+  same tick: after the day run succeeds, the job attempts the most
+  recently closed week/month/year whose summary file is absent; each
+  fold self-gates on terminal inputs, written summaries are immutable
+  (owner edits never clobbered, no re-firing), fold calls share the
+  night's spend cap, and a fold error stops the sweep for the night —
+  the next tick retries it. Verified intents land as draft assignments
+  in the owner's own envelope via a deterministic id, so a rollup retry
+  replays the stored record instead of duplicating it.
+
 - **D15. `memory.Provider` is the seam.** Hub-owned interface:
   `Caps/Capture/Recall/Search/Write/Export/Health`; a shared
   `memorytest.Conformance` suite every provider must pass; opaque scope
