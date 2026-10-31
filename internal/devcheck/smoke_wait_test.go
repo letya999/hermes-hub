@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	goruntime "runtime"
 	"strings"
 	"testing"
 	"text/template"
@@ -100,6 +102,29 @@ func TestSmokeWaitHealthyRestartsExitedContainerOnce(t *testing.T) {
 	}
 	if len(restarts) != 1 || restarts[0] != "browser-a" {
 		t.Fatalf("expected exactly one restart of browser-a, got %v", restarts)
+	}
+}
+
+func TestWriteSmokePasswdIsReadableBySidecarUID(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("Windows synthesizes mode bits; POSIX perms are the fixture's contract")
+	}
+	// The sidecar runs as uid 10001 and x11vnc exits(1) when the passwdfile
+	// exists but fopen fails with EACCES — unlike a missing file, which it
+	// tolerates. A plain `docker run -v` bind keeps the host owner/mode, so
+	// a runner-owned 0600 fixture crashes every boot on Linux CI while
+	// Docker Desktop masks it locally. The fixture holds a generated
+	// throwaway password; other-read is the honest fix.
+	pass, err := writeSmokePasswd(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(pass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o004 == 0 {
+		t.Fatalf("fixture must be readable by non-owner uid 10001, got %v", info.Mode().Perm())
 	}
 }
 

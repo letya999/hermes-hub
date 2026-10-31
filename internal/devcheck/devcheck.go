@@ -418,8 +418,8 @@ func DockerSmoke(ctx context.Context, image string) error {
 		return err
 	}
 	defer os.RemoveAll(dir)
-	pass := filepath.Join(dir, "novnc.pass")
-	if err := os.WriteFile(pass, []byte("smoke"), 0o600); err != nil {
+	pass, err := writeSmokePasswd(dir)
+	if err != nil {
 		return err
 	}
 	checks := [][]string{
@@ -428,7 +428,9 @@ func DockerSmoke(ctx context.Context, image string) error {
 		{"run", "--rm", "--entrypoint", "/opt/hermes/.venv/bin/python", image, "-c", "import sqlite3; assert sqlite3.sqlite_version_info >= (3,53,4)"},
 		{"network", "create", net},
 		// browser-<user> sidecar per compose.go: the image CMD is already
-		// `browser`; the read-only novnc password bind matches the render.
+		// `browser`. The password lands at the same path the compose secrets
+		// projection uses — a bare bind cannot express uid/gid/mode, so the
+		// fixture itself is made readable (writeSmokePasswd).
 		{"run", "-d", "--name", sidecar, "--network", net, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--shm-size", "1g", "--tmpfs", "/tmp:mode=1777", "--tmpfs", "/state:uid=10001,gid=10001,mode=0700", "--tmpfs", "/workspace:uid=10001,gid=10001,mode=0700", "--mount", "type=bind,source=" + filepath.ToSlash(pass) + ",target=/run/secrets/novnc.pass,readonly", image + "-browser"},
 		{"run", "-d", "--name", name, "--network", net, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--shm-size", "1g", "--tmpfs", "/tmp:mode=1777", "--tmpfs", "/state:uid=10001,gid=10001,mode=0700", "--tmpfs", "/workspace:uid=10001,gid=10001,mode=0700", "-e", "HUB_BROWSER=true", "-e", "BROWSER_CDP_URL=http://" + sidecar + ":9222", image, "idle"},
 	}
@@ -466,6 +468,23 @@ func DockerSmoke(ctx context.Context, image string) error {
 }
 
 const smokeStatusFormat = "{{if .State.Running}}running{{else}}{{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}}{{end}}"
+
+// writeSmokePasswd stages the throwaway noVNC password the smoke sidecar
+// bind-mounts at /run/secrets/novnc.pass. A plain bind keeps host owner and
+// mode: 0600 owned by the runner is an EACCES for the container's uid 10001,
+// and x11vnc exits(1) on it — the file exists, so the missing-file fallback
+// does not apply. The composed stack mounts the same file via secrets with
+// uid/gid/mode projection, which a bare docker run cannot express.
+func writeSmokePasswd(dir string) (string, error) {
+	pass := filepath.Join(dir, "novnc.pass")
+	if err := os.WriteFile(pass, []byte("smoke"), 0o644); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(pass, 0o644); err != nil {
+		return "", err
+	}
+	return pass, nil
+}
 
 func dumpSmokeLogs(run func(args ...string) error, containers ...string) {
 	for _, container := range containers {
