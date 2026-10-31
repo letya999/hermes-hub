@@ -10,6 +10,15 @@ Workstream: Storage reliability MVP (local planning; GitHub records not created)
 Previous: CHG-0223. Next: CHG-0225.
 Hard dependencies: CHG-0221, CHG-0222.
 
+## Amendment 2026-10-31 (substrate)
+
+[ADR-0091](../../../docs/adr/ADR-0091-root-services-sqlite-storage.md) /
+[SPEC-0090](../../../specs/active/SPEC-0090-root-services-sqlite.md) по
+инструкции владельца переносят substrate этого CHG с JSON snapshot на
+`store.db`: snapshot-коллекции пишутся одной транзакцией, conflict fence и
+initialized refusal сохраняются. Service audit ledger переезжает в
+audit-таблицу той же БД.
+
 ## Goal
 
 Сохранность ToolHub и доверенное подтверждение пользователя. Результат этапа проверяется acceptance ниже; текущий работающий код

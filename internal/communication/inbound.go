@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"os"
 	"path/filepath"
 	"time"
 )
@@ -50,14 +49,14 @@ func (s *Spool) ReadInbound(id string) (InboundRecord, []byte, error) {
 	if !validInboundID(id) {
 		return rec, nil, errors.New("invalid inbound id")
 	}
-	b, err := os.ReadFile(filepath.Join(s.root, "inbound", id+".json")) // #nosec G703 -- id is validated by spoolIDPattern
+	b, err := s.fsys.ReadFile(filepath.Join(s.root, "inbound", id+".json")) // #nosec G703 -- id is validated by spoolIDPattern
 	if err != nil {
 		return rec, nil, errors.New("inbound record not found")
 	}
 	if err := json.Unmarshal(b, &rec); err != nil {
 		return rec, nil, err
 	}
-	data, err := os.ReadFile(filepath.Join(s.root, "inbound", id+".bin")) // #nosec G703 -- id is validated by spoolIDPattern
+	data, err := s.fsys.ReadFile(filepath.Join(s.root, "inbound", id+".bin")) // #nosec G703 -- id is validated by spoolIDPattern
 	if err != nil {
 		return rec, nil, errors.New("inbound payload missing")
 	}

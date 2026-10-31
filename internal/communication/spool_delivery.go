@@ -55,23 +55,23 @@ func (s *Spool) enqueueDeliveryLocked(d Delivery) error {
 		d.OccurrenceID = d.JobID
 	}
 	for _, dir := range []string{"pending", "sending", "done", "failed"} {
-		if _, err := os.Stat(filepath.Join(s.root, "outbox", dir, spoolFileID(d.ID)+".json")); err == nil {
+		if _, err := s.fsys.Lstat(filepath.Join(s.root, "outbox", dir, spoolFileID(d.ID)+".json")); err == nil {
 			return nil
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 	}
 	if !d.Control && s.limits.MaxDeliveries > 0 {
-		entries, err := os.ReadDir(filepath.Join(s.root, "outbox", "pending"))
+		names, err := s.fsys.ReadDir(filepath.Join(s.root, "outbox", "pending"))
 		if err != nil {
 			return err
 		}
 		ordinary := 0
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+		for _, name := range names {
+			if !strings.HasSuffix(name, ".json") {
 				continue
 			}
-			body, err := os.ReadFile(filepath.Join(s.root, "outbox", "pending", entry.Name()))
+			body, err := s.fsys.ReadFile(filepath.Join(s.root, "outbox", "pending", name))
 			if err != nil {
 				return err
 			}
@@ -93,7 +93,7 @@ func (s *Spool) enqueueDeliveryLocked(d Delivery) error {
 func (s *Spool) LoadOffset() (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	b, err := os.ReadFile(filepath.Join(s.root, "offset.json"))
+	b, err := s.fsys.ReadFile(filepath.Join(s.root, "offset.json"))
 	if errors.Is(err, os.ErrNotExist) {
 		return 0, nil
 	}
@@ -129,14 +129,14 @@ func (s *Spool) ClaimDelivery() (*Delivery, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	pending := filepath.Join(s.root, "outbox", "pending")
-	entries, err := os.ReadDir(pending)
+	entries, err := s.fsys.ReadDir(pending)
 	if err != nil {
 		return nil, err
 	}
 	names := []string{}
-	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
-			names = append(names, entry.Name())
+	for _, name := range entries {
+		if strings.HasSuffix(name, ".json") {
+			names = append(names, name)
 		}
 	}
 	sort.Strings(names)
@@ -146,7 +146,7 @@ func (s *Spool) ClaimDelivery() (*Delivery, error) {
 		if i >= 256 {
 			break
 		}
-		b, err := os.ReadFile(filepath.Join(pending, name))
+		b, err := s.fsys.ReadFile(filepath.Join(pending, name))
 		if err != nil {
 			return nil, err
 		}
@@ -168,7 +168,7 @@ func (s *Spool) ClaimDelivery() (*Delivery, error) {
 		if i >= 256 {
 			break
 		}
-		b, err := os.ReadFile(filepath.Join(pending, name))
+		b, err := s.fsys.ReadFile(filepath.Join(pending, name))
 		if err != nil {
 			return nil, err
 		}
@@ -192,7 +192,7 @@ func (s *Spool) CompleteDelivery(id string) error {
 		return err
 	}
 	// Delete only blobs referenced by the durably completed delivery.
-	body, err := os.ReadFile(filepath.Join(s.root, "outbox", "done", spoolFileID(id)+".json"))
+	body, err := s.fsys.ReadFile(filepath.Join(s.root, "outbox", "done", spoolFileID(id)+".json"))
 	if err != nil {
 		return err
 	}
@@ -258,7 +258,7 @@ func (s *Spool) UpdateSending(d Delivery) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	path := filepath.Join(s.root, "outbox", "sending", spoolFileID(d.ID)+".json")
-	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+	if _, err := s.fsys.Lstat(path); errors.Is(err, os.ErrNotExist) {
 		return nil
 	} else if err != nil {
 		return err

@@ -70,9 +70,9 @@ func (s *Spool) loadEventStateLocked(id string) (EventState, error) {
 	if schedule, err := s.loadScheduleLocked(id); err == nil {
 		probeRevision = schedule.ProbeRevision
 	}
-	b, err := readEventRecord(s.eventPath(id))
+	b, err := s.readEventRecordLocked(s.eventPath(id))
 	if os.IsNotExist(err) {
-		if _, markerErr := os.Lstat(s.eventPath(id) + ".initialized"); markerErr == nil {
+		if _, markerErr := s.fsys.Lstat(s.eventPath(id) + ".initialized"); markerErr == nil {
 			return EventState{ScheduleID: id, ProbeRevision: probeRevision, Degraded: true, GapCount: 1, LastGapAt: time.Now().UTC(), LastError: "source cursor missing; recovery required"}, errors.New("source cursor missing; recovery required")
 		} else if !os.IsNotExist(markerErr) {
 			return st, markerErr
@@ -245,7 +245,7 @@ func (s *Spool) settleEvents(o RoutineOccurrence, schedule Schedule, body []byte
 	}
 	s.mu.Lock()
 	path := filepath.Join(s.root, "occurrences", occurrenceID(o)+".json")
-	raw, err := os.ReadFile(path)
+	raw, err := s.fsys.ReadFile(path)
 	if err != nil {
 		s.mu.Unlock()
 		return nil, err
@@ -336,7 +336,7 @@ func (s *Spool) settleEvents(o RoutineOccurrence, schedule Schedule, body []byte
 	defer s.mu.Unlock()
 	// The occurrence and the seen-set may have moved while the filter ran;
 	// re-validate before admitting anything to the sink.
-	raw, err = os.ReadFile(path)
+	raw, err = s.fsys.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}

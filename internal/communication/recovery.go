@@ -21,17 +21,17 @@ import (
 func (s *Spool) RequeueObservations(now time.Time, reconcileAdmissionUnknown bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	entries, err := os.ReadDir(filepath.Join(s.root, "failed"))
+	entries, err := s.fsys.ReadDir(filepath.Join(s.root, "failed"))
 	if err != nil {
 		return err
 	}
 jobs:
-	for _, entry := range entries {
-		if !strings.HasSuffix(entry.Name(), ".json") {
+	for _, name := range entries {
+		if !strings.HasSuffix(name, ".json") {
 			continue
 		}
-		from := filepath.Join(s.root, "failed", entry.Name())
-		b, err := os.ReadFile(from)
+		from := filepath.Join(s.root, "failed", name)
+		b, err := s.fsys.ReadFile(from)
 		var job Job
 		if err != nil || json.Unmarshal(b, &job) != nil {
 			return errors.New("invalid recovery job")
@@ -50,14 +50,14 @@ jobs:
 		if !admitted && !reconcileAdmissionUnknown {
 			continue
 		}
-		if mapping.Fingerprint != jobFingerprint(job) || mapping.JobID != job.ID || entry.Name() != spoolFileID(job.ID)+".json" {
+		if mapping.Fingerprint != jobFingerprint(job) || mapping.JobID != job.ID || name != spoolFileID(job.ID)+".json" {
 			return errors.New("recovery job binding mismatch")
 		}
 		// Once the budget notice is durable, further observation cannot
 		// notify again and must not consume a worker forever.
 		if !now.Before(mapping.UncertainSince.Add(hubruntime.RunBudget())) {
 			for _, dir := range []string{"pending", "sending", "done", "failed"} {
-				_, err := os.Stat(filepath.Join(s.root, "outbox", dir, spoolFileID("job-"+job.ID+"-uncertain")+".json"))
+				_, err := s.fsys.Lstat(filepath.Join(s.root, "outbox", dir, spoolFileID("job-"+job.ID+"-uncertain")+".json"))
 				if err == nil {
 					continue jobs
 				}
@@ -81,7 +81,7 @@ jobs:
 		if err = s.writeMappingLocked(mapping); err != nil {
 			return err
 		}
-		if err = s.renameOwned(from, filepath.Join(s.root, "pending", entry.Name())); err != nil {
+		if err = s.renameOwned(from, filepath.Join(s.root, "pending", name)); err != nil {
 			return err
 		}
 	}

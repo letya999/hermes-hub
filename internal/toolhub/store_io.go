@@ -46,6 +46,9 @@ func (s *Store) Save(path string) error {
 // saveLocked lets authorization mutations become visible only after the same
 // snapshot fence and durable write used by Save have succeeded.
 func (s *Store) saveLocked(path string) error {
+	if s.db != nil || isStoreDB(path) {
+		return s.saveDBLocked(path)
+	}
 	if err := api.SafeStorePath(path); err != nil {
 		return err
 	}
@@ -81,89 +84,10 @@ func (s *Store) saveLocked(path string) error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	s.compactLocked(time.Now())
-	if s.installationID == "" {
-		id, err := newInstallationID()
-		if err != nil {
-			return err
-		}
-		s.installationID = id
+	state, err := s.buildSnapshotLocked()
+	if err != nil {
+		return err
 	}
-	state := snapshot{Schema: api.SchemaVersion, InstallationID: s.installationID, ProjectionRevisions: map[string]uint64{}, RestartApplied: map[string]uint64{}, RestartDigests: map[string]string{}, CapabilityChanges: s.capabilityChanges, BindingChanges: s.bindingChanges}
-	for _, d := range s.definitions {
-		state.Definitions = append(state.Definitions, d)
-	}
-	for _, c := range s.connections {
-		state.Connections = append(state.Connections, c)
-	}
-	for _, r := range s.credentials {
-		state.Credentials = append(state.Credentials, r)
-	}
-	for _, b := range s.bindings {
-		state.Bindings = append(state.Bindings, b)
-	}
-	for _, w := range s.workloads {
-		state.Workloads = append(state.Workloads, w)
-	}
-	for key, revision := range s.projectionRevisions {
-		state.ProjectionRevisions[key] = revision
-	}
-	for key, revision := range s.restartApplied {
-		state.RestartApplied[key] = revision
-	}
-	for key, digest := range s.restartDigests {
-		state.RestartDigests[key] = digest
-	}
-	for _, grant := range s.grants {
-		state.Grants = append(state.Grants, grant)
-	}
-	for _, onboarding := range s.onboardings {
-		// A registered definition is already persisted once in the registry;
-		// embedding it per onboarding duplicates the same bytes. Drafts still
-		// awaiting admission keep their copy — nothing else can rebuild it.
-		if onboarding.Definition != nil && !onboarding.AdmissionPending {
-			if _, ok := s.definitions[definitionKey(onboarding.DefinitionID, onboarding.DefinitionVersion)]; ok {
-				onboarding.Definition = nil
-			}
-		}
-		state.Onboardings = append(state.Onboardings, onboarding)
-	}
-	for _, op := range s.operations {
-		state.Operations = append(state.Operations, op)
-	}
-	if len(s.recipes) > 0 {
-		state.Recipes = s.recipes
-	}
-	for _, pub := range s.publications {
-		state.Publications = append(state.Publications, pub)
-	}
-	for _, policy := range s.sharedPolicies {
-		state.SharedPolicies = append(state.SharedPolicies, policy)
-	}
-	for _, team := range s.teams {
-		state.Teams = append(state.Teams, team)
-	}
-	s.grantMu.Lock()
-	for _, grant := range s.bindingBrokerGrants {
-		state.BrokerGrants = append(state.BrokerGrants, grant)
-	}
-	s.grantMu.Unlock()
-	slices.SortFunc(state.Definitions, func(a, b api.ToolDefinition) int {
-		return strings.Compare(definitionKey(a.DefinitionID, a.Version), definitionKey(b.DefinitionID, b.Version))
-	})
-	slices.SortFunc(state.Connections, func(a, b api.Connection) int { return strings.Compare(a.ConnectionID, b.ConnectionID) })
-	slices.SortFunc(state.Credentials, func(a, b api.CredentialReference) int { return strings.Compare(a.CredentialRefID, b.CredentialRefID) })
-	slices.SortFunc(state.Bindings, func(a, b api.ToolBinding) int { return strings.Compare(a.ToolBindingID, b.ToolBindingID) })
-	slices.SortFunc(state.Workloads, func(a, b api.WorkloadInstance) int { return strings.Compare(a.WorkloadID, b.WorkloadID) })
-	slices.SortFunc(state.Grants, func(a, b api.Grant) int { return strings.Compare(a.GrantID, b.GrantID) })
-	slices.SortFunc(state.Onboardings, func(a, b api.Onboarding) int { return strings.Compare(a.OnboardingID, b.OnboardingID) })
-	slices.SortFunc(state.Operations, func(a, b api.Operation) int { return strings.Compare(a.OperationID, b.OperationID) })
-	slices.SortFunc(state.Publications, func(a, b api.DefinitionPublication) int {
-		return strings.Compare(definitionKey(a.DefinitionID, a.Version), definitionKey(b.DefinitionID, b.Version))
-	})
-	slices.SortFunc(state.SharedPolicies, func(a, b api.SharedCredentialPolicy) int { return strings.Compare(a.PolicyID, b.PolicyID) })
-	slices.SortFunc(state.Teams, func(a, b api.Team) int { return strings.Compare(a.TeamID, b.TeamID) })
-	slices.SortFunc(state.BrokerGrants, func(a, b api.BrokerBindingGrant) int { return strings.Compare(a.BindingID, b.BindingID) })
 	body, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
@@ -232,6 +156,9 @@ func Load(path string) (*Store, error) {
 	if err := api.SafeStorePath(path); err != nil {
 		return nil, err
 	}
+	if isStoreDB(path) {
+		return loadDB(path)
+	}
 	// Stamp before the read: a rename landing between stat and read leaves a
 	// conservative stamp (older than the bytes), so the next Reload simply
 	// loads once more instead of skipping a change it never saw.
@@ -253,6 +180,20 @@ func Load(path string) (*Store, error) {
 	if state.Schema != api.SchemaVersion {
 		return nil, fmt.Errorf("%w: store schema", api.ErrInvalid)
 	}
+	store, err := storeFromSnapshot(state)
+	if err != nil {
+		return nil, err
+	}
+	store.path = path
+	store.savedPath, store.diskDigest = path, sha256.Sum256(b)
+	store.diskStamp = stamp
+	return store, nil
+}
+
+// storeFromSnapshot validates a decoded snapshot into a Store; file and
+// SQLite backends share this exact admission path.
+func storeFromSnapshot(state snapshot) (*Store, error) {
+	var err error
 	store := NewStore()
 	for _, definition := range state.Definitions {
 		if err := store.RegisterDefinition(definition); err != nil {
@@ -417,11 +358,98 @@ func Load(path string) (*Store, error) {
 	if err := store.validateLocked(); err != nil {
 		return nil, err
 	}
-	store.path = path
 	store.installationID = state.InstallationID
-	store.savedPath, store.diskDigest = path, sha256.Sum256(b)
-	store.diskStamp = stamp
 	return store, nil
+}
+
+// buildSnapshotLocked compacts, stamps the installation and collects every
+// persisted collection into the snapshot in its canonical sort order — the
+// single serialization both backends write. s.mu must be held.
+func (s *Store) buildSnapshotLocked() (snapshot, error) {
+	s.compactLocked(time.Now())
+	if s.installationID == "" {
+		id, err := newInstallationID()
+		if err != nil {
+			return snapshot{}, err
+		}
+		s.installationID = id
+	}
+	state := snapshot{Schema: api.SchemaVersion, InstallationID: s.installationID, ProjectionRevisions: map[string]uint64{}, RestartApplied: map[string]uint64{}, RestartDigests: map[string]string{}, CapabilityChanges: s.capabilityChanges, BindingChanges: s.bindingChanges}
+	for _, d := range s.definitions {
+		state.Definitions = append(state.Definitions, d)
+	}
+	for _, c := range s.connections {
+		state.Connections = append(state.Connections, c)
+	}
+	for _, r := range s.credentials {
+		state.Credentials = append(state.Credentials, r)
+	}
+	for _, b := range s.bindings {
+		state.Bindings = append(state.Bindings, b)
+	}
+	for _, w := range s.workloads {
+		state.Workloads = append(state.Workloads, w)
+	}
+	for key, revision := range s.projectionRevisions {
+		state.ProjectionRevisions[key] = revision
+	}
+	for key, revision := range s.restartApplied {
+		state.RestartApplied[key] = revision
+	}
+	for key, digest := range s.restartDigests {
+		state.RestartDigests[key] = digest
+	}
+	for _, grant := range s.grants {
+		state.Grants = append(state.Grants, grant)
+	}
+	for _, onboarding := range s.onboardings {
+		// A registered definition is already persisted once in the registry;
+		// embedding it per onboarding duplicates the same bytes. Drafts still
+		// awaiting admission keep their copy — nothing else can rebuild it.
+		if onboarding.Definition != nil && !onboarding.AdmissionPending {
+			if _, ok := s.definitions[definitionKey(onboarding.DefinitionID, onboarding.DefinitionVersion)]; ok {
+				onboarding.Definition = nil
+			}
+		}
+		state.Onboardings = append(state.Onboardings, onboarding)
+	}
+	for _, op := range s.operations {
+		state.Operations = append(state.Operations, op)
+	}
+	if len(s.recipes) > 0 {
+		state.Recipes = s.recipes
+	}
+	for _, pub := range s.publications {
+		state.Publications = append(state.Publications, pub)
+	}
+	for _, policy := range s.sharedPolicies {
+		state.SharedPolicies = append(state.SharedPolicies, policy)
+	}
+	for _, team := range s.teams {
+		state.Teams = append(state.Teams, team)
+	}
+	s.grantMu.Lock()
+	for _, grant := range s.bindingBrokerGrants {
+		state.BrokerGrants = append(state.BrokerGrants, grant)
+	}
+	s.grantMu.Unlock()
+	slices.SortFunc(state.Definitions, func(a, b api.ToolDefinition) int {
+		return strings.Compare(definitionKey(a.DefinitionID, a.Version), definitionKey(b.DefinitionID, b.Version))
+	})
+	slices.SortFunc(state.Connections, func(a, b api.Connection) int { return strings.Compare(a.ConnectionID, b.ConnectionID) })
+	slices.SortFunc(state.Credentials, func(a, b api.CredentialReference) int { return strings.Compare(a.CredentialRefID, b.CredentialRefID) })
+	slices.SortFunc(state.Bindings, func(a, b api.ToolBinding) int { return strings.Compare(a.ToolBindingID, b.ToolBindingID) })
+	slices.SortFunc(state.Workloads, func(a, b api.WorkloadInstance) int { return strings.Compare(a.WorkloadID, b.WorkloadID) })
+	slices.SortFunc(state.Grants, func(a, b api.Grant) int { return strings.Compare(a.GrantID, b.GrantID) })
+	slices.SortFunc(state.Onboardings, func(a, b api.Onboarding) int { return strings.Compare(a.OnboardingID, b.OnboardingID) })
+	slices.SortFunc(state.Operations, func(a, b api.Operation) int { return strings.Compare(a.OperationID, b.OperationID) })
+	slices.SortFunc(state.Publications, func(a, b api.DefinitionPublication) int {
+		return strings.Compare(definitionKey(a.DefinitionID, a.Version), definitionKey(b.DefinitionID, b.Version))
+	})
+	slices.SortFunc(state.SharedPolicies, func(a, b api.SharedCredentialPolicy) int { return strings.Compare(a.PolicyID, b.PolicyID) })
+	slices.SortFunc(state.Teams, func(a, b api.Team) int { return strings.Compare(a.TeamID, b.TeamID) })
+	slices.SortFunc(state.BrokerGrants, func(a, b api.BrokerBindingGrant) int { return strings.Compare(a.BindingID, b.BindingID) })
+	return state, nil
 }
 
 // compactLocked deletes terminal records past their retention windows so a

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strconv"
 
 	"github.com/letya999/hermes-hub/internal/storagebudget"
@@ -40,6 +41,16 @@ func spoolStorageLimits(s spoolLimits) (storagebudget.Limits, error) {
 func (s *Spool) writeJSON(path string, value any) error {
 	return s.writeJSONClass(path, value, true)
 }
+
+// storagePath returns the counter-accounted path for a write: record rows
+// live inside spool.db, so their bytes debit the real file they occupy.
+func (s *Spool) storagePath(path string) string {
+	if _, ok := s.fsys.(*dbFS); ok && spoolRecordPath(s.root, path) {
+		return filepath.Join(s.root, "spool.db")
+	}
+	return path
+}
+
 func (s *Spool) writeJSONClass(path string, value any, lifecycle bool) error {
 	if s.readOnly {
 		return errReadOnlySpool
@@ -51,7 +62,7 @@ func (s *Spool) writeJSONClass(path string, value any, lifecycle bool) error {
 	if err != nil {
 		return err
 	}
-	return s.storage.Write(path, int64(len(body)), lifecycle, func() error { return atomicBytes(path, body) })
+	return s.storage.Write(s.storagePath(path), int64(len(body)), lifecycle, func() error { return s.fsys.WriteFile(path, body) })
 }
 func (s *Spool) writeRunReceipt(path string, r streamReceipt) error {
 	if s.readOnly {
@@ -67,7 +78,7 @@ func (s *Spool) writeRunReceipt(path string, r streamReceipt) error {
 	if len(body) > 4<<20 {
 		return errors.New("run receipt exceeds its record limit")
 	}
-	return s.storage.Write(path, int64(len(body)), true, func() error { return atomicBytes(path, body) })
+	return s.storage.Write(s.storagePath(path), int64(len(body)), true, func() error { return s.fsys.WriteFile(path, body) })
 }
 func (s *Spool) writeBlob(path string, data []byte, lifecycle bool) error {
 	if s.readOnly {
@@ -76,7 +87,7 @@ func (s *Spool) writeBlob(path string, data []byte, lifecycle bool) error {
 	if s.storage == nil {
 		return atomicBytes(path, data)
 	}
-	return s.storage.Write(path, int64(len(data)), lifecycle, func() error { return atomicBytes(path, data) })
+	return s.storage.Write(s.storagePath(path), int64(len(data)), lifecycle, func() error { return s.fsys.WriteFile(path, data) })
 }
 func (s *Spool) mkdirOwned(path string) error {
 	return s.mkdirOwnedClass(path, true)
@@ -94,6 +105,9 @@ func (s *Spool) renameOwned(from, to string) error {
 	if s.readOnly {
 		return errReadOnlySpool
 	}
+	if spoolRecordPath(s.root, from) && spoolRecordPath(s.root, to) {
+		return s.fsys.Rename(from, to)
+	}
 	if s.storage == nil {
 		return os.Rename(from, to)
 	}
@@ -102,6 +116,9 @@ func (s *Spool) renameOwned(from, to string) error {
 func (s *Spool) removeOwned(path string) error {
 	if s.readOnly {
 		return errReadOnlySpool
+	}
+	if spoolRecordPath(s.root, path) {
+		return s.fsys.Remove(path)
 	}
 	if s.storage == nil {
 		return storagebudget.ErrUnavailable

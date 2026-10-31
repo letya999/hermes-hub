@@ -3,7 +3,6 @@ package communication
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -79,16 +78,16 @@ func (g *Gateway) opsDeps() commops.Deps {
 		},
 		Mappings: func(userID string) []commops.Mapping {
 			var out []commops.Mapping
-			entries, err := os.ReadDir(filepath.Join(g.spool.root, "mappings"))
+			entries, err := g.spool.fsys.ReadDir(filepath.Join(g.spool.root, "mappings"))
 			if err != nil {
 				return nil
 			}
-			for _, entry := range entries {
-				if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			for _, name := range entries {
+				if !strings.HasSuffix(name, ".json") {
 					continue
 				}
 				g.spool.mu.Lock()
-				m, err := g.spool.loadMappingLocked(strings.TrimSuffix(entry.Name(), ".json"))
+				m, err := g.spool.loadMappingLocked(strings.TrimSuffix(name, ".json"))
 				g.spool.mu.Unlock()
 				if err != nil || m.UserID != userID {
 					continue
@@ -132,7 +131,7 @@ func (g *Gateway) opsDeps() commops.Deps {
 		},
 		MockLink: g.mockLinkClaim,
 		MockDelivered: func(deliveryID string) bool {
-			_, err := os.Stat(filepath.Join(g.mockRoot(), "mock-sent", spoolFileID(deliveryID)+".json"))
+			_, err := g.spool.fsys.Lstat(filepath.Join(g.mockRoot(), "mock-sent", spoolFileID(deliveryID)+".json"))
 			return err == nil
 		},
 		NotifyOwner: func(ctx context.Context, idempotency string, chatID int64, text string) {

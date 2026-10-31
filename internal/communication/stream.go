@@ -120,7 +120,7 @@ func (s *Spool) RecordStreamEvent(job Job, event hubruntime.ExecuteResponse) err
 	hash := sha256.Sum256([]byte(job.ID + "\x00" + event.EventID))
 	path := filepath.Join(s.root, "run-events", hex.EncodeToString(hash[:])+".json")
 	var receipt streamReceipt
-	if b, readErr := os.ReadFile(path); readErr == nil {
+	if b, readErr := s.fsys.ReadFile(path); readErr == nil {
 		err = json.Unmarshal(b, &receipt)
 		if err == nil && (receipt.JobID != job.ID || receipt.Event.EventID != event.EventID) {
 			err = errors.New("invalid stream receipt")
@@ -231,7 +231,7 @@ func (s *Spool) UpsertStatusDelivery(d Delivery) error {
 	defer s.signal() // a written or coalesced pending record wakes delivery
 	statusName := spoolFileID(d.ID) + ".json"
 	pending := filepath.Join(s.root, "outbox", "pending", statusName)
-	if b, readErr := os.ReadFile(pending); readErr == nil {
+	if b, readErr := s.fsys.ReadFile(pending); readErr == nil {
 		var p Delivery
 		if json.Unmarshal(b, &p) == nil && p.StatusClosed {
 			return nil
@@ -241,11 +241,11 @@ func (s *Spool) UpsertStatusDelivery(d Delivery) error {
 	// An in-flight or uncertain send must never be resurrected: the message
 	// may already exist and a fresh send would be a blind duplicate.
 	for _, dir := range []string{"sending", "failed"} {
-		if _, err := os.Stat(filepath.Join(s.root, "outbox", dir, statusName)); err == nil {
+		if _, err := s.fsys.Lstat(filepath.Join(s.root, "outbox", dir, statusName)); err == nil {
 			return nil
 		}
 	}
-	b, err := os.ReadFile(filepath.Join(s.root, "outbox", "done", statusName))
+	b, err := s.fsys.ReadFile(filepath.Join(s.root, "outbox", "done", statusName))
 	if errors.Is(err, os.ErrNotExist) {
 		return s.writeJSON(pending, d)
 	}
@@ -266,7 +266,7 @@ func (s *Spool) UpsertStatusDelivery(d Delivery) error {
 			return err
 		}
 		for _, path := range edits {
-			body, err := readEventRecord(path)
+			body, err := s.readEventRecordLocked(path)
 			if err != nil {
 				return err
 			}
@@ -284,7 +284,7 @@ func (s *Spool) UpsertStatusDelivery(d Delivery) error {
 	if edits, _ := filepath.Glob(filepath.Join(s.root, "outbox", "pending", spoolFileID(d.ID)+"-edit-*.json")); len(edits) > 0 {
 		for i, path := range edits {
 			var p Delivery
-			pb, perr := os.ReadFile(path)
+			pb, perr := s.fsys.ReadFile(path)
 			if perr != nil || json.Unmarshal(pb, &p) != nil {
 				continue
 			}
@@ -305,7 +305,7 @@ func (s *Spool) UpsertStatusDelivery(d Delivery) error {
 	next.ID = d.ID + "-edit-" + strconv.FormatUint(d.StreamPosition, 10) + "-" + hex.EncodeToString(digest[:12])
 	next.EditMessageID = sent.TelegramMessageID
 	for _, dir := range []string{"sending", "done", "failed"} {
-		if _, err := os.Lstat(filepath.Join(s.root, "outbox", dir, spoolFileID(next.ID)+".json")); err == nil {
+		if _, err := s.fsys.Lstat(filepath.Join(s.root, "outbox", dir, spoolFileID(next.ID)+".json")); err == nil {
 			return nil
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
@@ -321,7 +321,7 @@ func (s *Spool) CloseStatusDelivery(jobID string) (chatID int64, messageID int) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	path := filepath.Join(s.root, "outbox", "done", spoolFileID("job-"+jobID+"-status")+".json")
-	b, err := os.ReadFile(path)
+	b, err := s.fsys.ReadFile(path)
 	if err != nil {
 		return 0, 0
 	}
@@ -406,16 +406,16 @@ func (s *Spool) applyStreamReceiptLocked(receipt streamReceipt) error {
 }
 
 func (s *Spool) recoverStreamEvents() error {
-	entries, err := os.ReadDir(filepath.Join(s.root, "run-events"))
+	entries, err := s.fsys.ReadDir(filepath.Join(s.root, "run-events"))
 	if err != nil {
 		return err
 	}
 	var receipts []streamReceipt
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	for _, name := range entries {
+		if !strings.HasSuffix(name, ".json") {
 			continue
 		}
-		b, err := os.ReadFile(filepath.Join(s.root, "run-events", entry.Name()))
+		b, err := s.fsys.ReadFile(filepath.Join(s.root, "run-events", name))
 		if err != nil {
 			return err
 		}

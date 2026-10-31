@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -210,15 +209,15 @@ func (s *Spool) streamIDs(now time.Time) map[string]bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := map[string]bool{}
-	entries, err := os.ReadDir(filepath.Join(s.root, "schedules"))
+	names, err := s.fsys.ReadDir(filepath.Join(s.root, "schedules"))
 	if err != nil {
 		return out
 	}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	for _, name := range names {
+		if !strings.HasSuffix(name, ".json") {
 			continue
 		}
-		item, err := s.loadScheduleLocked(strings.TrimSuffix(entry.Name(), ".json"))
+		item, err := s.loadScheduleLocked(strings.TrimSuffix(name, ".json"))
 		if err != nil {
 			continue
 		}

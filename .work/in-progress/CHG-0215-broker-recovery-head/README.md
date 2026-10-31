@@ -4,6 +4,14 @@
 Это пакет проектирования по итогам read-only аудита. Подготовка документов
 не означает принятой миграции данных, passing fault tests или исправленного prod.
 
+Amendment 2026-10-31: [ADR-0091](../../../docs/adr/ADR-0091-root-services-sqlite-storage.md)
+и [SPEC-0090](../../../specs/active/SPEC-0090-root-services-sqlite.md) отменяют
+исключение SQLite для ToolHub и Communication по инструкции владельца.
+Substrate-колонки таблицы ниже обновлены; семантические требования
+(атомарность, cursor/dedup/receipt гарантии, audit, бюджеты, миграция)
+сохраняются и теперь выполняются транзакциями SQLite/SQLCipher.
+Обновлённые файлы не являются завершённой миграцией.
+
 ## Читать по порядку
 
 1. AGENTS.md, README.md, docs/index.md, docs/principles.md, docs/boundaries.md.
@@ -22,17 +30,19 @@
 |---|---|---|
 | Authorization state + safe audit Broker | SQLCipher в отдельном Broker module | Строгий current head, recovery и конечный hot/archive budget |
 | Secret objects / connector snapshots | Существующие encrypted providers | Known ownership, current/pinned/retired, bounded pending delete |
-| ToolHub state | Существующий JSON snapshot | Atomic sync, conflict fence, initialized-store refusal |
-| Jobs/outbox/run outcomes | Существующий spool + canonical receipt | Replay производных записей, stable IDs, no blind retry |
-| Subscription cursors / provider dedup | Раздельные typed directories | Active state не удаляется terminal-history compactor |
-| Control audit | Существующий audit module, finite JSONL segments | Durable admission/completion, safe fields, protected unsettled |
+| ToolHub state | SQLite `store.db` (ADR-0091) | Snapshot-коллекции одной транзакцией, conflict fence, initialized refusal |
+| Jobs/outbox/run outcomes | SQLite `spool.db` records + canonical receipt | Replay производных записей, stable IDs, no blind retry |
+| Subscription cursors / provider dedup | records-таблицы `spool.db` | Active state не удаляется terminal-history compactor |
+| Control audit | audit-таблица в БД сервиса + finite segments для прочих producers | Durable admission/completion, safe fields, protected unsettled |
 | Diagnostics / trace | Ротируемые files | Bounded reads, exact scope, visible gaps |
+| Binary payloads / archives / mock | Существующие bounded files | Не операционное состояние; учитываются в footprint |
 | Hermes memory/artifacts/usage | Существующие владельцы | Без переноса на новую общую БД |
 
 Обязательные свойства: Go trust boundary, model is untrusted, deny wins,
 persist-before-claim, отдельные dev/prod, explicit migration, no secret DTOs.
-Не включены root SQLite, PostgreSQL/TypeDB/DuckDB, workflow engine, vector store,
-новые providers, agent mounts управляющей DB, silent patch upstream Hermes.
+Не включены shared DB mount, PostgreSQL/TypeDB/DuckDB, workflow engine,
+vector store, новые providers, agent mounts управляющей DB, CGO в root
+binaries, silent patch upstream Hermes.
 
 ## Канонический порядок
 

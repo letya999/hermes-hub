@@ -198,7 +198,7 @@ func (s *Spool) recordControlTerminal(mapping JobMapping, outcome hubruntime.Exe
 	var job Job
 	found := false
 	for _, dir := range []string{"running", "pending", "failed", "done"} {
-		b, err := os.ReadFile(filepath.Join(s.root, dir, spoolFileID(mapping.JobID)+".json"))
+		b, err := s.fsys.ReadFile(filepath.Join(s.root, dir, spoolFileID(mapping.JobID)+".json"))
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}

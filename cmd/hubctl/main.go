@@ -448,6 +448,7 @@ func run(ctx context.Context, args []string) error {
 	live := f.Bool("live", false, "doctor: verify the selected model against the live provider catalog")
 	stateSource := f.String("state-volume", "", "legacy runtime state directory")
 	toolHubStore := f.String("toolhub-store", "", "absolute ToolHub registry path")
+	storeTo := f.String("to", "", "destination store path for store-migrate (default: store.db beside the source)")
 	workspaceSource := f.String("workspace-volume", "", "legacy workspace directory")
 	userSource := f.String("user-source", "", "legacy user directory")
 	orgSource := f.String("organization-source", "", "legacy organization directory")
@@ -570,6 +571,72 @@ func run(ctx context.Context, args []string) error {
 			return err
 		}
 		return json.NewEncoder(os.Stdout).Encode(report)
+	case "store-migrate":
+		if !*apply {
+			return fmt.Errorf("store-migrate requires --apply")
+		}
+		if *spoolDir != "" {
+			spool, err := filepath.Abs(*spoolDir)
+			if err != nil {
+				return err
+			}
+			spoolReport, err := migration.MigrateSpoolSubstrate(spool)
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(os.Stdout).Encode(spoolReport)
+		}
+		if *toolHubStore == "" {
+			return fmt.Errorf("store-migrate requires --toolhub-store")
+		}
+		from, err := filepath.Abs(*toolHubStore)
+		if err != nil {
+			return err
+		}
+		to := *storeTo
+		if to == "" {
+			to = filepath.Join(filepath.Dir(from), "store.db")
+		}
+		to, err = filepath.Abs(to)
+		if err != nil {
+			return err
+		}
+		migrationReport, err := migration.MigrateStoreSubstrate(from, to)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(migrationReport)
+	case "store-activate":
+		if !*apply {
+			return fmt.Errorf("store-activate requires --apply")
+		}
+		if *spoolDir != "" {
+			spool, err := filepath.Abs(*spoolDir)
+			if err != nil {
+				return err
+			}
+			spoolReport, err := migration.ActivateSpoolSubstrate(spool)
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(os.Stdout).Encode(spoolReport)
+		}
+		if *toolHubStore == "" || *storeTo == "" {
+			return fmt.Errorf("store-activate requires --toolhub-store and --to")
+		}
+		from, err := filepath.Abs(*toolHubStore)
+		if err != nil {
+			return err
+		}
+		to, err := filepath.Abs(*storeTo)
+		if err != nil {
+			return err
+		}
+		activationReport, err := migration.ActivateStoreSubstrate(from, to)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(activationReport)
 	case "catalog":
 		return json.NewEncoder(os.Stdout).Encode(stack.Features)
 	case "companion":

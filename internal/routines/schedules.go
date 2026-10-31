@@ -44,7 +44,7 @@ func (e *Engine) CreationReplayLocked(in commodel.Schedule, caller identity.Enve
 	item, err := e.LoadScheduleLocked(in.ScheduleID)
 	retired := false
 	if os.IsNotExist(err) {
-		b, readErr := os.ReadFile(e.CancelPath(in.ScheduleID))
+		b, readErr := e.readFile(e.CancelPath(in.ScheduleID))
 		if os.IsNotExist(readErr) {
 			return commodel.Schedule{}, false, nil
 		}
@@ -135,10 +135,10 @@ func (e *Engine) createScheduleAtLocked(in commodel.Schedule, caller identity.En
 	in.UpdatedAt = now
 	in.Creation = &commodel.ScheduleCreation{RequestedExpression: requested, ResolvedDueAt: next, CreatedAt: now, IntentSHA256: intent}
 	path := e.SchedulePath(in.ScheduleID)
-	if _, err := os.Stat(e.CancelPath(in.ScheduleID)); !os.IsNotExist(err) {
+	if _, err := e.lstat(e.CancelPath(in.ScheduleID)); !os.IsNotExist(err) {
 		return commodel.Schedule{}, errors.New("schedule id was retired; use a new id")
 	}
-	if _, err := os.Stat(path); err == nil {
+	if _, err := e.lstat(path); err == nil {
 		return commodel.Schedule{}, errors.New("schedule already exists")
 	}
 	if err := e.atomicJSON(path, in); err != nil {
@@ -150,7 +150,7 @@ func (e *Engine) createScheduleAtLocked(in commodel.Schedule, caller identity.En
 func (e *Engine) ListSchedules(caller identity.Envelope) ([]commodel.Schedule, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	entries, err := os.ReadDir(filepath.Join(e.root, "schedules"))
+	entries, err := e.readDir(filepath.Join(e.root, "schedules"))
 	if os.IsNotExist(err) {
 		return []commodel.Schedule{}, nil
 	}
@@ -158,11 +158,11 @@ func (e *Engine) ListSchedules(caller identity.Envelope) ([]commodel.Schedule, e
 		return nil, err
 	}
 	out := []commodel.Schedule{}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	for _, name := range entries {
+		if !strings.HasSuffix(name, ".json") {
 			continue
 		}
-		b, err := os.ReadFile(filepath.Join(e.root, "schedules", entry.Name()))
+		b, err := e.readFile(filepath.Join(e.root, "schedules", name))
 		if err != nil {
 			return nil, err
 		}
@@ -392,7 +392,7 @@ func (e *Engine) ClearRoutineFailure(scheduleID string) error {
 }
 
 func (e *Engine) OccurrenceCurrentLocked(o commodel.RoutineOccurrence) bool {
-	if _, err := os.Stat(e.CancelPath(o.ScheduleID)); !os.IsNotExist(err) {
+	if _, err := e.lstat(e.CancelPath(o.ScheduleID)); !os.IsNotExist(err) {
 		return false
 	}
 	schedule, err := e.LoadScheduleLocked(o.ScheduleID)
@@ -408,7 +408,7 @@ func (e *Engine) TickSchedules(now time.Time, nativeCron string, authorize func(
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	entries, err := os.ReadDir(filepath.Join(e.root, "schedules"))
+	entries, err := e.readDir(filepath.Join(e.root, "schedules"))
 	if err != nil {
 		return err
 	}
@@ -416,16 +416,16 @@ func (e *Engine) TickSchedules(now time.Time, nativeCron string, authorize func(
 	// schedules/quarantine and the tick continues, reporting the failure after
 	// every other schedule had its pass.
 	var errs []error
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	for _, name := range entries {
+		if !strings.HasSuffix(name, ".json") {
 			continue
 		}
-		item, err := e.LoadScheduleLocked(strings.TrimSuffix(entry.Name(), ".json"))
+		item, err := e.LoadScheduleLocked(strings.TrimSuffix(name, ".json"))
 		if err != nil {
-			if qerr := e.quarantineScheduleLocked(filepath.Join(e.root, "schedules", entry.Name())); qerr != nil {
+			if qerr := e.quarantineScheduleLocked(filepath.Join(e.root, "schedules", name)); qerr != nil {
 				return qerr
 			}
-			errs = append(errs, fmt.Errorf("schedule %s: %w", strings.TrimSuffix(entry.Name(), ".json"), err))
+			errs = append(errs, fmt.Errorf("schedule %s: %w", strings.TrimSuffix(name, ".json"), err))
 			continue
 		}
 		if item.BlockedReason != "" || now.Before(item.SnoozedUntil) || !item.Enabled || item.Paused || item.NextDue.IsZero() || now.Before(item.NextDue) || item.Delivery == "stream" {
@@ -447,7 +447,7 @@ func (e *Engine) TickSchedules(now time.Time, nativeCron string, authorize func(
 				continue
 			}
 			lastPath := filepath.Join(e.root, "occurrences", item.LastOccurrenceID+".json")
-			body, err := os.ReadFile(lastPath)
+			body, err := e.readFile(lastPath)
 			if err == nil {
 				var last commodel.RoutineOccurrence
 				if json.Unmarshal(body, &last) != nil || last.Job.ID != item.LastOccurrenceID {
@@ -475,7 +475,7 @@ func (e *Engine) TickSchedules(now time.Time, nativeCron string, authorize func(
 					outstanding = mappingErr == nil && !commodel.TerminalStatus(mapping.Status)
 					if os.IsNotExist(mappingErr) {
 						for _, dir := range []string{"pending", "running"} {
-							_, statErr := os.Stat(filepath.Join(e.root, dir, commodel.FileID(last.Job.ID)+".json"))
+							_, statErr := e.lstat(filepath.Join(e.root, dir, commodel.FileID(last.Job.ID)+".json"))
 							if statErr == nil {
 								outstanding = true
 							}
@@ -520,7 +520,7 @@ func (e *Engine) TickSchedules(now time.Time, nativeCron string, authorize func(
 		occ.Job.Trigger = "cron"
 		occ.Job.CreatedAt = due.UTC()
 		occPath := filepath.Join(e.root, "occurrences", occ.Job.ID+".json")
-		if _, err := os.Stat(occPath); err == nil {
+		if _, err := e.lstat(occPath); err == nil {
 			item.LastOccurrenceID = occ.Job.ID
 			if err := e.settleScheduleLocked(&item, loc, due, now); err != nil {
 				return err
@@ -529,7 +529,7 @@ func (e *Engine) TickSchedules(now time.Time, nativeCron string, authorize func(
 		}
 		found := false
 		for _, dir := range []string{"receipts", "archive", "quarantine"} {
-			_, statErr := os.Stat(filepath.Join(e.root, "occurrences", dir, occ.Job.ID+".json"))
+			_, statErr := e.lstat(filepath.Join(e.root, "occurrences", dir, occ.Job.ID+".json"))
 			if statErr == nil {
 				found = true
 				break
@@ -625,7 +625,7 @@ func (e *Engine) SchedulePath(id string) string {
 }
 
 func (e *Engine) LoadScheduleLocked(id string) (commodel.Schedule, error) {
-	b, err := os.ReadFile(e.SchedulePath(id))
+	b, err := e.readFile(e.SchedulePath(id))
 	if err != nil {
 		return commodel.Schedule{}, err
 	}

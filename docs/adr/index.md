@@ -6,6 +6,7 @@ last_verified: 2026-10-30
 
 | Record | Decision |
 |---|---|
+| [ADR-0091](ADR-0091-root-services-sqlite-storage.md) | Accepted direction: SQLite substrate for ToolHub/Communication (pure-Go driver, per-space DBs, shared migration contract); amends ADR-0087 alternatives + ADR-0088 D1 exclusion (CHG-0215-0226) |
 | [ADR-0090](ADR-0090-conversation-parallel-lanes.md) | Accepted: parallel sessions inside one context — lane key (principal, context, conversation), fairness per context, per-context cap below upstream; amends ADR-0025 (CHG-0234) |
 | [ADR-0089](ADR-0089-live-tool-inventory.md) | Accepted: live caller-scoped tool inventory — `tools_list` on the store path plus managed-profile `invoke`; no prompt catalog, deferred hydration or vMCP boundary (CHG-0233) |
 | [ADR-0088](ADR-0088-bounded-control-journals.md) | Accepted: bounded file journals/receipts, typed cursors, safe audit and diagnostics; implementation planned in CHG-0216–0226 |

@@ -90,7 +90,7 @@ func (s *Spool) topicTaskPath(principal string, chatID, topicID int64) string {
 }
 
 func (s *Spool) loadTaskLocked(principal, taskID string) (Task, error) {
-	b, err := os.ReadFile(s.taskPath(principal, taskID))
+	b, err := s.fsys.ReadFile(s.taskPath(principal, taskID))
 	if err != nil {
 		return Task{}, err
 	}
@@ -107,7 +107,7 @@ func (s *Spool) writeTaskLocked(task Task) error {
 }
 
 func (s *Spool) currentTaskLocked(principal string, chatID int64) (string, error) {
-	b, err := os.ReadFile(s.currentTaskPath(principal, chatID))
+	b, err := s.fsys.ReadFile(s.currentTaskPath(principal, chatID))
 	if errors.Is(err, os.ErrNotExist) {
 		return "", nil
 	}
@@ -124,7 +124,7 @@ func (s *Spool) currentTaskLocked(principal string, chatID int64) (string, error
 }
 
 func (s *Spool) topicTaskLocked(principal string, chatID, topicID int64) (string, error) {
-	b, err := os.ReadFile(s.topicTaskPath(principal, chatID, topicID))
+	b, err := s.fsys.ReadFile(s.topicTaskPath(principal, chatID, topicID))
 	if errors.Is(err, os.ErrNotExist) {
 		return "", nil
 	}
@@ -361,16 +361,16 @@ func (s *Spool) findTaskLocked(user User, chatID int64, selector string) (Task, 
 
 func (s *Spool) listTasksLocked(principal string) ([]Task, error) {
 	// ponytail: per-owner linear scan is bounded by the single-host spool; add an index if task volume makes it measurable.
-	entries, err := os.ReadDir(filepath.Join(s.root, "tasks"))
+	entries, err := s.fsys.ReadDir(filepath.Join(s.root, "tasks"))
 	if err != nil {
 		return nil, err
 	}
 	tasks := []Task{}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	for _, name := range entries {
+		if !strings.HasSuffix(name, ".json") {
 			continue
 		}
-		b, err := os.ReadFile(filepath.Join(s.root, "tasks", entry.Name()))
+		b, err := s.fsys.ReadFile(filepath.Join(s.root, "tasks", name))
 		if err != nil {
 			return nil, err
 		}

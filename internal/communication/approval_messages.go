@@ -23,21 +23,17 @@ func (s *Spool) trackApprovalMessage(d Delivery) error {
 // use the existing ownership-checked control path; deleting UI never approves.
 func (g *Gateway) closeApprovalMessages(ctx context.Context) {
 	dir := filepath.Join(g.spool.root, "approval-messages")
-	entries, err := os.ReadDir(dir)
+	entries, err := g.spool.fsys.ReadDir(dir)
 	if err != nil {
 		return
 	}
-	root, err := os.OpenRoot(dir)
-	if err != nil {
-		return
-	}
-	defer root.Close()
-	for _, entry := range entries {
-		if entry.IsDir() {
+	for _, name := range entries {
+		path := filepath.Join(dir, name)
+		info, err := g.spool.fsys.Lstat(path)
+		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 			continue
 		}
-		path := filepath.Join(dir, entry.Name())
-		b, err := root.ReadFile(entry.Name())
+		b, err := g.spool.fsys.ReadFile(path)
 		var d Delivery
 		if err != nil || json.Unmarshal(b, &d) != nil || d.TelegramMessageID <= 0 {
 			continue

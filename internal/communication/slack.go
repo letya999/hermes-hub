@@ -229,7 +229,7 @@ func (s *Spool) EventSeen(provider, eventID string) (bool, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, err := os.Stat(s.eventMarkerPath(provider, eventID)); err == nil {
+	if _, err := s.fsys.Lstat(s.eventMarkerPath(provider, eventID)); err == nil {
 		return true, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return false, err

@@ -104,6 +104,19 @@ func readEventRecord(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
+// readEventRecordLocked keeps the same record guard on whichever backend the
+// spool selected: rows surface size through the record info as well.
+func (s *Spool) readEventRecordLocked(path string) ([]byte, error) {
+	info, err := s.fsys.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Size() > 4<<20 {
+		return nil, errors.New("unsafe event record")
+	}
+	return s.fsys.ReadFile(path)
+}
+
 // migrateEventLayout runs only under the existing exclusive spool writer fence.
 // The manifest precedes every move; an events file fences the old binary's MkdirAll.
 func (s *Spool) migrateEventLayout() error {
@@ -269,7 +282,7 @@ func (s *Spool) migrateEventLayout() error {
 }
 
 func (s *Spool) markEventStateInitializedPath(path string) error {
-	if data, err := readEventRecord(path + ".initialized"); err == nil {
+	if data, err := s.readEventRecordLocked(path + ".initialized"); err == nil {
 		var marker struct {
 			Version int `json:"version"`
 		}

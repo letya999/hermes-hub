@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"os"
 	"path"
 	"path/filepath"
 	"strings"
@@ -37,7 +36,7 @@ func (s *Spool) putPrepareOrigin(onboardingID string, origin prepareOrigin) erro
 }
 
 func (s *Spool) loadPrepareOrigin(onboardingID string) (prepareOrigin, bool) {
-	body, err := os.ReadFile(s.prepareOriginPath(onboardingID))
+	body, err := s.fsys.ReadFile(s.prepareOriginPath(onboardingID))
 	if err != nil {
 		return prepareOrigin{}, false
 	}
@@ -57,15 +56,15 @@ func (s *Spool) prepareMessageID(onboardingID string) int {
 	best := 0
 	var bestTime time.Time
 	for _, dir := range []string{"sending", "done"} {
-		entries, err := os.ReadDir(filepath.Join(s.root, "outbox", dir))
+		entries, err := s.fsys.ReadDir(filepath.Join(s.root, "outbox", dir))
 		if err != nil {
 			continue
 		}
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasPrefix(entry.Name(), prefix) {
+		for _, name := range entries {
+			if !strings.HasPrefix(name, prefix) {
 				continue
 			}
-			b, err := os.ReadFile(filepath.Join(s.root, "outbox", dir, entry.Name()))
+			b, err := s.fsys.ReadFile(filepath.Join(s.root, "outbox", dir, name))
 			if err != nil {
 				continue
 			}
@@ -111,16 +110,16 @@ func (s *Spool) newestActiveMessageMapping(principal string) (JobMapping, bool) 
 // initiator's stored result names the source it installed (repo token), while
 // an unrelated session's job does not.
 func (s *Spool) initiatingMessageMapping(principal string, onboardingCreated time.Time, repository string) (JobMapping, bool) {
-	entries, err := os.ReadDir(filepath.Join(s.root, "mappings"))
+	entries, err := s.fsys.ReadDir(filepath.Join(s.root, "mappings"))
 	if err != nil {
 		return JobMapping{}, false
 	}
 	var candidates []JobMapping
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	for _, name := range entries {
+		if !strings.HasSuffix(name, ".json") {
 			continue
 		}
-		body, err := os.ReadFile(filepath.Join(s.root, "mappings", entry.Name()))
+		body, err := s.fsys.ReadFile(filepath.Join(s.root, "mappings", name))
 		if err != nil {
 			continue
 		}

@@ -46,7 +46,7 @@ func (s *Spool) goalPath(principal, conversationID string) string {
 }
 
 func (s *Spool) loadGoalLocked(principal, conversationID string) (Goal, error) {
-	b, err := os.ReadFile(s.goalPath(principal, conversationID))
+	b, err := s.fsys.ReadFile(s.goalPath(principal, conversationID))
 	if err != nil {
 		return Goal{}, err
 	}

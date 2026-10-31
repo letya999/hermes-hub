@@ -5,6 +5,7 @@ package toolhub
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,6 +24,7 @@ type Store struct {
 	mu                  sync.RWMutex
 	path                string
 	savedPath           string
+	db                  *sql.DB
 	diskDigest          [32]byte
 	diskStamp           storeStamp
 	installationID      string

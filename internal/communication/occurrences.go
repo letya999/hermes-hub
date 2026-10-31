@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -107,7 +106,7 @@ func (g *Gateway) routineConversationOf(jobID string) string {
 }
 
 func (g *Gateway) occurrenceFor(jobID string) (RoutineOccurrence, bool) {
-	body, err := os.ReadFile(filepath.Join(g.spool.root, "occurrences", spoolFileID(jobID)+".json"))
+	body, err := g.spool.fsys.ReadFile(filepath.Join(g.spool.root, "occurrences", spoolFileID(jobID)+".json"))
 	var o RoutineOccurrence
 	if err != nil || json.Unmarshal(body, &o) != nil {
 		return RoutineOccurrence{}, false

@@ -46,7 +46,7 @@ func (e *Engine) CreateAssignment(in commodel.Assignment, caller identity.Envelo
 		return commodel.Assignment{}, false, errors.New("grant widening requires owner chat authorization")
 	}
 	path := e.AssignmentPath(in.AssignmentID)
-	if b, err := os.ReadFile(path); err == nil {
+	if b, err := e.readFile(path); err == nil {
 		var existing commodel.Assignment
 		if json.Unmarshal(b, &existing) == nil {
 			if existing.Envelope.PrincipalID != caller.PrincipalID || existing.Envelope.ContextID != caller.ContextID || existing.Intent != in.Intent || existing.Title != in.Title || !sameAssignmentPlan(existing.Plan, in.Plan) || existing.Grants != in.Grants {
@@ -73,7 +73,7 @@ func sameAssignmentPlan(a, b *commodel.AssignmentPlan) bool {
 // loadAssignmentLocked reads the durable record; a corrupt or id-mismatched
 // file is invalid state, never silently repaired.
 func (e *Engine) loadAssignmentLocked(id string) (commodel.Assignment, error) {
-	b, err := os.ReadFile(e.AssignmentPath(id))
+	b, err := e.readFile(e.AssignmentPath(id))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return commodel.Assignment{}, ErrAssignmentNotFound
@@ -112,7 +112,7 @@ func (e *Engine) LoadAssignment(id string, caller identity.Envelope) (commodel.A
 func (e *Engine) ListAssignments(caller identity.Envelope) ([]commodel.Assignment, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	entries, err := os.ReadDir(filepath.Join(e.root, "assignments"))
+	entries, err := e.readDir(filepath.Join(e.root, "assignments"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -120,12 +120,12 @@ func (e *Engine) ListAssignments(caller identity.Envelope) ([]commodel.Assignmen
 		return nil, err
 	}
 	var out []commodel.Assignment
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	for _, name := range entries {
+		if !strings.HasSuffix(name, ".json") {
 			continue
 		}
 		var item commodel.Assignment
-		b, err := os.ReadFile(filepath.Join(e.root, "assignments", entry.Name()))
+		b, err := e.readFile(filepath.Join(e.root, "assignments", name))
 		if err != nil || json.Unmarshal(b, &item) != nil || item.AssignmentID == "" {
 			continue
 		}
@@ -213,12 +213,12 @@ func (e *Engine) ApplyAssignment(id string, caller identity.Envelope, expected .
 			if generation > 1 {
 				candidate = fmt.Sprintf("%s-r%d", baseID, generation)
 			}
-			if _, err := os.Stat(e.SchedulePath(candidate)); err != nil && !os.IsNotExist(err) {
+			if _, err := e.lstat(e.SchedulePath(candidate)); err != nil && !os.IsNotExist(err) {
 				return commodel.Assignment{}, err
 			} else if err == nil {
 				continue
 			}
-			if _, err := os.Stat(e.CancelPath(candidate)); err != nil && !os.IsNotExist(err) {
+			if _, err := e.lstat(e.CancelPath(candidate)); err != nil && !os.IsNotExist(err) {
 				return commodel.Assignment{}, err
 			} else if err == nil {
 				continue
@@ -643,19 +643,19 @@ func (e *Engine) PauseAssignment(id string, caller identity.Envelope, expected .
 func (e *Engine) ReconcileAssignments(now time.Time) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	entries, err := os.ReadDir(filepath.Join(e.root, "assignments"))
+	entries, err := e.readDir(filepath.Join(e.root, "assignments"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
 		return err
 	}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	for _, name := range entries {
+		if !strings.HasSuffix(name, ".json") {
 			continue
 		}
 		var item commodel.Assignment
-		b, err := os.ReadFile(filepath.Join(e.root, "assignments", entry.Name()))
+		b, err := e.readFile(filepath.Join(e.root, "assignments", name))
 		if err != nil || json.Unmarshal(b, &item) != nil || item.AssignmentID == "" {
 			continue
 		}

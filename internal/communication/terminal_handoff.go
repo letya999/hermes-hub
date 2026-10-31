@@ -80,7 +80,7 @@ func (s *Spool) RecordTerminalOutcome(job Job, outcome RunOutcome, delivery *Del
 	// A streamed terminal record already owns its delivery ID and payload.
 	if mapping.Status == outcome.Status && mapping.LastEventID != "" && (terminalStatus(mapping.Status) || mapping.Status == "uncertain") {
 		candidate := receiptPath(s.root, job.ID, mapping.LastEventID)
-		if body, err := readEventRecord(candidate); err == nil {
+		if body, err := s.readEventRecordLocked(candidate); err == nil {
 			var previous streamReceipt
 			if strictEventJSON(body, &previous) != nil || previous.JobID != job.ID || previous.Event.JobID != job.ID || previous.Event.EventID != mapping.LastEventID {
 				return errors.New("invalid prior handoff receipt")
@@ -94,7 +94,7 @@ func (s *Spool) RecordTerminalOutcome(job Job, outcome RunOutcome, delivery *Del
 	}
 	var receipt streamReceipt
 	changed := false
-	if body, readErr := readEventRecord(path); readErr == nil {
+	if body, readErr := s.readEventRecordLocked(path); readErr == nil {
 		if err := strictEventJSON(body, &receipt); err != nil {
 			return err
 		}
@@ -177,7 +177,7 @@ func (s *Spool) finishReceiptJobLocked(receipt streamReceipt) error {
 	source := ""
 	for _, dir := range []string{"pending", "running", "done", "failed"} {
 		path := filepath.Join(s.root, dir, file)
-		body, err := readEventRecord(path)
+		body, err := s.readEventRecordLocked(path)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
@@ -241,7 +241,7 @@ func writeRunReceipt(path string, receipt streamReceipt) error {
 func (s *Spool) savedTerminalOutcome(mapping JobMapping) (RunOutcome, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	body, err := readEventRecord(receiptPath(s.root, mapping.JobID, mapping.LastEventID))
+	body, err := s.readEventRecordLocked(receiptPath(s.root, mapping.JobID, mapping.LastEventID))
 	if err != nil {
 		return RunOutcome{}, err
 	}

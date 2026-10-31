@@ -79,21 +79,21 @@ func (s *Spool) activeMappingIDs() ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.activeMappings == nil {
-		entries, err := os.ReadDir(filepath.Join(s.root, "mappings"))
+		names, err := s.fsys.ReadDir(filepath.Join(s.root, "mappings"))
 		if err != nil {
 			return nil, err
 		}
 		active := map[string]bool{}
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+		for _, name := range names {
+			if !strings.HasSuffix(name, ".json") {
 				continue
 			}
-			body, err := os.ReadFile(filepath.Join(s.root, "mappings", entry.Name()))
+			body, err := s.fsys.ReadFile(filepath.Join(s.root, "mappings", name))
 			var mapping JobMapping
 			if err != nil || json.Unmarshal(body, &mapping) != nil {
 				continue
 			}
-			if mapping.JobID != "" && !terminalStatus(mapping.Status) && entry.Name() == spoolFileID(mapping.JobID)+".json" {
+			if mapping.JobID != "" && !terminalStatus(mapping.Status) && name == spoolFileID(mapping.JobID)+".json" {
 				active[mapping.JobID] = true
 			}
 		}
@@ -129,7 +129,7 @@ func (s *Spool) ActiveJobsForTask(principal, taskID string) ([]JobMapping, error
 }
 
 func (s *Spool) loadMappingLocked(id string) (JobMapping, error) {
-	b, err := os.ReadFile(s.mappingPath(id))
+	b, err := s.fsys.ReadFile(s.mappingPath(id))
 	if err != nil {
 		return JobMapping{}, err
 	}
@@ -286,7 +286,7 @@ func (s *Spool) contextLanesHeldLocked(fairKey string) int {
 func (s *Spool) SessionFor(principal, context, conversation string) (ConversationMapping, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	b, err := os.ReadFile(s.conversationPath(principal, context, conversation))
+	b, err := s.fsys.ReadFile(s.conversationPath(principal, context, conversation))
 	if errors.Is(err, os.ErrNotExist) {
 		return ConversationMapping{}, false, nil
 	}
@@ -324,10 +324,10 @@ func (s *Spool) jobAdmissionLocked(job Job) (bool, error) {
 		return false, err
 	}
 	path := filepath.Join(s.root, "pending", spoolFileID(job.ID)+".json")
-	body, err := readEventRecord(path)
+	body, err := s.readEventRecordLocked(path)
 	if errors.Is(err, os.ErrNotExist) {
 		for _, dir := range []string{"running", "done", "failed"} {
-			if _, other := os.Lstat(filepath.Join(s.root, dir, spoolFileID(job.ID)+".json")); other == nil {
+			if _, other := s.fsys.Lstat(filepath.Join(s.root, dir, spoolFileID(job.ID)+".json")); other == nil {
 				return false, errors.New("unmapped source job requires recovery")
 			} else if !errors.Is(other, os.ErrNotExist) {
 				return false, other

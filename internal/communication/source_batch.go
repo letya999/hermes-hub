@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -460,7 +459,7 @@ func (s *Spool) resumeOccurrenceBatch(o RoutineOccurrence, schedule Schedule, no
 	}
 	if st.PendingBatch == nil {
 		path := filepath.Join(s.root, "occurrences", occurrenceID(o)+".json")
-		body, err := os.ReadFile(path)
+		body, err := s.fsys.ReadFile(path)
 		if err != nil {
 			return true, err
 		}

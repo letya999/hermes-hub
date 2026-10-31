@@ -56,7 +56,7 @@ func (e *Engine) WatchPath(id string) string {
 func (e *Engine) LoadWatchStateLocked(id string) (WatchState, error) {
 	var st WatchState
 	schedule, scheduleErr := e.LoadScheduleLocked(id)
-	b, err := os.ReadFile(e.WatchPath(id))
+	b, err := e.readFile(e.WatchPath(id))
 	if os.IsNotExist(err) || (err == nil && json.Unmarshal(b, &st) == nil && scheduleErr == nil && st.ProbeRevision != schedule.ProbeRevision) {
 		if schedule, err := e.LoadScheduleLocked(id); err == nil && schedule.InitialProbeValue != nil {
 			value := *schedule.InitialProbeValue
@@ -146,14 +146,14 @@ func (e *Engine) probeOne(ctx context.Context, o commodel.RoutineOccurrence, now
 		}
 	}
 	receipt := filepath.Join(e.root, "occurrences", occurrenceID(o)+".probe-result")
-	if info, err := os.Lstat(receipt); err == nil {
+	if info, err := e.lstat(receipt); err == nil {
 		if !info.Mode().IsRegular() || info.Size() > 4<<20 {
 			return errors.New("unsafe probe receipt")
 		}
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	if body, err := os.ReadFile(receipt); err == nil {
+	if body, err := e.readFile(receipt); err == nil {
 		var result ProbeResult
 		decoder := json.NewDecoder(strings.NewReader(string(body)))
 		decoder.DisallowUnknownFields()
@@ -444,7 +444,7 @@ func (e *Engine) SettleHookIdle(o commodel.RoutineOccurrence, now time.Time, aut
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	path := filepath.Join(e.root, "occurrences", occurrenceID(o)+".json")
-	body, err := os.ReadFile(path)
+	body, err := e.readFile(path)
 	if err != nil {
 		return
 	}
@@ -465,7 +465,7 @@ func (e *Engine) SettleProbe(o commodel.RoutineOccurrence, schedule commodel.Sch
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	path := filepath.Join(e.root, "occurrences", occurrenceID(o)+".json")
-	body, err := os.ReadFile(path)
+	body, err := e.readFile(path)
 	if err != nil {
 		return err
 	}

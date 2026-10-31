@@ -47,9 +47,9 @@ func budgetPath(root string) string { return filepath.Join(root, "budget.json") 
 
 // loadBudget reads the persisted ledger; a corrupt file marks the spool's
 // admission broken (fail closed) rather than silently dropping demand.
-func loadBudget(root string) (*budgetLedger, error) {
+func loadBudget(fs spoolFS, root string) (*budgetLedger, error) {
 	ledger := &budgetLedger{Reservations: map[string]reservation{}, Scopes: map[string]*scopeBudget{}}
-	body, err := os.ReadFile(budgetPath(root))
+	body, err := fs.ReadFile(budgetPath(root))
 	if errors.Is(err, os.ErrNotExist) {
 		return ledger, nil
 	}
@@ -251,7 +251,7 @@ func (s *Spool) reconcileBudgetLocked() error {
 		}
 		live := false
 		for _, dir := range []string{"pending", "running"} {
-			if _, err := os.Stat(filepath.Join(s.root, dir, spoolFileID(jobID)+".json")); err == nil {
+			if _, err := s.fsys.Lstat(filepath.Join(s.root, dir, spoolFileID(jobID)+".json")); err == nil {
 				live = true
 			}
 		}

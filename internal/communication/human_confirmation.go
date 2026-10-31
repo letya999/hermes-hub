@@ -9,7 +9,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -43,12 +42,10 @@ func (s *Spool) humanConfirmationButton(proof api.HumanConfirmation, channel str
 func (g *Gateway) confirmHumanCallback(ctx context.Context, caller identity.Envelope, channel string, chatID int64, data string) error {
 	denied := errors.New("human confirmation unavailable")
 	path := filepath.Join(g.spool.root, "callbacks", "human-"+spoolFileID(data)+".json")
-	file, err := os.Open(path)
+	body, err := g.spool.fsys.ReadFile(path)
 	if err != nil {
 		return denied
 	}
-	body, err := io.ReadAll(io.LimitReader(file, (64<<10)+1))
-	_ = file.Close()
 	var record humanCallback
 	if err != nil || len(body) > 64<<10 || json.Unmarshal(body, &record) != nil {
 		return denied

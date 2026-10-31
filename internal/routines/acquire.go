@@ -6,10 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
-	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/commodel"
@@ -46,7 +44,7 @@ func (e *Engine) acquirePath(key string) string {
 
 func (e *Engine) loadAcquireLocked(principal, url string) (AcquireState, error) {
 	var st AcquireState
-	b, err := os.ReadFile(e.acquirePath(acquireKey(principal, url)))
+	b, err := e.readFile(e.acquirePath(acquireKey(principal, url)))
 	if err != nil {
 		return st, err
 	}
@@ -128,7 +126,7 @@ func (e *Engine) IntakeHook(scheduleID string, body []byte, now time.Time) error
 func (e *Engine) HookPendingCount(scheduleID string) int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	entries, err := os.ReadDir(filepath.Join(e.root, "hooks", commodel.FileID(scheduleID)))
+	entries, err := e.readDir(filepath.Join(e.root, "hooks", commodel.FileID(scheduleID)))
 	if err != nil {
 		return 0
 	}
@@ -138,13 +136,13 @@ func (e *Engine) HookPendingCount(scheduleID string) int {
 // popHookLocked removes and returns the oldest staged payload, or nil.
 func (e *Engine) popHookLocked(scheduleID string) []byte {
 	dir := filepath.Join(e.root, "hooks", commodel.FileID(scheduleID))
-	entries, err := os.ReadDir(dir)
+	entries, err := e.readDir(dir)
 	if err != nil || len(entries) == 0 {
 		return nil
 	}
-	slices.SortFunc(entries, func(a, b os.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
-	path := filepath.Join(dir, entries[0].Name())
-	body, err := os.ReadFile(path)
+	slices.Sort(entries)
+	path := filepath.Join(dir, entries[0])
+	body, err := e.readFile(path)
 	if err != nil {
 		return nil
 	}

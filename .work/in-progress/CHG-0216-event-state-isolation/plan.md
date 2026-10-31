@@ -10,6 +10,15 @@ Workstream: Storage reliability MVP (local planning; GitHub records not created)
 Previous: CHG-0215. Next: CHG-0217.
 Hard dependencies: нет.
 
+## Amendment 2026-10-31 (substrate)
+
+[ADR-0091](../../../docs/adr/ADR-0091-root-services-sqlite-storage.md) /
+[SPEC-0090](../../../specs/active/SPEC-0090-root-services-sqlite.md) по
+инструкции владельца переносят substrate этого CHG с typed directories на
+records-таблицы `spool.db` (Communication). Semantic requirements SPEC-0088
+R1 (cursor не terminal history, quarantine unknown, crash-safe layout
+migration) не меняются; anchors ниже дополняются `spooldb` слоем.
+
 ## Goal
 
 Изоляция курсоров и безопасная очистка event records. Результат этапа проверяется acceptance ниже; текущий работающий код

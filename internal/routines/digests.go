@@ -23,7 +23,7 @@ func (e *Engine) dispatchDigestLocked(o commodel.RoutineOccurrence, now time.Tim
 	lang := e.langOf(o.Job.PrincipalID)
 	path := filepath.Join(e.root, "occurrences", occurrenceID(o)+".digest-result")
 	var receipt digestReceipt
-	if body, err := os.ReadFile(path); err == nil {
+	if body, err := e.readFile(path); err == nil {
 		if json.Unmarshal(body, &receipt) != nil {
 			return errors.New("invalid digest receipt")
 		}
@@ -31,7 +31,7 @@ func (e *Engine) dispatchDigestLocked(o commodel.RoutineOccurrence, now time.Tim
 		return err
 	} else {
 		cursor := DigestState{ScheduleID: o.ScheduleID, Generations: map[string]uint64{}}
-		if body, err := os.ReadFile(e.DigestPath(o.ScheduleID)); err == nil {
+		if body, err := e.readFile(e.DigestPath(o.ScheduleID)); err == nil {
 			if json.Unmarshal(body, &cursor) != nil {
 				return errors.New("invalid digest cursor")
 			}
@@ -46,19 +46,19 @@ func (e *Engine) dispatchDigestLocked(o commodel.RoutineOccurrence, now time.Tim
 		}
 		unavailable := 0
 		digest, _ := e.LoadScheduleLocked(o.ScheduleID)
-		entries, err := os.ReadDir(filepath.Join(e.root, "watchers"))
+		entries, err := e.readDir(filepath.Join(e.root, "watchers"))
 		if err != nil {
 			return err
 		}
 		lines := []string{}
-		for _, entry := range entries {
+		for _, name := range entries {
 			if len(lines) >= 16 {
 				break
 			}
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			if !strings.HasSuffix(name, ".json") {
 				continue
 			}
-			body, err := os.ReadFile(filepath.Join(e.root, "watchers", entry.Name()))
+			body, err := e.readFile(filepath.Join(e.root, "watchers", name))
 			if err != nil {
 				return err
 			}
@@ -140,18 +140,18 @@ func (e *Engine) dispatchBriefLocked(o commodel.RoutineOccurrence, now time.Time
 	brief, _ := e.LoadScheduleLocked(o.ScheduleID)
 	lines := []string{}
 	unavailable := 0
-	entries, err := os.ReadDir(filepath.Join(e.root, "watchers"))
+	entries, err := e.readDir(filepath.Join(e.root, "watchers"))
 	if err != nil {
 		return err
 	}
-	for _, entry := range entries {
+	for _, name := range entries {
 		if len(lines) >= 16 {
 			break
 		}
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+		if !strings.HasSuffix(name, ".json") {
 			continue
 		}
-		body, err := os.ReadFile(filepath.Join(e.root, "watchers", entry.Name()))
+		body, err := e.readFile(filepath.Join(e.root, "watchers", name))
 		if err != nil {
 			return err
 		}
@@ -238,7 +238,7 @@ func (e *Engine) dispatchBriefLocked(o commodel.RoutineOccurrence, now time.Time
 
 func (e *Engine) LoadDigestCursorLocked(scheduleID string) (DigestState, error) {
 	cursor := DigestState{ScheduleID: scheduleID, Generations: map[string]uint64{}, Errors: map[string]string{}}
-	if body, err := os.ReadFile(e.DigestPath(scheduleID)); err == nil {
+	if body, err := e.readFile(e.DigestPath(scheduleID)); err == nil {
 		if json.Unmarshal(body, &cursor) != nil {
 			return cursor, errors.New("invalid digest cursor")
 		}

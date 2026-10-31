@@ -3,7 +3,7 @@ change: CHG-0224
 title: "Сохранность ToolHub и доверенное подтверждение пользователя"
 status: in_progress
 branch: chore/storage-reliability-integration
-updated: "2026-10-31"
+updated: "2026-11-01"
 phase: integrated-code-validation
 adr: ADR-0088
 spec: SPEC-0088
@@ -16,7 +16,7 @@ design_status: accepted
 implementation_status: partial
 readiness: dependency_gated
 slices:
-  S200.1-snapshot-durability: not_started
+  S200.1-snapshot-durability: in_progress
   S200.2-onboarding-reasons: not_started
   S200.3-human-contract: not_started
 validation:

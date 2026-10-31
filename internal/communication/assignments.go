@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -174,7 +173,7 @@ func (g *Gateway) assignmentProgress(w http.ResponseWriter, r *http.Request, id 
 	// assignment identity; no agent-supplied id can redirect the write.
 	var job Job
 	jobPath := filepath.Join(g.spool.root, "running", spoolFileID(req.JobID)+".json")
-	if raw, err := os.ReadFile(jobPath); err != nil || json.Unmarshal(raw, &job) != nil || job.ID != req.JobID || job.AssignmentID != id || job.PrincipalID != caller.PrincipalID || job.ContextID != caller.ContextID {
+	if raw, err := g.spool.fsys.ReadFile(jobPath); err != nil || json.Unmarshal(raw, &job) != nil || job.ID != req.JobID || job.AssignmentID != id || job.PrincipalID != caller.PrincipalID || job.ContextID != caller.ContextID {
 		http.Error(w, "trigger job unavailable", http.StatusForbidden)
 		return
 	}

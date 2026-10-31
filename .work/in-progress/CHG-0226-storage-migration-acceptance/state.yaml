@@ -3,7 +3,7 @@ change: CHG-0226
 title: "Явная миграция и итоговая приёмка ограниченного хранения"
 status: in_progress
 branch: fix/m23-live-wake
-updated: "2026-10-28"
+updated: "2026-11-01"
 phase: design-complete
 adr: ADR-0087
 spec: SPEC-0087
@@ -14,10 +14,10 @@ workstream: storage-reliability-mvp
 github_milestone: null
 github_issue: null
 design_status: accepted
-implementation_status: not_started
+implementation_status: partial
 readiness: dependency_gated
 slices:
-  S202.1-read-only-import: not_started
+  S202.1-read-only-import: in_progress
   S202.2-dev-acceptance: not_started
   S202.3-closeout: not_started
 validation:

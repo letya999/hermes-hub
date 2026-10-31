@@ -190,7 +190,7 @@ func (s *Spool) GetRoutine(id string, caller identity.Envelope) (RoutineCard, er
 	state := routineState(item)
 	if os.IsNotExist(err) {
 		var body []byte
-		body, err = os.ReadFile(s.cancelPath(id)) // #nosec G703 -- id is sanitized by commodel.FileID
+		body, err = s.fsys.ReadFile(s.cancelPath(id)) // #nosec G703 -- id is sanitized by commodel.FileID
 		if err == nil {
 			err = json.Unmarshal(body, &item)
 			state = "deleted"
