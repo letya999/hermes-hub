@@ -34,16 +34,18 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 | [CHG-0216](in-progress/CHG-0216-event-state-isolation/plan.md) | Storage reliability MVP: Изоляция курсоров и безопасная очистка event records; design accepted, implementation not started |
 | [CHG-0215](in-progress/CHG-0215-broker-recovery-head/plan.md) | Storage reliability MVP: Надёжная текущая голова recovery брокера; design accepted, implementation not started |
 | [CHG-0214](in-progress/CHG-0214-standing-assignment-mvp/plan.md) | M23 #324/#332: non-consuming cursor source, filtered batch wakes, specialist progress and runtime fences |
-| [CHG-0213](in-progress/CHG-0213-org-knowledge-brain/plan.md) | M20 stage 10 (optional): org shared brain — read-only OpenKnowledge over org material |
-| [CHG-0212](in-progress/CHG-0212-memory-migration-eval/plan.md) | M20 stage 9: Honcho/native export to cards, memory-eval fixture, `memory vacuum` |
-| [CHG-0211](in-progress/CHG-0211-knowledge-ui-edge/plan.md) | M20 stage 8: loopback `ui_port` + SSH tunnel docs; M18 edge hook |
-| [CHG-0210](in-progress/CHG-0210-openknowledge-mcp/plan.md) | M20 stage 7: OK MCP read/write capability split (`knowledge_ui` / `knowledge_ui_write`) |
-| [CHG-0209](in-progress/CHG-0209-openknowledge-service/plan.md) | M20 stage 6: pinned single-replica OpenKnowledge service per space |
-| [CHG-0208](in-progress/CHG-0208-memory-card-contract/plan.md) | M20 stage 5: `memory_card` fact/truth/merge contract + memory-zone write guards |
-| [CHG-0207](in-progress/CHG-0207-memory-search/plan.md) | M20 stage 4: `memory_search` BM25+link-graph, scope confinement, maintenance pass |
-| [CHG-0206](in-progress/CHG-0206-memory-night-rollup/plan.md) | M20 stage 3: hub-owned nightly rollup — summaries, evidence facts, Compiled Truth, CORE edits |
-| [CHG-0205](in-progress/CHG-0205-daily-leaf-ingest/plan.md) | M20 stage 2: verbatim daily leaf ingest from the communication plane |
-| [CHG-0204](in-progress/CHG-0204-vault-layout/plan.md) | M20 stage 1: `spaces/<id>/vault/` git substrate, `memory_vault` feature, CORE injection |
+| [CHG-0239](in-progress/CHG-0239-memory-provider-adapters/plan.md) | M20.11 #330: external provider adapters via seam — Hindsight adapter, replay migration, export-honcho |
+| [CHG-0238](in-progress/CHG-0238-memory-pre-turn-recall/plan.md) | M20.4 #419: pre-turn recall lane — zero-LLM, ≤4 hits ≤2500 chars, pinned per-run snapshot |
+| [CHG-0213](in-progress/CHG-0213-org-knowledge-brain/plan.md) | Deferred — Backlog Organization Knowledge milestone #308 (out of M20 scope): org shared brain |
+| [CHG-0212](in-progress/CHG-0212-memory-migration-eval/plan.md) | M20.7 #307: memory eval gate + native `MEMORY.md`/`USER.md` import + `memory vacuum` |
+| [CHG-0211](in-progress/CHG-0211-knowledge-ui-edge/plan.md) | M20.10 #306: loopback `ui_port` + SSH tunnel docs; M18 edge hook |
+| [CHG-0210](in-progress/CHG-0210-openknowledge-mcp/plan.md) | M20.9 #305: OK MCP read-only agent surface; `knowledge_ui_write` deferred |
+| [CHG-0209](in-progress/CHG-0209-openknowledge-service/plan.md) | M20.8 #304: pinned single-replica OpenKnowledge service per space |
+| [CHG-0208](in-progress/CHG-0208-memory-card-contract/plan.md) | M20.6 #303: `memory_card` fact/truth/merge/forget/remember contract + soft forget + zone guards |
+| [CHG-0207](in-progress/CHG-0207-memory-search/plan.md) | M20.3 #302: `memory_search` pure-Go BM25+link-graph on raw leaves, scope confinement, maintenance |
+| [CHG-0206](in-progress/CHG-0206-memory-night-rollup/plan.md) | M20.5 #301: gated night rollup — promotion/loss gates, directives, REVIEW.md, digest |
+| [CHG-0205](in-progress/CHG-0205-daily-leaf-ingest/plan.md) | M20.2 #300: provenance-aware daily capture — sidecar prov.db, kind quarantine, compaction flush |
+| [CHG-0204](in-progress/CHG-0204-vault-layout/plan.md) | M20.1 #299: `spaces/<id>/vault/` substrate, `memory.Provider` seam, audience-scoped CORE |
 | [CHG-0189](in-progress/CHG-0189-watch-contract/plan.md) | M23 #324/#332 follow-up: tool-contract discipline rule, watch_subscribe discoverability (prompt/descriptions/semantic refusal), per-source stream cadence (min_interval_seconds 5..3600), stream cursor persistence, watch_resume + catalog 5.3.0, docs-coverage test |
 | [CHG-0174](in-progress/CHG-0174-hosting-acceptance/plan.md) | M18 #147 H5: hosting acceptance/current docs — A1–A11 code/runtime/browser/sish evidence; offline gates green, native acceptance pending |
 | [CHG-0173](in-progress/CHG-0173-hosting-dynamic/plan.md) | M18 #147 H4: one admitted stateless go-http profile, secure runtime/relay, restart/finalizers; implemented, offline gates green, native acceptance pending |

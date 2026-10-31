@@ -1,7 +1,7 @@
-# CHG-0213: Org knowledge brain — read-only shared OK (M20 stage 10, optional)
+# CHG-0213: Org knowledge brain — read-only shared OK (deferred — Backlog Organization Knowledge milestone)
 
 Chain: ADR-0086 D8/D10 -> SPEC-0085 R10 -> this plan -> `state.yaml`.
-Previous stage: CHG-0212.
+Deferred out of M20 scope 2026-10-31: the restructured milestone ships user-scope only; org brain issues (#308, #321-323) live in the backlog milestone. This record stays for design reuse.
 
 ## Goal
 

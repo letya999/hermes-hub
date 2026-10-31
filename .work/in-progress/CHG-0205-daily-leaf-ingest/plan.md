@@ -1,96 +1,142 @@
-# CHG-0205: Daily leaf ingest (M20 stage 2)
+# CHG-0205: Provenance-aware daily capture (M20 stage 2)
 
-Chain: ADR-0086 D2/D3 -> SPEC-0085 R2 -> this plan -> `state.yaml`.
-Previous stage: CHG-0204. Next stage: CHG-0206.
+Chain: `docs/adr/ADR-0086-memory-vault-openknowledge.md` D3/D11/D18 ->
+`specs/active/SPEC-0085-memory-vault-openknowledge.md` R2 -> this plan ->
+`state.yaml`. Evidence: `../CHG-0204-vault-layout/research.md`,
+`../CHG-0204-vault-layout/spike-m20.md`.
+Previous stage: CHG-0204. Next stage: CHG-0207.
 
 ## Goal
 
 Every accepted owner turn and agent reply lands verbatim in
-`vault/memory/daily/YYYY-MM-DD.md` in the space timezone — append-only,
-attributed, untrusted-content tagged — so the night rollup has a
-lossless raw layer.
+`vault/memory/daily/YYYY-MM-DD.md` with unforgeable provenance in the
+hub-owned `runtime/memory/prov.db` sidecar — background kinds captured
+for audit but promotion-ineligible, recalled content marked
+non-extractable, and a pre-compaction flush that loses nothing.
 
 ## Read before coding
 
-1. CHG-0204 (vault exists); `internal/communication/*` message flow;
-   `docs/channels.md`, `docs/routines.md`; iva `agent/lib/vault-daily.ts`
-   behavior (research.md).
+1. ADR-0086 D11; SPEC-0085 R2; spike-m20.md (Trigger values, compaction
+   anchors); OpenClaw provenance classes (research.md).
+2. `internal/communication/gateway.go` (job admission),
+   `gateway_delivery.go` (reply path), `internal/commodel/delivery.go`
+   Job, `internal/compaction/compact.go` (flush hook point),
+   `internal/vault` writer (CHG-0204).
+
+## Preconditions and rules
+
+- Never reset or commit other tasks' uncommitted work.
+- Red test first. Go stdlib only.
+- `just check` before handoff.
 
 ## Slices
 
-### S2.1 Leaf writer (R2.1, R2.3)
+### S2.1 Entry schema + sidecar store (R2.2)
 
-Anchors: new `internal/vault/leaves.go`; caller: the communication
-plane's accepted-turn path (`internal/communication`).
+Anchors: `internal/memory/entry.go`; `internal/memory/provdb.go` —
+`runtime/memory/prov.db` (outside vault).
 
 Change:
-1. `AppendLeaf(vaultDir, tz, entry{ts, channel, speaker, body, flags})` —
-   opens `memory/daily/<date>.md` (create with `# <date>` header if
-   absent), appends a fenced entry block, fsyncs, returns offset.
-2. Entries are verbatim: no normalization beyond newline fencing;
-   speaker ∈ {owner, agent, system}.
-3. Day boundary uses `agent.yaml` `timezone` (IANA), not UTC.
+1. `Entry{ID, SourceRef, Provenance, Kind, Audience, ObservedAt}`; stable
+   IDs (`<date>-<seq>` from a sidecar counter, replay-deterministic).
+2. prov.db = newline-delimited JSON sidecar (no new deps), fsync'd
+   append before the leaf write is acked.
+3. `PromotionEligible(entry)` = `owner|agent` && `Kind=interactive` —
+   the single function every downstream gate calls.
 
 Tests (red first):
-- `TestAppendLeafVerbatim` — bytes preserved, order stable.
-- `TestAppendLeafCreatesDayFile` — first entry writes header.
-- `TestAppendLeafTZBoundary` — 23:59 UTC vs owner tz splits correctly.
-- `TestAppendLeafFsyncDurability` — read-back-after-write contract.
+- `TestEntryRoundtrip`, `TestProvDBAppendFsync`, `TestReplayStableIDs`,
+  `TestPromotionGateMatrix`.
 
-### S2.2 Untrusted marking (R2.2)
+### S2.2 Verbatim leaf append (R2.1, R2.3)
 
-Anchors: ingest call sites in `internal/communication` (forwarded
-message metadata path).
+Anchors: `internal/communication/gateway.go` job admission;
+`gateway_delivery.go` `deliverOne`; `internal/vault` writer.
 
 Change:
-1. Entries whose transport metadata marks them forwarded/external get a
-   `> [!untrusted]` block wrapper decided at ingest — never by content.
+1. On accepted owner turn → append `### HH:MM — owner` fenced block to
+   today's leaf via VaultWriter; on agent reply → `agent` block.
+   Timestamp/speaker/channel/audience in a display-only comment.
+2. Untrusted classification from transport metadata (forwarded/external/
+   tool-originated), stamped in the sidecar AND a `> [!untrusted]`
+   display marker; text inside can never reclassify the entry.
 
 Tests:
-- `TestForwardedEntryMarked` — marker present, decided by metadata flag.
-- `TestOwnerEntryUnmarked` — plain turns have no marker.
+- `TestLeafAppendVerbatim`, `TestUntrustedAtCapture`,
+  `TestForgedPrefixStaysUntrusted`.
 
-### S2.3 Scoped commits (R2.4)
+### S2.3 Kind from `job.Trigger` (R2.4)
 
-Anchors: `internal/vault/git.go` (new, shared with later stages).
+Anchors: `internal/commodel/delivery.go` Job.Trigger; capture call sites.
 
 Change:
-1. `CommitScope(vaultDir, scope, paths)` — stage named paths, commit with
-   `memory: <scope>` prefix; batching caller (timer-based, e.g. 15 min or
-   on day roll), no per-message commits.
-2. Honor `.gitignore`: excluded paths log as outside-backup, never fail.
+1. `KindForTrigger`: `message`→interactive, `cron`→routine,
+   `goal`→goal, `compact`→compaction, `wake`/`restart`/`auto-title`→
+   system; assignment/probe map from their job fields.
 
 Tests:
-- `TestCommitScopeBatches` — multiple appends → one commit.
-- `TestCommitScopeIgnoresExcluded` — excluded file doesn't block.
+- `TestKindTriggerMatrix`, `TestBackgroundPromotionIneligible` (100
+  wakes → 0 eligible).
 
-### S2.4 Wiring into accepted turns (R2.1)
+### S2.4 Recalled-block exclusion (R2.5)
 
-Anchors: the communication plane's accepted inbound/outbound handlers.
+Anchors: capture path; the D13 recalled marker constant.
 
 Change:
-1. After a turn is accepted/answered, append both sides to the leaf for
-   spaces with `memory_vault` enabled; ingest failures log and never
-   break message delivery.
+1. The recall injection (CHG-0238) and any recalled text inside a reply
+   carry the marker; capture strips/skips marked spans — they can never
+   land as new entries.
 
 Tests:
-- `TestExchangeLeavesTwoEntries` — owner+agent order.
-- `TestIngestFailureDoesNotBreakDelivery`.
+- `TestRecalledBlockNotCaptured`, `TestRecallEchoExcluded`.
+
+### S2.5 Pre-compaction flush (R2.6)
+
+Anchors: `internal/communication/gateway_compact.go`;
+`internal/compaction/compact.go` before the compress call.
+
+Change:
+1. Before compact drops turn content, flush unsaved entries into the
+   leaf as `agent`/`compaction` — audit-visible, never
+   promotion-eligible.
+
+Tests:
+- `TestCompactionFlushCaptured`, `TestFlushKindCompaction`.
+
+### S2.6 Boundary forging (R2.2)
+
+Anchors: leaf writer.
+
+Change:
+1. Body escaping: fence markers and provenance-comment prefixes inside
+   bodies are neutralized (indented/escaped); a body cannot mint an
+   entry boundary.
+
+Tests:
+- `TestFenceBreakEscaped`, `TestForgedProvenanceCommentInert`,
+  `TestConcurrentAppendsSerialized`, `TestDSTMidnightBoundary`.
 
 ## Red-team checklist
 
-- Body containing `]]` or fence-breakers cannot forge an entry boundary
-  (length-prefixed or escaped fencing — pick one, test it).
-- A poisoned day file (hand-edited) never crashes the appender.
-- Huge inbound bodies are appended (leaves are lossless), but a single
-  entry is size-capped with an explicit truncation note inside the fence.
+- Forged provenance comment inside owner text → ignored (sidecar
+  authoritative).
+- Injected "agent:"-style prefixes cannot reclassify an entry.
+- Leaf path symlink/path escape rejected; concurrent appends serialized
+  through the writer.
+- Untrusted entry containing directives never promoted downstream.
 
 ## Acceptance
 
-A2.1–A2.4 on dev stack: Telegram exchange → verbatim leaf; forwarded →
-marked; kill -9 between appends → no loss; `git log` shows scoped commits.
+A2.1–A2.7 on the dev stack: exchange lands verbatim; forward →
+untrusted; kill -9 loses nothing acked; compaction flush present.
 
 ## Out of scope
 
-- CLI `hubctl chat` sessions ingest (follow-up if wanted).
-- Rollup consumption of leaves (CHG-0206).
+- Search, recall lane, rollup, card writes.
+
+## Done checklist
+
+- [ ] Tests red then green; `just check`.
+- [ ] Red-team and live acceptance recorded in state.yaml.
+- [ ] Docs updated.
+- [ ] Issue updated and closed; state done; folder moved to `.work/done/`.

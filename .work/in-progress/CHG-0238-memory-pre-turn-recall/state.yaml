@@ -1,0 +1,30 @@
+schema: 1
+change: CHG-0238
+title: Pre-turn recall lane — zero-LLM, pinned per run
+status: in_progress
+branch: feat/m20-memory-vault
+updated: 2026-10-31
+phase: design-complete
+adr: ADR-0086
+spec: SPEC-0085
+requirements: [R4.1, R4.2, R4.3, R4.4, R4.5, R4.6]
+depends_on: [CHG-0204, CHG-0205, CHG-0207]
+github_milestone: M20 — Memory Vault and Knowledge Surface
+github_issue: 419
+design_status: accepted
+implementation_status: not_started
+slices:
+  S4.1-recall-assembly: not_started
+  S4.2-pinned-snapshot: not_started
+  S4.3-instructions-delivery: not_started
+  S4.4-lane2-hint: not_started
+  S4.5-audience-gate: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: pending: requires live stack (deferred — no-docker scope)
+evidence: []
+remaining: []
+limitations: []

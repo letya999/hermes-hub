@@ -1,13 +1,13 @@
 schema: 1
 change: CHG-0204
-title: Vault layout, feature gate and CORE injection
+title: Vault substrate, provider seam, audience-scoped CORE
 status: in_progress
-branch: feat/m20-knowledge-memory
-updated: 2026-10-24
+branch: feat/m20-memory-vault
+updated: 2026-10-31
 phase: design-complete
 adr: ADR-0086
 spec: SPEC-0085
-requirements: [R1.1, R1.2, R1.3, R1.4, R1.5]
+requirements: [R1.1, R1.2, R1.3, R1.4, R1.5, R1.6, R1.7]
 depends_on: []
 github_milestone: M20 — Memory Vault and Knowledge Surface
 github_issue: 299
@@ -17,13 +17,16 @@ slices:
   S1.1-feature: not_started
   S1.2-scaffold-mount: not_started
   S1.3-card-schema: not_started
-  S1.4-core-injection: not_started
+  S1.4-provider-seam: not_started
+  S1.5-vault-writer: not_started
+  S1.6-audience-core: not_started
+  S1.7-native-off: not_started
 validation:
   documents: pending
   just_check: not_run
   docker_check: not_run
   red_team: not_started
-  live_acceptance: not_started
+  live_acceptance: pending: requires live stack (deferred — no-docker scope)
 evidence: []
 remaining: []
 limitations: []

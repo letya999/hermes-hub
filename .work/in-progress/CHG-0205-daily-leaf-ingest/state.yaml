@@ -1,29 +1,31 @@
 schema: 1
 change: CHG-0205
-title: Daily leaf ingest
+title: Provenance-aware daily capture
 status: in_progress
-branch: feat/m20-knowledge-memory
-updated: 2026-10-24
+branch: feat/m20-memory-vault
+updated: 2026-10-31
 phase: design-complete
 adr: ADR-0086
 spec: SPEC-0085
-requirements: [R2.1, R2.2, R2.3, R2.4]
-depends_on: []
+requirements: [R2.1, R2.2, R2.3, R2.4, R2.5, R2.6, R2.7]
+depends_on: [CHG-0204]
 github_milestone: M20 — Memory Vault and Knowledge Surface
 github_issue: 300
 design_status: accepted
 implementation_status: not_started
 slices:
-  S2.1-leaf-writer: not_started
-  S2.2-untrusted-marking: not_started
-  S2.3-scoped-commits: not_started
-  S2.4-wiring: not_started
+  S2.1-entry-provdb: not_started
+  S2.2-verbatim-append: not_started
+  S2.3-kind-gating: not_started
+  S2.4-recall-exclusion: not_started
+  S2.5-compaction-flush: not_started
+  S2.6-boundary-forging: not_started
 validation:
   documents: pending
   just_check: not_run
   docker_check: not_run
   red_team: not_started
-  live_acceptance: not_started
+  live_acceptance: 'pending: requires live stack (deferred - no-docker scope)'
 evidence: []
 remaining: []
 limitations: []

@@ -1,67 +1,96 @@
-# CHG-0211: Knowledge-UI human access edge (M20 stage 8)
+# CHG-0211: Knowledge-UI edge — loopback + SSH tunnel + M18 hook (M20 stage 10)
 
-Chain: ADR-0086 D9 -> SPEC-0085 R8 -> this plan -> `state.yaml`.
-Previous stage: CHG-0210. Next stage: CHG-0212.
+Chain: `docs/adr/ADR-0086-memory-vault-openknowledge.md` D9 ->
+`specs/active/SPEC-0085-memory-vault-openknowledge.md` R10 -> this plan ->
+`state.yaml`.
+Previous stage: CHG-0210. Next stage: CHG-0239.
 
 ## Goal
 
-The owner opens their OpenKnowledge editor through a loopback-published
-port plus SSH tunnel — same posture as browser/oauth ports today — with
-collision diagnosis and an explicit hook for the future M18 public edge.
+Publish the OpenKnowledge UI on a per-space loopback port with a
+documented SSH-tunnel flow; no public exposure. Leave a documented hook
+for the M18 one-time-link path without implementing it.
 
 ## Read before coding
 
-1. `docs/operations.md` port model; `internal/stack/config.go`
-   (`oauth_port`, `browser_port` handling); `internal/stack/compose.go`
-   publish rendering; CHG-0209 service env.
+1. ADR-0086 D9; SPEC-0085 R10.
+2. `internal/stack` render (`ui_port` model like `browser_port`/
+   `oauth_port`); `hubctl status`; `internal/stack/doctor.go`;
+   `docs/operations.md` access patterns.
+
+## Preconditions and rules
+
+- Never reset or commit other tasks' uncommitted work.
+- Red test first. Go stdlib only.
+- `just check` before handoff.
 
 ## Slices
 
-### S8.1 `ui_port` + loopback publish (R8.1, R8.3)
+### S10.1 Loopback publish (R10.1)
 
-Anchors: `internal/stack/config.go` settings; `compose.go` ports list.
+Anchors: `internal/stack` compose render; port allocator.
 
 Change:
-1. `agent.yaml` `ui_port` (default: next free in the existing per-space
-   port scheme) renders `127.0.0.1:<ui_port>:8080` on the
-   `open-knowledge` service when `knowledge_ui` is on; matching
-   `OK_EXTERNAL_URL=http://localhost:<ui_port>`.
-2. Port collisions diagnosed exactly like browser/oauth ports
-   (compose/doctor error naming the conflict).
+1. `ui_port` in `agent.yaml` → `127.0.0.1:<ui_port>` publish +
+   `OK_EXTERNAL_URL=http://localhost:<ui_port>`; non-loopback bind is a
+   config validation error; collisions diagnosed like browser/oauth
+   ports.
 
 Tests (red first):
-- `TestUIPortLoopbackOnly` — publish target is `127.0.0.1`, never `0.0.0.0`.
-- `TestUIPortCollisionDiagnosed` — two spaces same port → named error.
-- `TestExternalURLMatchesPort`.
+- `TestUIPortLoopbackOnly`, `TestUIPortRejectsNonLoopback`,
+  `TestUIPortCollisionDiagnostic`.
 
-### S8.2 Tunnel docs + M18 hook (R8.2, R8.3)
+### S10.2 Status + runbook (R10.2)
 
-Anchors: `docs/operations.md`; `docs/integrations.md` capability table.
+Anchors: `hubctl status`; `docs/operations.md`.
 
 Change:
-1. Operations section: `ssh -L <ui_port>:localhost:<ui_port>` flow,
-   non-public default, no auth beyond host access — stated honestly.
-2. A named edge placeholder in render output/comments
-   (`# m18: edge host routing hook`) so the exposure milestone has a
-   defined seam, not an archaeology dig.
+1. `hubctl status` surfaces `ui_port`; runbook documents
+   `ssh -L ui_port:localhost:ui_port host` and the no-exposure default.
 
 Tests:
-- docs-check passes; link from spaces.md capability table added.
+- `TestStatusShowsUIPort`.
+
+### S10.3 M18 hook (R10.3)
+
+Anchors: ADR note; config placeholder.
+
+Change:
+1. Design note for the one-time `?t=` UI link + reserved config key —
+   documented as deferred, nothing partial.
+
+Tests:
+- `TestM18HookDocumented` (docs assertion).
+
+### S10.4 Diagnostics (R10.1)
+
+Anchors: `internal/stack/doctor.go`.
+
+Change:
+1. Doctor checks: port conflict, health reachability, never
+   non-loopback.
+
+Tests:
+- `TestDoctorUIPortChecks`.
 
 ## Red-team checklist
 
-- `ui_port` must not overlap reserved ranges (oauth/browser/slack) —
-  validation covers it.
-- OK banner "external access enabled, no server-side auth" is expected
-  and explained in docs — never silenced by weakening checks.
-- No `OK_ALLOW_EXTERNAL` on any non-loopback-published variant in M20.
+- Config binding `0.0.0.0` → validation error.
+- Port collision across spaces → clear diagnostic, no silent remap.
+- UI must never proxy to non-vault paths.
 
 ## Acceptance
 
-A8.1–A8.3: tunnel session opens the editor; second space renders a
-different port; `ss`/compose inspect shows loopback-only publish.
+A10.1–A10.4. Tunnel runbook verification recorded pending — requires
+live stack (deferred — no-docker scope).
 
 ## Out of scope
 
-- Real public edge, SSO/OAuth for the editor (M18 milestone).
-- Mobile/cloud agent access to `/mcp` (remote-agents story).
+- Public exposure, real authn/z, TLS, one-time-link implementation.
+
+## Done checklist
+
+- [ ] Tests red then green; `just check`.
+- [ ] Red-team and live acceptance recorded in state.yaml.
+- [ ] Docs updated.
+- [ ] Issue updated and closed; state done; folder moved to `.work/done/`.

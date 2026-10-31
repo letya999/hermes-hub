@@ -1,103 +1,103 @@
-# CHG-0210: OpenKnowledge MCP wiring and capability split (M20 stage 7)
+# CHG-0210: OK MCP wiring — read-only agent surface (M20 stage 9)
 
-Chain: ADR-0086 D8 -> SPEC-0085 R7 -> this plan -> `state.yaml`.
+Chain: `docs/adr/ADR-0086-memory-vault-openknowledge.md` D8/D19 ->
+`specs/active/SPEC-0085-memory-vault-openknowledge.md` R9 -> this plan ->
+`state.yaml`. Evidence: `../CHG-0204-vault-layout/spike-m20.md` Q4.
 Previous stage: CHG-0209. Next stage: CHG-0211.
 
 ## Goal
 
-Hermes sees the OpenKnowledge tool surface through the same governance
-as every other capability: read tools under `knowledge_ui`, the four
-write verbs under `knowledge_ui_write`, denials enforced at the
-ToolHub/governance layer — never merely unadvertised.
+Wire the agent to OpenKnowledge's MCP server for a verified read-only
+surface (read, search, links, history, lint-read, graph). The
+`knowledge_ui_write` grant is deferred — OK has no per-path scoping
+(spike), so agent writes stay on `memory_card` only.
 
 ## Read before coding
 
-1. SPEC-0040 §2/§5 (surfaces, mutation grants), SPEC-0041;
-   `internal/stack/hermesconfig.go` mcp_servers render;
-   `internal/toolhub` tools.include/exclude + governance;
-   `docs/spaces.md` `access: ro` semantics; OK `docs/reference/mcp.mdx`
-   tool list (research.md).
+1. ADR-0086 D8; SPEC-0085 R9; spike-m20.md Q4 (no per-path scoping).
+2. ToolHub capability/deny-wins model; `internal/agenttools` and the
+   hub-agent-tools catalog; `internal/stack/mcp.go` MCP render.
+
+## Preconditions and rules
+
+- Never reset or commit other tasks' uncommitted work.
+- Red test first. Go stdlib only.
+- Tool-contract changeset in one commit (description, prompt-contract,
+  `docs/tools.md`, `docs/routines.md`, catalog bump).
+- `just check` before handoff.
 
 ## Slices
 
-### S7.1 Read surface under `knowledge_ui` (R7.1)
+### S9.1 Verified tool list (R9.1)
 
-Anchors: `internal/stack/hermesconfig.go` server entry render;
-`internal/stack/render.go`.
+Anchors: pinned OK version tool surface; `internal/stack` catalog.
 
 Change:
-1. Feature `knowledge_ui` renders an MCP server entry →
-   `http://open-knowledge:8080/mcp` (private-network service name) with
-   `tools.include` = {`exec`,`search`,`links`,`history`,`audit`,`lint`,
-   `config`,`palette`,`preview_url`,`share_link`,`skills`} minus the
-   `skills`-write sub-ops if the contract allows expressing it — else
-   document the residue.
-2. Owner `mcp_servers` may not reuse the name (hub-owned, like `hub`).
+1. Enumerate OK MCP tools at the pinned version; classify read vs
+   write vs side-effect by test: admit `exec`, `search`, `links`,
+   `history`, `audit`, `lint` (read mode), `config`, `palette`,
+   `skills`; exclude `write`, `edit`, `delete`, `move`, `lint fix=true`,
+   `preview_url`, `share_link`, `search ready=false`, `install`,
+   `import`, `checkpoint`.
 
 Tests (red first):
-- `TestOKEntryUnderFeature` — absent without feature.
-- `TestOKReadToolIncludeList` — exact set, no write verbs.
-- `TestOKNameReserved` — owner can't squat `open-knowledge`.
+- `TestOKToolListVerified`, `TestOKSideChannelExcluded`.
 
-### S7.2 Write verbs under `knowledge_ui_write` (R7.2)
+### S9.2 `knowledge_ui` read grant (R9.1, R9.3)
 
-Anchors: `internal/toolhub` governance/tool filtering; feature registry.
+Anchors: ToolHub capability sections; `internal/stack/mcp.go`.
 
 Change:
-1. `knowledge_ui_write` adds `write`,`edit`,`delete`,`move`; without the
-   grant they sit in `tools.exclude` (deny enforced, deny receipt
-   recorded) — the SPEC-0040 `*_write` pattern.
-2. `access: ro` on the tools entry strips verbs even when the write
-   grant exists elsewhere (deny wins).
+1. Grant renders `http://open-knowledge:8080/mcp` with the read-only
+   subset via capability profile — excluded verbs absent at the
+   projection layer, not merely unadvertised.
 
 Tests:
-- `TestWriteVerbsExcludedWithoutGrant` — deny receipt on call.
-- `TestWriteVerbsAdmittedWithGrant`.
-- `TestAccessROStripsVerbs`.
+- `TestReadGrantSurfaceExact`, `TestWriteVerbNotProjected`.
 
-### S7.3 Org read-only path (R7.3)
+### S9.3 `knowledge_ui_write` deferred (R9.2)
 
-Anchors: `internal/stack/scope.go` `ReadOnlyMCP`, org overlay render.
+Anchors: capability model.
 
 Change:
-1. Org `read_only_mcp`/`tools.include` can grant the read surface to
-   members; org scope can never grant `knowledge_ui_write` to a user
-   runtime (org material is read-only by SPEC-0004).
+1. The write grant is not rendered anywhere; a write call — via surface
+   or direct MCP — returns the standard deny/unavailable receipt;
+   backlog issue documents the per-path-scoping precondition.
 
 Tests:
-- `TestOrgReadOnlyGrant` — members get read tools only.
-- `TestOrgWriteGrantRejected` — validation error.
+- `TestWriteVerbDeniedDirect`, `TestWriteDenyReceipt`.
 
-### S7.4 Boundary contract tests (R7.4)
+### S9.4 Revocation fail-closed (R9.2, R9.4)
 
-Anchors: `internal/devcheck` / tool contract test suites.
+Anchors: capability check path.
 
 Change:
-1. Calls with `cwd`/paths outside `spaces/<id>/vault` are refused —
-   proven via the projection contract tests, not live-claimed.
+1. Grant revocation removes both the projected surface AND direct MCP
+   call access; OK path args confined to the vault root.
 
 Tests:
-- `TestOKCallOutsideVaultRefused` — `..`, absolute, sibling-space paths.
+- `TestRevocationRemovesDirectAccess`, `TestOKPathConfined`,
+  `TestOKDownDegradedHonest`.
 
 ## Red-team checklist
 
-- Owner defines `mcp-raw:open-knowledge` pointing at the same service to
-  bypass include/exclude → reserved-name rejection covers it.
-- Write verb invoked directly at the service (not through governance) —
-  the service trusts the private network; document the residue: the
-  boundary is governance-level admission, same as other MCP connectors.
-- `exec` tool reads anything inside the vault project — fine — but a
-  symlink inside vault pointing outside → OK confines to project root;
-  verify in live acceptance.
-- Beta channel installs (`open-knowledge-beta`) never appear in render.
+- A "read" verb with write side-effects caught by effect verification.
+- Direct MCP call bypassing ToolHub → denied at capability check.
+- OK path args (`../`, absolute) confined to vault root.
 
 ## Acceptance
 
-A7.1–A7.4 on dev stack: read tools listed; `write` denied with receipt;
-grant on → attributed edit visible in OK live; outside-vault refused.
+A9.1–A9.6. Live checks recorded pending — requires live stack
+(deferred — no-docker scope).
 
 ## Out of scope
 
-- Per-tool finer grants beyond include/exclude.
-- OK skills.sh installs through the agent (evaluated later; `skills`
-  stays read-only in M20).
+- Agent write grant (deferred pending per-path scoping), OK
+  theming/plugins, org instances.
+
+## Done checklist
+
+- [ ] Tests red then green; `just check`.
+- [ ] Red-team and live acceptance recorded in state.yaml.
+- [ ] Docs updated.
+- [ ] Issue updated and closed; state done; folder moved to `.work/done/`.

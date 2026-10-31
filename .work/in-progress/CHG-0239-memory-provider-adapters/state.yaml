@@ -1,0 +1,29 @@
+schema: 1
+change: CHG-0239
+title: External memory provider adapters via seam
+status: in_progress
+branch: feat/m20-memory-vault
+updated: 2026-10-31
+phase: design-complete
+adr: ADR-0086
+spec: SPEC-0085
+requirements: [R11.1, R11.2, R11.3, R11.4, R11.5, R11.6]
+depends_on: [CHG-0204, CHG-0205, CHG-0207, CHG-0208]
+github_milestone: M20 — Memory Vault and Knowledge Surface
+github_issue: 330
+design_status: accepted
+implementation_status: not_started
+slices:
+  S11.1-managed-admissibility: not_started
+  S11.2-hindsight-adapter: not_started
+  S11.3-leaf-replay: not_started
+  S11.4-honcho-import: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: pending: requires live stack (deferred — no-docker scope)
+evidence: []
+remaining: []
+limitations: []

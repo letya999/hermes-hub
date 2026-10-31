@@ -1,112 +1,131 @@
-# CHG-0207: memory_search, link graph and maintenance (M20 stage 4)
+# CHG-0207: memory_search — BM25 + link graph (M20 stage 3)
 
-Chain: ADR-0086 D6 -> SPEC-0085 R4 -> this plan -> `state.yaml`.
-Previous stage: CHG-0206. Next stage: CHG-0208.
+Chain: `docs/adr/ADR-0086-memory-vault-openknowledge.md` D6 ->
+`specs/active/SPEC-0085-memory-vault-openknowledge.md` R3 -> this plan ->
+`state.yaml`. Evidence: `research.md`.
+Previous stage: CHG-0205. Next stage: CHG-0238.
 
 ## Goal
 
-The agent gets a real retrieval tool instead of grep: BM25 over cards and
-summaries, link-graph rerank, frontmatter meta, History excluded — plus a
-deterministic maintenance pass that keeps the graph, CORE cap and vault
-hygiene without any model calls.
+`memory_search` — pure-Go BM25 over `daily/` + `cards/` + `summaries/`
+with `.graph` link expansion, recency decay, scope confinement and
+honest degraded states. Every hit carries an evidence ref. No model, no
+new dependency, no vector lane.
 
 ## Read before coding
 
-1. `research.md` (iva `memory_search` contract); `internal/agenttools`
-   registration style; `internal/vault` card parsing (CHG-0204).
+1. `research.md` (iva `memory_search` contract); ADR-0086 D6; SPEC-0085 R3.
+2. `internal/agenttools` registration style; `internal/vault` card
+   parsing + prov.db (CHG-0204/0205); `internal/memory` scope minting.
+
+## Preconditions and rules
+
+- Never reset or commit other tasks' uncommitted work.
+- Red test first. Go stdlib only.
+- `just check` before handoff.
 
 ## Slices
 
-### S4.1 FTS index (R4.1)
+### S3.1 Tokenizer + BM25 (R3.1)
 
-Anchors: new `internal/vault/index/`; `internal/agenttools` tool file.
+Anchors: `internal/memory/search` (new package).
 
 Change:
-1. `just security` gate for `modernc.org/sqlite` (pure-Go FTS5 driver).
-   If accepted: index = FTS5 table `{path,title,meta,body,history,tags,
-   status,confidence}`; if rejected: pure-Go BM25 index file — same tool
-   contract either way.
-2. Per-file mtime+size fingerprint caching; index signature over the
-   scanned set; only changed files re-parsed.
-3. `## History` section split at parse time (iva `splitHistory`).
+1. Unicode tokenizer (word-boundary segmentation, lowercase, RU/EN —
+   ё→е normalization, no stemmer dependency) + BM25 scoring over
+   per-file documents split into line-range chunks; recency decay on
+   score.
 
 Tests (red first):
-- `TestIndexBuildsAndRanks` — known fixture, expected order.
-- `TestIndexReReadsOnlyChanged` — fingerprint cache hit.
-- `TestHistoryExcludedByDefault` / `TestHistoryIncludedOnFlag`.
+- `TestBM25RankingSanity`, `TestUnicodeTokenizationRU`,
+  `TestRecencyDecayOrdering`.
 
-### S4.2 Link graph + rerank (R4.1)
+### S3.2 Lazy index (R3.2)
 
-Anchors: `internal/vault/graph.go`; maintenance writer in S4.3.
-
-Change:
-1. `.graph/vault-graph.json` — edges from `[[wiki-links]]`, backlinks,
-   hub degree; nightly rebuild by deterministic code.
-2. Rerank: BM25 score × (1 + normalized graph centrality), bounded
-   boost; ties by recency.
-
-Tests:
-- `TestGraphEdgesAndBacklinks`.
-- `TestGraphRerankPrefersHub` — equal BM25 → hub card wins.
-
-### S4.3 Scope confinement + soft degrade (R4.2, R4.4)
-
-Anchors: `internal/vault/index/search.go`.
+Anchors: `internal/memory/search/index.go` — `runtime/memory/index/`
+outside the vault.
 
 Change:
-1. `scopeDirs` resolved under vault root via `os.Root`-style check;
-   out-of-root entries dropped silently.
-2. Any engine error → substring scan fallback with `degraded: true` in
-   the result; call never fails on index trouble.
-3. Results: vault-relative `path`, bounded snippet (≤240 chars), meta
-   line.
+1. mtime+size cache per file; per-scope rebuild on first stale query;
+   index files contain only opaque scope keys.
+2. `Invalidate(path)` on writer commits.
 
 Tests:
-- `TestScopeTraversalDropped` — `../..` silently removed.
-- `TestEngineFailureDegrades` — corrupted index → fallback + flag.
-- `TestResultPathsResolve` — agent file tools can open `path`.
+- `TestIndexCacheInvalidation`, `TestIndexRebuildOnStale`,
+  `TestIndexNoRawIdentifiers`, `TestOversizedBinarySkipped`.
 
-### S4.4 Deterministic maintenance pass (R4.3)
+### S3.3 Graph rerank (R3.1)
 
-Anchors: `internal/vault/maintain.go`; scheduled alongside rollup.
+Anchors: `internal/vault` `.graph/vault-graph.json` (rebuilt by the
+maintenance pass); card `[[links]]` parse.
 
 Change:
-1. Rebuild graph, check CORE cap (report, not truncate owner edits),
-   collapse duplicated `description` growth (streaming, bounded memory),
-   scoped commits, optional `git push` when `remote` configured.
-2. Zero model calls; failures logged per subtask, none abort the rest.
+1. Card neighborhood link expansion boosts hits one hop out.
 
 Tests:
-- `TestMaintainRebuildsGraph` / `TestMaintainCommits`.
-- `TestCleanupCollapsesDupDescription`.
-- `TestSubtaskFailureIsolated`.
+- `TestGraphNeighborBoost`, `TestGraphMissingTolerated`.
 
-### S4.5 Tool exposure (R4.4)
+### S3.4 Filters + safe defaults (R3.4)
 
-Anchors: `internal/agenttools` registration + render wiring for
-`memory_vault`.
+Anchors: search API; prov.db.
 
 Change:
-1. `memory_search` published when `memory_vault` enabled; joins the
-   hub's existing tool surface/allowlist machinery.
+1. Audience confinement (private hits invisible to group scope);
+   superseded/forgotten excluded unless `history:true`; untrusted hits
+   flagged `untrusted:true` and never eligible for the R4 recall path;
+   `kinds:` filter maps to prov.db kinds.
 
 Tests:
-- `TestToolGatedByFeature` — absent without the feature.
+- `TestScopeIsolationMatrix`, `TestHistoryFlagSemantics`,
+  `TestUntrustedFlaggedNotInRecallLane`, `TestKindFilter`.
+
+### S3.5 Tool surface (R3.3, R3.5)
+
+Anchors: `internal/agenttools` tool registration + hub-agent-tools
+catalog; `docs/tools.md`, `docs/routines.md`,
+`internal/stack/prompt_contract.go`.
+
+Change:
+1. `memory_search(query, limit, from, to, kinds)` returning hits with
+   evidence refs (file + date + line range) and a status of
+   empty/partial/degraded — degraded never swallows the turn.
+2. Contract changeset in one commit: description + prompt-contract +
+   docs + catalog bump.
+
+Tests:
+- `TestSearchToolEvidenceRefs`, `TestSearchDegradedHonest`,
+  `TestSearchEmptyVsUnavailable`, `TestSearchPerf10k` (p95 < 50 ms on a
+  10k-entry fixture).
+
+### S3.6 Maintenance (R3.6)
+
+Anchors: `hubctl memory search --reindex`; `internal/stack/doctor.go`.
+
+Change:
+1. Reindex command; doctor reports stale index.
+
+Tests:
+- `TestReindexCommand`, `TestDoctorStaleIndex`.
 
 ## Red-team checklist
 
-- Scope `/etc`, `../../secrets` → silently dropped, result still useful.
-- Malformed frontmatter in one card → card skipped by name, others index.
-- Graph file deleted mid-run → rebuilt on next maintenance; search
-  returns BM25-only with degraded flag.
-- Index must never contain `.env`/auth bytes — vault layout test.
+- Query-side scope injection cannot cross audience/space boundaries.
+- Crafted leaf (keyword stuffing, huge file) degrades gracefully.
+- Binary/oversized vault content cannot wedge the index.
+- Index files cannot leak raw identifiers.
 
 ## Acceptance
 
-A4.1–A4.4 on dev stack: keyword + graph-hop hits; stale text invisible
-without flag; traversal dropped; graph regenerates after edits.
+A3.1–A3.6 on the dev stack: leaf search finds the right day; evidence
+links resolve; deleted index rebuilds and reports degraded.
 
 ## Out of scope
 
-- Embeddings fusion (stays an OK-side opt-in).
-- Cross-user or org search.
+- Embeddings/vector lane, cross-vault federation, recall injection.
+
+## Done checklist
+
+- [ ] Tests red then green; `just check`.
+- [ ] Red-team and live acceptance recorded in state.yaml.
+- [ ] Docs updated.
+- [ ] Issue updated and closed; state done; folder moved to `.work/done/`.

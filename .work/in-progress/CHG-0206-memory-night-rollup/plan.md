@@ -1,123 +1,138 @@
-# CHG-0206: Memory-night rollup (M20 stage 3)
+# CHG-0206: Night rollup — gated consolidation, directives, journal (M20 stage 5)
 
-Chain: ADR-0086 D4/D5 -> SPEC-0085 R3 -> this plan -> `state.yaml`.
-Previous stage: CHG-0205. Next stage: CHG-0207.
+Chain: `docs/adr/ADR-0086-memory-vault-openknowledge.md` D4/D5/D14 ->
+`specs/active/SPEC-0085-memory-vault-openknowledge.md` R5 -> this plan ->
+`state.yaml`. Evidence: `research.md`, `../CHG-0204-vault-layout/spike-m20.md`.
+Previous stage: CHG-0238. Next stage: CHG-0208.
 
 ## Goal
 
-A hub-owned nightly job turns raw days into durable knowledge: day
-summary, evidence-linked card facts, Compiled Truth under optimistic
-hash check, bilateral links, bounded CORE.md edits — deterministic Go
-orchestration, model as proposal oracle via the space's model-relay.
+A hub-owned nightly job turns raw days into durable knowledge behind the
+gates that make consolidation trustworthy: promotion gate (provenance +
+kind), bounded-loss gate (prior state preserved, append-only fallback),
+Compiled Truth hash-check, directive supersede-in-place, `REVIEW.md`
+journal + morning digest, and intent→routine proposals.
 
 ## Read before coding
 
-1. `research.md` (iva night semantics); `internal/supervisor` scheduling;
-   `internal/routines`; model-relay client (`internal/runtime/
-   model_relay.go`, serviceauth); `internal/vault` from CHG-0204/0151.
+1. `research.md` (iva night semantics); ADR-0086 D4/D5/D14; SPEC-0085 R5.
+2. `internal/supervisor` scheduling; `internal/routines`; model-relay
+   (`internal/runtime`, serviceauth); `internal/memory` prov.db +
+   `PromotionEligible` (CHG-0205); `internal/vault` writer (CHG-0204).
+
+## Preconditions and rules
+
+- Never reset or commit other tasks' uncommitted work.
+- Red test first. Go stdlib only. Model is a JSON oracle via model-relay;
+  fixtures, never live calls in tests.
+- `just check` before handoff.
 
 ## Slices
 
-### S3.1 Scheduler + job skeleton (R3.1)
+### S5.1 Steps 1–4 + promotion gate (R5.1–R5.3)
 
-Anchors: new `internal/vault/night/` package; scheduler anchor in
-`internal/supervisor` (hub-owned per-space timers).
+Anchors: `internal/memory/night` (new package); `internal/memory`
+prov.db `PromotionEligible`.
 
 Change:
-1. Per-space cron evaluation in the space's timezone; `memory.rollup_time`
-   (default `04:00`) in `agent.yaml` `memory:` map.
-2. Job = ordered step runner; each step: read → model call (JSON
-   proposal) → validate → write/commit → checkpoint.
-3. Model access only via model-relay client with the space's model
-   config; no direct provider keys in job env.
+1. Pipeline: day summary + card refs + evidence facts → dated fact
+   appends + Compiled Truth proposal → bilateral links → bounded CORE
+   edit. All IO in Go; model only returns lenient-parsed JSON.
+2. Promotion gate as precondition: only `owner`/`agent` + `Kind=
+   interactive` entries feed the model's fact candidates; everything
+   else is filtered before the prompt is built.
+3. Evidence quotes verified verbatim against leaf text — a mutated
+   quote rejects the fact.
 
 Tests (red first):
-- `TestRollupTimeParsed` — HH:mm validation, default.
-- `TestStepOrder` — steps run a→b→c→d, later step skipped on earlier
-  failure.
-- `TestModelViaRelayOnly` — no provider env keys in job spec.
+- `TestPromotionGateExcludesUntrusted`, `TestPromotionGateExcludesKinds`,
+  `TestMutatedQuoteRejected`, `TestDaySummarySeeded`.
 
-### S3.2 Steps a–d (R3.2)
+### S5.2 Directives (R5.5)
 
-Anchors: `internal/vault/night/steps.go`; `internal/vault/cards.go`.
+Anchors: `internal/memory/night/core.go`.
 
 Change:
-1. (a) `SummarizeDay`: parse leaf → propose `{summary, card_refs, facts[]}`;
-   every fact requires `evidence` quoting an owner line; writes
-   `summaries/daily/YYYY-MM-DD.md`.
-2. (b) `UpdateCards`: append `- YYYY-MM-DD: fact · [[daily/…]] HH:MM`
-   (append-only); propose new Compiled Truth; apply only if file hash
-   unchanged since read (D5); owner-conflict → `truth_pending` marker,
-   replaced truth → `## History`.
-3. (c) `LinkCards`: create reciprocal `[[links]]` only when both cards
-   exist.
-4. (d) `EditCore`: bounded CORE.md proposal sourced from owner
-   quotations only; enforced ≤3600; old content → `CORE.history.md`.
+1. CORE `## Directives`: supersede-in-place (new dated directive
+   replaces the old line on the same key), never-evict class
+   (health/safety pinned).
 
 Tests:
-- `TestFactRequiresOwnerEvidence` — non-owner evidence rejected.
-- `TestTruthHashCheck` — concurrent owner edit wins, marker set.
-- `TestLinksBilateral` / `TestLinksSkipsMissing`.
-- `TestCoreEditBoundedAndArchived`.
+- `TestDirectiveSupersedeInPlace`, `TestDirectiveNeverEvict`.
 
-### S3.3 Caps + usage gate (R3.3)
+### S5.3 Bounded-loss gate (R5.4)
 
-Anchors: `internal/vault/night/budget.go`.
+Anchors: `internal/memory/night` rewrite path.
 
 Change:
-1. `Budget{MaxCalls: 40, MaxInputTokens: 300000}` configurable via
-   `memory:` map; estimated tokens before each call; exceeding → clean
-   stop, checkpoint recorded; never stop mid-write.
+1. Rewrite accepted only if dropped entries ≤ X% of prior; else reject,
+   preserve prior state, append-only fallback, journal the rejection.
 
 Tests:
-- `TestBudgetStopsBeforeNextCall` — no partial step.
-- `TestBudgetConfigurable`.
+- `TestBoundedLossRejects`, `TestBoundedLossPreservesPrior`,
+  `TestBoundedLossFallbackAppendOnly`.
 
-### S3.4 Idempotent cache + resume (R3.4, R3.6)
+### S5.4 REVIEW.md + morning digest (R5.6)
 
-Anchors: `internal/vault/night/cache.go`; state under
-`spaces/<id>/runtime/memory/night/`.
+Anchors: `internal/memory/night/journal.go`; owner-brief path
+(`internal/communication` proactive/brief).
 
 Change:
-1. Per-day cache: completed steps, input fingerprint (file hashes).
-2. Restart resumes at first uncompleted step; a changed already-
-   processed input halts the day with an explicit `needs_owner` record.
-3. Day readiness recorded only after summary commit; transport/provider
-   failure consumes no schema-failure attempt.
+1. `vault/REVIEW.md` appended per run: every promotion/skip/conflict,
+   human-readable.
+2. Short "what I remembered" digest queued through the existing
+   owner-brief delivery path.
 
 Tests:
-- `TestResumeFromSavedStep` — kill at step b → rerun starts at b.
-- `TestChangedProcessedInputHalts`.
-- `TestReadinessOnlyAfterCommit`.
+- `TestReviewJournalEntries`, `TestDigestQueued`.
 
-### S3.5 Fold-up (R3.5)
+### S5.5 Intent → routine proposals (R5.7)
 
-Anchors: `internal/vault/night/fold.go`.
+Anchors: `internal/memory/night/intent.go`; proposals surface (M23
+assignments draft path).
 
 Change:
-1. weekly: all 7 day states incl. explicit `no-data`; monthly: full
-   in-month weeks + in-month edge days; yearly: 12 months.
+1. "remind me Friday" lines → routine/assignment proposal records for
+   owner approval; never facts, never activated.
 
 Tests:
-- `TestWeeklyNeedsSevenStates` — 6 days + implicit gap → no weekly.
-- `TestMonthlyEdgeWeeks` / `TestYearlyNeedsTwelve`.
+- `TestIntentBecomesProposal`, `TestIntentNeverFact`.
+
+### S5.6 Cache, resume, budget (R5.8, R5.9)
+
+Anchors: `runtime/memory/night/` idempotent cache; caps.
+
+Change:
+1. Resume-from-step cache; changed already-processed entry halts the
+   day; ≤40 calls / ≤300k input tokens stops cleanly; `--dry-run`.
+2. Fold-up: weekly needs all 7 day states incl. no-data; monthly = full
+   in-month weeks + edge days; yearly = 12 months.
+
+Tests:
+- `TestResumeFromStep`, `TestChangedEntryHalts`, `TestBudgetStopsClean`,
+  `TestSecondRunNoop`, `TestWeeklyNeedsSeven`, `TestDSTEdge`.
 
 ## Red-team checklist
 
-- Model proposes a fact quoting a non-existent daily line → rejected
-  (evidence must resolve to a real leaf line).
-- Model proposes CORE edit quoting nothing → rejected.
-- Prompt-injection text inside a leaf reaches the model only inside the
-  untrusted fence (leaves carry the R2 marker through).
-- Two spaces never share cache/vault paths (per-space roots only).
+- An untrusted day tries every promotion path — none works.
+- Evidence quote subtly mutated → rejected.
+- Owner edits a card mid-rollup → owner version wins.
+- Rollup writes outside allowed zones → writer denies.
+- DST / 04:00 edge cases.
 
 ## Acceptance
 
-A3.1–A3.4 on dev stack with a fixture model response file or the dev
-model: seeded day → summary+fact; killed run resumes; owner edit during
-run → `truth_pending`; 7-day week → weekly.
+A5.1–A5.9 on the dev stack: seeded day → summary+facts+digest;
+owner card edit preserved with `truth_pending`.
 
 ## Out of scope
 
-- Embeddings/semantic ranking inside rollup.
-- Cross-vault/org rollup.
+- Vector/graph consolidation, org-level rollup, auto-activating
+  routines.
+
+## Done checklist
+
+- [ ] Tests red then green; `just check`.
+- [ ] Red-team and live acceptance recorded in state.yaml.
+- [ ] Docs updated.
+- [ ] Issue updated and closed; state done; folder moved to `.work/done/`.
