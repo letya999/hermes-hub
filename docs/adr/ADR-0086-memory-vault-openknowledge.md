@@ -91,6 +91,20 @@ a provider seam with conformance, and soft forget.
   swallowed turn. Search ships before the rollup: raw-leaf retrieval
   already answers "what did we discuss on Wednesday".
 
+  2026-10-31 amendment (M20.3): the query's audience travels through a
+  hub-stamped sidecar, never through tool arguments. The gateway worker
+  writes `runtime/run-scope/current` — `{job_id → {audience, expires}}`
+  — before dispatch and clears it on return; expiry is the run budget,
+  so a crash-orphaned stamp cannot outlive its run. The vault mount is
+  read-write to the runtime (the agent edits memory only through the
+  governed writer — a forged stamp still cannot lift the confinement,
+  since the reader takes the most restrictive live audience: any active
+  group run confines every in-flight call to "group"), and an absent or
+  expired stamp fails closed to "group". Persisted index snapshots live under
+  `runtime/memory/index/` inside the vault root like `prov.db`; a
+  read-only or missing mount degrades persistence to the in-process
+  cache without failing queries.
+
 - **D7. Memory writes go through one contract.** `memory_card` (hub MCP)
   exposes `fact` / `truth` / `merge` / `forget` / `remember`;
   `merge`/`forget` execute only inside a run whose triggering turn

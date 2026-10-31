@@ -14,6 +14,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/communication"
 	"github.com/letya999/hermes-hub/internal/contextlife"
 	"github.com/letya999/hermes-hub/internal/identity"
+	memorysearch "github.com/letya999/hermes-hub/internal/memory/search"
 	"github.com/letya999/hermes-hub/internal/skilleval"
 	"github.com/letya999/hermes-hub/internal/skillstore"
 	"github.com/letya999/hermes-hub/internal/skillstore/gitsource"
@@ -73,13 +74,14 @@ func runContext(_ context.Context, args []string) error {
 
 func runMemory(_ context.Context, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("memory requires list or delete")
+		return fmt.Errorf("memory requires list, delete or search")
 	}
 	sub := args[0]
 	f := flag.NewFlagSet("memory", flag.ContinueOnError)
 	dir := f.String("dir", "", "private deployment directory")
 	profile := f.String("user", "me", "person identifier")
 	name := f.String("name", "", "memory file name")
+	reindex := f.Bool("reindex", false, "rebuild the vault search index")
 	if err := f.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -91,6 +93,20 @@ func runMemory(_ context.Context, args []string) error {
 		return err
 	}
 	switch sub {
+	case "search":
+		if !*reindex {
+			return fmt.Errorf("memory search requires --reindex")
+		}
+		_, rebuilt, err := memorysearch.NewIndexer(filepath.Join(abs, "vault")).Ensure()
+		if err != nil {
+			return err
+		}
+		state := "fresh"
+		if rebuilt {
+			state = "rebuilt"
+		}
+		fmt.Printf("memory index %s\n", state)
+		return nil
 	case "list":
 		names, err := contextlife.MemoryFiles(abs)
 		if err != nil {

@@ -42,7 +42,6 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 | [CHG-0210](in-progress/CHG-0210-openknowledge-mcp/plan.md) | M20.9 #305: OK MCP read-only agent surface; `knowledge_ui_write` deferred |
 | [CHG-0209](in-progress/CHG-0209-openknowledge-service/plan.md) | M20.8 #304: pinned single-replica OpenKnowledge service per space |
 | [CHG-0208](in-progress/CHG-0208-memory-card-contract/plan.md) | M20.6 #303: `memory_card` fact/truth/merge/forget/remember contract + soft forget + zone guards |
-| [CHG-0207](in-progress/CHG-0207-memory-search/plan.md) | M20.3 #302: `memory_search` pure-Go BM25+link-graph on raw leaves, scope confinement, maintenance |
 | [CHG-0206](in-progress/CHG-0206-memory-night-rollup/plan.md) | M20.5 #301: gated night rollup — promotion/loss gates, directives, REVIEW.md, digest |
 | [CHG-0189](in-progress/CHG-0189-watch-contract/plan.md) | M23 #324/#332 follow-up: tool-contract discipline rule, watch_subscribe discoverability (prompt/descriptions/semantic refusal), per-source stream cadence (min_interval_seconds 5..3600), stream cursor persistence, watch_resume + catalog 5.3.0, docs-coverage test |
 | [CHG-0174](in-progress/CHG-0174-hosting-acceptance/plan.md) | M18 #147 H5: hosting acceptance/current docs — A1–A11 code/runtime/browser/sish evidence; offline gates green, native acceptance pending |
@@ -350,3 +349,4 @@ Open live follow-ups stay as GitHub issues, not stale CHG folders: #73
 (ToolHive/VPS), #74 (Hermes reconnect), #166/#170/#172 (live channel
 acceptance evidence).
 | [CHG-0205](done/CHG-0205-daily-leaf-ingest/plan.md) | M20.2 #300: provenance-aware daily capture — prov.db sidecar, kind quarantine, untrusted transport flag, compaction flush, sensitive-exclusion |
+| [CHG-0207](done/CHG-0207-memory-search/plan.md) | M20.3 #302: memory_search — pure-Go BM25 (postings + top-k) + link graph over leaves/cards/summaries, lazy mtime+size index + persisted snapshot under runtime/memory/index, prov.db fallback evidence, run-scope audience confinement (fail-closed group, unforgeable via zone guard), honest degraded/unavailable, catalog 5.10.0, hubctl memory search --reindex + doctor stale line, benchmark ~1.4ms p95-equivalent on 10k worst case |

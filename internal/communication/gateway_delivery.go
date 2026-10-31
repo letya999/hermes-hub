@@ -87,6 +87,12 @@ func (g *Gateway) worker(ctx context.Context) {
 				continue
 			}
 			g.busy.Add(1)
+			// SPEC-0085 R3.4: stamp the run's audience into the
+			// agent-read-only vault sidecar so memory_search confines the
+			// run; cleared on return, expired with the run budget.
+			if g.config.VaultDir != "" {
+				stampRunScope(g.config.VaultDir, job.ID, job.MemoryAudience())
+			}
 			var response string
 			var outcome RunOutcome
 			var runErr error
@@ -99,6 +105,9 @@ func (g *Gateway) worker(ctx context.Context) {
 				if runErr != nil {
 					outcome.Status = "failed"
 				}
+			}
+			if g.config.VaultDir != "" {
+				clearRunScope(g.config.VaultDir, job.ID)
 			}
 			g.busy.Add(-1)
 			if runErr != nil || outcome.Status == "uncertain" {

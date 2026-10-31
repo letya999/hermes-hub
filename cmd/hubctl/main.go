@@ -599,6 +599,13 @@ func run(ctx context.Context, args []string) error {
 			for _, line := range skillLines {
 				fmt.Println(line)
 			}
+			memoryLines, err := stack.MemoryDoctor(*dir)
+			if err != nil {
+				return err
+			}
+			for _, line := range memoryLines {
+				fmt.Println(line)
+			}
 			fmt.Println("Configuration valid. OAuth sessions, provider permissions and Docker runtime require live verification.")
 			return nil
 		}

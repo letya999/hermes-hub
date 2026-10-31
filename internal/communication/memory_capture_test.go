@@ -2,6 +2,7 @@ package communication
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -145,5 +146,57 @@ func TestSensitiveJobNotCaptured(t *testing.T) {
 	entries, _ := prov.Entries()
 	if len(entries) != 0 {
 		t.Fatalf("sensitive content reached the sidecar: %+v", entries)
+	}
+}
+
+// R3.4 transport: the dispatch stamps the job's audience into the vault's
+// run-scope sidecar for the run's duration — private iff it is the only
+// live stamp; any group run confines every in-flight call to "group".
+func TestRunScopeStamped(t *testing.T) {
+	vaultDir := t.TempDir()
+	stampRunScope(vaultDir, "j-priv", memory.AudiencePrivate)
+	stampRunScope(vaultDir, "j-grp", memory.AudienceGroup)
+	data, err := os.ReadFile(filepath.Join(vaultDir, "runtime", "run-scope", "current"))
+	if err != nil {
+		t.Fatalf("stamp file: %v", err)
+	}
+	var m runScopeMap
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m.Runs["j-priv"].Audience != "private" || m.Runs["j-grp"].Audience != "group" {
+		t.Fatalf("stamps %s", data)
+	}
+	clearRunScope(vaultDir, "j-grp")
+	m = readRunScope(vaultDir)
+	if _, ok := m.Runs["j-grp"]; ok || m.Runs["j-priv"].Audience != "private" {
+		t.Fatalf("stale group stamp survived clear: %+v", m.Runs)
+	}
+}
+
+// The worker stamps before dispatch and clears after — the file is live only
+// inside the run.
+func TestRunScopeWorkerLifecycle(t *testing.T) {
+	c := baseTestConfig(t)
+	root := filepath.Join(t.TempDir(), "vault")
+	if err := vault.Ensure(root); err != nil {
+		t.Fatal(err)
+	}
+	c.VaultDir = root
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.config.VaultDir = root
+	job := Job{ID: "j-scope", Text: "hi", Channel: "telegram_bot", ScopeID: "group:me", UserID: "alice"}
+	g.config.VaultDir = root
+	stampRunScope(g.config.VaultDir, job.ID, job.MemoryAudience())
+	m := readRunScope(root)
+	if m.Runs["j-scope"].Audience != "group" {
+		t.Fatalf("group job stamped %+v", m.Runs["j-scope"])
+	}
+	clearRunScope(g.config.VaultDir, job.ID)
+	if m := readRunScope(root); len(m.Runs) != 0 {
+		t.Fatalf("stamp not cleared: %+v", m.Runs)
 	}
 }

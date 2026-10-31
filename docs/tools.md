@@ -73,6 +73,7 @@ Grouped by capability resource (internal/agenttools/capability.go):
 | artifacts | `archive_create`, `archive_unpack`, `artifact_remove` | artifacts/ scope |
 | inbox | `inbox_fetch` | materialize a user-sent file into `inbox/`; zips unpack from memory |
 | knowledge | `knowledge_list`, `knowledge_search`, `knowledge_read` | read-only staged sources; content returns as output, never lands in workspace |
+| memory | `memory_search` | BM25 over daily leaves, cards and summaries with link-graph expansion; `query` required, `limit`/`from`/`to`/`kinds`/`history` optional; hits carry an `evidence` file:line-end ref — cite it, never answer from recall alone; `status` reports `ok`/`empty`/`degraded`/`unavailable` honestly; group-scope runs never see private entries |
 | ssh | `ssh_hosts`, `ssh_exec`, `ssh_read`, `ssh_write`, `ssh_shell_*`, `ssh_tunnel_*` | declared hosts only; write/shell/tunnel each need their own grant |
 | hh | `hh_search`, `hh_vacancy`, `hh_resumes`, `hh_apply` | apply sends externally — exact user-authorized inputs only |
 | exec | `code_exec` | bounded executor when the capability is granted; optional `skill` leases that skill's stored credentials into the one call |

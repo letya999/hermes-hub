@@ -33,7 +33,7 @@ func HubToolsDefinition() api.ToolDefinition {
 	return api.ToolDefinition{
 		Schema:       api.SchemaVersion,
 		DefinitionID: HubToolsDefinitionID,
-		Version:      "5.9.0",
+		Version:      "5.10.0",
 		Transport:    api.AgentTools,
 		Source:       api.DefinitionSource{},
 		Workload: api.WorkloadPolicy{
@@ -107,6 +107,7 @@ func HubToolsDefinition() api.ToolDefinition {
 			tool("archive_unpack", "archives.unpack", "Unpack a zip inside the admitted scope into artifacts/unpacked.", api.WriteEffect, append(use("read", "files", "path"), use("create", "artifacts")...), path, str("name")),
 			tool("inbox_fetch", "inbox.fetch", "Materialize a file the user sent to the chat into workspace inbox/; a zip is unpacked from memory and never written as an archive.", api.WriteEffect, append(use("fetch", "inbound"), use("create", "files")...), str("id")),
 			tool("knowledge_list", "knowledge.list", "List read-only knowledge sources staged for this user on the hub.", api.ReadEffect, use("read", "knowledge")),
+			tool("memory_search", "memory.search", "Search the owner's memory vault: BM25 over daily leaves, cards and summaries with link-graph expansion. Arguments: query (required), limit, from, to (YYYY-MM-DD bounds on entry date), kinds (entry kinds), history:true includes superseded/forgotten. Every hit carries an evidence ref file:line-end — cite it, never answer from memory alone; status=degraded|unavailable is reported honestly.", api.ReadEffect, use("read", "memory"), str("query"), opt("limit"), opt("from"), opt("to"), arg("kinds", "array", false), arg("history", "boolean", false)),
 			tool("knowledge_search", "knowledge.search", "Search read-only knowledge; excerpts include source, line and content hash.", api.ReadEffect, use("read", "knowledge"), str("query")),
 			tool("knowledge_read", "knowledge.read", "Read one staged knowledge source; the content returns as tool output and never lands in the workspace.", api.ReadEffect, use("read", "knowledge"), str("name")),
 			tool("image_convert", "images.convert", "Convert an image inside the admitted scope into a new artifact.", api.WriteEffect, append(use("convert", "images", "path"), use("create", "artifacts")...), str("name"), path, str("format")),
