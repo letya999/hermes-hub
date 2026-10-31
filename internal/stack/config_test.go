@@ -872,6 +872,24 @@ func TestDiagnosticsCanBeDisabled(t *testing.T) {
 	}
 }
 
+// The toolhub store lives inside the /state bind, so the `.initialized`
+// marker cannot detect whole-volume loss. The installation witness needs an
+// independent writable mount — the diagnostics host bind is the only one —
+// so the env is rendered exactly when that mount exists.
+func TestToolhubInstallationWitnessUsesIndependentMount(t *testing.T) {
+	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("telegram"), Ingress: testIngress("telegram")}
+	env := Compose(s, "/source", "/space")["services"].(M)["toolhub"].(M)["environment"].(M)
+	if env["HUB_TOOLHUB_IDENTITY_WITNESS"] != "/diagnostics/.toolhub-installation" {
+		t.Fatalf("installation witness not bound to an independent mount: %v", env["HUB_TOOLHUB_IDENTITY_WITNESS"])
+	}
+	off := false
+	s.Diagnostics = &off
+	env = Compose(s, "/source", "/space")["services"].(M)["toolhub"].(M)["environment"].(M)
+	if env["HUB_TOOLHUB_IDENTITY_WITNESS"] != nil {
+		t.Fatal("witness configured without an independent writable mount")
+	}
+}
+
 func TestSlackEventsPortCustomDevAndCollision(t *testing.T) {
 	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, SlackEventsPort: 9091, Tools: testTools("slack_app"), Ingress: testIngress("slack_app")}
 	if err := s.Validate(); err != nil {
@@ -1311,6 +1329,36 @@ func TestComposeMountsPerPrincipalSkillStoresForToolhub(t *testing.T) {
 	for _, want := range []string{"alice", "bob"} {
 		if !effMount[want] || !storeMount[want] {
 			t.Fatalf("principal %q missing mounts: eff=%v store=%v", want, effMount, storeMount)
+		}
+	}
+}
+
+func TestDiagnosticRotationMountsOnlyDedicatedDirectory(t *testing.T) {
+	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("telegram"), Ingress: testIngress("telegram"), ExecutionMode: "supervisor", SupervisorURL: "http://supervisor:8876"}
+	services := Compose(s, "/source", "/space")["services"].(M)
+	for _, service := range []string{"toolhub", "supervisor"} {
+		found := false
+		for _, volume := range services[service].(M)["volumes"].([]any) {
+			v, ok := volume.(M)
+			if !ok {
+				continue
+			}
+			source, _ := v["source"].(string)
+			if strings.HasSuffix(source, "/.local/supervisor.log") {
+				t.Error("single-file bind pins an obsolete inode after rotation")
+			}
+			if strings.HasSuffix(source, "/.local/diagnostics") {
+				found = true
+				if service == "toolhub" && v["read_only"] != true {
+					t.Fatal("collector host logs must be read-only")
+				}
+			}
+			if strings.HasSuffix(source, "/.local") {
+				t.Fatal("diagnostics exposed the whole host control directory")
+			}
+		}
+		if !found {
+			t.Errorf("%s lacks dedicated rotation directory", service)
 		}
 	}
 }

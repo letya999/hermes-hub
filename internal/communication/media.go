@@ -152,7 +152,7 @@ func (g *Gateway) handleVoice(ctx context.Context, update Update, user User, mes
 	}
 	path, err := g.downloadTelegramMedia(ctx, media.FileID)
 	if path != "" {
-		defer os.Remove(path)
+		defer g.spool.removeOwned(path)
 	}
 	if err != nil {
 		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-media", message.Chat.ID, topic, locale.T(lang, "media.download-failed"))
@@ -191,7 +191,7 @@ func (g *Gateway) handleFile(ctx context.Context, update Update, user User, mess
 	}
 	inbox := ""
 	if path, err := g.downloadTelegramMedia(ctx, media.FileID); err == nil && path != "" {
-		defer os.Remove(path)
+		defer g.spool.removeOwned(path)
 		staged, replied, stageErr := g.stageTelegramFile(ctx, update, message, user, envelope, media, name, path, saveErr)
 		if replied || stageErr != nil {
 			return stageErr
@@ -467,19 +467,38 @@ func (g *Gateway) downloadTelegramMedia(ctx context.Context, fileID string) (str
 	if file.FileSize > mediaSizeLimit {
 		return "", errors.New("too large")
 	}
+	release, err := g.spool.reserveStorage(mediaSizeLimit, 1, false)
+	if err != nil {
+		return "", err
+	}
+	defer release()
 	tmp, err := os.CreateTemp(filepath.Join(g.spool.root, "tmp"), "media-*")
 	if err != nil {
 		return "", err
 	}
-	defer tmp.Close()
-	if err := g.api.DownloadFile(ctx, file.FilePath, tmp); err != nil {
-		_ = os.Remove(tmp.Name())
-		return "", err
-	}
-	info, err := tmp.Stat()
-	if err != nil || info.Size() > mediaSizeLimit {
-		_ = os.Remove(tmp.Name())
-		return "", errors.New("too large")
+	writer := &boundedMediaWriter{dest: tmp, remaining: mediaSizeLimit}
+	downloadErr := g.api.DownloadFile(ctx, file.FilePath, writer)
+	closeErr := tmp.Close()
+	if downloadErr != nil || closeErr != nil || writer.exceeded {
+		_ = g.spool.removeOwned(tmp.Name())
+		return "", errors.New("media download failed or exceeded storage limit")
 	}
 	return tmp.Name(), nil
+}
+
+// Bound writes at the file boundary even when a provider reports the wrong size.
+type boundedMediaWriter struct {
+	dest      io.Writer
+	remaining int64
+	exceeded  bool
+}
+
+func (w *boundedMediaWriter) Write(p []byte) (int, error) {
+	if int64(len(p)) > w.remaining {
+		w.exceeded = true
+		return 0, errors.New("media exceeds storage limit")
+	}
+	n, err := w.dest.Write(p)
+	w.remaining -= int64(n)
+	return n, err
 }

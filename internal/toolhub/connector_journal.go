@@ -414,24 +414,6 @@ func (c *ControlPlane) connectorAllowWrites(ctx context.Context, auth identity.E
 	return result, nil
 }
 
-// applyConfirmedWrites is the human-side completion of an allow_writes link:
-// called from serveConfirm once the one-time token checks out.
-func (c *ControlPlane) applyConfirmedWrites(ctx context.Context, onboardingID string) error {
-	onboarding, err := c.Store.onboarding(onboardingID)
-	if err != nil {
-		return err
-	}
-	if !onboarding.PendingWrites {
-		return fmt.Errorf("%w: writes confirm", api.ErrInvalid)
-	}
-	onboarding.WritesEnabled = true
-	onboarding.PendingWrites = false
-	onboarding.Phase = api.PhaseEnabled
-	onboarding.ConfirmationUsed = true
-	onboarding.Revision++
-	return c.Store.PutOnboarding(onboarding)
-}
-
 // prepareInstallTarget infers the connector kind from the target itself —
 // the agent never picks between definition_id/source/remote_url. A
 // registered catalog definition goes to the catalog path; a prepared id or

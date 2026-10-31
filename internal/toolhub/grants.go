@@ -13,6 +13,10 @@ import (
 // must never share its backing array.
 func cloneOnboarding(o api.Onboarding) api.Onboarding {
 	o.Finalizers = slices.Clone(o.Finalizers)
+	if o.HumanConsent != nil {
+		consent := *o.HumanConsent
+		o.HumanConsent = &consent
+	}
 	return o
 }
 
@@ -78,9 +82,57 @@ func (s *Store) PutOnboarding(onboarding api.Onboarding) error {
 		return err
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	previous, existed := s.onboardings[onboarding.OnboardingID]
 	s.onboardings[onboarding.OnboardingID] = cloneOnboarding(onboarding)
-	s.mu.Unlock()
-	return s.persist()
+	if s.path != "" {
+		previousDigest := s.diskDigest
+		if err := s.saveLocked(s.path); err != nil {
+			if s.diskDigest == previousDigest {
+				if existed {
+					s.onboardings[onboarding.OnboardingID] = previous
+				} else {
+					delete(s.onboardings, onboarding.OnboardingID)
+				}
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+// ConsumeConfirmation persists the single-use claim before binding work starts.
+func (s *Store) ConsumeConfirmation(expected api.Onboarding) (api.Onboarding, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.consumeConfirmationLocked(expected, false, nil)
+}
+
+func (s *Store) consumeConfirmationLocked(expected api.Onboarding, completeWrites bool, consent *api.HumanConsent) (api.Onboarding, error) {
+	current, ok := s.onboardings[expected.OnboardingID]
+	if !ok || current.Revision != expected.Revision || current.ConfirmationUsed {
+		return api.Onboarding{}, fmt.Errorf("%w: confirmation already consumed or stale", api.ErrUnauthorized)
+	}
+	previous := cloneOnboarding(current)
+	current.ConfirmationUsed = true
+	if consent != nil {
+		current.HumanConsent = consent
+	}
+	if completeWrites {
+		current.WritesEnabled, current.PendingWrites, current.Phase = true, false, api.PhaseEnabled
+	}
+	current.Revision++
+	s.onboardings[current.OnboardingID] = current
+	if s.path != "" {
+		previousDigest := s.diskDigest
+		if err := s.saveLocked(s.path); err != nil {
+			if s.diskDigest == previousDigest {
+				s.onboardings[expected.OnboardingID] = previous
+			}
+			return api.Onboarding{}, err
+		}
+	}
+	return cloneOnboarding(current), nil
 }
 
 // ClaimPreparingOnboarding atomically reports a fresh record already in flight

@@ -83,3 +83,26 @@ func MigrateRecovery(c Config) (err error) {
 	}
 	return journal.SeedReplicatedFromOpen(svc.ledger, filepath.Join(c.RecoveryDir, "journal"), c.RecoveryAnchorDir, seal.Derive(recoveryKey, "ledger"), c.MaxLedgerBytes)
 }
+
+// MigrateHead upgrades recovery evidence only; it never opens providers or serves requests.
+func MigrateHead(c Config) error {
+	if err := validateRecoveryLayout(c); err != nil {
+		return err
+	}
+	master, err := securefs.ReadKey(c.MasterKeyFile)
+	if err != nil {
+		return err
+	}
+	defer clear(master)
+	raw, err := securefs.ReadKey(c.RecoveryKeyFile)
+	if err != nil {
+		return err
+	}
+	defer clear(raw)
+	if bytes.Equal(master, raw) {
+		return errors.New("recovery key must differ from master key")
+	}
+	recoveryKey := seal.Derive(raw, "identity/"+c.RecoveryIdentity)
+	defer clear(recoveryKey)
+	return journal.MigrateHead(c.DataDir, filepath.Join(c.RecoveryDir, "journal"), c.RecoveryAnchorDir, seal.Derive(master, "ledger"), seal.Derive(recoveryKey, "ledger"), c.MaxLedgerBytes)
+}

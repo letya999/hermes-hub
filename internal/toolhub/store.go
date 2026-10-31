@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/storagebudget"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"strings"
 	"sync"
@@ -24,6 +25,8 @@ type Store struct {
 	savedPath           string
 	diskDigest          [32]byte
 	diskStamp           storeStamp
+	installationID      string
+	syncDirectory       func(string) error
 	Reconnect           *ReconnectController
 	Stopper             api.WorkloadStopper
 	definitions         map[string]api.ToolDefinition
@@ -32,6 +35,8 @@ type Store struct {
 	bindings            map[string]api.ToolBinding
 	workloads           map[string]api.WorkloadInstance
 	projectionRevisions map[string]uint64
+	restartApplied      map[string]uint64
+	restartDigests      map[string]string
 	grants              map[string]api.Grant
 	onboardings         map[string]api.Onboarding
 	operations          map[string]api.Operation
@@ -71,10 +76,61 @@ type Store struct {
 	viewerLinks       map[string]viewerLink
 	viewerLinksLoaded bool
 	viewerSessions    map[string]viewerSession
+	// storage accounts every ToolHub-owned byte under the snapshot
+	// directory; bound lazily on the first persisted write. maintenance
+	// records the last reconcile attempt/success/error for operator
+	// surfaces; guarded by s.mu like the rest of the store state.
+	// storageMu alone guards the lazy counter binding: lease and
+	// viewer-link persist paths run under leaseMu, never s.mu.
+	storageMu   sync.Mutex
+	storage     *storagebudget.Counter
+	storageDir  string
+	maintenance storageMaintenanceStatus
 }
 
 func projectionKey(principalID, contextID, runtimeID string) string {
 	return principalID + "\x00" + contextID + "\x00" + runtimeID
+}
+
+func (s *Store) AppliedRestartRevision(target api.ProjectionTarget) uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.restartApplied[projectionKey(target.PrincipalID, target.ContextID, target.RuntimeID)]
+}
+
+func (s *Store) AppliedRestartDigest(target api.ProjectionTarget) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.restartDigests[projectionKey(target.PrincipalID, target.ContextID, target.RuntimeID)]
+}
+
+func (s *Store) MarkRestartApplied(target api.ProjectionTarget) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := projectionKey(target.PrincipalID, target.ContextID, target.RuntimeID)
+	previous := s.restartApplied[key]
+	if target.Revision <= previous {
+		return nil
+	}
+	previousDigest := s.restartDigests[key]
+	s.restartApplied[key] = target.Revision
+	s.restartDigests[key] = target.Digest
+	if s.path != "" {
+		if err := s.saveLocked(s.path); err != nil {
+			if previous == 0 {
+				delete(s.restartApplied, key)
+			} else {
+				s.restartApplied[key] = previous
+			}
+			if previousDigest == "" {
+				delete(s.restartDigests, key)
+			} else {
+				s.restartDigests[key] = previousDigest
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) touchProjectionLocked(binding *api.ToolBinding) uint64 {
@@ -115,7 +171,7 @@ func (s *Store) ProjectionRevisions() ([]api.ProjectionTarget, error) {
 		if len(parts) != 3 || revision == 0 {
 			continue
 		}
-		out = append(out, api.ProjectionTarget{PrincipalID: parts[0], ContextID: parts[1], RuntimeID: parts[2], Revision: revision})
+		out = append(out, api.ProjectionTarget{PrincipalID: parts[0], ContextID: parts[1], RuntimeID: parts[2], Revision: revision, Digest: s.semanticRestartDigestLocked(parts[0], parts[1], parts[2])})
 	}
 	return out, nil
 }
@@ -1354,12 +1410,15 @@ func (s *Store) Recipe(digest string) (api.RecipeResolution, error) {
 
 type snapshot struct {
 	Schema              int                             `json:"schema"`
+	InstallationID      string                          `json:"installation_id,omitempty"`
 	Definitions         []api.ToolDefinition            `json:"definitions"`
 	Connections         []api.Connection                `json:"connections"`
 	Credentials         []api.CredentialReference       `json:"credential_references"`
 	Bindings            []api.ToolBinding               `json:"bindings"`
 	Workloads           []api.WorkloadInstance          `json:"workloads"`
 	ProjectionRevisions map[string]uint64               `json:"projection_revisions,omitempty"`
+	RestartApplied      map[string]uint64               `json:"restart_applied,omitempty"`
+	RestartDigests      map[string]string               `json:"restart_digests,omitempty"`
 	Grants              []api.Grant                     `json:"grants,omitempty"`
 	Onboardings         []api.Onboarding                `json:"onboardings,omitempty"`
 	Operations          []api.Operation                 `json:"operations,omitempty"`

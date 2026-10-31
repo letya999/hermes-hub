@@ -246,12 +246,12 @@ func supervisorSmoke(ctx context.Context, image, providerURL string) error {
 	if finalCount != 1 {
 		return fmt.Errorf("real stream final count=%d", finalCount)
 	}
-	receipts, err := os.ReadDir(filepath.Join(root, "probe-spool", "events"))
+	receipts, err := os.ReadDir(filepath.Join(root, "probe-spool", "run-events"))
 	if err != nil {
 		return err
 	}
 	for _, receipt := range receipts {
-		body, err := os.ReadFile(filepath.Join(root, "probe-spool", "events", receipt.Name()))
+		body, err := os.ReadFile(filepath.Join(root, "probe-spool", "run-events", receipt.Name()))
 		if err != nil || strings.Contains(string(body), "HUB_TOOL_SECRET_CANARY") {
 			return fmt.Errorf("real tool arguments/output leaked into delivery receipts")
 		}
@@ -424,7 +424,8 @@ func supervisorSmoke(ctx context.Context, image, providerURL string) error {
 	runner.URL, runner.Resume = server.URL, true
 	recovered, err := runner.RunOutcome(ctx, interruptedJob)
 	if err == nil || recovered.Status != "interrupted" || recovered.RunID != admitted.RunID || recovered.RuntimeGeneration != replacement.Generation {
-		return fmt.Errorf("original run recovery across generation failed: status=%s error=%v", recovered.Status, err)
+		mapping, _, _ := spool.Mapping(interruptedJob.ID)
+		return fmt.Errorf("original run recovery across generation failed: interrupted=%t event_interrupted=%t run_same=%t generation_same=%t mapping_interrupted=%t mapping_event_interrupted=%t mapping_run_same=%t mapping_generation_same=%t uncertain=%t", recovered.Status == "interrupted", recovered.LastEvent == "run.interrupted", recovered.RunID == admitted.RunID, recovered.RuntimeGeneration == replacement.Generation, mapping.Status == "interrupted", mapping.LastKnownEvent == "run.interrupted", mapping.RunID == admitted.RunID, mapping.RuntimeGeneration == replacement.Generation, errors.Is(err, communication.ErrUncertain))
 	}
 	staleApproval := hubruntime.RunControl{RunReference: hubruntime.RunReference{ExecuteRequest: hubruntime.ExecuteRequest{Envelope: interruptedJob.Envelope, JobID: interruptedJob.ID, OrganizationID: interruptedJob.OrganizationID, UserID: interruptedJob.UserID, ActorID: interruptedJob.ActorID, ScopeID: interruptedJob.ScopeID, Channel: interruptedJob.Channel, Trigger: interruptedJob.Trigger, IdempotencyKey: interruptedJob.IdempotencyKey}, RunID: admitted.RunID, SessionID: admitted.SessionID, RuntimeGeneration: before.Generation}, Action: "approve", RequestID: admitted.ApprovalID, Choice: "once"}
 	staleBody, _ := json.Marshal(staleApproval)

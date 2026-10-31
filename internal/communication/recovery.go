@@ -81,7 +81,7 @@ jobs:
 		if err = s.writeMappingLocked(mapping); err != nil {
 			return err
 		}
-		if err = os.Rename(from, filepath.Join(s.root, "pending", entry.Name())); err != nil {
+		if err = s.renameOwned(from, filepath.Join(s.root, "pending", entry.Name())); err != nil {
 			return err
 		}
 	}

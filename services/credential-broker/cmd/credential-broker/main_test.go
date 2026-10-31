@@ -54,7 +54,7 @@ func TestCommands(t *testing.T) {
 	if e := run(ctx, []string{"version"}, failedWriter{}); e == nil {
 		t.Fatal("writer error")
 	}
-	for _, args := range [][]string{nil, {"unknown"}, {"init"}, {"init", "--unknown"}, {"serve"}, {"serve", "--unknown"}, {"migrate-recovery", "--unknown"}, {"check-config", "--config", "relative"}} {
+	for _, args := range [][]string{nil, {"unknown"}, {"init"}, {"init", "--unknown"}, {"serve"}, {"serve", "--unknown"}, {"migrate-recovery", "--unknown"}, {"migrate-head", "--unknown"}, {"migrate-head"}, {"check-config", "--config", "relative"}} {
 		if e := run(ctx, args, io.Discard); e == nil {
 			t.Fatal(args)
 		}
@@ -134,6 +134,12 @@ func TestMigrateRecoveryCommand(t *testing.T) {
 	if out.String() != "Recovery migration complete.\n" {
 		t.Fatal("migration output contains unexpected data")
 	}
+	for range 2 {
+		if err := run(context.Background(), []string{"migrate-head", "--config", migrationConfig}, io.Discard); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	if err := run(context.Background(), []string{"migrate-recovery"}, io.Discard); err == nil {
 		t.Fatal("migration accepted missing config")
 	}

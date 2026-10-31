@@ -90,7 +90,6 @@ func (s *Spool) RequestApproval(jobID string, caller identity.Envelope, requestI
 func (g *Gateway) controlLoop(ctx context.Context) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
-	var lastCompact time.Time
 	var lastNoticeSync time.Time
 	pendingNotice := true // first pass always syncs
 	for {
@@ -99,14 +98,7 @@ func (g *Gateway) controlLoop(ctx context.Context) {
 			lastNoticeSync = g.now()
 		}
 		g.controlOne(ctx)
-		if g.now().Sub(lastCompact) >= time.Hour {
-			retention := g.config.SpoolRetention
-			if retention <= 0 {
-				retention = 72 * time.Hour
-			}
-			_ = g.spool.Compact(g.now(), retention, CompactLimits{MaxTerminalFiles: g.config.SpoolMaxFiles, ArchiveMaxBytes: g.config.SpoolMaxArchiveBytes, MaxUsageEntries: g.config.SpoolMaxUsageEntries})
-			lastCompact = g.now()
-		}
+		g.maintainStorage(g.now())
 		select {
 		case <-ctx.Done():
 			return

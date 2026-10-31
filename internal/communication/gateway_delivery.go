@@ -70,20 +70,31 @@ func (g *Gateway) worker(ctx context.Context) {
 			nextObservation = now.Add(5 * time.Second)
 		}
 		if job, err := g.spool.ClaimJob(); err == nil && job != nil {
+			admission, found, admissionErr := g.spool.Mapping(job.ID)
+			if admissionErr != nil || !found || !admission.MatchesJob(*job) {
+				log.Printf("gateway job_id=%q status=blocked reason=admission_binding", job.ID)
+				continue
+			}
 			if job.Text != "" && g.authorizeGroupMapping(mappingFromJob(*job, g.now())) != nil {
 				log.Printf("gateway job_id=%q channel=%q status=denied reason=group_authorization", job.ID, job.Channel)
-				_ = g.spool.FailJob(job.ID)
+				if err := g.spool.RecordTerminalOutcome(*job, RunOutcome{Status: "cancelled", LastEvent: "run.cancelled"}, nil); err != nil {
+					log.Printf("gateway job_id=%q status=uncertain reason=terminal_handoff", job.ID)
+				}
 				continue
 			}
 			if job.Trigger == "cron" && job.Text != "" && g.authorizeOccurrence(*job) != nil {
-				_ = g.spool.FailJob(job.ID)
+				if err := g.spool.RecordTerminalOutcome(*job, RunOutcome{Status: "cancelled", LastEvent: "run.cancelled"}, nil); err != nil {
+					log.Printf("gateway job_id=%q status=uncertain reason=terminal_handoff", job.ID)
+				}
 				continue
 			}
 			if job.Trigger == "goal" && !g.goalTurnClaimable(*job) {
 				// A turn queued under a superseded epoch (or a cleared/paused
 				// goal) no-ops: the model is never invoked for a goal that
 				// already moved on (SPEC-0074).
-				_ = g.spool.CompleteJob(job.ID)
+				if err := g.spool.RecordTerminalOutcome(*job, RunOutcome{Status: "cancelled", LastEvent: "run.cancelled"}, nil); err != nil {
+					log.Printf("gateway job_id=%q status=uncertain reason=terminal_handoff", job.ID)
+				}
 				continue
 			}
 			g.busy.Add(1)
@@ -101,9 +112,21 @@ func (g *Gateway) worker(ctx context.Context) {
 				}
 			}
 			g.busy.Add(-1)
+			if runErr == nil && outcome.Status != "" && outcome.Status != "completed" {
+				if terminalStatus(outcome.Status) {
+					runErr = errors.New("run ended without completion")
+				} else {
+					runErr = ErrUncertain
+				}
+			}
 			if runErr != nil || outcome.Status == "uncertain" {
 				if mapping, found, err := g.spool.Mapping(job.ID); err == nil && found && terminalStatus(mapping.Status) {
-					outcome = RunOutcome{Text: mapping.Result, JobID: mapping.JobID, RunID: mapping.RunID, SessionID: mapping.SessionID, RuntimeGeneration: mapping.RuntimeGeneration, Status: mapping.Status, LastEvent: mapping.LastKnownEvent}
+					saved, saveErr := g.spool.savedTerminalOutcome(mapping)
+					if saveErr != nil {
+						log.Printf("gateway job_id=%q status=uncertain reason=terminal_source", job.ID)
+						continue
+					}
+					outcome = saved
 					response = outcome.Text
 					if mapping.Status == "completed" {
 						runErr = nil
@@ -116,34 +139,16 @@ func (g *Gateway) worker(ctx context.Context) {
 				if runErr == nil {
 					runErr = ErrUncertain
 				}
-				if outcome.Status != "" && outcome.Status != "uncertain" {
-					_ = g.spool.RecordOutcome(job.ID, outcome)
-				}
 				if errors.Is(runErr, ErrUncertain) || outcome.Status == "uncertain" {
-					_ = g.spool.RecordOutcome(job.ID, RunOutcome{JobID: job.ID, SessionID: outcome.SessionID, RunID: outcome.RunID, RuntimeGeneration: outcome.RuntimeGeneration, Status: "uncertain", LastEvent: "run.unknown"})
-				}
-				_ = g.spool.FailJob(job.ID)
-				// A plain run.failed on a user message or goal turn is usually
-				// a transient model/provider outage: retry once as a fresh run
-				// before telling the owner. Uncertain outcomes reconcile instead.
-				retried := false
-				if retryableJobFailure(*job, outcome.Status, runErr) {
-					retry := *job
-					retry.ID = job.ID + "-r1"
-					retry.IdempotencyKey = job.IdempotencyKey + "-r1"
-					retry.CreatedAt = g.now().UTC()
-					if accepted, err := g.spool.Enqueue(retry); err == nil && accepted {
-						retried = true
-						if chatID, messageID := g.spool.CloseStatusDelivery(job.ID); messageID > 0 {
-							_ = g.api.DeleteMessage(ctx, chatID, messageID)
-						}
-					}
+					outcome.Status, outcome.LastEvent = "uncertain", "run.unknown"
+				} else if outcome.Status == "" {
+					outcome.Status, outcome.LastEvent = "failed", "run.failed"
 				}
 				// A goal turn that failed for good must not leave the record
 				// "active" with nothing queued — that zombie reports live in
 				// /goal status while the loop never runs again.
 				goalPaused := false
-				if !retried && job.Trigger == "goal" && !errors.Is(runErr, ErrUncertain) && outcome.Status != "uncertain" {
+				if job.Trigger == "goal" && !errors.Is(runErr, ErrUncertain) && outcome.Status != "uncertain" {
 					goalPaused = g.pauseGoalAfterRunFailure(*job)
 				}
 				lang := locale.LangOf(g.user(job.UserID).WorkspaceDir)
@@ -170,7 +175,7 @@ func (g *Gateway) worker(ctx context.Context) {
 					if mapping, ok, merr := g.spool.Mapping(job.ID); merr == nil && ok {
 						since := mapping.UncertainSince
 						if since.IsZero() {
-							since = mapping.UpdatedAt
+							since = g.now()
 						}
 						if g.now().Before(since.Add(hubruntime.RunBudget())) {
 							deliver = false
@@ -188,23 +193,29 @@ func (g *Gateway) worker(ctx context.Context) {
 						}
 					}
 				}
-				if deliver && !retried {
-					_ = g.spool.EnqueueDelivery(Delivery{ID: key, IdempotencyKey: key, JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: message, CreatedAt: g.now().UTC()})
+				var delivery *Delivery
+				if deliver {
+					delivery = &Delivery{ID: key, IdempotencyKey: key, JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: message, CreatedAt: g.now().UTC()}
 				}
-				if outcome.Status == "" {
-					outcome.Status = "failed"
+				if err := g.spool.RecordTerminalOutcome(*job, outcome, delivery); err != nil {
+					log.Printf("gateway job_id=%q status=uncertain reason=terminal_handoff", job.ID)
+					continue
 				}
+
 			} else {
-				_ = g.spool.RecordOutcome(job.ID, outcome)
+				var delivery *Delivery
+				if job.AssignmentID == "" || strings.TrimSpace(response) != "NO_ACTIONABLE_EVENT" {
+					delivery = &Delivery{ID: "job-" + job.ID + "-response", JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: response, Format: formatMarkdown, Artifacts: outcome.Artifacts, Voice: outcome.Voice, CreatedAt: g.now().UTC()}
+				}
+				if err := g.spool.RecordTerminalOutcome(*job, outcome, delivery); err != nil {
+					log.Printf("gateway job_id=%q status=uncertain reason=terminal_handoff", job.ID)
+					continue
+				}
 				if job.Trigger == "cron" {
 					if o, ok := g.occurrenceFor(job.ID); ok {
 						_ = g.spool.ClearRoutineFailure(o.ScheduleID)
 					}
 				}
-				if job.AssignmentID == "" || strings.TrimSpace(response) != "NO_ACTIONABLE_EVENT" {
-					_ = g.spool.EnqueueDelivery(Delivery{ID: "job-" + job.ID + "-response", JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: response, Format: formatMarkdown, Artifacts: outcome.Artifacts, Voice: outcome.Voice, CreatedAt: g.now().UTC()})
-				}
-				_ = g.spool.CompleteJob(job.ID)
 				g.maybeAutoTitle(ctx, *job)
 				g.goalAfterJob(ctx, *job, response)
 			}
@@ -220,19 +231,6 @@ func (g *Gateway) worker(ctx context.Context) {
 		case <-ticker.C:
 		}
 	}
-}
-
-// retryableJobFailure bounds automatic retries to user messages and goal
-// turns whose run simply failed; uncertain outcomes reconcile, cancels and
-// interrupts are intentional, and cron/prepare continuations report instead.
-func retryableJobFailure(job Job, status string, err error) bool {
-	if (job.Trigger != "message" && job.Trigger != "goal") || strings.HasSuffix(job.ID, "-r1") {
-		return false
-	}
-	if errors.Is(err, ErrUncertain) || status == "uncertain" || status == "cancelled" || status == "interrupted" {
-		return false
-	}
-	return true
 }
 
 // deliveryLoop drains the outbox on the spool's notify signal with a

@@ -1,0 +1,18 @@
+schema: 1
+change: CHG-0239
+title: Verified legacy ToolHub audit rollover
+status: done
+branch: chore/storage-reliability-integration
+updated: "2026-10-31"
+phase: complete
+adr: ADR-0088
+spec: SPEC-0088
+depends_on: [CHG-0238]
+validation:
+  legacy_scan: passed_181794_records
+  archive_integrity: passed
+  local_dev_rollover: passed
+  toolhub_acceptance: passed
+  e2e_toolhub_mock: 15_pass_0_fail
+  just_check: passed_86_22_percent
+evidence: [evidence.md]

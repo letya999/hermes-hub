@@ -226,7 +226,8 @@ func TestComfyVideoResumesPersistedHandleWithoutSubmission(t *testing.T) {
 	for time.Now().Before(deadline) {
 		job, err := store.get("job-comfy-resume")
 		if err != nil {
-			t.Fatal(err)
+			time.Sleep(10 * time.Millisecond) // Windows can deny a read during atomic replacement.
+			continue
 		}
 		if job.Status == "done" {
 			data, err := os.ReadFile(filepath.Join(store.dirOf(job.ID), "result.bin"))

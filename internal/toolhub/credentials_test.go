@@ -46,8 +46,9 @@ func TestRotateDisableRemoveCutOpenSessionBeforeBackend(t *testing.T) {
 	store.Stopper = stops
 	var calls atomic.Int32
 	handler, err := (&Gateway{
-		Store:  store,
-		Tokens: map[string]identity.Envelope{"01234567890123456789012345678901": auth},
+		Store:      store,
+		AuditWrite: testAuditWriter(t),
+		Tokens:     map[string]identity.Envelope{"01234567890123456789012345678901": auth},
 		Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 			calls.Add(1)
 			return api.BackendResult{Text: "provider"}, nil

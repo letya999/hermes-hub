@@ -49,3 +49,11 @@ func TestChannelContractNamesLiveToolInventory(t *testing.T) {
 		t.Error("channel contract must explain that a listed name absent from the visible tool list is callable through invoke")
 	}
 }
+
+func TestChannelContractRequiresHumanToolHubConfirmation(t *testing.T) {
+	for _, want := range []string{"await_user_confirmation", "verified channel callback", "actor", "action", "revision", "expiry", "confirmation button", "original chat", "status only", "never human consent"} {
+		if !strings.Contains(ChannelContract, want) {
+			t.Errorf("channel contract missing %q", want)
+		}
+	}
+}

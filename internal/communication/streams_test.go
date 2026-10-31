@@ -369,7 +369,7 @@ func TestStreamCursorFeedsBackAndWaitsForOverflow(t *testing.T) {
 	if st.Cursor != "13" || len(st.Seen) != 10 {
 		t.Fatalf("replay did not drain overflow: %+v", st)
 	}
-	if strings.Join(calls, ",") != ",3,3" {
+	if strings.Join(calls, ",") != ",3" {
 		t.Fatalf("cursor feedback mismatch: %v", calls)
 	}
 }

@@ -2,6 +2,13 @@ package locale
 
 func init() {
 	register(LangKK, map[string]string{
+		"hubctl.audit-rollover-usage":   "Қолдану: hubctl audit rollover --ledger <толық жол> [--apply --digest <sha256:...>]",
+		"hubctl.audit-rollover-ledger":  "Тоқтатылған ToolHub ескі audit файлының жолы",
+		"hubctl.audit-rollover-apply":   "Тексерілген көшіруді қолдану; әдепкіде тек жоспар",
+		"hubctl.audit-rollover-digest":  "--apply үшін жоспар digest мәні",
+		"hubctl.audit-rollover-stale":   "Ескі audit жоспары ескірді; жоспарды қайта алыңыз.",
+		"hubctl.audit-rollover-invalid": "Ескі audit жарамсыз немесе оны қауіпсіз көшіру мүмкін емес.",
+		"hubctl.audit-rollover-failed":  "Ескі audit көшіруі аяқталмады; қайта бастар алдында offline күйін тексеріңіз.",
 		// Language picker and /language.
 		"lang.choose":   "Тілді таңдаңыз:",
 		"lang.saved":    "Тіл орнатылды: %s.",
@@ -168,9 +175,12 @@ func init() {
 		"chat.approve-usage":     "/approve <job-id> <request-id> <choice> пайдаланыңыз.",
 		"chat.approve-denied":    "Сұраныс қабылданбады: растау қолжетімсіз.",
 		"chat.approve-saved":     "Растау жауабы сақталды.",
+		"chat.confirm-button":    "Қосылу мен құқықтарды растау",
+		"chat.confirm-saved":     "Қосылу мен құқықтар расталды.",
 		"chat.approve-scope":     "Сұраныс қабылданбады: тапсырма немесе растау бұл әңгімеде қолжетімсіз.",
 		"chat.creds-usage":       "/credentials <request-id> <Credential Broker формасындағы код> пайдаланыңыз.",
 		"chat.creds-saved":       "Credential Broker растауы сақталды. Hermes-ке оралып, қосылым күйін сұраңыз.",
+		"secret.uncertain":       "Күйі: белгісіз. Жазуды қайталамас бұрын бастапқы операцияны тексеріңіз.",
 		"chat.creds-expired":     "Растау қабылданбады немесе мерзімі бітті. Жаңа қосылым сілтемесін сұраңыз.",
 		"chat.started":           "Дайын. Hermes кеңістігіңізге қосылдыңыз.",
 		"chat.cancel-usage":      "/cancel <job-id> пайдаланыңыз.",
@@ -365,6 +375,10 @@ func init() {
 		"page.done-oauth-body":          "Чатқа оралсаңыз болады. Календарьге қол жеткізу тексерілді.",
 		"page.done-device-body":         "Қырдылғы авторизацияланды. Чатқа оралып «дайын» деп жазудың қажеті жоқ.",
 		"page.confirm-title":            "MCP растау",
+		"page.confirm-in-chat":          "Бұл әрекетті бастапқы чатта растаңыз.",
+		"page.confirm-in-chat-for":      "%s сервері бастапқы чатта растауды күтуде. Бұл бет тек күйді көрсетеді.",
+		"page.confirm-permissions":      "Сұралған құқықтар: %s.",
+		"page.confirm-effects":          "Қамтылатын ресурстар: %s.",
 		"page.confirm-h1":               "Қосылуды растау",
 		"page.confirm-body":             "%s сервері қосылып, сақталған деректерге қол жеткізеді.",
 		"page.confirm-btn":              "Қосылуды растау",

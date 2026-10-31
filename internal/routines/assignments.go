@@ -55,7 +55,7 @@ func (e *Engine) CreateAssignment(in commodel.Assignment, caller identity.Envelo
 			return existing, true, nil
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	if err := e.mkdirOwned(filepath.Dir(path), false); err != nil {
 		return commodel.Assignment{}, false, err
 	}
 	if err := e.atomicJSON(path, in); err != nil {
@@ -447,20 +447,34 @@ func (e *Engine) AuthorizeAssignmentGrants(id string, planRev uint64, grants com
 	return e.atomicJSON(e.AssignmentPath(id), item)
 }
 
-// admitAssignmentWakeLocked is the claim-before-wake fence for
-// assignment-owned schedules (SPEC-0080 R2.2). e.mu must be held.
-func (e *Engine) admitAssignmentWakeLocked(assignmentID string, now time.Time, planRev ...uint64) bool {
+// Reserve before enqueue; retries reuse the same applied-generation operation.
+func (e *Engine) admitAssignmentOperationLocked(assignmentID, operationID string, now time.Time, planRev ...uint64) (bool, error) {
 	item, err := e.loadAssignmentLocked(assignmentID)
 	if err != nil {
-		return false
+		return false, err
 	}
 	if item.State != "active" {
 		// Paused, completed, cancelled or failed assignments never reach
 		// the model (SPEC-0080 R2.2).
-		return false
+		return false, nil
 	}
 	if len(planRev) > 0 && planRev[0] != 0 && (item.Plan == nil || item.Plan.Revision != planRev[0] || item.AppliedRev != planRev[0]) {
-		return false
+		return false, nil
+	}
+	revision := uint64(0)
+	if len(planRev) > 0 {
+		revision = planRev[0]
+	}
+	if operationID != "" {
+		if len(operationID) > 256 {
+			return false, errors.New("invalid wake operation")
+		}
+		if reserved, ok := item.Checkpoint.WakeOperations[operationID]; ok {
+			return reserved == revision, nil
+		}
+		if len(item.Checkpoint.WakeOperations) >= 1024 {
+			return false, errors.New("wake reservation capacity reached")
+		}
 	}
 	limit := item.Grants.MaxWakesPerDay
 	if limit == 0 {
@@ -473,19 +487,20 @@ func (e *Engine) admitAssignmentWakeLocked(assignmentID string, now time.Time, p
 		item.Checkpoint.WakeDay, item.Checkpoint.WakesToday = day, 0
 	}
 	if item.Checkpoint.WakesToday >= limit {
-		return false
+		return false, nil
+	}
+	if operationID != "" {
+		if item.Checkpoint.WakeOperations == nil {
+			item.Checkpoint.WakeOperations = map[string]uint64{}
+		}
+		item.Checkpoint.WakeOperations[operationID] = revision
 	}
 	item.Checkpoint.WakesToday++
 	item.Checkpoint.LLMCalls++
 	item.Checkpoint.LastWakeAt = now.UTC()
 	item.UpdatedAt = now.UTC()
-	return e.atomicJSON(e.AssignmentPath(item.AssignmentID), item) == nil
-}
-
-// AdmitAssignmentWakeLocked exposes the wake fence to the durable spool's
-// event fan-out; the engine and the spool share one lock (e.mu == s.mu).
-func (e *Engine) AdmitAssignmentWakeLocked(assignmentID string, now time.Time, planRev ...uint64) bool {
-	return e.admitAssignmentWakeLocked(assignmentID, now, planRev...)
+	err = e.atomicJSON(e.AssignmentPath(item.AssignmentID), item)
+	return err == nil, err
 }
 
 // ResumeAssignment re-arms a paused assignment's artifacts (SPEC-0080 R1.5).
@@ -709,4 +724,29 @@ func decimalMessageID(s string) bool {
 		}
 	}
 	return true
+}
+
+// Reserve a particular wake once, including retries after the owner's day changes.
+func (e *Engine) ReserveAssignmentWakeLocked(id, operationID string, now time.Time, planRev uint64) (bool, error) {
+	if operationID == "" {
+		return false, errors.New("wake operation required")
+	}
+	return e.admitAssignmentOperationLocked(id, operationID, now, planRev)
+}
+
+// A durable job mapping now owns dedup; release only its matching reservation.
+func (e *Engine) SettleAssignmentWakeLocked(id, operationID string, planRev uint64) error {
+	item, err := e.loadAssignmentLocked(id)
+	if err != nil {
+		return err
+	}
+	revision, ok := item.Checkpoint.WakeOperations[operationID]
+	if !ok {
+		return nil
+	}
+	if revision != planRev {
+		return errors.New("wake reservation generation mismatch")
+	}
+	delete(item.Checkpoint.WakeOperations, operationID)
+	return e.atomicJSON(e.AssignmentPath(id), item)
 }

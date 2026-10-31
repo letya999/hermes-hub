@@ -103,7 +103,7 @@ func (s *Spool) loadTaskLocked(principal, taskID string) (Task, error) {
 
 func (s *Spool) writeTaskLocked(task Task) error {
 	task.UpdatedAt = time.Now().UTC()
-	return atomicJSON(s.taskPath(task.PrincipalID, task.TaskID), task)
+	return s.writeJSON(s.taskPath(task.PrincipalID, task.TaskID), task)
 }
 
 func (s *Spool) currentTaskLocked(principal string, chatID int64) (string, error) {
@@ -147,7 +147,7 @@ func (s *Spool) materializeTaskLocked(task Task) error {
 		return err
 	}
 	if task.TopicID != 0 {
-		return atomicJSON(s.topicTaskPath(task.PrincipalID, task.ChatID, task.TopicID), struct {
+		return s.writeJSON(s.topicTaskPath(task.PrincipalID, task.ChatID, task.TopicID), struct {
 			TaskID string `json:"task_id"`
 		}{task.TaskID})
 	}
@@ -222,7 +222,7 @@ func (s *Spool) CreateTask(user User, chatID, topicID int64, name string, makeCu
 }
 
 func (s *Spool) setCurrentLocked(task Task) error {
-	return atomicJSON(s.currentTaskPath(task.PrincipalID, task.ChatID), struct {
+	return s.writeJSON(s.currentTaskPath(task.PrincipalID, task.ChatID), struct {
 		TaskID string `json:"task_id"`
 	}{task.TaskID})
 }
@@ -494,7 +494,7 @@ func (s *Spool) RebindTaskTopic(user User, chatID int64, taskID string, newTopic
 		return errors.New("topic is already bound")
 	}
 	if task.TopicID != 0 && task.TopicID != newTopic {
-		if err := os.Remove(s.topicTaskPath(user.ID, chatID, task.TopicID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := s.removeOwned(s.topicTaskPath(user.ID, chatID, task.TopicID)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 	}
@@ -579,12 +579,12 @@ func (s *Spool) ArchiveTask(user User, chatID int64, taskID string) (Task, error
 		return Task{}, err
 	}
 	if task.TopicID != 0 {
-		if err := os.Remove(s.topicTaskPath(user.ID, chatID, task.TopicID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := s.removeOwned(s.topicTaskPath(user.ID, chatID, task.TopicID)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return Task{}, err
 		}
 	}
 	if current, err := s.currentTaskLocked(user.ID, chatID); err == nil && current == task.TaskID {
-		if err := os.Remove(s.currentTaskPath(user.ID, chatID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := s.removeOwned(s.currentTaskPath(user.ID, chatID)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return Task{}, err
 		}
 	} else if err != nil {
@@ -648,18 +648,18 @@ func (s *Spool) deleteTaskLocked(user User, chatID int64, task Task) (Task, erro
 		return Task{}, errors.New("the default task cannot be deleted")
 	}
 	if task.TopicID != 0 {
-		if err := os.Remove(s.topicTaskPath(user.ID, chatID, task.TopicID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := s.removeOwned(s.topicTaskPath(user.ID, chatID, task.TopicID)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return Task{}, err
 		}
 	}
 	if current, err := s.currentTaskLocked(user.ID, chatID); err == nil && current == task.TaskID {
-		if err := os.Remove(s.currentTaskPath(user.ID, chatID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := s.removeOwned(s.currentTaskPath(user.ID, chatID)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return Task{}, err
 		}
 	} else if err != nil {
 		return Task{}, err
 	}
-	if err := os.Remove(s.taskPath(user.ID, task.TaskID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := s.removeOwned(s.taskPath(user.ID, task.TaskID)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return Task{}, err
 	}
 	return task, nil

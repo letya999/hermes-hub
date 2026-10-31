@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -32,11 +33,16 @@ func (g *Gateway) mockVoiceText(ctx context.Context, voice *mockVoice, caption s
 	if voice.MIME != "audio/ogg" || !bytes.HasPrefix(voice.Data, []byte("OggS")) || voice.Duration < 0 || g.transcriber == nil {
 		return "", errors.New("invalid or unavailable mock voice")
 	}
-	f, err := os.CreateTemp("", "hub-mock-voice-*.ogg")
+	release, err := g.spool.reserveStorage(int64(len(voice.Data)), 1, false)
 	if err != nil {
 		return "", err
 	}
-	defer os.Remove(f.Name())
+	defer release()
+	f, err := os.CreateTemp(filepath.Join(g.spool.root, "tmp"), "mock-voice-*.ogg")
+	if err != nil {
+		return "", err
+	}
+	defer g.spool.removeOwned(f.Name())
 	_, writeErr := f.Write(voice.Data)
 	closeErr := f.Close()
 	if writeErr != nil || closeErr != nil {

@@ -24,8 +24,8 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 	case "version":
 		_, e := fmt.Fprintln(out, version)
 		return e
-	case "migrate-recovery":
-		fs := flag.NewFlagSet("migrate-recovery", flag.ContinueOnError)
+	case "migrate-recovery", "migrate-head":
+		fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 		fs.SetOutput(out)
 		path := fs.String("config", "", "absolute configuration path")
 		if e := fs.Parse(args[1:]); e != nil {
@@ -38,7 +38,11 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 		if e != nil {
 			return e
 		}
-		if e := app.MigrateRecovery(cfg); e != nil {
+		migrate := app.MigrateRecovery
+		if args[0] == "migrate-head" {
+			migrate = app.MigrateHead
+		}
+		if e := migrate(cfg); e != nil {
 			return e
 		}
 		_, e = fmt.Fprintln(out, "Recovery migration complete.")

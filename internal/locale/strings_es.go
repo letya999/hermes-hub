@@ -2,6 +2,13 @@ package locale
 
 func init() {
 	register(LangES, map[string]string{
+		"hubctl.audit-rollover-usage":   "Uso: hubctl audit rollover --ledger <ruta absoluta> [--apply --digest <sha256:...>]",
+		"hubctl.audit-rollover-ledger":  "Ruta del audit antiguo con ToolHub detenido",
+		"hubctl.audit-rollover-apply":   "Aplicar la migración verificada; por defecto solo planifica",
+		"hubctl.audit-rollover-digest":  "Digest del plan requerido con --apply",
+		"hubctl.audit-rollover-stale":   "El plan del audit antiguo está desactualizado; genere otro.",
+		"hubctl.audit-rollover-invalid": "El audit antiguo es inválido o no permite una migración segura.",
+		"hubctl.audit-rollover-failed":  "Falló la migración del audit antiguo; revise el estado sin conexión antes de reintentar.",
 		// Language picker and /language.
 		"lang.choose":   "Elige tu idioma:",
 		"lang.saved":    "Idioma establecido: %s.",
@@ -186,9 +193,12 @@ func init() {
 		"chat.approve-usage":     "Usa /approve <job-id> <request-id> <choice>.",
 		"chat.approve-denied":    "Solicitud rechazada: confirmación no disponible.",
 		"chat.approve-saved":     "Respuesta de confirmación guardada.",
+		"chat.confirm-button":    "Confirmar conexión y permisos",
+		"chat.confirm-saved":     "Conexión y permisos confirmados.",
 		"chat.approve-scope":     "Solicitud rechazada: la tarea o la confirmación no está disponible en esta conversación.",
 		"chat.creds-usage":       "Usa /credentials <request-id> <código del formulario de Credential Broker>.",
 		"chat.creds-saved":       "Confirmación de Credential Broker guardada. Vuelve a Hermes y pide el estado de la conexión.",
+		"secret.uncertain":       "Estado: incierto. Comprueba la operación original antes de repetir la escritura.",
 		"chat.creds-expired":     "Confirmación rechazada o caducada. Pide un nuevo enlace de conexión.",
 		"chat.started":           "Listo. Estás conectado a tu espacio Hermes.",
 		"chat.cancel-usage":      "Usa /cancel <job-id>.",
@@ -377,6 +387,10 @@ func init() {
 		"page.done-paste-body":          "Puedes volver al chat.",
 		"page.done-oauth-body":          "Puedes volver al chat. El acceso al calendario está comprobado.",
 		"page.confirm-title":            "Confirmación MCP",
+		"page.confirm-in-chat":          "Confirma esta acción en el chat original.",
+		"page.confirm-in-chat-for":      "El servidor %s espera la confirmación en el chat original. Esta página solo muestra el estado.",
+		"page.confirm-permissions":      "Permisos solicitados: %s.",
+		"page.confirm-effects":          "Recursos afectados: %s.",
 		"page.confirm-h1":               "Confirmar conexión",
 		"page.confirm-body":             "El servidor %s se conectará y tendrá acceso a los datos guardados.",
 		"page.confirm-btn":              "Confirmar conexión",

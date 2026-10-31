@@ -27,6 +27,7 @@ func TestGatewayRefreshesOpenOwnerSessionWithoutCrossOwnerAccess(t *testing.T) {
 			return api.BackendResult{Text: "ok"}, nil
 		}),
 	}
+	attachGatewayAudit(t, gateway)
 	handler, err := gateway.Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -130,6 +131,7 @@ func TestGatewayRefreshesProjectionWrittenByAnotherStore(t *testing.T) {
 	gateway := &Gateway{Store: serving, Tokens: map[string]identity.Envelope{aliceToken: auth}, Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 		return api.BackendResult{Text: "ok"}, nil
 	})}
+	attachGatewayAudit(t, gateway)
 	handler, err := gateway.Handler()
 	if err != nil {
 		t.Fatal(err)

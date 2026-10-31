@@ -282,6 +282,45 @@ func TestModelRelayLadderAllDown(t *testing.T) {
 	}
 }
 
+func TestModelOutageHasTypedCause(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer upstream.Close()
+	static, err := modelRelayHandler(oneHop(t, "a="+upstream.URL), "synthetic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, selection, fixture := registryFixture(t, "  synthetic:\n    ladder:\n      - {provider: p, model: m1}\n")
+	fixture.Close()
+	// Use the same reachable failing upstream for both relay modes.
+	content, err := os.ReadFile(registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(registry, []byte(strings.Replace(string(content), fixture.URL, upstream.URL, 1)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	managed, err := modelRelayRegistryHandler(registry, selection, "alice", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, handler := range map[string]http.Handler{"static": static, "registry": managed} {
+		t.Run(name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, chatRequest())
+			var body struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if response.Code != http.StatusBadGateway || !strings.HasPrefix(response.Header().Get("Content-Type"), "application/json") || json.Unmarshal(response.Body.Bytes(), &body) != nil || body.Error.Code != "model_route_unavailable" {
+				t.Fatalf("outage response status=%d type=%q body=%s", response.Code, response.Header().Get("Content-Type"), response.Body.String())
+			}
+		})
+	}
+}
+
 func TestModelRelayHopKeyEnv(t *testing.T) {
 	var gotAuth string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

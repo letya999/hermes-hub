@@ -5,7 +5,9 @@ Chain: [ADR-0088](../../../docs/adr/ADR-0088-bounded-control-journals.md) ->
 Также: SPEC-0087; конкретные cross-spec acceptance указаны ниже.
 
 Workstream: Storage reliability MVP (local planning; GitHub records not created).
-Дизайн принят 2026-10-28; implementation not started.
+Дизайн принят 2026-10-28; код импортирован 2026-10-31 в
+`chore/storage-reliability-integration`. Приёмка продолжается
+(см. evidence.md и CHG-0237).
 Previous: CHG-0222. Next: CHG-0224.
 Hard dependencies: CHG-0217, CHG-0219, CHG-0220, CHG-0221, CHG-0222.
 

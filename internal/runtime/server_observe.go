@@ -25,38 +25,6 @@ var signalRuntimeProcess = func() {
 	}
 }
 
-type wakeAttempt struct {
-	response ExecuteResponse
-	err      error
-	elapsed  time.Duration
-}
-
-// retryColdWake repeats one chat turn that died before any tool call while
-// the runtime was still waking. A finished answer, a long failure, or a run
-// that already called a tool is left alone.
-func retryColdWake(response ExecuteResponse, err error, elapsed time.Duration, sawTool bool) bool {
-	if err == nil || sawTool || strings.TrimSpace(response.Text) != "" || elapsed > 20*time.Second {
-		return false
-	}
-	return response.Status == "failed" || response.Status == ""
-}
-
-func (s *runtimeHTTP) admitAndObserve(ctx context.Context, request ExecuteRequest, emit func(ExecuteResponse) error) (wakeAttempt, bool) {
-	started := time.Now()
-	sawTool := false
-	wrapped := emit
-	if emit != nil {
-		wrapped = func(event ExecuteResponse) error {
-			if event.LastEvent == "tool.start" || event.LastEvent == "tool.end" {
-				sawTool = true
-			}
-			return emit(event)
-		}
-	}
-	response, err := s.admitHermesRun(ctx, request, wrapped)
-	return wakeAttempt{response: response, err: err, elapsed: time.Since(started)}, sawTool
-}
-
 func (s *runtimeHTTP) admitHermesRun(ctx context.Context, request ExecuteRequest, emit func(ExecuteResponse) error) (ExecuteResponse, error) {
 	input := request.Text
 	if request.InboundID != "" {

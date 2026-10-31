@@ -68,9 +68,9 @@ func openFixture(t *testing.T, opts sshdOpts, grants Grants, hostExtra, defaults
 		t.Fatal(err)
 	}
 	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
-	svc, err := Open(Options{ConfigPath: configPath, Grants: grants,
+	svc, err := Open(testAuditOptions(t, Options{ConfigPath: configPath, Grants: grants,
 		Auth:      identity.Envelope{Schema: identity.Schema, PrincipalID: "me", ContextID: "me", RuntimeID: "test-runtime", PolicyVersion: "p1"},
-		AuditPath: auditPath})
+		AuditPath: auditPath}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestExecBoundsAndCancellation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 	started := time.Now()
-	if _, err = f2.svc.Exec(ctx, "box", "hang"); !errors.Is(err, ErrUnavailable) {
+	if _, err = f2.svc.Exec(ctx, "box", "hang"); !errors.Is(err, audit.ErrUncertain) {
 		t.Fatal("cancelled exec", err)
 	}
 	if elapsed := time.Since(started); elapsed > 2*time.Second {
@@ -209,8 +209,8 @@ func TestHostKeyPinning(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(f.cfgDir, "config.yaml"), []byte(pinned), 0600); err != nil {
 		t.Fatal(err)
 	}
-	svc, err := Open(Options{ConfigPath: filepath.Join(f.cfgDir, "config.yaml"),
-		Auth: identity.Envelope{Schema: identity.Schema, PrincipalID: "me"}})
+	svc, err := Open(testAuditOptions(t, Options{ConfigPath: filepath.Join(f.cfgDir, "config.yaml"),
+		Auth: identity.Envelope{Schema: identity.Schema, PrincipalID: "me"}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,7 +300,18 @@ func TestHostsViewHidesCredentials(t *testing.T) {
 }
 
 func TestOpenValidation(t *testing.T) {
-	if _, err := Open(Options{ConfigPath: "relative.yaml"}); !errors.Is(err, ErrInvalid) {
+	if _, err := Open(testAuditOptions(t, Options{ConfigPath: "relative.yaml"})); !errors.Is(err, ErrInvalid) {
 		t.Fatal("relative config path", err)
 	}
+}
+
+func testAuditOptions(t *testing.T, opts Options) Options {
+	t.Helper()
+	if opts.Auth.PrincipalID == "" {
+		opts.Auth.PrincipalID = "me"
+	}
+	if opts.AuditPath == "" {
+		opts.AuditPath = filepath.Join(t.TempDir(), "audit.jsonl")
+	}
+	return opts
 }

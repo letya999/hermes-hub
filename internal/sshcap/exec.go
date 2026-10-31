@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,7 +27,7 @@ type ExecResult struct {
 
 // Exec runs one allowlisted command over a fresh connection. Cancellation and
 // the per-host timeout both terminate the remote process.
-func (s *Service) Exec(ctx context.Context, alias, command string) (*ExecResult, error) {
+func (s *Service) Exec(ctx context.Context, alias, command string) (result *ExecResult, resultErr error) {
 	if err := s.alive(); err != nil {
 		return nil, err
 	}
@@ -34,6 +35,7 @@ func (s *Service) Exec(ctx context.Context, alias, command string) (*ExecResult,
 	if err != nil {
 		return nil, err
 	}
+	command = strings.TrimSpace(command)
 	effective, write, err := s.commandPolicy(h, alias, command)
 	if err != nil {
 		return nil, err
@@ -43,18 +45,28 @@ func (s *Service) Exec(ctx context.Context, alias, command string) (*ExecResult,
 		return nil, err
 	}
 	defer release()
+	ticket, err := s.beginAudit("ssh.exec", alias, command)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		ticket.finish(&resultErr)
+		if resultErr != nil {
+			result = nil
+		}
+	}()
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, h.timeout())
 	defer cancel()
 	client, err := s.dial(ctx, alias, h)
 	if err != nil {
-		s.auditEvent("ssh-exec", alias, "error", "dial failed")
+
 		return nil, err
 	}
 	defer client.Close()
 	session, err := client.NewSession()
 	if err != nil {
-		s.auditEvent("ssh-exec", alias, "error", "session failed")
+
 		return nil, fmt.Errorf("%w: session: %v", ErrUnavailable, err)
 	}
 	defer session.Close()
@@ -69,8 +81,9 @@ func (s *Service) Exec(ctx context.Context, alias, command string) (*ExecResult,
 	if err != nil {
 		return nil, fmt.Errorf("%w: stderr: %v", ErrUnavailable, err)
 	}
+	ticket.execution = "unknown"
 	if err = session.Start(effective); err != nil {
-		s.auditEvent("ssh-exec", alias, "error", "start failed")
+
 		return nil, fmt.Errorf("%w: start: %v", ErrUnavailable, err)
 	}
 	limit := h.outputLimit()
@@ -101,7 +114,7 @@ func (s *Service) Exec(ctx context.Context, alias, command string) (*ExecResult,
 		waitErr = ctx.Err()
 	}
 	truncated := outBuf.Len() > int(limit) || errBuf.Len() > int(limit)
-	result := &ExecResult{Alias: alias, Stdout: outBuf.String(), Stderr: errBuf.String(), Truncated: truncated, Write: write, Millis: time.Since(start).Milliseconds()}
+	result = &ExecResult{Alias: alias, Stdout: outBuf.String(), Stderr: errBuf.String(), Truncated: truncated, Write: write, Millis: time.Since(start).Milliseconds()}
 	if int64(len(result.Stdout)) > limit {
 		result.Stdout = result.Stdout[:limit]
 	}
@@ -112,16 +125,19 @@ func (s *Service) Exec(ctx context.Context, alias, command string) (*ExecResult,
 	switch {
 	case waitErr == nil:
 		result.ExitCode = 0
+		ticket.execution = "succeeded"
 	case errors.As(waitErr, &exitErr):
 		result.ExitCode = exitErr.ExitStatus()
+		ticket.execution = "failed"
 	case errors.Is(waitErr, context.DeadlineExceeded), errors.Is(waitErr, context.Canceled):
-		s.auditEvent("ssh-exec", alias, "error", "timeout or cancelled")
+
 		return nil, fmt.Errorf("%w: %v", ErrUnavailable, waitErr)
 	default:
 		result.ExitCode = -1
 	}
 	digest := sha256.Sum256([]byte(command))
-	s.auditEvent("ssh-exec", alias, "ok", fmt.Sprintf("exit=%d bytes=%d ms=%d sha256:%s", result.ExitCode, outBuf.Len()+errBuf.Len(), result.Millis, hex.EncodeToString(digest[:])[:16]))
+	ticket.receipt = fmt.Sprintf("exit=%d bytes=%d ms=%d sha256:%s", result.ExitCode, outBuf.Len()+errBuf.Len(), result.Millis, hex.EncodeToString(digest[:])[:16])
+
 	return result, nil
 }
 

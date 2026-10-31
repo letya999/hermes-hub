@@ -4,7 +4,9 @@ Chain: [ADR-0087](../../../docs/adr/ADR-0087-broker-bounded-sqlcipher-store.md) 
 [SPEC-0087 R1](../../../specs/active/SPEC-0087-broker-bounded-storage.md) -> этот plan -> state.yaml.
 
 Workstream: Storage reliability MVP (local planning; GitHub records not created).
-Дизайн принят 2026-10-28; implementation not started.
+Дизайн принят 2026-10-28; код импортирован 2026-10-31 в
+`chore/storage-reliability-integration`. Приёмка продолжается
+(см. evidence.md и CHG-0237).
 Previous: нет. Next: CHG-0216.
 Hard dependencies: нет.
 

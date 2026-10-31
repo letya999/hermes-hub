@@ -233,7 +233,7 @@ func TestToolHubPagesLocalized(t *testing.T) {
 		t.Errorf("wizard redirect lost lang: %q", loc)
 	}
 
-	// --- /confirm: GET renders the prompt, POST the localized outcome; a
+	// --- /confirm: GET renders status, POST cannot supply human consent; a
 	// spent nonce is the 410 gone page.
 	seed(api.Onboarding{
 		OnboardingID: "onb-conf", Phase: api.PhaseAwaitingConfirm,
@@ -242,10 +242,11 @@ func TestToolHubPagesLocalized(t *testing.T) {
 	})
 	rec = get(g.serveConfirm, "/confirm/onb-conf?t=cn1&lang=es", "")
 	assertPage("confirm-get", rec, "es",
-		page("page.confirm-title"), page("page.confirm-h1"),
-		page("page.confirm-body", "catalog-read"), page("page.confirm-btn"))
+		page("page.confirm-title"), page("page.confirm-in-chat-for", "catalog-read"))
 	rec = post(g.serveConfirm, "/confirm/onb-conf?t=cn1&lang=es", nil)
-	assertPage("confirm-post", rec, "es", page("page.confirmed-title"), page("page.confirmed-body"))
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), locale.T(locale.LangES, "page.confirm-in-chat")) {
+		t.Errorf("confirm-post: expected localized refusal, got %d", rec.Code)
+	}
 
 	seed(api.Onboarding{
 		OnboardingID: "onb-conf-fail", Phase: api.PhaseAwaitingConfirm,
@@ -253,7 +254,9 @@ func TestToolHubPagesLocalized(t *testing.T) {
 		ConfirmationNonce: "cn2", ConfirmationExpires: time.Now().Add(hour),
 	})
 	rec = post(g.serveConfirm, "/confirm/onb-conf-fail?t=cn2&lang=es", nil)
-	assertPage("confirm-fail", rec, "es", page("page.confirm-failed-title"))
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), locale.T(locale.LangES, "page.confirm-in-chat")) {
+		t.Errorf("confirm-fail: expected localized refusal, got %d", rec.Code)
+	}
 
 	seed(api.Onboarding{
 		OnboardingID: "onb-conf-gone", Phase: api.PhaseAwaitingConfirm,

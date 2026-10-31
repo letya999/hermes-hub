@@ -3,13 +3,16 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/agenttools"
+	"github.com/letya999/hermes-hub/internal/audit"
 	"github.com/letya999/hermes-hub/internal/companion"
 	"github.com/letya999/hermes-hub/internal/devcheck"
 	"github.com/letya999/hermes-hub/internal/diagnostics"
 	"github.com/letya999/hermes-hub/internal/hosting"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/migration"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/supervisor"
@@ -349,6 +352,65 @@ func run(ctx context.Context, args []string) error {
 			return fmt.Errorf("replay: unknown subcommand %q (export|run)", args[1])
 		}
 	}
+	if op == "storage" {
+		if len(args) < 2 {
+			return fmt.Errorf("usage: hubctl storage <status|cleanup>")
+		}
+		f := flag.NewFlagSet("storage", flag.ContinueOnError)
+		spoolDir := f.String("spool", "", "communication spool dir")
+		if args[1] == "cleanup" {
+			apply := f.Bool("apply", false, "apply the verified plan; default is dry-run")
+			digest := f.String("digest", "", "plan digest required with --apply")
+			retention := f.Duration("retention", 72*time.Hour, "terminal retention window")
+			if err := f.Parse(args[2:]); err != nil {
+				return err
+			}
+			return runStorageCleanup(os.Stdout, *spoolDir, *apply, *digest, *retention)
+		}
+		toolhubStore := f.String("toolhub-store", "", "ToolHub registry path")
+		if err := f.Parse(args[2:]); err != nil {
+			return err
+		}
+		return runStorageStatus(os.Stdout, *spoolDir, *toolhubStore)
+	}
+	if op == "audit" {
+		lang, ok := locale.Parse(os.Getenv("LANG"))
+		if !ok {
+			lang = locale.Default
+		}
+		usage := locale.T(lang, "hubctl.audit-rollover-usage")
+		if len(args) < 2 || args[1] != "rollover" {
+			return errors.New(usage)
+		}
+		f := flag.NewFlagSet("audit rollover", flag.ContinueOnError)
+		ledger := f.String("ledger", "", locale.T(lang, "hubctl.audit-rollover-ledger"))
+		apply := f.Bool("apply", false, locale.T(lang, "hubctl.audit-rollover-apply"))
+		digest := f.String("digest", "", locale.T(lang, "hubctl.audit-rollover-digest"))
+		if err := f.Parse(args[2:]); err != nil {
+			return err
+		}
+		if f.NArg() != 0 || *ledger == "" || *apply && *digest == "" {
+			return errors.New(usage)
+		}
+		var plan audit.LegacyPlan
+		var err error
+		if *apply {
+			plan, err = audit.RolloverLegacy(*ledger, *digest)
+		} else {
+			plan, err = audit.PlanLegacyRollover(*ledger)
+		}
+		if err != nil {
+			switch {
+			case errors.Is(err, audit.ErrStaleLegacyPlan):
+				return errors.New(locale.T(lang, "hubctl.audit-rollover-stale"))
+			case errors.Is(err, audit.ErrInvalid):
+				return errors.New(locale.T(lang, "hubctl.audit-rollover-invalid"))
+			default:
+				return errors.New(locale.T(lang, "hubctl.audit-rollover-failed"))
+			}
+		}
+		return json.NewEncoder(os.Stdout).Encode(plan)
+	}
 	if op == "spool" {
 		f := flag.NewFlagSet("spool", flag.ContinueOnError)
 		spoolDir := f.String("spool", "", "communication spool dir")
@@ -452,7 +514,7 @@ func run(ctx context.Context, args []string) error {
 		if !envSet {
 			supervisorEnv = ""
 		}
-		stopLog, err := diagnostics.HostLog(filepath.Join(filepath.Dir(*spacesRoot), ".local", "supervisor.log"))
+		stopLog, err := diagnostics.HostLog(filepath.Join(filepath.Dir(*spacesRoot), ".local", "diagnostics", "supervisor.log"))
 		if err != nil {
 			return err
 		}
@@ -528,7 +590,7 @@ func run(ctx context.Context, args []string) error {
 				explicitUser = *profile
 			}
 		})
-		return runTrace(ctx, os.Stdout, f.Arg(0), explicitUser, *spacesRoot)
+		return runTrace(ctx, os.Stdout, f.Arg(0), explicitUser, *spacesRoot, *environment)
 	}
 	if !slices.Contains([]string{"doctor", "build", "up", "down", "logs", "chat", "telegram-login", "meet-auth", "exec"}, op) {
 		return fmt.Errorf("unknown command %q", op)

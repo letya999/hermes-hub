@@ -138,6 +138,7 @@ func TestRunOutcomeColdStartBudgetExpires(t *testing.T) {
 				var calls atomic.Int32
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					calls.Add(1)
+					w.Header().Set("X-Hub-Admission", "not-dispatched")
 					w.WriteHeader(http.StatusServiceUnavailable)
 				}))
 				defer server.Close()
@@ -153,6 +154,42 @@ func TestRunOutcomeColdStartBudgetExpires(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), "runtime_unavailable") {
 				t.Fatalf("failure does not name the cause: %v", err)
+			}
+		})
+	}
+}
+
+func TestUnmarkedServiceUnavailableDoesNotReplayAdmission(t *testing.T) {
+	old, oldBudget := submitRetryBase, coldStartBudget
+	submitRetryBase = time.Millisecond
+	coldStartBudget = func() time.Duration { return 20 * time.Millisecond }
+	defer func() { submitRetryBase, coldStartBudget = old, oldBudget }()
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"job_id":"effectful","status":"uncertain"}`))
+	}))
+	defer server.Close()
+	_, err := (HTTPRunner{URL: server.URL, Auth: "fixture"}).RunOutcome(context.Background(), Job{ID: "effectful", IdempotencyKey: "same-operation", Text: "fixture"})
+	if !errors.Is(err, ErrUncertain) || calls.Load() != 1 {
+		t.Fatalf("unmarked post-dispatch 503 retried or settled: calls=%d uncertain=%t", calls.Load(), errors.Is(err, ErrUncertain))
+	}
+}
+
+func TestUnboundRuntimeFailureRemainsUncertain(t *testing.T) {
+	for _, kind := range []string{"http500", "invalid200"} {
+		t.Run(kind, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if kind == "http500" {
+					w.WriteHeader(http.StatusInternalServerError)
+				}
+				_, _ = w.Write([]byte(`invalid fixture`))
+			}))
+			defer server.Close()
+			_, err := (HTTPRunner{URL: server.URL, Auth: "fixture"}).RunOutcome(context.Background(), Job{ID: "effectful", IdempotencyKey: "same-operation", Text: "fixture"})
+			if !errors.Is(err, ErrUncertain) {
+				t.Fatal("post-dispatch reply failure was not uncertain")
 			}
 		})
 	}

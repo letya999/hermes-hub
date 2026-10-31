@@ -85,6 +85,12 @@ func TestLiveProgressTickRearmsAndAges(t *testing.T) {
 	if last.messageID != 100 || !strings.Contains(last.text, "Выполняю запрос") || !strings.Contains(last.text, "1 мин") {
 		t.Fatalf("status edit lost base text or elapsed: %+v", last)
 	}
+	g.now = func() time.Time { return base.Add(125 * time.Second) }
+	g.progressTick(ctx)
+	g.deliverOne(ctx)
+	if len(fake.edits) != 2 || !strings.Contains(fake.edits[1].text, "2 мин") {
+		t.Fatal("same-position elapsed status stopped updating")
+	}
 	// Once the run is terminal the tick produces neither actions nor edits.
 	terminal := streamEvent(job)
 	terminal.Status, terminal.LastEvent, terminal.EventID, terminal.Text = "completed", "run.completed", "done", "готово"
@@ -829,12 +835,15 @@ func TestCompactionKeepsPendingReceipts(t *testing.T) {
 	old := time.Now().Add(-400 * time.Hour)
 	receipt := func(name, deliveryID string) string {
 		t.Helper()
-		path := filepath.Join(root, "events", name+".json")
+		path := filepath.Join(root, "run-events", name+".json")
 		if err := atomicJSON(path, streamReceipt{JobID: "job-x", Position: 1, Event: hubruntime.ExecuteResponse{JobID: "job-x", EventID: name, Status: "running", LastEvent: "run.started"}, Delivery: &Delivery{ID: deliveryID}}); err != nil {
 			t.Fatal(err)
 		}
 		_ = os.Chtimes(path, old, old)
 		return path
+	}
+	if err := s.writeMappingLocked(JobMapping{JobID: "job-x", Status: "completed"}); err != nil {
+		t.Fatal(err)
 	}
 	kept := receipt("live", "job-x-event-live")
 	dropped := receipt("stale", "job-x-event-stale")
@@ -1192,7 +1201,7 @@ func TestStreamRejectsChangedBindingAndBoundsBeforeReceipt(t *testing.T) {
 	if m.EventPosition != 1 {
 		t.Fatalf("rejected event wrote state: %+v", m)
 	}
-	if err := os.WriteFile(filepath.Join(s.root, "events", "broken.json"), []byte("invalid"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(s.root, "run-events", "broken.json"), []byte("invalid"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := NewSpool(s.root); err == nil {
@@ -1231,29 +1240,40 @@ func TestHeartbeatDoesNotClobberBoundRunIdentity(t *testing.T) {
 	}
 }
 
-// A run stream that stops emitting must not pin the worker for the whole run
-// budget: the idle deadline cuts the hop and the job goes uncertain.
+// A silent run stream must cancel its HTTP hop before the run budget; durable
+// receipt persistence may outlast cancellation, and the job remains uncertain.
 func TestRunOutcomeStreamIdleDeadlineCancels(t *testing.T) {
 	s, job := streamJob(t)
 	t.Setenv("HUB_STREAM_IDLE", "50ms")
 	release := make(chan struct{})
+	cancelled := make(chan time.Duration, 1)
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", hubruntime.RunStreamContentType)
 		_ = json.NewEncoder(w).Encode(streamEvent(job))
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}
-		<-release
+		streamingAt := time.Now()
+		select {
+		case <-r.Context().Done():
+			cancelled <- time.Since(streamingAt)
+		case <-release:
+		}
 	}))
 	defer api.Close()
 	defer close(release)
-	start := time.Now()
 	outcome, err := (HTTPRunner{URL: api.URL, Auth: "secret", Spool: s, Limit: 30 * time.Second}).RunOutcome(context.Background(), job)
 	if err == nil || outcome.Status != "uncertain" {
 		t.Fatalf("silent stream outcome=%+v err=%v", outcome, err)
 	}
-	if elapsed := time.Since(start); elapsed > 5*time.Second {
-		t.Fatalf("idle stream pinned the worker %v", elapsed)
+	// Measure the idle network hop; durable receipt writes can outlast cancellation.
+	select {
+	case elapsed := <-cancelled:
+		if elapsed > 5*time.Second {
+			t.Fatalf("idle stream cancellation took %v", elapsed)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("idle cancellation did not reach the stream handler")
 	}
 }
 
@@ -1311,7 +1331,7 @@ func TestAdmittedRestartResumesWithoutSecondSubmission(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", hubruntime.RunStreamContentType)
 		event.RuntimeGeneration = "gen-2"
-		event.EventID = "observed:gen-2"
+		// The real runtime repeats the original admission ID on a new generation.
 		_ = json.NewEncoder(w).Encode(event)
 		event.Status, event.EventID, event.LastEvent = "interrupted", "terminal:interrupted", "run.interrupted"
 		_ = json.NewEncoder(w).Encode(event)
@@ -1368,7 +1388,7 @@ func TestStreamDisconnectAndStaleFramesKeepOutcomeUncertain(t *testing.T) {
 func TestStreamReceiptPersistenceFailureAndRecoveryAuthority(t *testing.T) {
 	s, job := streamJob(t)
 	event := streamEvent(job)
-	if err := os.Remove(filepath.Join(s.root, "events")); err != nil {
+	if err := os.Remove(filepath.Join(s.root, "run-events")); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.RecordStreamEvent(job, event); err == nil {
@@ -1378,7 +1398,7 @@ func TestStreamReceiptPersistenceFailureAndRecoveryAuthority(t *testing.T) {
 	if m.EventPosition != 0 || m.RunID != "" {
 		t.Fatalf("failed persistence advanced state: %+v", m)
 	}
-	if err := os.Mkdir(filepath.Join(s.root, "events"), 0700); err != nil {
+	if err := os.Mkdir(filepath.Join(s.root, "run-events"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.RecordStreamEvent(job, event); err != nil {
@@ -1393,11 +1413,11 @@ func TestStreamReceiptPersistenceFailureAndRecoveryAuthority(t *testing.T) {
 	if err := s.RebindObservation(job, event); err != nil {
 		t.Fatal(err)
 	}
-	entries, err := os.ReadDir(filepath.Join(s.root, "events"))
+	entries, err := os.ReadDir(filepath.Join(s.root, "run-events"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(s.root, "events", entries[0].Name()), []byte("invalid"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(s.root, "run-events", entries[0].Name()), []byte("invalid"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.RecordStreamEvent(job, event); err == nil {
@@ -1405,18 +1425,16 @@ func TestStreamReceiptPersistenceFailureAndRecoveryAuthority(t *testing.T) {
 	}
 }
 
-// spool/events is shared: stream receipts, slack dedup markers and event
-// subscription states coexist under it. Restart recovery must read only
-// receipt-shaped records and leave the other contracts to their owners.
+// Typed event directories keep subscription and provider records outside receipt replay.
 func TestRecoverStreamEventsIgnoresForeignEventFiles(t *testing.T) {
 	s, job := streamJob(t)
 	if err := s.RecordStreamEvent(job, streamEvent(job)); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(s.root, "events", "lv-evt.json"), []byte(`{"schedule_id":"lv-evt","seen":["a1"],"notify_count":1}`), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(s.root, "event-state", "lv-evt.json"), []byte(`{"schedule_id":"lv-evt","seen":["a1"],"notify_count":1}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(s.root, "events", "slack-marker.json"), []byte(`{"provider":"slack","event_id":"ev1"}`), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(s.root, "provider-dedup", "slack-marker.json"), []byte(`{"provider":"slack","event_id":"ev1"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := NewSpool(s.root); err != nil {
@@ -1434,12 +1452,12 @@ func TestRecoveryRejectsCrossAudienceReceipt(t *testing.T) {
 	if err := s.RecordStreamEvent(job, event); err != nil {
 		t.Fatal(err)
 	}
-	entries, err := os.ReadDir(filepath.Join(s.root, "events"))
+	entries, err := os.ReadDir(filepath.Join(s.root, "run-events"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, entry := range entries {
-		path := filepath.Join(s.root, "events", entry.Name())
+		path := filepath.Join(s.root, "run-events", entry.Name())
 		b, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
@@ -1798,10 +1816,10 @@ func TestRecoverySkipsStaleTerminalReceipt(t *testing.T) {
 	settled := streamEvent(job)
 	settled.Status, settled.LastEvent, settled.EventID, settled.Text = "completed", "run.completed", "terminal:completed", "saved answer"
 	consistent := streamReceipt{JobID: job.ID, Position: mapping.EventPosition + 2, Event: settled}
-	if err := atomicJSON(filepath.Join(s.root, "events", "straggler.json"), straggler); err != nil {
+	if err := atomicJSON(filepath.Join(s.root, "run-events", "straggler.json"), straggler); err != nil {
 		t.Fatal(err)
 	}
-	if err := atomicJSON(filepath.Join(s.root, "events", "settled.json"), consistent); err != nil {
+	if err := atomicJSON(filepath.Join(s.root, "run-events", "settled.json"), consistent); err != nil {
 		t.Fatal(err)
 	}
 	reopened, err := NewSpool(s.root)

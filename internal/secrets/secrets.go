@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -50,39 +51,63 @@ func Open(storePath, keyFile string, key []byte, backend string) (*Service, erro
 	return &Service{Backend: store}, nil
 }
 
-func (s *Service) Set(owner string, values map[string]string) ([]Info, error) {
+func (s *Service) Set(owner string, values map[string]string) (result []Info, resultErr error) {
 	if s == nil || s.Backend == nil {
 		return nil, ErrNotConfigured
 	}
 	if len(values) == 0 {
 		return nil, credstore.ErrInvalid
 	}
-	infos := make([]Info, 0, len(values))
 	names := make([]string, 0, len(values))
 	for name, value := range values {
-		locator, err := s.locatorFor(owner, name)
-		if err != nil {
+		if err := credstore.ValidateValue(name, value); err != nil {
 			return nil, err
 		}
-		if err := s.Backend.Put(locator, owner, map[string]string{name: value}); err != nil {
-			return nil, err
-		}
-		info, err := s.Backend.Info(locator, owner)
-		if err != nil {
-			return nil, err
-		}
-		if err := s.audit(audit.NewEvent("credential-change", owner, "set")); err != nil {
-			_ = s.Backend.Delete(locator, owner)
-			return nil, err
-		}
-		infos = append(infos, Info{Name: name, Status: info.Status, Locator: locator, Revision: info.Revision, TerminalExposure: info.TerminalExposure})
 		names = append(names, name)
-		if err := s.publishRegistry(owner, locator, []string{name}, false); err != nil {
+	}
+	slices.Sort(names)
+	ticket, err := s.beginMutation(mutationEvent(owner, "credential-change", "credential.set"))
+	if err != nil {
+		return nil, err
+	}
+	locators := make([]string, len(names))
+	attempted := 0
+	defer func() {
+		ticket.finish(&resultErr)
+		if resultErr != nil {
+			result = nil
+			for i := 0; i < attempted; i++ {
+				_ = s.degrade(owner, locators[i], []string{names[i]})
+			}
+		}
+	}()
+	// Resolve under durable owner admission so concurrent batches cannot reuse a stale lookup.
+	for i, name := range names {
+		locators[i], err = s.locatorFor(owner, name)
+		if err != nil {
 			return nil, err
 		}
 	}
-	slices.Sort(names)
-	return infos, nil
+	for i, name := range names {
+		replacement, err := s.replacementValues(owner, locators[i], name, values[name])
+		if err != nil {
+			return nil, err
+		}
+		ticket.execution = "unknown"
+		attempted = i + 1
+		if err := s.Backend.Put(locators[i], owner, replacement); err != nil {
+			return nil, err
+		}
+		info, err := s.Backend.Info(locators[i], owner)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.publishRegistry(owner, locators[i], []string{name}, false); err != nil {
+			return nil, err
+		}
+		result = append(result, Info{Name: name, Status: info.Status, Locator: locators[i], Revision: info.Revision, TerminalExposure: info.TerminalExposure})
+	}
+	return result, nil
 }
 
 func (s *Service) List(owner string) ([]Info, error) {
@@ -111,21 +136,23 @@ func (s *Service) Delete(owner, name string) error {
 	if err != nil {
 		return err
 	}
-	if err := s.Backend.Delete(locator, owner); err != nil {
-		return err
-	}
+	ticket, admissionErr := s.beginMutation(mutationEvent(owner, "credential-change", "credential.delete"))
+	// Requested revocation still stops every access path when audit or one cleanup leg fails.
+	effectErr := s.Backend.Delete(locator, owner)
 	if path := s.envPath(owner); path != "" {
-		_, _ = envstore.Remove(path, name, "", name)
+		_, err = envstore.Remove(path, name, "", name)
+		effectErr = errors.Join(effectErr, err)
 	}
-	event := audit.NewEvent("credential-change", owner, "delete")
-	event.Name = name
-	if err := s.audit(event); err != nil {
-		return err
+	effectErr = errors.Join(effectErr, s.publishRegistry(owner, locator, []string{name}, true))
+	if admissionErr != nil {
+		return audit.ErrUncertain
 	}
-	return s.publishRegistry(owner, locator, []string{name}, true)
+	ticket.execution = "unknown"
+	ticket.finish(&effectErr)
+	return effectErr
 }
 
-func (s *Service) Rotate(owner, name, value, connectionID string) error {
+func (s *Service) Rotate(owner, name, value, connectionID string) (resultErr error) {
 	if s == nil || s.Backend == nil {
 		return ErrNotConfigured
 	}
@@ -133,32 +160,53 @@ func (s *Service) Rotate(owner, name, value, connectionID string) error {
 	if err != nil {
 		return err
 	}
-	if err := s.Backend.Put(locator, owner, map[string]string{name: value}); err != nil {
-		_ = s.Backend.SetStatus(locator, owner, credstore.StatusDegraded)
-		if s.Registry != nil && connectionID != "" {
-			_ = s.Registry.MarkDegraded(connectionID)
+	if s.Registry != nil && connectionID != "" {
+		owned := false
+		for _, ref := range s.Registry.ConnectionsForSecret(locator, owner, []string{name}) {
+			if ref.ConnectionID == connectionID {
+				owned = true
+				break
+			}
 		}
+		if !owned {
+			return api.ErrUnauthorized
+		}
+	}
+	ticket, err := s.beginMutation(mutationEvent(owner, "credential-change", "credential.rotate"))
+	if err != nil {
+		return err
+	}
+	defer func() {
+		ticket.finish(&resultErr)
+		if resultErr != nil && ticket.execution == "unknown" {
+			_ = s.degrade(owner, locator, []string{name})
+		}
+	}()
+	if invalidErr := credstore.ValidateValue(name, value); invalidErr != nil {
+		ticket.execution = "unknown"
+		if err := s.degrade(owner, locator, []string{name}); err != nil {
+			return audit.ErrUncertain
+		}
+		ticket.execution = "failed"
+		return invalidErr
+	}
+	replacement, err := s.replacementValues(owner, locator, name, value)
+	if err != nil {
+		return err
+	}
+	ticket.execution = "unknown"
+	if err := s.Backend.Put(locator, owner, replacement); err != nil {
 		return err
 	}
 	if s.Registry != nil && connectionID != "" {
 		if _, err := s.Registry.RotateCredential(connectionID, s.Backend.Name(), locator, []string{name}); err != nil {
-			_ = s.Registry.MarkDegraded(connectionID)
-			_ = s.Backend.SetStatus(locator, owner, credstore.StatusDegraded)
 			return err
 		}
-	}
-	event := audit.NewEvent("credential-change", owner, "rotate")
-	event.Name = name
-	if err := s.audit(event); err != nil {
-		if s.Registry != nil && connectionID != "" {
-			_ = s.Registry.MarkDegraded(connectionID)
-		}
-		return err
 	}
 	return nil
 }
 
-func (s *Service) SetTerminalExposure(owner, name string, enabled bool) error {
+func (s *Service) SetTerminalExposure(owner, name string, enabled bool) (resultErr error) {
 	if s == nil || s.Backend == nil {
 		return ErrNotConfigured
 	}
@@ -166,26 +214,43 @@ func (s *Service) SetTerminalExposure(owner, name string, enabled bool) error {
 	if err != nil {
 		return err
 	}
-	if err := s.Backend.SetTerminalExposure(locator, owner, enabled); err != nil {
+	action := "credential.isolate"
+	if enabled {
+		action = "credential.expose"
+	}
+	ticket, admissionErr := s.beginMutation(mutationEvent(owner, "terminal-exposure", action))
+	if admissionErr != nil && enabled {
+		return admissionErr
+	}
+	defer func() {
+		if ticket == nil {
+			resultErr = audit.ErrUncertain
+			return
+		}
+		ticket.finish(&resultErr)
+	}()
+	if ticket != nil {
+		ticket.execution = "unknown"
+	}
+	flagErr := s.Backend.SetTerminalExposure(locator, owner, enabled)
+	path := s.envPath(owner)
+	if !enabled {
+		if path != "" {
+			_, err = envstore.Remove(path, name, "", name)
+		}
+		return errors.Join(flagErr, err)
+	}
+	if flagErr != nil {
+		return flagErr
+	}
+	values, err := s.Backend.Get(locator, owner)
+	if err != nil {
 		return err
 	}
-	path := s.envPath(owner)
-	if enabled {
-		values, err := s.Backend.Get(locator, owner)
-		if err != nil {
-			return err
-		}
-		if path != "" {
-			if _, err := envstore.Update(path, name+"="+values[name], name, ""); err != nil {
-				return err
-			}
-		}
-	} else if path != "" {
-		_, _ = envstore.Remove(path, name, "", name)
+	if path != "" {
+		_, err = envstore.Update(path, name+"="+values[name], name, "")
 	}
-	event := audit.NewEvent("terminal-exposure", owner, statusText(enabled))
-	event.Name = name
-	return s.audit(event)
+	return err
 }
 
 func (s *Service) ApplyChat(owner, text string) ([]string, string, error) {
@@ -198,6 +263,9 @@ func (s *Service) ApplyChat(owner, text string) ([]string, string, error) {
 	}
 	infos, err := s.Set(owner, values)
 	if err != nil {
+		if errors.Is(err, audit.ErrUncertain) {
+			return nil, locale.T(locale.Operator(), "secret.uncertain"), err
+		}
 		return nil, FormatStatus(locale.Operator(), nil, "rejected"), err
 	}
 	names := make([]string, 0, len(infos))
@@ -212,7 +280,7 @@ func (s *Service) Inject(auth identity.Envelope, projectedName, workloadRoot, jo
 		return Injection{}, ErrNotConfigured
 	}
 	var injected Injection
-	err := s.Registry.AuthorizeProjected(auth, projectedName, func(_ api.ProjectedTool, effective api.EffectiveBinding) error {
+	err := s.Registry.AuthorizeProjected(auth, projectedName, func(_ api.ProjectedTool, effective api.EffectiveBinding) (callbackErr error) {
 		if effective.Definition.Workload.Class == api.Shared && !effective.Definition.Workload.Sharable {
 			for _, input := range effective.Definition.Credentials {
 				if !input.PerRequest {
@@ -229,6 +297,25 @@ func (s *Service) Inject(auth identity.Envelope, projectedName, workloadRoot, jo
 		if effective.Connection != nil {
 			owner = effective.Connection.Owner.ID
 		}
+		event := audit.NewEvent("tool-call", auth.PrincipalID, "inject")
+		event.RuntimeID = auth.RuntimeID
+		event.ContextID = auth.ContextID
+		event.PolicyRevision = auth.PolicyVersion
+		if effective.Connection != nil {
+			event.ConnectionID = effective.Connection.ConnectionID
+		}
+		if effective.Credential != nil {
+			event.CredentialRevision = effective.Credential.Revision
+		}
+		event.ProjectionRevision = effective.Binding.ProjectionRevision
+		event.Action, event.CorrelationID = "credential.inject", "legacy-credentials"
+		event.Environment, event.Generation = auth.Environment, auth.Generation
+		ticket, err := s.beginMutation(event)
+		if err != nil {
+			return err
+		}
+		defer ticket.finish(&callbackErr)
+
 		values, err := s.Backend.Get(effective.Credential.Locator, owner)
 		if err != nil {
 			return err
@@ -243,6 +330,7 @@ func (s *Service) Inject(auth identity.Envelope, projectedName, workloadRoot, jo
 			}
 			injected.Env[key] = value
 		}
+		ticket.execution = "unknown"
 		workspace, err := api.OpenWorkloadWorkspace(workloadRoot, effective, jobID)
 		if err != nil {
 			return err
@@ -268,18 +356,7 @@ func (s *Service) Inject(auth identity.Envelope, projectedName, workloadRoot, jo
 			}
 			return workspace.Cleanup()
 		}
-		event := audit.NewEvent("tool-call", auth.PrincipalID, "inject")
-		event.RuntimeID = auth.RuntimeID
-		event.ContextID = auth.ContextID
-		event.PolicyRevision = auth.PolicyVersion
-		if effective.Connection != nil {
-			event.ConnectionID = effective.Connection.ConnectionID
-		}
-		if effective.Credential != nil {
-			event.CredentialRevision = effective.Credential.Revision
-		}
-		event.ProjectionRevision = effective.Binding.ProjectionRevision
-		return s.audit(event)
+		return nil
 	})
 	if err != nil {
 		if injected.Wipe != nil {
@@ -307,6 +384,30 @@ func ContainsValue(text string, values map[string]string) bool {
 		}
 	}
 	return false
+}
+
+// Existing multi-key objects retain their other values; unreadable siblings are never replaced.
+func (s *Service) replacementValues(owner, locator, name, value string) (map[string]string, error) {
+	replacement := map[string]string{name: value}
+	info, err := s.Backend.Info(locator, owner)
+	if errors.Is(err, credstore.ErrNotFound) {
+		return replacement, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !slices.Contains(info.Names, name) {
+		return nil, credstore.ErrInvalid
+	}
+	if len(info.Names) > 1 {
+		values, err := s.Backend.Get(locator, owner)
+		if err != nil {
+			return nil, err
+		}
+		replacement = maps.Clone(values)
+		replacement[name] = value
+	}
+	return replacement, nil
 }
 
 func (s *Service) locatorFor(owner, name string) (string, error) {
@@ -342,16 +443,6 @@ func (s *Service) envPath(owner string) string {
 	return ""
 }
 
-func (s *Service) audit(event audit.Event) error {
-	if s == nil || s.Audit == nil {
-		return nil
-	}
-	if event.EventID == "" {
-		event.EventID = "evt-missing"
-	}
-	return s.Audit.Append(event)
-}
-
 func (s *Service) publishRegistry(owner, locator string, names []string, revoke bool) error {
 	if s == nil || s.Registry == nil {
 		return nil
@@ -376,11 +467,4 @@ func (s *Service) publishRegistry(owner, locator string, names []string, revoke 
 		}
 	}
 	return nil
-}
-
-func statusText(enabled bool) string {
-	if enabled {
-		return "enabled"
-	}
-	return "disabled"
 }

@@ -87,6 +87,7 @@ func TestCalendarShippedAuthorizeInjectAndHTTP(t *testing.T) {
 		env, err := api.DecryptAuthorized(secrets, e)
 		return api.CredentialInjection{Environment: env}, err
 	}}
+	attachGatewayAudit(t, gateway)
 	for _, name := range []string{"list", "get", "create", "update", "delete"} {
 		write := name == "create" || name == "update" || name == "delete"
 		d := api.CalendarDefinition(write)

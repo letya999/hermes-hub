@@ -227,7 +227,7 @@ func (g *Gateway) handleGroupUpdate(ctx context.Context, update Update, message 
 		}
 		g.spool.mu.Lock()
 		name := filepath.Join(g.spool.root, "groups", strconv.FormatInt(group.ChatID, 10)+".json")
-		if err := os.MkdirAll(filepath.Dir(name), 0700); err != nil {
+		if err := g.spool.mkdirOwned(filepath.Dir(name)); err != nil {
 			g.spool.mu.Unlock()
 			return err
 		}
@@ -259,7 +259,7 @@ func (g *Gateway) handleGroupUpdate(ctx context.Context, update Update, message 
 			seen = seen[len(seen)-256:]
 		}
 		save := func() error {
-			return atomicJSON(name, groupHistory{Seen: seen, Transcript: transcript})
+			return g.spool.writeJSON(name, groupHistory{Seen: seen, Transcript: transcript})
 		}
 		mention := group.Mention
 		if mention == "" {

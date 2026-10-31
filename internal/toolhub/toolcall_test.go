@@ -30,6 +30,7 @@ func TestToolCallReturnsText(t *testing.T) {
 			"alice-principal-token-0000000000000": {auth: auth},
 		},
 	}
+	attachGatewayAudit(t, g)
 	handler, err := g.Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -80,6 +81,7 @@ func TestToolCallRejectsWriteEffect(t *testing.T) {
 			"alice-principal-token-0000000000000": {auth: auth},
 		},
 	}
+	attachGatewayAudit(t, g)
 	handler, err := g.Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -113,6 +115,7 @@ func TestToolCallRejectsForeignHeaderAndUnknown(t *testing.T) {
 			"bob-principal-token-000000000000000": {auth: bob},
 		},
 	}
+	attachGatewayAudit(t, g)
 	handler, err := g.Handler()
 	if err != nil {
 		t.Fatal(err)

@@ -330,13 +330,8 @@ func runConnector(ctx context.Context, args []string) error {
 			return err
 		}
 		gateway := &toolhub.Gateway{Store: registry, Backend: api.RoutingBackend{Provider: api.PersonalProviderBackend{}, MCP: api.MCPBackend{Root: os.Getenv("HUB_STATE"), Token: os.Getenv("TOOLHIVE_VMCP_TOKEN"), AdmissionVerifier: admission}},
-			Injector: toolhub.LocalCredentialInjector(backend),
-			AuditWrite: func(_ string, fields map[string]string) error {
-				event := audit.NewEvent("tool-call", auth.PrincipalID, fields["outcome"])
-				event.ContextID, event.RuntimeID, event.ConnectionID, event.PolicyRevision = auth.ContextID, auth.RuntimeID, fields["connection_id"], auth.PolicyVersion
-				event.ToolCallID, event.Receipt = fields["tool_call_id"], fields["receipt"]
-				return ledger.Append(event)
-			}}
+			Injector:   toolhub.LocalCredentialInjector(backend),
+			AuditWrite: toolhub.LedgerAuditWriter(ledger)}
 		result, err := gateway.CallAuthorized(ctx, auth, *toolName, arguments)
 		if err != nil {
 			return err

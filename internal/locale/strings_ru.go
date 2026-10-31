@@ -2,6 +2,13 @@ package locale
 
 func init() {
 	register(LangRU, map[string]string{
+		"hubctl.audit-rollover-usage":   "Использование: hubctl audit rollover --ledger <абсолютный путь> [--apply --digest <sha256:...>]",
+		"hubctl.audit-rollover-ledger":  "Путь к старому audit остановленного ToolHub",
+		"hubctl.audit-rollover-apply":   "Применить проверенный перенос; по умолчанию только план",
+		"hubctl.audit-rollover-digest":  "Digest плана для --apply",
+		"hubctl.audit-rollover-stale":   "План старого audit устарел; получите его заново.",
+		"hubctl.audit-rollover-invalid": "Старый audit повреждён или не допускает безопасный перенос.",
+		"hubctl.audit-rollover-failed":  "Перенос старого audit не завершился; проверьте offline-состояние перед повтором.",
 		// Language picker and /language.
 		"lang.choose":   "Выберите язык для взаимодействия:",
 		"lang.saved":    "Язык установлен: %s.",
@@ -166,9 +173,12 @@ func init() {
 		"chat.approve-usage":     "Используйте /approve <job-id> <request-id> <choice>.",
 		"chat.approve-denied":    "Запрос отклонён: подтверждение недоступно.",
 		"chat.approve-saved":     "Ответ на подтверждение сохранён.",
+		"chat.confirm-button":    "Подтвердить подключение и права",
+		"chat.confirm-saved":     "Подключение и права подтверждены.",
 		"chat.approve-scope":     "Запрос отклонён: задача или подтверждение недоступны в этом разговоре.",
 		"chat.creds-usage":       "Используйте /credentials <request-id> <код из формы Credential Broker>.",
 		"chat.creds-saved":       "Подтверждение Credential Broker сохранено. Вернитесь в Hermes и запросите статус подключения.",
+		"secret.uncertain":       "Статус: неизвестен. Проверьте исходную операцию перед повторной записью.",
 		"chat.creds-expired":     "Подтверждение отклонено или истекло. Запросите новую ссылку подключения.",
 		"chat.started":           "Готово. Вы подключены к своему Hermes-пространству.",
 		"chat.cancel-usage":      "Используйте /cancel <job-id>.",
@@ -363,6 +373,10 @@ func init() {
 		"page.done-oauth-body":          "Можно вернуться в чат. Доступ к календарю проверен.",
 		"page.done-device-body":         "Устройство авторизовано. Возвращаться в чат и писать «готово» не нужно.",
 		"page.confirm-title":            "Подтверждение MCP",
+		"page.confirm-in-chat":          "Подтвердите действие в исходном чате.",
+		"page.confirm-in-chat-for":      "Сервер %s ожидает подтверждения в исходном чате. Эта страница показывает только состояние.",
+		"page.confirm-permissions":      "Запрошенные права: %s.",
+		"page.confirm-effects":          "Затрагиваемые ресурсы: %s.",
 		"page.confirm-h1":               "Подтверждение подключения",
 		"page.confirm-body":             "Сервер %s будет подключён и получит доступ к сохранённым данным.",
 		"page.confirm-btn":              "Подтвердить подключение",

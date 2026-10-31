@@ -69,7 +69,7 @@ func loadBudget(root string) (*budgetLedger, error) {
 }
 
 func (s *Spool) saveBudgetLocked() error {
-	return atomicJSON(budgetPath(s.root), s.budget)
+	return s.writeJSON(budgetPath(s.root), s.budget)
 }
 
 // bucketLocked returns the scope's counters, rolling settled totals into a
@@ -94,12 +94,16 @@ func (s *Spool) bucketLocked(scopeID string) *scopeBudget {
 const installationScope = "_install"
 
 // spoolLimits are host-only admission ceilings read from the environment at
-// open; agents cannot raise them. Zero disables a ceiling.
+// open; agents cannot raise them. Disk limits must be finite and positive.
 type spoolLimits struct {
 	MaxPendingPerScope int
 	MaxPendingTotal    int
 	ScopeTokenDaily    int64
 	MaxBytes           int64
+	MaxNextWrite       int64
+	LifecycleBytes     int64
+	MaxOwnedFiles      int
+	LifecycleFiles     int
 	// MaxDeliveries bounds ordinary pending outbox entries; control-plane
 	// deliveries claim a reserved lane and are exempt.
 	MaxDeliveries int
@@ -115,6 +119,10 @@ func limitsFromEnv() spoolLimits {
 		MaxPendingTotal:       intFromEnv("HUB_SPOOL_MAX_PENDING_TOTAL", 128),
 		ScopeTokenDaily:       int64(intFromEnv("HUB_SCOPE_TOKEN_DAILY", 0)),
 		MaxBytes:              int64(intFromEnv("HUB_SPOOL_MAX_BYTES", 256<<20)),
+		MaxNextWrite:          int64(intFromEnv("HUB_SPOOL_MAX_NEXT_WRITE_BYTES", 64<<20)),
+		LifecycleBytes:        int64(intFromEnv("HUB_SPOOL_LIFECYCLE_RESERVE_BYTES", 32<<20)),
+		MaxOwnedFiles:         intFromEnv("HUB_SPOOL_MAX_OWNED_FILES", 65536),
+		LifecycleFiles:        intFromEnv("HUB_SPOOL_LIFECYCLE_RESERVE_FILES", 128),
 		MaxDeliveries:         intFromEnv("HUB_SPOOL_MAX_DELIVERIES", 1024),
 		MaxParallelPerContext: intFromEnv("HUB_CONTEXT_MAX_PARALLEL", 8),
 	}
@@ -143,19 +151,9 @@ func (s *Spool) checkCeilingsLocked(scopeID string, estimate int64) error {
 			return fmt.Errorf("scope %s daily token budget exhausted", scopeID)
 		}
 	}
-	if s.limits.MaxBytes > 0 {
-		var bytes int64
-		entries, err := os.ReadDir(filepath.Join(s.root, "pending"))
-		if err != nil {
+	if s.storage != nil {
+		if err := s.storage.CheckAdmission(); err != nil {
 			return err
-		}
-		for _, entry := range entries {
-			if info, err := entry.Info(); err == nil {
-				bytes += info.Size()
-			}
-		}
-		if bytes >= s.limits.MaxBytes {
-			return fmt.Errorf("spool storage ceiling reached (%d bytes)", s.limits.MaxBytes)
 		}
 	}
 	return nil

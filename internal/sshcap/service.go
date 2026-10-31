@@ -5,7 +5,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -92,14 +94,27 @@ func (s *Service) Close() {
 	}
 	s.closed = true
 	close(s.done)
-	for _, sh := range s.shells {
-		sh.close()
+	var shells, tunnels []string
+	for id := range s.shells {
+		shells = append(shells, id)
 	}
-	for _, t := range s.tunnels {
-		t.close()
+	for id := range s.tunnels {
+		tunnels = append(tunnels, id)
 	}
 	s.mu.Unlock()
+	for _, id := range shells {
+		reportCleanup(s.ShellClose(id))
+	}
+	for _, id := range tunnels {
+		reportCleanup(s.TunnelClose(id))
+	}
 	_ = s.root.Close()
+}
+
+func reportCleanup(err error) {
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		slog.Error("ssh cleanup failed", "error_class", "uncertain")
+	}
 }
 
 func (s *Service) alive() error {
@@ -148,8 +163,7 @@ func (s *Service) Hosts() []HostView {
 func (s *Service) host(alias string) (*Host, error) {
 	h, ok := s.cfg.Hosts[alias]
 	if !ok {
-		s.auditEvent("ssh", alias, "denied", "unknown alias")
-		return nil, fmt.Errorf("%w: unknown host alias %q", ErrNotFound, alias)
+		return nil, errors.Join(fmt.Errorf("%w: unknown host alias", ErrNotFound), s.auditEvent("ssh", alias, "denied", "unknown alias"))
 	}
 	return h, nil
 }
@@ -220,24 +234,26 @@ func (s *Service) acquire() (func(), error) {
 	}
 }
 
-// auditEvent appends a bounded "ssh" event; op names the operation so the
-// ledger stays filterable without new kinds. Audit failures never unblock a
-// call.
-func (s *Service) auditEvent(op, alias, outcome, receipt string) {
-	if s.ledger == nil {
-		return
-	}
+// auditEvent records a decision without admitting an external effect.
+func (s *Service) auditEvent(op, alias, outcome, receipt string) error {
 	event := audit.NewEvent("ssh", s.auth.PrincipalID, outcome)
 	event.Name = alias
+	if s.cfg == nil || s.cfg.Hosts[alias] == nil {
+		event.Name = "unknown"
+	}
 	event.ContextID = s.auth.ContextID
 	event.RuntimeID = s.auth.RuntimeID
 	event.PolicyRevision = s.auth.PolicyVersion
-	receipt = op + " " + receipt
-	if len(receipt) > 240 {
-		receipt = receipt[:240]
-	}
-	event.Receipt = receipt
-	_ = s.ledger.Append(event)
+	event.Environment = s.auth.Environment
+	event.Generation = s.auth.Generation
+	event.Action = op
+	event.OperationID = event.EventID
+	event.Phase = "decision"
+	event.Authorization = "deny"
+	event.Execution = "not_started"
+	event.Delivery = "not_applicable"
+	event.Receipt = op + " " + receipt
+	return s.ledger.Append(event)
 }
 
 // commandPolicy validates and classifies a remote command. It returns the
@@ -252,8 +268,7 @@ func (s *Service) commandPolicy(h *Host, alias, command string) (string, bool, e
 	sudo := strings.HasPrefix(command, "sudo ") || strings.HasPrefix(command, "sudo\t")
 	if sudo {
 		if h.Sudo != "passwordless" {
-			s.auditEvent("ssh-exec", alias, "denied", "sudo not permitted")
-			return "", false, fmt.Errorf("%w: sudo is not permitted on %q", ErrDenied, alias)
+			return "", false, errors.Join(fmt.Errorf("%w: sudo is not permitted", ErrDenied), s.auditEvent("ssh-exec", alias, "denied", "sudo not permitted"))
 		}
 		effective = strings.TrimSpace(command[len("sudo "):])
 		if strings.HasPrefix(effective, "-n ") {
@@ -265,13 +280,11 @@ func (s *Service) commandPolicy(h *Host, alias, command string) (string, bool, e
 	}
 	if matchAny(h.WriteCommands, effective) {
 		if !s.grants.Write {
-			s.auditEvent("ssh-exec", alias, "denied", "write grant required")
-			return "", false, fmt.Errorf("%w: command requires the ssh_write grant", ErrDenied)
+			return "", false, errors.Join(fmt.Errorf("%w: command requires the ssh_write grant", ErrDenied), s.auditEvent("ssh-exec", alias, "denied", "write grant required"))
 		}
 		return effective, true, nil
 	}
-	s.auditEvent("ssh-exec", alias, "denied", "command not allowlisted")
-	return "", false, fmt.Errorf("%w: command is not allowlisted on %q", ErrDenied, alias)
+	return "", false, errors.Join(fmt.Errorf("%w: command is not allowlisted", ErrDenied), s.auditEvent("ssh-exec", alias, "denied", "command not allowlisted"))
 }
 
 // pathPolicy checks a remote path against an allowlist.
@@ -280,8 +293,7 @@ func (s *Service) pathPolicy(h *Host, alias, kind string, patterns []string, p s
 		return fmt.Errorf("%w: path must be absolute and single-line", ErrInvalid)
 	}
 	if !matchAny(patterns, p) {
-		s.auditEvent("ssh-file", alias, "denied", kind+" path not allowlisted")
-		return fmt.Errorf("%w: path is not allowlisted on %q", ErrDenied, alias)
+		return errors.Join(fmt.Errorf("%w: path is not allowlisted", ErrDenied), s.auditEvent("ssh-file", alias, "denied", kind+" path not allowlisted"))
 	}
 	return nil
 }
