@@ -37,7 +37,7 @@ func TestPreparedBundleDiscoveryAndTelegramGate(t *testing.T) {
 			t.Fatalf("bundle ID %s missing", id)
 		}
 	}
-	if telegram.Source.CommitSHA != "26f1632b2b07cca16fa8f172fe645477921db9ed" || !telegram.AuthBeforeToolsList || telegram.RuntimeEnvironment["TELEGRAM_EXPOSED_TOOLS"] != "read-only" || telegram.Stateful || !slices.Equal(telegram.PythonExtras, []string{"proxy"}) {
+	if telegram.Source.CommitSHA != "5efcafb593def92943d31827ce6a0471025379ea" || !telegram.AuthBeforeToolsList || telegram.RuntimeEnvironment["TELEGRAM_EXPOSED_TOOLS"] != "read-only" || telegram.Stateful || !slices.Equal(telegram.PythonExtras, []string{"proxy"}) {
 		t.Fatalf("unsafe Telegram entry: %+v", telegram)
 	}
 	if !slices.Equal(telegram.ProxyEnvironment, []string{"TELEGRAM_PROXY_HOST", "TELEGRAM_PROXY_PORT"}) {

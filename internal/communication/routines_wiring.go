@@ -127,6 +127,14 @@ func (s *Spool) RecordRoutineFailure(scheduleID, digest string) (bool, error) {
 	return s.rt.RecordRoutineFailure(scheduleID, digest)
 }
 
+func (s *Spool) MarkRoutineFailurePending(scheduleID, digest string) (bool, error) {
+	return s.rt.MarkRoutineFailurePending(scheduleID, digest)
+}
+
+func (s *Spool) ReleaseRoutineFailurePending(scheduleID, digest string) error {
+	return s.rt.ReleaseRoutineFailurePending(scheduleID, digest)
+}
+
 func (s *Spool) ClearRoutineFailure(scheduleID string) error {
 	return s.rt.ClearRoutineFailure(scheduleID)
 }

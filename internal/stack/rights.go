@@ -38,6 +38,7 @@ var settingsFieldRights = map[string]string{
 	"CapabilityGeneration":  "CapabilityGeneration",
 	"CLIRegistries":         "CLIRegistries",
 	"CLIToolboxes":          "CLIToolboxes",
+	"Hosting":               "Hosting",
 	"Tools":                 "Tools",
 	"Ingress":               "Ingress",
 	"TelegramAuth":          "TelegramAuth",
@@ -53,6 +54,7 @@ var settingsFieldRights = map[string]string{
 	"OrganizationDocsDir":   "OrganizationDocsDir",
 	"OrganizationSkillsDir": "OrganizationSkillsDir",
 	"OrganizationRole":      "OrganizationRole",
+	"OrganizationProfile":   "OrganizationProfile",
 	"OrgActions":            "OrgActions",
 	"GoogleEmail":           "GoogleEmail",
 	"GitLabHost":            "GitLabHost",
@@ -88,6 +90,7 @@ type mcpRights struct {
 // rightsView is the canonical rights-bearing subset of Settings hashed into
 // HUB_POLICY_VERSION. Field names pair with settingsFieldRights.
 type rightsView struct {
+	Hosting               *HostingSettings              `json:"hosting,omitempty"`
 	CapabilityMode        string                        `json:"capability_mode,omitempty"`
 	CapabilityProfileID   string                        `json:"capability_profile_id,omitempty"`
 	CapabilityGeneration  uint64                        `json:"capability_generation,omitempty"`
@@ -108,6 +111,7 @@ type rightsView struct {
 	OrganizationDocsDir   string                        `json:"organization_docs_dir,omitempty"`
 	OrganizationSkillsDir string                        `json:"organization_skills_dir,omitempty"`
 	OrganizationRole      string                        `json:"organization_role,omitempty"`
+	OrganizationProfile   string                        `json:"organization_profile,omitempty"`
 	OrgActions            []string                      `json:"org_actions,omitempty"`
 	GoogleEmail           string                        `json:"google_email,omitempty"`
 	GitLabHost            string                        `json:"gitlab_host,omitempty"`
@@ -142,6 +146,7 @@ func rightsProjection(s Settings) rightsView {
 		OrganizationDocsDir:   s.OrganizationDocsDir,
 		OrganizationSkillsDir: s.OrganizationSkillsDir,
 		OrganizationRole:      s.OrganizationRole,
+		OrganizationProfile:   s.OrganizationProfile,
 		OrgActions:            s.OrgActions,
 		GoogleEmail:           s.GoogleEmail,
 		GitLabHost:            s.GitLabHost,
@@ -163,6 +168,10 @@ func rightsProjection(s Settings) rightsView {
 	}
 	if s.defaultGlobalSkills {
 		view.GlobalSkillsDir = ""
+	}
+	if s.Has("hosting") {
+		hosting := s.Hosting
+		view.Hosting = &hosting
 	}
 	return view
 }

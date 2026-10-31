@@ -1,5 +1,5 @@
 ---
-status: active (warm-idle default superseded: 30 min per SPEC-0053/ADR-0036, not five minutes)
+status: active (warm-idle default superseded: 30 min per SPEC-0053/ADR-0036, not five minutes; rule 4 per-context job serialization superseded by per-conversation lanes per SPEC-0089/ADR-0090)
 title: Scale-to-zero Hermes runtime lifecycle
 ---
 

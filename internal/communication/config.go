@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"gopkg.in/yaml.v3"
@@ -46,26 +47,25 @@ type Config struct {
 	// toolhub-tokens.json: sibling-space runtime tokens enrolled there are
 	// equally valid control-plane bearers. The principal still comes from
 	// X-Hub-Principal — the token only proves the caller is a hub service.
-	ControlTokensFile string        `yaml:"-"`
-	controlAuthExtra  []string      `yaml:"-"`
-	ListenAddr        string        `yaml:"-"`
-	FormOrigin        string        `yaml:"-"`
-	NativeCron        string        `yaml:"-"`
-	STTCommand        string        `yaml:"-"`
-	TTSCommand        string        `yaml:"-"`
-	STTURL            string        `yaml:"-"`
-	STTAuth           string        `yaml:"-"`
-	TTSURL            string        `yaml:"-"`
-	TTSAuth           string        `yaml:"-"`
-	TTSVoice          string        `yaml:"-"`
-	TTSUploadURL      string        `yaml:"-"`
-	STTTimeout        time.Duration `yaml:"-"`
-	MediaMaxDuration  int           `yaml:"-"`
-	SpoolDir          string        `yaml:"spool_dir"`
-	RuntimeURL        string        `yaml:"-"`
-	RuntimeAuth       string        `yaml:"-"`
-	PollTimeout       time.Duration `yaml:"-"`
-	HermesCommand     string        `yaml:"-"`
+	ControlTokensFile string                 `yaml:"-"`
+	controlAuthExtra  []string               `yaml:"-"`
+	ListenAddr        string                 `yaml:"-"`
+	FormOrigin        string                 `yaml:"-"`
+	NativeCron        string                 `yaml:"-"`
+	STTURL            string                 `yaml:"-"`
+	STTAuth           string                 `yaml:"-"`
+	TTSURL            string                 `yaml:"-"`
+	TTSAuth           string                 `yaml:"-"`
+	TTSVoice          string                 `yaml:"-"`
+	TTSVoices         map[locale.Lang]string `yaml:"-"`
+	TTSUploadURL      string                 `yaml:"-"`
+	STTTimeout        time.Duration          `yaml:"-"`
+	MediaMaxDuration  int                    `yaml:"-"`
+	SpoolDir          string                 `yaml:"spool_dir"`
+	RuntimeURL        string                 `yaml:"-"`
+	RuntimeAuth       string                 `yaml:"-"`
+	PollTimeout       time.Duration          `yaml:"-"`
+	HermesCommand     string                 `yaml:"-"`
 	// ToolHubURL is the ToolHub control address (e.g. http://toolhub:8090)
 	// used by /connections when the local registry is unavailable in
 	// broker-approve mode. The caller's token comes from ControlTokensFile.
@@ -94,6 +94,31 @@ type Config struct {
 	// schedule draft names a key; URLs never come from the probe, so internal
 	// addresses stay an explicit operator decision (SPEC-0059 R5.5).
 	ServiceEndpoints map[string]ServiceEndpoint `yaml:"service_endpoints,omitempty"`
+	// SkillsByPrincipalDir is the per-principal effective-view root: each
+	// subdirectory <principal>/ holds one space's generated skills-effective
+	// tree, letting the shared gateway resolve `/name` and `$name` against the
+	// caller's own catalog instead of the owner's (M24 acceptance).
+	SkillsByPrincipalDir string `yaml:"-"`
+	// SkillsDir is the mounted read-only effective skill view (/skills) used
+	// for harness-side /name and $name expansion (SPEC-0083 R6.5); empty
+	// disables expansion entirely.
+	SkillsDir string `yaml:"-"`
+	// SkillsStore is the owner's writable skill store; skill-scoped
+	// credential forms persist under its private .state dir (R8.2). Empty
+	// disables the unmanaged persist path — managed relays via RuntimeURL.
+	SkillsStore string `yaml:"-"`
+	// SkillsStoreByDir is the per-principal writable-store root: each
+	// subdirectory <principal>/ is that space's skills/ store so /v1/skill-git
+	// writes drafts and .sources mirrors into the CALLER's store — publish
+	// still applies through the owning runtime (R5.3). Empty means only the
+	// owner's single SkillsStore is reachable.
+	SkillsStoreByDir string `yaml:"-"`
+	// CLIExec submits bounded git invocations to the controller /cli-exec;
+	// nil fails every skill-git action closed (R10.3).
+	CLIExec api.CLIExecFunc `yaml:"-"`
+	// GitLabHost is the configured self-hosted GitLab an install URL may
+	// name in addition to gitlab.com (R10.1).
+	GitLabHost string `yaml:"-"`
 }
 
 // ServiceEndpoint is one registered probe service: the URL the hub POSTs
@@ -252,10 +277,19 @@ func ConfigFromEnv() (Config, error) {
 		if err != nil {
 			return Config{}, err
 		}
+		config.GitLabHost = os.Getenv("HUB_GITLAB_HOST")
+		config.CLIExec, err = api.CLIExecFromEnv()
+		if err != nil {
+			return Config{}, err
+		}
 		config.Workers = workersFromEnv()
 		config.SpoolRetention = spoolRetentionFromEnv()
 		config.SpoolMaxFiles, config.SpoolMaxArchiveBytes, config.SpoolMaxUsageEntries = spoolLimitsFromEnv()
 		config.MockDir = os.Getenv("HUB_MOCK_DIR")
+		config.SkillsDir = os.Getenv("HUB_SKILLS_EFFECTIVE")
+		config.SkillsByPrincipalDir = os.Getenv("HUB_SKILLS_BY_PRINCIPAL")
+		config.SkillsStoreByDir = os.Getenv("HUB_SKILLS_STORE_BY")
+		config.SkillsStore = os.Getenv("HUB_SKILLS_STORE")
 		fillChannelSecrets(&config)
 		return config, nil
 	}
@@ -299,6 +333,15 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	config.SpoolMaxFiles, config.SpoolMaxArchiveBytes, config.SpoolMaxUsageEntries = spoolLimitsFromEnv()
+	config.SkillsDir = os.Getenv("HUB_SKILLS_EFFECTIVE")
+	config.SkillsByPrincipalDir = os.Getenv("HUB_SKILLS_BY_PRINCIPAL")
+	config.SkillsStoreByDir = os.Getenv("HUB_SKILLS_STORE_BY")
+	config.SkillsStore = os.Getenv("HUB_SKILLS_STORE")
+	config.GitLabHost = os.Getenv("HUB_GITLAB_HOST")
+	config.CLIExec, err = api.CLIExecFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
 	fillChannelSecrets(&config)
 	return config, nil
 }
@@ -378,13 +421,15 @@ func intFromEnv(name string, fallback int) int {
 	return fallback
 }
 
-// workersFromEnv bounds the job worker pool; default 4 keeps it under the
-// supervisor's default runtime cap. Context serialization is unaffected.
+// workersFromEnv bounds the job worker pool; default 32 gives conversation
+// lanes (ADR-0090) headroom — workers are goroutines holding an HTTP stream.
+// Concurrency is still capped per context by HUB_CONTEXT_MAX_PARALLEL and
+// globally by this pool.
 func workersFromEnv() int {
 	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_WORKERS"))); err == nil && n > 0 {
 		return n
 	}
-	return 4
+	return 32
 }
 
 func fillChannelSecrets(config *Config) {
@@ -406,13 +451,22 @@ func fillChannelSecrets(config *Config) {
 	config.TelegramAuthAPIID = os.Getenv("HUB_TELEGRAM_AUTH_API_ID")
 	config.TelegramAuthAPIHash = os.Getenv("HUB_TELEGRAM_AUTH_API_HASH")
 	config.NativeCron = os.Getenv("HUB_NATIVE_CRON")
-	config.STTCommand = os.Getenv("HUB_STT_COMMAND")
-	config.TTSCommand = os.Getenv("HUB_TTS_COMMAND")
+	// SPEC-0082 R2: transcription/synthesis is service-only (HUB_STT_URL /
+	// HUB_TTS_URL). The in-image command workers are gone; the gateway reports
+	// the typed unavailable status when no URL is configured.
 	config.STTURL = os.Getenv("HUB_STT_URL")
 	config.STTAuth = envOr("HUB_STT_AUTH", os.Getenv("HUB_MEDIA_AUTH"))
 	config.TTSURL = os.Getenv("HUB_TTS_URL")
 	config.TTSAuth = envOr("HUB_TTS_AUTH", os.Getenv("HUB_MEDIA_AUTH"))
 	config.TTSVoice = os.Getenv("HUB_TTS_VOICE")
+	for _, lang := range []locale.Lang{locale.LangEN, locale.LangRU, locale.LangKK, locale.LangES} {
+		if voice := strings.TrimSpace(os.Getenv("HUB_TTS_VOICE_" + strings.ToUpper(string(lang)))); voice != "" {
+			if config.TTSVoices == nil {
+				config.TTSVoices = map[locale.Lang]string{}
+			}
+			config.TTSVoices[lang] = voice
+		}
+	}
 	config.TTSUploadURL = os.Getenv("HUB_TTS_UPLOAD_URL")
 	config.ToolHubURL = strings.TrimRight(strings.TrimSpace(os.Getenv("HUB_TOOLHUB_URL")), "/")
 }

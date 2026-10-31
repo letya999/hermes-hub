@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/locale"
 )
 
 type masterHold struct {
@@ -19,6 +21,28 @@ type masterHold struct {
 	Reason        string `json:"reason"`
 	NoticeID      string `json:"notice_id"`
 	NoticePending bool   `json:"notice_pending"`
+}
+
+// holdsSnapshot returns the last fetched hold projection — the pure read
+// the spool's under-lock admission check needs (no I/O under the lock).
+func (g *Gateway) holdsSnapshot() []masterHold {
+	g.holdsMu.Lock()
+	defer g.holdsMu.Unlock()
+	return g.holdsLast
+}
+
+// refreshHolds fetches the hold projection at the public enqueue boundary;
+// enqueueLocked itself only reads the snapshot so no caller waits on I/O
+// while holding the spool lock.
+func (g *Gateway) refreshHolds(ctx context.Context) error {
+	holds, err := g.masterHolds(ctx)
+	if err != nil {
+		return err
+	}
+	g.holdsMu.Lock()
+	g.holdsLast = holds
+	g.holdsMu.Unlock()
+	return nil
 }
 
 func (g *Gateway) masterHolds(ctx context.Context) ([]masterHold, error) {
@@ -74,7 +98,7 @@ func (g *Gateway) syncMasterNotices(ctx context.Context) (bool, error) {
 			}
 			continue
 		}
-		text := "Работа приостановлена администратором (" + hold.Reason + "). Для возобновления обратитесь к администратору. Уже выполненные внешние действия не отменены; неопределённые результаты требуют проверки."
+		text := locale.T(locale.LangOf(user.WorkspaceDir), "hold.notice", hold.Reason)
 		if err := g.queueDelivery(ctx, hold.NoticeID, user.TelegramIDs[0], 0, text); err != nil {
 			return pending, err
 		}

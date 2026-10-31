@@ -182,6 +182,45 @@ func TestExtractMediaArtifactsStagesWorkspaceFiles(t *testing.T) {
 	}
 }
 
+// A deliverable written at the workspace root — the observed book task saved
+// psihologiya_vliyaniya_chaldini.html beside the artifacts/ tree — must still
+// reach the chat: the run-end scan stages it under the matching bucket.
+// Working files (notes, scratch, unknown extensions) stay undelivered.
+func TestScanArtifactsStagesTopLevelDeliverables(t *testing.T) {
+	dir := t.TempDir()
+	old := workspace
+	workspace = dir
+	defer func() { workspace = old }()
+	writeArtifact(t, artifactRoot(), "documents/listed.pdf", "in-tree")
+	writeArtifact(t, dir, "book.html", "<html>book</html>")
+	writeArtifact(t, dir, "chart.png", "png-bytes")
+	writeArtifact(t, dir, "clip.mp4", "mp4-bytes")
+	writeArtifact(t, dir, "report.pdf", "pdf-bytes")
+	writeArtifact(t, dir, "todo.md", "working notes")
+	writeArtifact(t, dir, "scratch.py", "print(1)")
+	writeArtifact(t, dir, ".env", "TOKEN=x")
+	oldDeliverable := writeArtifact(t, dir, "old-report.pdf", "stale")
+	if err := os.Chtimes(oldDeliverable, time.Now().Add(-time.Hour), time.Now().Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	got := scanArtifacts(time.Now().Add(-time.Minute))
+	var paths []string
+	for _, ref := range got {
+		paths = append(paths, ref.Path)
+		if ref.Error != "" {
+			t.Fatalf("scan produced an error ref: %+v", ref)
+		}
+	}
+	want := []string{"documents/book.html", "documents/listed.pdf", "documents/report.pdf", "images/chart.png", "videos/clip.mp4"}
+	if strings.Join(paths, "|") != strings.Join(want, "|") {
+		t.Fatalf("top-level deliverables not staged: %v", paths)
+	}
+	staged, err := os.ReadFile(filepath.Join(artifactRoot(), "documents", "book.html"))
+	if err != nil || string(staged) != "<html>book</html>" {
+		t.Fatalf("staged copy missing: %v %q", err, staged)
+	}
+}
+
 func TestExtractMediaArtifactsDropsEmptyAndDupes(t *testing.T) {
 	dir := t.TempDir()
 	old := workspace
@@ -428,5 +467,32 @@ func TestArtifactEndpointBoundsAndMime(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("badjson=%d", rec.Code)
+	}
+}
+
+func TestStageMediaArtifactStagesUpstreamMediaCache(t *testing.T) {
+	ws, st := t.TempDir(), t.TempDir()
+	oldW := workspace
+	workspace = ws
+	defer func() { workspace = oldW }()
+	t.Setenv("HERMES_HOME", filepath.Join(st, "hermes"))
+	// Upstream caches MCP image/audio blocks under <hermes>/cache/... and emits
+	// an absolute MEDIA:<path> marker; that tree sits outside /workspace yet is
+	// a legitimate delivery source.
+	cacheFile := writeArtifact(t, filepath.Join(st, "hermes", "cache", "images"), "img_x.png", "png-bytes")
+	ref, ok := stageMediaArtifact(cacheFile)
+	if !ok || ref.Name != "img_x.png" || ref.Mime != "image/png" {
+		t.Fatalf("media-cache ref=%+v ok=%v", ref, ok)
+	}
+	if _, err := os.Stat(filepath.Join(artifactRoot(), "images", "img_x.png")); err != nil {
+		t.Fatalf("staged copy missing: %v", err)
+	}
+	// A cache path must not escape containment via symlink to outside.
+	outside := writeArtifact(t, filepath.Join(st, "outside"), "secret.txt", "nope")
+	link := filepath.Join(st, "hermes", "cache", "images", "linked.png")
+	if err := os.Symlink(outside, link); err == nil {
+		if ref, ok := stageMediaArtifact(link); ok {
+			t.Fatalf("cache symlink escaped containment: %+v", ref)
+		}
 	}
 }

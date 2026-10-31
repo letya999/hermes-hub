@@ -217,30 +217,52 @@ func (s *Store) managedSelfInstallsLocked(auth identity.Envelope, profile api.Ca
 		return nil
 	}
 	admitted := map[string]bool{}
-	for _, onboarding := range s.onboardings {
-		if (onboarding.Mode != api.OnboardingSelfInstall && onboarding.Mode != api.OnboardingRemote) || onboarding.BindingID == "" ||
-			onboarding.PrincipalID != auth.PrincipalID || onboarding.ContextID != auth.ContextID ||
-			onboarding.RuntimeID != auth.RuntimeID || onboarding.PolicyVersion != auth.PolicyVersion {
+	for id, binding := range s.bindings {
+		if binding.Status != api.ActiveStatus {
 			continue
 		}
-		if onboarding.Phase != api.PhaseConfirmed && onboarding.Phase != api.PhaseEnabled && onboarding.Phase != api.PhaseDisabled {
+		onboarding, ok := s.selfInstallOnboardingLocked(id)
+		if !ok || onboarding.PrincipalID != auth.PrincipalID || onboarding.ContextID != auth.ContextID || onboarding.RuntimeID != auth.RuntimeID || onboarding.PolicyVersion != auth.PolicyVersion {
 			continue
 		}
-		admitted[onboarding.BindingID] = true
+		admitted[id] = true
 	}
 	return admitted
 }
 
-// selfInstallWritesLocked reports whether the owning onboarding enabled
-// write-effect tools through the human-confirmed connector_allow_writes
-// step. Default off.
+// A credential rotation creates a new binding ID. The confirmed self-install
+// provenance follows only a revoked predecessor on the same owner, connection,
+// immutable definition version and policy generation.
 func (s *Store) selfInstallOnboardingLocked(bindingID string) (api.Onboarding, bool) {
+	binding, exists := s.bindings[bindingID]
+	if !exists {
+		return api.Onboarding{}, false
+	}
+	var inherited api.Onboarding
+	var found bool
 	for _, onboarding := range s.onboardings {
+		if (onboarding.Mode != api.OnboardingSelfInstall && onboarding.Mode != api.OnboardingRemote) ||
+			(onboarding.Phase != api.PhaseConfirmed && onboarding.Phase != api.PhaseEnabled && onboarding.Phase != api.PhaseDisabled) {
+			continue
+		}
 		if onboarding.BindingID == bindingID {
 			return onboarding, true
 		}
+		old, ok := s.bindings[onboarding.BindingID]
+		if !ok || old.Status != api.RevokedStatus || onboarding.Phase == api.PhaseDisabled ||
+			old.ConnectionID == "" || old.ConnectionID != binding.ConnectionID ||
+			old.DefinitionID != binding.DefinitionID || old.DefinitionVersion != binding.DefinitionVersion ||
+			old.PrincipalID != binding.PrincipalID || old.ContextID != binding.ContextID ||
+			old.RuntimeID != binding.RuntimeID || old.PolicyVersion != binding.PolicyVersion ||
+			binding.CredentialRevision <= old.CredentialRevision {
+			continue
+		}
+		if !found || !onboarding.WritesEnabled {
+			inherited = onboarding
+			found = true
+		}
 	}
-	return api.Onboarding{}, false
+	return inherited, found
 }
 
 func (s *Store) selfInstallWritesLocked(bindingID string) bool {

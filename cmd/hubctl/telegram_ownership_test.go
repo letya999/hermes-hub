@@ -4,7 +4,30 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/letya999/hermes-hub/internal/stack"
 )
+
+func TestTelegramOwnershipCheckAppliesOnlyToGatewaySpaces(t *testing.T) {
+	// Member spaces declare ingress:telegram but deliver through the org
+	// gateway — running the ownership check for them always conflicts with
+	// the org's live communication-hub. Only spaces that render a gateway
+	// may claim the bot token.
+	infraTrue := true
+	infraFalse := false
+	member := stack.Settings{Infra: &infraFalse, Ingress: []string{"telegram"}}
+	infra := stack.Settings{Infra: &infraTrue, Ingress: []string{"telegram"}}
+	plain := stack.Settings{Infra: &infraTrue}
+	if telegramOwnershipCheckApplies(member) {
+		t.Fatal("member space must not run the bot-ownership check")
+	}
+	if !telegramOwnershipCheckApplies(infra) {
+		t.Fatal("infra space with telegram must run the bot-ownership check")
+	}
+	if telegramOwnershipCheckApplies(plain) {
+		t.Fatal("infra space without telegram has no bot token to check")
+	}
+}
 
 func TestTelegramOwnershipRejectsAnotherRunningStackWithoutExposingToken(t *testing.T) {
 	const token = "synthetic-private-token"

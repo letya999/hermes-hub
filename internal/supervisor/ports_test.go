@@ -186,3 +186,23 @@ func TestEnsureRefusesForeignSameNameContainer(t *testing.T) {
 		t.Fatalf("foreign container removed: %v", removed)
 	}
 }
+
+// A restored runtime record whose container is already gone must not block
+// respawn after a policy rotation: removing nothing is a no-op, not an error.
+func TestEnsureRespawnsAfterStalePolicyWhenContainerMissing(t *testing.T) {
+	command := func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "inspect" {
+			return nil, errors.New("no such container")
+		}
+		return []byte(""), nil
+	}
+	m, root := testManager(t, command, func(context.Context, string, string) error { return nil })
+	b := binding(root)
+	key := runtimeKey(b)
+	m.mu.Lock()
+	m.items[key] = &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway", Generation: "gen-9", Container: "ghost", State: Stopped, PolicyVersion: "policy-old", Managed: true}, leases: map[string]Lease{}, restored: true}
+	m.mu.Unlock()
+	if _, err := m.Ensure(context.Background(), b); err != nil {
+		t.Fatalf("missing stale container blocked respawn: %v", err)
+	}
+}

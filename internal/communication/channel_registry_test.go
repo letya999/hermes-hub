@@ -245,6 +245,11 @@ func TestRoutineOriginFollowsChannelCaps(t *testing.T) {
 	if !strings.Contains(got.Instructions, `"origin_job_id":"rec-origin"`) {
 		t.Fatalf("routine-origin channel lost its pin: %q", got.Instructions)
 	}
+	// The owner's workspace language rides every run's instructions so the
+	// agent answers in it — testConfig pins alice to ru.
+	if !strings.Contains(got.Instructions, "language is Русский (ru)") {
+		t.Fatalf("run instructions lost the owner language hint: %q", got.Instructions)
+	}
 }
 
 // A channel whose delivery targets can be re-bound after enqueue opts into
@@ -381,5 +386,15 @@ func TestInboundJobUsesChannelEnvelopeAndPresence(t *testing.T) {
 	}
 	if len(fake.presence) == 0 {
 		t.Fatal("typing-capable channel got no accept-time presence")
+	}
+}
+
+// A spool built standalone (channelFor(nil, ...)) binds nil-gateway closures:
+// RouteBlockedNotice resolves the owner through UserByPrincipal, so a nil
+// gateway must report no verified home — not dereference it.
+func TestNilGatewayUserByPrincipalFailsClosed(t *testing.T) {
+	var g *Gateway
+	if u := g.telegramDeps().UserByPrincipal("alice"); u.ID != "" {
+		t.Fatalf("nil gateway resolved a user: %+v", u)
 	}
 }

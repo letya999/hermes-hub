@@ -1,0 +1,44 @@
+schema: 1
+change: CHG-0189
+title: Watch tool contract discipline + event-watch discoverability
+status: in_progress
+branch: fix/m23-live-wake
+updated: 2026-10-28
+phase: implementation
+adr: ADR-0082
+spec: SPEC-0081
+issues: ["#324", "#332"]
+slices:
+  s1_contract_discipline:
+    state: green
+    evidence: tools_docs_test.go — every HubToolsDefinition tool must appear in docs/tools.md; AGENTS.md + engineering.md record the single-changeset rule
+  s2_discoverability:
+    state: green
+    evidence: prompt_contract.go monitoring paragraph + snapshot test; routine_create/watch_subscribe descriptions; validate.go probe-kind and probe-args refusals point to watch_subscribe
+  s3_per_source_cadence:
+    state: green
+    evidence: commodel.WaitCapableProbeTool + WatchProbe.min_interval_seconds (5..3600, stream-only); streamPoll sleeps declared cadence; next_cursor persisted on stream batches
+  s4_surface:
+    state: green
+    evidence: watch_resume in catalog/dispatch/MCP/docs; catalog 5.3.1 with delivery/filter/min_interval_seconds/sources on watch_subscribe
+  s5_multi_source:
+    state: green
+    evidence: probe.sources fanout ≤32 under concurrency 8; per-source cursors/errors/dedup (label|id); merged batch → one wake with [label] attribution; Event.Raw compacted JSON feeds filters via input()
+  s6_sample:
+    state: green
+    evidence: POST /v1/routines/{id}/sample owner-scoped; watch_sample op in dispatch/catalog/docs/e2e E2E-174; per-source errors surfaced; candidate-filter dry run; no durable side effects
+gates:
+  unit_focused: green (agenttools, communication, stack, commodel — targeted runs)
+  just_check: green (86.14% coverage; cmd/toolhub TempDir flake passed on rerun)
+  live_projection: green (114 tools incl. 6 watch_* + sources + watch_sample for artem_two; policies rev12/rev10, profiles rev14/rev15, bindings 5.3.1)
+  live_sample_smoke: green (POST /sample on tg-github-harness-stream-v1 returned raw event JSON + verdict, no side effects)
+  live_watch_matrix: green (broker ledger-limit fixed: config max_ledger_bytes 64MiB->256MiB; sink=notify on w-test-teo/multisrc2/settled2 delivered telegram-sent; source-qualified dedup "teo|id" seen live; poll watch get-drafts notify_count=1; web watcher api.github.com/zen detected value change + delivered; resume dedup: no re-notify on seen event)
+  live_agent_e2e: pending (user telegram retest; sink=agent wake proven earlier at 21:05-21:06 via harness watch)
+notes:
+  - Found+fixed live: explicit wait args >= call budget deadlocked streams -> streamProbeWithin clamps to (budget-5).
+  - Found+fixed live: serialized connector queues waits -> probeRound splits wait bound across source share; call budgets 60s/45s (streams/sample) absorb queueing.
+  - Found+fixed infra: credential-broker journal hit max_ledger_bytes (64MiB) -> poisoned -> all mutations 503. Raised to 256MiB in volume config + spaces/local/broker/config.json; restart replayed under new limit.
+  - Global routine floor 60s untouched; cadence is per-source via stream probe only.
+  - SPEC-0081 R1.6 cursor/next_cursor envelope semantics now held by the stream path too.
+  - Existing lifecycle fixtures gained min_interval_seconds=60 — fixture update, no relaxation.
+  - Catalog bumped 5.3.0→5.3.1: sources arg + watch_sample + input()/emit contract in description and prompt contract.

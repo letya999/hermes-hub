@@ -54,6 +54,14 @@ type MaterializeOptions struct {
 	// merged onto the materialized config and re-merged onto the expected
 	// config at attestation. Nil means the reviewed zero template.
 	Context *ContextConfig
+	// Browser is the render-time hub sidecar grant (SPEC-0083): which
+	// endpoints the reviewed settings admitted and whether mutation tools
+	// joined the surface. Zero value renders no browser servers.
+	Browser BrowserGrant
+	// User is the space principal: the browser sidecar hostname embeds it
+	// (browser-<user>), so the reconstruction cannot derive it from the file
+	// under review and takes it from HUB_USER_ID instead.
+	User string
 }
 
 // MaterializeHermesConfig renders the effective Hermes config on the host so
@@ -195,7 +203,9 @@ func validateManagedSourceConfig(configPath string, opts MaterializeOptions) err
 		// expected source matches the operator-rendered file.
 		tools["image_gen"] = ToolEntry{Via: ToolViaToolHub}
 	}
-	expected, err := yaml.Marshal(managedHermesConfig(Settings{Model: name, ModelURL: url, Timezone: zone, Tools: tools, Web: opts.Web, ImageGen: opts.ImageGen}))
+	settings := Settings{Model: name, ModelURL: url, Timezone: zone, Tools: tools, Web: opts.Web, ImageGen: opts.ImageGen, User: opts.User}
+	applyBrowserGrant(&settings, opts.Browser)
+	expected, err := yaml.Marshal(managedHermesConfig(settings))
 	if err != nil {
 		return err
 	}
@@ -207,6 +217,34 @@ func validateManagedSourceConfig(configPath string, opts MaterializeOptions) err
 		return fmt.Errorf("managed Hermes source differs from the reviewed zero-capability template")
 	}
 	return nil
+}
+
+// applyBrowserGrant reconstructs the browser admission the reviewed render
+// computed: a Tools entry reproduces Has("browser")/Has("browser_act") and a
+// synthesized governance view replays the per-section decisions, so
+// managedMCPServers emits exactly the granted endpoints — a grant narrower
+// than the rendered file is unreviewed drift and fails attestation.
+func applyBrowserGrant(s *Settings, grant BrowserGrant) {
+	// The carried grant is the sole authority: a workspace wish in the
+	// caller's settings cannot widen what the reviewed render admitted.
+	delete(s.Tools, "browser")
+	if grant == (BrowserGrant{}) {
+		return
+	}
+	if s.Tools == nil {
+		s.Tools = map[string]ToolEntry{}
+	}
+	s.Tools["browser"] = ToolEntry{Via: ToolViaMCP, Tools: map[string]bool{"act": grant.Act}}
+	effect := func(on bool) string {
+		if on {
+			return api.RuleAllow
+		}
+		return api.RuleDeny
+	}
+	s.gov = &toolGovernance{decisions: map[string]api.PolicyDecision{
+		api.SectionHubBrowser: {Effect: effect(grant.Persistent)},
+		"hub:browser_guest":   {Effect: effect(grant.Guest)},
+	}}
 }
 
 // applyContextConfig merges the declared context-control section onto the
@@ -298,11 +336,14 @@ func ValidateManagedEffectiveConfig(configPath string, s Settings, opts Material
 	// container; without it a carved-out web block can never be reproduced.
 	s.Web = opts.Web
 	s.ImageGen = opts.ImageGen
+	s.User = opts.User
+	applyBrowserGrant(&s, opts.Browser)
 	expected := managedHermesConfig(s)
-	expected["mcp_servers"] = M{"toolhub": M{
+	servers := expected["mcp_servers"].(M)
+	servers["toolhub"] = M{
 		"url": opts.ToolHubEndpoint, "timeout": toolHubCallTimeoutSeconds,
 		"skip_preflight": true, "headers": M{"Authorization": "Bearer ${" + tokenEnv + "}"},
-	}}
+	}
 	if opts.ToolHubReconnect {
 		expected["approvals"] = M{"mcp_reload_confirm": false}
 	}

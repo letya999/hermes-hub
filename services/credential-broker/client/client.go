@@ -138,6 +138,10 @@ func (c *Client) Grant(ctx context.Context, id string, in v1.GrantRequest) (out 
 	e = c.Do(ctx, "POST", "/v1/credentials/"+id+"/grants", in, &out)
 	return
 }
+func (c *Client) GetGrant(ctx context.Context, id string) (out v1.Grant, e error) {
+	e = c.Do(ctx, "GET", "/v1/grants/"+id, nil, &out)
+	return
+}
 func (c *Client) Acquire(ctx context.Context, in v1.AcquireLease) (out v1.Lease, e error) {
 	e = c.Do(ctx, "POST", "/v1/leases", in, &out)
 	return

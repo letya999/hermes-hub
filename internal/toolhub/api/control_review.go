@@ -91,6 +91,12 @@ func DefaultSourceReviewerWithCatalogs(artifactsDir, seccompPath string, catalog
 			resolution.Ledger = append(resolution.Ledger, candidateLedgerEntries(preparedCandidate, false, time.Now().UTC().Format(time.RFC3339))...)
 			enrichResolution(&resolution)
 		}
+		// A declared interactive-authentication server is classified, not
+		// imitated: no credential form, build or pull is fabricated for a
+		// scenario the reviewed contract cannot support.
+		if resolution.Connection.Interactive {
+			return SourceReview{}, fmt.Errorf("%w: server requires interactive authentication", ErrUnsupportedAuth)
+		}
 		if resolution.State == "ready" {
 			ApplyLaunchState(&config, resolution.Launch)
 		}
@@ -149,12 +155,15 @@ func DefaultSourceReviewerWithCatalogs(artifactsDir, seccompPath string, catalog
 		if len(imported.Definition.Credentials) == 0 {
 			MergeConnectionForDefinition(resolution.Connection, &imported.Definition)
 		}
+		built := imported
 		imported, _, err = PreflightImportedArtifact(ctx, imported, artifactsDir)
 		if review, ok := ReviewFromCredentialGate(imported, err, &resolution); ok {
 			return review, nil
 		}
 		if err != nil {
-			return SourceReview{}, err
+			// The failed probe zeroes the packet; the caller still needs the
+			// built evidence so a credential retry can reuse the artifact.
+			return SourceReview{Definition: built.Definition, Recipe: &resolution}, err
 		}
 		return SourceReview{
 			Definition: imported.Definition, Permissions: ToolNames(imported.Definition),

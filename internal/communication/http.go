@@ -1,6 +1,7 @@
 package communication
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -23,11 +24,17 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("/v1/tasks", g.handleTasks)
 	mux.HandleFunc("/v1/tasks/", g.handleTasks)
 	mux.HandleFunc("/v1/inbound/", g.handleInbound)
+	mux.HandleFunc("/v1/hooks/", g.handleHooks)
+	mux.HandleFunc("/v1/assignments", g.handleAssignments)
+	mux.HandleFunc("/v1/assignments/", g.handleAssignmentItem)
 	mux.HandleFunc("/v1/mock/message", g.handleMockMessage)
 	mux.HandleFunc("/v1/mock/outbox", g.handleMockOutbox)
 	mux.HandleFunc("/v1/credential-forms", g.handleCredentialFormRequest)
+	mux.HandleFunc("/v1/skill-drafts", g.handleSkillDraftRequest)
+	mux.HandleFunc("/v1/skill-git", g.handleSkillGit)
 	mux.HandleFunc("/v1/prepare-outcome", g.handlePrepareOutcome)
 	mux.HandleFunc("/credentials/", g.serveCredentialForm)
+	mux.HandleFunc("/skill-drafts/", g.serveSkillDraft)
 	g.registerTelegramAuth(mux)
 	return mux
 }
@@ -342,6 +349,27 @@ func (g *Gateway) handleRoutineItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
+	case r.Method == http.MethodPost && action == "sample":
+		var req struct {
+			Filter string `json:"filter"`
+		}
+		if r.ContentLength > 0 && decodeJSON(r, &req) != nil {
+			http.Error(w, "invalid sample request", http.StatusBadRequest)
+			return
+		}
+		toolCall := func(ctx context.Context, principal string, probe *WatchProbe) ([]byte, error) {
+			return g.toolCallProbeWithin(ctx, principal, probe, sampleCallBudget)
+		}
+		sample, err := g.sampleRoutine(r.Context(), id, caller, req.Filter, toolCall)
+		if err != nil {
+			status := http.StatusBadRequest
+			if errors.Is(err, ErrRoutineNotOwned) {
+				status = http.StatusForbidden
+			}
+			http.Error(w, err.Error(), status)
+			return
+		}
+		writeJSON(w, sample)
 	case r.Method == http.MethodPost && (action == "" || action == "resume"):
 		var patch map[string]json.RawMessage
 		if decodeJSON(r, &patch) != nil {
@@ -402,6 +430,34 @@ func (g *Gateway) handleInbound(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func (g *Gateway) handleHooks(w http.ResponseWriter, r *http.Request) {
+	caller, ok := g.authorizeControl(r)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/v1/hooks/")
+	body, err := io.ReadAll(io.LimitReader(r.Body, 64*1024))
+	if err != nil || len(body) == 0 {
+		http.Error(w, "bad payload", http.StatusBadRequest)
+		return
+	}
+	card, err := g.spool.GetRoutine(id, caller)
+	if err != nil || card.Schedule.Probe == nil || card.Schedule.Probe.Kind != "hook" {
+		http.NotFound(w, r)
+		return
+	}
+	if err := g.spool.rt.IntakeHook(id, body, g.now().UTC()); err != nil {
+		http.Error(w, "intake failed", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
 }
 
 func decodeJSON(r *http.Request, v any) error {

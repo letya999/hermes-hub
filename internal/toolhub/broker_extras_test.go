@@ -230,7 +230,7 @@ func TestBrokerExtrasAvoidBoundContractCollisions(t *testing.T) {
 		{Name: "GITLAB_PROJECT_ID"},
 	}
 	definition.CredentialContractID = "gitlab-pat"
-	definition.CredentialContractRevision = 2
+	definition.CredentialContractRevision = 3
 	definition.CredentialContractEnv = map[string]string{
 		"GITLAB_PERSONAL_ACCESS_TOKEN": "GITLAB_PERSONAL_ACCESS_TOKEN",
 		"GITLAB_TOKEN":                 "GITLAB_TOKEN",
@@ -277,7 +277,7 @@ func TestBindReviewedContractRegistersPinnedPreparedContract(t *testing.T) {
 		{Name: "GITLAB_PROJECT_ID"},
 	}
 	definition.CredentialContractID = "gitlab-pat"
-	definition.CredentialContractRevision = 2
+	definition.CredentialContractRevision = 3
 	definition.CredentialContractEnv = map[string]string{
 		"GITLAB_PERSONAL_ACCESS_TOKEN": "GITLAB_PERSONAL_ACCESS_TOKEN",
 		"GITLAB_API_URL":               "GITLAB_API_URL",
@@ -313,8 +313,8 @@ func TestBindReviewedContractRegistersPinnedPreparedContract(t *testing.T) {
 	if err := control.bindReviewedContract(t.Context(), aliceAuth(), &definition); err != nil {
 		t.Fatal(err)
 	}
-	if registered.ID != "gitlab-pat" || registered.Revision != 2 {
-		t.Fatalf("registered %+v, want reviewed gitlab-pat@2", registered)
+	if registered.ID != "gitlab-pat" || registered.Revision != 3 {
+		t.Fatalf("registered %+v, want reviewed gitlab-pat@3", registered)
 	}
 	if len(registered.Fields) != 3 || len(registered.Deliveries) != 4 {
 		t.Fatalf("synthesized contract was registered instead of the reviewed one: %+v", registered)

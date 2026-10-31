@@ -22,6 +22,7 @@ type (
 	RoutineTiming     = commodel.RoutineTiming
 	RoutineWindow     = commodel.RoutineWindow
 	WatchProbe        = commodel.WatchProbe
+	WatchProbeSource  = commodel.WatchProbeSource
 	ProbeNeed         = commodel.ProbeNeed
 	RenderStep        = commodel.RenderStep
 	ExtractStep       = commodel.ExtractStep

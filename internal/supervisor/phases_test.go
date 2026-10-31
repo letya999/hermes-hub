@@ -355,6 +355,7 @@ func TestReconcileObservesKnownRun(t *testing.T) {
 		return []byte("running"), nil
 	}, func(context.Context, string, string) error { return nil })
 	b := binding(root)
+	b.PolicyVersion = controlTestPolicy(t, root)
 	runtime, err := m.Ensure(context.Background(), b)
 	if err != nil {
 		t.Fatal(err)
@@ -419,6 +420,7 @@ func TestReconcileReplaysIdempotencyKeyWhenRunIDUnknown(t *testing.T) {
 		return []byte("running"), nil
 	}, func(context.Context, string, string) error { return nil })
 	b := binding(root)
+	b.PolicyVersion = controlTestPolicy(t, root)
 	runtime, err := m.Ensure(context.Background(), b)
 	if err != nil {
 		t.Fatal(err)
@@ -491,6 +493,7 @@ func TestReconcileSettlesLostAdmission(t *testing.T) {
 		return []byte("running"), nil
 	}, func(context.Context, string, string) error { return nil })
 	b := binding(root)
+	b.PolicyVersion = controlTestPolicy(t, root)
 	runtime, err := m.Ensure(context.Background(), b)
 	if err != nil {
 		t.Fatal(err)
@@ -557,6 +560,7 @@ func TestReconcileAttemptLeaseReleasedWhenUnresolved(t *testing.T) {
 		return []byte("running"), nil
 	}, func(context.Context, string, string) error { return nil })
 	b := binding(root)
+	b.PolicyVersion = controlTestPolicy(t, root)
 	runtime, err := m.Ensure(context.Background(), b)
 	if err != nil {
 		t.Fatal(err)
@@ -623,6 +627,7 @@ func TestReconcileDeliversOnce(t *testing.T) {
 		return []byte("running"), nil
 	}, func(context.Context, string, string) error { return nil })
 	b := binding(root)
+	b.PolicyVersion = controlTestPolicy(t, root)
 	runtime, err := m.Ensure(context.Background(), b)
 	if err != nil {
 		t.Fatal(err)
@@ -701,6 +706,7 @@ func TestUnconfirmedPastBudgetFailsWithCause(t *testing.T) {
 		return []byte("running"), nil
 	}, func(context.Context, string, string) error { return nil })
 	b := binding(root)
+	b.PolicyVersion = controlTestPolicy(t, root)
 	runtime, err := m.Ensure(context.Background(), b)
 	if err != nil {
 		t.Fatal(err)
@@ -761,6 +767,7 @@ func TestSweepReconcilesUnconfirmed(t *testing.T) {
 		return []byte("running"), nil
 	}, func(context.Context, string, string) error { return nil })
 	b := binding(root)
+	b.PolicyVersion = controlTestPolicy(t, root)
 	runtime, err := m.Ensure(context.Background(), b)
 	if err != nil {
 		t.Fatal(err)
@@ -816,6 +823,7 @@ func TestExpireUncertainDefersUnconfirmedWithinBudget(t *testing.T) {
 		return []byte("running"), nil
 	}, func(context.Context, string, string) error { return nil })
 	b := binding(root)
+	b.PolicyVersion = controlTestPolicy(t, root)
 	runtime, err := m.Ensure(context.Background(), b)
 	if err != nil {
 		t.Fatal(err)

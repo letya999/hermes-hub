@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"io"
 	"os"
@@ -13,7 +14,9 @@ import (
 	"testing"
 
 	"github.com/letya999/hermes-hub/internal/credstore"
+	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/supervisor"
+	"gopkg.in/yaml.v3"
 )
 
 // hubctl up shares the supervisor's warm-retention default: bare flags must
@@ -48,6 +51,43 @@ func TestCLIWorkflow(t *testing.T) {
 	}
 }
 
+// hubctl doctor surfaces the effective-view skills report: entries the agent
+// catalog hides (ineligible, hidden) are still operator-visible.
+func TestDoctorPrintsSkillsSection(t *testing.T) {
+	ctx := context.Background()
+	dir := filepath.Join(t.TempDir(), "owner")
+	if err := run(ctx, []string{"init", "--dir", dir, "--user", "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	agentPath := filepath.Join(dir, "agent.yaml")
+	raw, err := os.ReadFile(agentPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := strings.Replace(string(raw), `model: ""`, `model: "m1"`, 1)
+	cfg = strings.Replace(cfg, `model_url: ""`, `model_url: "http://model-relay:8318/v1"`, 1)
+	if err := os.WriteFile(agentPath, []byte(cfg), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "secrets.prod.env"), []byte("OPENAI_API_KEY=fake\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	idxDir := filepath.Join(dir, "generated", "skills-effective")
+	if err := os.MkdirAll(idxDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	idx := `{"schema":1,"revision":"r1","skills":[{"name":"stuck","source":"user","eligible":false,"missing":["connector:gitlab"]}]}`
+	if err := os.WriteFile(filepath.Join(idxDir, "index.json"), []byte(idx), 0644); err != nil {
+		t.Fatal(err)
+	}
+	out := captureOutput(t, func() error {
+		return run(ctx, []string{"doctor", "--dir", dir})
+	})
+	if !strings.Contains(out, "Skills: 1 effective") || !strings.Contains(out, `stuck [user] INELIGIBLE, missing: connector:gitlab`) {
+		t.Fatalf("doctor missing skills report:\n%s", out)
+	}
+}
+
 func TestCLIOrganizationWorkflow(t *testing.T) {
 	root := t.TempDir()
 	org := filepath.Join(root, "organizations", "acme")
@@ -63,6 +103,225 @@ func TestCLIOrganizationWorkflow(t *testing.T) {
 	}
 	if err := run(context.Background(), []string{"org-init", "--org-dir", org}); err == nil {
 		t.Fatal("org-init without organization accepted")
+	}
+}
+
+// `hubctl init --profile` stamps the chosen provisioning profile's files.
+func TestCLIInitProfile(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	profileDir := filepath.Join(root, "policies", "profiles", "dev")
+	if err := os.MkdirAll(profileDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profileDir, "workspace.yaml"), []byte("tools: {}\n# dev-wishes\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	space := filepath.Join(root, "spaces", "carol")
+	if err := run(ctx, []string{"init", "--dir", space, "--user", "carol", "--profile", "dev"}); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := os.ReadFile(filepath.Join(space, "workspace.yaml"))
+	if err != nil || string(workspace) != "tools: {}\n# dev-wishes\n" {
+		t.Fatalf("profile workspace not stamped: %q %v", workspace, err)
+	}
+}
+
+// `hubctl org sync-members` provisions every member space idempotently with
+// the member's resolved profile; dry-run reports without writing.
+func TestCLIOrgSyncMembers(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	orgDir := filepath.Join(root, "organizations", "acme")
+	if err := run(ctx, []string{"org-init", "--org", "acme", "--org-dir", orgDir, "--user", "alice"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := stack.InitOrganization(orgDir, "acme", "alice"); err == nil {
+		t.Fatal("org-init overwrote")
+	}
+	orgSettings, err := stack.ReadOrganization(orgDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orgSettings.Members["bob"] = stack.OrgMember{Role: "member", Profile: "lead"}
+	if err := os.MkdirAll(filepath.Join(orgDir, "profiles", "lead"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(orgDir, "profiles", "lead", "workspace.yaml"), []byte("tools: {}\n# lead\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := yaml.Marshal(orgSettings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(orgDir, "settings.yaml"), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	spacesRoot := filepath.Join(root, "spaces")
+
+	// Dry-run reports both members without creating anything.
+	out, err := captureStdout(t, func() error {
+		return run(ctx, []string{"org", "sync-members", "--org", "acme", "--org-dir", orgDir, "--spaces", spacesRoot, "--dry-run"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "alice") || !strings.Contains(out, "bob") {
+		t.Fatalf("dry-run report: %q", out)
+	}
+	if _, err := os.Stat(filepath.Join(spacesRoot, "bob")); !os.IsNotExist(err) {
+		t.Fatal("dry-run created a space")
+	}
+
+	if err := run(ctx, []string{"org", "sync-members", "--org", "acme", "--org-dir", orgDir, "--spaces", spacesRoot}); err != nil {
+		t.Fatal(err)
+	}
+	workspace, _ := os.ReadFile(filepath.Join(spacesRoot, "bob", "workspace.yaml"))
+	if string(workspace) != "tools: {}\n# lead\n" {
+		t.Fatalf("member profile not stamped: %q", workspace)
+	}
+	// Second run is idempotent: reports existing, creates nothing.
+	out, err = captureStdout(t, func() error {
+		return run(ctx, []string{"org", "sync-members", "--org", "acme", "--org-dir", orgDir, "--spaces", spacesRoot})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"created":[]`) {
+		t.Fatalf("second run not idempotent: %q", out)
+	}
+}
+
+// `hubctl profile grants` renders a profile's grants.yaml into a policy draft
+// revision (defaults swapped, ceiling untouched); only the confirmed operator
+// capability path can commit it, and the store still rejects anything past
+// the organization ceiling (R9.5).
+func TestProfileGrantsIssuedByOperatorOnly(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	space := filepath.Join(root, "spaces", "alice")
+	digest := "sha256:" + strings.Repeat("a", 64)
+	profileDir := filepath.Join(root, "policies", "profiles", "ops")
+	if err := os.MkdirAll(profileDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	grants := "rules:\n  - capability_id: files\n    implementation_digest: " + digest +
+		"\n    action: read\n    resource: workspace\n    path_prefix: docs\n    limits: {output_bytes: 1024, timeout_seconds: 5}\n"
+	if err := os.WriteFile(filepath.Join(profileDir, "grants.yaml"), []byte(grants), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(ctx, []string{"init", "--dir", space, "--user", "alice", "--profile", "ops"}); err != nil {
+		t.Fatal(err)
+	}
+
+	rule := map[string]any{"capability_id": "files", "implementation_digest": digest,
+		"action": "read", "resource": "workspace", "path_prefix": "docs",
+		"limits": map[string]any{"output_bytes": 1024, "timeout_seconds": 5}}
+	policy := map[string]any{
+		"schema": 1, "policy_id": "acme-ops", "organization": "acme", "members": []string{"alice"},
+		"revision": 1, "issued_by": "operator", "issued_at": "2026-01-01T00:00:00Z",
+		"reason": "acme ops baseline", "status": "active", "ceiling": []any{rule},
+	}
+	policyBody, _ := json.Marshal(policy)
+	policyPath := filepath.Join(root, "policy.json")
+	if err := os.WriteFile(policyPath, policyBody, 0600); err != nil {
+		t.Fatal(err)
+	}
+	draftPath := filepath.Join(root, "draft.json")
+	if err := run(ctx, []string{"profile", "grants", "--dir", space, "--profile", "ops", "--policy", policyPath, "--out", draftPath}); err != nil {
+		t.Fatal(err)
+	}
+	var draft map[string]any
+	draftBody, err := os.ReadFile(draftPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(draftBody, &draft); err != nil {
+		t.Fatal(err)
+	}
+	defaults, _ := draft["defaults"].([]any)
+	if len(defaults) != 1 || defaults[0].(map[string]any)["path_prefix"] != "docs" {
+		t.Fatalf("grants did not land in policy defaults: %s", draftBody)
+	}
+	if draft["revision"] != float64(2) {
+		t.Fatalf("draft revision not bumped: %v", draft["revision"])
+	}
+
+	// The draft has no authority until an operator confirms it; the capability
+	// path then commits it, and the ceiling check still applies.
+	store := filepath.Join(root, "toolhub-store.json")
+	if err := run(ctx, []string{"capability", "--kind", "policy", "--file", draftPath, "--toolhub-store", store}); err == nil {
+		t.Fatal("unconfirmed policy accepted")
+	}
+	if err := run(ctx, []string{"capability", "--kind", "policy", "--file", draftPath, "--toolhub-store", store, "--confirm"}); err != nil {
+		t.Fatalf("confirmed in-ceiling policy rejected: %v", err)
+	}
+}
+
+// `hubctl profile diff|apply` performs 3-way updates via profile.lock: files
+// the user never touched take the new profile content; customized files are
+// preserved and reported (R9.7).
+func TestProfileApplyKeepsCustomizedFiles(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	profileDir := filepath.Join(root, "policies", "profiles", "ops")
+	for name, body := range map[string]string{
+		"profile.yaml":   "version: 1\n",
+		"workspace.yaml": "tools: {}\n# ops v1\n",
+		"agent.yaml":     "model: base\n# ops v1\n",
+	} {
+		writeProfileFixture(t, profileDir, name, body)
+	}
+	space := filepath.Join(root, "spaces", "alice")
+	if err := run(ctx, []string{"init", "--dir", space, "--user", "alice", "--profile", "ops"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The owner edits agent.yaml; the profile then moves workspace to v2.
+	writeProfileFixture(t, space, "agent.yaml", "model: custom\n# alice edits\n")
+	writeProfileFixture(t, profileDir, "workspace.yaml", "tools: {}\n# ops v2\n")
+	writeProfileFixture(t, profileDir, "agent.yaml", "model: base\n# ops v2\n")
+	writeProfileFixture(t, profileDir, "profile.yaml", "version: 2\n")
+
+	out, err := captureStdout(t, func() error {
+		return run(ctx, []string{"profile", "diff", "--dir", space})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report map[string]any
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("diff report: %v %q", err, out)
+	}
+	if !slices.Contains(report["updates"].([]any), "workspace.yaml") ||
+		!slices.Contains(report["customized"].([]any), "agent.yaml") {
+		t.Fatalf("3-way report wrong: %s", out)
+	}
+
+	if err := run(ctx, []string{"profile", "apply", "--dir", space}); err != nil {
+		t.Fatal(err)
+	}
+	workspace, _ := os.ReadFile(filepath.Join(space, "workspace.yaml"))
+	if string(workspace) != "tools: {}\n# ops v2\n" {
+		t.Fatalf("untouched file not updated: %q", workspace)
+	}
+	agent, _ := os.ReadFile(filepath.Join(space, "agent.yaml"))
+	if string(agent) != "model: custom\n# alice edits\n" {
+		t.Fatalf("customized file overwritten: %q", agent)
+	}
+	lock, _ := os.ReadFile(filepath.Join(space, "profile.lock"))
+	if !strings.Contains(string(lock), "version: 2") {
+		t.Fatalf("lock not advanced: %q", lock)
+	}
+}
+
+func writeProfileFixture(t *testing.T, dir, name, body string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0600); err != nil {
+		t.Fatal(err)
 	}
 }
 

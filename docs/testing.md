@@ -1,6 +1,6 @@
 ---
 description: Test pyramid and evidence rules — unit/race, contract probes, Docker gates, mock channels, live acceptance.
-last_verified: 2026-10-24
+last_verified: 2026-10-26
 ---
 
 # Testing
@@ -93,3 +93,7 @@ copied broker source excluded from the denominator). Windows zero-statement
 profile rows are accepted by the coverage parser. When a gate is
 unavailable locally (no Docker, no provider account) — report it
 unavailable, never substitute a lighter check as equivalent.
+
+## Hosting regression tests
+
+`internal/hosting` covers owner binding, writer fencing, immutable snapshot isolation, quota/recovery, audit pressure, share revocation and HTTP gates. `internal/toolhub` checks hosting inspect/admission/relay and serialized fleet reservations; `internal/agenttools` checks the four site tools through the private API. `cmd/cellinit` tests bounded destination-fixed relay contracts. Native resource/browser/sish acceptance is separate; see [hosting](services/hosting.md).

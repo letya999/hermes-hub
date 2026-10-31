@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 const (
@@ -84,6 +85,7 @@ func ApplyPreflightToolList(imported *ImportedArtifact, tools []ToolSpec) (Confi
 		return ConfirmedToolContract{}, fmt.Errorf("%w: imported artifact required", ErrInvalid)
 	}
 	AlignImportedEntrypoint(imported)
+	tools = applyCuratedReadTools(imported.Definition.Source, tools)
 	contract := ConfirmedToolContract{Source: ToolContractPreflight, Tools: append([]ToolSpec(nil), tools...)}
 	if err := validateConfirmedToolContract(contract); err != nil {
 		return ConfirmedToolContract{}, err
@@ -98,6 +100,32 @@ func ApplyPreflightToolList(imported *ImportedArtifact, tools []ToolSpec) (Confi
 		return ConfirmedToolContract{}, err
 	}
 	return contract, nil
+}
+
+// applyCuratedReadTools upgrades a probed tool to read when the prepared
+// catalog curates it as read (e.g. POST search/query endpoints the upstream
+// server never annotates readOnlyHint). The list is owner-authored, not
+// provider text; unlisted tools keep the probe's fail-closed verdict.
+func applyCuratedReadTools(source DefinitionSource, tools []ToolSpec) []ToolSpec {
+	repository := strings.TrimSpace(source.Repository)
+	if repository == "" {
+		return tools
+	}
+	entry, ok, err := PreparedForRepository(repository, strings.TrimSpace(source.Subfolder))
+	if err != nil || !ok || len(entry.ReadTools) == 0 {
+		return tools
+	}
+	curated := make(map[string]bool, len(entry.ReadTools))
+	for _, name := range entry.ReadTools {
+		curated[name] = true
+	}
+	out := append([]ToolSpec(nil), tools...)
+	for i := range out {
+		if curated[out[i].Name] {
+			out[i].Effect = ReadEffect
+		}
+	}
+	return out
 }
 
 // AttachConfirmedToolContract stamps an imported review packet with a tool

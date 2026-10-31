@@ -224,6 +224,12 @@ func envReference(value string) string {
 // one fork per health tick.
 var hubChildResults sync.Map
 
+// hubChildGrace bounds how long a spawned child may live before it counts as
+// healthy: a live stdio server stays up waiting on input, a dead-on-init one
+// exits inside the window. A dying child still has to boot first, so tests
+// re-exec'ing an instrumented binary under load widen it.
+var hubChildGrace = 1500 * time.Millisecond
+
 // hubChildCheck proves the hub stdio child actually starts — the failure
 // classes env resolution cannot see (missing or broken binary). It runs only
 // when the env check passed; unresolved plumbing already names the cause more
@@ -260,7 +266,7 @@ func spawnHubChild(name string, args []string) string {
 	select {
 	case <-done:
 		return "child_init_failed"
-	case <-time.After(1500 * time.Millisecond):
+	case <-time.After(hubChildGrace):
 	}
 	_ = cmd.Process.Kill()
 	<-done

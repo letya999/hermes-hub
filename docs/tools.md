@@ -1,6 +1,6 @@
 ---
 description: Complete agent-visible tool surface — toolhub control tools, connector_* facade, hub:tools catalog, effect/grant requirements, delivery directives.
-last_verified: 2026-10-25
+last_verified: "2026-10-31"
 ---
 
 # Tool surface
@@ -32,6 +32,14 @@ profile's `control_operations` allowlist:
 | `grant_request` | Request a grant the profile does not yet carry |
 | `install_shared` | Install a shared/team connection |
 
+Three further tools sit beside the allowlist (ADR-0089):
+
+| Tool | Purpose |
+|---|---|
+| `system_guide` | Static reference document — concepts and formats, no account data; always projected |
+| `tools_list` | Live caller-scoped inventory — exact admitted names re-read on every call, including tools enabled in this or another session. Compact `{name, definition, effect}` entries plus `controls`; `query` filters names, `name` returns one full spec with `input_schema`. Always projected |
+| `invoke` | Dispatch one admitted projected tool by exact `{tool, arguments}` through the same `AuthorizeProjectedCall` admission — for names the client's cached tools/list has not yet refreshed. Projected with the connectors bundle (`connectors` = `personal`/`personal+team`) or an explicit `invoke` grant |
+
 ## connector_* — unified facade
 
 Nine tools (ADR-0055, `api.ConnectorTools`), shown when the profile's
@@ -51,13 +59,15 @@ Grouped by capability resource (internal/agenttools/capability.go):
 
 | Group | Tools | Notes |
 |---|---|---|
-| files | `file_list`, `file_read`, `file_write`, `file_search` | admitted workspace scope; `file_write` is revision-guarded |
+| files | `file_list`, `file_read`, `file_write`, `file_search` | admitted workspace scope; `file_write` is revision-guarded; `root=skills` opens the read-only effective skills view |
 | services | `service_catalog` (read), `service_enable`, `service_disable` | self-service catalog only; enable needs explicit owner request, never returns credentials, refuses org-scoped changes |
 | settings | `settings_get`, `settings_set` | manageable key allowlist; secrets never shown; applies after scheduled restart |
 | context | `context_status`, `context_compact` | bounded session view (threshold/journal/live estimate) and turn-boundary compaction; busy sessions refuse deterministically, `queue` parks; results are metadata only |
 | goals | `goal_set`, `goal_status`, `goal_pause`, `goal_resume`, `goal_clear` | persistent per-conversation goal record — same durable record `/goal` manages; bounded continuation loop with verified completion |
 | routines | `routine_create`, `routine_list`, `routine_get`, `routine_edit`, `routine_delete` | five-tool public surface; see docs/routines.md |
-| watches | `watch_subscribe`, `watch_list`, `watch_pause`, `watch_delete` | scheduled probes: http/mcp_tool/script/command/render/service kinds |
+| watches | `watch_subscribe`, `watch_list`, `watch_pause`, `watch_resume`, `watch_delete`, `watch_sample` | event subscriptions (job_kind=event, mcp_tool probe only); `sink=notify|agent`, `delivery=stream` (bounded wait for wait-style tools; poll-style tools need `min_interval_seconds` 5–3600), `sources` fans one watch over ≤32 inputs; `cursor_arg` feeds `next_cursor` back per source after settlement; `filter` Starlark `input()`→emit keep\|drop\|urgent per event; `watch_sample` returns up to four raw events per source without waking; see docs/routines.md |
+| assignments | `assignment_plan`, `assignment_create`, `assignment_list`, `assignment_get`, `assignment_update`, `assignment_apply`, `assignment_pause`, `assignment_resume`, `assignment_cancel`, `assignment_complete`, `assignment_progress` | durable multi-source mandates (SPEC-0080); CAS via expected_revision; `assignment_progress` requires a running trigger job and stores bounded findings/next step/completion; owner-only grant widening; create a draft before source checks; plan updates retain unavailable references/reasons. Public Telegram URLs normalize to usernames; invite/discussion URLs are rejected. |
+| exposure | `exposure_list`, `exposure_status`, `exposure_open`, `exposure_close` | live public tunnels on this runtime; open/close act on declared endpoints only |
 | documents | `document_extract`, `document_create`, `document_edit`, `document_convert` | txt, md, csv, html, pdf, xlsx, pptx |
 | images | `image_inspect`, `images_inspect`, `image_convert`; `image_generate`, `image_edit` | generate/edit absent until the `image_gen` grant is active; png/jpeg/webp |
 | artifacts | `archive_create`, `archive_unpack`, `artifact_remove` | artifacts/ scope |
@@ -65,10 +75,85 @@ Grouped by capability resource (internal/agenttools/capability.go):
 | knowledge | `knowledge_list`, `knowledge_search`, `knowledge_read` | read-only staged sources; content returns as output, never lands in workspace |
 | ssh | `ssh_hosts`, `ssh_exec`, `ssh_read`, `ssh_write`, `ssh_shell_*`, `ssh_tunnel_*` | declared hosts only; write/shell/tunnel each need their own grant |
 | hh | `hh_search`, `hh_vacancy`, `hh_resumes`, `hh_apply` | apply sends externally — exact user-authorized inputs only |
-| exec | `code_exec` | bounded executor when the capability is granted |
+| exec | `code_exec` | bounded executor when the capability is granted; optional `skill` leases that skill's stored credentials into the one call |
+| skills | `skill`, `skills_search`, `skills_list`, `skill_view`; `skill_manage` | reads serve the ro effective view; `skills_list` is the honest inventory — entries carry `eligible`, ineligible ones name their `missing` requirements, plus hub-journaled usage counters (`stats`); the tier-0 prompt block only counts ineligible skills (`+N unavailable`); `skill_manage` writes drafts only — publication is the owner's approval card, never the model |
 
 ## Contract notes (bounds that surprise)
 
+- **skills:**: the file tools take `root=skills` as a fourth read-only root —
+  the effective skills view (`/skills`), never writable; `document_extract`
+  and `image_inspect` reach it as a `skills:<name>/<path>` path prefix.
+  Copying a skill resource into the workspace stays an explicit `file_write`
+  on the workspace root. Scripts under `skills:` are data: they carry no
+  exec bits and run only from a scratch copy inside a cell.
+- **skill_manage**: every action (create/patch/edit/write_file/remove_file/
+  delete/archive/restore/propose_to_org) creates a draft — the live tree under
+  `/skills` never changes from a tool call. The reply carries diff/lint/scan
+  plus `confirm_url` to a nonce-protected approval card the owner clicks;
+  `link_sent=false` means the card was not delivered but the draft persists.
+  Cards persist across gateway restarts (nonce hashes only, beside the
+  spool), stay valid for 72h, and a rejected apply reports the runtime's
+  reason on the card instead of a bare failure.
+  `patch`/`edit` require the current `base_revision` (optimistic concurrency);
+  action-foreign fields are rejected before any write; principal comes from
+  the authenticated envelope — model-supplied principal/org fields are
+  ignored. `propose_to_org` lands an org-scope draft; org publish requires
+  an owner/admin role at apply time (`hubctl skill promote`). The exception is
+  `configure`: it writes the owner's private `.state/settings` (keys ⊆ the
+  skill's declared `metadata.hermes.config`) — not a draft, since it never
+  touches the skill tree. Four more actions import rather than author:
+  `install` takes an https GitHub/GitLab `url` (optional `ref`, `path`,
+  `name`, `grant` — a broker credential name for private repos, never a
+  token in the URL); a bare repository URL returns `candidates` of
+  discovered `SKILL.md` subtrees to retry with `path` instead of guessing —
+  a repo whose `SKILL.md` sits at the root appears as `path:"."` and
+  installs the whole tree under its frontmatter name. Registry pages work
+  too — `https://www.skills.sh/<owner>/<repo>/<skill>` resolves the named
+  skill against the GitHub repository's candidates. Whatever the source,
+  the draft lands under the SKILL.md frontmatter name — publish requires
+  name == dir, and only an explicit `name` argument overrides it.
+  `update` refetches one installed skill's pinned ref (`force_push:true`
+  flags rewritten upstream history) and `check_updates` lists pending
+  upstream moves without importing. All three run inside a bounded git cell
+  (https egress to the repo host only); `install`/`update` land as drafts
+  with `.origin.json` provenance and still need the owner's card.
+  `install_local` imports a package already staged in the workspace — an
+  inbox download, an unpacked archive or a checkout: `path` names the
+  workspace-relative directory, zip or standalone `SKILL.md`/markdown file
+  (for a package holding several skills, point `path` at the intended
+  root); `name` overrides the frontmatter-derived draft name. It runs the
+  same import pipeline — dot-prefixed paths (repo plumbing like `.github`,
+  `.claude`) are dropped and reported in `dropped_dot_paths`/draft notes,
+  foreign resource links that resolve inside the tree are admitted and
+  audited in `notes`, binaries survive — and lands as an `imported` draft
+  with the same owner approval card.
+- **skill usage telemetry**: `skill()` activations and `skill_view` file
+  reads are journaled by the hub into the owner store's `.state/usage/`
+  (uses, helped, failed, trigger misses, last_used — bounded counters, no
+  content). The agent has no write path to these events; `skills_list`
+  exposes the counters as `stats` and `hubctl skill stats --name <skill>`
+  prints them. `evals/triggers.json` + `evals/evals.json` ship inside a
+  skill for `hubctl skill eval` — an isolated temp-space run scored through
+  an operator eval endpoint (`HUB_SKILL_EVAL_URL`); `--id <draft>` scores an
+  unpublished draft tree for the pre-publish check. Unavailable models are
+  reported, not fabricated.
+- **code_exec `skill` arg + credentials**: `skill()` reports
+  `readiness.setup_needed` with a `form_url` to the protected credential form
+  when declared `requires.credentials` lack stored values; a hard requirement
+  (`hard: true`) makes the skill ineligible until stored. Submitted values
+  persist under the owner store's `.state/credentials/<skill>.json` bound to
+  (principal, skill) — never `self-env.json`. A `code_exec` call carrying
+  `skill:"<name>"` leases exactly the declared names into that one sandbox
+  call's env through the stdin exec protocol — never argv, container config,
+  tool results, logs or audit. Declared names are the only ones leased;
+  undeclared `.state` entries and ineligible skills lease nothing. A
+  credential may declare `ref: <ENV_KEY>` to reuse an already-configured
+  self-env key (e.g. a connector's PAT) instead of a per-skill duplicate —
+  the lease resolves through the same allowlist-checked self-env file and a
+  stored per-skill value still wins.
+  `metadata.hermes.config` declares non-secret per-user settings that
+  `skill()` surfaces effective (stored-or-default); `skill_manage`
+  `configure` writes them to `.state/settings`.
 - **inbox_fetch**: an incoming transfer lands in `inbox/<id>/files/`; ZIPs
   extract there and a `inbox/<id>/receipt.json` is stored *before* the staged
   copy is acknowledged — retry reuses the receipt, never re-downloads.
@@ -112,7 +197,11 @@ Grouped by capability resource (internal/agenttools/capability.go):
 Reply-level markers the channel consumes (set in the tools server
 instructions): `MEDIA: <workspace path>` attaches a file; `VOICE: <text>`
 sends a voice message on voice-capable channels (voice-only when it's the
-whole reply; synthesized audio is never stored).
+whole reply; synthesized audio is never stored). At run end the runtime
+also delivers files produced under `artifacts/documents`, `artifacts/images`
+and `artifacts/videos`, plus a root-level workspace file carrying a
+deliverable extension (.html, .pdf, .png, .mp4) — staged into its bucket
+automatically.
 
 ## Standing rules (from the tool instructions)
 
@@ -199,3 +288,7 @@ content changes/deletion invalidate the next turn's cached knowledge reply.
 Private immutable traces are retained for audit and never injected as retrieval
 results. External connectors require their own real contract acceptance;
 no embeddings service or database is required.
+
+## Site tools
+
+The `hosting` tool family exposes `site_publish`, `site_unpublish`, `site_list`, `site_status`. Publish takes a prebuilt workspace path, declared slot, request ID and expected revision; public access requires explicit authorization. Owner/env, image and runtime are trusted configuration. See [hosting workflow](services/hosting.md).

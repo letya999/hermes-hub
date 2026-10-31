@@ -17,7 +17,21 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/routines"
 )
+
+func TestStreamRefPreservesNumericScheduleSuffix(t *testing.T) {
+	const hash = "0123456789abcdef"
+	for id, want := range map[string]string{
+		"stream2-10-watch-2026-3-" + hash: "watch-2026",
+		"stream2-8-watch-p3-0-" + hash:    "watch-p3",
+		"stream-watch-3-" + hash:          "watch", // previously queued refs
+	} {
+		if got := streamRefScheduleID(id); got != want {
+			t.Fatalf("%s: got %q, want %q", id, got, want)
+		}
+	}
+}
 
 func occurrenceFixture(t *testing.T) (*Spool, RoutineOccurrence, *Gateway) {
 	t.Helper()
@@ -27,7 +41,8 @@ func occurrenceFixture(t *testing.T) (*Spool, RoutineOccurrence, *Gateway) {
 	}
 	job := Job{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), UserID: "alice", ActorID: "alice", ScopeID: "user:alice", OrganizationID: "personal", Channel: "telegram_bot", ChatID: 11, Text: "scheduled work"}
 	o := RoutineOccurrence{ScheduleID: "schedule-one", Revision: 1, DueAt: time.Unix(100, 0), Job: job}
-	g := &Gateway{spool: s, config: Config{OrganizationID: "personal"}, users: map[int64]User{11: {ID: "alice", Enabled: true}}, now: func() time.Time { return time.Unix(90, 0) }}
+	g := &Gateway{spool: s, config: Config{OrganizationID: "personal", Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}}, users: map[int64]User{11: {ID: "alice", Enabled: true}}, now: func() time.Time { return time.Unix(90, 0) }}
+	s.resolveChannel = func(id string) routines.OccurrenceChannel { return g.channel(id) }
 	return s, o, g
 }
 
@@ -333,6 +348,57 @@ func TestFetchWatchBounded(t *testing.T) {
 	defer bad.Close()
 	if _, err := g.fetchWatch(context.Background(), bad.URL); err == nil {
 		t.Fatal("non-2xx probe treated as a value")
+	}
+}
+
+// A source-declared Retry-After must reach the engine as a typed hint so the
+// shared acquisition pool can fence further polls (SPEC-0081 R2.2).
+func TestFetchWatchRetryAfter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "120")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+	g := &Gateway{watchHTTP: server.Client()}
+	_, err := g.fetchWatch(context.Background(), server.URL)
+	var ra *routines.RetryAfterError
+	if !errors.As(err, &ra) || ra.Delay != 120*time.Second {
+		t.Fatalf("429 must surface a typed retry-after: %v", err)
+	}
+}
+
+// GitHub-style rate limiting answers 403, not 429: an explicit Retry-After
+// header must still fence further polls (SPEC-0081 R2.2).
+func TestFetchWatchForbiddenRetryAfter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "90")
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+	g := &Gateway{watchHTTP: server.Client()}
+	_, err := g.fetchWatch(context.Background(), server.URL)
+	var ra *routines.RetryAfterError
+	if !errors.As(err, &ra) || ra.Delay != 90*time.Second {
+		t.Fatalf("403 with Retry-After must surface a typed retry-after: %v", err)
+	}
+}
+
+// GitHub's primary limit answers 403 without Retry-After: an exhausted
+// X-RateLimit budget must back off until the declared reset, not poll every
+// tick into a guaranteed failure (SPEC-0081 R2.2).
+func TestFetchWatchForbiddenRateLimitReset(t *testing.T) {
+	reset := time.Now().Add(2 * time.Minute).Unix()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(reset, 10))
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+	g := &Gateway{watchHTTP: server.Client()}
+	_, err := g.fetchWatch(context.Background(), server.URL)
+	var ra *routines.RetryAfterError
+	if !errors.As(err, &ra) || ra.Delay <= 0 || ra.Delay > 3*time.Minute {
+		t.Fatalf("403 with exhausted rate limit must back off until reset: %v", err)
 	}
 }
 

@@ -25,6 +25,9 @@ var blockedCatalogJSON []byte
 //go:embed prepared/contracts/*.json
 var preparedContractFiles embed.FS
 
+//go:embed prepared/digests.json
+var preparedDigestsJSON []byte
+
 // BrokerContract returns reviewed deployment data, never upstream authority.
 func (entry PreparedEntry) BrokerContract() (contract.Contract, error) {
 	var result contract.Contract

@@ -3,6 +3,7 @@ package communication
 import (
 	"context"
 	"encoding/json"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -169,17 +170,17 @@ func TestConfigValidateAndMediaServices(t *testing.T) {
 	}))
 	defer tts.Close()
 	syn := HTTPSynthesizer{Base: tts.URL, Voice: "nova", Timeout: 5 * time.Second}
-	out, mime, err := syn.Synthesize(context.Background(), "say hi")
+	out, mime, err := syn.Synthesize(context.Background(), locale.LangEN, "say hi")
 	if err != nil || string(out) != "AUDIO" || mime != "audio/ogg" {
 		t.Fatalf("synthesize: %v %q %q", err, out, mime)
 	}
 	if !syn.Healthy(context.Background()) {
 		t.Fatal("healthy tts reported down")
 	}
-	if _, _, err := syn.Synthesize(context.Background(), "   "); err == nil {
+	if _, _, err := syn.Synthesize(context.Background(), locale.LangEN, "   "); err == nil {
 		t.Fatal("empty text synthesized")
 	}
-	if _, _, err := (HTTPSynthesizer{}).Synthesize(context.Background(), "hi"); err == nil {
+	if _, _, err := (HTTPSynthesizer{}).Synthesize(context.Background(), locale.LangEN, "hi"); err == nil {
 		t.Fatal("unconfigured TTS synthesized")
 	}
 	if !allowedAudioMIME("audio/ogg;codecs=opus") || allowedAudioMIME("text/plain") {

@@ -5,7 +5,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/letya999/hermes-hub/internal/stack"
 )
+
+// telegramOwnershipCheckApplies reports whether this space actually renders a
+// communication-hub gateway. Member spaces declare ingress:telegram but
+// deliver through the org gateway — checking bot ownership for them always
+// conflicts with the org's live gateway.
+func telegramOwnershipCheckApplies(s stack.Settings) bool {
+	return s.RendersInfra() && s.Has("telegram")
+}
 
 // Running gateways with one bot token compete for Telegram updates.
 func checkTelegramOwnership(ctx context.Context, project, token string, run func(context.Context, ...string) ([]byte, error)) error {

@@ -1,6 +1,6 @@
 ---
 description: Operator runbook — stack lifecycle, user onboarding, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
-last_verified: 2026-10-26
+last_verified: 2026-10-31
 ---
 
 # Operations
@@ -153,6 +153,12 @@ hubctl grant --user alice --toolhub-store /protected/toolhub/store.json \
     --kind control-operation --operation status --confirm
 hubctl capability --kind policy|profile --file reviewed.json \
     --toolhub-store <path> --confirm
+hubctl profile grants --dir spaces/<user> --profile <name> \
+    --policy org-policy.json --out draft.json                          # grants.yaml → draft defaults, ceiling untouched
+hubctl profile diff --dir spaces/<user>                                # 3-way plan via profile.lock
+hubctl profile apply --dir spaces/<user>                               # untouched files update; customized kept+reported
+hubctl org sync-members --org acme --org-dir spaces/acme \
+    --spaces spaces --dry-run                                          # report, then drop --dry-run to provision
 hubctl capability --kind group --file g.json --toolhub-store <path>   # validate+print digest only
 hubctl capability --kind preview --file draft.json --toolhub-store <path>  # old→new diff, never writes
 hubctl capability --kind tools --settings <space> \
@@ -236,6 +242,90 @@ hub-toolhub; that listener serves only human-action paths (control/gateway
 configured origin exactly. `hubctl connector link --onboarding <id>` prints a
 pending URL; `--confirm` completes an awaiting-confirmation onboarding.
 
+## Outbound exposure (tunnels)
+
+Opt-in per environment: `features.exposure` + a reviewed
+`connections/exposure/config.yaml` (provider `sish`, pinned relay host keys,
+`zone`, `key_ref` file:/broker:, bounds, named endpoints). Render fails
+closed without a valid config; the config mounts read-only at
+`/state/exposure` and `HUB_EXPOSURE_CONFIG` is wired into the runtime env.
+`hubctl exposure enrol --dir <space>` materializes the relay keypair
+(file refs) or stages a broker grant (broker refs) and prints VPS enrolment
+steps — it never prints the private half.
+
+The agent gets `exposure_list/status/open/close` — name-only: bind,
+target and public name are composed by the hub from the reviewed config
+(`<endpoint>.<zone>.<relay.domain>`), never from tool arguments.
+`access: ro` keeps list/status and denies open/close. Every transition is
+audited (`audit/exposure.jsonl`); opens are capped by `max_exposures` and
+reaped at `lifetime_seconds` (background reaper; idle reap deferred until a
+provider-side traffic signal exists).
+
+`hub_public_listener` targets resolve through `HUB_PUBLIC_TARGET` —
+set it to toolhub's public-listener address (e.g. `HUB_PUBLIC_LISTEN=0.0.0.0:8091`
+on hub-toolhub plus `HUB_PUBLIC_TARGET=toolhub:8091` in `secrets.<env>.env`
+so it reaches the runtime env). It fronts the same restricted human-action
+surface as the public listener; it is not a second public surface. Live
+sish acceptance requires the operator VPS + domain and is tracked in
+CHG-0166.
+
+Relay image pin: upstream sish sends a hostname in the `forwarded-tcpip`
+originator field, which strict Go SSH clients reject — every delivered
+connection fails until it is fixed (upstream issue 387 / PR 388). Deploy
+the relay from the reviewed fork image
+`ghcr.io/letya999/sish:v3.0.5-originaddr.1`
+(digest `sha256:cdb3195c71d4c69dcc5447def23fb552b9f933324843dc184c955b1b370470a1`,
+source branch `letya999/sish:fix/forwarded-tcpip-origin-addr`) until a
+released upstream contains the correction; then repin to the upstream
+release tag.
+
+## Per-user DNS/TLS addressing
+
+Opt-in per environment: a reviewed `connections/dns/config.yaml` selects
+the profile — `provider` (`regru`, `digitalocean`, `gcloud`), `zone` (the
+DNS zone the provider API writes), `base` (public suffix for names),
+`credential_ref` (`file:` map or `broker:` grant; materialized per call,
+released after — never in argv/env/logs/ledger), plus quirks:
+`static_egress_ip` for pure reg.ru (REG.API requires a panel IP
+allowlist; the profile refuses to load without it — delegate
+`hub.<domain>` instead on dynamic IPs), `name_servers` for delegated
+profiles, `project`/`managed_zone` for gcloud.
+
+Supported profiles: pure reg.ru (zone on reg.ru NS, static-IP executor),
+pure DigitalOcean (whole zone on DO NS), reg.ru-parent + `hub.<domain>`
+delegated to GCP Cloud DNS or to DO nameservers. For delegated profiles
+`zone` is the parent domain, `base` is `hub.<domain>`; one-time bootstrap
+is the parent-side NS records, then `hubctl dns delegate-check` verifies
+live NS answers against `name_servers`.
+
+Commands (all `--dir` owner dir): `dns check` prints the profile without
+secrets; `dns ensure --ip <addr> <user>` writes the onboarding wildcard
+`A` record `*.<user>`; `dns remove --ip <addr> <user>` tears it down;
+`dns records` lists zone records; `dns cert --acme <dir-url> <user>`
+issues the per-user wildcard `*.<user>.<base>` over ACME DNS-01
+(`_acme-challenge` TXT via the same contract) into
+`connections/dns/certs/`; `dns push --alias <ssh-host> [--cert-dir
+<dir>] <user>` delivers `<user>.{crt,key}.pem` into the sish
+`--https-certificate-directory` over the reviewed `connections/ssh`
+capability (atomic SFTP write, audited `ssh` events).
+
+The `<user>` positional is bound, not free-form: it must equal the `zone`
+label in the space's reviewed `connections/exposure/config.yaml`, so one
+space's operator run cannot write or certify another user's names.
+Denials are audited (`dns` kind, outcome `denied`). Exposure open/close
+makes no DNS call — wildcard records and certs exist independently of
+tunnel lifecycle.
+
+TLS lifecycle: `dns cert` is the renewal driver — it skips issuance while
+the stored leaf has more than 30 days of validity and re-issues inside
+that window; a failed renewal keeps the live cert and appends a
+`renew-failed` audit event. The ACME account key is persisted once at
+`connections/dns/acme-account.key` (0600). Provider calls carry an
+explicit timeout (`dns.Options.Timeout`); propagation to the zone's own
+nameservers is polled by `dns.WaitAuthoritative` to a caller deadline.
+Live acceptance — a real domain per profile plus a deployed sish — is
+separate evidence and is not asserted from httptest fixtures.
+
 ## Broker operations
 
 Enablement env layout is in docs/integrations.md; provisioning detail per
@@ -291,9 +381,13 @@ never in the general archive. `down` never deletes homes; `purge` needs
 Memory: native files under `spaces/<id>/hermes/memories` (`MEMORY.md`,
 `USER.md`) — `hubctl memory list` / `hubctl memory delete --name`. Honcho is
 optional (`honcho` + `honcho_url`); its failure must not break ordinary
-Hermes memory. Skills install into `spaces/<id>/hermes/skills` without
-rebuild; `hubctl skill install --consent` scans SKILL.md and refuses
-provider-mutation text.
+Hermes memory. Skills live in the owner store `spaces/<id>/skills` —
+publication, archive, restore, rollback and promote rebuild the read-only
+effective view (`generated/skills-effective`) in place, so a running runtime
+sees the new catalog on its next call without respawn or manual render;
+`hubctl skill install --consent` scans SKILL.md and records findings —
+MVP advisory mode: the approval gate is the named approver, not the
+scanner, until rule quality justifies a publish-time block.
 
 ## Backup
 
@@ -307,14 +401,39 @@ handoff on restart.
 
 ## Images and builds
 
-Two build targets share layers: core `hermes-hub:0.4.0-<env>` and
-`-control` (adds Docker CLI + ToolHive; only toolhub + workload-controller).
-Optional trees (Playwright browsers, messaging/google/voice extras, Google/
-Atlassian/Telegram-account Python) stay out of the default image — own
-Dockerfiles under `docker/`. Generated compose carries exactly one core
-`build:` (cliproxy) and one control `build:` (toolhub); everything else
-references those tags — raw `docker compose build` would repeat the
-Dockerfile per service.
+Four role images share the staged Dockerfile (SPEC-0082):
+`hermes-hub:0.4.0-<env>-core` (control-plane daemons: cliproxy,
+communication-hub, supervisor, relays), `…-control` (adds Docker CLI +
+ToolHive; only toolhub + workload-controller), `hermes-hub:0.4.0-<env>`
+(the agent runtime — Python venv + node, no browser or voice stack), and
+`hermes-hub:0.4.0-<env>-browser` (per-space sidecar: headed Chromium under
+Xvfb, authenticated x11vnc, static noVNC, playwright-mcp, google_meet
+NodeServer). Optional trees (messaging/google extras, Google/Atlassian/
+Telegram-account Python, voice STT/TTS) stay out of the role images — own
+Dockerfiles under `docker/`. Generated compose carries one `build:` per
+role (cliproxy/core, toolhub/control, hermes-runtime, browser-<user>);
+everything else references those tags — raw `docker compose build` would
+repeat the Dockerfile per service. CI's `image` job publishes all four
+role tags and fails the build when `devcheck image-budget` finds a role
+over its SPEC-0082 size ceiling or carrying a forbidden artifact.
+
+The browser sidecar is a warm resource, not resident infrastructure
+(SPEC-0083): capped at `cpus 2.0 / mem_limit 3g / pids_limit 256` (its 1 GB
+shm counts against the memory limit), it sleeps once its space has no live
+runtime — spawned or a compose `hermes-runtime` — for
+`hub-supervisor -browser-idle-ttl` (default 15m). `docker stop` is a
+graceful SIGTERM so Chromium flushes `connections/browser`; `unless-stopped`
+honours the stop and the next spawn's `docker start` (issued by `Ensure` for
+browser/meet spaces before readiness) revives it transparently — profile,
+cookies and logins survive. `hubctl up` re-raises it as usual. Expected
+noise: the runtime's container healthcheck probes CDP whenever the browser
+marker is set, so the runtime shows `unhealthy` while its sidecar is
+asleep or restarting — transient, clears on wake. Managed runtimes get
+their `browser`/`browser_guest` MCP servers rendered directly into the
+managed config from the reviewed `browser`/`browser_act` capability
+(same `hub:browser`/`hub:browser_guest` governance gate, no connector
+or catalog round-trip); `HUB_MANAGED_BROWSER` carries the grant to
+in-container materialization so the attested config matches.
 
 Entry points (`just`, `hubctl build`/`up`) force `DOCKER_BUILDKIT=1`,
 `COMPOSE_DOCKER_CLI_BUILD=1`, `COMPOSE_BAKE=true`; `hubctl` prunes
@@ -327,7 +446,7 @@ retag-orphans before/after and caps builder cache at 8 GB.
 compiles one Linux binary, overlays the dev image, recreates only that
 service; restores prior image on failure. Names: `communication-hub`,
 `credential-broker`, `hub-media`, `toolhub`, `workload-controller`,
-`supervisor`, `hermes-runtime` (supervisor mode records it for next spawn;
+`supervisor`, `hermes-runtime`, `model-relay` (supervisor mode records it for next spawn;
 a full `hubctl up` returns to base). Verify with `docker ps --filter
 name=hermes-hub-<user>-dev-<service>-1` → `…-dev-<service>:local` + `Up`.
 
@@ -410,6 +529,16 @@ archive holds 48 h detail + dedup receipt for the retention period; catch-up
 the production spool. Never delete uncertain mappings/leases to force a
 retry — the original run may already have acted externally.
 
+Concurrency: in-flight serialization is per conversation lane
+`(principal, context, conversation)` — forum topics and DM tasks of one
+user run in parallel inside the shared context runtime, FIFO inside each
+conversation (ADR-0090, amends ADR-0025). `HUB_CONTEXT_MAX_PARALLEL` (8)
+caps a context's lanes below the upstream Hermes `max_concurrent_runs`
+(10); `HUB_COMMUNICATION_WORKERS` (32) bounds the pool; fair rotation
+still rotates by scope so one owner's sessions cannot crowd out others.
+Ceilings: shared workspace/`MEMORY.md` is last-writer-wins across lanes;
+one browser sidecar per space; a runtime restart hits all its lanes.
+
 Gateway/session ops: `/new`, `/use`, `/delete`, `/sessions`, `/session`
 manage per-task sessions (each task = own durable Hermes session; forum
 topics supported; slash-command list enforced + registered as bot menu).
@@ -439,6 +568,91 @@ private interface reachable from both host CLI and gateway container, with
 communication-hub + toolhub. Rollback: drain, `--execution-mode static`
 without URL (+`--native-cron unmigrated` if needed), keep same spool/home;
 do not reactivate native definitions already migrated to hub occurrences.
+
+## Skill git installs
+
+`hubctl skill install --dir spaces/<u> --url <https github/gitlab url>`
+fetches through the controller's bounded `/cli-exec` cell (plan
+`skillgit@1.0.0`, `git` on the cli-tools image — never an owner command;
+egress is exactly the repository host, hooks/protocol.file/submodules/LFS
+are off, fetch is `--depth=1 --filter=blob:none` into the per-owner bare
+mirror `skills/.sources/<id>.git`). The shared workload-controller
+authenticates only the infra-owner's admission token: `--dir` pointing at
+a secondary space resolves the sibling that renders the control plane
+(`infra:` absent/true) and presents its `toolhub.auth` — the target
+space's own token is never accepted. The result is a scanned **draft** —
+approve it with `hubctl skill approve --id <d>` or the owner card. A repo
+URL without `/tree/<ref>/<path>` returns `candidates` instead of picking
+one; retry with `--path`. `--ref` pins a branch/tag to its resolved commit,
+`--name` overrides the draft name. `hubctl skill update --name <s>` (or
+`--all`) refetches tracked skills into new drafts, reports
+`force_push:true` on rewritten upstream history and `up_to_date:true`
+without a draft when the tracked ref did not move. `hubctl skill sources
+list` shows mirrors and the skills each feeds; `sources remove --id <id>`
+deletes the mirror — installed skills keep working but lose update
+tracking.
+
+Sources are https GitHub/GitLab only; a self-hosted GitLab needs
+`gitlab_host: <host>` in `workspace.yaml` — render adds its egress and the
+third `skillgit` approval tuple, then `hubctl up`. Registry locators also
+work: `https://www.skills.sh/<owner>/<repo>[/<skill>]` maps to the GitHub
+repository and resolves `<skill>` against the discovered candidates — an
+unmatched slug returns the candidate list instead of guessing.
+The export itself is a bounded transport (32 MiB archive cap): repo
+plumbing and vendored `node_modules` are filtered while streaming and
+named in `dropped_dot_paths`/draft notes, so a vendored repo never exhausts
+the skill-tree byte quota; an archive over the transport bound fails with
+a quota error, not a bare `invalid skill source`.
+Authentication: agents name a broker credential with `grant` (the gateway
+leases it into `GIT_TOKEN` for the cell); the operator path takes
+`GIT_TOKEN` from the environment. Tokens never enter URLs, argv, git
+config, logs or `.origin.json`.
+
+## Skill local installs
+
+`hubctl skill install --dir spaces/<u> --from <path>` imports a package
+already on disk — a directory containing `SKILL.md`, a `.zip` archive or a
+standalone markdown/`SKILL.md` file — through the same imported-draft
+pipeline the agent's `install_local` uses. The name comes from the
+`SKILL.md` frontmatter (`--name` overrides; path basename is the
+fallback). Without `--consent` the result is a draft the owner approves
+with `skill approve --id`; `--consent` publishes immediately.
+
+Imports are *foreign* packages, not authored trees: dot-prefixed paths
+(`.github`, `.claude`, `.gitignore`, a spoofed `.origin.json`) are dropped
+and summarized in draft `import_notes`; resource-file links that resolve
+inside the package are admitted and audited in `notes` instead of
+rejected — dead links out of `SKILL.md` itself stay hard errors. Zip
+extraction is bounded (entry count/bytes, path traversal and special
+files refused); binary payloads like images in `assets/` survive intact.
+Inside a runtime the agent reaches the same path with
+`skill_manage action=install_local` and a workspace-relative `path` —
+inbox downloads staged by `inbox_fetch`, unpacked archives, checkouts.
+
+## Skill quality: lint, stats, evals
+
+Every draft carries advisory lint findings in `ScanFindings` (name/dir,
+imperative description ≤1024 with ~250 advisory, ≤500-line body, ≤60
+files, references one level deep, no incident-log shape) — they inform
+the approval card but never block it; dead links stay hard errors.
+
+`hubctl skill stats --dir spaces/<u> --name <s>` prints the hub-journaled
+counters (uses, helped, failed, trigger_misses, last_used) from
+`.state/usage/` — the agent cannot write these events; activations and
+resource reads journal server-side.
+
+`hubctl skill eval --dir spaces/<u> --name <s>` reads `evals/triggers.json`
+and `evals/evals.json` inside the skill — `--id <draft>` evaluates the
+unpublished `.drafts/<id>` tree instead, the pre-publish check the approval
+gate exists for. It materializes an isolated temp
+space containing only that skill, and scores validation accuracy through
+`HUB_SKILL_EVAL_URL` — an operator eval endpoint that runs each prompt
+against a real model and returns the run receipt (`skill` tool calls mark
+activation). Reports land under `.work/tmp/`; without the endpoint every
+leg reports `model_unavailable` — never a fabricated pass. Platform
+skills ship their trigger suites under `config/skills/*/evals/` and
+`internal/systemguide/evals/`; lint-cleanliness and fixture validity are
+enforced by tests.
 
 ## SSH capability operations
 
@@ -472,6 +686,134 @@ audiences `broker:control`+`broker:runtime`, install the
 service-level identity), write the grant id to `spaces/<u>/media.grant`,
 re-render. Fallback for standalone runs: `HUB_MEDIA_UPSTREAM_KEY`/
 `OPENAI_API_KEY`/`FAL_KEY` env; a fal engine with neither refuses to boot.
+
+Operational facts proven by live acceptance:
+
+- `media.grant` reaches the container only through `hubctl up`/`down`,
+  which feeds the file into compose interpolation (`${HUB_MEDIA_BROKER_GRANT}`).
+  A raw `docker compose up` renders the variable empty: hub-media then runs
+  the `remote` engine with no credential, sends no `Authorization`, and the
+  upstream answers 401 — surfaced to callers only as
+  `"image generation failed"`. Same applies to `supervisor.auth` →
+  `HUB_SUPERVISOR_AUTH`: a compose call without it fails interpolation
+  outright. Always bring rendered stacks up through `hubctl up`, or export
+  both variables explicitly. Verify post-recreate:
+  `docker inspect` on the service shows the grant in `.Config.Env`.
+- The env-key fallback is unreachable in a rendered stack: compose mounts no
+  media env file and injects no `HUB_MEDIA_UPSTREAM_KEY`/`OPENAI_API_KEY` —
+  without a grant the service simply has no upstream credential. There is no
+  silent "works anyway" mode; treat upstream-401 symptoms as a missing grant
+  first, a provider problem second.
+- Gemini-family image models (`gemini-*-image`, e.g.
+  `gemini-3.1-flash-image`) do not serve `/v1/images/generations`; cliproxy
+  routes them through `/v1/chat/completions` with
+  `modalities: ["image","text"]`. hub-media takes that path automatically
+  for ids listed in `HUB_MEDIA_CHAT_MODELS` (the default list covers the
+  cliproxy Gemini image ids) and parses `choices[0].message.images[]`. The
+  plain `/v1/images/generations` contract is reserved for `gpt-image-*`,
+  `grok-imagine-*` and openai-compatibility image models.
+- Image generation deliberately runs on the **shared** cliproxy behind the
+  broker-grant key — not the owner's dedicated cliproxy. Owner isolation for
+  media is the grant+policy binding, not per-owner proxy auth.
+
+## Additional managed owners (multi-principal bring-up)
+
+Adding or renaming a managed principal touches more files than one
+`hubctl init`: the pieces below were each proven load-bearing on a live
+two-owner dev stack (renames `telegram-*` → named principals). Skipping any
+of them fails silently — empty tool lists, `model_not_found`, 401s — rather
+than loudly.
+
+Files and records per owner:
+
+- `spaces/<owner>/agent.yaml` — `user: <owner>` (this is the principal id
+  rendered everywhere), `model:` must be a **registry id** from models.yaml
+  (e.g. `default`), not an upstream model name. Upstream names with dots
+  (`gemini-3.8-flash-high`) fail `registryNamePattern` validation.
+- `models.yaml` — registry ids are logical names without dots (`default`,
+  `alt`); each ladder hop's `model:` must exist in **that owner's** cliproxy
+  `/v1/models` catalog — dedicated instances may expose different catalogs.
+  Hot reload applies edits without restart.
+- `spaces/local/communication.users.yaml` — hand-edited: `id`, `runtime_id`,
+  `telegram_ids`, `policy_version`. The policy version must equal the
+  rendered stack policy (`policy-<hash>` from the space's generated files);
+  a stale value produces a silently empty `tools/list` — the runtime passes
+  health checks and the agent sees zero tools.
+- `communication.<env>.env` — `TELEGRAM_ALLOWED_USERS` must include every
+  owner's numeric Telegram id; an absent id is rejected at bot level before
+  any users.yaml routing.
+- `spaces/<owner>/cliproxy/` (dedicated mode) — own `config.yaml`, own
+  `api-key`, own `auths/` dir. Never copy another owner's keys or upstream
+  auth material: the point of dedicated mode is independent accounts.
+- `secrets.<env>.env`, `runtime.auth`, `model-relay.auth`,
+  `media.auth` — per-owner bearers; `model-relay.auth` carries two distinct
+  tokens: `HUB_MODEL_RELAY_AUTH` (runtime→relay chat/quota) and
+  `HUB_MODEL_RELAY_ADMIN` (the owner-facing `PUT /v1/model` switch — the
+  chat bearer gets 403 on it by design).
+- Capability store — after a rename/re-render the stack policy id changes;
+  reconfirm the owner's profile onto the new `policy_version` and create
+  the `hub-agent-tools` binding via `hubctl capability … --confirm`. Stop
+  toolhub during store writes: a running toolhub rewrites `store.json`
+  between the CLI's load and save, and the write fails on drift.
+- Infra re-render — re-render the infra space (`spaces/local`) after adding
+  or renaming a principal: `EnrollSiblingRuntimeTokens` rewrites
+  `toolhub-tokens.json`, and comm-hub only accepts enrolled runtime tokens.
+- Broker key volume — a freshly created owner stack gets an empty
+  `broker-secrets-*` volume; the relay exits with
+  `credential broker CA file is invalid` until `server.crt` and the key
+  material (0600, uid 10001) are provisioned — same procedure as
+  `broker-secrets-media` above.
+- Compose interpolation — `hubctl up` additionally injects
+  `supervisor.auth`/`media.grant` into compose env; see Media credentials
+  for why raw `docker compose` breaks the stack.
+
+Verification sequence (each step proved a real failure mode):
+
+```text
+# inside any runtime-network container:
+getent hosts cliproxy cliproxy-<owner>        # cliproxy → exactly the infra
+                                            # IP; dedicated cliproxy must
+                                            # never claim the shared alias
+curl -s -o /dev/null -w '%{http_code}' \
+    http://cliproxy-<owner>:8317/v1/models    # 401 unauthenticated
+# own cliproxy key → 200; sibling's key → 401
+curl -s -H "Authorization: Bearer <relay-auth>" \
+    http://model-relay-<owner>:8318/v1/models # own bearer → 200 catalog
+# sibling relay bearer → 403; sibling admin on this relay → forbidden
+PUT /v1/model {"model":"alt"} with the admin bearer
+POST /v1/chat/completions → response's "model" shows the new ladder's
+    upstream name; PUT back to default afterwards
+POST /v1/mock/message (comm-hub, principal header) → outbox delivery
+    proves wake→spawn→admission→reply end-to-end
+```
+
+Known traps from live acceptance:
+
+- **Dedicated cliproxy must not claim `cliproxy` on the shared runtime
+  network.** A service literally named `cliproxy` gets the implicit alias
+  and DNS round-robins owner traffic to the wrong instance (random 401s).
+  Owner-scoped names/aliases only; verify with `getent` as above.
+- **Stale container images mask everything.** `dev-rebuild` the service
+  before trusting evidence — a pre-change `hermes-hub:0.4.0-dev` supervisor,
+  toolhub, relay or hub-media silently shows old behavior. Check
+  `docker inspect` shows a `…:local` overlay image under `.Config.Image`.
+- **Default `HUB_MODEL_RELAY_HOP_TIMEOUT` (30 s) is shorter than a
+  multi-image vision call** on a cold cliproxy → honest upstream work reads
+  as a 502. Raise it in `model-relay.<env>.env` for acceptance runs.
+- **ToolHub restart kills live MCP sessions** inside spawned runtimes —
+  after any toolhub recreate, kill and re-wake runtimes rather than reusing.
+- **Renamed/migrated spaces can carry corrupt SQLite state** — a malformed
+  `managed/<env>/hermes/state.db` lets the runtime boot and answer
+  readiness while every job stalls `uncertain`. Check
+  `PRAGMA integrity_check` on each `managed/<env>/hermes/*.db` after a
+  rename or host migration.
+- **`/model` chat command is currently dead for managed principals** behind
+  the shared comm-hub: `HUB_MODEL_RELAY_URL`/`model-relay.auth` are rendered
+  only into a gateway inside its own managed space, and managed spaces run
+  no gateway — so the command replies "недоступно". Model switching works
+  through the relay admin `PUT /v1/model` (see verification above); a
+  per-principal relay resolution in comm-hub is a known gap, not a secret
+  feature to debug.
 
 ## Preflight and misc
 
@@ -585,3 +927,7 @@ Source-only verification never proves that a running image contains these
 changes. M16 local work does not build, deploy, restart or contact a real account;
 image/channel/provider acceptance must be recorded separately after an authorized
 rollout.
+
+## Site hosting
+
+Configure reviewed `hosting.slots` and exposure before render/doctor. Dynamic hosting requires an approved digest-pinned minimal image for the fixed go-http binary and explicit runsc/Kata; no runtime fallback. Preserve site and coordination volumes during recovery. See [hosting operations and recovery](services/hosting.md); native runtime/sish/browser checks are separate prerequisites.

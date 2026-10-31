@@ -1,10 +1,20 @@
 package commodel
 
 import (
+	"strings"
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
 )
+
+// WaitCapableProbeTool reports whether a projected tool is a bounded
+// long-poll by its name contract (wait/settled/new_message): such tools
+// hold the call until a batch or deadline, so a stream loop needs no
+// inter-round pacing. Any other mcp_tool probe is a plain poll and must
+// declare MinIntervalSeconds for stream delivery.
+func WaitCapableProbeTool(name string) bool {
+	return strings.Contains(name, "settled") || strings.Contains(name, "wait") || strings.Contains(name, "new_message")
+}
 
 // WatchProbe is a bounded deterministic probe: one http(s) GET; the compared
 // value is the first capture group of Regex, or the whole bounded body.
@@ -37,6 +47,35 @@ type WatchProbe struct {
 	// chain sees the DOM (SPEC-0059 R5.4).
 	Steps   []RenderStep `json:"steps,omitempty"`
 	WaitFor string       `json:"wait_for,omitempty"`
+	// Filter is the deterministic per-event gate for event subscriptions
+	// (SPEC-0081 R4.1): an isolated script reading the event JSON and
+	// emitting keep|drop|urgent. Dropped events are marked seen without
+	// fan-out; urgent events bypass quiet windows and daily caps.
+	Filter string `json:"filter,omitempty"`
+	// MinIntervalSeconds declares the source's cadence contract for
+	// delivery=stream polls: minimum start-to-start cadence; read time counts. Required on stream schedules whose tool is not
+	// wait-capable — wait tools hold the call open and pace themselves.
+	MinIntervalSeconds int64 `json:"min_interval_seconds,omitempty"`
+	// CursorArg names the projected tool argument that receives the durable
+	// next_cursor from its previous successful stream round. Empty disables
+	// cursor feedback for legacy wait tools.
+	CursorArg string `json:"cursor_arg,omitempty"`
+	// Sources fans one subscription out over several acquisition inputs
+	// (SPEC-0081 shared acquisition): each entry is probed in bounded
+	// parallel per stream round and the batches merge into one wake.
+	// Args below is the shared base; a source overrides keys with its own
+	// Args and may narrow to a different Tool in the same backend.
+	Sources []WatchProbeSource `json:"sources,omitempty"`
+}
+
+// WatchProbeSource is one acquisition input inside a shared event
+// subscription: same tool by default (Args overrides merge onto the
+// probe's Args) or a sibling tool when Tool is set. Name labels the
+// source for per-source state and bundle attribution.
+type WatchProbeSource struct {
+	Name string         `json:"name,omitempty"`
+	Tool string         `json:"tool,omitempty"`
+	Args map[string]any `json:"args,omitempty"`
 }
 
 // ProbeNeed is one hub-prefetched read-tool call for a script probe.
@@ -120,8 +159,13 @@ type Schedule struct {
 	LastDeliveryState   string      `json:"last_delivery_state,omitempty"`
 	// LastFailureSHA256 dedupes owner-facing error deliveries: a routine that
 	// fails every tick with the same normalized error notifies once, and a
-	// success clears it so the next failure notifies again.
+	// success clears it so the next failure notifies again. It is recorded
+	// only once the failure notice is actually delivered.
 	LastFailureSHA256 string `json:"last_failure_sha256,omitempty"`
+	// PendingFailureSHA256 marks a failure notice still in flight: identical
+	// failures enqueue nothing while it stands, and a notice that dies in
+	// outbox/failed releases it so the next identical failure notifies again.
+	PendingFailureSHA256 string `json:"pending_failure_sha256,omitempty"`
 	// BlockedAt/BlockedReason mark a schedule the tick can no longer advance:
 	// the owner sees state "blocked" in routine_get and must edit or delete it.
 	BlockedAt     time.Time     `json:"blocked_at,omitempty"`
@@ -150,10 +194,16 @@ type Schedule struct {
 	// Delivery selects how an event subscription is fed: empty/"poll" fires
 	// one occurrence per cron tick, "stream" runs a hub-owned bounded
 	// long-poll loop against the probe tool instead (no occurrences).
-	Delivery      string    `json:"delivery,omitempty"`
-	NativeCronRef string    `json:"native_cron_ref,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	Delivery      string `json:"delivery,omitempty"`
+	NativeCronRef string `json:"native_cron_ref,omitempty"`
+	// AssignmentID marks a schedule provisioned by an assignment apply;
+	// WakePrompt prefixes agent-sink evidence jobs with the specialist's
+	// instructions (SPEC-0080). Both are engine-stamped, never draft-set.
+	AssignmentID           string    `json:"assignment_id,omitempty"`
+	AssignmentPlanRevision uint64    `json:"assignment_plan_revision,omitempty"`
+	WakePrompt             string    `json:"wake_prompt,omitempty"`
+	CreatedAt              time.Time `json:"created_at"`
+	UpdatedAt              time.Time `json:"updated_at"`
 }
 
 // RoutineDraft is the POST /v1/routines boundary: it carries only the fields
@@ -223,7 +273,17 @@ type RoutineOccurrence struct {
 type Event struct {
 	ID   string
 	Text string
+	// Raw is the bounded compacted JSON of the source item when it decoded
+	// as an object — the filter's input() so connector fields beyond the
+	// text (chat_id, sender, url) stay visible to keep|drop|urgent.
+	Raw string
+	// Source labels the fan-out input that produced the event inside a
+	// multi-source subscription (empty for single-probe watches).
+	Source string
 	// Requeue carries the connector-native identifier arguments for the
 	// requeue hook when the event exposes them.
 	Requeue map[string]any
+	// Urgent is set by a deterministic filter verdict: the event bypasses
+	// quiet windows and daily caps (SPEC-0081 R4.1).
+	Urgent bool `json:"urgent,omitempty"`
 }

@@ -2,14 +2,36 @@
 
 [Быстрый старт на русском](START_HERE.ru.md)
 
-A standalone, general-purpose [Hermes](https://github.com/nousresearch/hermes-agent)
-deployment with a Go control plane. Chat, internet research, personal files, memory,
-skills, hooks and MCP connections. No embedded CRM, vacancy collector or required business service.
+A personal AI agent you run yourself. One binary, one Docker Compose stack, and your
+agent lives in Telegram — chatting, searching the web, working with your files,
+remembering things, and connecting to the services you choose. Built on the upstream
+[Hermes](https://github.com/nousresearch/hermes-agent) CLI with a Go control plane
+around it. No embedded CRM, vacancy collector or business service you didn't ask for.
+
+## What you actually get
+
+- **An agent in your chat.** Telegram first (Slack exists too). Messages, voice
+  notes, files in, files out — documents, images, videos are delivered back to the
+  conversation automatically.
+- **Skills the agent can learn.** Install a skill from a GitHub/GitLab URL, a ZIP,
+  a folder or a single `SKILL.md`. Every install lands as a reviewable draft —
+  nothing goes live until you approve a card. Org admins can publish skills to a
+  whole team; collisions are hidden, never silently merged.
+- **Connections on your terms.** MCP servers, Google Workspace, GitHub, GitLab,
+  Slack, Notion, HeadHunter, SSH — each opt-in, each scoped. Secrets go through a
+  credential broker: the agent sees a form link, the value leases into the exact
+  call that needs it and never reaches chat, logs or audit.
+- **Memory that survives restarts.** Per-user persistent homes under `spaces/<id>` —
+  agent config, workspace, archive, skill store. Restart the stack, everything is
+  where it was.
+- **More than one agent if you want.** Multiple users on one host, each isolated.
+  Organizations get their own policy, approved connectors and shared skills that
+  members can't widen — only narrow.
 
 ## Quick start
 
-Requires Docker Engine/Desktop with Compose 2.30+. Choose a platform binary from the
-release archive; Go is only needed when building from source. Linux example:
+Requires Docker Engine/Desktop with Compose 2.30+. Grab a platform binary from the
+latest release; Go is only needed to build from source. Linux example:
 
 ```bash
 ./bin/hubctl-linux-amd64 init --user artem
@@ -19,115 +41,96 @@ release archive; Go is only needed when building from source. Linux example:
 ./bin/hubctl-linux-amd64 chat --user artem
 ```
 
-Set your model ID, an OpenAI-compatible model_url ending in /v1, and OPENAI_API_KEY.
-CLIProxy API can be that endpoint. Use host.docker.internal for a provider on the Docker
-host. For Windows use the included .exe and Docker Desktop Linux containers.
-Start with 4 vCPU, 8 GB RAM and 30 GB free disk; browser/speech dependencies make the
-agent image larger than the small Go CLI. The first build downloads pinned upstreams.
+Set your model ID, an OpenAI-compatible `model_url` ending in `/v1`, and
+`OPENAI_API_KEY`. CLIProxy works as that endpoint; use `host.docker.internal` for a
+provider on the Docker host. On Windows use the included `.exe` and Docker Desktop
+Linux containers. Start with 4 vCPU, 8 GB RAM, 30 GB free disk — the first build
+downloads pinned upstreams and the agent image is bigger than the small Go CLI.
 
-## Organizations, users and environments
+Dev/prod is a Docker target + env file selection, not a second namespace. Dev mounts
+source at `/src` with a writable layer; prod runs read-only root.
 
-The namespace is **spaces/<id>** for both users and organizations. Every home has a
-`scope.yaml`; user homes also have `agent.yaml` (runtime config) and
-`workspace.yaml` (capability intent), SOUL, secrets and persistent
-`hermes/`, `connections/`, `workspace/` and `archive/` directories. An organization
-home contains membership, approved features/MCP servers, shared material and policy.
-The user can narrow that policy by denying entries in `tools:` (`name: off`), but cannot expand it. Public
-authentication/routing is not part of this local control plane: the caller must map
-an authenticated principal to one user space before starting its runtime.
+## How it fits together
 
-Dev/prod selects a Docker target and env file; it does not create another user
-namespace. Generated files live under `spaces/<id>/generated/`. Runtime state is bind-
-mounted from the selected homes; the communication queue is the separate
-`communication-hub-data` volume. No automatic copying of tokens or memories between users.
+```
+Telegram ──> communication-hub (gateway, queues, cards)
+                  │  durable job
+                  ▼
+            supervisor ──> spawns the per-user runtime on demand
+                  │        (Hermes CLI in its own container)
+                  ▼
+            toolhub / workload-controller / credential-broker
+               tools admitted per call, secrets leased per call
+```
+
+The gateway owns the conversation; the supervisor starts the right user's runtime,
+keeps warm leases for 30 minutes and shuts idle compute down. ToolHub decides which
+tools the model may see *for this principal*; the workload-controller runs bounded
+cells (git installs, skill scripts) with egress allowlists; the broker hands out
+credentials per call instead of baking them into environments.
+
+## Organizations
+
+Users and orgs share one namespace: `spaces/<id>`. An org home carries membership,
+approved features/MCP servers, shared material and policy — members can deny entries
+in their own `tools:` but never expand past the org ceiling.
 
 ```bash
 ./bin/hubctl-linux-amd64 org-init --org acme --user artem
 ./bin/hubctl-linux-amd64 init --org acme --user artem
-./bin/hubctl-linux-amd64 up --user artem --env dev
-./bin/hubctl-linux-amd64 init --user another-person
-./bin/hubctl-linux-amd64 up --user another-person --env prod
+./bin/hubctl-linux-amd64 org sync-members --org acme --org-dir spaces/acme
 ```
 
-Edit `spaces/acme/scope.yaml` to remove features, add approved read-only
-`mcp_servers` with `tools.include` allowlists, and grant only the required
-`org_actions` such as `slack.write` or `hh.apply`. Run
-`up`, `render` and `doctor` with the same `--org`/`--user` selection. Organization
-documents and skills are available to the runtime only through read-only `/scope/org`.
-Existing installations stay on the old layout until an explicit, verified migration:
+Members get org skills delivered into their catalog (`source: org`), org-approved
+connectors, and the org's policies. Old layouts stay put until an explicit verified
+migration (`migrate-spaces --apply`).
 
-```bash
-./bin/hubctl-linux-amd64 migrate-spaces --user artem --org acme
-./bin/hubctl-linux-amd64 migrate-spaces --user artem --org acme --apply
-```
-
-Dev mounts selected source under /src for development. Prod has no project
-source mount. The Go toolchain stays on the host. Both use an unprivileged runtime and persistent data; the runtime
-HTTP service is reachable only on the private Compose network.
-Prod has a read-only root; dev has a writable disposable layer for tests/build outputs. Choose different base browser/OAuth ports for
-another user; dev uses the next port. Docker Compose rejects accidental host-port collisions.
-
-## Connections and capabilities
+## Capability map
 
 | Capability | Implementation |
 |---|---|
-| General agent | Upstream Hermes CLI, communication gateway with Telegram adapter, cron, files, terminal |
-| Self-environment | Telegram-visible service catalog, explicit `KEY=value` updates and self-service connector enablement; per-runtime persistence and restart |
-| Skills / hooks / memory | Native Hermes mechanisms persisted per user and runtime |
-| Personal Telegram | Separate pinned Telegram MCP source, server-enforced read-only default; not the bot transport |
-| Google Workspace | Read-only Calendar, Drive, Gmail, Docs, Sheets, Slides and Tasks over OAuth; writes opt-in |
-| Internet / LinkedIn | Persistent Chromium + Playwright MCP; optional native search providers |
-| Web search / deep research | `web` feature: `web_search`/`web_extract` with configured providers (anonymous keyless tier needs no key) plus `web_providers` and `web_search_multi` — parallel fan-out across the `web.search_providers` allowlist with `search_backend` as default; `deep_research` feature adds the bounded `deep-research-embedded` skill — gap-driven rounds, on-disk state, durable long runs via routines |
-| HeadHunter | Official vacancy, personal resume and explicitly authorized application API |
-| Slack / GitHub / Atlassian | OAuth/token MCP connections; Atlassian covers Jira and Confluence with personal API-token auth |
-| GitLab | Bundled `glab` CLI with `GITLAB_TOKEN` PAT authentication |
-| SSH | Opt-in hub capability: pinned host keys, alias-bound destinations, allowlisted commands/paths, Broker keys; write/shell/tunnel are separate features |
-| Meet / audio | Native Meet caption plugin and local faster-whisper |
-| Documents and images | Hub tools for document extract, create, edit, and convert (txt, md, csv, html, pdf, xlsx, pptx); image inspect and local png, jpeg, and webp convert; opt-in `image_generate` and `image_edit`, with the model selecting the images endpoint or the Gemini chat image call |
-| Native desktop / Drafts.app | Authenticated bridge to a trusted native stdio MCP server |
-| Other services | Arbitrary configured stdio/HTTP MCP; external services remain external |
+| Agent core | Upstream Hermes CLI, durable job queue, cron, files, terminal |
+| Skills | Unified store (drafts → approval → publish), git/ZIP/markdown/dir sources, secrets + settings via broker, per-org delivery, usage telemetry |
+| Personal Telegram | Pinned Telegram MCP, server-enforced read-only default — not the bot transport |
+| Google Workspace | Read-only Calendar/Drive/Gmail/Docs/Sheets/Tasks over OAuth; writes opt-in |
+| Web / research | `web_search`/`web_extract` + parallel `web_search_multi`; `deep-research-embedded` skill for bounded long runs |
+| Browser / LinkedIn | Persistent Chromium + Playwright MCP |
+| HeadHunter | Official vacancy/resume/application API |
+| Slack / GitHub / Atlassian | OAuth/token MCP; Atlassian covers Jira + Confluence |
+| GitLab | Bundled `glab` CLI with PAT |
+| SSH | Opt-in: pinned host keys, alias-bound destinations, allowlisted commands |
+| Documents / images / video | Hub tools for txt/md/csv/html/pdf/xlsx/pptx; image inspect/convert; opt-in `image_gen` + video via `hub-media` sidecar |
+| Voice | `hub-stt` (faster-whisper) + `hub-tts` (espeak) sidecars; remote OpenAI-compatible engines supported |
+| Other | Arbitrary configured stdio/HTTP MCP — external services stay external |
 
-Default `workspace.yaml` wishes cover workspace, browser, hh, web and deep_research
-— wishes select a backend but admit nothing without a ToolHub grant. Image generation
-is the separate opt-in `image_gen` feature: provider, model, and delivery are configured there. Delivery `workspace` keeps the file in that user's workspace; delivery `url` returns the provider URL. All account integrations are opt-in.
-The frozen per-capability matrix — availability, surface, credentials,
-limits and revocation — is [SPEC-0040](specs/active/SPEC-0040-capability-profile.md).
-The accepted default-deny successor is [SPEC-0041](specs/active/SPEC-0041-default-deny-capabilities.md)
-with [isolation and acceptance requirements](specs/active/SPEC-0042-capability-isolation-and-proof.md).
-Implementation is in progress; the [audit](.work/in-progress/CHG-0065-capability-enforcement/audit.md) and
-[phased plan](.work/in-progress/CHG-0065-capability-enforcement/plan.md) separate
-current evidence from the target guarantees.
-Hermes works without CareerGo and JobFetch. If you run an external MCP service, add
-its URL and token reference under mcp_servers; see [connections](docs/integrations.md).
-An explicit owner message containing connector `KEY=value` lines is intercepted
-before Hermes. `hubctl secret set|list|delete` is the host path. Replies contain
-key names and status, never values; groups reject credential entry.
+The frozen capability contract: [SPEC-0040](specs/active/SPEC-0040-capability-profile.md),
+[SPEC-0041](specs/active/SPEC-0041-default-deny-capabilities.md),
+[SPEC-0042](specs/active/SPEC-0042-capability-isolation-and-proof.md).
+The skills platform contract: [SPEC-0084](specs/active/SPEC-0084-agent-skills-platform.md).
+
+## Honest status
+
+Done and acceptance-verified on the live dev stack: multi-user gateway, supervisor
+scheduling, the full skills platform (M24), media services, connector platform,
+i18n. In flight or pending live legs: managed hosting delivery (M18), self-evolving
+skills (deferred post-MVP). The [changelog](CHANGELOG.md) and
+[milestones](https://github.com/letya999/hermes-hub/milestones) carry the record;
+[.work/](.work) CHG records say what was proven versus what was assumed.
 
 ## Engineering
 
-`just check` is the single local CI entrypoint. It runs Go race tests, the >=85%
-coverage gate for all original Go statements, static analysis, documentation/workflow
-checks and CLI integration tests. Upstream source is not counted toward coverage.
-For fast local Go iteration, `go run ./cmd/hubctl dev-rebuild --dir spaces/<user>
---env dev <service>` updates one enabled dev service on its existing base image;
-see [operations](docs/operations.md).
+`just check` is the single local CI entrypoint: Go race tests, ≥85% coverage gate
+on original code, static analysis, docs/workflow checks, CLI integration tests.
+For fast iteration on a running dev stack:
 
-GitHub Actions runs the same gate and builds/smoke-tests both Docker targets. A manual
-workflow is included for a labelled self-hosted GitHub Runner. Never use a personal
-agent VPS as a public pull-request runner. See [CONTRIBUTING](CONTRIBUTING.md).
+```bash
+go run ./cmd/hubctl dev-rebuild --dir spaces/<user> --env dev <service>
+```
 
-- [SETUP](SETUP.md): account bootstrap, VPS and native tools.
-- [Architecture](docs/architecture.md), [operations](docs/operations.md), [validation](docs/validation.md).
-- [Memory Bank](docs/index.md): rules / decisions / frozen specifications / plans.
-- [LICENSE](LICENSE): AGPL-3.0-only for original code; upstream licenses remain separate.
+GitHub Actions runs the same gate plus Docker builds. Never point CI at a personal
+agent VPS. See [CONTRIBUTING](CONTRIBUTING.md).
 
-This is source plus compiled Go control/runtime tools. Docker execution and real account access
-must be validated on the deployment host; see the delivery evidence before rollout.
-
-
-Persistent communication rollout uses `hubctl execution-audit` and
-`hubctl select-execution` per context. The supervised gateway sends durable jobs to
-the container supervisor (control image), which starts the exact user's Hermes home,
-holds active leases, and gracefully shuts compute down after the default
-30-minute warm TTL.
-See [operations](docs/operations.md) for drain, rollout, rollback and native cron prerequisites.
+- [SETUP](SETUP.md) — account bootstrap, VPS, native tools
+- [Architecture](docs/architecture.md) · [Operations](docs/operations.md) · [Validation](docs/validation.md)
+- [Memory Bank](docs/index.md) — rules / decisions / frozen specs / plans
+- [LICENSE](LICENSE) — AGPL-3.0-only for original code; upstream licenses separate

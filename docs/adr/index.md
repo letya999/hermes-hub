@@ -1,16 +1,30 @@
 ---
 description: Architectural decisions and clearly marked proposals; append new records when changing direction.
-last_verified: 2026-10-25
+last_verified: 2026-10-30
 ---
 # Decisions
 
 | Record | Decision |
 |---|---|
+| [ADR-0090](ADR-0090-conversation-parallel-lanes.md) | Accepted: parallel sessions inside one context — lane key (principal, context, conversation), fairness per context, per-context cap below upstream; amends ADR-0025 (CHG-0234) |
+| [ADR-0089](ADR-0089-live-tool-inventory.md) | Accepted: live caller-scoped tool inventory — `tools_list` on the store path plus managed-profile `invoke`; no prompt catalog, deferred hydration or vMCP boundary (CHG-0233) |
+| [ADR-0088](ADR-0088-bounded-control-journals.md) | Accepted: bounded file journals/receipts, typed cursors, safe audit and diagnostics; implementation planned in CHG-0216–0226 |
+| [ADR-0087](ADR-0087-broker-bounded-sqlcipher-store.md) | Accepted direction: Broker-only SQLCipher, strict recovery head and object lifecycle; native/fault gate before migration (CHG-0215–0226) |
+| [ADR-0086](ADR-0086-memory-vault-openknowledge.md) | Proposed: per-space markdown memory vault (leaves/cards/summaries/CORE) with deterministic nightly rollup, plus OpenKnowledge as opt-in knowledge surface (M20, renumbered from a duplicate ADR-0073) |
+| [ADR-0085](ADR-0085-agent-skills-platform.md) | Proposed: agent skills platform — agentskills.io format, hub-owned per-owner stores, read-only effective view, draft-first writes, grant-only authority, native default-deny, brokered secrets, curated self-evolution, pinned git installs (M24 #356–#368) |
+| [ADR-0084](ADR-0084-channel-agnostic-user-locale.md) | Accepted: channel-agnostic user locale — canonical EN catalog with generated ru/kk/es, workspace preferences.json, evidence ladder + /language picker, Delivery.Lang, HUB_USER_LANG, LLM language hints |
+| [ADR-0083](ADR-0083-lean-images-capability-packs.md) | Proposed: lean role images — hub-core/control/runtime/browser split, browser + voice extracted to per-space images, pruned upstream tree, declared capabilities pulled on demand (M26 #371–#380, M27 #383–#390) |
+| [ADR-0082](ADR-0082-standing-assignments.md) | Accepted: standing assignments — durable owner-intent record reconciling to routine artifacts, shared acquisition inside verified boundaries, deterministic filters gating model wakes (M23 #324/#332) |
+| [ADR-0081](ADR-0081-user-scoped-site-hosting.md) | Accepted: user-scoped hosting over existing controller/ToolHub and sish/DNS; static-first, isolated dynamic profile, revocable artifact links; no Haloy fork (M18 #147, renumbered from a duplicate ADR-0079) |
+| [ADR-0080](ADR-0080-per-user-dns-tls.md) | Accepted: per-user subdomains — provider-neutral DNS record contract over regru/DO/delegated GCP+DO profiles, hub-issued per-user wildcard via DNS-01 pushed to sish (renumbered from a duplicate ADR-0078) |
+| [ADR-0079](ADR-0079-outbound-exposure.md) | Accepted: named public endpoints over opt-in per-binding tunnel workloads — sish reference provider, cloudflared managed alternate; Broker credentials, name-only agent surface (renumbered from a duplicate ADR-0077) |
+| [ADR-0078](ADR-0078-auth-first-admission-contract.md) | Proposed: built-evidence reuse on auth-first credential retry; `interactive` recipe marker classifies unsupported interactive auth (renumbered from a duplicate ADR-0076) |
 | [ADR-0077](ADR-0077-ops-admin-delivery.md) | Ops/admin plane — file-read usage export, versioned space manifests, polling watch, rollout pins, admin token scope, isolated replay |
 | [ADR-0076](ADR-0076-operational-protection.md) | Proposed: M17 hardening, owned resources, budgets, containment and personal supervision |
 | [ADR-0075](ADR-0075-dual-engine-context-control.md) | Proposed: grant-selected dual engines for manual/automatic compaction and goal mode; sidecar transport to pinned upstream primitives |
 | [ADR-0074](ADR-0074-session-runtime-discipline.md) | Session & runtime discipline: group scopes, knowledge lifecycle, stable session identity with runaway token ceiling, memory boundary, todo contract, idle-proof, goal bootstrap, archive bounds (renumbered from a duplicate ADR-0072) |
 | [ADR-0073](ADR-0073-model-provider-boundaries.md) | Model & provider layer boundaries (renumbered from a duplicate ADR-0072) |
+
 | [ADR-0072](ADR-0072-connector-recovery-and-system-guide.md) | Owner-bound encrypted recovery, truthful inventory and mandatory reference guidance |
 | [ADR-0071](ADR-0071-dynamic-session-contract.md) | Bounded owner-only dynamic JSON session contracts |
 | [ADR-0070](ADR-0070-recipe-oauth.md) | Recipe-driven OAuth and lease-local token file views |

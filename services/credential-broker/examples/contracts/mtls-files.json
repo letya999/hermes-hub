@@ -1,22 +1,32 @@
 {
   "id": "mtls-files",
   "revision": 1,
-  "title": "mTLS: сертификат и ключ",
+  "title": "mTLS: certificate and key",
   "storage": "local",
   "fields": [
     {
       "id": "certificate",
-      "label": "Сертификат PEM",
+      "label": "PEM certificate",
       "kind": "pem",
       "required": true,
-      "max_bytes": 16384
+      "max_bytes": 16384,
+      "label_i18n": {
+        "ru": "Сертификат PEM",
+        "kk": "PEM сертификаты",
+        "es": "Certificado PEM"
+      }
     },
     {
       "id": "private_key",
-      "label": "Закрытый ключ PEM",
+      "label": "PEM private key",
       "kind": "pem",
       "required": true,
-      "max_bytes": 16384
+      "max_bytes": 16384,
+      "label_i18n": {
+        "ru": "Закрытый ключ PEM",
+        "kk": "PEM жеке кілті",
+        "es": "Clave privada PEM"
+      }
     }
   ],
   "allow_shared": false,
@@ -31,5 +41,10 @@
       "field": "private_key",
       "target": "/run/mcp-secrets/client.key"
     }
-  ]
+  ],
+  "title_i18n": {
+    "ru": "mTLS: сертификат и ключ",
+    "kk": "mTLS: сертификат және кілт",
+    "es": "mTLS: certificado y clave"
+  }
 }

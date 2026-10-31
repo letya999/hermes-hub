@@ -7,6 +7,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
 func boolPtr(v bool) *bool { return &v }
@@ -122,9 +125,10 @@ func TestWebFeatureGatesCapability(t *testing.T) {
 	if _, ok := cfg["web"]; ok {
 		t.Fatal("web section rendered without web feature")
 	}
-	disabled := cfg["skills"].(M)["disabled"].([]string)
-	if !slices.Contains(disabled, "deep-research-embedded") {
-		t.Fatal("deep-research-embedded not disabled without deep_research feature")
+	// Gated skills are excluded at materialization (the /skills mount); the
+	// rendered loader config stays empty — no disabled list to bypass.
+	if skills := cfg["skills"].(M); len(skills) != 0 {
+		t.Fatalf("skills loader config rendered: %#v", skills)
 	}
 	agent, ok := cfg["agent"].(M)
 	if !ok || !slices.Contains(agent["disabled_toolsets"].([]string), "web") {
@@ -139,8 +143,8 @@ func TestWebFeatureGatesCapability(t *testing.T) {
 	if !slices.Contains(cli, "web") {
 		t.Fatal("web toolset missing with web feature")
 	}
-	if disabled, ok := cfg["skills"].(M)["disabled"]; ok && slices.Contains(disabled.([]string), "deep-research-embedded") {
-		t.Fatal("deep-research-embedded disabled despite deep_research feature")
+	if skills := cfg["skills"].(M); len(skills) != 0 {
+		t.Fatalf("skills loader config rendered: %#v", skills)
 	}
 	agent, ok = cfg["agent"].(M)
 	if !ok {
@@ -348,6 +352,19 @@ func TestWebSettingsRoundTripThroughSpaceFiles(t *testing.T) {
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
+	// R3.1: the native web toolset is a wish plus a grant now.
+	wsPath := filepath.Join(d, "workspace.yaml")
+	ws, err := os.ReadFile(wsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws = []byte(strings.Replace(string(ws), "  # web: native", "  web: {via: native}", 1))
+	if err := os.WriteFile(wsPath, ws, 0600); err != nil {
+		t.Fatal(err)
+	}
+	seedGovernance(t, d, func(doc *api.Governance) {
+		activeToolGrant(t, doc, "me", "native:web", time.Hour)
+	})
 	s, err := Read(d)
 	if err != nil {
 		t.Fatal(err)

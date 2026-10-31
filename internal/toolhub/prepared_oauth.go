@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/oauth"
 )
 
@@ -24,6 +25,9 @@ type preparedOAuthFlow struct {
 	// remote marks a generic remote-mcp flow minted from discovered PRM/AS
 	// metadata rather than a reviewed prepared-provider contract.
 	remote bool
+	// lang remembers the user's language picked on the hop link so the
+	// provider's callback redirect can keep it (it carries only state+code).
+	lang locale.Lang
 }
 
 // oauthFlowStore serializes pending handoffs behind their own lock; flow
@@ -177,6 +181,29 @@ func (c *ControlPlane) preparedOAuthOnboardingID(state string) string {
 		return flow.onboardingID
 	}
 	return ""
+}
+
+// oauthFlowLang reads the language remembered on a live flow.
+func (c *ControlPlane) oauthFlowLang(state string) (locale.Lang, bool) {
+	c.oauthFlows.mu.Lock()
+	defer c.oauthFlows.mu.Unlock()
+	if flow := c.oauthFlows.flows[state]; flow != nil && flow.lang != "" {
+		return flow.lang, true
+	}
+	return "", false
+}
+
+// rememberOAuthFlowLang stamps the user's resolved page language onto the
+// live flow; the ?state= hop link and the wizard's oauth step call it.
+func (c *ControlPlane) rememberOAuthFlowLang(state string, lang locale.Lang) {
+	if state == "" {
+		return
+	}
+	c.oauthFlows.mu.Lock()
+	defer c.oauthFlows.mu.Unlock()
+	if flow := c.oauthFlows.flows[state]; flow != nil {
+		flow.lang = lang
+	}
 }
 
 func (c *ControlPlane) completePreparedOAuth(ctx context.Context, state, code string) error {

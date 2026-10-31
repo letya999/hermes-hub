@@ -97,6 +97,9 @@ type Config struct {
 	AdminAuth      string
 	Environment    string
 	WarmTTL        time.Duration
+	// BrowserIdleTTL is the grace a per-space browser sidecar stays up after
+	// its last runtime is gone; the sweep stops it once the deadline passes.
+	BrowserIdleTTL time.Duration
 	MaxConcurrent  int
 	// MaxPerPrincipal bounds live runtimes owned by one principal; zero
 	// leaves the global MaxConcurrent semaphore as the only capacity cap.
@@ -167,14 +170,18 @@ type Runtime struct {
 	RuntimeID    string            `json:"runtime_id"`
 	RuntimeMode  string            `json:"runtime_mode"`
 	Generation   string            `json:"generation"`
-	Container    string            `json:"container"`
-	Address      string            `json:"address"`
-	State        State             `json:"state"`
-	ImageSource  string            `json:"image_source,omitempty"`
-	Leases       int               `json:"leases"`
-	LastUsed     time.Time         `json:"last_used"`
-	IdleDeadline time.Time         `json:"idle_deadline,omitempty"`
-	Managed      bool              `json:"managed,omitempty"`
+	// PolicyVersion records the policy hash this generation was spawned with so
+	// a later Ensure can detect a rotated policy and replace the runtime
+	// instead of reusing one whose own envelope gate would reject the request.
+	PolicyVersion string    `json:"policy_version,omitempty"`
+	Container     string    `json:"container"`
+	Address       string    `json:"address"`
+	State         State     `json:"state"`
+	ImageSource   string    `json:"image_source,omitempty"`
+	Leases        int       `json:"leases"`
+	LastUsed      time.Time `json:"last_used"`
+	IdleDeadline  time.Time `json:"idle_deadline,omitempty"`
+	Managed       bool      `json:"managed,omitempty"`
 	// Consumers and WaitReason are read projections, never persisted state:
 	// they describe live demand at read time and stay empty on disk.
 	Consumers  []LeaseConsumer `json:"consumers,omitempty"`
@@ -216,6 +223,10 @@ type Manager struct {
 	personalPending map[string]*personalWake
 	personalRunning map[string]bool
 	wakeNotify      chan struct{}
+	// sidecarIdle holds per-container idle deadlines for browser sidecars
+	// whose space has no live runtime; in-memory only — a restart grants one
+	// grace period, never a premature stop.
+	sidecarIdle map[string]time.Time
 }
 
 type persistedManager struct {
@@ -354,6 +365,9 @@ func New(cfg Config) (*Manager, error) {
 	}
 	if cfg.WarmTTL <= 0 {
 		cfg.WarmTTL = DefaultWarmTTL
+	}
+	if cfg.BrowserIdleTTL <= 0 {
+		cfg.BrowserIdleTTL = DefaultBrowserIdleTTL
 	}
 	if cfg.MaxConcurrent <= 0 {
 		cfg.MaxConcurrent = 8
@@ -531,6 +545,7 @@ func (m *Manager) sweep(ctx context.Context, now time.Time) {
 	}
 	if sweepCtx.Err() == nil {
 		_ = m.Reap(sweepCtx, now)
+		m.ReapIdleBrowserSidecars(sweepCtx, now)
 	}
 }
 

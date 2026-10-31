@@ -42,6 +42,26 @@ any store write.
 `prepare_source` and `enable` are idempotent on a client `request_key`.
 Onboarding is persisted so `status` survives process restart.
 
+### Discovery surface
+
+Every projection additionally carries two always-present tools that need no
+grant, because they only ever expose the caller's own admitted surface, plus
+the dispatch tool governed by the control grant rules below:
+
+- `system_guide` — the static reference document.
+- `tools_list` — the live caller-scoped inventory, recomputed per call from the
+  same `ListProjectedTools` + governance-filter inputs as `tools/list`. Default
+  entries are compact (`name`, `definition`, `effect`); `query` and exact
+  `name` return descriptions and input schemas. Output is bounded by `limit`.
+  A connector or MCP tool enabled in this or another session is listed on the
+  next call without reconnect, respawn or prompt regeneration.
+- `invoke` — dispatch by exact projected tool name through the standard
+  `AuthorizeProjectedCall` admission path, for names the client's cached
+  `tools/list` has not yet refreshed. `invoke` widens nothing: under a managed
+  capability profile it rides with the connectors bundle (`personal` /
+  `personal+team`); `connectors: ""` keeps the strict `control_operations`
+  allowlist, `connectors: none` and the legacy grant path are unchanged.
+
 ### Two install modes
 
 1. **Administrator preflight catalog.** The operator imports, builds and

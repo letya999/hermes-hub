@@ -1,0 +1,24 @@
+chg: CHG-0195
+title: M24 #363 S8 — secrets and settings via the credential broker
+issue: 363
+status: done
+slices:
+  S8.1-parse-credentials: done
+  S8.2-state-store: done
+  S8.3-readiness: done
+  S8.4-form-persist: done
+  S8.5-exec-lease: done
+  S8.6-settings: done
+  S8.7-contract-docs: done
+verification: just check green 2026-10-28 (coverage 86.14%, gosec clean); no dependency changes, just security not required
+notes: >
+  All code slices green. Deviations from plan: (1) no managed /v1/skill-creds
+  relay — the gateway mounts the owner store writable at /skills-store in
+  both modes, so persistSkillCredentials writes .state directly; an untested
+  HTTP contract was not invented. (2) The lease surface is
+  ScratchExecRequest.env over the stdin channel into `docker run -i …
+  exec-scratch`; exec-scratch filters to env-shaped non-reserved names (≤16)
+  that cannot shadow the sanitized workload env. (3) ToolHub resolves the
+  lease from HUB_SKILLS_STORE ro + HUB_SKILLS_EFFECTIVE index: declared
+  names ∩ stored values, eligible skills only. Catalog bumped to
+  hub-agent-tools@5.3.0 for code_exec.skill + skill_manage.configure.

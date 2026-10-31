@@ -65,6 +65,7 @@ type JobMapping struct {
 	PolicyVersion        string          `json:"policy_version"`
 	Channel              string          `json:"channel"`
 	Trigger              string          `json:"trigger"`
+	AssignmentID         string          `json:"assignment_id,omitempty"`
 	// TaskID/TopicID pin the durable task binding; Style/StyleVersion/
 	// StyleSnapshotted pin the admitted-run presentation snapshot.
 	TaskID  string `json:"task_id,omitempty"`
@@ -131,7 +132,7 @@ func (mapping JobMapping) MatchesJob(job Job) bool {
 }
 
 func MappingFromJob(job Job, now time.Time) JobMapping {
-	return JobMapping{OperationalEpoch: job.OperationalEpoch, RoutineOriginVersion: 1, IdentitySchema: job.Envelope.Schema, ExternalIdentityID: job.Envelope.ExternalIdentityID, JobID: job.ID, IdempotencyKey: job.IdempotencyKey, Fingerprint: JobFingerprint(job), PrincipalID: job.PrincipalID, ActorID: job.ActorID, ContextID: job.ContextID, ScopeID: job.ScopeID, RuntimeID: job.RuntimeID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, OrganizationID: job.OrganizationID, UserID: job.UserID, PolicyVersion: job.PolicyVersion, Channel: job.Channel, Trigger: job.Trigger, TaskID: job.TaskID, TopicID: job.TopicID, ChatID: job.ChatID, Status: "accepted", CreatedAt: now, UpdatedAt: now, LastKnownEvent: "job.accepted"}
+	return JobMapping{OperationalEpoch: job.OperationalEpoch, RoutineOriginVersion: 1, IdentitySchema: job.Envelope.Schema, ExternalIdentityID: job.Envelope.ExternalIdentityID, JobID: job.ID, IdempotencyKey: job.IdempotencyKey, Fingerprint: JobFingerprint(job), PrincipalID: job.PrincipalID, ActorID: job.ActorID, ContextID: job.ContextID, ScopeID: job.ScopeID, RuntimeID: job.RuntimeID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, OrganizationID: job.OrganizationID, UserID: job.UserID, PolicyVersion: job.PolicyVersion, Channel: job.Channel, Trigger: job.Trigger, AssignmentID: job.AssignmentID, TaskID: job.TaskID, TopicID: job.TopicID, ChatID: job.ChatID, Status: "accepted", CreatedAt: now, UpdatedAt: now, LastKnownEvent: "job.accepted"}
 }
 
 // TerminalStatus reports whether a job mapping reached a state nothing will

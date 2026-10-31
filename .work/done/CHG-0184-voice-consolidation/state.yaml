@@ -1,0 +1,34 @@
+schema: 1
+change: CHG-0184
+title: Voice consolidation
+status: done
+branch: feat/m26-lean-images
+updated: 2026-10-28
+phase: implementation
+adr: ADR-0083
+spec: SPEC-0082
+requirements: [R2.1, R2.2, R2.3]
+depends_on: [CHG-0183]
+github_milestone: M26 — Lean Role Images
+github_issue: 375
+design_status: accepted
+implementation_status: done
+slices:
+  S2.1-single-voice-path: done
+  S2.2-hashed-stt-tts: done
+validation:
+  documents: done
+  just_check: pass (coverage 86.14%)
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence:
+  - "communication.Config drops STTCommand/TTSCommand; ConfigFromEnv no longer reads HUB_STT_COMMAND/HUB_TTS_COMMAND"
+  - "serviceTranscriber/serviceSynthesizer select URL-backed clients only; absent URL yields nil worker and typed voice-unavailable"
+  - "gateway env emits only HUB_STT_URL/HUB_TTS_URL; HUB_STT_COMMAND/HUB_TTS_COMMAND/HF_HOME/XDG_CACHE_HOME gone (TestComposeRendersServiceOnlyVoice)"
+  - "docker/hub-stt and docker/hub-tts command scripts deleted; faster-whisper smoke removed from runtime contract (STT decode contract still runs against the dedicated STT image)"
+  - "docker/Dockerfile.stt + Dockerfile.tts install with pip --require-hashes from docker/{stt,tts}-requirements.txt (torch via pytorch cpu index)"
+  - "go test ./internal/communication ./internal/stack ./internal/devcheck green"
+remaining: []
+limitations:
+  - "No Docker builds run locally (owner instruction); voice image build + in-image STT decode remain CI-gated"

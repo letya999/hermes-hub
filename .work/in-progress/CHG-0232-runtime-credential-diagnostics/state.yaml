@@ -1,0 +1,21 @@
+schema: 1
+change: CHG-0232
+title: Runtime credential references and spawn diagnostics
+status: in_progress
+branch: fix/m23-live-wake
+updated: 2026-10-30
+phase: acceptance
+validation:
+  just_check: passed_86.30_percent
+  dev_rebuild_toolhub: passed
+  dev_rebuild_supervisor: passed
+  dev_rebuild_runtime_image: passed
+  docker_check: blocked_upstream_github_fetch
+  docker_contract_and_canaries: passed
+  live_acceptance: not_run
+evidence:
+  - "caller-scoped ref lease tests and safe spawn-class response test passed"
+  - "supervisor dev container running; authenticated health endpoint returned 401 without token"
+  - "runtime dev image prepared for next supervised spawn"
+  - "Docker contract, capability, smoke, managed supervisor/network and scratch canaries passed"
+  - "full docker-check dev stopped at pinned upstream Hermes GitHub fetch; no local build/test failure observed"

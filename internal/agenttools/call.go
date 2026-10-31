@@ -48,6 +48,15 @@ func (t *Tools) ExecCall(ctx context.Context, name string, arguments map[string]
 	if name == "image_inspect" && len(r.Paths) > 0 {
 		return nil, errors.New("use images_inspect for capability-admitted image sets")
 	}
+	if name == "skill_manage" {
+		if reason := t.toolPolicyDeny(name); reason != "" {
+			return nil, errors.New(reason)
+		}
+		if t.ReadOnlyTools[name] {
+			return nil, fmt.Errorf("%s is read-only on this runtime", name)
+		}
+		return t.skillManage(ctx, arguments)
+	}
 	ws, ar, org, done, err := t.scopedRoots(name, &r, scopes)
 	if err != nil {
 		return nil, err
@@ -98,9 +107,21 @@ func (t *Tools) call(ctx context.Context, name string, r Input, ws, ar, org *os.
 		return t.SettingsSet(r)
 	case "routine_create", "routine_list", "routine_edit", "routine_update", "routine_pause", "routine_snooze", "routine_delete",
 		"routine_get", "routine_resume", "routine_history", "routine_preview",
-		"watch_subscribe", "watch_list", "watch_pause", "watch_delete":
+		"watch_subscribe", "watch_list", "watch_pause", "watch_resume", "watch_delete", "watch_sample":
 		return t.Routine(ctx, name, r)
+	case "assignment_plan", "assignment_create", "assignment_list", "assignment_get",
+		"assignment_update", "assignment_apply", "assignment_pause", "assignment_resume",
+		"assignment_cancel", "assignment_complete", "assignment_progress":
+		return t.Assignment(ctx, name, r)
 	case "document_extract":
+		if rel, ok := strings.CutPrefix(r.Path, "skills:"); ok {
+			// R7.3: skills: is a read-only logical root over the effective
+			// view; copying to the workspace stays an explicit file op.
+			if t.Skills == nil {
+				return nil, errors.New("skills root is not configured")
+			}
+			return media.New(t.Skills).Extract(ctx, rel)
+		}
 		return session().Extract(ctx, r.Path)
 	case "document_create":
 		return session().Create(ctx, r.Name, r.Format, r.Text)
@@ -121,6 +142,9 @@ func (t *Tools) call(ctx context.Context, name string, r Input, ws, ar, org *os.
 	case "knowledge_read":
 		return t.knowledgeRead(ctx, r)
 	case "image_inspect", "images_inspect":
+		if rel, ok := strings.CutPrefix(r.Path, "skills:"); ok {
+			return media.New(t.Skills).Inspect(ctx, rel)
+		}
 		if len(r.Paths) > 0 {
 			return session().InspectMany(ctx, r.Paths)
 		}
@@ -153,6 +177,12 @@ func (t *Tools) call(ctx context.Context, name string, r Input, ws, ar, org *os.
 		return t.API(ctx, name, r)
 	case "ssh_hosts", "ssh_exec", "ssh_read", "ssh_write", "ssh_shell_open", "ssh_shell_send", "ssh_shell_read", "ssh_shell_close", "ssh_tunnel_open", "ssh_tunnel_list", "ssh_tunnel_close":
 		return t.sshDispatch(ctx, name, r)
+	case "site_publish", "site_unpublish", "site_list", "site_status":
+		return t.hostingCall(ctx, name, r, ws)
+	case "exposure_list", "exposure_status", "exposure_open", "exposure_close":
+		return t.exposureDispatch(ctx, name, r)
+	case "skill", "skills_search", "skills_list", "skill_view", "skill_manage":
+		return t.skillCall(ctx, name, r)
 	default:
 		return nil, fmt.Errorf("unknown tool %q", name)
 	}

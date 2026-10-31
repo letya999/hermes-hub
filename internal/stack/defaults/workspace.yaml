@@ -16,12 +16,16 @@ tools:
     paths: [docs]
   documents: toolhub
   images: toolhub
-  todo: native
-  memory: native
-  web: native         # web search/extract toolset; provider keys via secrets
-  deep_research: native # bundled bounded deep-research skill; needs web
+  # Native Hermes toolsets are default-deny (SPEC-0083 R3.1): uncomment a
+  # wish AND grant it — hubctl governance --kind grant native:<name>.
+  # todo: native
+  # memory: native
+  # web: native         # web search/extract toolset; provider keys via secrets
+  # deep_research: native # bundled bounded deep-research skill; needs web
   browser: mcp        # playwright read/navigate; tools: {act: true} adds mutations
   hh: toolhub
+  skills: toolhub        # agent skills catalog: search/list/view/invoke
+  skills_manage: toolhub # skill drafts + owner-approved publish
   # terminal: native   # relaxed grant: full workspace reach, no call audit
   # code_exec: toolhub # sandboxed execution in a disposable container
   # ssh: {via: toolhub, access: ro}

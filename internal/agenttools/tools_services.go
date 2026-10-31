@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/envstore"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub"
 	"os"
@@ -70,11 +71,12 @@ func (t *Tools) EnvUpdate(r Input) (map[string]any, error) {
 }
 
 func envUpdateNextStep(path string) string {
+	lang := locale.LangOf(os.Getenv("HUB_WORKSPACE"))
 	values, err := envstore.Load(path, os.Getenv("HUB_SELF_ENV_KEYS"), os.Getenv("HUB_PROTECTED_ENV_KEYS"))
 	if err == nil && values["JIRA_URL"] != "" && values["JIRA_USERNAME"] != "" && values["JIRA_API_TOKEN"] != "" {
-		return "После перезапуска проверить доступ к Jira или показать задачи, созданные за последние 2 дня?"
+		return locale.T(lang, "tools.next-step.jira")
 	}
-	return "После перезапуска проверить статус подключений или продолжить настройку?"
+	return locale.T(lang, "tools.next-step.generic")
 }
 
 func (t *Tools) ServiceCatalog() (map[string]any, error) {

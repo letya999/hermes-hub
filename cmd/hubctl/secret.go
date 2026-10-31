@@ -13,6 +13,7 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/audit"
 	"github.com/letya999/hermes-hub/internal/credstore"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/secrets"
 	"github.com/letya999/hermes-hub/internal/toolhub"
 )
@@ -117,7 +118,7 @@ func runSecret(_ context.Context, args []string) error {
 		for _, info := range infos {
 			names = append(names, info.Name)
 		}
-		fmt.Println(secrets.FormatStatus(names, "active"))
+		fmt.Println(secrets.FormatStatus(locale.Operator(), names, "active"))
 		return nil
 	case "list":
 		infos, err := svc.List(owner)
@@ -136,7 +137,7 @@ func runSecret(_ context.Context, args []string) error {
 		if err := svc.Delete(owner, *name); err != nil {
 			return err
 		}
-		fmt.Println(secrets.FormatStatus([]string{*name}, "removed"))
+		fmt.Println(secrets.FormatStatus(locale.Operator(), []string{*name}, "removed"))
 		return nil
 	case "expose":
 		if *name == "" {
@@ -149,7 +150,7 @@ func runSecret(_ context.Context, args []string) error {
 		if *terminal {
 			status = "terminal"
 		}
-		fmt.Println(secrets.FormatStatus([]string{*name}, status))
+		fmt.Println(secrets.FormatStatus(locale.Operator(), []string{*name}, status))
 		return nil
 	case "activity":
 		events, err := ledger.List(owner)
@@ -202,7 +203,7 @@ func runSecret(_ context.Context, args []string) error {
 		if err := svc.Backend.RotateKey(key); err != nil {
 			return err
 		}
-		fmt.Println("Статус: key-rotated")
+		fmt.Println(secrets.FormatStatus(locale.Operator(), nil, "key-rotated"))
 		return nil
 	default:
 		return fmt.Errorf("unknown secret command %q", sub)

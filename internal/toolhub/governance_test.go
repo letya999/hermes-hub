@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
 )
 
 var govRuleSeq int
@@ -39,8 +40,10 @@ func TestGovernanceEvaluateOrdering(t *testing.T) {
 	if d := doc.Evaluate("alice", "", "user_mcp", nil, now); d.Effect != api.RuleDeny || d.Via != "section" {
 		t.Fatalf("user_mcp default: %+v", d)
 	}
-	if d := doc.Evaluate("alice", "", "native:file", nil, now); !d.Allowed() {
-		t.Fatalf("native:file default: %+v", d)
+	// SPEC-0083 R3.1: every native toolset defaults to deny — a wish needs an
+	// active grant or an explicit allow rule to take effect.
+	if d := doc.Evaluate("alice", "", "native:file", nil, now); d.Effect != api.RuleDeny || d.Via != "section" {
+		t.Fatalf("native:file default must be deny: %+v", d)
 	}
 	if d := doc.Evaluate("alice", "", "imaginary:surface", nil, now); d.Effect != api.RuleDeny || d.Via != "unknown" {
 		t.Fatalf("unknown section: %+v", d)
@@ -73,7 +76,8 @@ func TestGovernanceEvaluateOrdering(t *testing.T) {
 	}
 	// Expired rules are inert.
 	doc.Rules = append(doc.Rules, api.PolicyRule{RuleID: "expired-deny", Scope: api.ScopeGlobal, Section: "native:file", Effect: api.RuleDeny, Reason: "x", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1, ExpiresAt: now.Add(-time.Hour)})
-	if d := doc.Evaluate("alice", "", "native:file", nil, now); !d.Allowed() {
+	// Inert means no deny-via-rule — the inventory floor still applies.
+	if d := doc.Evaluate("alice", "", "native:file", nil, now); d.Via == "deny" {
 		t.Fatalf("expired deny applied: %+v", d)
 	}
 }
@@ -184,8 +188,10 @@ func TestGovernanceStoreFailClosed(t *testing.T) {
 	if err := store.Update(time.Now(), func(*api.Governance) error { return nil }); err == nil {
 		t.Fatal("corrupt doc overwritten by Update")
 	}
-	// A schema-valid but invalid document fails validation on load.
-	if err := os.WriteFile(path, []byte(`{"schema":1,"revision":1,"inventory":[]}`), 0600); err != nil {
+	// A schema-valid but invalid document fails validation on load — an
+	// identity-invalid revision survives reconcileInventory's healing of
+	// merely missing sections and still fails closed.
+	if err := os.WriteFile(path, []byte(`{"schema":1,"revision":0,"inventory":[]}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Load(); !errors.Is(err, api.ErrInvalid) {
@@ -510,6 +516,22 @@ func TestServeGrantAckForm(t *testing.T) {
 	}
 }
 
+// The protected grant page is localized like every other human surface
+// (ADR-0084): the catalog picks the language, never a hardcoded English
+// literal.
+func TestGrantAckPageLocalized(t *testing.T) {
+	grant := &api.ToolGrant{GrantID: "grant-1", PrincipalID: "alice", Section: "connectors", Reason: "enable gitlab", Status: api.GrantPending, ExpiresAt: time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)}
+	page := grantAckPage(grant, "nonce-1", locale.LangRU)
+	for _, want := range []string{"Выдать доступ", "Раздел", "Причина"} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("ru grant page missing %q", want)
+		}
+	}
+	if strings.Contains(page, "Grant access") || strings.Contains(page, `lang="en"`) {
+		t.Fatal("ru grant page carries hardcoded English")
+	}
+}
+
 // Section axes are facts; the trust tier is derived from them — a stored
 // "trusted" label would let a tampered document launder authority.
 func TestToolSectionTrustDerivation(t *testing.T) {
@@ -554,6 +576,17 @@ func TestSeedInventoryIntegrity(t *testing.T) {
 	}
 	if _, ok := doc.Section("native:imaginary"); ok {
 		t.Fatal("unknown id resolved")
+	}
+}
+
+// SPEC-0083 R3.1: every native:* capability starts denied; only an explicit
+// workspace wish plus a grant admits it. Hub-owned sections keep their own
+// defaults.
+func TestSeedInventoryNativeSectionsDefaultDeny(t *testing.T) {
+	for _, sec := range api.SeedInventory() {
+		if strings.HasPrefix(sec.ID, "native:") && sec.Default != api.RuleDeny {
+			t.Fatalf("%s defaults to %s, want deny", sec.ID, sec.Default)
+		}
 	}
 }
 

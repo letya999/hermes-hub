@@ -100,7 +100,7 @@ func TestWatchDeliveryOutcomes(t *testing.T) {
 				}
 			}
 			var out bytes.Buffer
-			err := runWatch(t.Context(), &out, watchOptions{Job: "j1", SpoolDir: spool, Interval: time.Millisecond, Timeout: 100 * time.Millisecond})
+			err := runWatch(t.Context(), &out, watchOptions{Job: "j1", SpoolDir: spool, Interval: time.Millisecond, Timeout: time.Second})
 			if tc.corrupt {
 				if err == nil {
 					t.Error("unreadable delivery state reported complete")

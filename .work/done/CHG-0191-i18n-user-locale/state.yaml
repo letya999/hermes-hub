@@ -1,0 +1,64 @@
+schema: 1
+change: CHG-0191
+title: Channel-agnostic user locale (i18n + a11y)
+status: done
+branch: feat/i18n-user-locale
+updated: 2026-10-27
+phase: closeout
+adr: ADR-0084
+spec: ~
+requirements: [owner-direction-2026-10-27]
+depends_on: []
+github_milestone: ~
+github_issue: ~
+design_status: accepted
+implementation_status: done
+slices:
+  S0-locale-core-and-ladder: done
+  S1-command-surfaces: done
+  S2-progress-background: done
+  S3-hub-html-a11y: done
+  S4-broker-pages: done
+  S5-llm-prompts-contracts: done
+  S6-operator-tooling: done
+  S7-voice-fixtures-glossary-docs: done
+validation:
+  documents: passed
+  just_check: passed
+  docker_check: deferred_no_image_change
+  red_team: passed
+  live_acceptance: not_run_no_live_channel
+evidence:
+  - "locale: internal/locale package — Lang/Parse/T, prefs ladder, 4 catalogs, parity+interpolation tests green"
+  - "gateway: /language+picker, Delivery.Lang, HUB_USER_LANG, setMyCommands×4, detect ladder; TestMain pins HUB_DEFAULT_LANG=ru for historical assertions"
+  - "internal/communication user-facing literals localized: commands, stream/goal/compact/worker/progress/broker/media/slack/hold/toolhub/prepare notices; remaining Cyrillic is model-facing (S5) or HTML (S3)"
+  - "go test ./internal/locale ./internal/communication — green (75s)"
+  - "S2: slack artifact via Delivery.Lang; commops Owner.Lang (health/canary) wired in ops_wiring; agenttools next_step + runtime quota/progress via LangOf(HUB_WORKSPACE); routines digests+blocked via Deps.LangOf→spool.langOf; runtime TestMain pins HUB_DEFAULT_LANG=ru"
+  - "go test ./internal/{communication,channel,commops,runtime,agenttools,routines} — green; S2-scope files have zero Cyrillic literals"
+  - "S3: locale.Negotiate (Accept-Language); all toolhub HTML pages localized (91 keys page.*/cred.* ×4 catalogs); pageLang = ?lang= > Accept-Language > fallback; lang propagated via redirects, device link, oauth flow.lang; langLink stamps ?lang= on toolhub URLs in chat notices; aria-live on wait/status regions; toolhub TestMain pins ru"
+  - "go test ./internal/{toolhub,communication,locale} — green (110s/230s); zero Cyrillic literals in toolhub non-test files"
+  - "S4: credential-broker own webText catalog (en/ru/kk/es, 20 keys) in httpapi/webtext.go — standalone module cannot import internal/locale; browserLang = ?lang= > Accept-Language(q-ranked) > en; formPage template localized with ?lang= on approve-check/submit/oauth actions and authorizing redirect; success(w,lang); dev-seeded contract title → EN; hub forwards lang into BrokerAuthorizationURL (brokerHopPage + ?request= redirect)"
+  - "broker just check in Docker (golang:1.27.3-bookworm, module is linux-only): gofmt/vet/openapi/archtest/secrets/docs/race+build green, coverage 89.83% (all pkgs ≥85%)"
+  - "S5: model-facing prompts → EN + modelLangHint(locale.LangOf(workspace)): prepareContinuation (all 5 branches), goalAfterJob fallback, 'resume' kick; instruction body is English, hint carries native self-name + code"
+  - "telegram DeliverArtifact failure localized via artifact.failed ×4 catalogs using delivery.Lang"
+  - "contract schema: Field.LabelI18n + Contract.TitleI18n (≤8 entries, tag regex, ≤240 bytes); Localize exact→base-tag→base-text; Extra.Validate validates label_i18n; SessionView.TitleI18n carried through OpenSession; browser resolves Title/Labels per-request lang"
+  - "all 13 prepared contracts carry ru/kk/es title_i18n + label_i18n with English base (google-file-session flipped); prepared_i18n_test enforces translations + English base + env-name labels exempt; app/init.go demo seed translated"
+  - "openapi.json regenerated: Field.label_i18n + Contract.title_i18n as string-map objects; drift check green"
+  - "broker check in Docker green again after schema change: coverage 89.89% (all pkgs ≥85%)"
+  - "S6: locale.Operator() (HUB_LANG→LANG→HUB_DEFAULT_LANG→en); FormatStatus(lang,...) with op.status-only/op.names-status ×4 catalogs; hubctl set/delete/expose/rotate pass locale.Operator(); all 3 ApplyChat rejection paths localized (FormatStatus(nil,'rejected'))"
+  - "operator scripts localized: local-accounts.ps1 (25 strings → _T tables ×4 langs + lang ladder HUB_LANG>LANG>UI culture), start-local-accounts.ps1 passes -e HUB_LANG into docker run + localized banner, telegram-account-login.py _T table (10 keys) + _t via HUB_LANG normalized by wrapper; BOM/LF preserved on ps1"
+  - "internal/devcheck/scripts_i18n_test.go: flags Cyrillic at Write-Host/throw/Read-Host/getpass/print/ValueError call sites + requires HUB_LANG + all 4 lang tables per script"
+  - "go test ./internal/{secrets,locale,devcheck} ./cmd/hubctl — green; ps1 parse-clean via PSParser, py ast.parse ok"
+  - "S7: Synthesizer.Synthesize(ctx, lang, text); HTTPSynthesizer.Voices map + voiceFor(lang)→Voice fallback; HUB_TTS_VOICE_{EN,RU,KK,ES} env parse into Config.TTSVoices; sendVoiceReply passes delivery.Lang; compose passes the 5 vars into communication-hub unchanged; sidecar already accepts per-request voice (req.Voice)"
+  - "examples/contracts flipped to English base + ru/kk/es i18n maps (12 files, per-file EOL preserved); examples_test now enforces English base + full i18n parity with prepared catalog"
+  - "terminology review: kk 'Қырдылғы' gibberish → 'Есептік деректерді енгізу'; kk 'сеанс' outlier → 'сессия'; kk menu.desc.status тапсырма→сессия; ru 'задача' vs en 'session' drift documented as accepted (pre-existing product wording, both terms user-visible since /new)"
+  - "docs: ADR-0084 D5/D6 wording aligned to implementation (hint format, operator ladders, TTS voices); media.md documents HUB_TTS_VOICE_* selection; glossary.md gains lang/locale row"
+  - "red-team: corrupt/foreign prefs fall back without panic; SourceChosen resists later hints; lang: callback writes only the resolved acting user's workspace; ?lang= injection payloads rejected by allowlist on both resolvers (TestPageLangRejectsInjectionTags + broker table); picker never reaches unverified senders or non-owner group paths (absence pinned in TestGatewayEdgeRepliesLocalized)"
+remaining:
+  - none — all slices S0..S7 implemented
+limitations:
+  - Model-facing prompts are English + explicit lang hint; viewer title stays English product name; broker-callback persisted Error uses operator fallback (no request context)
+  - Broker /oauth/callback success page resolves lang via Accept-Language (provider redirect carries no ?lang=) — same browser, honest fallback
+  - examples/contracts follow the same convention as the prepared catalog: English base + ru/kk/es i18n maps
+  - Operator scripts resolve HUB_LANG>LANG>OS culture (ps1) / HUB_LANG passed through by wrapper (py); no workspace context — env-only, EN default
+  - Russian catalog keeps the historical «задача» wording where English canonical says "session" — accepted drift, both terms are established for the same concept

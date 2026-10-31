@@ -42,7 +42,11 @@ func (m *Manager) ReconcileHealth(ctx context.Context, now time.Time) {
 	m.mu.Unlock()
 	for _, key := range keys {
 		lock := m.lockFor(key)
-		lock.Lock()
+		// A request-held key lock (a spawn parked on a full capacity semaphore)
+		// must not wedge the sweep: skip it and retry on the next tick.
+		if !lock.TryLock() {
+			continue
+		}
 		m.mu.Lock()
 		entry := m.items[key]
 		if entry == nil {
@@ -94,7 +98,9 @@ func (m *Manager) ReconcileHealth(ctx context.Context, now time.Time) {
 			cancel()
 		}
 		remediate := false
-		lock.Lock()
+		if !lock.TryLock() {
+			continue
+		}
 		m.mu.Lock()
 		if current := m.items[key]; current != nil && current.Generation == snapshot.Generation {
 			previous := current.Runtime

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/diagnostics"
+	"github.com/letya999/hermes-hub/internal/locale"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
@@ -23,6 +24,28 @@ type editThrottle struct {
 
 func (g *Gateway) queueDelivery(ctx context.Context, key string, chatID, topicID int64, text string) error {
 	return g.queueDeliveryChannel(ctx, key, "telegram_bot", chatID, topicID, text)
+}
+
+// deliveryLang resolves the owning user's language for an outbound record.
+// Direct sends map the channel transport address back to the owner;
+// unresolvable targets fall back to the operator default.
+func (g *Gateway) deliveryLang(d *Delivery) locale.Lang {
+	principal := ""
+	if d.JobID != "" {
+		if m, ok, err := g.spool.Mapping(d.JobID); err == nil && ok {
+			principal = m.PrincipalID
+		}
+	} else if d.Channel == "mock" {
+		if owner, err := g.mockLinkOwner(d.ChatID); err == nil {
+			principal = owner
+		}
+	} else if u := g.userByChatID(d.ChatID); u.ID != "" {
+		principal = u.ID
+	}
+	if u := g.user(principal); u.ID != "" && u.WorkspaceDir != "" {
+		return locale.LangOf(u.WorkspaceDir)
+	}
+	return locale.Fallback()
 }
 
 // queueDeliveryChannel is queueDelivery for non-Telegram surfaces: command
@@ -123,15 +146,16 @@ func (g *Gateway) worker(ctx context.Context) {
 				if !retried && job.Trigger == "goal" && !errors.Is(runErr, ErrUncertain) && outcome.Status != "uncertain" {
 					goalPaused = g.pauseGoalAfterRunFailure(*job)
 				}
-				key, message := "job-"+job.ID+"-error", failureMessage(job.ID, outcome.Status)
+				lang := locale.LangOf(g.user(job.UserID).WorkspaceDir)
+				key, message := "job-"+job.ID+"-error", failureMessage(lang, job.ID, outcome.Status)
 				if goalPaused {
-					message += " Цель приостановлена — /goal resume продолжит."
+					message += " " + locale.T(lang, "job.goal-paused")
 				}
 				if errors.Is(runErr, ErrUncertain) || outcome.Status == "uncertain" {
 					key = "job-" + job.ID + "-uncertain"
-					message = "Исход задачи пока неизвестен. Повторный запуск может продублировать действие. ID: " + job.ID
+					message = locale.T(lang, "job.uncertain", job.ID)
 					if outcome.RunID != "" && g.config.RuntimeURL != "" {
-						message = "Проверяю исходную задачу после потери соединения. ID: " + job.ID
+						message = locale.T(lang, "job.recheck", job.ID)
 					}
 				}
 				// Routines dedupe owner-facing errors per schedule: an identical
@@ -155,7 +179,11 @@ func (g *Gateway) worker(ctx context.Context) {
 				}
 				if deliver && job.Trigger == "cron" {
 					if o, ok := g.occurrenceFor(job.ID); ok {
-						if fresh, derr := g.spool.RecordRoutineFailure(o.ScheduleID, routineFailureDigest(job.ID, message)); derr == nil {
+						// The pending marker suppresses duplicates only while a
+						// notice is in flight; a notice that dies unconfirmed
+						// releases it and the delivered digest is recorded by
+						// deliverOne once the notice reaches the owner.
+						if fresh, ferr := g.spool.MarkRoutineFailurePending(o.ScheduleID, routineFailureDigest(job.ID, message)); ferr == nil {
 							deliver = fresh
 						}
 					}
@@ -173,7 +201,9 @@ func (g *Gateway) worker(ctx context.Context) {
 						_ = g.spool.ClearRoutineFailure(o.ScheduleID)
 					}
 				}
-				_ = g.spool.EnqueueDelivery(Delivery{ID: "job-" + job.ID + "-response", JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: response, Format: formatMarkdown, Artifacts: outcome.Artifacts, Voice: outcome.Voice, CreatedAt: g.now().UTC()})
+				if job.AssignmentID == "" || strings.TrimSpace(response) != "NO_ACTIONABLE_EVENT" {
+					_ = g.spool.EnqueueDelivery(Delivery{ID: "job-" + job.ID + "-response", JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, SlackChannel: job.SlackChannel, SlackThread: job.SlackThread, Text: response, Format: formatMarkdown, Artifacts: outcome.Artifacts, Voice: outcome.Voice, CreatedAt: g.now().UTC()})
+				}
 				_ = g.spool.CompleteJob(job.ID)
 				g.maybeAutoTitle(ctx, *job)
 				g.goalAfterJob(ctx, *job, response)
@@ -221,15 +251,46 @@ func (g *Gateway) deliveryLoop(ctx context.Context) {
 	}
 }
 
+// uncertainDelivery settles a claimed delivery as failed-unconfirmed; for a
+// routine failure notice it also releases the schedule's in-flight digest so
+// the next identical failure notifies again. The delivered digest is never
+// touched — only the pending marker, and only while it still names this
+// exact failure.
+func (g *Gateway) uncertainDelivery(d Delivery) {
+	if err := g.spool.UncertainDelivery(d.ID); err != nil {
+		return
+	}
+	var scheduleID, digest string
+	switch {
+	case d.JobID != "" && (strings.HasSuffix(d.ID, "-error") || strings.HasSuffix(d.ID, "-uncertain")):
+		o, ok := g.occurrenceFor(d.JobID)
+		if !ok || o.Job.Trigger != "cron" {
+			return
+		}
+		scheduleID, digest = o.ScheduleID, routineFailureDigest(d.JobID, d.Text)
+	case d.JobID == "" && d.OccurrenceID != "" && strings.HasPrefix(d.ID, "watch-fail-"):
+		o, ok := g.occurrenceFor(d.OccurrenceID)
+		if !ok {
+			return
+		}
+		scheduleID, digest = o.ScheduleID, routineFailureDigest(d.OccurrenceID, d.Text)
+	default:
+		return
+	}
+	_ = g.spool.ReleaseRoutineFailurePending(scheduleID, digest)
+}
+
 func (g *Gateway) deliverOne(ctx context.Context) {
 	delivery, err := g.spool.ClaimDelivery()
 	if err != nil || delivery == nil {
 		return
 	}
-	if delivery.ApprovalJobID != "" || len(delivery.Buttons) > 0 {
+	delivery.Lang = g.deliveryLang(delivery)
+	_ = g.spool.UpdateSending(*delivery)
+	if delivery.ApprovalJobID != "" || (len(delivery.Buttons) > 0 && delivery.Kind == "") {
 		mapping, found, mapErr := g.spool.Mapping(delivery.ApprovalJobID)
 		if mapErr != nil || !found {
-			_ = g.spool.UncertainDelivery(delivery.ID)
+			g.uncertainDelivery(*delivery)
 			return
 		}
 		if terminalStatus(mapping.Status) || mapping.CancelRequested || mapping.ApprovalID != delivery.ApprovalID || mapping.ApprovalState != "pending" || !g.now().Before(mapping.ApprovalDeadline) || mapping.Control != nil {
@@ -239,14 +300,14 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 		user := g.user(mapping.PrincipalID)
 		current := user.Envelope(1)
 		if delivery.ApprovalRunID == "" || delivery.ApprovalGeneration == "" || delivery.ApprovalRunID != mapping.RunID || delivery.ApprovalGeneration != mapping.RuntimeGeneration || delivery.ConversationID != mapping.ConversationID || delivery.DeliveryTargetID != mapping.DeliveryTargetID || !user.Enabled || current.RuntimeID != mapping.RuntimeID || current.PolicyVersion != mapping.PolicyVersion {
-			_ = g.spool.UncertainDelivery(delivery.ID)
+			g.uncertainDelivery(*delivery)
 			return
 		}
 	}
 	if delivery.JobID != "" {
 		mapping, found, err := g.spool.Mapping(delivery.JobID)
 		if err != nil {
-			_ = g.spool.UncertainDelivery(delivery.ID)
+			g.uncertainDelivery(*delivery)
 			return
 		}
 		if found {
@@ -267,25 +328,25 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 							delivery.BlockedBy = "administrative_hold"
 						}
 						if g.spool.UpdateSending(*delivery) == nil {
-							_ = g.spool.UncertainDelivery(delivery.ID)
+							g.uncertainDelivery(*delivery)
 						}
 						return
 					}
 				}
 			}
 			if g.authorizeGroupMapping(mapping) != nil {
-				_ = g.spool.UncertainDelivery(delivery.ID)
+				g.uncertainDelivery(*delivery)
 				return
 			}
 			user := g.user(mapping.PrincipalID)
 			current := user.Envelope(1)
 			if !user.Enabled || user.ID != mapping.PrincipalID || current.RuntimeID != mapping.RuntimeID || current.PolicyVersion != mapping.PolicyVersion || (delivery.DeliveryTargetID != "" && delivery.DeliveryTargetID != mapping.DeliveryTargetID) {
-				_ = g.spool.UncertainDelivery(delivery.ID)
+				g.uncertainDelivery(*delivery)
 				return
 			}
 			if v, ok := g.channel(mapping.Channel).(deliveryTargetVerifier); ok && v != nil {
 				if err := v.VerifyDeliveryTarget(delivery, user.ID); err != nil {
-					_ = g.spool.UncertainDelivery(delivery.ID)
+					g.uncertainDelivery(*delivery)
 					return
 				}
 			}
@@ -296,7 +357,7 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 		valid := g.occurrenceRefAuthorizedLocked(delivery.OccurrenceID)
 		g.spool.mu.Unlock()
 		if !valid {
-			_ = g.spool.UncertainDelivery(delivery.ID)
+			g.uncertainDelivery(*delivery)
 			return
 		}
 	}
@@ -304,7 +365,7 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 	ch := g.channel(delivery.Channel)
 	if ch == nil {
 		log.Printf("gateway delivery channel=%q job_id=%q delivery_id=%q status=unrouted", delivery.Channel, delivery.JobID, delivery.ID)
-		_ = g.spool.UncertainDelivery(delivery.ID)
+		g.uncertainDelivery(*delivery)
 		return
 	}
 	sendErr := ch.Deliver(ctx, delivery)
@@ -318,7 +379,7 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 		log.Printf("gateway delivery channel=%q job_id=%q delivery_id=%q status=uncertain", delivery.Channel, delivery.JobID, delivery.ID)
 		// A timeout may have sent the message. Keep it failed so a restart never
 		// blindly duplicates an uncertain Telegram delivery.
-		_ = g.spool.UncertainDelivery(delivery.ID)
+		g.uncertainDelivery(*delivery)
 		return
 	}
 	if delivery.Channel == "telegram_bot" && os.Getenv("HUB_DIAGNOSTICS_ENABLED") != "false" {
@@ -333,6 +394,20 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 		log.Printf("gateway telegram-sent job_id=%q delivery_id=%q chat_id=%d %s", delivery.JobID, delivery.ID, delivery.ChatID, field)
 	}
 	_ = g.spool.CompleteDelivery(delivery.ID)
+	// A routine failure notice earns its dedupe digest only once it reached
+	// the owner: notices that die unconfirmed never suppress the next
+	// identical failure.
+	if delivery.JobID != "" && (strings.HasSuffix(delivery.ID, "-error") || strings.HasSuffix(delivery.ID, "-uncertain")) {
+		if o, ok := g.occurrenceFor(delivery.JobID); ok && o.Job.Trigger == "cron" {
+			_, _ = g.spool.RecordRoutineFailure(o.ScheduleID, routineFailureDigest(delivery.JobID, delivery.Text))
+		}
+	}
+	// Watch-fail notices carry the occurrence id instead of a routine JobID.
+	if delivery.JobID == "" && delivery.OccurrenceID != "" && strings.HasPrefix(delivery.ID, "watch-fail-") {
+		if o, ok := g.occurrenceFor(delivery.OccurrenceID); ok && o.Job.Trigger == "cron" {
+			_, _ = g.spool.RecordRoutineFailure(o.ScheduleID, routineFailureDigest(delivery.OccurrenceID, delivery.Text))
+		}
+	}
 	if delivery.JobID != "" && (strings.HasSuffix(delivery.ID, "-response") || strings.HasSuffix(delivery.ID, "-error")) {
 		// The answer now stands alone; retire the editable status message
 		// and close its receipt so late progress cannot resurrect it.
@@ -432,7 +507,7 @@ func (g *Gateway) sendVoiceReply(ctx context.Context, delivery Delivery, text st
 		// Third-party upload is skipped unless a future explicit upload worker is configured.
 		return errors.New("voice upload is not configured")
 	}
-	audio, _, err := g.synthesizer.Synthesize(ctx, text)
+	audio, _, err := g.synthesizer.Synthesize(ctx, delivery.Lang, text)
 	if err != nil || len(audio) == 0 || len(audio) > mediaSizeLimit {
 		log.Printf("gateway voice synth failed delivery_id=%q err=%v bytes=%d", delivery.ID, err, len(audio))
 		return errors.New("tts failed")

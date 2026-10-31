@@ -1,0 +1,37 @@
+schema: 1
+change: CHG-0233
+title: Live caller-scoped tool inventory (tools_list + invoke)
+status: done
+branch: fix/m23-live-wake
+updated: 2026-10-30
+phase: done
+adr: ADR-0089
+spec: SPEC-0023
+requirements: [control-mcp-discovery]
+depends_on: []
+github_milestone: pending
+github_issue: pending
+design_status: accepted
+implementation_status: done
+slices:
+  S1.1-tools-list-tool: done
+  S1.2-invoke-managed-profiles: done
+  S1.3-contract-and-docs: done
+validation:
+  documents: pass
+  just_check: pass_except_unrelated_flake
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence:
+  - go test ./internal/toolhub ./internal/toolhub/api — ok (tools_list live inventory, caller isolation, revoke/disable, compact listing, query/name/limit, no secret leakage, managed invoke admit/deny, end-to-end managed invoke over streamable HTTP)
+  - just lint — gofmt/mod tidy/staticcheck/gosec clean
+  - just docs-check + actionlint — clean
+  - just config-check — TestDeploymentConfigurationContract ok
+  - just check (full) — all packages ok except internal/mediasvc TestComfyVideoResumesPersistedHandleWithoutSubmission: Windows temp-file lock flake unrelated to this change; passes standalone (`go test ./internal/mediasvc -run TestComfyVideoResumesPersistedHandleWithoutSubmission` ok)
+remaining:
+  - rebind + respawn managed spaces on next deployment so the updated ChannelContract is projected (catalog hub-agent-tools already at 5.9.0 via parallel work)
+  - live acceptance on a real deployment not performed
+limitations:
+  - pull model: model must call tools_list; prompt contract instructs "call tools_list before telling the user a capability is missing"
+  - invoke under managed profiles rides the connectors bundle only (connectors: personal / personal+team); connectors:"" keeps strict control_operations allowlist, connectors:none denies

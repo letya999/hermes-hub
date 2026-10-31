@@ -118,6 +118,33 @@ func TestCatalogEnableManagedAtomicAuthorityAndIsolation(t *testing.T) {
 	}
 }
 
+func TestCatalogEnableSelectsCanonicalToolNames(t *testing.T) {
+	s, auth, _, _ := managedStore(t)
+	d := api.CLICatalogDefinitions()[1]
+	if err := s.RegisterDefinition(d); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.EnableCatalog(auth, d.DefinitionID, d.Version, "operator", true); err != nil {
+		t.Fatal(err)
+	}
+	profile := s.capabilityProfiles[auth.CapabilityProfile]
+	seen := map[string]bool{}
+	for _, selection := range profile.Selections {
+		if selection.DefinitionID != d.DefinitionID || selection.DefinitionVersion != d.Version {
+			continue
+		}
+		if selection.Name != selection.ToolName {
+			t.Fatalf("catalog selection projected under generated name %q for tool %q", selection.Name, selection.ToolName)
+		}
+		seen[selection.Name] = true
+	}
+	for _, tool := range d.Tools {
+		if !seen[tool.Name] {
+			t.Fatalf("catalog tool %q missing from selections", tool.Name)
+		}
+	}
+}
+
 func containsProjectedBinding(tools []api.ProjectedTool, id string) bool {
 	for _, tool := range tools {
 		if tool.BindingID == id {

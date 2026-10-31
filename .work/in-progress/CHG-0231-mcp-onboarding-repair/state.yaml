@@ -1,0 +1,19 @@
+schema: 1
+change: CHG-0231
+title: MCP onboarding contract and failure repair
+status: in_progress
+branch: fix/m23-live-wake
+updated: 2026-10-30
+phase: acceptance
+validation:
+  just_check: passed_86.30_percent
+  dev_rebuild_toolhub: passed
+  docker_check: blocked_upstream_github_fetch
+  docker_contract_and_canaries: passed
+  live_acceptance: not_run
+evidence:
+  - "13 prepared contract revisions and catalog pins bumped; embedded digest manifest checked in Go suite"
+  - "regressions cover digest mismatch, Broker registration 409 and post-persist failed form"
+  - "toolhub dev image loaded; MCP endpoint returned authenticated 401 without credentials"
+  - "Docker contract, capability, smoke and integration canaries passed on rebuilt runtime dev image"
+  - "full docker-check dev stopped at pinned upstream Hermes GitHub fetch; no local build/test failure observed"

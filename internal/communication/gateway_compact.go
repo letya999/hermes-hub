@@ -2,7 +2,7 @@ package communication
 
 import (
 	"context"
-	"fmt"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"strconv"
 	"strings"
 	"time"
@@ -10,8 +10,6 @@ import (
 	"github.com/letya999/hermes-hub/internal/compaction"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
-
-const compactUsage = "Использование: /compact [here N] [focus <текст>] [prune] [preview] [queue] [hub|native] — сжать контекст текущей задачи."
 
 // parseCompactArgs translates the channel grammar into the runtime request's
 // argument subset. `here` without a number defaults to 2 retained exchanges,
@@ -72,17 +70,19 @@ type compactRunner interface {
 // envelope and the task's stable conversation to POST /v1/compact — the slash
 // command itself is never enqueued as a run. Replies carry only the
 // allowlisted result projection.
-func (g *Gateway) compactCommand(ctx context.Context, user User, task Task, channel string, chatID, topic, sender int64, deliveryKey, text string) error {
+func (g *Gateway) compactCommand(ctx context.Context, user User, task Task, route commandRoute, deliveryKey, text string) error {
+	topic, sender := route.topic, route.sender
 	reply := func(answer string) error {
-		return g.queueDeliveryChannel(ctx, deliveryKey+"-reply", channel, chatID, topic, answer)
+		return g.queueCommandReply(ctx, deliveryKey+"-reply", route, topic, answer)
 	}
+	lang := locale.LangOf(user.WorkspaceDir)
 	args, ok := parseCompactArgs(text)
 	if !ok {
-		return reply(compactUsage)
+		return reply(locale.T(lang, "compact.usage"))
 	}
 	runner, ok := g.runner.(compactRunner)
 	if !ok {
-		return reply("Сжатие контекста недоступно для этого исполнителя.")
+		return reply(locale.T(lang, "compact.unsupported-runner"))
 	}
 	envelope := user.Envelope(sender)
 	envelope.ConversationID = task.ConversationID
@@ -98,7 +98,7 @@ func (g *Gateway) compactCommand(ctx context.Context, user User, task Task, chan
 	}
 	if g.usageQueries.Add(1) > 2 {
 		g.usageQueries.Add(-1)
-		return reply("Сжатие уже выполняется. Повторите позже.")
+		return reply(locale.T(lang, "compact.busy"))
 	}
 	queryCtx := ctx
 	if g.commandCtx != nil {
@@ -110,18 +110,18 @@ func (g *Gateway) compactCommand(ctx context.Context, user User, task Task, chan
 		compactCtx, cancel := context.WithTimeout(queryCtx, 5*time.Minute)
 		defer cancel()
 		result, err := runner.Compact(compactCtx, args)
-		answer := compactReply(result)
+		answer := compactReply(lang, result)
 		if err != nil {
-			answer = "Сжатие контекста недоступно: " + err.Error()
+			answer = locale.T(lang, "compact.unavailable", err.Error())
 		}
-		_ = g.queueDeliveryChannel(context.Background(), deliveryKey+"-compact", channel, chatID, topic, answer)
+		_ = g.queueCommandReply(context.Background(), deliveryKey+"-compact", route, topic, answer)
 	}()
-	return reply("Сжимаю контекст…")
+	return reply(locale.T(lang, "compact.working"))
 }
 
 // compactReply renders only the allowlisted result projection — summary text
 // and transcript content never cross this boundary by construction.
-func compactReply(result compaction.CompactResult) string {
+func compactReply(lang locale.Lang, result compaction.CompactResult) string {
 	tokens := func(p *int64) int64 {
 		if p == nil {
 			return 0
@@ -130,37 +130,37 @@ func compactReply(result compaction.CompactResult) string {
 	}
 	switch {
 	case result.WouldMethod != "":
-		return fmt.Sprintf("Предпросмотр: сработал бы %s; ~%d ток., сообщений %d.",
+		return locale.T(lang, "compact.preview",
 			result.WouldMethod, tokens(result.TokensBefore), result.MessagesBefore)
 	case result.FailureClass == "queued":
-		return "Сессия занята — сжатие выполнится на ближайшей границе хода."
+		return locale.T(lang, "compact.queued")
 	case result.Applied:
-		return fmt.Sprintf("Контекст сжат (%s): ~%d → ~%d ток., сообщений %d → %d.",
+		return locale.T(lang, "compact.applied",
 			result.Method, tokens(result.TokensBefore), tokens(result.TokensAfter),
 			result.MessagesBefore, result.MessagesAfter)
 	}
-	return "Сжатие не применено: " + compactFailureText(result.FailureClass)
+	return locale.T(lang, "compact.err.prefix", compactFailureText(lang, result.FailureClass))
 }
 
-func compactFailureText(class string) string {
+func compactFailureText(lang locale.Lang, class string) string {
 	switch class {
 	case "lease_held":
-		return "сессия занята другим ходом; повторите позже или добавьте queue"
+		return locale.T(lang, "compact.err.lease-held")
 	case "engine_denied":
-		return "запрошенный движок не разрешён политикой (context.compact)"
+		return locale.T(lang, "compact.err.engine-denied")
 	case "unsupported":
-		return "нативное сжатие недоступно в этой сборке Hermes"
+		return locale.T(lang, "compact.err.unsupported")
 	case "nothing_to_compress", "nothing_to_prune":
-		return "сжимать нечего — транскрипт уже компактен"
+		return locale.T(lang, "compact.err.nothing")
 	case "under_threshold":
-		return "контекст ниже порога сжатия"
+		return locale.T(lang, "compact.err.under-threshold")
 	case "estimate_failed":
-		return "не удалось оценить размер контекста"
+		return locale.T(lang, "compact.err.estimate-failed")
 	case "disabled":
-		return "сжатие отключено политикой"
+		return locale.T(lang, "compact.err.disabled")
 	default:
 		if class == "" {
-			return "неизвестная ошибка"
+			return locale.T(lang, "compact.err.unknown")
 		}
 		return class
 	}

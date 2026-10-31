@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"gopkg.in/yaml.v3"
 )
 
 // seedGovernance writes a valid governance document into the space's
@@ -98,8 +96,9 @@ func TestGovernanceExplicitWishDenied(t *testing.T) {
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
-	// Default workspace selects `file: toolhub` and `web: native`; a global
-	// deny on either section must fail the whole read, not silently filter.
+	// Default workspace selects `file: toolhub`; a global deny on that section
+	// must fail the whole read, not silently filter. `web: native` is an
+	// explicit wish now (R3.1) — grant nothing and a deny must fail the read.
 	seedGovernance(t, d, func(doc *api.Governance) {
 		doc.Rules = append(doc.Rules, api.PolicyRule{RuleID: "deny-files", Scope: api.ScopeGlobal, Section: "hub:files", Effect: api.RuleDeny, Reason: "test deny", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1})
 	})
@@ -107,11 +106,59 @@ func TestGovernanceExplicitWishDenied(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "hub:files") {
 		t.Fatalf("denied explicit tools entry admitted: %v", err)
 	}
+	wsPath := filepath.Join(d, "workspace.yaml")
+	wsBody, _ := os.ReadFile(wsPath)
+	wsBody = []byte(strings.Replace(string(wsBody), "  # web: native", "  web: {via: native}", 1))
+	if err := os.WriteFile(wsPath, wsBody, 0600); err != nil {
+		t.Fatal(err)
+	}
 	seedGovernance(t, d, func(doc *api.Governance) {
 		doc.Rules = append(doc.Rules, api.PolicyRule{RuleID: "deny-web", Scope: api.ScopeGlobal, Section: "native:web", Effect: api.RuleDeny, Reason: "test deny", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1})
 	})
 	if _, err := Read(d); err == nil || !strings.Contains(err.Error(), "native:web") {
 		t.Fatalf("denied native toolset admitted: %v", err)
+	}
+}
+
+// TestGovernanceAssignmentsSection: the assignments wish is a governed hub
+// section — `assignments: toolhub` must resolve to a known inventory entry
+// (SPEC-0080), not fail as an unknown section.
+func TestGovernanceAssignmentsSection(t *testing.T) {
+	d := t.TempDir()
+	if err := Init(d, "me"); err != nil {
+		t.Fatal(err)
+	}
+	wsPath := filepath.Join(d, "workspace.yaml")
+	wsBody, err := os.ReadFile(wsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wsBody = []byte(strings.Replace(string(wsBody), "  images: toolhub", "  images: toolhub\n  assignments: toolhub", 1))
+	if err := os.WriteFile(wsPath, wsBody, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Read(d); err != nil {
+		t.Fatalf("assignments: toolhub must be a known section: %v", err)
+	}
+}
+
+// TestGovernanceSkillsSections: the skill families are governed hub sections —
+// the default workspace wishes `skills`/`skills_manage` must resolve to the
+// hub:skills / hub:skills_manage inventory entries (SPEC-0084), not fail as
+// unknown capability families.
+func TestGovernanceSkillsSections(t *testing.T) {
+	d := t.TempDir()
+	if err := Init(d, "me"); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Read(d)
+	if err != nil {
+		t.Fatalf("skills wishes must resolve to known sections: %v", err)
+	}
+	for _, name := range []string{"skills", "skills_manage"} {
+		if entry, ok := s.Tools[name]; !ok || entry.Via != ToolViaToolHub {
+			t.Fatalf("default workspace must wish %s: toolhub, got %+v", name, s.Tools[name])
+		}
 	}
 }
 
@@ -163,33 +210,21 @@ func TestGovernanceImplicitSectionsFilteredAtRender(t *testing.T) {
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
-	// cronjob is an implicit unmanaged emission — not in the default
-	// workspace tools map — so its deny filters render output without failing
-	// the read.
+	// A native the space never wished for stays off even when a policy rule
+	// names it — and evaluating it must never fail the read (R3.1/R3.2).
+	// Unemitted sections are simply not on the render; govAllows reports the
+	// recorded decision only for evaluated sections.
 	seedGovernance(t, d, func(doc *api.Governance) {
 		doc.Rules = append(doc.Rules, api.PolicyRule{RuleID: "deny-cronjob", Scope: api.ScopeGlobal, Section: "native:cronjob", Effect: api.RuleDeny, Reason: "test", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1})
 	})
 	s, err := Read(d)
 	if err != nil {
-		t.Fatalf("implicit section deny must not fail the read: %v", err)
-	}
-	if s.govAllows("native:cronjob") {
-		t.Fatal("denied implicit section still allowed")
+		t.Fatalf("unwished native section deny must not fail the read: %v", err)
 	}
 	cfg := Config(s)
-	yamlBody, err := yaml.Marshal(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var rendered map[string]any
-	if err := yaml.Unmarshal(yamlBody, &rendered); err != nil {
-		t.Fatal(err)
-	}
-	agent, _ := rendered["agent"].(map[string]any)
-	enabled, _ := agent["enabled_toolsets"].([]any)
-	for _, name := range enabled {
-		if name == "cronjob" {
-			t.Fatal("denied toolset still emitted")
+	for _, channel := range []string{"cli", "local", "telegram", "api_server", "cron"} {
+		if sets := cfg["platform_toolsets"].(M)[channel].([]string); slices.Contains(sets, "cronjob") {
+			t.Fatalf("%s emitted denied cronjob: %v", channel, sets)
 		}
 	}
 }
@@ -321,19 +356,68 @@ func TestSectionForEntryMapping(t *testing.T) {
 	}
 }
 
+// TestGovernanceDocPathInfraSibling: the shared document lives in the infra
+// space's runtime dir — a secondary space (infra: false) must reach it, not
+// the alphabetically-first sibling's leftover doc. The infra space itself
+// always resolves its own dir (seed target), never a sibling's.
+func TestGovernanceDocPathInfraSibling(t *testing.T) {
+	spaces := filepath.Join(t.TempDir(), "spaces")
+	write := func(space, rel, body string) {
+		path := filepath.Join(spaces, space, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	doc := filepath.Join("runtime", "toolhub", "governance.json")
+	write("artem_main", "agent.yaml", "schema: 2\nuser: artem_main\ninfra: false\n")
+	write("artem_main", doc, "{}")
+	write("local", "settings.yaml", "user: local\n")
+	write("local", doc, "{}")
+	write("artem_two", "agent.yaml", "schema: 2\nuser: artem_two\ninfra: false\n")
+
+	want := filepath.Join(spaces, "local", doc)
+	if got := governanceDocPath(filepath.Join(spaces, "artem_two")); got != want {
+		t.Fatalf("secondary picked %q, want infra doc %q", got, want)
+	}
+	// A secondary's leftover own doc is last resort, never authority over the
+	// infra document.
+	write("artem_two", doc, "{}")
+	if got := governanceDocPath(filepath.Join(spaces, "artem_two")); got != want {
+		t.Fatalf("secondary own doc shadowed the infra doc: %q", got)
+	}
+	// The infra space resolves its own dir whether the file exists or not.
+	if got := governanceDocPath(filepath.Join(spaces, "local")); got != want {
+		t.Fatalf("infra space doc path: %q", got)
+	}
+	os.Remove(filepath.Join(spaces, "local", doc))
+	if got := governanceDocPath(filepath.Join(spaces, "local")); got != want {
+		t.Fatalf("infra space seed target must be its own dir: %q", got)
+	}
+	// With no infra sibling at all, a secondary falls back to any documented
+	// sibling, then its own dir.
+	other := filepath.Join(spaces, "artem_two")
+	os.Remove(filepath.Join(spaces, "artem_two", doc))
+	if got := governanceDocPath(other); got != filepath.Join(spaces, "artem_main", doc) {
+		t.Fatalf("no infra sibling: fallback should be a documented sibling: %q", got)
+	}
+}
+
 // denyDefaultSelections preserves only deny-default sections the space
 // explicitly picked — never user_mcp, never implicit toolsets.
 func TestDenyDefaultSelections(t *testing.T) {
 	s := Settings{User: "alice", Tools: map[string]ToolEntry{
 		"terminal": {Via: ToolViaNative},
-		"file":     {Via: ToolViaNative},  // allow-default: not preserved
+		"file":     {Via: ToolViaNative},  // deny-default since R3.1: preserved
 		"gitea":    {Via: ToolViaMCPRaw},  // user_mcp: never preserved
 		"off":      {Via: ToolViaOff},     // disabled: skipped
 		"ssh":      {Via: ToolViaToolHub}, // hub:ssh is deny-default exec
 	}}
 	got := s.denyDefaultSelections(api.NewGovernance())
-	want := []string{"native:terminal"}
-	if len(got) != 1 || got[0] != want[0] {
+	want := []string{"native:file", "native:terminal"}
+	if !slices.Equal(got, want) {
 		t.Fatalf("preserved %v want %v", got, want)
 	}
 }
@@ -346,8 +430,8 @@ func TestImplicitToolsetSections(t *testing.T) {
 		t.Fatalf("managed implicit: %v", got)
 	}
 	plain := implicitToolsetSections(Settings{User: "alice"})
-	if !slices.Contains(plain, api.SectionHubTools) || !slices.Contains(plain, "native:terminal") {
-		t.Fatalf("unmanaged implicit: %v", plain)
+	if !slices.Equal(plain, []string{api.SectionHubTools}) {
+		t.Fatalf("unmanaged implicit must be hub tools only: %v", plain)
 	}
 	if slices.Contains(plain, "hub:browser_guest") {
 		t.Fatal("guest surface listed without browser")
@@ -370,5 +454,53 @@ func TestGovViewAbsent(t *testing.T) {
 	}
 	if s.govForcedRO("file") {
 		t.Fatal("forced ro on unviewed settings")
+	}
+}
+
+// The shared workload-controller lives on the infra-owner's compose project;
+// a secondary space's operator calls must present the infra sibling's
+// credentials. InfraSpaceDir mirrors governanceDocPath's precedence: own
+// space when it renders the control plane, else the infra sibling, else own.
+func TestInfraSpaceDir(t *testing.T) {
+	root := t.TempDir()
+	spaces := filepath.Join(root, "spaces")
+	local := filepath.Join(spaces, "local")
+	member := filepath.Join(spaces, "member")
+	for _, d := range []string{local, member} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(local, "agent.yaml"), []byte("user: me\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(member, "agent.yaml"), []byte("infra: false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := InfraSpaceDir(member); got != local {
+		t.Fatalf("member must resolve the infra sibling, got %s", got)
+	}
+	if got := InfraSpaceDir(local); got != local {
+		t.Fatalf("infra space resolves itself, got %s", got)
+	}
+	// Outside a spaces/ layout the space answers for itself.
+	lone := filepath.Join(root, "lone")
+	if err := os.MkdirAll(lone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := InfraSpaceDir(lone); got != lone {
+		t.Fatalf("standalone dir resolves itself, got %s", got)
+	}
+	// No infra sibling on record: fail back to the caller, never error out.
+	root2 := t.TempDir()
+	lonely := filepath.Join(root2, "spaces", "solo")
+	if err := os.MkdirAll(lonely, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(lonely, "agent.yaml"), []byte("infra: false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := InfraSpaceDir(lonely); got != lonely {
+		t.Fatalf("no infra sibling falls back to caller, got %s", got)
 	}
 }

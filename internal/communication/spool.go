@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/routines"
 )
 
@@ -72,9 +73,10 @@ type Spool struct {
 	root   string
 	mu     sync.Mutex
 	secret map[string]string
-	// inFlight maps (principal, context) to the job currently allowed to run;
-	// held until the job's mapping reaches a terminal status. In-memory only,
-	// rebuilt from durable mappings on startup (ADR-0025).
+	// inFlight maps (principal, context, conversation) to the job currently
+	// allowed to run; held until the job's mapping reaches a terminal status.
+	// In-memory only, rebuilt from durable mappings on startup (ADR-0090,
+	// amends ADR-0025).
 	inFlight        map[string]string
 	proactiveFlight map[string]bool
 	activeMappings  map[string]bool // Lazily rebuilt; only this spool's writer changes mappings.
@@ -93,6 +95,20 @@ type Spool struct {
 	// prefetched need results). Nil fails the probe — a script probe without
 	// the supervisor never runs in-process.
 	probeScript func(ctx context.Context, o RoutineOccurrence, src, input string, mountSpace bool, needs []string) (string, error)
+	// refreshHolds, when set (supervised mode), fetches the supervisor's
+	// hold projection at the public enqueue boundary — outside the spool
+	// lock. holdsSnapshot reads the last projection under the lock: an
+	// active hold suppresses the job, a settled hold stamps its operational
+	// epoch so supervisor admission and delivery gating evaluate the epoch
+	// the job was queued under — not a zero value that fails every fence
+	// (SPEC-0053).
+	refreshHolds  func(ctx context.Context) error
+	holdsSnapshot func() []masterHold
+	// resolveChannel, when set, binds engine channel lookups to the owning
+	// gateway's user registry: RouteBlockedNotice retargets to the owner's
+	// verified home only when the real binding is resolvable — the nil-
+	// gateway fallback stays for the pure validation methods.
+	resolveChannel func(id string) routines.OccurrenceChannel
 	// rt is the routines engine (internal/routines) sharing this spool's
 	// mutex and root; it owns the schedules/occurrences/watchers/digests
 	// subtrees and borrows the rest of the spool through its Deps seam.
@@ -102,6 +118,9 @@ type Spool struct {
 	budget       *budgetLedger
 	budgetBroken error
 	limits       spoolLimits
+	// langOf resolves the job owner's workspace language for user-facing
+	// stream texts; nil falls back to the hub default.
+	langOf func(principalID string) locale.Lang
 }
 
 // Notify exposes the coalesced wake channel. Buffered with capacity one: a
@@ -187,9 +206,20 @@ func openSpool(root string, create bool) (*Spool, error) {
 		NormalizeDelivery: normalizeDelivery,
 		WriteJSONAtomic:   atomicJSON,
 		Signal:            s.signal,
-		ChannelFor:        func(id string) routines.OccurrenceChannel { return channelFor(nil, id) },
-		ProbeScript:       func() routines.ProbeScriptFunc { return s.probeScript },
-		SettleEvents:      s.settleEvents,
+		ChannelFor: func(id string) routines.OccurrenceChannel {
+			if s.resolveChannel != nil {
+				return s.resolveChannel(id)
+			}
+			return channelFor(nil, id)
+		},
+		ProbeScript:  func() routines.ProbeScriptFunc { return s.probeScript },
+		SettleEvents: s.settleEvents,
+		LangOf: func(p string) locale.Lang {
+			if s.langOf != nil {
+				return s.langOf(p)
+			}
+			return locale.Fallback()
+		},
 	})
 	return s, nil
 }
@@ -291,7 +321,7 @@ func (s *Spool) rebuildMappings() error {
 				}
 			}
 			if mapping, err := s.loadMappingLocked(job.ID); err == nil && mappingHoldsContext(mapping) {
-				s.inFlight[jobContextKey(mapping.PrincipalID, mapping.ContextID)] = job.ID
+				s.inFlight[jobContextKey(mapping.PrincipalID, mapping.ContextID, mapping.ConversationID)] = job.ID
 			}
 		}
 	}
@@ -849,6 +879,13 @@ func recoverFiles(from, to string) error {
 }
 
 func (s *Spool) Enqueue(job Job) (bool, error) {
+	if s.refreshHolds != nil {
+		// The hold projection is I/O — refresh at the boundary before the
+		// lock so inner producers and other writers never stall on it.
+		if err := s.refreshHolds(context.Background()); err != nil {
+			return false, err
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.enqueueLocked(job)
@@ -867,6 +904,19 @@ func (s *Spool) enqueueLocked(job Job) (bool, error) {
 		}
 		if job.Trigger != "cron" {
 			job.Envelope.ConversationID = task.ConversationID
+		}
+	}
+	if s.holdsSnapshot != nil {
+		for _, hold := range s.holdsSnapshot() {
+			if hold.PrincipalID != job.PrincipalID || hold.ContextID != job.ContextID {
+				continue
+			}
+			if hold.Active {
+				// Administrative hold: the enqueue is accepted but suppressed —
+				// the same fence enqueueChannelJob applies before dispatch.
+				return true, nil
+			}
+			job.OperationalEpoch = hold.Epoch
 		}
 	}
 	fingerprint := jobFingerprint(job)
@@ -1019,7 +1069,7 @@ func (s *Spool) ClaimJob() (*Job, error) {
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
 		a, b := candidates[i].job, candidates[j].job
-		ak, bk := jobContextKey(a.PrincipalID, a.ContextID), jobContextKey(b.PrincipalID, b.ContextID)
+		ak, bk := jobFairKey(a.PrincipalID, a.ContextID), jobFairKey(b.PrincipalID, b.ContextID)
 		if ak != bk {
 			if (ak > cursor.Scope) != (bk > cursor.Scope) {
 				return ak > cursor.Scope
@@ -1035,6 +1085,17 @@ func (s *Spool) ClaimJob() (*Job, error) {
 		name := entry.name
 		job := entry.job
 		pending := filepath.Join(s.root, "pending", name)
+		if job.AssignmentID != "" && job.AssignmentPlanRevision != 0 {
+			if _, ok := s.rt.AssignmentForWakeLocked(job.AssignmentID, job.AssignmentPlanRevision); !ok {
+				if err := s.updateMappingLocked(job.ID, RunOutcome{Status: "cancelled", LastEvent: "assignment.cancelled"}, "cancelled", true); err != nil {
+					return nil, err
+				}
+				if err := os.Rename(pending, filepath.Join(s.root, "failed", name)); err != nil {
+					return nil, err
+				}
+				continue
+			}
+		}
 		if job.Trigger == "cron" && strings.HasPrefix(job.ID, "routine-") {
 			body, err := os.ReadFile(filepath.Join(s.root, "occurrences", spoolFileID(job.ID)+".json"))
 			var o RoutineOccurrence
@@ -1048,12 +1109,21 @@ func (s *Spool) ClaimJob() (*Job, error) {
 				continue
 			}
 		}
-		key := jobContextKey(job.PrincipalID, job.ContextID)
+		// ponytail: parallel lanes share one home and runtime — workspace
+		// writes are last-writer-wins, the browser sidecar is single and a
+		// runtime restart hits every lane (ADR-0090 D5). Upgrade paths:
+		// per-session workspace views, a browser lane, per-lane wedge
+		// accounting.
+		key := jobContextKey(job.PrincipalID, job.ContextID, job.ConversationID)
 		if holder, busy := s.inFlight[key]; busy && holder != job.ID {
-			continue // Context serialization is per key; other contexts stay claimable.
+			continue // Serialization is per conversation lane; other lanes stay claimable.
+		}
+		fairKey := jobFairKey(job.PrincipalID, job.ContextID)
+		if s.inFlight[key] != job.ID && s.limits.MaxParallelPerContext > 0 && s.contextLanesHeldLocked(fairKey) >= s.limits.MaxParallelPerContext {
+			continue // Context at its session cap; the lane waits like a busy key (ADR-0090 R3).
 		}
 		to := filepath.Join(s.root, "running", name)
-		cursor.Scope = key
+		cursor.Scope = fairKey
 		if err := atomicJSON(cursorPath, cursor); err != nil {
 			return nil, err
 		}

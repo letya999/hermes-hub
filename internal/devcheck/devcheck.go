@@ -20,6 +20,8 @@ import (
 	"time"
 )
 
+var errEmptyCoverage = errors.New("empty coverage profile")
+
 type coverBlock struct {
 	statements int
 	covered    bool
@@ -57,7 +59,11 @@ func parseCoverage(name string) (map[string]coverBlock, error) {
 		}
 		merged := blocks[fields[0]]
 		if merged.pkg == "" {
-			file := fields[0][:strings.IndexByte(fields[0], ':')]
+			separator := strings.LastIndexByte(fields[0], ':')
+			if separator <= 0 {
+				return nil, fmt.Errorf("invalid coverage location")
+			}
+			file := fields[0][:separator]
 			if i := strings.LastIndexByte(file, '/'); i >= 0 {
 				merged.pkg = file[:i]
 			} else {
@@ -74,7 +80,7 @@ func parseCoverage(name string) (map[string]coverBlock, error) {
 		return nil, err
 	}
 	if len(blocks) == 0 {
-		return nil, fmt.Errorf("empty coverage profile")
+		return nil, errEmptyCoverage
 	}
 	return blocks, nil
 }
@@ -160,48 +166,6 @@ func CoverageGate(name string, minimum, packageMinimum float64) (float64, error)
 		}
 	}
 	return actual, nil
-}
-
-func CoverAll(profile string, minimum, packageMinimum float64, listPackages func() ([]string, error), testPackage func(pkg, out string) error) (float64, error) {
-	packages, err := listPackages()
-	if err != nil {
-		return 0, err
-	}
-	out, err := os.Create(profile)
-	if err != nil {
-		return 0, err
-	}
-	if _, err := out.WriteString("mode: count\n"); err != nil {
-		_ = out.Close()
-		return 0, err
-	}
-	tmp := profile + ".tmp"
-	for _, pkg := range packages {
-		if err := testPackage(pkg, tmp); err != nil {
-			_ = out.Close()
-			return 0, err
-		}
-		body, err := os.ReadFile(tmp)
-		if err != nil {
-			_ = out.Close()
-			return 0, err
-		}
-		for _, line := range strings.Split(string(body), "\n") {
-			line = strings.TrimRight(line, "\r")
-			if line == "" || strings.HasPrefix(line, "mode:") {
-				continue
-			}
-			if _, err := out.WriteString(line + "\n"); err != nil {
-				_ = out.Close()
-				return 0, err
-			}
-		}
-	}
-	_ = os.Remove(tmp)
-	if err := out.Close(); err != nil {
-		return 0, err
-	}
-	return CoverageGate(profile, minimum, packageMinimum)
 }
 
 func Project(root string) error {
@@ -435,35 +399,123 @@ func DockerSmoke(ctx context.Context, image string) error {
 		return err
 	}
 	name := fmt.Sprintf("hermes-smoke-%x", suffix)
+	// SPEC-0082 R4: the display stack lives in the dedicated browser image,
+	// not the runtime. Smoke mirrors the compose topology — sidecar plus
+	// runtime on a scratch network — and the runtime health probe reaches
+	// CDP over BROWSER_CDP_URL exactly as it does on the space network.
+	sidecar := name + "-browser"
+	net := name + "-net"
 	run := func(args ...string) error {
 		cmd := exec.CommandContext(ctx, "docker", args...)
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 		return cmd.Run()
 	}
 	defer exec.Command("docker", "rm", "-f", name).Run()
+	defer exec.Command("docker", "rm", "-f", sidecar).Run()
+	defer exec.Command("docker", "network", "rm", net).Run()
+	dir, err := os.MkdirTemp("", "novnc-pass")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	pass, err := writeSmokePasswd(dir)
+	if err != nil {
+		return err
+	}
 	checks := [][]string{
 		{"run", "--rm", "--entrypoint", "hermes", image, "--version"},
 		{"run", "--rm", "--entrypoint", "glab", image, "--version"},
 		{"run", "--rm", "--entrypoint", "/opt/hermes/.venv/bin/python", image, "-c", "import sqlite3; assert sqlite3.sqlite_version_info >= (3,53,4)"},
-		{"run", "-d", "--name", name, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--shm-size", "1g", "--tmpfs", "/tmp:mode=1777", "--tmpfs", "/state:uid=10001,gid=10001,mode=0700", "--tmpfs", "/workspace:uid=10001,gid=10001,mode=0700", "-e", "HUB_BROWSER=true", image, "idle"},
+		{"network", "create", net},
+		// browser-<user> sidecar per compose.go: the image CMD is already
+		// `browser`. The password lands at the same path the compose secrets
+		// projection uses — a bare bind cannot express uid/gid/mode, so the
+		// fixture itself is made readable (writeSmokePasswd).
+		{"run", "-d", "--name", sidecar, "--network", net, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--shm-size", "1g", "--tmpfs", "/tmp:mode=1777", "--tmpfs", "/state:uid=10001,gid=10001,mode=0700", "--tmpfs", "/workspace:uid=10001,gid=10001,mode=0700", "--mount", "type=bind,source=" + filepath.ToSlash(pass) + ",target=/run/secrets/novnc.pass,readonly", image + "-browser"},
+		{"run", "-d", "--name", name, "--network", net, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--shm-size", "1g", "--tmpfs", "/tmp:mode=1777", "--tmpfs", "/state:uid=10001,gid=10001,mode=0700", "--tmpfs", "/workspace:uid=10001,gid=10001,mode=0700", "-e", "HUB_BROWSER=true", "-e", "BROWSER_CDP_URL=http://" + sidecar + ":9222", image, "idle"},
 	}
 	for _, args := range checks {
 		if err := run(args...); err != nil {
 			return err
 		}
 	}
-	for range 90 {
-		if exec.CommandContext(ctx, "docker", "exec", name, "hub-runtime", "health").Run() == nil {
-			if err := runtimeContractSmoke(ctx, image, name+"-contract"); err != nil {
-				return err
-			}
-			fmt.Println("Standalone Docker runtime smoke passed; no live provider calls")
+	status := func(container string) string {
+		out, err := exec.CommandContext(ctx, "docker", "inspect", "--format", smokeStatusFormat, container).Output()
+		if err != nil {
+			return "unknown"
+		}
+		return strings.TrimSpace(string(out))
+	}
+	err = smokeWaitHealthy(ctx, func() error {
+		out, runErr := exec.CommandContext(ctx, "docker", "exec", name, "hub-runtime", "health").CombinedOutput()
+		if runErr == nil {
 			return nil
+		}
+		return fmt.Errorf("%v: %s", runErr, strings.TrimSpace(string(out)))
+	}, status, func(container string) {
+		fmt.Printf("smoke: %s died, restarting once\n", container)
+		_ = run("start", container)
+	}, []string{name, sidecar}, 90*time.Second)
+	if err != nil {
+		dumpSmokeLogs(run, name, sidecar)
+		return err
+	}
+	if err := runtimeContractSmoke(ctx, image, name+"-contract"); err != nil {
+		return err
+	}
+	fmt.Println("Standalone Docker runtime smoke passed; no live provider calls")
+	return nil
+}
+
+const smokeStatusFormat = "{{if .State.Running}}running{{else}}{{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}}{{end}}"
+
+// writeSmokePasswd stages the throwaway noVNC password the smoke sidecar
+// bind-mounts at /run/secrets/novnc.pass. A plain bind keeps host owner and
+// mode: 0600 owned by the runner is an EACCES for the container's uid 10001,
+// and x11vnc exits(1) on it — the file exists, so the missing-file fallback
+// does not apply. The composed stack mounts the same file via secrets with
+// uid/gid/mode projection, which a bare docker run cannot express.
+func writeSmokePasswd(dir string) (string, error) {
+	pass := filepath.Join(dir, "novnc.pass")
+	if err := os.WriteFile(pass, []byte("smoke"), 0o644); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(pass, 0o644); err != nil {
+		return "", err
+	}
+	return pass, nil
+}
+
+func dumpSmokeLogs(run func(args ...string) error, containers ...string) {
+	for _, container := range containers {
+		_ = run("logs", container)
+	}
+}
+
+func smokeWaitHealthy(ctx context.Context, healthy func() error, status func(string) string, restart func(string), containers []string, window time.Duration) error {
+	deadline := time.Now().Add(window)
+	restarted := map[string]bool{}
+	var healthErr error
+	for {
+		if healthErr = healthy(); healthErr == nil {
+			return nil
+		}
+		for _, container := range containers {
+			s := status(container)
+			if s == "running" {
+				continue
+			}
+			if restarted[container] {
+				return fmt.Errorf("%s exited during smoke (status %s)", container, s)
+			}
+			restarted[container] = true
+			restart(container)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("agent/browser failed health check: %w", healthErr)
 		}
 		time.Sleep(time.Second)
 	}
-	_ = run("logs", name)
-	return fmt.Errorf("agent/browser failed health check")
 }
 
 func runtimeContractSmoke(ctx context.Context, image, name string) error {

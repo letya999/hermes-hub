@@ -109,7 +109,9 @@ func TestRunRetriesConfirmedRemovalAfterBrokerRecovers(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- runWithContext(ctx) }()
-	deadline := time.Now().Add(2 * time.Second)
+	// Generous deadline: startup under parallel -race load can take seconds
+	// before the first removal attempt reaches the stub Broker.
+	deadline := time.Now().Add(15 * time.Second)
 	for calls.Load() == 0 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
@@ -131,6 +133,12 @@ func TestRunRetriesConfirmedRemovalAfterBrokerRecovers(t *testing.T) {
 			}
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+	// Drain runWithContext before failing: a shutdown still writing the store
+	// holds the .toolhub-* temp file open and trips TempDir cleanup on Windows.
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 	t.Fatal("removal did not retry after Broker recovery")
 }
@@ -185,7 +193,9 @@ func TestRunSchedulesReconcilerPass(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- runWithContext(ctx) }()
-	deadline := time.Now().Add(3 * time.Second)
+	// Generous deadline: startup under parallel -race load can take seconds
+	// before the first reconciler pass writes the store.
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		reloaded, err := toolhub.Load(path)
 		if err == nil {
@@ -199,6 +209,12 @@ func TestRunSchedulesReconcilerPass(t *testing.T) {
 			}
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+	// Drain runWithContext before failing: a shutdown still writing the store
+	// holds the .toolhub-* temp file open and trips TempDir cleanup on Windows.
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 	t.Fatal("scheduled reconciler did not degrade the dead-credential connection")
 }
@@ -344,7 +360,15 @@ func TestRunServesPublicSurface(t *testing.T) {
 	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:0")
 	t.Setenv("HUB_TOOLHIVE_ADMISSION_ENDPOINT", "")
 	t.Setenv("HUB_PUBLIC_LISTEN", publicAddr)
-	go func() { _ = run() }()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runWithContext(ctx) }()
+	defer func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Error(err)
+		}
+	}()
 	client := &http.Client{Timeout: 500 * time.Millisecond}
 	deadline := time.Now().Add(5 * time.Second)
 	for {

@@ -1,7 +1,7 @@
 {
   "id": "github-api-proxy",
   "revision": 1,
-  "title": "GitHub API: ограниченный proxy",
+  "title": "GitHub API: limited proxy",
   "storage": "local",
   "fields": [
     {
@@ -9,7 +9,12 @@
       "label": "GitHub token",
       "kind": "secret",
       "required": true,
-      "max_bytes": 4096
+      "max_bytes": 4096,
+      "label_i18n": {
+        "ru": "Токен GitHub",
+        "kk": "GitHub токені",
+        "es": "Token de GitHub"
+      }
     }
   ],
   "allow_shared": true,
@@ -31,5 +36,10 @@
         "X-GitHub-Api-Version": "2022-11-28"
       }
     }
-  ]
+  ],
+  "title_i18n": {
+    "ru": "GitHub API: ограниченный proxy",
+    "kk": "GitHub API: шектеулі proxy",
+    "es": "API de GitHub: proxy limitado"
+  }
 }

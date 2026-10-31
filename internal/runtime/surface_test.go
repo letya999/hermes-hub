@@ -174,6 +174,14 @@ func TestSurfaceProbeHubChildDiesOnInit(t *testing.T) {
 	t.Setenv("HUB_SELFTEST_CHILD", "die-fast")
 	// Race instrumentation otherwise delays os.Exit by one second in the child.
 	t.Setenv("GORACE", "atexit_sleep_ms=0")
+	// The production grace window (1.5s) loses the race against a re-exec'd
+	// instrumented test binary booting under parallel -race load: the parent
+	// then kills a still-booting child and reports it healthy. The death
+	// signature being proven is instant once the child runs, so only the boot
+	// time is load-dependent — widen the window for this test.
+	oldGrace := hubChildGrace
+	hubChildGrace = 30 * time.Second
+	t.Cleanup(func() { hubChildGrace = oldGrace })
 
 	result := surfaceProbe(context.Background())
 	if result.surface != "degraded" {
@@ -191,6 +199,30 @@ func TestHelperProcessDieFast(t *testing.T) {
 		return
 	}
 	os.Exit(0)
+}
+
+// TestHelperProcessDiesAfterBoot is not a test: re-exec'd as the hub stdio
+// child it outlives the production grace window, then exits — proof that the
+// init verdict comes from the configured window, not a hardcoded one.
+func TestHelperProcessDiesAfterBoot(t *testing.T) {
+	if os.Getenv("HUB_SELFTEST_CHILD") != "die-after-boot" {
+		return
+	}
+	time.Sleep(2 * time.Second)
+	os.Exit(0)
+}
+
+// The spawn verdict must read hubChildGrace: a child that dies after the
+// production 1.5s window but inside a widened one is still init-failed. If
+// spawnHubChild hardcodes 1500ms it kills the child first and reports "".
+func TestSpawnHubChildHonorsGraceWindow(t *testing.T) {
+	old := hubChildGrace
+	hubChildGrace = 60 * time.Second
+	t.Cleanup(func() { hubChildGrace = old })
+	t.Setenv("HUB_SELFTEST_CHILD", "die-after-boot")
+	if reason := spawnHubChild(mustAbs(t, os.Args[0]), []string{"-test.run=TestHelperProcessDiesAfterBoot"}); reason != "child_init_failed" {
+		t.Fatalf("reason = %q, want child_init_failed", reason)
+	}
 }
 
 // SPEC-0053 R1.5: the spawn self-test is a startup proof — it must not fork a

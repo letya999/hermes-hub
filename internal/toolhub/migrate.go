@@ -55,6 +55,84 @@ func MigrateBindings(store *Store, principalID, contextID, runtimeID, from, to s
 	return 0, fmt.Errorf("%w: migrate gave up after %d stale writes: %v", api.ErrConflict, migrateMaxAttempts, lastErr)
 }
 
+// ProjectionMigration reports what a policy-version roll moved and what
+// stayed pinned for an operator decision.
+type ProjectionMigration struct {
+	BindingsMoved   int
+	ProfilesBlocked []string
+}
+
+// MigrateProjection rolls every active binding of one (principal, context,
+// runtime) projection onto policy version `to`. Unlike MigrateBindings it
+// scans live state rather than trusting one `from` version: envelopes are
+// minted at the rendered policy hash, so anything pinned at a version no
+// manifest recorded still bricks the projection unless it moves.
+// Disabled/revoked bindings never move.
+// Capability profiles are confirmation-signed: rewriting PolicyVersion would
+// invalidate the operator's review digest and brick every later store Load,
+// so a stale active profile is never rewritten — it is reported in
+// ProfilesBlocked for the operator to republish under the new policy.
+func MigrateProjection(store *Store, principalID, contextID, runtimeID, to string) (ProjectionMigration, error) {
+	var lastErr error
+	for attempt := 0; attempt < migrateMaxAttempts; attempt++ {
+		report, err := store.migrateProjectionOnce(principalID, contextID, runtimeID, to)
+		if err == nil {
+			return report, nil
+		}
+		lastErr = err
+		if !errors.Is(err, api.ErrConflict) && !errors.Is(err, api.ErrStale) {
+			return ProjectionMigration{}, err
+		}
+		if reloadErr := store.Reload(); reloadErr != nil {
+			return ProjectionMigration{}, fmt.Errorf("%w: reload after stale write: %v", err, reloadErr)
+		}
+	}
+	return ProjectionMigration{}, fmt.Errorf("%w: migrate gave up after %d stale writes: %v", api.ErrConflict, migrateMaxAttempts, lastErr)
+}
+
+func (s *Store) migrateProjectionOnce(principalID, contextID, runtimeID, to string) (ProjectionMigration, error) {
+	var report ProjectionMigration
+	s.mu.Lock()
+	for id, binding := range s.bindings {
+		if binding.PrincipalID != principalID || binding.ContextID != contextID || binding.RuntimeID != runtimeID {
+			continue
+		}
+		if binding.Status != api.ActiveStatus || binding.PolicyVersion == to {
+			continue
+		}
+		from := binding.PolicyVersion
+		binding.PolicyVersion = to
+		binding.Revision++
+		s.touchProjectionLocked(&binding)
+		s.bindings[id] = binding
+		s.bindingChanges = append(s.bindingChanges, bindingChange{
+			BindingID:  binding.ToolBindingID,
+			FromPolicy: from,
+			ToPolicy:   to,
+			Revision:   binding.Revision,
+		})
+		report.BindingsMoved++
+	}
+	for id, profile := range s.capabilityProfiles {
+		if profile.PrincipalID != principalID || profile.ContextID != contextID || profile.RuntimeID != runtimeID {
+			continue
+		}
+		if profile.Status != api.ActiveStatus || profile.PolicyVersion == to {
+			continue
+		}
+		report.ProfilesBlocked = append(report.ProfilesBlocked, id)
+	}
+	s.mu.Unlock()
+	if report.BindingsMoved == 0 {
+		return report, nil
+	}
+	if err := s.persist(); err != nil {
+		_ = s.Reload()
+		return ProjectionMigration{}, err
+	}
+	return report, nil
+}
+
 func (s *Store) migrateOnce(principalID, contextID, runtimeID, from, to string) (int, error) {
 	s.mu.Lock()
 	moved := 0

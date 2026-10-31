@@ -89,6 +89,12 @@ func validMCPProbe(probe *commodel.WatchProbe) error {
 	if probe.RequeueTool != "" && !probeToolPattern.MatchString(probe.RequeueTool) {
 		return errors.New("invalid requeue tool name")
 	}
+	if probe.CursorArg != "" {
+		_, supplied := probe.Args[probe.CursorArg]
+		if !probeToolPattern.MatchString(probe.CursorArg) || supplied {
+			return errors.New("invalid cursor argument")
+		}
+	}
 	if probe.Args != nil {
 		b, err := json.Marshal(probe.Args)
 		if err != nil || len(b) > 8*1024 {
@@ -165,6 +171,9 @@ func ValidateScheduleDraft(in commodel.Schedule, caller identity.Envelope, hooks
 	if in.JobKind == "brief" && in.Probe != nil {
 		return errors.New("a brief aggregates sources and carries no probe")
 	}
+	if in.Probe != nil && in.JobKind != "watcher" && in.JobKind != "check" && in.JobKind != "event" {
+		return errors.New("a probe requires a watcher, check or event schedule; for source event subscriptions use watch_subscribe")
+	}
 	if in.MaxRetries != 0 && (in.JobKind != "check" || in.MaxRetries < 0 || in.MaxRetries > 8) {
 		return errors.New("max_retries is a check bound between 0 and 8")
 	}
@@ -199,6 +208,10 @@ func ValidateScheduleDraft(in commodel.Schedule, caller identity.Envelope, hooks
 		if in.Probe.Kind == "mcp_tool" {
 			if err := validMCPProbe(in.Probe); err != nil {
 				return err
+			}
+		} else if in.Probe.Kind == "hook" {
+			if u, err := url.Parse(in.Probe.URL); err != nil || u.Scheme != "hook" {
+				return errors.New("hook probe needs a hook:<label> url")
 			}
 		} else if in.Probe.Kind != "command" && in.Probe.Kind != "service" {
 			u, err := url.Parse(in.Probe.URL)
@@ -269,7 +282,7 @@ func ValidateScheduleDraft(in commodel.Schedule, caller identity.Envelope, hooks
 		if len(in.Probe.URL) > 2048 {
 			return errors.New("probe URL exceeds limit")
 		}
-		if in.Probe.Kind != "" && in.Probe.Kind != "http" && in.Probe.Kind != "github_issue" && in.Probe.Kind != "mcp_tool" && in.Probe.Kind != "script" && in.Probe.Kind != "command" && in.Probe.Kind != "render" && in.Probe.Kind != "service" {
+		if in.Probe.Kind != "" && in.Probe.Kind != "http" && in.Probe.Kind != "github_issue" && in.Probe.Kind != "mcp_tool" && in.Probe.Kind != "script" && in.Probe.Kind != "command" && in.Probe.Kind != "render" && in.Probe.Kind != "service" && in.Probe.Kind != "hook" {
 			return errors.New("invalid probe kind")
 		}
 		if in.Probe.Kind == "render" || in.Probe.Kind == "service" {
@@ -312,6 +325,41 @@ func ValidateScheduleDraft(in commodel.Schedule, caller identity.Envelope, hooks
 		} else if in.Probe.Script != "" {
 			return errors.New("script requires a script or command probe kind")
 		}
+		if in.Probe.Filter != "" && in.JobKind != "event" {
+			return errors.New("a probe filter gates event subscriptions only")
+		}
+		if in.Probe.Filter != "" {
+			// The event gate is a script too (SPEC-0081 R4.1): an
+			// uncompilable filter must fail here, not silently at poll time.
+			if err := hooks.Script(in.Probe.Filter); err != nil {
+				return fmt.Errorf("probe filter does not compile: %w", err)
+			}
+		}
+		if len(in.Probe.Sources) > 32 {
+			return errors.New("probe sources exceed bounds")
+		}
+		if len(in.Probe.Sources) > 0 && (in.JobKind != "event" || in.Delivery != "stream") {
+			return errors.New("probe sources fan out only on a stream event subscription")
+		}
+		for _, src := range in.Probe.Sources {
+			if in.Probe.CursorArg != "" {
+				if _, supplied := src.Args[in.Probe.CursorArg]; supplied {
+					return errors.New("source args cannot set the managed cursor")
+				}
+			}
+			if src.Tool != "" && !probeToolPattern.MatchString(src.Tool) {
+				return errors.New("invalid probe source tool name")
+			}
+			if src.Name != "" && !commodel.IDPattern.MatchString(src.Name) {
+				return errors.New("invalid probe source name")
+			}
+			if src.Args != nil {
+				b, err := json.Marshal(src.Args)
+				if err != nil || len(b) > 8*1024 {
+					return errors.New("probe source args exceed bounds")
+				}
+			}
+		}
 		if err := validateProbeNeeds(in.Probe); err != nil {
 			return err
 		}
@@ -320,6 +368,26 @@ func ValidateScheduleDraft(in commodel.Schedule, caller identity.Envelope, hooks
 			if err != nil || u.Scheme != "https" || u.Host != "api.github.com" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || in.Probe.Regex != "" || !regexp.MustCompile(`^/repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[1-9][0-9]*$`).MatchString(u.Path) {
 				return errors.New("GitHub issue probe needs its public REST issue URL")
 			}
+		}
+		if in.Delivery == "stream" && in.Probe.Kind == "mcp_tool" && in.Probe.MinIntervalSeconds == 0 {
+			waitCapable := commodel.WaitCapableProbeTool(in.Probe.Tool)
+			for _, src := range in.Probe.Sources {
+				if src.Tool != "" && !commodel.WaitCapableProbeTool(src.Tool) {
+					waitCapable = false
+				}
+			}
+			if !waitCapable {
+				return errors.New("stream delivery on a plain poll tool requires probe.min_interval_seconds; wait-style tools (wait/settled/new_message) hold the call open and need none")
+			}
+		}
+		if in.Probe.MinIntervalSeconds != 0 && in.Delivery != "stream" {
+			return errors.New("probe.min_interval_seconds is a stream-delivery cadence contract")
+		}
+		if in.Probe.CursorArg != "" && in.Delivery != "stream" {
+			return errors.New("probe.cursor_arg requires stream delivery")
+		}
+		if in.Probe.MinIntervalSeconds != 0 && (in.Probe.MinIntervalSeconds < 5 || in.Probe.MinIntervalSeconds > 3600) {
+			return errors.New("probe.min_interval_seconds must be 5 through 3600 seconds")
 		}
 	}
 	if in.JobKind == "script" && hooks.Script(in.Input) != nil {

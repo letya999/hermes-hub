@@ -1,12 +1,22 @@
 {
   "id": "datalens-auth",
-  "revision": 1,
+  "revision": 2,
   "title": "DataLens organization and Authorization header",
+  "title_i18n": {
+    "ru": "Организация DataLens и заголовок Authorization",
+    "kk": "DataLens ұйымы және Authorization тақырыптамасы",
+    "es": "Organización DataLens y cabecera Authorization"
+  },
   "storage": "local",
   "fields": [
     {
       "id": "org_id",
       "label": "DataLens organization ID (sent as x-dl-org-id)",
+      "label_i18n": {
+        "ru": "ID организации DataLens (отправляется как x-dl-org-id)",
+        "kk": "DataLens ұйымы ID-і (x-dl-org-id ретінде жіберіледі)",
+        "es": "ID de organización de DataLens (se envía como x-dl-org-id)"
+      },
       "kind": "string",
       "required": true,
       "max_bytes": 256
@@ -14,6 +24,11 @@
     {
       "id": "auth_header",
       "label": "Authorization header value (for example Bearer <iam-token>; OAuth <token> for internal installations)",
+      "label_i18n": {
+        "ru": "Значение заголовка Authorization (например Bearer <iam-token>; OAuth <token> для внутренних установок)",
+        "kk": "Authorization тақырыптамасының мәні (мысалы Bearer <iam-token>; ішкі орнатулар үшін OAuth <token>)",
+        "es": "Valor de la cabecera Authorization (por ejemplo Bearer <iam-token>; OAuth <token> en instalaciones internas)"
+      },
       "kind": "secret",
       "required": true,
       "max_bytes": 8192
@@ -21,6 +36,11 @@
     {
       "id": "api_url",
       "label": "DataLens API base URL (optional; defaults to https://api.datalens.tech)",
+      "label_i18n": {
+        "ru": "Базовый URL API DataLens (необязательно; по умолчанию https://api.datalens.tech)",
+        "kk": "DataLens API негізгі URL-і (міндетті емес; әдепкі https://api.datalens.tech)",
+        "es": "URL base de la API de DataLens (opcional; https://api.datalens.tech por defecto)"
+      },
       "kind": "string",
       "required": false,
       "max_bytes": 2048

@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
-	"strings"
 
 	"github.com/letya999/hermes-hub/internal/devcheck"
 )
@@ -20,7 +19,15 @@ func main() {
 	}
 }
 
-var coverAll = devcheck.CoverAll
+// coverTest runs the whole suite in one invocation like a CI shard
+// (.github/workflows/ci.yml): go test parallelizes package binaries across
+// GOMAXPROCS and merges the -coverpkg=./... profiles natively. The old
+// per-package loop re-linked and ran the same instrumented binary 49 times
+// serially (15-20 min locally).
+var coverTest = func(profile string) *exec.Cmd {
+	return exec.Command("go", "test", "-race", "-shuffle=on", "-count=1", "-timeout=10m",
+		"-coverpkg=./...", "-coverprofile="+profile, "./...")
+}
 
 func run(args []string) error {
 	var err error
@@ -56,28 +63,23 @@ func run(args []string) error {
 		if parseErr != nil {
 			err = parseErr
 		} else {
-			actual, checkErr := coverAll(args[1], minimum, pkgMin,
-				func() ([]string, error) {
-					listed, listErr := exec.Command("go", "list", "./...").Output()
-					if listErr != nil {
-						return nil, listErr
-					}
-					return strings.Fields(string(listed)), nil
-				},
-				func(pkg, out string) error {
-					test := exec.Command("go", "test", "-race", "-shuffle=on", "-count=1", "-coverpkg=./...", "-coverprofile="+out, pkg)
-					test.Stdout = os.Stdout
-					test.Stderr = os.Stderr
-					return test.Run()
-				})
-			if checkErr != nil {
-				err = checkErr
+			test := coverTest(args[1])
+			test.Stdout, test.Stderr = os.Stdout, os.Stderr
+			if testErr := test.Run(); testErr != nil {
+				err = testErr
 			} else {
-				fmt.Printf("Go statement coverage: %.2f%%\n", actual)
+				actual, checkErr := devcheck.CoverageGate(args[1], minimum, pkgMin)
+				if checkErr != nil {
+					err = checkErr
+				} else {
+					fmt.Printf("Go statement coverage: %.2f%%\n", actual)
+				}
 			}
 		}
 	case len(args) == 2 && args[0] == "docker-smoke":
 		err = devcheck.DockerSmoke(context.Background(), args[1])
+	case len(args) == 3 && args[0] == "image-budget":
+		err = devcheck.ImageBudget(context.Background(), args[1], args[2])
 	case len(args) == 3 && args[0] == "docker-build":
 		err = devcheck.DockerBuild(context.Background(), args[1], args[2])
 	case len(args) == 3 && args[0] == "docker-pull":
@@ -136,7 +138,7 @@ func run(args []string) error {
 			err = devcheck.MCPBench(context.Background(), args[1], args[2], calls, os.Stdout)
 		}
 	default:
-		err = fmt.Errorf("usage: devcheck docs|format|gosec|coverage FILE MINIMUM [PACKAGE-MINIMUM]|covergo FILE MINIMUM [PACKAGE-MINIMUM]|docker-build IMAGE TARGET|docker-pull IMAGE TARGET|docker-publish TARGET|docker-clean [--deep]|docker-smoke IMAGE|hermes-contract IMAGE|hermes-native-contract IMAGE|supervisor-contract IMAGE|tts-cache-contract IMAGE|hermes-capability-contract IMAGE|managed-network-canary IMAGE|managed-supervisor-canary IMAGE|scratch-workload-canary IMAGE|gateway-lifecycle IMAGE|toolhub-contract|toolhub-gateway-contract|toolhub-hermes-contract|mcp-bench URL TOOL CALLS|connector-build ID OUTDIR|connector-ref ID|connector-pin ID PINFILE REF CATALOG|connector-bench RUNS")
+		err = fmt.Errorf("usage: devcheck docs|format|gosec|coverage FILE MINIMUM [PACKAGE-MINIMUM]|covergo FILE MINIMUM [PACKAGE-MINIMUM]|docker-build IMAGE TARGET|docker-pull IMAGE TARGET|docker-publish TARGET|docker-clean [--deep]|docker-smoke IMAGE|image-budget IMAGE ROLE|hermes-contract IMAGE|hermes-native-contract IMAGE|supervisor-contract IMAGE|tts-cache-contract IMAGE|hermes-capability-contract IMAGE|managed-network-canary IMAGE|managed-supervisor-canary IMAGE|scratch-workload-canary IMAGE|gateway-lifecycle IMAGE|toolhub-contract|toolhub-gateway-contract|toolhub-hermes-contract|mcp-bench URL TOOL CALLS|connector-build ID OUTDIR|connector-ref ID|connector-pin ID PINFILE REF CATALOG|connector-bench RUNS")
 	}
 	return err
 }

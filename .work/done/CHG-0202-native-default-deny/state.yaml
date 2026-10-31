@@ -1,0 +1,42 @@
+schema: 1
+change: CHG-0202
+title: Native Hermes capabilities default-deny
+status: done
+branch: feat/m24-agent-skills
+updated: 2026-10-27
+phase: implementation
+adr: ADR-0085
+spec: SPEC-0084
+requirements: [R3.1, R3.2, R3.3]
+depends_on: [CHG-0201]
+github_milestone: M24 — Agent Skills Platform
+github_issue: 358
+design_status: accepted
+implementation_status: done
+slices:
+  S3.1-inventory-deny: done
+  S3.2-no-implicit-base-list: done
+  S3.3-skills-curator-sealed: done
+  S3.4-hermes-catalog-source: deferred_docker_excluded_this_session
+  S3.5-source-grant-vocabulary: deferred_with_S3.4
+  S3.6-cli-grant-surface: done_preexisting
+  S3.7-defaults-no-native: done
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_applicable_no_docker_this_session
+  red_team: pending
+  live_acceptance: deferred_to_m24.13
+evidence:
+  - go test ./... green; just check green (86.09% own coverage)
+  - all native:* SeedInventory sections default RuleDeny
+  - unmanaged implicit sections = [hub:tools, hub:browser_guest(conditional)]
+  - skills toolset off the carve-out list; ValidateNativeToolsets rejects it;
+    render skips it and keeps it on disabled_toolsets; curator pinned off in
+    both modes; .no-bundled-skills written at render
+remaining:
+  - S3.4/S3.5 land when image-side work resumes (Docker excluded this session)
+  - issue close-out on GitHub after acceptance
+limitations:
+  - `skills`/`skill_manage`/`skills_list`/`skill_view` absence verified via
+    rendered config + denylist, not a live runtime probe (Docker excluded)

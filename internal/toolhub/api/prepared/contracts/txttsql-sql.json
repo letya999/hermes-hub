@@ -1,12 +1,22 @@
 {
   "id": "txttsql-sql",
-  "revision": 2,
+  "revision": 3,
   "title": "TXT-to-SQL database sources",
+  "title_i18n": {
+    "ru": "Источники базы данных TXT-to-SQL",
+    "kk": "TXT-to-SQL дерекқор көздері",
+    "es": "Fuentes de base de datos TXT-to-SQL"
+  },
   "storage": "local",
   "fields": [
     {
       "id": "sources",
       "label": "Sources JSON array (id, kind, host, port, database, user/user_secret, password, allowed_schemas, allowed_tables)",
+      "label_i18n": {
+        "ru": "JSON-массив источников (id, kind, host, port, database, user/user_secret, password, allowed_schemas, allowed_tables)",
+        "kk": "Көздер JSON массиві (id, kind, host, port, database, user/user_secret, password, allowed_schemas, allowed_tables)",
+        "es": "Array JSON de fuentes (id, kind, host, port, database, user/user_secret, password, allowed_schemas, allowed_tables)"
+      },
       "kind": "json",
       "required": true,
       "max_bytes": 32768
@@ -14,6 +24,11 @@
     {
       "id": "endpoint",
       "label": "Database endpoint host:port for the managed TCP forward (e.g. db.example.com:5432)",
+      "label_i18n": {
+        "ru": "Адрес базы host:port для управляемого TCP-форварда (например db.example.com:5432)",
+        "kk": "Басқарылатын TCP форварды үшін дерекқор host:port (мыс. db.example.com:5432)",
+        "es": "Endpoint de la base host:port para el reenvío TCP gestionado (p. ej. db.example.com:5432)"
+      },
       "kind": "string",
       "required": true,
       "max_bytes": 256
@@ -21,6 +36,11 @@
     {
       "id": "endpoint_2",
       "label": "Second database endpoint host:port (optional)",
+      "label_i18n": {
+        "ru": "Второй адрес базы host:port (необязательно)",
+        "kk": "Екінші дерекқор endpoint host:port (міндетті емес)",
+        "es": "Segundo endpoint host:port de la base (opcional)"
+      },
       "kind": "string",
       "required": false,
       "max_bytes": 256
@@ -28,6 +48,11 @@
     {
       "id": "endpoint_3",
       "label": "Third database endpoint host:port (optional)",
+      "label_i18n": {
+        "ru": "Третий адрес базы host:port (необязательно)",
+        "kk": "Үшінші дерекқор endpoint host:port (міндетті емес)",
+        "es": "Tercer endpoint host:port de la base (opcional)"
+      },
       "kind": "string",
       "required": false,
       "max_bytes": 256
@@ -35,6 +60,11 @@
     {
       "id": "password_1",
       "label": "Password referenced from sources as {\"kind\":\"env\",\"name\":\"TXTTSQL_PASSWORD_1\"}",
+      "label_i18n": {
+        "ru": "Пароль, на который ссылаются sources как {\"kind\":\"env\",\"name\":\"TXTTSQL_PASSWORD_1\"}",
+        "kk": "Sources ішінде {\"kind\":\"env\",\"name\":\"TXTTSQL_PASSWORD_1\"} деп сілтенетін құпиясөз",
+        "es": "Contraseña referenciada desde sources como {\"kind\":\"env\",\"name\":\"TXTTSQL_PASSWORD_1\"}"
+      },
       "kind": "secret",
       "required": false,
       "max_bytes": 4096
@@ -42,6 +72,11 @@
     {
       "id": "password_2",
       "label": "Password referenced from sources as {\"kind\":\"env\",\"name\":\"TXTTSQL_PASSWORD_2\"}",
+      "label_i18n": {
+        "ru": "Пароль, на который ссылаются sources как {\"kind\":\"env\",\"name\":\"TXTTSQL_PASSWORD_2\"}",
+        "kk": "Sources ішінде {\"kind\":\"env\",\"name\":\"TXTTSQL_PASSWORD_2\"} деп сілтенетін құпиясөз",
+        "es": "Contraseña referenciada desde sources como {\"kind\":\"env\",\"name\":\"TXTTSQL_PASSWORD_2\"}"
+      },
       "kind": "secret",
       "required": false,
       "max_bytes": 4096
@@ -49,6 +84,11 @@
     {
       "id": "password_3",
       "label": "Password referenced from sources as {\"kind\":\"env\",\"name\":\"TXTTSQL_PASSWORD_3\"}",
+      "label_i18n": {
+        "ru": "Пароль, на который ссылаются sources как {\"kind\":\"env\",\"name\":\"TXTTSQL_PASSWORD_3\"}",
+        "kk": "Sources ішінде {\"kind\":\"env\",\"name\":\"TXTTSQL_PASSWORD_3\"} деп сілтенетін құпиясөз",
+        "es": "Contraseña referenciada desde sources como {\"kind\":\"env\",\"name\":\"TXTTSQL_PASSWORD_3\"}"
+      },
       "kind": "secret",
       "required": false,
       "max_bytes": 4096
@@ -56,6 +96,11 @@
     {
       "id": "config",
       "label": "Full config.toml (optional; enables memory, plugins, ontology and metadata providers)",
+      "label_i18n": {
+        "ru": "Полный config.toml (необязательно; включает память, плагины, онтологию и провайдеры метаданных)",
+        "kk": "Толық config.toml (міндетті емес; жад, плагиндер, онтология және метадерек провайдерлерін қосады)",
+        "es": "config.toml completo (opcional; habilita memoria, plugins, ontología y proveedores de metadatos)"
+      },
       "kind": "secret",
       "required": false,
       "max_bytes": 32768
@@ -63,6 +108,11 @@
     {
       "id": "ca_pem",
       "label": "CA bundle PEM for database or metadata TLS (optional)",
+      "label_i18n": {
+        "ru": "CA-бандл PEM для TLS базы или метаданных (необязательно)",
+        "kk": "Дерекқор немесе метадерек TLS үшін CA PEM бандлы (міндетті емес)",
+        "es": "Paquete CA PEM para TLS de la base o metadatos (opcional)"
+      },
       "kind": "pem",
       "required": false,
       "max_bytes": 16384

@@ -103,6 +103,12 @@ func TestManagedRunArgsUseIsolatedAgentNetwork(t *testing.T) {
 			t.Fatalf("sealed extension root %s missing", name)
 		}
 	}
+	if !slices.Contains(args, "type=bind,src="+stack.GeneratedEffectiveSkillsDir(root)+",dst=/skills,readonly") {
+		t.Fatalf("managed run args missing the read-only effective view mount: %s", joined)
+	}
+	if _, err := os.Stat(filepath.Join(stack.GeneratedEffectiveSkillsDir(root), "hermes-hub-system-guide", "SKILL.md")); err != nil {
+		t.Fatalf("managed spawn did not build the effective view: %v", err)
+	}
 	for _, want := range []string{"HUB_CAPABILITY_MODE=managed", "HUB_CAPABILITY_PROFILE_ID=alice-default", "HUB_CAPABILITY_GENERATION=1", "HUB_MANAGED_MODEL_URL=http://model-relay:8318/v1", "HUB_RUNTIME_GENERATION=gen-1"} {
 		if !slices.Contains(args, want) {
 			t.Fatalf("managed environment missing %s", want)
@@ -386,5 +392,156 @@ func TestManagedRuntimeSkipsScopeMountOwnership(t *testing.T) {
 	}
 	if mounted {
 		t.Fatal("managed ownership still inspected /scope mounts")
+	}
+}
+
+// R5.1: managed runtimes get the same writable owner store beside the
+// read-only effective view — tools behave identically in both modes.
+func TestManagedRunArgsMountsWritableSkillsStore(t *testing.T) {
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("ok"), nil }, nil)
+	writeManagedFixtures(t, root)
+	bound, err := m.normalize(binding(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, err := m.runArgsWithGeneration(bound, "hub-test-container", 0, "gen-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(args, " ")
+	want := "type=bind,src=" + filepath.Join(root, "skills") + ",dst=/skills-store"
+	if !strings.Contains(joined, want) {
+		t.Fatalf("managed run args missing writable skills store mount: %s", joined)
+	}
+	// The owner store — not a private managed/<env>/skills copy — so drafts,
+	// publishes and the effective view all see the same store.
+	if strings.Contains(joined, "managed"+string(filepath.Separator)+"prod"+string(filepath.Separator)+"skills") {
+		t.Fatal("managed /skills-store must not bind the private managed store")
+	}
+	for _, env := range []string{"HUB_SKILLS_STORE=/skills-store", "HUB_SKILLS_EFFECTIVE=/skills"} {
+		if !strings.Contains(joined, env) {
+			t.Fatalf("managed run args missing %s", env)
+		}
+	}
+}
+
+// The post-publish rebuild contract rides managed spawns too: platform
+// staging read-only, the view a second writable bind, the render snapshot.
+func TestManagedRunArgsMountsViewRebuildContract(t *testing.T) {
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("ok"), nil }, nil)
+	writeManagedFixtures(t, root)
+	bound, err := m.normalize(binding(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, err := m.runArgsWithGeneration(bound, "hub-test-container", 0, "gen-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"type=bind,src=" + stack.GeneratedSkillsDir(root) + ",dst=/skills-platform,readonly",
+		"type=bind,src=" + stack.GeneratedEffectiveSkillsDir(root) + ",dst=/skills-effective-rw",
+		"type=bind,src=" + stack.GeneratedSkillsMetaDir(root) + ",dst=/skills-meta,readonly",
+	} {
+		if !slices.Contains(args, want) {
+			t.Fatalf("managed run args missing %s", want)
+		}
+	}
+}
+
+// R5.2: managed org-bound spawns mount the writable org store identically.
+func TestManagedRunArgsMountsOrgSkillsStoreWhenOrgScoped(t *testing.T) {
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("ok"), nil }, nil)
+	writeManagedFixtures(t, root)
+	orgDir := filepath.Join(filepath.Dir(root), "organizations", "acme")
+	for _, name := range []string{"docs", "skills"} {
+		if err := os.MkdirAll(filepath.Join(orgDir, name), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	orgSettings := `schema: 1
+organization: acme
+members:
+  alice: owner
+features: [workspace]
+`
+	if err := os.WriteFile(filepath.Join(orgDir, "settings.yaml"), []byte(orgSettings), 0600); err != nil {
+		t.Fatal(err)
+	}
+	userSettings := `schema: 1
+user: alice
+organization: acme
+model: synthetic
+model_url: http://model-relay:8318/v1
+timezone: UTC
+browser_port: 6080
+oauth_port: 8000
+capability_mode: managed
+capability_profile_id: alice-default
+capability_generation: 1
+features: [workspace]
+`
+	if err := os.WriteFile(filepath.Join(root, "settings.yaml"), []byte(userSettings), 0600); err != nil {
+		t.Fatal(err)
+	}
+	bound := binding(root)
+	bound.OrganizationID = "acme"
+	normalized, err := m.normalize(bound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, err := m.runArgsWithGeneration(normalized, "hub-test-container", 0, "gen-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(args, " ")
+	want := "type=bind,src=" + filepath.Join(orgDir, "skills") + ",dst=/skills-store-org"
+	if !strings.Contains(joined, want) {
+		t.Fatalf("managed org-bound run args missing org store mount: %s", joined)
+	}
+	if !strings.Contains(joined, "HUB_SKILLS_ORG=/skills-store-org") {
+		t.Fatalf("managed org-bound run args missing HUB_SKILLS_ORG: %s", joined)
+	}
+}
+
+// The host-side materialization for a managed space must carry the render's
+// browser grant into the effective config the spawned runtime mounts: the
+// review surface (governance decisions, browser_act) is evaluated on the
+// fully loaded Settings here, never re-derived in the container.
+func TestManagedMaterializeCarriesBrowserGrant(t *testing.T) {
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("ok"), nil }, nil)
+	writeManagedFixtures(t, root)
+	settings, err := stack.ReadEnvironment(root, "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.Tools = map[string]stack.ToolEntry{"browser": {Via: stack.ToolViaMCP, Tools: map[string]bool{"act": true}}}
+	settingsBody, err := yaml.Marshal(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "settings.yaml"), settingsBody, 0600); err != nil {
+		t.Fatal(err)
+	}
+	source, err := yaml.Marshal(stack.Config(settings))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "hermes.prod.yaml"), source, 0600); err != nil {
+		t.Fatal(err)
+	}
+	configPath, err := m.materializeHermesConfig(binding(root), "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	for _, want := range []string{"browser-alice:8931/mcp", "browser-alice:8932/mcp", "browser_click", "toolhub"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("materialized config missing %q:\n%s", want, text)
+		}
 	}
 }

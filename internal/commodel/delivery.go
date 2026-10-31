@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
@@ -11,17 +12,19 @@ import (
 // held only in memory by the spool and are intentionally absent from job files.
 type Job struct {
 	identity.Envelope
-	OperationalEpoch uint64 `json:"operational_epoch,omitempty"`
-	ID               string `json:"id"`
-	OrganizationID   string `json:"organization_id"`
-	UserID           string `json:"user_id"`
-	ActorID          string `json:"actor_id"`
-	ScopeID          string `json:"scope_id"`
-	Channel          string `json:"channel"`
-	Trigger          string `json:"trigger"`
-	IdempotencyKey   string `json:"idempotency_key"`
-	ChatID           int64  `json:"chat_id"`
-	MessageID        int    `json:"message_id"`
+	OperationalEpoch       uint64 `json:"operational_epoch,omitempty"`
+	ID                     string `json:"id"`
+	AssignmentID           string `json:"assignment_id,omitempty"`
+	AssignmentPlanRevision uint64 `json:"assignment_plan_revision,omitempty"`
+	OrganizationID         string `json:"organization_id"`
+	UserID                 string `json:"user_id"`
+	ActorID                string `json:"actor_id"`
+	ScopeID                string `json:"scope_id"`
+	Channel                string `json:"channel"`
+	Trigger                string `json:"trigger"`
+	IdempotencyKey         string `json:"idempotency_key"`
+	ChatID                 int64  `json:"chat_id"`
+	MessageID              int    `json:"message_id"`
 	// TaskID/TopicID pin the durable task binding at acceptance: every reply,
 	// progress event, approval, artifact and voice note returns to the same
 	// task/topic. Model output never re-routes them.
@@ -61,6 +64,9 @@ type Delivery struct {
 	SlackThread  string `json:"slack_thread,omitempty"`
 	Text         string `json:"text"`
 	Format       string `json:"format,omitempty"`
+	// Lang is the owning user's resolved language, stamped at claim time so
+	// channel adapters localize surface text without re-resolving identity.
+	Lang locale.Lang `json:"lang,omitempty"`
 	// NotBefore defers quiet-window deliveries: the entry stays durable in
 	// pending until the schedule's quiet window ends (SPEC-0054 R2.1).
 	NotBefore time.Time `json:"not_before,omitempty"`
@@ -81,12 +87,16 @@ type Delivery struct {
 	VoiceSent bool `json:"voice_sent,omitempty"`
 	// Buttons carries Telegram inline-keyboard rows (one button per row) for
 	// channels that support them; Data is the opaque callback payload.
-	Buttons            []DeliveryButton `json:"buttons,omitempty"`
-	ApprovalJobID      string           `json:"approval_job_id,omitempty"`
-	ApprovalID         string           `json:"approval_id,omitempty"`
-	ApprovalRunID      string           `json:"approval_run_id,omitempty"`
-	ApprovalGeneration string           `json:"approval_generation,omitempty"`
-	TelegramMessageID  int              `json:"telegram_message_id,omitempty"`
+	Buttons []DeliveryButton `json:"buttons,omitempty"`
+	// Kind marks non-approval interactive deliveries (e.g. "lang-picker") whose
+	// buttons carry self-describing callbacks: they need no approval-record
+	// reconciliation at send time, unlike approval keyboards.
+	Kind               string `json:"kind,omitempty"`
+	ApprovalJobID      string `json:"approval_job_id,omitempty"`
+	ApprovalID         string `json:"approval_id,omitempty"`
+	ApprovalRunID      string `json:"approval_run_id,omitempty"`
+	ApprovalGeneration string `json:"approval_generation,omitempty"`
+	TelegramMessageID  int    `json:"telegram_message_id,omitempty"`
 	// EditMessageID targets a status message already delivered: the delivery
 	// worker edits it instead of sending a new message (SPEC-0053 R2.2).
 	EditMessageID int `json:"edit_message_id,omitempty"`

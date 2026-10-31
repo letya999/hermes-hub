@@ -23,6 +23,8 @@ import (
 	"github.com/letya999/hermes-hub/internal/diagnostics"
 	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/internal/routines"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
@@ -40,12 +42,17 @@ type Gateway struct {
 	usageQueries atomic.Int32
 	usageWG      sync.WaitGroup
 	commandCtx   context.Context
-	now          func() time.Time
-	transcriber  Transcriber
-	synthesizer  Synthesizer
-	forms        formRegistry
-	telegramAuth *telegramAuthState
-	quota        quotaTracker
+	// skillActivated dedupes harness-side skill activation per
+	// (principal, task) for $name expansion (R6.5).
+	skillMu        sync.Mutex
+	skillActivated map[string]*skillSession
+	now            func() time.Time
+	transcriber    Transcriber
+	synthesizer    Synthesizer
+	forms          formRegistry
+	drafts         skillDraftRegistry
+	telegramAuth   *telegramAuthState
+	quota          quotaTracker
 	// contentUntil bounds the explicit content-capture window: inside it
 	// message logs carry redacted text, outside only lengths and IDs.
 	contentUntil time.Time
@@ -62,6 +69,12 @@ type Gateway struct {
 	// botMu/botName cache the getMe lookup behind the default mention tag.
 	botMu   sync.Mutex
 	botName string
+	// holdsMu/holdsLast cache the supervisor's hold projection so the
+	// spool's under-lock admission check never performs I/O.
+	holdsMu     sync.Mutex
+	holdsLast   []masterHold
+	streamMu    sync.Mutex
+	streamCalls map[string]*streamSharedCall
 }
 
 func New(config Config) (*Gateway, error) {
@@ -115,15 +128,29 @@ func New(config Config) (*Gateway, error) {
 			slackUsers[link.Key()] = user
 		}
 	}
-	synthesizer := serviceSynthesizer(config.TTSURL, config.TTSAuth, config.TTSVoice, config.TTSCommand)
+	synthesizer := serviceSynthesizer(config.TTSURL, config.TTSAuth, config.TTSVoice, config.TTSVoices)
 	runner := Runner(HermesRunner{Command: config.HermesCommand})
 	if config.RuntimeURL != "" {
 		runner = HTTPRunner{URL: config.RuntimeURL, Auth: config.RuntimeAuth, Spool: spool, JobsAPI: config.Supervised, Voice: synthesizer != nil}
 	}
 	restart := runtimeRestart(config.RuntimeURL, config.RuntimeAuth, config.Supervised)
-	g := &Gateway{config: config, users: users, slackUsers: slackUsers, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: restart, now: time.Now, transcriber: serviceTranscriber(config.STTURL, config.STTAuth, config.STTCommand, config.STTTimeout), synthesizer: synthesizer, forms: formRegistry{m: map[string]credentialForm{}}}
+	g := &Gateway{config: config, users: users, slackUsers: slackUsers, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: restart, now: time.Now, transcriber: serviceTranscriber(config.STTURL, config.STTAuth, config.STTTimeout), synthesizer: synthesizer, forms: formRegistry{m: map[string]credentialForm{}}}
+	// Draft approval cards persist beside the spool so a restart does not
+	// murder pending links (nonce hashes only — the link stays the secret).
+	g.drafts.load(filepath.Join(config.SpoolDir, "skill-drafts.json"), g.now)
 	spool.JobDone = g.toolHubJobDone
 	spool.probeScript = g.runProbeScript
+	spool.resolveChannel = func(id string) routines.OccurrenceChannel { return g.channel(id) }
+	spool.langOf = func(principalID string) locale.Lang {
+		if u := g.user(principalID); u.ID != "" && u.WorkspaceDir != "" {
+			return locale.LangOf(u.WorkspaceDir)
+		}
+		return locale.Fallback()
+	}
+	if config.Supervised {
+		spool.refreshHolds = g.refreshHolds
+		spool.holdsSnapshot = g.holdsSnapshot
+	}
 	if config.TelegramAuthEnabled {
 		// Enabled by default on telegram stacks: missing Broker/form-origin
 		// prerequisites degrade to no QR invites instead of refusing to start.
@@ -298,14 +325,32 @@ func (g *Gateway) processBatch(ctx context.Context, updates []Update, offset int
 	return offset, nil
 }
 
+// langForHint picks a supported language for a sender with no stored
+// preference — used for replies to unverified strangers, where there is no
+// workspace to read and nothing to persist.
+func langForHint(hint string) locale.Lang {
+	if l, ok := locale.Parse(hint); ok {
+		return l
+	}
+	return locale.Fallback()
+}
+
 // handleCallback applies an inline-keyboard tap: the opaque data resolves to a
 // durable (job, request, choice) record, then the same ownership-checked
 // approval path as /approve runs. Every tap is answered so Telegram stops
 // showing the loading spinner; rejected taps change nothing.
 func (g *Gateway) handleCallback(ctx context.Context, query *CallbackQuery) error {
-	answer := "Запрос отклонен: подтверждение недоступно."
+	answer := locale.T(locale.Default, "chat.approve-denied")
 	if query.From != nil && query.Message != nil {
 		if user, ok := g.telegramUserFor(query.Message.Chat.ID, query.From.ID); ok {
+			answer = locale.T(locale.LangOf(user.WorkspaceDir), "chat.approve-denied")
+			if strings.HasPrefix(query.Data, "lang:") {
+				if picked, parsed := locale.Parse(strings.TrimPrefix(query.Data, "lang:")); parsed {
+					_ = locale.StorePrefs(user.WorkspaceDir, locale.Prefs{Lang: picked, Source: locale.SourceChosen})
+					answer = locale.T(picked, "lang.saved", locale.Names[picked])
+				}
+				return g.api.AnswerCallbackQuery(ctx, query.ID, answer)
+			}
 			if jobID, requestID, choice, err := g.spool.ApprovalCallback(query.Data); err == nil {
 				caller := user.Envelope(query.From.ID)
 				audienceVerified := false
@@ -321,7 +366,7 @@ func (g *Gateway) handleCallback(ctx context.Context, query *CallbackQuery) erro
 				}
 				if audienceVerified {
 					if err := g.spool.RequestApproval(jobID, caller, requestID, choice); err == nil {
-						answer = "Ответ на подтверждение сохранен."
+						answer = locale.T(locale.LangOf(user.WorkspaceDir), "chat.approve-saved")
 					}
 				}
 			}
@@ -353,7 +398,7 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 				return nil
 			}
 			_ = g.api.DeleteMessage(ctx, message.Chat.ID, message.MessageID)
-			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-group-secret", message.Chat.ID, 0, "Группы не принимают секреты.")
+			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-group-secret", message.Chat.ID, 0, locale.T(locale.LangOf(user.WorkspaceDir), "chat.group-no-secrets"))
 		}
 		if !ok || message.Chat.ID >= 0 {
 			return nil
@@ -369,7 +414,18 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 		if text == "" && message.Voice == nil && message.Audio == nil && message.Document == nil && len(message.Photo) == 0 {
 			return nil
 		}
-		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, messageTopicID(message), "Доступ к этому боту не настроен.")
+		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, messageTopicID(message), locale.T(langForHint(message.From.LanguageCode), "chat.no-access"))
+	}
+	// The locale ladder: strong channel evidence adopts a language once;
+	// otherwise the stored preference decides.
+	switch lang, action := locale.Resolve(user.WorkspaceDir, message.From.LanguageCode); action {
+	case "detected":
+		locale.StoreResult(user.WorkspaceDir, lang, action)
+		_ = g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-lang", message.Chat.ID, messageTopicID(message), locale.T(lang, "lang.detected", locale.Names[lang]))
+	case "picker":
+		locale.StoreResult(user.WorkspaceDir, lang, action)
+		route := commandRoute{channel: "telegram_bot", chatID: message.Chat.ID, topic: messageTopicID(message), sender: message.From.ID}
+		_ = g.languagePicker(ctx, route, messageTopicID(message), "telegram-"+strconv.Itoa(update.UpdateID), lang)
 	}
 	if os.Getenv("HUB_DIAGNOSTICS_ENABLED") != "false" {
 		visible := text
@@ -394,7 +450,7 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 		return nil
 	}
 	if edited {
-		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-edit", message.Chat.ID, messageTopicID(message), "Изменение сообщения не перезапускает задачу. Используйте новое сообщение или /cancel.")
+		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-edit", message.Chat.ID, messageTopicID(message), locale.T(locale.LangOf(user.WorkspaceDir), "chat.edit-norestart"))
 	}
 	if strings.HasPrefix(text, "/") {
 		topic := messageTopicID(message)
@@ -402,9 +458,10 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 		// topic: /task new is the explicit binding action.
 		task, taskErr := g.spool.ResolveTask(user, message.Chat.ID, topic, false)
 		if taskErr != nil {
-			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, topic, "Не удалось открыть задачу.")
+			return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, topic, locale.T(locale.LangOf(user.WorkspaceDir), "chat.task-open-failed"))
 		}
-		return g.dispatchChannelCommand(ctx, user, task, "telegram_bot", message.Chat.ID, topic, message.From.ID, "telegram-"+strconv.Itoa(update.UpdateID), text)
+		route := commandRoute{channel: "telegram_bot", chatID: message.Chat.ID, topic: topic, sender: message.From.ID}
+		return g.dispatchChannelCommand(ctx, user, task, route, "telegram-"+strconv.Itoa(update.UpdateID), text)
 	}
 	if message.Voice != nil || message.Audio != nil {
 		return g.handleVoice(ctx, update, user, message)
@@ -422,19 +479,41 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 	// topic adopts it, root-DM text follows the chat's current task.
 	task, err := g.spool.ResolveTask(user, message.Chat.ID, messageTopicID(message), true)
 	if err != nil {
-		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, messageTopicID(message), "Не удалось открыть задачу.")
+		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, messageTopicID(message), locale.T(locale.LangOf(user.WorkspaceDir), "chat.task-open-failed"))
 	}
 	return g.enqueueChannelJob(ctx, user, task, "telegram_bot", "telegram-"+strconv.Itoa(update.UpdateID), "telegram:"+strconv.Itoa(update.UpdateID), message.Chat.ID, message.MessageID, text, message.From.ID, "")
 }
 
+// commandRoute is the verified return path for a channel command reply:
+// telegram fills chatID/topic/sender, slack fills the string ids; the
+// conversation ids come from the verified sender envelope — never the
+// command text.
+type commandRoute struct {
+	channel          string
+	chatID           int64
+	topic            int64
+	sender           int64
+	conversationID   string
+	deliveryTargetID string
+	slackChannel     string
+	slackThread      string
+}
+
+// queueCommandReply enqueues a command answer on the route that carried the
+// command — Slack threads need their channel ids, telegram needs chat/topic.
+func (g *Gateway) queueCommandReply(_ context.Context, key string, route commandRoute, topicID int64, text string) error {
+	return g.spool.EnqueueDelivery(Delivery{ID: key, IdempotencyKey: key, Channel: route.channel, ChatID: route.chatID, TopicID: topicID, SlackChannel: route.slackChannel, SlackThread: route.slackThread, ConversationID: route.conversationID, DeliveryTargetID: route.deliveryTargetID, Text: text, CreatedAt: g.now().UTC()})
+}
+
 // dispatchChannelCommand runs one slash command for an already authenticated
-// caller, whatever channel carried it (Telegram update, mock inject). The
-// caller identity is the verified envelope principal — never the command
-// text. deliveryKey namespaces the reply's outbox idempotency ids; sender is
-// the verified channel sender used for job envelopes. channel is the
-// registered delivery channel the reply must leave through.
-func (g *Gateway) dispatchChannelCommand(ctx context.Context, user User, task Task, channel string, chatID, topic, sender int64, deliveryKey, text string) error {
+// caller, whatever channel carried it (Telegram update, mock inject, Slack
+// event). The caller identity is the verified envelope principal — never
+// the command text. deliveryKey namespaces the reply's outbox idempotency
+// ids; route.sender is the verified channel sender used for job envelopes.
+func (g *Gateway) dispatchChannelCommand(ctx context.Context, user User, task Task, route commandRoute, deliveryKey, text string) error {
 	{
+		channel, chatID, topic, sender := route.channel, route.chatID, route.topic, route.sender
+		lang := locale.LangOf(user.WorkspaceDir)
 		command := strings.ToLower(strings.TrimPrefix(strings.Fields(text)[0], "/"))
 		if at := strings.IndexByte(command, '@'); at >= 0 {
 			command = command[:at]
@@ -451,24 +530,24 @@ func (g *Gateway) dispatchChannelCommand(ctx context.Context, user User, task Ta
 			return env
 		}
 		reply := func(answer string) error {
-			return g.queueDeliveryChannel(ctx, deliveryKey+"-reply", channel, chatID, topic, answer)
+			return g.queueCommandReply(ctx, deliveryKey+"-reply", route, topic, answer)
 		}
 		switch command {
 		case "approve":
 			fields := strings.Fields(text)
-			answer := "Используйте /approve <job-id> <request-id> <choice>."
+			answer := locale.T(lang, "chat.approve-usage")
 			var err error
 			if len(fields) == 4 {
 				err = g.spool.RequestApproval(fields[1], callerForJob(fields[1]), fields[2], fields[3])
-				answer = "Ответ на подтверждение сохранен."
+				answer = locale.T(lang, "chat.approve-saved")
 			}
 			if err != nil {
-				answer = "Запрос отклонен: задача или подтверждение недоступны в этом разговоре."
+				answer = locale.T(lang, "chat.approve-scope")
 			}
 			return reply(answer)
 		case "credentials", "broker-approve":
 			fields := strings.Fields(text)
-			answer := "Используйте /credentials <request-id> <код из формы Credential Broker>."
+			answer := locale.T(lang, "chat.creds-usage")
 			if len(fields) == 3 && g.config.BrokerApprove.Enabled() {
 				caller := user.Envelope(sender)
 				client, err := g.config.BrokerApprove.New(caller, "broker:approve")
@@ -476,24 +555,24 @@ func (g *Gateway) dispatchChannelCommand(ctx context.Context, user User, task Ta
 					err = client.Approve(ctx, fields[1], fields[2])
 				}
 				if err == nil {
-					answer = "Подтверждение Credential Broker сохранено. Вернитесь в Hermes и запросите статус подключения."
+					answer = locale.T(lang, "chat.creds-saved")
 				} else {
-					answer = "Подтверждение отклонено или истекло. Запросите новую ссылку подключения."
+					answer = locale.T(lang, "chat.creds-expired")
 				}
 			}
 			return reply(answer)
 		case "start":
-			return reply("Готово. Вы подключены к своему Hermes-пространству.")
+			return reply(locale.T(lang, "chat.started"))
 		case "new":
 			answer, replyTopic := g.newTaskCommand(ctx, user, chatID, topic, text)
-			return g.queueDeliveryChannel(ctx, deliveryKey+"-reply", channel, chatID, replyTopic, answer)
+			return g.queueCommandReply(ctx, deliveryKey+"-reply", route, replyTopic, answer)
 		case "sessions":
 			return reply(g.sessionsCommand(user, chatID))
 		case "use":
 			return reply(g.useCommand(ctx, user, chatID, text))
 		case "delete":
 			answer, replyTopic := g.deleteCommand(ctx, user, chatID, topic, task, text)
-			return g.queueDeliveryChannel(ctx, deliveryKey+"-reply", channel, chatID, replyTopic, answer)
+			return g.queueCommandReply(ctx, deliveryKey+"-reply", route, replyTopic, answer)
 		case "archive":
 			return reply(g.archiveCommand(ctx, user, chatID, task, text))
 		case "archived":
@@ -504,50 +583,52 @@ func (g *Gateway) dispatchChannelCommand(ctx context.Context, user User, task Ta
 			return reply(g.stopCommand(user, task, callerForJob))
 		case "cancel":
 			fields := strings.Fields(text)
-			answer := "Используйте /cancel <job-id>."
+			answer := locale.T(lang, "chat.cancel-usage")
 			if len(fields) >= 2 {
 				mapping, err := g.spool.RequestCancel(fields[1], callerForJob(fields[1]))
 				if err == nil {
-					answer = "Отмена " + mapping.JobID + ": " + mapping.Status + "."
+					answer = locale.T(lang, "chat.cancel-ok", mapping.JobID, mapping.Status)
 				} else {
-					answer = "Не удалось отменить: задача недоступна в этом разговоре."
+					answer = locale.T(lang, "chat.cancel-scope")
 				}
 			}
 			return reply(answer)
 		case "routines":
 			items, err := g.spool.ListSchedules(user.Envelope(sender))
 			if err != nil {
-				return reply("Список напоминаний недоступен.")
+				return reply(locale.T(lang, "chat.routines-unavail"))
 			}
-			lines := []string{"Напоминания и проверки:"}
+			lines := []string{locale.T(lang, "chat.routines-title")}
 			for _, item := range items {
-				state := "активно"
+				state := locale.T(lang, "routine.active")
 				switch routineState(item) {
 				case "paused":
-					state = "пауза"
+					state = locale.T(lang, "routine.paused")
 				case "completed":
-					state = "расписание завершено"
+					state = locale.T(lang, "routine.completed")
+				case "blocked":
+					state = locale.T(lang, "routine.blocked")
 				}
 				if item.LastOccurrenceState == "missed" {
-					state += ", последнее срабатывание пропущено"
+					state += ", " + locale.T(lang, "routine.missed")
 				}
 				if item.LastDeliveryState == "uncertain" {
-					state += ", доставка не подтверждена"
+					state += ", " + locale.T(lang, "routine.unconfirmed")
 				} else if item.LastDeliveryState == "delivered" {
-					state += ", доставлено"
+					state += ", " + locale.T(lang, "routine.delivered")
 				}
-				due := "следующих запусков нет"
+				due := locale.T(lang, "routine.no-due")
 				if !item.NextDue.IsZero() {
 					due = item.NextDue.UTC().Format(time.RFC3339)
 				}
 				lines = append(lines, item.ScheduleID+" — "+item.JobKind+", "+state+", "+due)
 			}
 			if len(items) == 0 {
-				lines = append(lines, "Пока нет.")
+				lines = append(lines, locale.T(lang, "chat.routines-empty"))
 			}
 			return reply(strings.Join(lines, "\n"))
 		case "model":
-			return reply(modelCommand(ctx, user.ID, text))
+			return reply(modelCommand(ctx, user, text))
 		case "usage":
 			overview := true
 			if fields := strings.Fields(text); len(fields) >= 2 && fields[1] == "session" {
@@ -555,9 +636,10 @@ func (g *Gateway) dispatchChannelCommand(ctx context.Context, user User, task Ta
 			}
 			journal := ""
 			if overview {
-				journal = g.journalUsage(user, text)
-				if strings.HasPrefix(journal, "Используйте /usage") {
-					return reply(journal)
+				var argsOK bool
+				journal, argsOK = g.journalUsage(user, text)
+				if !argsOK {
+					return reply(locale.T(lang, "usage.journal-usage"))
 				}
 			}
 			// Measuring usage means up to minutes of sequential HTTP work
@@ -565,7 +647,7 @@ func (g *Gateway) dispatchChannelCommand(ctx context.Context, user User, task Ta
 			// beside the poll or one /usage would stall every later update.
 			if g.usageQueries.Add(1) > 2 {
 				g.usageQueries.Add(-1)
-				return reply("Измерение уже выполняется. Повторите позже.")
+				return reply(locale.T(lang, "usage.busy"))
 			}
 			queryCtx := ctx
 			if g.commandCtx != nil {
@@ -578,27 +660,87 @@ func (g *Gateway) dispatchChannelCommand(ctx context.Context, user User, task Ta
 				defer cancel()
 				answer := journal
 				if overview {
-					answer += "\n" + strings.Join(g.quotaLines(usageCtx), "\n")
+					answer += "\n" + strings.Join(g.quotaLines(usageCtx, lang, user.ID), "\n")
 				} else {
 					answer = g.usageCommand(usageCtx, user, sender, task)
 				}
-				_ = g.queueDeliveryChannel(context.Background(), deliveryKey+"-usage", channel, chatID, topic, answer)
+				_ = g.queueCommandReply(context.Background(), deliveryKey+"-usage", route, topic, answer)
 			}()
-			return reply("Измеряю расход и квоту…")
+			return reply(locale.T(lang, "usage.measuring"))
 		case "compact", "compress":
-			return g.compactCommand(ctx, user, task, channel, chatID, topic, sender, deliveryKey, text)
+			return g.compactCommand(ctx, user, task, route, deliveryKey, text)
 		case "goal":
-			return g.goalCommand(ctx, user, task, channel, chatID, topic, sender, deliveryKey, text)
+			return g.goalCommand(ctx, user, task, route, deliveryKey, text)
 		case "connections", "connection", "connectors":
 			return reply(g.connectionsCommand(user, sender))
 		case "watches":
 			return reply(g.watchesCommand(user, sender))
+		case "assignments":
+			return reply(g.assignmentsCommand(user, sender, lang))
+		case "assignment":
+			return reply(g.assignmentCommand(user, sender, text, lang))
+		case "language":
+			fields := strings.Fields(text)
+			if len(fields) == 1 {
+				lang := locale.LangOf(user.WorkspaceDir)
+				if _, action := locale.Resolve(user.WorkspaceDir, ""); action == "picker" {
+					locale.StoreResult(user.WorkspaceDir, lang, "picker")
+				}
+				return g.languagePicker(ctx, route, topic, deliveryKey, lang)
+			}
+			if len(fields) == 2 {
+				if picked, ok := locale.Parse(fields[1]); ok {
+					_ = locale.StorePrefs(user.WorkspaceDir, locale.Prefs{Lang: picked, Source: locale.SourceChosen})
+					return reply(locale.T(picked, "lang.saved", locale.Names[picked]))
+				}
+				return reply(locale.T(lang, "lang.unknown", fields[1]))
+			}
+			fallthrough
 		case "help":
-			return reply(commandHelp())
+			return reply(commandHelp(lang))
 		default:
-			return reply("Неизвестная команда /" + command + ".\n\n" + commandHelp())
+			principalID := user.Envelope(sender).PrincipalID
+			if idx, dir := g.skillIndex(principalID); idx != nil {
+				e := skillEntry(idx, command)
+				if e == nil {
+					return reply(locale.T(lang, "chat.unknown-command", command, commandHelp(lang)))
+				}
+				if e.Hidden || !e.Eligible {
+					return reply(locale.T(lang, "chat.skill-unavailable", command))
+				}
+				session := g.skillSessionFor(principalID, task.TaskID, idx)
+				g.skillMu.Lock()
+				already := session.activatedSet()[command]
+				if !already {
+					session.Activated = append(session.Activated, command)
+				}
+				g.skillMu.Unlock()
+				if already {
+					return reply(locale.T(lang, "chat.skill-active", command))
+				}
+				args := strings.Fields(text)
+				expanded, err := g.skillActivationText(dir, e, args[1:])
+				if err != nil {
+					return reply(locale.T(lang, "chat.skill-unavailable", command))
+				}
+				return g.enqueueChannelJob(ctx, user, task, channel, deliveryKey+"-skill", deliveryKey+":skill:"+command, chatID, 0, expanded, sender, "")
+			}
+			return reply(locale.T(lang, "chat.unknown-command", command, commandHelp(lang)))
 		}
 	}
+}
+
+// languagePicker shows the supported languages. Channels with action
+// affordances get one button per language; the prompt text is still
+// self-sufficient so text-only channels can answer with /language <code>.
+func (g *Gateway) languagePicker(_ context.Context, route commandRoute, topic int64, deliveryKey string, lang locale.Lang) error {
+	d := Delivery{ID: deliveryKey + "-lang", IdempotencyKey: deliveryKey + "-lang", Channel: route.channel, ChatID: route.chatID, TopicID: topic, SlackChannel: route.slackChannel, SlackThread: route.slackThread, ConversationID: route.conversationID, DeliveryTargetID: route.deliveryTargetID, Kind: "lang-picker", Text: locale.T(lang, "lang.choose"), CreatedAt: g.now().UTC()}
+	if ch := g.channel(route.channel); ch != nil && ch.Caps().Actions {
+		for _, l := range locale.All {
+			d.Buttons = append(d.Buttons, DeliveryButton{Text: locale.Names[l], Data: "lang:" + string(l)})
+		}
+	}
+	return g.spool.EnqueueDelivery(d)
 }
 
 func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, task Task, channel, id, idempotency string, chatID int64, messageID int, text string, sender int64, inboundID string) error {
@@ -608,6 +750,7 @@ func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, task Task, c
 	}
 	envelope := ch.JobEnvelope(user, chatID, sender)
 	envelope.ConversationID = task.ConversationID
+	text = g.expandSkillRefs(envelope.PrincipalID, task.TaskID, text)
 	job := Job{Envelope: envelope, ID: id, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: channel, Trigger: "message", IdempotencyKey: idempotency, ChatID: chatID, MessageID: messageID, TaskID: task.TaskID, TopicID: task.TopicID, Text: text, InboundID: inboundID, Sensitive: false, CreatedAt: g.now().UTC()}
 	if channel == "telegram_bot" && chatID < 0 {
 		if group := g.groupFor(chatID); group == nil || group.Mode != "topics" {
@@ -697,30 +840,34 @@ func (g *Gateway) progressTick(ctx context.Context) {
 		}
 		// Only an admitted run earns live progress: a queued or wedged job
 		// would farm typing and edits forever with nothing behind them.
+		if m.AssignmentID != "" {
+			continue
+		}
 		if m.RunID == "" {
 			continue
 		}
+		lang := locale.LangOf(g.user(m.PrincipalID).WorkspaceDir)
 		_ = ch.SendPresence(ctx, m.ChatID, m.TopicID)
 		base := strings.TrimSpace(m.StatusText)
 		if base == "" {
-			base = "Выполняю запрос."
+			base = locale.T(lang, "chat.working")
 		}
-		_ = g.spool.UpsertStatusDelivery(Delivery{ID: "job-" + m.JobID + "-status", Channel: m.Channel, ConversationID: m.ConversationID, DeliveryTargetID: m.DeliveryTargetID, ChatID: m.ChatID, TaskID: m.TaskID, TopicID: m.TopicID, Text: base + " · " + formatElapsed(g.now().Sub(m.CreatedAt)), CreatedAt: g.now().UTC()})
+		_ = g.spool.UpsertStatusDelivery(Delivery{ID: "job-" + m.JobID + "-status", Channel: m.Channel, ConversationID: m.ConversationID, DeliveryTargetID: m.DeliveryTargetID, ChatID: m.ChatID, TaskID: m.TaskID, TopicID: m.TopicID, Text: base + " · " + formatElapsed(lang, g.now().Sub(m.CreatedAt)), CreatedAt: g.now().UTC()})
 	}
 }
 
-func formatElapsed(d time.Duration) string {
+func formatElapsed(lang locale.Lang, d time.Duration) string {
 	if d < 0 {
 		d = 0
 	}
 	s := int(d.Round(time.Second).Seconds())
 	switch {
 	case s < 60:
-		return strconv.Itoa(s) + " сек"
+		return locale.T(lang, "time.sec", s)
 	case s < 3600:
-		return strconv.Itoa(s/60) + " мин " + strconv.Itoa(s%60) + " сек"
+		return locale.T(lang, "time.min", s/60, s%60)
 	default:
-		return strconv.Itoa(s/3600) + " ч " + strconv.Itoa((s%3600)/60) + " мин"
+		return locale.T(lang, "time.hour", s/3600, (s%3600)/60)
 	}
 }
 
@@ -746,7 +893,8 @@ func mediaReady(impl any, command, url string) bool {
 
 func (g *Gateway) interceptSecret(ctx context.Context, user User, updateID int, chatID, topicID int64, messageID int, text string) error {
 	_ = g.api.DeleteMessage(ctx, chatID, messageID)
-	reply := "Секреты через чат не принимаются."
+	lang := locale.LangOf(user.WorkspaceDir)
+	reply := locale.T(lang, "chat.secrets-rejected")
 	values, err := envstore.Parse(text)
 	if err == nil && len(values) > 0 && len(user.TelegramIDs) > 0 {
 		keys := make([]string, 0, len(values))
@@ -755,8 +903,8 @@ func (g *Gateway) interceptSecret(ctx context.Context, user User, updateID int, 
 			values[key] = ""
 		}
 		slices.Sort(keys)
-		if form, formErr := g.createCredentialForm(user.Envelope(user.TelegramIDs[0]), keys); formErr == nil {
-			reply = "Введите данные только в защищённой форме: " + form.FormURL
+		if form, formErr := g.createCredentialForm(user.Envelope(user.TelegramIDs[0]), keys, ""); formErr == nil {
+			reply = locale.T(lang, "chat.secrets-form", form.FormURL)
 		}
 	}
 	return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(updateID)+"-secret", chatID, topicID, reply)
@@ -767,7 +915,7 @@ func (g *Gateway) interceptSecret(ctx context.Context, user User, updateID int, 
 func (g *Gateway) notifyTelegramConflict() {
 	for _, u := range g.config.Users {
 		if u.Enabled && len(u.TelegramIDs) > 0 {
-			_ = g.queueDelivery(context.Background(), "telegram-conflict", u.TelegramIDs[0], 0, "Обнаружен второй экземпляр этого бота с тем же токеном — опрос приостановлен. Остановите лишний процесс.")
+			_ = g.queueDelivery(context.Background(), "telegram-conflict", u.TelegramIDs[0], 0, locale.T(locale.LangOf(u.WorkspaceDir), "chat.bot-conflict"))
 			return
 		}
 	}

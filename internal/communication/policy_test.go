@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/identity"
 )
 
@@ -1568,5 +1569,247 @@ func TestCheckMCPProbeSeedsBaselineOverHTTP(t *testing.T) {
 	s.mu.Unlock()
 	if err != nil || st.Value != "open" {
 		t.Fatalf("baseline not seeded from tool call: %+v %v", st, err)
+	}
+}
+
+// S5.1 — connector wait responses carry their items under `results` or
+// `messages`, and native ids are often numeric (telegram message ids); both
+// shapes must yield discrete dedup-able events (SPEC-0054 R5.1/R5.2).
+func TestExtractEventsResultsAndNumericIDs(t *testing.T) {
+	probe := &WatchProbe{Kind: "mcp_tool"}
+	events, err := extractEvents(probe, []byte(`{"results":[{"id":325267,"text":"first"},{"id":325268,"text":"second"}]}`))
+	if err != nil || len(events) != 2 || events[0].ID != "325267" || events[1].ID != "325268" {
+		t.Fatalf("results envelope not extracted: %+v %v", events, err)
+	}
+	msgs, err := extractEvents(probe, []byte(`{"messages":[{"message_id":991,"text":"ping"}]}`))
+	if err != nil || len(msgs) != 1 || msgs[0].ID != "991" {
+		t.Fatalf("messages envelope not extracted: %+v %v", msgs, err)
+	}
+}
+
+// S5.2 — an assignment-owned event schedule spends the assignment's wake
+// budget at admission (SPEC-0080 R2.2): an exhausted budget suppresses the
+// bundle and the events stay unseen until the owner-day rolls over.
+func TestEventAgentSinkRespectsAssignmentBudget(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	sched, err := s.CreateSchedule(Schedule{ScheduleID: "ev-asg", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "mail events", JobKind: "event", Sink: "agent", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-mail-events-abc"}}, caller, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	sched.AssignmentID = "asg-evbudget"
+	if err := atomicJSON(s.schedulePath(sched.ScheduleID), sched); err != nil {
+		t.Fatal(err)
+	}
+	asg := commodel.Assignment{AssignmentID: "asg-evbudget", Revision: 1, Envelope: caller, Intent: "watch mail", State: "active",
+		Grants:     commodel.AssignmentGrants{MaxWakesPerDay: 1},
+		Checkpoint: commodel.AssignmentCheckpoint{WakeDay: now.Format("2006-01-02"), WakesToday: 1},
+		CreatedAt:  now, UpdatedAt: now}
+	if err := os.MkdirAll(filepath.Join(s.root, "assignments"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicJSON(s.rt.AssignmentPath(asg.AssignmentID), asg); err != nil {
+		t.Fatal(err)
+	}
+	o.ScheduleID = "ev-asg"
+	o.JobKind = "event"
+	o.Job.Trigger = "cron"
+	o.State = "probing"
+	if err := atomicJSON(filepath.Join(s.root, "occurrences", occurrenceID(o)+".json"), o); err != nil {
+		t.Fatal(err)
+	}
+	s.settleEvents(o, sched, []byte(`{"events":[{"id":"w1","text":"mail arrived"}]}`), now, nil, g.authorizeOccurrence)
+	if job, err := s.ClaimJob(); err != nil || job != nil {
+		t.Fatalf("over-budget wake admitted a job: %+v %v", job, err)
+	}
+	st, err := s.EventStateOf("ev-asg")
+	if err != nil || st.seen("w1") {
+		t.Fatalf("suppressed event must stay unseen: %+v %v", st, err)
+	}
+	// The owner-day rolls over: the same checkpoint admits again.
+	asg.Checkpoint.WakeDay = now.Add(-24 * time.Hour).Format("2006-01-02")
+	if err := atomicJSON(s.rt.AssignmentPath(asg.AssignmentID), asg); err != nil {
+		t.Fatal(err)
+	}
+	o2 := o
+	o2.DueAt = o.DueAt.Add(time.Hour)
+	o2.State = "probing"
+	if err := atomicJSON(filepath.Join(s.root, "occurrences", occurrenceID(o2)+".json"), o2); err != nil {
+		t.Fatal(err)
+	}
+	s.settleEvents(o2, sched, []byte(`{"events":[{"id":"w1","text":"mail arrived"}]}`), now, nil, g.authorizeOccurrence)
+	if job, err := s.ClaimJob(); err != nil || job == nil {
+		t.Fatal("rolled-over budget must admit the wake")
+	}
+}
+
+// SPEC-0080 R2.2 — a paused or cancelled assignment must never spend a
+// wake: the fence rejects before the model is even considered.
+func TestEventAgentSinkPausedAssignmentNeverWakes(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	sched, err := s.CreateSchedule(Schedule{ScheduleID: "ev-paused", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "mail events", JobKind: "event", Sink: "agent", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-mail-events-abc"}}, caller, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	sched.AssignmentID = "asg-evpaused"
+	if err := atomicJSON(s.schedulePath(sched.ScheduleID), sched); err != nil {
+		t.Fatal(err)
+	}
+	asg := commodel.Assignment{AssignmentID: "asg-evpaused", Revision: 1, Envelope: caller, Intent: "watch mail", State: "paused",
+		CreatedAt: now, UpdatedAt: now}
+	if err := os.MkdirAll(filepath.Join(s.root, "assignments"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicJSON(s.rt.AssignmentPath(asg.AssignmentID), asg); err != nil {
+		t.Fatal(err)
+	}
+	o.ScheduleID = "ev-paused"
+	o.JobKind = "event"
+	o.Job.Trigger = "cron"
+	o.State = "probing"
+	if err := atomicJSON(filepath.Join(s.root, "occurrences", occurrenceID(o)+".json"), o); err != nil {
+		t.Fatal(err)
+	}
+	s.settleEvents(o, sched, []byte(`{"events":[{"id":"p1","text":"mail arrived"}]}`), now, nil, g.authorizeOccurrence)
+	if job, err := s.ClaimJob(); err != nil || job != nil {
+		t.Fatalf("paused assignment admitted a wake: %+v %v", job, err)
+	}
+	st, err := s.EventStateOf("ev-paused")
+	if err != nil || st.seen("p1") {
+		t.Fatalf("suppressed event must stay unseen: %+v %v", st, err)
+	}
+	item, err := s.rt.LoadAssignment(asg.AssignmentID, caller)
+	if err != nil || item.Checkpoint.WakesToday != 0 {
+		t.Fatalf("paused assignment spent a wake: %+v %v", item.Checkpoint, err)
+	}
+}
+
+// S5.2 — an agent-sink wake honors the owner's quiet window: it cannot be
+// deferred like a delivery, so it is suppressed outright and the events
+// stay unseen (matching the watcher agent-escalation rule, SPEC-0054 R2.1).
+func TestEventAgentSinkRespectsQuietWindow(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	now := time.Now().UTC()
+	from := now.Add(-time.Hour).Format("15:04")
+	to := now.Add(time.Hour).Format("15:04")
+	sched, err := s.CreateSchedule(Schedule{ScheduleID: "ev-quiet", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "mail events", JobKind: "event", Sink: "agent", QuietFrom: from, QuietTo: to, Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-mail-events-abc"}}, caller, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.ScheduleID = "ev-quiet"
+	o.JobKind = "event"
+	o.Job.Trigger = "cron"
+	o.State = "probing"
+	if err := atomicJSON(filepath.Join(s.root, "occurrences", occurrenceID(o)+".json"), o); err != nil {
+		t.Fatal(err)
+	}
+	s.settleEvents(o, sched, []byte(`{"events":[{"id":"q1","text":"mail arrived"}]}`), now, nil, g.authorizeOccurrence)
+	if job, err := s.ClaimJob(); err != nil || job != nil {
+		t.Fatalf("quiet window admitted an agent wake: %+v %v", job, err)
+	}
+	st, err := s.EventStateOf("ev-quiet")
+	if err != nil || st.seen("q1") {
+		t.Fatalf("quiet-suppressed event must stay unseen: %+v %v", st, err)
+	}
+}
+
+// S5.2 — the daily cap applies to agent wakes too: past the limit the
+// bundle is suppressed and the events stay unseen (SPEC-0054 R2.2).
+func TestEventAgentSinkRespectsDailyLimit(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	sched, err := s.CreateSchedule(Schedule{ScheduleID: "ev-cap", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "mail events", JobKind: "event", Sink: "agent", DailyLimit: 1, Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-mail-events-abc"}}, caller, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	o.ScheduleID = "ev-cap"
+	o.JobKind = "event"
+	o.Job.Trigger = "cron"
+	fire := func(id string) {
+		oc := o
+		oc.DueAt = o.DueAt.Add(time.Hour)
+		oc.State = "probing"
+		if err := atomicJSON(filepath.Join(s.root, "occurrences", occurrenceID(oc)+".json"), oc); err != nil {
+			t.Fatal(err)
+		}
+		s.settleEvents(oc, sched, []byte(`{"events":[{"id":"`+id+`","text":"mail arrived"}]}`), now, nil, g.authorizeOccurrence)
+	}
+	fire("c1")
+	if job, err := s.ClaimJob(); err != nil || job == nil {
+		t.Fatal("first wake under the cap must admit")
+	}
+	if st, err := s.EventStateOf("ev-cap"); err != nil || st.LastSuccess.IsZero() {
+		t.Fatalf("admitted wake must stamp durable LastSuccess: %+v %v", st, err)
+	}
+	fire("c2")
+	if job, err := s.ClaimJob(); err != nil || job != nil {
+		t.Fatalf("over-cap wake admitted a job: %+v %v", job, err)
+	}
+	st, err := s.EventStateOf("ev-cap")
+	if err != nil || st.seen("c2") {
+		t.Fatalf("capped event must stay unseen: %+v %v", st, err)
+	}
+}
+
+// A watch-fail notice that never reaches the owner must not suppress the
+// next identical probe failure: the dedupe digest lands on delivery, not
+// on enqueue (same contract as routine failure notices).
+func TestWatchFailNoticeDedupeWaitsForDelivery(t *testing.T) {
+	s, o, g := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	sched, err := s.CreateSchedule(Schedule{ScheduleID: "wf1", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "watch quietly", JobKind: "watcher", Probe: &WatchProbe{URL: "https://example.com/q"}}, caller, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	fire := func(seq int) {
+		oc := o
+		oc.ScheduleID = "wf1"
+		oc.JobKind = "watcher"
+		oc.DueAt = now.Add(time.Duration(seq) * time.Hour)
+		oc.Job.Trigger = "cron"
+		oc.Job.ID = OccurrenceID(oc)
+		oc.State = "probing"
+		if err := atomicJSON(filepath.Join(s.root, "occurrences", occurrenceID(oc)+".json"), oc); err != nil {
+			t.Fatal(err)
+		}
+		s.rt.SettleProbe(oc, sched, "", "", now, errors.New("source exploded"), g.authorizeOccurrence)
+	}
+	fire(0)
+	item, err := s.loadScheduleLocked("wf1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.LastFailureSHA256 != "" {
+		t.Fatalf("dedupe digest recorded before delivery: %q", item.LastFailureSHA256)
+	}
+	// The send never confirms: the channel errors and the notice dies in
+	// outbox/failed through the real delivery path.
+	g.api = &fakeAPI{err: errors.New("send down")}
+	g.deliverOne(context.Background())
+	fire(1)
+	name, err := firstJSON(filepath.Join(s.root, "outbox", "pending"))
+	if err != nil || name == "" {
+		t.Fatal("undelivered notice suppressed the retry")
+	}
+	if !strings.Contains(name, "watch-fail-") {
+		t.Fatalf("retry produced a non-watch-fail delivery: %q", name)
+	}
+	// Once the notice actually reaches the owner the digest is recorded;
+	// the next identical failure dedupes again.
+	g.api = &fakeAPI{}
+	g.deliverOne(context.Background())
+	item, err = s.loadScheduleLocked("wf1")
+	if err != nil || item.LastFailureSHA256 == "" {
+		t.Fatalf("delivered notice must record the dedupe digest: %q %v", item.LastFailureSHA256, err)
+	}
+	fire(2)
+	if extra, err := s.ClaimDelivery(); err != nil || extra != nil {
+		t.Fatalf("delivered notice must suppress the identical failure: %+v %v", extra, err)
 	}
 }

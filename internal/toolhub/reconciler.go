@@ -243,7 +243,8 @@ func (r *Reconciler) checkSurfaces(ctx context.Context, failed map[string]bool) 
 	}
 	var failures []error
 	for _, connection := range r.Store.Connections() {
-		if connection.Status != api.ActiveStatus || failed[connection.ConnectionID] {
+		recoverable := connection.Status == api.DegradedStatus && connection.Metadata[api.LabelAcceptSurface] != "" && connection.Metadata[api.LabelAcceptRecipe] == ""
+		if (connection.Status != api.ActiveStatus && !recoverable) || failed[connection.ConnectionID] {
 			continue
 		}
 		binding, pinned := r.Store.pinnedBinding(connection.ConnectionID)
@@ -267,6 +268,14 @@ func (r *Reconciler) checkSurfaces(ctx context.Context, failed map[string]bool) 
 		}
 		observed := api.ToolSurfaceDigest(surface)
 		if observed == binding.ToolDigest {
+			if connection.Status == api.DegradedStatus {
+				if _, err := r.Store.restoreApprovedSurfaceIfCurrent(connection, binding); err != nil {
+					failures = append(failures, err)
+				}
+			}
+			continue
+		}
+		if connection.Status == api.DegradedStatus {
 			continue
 		}
 		applied, err := r.Store.markDegradedIfCurrent(connection.ConnectionID, &connection, api.LabelAcceptSurface, observed)

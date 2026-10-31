@@ -6,7 +6,6 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"maps"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -78,7 +77,7 @@ func (s *Store) EnableCatalog(auth identity.Envelope, definitionID, version, iss
 				return api.ToolBinding{}, fmt.Errorf("%w: catalog tool has no capability contract", api.ErrInvalid)
 			}
 			selection := api.CapabilitySelection{CapabilityID: tool.CapabilityID, DefinitionID: d.DefinitionID, DefinitionVersion: d.Version,
-				ImplementationDigest: digest, ToolName: tool.Name, Name: d.DefinitionID + "_" + strings.ReplaceAll(tool.Name, "-", "_")}
+				ImplementationDigest: digest, ToolName: tool.Name, Name: tool.Name}
 			if !slices.ContainsFunc(profile.Selections, func(v api.CapabilitySelection) bool {
 				return v.DefinitionID == d.DefinitionID && v.DefinitionVersion == d.Version && v.ToolName == tool.Name && v.ConnectionID == ""
 			}) {

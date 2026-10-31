@@ -1,8 +1,12 @@
 package stack
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/exposure"
+	"github.com/letya999/hermes-hub/internal/skillstore"
 	"github.com/letya999/hermes-hub/internal/sshcap"
 	"gopkg.in/yaml.v3"
 	"os"
@@ -68,7 +72,14 @@ func RenderEnvironment(dir, root, environment string) error {
 			return fmt.Errorf("ssh config: %w", err)
 		}
 	}
-	if s.CapabilityMode != "managed" && strings.TrimSpace(s.GlobalSkillsDir) == "" {
+	if s.Has("exposure") {
+		// Same fail-closed contract: a broken exposure config must stop the
+		// render rather than ship silently-denying exposure tools.
+		if _, err = exposure.Load(filepath.Join(dir, "connections", "exposure", "config.yaml")); err != nil {
+			return fmt.Errorf("exposure config: %w", err)
+		}
+	}
+	if strings.TrimSpace(s.GlobalSkillsDir) == "" {
 		s.DefaultGlobalSkillsDir(filepath.Join(root, "config", "skills"))
 		if err := os.MkdirAll(s.GlobalSkillsDir, 0755); err != nil {
 			return err
@@ -90,8 +101,29 @@ func RenderEnvironment(dir, root, environment string) error {
 			return err
 		}
 	}
+	// SPEC-0083 R3.3: upstream must never seed bundled skills into the
+	// runtime home — the hub-built effective view at /skills is the only
+	// skill path. The marker suppresses upstream seeding beyond its
+	// hardcoded essentials; the /skills mount and the disabled `skills`
+	// toolset close the rest.
+	if err = os.WriteFile(filepath.Join(dir, "hermes", ".no-bundled-skills"), []byte("# hub-managed: upstream bundled-skill seeding stays off (SPEC-0083 R3.3)\n"), 0600); err != nil {
+		return err
+	}
+	// Pre-M24 spaces keep authored skills under hermes/skills; the unified
+	// store at skills/ is authoritative now. Idempotent: consented registry
+	// entries publish, unrecorded content lands as drafts (SPEC-0083 R2.7).
+	if _, err = skillstore.MigrateLegacySpaceWithPlatform(dir, s.GlobalSkillsDir, true); err != nil {
+		return fmt.Errorf("legacy skills migration: %w", err)
+	}
+	// Same move for the organization tier: legacy <org>/hermes/skills content
+	// lands in the unified <org>/skills store (SPEC-0083 R2.7).
+	if s.OrgScoped() && s.OrganizationDir != "" {
+		if _, err = skillstore.MigrateLegacyOrg(s.OrganizationDir, true); err != nil {
+			return fmt.Errorf("organization skills migration: %w", err)
+		}
+	}
 	if s.CapabilityMode == "managed" {
-		for _, name := range []string{"runtime", "hermes", "home", "cache", "workspace"} {
+		for _, name := range []string{"runtime", "hermes", "home", "cache", "workspace", "skills"} {
 			if err = os.MkdirAll(filepath.Join(dir, "managed", s.Environment, name), 0700); err != nil {
 				return err
 			}
@@ -188,6 +220,12 @@ func RenderEnvironment(dir, root, environment string) error {
 			managedEnv["HTTP_PROXY"] = "http://egress-relay:8319"
 			managedEnv["HTTPS_PROXY"] = "http://egress-relay:8319"
 			managedEnv["NO_PROXY"] = "toolhub,model-relay,egress-relay,localhost,127.0.0.1"
+			if s.Has("browser") {
+				// The browser MCP sidecar is internal like the relays:
+				// proxying it through egress breaks the streamable-HTTP
+				// handshake (the relay rightly refuses arbitrary forwards).
+				managedEnv["NO_PROXY"] += ",browser-" + s.User
+			}
 			managedEnv["HUB_EGRESS_PROXY"] = "http://egress-relay:8319"
 			for _, key := range s.Web.envKeys() {
 				if value := secrets[key]; value != "" {
@@ -214,6 +252,9 @@ func RenderEnvironment(dir, root, environment string) error {
 		}
 	}
 	if err = writeToolHubFiles(dir, s); err != nil {
+		return err
+	}
+	if err = writeBrowserFiles(dir, s); err != nil {
 		return err
 	}
 	outputs := map[string]any{"hermes." + environment + ".yaml": Config(s), "compose." + environment + ".yaml": Compose(s, root, dir)}
@@ -245,7 +286,7 @@ func RenderEnvironment(dir, root, environment string) error {
 	if err = writeToolManifest(dir, s); err != nil {
 		return err
 	}
-	if err = MaterializeGlobalSkills(dir, s); err != nil {
+	if _, err = MaterializeEffectiveSkills(dir, s); err != nil {
 		return err
 	}
 	if err = MaterializeHubPlugins(dir, root, s); err != nil {
@@ -268,6 +309,63 @@ func RenderEnvironment(dir, root, environment string) error {
 		return err
 	}
 	return nil
+}
+
+// writeBrowserFiles provisions the per-space browser secrets the sidecar
+// mounts read-only: the noVNC password (x11vnc -passwdfile) and, for meet
+// spaces, the token upstream's NodeServer serves plus the runtime-side node
+// registry entry — generated once, never rotated by a re-render.
+func writeBrowserFiles(dir string, s Settings) error {
+	if !s.Has("browser") && !s.Has("meet") {
+		return nil
+	}
+	if err := ensureTokenFile(filepath.Join(dir, "browser-novnc.passwd")); err != nil {
+		return err
+	}
+	if !s.Has("meet") {
+		return nil
+	}
+	tokenPath := filepath.Join(dir, "meet-node-token.json")
+	if _, err := os.Lstat(tokenPath); os.IsNotExist(err) {
+		value := make([]byte, 32)
+		if _, err = rand.Read(value); err != nil {
+			return err
+		}
+		body, err := json.Marshal(M{"token": hex.EncodeToString(value)})
+		if err != nil {
+			return err
+		}
+		if err = os.WriteFile(tokenPath, body, 0600); err != nil {
+			return err
+		}
+	} else if err != nil {
+		return err
+	}
+	tokenData, err := os.ReadFile(tokenPath)
+	if err != nil {
+		return err
+	}
+	var tokenDoc struct {
+		Token string `json:"token"`
+	}
+	if err = json.Unmarshal(tokenData, &tokenDoc); err != nil || tokenDoc.Token == "" {
+		return fmt.Errorf("meet node token file is unreadable")
+	}
+	// Seed the runtime-side registry: plugins.google_meet.node.registry
+	// resolves node='auto' through $HERMES_HOME/workspace/meetings/nodes.json.
+	// The sidecar's token file holds the same secret, so the entry is
+	// pre-approved without the operator running `meet node approve`.
+	nodesPath := filepath.Join(dir, "hermes", "workspace", "meetings", "nodes.json")
+	name := "browser-" + s.User
+	nodes := M{"nodes": M{name: M{"url": "ws://" + name + ":18789", "token": tokenDoc.Token}}}
+	body, err := json.MarshalIndent(nodes, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err = os.MkdirAll(filepath.Dir(nodesPath), 0770); err != nil {
+		return err
+	}
+	return atomic(nodesPath, append(body, '\n'))
 }
 
 // removeIfExists deletes path when present; a missing file is not an error.
@@ -309,7 +407,7 @@ func managedEgressHosts(s Settings, dir string) []string {
 			continue
 		}
 		switch name {
-		case "routines", "services":
+		case "routines", "services", "assignments":
 			hosts["communication-hub"] = true
 		case "hh":
 			hosts["api.hh.ru"] = true
@@ -396,6 +494,10 @@ func writeToolHubFiles(dir string, s Settings) error {
 	}
 	token := strings.TrimSpace(string(key))
 	controller := M{"state_root": "/state", "toolhive_binary": "/usr/local/bin/thv", "seccomp_profile": "/opt/hub/seccomp/seccomp-mcp-runtime.json", "docker_fallback": true, "bridge_binary": "/usr/local/bin/hubctl", "credential_mount_root": "/run/broker-materialized", "dynamic_definitions": true, "max_active": 8, "idle_ttl_seconds": 1800, "cli": cliControllerSection(s, dir)}
+
+	if err := writeHostingFiles(dir, s); err != nil {
+		return err
+	}
 	body, err := json.MarshalIndent(controller, "", "  ")
 	if err != nil {
 		return err

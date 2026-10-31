@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/letya999/hermes-hub/internal/locale"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
@@ -663,7 +664,7 @@ func TestGoalSetNamedRefusal(t *testing.T) {
 
 // /help advertises the goal command alongside the other session controls.
 func TestHelpAdvertisesGoal(t *testing.T) {
-	if !strings.Contains(commandHelp(), "/goal — ") {
+	if !strings.Contains(commandHelp(locale.LangRU), "/goal — ") {
 		t.Fatal("/goal missing from command help")
 	}
 }
@@ -1172,6 +1173,11 @@ func TestGoalAfterJobHubContinueRestatesGoal(t *testing.T) {
 	if !strings.Contains(next.Text, "write the book") || !strings.Contains(next.Text, "chapter 1 drafted") {
 		t.Fatalf("hub continuation must restate goal+verdict reason, got %q", next.Text)
 	}
+	// The restated prompt is a model-facing instruction: English scaffold plus
+	// the owner's language as an explicit reply hint (TestMain pins ru).
+	if !strings.Contains(next.Text, "Goal: ") || !strings.Contains(next.Text, "Previous turn verdict: ") || !strings.Contains(next.Text, "Русский (ru)") {
+		t.Fatalf("hub continuation must be English with a language hint, got %q", next.Text)
+	}
 }
 
 // /v1/goals is the ToolHub control surface: same record as the channel
@@ -1228,11 +1234,24 @@ func TestGoalsEndpointOps(t *testing.T) {
 	if goal.Status != "paused" {
 		t.Fatalf("paused: %+v", goal)
 	}
-	// resume → active + queued turn
+	// resume → active + queued turn; the synthesized hub-engine prompt is a
+	// model-facing instruction and carries the owner's language hint (TestMain
+	// pins ru).
 	call(`{"op":"resume","conversation_id":"`+convID+`"}`, true)
 	goal, _, _ = g.spool.GoalForTask("alice", task.ConversationID)
 	if goal.Status != "active" {
 		t.Fatalf("resumed: %+v", goal)
+	}
+	resumePrompt := ""
+	entries, _ := os.ReadDir(filepath.Join(g.spool.root, "pending"))
+	for _, e := range entries {
+		var j Job
+		if data, err := os.ReadFile(filepath.Join(g.spool.root, "pending", e.Name())); err == nil && json.Unmarshal(data, &j) == nil && j.Trigger == "goal" && !strings.HasPrefix(j.IdempotencyKey, "goal-kickoff") {
+			resumePrompt = j.Text
+		}
+	}
+	if !strings.Contains(resumePrompt, "Русский (ru)") {
+		t.Fatalf("hub-engine resume prompt misses the language hint: %q", resumePrompt)
 	}
 	// clear → record gone
 	call(`{"op":"clear","conversation_id":"`+convID+`"}`, true)

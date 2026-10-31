@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/locale"
 )
 
 func TestStreamReadersBoundAndDiscardPrivateFields(t *testing.T) {
@@ -90,7 +92,7 @@ func TestStalledNativeReceiverIsBoundedAndCancellationClosesStream(t *testing.T)
 	}
 }
 
-func TestNativeSSEApprovalDedupProgressCapAndPrivatePayloads(t *testing.T) {
+func TestNativeSSEApprovalDedupContinuousProgressAndPrivatePayloads(t *testing.T) {
 	var polls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/events") {
@@ -136,22 +138,22 @@ func TestNativeSSEApprovalDedupProgressCapAndPrivatePayloads(t *testing.T) {
 		}
 		return nil
 	})
-	if err != nil || result.Status != "completed" || progress != 10 || approvals != 1 {
+	if err != nil || result.Status != "completed" || progress != 15 || approvals != 1 {
 		t.Fatalf("result=%+v progress=%d approvals=%d error=%v", result, progress, approvals, err)
 	}
 }
 
 func TestToolHubProgressMessages(t *testing.T) {
-	if got := toolProgressText(nativeRunEvent{Event: "tool.started", Tool: "mcp__toolhub__prepare_source"}); !strings.Contains(got, "шаг 1/4") || !strings.Contains(got, "2–15 минут") {
+	if got := toolProgressText(nativeRunEvent{Event: "tool.started", Tool: "mcp__toolhub__prepare_source"}, locale.LangRU); !strings.Contains(got, "шаг 1/4") || !strings.Contains(got, "2–15 минут") {
 		t.Fatalf("prepare progress=%q", got)
 	}
-	if got := toolProgressText(nativeRunEvent{Event: "tool.started", Tool: "mcp__toolhub__enable"}); !strings.Contains(got, "шаг 4/4") || !strings.Contains(got, "без рестарта") {
+	if got := toolProgressText(nativeRunEvent{Event: "tool.started", Tool: "mcp__toolhub__enable"}, locale.LangRU); !strings.Contains(got, "шаг 4/4") || !strings.Contains(got, "без рестарта") {
 		t.Fatalf("enable progress=%q", got)
 	}
-	if got := toolProgressText(nativeRunEvent{Event: "tool.started", Tool: "mcp_toolhub_prepare_source"}); !strings.Contains(got, "шаг 1/4") {
+	if got := toolProgressText(nativeRunEvent{Event: "tool.started", Tool: "mcp_toolhub_prepare_source"}, locale.LangRU); !strings.Contains(got, "шаг 1/4") {
 		t.Fatalf("Hermes tool-name progress=%q", got)
 	}
-	if got := toolProgressText(nativeRunEvent{Event: "tool.completed", Error: true}); !strings.Contains(got, "ошибкой") {
+	if got := toolProgressText(nativeRunEvent{Event: "tool.completed", Error: true}, locale.LangRU); !strings.Contains(got, "ошибкой") {
 		t.Fatalf("error progress=%q", got)
 	}
 	for tool, want := range map[string]string{
@@ -160,18 +162,18 @@ func TestToolHubProgressMessages(t *testing.T) {
 		"mcp__toolhub__invoke":               "реальный вызов",
 		"other":                              "",
 	} {
-		if got := toolProgressText(nativeRunEvent{Event: "tool.started", Tool: tool}); !strings.Contains(got, want) {
+		if got := toolProgressText(nativeRunEvent{Event: "tool.started", Tool: tool}, locale.LangRU); !strings.Contains(got, want) {
 			t.Fatalf("%s progress=%q", tool, got)
 		}
 	}
-	if got := toolProgressText(nativeRunEvent{Event: "tool.completed"}); !strings.Contains(got, "завершён") {
+	if got := toolProgressText(nativeRunEvent{Event: "tool.completed"}, locale.LangRU); !strings.Contains(got, "завершён") {
 		t.Fatalf("completed progress=%q", got)
 	}
-	preparing := toolProgressText(nativeRunEvent{Event: "tool.completed", Tool: "mcp__toolhub__prepare_source", Output: `{"phase":"preparing"}`})
+	preparing := toolProgressText(nativeRunEvent{Event: "tool.completed", Tool: "mcp__toolhub__prepare_source", Output: `{"phase":"preparing"}`}, locale.LangRU)
 	if strings.Contains(preparing, "образ собран") || !strings.Contains(preparing, "фоне") {
 		t.Fatalf("preparing progress=%q", preparing)
 	}
-	answered := toolProgressText(nativeRunEvent{Event: "tool.completed", Tool: "mcp__toolhub__prepare_source"})
+	answered := toolProgressText(nativeRunEvent{Event: "tool.completed", Tool: "mcp__toolhub__prepare_source"}, locale.LangRU)
 	if strings.Contains(answered, "образ собран") {
 		t.Fatalf("prepare completion claimed the image was built: %q", answered)
 	}

@@ -15,6 +15,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/credstore"
 	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/toolhub"
 )
 
@@ -190,20 +191,20 @@ func (s *Service) SetTerminalExposure(owner, name string, enabled bool) error {
 func (s *Service) ApplyChat(owner, text string) ([]string, string, error) {
 	values, err := envstore.Parse(text)
 	if err != nil {
-		return nil, "Статус: rejected", err
+		return nil, FormatStatus(locale.Operator(), nil, "rejected"), err
 	}
 	if len(values) == 0 {
-		return nil, "Статус: rejected", credstore.ErrInvalid
+		return nil, FormatStatus(locale.Operator(), nil, "rejected"), credstore.ErrInvalid
 	}
 	infos, err := s.Set(owner, values)
 	if err != nil {
-		return nil, "Статус: rejected", err
+		return nil, FormatStatus(locale.Operator(), nil, "rejected"), err
 	}
 	names := make([]string, 0, len(infos))
 	for _, info := range infos {
 		names = append(names, info.Name)
 	}
-	return names, FormatStatus(names, "active"), nil
+	return names, FormatStatus(locale.Operator(), names, "active"), nil
 }
 
 func (s *Service) Inject(auth identity.Envelope, projectedName, workloadRoot, jobID string) (Injection, error) {
@@ -289,9 +290,14 @@ func (s *Service) Inject(auth identity.Envelope, projectedName, workloadRoot, jo
 	return injected, nil
 }
 
-func FormatStatus(names []string, status string) string {
+// FormatStatus renders the operator-facing status line. The status value is
+// a stable machine token; only the surrounding labels localize.
+func FormatStatus(lang locale.Lang, names []string, status string) string {
 	slices.Sort(names)
-	return "Имена: " + strings.Join(names, ", ") + ". Статус: " + status + "."
+	if len(names) == 0 {
+		return locale.T(lang, "op.status-only", status)
+	}
+	return locale.T(lang, "op.names-status", strings.Join(names, ", "), status)
 }
 
 func ContainsValue(text string, values map[string]string) bool {

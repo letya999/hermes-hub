@@ -1,6 +1,6 @@
 ---
 description: toolhub — capability gateway: tool admission, governance evaluation, connector lifecycle, audit ledger.
-last_verified: 2026-10-26
+last_verified: 2026-10-30
 ---
 
 # toolhub
@@ -30,6 +30,9 @@ tool call crosses. Listens `0.0.0.0:8090`, host-bound to `127.0.0.1:8090`.
   never bucketed.
 - **Cells** (`cell*.go`): bounded CLI/MCP tool execution in disposable
   containers seeded by `cellinit` (see services/cell-proxy.md).
+  Skill credential refs are leased from the calling principal's running
+  runtime through the supervisor; ToolHub never reads its own self-env for
+  another principal. An unavailable runtime yields no ref lease.
 - **Catalog** (`catalog.go`, `artifact_catalog.go`): prepared connector
   registry, CI-built images (ADR-0057), content-addressed recipes
   (`recipes/<sha256>`, ADR-0053).

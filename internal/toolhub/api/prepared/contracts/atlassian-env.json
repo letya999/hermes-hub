@@ -1,12 +1,22 @@
 {
   "id": "atlassian-env",
-  "revision": 2,
+  "revision": 3,
   "title": "Atlassian connection — fill the Jira block, the Confluence block, or both",
+  "title_i18n": {
+    "ru": "Подключение Atlassian — заполните блок Jira, блок Confluence или оба",
+    "kk": "Atlassian қосылымы — Jira блогын, Confluence блогын немесе екеуін де толтырыңыз",
+    "es": "Conexión Atlassian: rellena el bloque de Jira, el de Confluence o ambos"
+  },
   "storage": "local",
   "fields": [
     {
       "id": "jira_url",
       "label": "Jira base URL (https://company.atlassian.net or self-hosted)",
+      "label_i18n": {
+        "ru": "Базовый URL Jira (https://company.atlassian.net или self-hosted)",
+        "kk": "Jira негізгі URL-і (https://company.atlassian.net немесе өз серверінде)",
+        "es": "URL base de Jira (https://company.atlassian.net o autoalojado)"
+      },
       "kind": "string",
       "required": false,
       "max_bytes": 2048
@@ -14,6 +24,11 @@
     {
       "id": "jira_username",
       "label": "Jira username (email for Cloud)",
+      "label_i18n": {
+        "ru": "Имя пользователя Jira (email для Cloud)",
+        "kk": "Jira пайдаланушы аты (Cloud үшін email)",
+        "es": "Usuario de Jira (correo para Cloud)"
+      },
       "kind": "string",
       "required": false,
       "max_bytes": 2048
@@ -21,6 +36,11 @@
     {
       "id": "jira_api_token",
       "label": "Jira API token",
+      "label_i18n": {
+        "ru": "API-токен Jira",
+        "kk": "Jira API токені",
+        "es": "Token de API de Jira"
+      },
       "kind": "secret",
       "required": false,
       "max_bytes": 4096
@@ -28,6 +48,11 @@
     {
       "id": "confluence_url",
       "label": "Confluence base URL (https://company.atlassian.net/wiki or self-hosted)",
+      "label_i18n": {
+        "ru": "Базовый URL Confluence (https://company.atlassian.net/wiki или self-hosted)",
+        "kk": "Confluence негізгі URL-і (https://company.atlassian.net/wiki немесе өз серверінде)",
+        "es": "URL base de Confluence (https://company.atlassian.net/wiki o autoalojado)"
+      },
       "kind": "string",
       "required": false,
       "max_bytes": 2048
@@ -35,6 +60,11 @@
     {
       "id": "confluence_username",
       "label": "Confluence username (email for Cloud)",
+      "label_i18n": {
+        "ru": "Имя пользователя Confluence (email для Cloud)",
+        "kk": "Confluence пайдаланушы аты (Cloud үшін email)",
+        "es": "Usuario de Confluence (correo para Cloud)"
+      },
       "kind": "string",
       "required": false,
       "max_bytes": 2048
@@ -42,6 +72,11 @@
     {
       "id": "confluence_api_token",
       "label": "Confluence API token",
+      "label_i18n": {
+        "ru": "API-токен Confluence",
+        "kk": "Confluence API токені",
+        "es": "Token de API de Confluence"
+      },
       "kind": "secret",
       "required": false,
       "max_bytes": 4096
@@ -49,11 +84,35 @@
   ],
   "allow_shared": false,
   "deliveries": [
-    { "type": "env", "field": "jira_url", "target": "JIRA_URL" },
-    { "type": "env", "field": "jira_username", "target": "JIRA_USERNAME" },
-    { "type": "env", "field": "jira_api_token", "target": "JIRA_API_TOKEN" },
-    { "type": "env", "field": "confluence_url", "target": "CONFLUENCE_URL" },
-    { "type": "env", "field": "confluence_username", "target": "CONFLUENCE_USERNAME" },
-    { "type": "env", "field": "confluence_api_token", "target": "CONFLUENCE_API_TOKEN" }
+    {
+      "type": "env",
+      "field": "jira_url",
+      "target": "JIRA_URL"
+    },
+    {
+      "type": "env",
+      "field": "jira_username",
+      "target": "JIRA_USERNAME"
+    },
+    {
+      "type": "env",
+      "field": "jira_api_token",
+      "target": "JIRA_API_TOKEN"
+    },
+    {
+      "type": "env",
+      "field": "confluence_url",
+      "target": "CONFLUENCE_URL"
+    },
+    {
+      "type": "env",
+      "field": "confluence_username",
+      "target": "CONFLUENCE_USERNAME"
+    },
+    {
+      "type": "env",
+      "field": "confluence_api_token",
+      "target": "CONFLUENCE_API_TOKEN"
+    }
   ]
 }

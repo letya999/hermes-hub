@@ -34,6 +34,18 @@ func TestRoutineDiscoveryExplainsSameDeterministicContract(t *testing.T) {
 	}
 }
 
+func TestExposureToolsInCatalog(t *testing.T) {
+	names := map[string]bool{}
+	for _, tool := range HubToolsDefinition().Tools {
+		names[tool.Name] = true
+	}
+	for _, want := range []string{"exposure_list", "exposure_status", "exposure_open", "exposure_close"} {
+		if !names[want] {
+			t.Fatal("catalog spec missing:", want)
+		}
+	}
+}
+
 func TestHubToolsDefinitionValidatesSandboxed(t *testing.T) {
 	d := HubToolsDefinition()
 	if err := d.Validate(); err != nil {
@@ -54,4 +66,50 @@ func TestHubToolsDefinitionValidatesSandboxed(t *testing.T) {
 	if !found {
 		t.Fatal("code_exec missing from the hub catalog")
 	}
+}
+
+// R8.3: code_exec's optional `skill` argument is the schema-only lease marker
+// — the agent names the skill, the executor resolves the one-call env.
+func TestCodeExecDeclaresSkillLeaseArgument(t *testing.T) {
+	d := HubToolsDefinition()
+	for _, tool := range d.Tools {
+		if tool.Name != "code_exec" {
+			continue
+		}
+		for _, a := range tool.Arguments {
+			if a.Name == "skill" {
+				if a.Required {
+					t.Fatal("skill lease must be optional")
+				}
+				return
+			}
+		}
+		t.Fatalf("code_exec arguments lack skill: %+v", tool.Arguments)
+	}
+	t.Fatal("code_exec missing from the hub catalog")
+}
+
+// R10.6: skill_manage's git actions ride the same tool — url/ref/path/grant
+// are optional because the non-git actions still dominate the call shape.
+func TestSkillManageDeclaresGitArguments(t *testing.T) {
+	d := HubToolsDefinition()
+	for _, tool := range d.Tools {
+		if tool.Name != "skill_manage" {
+			continue
+		}
+		declared := map[string]bool{}
+		for _, a := range tool.Arguments {
+			declared[a.Name] = true
+		}
+		for _, want := range []string{"url", "ref", "path", "grant"} {
+			if !declared[want] {
+				t.Fatalf("skill_manage arguments lack %q: %+v", want, tool.Arguments)
+			}
+		}
+		if !strings.Contains(tool.Description, "install") {
+			t.Fatalf("skill_manage description hides the git actions: %q", tool.Description)
+		}
+		return
+	}
+	t.Fatal("skill_manage missing from the hub catalog")
 }

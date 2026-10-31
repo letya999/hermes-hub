@@ -38,11 +38,11 @@ func policyTemplate(spaceDir, name string, embedded []byte) []byte {
 	return embedded
 }
 
-// renderDefaultAgent stamps the agent template with the space identity and
+// renderAgent stamps the resolved agent template with the space identity and
 // the allocated host ports while preserving its comments.
-func renderDefaultAgent(spaceDir, user, organization string, ports spacePorts) ([]byte, error) {
+func renderAgent(template []byte, user, organization string, ports spacePorts) ([]byte, error) {
 	var doc yaml.Node
-	if err := yaml.Unmarshal(policyTemplate(spaceDir, "agent-default.yaml", defaultAgentYAML), &doc); err != nil {
+	if err := yaml.Unmarshal(template, &doc); err != nil {
 		return nil, err
 	}
 	root := doc.Content[0]
@@ -188,7 +188,8 @@ var toolhubFamilies = map[string]bool{
 	"files": true, "file": true, "documents": true, "docs": true,
 	"images": true, "artifacts": true, "routines": true, "services": true,
 	"hh": true, "ssh": true, "image_gen": true, "terminal": true,
-	"code_exec": true, "web": true, "settings": true,
+	"code_exec": true, "web": true, "settings": true, "exposure": true, "hosting": true,
+	"assignments": true, "skills": true, "skills_manage": true,
 }
 
 // mcpConnectors are builtin MCP-provided capabilities: rendered directly only
@@ -229,7 +230,9 @@ var toolhubCapabilityID = map[string]string{
 	"images": "images", "artifacts": "artifacts", "routines": "routines",
 	"services": "services", "hh": "hh", "ssh": "ssh", "image_gen": "image_gen",
 	"terminal": "terminal", "code_exec": "terminal", "web": "web",
-	"settings": "settings",
+	"settings": "settings", "exposure": "exposure", "hosting": "hosting",
+	"assignments": "assignments",
+	"skills":      "skills", "skills_manage": "skills_manage",
 }
 
 // ToolHubCapabilityID reports the executor capability family a `via: toolhub`

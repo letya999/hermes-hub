@@ -6,6 +6,7 @@ import (
 	brokerv1 "github.com/letya999/credential-broker/api/v1"
 	brokerclient "github.com/letya999/credential-broker/client"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/url"
@@ -375,8 +376,19 @@ func (c *ControlPlane) completeBrokerAdmission(ctx context.Context, auth identit
 	latest.FormNonce, latest.FormExpires = "", time.Time{}
 	if err != nil {
 		latest.Phase = api.PhaseAwaitingCreds
-		latest.Error = "Проверка не прошла. " + credentialProbeFailure(err)
+		latest.Error = locale.T(locale.Fallback(), "cred.failed", credentialProbeFailure(err, locale.Fallback()))
 		latest.ErrorCode = api.OpCodeProbeFailed
+		if admitted.Source.ArchiveDigest != "" {
+			// Built evidence survives a rejected credential so rotation only
+			// re-runs the tools/list probe instead of rebuilding the artifact.
+			// Tools and tool-contract digests stay empty — confirmation still
+			// waits for a real credentialed tools/list.
+			admitted.Tools = nil
+			admitted.Source.ToolContractDigest = ""
+			admitted.Source.ToolContractSource = ""
+			latest.Definition = &admitted
+			latest.DefinitionID, latest.DefinitionVersion = admitted.DefinitionID, admitted.Version
+		}
 	} else {
 		latest.Definition = &admitted
 		latest.DefinitionID, latest.DefinitionVersion = admitted.DefinitionID, admitted.Version
@@ -443,6 +455,21 @@ func (c *ControlPlane) brokerCredentialRequired(definition api.ToolDefinition, o
 	return c != nil && c.Broker != nil && c.Broker.Enabled() && (definition.CredentialContractID != "" || onboarding.BrokerCredentialID != "")
 }
 
+func (c *ControlPlane) brokerGrantActive(ctx context.Context, auth identity.Envelope, definition api.ToolDefinition, match ownerConnectionMatch) (bool, error) {
+	if !c.Store.brokerGrantReusable(auth, definition, match) {
+		return false, nil
+	}
+	control, err := c.brokerControl(auth, definition.Workload.Class == api.Shared)
+	if err != nil {
+		return false, err
+	}
+	grant, err := control.GetGrant(ctx, match.credential.BrokerGrantID)
+	if err != nil {
+		return false, err
+	}
+	return grant.Active, nil
+}
+
 func (c *ControlPlane) ensureBrokerGrant(ctx context.Context, auth identity.Envelope, definition api.ToolDefinition, onboarding api.Onboarding, binding api.ToolBinding) (string, error) {
 	if c.Broker == nil || !c.Broker.Enabled() || onboarding.BrokerCredentialID == "" {
 		return "", fmt.Errorf("%w: credential broker credential", api.ErrUnauthorized)
@@ -466,14 +493,21 @@ func (c *ControlPlane) ensureBrokerGrant(ctx context.Context, auth identity.Enve
 	if binding.WorkloadClass == api.Shared {
 		execution = "shared"
 	}
-	grant, err := control.Grant(ctx, onboarding.BrokerCredentialID, brokerv1.GrantRequest{
+	request := brokerv1.GrantRequest{
 		ContractID: definition.CredentialContractID, ContractRevision: definition.CredentialContractRevision,
 		PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID,
 		BindingID: binding.ToolBindingID, WorkloadID: workload.WorkloadID, Execution: execution,
 		IdempotencyKey: api.DeterministicID("grant", onboarding.OnboardingID, binding.ToolBindingID),
-	})
-	if err != nil {
-		return "", err
 	}
-	return grant.ID, nil
+	for attempt := 0; attempt < 2; attempt++ {
+		grant, err := control.Grant(ctx, onboarding.BrokerCredentialID, request)
+		if err != nil {
+			return "", err
+		}
+		if grant.Active {
+			return grant.ID, nil
+		}
+		request.IdempotencyKey = api.DeterministicID("grant-retry", request.IdempotencyKey, grant.ID)
+	}
+	return "", fmt.Errorf("%w: broker grant remained revoked", api.ErrUnauthorized)
 }

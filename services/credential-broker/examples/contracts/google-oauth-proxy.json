@@ -1,7 +1,7 @@
 {
   "id": "google-oauth-proxy",
   "revision": 1,
-  "title": "Google Calendar: авторизация в Broker",
+  "title": "Google Calendar: authorization in Broker",
   "storage": "local",
   "fields": [],
   "allow_shared": true,
@@ -18,5 +18,10 @@
       ],
       "auth": "oauth2"
     }
-  ]
+  ],
+  "title_i18n": {
+    "ru": "Google Calendar: авторизация в Broker",
+    "kk": "Google Calendar: Broker-дегі авторизация",
+    "es": "Google Calendar: autorización en Broker"
+  }
 }

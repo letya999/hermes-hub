@@ -38,8 +38,10 @@ type modelHop struct {
 }
 
 type modelHealth struct {
-	mu   sync.Mutex
-	cool time.Time
+	mu          sync.Mutex
+	cool        time.Time
+	recoverable bool
+	retrying    bool
 }
 
 // down reports whether the provider is still inside its cooldown window.
@@ -88,9 +90,13 @@ func parseModelHops(spec string) ([]*modelHop, error) {
 }
 
 func (h *modelHop) available(now time.Time) bool {
+	return h.availableFor(now, false)
+}
+
+func (h *modelHop) availableFor(now time.Time, reserved bool) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.cool.IsZero() || !h.cool.After(now)
+	return (!h.retrying || reserved) && (h.cool.IsZero() || !h.cool.After(now))
 }
 
 // fail parks a hop for hopCooldown so the next request does not pay its
@@ -101,6 +107,46 @@ func (h *modelHop) fail() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.cool = time.Now().Add(hopCooldown)
+	h.recoverable = false
+}
+
+func (h *modelHop) failTransport() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cool = time.Now().Add(hopCooldown)
+	h.recoverable = true
+}
+
+// waitForModelRecovery reserves one bounded probe after a transport timeout.
+// Other callers keep the hop's cooldown instead of stampeding the provider.
+func waitForModelRecovery(ctx context.Context, hops []*modelHop) (*modelHop, func()) {
+	now := time.Now()
+	for _, hop := range hops {
+		hop.mu.Lock()
+		healthy := !hop.recoverable && !hop.retrying && (hop.cool.IsZero() || !hop.cool.After(now))
+		hop.mu.Unlock()
+		if healthy {
+			return nil, func() {}
+		}
+	}
+	for _, hop := range hops {
+		hop.mu.Lock()
+		if !hop.recoverable || hop.retrying {
+			hop.mu.Unlock()
+			continue
+		}
+		delay := time.Until(hop.cool)
+		hop.retrying = true
+		hop.mu.Unlock()
+		timer := time.NewTimer(max(0, delay))
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+		}
+		return hop, func() { hop.mu.Lock(); hop.retrying = false; hop.mu.Unlock() }
+	}
+	return nil, func() {}
 }
 
 func (h *modelHop) state() map[string]any {
@@ -281,9 +327,11 @@ type relayModel = stack.ModelEntry
 
 func modelCall(ctx context.Context, client *http.Client, hops []*modelHop, method, path, auth, ctype string, body []byte, hopTimeout time.Duration) (*modelHop, *http.Response, error) {
 	bounded := *client
+	recovering, releaseRecovery := waitForModelRecovery(ctx, hops)
+	defer releaseRecovery()
 	for _, hop := range hops {
 		started := time.Now()
-		if !hop.available(time.Now()) {
+		if !hop.availableFor(time.Now(), hop == recovering) {
 			log.Printf("model-relay hop=%s path=%s skipped (cooldown)", hop.name, path) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
 			continue
 		}
@@ -341,8 +389,8 @@ func modelCall(ctx context.Context, client *http.Client, hops []*modelHop, metho
 		}
 		resp, err := bounded.Do(req) // #nosec G704 -- configured upstream hop
 		if err != nil {
-			hop.fail()
-			log.Printf("model-relay hop=%s path=%s transport error: %v", hop.name, path, err) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
+			hop.failTransport()
+			log.Printf("model-relay hop=%s path=%s transport error", hop.name, path) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
 			continue
 		}
 		// Redirects are denied and quota/account exhaustion falls through;
@@ -354,6 +402,9 @@ func modelCall(ctx context.Context, client *http.Client, hops []*modelHop, metho
 			_ = resp.Body.Close()
 			continue
 		}
+		hop.mu.Lock()
+		hop.cool, hop.recoverable = time.Time{}, false
+		hop.mu.Unlock()
 		log.Printf("model-relay hop=%s path=%s status=%d", hop.name, path, resp.StatusCode) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
 		return hop, resp, nil
 	}
@@ -1033,10 +1084,11 @@ func modelRelayHandlerFromEnv() (http.Handler, error) {
 }
 
 func modelRelayLimits() (time.Duration, time.Duration, error) {
-	// The hop bound covers the whole exchange incl. a streaming body — agentic
-	// completions legitimately run tens of seconds, so the default is the full
-	// request budget rather than a tight first-byte ceiling.
-	hop, total := 2*time.Minute, 2*time.Minute
+	// The hop bound covers the whole exchange incl. a streaming body — long
+	// generations (a whole book rendered in one completion) legitimately run
+	// minutes, so the default is the capped maximum rather than a tighter
+	// ceiling; the total budget leaves room for one retried fast-failing hop.
+	hop, total := 5*time.Minute, 6*time.Minute
 	for _, item := range []struct {
 		key     string
 		value   *time.Duration

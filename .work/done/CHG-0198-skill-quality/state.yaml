@@ -1,0 +1,16 @@
+change: CHG-0198
+issue: 367
+title: M24 #367 S12 — quality: lint, evals, telemetry
+status: done
+slices:
+  S12.1-lint-rules: done
+  S12.2-usage-telemetry: done
+  S12.3-evals-schema: done
+  S12.4-hubctl-eval: done
+  S12.5-hub-skills: done
+  S12.6-contract-docs: done
+  S12.7-closeout: done
+notes:
+  - "#366/R11 deferred post-MVP (milestone removed 2026-10-28); usage file format ships, recording limited to use/view."
+  - "Live model eval legs deferred to #368: HTTPRunner honors HUB_SKILL_EVAL_URL; absent endpoint reports model_unavailable honestly."
+  - "Trigger misses + cost counters are schema-reserved; populated by live eval/runtime path (#368)."

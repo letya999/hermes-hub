@@ -132,6 +132,77 @@ Available here | Verification**. Include a brief reason and supported next
 step for unavailable entries. An empty list means "nothing returned by this
 scope/surface", unless a complete authoritative inventory proves more.
 
+## Agent skills
+
+Skills are governed content: a skill is a `SKILL.md` (frontmatter +
+instructions) plus optional resource files. The live tree is the read-only
+effective view `/skills`; owner-writable drafts live in `/skills-store`, and
+organization drafts in `/skills-store-org` (org-bound spaces only).
+
+Five tools cover the surface. `skill` invokes a skill by name and returns its
+frontmatter-stripped instructions plus resource file *names* — resource
+contents are read only through `skill_view`. `skills_search`, `skills_list`
+and `skill_view` are reads against the effective view. `skill_manage` is the
+only mutation tool and **always creates a draft**; it never changes the live
+tree directly.
+
+Publication is a human act: after `skill_manage`, communication delivers a
+nonce-protected approval card (`confirm_url`; `link_sent=false` means the
+draft exists but the card was not delivered). The owner's click relays to the
+runtime `/v1/skill-apply`, which is the sole mutator of the mounted stores.
+Replayed or cross-user card links fail. `patch`/`edit` carry `base_revision`
+for optimistic concurrency. `propose_to_org` lands an organization draft;
+org publish requires an owner/admin organization role at apply time —
+`hubctl skill promote` is the operator path. Every draft passes the
+deterministic scan pipeline before it can be published.
+
+Progressive disclosure: `soul-effective` carries a tier-0 `<available_skills>`
+catalog (name, source, description — hidden and ineligible entries excluded).
+Explicit `/name args` and inline `$name` references expand harness-side into
+`<skill_content>` with `$ARGUMENTS`/`$0..$n` substituted; activation dedupes
+per session and hidden or ineligible references produce a visible error.
+A catalog publish mid-session arrives as one `<skills_catalog_updated>` note.
+
+Resources and execution: `skill_view path=` reads bounded text only from
+`references/`, `templates/` and `examples/` (plus `SKILL.md`); scripts and
+assets are binary/tree data, not skill_view output. The same effective view
+is reachable as the read-only `skills:` root for `file_list`/`file_read`/
+`file_search` and as a `skills:<name>/<path>` prefix for `document_extract`
+and `image_inspect`; writes through it always fail, and copying a file into
+the workspace is an explicit `file_write`. A skill whose `requires` deps the
+operator surface cannot resolve reports `deps_missing`; a script-bearing
+skill without an execution grant is `instructions_only` — its `skill()`
+response still returns instructions. Scripts never execute inside `/skills`:
+the tree carries no exec bits, cells mount it read-only, and a script runs
+only after it is copied onto cell scratch (`/work`) — never in place.
+
+Secrets and settings: skills declare credential *names* in
+`requires.credentials` (never values — SKILL.md cannot hold secrets and
+hub/broker-owned `HUB_*`/`BROKER_*` names are rejected at parse). A missing
+soft credential makes `skill()` report `readiness.setup_needed` with a
+`form_url` to the protected credential form; a `hard: true` requirement
+hides the skill until stored. The form writes
+`.state/credentials/<skill>.json` in the owner store, bound to
+(principal, skill) — never `self-env.json`. A `code_exec` call passing the
+`skill` argument leases exactly the declared names into that one sandbox
+call's env; undeclared store entries, ineligible skills and absent stores
+lease nothing. `metadata.hermes.config` declares non-secret per-user
+settings: `skill()` surfaces effective values (stored-or-default) and
+`skill_manage action=configure` writes `.state/settings` — private state,
+not a draft.
+
+Git installs: `skill_manage action=install` takes an https GitHub/GitLab
+repository `url` (optional `ref`, `path`, `name`; `grant` names a broker
+credential for private repos — never a token in the URL). The hub fetches
+through a bounded cell into a per-owner mirror, scans the export and lands
+a draft with `.origin.json` provenance — an approval card still gates
+publication. A bare repository URL returns `candidates` (discovered
+`SKILL.md` subtrees) instead of guessing; retry with `path`.
+`action=update` re-fetches one installed skill's tracked commit —
+`force_push: true` means upstream history rewound — and `check_updates`
+reports pending updates without importing. Source removal deletes the
+mirror and drops update tracking.
+
 ## Status and evidence
 
 - Operation `done`: that requested action completed.

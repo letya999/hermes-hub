@@ -14,7 +14,7 @@ func TestPreparedCredentialGate(t *testing.T) {
 	PreparedCatalogJSON = []byte(fmt.Sprintf(`[{
 		"id": "prepared-x", "name": "X", "license": "MIT", "language": "node",
 		"source": {"repository": "https://github.com/acme/gated", "commit_sha": "%s"},
-		"contract_id": "github-pat", "contract_revision": 1,
+		"contract_id": "github-pat", "contract_revision": 2,
 		"entrypoint": ["server"], "read_tools": ["list"], "probe_tool": "list",
 		"auth_before_tools_list": true,
 		"connection": {"fields": [{"name": "API_TOKEN", "type": "secret", "required": true, "delivery": "env"}, {"name": "REGION", "type": "string", "delivery": "env"}]},

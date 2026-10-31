@@ -16,6 +16,7 @@ import (
 // Package stack generates a private, per-user Hermes deployment.
 
 type Settings struct {
+	Hosting              HostingSettings `yaml:"hosting,omitempty"`
 	defaultGlobalSkills  bool
 	ExecutionMode        string `yaml:"-"`
 	SupervisorURL        string `yaml:"-"`
@@ -86,6 +87,7 @@ type Settings struct {
 	OrganizationSkillsDir string   `yaml:"-"`
 	SpaceDir              string   `yaml:"-"`
 	OrganizationRole      string   `yaml:"-"`
+	OrganizationProfile   string   `yaml:"-"`
 	OrgActions            []string `yaml:"-"`
 	// gov is the per-load tool-governance view (issue 139): the evaluated
 	// decisions and cap:read overrides the render consumers enforce. Nil when
@@ -112,9 +114,9 @@ type Settings struct {
 	JudgeModel   string         `yaml:"judge_model,omitempty"`
 }
 
-// DefaultGlobalSkillsDir resolves the bundled catalog without changing operator rights.
+// DefaultGlobalSkillsDir resolves the platform catalog without changing operator rights.
 func (s *Settings) DefaultGlobalSkillsDir(dir string) {
-	if s.CapabilityMode != "managed" && strings.TrimSpace(s.GlobalSkillsDir) == "" {
+	if strings.TrimSpace(s.GlobalSkillsDir) == "" {
 		s.GlobalSkillsDir = dir
 		s.defaultGlobalSkills = true
 	}
@@ -152,6 +154,8 @@ var Features = []Feature{
 	{"atlassian", []string{"JIRA_URL", "JIRA_USERNAME", "JIRA_API_TOKEN"}, "Direct mcp-atlassian Jira MCP; optional Confluence credentials can be added later"},
 	{"desktop", []string{"DESKTOP_TOKEN"}, "Authenticated companion on a native Windows/macOS/Linux desktop"},
 	{"drafts", []string{"DRAFTS_TOKEN"}, "Authenticated companion for the macOS Drafts app"},
+	{"hosting", nil, "Owner-bound immutable static and isolated dynamic sites; requires reviewed hosting config and exposure"},
+	{"exposure", nil, "Named outbound public endpoints over a per-binding tunnel workload (sish/cloudflared); requires a reviewed connections/exposure/config.yaml"},
 }
 var idPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,39}$`)
 var envReferencePattern = regexp.MustCompile(`\$\{([A-Z][A-Z0-9_]*)\}`)

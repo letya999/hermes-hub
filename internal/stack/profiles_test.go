@@ -273,3 +273,19 @@ func TestModelRelaySharedAliasAndGatewayWiring(t *testing.T) {
 		t.Fatal("gateway lacks the model-relay bearer")
 	}
 }
+
+// CHG-0230 follow-up: a supervised gateway's HUB_RUNTIME_URL is the
+// control-plane address for holds/control/skill-apply — all served by the
+// supervisor mux. "hermes-runtime" only resolves while an unmanaged runtime
+// compose service exists, so a supervised gateway must point at the
+// supervisor URL or protected skill publication can never reach it.
+func TestSupervisedGatewayRuntimeURLIsSupervisor(t *testing.T) {
+	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
+		CapabilityMode: "managed", CapabilityProfileID: "p", CapabilityGeneration: 1,
+		ExecutionMode: "supervisor", SupervisorURL: "http://supervisor:8876",
+		Model: "m", ModelURL: "http://model-relay:8318/v1", Ingress: []string{"telegram"}}
+	env := Compose(s, "/source", "/space")["services"].(M)["communication-hub"].(M)["environment"].(M)
+	if env["HUB_RUNTIME_URL"] != "http://supervisor:8876" {
+		t.Fatalf("supervised gateway must reach the supervisor, got %v", env["HUB_RUNTIME_URL"])
+	}
+}
