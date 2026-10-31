@@ -50,7 +50,7 @@ func parseSupervisorArgs(argv []string) (supervisorArgs, error) {
 	var o supervisorArgs
 	flags := flag.NewFlagSet("hub-supervisor", flag.ContinueOnError)
 	flags.StringVar(&o.spaces, "spaces", "spaces", "root containing isolated context homes")
-	flags.StringVar(&o.image, "image", "hermes-hub:0.4.0-prod", "pinned Hermes runtime image")
+	flags.StringVar(&o.image, "image", "hermes-hub:0.5.0-prod", "pinned Hermes runtime image")
 	flags.StringVar(&o.listen, "listen", envOr("HUB_SUPERVISOR_LISTEN", "127.0.0.1:8876"), "private supervisor listen address")
 	flags.StringVar(&o.auth, "auth", supervisorAuthFromEnv(), "shared private supervisor token")
 	flags.StringVar(&o.authFile, "auth-file", os.Getenv("HUB_SUPERVISOR_AUTH_FILE"), "file containing the supervisor token (preferred over -auth)")

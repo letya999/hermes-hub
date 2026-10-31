@@ -18,7 +18,7 @@ func TestDockerCleanRemovesOnlyUnreferencedState(t *testing.T) {
 	if err := os.MkdirAll(space, 0755); err != nil {
 		t.Fatal(err)
 	}
-	compose := "services:\n  runtime:\n    image: hermes-hub:0.4.0-dev\n  toolhub:\n    image: hermes-hub:0.4.0-dev\n"
+	compose := "services:\n  runtime:\n    image: hermes-hub:0.5.0-dev\n  toolhub:\n    image: hermes-hub:0.5.0-dev\n"
 	if err := os.WriteFile(filepath.Join(space, "compose.dev.yaml"), []byte(compose), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestDockerCleanRemovesOnlyUnreferencedState(t *testing.T) {
 						return []byte("ae15d8c8a0a5\n"), nil
 					}
 				}
-				return []byte("hermes-hub:0.4.0-dev\nhermes-hub:0.2.0-dev\nhermes-hub:test\nhermes-hub:<none>\nunprefixed\n"), nil
+				return []byte("hermes-hub:0.5.0-dev\nhermes-hub:0.2.0-dev\nhermes-hub:test\nhermes-hub:<none>\nunprefixed\n"), nil
 			}
 		case "ps":
 			for _, arg := range args {
@@ -74,7 +74,7 @@ func TestDockerCleanRemovesOnlyUnreferencedState(t *testing.T) {
 		}
 	}
 	for _, unwanted := range []string{
-		"rmi hermes-hub:0.4.0-dev",
+		"rmi hermes-hub:0.5.0-dev",
 		"rmi hermes-hub:test",
 		"rm hermes-build-proxy-bb",
 		"rm other-app",
@@ -337,14 +337,14 @@ func TestActiveImageTagsKeepsComposeReferences(t *testing.T) {
 	if err := os.MkdirAll(generated, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(generated, "compose.dev.yaml"), []byte("services:\n  runtime:\n    image: hermes-hub:0.4.0-dev\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(generated, "compose.dev.yaml"), []byte("services:\n  runtime:\n    image: hermes-hub:0.5.0-dev\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	keep, err := activeImageTags(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !keep["9.9.9-prod"] || !keep["0.4.0-dev"] || !keep["test"] || keep["1"] {
+	if !keep["9.9.9-prod"] || !keep["0.5.0-dev"] || !keep["test"] || keep["1"] {
 		t.Fatalf("unexpected keep set: %v", keep)
 	}
 	broken := filepath.Join(root, "spaces", "broken")

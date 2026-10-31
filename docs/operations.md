@@ -402,11 +402,11 @@ handoff on restart.
 ## Images and builds
 
 Four role images share the staged Dockerfile (SPEC-0082):
-`hermes-hub:0.4.0-<env>-core` (control-plane daemons: cliproxy,
+`hermes-hub:0.5.0-<env>-core` (control-plane daemons: cliproxy,
 communication-hub, supervisor, relays), `…-control` (adds Docker CLI +
-ToolHive; only toolhub + workload-controller), `hermes-hub:0.4.0-<env>`
+ToolHive; only toolhub + workload-controller), `hermes-hub:0.5.0-<env>`
 (the agent runtime — Python venv + node, no browser or voice stack), and
-`hermes-hub:0.4.0-<env>-browser` (per-space sidecar: headed Chromium under
+`hermes-hub:0.5.0-<env>-browser` (per-space sidecar: headed Chromium under
 Xvfb, authenticated x11vnc, static noVNC, playwright-mcp, google_meet
 NodeServer). Optional trees (messaging/google extras, Google/Atlassian/
 Telegram-account Python, voice STT/TTS) stay out of the role images — own
@@ -794,7 +794,7 @@ Known traps from live acceptance:
   and DNS round-robins owner traffic to the wrong instance (random 401s).
   Owner-scoped names/aliases only; verify with `getent` as above.
 - **Stale container images mask everything.** `dev-rebuild` the service
-  before trusting evidence — a pre-change `hermes-hub:0.4.0-dev` supervisor,
+  before trusting evidence — a pre-change `hermes-hub:0.5.0-dev` supervisor,
   toolhub, relay or hub-media silently shows old behavior. Check
   `docker inspect` shows a `…:local` overlay image under `.Config.Image`.
 - **Default `HUB_MODEL_RELAY_HOP_TIMEOUT` (30 s) is shorter than a

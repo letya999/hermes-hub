@@ -16,14 +16,14 @@ import (
 // networks and volumes are denied with ErrIsolation while labelled own
 // objects pass. Run with:
 //
-//	HUB_SCOPE_IMAGE=hermes-hub:0.4.0-dev go test -tags integration -run TestDockerScopeRealDocker ./internal/toolhub
+//	HUB_SCOPE_IMAGE=hermes-hub:0.5.0-dev go test -tags integration -run TestDockerScopeRealDocker ./internal/toolhub
 func TestDockerScopeRealDocker(t *testing.T) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("docker not installed")
 	}
 	image := os.Getenv("HUB_SCOPE_IMAGE")
 	if image == "" {
-		image = "hermes-hub:0.4.0-dev"
+		image = "hermes-hub:0.5.0-dev"
 	}
 	if out, err := LocalCommand(context.Background(), "docker", "image", "inspect", image); err != nil {
 		t.Skipf("image %s unavailable: %v (%s)", image, err, out)
