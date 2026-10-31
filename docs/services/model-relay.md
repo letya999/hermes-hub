@@ -1,6 +1,6 @@
 ---
 description: model-relay — per-space model selection endpoint for managed spaces; layered models.yaml, owner switch bearer, cliproxy upstream.
-last_verified: 2026-10-28
+last_verified: 2026-10-29
 ---
 
 # model-relay
@@ -12,6 +12,11 @@ per-space alias stops name collisions across spaces) and on the managed agent
 network.
 
 ## What it does
+
+When every hop in the configured fallback ladder fails, both relay modes
+return HTTP 502 with JSON `error.code=model_route_unavailable`. The response
+contains no provider URL, credential or upstream body; hop cooldown and the
+ordered fallback remain active.
 
 - Serves the per-space model ladder and the owner's switch operation. The
   merged registry mounts read-only at `/run/model-config/models.yaml` — rendered by

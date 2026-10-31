@@ -60,7 +60,7 @@ func TestConfirmLinkAcceptsTParam(t *testing.T) {
 	gateway, _, id := confirmLinkFixture(t, "one-time-token", time.Now().Add(time.Hour))
 	rec, req := confirmLinkRequest(t, http.MethodGet, "http://127.0.0.1/confirm/"+id+"?t=one-time-token")
 	gateway.serveConfirm(rec, req)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<form") {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "в чате") || strings.Contains(rec.Body.String(), "<form") {
 		t.Fatalf("t-param link status=%d", rec.Code)
 	}
 }
@@ -69,9 +69,13 @@ func TestConfirmLinkReplayReturns410(t *testing.T) {
 	gateway, store, id := confirmLinkFixture(t, "used-token", time.Now().Add(time.Hour))
 	rec, req := confirmLinkRequest(t, http.MethodPost, "http://127.0.0.1/confirm/"+id+"?t=used-token")
 	gateway.serveConfirm(rec, req)
-	if rec.Code != http.StatusOK {
+	if rec.Code != http.StatusForbidden {
 		t.Fatalf("first use status=%d body=%s", rec.Code, rec.Body.String())
 	}
+	if pending := mustOnboarding(t, store, id); pending.ConfirmationUsed || pending.BindingID != "" {
+		t.Fatal("bearer page granted consent")
+	}
+	finishAsHuman(t, gateway.Control, id)
 	if got, err := store.onboarding(id); err != nil || (got.Phase != api.PhaseConfirmed && got.Phase != api.PhaseEnabled) {
 		t.Fatalf("phase=%v err=%v", got.Phase, err)
 	}
@@ -131,7 +135,7 @@ func TestPublicMuxServesOnlyHumanPaths(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "https://hub.example.com/confirm/"+id+"?t=pub-token", nil)
 	req.Host = "hub.example.com"
 	public.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<form") {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "в чате") || strings.Contains(rec.Body.String(), "<form") {
 		t.Fatalf("public confirm status=%d", rec.Code)
 	}
 	blocked := httptest.NewRecorder()
@@ -215,7 +219,7 @@ func TestEndpointHandlerExposesPublicSurface(t *testing.T) {
 	config := EndpointConfig{Token: token, Auth: auth, Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 		return api.BackendResult{Text: "ok"}, nil
 	})}
-	handler, err := NewEndpointHandler(config, store)
+	handler, err := endpointWithTestAudit(t, config, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +236,7 @@ func TestEndpointHandlerPublicOriginSetsFormOrigin(t *testing.T) {
 	config := EndpointConfig{Token: strings.Repeat("p", 40), Auth: auth, Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 		return api.BackendResult{Text: "ok"}, nil
 	})}
-	handler, err := NewEndpointHandler(config, store)
+	handler, err := endpointWithTestAudit(t, config, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,6 +252,17 @@ func TestEndpointHandlerPublicOriginSetsFormOrigin(t *testing.T) {
 // S2.3: RFC 8628 device flow rides the same one-time link surface — GET
 // renders the user code + verification URI, POST polls and completes.
 func TestDeviceFlowPageCompletesOnboarding(t *testing.T) {
+	humanNotices := make(chan bool, 8)
+	notices := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if json.NewDecoder(r.Body).Decode(&body) == nil && body["phase"] == api.PhaseAwaitingConfirm && body["confirmation"] != nil {
+			humanNotices <- true
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer notices.Close()
+	t.Setenv("HUB_COMMUNICATION_CONTROL_URL", notices.URL)
+	t.Setenv("HUB_COMMUNICATION_AUTH", testHumanControlToken)
 	store := NewStore()
 	grantTestControlOperations(t, store, "alice", api.ControlOperations...)
 	definition := remoteDefinition()
@@ -304,9 +319,18 @@ func TestDeviceFlowPageCompletesOnboarding(t *testing.T) {
 		t.Fatalf("device poll status=%d body=%s", post.Code, post.Body.String())
 	}
 	latest, err := store.onboarding(onboardingID)
-	if err != nil || (latest.Phase != api.PhaseConfirmed && latest.Phase != api.PhaseEnabled) {
-		t.Fatalf("device flow did not finish authorization: phase=%v err=%v", latest.Phase, err)
+	if err != nil || latest.Phase != api.PhaseAwaitingConfirm || latest.ConfirmationUsed {
+		t.Errorf("device flow bypassed human consent: phase=%v used=%v err=%v", latest.Phase, latest.ConfirmationUsed, err)
 	}
+	select {
+	case <-humanNotices:
+	default:
+		t.Error("device flow did not send trusted human confirmation")
+	}
+	if latest.Phase != api.PhaseAwaitingConfirm {
+		return
+	}
+	finishAsHuman(t, control, onboardingID)
 }
 
 // authorization_pending is a waiting state, not a failure — the page tells
@@ -445,6 +469,7 @@ func TestDeviceRouteRegisteredOnBothMuxes(t *testing.T) {
 			return api.BackendResult{Text: "ok"}, nil
 		}),
 		Tokens: map[string]identity.Envelope{strings.Repeat("t", 40): aliceAuth()}}
+	attachGatewayAudit(t, gateway)
 	handler, err := gateway.Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -518,6 +543,7 @@ func TestConnectPasteCompletesOAuth(t *testing.T) {
 	if err := store.PutOnboarding(on); err != nil {
 		t.Fatal(err)
 	}
+	grantTestControlOperations(t, store, auth.PrincipalID, "confirm")
 	secrets, err := credstore.Open(credstore.Options{Path: filepath.Join(t.TempDir(), "p.enc"), Key: bytes.Repeat([]byte("k"), 32)})
 	if err != nil {
 		t.Fatal(err)
@@ -570,9 +596,10 @@ func TestConnectPasteCompletesOAuth(t *testing.T) {
 		t.Fatalf("paste status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	latest, err := store.onboarding(on.OnboardingID)
-	if err != nil || latest.Phase != api.PhaseEnabled {
-		t.Fatalf("paste did not complete: phase=%v err=%v", latest.Phase, err)
+	if err != nil || latest.Phase != api.PhaseAwaitingConfirm || latest.ConfirmationUsed {
+		t.Fatalf("OAuth paste bypassed human consent: phase=%v err=%v", latest.Phase, err)
 	}
+	finishAsHuman(t, c, on.OnboardingID)
 }
 
 // S2.4 fail-closed: a pasted redirect whose state does not match the

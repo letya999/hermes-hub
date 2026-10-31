@@ -313,6 +313,7 @@ func admittedGateDefinition(version, tool string) api.ToolDefinition {
 
 func TestCredentialGateConfirmsLocalSecretWithoutBroker(t *testing.T) {
 	store := NewStore()
+	grantTestControlOperations(t, store, "alice", "confirm")
 	key, err := credstore.GenerateKey()
 	if err != nil {
 		t.Fatal(err)
@@ -370,6 +371,10 @@ func TestCredentialGateConfirmsLocalSecretWithoutBroker(t *testing.T) {
 	if err := control.AuthorizeCredentials(t.Context(), preparing.OnboardingID, stored.FormNonce, map[string]string{"SLACK_MCP_XOXP_TOKEN": "xoxp-real-token-value"}); err != nil {
 		t.Fatal(err)
 	}
+	if pending := mustOnboarding(t, store, preparing.OnboardingID); pending.Phase != api.PhaseAwaitingConfirm || pending.ConfirmationUsed {
+		t.Fatal("credential intake bypassed human consent")
+	}
+	finishAsHuman(t, control, preparing.OnboardingID)
 	stored, _ = store.onboarding(preparing.OnboardingID)
 	if stored.Phase != api.PhaseEnabled || stored.BrokerCredentialID != "" || !seenLocal {
 		t.Fatalf("phase=%s broker=%q local=%v", stored.Phase, stored.BrokerCredentialID, seenLocal)

@@ -1,0 +1,56 @@
+schema: 1
+change: CHG-0201
+title: "Долговечная сверка проекций и понятные причины runtime-сбоев"
+status: in_progress
+branch: codex/storage-reliability-mvp
+updated: "2026-10-30"
+phase: desired-applied-partial-implementation
+adr: ADR-0085
+spec: SPEC-0085
+requirements: [R7]
+depends_on: [CHG-0193, CHG-0200]
+workstream: storage-reliability-mvp
+github_milestone: null
+github_issue: null
+design_status: accepted
+implementation_status: in_progress
+readiness: root_independent_work_in_progress
+slices:
+  S201.1-desired-applied: in_progress
+  S201.2-restart-causes: implemented_pending_acceptance
+  S201.3-failure-semantics: implemented_pending_acceptance
+validation:
+  documents: passed
+  planning_package: passed
+  planning_just_check: failed
+  just_check: passed
+  just_check_lint: passed
+  just_check_other_go_packages: passed
+  mediasvc_targeted_race_repeat: passed_20_times
+  root_statement_coverage: "86.02%"
+  restart_revision_targeted_race: passed
+  restart_applied_write_conflict_race: passed
+  projection_burst_targeted_race: passed
+  model_outage_targeted_race: passed
+  legacy_semantic_digest_targeted_race: passed
+  managed_team_semantic_digest_targeted_race: passed
+  restart_marker_targeted_race: passed
+  restart_marker_sync_fault_targeted_race: passed
+  restart_marker_dirsync_targeted_race: passed
+  restart_cause_supervisor_tests: passed
+  restart_cause_targeted_race: passed
+  title_failure_targeted_race: passed_3_times
+  module_check: not_run
+  security: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence:
+  - "evidence.md: durable applied revision/digest, same-snapshot burst and typed model outage regressions."
+  - "evidence.md: durable pending restart cause survives supervisor restart, is cleared+persisted on apply; post-delivery poll coalesces on unarmed runtime; marker parent-directory sync."
+remaining:
+  - "Pinned-Hermes tool IsError vs transport probe and container acceptance remain outstanding; rerun full local gates after this changeset."
+limitations:
+  - "Desired/applied revision, legacy digest and generation-bound restart markers are tested on synthetic store+HTTP fixtures; managed/team digest, Docker and actual supervisor/runtime acceptance remain outstanding."
+  - "Pending restart cause and directory-sync durability are proven on synthetic fixtures only; native power-loss, pinned-Hermes contract probe and container acceptance remain outstanding."
+  - "Revoke-immediacy requirement is covered by the pre-existing TestManagedRevocationOnOpenMCPSession (per-call enforcement on an open session, no restart wait)."

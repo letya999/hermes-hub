@@ -41,7 +41,7 @@ func TestCollectRealDockerScopesToProject(t *testing.T) {
 	runFixture := func(name string, labels ...string) {
 		t.Helper()
 		args := append([]string{"run", "-d", "--name", name, "--entrypoint", "echo"}, labels...)
-		args = append(args, image, "capdiag-marker-"+name)
+		args = append(args, image, `{"event":"fixture","job_id":"capdiag-marker-`+name+`"}`)
 		if out, err := Docker(ctx, args...); err != nil {
 			t.Fatalf("docker %v: %v (%s)", args, err, out)
 		}
@@ -52,7 +52,7 @@ func TestCollectRealDockerScopesToProject(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "hermes-diagnostics.txt")
-	if err := Collect(ctx, path, Docker, Scope{Project: project, Owner: "capdiag-owner"}); err != nil {
+	if err := Collect(ctx, path, nil, Scope{Project: project, Owner: "capdiag-owner"}); err != nil {
 		t.Fatalf("collect: %v", err)
 	}
 	body, err := os.ReadFile(path)
@@ -76,5 +76,47 @@ func TestCollectRealDockerScopesToProject(t *testing.T) {
 	}
 	if strings.Contains(string(cursor), foreign) {
 		t.Error("foreign container must not enter the cursor")
+	}
+}
+
+// Actual Docker backlog proof; never selected by the default non-integration suite.
+func TestCollectRealDockerBacklog5001(t *testing.T) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker unavailable")
+	}
+	image := os.Getenv("HUB_DIAG_IMAGE")
+	if image == "" {
+		t.Skip("set HUB_DIAG_IMAGE to an admitted test image")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	name := "capdiag-backlog-" + fmt.Sprint(time.Now().UnixNano())
+	project := name
+	script := `i=0; while [ "$i" -le 5000 ]; do printf '{"event":"fixture","job_id":"backlog-owned","count":%s}\n' "$i"; i=$((i+1)); done`
+	if _, err := Docker(ctx, "run", "-d", "--name", name, "--label", "com.docker.compose.project="+project, "--entrypoint", "sh", image, "-c", script); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = Docker(context.Background(), "rm", "-f", name) })
+	if _, err := Docker(ctx, "wait", name); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "diagnostic.log")
+	for range 3 {
+		if err := Collect(ctx, path, nil, Scope{Project: project}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(body)), "\n")
+	if len(lines) != 5001 {
+		t.Fatalf("backlog lines=%d, want 5001", len(lines))
+	}
+	for _, value := range []string{`"count":0,`, `"count":5000,`} {
+		if strings.Count(string(body), value) != 1 {
+			t.Fatalf("missing/duplicated boundary %s", value)
+		}
 	}
 }

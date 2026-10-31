@@ -14,6 +14,11 @@ the `hub:tools` governance section) for workspace/user tools. Every tool declare
 write effect; write effects additionally need the active write path
 (described per group).
 
+Toolhub uncertain outcomes use `status=uncertain`, a safe `operation_id` and
+`retryable=false` (MCP IsError; internal HTTP 409). Reconcile the existing
+operation before repeating it. Authentication recovery can repeat setup only
+before business dispatch; an arbitrary backend error never permits replay.
+
 ## mcp__toolhub__ — control plane
 
 One tool per `ControlOperations` entry (api/grants.go), projected per the
@@ -25,10 +30,10 @@ profile's `control_operations` allowlist:
 | `prepare_source` | Prepare a source (GitHub repo URL, catalog entry) into a reviewable definition |
 | `status` | Onboarding/connection status incl. stuck cleanup step |
 | `required_credentials` | Credential hints for a prepared definition |
-| `confirm` | Execute the confirmed step behind a `?t=` link |
+| `confirm` | Read pending confirmation status; a verified channel callback binds the human actor and exact action (`next_action=await_user_confirmation`) |
 | `enable` / `disable` / `revoke` / `remove` | Lifecycle transitions |
 | `rotate` | Re-issue a connection's credential via broker |
-| `diagnostics` | Caller-scoped, bounded, redacted log lines + workload health — the only agent-visible log surface |
+| `diagnostics` | Caller-scoped bounded lifecycle metadata + workload health; bodies/unknown fields are excluded before search; source_position marks replay and truncated/gaps mean partial evidence |
 | `grant_request` | Request a grant the profile does not yet carry |
 | `install_shared` | Install a shared/team connection |
 
@@ -42,8 +47,10 @@ Nine tools (ADR-0055, `api.ConnectorTools`), shown when the profile's
 `connector_reauth`, `connector_remove`, `connector_allow_writes`.
 
 Writes are double-gated: the tool itself is a write effect, and
-`connector_allow_writes` only arms a protected confirm link that flips the
-connection's `writes_enabled` — writes default off per connection.
+`connector_allow_writes` arms a human confirmation in the original channel.
+Its verified callback flips `writes_enabled`; writes default off per connection.
+The confirmation binds actor, action digest, revision and expiry and is consumed
+once. Protected link pages cannot grant consent.
 
 ## hub:tools — workspace and user tools
 
@@ -59,13 +66,13 @@ Grouped by capability resource (internal/agenttools/capability.go):
 | routines | `routine_create`, `routine_list`, `routine_get`, `routine_edit`, `routine_delete` | five-tool public surface; see docs/routines.md |
 | watches | `watch_subscribe`, `watch_list`, `watch_pause`, `watch_resume`, `watch_delete`, `watch_sample` | event subscriptions (job_kind=event, mcp_tool probe only); `sink=notify|agent`, `delivery=stream` (bounded wait for wait-style tools; poll-style tools need `min_interval_seconds` 5–3600), `sources` fans one watch over ≤32 inputs; `cursor_arg` feeds `next_cursor` back per source after settlement; `filter` Starlark `input()`→emit keep\|drop\|urgent per event; `watch_sample` returns up to four raw events per source without waking; see docs/routines.md |
 | assignments | `assignment_plan`, `assignment_create`, `assignment_list`, `assignment_get`, `assignment_update`, `assignment_apply`, `assignment_pause`, `assignment_resume`, `assignment_cancel`, `assignment_complete`, `assignment_progress` | durable multi-source mandates (SPEC-0080); CAS via expected_revision; `assignment_progress` requires a running trigger job and stores bounded findings/next step/completion; owner-only grant widening; create a draft before source checks; plan updates retain unavailable references/reasons. Public Telegram URLs normalize to usernames; invite/discussion URLs are rejected. |
-| exposure | `exposure_list`, `exposure_status`, `exposure_open`, `exposure_close` | live public tunnels on this runtime; open/close act on declared endpoints only |
+| exposure | `exposure_list`, `exposure_status`, `exposure_open`, `exposure_close` | live public tunnels on this runtime; declared endpoints only; uncertain errors/flags require reconciliation before repeating open; close still stops access if audit is unavailable |
 | documents | `document_extract`, `document_create`, `document_edit`, `document_convert` | txt, md, csv, html, pdf, xlsx, pptx |
 | images | `image_inspect`, `images_inspect`, `image_convert`; `image_generate`, `image_edit` | generate/edit absent until the `image_gen` grant is active; png/jpeg/webp |
 | artifacts | `archive_create`, `archive_unpack`, `artifact_remove` | artifacts/ scope |
 | inbox | `inbox_fetch` | materialize a user-sent file into `inbox/`; zips unpack from memory |
 | knowledge | `knowledge_list`, `knowledge_search`, `knowledge_read` | read-only staged sources; content returns as output, never lands in workspace |
-| ssh | `ssh_hosts`, `ssh_exec`, `ssh_read`, `ssh_write`, `ssh_shell_*`, `ssh_tunnel_*` | declared hosts only; write/shell/tunnel each need their own grant |
+| ssh | `ssh_hosts`, `ssh_exec`, `ssh_read`, `ssh_write`, `ssh_shell_*`, `ssh_tunnel_*` | declared hosts only; write/shell/tunnel each need their own grant; effects require durable audit; reconcile uncertain outcomes before repeating; close still attempts cleanup if audit fails |
 | hh | `hh_search`, `hh_vacancy`, `hh_resumes`, `hh_apply` | apply sends externally — exact user-authorized inputs only |
 | exec | `code_exec` | bounded executor when the capability is granted |
 

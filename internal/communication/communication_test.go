@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/audit"
 	"io"
 	"log"
 	"net/http"
@@ -1571,6 +1572,10 @@ func TestGatewayChatCutsOpenToolHubSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	svc.Audit, err = audit.Open(filepath.Join(filepath.Dir(storePath), "audit.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	infos, err := svc.Set("alice", map[string]string{"GOOGLE_TOKEN": "chat-cut-secret"})
 	if err != nil {
 		t.Fatal(err)
@@ -1627,10 +1632,15 @@ func TestGatewayChatCutsOpenToolHubSession(t *testing.T) {
 	stops := &chatStopRecorder{}
 	live.Stopper = stops
 	var calls atomic.Int32
+	ledger, err := audit.Open(filepath.Join(t.TempDir(), "audit.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	handler, err := (&toolhub.Gateway{
-		Store:   live,
-		Tokens:  map[string]identity.Envelope{"01234567890123456789012345678901": auth},
-		Backend: chatCallCounter{n: &calls},
+		AuditWrite: toolhub.LedgerAuditWriter(ledger),
+		Store:      live,
+		Tokens:     map[string]identity.Envelope{"01234567890123456789012345678901": auth},
+		Backend:    chatCallCounter{n: &calls},
 	}).Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -1836,7 +1846,7 @@ func TestWorkerRunsWithIsolatedUserAndHandlesError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { defer close(done); g.worker(ctx) }()
-	if _, err := g.spool.Enqueue(Job{ID: "worker-job", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", ChatID: 11, Text: "hello"}); err != nil {
+	if _, err := g.spool.Enqueue(Job{Envelope: g.user("alice").Envelope(11), IdempotencyKey: "worker-job", ID: "worker-job", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", ChatID: 11, Text: "hello"}); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(2 * time.Second)
@@ -1862,7 +1872,7 @@ func TestWorkerRunsWithIsolatedUserAndHandlesError(t *testing.T) {
 	ctx, cancel = context.WithCancel(context.Background())
 	done = make(chan struct{})
 	go func() { defer close(done); g.worker(ctx) }()
-	if _, err := g.spool.Enqueue(Job{ID: "error-job", UserID: "alice", ChatID: 11, Text: "again"}); err != nil {
+	if _, err := g.spool.Enqueue(Job{Envelope: g.user("alice").Envelope(11), IdempotencyKey: "error-job", ID: "error-job", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Text: "again"}); err != nil {
 		t.Fatal(err)
 	}
 	deadline = time.Now().Add(2 * time.Second)

@@ -63,6 +63,7 @@ func TestOfficialWorkspaceDiscoveryAndShippedGateway(t *testing.T) {
 			gateway := &Gateway{Store: store, Backend: api.RoutingBackend{MCP: api.MCPBackend{HTTPClient: httpClient}}, Injector: func(context.Context, api.EffectiveBinding) (api.CredentialInjection, error) {
 				return api.CredentialInjection{Environment: map[string]string{"ACCESS_TOKEN": "owner-token", "OAUTH_SCOPE": strings.Join(scopes, " ")}}, nil
 			}}
+			attachGatewayAudit(t, gateway)
 			name := api.ProjectedToolName(d.DefinitionID, d.Version, d.Tools[0].Name)
 			if _, err := gateway.CallAuthorized(context.Background(), auth, name, map[string]any{"resource": "one"}); err != nil {
 				t.Fatal(err)

@@ -302,6 +302,7 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 		// logged host-side; the caller only gets that the runtime is unavailable.
 		log.Printf("acquire failed for %s/%s: %v", binding.PrincipalID, binding.ContextID, err)
 		m.abandonJob(request)
+		w.Header().Set("X-Hub-Admission", "not-dispatched")
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "runtime unavailable"})
 		return
 	}

@@ -1,6 +1,6 @@
 ---
 description: hub-runtime — the agent container process and its relay modes (serve/idle/health, model/toolhub/egress/control relays).
-last_verified: 2026-10-25
+last_verified: 2026-10-29
 ---
 
 # hub-runtime
@@ -63,3 +63,23 @@ contract bump is a new ADR + spec.
 In a dev stack, `hubctl dev-rebuild` produces `hermes-hub-dev-<user>-runtime:
 local` and swaps the container in place; supervised spaces pick it up on next
 spawn. A full `hubctl up` returns Compose services to base images.
+
+## Admission identity and recovery
+
+An admitted Hermes run keeps its original idempotency key. An observed failed
+run is returned as failed without a second `:wake` admission: missing SSE tool
+events cannot prove that the run had no effects. Communication distinguishes
+verified pre-dispatch submission failures from post-dispatch uncertainty and
+re-observes the original run. Local protocol fixtures cover this boundary;
+CHG-0198 native/container acceptance is still pending.
+
+## Deferred projection restart
+
+`POST /v1/restart-request` stores a bounded marker with ToolHub operation ID,
+`tool_projection_change` reason, revision and the current runtime generation.
+The same operation is idempotent; an older revision or stale generation is
+rejected. The marker file is synced before atomic replacement and the parent
+directory is synced after the rename, so an acknowledged marker cannot be
+dropped by a crash; `/v1/restart` applies it
+between runs. Legacy empty markers remain accepted. Local filesystem and HTTP
+fixtures cover the contract; container acceptance is pending.

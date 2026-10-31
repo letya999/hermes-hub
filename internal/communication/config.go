@@ -104,6 +104,10 @@ type ServiceEndpoint struct {
 }
 
 func (c Config) Validate() error {
+	if _, err := spoolStorageLimits(limitsFromEnv()); err != nil {
+		return err
+	}
+
 	if c.Supervised && c.RuntimeURL == "" {
 		return errors.New("supervised gateway requires the host runtime URL")
 	}

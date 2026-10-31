@@ -46,11 +46,12 @@ func traceFixture(t *testing.T) (opts TraceOptions, spaces string) {
 		t.Fatal(err)
 	}
 	return TraceOptions{
-		JobID:         "job-1",
-		User:          "alice",
-		SpacesRoot:    spaces,
-		SupervisorLog: supervisorLog,
-		DockerNames: func(context.Context) ([]string, error) {
+		JobID:          "job-1",
+		IncludeContent: true,
+		User:           "alice",
+		SpacesRoot:     spaces,
+		SupervisorLog:  supervisorLog,
+		DockerNames: func(context.Context, string, string, string) ([]string, error) {
 			return []string{"hermes-context-aabb", "toolhub"}, nil
 		},
 		DockerLogs: func(_ context.Context, name string) ([]byte, error) {

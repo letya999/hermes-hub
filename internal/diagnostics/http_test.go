@@ -31,7 +31,7 @@ func TestHTTPLogsJobIDWhenValid(t *testing.T) {
 	if !strings.Contains(out, `"job_id":"routine-abc123"`) {
 		t.Fatalf("valid job id not logged: %q", out)
 	}
-	if !strings.Contains(out, `"component":"supervisor"`) || !strings.Contains(out, `"msg":"http"`) {
+	if !strings.Contains(out, `"component":"supervisor"`) || !strings.Contains(out, `"event":"http"`) {
 		t.Fatalf("access log lost: %q", out)
 	}
 }
@@ -47,5 +47,17 @@ func TestHTTPLogDropsInvalidJobID(t *testing.T) {
 		if strings.Contains(out, "\ninjection") || strings.Contains(out, strings.Repeat("x", 100)) {
 			t.Fatalf("header bytes leaked into log: %q", out)
 		}
+	}
+}
+
+func TestHTTPDiagnosticRouteDoesNotEchoUnknownSegments(t *testing.T) {
+	var out bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&out)
+	defer log.SetOutput(previous)
+	handler := HTTP("supervisor", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(404) }))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/v1/private-route-canary/private-id?token=private-query", nil))
+	if strings.Contains(out.String(), "private-") {
+		t.Fatal("diagnostic route echoed a caller-controlled path segment")
 	}
 }

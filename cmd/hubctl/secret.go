@@ -160,10 +160,11 @@ func runSecret(_ context.Context, args []string) error {
 		for _, event := range events {
 			safe = append(safe, map[string]any{
 				"event_id": event.EventID, "kind": event.Kind, "outcome": event.Outcome,
+				"operation_id": event.OperationID, "phase": event.Phase, "action": event.Action,
+				"authorization": event.Authorization, "execution": event.Execution, "delivery": event.Delivery,
 				"connection_id": event.ConnectionID, "policy_revision": event.PolicyRevision,
 				"credential_revision": event.CredentialRevision, "job_id": event.JobID,
 				"hermes_run_id": event.HermesRunID, "tool_call_id": event.ToolCallID,
-				"name": event.Name,
 			})
 		}
 		return json.NewEncoder(os.Stdout).Encode(safe)

@@ -54,6 +54,9 @@ func (t *Tools) registerSSH(s *mcp.Server) {
 		return
 	}
 	add := func(name, description string) {
+		if name != "ssh_hosts" && name != "ssh_tunnel_list" {
+			description += " Durable audit is required. An uncertain result requires reconciliation before any repeat; session close still attempts access termination if audit fails."
+		}
 		mcp.AddTool(s, &mcp.Tool{Name: name, Description: description}, func(ctx context.Context, _ *mcp.CallToolRequest, r Input) (*mcp.CallToolResult, map[string]any, error) {
 			out, err := t.Call(ctx, name, r)
 			if err != nil {

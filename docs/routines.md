@@ -1,6 +1,6 @@
 ---
 description: Routine business tools, interval windows, lifecycle, authorization and delivery evidence.
-last_verified: 2026-10-28
+last_verified: 2026-10-29
 ---
 # Routines
 
@@ -48,7 +48,19 @@ default 10, and history_cursor from history.next_cursor. include=[next_runs] use
 preview_limit 1..20, default 5. Both can be requested together. History keeps its
 items/next_cursor page; next_runs contains state/timezone/times. No work is run.
 These component reads are not one atomic snapshot; any failed component fails
-the call. Structured history answers user questions; raw logs remain diagnostics.
+the call. Structured history answers user questions; diagnostics expose bounded lifecycle
+metadata only. Search stable IDs/status fields; message bodies are excluded.
+Repeated source_position marks replay; diagnostic_gap/truncated cannot prove success.
+Toolhub `status=uncertain` / `retryable=false` identifies an unresolved operation;
+retain operation_id and reconcile it before any repeat. It is an application
+error, not permission to retry a transport. Only verified setup failure before
+business dispatch permits one authentication recovery.
+SSH uncertain results require reconciliation before repeating a command, write
+or session action. Shell/tunnel close still attempts access termination if audit
+fails; uncertainty is not a confirmed receipt.
+Exposure errors or list/status uncertain=true require reconciliation of the existing
+endpoint before repeating open. Close still attempts to stop access if audit fails;
+an uncertain close is not a confirmed completion receipt.
 
 Operations stay inside the authenticated principal and context. Identity and
 audience are host-derived. List includes saved paused/completed schedules; use
@@ -199,8 +211,10 @@ Agent-sink bundles attribute every event as `[label] text`.
 
 For non-consuming cursor reads, set `probe.cursor_arg` to the projected tool's
 cursor parameter. The hub supplies the last durable `next_cursor` to each
-source's next call. A missing cursor lets the connector establish a silent
-high-watermark baseline; dropped events and successfully admitted events
+source's next call. A never-initialized source may establish a silent
+high-watermark baseline; loss of an initialized cursor fails closed with a
+visible gap and requires recovery. Cursor state lives in `event-state/` outside
+terminal-history compaction. Dropped events and successfully admitted events
 advance it, while overflow, filtering failure and sink failure leave it in
 place so the next poll replays the unhandled page. A source response without
 `next_cursor` fails closed. For Telegram group messages use the opt-in
@@ -408,7 +422,7 @@ clock occurrences; inspect event_state for current health/error.
 
 ## Deployment and manual acceptance
 
-The catalog is hub-agent-tools@5.3.3. Old definitions remain immutable. Register
+The catalog is hub-agent-tools@5.8.0-storage.3. Old definitions remain immutable. Register
 the new version and, for managed spaces, deliberately repin selected tools in the protected profile,
 preserving scopes, denies and limits. routine_edit requires routines.update and
 the update:routines tuple for all four actions. Do not translate a former
@@ -417,6 +431,13 @@ Delete remains a separate capability. Old private operations still serve already
 pinned definitions; current MCP discovery shows the five routine tools plus the
 watch and assignment families. No provider connection or
 external write grant is created by a catalog upgrade.
+
+For ToolHub onboarding, `next_action=await_user_confirmation` requires the
+user's verified callback in the original channel. The callback binds actor,
+action digest, revision and expiry and is consumed once; protected pages show
+status only. The agent-facing `confirm` tool reads status only; a tool call
+with a nonce never supplies human consent. Credential and OAuth submission
+save verified inputs and wait for this separate confirmation before enablement.
 
 Use the [operations rebuild procedure](operations.md). Runtime dev overlays
 update both hub-runtime and its hubctl executor. Verify actual managed MCP
@@ -441,3 +462,32 @@ fixture and remove it afterwards.
 Then ask to show all pages, open the card, pause, change text, resume, snooze,
 show history and delete the fixture. Verify ID, revision, state and dates after
 each change. Record real sends and cleanup as their own acceptance evidence.
+
+## Source batch recovery
+
+Event sources persist one bounded pending batch with exact filter decisions and
+prepared sink payloads in their existing cursor state before fanout. A restart or
+full sink drains that remainder before another source fetch; recovered events do
+not rerun the filter. Drop decisions and sink admission precede cursor advance.
+Pause, owner authorization and assignment/revision fences still apply to replay.
+Agent batch references additionally bind schedule and probe revisions at claim
+and delivery. Sources with consuming reads and no ACK cannot guarantee delivery
+across a crash before the first local receipt; prefer non-consuming cursor reads.
+Failed agent turns keep their logical job identity and do not create automatic
+`-r1` submissions. Failed goals pause; missing tool telemetry is not proof of no
+effect. Same-identity retry is limited to verified pre-dispatch failures; unknown
+results reconcile. CHG-0198 native/container acceptance remains pending.
+
+Assignment wake checkpoints retain bounded unresolved `wake_operations`, keyed by
+logical job ID with its applied generation. Replaying that reservation preserves
+the original wake charge across enqueue failure or day rollover. Current pause
+and generation checks still apply. A confirmed durable job admission releases
+its reservation; failed confirmation leaves replayable local work. This receipt
+is accounting evidence, not a new authorization or an agent confirmation.
+
+Non-event watcher escalation saves exact job intent in its existing `probe-result`
+receipt before enqueue. Replay keeps source/occurrence identity and current owner
+checks; it does not refetch or charge the same reserved wake twice. Storage
+failure is returned separately from an exhausted quota. A receipt from another
+source or with another audience is refused before admission. Probe receipts are
+regular files bounded to 4 MiB and decode as one known JSON document.

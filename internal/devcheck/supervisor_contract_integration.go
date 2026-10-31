@@ -246,12 +246,12 @@ func supervisorSmoke(ctx context.Context, image, providerURL string) error {
 	if finalCount != 1 {
 		return fmt.Errorf("real stream final count=%d", finalCount)
 	}
-	receipts, err := os.ReadDir(filepath.Join(root, "probe-spool", "events"))
+	receipts, err := os.ReadDir(filepath.Join(root, "probe-spool", "run-events"))
 	if err != nil {
 		return err
 	}
 	for _, receipt := range receipts {
-		body, err := os.ReadFile(filepath.Join(root, "probe-spool", "events", receipt.Name()))
+		body, err := os.ReadFile(filepath.Join(root, "probe-spool", "run-events", receipt.Name()))
 		if err != nil || strings.Contains(string(body), "HUB_TOOL_SECRET_CANARY") {
 			return fmt.Errorf("real tool arguments/output leaked into delivery receipts")
 		}

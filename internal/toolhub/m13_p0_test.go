@@ -644,7 +644,7 @@ func TestExpiredCredentialFormRenewalSendsLink(t *testing.T) {
 	}
 }
 
-func TestConfirmLinkPageExecutesAuthorization(t *testing.T) {
+func TestConfirmLinkPageDefersToVerifiedActor(t *testing.T) {
 	store := NewStore()
 	grantTestControlOperations(t, store, "alice", api.ControlOperations...)
 	definition := catalogReadDefinition()
@@ -672,7 +672,7 @@ func TestConfirmLinkPageExecutesAuthorization(t *testing.T) {
 	get := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/confirm/onb-confirm-link?nonce="+nonce, nil)
 	get.Host = "127.0.0.1"
 	gateway.serveConfirm(rec, get)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<form") {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "в чате") || strings.Contains(rec.Body.String(), "<form") {
 		t.Fatalf("confirm page status=%d", rec.Code)
 	}
 	bad := httptest.NewRecorder()
@@ -686,9 +686,13 @@ func TestConfirmLinkPageExecutesAuthorization(t *testing.T) {
 	postReq := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/confirm/onb-confirm-link?nonce="+nonce, nil)
 	postReq.Host = "127.0.0.1"
 	gateway.serveConfirm(post, postReq)
-	if post.Code != http.StatusOK {
+	if post.Code != http.StatusForbidden {
 		t.Fatalf("confirm post status=%d body=%s", post.Code, post.Body.String())
 	}
+	if pending := mustOnboarding(t, store, onboarding.OnboardingID); pending.ConfirmationUsed || pending.BindingID != "" {
+		t.Fatal("bearer page granted consent")
+	}
+	finishAsHuman(t, control, onboarding.OnboardingID)
 	latest, err := store.onboarding("onb-confirm-link")
 	if err != nil || (latest.Phase != api.PhaseConfirmed && latest.Phase != api.PhaseEnabled) {
 		t.Fatalf("confirm link did not finish authorization: phase=%v err=%v", latest.Phase, err)
@@ -1079,7 +1083,7 @@ func newAnnotatedRemoteFixture(t *testing.T, tools ...*mcp.Tool) *remoteMCPFixtu
 	server := httptest.NewTLSServer(handler)
 	t.Cleanup(server.Close)
 	fixture.URL = server.URL
-	pinRemoteFixtureClient(t, fixture, server.URL)
+	pinRemoteFixtureClient(t, fixture, server)
 	return fixture
 }
 

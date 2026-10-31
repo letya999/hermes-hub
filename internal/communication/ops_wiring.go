@@ -139,7 +139,7 @@ func (g *Gateway) opsDeps() commops.Deps {
 		},
 		JobTimeout:      func() time.Duration { return canaryJobTimeout },
 		DeliveryGrace:   func() time.Duration { return canaryDeliveryGrace },
-		WriteJSONAtomic: atomicJSON,
+		WriteJSONAtomic: g.spool.writeJSON,
 	}
 }
 

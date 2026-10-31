@@ -100,15 +100,18 @@ func (s *Spool) RecordUsage(job Job, runID string, report hubruntime.SessionUsag
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(usagePath(s.root), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	if _, err := f.Write(append(body, '\n')); err != nil {
-		return err
-	}
-	return f.Sync()
+	return s.updateStorage(usagePath(s.root), int64(len(body)+1), func() error {
+		f, err := os.OpenFile(usagePath(s.root), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+		if err != nil {
+			return err
+		}
+		_, writeErr := f.Write(append(body, '\n'))
+		if writeErr == nil {
+			writeErr = f.Sync()
+		}
+		closeErr := f.Close()
+		return errors.Join(writeErr, closeErr)
+	})
 }
 
 // usageEntriesLocked reads the whole journal. Metering volume is one line per
@@ -210,19 +213,24 @@ func (s *Spool) repairUsageTailLocked() error {
 				if _, err := f.Seek(0, io.SeekEnd); err != nil {
 					return err
 				}
-				if _, err := f.Write([]byte{'\n'}); err != nil {
-					return err
-				}
+				return s.updateStorage(usagePath(s.root), 1, func() error {
+					if _, err := f.Write([]byte{'\n'}); err != nil {
+						return err
+					}
+					return f.Sync()
+				})
 			} else {
 				quarantine := filepath.Join(s.root, fmt.Sprintf("usage-tail-%d.partial", time.Now().UnixNano()))
-				if err := atomicJSON(quarantine, map[string][]byte{"bytes": line}); err != nil {
+				if err := s.writeJSON(quarantine, map[string][]byte{"bytes": line}); err != nil {
 					return err
 				}
-				if err := f.Truncate(offset); err != nil {
-					return err
-				}
+				return s.updateStorage(usagePath(s.root), 0, func() error {
+					if err := f.Truncate(offset); err != nil {
+						return err
+					}
+					return f.Sync()
+				})
 			}
-			return f.Sync()
 		}
 		if len(line) > 1 && !json.Valid(line) {
 			return errors.New("usage journal contains a corrupt completed record")

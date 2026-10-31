@@ -272,15 +272,7 @@ func (c *ControlPlane) completePreparedOAuth(ctx context.Context, state, code st
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return err
 	}
-	if err := c.refreshConfirmation(ctx, auth, &onboarding); err != nil {
-		return err
-	}
-	_, err = c.confirm(ctx, auth, map[string]any{"onboarding_id": onboarding.OnboardingID, "nonce": onboarding.ConfirmationNonce})
-	if err != nil {
-		return err
-	}
-	_, err = c.enable(ctx, auth, map[string]any{"onboarding_id": onboarding.OnboardingID})
-	return err
+	return c.refreshConfirmation(ctx, auth, &onboarding)
 }
 
 func validPreparedOAuthURL(raw string) bool {

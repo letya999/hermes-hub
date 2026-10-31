@@ -96,7 +96,7 @@ type toolReceipt struct {
 // with no tool.start means the tool surface is broken even though the model
 // answered.
 func (e *Engine) ToolCheck(jobID string) string {
-	entries, err := os.ReadDir(filepath.Join(e.Deps.SpoolRoot, "events"))
+	entries, err := os.ReadDir(filepath.Join(e.Deps.SpoolRoot, "run-events"))
 	if err != nil {
 		return "events_unreadable"
 	}
@@ -105,7 +105,7 @@ func (e *Engine) ToolCheck(jobID string) string {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
-		b, readErr := os.ReadFile(filepath.Join(e.Deps.SpoolRoot, "events", entry.Name()))
+		b, readErr := os.ReadFile(filepath.Join(e.Deps.SpoolRoot, "run-events", entry.Name()))
 		var receipt toolReceipt
 		if readErr != nil || json.Unmarshal(b, &receipt) != nil {
 			continue

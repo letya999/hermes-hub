@@ -115,8 +115,8 @@ func TestM10ProbeReceiptRecoversFailedOutboxWithoutRefetch(t *testing.T) {
 	}
 	calls := 0
 	fetch := func(context.Context, string) ([]byte, error) { calls++; return []byte("new"), nil }
-	if err := s.ProbeDueOccurrencesContext(context.Background(), o.DueAt, g.authorizeOccurrence, fetch, nil, nil); err != nil {
-		t.Fatal(err)
+	if err := s.ProbeDueOccurrencesContext(context.Background(), o.DueAt, g.authorizeOccurrence, fetch, nil, nil); err == nil {
+		t.Fatal("failed outbox admission reported success")
 	}
 	if err := os.Remove(pending); err != nil {
 		t.Fatal(err)

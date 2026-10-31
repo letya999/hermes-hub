@@ -1,0 +1,40 @@
+schema: 1
+change: CHG-0194
+title: "Gate сборки и аварийной атомарности SQLCipher"
+status: in_progress
+branch: codex/storage-reliability-mvp
+updated: "2026-10-28"
+phase: design-complete
+adr: ADR-0084
+spec: SPEC-0084
+requirements: [R2]
+depends_on: [CHG-0191]
+workstream: storage-reliability-mvp
+github_milestone: null
+github_issue: null
+design_status: accepted
+implementation_status: not_started
+readiness: native_gate_unavailable
+slices:
+  S194.1-engine-build: not_started
+  S194.2-atomicity-matrix: not_started
+  S194.3-gate-receipt: not_started
+validation:
+  documents: passed
+  planning_package: passed
+  planning_just_check: failed
+  just_check: not_run
+  module_check: not_run
+  security: not_run
+  docker_check: deferred_by_user
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining:
+  - "Implementation and all runtime acceptance remain outstanding."
+limitations:
+  - "Planning record only; no production code or live state changed."
+  - "Native dependency pins and volume-loss behaviour must be evidenced by this gate; not assumed."
+
+blockers:
+  - "User deferred Docker use: native volume-loss proof unavailable; SQLCipher introduction remains prohibited."

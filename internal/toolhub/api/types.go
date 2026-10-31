@@ -445,4 +445,5 @@ type ProjectionTarget struct {
 	ContextID   string `json:"context_id"`
 	RuntimeID   string `json:"runtime_id"`
 	Revision    uint64 `json:"revision"`
+	Digest      string `json:"-"`
 }

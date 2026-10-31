@@ -203,6 +203,10 @@ func TestOpenNilAndErrorPaths(t *testing.T) {
 	if err != nil || svc == nil {
 		t.Fatal(err)
 	}
+	svc.Audit, err = audit.Open(filepath.Join(t.TempDir(), "audit.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := (*Service)(nil).Set("alice", map[string]string{"GOOGLE_TOKEN": "x"}); !errors.Is(err, ErrNotConfigured) {
 		t.Fatalf("nil set: %v", err)
 	}
@@ -388,7 +392,7 @@ func TestReuseLocatorRotateErrorsAndInjectFilters(t *testing.T) {
 	if err := injected.Wipe(); err != nil {
 		t.Fatal(err)
 	}
-	failing := &Service{Backend: listErrBackend{Backend: svc.Backend, err: credstore.ErrInvalid}}
+	failing := &Service{Backend: listErrBackend{Backend: svc.Backend, err: credstore.ErrInvalid}, Audit: svc.Audit}
 	if _, err := failing.List("alice"); !errors.Is(err, credstore.ErrInvalid) {
 		t.Fatalf("list error: %v", err)
 	}
@@ -536,10 +540,15 @@ func TestApplyChatCutsOpenSession(t *testing.T) {
 	registry.Stopper = stops
 	svc.Registry = registry
 	var calls atomic.Int32
+	ledger, err := audit.Open(filepath.Join(t.TempDir(), "audit.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	handler, err := (&toolhub.Gateway{
-		Store:   registry,
-		Tokens:  map[string]identity.Envelope{"01234567890123456789012345678901": auth},
-		Backend: toolhubCallCounter{n: &calls},
+		AuditWrite: toolhub.LedgerAuditWriter(ledger),
+		Store:      registry,
+		Tokens:     map[string]identity.Envelope{"01234567890123456789012345678901": auth},
+		Backend:    toolhubCallCounter{n: &calls},
 	}).Handler()
 	if err != nil {
 		t.Fatal(err)

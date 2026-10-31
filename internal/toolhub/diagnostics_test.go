@@ -165,7 +165,7 @@ func TestDiagnosticsBoundsAndFilters(t *testing.T) {
 	dir := t.TempDir()
 	var lines []string
 	for i := 0; i < 50; i++ {
-		lines = append(lines, diagLine(fmt.Sprintf("2026-09-28T10:00:%02dZ", i), work, fmt.Sprintf("line %d noise", i)))
+		lines = append(lines, diagLine(fmt.Sprintf("2026-09-28T10:00:%02dZ", i), work, fmt.Sprintf(`{"job_id":"job-%d","event":"run.started"}`, i)))
 	}
 	lines = append(lines, diagLine("2026-09-28T10:01:00Z", work, "ERROR crash loop detected"))
 	diagWrite(t, dir, lines...)
@@ -183,11 +183,11 @@ func TestDiagnosticsBoundsAndFilters(t *testing.T) {
 		t.Fatalf("diagnostics severity: %v", err)
 	}
 	got := body["lines"].([]map[string]any)
-	if len(got) != 1 || !strings.Contains(got[0]["message"].(string), "crash loop") {
+	if len(got) != 1 || !strings.Contains(got[0]["message"].(string), "ERROR") {
 		t.Fatalf("severity filter: %#v", got)
 	}
 	// Search substring.
-	body, err = control.diagnostics(t.Context(), alice, map[string]any{"search": "line 42"})
+	body, err = control.diagnostics(t.Context(), alice, map[string]any{"search": "job-42"})
 	if err != nil {
 		t.Fatalf("diagnostics search: %v", err)
 	}
@@ -300,5 +300,39 @@ func TestDiagnosticsRejectsAuthorityArgs(t *testing.T) {
 	control := &ControlPlane{Store: store, DiagnosticsDir: t.TempDir()}
 	if _, err := control.Invoke(t.Context(), aliceAuth(), "diagnostics", map[string]any{"owner": "root"}); err == nil {
 		t.Fatal("authority argument accepted")
+	}
+}
+
+func TestDiagnosticsOmitsLegacyContentAndSearchSideChannel(t *testing.T) {
+	store := NewStore()
+	auth := aliceAuth()
+	work := "work-eeeeeeeeeeeeeeeeeeeeeeee"
+	diagFixture(t, store, auth, work)
+	dir := t.TempDir()
+	diagWrite(t, dir, diagLine("2026-10-28T12:00:00Z", work, `{"job_id":"owned-job","text":"private-body-canary","private-key-canary":"private-value-canary"}`))
+	control := &ControlPlane{Store: store, DiagnosticsDir: dir}
+	body, err := control.diagnostics(t.Context(), auth, map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := body["lines"].([]map[string]any)
+	if len(lines) != 1 {
+		t.Fatal("safe metadata record missing")
+	}
+	msg := lines[0]["message"].(string)
+	if !strings.Contains(msg, "owned-job") {
+		t.Fatal("correlation metadata missing")
+	}
+	for _, value := range []string{"private-body-canary", "private-key-canary", "private-value-canary"} {
+		if strings.Contains(msg, value) {
+			t.Errorf("private legacy field exposed: %s", value)
+		}
+	}
+	body, err = control.diagnostics(t.Context(), auth, map[string]any{"search": "private-body-canary"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body["lines"].([]map[string]any)) != 0 {
+		t.Fatal("search revealed omitted private content")
 	}
 }

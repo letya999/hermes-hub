@@ -456,14 +456,22 @@ func decodeSnapshot(body []byte) (snapshot, error) {
 	return state, nil
 }
 
+// ValidateValue validates a credential before any batch writes without echoing its key.
+func ValidateValue(name, value string) error {
+	if !validName(name) || len(value) == 0 || len(value) > MaxValueBytes || strings.ContainsAny(value, "\x00") {
+		return fmt.Errorf("%w: credential value", ErrInvalid)
+	}
+	return nil
+}
+
 func encodeValues(values map[string]string) ([]string, []byte, error) {
 	if len(values) == 0 || len(values) > MaxValues {
 		return nil, nil, fmt.Errorf("%w: values", ErrInvalid)
 	}
 	names := make([]string, 0, len(values))
 	for key, value := range values {
-		if !validName(key) || len(value) == 0 || len(value) > MaxValueBytes || strings.ContainsAny(value, "\x00") {
-			return nil, nil, fmt.Errorf("%w: secret %s", ErrInvalid, key)
+		if err := ValidateValue(key, value); err != nil {
+			return nil, nil, err
 		}
 		names = append(names, key)
 	}

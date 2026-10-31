@@ -55,6 +55,7 @@ func TestControlProjectionRevokeOnOpenMCPSession(t *testing.T) {
 			return api.BackendResult{Text: "unexpected"}, nil
 		}),
 	}
+	attachGatewayAudit(t, gateway)
 	handler, err := gateway.Handler()
 	if err != nil {
 		t.Fatal(err)

@@ -80,7 +80,7 @@ func (t *Tools) exposureDispatch(ctx context.Context, name string, r Input) (any
 	}
 	tunnelView := func(tn *exposure.Tunnel) map[string]any {
 		return map[string]any{"endpoint": tn.Endpoint, "public_name": tn.PublicName,
-			"target": tn.Target, "expires_at": tn.ExpiresAt}
+			"target": tn.Target, "expires_at": tn.ExpiresAt, "uncertain": tn.Uncertain}
 	}
 	if name == "exposure_list" {
 		live := svc.List()
@@ -119,8 +119,8 @@ func (t *Tools) registerExposure(s *mcp.Server) {
 			return nil, nil, nil
 		})
 	}
-	add("exposure_list", "List live public exposures (tunnels) on this runtime.")
-	add("exposure_status", "Show one live public exposure by endpoint name.")
-	add("exposure_open", "Open one declared endpoint's public tunnel. Name-only: binds, targets and relay details come from the reviewed config, never from arguments.")
-	add("exposure_close", "Close one live public exposure by endpoint name.")
+	add("exposure_list", "List live public exposures on this runtime, including uncertain effects requiring reconciliation.")
+	add("exposure_status", "Show one live public exposure by endpoint name; uncertain=true means its effect or audit completion is unverified.")
+	add("exposure_open", "Open one declared endpoint's public tunnel. An uncertain result must be reconciled, never blindly repeated. Name-only: binds, targets and relay details come from the reviewed config, never from arguments.")
+	add("exposure_close", "Close one live public exposure by endpoint name. Audit failure never prevents stopping access; an uncertain result requires reconciliation.")
 }

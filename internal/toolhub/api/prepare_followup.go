@@ -56,6 +56,9 @@ func PostPrepareNotice(ctx context.Context, auth identity.Envelope, onboarding O
 		"detail":            PublicPrepareError(ErrString(onboarding.Error)),
 		"form_url":          credentialNoticeURL(onboarding),
 	}
+	if onboarding.Phase == PhaseAwaitingConfirm {
+		payload["confirmation"] = HumanConfirmation{OnboardingID: onboarding.OnboardingID, Actor: auth, Nonce: onboarding.ConfirmationNonce, Revision: onboarding.Revision, ActionDigest: ConfirmationActionDigest(onboarding), ExpiresAt: onboarding.ConfirmationExpires}
+	}
 	// The reviewed contract declares how credentials may be collected; the
 	// channel offers that intake (e.g. QR login) instead of sniffing ids.
 	if reviewed, ok, rerr := PreparedContractFor(onboarding.BrokerContractID, onboarding.BrokerContractRevision); rerr == nil && ok && reviewed.Intake != "" {

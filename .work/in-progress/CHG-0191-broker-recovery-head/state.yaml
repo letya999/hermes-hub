@@ -1,0 +1,56 @@
+schema: 1
+change: CHG-0191
+title: "Надёжная текущая голова recovery брокера"
+status: in_progress
+branch: codex/storage-reliability-mvp
+updated: "2026-10-29"
+phase: implementation-validation
+adr: ADR-0084
+spec: SPEC-0084
+requirements: [R1]
+depends_on: []
+workstream: storage-reliability-mvp
+github_milestone: null
+github_issue: null
+design_status: accepted
+implementation_status: in_progress
+readiness: acceptance_pending
+slices:
+  S191.1-recovery-regressions: implemented_pending_acceptance
+  S191.2-versioned-head: implemented_pending_acceptance
+  S191.3-legacy-adoption: implemented_pending_acceptance
+validation:
+  documents: passed
+  planning_package: passed
+  planning_just_check: failed
+  just_check: passed
+  just_check_host: windows
+  root_statement_coverage: "85.95%"
+  module_check: passed
+  security: not_required_no_dependency_change
+  docker_check: deferred_by_user
+  red_team: in_progress
+  live_acceptance: not_started
+evidence:
+  - "evidence.md: synthetic regression, native filesystem and gate receipts."
+  - "WSL native just check passed: total 89.54%, internal/journal 85.74%, every production package >=85%."
+planning_evidence:
+  - "2026-10-28: go run ./cmd/devcheck docs passed before and after package creation."
+  - "12 YAML states parsed with existing gopkg.in/yaml.v3; 36 slices matched plans; dependency DAG checked."
+  - "All new Markdown links resolve; file bounds/whitespace and git diff --check passed."
+  - "All pre-existing content of the three edited indexes preserved; production code not edited."
+  - "just check failed in unchanged internal/mediasvc TestComfyVideoResumesPersistedHandleWithoutSubmission: Windows temporary file lock; coverage metadata write also failed."
+  - "Targeted go test -race -run '^TestComfyVideoResumesPersistedHandleWithoutSubmission$' -count=1 ./internal/mediasvc passed; full just check remains failed, aggregate coverage unverified."
+remaining:
+  - "Root just check now passes at 85.96% after the independent CHG-0201 slice; acceptance and deferred Docker/image gates remain."
+  - "Complete actual acceptance and deferred Docker/image gates before rollout; no production migration."
+limitations:
+  - "Implementation is isolated in the new worktree; no live data/provider changes or rollout."
+  - "Docker checks deferred by the direct user instruction; do not run containers or deploy."
+
+final_gate_receipt:
+  docs: passed
+  lint_gosec: passed
+  root_go_check: failed_existing_runtime_deadline
+  prior_root_statement_coverage: "86.03% in preceding full test pass; that run failed lint before archive Root confinement fix"
+  isolated_runtime_repeat: "passed (2.269s); full gate still failed"

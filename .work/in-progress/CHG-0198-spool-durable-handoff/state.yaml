@@ -1,0 +1,58 @@
+schema: 1
+change: CHG-0198
+title: "Один receipt для результата, доставки и обработки source batch"
+status: in_progress
+branch: codex/storage-reliability-mvp
+updated: "2026-10-29"
+phase: implementation-validation
+adr: ADR-0085
+spec: SPEC-0085
+requirements: [R4]
+depends_on: [CHG-0192, CHG-0197]
+workstream: storage-reliability-mvp
+github_milestone: null
+github_issue: null
+design_status: accepted
+implementation_status: implemented_pending_acceptance
+readiness: acceptance_pending
+slices:
+  S198.1-terminal-receipt: implemented_pending_acceptance
+  S198.2-batch-intent: implemented_pending_acceptance
+  S198.3-retry-classification: implemented_pending_acceptance
+validation:
+  documents: passed
+  planning_package: passed
+  planning_just_check: failed
+  just_check: passed
+  root_statement_coverage: "85.91%"
+  previous_watcher_check: failed_legacy_receipt_and_error_fixtures_fixed
+  previous_full_just_check: passed
+  previous_full_root_statement_coverage: "85.93%"
+  previous_reviewed_just_check: failed_elapsed_status_regression_fixed
+  previous_stable_just_check: passed
+  previous_stable_root_statement_coverage: "85.92%"
+  previous_just_check: failed_concurrent_test_rename_harness
+  module_check: not_run
+  security: not_required_no_dependency_change
+  docker_check: deferred_by_user
+  terminal_handoff_targeted_race: passed
+  communication_race: passed_in_root_check
+  source_batch_initial_race: passed
+  source_batch_extended_race: passed
+  source_batch_pending_repair_race: passed
+  retry_classification_race: passed
+  reviewed_recovery_race: passed
+  trusted_rebind_race: passed
+  watcher_handoff_race: passed
+  probe_receipt_scope_race: passed
+  corrupt_batch_race: passed
+  elapsed_status_recovery_race: passed
+  red_team: partial
+  live_acceptance: not_started
+evidence:
+  - "evidence.md: terminal receipt filesystem fault injection and worker regression."
+remaining:
+  - "Current Windows root gates passed; isolated native/container handoff acceptance remains pending."
+  - "Dependency acceptance and native/container handoff acceptance remain pending; no done claim."
+limitations:
+  - "Isolated worktree implementation only; no Docker deployment or working data changed."

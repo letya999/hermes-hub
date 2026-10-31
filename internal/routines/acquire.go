@@ -116,12 +116,12 @@ func (e *Engine) IntakeHook(scheduleID string, body []byte, now time.Time) error
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	dir := filepath.Join(e.root, "hooks", commodel.FileID(scheduleID))
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := e.mkdirOwned(dir, false); err != nil {
 		return err
 	}
 	sum := sha256.Sum256(append([]byte(scheduleID+"\x00"), body...))
 	name := hex.EncodeToString(sum[:16]) + ".json"
-	return os.WriteFile(filepath.Join(dir, name), body, 0o600)
+	return e.writeBytes(filepath.Join(dir, name), body)
 }
 
 // HookPendingCount reports staged payloads awaiting the next probe tick.
@@ -148,7 +148,7 @@ func (e *Engine) popHookLocked(scheduleID string) []byte {
 	if err != nil {
 		return nil
 	}
-	_ = os.Remove(path)
+	_ = e.removeOwned(path)
 	return body
 }
 

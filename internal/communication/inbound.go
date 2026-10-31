@@ -30,16 +30,19 @@ func (s *Spool) StageInbound(rec InboundRecord, src io.Reader) error {
 	if !validInboundID(rec.ID) {
 		return errors.New("invalid inbound id")
 	}
-	data, err := io.ReadAll(src)
+	data, err := io.ReadAll(io.LimitReader(src, videoSizeLimit+1))
 	if err != nil {
 		return err
 	}
+	if len(data) > videoSizeLimit {
+		return errors.New("inbound exceeds storage write limit")
+	}
 	rec.Size = int64(len(data))
 	dir := filepath.Join(s.root, "inbound")
-	if err := os.WriteFile(filepath.Join(dir, rec.ID+".bin"), data, 0600); err != nil {
+	if err := s.writeBlob(filepath.Join(dir, rec.ID+".bin"), data, false); err != nil {
 		return err
 	}
-	return atomicJSON(filepath.Join(dir, rec.ID+".json"), rec)
+	return s.writeJSONClass(filepath.Join(dir, rec.ID+".json"), rec, false)
 }
 
 func (s *Spool) ReadInbound(id string) (InboundRecord, []byte, error) {
@@ -65,7 +68,7 @@ func (s *Spool) ConsumeInbound(id string) error {
 	if !validInboundID(id) {
 		return errors.New("invalid inbound id")
 	}
-	err := os.Remove(filepath.Join(s.root, "inbound", id+".json")) // #nosec G703 -- id is validated by spoolIDPattern
-	_ = os.Remove(filepath.Join(s.root, "inbound", id+".bin"))     // #nosec G703 -- id is validated by spoolIDPattern
+	err := s.removeOwned(filepath.Join(s.root, "inbound", id+".json")) // #nosec G703 -- id is validated by spoolIDPattern
+	_ = s.removeOwned(filepath.Join(s.root, "inbound", id+".bin"))     // #nosec G703 -- id is validated by spoolIDPattern
 	return err
 }

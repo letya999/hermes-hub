@@ -103,7 +103,7 @@ func (g *Gateway) addProjectedTool(server *mcp.Server, auth identity.Envelope, p
 				return nil, fmt.Errorf("%w: tool arguments: %v", api.ErrInvalid, err)
 			}
 		}
-		return g.call(ctx, auth, name, arguments)
+		return g.mcpCall(ctx, auth, name, arguments)
 	})
 }
 

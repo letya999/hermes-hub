@@ -61,10 +61,10 @@ func (e *Engine) PutOccurrence(o commodel.RoutineOccurrence, caller identity.Env
 // quarantineOccurrenceLocked preserves a bad durable record outside hot scans.
 func (e *Engine) quarantineOccurrenceLocked(path string) error {
 	dir := filepath.Join(e.root, "occurrences", "quarantine")
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := e.mkdirOwned(dir, true); err != nil {
 		return err
 	}
-	if err := os.Rename(path, filepath.Join(dir, filepath.Base(path))); err != nil {
+	if err := e.renameOwned(path, filepath.Join(dir, filepath.Base(path))); err != nil {
 		return err
 	}
 	log.Printf("quarantined invalid occurrence %s", filepath.Base(path))

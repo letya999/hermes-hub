@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"github.com/letya999/hermes-hub/internal/audit"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/http/httptest"
@@ -50,6 +51,10 @@ func TestCLISecretSetCutsOpenToolHubSession(t *testing.T) {
 	}
 	storePath := filepath.Join(dir, "runtime", "credentials", "store.enc")
 	svc, err := secrets.Open(storePath, keyFile, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Audit, err = audit.Open(filepath.Join(filepath.Dir(storePath), "audit.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,10 +108,15 @@ func TestCLISecretSetCutsOpenToolHubSession(t *testing.T) {
 	stops := &hubctlStopRecorder{}
 	live.Stopper = stops
 	var calls atomic.Int32
+	ledger, err := audit.Open(filepath.Join(t.TempDir(), "audit.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	handler, err := (&toolhub.Gateway{
-		Store:   live,
-		Tokens:  map[string]identity.Envelope{"01234567890123456789012345678901": auth},
-		Backend: hubctlCallCounter{n: &calls},
+		AuditWrite: toolhub.LedgerAuditWriter(ledger),
+		Store:      live,
+		Tokens:     map[string]identity.Envelope{"01234567890123456789012345678901": auth},
+		Backend:    hubctlCallCounter{n: &calls},
 	}).Handler()
 	if err != nil {
 		t.Fatal(err)

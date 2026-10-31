@@ -52,6 +52,7 @@ func adminFixture(t *testing.T, audits *[]string) (*Gateway, http.Handler) {
 			"alice-principal-token-0000000000000": auth,
 		},
 	}
+	attachGatewayAudit(t, g)
 	ledger, err := audit.Open(filepath.Join(t.TempDir(), "admin-audit.jsonl"))
 	if err != nil {
 		t.Fatal(err)

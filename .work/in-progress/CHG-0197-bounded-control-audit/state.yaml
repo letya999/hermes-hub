@@ -1,0 +1,60 @@
+schema: 1
+change: CHG-0197
+title: "Ограниченный обязательный audit и честные исходы действий"
+status: in_progress
+branch: codex/storage-reliability-mvp
+updated: "2026-10-29"
+phase: implementation-validation
+adr: ADR-0085
+spec: SPEC-0085
+requirements: [R3]
+depends_on: []
+workstream: storage-reliability-mvp
+github_milestone: null
+github_issue: null
+design_status: accepted
+implementation_status: in_progress
+readiness: acceptance_pending
+slices:
+  S197.1-bounded-ledger: implemented_pending_acceptance
+  S197.2-admission-outcome: implemented_pending_acceptance
+  S197.3-policy-and-recovery: implemented_pending_acceptance
+validation:
+  documents: passed
+  planning_package: passed
+  planning_just_check: failed
+  just_check: passed_pre_chg0198_snapshot
+  just_check_host: windows
+  previous_root_statement_coverage: "85.95%"
+  root_statement_coverage: "85.96%"
+  module_check: not_run
+  security: not_required_no_dependency_change
+  docker_check: deferred_by_user
+  native_ssh_race: unavailable
+  previous_native_ssh_race: passed
+  ssh_race: passed
+  agenttools_race: passed
+  native_audit_race: unavailable
+  previous_native_audit_race: passed
+  native_admission_exposure_race: unavailable
+  previous_native_admission_exposure_race: passed
+  native_root_check: failed
+  lint_after_fix: passed
+  legacy_secret_race: passed
+  legacy_credential_store_race: passed
+  secret_caller_race: passed
+  lifecycle_consumer_race: passed
+  receipt_privacy_race: passed
+  media_lock_race_repeat: passed
+  red_team: partial
+  live_acceptance: not_started
+evidence:
+  - "evidence.md: bounded-ledger regressions and real filesystem/process receipts."
+remaining:
+  - "S197.1-S197.3 implementation including legacy credential preservation passed the Windows root gate; actual acceptance remains pending."
+  - "Reproduced legacy credential rollback, batch, owner isolation and activity privacy regressions are fixed and covered; Windows full gate passed before CHG-0198 edits."
+  - "Root native just check failed: X11 readonly fixture, organization MCP inheritance, Toolhub Reload stop-failure expectation; not accepted as baseline or final green."
+  - "Prepared tool contract/catalog still needs rebind + respawn when Docker use is authorized."
+limitations:
+  - "Implementation remains isolated in worktree; no deployment or live state changed."
+  - "Current native S197.3 race run did not start: Wsl/Service/0x8007274c connection failure. No WSL/Docker reset attempted."

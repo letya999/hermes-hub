@@ -528,3 +528,50 @@ func TestStatusRejectsForeignSupersededPointer(t *testing.T) {
 		t.Fatalf("superseded status=%v err=%v", st, err)
 	}
 }
+
+func TestStatusForeignAndUnknownAreIndistinguishable(t *testing.T) {
+	control := &ControlPlane{Store: NewStore()}
+	record := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-private", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", Mode: api.OnboardingSelfInstall, Phase: api.PhasePreparing, Revision: 1, CreatedAt: time.Now()}
+	if err := control.Store.PutOnboarding(record); err != nil {
+		t.Fatal(err)
+	}
+	_, foreign := control.resolveOnboarding(bobAuth(), map[string]any{"onboarding_id": record.OnboardingID})
+	_, unknown := control.resolveOnboarding(bobAuth(), map[string]any{"onboarding_id": "onboard-unknown"})
+	if !errors.Is(foreign, api.ErrNotFound) || !errors.Is(unknown, api.ErrNotFound) || foreign.Error() != unknown.Error() {
+		t.Fatalf("status leaks object existence: foreign=%v unknown=%v", foreign, unknown)
+	}
+	var reason interface{ ReasonCode() string }
+	if !errors.As(foreign, &reason) || reason.ReasonCode() != "scope" {
+		t.Fatal("internal scope reason missing")
+	}
+	if !errors.As(unknown, &reason) || reason.ReasonCode() != "unknown" {
+		t.Fatal("internal unknown reason missing")
+	}
+}
+
+func TestStatusInternalVersionAndTerminalReasons(t *testing.T) {
+	control := &ControlPlane{Store: NewStore()}
+	for _, record := range []api.Onboarding{
+		{Schema: api.SchemaVersion, OnboardingID: "onboard-v1", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", DefinitionID: "versioned", DefinitionVersion: "1.0.0", Mode: api.OnboardingSelfInstall, Phase: api.PhasePreparing, Revision: 1, CreatedAt: time.Now()},
+		{Schema: api.SchemaVersion, OnboardingID: "onboard-removed", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", PolicyVersion: "policy-1", DefinitionID: "removed", DefinitionVersion: "1.0.0", Mode: api.OnboardingSelfInstall, Phase: api.PhaseRemoved, Revision: 1, CreatedAt: time.Now()},
+	} {
+		if err := control.Store.PutOnboarding(record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		args   map[string]any
+		reason string
+	}{
+		{map[string]any{"definition_id": "missing"}, "unknown"},
+		{map[string]any{"definition_id": "versioned", "version": "2.0.0"}, "version"},
+		{map[string]any{"definition_id": "removed"}, "terminal"},
+		{map[string]any{"selector": "removed"}, "terminal"},
+	} {
+		_, err := control.resolveOnboarding(aliceAuth(), tc.args)
+		var reason interface{ ReasonCode() string }
+		if !errors.Is(err, api.ErrNotFound) || !errors.As(err, &reason) || reason.ReasonCode() != tc.reason {
+			t.Fatalf("internal status reason=%v, want %s", err, tc.reason)
+		}
+	}
+}

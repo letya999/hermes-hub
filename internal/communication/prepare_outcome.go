@@ -2,6 +2,7 @@ package communication
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -15,17 +16,18 @@ import (
 )
 
 type prepareOutcomeRequest struct {
-	OnboardingID     string `json:"onboarding_id"`
-	Phase            string `json:"phase"`
-	DefinitionID     string `json:"definition_id"`
-	ContractID       string `json:"contract_id"`
-	CredentialIntake string `json:"credential_intake"`
-	BrokerRequestID  string `json:"broker_request_id"`
-	Repository       string `json:"repository"`
-	Detail           string `json:"detail"`
-	FormURL          string `json:"form_url"`
-	Event            string `json:"event"`
-	Tools            int    `json:"tools"`
+	Confirmation     *api.HumanConfirmation `json:"confirmation,omitempty"`
+	OnboardingID     string                 `json:"onboarding_id"`
+	Phase            string                 `json:"phase"`
+	DefinitionID     string                 `json:"definition_id"`
+	ContractID       string                 `json:"contract_id"`
+	CredentialIntake string                 `json:"credential_intake"`
+	BrokerRequestID  string                 `json:"broker_request_id"`
+	Repository       string                 `json:"repository"`
+	Detail           string                 `json:"detail"`
+	FormURL          string                 `json:"form_url"`
+	Event            string                 `json:"event"`
+	Tools            int                    `json:"tools"`
 	// CreatedAt pins the onboarding creation instant so the gateway can find
 	// the message job that was running when the install was requested.
 	CreatedAt string `json:"created_at,omitempty"`
@@ -50,6 +52,13 @@ func (g *Gateway) handlePrepareOutcome(w http.ResponseWriter, r *http.Request) {
 	if decodeJSON(r, &request) != nil {
 		http.Error(w, "invalid prepare outcome", http.StatusBadRequest)
 		return
+	}
+	if proof := request.Confirmation; proof != nil {
+		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if r.Header.Get("Origin") != "" || subtle.ConstantTimeCompare([]byte(token), []byte(g.config.ControlAuth)) != 1 || !g.config.Supervised && g.config.ControlAuth == g.config.RuntimeAuth || proof.Actor.Validate(caller.PrincipalID, caller.ContextID, caller.RuntimeID, caller.PolicyVersion) != nil || request.Phase != "awaiting-confirm" || proof.OnboardingID != request.OnboardingID || proof.Nonce == "" || !g.now().Before(proof.ExpiresAt) {
+			http.Error(w, "confirmation denied", http.StatusForbidden)
+			return
+		}
 	}
 	if request.ConnectionID != "" || request.ViewerURL != "" {
 		g.handleViewerNotice(w, caller, request)
@@ -306,6 +315,13 @@ func prepareOutcomeKey(request prepareOutcomeRequest, loginURL string) string {
 		sum := sha256.Sum256([]byte(loginURL))
 		key += "-" + hex.EncodeToString(sum[:4])
 	}
+	if proof := request.Confirmation; proof != nil {
+		// A reissued proof must land as a fresh notice: binding only the
+		// onboarding/phase key would dedupe the new proof behind the spent
+		// delivery and leave the user holding a stale callback.
+		sum := sha256.Sum256([]byte(proof.Nonce + "\x00" + proof.ActionDigest))
+		key += "-" + hex.EncodeToString(sum[:4])
+	}
 	return key
 }
 
@@ -399,6 +415,13 @@ func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key,
 		chatID, topicID = origin.ChatID, origin.TopicID
 	}
 	delivery := Delivery{ID: key + "-notice", IdempotencyKey: key + "-notice", Channel: channelName, ChatID: chatID, TaskID: bound.TaskID, TopicID: topicID, Text: notice, CreatedAt: now}
+	if request.Confirmation != nil {
+		button, err := g.spool.humanConfirmationButton(*request.Confirmation, channelName, chatID)
+		if err != nil {
+			return err
+		}
+		delivery.Buttons = []DeliveryButton{button}
+	}
 	// Each new action link lands as a fresh message; the key dedupes repeats.
 	// Editing the old status can bury the only link the user needs to
 	// continue. The stable wizard link is exempt: it stays the same URL for
@@ -409,7 +432,7 @@ func (g *Gateway) deliverPrepareNotice(user User, caller identity.Envelope, key,
 	if err := g.spool.EnqueueDelivery(delivery); err != nil {
 		return err
 	}
-	if request.Event != "" || waitingForLogin || actionLink(request.FormURL, "/remove/") != "" {
+	if request.Event != "" || waitingForLogin || request.Confirmation != nil || actionLink(request.FormURL, "/remove/") != "" {
 		// Wait for user action before resuming the agent — an armed remove
 		// link is itself the continuation.
 		return nil

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -153,6 +154,80 @@ func TestLifecycleIdempotentEnableDisableRemoveAndRaces(t *testing.T) {
 	}
 }
 
+func TestConfirmationConsumedOnceConcurrently(t *testing.T) {
+	store := NewStore()
+	grantTestControlOperations(t, store, "alice", api.ControlOperations...)
+	definition := catalogReadDefinition()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	control := &ControlPlane{Store: store, WorkloadRoot: t.TempDir(), Now: time.Now}
+	prepared, err := control.Invoke(t.Context(), aliceAuth(), "prepare_source", map[string]any{"definition_id": definition.DefinitionID, "version": definition.Version, "request_key": "concurrent-human"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := prepared["onboarding_id"].(string)
+	nonce := confirmNonceOf(t, store, id)
+	path := filepath.Join(t.TempDir(), "store.json")
+	if err := store.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	control.Store = store
+	entered, release := make(chan struct{}), make(chan struct{})
+	var readyCalls atomic.Int32
+	control.Ready = func(context.Context, api.EffectiveBinding) error {
+		if readyCalls.Add(1) == 1 {
+			close(entered)
+			<-release
+		}
+		return nil
+	}
+	first := make(chan error, 1)
+	go func() {
+		_, err := control.confirm(context.Background(), aliceAuth(), map[string]any{"onboarding_id": id, "nonce": nonce})
+		first <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first confirmation did not reach readiness probe")
+	}
+	second := make(chan error, 1)
+	go func() {
+		_, err := control.confirm(context.Background(), aliceAuth(), map[string]any{"onboarding_id": id, "nonce": nonce})
+		second <- err
+	}()
+	var secondErr error
+	select {
+	case secondErr = <-second:
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("second confirmation did not settle")
+	}
+	close(release)
+	if firstErr := <-first; firstErr != nil {
+		t.Fatalf("first confirmation: %v", firstErr)
+	}
+	if !errors.Is(secondErr, api.ErrUnauthorized) || readyCalls.Load() != 1 {
+		t.Fatalf("nonce consumed more than once: second=%v readiness=%d", secondErr, readyCalls.Load())
+	}
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := mustOnboarding(t, reloaded, id)
+	if !record.ConfirmationUsed || record.Phase != api.PhaseConfirmed {
+		t.Fatalf("durable confirmation state=%+v", record)
+	}
+}
+
 func TestControlEnableUsesReadinessForInitialAndReenable(t *testing.T) {
 	store := NewStore()
 	grantTestControlOperations(t, store, "alice", "prepare_source", "status", "confirm", "enable", "disable")
@@ -248,6 +323,11 @@ func TestCredentialReadinessFailureDoesNotPublishOrRotateOnRetry(t *testing.T) {
 		t.Fatal("failed admission projected a tool")
 	}
 	admit = true
+	control.Now = func() time.Time { return time.Now().Add(2 * time.Hour) }
+	if _, err := control.Invoke(t.Context(), auth, "status", map[string]any{"onboarding_id": id}); err != nil {
+		t.Fatal(err)
+	}
+	confirm["nonce"] = confirmNonceOf(t, store, id)
 	if _, err := control.Invoke(t.Context(), auth, "confirm", confirm); err != nil {
 		t.Fatal(err)
 	}
@@ -391,17 +471,21 @@ func TestConfirmAndEnableFailureRecordedOnOnboarding(t *testing.T) {
 		t.Fatal("failed admission was confirmed")
 	}
 	stored, _ := store.onboarding(id)
-	if !strings.Contains(stored.Error, "required runtime credential missing") || stored.Phase != api.PhaseAwaitingConfirm || stored.ConfirmationUsed {
+	if !strings.Contains(stored.Error, "required runtime credential missing") || stored.Phase != api.PhaseAwaitingConfirm || !stored.ConfirmationUsed {
 		t.Fatalf("confirm failure not recorded: %+v", stored)
 	}
 	status, err := control.Invoke(t.Context(), auth, "status", map[string]any{"onboarding_id": id})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(fmt.Sprint(status["error"]), "required runtime credential missing") || status["next_action"] != "confirm" {
+	if !strings.Contains(fmt.Sprint(status["error"]), "required runtime credential missing") || status["next_action"] != "await_user_confirmation" {
 		t.Fatalf("status hides the recorded failure: %v", status)
 	}
 	admit = true
+	control.Now = func() time.Time { return time.Now().Add(2 * time.Hour) }
+	if _, err := control.Invoke(t.Context(), auth, "status", map[string]any{"onboarding_id": id}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := control.Invoke(t.Context(), auth, "confirm", map[string]any{"onboarding_id": id, "nonce": confirmNonceOf(t, store, id)}); err != nil {
 		t.Fatal(err)
 	}

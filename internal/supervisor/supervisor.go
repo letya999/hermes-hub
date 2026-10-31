@@ -161,12 +161,16 @@ type Runtime struct {
 	ToolReasons  map[string]string `json:"tool_reasons,omitempty"`
 	ModelStatus  string            `json:"model_status,omitempty"`
 	Restarts     int               `json:"restarts,omitempty"`
-	Desired      bool              `json:"desired"`
-	PrincipalID  string            `json:"principal_id"`
-	ContextID    string            `json:"context_id"`
-	RuntimeID    string            `json:"runtime_id"`
-	RuntimeMode  string            `json:"runtime_mode"`
-	Generation   string            `json:"generation"`
+	// PendingRestart is the durable cause of a deferred restart: an armed
+	// marker on a busy runtime applies after handoff, and a supervisor
+	// restart must not lose why the restart was requested.
+	PendingRestart *RestartCause `json:"pending_restart,omitempty"`
+	Desired        bool          `json:"desired"`
+	PrincipalID    string        `json:"principal_id"`
+	ContextID      string        `json:"context_id"`
+	RuntimeID      string        `json:"runtime_id"`
+	RuntimeMode    string        `json:"runtime_mode"`
+	Generation     string        `json:"generation"`
 	// PolicyVersion records the policy hash this generation was spawned with so
 	// a later Ensure can detect a rotated policy and replace the runtime
 	// instead of reusing one whose own envelope gate would reject the request.
@@ -187,6 +191,16 @@ type Runtime struct {
 	// never feed remediation decisions.
 	CPUPercent float64 `json:"cpu_percent,omitempty"`
 	MemBytes   int64   `json:"mem_bytes,omitempty"`
+}
+
+// RestartCause is the owner-safe record of why a runtime restart was
+// requested: a fixed reason vocabulary plus the operation/generation ids —
+// never free text or payloads.
+type RestartCause struct {
+	Reason      string `json:"reason"`
+	OperationID string `json:"operation_id,omitempty"`
+	Revision    uint64 `json:"revision,omitempty"`
+	Generation  string `json:"generation"`
 }
 
 type runtimeEntry struct {

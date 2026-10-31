@@ -1,0 +1,58 @@
+schema: 1
+change: CHG-0200
+title: "Сохранность ToolHub и доверенное подтверждение пользователя"
+status: in_progress
+branch: codex/storage-reliability-mvp
+updated: "2026-10-29"
+phase: human-contract-partial-implementation
+adr: ADR-0085
+spec: SPEC-0085
+requirements: [R6]
+depends_on: [CHG-0197, CHG-0198]
+workstream: storage-reliability-mvp
+github_milestone: null
+github_issue: null
+design_status: accepted
+implementation_status: in_progress
+readiness: root_independent_work_in_progress
+slices:
+  S200.1-snapshot-durability: in_progress
+  S200.2-onboarding-reasons: in_progress
+  S200.3-human-contract: in_progress
+validation:
+  documents: passed
+  planning_package: passed
+  planning_just_check: failed
+  just_check: pending_after_actor_bound_channel_contract
+  root_statement_coverage: "85.97%"
+  status_reason_targeted_race: passed
+  status_reason_full_race: passed
+  broker_ref_restart_targeted_race: passed
+  unknown_definition_targeted_race: passed
+  agent_confirm_targeted_race: passed
+  concurrent_confirmation_targeted_race: passed
+  human_contract_toolhub_full_before_claim: passed
+  human_contract_toolhub_full_after_claim: passed_after_retry_contract_update
+  failed_full_run_targeted_repeats: passed
+  toolhub_snapshot_targeted_race: passed
+  toolhub_snapshot_full_race: passed
+  synthetic_recreate_reference_race: passed
+  onboarding_save_rollback_targeted_race: passed
+  onboarding_post_replace_sync_targeted_race: passed
+  confirmation_claim_save_failure_targeted_race: passed
+  actor_bound_callback_targeted_race: passed
+  channel_callback_restart_targeted_race: passed
+  current_authority_revocation_targeted_race: passed
+  updated_oauth_page_expectations_targeted: passed
+  module_check: not_run
+  security: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence:
+  - "evidence.md: synthetic missing-store and directory-sync regression evidence."
+remaining:
+  - "Finish non-Telegram callback transport, expiry/storage reasons, independent installation identity and local gate reruns; native recreate, rebind/respawn and acceptance remain excluded."
+limitations:
+  - "Local marker does not detect loss of the entire volume with the marker; native filesystem/container acceptance remains outstanding."
+  - "Actor-bound Telegram callback uses local filesystem/HTTP fixtures; other channel transport and rollout acceptance remain outstanding."

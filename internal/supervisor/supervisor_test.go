@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -399,6 +400,205 @@ func TestRestartRequestMarksOwnedRuntimeByState(t *testing.T) {
 				t.Fatalf("marked=%v applied=%v want applied=%v", marked, applied, tc.wantApply)
 			}
 		})
+	}
+}
+
+func TestRestartRequestForwardsOperationAndGeneration(t *testing.T) {
+	var forwarded struct {
+		OperationID string `json:"operation_id"`
+		Reason      string `json:"reason"`
+		Revision    uint64 `json:"revision"`
+		Generation  string `json:"generation"`
+	}
+	runtimeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&forwarded); err != nil {
+			t.Errorf("forwarded marker: %v", err)
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"scheduled": true})
+	}))
+	defer runtimeAPI.Close()
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	b := binding(root)
+	if _, err := m.Ensure(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	entry := m.items[runtimeKey(b)]
+	entry.Address, entry.State, entry.auth = runtimeAPI.URL, Busy, "secret"
+	generation := entry.Generation
+	m.mu.Unlock()
+	body := []byte(`{"principal_id":"alice","context_id":"alice","runtime_id":"alice","operation_id":"projection-abc","reason":"tool_projection_change","revision":3}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/restart-request", bytes.NewReader(body))
+	request.Header.Set("Authorization", "Bearer secret")
+	response := httptest.NewRecorder()
+	m.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || forwarded.OperationID != "projection-abc" || forwarded.Reason != "tool_projection_change" || forwarded.Revision != 3 || forwarded.Generation != generation {
+		t.Fatalf("marker status=%d forwarded=%+v generation=%q", response.Code, forwarded, generation)
+	}
+}
+
+// A deferred restart's cause is durable supervisor state: if the supervisor
+// itself restarts before the busy runtime drains, the pending reason and
+// operation must still be known — otherwise the later restart applies with
+// no record of why it happened.
+func TestRestartReasonSurvivesSupervisorRestart(t *testing.T) {
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	b := binding(root)
+	if _, err := m.Ensure(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	runtimeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]bool{"scheduled": true})
+	}))
+	defer runtimeAPI.Close()
+	m.mu.Lock()
+	entry := m.items[runtimeKey(b)]
+	entry.Address, entry.State, entry.auth = runtimeAPI.URL, Busy, "secret"
+	m.mu.Unlock()
+	body := []byte(`{"principal_id":"alice","context_id":"alice","runtime_id":"alice","operation_id":"projection-abc","reason":"tool_projection_change","revision":3}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/restart-request", bytes.NewReader(body))
+	request.Header.Set("Authorization", "Bearer secret")
+	response := httptest.NewRecorder()
+	m.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("restart-request status=%d", response.Code)
+	}
+	status, ok, err := m.Status(b)
+	if err != nil || !ok {
+		t.Fatalf("status lookup failed: %v %v", ok, err)
+	}
+	if status.PendingRestart == nil || status.PendingRestart.Reason != "tool_projection_change" || status.PendingRestart.OperationID != "projection-abc" || status.PendingRestart.Revision != 3 || status.PendingRestart.Generation != entry.Generation {
+		t.Fatalf("pending restart cause missing from status: %+v", status.PendingRestart)
+	}
+	reloaded, err := New(m.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, ok, err = reloaded.Status(b)
+	if err != nil || !ok {
+		t.Fatalf("reloaded status failed: %v %v", ok, err)
+	}
+	if status.PendingRestart == nil || status.PendingRestart.Reason != "tool_projection_change" || status.PendingRestart.OperationID != "projection-abc" || status.PendingRestart.Revision != 3 {
+		t.Fatalf("supervisor restart lost the pending restart cause: %+v", status.PendingRestart)
+	}
+}
+
+// Once the deferred restart applies, the pending cause is spent: leaving it
+// armed would keep reporting a restart reason that already happened.
+func TestAppliedRestartClearsPendingCause(t *testing.T) {
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	b := binding(root)
+	runtime, err := m.Ensure(context.Background(), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]bool{"scheduled": true})
+	}))
+	defer runtimeAPI.Close()
+	m.mu.Lock()
+	entry := m.items[runtimeKey(b)]
+	entry.Address, entry.auth = runtimeAPI.URL, "secret"
+	runtime.Address = runtimeAPI.URL
+	entry.Runtime.PendingRestart = &RestartCause{Reason: "tool_projection_change", OperationID: "projection-abc", Revision: 3, Generation: entry.Generation}
+	if err := m.persistLocked(); err != nil {
+		m.mu.Unlock()
+		t.Fatalf("seed pending cause: %v", err)
+	}
+	m.mu.Unlock()
+	applied, err := m.applyRuntimeRestart(context.Background(), runtime, "secret", 2)
+	if err != nil || !applied {
+		t.Fatalf("applyRuntimeRestart applied=%v err=%v", applied, err)
+	}
+	status, _, _ := m.Status(b)
+	if status.PendingRestart != nil {
+		t.Fatalf("applied restart left a stale cause: %+v", status.PendingRestart)
+	}
+	reloaded, err := New(m.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, _, _ = reloaded.Status(b)
+	if status.PendingRestart != nil {
+		t.Fatalf("cleared cause reappeared after supervisor restart: %+v", status.PendingRestart)
+	}
+}
+
+// The gateway polls /v1/restart after every delivered job. Once the armed
+// marker was consumed by the applied restart, the next status delivery must
+// coalesce to a no-op instead of bouncing the container a second time.
+func TestStatusDeliveryDoesNotTriggerFinalRestart(t *testing.T) {
+	var restarts atomic.Int32
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "restart" {
+			restarts.Add(1)
+		}
+		if args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	b := binding(root)
+	runtime, err := m.Ensure(context.Background(), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var scheduled atomic.Bool
+	scheduled.Store(true)
+	runtimeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]bool{"scheduled": scheduled.Load()})
+	}))
+	defer runtimeAPI.Close()
+	m.mu.Lock()
+	entry := m.items[runtimeKey(b)]
+	entry.Address, entry.auth = runtimeAPI.URL, "secret"
+	runtime.Address = runtimeAPI.URL
+	m.mu.Unlock()
+	applied, err := m.applyRuntimeRestart(context.Background(), runtime, "secret", 2)
+	if err != nil || !applied || restarts.Load() != 1 {
+		t.Fatalf("first restart applied=%v err=%v restarts=%d", applied, err, restarts.Load())
+	}
+	// The runtime consumed its marker on respawn; the next status delivery
+	// arrives at an unarmed runtime.
+	scheduled.Store(false)
+	applied, err = m.applyRuntimeRestart(context.Background(), runtime, "secret", 2)
+	if err != nil || applied || restarts.Load() != 1 {
+		t.Fatalf("status delivery retriggered restart applied=%v err=%v restarts=%d", applied, err, restarts.Load())
+	}
+}
+
+func TestRestartRequestRejectsInvalidOperation(t *testing.T) {
+	m, _ := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
+	for _, body := range []string{
+		`{"principal_id":"alice","context_id":"alice","revision":3,"operation_id":"projection-abc","reason":"tool_projection_change"}`,
+		`{"principal_id":"alice","context_id":"alice","runtime_id":"../other","revision":3,"operation_id":"projection-abc","reason":"tool_projection_change"}`,
+		`{"principal_id":"alice","context_id":"alice","runtime_id":"alice","revision":0,"operation_id":"projection-abc","reason":"tool_projection_change"}`,
+		`{"principal_id":"alice","context_id":"alice","runtime_id":"alice","revision":3,"operation_id":"projection-abc","reason":"manual"}`,
+		`{"principal_id":"alice","context_id":"alice","runtime_id":"alice","revision":3,"operation_id":"../escape","reason":"tool_projection_change"}`,
+		`{"principal_id":"alice","context_id":"alice","runtime_id":"alice","revision":3}`,
+	} {
+		request := httptest.NewRequest(http.MethodPost, "/v1/restart-request", strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer secret")
+		response := httptest.NewRecorder()
+		m.Handler().ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest {
+			t.Errorf("invalid operation returned %d for %s", response.Code, body)
+		}
 	}
 }
 
@@ -2000,6 +2200,9 @@ func TestExecuteAbandonsJobWhenRuntimeNeverRan(t *testing.T) {
 		req.Header.Set("Authorization", "Bearer secret")
 		rec := httptest.NewRecorder()
 		m.Handler().ServeHTTP(rec, req)
+		if rec.Header().Get("X-Hub-Admission") != "not-dispatched" {
+			t.Error("verified pre-dispatch rejection missing marker")
+		}
 		return rec.Code
 	}
 	if code := post(); code != http.StatusServiceUnavailable {

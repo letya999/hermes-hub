@@ -24,3 +24,11 @@ func TestChannelContractGuidesWatchSubscription(t *testing.T) {
 		}
 	}
 }
+
+func TestChannelContractRequiresHumanToolHubConfirmation(t *testing.T) {
+	for _, want := range []string{"await_user_confirmation", "verified channel callback", "actor", "action", "revision", "expiry", "confirmation button", "original chat", "status only", "never human consent"} {
+		if !strings.Contains(ChannelContract, want) {
+			t.Errorf("channel contract missing %q", want)
+		}
+	}
+}

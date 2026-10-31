@@ -30,10 +30,10 @@ func (s *Spool) prepareOriginPath(onboardingID string) string {
 
 func (s *Spool) putPrepareOrigin(onboardingID string, origin prepareOrigin) error {
 	path := s.prepareOriginPath(onboardingID)
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	if err := s.mkdirOwned(filepath.Dir(path)); err != nil {
 		return err
 	}
-	return atomicJSON(path, origin)
+	return s.writeJSON(path, origin)
 }
 
 func (s *Spool) loadPrepareOrigin(onboardingID string) (prepareOrigin, bool) {

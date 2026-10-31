@@ -767,7 +767,7 @@ func TestGoalAfterJobNativeMirrorsTurnBudget(t *testing.T) {
 	if err := g.spool.SaveGoal(Goal{TaskID: task.TaskID, PrincipalID: user.ID, ConversationID: task.ConversationID, Text: "ship it", Engine: "native", Status: "active", MaxTurns: 20, Epoch: 7}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.spool.Enqueue(Job{ID: "goal-turn-1", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "goal", ChatID: 11, TaskID: task.TaskID, Text: "continue", GoalEpoch: 7, CreatedAt: g.now().UTC()}); err != nil {
+	if _, err := g.spool.Enqueue(Job{Envelope: user.Envelope(11), IdempotencyKey: "goal-turn-1", ID: "goal-turn-1", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "goal", ChatID: 11, TaskID: task.TaskID, Text: "continue", GoalEpoch: 7, CreatedAt: g.now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
@@ -810,7 +810,7 @@ func TestGoalAfterJobDoneNotifiesWithEvidence(t *testing.T) {
 	if err := g.spool.SaveGoal(Goal{TaskID: task.TaskID, PrincipalID: user.ID, ConversationID: task.ConversationID, Text: "ship it", Engine: "hub", Status: "active", MaxTurns: 20, Epoch: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.spool.Enqueue(Job{ID: "goal-turn-done", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "goal", ChatID: 11, TaskID: task.TaskID, Text: "continue", GoalEpoch: 1, CreatedAt: g.now().UTC()}); err != nil {
+	if _, err := g.spool.Enqueue(Job{Envelope: user.Envelope(11), IdempotencyKey: "goal-turn-done", ID: "goal-turn-done", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "goal", ChatID: 11, TaskID: task.TaskID, Text: "continue", GoalEpoch: 1, CreatedAt: g.now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
@@ -907,7 +907,7 @@ func TestGoalAfterJobBlockedStops(t *testing.T) {
 	if err := g.spool.SaveGoal(Goal{TaskID: task.TaskID, PrincipalID: user.ID, ConversationID: task.ConversationID, Text: "ship it", Engine: "hub", Status: "active", MaxTurns: 20, Epoch: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.spool.Enqueue(Job{ID: "goal-turn-blocked", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "goal", ChatID: 11, TaskID: task.TaskID, Text: "x", GoalEpoch: 1, CreatedAt: g.now().UTC()}); err != nil {
+	if _, err := g.spool.Enqueue(Job{Envelope: user.Envelope(11), IdempotencyKey: "goal-turn-blocked", ID: "goal-turn-blocked", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "goal", ChatID: 11, TaskID: task.TaskID, Text: "x", GoalEpoch: 1, CreatedAt: g.now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
@@ -956,7 +956,7 @@ func TestGoalAfterJobMaxTurnsStops(t *testing.T) {
 	if err := g.spool.SaveGoal(Goal{TaskID: task.TaskID, PrincipalID: user.ID, ConversationID: task.ConversationID, Text: "ship it", Engine: "hub", Status: "active", TurnsUsed: 2, MaxTurns: 3, Epoch: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.spool.Enqueue(Job{ID: "goal-turn-max", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "goal", ChatID: 11, TaskID: task.TaskID, Text: "x", GoalEpoch: 1, CreatedAt: g.now().UTC()}); err != nil {
+	if _, err := g.spool.Enqueue(Job{Envelope: user.Envelope(11), IdempotencyKey: "goal-turn-max", ID: "goal-turn-max", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "goal", ChatID: 11, TaskID: task.TaskID, Text: "x", GoalEpoch: 1, CreatedAt: g.now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
@@ -1005,7 +1005,7 @@ func TestGoalAfterJobTransportStreakPauses(t *testing.T) {
 	if err := g.spool.SaveGoal(Goal{TaskID: task.TaskID, PrincipalID: user.ID, ConversationID: task.ConversationID, Text: "ship it", Engine: "hub", Status: "active", MaxTurns: 20, ConsecTransport: 2, Epoch: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.spool.Enqueue(Job{ID: "goal-turn-transport", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "goal", ChatID: 11, TaskID: task.TaskID, Text: "x", GoalEpoch: 1, CreatedAt: g.now().UTC()}); err != nil {
+	if _, err := g.spool.Enqueue(Job{Envelope: user.Envelope(11), IdempotencyKey: "goal-turn-transport", ID: "goal-turn-transport", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "goal", ChatID: 11, TaskID: task.TaskID, Text: "x", GoalEpoch: 1, CreatedAt: g.now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
@@ -1054,7 +1054,7 @@ func TestGoalStaleEpochNoOpsAtClaim(t *testing.T) {
 	if err := g.spool.SaveGoal(Goal{TaskID: task.TaskID, PrincipalID: user.ID, ConversationID: task.ConversationID, Text: "new goal", Engine: "hub", Status: "active", MaxTurns: 20, Epoch: 2}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.spool.Enqueue(Job{ID: "goal-turn-stale", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "goal", ChatID: 11, TaskID: task.TaskID, Text: "x", GoalEpoch: 1, CreatedAt: g.now().UTC()}); err != nil {
+	if _, err := g.spool.Enqueue(Job{Envelope: user.Envelope(11), IdempotencyKey: "goal-turn-stale", ID: "goal-turn-stale", OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "goal", ChatID: 11, TaskID: task.TaskID, Text: "x", GoalEpoch: 1, CreatedAt: g.now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
@@ -1077,12 +1077,12 @@ func TestGoalStaleEpochNoOpsAtClaim(t *testing.T) {
 	<-done
 }
 
-// A goal turn that hits a terminal run.failed gets the same single retry as a
-// user message; when the retry also fails the record pauses instead of
+// A terminal run.failed does not prove an effect-free attempt. The goal
+// pauses without a fresh operation, instead of
 // staying "active" with nothing queued — a zombie /goal status would still
 // report live while the loop never runs again (SPEC-0074 R4: stops persist a
 // reason).
-func TestGoalTurnRunFailureRetriesThenPauses(t *testing.T) {
+func TestGoalTurnRunFailurePausesWithoutResubmission(t *testing.T) {
 	c := testConfig(t)
 	g, err := New(c)
 	if err != nil {
@@ -1115,6 +1115,8 @@ func TestGoalTurnRunFailureRetriesThenPauses(t *testing.T) {
 	}
 	cancel()
 	<-done
+	// Worker shutdown finishes enqueue; drain the notice without racing cancellation.
+	g.deliverOne(context.Background())
 	goal, _, _ := g.spool.GoalForTask(user.ID, task.ConversationID)
 	if goal.Status != "paused" || goal.LastReason == "" {
 		t.Fatalf("failed goal turn left the record zombie-active: %+v", goal)
@@ -1122,8 +1124,8 @@ func TestGoalTurnRunFailureRetriesThenPauses(t *testing.T) {
 	runner.mu.Lock()
 	calls := runner.calls
 	runner.mu.Unlock()
-	if calls != 2 {
-		t.Fatalf("runner calls=%d, want 2 (one automatic retry)", calls)
+	if calls != 1 {
+		t.Fatalf("runner calls=%d, want 1 without pre-effect proof", calls)
 	}
 	fake.mu.Lock()
 	sent := append([]string{}, fake.sent...)

@@ -4,18 +4,13 @@ package audit
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"os"
-	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 )
 
-const Schema = 1
+const Schema = 2
 
 var (
 	ErrInvalid = errors.New("invalid audit event")
@@ -44,6 +39,14 @@ type Event struct {
 	CapabilityProfileRevision uint64    `json:"capability_profile_revision,omitempty"`
 	Environment               string    `json:"environment,omitempty"`
 	Generation                uint64    `json:"generation,omitempty"`
+	OperationID               string    `json:"operation_id,omitempty"`
+	CleanupAction             string    `json:"cleanup_action,omitempty"`
+	CleanupOf                 string    `json:"cleanup_of,omitempty"`
+	Phase                     string    `json:"phase,omitempty"`
+	Action                    string    `json:"action,omitempty"`
+	Authorization             string    `json:"authorization,omitempty"`
+	Execution                 string    `json:"execution,omitempty"`
+	Delivery                  string    `json:"delivery,omitempty"`
 	Outcome                   string    `json:"outcome"`
 	JobID                     string    `json:"job_id,omitempty"`
 	HermesRunID               string    `json:"hermes_run_id,omitempty"`
@@ -55,89 +58,8 @@ type Event struct {
 	Receipt string `json:"receipt,omitempty"`
 }
 
-type Ledger struct {
-	mu   sync.Mutex
-	path string
-}
-
-func Open(path string) (*Ledger, error) {
-	if path == "" || !filepath.IsAbs(path) {
-		return nil, fmt.Errorf("%w: ledger path must be absolute", ErrInvalid)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return nil, err
-	}
-	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
-		if err := os.WriteFile(path, nil, 0600); err != nil {
-			return nil, err
-		}
-	} else if err != nil {
-		return nil, err
-	}
-	return &Ledger{path: path}, nil
-}
-
-func (l *Ledger) Append(event Event) error {
-	if l == nil {
-		return fmt.Errorf("%w: nil ledger", ErrWrite)
-	}
-	if err := validate(event); err != nil {
-		return err
-	}
-	body, err := json.Marshal(event)
-	if err != nil {
-		return err
-	}
-	if containsSensitive(body) {
-		return fmt.Errorf("%w: event contains forbidden material", ErrInvalid)
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	f, err := os.OpenFile(l.path, os.O_APPEND|os.O_WRONLY, 0600) // #nosec G304 -- ledger path is created by Open.
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrWrite, err)
-	}
-	defer f.Close()
-	if _, err := f.Write(append(body, '\n')); err != nil {
-		return fmt.Errorf("%w: %v", ErrWrite, err)
-	}
-	if err := f.Sync(); err != nil {
-		return fmt.Errorf("%w: %v", ErrWrite, err)
-	}
-	return nil
-}
-
-func (l *Ledger) List(principal string) ([]Event, error) {
-	if principal == "" {
-		return nil, fmt.Errorf("%w: principal", ErrInvalid)
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	f, err := os.Open(l.path) // #nosec G304 -- ledger path is created by Open.
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	decoder := json.NewDecoder(f)
-	events := make([]Event, 0)
-	for {
-		var event Event
-		if err := decoder.Decode(&event); err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
-		}
-		if event.PrincipalID != principal {
-			continue
-		}
-		events = append(events, event)
-	}
-	return events, nil
-}
-
 func validate(event Event) error {
-	if event.Schema != Schema || event.EventID == "" || event.PrincipalID == "" || event.Kind == "" || event.Outcome == "" || event.At.IsZero() {
+	if (event.Schema != Schema && event.Schema != 1) || event.EventID == "" || event.PrincipalID == "" || event.Kind == "" || event.Outcome == "" || event.At.IsZero() {
 		return fmt.Errorf("%w: required fields", ErrInvalid)
 	}
 	switch event.Kind {
@@ -145,20 +67,25 @@ func validate(event Event) error {
 	default:
 		return fmt.Errorf("%w: kind", ErrInvalid)
 	}
+	logicalBytes := 0
 	for _, value := range []string{event.EventID, event.PrincipalID, event.ContextID, event.RuntimeID, event.ConnectionID, event.PolicyRevision, event.JobID, event.HermesRunID, event.ToolCallID, event.CorrelationID, event.Name, event.Outcome, event.Kind, event.Receipt} {
-		if strings.ContainsAny(value, "\r\n") {
-			return fmt.Errorf("%w: newline in field", ErrInvalid)
+		if len(value) > MaxRecordBytes-logicalBytes {
+			return fmt.Errorf("%w: record size", ErrInvalid)
+		}
+		logicalBytes += len(value)
+		if strings.ContainsAny(value, "\x00\r\n") {
+			return fmt.Errorf("%w: control character in field", ErrInvalid)
 		}
 	}
-	if len(event.Receipt) > 256 {
-		return fmt.Errorf("%w: receipt is too large", ErrInvalid)
+	if !ValidReceipt(event.Receipt) {
+		return fmt.Errorf("%w: unsafe receipt", ErrInvalid)
 	}
 	for _, value := range []string{event.CapabilityID, event.CapabilityProfile, event.ImplementationDigest, event.Environment, event.SenderID, event.TeamID, event.BindingID} {
 		if len(value) > 128 || strings.ContainsAny(value, "\x00\r\n") {
 			return fmt.Errorf("%w: capability metadata", ErrInvalid)
 		}
 	}
-	return nil
+	return validateOperation(event)
 }
 
 func containsSensitive(body []byte) bool {

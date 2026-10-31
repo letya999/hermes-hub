@@ -21,7 +21,7 @@ type ReadResult struct {
 
 // Read fetches one allowlisted remote path over SFTP with a byte cap. Binary
 // files are rejected like the workspace file tools.
-func (s *Service) Read(ctx context.Context, alias, remotePath string) (*ReadResult, error) {
+func (s *Service) Read(ctx context.Context, alias, remotePath string) (result *ReadResult, resultErr error) {
 	if err := s.alive(); err != nil {
 		return nil, err
 	}
@@ -37,9 +37,19 @@ func (s *Service) Read(ctx context.Context, alias, remotePath string) (*ReadResu
 		return nil, err
 	}
 	defer release()
+	ticket, err := s.beginAudit("ssh.read", alias, remotePath)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		ticket.finish(&resultErr)
+		if resultErr != nil {
+			result = nil
+		}
+	}()
 	client, err := s.dial(ctx, alias, h)
 	if err != nil {
-		s.auditEvent("ssh-file", alias, "error", "dial failed")
+
 		return nil, err
 	}
 	defer client.Close()
@@ -48,9 +58,11 @@ func (s *Service) Read(ctx context.Context, alias, remotePath string) (*ReadResu
 		return nil, fmt.Errorf("%w: sftp: %v", ErrUnavailable, err)
 	}
 	defer fs.Close()
+	ticket.execution = "unknown"
 	f, err := fs.Open(remotePath)
 	if err != nil {
-		s.auditEvent("ssh-file", alias, "error", "open failed")
+
+		ticket.execution = "failed"
 		return nil, fmt.Errorf("%w: open: %v", ErrUnavailable, err)
 	}
 	defer f.Close()
@@ -62,9 +74,12 @@ func (s *Service) Read(ctx context.Context, alias, remotePath string) (*ReadResu
 		body = body[:h.readLimit()]
 	}
 	if !utf8.Valid(body) {
+		ticket.execution = "failed"
 		return nil, fmt.Errorf("%w: remote file is not UTF-8 text", ErrInvalid)
 	}
-	s.auditEvent("ssh-file", alias, "ok", fmt.Sprintf("read %s bytes=%d", remotePath, len(body)))
+
+	ticket.execution = "succeeded"
+	ticket.receipt = fmt.Sprintf("bytes=%d", len(body))
 	return &ReadResult{Alias: alias, Path: remotePath, Text: string(body), Truncated: truncated, Bytes: len(body)}, nil
 }
 
@@ -76,7 +91,7 @@ type WriteResult struct {
 
 // Write atomically replaces one allowlisted remote path (temp + rename). The
 // ssh_write grant is required and the payload is bounded UTF-8 text.
-func (s *Service) Write(ctx context.Context, alias, remotePath, text string) (*WriteResult, error) {
+func (s *Service) Write(ctx context.Context, alias, remotePath, text string) (result *WriteResult, resultErr error) {
 	if err := s.alive(); err != nil {
 		return nil, err
 	}
@@ -98,9 +113,19 @@ func (s *Service) Write(ctx context.Context, alias, remotePath, text string) (*W
 		return nil, err
 	}
 	defer release()
+	ticket, err := s.beginAudit("ssh.write", alias, remotePath)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		ticket.finish(&resultErr)
+		if resultErr != nil {
+			result = nil
+		}
+	}()
 	client, err := s.dial(ctx, alias, h)
 	if err != nil {
-		s.auditEvent("ssh-file", alias, "error", "dial failed")
+
 		return nil, err
 	}
 	defer client.Close()
@@ -114,9 +139,10 @@ func (s *Service) Write(ctx context.Context, alias, remotePath, text string) (*W
 		return nil, fmt.Errorf("%w: temp name", ErrUnavailable)
 	}
 	tmp := remotePath + ".hub-ssh-" + hex.EncodeToString(raw)
+	ticket.execution = "unknown"
 	f, err := fs.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL)
 	if err != nil {
-		s.auditEvent("ssh-file", alias, "error", "temp create failed")
+
 		return nil, fmt.Errorf("%w: temp create: %v", ErrUnavailable, err)
 	}
 	_, writeErr := f.Write([]byte(text))
@@ -127,9 +153,11 @@ func (s *Service) Write(ctx context.Context, alias, remotePath, text string) (*W
 	}
 	if err = fs.Rename(tmp, remotePath); err != nil {
 		_ = fs.Remove(tmp)
-		s.auditEvent("ssh-file", alias, "error", "rename failed")
+
 		return nil, fmt.Errorf("%w: rename: %v", ErrUnavailable, err)
 	}
-	s.auditEvent("ssh-file", alias, "ok", fmt.Sprintf("write %s bytes=%d", remotePath, len(text)))
+
+	ticket.execution = "succeeded"
+	ticket.receipt = fmt.Sprintf("bytes=%d", len(text))
 	return &WriteResult{Alias: alias, Path: remotePath, Bytes: len(text)}, nil
 }

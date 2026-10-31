@@ -1,6 +1,6 @@
 ---
 description: supervisor — per-space runtime spawner/manager; owns warm pools, docker exec agent-tools path, control channel.
-last_verified: 2026-10-26
+last_verified: 2026-10-29
 ---
 
 # supervisor
@@ -25,7 +25,9 @@ the shared space network.
 
 `docker.sock` (the only service besides toolhub that may touch it), the parent
 spaces dir at `/spaces`, project `config/` read-only, and the host
-`.local/supervisor.log` bind for diagnostics.
+dedicated `.local/diagnostics/` directory bind for rotation-safe diagnostics.
+The ToolHub collector receives that directory read-only; neighboring auth/control
+files are excluded. Shared host-gid access uses 0770 directories and 0660 log files.
 
 ## Responsibilities
 
@@ -46,6 +48,15 @@ spaces dir at `/spaces`, project `config/` read-only, and the host
   successful no-op — next lease spawns fresh. Secondary spaces
   (`infra: false`) render no `hermes-runtime` service; the infra owner drops
   it when `HUB_RUNTIME_SUPERVISOR_URL` is configured.
+  A versioned ToolHub restart request forwards its operation ID, reason and
+  revision with the selected runtime generation; the runtime rejects stale
+  generations. Legacy requests without operation fields remain supported.
+  For a busy runtime the request is deferred: the supervisor persists a
+  bounded `pending_restart` cause (operation ID, reason, revision,
+  generation) so a supervisor restart cannot lose *why* a restart is owed;
+  the cause is cleared and persisted as spent once the restart actually
+  applies, and later post-delivery polls coalesce to no-ops on an unarmed
+  runtime.
 - `/v1/runtimes` entries expose a read-only `consumers` projection (lease
   kind, owner class, expiry) and `wait_reason` for expected waits — parked
   approvals/streams are reported, not remediated. Genuine anomalies append
@@ -83,3 +94,14 @@ spaces dir at `/spaces`, project `config/` read-only, and the host
   toolhub + workload-controller.
 - `restart: unless-stopped`, `stop_grace_period: 30s` — a supervisor restart
   does not kill spawned runtimes; they re-register.
+
+## Pre-dispatch rejection contract
+
+`POST /v1/execute` and `/v1/jobs` return 503 with
+`X-Hub-Admission: not-dispatched` when acquiring the runtime fails before any
+execute request reaches it. Communication may retry that refusal using the same
+job and idempotency identity. A bare 503, response loss after dispatch or failed
+mandatory checkpoint does not establish this boundary and stays uncertain.
+The marker is emitted by the supervisor's acquire-failure branch and is not
+copied from an upstream runtime response. Recovery observes the original job;
+these local protocol tests do not replace CHG-0198 native/container acceptance.

@@ -70,6 +70,15 @@ func TestPostPrepareNoticeContract(t *testing.T) {
 		t.Fatalf("event payload: %v", got)
 	}
 	// settled phases carry no form URL
+	onboarding.Phase = PhaseAwaitingConfirm
+	onboarding.ConfirmationNonce = "human-confirmation-nonce"
+	onboarding.Revision = 7
+	onboarding.ConfirmationExpires = time.Now().Add(time.Minute)
+	PostPrepareNotice(context.Background(), auth, onboarding, "", 0)
+	proof, ok := got["confirmation"].(map[string]any)
+	if !ok || proof["nonce"] != onboarding.ConfirmationNonce || proof["revision"] != float64(7) || proof["action_digest"] != ConfirmationActionDigest(onboarding) || proof["expires_at"] == "" {
+		t.Fatalf("trusted channel proof missing: %v", got)
+	}
 	got = nil
 	settled := onboarding
 	settled.Phase = PhaseEnabled

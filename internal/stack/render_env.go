@@ -106,22 +106,22 @@ func RenderEnvironment(dir, root, environment string) error {
 		}
 	}
 	if s.RendersInfra() && (s.DiagnosticsEnabled() || (s.ExecutionMode == "supervisor" && s.SupervisorURL == "http://supervisor:8876")) {
-		// Per-user diagnostics live under the space; the repo-level .local only
-		// hosts the shared host-supervisor log, bind-mounted read-only so a
-		// missing file can never materialize as a directory inside the stack.
-		if err := os.MkdirAll(filepath.Join(dir, "diagnostics"), 0700); err != nil {
-			return err
-		}
-		localDir := filepath.Join(root, ".local")
-		if err := os.MkdirAll(localDir, 0700); err != nil {
-			return err
-		}
-		hostLog, err := os.OpenFile(filepath.Join(localDir, "supervisor.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
-		if err != nil {
-			return err
-		}
-		if err := hostLog.Close(); err != nil {
-			return err
+		// Dedicated metadata-only directories survive rotation without exposing
+		// neighboring auth/control files. The service uid shares the host gid.
+		for _, logDir := range []string{filepath.Join(dir, "diagnostics"), filepath.Join(root, ".local", "diagnostics")} {
+			if err := os.MkdirAll(logDir, 0770); err != nil {
+				return err
+			}
+			info, err := os.Lstat(logDir)
+			if err != nil {
+				return err
+			}
+			if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("unsafe diagnostic directory")
+			}
+			if err := os.Chmod(logDir, 0770); err != nil {
+				return err
+			}
 		}
 	}
 	if err = writeHonchoConfig(dir, s); err != nil {

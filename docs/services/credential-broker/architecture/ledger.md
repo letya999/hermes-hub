@@ -7,7 +7,8 @@ last_verified: "2026-10-28"
 
 Physical storage compaction is lossless: each record is compressed before
 AEAD encryption, and a legacy ledger above one third of its configured limit
-is rewritten atomically on open. The sequence, plaintext hash chain, audit
+is rewritten atomically on standalone open. Anchored recovery disables this
+rewrite until its trusted head and both committed prefixes have been checked. The sequence, plaintext hash chain, audit
 records, and independent recovery anchor remain unchanged. A separate lock
 file fences writers across inode replacement. The byte limit remains hard;
 if incompressible history fills it, mutations fail closed and require an
@@ -32,3 +33,15 @@ Default limit 64 MiB, максимум 1 GiB. Полного event sourcing кл
 При restart сохраняются requests/grants/credential refs/snapshots; leases всегда исчезают,
 plaintext materializations очищаются. Незавершённый token exchange требует нового enrollment.
 Старый workload оператор/ToolHub должен остановить: broker restart не управляет Docker.
+
+В anchored режиме текущая sealed `current-head` версии 2 связывает format,
+store identity (primary/recovery key identity), sequence и digest. Даже пустой
+store имеет явную genesis-голову. Ack приходит после recovery, primary и
+atomic head replace с file/directory sync. Неверная/потерянная текущая голова
+блокирует открытие до обрезки либо compaction; старые commit-файлы не fallback.
+Обрезать можно только хвост после проверенной текущей головы, проверив оба
+committed prefix. Missing/corrupt ciphertext не чинится этим механизмом.
+Legacy head требует offline `migrate-head` на согласованном наборе; новая
+версия marker отвергается прежним anchored binary. Legacy commit evidence
+мигратор сохраняет. Replay всех доверенных свежестных данных по-прежнему
+не обнаруживается без независимого external freshness.

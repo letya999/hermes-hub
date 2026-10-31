@@ -196,16 +196,7 @@ func (c *ControlPlane) completeRemoteOAuth(ctx context.Context, flow *preparedOA
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return err
 	}
-	if err := c.refreshConfirmation(ctx, auth, &onboarding); err != nil {
-		return err
-	}
-	if _, err := c.confirm(ctx, auth, map[string]any{"onboarding_id": onboarding.OnboardingID, "nonce": onboarding.ConfirmationNonce}); err != nil {
-		return err
-	}
-	if _, err := c.enable(ctx, auth, map[string]any{"onboarding_id": onboarding.OnboardingID}); err != nil {
-		return err
-	}
-	return nil
+	return c.refreshConfirmation(ctx, auth, &onboarding)
 }
 
 // remoteOAuthRefresh mints a fresh access token for an OAuth-managed remote

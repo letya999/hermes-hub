@@ -601,20 +601,16 @@ var errCredentialSaved = errors.New("credential saved")
 // stored, so the form re-renders instead of reporting a saved secret.
 var errCredentialProbe = errors.New("credential probe rejected")
 
-// AuthorizeCredentials treats the protected form submission as the user's
-// confirmation and completes the binding without another model round-trip.
+// AuthorizeCredentials stores verified inputs and requests actor-bound consent.
 func (c *ControlPlane) AuthorizeCredentials(ctx context.Context, onboardingID, nonce string, values map[string]string) error {
 	if err := c.SubmitCredentials(onboardingID, nonce, values); err != nil {
 		return err
 	}
-	if err := c.finishAuthorization(ctx, onboardingID); err != nil {
-		if latest, lerr := c.Store.onboarding(onboardingID); lerr == nil {
-			notify := latest
-			notify.Error = err.Error()
-			api.DeliverPrepareEvent(ctx, onboardingEnvelope(latest), notify, "binding-failed")
-		}
-		return fmt.Errorf("%w: %w", errCredentialSaved, err)
+	onboarding, err := c.Store.onboarding(onboardingID)
+	if err != nil {
+		return err
 	}
+	api.PostPrepareNotice(ctx, onboardingEnvelope(onboarding), onboarding, "", 0)
 	return nil
 }
 

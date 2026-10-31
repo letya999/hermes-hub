@@ -35,8 +35,7 @@ type HTTPRunner struct {
 	Voice bool
 }
 
-// submitRetryBase is the first backoff step for provably unadmitted
-// submissions (dial/connect refused, 503); it doubles up to 20 s.
+// submitRetryBase backs off verified pre-dispatch refusals; identity stays fixed.
 var submitRetryBase = time.Second
 
 // coldStartBudget bounds submission retries while the supervisor is down or
@@ -156,9 +155,8 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 		// the cap and the idle deadline abandons silent hops.
 		httpClient = r.streamClient()
 	}
-	// A supervisor that is down or still booting (dial/DNS failure, or 503)
-	// provably never admitted the job, so retrying inside the cold-start
-	// budget is safe; anything past response headers stays uncertain.
+	// Retry only a dial failure or the trusted supervisor pre-dispatch marker.
+	// A status code alone cannot establish that no side effect happened.
 	deadline := time.Now().Add(coldStartBudget())
 	delay := submitRetryBase
 	for {
@@ -175,7 +173,7 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 			req.Header.Set("Accept", hubruntime.RunStreamContentType)
 		}
 		response, err = httpClient.Do(req)
-		if err == nil && response.StatusCode != http.StatusServiceUnavailable {
+		if err == nil && (response.StatusCode != http.StatusServiceUnavailable || response.Header.Get("X-Hub-Admission") != "not-dispatched" || r.Resume) {
 			break
 		}
 		if err != nil && !retryableSubmitError(err) {
@@ -260,7 +258,7 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 		if terminalStatus(failure.Status) && failure.JobID == job.ID {
 			r.meterUsage(jobCtx, job, failure.RunID, time.Since(startedAt))
 		}
-		if failure.Status == "uncertain" || (r.Resume && response.StatusCode == http.StatusConflict) {
+		if failure.Status == "uncertain" || !terminalStatus(failure.Status) || failure.JobID != job.ID || failure.RunID == "" || failure.SessionID == "" || failure.RuntimeGeneration == "" || (r.Resume && response.StatusCode == http.StatusConflict) {
 			// A resume conflict only says the outcome is not observable yet —
 			// the reconciler may still settle it, so it stays uncertain.
 			return outcome, fmt.Errorf("%w: runtime returned HTTP %d", ErrUncertain, response.StatusCode)
@@ -269,13 +267,13 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 	}
 	var result hubruntime.ExecuteResponse
 	if err := json.NewDecoder(io.LimitReader(response.Body, 2*1024*1024+64*1024)).Decode(&result); err != nil {
-		return RunOutcome{}, errors.New("runtime returned an invalid response")
+		return RunOutcome{}, fmt.Errorf("%w: invalid runtime response", ErrUncertain)
 	}
-	if result.Status == "uncertain" {
+	if result.Status != "" && !terminalStatus(result.Status) {
 		return outcomeFromEvent(result), ErrUncertain
 	}
 	if strings.TrimSpace(result.Text) == "" && (result.Status == "completed" || !terminalStatus(result.Status)) {
-		return RunOutcome{}, errors.New("runtime returned an invalid response")
+		return RunOutcome{}, fmt.Errorf("%w: invalid runtime response", ErrUncertain)
 	}
 	if terminalStatus(result.Status) && result.JobID == job.ID {
 		r.meterUsage(jobCtx, job, result.RunID, time.Since(startedAt))
@@ -309,9 +307,8 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 			result.EventID = "terminal:" + result.Status
 			result.LastEvent = "run." + result.Status
 			persistErr = r.Spool.RecordStreamEvent(job, result)
-		} else {
-			persistErr = r.Spool.RecordOutcome(job.ID, outcomeFromEvent(result))
-		}
+		} // Outcomes without a stream binding are committed by the worker receipt.
+
 		if persistErr != nil {
 			return RunOutcome{}, ErrUncertain
 		}
@@ -319,8 +316,7 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 	if terminalStatus(result.Status) && result.Status != "completed" {
 		return outcomeFromEvent(result), errors.New("hermes run ended without completion")
 	}
-	outcome := RunOutcome{Text: result.Text, JobID: result.JobID, SessionID: result.SessionID, RunID: result.RunID, RuntimeGeneration: result.RuntimeGeneration, Status: result.Status, LastEvent: result.LastEvent, Voice: result.Voice}
-	return outcome, nil
+	return outcomeFromEvent(result), nil
 }
 
 // meterUsage journals the measured session usage after a terminal run. It is

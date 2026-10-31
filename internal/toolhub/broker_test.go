@@ -1270,6 +1270,14 @@ func TestEnsureBrokerRequestSkipsRevokedCredentialReuse(t *testing.T) {
 			if err := store.PutConnection(api.Connection{Schema: api.SchemaVersion, ConnectionID: "conn-existing", Owner: api.OwnerRef{Type: api.PrincipalOwner, ID: "alice"}, DefinitionID: definition.DefinitionID, CredentialRefID: old.CredentialRefID, Revision: 1, Status: api.ActiveStatus}); err != nil {
 				t.Fatal(err)
 			}
+			path := filepath.Join(t.TempDir(), "toolhub", "store.json")
+			if err := store.Save(path); err != nil {
+				t.Fatal(err)
+			}
+			store, err = Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
 			cfg := credentialbroker.Config{URL: server.URL, KeyFile: keyPath, KeyID: "toolhub", Issuer: "hermes-toolhub"}
 			control := &ControlPlane{Store: store, Broker: &cfg, Now: time.Now}
 			onboarding, err := control.newOnboarding(auth, api.OnboardingCatalog, "reinstall", definition, "", "")

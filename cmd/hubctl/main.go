@@ -293,6 +293,27 @@ func run(ctx context.Context, args []string) error {
 			return fmt.Errorf("replay: unknown subcommand %q (export|run)", args[1])
 		}
 	}
+	if op == "storage" {
+		if len(args) < 2 {
+			return fmt.Errorf("usage: hubctl storage <status|cleanup>")
+		}
+		f := flag.NewFlagSet("storage", flag.ContinueOnError)
+		spoolDir := f.String("spool", "", "communication spool dir")
+		if args[1] == "cleanup" {
+			apply := f.Bool("apply", false, "apply the verified plan; default is dry-run")
+			digest := f.String("digest", "", "plan digest required with --apply")
+			retention := f.Duration("retention", 72*time.Hour, "terminal retention window")
+			if err := f.Parse(args[2:]); err != nil {
+				return err
+			}
+			return runStorageCleanup(os.Stdout, *spoolDir, *apply, *digest, *retention)
+		}
+		toolhubStore := f.String("toolhub-store", "", "ToolHub registry path")
+		if err := f.Parse(args[2:]); err != nil {
+			return err
+		}
+		return runStorageStatus(os.Stdout, *spoolDir, *toolhubStore)
+	}
 	if op == "spool" {
 		f := flag.NewFlagSet("spool", flag.ContinueOnError)
 		spoolDir := f.String("spool", "", "communication spool dir")
@@ -395,7 +416,7 @@ func run(ctx context.Context, args []string) error {
 		if !envSet {
 			supervisorEnv = ""
 		}
-		stopLog, err := diagnostics.HostLog(filepath.Join(filepath.Dir(*spacesRoot), ".local", "supervisor.log"))
+		stopLog, err := diagnostics.HostLog(filepath.Join(filepath.Dir(*spacesRoot), ".local", "diagnostics", "supervisor.log"))
 		if err != nil {
 			return err
 		}
@@ -468,7 +489,7 @@ func run(ctx context.Context, args []string) error {
 				explicitUser = *profile
 			}
 		})
-		return runTrace(ctx, os.Stdout, f.Arg(0), explicitUser, *spacesRoot)
+		return runTrace(ctx, os.Stdout, f.Arg(0), explicitUser, *spacesRoot, *environment)
 	}
 	if !slices.Contains([]string{"doctor", "build", "up", "down", "logs", "chat", "telegram-login", "meet-auth", "exec"}, op) {
 		return fmt.Errorf("unknown command %q", op)

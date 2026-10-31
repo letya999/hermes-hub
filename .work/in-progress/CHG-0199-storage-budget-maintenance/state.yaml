@@ -1,0 +1,49 @@
+schema: 1
+change: CHG-0199
+title: "Полный учёт объёма и безопасное операторское обслуживание"
+status: in_progress
+branch: codex/storage-reliability-mvp
+updated: "2026-10-30"
+phase: root-operator-surface-implementation
+adr: ADR-0085
+spec: SPEC-0085
+related_specs: [SPEC-0084]
+requirements: [R5]
+depends_on: [CHG-0193, CHG-0195, CHG-0196, CHG-0197, CHG-0198]
+workstream: storage-reliability-mvp
+github_milestone: null
+github_issue: null
+design_status: accepted
+implementation_status: in_progress
+readiness: broker_dependency_gated_root_preparation
+slices:
+  S199.1-all-owned-bytes: in_progress
+  S199.2-owner-maintenance: in_progress
+  S199.3-safe-operator-cli: in_progress
+validation:
+  documents: passed
+  planning_package: passed
+  planning_just_check: failed
+  just_check: passed_after_communication_maintenance
+  root_statement_coverage: "85.94%"
+  communication_maintenance_race: passed_on_full_repeat
+  gosec_after_fix: passed
+  targeted_race_after_fix: passed
+  previous_root_just_check: passed
+  previous_root_statement_coverage: "85.91%"
+  full_footprint_red: reproduced
+  next_write_reserve_red: reproduced
+  module_check: not_run
+  security: not_run
+  docker_check: deferred_by_user
+  red_team: in_progress
+  live_acceptance: not_started
+evidence:
+  - "evidence.md: root storage budget regression and implementation progress."
+remaining:
+  - "ToolHub accounting, maintenance and the storage status/cleanup CLI are implemented and covered by synthetic regressions; Broker accounting/maintenance/CLI integration remains."
+  - "Broker accounting/maintenance integration remains gated by CHG-0194 SQLCipher proof and dependent CHG-0195/0196."
+limitations:
+  - "ToolHub accounting binds the whole persisted-store directory (snapshot plus owned sidecar state); quota is enforced on snapshot writes. Broker owner accounting remains outstanding."
+  - "Communication bounded accounting and maintenance use synthetic filesystem evidence; no Docker/native durability or live acceptance performed."
+  - "Security audit without destructive policy eventually stops admission at the finite cap; no infinite-retention promise."

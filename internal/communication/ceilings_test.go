@@ -2,6 +2,7 @@ package communication
 
 import (
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -99,12 +100,13 @@ func TestCeilingsTokenDaily(t *testing.T) {
 	}
 }
 
-// The storage ceiling stats live queue bytes under the spool mutex: once the
-// queue exceeds the cap, further admission is refused until it drains.
+// Retained owner bytes consume headroom even after the pending queue is small.
 func TestCeilingsSpoolBytes(t *testing.T) {
 	t.Setenv("HUB_SPOOL_MAX_PENDING_PER_SCOPE", "0")
 	t.Setenv("HUB_SPOOL_MAX_PENDING_TOTAL", "0")
-	t.Setenv("HUB_SPOOL_MAX_BYTES", "1")
+	t.Setenv("HUB_SPOOL_MAX_BYTES", "16384")
+	t.Setenv("HUB_SPOOL_MAX_NEXT_WRITE_BYTES", "4096")
+	t.Setenv("HUB_SPOOL_LIFECYCLE_RESERVE_BYTES", "4096")
 	spool, err := NewSpool(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -122,6 +124,11 @@ func TestCeilingsSpoolBytes(t *testing.T) {
 	}
 	if err := enqueue("job-bytes-0"); err != nil {
 		t.Fatalf("empty spool refused: %v", err)
+	}
+	for _, name := range []string{"retained-a", "retained-b"} {
+		if err := spool.writeBlob(filepath.Join(spool.root, "tmp", name), make([]byte, 4096), true); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := enqueue("job-bytes-1"); err == nil {
 		t.Fatal("storage ceiling not enforced")

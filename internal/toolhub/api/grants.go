@@ -122,6 +122,7 @@ type Onboarding struct {
 	ConfirmationNonce   string           `json:"confirmation_nonce,omitempty"`
 	ConfirmationExpires time.Time        `json:"confirmation_expires,omitempty"`
 	ConfirmationUsed    bool             `json:"confirmation_used,omitempty"`
+	HumanConsent        *HumanConsent    `json:"human_consent,omitempty"`
 	// RemoveNonce/RemoveExpires arm the destructive remove: the first call
 	// previews and issues the nonce; only a follow-up remove carrying it
 	// deletes credentials, workloads and state.

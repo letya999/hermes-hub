@@ -270,6 +270,7 @@ func TestConnectorToolsProjection(t *testing.T) {
 		Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 			return api.BackendResult{Text: "ok"}, nil
 		})}
+	attachGatewayAudit(t, g)
 	handler, err := g.Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -897,10 +898,16 @@ func TestConnectorAllowWritesJournal(t *testing.T) {
 	if armed.WizardNonce == "" || armed.WizardExpires.IsZero() {
 		t.Fatalf("allow_writes confirm did not arm the wizard link: %+v", armed)
 	}
-	// The human confirms on the protected page — same /confirm surface.
-	gateway := &Gateway{Control: c}
-	rec, req := confirmLinkRequest(t, http.MethodPost, "http://127.0.0.1/confirm/"+armed.OnboardingID+"?t="+armed.ConfirmationNonce)
-	gateway.serveConfirm(rec, req)
+	// Only the channel's verified actor can attest the exact write upgrade.
+	gateway := &Gateway{Store: store, Control: c, ControlToken: "synthetic-service-confirmation-bearer", Tokens: map[string]identity.Envelope{aliceToken: auth}}
+	proof, err := json.Marshal(api.HumanConfirmation{OnboardingID: armed.OnboardingID, Actor: auth, Nonce: armed.ConfirmationNonce, Revision: armed.Revision, ActionDigest: api.ConfirmationActionDigest(armed), ExpiresAt: armed.ConfirmationExpires})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/confirmations", strings.NewReader(string(proof)))
+	req.Header.Set("Authorization", "Bearer "+gateway.ControlToken)
+	gateway.serveHumanConfirmation(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("writes confirm page status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -1035,6 +1042,7 @@ func TestConnectorHTTPVerbsUseFacade(t *testing.T) {
 		Backend:      api.RoutingBackend{},
 		Tokens:       map[string]identity.Envelope{"alice-principal-token-0000000000000": auth},
 	}
+	attachGatewayAudit(t, g)
 	handler, err := g.Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -1103,7 +1111,7 @@ func TestStatusBodyTypedCodesOnly(t *testing.T) {
 	}
 	wantNext := map[string]string{
 		api.PhasePreparing: "poll_status", api.PhaseFailed: "retry", api.PhaseAwaitingCreds: "submit_credentials",
-		api.PhaseAwaitingConfirm: "confirm", api.PhaseAwaitingOAuth: "authorize", api.PhaseConfirmed: "enable",
+		api.PhaseAwaitingConfirm: "await_user_confirmation", api.PhaseAwaitingOAuth: "authorize", api.PhaseConfirmed: "enable",
 	}
 	for _, on := range phases {
 		body := control.statusBody(on, false)

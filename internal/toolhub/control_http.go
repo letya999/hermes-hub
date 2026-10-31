@@ -59,7 +59,17 @@ func (g *Gateway) addControlTools(server *mcp.Server, auth identity.Envelope, al
 				}
 			}
 			notifyControlProgress(ctx, request, name, false, nil)
-			body, err := g.Control.Invoke(ctx, auth, name, arguments)
+			var body map[string]any
+			var err error
+			if name == "confirm" {
+				if err = g.Store.RequireControlOperation(auth, name); err == nil {
+					if err = api.RejectAuthorityArguments(arguments); err == nil {
+						body, err = g.Control.status(ctx, auth, arguments)
+					}
+				}
+			} else {
+				body, err = g.Control.Invoke(ctx, auth, name, arguments)
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -76,7 +86,7 @@ func (g *Gateway) addControlTools(server *mcp.Server, auth identity.Envelope, al
 	if !allowed["invoke"] {
 		return
 	}
-	server.AddTool(&mcp.Tool{Name: "invoke", Description: "Call an enabled ToolHub projected tool without reconnecting the MCP client. Pass the exact projected tool name and its arguments.", InputSchema: map[string]any{
+	server.AddTool(&mcp.Tool{Name: "invoke", Description: "Call an enabled ToolHub projected tool without reconnecting the MCP client. Pass the exact projected tool name and its arguments. An uncertain application result carries operation_id and retryable=false; reconcile it before any repeat.", InputSchema: map[string]any{
 		"type": "object", "required": []string{"tool"}, "additionalProperties": false,
 		"properties": map[string]any{"tool": map[string]any{"type": "string"}, "arguments": map[string]any{"type": "object"}},
 	}}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -90,7 +100,7 @@ func (g *Gateway) addControlTools(server *mcp.Server, auth identity.Envelope, al
 		if request == nil || json.Unmarshal(request.Params.Arguments, &arguments) != nil || strings.TrimSpace(arguments.Tool) == "" {
 			return nil, fmt.Errorf("%w: invoke arguments", api.ErrInvalid)
 		}
-		return g.call(ctx, auth, arguments.Tool, arguments.Arguments)
+		return g.mcpCall(ctx, auth, arguments.Tool, arguments.Arguments)
 	})
 }
 
@@ -141,11 +151,11 @@ func controlToolContract(name string) (string, map[string]any) {
 			"tail":     map[string]any{"type": "integer", "description": "Newest lines to return, 1-500 (default 200).", "minimum": 1, "maximum": 500},
 			"since":    map[string]any{"type": "string", "description": "RFC3339 lower time bound."},
 			"until":    map[string]any{"type": "string", "description": "RFC3339 upper time bound."},
-			"search":   map[string]any{"type": "string", "description": "Case-insensitive substring filter.", "maxLength": 256},
+			"search":   map[string]any{"type": "string", "description": "Case-insensitive substring filter over safe lifecycle metadata; message bodies are excluded.", "maxLength": 256},
 			"severity": map[string]any{"type": "string", "enum": []string{"info", "warn", "error"}},
 			"workload": map[string]any{"type": "string", "description": "Narrow to a workload_id, binding_id, definition_id, or \"runtime\" for the Hermes runtime container."},
 		}
-		description = "User-scoped runtime diagnostics. Returns health for the authenticated caller's own connector workloads plus bounded, redacted log lines from their runtime and workload containers. Host logs, other users' data, secrets and raw Docker APIs are never exposed."
+		description = "User-scoped runtime diagnostics. Returns owned workload health and bounded lifecycle metadata from the authenticated caller's runtime/workloads. Message bodies, unknown log fields, other users' data, secrets and raw Docker APIs are excluded. Search uses safe metadata only. source_position identifies replay; truncated or diagnostic_gap means incomplete evidence, never verified success."
 	case "grant_request":
 		properties = map[string]any{
 			"section":  map[string]any{"type": "string", "description": "Governance section to unlock; default user_mcp."},
@@ -158,6 +168,8 @@ func controlToolContract(name string) (string, map[string]any) {
 			properties["resend"] = map[string]any{"type": "boolean", "description": "Only when the user explicitly asks for the pending action link again (send/resend/re-issue the link): posts it as a fresh channel message. For an OAuth onboarding the armed link is rotated — the previous link stops working, so do not resend as a routine poll."}
 			description += " With no selector, status returns the latest onboarding for the authenticated user."
 		}
+	case "confirm":
+		description += " Read the current onboarding status only. Confirmation requires a verified channel callback bound to the human actor, exact action, revision and expiry; calling this tool, even with a nonce, never grants consent. Protected pages display status only."
 	}
 	return description, map[string]any{"type": "object", "properties": properties, "additionalProperties": true}
 }
@@ -463,22 +475,18 @@ func (g *Gateway) serveConfirm(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	var finishErr error
-	if onboarding.PendingWrites {
-		finishErr = g.Control.applyConfirmedWrites(r.Context(), onboardingID)
-	} else {
-		finishErr = g.Control.finishAuthorization(r.Context(), onboardingID)
-	}
-	if finishErr != nil {
-		w.WriteHeader(http.StatusBadGateway)
-		_, _ = io.WriteString(w, credentialResultPage("Подтверждение не прошло", api.PublicPrepareError(finishErr))) // #nosec G705 -- credentialResultPage escapes title and message
-		return
-	}
-	_, _ = io.WriteString(w, credentialResultPage("Подключение подтверждено", "Возвращаться в чат и писать «готово» не нужно."))
+	http.Error(w, "verified channel confirmation required", http.StatusForbidden)
 }
 
 func confirmPage(onboarding api.Onboarding) string {
-	return `<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Подтверждение MCP</title><style>:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:28px;letter-spacing:-.02em}p{margin:0 0 22px;color:#52606d;line-height:1.6}button{width:100%;border:0;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font:inherit;font-weight:700;cursor:pointer}</style><main><h1>Подтверждение подключения</h1><p>Сервер ` + html.EscapeString(onboarding.DefinitionID) + ` будет подключён и получит доступ к сохранённым данным.</p><form method="post"><button type="submit">Подтвердить подключение</button></form></main></html>`
+	text := "Сервер " + onboarding.DefinitionID + "."
+	if len(onboarding.Permissions) > 0 {
+		text += " Запрошенные права: " + strings.Join(onboarding.Permissions, ", ") + "."
+	}
+	if len(onboarding.Effects) > 0 {
+		text += " Доступ затрагивает: " + strings.Join(onboarding.Effects, ", ") + "."
+	}
+	return credentialResultPage("Подтверждение подключения", text+" Подтвердите действие кнопкой в чате, из которого вы запросили подключение.")
 }
 
 // serveRemove is the destructive twin of serveConfirm: the channel notice
@@ -660,19 +668,7 @@ func (g *Gateway) serveWizard(w http.ResponseWriter, r *http.Request, onboarding
 			return
 		}
 		if r.Method == http.MethodPost {
-			var finishErr error
-			if onboarding.PendingWrites {
-				finishErr = g.Control.applyConfirmedWrites(r.Context(), onboardingID)
-			} else {
-				finishErr = g.Control.finishAuthorization(r.Context(), onboardingID)
-			}
-			if finishErr != nil {
-				http.Error(w, "confirmation failed", http.StatusBadGateway)
-				return
-			}
-			wizardURL := g.Control.origin() + "/connect/" + url.PathEscape(onboardingID) + "?k=" + url.QueryEscape(onboarding.WizardNonce)
-			w.Header().Set("Location", wizardURL)
-			w.WriteHeader(http.StatusSeeOther)
+			http.Error(w, "verified channel confirmation required", http.StatusForbidden)
 			return
 		}
 	}

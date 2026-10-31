@@ -17,6 +17,7 @@ func TestSystemGuideAvailableWithoutConnectorGrants(t *testing.T) {
 		t.Fatal("reference read executed a provider tool")
 		return api.BackendResult{}, nil
 	})}
+	attachGatewayAudit(t, g)
 	handler, err := g.Handler()
 	if err != nil {
 		t.Fatal(err)

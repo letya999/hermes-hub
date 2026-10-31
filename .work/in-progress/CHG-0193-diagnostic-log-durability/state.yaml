@@ -1,0 +1,40 @@
+schema: 1
+change: CHG-0193
+title: "Ротация, курсоры и ограниченный trace диагностики"
+status: in_progress
+branch: codex/storage-reliability-mvp
+updated: "2026-10-29"
+phase: implementation-validation
+adr: ADR-0085
+spec: SPEC-0085
+requirements: [R2]
+depends_on: []
+workstream: storage-reliability-mvp
+github_milestone: null
+github_issue: null
+design_status: accepted
+implementation_status: in_progress
+readiness: acceptance_pending
+slices:
+  S193.1-rotation: implemented_pending_acceptance
+  S193.2-source-cursors: implemented_pending_acceptance
+  S193.3-trace: implemented_pending_acceptance
+validation:
+  documents: passed
+  planning_package: passed
+  planning_just_check: failed
+  just_check: passed
+  just_check_host: windows
+  root_statement_coverage: "85.95%"
+  module_check: not_applicable
+  security: not_required_no_dependency_change
+  docker_check: deferred_by_user
+  red_team: passed_synthetic_only
+  live_acceptance: not_started
+evidence:
+  - "evidence.md: synthetic/native filesystem regression and contract receipts."
+remaining:
+  - "Windows full root gate passed; Docker daemon/volume proof remains outstanding."
+  - "Catalog 5.8.0-storage.1 is prepared only; rebind + respawn deferred by the user Docker restriction."
+limitations:
+  - "Code is isolated in the new worktree; no production mounts, providers or data were changed."

@@ -16,3 +16,14 @@ func stopProcess(cmd *exec.Cmd)                 { _ = syscall.Kill(-cmd.Process.
 func processAlive(pid int) bool                 { return pid > 0 && syscall.Kill(pid, 0) == nil }
 func notifySignals(ch chan os.Signal)           { signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM) }
 func stopSignals(ch chan os.Signal)             { signal.Stop(ch) }
+
+// An atomic rename only reaches stable storage once the parent directory
+// entry is flushed; without it a crash can drop the acknowledged marker.
+func syncRuntimeDirectory(dir string) error {
+	f, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return f.Sync()
+}

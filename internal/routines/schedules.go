@@ -270,7 +270,7 @@ func (e *Engine) deleteScheduleLocked(id string, caller identity.Envelope, expec
 	if err := e.atomicJSON(e.CancelPath(id), item); err != nil {
 		return err
 	}
-	return os.Remove(e.SchedulePath(id))
+	return e.removeOwned(e.SchedulePath(id))
 }
 
 func (e *Engine) SnoozeSchedule(id string, caller identity.Envelope, until time.Time, expected ...uint64) error {
@@ -554,10 +554,10 @@ func (e *Engine) TickSchedules(now time.Time, nativeCron string, authorize func(
 // scan so the tick keeps serving every other owner.
 func (e *Engine) quarantineScheduleLocked(path string) error {
 	dir := filepath.Join(e.root, "schedules", "quarantine")
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := e.mkdirOwned(dir, true); err != nil {
 		return err
 	}
-	return os.Rename(path, filepath.Join(dir, filepath.Base(path)))
+	return e.renameOwned(path, filepath.Join(dir, filepath.Base(path)))
 }
 
 // blockScheduleLocked marks a schedule the tick can no longer advance: the

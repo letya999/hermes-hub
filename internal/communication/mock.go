@@ -180,7 +180,7 @@ func (g *Gateway) mockLinkClaim(chatID int64, principal string) error {
 		}
 		return nil
 	}
-	return atomicJSON(filepath.Join(g.mockRoot(), "mock-links", strconv.FormatInt(chatID, 10)+".json"), map[string]string{"principal": principal})
+	return g.spool.writeJSON(filepath.Join(g.mockRoot(), "mock-links", strconv.FormatInt(chatID, 10)+".json"), map[string]string{"principal": principal})
 }
 
 // captureMock persists a completed delivery as the channel's durable record.
@@ -202,5 +202,5 @@ func (g *Gateway) captureMock(d *Delivery) error {
 		}
 		artifacts[artifact.Name] = data
 	}
-	return atomicJSON(filepath.Join(g.mockRoot(), "mock-sent", spoolFileID(d.ID)+".json"), map[string]any{"principal": owner, "delivery": d, "artifact_data": artifacts})
+	return g.spool.writeJSON(filepath.Join(g.mockRoot(), "mock-sent", spoolFileID(d.ID)+".json"), map[string]any{"principal": owner, "delivery": d, "artifact_data": artifacts})
 }

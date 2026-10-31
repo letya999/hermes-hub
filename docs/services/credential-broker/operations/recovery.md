@@ -1,6 +1,6 @@
 ---
 description: "Процедуры, при которых нельзя обойти fail-closed поведение."
-last_verified: "2026-10-24"
+last_verified: "2026-10-28"
 ---
 
 # Восстановление, отзыв и очистка
@@ -36,7 +36,7 @@ credentials сам по себе. Не удалять его, чтобы обо�
 зашифрованные local provider objects. Recovery key отличается от master key;
 ключи отделяются по назначению и `recovery_identity`. Backup записывается
 до primary; подтверждение приходит после fsync primary и зашифрованного
-commit anchor. После потери primary journal восстанавливается только по
+current-head v2 с atomic replace и file/directory sync. После потери primary journal восстанавливается только по
 backup, чей подтверждённый head совпадает с независимым anchor. Более старая
 или подменённая копия отвергается. Неподтверждённый хвост после прерванной
 записи отбрасывается; повторный запуск продолжает с последней подтверждённой
@@ -124,3 +124,21 @@ Journal bounded; metadata maps живут в памяти. Не использо
 Expired drafts/proof objects после прерванного OAuth могут оставаться encrypted orphan в provider.
 Нет автоматического GC неизвестных путей: планировать retention и reconciliation по ledger/evidence,
 не удалять secret prefix «на всякий случай».
+
+## Переход legacy recovery head
+
+Новый anchored startup отказывает на legacy marker; автоматического adoption
+нет. До применения остановить Broker и workloads, проверить backup с ключами,
+config и contracts, подготовить изолированную копию всего P/R/anchor набора.
+На копии выполнить `credential-broker migrate-head --config /absolute/config.json`.
+Команда берёт journal locks и требует точного совпадения primary/recovery tip
+и legacy latest anchor. При mismatch источники не обрезаются и не compact.
+Providers команда не открывает и не очищает. Head сначала сохраняется и
+проверяется, затем активируется новый marker. Повтор после staged head
+допускается лишь при тех же digest/sequence; повтор после activation идемпотентен.
+Старые commit-файлы сохраняются: их удаление не входит в эту команду.
+
+Потерянную `current-head` нельзя восстанавливать выбором старшего оставшегося
+commit-файла или запуском `migrate-recovery`: это recovery-required.
+Не удалять initialized marker. Полный module/container gate и приёмка этого
+перехода ведутся в CHG-0191; рабочие данные в текущей реализации не мигрировались.

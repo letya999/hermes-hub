@@ -65,10 +65,12 @@ type Gateway struct {
 	botName string
 	// holdsMu/holdsLast cache the supervisor's hold projection so the
 	// spool's under-lock admission check never performs I/O.
-	holdsMu     sync.Mutex
-	holdsLast   []masterHold
-	streamMu    sync.Mutex
-	streamCalls map[string]*streamSharedCall
+	holdsMu       sync.Mutex
+	holdsLast     []masterHold
+	streamMu      sync.Mutex
+	streamCalls   map[string]*streamSharedCall
+	maintenanceMu sync.Mutex
+	maintenance   storageMaintenanceStatus
 }
 
 func New(config Config) (*Gateway, error) {
@@ -105,6 +107,13 @@ func New(config Config) (*Gateway, error) {
 	if config.MockDir != "" {
 		for _, dir := range []string{"mock-sent", "mock-links"} {
 			if err := os.MkdirAll(filepath.Join(config.MockDir, dir), 0700); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if config.MockDir != "" && spool.storage != nil {
+		for _, dir := range []string{"mock-sent", "mock-links"} {
+			if err := spool.storage.AddRoot(filepath.Join(config.MockDir, dir)); err != nil {
 				return nil, err
 			}
 		}
@@ -318,6 +327,12 @@ func (g *Gateway) handleCallback(ctx context.Context, query *CallbackQuery) erro
 	answer := "Запрос отклонен: подтверждение недоступно."
 	if query.From != nil && query.Message != nil {
 		if user, ok := g.telegramUserFor(query.Message.Chat.ID, query.From.ID); ok {
+			if strings.HasPrefix(query.Data, "h:") {
+				if err := g.confirmHumanCallback(ctx, user.Envelope(query.From.ID), "telegram_bot", query.Message.Chat.ID, query.Data); err == nil {
+					answer = "Подключение и права подтверждены."
+				}
+				return g.api.AnswerCallbackQuery(ctx, query.ID, answer)
+			}
 			if jobID, requestID, choice, err := g.spool.ApprovalCallback(query.Data); err == nil {
 				caller := user.Envelope(query.From.ID)
 				audienceVerified := false
@@ -724,7 +739,7 @@ func (g *Gateway) progressTick(ctx context.Context) {
 		if base == "" {
 			base = "Выполняю запрос."
 		}
-		_ = g.spool.UpsertStatusDelivery(Delivery{ID: "job-" + m.JobID + "-status", Channel: m.Channel, ConversationID: m.ConversationID, DeliveryTargetID: m.DeliveryTargetID, ChatID: m.ChatID, TaskID: m.TaskID, TopicID: m.TopicID, Text: base + " · " + formatElapsed(g.now().Sub(m.CreatedAt)), CreatedAt: g.now().UTC()})
+		_ = g.spool.UpsertStatusDelivery(Delivery{ID: "job-" + m.JobID + "-status", Channel: m.Channel, ConversationID: m.ConversationID, DeliveryTargetID: m.DeliveryTargetID, ChatID: m.ChatID, TaskID: m.TaskID, TopicID: m.TopicID, Text: base + " · " + formatElapsed(g.now().Sub(m.CreatedAt)), StreamPosition: m.EventPosition, CreatedAt: g.now().UTC()})
 	}
 }
 

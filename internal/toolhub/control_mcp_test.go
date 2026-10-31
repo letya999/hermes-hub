@@ -18,8 +18,9 @@ import (
 )
 
 const (
-	aliceToken = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	bobToken   = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	aliceToken            = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	bobToken              = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	testHumanControlToken = "synthetic-service-confirmation-bearer"
 )
 
 func aliceAuth() identity.Envelope {
@@ -34,6 +35,36 @@ func TestControlToolContractDocumentsResumeSelector(t *testing.T) {
 	properties, ok := schema["properties"].(map[string]any)
 	if !ok || properties["onboarding_id"] == nil || properties["definition_id"] == nil {
 		t.Fatalf("status schema missing selectors: %#v", schema)
+	}
+}
+
+func TestAgentCannotConfirmItsOwnConsent(t *testing.T) {
+	description, _ := controlToolContract("confirm")
+	if !strings.Contains(description, "verified channel callback") {
+		t.Error("confirm description omits actor-bound channel consent")
+	}
+	fix := newControlFixture(t, fixtureReviewer(userMCPDefinition()))
+	if err := fix.store.RegisterDefinition(catalogReadDefinition()); err != nil {
+		t.Fatal(err)
+	}
+	if err := putGrant(t, fix.store, api.OperatorGrant(api.GrantCatalogDefault, "alice", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	alice := fix.session(t, aliceToken)
+	prepared, err := callControl(t, alice, "prepare_source", map[string]any{"definition_id": "catalog-read", "version": "1.0.0", "request_key": "agent-consent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := prepared["onboarding_id"].(string)
+	status, err := callControl(t, alice, "confirm", map[string]any{"onboarding_id": id, "nonce": confirmNonceOf(t, fix.store, id)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status["phase"] != api.PhaseAwaitingConfirm || status["next_action"] != "await_user_confirmation" {
+		t.Fatalf("agent confirmed consent: %v", status)
+	}
+	if _, err := callControl(t, alice, "enable", map[string]any{"onboarding_id": id}); err == nil {
+		t.Fatal("agent enabled before human confirmation")
 	}
 }
 
@@ -170,7 +201,8 @@ func newControlFixture(t *testing.T, reviewer api.SourceReviewer) *controlFixtur
 			calls.Add(1)
 			return api.BackendResult{Text: "ok"}, nil
 		}),
-		Control: control,
+		Control:      control,
+		ControlToken: testHumanControlToken,
 		Audit: func(_ string, fields map[string]string) {
 			copied := map[string]string{}
 			for k, v := range fields {
@@ -179,6 +211,7 @@ func newControlFixture(t *testing.T, reviewer api.SourceReviewer) *controlFixtur
 			fix.audit = append(fix.audit, copied)
 		},
 	}
+	attachGatewayAudit(t, gateway)
 	handler, err := gateway.Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -233,6 +266,28 @@ func callControl(t *testing.T, session *mcp.ClientSession, op string, args map[s
 		}
 	}
 	return nil, errors.New("missing control status body")
+}
+
+func confirmViaTrustedChannel(t *testing.T, baseURL string, store *Store, id string) {
+	t.Helper()
+	onboarding := mustOnboarding(t, store, id)
+	proof, err := json.Marshal(api.HumanConfirmation{OnboardingID: id, Actor: onboardingEnvelope(onboarding), Nonce: onboarding.ConfirmationNonce, Revision: onboarding.Revision, ActionDigest: api.ConfirmationActionDigest(onboarding), ExpiresAt: onboarding.ConfirmationExpires})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodPost, baseURL+"/v1/confirmations", strings.NewReader(string(proof)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+testHumanControlToken)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("trusted channel confirmation status=%d", response.StatusCode)
+	}
 }
 
 func TestControlMCPOperationsAndIsolation(t *testing.T) {
@@ -296,9 +351,7 @@ func TestControlMCPOperationsAndIsolation(t *testing.T) {
 	if strings.Contains(string(encoded), "local://") || strings.Contains(strings.ToLower(string(encoded)), "token=") {
 		t.Fatalf("required_credentials leaked locator/secret: %s", encoded)
 	}
-	if _, err := callControl(t, alice, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, fix.store, prepared["onboarding_id"])}); err != nil {
-		t.Fatal(err)
-	}
+	confirmViaTrustedChannel(t, fix.server.URL, fix.store, prepared["onboarding_id"].(string))
 	enabled, err := callControl(t, alice, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"]})
 	if err != nil || enabled["binding_id"] == "" || enabled["phase"] != api.PhaseEnabled {
 		t.Fatalf("enable=%v err=%v", enabled, err)
@@ -347,18 +400,12 @@ func TestControlMCPOperationsAndIsolation(t *testing.T) {
 	if _, err := callControl(t, alice, "status", map[string]any{"onboarding_id": self["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	selfConfirm, err := callControl(t, alice, "confirm", map[string]any{"onboarding_id": self["onboarding_id"], "nonce": confirmNonceOf(t, fix.store, self["onboarding_id"])})
-	if err != nil {
-		t.Fatal(err)
-	}
+	confirmViaTrustedChannel(t, fix.server.URL, fix.store, self["onboarding_id"].(string))
 	enabledSelf, err := callControl(t, alice, "enable", map[string]any{"onboarding_id": self["onboarding_id"]})
 	if err != nil {
 		t.Fatal(err)
 	}
 	userBinding, _ := enabledSelf["binding_id"].(string)
-	if userBinding == "" {
-		userBinding, _ = selfConfirm["binding_id"].(string)
-	}
 	if err := fix.store.PromoteToCatalog("user-mcp", "1.0.0", "operator"); err != nil {
 		t.Fatal(err)
 	}
