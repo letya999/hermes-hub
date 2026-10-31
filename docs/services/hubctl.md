@@ -71,6 +71,12 @@ archives aged done/failed records. Live pending/running records, open
 approvals and live receipts are never candidates. The offline apply uses the
 same terminal-file, archive-byte and usage-entry limits as gateway maintenance.
 
+`hubctl audit rollover --ledger <absolute audit.jsonl>` plans an offline
+recovery of an oversized schema-1-only ToolHub audit. With ToolHub stopped,
+`--apply --digest <sha256:...>` verifies a complete compressed archive before
+starting a fresh bounded ledger. Output contains only safe counts, bytes and
+digest; mixed or segmented ledgers are refused.
+
 ## Bounded trace
 
 `hubctl trace <job_id> --spaces <root> --env dev|prod [--user <owner>]`

@@ -2,6 +2,13 @@ package locale
 
 func init() {
 	register(LangEN, map[string]string{
+		"hubctl.audit-rollover-usage":   "Usage: hubctl audit rollover --ledger <absolute path> [--apply --digest <sha256:...>]",
+		"hubctl.audit-rollover-ledger":  "Path to the stopped ToolHub legacy audit",
+		"hubctl.audit-rollover-apply":   "Apply the verified rollover; default is dry-run",
+		"hubctl.audit-rollover-digest":  "Plan digest required with --apply",
+		"hubctl.audit-rollover-stale":   "The legacy audit plan is stale; run the dry-run again.",
+		"hubctl.audit-rollover-invalid": "The legacy audit is invalid or cannot be rolled over safely.",
+		"hubctl.audit-rollover-failed":  "The legacy audit rollover failed; inspect the offline state before retrying.",
 		// Language picker and /language.
 		"lang.choose":   "Choose your language:",
 		"lang.saved":    "Language set: %s.",

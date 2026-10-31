@@ -245,6 +245,16 @@ agent network), `HUB_CAPABILITY_MODE`/`_PROFILE_ID`/`_GENERATION`/`_ENVIRONMENT`
 65536 records. There is no destructive TTL. At capacity, writes stop with an
 explicit error; export/recovery is an operator action. Corrupt/partial records,
 unknown schemas and missing segments fail closed without truncation.
+For an oversized, unsegmented schema-1-only legacy file, stop its ToolHub and
+use `hubctl audit rollover --ledger <absolute audit.jsonl>` for a count/size/
+digest plan. `--apply --digest <sha256:...>` holds the audit writer lock,
+rechecks every record, writes and verifies a mode-0600 gzip archive named
+`audit.jsonl.legacy-<digest>.jsonl.gz`, then replaces the active file with a
+schema-2 rollover marker. The uncompressed source is removed only after the
+archive is verified and the new file is synced. Schema-2 or segmented ledgers
+are refused. The archive retains historical events for offline recovery; the
+new live `ReadPage` starts with the rollover marker. There is no automatic TTL
+for the archive.
 
 Scoped `ReadPage` returns at most 1000 events; `List` refuses histories that
 require pagination. Schema 2 operation records distinguish authorization, execution and delivery;

@@ -19,11 +19,17 @@ keys, message bodies or audit records are copied into the repository.
   Broker container and its distinct primary, recovery and key volumes remained.
 - Direct deletion of 101 older ignored host `.log`/`.old`/`.bak`/`.tmp`
   files in `spaces/local` was rejected by automatic approval review with the
-  sole reason `blocked by policy`. No alternative deletion route was used.
-- The active legacy ToolHub audit remains about 85 MiB / 181,794 schema-1
-  records. Its current bounded ledger admits 16 MiB / 65,536 records, so this
-  is an unresolved operational limitation. An audit migration needs a separate
-  evidence-preserving recovery path; no direct truncation was attempted.
+  sole reason `blocked by policy`. The same guarded PowerShell action was
+  rejected again after explicit owner authorization. No alternative deletion
+  route was used.
+- A separate digest-bound offline cleanup removed one 15-day-old `api.test`
+  binary and 72 stale E2E files: 73 files / 53,701,192 bytes. One
+  `settings-baseline` recovery marker was retained. The stopped gateway
+  restarted and the spool plan then reported 4,225 files / 4,598,160 bytes.
+- The oversized local ToolHub audit was recovered by CHG-0239: all 181,794
+  records are preserved in a verified compressed archive and the active
+  bounded ledger accepts new writes. The original uncompressed duplicate was
+  removed after verification.
 - Global legacy readers were retained because other dev spaces still contain
   schema-1 data. Removing them now would prevent those spaces from starting
   or reading their state.

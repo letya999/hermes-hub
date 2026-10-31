@@ -171,6 +171,13 @@ also uses the gateway's configured terminal-file, archive-byte and usage-entry
 limits, so overflow is archived even when its file mtime is recent.
 Orphaned routine crash-replay sidecars older than retention are removed only
 when their live occurrence is absent; quarantined occurrences keep theirs.
+For an overfull schema-1-only ToolHub audit, stop the selected ToolHub and run
+`hubctl audit rollover --ledger <absolute audit.jsonl>` to review safe counts
+and the digest. Apply with `--apply --digest <sha256:...>` while it remains
+stopped. The command verifies the mode-0600 gzip archive before replacing the
+active ledger; keep that archive for historical investigation. The new live
+ledger begins with a rollover marker. Do not apply this path to schema-2 or
+segmented audit files; they require reconciliation of operation outcomes.
 
 ## Operator mutations require `--confirm`
 
