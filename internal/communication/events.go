@@ -437,6 +437,7 @@ func (s *Spool) fanoutEventsLocked(st *EventState, schedule Schedule, job Job, f
 			}
 			bundleJob := job
 			bundleJob.ID = seed
+			bundleJob.Untrusted = true // bundled event evidence is external content
 			bundleJob.IdempotencyKey = bundleJob.ID
 			bundleJob.AssignmentID = schedule.AssignmentID
 			bundleJob.AssignmentPlanRevision = schedule.AssignmentPlanRevision

@@ -71,7 +71,7 @@ func (g *Gateway) opsDeps() commops.Deps {
 			if !ok {
 				return errors.New("task handle mismatch")
 			}
-			return g.enqueueChannelJob(ctx, user, bound, "mock", jobID, idempotency, chatID, 0, text, chatID, "")
+			return g.enqueueChannelJob(ctx, user, bound, "mock", jobID, idempotency, chatID, 0, text, chatID, "", false)
 		},
 		MappingStatus: func(jobID string) (string, bool, error) {
 			m, found, err := g.spool.Mapping(jobID)

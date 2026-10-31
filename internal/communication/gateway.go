@@ -26,6 +26,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/routines"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
+	"github.com/letya999/hermes-hub/internal/vault"
 )
 
 type Gateway struct {
@@ -34,6 +35,7 @@ type Gateway struct {
 	users        map[int64]User
 	slackUsers   map[string]User
 	spool        *Spool
+	memory       *vault.Daily // nil unless memory_vault mounts /vault
 	api          TelegramAPI
 	slack        SlackAPI
 	runner       Runner
@@ -150,6 +152,17 @@ func New(config Config) (*Gateway, error) {
 	if config.Supervised {
 		spool.refreshHolds = g.refreshHolds
 		spool.holdsSnapshot = g.holdsSnapshot
+	}
+	if config.VaultDir != "" {
+		// The gateway mounts the vault read-only for CORE injection; capture
+		// writes go through the governed writer which enforces confinement.
+		// Owner timezone comes from the TZ env the stack renders.
+		daily, err := vault.OpenDaily(config.VaultDir, time.Local)
+		if err != nil {
+			return nil, fmt.Errorf("memory vault capture: %w", err)
+		}
+		g.memory = daily
+		spool.onAccepted = g.captureTurn
 	}
 	if config.TelegramAuthEnabled {
 		// Enabled by default on telegram stacks: missing Broker/form-origin
@@ -481,7 +494,7 @@ func (g *Gateway) handleUpdate(ctx context.Context, update Update) error {
 	if err != nil {
 		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, messageTopicID(message), locale.T(locale.LangOf(user.WorkspaceDir), "chat.task-open-failed"))
 	}
-	return g.enqueueChannelJob(ctx, user, task, "telegram_bot", "telegram-"+strconv.Itoa(update.UpdateID), "telegram:"+strconv.Itoa(update.UpdateID), message.Chat.ID, message.MessageID, text, message.From.ID, "")
+	return g.enqueueChannelJob(ctx, user, task, "telegram_bot", "telegram-"+strconv.Itoa(update.UpdateID), "telegram:"+strconv.Itoa(update.UpdateID), message.Chat.ID, message.MessageID, text, message.From.ID, "", message.ForwardOrigin != nil)
 }
 
 // commandRoute is the verified return path for a channel command reply:
@@ -723,7 +736,7 @@ func (g *Gateway) dispatchChannelCommand(ctx context.Context, user User, task Ta
 				if err != nil {
 					return reply(locale.T(lang, "chat.skill-unavailable", command))
 				}
-				return g.enqueueChannelJob(ctx, user, task, channel, deliveryKey+"-skill", deliveryKey+":skill:"+command, chatID, 0, expanded, sender, "")
+				return g.enqueueChannelJob(ctx, user, task, channel, deliveryKey+"-skill", deliveryKey+":skill:"+command, chatID, 0, expanded, sender, "", false)
 			}
 			return reply(locale.T(lang, "chat.unknown-command", command, commandHelp(lang)))
 		}
@@ -743,7 +756,7 @@ func (g *Gateway) languagePicker(_ context.Context, route commandRoute, topic in
 	return g.spool.EnqueueDelivery(d)
 }
 
-func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, task Task, channel, id, idempotency string, chatID int64, messageID int, text string, sender int64, inboundID string) error {
+func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, task Task, channel, id, idempotency string, chatID int64, messageID int, text string, sender int64, inboundID string, untrusted bool) error {
 	ch := g.channel(channel)
 	if ch == nil {
 		return errors.New("channel is not registered")
@@ -751,7 +764,7 @@ func (g *Gateway) enqueueChannelJob(ctx context.Context, user User, task Task, c
 	envelope := ch.JobEnvelope(user, chatID, sender)
 	envelope.ConversationID = task.ConversationID
 	text = g.expandSkillRefs(envelope.PrincipalID, task.TaskID, text)
-	job := Job{Envelope: envelope, ID: id, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: channel, Trigger: "message", IdempotencyKey: idempotency, ChatID: chatID, MessageID: messageID, TaskID: task.TaskID, TopicID: task.TopicID, Text: text, InboundID: inboundID, Sensitive: false, CreatedAt: g.now().UTC()}
+	job := Job{Envelope: envelope, ID: id, OrganizationID: g.config.OrganizationID, UserID: user.ID, ActorID: user.ID, ScopeID: "user:" + user.ID, Channel: channel, Trigger: "message", IdempotencyKey: idempotency, ChatID: chatID, MessageID: messageID, TaskID: task.TaskID, TopicID: task.TopicID, Text: text, InboundID: inboundID, Sensitive: false, Untrusted: untrusted, CreatedAt: g.now().UTC()}
 	if channel == "telegram_bot" && chatID < 0 {
 		if group := g.groupFor(chatID); group == nil || group.Mode != "topics" {
 			job.ScopeID = "group:" + user.ID

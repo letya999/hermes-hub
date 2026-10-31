@@ -488,7 +488,7 @@ func (g *Gateway) sampleRoutine(ctx context.Context, id string, caller identity.
 	if filterOverride != "" {
 		filter = filterOverride
 	}
-	job := Job{Envelope: sched.Envelope, OrganizationID: sched.OrganizationID, UserID: sched.UserID, ActorID: sched.ActorID, ScopeID: sched.ScopeID, Channel: sched.Channel, ChatID: sched.ChatID, TaskID: sched.TaskID, TopicID: sched.TopicID, SlackChannel: sched.SlackChannel, SlackThread: sched.SlackThread, Text: sched.Input, Trigger: "cron", CreatedAt: g.now().UTC()}
+	job := Job{Envelope: sched.Envelope, OrganizationID: sched.OrganizationID, UserID: sched.UserID, ActorID: sched.ActorID, ScopeID: sched.ScopeID, Channel: sched.Channel, ChatID: sched.ChatID, TaskID: sched.TaskID, TopicID: sched.TopicID, SlackChannel: sched.SlackChannel, SlackThread: sched.SlackThread, Text: sched.Input, Trigger: "cron", CreatedAt: g.now().UTC(), Probe: sched.Probe != nil}
 	proxy := RoutineOccurrence{ScheduleID: id, DueAt: job.CreatedAt, Job: job}
 	for _, res := range results {
 		rep := sampleSourceReport{Source: res.label}
@@ -607,7 +607,7 @@ func (s *Spool) settleStreamResults(schedule Schedule, results []sourceResult, n
 		s.mu.Unlock()
 		return nil, true
 	}
-	job := Job{Envelope: schedule.Envelope, OrganizationID: schedule.OrganizationID, UserID: schedule.UserID, ActorID: schedule.ActorID, ScopeID: schedule.ScopeID, Channel: schedule.Channel, ChatID: schedule.ChatID, TaskID: schedule.TaskID, TopicID: schedule.TopicID, SlackChannel: schedule.SlackChannel, SlackThread: schedule.SlackThread, Text: schedule.Input, Trigger: "cron", CreatedAt: now.UTC()}
+	job := Job{Envelope: schedule.Envelope, OrganizationID: schedule.OrganizationID, UserID: schedule.UserID, ActorID: schedule.ActorID, ScopeID: schedule.ScopeID, Channel: schedule.Channel, ChatID: schedule.ChatID, TaskID: schedule.TaskID, TopicID: schedule.TopicID, SlackChannel: schedule.SlackChannel, SlackThread: schedule.SlackThread, Text: schedule.Input, Trigger: "cron", CreatedAt: now.UTC(), Probe: schedule.Probe != nil}
 	if authorize != nil && authorize(job) != nil {
 		st.LastError = "routine owner unavailable"
 		_ = atomicJSON(s.eventPath(schedule.ScheduleID), st)

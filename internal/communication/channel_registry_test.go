@@ -370,7 +370,7 @@ func TestInboundJobUsesChannelEnvelopeAndPresence(t *testing.T) {
 	registerTestChannel(t, fake)
 	user := g.user("alice")
 	task := Task{ConversationID: "conv-rec"}
-	if err := g.enqueueChannelJob(context.Background(), user, task, "rec_test", "job-rec-in", "rec-key", 11, 0, "hi", 11, ""); err != nil {
+	if err := g.enqueueChannelJob(context.Background(), user, task, "rec_test", "job-rec-in", "rec-key", 11, 0, "hi", 11, "", false); err != nil {
 		t.Fatal(err)
 	}
 	body, err := os.ReadFile(filepath.Join(g.spool.root, "pending", spoolFileID("job-rec-in")+".json"))

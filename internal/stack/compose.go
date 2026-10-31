@@ -735,10 +735,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			brokerSecrets("communication"),
 		}
 		if s.Has("memory_vault") {
-			// The gateway reads CORE for private-run instruction injection —
-			// read-only; governed writes stay inside the runtime's writer.
+			// The gateway reads CORE for private-run injection and writes the
+			// daily leaf capture (SPEC-0085 R2.1) — read-write; confinement
+			// lives in the governed Writer, not the mount.
 			gatewayEnvironment["HUB_VAULT"] = "/vault"
-			gateway["volumes"] = append(gateway["volumes"].([]any), M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "vault")), "target": "/vault", "read_only": true})
+			gateway["volumes"] = append(gateway["volumes"].([]any), M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "vault")), "target": "/vault"})
 		}
 		// Sibling Telegram identities live in this file. TELEGRAM_ALLOWED_USERS
 		// stays the single infra-owner fallback when the file is absent.

@@ -95,7 +95,7 @@ func TestRenderVaultMountGated(t *testing.T) {
 
 // SPEC-0085 R1.6: the gateway reads CORE for private-run injection, so it
 // mounts the vault read-only — writes stay in the runtime's governed writer.
-func TestGatewayVaultMountReadOnly(t *testing.T) {
+func TestGatewayVaultMountReadWrite(t *testing.T) {
 	dir := t.TempDir()
 	s := validSettings()
 	s.Ingress = []string{"telegram"}
@@ -113,8 +113,8 @@ func TestGatewayVaultMountReadOnly(t *testing.T) {
 		m, ok := volume.(M)
 		if ok && m["target"] == "/vault" {
 			found = true
-			if m["read_only"] != true {
-				t.Fatal("gateway vault mount must be read-only")
+			if m["read_only"] == true {
+				t.Fatal("gateway vault mount must be read-write — the comm plane writes daily leaves")
 			}
 			if m["source"] != filepath.ToSlash(filepath.Join(dir, "vault")) {
 				t.Fatalf("vault mount must bind spaces/<user>/vault, got %v", m["source"])

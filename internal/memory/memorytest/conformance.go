@@ -38,8 +38,8 @@ func Conformance(t *testing.T, open func(t *testing.T) Provider) {
 		if !caps.Capture || !caps.Export {
 			t.Skip("provider does not serve capture/export")
 		}
-		a := memory.Entry{ID: "c-a", Scope: scopeA, Kind: memory.KindInteractive, Provenance: memory.ProvenanceOwner, Audience: memory.AudiencePrivate, Body: "a secret preference", At: time.Now().UTC()}
-		b := memory.Entry{ID: "c-b", Scope: scopeB, Kind: memory.KindInteractive, Provenance: memory.ProvenanceOwner, Audience: memory.AudienceGroup, Body: "a group-visible note", At: time.Now().UTC()}
+		a := memory.Entry{ID: "c-a", Scope: scopeA, Kind: memory.KindInteractive, Provenance: memory.ProvenanceOwner, Audience: memory.AudiencePrivate, Body: "a secret preference", ObservedAt: time.Now().UTC()}
+		b := memory.Entry{ID: "c-b", Scope: scopeB, Kind: memory.KindInteractive, Provenance: memory.ProvenanceOwner, Audience: memory.AudienceGroup, Body: "a group-visible note", ObservedAt: time.Now().UTC()}
 		if _, err := p.Capture(ctx, a); err != nil {
 			t.Fatalf("capture A: %v", err)
 		}
@@ -68,7 +68,7 @@ func Conformance(t *testing.T, open func(t *testing.T) Provider) {
 		if !caps.Capture || !caps.Export {
 			t.Skip("provider does not serve capture/export")
 		}
-		entry := memory.Entry{ID: "c-idem", Scope: scopeA, Kind: memory.KindInteractive, Provenance: memory.ProvenanceOwner, Audience: memory.AudiencePrivate, Body: "same capture twice", At: time.Now().UTC()}
+		entry := memory.Entry{ID: "c-idem", Scope: scopeA, Kind: memory.KindInteractive, Provenance: memory.ProvenanceOwner, Audience: memory.AudiencePrivate, Body: "same capture twice", ObservedAt: time.Now().UTC()}
 		if _, err := p.Capture(ctx, entry); err != nil {
 			t.Fatalf("first capture: %v", err)
 		}
@@ -94,7 +94,7 @@ func Conformance(t *testing.T, open func(t *testing.T) Provider) {
 		if !caps.Capture || !caps.Export {
 			t.Skip("provider does not serve capture/export")
 		}
-		entry := memory.Entry{ID: "c-prov", Scope: scopeA, Kind: memory.KindRoutine, Provenance: memory.ProvenanceUntrusted, Audience: memory.AudiencePrivate, Body: "external text", At: time.Now().UTC()}
+		entry := memory.Entry{ID: "c-prov", Scope: scopeA, Kind: memory.KindRoutine, Provenance: memory.ProvenanceUntrusted, Audience: memory.AudiencePrivate, Body: "external text", ObservedAt: time.Now().UTC()}
 		if _, err := p.Capture(ctx, entry); err != nil {
 			t.Fatalf("capture: %v", err)
 		}

@@ -49,7 +49,7 @@ type Entry struct {
 	Audience   Audience   `json:"audience"`
 	SourceRef  string     `json:"source_ref,omitempty"`
 	Body       string     `json:"body"`
-	At         time.Time  `json:"at"`
+	ObservedAt time.Time  `json:"observed_at"`
 }
 
 // PromotionEligible is the combined hard gate of SPEC-0085 R1/R5: only
@@ -177,4 +177,76 @@ type Provider interface {
 	Write(ctx context.Context, op WriteOp) (WriteResult, error)
 	Export(ctx context.Context, scope Scope) ([]Entry, error)
 	Health(ctx context.Context) error
+}
+
+// KindForTrigger maps a job trigger to the entry kind of SPEC-0085 R2.4:
+// interactive turns may promote; routine, assignment, probe, goal, compaction
+// and system work is captured for audit and can never promote. Unknown
+// triggers fail closed to KindSystem.
+func KindForTrigger(trigger string, assignment, probe bool) Kind {
+	switch {
+	case probe:
+		return KindProbe
+	case assignment:
+		return KindAssignment
+	}
+	switch trigger {
+	case "message":
+		return KindInteractive
+	case "cron":
+		return KindRoutine
+	case "goal":
+		return KindGoal
+	case "compact":
+		return KindCompaction
+	default:
+		return KindSystem
+	}
+}
+
+// ProvenanceForTurn stamps turn provenance at capture (SPEC-0085 R2.3):
+// the untrusted mark comes only from transport metadata, owner-authored
+// instructions (messages, schedules, goals, assignments) are owner, and
+// everything else the hub fires is system. Body text can never reclassify.
+func ProvenanceForTurn(untrusted bool, trigger string) Provenance {
+	if untrusted {
+		return ProvenanceUntrusted
+	}
+	switch trigger {
+	case "message", "cron", "goal":
+		return ProvenanceOwner
+	default:
+		return ProvenanceSystem
+	}
+}
+
+// Recalled content markers (SPEC-0085 D13/R4.4): the pre-turn recall lane
+// wraps injected hits in these markers so capture can never re-extract them.
+const (
+	RecalledOpen  = "<!-- hermes:recalled -->"
+	RecalledClose = "<!-- /hermes:recalled -->"
+)
+
+// StripRecalled removes every span from a RecalledOpen marker through its
+// RecalledClose — recalled text can never re-enter a leaf as new content.
+// An unclosed marker strips to end of body (fail closed: nothing after an
+// open recall span is trustworthy capture material).
+func StripRecalled(body string) string {
+	var b strings.Builder
+	rest := body
+	for {
+		i := strings.Index(rest, RecalledOpen)
+		if i < 0 {
+			b.WriteString(rest)
+			break
+		}
+		b.WriteString(rest[:i])
+		rest = rest[i+len(RecalledOpen):]
+		j := strings.Index(rest, RecalledClose)
+		if j < 0 {
+			break
+		}
+		rest = rest[j+len(RecalledClose):]
+	}
+	return b.String()
 }

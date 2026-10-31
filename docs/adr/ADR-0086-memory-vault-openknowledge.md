@@ -8,6 +8,10 @@ Status: Proposed 2026-10-24. Milestone M20.
 Amended 2026-10-31 (M20.0, issue #418): D6/D10 revised, D11–D19 added from
 the post-research redesign; spike evidence in
 `.work/in-progress/CHG-0204-vault-layout/spike-m20.md`.
+Amended (M20.2, issue #300): D11 extended — the gateway's `/vault` mount
+is read-write because the communication plane is the capture writer;
+capture ids derive from job ids for retry-safe capture; `Sensitive`
+jobs persist nothing.
 Requirements: [SPEC-0085](../../specs/active/SPEC-0085-memory-vault-openknowledge.md).
 Research: `.work/in-progress/CHG-0204-vault-layout/research.md`.
 
@@ -137,6 +141,14 @@ a provider seam with conformance, and soft forget.
   re-enter capture. A pre-compaction flush hook on the existing
   compaction path writes what summarization would lose into the leaf as
   `agent`/`compaction` before it drops.
+  The communication plane is the capture writer: the gateway mounts
+  `/vault` read-write (M20.1's read-only mount covered CORE reads only)
+  and writes through the governed `Writer`, so path confinement, zone
+  guards and actor-attributed commits apply to capture too. Capture ids
+  derive from the job id (`turn-<job>`, `reply-<job>`,
+  `compact-<session>-<i>`) so a spool retry or a replayed leaf range
+  can never double-write; `Sensitive` jobs persist nothing — neither
+  sidecar row nor leaf block.
 
 - **D12. CORE is audience-scoped and delivered per run.** CORE.md =
   `## Directives` (preferences, supersede-in-place, dated, never-evict

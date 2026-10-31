@@ -44,7 +44,6 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 | [CHG-0208](in-progress/CHG-0208-memory-card-contract/plan.md) | M20.6 #303: `memory_card` fact/truth/merge/forget/remember contract + soft forget + zone guards |
 | [CHG-0207](in-progress/CHG-0207-memory-search/plan.md) | M20.3 #302: `memory_search` pure-Go BM25+link-graph on raw leaves, scope confinement, maintenance |
 | [CHG-0206](in-progress/CHG-0206-memory-night-rollup/plan.md) | M20.5 #301: gated night rollup — promotion/loss gates, directives, REVIEW.md, digest |
-| [CHG-0205](in-progress/CHG-0205-daily-leaf-ingest/plan.md) | M20.2 #300: provenance-aware daily capture — sidecar prov.db, kind quarantine, compaction flush |
 | [CHG-0189](in-progress/CHG-0189-watch-contract/plan.md) | M23 #324/#332 follow-up: tool-contract discipline rule, watch_subscribe discoverability (prompt/descriptions/semantic refusal), per-source stream cadence (min_interval_seconds 5..3600), stream cursor persistence, watch_resume + catalog 5.3.0, docs-coverage test |
 | [CHG-0174](in-progress/CHG-0174-hosting-acceptance/plan.md) | M18 #147 H5: hosting acceptance/current docs — A1–A11 code/runtime/browser/sish evidence; offline gates green, native acceptance pending |
 | [CHG-0173](in-progress/CHG-0173-hosting-dynamic/plan.md) | M18 #147 H4: one admitted stateless go-http profile, secure runtime/relay, restart/finalizers; implemented, offline gates green, native acceptance pending |
@@ -120,7 +119,6 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 | [CHG-0202](done/CHG-0202-native-default-deny/plan.md) | Done 2026-10-27: M24 #358 S3 — native Hermes capabilities default-deny: inventory deny, no implicit base list, skills/curator sealed, .no-bundled-skills; commit 6eb440e (closeout bookkeeping completed 2026-10-28) |
 | [CHG-0201](done/CHG-0201-unified-skill-store/plan.md) | Done 2026-10-27: M24 #357 S2 — unified skillstore: drafts/revisions/archives/quotas, legacy migration, effective read-only view at /skills; commit 6ada0ef (closeout bookkeeping completed 2026-10-28) |
 | [CHG-0200](done/CHG-0200-skills-platform-design/plan.md) | Done 2026-10-27: M24 #356 S1 — skills platform design: ADR-0085 + SPEC-0084 + Hermes pin spike verified; commit b3375d1 (closeout bookkeeping completed 2026-10-28) |
-
 
 ## Done — M23 proactive assignments
 
@@ -351,3 +349,4 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 Open live follow-ups stay as GitHub issues, not stale CHG folders: #73
 (ToolHive/VPS), #74 (Hermes reconnect), #166/#170/#172 (live channel
 acceptance evidence).
+| [CHG-0205](done/CHG-0205-daily-leaf-ingest/plan.md) | M20.2 #300: provenance-aware daily capture — prov.db sidecar, kind quarantine, untrusted transport flag, compaction flush, sensitive-exclusion |

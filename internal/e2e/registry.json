@@ -2365,4 +2365,18 @@
     "level": "contract",
     "cleanup": "Remove synthetic spool with the fixture"
   }
+,
+  {
+    "id": "E2E-183",
+    "surface": "native",
+    "name": "memory_vault",
+    "title": "Hermes capability: memory_vault",
+    "action": "Включи memory_vault в тестовом space; отправь сообщение; проверь, что ход лёг в vault/memory/daily с пометкой provenance, а memory-тулсет исчез с поверхности.",
+    "expected": "В space создался git-вольт со scaffold; daily leaf получил verbatim-записи turn/reply с prov-меткой; нативный memory тулсет не спроецирован; CORE попадает только в приватные запуски.",
+    "package": "",
+    "test": "",
+    "prerequisites": "Тестовый managed-профиль с memory_vault в features; изолированный vault fixture; без рабочих данных.",
+    "level": "agent-e2e",
+    "cleanup": "Удалить только созданные тестом vault и записи; вернуть исходную настройку."
+  }
 ]
