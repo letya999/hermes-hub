@@ -103,6 +103,10 @@ type Config struct {
 	// for harness-side /name and $name expansion (SPEC-0083 R6.5); empty
 	// disables expansion entirely.
 	SkillsDir string `yaml:"-"`
+	// VaultDir is the mounted read-only memory vault (/vault) used for the
+	// private-audience CORE block in per-run instructions; empty means the
+	// memory_vault feature is off and no CORE is injected (SPEC-0085 R1.6).
+	VaultDir string `yaml:"-"`
 	// SkillsStore is the owner's writable skill store; skill-scoped
 	// credential forms persist under its private .state dir (R8.2). Empty
 	// disables the unmanaged persist path — managed relays via RuntimeURL.
@@ -335,6 +339,7 @@ func ConfigFromEnv() (Config, error) {
 	config.SpoolMaxFiles, config.SpoolMaxArchiveBytes, config.SpoolMaxUsageEntries = spoolLimitsFromEnv()
 	config.SkillsDir = os.Getenv("HUB_SKILLS_EFFECTIVE")
 	config.SkillsByPrincipalDir = os.Getenv("HUB_SKILLS_BY_PRINCIPAL")
+	config.VaultDir = os.Getenv("HUB_VAULT")
 	config.SkillsStoreByDir = os.Getenv("HUB_SKILLS_STORE_BY")
 	config.SkillsStore = os.Getenv("HUB_SKILLS_STORE")
 	config.GitLabHost = os.Getenv("HUB_GITLAB_HOST")

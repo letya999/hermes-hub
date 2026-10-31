@@ -247,6 +247,15 @@ names are `hermes-<owner>`, disabled configuration is removed, remote content
 is retained, and existing shared `hermes` data requires explicit owner-reviewed
 migration. Local tests do not establish Honcho API integration success.
 
+The `memory_vault` feature (ADR-0086, SPEC-0085) replaces the native store
+entirely when on: the `memory` toolset stays in `agent.disabled_toolsets`,
+`memory_enabled`/`user_profile_enabled` render false on both render paths,
+and `MEMORY.md`/`USER.md` remain on disk untouched for the M20.7 import. The
+vault is a git-backed `spaces/<id>/vault/` tree; the governed writer is the
+only mutation path (hash-checked, actor-attributed commits, zone-whitelisted)
+and `CORE.md` reaches only private-audience run instructions, pinned per job
+mapping like the style snapshot.
+
 Memory list/delete reject foreign-home aliases. Context backup rejects
 non-regular files and exports shared spool records only with matching
 principal/context; legacy unattributed records are excluded. Agent replies

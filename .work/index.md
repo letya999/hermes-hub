@@ -45,7 +45,6 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 | [CHG-0207](in-progress/CHG-0207-memory-search/plan.md) | M20.3 #302: `memory_search` pure-Go BM25+link-graph on raw leaves, scope confinement, maintenance |
 | [CHG-0206](in-progress/CHG-0206-memory-night-rollup/plan.md) | M20.5 #301: gated night rollup — promotion/loss gates, directives, REVIEW.md, digest |
 | [CHG-0205](in-progress/CHG-0205-daily-leaf-ingest/plan.md) | M20.2 #300: provenance-aware daily capture — sidecar prov.db, kind quarantine, compaction flush |
-| [CHG-0204](in-progress/CHG-0204-vault-layout/plan.md) | M20.1 #299: `spaces/<id>/vault/` substrate, `memory.Provider` seam, audience-scoped CORE |
 | [CHG-0189](in-progress/CHG-0189-watch-contract/plan.md) | M23 #324/#332 follow-up: tool-contract discipline rule, watch_subscribe discoverability (prompt/descriptions/semantic refusal), per-source stream cadence (min_interval_seconds 5..3600), stream cursor persistence, watch_resume + catalog 5.3.0, docs-coverage test |
 | [CHG-0174](in-progress/CHG-0174-hosting-acceptance/plan.md) | M18 #147 H5: hosting acceptance/current docs — A1–A11 code/runtime/browser/sish evidence; offline gates green, native acceptance pending |
 | [CHG-0173](in-progress/CHG-0173-hosting-dynamic/plan.md) | M18 #147 H4: one admitted stateless go-http profile, secure runtime/relay, restart/finalizers; implemented, offline gates green, native acceptance pending |
@@ -83,6 +82,12 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 |---|---|
 | [CHG-0037](done/CHG-0037-toolhub-closeout/plan.md) | Abandoned: ToolHub closeout umbrella superseded by later per-issue CHGs |
 | [CHG-0031](done/CHG-0031-docker-disk-diagnosis/plan.md) | Abandoned: read-only diagnosis superseded by CHG-0031-docker-reclaim findings |
+
+## Done — M20 Memory Vault + OpenKnowledge
+
+| Change | State |
+|---|---|
+| [CHG-0204](done/CHG-0204-vault-layout/plan.md) | Done 2026-10-31: M20.1 #299 vault substrate + provider seam + audience-scoped CORE — `memory_vault` deny-default feature (org-rejected), git-backed scaffold via `vault.Ensure`, card schema contract, `memory.Provider` seam + `memorytest.Conformance` on vault/fake/null, governed writer (hash-check, actor commits, zones, `truth_pending`), private-only pinned CORE injection ≤4096 B, `/vault` rw runtime + ro gateway mounts, native `memory` toolset evicted; offline tests green, live acceptance deferred (no-docker scope) |
 
 ## Done — M26 Lean Role Images
 

@@ -1,6 +1,6 @@
 ---
 description: spaces/<id>/ layout — settings.yaml, generated configs, secrets/env files, state dirs, and what is hand-edited vs rendered.
-last_verified: 2026-10-30
+last_verified: 2026-10-31
 ---
 
 # Spaces
@@ -153,6 +153,11 @@ docs/tools.md; they are not shared personal-memory stores.
   tmpfs shadows), routines/watch state, job mappings (ADR-0015).
 - `home/` — the agent's home; `workspace/` — the admitted workspace scope;
   `archive/` — read-only extracted archive; `inbox/` — user-file intake.
+- `vault/` — the git-backed memory vault when `memory_vault` is on
+  (ADR-0086): `memory/` markdown (`daily/`, `cards/`, `summaries/`,
+  `CORE.md`, `schema.json`) committed by the governed writer, runtime
+  sidecars under `runtime/` (`.okignore`d, never committed). Mounts rw at
+  `/vault` in the runtime and read-only in the communication gateway.
 - `broker/` — broker materialization output; `cache/`, `cliproxy/` —
   service-local state; `managed/<env>/model-relay` — relay selection state.
 - `diagnostics/` — bounded log surface backing `mcp__toolhub__diagnostics`
@@ -166,7 +171,7 @@ In legacy `settings.yaml` the opt-in contract is the `features` list from
 `ssh_tunnel`, `hh`, `telegram`, `slack_app`, `telegram_user`,
 `telegram_write`, `google`, `google_write`, `gitlab`, `meet`,
 `transcription`, `image_gen`, `github`, `slack`, `atlassian`, `desktop`,
-`drafts` —
+`drafts`, `memory_vault` —
 each with declared `requires` env keys and a scope note. Write-effect
 features (`*_write`, `browser_act`, `ssh_shell`, `ssh_tunnel`) are separate
 opt-ins on top of their read parent, matching deny-wins. In schema-3 spaces

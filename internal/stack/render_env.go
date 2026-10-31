@@ -8,6 +8,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/exposure"
 	"github.com/letya999/hermes-hub/internal/skillstore"
 	"github.com/letya999/hermes-hub/internal/sshcap"
+	"github.com/letya999/hermes-hub/internal/vault"
 	"gopkg.in/yaml.v3"
 	"os"
 	"path/filepath"
@@ -98,6 +99,13 @@ func RenderEnvironment(dir, root, environment string) error {
 	}
 	for _, name := range []string{"archive", "runtime", "runtime/artifacts", "runtime/toolhub", "runtime/credentials", "runtime/materialized", "broker", "broker/keys", "broker/tls", "cliproxy", "hermes", "hermes/memories", "hermes/skills", "connections", "connections/google", "connections/telegram", "connections/browser", "connections/ssh/keys", "home", "cache", "workspace", "workspace/browser", "workspace/artifacts", "workspace/artifacts/documents", "workspace/artifacts/images", "skills"} {
 		if err = os.MkdirAll(filepath.Join(dir, name), 0700); err != nil {
+			return err
+		}
+	}
+	if s.Has("memory_vault") {
+		// The git-backed vault is materialized with the rest of the space
+		// tree; Ensure is idempotent so re-renders never disturb content.
+		if err = vault.Ensure(filepath.Join(dir, "vault")); err != nil {
 			return err
 		}
 	}

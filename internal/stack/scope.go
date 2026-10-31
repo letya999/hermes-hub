@@ -168,6 +168,9 @@ func (o OrganizationSettings) Validate() error {
 	}
 	seen := map[string]bool{}
 	for _, name := range o.Features {
+		if name == "memory_vault" {
+			return fmt.Errorf("organization cannot grant memory_vault: the vault is a per-user store")
+		}
 		if seen[name] || !slices.ContainsFunc(Features, func(f Feature) bool { return f.Name == name }) {
 			return fmt.Errorf("organization has unknown or duplicate feature %q", name)
 		}
@@ -454,7 +457,9 @@ func InitOrganization(dir, organization, owner string) error {
 func organizationFeatures() []string {
 	result := make([]string, 0, len(Features)-1)
 	for _, feature := range Features {
-		if feature.Name != "telegram_write" {
+		// telegram_write needs the per-member Telegram credential path;
+		// memory_vault is a per-user store no organization ceiling may grant.
+		if feature.Name != "telegram_write" && feature.Name != "memory_vault" {
 			result = append(result, feature.Name)
 		}
 	}

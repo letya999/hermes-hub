@@ -118,6 +118,10 @@ var featureToolMigration = map[string]ToolEntry{
 	// through the controller path, never the executor's network.
 	"exposure": {Via: ToolViaToolHub},
 	"hosting":  {Via: ToolViaToolHub},
+	// memory_vault is a hub-side subsystem flag (like the stt/deep_research
+	// pseudo entries): `native` is only the enable marker — nothing upstream
+	// serves a toolset by this name.
+	"memory_vault": {Via: ToolViaNative},
 }
 
 var featureToggleMigration = map[string][2]string{

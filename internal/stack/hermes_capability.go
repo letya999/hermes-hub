@@ -108,6 +108,11 @@ func disabledToolsets(s Settings) []string {
 			disabled = append(disabled, name)
 		}
 	}
+	// SPEC-0085 R1.6: memory_vault evicts the native memory toolset even
+	// when the space carved it out — it goes back onto the denylist.
+	if s.Has("memory_vault") && !slices.Contains(disabled, "memory") {
+		disabled = append(disabled, "memory")
+	}
 	slices.Sort(disabled)
 	return disabled
 }
@@ -136,7 +141,9 @@ func managedHermesConfig(s Settings) M {
 		"hooks":       M{},
 		// A carved-out `memory` toolset still needs its subsystem flag; without
 		// it the tool loads against a disabled backend and silently no-ops.
-		"memory": M{"memory_enabled": slices.Contains(s.nativeCarveouts(), "memory"), "user_profile_enabled": false},
+		// SPEC-0085 R1.6: memory_vault replaces the native store — the flag
+		// renders false and the toolset returns to the denylist below.
+		"memory": M{"memory_enabled": slices.Contains(s.nativeCarveouts(), "memory") && !s.Has("memory_vault"), "user_profile_enabled": false},
 		// Voice lives on the gateway side: communication-hub transcribes and
 		// synthesizes through the hub-stt/hub-tts sidecars. The in-runtime
 		// upstream STT toolset stays sealed — the managed runtime never sees

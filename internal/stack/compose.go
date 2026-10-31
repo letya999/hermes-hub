@@ -87,6 +87,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "soul-effective."+s.Environment+".md")), "target": "/state/hermes/SOUL.md", "read_only": true},
 		}
 	}
+	if s.Has("memory_vault") {
+		// The vault is a per-space git tree the governed writer commits into;
+		// it mounts read-write for the runtime in both render modes.
+		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "vault")), "target": "/vault"})
+	}
 	if s.Has("ssh") {
 		// The whole SSH capability — host bindings, pinned host keys and any
 		// file: credentials — is operator-owned and read-only inside the runtime.
@@ -145,6 +150,9 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	}
 	if s.ExecutionMode != "supervisor" {
 		runtimeEnv["HUB_RUNTIME_GENERATION"] = "static-" + s.User + "-" + s.Environment
+	}
+	if s.Has("memory_vault") {
+		runtimeEnv["HUB_VAULT"] = "/vault"
 	}
 	runtimeEnv["HUB_CAPABILITY_MODE"] = s.CapabilityMode
 	if s.CapabilityMode == "managed" {
@@ -725,6 +733,12 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			M{"type": "bind", "source": filepath.ToSlash(GeneratedEffectiveSkillsDir(dir)), "target": "/skills-effective", "read_only": true},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "skills")), "target": "/skills-store"},
 			brokerSecrets("communication"),
+		}
+		if s.Has("memory_vault") {
+			// The gateway reads CORE for private-run instruction injection —
+			// read-only; governed writes stay inside the runtime's writer.
+			gatewayEnvironment["HUB_VAULT"] = "/vault"
+			gateway["volumes"] = append(gateway["volumes"].([]any), M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "vault")), "target": "/vault", "read_only": true})
 		}
 		// Sibling Telegram identities live in this file. TELEGRAM_ALLOWED_USERS
 		// stays the single infra-owner fallback when the file is absent.

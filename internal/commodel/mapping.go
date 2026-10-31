@@ -74,10 +74,14 @@ type JobMapping struct {
 	// StatusText is the latest user-facing status line for live progress:
 	// the periodic tick re-renders it with elapsed time, so the durable copy
 	// lets a restarted gateway resume the status message without the stream.
-	StatusText        string `json:"status_text,omitempty"`
-	Style             string `json:"style,omitempty"`
-	StyleVersion      uint64 `json:"style_version,omitempty"`
-	StyleSnapshotted  bool   `json:"style_snapshotted,omitempty"`
+	StatusText       string `json:"status_text,omitempty"`
+	Style            string `json:"style,omitempty"`
+	StyleVersion     uint64 `json:"style_version,omitempty"`
+	StyleSnapshotted bool   `json:"style_snapshotted,omitempty"`
+	// CoreSnapshot/CoreSnapshotted pin the admitted-run memory CORE block:
+	// a retried run reuses the snapshot instead of re-reading the vault.
+	CoreSnapshot      string `json:"core_snapshot,omitempty"`
+	CoreSnapshotted   bool   `json:"core_snapshotted,omitempty"`
 	Status            string `json:"status"`
 	SessionID         string `json:"session_id,omitempty"`
 	RunID             string `json:"run_id,omitempty"`
