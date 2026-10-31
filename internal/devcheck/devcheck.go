@@ -437,18 +437,44 @@ func DockerSmoke(ctx context.Context, image string) error {
 			return err
 		}
 	}
-	for range 90 {
-		if exec.CommandContext(ctx, "docker", "exec", name, "hub-runtime", "health").Run() == nil {
-			if err := runtimeContractSmoke(ctx, image, name+"-contract"); err != nil {
-				return err
-			}
-			fmt.Println("Standalone Docker runtime smoke passed; no live provider calls")
+	status := func(container string) string {
+		out, err := exec.CommandContext(ctx, "docker", "inspect", "--format", "{{.State.Status}}", container).Output()
+		if err != nil {
+			return "unknown"
+		}
+		return strings.TrimSpace(string(out))
+	}
+	err = smokeWaitHealthy(ctx, func() bool {
+		return exec.CommandContext(ctx, "docker", "exec", name, "hub-runtime", "health").Run() == nil
+	}, status, []string{name, sidecar}, 90*time.Second)
+	if err != nil {
+		_ = run("logs", "--tail", "80", name)
+		_ = run("logs", "--tail", "80", sidecar)
+		return err
+	}
+	if err := runtimeContractSmoke(ctx, image, name+"-contract"); err != nil {
+		return err
+	}
+	fmt.Println("Standalone Docker runtime smoke passed; no live provider calls")
+	return nil
+}
+
+func smokeWaitHealthy(ctx context.Context, healthy func() bool, status func(string) string, containers []string, window time.Duration) error {
+	deadline := time.Now().Add(window)
+	for {
+		if healthy() {
 			return nil
+		}
+		for _, container := range containers {
+			if s := status(container); s != "running" {
+				return fmt.Errorf("%s exited during smoke (status %s)", container, s)
+			}
+		}
+		if time.Now().After(deadline) {
+			return errors.New("agent/browser failed health check")
 		}
 		time.Sleep(time.Second)
 	}
-	_ = run("logs", name)
-	return fmt.Errorf("agent/browser failed health check")
 }
 
 func runtimeContractSmoke(ctx context.Context, image, name string) error {
