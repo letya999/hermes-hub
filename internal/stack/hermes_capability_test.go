@@ -10,8 +10,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/media"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"gopkg.in/yaml.v3"
 )
 
@@ -598,6 +600,13 @@ func TestManagedEgressRelayRenders(t *testing.T) {
 	if err := WriteSpace(dir, settings); err != nil {
 		t.Fatal(err)
 	}
+	// Native toolsets are default-deny (SPEC-0083 R3.1): grant the fixture's
+	// native selections before render.
+	seedGovernance(t, dir, func(doc *api.Governance) {
+		for _, section := range []string{"native:web", "native:search", "native:memory", "native:todo"} {
+			activeToolGrant(t, doc, "alice", section, time.Hour)
+		}
+	})
 	// A provider key must reach the managed runtime env — the spawned
 	// container has no other path to it.
 	if err := os.WriteFile(filepath.Join(dir, "secrets.dev.env"), []byte("OPENAI_API_KEY=k-test\nKEENABLE_API_KEY=kk-test\n"), 0600); err != nil {
@@ -713,5 +722,310 @@ func TestManagedEgressRelayRenders(t *testing.T) {
 	attestOpts.ImageGen = media.ImageGen{}
 	if err := ValidateManagedEffectiveConfig(effectivePath, validate, attestOpts); err == nil {
 		t.Fatal("image_gen block accepted without the grant in transit")
+	}
+}
+
+// TestAssignmentToolhubFamily: the standing-assignment surface is a
+// deliverable ToolHub capability family — a space may wish assignments:
+// toolhub, the wish maps to the assignments capability, and the control
+// plane host opens exactly like routines (SPEC-0080 R2.3).
+func TestAssignmentToolhubFamily(t *testing.T) {
+	s := Settings{Schema: 1, User: "alice", Environment: "dev", CapabilityMode: "managed",
+		CapabilityProfileID: "alice-default", CapabilityGeneration: 1,
+		Tools: map[string]ToolEntry{"assignments": {Via: ToolViaToolHub}}}
+	if err := s.validateTools(); err != nil {
+		t.Fatalf("assignments: toolhub must validate: %v", err)
+	}
+	if got := ToolHubCapabilityID("assignments"); got != "assignments" {
+		t.Fatalf("capability id = %q", got)
+	}
+	hosts := managedEgressHosts(s, t.TempDir())
+	if !slices.Contains(hosts, "communication-hub") {
+		t.Fatalf("assignments must open the control plane egress: %v", hosts)
+	}
+}
+
+// SPEC-0084 R3.3: the native skills toolset is always off — the hub-built
+// read-only view at /skills replaces upstream loading entirely, so `skills`
+// is not a carve-out and a wish plus active grant still cannot lift it onto
+// a platform list or off the denylist.
+func TestNativeSkillsToolsetAlwaysDenied(t *testing.T) {
+	if slices.Contains(NativeCarveoutToolsets(), "skills") {
+		t.Fatal("skills is a reviewed carve-out — must never be re-enableable")
+	}
+	if err := ValidateNativeToolsets([]string{"skills"}); err == nil {
+		t.Fatal("skills accepted as a native carve-out")
+	}
+	d := t.TempDir()
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "config"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config", "SOUL.md"), []byte("soul"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Init(d, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Read(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Model, s.ModelURL = "test", "http://model.invalid/v1"
+	// A `skills: {via: native}` wish can be persisted but never renders —
+	// validation refuses it before any grant question.
+	s.Tools = map[string]ToolEntry{"skills": {Via: ToolViaNative}}
+	if err := saveSpace(d, s); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenderEnvironment(d, root, "prod"); err == nil || !strings.Contains(err.Error(), "not a reviewed native toolset") {
+		t.Fatalf("skills wish rendered: %v", err)
+	}
+	s.Tools = map[string]ToolEntry{}
+	if err := saveSpace(d, s); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenderEnvironment(d, root, "prod"); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(d, "generated", "hermes.prod.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg M
+	if err := yaml.Unmarshal(body, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	disabled := cfg["agent"].(M)["disabled_toolsets"].([]any)
+	if !slices.Contains(disabled, "skills") {
+		t.Fatalf("skills toolset left the denylist under a grant: %v", disabled)
+	}
+	for platform, list := range cfg["platform_toolsets"].(M) {
+		if slices.Contains(list.([]any), "skills") {
+			t.Fatalf("skills toolset emitted for platform %s", platform)
+		}
+	}
+	if cfg["curator"].(M)["enabled"] != false {
+		t.Fatal("unmanaged render must pin the curator off")
+	}
+	if _, err := os.Stat(filepath.Join(d, "hermes", ".no-bundled-skills")); err != nil {
+		t.Fatalf("bundled-skills marker missing after render: %v", err)
+	}
+}
+
+// The hub-owned browser sidecar is infrastructure like the model relay: it
+// renders directly into managed mcp_servers under the same governance gate
+// the unmanaged path uses (hub:browser / hub:browser_guest), never through a
+// model-selectable connector. Read tools ship by default; mutation tools
+// stay behind the explicit browser_act capability.
+func TestManagedRenderBrowserServer(t *testing.T) {
+	base := Settings{Schema: 1, Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, User: "alice", Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
+
+	s := base
+	s.Tools = map[string]ToolEntry{"browser": {Via: ToolViaMCP}}
+	servers := Config(s)["mcp_servers"].(M)
+	persistent, ok := servers["browser"].(M)
+	if !ok || persistent["url"] != "http://browser-alice:8931/mcp" {
+		t.Fatalf("managed browser server missing or wrong: %v", servers)
+	}
+	guest, ok := servers["browser_guest"].(M)
+	if !ok || guest["url"] != "http://browser-alice:8932/mcp" {
+		t.Fatalf("managed guest browser server missing or wrong: %v", servers)
+	}
+	for _, tool := range []string{"browser_navigate", "browser_take_screenshot", "browser_snapshot"} {
+		if !slices.Contains(persistent["tools"].(MCPTools).Include, tool) {
+			t.Fatalf("managed browser lacks read tool %s", tool)
+		}
+	}
+	for _, tool := range browserMutationTools {
+		if slices.Contains(persistent["tools"].(MCPTools).Include, tool) {
+			t.Fatalf("mutation tool %s projected without browser_act", tool)
+		}
+	}
+
+	// browser_act widens the include list on both endpoints.
+	act := base
+	act.Tools = map[string]ToolEntry{"browser": {Via: ToolViaMCP, Tools: map[string]bool{"act": true}}}
+	actServers := Config(act)["mcp_servers"].(M)
+	if !slices.Contains(actServers["browser"].(M)["tools"].(MCPTools).Include, "browser_click") {
+		t.Fatal("browser_act did not admit mutation tools")
+	}
+	if !slices.Contains(actServers["browser_guest"].(M)["tools"].(MCPTools).Include, "browser_click") {
+		t.Fatal("browser_act did not admit guest mutation tools")
+	}
+
+	// Governance denies are honored the same way as the unmanaged render:
+	// a denied section emits no server at all.
+	denied := base
+	denied.Tools = map[string]ToolEntry{"browser": {Via: ToolViaMCP}}
+	denied.gov = &toolGovernance{decisions: map[string]api.PolicyDecision{
+		api.SectionHubBrowser: {Effect: api.RuleDeny},
+		"hub:browser_guest":   {Effect: api.RuleDeny},
+	}}
+	if servers := Config(denied)["mcp_servers"].(M); len(servers) != 0 {
+		t.Fatalf("denied browser section still rendered: %v", servers)
+	}
+	partial := denied
+	partial.gov = &toolGovernance{decisions: map[string]api.PolicyDecision{
+		api.SectionHubBrowser: {Effect: api.RuleDeny},
+		"hub:browser_guest":   {Effect: api.RuleAllow},
+	}}
+	partialServers := Config(partial)["mcp_servers"].(M)
+	if partialServers["browser"] != nil || partialServers["browser_guest"] == nil {
+		t.Fatalf("per-section governance not honored: %v", partialServers)
+	}
+
+	// No browser wish: managed mcp_servers stays empty (toolhub is injected
+	// at materialization).
+	empty := Config(base)["mcp_servers"].(M)
+	if len(empty) != 0 {
+		t.Fatalf("zero-wish render gained servers: %v", empty)
+	}
+}
+
+// The materialization attestation must accept the rendered browser server:
+// the grant rides MaterializeOptions.Browser so the in-container
+// reconstruction emits the identical server set.
+func TestManagedBrowserMaterializeAndAttest(t *testing.T) {
+	s := Settings{Schema: 1, Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, User: "alice", Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
+		Tools: map[string]ToolEntry{"browser": {Via: ToolViaMCP, Tools: map[string]bool{"act": true}}}}
+	zero := Config(s)
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source.yaml")
+	body, err := yaml.Marshal(zero)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	opts := MaterializeOptions{Managed: true, ToolHubEndpoint: "http://toolhub:8090/mcp", ToolHubTokenEnv: "HUB_RUNTIME_AUTH", RuntimeAuthPresent: true,
+		Browser: BrowserGrant{Persistent: true, Guest: true, Act: true}, User: "alice"}
+	dest := filepath.Join(dir, "effective.yaml")
+	if err := MaterializeHermesConfig(source, dest, opts); err != nil {
+		t.Fatalf("browser materialize: %v", err)
+	}
+	if err := ValidateManagedEffectiveConfig(dest, s, opts); err != nil {
+		t.Fatalf("browser effective config rejected: %v", err)
+	}
+	var effective M
+	raw, _ := os.ReadFile(dest)
+	if err := yaml.Unmarshal(raw, &effective); err != nil {
+		t.Fatal(err)
+	}
+	servers, _ := effective["mcp_servers"].(map[string]any)
+	if servers["browser"] == nil || servers["browser_guest"] == nil || servers["toolhub"] == nil {
+		t.Fatalf("effective config lost managed servers: %v", servers)
+	}
+
+	// A grant narrower than the render is unreviewed drift: the attestation
+	// rebuilds the same zero-template and must reject the widening.
+	shrunk := opts
+	shrunk.Browser = BrowserGrant{}
+	if err := ValidateManagedEffectiveConfig(dest, s, shrunk); err == nil {
+		t.Fatal("effective browser surface accepted under a revoked grant")
+	}
+}
+
+// The spawned managed runtime reconstructs the browser grant inside the
+// container; it rides RuntimeService env as JSON exactly like
+// HUB_MANAGED_IMAGE_GEN, so the in-container preflight emits the identical
+// server set without consulting agent-editable state.
+func TestManagedRuntimeEnvCarriesBrowserGrant(t *testing.T) {
+	s := Settings{Schema: 1, User: "alice", Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, Timezone: "UTC", OAuthPort: 8000, BrowserPort: 6080,
+		Tools: map[string]ToolEntry{"browser": {Via: ToolViaMCP, Tools: map[string]bool{"act": true}}}}
+	env := RuntimeService(s, t.TempDir(), t.TempDir())["environment"].(M)
+	var grant BrowserGrant
+	raw, ok := env["HUB_MANAGED_BROWSER"].(string)
+	if !ok {
+		t.Fatalf("HUB_MANAGED_BROWSER absent from managed runtime env: %v", env)
+	}
+	if err := json.Unmarshal([]byte(raw), &grant); err != nil {
+		t.Fatalf("HUB_MANAGED_BROWSER is not the grant JSON: %v", err)
+	}
+	if grant != (BrowserGrant{Persistent: true, Guest: true, Act: true}) {
+		t.Fatalf("runtime browser grant mismatch: %+v", grant)
+	}
+
+	// A denied guest section reaches the container as grant data, not as a
+	// rendered server the agent could widen.
+	gated := s
+	gated.gov = &toolGovernance{decisions: map[string]api.PolicyDecision{
+		"hub:browser_guest": {Effect: api.RuleDeny},
+	}}
+	env = RuntimeService(gated, t.TempDir(), t.TempDir())["environment"].(M)
+	grant = BrowserGrant{}
+	if err := json.Unmarshal([]byte(env["HUB_MANAGED_BROWSER"].(string)), &grant); err != nil {
+		t.Fatal(err)
+	}
+	if grant != (BrowserGrant{Persistent: true, Act: true}) {
+		t.Fatalf("denied guest leaked into runtime grant: %+v", grant)
+	}
+
+	// No browser wish: no grant rides the env.
+	plain := s
+	plain.Tools = nil
+	env = RuntimeService(plain, t.TempDir(), t.TempDir())["environment"].(M)
+	if env["HUB_MANAGED_BROWSER"] != nil {
+		t.Fatalf("browser grant rendered without a wish: %v", env["HUB_MANAGED_BROWSER"])
+	}
+}
+
+// The RenderEnvironment materialization is the same attestation boundary the
+// supervisor walks: a browser-wish space must render an effective config that
+// carries the sidecar servers end-to-end, or the runtime attestation rejects
+// its own reviewed render.
+func TestManagedRenderEnvironmentCarriesBrowserGrant(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "spaces", "alice")
+	if err := Init(dir, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := Read(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.CapabilityMode, settings.CapabilityProfileID, settings.CapabilityGeneration = "managed", "alice-default", 1
+	settings.Model = "synthetic"
+	settings.ModelURL = "http://model-relay:8318/v1"
+	settings.Memory, settings.Ingress = false, nil
+	settings.Tools = map[string]ToolEntry{"browser": {Via: ToolViaMCP, Tools: map[string]bool{"act": true}}}
+	if err := WriteSpace(dir, settings); err != nil {
+		t.Fatal(err)
+	}
+	selection := ExecutionSelection{Schema: 1, User: "alice", Environment: "dev", Mode: "supervisor", SupervisorURL: "http://localhost:8876", NativeCron: "disabled", CompatibilityRelease: "0.3.0"}
+	selectionBody, err := json.Marshal(selection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ExecutionPath("dev")), selectionBody, 0600); err != nil {
+		t.Fatal(err)
+	}
+	configDir := filepath.Join(root, "config")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "SOUL.md"), []byte("# test soul\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenderEnvironment(dir, root, "dev"); err != nil {
+		t.Fatalf("managed browser render: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "generated", "hermes-effective.dev.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	for _, want := range []string{"browser-alice:8931/mcp", "browser-alice:8932/mcp", "toolhub"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("effective render missing %q:\n%s", want, text)
+		}
+	}
+	runtimeEnv, err := os.ReadFile(filepath.Join(dir, "managed-runtime.dev.env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(runtimeEnv), "HUB_TOOLHUB_ENDPOINT=") {
+		t.Fatal("managed runtime env lost the ToolHub endpoint")
 	}
 }

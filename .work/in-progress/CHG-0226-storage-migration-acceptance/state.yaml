@@ -1,0 +1,37 @@
+schema: 1
+change: CHG-0226
+title: "Явная миграция и итоговая приёмка ограниченного хранения"
+status: in_progress
+branch: fix/m23-live-wake
+updated: "2026-10-28"
+phase: design-complete
+adr: ADR-0087
+spec: SPEC-0087
+related_specs: [SPEC-0088]
+requirements: [R6]
+depends_on: [CHG-0215, CHG-0216, CHG-0217, CHG-0218, CHG-0219, CHG-0220, CHG-0221, CHG-0222, CHG-0223, CHG-0224, CHG-0225]
+workstream: storage-reliability-mvp
+github_milestone: null
+github_issue: null
+design_status: accepted
+implementation_status: not_started
+readiness: dependency_gated
+slices:
+  S202.1-read-only-import: not_started
+  S202.2-dev-acceptance: not_started
+  S202.3-closeout: not_started
+validation:
+  documents: passed
+  planning_package: passed
+  planning_just_check: failed
+  just_check: not_run
+  module_check: not_run
+  security: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining:
+  - "Implementation and all runtime acceptance remain outstanding."
+limitations:
+  - "Planning record only; no production code or live state changed."

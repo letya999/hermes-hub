@@ -13,7 +13,7 @@ import (
 // OwnsHistoryEnvelope reports whether an envelope belongs to the schedule's
 // owner context — current identity or one of the durable prior envelopes.
 func OwnsHistoryEnvelope(item commodel.Schedule, envelope identity.Envelope) bool {
-	return envelope.PrincipalID == item.Envelope.PrincipalID && envelope.ContextID == item.Envelope.ContextID && (envelope == item.Envelope || slices.Contains(item.PriorEnvelopes, envelope))
+	return envelope.PrincipalID == item.Envelope.PrincipalID && envelope.ContextID == item.Envelope.ContextID && (envelope.Equal(item.Envelope) || slices.ContainsFunc(item.PriorEnvelopes, envelope.Equal))
 }
 
 // ReminderStateLocked derives a reminder occurrence's outcome on owner reads;

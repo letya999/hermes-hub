@@ -26,6 +26,7 @@ type cliCell struct {
 	runtime         string // OCI runtime the create used ("" = daemon default runc)
 	workHost        string // host path bound at /work; "" when tmpfs scratch
 	workRW          bool
+	skillsHost      string // host path bound ro at /skills; "" when no mount
 	installPackages bool
 	network         string   // internal egress network name, "" = none
 	sidecars        []string // companion container names (squid, cred-proxy)
@@ -77,6 +78,7 @@ const (
 	cellCanaryPath   = "/tmp/.hermes-canary"
 	cellCanaryName   = ".hermes-canary"
 	cellToolsetGuest = "/tools"
+	cellSkillsGuest  = "/skills"
 	credProxyPort    = 3129
 	cellProxyPort    = 3128
 )

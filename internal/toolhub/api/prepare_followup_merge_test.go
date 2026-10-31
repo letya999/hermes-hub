@@ -100,7 +100,7 @@ func TestPostPrepareNoticeCarriesCredentialIntake(t *testing.T) {
 
 	// The reviewed telegram-session contract declares QR intake; the gateway
 	// needs it in the payload instead of pattern-matching the contract id.
-	onboarding := Onboarding{OnboardingID: "onb-tg", Phase: PhaseAwaitingCreds, BrokerContractID: "telegram-session", BrokerContractRevision: 2, BrokerRequestID: "req-1"}
+	onboarding := Onboarding{OnboardingID: "onb-tg", Phase: PhaseAwaitingCreds, BrokerContractID: "telegram-session", BrokerContractRevision: 3, BrokerRequestID: "req-1"}
 	PostPrepareNotice(context.Background(), auth, onboarding, "", 0)
 	if got["credential_intake"] != "telegram_qr" {
 		t.Fatalf("intake missing from payload: %v", got)

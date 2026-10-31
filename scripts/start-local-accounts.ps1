@@ -28,4 +28,15 @@ $endpoint = @(Get-CimInstance Win32_Process -Filter "Name='toolhub.exe'" | Where
 if ($endpoint.Count -eq 0) {
     Start-Process -FilePath $endpointBinary -WindowStyle Hidden -RedirectStandardError (Join-Path $Root 'toolhub-error.log') -RedirectStandardOutput (Join-Path $Root 'toolhub.log')
 }
-Write-Host 'Локальные службы запущены. Если Docker Desktop перезапущен или службы сообщили ошибку, попросите проверить запуск; рабочие контейнеры не удаляйте.'
+
+$lang = @($env:HUB_LANG, $env:LC_ALL, $env:LANG, (Get-UICulture).TwoLetterISOLanguageName) |
+    ForEach-Object { if ($_) { ($_ -split '[_.\-]')[0].ToLowerInvariant() } } |
+    Where-Object { $_ -in @('en', 'ru', 'kk', 'es') } | Select-Object -First 1
+if (!$lang) { $lang = 'en' }
+$started = @{
+    en = 'Local services are running. If Docker Desktop was restarted or a service reported an error, ask to check the launch; do not delete the workload containers.'
+    ru = 'Локальные службы запущены. Если Docker Desktop перезапущен или службы сообщили ошибку, попросите проверить запуск; рабочие контейнеры не удаляйте.'
+    kk = 'Жергілікті қызметтер іске қосылды. Docker Desktop қайта жүктелсе немесе қызмет қате хабарласа, іске қосуды тексеруін сұраңыз; жұмыс контейнерлерін жоймаңыз.'
+    es = 'Los servicios locales están en marcha. Si Docker Desktop se reinició o un servicio informó de un error, pide que revisen el arranque; no borres los contenedores de trabajo.'
+}
+Write-Host $started[$lang]

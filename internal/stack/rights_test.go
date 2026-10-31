@@ -70,10 +70,14 @@ func TestPolicyVersionIgnoresNonRightsFields(t *testing.T) {
 // so a field classified rights-bearing without a mutator fails here.
 func TestPolicyVersionChangesOnRightsFields(t *testing.T) {
 	mutators := map[string]func(*Settings){
-		"CapabilityMode":        func(s *Settings) { s.CapabilityMode = "managed" },
-		"CapabilityProfileID":   func(s *Settings) { s.CapabilityProfileID = "p-1" },
-		"CapabilityGeneration":  func(s *Settings) { s.CapabilityGeneration = 7 },
-		"CLIRegistries":         func(s *Settings) { s.CLIRegistries = []string{"ghcr.io/x"} },
+		"CapabilityMode":       func(s *Settings) { s.CapabilityMode = "managed" },
+		"CapabilityProfileID":  func(s *Settings) { s.CapabilityProfileID = "p-1" },
+		"CapabilityGeneration": func(s *Settings) { s.CapabilityGeneration = 7 },
+		"CLIRegistries":        func(s *Settings) { s.CLIRegistries = []string{"ghcr.io/x"} },
+		"Hosting": func(s *Settings) {
+			s.Tools["hosting"] = ToolEntry{Via: ToolViaToolHub}
+			s.Hosting.Slots = []string{"page"}
+		},
 		"CLIToolboxes":          func(s *Settings) { s.CLIToolboxes = map[string][]string{"box": {"img@sha256:aa"}} },
 		"Tools":                 func(s *Settings) { s.Tools["web"] = ToolEntry{Via: ToolViaMCP} },
 		"Ingress":               func(s *Settings) { s.Ingress = append(s.Ingress, "slack") },
@@ -90,6 +94,7 @@ func TestPolicyVersionChangesOnRightsFields(t *testing.T) {
 		"OrganizationDocsDir":   func(s *Settings) { s.OrganizationDocsDir = "/docs" },
 		"OrganizationSkillsDir": func(s *Settings) { s.OrganizationSkillsDir = "/oskills" },
 		"OrganizationRole":      func(s *Settings) { s.OrganizationRole = "member" },
+		"OrganizationProfile":   func(s *Settings) { s.OrganizationProfile = "analyst" },
 		"OrgActions":            func(s *Settings) { s.OrgActions = []string{"read"} },
 		"GoogleEmail":           func(s *Settings) { s.GoogleEmail = "a@b.c" },
 		"GitLabHost":            func(s *Settings) { s.GitLabHost = "gl.example" },

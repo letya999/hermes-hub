@@ -1,6 +1,6 @@
 ---
 description: System overview — roles, component map, networks, lifecycle; details live in services/, rbac.md, spaces.md and the ADRs.
-last_verified: 2026-10-25
+last_verified: 2026-10-28
 ---
 
 # Architecture
@@ -28,6 +28,7 @@ and tools.
 | `toolhub` | Capability gateway: governance evaluation, connector lifecycle, audit | [toolhub.md](services/toolhub.md) |
 | `credential-broker` | Standalone credential authority (copied MIT module) | [credential-broker.md](services/credential-broker/index.md) |
 | `hub-stt`/`hub-tts`/`hub-media` | Speech + media sidecars, bearer-auth internal API | [media.md](services/media.md) |
+| `browser-<user>` | Per-space browser sidecar: headed Chromium under Xvfb, authenticated noVNC, playwright-mcp endpoints, google_meet node; CDP stays on the space network | [runtime.md](services/runtime.md) |
 | `cellinit`/`cell-proxy`/`mcp-bridge` | Disposable workload cells + loopback relays | [cell-proxy.md](services/cell-proxy.md) |
 | `model-relay` | Per-space model selection + provider ladder | [model-relay.md](services/model-relay.md) |
 | `hubctl` | Operator CLI: render/up/down, secrets, migrations, connector host ops | [hubctl.md](services/hubctl.md) |
@@ -205,3 +206,7 @@ retained for idempotent replay (removed 30 d, terminal operations 7 d).
   pre-migration cron pins its context on until migrated.
 - Not every guarantee is deployed yet — ADR-0031/32 acceptance is tracked
   in .work; describe the deployed stack, not the target, when answering.
+
+## Site hosting
+
+Opt-in `hosting` adds an owner/env Go web tier and a hosting-only workload controller. It consumes sish exposure and per-user wildcard DNS/TLS. Site snapshots have separate volumes; user code runs outside Hermes with no Hub network. See [hosting](services/hosting.md) for boundaries, fleet/zone coordination and deployment prerequisites.

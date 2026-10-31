@@ -1,0 +1,40 @@
+schema: 1
+change: CHG-0188
+title: m23-live-wake
+status: done
+branch: fix/m23-live-wake
+updated: 2026-10-27
+phase: done
+adr: ADR-0082
+spec: SPEC-0080+SPEC-0081
+requirements: [R2.2, R2.3, R3.x, R4.1]
+depends_on: [CHG-0178, CHG-0179, CHG-0180, CHG-0181]
+github_milestone: M23 — Backlog Proactive Assignments
+github_issue: 324,332
+design_status: accepted
+implementation_status: done
+slices:
+  S1-supervisor-policy-fencing: done
+  S2-failure-notice-dedupe: done
+  S3-event-pipeline: done
+  S4-assignment-tool-delivery: done
+  S5-hold-projection-no-lock-io: done
+validation:
+  documents: pass
+  just_check: pass (coverage 86.10%)
+  docker_check: dev-rebuild path used (hubctl dev-rebuild on communication-hub/supervisor/hermes-runtime, not full image gate)
+  red_team: partial
+  live_acceptance: done
+evidence:
+  - "P0 live remediation: 8 tg-gh-* schedules paused, stale operator pin removed, filters repaired to compiling Starlark"
+  - "runtime respawn chain gen-426..429 lands on derived policy policy-a65cfdeb88f36f3c; stale-policy runtime replaced by Ensure"
+  - "hub-agent-tools@5.2.0 registered in live ToolHub store; binding + policy rev7 + profile rev9 for artem_two; preview admitted 39/39, denied []"
+  - "live MCP tools/list exposes all 10 assignment_* tools + routine_get + images_inspect (unique capability_ids)"
+  - "assignment asg-e36fbe3c active via REST; hook POST /v1/hooks/<id> 202 -> watch_state advanced -> telegram-sent chat_id=480637186 text_len=149"
+  - "cancel: assignment cancelled_at stamped, source schedule deleted"
+limitations:
+  - "full just docker-check image gate deferred to CI; local verification used the documented hubctl dev-rebuild path"
+  - "red_team partial: authz legs covered by tests + live 401/404 earlier in CHG-0181; no dedicated adversarial sweep this change"
+remaining:
+  - "rotate secrets previously printed into a session transcript (HUB_COMMUNICATION_AUTH, HUB_MEDIA_AUTH, OPENAI_API_KEY, KEENABLE_API_KEY for spaces/artem_two)"
+  - "clean up the paused test tg-gh-* schedules on the dev stack"

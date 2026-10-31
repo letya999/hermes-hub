@@ -77,10 +77,32 @@ func TestSelfSettingsCannotRestoreNativeTerminal(t *testing.T) {
 	}
 }
 
+// SPEC-0083 R3.2: nothing implicit remains — a space with no tools: wishes
+// renders zero native toolsets on every served platform, and denied natives
+// stay under agent.disabled_toolsets.
+func TestRenderEmitsNoImplicitNativeToolsets(t *testing.T) {
+	s := Settings{Schema: 1, Environment: "dev", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
+	cfg := Config(s)
+	for _, channel := range []string{"cli", "local", "telegram", "api_server", "cron"} {
+		if sets := cfg["platform_toolsets"].(M)[channel].([]string); len(sets) != 0 {
+			t.Fatalf("%s emits implicit natives: %v", channel, sets)
+		}
+	}
+	denied := cfg["agent"].(M)["disabled_toolsets"].([]string)
+	for _, name := range []string{"file", "web", "skills", "memory", "cronjob", "todo", "session_search"} {
+		if !slices.Contains(denied, name) {
+			t.Fatalf("ungrieved native %s missing from disabled_toolsets", name)
+		}
+	}
+}
+
 func TestToolHubTerminalRemovesNativeEvenWhenGovernanceAllows(t *testing.T) {
 	s := Settings{Schema: 1, Environment: "dev", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
 		Tools: map[string]ToolEntry{"terminal": {Via: ToolViaToolHub}}}
 	// nil governance allows emission, so this catches the backend-routing bug.
+	// R3.2: no implicit base list — an explicit file wish keeps the rest of
+	// the render honest about what toolhub terminal removed.
+	s.Tools["file"] = ToolEntry{Via: ToolViaNative}
 	cfg := Config(s)
 	for _, channel := range []string{"cli", "telegram", "api_server", "cron"} {
 		sets := cfg["platform_toolsets"].(M)[channel].([]string)
@@ -120,11 +142,7 @@ func TestUnnamedPlatformsFallClosed(t *testing.T) {
 		if !ok {
 			t.Fatalf("platform %s unnamed: upstream composite fallback is live", platform)
 		}
-		served := slices.Contains([]string{"cli", "local", "telegram", "api_server", "cron"}, platform)
-		if served && len(sets) == 0 {
-			t.Fatalf("served platform %s lost the reviewed surface", platform)
-		}
-		if !served && len(sets) != 0 {
+		if !slices.Contains([]string{"cli", "local", "telegram", "api_server", "cron"}, platform) && len(sets) != 0 {
 			t.Fatalf("unserved platform %s got tools: %v", platform, sets)
 		}
 	}
@@ -139,9 +157,10 @@ func TestUnnamedPlatformsFallClosed(t *testing.T) {
 			t.Fatalf("composite %s in denylist would strip enabled core tools", name)
 		}
 	}
+	// R3.1: ungranted native leaves stay on the deny net.
 	for _, name := range []string{"file", "memory", "skills", "todo", "session_search"} {
-		if slices.Contains(denied, name) {
-			t.Fatalf("enabled toolset %s landed on the denylist", name)
+		if !slices.Contains(denied, name) {
+			t.Fatalf("ungranted native %s missing from the denylist", name)
 		}
 	}
 	// An explicitly granted native toolset lifts only that toolset off the net.

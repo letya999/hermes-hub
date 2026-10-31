@@ -44,7 +44,7 @@ func TestM10ApplyPrevalidatesEveryResourceAndBoundsInput(t *testing.T) {
 				t.Fatal(err)
 			}
 			spool := filepath.Join(t.TempDir(), "spool")
-			if _, err := applyFile(spool, state, "alice", spec); err == nil {
+			if _, err := applyFile(spool, state, "alice", spec, ""); err == nil {
 				t.Fatal("invalid apply accepted")
 			}
 			files, _ := filepath.Glob(filepath.Join(spool, "schedules", "*.json"))
@@ -62,19 +62,19 @@ func TestM10ApplyPrevalidatesEveryResourceAndBoundsInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = applyFile(spool, state, "alice", spec); err == nil {
+	if _, err = applyFile(spool, state, "alice", spec, ""); err == nil {
 		unlock()
 		t.Fatal("offline apply ignored gateway lock")
 	}
 	unlock()
-	if _, err = applyFile(spool, state, "../alice", spec); err == nil {
+	if _, err = applyFile(spool, state, "../alice", spec, ""); err == nil {
 		t.Fatal("invalid principal accepted")
 	}
 	oversized := filepath.Join(root, "too-big.yaml")
 	if err = os.WriteFile(oversized, []byte(strings.Repeat("x", (1<<20)+1)), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = applyFile(spool, state, "alice", oversized); err == nil {
+	if _, err = applyFile(spool, state, "alice", oversized, ""); err == nil {
 		t.Fatal("oversize YAML accepted")
 	}
 	if _, err = readApplySource(root); err == nil {

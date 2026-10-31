@@ -1,0 +1,27 @@
+{
+  "split": 0.6,
+  "runs": 3,
+  "threshold": 0.5,
+  "queries": [
+    {"q": "explain how Hermes Hub toolsets work", "expect": true},
+    {"q": "what connectors are available in my space", "expect": true},
+    {"q": "how do MCP integrations authenticate here", "expect": true},
+    {"q": "объясни, как работают агент-тулзы в хабе", "expect": true},
+    {"q": "why is my connection showing degraded status", "expect": true},
+    {"q": "what is the difference between native and agent-tools", "expect": true},
+    {"q": "how do I recover a failed integration", "expect": true},
+    {"q": "list the toolsets I have access to", "expect": true},
+    {"q": "какие интеграции доступны в моём спейсе", "expect": true},
+    {"q": "how does the hub route a CLI request", "expect": true},
+    {"q": "deep research the history of MCP", "expect": false},
+    {"q": "install the GitHub MCP connector", "expect": false},
+    {"q": "merge these two PDFs", "expect": false},
+    {"q": "write unit tests for this file", "expect": false},
+    {"q": "запусти деплой продакшена", "expect": false},
+    {"q": "draft a reply to this email", "expect": false},
+    {"q": "summarize the attached document", "expect": false},
+    {"q": "set a reminder for 9am tomorrow", "expect": false},
+    {"q": "update my skill's description", "expect": false},
+    {"q": "show token usage for this session", "expect": false}
+  ]
+}

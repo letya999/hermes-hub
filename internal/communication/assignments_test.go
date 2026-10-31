@@ -1,0 +1,390 @@
+package communication
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/letya999/hermes-hub/internal/commodel"
+	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/internal/routines"
+)
+
+// TestAssignmentAPIRoundTrip (SPEC-0080 R2.1/R2.2): create→apply→get→pause→
+// resume→cancel over REST; every route is owner-scoped (foreign ⇒ 404) and
+// cancelled is terminal.
+func TestAssignmentAPIRoundTrip(t *testing.T) {
+	c := testConfig(t)
+	c.ControlAuth = "control-token"
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"title":"watch prices","intent":"watch prices for X","apply":true,"plan":{"sources":[{"name":"page","schedule":{"schedule_id":"src-page","channel":"telegram_bot","chat_id":11,"timezone":"UTC","expression":"every:15m","job_kind":"watcher","input":"watch page","probe":{"kind":"http","url":"https://example.com/p"}}}],"specialist":{"instructions":"report changes only","reply":"notify"}}}`
+	w := destinationRequest(g, http.MethodPost, "/v1/assignments", body)
+	if w.Code != http.StatusOK && w.Code != http.StatusCreated {
+		t.Fatalf("create failed: %d %s", w.Code, w.Body.String())
+	}
+	var created commodel.Assignment
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.AssignmentID == "" || created.State != "active" {
+		t.Fatalf("assignment not active after apply: %+v", created)
+	}
+	id := created.AssignmentID
+
+	// List shows the assignment to its owner.
+	w = destinationRequest(g, http.MethodGet, "/v1/assignments", "")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), id) {
+		t.Fatalf("list missing assignment: %d %s", w.Code, w.Body.String())
+	}
+	// Status card reports applied artifacts.
+	w = destinationRequest(g, http.MethodGet, "/v1/assignments/"+id, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("card failed: %d %s", w.Code, w.Body.String())
+	}
+	var card map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &card); err != nil {
+		t.Fatal(err)
+	}
+	if card["state"] != "active" || card["assignment_id"] != id {
+		t.Fatalf("bad card: %v", card)
+	}
+	// Pause → resume → cancel lifecycle over REST — each verb must reach the
+	// durable state, not just return 200.
+	for _, step := range []struct{ action, want string }{{"pause", "paused"}, {"resume", "active"}, {"cancel", "cancelled"}} {
+		current, err := g.spool.rt.LoadAssignment(id, g.users[11].Envelope(11))
+		if err != nil {
+			t.Fatal(err)
+		}
+		w = destinationRequest(g, http.MethodPost, "/v1/assignments/"+id+"/"+step.action, `{"expected_revision":`+itoa(current.Revision)+`}`)
+		if w.Code != http.StatusOK && w.Code != http.StatusNoContent {
+			t.Fatalf("%s failed: %d %s", step.action, w.Code, w.Body.String())
+		}
+		item, err := g.spool.rt.LoadAssignment(id, g.users[11].Envelope(11))
+		if err != nil || item.State != step.want {
+			t.Fatalf("%s did not reach state %q: %v %+v", step.action, step.want, err, item)
+		}
+	}
+	// Cancelled is terminal: re-apply refuses.
+	w = destinationRequest(g, http.MethodPost, "/v1/assignments/"+id+"/apply", `{}`)
+	if w.Code == http.StatusOK {
+		t.Fatal("cancelled assignment must not re-apply")
+	}
+	// Foreign id ⇒ 404-class everywhere.
+	for _, path := range []string{"/v1/assignments/nope", "/v1/assignments/nope/pause"} {
+		w = destinationRequest(g, http.MethodGet, path, "")
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("foreign id %s must 404, got %d", path, w.Code)
+		}
+	}
+}
+
+// TestAssignmentPlanDryRun (SPEC-0080 R2.1): the dry-run endpoint validates
+// every source draft and returns per-source verdicts without persisting any
+// assignment or schedule.
+func TestAssignmentPlanDryRun(t *testing.T) {
+	c := testConfig(t)
+	c.ControlAuth = "control-token"
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"sources":[{"name":"page","schedule":{"channel":"telegram_bot","chat_id":11,"timezone":"UTC","expression":"every:15m","job_kind":"watcher","input":"watch page","probe":{"kind":"http","url":"https://example.com/p"}}},{"name":"bad","schedule":{"channel":"telegram_bot","chat_id":11,"timezone":"UTC","expression":"every:15m","job_kind":"watcher","input":"watch bad","probe":{"kind":"http","url":"not-a-url"}}}]}`
+	w := destinationRequest(g, http.MethodPost, "/v1/assignments/plan", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("dry-run failed: %d %s", w.Code, w.Body.String())
+	}
+	var verdicts map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &verdicts); err != nil {
+		t.Fatal(err)
+	}
+	if verdicts["page"] != "ok" || verdicts["bad"] == "ok" || verdicts["bad"] == "" {
+		t.Fatalf("per-source verdicts wrong: %v", verdicts)
+	}
+	if items, _ := g.spool.rt.ListAssignments(g.users[11].Envelope(11)); len(items) != 0 {
+		t.Fatal("dry-run must not persist")
+	}
+}
+
+// TestAssignmentPlanUpdateNarrowsGrants (SPEC-0080 R2.4): POST .../plan is
+// CAS-guarded; grant widening without owner authorization is refused.
+func TestAssignmentPlanUpdateNarrowsGrants(t *testing.T) {
+	c := testConfig(t)
+	c.ControlAuth = "control-token"
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := destinationRequest(g, http.MethodPost, "/v1/assignments", `{"title":"t","intent":"watch x","grants":{"max_wakes_per_day":10}}`)
+	var created commodel.Assignment
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil || created.AssignmentID == "" {
+		t.Fatalf("create failed: %d %s", w.Code, w.Body.String())
+	}
+	id := created.AssignmentID
+	// Widening without authorize ⇒ refused.
+	w = destinationRequest(g, http.MethodPost, "/v1/assignments/"+id+"/plan", `{"plan":{"revision":1,"sources":[]},"grants":{"max_wakes_per_day":50},"expected_revision":`+itoa(created.Revision)+`}`)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("grant widening must 403, got %d %s", w.Code, w.Body.String())
+	}
+	// Narrowing ⇒ ok; stale revision ⇒ conflict.
+	w = destinationRequest(g, http.MethodPost, "/v1/assignments/"+id+"/plan", `{"plan":{"revision":1,"sources":[]},"grants":{"max_wakes_per_day":5},"expected_revision":`+itoa(created.Revision)+`}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("narrowing refused: %d %s", w.Code, w.Body.String())
+	}
+	w = destinationRequest(g, http.MethodPost, "/v1/assignments/"+id+"/plan", `{"plan":{"revision":1,"sources":[]},"grants":{"max_wakes_per_day":4},"expected_revision":`+itoa(created.Revision)+`}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("stale revision must 409, got %d %s", w.Code, w.Body.String())
+	}
+}
+
+func itoa(v uint64) string { return strconv.FormatUint(v, 10) }
+
+// TestAssignmentCompleteVerb (SPEC-0080 R2.1): complete retires the
+// assignment's sources and lands in the terminal "completed" state.
+func TestAssignmentCompleteVerb(t *testing.T) {
+	c := testConfig(t)
+	c.ControlAuth = "control-token"
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"title":"done","intent":"watch y","apply":true,"plan":{"sources":[{"name":"page","schedule":{"channel":"telegram_bot","chat_id":11,"timezone":"UTC","expression":"every:15m","job_kind":"watcher","input":"w","probe":{"kind":"http","url":"https://example.com/p"}}}]}}`
+	w := destinationRequest(g, http.MethodPost, "/v1/assignments", body)
+	var created commodel.Assignment
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil || created.AssignmentID == "" {
+		t.Fatalf("create failed: %d %s", w.Code, w.Body.String())
+	}
+	// The applied artifact must carry the gateway org + owner actor/scope —
+	// otherwise every occurrence fails owner authorization at tick time.
+	scheds, err := g.spool.ListSchedules(g.users[11].Envelope(11))
+	if err != nil || len(scheds) != 1 {
+		t.Fatalf("applied schedule missing: %v", err)
+	}
+	if scheds[0].OrganizationID != "personal" || scheds[0].ActorID != "alice" || scheds[0].ScopeID != "user:alice" {
+		t.Fatalf("artifact missing owner/org stamps: %+v", scheds[0])
+	}
+	w = destinationRequest(g, http.MethodPost, "/v1/assignments/"+created.AssignmentID+"/complete", `{"expected_revision":`+itoa(created.Revision)+`}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("complete failed: %d %s", w.Code, w.Body.String())
+	}
+	item, err := g.spool.rt.LoadAssignment(created.AssignmentID, g.users[11].Envelope(11))
+	if err != nil || item.State != "completed" {
+		t.Fatalf("not completed: %v %+v", err, item)
+	}
+}
+
+func TestAssignmentProgressRequiresRunningTriggerAndCanComplete(t *testing.T) {
+	c := testConfig(t)
+	c.ControlAuth = "control-token"
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := destinationRequest(g, http.MethodPost, "/v1/assignments", `{"intent":"watch for an answer","apply":true,"plan":{"revision":1,"sources":[{"name":"page","schedule":{"channel":"telegram_bot","chat_id":11,"timezone":"UTC","expression":"every:15m","job_kind":"watcher","input":"watch","probe":{"kind":"http","url":"https://example.com/p"}}}]}}`)
+	var item commodel.Assignment
+	if err := json.Unmarshal(w.Body.Bytes(), &item); err != nil || item.AssignmentID == "" {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	path := "/v1/assignments/" + item.AssignmentID + "/progress"
+	body := `{"expected_revision":` + itoa(item.Revision) + `,"job_id":"trigger-1","summary":"found the answer","finding":"source-1 says yes","next_step":"none","complete":true}`
+	w = destinationRequest(g, http.MethodPost, path, body)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("unbound progress accepted: %d", w.Code)
+	}
+	job := Job{ID: "trigger-1", Envelope: g.users[11].Envelope(11), AssignmentID: item.AssignmentID, AssignmentPlanRevision: item.AppliedRev}
+	if err := atomicJSON(filepath.Join(g.spool.root, "running", spoolFileID(job.ID)+".json"), job); err != nil {
+		t.Fatal(err)
+	}
+	w = destinationRequest(g, http.MethodPost, path, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("progress: %d %s", w.Code, w.Body.String())
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &item); err != nil || item.State != "completed" || item.Progress.Summary != "found the answer" || len(item.Progress.Findings) != 1 {
+		t.Fatalf("progress not durable: %v %+v", err, item)
+	}
+	w = destinationRequest(g, http.MethodPost, path, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("same trigger retry not idempotent: %d", w.Code)
+	}
+}
+
+// TestAssignmentCommands (SPEC-0080 R2.4/R2.5): /assignments lists the
+// owner's standing assignments; /assignment <id> status|pause|resume|
+// cancel|complete|authorize steers them — owner-envelope only, authorize is
+// chat-exclusive.
+func TestAssignmentCommands(t *testing.T) {
+	c := testConfig(t)
+	c.ControlAuth = "control-token"
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := g.users[11]
+	w := destinationRequest(g, http.MethodPost, "/v1/assignments", `{"title":"prices","intent":"watch prices","apply":true,"plan":{"sources":[{"name":"page","schedule":{"channel":"telegram_bot","chat_id":11,"timezone":"UTC","expression":"every:15m","job_kind":"watcher","input":"w","probe":{"kind":"http","url":"https://example.com/p"}}}],"specialist":{"instructions":"report changes"},"unavailable":[{"reference":"private community","reason":"membership required"}]}}`)
+	var created commodel.Assignment
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil || created.AssignmentID == "" {
+		t.Fatalf("create failed: %d %s", w.Code, w.Body.String())
+	}
+	id := created.AssignmentID
+
+	out := g.assignmentsCommand(user, 11, locale.LangRU)
+	if !strings.Contains(out, id) || !strings.Contains(out, "active") {
+		t.Fatalf("list command missing assignment: %q", out)
+	}
+	out = g.assignmentCommand(user, 11, "/assignment "+id+" status", locale.LangRU)
+	if !strings.Contains(out, "active") || !strings.Contains(out, "private community") || !strings.Contains(out, "membership required") {
+		t.Fatalf("status command wrong: %q", out)
+	}
+	out = g.assignmentCommand(user, 11, "/assignment "+id+" pause", locale.LangRU)
+	item, _ := g.spool.rt.LoadAssignment(id, user.Envelope(11))
+	if !strings.Contains(out, "pause") && item.State != "paused" {
+		t.Fatalf("pause command failed: %q state=%s", out, item.State)
+	}
+	if item.State != "paused" {
+		t.Fatalf("pause command did not pause: %s", item.State)
+	}
+	// authorize stamps the plan revision — the only grant-widening verb.
+	out = g.assignmentCommand(user, 11, "/assignment "+id+" authorize 30 8", locale.LangRU)
+	item, _ = g.spool.rt.LoadAssignment(id, user.Envelope(11))
+	if !strings.Contains(out, "authorize") || item.GrantsAuthorizedRev != item.Plan.Revision+1 || item.Grants.MaxWakesPerDay != 30 {
+		t.Fatalf("authorize did not stamp plan revision: %+v (out=%q)", item, out)
+	}
+	// Bad authorize forms answer in the caller's language, not a hardcoded one.
+	if out = g.assignmentCommand(user, 11, "/assignment "+id+" authorize", locale.LangRU); out != locale.T(locale.LangRU, "assignment.authorize-usage") {
+		t.Fatalf("authorize usage = %q, want %q", out, locale.T(locale.LangRU, "assignment.authorize-usage"))
+	}
+	if out = g.assignmentCommand(user, 11, "/assignment "+id+" authorize x y", locale.LangEN); out != locale.T(locale.LangEN, "assignment.bad-limits") {
+		t.Fatalf("bad limits = %q, want %q", out, locale.T(locale.LangEN, "assignment.bad-limits"))
+	}
+	// Foreign sender gets a refusal, not the record.
+	out = g.assignmentCommand(user, 99, "/assignment "+id+" status", locale.LangRU)
+	if strings.Contains(out, "active") {
+		t.Fatalf("foreign sender saw the assignment: %q", out)
+	}
+}
+
+// The assignment wake bundle is model-facing: it pins the owner's stored
+// language like the per-run instructions do (ADR-0084 D5).
+func TestAssignmentWakeBundleLangHint(t *testing.T) {
+	s, o, _ := occurrenceFixture(t)
+	caller := o.Job.Envelope
+	asg := commodel.Assignment{AssignmentID: "asg1", Title: "prices", Intent: "watch prices", State: "active", AppliedRev: 1, Envelope: caller, Plan: &commodel.AssignmentPlan{Revision: 1}}
+	if _, _, err := s.rt.CreateAssignment(asg, caller); err != nil {
+		t.Fatal(err)
+	}
+	s.langOf = func(string) locale.Lang { return locale.LangES }
+	st := &EventState{}
+	schedule := Schedule{ScheduleID: "ev-asg", AssignmentID: "asg1", AssignmentPlanRevision: 1, Sink: "agent", Timezone: "UTC"}
+	s.mu.Lock()
+	s.fanoutEventsLocked(st, schedule, o.Job, []Event{{ID: "e1", Text: "one"}}, "seed-1", "ev-asg", time.Now().UTC())
+	s.mu.Unlock()
+	job, err := s.ClaimJob()
+	if err != nil || job == nil {
+		t.Fatal("assignment wake admitted no bundle job")
+	}
+	if !strings.Contains(job.Text, "language is Español (es)") {
+		t.Fatalf("bundle missing owner language hint: %q", job.Text)
+	}
+}
+
+// TestAssignmentCommandsLocalized: the same replies render in the caller's
+// workspace locale — the catalog supplies every fixed string, the record
+// tokens (state, verb) stay verbatim.
+func TestAssignmentCommandsLocalized(t *testing.T) {
+	c := testConfig(t)
+	c.ControlAuth = "control-token"
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := g.users[11]
+	out := g.assignmentsCommand(user, 11, locale.LangEN)
+	if !strings.Contains(out, "None yet.") {
+		t.Errorf("en empty list wrong: %q", out)
+	}
+
+	w := destinationRequest(g, http.MethodPost, "/v1/assignments", `{"title":"prices","intent":"watch prices","apply":true,"plan":{"sources":[{"name":"page","schedule":{"channel":"telegram_bot","chat_id":11,"timezone":"UTC","expression":"every:15m","job_kind":"watcher","input":"w","probe":{"kind":"http","url":"https://example.com/p"}}}],"specialist":{"instructions":"report changes"}}}`)
+	var created commodel.Assignment
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil || created.AssignmentID == "" {
+		t.Fatalf("create failed: %d %s", w.Code, w.Body.String())
+	}
+	id := created.AssignmentID
+	g.spool.rt.AdmitAssignmentWakeLocked(id, time.Now())
+
+	out = g.assignmentsCommand(user, 11, locale.LangEN)
+	if !strings.Contains(out, "Standing assignments:") || !strings.Contains(out, id) || !strings.Contains(out, "wakes today") {
+		t.Errorf("en list wrong: %q", out)
+	}
+	out = g.assignmentCommand(user, 11, "/assignment "+id+" status", locale.LangEN)
+	if !strings.Contains(out, "revision") || !strings.Contains(out, "wakes today") {
+		t.Errorf("en status wrong: %q", out)
+	}
+	out = g.assignmentCommand(user, 11, "/assignment "+id+" pause", locale.LangEN)
+	if !strings.Contains(out, "accepted") {
+		t.Errorf("en pause reply wrong: %q", out)
+	}
+	out = g.assignmentCommand(user, 11, "/assignment "+id+" bogus", locale.LangEN)
+	if !strings.Contains(out, "Unknown action") {
+		t.Errorf("en unknown-verb wrong: %q", out)
+	}
+	g.assignmentCommand(user, 11, "/assignment "+id+" cancel", locale.LangEN)
+	out = g.assignmentCommand(user, 11, "/assignment "+id+" cancel", locale.LangEN)
+	if !strings.Contains(out, "rejected") {
+		t.Errorf("en rejected-verb wrong: %q", out)
+	}
+	out = g.assignmentCommand(user, 11, "/assignment", locale.LangEN)
+	if !strings.Contains(out, "Use /assignment") {
+		t.Errorf("en usage wrong: %q", out)
+	}
+	out = g.assignmentCommand(user, 11, "/assignment asg-missing status", locale.LangEN)
+	if !strings.Contains(out, "unavailable") {
+		t.Errorf("en unavailable wrong: %q", out)
+	}
+
+	// A store that cannot list — engine rooted at an invalid path — surfaces
+	// the localized unavailable reply rather than a panic.
+	g.spool.rt = routines.NewEngine("bad\x00root", &sync.Mutex{}, routines.Deps{})
+	if out = g.assignmentsCommand(user, 11, locale.LangEN); !strings.Contains(out, "unavailable") {
+		t.Errorf("en list-unavailable wrong: %q", out)
+	}
+}
+
+// TestAssignmentCommandDispatch (SPEC-0080 R2.4/R2.5): the chat dispatcher
+// routes /assignments and /assignment to the owner-scoped command handlers
+// and the help inventory advertises both.
+func TestAssignmentCommandDispatch(t *testing.T) {
+	c := testConfig(t)
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{}
+	g.api, g.runner = fake, &fakeRunner{}
+	ctx := context.Background()
+	if err := g.handleUpdate(ctx, taskUpdate(1, 1, "/assignments", 11, 0)); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(ctx)
+	if len(fake.sent) != 1 || !strings.HasPrefix(fake.sent[0], "Постоянные поручения") {
+		t.Fatalf("/assignments did not route: %v", fake.sent)
+	}
+	if err := g.handleUpdate(ctx, taskUpdate(2, 1, "/assignment missing-id status", 11, 0)); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(ctx)
+	if len(fake.sent) != 2 || !strings.HasPrefix(fake.sent[1], "Поручение недоступно") {
+		t.Fatalf("/assignment did not route: %v", fake.sent)
+	}
+	help := commandHelp(locale.LangRU)
+	if !strings.Contains(help, "/assignments — ") || !strings.Contains(help, "/assignment — ") {
+		t.Fatalf("help inventory missing assignment commands: %q", help)
+	}
+}

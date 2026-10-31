@@ -28,6 +28,12 @@
           "label": {
             "type": "string"
           },
+          "label_i18n": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
           "kind": {
             "type": "string"
           },
@@ -207,6 +213,12 @@
           },
           "allow_shared": {
             "type": "boolean"
+          },
+          "title_i18n": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
           }
         },
         "additionalProperties": false,
@@ -1381,6 +1393,50 @@
             }
           }
         }
+      }
+    },
+    "/v1/grants/{grant_id}": {
+      "get": {
+        "operationId": "getGrant",
+        "summary": "Owner-visible grant status",
+        "x-required-audience": "broker:control",
+        "security": [
+          {
+            "HubAssertion": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Grant"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Sanitized API error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "grant_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
       }
     },
     "/v1/grants/{grant_id}/revoke": {

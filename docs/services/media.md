@@ -1,6 +1,6 @@
 ---
 description: hub-media, hub-stt, hub-tts — media sidecars carrying provider credentials; sync image gen plus durable async jobs.
-last_verified: 2026-10-24
+last_verified: 2026-10-27
 ---
 
 # media services (hub-media, hub-stt, hub-tts)
@@ -37,6 +37,11 @@ for model caches. In-container healthcheck: `hub-media health` hits
 `HUB_STT_COMMAND`/`HUB_TTS_COMMAND` stay configured as the embedded fallback
 (`/usr/local/bin/hub-stt`, `hub-tts`); when the URL is set the sidecar wins at
 selection time — an in-process command worker, not a second transport.
+
+The gateway picks the synthesis voice per reply language:
+`HUB_TTS_VOICE_<LANG>` (`EN`/`RU`/`KK`/`ES`) overrides `HUB_TTS_VOICE`, which
+stays the default for unmapped languages. With `transcription` on, compose
+passes all five variables to communication-hub unchanged.
 
 ## Model routing and independent accounts
 

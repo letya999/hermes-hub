@@ -28,7 +28,7 @@ func TestApplyKnowledgeScopedFolderLifecycle(t *testing.T) {
 		if err := os.WriteFile(cfg, []byte(body), 0600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := applyFile(filepath.Join(root, "spool"), state, "alice", cfg); err != nil {
+		if _, err := applyFile(filepath.Join(root, "spool"), state, "alice", cfg, ""); err != nil {
 			t.Fatal(err)
 		}
 	}

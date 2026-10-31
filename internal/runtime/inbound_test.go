@@ -15,11 +15,41 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+func TestFetchInboundUsesCanonicalName(t *testing.T) {
+	server := mcp.NewServer(&mcp.Implementation{Name: "fixture", Version: "1"}, nil)
+	server.AddTool(&mcp.Tool{Name: "inbox_fetch", InputSchema: map[string]any{"type": "object"}}, func(_ context.Context, r *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{StructuredContent: map[string]any{"path": "inbox/in-90/files/report.pdf", "acknowledged": true}}, nil
+	})
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+	t.Setenv("HUB_TOOLHUB_ENDPOINT", httpServer.URL)
+	t.Setenv("HUB_RUNTIME_AUTH", "owner-token")
+	if path, err := fetchInbound(context.Background(), "in-90"); err != nil || path != "inbox/in-90/files/report.pdf" {
+		t.Fatalf("canonical inbox_fetch rejected: path=%q err=%v", path, err)
+	}
+}
+
+func TestFetchInboundFallsBackToProjectedName(t *testing.T) {
+	legacy := api.ProjectedToolName(agenttools.HubToolsDefinitionID, agenttools.HubToolsDefinition().Version, "inbox_fetch")
+	server := mcp.NewServer(&mcp.Implementation{Name: "fixture", Version: "1"}, nil)
+	server.AddTool(&mcp.Tool{Name: legacy, InputSchema: map[string]any{"type": "object"}}, func(_ context.Context, r *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{StructuredContent: map[string]any{"path": "inbox/in-90/files/report.pdf", "acknowledged": true}}, nil
+	})
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+	t.Setenv("HUB_TOOLHUB_ENDPOINT", httpServer.URL)
+	t.Setenv("HUB_RUNTIME_AUTH", "owner-token")
+	if path, err := fetchInbound(context.Background(), "in-90"); err != nil || path != "inbox/in-90/files/report.pdf" {
+		t.Fatalf("legacy projected name rejected: path=%q err=%v", path, err)
+	}
+}
+
 func TestFetchInboundUsesOwnerToolAndRejectsFailure(t *testing.T) {
-	name := api.ProjectedToolName(agenttools.HubToolsDefinitionID, agenttools.HubToolsDefinition().Version, "inbox_fetch")
 	server := mcp.NewServer(&mcp.Implementation{Name: "fixture", Version: "1"}, nil)
 	returnedPath := "inbox/in-90/files/report.pdf"
-	server.AddTool(&mcp.Tool{Name: name, InputSchema: map[string]any{"type": "object"}}, func(_ context.Context, r *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	server.AddTool(&mcp.Tool{Name: "inbox_fetch", InputSchema: map[string]any{"type": "object"}}, func(_ context.Context, r *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		if r.Params.Arguments == nil {
 			t.Fatal("missing inbound ID")
 		}
@@ -93,9 +123,8 @@ func TestAdmissionRequiresInboundSave(t *testing.T) {
 }
 
 func TestAdmissionGivesAgentSavedDocumentPath(t *testing.T) {
-	name := api.ProjectedToolName(agenttools.HubToolsDefinitionID, agenttools.HubToolsDefinition().Version, "inbox_fetch")
 	tools := mcp.NewServer(&mcp.Implementation{Name: "fixture", Version: "1"}, nil)
-	tools.AddTool(&mcp.Tool{Name: name, InputSchema: map[string]any{"type": "object"}}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	tools.AddTool(&mcp.Tool{Name: "inbox_fetch", InputSchema: map[string]any{"type": "object"}}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return &mcp.CallToolResult{StructuredContent: map[string]any{"path": "inbox/in-90/files/report.pdf", "acknowledged": true}}, nil
 	})
 	toolServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return tools }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true}))

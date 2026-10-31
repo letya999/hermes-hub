@@ -20,7 +20,7 @@ func TestApplyKnowledgeRejectsUnsafeSnapshotBeforeWriting(t *testing.T) {
 	state := filepath.Join(root, "state")
 	body := "knowledge:\n  - name: safe.md\n    source: private.md\n  - name: docs\n    context: project\n    state: present\n    source: notes\n"
 	os.WriteFile(cfg, []byte(body), 0600)
-	if _, err := applyFile(filepath.Join(root, "spool"), state, "alice", cfg); err == nil {
+	if _, err := applyFile(filepath.Join(root, "spool"), state, "alice", cfg, ""); err == nil {
 		t.Error("folder symlink accepted")
 	}
 	if _, err := os.Stat(filepath.Join(state, "knowledge", "alice", "safe.md")); !os.IsNotExist(err) {

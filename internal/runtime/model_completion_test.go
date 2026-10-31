@@ -267,6 +267,21 @@ func TestModelRelayDefaultHopBoundCoversLongCompletions(t *testing.T) {
 	}
 }
 
+// Live incident: a book-length HTML generation was clipped at exactly the
+// 3-minute default hop bound (cliproxy 499s at 16:38/16:42/16:46) and the
+// run failed. One generation must get the maximum permitted hop budget.
+func TestModelRelayDefaultHopCoversCappedGeneration(t *testing.T) {
+	t.Setenv("HUB_MODEL_RELAY_HOP_TIMEOUT", "")
+	t.Setenv("HUB_MODEL_RELAY_TIMEOUT", "")
+	hop, total, err := modelRelayLimits()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hop < 5*time.Minute || total <= hop {
+		t.Fatalf("default bounds clip long generations: hop %s total %s", hop, total)
+	}
+}
+
 func TestModelRelayRejectsUnboundedConfiguration(t *testing.T) {
 	t.Setenv("HUB_MODEL_RELAY_REGISTRY", "")
 	t.Setenv("HUB_MODEL_RELAY_MODEL", "synthetic")

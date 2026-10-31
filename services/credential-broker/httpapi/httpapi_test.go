@@ -298,6 +298,14 @@ func (f *httpFixture) enroll(values provider.Bundle) (v1.Request, v1.Grant, v1.L
 func TestHTTPEnrollmentRuntimeAndAudit(t *testing.T) {
 	f := fixtureHTTP(t, apiContract(), safenet.Policy{}, nil)
 	r, g, l, a := f.enroll(provider.Bundle{"token": []byte("SENTINEL_TOKEN_NEVER_IN_CHAT")})
+	if got := parseResponse[v1.Grant](t, f.api("GET", "/v1/grants/"+g.ID, "broker:control", actor, nil), 200); !got.Active {
+		t.Fatal("active grant reported revoked")
+	}
+	other := actor
+	other.PrincipalID = "bob"
+	if w := f.api("GET", "/v1/grants/"+g.ID, "broker:control", other, nil); w.Code != 404 {
+		t.Fatalf("cross-owner grant visible: %d", w.Code)
+	}
 	if w := f.api("GET", "/v1/contracts", "broker:control", actor, nil); w.Code != 200 {
 		t.Fatal(w.Code)
 	}
@@ -326,6 +334,9 @@ func TestHTTPEnrollmentRuntimeAndAudit(t *testing.T) {
 	}
 	if w := f.api("POST", "/v1/grants/"+g.ID+"/revoke", "broker:control", actor, nil); w.Code != 200 {
 		t.Fatal(w.Code)
+	}
+	if got := parseResponse[v1.Grant](t, f.api("GET", "/v1/grants/"+g.ID, "broker:control", actor, nil), 200); got.Active {
+		t.Fatal("revoked grant reported active")
 	}
 	if w := f.api("POST", "/v1/credentials/"+r.CredentialID+"/revoke", "broker:control", actor, nil); w.Code != 200 {
 		t.Fatal(w.Code)

@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/locale"
 )
 
 // Interval reads HUB_CANARY_INTERVAL ("5m" or bare seconds); 0 =
@@ -174,13 +176,17 @@ func (e *Engine) Record(ctx context.Context, now time.Time, class string) {
 	if len(owner.TelegramIDs) > 0 {
 		home = owner.TelegramIDs[0]
 	}
+	lang := owner.Lang
+	if lang == "" {
+		lang = locale.Fallback()
+	}
 	if class != "" && class != st.LastClass {
 		e.Deps.NotifyOwner(ctx, "canary-"+class, home,
-			"Канареечная проверка не проходит: "+class+". Проверьте /status.")
+			locale.T(lang, "ops.canary-failing", class))
 		st.LastClass = class
 	} else if class == "" && st.LastClass != "" {
 		e.Deps.NotifyOwner(ctx, "canary-recovered", home,
-			"Канареечная проверка восстановилась после "+st.LastClass+".")
+			locale.T(lang, "ops.canary-recovered", st.LastClass))
 		st.LastClass = ""
 	}
 	e.saveState(st)

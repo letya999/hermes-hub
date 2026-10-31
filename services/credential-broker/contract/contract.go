@@ -28,13 +28,33 @@ var ErrValues = errors.New("credential fields do not match contract")
 var fieldID = regexp.MustCompile(`^[a-z][a-z0-9_]{0,39}$`)
 var envName = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,79}$`)
 var stateName = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,79}$`)
+var i18nTag = regexp.MustCompile(`^[a-z]{2,8}(-[A-Za-z0-9]{1,8}){0,3}$`)
+
+// validI18n bounds a translation map: a handful of plain-language tags and
+// values staying within twice the label/title limit — translations of a
+// maximum-length label run longer in non-Latin scripts.
+func validI18n(table map[string]string) bool {
+	if len(table) > 8 {
+		return false
+	}
+	for tag, text := range table {
+		if !i18nTag.MatchString(tag) || len(text) == 0 || len(text) > 240 {
+			return false
+		}
+	}
+	return true
+}
 
 type Field struct {
-	ID       string `json:"id"`
-	Label    string `json:"label"`
-	Kind     string `json:"kind"` // secret, string, json, pem, blob
-	Required bool   `json:"required"`
-	MaxBytes int    `json:"max_bytes"`
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	// LabelI18n carries deployer-declared translations of Label keyed by a
+	// language tag (en, ru, kk, es, es-ES, ...). The browser form resolves
+	// the viewer's language and falls back to Label when no entry matches.
+	LabelI18n map[string]string `json:"label_i18n,omitempty"`
+	Kind      string            `json:"kind"` // secret, string, json, pem, blob
+	Required  bool              `json:"required"`
+	MaxBytes  int               `json:"max_bytes"`
 }
 type Delivery struct {
 	Type    string            `json:"type"` // env, file, json_file
@@ -79,6 +99,37 @@ type Contract struct {
 	// a new intake kind is always a deliberate contract revision.
 	Intake      string `json:"intake,omitempty"`
 	AllowShared bool   `json:"allow_shared"`
+	// TitleI18n mirrors Field.LabelI18n at contract level: per-language form
+	// titles. Deployer-declared, resolved per request, Title is the fallback.
+	TitleI18n map[string]string `json:"title_i18n,omitempty"`
+}
+
+// Localize resolves table[lang] for lang or its base tag (es-ES → es); an
+// empty table or a miss keeps the base text. Deployer-declared i18n never
+// overrides the reviewed fallback.
+func Localize(table map[string]string, lang, base string) string {
+	lang = strings.ToLower(strings.TrimSpace(lang))
+	if text := table[lang]; text != "" {
+		return text
+	}
+	if i := strings.IndexAny(lang, "-_"); i >= 0 {
+		if text := table[lang[:i]]; text != "" {
+			return text
+		}
+	}
+	return base
+}
+
+// TitleFor renders the contract title in lang with the reviewed Title as
+// fallback.
+func (c Contract) TitleFor(lang string) string {
+	return Localize(c.TitleI18n, lang, c.Title)
+}
+
+// LabelFor renders the field label in lang with the reviewed Label as
+// fallback.
+func (f Field) LabelFor(lang string) string {
+	return Localize(f.LabelI18n, lang, f.Label)
 }
 
 // MaxExtraInputs bounds one request's optional extras. Upstream metadata can
@@ -108,7 +159,7 @@ func (e *Extra) Validate() error {
 	}
 	fields := map[string]bool{}
 	for _, f := range e.Fields {
-		if f.Required || !fieldID.MatchString(f.ID) || f.ID == "csrf" || fields[f.ID] || len(f.Label) == 0 || len(f.Label) > 120 || f.MaxBytes < 1 || f.MaxBytes > 65536 || !slices.Contains([]string{"secret", "string", "json", "pem", "blob"}, f.Kind) {
+		if f.Required || !fieldID.MatchString(f.ID) || f.ID == "csrf" || fields[f.ID] || len(f.Label) == 0 || len(f.Label) > 120 || f.MaxBytes < 1 || f.MaxBytes > 65536 || !slices.Contains([]string{"secret", "string", "json", "pem", "blob"}, f.Kind) || !validI18n(f.LabelI18n) {
 			return ErrContract
 		}
 		fields[f.ID] = true
@@ -173,12 +224,12 @@ func (c Contract) Validate() error {
 // except the catalog cardinality caps — the effective contract one request
 // collects may exceed them through validated optional extras.
 func (c Contract) ValidateStructure() error {
-	if !identity.ValidID(c.ID) || c.Revision < 1 || c.Revision > 100000 || len(c.Title) == 0 || len(c.Title) > 120 || !identity.ValidID(c.Storage) {
+	if !identity.ValidID(c.ID) || c.Revision < 1 || c.Revision > 100000 || len(c.Title) == 0 || len(c.Title) > 120 || !identity.ValidID(c.Storage) || !validI18n(c.TitleI18n) {
 		return ErrContract
 	}
 	fields := map[string]bool{}
 	for _, f := range c.Fields {
-		if !fieldID.MatchString(f.ID) || f.ID == "csrf" || fields[f.ID] || len(f.Label) == 0 || len(f.Label) > 120 || f.MaxBytes < 1 || f.MaxBytes > 65536 || !slices.Contains([]string{"secret", "string", "json", "pem", "blob"}, f.Kind) {
+		if !fieldID.MatchString(f.ID) || f.ID == "csrf" || fields[f.ID] || len(f.Label) == 0 || len(f.Label) > 120 || f.MaxBytes < 1 || f.MaxBytes > 65536 || !slices.Contains([]string{"secret", "string", "json", "pem", "blob"}, f.Kind) || !validI18n(f.LabelI18n) {
 			return ErrContract
 		}
 		fields[f.ID] = true

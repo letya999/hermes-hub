@@ -13,6 +13,7 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
 )
 
 var ErrScheduleConflict = errors.New("schedule id conflicts with an existing or retired intent")
@@ -78,6 +79,12 @@ func (e *Engine) CreateScheduleAt(in commodel.Schedule, caller identity.Envelope
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	return e.createScheduleAtLocked(in, caller, nativeCron, initialValue, now, routingUser...)
+}
+
+// createScheduleAtLocked is CreateScheduleAt's critical section: callers hold
+// e.mu (assignment reconcile provisions several artifacts in one section).
+func (e *Engine) createScheduleAtLocked(in commodel.Schedule, caller identity.Envelope, nativeCron string, initialValue *string, now time.Time, routingUser ...commodel.User) (commodel.Schedule, error) {
 	if len(routingUser) > 0 && (in.OriginJobID != "" || in.DestinationTaskID != "") {
 		var err error
 		in, err = e.BindRoutineDestinationLocked(in, caller, routingUser[0])
@@ -144,6 +151,9 @@ func (e *Engine) ListSchedules(caller identity.Envelope) ([]commodel.Schedule, e
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	entries, err := os.ReadDir(filepath.Join(e.root, "schedules"))
+	if os.IsNotExist(err) {
+		return []commodel.Schedule{}, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -238,6 +248,12 @@ func (e *Engine) PauseSchedule(id string, caller identity.Envelope, expected ...
 func (e *Engine) DeleteSchedule(id string, caller identity.Envelope, expected ...uint64) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	return e.deleteScheduleLocked(id, caller, expected...)
+}
+
+// deleteScheduleLocked is DeleteSchedule's critical section (orphaned
+// assignment artifacts are removed inside the reconcile section).
+func (e *Engine) deleteScheduleLocked(id string, caller identity.Envelope, expected ...uint64) error {
 	item, err := e.LoadScheduleLocked(id)
 	if err != nil {
 		return err
@@ -312,8 +328,47 @@ func (e *Engine) RecordRoutineFailure(scheduleID, digest string) (bool, error) {
 		return false, nil
 	}
 	item.LastFailureSHA256 = digest
+	item.PendingFailureSHA256 = ""
 	item.UpdatedAt = time.Now().UTC()
 	return true, e.atomicJSON(e.SchedulePath(scheduleID), item)
+}
+
+// MarkRoutineFailurePending stamps the in-flight failure-notice digest and
+// reports whether a notice must be enqueued: false when this exact failure
+// was already delivered (LastFailureSHA256) or already has a notice in
+// flight. The marker releases when the notice dies unconfirmed, so a dead
+// notice never silences the next identical failure.
+func (e *Engine) MarkRoutineFailurePending(scheduleID, digest string) (bool, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	item, err := e.LoadScheduleLocked(scheduleID)
+	if os.IsNotExist(err) {
+		return true, nil
+	}
+	if err != nil {
+		return true, err
+	}
+	if digest != "" && (item.LastFailureSHA256 == digest || item.PendingFailureSHA256 == digest) {
+		return false, nil
+	}
+	item.PendingFailureSHA256 = digest
+	item.UpdatedAt = time.Now().UTC()
+	return true, e.atomicJSON(e.SchedulePath(scheduleID), item)
+}
+
+// ReleaseRoutineFailurePending clears the in-flight marker when its notice
+// died unconfirmed — only while the marker still names that failure, so a
+// newer failure's marker is never lost.
+func (e *Engine) ReleaseRoutineFailurePending(scheduleID, digest string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	item, err := e.LoadScheduleLocked(scheduleID)
+	if err != nil || digest == "" || item.PendingFailureSHA256 != digest {
+		return err
+	}
+	item.PendingFailureSHA256 = ""
+	item.UpdatedAt = time.Now().UTC()
+	return e.atomicJSON(e.SchedulePath(scheduleID), item)
 }
 
 // ClearRoutineFailure drops the stored failure digest after a success so the
@@ -344,7 +399,7 @@ func (e *Engine) OccurrenceCurrentLocked(o commodel.RoutineOccurrence) bool {
 	if os.IsNotExist(err) {
 		return true // PutOccurrence also accepts externally owned recurrence clocks.
 	}
-	return err == nil && schedule.Revision == o.Revision && schedule.Envelope == o.Job.Envelope
+	return err == nil && schedule.Revision == o.Revision && schedule.Envelope.Equal(o.Job.Envelope)
 }
 
 func (e *Engine) TickSchedules(now time.Time, nativeCron string, authorize func(commodel.Job) error) error {
@@ -444,7 +499,7 @@ func (e *Engine) TickSchedules(now time.Time, nativeCron string, authorize func(
 		if window <= 0 {
 			window = DefaultCatchUp
 		}
-		job := commodel.Job{Envelope: item.Envelope, OrganizationID: item.OrganizationID, UserID: item.UserID, ActorID: item.ActorID, ScopeID: item.ScopeID, Channel: item.Channel, ChatID: item.ChatID, TaskID: item.TaskID, TopicID: item.TopicID, SlackChannel: item.SlackChannel, SlackThread: item.SlackThread, Text: item.Input, Trigger: "cron"}
+		job := commodel.Job{Envelope: item.Envelope, OrganizationID: item.OrganizationID, UserID: item.UserID, ActorID: item.ActorID, ScopeID: item.ScopeID, Channel: item.Channel, ChatID: item.ChatID, TaskID: item.TaskID, TopicID: item.TopicID, SlackChannel: item.SlackChannel, SlackThread: item.SlackThread, Text: item.Input, Trigger: "cron", AssignmentID: item.AssignmentID, AssignmentPlanRevision: item.AssignmentPlanRevision}
 		occ := commodel.RoutineOccurrence{ScheduleID: item.ScheduleID, Revision: item.Revision, DueAt: due, JobKind: item.JobKind, Job: job, CatchUpWindow: window}
 		if err := ValidateOccurrence(occ, item.Envelope, e.deps.ChannelFor); err != nil {
 			continue
@@ -518,7 +573,7 @@ func (e *Engine) BlockScheduleLocked(item *commodel.Schedule, reason string, now
 	digest := hex.EncodeToString(sum[:])
 	if item.LastFailureSHA256 != digest {
 		item.LastFailureSHA256 = digest
-		text := "Рутина «" + item.ScheduleID + "» остановлена: " + reason + ". Откройте её через routine_get, исправьте и сделайте resume — или удалите."
+		text := locale.T(e.langOf(item.Envelope.PrincipalID), "routines.blocked", item.ScheduleID, reason)
 		d := commodel.Delivery{ID: "routine-blocked-" + item.ScheduleID + "-" + digest[:8], IdempotencyKey: "routine-blocked-" + item.ScheduleID + "-" + digest[:8], Channel: item.Channel, ConversationID: item.Envelope.ConversationID, DeliveryTargetID: item.Envelope.DeliveryTargetID, ChatID: item.ChatID, TaskID: item.TaskID, TopicID: item.TopicID, SlackChannel: item.SlackChannel, SlackThread: item.SlackThread, Text: text, CreatedAt: now.UTC()}
 		if ch := e.channelFor(item.Channel); ch != nil {
 			// The notice goes to the owner's verified home, never to the

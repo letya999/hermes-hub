@@ -2,6 +2,78 @@
 
 ## Unreleased
 
+## 0.5.0 — agent skills platform, lean role images and proactive assignments — 2026-10-31
+
+- Agent skills platform (ADR-0085, SPEC-0084, CHG-0188..0203): a governed
+  lifecycle for skills installed from GitHub/GitLab remotes, zip archives or
+  a single Markdown file, local paths, and organization stores. A unified
+  `internal/skillstore` backs a read-only effective view materialized per
+  space; progressive disclosure ships SKILL.md metadata in the catalog while
+  reference files load on demand with view events recorded. Install paths
+  run through a deterministic scan pipeline (rules, taint, publish gate,
+  audit) before anything reaches the view; secrets and settings land in the
+  `.state` credential store, never in the skill tree. Governed agent tools
+  cover install/list/show/remove plus draft review with Telegram approval
+  cards — drafts are immutable revisions, and owner/admin roles publish while
+  members only propose. Skill usage feeds the metering journal, and the
+  scan/publish gate is advisory in this MVP cut.
+- Organization skill delivery: `hubctl org-init`/`sync-members` create member
+  spaces idempotently; an owner `promote`s a skill into the org store where
+  it lands in every member's effective view as `source: "org"`. A user skill
+  shadowed by an org skill of the same name is hidden with a
+  `hidden_by_source` notice instead of colliding.
+- Standing assignments and event watch (M23, ADR-0082, SPEC-0080/0081):
+  durable owner-scoped assignments with reconciled artifacts, fenced wakes,
+  acquisition pooling with Retry-After-aware backoff, per-source stream
+  cadence, multi-source fanout that shares the caller's wait budget, and
+  `/assignments` chat commands. Draft-first contract for executable
+  assignments.
+- Lean role images (M26, ADR-0083, SPEC-0082, CHG-0182..0187): the monolith
+  split into `runtime`, `-core` (control-plane daemons) and `-control`
+  (toolhub + workload-controller) stages, each with an image-budget gate in
+  CI. Voice work consolidated on dedicated `hub-stt`/`hub-tts` images.
+- Browser sidecar (CHG-0186, CHG-0190, CHG-0227): headed Chromium, Xvfb,
+  fluxbox, x11vnc and the noVNC bridge moved out of the user runtime into a
+  dedicated per-space container running uid 10001 on tmpfs only — read-only
+  root, all capabilities dropped, bounded memory/PIDs, loopback-only noVNC.
+  Chromium keeps CDP on `127.0.0.1:9223`; a hub-runtime TCP relay serves the
+  space-internal `:9222` and `BROWSER_CDP_URL` points the runtime at it —
+  no host-published CDP. Idle lifecycle auto-starts, sleeps and caps the
+  stack; managed spaces get the same delivery through the grant chain.
+- Channel-agnostic user locale (ADR-0084): a per-user locale drives
+  deterministic surfaces — model-facing prompts, contract text, HTML pages,
+  credential forms, progress/background notices, per-language TTS voice,
+  Telegram/Slack dispatch and operator scripts — replacing the last
+  hardcoded user-facing strings.
+- User site hosting and exposure (CHG-0166..0177): reviewed opt-in outbound
+  exposure via the sish provider with :80 terminate semantics, per-user
+  subdomains through a provider contract with ACME DNS-01 (`hubctl dns`),
+  and user-scoped hosting — store, web access, static delivery and
+  go-http dynamic sites.
+- Ops hardening (M17): event-driven personal supervisor with SSH CA cert
+  minting, runtime watchdog with owned-resource lifecycle and fair budgets,
+  master containment with delivery-aware watch and fair admission, bounded
+  spool/journal/poll growth, admin diagnostics principal, `hubctl replay`
+  incident reruns, smoke-gated image rollout pins, `hubctl usage` export and
+  `apply -f` space convergence.
+- Parallel lanes and live tool inventory: conversation-keyed parallel
+  session lanes with per-context fairness under the upstream cap, and a
+  caller-scoped live tool inventory (`tools_list` + managed invoke) with
+  canonical managed tool names.
+- Fixes: `hubctl skill git/update` authenticates against the infra-owner's
+  controller key instead of the target space token; `skill update` reports
+  `up_to_date` instead of opening a noise draft on an unmoved ref; the
+  browser sidecar's noVNC password is delivered as a Compose secret with
+  uid/gid/mode projection — a host-owned `0600` bind is an EACCES for the
+  uid-10001 container, and x11vnc exits on it (ENOENT is tolerated, EACCES
+  is not), so the old bind both crashed Linux hosts and risked an
+  unauthenticated VNC. The smoke gate gained fail-fast dead-container
+  detection with exit code/OOM status, a single bounded restart, full dual
+  logs and probe-stderr on timeout.
+- Dependencies: `golang.org/x/net` bumped to v0.62.0 for GO-2026-6860;
+  credential-broker journal coverage raised past the 85% floor with
+  fail-closed error-path tests.
+
 ## 0.4.0 — media services, connector platform and runtime discipline — 2026-10-25
 
 - Media generation sidecar `hub-media` (CHG-0063, SPEC-0040): image and video

@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/supervisor"
 )
@@ -129,5 +130,15 @@ func TestSupervisorFlagDefaults(t *testing.T) {
 	}
 	if parsed.warmTTL != supervisor.DefaultWarmTTL {
 		t.Fatalf("warm-ttl default=%s, want %s", parsed.warmTTL, supervisor.DefaultWarmTTL)
+	}
+	if parsed.browserIdleTTL != supervisor.DefaultBrowserIdleTTL {
+		t.Fatalf("browser-idle-ttl default=%s, want %s", parsed.browserIdleTTL, supervisor.DefaultBrowserIdleTTL)
+	}
+	parsed, err = parseSupervisorArgs([]string{"-browser-idle-ttl", "7m"})
+	if err != nil || parsed.browserIdleTTL != 7*time.Minute {
+		t.Fatalf("browser-idle-ttl flag must parse, got %v/%v", parsed.browserIdleTTL, err)
+	}
+	if cfg := parsed.config(); cfg.BrowserIdleTTL != 7*time.Minute {
+		t.Fatalf("browser-idle-ttl must reach supervisor.Config, got %s", cfg.BrowserIdleTTL)
 	}
 }

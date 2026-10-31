@@ -244,6 +244,64 @@ func TestReconcilerSurfaceResolvesConnectionVersion(t *testing.T) {
 	}
 }
 
+func TestDefinitionForConnectionIgnoresDisabledUpgradeBinding(t *testing.T) {
+	store, _, old := seededStore(t)
+	newer := remoteDefinition()
+	newer.Version = "2.0.0"
+	newer.Tools = []api.ToolSpec{{Name: "watch", Effect: api.ReadEffect}}
+	if err := store.RegisterDefinition(newer); err != nil {
+		t.Fatal(err)
+	}
+	disabled := store.bindings[old.ToolBindingID]
+	disabled.Status = api.DisabledStatus
+	disabled.ToolDigest = api.ToolSurfaceDigest(remoteDefinition().Tools)
+	store.bindings[old.ToolBindingID] = disabled
+	active := disabled
+	active.ToolBindingID = "upgraded-binding"
+	active.DefinitionVersion = newer.Version
+	active.Status = api.ActiveStatus
+	active.ToolDigest = api.ToolSurfaceDigest(newer.Tools)
+	store.bindings[active.ToolBindingID] = active
+	connection, _ := store.connectionFor("google-work")
+	for range 100 {
+		definition, err := store.definitionForConnection(connection)
+		if err != nil || definition.Version != newer.Version {
+			t.Fatalf("resolved disabled version after upgrade: version=%q err=%v", definition.Version, err)
+		}
+	}
+	connection.Status = api.DegradedStatus
+	connection.Metadata[api.LabelAcceptSurface] = disabled.ToolDigest
+	store.connections[connection.ConnectionID] = connection
+	reconciler := (&ControlPlane{Store: store, SurfaceProbe: func(_ context.Context, _ api.Connection, definition api.ToolDefinition) ([]api.ToolSpec, error) {
+		return definition.Tools, nil
+	}}).NewReconciler()
+	reconciler.CredAlive = func(context.Context, string) (bool, error) { return true, nil }
+	reconciler.Notify = func(context.Context, string, string, map[string]any) error { return nil }
+	if err := reconciler.ScanOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	restored, _ := store.connectionFor(connection.ConnectionID)
+	if restored.Status != api.ActiveStatus || restored.Metadata[api.LabelAcceptSurface] != "" {
+		pinned, _ := store.pinnedBinding(connection.ConnectionID)
+		surface, _ := reconciler.Surface(context.Background(), restored)
+		t.Fatalf("approved surface did not recover false drift: status=%s approved=%t pending=%t", restored.Status, pinned.ToolDigest == api.ToolSurfaceDigest(surface), restored.Metadata[api.LabelAcceptSurface] != "")
+	}
+	if got := store.bindings[active.ToolBindingID].ConnectionRevision; got != restored.Revision {
+		t.Fatalf("recovered binding kept stale connection revision: got=%d want=%d", got, restored.Revision)
+	}
+	restored.Status = api.DegradedStatus
+	restored.Metadata[api.LabelAcceptSurface] = disabled.ToolDigest
+	store.connections[connection.ConnectionID] = restored
+	reconciler.Surface = func(context.Context, api.Connection) ([]api.ToolSpec, error) { return remoteDefinition().Tools, nil }
+	if err := reconciler.ScanOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	unchanged, _ := store.connectionFor(connection.ConnectionID)
+	if unchanged.Status != api.DegradedStatus || unchanged.Metadata[api.LabelAcceptSurface] == "" {
+		t.Fatalf("unapproved surface escaped drift hold: status=%s", unchanged.Status)
+	}
+}
+
 // With no binding pinning a version the resolution still must be
 // deterministic — the newest registered version wins, never a random one.
 func TestDefinitionForConnectionFallsBackToNewestVersion(t *testing.T) {

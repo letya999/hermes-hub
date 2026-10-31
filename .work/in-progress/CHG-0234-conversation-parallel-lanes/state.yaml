@@ -1,0 +1,52 @@
+schema: 1
+change: CHG-0234
+title: Parallel session lanes per context (conversation-keyed gateway serialization)
+status: in_progress
+branch: fix/m23-live-wake
+updated: 2026-10-30
+phase: implementation
+adr: ADR-0090
+spec: SPEC-0089
+requirements: [conversation-parallel-lanes]
+depends_on: []
+github_milestone: pending
+github_issue: pending
+design_status: accepted
+implementation_status: in_progress
+slices:
+  S1-lane-key-conversation: done
+  S2-per-context-cap: done
+  S3-worker-default: done
+  S4-docs-spec-flips: done
+  S5-live-acceptance: not_started
+validation:
+  documents: done
+  just_check: "docs-check/lint/config-check green; go-check fails only on
+    unrelated Windows temp file-lock flakes (mediasvc comfy, toolhub removal
+    reconciler, goal retry delivery — all pass standalone; communication
+    package ok under -race -shuffle in both full runs)"
+  docker_check: not_run
+  red_team: reviewed_in_tests
+  live_acceptance: not_started
+evidence:
+  - "upstream pin 869228cab: executor thread per /v1/runs run, per-run
+    contextvars, WAL state.db (api_server_runs.py); global
+    max_concurrent_runs=10 -> 429 pre-admission, no queue in pin"
+  - "upstream wake.py:24: api server has no per-session lock — hub keeps
+    per-session serialization, drops per-context serialization"
+  - "hub chain verified: supervisor Acquire allows concurrent job leases;
+    hub-runtime /v1/execute has no lock; topics mode already mints a
+    session per forum topic; sole serializer is gateway
+    inFlight[principal+context]"
+remaining:
+  - owner acceptance of ADR-0090 / SPEC-0089 freeze
+  - decide branch name (state.yaml placeholder feat/conversation-parallel-lanes)
+limitations:
+  - "shared workspace/MEMORY.md: last-writer-wins between parallel sessions
+    (ponytail ceiling, upgrade path: per-session workspace views)"
+  - "one browser sidecar per space; browser-heavy parallel sessions contend
+    (ponytail ceiling, upgrade path: browser lane/profile split)"
+  - "shared runtime blast radius and shared consecutiveUncertain wedge
+    counter (ponytail ceiling, upgrade path: per-session wedge accounting)"
+  - "pre-admission upstream rejection (incl. 429) fails the job; durable
+    requeue is a separate decision"

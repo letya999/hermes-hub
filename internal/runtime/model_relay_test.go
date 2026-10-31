@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log"
@@ -9,7 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func oneHop(t *testing.T, raw string) []*modelHop {
@@ -977,5 +980,72 @@ models:
 	handler.ServeHTTP(response, chatRequest())
 	if response.Code != http.StatusOK {
 		t.Fatalf("registry mode from env did not serve: %d", response.Code)
+	}
+}
+
+func TestModelRelayRecoversOneTransportTimeoutAfterCooldown(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			time.Sleep(30 * time.Millisecond)
+		}
+		_, _ = io.WriteString(w, `{"choices":[]}`)
+	}))
+	defer upstream.Close()
+	hops := oneHop(t, "one="+upstream.URL)
+	client := &http.Client{}
+	_, _, err := modelCall(context.Background(), client, hops, http.MethodPost, "/v1/chat/completions", "", "application/json", []byte(`{"model":"x"}`), 10*time.Millisecond)
+	if err == nil {
+		t.Fatal("first slow attempt unexpectedly succeeded")
+	}
+	hops[0].mu.Lock()
+	hops[0].cool = time.Now().Add(20 * time.Millisecond)
+	hops[0].mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_, resp, err := modelCall(ctx, client, hops, http.MethodPost, "/v1/chat/completions", "", "application/json", []byte(`{"model":"x"}`), 100*time.Millisecond)
+	if err != nil || resp == nil || resp.StatusCode != http.StatusOK || calls.Load() != 2 {
+		t.Fatalf("recovery failed: calls=%d response=%v error=%v", calls.Load(), resp, err)
+	}
+	_ = resp.Body.Close()
+}
+
+func TestModelRelayOnlyOneRecoveryProbe(t *testing.T) {
+	var calls atomic.Int32
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		entered <- struct{}{}
+		<-release
+		_, _ = io.WriteString(w, `{"choices":[]}`)
+	}))
+	defer upstream.Close()
+	hops := oneHop(t, "one="+upstream.URL)
+	hops[0].mu.Lock()
+	hops[0].cool = time.Now().Add(-time.Second)
+	hops[0].recoverable = true
+	hops[0].mu.Unlock()
+	firstDone := make(chan error, 1)
+	go func() {
+		_, resp, err := modelCall(context.Background(), &http.Client{}, hops, http.MethodPost, "/v1/chat/completions", "", "application/json", []byte(`{"model":"x"}`), time.Second)
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		firstDone <- err
+	}()
+	<-entered
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
+	defer cancel()
+	_, resp, _ := modelCall(ctx, &http.Client{}, hops, http.MethodPost, "/v1/chat/completions", "", "application/json", []byte(`{"model":"x"}`), time.Second)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("recovery stampede: %d upstream calls", got)
 	}
 }

@@ -1,12 +1,22 @@
 {
   "id": "github-pat",
-  "revision": 1,
+  "revision": 2,
   "title": "GitHub PAT",
+  "title_i18n": {
+    "ru": "GitHub: персональный токен",
+    "kk": "GitHub: жеке токен",
+    "es": "GitHub: token de acceso personal"
+  },
   "storage": "local",
   "fields": [
     {
       "id": "token",
       "label": "GitHub personal access token",
+      "label_i18n": {
+        "ru": "Персональный токен GitHub",
+        "kk": "GitHub жеке кіру токені",
+        "es": "Token de acceso personal de GitHub"
+      },
       "kind": "secret",
       "required": true,
       "max_bytes": 4096

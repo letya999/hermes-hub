@@ -168,18 +168,26 @@ func fallbackBridgeMountsOK(mounts []genericMount, workload genericWorkload) boo
 func (c *genericController) CleanupIdle(ctx context.Context, now time.Time) []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	ids := c.config.Budget.CleanupIdle(now)
+	ids := c.config.Budget.IdleCandidates(now)
+	var removed []string
 	for _, id := range ids {
 		workload, ok := c.workloads[id]
 		if !ok {
+			continue
+		}
+		// Persistent retention pins a stateless shared workload: consumer
+		// demand is explicit, and idleness alone never reaps the process.
+		if workload.plan.Definition.Workload.Retention == "persistent" {
 			continue
 		}
 		if err := c.removeWorkload(ctx, workload, workload.plan.Definition.Workload.Stateful); err != nil {
 			continue
 		}
 		delete(c.workloads, id)
+		c.config.Budget.Release(id)
+		removed = append(removed, id)
 	}
-	return ids
+	return removed
 }
 
 // purgeWorkloadByName removes the leftover resources of a workload the

@@ -9,14 +9,24 @@
       "label": "OpenSSH/PEM private key",
       "kind": "secret",
       "required": true,
-      "max_bytes": 16384
+      "max_bytes": 16384,
+      "label_i18n": {
+        "ru": "Закрытый ключ OpenSSH/PEM",
+        "kk": "OpenSSH/PEM жеке кілті",
+        "es": "Clave privada OpenSSH/PEM"
+      }
     },
     {
       "id": "certificate",
       "label": "OpenSSH user certificate (optional)",
       "kind": "string",
       "required": false,
-      "max_bytes": 16384
+      "max_bytes": 16384,
+      "label_i18n": {
+        "ru": "Сертификат пользователя OpenSSH (необязательно)",
+        "kk": "OpenSSH пайдаланушы сертификаты (міндетті емес)",
+        "es": "Certificado de usuario OpenSSH (opcional)"
+      }
     }
   ],
   "allow_shared": false,
@@ -31,5 +41,10 @@
       "field": "certificate",
       "target": "SSH_CERTIFICATE"
     }
-  ]
+  ],
+  "title_i18n": {
+    "ru": "Закрытый ключ SSH (+ необязательный сертификат)",
+    "kk": "SSH жеке кілті (+ міндетті емес сертификат)",
+    "es": "Clave privada SSH (+ certificado opcional)"
+  }
 }

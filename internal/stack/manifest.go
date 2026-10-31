@@ -3,7 +3,6 @@ package stack
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub"
 	"os"
 	"path/filepath"
@@ -77,26 +76,16 @@ func readToolManifest(dir, environment string) (*ToolManifest, error) {
 	return &manifest, nil
 }
 
-// migrateToolhubBindings rolls this space's active ToolHub bindings onto the
-// policy version this render computed (SPEC-0053 R1.2): a rights-hash change
-// must not orphan grants the operator never revoked. The previous version
-// comes from the last rendered manifest; disabled/revoked bindings and other
-// principals never move. Migration runs at render time so the deploy that
-// follows already finds matching bindings.
+// migrateToolhubBindings rolls this space's active ToolHub bindings and
+// capability profiles onto the policy version this render computed
+// (SPEC-0053 R1.2): a rights-hash change must not orphan grants the operator
+// never revoked. The migration scans live state rather than trusting the
+// previous manifest's `from` — envelopes are minted at the rendered hash, so
+// entities pinned at a version no manifest recorded still brick the
+// projection (the CHG-0230 live outage). Migration runs at render time so the
+// deploy that follows already finds matching state.
 func migrateToolhubBindings(dir string, s Settings) error {
 	manifest := toolManifest(s)
-	previous, err := readToolManifest(dir, s.Environment)
-	if err != nil {
-		return err
-	}
-	if previous == nil || previous.PolicyVersion == manifest.PolicyVersion {
-		return nil
-	}
-	if !identity.ValidID(previous.PolicyVersion) {
-		// A pre-SPEC-0053 manifest without a usable version cannot name the
-		// migration source; leave bindings and let projection log exclusions.
-		return nil
-	}
 	storePath := filepath.Join(dir, "runtime", "toolhub", "store.json")
 	if _, err := os.Stat(storePath); err != nil {
 		if os.IsNotExist(err) {
@@ -108,12 +97,15 @@ func migrateToolhubBindings(dir string, s Settings) error {
 	if err != nil {
 		return fmt.Errorf("toolhub store: %w", err)
 	}
-	moved, err := toolhub.MigrateBindings(store, s.User, manifest.Context, s.User, previous.PolicyVersion, manifest.PolicyVersion)
+	report, err := toolhub.MigrateProjection(store, s.User, manifest.Context, s.User, manifest.PolicyVersion)
 	if err != nil {
-		return fmt.Errorf("toolhub binding migration %s -> %s: %w", previous.PolicyVersion, manifest.PolicyVersion, err)
+		return fmt.Errorf("toolhub policy-version migration -> %s: %w", manifest.PolicyVersion, err)
 	}
-	if moved > 0 {
-		fmt.Fprintf(os.Stderr, "hubctl: migrated %d toolhub binding(s) %s -> %s\n", moved, previous.PolicyVersion, manifest.PolicyVersion)
+	if report.BindingsMoved > 0 {
+		fmt.Fprintf(os.Stderr, "hubctl: migrated %d toolhub binding(s) -> %s\n", report.BindingsMoved, manifest.PolicyVersion)
+	}
+	for _, id := range report.ProfilesBlocked {
+		fmt.Fprintf(os.Stderr, "hubctl: capability profile %s pinned at a stale policy — republish it (--kind profile --confirm) or the projection stays denied\n", id)
 	}
 	return nil
 }

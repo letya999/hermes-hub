@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/locale"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
@@ -53,7 +55,7 @@ func TestCompactArgsParse(t *testing.T) {
 			Here: args.Here, Focus: args.Focus, Prune: args.Prune,
 			Preview: args.Preview, Engine: args.Engine, BusyPolicy: args.BusyPolicy,
 		}
-		if got != tc.want {
+		if !reflect.DeepEqual(got, tc.want) {
 			t.Fatalf("%q: got %+v want %+v", tc.text, got, tc.want)
 		}
 	}
@@ -198,7 +200,7 @@ func TestCompressAliasRoutesPreview(t *testing.T) {
 
 // /help advertises the compact command alongside the other session controls.
 func TestHelpAdvertisesCompact(t *testing.T) {
-	if !strings.Contains(commandHelp(), "/compact — ") {
+	if !strings.Contains(commandHelp(locale.LangRU), "/compact — ") {
 		t.Fatal("/compact missing from command help")
 	}
 }

@@ -461,7 +461,7 @@ func (s *Store) definitionForConnection(connection api.Connection) (api.ToolDefi
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, binding := range s.bindings {
-		if binding.ConnectionID == connection.ConnectionID && binding.DefinitionVersion != "" {
+		if binding.ConnectionID == connection.ConnectionID && binding.Status == api.ActiveStatus && binding.DefinitionVersion != "" {
 			if definition, ok := s.definitions[definitionKey(connection.DefinitionID, binding.DefinitionVersion)]; ok {
 				return definition, nil
 			}
@@ -898,6 +898,35 @@ func (s *Store) markDegradedIfCurrent(connectionID string, expected *api.Connect
 	return true, stopErr
 }
 
+func (s *Store) restoreApprovedSurfaceIfCurrent(expected api.Connection, pinned api.ToolBinding) (bool, error) {
+	s.mu.Lock()
+	connection, ok := s.connections[expected.ConnectionID]
+	binding, bound := s.bindings[pinned.ToolBindingID]
+	if !ok || !bound || connection.Revision != expected.Revision || connection.Status != api.DegradedStatus ||
+		connection.Metadata[api.LabelAcceptSurface] == "" || connection.Metadata[api.LabelAcceptRecipe] != "" ||
+		binding.ConnectionID != connection.ConnectionID || binding.Status != api.ActiveStatus || binding.ToolDigest != pinned.ToolDigest {
+		s.mu.Unlock()
+		return false, nil
+	}
+	delete(connection.Metadata, api.LabelAcceptSurface)
+	connection.Status = api.ActiveStatus
+	connection.Revision++
+	s.connections[connection.ConnectionID] = connection
+	s.noteConnectionStatusLocked(connection)
+	for id, candidate := range s.bindings {
+		if candidate.ConnectionID == connection.ConnectionID {
+			if candidate.Status == api.ActiveStatus && candidate.ToolDigest == pinned.ToolDigest {
+				candidate.ConnectionRevision = connection.Revision
+				candidate.Revision++
+			}
+			s.touchProjectionLocked(&candidate)
+			s.bindings[id] = candidate
+		}
+	}
+	s.mu.Unlock()
+	return true, s.persistAndNotify()
+}
+
 // ObserveDrift records a drift the reconciler resolved under an accept key;
 // the connection stays parked until a human /confirm re-pins it or fresh
 // credentials consume the credential pin.
@@ -1114,12 +1143,53 @@ func (s *Store) Authorize(auth identity.Envelope, bindingID string, admit func(a
 		return err
 	}
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	effective, err := s.resolveLocked(auth, bindingID)
+	s.mu.RUnlock()
+	if err != nil {
+		return err
+	}
+	if err := s.noteRecovery(effective); err != nil {
+		return err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	effective, err = s.resolveLocked(auth, bindingID)
 	if err != nil {
 		return err
 	}
 	return admit(effective)
+}
+
+// noteRecovery bounds connector respawns: an admission whose recorded
+// workload is known but not running is a restart, and restarts are counted
+// on the connection. Exhausting the budget degrades the connection instead
+// of restart-looping — a human re-enables it after fixing the cause. An
+// absent workload record is first demand, not recovery.
+func (s *Store) noteRecovery(effective api.EffectiveBinding) error {
+	const recoveryBudget = 3
+	if effective.Connection == nil || effective.WorkloadID == "" {
+		return nil
+	}
+	s.mu.Lock()
+	workload, known := s.workloads[effective.WorkloadID]
+	if !known || workload.Status == api.RunningStatus || workload.Status == api.StartingStatus {
+		s.mu.Unlock()
+		return nil
+	}
+	connection, ok := s.connections[effective.Connection.ConnectionID]
+	if !ok {
+		s.mu.Unlock()
+		return nil
+	}
+	connection.RecoveryCount++
+	s.connections[connection.ConnectionID] = connection
+	exhausted := connection.RecoveryCount >= recoveryBudget
+	s.mu.Unlock()
+	if exhausted {
+		_, _ = s.markDegradedIfCurrent(connection.ConnectionID, &connection, "", "")
+		return fmt.Errorf("%w: recovery budget exhausted", api.ErrDegraded)
+	}
+	return s.persist()
 }
 
 func (s *Store) resolveLocked(auth identity.Envelope, bindingID string) (api.EffectiveBinding, error) {
@@ -1256,7 +1326,7 @@ func (s *Store) PutRecipe(resolution api.RecipeResolution) (string, error) {
 	s.mu.Lock()
 	_, known := s.recipes[digest]
 	if !known {
-		s.recipes[digest] = resolution
+		s.recipes[digest] = api.CloneResolution(resolution)
 	}
 	s.mu.Unlock()
 	if known {
@@ -1279,7 +1349,7 @@ func (s *Store) Recipe(digest string) (api.RecipeResolution, error) {
 	if !ok {
 		return api.RecipeResolution{}, api.ErrNotFound
 	}
-	return resolution, nil
+	return api.CloneResolution(resolution), nil
 }
 
 type snapshot struct {
@@ -1300,6 +1370,40 @@ type snapshot struct {
 	BrokerGrants        []api.BrokerBindingGrant        `json:"broker_grants,omitempty"`
 	CapabilityChanges   []api.CapabilityChange          `json:"capability_changes,omitempty"`
 	BindingChanges      []bindingChange                 `json:"binding_changes,omitempty"`
+}
+
+// SharedConsumers counts the active bindings that still consume one shared
+// workload: the persisted binding registry is the consumer ledger for a
+// shared workload, so demand survives a restart of both the hub and the
+// controller process. exceptBindingID excludes the binding being released.
+func (s *Store) SharedConsumers(definitionID, version, exceptBindingID string) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.sharedConsumersLocked(definitionID, version, exceptBindingID)
+}
+
+// SharedBindingConsumed reports whether a labelled binding belongs to a
+// shared workload that still has live consumers — the guard the reconciler
+// applies before purging an orphan whose spawning connection is gone.
+func (s *Store) SharedBindingConsumed(bindingID string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	binding, ok := s.bindings[bindingID]
+	if !ok || binding.WorkloadClass != api.Shared {
+		return false
+	}
+	return s.sharedConsumersLocked(binding.DefinitionID, binding.DefinitionVersion, "") > 0
+}
+
+func (s *Store) sharedConsumersLocked(definitionID, version, exceptBindingID string) int {
+	count := 0
+	for _, binding := range s.bindings {
+		if binding.ToolBindingID == exceptBindingID || binding.Status != api.ActiveStatus || binding.DefinitionID != definitionID || binding.DefinitionVersion != version || binding.WorkloadClass != api.Shared {
+			continue
+		}
+		count++
+	}
+	return count
 }
 
 func (s *Store) stopAffectedLocked(connectionID string) []string {

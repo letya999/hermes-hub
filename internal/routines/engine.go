@@ -13,6 +13,7 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
 )
 
 // OccurrenceChannel is the provider slice the engine needs: occurrence
@@ -65,6 +66,9 @@ type Deps struct {
 	// SettleEvents settles an "event"-kind occurrence into the owner's event
 	// plane. It runs WITHOUT the engine lock — the owner re-locks internally.
 	SettleEvents func(o commodel.RoutineOccurrence, schedule commodel.Schedule, body []byte, now time.Time, probeErr error, authorize func(commodel.Job) error) []commodel.Event
+	// LangOf resolves an occurrence owner's workspace language for composed
+	// delivery text; nil falls back to the hub default.
+	LangOf func(principal string) locale.Lang
 }
 
 // Engine runs the routines plane against injected dependencies. It shares
@@ -80,6 +84,14 @@ type Engine struct {
 	// mappingDriftReported warns once per process about a corrupt active
 	// occurrence binding.
 	mappingDriftReported map[string]bool
+	// acquireBurst holds fetched bodies for the current probe sweep only:
+	// coalescing shares one fetch inside a tick and is cleared per sweep so
+	// a re-due occurrence never sees a stale body (SPEC-0081 R2.1).
+	acquireBurst map[string][]byte
+	// acquireInflight collapses concurrent fetches for one (principal,url)
+	// inside a sweep: followers wait on done and read the burst body or the
+	// leader's error — the pool issues one fetch per sweep, never two.
+	acquireInflight map[string]*acquireFlight
 }
 
 // NewEngine builds the engine; the owner fills every Deps field.
@@ -96,6 +108,13 @@ func (e *Engine) normalizeDelivery(d commodel.Delivery) (commodel.Delivery, erro
 }
 
 func (e *Engine) channelFor(id string) OccurrenceChannel { return e.deps.ChannelFor(id) }
+
+func (e *Engine) langOf(principal string) locale.Lang {
+	if e.deps.LangOf != nil {
+		return e.deps.LangOf(principal)
+	}
+	return locale.Fallback()
+}
 
 func (e *Engine) probeScript() ProbeScriptFunc {
 	if e.deps.ProbeScript == nil {

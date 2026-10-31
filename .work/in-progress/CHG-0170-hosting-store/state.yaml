@@ -1,0 +1,35 @@
+schema: 1
+change: CHG-0170
+title: Hosting slots immutable releases and quota
+status: in_progress
+branch: feat/m18-exposure-hosting
+updated: 2026-10-26
+phase: implementation
+adr: ADR-0081
+spec: SPEC-0079
+requirements: [R1, R2, R3, R4, R8, R9, R10]
+depends_on: [CHG-0169]
+github_milestone: M18
+github_issue: 147
+design_status: accepted
+implementation_status: in_progress
+slices:
+  H1.1-binding-policy-store: implemented_pending_gates
+  H1.2-snapshot-quota: implemented_pending_gates
+  H1.3-recovery-audit: implemented_pending_gates
+validation:
+  documents: pass
+  just_check: pass
+  coverage: 86.03_statements_package_floor_75_held
+  docker_check: not_run_owner_instruction
+  red_team: self_review_negative_contracts_native_pending
+  live_acceptance: not_started
+evidence:
+  - Owner marker and binding reject foreign or unowned nonempty stores before recovery
+  - Descriptor snapshots reject traversal links hardlinks special and hidden credential files
+  - Durable pending retired tombstone sequence and audit recovery are implemented
+  - TestFailedPreparationConsumesRevision verifies failed preparations never reuse a revision
+remaining:
+  - Finish aggregate gates and cross-reference final evidence
+limitations:
+  - Native crash or disk-full acceptance is not certified by temp-directory tests

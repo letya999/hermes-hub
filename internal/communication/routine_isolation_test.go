@@ -690,3 +690,95 @@ func TestInteractiveJobClaimedBeforeOccurrence(t *testing.T) {
 		}
 	}
 }
+
+// A failure notice that never reaches the owner — its outbox copy dies
+// unconfirmed at the channel — must not suppress the next identical failure:
+// the dedupe digest marks notices the owner actually received.
+func TestRoutineFailureNoticeRetriesAfterUndeliveredNotice(t *testing.T) {
+	c := testConfig(t)
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAPI{err: errors.New("telegram send failed")}
+	g.api = fake
+	u := c.Users[0]
+	caller := u.Envelope(11)
+	if _, err := g.spool.CreateSchedule(Schedule{ScheduleID: "failing-blocked", Envelope: caller, OrganizationID: c.OrganizationID, UserID: u.ID, ActorID: u.ID, ScopeID: "user:" + u.ID, Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 * * * *", Input: "fails every tick", JobKind: "agent"}, caller, ""); err != nil {
+		t.Fatal(err)
+	}
+	sched, err := g.spool.loadScheduleLocked("failing-blocked")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := Job{Envelope: caller, UserID: u.ID, ActorID: u.ID, ScopeID: "user:" + u.ID, OrganizationID: c.OrganizationID, Channel: "telegram_bot", ChatID: 11, Trigger: "cron", Text: "fails every tick"}
+	fire := func(seq int) string {
+		occ := RoutineOccurrence{ScheduleID: sched.ScheduleID, Revision: sched.Revision, DueAt: time.Unix(2000, 0).Add(time.Duration(seq) * time.Minute), Job: base}
+		if err := g.spool.PutOccurrence(occ, caller); err != nil {
+			t.Fatal(err)
+		}
+		if err := g.spool.DispatchDueOccurrences(occ.DueAt.Add(time.Second), g.authorizeOccurrence); err != nil {
+			t.Fatal(err)
+		}
+		return OccurrenceID(occ)
+	}
+	settled := func(jobID string) bool {
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			if m, found, _ := g.spool.Mapping(jobID); found && terminalStatus(m.Status) {
+				return true
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		return false
+	}
+	g.runner = routineFailRunner{fail: true}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); g.worker(ctx) }()
+	if !settled(fire(0)) {
+		t.Fatal("first occurrence never settled")
+	}
+	// The channel refused the notice: it must land in outbox/failed.
+	deadline := time.Now().Add(3 * time.Second)
+	failed := ""
+	for time.Now().Before(deadline) {
+		entries, _ := os.ReadDir(filepath.Join(g.spool.root, "outbox", "failed"))
+		if len(entries) > 0 {
+			failed = entries[0].Name()
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if failed == "" {
+		cancel()
+		<-done
+		t.Fatal("blocked notice never reached outbox/failed")
+	}
+	// Channel recovers: the next identical failure must notify again.
+	fake.mu.Lock()
+	fake.err = nil
+	fake.mu.Unlock()
+	if !settled(fire(1)) {
+		t.Fatal("second occurrence never settled")
+	}
+	found := false
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		fake.mu.Lock()
+		for _, text := range fake.sent {
+			if strings.Contains(text, "Не удалось завершить задачу") {
+				found = true
+			}
+		}
+		fake.mu.Unlock()
+		if found {
+			break
+		}
+	}
+	cancel()
+	<-done
+	if !found {
+		sched2, _ := g.spool.loadScheduleLocked("failing-blocked")
+		t.Fatalf("undelivered notice suppressed the retry: digest=%q sent=%v", sched2.LastFailureSHA256, fake.sent)
+	}
+}

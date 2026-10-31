@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/letya999/hermes-hub/internal/locale"
 )
 
 // Telegram API subset used by the adapter.
@@ -59,6 +61,9 @@ type Message struct {
 type TGUser struct {
 	ID       int64  `json:"id"`
 	Username string `json:"username"`
+	// LanguageCode is the sender's client locale (IETF tag); the locale
+	// ladder treats it as strong evidence for the workspace preference.
+	LanguageCode string `json:"language_code,omitempty"`
 }
 type TGDirectTopic struct {
 	TopicID int64 `json:"topic_id"`
@@ -487,13 +492,26 @@ func (t *telegramAPI) SendVoice(ctx context.Context, chatID, topicID int64, audi
 // this a stale scope registration (e.g. left by an upstream adapter) shadows
 // the default menu in private and group chats.
 func (t *telegramAPI) SetMyCommands(ctx context.Context) error {
-	commands := make([]map[string]string, 0, len(botCommandInventory))
-	for _, c := range botCommandInventory {
-		commands = append(commands, map[string]string{"command": c.Command, "description": c.Description})
+	// One pass per supported language (plus the empty language_code fallback)
+	// per scope: the client renders the menu in its app locale, no per-user
+	// tracking needed.
+	langs := []string{""}
+	for _, l := range locale.All {
+		langs = append(langs, string(l))
 	}
 	for _, scope := range []string{"default", "all_private_chats", "all_group_chats", "all_chat_administrators"} {
-		if err := t.call(ctx, "setMyCommands", map[string]any{"commands": commands, "scope": map[string]any{"type": scope}}, nil); err != nil {
-			return err
+		for _, langCode := range langs {
+			lang := locale.Fallback()
+			if parsed, ok := locale.Parse(langCode); ok {
+				lang = parsed
+			}
+			commands := make([]map[string]string, 0, len(botCommandInventory))
+			for _, c := range botCommandInventory {
+				commands = append(commands, map[string]string{"command": c.Command, "description": locale.T(lang, c.DescKey)})
+			}
+			if err := t.call(ctx, "setMyCommands", map[string]any{"commands": commands, "scope": map[string]any{"type": scope}, "language_code": langCode}, nil); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

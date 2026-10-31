@@ -1,6 +1,6 @@
 ---
 description: Telegram bot channel — adapter contract, file/usage/voice surfaces, QR auth page, limits.
-last_verified: 2026-10-25
+last_verified: 2026-10-30
 ---
 
 # Channel: Telegram (bot API)
@@ -16,7 +16,10 @@ token lives solely in communication-hub env. Contract: internal/channel
   chat gets the not-configured reply. Telegram user/chat IDs are transport
   links — never filesystem or authorization keys.
 - Forum/topic routing: `chat_id + message_thread_id` select the delivery
-  audience; inline approvals retain topic routing.
+  audience; inline approvals retain topic routing. In `mode: topics`
+  groups each topic is its own conversation lane — a user's topics run
+  in parallel inside their context (FIFO within one topic, capped by
+  `HUB_CONTEXT_MAX_PARALLEL`; ADR-0090).
 - Groups are disabled by default; private allowlisted DMs are the supported
   shape.
 

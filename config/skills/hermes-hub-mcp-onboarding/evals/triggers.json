@@ -1,0 +1,27 @@
+{
+  "split": 0.6,
+  "runs": 3,
+  "threshold": 0.5,
+  "queries": [
+    {"q": "install the GitHub MCP connector", "expect": true},
+    {"q": "add a GitLab MCP to this space", "expect": true},
+    {"q": "remove the filesystem connector", "expect": true},
+    {"q": "установи MCP для гитхаба", "expect": true},
+    {"q": "connect a new CLI tool through ToolHub", "expect": true},
+    {"q": "onboard the Slack connector", "expect": true},
+    {"q": "удали коннектор телеграма", "expect": true},
+    {"q": "set up an OAuth MCP integration", "expect": true},
+    {"q": "add the postgres MCP server to my hub", "expect": true},
+    {"q": "manage my connector credentials for GitHub", "expect": true},
+    {"q": "deep research the MCP specification history", "expect": false},
+    {"q": "what time is it in Tokyo", "expect": false},
+    {"q": "write a haiku about connectors", "expect": false},
+    {"q": "explain how skill drafts get approved", "expect": false},
+    {"q": "research battery chemistry trends in depth", "expect": false},
+    {"q": "list my published skills", "expect": false},
+    {"q": "roll back the pdf skill to last week", "expect": false},
+    {"q": "скажи анекдот", "expect": false},
+    {"q": "search the web for MCP server registries", "expect": false},
+    {"q": "show me my usage stats", "expect": false}
+  ]
+}

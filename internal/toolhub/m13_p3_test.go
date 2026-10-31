@@ -303,8 +303,10 @@ func TestConnectorToolsProjection(t *testing.T) {
 			t.Fatalf("legacy control op %q leaked into connector projection", legacy)
 		}
 	}
-	if got["invoke"] {
-		t.Fatal("invoke leaked into connector projection")
+	// invoke is the dispatch fallback for connector names absent from the
+	// client's cached tools/list — the connectors bundle carries it (ADR-0089).
+	if !got["invoke"] {
+		t.Fatal("connector projection missing invoke")
 	}
 }
 
@@ -344,8 +346,8 @@ func TestConnectorsBundleAllowedOps(t *testing.T) {
 			t.Fatalf("personal+team lost %q", tool)
 		}
 	}
-	if len(allowed) != len(api.ConnectorTools) {
-		t.Fatalf("personal+team leaked legacy ops: %v", allowed)
+	if len(allowed) != len(api.ConnectorTools)+1 || !allowed["invoke"] {
+		t.Fatalf("personal+team leaked legacy ops or lost invoke: %v", allowed)
 	}
 	profile.Revision++
 	profile.Connectors = api.ConnectorsNone

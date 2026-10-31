@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -650,5 +651,31 @@ func TestSeedReplicatedRejectsWrongRecoveryKey(t *testing.T) {
 	}
 	if err := SeedReplicated(primary, recovery, anchor, primaryKey, bytes.Repeat([]byte{8}, 32), 8<<20); err == nil {
 		t.Fatal("wrong recovery key accepted during migration retry")
+	}
+}
+
+func TestReplicatedAnchorAcceptsCompressedAuditOnRestart(t *testing.T) {
+	primary, key := setup(t)
+	recovery, _ := setup(t)
+	anchor, _ := setup(t)
+	recoveryKey := bytes.Repeat([]byte{9}, 32)
+	payload := strings.Repeat("audit", 1024)
+	j, err := OpenReplicatedAnchored(primary, recovery, anchor, key, recoveryKey, 2<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.Append("audit", map[string]string{"payload": payload}); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	j, err = OpenReplicatedAnchored(primary, recovery, anchor, key, recoveryKey, 2<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	if len(j.Records()) != 1 || !bytes.Contains(j.Records()[0].Data, []byte(payload)) {
+		t.Fatal("compressed audit missing after anchored replay")
 	}
 }

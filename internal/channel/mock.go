@@ -90,7 +90,7 @@ func (c mock) AuthorizeOccurrence(job commodel.Job, user commodel.User, configur
 }
 
 func (c mock) ValidateOccurrence(o commodel.RoutineOccurrence, caller identity.Envelope) error {
-	if o.Job.ChatID <= 0 || caller != identity.MockEnvelope(o.Job.UserID, o.Job.ChatID, o.Job.RuntimeID, o.Job.PolicyVersion) {
+	if o.Job.ChatID <= 0 || !caller.Equal(identity.MockEnvelope(o.Job.UserID, o.Job.ChatID, o.Job.RuntimeID, o.Job.PolicyVersion)) {
 		return errors.New("invalid occurrence ownership")
 	}
 	return nil

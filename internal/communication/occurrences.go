@@ -87,7 +87,7 @@ func (g *Gateway) ownsRoutineEnvelope(job Job, canonical identity.Envelope) bool
 		}
 		canonical.ConversationID = job.ConversationID
 	}
-	return job.Envelope == canonical
+	return job.Envelope.Equal(canonical)
 }
 
 // routineConversationOf resolves the schedule-pinned conversation for a
@@ -114,8 +114,32 @@ func (g *Gateway) occurrenceFor(jobID string) (RoutineOccurrence, bool) {
 
 // streamRefScheduleID recovers the schedule id a stream fan-out ref was
 // deterministically seeded from (streams.go builds them where no occurrence
-// exists): stream-<schedule id>[-<probe revision>]-<16-hex batch hash>.
+// exists): stream2-<id length>-<schedule id>-<probe revision>-<batch hash>.
+// The length makes numeric suffixes in schedule ids unambiguous; old refs
+// remain readable for pending deliveries created before the format change.
 func streamRefScheduleID(id string) string {
+	if rest, ok := strings.CutPrefix(id, "stream2-"); ok {
+		lengthText, tail, ok := strings.Cut(rest, "-")
+		if !ok {
+			return ""
+		}
+		n, err := strconv.Atoi(lengthText)
+		if err != nil || n < 1 || n > 80 || len(tail) < n+3 || tail[n] != '-' {
+			return ""
+		}
+		sid := tail[:n]
+		rev, hash, ok := strings.Cut(tail[n+1:], "-")
+		if !ok || !commodel.IDPattern.MatchString(sid) || rev == "" || len(hash) != 16 {
+			return ""
+		}
+		if _, err := strconv.ParseUint(rev, 10, 64); err != nil {
+			return ""
+		}
+		if _, err := hex.DecodeString(hash); err != nil {
+			return ""
+		}
+		return sid
+	}
 	rest, ok := strings.CutPrefix(id, "stream-")
 	if !ok {
 		return ""
@@ -129,7 +153,7 @@ func streamRefScheduleID(id string) string {
 	}
 	sid := rest[:i]
 	if j := strings.LastIndexByte(sid, '-'); j > 0 {
-		if _, err := strconv.ParseUint(sid[j+1:], 10, 64); err == nil {
+		if _, err := strconv.ParseUint(sid[j+1:], 10, 64); err == nil { // legacy refs
 			sid = sid[:j]
 		}
 	}
@@ -145,7 +169,14 @@ func streamRefScheduleID(id string) string {
 // authorized. s.mu must be held.
 func (g *Gateway) occurrenceRefAuthorizedLocked(id string) bool {
 	if o, ok := g.occurrenceFor(id); ok {
-		return g.spool.occurrenceCurrentLocked(o) && g.authorizeOccurrence(o.Job) == nil
+		if !g.spool.occurrenceCurrentLocked(o) || g.authorizeOccurrence(o.Job) != nil {
+			return false
+		}
+		if o.Job.AssignmentID != "" && o.Job.AssignmentPlanRevision != 0 {
+			_, active := g.spool.rt.AssignmentForWakeLocked(o.Job.AssignmentID, o.Job.AssignmentPlanRevision)
+			return active
+		}
+		return true
 	}
 	sid := streamRefScheduleID(id)
 	if sid == "" {
@@ -154,6 +185,11 @@ func (g *Gateway) occurrenceRefAuthorizedLocked(id string) bool {
 	schedule, err := g.spool.loadScheduleLocked(sid)
 	if err != nil || !streamActive(&schedule, g.now().UTC()) {
 		return false
+	}
+	if schedule.AssignmentID != "" && schedule.AssignmentPlanRevision != 0 {
+		if _, ok := g.spool.rt.AssignmentForWakeLocked(schedule.AssignmentID, schedule.AssignmentPlanRevision); !ok {
+			return false
+		}
 	}
 	job := Job{Envelope: schedule.Envelope, OrganizationID: schedule.OrganizationID, UserID: schedule.UserID, ActorID: schedule.ActorID, ScopeID: schedule.ScopeID, Channel: schedule.Channel, ChatID: schedule.ChatID, TaskID: schedule.TaskID, TopicID: schedule.TopicID, SlackChannel: schedule.SlackChannel, SlackThread: schedule.SlackThread, Trigger: "cron"}
 	return g.authorizeOccurrence(job) == nil

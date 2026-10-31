@@ -26,7 +26,7 @@ func TestRoutinePublicSurfaceHasFiveTools(t *testing.T) {
 		}
 	}
 	definition := HubToolsDefinition()
-	if definition.Version != "5.0.1" {
+	if definition.Version != "5.9.0" {
 		t.Errorf("new immutable contract version=%s", definition.Version)
 	}
 	arguments := map[string][]string{"routine_create": {"origin_job_id", "destination_task_id"}, "routine_list": {"query", "view"}, "routine_get": {"include", "history_limit", "history_cursor", "preview_limit"}, "routine_edit": {"action", "expected_revision", "patch", "until", "origin_job_id"}}
@@ -230,5 +230,15 @@ func TestRoutineListTransportsSearchQuery(t *testing.T) {
 	v.CommunicationURL = server.URL
 	if _, err := v.Routine(context.Background(), "routine_list", Input{Query: "Пятница & 10:00", Limit: 2, Cursor: "item-a"}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestAssignmentCatalogVersion: assignment tools joined the immutable
+// catalog — the contract revision must advance so protected stores can
+// admit the new selection set (SPEC-0080 R2.3).
+func TestAssignmentCatalogVersion(t *testing.T) {
+	definition := HubToolsDefinition()
+	if definition.Version != "5.9.0" {
+		t.Fatalf("catalog version = %s, want 5.9.0 with install_local skill import", definition.Version)
 	}
 }

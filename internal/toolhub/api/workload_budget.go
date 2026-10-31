@@ -123,6 +123,23 @@ func (b *WorkloadBudget) CleanupIdle(now time.Time) []string {
 	return expired
 }
 
+// IdleCandidates retains capacity until the lifecycle owner confirms removal.
+func (b *WorkloadBudget) IdleCandidates(now time.Time) []string {
+	if b == nil {
+		return nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var expired []string
+	for id, touched := range b.active {
+		if now.Sub(touched) >= b.idleTTL {
+			expired = append(expired, id)
+		}
+	}
+	slices.Sort(expired)
+	return expired
+}
+
 func (b *WorkloadBudget) Snapshot() (active, queued []string) {
 	if b == nil {
 		return nil, nil

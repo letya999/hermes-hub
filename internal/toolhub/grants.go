@@ -333,8 +333,13 @@ func (s *Store) AllowedControlOperations(auth identity.Envelope) (map[string]boo
 			return allowed, err
 		}
 		// The connectors bundle replaces the legacy per-operation projection
-		// with the unified nine-tool surface.
+		// with the unified nine-tool surface. invoke rides with it: it is the
+		// dispatch fallback for names missing from the client's cached
+		// tools/list, and every call still routes through
+		// AuthorizeProjectedCall (ADR-0089 D3). Under "" the profile's own
+		// control_operations allowlist stays the strict contract.
 		if profile.Connectors == api.ConnectorsPersonal || profile.Connectors == api.ConnectorsPersonalTeam {
+			allowed["invoke"] = true
 			for _, tool := range api.ConnectorTools {
 				allowed[tool] = true
 			}

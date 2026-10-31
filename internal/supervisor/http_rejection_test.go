@@ -19,7 +19,7 @@ func TestUntypedRuntimeHTTPFailureHasDurableOutcome(t *testing.T) {
 		code   int
 		status string
 	}{
-		{"invalid", 400, "failed"}, {"unauthorized", 401, "failed"}, {"forbidden", 403, "failed"}, {"unprocessable", 422, "failed"}, {"conflict", 409, "uncertain"}, {"server", 500, "uncertain"},
+		{"invalid", 400, "failed"}, {"unauthorized", 401, "failed"}, {"forbidden", 403, "failed"}, {"unprocessable", 422, "failed"}, {"conflict", 409, "failed"}, {"server", 500, "uncertain"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {

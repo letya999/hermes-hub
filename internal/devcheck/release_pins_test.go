@@ -13,14 +13,14 @@ import (
 // Release pin guard: image tags, the CLI banner and the probe identity all
 // carry the release version literally. When the version advances this test
 // lists every stale site so the bump cannot land half-done. Historical
-// mentions like "v0.3.0 removed ..." or bare compatibility_release fixtures
+// mentions like "v0.4.0 removed ..." or bare compatibility_release fixtures
 // do not match the pinned shapes below.
 func TestReleasePinsAreCurrent(t *testing.T) {
 	stale := []*regexp.Regexp{
-		regexp.MustCompile(`hermes-hub(-[\w]+)?:0\.3\.0`),
-		regexp.MustCompile(`:0\.3\.0-`),
-		regexp.MustCompile(`hubctl 0\.3\.0`),
-		regexp.MustCompile(`"version":\s*"0\.3\.0"`),
+		regexp.MustCompile(`hermes-hub(-[\w]+)?:0\.4\.0`),
+		regexp.MustCompile(`:0\.4\.0-`),
+		regexp.MustCompile(`hubctl 0\.4\.0`),
+		regexp.MustCompile(`"version":\s*"0\.4\.0"`),
 	}
 	roots := []string{"../../cmd", "../../internal", "../../docs", "../../docker", "../../scripts", "../../justfile"}
 	var hits []string
@@ -54,6 +54,6 @@ func TestReleasePinsAreCurrent(t *testing.T) {
 		}
 	}
 	if len(hits) > 0 {
-		t.Fatalf("stale 0.3.0 release pins:\n%s", strings.Join(hits, "\n"))
+		t.Fatalf("stale 0.4.0 release pins:\n%s", strings.Join(hits, "\n"))
 	}
 }

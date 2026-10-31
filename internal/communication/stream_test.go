@@ -796,7 +796,7 @@ func TestCompactionKeepsNonTerminal(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = os.Chtimes(filepath.Join(root, "pending", "new-job.json"), old, old)
-	if err := s.Compact(time.Now(), 336*time.Hour); err != nil {
+	if err := s.Compact(time.Now(), 336*time.Hour, CompactLimits{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(s.mappingPath("old-done")); !errors.Is(err, os.ErrNotExist) {
@@ -841,7 +841,7 @@ func TestCompactionKeepsPendingReceipts(t *testing.T) {
 	if err := atomicJSON(filepath.Join(root, "outbox", "pending", "job-x-event-live.json"), Delivery{ID: "job-x-event-live", Channel: "telegram_bot", ChatID: 11, Text: "x"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Compact(time.Now(), 336*time.Hour); err != nil {
+	if err := s.Compact(time.Now(), 336*time.Hour, CompactLimits{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(kept); err != nil {
@@ -1817,5 +1817,29 @@ func TestRecoverySkipsStaleTerminalReceipt(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(s.root, "outbox", "pending", spoolFileID(straggler.Delivery.ID)+".json")); !os.IsNotExist(err) {
 		t.Fatal("stale delivery was re-enqueued")
+	}
+}
+
+func TestAssignmentSkipResultSendsNoStatusOrReply(t *testing.T) {
+	spool, job := streamJob(t)
+	if _, err := spool.ClaimJob(); err != nil {
+		t.Fatal(err)
+	}
+	job.AssignmentID = "asg-1"
+	progress := streamEvent(job)
+	progress.LastEvent, progress.EventID, progress.Text = "tool.start", "tool-1", "working"
+	if err := spool.RecordStreamEvent(job, progress); err != nil {
+		t.Fatal(err)
+	}
+	if delivery, err := spool.ClaimDelivery(); err != nil || delivery != nil {
+		t.Fatalf("assignment status leaked: %+v %v", delivery, err)
+	}
+	terminal := streamEvent(job)
+	terminal.Status, terminal.LastEvent, terminal.EventID, terminal.Text = "completed", "run.completed", "terminal:completed", "NO_ACTIONABLE_EVENT"
+	if err := spool.RecordStreamEvent(job, terminal); err != nil {
+		t.Fatal(err)
+	}
+	if delivery, err := spool.ClaimDelivery(); err != nil || delivery != nil {
+		t.Fatalf("skip result leaked: %+v %v", delivery, err)
 	}
 }

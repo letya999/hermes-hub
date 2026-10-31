@@ -117,10 +117,10 @@ func TestM10RegressionUsageCountsSessionDelta(t *testing.T) {
 	runner := HTTPRunner{URL: srv.URL, Spool: s}
 	job := o.Job
 	job.ID = "job-one"
-	runner.meterUsage(context.Background(), job, "run-one")
+	runner.meterUsage(context.Background(), job, "run-one", 0)
 	counter = 25
 	job.ID = "job-two"
-	runner.meterUsage(context.Background(), job, "run-two")
+	runner.meterUsage(context.Background(), job, "run-two", 0)
 	totals, err := s.UsageTotals("user:alice")
 	if err != nil {
 		t.Fatal(err)

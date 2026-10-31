@@ -1,0 +1,37 @@
+chg: CHG-0194
+title: M24 #362 S7 — resources and script execution
+issue: 362
+status: done
+slices:
+  S7.1-skill-view-bounds: done
+  S7.2-lint-refs-noexec: done
+  S7.3-deps-validation: done
+  S7.4-skill-readiness: done
+  S7.5-skills-ro-root: done
+  S7.6-cells-skills-mount: done
+  S7.7-docs-state: done
+verification: done
+notes: >
+  Implemented. R7 interpretation: deps/env/bins remain render-reported
+  readiness signals (never grant); "scratch copy" for scripts is the
+  cell /work mount — /skills itself is bind-mounted read-only so exec
+  in the skill tree is structurally impossible, and Build strips exec
+  bits so the mounted tree is data-only.
+  S7.1: skill_view caps at 32 KiB (truncated flag) and restricts path=
+  to SKILL.md + references/ + templates/ + examples/. S7.2: lintRefs
+  enforces one-level markdown links on publish/draft; scan load.exec
+  rule surfaces !`cmd` markers at High (hub has no load-exec path).
+  S7.3: metadata.deps validated by depPattern, uv run/npx pins
+  normalize to pip:/npm:, PEP 723 blocks fold in, DepsMissing stamped
+  against registries at render. S7.4: skill() returns readiness
+  {missing, deps_missing, has_scripts, instructions_only}. S7.5:
+  skills root for file ops + skills: prefix for document_extract /
+  image_inspect; OpenRoots opens HUB_SKILLS_EFFECTIVE as t.Skills.
+  S7.6: principal-scope cells bind generated/skills-effective ro at
+  /skills (containment + no-symlink + exists checks; cellProfileProblem
+  admits and verifies the ro bind).
+  Verified: just check green (86.13% overall; format/vet/tidy/
+  staticcheck/gosec/docs/actionlint/integration contract all pass).
+  Docker cell gates not run locally — cell mount proven via fake-daemon
+  argv + inspect echo; live /skills cell mount is a live-acceptance
+  item for #368.

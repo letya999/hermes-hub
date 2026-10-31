@@ -1,0 +1,37 @@
+schema: 1
+change: CHG-0218
+title: "Gate сборки и аварийной атомарности SQLCipher"
+status: in_progress
+branch: fix/m23-live-wake
+updated: "2026-10-28"
+phase: design-complete
+adr: ADR-0087
+spec: SPEC-0087
+requirements: [R2]
+depends_on: [CHG-0215]
+workstream: storage-reliability-mvp
+github_milestone: null
+github_issue: null
+design_status: accepted
+implementation_status: not_started
+readiness: proof_gate_pending
+slices:
+  S194.1-engine-build: not_started
+  S194.2-atomicity-matrix: not_started
+  S194.3-gate-receipt: not_started
+validation:
+  documents: passed
+  planning_package: passed
+  planning_just_check: failed
+  just_check: not_run
+  module_check: not_run
+  security: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining:
+  - "Implementation and all runtime acceptance remain outstanding."
+limitations:
+  - "Planning record only; no production code or live state changed."
+  - "Native dependency pins and volume-loss behaviour must be evidenced by this gate; not assumed."

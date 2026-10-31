@@ -1,6 +1,6 @@
 ---
 description: communication-hub — channel gateway: Telegram/Slack adapters, inbound routing, credential forms, spool, control API.
-last_verified: 2026-10-24
+last_verified: 2026-10-28
 ---
 
 # communication-hub
@@ -26,8 +26,20 @@ everything entering or leaving the human conversation. Listens
 - **Control API** on the same listener: `prepare-outcome` callbacks, routines
   control, sibling-runtime calls authenticated by `toolhub-tokens.json`
   (`HUB_COMMUNICATION_TOKENS_FILE`).
+- **Master hold notices**: the control loop syncs supervisor `/v1/holds` on
+  boot and every second while a notice is pending; a clean hold set backs off
+  to a ~10 s poll. A routable notice is durably enqueued (Telegram) then
+  acknowledged via `/v1/holds/ack`. A notice with no configured delivery
+  channel is acknowledged immediately — undeliverable notices never wedge
+  pending.
 - **Spool**: durable outbound queue on the `communication-hub-data` volume
-  (`HUB_COMMUNICATION_SPOOL=/data`).
+  (`HUB_COMMUNICATION_SPOOL=/data`). Every admitted job holds exactly one
+  reservation in `budget.json` (written before the job file, settled once at
+  terminal outcome; unmeasured usage settles at the estimate and counts as
+  `unknown`). Fair claim rotates by scope and promotes background jobs parked
+  past the 5-minute aging bound. Control deliveries (approvals, marked
+  control sends) claim ahead of ordinary replies and are exempt from the
+  ordinary outbox cap.
 
 ## Key env
 
@@ -37,7 +49,8 @@ everything entering or leaving the human conversation. Listens
 (delivery targets), `HUB_TOOLHUB_URL` (`toolhub:8090` direct or
 `toolhub-control:8090` via supervisor), `HUB_TELEGRAM_AUTH_ENABLED`,
 `HUB_COMMUNICATION_CONFIG` (`communication.users.yaml` — sibling Telegram
-identities; `TELEGRAM_ALLOWED_USERS` is the infra-owner fallback),
+identities; `TELEGRAM_ALLOWED_USERS` is the bot-level allowlist and must
+contain every owner's numeric id),
 `HUB_MODEL_RELAY_URL` + `model-relay.auth` for a gateway rendered inside its
 own managed space, or `HUB_MODEL_RELAY_ADMINS_FILE` (enrolled
 `model-relay-admins.json`, principal → relay URL + admin bearer) for the
@@ -48,6 +61,25 @@ starting with `/` both run it, so mock replies land in `mock-sent` and
 never enqueue an agent job,
 `HUB_STT_URL`/`HUB_TTS_URL` + `media.auth` when `transcription` is on,
 `HUB_CREDENTIAL_BROKER_APPROVE_*` (broker client for approvals).
+
+Admission ceilings (host-only, read at spool open): `HUB_SPOOL_MAX_PENDING_PER_SCOPE`
+(default 16), `HUB_SPOOL_MAX_PENDING_TOTAL` (128), `HUB_SCOPE_TOKEN_DAILY`
+(0 = unsettled+reserved token ceiling off), `HUB_SPOOL_MAX_BYTES` (256 MiB
+pending-queue storage), `HUB_SPOOL_MAX_DELIVERIES` (1024 ordinary pending
+outbox entries; control lane exempt).
+
+Retention and storage bounds (hourly compaction): `HUB_SPOOL_RETENTION`
+(default 72h) ages terminal records out of `done/`, `failed/`,
+`outbox/{done,failed}/`, `events/` and terminal `mappings/` into daily
+gzip bundles under `archive/` — history compresses instead of disappearing.
+`HUB_SPOOL_MAX_FILES` (default 2048) caps each terminal dir's record count
+inside the window; `HUB_SPOOL_MAX_ARCHIVE_BYTES` (default 64 MiB) evicts the
+oldest bundles. `usage.jsonl` is rewritten keeping the retention window plus
+the newest record per session (the delta baseline a live session needs);
+`HUB_SPOOL_MAX_USAGE_ENTRIES` (default 65536) bounds it, oldest non-baseline
+records leaving first. Uncertain `failed/` jobs awaiting re-observation,
+receipts for in-flight deliveries, live job mappings and pending/running
+work are never compacted.
 
 ## Boundaries
 

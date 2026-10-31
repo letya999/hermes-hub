@@ -81,6 +81,118 @@ func TestOperatorPinSurvivesRestartWakesOnceAndPreventsIdleReap(t *testing.T) {
 	}
 }
 
+// A blocked Ensure inside recovery/pin work must never gate the detection
+// sweep: health marking for the rest of the fleet runs on its own loop.
+func TestSweepDoesNotRunEnsureWork(t *testing.T) {
+	ran := make(chan string, 4)
+	m, root := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "run" {
+			ran <- "run"
+		}
+		if args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", "policy-1"), UserID: "alice", ActorID: "alice", ScopeID: "user:alice", OrganizationID: "personal"}
+	if err := m.SetPin(request, true); err != nil {
+		t.Fatal(err)
+	}
+	m.sweep(context.Background(), m.cfg.Now())
+	select {
+	case <-ran:
+		t.Fatal("detection sweep issued docker run")
+	case <-time.After(2 * time.Second):
+	}
+	m.reconcileWork(context.Background())
+	select {
+	case <-ran:
+	case <-time.After(10 * time.Second):
+		t.Fatal("reconcile loop skipped the pending pin")
+	}
+	if runtime, ok, err := m.Status(binding(root)); err != nil || !ok || runtime.Container == "" {
+		t.Fatalf("reconcile did not spawn the pinned runtime: %+v %v", runtime, err)
+	}
+}
+
+// Serve must drive the reconcile loop itself: a pin accepted while the
+// server runs spawns the runtime without any test-side reconcile call.
+func TestSupervisorServeRunsReconcileLoop(t *testing.T) {
+	ran := make(chan string, 4)
+	m, _ := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "run" {
+			ran <- "run"
+		}
+		if args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Serve(ctx, m, "127.0.0.1:0") }()
+	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", "policy-1"), UserID: "alice", ActorID: "alice", ScopeID: "user:alice", OrganizationID: "personal"}
+	if err := m.SetPin(request, true); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ran:
+	case <-time.After(15 * time.Second):
+		cancel()
+		t.Fatal("Serve never reconciled the pending pin")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Serve did not stop after cancel")
+	}
+}
+
+// Shutdown is graceful: Serve must not return while a reconcile pass still
+// holds in-flight docker work — otherwise state writes can land after the
+// caller believes the process stopped.
+func TestServeWaitsForInflightReconcile(t *testing.T) {
+	entered := make(chan struct{}, 4)
+	release := make(chan struct{})
+	var enterOnce sync.Once
+	m, _ := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "run" {
+			enterOnce.Do(func() { close(entered) })
+			<-release
+		}
+		if args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", "policy-1"), UserID: "alice", ActorID: "alice", ScopeID: "user:alice", OrganizationID: "personal"}
+	if err := m.SetPin(request, true); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Serve(ctx, m, "127.0.0.1:0") }()
+	select {
+	case <-entered:
+	case <-time.After(15 * time.Second):
+		cancel()
+		t.Fatal("reconcile never reached the spawn")
+	}
+	cancel()
+	select {
+	case <-done:
+		t.Fatal("Serve returned while a reconcile pass was in flight")
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Serve did not return after reconcile finished")
+	}
+}
+
 func TestPinWriteFailureRollsBackDesiredState(t *testing.T) {
 	m, _ := testManager(t, func(context.Context, ...string) ([]byte, error) { return nil, nil }, func(context.Context, string, string) error { return nil })
 	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 1, "alice", "policy-1"), UserID: "alice", ActorID: "alice", ScopeID: "user:alice", OrganizationID: "personal"}

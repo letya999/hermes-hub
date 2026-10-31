@@ -10,6 +10,8 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
 	"time"
 )
@@ -67,6 +69,7 @@ func (g *Gateway) projectedServer(auth identity.Envelope) (*mcp.Server, map[stri
 	server.AddTool(&mcp.Tool{Name: "system_guide", Description: "Read the Hermes Hub system guide: concepts, MCP/connector/CLI formats, ownership, access, inventory and recovery evidence. Static documentation; no account data or mutations.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: systemguide.Skill}}}, nil
 	})
+	g.addToolsListTool(server, auth)
 	tools := make(map[string]api.ToolSpec, len(projected))
 	for _, projectedTool := range projected {
 		g.addProjectedTool(server, auth, projectedTool)
@@ -84,11 +87,16 @@ func (g *Gateway) allowedControls(auth identity.Envelope) (map[string]bool, erro
 
 func (g *Gateway) addProjectedTool(server *mcp.Server, auth identity.Envelope, projected api.ProjectedTool) {
 	name, tool := projected.Name, projected.Tool
-	var schema any = api.CliInputSchema(tool)
-	if len(tool.InputSchema) > 0 {
-		schema = tool.InputSchema
-	}
+	schema := g.projectedToolSchema(tool)
 	server.AddTool(&mcp.Tool{Name: name, Description: tool.Description, InputSchema: schema}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// Per-request correlation rides in the HTTP headers; the streamable
+		// session detaches the outer request context, so RequestExtra.Header
+		// is the only carrier that reaches the tool call itself.
+		if extra := request.GetExtra(); extra != nil && extra.Header != nil {
+			if corr := api.HeaderCorrelation(extra.Header.Get(api.HeaderJobID), extra.Header.Get(api.HeaderRunID)); corr.JobID != "" || corr.HermesRunID != "" {
+				ctx = api.WithCallCorrelation(ctx, corr)
+			}
+		}
 		arguments := map[string]any{}
 		if len(request.Params.Arguments) > 0 {
 			if err := json.Unmarshal(request.Params.Arguments, &arguments); err != nil {
@@ -97,6 +105,42 @@ func (g *Gateway) addProjectedTool(server *mcp.Server, auth identity.Envelope, p
 		}
 		return g.call(ctx, auth, name, arguments)
 	})
+}
+
+// projectedToolSchema renders the MCP input schema for a projected tool. The
+// skill tool's name argument is narrowed to the names the mounted effective
+// index admits (SPEC-0083 R5.1); the runtime executor re-validates
+// authoritatively, so a stale index degrades to an admission hint.
+func (g *Gateway) projectedToolSchema(tool api.ToolSpec) any {
+	var schema any = api.CliInputSchema(tool)
+	if len(tool.InputSchema) > 0 {
+		schema = tool.InputSchema
+	}
+	if tool.Name != "skill" {
+		return schema
+	}
+	raw, err := os.ReadFile(filepath.Join(os.Getenv("HUB_SKILLS_EFFECTIVE"), "index.json")) // #nosec G703 -- runtime-configured read-only effective view mount
+	if err != nil {
+		return schema
+	}
+	var index struct {
+		Skills []struct {
+			Name string `json:"name"`
+		} `json:"skills"`
+	}
+	if json.Unmarshal(raw, &index) != nil {
+		return schema
+	}
+	if object, ok := schema.(map[string]any); ok {
+		if properties, ok := object["properties"].(map[string]any); ok {
+			names := make([]any, 0, len(index.Skills))
+			for _, entry := range index.Skills {
+				names = append(names, entry.Name)
+			}
+			properties["name"] = map[string]any{"type": "string", "enum": names}
+		}
+	}
+	return schema
 }
 
 // RefreshProjection updates existing MCP sessions without restarting Hermes.
@@ -140,7 +184,7 @@ func (g *Gateway) notifyPrepareDone(ctx context.Context, auth identity.Envelope,
 	}
 	g.mu.Unlock()
 	for _, projection := range list {
-		if projection.auth != auth {
+		if !envelopeEqual(projection.auth, auth) {
 			continue
 		}
 		for session := range projection.server.Sessions() {
@@ -192,4 +236,10 @@ func (g *Gateway) refreshProjection(projection *gatewayProjection) error {
 	}
 	projection.tools = next
 	return nil
+}
+
+// envelopeEqual compares two envelopes field-for-field; Envelope.Scopes made
+// the struct non-comparable.
+func envelopeEqual(a, b identity.Envelope) bool {
+	return reflect.DeepEqual(a, b)
 }

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	starlarkjson "go.starlark.net/lib/json"
 	"go.starlark.net/starlark"
 	"go.starlark.net/syntax"
 )
@@ -78,6 +79,7 @@ func runScript(ctx context.Context, src string, now time.Time, input, watchRoot 
 		}()
 	}
 	globals := starlark.StringDict{
+		"json": starlarkjson.Module,
 		"time_now": starlark.NewBuiltin("time_now", func(*starlark.Thread, *starlark.Builtin, starlark.Tuple, []starlark.Tuple) (starlark.Value, error) {
 			return starlark.String(now.UTC().Format(time.RFC3339)), nil
 		}),

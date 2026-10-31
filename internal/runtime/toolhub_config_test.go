@@ -131,3 +131,30 @@ func TestToolHubAutostartBinaryPrefersShippedName(t *testing.T) {
 		t.Fatalf("fallback binary=%q", got)
 	}
 }
+
+// HUB_MANAGED_BROWSER carries the render-admitted sidecar grant into the
+// container; the in-container preflight must replay it verbatim (and pick the
+// sidecar user from HUB_USER_ID) so the emitted server set matches the
+// host-materialized config byte for byte.
+func TestMaterializeOptionsFromEnvCarriesBrowserGrant(t *testing.T) {
+	opts, err := materializeOptionsFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.Browser != (stack.BrowserGrant{}) {
+		t.Fatalf("absent env produced a grant: %+v", opts.Browser)
+	}
+	t.Setenv("HUB_MANAGED_BROWSER", `{"persistent":true,"guest":true,"act":true}`)
+	t.Setenv("HUB_USER_ID", "alice")
+	opts, err = materializeOptionsFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.Browser != (stack.BrowserGrant{Persistent: true, Guest: true, Act: true}) || opts.User != "alice" {
+		t.Fatalf("browser grant lost in env transit: %+v user=%q", opts.Browser, opts.User)
+	}
+	t.Setenv("HUB_MANAGED_BROWSER", `{`)
+	if _, err := materializeOptionsFromEnv(); err == nil {
+		t.Fatal("invalid browser grant env accepted")
+	}
+}

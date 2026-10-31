@@ -1,6 +1,6 @@
 ---
 description: hub-runtime — the agent container process and its relay modes (serve/idle/health, model/toolhub/egress/control relays).
-last_verified: 2026-10-25
+last_verified: 2026-10-31
 ---
 
 # hub-runtime
@@ -24,7 +24,7 @@ argv[1] (`internal/runtime/runtime.go`): `idle`, `gateway`, `prepare`,
 
 ## Container contract
 
-Rendered by `internal/stack/compose.go`: image `hermes-hub:0.4.0-<env>`,
+Rendered by `internal/stack/compose.go`: image `hermes-hub:0.5.0-<env>`,
 `read_only`, `cap_drop: ALL`, `no-new-privileges`, `shm_size 1gb`, tmpfs `/tmp`,
 `init: true`, `stop_grace_period: 30s` (inner gateway freezes its event loop
 up to ~15s on SIGTERM; default grace would log false UNCLEAN deaths).

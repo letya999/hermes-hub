@@ -1,12 +1,22 @@
 {
   "id": "dbhub-sql",
-  "revision": 1,
+  "revision": 2,
   "title": "DBHub database connection",
+  "title_i18n": {
+    "ru": "Подключение к базе данных DBHub",
+    "kk": "DBHub дерекқорына қосылу",
+    "es": "Conexión a base de datos DBHub"
+  },
   "storage": "local",
   "fields": [
     {
       "id": "dsn",
       "label": "Database DSN (postgres://user:password@127.0.0.1:15432/database when using the managed forward)",
+      "label_i18n": {
+        "ru": "DSN базы данных (postgres://user:password@127.0.0.1:15432/database при использовании управляемого форварда)",
+        "kk": "Дерекқор DSN-і (басқарылатын форвардпен postgres://user:password@127.0.0.1:15432/database)",
+        "es": "DSN de la base de datos (postgres://user:password@127.0.0.1:15432/database con el reenvío gestionado)"
+      },
       "kind": "secret",
       "required": true,
       "max_bytes": 2048
@@ -14,6 +24,11 @@
     {
       "id": "endpoint",
       "label": "Database endpoint host:port for the managed TCP forward (e.g. db.example.com:5432)",
+      "label_i18n": {
+        "ru": "Адрес базы host:port для управляемого TCP-форварда (например db.example.com:5432)",
+        "kk": "Басқарылатын TCP форварды үшін дерекқор host:port (мыс. db.example.com:5432)",
+        "es": "Endpoint de la base host:port para el reenvío TCP gestionado (p. ej. db.example.com:5432)"
+      },
       "kind": "string",
       "required": true,
       "max_bytes": 256
@@ -21,6 +36,11 @@
     {
       "id": "ssh_endpoint",
       "label": "SSH bastion host:port for the managed forward (optional, enables the tunnel)",
+      "label_i18n": {
+        "ru": "SSH-бастион host:port для управляемого форварда (необязательно, включает туннель)",
+        "kk": "Басқарылатын форвардқа арналған SSH бастион host:port (міндетті емес, туннельді қосады)",
+        "es": "Bastión SSH host:port para el reenvío gestionado (opcional, habilita el túnel)"
+      },
       "kind": "string",
       "required": false,
       "max_bytes": 256
@@ -28,6 +48,11 @@
     {
       "id": "ssh_host",
       "label": "SSH host dbhub dials; 127.0.0.1 when the endpoint goes through the managed forward",
+      "label_i18n": {
+        "ru": "SSH-хост для dbhub; 127.0.0.1, если endpoint идёт через управляемый форвард",
+        "kk": "dbhub қоңырау шалатын SSH хост; endpoint басқарылатын форвард арқылы болса 127.0.0.1",
+        "es": "Host SSH al que llama dbhub; 127.0.0.1 si el endpoint usa el reenvío gestionado"
+      },
       "kind": "string",
       "required": false,
       "max_bytes": 256
@@ -35,6 +60,11 @@
     {
       "id": "ssh_port",
       "label": "SSH port dbhub dials; 15433 when the endpoint goes through the managed forward",
+      "label_i18n": {
+        "ru": "SSH-порт для dbhub; 15433, если endpoint идёт через управляемый форвард",
+        "kk": "dbhub қоңырау шалатын SSH порт; endpoint басқарылатын форвард арқылы болса 15433",
+        "es": "Puerto SSH al que llama dbhub; 15433 si el endpoint usa el reenvío gestionado"
+      },
       "kind": "string",
       "required": false,
       "max_bytes": 256
@@ -42,6 +72,11 @@
     {
       "id": "ssh_user",
       "label": "SSH user (required when ssh_endpoint is set)",
+      "label_i18n": {
+        "ru": "Пользователь SSH (обязателен при заданном ssh_endpoint)",
+        "kk": "SSH пайдаланушысы (ssh_endpoint көрсетілсе міндетті)",
+        "es": "Usuario SSH (obligatorio si se indica ssh_endpoint)"
+      },
       "kind": "string",
       "required": false,
       "max_bytes": 256
@@ -49,6 +84,11 @@
     {
       "id": "ssh_password",
       "label": "SSH password (either this or ssh_key is required for the tunnel)",
+      "label_i18n": {
+        "ru": "Пароль SSH (для туннеля нужен либо он, либо ssh_key)",
+        "kk": "SSH құпиясөзі (туннель үшін ол немесе ssh_key керек)",
+        "es": "Contraseña SSH (se requiere esta o ssh_key para el túnel)"
+      },
       "kind": "secret",
       "required": false,
       "max_bytes": 4096
@@ -56,6 +96,11 @@
     {
       "id": "ssh_key",
       "label": "SSH private key (OpenSSH/PEM); delivered as a read-only file",
+      "label_i18n": {
+        "ru": "Закрытый ключ SSH (OpenSSH/PEM); доставляется read-only файлом",
+        "kk": "SSH жеке кілті (OpenSSH/PEM); тек оқу файлом жеткізіледі",
+        "es": "Clave privada SSH (OpenSSH/PEM); se entrega como archivo de solo lectura"
+      },
       "kind": "secret",
       "required": false,
       "max_bytes": 16384
@@ -63,6 +108,11 @@
     {
       "id": "ssh_passphrase",
       "label": "SSH key passphrase (optional)",
+      "label_i18n": {
+        "ru": "Парольная фраза SSH-ключа (необязательно)",
+        "kk": "SSH кілтінің құпияфразасы (міндетті емес)",
+        "es": "Frase de contraseña de la clave SSH (opcional)"
+      },
       "kind": "secret",
       "required": false,
       "max_bytes": 4096
@@ -70,6 +120,11 @@
     {
       "id": "ca_pem",
       "label": "CA bundle PEM for database TLS (optional; reference /run/dbhub/ca.pem from the DSN)",
+      "label_i18n": {
+        "ru": "CA-бандл PEM для TLS базы (необязательно; укажите /run/dbhub/ca.pem в DSN)",
+        "kk": "Дерекқор TLS үшін CA PEM бандлы (міндетті емес; DSN-де /run/dbhub/ca.pem көрсетіңіз)",
+        "es": "Paquete CA PEM para TLS de la base (opcional; referencia /run/dbhub/ca.pem desde el DSN)"
+      },
       "kind": "pem",
       "required": false,
       "max_bytes": 16384

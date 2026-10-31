@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
 )
 
 // grant_request is the in-conversation half of the unlock ceremony. The host
@@ -115,7 +116,7 @@ func (g *Gateway) serveGrantAck(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
-		_, _ = io.WriteString(w, grantAckPage(grant, nonce)) // #nosec G705 -- grantAckPage escapes interpolated values
+		_, _ = io.WriteString(w, grantAckPage(grant, nonce, pageLang(r))) // #nosec G705 -- grantAckPage escapes interpolated values
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -139,25 +140,26 @@ func (g *Gateway) serveGrantAck(w http.ResponseWriter, r *http.Request) {
 		acknowledged = current.Status == api.GrantActive
 		return nil
 	})
+	lang := pageLang(r)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	if updateErr != nil || !acknowledged {
 		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = io.WriteString(w, credentialResultPage("Grant not activated", "The request nonce is missing, expired or already rotated. Return to the conversation and request the grant again."))
+		_, _ = io.WriteString(w, credentialResultPage(locale.T(lang, "page.grant-failed-title"), locale.T(lang, "page.grant-failed-body"), lang))
 		return
 	}
-	_, _ = io.WriteString(w, credentialResultPage("Grant activated", "The tool access grant is active until its expiry. Return to the conversation."))
+	_, _ = io.WriteString(w, credentialResultPage(locale.T(lang, "page.grant-activated-title"), locale.T(lang, "page.grant-activated-body"), lang))
 }
 
-func grantAckPage(grant *api.ToolGrant, nonce string) string {
-	return `<!doctype html><html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Tool access grant</title><style>
+func grantAckPage(grant *api.ToolGrant, nonce string, lang locale.Lang) string {
+	return `<!doctype html><html lang="` + html.EscapeString(string(lang)) + `"><meta name="viewport" content="width=device-width,initial-scale=1"><title>` + html.EscapeString(locale.T(lang, "page.grant-title")) + `</title><style>
 :root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:26px}p,dl{color:#52606d;line-height:1.6}dt{font-weight:650;color:#17202a}dd{margin:0 0 12px}button{width:100%;border:0;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font:inherit;font-weight:700;cursor:pointer}
-</style><main><h1>Tool access grant</h1><dl>` +
-		`<dt>Section</dt><dd>` + html.EscapeString(grant.Section) + `</dd>` +
-		`<dt>Principal</dt><dd>` + html.EscapeString(grant.PrincipalID) + `</dd>` +
-		`<dt>Reason</dt><dd>` + html.EscapeString(grant.Reason) + `</dd>` +
-		`<dt>Expires</dt><dd>` + html.EscapeString(grant.ExpiresAt.Format("2006-01-02 15:04:05 UTC")) + `</dd></dl>` +
+</style><main><h1>` + html.EscapeString(locale.T(lang, "page.grant-title")) + `</h1><dl>` +
+		`<dt>` + html.EscapeString(locale.T(lang, "page.grant-section")) + `</dt><dd>` + html.EscapeString(grant.Section) + `</dd>` +
+		`<dt>` + html.EscapeString(locale.T(lang, "page.grant-principal")) + `</dt><dd>` + html.EscapeString(grant.PrincipalID) + `</dd>` +
+		`<dt>` + html.EscapeString(locale.T(lang, "page.grant-reason")) + `</dt><dd>` + html.EscapeString(grant.Reason) + `</dd>` +
+		`<dt>` + html.EscapeString(locale.T(lang, "page.grant-expires")) + `</dt><dd>` + html.EscapeString(grant.ExpiresAt.Format("2006-01-02 15:04:05 UTC")) + `</dd></dl>` +
 		`<form method="post"><input type="hidden" name="nonce" value="` + html.EscapeString(nonce) + `">` +
-		`<button type="submit">Grant access</button></form>` +
-		`<p>This activates the host-approved grant for this principal only. The agent cannot complete this step itself.</p></main></html>`
+		`<button type="submit">` + html.EscapeString(locale.T(lang, "page.grant-submit")) + `</button></form>` +
+		`<p>` + html.EscapeString(locale.T(lang, "page.grant-note")) + `</p></main></html>`
 }

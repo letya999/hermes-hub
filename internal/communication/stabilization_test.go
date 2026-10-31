@@ -466,14 +466,14 @@ func TestM10WriterLockAndLocalUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, command := range []string{"/usage", "/usage day", "/usage week model=tiny", "/usage model=tiny", "/usage month tiny"} {
-		got := g.journalUsage(User{ID: "alice"}, command)
-		if !strings.Contains(got, "вход 17") {
+		got, argsOK := g.journalUsage(User{ID: "alice"}, command)
+		if !argsOK || !strings.Contains(got, "вход 17") {
 			t.Fatalf("%s: %s", command, got)
 		}
 	}
 	for _, command := range []string{"/usage wrong", "/usage day week", "/usage model=", "/usage day tiny extra"} {
-		if got := g.journalUsage(User{ID: "alice"}, command); !strings.Contains(got, "Используйте") {
-			t.Fatalf("invalid %s: %s", command, got)
+		if got, argsOK := g.journalUsage(User{ID: "alice"}, command); argsOK || got != "" {
+			t.Fatalf("invalid %s should report bad args: %q", command, got)
 		}
 	}
 }

@@ -1,0 +1,30 @@
+schema: 1
+change: CHG-0206
+title: Memory-night rollup
+status: in_progress
+branch: feat/m20-knowledge-memory
+updated: 2026-10-24
+phase: design-complete
+adr: ADR-0086
+spec: SPEC-0085
+requirements: [R3.1, R3.2, R3.3, R3.4, R3.5, R3.6]
+depends_on: []
+github_milestone: M20 — Memory Vault and Knowledge Surface
+github_issue: 301
+design_status: accepted
+implementation_status: not_started
+slices:
+  S3.1-scheduler: not_started
+  S3.2-steps: not_started
+  S3.3-budget: not_started
+  S3.4-cache-resume: not_started
+  S3.5-foldup: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining: []
+limitations: []

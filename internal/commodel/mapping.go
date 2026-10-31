@@ -42,6 +42,7 @@ type RunOutcome struct {
 // JobMapping is durable routing/lifecycle metadata. Binding fields are copied
 // at acceptance and are never changed by a retry or a caller-supplied payload.
 type JobMapping struct {
+	OperationalEpoch     uint64          `json:"operational_epoch,omitempty"`
 	RoutineOriginVersion uint64          `json:"routine_origin_version,omitempty"`
 	IdentitySchema       int             `json:"identity_schema"`
 	ExternalIdentityID   string          `json:"external_identity_id"`
@@ -64,6 +65,7 @@ type JobMapping struct {
 	PolicyVersion        string          `json:"policy_version"`
 	Channel              string          `json:"channel"`
 	Trigger              string          `json:"trigger"`
+	AssignmentID         string          `json:"assignment_id,omitempty"`
 	// TaskID/TopicID pin the durable task binding; Style/StyleVersion/
 	// StyleSnapshotted pin the admitted-run presentation snapshot.
 	TaskID  string `json:"task_id,omitempty"`
@@ -104,17 +106,18 @@ func JobFingerprint(job Job) string {
 		textHash = hex.EncodeToString(h[:])
 	}
 	value := struct {
-		Envelope       any
-		OrganizationID string
-		UserID         string
-		ActorID        string
-		ScopeID        string
-		Channel        string
-		Trigger        string
-		SlackChannel   string
-		SlackThread    string
-		TextHash       string
-	}{job.Envelope, job.OrganizationID, job.UserID, job.ActorID, job.ScopeID, job.Channel, job.Trigger, job.SlackChannel, job.SlackThread, textHash}
+		OperationalEpoch uint64 `json:",omitempty"`
+		Envelope         any
+		OrganizationID   string
+		UserID           string
+		ActorID          string
+		ScopeID          string
+		Channel          string
+		Trigger          string
+		SlackChannel     string
+		SlackThread      string
+		TextHash         string
+	}{job.OperationalEpoch, job.Envelope, job.OrganizationID, job.UserID, job.ActorID, job.ScopeID, job.Channel, job.Trigger, job.SlackChannel, job.SlackThread, textHash}
 	b, _ := json.Marshal(value)
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:])
@@ -122,11 +125,14 @@ func JobFingerprint(job Job) string {
 
 // MatchesJob is used by the read-only migration audit before changing executors.
 func (mapping JobMapping) MatchesJob(job Job) bool {
+	if mapping.OperationalEpoch != job.OperationalEpoch {
+		return false
+	}
 	return mapping.JobID == job.ID && mapping.IdempotencyKey == job.IdempotencyKey && mapping.Fingerprint == JobFingerprint(job) && mapping.UserID == job.UserID && mapping.ContextID == job.ContextID && mapping.PrincipalID == job.PrincipalID && mapping.RuntimeID == job.RuntimeID && mapping.ConversationID == job.ConversationID && mapping.DeliveryTargetID == job.DeliveryTargetID && mapping.PolicyVersion == job.PolicyVersion && mapping.ExternalIdentityID == job.ExternalIdentityID && mapping.IdentitySchema == job.Schema && mapping.ScopeID == job.ScopeID && mapping.ActorID == job.ActorID && mapping.OrganizationID == job.OrganizationID && mapping.Channel == job.Channel && mapping.Trigger == job.Trigger
 }
 
 func MappingFromJob(job Job, now time.Time) JobMapping {
-	return JobMapping{RoutineOriginVersion: 1, IdentitySchema: job.Envelope.Schema, ExternalIdentityID: job.Envelope.ExternalIdentityID, JobID: job.ID, IdempotencyKey: job.IdempotencyKey, Fingerprint: JobFingerprint(job), PrincipalID: job.PrincipalID, ActorID: job.ActorID, ContextID: job.ContextID, ScopeID: job.ScopeID, RuntimeID: job.RuntimeID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, OrganizationID: job.OrganizationID, UserID: job.UserID, PolicyVersion: job.PolicyVersion, Channel: job.Channel, Trigger: job.Trigger, TaskID: job.TaskID, TopicID: job.TopicID, ChatID: job.ChatID, Status: "accepted", CreatedAt: now, UpdatedAt: now, LastKnownEvent: "job.accepted"}
+	return JobMapping{OperationalEpoch: job.OperationalEpoch, RoutineOriginVersion: 1, IdentitySchema: job.Envelope.Schema, ExternalIdentityID: job.Envelope.ExternalIdentityID, JobID: job.ID, IdempotencyKey: job.IdempotencyKey, Fingerprint: JobFingerprint(job), PrincipalID: job.PrincipalID, ActorID: job.ActorID, ContextID: job.ContextID, ScopeID: job.ScopeID, RuntimeID: job.RuntimeID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, OrganizationID: job.OrganizationID, UserID: job.UserID, PolicyVersion: job.PolicyVersion, Channel: job.Channel, Trigger: job.Trigger, AssignmentID: job.AssignmentID, TaskID: job.TaskID, TopicID: job.TopicID, ChatID: job.ChatID, Status: "accepted", CreatedAt: now, UpdatedAt: now, LastKnownEvent: "job.accepted"}
 }
 
 // TerminalStatus reports whether a job mapping reached a state nothing will

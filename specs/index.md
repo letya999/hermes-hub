@@ -7,11 +7,27 @@ record it points to. `archive/` holds only pre-renumbering originals.
 
 | Specification | Status |
 |---|---|
+| [SPEC-0089](active/SPEC-0089-conversation-parallel-lanes.md) | Frozen: parallel sessions inside one context — lane per conversation, fairness per context, per-context cap below upstream (ADR-0090, CHG-0234); supersedes SPEC-0012 rule 4 |
+| [SPEC-0088](active/SPEC-0088-bounded-control-journals.md) | Frozen: bounded root-plane journals, receipts, diagnostics and maintenance; implementation not started |
+| [SPEC-0087](active/SPEC-0087-broker-bounded-storage.md) | Frozen: Broker recovery, SQLCipher proof, normalized state/audit and provider lifecycle; implementation not started |
+| [SPEC-0086](active/SPEC-0086-standing-assignment-mvp.md) | Frozen: executable standing-assignment MVP — cursor replay, filtered specialist wakes, durable progress and acceptance (M23 #324/#332) |
+| [SPEC-0085](active/SPEC-0085-memory-vault-openknowledge.md) | Frozen: M20 memory vault (leaves, cards, summaries, CORE, rollup, search, write contract) and opt-in OpenKnowledge surface (renumbered from a duplicate SPEC-0070) |
+| [SPEC-0084](active/SPEC-0084-agent-skills-platform.md) | Frozen: agent skills platform — store/effective view, default-deny natives, security pipeline, tools, disclosure, resources, secrets, profiles, git installs, evolution, quality, acceptance (M24 #356–#368) |
+| [SPEC-0083](active/SPEC-0083-browser-sidecar-lifecycle.md) | Frozen: browser sidecar lifecycle — resource ceiling, spawn auto-start, idle sleep after grace (ADR-0083 D8/D9, CHG-0190) |
+| [SPEC-0081](active/SPEC-0081-shared-acquisition.md) | Frozen: shared source acquisition — boundary-keyed pool, conditional HTTP, cursors/gap visibility, per-event filters, hook intake (M23 #332) |
+| [SPEC-0082](active/SPEC-0082-image-role-budgets.md) | Frozen: image role budgets — per-image size SLOs, forbidden binaries, hygiene, voice consolidation, hub-core split, browser sidecar, acceptance (M26 #371–#380) |
+| [SPEC-0080](active/SPEC-0080-standing-assignments.md) | Frozen: standing assignments — durable owner intent, plan reconcile, fenced wakes, messenger control (M23 #324) |
+| [SPEC-0079](active/SPEC-0079-user-scoped-site-hosting.md) | Frozen: user-scoped hosting — static/dynamic isolation, publication, quotas, artifact access and durable lifecycle; CHG-0170–0174 (M18 #147) |
+| [SPEC-0078](active/SPEC-0078-per-user-dns-tls.md) | Frozen: per-user subdomains — provider-neutral DNS contract, four profiles, per-user wildcard via DNS-01 to sish, Broker credentials (M18 #146) |
+| [SPEC-0077](active/SPEC-0077-outbound-exposure.md) | Frozen: outbound exposure primitive — named endpoints, per-binding tunnel workloads, Broker credentials, sish/cloudflared profiles, bounds and audit (M18 #145) |
+| [SPEC-0076](active/SPEC-0076-ops-admin-delivery.md) | Frozen: usage export, space manifests, watch, image rollout pins, admin diagnostics, incident replay (M17) |
+| [SPEC-0075](active/SPEC-0075-operational-protection.md) | Draft: M17 operational protection and code closeout |
 | [SPEC-0074](active/SPEC-0074-goal-mode.md) | Draft: persistent /goal mode — dual engine, judge modes, spool continuation |
 | [SPEC-0073](active/SPEC-0073-manual-compaction.md) | Draft: manual compaction — dual engine, upstream semantics, turn-boundary safety |
 | [SPEC-0072](active/SPEC-0072-compression-policy-status.md) | Draft: automatic compaction policy, relay routing, hub sweep, honest status |
 | [SPEC-0071](active/SPEC-0071-session-runtime-discipline.md) | Frozen: session & runtime discipline (renumbered from a duplicate SPEC-0069) |
 | [SPEC-0070](active/SPEC-0070-model-provider-completion.md) | Frozen: model & provider layer completion (renumbered from a duplicate SPEC-0069) |
+
 | [SPEC-0069](active/SPEC-0069-connector-recovery-and-system-guide.md) | Frozen: connector recovery, access, inventory and mandatory guide delivery |
 | [SPEC-0068](active/SPEC-0068-dynamic-session-contract.md) | Frozen: bounded owner-only dynamic JSON sessions |
 | [SPEC-0067](active/SPEC-0067-recipe-oauth.md) | Frozen: recipe-driven OAuth installation |
@@ -69,7 +85,7 @@ record it points to. `archive/` holds only pre-renumbering originals.
 | [SPEC-0015](active/SPEC-0015-run-controls.md) | Durable cancellation and approval ownership, dispatch and expiry |
 | [SPEC-0014](active/SPEC-0014-job-runtime-mappings.md) | Durable job, session, run and runtime mappings |
 | [SPEC-0013](active/SPEC-0013-routines-and-runtime-wake.md) | Hub-owned routines wake sleeping context runtimes |
-| [SPEC-0012](active/SPEC-0012-scale-to-zero-runtime-lifecycle.md) | Scale-to-zero lifecycle for isolated context runtimes; idle default superseded by 30-min warm TTL (SPEC-0053) |
+| [SPEC-0012](active/SPEC-0012-scale-to-zero-runtime-lifecycle.md) | Scale-to-zero lifecycle for isolated context runtimes; idle default superseded by 30-min warm TTL (SPEC-0053); rule 4 per-context serialization superseded by per-conversation lanes (SPEC-0089) |
 | [SPEC-0011](active/SPEC-0011-hermes-api-contract.md) | Pinned Hermes API contract for sessions and runs |
 | [SPEC-0010](active/SPEC-0010-stable-identifiers.md) | Stable identity, context, runtime, conversation and connection identifiers |
 | [SPEC-0009](active/SPEC-0009-scoped-homes-and-service-boundaries.md) | Implemented scoped homes and communication-hub boundary; migration remains explicit |

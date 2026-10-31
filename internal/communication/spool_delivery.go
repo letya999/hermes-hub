@@ -40,6 +40,11 @@ func normalizeDelivery(d Delivery) (Delivery, error) {
 	if err := ch.NormalizeDelivery(&d); err != nil {
 		return d, err
 	}
+	// Approval prompts are control plane by contract: they unblock held work
+	// and must never queue behind a flooded ordinary outbox.
+	if d.ApprovalID != "" {
+		d.Control = true
+	}
 	return d, nil
 }
 
@@ -54,6 +59,32 @@ func (s *Spool) enqueueDeliveryLocked(d Delivery) error {
 			return nil
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
+		}
+	}
+	if !d.Control && s.limits.MaxDeliveries > 0 {
+		entries, err := os.ReadDir(filepath.Join(s.root, "outbox", "pending"))
+		if err != nil {
+			return err
+		}
+		ordinary := 0
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+				continue
+			}
+			body, err := os.ReadFile(filepath.Join(s.root, "outbox", "pending", entry.Name()))
+			if err != nil {
+				return err
+			}
+			var pending Delivery
+			if err := json.Unmarshal(body, &pending); err != nil {
+				return err
+			}
+			if !pending.Control {
+				ordinary++
+			}
+		}
+		if ordinary >= s.limits.MaxDeliveries {
+			return errors.New("outbox queue full")
 		}
 	}
 	return atomicJSON(filepath.Join(s.root, "outbox", "pending", spoolFileID(d.ID)+".json"), d)
@@ -109,6 +140,28 @@ func (s *Spool) ClaimDelivery() (*Delivery, error) {
 		}
 	}
 	sort.Strings(names)
+	// Control-plane sends claim before ordinary replies so an outbox flood
+	// cannot delay approvals or cancel-acks; the same bounded scan applies.
+	for i, name := range names {
+		if i >= 256 {
+			break
+		}
+		b, err := os.ReadFile(filepath.Join(pending, name))
+		if err != nil {
+			return nil, err
+		}
+		var d Delivery
+		if err := json.Unmarshal(b, &d); err != nil {
+			return nil, err
+		}
+		if !d.Control || d.NotBefore.After(time.Now().UTC()) {
+			continue
+		}
+		if err := os.Rename(filepath.Join(pending, name), filepath.Join(s.root, "outbox", "sending", name)); err != nil {
+			return nil, err
+		}
+		return &d, nil
+	}
 	// Quiet-window deliveries stay durable in pending until not_before; a
 	// bounded scan keeps a deferred backlog from stalling the claim loop.
 	for i, name := range names {

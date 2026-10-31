@@ -318,7 +318,11 @@ func (m *Manager) ReapOrphans(ctx context.Context) {
 			continue
 		}
 		lock := m.lockFor(runtimeKey(Binding{PrincipalID: runtime.PrincipalID, ContextID: runtime.ContextID, RuntimeMode: runtime.RuntimeMode}))
-		lock.Lock()
+		// A request-held key lock (a spawn parked on a full capacity semaphore)
+		// must not wedge the sweep: the orphan stays listed for the next tick.
+		if !lock.TryLock() {
+			continue
+		}
 		// Removal inspects either form, but the control relay is named
 		// <container>-ctl, so prefer the recorded name when it is known.
 		runtime.Container, runtime.Generation = orphan.Container, orphan.Generation

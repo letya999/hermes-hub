@@ -213,10 +213,16 @@ func CLIExecFromEnv() (CLIExecFunc, error) {
 	if endpoint == "" {
 		return nil, nil
 	}
+	return CLIExecClient(endpoint, os.Getenv("HUB_TOOLHIVE_ADMISSION_TOKEN"))
+}
+
+// CLIExecClient builds the /cli-exec runner for an explicit admission
+// endpoint and token — the host-side path hubctl uses where the container
+// env pair does not exist.
+func CLIExecClient(endpoint, token string) (CLIExecFunc, error) {
 	if err := ValidateBackendEndpoint(endpoint); err != nil {
 		return nil, err
 	}
-	token := os.Getenv("HUB_TOOLHIVE_ADMISSION_TOKEN")
 	execURL := strings.TrimSuffix(strings.TrimRight(endpoint, "/"), "/admit") + "/cli-exec"
 	// Cells may outlive a short client timeout: the per-request deadline is
 	// plan timeout + cell overhead, set on the context by the caller.

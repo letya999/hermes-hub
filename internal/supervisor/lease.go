@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 )
@@ -56,6 +57,62 @@ func (m *Manager) releaseKey(key string) error {
 	return nil
 }
 
+var errStaleLease = errors.New("stale runtime lease")
+
+// RenewLease extends a live consumer hold. Renewal is idempotent: a renewed
+// lease keeps its generation fence and simply gains a later claim deadline.
+func (m *Manager) RenewLease(leaseID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, entry := range m.items {
+		lease, ok := entry.leases[leaseID]
+		if !ok {
+			continue
+		}
+		if lease.Generation != entry.Generation {
+			return errStaleLease
+		}
+		lease.RenewedAt = m.cfg.Now()
+		lease.ExpiresAt = m.cfg.Now().Add(5 * time.Minute)
+		entry.leases[leaseID] = lease
+		return m.persistLocked()
+	}
+	return errors.New("lease is not registered")
+}
+
+// consumers projects the entry's persisted leases into the allowlisted status
+// shape. m.mu must be held by the caller.
+func (entry *runtimeEntry) consumers() []LeaseConsumer {
+	if len(entry.leases) == 0 {
+		return nil
+	}
+	consumers := make([]LeaseConsumer, 0, len(entry.leases))
+	for _, lease := range entry.leases {
+		consumers = append(consumers, LeaseConsumer{ID: lease.ID, Kind: lease.Kind, Owner: lease.Owner, Scope: lease.Scope, Reason: lease.Reason, ExpiresAt: lease.ExpiresAt})
+	}
+	sort.Slice(consumers, func(i, j int) bool { return consumers[i].ID < consumers[j].ID })
+	return consumers
+}
+
+// expectedWaitLocked names why a runtime holding demand is legitimately
+// waiting so diagnostics do not read it as a stuck run. m.mu must be held.
+func (m *Manager) expectedWaitLocked(entry *runtimeEntry) string {
+	for _, lease := range entry.leases {
+		if lease.Generation != entry.Generation {
+			continue
+		}
+		switch lease.Kind {
+		case LeaseApproval:
+			return "approval"
+		case LeaseStream:
+			return "stream"
+		case LeaseUncertain:
+			return "observation"
+		}
+	}
+	return ""
+}
+
 // Acquire starts/reuses a runtime and records a named lease. The lease ID is
 // opaque to callers and is the only safe way to release work after a request
 // has crossed an asynchronous boundary.
@@ -79,7 +136,7 @@ func (m *Manager) Acquire(ctx context.Context, binding Binding, kind LeaseKind) 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.leaseSeq++
-	lease := Lease{ID: fmt.Sprintf("lease-%x", m.leaseSeq), Kind: kind, PrincipalID: binding.PrincipalID, ContextID: binding.ContextID, RuntimeMode: binding.RuntimeMode, Generation: entryGeneration(m.items[key]), Owner: "supervisor", ExpiresAt: m.cfg.Now().Add(5 * time.Minute)}
+	lease := Lease{ID: fmt.Sprintf("lease-%x", m.leaseSeq), Kind: kind, PrincipalID: binding.PrincipalID, ContextID: binding.ContextID, RuntimeMode: binding.RuntimeMode, Scope: binding.ScopeID, Generation: entryGeneration(m.items[key]), Owner: "supervisor", ExpiresAt: m.cfg.Now().Add(5 * time.Minute)}
 	entry := m.items[key]
 	if entry == nil || entry.State == Stopped || entry.State == Degraded {
 		return Lease{}, Runtime{}, errors.New("runtime is not registered")
@@ -215,7 +272,11 @@ func (m *Manager) Reap(ctx context.Context, now time.Time) error {
 	m.mu.Unlock()
 	for _, key := range keys {
 		lock := m.lockFor(key)
-		lock.Lock()
+		// A request-held key lock (a spawn parked on a full capacity semaphore)
+		// must not wedge the sweep: the entry stays reapable next tick.
+		if !lock.TryLock() {
+			continue
+		}
 		m.mu.Lock()
 		runtime := m.items[key]
 		if runtime == nil || (runtime.State != Idle && (runtime.State != Degraded || runtime.IdleDeadline.IsZero())) || m.runtimeDesiredLocked(runtime) || runtime.RuntimeHealth == "unknown" || runtime.Ownership == "unverified" || runtime.IdleDeadline.After(now) {
@@ -329,8 +390,8 @@ func (m *Manager) lease(w http.ResponseWriter, r *http.Request) {
 	}
 	lease, runtime, err := m.Acquire(r.Context(), binding, payload.Kind)
 	if err != nil {
-		log.Printf("acquire failed for %s/%s: %v", binding.PrincipalID, binding.ContextID, err)
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		log.Printf("acquire failed principal=%s context=%s class=%s", binding.PrincipalID, binding.ContextID, runtimeFailureClass(err))
+		writeRuntimeFailure(w, http.StatusServiceUnavailable, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, struct {

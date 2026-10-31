@@ -167,7 +167,7 @@ func TestCompactQuietOccurrencesKeepsReceiptAndLiveWork(t *testing.T) {
 	if err := s.PutOccurrence(active, active.Job.Envelope); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Compact(quiet.DueAt.Add(72*time.Hour), 14*24*time.Hour); err != nil {
+	if err := s.Compact(quiet.DueAt.Add(72*time.Hour), 14*24*time.Hour, CompactLimits{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
@@ -325,7 +325,7 @@ func TestCompactArchivesRecentQuietOccurrence(t *testing.T) {
 	if err := atomicJSON(path, saved); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Compact(time.Now(), 14*24*time.Hour); err != nil {
+	if err := s.Compact(time.Now(), 14*24*time.Hour, CompactLimits{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
@@ -357,7 +357,7 @@ func TestCompactDispatchedWaitsForDelivery(t *testing.T) {
 	if err := os.Chtimes(path, old, old); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Compact(time.Now(), 14*24*time.Hour); err != nil {
+	if err := s.Compact(time.Now(), 14*24*time.Hour, CompactLimits{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path); err != nil {
@@ -370,7 +370,7 @@ func TestCompactDispatchedWaitsForDelivery(t *testing.T) {
 	if err := s.CompleteDelivery(d.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Compact(time.Now(), 14*24*time.Hour); err != nil {
+	if err := s.Compact(time.Now(), 14*24*time.Hour, CompactLimits{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {

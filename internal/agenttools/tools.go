@@ -3,6 +3,7 @@ package agenttools
 import (
 	"fmt"
 	"github.com/gofrs/flock"
+	"github.com/letya999/hermes-hub/internal/exposure"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/media"
 	"github.com/letya999/hermes-hub/internal/sshcap"
@@ -21,6 +22,11 @@ import (
 const Limit = 2 * 1024 * 1024
 
 type Input struct {
+	Mode               string         `json:"mode,omitempty"`
+	Access             string         `json:"access,omitempty"`
+	Profile            string         `json:"profile,omitempty"`
+	RequestID          string         `json:"request_id,omitempty"`
+	LifetimeSeconds    int            `json:"lifetime_seconds,omitempty"`
 	OriginJobID        string         `json:"origin_job_id,omitempty"`
 	DestinationTaskID  string         `json:"destination_task_id,omitempty"`
 	Context            string         `json:"context,omitempty"`
@@ -30,6 +36,7 @@ type Input struct {
 	Root               string         `json:"root,omitempty"`
 	Text               string         `json:"text,omitempty"`
 	Revision           string         `json:"revision,omitempty"`
+	Version            string         `json:"version,omitempty"`
 	Query              string         `json:"query,omitempty"`
 	Format             string         `json:"format,omitempty"`
 	Name               string         `json:"name,omitempty"`
@@ -64,6 +71,7 @@ type Input struct {
 	Command            string         `json:"command,omitempty"`
 	Data               string         `json:"data,omitempty"`
 	Offset             uint64         `json:"offset,omitempty"`
+	Source             string         `json:"source,omitempty"`
 	Key                string         `json:"key,omitempty"`
 	Value              string         `json:"value,omitempty"`
 	Paths              []string       `json:"paths,omitempty"`
@@ -95,9 +103,28 @@ type Input struct {
 	QuietTo    string   `json:"quiet_to,omitempty"`
 	DailyLimit int      `json:"daily_limit,omitempty"`
 	MaxRetries int      `json:"max_retries,omitempty"`
-	Sink       string   `json:"sink,omitempty"`
-	Delivery   string   `json:"delivery,omitempty"`
-	Args       string   `json:"args,omitempty"`
+	// Plan carries an assignment plan as a JSON object string; Title names
+	// the assignment for the owner. Intent rides the existing Text field.
+	Plan     string `json:"plan,omitempty"`
+	Title    string `json:"title,omitempty"`
+	JobID    string `json:"job_id,omitempty"`
+	Summary  string `json:"summary,omitempty"`
+	Finding  string `json:"finding,omitempty"`
+	NextStep string `json:"next_step,omitempty"`
+	Complete bool   `json:"complete,omitempty"`
+	Sink     string `json:"sink,omitempty"`
+	Delivery string `json:"delivery,omitempty"`
+	Args     string `json:"args,omitempty"`
+	// Filter is the deterministic per-event Starlark gate for event
+	// subscriptions (probe.filter); MinIntervalSeconds declares the source
+	// cadence for stream delivery on poll-style tools.
+	Filter             string `json:"filter,omitempty"`
+	MinIntervalSeconds int    `json:"min_interval_seconds,omitempty"`
+	CursorArg          string `json:"cursor_arg,omitempty"`
+	// Sources fans one subscription out over several acquisition inputs: a
+	// JSON array string of {name?,tool?,args} entries merged onto the
+	// probe's tool+args per stream round.
+	Sources string `json:"sources,omitempty"`
 }
 type Tools struct {
 	Workspace, Archive, Organization *os.Root
@@ -117,12 +144,22 @@ type Tools struct {
 	SSH               *sshcap.Service
 	SSHGrants         sshcap.Grants
 	sshErr            error
+	Exposure          *exposure.Manager
+	exposureErr       error
+	exposureProvider  exposure.Provider
 	Restart           func() error
 	CommunicationURL  string
 	CommunicationAuth string
-	Media             *media.Session
-	mu                sync.Mutex
-	lock, envLock     *flock.Flock
+	// Skill paths: SkillsEffective is the read-only mounted effective view
+	// (/skills), SkillsStore the writable owner store (HUB_SKILLS_STORE),
+	// SkillsOrg the writable org store when org-bound (HUB_SKILLS_ORG).
+	SkillsEffective, SkillsStore, SkillsOrg string
+	// Skills is the effective view opened as a read-only executor root —
+	// the skills: logical root for file/document/image ops (R7.3).
+	Skills        *os.Root
+	Media         *media.Session
+	mu            sync.Mutex
+	lock, envLock *flock.Flock
 }
 
 var signalRuntime = func(process *os.Process) {
@@ -197,8 +234,16 @@ func OpenRoots(workspace, archive, organization string) (*Tools, error) {
 		}
 		return nil, err
 	}
-	t := &Tools{Workspace: w, Archive: a, Organization: o, OrgScoped: o != nil, OrgActions: parseActions(os.Getenv("HUB_ORG_ACTIONS")), ReadOnlyTools: readOnlyToolNames(parseActions(os.Getenv("HUB_TOOLS_RO"))), ToolPolicy: toolPolicy, StateDir: stateDir, ToolHub: toolHubStore, ToolHubAuth: toolHubAuth, Restart: func() error { return restartRuntime(stateDir) }, CommunicationURL: strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_CONTROL_URL")), CommunicationAuth: communicationAuth, Media: media.New(w), lock: flock.New(filepath.Join(workspace, ".hub-writer.lock")), envLock: flock.New(filepath.Join(stateDir, ".self-env.lock")), HHURL: "https://api.hh.ru", HHKey: os.Getenv("HH_TOKEN"), UserAgent: os.Getenv("HH_USER_AGENT"), HHEnabled: os.Getenv("HUB_HH_ENABLED") == "true", HTTP: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	// The effective view doubles as the read-only skills: executor root
+	// (R7.3); an absent mount leaves it nil — handlers then answer
+	// "skills root is not configured" instead of failing Open.
+	var sk *os.Root
+	if eff := os.Getenv("HUB_SKILLS_EFFECTIVE"); eff != "" {
+		sk, _ = os.OpenRoot(eff)
+	}
+	t := &Tools{Workspace: w, Archive: a, Organization: o, Skills: sk, OrgScoped: o != nil, OrgActions: parseActions(os.Getenv("HUB_ORG_ACTIONS")), ReadOnlyTools: readOnlyToolNames(parseActions(os.Getenv("HUB_TOOLS_RO"))), ToolPolicy: toolPolicy, StateDir: stateDir, ToolHub: toolHubStore, ToolHubAuth: toolHubAuth, Restart: func() error { return restartRuntime(stateDir) }, CommunicationURL: strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_CONTROL_URL")), CommunicationAuth: communicationAuth, SkillsEffective: os.Getenv("HUB_SKILLS_EFFECTIVE"), SkillsStore: os.Getenv("HUB_SKILLS_STORE"), SkillsOrg: os.Getenv("HUB_SKILLS_ORG"), Media: media.New(w), lock: flock.New(filepath.Join(workspace, ".hub-writer.lock")), envLock: flock.New(filepath.Join(stateDir, ".self-env.lock")), HHURL: "https://api.hh.ru", HHKey: os.Getenv("HH_TOKEN"), UserAgent: os.Getenv("HH_USER_AGENT"), HHEnabled: os.Getenv("HUB_HH_ENABLED") == "true", HTTP: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	t.openSSH()
+	t.openExposure()
 	return t, nil
 }
 
@@ -284,11 +329,20 @@ func (t *Tools) Close() {
 	if t.SSH != nil {
 		t.SSH.Close()
 	}
+	if t.Exposure != nil {
+		t.Exposure.Shutdown()
+	}
+	if p, ok := t.exposureProvider.(interface{ Shutdown() }); ok {
+		p.Shutdown()
+	}
 	_ = t.Workspace.Close()
 	if t.Archive != nil {
 		_ = t.Archive.Close()
 	}
 	if t.Organization != nil {
 		_ = t.Organization.Close()
+	}
+	if t.Skills != nil {
+		_ = t.Skills.Close()
 	}
 }

@@ -37,6 +37,10 @@ func (m *Manager) beginJob(request hubruntime.ExecuteRequest) (hubruntime.Execut
 	fingerprint := executeFingerprint(request)
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	hold := m.holds[holdKey(request.PrincipalID, request.ContextID)]
+	if hold.Active || request.OperationalEpoch != hold.Epoch {
+		return hubruntime.ExecuteResponse{}, false, errors.New("administrative hold")
+	}
 	if previous, ok := m.jobs[key]; ok {
 		if previous.Fingerprint != fingerprint {
 			return hubruntime.ExecuteResponse{}, false, errors.New("job identity already used with different payload")
@@ -51,7 +55,7 @@ func (m *Manager) beginJob(request hubruntime.ExecuteRequest) (hubruntime.Execut
 	}
 	metadata := request
 	metadata.Text = ""
-	m.jobs[key] = jobRecord{Request: metadata, Fingerprint: fingerprint, Status: "running", Phase: phaseAccepted, UpdatedAt: time.Now().UTC()}
+	m.jobs[key] = jobRecord{OperationalEpoch: hold.Epoch, Request: metadata, Fingerprint: fingerprint, Status: "running", Phase: phaseAccepted, UpdatedAt: time.Now().UTC()}
 	if err := m.persistLocked(); err != nil {
 		delete(m.jobs, key)
 		return hubruntime.ExecuteResponse{}, false, err
@@ -119,6 +123,10 @@ func (m *Manager) finishJobGenerationLocked(request hubruntime.ExecuteRequest, r
 		return errors.New("job identity is required")
 	}
 	if record, ok := m.jobs[key]; ok {
+		hold := m.holds[holdKey(record.Request.PrincipalID, record.Request.ContextID)]
+		if hold.Active || record.OperationalEpoch != hold.Epoch {
+			return errors.New("administrative effect fence")
+		}
 		if terminalRunStatus(record.Status) && status != record.Status {
 			return errors.New("job already terminal")
 		}
@@ -197,7 +205,13 @@ func (m *Manager) finishJobGenerationLocked(request hubruntime.ExecuteRequest, r
 					entry.State, entry.IdleDeadline = Idle, m.cfg.Now().Add(m.cfg.WarmTTL)
 				}
 			}
-			if status == "uncertain" {
+			// Wedge budget: count each distinct unconfirmed outcome once — a
+			// fresh uncertain transition, or a run.timeout naming, which is
+			// itself an outcome the runtime never confirmed. A terminal event
+			// actually observed from the runtime is the only reset.
+			unconfirmed := (status == "uncertain" && previous.Status != "uncertain") ||
+				(response.LastEvent == "run.timeout" && previous.Response.LastEvent != "run.timeout")
+			if unconfirmed {
 				entry.consecutiveUncertain++
 			} else if terminalRunStatus(status) {
 				entry.consecutiveUncertain = 0
@@ -286,9 +300,9 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 		// The job never reached a runtime: drop the record so a retry re-admits
 		// it instead of replaying a synthetic "uncertain" result. The cause is
 		// logged host-side; the caller only gets that the runtime is unavailable.
-		log.Printf("acquire failed for %s/%s: %v", binding.PrincipalID, binding.ContextID, err)
+		log.Printf("acquire failed principal=%s context=%s class=%s", binding.PrincipalID, binding.ContextID, runtimeFailureClass(err))
 		m.abandonJob(request)
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "runtime unavailable"})
+		writeRuntimeFailure(w, http.StatusServiceUnavailable, err)
 		return
 	}
 	if err := m.bindJobGeneration(request, runtime.Generation); err != nil {
@@ -369,7 +383,7 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 		if status == "" && response.StatusCode/100 != 2 {
 			status = "uncertain"
 			event := "run.unknown"
-			if response.StatusCode == http.StatusBadRequest || response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden || response.StatusCode == http.StatusUnprocessableEntity {
+			if response.StatusCode == http.StatusBadRequest || response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden || response.StatusCode == http.StatusConflict || response.StatusCode == http.StatusUnprocessableEntity {
 				status = "failed"
 				event = "run.failed"
 			}

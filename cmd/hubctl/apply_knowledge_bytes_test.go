@@ -20,7 +20,7 @@ func TestKnowledgeFolderByteLimitIsPreflighted(t *testing.T) {
 	spec := filepath.Join(root, "apply.yaml")
 	os.WriteFile(spec, []byte("knowledge:\n  - name: safe.md\n    source: safe.md\n  - name: docs\n    context: project\n    state: present\n    source: notes\n"), 0600)
 	state := filepath.Join(root, "state")
-	if _, err := applyFile(filepath.Join(root, "spool"), state, "alice", spec); err == nil {
+	if _, err := applyFile(filepath.Join(root, "spool"), state, "alice", spec, ""); err == nil {
 		t.Error("oversized folder accepted")
 	}
 	if _, err := os.Stat(filepath.Join(state, "knowledge", "alice", "safe.md")); !os.IsNotExist(err) {

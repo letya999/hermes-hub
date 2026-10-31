@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"html"
 	"io"
@@ -321,7 +322,7 @@ func (g *Gateway) serveCredentials(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-"+cspNonce+"'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
-		_, _ = io.WriteString(w, g.credentialFormHTML(onboarding, onboardingID, "", nil, cspNonce))
+		_, _ = io.WriteString(w, g.credentialFormHTML(onboarding, onboardingID, "", nil, cspNonce, pageLang(r)))
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -392,7 +393,8 @@ func (g *Gateway) submitCredentialForm(w http.ResponseWriter, r *http.Request, o
 		}
 	}
 	applyCredentialDefaults(onboarding.Required, values)
-	if err := g.Control.AuthorizeCredentials(r.Context(), onboardingID, nonce, values); err != nil {
+	lang := pageLang(r)
+	if err := g.Control.AuthorizeCredentials(r.Context(), onboardingID, nonce, values, lang); err != nil {
 		if errors.Is(err, errCredentialProbe) {
 			// Transactional save: the probe rejected before any persistence,
 			// so the owner retries in place — the re-rendered form carries
@@ -402,14 +404,14 @@ func (g *Gateway) submitCredentialForm(w http.ResponseWriter, r *http.Request, o
 			w.Header().Set("Cache-Control", "no-store")
 			w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-"+cspNonce+"'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = io.WriteString(w, g.credentialFormHTML(onboarding, onboardingID, credentialProbeFailure(err), values, cspNonce))
+			_, _ = io.WriteString(w, g.credentialFormHTML(onboarding, onboardingID, credentialProbeFailure(err, lang), values, cspNonce, lang))
 			return
 		}
-		status, title, message := credentialSubmitPage(err)
+		status, title, message := credentialSubmitPage(err, lang)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(status)
-		_, _ = io.WriteString(w, credentialResultPage(title, message)) // #nosec G705 -- credentialResultPage escapes title and message
+		_, _ = io.WriteString(w, credentialResultPage(title, message, lang)) // #nosec G705 -- credentialResultPage escapes title and message
 		return
 	}
 	// Accepted — send the browser back to the stable wizard link, which now
@@ -417,12 +419,12 @@ func (g *Gateway) submitCredentialForm(w http.ResponseWriter, r *http.Request, o
 	// of a dead-end page.
 	if done, derr := g.Control.Store.onboarding(onboardingID); derr == nil &&
 		done.WizardNonce != "" && g.Control.now().Before(done.WizardExpires) {
-		http.Redirect(w, r, g.Control.origin()+"/connect/"+url.PathEscape(onboardingID)+"?k="+url.QueryEscape(done.WizardNonce), http.StatusSeeOther)
+		http.Redirect(w, r, g.Control.origin()+"/connect/"+url.PathEscape(onboardingID)+"?k="+url.QueryEscape(done.WizardNonce)+"&lang="+url.QueryEscape(string(lang)), http.StatusSeeOther)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	_, _ = io.WriteString(w, credentialResultPage("Подключение завершено", "Credentials проверены, MCP запущен и включён. Возвращаться в чат и писать «готово» не нужно."))
+	_, _ = io.WriteString(w, credentialResultPage(locale.T(lang, "page.done-title"), locale.T(lang, "page.done-creds-body"), lang))
 }
 
 // serveConfirm is the user-facing authorization page the channel notice links
@@ -446,7 +448,7 @@ func (g *Gateway) serveConfirm(w http.ResponseWriter, r *http.Request) {
 	onboarding, err := g.Control.Store.onboarding(onboardingID)
 	if err == nil && onboarding.ConfirmationNonce != "" && nonce == onboarding.ConfirmationNonce && (onboarding.ConfirmationUsed || onboarding.ConfirmationExpires.IsZero() || g.Control.now().After(onboarding.ConfirmationExpires)) {
 		// The link was already spent: dead link, not a forged token.
-		goneLinkPage(w)
+		goneLinkPage(w, pageLang(r))
 		return
 	}
 	if err != nil || onboarding.Phase != api.PhaseAwaitingConfirm || onboarding.ConfirmationNonce == "" || nonce != onboarding.ConfirmationNonce || onboarding.ConfirmationUsed || onboarding.ConfirmationExpires.IsZero() || g.Control.now().After(onboarding.ConfirmationExpires) {
@@ -456,13 +458,14 @@ func (g *Gateway) serveConfirm(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	if r.Method == http.MethodGet {
-		_, _ = io.WriteString(w, confirmPage(onboarding))
+		_, _ = io.WriteString(w, confirmPage(onboarding, pageLang(r)))
 		return
 	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	lang := pageLang(r)
 	var finishErr error
 	if onboarding.PendingWrites {
 		finishErr = g.Control.applyConfirmedWrites(r.Context(), onboardingID)
@@ -471,14 +474,14 @@ func (g *Gateway) serveConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 	if finishErr != nil {
 		w.WriteHeader(http.StatusBadGateway)
-		_, _ = io.WriteString(w, credentialResultPage("Подтверждение не прошло", api.PublicPrepareError(finishErr))) // #nosec G705 -- credentialResultPage escapes title and message
+		_, _ = io.WriteString(w, credentialResultPage(locale.T(lang, "page.confirm-failed-title"), api.PublicPrepareError(finishErr), lang)) // #nosec G705 -- credentialResultPage escapes title and message
 		return
 	}
-	_, _ = io.WriteString(w, credentialResultPage("Подключение подтверждено", "Возвращаться в чат и писать «готово» не нужно."))
+	_, _ = io.WriteString(w, credentialResultPage(locale.T(lang, "page.confirmed-title"), locale.T(lang, "page.confirmed-body"), lang))
 }
 
-func confirmPage(onboarding api.Onboarding) string {
-	return `<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Подтверждение MCP</title><style>:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:28px;letter-spacing:-.02em}p{margin:0 0 22px;color:#52606d;line-height:1.6}button{width:100%;border:0;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font:inherit;font-weight:700;cursor:pointer}</style><main><h1>Подтверждение подключения</h1><p>Сервер ` + html.EscapeString(onboarding.DefinitionID) + ` будет подключён и получит доступ к сохранённым данным.</p><form method="post"><button type="submit">Подтвердить подключение</button></form></main></html>`
+func confirmPage(onboarding api.Onboarding, lang locale.Lang) string {
+	return `<!doctype html><html lang="` + html.EscapeString(string(lang)) + `"><meta name="viewport" content="width=device-width,initial-scale=1"><title>` + html.EscapeString(locale.T(lang, "page.confirm-title")) + `</title><style>:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:28px;letter-spacing:-.02em}p{margin:0 0 22px;color:#52606d;line-height:1.6}button{width:100%;border:0;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font:inherit;font-weight:700;cursor:pointer}</style><main><h1>` + html.EscapeString(locale.T(lang, "page.confirm-h1")) + `</h1><p>` + html.EscapeString(locale.T(lang, "page.confirm-body", onboarding.DefinitionID)) + `</p><form method="post"><button type="submit">` + html.EscapeString(locale.T(lang, "page.confirm-btn")) + `</button></form></main></html>`
 }
 
 // serveRemove is the destructive twin of serveConfirm: the channel notice
@@ -501,7 +504,7 @@ func (g *Gateway) serveRemove(w http.ResponseWriter, r *http.Request) {
 	nonce := linkToken(r)
 	onboarding, err := g.Control.Store.onboarding(onboardingID)
 	if err == nil && onboarding.RemoveNonce != "" && nonce == onboarding.RemoveNonce && (onboarding.Phase == api.PhaseRemoved || onboarding.RemoveExpires.IsZero() || g.Control.now().After(onboarding.RemoveExpires)) {
-		goneLinkPage(w)
+		goneLinkPage(w, pageLang(r))
 		return
 	}
 	if err != nil || onboarding.RemoveNonce == "" || nonce != onboarding.RemoveNonce || onboarding.RemoveExpires.IsZero() || g.Control.now().After(onboarding.RemoveExpires) || onboarding.Phase == api.PhaseRemoved {
@@ -510,8 +513,9 @@ func (g *Gateway) serveRemove(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
+	lang := pageLang(r)
 	if r.Method == http.MethodGet {
-		_, _ = io.WriteString(w, `<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Удаление MCP</title><style>:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:28px;letter-spacing:-.02em}p{margin:0 0 22px;color:#52606d;line-height:1.6}button{width:100%;border:0;border-radius:10px;padding:13px 18px;background:#b42318;color:#fff;font:inherit;font-weight:700;cursor:pointer}</style><main><h1>Удаление подключения</h1><p>Сервер `+html.EscapeString(onboarding.DefinitionID)+` будет отключён: сохранённые credentials, рабочее пространство и состояние удалятся безвозвратно.</p><form method="post"><button type="submit">Удалить подключение</button></form></main></html>`)
+		_, _ = io.WriteString(w, `<!doctype html><html lang="`+html.EscapeString(string(lang))+`"><meta name="viewport" content="width=device-width,initial-scale=1"><title>`+html.EscapeString(locale.T(lang, "page.remove-title"))+`</title><style>:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:28px;letter-spacing:-.02em}p{margin:0 0 22px;color:#52606d;line-height:1.6}button{width:100%;border:0;border-radius:10px;padding:13px 18px;background:#b42318;color:#fff;font:inherit;font-weight:700;cursor:pointer}</style><main><h1>`+html.EscapeString(locale.T(lang, "page.remove-h1"))+`</h1><p>`+html.EscapeString(locale.T(lang, "page.remove-body", onboarding.DefinitionID))+`</p><form method="post"><button type="submit">`+html.EscapeString(locale.T(lang, "page.remove-btn"))+`</button></form></main></html>`)
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -520,10 +524,10 @@ func (g *Gateway) serveRemove(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, err := g.Control.remove(r.Context(), onboardingEnvelope(onboarding), map[string]any{"onboarding_id": onboardingID, "remove_nonce": nonce}); err != nil {
 		w.WriteHeader(http.StatusBadGateway)
-		_, _ = io.WriteString(w, credentialResultPage("Удаление не прошло", api.PublicPrepareError(err)))
+		_, _ = io.WriteString(w, credentialResultPage(locale.T(lang, "page.remove-failed-title"), api.PublicPrepareError(err), lang))
 		return
 	}
-	_, _ = io.WriteString(w, credentialResultPage("Подключение удалено", "Сервер отключён, credentials и рабочее состояние удалены."))
+	_, _ = io.WriteString(w, credentialResultPage(locale.T(lang, "page.removed-title"), locale.T(lang, "page.removed-body"), lang))
 }
 
 // serveConnect is the loopback hop for external action links: the channel
@@ -570,11 +574,13 @@ func (g *Gateway) serveConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	if state := r.URL.Query().Get("state"); state != "" && onboarding.ProviderAuthorizationURL != "" {
 		if parsed, perr := url.Parse(onboarding.ProviderAuthorizationURL); perr == nil && parsed.Query().Get("state") == state {
+			lang := pageLang(r)
+			g.Control.rememberOAuthFlowLang(state, lang)
 			// The stored flow dies with its in-memory state — hand the
 			// browser to the wizard link, which re-arms a live flow
 			// before rendering the provider hop.
 			if r.Method == http.MethodGet && g.Control.preparedOAuthOnboardingID(state) != onboardingID && onboarding.WizardNonce != "" && g.Control.now().Before(onboarding.WizardExpires) {
-				http.Redirect(w, r, g.Control.origin()+"/connect/"+url.PathEscape(onboardingID)+"?k="+url.QueryEscape(onboarding.WizardNonce), http.StatusSeeOther)
+				http.Redirect(w, r, g.Control.origin()+"/connect/"+url.PathEscape(onboardingID)+"?k="+url.QueryEscape(onboarding.WizardNonce)+"&lang="+url.QueryEscape(string(lang)), http.StatusSeeOther)
 				return
 			}
 			// Interstitial instead of a bare 302: a user authorizing on
@@ -584,12 +590,12 @@ func (g *Gateway) serveConnect(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.Header().Set("Cache-Control", "no-store")
 			w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
-			_, _ = io.WriteString(w, oauthInterstitialPage(onboarding, state)) // #nosec G705 -- page values are html.EscapeString-escaped
+			_, _ = io.WriteString(w, oauthInterstitialPage(onboarding, state, lang)) // #nosec G705 -- page values are html.EscapeString-escaped
 			return
 		}
 	}
 	if request := r.URL.Query().Get("request"); request != "" && request == onboarding.BrokerRequestID && onboarding.BrokerAuthorizationURL != "" {
-		http.Redirect(w, r, onboarding.BrokerAuthorizationURL, http.StatusFound)
+		http.Redirect(w, r, onboarding.BrokerAuthorizationURL+"?lang="+string(pageLang(r)), http.StatusFound)
 		return
 	}
 	http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -602,6 +608,7 @@ func (g *Gateway) serveConnect(w http.ResponseWriter, r *http.Request) {
 // principal/context/connection and runs the PKCE exchange exactly like the
 // live /oauth/callback.
 func (g *Gateway) serveOAuthPaste(w http.ResponseWriter, r *http.Request, storedState string) {
+	lang := g.oauthLang(r, storedState)
 	if storedState == "" || r.ParseForm() != nil || r.Form.Get("state") != storedState {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -615,24 +622,24 @@ func (g *Gateway) serveOAuthPaste(w http.ResponseWriter, r *http.Request, stored
 	w.Header().Set("Cache-Control", "no-store")
 	if err := g.Control.completePreparedOAuth(r.Context(), storedState, pasted.Query().Get("code")); err != nil {
 		w.WriteHeader(http.StatusForbidden)
-		_, _ = io.WriteString(w, credentialResultPage("Вход не прошёл", "Авторизация отклонена. Вернитесь в чат и запросите свежую ссылку через status."))
+		_, _ = io.WriteString(w, credentialResultPage(locale.T(lang, "page.login-failed-title"), locale.T(lang, "page.oauth-denied-body"), lang))
 		return
 	}
-	_, _ = io.WriteString(w, credentialResultPage("Подключение завершено", "Можно вернуться в чат."))
+	_, _ = io.WriteString(w, credentialResultPage(locale.T(lang, "page.done-title"), locale.T(lang, "page.done-paste-body"), lang))
 }
 
 // oauthInterstitialPage is the provider-hop page shared by the ?state=
 // connect link and the wizard's awaiting-oauth phase.
-func oauthInterstitialPage(onboarding api.Onboarding, state string) string {
-	return `<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="10"><title>Вход у провайдера</title><style>:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:28px;letter-spacing:-.02em}p{margin:0 0 22px;color:#52606d;line-height:1.6}a.btn{display:block;text-align:center;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font-weight:700;text-decoration:none}details{margin-top:18px;color:#52606d}summary{cursor:pointer;font-weight:650}label{display:block;font-weight:650;margin:14px 0 0}input{display:block;width:100%;margin-top:8px;border:1px solid #aab4bf;border-radius:10px;padding:12px 14px;font:inherit}button{width:100%;margin-top:16px;border:0;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font:inherit;font-weight:700;cursor:pointer}</style><main><h1>Вход у провайдера</h1><p>Откройте страницу авторизации и разрешите доступ.</p><a class="btn" rel="noopener noreferrer" href="` + html.EscapeString(onboarding.ProviderAuthorizationURL) + `">Перейти к авторизации</a><details><summary>Входили на другом устройстве? Вставьте адрес финальной страницы</summary><p>Если после входа страница не открылась, скопируйте её адрес целиком и вставьте сюда.</p><form method="post"><input type="hidden" name="state" value="` + html.EscapeString(state) + `"><label>Адрес страницы<input name="redirect_url" required placeholder="http://127.0.0.1/oauth/callback?…"></label><button type="submit">Завершить вход</button></form></details></main></html>`
+func oauthInterstitialPage(onboarding api.Onboarding, state string, lang locale.Lang) string {
+	return `<!doctype html><html lang="` + html.EscapeString(string(lang)) + `"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="10"><title>` + html.EscapeString(locale.T(lang, "page.oauth-title")) + `</title><style>:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:28px;letter-spacing:-.02em}p{margin:0 0 22px;color:#52606d;line-height:1.6}a.btn{display:block;text-align:center;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font-weight:700;text-decoration:none}details{margin-top:18px;color:#52606d}summary{cursor:pointer;font-weight:650}label{display:block;font-weight:650;margin:14px 0 0}input{display:block;width:100%;margin-top:8px;border:1px solid #aab4bf;border-radius:10px;padding:12px 14px;font:inherit}button{width:100%;margin-top:16px;border:0;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font:inherit;font-weight:700;cursor:pointer}</style><main><h1>` + html.EscapeString(locale.T(lang, "page.oauth-title")) + `</h1><p>` + html.EscapeString(locale.T(lang, "page.oauth-body")) + `</p><a class="btn" rel="noopener noreferrer" href="` + html.EscapeString(onboarding.ProviderAuthorizationURL) + `">` + html.EscapeString(locale.T(lang, "page.oauth-btn")) + `</a><details><summary>` + html.EscapeString(locale.T(lang, "page.oauth-paste")) + `</summary><p>` + html.EscapeString(locale.T(lang, "page.oauth-paste-hint")) + `</p><form method="post"><input type="hidden" name="state" value="` + html.EscapeString(state) + `"><label>` + html.EscapeString(locale.T(lang, "page.oauth-paste-label")) + `<input name="redirect_url" required placeholder="http://127.0.0.1/oauth/callback?…"></label><button type="submit">` + html.EscapeString(locale.T(lang, "page.oauth-paste-btn")) + `</button></form></details></main></html>`
 }
 
 // brokerHopPage is the wizard's awaiting-credentials render for
 // broker-mediated onboarding: the values live at the broker's own form, so
 // the page forwards there and meta-refreshes — a submitted request flips the
 // phase and the reload lands on the confirm step of the same wizard URL.
-func brokerHopPage(onboarding api.Onboarding) string {
-	return `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="8"><title>Подключение MCP</title><style>:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:28px;letter-spacing:-.02em}p{margin:0 0 22px;color:#52606d;line-height:1.6}a.btn{display:block;text-align:center;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font-weight:700;text-decoration:none}</style><main><h1>Ввод учётных данных</h1><p>Откройте защищённую форму брокера и заполните значения. Эта страница обновится сама, когда они будут приняты.</p><a class="btn" rel="noopener noreferrer" href="` + html.EscapeString(onboarding.BrokerAuthorizationURL) + `">Открыть форму брокера</a></main></html>`
+func brokerHopPage(onboarding api.Onboarding, lang locale.Lang) string {
+	return `<!doctype html><html lang="` + html.EscapeString(string(lang)) + `"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="8"><title>` + html.EscapeString(locale.T(lang, "page.connect-title")) + `</title><style>:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:28px;letter-spacing:-.02em}p{margin:0 0 22px;color:#52606d;line-height:1.6}a.btn{display:block;text-align:center;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font-weight:700;text-decoration:none}</style><main><h1>` + html.EscapeString(locale.T(lang, "page.broker-h1")) + `</h1><p>` + html.EscapeString(locale.T(lang, "page.broker-body")) + `</p><a class="btn" rel="noopener noreferrer" href="` + html.EscapeString(onboarding.BrokerAuthorizationURL+"?lang="+string(lang)) + `">` + html.EscapeString(locale.T(lang, "page.broker-btn")) + `</a></main></html>`
 }
 
 // serveWizard renders the stable single-link setup page: ?k= carries the
@@ -643,6 +650,7 @@ func (g *Gateway) serveWizard(w http.ResponseWriter, r *http.Request, onboarding
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+	lang := pageLang(r)
 	// A polling page reload is itself a credentials ask: pull the broker
 	// request forward so a submitted form flips the page to confirm without
 	// a second link or a chat round-trip. The gateway dedupes the notices
@@ -656,7 +664,7 @@ func (g *Gateway) serveWizard(w http.ResponseWriter, r *http.Request, onboarding
 		if r.Method == http.MethodGet {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.Header().Set("Cache-Control", "no-store")
-			_, _ = io.WriteString(w, confirmPage(onboarding))
+			_, _ = io.WriteString(w, confirmPage(onboarding, lang))
 			return
 		}
 		if r.Method == http.MethodPost {
@@ -670,7 +678,7 @@ func (g *Gateway) serveWizard(w http.ResponseWriter, r *http.Request, onboarding
 				http.Error(w, "confirmation failed", http.StatusBadGateway)
 				return
 			}
-			wizardURL := g.Control.origin() + "/connect/" + url.PathEscape(onboardingID) + "?k=" + url.QueryEscape(onboarding.WizardNonce)
+			wizardURL := g.Control.origin() + "/connect/" + url.PathEscape(onboardingID) + "?k=" + url.QueryEscape(onboarding.WizardNonce) + "&lang=" + url.QueryEscape(string(lang))
 			w.Header().Set("Location", wizardURL)
 			w.WriteHeader(http.StatusSeeOther)
 			return
@@ -686,6 +694,7 @@ func (g *Gateway) serveWizard(w http.ResponseWriter, r *http.Request, onboarding
 			return
 		}
 		if r.Method == http.MethodGet {
+			g.Control.rememberOAuthFlowLang(storedState, lang)
 			// The provider hop dies with its in-memory flow (step TTL or a
 			// toolhub restart): re-arm it so this page never fronts a dead
 			// authorization URL that only fails at /oauth/callback.
@@ -705,10 +714,10 @@ func (g *Gateway) serveWizard(w http.ResponseWriter, r *http.Request, onboarding
 			w.Header().Set("Cache-Control", "no-store")
 			w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 			if g.Control.preparedOAuthOnboardingID(storedState) != onboardingID {
-				_, _ = io.WriteString(w, wizardWaitPage)
+				_, _ = io.WriteString(w, wizardWaitPage(lang))
 				return
 			}
-			_, _ = io.WriteString(w, oauthInterstitialPage(onboarding, storedState))
+			_, _ = io.WriteString(w, oauthInterstitialPage(onboarding, storedState, lang))
 			return
 		}
 	}
@@ -720,7 +729,7 @@ func (g *Gateway) serveWizard(w http.ResponseWriter, r *http.Request, onboarding
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")
-		_, _ = io.WriteString(w, brokerHopPage(onboarding))
+		_, _ = io.WriteString(w, brokerHopPage(onboarding, lang))
 		return
 	}
 	if onboarding.Phase == api.PhaseAwaitingCreds && r.Method == http.MethodGet {
@@ -728,7 +737,7 @@ func (g *Gateway) serveWizard(w http.ResponseWriter, r *http.Request, onboarding
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-"+cspNonce+"'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
-		_, _ = io.WriteString(w, g.credentialFormHTML(onboarding, onboardingID, "", nil, cspNonce))
+		_, _ = io.WriteString(w, g.credentialFormHTML(onboarding, onboardingID, "", nil, cspNonce, lang))
 		return
 	}
 	if r.Method == http.MethodGet {
@@ -737,13 +746,13 @@ func (g *Gateway) serveWizard(w http.ResponseWriter, r *http.Request, onboarding
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")
 		switch onboarding.Phase {
 		case api.PhasePreparing, api.PhaseReview, api.PhaseConfirmed:
-			_, _ = io.WriteString(w, wizardWaitPage)
+			_, _ = io.WriteString(w, wizardWaitPage(lang))
 			return
 		case api.PhaseEnabled:
-			_, _ = io.WriteString(w, credentialResultPage("MCP подключён", "Настройка завершена — можно вернуться в чат и пользоваться инструментами."))
+			_, _ = io.WriteString(w, credentialResultPage(locale.T(lang, "page.enabled-title"), locale.T(lang, "page.enabled-body"), lang))
 			return
 		case api.PhaseFailed:
-			_, _ = io.WriteString(w, credentialResultPage("Ошибка подключения", "Подключение не удалось. Вернитесь в чат и попросите повторить установку."))
+			_, _ = io.WriteString(w, credentialResultPage(locale.T(lang, "page.failed-title"), locale.T(lang, "page.failed-body"), lang))
 			return
 		}
 	}
@@ -753,7 +762,9 @@ func (g *Gateway) serveWizard(w http.ResponseWriter, r *http.Request, onboarding
 // wizardWaitPage renders the honest in-progress state: the backend is still
 // building/reviewing/enabling, so the page meta-refreshes until the phase
 // advances to a real step or a terminal state on the same URL.
-const wizardWaitPage = `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="6"><title>Настройка MCP</title><style>:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:28px;letter-spacing:-.02em}p{margin:0;color:#52606d;line-height:1.6}</style><main><h1>Настройка коннектора…</h1><p>Идёт подготовка и проверка — страница обновится автоматически. Обычно это занимает пару минут.</p></main></html>`
+func wizardWaitPage(lang locale.Lang) string {
+	return `<!doctype html><html lang="` + html.EscapeString(string(lang)) + `"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="6"><title>` + html.EscapeString(locale.T(lang, "page.wait-title")) + `</title><style>:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:28px;letter-spacing:-.02em}p{margin:0;color:#52606d;line-height:1.6}</style><main aria-live="polite"><h1>` + html.EscapeString(locale.T(lang, "page.wait-h1")) + `</h1><p>` + html.EscapeString(locale.T(lang, "page.wait-body")) + `</p></main></html>`
+}
 
 // serveViewer answers the owner-bound browser viewer link: a spent or
 // expired nonce gets 410 gone, a forged one 403, a live one opens a short
@@ -797,19 +808,21 @@ func (g *Gateway) serveViewerPage(w http.ResponseWriter, r *http.Request, connec
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	lang := pageLang(r)
 	sessionID, err := g.Control.Store.OpenViewerSession(connectionID, linkToken(r), g.Control.now())
 	if errors.Is(err, api.ErrLinkGone) {
-		goneLinkPage(w)
+		goneLinkPage(w, lang)
 		return
 	}
 	if err != nil {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
+	retry, _ := json.Marshal(locale.T(lang, "page.viewer-retry"))
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
-	_, _ = io.WriteString(w, `<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Browser viewer</title><style>`+
+	_, _ = io.WriteString(w, `<!doctype html><html lang="`+html.EscapeString(string(lang))+`"><meta name="viewport" content="width=device-width,initial-scale=1"><title>`+html.EscapeString(locale.T(lang, "page.viewer-title"))+`</title><style>`+
 		`:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}`+
 		`body{margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:16px}main{width:min(1024px,100%)}`+
 		`h1{font-size:20px;margin:0 0 8px}p{color:#52606d;line-height:1.5;margin:0 0 12px}`+
@@ -817,15 +830,15 @@ func (g *Gateway) serveViewerPage(w http.ResponseWriter, r *http.Request, connec
 		`#bar button{border:0;border-radius:8px;padding:9px 16px;background:#175cd3;color:#fff;font:inherit;cursor:pointer}`+
 		`#screen{width:100%;background:#17202a;border-radius:12px;cursor:crosshair;display:block}`+
 		`#status{color:#98a2b3;font-size:13px;margin-top:8px}</style>`+
-		`<main><h1>Browser viewer — `+html.EscapeString(connectionID)+`</h1>`+
-		`<p>Вход на сайты выполняется только здесь — никогда не отправляйте пароли в чат.</p>`+
-		`<div id="bar"><input id="url" placeholder="https://…" autocomplete="off"><button id="go">Открыть</button></div>`+
-		`<img id="screen" alt=""><div id="status"></div></main>`+
+		`<main><h1>`+html.EscapeString(locale.T(lang, "page.viewer-title")+" — "+connectionID)+`</h1>`+
+		`<p>`+html.EscapeString(locale.T(lang, "page.viewer-hint"))+`</p>`+
+		`<div id="bar"><input id="url" placeholder="https://…" autocomplete="off" aria-label="`+html.EscapeString(locale.T(lang, "page.viewer-open"))+`"><button id="go">`+html.EscapeString(locale.T(lang, "page.viewer-open"))+`</button></div>`+
+		`<img id="screen" alt="`+html.EscapeString(locale.T(lang, "page.viewer-alt"))+`"><div id="status" aria-live="polite"></div></main>`+
 		`<script>`+
 		`var S="session=`+html.EscapeString(sessionID)+`";`+
 		`var base="/viewer/`+html.EscapeString(connectionID)+`";`+
 		`var img=document.getElementById("screen"),st=document.getElementById("status");`+
-		`function poll(){var f=new Image();f.onload=function(){img.src=f.src;setTimeout(poll,700)};f.onerror=function(){st.textContent="Кадр недоступен — повтор через 3 с";setTimeout(poll,3000)};f.src=base+"/frame?"+S+"&n="+Date.now()}`+
+		`function poll(){var f=new Image();f.onload=function(){img.src=f.src;setTimeout(poll,700)};f.onerror=function(){st.textContent=`+string(retry)+`;setTimeout(poll,3000)};f.src=base+"/frame?"+S+"&n="+Date.now()}`+
 		`function send(tool,args){return fetch(base+"/input?"+S,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({tool:tool,arguments:args})})}`+
 		`img.addEventListener("click",function(e){var r=img.getBoundingClientRect();var x=Math.round(e.clientX-r.left),y=Math.round(e.clientY-r.top);send("browser_mouse_click_xy",{x:x,y:y})});`+
 		`document.addEventListener("keydown",function(e){if(e.target.id==="url")return;var k=e.key;if(k.length===1||k==="Enter"||k==="Backspace"||k==="Tab"||k==="Escape"||k.indexOf("Arrow")===0){e.preventDefault();send("browser_press_key",{key:k})}});`+
@@ -972,6 +985,7 @@ func (g *Gateway) serveDevice(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no oauth provider", http.StatusBadRequest)
 		return
 	}
+	lang := pageLang(r)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	if r.Method == http.MethodGet {
@@ -983,7 +997,7 @@ func (g *Gateway) serveDevice(w http.ResponseWriter, r *http.Request) {
 			start, serr := g.Control.OAuth.StartDevice(onboarding.PrincipalID, onboarding.ContextID, onboardingID, onboarding.OAuthProvider)
 			if serr != nil {
 				w.WriteHeader(http.StatusBadGateway)
-				_, _ = io.WriteString(w, credentialResultPage("Вход по коду недоступен", api.PublicPrepareError(serr))) // #nosec G705 -- credentialResultPage escapes title and message
+				_, _ = io.WriteString(w, credentialResultPage(locale.T(lang, "page.device-unavail-title"), api.PublicPrepareError(serr), lang)) // #nosec G705 -- credentialResultPage escapes title and message
 				return
 			}
 			code, userCode, verification = start.DeviceCode, start.UserCode, start.Verification
@@ -996,7 +1010,8 @@ func (g *Gateway) serveDevice(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		_, _ = io.WriteString(w, `<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Вход по коду</title><style>:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:28px;letter-spacing:-.02em}p{margin:0 0 22px;color:#52606d;line-height:1.6}.code{font:700 32px/1.2 ui-monospace,SFMono-Regular,Consolas,monospace;text-align:center;letter-spacing:.08em;margin:12px 0 22px;color:#17202a}button{width:100%;border:0;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font:inherit;font-weight:700;cursor:pointer}a{color:#175cd3}</style><main><h1>Вход по коду устройства</h1><p>Откройте на любом устройстве <a rel="noopener noreferrer" href="`+html.EscapeString(verification)+`">`+html.EscapeString(verification)+`</a> и введите код:</p><div class="code">`+html.EscapeString(userCode)+`</div><form method="post"><input type="hidden" name="device_code" value="`+html.EscapeString(code)+`"><input type="hidden" name="t" value="`+html.EscapeString(token)+`"><button type="submit">Я ввёл код — проверить</button></form></main></html>`)
+		link := `<a rel="noopener noreferrer" href="` + html.EscapeString(verification) + `">` + html.EscapeString(verification) + `</a>`
+		_, _ = io.WriteString(w, `<!doctype html><html lang="`+html.EscapeString(string(lang))+`"><meta name="viewport" content="width=device-width,initial-scale=1"><title>`+html.EscapeString(locale.T(lang, "page.device-title"))+`</title><style>:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:28px;letter-spacing:-.02em}p{margin:0 0 22px;color:#52606d;line-height:1.6}.code{font:700 32px/1.2 ui-monospace,SFMono-Regular,Consolas,monospace;text-align:center;letter-spacing:.08em;margin:12px 0 22px;color:#17202a}button{width:100%;border:0;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font:inherit;font-weight:700;cursor:pointer}a{color:#175cd3}</style><main><h1>`+html.EscapeString(locale.T(lang, "page.device-h1"))+`</h1><p>`+locale.T(lang, "page.device-body", link)+`</p><div class="code">`+html.EscapeString(userCode)+`</div><form method="post"><input type="hidden" name="device_code" value="`+html.EscapeString(code)+`"><input type="hidden" name="t" value="`+html.EscapeString(token)+`"><button type="submit">`+html.EscapeString(locale.T(lang, "page.device-btn"))+`</button></form></main></html>`)
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -1015,19 +1030,19 @@ func (g *Gateway) serveDevice(w http.ResponseWriter, r *http.Request) {
 		// still typing the code on their other device.
 		text := perr.Error()
 		if strings.Contains(text, "authorization_pending") || strings.Contains(text, "slow_down") {
-			_, _ = io.WriteString(w, credentialResultPage("Жду подтверждение", "Код ещё не введён на другом устройстве. Вернитесь и нажмите «Проверить» ещё раз."))
+			_, _ = io.WriteString(w, credentialResultPage(locale.T(lang, "page.device-pending-title"), locale.T(lang, "page.device-pending-body"), lang))
 			return
 		}
 		w.WriteHeader(http.StatusBadGateway)
-		_, _ = io.WriteString(w, credentialResultPage("Вход не прошёл", api.PublicPrepareError(perr))) // #nosec G705 -- credentialResultPage escapes title and message
+		_, _ = io.WriteString(w, credentialResultPage(locale.T(lang, "page.login-failed-title"), api.PublicPrepareError(perr), lang)) // #nosec G705 -- credentialResultPage escapes title and message
 		return
 	}
 	if err := g.Control.completeDeviceAuth(r.Context(), onboarding, meta); err != nil {
 		w.WriteHeader(http.StatusBadGateway)
-		_, _ = io.WriteString(w, credentialResultPage("Подключение не прошло", api.PublicPrepareError(err))) // #nosec G705 -- credentialResultPage escapes title and message
+		_, _ = io.WriteString(w, credentialResultPage(locale.T(lang, "page.connect-failed-title"), api.PublicPrepareError(err), lang)) // #nosec G705 -- credentialResultPage escapes title and message
 		return
 	}
-	_, _ = io.WriteString(w, credentialResultPage("Подключение завершено", "Устройство авторизовано. Возвращаться в чат и писать «готово» не нужно."))
+	_, _ = io.WriteString(w, credentialResultPage(locale.T(lang, "page.done-title"), locale.T(lang, "page.done-device-body"), lang))
 }
 
 // deviceTokenValid accepts the onboarding's live form or confirmation nonce
@@ -1047,30 +1062,30 @@ func deviceTokenValid(onboarding api.Onboarding, token string) bool {
 
 // goneLinkPage answers a spent or dead one-time link: 410 with a hint to
 // request a fresh link rather than retry the burnt token.
-func goneLinkPage(w http.ResponseWriter) {
+func goneLinkPage(w http.ResponseWriter, lang locale.Lang) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusGone)
-	_, _ = io.WriteString(w, credentialResultPage("Ссылка уже использована", "Эта одноразовая ссылка больше не действует. Попросите прислать fresh link — модель может вызвать status или remove заново."))
+	_, _ = io.WriteString(w, credentialResultPage(locale.T(lang, "page.gone-title"), locale.T(lang, "page.gone-body"), lang))
 }
 
-func credentialResultPage(title, message string) string {
-	return `<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><title>` + html.EscapeString(title) + `</title><style>:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:28px;letter-spacing:-.02em}p{margin:0;color:#52606d;line-height:1.6}</style><main><h1>` + html.EscapeString(title) + `</h1><p>` + html.EscapeString(message) + `</p></main></html>`
+func credentialResultPage(title, message string, lang locale.Lang) string {
+	return `<!doctype html><html lang="` + html.EscapeString(string(lang)) + `"><meta name="viewport" content="width=device-width,initial-scale=1"><title>` + html.EscapeString(title) + `</title><style>:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}main{width:min(620px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{margin:0 0 12px;font-size:28px;letter-spacing:-.02em}p{margin:0;color:#52606d;line-height:1.6}</style><main><h1>` + html.EscapeString(title) + `</h1><p>` + html.EscapeString(message) + `</p></main></html>`
 }
 
-func credentialFormIntro(hints []api.CredentialHint) string {
+func credentialFormIntro(hints []api.CredentialHint, lang locale.Lang) string {
 	if credentialHintsUseAlternatives(hints) {
-		return "Заполните один набор. Открыт самый короткий. Остальные способы свёрнуты — их поля отправлять не нужно."
+		return locale.T(lang, "page.form-intro-alt")
 	}
-	return "Введите запрошенные поля. Они сохранятся в защищённом хранилище и не попадут в чат."
+	return locale.T(lang, "page.form-intro")
 }
 
-func writeCredentialFields(b *strings.Builder, hints, optional []api.CredentialHint, nonce string, recipeFields map[string]api.ConnectionField, prefill map[string]string) {
+func writeCredentialFields(b *strings.Builder, hints, optional []api.CredentialHint, nonce string, recipeFields map[string]api.ConnectionField, prefill map[string]string, lang locale.Lang) {
 	if !credentialHintsUseAlternatives(hints) {
 		for _, hint := range hints {
-			b.WriteString(credentialFieldMarkup(hint, recipeFields[hint.Name], prefill[hint.Name]))
+			b.WriteString(credentialFieldMarkup(hint, recipeFields[hint.Name], prefill[hint.Name], lang))
 		}
-		writeOptionalCredentialFields(b, optional)
+		writeOptionalCredentialFields(b, optional, lang)
 		return
 	}
 	groups := map[int][]api.CredentialHint{}
@@ -1096,17 +1111,17 @@ func writeCredentialFields(b *strings.Builder, hints, optional []api.CredentialH
 		}
 		legend := strings.Join(names, ", ")
 		if index > 0 {
-			b.WriteString(`<details><summary>Другой набор: ` + html.EscapeString(legend) + `</summary>`)
+			b.WriteString(`<details><summary>` + html.EscapeString(locale.T(lang, "page.alt-set", legend)) + `</summary>`)
 		}
 		group := append(append([]api.CredentialHint{}, plain...), groups[id]...)
 		b.WriteString(`<form method="post" enctype="multipart/form-data"><input type="hidden" name="nonce" value="` + html.EscapeString(nonce) + `"><fieldset><legend>`)
 		b.WriteString(html.EscapeString(legend))
 		b.WriteString("</legend>")
 		for _, hint := range group {
-			b.WriteString(credentialFieldMarkup(hint, recipeFields[hint.Name], prefill[hint.Name]))
+			b.WriteString(credentialFieldMarkup(hint, recipeFields[hint.Name], prefill[hint.Name], lang))
 		}
-		writeOptionalCredentialFields(b, optional)
-		b.WriteString(`<button type="submit">Сохранить и продолжить</button><button type="submit" formnovalidate>Отправить без проверки браузера</button></fieldset></form>`)
+		writeOptionalCredentialFields(b, optional, lang)
+		b.WriteString(`<button type="submit">` + html.EscapeString(locale.T(lang, "page.submit")) + `</button><button type="submit" formnovalidate>` + html.EscapeString(locale.T(lang, "page.submit-no-probe")) + `</button></fieldset></form>`)
 		if index > 0 {
 			b.WriteString(`</details>`)
 		}
@@ -1115,13 +1130,15 @@ func writeCredentialFields(b *strings.Builder, hints, optional []api.CredentialH
 
 // writeOptionalCredentialFields renders discovered non-required inputs so the
 // owner can fill them in the same submit without them gating the form.
-func writeOptionalCredentialFields(b *strings.Builder, optional []api.CredentialHint) {
+// writeOptionalCredentialFields renders discovered non-required inputs so the
+// owner can fill them in the same submit without them gating the form.
+func writeOptionalCredentialFields(b *strings.Builder, optional []api.CredentialHint, lang locale.Lang) {
 	if len(optional) == 0 {
 		return
 	}
-	b.WriteString(`<details><summary>Необязательные параметры</summary>`)
+	b.WriteString(`<details><summary>` + html.EscapeString(locale.T(lang, "page.opt-group")) + `</summary>`)
 	for _, hint := range credentialFormHints(optional) {
-		b.WriteString(optionalCredentialFieldMarkup(hint))
+		b.WriteString(optionalCredentialFieldMarkup(hint, lang))
 	}
 	b.WriteString(`</details>`)
 }
@@ -1129,11 +1146,14 @@ func writeOptionalCredentialFields(b *strings.Builder, optional []api.Credential
 // credentialFormHTML renders the one-time credential form. errText is the
 // public probe error shown on a retry; prefill carries the submitted values
 // back page-side — neither ever reaches the model channel.
-func (g *Gateway) credentialFormHTML(onboarding api.Onboarding, onboardingID, errText string, prefill map[string]string, cspNonce string) string {
+// credentialFormHTML renders the one-time credential form. errText is the
+// public probe error shown on a retry; prefill carries the submitted values
+// back page-side — neither ever reaches the model channel.
+func (g *Gateway) credentialFormHTML(onboarding api.Onboarding, onboardingID, errText string, prefill map[string]string, cspNonce string, lang locale.Lang) string {
 	var b strings.Builder
-	b.WriteString(`<!doctype html><html lang="ru"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Подключение MCP</title><style>
+	b.WriteString(`<!doctype html><html lang="` + html.EscapeString(string(lang)) + `"><meta name="viewport" content="width=device-width,initial-scale=1"><title>` + html.EscapeString(locale.T(lang, "page.connect-title")) + `</title><style>
 :root{color-scheme:light;font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#17202a}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px}.panel{width:min(640px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:16px;padding:32px;box-shadow:0 16px 42px rgba(23,32,42,.10)}h1{font-size:28px;line-height:1.2;letter-spacing:-.02em;margin:0 0 10px}p{color:#52606d;line-height:1.55;margin:0 0 24px}p.err{color:#b42318;font-weight:600}fieldset{border:1px solid #dfe4ea;border-radius:12px;padding:16px 16px 0;margin:0 0 16px}legend{font-size:16px;font-weight:750;padding:0 6px}label{display:block;font-weight:650;margin:0 0 22px}input,textarea{display:block;width:100%;margin-top:8px;border:1px solid #aab4bf;border-radius:10px;padding:12px 14px;font:inherit;color:#17202a;background:#fff}input[type=file]{padding:10px}textarea{min-height:180px;resize:vertical;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:14px}input:focus,textarea:focus{outline:3px solid rgba(36,99,235,.22);border-color:#2463eb}small{display:block;color:#667583;font-weight:400;line-height:1.45;margin:-12px 0 20px}.tag{display:inline;margin:0 0 0 6px;font-size:12px}.opt{display:flex;align-items:center;gap:8px;margin:-14px 0 18px;font-weight:400;color:#52606d;font-size:14px}.opt input{display:inline;width:auto;margin:0;padding:0}button{width:100%;border:0;border-radius:10px;padding:13px 18px;background:#175cd3;color:#fff;font:inherit;font-weight:700;cursor:pointer}button:hover{background:#124aa8}button:focus-visible{outline:3px solid rgba(36,99,235,.3);outline-offset:2px}details{margin:18px 0 22px;color:#52606d}details label{color:#17202a;margin-top:18px}summary{cursor:pointer;font-weight:650}a{color:#175cd3;text-underline-offset:3px}.wait{text-align:center;padding:20px 0}.spin{width:44px;height:44px;margin:0 auto;border:4px solid #dfe4ea;border-top-color:#175cd3;border-radius:50%;animation:sp .9s linear infinite}@keyframes sp{to{transform:rotate(360deg)}}.wait p{margin:0}.wait .lead{font-weight:650;color:#17202a;margin:18px 0 8px}@media(max-width:520px){body{padding:12px}.panel{padding:22px 18px;border-radius:12px}h1{font-size:24px}}
-</style><main class="panel"><h1>Подключение MCP</h1><p>` + html.EscapeString(credentialFormIntro(onboarding.Required)) + `</p>`)
+</style><main class="panel"><h1>` + html.EscapeString(locale.T(lang, "page.connect-title")) + `</h1><p>` + html.EscapeString(credentialFormIntro(onboarding.Required, lang)) + `</p>`)
 	if errText != "" {
 		b.WriteString(`<p class="err">` + html.EscapeString(errText) + `</p>`)
 	}
@@ -1184,15 +1204,12 @@ func (g *Gateway) credentialFormHTML(onboarding api.Onboarding, onboardingID, er
 				reads = append(reads, tool.Name)
 			}
 		}
-		b.WriteString("<p class=\"meta\">Инструменты: ")
-		if len(reads) > 0 {
-			b.WriteString(html.EscapeString(strings.Join(reads, ", ")))
-		}
+		b.WriteString("<p class=\"meta\">" + html.EscapeString(locale.T(lang, "page.tools", strings.Join(reads, ", "))))
 		if len(writes) > 0 {
 			if len(reads) > 0 {
 				b.WriteString("; ")
 			}
-			b.WriteString("запись (по умолчанию выключены): " + html.EscapeString(strings.Join(writes, ", ")))
+			b.WriteString(html.EscapeString(locale.T(lang, "page.tools-writes", strings.Join(writes, ", "))))
 		}
 		b.WriteString("</p>")
 	}
@@ -1201,7 +1218,7 @@ func (g *Gateway) credentialFormHTML(onboarding api.Onboarding, onboardingID, er
 			if alternative.URL == "" {
 				continue
 			}
-			b.WriteString("<details><summary>Другой способ авторизации</summary><a rel=\"noopener noreferrer\" href=\"" + html.EscapeString(alternative.URL) + "\">" + html.EscapeString(alternative.Name) + "</a></details>")
+			b.WriteString("<details><summary>" + html.EscapeString(locale.T(lang, "page.alt-auth")) + "</summary><a rel=\"noopener noreferrer\" href=\"" + html.EscapeString(alternative.URL) + "\">" + html.EscapeString(alternative.Name) + "</a></details>")
 		}
 	}
 	// RFC 8628 escape hatch: when the provider advertises a device
@@ -1209,41 +1226,41 @@ func (g *Gateway) credentialFormHTML(onboarding api.Onboarding, onboardingID, er
 	// /device page reuses this link's token.
 	if g.Control.OAuth != nil && onboarding.OAuthProvider != "" {
 		if prov, ok := g.Control.OAuth.Provider(onboarding.OAuthProvider); ok && prov.DeviceCodeURL != "" {
-			b.WriteString("<details><summary>Войти кодом на другом устройстве</summary><a rel=\"noopener noreferrer\" href=\"/device/" + html.EscapeString(onboardingID) + "?t=" + html.EscapeString(onboarding.FormNonce) + "\">Открыть страницу кода устройства</a></details>")
+			b.WriteString("<details><summary>" + html.EscapeString(locale.T(lang, "page.device-alt")) + "</summary><a rel=\"noopener noreferrer\" href=\"/device/" + html.EscapeString(onboardingID) + "?t=" + html.EscapeString(onboarding.FormNonce) + "&amp;lang=" + html.EscapeString(string(lang)) + "\">" + html.EscapeString(locale.T(lang, "page.device-open")) + "</a></details>")
 		}
 	}
-	writeCredentialFields(&b, hints, onboarding.Optional, onboarding.FormNonce, recipeFields, prefill)
+	writeCredentialFields(&b, hints, onboarding.Optional, onboarding.FormNonce, recipeFields, prefill, lang)
 	if !separate {
-		b.WriteString(`<button type="submit">Сохранить и продолжить</button><button type="submit" formnovalidate>Отправить без проверки браузера</button></form>`)
+		b.WriteString(`<button type="submit">` + html.EscapeString(locale.T(lang, "page.submit")) + `</button><button type="submit" formnovalidate>` + html.EscapeString(locale.T(lang, "page.submit-no-probe")) + `</button></form>`)
 	}
 	// The submit blocks on a real server probe; a silent 30+ seconds reads
 	// as a refresh loop. Swap the inputs for an honest waiting state while
 	// the POST completes — the response page still carries the outcome.
-	b.WriteString(`<div class="wait" id="wait" hidden><div class="spin"></div><p class="lead">Проверяю данные и запускаю MCP…</p><p>обычно до минуты — <span id="secs">0</span> с</p></div>`)
+	b.WriteString(`<div class="wait" id="wait" hidden aria-live="polite"><div class="spin"></div><p class="lead">` + html.EscapeString(locale.T(lang, "page.wait-submit")) + `</p><p>` + html.EscapeString(locale.T(lang, "page.wait-usually")) + `<span id="secs">0</span>` + html.EscapeString(locale.T(lang, "page.wait-seconds")) + `</p></div>`)
 	b.WriteString(`<script nonce="` + cspNonce + `">var t0=Date.now();document.addEventListener('submit',function(e){var f=e.target;if(f._busy){e.preventDefault();return}f._busy=true;document.querySelectorAll('form,details').forEach(function(el){el.style.display='none'});document.getElementById('wait').hidden=false;var s=document.getElementById('secs');setInterval(function(){s.textContent=Math.floor((Date.now()-t0)/1000)},500)});</script>`)
 	b.WriteString("</main></html>")
 	return b.String()
 }
 
-func credentialSubmitPage(err error) (int, string, string) {
+func credentialSubmitPage(err error, lang locale.Lang) (int, string, string) {
 	if errors.Is(err, errCredentialSaved) {
-		reason := strings.TrimPrefix(credentialProbeFailure(err), errCredentialSaved.Error()+": ")
+		reason := strings.TrimPrefix(credentialProbeFailure(err, lang), errCredentialSaved.Error()+": ")
 		if reason == "" {
-			reason = "сервер не завершил привязку."
+			reason = locale.T(lang, "page.saved-no-reason")
 		}
-		return http.StatusServiceUnavailable, "Подключение не завершено", "Данные сохранены. Завершить привязку из формы не удалось: " + reason + " Повторите подтверждение в чате."
+		return http.StatusServiceUnavailable, locale.T(lang, "page.saved-title"), locale.T(lang, "page.saved-body", reason)
 	}
 	if errors.Is(err, api.ErrUnauthorized) && credentialLinkRejected(err) {
-		return http.StatusUnauthorized, "Ссылка устарела", "Форма больше не действует. Данные не сохранены. Попросите в чате новую ссылку."
+		return http.StatusUnauthorized, locale.T(lang, "page.stale-title"), locale.T(lang, "page.stale-body")
 	}
 	if errors.Is(err, api.ErrInvalid) {
-		return http.StatusBadRequest, "Форма заполнена не так", credentialFormRejection(err)
+		return http.StatusBadRequest, locale.T(lang, "page.invalid-title"), credentialFormRejection(err, lang)
 	}
-	reason := credentialProbeFailure(err)
+	reason := credentialProbeFailure(err, lang)
 	if reason == "" {
-		reason = "Сервер не подтвердил вход."
+		reason = locale.T(lang, "page.probe-no-reason")
 	}
-	return http.StatusServiceUnavailable, "Проверка не прошла", "Токен не сохранён. " + reason
+	return http.StatusServiceUnavailable, locale.T(lang, "page.probe-title"), locale.T(lang, "page.probe-body", reason)
 }
 
 func credentialLinkRejected(err error) bool {
@@ -1255,34 +1272,38 @@ func credentialLinkRejected(err error) bool {
 // metadata source, ladder rank and an upstream "create a token" link — and
 // demotes heuristic-only (unverified) fields to a visible suggestion rather
 // than a required input.
-func credentialFieldProvenance(field api.ConnectionField) string {
+// credentialFieldProvenance renders where the field declaration came from —
+// metadata source, ladder rank and an upstream "create a token" link — and
+// demotes heuristic-only (unverified) fields to a visible suggestion rather
+// than a required input.
+func credentialFieldProvenance(field api.ConnectionField, lang locale.Lang) string {
 	if field.Name == "" {
 		return ""
 	}
 	parts := []string{}
 	if field.Source != "" {
-		parts = append(parts, "источник: "+field.Source)
+		parts = append(parts, locale.T(lang, "page.prov-source", field.Source))
 	}
 	if field.Rank != "" {
-		parts = append(parts, "rank "+string(field.Rank))
+		parts = append(parts, locale.T(lang, "page.prov-rank", string(field.Rank)))
 	}
 	out := ""
 	if len(parts) > 0 {
 		out = "<small class=\"prov\">" + html.EscapeString(strings.Join(parts, " · ")) + "</small>"
 	}
 	if field.Unverified {
-		out += "<small class=\"prov\">suggested from " + html.EscapeString(field.Source) + " — пожалуйста, проверьте</small>"
+		out += "<small class=\"prov\">" + html.EscapeString(locale.T(lang, "page.prov-unverified", field.Source)) + "</small>"
 	}
 	if field.TokenURL != "" && strings.HasPrefix(field.TokenURL, "https://") {
-		out += "<small class=\"prov\"><a rel=\"noopener noreferrer\" href=\"" + html.EscapeString(field.TokenURL) + "\">Создать токен у провайдера</a></small>"
+		out += "<small class=\"prov\"><a rel=\"noopener noreferrer\" href=\"" + html.EscapeString(field.TokenURL) + "\">" + html.EscapeString(locale.T(lang, "page.prov-token")) + "</a></small>"
 	}
 	return out
 }
 
-func credentialFieldMarkup(hint api.CredentialHint, field api.ConnectionField, value string) string {
-	prov := credentialFieldProvenance(field)
+func credentialFieldMarkup(hint api.CredentialHint, field api.ConnectionField, value string, lang locale.Lang) string {
+	prov := credentialFieldProvenance(field, lang)
 	if field.Unverified {
-		markup := optionalCredentialFieldMarkup(hint)
+		markup := optionalCredentialFieldMarkup(hint, lang)
 		return markup + prov
 	}
 	label := html.EscapeString(credentialFieldLabel(hint))
@@ -1301,10 +1322,10 @@ func credentialFieldMarkup(hint api.CredentialHint, field api.ConnectionField, v
 		}
 	}
 	if hint.Delivery == "file" {
-		return "<label>" + label + " <small class=\"tag\">обязательное</small>" + `<input type="file" name="` + inputName + `" required>` + credentialFieldHint(hint) + prov + "</label>"
+		return "<label>" + label + " <small class=\"tag\">" + html.EscapeString(locale.T(lang, "page.field-required")) + "</small>" + `<input type="file" name="` + inputName + `" required>` + credentialFieldHint(hint) + prov + "</label>"
 	}
 	if hint.Delivery == "json" || strings.EqualFold(hint.Type, "json") {
-		return "<label>" + label + " <small class=\"tag\">обязательное</small>" + "<textarea name=\"" + inputName + "\" autocomplete=\"off\" required></textarea>" + credentialFieldHint(hint) + prov + "</label>"
+		return "<label>" + label + " <small class=\"tag\">" + html.EscapeString(locale.T(lang, "page.field-required")) + "</small>" + "<textarea name=\"" + inputName + "\" autocomplete=\"off\" required></textarea>" + credentialFieldHint(hint) + prov + "</label>"
 	}
 	autocomplete := "off"
 	switch inputType {
@@ -1317,24 +1338,24 @@ func credentialFieldMarkup(hint api.CredentialHint, field api.ConnectionField, v
 	if hint.AlternativeGroup > 0 {
 		required = ""
 	}
-	tag := "необязательное"
+	tag := locale.T(lang, "page.field-optional")
 	opt := ""
 	if required != "" {
-		tag = "обязательное"
-		opt = `<label class="opt"><input type="checkbox" name="opt:` + inputName + `" value="1"> Поле не требуется — запустить без него</label>`
+		tag = locale.T(lang, "page.field-required")
+		opt = `<label class="opt"><input type="checkbox" name="opt:` + inputName + `" value="1"> ` + html.EscapeString(locale.T(lang, "page.opt-out")) + `</label>`
 	}
 	input := "<input type=\"" + inputType + "\" name=\"" + inputName + "\" autocomplete=\"" + autocomplete + "\"" + required
 	if value != "" {
 		input += " value=\"" + html.EscapeString(value) + "\""
 	}
 	input += ">"
-	return "<label>" + label + " <small class=\"tag\">" + tag + "</small>" + input + credentialFieldHint(hint) + prov + "</label>" + opt
+	return "<label>" + label + " <small class=\"tag\">" + html.EscapeString(tag) + "</small>" + input + credentialFieldHint(hint) + prov + "</label>" + opt
 }
 
 // optionalCredentialFieldMarkup renders a discovered non-required input: same
-// control, no required attribute, explicit "необязательное" tag.
-func optionalCredentialFieldMarkup(hint api.CredentialHint) string {
-	label := html.EscapeString(credentialFieldLabel(hint)) + " <small class=\"tag\">необязательное</small>"
+// control, no required attribute, explicit optional tag.
+func optionalCredentialFieldMarkup(hint api.CredentialHint, lang locale.Lang) string {
+	label := html.EscapeString(credentialFieldLabel(hint)) + " <small class=\"tag\">" + html.EscapeString(locale.T(lang, "page.field-optional")) + "</small>"
 	inputName := html.EscapeString(hint.Name)
 	if hint.Delivery == "file" {
 		return "<label>" + label + `<input type="file" name="` + inputName + `">` + credentialFieldHint(hint) + "</label>"
@@ -1424,8 +1445,10 @@ func (g *Gateway) serveOAuthCallback(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "missing onboarding", http.StatusBadRequest)
 			return
 		}
-		flowOnboardingID := g.Control.preparedOAuthOnboardingID(r.URL.Query().Get("state"))
-		if err := g.Control.completePreparedOAuth(r.Context(), r.URL.Query().Get("state"), r.URL.Query().Get("code")); err != nil {
+		state := r.URL.Query().Get("state")
+		lang := g.oauthLang(r, state)
+		flowOnboardingID := g.Control.preparedOAuthOnboardingID(state)
+		if err := g.Control.completePreparedOAuth(r.Context(), state, r.URL.Query().Get("code")); err != nil {
 			log.Printf("toolhub oauth callback failed: %v", err)
 			http.Error(w, "authorization failed; return to chat and retry status", http.StatusForbidden)
 			return
@@ -1434,13 +1457,13 @@ func (g *Gateway) serveOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		// now renders the enablement progress and the final state.
 		if done, derr := g.Control.Store.onboarding(flowOnboardingID); derr == nil &&
 			done.WizardNonce != "" && g.Control.now().Before(done.WizardExpires) {
-			http.Redirect(w, r, g.Control.origin()+"/connect/"+url.PathEscape(done.OnboardingID)+"?k="+url.QueryEscape(done.WizardNonce), http.StatusSeeOther)
+			http.Redirect(w, r, g.Control.origin()+"/connect/"+url.PathEscape(done.OnboardingID)+"?k="+url.QueryEscape(done.WizardNonce)+"&lang="+url.QueryEscape(string(lang)), http.StatusSeeOther)
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		_, _ = io.WriteString(w, credentialResultPage("Подключение завершено", "Можно вернуться в чат. Доступ к календарю проверен."))
+		_, _ = io.WriteString(w, credentialResultPage(locale.T(lang, "page.done-title"), locale.T(lang, "page.done-oauth-body"), lang)) // #nosec G705 -- credentialResultPage escapes title and message
 		return
 	}
 	onboarding, err := g.Control.Store.onboarding(onboardingID)
@@ -1465,6 +1488,35 @@ func linkToken(r *http.Request) string {
 		return t
 	}
 	return r.URL.Query().Get("nonce")
+}
+
+// pageLang resolves the page locale: an explicit ?lang= wins, then
+// Accept-Language, then the operator fallback.
+func pageLang(r *http.Request) locale.Lang {
+	if lang, ok := locale.Parse(r.URL.Query().Get("lang")); ok {
+		return lang
+	}
+	if lang, ok := locale.Negotiate(r.Header.Get("Accept-Language")); ok {
+		return lang
+	}
+	return locale.Fallback()
+}
+
+// oauthLang resolves like pageLang but lets a language remembered on the
+// pending flow win over Accept-Language: the provider's redirect back to
+// /oauth/callback carries only state+code, so the user's explicit ?lang=
+// choice on the hop link survives through the remembered flow state.
+func (g *Gateway) oauthLang(r *http.Request, state string) locale.Lang {
+	if lang, ok := locale.Parse(r.URL.Query().Get("lang")); ok {
+		return lang
+	}
+	if lang, ok := g.Control.oauthFlowLang(state); ok {
+		return lang
+	}
+	if lang, ok := locale.Negotiate(r.Header.Get("Accept-Language")); ok {
+		return lang
+	}
+	return locale.Fallback()
 }
 
 type publicSurfaceKey struct{}

@@ -8,7 +8,7 @@ param(
     [Parameter(Mandatory = $true)][string]$AuthFile,
     [string]$Listen = '127.0.0.1:8876',
     [ValidateSet('dev', 'prod')][string]$Environment = 'prod',
-    [string]$Image = 'hermes-hub:0.4.0-prod',
+    [string]$Image = 'hermes-hub:0.5.0-prod',
     # Required when $Listen is a wildcard address (for example 0.0.0.0:8876 so
     # Docker containers reach the host); the supervisor refuses it otherwise.
     [switch]$AllowWildcardListen,

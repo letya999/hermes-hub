@@ -1,0 +1,69 @@
+change: CHG-0199
+issue: 368
+title: M24 #368 — live acceptance
+status: done
+slices:
+  S13.1-standalone-controller: done
+  S13.2-live-git-legs: done
+  S13.3-live-eval-leg: done
+  S13.4-evidence-closeout: done
+evidence:
+  - "controller: hubctl connector generic-controller @127.0.0.1:18545, scope m24-accept, skillgit@1.0.0 approved for github.com only, token>=32 chars via file"
+  - "candidates: GET github.com/anthropics/skills bare URL -> real ls-remote --symref + ls-tree -r in cli-exec cells -> 20 candidates, commit dbd4588f9e10, source_id 82a901da1b9bedec"
+  - "install: --path skills/pdf -> real init/fetch/archive cells -> draft 20261028t140059.898625700z-6cf4bc757376 'pdf' @dbd4588f; .origin.json {source_id,url,commit,path,tree_sha,scan:pass,fetched_at}"
+  - "draft card: scan_findings include script.shebang(medium) + desc.advise(info) + name.mismatch(medium) — R12.1 lint riding a real import"
+  - "approve -> skill list: pdf @2eb857ea; update --name pdf -> new draft same commit (draft-first on unchanged upstream); approve -> .origin.json refreshed on published dir"
+  - "sources list -> [{id 82a901da1b9bedec, url github anthropics/skills, skills:[pdf]}]; sources remove -> {removed:true, skills:[pdf]}"
+  - "negatives: ssh:// -> invalid skill source (argv parse); https://bitbucket.org -> invalid skill source (host allowlist); https://gitlab.com -> controller 403 'cli egress gitlab.com is not operator-approved' (admission wall live)"
+  - "eval: acceptance-probe (20 queries, split .6) -> skill eval -> triggers {status:model_unavailable, queries:8} — honest report, no fabricated score; persisted .work/tmp/skill-eval-*.json"
+  - "stats: skill stats --name pdf -> {uses:0,helped:0,failed:0,trigger_misses:0} — counters only, no event detail"
+  - "LIVE BUG 1 FOUND+FIXED: git 2.47 safe.directory — bind mountpoint /work owned by host uid != exec uid -> 'not in a git directory'; fixed via -c safe.directory=/work in hardened argv (execcell.go)"
+  - "LIVE BUG 2 FOUND+FIXED: git archive emits pax_global_header + dir entries -> parseExport rejected them; fixed by skipping TypeXGlobalHeader/TypeDir (execcell.go)"
+  - "2026-10-30 session: publish path FIXED � supervisor /v1/skill-apply proxy (env.go/http.go), comm sends envelope+routing fields, compose HUB_RUNTIME_URL hermes-runtime:8080 -> supervisor (was dead alias); all TDD'd"
+  - "card path LIVE: skill_manage create card-path-probe -> card(diff,lint,scan,provenance,link_sent) -> POST publish 200 -> spaces/artem_two/skills + generated/skills-effective both contain SKILL.md; audit published+draft_published"
+  - "usable LIVE: skill_view/skill(card-path-probe) returns body 'answer: BELLAMY'; /card-path-probe alpha beta via mock ingress -> real model relay -> agent reply 'BELLAMY'"
+  - "undo LIVE: undo-probe-2 published -> undo -> 200; skill absent from store+view; audit draft_published+archived+rolled_back (first-publish undo archives recoverably)"
+  - "cross-principal LIVE: artem_main /card-path-probe -> 'Unknown command' (en locale) while artem_two -> BELLAMY � no existence oracle"
+  - "ineligible LIVE: ineligible-probe requires_toolsets [missing] -> index eligible:false missing:[toolset:..] -> /ineligible-probe -> '����� /ineligible-probe ����������.' (localized visible error)"
+  - "$name LIVE: 'run $card-path-probe now' -> expandSkillRefs -> real run completed -> agent 'BELLAMY' (per-principal index)"
+  - "BUG FIXED: shared-gateway /name+$name resolved OWNER's index only for all principals � new HUB_SKILLS_BY_PRINCIPAL root mounts spaces/*/generated/skills-effective ro; legacy single mount now owner-only (sibling leak closed)"
+  - "BUG FIXED (pre-existing): ConfigFromEnv YAML branch (HUB_COMMUNICATION_CONFIG set = every shared deployment) dropped HUB_SKILLS_EFFECTIVE/STORE/BY_PRINCIPAL envs � slash/$name silently dead in shared gateways; envs now parsed in that branch too"
+  - "rollback empty base_revision FIXED: first-publish undo previously 502; Store.Rollback(name,'') archives live skill (recoverable .archive) + rolled_back audit"
+  - "spec note: hidden (disable-model-invocation) skills return 'unavailable' on /name and $name by codified tests; explicit invocation works via skill(name) tool � flag for spec clarification R6.1"
+  - "secrets LIVE: secret-probe (requires.env PROBE_CANARY) -> skill() setup_needed:true + auto-minted form_url -> POST /v1/credential-forms (sibling principal) -> form POST 200 -> gateway relays to supervisor /v1/skill-creds -> spawned runtime writes spaces/artem_two/skills/.state/credentials/secret-probe.json; canary absent from comm/supervisor/runtime logs"
+  - "readiness LIVE: stored cred flips setup_needed to false + form_url suppressed (index stamp is render-time; skill() live-checks .state names only)"
+  - "settings LIVE: settings-probe hermes.config {VERBOSITY,REGION} -> configure undeclared key rejected, VERBOSITY=loud stored -> .state/settings file -> skill() shows loud over default"
+  - "cell lease LIVE (R8.3+R7.2): file_write probe/canary.py -> code_exec(command, path=probe, skill=secret-probe) -> disposable container stdout CANARY=canary-7f4e2b-live (stopped+tree_stopped); same call without skill arg -> CANARY=MISSING"
+  - "no-grant readiness LIVE: scripts/canary.py published -> has_scripts:true instructions_only:true (native:terminal off)"
+  - "BUGS FIXED (per-principal creds, all TDD): (a) skillCredentialNames read owner index only -> skill:<skill> forms rejected for siblings; (b) persistSkillCredentials wrote owner store -> managed deployments now relay via new supervisor /v1/skill-creds -> runtime handler; (c) skillLeaseEnv read owner index+store -> toolhub mounts /skills-effective-by/<p> + /skills-store-by/<p> ro, lease resolves caller dirs"
+  - "known gap: credential ref (self-env) lease path still reads owner HUB_STATE � refs undeclared by probe; recorded for follow-up"
+  - "2026-10-30 git LIVE: skill_manage install anthropics/skills skills/xlsx via MCP -> 6 bounded cli-exec cells -> draft in artem_two store only (owner store clean) -> publish card 200 -> store+effective; .origin.json hub-side only, no .git"
+  - "git update LIVE: update xlsx -> re-fetch same pin ca45fc49 -> diff draft w/ honest scan findings (script.network, unicode.hidden) -> publish 200, undo re-armed"
+  - "BUG FIXED: stale .sources/<id>.git/shallow.lock after client-killed fetch cell -> clearStaleMirrorLock before fetch in Install+Update (TDD)"
+  - "BUG FIXED: lintRefs scanned .py/.sh for markdown-link syntax -> regex literal in anthropics pptx_chart.py false-positived 'resource files may not chain'; link lint now skips script files (TDD on real file)"
+  - "BUG FIXED: egress-relay ResponseHeaderTimeout 30s killed MCP install mid-flight while comm kept working -> relay timeout now 10min (TDD var+bound)"
+  - "BUG FIXED: gateway runtimeSkillApply http.Client 15s < cold runtime spawn (~15s+) -> publish applied upstream while card 502'd 'apply failed'; skillApplyTimeout var now 2min (TDD)"
+  - "BUG FIXED: TestComposeSupervisorModeOmitsResidentRuntime intent preserved — assert no runtime.auth env file instead of exactly-one file (toolhub.auth is controller admission, not runtime auth)"
+  - "eval LIVE (R12.3): hubctl skill eval eval-probe -> materialized temp space -> 4 validation queries x3 runs via real model-relay (in-container, token never leaves container) -> {status:done, accuracy:1.0, pass:true}; report .work/tmp/skill-eval-eval-probe-*.json"
+  - "stats LIVE (R12.5): skill stats xlsx -> {uses:1,last_used} journaled from real skill() invocation; pdf -> zeros (never invoked — honest)"
+  - "restart survival LIVE: killed artem_two runtime -> supervisor respawned on fixed image -> skill(xlsx) returns full tree (store+effective persisted)"
+  - "spawn fail-closed LIVE: crash-budget backoff refused immediate respawn after repeated kills (next_retry_at honored); sibling principal without mounted store -> 503, never owner-store fallback"
+  - "2026-10-31 owner manual legs (main stack, real Telegram): /name + $name invocation, secret-probe env form, notion-search MCP, github-summary MCP+env install, draft-card-approve-publish cycles, /usage output - all exercised by the owner in chat"
+  - "2026-10-31 org legs LIVE on main stack: hubctl org-init testorg -> sync-members created m24-member-a/m24-member-b/me idempotently -> org-echo + team-faq published to org store -> member-b effective view shows both source=org -> member promote REFUSED 'requires owner/admin role, got member' -> owner me promote published"
+  - "collision LIVE: same-named user skill installed under testorg org-echo -> view keeps source=org entry + collision notice hidden_by_source=org (hide+notify as designed)"
+  - "BUG FIXED (host-side admission): hubctl skill git/update on a secondary space presented the space's own toolhub.auth token to the shared workload-controller -> 401. skillGitToken now resolves the infra sibling via stack.InfraSpaceDir (mirrors governanceDocPath precedence). Verified live: artem_two update fetched through the real controller"
+  - "BUG FIXED (update noise): Update created a draft even when the ref never moved -> UpToDate field was dead code. Unmoved ref now returns up_to_date:true with no draft (gitsource install.go; TDD). Verified live: html-book-bundler -> {up_to_date:true}"
+  - "secrets at-rest LIVE: canary-7f4e2b-live present only in .state/credentials/secret-probe.json - absent from spool, logs, jsonl audit (R8.3 honored end-to-end)"
+  - "usage journal LIVE: secret-probe 4 uses; view events for SKILL.md+reference files on grill/prose-polish (progressive disclosure proof); stats cmd reads real counters"
+  - "unmanaged parity: local (no capability_mode) materializes generated/skills-effective the same as managed spaces; mounted ro"
+  - "delivery LIVE (post-fix): root-level workspace .html/.pdf/.png/.mp4 staged to artifact buckets at run end (psihologiya book case reproduced the gap; scan now covers workspace root)"
+  - "relay LIVE (post-fix): model-relay hop default 5m/total 6m on rebuilt artem_two+artem_main relays - 3min generation ceiling removed"
+limitations:
+  - "no private-GitLab leg: no token on this stack; broker-grant path unit-tested only"
+  - "live model eval needs operator-supplied HUB_SKILL_EVAL_URL endpoint - eval legs verified via in-container model-relay earlier (accuracy 1.0); no shipped endpoint exists by design"
+  - "skill-critical scan gate remains advisory per owner MVP decision (R4.4 documented)"
+  - "github-summary skill viewed+eligible but not executed in a run (MCP+env combo execution leg pending owner prompt)"
+validation:
+  just_check: pass (coverage 86.33%, 2026-10-31, serial run all packages ok; 2 parallel-load Windows file-lock flakes pass in isolation)
+  live_acceptance: pass (org delivery+role gates+collision+git update+secrets+stats+parity verified on the running dev stack 2026-10-31; private-GitLab leg creds absent)
+remaining: []

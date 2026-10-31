@@ -1117,6 +1117,147 @@ func TestCellWorkspacePrincipalManagedLayout(t *testing.T) {
 	}
 }
 
+// R10.3/R10.4: a skill-source cell binds exactly one owner mirror —
+// <principal>/skills/.sources/<id>.git — read-write; the id is a fixed
+// 16-hex source identity so no other store path is reachable.
+func TestCellSkillSourceBind(t *testing.T) {
+	c, _ := cellFixture(t, nil)
+	root := t.TempDir()
+	mirror := filepath.Join(root, "alice", "skills", ".sources", "97393e7e6b5ab8df.git")
+	if err := os.MkdirAll(mirror, 0755); err != nil {
+		t.Fatal(err)
+	}
+	c.config.CLI.SpacesRoot = root
+	req := api.CliExecRequest{Principal: "alice", Workspace: api.CliWorkspace{Scope: "skill-source", Path: "97393e7e6b5ab8df.git", Access: "rw"}}
+	got, rw, err := c.cellWorkspaceBind(req)
+	if err != nil || !rw {
+		t.Fatalf("skill-source bind: %v rw=%v", err, rw)
+	}
+	if !strings.HasSuffix(filepath.ToSlash(got), "alice/skills/.sources/97393e7e6b5ab8df.git") {
+		t.Fatalf("mirror bind resolved to %q", got)
+	}
+}
+
+func TestCellSkillSourceBindRejects(t *testing.T) {
+	c, _ := cellFixture(t, nil)
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "alice", "skills", ".sources", "97393e7e6b5ab8df.git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	c.config.CLI.SpacesRoot = root
+	bad := func(path, access string) {
+		t.Helper()
+		req := api.CliExecRequest{Principal: "alice", Workspace: api.CliWorkspace{Scope: "skill-source", Path: path, Access: access}}
+		if _, _, err := c.cellWorkspaceBind(req); err == nil {
+			t.Fatalf("path %q access %q must be rejected", path, access)
+		}
+	}
+	bad("../etc.git", "rw")             // traversal outside .sources
+	bad("not-a-source-id.git", "rw")    // not a source id
+	bad("97393e7e6b5ab8df.git/x", "rw") // below the mirror root
+	bad("97393e7e6b5ab8df.git", "ro")   // mirrors are fetch targets: rw only
+	bad("aaaaaaaaaaaaaaaa.git", "rw")   // valid shape, missing dir
+	c.config.CLI.SpacesRoot = ""
+	bad("97393e7e6b5ab8df.git", "rw") // no spaces root
+	// A symlinked mirror resolves inside Stat but binds outside .sources.
+	c.config.CLI.SpacesRoot = root
+	outside := t.TempDir()
+	link := filepath.Join(root, "alice", "skills", ".sources", "bbbbbbbbbbbbbbbb.git")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	bad("bbbbbbbbbbbbbbbb.git", "rw")
+}
+
+// R7.2: a principal-scoped cell mounts the principal's effective skills view
+// read-only at /skills; the mount must satisfy the cell profile check and
+// never appear for cells without a rendered view or a principal scope.
+func TestCellSkillsMount(t *testing.T) {
+	c, fake := cellFixture(t, nil)
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "alice", "generated", "skills-effective"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "alice", "workspace"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	c.config.CLI.SpacesRoot = root
+	req := cliReq("rg", cellExecution())
+	req.Workspace = api.CliWorkspace{Scope: "principal"}
+	if _, err := c.execCLI(context.Background(), req); err != nil {
+		t.Fatalf("skills-mount exec denied: %v", err)
+	}
+	found := false
+	for _, call := range fake.createCalls() {
+		for _, arg := range call {
+			if strings.Contains(arg, "target=/skills") {
+				found = true
+				if !strings.HasPrefix(arg, "type=bind,") || !strings.Contains(arg, "readonly") || !strings.Contains(arg, "skills-effective") {
+					t.Fatalf("/skills must be a ro bind of the effective view: %q", arg)
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no /skills mount in create argv: %v", fake.createCalls())
+	}
+	// A principal without a rendered view gets no mount — a bind to a missing
+	// host path would make the daemon create the directory itself.
+	c2, fake2 := cellFixture(t, nil)
+	root2 := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root2, "bob", "workspace"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	c2.config.CLI.SpacesRoot = root2
+	req2 := cliReq("rg", cellExecution())
+	req2.Principal, req2.Workspace = "bob", api.CliWorkspace{Scope: "principal"}
+	if _, err := c2.execCLI(context.Background(), req2); err != nil {
+		t.Fatalf("unmounted exec denied: %v", err)
+	}
+	for _, call := range fake2.createCalls() {
+		for _, arg := range call {
+			if strings.Contains(arg, "target=/skills") {
+				t.Fatalf("unrendered view must not mount /skills: %q", arg)
+			}
+		}
+	}
+	// A traversal principal must never resolve a view outside the spaces
+	// root — the cell profile check applies to workspace binds and applies
+	// here the same way.
+	c3, _ := cellFixture(t, nil)
+	root3 := t.TempDir()
+	outside := filepath.Join(filepath.Dir(root3), "escaped")
+	if err := os.MkdirAll(filepath.Join(outside, "generated", "skills-effective"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	c3.config.CLI.SpacesRoot = root3
+	req3 := cliReq("rg", cellExecution())
+	req3.Principal, req3.Workspace = ".."+string(filepath.Separator)+"escaped", api.CliWorkspace{Scope: "principal"}
+	if got := c3.cellSkillsBind(req3); got != "" {
+		t.Fatalf("traversal principal resolved %q outside the spaces root", got)
+	}
+	// A symlinked generated/ under /spaces resolves host-side when the
+	// daemon binds it — the mount must not follow it out of the root.
+	c4, _ := cellFixture(t, nil)
+	root4 := t.TempDir()
+	target := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(target, "generated", "skills-effective"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root4, "alice"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(target, "generated"), filepath.Join(root4, "alice", "generated")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	c4.config.CLI.SpacesRoot = root4
+	req4 := cliReq("rg", cellExecution())
+	req4.Workspace = api.CliWorkspace{Scope: "principal"}
+	if got := c4.cellSkillsBind(req4); got != "" {
+		t.Fatalf("symlinked view resolved %q outside the spaces root", got)
+	}
+}
+
 // Squid needs a beat between docker start and its port bind; the probe runs
 // inside the proxy because the internal network is unreachable otherwise.
 func TestWaitProxyListen(t *testing.T) {

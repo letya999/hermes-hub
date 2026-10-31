@@ -38,14 +38,19 @@ type supervisorArgs struct {
 	watch          bool
 	environment    string
 	warmTTL        time.Duration
+	browserIdleTTL time.Duration
 	max            int
+}
+
+func (o supervisorArgs) config() supervisor.Config {
+	return supervisor.Config{SpacesRoot: o.spaces, Image: o.image, Environment: o.environment, RuntimeAuth: o.auth, WarmTTL: o.warmTTL, BrowserIdleTTL: o.browserIdleTTL, MaxConcurrent: o.max, AllowWildcardListen: o.wildcardListen}
 }
 
 func parseSupervisorArgs(argv []string) (supervisorArgs, error) {
 	var o supervisorArgs
 	flags := flag.NewFlagSet("hub-supervisor", flag.ContinueOnError)
 	flags.StringVar(&o.spaces, "spaces", "spaces", "root containing isolated context homes")
-	flags.StringVar(&o.image, "image", "hermes-hub:0.4.0-prod", "pinned Hermes runtime image")
+	flags.StringVar(&o.image, "image", "hermes-hub:0.5.0-prod", "pinned Hermes runtime image")
 	flags.StringVar(&o.listen, "listen", envOr("HUB_SUPERVISOR_LISTEN", "127.0.0.1:8876"), "private supervisor listen address")
 	flags.StringVar(&o.auth, "auth", supervisorAuthFromEnv(), "shared private supervisor token")
 	flags.StringVar(&o.authFile, "auth-file", os.Getenv("HUB_SUPERVISOR_AUTH_FILE"), "file containing the supervisor token (preferred over -auth)")
@@ -53,6 +58,7 @@ func parseSupervisorArgs(argv []string) (supervisorArgs, error) {
 	flags.BoolVar(&o.watch, "watch", false, "restart a crashed supervisor child within 10 seconds")
 	flags.StringVar(&o.environment, "env", envOr("HUB_ENV", "prod"), "runtime environment: dev or prod")
 	flags.DurationVar(&o.warmTTL, "warm-ttl", supervisor.DefaultWarmTTL, "idle runtime retention")
+	flags.DurationVar(&o.browserIdleTTL, "browser-idle-ttl", supervisor.DefaultBrowserIdleTTL, "idle browser sidecar retention before sleep")
 	flags.IntVar(&o.max, "max-concurrent", 8, "maximum running context runtimes")
 	if err := flags.Parse(argv); err != nil {
 		return o, err
@@ -156,7 +162,7 @@ func run() error {
 		return err
 	}
 	defer stopLog()
-	m, err := supervisor.New(supervisor.Config{SpacesRoot: o.spaces, Image: o.image, Environment: o.environment, RuntimeAuth: o.auth, WarmTTL: o.warmTTL, MaxConcurrent: o.max, AllowWildcardListen: o.wildcardListen})
+	m, err := supervisor.New(o.config())
 	if err != nil {
 		return err
 	}

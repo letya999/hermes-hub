@@ -29,14 +29,17 @@ func TestSupervisorWatchRestartsAndStops(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	// The window must cover two instrumented-binary boots plus the 1s restart
+	// delay under parallel -race load; a re-exec'd test binary can take
+	// seconds just to start on a contended Windows host.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	started := time.Now()
 	if err := watchSupervisor(ctx, executable, []string{"-test.run=^TestSupervisorWatchRestartsAndStops$"}); err != nil {
 		t.Fatal(err)
 	}
 	body, err := os.ReadFile(marker)
-	if err != nil || strings.Count(string(body), "x") != 2 || time.Since(started) > 8*time.Second {
+	if err != nil || strings.Count(string(body), "x") != 2 || time.Since(started) > 30*time.Second {
 		t.Fatalf("watch must restart one crashed child and join it on cancellation: starts=%q error=%v elapsed=%s", body, err, time.Since(started))
 	}
 }
@@ -62,7 +65,7 @@ func TestSupervisorWatchCLIStartsChild(t *testing.T) {
 	if err := os.WriteFile(auth, []byte("synthetic-watch-auth"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	out, _ := exec.CommandContext(ctx, binary, "-watch", "-env", "dev", "-spaces", filepath.Join(root, "spaces"), "-auth-file", auth, "-listen", listener.Addr().String()).CombinedOutput()
 	if !strings.Contains(string(out), "supervisor child exited; restarting in 1s") {

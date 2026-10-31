@@ -74,6 +74,40 @@ func TestEgressRelayForwardsListedHTTP(t *testing.T) {
 	}
 }
 
+// Long control-plane calls (skill-git installs span sequential bounded
+// cells) must not trip the relay's upstream header timeout: the bound has
+// to sit above that budget and be observable as a real 502 when shrunk.
+func TestEgressRelaySurvivesSlowControlUpstream(t *testing.T) {
+	if egressRelayResponseTimeout < 10*time.Minute {
+		t.Fatalf("response timeout %v cannot cover sequential skill-git cells", egressRelayResponseTimeout)
+	}
+	defer func(prev time.Duration) { egressRelayResponseTimeout = prev }(egressRelayResponseTimeout)
+	egressRelayResponseTimeout = 50 * time.Millisecond
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(150 * time.Millisecond)
+		fmt.Fprint(w, "late")
+	}))
+	defer upstream.Close()
+	host := strings.TrimPrefix(upstream.URL, "http://")
+	hostname, _, _ := net.SplitHostPort(host)
+	relay := httptest.NewServer(egressRelayHandler(parseEgressHosts(hostname)))
+	defer relay.Close()
+	conn, err := net.DialTimeout("tcp", strings.TrimPrefix(relay.URL, "http://"), 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	fmt.Fprintf(conn, "GET %s/slow HTTP/1.1\r\nHost: %s\r\n\r\n", upstream.URL, host)
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("a shrunk timeout must surface 502, got %d", resp.StatusCode)
+	}
+}
+
 func TestEgressRelayConnect(t *testing.T) {
 	// A real CONNECT tunnel to a local listener on 443 is impractical in a
 	// test; assert the policy gate instead: non-443 and unlisted are denied,

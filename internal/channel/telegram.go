@@ -9,6 +9,7 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
@@ -169,10 +170,21 @@ func (c telegram) JobEnvelope(user commodel.User, chatID, sender int64) identity
 }
 
 func (c telegram) RouteBlockedNotice(item commodel.Schedule, d *commodel.Delivery) {
-	target := item.Envelope.DeliveryTargetID
+	// The notice goes to the owner's CURRENT verified binding — the durable
+	// envelope target may be stale (the chat remapped to another principal
+	// since enrollment), and a stale binding is exactly what may have caused
+	// the block.
+	owner := c.d.UserByPrincipal(item.Envelope.PrincipalID)
+	if len(owner.TelegramIDs) == 0 {
+		// No verified home: clear the address so normalize refuses the
+		// notice instead of rerouting it to the stale chat.
+		d.ConversationID, d.DeliveryTargetID, d.ChatID = "", "", 0
+		return
+	}
+	target := "telegram-" + strconv.FormatInt(owner.TelegramIDs[0], 10)
 	d.ConversationID, d.DeliveryTargetID = target, target
 	d.TaskID, d.TopicID = "", 0
-	d.ChatID, _ = strconv.ParseInt(strings.TrimPrefix(target, "telegram-"), 10, 64)
+	d.ChatID = owner.TelegramIDs[0]
 }
 
 func (c telegram) PrepareRoutine(in *commodel.Schedule, caller identity.Envelope) (identity.Envelope, error) {
@@ -195,7 +207,7 @@ func (c telegram) SendPresence(ctx context.Context, chatID, topicID int64) error
 func (c telegram) DeliverArtifact(ctx context.Context, delivery *commodel.Delivery, ref hubruntime.ArtifactRef) error {
 	deps := c.d
 	if ref.Error != "" {
-		return deps.API().SendMessage(ctx, delivery.ChatID, delivery.TopicID, LimitTelegramText("Файл не удалось доставить: "+ref.Name), "")
+		return deps.API().SendMessage(ctx, delivery.ChatID, delivery.TopicID, LimitTelegramText(locale.T(delivery.Lang, "artifact.failed", ref.Name)), "")
 	}
 	data, err := deps.ReadDeliveryBlob(delivery.ID, ref.Blob)
 	if err != nil {
@@ -215,7 +227,7 @@ func (c telegram) DeliverArtifact(ctx context.Context, delivery *commodel.Delive
 }
 
 func (c telegram) ValidateOccurrence(o commodel.RoutineOccurrence, caller identity.Envelope) error {
-	if o.Job.ChatID <= 0 || caller != identity.TelegramEnvelope(o.Job.UserID, o.Job.ChatID, o.Job.RuntimeID, o.Job.PolicyVersion) {
+	if o.Job.ChatID <= 0 || !caller.Equal(identity.TelegramEnvelope(o.Job.UserID, o.Job.ChatID, o.Job.RuntimeID, o.Job.PolicyVersion)) {
 		return errors.New("invalid occurrence ownership")
 	}
 	return nil

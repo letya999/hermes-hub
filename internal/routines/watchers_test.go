@@ -176,7 +176,7 @@ func TestAgentEscalationRespectsQuiet(t *testing.T) {
 	if quietLive.State != "capped" {
 		t.Fatalf("quiet escalation must be capped, got %q", quietLive.State)
 	}
-	if len(d.jobs) != 1 || !strings.HasPrefix(d.jobs[0].Text, "[untrusted watcher evidence]") {
+	if len(d.jobs) != 1 || !strings.Contains(d.jobs[0].Text, "[untrusted watcher evidence]") {
 		t.Fatalf("loud schedule must enqueue exactly one evidence job, got %+v", d.jobs)
 	}
 	if len(d.deliveries) != 0 {
@@ -228,5 +228,29 @@ func TestValidateProbeErrorDetail(t *testing.T) {
 	err = ValidateScheduleDraft(in, caller, hooks)
 	if err == nil || !strings.Contains(err.Error(), "does not compile:") {
 		t.Fatalf("regex rejection must carry the compiler reason, got %v", err)
+	}
+}
+
+// TestHookProbeValidates (SPEC-0081 R5.1): a hook probe names its intake
+// label as hook:<name> — never a fetchable URL — and requires event kind.
+func TestHookProbeValidates(t *testing.T) {
+	caller := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
+	hooks := DraftHooks{
+		Channel: func(commodel.Schedule) error { return nil },
+		Script:  ScriptSyntaxError,
+	}
+	in := commodel.Schedule{
+		ScheduleID: "w-hook", Revision: 1, Envelope: caller, UserID: "alice",
+		ActorID: "alice", ScopeID: "user:alice", OrganizationID: "personal",
+		Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "every:5m",
+		Input: "watch hooks", JobKind: "event",
+		Probe: &commodel.WatchProbe{Kind: "hook", URL: "hook:github"},
+	}
+	if err := ValidateScheduleDraft(in, caller, hooks); err != nil {
+		t.Fatalf("hook probe must validate: %v", err)
+	}
+	in.Probe.URL = "https://example.com"
+	if err := ValidateScheduleDraft(in, caller, hooks); err == nil {
+		t.Fatal("hook probe must reject a fetchable URL")
 	}
 }

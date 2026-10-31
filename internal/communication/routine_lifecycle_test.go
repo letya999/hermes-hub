@@ -84,7 +84,7 @@ func TestRoutineSourceEditSeedsANewCheckBaseline(t *testing.T) {
 
 func TestRoutineKindConversionClearsEventSettings(t *testing.T) {
 	s, o, _ := occurrenceFixture(t)
-	in := Schedule{ScheduleID: "convert-event", Envelope: o.Job.Envelope, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 10 * * 5", Input: "fixture", JobKind: "event", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "read_events"}, Sink: "agent", Delivery: "stream"}
+	in := Schedule{ScheduleID: "convert-event", Envelope: o.Job.Envelope, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 10 * * 5", Input: "fixture", JobKind: "event", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "read_events", MinIntervalSeconds: 60}, Sink: "agent", Delivery: "stream"}
 	in, err := s.CreateSchedule(in, in.Envelope, "")
 	if err != nil {
 		t.Fatal(err)
@@ -127,7 +127,7 @@ func TestRoutineDSTWindowsStayInsideLocalBounds(t *testing.T) {
 
 func TestRoutineStreamPauseFencesInFlightBatch(t *testing.T) {
 	s, o, _ := occurrenceFixture(t)
-	in := Schedule{ScheduleID: "stream-fence", Envelope: o.Job.Envelope, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 10 * * 5", Input: "fixture", JobKind: "event", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "read_events"}, Delivery: "stream"}
+	in := Schedule{ScheduleID: "stream-fence", Envelope: o.Job.Envelope, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 10 * * 5", Input: "fixture", JobKind: "event", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "read_events", MinIntervalSeconds: 60}, Delivery: "stream"}
 	in, err := s.CreateSchedule(in, in.Envelope, "")
 	if err != nil {
 		t.Fatal(err)
@@ -144,7 +144,7 @@ func TestRoutineStreamPauseFencesInFlightBatch(t *testing.T) {
 
 func TestRoutineStreamEditFencesInFlightBatch(t *testing.T) {
 	s, o, _ := occurrenceFixture(t)
-	in := Schedule{ScheduleID: "stream-edit-fence", Envelope: o.Job.Envelope, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 10 * * 5", Input: "fixture", JobKind: "event", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "read_events"}, Delivery: "stream"}
+	in := Schedule{ScheduleID: "stream-edit-fence", Envelope: o.Job.Envelope, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 10 * * 5", Input: "fixture", JobKind: "event", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "read_events", MinIntervalSeconds: 60}, Delivery: "stream"}
 	in, err := s.CreateSchedule(in, in.Envelope, "")
 	if err != nil {
 		t.Fatal(err)
@@ -161,7 +161,7 @@ func TestRoutineStreamEditFencesInFlightBatch(t *testing.T) {
 
 func TestRoutineEventSourceEditHasIndependentDeduplication(t *testing.T) {
 	s, o, _ := occurrenceFixture(t)
-	in := Schedule{ScheduleID: "stream-source-edit", Envelope: o.Job.Envelope, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 10 * * 5", Input: "fixture", JobKind: "event", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "read_events"}, Delivery: "stream"}
+	in := Schedule{ScheduleID: "stream-source-edit", Envelope: o.Job.Envelope, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 10 * * 5", Input: "fixture", JobKind: "event", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "read_events", MinIntervalSeconds: 60}, Delivery: "stream"}
 	in, err := s.CreateSchedule(in, in.Envelope, "")
 	if err != nil {
 		t.Fatal(err)
@@ -523,7 +523,7 @@ func TestRoutineHistorySurvivesDetailCompaction(t *testing.T) {
 	}
 	for _, age := range []time.Duration{0, time.Hour, 49 * time.Hour} {
 		if age > 0 {
-			if err := s.Compact(in.NextDue.Add(age), 14*24*time.Hour); err != nil {
+			if err := s.Compact(in.NextDue.Add(age), 14*24*time.Hour, CompactLimits{}); err != nil {
 				t.Fatal(err)
 			}
 		}

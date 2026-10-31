@@ -9,6 +9,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/companion"
 	"github.com/letya999/hermes-hub/internal/devcheck"
 	"github.com/letya999/hermes-hub/internal/diagnostics"
+	"github.com/letya999/hermes-hub/internal/hosting"
 	"github.com/letya999/hermes-hub/internal/migration"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/supervisor"
@@ -40,7 +41,7 @@ func warmTTLFlag(f *flag.FlagSet) *time.Duration {
 
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		fmt.Println("hubctl 0.4.0: init | org-init | migrate-spaces | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | artifact | build | dev-rebuild | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | grant | governance | capability | context | memory | skill | routine | apply\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nConnector controllers: local-controller (fixed Telegram) or generic-controller (trusted artifact)\nSee README.md for account setup and private VPS access.")
+		fmt.Println("hubctl 0.5.0: init | org-init | migrate-spaces | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | artifact | build | dev-rebuild | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | grant | governance | capability | context | memory | skill | routine | apply | usage | watch | image | replay\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nConnector controllers: local-controller (fixed Telegram) or generic-controller (trusted artifact)\nSee README.md for account setup and private VPS access.")
 		return nil
 	}
 	op := args[0]
@@ -52,6 +53,27 @@ func run(ctx context.Context, args []string) error {
 	}
 	if op == "artifact" {
 		return runArtifact(ctx, args[1:])
+	}
+	if op == "hosting-init" {
+		if len(args) != 1 {
+			return fmt.Errorf("hosting-init accepts no arguments")
+		}
+		return hosting.InitVolume("/sites")
+	}
+	if op == "hosting" {
+		f := flag.NewFlagSet("hosting", flag.ContinueOnError)
+		config := f.String("config", "", "operator hosting deployment config")
+		if err := f.Parse(args[1:]); err != nil {
+			return err
+		}
+		if f.NArg() != 0 || *config == "" {
+			return fmt.Errorf("hosting requires --config")
+		}
+		cfg, err := hosting.LoadDeployment(*config)
+		if err != nil {
+			return err
+		}
+		return hosting.Run(ctx, cfg)
 	}
 	if op == "relay" {
 		f := flag.NewFlagSet("relay", flag.ContinueOnError)
@@ -110,6 +132,12 @@ func run(ctx context.Context, args []string) error {
 	if op == "secret" {
 		return runSecret(ctx, args[1:])
 	}
+	if op == "exposure" {
+		return runExposure(ctx, args[1:])
+	}
+	if op == "dns" {
+		return runDNS(ctx, args[1:])
+	}
 	if op == "credentials" {
 		return runCredentials(ctx, args[1:])
 	}
@@ -152,17 +180,174 @@ func run(ctx context.Context, args []string) error {
 		profile := f.String("user", "me", "person identifier")
 		spoolDir := f.String("spool", "", "communication spool")
 		stateDir := f.String("state", "", "runtime state dir (knowledge target)")
+		spaceDir := f.String("dir", "", "space directory (required by the space: section)")
 		if err := f.Parse(args[1:]); err != nil {
 			return err
 		}
 		if *file == "" || *spoolDir == "" {
 			return fmt.Errorf("apply requires -f <file> and --spool <dir>")
 		}
-		rep, err := applyFile(*spoolDir, *stateDir, *profile, *file)
+		rep, err := applyFile(*spoolDir, *stateDir, *profile, *file, *spaceDir)
 		if err != nil {
 			return err
 		}
 		return json.NewEncoder(os.Stdout).Encode(rep)
+	}
+	if op == "usage" {
+		f := flag.NewFlagSet("usage", flag.ContinueOnError)
+		spoolDir := f.String("spool", "", "communication spool dir holding usage.jsonl")
+		days := f.Int("days", 0, "window in days (0 = all records)")
+		actor := f.String("actor", "", "aggregate only this actor/user id")
+		model := f.String("model", "", "aggregate only this model id")
+		if err := f.Parse(args[1:]); err != nil {
+			return err
+		}
+		if *spoolDir == "" || f.NArg() != 0 {
+			return fmt.Errorf("usage requires --spool <dir> and no positional arguments")
+		}
+		return runUsage(os.Stdout, *spoolDir, time.Duration(*days)*24*time.Hour, *actor, *model)
+	}
+	if op == "watch" {
+		f := flag.NewFlagSet("watch", flag.ContinueOnError)
+		job := f.String("job", "", "job id to watch to terminal")
+		scope := f.String("scope", "", "user scope to watch (runtime transitions)")
+		spoolDir := f.String("spool", "", "communication spool dir (durable mapping source)")
+		supervisorURL := f.String("supervisor-url", "", "supervisor HTTP base URL")
+		supervisorAuth := f.String("supervisor-auth", "", "supervisor bearer token")
+		interval := f.Duration("interval", time.Second, "poll interval")
+		timeout := f.Duration("timeout", 0, "overall deadline (e.g. 30s); 0 = wait until done/ctrl-c")
+		if err := f.Parse(args[1:]); err != nil {
+			return err
+		}
+		if (*job == "") == (*scope == "") || f.NArg() != 0 || (*spoolDir == "" && *supervisorURL == "") {
+			return fmt.Errorf("usage: hubctl watch (--job <id> | --scope <user>) (--spool <dir> | --supervisor-url <url> [--supervisor-auth <tok>]) [--timeout <d>]")
+		}
+		return runWatch(ctx, os.Stdout, watchOptions{
+			Job: *job, Scope: *scope, SpoolDir: *spoolDir,
+			SupervisorURL: *supervisorURL, SupervisorAuth: *supervisorAuth,
+			Interval: *interval, Timeout: *timeout, Client: http.DefaultClient,
+		})
+	}
+	if op == "image" {
+		dir, environment := "", "prod"
+		subArgs := args[1:]
+		var kept []string
+		for i := 0; i < len(subArgs); i++ {
+			switch subArgs[i] {
+			case "--dir":
+				if i+1 >= len(subArgs) {
+					return fmt.Errorf("image: --dir requires a value")
+				}
+				dir, i = subArgs[i+1], i+1
+			case "--env":
+				if i+1 >= len(subArgs) {
+					return fmt.Errorf("image: --env requires a value")
+				}
+				environment, i = subArgs[i+1], i+1
+			default:
+				kept = append(kept, subArgs[i])
+			}
+		}
+		if environment != "dev" && environment != "prod" {
+			return fmt.Errorf("image requires --env dev|prod")
+		}
+		return runImage(ctx, os.Stdout, dir, environment, devcheck.DockerSmoke, kept)
+	}
+	if op == "org" {
+		f := flag.NewFlagSet("org", flag.ContinueOnError)
+		organization := f.String("org", "", "organization identifier")
+		organizationDir := f.String("org-dir", "", "organization configuration directory")
+		spacesRoot := f.String("spaces", "spaces", "root containing member spaces")
+		dryRun := f.Bool("dry-run", false, "report without writing")
+		if len(args) < 2 || args[1] != "sync-members" {
+			return fmt.Errorf("usage: hubctl org sync-members --org <org> --org-dir <dir> [--spaces <root>] [--dry-run]")
+		}
+		if err := f.Parse(args[2:]); err != nil {
+			return err
+		}
+		if f.NArg() != 0 || *organization == "" || *organizationDir == "" {
+			return fmt.Errorf("usage: hubctl org sync-members --org <org> --org-dir <dir> [--spaces <root>] [--dry-run]")
+		}
+		rep, err := stack.SyncOrganizationMembers(*organizationDir, *organization, *spacesRoot, "prod", *dryRun)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(rep)
+	}
+	if op == "profile" {
+		if len(args) < 2 {
+			return fmt.Errorf("usage: hubctl profile grants|diff|apply")
+		}
+		switch args[1] {
+		case "grants":
+			f := flag.NewFlagSet("profile grants", flag.ContinueOnError)
+			dir := f.String("dir", "", "space directory the profile resolves against")
+			profile := f.String("profile", "", "provisioning profile name")
+			policyFile := f.String("policy", "", "capability policy JSON whose defaults the grants replace")
+			out := f.String("out", "", "draft output path (default stdout)")
+			if err := f.Parse(args[2:]); err != nil {
+				return err
+			}
+			if *dir == "" || *profile == "" || *policyFile == "" || f.NArg() != 0 {
+				return fmt.Errorf("usage: hubctl profile grants --dir <space> --profile <name> --policy <policy.json> [--out <draft.json>]")
+			}
+			return runProfileGrants(*dir, *profile, *policyFile, *out)
+		case "diff", "apply":
+			f := flag.NewFlagSet("profile "+args[1], flag.ContinueOnError)
+			dir := f.String("dir", "", "space directory")
+			if err := f.Parse(args[2:]); err != nil {
+				return err
+			}
+			if *dir == "" || f.NArg() != 0 {
+				return fmt.Errorf("usage: hubctl profile %s --dir <space>", args[1])
+			}
+			rep, err := stack.UpdateProvisioningProfile(*dir, args[1] == "apply")
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(os.Stdout).Encode(rep)
+		}
+		return fmt.Errorf("unknown profile command %q", args[1])
+	}
+	if op == "replay" {
+		if len(args) < 2 {
+			return fmt.Errorf("usage: hubctl replay export --job <id> --spool <dir> [-o <dir>] | hubctl replay run --bundle <file> --replay-dir <dir> [--runtime-url <url>]")
+		}
+		switch args[1] {
+		case "export":
+			f := flag.NewFlagSet("replay export", flag.ContinueOnError)
+			job := f.String("job", "", "durable job id to export")
+			spoolDir := f.String("spool", "", "communication spool dir holding the job")
+			spaceDir := f.String("space", "", "space dir for non-secret doc snapshot")
+			outDir := f.String("o", "", "output dir for bundle.json")
+			promptFile := f.String("prompt-file", "", "prompt file for sensitive jobs (verified against recorded digest)")
+			if err := f.Parse(args[2:]); err != nil {
+				return err
+			}
+			if *job == "" || *spoolDir == "" || *outDir == "" || f.NArg() != 0 {
+				return fmt.Errorf("usage: hubctl replay export --job <id> --spool <dir> [--space <dir>] -o <dir> [--prompt-file <f>]")
+			}
+			return runReplayExport(os.Stdout, replayExportOpts{
+				JobID: *job, SpoolDir: *spoolDir, SpaceDir: *spaceDir, OutDir: *outDir, PromptFile: *promptFile,
+			})
+		case "run":
+			f := flag.NewFlagSet("replay run", flag.ContinueOnError)
+			bundle := f.String("bundle", "", "bundle.json produced by replay export")
+			replayDir := f.String("replay-dir", "", "isolated dir for replay spool + mock captures")
+			runtimeURL := f.String("runtime-url", "", "optional replay supervisor URL (/v1/execute)")
+			runtimeAuth := f.String("runtime-auth", "", "optional bearer token for --runtime-url")
+			if err := f.Parse(args[2:]); err != nil {
+				return err
+			}
+			if *bundle == "" || *replayDir == "" || f.NArg() != 0 {
+				return fmt.Errorf("usage: hubctl replay run --bundle <file> --replay-dir <dir> [--runtime-url <url> [--runtime-auth <tok>]]")
+			}
+			return runReplayRun(os.Stdout, replayRunOpts{
+				BundlePath: *bundle, ReplayDir: *replayDir, RuntimeURL: *runtimeURL, RuntimeAuth: *runtimeAuth,
+			})
+		default:
+			return fmt.Errorf("replay: unknown subcommand %q (export|run)", args[1])
+		}
 	}
 	if op == "spool" {
 		f := flag.NewFlagSet("spool", flag.ContinueOnError)
@@ -188,6 +373,7 @@ func run(ctx context.Context, args []string) error {
 	dir := f.String("dir", "", "private deployment directory")
 	root := f.String("root", ".", "source root")
 	profile := f.String("user", "me", "person identifier")
+	provisionProfile := f.String("profile", "", "provisioning profile for init (else org assignment/default)")
 	organization := f.String("org", "", "organization identifier")
 	organizationRoot := f.String("organization", "", "mounted organization docs root for tools")
 	organizationDir := f.String("org-dir", "", "organization configuration directory")
@@ -204,7 +390,7 @@ func run(ctx context.Context, args []string) error {
 	userSource := f.String("user-source", "", "legacy user directory")
 	orgSource := f.String("organization-source", "", "legacy organization directory")
 	spacesRoot := f.String("spaces", "spaces", "root containing context homes for the host supervisor")
-	supervisorImage := f.String("runtime-image", "hermes-hub:0.4.0-prod", "pinned runtime image for the host supervisor")
+	supervisorImage := f.String("runtime-image", "hermes-hub:0.5.0-prod", "pinned runtime image for the host supervisor")
 	supervisorListen := f.String("supervisor-listen", "127.0.0.1:8876", "private host supervisor address")
 	supervisorWildcard := f.Bool("supervisor-allow-wildcard-listen", false, "permit binding the supervisor control plane on all interfaces")
 	supervisorAuth := f.String("supervisor-auth", supervisorAuthFromEnv(), "private supervisor token")
@@ -277,6 +463,9 @@ func run(ctx context.Context, args []string) error {
 		}
 		return supervisor.Serve(ctx, manager, *supervisorListen)
 	case "init":
+		if *provisionProfile != "" {
+			return stack.InitEnvironmentProvision(*dir, *profile, *environment, *provisionProfile)
+		}
 		if *organization != "" {
 			return stack.InitEnvironmentWithOrganization(*dir, *profile, *environment, *organization)
 		}
@@ -403,6 +592,13 @@ func run(ctx context.Context, args []string) error {
 				fmt.Println("Selected model is present in the provider catalog.")
 				return nil
 			}
+			skillLines, err := stack.SkillDoctor(*dir)
+			if err != nil {
+				return err
+			}
+			for _, line := range skillLines {
+				fmt.Println(line)
+			}
 			fmt.Println("Configuration valid. OAuth sessions, provider permissions and Docker runtime require live verification.")
 			return nil
 		}
@@ -449,7 +645,7 @@ func run(ctx context.Context, args []string) error {
 					return err
 				}
 			}
-			if s.Has("telegram") {
+			if telegramOwnershipCheckApplies(s) {
 				secrets, secretErr := stack.ReadSecrets(filepath.Join(*dir, "secrets."+*environment+".env"))
 				if secretErr != nil {
 					return secretErr
@@ -487,9 +683,25 @@ func run(ctx context.Context, args []string) error {
 			}
 			dockerfile := filepath.Join(rootAbs, "docker", "Dockerfile")
 			for _, stage := range []string{"cli-tools", "cell-proxy"} {
-				image := "hermes-hub-" + stage + ":0.4.0-" + *environment
+				image := "hermes-hub-" + stage + ":0.5.0-" + *environment
 				if err := dockerCmd("build", "--target", stage, "-t", image, "-f", dockerfile, rootAbs).Run(); err != nil {
 					return fmt.Errorf("build %s: %w", image, err)
+				}
+			}
+			// Spawned runtimes resolve the agent tag at container start.
+			// Supervisor and managed renders drop the hermes-runtime service,
+			// so no compose build section produces the tag there — build it
+			// explicitly like the cell images above.
+			envSettings, readErr := stack.ReadEnvironment(*dir, *environment)
+			if readErr != nil {
+				return readErr
+			}
+			if envSettings.RendersInfra() {
+				if _, rendered := stack.Compose(envSettings, rootAbs, abs)["services"].(stack.M)["hermes-runtime"]; !rendered {
+					image := "hermes-hub:0.5.0-" + *environment
+					if err := dockerCmd("build", "--target", *environment, "-t", image, "-f", dockerfile, rootAbs).Run(); err != nil {
+						return fmt.Errorf("build %s: %w", image, err)
+					}
 				}
 			}
 			if *environment == "dev" && (len(f.Args()) == 0 || slices.Contains(f.Args(), "cliproxy")) {

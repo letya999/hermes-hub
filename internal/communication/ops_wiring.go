@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/commops"
+	"github.com/letya999/hermes-hub/internal/locale"
 )
 
 // canaryJobTimeout bounds a single verification round; a run that has not
@@ -49,7 +50,7 @@ func (g *Gateway) opsDeps() commops.Deps {
 		Owner: func() (commops.Owner, bool) {
 			for _, u := range g.config.Users {
 				if u.Enabled {
-					return commops.Owner{ID: u.ID, TelegramIDs: u.TelegramIDs}, true
+					return commops.Owner{ID: u.ID, TelegramIDs: u.TelegramIDs, Lang: locale.LangOf(u.WorkspaceDir)}, true
 				}
 			}
 			return commops.Owner{}, false
@@ -165,7 +166,7 @@ func (g *Gateway) canaryLoop(ctx context.Context, interval time.Duration) {
 }
 
 func (g *Gateway) healthLines(user User) string {
-	return g.opsEngine().HealthLines(commops.Owner{ID: user.ID, TelegramIDs: user.TelegramIDs})
+	return g.opsEngine().HealthLines(commops.Owner{ID: user.ID, TelegramIDs: user.TelegramIDs, Lang: locale.LangOf(user.WorkspaceDir)})
 }
 
 // healthSurface reuses the readiness surface — its additive Restarts field is

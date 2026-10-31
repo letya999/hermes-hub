@@ -1,6 +1,7 @@
 package communication
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -44,6 +45,73 @@ func TestValidateScheduleDraftBranches(t *testing.T) {
 		{"sink non-event", func(s *Schedule) { s.Sink = "notify" }},
 		{"delivery bad", func(s *Schedule) { s.JobKind = "event"; s.Sink = "notify"; s.Delivery = "weird" }},
 		{"stream non-mcp", func(s *Schedule) { s.JobKind = "event"; s.Delivery = "stream" }},
+		{"probe on agent kind", func(s *Schedule) { s.JobKind = "agent" }},
+		{"stream poll no cadence", func(s *Schedule) {
+			s.JobKind = "event"
+			s.Sink = "notify"
+			s.Delivery = "stream"
+			s.Probe = &WatchProbe{Kind: "mcp_tool", Tool: "hub-feed-poll-abc"}
+		}},
+		{"min interval tiny", func(s *Schedule) {
+			s.JobKind = "event"
+			s.Sink = "notify"
+			s.Delivery = "stream"
+			s.Probe = &WatchProbe{Kind: "mcp_tool", Tool: "hub-feed-poll-abc", MinIntervalSeconds: 2}
+		}},
+		{"min interval huge", func(s *Schedule) {
+			s.JobKind = "event"
+			s.Sink = "notify"
+			s.Delivery = "stream"
+			s.Probe = &WatchProbe{Kind: "mcp_tool", Tool: "hub-feed-poll-abc", MinIntervalSeconds: 99999}
+		}},
+		{"min interval on poll", func(s *Schedule) {
+			s.JobKind = "event"
+			s.Sink = "notify"
+			s.Probe = &WatchProbe{Kind: "mcp_tool", Tool: "hub-feed-poll-abc", MinIntervalSeconds: 30}
+		}},
+		{"min interval http", func(s *Schedule) { s.Probe.MinIntervalSeconds = 30 }},
+		{"filter non-event", func(s *Schedule) { s.Probe.Filter = "print('keep')" }},
+		{"sources non-stream", func(s *Schedule) {
+			s.JobKind = "event"
+			s.Sink = "notify"
+			s.Probe = &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc", Sources: []WatchProbeSource{{Args: map[string]any{"chat_id": 1}}}}
+		}},
+		{"sources non-mcp", func(s *Schedule) {
+			s.JobKind = "event"
+			s.Sink = "notify"
+			s.Delivery = "stream"
+			s.Probe = &WatchProbe{Kind: "http", URL: "https://x/y", Sources: []WatchProbeSource{{}}}
+		}},
+		{"sources overflow", func(s *Schedule) {
+			s.JobKind = "event"
+			s.Sink = "notify"
+			s.Delivery = "stream"
+			s.Probe = &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc", Sources: make([]WatchProbeSource, 33)}
+		}},
+		{"source bad tool", func(s *Schedule) {
+			s.JobKind = "event"
+			s.Sink = "notify"
+			s.Delivery = "stream"
+			s.Probe = &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc", Sources: []WatchProbeSource{{Tool: "bad!!"}}}
+		}},
+		{"source bad name", func(s *Schedule) {
+			s.JobKind = "event"
+			s.Sink = "notify"
+			s.Delivery = "stream"
+			s.Probe = &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc", Sources: []WatchProbeSource{{Name: "!!bad"}}}
+		}},
+		{"source args huge", func(s *Schedule) {
+			s.JobKind = "event"
+			s.Sink = "notify"
+			s.Delivery = "stream"
+			s.Probe = &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc", Sources: []WatchProbeSource{{Args: map[string]any{"pad": strings.Repeat("x", 9*1024)}}}}
+		}},
+		{"source poll no cadence", func(s *Schedule) {
+			s.JobKind = "event"
+			s.Sink = "notify"
+			s.Delivery = "stream"
+			s.Probe = &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc", Sources: []WatchProbeSource{{Tool: "hub-feed-poll-abc"}}}
+		}},
 		{"probe url long", func(s *Schedule) { s.Probe.URL = "https://x/" + string(make([]byte, 2100)) }},
 		{"probe kind bad", func(s *Schedule) { s.Probe.Kind = "carrier-pigeon" }},
 		{"github probe bad", func(s *Schedule) { s.Probe = &WatchProbe{Kind: "github_issue", URL: "https://not-github/x"} }},
@@ -65,6 +133,19 @@ func TestValidateScheduleDraftBranches(t *testing.T) {
 	if err := validateScheduleDraft(valid, identity.TelegramEnvelope("mallory", 99, "mallory", "policy-1")); err == nil {
 		t.Fatal("foreign caller accepted")
 	}
+	// A probe is a watcher/check/event-only contract: every other job kind
+	// must reject it rather than silently carry an ignored probe — an
+	// agent-kind routine that polls a source is the cron-shaped misuse
+	// watch_subscribe exists to prevent.
+	for _, kind := range []string{"reminder", "digest", "script", ""} {
+		d := valid
+		probe := *d.Probe
+		d.Probe = &probe
+		d.JobKind = kind
+		if err := validateScheduleDraft(d, env); err == nil {
+			t.Errorf("probe on kind %q accepted", kind)
+		}
+	}
 	// Valid variants: check+expect, event+sink, github issue probe, mcp_tool.
 	for name, patch := range map[string]func(*Schedule){
 		"check equals": func(s *Schedule) { s.JobKind = "check"; s.Expect = "equals:green" },
@@ -77,6 +158,33 @@ func TestValidateScheduleDraftBranches(t *testing.T) {
 			s.JobKind = "check"
 			s.Expect = "changed"
 			s.Probe = &WatchProbe{URL: "task:t-12345"}
+		},
+		"event stream wait tool": func(s *Schedule) {
+			s.JobKind = "event"
+			s.Sink = "notify"
+			s.Delivery = "stream"
+			s.Probe = &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc"}
+		},
+		"event stream poll cadence": func(s *Schedule) {
+			s.JobKind = "event"
+			s.Sink = "notify"
+			s.Delivery = "stream"
+			s.Probe = &WatchProbe{Kind: "mcp_tool", Tool: "hub-feed-poll-abc", MinIntervalSeconds: 30}
+		},
+		"event filter": func(s *Schedule) {
+			s.JobKind = "event"
+			s.Sink = "notify"
+			s.Probe = &WatchProbe{Kind: "mcp_tool", Tool: "hub-feed-poll-abc", Filter: "print('keep')"}
+		},
+		"event stream sources": func(s *Schedule) {
+			s.JobKind = "event"
+			s.Sink = "agent"
+			s.Delivery = "stream"
+			s.Probe = &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-abc", Args: map[string]any{"timeout": 20},
+				Sources: []WatchProbeSource{
+					{Name: "alpha", Args: map[string]any{"chat_id": 1}},
+					{Name: "beta", Tool: "hub-tg-wait-settled-xyz", Args: map[string]any{"chat_id": 2}},
+				}}
 		},
 	} {
 		d := valid

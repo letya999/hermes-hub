@@ -31,13 +31,22 @@ func claimID(t *testing.T, s *Spool) string {
 	return job.ID
 }
 
-// Different contexts must not head-of-line block each other (ADR-0025).
+// laneJob pins a job to an explicit conversation (topic/task lane, ADR-0090).
+func laneJob(id, principal, conversation string) Job {
+	job := parallelJob(id, principal)
+	job.Envelope.ConversationID = conversation
+	job.Envelope.DeliveryTargetID = conversation
+	return job
+}
+
+// Different contexts must not head-of-line block each other (ADR-0025), and
+// serialization inside one context is per conversation (ADR-0090).
 func TestClaimJobSkipsBusyContext(t *testing.T) {
 	s, err := NewSpool(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []string{"a1", "b1", "a2"} {
+	for _, id := range []string{"a1", "b1"} {
 		user := "alice"
 		if id[0] == 'b' {
 			user = "bob"
@@ -46,6 +55,10 @@ func TestClaimJobSkipsBusyContext(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// a2 shares a1's conversation: it queues behind the held lane.
+	if _, err := s.Enqueue(laneJob("a2", "alice", "conv-a1")); err != nil {
+		t.Fatal(err)
+	}
 	if got := claimID(t, s); got != "a1" {
 		t.Fatalf("first claim = %q", got)
 	}
@@ -53,31 +66,60 @@ func TestClaimJobSkipsBusyContext(t *testing.T) {
 		t.Fatalf("second claim must skip busy alice context, got %q", got)
 	}
 	if got := claimID(t, s); got != "" {
-		t.Fatalf("same-context job must stay queued, got %q", got)
+		t.Fatalf("same-conversation job must stay queued, got %q", got)
 	}
 	if err := s.CompleteJob("a1"); err != nil {
 		t.Fatal(err)
 	}
 	if got := claimID(t, s); got != "a2" {
-		t.Fatalf("released context must be claimable, got %q", got)
+		t.Fatalf("released lane must be claimable, got %q", got)
 	}
 }
 
-// An uncertain outcome keeps only its own context blocked; the same job stays
+// Different conversations in one context are separate lanes (ADR-0090 R2):
+// a user's topics run in parallel while each conversation keeps FIFO.
+func TestClaimParallelConversationsSameContext(t *testing.T) {
+	s, err := NewSpool(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, job := range []Job{laneJob("a1", "alice", "topic-1"), laneJob("a2", "alice", "topic-2"), laneJob("a3", "alice", "topic-1")} {
+		if _, err := s.Enqueue(job); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := claimID(t, s); got != "a1" {
+		t.Fatalf("first claim = %q", got)
+	}
+	if got := claimID(t, s); got != "a2" {
+		t.Fatalf("second conversation must claim in parallel, got %q", got)
+	}
+	if got := claimID(t, s); got != "" {
+		t.Fatalf("same-conversation job must stay queued, got %q", got)
+	}
+	if err := s.CompleteJob("a1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := claimID(t, s); got != "a3" {
+		t.Fatalf("freed lane must be claimable, got %q", got)
+	}
+}
+
+// An uncertain outcome keeps only its own lane blocked; the same job stays
 // claimable for observation (its run may still be executing).
 func TestUncertainHoldsOnlyOwnContext(t *testing.T) {
 	s, err := NewSpool(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []string{"a1", "a2", "b1"} {
-		user := "alice"
-		if id == "b1" {
-			user = "bob"
-		}
-		if _, err := s.Enqueue(parallelJob(id, user)); err != nil {
-			t.Fatal(err)
-		}
+	if _, err := s.Enqueue(laneJob("a1", "alice", "topic-1")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Enqueue(laneJob("a2", "alice", "topic-1")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Enqueue(parallelJob("b1", "bob")); err != nil {
+		t.Fatal(err)
 	}
 	if got := claimID(t, s); got != "a1" {
 		t.Fatalf("claim = %q", got)
@@ -92,7 +134,7 @@ func TestUncertainHoldsOnlyOwnContext(t *testing.T) {
 		t.Fatalf("other context must stay claimable, got %q", got)
 	}
 	if got := claimID(t, s); got != "" {
-		t.Fatalf("uncertain context must stay blocked, got %q", got)
+		t.Fatalf("uncertain lane must stay blocked, got %q", got)
 	}
 	// RequeueObservations returns the admitted run to pending; only it may
 	// re-claim the held context key.
@@ -112,7 +154,7 @@ func TestRestartRebuildsInFlight(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Enqueue(parallelJob("a1", "alice")); err != nil {
+	if _, err := s.Enqueue(laneJob("a1", "alice", "topic-1")); err != nil {
 		t.Fatal(err)
 	}
 	if got := claimID(t, s); got != "a1" {
@@ -128,16 +170,22 @@ func TestRestartRebuildsInFlight(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := reopened.Enqueue(parallelJob("a2", "alice")); err != nil {
+	if _, err := reopened.Enqueue(laneJob("a2", "alice", "topic-1")); err != nil {
 		t.Fatal(err)
 	}
-	// The crashed job owns the key and reclaims it itself; the queued
-	// same-context job stays blocked.
+	if _, err := reopened.Enqueue(laneJob("a3", "alice", "topic-2")); err != nil {
+		t.Fatal(err)
+	}
+	// The crashed job owns the lane and reclaims it; the queued
+	// same-conversation job stays blocked, another lane claims freely.
 	if got := claimID(t, reopened); got != "a1" {
-		t.Fatalf("crashed job must reclaim its own context, got %q", got)
+		t.Fatalf("crashed job must reclaim its own lane, got %q", got)
+	}
+	if got := claimID(t, reopened); got != "a3" {
+		t.Fatalf("other lane must claim after restart, got %q", got)
 	}
 	if got := claimID(t, reopened); got != "" {
-		t.Fatalf("restarted spool must keep uncertain context blocked, got %q", got)
+		t.Fatalf("restarted spool must keep the held lane blocked, got %q", got)
 	}
 	if _, err := reopened.Enqueue(parallelJob("b1", "bob")); err != nil {
 		t.Fatal(err)
@@ -149,18 +197,20 @@ func TestRestartRebuildsInFlight(t *testing.T) {
 
 // An uncertain outcome without an admitted run (e.g. supervisor rejected the
 // acquire before any container started) has nothing executing: it must not
-// hold the context, or the user deadlocks forever — RequeueObservations only
-// re-drives admitted runs.
+// hold the lane, or the conversation deadlocks forever — RequeueObservations
+// only re-drives admitted runs.
 func TestUnadmittedUncertainReleasesContext(t *testing.T) {
 	root := t.TempDir()
 	s, err := NewSpool(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []string{"a1", "a2"} {
-		if _, err := s.Enqueue(parallelJob(id, "alice")); err != nil {
-			t.Fatal(err)
-		}
+	// a2 shares a1's lane: only a released lane lets it claim.
+	if _, err := s.Enqueue(laneJob("a1", "alice", "topic-1")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Enqueue(laneJob("a2", "alice", "topic-1")); err != nil {
+		t.Fatal(err)
 	}
 	if got := claimID(t, s); got != "a1" {
 		t.Fatalf("claim = %q", got)
@@ -172,10 +222,10 @@ func TestUnadmittedUncertainReleasesContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := claimID(t, s); got != "a2" {
-		t.Fatalf("unadmitted uncertain must release the context, got %q", got)
+		t.Fatalf("unadmitted uncertain must release the lane, got %q", got)
 	}
 	// Same after restart: rebuild must not resurrect a hold with no run.
-	if _, err := s.Enqueue(parallelJob("a3", "alice")); err != nil {
+	if _, err := s.Enqueue(laneJob("a3", "alice", "topic-1")); err != nil {
 		t.Fatal(err)
 	}
 	reopened, err := NewSpool(root)
@@ -214,6 +264,70 @@ func (b blockingRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, er
 		return RunOutcome{Text: "done", JobID: job.ID, Status: "completed", LastEvent: "run.completed"}, nil
 	case <-ctx.Done():
 		return RunOutcome{}, ctx.Err()
+	}
+}
+
+// Jobs without a conversation id degrade to the context key (ADR-0090 R1):
+// they serialize with each other but not with named lanes.
+func TestEmptyConversationFallsBackToContextKey(t *testing.T) {
+	s, err := NewSpool(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	bare := parallelJob("a1", "alice")
+	bare.Envelope.ConversationID = ""
+	for _, job := range []Job{bare, laneJob("a2", "alice", "topic-1")} {
+		if _, err := s.Enqueue(job); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bare2 := parallelJob("a3", "alice")
+	bare2.Envelope.ConversationID = ""
+	if _, err := s.Enqueue(bare2); err != nil {
+		t.Fatal(err)
+	}
+	if got := claimID(t, s); got != "a1" {
+		t.Fatalf("claim = %q", got)
+	}
+	if got := claimID(t, s); got != "a2" {
+		t.Fatalf("named lane must claim beside the context lane, got %q", got)
+	}
+	if got := claimID(t, s); got != "" {
+		t.Fatalf("second conversationless job must stay queued, got %q", got)
+	}
+}
+
+// A context at its lane cap queues further conversations like a busy lane
+// (ADR-0090 R3); other contexts stay claimable.
+func TestContextParallelCapSkips(t *testing.T) {
+	t.Setenv("HUB_CONTEXT_MAX_PARALLEL", "2")
+	s, err := NewSpool(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, job := range []Job{laneJob("a1", "alice", "topic-1"), laneJob("a2", "alice", "topic-2"), laneJob("a3", "alice", "topic-3"), parallelJob("b1", "bob")} {
+		if _, err := s.Enqueue(job); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := claimID(t, s); got != "a1" {
+		t.Fatalf("claim = %q", got)
+	}
+	// Scope rotation gives bob the next claim before alice's second lane.
+	if got := claimID(t, s); got != "b1" {
+		t.Fatalf("rotation must serve the other scope, got %q", got)
+	}
+	if got := claimID(t, s); got != "a2" {
+		t.Fatalf("second lane must claim under the cap, got %q", got)
+	}
+	if got := claimID(t, s); got != "" {
+		t.Fatalf("third lane over the cap must wait, got %q", got)
+	}
+	if err := s.CompleteJob("a1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := claimID(t, s); got != "a3" {
+		t.Fatalf("freed lane slot must be claimable, got %q", got)
 	}
 }
 

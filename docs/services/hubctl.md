@@ -1,6 +1,6 @@
 ---
 description: hubctl — host-side control CLI: stack lifecycle, builds, spaces, grants, connector controllers.
-last_verified: 2026-10-20
+last_verified: 2026-10-25
 ---
 
 # hubctl
@@ -23,6 +23,11 @@ a human confirmation link minted through the communication gateway.
   `connector local-controller` (fixed Telegram variant).
 - **Operator state**: `catalog`, `artifact`, `tools`, `grant`, `governance`,
   `capability`, `context`, `memory`, `skill`, `routine`, `secret`.
+- **Ops & delivery** (ADR-0077): `usage` (token/runtime-seconds report over
+  `usage.jsonl`), `watch` (job/runtime transitions to terminal), `image`
+  (smoke-gated rollout pins: `promote`/`revert`/`canary`/`status`),
+  `replay` (sanitized incident bundle `export` + isolated mock-channel `run`).
+  `apply -f` also converges a declarative `space:` manifest.
 - **Interactive**: `chat`, `telegram-login`, `meet-auth`, `companion`.
 
 Flags: `--dir spaces/<user>`, `--root .`, `--user`, `--org`, `--env prod|dev`.

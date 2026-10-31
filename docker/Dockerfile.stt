@@ -20,7 +20,10 @@ ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates && rm -rf /var/lib/apt/lists/*
 # faster-whisper alone: the command STT engine; no messaging/voice extras.
 # PyAV 19 removed metadata_errors, still used by faster-whisper 1.2.1.
-RUN for i in 1 2 3 4; do if pip install --no-cache-dir faster-whisper==1.2.1 av==18.1.0; then break; fi; if [ "$i" = 4 ]; then exit 1; fi; sleep 10; done
+# Hash-pinned lockfile (docker/stt-requirements.txt, uv pip compile
+# --generate-hashes): every wheel is verified before install (SPEC-0082 R2.3).
+COPY docker/stt-requirements.txt /opt/stt-requirements.txt
+RUN for i in 1 2 3 4; do if pip install --no-cache-dir --require-hashes -r /opt/stt-requirements.txt; then break; fi; if [ "$i" = 4 ]; then exit 1; fi; sleep 10; done
 COPY --from=go_build /hub-stt /usr/local/bin/hub-stt
 COPY docker/media/stt-worker /usr/local/bin/
 RUN chmod 0755 /usr/local/bin/stt-worker

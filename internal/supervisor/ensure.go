@@ -18,6 +18,12 @@ import (
 )
 
 func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) {
+	m.mu.Lock()
+	held := m.holds[holdKey(binding.PrincipalID, binding.ContextID)].Active
+	m.mu.Unlock()
+	if held {
+		return Runtime{}, errors.New("administrative hold")
+	}
 	binding, err := m.normalize(binding)
 	if err != nil {
 		return Runtime{}, err
@@ -52,6 +58,26 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 		for id, lease := range current.leases {
 			if lease.Kind == LeaseLifecycle {
 				lifecycle[id] = lease
+			}
+		}
+	}
+	if current != nil && current.PolicyVersion != "" && binding.PolicyVersion != "" && current.PolicyVersion != binding.PolicyVersion && (current.State == Ready || current.State == Idle || current.State == Busy || current.restored) {
+		snapshot := current.Runtime
+		m.mu.Unlock()
+		log.Printf("runtime %s policy rotated: replacing stale generation", snapshot.Container)
+		// A verified-absent container already satisfies the removal goal;
+		// only a real removal failure blocks the rotated spawn.
+		if err := m.removeOwnedRuntime(ctx, snapshot); err != nil && !errors.Is(err, ErrRuntimeMissing) {
+			return Runtime{}, errors.New("stale-policy runtime removal failed")
+		}
+		m.mu.Lock()
+		current = m.items[key]
+		if current != nil && current.Generation == snapshot.Generation {
+			current.State = Stopped
+			current.restored = false
+			if err := m.persistLocked(); err != nil {
+				m.mu.Unlock()
+				return Runtime{}, err
 			}
 		}
 	}
@@ -153,6 +179,18 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 		m.mu.Unlock()
 		return Runtime{}, errors.New("owned orphan runtimes require inspection before new capacity")
 	}
+	if !slotHeld && m.cfg.MaxPerPrincipal > 0 {
+		live := 0
+		for k, entry := range m.items {
+			if k != key && entry.PrincipalID == binding.PrincipalID && (entry.State == Starting || entry.State == Ready || entry.State == Idle || entry.State == Busy) {
+				live++
+			}
+		}
+		if live >= m.cfg.MaxPerPrincipal {
+			m.mu.Unlock()
+			return Runtime{}, errors.New("per-principal runtime ceiling reached")
+		}
+	}
 	m.mu.Unlock()
 	if !slotHeld {
 		select {
@@ -176,7 +214,7 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 	}
 	address := m.runtimeAddress(container, port, managed)
 	m.gen++
-	logical := &runtimeEntry{Runtime: Runtime{PrincipalID: binding.PrincipalID, ContextID: binding.ContextID, RuntimeID: binding.RuntimeID, RuntimeMode: binding.RuntimeMode, Generation: fmt.Sprintf("gen-%d", m.gen), Container: container, Address: address, State: Starting, Leases: 1, LastUsed: m.cfg.Now(), Managed: managed}, auth: binding.runtimeAuth, leases: map[string]Lease{}}
+	logical := &runtimeEntry{Runtime: Runtime{PrincipalID: binding.PrincipalID, ContextID: binding.ContextID, RuntimeID: binding.RuntimeID, RuntimeMode: binding.RuntimeMode, Generation: fmt.Sprintf("gen-%d", m.gen), PolicyVersion: binding.PolicyVersion, Container: container, Address: address, State: Starting, ImageSource: imageSourceOf(binding, m.environment(), m.cfg.Image), Leases: 1, LastUsed: m.cfg.Now(), Managed: managed}, auth: binding.runtimeAuth, leases: map[string]Lease{}}
 	logical.binding = binding
 	for id, lease := range lifecycle {
 		lease.Generation = logical.Generation
@@ -271,6 +309,35 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 			m.releaseSlot(key)
 		}
 		return Runtime{}, fmt.Errorf("start runtime: %w: %s", runErr, firstLine(string(out)))
+	}
+	if managedSettings.Has("browser") || managedSettings.Has("meet") {
+		// SPEC-0083 R2: the sidecar sleeps between uses; `docker start` is
+		// idempotent — running is a no-op, a slept one resumes before the
+		// runtime probes readiness. A failed start is the same severity class
+		// as a missing space network: fail the spawn and reclaim.
+		if err := m.ensureBrowserSidecar(ctx, binding.UserID); err != nil {
+			cleanupErr := m.removeOwnedRuntime(ctx, logical.Runtime)
+			m.markDegraded(key)
+			if cleanupErr == nil || errors.Is(cleanupErr, ErrRuntimeMissing) {
+				m.releaseSlot(key)
+			}
+			return Runtime{}, err
+		}
+	}
+	if !managed && (managedSettings.Has("browser") || managedSettings.Has("meet")) {
+		// The browser sidecar answers as browser-<user> on the space's compose
+		// default network; spawned runtimes join the shared net only, so
+		// dual-home them here. Managed runtimes already sit on the agent net
+		// the sidecar aliases into.
+		spaceNet := "hermes-hub-" + binding.UserID + "-" + m.environment() + "_default"
+		if out, connectErr := m.command(ctx, "network", "connect", spaceNet, container); connectErr != nil {
+			cleanupErr := m.removeOwnedRuntime(ctx, logical.Runtime)
+			m.markDegraded(key)
+			if cleanupErr == nil || errors.Is(cleanupErr, ErrRuntimeMissing) {
+				m.releaseSlot(key)
+			}
+			return Runtime{}, fmt.Errorf("attach browser network %s (run hubctl up for this space): %w: %s", spaceNet, connectErr, firstLine(string(out)))
+		}
 	}
 	if err = m.ready(ctx, address, binding.runtimeAuth); err != nil {
 		cleanupErr := m.removeOwnedRuntime(ctx, logical.Runtime)
@@ -433,7 +500,7 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 			args = append(args, "-e", key+"="+fmt.Sprint(service["environment"].(stack.M)[key]))
 		}
 	}
-	for _, mount := range []struct{ source, target string }{{"runtime", "/state"}, {"hermes", "/state/hermes"}, {"connections/google", "/state/google"}, {"connections/telegram", "/state/telegram"}, {"connections/browser", "/state/browser"}, {"home", "/state/home"}, {"cache", "/state/cache"}, {"workspace", "/workspace"}, {"archive", "/archive"}} {
+	for _, mount := range []struct{ source, target string }{{"runtime", "/state"}, {"hermes", "/state/hermes"}, {"connections/google", "/state/google"}, {"connections/telegram", "/state/telegram"}, {"home", "/state/home"}, {"cache", "/state/cache"}, {"workspace", "/workspace"}, {"archive", "/archive"}} {
 		value := "type=bind,src=" + filepath.Join(binding.ContextRoot, filepath.FromSlash(mount.source)) + ",dst=" + mount.target
 		if mount.target == "/archive" {
 			value += ",readonly"
@@ -452,12 +519,32 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	}
 	if strings.TrimSpace(spawnSettings.GlobalSkillsDir) == "" {
 		spawnSettings.DefaultGlobalSkillsDir(filepath.Join(filepath.Dir(filepath.Dir(binding.ContextRoot)), "config", "skills"))
+		// Same contract as RenderEnvironment: a defaulted platform catalog is
+		// created empty so its absence never breaks the spawn.
+		if err := os.MkdirAll(spawnSettings.GlobalSkillsDir, 0755); err != nil {
+			return nil, fmt.Errorf("platform skills dir: %w", err)
+		}
 	}
-	if err := stack.MaterializeGlobalSkills(binding.ContextRoot, spawnSettings); err != nil {
-		log.Printf("supervisor skills materialization skipped: %v", err)
+	if _, err := stack.MaterializeEffectiveSkills(binding.ContextRoot, spawnSettings); err != nil {
+		return nil, fmt.Errorf("effective skills view: %w", err)
 	}
-	if info, err := os.Stat(stack.GeneratedSkillsDir(binding.ContextRoot)); err == nil && info.IsDir() {
-		args = append(args, "--mount", "type=bind,src="+stack.GeneratedSkillsDir(binding.ContextRoot)+",dst=/opt/hub/skills,readonly")
+	args = append(args, "--mount", "type=bind,src="+stack.GeneratedEffectiveSkillsDir(binding.ContextRoot)+",dst=/skills,readonly")
+	// Post-publish rebuild contract: the platform tier and the render
+	// snapshot mount read-only; the view gets a second writable bind so
+	// /v1/skill-apply can recompose it in place without a respawn.
+	args = append(args, "--mount", "type=bind,src="+stack.GeneratedSkillsDir(binding.ContextRoot)+",dst=/skills-platform,readonly")
+	args = append(args, "--mount", "type=bind,src="+stack.GeneratedEffectiveSkillsDir(binding.ContextRoot)+",dst=/skills-effective-rw")
+	args = append(args, "--mount", "type=bind,src="+stack.GeneratedSkillsMetaDir(binding.ContextRoot)+",dst=/skills-meta,readonly")
+	args = append(args, "--tmpfs", "/state/hermes/skills:ro,mode=0555")
+	// R5.1: the owner store is writable beside the read-only effective view;
+	// the env contract tells the executor which path is which. skill_manage
+	// writes drafts here — never into /skills.
+	args = append(args, "--mount", "type=bind,src="+filepath.Join(binding.ContextRoot, "skills")+",dst=/skills-store")
+	args = append(args, "-e", "HUB_SKILLS_STORE=/skills-store", "-e", "HUB_SKILLS_EFFECTIVE=/skills")
+	// R5.2: org-bound spawns also mount the writable org store for org drafts;
+	// HUB_SKILLS_ORG reaches the env through the rendered service contract.
+	if spawnSettings.OrgScoped() && spawnSettings.OrganizationSkillsDir != "" {
+		args = append(args, "--mount", "type=bind,src="+spawnSettings.OrganizationSkillsDir+",dst=/skills-store-org")
 	}
 	// Same contract for hub plugins: materialize the feature-filtered copy at
 	// spawn and mount each plugin read-only into upstream's bundled plugins
@@ -516,7 +603,7 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 			args = append(args, "--mount", "type=bind,src="+file.source+",dst="+file.target+",readonly")
 		}
 	}
-	args = append(args, "--add-host", "host.docker.internal:host-gateway", "--tmpfs", "/tmp:uid=10001,gid=10001,mode=1777", "--shm-size", "1gb")
+	args = append(args, "--add-host", "host.docker.internal:host-gateway", "--tmpfs", "/tmp:uid=10001,gid=10001,mode=1777")
 	args = append(args, "-e", "HUB_RUNTIME_LISTEN=0.0.0.0:"+strconv.Itoa(m.cfg.RuntimePort), "-e", "HUB_STATE=/state", "-e", "HUB_WORKSPACE=/workspace", "-e", "HERMES_HOME=/state/hermes", "-e", "HOME=/state/home", "-e", "HUB_USER_ID="+binding.UserID, "-e", "HUB_ORGANIZATION_ID="+binding.OrganizationID, "-e", "HUB_RUNTIME_ID="+binding.RuntimeID, "-e", "HUB_POLICY_VERSION="+binding.PolicyVersion, "-e", "API_SERVER_ENABLED=true", "-e", "API_SERVER_HOST=127.0.0.1", "-e", "API_SERVER_PORT=8642")
 	if generation != "" {
 		args = append(args, "-e", "HUB_RUNTIME_GENERATION="+generation)
@@ -524,7 +611,7 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	if value := strings.TrimSpace(os.Getenv("HUB_RUN_STALL_TIMEOUT")); value != "" {
 		args = append(args, "-e", "HUB_RUN_STALL_TIMEOUT="+value)
 	}
-	image, err := devRuntimeImage(binding.ContextRoot, binding.UserID, env, m.cfg.Image)
+	image, _, err := resolveRuntimeImage(binding.ContextRoot, binding.UserID, binding.ContextID, env, m.cfg.Image)
 	if err != nil {
 		return nil, err
 	}
@@ -571,6 +658,32 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 	for _, name := range []struct{ source, target string }{{"runtime", "/state"}, {"hermes", "/state/hermes"}, {"home", "/state/home"}, {"cache", "/state/cache"}, {"workspace", "/workspace"}} {
 		args = append(args, "--mount", "type=bind,src="+filepath.Join(managedDir, name.source)+",dst="+name.target)
 	}
+	// Same skill contract as unmanaged spawns: the hub-built effective view
+	// mounts read-only at /skills and a failed build refuses the spawn.
+	if strings.TrimSpace(settings.GlobalSkillsDir) == "" {
+		settings.DefaultGlobalSkillsDir(filepath.Join(filepath.Dir(filepath.Dir(binding.ContextRoot)), "config", "skills"))
+		if err := os.MkdirAll(settings.GlobalSkillsDir, 0755); err != nil {
+			return nil, fmt.Errorf("platform skills dir: %w", err)
+		}
+	}
+	if _, err := stack.MaterializeEffectiveSkills(binding.ContextRoot, settings); err != nil {
+		return nil, fmt.Errorf("effective skills view: %w", err)
+	}
+	args = append(args, "--mount", "type=bind,src="+stack.GeneratedEffectiveSkillsDir(binding.ContextRoot)+",dst=/skills,readonly")
+	// Post-publish rebuild contract: the platform tier and the render
+	// snapshot mount read-only; the view gets a second writable bind so
+	// /v1/skill-apply can recompose it in place without a respawn.
+	args = append(args, "--mount", "type=bind,src="+stack.GeneratedSkillsDir(binding.ContextRoot)+",dst=/skills-platform,readonly")
+	args = append(args, "--mount", "type=bind,src="+stack.GeneratedEffectiveSkillsDir(binding.ContextRoot)+",dst=/skills-effective-rw")
+	args = append(args, "--mount", "type=bind,src="+stack.GeneratedSkillsMetaDir(binding.ContextRoot)+",dst=/skills-meta,readonly")
+	// R5.1: identical to unmanaged — the owner store (not a private managed
+	// copy) is writable at /skills-store so drafts, publishes and the
+	// effective view all see the same store.
+	args = append(args, "--mount", "type=bind,src="+filepath.Join(binding.ContextRoot, "skills")+",dst=/skills-store")
+	args = append(args, "-e", "HUB_SKILLS_STORE=/skills-store", "-e", "HUB_SKILLS_EFFECTIVE=/skills")
+	if settings.OrgScoped() && settings.OrganizationSkillsDir != "" {
+		args = append(args, "--mount", "type=bind,src="+settings.OrganizationSkillsDir+",dst=/skills-store-org")
+	}
 	effectiveConfig, err := m.materializeHermesConfig(binding, env)
 	if err != nil {
 		return nil, err
@@ -591,7 +704,7 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 		args = append(args, "--mount", "type=bind,src="+manifest+",dst=/config/tool-manifest.json,readonly")
 		args = append(args, "-e", "HUB_TOOL_MANIFEST=/config/tool-manifest.json")
 	}
-	args = append(args, "--tmpfs", "/tmp:uid=10001,gid=10001,mode=1777", "--shm-size", "1gb")
+	args = append(args, "--tmpfs", "/tmp:uid=10001,gid=10001,mode=1777")
 	for _, name := range managedExtensionRootTmpfs {
 		args = append(args, "--tmpfs", "/state/hermes/"+name+":ro,mode=0555")
 	}
@@ -604,7 +717,7 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 	if value := strings.TrimSpace(os.Getenv("HUB_RUN_STALL_TIMEOUT")); value != "" {
 		args = append(args, "-e", "HUB_RUN_STALL_TIMEOUT="+value)
 	}
-	image, err := devRuntimeImage(binding.ContextRoot, binding.UserID, env, m.cfg.Image)
+	image, _, err := resolveRuntimeImage(binding.ContextRoot, binding.UserID, binding.ContextID, env, m.cfg.Image)
 	if err != nil {
 		return nil, err
 	}
@@ -640,7 +753,7 @@ func (m *Manager) ensureManagedInfra(ctx context.Context, binding Binding, setti
 
 func (m *Manager) spawnControlRelay(ctx context.Context, binding Binding, container string, port int, generation, agentNet string) error {
 	relay := container + "-ctl"
-	image, err := devRuntimeImage(binding.ContextRoot, binding.UserID, m.cfg.Environment, m.cfg.Image)
+	image, _, err := resolveRuntimeImage(binding.ContextRoot, binding.UserID, binding.ContextID, m.cfg.Environment, m.cfg.Image)
 	if err != nil {
 		return err
 	}

@@ -1,6 +1,6 @@
 ---
 description: Canonical terms — feature, tool, toolset, capability, connector, backend/via.
-last_verified: 2026-10-24
+last_verified: 2026-10-27
 ---
 # Glossary
 
@@ -27,6 +27,7 @@ The column on the left is the config-facing name; the rest is what it means in c
 | `per-team` | Informal team ownership/sharing description, not a workload-class enum. `shareable: credential` shares credentials across member workloads; `shareable: connection` shares both. |
 | `container-mcp` / `remote-mcp` | ToolHub backend transports for managed MCP workloads / remote MCP endpoints. `mcp-raw:<name>` is instead a configuration route. |
 | bundled CLI / `bounded-cli` | Bundled describes binary packaging; bounded CLI is a transport with validated arguments and execution limits. Neither proves provider authentication. |
+| `lang` / locale | A `locale.Lang` code (`en`/`ru`/`kk`/`es`). User-facing text follows `Delivery.Lang` — stamped once per user from the workspace `preferences.json`; operator tooling (`hubctl`, scripts) instead resolves `HUB_LANG`/`LANG`/OS culture and never reads a workspace. |
 
 The full agent-facing reference is
 [`hermes-hub-system-guide`](../internal/systemguide/SKILL.md). Inventory answers

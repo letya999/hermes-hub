@@ -139,8 +139,11 @@ type RuntimeRelease struct {
 	Quiesced   bool `json:"quiesced"`
 }
 type SessionView struct {
-	RequestID   string
-	Title       string
+	RequestID string
+	Title     string
+	// TitleI18n carries the contract's declared title translations so the
+	// browser form can resolve the viewer's language per request.
+	TitleI18n   map[string]string
 	Status      string
 	Code        string
 	Approved    bool

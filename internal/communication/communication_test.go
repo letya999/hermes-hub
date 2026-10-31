@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 
 	"github.com/letya999/hermes-hub/internal/credstore"
@@ -29,6 +30,14 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+// The package's historical fixtures assert the Russian strings that predated
+// i18n; pinning the hub default to ru keeps those assertions meaningful while
+// per-user behavior is exercised by explicit prefs/hints in locale_test.go.
+func TestMain(m *testing.M) {
+	_ = os.Setenv("HUB_DEFAULT_LANG", "ru")
+	os.Exit(m.Run())
+}
 
 type forumOp struct {
 	method string
@@ -261,10 +270,30 @@ func (f *fakeRunner) Run(_ context.Context, job Job, user User) (string, error) 
 
 func testConfig(t *testing.T) Config {
 	t.Helper()
+	c := baseTestConfig(t)
+	// Historical fixtures assert the pre-i18n Russian strings; a chosen
+	// preference keeps the picker silent and the language pinned.
+	pinLang(t, c.Users[0].WorkspaceDir, locale.LangRU)
+	return c
+}
+
+// baseTestConfig is testConfig without the language pin — locale tests need
+// the real first-contact state.
+func baseTestConfig(t *testing.T) Config {
+	t.Helper()
 	root := t.TempDir()
 	_ = os.MkdirAll(filepath.Join(root, "alice", "state"), 0700)
 	_ = os.MkdirAll(filepath.Join(root, "alice", "workspace"), 0700)
 	return Config{OrganizationID: "personal", TelegramToken: "token", SpoolDir: filepath.Join(root, "spool"), PollTimeout: time.Second, Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}, StateDir: filepath.Join(root, "alice", "state"), WorkspaceDir: filepath.Join(root, "alice", "workspace"), Features: []string{"workspace", "github"}, ConfiguredEnv: map[string]bool{"GITHUB_TOKEN": true}}}}
+}
+
+// pinLang seeds a workspace preference for fixtures that predate the locale
+// ladder: explicit chosen state silences first-contact picker/detect noise.
+func pinLang(t *testing.T, workspaceDir string, lang locale.Lang) {
+	t.Helper()
+	if err := locale.StorePrefs(workspaceDir, locale.Prefs{Lang: lang, Source: locale.SourceChosen}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // SPEC-0053 R2.3: spool retention and the mock-capture directory are
@@ -289,8 +318,11 @@ func TestConfigFromEnvSpoolKnobs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.SpoolRetention != 336*time.Hour {
-		t.Fatalf("default retention must be 336h: %v", config.SpoolRetention)
+	if config.SpoolRetention != 72*time.Hour {
+		t.Fatalf("default retention must be 72h: %v", config.SpoolRetention)
+	}
+	if config.SpoolMaxFiles != 2048 || config.SpoolMaxArchiveBytes != 64<<20 {
+		t.Fatalf("default limits: %d %d", config.SpoolMaxFiles, config.SpoolMaxArchiveBytes)
 	}
 }
 
@@ -685,9 +717,18 @@ func TestConfigFromYAMLEnvBranch(t *testing.T) {
 	}
 	t.Setenv("HUB_COMMUNICATION_CONFIG", path)
 	t.Setenv("TELEGRAM_BOT_TOKEN", "token")
+	t.Setenv("HUB_SKILLS_EFFECTIVE", "/skills-effective")
+	t.Setenv("HUB_SKILLS_BY_PRINCIPAL", "/skills-effective-by")
+	t.Setenv("HUB_SKILLS_STORE", "/skills-store")
 	c, err := ConfigFromEnv()
 	if err != nil || c.Users[0].ID != "alice" || c.TelegramToken != "token" {
 		t.Fatal(c, err)
+	}
+	// The YAML branch must still honor the container skill mounts — the
+	// shared deployment (users.yaml present) is exactly where /name and
+	// $name expansion matters.
+	if c.SkillsDir != "/skills-effective" || c.SkillsByPrincipalDir != "/skills-effective-by" || c.SkillsStore != "/skills-store" {
+		t.Fatalf("skill dirs dropped in the YAML branch: %+v", c)
 	}
 }
 
@@ -848,6 +889,10 @@ func TestAcceptedJobWakesSupervisedRuntime(t *testing.T) {
 	var wakes []map[string]any
 	wake := make(chan map[string]any, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/holds" && r.Method == http.MethodGet && r.Header.Get("Authorization") == "Bearer secret" {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
 		if r.URL.Path == "/v1/wake" && r.Header.Get("Authorization") == "Bearer secret" {
 			var body map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&body)
@@ -1322,7 +1367,7 @@ func TestCredentialFormRejectsReplayAndNonLoopbackRequests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	form, err := g.createCredentialForm(identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), []string{"GITHUB_TOKEN"})
+	form, err := g.createCredentialForm(identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), []string{"GITHUB_TOKEN"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1435,11 +1480,11 @@ func TestCredentialFormValidationAndOrigins(t *testing.T) {
 		t.Fatal(err)
 	}
 	g.forms.m = nil
-	if _, err := g.createCredentialForm(identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), []string{"GITHUB_TOKEN"}); err != nil {
+	if _, err := g.createCredentialForm(identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), []string{"GITHUB_TOKEN"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	g.forms.m["expired"] = credentialForm{OwnerID: "alice", ExpiresAt: time.Now().Add(-time.Minute)}
-	if _, err := g.createCredentialForm(identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), []string{"GITHUB_TOKEN"}); err != nil {
+	if _, err := g.createCredentialForm(identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), []string{"GITHUB_TOKEN"}, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1911,7 +1956,7 @@ func TestEnvHelpers(t *testing.T) {
 		t.Fatal("workersFromEnv set")
 	}
 	t.Setenv("HUB_COMMUNICATION_WORKERS", "0")
-	if workersFromEnv() != 4 {
+	if workersFromEnv() != 32 {
 		t.Fatal("workersFromEnv fallback")
 	}
 }

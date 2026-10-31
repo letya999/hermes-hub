@@ -50,6 +50,12 @@ func materializeOptionsFromEnv() (stack.MaterializeOptions, error) {
 		}
 		contextCfg = &decoded
 	}
+	var browserGrant stack.BrowserGrant
+	if raw := strings.TrimSpace(os.Getenv("HUB_MANAGED_BROWSER")); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &browserGrant); err != nil {
+			return stack.MaterializeOptions{}, fmt.Errorf("invalid HUB_MANAGED_BROWSER: %w", err)
+		}
+	}
 	selfSettingsPath := ""
 	if os.Getenv("HUB_CAPABILITY_MODE") == "managed" {
 		selfSettingsPath = filepath.Join(state, selfsettings.FileName)
@@ -66,6 +72,8 @@ func materializeOptionsFromEnv() (stack.MaterializeOptions, error) {
 		ImageGen:           imageGen,
 		Context:            contextCfg,
 		SelfSettingsPath:   selfSettingsPath,
+		Browser:            browserGrant,
+		User:               os.Getenv("HUB_USER_ID"),
 	}, nil
 }
 

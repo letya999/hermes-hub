@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/commodel"
+	"github.com/letya999/hermes-hub/internal/identity"
 )
 
 // Durable id formats are a replay contract: a spool written by one release
@@ -49,6 +50,14 @@ func TestRoutineConversationStable(t *testing.T) {
 	}
 	if !commodel.IDPattern.MatchString(RoutineConversation("r-1")) {
 		t.Fatal("routine conversation id left the filename-safe charset")
+	}
+}
+
+func TestRoutineConversationLongAssignmentID(t *testing.T) {
+	schedule := "asg-asg-613b1fd16bf7d58440ed7dde1c473af8-saved-m23-e2e"
+	got := RoutineConversation(schedule)
+	if !identity.ValidID(got) || got != RoutineConversation(schedule) || got == RoutineConversation(schedule+"-other") {
+		t.Fatalf("long schedule produced invalid or unstable runtime conversation: %q", got)
 	}
 }
 

@@ -20,7 +20,7 @@ func TestPreparedEntryTierAndImagePin(t *testing.T) {
 		"source": {"repository": "https://github.com/makenotion/notion-mcp-server", "commit_sha": "730ae781ba28beeaf0865025a3f2ed4c25ea2387"},
 		"language": "node", "entrypoint": ["node", "/app/bin/cli.mjs"],
 		"connection": {"fields": [{"name": "NOTION_TOKEN", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "NOTION_TOKEN"}]},
-		"contract_id": "notion-token", "contract_revision": 2,
+		"contract_id": "notion-token", "contract_revision": 3,
 		"egress": ["api.notion.com"], "read_tools": ["API-get-self"], "probe_tool": "API-get-self",
 		"runbook": "docs/prepared-connectors.md#notion",
 		"handoff": "Install notion."
@@ -48,7 +48,7 @@ func TestPreparedEntryTierValidation(t *testing.T) {
 			"source": {"repository": "https://github.com/makenotion/notion-mcp-server", "commit_sha": "730ae781ba28beeaf0865025a3f2ed4c25ea2387"},
 			"language": "node", "entrypoint": ["node", "/app/bin/cli.mjs"],
 			"connection": {"fields": [{"name": "NOTION_TOKEN", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "NOTION_TOKEN"}]},
-			"contract_id": "notion-token", "contract_revision": 2,
+			"contract_id": "notion-token", "contract_revision": 3,
 			"egress": ["api.notion.com"], "read_tools": ["API-get-self"], "probe_tool": "API-get-self",
 			"runbook": "docs/prepared-connectors.md#notion",
 			"handoff": "Install notion."
@@ -229,7 +229,7 @@ func TestPreparedEntryToolsetsCarry(t *testing.T) {
 		"source": {"repository": "https://github.com/makenotion/notion-mcp-server", "commit_sha": "730ae781ba28beeaf0865025a3f2ed4c25ea2387"},
 		"language": "node", "entrypoint": ["node", "/app/bin/cli.mjs"],
 		"connection": {"fields": [{"name": "NOTION_TOKEN", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "NOTION_TOKEN"}]},
-		"contract_id": "notion-token", "contract_revision": 2,
+		"contract_id": "notion-token", "contract_revision": 3,
 		"egress": ["api.notion.com"], "read_tools": ["API-get-self"], "probe_tool": "API-get-self",
 		"toolsets": {"pages": ["API-get-page", "API-patch-page"]},
 		"default_enabled": ["API-get-self"], "default_excluded": ["API-patch-page"],

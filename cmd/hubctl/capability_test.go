@@ -271,10 +271,16 @@ func TestCapabilityCLITools(t *testing.T) {
 	if err := os.WriteFile(settingsPath, []byte(managed), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// terminal is a deny-by-default section: the host admits it for alice
-	// before the tools edit, the same rule an operator writes with
+	// Native toolsets are deny-by-default (SPEC-0083 R3.1): the host admits
+	// the sections this test selects, the same rules an operator writes with
 	// hubctl governance --kind rule.
-	seedTestGovernance(t, dir, api.PolicyRule{RuleID: "allow-terminal-alice", Scope: api.ScopeUser, Subject: "alice", Section: "native:terminal", Effect: api.RuleAllow, Reason: "test", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1})
+	allowNative := func(id, section string) api.PolicyRule {
+		return api.PolicyRule{RuleID: id, Scope: api.ScopeUser, Subject: "alice", Section: section, Effect: api.RuleAllow, Reason: "test", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1}
+	}
+	seedTestGovernance(t, dir,
+		allowNative("allow-terminal-alice", "native:terminal"),
+		allowNative("allow-memory-alice", "native:memory"),
+		allowNative("allow-todo-alice", "native:todo"))
 	// Without --set the compiled plan prints and nothing changes.
 	plan := captureOutput(t, func() error {
 		return runCapability([]string{"--kind", "tools", "--settings", settingsPath})
@@ -384,8 +390,11 @@ func TestCapabilityCLIToolsSplitSpace(t *testing.T) {
 		t.Fatal(err)
 	}
 	// mcp-raw onto a user-declared server is the user_mcp section — denied by
-	// default; the host admits it for this principal before the edit.
-	seedTestGovernance(t, dir, api.PolicyRule{RuleID: "allow-usermcp-alice", Scope: api.ScopeUser, Subject: "alice", Section: api.SectionUserMCP, Effect: api.RuleAllow, Reason: "test", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1})
+	// default; the host admits it for this principal before the edit. The
+	// fixture's native memory selection needs its own allow under R3.1.
+	seedTestGovernance(t, dir,
+		api.PolicyRule{RuleID: "allow-usermcp-alice", Scope: api.ScopeUser, Subject: "alice", Section: api.SectionUserMCP, Effect: api.RuleAllow, Reason: "test", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1},
+		api.PolicyRule{RuleID: "allow-memory-alice", Scope: api.ScopeUser, Subject: "alice", Section: "native:memory", Effect: api.RuleAllow, Reason: "test", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1})
 	agentBefore, err := os.ReadFile(filepath.Join(dir, "agent.yaml"))
 	if err != nil {
 		t.Fatal(err)

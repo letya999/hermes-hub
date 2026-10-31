@@ -54,6 +54,14 @@ type MaterializeOptions struct {
 	// merged onto the materialized config and re-merged onto the expected
 	// config at attestation. Nil means the reviewed zero template.
 	Context *ContextConfig
+	// Browser is the render-time hub sidecar grant (SPEC-0083): which
+	// endpoints the reviewed settings admitted and whether mutation tools
+	// joined the surface. Zero value renders no browser servers.
+	Browser BrowserGrant
+	// User is the space principal: the browser sidecar hostname embeds it
+	// (browser-<user>), so the reconstruction cannot derive it from the file
+	// under review and takes it from HUB_USER_ID instead.
+	User string
 }
 
 // MaterializeHermesConfig renders the effective Hermes config on the host so
@@ -195,7 +203,9 @@ func validateManagedSourceConfig(configPath string, opts MaterializeOptions) err
 		// expected source matches the operator-rendered file.
 		tools["image_gen"] = ToolEntry{Via: ToolViaToolHub}
 	}
-	expected, err := yaml.Marshal(managedHermesConfig(Settings{Model: name, ModelURL: url, Timezone: zone, Tools: tools, Web: opts.Web, ImageGen: opts.ImageGen}))
+	settings := Settings{Model: name, ModelURL: url, Timezone: zone, Tools: tools, Web: opts.Web, ImageGen: opts.ImageGen, User: opts.User}
+	applyBrowserGrant(&settings, opts.Browser)
+	expected, err := yaml.Marshal(managedHermesConfig(settings))
 	if err != nil {
 		return err
 	}
@@ -207,6 +217,34 @@ func validateManagedSourceConfig(configPath string, opts MaterializeOptions) err
 		return fmt.Errorf("managed Hermes source differs from the reviewed zero-capability template")
 	}
 	return nil
+}
+
+// applyBrowserGrant reconstructs the browser admission the reviewed render
+// computed: a Tools entry reproduces Has("browser")/Has("browser_act") and a
+// synthesized governance view replays the per-section decisions, so
+// managedMCPServers emits exactly the granted endpoints — a grant narrower
+// than the rendered file is unreviewed drift and fails attestation.
+func applyBrowserGrant(s *Settings, grant BrowserGrant) {
+	// The carried grant is the sole authority: a workspace wish in the
+	// caller's settings cannot widen what the reviewed render admitted.
+	delete(s.Tools, "browser")
+	if grant == (BrowserGrant{}) {
+		return
+	}
+	if s.Tools == nil {
+		s.Tools = map[string]ToolEntry{}
+	}
+	s.Tools["browser"] = ToolEntry{Via: ToolViaMCP, Tools: map[string]bool{"act": grant.Act}}
+	effect := func(on bool) string {
+		if on {
+			return api.RuleAllow
+		}
+		return api.RuleDeny
+	}
+	s.gov = &toolGovernance{decisions: map[string]api.PolicyDecision{
+		api.SectionHubBrowser: {Effect: effect(grant.Persistent)},
+		"hub:browser_guest":   {Effect: effect(grant.Guest)},
+	}}
 }
 
 // applyContextConfig merges the declared context-control section onto the
@@ -298,11 +336,14 @@ func ValidateManagedEffectiveConfig(configPath string, s Settings, opts Material
 	// container; without it a carved-out web block can never be reproduced.
 	s.Web = opts.Web
 	s.ImageGen = opts.ImageGen
+	s.User = opts.User
+	applyBrowserGrant(&s, opts.Browser)
 	expected := managedHermesConfig(s)
-	expected["mcp_servers"] = M{"toolhub": M{
+	servers := expected["mcp_servers"].(M)
+	servers["toolhub"] = M{
 		"url": opts.ToolHubEndpoint, "timeout": toolHubCallTimeoutSeconds,
 		"skip_preflight": true, "headers": M{"Authorization": "Bearer ${" + tokenEnv + "}"},
-	}}
+	}
 	if opts.ToolHubReconnect {
 		expected["approvals"] = M{"mcp_reload_confirm": false}
 	}
@@ -388,13 +429,9 @@ func applySelfServicesFrom(configPath, servicesPath string) error {
 	if err != nil || len(features) == 0 {
 		return err
 	}
-	body, err := os.ReadFile(configPath) // #nosec G304 -- materialized path
+	config, err := readHermesConfigMap(configPath)
 	if err != nil {
 		return err
-	}
-	var config map[string]any
-	if err := yaml.Unmarshal(body, &config); err != nil {
-		return fmt.Errorf("read Hermes config: %w", err)
 	}
 	servers, ok := config["mcp_servers"].(map[string]any)
 	if !ok {
@@ -417,6 +454,20 @@ func applySelfServicesFrom(configPath, servicesPath string) error {
 	return os.WriteFile(configPath, updated, 0660)
 }
 
+// readHermesConfigMap loads the materialized config as a non-nil map: an
+// empty file unmarshals to nil and later merge writes would panic.
+func readHermesConfigMap(configPath string) (M, error) {
+	body, err := os.ReadFile(configPath) // #nosec G304 -- materialized path
+	if err != nil {
+		return nil, err
+	}
+	config := M{}
+	if err := yaml.Unmarshal(body, &config); err != nil {
+		return nil, fmt.Errorf("read Hermes config: %w", err)
+	}
+	return config, nil
+}
+
 func applyToolHubConfigWith(configPath string, opts MaterializeOptions) error {
 	endpoint := opts.ToolHubEndpoint
 	if endpoint == "" {
@@ -435,13 +486,9 @@ func applyToolHubConfigWith(configPath string, opts MaterializeOptions) error {
 	if !opts.RuntimeAuthPresent {
 		return fmt.Errorf("HUB_TOOLHUB_TOKEN_ENV %s is empty", tokenEnv)
 	}
-	body, err := os.ReadFile(configPath) // #nosec G304 -- materialized path
+	config, err := readHermesConfigMap(configPath)
 	if err != nil {
 		return err
-	}
-	var config map[string]any
-	if err := yaml.Unmarshal(body, &config); err != nil {
-		return fmt.Errorf("read Hermes config: %w", err)
 	}
 	servers, ok := config["mcp_servers"].(map[string]any)
 	if !ok {

@@ -1,0 +1,36 @@
+schema: 1
+change: CHG-0221
+title: "Ограниченный обязательный audit и честные исходы действий"
+status: in_progress
+branch: fix/m23-live-wake
+updated: "2026-10-28"
+phase: design-complete
+adr: ADR-0088
+spec: SPEC-0088
+requirements: [R3]
+depends_on: []
+workstream: storage-reliability-mvp
+github_milestone: null
+github_issue: null
+design_status: accepted
+implementation_status: not_started
+readiness: ready_after_rebaseline
+slices:
+  S197.1-bounded-ledger: not_started
+  S197.2-admission-outcome: not_started
+  S197.3-policy-and-recovery: not_started
+validation:
+  documents: passed
+  planning_package: passed
+  planning_just_check: failed
+  just_check: not_run
+  module_check: not_run
+  security: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining:
+  - "Implementation and all runtime acceptance remain outstanding."
+limitations:
+  - "Planning record only; no production code or live state changed."

@@ -32,7 +32,7 @@ func TestKnowledgeApplyValidatesAllSnapshotsBeforeWrites(t *testing.T) {
 			body := fmt.Sprintf("knowledge:\n  - name: safe.md\n    source: safe.md\n  - name: docs\n    context: %s\n    state: %s\n    source: notes\n", scope, status)
 			os.WriteFile(spec, []byte(body), 0600)
 			state := filepath.Join(root, "state")
-			if _, err := applyFile(filepath.Join(root, "spool"), state, "alice", spec); err == nil {
+			if _, err := applyFile(filepath.Join(root, "spool"), state, "alice", spec, ""); err == nil {
 				t.Error("invalid knowledge apply accepted")
 			}
 			if _, err := os.Stat(filepath.Join(state, "knowledge", "alice", "safe.md")); !os.IsNotExist(err) {

@@ -111,9 +111,21 @@ func runStartFor(runID string) time.Time {
 	return info.ModTime()
 }
 
+// rootDeliverableExts are the extensions a top-level workspace file may carry
+// to count as a run deliverable — one format per delivery bucket. Text
+// formats (.md/.txt/.csv) are excluded: todo lists and scratch notes share
+// them, so a root-level text file is a working file until the model moves it
+// under artifacts/ or marks it MEDIA:.
+var rootDeliverableExts = map[string]bool{
+	".html": true, ".pdf": true, ".png": true, ".mp4": true,
+}
+
 // scanArtifacts lists files the run produced under artifacts/documents,
 // artifacts/images and artifacts/videos. The run-start timestamp bounds
 // attribution; a zero time (recovered observation) lists nothing.
+// Top-level workspace files with a deliverable extension are staged into the
+// matching bucket too — models regularly save their final output beside the
+// artifacts/ tree instead of inside it.
 func scanArtifacts(since time.Time) []ArtifactRef {
 	if since.IsZero() {
 		return nil
@@ -145,7 +157,42 @@ func scanArtifacts(since time.Time) []ArtifactRef {
 		found = append(found, ArtifactRef{Name: filepath.Base(path), Path: filepath.ToSlash(rel), Mime: mime, Size: info.Size()})
 		return nil
 	})
+	found = append(found, scanTopLevelDeliverables(since, artifactMaxCount-len(found))...)
 	slices.SortFunc(found, func(a, b ArtifactRef) int { return strings.Compare(a.Path, b.Path) })
+	return found
+}
+
+// scanTopLevelDeliverables stages deliverable files sitting directly at the
+// workspace root into their artifacts bucket. Same window, size, symlink and
+// count bounds as the in-tree scan; staging goes through stageMediaArtifact so
+// the returned refs always point under the servable artifacts root.
+func scanTopLevelDeliverables(since time.Time, budget int) []ArtifactRef {
+	if budget <= 0 {
+		return nil
+	}
+	entries, err := os.ReadDir(workspace)
+	if err != nil {
+		return nil
+	}
+	var found []ArtifactRef
+	for _, entry := range entries {
+		if len(found) >= budget {
+			break
+		}
+		if entry.IsDir() || !rootDeliverableExts[strings.ToLower(filepath.Ext(entry.Name()))] {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || entry.Type()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			continue
+		}
+		if info.Size() == 0 || info.ModTime().Before(since.Add(-artifactScanSkew)) {
+			continue
+		}
+		if ref, ok := stageMediaArtifact(filepath.Join(workspace, entry.Name())); ok {
+			found = append(found, ref)
+		}
+	}
 	return found
 }
 
@@ -207,6 +254,20 @@ func extractVoiceLines(text string) (string, string) {
 // matching artifacts bucket when it does not already live under
 // artifacts/{documents,images,videos}. Containment, regular-file and size
 // checks are the same contract the artifact endpoint enforces.
+func underDir(root, path string) bool {
+	return root != "" && (path == root || strings.HasPrefix(path, root+string(os.PathSeparator)))
+}
+
+// mediaCacheRoot resolves the upstream media cache (<hermes>/cache): MCP
+// image/audio blocks land there and surface as absolute MEDIA: markers —
+// legitimate delivery sources that live outside the workspace tree.
+func mediaCacheRoot() string {
+	resolved, err := filepath.EvalSymlinks(filepath.Join(env("HERMES_HOME", filepath.Join(state, "hermes")), "cache"))
+	if err != nil {
+		return ""
+	}
+	return resolved
+}
 func stageMediaArtifact(raw string) (ArtifactRef, bool) {
 	if raw == "" || len(raw) > 1024 || strings.ContainsRune(raw, 0) {
 		return ArtifactRef{}, false
@@ -245,7 +306,7 @@ func stageMediaArtifact(raw string) (ArtifactRef, bool) {
 			}
 		}
 	}
-	if err != nil || resolved != resolvedRoot && !strings.HasPrefix(resolved, resolvedRoot+string(os.PathSeparator)) {
+	if err != nil || !underDir(resolvedRoot, resolved) && !underDir(mediaCacheRoot(), resolved) {
 		return ArtifactRef{}, false
 	}
 	info, err := os.Stat(resolved)

@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
@@ -11,16 +12,19 @@ import (
 // held only in memory by the spool and are intentionally absent from job files.
 type Job struct {
 	identity.Envelope
-	ID             string `json:"id"`
-	OrganizationID string `json:"organization_id"`
-	UserID         string `json:"user_id"`
-	ActorID        string `json:"actor_id"`
-	ScopeID        string `json:"scope_id"`
-	Channel        string `json:"channel"`
-	Trigger        string `json:"trigger"`
-	IdempotencyKey string `json:"idempotency_key"`
-	ChatID         int64  `json:"chat_id"`
-	MessageID      int    `json:"message_id"`
+	OperationalEpoch       uint64 `json:"operational_epoch,omitempty"`
+	ID                     string `json:"id"`
+	AssignmentID           string `json:"assignment_id,omitempty"`
+	AssignmentPlanRevision uint64 `json:"assignment_plan_revision,omitempty"`
+	OrganizationID         string `json:"organization_id"`
+	UserID                 string `json:"user_id"`
+	ActorID                string `json:"actor_id"`
+	ScopeID                string `json:"scope_id"`
+	Channel                string `json:"channel"`
+	Trigger                string `json:"trigger"`
+	IdempotencyKey         string `json:"idempotency_key"`
+	ChatID                 int64  `json:"chat_id"`
+	MessageID              int    `json:"message_id"`
 	// TaskID/TopicID pin the durable task binding at acceptance: every reply,
 	// progress event, approval, artifact and voice note returns to the same
 	// task/topic. Model output never re-routes them.
@@ -34,11 +38,15 @@ type Job struct {
 	TextSHA256   string `json:"text_sha256,omitempty"`
 	// GoalEpoch pins a goal-mode turn to the record epoch it was queued under;
 	// a claim whose epoch no longer matches the active goal no-ops (SPEC-0074).
-	GoalEpoch int64     `json:"goal_epoch,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	GoalEpoch int64 `json:"goal_epoch,omitempty"`
+	// TokenEstimate prices the admission reservation when the caller knows
+	// the expected spend; zero takes the spool default, negative is rejected.
+	TokenEstimate int64     `json:"token_estimate,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 type Delivery struct {
+	BlockedBy        string `json:"blocked_by,omitempty"`
 	ID               string `json:"id"`
 	OccurrenceID     string `json:"occurrence_id,omitempty"`
 	JobID            string `json:"job_id"`
@@ -56,6 +64,9 @@ type Delivery struct {
 	SlackThread  string `json:"slack_thread,omitempty"`
 	Text         string `json:"text"`
 	Format       string `json:"format,omitempty"`
+	// Lang is the owning user's resolved language, stamped at claim time so
+	// channel adapters localize surface text without re-resolving identity.
+	Lang locale.Lang `json:"lang,omitempty"`
 	// NotBefore defers quiet-window deliveries: the entry stays durable in
 	// pending until the schedule's quiet window ends (SPEC-0054 R2.1).
 	NotBefore time.Time `json:"not_before,omitempty"`
@@ -76,12 +87,16 @@ type Delivery struct {
 	VoiceSent bool `json:"voice_sent,omitempty"`
 	// Buttons carries Telegram inline-keyboard rows (one button per row) for
 	// channels that support them; Data is the opaque callback payload.
-	Buttons            []DeliveryButton `json:"buttons,omitempty"`
-	ApprovalJobID      string           `json:"approval_job_id,omitempty"`
-	ApprovalID         string           `json:"approval_id,omitempty"`
-	ApprovalRunID      string           `json:"approval_run_id,omitempty"`
-	ApprovalGeneration string           `json:"approval_generation,omitempty"`
-	TelegramMessageID  int              `json:"telegram_message_id,omitempty"`
+	Buttons []DeliveryButton `json:"buttons,omitempty"`
+	// Kind marks non-approval interactive deliveries (e.g. "lang-picker") whose
+	// buttons carry self-describing callbacks: they need no approval-record
+	// reconciliation at send time, unlike approval keyboards.
+	Kind               string `json:"kind,omitempty"`
+	ApprovalJobID      string `json:"approval_job_id,omitempty"`
+	ApprovalID         string `json:"approval_id,omitempty"`
+	ApprovalRunID      string `json:"approval_run_id,omitempty"`
+	ApprovalGeneration string `json:"approval_generation,omitempty"`
+	TelegramMessageID  int    `json:"telegram_message_id,omitempty"`
 	// EditMessageID targets a status message already delivered: the delivery
 	// worker edits it instead of sending a new message (SPEC-0053 R2.2).
 	EditMessageID int `json:"edit_message_id,omitempty"`
@@ -90,9 +105,13 @@ type Delivery struct {
 	StreamPosition uint64 `json:"stream_position,omitempty"`
 	// StatusClosed marks the run's status message finalized: late events must
 	// not resurrect or edit it.
-	StatusClosed bool      `json:"status_closed,omitempty"`
-	Attempts     int       `json:"attempts"`
-	CreatedAt    time.Time `json:"created_at"`
+	StatusClosed bool `json:"status_closed,omitempty"`
+	// Control marks control-plane sends (approvals, cancel-acks, hold
+	// notices): they claim ahead of ordinary replies and hold a reserved
+	// enqueue lane when the ordinary outbox is at its cap.
+	Control   bool      `json:"control,omitempty"`
+	Attempts  int       `json:"attempts"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type DeliveryButton struct {

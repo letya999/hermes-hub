@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/letya999/hermes-hub/internal/locale"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
@@ -21,12 +22,12 @@ type goalRunner interface {
 // command itself is never enqueued as a run. A set persists the durable
 // (principal, conversation) record and queues the kickoff as an ordinary
 // spool job with the goal trigger (SPEC-0074).
-func (g *Gateway) goalCommand(ctx context.Context, user User, task Task, channel string, chatID, topic, sender int64, deliveryKey, text string) error {
+func (g *Gateway) goalCommand(ctx context.Context, user User, task Task, route commandRoute, deliveryKey, text string) error {
 	reply := func(answer string) error {
-		return g.queueDeliveryChannel(ctx, deliveryKey+"-reply", channel, chatID, topic, answer)
+		return g.queueCommandReply(ctx, deliveryKey+"-reply", route, route.topic, answer)
 	}
 	verb, arg := parseGoalArgs(text)
-	answer, err := g.goalVerb(ctx, user, task, sender, channel, chatID, verb, arg)
+	answer, err := g.goalVerb(ctx, user, task, route.sender, route.channel, route.chatID, verb, arg)
 	if err != nil {
 		return err
 	}
@@ -37,16 +38,17 @@ func (g *Gateway) goalCommand(ctx context.Context, user User, task Task, channel
 // the channel command and the /v1/goals control surface share it.
 func (g *Gateway) goalVerb(ctx context.Context, user User, task Task, sender int64, channel string, chatID int64, verb, arg string) (string, error) {
 	reply := func(answer string) (string, error) { return answer, nil }
+	lang := locale.LangOf(user.WorkspaceDir)
 	if verb == "unsupported" {
-		return "Команда /goal " + arg + " не поддерживается в этой версии (доступны: /goal, /goal status, /goal pause, /goal resume, /goal clear, /goal <текст>).", nil
+		return locale.T(lang, "goal.unsupported", arg), nil
 	}
 	if verb == "status" {
 		goal, found, err := g.spool.GoalForTask(user.ID, task.ConversationID)
 		if err != nil {
-			return reply("Цель недоступна: " + err.Error())
+			return reply(locale.T(lang, "goal.unavailable", err.Error()))
 		}
 		if !found {
-			return reply("Нет активной цели для этой задачи.")
+			return reply(locale.T(lang, "goal.none"))
 		}
 		if goal.Engine == "native" {
 			// Upstream is authoritative — refresh the mirror before answering.
@@ -55,43 +57,44 @@ func (g *Gateway) goalVerb(ctx context.Context, user User, task Task, sender int
 				_ = g.spool.SaveGoal(goal)
 			}
 		}
-		return reply("Цель («" + goal.Text + "»): " + goal.Status + ", движок " + goal.Engine +
-			", ходы " + strconv.Itoa(goal.TurnsUsed) + "/" + strconv.Itoa(goal.MaxTurns))
+		return reply(locale.T(lang, "goal.status", goal.Text, goal.Status, goal.Engine, goal.TurnsUsed, goal.MaxTurns))
 	}
 	if verb == "clear" {
 		goal, found, err := g.spool.GoalForTask(user.ID, task.ConversationID)
 		if err != nil {
-			return reply("Цель недоступна: " + err.Error())
+			return reply(locale.T(lang, "goal.unavailable", err.Error()))
 		}
 		if !found {
-			return reply("Нет активной цели для этой задачи.")
+			return reply(locale.T(lang, "goal.none"))
 		}
 		if goal.Engine == "native" {
 			// Upstream holds the authoritative record — clear it there too.
 			if _, rerr := g.goalRuntimeOp(ctx, user, task, sender, channel, chatID, goal, "clear"); rerr != nil {
-				return reply("Цель недоступна: " + rerr.Error())
+				return reply(locale.T(lang, "goal.unavailable", rerr.Error()))
 			}
 		}
 		if err := g.spool.ClearGoal(user.ID, task.ConversationID); err != nil {
-			return reply("Цель недоступна: " + err.Error())
+			return reply(locale.T(lang, "goal.unavailable", err.Error()))
 		}
-		return reply("Цель сброшена — запись удалена, запланированные ходы устарели.")
+		return reply(locale.T(lang, "goal.cleared"))
 	}
 	if verb == "pause" || verb == "resume" {
 		goal, found, err := g.spool.GoalForTask(user.ID, task.ConversationID)
 		if err != nil {
-			return reply("Цель недоступна: " + err.Error())
+			return reply(locale.T(lang, "goal.unavailable", err.Error()))
 		}
 		if !found {
-			return reply("Нет активной цели для этой задачи.")
+			return reply(locale.T(lang, "goal.none"))
 		}
-		prompt := "resume"
+		// Hub-engine resumes restate no upstream prompt: the synthesized kick
+		// carries the owner's language hint like every model-facing text.
+		prompt := "Resume the goal and continue working toward it." + modelLangHint(locale.LangOf(user.WorkspaceDir))
 		if goal.Engine == "native" {
 			// Upstream is authoritative — the verb moves its record and the
 			// mirrored state (plus resume's continuation prompt) comes back.
 			result, rerr := g.goalRuntimeOp(ctx, user, task, sender, channel, chatID, goal, verb)
 			if rerr != nil {
-				return reply("Цель недоступна: " + rerr.Error())
+				return reply(locale.T(lang, "goal.unavailable", rerr.Error()))
 			}
 			goal = mirrorGoalState(goal, result)
 			if result.ContinuationPrompt != "" {
@@ -101,22 +104,22 @@ func (g *Gateway) goalVerb(ctx context.Context, user User, task Task, sender int
 			goal.Status = map[string]string{"pause": "paused", "resume": "active"}[verb]
 		}
 		if err := g.spool.SaveGoal(goal); err != nil {
-			return reply("Цель недоступна: " + err.Error())
+			return reply(locale.T(lang, "goal.unavailable", err.Error()))
 		}
 		if verb == "pause" {
-			return reply("Цель приостановлена — ходы остановлены, записи сохранены.")
+			return reply(locale.T(lang, "goal.paused"))
 		}
 		if err := g.enqueueGoalTurn(user, task, channel, chatID, sender, goal, prompt); err != nil {
-			return reply("Цель недоступна: " + err.Error())
+			return reply(locale.T(lang, "goal.unavailable", err.Error()))
 		}
-		return reply("Цель возобновлена — ход продолжается.")
+		return reply(locale.T(lang, "goal.resumed"))
 	}
 	if verb != "set" {
-		return reply("Цель недоступна: команда не обработана.")
+		return reply(locale.T(lang, "goal.unhandled"))
 	}
 	runner, ok := g.runner.(goalRunner)
 	if !ok {
-		return reply("Управление целями недоступно для этого исполнителя.")
+		return reply(locale.T(lang, "goal.unsupported-runner"))
 	}
 	envelope := g.channel(channel).JobEnvelope(user, chatID, sender)
 	envelope.ConversationID = task.ConversationID
@@ -127,17 +130,17 @@ func (g *Gateway) goalVerb(ctx context.Context, user User, task Task, sender int
 	}, Op: "set", Text: arg}
 	existing, found, err := g.spool.GoalForTask(user.ID, task.ConversationID)
 	if err != nil {
-		return reply("Цель недоступна: " + err.Error())
+		return reply(locale.T(lang, "goal.unavailable", err.Error()))
 	}
 	if found {
 		request.ExpectEngine = existing.Engine
 	}
 	result, err := runner.Goal(ctx, request)
 	if err != nil {
-		return reply("Цель недоступна: " + err.Error())
+		return reply(locale.T(lang, "goal.unavailable", err.Error()))
 	}
 	if result.FailureClass != "" {
-		return reply("Цель не принята: " + goalFailureText(result.FailureClass))
+		return reply(locale.T(lang, "goal.rejected", goalFailureText(lang, result.FailureClass)))
 	}
 	epoch := int64(1)
 	if found {
@@ -147,7 +150,7 @@ func (g *Gateway) goalVerb(ctx context.Context, user User, task Task, sender int
 		TaskID: task.TaskID, PrincipalID: user.ID, ConversationID: task.ConversationID,
 		Text: arg, Engine: result.Engine, Status: "active", MaxTurns: result.MaxTurns, Epoch: epoch,
 	}); err != nil {
-		return reply("Цель недоступна: " + err.Error())
+		return reply(locale.T(lang, "goal.unavailable", err.Error()))
 	}
 	suffix := "-e" + strconv.FormatInt(epoch, 10) + "-" + strconv.FormatInt(g.now().UnixNano(), 36)
 	kickoff := Job{
@@ -159,9 +162,9 @@ func (g *Gateway) goalVerb(ctx context.Context, user User, task Task, sender int
 		Text: result.KickoffPrompt, GoalEpoch: epoch, CreatedAt: g.now().UTC(),
 	}
 	if _, err := g.spool.Enqueue(kickoff); err != nil {
-		return reply("Цель недоступна: " + err.Error())
+		return reply(locale.T(lang, "goal.unavailable", err.Error()))
 	}
-	return reply("Цель поставлена (движок " + result.Engine + ", лимит " + strconv.Itoa(result.MaxTurns) + " ходов): " + arg)
+	return reply(locale.T(lang, "goal.set", result.Engine, result.MaxTurns, arg))
 }
 
 // enqueueGoalTurn queues one goal turn as an ordinary durable spool job —
@@ -244,7 +247,7 @@ func (g *Gateway) goalAfterJob(ctx context.Context, job Job, response string) {
 		goal.Status = "done"
 		_ = g.spool.SaveGoal(goal)
 		suffix := "-done-" + strconv.Itoa(goal.TurnsUsed) + "-e" + strconv.FormatInt(goal.Epoch, 10) + "-" + strconv.FormatInt(g.now().UnixNano(), 36)
-		_ = g.spool.EnqueueDelivery(Delivery{ID: "goal-" + job.TaskID + suffix, IdempotencyKey: "goal-" + job.TaskID + suffix, Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, Text: "Цель достигнута («" + goal.Text + "») — " + result.Reason + ". Доказательство: " + result.Evidence, CreatedAt: g.now().UTC()})
+		_ = g.spool.EnqueueDelivery(Delivery{ID: "goal-" + job.TaskID + suffix, IdempotencyKey: "goal-" + job.TaskID + suffix, Channel: job.Channel, ChatID: job.ChatID, TaskID: job.TaskID, TopicID: job.TopicID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, Text: locale.T(locale.LangOf(g.user(job.UserID).WorkspaceDir), "goal.achieved", goal.Text, result.Reason, result.Evidence), CreatedAt: g.now().UTC()})
 		return
 	}
 	if goal.TurnsUsed >= goal.MaxTurns {
@@ -264,7 +267,7 @@ func (g *Gateway) goalAfterJob(ctx context.Context, job Job, response string) {
 		// SPEC-0074 R3b: hub-engine evaluations carry no continuation_prompt —
 		// the next turn restates the goal and the verdict reason; an empty
 		// prompt would fail as "empty Hermes prompt" before any dispatch.
-		prompt = "Цель: " + goal.Text + "\nВердикт предыдущего хода: " + goal.LastReason + "\nПродолжай работу над целью."
+		prompt = "Goal: " + goal.Text + "\nPrevious turn verdict: " + goal.LastReason + "\nContinue working toward the goal." + modelLangHint(locale.LangOf(user.WorkspaceDir))
 	}
 	_ = g.enqueueGoalTurn(user, task, job.Channel, job.ChatID, sender, goal, prompt)
 }
@@ -334,9 +337,9 @@ func (g *Gateway) preemptGoalTurns(principalID, conversationID string) {
 	_ = g.spool.SaveGoal(goal)
 }
 
-func goalFailureText(class string) string {
+func goalFailureText(lang locale.Lang, class string) string {
 	if class == "engine_conflict" {
-		return "активная цель работает на другом движке — сначала /goal clear"
+		return locale.T(lang, "goal.err.engine-conflict")
 	}
 	return class
 }

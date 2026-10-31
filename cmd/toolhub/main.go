@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -67,6 +68,13 @@ func runWithContext(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	ctx, stop := context.WithCancel(ctx)
+	var background sync.WaitGroup
+	defer func() { stop(); background.Wait() }()
+	runBackground := func(work func()) {
+		background.Add(1)
+		go func() { defer background.Done(); work() }()
+	}
 	server := &http.Server{Addr: config.Listen, Handler: diagnostics.HTTP("toolhub", handler), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 2 * time.Minute}
 	publicServer, publicLn, err := publicServerFor(handler)
 	if err != nil {
@@ -83,20 +91,22 @@ func runWithContext(ctx context.Context) error {
 	remover := handler.(interface{ ResumeRemovals(context.Context) error })
 	// A transient startup failure is retried and reported by the periodic loop.
 	_ = remover.ResumeRemovals(ctx)
-	go removalRetryLoop(ctx, removalRetryInterval, remover.ResumeRemovals)
+	runBackground(func() { removalRetryLoop(ctx, removalRetryInterval, remover.ResumeRemovals) })
 	reconciler := handler.(interface{ Reconcile(context.Context) error })
-	go removalRetryLoop(ctx, reconcileInterval, reconciler.Reconcile)
+	runBackground(func() { removalRetryLoop(ctx, reconcileInterval, reconciler.Reconcile) })
 	if dir := os.Getenv("HUB_DIAGNOSTICS_DIR"); dir != "" {
 		scope := diagnostics.Scope{
 			Project:  os.Getenv("HUB_DIAGNOSTICS_PROJECT"),
 			AgentNet: os.Getenv("HUB_DIAGNOSTICS_AGENT_NET"),
 			Owner:    os.Getenv("HUB_DIAGNOSTICS_OWNER"),
 		}
-		go diagnostics.Follow(ctx, filepath.Join(dir, "hermes-diagnostics.txt"), diagnostics.Docker, 15*time.Second, scope)
+		runBackground(func() {
+			diagnostics.Follow(ctx, filepath.Join(dir, "hermes-diagnostics.txt"), diagnostics.Docker, 15*time.Second, scope)
+		})
 	}
 	refresher := handler.(interface{ RefreshProjection() error })
 	restartNotify := api.RuntimeRestartNotifierFromEnv()
-	go func() {
+	runBackground(func() {
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
 		pending := false
@@ -128,7 +138,7 @@ func runWithContext(ctx context.Context) error {
 				ticks++
 			}
 		}
-	}()
+	})
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.ListenAndServe() }()
 	select {

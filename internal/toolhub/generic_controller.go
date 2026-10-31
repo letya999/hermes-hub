@@ -21,17 +21,22 @@ import (
 // ToolHive invocation and checks Docker's returned profile before admission.
 
 type GenericControllerConfig struct {
-	StateRoot           string              `json:"state_root"`
-	ToolHiveBinary      string              `json:"toolhive_binary"`
-	SeccompProfile      string              `json:"seccomp_profile"`
-	DockerFallback      bool                `json:"docker_fallback,omitempty"`
-	BridgeBinary        string              `json:"bridge_binary,omitempty"`
-	CredentialMountRoot string              `json:"credential_mount_root,omitempty"`
-	Definition          api.ToolDefinition  `json:"definition"`
-	DynamicDefinitions  bool                `json:"dynamic_definitions,omitempty"`
-	Budget              *api.WorkloadBudget `json:"-"`
-	MaxActive           int                 `json:"max_active"`
-	IdleTTLSeconds      int                 `json:"idle_ttl_seconds"`
+	HostingFleetRoot    string                    `json:"hosting_fleet_root,omitempty"`
+	HostingHelperVolume string                    `json:"hosting_helper_volume,omitempty"`
+	HostingOnly         bool                      `json:"hosting_only,omitempty"`
+	HostingCellInit     string                    `json:"hosting_cell_init,omitempty"`
+	Hosting             map[string]HostingProfile `json:"hosting,omitempty"`
+	StateRoot           string                    `json:"state_root"`
+	ToolHiveBinary      string                    `json:"toolhive_binary"`
+	SeccompProfile      string                    `json:"seccomp_profile"`
+	DockerFallback      bool                      `json:"docker_fallback,omitempty"`
+	BridgeBinary        string                    `json:"bridge_binary,omitempty"`
+	CredentialMountRoot string                    `json:"credential_mount_root,omitempty"`
+	Definition          api.ToolDefinition        `json:"definition"`
+	DynamicDefinitions  bool                      `json:"dynamic_definitions,omitempty"`
+	Budget              *api.WorkloadBudget       `json:"-"`
+	MaxActive           int                       `json:"max_active"`
+	IdleTTLSeconds      int                       `json:"idle_ttl_seconds"`
 	// CLI configures bounded-cli admission: the executor container the
 	// process lands in is inspected per call and only approved plans are
 	// admitted. Nil disables the CLI path entirely.
@@ -56,6 +61,8 @@ type genericWorkload struct {
 }
 
 type genericController struct {
+	siteInput  func(context.Context, io.Reader, string, ...string) ([]byte, error)
+	siteMu     sync.Mutex
 	config     GenericControllerConfig
 	command    func(context.Context, string, ...string) ([]byte, error)
 	commandEnv func(context.Context, map[string]string, string, ...string) ([]byte, error)
@@ -218,7 +225,7 @@ func newGenericController(config GenericControllerConfig) (*genericController, e
 	if api.NoSymlinkPath(config.StateRoot) != nil || api.NoSymlinkPath(config.SeccompProfile) != nil {
 		return nil, api.ErrIsolation
 	}
-	controller := &genericController{config: config, command: api.LocalCommand, commandEnv: api.IsolatedCommandEnv, commandExit: api.LocalCommandExit, commandStdin: api.LocalCommandInput, workloads: map[string]genericWorkload{}, registry: newCellRegistry()}
+	controller := &genericController{siteInput: siteCommandInput, config: config, command: api.LocalCommand, commandEnv: api.IsolatedCommandEnv, commandExit: api.LocalCommandExit, commandStdin: api.LocalCommandInput, workloads: map[string]genericWorkload{}, registry: newCellRegistry()}
 	controller.scope = api.NewDockerScope(os.Getenv("HUB_DOCKER_SCOPE"), os.Getenv("HUB_DOCKER_AGENT_NET"), controller.command)
 	return controller, nil
 }
@@ -345,6 +352,11 @@ func RunGenericController(ctx context.Context, config GenericControllerConfig, l
 	if err != nil {
 		return err
 	}
+	if len(config.Hosting) > 0 {
+		if err := c.siteInitSeed(); err != nil {
+			return err
+		}
+	}
 	if config.CLI != nil {
 		if err := c.cellInitSeed(); err != nil {
 			return err
@@ -356,12 +368,20 @@ func RunGenericController(ctx context.Context, config GenericControllerConfig, l
 	}
 	defer listener.Close()
 	server := &http.Server{Handler: c.handler(token), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: time.Minute}
+	shutdownDone := make(chan struct{})
 	go func() { // #nosec G118 -- graceful shutdown needs a fresh context after ctx cancellation
+		defer close(shutdownDone)
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
+				if c.config.HostingOnly {
+					_ = server.Close()
+					cleanup, stop := context.WithTimeout(context.Background(), 30*time.Second)
+					c.releaseHostingOnShutdown(cleanup)
+					stop()
+				}
 				shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				_ = server.Shutdown(shutdown)
 				cancel()
@@ -376,6 +396,9 @@ func RunGenericController(ctx context.Context, config GenericControllerConfig, l
 	}()
 	if err := server.Serve(listener); err != http.ErrServerClosed {
 		return err
+	}
+	if config.HostingOnly {
+		<-shutdownDone
 	}
 	return nil
 }

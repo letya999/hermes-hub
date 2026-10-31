@@ -64,12 +64,18 @@ func (r HTTPRunner) Run(ctx context.Context, job Job, _ User) (string, error) {
 }
 
 func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error) {
+	startedAt := time.Now()
 	origin := ""
+	langHint := false
 	if r.Spool != nil {
 		mapping, ok, err := r.Spool.Mapping(job.ID)
 		if err != nil {
 			return RunOutcome{}, err
 		}
+		// Mappings written before the instruction-pinning era replay
+		// byte-identical instructions under their idempotency key; the owner
+		// language pin rides only current-generation records.
+		langHint = ok && mapping.RoutineOriginVersion >= 1
 		if ok && mapping.RoutineOriginVersion == 1 && mapping.MatchesJob(job) {
 			if ch := channelFor(nil, job.Channel); ch != nil && ch.Caps().RoutineOrigin {
 				body, _ := json.Marshal(map[string]string{"origin_job_id": job.ID})
@@ -121,19 +127,28 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 		}
 		instructions += "To answer with a voice message, put `VOICE: <spoken text>` on its own line in the reply — the channel synthesizes and sends it as a voice message; when VOICE: is the only line, the reply is voice-only and no text message is sent. Do that when the user asks for a spoken or voice answer; otherwise answer in text. Synthesized audio is never stored."
 	}
+	// The owner's stored language is per-run data too: the model answers in
+	// it regardless of the prompt's own language (ADR-0084 D5).
+	if langHint && r.Spool.langOf != nil {
+		if instructions != "" {
+			instructions += "\n"
+		}
+		instructions += strings.TrimSpace(modelLangHint(r.Spool.langOf(job.UserID)))
+	}
 	body, err := json.Marshal(hubruntime.ExecuteRequest{
-		Envelope:       job.Envelope,
-		JobID:          job.ID,
-		OrganizationID: job.OrganizationID,
-		UserID:         job.UserID,
-		ActorID:        job.ActorID,
-		ScopeID:        job.ScopeID,
-		Channel:        job.Channel,
-		Trigger:        job.Trigger,
-		IdempotencyKey: job.IdempotencyKey,
-		Text:           job.Text,
-		InboundID:      job.InboundID,
-		Instructions:   instructions,
+		OperationalEpoch: job.OperationalEpoch,
+		Envelope:         job.Envelope,
+		JobID:            job.ID,
+		OrganizationID:   job.OrganizationID,
+		UserID:           job.UserID,
+		ActorID:          job.ActorID,
+		ScopeID:          job.ScopeID,
+		Channel:          job.Channel,
+		Trigger:          job.Trigger,
+		IdempotencyKey:   job.IdempotencyKey,
+		Text:             job.Text,
+		InboundID:        job.InboundID,
+		Instructions:     instructions,
 	})
 	if err != nil {
 		return RunOutcome{}, err
@@ -215,7 +230,7 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 				r.attachArtifacts(jobCtx, job, &event)
 			}
 			if terminalStatus(event.Status) {
-				r.meterUsage(jobCtx, job, event.RunID)
+				r.meterUsage(jobCtx, job, event.RunID, time.Since(startedAt))
 			}
 			if err := r.Spool.RecordStreamEvent(job, event); err != nil {
 				return err
@@ -256,7 +271,7 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 		_ = json.NewDecoder(io.LimitReader(response.Body, 64*1024)).Decode(&failure)
 		outcome := RunOutcome{JobID: failure.JobID, SessionID: failure.SessionID, RunID: failure.RunID, RuntimeGeneration: failure.RuntimeGeneration, Status: failure.Status, LastEvent: failure.LastEvent}
 		if terminalStatus(failure.Status) && failure.JobID == job.ID {
-			r.meterUsage(jobCtx, job, failure.RunID)
+			r.meterUsage(jobCtx, job, failure.RunID, time.Since(startedAt))
 		}
 		if failure.Status == "uncertain" || (r.Resume && response.StatusCode == http.StatusConflict) {
 			// A resume conflict only says the outcome is not observable yet —
@@ -276,7 +291,7 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 		return RunOutcome{}, errors.New("runtime returned an invalid response")
 	}
 	if terminalStatus(result.Status) && result.JobID == job.ID {
-		r.meterUsage(jobCtx, job, result.RunID)
+		r.meterUsage(jobCtx, job, result.RunID, time.Since(startedAt))
 	}
 	if r.Spool != nil {
 		if result.JobID != job.ID {
@@ -324,7 +339,7 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 // meterUsage journals the measured session usage after a terminal run. It is
 // best-effort: a missing meter must never fail an already-finished job; the
 // journal simply lacks that attempt (visible as a totals gap, never a fake).
-func (r HTTPRunner) meterUsage(ctx context.Context, job Job, runID string) {
+func (r HTTPRunner) meterUsage(ctx context.Context, job Job, runID string, duration time.Duration) {
 	if r.Spool == nil || runID == "" {
 		return
 	}
@@ -336,6 +351,8 @@ func (r HTTPRunner) meterUsage(ctx context.Context, job Job, runID string) {
 	if err != nil {
 		report = hubruntime.SessionUsage{FetchedAt: time.Now().UTC()}
 	}
+	ms := duration.Milliseconds()
+	report.DurationMS = &ms
 	if err := r.Spool.RecordUsage(job, runID, report); err != nil {
 		log.Printf("usage journal write failed job_id=%q", job.ID)
 	}

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/commodel"
+	"github.com/letya999/hermes-hub/internal/identity"
 )
 
 // DefaultCatchUp bounds how far a missed schedule may backfill when the
@@ -26,7 +27,12 @@ func occurrenceID(o commodel.RoutineOccurrence) string {
 // interactive task conversation. TaskID/TopicID remain on the job for
 // delivery routing only.
 func RoutineConversation(scheduleID string) string {
-	return "routine-" + scheduleID
+	id := "routine-" + scheduleID
+	if identity.ValidID(id) {
+		return id
+	}
+	sum := sha256.Sum256([]byte(scheduleID))
+	return "routine-" + hex.EncodeToString(sum[:16])
 }
 
 // RoutineFailureDigest normalizes an owner-facing error text so repeated

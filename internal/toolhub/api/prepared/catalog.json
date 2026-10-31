@@ -4,8 +4,8 @@
     "source": {"repository": "https://github.com/makenotion/notion-mcp-server", "commit_sha": "730ae781ba28beeaf0865025a3f2ed4c25ea2387"},
     "language": "node", "entrypoint": ["node", "/app/bin/cli.mjs"],
     "connection": {"fields": [{"name": "NOTION_TOKEN", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "NOTION_TOKEN"}]},
-    "contract_id": "notion-token", "contract_revision": 2, "stateful": false,
-    "egress": ["api.notion.com"], "read_tools": ["API-get-self", "API-post-search", "API-retrieve-a-page"], "probe_tool": "API-get-self",
+    "contract_id": "notion-token", "contract_revision": 3, "stateful": false,
+    "egress": ["api.notion.com"], "read_tools": ["API-get-self", "API-post-search", "API-query-data-source", "API-retrieve-a-page"], "probe_tool": "API-get-self",
     "runbook": "docs/prepared-connectors.md#notion",
     "handoff": "Install https://github.com/makenotion/notion-mcp-server; reuse my existing Notion connection. Enter NOTION_TOKEN only in the protected Broker form. Verify a read of the shared root/pages; do not create or edit pages."
   },
@@ -14,7 +14,7 @@
     "source": {"repository": "https://github.com/nspady/google-calendar-mcp", "commit_sha": "7c788f58e8b00db66ddd0eccd81fdc3dda0ecf9b"},
     "language": "node", "entrypoint": ["node", "/app/build/index.js"],
     "connection": {"fields": [{"name": "GOOGLE_OAUTH_CREDENTIALS", "type": "json", "required": true, "secret": true, "delivery": "file", "target": "/run/mcp-secrets/google/client.json"}]},
-    "contract_id": "google-file-session", "contract_revision": 1, "stateful": true,
+    "contract_id": "google-file-session", "contract_revision": 2, "stateful": true,
     "state_target": "/home/mcp/.config/google-calendar",
     "runtime_environment": {"GOOGLE_CALENDAR_MCP_TOKEN_PATH": "/home/mcp/.config/google-calendar/runtime_session.json"},
     "preflight_files": {"GOOGLE_OAUTH_CREDENTIALS": {"installed":{"client_id":"preflight.apps.googleusercontent.com","client_secret":"preflight","redirect_uris":["http://localhost"]}}},
@@ -32,7 +32,7 @@
       {"name":"GOOGLE_CLIENT_SECRET_PATH","type":"json","required":true,"secret":true,"delivery":"file","target":"/run/mcp-secrets/client.json"},
       {"name":"USER_GOOGLE_EMAIL","type":"email","required":true,"secret":false,"delivery":"env","target":"USER_GOOGLE_EMAIL"}
     ]},
-    "contract_id":"workspace-file-session","contract_revision":1,"stateful":true,
+    "contract_id":"workspace-file-session","contract_revision":2,"stateful":true,
     "state_target":"/home/mcp/.google_workspace_mcp/credentials",
     "runtime_environment":{"MCP_SINGLE_USER_MODE":"1","WORKSPACE_MCP_CREDENTIALS_DIR":"/home/mcp/.google_workspace_mcp/credentials","WORKSPACE_MCP_LOG_LEVEL":"WARNING"},
     "preflight_environment":{"USER_GOOGLE_EMAIL":"fixture@example.com"},
@@ -54,7 +54,7 @@
     "source": {"repository": "https://github.com/github/github-mcp-server", "commit_sha": "85598ba6e1256f7ebf4867b95d63b833c4549264"},
     "language": "go", "entrypoint": ["/app/mcp-server", "stdio"],
     "connection": {"fields": [{"name": "GITHUB_PERSONAL_ACCESS_TOKEN", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "GITHUB_PERSONAL_ACCESS_TOKEN"}]},
-    "contract_id": "github-pat", "contract_revision": 1, "stateful": false,
+    "contract_id": "github-pat", "contract_revision": 2, "stateful": false,
     "toolsets": {
       "context": ["get_me", "get_teams", "get_team_members"],
       "repos": ["search_repositories", "get_file_contents", "list_commits", "search_code", "search_commits", "get_commit", "get_file_blame", "list_branches", "list_tags", "get_tag", "list_releases", "get_latest_release", "get_release_by_tag", "list_starred_repositories", "list_repository_collaborators", "create_or_update_file", "create_repository", "fork_repository", "create_branch", "push_files", "delete_file", "star_repository", "unstar_repository", "delete_repository"],
@@ -93,7 +93,7 @@
       {"name": "GITLAB_API_URL", "type": "url", "required": false, "secret": false, "delivery": "env", "target": "GITLAB_API_URL"},
       {"name": "GITLAB_ENDPOINT", "type": "string", "required": false, "secret": false, "delivery": "env", "target": "GITLAB_ENDPOINT"}
     ]},
-    "contract_id": "gitlab-pat", "contract_revision": 2, "stateful": false,
+    "contract_id": "gitlab-pat", "contract_revision": 3, "stateful": false,
     "tcp_forwards": [
       {"listen": 18929, "target_env": "GITLAB_ENDPOINT"}
     ],
@@ -113,7 +113,7 @@
       {"name": "CONFLUENCE_USERNAME", "type": "string", "required": true, "secret": false, "delivery": "env", "target": "CONFLUENCE_USERNAME"},
       {"name": "CONFLUENCE_API_TOKEN", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "CONFLUENCE_API_TOKEN"}
     ]},
-    "contract_id": "atlassian-env", "contract_revision": 2, "stateful": false,
+    "contract_id": "atlassian-env", "contract_revision": 3, "stateful": false,
     "credential_groups": [["JIRA_URL", "JIRA_USERNAME", "JIRA_API_TOKEN"], ["CONFLUENCE_URL", "CONFLUENCE_USERNAME", "CONFLUENCE_API_TOKEN"]],
     "egress": ["atlassian.net", "atlassian.com"], "read_tools": ["jira_get_all_projects", "jira_get_user_profile", "jira_get_issue", "jira_search", "confluence_list_page_templates", "confluence_get_page", "confluence_search"],
     "probe_tools": [{"tool": "jira_get_all_projects", "env": "JIRA_URL"}, {"tool": "confluence_list_page_templates", "env": "CONFLUENCE_URL"}],
@@ -135,7 +135,7 @@
       {"name": "TXTTSQL_CONFIG", "type": "file", "required": false, "secret": true, "delivery": "file", "target": "/app/config.toml"},
       {"name": "TXTTSQL_CA_FILE", "type": "pem", "required": false, "secret": false, "delivery": "file", "target": "/run/txttsql/ca.pem"}
     ]},
-    "contract_id": "txttsql-sql", "contract_revision": 2, "stateful": false,
+    "contract_id": "txttsql-sql", "contract_revision": 3, "stateful": false,
     "tcp_forwards": [
       {"listen": 15432, "target_env": "TXTTSQL_ENDPOINT"},
       {"listen": 15433, "target_env": "TXTTSQL_ENDPOINT_2"},
@@ -162,7 +162,7 @@
       {"name": "SSH_PASSPHRASE", "type": "token", "required": false, "secret": true, "delivery": "env", "target": "SSH_PASSPHRASE"},
       {"name": "DBHUB_CA_FILE", "type": "pem", "required": false, "secret": false, "delivery": "file", "target": "/run/dbhub/ca.pem"}
     ]},
-    "contract_id": "dbhub-sql", "contract_revision": 1, "stateful": false,
+    "contract_id": "dbhub-sql", "contract_revision": 2, "stateful": false,
     "preflight_environment": {"DSN": "sqlite:///:memory:"},
     "tcp_forwards": [
       {"listen": 15432, "target_env": "DBHUB_ENDPOINT"},
@@ -182,7 +182,7 @@
       {"name": "GRAFANA_ORG_ID", "type": "string", "required": false, "secret": false, "delivery": "env", "target": "GRAFANA_ORG_ID"},
       {"name": "GRAFANA_ENDPOINT", "type": "string", "required": false, "secret": false, "delivery": "env", "target": "GRAFANA_ENDPOINT"}
     ]},
-    "contract_id": "grafana-sat", "contract_revision": 1, "stateful": false,
+    "contract_id": "grafana-sat", "contract_revision": 2, "stateful": false,
     "environment": ["GRAFANA_SOCKS5_PROXY"],
     "runtime_environment": {"GRAFANA_USAGE_STATS": "disabled", "GRAFANA_LOKI_GUARDRAIL_MODE": "enforce"},
     "tcp_forwards": [
@@ -201,7 +201,7 @@
       {"name": "MCP_SERVER_PROMETHEUS_URL", "type": "url", "required": true, "secret": false, "delivery": "env", "target": "MCP_SERVER_PROMETHEUS_URL"},
       {"name": "PROMETHEUS_ENDPOINT", "type": "string", "required": false, "secret": false, "delivery": "env", "target": "PROMETHEUS_ENDPOINT"}
     ]},
-    "contract_id": "prometheus-url", "contract_revision": 2, "stateful": false,
+    "contract_id": "prometheus-url", "contract_revision": 3, "stateful": false,
     "context_sources": [
       {"source": {"repository": "https://github.com/prometheus/docs", "commit_sha": "bd8a3f4fe92454ea0709895d6d9c771b8e86e710"}, "into": "cmd/prometheus-mcp/external/docs"}
     ],
@@ -223,7 +223,7 @@
       {"name": "DATALENS_API_AUTH_HEADER", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "DATALENS_API_AUTH_HEADER"},
       {"name": "DATALENS_API_URL", "type": "url", "required": false, "secret": false, "delivery": "env", "target": "DATALENS_API_URL"}
     ]},
-    "contract_id": "datalens-auth", "contract_revision": 1, "stateful": false,
+    "contract_id": "datalens-auth", "contract_revision": 2, "stateful": false,
     "preflight_network": true,
     "runtime_environment": {"DATALENS_YC_STATIC_AUTH": "1", "DATALENS_MAX_RESPONSE_CHARS": "100000", "NODE_USE_ENV_PROXY": "1"},
     "egress": ["api.datalens.tech", "registry.npmjs.org"],
@@ -233,7 +233,7 @@
   },
   {
     "id": "telegram", "name": "Personal Telegram", "license": "Apache-2.0", "tier": "t1",
-    "source": {"repository": "https://github.com/letya999/telegram-mcp", "commit_sha": "26f1632b2b07cca16fa8f172fe645477921db9ed"},
+    "source": {"repository": "https://github.com/letya999/telegram-mcp", "commit_sha": "5efcafb593def92943d31827ce6a0471025379ea"},
     "language": "python", "python_extras": ["proxy"], "entrypoint": ["/opt/venv/bin/telegram-mcp"],
     "connection": {"fields": [
       {"name": "TELEGRAM_API_ID", "type": "string", "required": true, "secret": false, "delivery": "env", "target": "TELEGRAM_API_ID"},
@@ -241,12 +241,12 @@
       {"name": "TELEGRAM_SESSION_STRING", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "TELEGRAM_SESSION_STRING"},
       {"name": "TELEGRAM_EXPECTED_USER_ID", "type": "string", "required": true, "secret": false, "delivery": "env", "target": "TELEGRAM_EXPECTED_USER_ID"}
     ]},
-    "contract_id": "telegram-session", "contract_revision": 2, "stateful": false,
+    "contract_id": "telegram-session", "contract_revision": 3, "stateful": false,
     "auth_before_tools_list": true,
     "runtime_environment": {"TELEGRAM_EXPOSED_TOOLS": "read-only", "TELEGRAM_TRANSCRIBE": "off", "TELEGRAM_DEVICE_MODEL": "hermes-hub ToolHub"},
     "proxy_environment": ["TELEGRAM_PROXY_HOST", "TELEGRAM_PROXY_PORT"],
     "egress": ["91.108.56.0/22", "91.108.4.0/22", "91.108.8.0/22", "91.108.16.0/22", "91.108.12.0/22", "149.154.160.0/20", "91.105.192.0/23", "91.108.20.0/22", "185.76.151.0/24"],
-    "read_tools": ["list_accounts", "get_chats", "list_chats", "get_chat", "get_history", "get_messages", "list_messages", "search_messages", "search_global", "wait_for_new_message", "wait_for_settled_message", "requeue_event", "incoming_feed_status"],
+    "read_tools": ["list_accounts", "get_chats", "list_chats", "get_chat", "get_history", "get_messages", "list_messages", "watch_chat_messages", "search_messages", "search_global", "wait_for_new_message", "wait_for_settled_message", "requeue_event", "incoming_feed_status"],
     "probe_tool": "list_accounts",
     "runbook": "docs/prepared-connectors.md#personal-telegram",
     "handoff": "Call prepare_source once with https://github.com/letya999/telegram-mcp. Enter API ID, API hash, a personal StringSession and expected numeric user ID only in the protected Broker form. Verify list_accounts and a bounded history read. Bot credentials and provider writes are outside this read-only entry."
@@ -263,7 +263,7 @@
       {"name": "PLAYWRIGHT_MCP_ALLOWED_ORIGINS", "type": "string", "required": false, "secret": false, "delivery": "env", "target": "PLAYWRIGHT_MCP_ALLOWED_ORIGINS"},
       {"name": "PLAYWRIGHT_MCP_BLOCKED_ORIGINS", "type": "string", "required": false, "secret": false, "delivery": "env", "target": "PLAYWRIGHT_MCP_BLOCKED_ORIGINS"}
     ]},
-    "contract_id": "browser-session", "contract_revision": 1, "stateful": true,
+    "contract_id": "browser-session", "contract_revision": 2, "stateful": true,
     "state_target": "/state/browser-profile",
     "budgets": {"cpu_millis": 2000, "memory_mib": 2048, "max_pids": 256, "shm_size_mib": 1024},
     "egress_class": "web",

@@ -1,6 +1,6 @@
 ---
 description: toolhub — capability gateway: tool admission, governance evaluation, connector lifecycle, audit ledger.
-last_verified: 2026-10-24
+last_verified: 2026-10-30
 ---
 
 # toolhub
@@ -17,8 +17,22 @@ tool call crosses. Listens `0.0.0.0:8090`, host-bound to `127.0.0.1:8090`.
   onboarding records through `preparing → review → awaiting-credentials →
   awaiting-confirm → confirmed → enabled`, then `disabled`/`revoked`/`removed`
   with the finalizer ladder (ADR-0056).
+- **Shared connector consumers**: stateless `shared` workloads track every
+  active binding as a consumer; release stops the process only when the last
+  consumer leaves, and the reconciler never purges one with live consumers.
+  `workload.retention` is `demand` (default), `warm` or `persistent`
+  (persistent needs a stateless shared workload and skips idle reaping).
+- **Recovery budget**: re-admitting a connection whose recorded workload is
+  not running counts as one recovery; after three the connection degrades
+  instead of restart-looping.
+- **Per-run call ceiling**: `HUB_TOOL_CALLS_PER_RUN` bounds tool calls under
+  one job correlation (default 256); uncorrelated control-path calls are
+  never bucketed.
 - **Cells** (`cell*.go`): bounded CLI/MCP tool execution in disposable
   containers seeded by `cellinit` (see services/cell-proxy.md).
+  Skill credential refs are leased from the calling principal's running
+  runtime through the supervisor; ToolHub never reads its own self-env for
+  another principal. An unavailable runtime yields no ref lease.
 - **Catalog** (`catalog.go`, `artifact_catalog.go`): prepared connector
   registry, CI-built images (ADR-0057), content-addressed recipes
   (`recipes/<sha256>`, ADR-0053).
@@ -58,6 +72,15 @@ tool call crosses. Listens `0.0.0.0:8090`, host-bound to `127.0.0.1:8090`.
   sessions (sliding 15 min, 2 h cap), polls JPEG frames and forwards a
   bounded browser-tool allowlist — scripting, network, file and close tools
   are denied.
+- **Admin diagnostics** (`admin.go`, ADR-0077): a `hermes-admin` principal
+  enrolled in `toolhub-tokens.json` with `"scopes": ["admin"]` gets read-only
+  forensics — `GET /v1/admin/onboardings`, `GET /v1/admin/diagnose/<id>`,
+  `POST /v1/admin/inspect-source` (bounded file list + literal-grep snippets
+  of the pinned upstream commit; never whole file bodies, credentials,
+  nonces or wizard codes). Calls are serialized, paced ≥1 s apart and
+  audit-tagged `admin.diagnostics`. A control-plane bearer +
+  `X-Hub-Principal` cannot reach them: the scope must live on the presented
+  token itself.
 
 ## State
 
