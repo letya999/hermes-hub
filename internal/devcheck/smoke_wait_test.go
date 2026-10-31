@@ -3,6 +3,7 @@ package devcheck
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"text/template"
@@ -11,7 +12,7 @@ import (
 
 func TestSmokeWaitHealthyFailsFastOnExitedContainer(t *testing.T) {
 	err := smokeWaitHealthy(context.Background(),
-		func() bool { return false },
+		func() error { return errors.New("unhealthy") },
 		func(name string) string {
 			if name == "hermes-smoke-x-browser" {
 				return "exited"
@@ -88,7 +89,7 @@ func TestSmokeWaitHealthyRestartsExitedContainerOnce(t *testing.T) {
 		return "running"
 	}
 	err := smokeWaitHealthy(context.Background(),
-		func() bool { return false },
+		func() error { return errors.New("unhealthy") },
 		status,
 		func(name string) { restarts = append(restarts, name) },
 		[]string{"runtime-a", "browser-a"},
@@ -99,5 +100,21 @@ func TestSmokeWaitHealthyRestartsExitedContainerOnce(t *testing.T) {
 	}
 	if len(restarts) != 1 || restarts[0] != "browser-a" {
 		t.Fatalf("expected exactly one restart of browser-a, got %v", restarts)
+	}
+}
+
+func TestSmokeWaitHealthyTimeoutReportsProbeError(t *testing.T) {
+	// The runtime's `hub-runtime health` exits nonzero with the reason on
+	// stderr — discarding it left the CI timeout undiagnosable even after the
+	// sidecar recovered.
+	err := smokeWaitHealthy(context.Background(),
+		func() error { return errors.New("open /state/runtime.json: no such file") },
+		func(string) string { return "running" },
+		func(string) {},
+		[]string{"runtime-b"},
+		50*time.Millisecond,
+	)
+	if err == nil || !strings.Contains(err.Error(), "runtime.json") {
+		t.Fatalf("timeout error must carry the probe failure reason, got %v", err)
 	}
 }

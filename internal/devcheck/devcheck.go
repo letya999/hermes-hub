@@ -444,8 +444,12 @@ func DockerSmoke(ctx context.Context, image string) error {
 		}
 		return strings.TrimSpace(string(out))
 	}
-	err = smokeWaitHealthy(ctx, func() bool {
-		return exec.CommandContext(ctx, "docker", "exec", name, "hub-runtime", "health").Run() == nil
+	err = smokeWaitHealthy(ctx, func() error {
+		out, runErr := exec.CommandContext(ctx, "docker", "exec", name, "hub-runtime", "health").CombinedOutput()
+		if runErr == nil {
+			return nil
+		}
+		return fmt.Errorf("%v: %s", runErr, strings.TrimSpace(string(out)))
 	}, status, func(container string) {
 		fmt.Printf("smoke: %s died, restarting once\n", container)
 		_ = run("start", container)
@@ -469,11 +473,12 @@ func dumpSmokeLogs(run func(args ...string) error, containers ...string) {
 	}
 }
 
-func smokeWaitHealthy(ctx context.Context, healthy func() bool, status func(string) string, restart func(string), containers []string, window time.Duration) error {
+func smokeWaitHealthy(ctx context.Context, healthy func() error, status func(string) string, restart func(string), containers []string, window time.Duration) error {
 	deadline := time.Now().Add(window)
 	restarted := map[string]bool{}
+	var healthErr error
 	for {
-		if healthy() {
+		if healthErr = healthy(); healthErr == nil {
 			return nil
 		}
 		for _, container := range containers {
@@ -488,7 +493,7 @@ func smokeWaitHealthy(ctx context.Context, healthy func() bool, status func(stri
 			restart(container)
 		}
 		if time.Now().After(deadline) {
-			return errors.New("agent/browser failed health check")
+			return fmt.Errorf("agent/browser failed health check: %w", healthErr)
 		}
 		time.Sleep(time.Second)
 	}
