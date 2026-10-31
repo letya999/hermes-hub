@@ -1,0 +1,24 @@
+schema: 1
+change: CHG-0240
+title: Local legacy data retirement
+status: in_progress
+branch: chore/storage-reliability-integration
+updated: "2026-10-31"
+phase: verification
+adr: ADR-0088
+spec: SPEC-0088
+depends_on: [CHG-0238, CHG-0239]
+validation:
+  safe_inventory: passed
+  aged_host_cleanup: passed_330_files
+  legacy_settings: migrated_22_retained_1
+  active_space_doctor: passed
+  active_space_render: passed
+  e2e_core_mock: 122_pass_29_blocked_0_fail
+  just_check: failed_windows_fork_exec
+  sequential_gate: passed_86_23_percent
+evidence: [evidence.md]
+remaining:
+  - "23 currently bound local credential references have no reviewed Broker contract; preserve ciphertext/key until re-onboarding or an explicit lossful retirement."
+  - "One dormant legacy config is unreadable and shares a space with auth files."
+  - "Local ignored-file deletion remains rejected by automatic approval review."

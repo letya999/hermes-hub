@@ -16,6 +16,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0240](in-progress/CHG-0240-legacy-data-retirement/plan.md) | Local legacy cleanup: 330 old files removed, 22 configs split; active local credentials and one unreadable auth-bearing space retained pending safe migration |
 | [CHG-0238](in-progress/CHG-0238-storage-cleanup/plan.md) | Local spool and audit cleaned; deletion of 101 older ignored host files blocked by automatic approval review |
 | [CHG-0234](in-progress/CHG-0234-conversation-parallel-lanes/plan.md) | Parallel session lanes per context: conversation-keyed inFlight, fairness per context, per-context cap below upstream Hermes cap; implementing |
 | [CHG-0235](in-progress/CHG-0235-localized-user-strings/plan.md) | Localize last hardcoded user-facing strings: grant page, viewer title, /usage placeholder, hosting bootstrap + AGENTS.md rule; validating |
