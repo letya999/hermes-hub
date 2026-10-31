@@ -336,6 +336,7 @@ jobs:
           case "$GATE" in
             smoke)
               go run ./cmd/devcheck docker-pull hermes-hub:test-control "$TARGET-control"
+              go run ./cmd/devcheck docker-pull hermes-hub:test-browser "$TARGET-browser"
               test "$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' hermes-hub:test-control)" = "$(git rev-parse HEAD)"
               docker run --rm --entrypoint docker hermes-hub:test-control --version
               go run ./cmd/devcheck docker-smoke hermes-hub:test
