@@ -18,6 +18,7 @@ func TestSmokeWaitHealthyFailsFastOnExitedContainer(t *testing.T) {
 			}
 			return "running"
 		},
+		func(string) {},
 		[]string{"hermes-smoke-x", "hermes-smoke-x-browser"},
 		50*time.Millisecond,
 	)
@@ -50,5 +51,53 @@ func TestSmokeStatusFormatSurfacesExitAndOOM(t *testing.T) {
 	got := render(state{Status: "exited", ExitCode: 1})
 	if !strings.Contains(got, "exited") || !strings.Contains(got, "exit=1") || !strings.Contains(got, "oom=") {
 		t.Fatalf("dead container must report status, exit code and oom flag, got %q", got)
+	}
+}
+
+func TestDumpSmokeLogsRequestsFullLogs(t *testing.T) {
+	// The sidecar's startup chatter alone exceeds a tail window — a bounded
+	// dump cut the first child death out of the CI failure log entirely.
+	var calls [][]string
+	dumpSmokeLogs(func(args ...string) error {
+		calls = append(calls, append([]string{}, args...))
+		return nil
+	}, "runtime-a", "browser-a")
+	if len(calls) != 2 {
+		t.Fatalf("expected a log pull per container, got %v", calls)
+	}
+	for i, name := range []string{"runtime-a", "browser-a"} {
+		args := calls[i]
+		if len(args) != 2 || args[0] != "logs" || args[1] != name {
+			t.Fatalf("expected plain `docker logs %s`, got %v", name, args)
+		}
+	}
+}
+
+func TestSmokeWaitHealthyRestartsExitedContainerOnce(t *testing.T) {
+	// CI evidence: the display stack was observed fully up (DevTools listening)
+	// then the X server died ~1s in — an environmental race, not a defect the
+	// gate should grind 90s against. One bounded restart absorbs it; a second
+	// death is a real failure.
+	deaths := map[string]int{}
+	restarts := []string{}
+	status := func(name string) string {
+		if name == "browser-a" && deaths[name] < 2 {
+			deaths[name]++
+			return "exited exit=1 oom=false"
+		}
+		return "running"
+	}
+	err := smokeWaitHealthy(context.Background(),
+		func() bool { return false },
+		status,
+		func(name string) { restarts = append(restarts, name) },
+		[]string{"runtime-a", "browser-a"},
+		3*time.Second,
+	)
+	if err == nil || !strings.Contains(err.Error(), "browser-a") {
+		t.Fatalf("second death must still fail naming the container, got %v", err)
+	}
+	if len(restarts) != 1 || restarts[0] != "browser-a" {
+		t.Fatalf("expected exactly one restart of browser-a, got %v", restarts)
 	}
 }
