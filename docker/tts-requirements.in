@@ -1,2 +1,2 @@
-torch==2.8.0+cpu
+torch==2.13.0
 omegaconf==2.3.0
