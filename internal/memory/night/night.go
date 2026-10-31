@@ -198,6 +198,13 @@ func Run(ctx context.Context, root string, day time.Time, o Options) (Result, er
 		return res, err
 	}
 
+	// R8.4: sweep owner edits (the OK UI path) into vault history before any
+	// run write — a rollup commit must never absorb owner bytes under a
+	// system author. The sweep is idempotent: a clean tree commits nothing,
+	// and DryRun has already returned so a dry night mutates nothing.
+	if _, err := vault.CommitExternalEdits(root); err != nil {
+		return res, err
+	}
 	w := vault.NewWriter(root)
 	// A resumed run keeps the pre-crash journal lines and digest so the
 	// day's REVIEW section and owner brief reflect every promotion the

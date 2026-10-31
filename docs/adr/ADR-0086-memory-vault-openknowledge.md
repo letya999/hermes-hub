@@ -1,6 +1,6 @@
 ---
 description: Per-space markdown memory vault (daily leaves, typed cards, folded summaries, audience-scoped CORE.md) with a deterministic gated nightly rollup, zero-LLM pre-turn recall, a provider seam, plus OpenKnowledge as the opt-in human editing surface over the same files.
-last_verified: 2026-10-31
+last_verified: 2026-11-01
 ---
 # ADR-0086: Memory vault and OpenKnowledge knowledge surface
 
@@ -40,6 +40,21 @@ names, and a mock relay never counts as live. Vacuum's dry-run is a pure
 scan; `--apply` strips struck leaf blocks through the governed writer,
 `git rm`s superseded cards, drops prov.db rows and commits — history
 keeps everything recoverable.
+Amended (M20.8, issue #304): D8 mechanics recorded — the knowledge role
+image is a dedicated Dockerfile stage `npm i -g --ignore-scripts
+@inkeep/open-knowledge@0.88.2` (exact pin, newest stable ≥7 days old at
+selection), built per environment as `hermes-hub:<ver>-<env>-knowledge`
+through the hub BuildKit paths (`docker-check`, `docker-pull`, CI image
+matrix) with a 600 MB role budget. The service mounts
+`spaces/<id>/vault` at `/data` read-write, binds its container interface
+via `OK_ALLOW_EXTERNAL=1`, attaches exactly the space-private network
+(project default in static mode, the internal agent net in managed
+mode), and publishes no host port. Owner provenance is a git-level
+sweep: `vault.CommitExternalEdits` commits every uncommitted working-tree
+change as `hermes-owner` (excluding `.git/`, `.graph/`, `.ok/` and
+`runtime/` sidecars) and runs inside the rollup immediately before the
+first governed write, so a rollup commit can never absorb owner bytes
+under a system author.
 Requirements: [SPEC-0085](../../specs/active/SPEC-0085-memory-vault-openknowledge.md).
 Research: `.work/in-progress/CHG-0204-vault-layout/research.md`.
 

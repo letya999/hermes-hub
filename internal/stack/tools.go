@@ -205,7 +205,7 @@ var mcpConnectors = map[string]bool{
 // native subsystems: meet maps to the google_meet plugin toolset (unmanaged
 // only — plugins stay sealed under managed), transcription is the stt flag,
 // deep_research is the bundled-skill gate.
-var pseudoToolsets = map[string]bool{"meet": true, "transcription": true, "deep_research": true, "memory_vault": true}
+var pseudoToolsets = map[string]bool{"meet": true, "transcription": true, "deep_research": true, "memory_vault": true, "knowledge_ui": true}
 
 // ingressChannels are transport adapters that feed messages into the agent.
 // They are operator-owned ingress, never agent tools.

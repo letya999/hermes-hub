@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -366,6 +367,46 @@ func TestBoundedLossApplies(t *testing.T) {
 	}
 	if res.Rejected != 0 {
 		t.Fatalf("in-bound rewrite was rejected: %+v", res)
+	}
+}
+
+// R8.4: an owner edit on disk — the OK UI path — is swept into history as
+// hermes-owner before the rollup's own writes, so the run's card commit can
+// never absorb owner bytes under a system author. The edit itself survives
+// the rewrite (preserved under ## History like any replaced body).
+func TestUIEditWinsRollup(t *testing.T) {
+	root := fixture(t, []memory.Entry{
+		eligibleEntry("turn-1", "I only drink earl grey tea"),
+	})
+	card := "---\ntype: note\nstatus: active\ntags: []\ncreated: 2026-04-10\nupdated: 2026-04-10\n---\n\n## Facts\n\n- owner-pinned-line\n"
+	if err := os.MkdirAll(filepath.Join(root, "memory", "cards", "notes"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "memory", "cards", "notes", "tea.md"), []byte(card), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Run(context.Background(), root, dayNoon, Options{
+		Relay: func(ctx context.Context, system, user string) (string, error) {
+			return `{"summary":"tea","facts":[],"truths":[{"card":"notes/tea","content":"---\ntype: note\nstatus: active\ntags: []\ncreated: 2026-04-10\nupdated: 2026-04-19\n---\n\n## Facts\n\n- rollup-line\n"}]}`, nil
+		},
+		Now: dayNoon.Add(24 * time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := os.ReadFile(filepath.Join(root, "memory", "cards", "notes", "tea.md"))
+	if !strings.Contains(string(body), "owner-pinned-line") {
+		t.Fatalf("owner line dropped from the card: %q", body)
+	}
+	cmd := exec.Command("git", "log", "--format=%an", "--", "memory/cards/notes/tea.md")
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	authors := strings.Fields(string(out))
+	if len(authors) < 2 || authors[1] != "hermes-owner" {
+		t.Fatalf("owner edit must commit as hermes-owner before the rollup write: %v", authors)
 	}
 }
 

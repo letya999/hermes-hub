@@ -105,7 +105,7 @@ func Config(s Settings) M {
 			// hub-built read-only view at /skills is the only skill path.
 			// memory_vault is likewise a hub-side flag: the vault mounts and
 			// CORE wiring are render-time behavior, never an agent toolset.
-			if name == "skills" || name == "memory_vault" {
+			if name == "skills" || name == "memory_vault" || name == "knowledge_ui" {
 				continue
 			}
 			// SPEC-0085 R1.6: with the vault on the native memory toolset

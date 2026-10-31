@@ -148,6 +148,19 @@ USER 10001:10001
 ENTRYPOINT ["hub-runtime"]
 CMD ["browser"]
 
+# OpenKnowledge knowledge surface (SPEC-0085 R8, ADR-0086 D8): the per-space
+# markdown editor/MCP over the space memory vault. One pinned replica on the
+# space-private network, vault bind-mounted at /data; the container never
+# publishes to the host in this stage. The upstream package is pinned exactly
+# — no floating tag may resurrect an unreviewed release.
+FROM node AS knowledge
+RUN set -e; for i in 1 2 3 4; do if npm i -g --ignore-scripts @inkeep/open-knowledge@0.88.2; then break; fi; if [ "$i" = 4 ]; then exit 1; fi; sleep 10; done; npm cache clean --force
+RUN groupadd -g 10001 agent && useradd -u 10001 -g agent -d /state/home -s /bin/bash agent && mkdir -p /state/home /data && chown 10001:10001 /state/home /data
+ENV HOME=/state/home
+WORKDIR /data
+USER 10001:10001
+CMD ["ok", "start"]
+
 # Bounded-CLI cells run on this dedicated image: catalog commands (git, rg)
 # plus the static cellinit helper, and nothing else — no /state, no socket,
 # no interpreters that could execute mutable workspace code.
@@ -222,6 +235,18 @@ ARG GIT_SHA=unknown
 LABEL org.opencontainers.image.revision="${GIT_SHA}"
 
 FROM browser AS dev-browser
+USER 0:0
+RUN mkdir /src && chown 10001:10001 /src
+USER 10001:10001
+ARG GIT_SHA=unknown
+LABEL org.opencontainers.image.revision="${GIT_SHA}"
+
+FROM knowledge AS prod-knowledge
+LABEL org.opencontainers.image.licenses="AGPL-3.0-only"
+ARG GIT_SHA=unknown
+LABEL org.opencontainers.image.revision="${GIT_SHA}"
+
+FROM knowledge AS dev-knowledge
 USER 0:0
 RUN mkdir /src && chown 10001:10001 /src
 USER 10001:10001

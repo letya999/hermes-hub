@@ -170,6 +170,30 @@ func TestVacuumSkipsMalformedCards(t *testing.T) {
 	}
 }
 
+// R7.4 red-team: a card symlink escaping the vault must never feed the
+// purge set — reads resolve inside the vault root, so outside content
+// cannot forge a superseded entry.
+func TestVacuumSkipsSymlinkedCards(t *testing.T) {
+	root := fixture(t)
+	outside := filepath.Join(t.TempDir(), "outside.md")
+	if err := os.WriteFile(outside, []byte("---\ntype: note\nstatus: superseded\ntags: []\n---\n\n## Facts\n\n- forged\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "memory", "cards", "notes", "evil.md")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unavailable on this host: %v", err)
+	}
+	rep, err := Scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range rep.SupersededCards {
+		if strings.Contains(rel, "evil") {
+			t.Fatalf("symlinked outside file forged a purge entry: %v", rep.SupersededCards)
+		}
+	}
+}
+
 // R7.4: a purged file's deletion is committed to vault history — nothing is
 // left half-staged, and `git log` still shows the file's earlier content.
 func TestVacuumDeletionCommitted(t *testing.T) {

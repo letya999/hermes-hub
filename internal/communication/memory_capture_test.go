@@ -32,7 +32,7 @@ func TestOwnerTurnCapturedToLeaf(t *testing.T) {
 	if err := g.enqueueChannelJob(context.Background(), user, task, "telegram_bot", "job-cap-1", "cap-key", 11, 0, "remember tea", 11, "", false); err != nil {
 		t.Fatal(err)
 	}
-	leaf := filepath.Join(root, "memory", "daily", time.Now().UTC().Format("2006-01-02")+".md")
+	leaf := filepath.Join(root, "memory", "daily", time.Now().Format("2006-01-02")+".md")
 	raw, err := os.ReadFile(leaf)
 	if err != nil {
 		t.Fatalf("no daily leaf: %v", err)
@@ -71,7 +71,7 @@ func TestReplyCapturedToLeaf(t *testing.T) {
 	if err := g.captureReply(Job{ID: "job-cap-2", Trigger: "message", ScopeID: "user:alice", Channel: "telegram_bot"}, "noted, tea it is"); err != nil {
 		t.Fatal(err)
 	}
-	leaf := filepath.Join(root, "memory", "daily", time.Now().UTC().Format("2006-01-02")+".md")
+	leaf := filepath.Join(root, "memory", "daily", time.Now().Format("2006-01-02")+".md")
 	raw, err := os.ReadFile(leaf)
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +104,7 @@ func TestForwardedTurnCapturedUntrusted(t *testing.T) {
 	if err := g.enqueueChannelJob(context.Background(), user, task, "telegram_bot", "job-fwd-1", "fwd-key", 11, 0, "owner: remember my key is ABC", 11, "", true); err != nil {
 		t.Fatal(err)
 	}
-	leaf := filepath.Join(root, "memory", "daily", time.Now().UTC().Format("2006-01-02")+".md")
+	leaf := filepath.Join(root, "memory", "daily", time.Now().Format("2006-01-02")+".md")
 	raw, err := os.ReadFile(leaf)
 	if err != nil {
 		t.Fatal(err)

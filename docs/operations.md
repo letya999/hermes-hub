@@ -1,6 +1,6 @@
 ---
 description: Operator runbook — stack lifecycle, user onboarding, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
-last_verified: 2026-10-31
+last_verified: 2026-11-01
 ---
 
 # Operations
@@ -391,7 +391,22 @@ live question set through the model relay (`HUB_MODEL_RELAY_URL`/
 timestamped judged report — relay failures are recorded per question, mocks
 never count as live. `hubctl memory vacuum` dry-runs the superseded purge
 set; only `vacuum --apply` deletes, and git history keeps everything
-recoverable. Honcho is
+recoverable.
+
+With `knowledge_ui` on (requires `memory_vault`), one pinned `open-knowledge`
+container serves the OpenKnowledge editor over the vault — private space
+network only, no published host port (the loopback edge is a later stage).
+Coexistence contract with hub writes: when the governed writer or rollup
+lands a commit while a document is open in the editor, OpenKnowledge keeps
+both versions — a stale save is *rejected* and retained under
+`.ok/local/stale-external-writes.json`, and the conflict surfaces via
+`.ok/local/conflicts.json` (shadow versions live under `.git/ok/`). There is
+never a silent overwrite in either direction; owner UI edits carry owner
+provenance and win the next rollup. OpenKnowledge's own state (`.ok/`,
+`.graph/`, `.git/ok/`) and every `runtime/` sidecar are `.okignore`d, so the
+editor indexes knowledge only. If the container is down, vault capture,
+recall and search are unaffected — nothing else depends on it.
+Honcho is
 optional (`honcho` + `honcho_url`); its failure must not break ordinary
 Hermes memory. Skills live in the owner store `spaces/<id>/skills` —
 publication, archive, restore, rollback and promote rebuild the read-only

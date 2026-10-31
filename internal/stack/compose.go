@@ -383,6 +383,31 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		}
 		services["browser-"+s.User] = browserService
 	}
+	// SPEC-0085 R8: knowledge_ui renders one pinned OpenKnowledge replica per
+	// space over the vault — private network only, no published ports (the
+	// loopback edge is CHG-0211). First boot inits the project; later boots
+	// find .ok/ and start directly.
+	if s.Has("knowledge_ui") {
+		okService := cloneMap(common)
+		okService["image"] = "hermes-hub:0.5.0-" + s.Environment + "-knowledge"
+		okService["build"] = imageBuild(s.Environment + "-knowledge")
+		okService["deploy"] = M{"replicas": 1}
+		okService["command"] = "sh -c '[ -d .ok ] || ok init --no-mcp --no-skills; exec ok start'"
+		// R8.2: the vault is the OpenKnowledge project root; OK state (.ok/,
+		// .git/ok/, .graph/) lands inside it on .okignore'd paths.
+		okService["volumes"] = []any{
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "vault")), "target": "/data"},
+		}
+		// OK binds its container interface only so space-net peers can reach
+		// it; no host port is ever published in this stage (edge = CHG-0211).
+		okService["environment"] = M{"OK_ALLOW_EXTERNAL": "1"}
+		if s.CapabilityMode == "managed" {
+			okService["networks"] = M{managedAgentNetwork(s): M{}}
+		} else {
+			okService["networks"] = M{"default": M{}}
+		}
+		services["open-knowledge"] = okService
+	}
 	hostRuntimeDir := filepath.ToSlash(filepath.Join(dir, "runtime"))
 	hostCliproxyDir := filepath.ToSlash(filepath.Join(dir, "cliproxy"))
 	stateBind := M{"type": "bind", "source": hostRuntimeDir, "target": "/state"}

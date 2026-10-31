@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -39,22 +40,28 @@ func Scan(root string) (Report, error) {
 	var rep Report
 	struck := memory.OpenForgetSet(filepath.Join(root, "runtime", "memory")).Set()
 
-	// Superseded cards — frontmatter status only, body text is data.
+	// Superseded cards — frontmatter status only, body text is data. The
+	// walk is root-scoped: a symlinked card can never read outside the
+	// vault's cards tree (TOCTOU-safe, no path traversal).
 	cards := filepath.Join(root, "memory", "cards")
-	_ = filepath.Walk(cards, func(p string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() || !strings.HasSuffix(p, ".md") {
-			return err
-		}
-		data, err := os.ReadFile(p)
-		if err != nil {
-			return err
-		}
-		if memory.FrontmatterStatus(string(data)) == "superseded" {
-			rel, _ := filepath.Rel(root, p)
-			rep.SupersededCards = append(rep.SupersededCards, filepath.ToSlash(rel))
-		}
-		return nil
-	})
+	vroot, err := os.OpenRoot(cards)
+	if err == nil {
+		defer func() { _ = vroot.Close() }()
+		cardsFS := vroot.FS()
+		_ = fs.WalkDir(cardsFS, ".", func(rel string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() || !strings.HasSuffix(rel, ".md") {
+				return err
+			}
+			data, err := fs.ReadFile(cardsFS, rel)
+			if err != nil {
+				return err
+			}
+			if memory.FrontmatterStatus(string(data)) == "superseded" {
+				rep.SupersededCards = append(rep.SupersededCards, filepath.ToSlash(filepath.Join("memory", "cards", rel)))
+			}
+			return nil
+		})
+	}
 	sort.Strings(rep.SupersededCards)
 
 	// Struck entry blocks inside daily leaves.
@@ -99,7 +106,7 @@ func Scan(root string) (Report, error) {
 				rep.ProvDropped++
 			}
 		}
-		f.Close()
+		_ = f.Close()
 	}
 	return rep, nil
 }
@@ -196,7 +203,7 @@ func dropProvRows(root string, struck map[string]bool) error {
 		}
 		keep = append(keep, line)
 	}
-	f.Close()
+	_ = f.Close()
 	tmp := path + ".tmp"
 	w, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -204,12 +211,12 @@ func dropProvRows(root string, struck map[string]bool) error {
 	}
 	for _, line := range keep {
 		if _, err := w.Write(append(line, '\n')); err != nil {
-			w.Close()
+			_ = w.Close()
 			return err
 		}
 	}
 	if err := w.Sync(); err != nil {
-		w.Close()
+		_ = w.Close()
 		return err
 	}
 	if err := w.Close(); err != nil {

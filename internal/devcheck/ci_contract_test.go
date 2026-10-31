@@ -173,6 +173,55 @@ func TestCIContainerFanoutPreservesEveryGate(t *testing.T) {
 	}
 }
 
+// SPEC-0085 R8.1/R8.5: the OpenKnowledge role image exists as a dedicated
+// stage pinned to an exact @inkeep/open-knowledge version, has prod/dev
+// targets with revision labels, is budgeted, and is wired through the
+// local and CI build/pull paths.
+func TestKnowledgeRolePinned(t *testing.T) {
+	dockerfile, err := os.ReadFile("../../docker/Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(dockerfile)
+	start := strings.Index(source, "AS knowledge")
+	if start < 0 {
+		t.Fatal("knowledge stage missing")
+	}
+	chunk := source[start:]
+	if end := strings.Index(chunk, "\nFROM "); end >= 0 {
+		chunk = chunk[:end]
+	}
+	if !strings.Contains(chunk, "@inkeep/open-knowledge@0.88.2") {
+		t.Fatal("knowledge stage lost its exact npm version pin")
+	}
+	for _, stage := range []string{"prod-knowledge", "dev-knowledge"} {
+		if !strings.Contains(source, "AS "+stage) {
+			t.Fatalf("%s target missing", stage)
+		}
+	}
+	just, err := os.ReadFile("../../justfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"docker-build hermes-hub:test-knowledge {{target}}-knowledge", "docker-pull hermes-hub:test-knowledge {{target}}-knowledge", "image-budget hermes-hub:test-knowledge knowledge"} {
+		if !strings.Contains(string(just), want) {
+			t.Errorf("local image gate misses %s", want)
+		}
+	}
+	ci, err := os.ReadFile("../../.github/workflows/ci.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"${{ matrix.target }}-knowledge", "hermes-hub:test-${{ matrix.target }}-knowledge"} {
+		if !strings.Contains(string(ci), want) {
+			t.Errorf("CI image path misses %s", want)
+		}
+	}
+	if _, ok := imageRoleBudgets["knowledge"]; !ok {
+		t.Error("knowledge role missing from image budgets")
+	}
+}
+
 func TestImageRevisionCannotInvalidateDependencyLayers(t *testing.T) {
 	data, err := os.ReadFile("../../docker/Dockerfile")
 	if err != nil {

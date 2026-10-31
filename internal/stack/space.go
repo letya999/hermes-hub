@@ -122,6 +122,9 @@ var featureToolMigration = map[string]ToolEntry{
 	// pseudo entries): `native` is only the enable marker — nothing upstream
 	// serves a toolset by this name.
 	"memory_vault": {Via: ToolViaNative},
+	// knowledge_ui is likewise a hub-side subsystem flag: it renders the
+	// per-space OpenKnowledge service, never an agent-visible toolset.
+	"knowledge_ui": {Via: ToolViaNative},
 }
 
 var featureToggleMigration = map[string][2]string{

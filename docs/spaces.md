@@ -1,6 +1,6 @@
 ---
 description: spaces/<id>/ layout — settings.yaml, generated configs, secrets/env files, state dirs, and what is hand-edited vs rendered.
-last_verified: 2026-10-31
+last_verified: 2026-11-01
 ---
 
 # Spaces
@@ -170,7 +170,13 @@ docs/tools.md; they are not shared personal-memory stores.
   `"HH:MM"` space-local, default 04:00) it folds the just-closed day —
   promotions, directives, REVIEW journal, owner digest, intent→draft
   assignment proposals — then closes any finished week/month/year whose
-  summary is missing.
+  summary is missing. With `knowledge_ui` on, one pinned
+  `open-knowledge` container mounts the vault at `/data` on the
+  space-private network only (no published host port; the loopback edge
+  is a later stage). Edits landing outside the governed writer — the
+  editor or direct file changes — are swept into history as
+  `hermes-owner` by `CommitExternalEdits` at the head of every rollup,
+  so owner provenance survives and wins (SPEC-0085 R8).
 - `broker/` — broker materialization output; `cache/`, `cliproxy/` —
   service-local state; `managed/<env>/model-relay` — relay selection state.
 - `diagnostics/` — bounded log surface backing `mcp__toolhub__diagnostics`
@@ -184,7 +190,7 @@ In legacy `settings.yaml` the opt-in contract is the `features` list from
 `ssh_tunnel`, `hh`, `telegram`, `slack_app`, `telegram_user`,
 `telegram_write`, `google`, `google_write`, `gitlab`, `meet`,
 `transcription`, `image_gen`, `github`, `slack`, `atlassian`, `desktop`,
-`drafts`, `memory_vault` —
+`drafts`, `memory_vault`, `knowledge_ui` —
 each with declared `requires` env keys and a scope note. Write-effect
 features (`*_write`, `browser_act`, `ssh_shell`, `ssh_tunnel`) are separate
 opt-ins on top of their read parent, matching deny-wins. In schema-3 spaces

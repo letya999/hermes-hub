@@ -161,6 +161,7 @@ var Features = []Feature{
 	{"hosting", nil, "Owner-bound immutable static and isolated dynamic sites; requires reviewed hosting config and exposure"},
 	{"exposure", nil, "Named outbound public endpoints over a per-binding tunnel workload (sish/cloudflared); requires a reviewed connections/exposure/config.yaml"},
 	{"memory_vault", nil, "Git-backed per-space memory vault at spaces/<id>/vault; removes the native memory toolset and scopes CORE to private runs"},
+	{"knowledge_ui", nil, "OpenKnowledge editor over the space memory vault: one pinned replica, private network only; requires memory_vault"},
 }
 var idPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,39}$`)
 var envReferencePattern = regexp.MustCompile(`\$\{([A-Z][A-Z0-9_]*)\}`)
@@ -446,6 +447,9 @@ func (s Settings) Validate() error {
 	}
 	if s.Has("browser_act") && !s.Has("browser") {
 		return fmt.Errorf("browser_act requires browser")
+	}
+	if s.Has("knowledge_ui") && !s.Has("memory_vault") {
+		return fmt.Errorf("knowledge_ui requires memory_vault")
 	}
 	if s.Has("google") && (!strings.Contains(s.GoogleEmail, "@") || s.OAuthPort < 1024) {
 		return fmt.Errorf("google requires email and oauth_port >=1024")
