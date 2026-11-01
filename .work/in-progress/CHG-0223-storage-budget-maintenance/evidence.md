@@ -78,3 +78,14 @@ Config surface: `audit_auto_retain` / `records_auto_retain` are the explicit des
 Docs: `docs/operations.md` (records rotation, auto policies, visible ledger stop, backoff, store-sweep) and `docs/services/credential-broker/operations/recovery.md` (rotation + auto-maintenance section) updated.
 
 Not verified yet: live dev-stack rotation on the real volume (in progress), `just check` root, coverage numbers, race.
+
+## Live dev rotation, 2026-11-02
+
+On the real dev volume (broker stopped, dev image `hermes-hub-dev-local-credential-broker:local` with the new binary):
+
+- `store-retain --records --keep-bytes 8388608` exported **342,416 records / 118,713,643 bytes** into `records-1-342416.seal` (199,801,844 B encrypted) + sealed manifest; `pruned:false` — export-only honored.
+- `store-retain --records --keep-bytes 8388608 --destroy` verified the existing archive, pruned the prefix across both legs in one transaction and VACUUMed: `primary.db` **327,073,792 → 10,498,048 bytes**; `recovery.db` likewise 10,498,048. `HotBytes` in the report: 8,388,399.
+- Broker restart on the rotated store: floor-aware replay opened cleanly, `Credential Broker listening`, 0 restarts, TLS handshake answers on :8787.
+- Dev config (`spaces/local/broker/config.json` + live volume config) now sets `audit_hot_max_bytes`/`audit_archive_dir`/`audit_auto_retain`/`records_archive_dir`/`records_auto_retain` — the tick self-maintains audit and records history at 80% high water from here.
+
+Commit `62d04a5`. Module suite green in the SQLCipher image (`go test ./...` all packages, real codec). Remaining honest gaps: archive-dir byte budget (S199.1 partial), root `just check`, race run, coverage delta.

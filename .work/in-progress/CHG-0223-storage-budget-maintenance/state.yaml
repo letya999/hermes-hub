@@ -3,7 +3,7 @@ change: CHG-0223
 title: "Полный учёт объёма и безопасное операторское обслуживание"
 status: in_progress
 branch: chore/storage-reliability-dev-acceptance
-updated: "2026-11-02"
+updated: "2026-11-01"
 phase: integrated-code-validation
 adr: ADR-0088
 spec: SPEC-0088
@@ -32,7 +32,7 @@ validation:
   live_acceptance: in_progress
 evidence: [evidence.md]
 remaining:
-  - "Broker records rotation verified by SQLCipher image tests; live dev rotation evidence pending."
+  - "Broker records rotation verified by SQLCipher image tests AND live dev rotation (342,416 rows, 312MiB->10.5MiB physical shrink, clean reopen)."
   - "Archive directory byte budget (full-footprint accounting) not yet implemented."
   - "Imported implementation requires integrated acceptance; design-only dependencies remain outstanding."
 limitations:
