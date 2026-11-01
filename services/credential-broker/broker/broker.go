@@ -2,6 +2,7 @@ package broker
 
 import (
 	"encoding/json"
+	"errors"
 	"net/url"
 	"strings"
 	"sync"
@@ -272,6 +273,9 @@ func (b *Broker) commit(m mutation) (uint64, error) {
 	}
 	seq, e := b.cfg.Journal.AppendWith("mutation.v1", m, aux)
 	if e != nil {
+		if errors.Is(e, journal.ErrFull) {
+			return 0, ErrRetentionFull
+		}
 		return 0, ErrUnavailable
 	}
 	b.apply(m, seq)
@@ -359,6 +363,13 @@ func (b *Broker) Events(a identity.Actor, after uint64, limit int) v1.Events {
 		limit = 100
 	}
 	if b.normalized {
+		// The retained floor is the re-anchor point: a cursor below it means
+		// the audit rows it points past were archived out, so the page reports
+		// the gap explicitly instead of silently starting mid-history.
+		if floor, err := b.cfg.Journal.AuditFloor(); err == nil {
+			out.EarliestAvailable = floor
+			out.Gap = after+1 < floor
+		}
 		rows, err := b.cfg.Journal.AuditPage(after, limit, journal.AuditScope{
 			Broadcast: "broker.started", Principal: a.PrincipalID,
 			Context: a.ContextID, AnyPrincipal: a.ContextManager,

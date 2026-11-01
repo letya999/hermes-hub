@@ -17,7 +17,7 @@ implementation_status: partial
 readiness: normalized_tables_live_on_dev
 slices:
   S195.1-transactional-state: done
-  S195.2-events-retention: partial
+  S195.2-events-retention: done
   S195.3-import-and-scale: partial
 validation:
   documents: passed
@@ -32,10 +32,14 @@ validation:
 evidence:
   - "../CHG-0218-broker-sqlcipher-proof/gate-result.md"
   - "S195.1 live: dev store normalized via `store-normalize` (2026-11-01); reopen probe: normalized=true, 415 state rows (contract 27, credential 42, grant 104, request 110, session 122, state 10), audit paginated; broker serves /v1/leases + /v1/runtime at ~30ms with marker staying armed across live commits."
+  - "S195.2 (2026-11-01): bounded hot audit cap gates admission as visible ErrRetentionFull/HTTP 507 before the transaction without poisoning the journal; `store-retain` exports the hot prefix into identity-sealed .seal + HMAC manifest, verifies existing archives instead of overwriting, prunes only under --destroy in one tx across both legs and persists audit_floor; ReadAuditArchive checks identity, manifest HMAC, archive+plaintext digests, row/byte counts and range; /v1/events reports earliest_available+gap for expired cursors; module suite green in pinned SQLCipher image (18 packages)."
 remaining:
-  - "Scoped events pagination polish (S195.2: retention/compaction of audit table) and large-scale import evidence (rest of S195.3) not done."
+  - "Large-scale import evidence (rest of S195.3: 10k/100k/1M audit rows, memory+latency measurements) not done."
   - "Normalized schema shipped: state(kind,id,seq,body) keyed current state, audit(seq,kind,principal,context,body) paginated, meta marker; atomic aux writes on every commit; AppendWith/normalize pass idempotent; raw append degrades Normalized() until repaired."
   - "Journal no longer retains the SQL record chain in memory; Records() streams from the table."
-  - "store-normalize CLI wired for replicated + single layouts."
+  - "store-normalize + store-retain CLI wired for replicated + single layouts."
 limitations:
-  - "Audit table grows with history; S195.2 still owes retention/GC (overlaps CHG-0220 lifecycle scope)."
+  - "Retention is operator-invoked (`store-retain`); the bounded background cleaner and object lifecycle GC stay with CHG-0220."
+  - "Audit retention enforces a byte budget; an age-based budget is not wired (no per-row timestamp column on audit)."
+  - "Physical .db files do not shrink after audit prune — the records chain keeps the full hash history; file rotation remains a CHG-0220 follow-up."
+  - "Retention config is optional; the dev stack runs without a configured cap until ops sets audit_hot_max_bytes + audit_archive_dir."

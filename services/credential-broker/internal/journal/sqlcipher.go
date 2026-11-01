@@ -85,6 +85,13 @@ func (j *Journal) appendSQL(r Record, plain []byte, aux *AuxWrites) (uint64, err
 		j.poisoned = true
 		return 0, ErrUnavailable
 	}
+	// The audit admission stop is visible, not poisonous: the commit is
+	// refused before it begins so the journal stays usable and a retention
+	// pass can free headroom (SPEC-0087 R5.3).
+	if aux != nil && aux.Audit != nil && j.retention.HotMaxBytes > 0 &&
+		j.auditBytes+int64(len(aux.Audit.Body)) > j.retention.HotMaxBytes {
+		return 0, ErrFull
+	}
 	tx, err := j.sql.db.Begin()
 	if err != nil {
 		j.poisoned = true
@@ -125,6 +132,9 @@ func (j *Journal) appendSQL(r Record, plain []byte, aux *AuxWrites) (uint64, err
 	j.prev = hex.EncodeToString(h[:])
 	j.seq = r.Sequence
 	j.size = size
+	if aux != nil && aux.Audit != nil {
+		j.auditBytes += int64(len(aux.Audit.Body))
+	}
 	return r.Sequence, nil
 }
 

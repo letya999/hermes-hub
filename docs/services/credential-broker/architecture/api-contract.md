@@ -1,6 +1,6 @@
 ---
 description: "Версия v1, audiences, errors и отделение секретного runtime-канала."
-last_verified: "2026-10-28"
+last_verified: "2026-11-01"
 ---
 
 # HTTP API и identity contract
@@ -45,7 +45,10 @@ Storage по умолчанию — первый writable provider. Идемпо
 
 `GET /v1/events?after=N` возвращает до 100 видимых событий и `next_cursor`. Cursor глобальный,
 поэтому видимые номера могут иметь разрывы. Consumer сохраняет cursor и идемпотентно обрабатывает sequence;
-события не заменяют повторную проверку текущей credential/grant revision.
+события не заменяют повторную проверку текущей credential/grant revision. Ответ также несёт
+`earliest_available` — нижнюю границу удержанной истории — и `gap: true`, когда переданный
+cursor старше этой границы (часть истории уже ушла в sealed-архив, SPEC-0087 R5). Cursor ровно
+на границе gap не вызывает.
 
 ## Runtime
 

@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1324,5 +1325,244 @@ func TestSQLCipherOpenRefusesHeldRecoveryLock(t *testing.T) {
 	if j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20); err == nil {
 		_ = j.Close()
 		t.Fatal("open proceeded while a foreign writer held the recovery lock")
+	}
+}
+
+// Audit pages never exceed the scoped-page contract limit of 100, no matter
+// what the caller asks for (SPEC-0087 R3.5).
+func TestAuditPageLimitCapped(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 0)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close() }()
+	for i := 0; i < 101; i++ {
+		if _, err := j.AppendWith("mutation.v1", map[string]string{"op": fmt.Sprintf("op-%d", i)}, &AuxWrites{
+			Audit: &AuditWrite{Kind: "k", Principal: "p", Context: "c", Body: []byte(`{"op":1}`)},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, err := j.AuditPage(0, 500, AuditScope{Principal: "p", Context: "c"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page) != 100 {
+		t.Fatalf("audit page = %d rows, want 100 cap", len(page))
+	}
+}
+
+// Audit retention exports the hot prefix into an encrypted sealed archive and
+// only then, under an explicit destructive policy, prunes the source. Without
+// the destructive flag the store stops admitting audit writes rather than
+// silently deleting rows (SPEC-0087 R5.3).
+func TestAuditArchiveVerifiedBeforePrune(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 0)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close() }()
+	archiveDir := filepath.Join(t.TempDir(), "archive")
+	// ~64-byte bodies: a 200-byte hot cap admits three rows, not four.
+	j.SetAuditRetention(AuditRetention{HotMaxBytes: 200, ArchiveDir: archiveDir})
+	put := func(tag string) error {
+		_, err := j.AppendWith("mutation.v1", map[string]string{"op": tag}, &AuxWrites{
+			Audit: &AuditWrite{Kind: "k." + tag, Principal: "p1", Context: "c1", Body: []byte(`{"pad":"` + strings.Repeat("x", 48) + `"}`)},
+		})
+		return err
+	}
+	for _, tag := range []string{"a", "b", "c"} {
+		if err := put(tag); err != nil {
+			t.Fatalf("audit append %s: %v", tag, err)
+		}
+	}
+	// The fourth row would cross the hot cap: a visible admission stop, not a
+	// hidden delete — and the journal must stay usable, not poisoned.
+	if err := put("d"); !errors.Is(err, ErrFull) {
+		t.Fatalf("audit append past the hot cap = %v, want ErrFull", err)
+	}
+	if !j.Healthy() {
+		t.Fatal("admission stop poisoned the journal")
+	}
+	rep, err := j.RetainAudits()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Pruned {
+		t.Fatal("retention deleted rows without the destructive policy")
+	}
+	if rep.Rows != 3 || rep.SeqLo != 1 || rep.SeqHi != 3 {
+		t.Fatalf("report = %+v, want 3 rows over seq 1-3", rep)
+	}
+	sealFile := filepath.Join(archiveDir, "audit-1-3.seal")
+	manifestFile := filepath.Join(archiveDir, "audit-1-3.manifest.json")
+	if _, err := os.Stat(sealFile); err != nil {
+		t.Fatalf("no sealed archive: %v", err)
+	}
+	if _, err := os.Stat(manifestFile); err != nil {
+		t.Fatalf("no sealed manifest: %v", err)
+	}
+	// Export-only: the source rows stay, the stop stays.
+	if got, _ := j.AuditFloor(); got != 1 {
+		t.Fatalf("audit floor moved to %d under export-only retention", got)
+	}
+	if err := put("d"); !errors.Is(err, ErrFull) {
+		t.Fatalf("post-export audit append = %v, want ErrFull", err)
+	}
+	// Tampered archive must never authorize a prune.
+	body, _ := os.ReadFile(manifestFile)
+	var m map[string]any
+	if json.Unmarshal(body, &m) != nil {
+		t.Fatal("manifest is not json")
+	}
+	m["rows"] = 1
+	// The manifest is hmac-sealed; a naive tamper must fail verification.
+	forged, _ := json.Marshal(m)
+	if err := os.WriteFile(manifestFile, forged, 0600); err != nil {
+		t.Fatal(err)
+	}
+	j.SetAuditRetention(AuditRetention{HotMaxBytes: 200, ArchiveDir: archiveDir, Destructive: true})
+	if _, err := j.RetainAudits(); err == nil {
+		t.Fatal("retention pruned against a tampered manifest")
+	}
+	// Restore a genuine archive, then prune for real.
+	if err := os.Remove(manifestFile); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(sealFile); err != nil {
+		t.Fatal(err)
+	}
+	rep, err = j.RetainAudits()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.Pruned {
+		t.Fatal("destructive retention did not prune")
+	}
+	if got, _ := j.AuditFloor(); got != 4 {
+		t.Fatalf("audit floor = %d after pruning seq 1-3, want 4", got)
+	}
+	if rows, err := j.AuditPage(0, 100, AuditScope{Principal: "p1", Context: "c1"}); err != nil || len(rows) != 0 {
+		t.Fatalf("pruned rows still served: %d %v", len(rows), err)
+	}
+	// Headroom freed: the stopped admission now goes through.
+	if err := put("d"); err != nil {
+		t.Fatalf("audit append after prune: %v", err)
+	}
+	// The archive remains readable independently of the pruned source.
+	recs, err := ReadAuditArchive(sealFile, manifestFile, j.StoreIdentity())
+	if err != nil {
+		t.Fatalf("sealed archive failed verification: %v", err)
+	}
+	if len(recs) != 3 || recs[0].Seq != 1 || recs[2].Seq != 3 {
+		t.Fatalf("archive rows = %+v", recs)
+	}
+}
+
+// writeTamperedArchive exports a one-row audit archive, then overwrites its
+// manifest with a mutated copy resealed by the store-derived key — seal
+// validity alone must never stand in for payload consistency.
+func writeTamperedArchive(t *testing.T, mutate func(*auditManifestDoc)) (sealFile, manifestFile string, identity []byte) {
+	t.Helper()
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 0)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close() }()
+	archiveDir := filepath.Join(t.TempDir(), "archive")
+	j.SetAuditRetention(AuditRetention{HotMaxBytes: 1 << 20, ArchiveDir: archiveDir})
+	_, err = j.AppendWith("mutation.v1", map[string]string{"op": "x"}, &AuxWrites{
+		Audit: &AuditWrite{Kind: "k.x", Principal: "p1", Context: "c1", Body: []byte(`{"a":1}`)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.RetainAudits(); err != nil {
+		t.Fatal(err)
+	}
+	sealFile = filepath.Join(archiveDir, "audit-1-1.seal")
+	manifestFile = filepath.Join(archiveDir, "audit-1-1.manifest.json")
+	raw, err := os.ReadFile(manifestFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var d auditManifestDoc
+	if err := json.Unmarshal(raw, &d); err != nil {
+		t.Fatal(err)
+	}
+	mutate(&d)
+	d.Seal = auditManifestHMAC(d, j.identity)
+	forged, err := json.Marshal(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestFile, forged, 0600); err != nil {
+		t.Fatal(err)
+	}
+	return sealFile, manifestFile, j.StoreIdentity()
+}
+
+// A manifest whose sealed fields contradict the payload must fail closed: the
+// declared row count, byte count, digests and sequence range are part of the
+// archive proof, not decoration (SPEC-0087 R5.4).
+func TestReadAuditArchiveRejectsInconsistentManifest(t *testing.T) {
+	requireCipher(t)
+	sealFile, manifestFile, identity := writeTamperedArchive(t, func(d *auditManifestDoc) { d.Rows = 99 })
+	if _, err := ReadAuditArchive(sealFile, manifestFile, identity); err == nil {
+		t.Fatal("manifest/payload inconsistency accepted")
+	}
+}
+
+// A resealed manifest with a corrupted plaintext digest must fail closed.
+func TestReadAuditArchiveRejectsBadPlaintextDigest(t *testing.T) {
+	requireCipher(t)
+	sealFile, manifestFile, identity := writeTamperedArchive(t, func(d *auditManifestDoc) { d.Digest = "AAAA" })
+	if _, err := ReadAuditArchive(sealFile, manifestFile, identity); err == nil {
+		t.Fatal("corrupted plaintext digest accepted")
+	}
+}
+
+// A resealed manifest naming a different encrypted-archive digest must fail
+// closed — the sealed bytes themselves are pinned by the manifest.
+func TestReadAuditArchiveRejectsBadArchiveDigest(t *testing.T) {
+	requireCipher(t)
+	sealFile, manifestFile, identity := writeTamperedArchive(t, func(d *auditManifestDoc) { d.ArchiveSHA256 = "AAAA" })
+	if _, err := ReadAuditArchive(sealFile, manifestFile, identity); err == nil {
+		t.Fatal("corrupted archive digest accepted")
+	}
+}
+
+// A resealed manifest with a corrupted byte count must fail closed.
+func TestReadAuditArchiveRejectsBadByteCount(t *testing.T) {
+	requireCipher(t)
+	sealFile, manifestFile, identity := writeTamperedArchive(t, func(d *auditManifestDoc) { d.Bytes = 1 })
+	if _, err := ReadAuditArchive(sealFile, manifestFile, identity); err == nil {
+		t.Fatal("corrupted byte count accepted")
 	}
 }

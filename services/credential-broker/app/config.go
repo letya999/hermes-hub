@@ -93,6 +93,12 @@ type Config struct {
 	// credential form on first visit. Personal loopback deployments only;
 	// BROKER_DIRECT_FORM=1 enables it without editing this file.
 	DirectForm bool `json:"direct_form,omitempty"`
+	// AuditHotMaxBytes bounds the hot audit table (0 disables the admission
+	// gate). AuditArchiveDir receives sealed audit archives; both must be
+	// set together. Pruning is never enabled from configuration — only an
+	// explicit store-retain --destroy run authorizes it.
+	AuditHotMaxBytes int64  `json:"audit_hot_max_bytes,omitempty"`
+	AuditArchiveDir  string `json:"audit_archive_dir,omitempty"`
 }
 
 func ReadConfig(path string) (Config, error) {
@@ -120,6 +126,15 @@ func ReadConfig(path string) (Config, error) {
 	}
 	if _, _, e := net.SplitHostPort(c.Listen); e != nil {
 		return c, errors.New("invalid listen address")
+	}
+	if c.AuditHotMaxBytes < 0 || c.AuditHotMaxBytes > 1<<30 {
+		return c, errors.New("invalid audit hot cap")
+	}
+	if (c.AuditHotMaxBytes == 0) != (c.AuditArchiveDir == "") {
+		return c, errors.New("audit retention requires both audit_hot_max_bytes and audit_archive_dir")
+	}
+	if c.AuditArchiveDir != "" && !filepath.IsAbs(c.AuditArchiveDir) {
+		return c, errors.New("audit archive directory must be absolute")
 	}
 	if len(c.TrustedKeys) == 0 || len(c.TrustedKeys) > 64 || len(c.Providers) == 0 || len(c.Providers) > 32 {
 		return c, errors.New("invalid adapter configuration")
@@ -371,6 +386,9 @@ func Build(c Config) (*Service, error) {
 	}
 	if e != nil {
 		return nil, e
+	}
+	if c.AuditHotMaxBytes > 0 {
+		ledger.SetAuditRetention(journal.AuditRetention{HotMaxBytes: c.AuditHotMaxBytes, ArchiveDir: c.AuditArchiveDir})
 	}
 	if initialized && len(ledger.Records()) == 0 {
 		_ = ledger.Close()

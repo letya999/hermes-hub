@@ -59,6 +59,20 @@ func SQLCipherVersion() (string, error) {
 	return "", errNoCipher
 }
 
+func (j *Journal) sqlAuditBytes() int64 { return 0 }
+
+func (j *Journal) AuditFloor() (uint64, error) {
+	return 0, errNoCipher
+}
+
+func (j *Journal) RetainAudits() (RetainReport, error) {
+	return RetainReport{}, errNoCipher
+}
+
+func ReadAuditArchive(_, _ string, _ []byte) ([]AuditRow, error) {
+	return nil, errNoCipher
+}
+
 func ImportSQLCipher(primaryDir, recoveryDir, anchorDir string, primaryKey, recoveryKey []byte, limit int64) (*SQLCipherManifest, error) {
 	return nil, errNoCipher
 }

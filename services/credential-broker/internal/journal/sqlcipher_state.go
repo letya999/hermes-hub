@@ -3,10 +3,20 @@
 package journal
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 
 	"github.com/letya999/credential-broker/internal/seal"
+	"github.com/letya999/credential-broker/internal/securefs"
+	"github.com/letya999/credential-broker/internal/strictjson"
 )
 
 func (j *Journal) sqlSchemas() []string {
@@ -125,7 +135,7 @@ func (j *Journal) AuditPage(after uint64, limit int, scope AuditScope) ([]AuditR
 	if j.sql == nil {
 		return nil, ErrUnavailable
 	}
-	if limit < 1 || limit > 1000 {
+	if limit < 1 || limit > 100 {
 		limit = 100
 	}
 	any := 0
@@ -255,6 +265,324 @@ func NormalizeSQLCipher(primaryDir, recoveryDir, anchorDir string, primaryKey, r
 	}
 	defer func() { _ = j.Close() }()
 	return normalizeSQL(j.sql.db, j.sqlSchemas(), j.seq, norm)
+}
+
+// sqlAuditBytes reports the live byte size of the hot audit table. The caller
+// holds j.mu.
+func (j *Journal) sqlAuditBytes() int64 {
+	if j.sql == nil {
+		return 0
+	}
+	var n int64
+	if err := j.sql.db.QueryRow("SELECT COALESCE(SUM(LENGTH(body)),0) FROM r.audit").Scan(&n); err != nil {
+		return 0
+	}
+	return n
+}
+
+// AuditFloor returns the smallest audit sequence still stored — the re-anchor
+// point a client reports when its cursor expired under retention pruning.
+func (j *Journal) AuditFloor() (uint64, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.sql == nil {
+		return 0, ErrUnavailable
+	}
+	// The prune marker carries the floor across an emptied table; the live
+	// minimum covers rows retained since it was set.
+	var floor uint64
+	var v string
+	if err := j.sql.db.QueryRow("SELECT v FROM r.meta WHERE k='audit_floor'").Scan(&v); err == nil {
+		floor, _ = strconv.ParseUint(v, 10, 64)
+	}
+	var min sql.NullInt64
+	if err := j.sql.db.QueryRow("SELECT MIN(seq) FROM r.audit").Scan(&min); err != nil {
+		return 0, ErrUnavailable
+	}
+	if min.Valid && uint64(min.Int64) > floor {
+		floor = uint64(min.Int64)
+	}
+	return floor, nil
+}
+
+// auditArchiveRow is the canonical payload encoding inside a sealed archive;
+// encoding/json renders Body as base64 so arbitrary record bytes survive.
+type auditArchiveRow struct {
+	Seq       uint64 `json:"seq"`
+	Kind      string `json:"kind"`
+	Principal string `json:"principal"`
+	Context   string `json:"context"`
+	Body      []byte `json:"body"`
+}
+
+// auditManifestDoc is the sealed manifest beside every .seal archive. Seal is
+// an HMAC-SHA256 (base64url) over the canonical JSON of every other field,
+// keyed by a purpose-separated key derived from the store identity — a
+// tampered field never verifies, so a forged manifest can never authorize a
+// prune (SPEC-0087 R5.4).
+type auditManifestDoc struct {
+	Format        int    `json:"format"`
+	Store         string `json:"store"`
+	SeqLo         uint64 `json:"seq_lo"`
+	SeqHi         uint64 `json:"seq_hi"`
+	Rows          int    `json:"rows"`
+	Bytes         int64  `json:"bytes"`
+	Digest        string `json:"digest"`
+	ArchiveSHA256 string `json:"archive_sha256"`
+	Seal          string `json:"seal"`
+}
+
+// auditManifestHMAC seals the manifest fields. Struct marshal order is fixed
+// so the covered form is canonical.
+func auditManifestHMAC(d auditManifestDoc, identity []byte) string {
+	d.Seal = ""
+	raw, err := json.Marshal(d)
+	if err != nil {
+		return ""
+	}
+	h := hmac.New(sha256.New, seal.Derive(identity, "audit-manifest/v1"))
+	_, _ = h.Write(raw)
+	return base64.RawURLEncoding.EncodeToString(h.Sum(nil))
+}
+
+func auditArchiveAAD(lo, hi uint64) []byte {
+	return []byte("audit-archive/v1|" + strconv.FormatUint(lo, 10) + "|" + strconv.FormatUint(hi, 10))
+}
+
+func auditArchiveNames(lo, hi uint64) (sealName, manifestName string) {
+	base := "audit-" + strconv.FormatUint(lo, 10) + "-" + strconv.FormatUint(hi, 10)
+	return base + ".seal", base + ".manifest.json"
+}
+
+// writeAuditArchive seals the exported rows and emits the .seal payload plus
+// its HMAC-sealed manifest as immutable files. Existing files are never
+// overwritten — a partial earlier attempt fails closed instead of masking
+// corruption.
+func (j *Journal) writeAuditArchive(dir string, rows []AuditRow, lo, hi uint64) (string, error) {
+	enc := make([]auditArchiveRow, 0, len(rows))
+	var total int64
+	for _, r := range rows {
+		enc = append(enc, auditArchiveRow{Seq: r.Seq, Kind: r.Kind, Principal: r.Principal, Context: r.Context, Body: r.Body})
+		total += int64(len(r.Body))
+	}
+	payload, err := json.Marshal(enc)
+	if err != nil {
+		return "", err
+	}
+	box, err := seal.New(seal.Derive(j.identity, "audit-archive/v1"))
+	if err != nil {
+		return "", err
+	}
+	sealed, err := box.Seal(payload, auditArchiveAAD(lo, hi))
+	if err != nil {
+		return "", err
+	}
+	sealName, manName := auditArchiveNames(lo, hi)
+	if err := securefs.Create(dir, sealName, sealed, 0600); err != nil {
+		return "", err
+	}
+	payloadSum := sha256.Sum256(payload)
+	encSum := sha256.Sum256(sealed)
+	d := auditManifestDoc{
+		Format:        1,
+		Store:         base64.RawURLEncoding.EncodeToString(j.identity),
+		SeqLo:         lo,
+		SeqHi:         hi,
+		Rows:          len(rows),
+		Bytes:         total,
+		Digest:        base64.RawURLEncoding.EncodeToString(payloadSum[:]),
+		ArchiveSHA256: base64.RawURLEncoding.EncodeToString(encSum[:]),
+	}
+	d.Seal = auditManifestHMAC(d, j.identity)
+	manifest, err := json.Marshal(d)
+	if err != nil {
+		return "", err
+	}
+	if err := securefs.Create(dir, manName, manifest, 0600); err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, sealName), nil
+}
+
+// auditManifest reads, parses and authenticates a manifest document.
+func auditManifest(dir, name string, identity []byte) (auditManifestDoc, error) {
+	raw, err := securefs.Read(dir, name, 1<<20)
+	if err != nil {
+		return auditManifestDoc{}, err
+	}
+	var d auditManifestDoc
+	if err := strictjson.Decode(raw, &d); err != nil {
+		return auditManifestDoc{}, errors.New("audit manifest malformed")
+	}
+	if d.Format != 1 || d.Rows < 0 || d.SeqHi < d.SeqLo {
+		return auditManifestDoc{}, errors.New("audit manifest invalid")
+	}
+	if !seal.Equal(d.Store, base64.RawURLEncoding.EncodeToString(identity)) {
+		return auditManifestDoc{}, errors.New("audit manifest store mismatch")
+	}
+	if !seal.Equal(d.Seal, auditManifestHMAC(d, identity)) {
+		return auditManifestDoc{}, errors.New("audit manifest seal mismatch")
+	}
+	return d, nil
+}
+
+// sqlAuditRows streams the hot audit prefix. The caller holds j.mu.
+func (j *Journal) sqlAuditRows() ([]AuditRow, error) {
+	rows, err := j.sql.db.Query("SELECT seq,kind,principal,context,body FROM r.audit ORDER BY seq")
+	if err != nil {
+		return nil, ErrUnavailable
+	}
+	defer rows.Close()
+	out := []AuditRow{}
+	for rows.Next() {
+		var r AuditRow
+		if err := rows.Scan(&r.Seq, &r.Kind, &r.Principal, &r.Context, &r.Body); err != nil {
+			return nil, ErrUnavailable
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, ErrUnavailable
+	}
+	return out, nil
+}
+
+// RetainAudits exports the hot audit prefix into a sealed archive and, only
+// under an explicit destructive policy, prunes the verified source rows. The
+// policy is always bounded: an unlimited cap is refused rather than applied.
+func (j *Journal) RetainAudits() (RetainReport, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	rep := RetainReport{}
+	if j.sql == nil {
+		return rep, ErrUnavailable
+	}
+	pol := j.retention
+	if pol.HotMaxBytes <= 0 || pol.HotMaxBytes > maxAuditHotCap {
+		return rep, errors.New("audit retention requires a bounded hot cap")
+	}
+	if pol.ArchiveDir == "" {
+		return rep, errors.New("audit retention requires an archive directory")
+	}
+	if err := securefs.Dir(pol.ArchiveDir); err != nil {
+		return rep, err
+	}
+	rows, err := j.sqlAuditRows()
+	if err != nil {
+		return rep, err
+	}
+	if len(rows) == 0 {
+		rep.HotBytes = j.sqlAuditBytes()
+		return rep, nil
+	}
+	lo, hi := rows[0].Seq, rows[len(rows)-1].Seq
+	sealName, manName := auditArchiveNames(lo, hi)
+	sealPath := filepath.Join(pol.ArchiveDir, sealName)
+	manPath := filepath.Join(pol.ArchiveDir, manName)
+	// An archive already covering this range is verified, never rewritten:
+	// tampering must fail the pass, never self-heal. A fresh export is
+	// verified before it may authorize any prune (SPEC-0087 R5.4).
+	if _, err := os.Stat(sealPath); err == nil {
+		if _, err := ReadAuditArchive(sealPath, manPath, j.identity); err != nil {
+			return rep, fmt.Errorf("existing audit archive failed verification: %w", err)
+		}
+	} else {
+		if _, err := j.writeAuditArchive(pol.ArchiveDir, rows, lo, hi); err != nil {
+			return rep, err
+		}
+		if _, err := ReadAuditArchive(sealPath, manPath, j.identity); err != nil {
+			return rep, fmt.Errorf("fresh audit archive failed verification: %w", err)
+		}
+	}
+	rep.Exported = true
+	rep.Archive = sealPath
+	rep.SeqLo, rep.SeqHi, rep.Rows = lo, hi, len(rows)
+	for _, r := range rows {
+		rep.Bytes += int64(len(r.Body))
+	}
+	if pol.Destructive {
+		// The verified archive covers [lo,hi]: the source prefix is deleted
+		// in one transaction across both legs.
+		tx, err := j.sql.db.Begin()
+		if err != nil {
+			return rep, ErrUnavailable
+		}
+		for _, schema := range j.sqlSchemas() {
+			// #nosec G202 -- schema is a fixed "r"/"p" literal.
+			if _, err := tx.Exec("DELETE FROM "+schema+".audit WHERE seq >= ? AND seq <= ?", lo, hi); err != nil {
+				_ = tx.Rollback()
+				j.poisoned = true
+				return rep, ErrUnavailable
+			}
+			// #nosec G202 -- schema is a fixed "r"/"p" literal.
+			if _, err := tx.Exec("REPLACE INTO "+schema+".meta(k,v) VALUES('audit_floor',?)", strconv.FormatUint(hi+1, 10)); err != nil {
+				_ = tx.Rollback()
+				j.poisoned = true
+				return rep, ErrUnavailable
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			j.poisoned = true
+			return rep, ErrUnavailable
+		}
+		rep.Pruned = true
+		j.auditBytes = j.sqlAuditBytes()
+	}
+	rep.HotBytes = j.sqlAuditBytes()
+	rep.OverCap = rep.HotBytes > pol.HotMaxBytes
+	return rep, nil
+}
+
+// ReadAuditArchive decrypts and verifies a sealed audit archive against its
+// manifest: store identity, manifest seal, archive digest, plaintext digest,
+// row count and the contiguous sequence range must all match. Any deviation
+// fails closed and returns nothing.
+func ReadAuditArchive(sealFile, manifestFile string, identity []byte) ([]AuditRow, error) {
+	if len(identity) == 0 {
+		return nil, errors.New("audit archive identity missing")
+	}
+	mdir, mname := filepath.Dir(manifestFile), filepath.Base(manifestFile)
+	d, err := auditManifest(mdir, mname, identity)
+	if err != nil {
+		return nil, err
+	}
+	sdir, sname := filepath.Dir(sealFile), filepath.Base(sealFile)
+	enc, err := securefs.Read(sdir, sname, maxAuditHotCap*2)
+	if err != nil {
+		return nil, err
+	}
+	encSum := sha256.Sum256(enc)
+	if !seal.Equal(d.ArchiveSHA256, base64.RawURLEncoding.EncodeToString(encSum[:])) {
+		return nil, errors.New("audit archive digest mismatch")
+	}
+	box, err := seal.New(seal.Derive(identity, "audit-archive/v1"))
+	if err != nil {
+		return nil, err
+	}
+	plain, err := box.Open(enc, auditArchiveAAD(d.SeqLo, d.SeqHi))
+	if err != nil {
+		return nil, errors.New("audit archive decryption failed")
+	}
+	plainSum := sha256.Sum256(plain)
+	if !seal.Equal(d.Digest, base64.RawURLEncoding.EncodeToString(plainSum[:])) {
+		return nil, errors.New("audit archive payload digest mismatch")
+	}
+	var rows []auditArchiveRow
+	if err := strictjson.Decode(plain, &rows); err != nil {
+		return nil, errors.New("audit archive payload malformed")
+	}
+	var bytes int64
+	for _, r := range rows {
+		bytes += int64(len(r.Body))
+	}
+	if len(rows) != d.Rows || bytes != d.Bytes {
+		return nil, errors.New("audit archive manifest fields inconsistent")
+	}
+	out := make([]AuditRow, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, AuditRow{Seq: r.Seq, Kind: r.Kind, Principal: r.Principal, Context: r.Context, Body: r.Body})
+	}
+	return out, nil
 }
 
 // NormalizeSQLCipherSingle backfills normalized tables on an activated

@@ -421,6 +421,17 @@ service in docs/services/credential-broker.md. Ops-critical facts:
   into `substrate-backup/` and restarts the service). The dev image build
   needs a CGO SQLCipher toolchain — `hubctl dev-rebuild credential-broker`
   uses the pinned `build` stage of `services/credential-broker/deploy/Dockerfile`.
+- Bounded hot audit retention (SPEC-0087 R3/R5): set `audit_hot_max_bytes`
+  and `audit_archive_dir` together in the broker config — an audit append
+  crossing the byte cap fails as a visible `audit retention full` (HTTP 507)
+  instead of silently deleting history. `credential-broker store-retain
+  --config PATH` exports the hot audit prefix into an identity-sealed
+  `.seal` archive plus an HMAC-authenticated `.manifest.json` and prints a
+  JSON report; `--destroy` additionally prunes the verified source prefix in
+  one transaction across both legs and persists `audit_floor`. Existing
+  archives are verified, never overwritten — a tampered archive or manifest
+  fails closed and never authorizes a prune. `/v1/events` answers report
+  `earliest_available`/`gap` when a client's cursor predates the floor.
 - File-delivery contracts (e.g. Google service-account JSON) need a shared
   tmpfs at the same absolute path on broker, controller and daemon — set as
   `credential_mount_root` in the controller config; requests reject without

@@ -8,9 +8,12 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	v1 "github.com/letya999/credential-broker/api/v1"
 	"github.com/letya999/credential-broker/app"
+	"github.com/letya999/credential-broker/identity"
 	"github.com/letya999/credential-broker/internal/journal"
 	"github.com/letya999/credential-broker/internal/seal"
 )
@@ -287,4 +290,84 @@ func TestStoreMigrateSingleCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer svc.Broker.Close()
+}
+
+// store-retain exports the hot audit prefix into a verified archive and only
+// prunes when the explicit --destroy flag is passed.
+func TestStoreRetainCommand(t *testing.T) {
+	if _, err := journal.SQLCipherVersion(); err != nil {
+		t.Skip("sqlcipher engine unavailable in this build")
+	}
+	root := filepath.Join(t.TempDir(), "install")
+	if err := app.Init(root); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "config.json")
+	cfg, err := app.ReadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := app.Build(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alice := identity.Actor{PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime-alice", ExternalIdentityID: "tg-alice", ConversationID: "dm-alice", PolicyVersion: "policy-v1"}
+	if _, err := svc.Broker.CreateRequest(context.Background(), alice, v1.CreateRequest{ContractID: "github-pat", ContractRevision: 1, ConnectionID: "connection-1", OnboardingID: "onboarding-1", IdempotencyKey: "request-key-1", OwnerKind: "user"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Broker.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(context.Background(), []string{"store-migrate", "--config", path}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(context.Background(), []string{"store-activate", "--config", path}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(context.Background(), []string{"store-normalize", "--config", path}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	cfg.AuditHotMaxBytes = 64 << 10
+	cfg.AuditArchiveDir = filepath.Join(t.TempDir(), "arch")
+	retentionConfig := filepath.Join(root, "retention.json")
+	if err := app.WriteJSON(retentionConfig, cfg); err != nil {
+		t.Fatal(err)
+	}
+	svc, err = app.Build(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Broker.CreateRequest(context.Background(), alice, v1.CreateRequest{ContractID: "github-pat", ContractRevision: 1, ConnectionID: "connection-2", OnboardingID: "onboarding-2", IdempotencyKey: "request-key-2", OwnerKind: "user"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Broker.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := run(context.Background(), []string{"store-retain", "--config", retentionConfig}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"pruned":false`) {
+		t.Fatal("export-only pass pruned or malformed report:", out.String())
+	}
+	out.Reset()
+	if err := run(context.Background(), []string{"store-retain", "--config", retentionConfig, "--destroy"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"pruned":true`) {
+		t.Fatal("destructive pass did not prune or malformed report:", out.String())
+	}
+	master, err := os.ReadFile(cfg.MasterKeyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j, err := journal.Open(cfg.DataDir, seal.Derive(master, "ledger"), cfg.MaxLedgerBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	floor, err := j.AuditFloor()
+	_ = j.Close()
+	if err != nil || floor < 2 {
+		t.Fatalf("audit floor = %d %v, want >= 2 after prune", floor, err)
+	}
 }

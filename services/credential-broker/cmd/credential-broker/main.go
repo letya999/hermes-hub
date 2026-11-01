@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -52,6 +53,31 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 			return e
 		}
 		_, e = fmt.Fprintln(out, done)
+		return e
+	case "store-retain":
+		fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
+		fs.SetOutput(out)
+		path := fs.String("config", "", "absolute configuration path")
+		destroy := fs.Bool("destroy", false, "delete exported audit rows after archive verification")
+		if e := fs.Parse(args[1:]); e != nil {
+			return e
+		}
+		if *path == "" || fs.NArg() != 0 {
+			return fmt.Errorf("--config is required")
+		}
+		cfg, e := app.ReadConfig(*path)
+		if e != nil {
+			return e
+		}
+		rep, e := app.RetainAudits(cfg, *destroy)
+		if e != nil {
+			return e
+		}
+		report, e := json.Marshal(rep)
+		if e != nil {
+			return e
+		}
+		_, e = fmt.Fprintln(out, string(report))
 		return e
 	case "migrate-recovery", "migrate-head":
 		fs := flag.NewFlagSet(args[0], flag.ContinueOnError)

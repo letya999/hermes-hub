@@ -1,5 +1,6 @@
 package journal
 
+
 // StateWrite upserts one current-state row atomically with the journal record
 // it was derived from. Kind and ID stay opaque to the journal — domain
 // decoding is the caller's job.
@@ -57,6 +58,33 @@ type AuditScope struct {
 // NormalizeFunc derives normalized-table writes from one journaled record.
 // The domain decoder lives in the caller; the journal stays record-blind.
 type NormalizeFunc func(Record) ([]StateWrite, *AuditWrite, error)
+
+// AuditRetention is the hot-audit policy wired onto an open Journal:
+// HotMaxBytes caps the byte size of live audit rows (always bounded, no
+// unlimited value), ArchiveDir receives sealed archives, and Destructive is
+// the explicit opt-in that lets a verified archive's source rows be deleted.
+// Without Destructive retention only exports — filling the cap stops
+// admission visibly instead of hiding deletes (SPEC-0087 R5.3).
+type AuditRetention struct {
+	HotMaxBytes int64
+	ArchiveDir  string
+	Destructive bool
+}
+
+// RetainReport describes one audit-retention pass: the exported range, the
+// archive artifact, whether the source was pruned, and whether the hot table
+// is still over cap (export-only mode leaves it full).
+type RetainReport struct {
+	Exported   bool
+	Archive    string
+	SeqLo      uint64
+	SeqHi      uint64
+	Rows       int
+	Bytes      int64
+	Pruned     bool `json:"pruned"`
+	HotBytes   int64
+	OverCap    bool
+}
 
 func sqlValidateAux(aux *AuxWrites) error {
 	if aux == nil {

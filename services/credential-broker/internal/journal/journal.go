@@ -27,6 +27,16 @@ const MaxRecord = 1 << 20
 
 var ErrUnavailable = errors.New("journal unavailable")
 
+// ErrFull is the visible admission stop: an audit write would push the hot
+// audit table past its configured cap. It refuses the commit without
+// poisoning the journal — reads keep working and the store resumes once a
+// retention pass frees headroom (SPEC-0087 R5.3).
+var ErrFull = errors.New("journal full")
+
+// maxAuditHotCap bounds the hot-audit policy: retention is always finite and
+// never accepts an unlimited value (SPEC-0087 R5).
+const maxAuditHotCap = 1 << 30
+
 type Record struct {
 	Sequence uint64          `json:"sequence"`
 	Previous string          `json:"previous"`
@@ -34,7 +44,9 @@ type Record struct {
 	Data     json.RawMessage `json:"data"`
 }
 type Journal struct {
-	mu       sync.Mutex
+	retention  AuditRetention
+	auditBytes int64
+	mu         sync.Mutex
 	file     *os.File
 	lock     *os.File
 	legacy   bool
@@ -254,6 +266,23 @@ func (j *Journal) append(kind string, data any, aux *AuxWrites) (uint64, error) 
 // them — and the append behaves exactly like Append.
 func (j *Journal) AppendWith(kind string, data any, aux *AuxWrites) (uint64, error) {
 	return j.append(kind, data, aux)
+}
+
+// SetAuditRetention wires the hot-audit policy onto the journal and reloads
+// the live audit byte count so the admission gate starts accurate.
+func (j *Journal) SetAuditRetention(r AuditRetention) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.retention = r
+	j.auditBytes = j.sqlAuditBytes()
+}
+
+// StoreIdentity returns the journal's derived store identity — the value
+// archive keys and manifest seals are bound to.
+func (j *Journal) StoreIdentity() []byte {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return append([]byte(nil), j.identity...)
 }
 
 // Normalized reports whether the normalized state/audit tables provably cover

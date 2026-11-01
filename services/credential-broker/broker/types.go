@@ -28,6 +28,10 @@ var (
 	ErrInvalid     = errors.New("invalid request")
 	ErrUnavailable = errors.New("broker unavailable")
 	ErrReauthorize = errors.New("reauthorization required")
+	// ErrRetentionFull is the visible admission stop: the hot audit table is
+	// at its configured cap. It is not a crash — a retention pass frees
+	// headroom and commits resume (SPEC-0087 R5.3).
+	ErrRetentionFull = errors.New("audit retention full")
 )
 
 type ExternalAlias struct {

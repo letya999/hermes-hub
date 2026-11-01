@@ -4,12 +4,15 @@ package broker
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	v1 "github.com/letya999/credential-broker/api/v1"
 	"github.com/letya999/credential-broker/contract"
+	"github.com/letya999/credential-broker/identity"
 	"github.com/letya999/credential-broker/internal/journal"
 	"github.com/letya999/credential-broker/materialize"
 	"github.com/letya999/credential-broker/provider"
@@ -173,6 +176,89 @@ func TestBrokerNormalizedStoreRestart(t *testing.T) {
 		if e.PrincipalID == "alice" {
 			t.Fatal("foreign scope received alice's events")
 		}
+	}
+}
+
+// Scoped pages must report an expired cursor explicitly: earliest_available
+// is the retained floor and gap marks pruned history between the cursor and
+// that floor. The floor boundary itself is contiguous (SPEC-0087 R3.5).
+func TestScopedEventsPageAndExpiredCursor(t *testing.T) {
+	f := newSqlFixture(t)
+	c := f.enroll(alice, "pat", "github")
+	g, agent := f.grant(alice, c, "pat", "binding1", "workload1")
+	_ = f.lease(agent, g)
+	dir := filepath.Join(f.root, "arch")
+	f.cfg.Journal.SetAuditRetention(journal.AuditRetention{HotMaxBytes: 64 << 10, ArchiveDir: dir, Destructive: true})
+	rep, err := f.cfg.Journal.RetainAudits()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.Pruned || rep.SeqHi < 2 {
+		t.Fatalf("retention report %+v", rep)
+	}
+	// A cursor below the floor: explicit gap plus the re-anchor point.
+	evs := f.b.Events(alice, 0, 100)
+	if !evs.Gap || evs.EarliestAvailable != rep.SeqHi+1 {
+		t.Fatalf("expired cursor not reported: %+v want floor=%d", evs, rep.SeqHi+1)
+	}
+	// The floor boundary itself is not a gap — the page starts exactly there.
+	atFloor := f.b.Events(alice, rep.SeqHi, 100)
+	if atFloor.Gap {
+		t.Fatalf("floor boundary reported a gap: %+v", atFloor)
+	}
+	// New commits never reuse pruned sequence numbers.
+	_ = f.enroll(alice, "pat", "gitlab")
+	for _, e := range f.b.Events(alice, rep.SeqHi, 100).Events {
+		if e.Sequence <= rep.SeqHi {
+			t.Fatalf("reused pruned sequence %d", e.Sequence)
+		}
+	}
+}
+
+// A sequence cursor is scope-blind: pages always filter by the caller's
+// scope, so a cursor issued under one scope never exposes another scope's
+// events when replayed under a foreign scope.
+func TestForeignCursorNeverReturnsOtherScope(t *testing.T) {
+	f := newSqlFixture(t)
+	c := f.enroll(alice, "pat", "github")
+	g, agent := f.grant(alice, c, "pat", "binding1", "workload1")
+	_ = f.lease(agent, g)
+	_ = f.enroll(bob, "pat", "gitlab")
+	bobPage := f.b.Events(bob, 0, 100)
+	if len(bobPage.Events) == 0 {
+		t.Fatal("bob scope empty")
+	}
+	// Interleave a later alice event so bob's cursor lands mid-stream.
+	_ = f.enroll(alice, "pat", "gh2")
+	visible := func(e v1.Event, a identity.Actor) bool {
+		return e.Kind == "broker.started" || (e.ContextID == a.ContextID && e.PrincipalID == a.PrincipalID)
+	}
+	for _, e := range f.b.Events(alice, bobPage.NextCursor, 100).Events {
+		if !visible(e, alice) {
+			t.Fatalf("bob's cursor leaked a foreign event into alice's page: %+v", e)
+		}
+	}
+	alicePage := f.b.Events(alice, 0, 100)
+	for _, e := range f.b.Events(bob, alicePage.NextCursor, 100).Events {
+		if !visible(e, bob) {
+			t.Fatalf("alice's cursor leaked a foreign event into bob's page: %+v", e)
+		}
+	}
+}
+
+// A full hot audit stops admission with a visible, distinct error — never a
+// silent delete and never a crash (SPEC-0087 R5.3). The journal stays usable
+// for reads and resumes once a retention pass frees headroom.
+func TestAuditFullStopsAdmissionVisibly(t *testing.T) {
+	f := newSqlFixture(t)
+	// A cap smaller than one mutation body refuses the next audit commit.
+	f.cfg.Journal.SetAuditRetention(journal.AuditRetention{HotMaxBytes: 1})
+	_, err := f.b.CreateRequest(testCtx, alice, v1.CreateRequest{ContractID: "pat", ContractRevision: 1, ConnectionID: "github", OnboardingID: "onboard_1", IdempotencyKey: "full_probe", OwnerKind: "user"})
+	if !errors.Is(err, ErrRetentionFull) {
+		t.Fatalf("admission stop = %v, want ErrRetentionFull", err)
+	}
+	if !f.b.Healthy() {
+		t.Fatal("admission stop poisoned the broker")
 	}
 }
 
