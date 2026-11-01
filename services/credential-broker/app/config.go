@@ -102,12 +102,20 @@ type Config struct {
 	AuditHotMaxBytes int64  `json:"audit_hot_max_bytes,omitempty"`
 	AuditArchiveDir  string `json:"audit_archive_dir,omitempty"`
 	AuditAutoRetain  bool   `json:"audit_auto_retain,omitempty"`
+	// Archive budgets bound the archive directory itself: on the tick the
+	// oldest verified archive pairs past the byte/age limit are permanently
+	// deleted — except the newest pair, which carries the provenance link
+	// to the current floor (SPEC-0087 R5.2). Zero means unbounded.
+	AuditArchiveMaxBytes   int64 `json:"audit_archive_max_bytes,omitempty"`
+	AuditArchiveMaxAgeDays int   `json:"audit_archive_max_age_days,omitempty"`
 	// RecordsArchiveDir receives sealed history-rotation archives; empty
 	// falls back to AuditArchiveDir. RecordsAutoRetain is the explicit
 	// destructive policy for automatic rotation: at 80% of the ledger cap
 	// the history prefix exports, prunes and compacts.
-	RecordsArchiveDir string `json:"records_archive_dir,omitempty"`
-	RecordsAutoRetain bool   `json:"records_auto_retain,omitempty"`
+	RecordsArchiveDir        string `json:"records_archive_dir,omitempty"`
+	RecordsAutoRetain        bool   `json:"records_auto_retain,omitempty"`
+	RecordsArchiveMaxBytes   int64  `json:"records_archive_max_bytes,omitempty"`
+	RecordsArchiveMaxAgeDays int    `json:"records_archive_max_age_days,omitempty"`
 }
 
 func ReadConfig(path string) (Config, error) {
@@ -147,6 +155,9 @@ func ReadConfig(path string) (Config, error) {
 	}
 	if c.AuditAutoRetain && c.AuditArchiveDir == "" {
 		return c, errors.New("audit auto retain requires audit_archive_dir")
+	}
+	if c.AuditArchiveMaxBytes > 0 && c.AuditArchiveDir == "" {
+		return c, errors.New("audit archive budget requires audit_archive_dir")
 	}
 	if c.RecordsArchiveDir != "" && !filepath.IsAbs(c.RecordsArchiveDir) {
 		return c, errors.New("records archive directory must be absolute")
@@ -413,7 +424,7 @@ func Build(c Config) (*Service, error) {
 		recordsArchive = c.AuditArchiveDir
 	}
 	if recordsArchive != "" {
-		ledger.SetRecordsRetention(journal.RecordsRetention{ArchiveDir: recordsArchive, Destructive: c.RecordsAutoRetain})
+		ledger.SetRecordsRetention(journal.RecordsRetention{ArchiveDir: recordsArchive, Destructive: c.RecordsAutoRetain, ArchiveMaxBytes: c.RecordsArchiveMaxBytes})
 	}
 	if initialized && len(ledger.Records()) == 0 {
 		_ = ledger.Close()

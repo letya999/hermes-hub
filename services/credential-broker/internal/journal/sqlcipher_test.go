@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/letya999/credential-broker/internal/seal"
 )
@@ -1662,6 +1663,256 @@ func TestRecordsRotateArchivesAndShrinks(t *testing.T) {
 	_ = rows
 	if got := len(j2.sqlRecords()); got != 40-rep.Rows+1 {
 		t.Fatalf("retained records = %d, want %d", got, 40-rep.Rows+1)
+	}
+}
+
+// Archives are the last unbounded location: under an explicit byte budget
+// the maintenance tick permanently deletes the oldest verified archive
+// pair — but never the newest one, which carries the provenance link to
+// the current retained floor (SPEC-0087 R5.2).
+func TestArchiveBudgetSweepsOldest(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 0)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close() }()
+	archiveDir := filepath.Join(t.TempDir(), "archive")
+	j.SetRecordsRetention(RecordsRetention{ArchiveDir: archiveDir, Destructive: true})
+	pad := strings.Repeat("x", 4000)
+	appendN := func(n int, tag string) {
+		for i := 0; i < n; i++ {
+			if _, err := j.AppendWith("mutation.v1", map[string]string{"op": fmt.Sprintf("%s-%d", tag, i), "pad": pad}, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// Two rotations → two sealed archives.
+	appendN(40, "first")
+	if _, err := j.RetainRecords(32 << 10); err != nil {
+		t.Fatal(err)
+	}
+	appendN(40, "second")
+	if _, err := j.RetainRecords(32 << 10); err != nil {
+		t.Fatal(err)
+	}
+	ents, err := os.ReadDir(archiveDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seals []string
+	var total int64
+	for _, e := range ents {
+		fi, err := e.Info()
+		if err != nil {
+			t.Fatal(err)
+		}
+		total += fi.Size()
+		if strings.HasSuffix(e.Name(), ".seal") {
+			seals = append(seals, e.Name())
+		}
+	}
+	if len(seals) != 2 {
+		t.Fatalf("archives = %v, want 2", seals)
+	}
+	// Budget smaller than the two archives combined: the oldest pair is
+	// permanently deleted; the newest (provenance link) survives.
+	j.SetRecordsRetention(RecordsRetention{ArchiveDir: archiveDir, Destructive: true, ArchiveMaxBytes: total / 2})
+	if rep := j.RetainMaintenance(); rep.LastError != "" {
+		t.Fatalf("archive sweep error: %s", rep.LastError)
+	}
+	ents, err = os.ReadDir(archiveDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var left []string
+	for _, e := range ents {
+		left = append(left, e.Name())
+	}
+	if len(left) != 2 {
+		t.Fatalf("archive dir after sweep = %v, want newest pair only", left)
+	}
+}
+
+// Age budget: a verified pair older than the limit is permanently deleted;
+// a fresh pair the same size stays (SPEC-0087 R5.2).
+func TestArchiveAgeDeletesOldPair(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 0)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close() }()
+	archiveDir := filepath.Join(t.TempDir(), "archive")
+	j.SetRecordsRetention(RecordsRetention{ArchiveDir: archiveDir, Destructive: true, ArchiveMaxAgeDays: 1})
+	pad := strings.Repeat("x", 4000)
+	appendN := func(n int) {
+		for i := 0; i < n; i++ {
+			if _, err := j.AppendWith("mutation.v1", map[string]string{"pad": pad}, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	appendN(40)
+	if _, err := j.RetainRecords(32 << 10); err != nil {
+		t.Fatal(err)
+	}
+	appendN(40)
+	if _, err := j.RetainRecords(32 << 10); err != nil {
+		t.Fatal(err)
+	}
+	// Age the older archive past the limit.
+	old := filepath.Join(archiveDir, "records-1-32.seal")
+	oldMan := filepath.Join(archiveDir, "records-1-32.manifest.json")
+	past := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(old, past, past); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(oldMan, past, past); err != nil {
+		t.Fatal(err)
+	}
+	if rep := j.RetainMaintenance(); rep.LastError != "" {
+		t.Fatalf("age sweep error: %s", rep.LastError)
+	}
+	ents, err := os.ReadDir(archiveDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var left []string
+	for _, e := range ents {
+		left = append(left, e.Name())
+	}
+	if len(left) != 2 || !strings.HasPrefix(left[0], "records-33-") {
+		t.Fatalf("aged pair not swept: %v", left)
+	}
+}
+
+// The archive byte budget covers audit archives the same way: the oldest
+// verified audit pair is permanently deleted over budget; the newest
+// survives (SPEC-0087 R5.2).
+func TestArchiveBudgetSweepsAudit(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 0)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close() }()
+	archiveDir := filepath.Join(t.TempDir(), "archive")
+	j.SetAuditRetention(AuditRetention{HotMaxBytes: 1 << 20, ArchiveDir: archiveDir, Destructive: true})
+	put := func(tag string) {
+		_, err := j.AppendWith("mutation.v1", map[string]string{"op": tag}, &AuxWrites{
+			Audit: &AuditWrite{Kind: "k." + tag, Principal: "p1", Context: "c1", Body: []byte(`{"pad":"` + strings.Repeat("x", 400) + `"}`)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tag := range []string{"a", "b", "c"} {
+		put(tag)
+	}
+	if _, err := j.RetainAudits(); err != nil {
+		t.Fatal(err)
+	}
+	for _, tag := range []string{"d", "e", "f"} {
+		put(tag)
+	}
+	if _, err := j.RetainAudits(); err != nil {
+		t.Fatal(err)
+	}
+	ents, err := os.ReadDir(archiveDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seals int
+	var bytes int64
+	for _, e := range ents {
+		fi, _ := e.Info()
+		bytes += fi.Size()
+		if strings.HasPrefix(e.Name(), "audit-") && strings.HasSuffix(e.Name(), ".seal") {
+			seals++
+		}
+	}
+	if seals != 2 {
+		t.Fatalf("audit archives = %d, want 2", seals)
+	}
+	j.SetAuditRetention(AuditRetention{HotMaxBytes: 1 << 20, ArchiveDir: archiveDir, Destructive: true, ArchiveMaxBytes: bytes / 2})
+	if rep := j.RetainMaintenance(); rep.LastError != "" {
+		t.Fatalf("audit sweep error: %s", rep.LastError)
+	}
+	ents, err = os.ReadDir(archiveDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var left []string
+	for _, e := range ents {
+		left = append(left, e.Name())
+	}
+	if len(left) != 2 {
+		t.Fatalf("audit dir after sweep = %v, want newest pair only", left)
+	}
+}
+
+// The newest archive is never swept: a lone archive over the byte budget
+// stays — losing it would cut the provenance link to the retained floor.
+func TestArchiveBudgetKeepsNewestAlone(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 0)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close() }()
+	archiveDir := filepath.Join(t.TempDir(), "archive")
+	j.SetRecordsRetention(RecordsRetention{ArchiveDir: archiveDir, Destructive: true, ArchiveMaxBytes: 1})
+	pad := strings.Repeat("x", 4000)
+	for i := 0; i < 40; i++ {
+		if _, err := j.AppendWith("mutation.v1", map[string]string{"pad": pad}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := j.RetainRecords(32 << 10); err != nil {
+		t.Fatal(err)
+	}
+	if rep := j.RetainMaintenance(); rep.LastError != "" {
+		t.Fatalf("sweep error: %s", rep.LastError)
+	}
+	ents, err := os.ReadDir(archiveDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ents) != 2 {
+		t.Fatalf("newest archive swept: %v", ents)
 	}
 }
 

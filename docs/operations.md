@@ -440,6 +440,12 @@ service in docs/services/credential-broker.md. Ops-critical facts:
   tip hash and VACUUMs the files — the physical shrink the byte cap alone
   never delivers. Reopen verifies the retained chain from the floor; a
   witness head below the floor (or lost on a rotated store) fails closed.
+- Archive budgets bound the archive directories themselves:
+  `{audit,records}_archive_max_bytes` and `{audit,records}_archive_max_age_days`
+  make the tick permanently delete the oldest **verified** archive pairs
+  over the limit — except the newest pair per directory, which carries the
+  provenance link to the retained floor. Foreign or tampered manifests are
+  never deleted (fail-closed). Zero = unbounded (default).
 - Automatic high-water maintenance: `audit_auto_retain` /
   `records_auto_retain` are the explicit destructive policies. On the
   service tick, hot audit bytes over 80% of the audit cap export (and prune

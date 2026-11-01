@@ -224,6 +224,7 @@ func TestReadConfigRejectsUnboundAutoRetain(t *testing.T) {
 		func(c *Config) { c.AuditAutoRetain = true },
 		func(c *Config) { c.RecordsAutoRetain = true },
 		func(c *Config) { c.RecordsArchiveDir = "relative" },
+		func(c *Config) { c.AuditArchiveMaxBytes = 1 << 20 },
 	} {
 		bad := c
 		change(&bad)

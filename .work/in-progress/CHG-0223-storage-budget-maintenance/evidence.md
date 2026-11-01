@@ -89,3 +89,16 @@ On the real dev volume (broker stopped, dev image `hermes-hub-dev-local-credenti
 - Dev config (`spaces/local/broker/config.json` + live volume config) now sets `audit_hot_max_bytes`/`audit_archive_dir`/`audit_auto_retain`/`records_archive_dir`/`records_auto_retain` — the tick self-maintains audit and records history at 80% high water from here.
 
 Commit `62d04a5`. Module suite green in the SQLCipher image (`go test ./...` all packages, real codec). Remaining honest gaps: archive-dir byte budget (S199.1 partial), root `just check`, race run, coverage delta.
+
+## Archive budgets (S199.1 last gap closed), 2026-11-01
+
+The archive directories themselves are now bounded: `sweepArchiveDir` runs on the same maintenance tick, groups `records-*`/`audit-*` `.seal`+`.manifest.json` pairs, verifies each manifest as this store's archive (fail-closed — foreign or tampered manifests are never deleted), and permanently deletes the oldest verified pairs over the byte (`*_archive_max_bytes`) or age (`*_archive_max_age_days`) limit. The newest verified pair is never deleted — it carries the provenance link the retained floor chains onto.
+
+- `TestArchiveBudgetSweepsOldest`: two rotations → two archives; byte budget < total → oldest pair gone, newest verifies standalone.
+- `TestArchiveAgeDeletesOldPair`: 48h-aged pair swept under `max_age_days=1`, fresh pair kept.
+- `TestArchiveBudgetSweepsAudit`: same budget semantics for `audit-*` pairs through `AuditRetention`.
+- `TestArchiveBudgetKeepsNewestAlone`: a lone archive over budget survives — provenance link never cut.
+- `TestBuildWiresRecordsArchiveBudget` (app): `records_archive_max_bytes` reaches the journal through `Build`; `TestReadConfigRejectsUnboundAutoRetain` extended: a byte budget without an archive dir is rejected.
+- Full module `go test ./...` green in the SQLCipher image after the sweep.
+
+Dev config sets `audit_archive_max_bytes=512MiB`/`audit_archive_max_age_days=30` and `records_archive_max_bytes=2GiB`/`records_archive_max_age_days=30` — the whole broker storage footprint (hot audit, records chain, object files, archives) is now bounded on dev.

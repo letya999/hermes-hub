@@ -68,6 +68,13 @@ type AuditRetention struct {
 	HotMaxBytes int64
 	ArchiveDir  string
 	Destructive bool
+	// ArchiveMaxBytes and ArchiveMaxAgeDays bound the archive directory
+	// itself: the maintenance tick permanently deletes the oldest verified
+	// archive pairs over the budget — except the newest pair, which carries
+	// the provenance link to the current retained floor (SPEC-0087 R5.2).
+	// Zero means unbounded.
+	ArchiveMaxBytes   int64
+	ArchiveMaxAgeDays int
 }
 
 // RetainReport describes one audit-retention pass: the exported range, the
@@ -94,6 +101,13 @@ type RetainReport struct {
 type RecordsRetention struct {
 	ArchiveDir  string
 	Destructive bool
+	// ArchiveMaxBytes and ArchiveMaxAgeDays bound the archive directory
+	// itself: the maintenance tick permanently deletes the oldest verified
+	// archive pairs over the budget — except the newest pair, which carries
+	// the provenance link to the current retained floor (SPEC-0087 R5.2).
+	// Zero means unbounded.
+	ArchiveMaxBytes   int64
+	ArchiveMaxAgeDays int
 }
 
 // MaintenanceReport describes one high-water maintenance tick: each retain

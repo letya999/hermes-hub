@@ -402,6 +402,66 @@ func TestBuildWiresRecordsAutoRetain(t *testing.T) {
 	}
 }
 
+// The config-level archive byte budget must reach the serving journal:
+// Build wires records_archive_max_bytes onto the retention policy so the
+// maintenance tick permanently deletes the oldest verified archive pair.
+func TestBuildWiresRecordsArchiveBudget(t *testing.T) {
+	c := devConfig(t)
+	c.DirectForm = true
+	c.MaxLedgerBytes = 2 << 20
+	c.RecordsArchiveDir = filepath.Join(t.TempDir(), "arch")
+	c.RecordsArchiveMaxBytes = 1
+	svc, err := Build(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Broker.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateStore(c); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateStore(c); err != nil {
+		t.Fatal(err)
+	}
+	if err := NormalizeStore(c); err != nil {
+		t.Fatal(err)
+	}
+	svc, err = Build(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = svc.Broker.Close() }()
+	// Two rotations → two archives; budget=1 sweeps the oldest.
+	pad := strings.Repeat("x", 4000)
+	for i := 0; i < 40; i++ {
+		if _, err := svc.ledger.AppendWith("mutation.v1", map[string]string{"pad": pad}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := svc.ledger.RetainRecords(32 << 10); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 40; i++ {
+		if _, err := svc.ledger.AppendWith("mutation.v1", map[string]string{"pad": pad}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := svc.ledger.RetainRecords(32 << 10); err != nil {
+		t.Fatal(err)
+	}
+	if rep := svc.ledger.RetainMaintenance(); rep.LastError != "" {
+		t.Fatalf("sweep error: %s", rep.LastError)
+	}
+	ents, err := os.ReadDir(c.RecordsArchiveDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ents) != 2 {
+		t.Fatalf("archive budget not wired: %d files remain, want newest pair only", len(ents))
+	}
+}
+
 // The service's own sweep tick drives high-water maintenance — no operator,
 // no offline command: over-water history rotates inside normal operation.
 func TestServiceTickRunsRetainMaintenance(t *testing.T) {

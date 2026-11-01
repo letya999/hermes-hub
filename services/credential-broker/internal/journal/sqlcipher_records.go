@@ -13,7 +13,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/letya999/credential-broker/internal/seal"
 	"github.com/letya999/credential-broker/internal/securefs"
@@ -392,6 +395,122 @@ func (j *Journal) retainRecordsLocked(keepBytes int64) (RetainReport, error) {
 	return rep, nil
 }
 
+// sweepRecordsArchives bounds the archive directory: verified pairs older
+// than the age cap — and the oldest pairs while total bytes exceed the byte
+// cap — are permanently deleted. The newest verified pair is never deleted:
+// it carries the provenance link the retained floor chains onto. Anything
+// not verified as this store's archive is left untouched, fail-closed
+// (SPEC-0087 R5.2).
+func (j *Journal) sweepRecordsArchives(dir string, maxBytes int64, maxAgeDays int) error {
+	if dir == "" || (maxBytes <= 0 && maxAgeDays <= 0) {
+		return nil
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	type pair struct {
+		lo, hi       uint64
+		kind         string
+		sealName     string
+		manifestName string
+		bytes        int64
+		mtime        time.Time
+	}
+	byBase := map[string]*pair{}
+	for _, e := range ents {
+		var lo, hi uint64
+		var kind string
+		var isSeal bool
+		switch {
+		case strings.HasSuffix(e.Name(), ".seal"):
+			if n, err := fmt.Sscanf(e.Name(), "records-%d-%d.seal", &lo, &hi); err == nil && n == 2 {
+				kind = "records"
+			} else if n, err := fmt.Sscanf(e.Name(), "audit-%d-%d.seal", &lo, &hi); err == nil && n == 2 {
+				kind = "audit"
+			}
+			isSeal = true
+		case strings.HasSuffix(e.Name(), ".manifest.json"):
+			if n, err := fmt.Sscanf(e.Name(), "records-%d-%d.manifest.json", &lo, &hi); err == nil && n == 2 {
+				kind = "records"
+			} else if n, err := fmt.Sscanf(e.Name(), "audit-%d-%d.manifest.json", &lo, &hi); err == nil && n == 2 {
+				kind = "audit"
+			}
+		}
+		if kind == "" {
+			continue
+		}
+		base := kind + "-" + strconv.FormatUint(lo, 10) + "-" + strconv.FormatUint(hi, 10)
+		p := byBase[base]
+		if p == nil {
+			p = &pair{lo: lo, hi: hi, kind: kind}
+			byBase[base] = p
+		}
+		fi, err := e.Info()
+		if err != nil {
+			continue
+		}
+		p.bytes += fi.Size()
+		if fi.ModTime().After(p.mtime) {
+			p.mtime = fi.ModTime()
+		}
+		if isSeal {
+			p.sealName = e.Name()
+		} else {
+			p.manifestName = e.Name()
+		}
+	}
+	var owned []*pair
+	for _, p := range byBase {
+		if p.sealName == "" || p.manifestName == "" {
+			continue
+		}
+		var valid bool
+		switch p.kind {
+		case "records":
+			_, err := recordsManifest(dir, p.manifestName, j.identity)
+			valid = err == nil
+		case "audit":
+			_, err := auditManifest(dir, p.manifestName, j.identity)
+			valid = err == nil
+		}
+		if !valid {
+			continue
+		}
+		owned = append(owned, p)
+	}
+	sort.Slice(owned, func(a, b int) bool { return owned[a].hi < owned[b].hi })
+	var newestHi uint64
+	if len(owned) > 0 {
+		newestHi = owned[len(owned)-1].hi
+	}
+	drop := func(p *pair) {
+		_ = os.Remove(filepath.Join(dir, p.sealName))
+		_ = os.Remove(filepath.Join(dir, p.manifestName))
+	}
+	if maxAgeDays > 0 {
+		cutoff := time.Now().Add(-time.Duration(maxAgeDays) * 24 * time.Hour)
+		var keep []*pair
+		for _, p := range owned {
+			if p.hi != newestHi && p.mtime.Before(cutoff) {
+				drop(p)
+				continue
+			}
+			keep = append(keep, p)
+		}
+		owned = keep
+	}
+	var total int64
+	for _, p := range owned {
+		total += p.bytes
+	}
+	for i := 0; i < len(owned)-1 && total > maxBytes; i++ {
+		total -= owned[i].bytes
+		drop(owned[i])
+	}
+	return nil
+}
+
 // RetainMaintenance runs one high-water tick: when hot records bytes pass 80%
 // of the ledger cap the prefix rotates to half-cap; when hot audit bytes pass
 // 80% of the audit cap the prefix exports (and prunes under the destructive
@@ -422,6 +541,20 @@ func (j *Journal) RetainMaintenance() MaintenanceReport {
 			lastErr += err.Error()
 		} else {
 			rep.Records = &r
+		}
+	}
+	if err := j.sweepRecordsArchives(j.retainR.ArchiveDir, j.retainR.ArchiveMaxBytes, j.retainR.ArchiveMaxAgeDays); err != nil {
+		if lastErr != "" {
+			lastErr += "; "
+		}
+		lastErr += err.Error()
+	}
+	if j.retention.ArchiveDir != j.retainR.ArchiveDir {
+		if err := j.sweepRecordsArchives(j.retention.ArchiveDir, j.retention.ArchiveMaxBytes, j.retention.ArchiveMaxAgeDays); err != nil {
+			if lastErr != "" {
+				lastErr += "; "
+			}
+			lastErr += err.Error()
 		}
 	}
 	rep.LastError = lastErr
