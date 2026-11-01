@@ -132,7 +132,7 @@ func openSQLReplicated(primaryDir, recoveryDir string, anchor *recoveryAnchor, p
 	if err != nil {
 		return fail(err)
 	}
-	primary, pprev, psize, err := sqlReplay(db, "p")
+	primary, _, _, err := sqlReplay(db, "p")
 	if err != nil {
 		return fail(err)
 	}
@@ -196,7 +196,7 @@ func openSQLReplicated(primaryDir, recoveryDir string, anchor *recoveryAnchor, p
 		}
 	}
 	primary = recovery[:latest]
-	pprev = ""
+	pprev := ""
 	if latest > 0 {
 		plain, err := json.Marshal(recovery[latest-1])
 		if err != nil {
@@ -205,7 +205,7 @@ func openSQLReplicated(primaryDir, recoveryDir string, anchor *recoveryAnchor, p
 		sum := sha256.Sum256(plain)
 		pprev = hex.EncodeToString(sum[:])
 	}
-	psize = 0
+	var psize int64
 	for _, r := range primary {
 		psize += int64(len(r.Data)) + 64
 	}

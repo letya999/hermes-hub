@@ -89,6 +89,8 @@ func sqlAttach(db *sql.DB, alias, path, pass string) error {
 // sqlReplay reads a records table and verifies the strict hash chain: the
 // digest of each canonical record encoding must be the next row's prev.
 func sqlReplay(db *sql.DB, schema string) ([]Record, string, int64, error) {
+	// #nosec G202 -- schema is a fixed "r"/"p" literal from call sites, never
+	// user input; the whitelisted sqlAttach aliases enforce it.
 	rows, err := db.Query("SELECT seq, prev, kind, body FROM " + schema + ".records ORDER BY seq")
 	if err != nil {
 		return nil, "", 0, ErrUnavailable
@@ -230,6 +232,8 @@ func ImportSQLCipher(primaryDir, recoveryDir, anchorDir string, primaryKey, reco
 	}
 	for _, r := range primary.records {
 		for _, schema := range []string{"r", "p"} {
+			// #nosec G202 -- schema is a fixed "r"/"p" literal; row values stay
+			// parameterized.
 			if _, err := tx.Exec("INSERT INTO "+schema+".records(seq,prev,kind,body) VALUES(?,?,?,?)", r.Sequence, r.Previous, r.Kind, []byte(r.Data)); err != nil {
 				_ = tx.Rollback()
 				return fail(ErrUnavailable)

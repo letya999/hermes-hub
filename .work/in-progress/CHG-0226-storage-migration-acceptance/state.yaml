@@ -24,8 +24,8 @@ validation:
   documents: passed
   planning_package: passed
   planning_just_check: failed
-  just_check: not_run
-  module_check: not_run
+  just_check: failed
+  module_check: passed
   security: passed
   docker_check: passed
   red_team: not_started
@@ -38,3 +38,4 @@ remaining:
 limitations:
   - "Power-loss matrix unavailable; broker normalized tables (CHG-0219) out of this slice."
   - "Windows bind-mount chmod quirk needed a container-side store.db recreate; the activated-spool reopen crash (migrateEventLayout raw-os manifest read, Linux-only symptom) was found and fixed during live acceptance."
+  - "Root just check on this host: environmental AV/CGO linker denials (Access is denied on spawned cover.exe/gcc/ld.lld) — recorded, not code failures. Module check must run with -tags=libsqlite3 + codec headers (CI updated: libsqlcipher-dev + GOFLAGS env); coverage gate now green at 88.97% with 14 new refusal-path engine tests."
