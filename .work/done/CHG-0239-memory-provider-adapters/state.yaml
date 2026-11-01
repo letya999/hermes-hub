@@ -1,0 +1,56 @@
+schema: 1
+change: CHG-0239
+title: External memory provider adapters via seam
+status: done
+branch: feat/m20-memory-vault
+updated: 2026-11-01
+phase: complete
+adr: ADR-0086
+spec: SPEC-0085
+requirements: [R11.1, R11.2, R11.3, R11.4, R11.5, R11.6]
+depends_on: [CHG-0204, CHG-0205, CHG-0207, CHG-0208]
+github_milestone: M20 — Memory Vault and Knowledge Surface
+github_issue: 330
+design_status: accepted
+implementation_status: done
+slices:
+  S11.1-managed-admissibility: done
+  S11.2-hindsight-adapter: done
+  S11.3-leaf-replay: done
+  S11.4-honcho-import: done
+validation:
+  documents: done
+  just_check: 'legs green — lint (format/vet/staticcheck/gosec/tidy/actionlint), docs-check, config-check all pass; go-check red only on the known env flake family (lld -T on hub-stt, compile.exe/test.exe fork/exec AV block, toolhub rename Access-denied) — every named package verified green isolated'
+  docker_check: 'pending: no Docker in this environment'
+  red_team: done
+  live_acceptance: 'pending: requires a live Hindsight deployment (deferred — no-docker scope); fixture verification is contract-level only and never claimed as live'
+evidence:
+  - internal/memory/providers/hindsight/hindsight.go — stdlib adapter over the verified wire API at pin 869228c: POST retain (document_id=idempotency, hub metadata on items), GET documents list+detail paged export (original_text + document_metadata round-trip), POST recall→Search hits, GET /health→Health; Recall/Write=ErrUnsupported; scope keys refused on traversal shape
+  - internal/memory/memorytest/hindsight_fixture.go — shared in-memory Hindsight API fixture (retain upsert, paged documents, recall, health flip)
+  - internal/memory/replay/replay.go — prov.db stream → Provider.Capture with per-entry scope remint and cursor checkpoint under runtime/memory/replay.cursor; resumable, idempotent
+  - internal/vault/scope.go — OpenScopeMaterial: 32-byte hub-generated runtime/memory/scope.key (0600), stable across opens
+  - internal/stack/provider.go — providerConfig render/remove behind memory_provider capability + native:memory_provider governance; validateProviderConfig (known kind, absolute http(s), token-env naming); providerEgressHost into managed allowlist; OpenProvider instantiates the rendered adapter resolving the token from runtime.<env>.env / managed-runtime.<env>.env
+  - internal/stack/config.go/rights.go/tools.go/space.go — memory_provider feature (requires memory_vault), pseudo toolset, governance inventory, fields classified
+  - cmd/hubctl/context.go — memory replay (prov.db→provider, minted banks, cursor) and memory export-honcho --file (stage→--apply) verbs
+  - internal/memory/importer/honcho.go — ParseHoncho: upstream v3 conclusions export (Page items or piped array) → per-observed-peer reviewable CardDrafts, level-annotated facts, dedupe
+  - tests: TestConformanceHindsight, TestHindsightDegradedHonest, TestHindsightScopeIsolation, TestHindsightProvenanceMetadata, TestHindsightScopeKeySanitized, TestHindsightExportPagination, TestHindsightNewRejectsBadEndpoint, TestHindsightTokenSent, TestHindsightSearchLimit; TestProviderGrantGated, TestProviderDisableRemovesConfig, TestProviderNoSilentFallback, TestProviderManagedEgress, TestOpenProvider; TestReplayIdempotent, TestReplayResumable, TestReplaySearchParity, TestReplayCursorErrors; TestScopeMaterialStable; TestHonchoImportReviewable, TestHonchoImportIdempotent; TestMemoryReplayCLI, TestMemoryExportHonchoCLI
+  - docs/adr/ADR-0086-memory-vault-openknowledge.md — M20.11 amendment
+  - docs/operations.md — provider capability, replay, export-honcho, degradation
+  - docs/spaces.md — agent.yaml provider keys, runtime/memory sidecars, feature list
+remaining: []
+limitations:
+  - 'live Hindsight protocol acceptance (real deployment, flush-on-stop, session-switch recall, revocation timing): pending — no Docker; the fixture verifies the wire contract only and is never claimed as deployment proof'
+  - 'adapter coverage: capture/search/export/health lanes only — Recall and Write are honest ErrUnsupported (reflect ≠ evidence; governed writes stay vault-only)'
+  - 'cloud Hindsight egress is contract-tested via the managed allowlist only; a real cloud credential flow is unverified'
+  - 'TestRenderAllFeatures fixture extended with provider fields (all-features enumeration now satisfies provider validation)'
+red_team:
+  - 'scope keys that could traverse the bank path (../, separators, %2f) refused at the adapter regardless of caller — MintScope hex output is not trusted (TestHindsightScopeKeySanitized)'
+  - 'bank isolation literal: two minted scopes never see each other''s documents or recall hits (TestHindsightScopeIsolation, conformance)'
+  - 'token field accepts only a secrets-env NAME — a literal credential fails validation and nothing renders (TestProviderNoSilentFallback); OpenProvider resolves it from the space env file at call time'
+  - 'provider config forged in the space tree cannot mint scopes — provider.json lives under vault/runtime (hub-owned, .okignore''d, outside governed memory paths), scope.key is hub-generated there'
+  - 'replay mints bank ids from hub-held material over env×principal×audience — the provider never sees raw identifiers; a corrupt or unwritable cursor refuses rather than silently re-capturing'
+  - 'export-honcho goes through the import staging lane only — nothing applies without --apply, applied cards are additive and never clobber (import contract reused verbatim)'
+  - 'disable removes provider.json and drops the egress host; a governance deny removes egress even with the wish present (TestProviderManagedEgress)'
+notes:
+  - 'A11.1 decision recorded in ADR-0086 (upstream plugin path rejected by D19 — invariants, not availability); A11.2 grant-gated enable/deny-wins/clean disable tested; A11.3 conformance green; A11.4 replay equivalence at fixture level (TestReplaySearchParity); A11.5 honcho import reviewable; A11.6 degraded honesty (Health error, empty≠unavailable, unsupported lanes honest)'
+  - 'own coverage: hindsight 89.8%, importer 89.8%, replay 93.0% (was 83.7% until cursor-error tests), vault/stack floors retained; memorytest is a support package exercised from consumer tests'

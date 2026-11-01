@@ -86,6 +86,33 @@ link auth/expiry contract there. Carry fix: `native:knowledge_ui` was
 missing from `SeedInventory` — a real space's wish denied as "section
 not in the tool inventory" and could never be granted or
 migration-preserved; it is now seeded deny-default like `memory_vault`.
+Amended (M20.11, issue #330): R11 mechanics recorded — the first
+adapter is `internal/memory/providers/hindsight`, a stdlib HTTP client
+over the verified wire API at pin `869228c`: retain upserts by
+`document_id` = entry id (capture idempotence), documents list+detail
+paged export restoring `original_text` plus hub metadata
+(`hub_provenance`/`hub_kind`/`hub_audience`/`hub_source_ref`/
+`hub_entry_id`), recall→Search hits, `/health`→Health; `Recall` and
+`Write` report `ErrUnsupported` — reflect is not evidence and external
+Hindsight cannot honor governed writes. `bank_id` is the opaque scope
+key verbatim; the adapter rejects traversal-shaped keys regardless of
+caller. The capability is `tools: {memory_provider: {via: native}}`
+behind `native:memory_provider` governance, fields `memory_provider`
+(kind) + `memory_provider_url` (absolute http(s)) +
+`memory_provider_token_env` (secrets *name* — literals refuse) in
+`agent.yaml`; render writes `vault/runtime/memory/provider.json`,
+disabling removes it, and managed mode allowlists the endpoint host
+while the capability stands. `hubctl memory replay` streams `prov.db`
+append-order into `Provider.Capture`, minting each bank id from
+`runtime/memory/scope.key` (hub-generated, 0600) over
+env×principal×audience, checkpointing `runtime/memory/replay.cursor`
+per entry so interruption resumes and re-runs capture nothing.
+`hubctl memory export-honcho --file` parses the verified upstream
+conclusions export (Page `items` or the piped array) into reviewable
+`source: migrated` card drafts through the M20.7 import lane — staged,
+never silently applied. Live protocol acceptance (a real Hindsight
+deployment, flush-on-stop, revocation timing) stays recorded pending —
+fixture tests verify the contract, never deployment.
 Requirements: [SPEC-0085](../../specs/active/SPEC-0085-memory-vault-openknowledge.md).
 Research: `.work/in-progress/CHG-0204-vault-layout/research.md`.
 

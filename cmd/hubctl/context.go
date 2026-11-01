@@ -14,8 +14,10 @@ import (
 	"github.com/letya999/hermes-hub/internal/communication"
 	"github.com/letya999/hermes-hub/internal/contextlife"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/memory"
 	memoryeval "github.com/letya999/hermes-hub/internal/memory/eval"
 	"github.com/letya999/hermes-hub/internal/memory/importer"
+	"github.com/letya999/hermes-hub/internal/memory/replay"
 	memorysearch "github.com/letya999/hermes-hub/internal/memory/search"
 	"github.com/letya999/hermes-hub/internal/memory/vacuum"
 	"github.com/letya999/hermes-hub/internal/skilleval"
@@ -23,6 +25,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/skillstore/gitsource"
 	"github.com/letya999/hermes-hub/internal/skillstore/scan"
 	"github.com/letya999/hermes-hub/internal/stack"
+	"github.com/letya999/hermes-hub/internal/vault"
 )
 
 func runContext(_ context.Context, args []string) error {
@@ -77,7 +80,7 @@ func runContext(_ context.Context, args []string) error {
 
 func runMemory(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("memory requires list, delete or search")
+		return fmt.Errorf("memory requires list, delete, search, import, eval, vacuum, replay or export-honcho")
 	}
 	sub := args[0]
 	f := flag.NewFlagSet("memory", flag.ContinueOnError)
@@ -88,6 +91,8 @@ func runMemory(ctx context.Context, args []string) error {
 	apply := f.Bool("apply", false, "commit the reported mutation (import/vacuum)")
 	questions := f.String("questions", "", "live-eval question set JSON")
 	outDir := f.String("out-dir", "", "report directory (default .work/tmp)")
+	env := f.String("env", "prod", "dev or prod")
+	file := f.String("file", "", "export file path (export-honcho)")
 	if err := f.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -224,6 +229,65 @@ func runMemory(ctx context.Context, args []string) error {
 		}
 		rep, err := vacuum.Scan(vaultDir)
 		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(rep)
+	case "replay":
+		// Provider migration (SPEC-0085 R11.4): the prov.db audit spine
+		// streams into the rendered provider with stable ids — resumable
+		// via the hub-owned cursor, idempotent on retry.
+		vaultDir := filepath.Join(abs, "vault")
+		s, err := stack.ReadEnvironment(abs, *env)
+		if err != nil {
+			return err
+		}
+		p, err := stack.OpenProvider(abs, s)
+		if err != nil {
+			return err
+		}
+		prov, err := memory.OpenProvDB(filepath.Join(vaultDir, "runtime", "memory"))
+		if err != nil {
+			return err
+		}
+		entries, err := prov.Entries()
+		if err != nil {
+			return err
+		}
+		material, err := vault.OpenScopeMaterial(vaultDir)
+		if err != nil {
+			return err
+		}
+		mint := func(a memory.Audience) memory.Scope {
+			return memory.MintScope(material, *env, *profile, string(a))
+		}
+		cursor := filepath.Join(vaultDir, "runtime", "memory", "replay.cursor")
+		rep, err := replay.New(p, mint, cursor).Run(ctx, entries)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(rep)
+	case "export-honcho":
+		// Honcho migration (SPEC-0085 R11.5): the export file becomes
+		// reviewable card drafts in the staging lane; only --apply commits.
+		if *file == "" {
+			return fmt.Errorf("memory export-honcho requires --file")
+		}
+		vaultDir := filepath.Join(abs, "vault")
+		rep, err := importer.ParseHoncho(*file)
+		if err != nil {
+			return err
+		}
+		if *apply {
+			if err := importer.Stage(vaultDir, rep); err != nil {
+				return err
+			}
+			res, err := importer.Apply(vaultDir)
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(os.Stdout).Encode(res)
+		}
+		if err := importer.Stage(vaultDir, rep); err != nil {
 			return err
 		}
 		return json.NewEncoder(os.Stdout).Encode(rep)

@@ -97,7 +97,7 @@ no-docker scope); mocks never count.
 
 ## Done checklist
 
-- [ ] Tests red then green; `just check`.
-- [ ] Red-team and live acceptance recorded in state.yaml.
-- [ ] Docs updated.
-- [ ] Issue updated and closed; state done; folder moved to `.work/done/`.
+- [x] Tests red then green; `just check`.
+- [x] Red-team and live acceptance recorded in state.yaml.
+- [x] Docs updated.
+- [x] Issue updated and closed; state done; folder moved to `.work/done/`.

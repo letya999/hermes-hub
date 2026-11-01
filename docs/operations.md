@@ -393,6 +393,26 @@ never count as live. `hubctl memory vacuum` dry-runs the superseded purge
 set; only `vacuum --apply` deletes, and git history keeps everything
 recoverable.
 
+An external memory backend rides the hub-owned provider seam, never the
+upstream plugin path: `tools: {memory_provider: {via: native}}` in
+`workspace.yaml` behind a `native:memory_provider` governance grant, with
+`memory_provider` (adapter kind — `hindsight` today), `memory_provider_url`
+(absolute http(s)) and optional `memory_provider_token_env` (the *name* of
+a secrets-env variable — a literal credential is rejected at validation) in
+`agent.yaml`. The render writes `vault/runtime/memory/provider.json`; in
+managed capability mode the endpoint host joins the egress allowlist, and
+disabling the capability removes both. `hubctl memory replay` streams the
+`prov.db` audit spine into the provider — each entry's bank id minted from
+`runtime/memory/scope.key` (hub-generated, never in the space) over
+env×principal×audience — checkpointed per entry at `runtime/memory/
+replay.cursor` so an interrupted migration resumes and a re-run captures
+nothing twice. `hubctl memory export-honcho --file <export.json>` converts
+a Honcho conclusions export (the list Page or the piped array) into
+`source: migrated` draft cards in the import staging lane — review, then
+`--apply` commits. If the provider is down the vault is unaffected; the
+adapter reports degradation honestly (capture/search/export and health are
+the only lanes — recall and governed write are `unsupported`).
+
 With `knowledge_ui` on (requires `memory_vault`), one pinned `open-knowledge`
 container serves the OpenKnowledge editor over the vault — private space
 network only by default, no host reachability at all. Setting `ui_port` in

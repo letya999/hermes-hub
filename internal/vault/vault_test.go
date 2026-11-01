@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -132,5 +133,40 @@ func TestVaultScaffoldNeverSecrets(t *testing.T) {
 		if !strings.Contains(string(okignore), want) {
 			t.Fatalf(".okignore missing %q", want)
 		}
+	}
+}
+
+
+// R11.4: replay mints bank ids from hub-held material the space never sees —
+// runtime/memory/scope.key is generated once, stable across opens, and
+// lives in the hub-owned sidecar zone (never a governed memory path).
+func TestScopeMaterialStable(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "vault")
+	if err := Ensure(root); err != nil {
+		t.Fatal(err)
+	}
+	m1, err := OpenScopeMaterial(root)
+	if err != nil {
+		t.Fatalf("first open: %v", err)
+	}
+	if len(m1) != 32 {
+		t.Fatalf("material is %d bytes, want 32", len(m1))
+	}
+	info, err := os.Stat(filepath.Join(root, "runtime", "memory", "scope.key"))
+	if err != nil {
+		t.Fatalf("scope.key missing: %v", err)
+	}
+	// POSIX-only: Windows reports no permission bits, but deployment hosts
+	// are POSIX — the mint material must never be world-readable there.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("scope.key mode %v, want 0600", info.Mode().Perm())
+	}
+	m2, err := OpenScopeMaterial(root)
+	if err != nil {
+		t.Fatalf("second open: %v", err)
+	}
+	if string(m1) != string(m2) {
+		t.Fatal("scope material must be stable across opens — a mint must reproduce")
 	}
 }

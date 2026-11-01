@@ -91,6 +91,21 @@ type Settings struct {
 	// one-time ?t= links. Setting it today is an honest validation error,
 	// so the key can never silently half-work before its contract lands.
 	UIExpose string `yaml:"ui_expose,omitempty"`
+	// MemoryProvider selects the external memory backend behind the
+	// hub-owned provider seam (SPEC-0085 R11): "hindsight" is the only
+	// adapter today — an unknown kind fails validation, never a silent
+	// fallback. It is inert until the memory_provider capability is
+	// granted; the provider sees only scope-minted traffic.
+	MemoryProvider string `yaml:"memory_provider,omitempty"`
+	// MemoryProviderURL is the provider's HTTP endpoint — typically a
+	// space-network or host-side Hindsight deployment; a cloud endpoint is
+	// legal only through the explicit capability grant (it adds the host
+	// to the managed egress allowlist).
+	MemoryProviderURL string `yaml:"memory_provider_url,omitempty"`
+	// MemoryProviderTokenEnv names the secrets variable holding the
+	// provider credential for cloud egress — a name, never a value, so no
+	// credential material lands in config, renders or diagnostics.
+	MemoryProviderTokenEnv string `yaml:"memory_provider_token_env,omitempty"`
 	// Infra marks the space that renders the shared control plane (ToolHub,
 	// Credential Broker, workload-controller, cliproxy, communication-hub).
 	// Exactly one deployed space must render it; secondary spaces set
@@ -173,6 +188,7 @@ var Features = []Feature{
 	{"exposure", nil, "Named outbound public endpoints over a per-binding tunnel workload (sish/cloudflared); requires a reviewed connections/exposure/config.yaml"},
 	{"memory_vault", nil, "Git-backed per-space memory vault at spaces/<id>/vault; removes the native memory toolset and scopes CORE to private runs"},
 	{"knowledge_ui", nil, "OpenKnowledge editor over the space memory vault: one pinned replica, private network only; requires memory_vault"},
+	{"memory_provider", nil, "External memory backend behind the hub-owned provider seam (first adapter: Hindsight); requires memory_vault"},
 }
 var idPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,39}$`)
 var envReferencePattern = regexp.MustCompile(`\$\{([A-Z][A-Z0-9_]*)\}`)
@@ -462,6 +478,9 @@ func (s Settings) Validate() error {
 	if s.Has("knowledge_ui") && !s.Has("memory_vault") {
 		return fmt.Errorf("knowledge_ui requires memory_vault")
 	}
+	if s.Has("memory_provider") && !s.Has("memory_vault") {
+		return fmt.Errorf("memory_provider requires memory_vault")
+	}
 	if s.Has("google") && (!strings.Contains(s.GoogleEmail, "@") || s.OAuthPort < 1024) {
 		return fmt.Errorf("google requires email and oauth_port >=1024")
 	}
@@ -512,6 +531,9 @@ func (s Settings) Validate() error {
 	// until the one-time-link edge contract is decided there.
 	if s.UIExpose != "" {
 		return fmt.Errorf("ui_expose is reserved for M18 and not implemented")
+	}
+	if err := s.validateProviderConfig(); err != nil {
+		return err
 	}
 	return nil
 }

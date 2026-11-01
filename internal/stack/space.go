@@ -125,6 +125,10 @@ var featureToolMigration = map[string]ToolEntry{
 	// knowledge_ui is likewise a hub-side subsystem flag: it renders the
 	// per-space OpenKnowledge service, never an agent-visible toolset.
 	"knowledge_ui": {Via: ToolViaNative},
+	// memory_provider is the same shape: the flag admits an external
+	// backend behind the hub-owned provider seam — no upstream toolset
+	// exists by this name and none may render one.
+	"memory_provider": {Via: ToolViaNative},
 }
 
 var featureToggleMigration = map[string][2]string{

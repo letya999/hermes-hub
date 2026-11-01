@@ -88,6 +88,8 @@ func TestRenderAllFeatures(t *testing.T) {
 	s.GoogleEmail = "me@example.org"
 	s.DesktopURL = "http://host.docker.internal:8765/mcp"
 	s.DraftsURL = "http://host.docker.internal:8766/mcp"
+	s.MemoryProvider = "hindsight"
+	s.MemoryProviderURL = "http://hindsight.invalid:8888"
 	var featureNames []string
 	for _, f := range Features {
 		featureNames = append(featureNames, f.Name)

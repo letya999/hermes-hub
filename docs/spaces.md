@@ -20,7 +20,7 @@ wrong file are rejected by name, not merged.
 | File | Owner | Contents |
 |---|---|---|
 | `scope.yaml` | operator | Host-owned `kind` (`user`, `group`, `organization`), `id` and optional organization binding; group init refuses existing personal scopes |
-| `agent.yaml` (schema 3) | operator | runtime config: `user`, `organization`, `model`, `model_url`, `timezone`, ports (`oauth_port`, `browser_port`, `slack_events_port`), `hooks`, `memory`, `honcho`, `cliproxy`, `infra` (exactly one deployed space renders the shared control plane), `diagnostics`, `image_gen`, `web`, `cli_registries`, managed-mode pin (`capability_mode`, `capability_profile_id`, `capability_generation`) |
+| `agent.yaml` (schema 3) | operator | runtime config: `user`, `organization`, `model`, `model_url`, `timezone`, ports (`oauth_port`, `browser_port`, `slack_events_port`), `hooks`, `memory`, `honcho`, `cliproxy`, `infra` (exactly one deployed space renders the shared control plane), `diagnostics`, `image_gen`, `web`, `cli_registries`, managed-mode pin (`capability_mode`, `capability_profile_id`, `capability_generation`), external memory provider (`memory_provider`, `memory_provider_url`, `memory_provider_token_env` — a secrets-env *name*, never a value) |
 | `workspace.yaml` (schema 3) | capability intent | the `tools:` map, `ingress:` channels, `workspace:` mounts plus optional `goal`/`bootstrap_revision`, `mcp:` raw server definitions. **Visibility, not authority** — ToolHub profiles/grants still govern admission |
 | `settings.yaml` (schema 1, legacy) | — | pre-split file; still parses — `features`, `native_toolsets`, `disabled_mcp` migrate into the pair at load — but mixing old keys with the new pair is rejected. `internal/stack/defaults/{agent,workspace}.yaml` seed new spaces |
 | `SOUL.md` | owner | The persona/agent-home document — see docs/agent-home.md |
@@ -160,7 +160,10 @@ docs/tools.md; they are not shared personal-memory stores.
   committed: `prov.db`, `index/`, `run-scope/` (audience + provenance
   stamps), `night/` day states + `truth_pending`, `memory/forget.jsonl`
   soft-forget strikes, `memory/writes.jsonl` the card-write audit
-  journal and `memory/import/` the staged native-import drafts). Agent write access goes through the `memory_card` contract or
+  journal, `memory/import/` the staged native-import drafts,
+  `memory/scope.key` the hub-generated replay mint material,
+  `memory/provider.json` the rendered external-provider record and
+  `memory/replay.cursor` the migration checkpoint). Agent write access goes through the `memory_card` contract or
   the `vault:` file root — both require a stamped private run and deny the
   governed zones (`memory/`, `runtime/`, dot paths); `library/` stays
   writable (SPEC-0085 R6). Mounts rw at `/vault` in the runtime and in the
@@ -196,7 +199,7 @@ In legacy `settings.yaml` the opt-in contract is the `features` list from
 `ssh_tunnel`, `hh`, `telegram`, `slack_app`, `telegram_user`,
 `telegram_write`, `google`, `google_write`, `gitlab`, `meet`,
 `transcription`, `image_gen`, `github`, `slack`, `atlassian`, `desktop`,
-`drafts`, `memory_vault`, `knowledge_ui` —
+`drafts`, `memory_vault`, `knowledge_ui`, `memory_provider` —
 each with declared `requires` env keys and a scope note. Write-effect
 features (`*_write`, `browser_act`, `ssh_shell`, `ssh_tunnel`) are separate
 opt-ins on top of their read parent, matching deny-wins. In schema-3 spaces
