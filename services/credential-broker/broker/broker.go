@@ -26,7 +26,7 @@ func New(cfg Config) (*Broker, error) {
 	if u.Scheme == "http" && u.Hostname() != "127.0.0.1" && u.Hostname() != "localhost" && u.Hostname() != "::1" {
 		return nil, ErrInvalid
 	}
-	b := &Broker{cfg: cfg, catalog: map[string]contract.Contract{}, requests: map[string]requestRecord{}, sessions: map[string]sessionRecord{}, credentials: map[string]credentialRecord{}, grants: map[string]grantRecord{}, states: map[string]stateRecord{}, oauth: map[string]oauthRecord{}, leases: map[string]*leaseRecord{}, objects: map[string]objectRecord{}, refreshLocks: map[string]*sync.Mutex{}}
+	b := &Broker{cfg: cfg, catalog: map[string]contract.Contract{}, requests: map[string]requestRecord{}, sessions: map[string]sessionRecord{}, credentials: map[string]credentialRecord{}, grants: map[string]grantRecord{}, states: map[string]stateRecord{}, oauth: map[string]oauthRecord{}, leases: map[string]*leaseRecord{}, objects: map[string]objectRecord{}, pins: map[string]int{}, usePins: map[string]string{}, refreshLocks: map[string]*sync.Mutex{}}
 	for _, c := range cfg.Contracts {
 		k := key(c.ID, c.Revision)
 		if c.Validate() != nil || b.catalog[k].ID != "" || cfg.Providers[c.Storage] == nil {

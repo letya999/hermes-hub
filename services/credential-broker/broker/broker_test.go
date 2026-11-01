@@ -18,6 +18,7 @@ import (
 	"github.com/letya999/credential-broker/contract"
 	"github.com/letya999/credential-broker/identity"
 	"github.com/letya999/credential-broker/internal/journal"
+	"github.com/letya999/credential-broker/internal/seal"
 	"github.com/letya999/credential-broker/materialize"
 	"github.com/letya999/credential-broker/provider"
 )
@@ -169,6 +170,20 @@ func (f *fixture) lease(a identity.Actor, g v1.Grant) v1.Lease {
 		f.t.Fatal(e)
 	}
 	return l
+}
+func (f *fixture) checkpoint(a identity.Actor, g v1.Grant, session string) {
+	f.t.Helper()
+	l := f.lease(a, g)
+	m, e := f.b.Materialize(testCtx, a, l.ID)
+	if e != nil {
+		f.t.Fatal(e)
+	}
+	if e = os.WriteFile(filepath.Join(m.Mounts[1].Source, "runtime_session.json"), []byte(session), 0600); e != nil {
+		f.t.Fatal(e)
+	}
+	if e = f.b.Release(testCtx, a, l.ID, v1.RuntimeRelease{Checkpoint: true, Quiesced: true}); e != nil {
+		f.t.Fatal(e)
+	}
 }
 
 func TestEnrollmentIdentityReplayAndIdempotency(t *testing.T) {
@@ -524,6 +539,27 @@ func TestLocalCreateCrashBeforeActivationOwned(t *testing.T) {
 	}
 }
 
+// On the success path the intent row reserved before the provider write is
+// completed by the same activation commit — no "intent" state lingers after
+// enrollment (SPEC-0087 R4 — intents resolve, they do not accumulate).
+func TestSuccessfulWriteLeavesNoIntent(t *testing.T) {
+	f := newFixture(t)
+	c := f.enroll(alice, "pat", "github")
+	var intents int
+	var currents int
+	for _, o := range f.b.objects {
+		if o.State == "intent" {
+			intents++
+		}
+		if o.OwnerID == c.ID && o.State == "current" {
+			currents++
+		}
+	}
+	if intents != 0 || currents != 1 {
+		t.Fatalf("enrollment left %d intent / %d current rows, want 0/1", intents, currents)
+	}
+}
+
 // A crash between the checkpoint provider write and the state commit must
 // not orphan the snapshot object: the intent row owns it across restart
 // (SPEC-0087 R4.2).
@@ -609,6 +645,361 @@ func TestUnknownRemoteObjectNeverDeleted(t *testing.T) {
 		t.Fatal("unknown remote object deleted:", e)
 	}
 	got.Wipe()
+}
+
+// A checkpoint version pinned by an active restore must survive any delete
+// path: the pinned version stays resolvable and the credential is denied,
+// never silently destroyed under active use (SPEC-0087 R4.2/R4.5).
+func TestPinnedCheckpointVersionSurvivesGC(t *testing.T) {
+	f := newFixture(t, stateContract())
+	c := f.enroll(alice, "session", "service")
+	g, a := f.grant(alice, c, "session", "state_binding", "state_workload")
+	l := f.lease(alice, g)
+	m, e := f.b.Materialize(testCtx, a, l.ID)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = os.WriteFile(filepath.Join(m.Mounts[1].Source, "runtime_session.json"), []byte(`{"session":"v1"}`), 0600); e != nil {
+		t.Fatal(e)
+	}
+	if e = f.b.Release(testCtx, a, l.ID, v1.RuntimeRelease{Checkpoint: true, Quiesced: true}); e != nil {
+		t.Fatal(e)
+	}
+	pinned := f.b.states[seal.Digest(c.ID+"/"+a.ContextID+"/"+g.BindingID)].Ref
+	// A new lease restores from v1 — that version is pinned for the lease.
+	l = f.lease(alice, g)
+	if _, e = f.b.Materialize(testCtx, a, l.ID); e != nil {
+		t.Fatal(e)
+	}
+	if e = f.b.DeleteCredential(testCtx, alice, c.ID); !errors.Is(e, ErrConflict) {
+		t.Fatalf("delete under pinned object = %v, want ErrConflict", e)
+	}
+	got, e := f.b.cfg.Providers.Resolve(testCtx, pinned)
+	if e != nil {
+		t.Fatal("pinned checkpoint version deleted:", e)
+	}
+	got.Wipe()
+}
+
+// Dropping a lease must release its uses' pins even if Finish is never
+// called — otherwise a stale pin would deny credential deletion forever.
+func TestDropLeaseReleasesUsePins(t *testing.T) {
+	f := newFixture(t)
+	c := f.enroll(alice, "pat", "github")
+	g, a := f.grant(alice, c, "pat", "binding1", "workload1")
+	l := f.lease(alice, g)
+	if _, e := f.b.BeginUse(testCtx, a, l.ID); e != nil {
+		t.Fatal(e)
+	}
+	if e := f.b.Release(testCtx, a, l.ID, v1.RuntimeRelease{}); e != nil {
+		t.Fatal(e)
+	}
+	if e := f.b.DeleteCredential(testCtx, alice, c.ID); e != nil {
+		t.Fatalf("stale use pin denied delete: %v", e)
+	}
+}
+
+// An unchanged quiesced checkpoint must not mint a new provider object:
+// digest-equal snapshots keep the same ref and no extra object row appears
+// (SPEC-0087 R4 — versions only on real content change).
+func TestUnchangedQuiescedCheckpointDoesNotCreateVersion(t *testing.T) {
+	f := newFixture(t, stateContract())
+	c := f.enroll(alice, "session", "service")
+	g, a := f.grant(alice, c, "session", "state_binding", "state_workload")
+	f.checkpoint(a, g, `{"session":"same"}`)
+	first := f.b.states[seal.Digest(c.ID+"/"+a.ContextID+"/"+g.BindingID)]
+	f.checkpoint(a, g, `{"session":"same"}`)
+	second := f.b.states[seal.Digest(c.ID+"/"+a.ContextID+"/"+g.BindingID)]
+	if first.Ref != second.Ref {
+		t.Fatalf("unchanged checkpoint created new version %v, want %v", second.Ref, first.Ref)
+	}
+	stateObjs := 0
+	for _, o := range f.b.objects {
+		if o.OwnerKind == "state" {
+			stateObjs++
+		}
+	}
+	if stateObjs != 1 {
+		t.Fatalf("unchanged checkpoint left %d state object rows, want 1", stateObjs)
+	}
+}
+
+// A changed checkpoint activates the replacement first and only then retires
+// the superseded version — the old row flips to retired, never vanishing
+// before the new ref is durable (SPEC-0087 R4 — activate before retire).
+func TestChangedCheckpointRetiresPreviousVersion(t *testing.T) {
+	f := newFixture(t, stateContract())
+	c := f.enroll(alice, "session", "service")
+	g, a := f.grant(alice, c, "session", "state_binding", "state_workload")
+	checkpoint := func(session string) { f.checkpoint(a, g, session) }
+	key := seal.Digest(c.ID + "/" + a.ContextID + "/" + g.BindingID)
+	checkpoint(`{"session":"one"}`)
+	firstID := objectID(f.b.states[key].Ref)
+	checkpoint(`{"session":"two"}`)
+	secondID := objectID(f.b.states[key].Ref)
+	if firstID == secondID {
+		t.Fatal("changed checkpoint must create a new version")
+	}
+	if f.b.objects[firstID].State != "retired" {
+		t.Fatalf("superseded version state = %q, want retired", f.b.objects[firstID].State)
+	}
+	if f.b.objects[secondID].State != "current" {
+		t.Fatalf("new version state = %q, want current", f.b.objects[secondID].State)
+	}
+}
+
+// Superseding a version whose own restore pin is still held must not
+// physically delete it mid-checkpoint: after release the row rests at
+// "retired" and the provider object stays resolvable until the cleanup
+// worker owns deletion (SPEC-0087 R4 — retirement is a ledger label).
+func TestSupersededCheckpointStaysResolvable(t *testing.T) {
+	f := newFixture(t, stateContract())
+	c := f.enroll(alice, "session", "service")
+	g, a := f.grant(alice, c, "session", "state_binding", "state_workload")
+	checkpoint := func(session string) { f.checkpoint(a, g, session) }
+	key := seal.Digest(c.ID + "/" + a.ContextID + "/" + g.BindingID)
+	checkpoint(`{"session":"one"}`)
+	first := f.b.states[key].Ref
+	checkpoint(`{"session":"two"}`)
+	if f.b.objects[objectID(first)].State != "retired" {
+		t.Fatalf("superseded version state = %q, want retired", f.b.objects[objectID(first)].State)
+	}
+	if _, e := os.Stat(filepath.Join(f.root, "secrets", first.Locator)); e != nil {
+		t.Fatalf("retired version physically deleted before cleanup: %v", e)
+	}
+}
+
+// failDelete refuses provider deletions until released — the sweep must
+// keep the object durably pending-delete, never silently unowned.
+type failDelete struct {
+	provider.Provider
+	fail atomic.Bool
+}
+
+func (w *failDelete) Delete(ctx context.Context, r provider.Ref) error {
+	if w.fail.Load() {
+		return provider.ErrUnavailable
+	}
+	return w.Provider.Delete(ctx, r)
+}
+
+// A failed physical delete leaves the row pending-delete and durable: the
+// sweep reports denial, the object stays owned, and a retry under backoff
+// is skipped until the clock passes (SPEC-0087 R4.6).
+func TestDeleteFailureRemainsPendingAndDenied(t *testing.T) {
+	f := newFixture(t, stateContract())
+	c := f.enroll(alice, "session", "service")
+	g, a := f.grant(alice, c, "session", "state_binding", "state_workload")
+	checkpoint := func(session string) { f.checkpoint(a, g, session) }
+	key := seal.Digest(c.ID + "/" + a.ContextID + "/" + g.BindingID)
+	checkpoint(`{"session":"one"}`)
+	retiredID := objectID(f.b.states[key].Ref)
+	checkpoint(`{"session":"two"}`)
+	w := &failDelete{Provider: f.cfg.Providers["local"]}
+	f.cfg.Providers["local"] = w
+	w.fail.Store(true)
+	if _, e := f.b.SweepObjects(testCtx, a, 10); e == nil {
+		t.Fatal("sweep over failing delete must report denial")
+	}
+	f.restart()
+	if f.b.objects[retiredID].State != "pending-delete" {
+		t.Fatalf("failed delete left %q, want durable pending-delete", f.b.objects[retiredID].State)
+	}
+	// Backoff: an immediate retry does not touch the object again.
+	if n, _ := f.b.SweepObjects(testCtx, a, 10); n != 0 {
+		t.Fatalf("backoff-less retry re-attempted %d objects", n)
+	}
+	// After the backoff window the retry succeeds and resolves the row.
+	f.b.cfg.Now = func() time.Time { return time.Now().Add(2 * time.Minute) }
+	w.fail.Store(false)
+	if _, e := f.b.SweepObjects(testCtx, a, 10); e != nil {
+		t.Fatalf("retry after backoff: %v", e)
+	}
+	if f.b.objects[retiredID].State != "deleted" {
+		t.Fatalf("retried delete left %q, want deleted", f.b.objects[retiredID].State)
+	}
+}
+
+// The deleted receipt is only committed after the provider has removed
+// every copy: primary and recovery files are gone before the object row
+// flips to "deleted" (SPEC-0087 R4.6 — cleanup both copies + sync first).
+func TestCleanupBothCopiesBeforeReceipt(t *testing.T) {
+	f := newFixture(t, stateContract())
+	rec, e := provider.NewRecoverableLocal("local", filepath.Join(f.root, "secrets"), filepath.Join(f.root, "recovery"), bytes.Repeat([]byte{7}, 32), bytes.Repeat([]byte{9}, 32))
+	if e != nil {
+		t.Fatal(e)
+	}
+	f.cfg.Providers["local"] = rec
+	c := f.enroll(alice, "session", "service")
+	g, a := f.grant(alice, c, "session", "state_binding", "state_workload")
+	checkpoint := func(session string) { f.checkpoint(a, g, session) }
+	key := seal.Digest(c.ID + "/" + a.ContextID + "/" + g.BindingID)
+	checkpoint(`{"session":"one"}`)
+	retired := f.b.states[key].Ref
+	checkpoint(`{"session":"two"}`)
+	if _, e := os.Stat(filepath.Join(f.root, "secrets", retired.Locator)); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := os.Stat(filepath.Join(f.root, "recovery", retired.Locator)); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := f.b.SweepObjects(testCtx, a, 10); e != nil {
+		t.Fatal(e)
+	}
+	if f.b.objects[objectID(retired)].State != "deleted" {
+		t.Fatalf("object state = %q, want deleted", f.b.objects[objectID(retired)].State)
+	}
+	for _, dir := range []string{"secrets", "recovery"} {
+		if _, e := os.Stat(filepath.Join(f.root, dir, retired.Locator)); !errors.Is(e, os.ErrNotExist) {
+			t.Fatalf("%s copy survived receipt: %v", dir, e)
+		}
+	}
+}
+
+// The sweep deletes only exact owned refs in its queue: objects owned by
+// another credential — and the still-current version of the same owner —
+// are never touched (SPEC-0087 R4.6 — exact known refs only).
+func TestAliasAndSharedCredentialUntouched(t *testing.T) {
+	f := newFixture(t, stateContract())
+	ca := f.enroll(alice, "session", "service")
+	cb := f.enroll(alice, "session", "service-b")
+	ga, a := f.grant(alice, ca, "session", "state_binding", "state_workload")
+	gb, ab := f.grant(alice, cb, "session", "state_binding_b", "state_workload_b")
+	keyA := seal.Digest(ca.ID + "/" + a.ContextID + "/" + ga.BindingID)
+	f.checkpoint(a, ga, `{"session":"one"}`)
+	retiredA := f.b.states[keyA].Ref
+	f.checkpoint(a, ga, `{"session":"two"}`)
+	currentA := f.b.states[keyA].Ref
+	f.checkpoint(ab, gb, `{"session":"bee"}`)
+	currentB := f.b.states[seal.Digest(cb.ID+"/"+ab.ContextID+"/"+gb.BindingID)].Ref
+	if _, e := f.b.SweepObjects(testCtx, a, 10); e != nil {
+		t.Fatal(e)
+	}
+	for _, keep := range []provider.Ref{currentA, currentB} {
+		if f.b.objects[objectID(keep)].State != "current" {
+			t.Fatalf("unrelated object state = %q, want current", f.b.objects[objectID(keep)].State)
+		}
+		if _, e := os.Stat(filepath.Join(f.root, "secrets", keep.Locator)); e != nil {
+			t.Fatalf("unrelated object deleted: %v", e)
+		}
+	}
+	if f.b.objects[objectID(retiredA)].State != "deleted" {
+		t.Fatalf("queued object state = %q, want deleted", f.b.objects[objectID(retiredA)].State)
+	}
+}
+
+// An abandoned owned intent is freed only through its ownership row:
+// once the owning request is terminal, the sweep collects the crash-owned
+// object by its exact ref — never by directory scanning (SPEC-0087 R4.6).
+func TestAbandonedIntentFreedByOwnership(t *testing.T) {
+	f := newFixture(t)
+	w := &crashWriter{Provider: f.cfg.Providers["local"]}
+	f.cfg.Providers["local"] = w
+	w.armed.Store(true)
+	r := f.request(alice, "pat", "github", "abandoned_intent")
+	cookie := f.pair(alice, r)
+	if e := f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"token": []byte("x")}, nil); !errors.Is(e, ErrUnavailable) {
+		t.Fatal(e)
+	}
+	w.armed.Store(false)
+	if e := f.b.CancelRequest(alice, r.ID); e != nil {
+		t.Fatal(e)
+	}
+	entries, e := os.ReadDir(filepath.Join(f.root, "secrets"))
+	if e != nil || len(entries) != 1 {
+		t.Fatalf("abandoned object missing: %v %d", e, len(entries))
+	}
+	if _, e := f.b.SweepObjects(testCtx, alice, 10); e != nil {
+		t.Fatal(e)
+	}
+	entries, e = os.ReadDir(filepath.Join(f.root, "secrets"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("%d abandoned objects survived sweep", len(entries))
+	}
+	var intents int
+	for _, o := range f.b.objects {
+		if o.State != "deleted" {
+			intents++
+		}
+	}
+	if intents != 0 {
+		t.Fatalf("%d non-deleted object rows after sweep", intents)
+	}
+}
+
+// A draft owned by an expired — not canceled — request is likewise an
+// abandoned owned object: expiry also frees it through ownership
+// (SPEC-0087 R4.6 — expired drafts/verifiers via ownership only).
+func TestExpiredDraftFreedByOwnership(t *testing.T) {
+	f := newFixture(t)
+	w := &crashWriter{Provider: f.cfg.Providers["local"]}
+	f.cfg.Providers["local"] = w
+	w.armed.Store(true)
+	r := f.request(alice, "pat", "github", "expired_draft")
+	cookie := f.pair(alice, r)
+	if e := f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"token": []byte("x")}, nil); !errors.Is(e, ErrUnavailable) {
+		t.Fatal(e)
+	}
+	w.armed.Store(false)
+	f.clock.at = f.clock.at.Add(48 * time.Hour)
+	if _, e := f.b.SweepObjects(testCtx, alice, 10); e != nil {
+		t.Fatal(e)
+	}
+	entries, e := os.ReadDir(filepath.Join(f.root, "secrets"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("%d expired-draft objects survived sweep", len(entries))
+	}
+}
+
+// The periodic maintenance sweep — not only an explicit call — collects
+// retired objects within its bounded batch (SPEC-0087 R4.6: the worker
+// runs inside the existing maintenance tick).
+func TestMaintenanceSweepCollectsObjects(t *testing.T) {
+	f := newFixture(t, stateContract())
+	c := f.enroll(alice, "session", "service")
+	g, a := f.grant(alice, c, "session", "state_binding", "state_workload")
+	checkpoint := func(session string) { f.checkpoint(a, g, session) }
+	key := seal.Digest(c.ID + "/" + a.ContextID + "/" + g.BindingID)
+	checkpoint(`{"session":"one"}`)
+	retired := f.b.states[key].Ref
+	checkpoint(`{"session":"two"}`)
+	f.b.Sweep()
+	if f.b.objects[objectID(retired)].State != "deleted" {
+		t.Fatalf("maintenance sweep left %q, want deleted", f.b.objects[objectID(retired)].State)
+	}
+}
+
+// The worker is bounded: a sweep processes at most `limit` queued
+// objects per pass, so a backlog drains incrementally rather than in one
+// unbounded burst (SPEC-0087 R4.6).
+func TestSweepHonorsBatchLimit(t *testing.T) {
+	f := newFixture(t, stateContract())
+	c := f.enroll(alice, "session", "service")
+	g, a := f.grant(alice, c, "session", "state_binding", "state_workload")
+	f.checkpoint(a, g, `{"session":"one"}`)
+	f.checkpoint(a, g, `{"session":"two"}`)
+	f.checkpoint(a, g, `{"session":"three"}`)
+	if n, e := f.b.SweepObjects(testCtx, a, 1); e != nil || n != 1 {
+		t.Fatalf("sweep limit 1 processed %d, err %v", n, e)
+	}
+	var deleted, remaining int
+	for _, o := range f.b.objects {
+		switch o.State {
+		case "deleted":
+			deleted++
+		case "pending-delete", "retired":
+			remaining++
+		}
+	}
+	if deleted != 1 || remaining != 1 {
+		t.Fatalf("after bounded sweep deleted=%d pending/retired=%d, want 1/1", deleted, remaining)
+	}
 }
 
 func TestExpirationCancellationAndBrowserLimits(t *testing.T) {

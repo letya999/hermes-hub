@@ -155,6 +155,10 @@ func TestOAuthPKCERefreshAndConcurrentUse(t *testing.T) {
 	if e != nil || len(mat.Env) != 0 {
 		t.Fatal("OAuth tokens must not escape as env", e)
 	}
+	use.Finish()
+	if e = f.b.Release(testCtx, a, l.ID, v1.RuntimeRelease{}); e != nil {
+		t.Fatal(e)
+	}
 	if e = f.b.DeleteCredential(testCtx, alice, c.ID); e != nil {
 		t.Fatal(e)
 	}
@@ -332,6 +336,53 @@ func TestVerifierCrashKeepsObjectOwned(t *testing.T) {
 	if intents != 1 {
 		t.Fatalf("crashed verifier write left %d owned intent rows, want 1", intents)
 	}
+}
+
+// A refresh during active use must not strand the in-use version: the
+// replacement is activated first and the superseded version stays pinned —
+// resolvable — until the use releases it (SPEC-0087 R4.2).
+func TestRotatingOAuthReplacementNotLost(t *testing.T) {
+	up := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		fmt.Fprint(w, `{"access_token":"access-1","refresh_token":"refresh-1","expires_in":60,"token_type":"bearer"}`)
+	}))
+	defer up.Close()
+	f := newFixture(t, oauthContract())
+	f.cfg.OAuth["example"] = oauthProvider(up)
+	f.start()
+	r, cookie, q := oauthBegin(t, f)
+	if e := f.b.CompleteOAuth(testCtx, cookie, q.Get("state"), "one-code"); e != nil {
+		t.Fatal(e)
+	}
+	rr, _ := f.b.GetRequest(alice, r.ID)
+	c, _ := f.b.GetCredential(alice, rr.CredentialID)
+	g, a := f.grant(alice, c, "oauth", "oauth_binding", "oauth_workload")
+	l := f.lease(alice, g)
+	inUse, e := f.b.BeginUse(testCtx, a, l.ID)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer inUse.Finish()
+	oldRef := inUse.Ref
+	f.clock.add(45 * time.Second)
+	other, e := f.b.BeginUse(testCtx, a, l.ID)
+	if e != nil {
+		t.Fatal(e)
+	}
+	token, e := f.b.AccessToken(testCtx, other)
+	other.Finish()
+	if e != nil || token != "access-1" {
+		t.Fatal(token, e)
+	}
+	row, ok := f.b.objects[objectID(oldRef)]
+	if !ok || row.State != "pinned" {
+		t.Fatalf("in-use version after replacement = %+v (present=%v), want pinned", row, ok)
+	}
+	got, e := f.b.cfg.Providers.Resolve(testCtx, oldRef)
+	if e != nil {
+		t.Fatal("pinned version unresolvable:", e)
+	}
+	got.Wipe()
 }
 
 func TestOAuthFailureRequiresNewFlowAndRevocation(t *testing.T) {

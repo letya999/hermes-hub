@@ -216,9 +216,11 @@ func (b *Broker) dropLease(id string) {
 	if !ok {
 		return
 	}
-	for _, cancel := range l.Active {
+	for op, cancel := range l.Active {
 		cancel()
+		b.unpinOp(op)
 	}
+	b.unpin(l.PinnedObj)
 	_ = b.cfg.Materializer.Remove(id)
 	// Every request is rejected after this removal, even if OS cleanup failed.
 	delete(b.leases, id)
@@ -237,7 +239,14 @@ func (b *Broker) sweepLocked() {
 		}
 	}
 }
-func (b *Broker) Sweep() { b.mu.Lock(); defer b.mu.Unlock(); b.sweepLocked() }
+func (b *Broker) Sweep() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.sweepLocked()
+	// The maintenance tick also drains a bounded batch of the pending
+	// object-delete queue (SPEC-0087 R4.6).
+	_, _ = b.sweepObjectsLocked(context.Background(), identity.Actor{PrincipalID: "maintenance"}, 64)
+}
 func (b *Broker) RevokeGrant(a identity.Actor, id string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -306,9 +315,30 @@ func (b *Broker) RevokeCredential(a identity.Actor, id string) error {
 	return nil
 }
 
+// stateOwnedBy reports whether a state key derives from one of the
+// credential's grants — the same digest the lease acquisition computes.
+func (b *Broker) stateOwnedBy(credID, sk string) bool {
+	for _, g := range b.grants {
+		if g.View.CredentialID == credID && seal.Digest(credID+"/"+g.View.ContextID+"/"+g.View.BindingID) == sk {
+			return true
+		}
+	}
+	return false
+}
+
 // Delete unlinks managed secret versions, never externally imported secrets.
 // It is retryable: a backend failure leaves the credential unusable as "revoked".
 func (b *Broker) DeleteCredential(ctx context.Context, a identity.Actor, id string) error {
+	b.mu.Lock()
+	// A version held by active use or a required quiesced restore is never
+	// destroyed: any live pin denies the whole delete (SPEC-0087 R4.2/R4.5).
+	for _, o := range b.objects {
+		if o.State != "deleted" && b.pins[o.ID] > 0 && (o.OwnerKind == "credential" && o.OwnerID == id || o.OwnerKind == "state" && b.stateOwnedBy(id, o.OwnerID)) {
+			b.mu.Unlock()
+			return ErrConflict
+		}
+	}
+	b.mu.Unlock()
 	if e := b.RevokeCredential(a, id); e != nil {
 		return e
 	}

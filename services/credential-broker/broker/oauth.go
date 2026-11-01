@@ -337,7 +337,11 @@ func (b *Broker) AccessToken(ctx context.Context, u Use) (string, error) {
 	now := b.now()
 	objs := []objectRecord{{ID: objectID(ref), OwnerKind: "credential", OwnerID: current.View.ID, Ref: ref, State: "current", Op: "oauth.refresh", CreatedAt: now, UpdatedAt: now}}
 	if o, ok := b.objects[objectID(current.Ref)]; ok && o.State == "current" {
-		o.State = "retired"
+		if b.pins[o.ID] > 0 {
+			o.State = "pinned"
+		} else {
+			o.State = "retired"
+		}
 		o.UpdatedAt = now
 		objs = append(objs, o)
 	}

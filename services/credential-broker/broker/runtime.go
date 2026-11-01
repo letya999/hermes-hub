@@ -2,7 +2,10 @@ package broker
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
+	"sort"
 
 	v1 "github.com/letya999/credential-broker/api/v1"
 	"github.com/letya999/credential-broker/contract"
@@ -46,11 +49,15 @@ func (b *Broker) BeginUse(ctx context.Context, a identity.Actor, id string) (Use
 	op := newID("u")
 	ctx, cancel := context.WithTimeout(ctx, l.View.ExpiresAt.Sub(b.now()))
 	l.Active[op] = cancel
+	oid := objectID(c.Ref)
+	b.pins[oid]++
+	b.usePins[op] = oid
 	use := Use{Context: ctx, Contract: requestContract(b.catalog[g.ContractKey], c.Extra, demotedSet(c.Demoted)), CredentialID: c.View.ID, Ref: c.Ref}
 	use.Finish = func() {
 		cancel()
 		b.mu.Lock()
 		defer b.mu.Unlock()
+		b.unpinOp(op)
 		if cur, ok := b.leases[id]; ok {
 			delete(cur.Active, op)
 		}
@@ -154,8 +161,32 @@ func (b *Broker) Materialize(ctx context.Context, a identity.Actor, id string) (
 		_ = b.cfg.Materializer.Remove(id)
 		return v1.Materialized{}, e
 	}
+	if stateRec.Ref.Provider != "" {
+		l.PinnedObj = objectID(stateRec.Ref)
+		b.pins[l.PinnedObj]++
+	}
 	l.Materialized = &out
 	return copyMaterialized(out), nil
+}
+
+// unpinOp releases one use's hold on its credential object version. The
+// durable row transitions at the next lifecycle mutation — pins are a
+// live-count gate, not a stored flag.
+func (b *Broker) unpinOp(op string) {
+	b.unpin(b.usePins[op])
+	delete(b.usePins, op)
+}
+
+// unpin decrements a live pin count.
+func (b *Broker) unpin(oid string) {
+	if oid == "" {
+		return
+	}
+	if b.pins[oid] > 1 {
+		b.pins[oid]--
+	} else {
+		delete(b.pins, oid)
+	}
 }
 func (b *Broker) Release(ctx context.Context, a identity.Actor, id string, in v1.RuntimeRelease) error {
 	b.mu.Lock()
@@ -174,14 +205,28 @@ func (b *Broker) Release(ctx context.Context, a identity.Actor, id string, in v1
 		}
 		defer values.Wipe()
 		storage := b.catalog[g.ContractKey].Storage
-		ref, e := b.putObject(ctx, a, storage, "state", l.StateKey, "state.checkpoint", values)
-		if e != nil {
-			return ErrUnavailable
-		}
 		prev := b.states[l.StateKey]
-		sr := stateRecord{Key: l.StateKey, Ref: ref, Revision: prev.Revision + 1, OwnedRefs: prev.OwnedRefs}
+		digest := bundleDigest(values)
+		var ref provider.Ref
+		var objs []objectRecord
 		now := b.now()
-		objs := []objectRecord{{ID: objectID(ref), OwnerKind: "state", OwnerID: l.StateKey, Ref: ref, State: "current", Op: "state.checkpoint", CreatedAt: now, UpdatedAt: now}}
+		if prev.Digest != "" && prev.Digest == digest && prev.Ref.Provider != "" {
+			// Digest-equal snapshot — reuse the existing version instead of
+			// minting an identical object (SPEC-0087 R4).
+			ref = prev.Ref
+		} else {
+			ref, e = b.putObject(ctx, a, storage, "state", l.StateKey, "state.checkpoint", values)
+			if e != nil {
+				return ErrUnavailable
+			}
+			objs = []objectRecord{{ID: objectID(ref), OwnerKind: "state", OwnerID: l.StateKey, Ref: ref, State: "current", Op: "state.checkpoint", CreatedAt: now, UpdatedAt: now}}
+			if o, ok := b.objects[objectID(prev.Ref)]; ok && o.State == "current" {
+				o.State = "retired"
+				o.UpdatedAt = now
+				objs = append(objs, o)
+			}
+		}
+		sr := stateRecord{Key: l.StateKey, Ref: ref, Revision: prev.Revision + 1, OwnedRefs: prev.OwnedRefs, Digest: digest}
 		ev := b.audit("state.checkpointed", a)
 		ev.CredentialID = c.View.ID
 		ev.LeaseID = id
@@ -198,6 +243,24 @@ func (b *Broker) Release(ctx context.Context, a identity.Actor, id string, in v1
 	}
 	b.dropLease(id)
 	return nil
+}
+
+// bundleDigest is the canonical content digest of a snapshot bundle —
+// order-independent over keys so identical content always dedupes.
+func bundleDigest(b provider.Bundle) string {
+	keys := make([]string, 0, len(b))
+	for k := range b {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	h := sha256.New()
+	for _, k := range keys {
+		h.Write([]byte(k))
+		h.Write([]byte{0})
+		h.Write(b[k])
+		h.Write([]byte{0})
+	}
+	return base64.RawURLEncoding.EncodeToString(h.Sum(nil))
 }
 
 func cloneContract(c contract.Contract) contract.Contract {

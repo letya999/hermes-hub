@@ -108,6 +108,8 @@ type objectRecord struct {
 	Op        string       `json:"op"`
 	CreatedAt time.Time    `json:"created_at"`
 	UpdatedAt time.Time    `json:"updated_at"`
+	Attempts  int          `json:"attempts,omitempty"`
+	NextAt    time.Time    `json:"next_at,omitempty"`
 }
 
 func objectID(ref provider.Ref) string { return ref.Provider + "/" + ref.Locator }
@@ -122,6 +124,7 @@ type leaseRecord struct {
 	View         v1.Lease
 	Materialized *v1.Materialized
 	StateKey     string
+	PinnedObj    string
 	Active       map[string]context.CancelFunc
 }
 type stateRecord struct {
@@ -129,6 +132,7 @@ type stateRecord struct {
 	Key       string         `json:"key"`
 	Ref       provider.Ref   `json:"ref"`
 	Revision  uint64         `json:"revision"`
+	Digest    string         `json:"digest,omitempty"`
 }
 
 type oauthRecord struct {
@@ -170,6 +174,8 @@ type Broker struct {
 	leases       map[string]*leaseRecord
 	events       []v1.Event
 	objects      map[string]objectRecord
+	pins         map[string]int
+	usePins      map[string]string
 	refreshLocks map[string]*sync.Mutex
 	normalized   bool
 	closed       bool
