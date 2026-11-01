@@ -1,0 +1,28 @@
+schema: 1
+change: CHG-0244
+title: "M29.3 Separate service topology from settings and provision from the effective revision"
+status: in_progress
+branch: pending
+updated: 2026-11-02
+phase: design-complete
+adr: ADR-0092
+spec: SPEC-0091
+requirements: [R3.1, R3.2]
+depends_on: ["M29.2"]
+github_milestone: "M29 — Six-Passport Space Contract"
+github_issue: 427
+design_status: accepted
+implementation_status: not_started
+slices:
+  S3.1-contract: not_started
+  S3.2-implementation: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining:
+  - "A user can inspect which services run and how they are configured; missing service or conflicting port fails before any compose change."
+limitations: []

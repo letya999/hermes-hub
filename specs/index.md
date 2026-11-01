@@ -7,6 +7,7 @@ record it points to. `archive/` holds only pre-renumbering originals.
 
 | Specification | Status |
 |---|---|
+| [SPEC-0091](active/SPEC-0091-six-passport-space-contract.md) | Frozen: M29 six-passport MVP, catalogs/templates, brokered model sessions, ToolHub/grants, prompt, migration and live acceptance (ADR-0092) |
 | [SPEC-0090](active/SPEC-0090-root-services-sqlite.md) | Frozen: SQLite storage for ToolHub/Communication + shared migration contract for all three services (ADR-0091, CHG-0215–0226); supersedes SPEC-0088 substrate clauses for the two services |
 | [SPEC-0089](active/SPEC-0089-conversation-parallel-lanes.md) | Frozen: parallel sessions inside one context — lane per conversation, fairness per context, per-context cap below upstream (ADR-0090, CHG-0234); supersedes SPEC-0012 rule 4 |
 | [SPEC-0088](active/SPEC-0088-bounded-control-journals.md) | Frozen: bounded root-plane journals, receipts, diagnostics and maintenance; implementation not started; substrate for ToolHub/Communication superseded by SPEC-0090 |

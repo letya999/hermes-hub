@@ -16,6 +16,19 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
+| [CHG-0241](in-progress/CHG-0241-baseline-upstream/plan.md) | M29.0 Baseline, migration matrix, and pinned Hermes context spike; planned, implementation not started |
+| [CHG-0242](in-progress/CHG-0242-platform-catalogs/plan.md) | M29.1 Generate immutable platform catalogs for capabilities, toolsets, and services; planned, implementation not started |
+| [CHG-0243](in-progress/CHG-0243-passport-compiler/plan.md) | M29.2 Compile platform, organization, and user sources into one six-passport revision; planned, implementation not started |
+| [CHG-0244](in-progress/CHG-0244-stack-config/plan.md) | M29.3 Separate service topology from settings and provision from the effective revision; planned, implementation not started |
+| [CHG-0245](in-progress/CHG-0245-workspace-layout/plan.md) | M29.4 Materialize the workspace tree, safe inbox/artifacts, projects, vault and read-only mounts; planned, implementation not started |
+| [CHG-0246](in-progress/CHG-0246-grants-authority/plan.md) | M29.5 Make grants.yaml a simple effective operations view over trusted ceilings and ledger; planned, implementation not started |
+| [CHG-0247](in-progress/CHG-0247-toolset-projection/plan.md) | M29.6 Project whole toolsets into core ≤20 and extended live discovery; planned, implementation not started |
+| [CHG-0248](in-progress/CHG-0248-model-credentials/plan.md) | M29.7 Broker model API keys and OAuth session material through scoped contracts; planned, implementation not started |
+| [CHG-0249](in-progress/CHG-0249-model-routing/plan.md) | M29.8 Route by model service, enforce quotas, and fail over safely; planned, implementation not started |
+| [CHG-0250](in-progress/CHG-0250-prompt-context/plan.md) | M29.9 Guarantee one read-only system prompt and Hub rules in every managed Hermes turn; planned, implementation not started |
+| [CHG-0251](in-progress/CHG-0251-skills-connectors/plan.md) | M29.10 Integrate skills, connectors, raw MCP and capability packs with passports; planned, implementation not started |
+| [CHG-0252](in-progress/CHG-0252-migration-docs/plan.md) | M29.11 Migrate legacy config safely and document the six-passport operating model; planned, implementation not started |
+| [CHG-0253](in-progress/CHG-0253-acceptance-ci/plan.md) | M29.12 Multi-user live acceptance, CI gates, and milestone closeout; planned, implementation not started |
 | [CHG-0240](in-progress/CHG-0240-legacy-data-retirement/plan.md) | Local cleanup and all-space external connector retirement: 109 unused Docker volumes, 16.46 GB connector artifacts, 1.17 GB browser profiles, 23 artifact images, external env and all CLI/MCP definitions removed; six active system bindings retained |
 | [CHG-0238](in-progress/CHG-0238-storage-cleanup/plan.md) | Local spool and audit cleaned; deletion of 101 older ignored host files blocked by automatic approval review |
 | [CHG-0234](in-progress/CHG-0234-conversation-parallel-lanes/plan.md) | Parallel session lanes per context: conversation-keyed inFlight, fairness per context, per-context cap below upstream Hermes cap; implementing |

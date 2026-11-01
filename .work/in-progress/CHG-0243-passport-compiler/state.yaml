@@ -1,0 +1,28 @@
+schema: 1
+change: CHG-0243
+title: "M29.2 Compile platform, organization, and user sources into one six-passport revision"
+status: in_progress
+branch: pending
+updated: 2026-11-02
+phase: design-complete
+adr: ADR-0092
+spec: SPEC-0091
+requirements: [R2.1, R2.2]
+depends_on: ["M29.1"]
+github_milestone: "M29 — Six-Passport Space Contract"
+github_issue: 426
+design_status: accepted
+implementation_status: not_started
+slices:
+  S2.1-contract: not_started
+  S2.2-implementation: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining:
+  - "One invalid layer changes none of the six active files; approved new revision is consistent and user cannot edit generated authority."
+limitations: []

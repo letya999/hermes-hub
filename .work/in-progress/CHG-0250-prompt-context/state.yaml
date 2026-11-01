@@ -1,0 +1,28 @@
+schema: 1
+change: CHG-0250
+title: "M29.9 Guarantee one read-only system prompt and Hub rules in every managed Hermes turn"
+status: in_progress
+branch: pending
+updated: 2026-11-02
+phase: design-complete
+adr: ADR-0092
+spec: SPEC-0091
+requirements: [R9.1, R9.2]
+depends_on: ["M29.0", "M29.2", "M29.6"]
+github_milestone: "M29 — Six-Passport Space Contract"
+github_issue: 433
+design_status: accepted
+implementation_status: not_started
+slices:
+  S9.1-contract: not_started
+  S9.2-implementation: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining:
+  - "Each managed turn contains exactly one effective Hub contract and no unauthorized project AGENTS/MEMORY override or writable authority source."
+limitations: []
