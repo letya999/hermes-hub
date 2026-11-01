@@ -607,6 +607,63 @@ func TestManagedAdmissionFencesOtherStoreInstances(t *testing.T) {
 	}
 }
 
+// The SQLite substrate must honor the same admission fence as the JSON
+// store: a managed call admits on a verified digest, a committed
+// cross-instance change is detected as stale, and a competing writer cannot
+// land mid-admission. Regression for the digest being stored as the JSON
+// snapshot hash while the fence hashed raw db bytes (always stale).
+func TestManagedAdmissionFenceOnDBStore(t *testing.T) {
+	s, auth, _, _ := managedStore(t)
+	path := filepath.Join(t.TempDir(), "registry.db")
+	if err := s.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	defer s.CloseDB()
+	reader, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.CloseDB()
+	writer, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.CloseDB()
+	args := map[string]any{"path": "docs/a", "scope": "workspace"}
+	called := false
+	err = reader.AuthorizeProjectedCall(auth, "workspace_read", args, func(api.ProjectedTool, api.EffectiveBinding) error {
+		called = true
+		if saveErr := writer.Save(path); saveErr == nil {
+			return errors.New("cross-instance commit allowed during admission")
+		}
+		return nil
+	})
+	if err != nil || !called {
+		t.Fatalf("db-backed managed admission denied: %v", err)
+	}
+	def := remoteDefinition()
+	def.Version = "3.0.0"
+	if err := writer.RegisterDefinition(def); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	reader.mu.RLock()
+	release, fenceErr := reader.lockCapabilityAdmission()
+	reader.mu.RUnlock()
+	if release != nil {
+		release()
+	}
+	if !errors.Is(fenceErr, api.ErrStale) {
+		t.Fatalf("cross-instance commit passed db admission fence: %v", fenceErr)
+	}
+	called = false
+	if err := reader.AuthorizeProjectedCall(auth, "workspace_read", args, func(api.ProjectedTool, api.EffectiveBinding) error { called = true; return nil }); err != nil || !called {
+		t.Fatalf("admission did not recover after reload: %v", err)
+	}
+}
+
 func TestManagedPolicyOwnsPublishedData(t *testing.T) {
 	s, auth, policy, profile := managedStore(t)
 	policy.Members[0] = "mallory"

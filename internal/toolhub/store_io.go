@@ -30,7 +30,14 @@ func statStoreStamp(path string) (storeStamp, bool) {
 	if err != nil {
 		return storeStamp{}, false
 	}
-	return storeStamp{mtime: info.ModTime().UnixNano(), size: info.Size()}, true
+	stamp := storeStamp{mtime: info.ModTime().UnixNano(), size: info.Size()}
+	// WAL-mode SQLite commits land in the sidecar until a checkpoint, so a
+	// cross-instance write is invisible in the main file's stamp alone.
+	if wal, walErr := os.Stat(path + "-wal"); walErr == nil {
+		stamp.mtime = max(stamp.mtime, wal.ModTime().UnixNano())
+		stamp.size += wal.Size()
+	}
+	return stamp, true
 }
 
 func NewStore() *Store {
@@ -514,6 +521,10 @@ func (s *Store) Reload() error {
 		s.mu.Unlock()
 		return err
 	}
+	// The adopted snapshot replaces in-memory state, but the fresh handle is
+	// redundant — s keeps its own. Without this every cross-instance reload
+	// leaks a SQLite connection (and locks the file on Windows).
+	defer func() { _ = fresh.CloseDB() }()
 	// Reads must not replace pending in-process mutations with the unchanged
 	// disk snapshot, nor race a Save and restore its older predecessor.
 	if fresh.diskDigest == s.diskDigest {
