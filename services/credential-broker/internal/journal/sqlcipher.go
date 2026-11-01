@@ -11,6 +11,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -21,14 +22,48 @@ import (
 
 var errNoCipher = errors.New("sqlcipher engine unavailable")
 
-const (
-	sqlSchema = `CREATE TABLE IF NOT EXISTS records(
+var sqlSchema = []string{
+	`CREATE TABLE IF NOT EXISTS {s}.records(
 		seq INTEGER PRIMARY KEY CHECK(seq > 0),
 		prev TEXT NOT NULL,
 		kind TEXT NOT NULL,
 		body BLOB NOT NULL
-	) WITHOUT ROWID`
-)
+	) WITHOUT ROWID`,
+	`CREATE TABLE IF NOT EXISTS {s}.state(
+		kind TEXT NOT NULL,
+		id TEXT NOT NULL,
+		seq INTEGER NOT NULL,
+		body BLOB NOT NULL,
+		PRIMARY KEY (kind, id)
+	) WITHOUT ROWID`,
+	`CREATE TABLE IF NOT EXISTS {s}.audit(
+		seq INTEGER PRIMARY KEY,
+		kind TEXT NOT NULL,
+		principal TEXT NOT NULL,
+		context TEXT NOT NULL,
+		body BLOB NOT NULL
+	) WITHOUT ROWID`,
+	`CREATE TABLE IF NOT EXISTS {s}.meta(
+		k TEXT PRIMARY KEY,
+		v TEXT NOT NULL
+	) WITHOUT ROWID`,
+}
+
+type sqlExecer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+// sqlEnsureSchema creates the record/state/audit/meta tables idempotently —
+// stores activated before normalized tables existed adopt them at open.
+func sqlEnsureSchema(ex sqlExecer, schema string) error {
+	for _, stmt := range sqlSchema {
+		// #nosec G202 -- schema is a fixed "r"/"p" literal from call sites.
+		if _, err := ex.Exec(strings.Replace(stmt, "{s}", schema, -1)); err != nil {
+			return ErrUnavailable
+		}
+	}
+	return nil
+}
 
 // sqlStore is the durable backend behind an activated Journal. In replicated
 // mode both databases attach to a :memory: session — recovery as r, primary
@@ -44,7 +79,7 @@ type sqlStore struct {
 // witness head. A crash between COMMIT and the head write drops the
 // unacknowledged row on the next open — the same acknowledge ordering as the
 // framed backend.
-func (j *Journal) appendSQL(r Record, plain []byte) (uint64, error) {
+func (j *Journal) appendSQL(r Record, plain []byte, aux *AuxWrites) (uint64, error) {
 	size := j.size + int64(len(r.Data)) + 64
 	if size > j.limit {
 		j.poisoned = true
@@ -67,6 +102,15 @@ func (j *Journal) appendSQL(r Record, plain []byte) (uint64, error) {
 			return 0, ErrUnavailable
 		}
 	}
+	if aux != nil {
+		// State upserts, the audit row and the marker land in the same commit
+		// as the chained record — mutation, safe audit and state are atomic.
+		if err := j.appendSQLAux(tx, r.Sequence, aux); err != nil {
+			_ = tx.Rollback()
+			j.poisoned = true
+			return 0, ErrUnavailable
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		j.poisoned = true
 		return 0, ErrUnavailable
@@ -81,7 +125,6 @@ func (j *Journal) appendSQL(r Record, plain []byte) (uint64, error) {
 	j.prev = hex.EncodeToString(h[:])
 	j.seq = r.Sequence
 	j.size = size
-	j.records = append(j.records, r)
 	return r.Sequence, nil
 }
 
@@ -126,6 +169,12 @@ func openSQLReplicated(primaryDir, recoveryDir string, anchor *recoveryAnchor, p
 		return fail(err)
 	}
 	if err := sqlAttach(db, "p", filepath.Join(primaryDir, sqlPrimaryDB), sqlKeyPass(primaryKey, "sqlcipher-ledger/v1")); err != nil {
+		return fail(err)
+	}
+	if err := sqlEnsureSchema(db, "r"); err != nil {
+		return fail(err)
+	}
+	if err := sqlEnsureSchema(db, "p"); err != nil {
 		return fail(err)
 	}
 	recovery, _, _, err := sqlReplay(db, "r")
@@ -209,7 +258,8 @@ func openSQLReplicated(primaryDir, recoveryDir string, anchor *recoveryAnchor, p
 	for _, r := range primary {
 		psize += int64(len(r.Data)) + 64
 	}
-	j := &Journal{lock: plock, limit: limit, seq: latest, prev: pprev, size: psize, records: primary,
+	// Records are not retained: the sql backend streams them on demand.
+	j := &Journal{lock: plock, limit: limit, seq: latest, prev: pprev, size: psize,
 		sql: &sqlStore{db: db, replicated: true, recLock: rlock}}
 	j.identity = seal.Derive(primaryKey, "journal-store-key/v2")
 	j.anchor = anchor
@@ -237,11 +287,14 @@ func openSQLSingle(dir string, key []byte, limit int64) (*Journal, error) {
 	if err := sqlAttach(db, "r", filepath.Join(dir, sqlSingleDB), sqlKeyPass(key, "sqlcipher-ledger/v1")); err != nil {
 		return fail(err)
 	}
+	if err := sqlEnsureSchema(db, "r"); err != nil {
+		return fail(err)
+	}
 	recs, prev, size, err := sqlReplay(db, "r")
 	if err != nil {
 		return fail(err)
 	}
-	j := &Journal{lock: lock, limit: limit, seq: uint64(len(recs)), prev: prev, size: size, records: recs,
+	j := &Journal{lock: lock, limit: limit, seq: uint64(len(recs)), prev: prev, size: size,
 		sql: &sqlStore{db: db}}
 	j.identity = seal.Derive(key, "journal-store-key/v2")
 	return j, nil

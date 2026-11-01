@@ -146,6 +146,7 @@ type Broker struct {
 	leases       map[string]*leaseRecord
 	events       []v1.Event
 	refreshLocks map[string]*sync.Mutex
+	normalized   bool
 	closed       bool
 }
 

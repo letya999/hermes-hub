@@ -20,7 +20,7 @@ type sqlStore struct {
 
 // appendSQL is unreachable on non-CGO builds: an activated marker can only be
 // produced by a cipher build, and the dispatch above refuses one it finds.
-func (j *Journal) appendSQL(r Record, plain []byte) (uint64, error) {
+func (j *Journal) appendSQL(r Record, plain []byte, aux *AuxWrites) (uint64, error) {
 	return 0, errNoCipher
 }
 
@@ -72,5 +72,23 @@ func ImportSQLCipherSingle(dir string, key []byte, limit int64) error {
 }
 
 func ActivateSQLCipherSingle(dir string, key []byte) error {
+	return errNoCipher
+}
+
+func (j *Journal) sqlNormalized() bool { return false }
+
+func (j *Journal) sqlRecords() []Record { return nil }
+
+func (j *Journal) StateRows() ([]StateRow, error) { return nil, ErrUnavailable }
+
+func (j *Journal) AuditPage(after uint64, limit int, scope AuditScope) ([]AuditRow, error) {
+	return nil, ErrUnavailable
+}
+
+func NormalizeSQLCipher(primaryDir, recoveryDir, anchorDir string, primaryKey, recoveryKey []byte, limit int64, norm NormalizeFunc) error {
+	return errNoCipher
+}
+
+func NormalizeSQLCipherSingle(dir string, key []byte, limit int64, norm NormalizeFunc) error {
 	return errNoCipher
 }

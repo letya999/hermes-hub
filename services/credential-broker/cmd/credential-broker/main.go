@@ -24,7 +24,7 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 	case "version":
 		_, e := fmt.Fprintln(out, version)
 		return e
-	case "store-migrate", "store-activate":
+	case "store-migrate", "store-activate", "store-normalize":
 		fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 		fs.SetOutput(out)
 		path := fs.String("config", "", "absolute configuration path")
@@ -40,9 +40,13 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 		}
 		migrate := app.MigrateStore
 		done := "Store migration staged."
-		if args[0] == "store-activate" {
+		switch args[0] {
+		case "store-activate":
 			migrate = app.ActivateStore
 			done = "Store activated."
+		case "store-normalize":
+			migrate = app.NormalizeStore
+			done = "Store normalized."
 		}
 		if e := migrate(cfg); e != nil {
 			return e

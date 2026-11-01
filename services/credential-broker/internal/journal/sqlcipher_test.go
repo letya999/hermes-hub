@@ -57,6 +57,164 @@ func seedLegacy(t *testing.T, primary, recovery, anchorDir string, pk, rk []byte
 	}
 }
 
+// Normalized tables: state upserts and audit rows commit atomically with the
+// chained record, the normalize pass backfills history idempotently, and
+// opens after it serve current-state reads without replaying the journal.
+func TestSQLCipherNormalizedStore(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 3)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j.Normalized() {
+		t.Fatal("store reported normalized without a normalize pass")
+	}
+	stateBody := []byte(`{"view":{"id":"g1","status":"issued"}}`)
+	auditBody := []byte(`{"kind":"grant.issued","principal_id":"p1"}`)
+	if _, err := j.AppendWith("mutation.v1", map[string]string{"op": "x"}, &AuxWrites{
+		States: []StateWrite{{Kind: "grant", ID: "g1", Body: stateBody}},
+		Audit:  &AuditWrite{Kind: "grant.issued", Principal: "p1", Context: "c1", Body: auditBody},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if j.Normalized() {
+		t.Fatal("aux rows alone must not mark the store normalized")
+	}
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	normalized := 0
+	norm := func(r Record) ([]StateWrite, *AuditWrite, error) {
+		normalized++
+		return []StateWrite{{Kind: "audit-rec", ID: fmt.Sprint(r.Sequence), Body: r.Data}},
+			&AuditWrite{Kind: r.Kind, Principal: "p", Context: "c", Body: r.Data}, nil
+	}
+	if err := NormalizeSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20, norm); err != nil {
+		t.Fatal(err)
+	}
+	if normalized != 4 {
+		t.Fatalf("normalize saw %d records, want 4", normalized)
+	}
+	j, err = OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close() }()
+	if !j.Normalized() {
+		t.Fatal("store not normalized after the pass")
+	}
+	states, err := j.StateRows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Four audit-rec rows (one per record, backfilled) plus the g1 grant the
+	// live AppendWith wrote before the pass.
+	if len(states) != 5 {
+		t.Fatalf("state rows = %d, want 5", len(states))
+	}
+	page, err := j.AuditPage(0, 2, AuditScope{Broadcast: "mutation.v1"})
+	if err != nil || len(page) != 2 || page[0].Seq != 1 || page[1].Seq != 2 {
+		t.Fatalf("first audit page = %+v %v", page, err)
+	}
+	page, err = j.AuditPage(page[len(page)-1].Seq, 100, AuditScope{Principal: "p", Context: "c"})
+	if err != nil || len(page) != 2 {
+		t.Fatalf("audit continuation = %+v %v", page, err)
+	}
+	if rows, err := j.AuditPage(0, 100, AuditScope{Principal: "other", Context: "c"}); err != nil || len(rows) != 0 {
+		t.Fatalf("foreign principal saw %d audit rows", len(rows))
+	}
+	// A plain Append leaves the marker behind the head: the store must report
+	// degraded rather than serve incomplete tables.
+	if _, err := j.Append("mutation.v1", map[string]string{"op": "raw"}); err != nil {
+		t.Fatal(err)
+	}
+	if j.Normalized() {
+		t.Fatal("raw append kept the normalized marker fresh")
+	}
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	j, err = OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close() }()
+	if j.Normalized() {
+		t.Fatal("reopened store ignored the stale marker")
+	}
+	// Re-running the pass repairs the gap and re-arms normalized reads.
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := NormalizeSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20, norm); err != nil {
+		t.Fatal(err)
+	}
+	j, err = OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close() }()
+	if !j.Normalized() {
+		t.Fatal("re-normalized store stayed degraded")
+	}
+	if len(j.Records()) != 5 {
+		t.Fatalf("records lost after normalize: %d", len(j.Records()))
+	}
+}
+
+// The marker must track every aux append: Normalized stays true while
+// AppendWith is the only writer, and survives close/reopen.
+func TestSQLCipherNormalizedMarkerTracksAppends(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 0)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	if err := NormalizeSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20, func(Record) ([]StateWrite, *AuditWrite, error) {
+		return nil, nil, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !j.Normalized() {
+		t.Fatal("empty normalize pass did not arm the marker")
+	}
+	if _, err := j.AppendWith("mutation.v1", map[string]string{"x": "1"}, &AuxWrites{
+		Audit: &AuditWrite{Kind: "k", Principal: "p", Context: "c", Body: []byte(`{"k":1}`)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !j.Normalized() {
+		t.Fatal("marker lagged behind an aux append")
+	}
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	j, err = OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close() }()
+	if !j.Normalized() {
+		t.Fatal("marker lost across reopen")
+	}
+}
+
 func TestSQLCipherBuildIdentity(t *testing.T) {
 	requireCipher(t)
 	v, err := SQLCipherVersion()

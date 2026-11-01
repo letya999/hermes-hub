@@ -161,6 +161,9 @@ func openJournal(dir string, key []byte, limit int64, compact bool) (*Journal, e
 func (j *Journal) Records() []Record {
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if j.sql != nil {
+		return j.sqlRecords()
+	}
 	out := make([]Record, len(j.records))
 	for i, r := range j.records {
 		out[i] = r
@@ -170,9 +173,16 @@ func (j *Journal) Records() []Record {
 }
 
 func (j *Journal) Append(kind string, data any) (uint64, error) {
+	return j.append(kind, data, nil)
+}
+
+func (j *Journal) append(kind string, data any, aux *AuxWrites) (uint64, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if j.poisoned || (j.file == nil && j.sql == nil) || kind == "" {
+		return 0, ErrUnavailable
+	}
+	if err := sqlValidateAux(aux); err != nil {
 		return 0, ErrUnavailable
 	}
 	raw, err := json.Marshal(data)
@@ -188,7 +198,7 @@ func (j *Journal) Append(kind string, data any) (uint64, error) {
 		return 0, errors.New("record too large")
 	}
 	if j.sql != nil {
-		return j.appendSQL(r, plain)
+		return j.appendSQL(r, plain, aux)
 	}
 	buf, compressed, err := j.frame(plain)
 	if err != nil {
@@ -237,6 +247,23 @@ func (j *Journal) Append(kind string, data any) (uint64, error) {
 	}
 	return r.Sequence, nil
 }
+
+// AppendWith commits one record plus its normalized-table writes (state
+// upserts and an audit row) in a single transaction on the sql backend. On a
+// framed store the aux writes are dropped — there are no tables to receive
+// them — and the append behaves exactly like Append.
+func (j *Journal) AppendWith(kind string, data any, aux *AuxWrites) (uint64, error) {
+	return j.append(kind, data, aux)
+}
+
+// Normalized reports whether the normalized state/audit tables provably cover
+// the journal head. Always false on framed stores.
+func (j *Journal) Normalized() bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.sql != nil && j.sqlNormalized()
+}
+
 func (j *Journal) Healthy() bool {
 	j.mu.Lock()
 	defer j.mu.Unlock()

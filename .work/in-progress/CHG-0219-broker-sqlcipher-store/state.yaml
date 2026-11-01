@@ -2,9 +2,9 @@ schema: 1
 change: CHG-0219
 title: "Таблицы состояния и постраничный audit Broker"
 status: in_progress
-branch: fix/m23-live-wake
+branch: chore/storage-reliability-dev-acceptance
 updated: "2026-11-01"
-phase: substrate-implemented
+phase: normalized-slice-live
 adr: ADR-0087
 spec: SPEC-0087
 requirements: [R3]
@@ -14,10 +14,10 @@ github_milestone: null
 github_issue: null
 design_status: accepted
 implementation_status: partial
-readiness: substrate_done_tables_pending
+readiness: normalized_tables_live_on_dev
 slices:
-  S195.1-transactional-state: not_started
-  S195.2-events-retention: not_started
+  S195.1-transactional-state: done
+  S195.2-events-retention: partial
   S195.3-import-and-scale: partial
 validation:
   documents: passed
@@ -31,8 +31,11 @@ validation:
   live_acceptance: not_started
 evidence:
   - "../CHG-0218-broker-sqlcipher-proof/gate-result.md"
+  - "S195.1 live: dev store normalized via `store-normalize` (2026-11-01); reopen probe: normalized=true, 415 state rows (contract 27, credential 42, grant 104, request 110, session 122, state 10), audit paginated; broker serves /v1/leases + /v1/runtime at ~30ms with marker staying armed across live commits."
 remaining:
-  - "Normalized state/audit/object tables (S195.1), scoped events pagination (S195.2) and large-scale import evidence (rest of S195.3) not started."
-  - "Journal SQLCipher substrate implemented: primary.db/recovery.db/ledger.db, import/activate, witness tail-drop, store-migrate/store-activate CLI."
+  - "Scoped events pagination polish (S195.2: retention/compaction of audit table) and large-scale import evidence (rest of S195.3) not done."
+  - "Normalized schema shipped: state(kind,id,seq,body) keyed current state, audit(seq,kind,principal,context,body) paginated, meta marker; atomic aux writes on every commit; AppendWith/normalize pass idempotent; raw append degrades Normalized() until repaired."
+  - "Journal no longer retains the SQL record chain in memory; Records() streams from the table."
+  - "store-normalize CLI wired for replicated + single layouts."
 limitations:
-  - "Substrate shipped under CHG-0218 gate; this CHG still owns the normalized R3 surface."
+  - "Audit table grows with history; S195.2 still owes retention/GC (overlaps CHG-0220 lifecycle scope)."

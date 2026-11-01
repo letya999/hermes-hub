@@ -12,6 +12,7 @@ import (
 
 	"github.com/letya999/credential-broker/app"
 	"github.com/letya999/credential-broker/internal/journal"
+	"github.com/letya999/credential-broker/internal/seal"
 )
 
 type failedWriter struct{}
@@ -215,6 +216,33 @@ func TestStoreMigrateCommand(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(cfg.DataDir, "substrate-backup", "ledger.bin")); err != nil {
 		t.Fatal("legacy ledger not retired")
+	}
+	out.Reset()
+	if err := run(context.Background(), []string{"store-normalize", "--config", migrationConfig}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != "Store normalized.\n" {
+		t.Fatal("unexpected output:", out.String())
+	}
+	master, err := os.ReadFile(cfg.MasterKeyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(cfg.RecoveryKeyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j, err := journal.OpenReplicatedAnchored(cfg.DataDir, filepath.Join(cfg.RecoveryDir, "journal"), cfg.RecoveryAnchorDir,
+		seal.Derive(master, "ledger"), seal.Derive(seal.Derive(raw, "identity/"+cfg.RecoveryIdentity), "ledger"), cfg.MaxLedgerBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !j.Normalized() {
+		_ = j.Close()
+		t.Fatal("store-normalize did not arm the marker")
+	}
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
 	}
 	// The service must come up on the SQLCipher backend.
 	svc, err = app.Build(cfg)

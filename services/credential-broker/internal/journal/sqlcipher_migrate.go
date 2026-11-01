@@ -12,7 +12,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
 
@@ -225,7 +224,7 @@ func ImportSQLCipher(primaryDir, recoveryDir, anchorDir string, primaryKey, reco
 		return fail(ErrUnavailable)
 	}
 	for _, schema := range []string{"r", "p"} {
-		if _, err := tx.Exec(strings.Replace(sqlSchema, "records", schema+".records", 1)); err != nil {
+		if err := sqlEnsureSchema(tx, schema); err != nil {
 			_ = tx.Rollback()
 			return fail(ErrUnavailable)
 		}
@@ -350,7 +349,7 @@ func ImportSQLCipherSingle(dir string, key []byte, limit int64) error {
 	if err != nil {
 		return fail(ErrUnavailable)
 	}
-	if _, err := tx.Exec(strings.Replace(sqlSchema, "records", "r.records", 1)); err != nil {
+	if err := sqlEnsureSchema(tx, "r"); err != nil {
 		_ = tx.Rollback()
 		return fail(ErrUnavailable)
 	}
