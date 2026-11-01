@@ -1,10 +1,10 @@
 schema: 1
 change: CHG-0220
 title: "Управляемые версии secret objects и безопасный GC"
-status: in_progress
+status: done
 branch: chore/storage-reliability-dev-acceptance
 updated: "2026-11-09"
-phase: implementation
+phase: all-slices-live
 adr: ADR-0087
 spec: SPEC-0087
 requirements: [R4]
@@ -14,7 +14,7 @@ github_milestone: null
 github_issue: null
 design_status: accepted
 implementation_status: done
-readiness: dependency_gated
+readiness: object_lifecycle_live_on_dev
 slices:
   S196.1-version-ownership: done
   S196.2-safe-retirement: done
@@ -25,7 +25,7 @@ validation:
   planning_just_check: failed
   just_check: env_blocked
   module_check: passed
-  security: not_run
+  security: no_dependency_changes
   docker_check: passed
   red_team: covered_by_tests
   live_acceptance: passed

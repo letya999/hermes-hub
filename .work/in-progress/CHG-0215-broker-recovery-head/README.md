@@ -57,7 +57,7 @@ native gate, но зависимые этапы нельзя объявлять 
 | 3 | [CHG-0217: Ротация, курсоры и ограниченный trace диагностики](../CHG-0217-diagnostic-log-durability/plan.md) | Можно начинать после rebaseline |
 | 4 | [CHG-0218: Gate сборки и аварийной атомарности SQLCipher](../CHG-0218-broker-sqlcipher-proof/plan.md) | После CHG-0215 |
 | 5 | [CHG-0219: Таблицы состояния и постраничный audit Broker](../../done/CHG-0219-broker-sqlcipher-store/plan.md) | После CHG-0215, CHG-0218 |
-| 6 | [CHG-0220: Управляемые версии secret objects и безопасный GC](../CHG-0220-broker-object-lifecycle/plan.md) | После CHG-0219 |
+| 6 | [CHG-0220: Управляемые версии secret objects и безопасный GC](../../done/CHG-0220-broker-object-lifecycle/plan.md) | После CHG-0219 |
 | 7 | [CHG-0221: Ограниченный обязательный audit и честные исходы действий](../CHG-0221-bounded-control-audit/plan.md) | Можно начинать после rebaseline |
 | 8 | [CHG-0222: Один receipt для результата, доставки и обработки source batch](../CHG-0222-spool-durable-handoff/plan.md) | После CHG-0216, CHG-0221 |
 | 9 | [CHG-0223: Полный учёт объёма и безопасное операторское обслуживание](../CHG-0223-storage-budget-maintenance/plan.md) | После CHG-0217, CHG-0219, CHG-0220, CHG-0221, CHG-0222 |
