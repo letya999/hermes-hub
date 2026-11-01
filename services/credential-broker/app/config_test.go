@@ -214,6 +214,41 @@ func TestReadConfigRejectsInvalidAuditRetention(t *testing.T) {
 	}
 }
 
+// Auto-retain flags are the explicit destructive policy for high-water
+// maintenance; they must never stand alone — an archive target is required.
+func TestReadConfigRejectsUnboundAutoRetain(t *testing.T) {
+	c := devConfig(t)
+	root := t.TempDir()
+	_ = os.Chmod(root, 0700)
+	for i, change := range []func(*Config){
+		func(c *Config) { c.AuditAutoRetain = true },
+		func(c *Config) { c.RecordsAutoRetain = true },
+		func(c *Config) { c.RecordsArchiveDir = "relative" },
+	} {
+		bad := c
+		change(&bad)
+		path := filepath.Join(root, "auto-"+strconv.Itoa(i)+".json")
+		if e := WriteJSON(path, bad); e != nil {
+			t.Fatal(e)
+		}
+		if _, e := ReadConfig(path); e == nil {
+			t.Fatalf("case %d accepted unbound auto-retain", i)
+		}
+	}
+	good := c
+	good.AuditHotMaxBytes = 4096
+	good.AuditArchiveDir = filepath.Join(root, "arch")
+	good.AuditAutoRetain = true
+	good.RecordsAutoRetain = true
+	path := filepath.Join(root, "auto-ok.json")
+	if e := WriteJSON(path, good); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := ReadConfig(path); e != nil {
+		t.Fatalf("auto retain with archive rejected: %v", e)
+	}
+}
+
 func TestProviderCompositionAndProtectedFiles(t *testing.T) {
 	root := t.TempDir()
 	_ = os.Chmod(root, 0700)

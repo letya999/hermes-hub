@@ -57,3 +57,24 @@ Fixture note: three pre-existing OAuth confirmation tests failed with `trusted h
 Docs: `docs/services/hubctl.md` gained the storage operator-surface section and command-list entry; `docs/operations.md` documents `storage status`/`cleanup` under the operator ops surface. Not verified: Docker/native durability, Broker owner surfaces (gated by CHG-0218), live acceptance.
 
 Repeat: the isolated full-package `go test ./internal/communication -count=1` rerun exited 0 (106.7 s), confirming the earlier `TestWorkerRunsWithIsolatedUserAndHandlesError` failure as a load-timing flake, not a regression in the storage wrappers.
+
+## Broker owner maintenance + records rotation, 2026-11-02
+
+SQLCipher-image evidence (container `hermes-broker-sqlcipher:test`, `-tags=libsqlite3`, real codec — not host-skipped):
+
+- `TestRecordsRotateArchivesAndShrinks`: `RetainRecords(keep)` exports the records prefix into `records-<lo>-<hi>.seal` + HMAC-sealed manifest, verifies the archive standalone (internal hash chain re-verified), then under the destructive policy deletes the prefix across both legs in one transaction, re-anchors `records_floor`/`records_floor_prev` and VACUUMs — the test asserts the `.db` file is physically smaller after the pass and that reopen replays from the floor cleanly.
+- `TestRecordsFloorAboveHeadRefusesOpen`: reopen with a witness head below the floor fails `ErrUnavailable`; a wiped head (seq=0) on a rotated store fails the same way — the guard predates the fix and panicked on negative slice indexing before it.
+- `TestSQLCipherAppendBound` (rewritten contract): ledger-cap overflow answers `ErrFull` — the journal stays `Healthy()`, no poison; a later small append succeeds after headroom exists. ErrFull already maps to `ErrRetentionFull` → HTTP 507 through the Broker.
+- `TestRetainMaintenanceRotatesAtHighWater`: at >80% of the ledger cap the tick rotates the prefix to a half-cap suffix, prunes and compacts under the destructive policy, persists `retain_last_ok` (report.Marker); a second high-water pass at an unchanged marker does not rewrite meta (WAL-churn bound).
+- `TestRetainMaintenanceIdleWritesNothing`: a quiet tick runs no pass and writes no marker.
+- `TestDeleteFailureRemainsPendingAndDenied` (extended): failed provider delete leaves durable `pending-delete`, durable `attempts`/`next_at`; an immediate retry is skipped, a retry after the first window fails again and pushes `next_at` past 45s — exponential, not the old flat 30s; retry after the window succeeds and resolves the row. The jitter is downward-only (up to -12.5%) so a retry never waits past its exponential bound — a nondeterministic >30s window was a real flake caught by this test.
+- `TestSweepObjectsCommandDrainsRetiredObjects` (app) + `TestStoreSweepCommand` (cmd): `store-sweep --config` drains retired objects offline with the service stopped and reports `{"swept": N}`.
+- `TestStoreRetainRecordsCommand` (cmd): `store-retain --records --keep-bytes` exports the prefix and prints the JSON report; with `--destroy` it prunes and reports `pruned:true`.
+- `TestServiceTickRunsRetainMaintenance` (app): a live `Service.Run` tick rotates records history with no operator — the auto path is real, not only a unit seam.
+- `TestBuildWiresRecordsAutoRetain` + `TestReadConfigRejectsUnboundAutoRetain` (app): config `records_archive_dir`/`records_auto_retain` (+ `audit_auto_retain`) wire the destructive policies onto the open journal through `Build`; config validation rejects auto-retain without an archive dir.
+
+Config surface: `audit_auto_retain` / `records_auto_retain` are the explicit destructive policies (opt-in); `records_archive_dir` defaults to `audit_archive_dir`. Without the flags a high-water tick exports only — admission stops visibly at the cap; nothing is silently deleted. Dev stack (`spaces/local/broker/config.json` + live volume config) runs with both flags enabled.
+
+Docs: `docs/operations.md` (records rotation, auto policies, visible ledger stop, backoff, store-sweep) and `docs/services/credential-broker/operations/recovery.md` (rotation + auto-maintenance section) updated.
+
+Not verified yet: live dev-stack rotation on the real volume (in progress), `just check` root, coverage numbers, race.

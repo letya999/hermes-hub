@@ -2,10 +2,31 @@ package broker
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"time"
 
 	"github.com/letya999/credential-broker/identity"
 )
+
+// sweepBackoff grows exponentially so a persistently failing provider is
+// not retried at a fixed rate; downward jitter (up to -12.5%) collapses
+// retry alignment while never extending past the exponential bound
+// (SPEC-0087 R5.2).
+func sweepBackoff(attempts int) time.Duration {
+	d := 30 * time.Second
+	for i := 1; i < attempts; i++ {
+		d *= 2
+	}
+	if d > 30*time.Minute {
+		d = 30 * time.Minute
+	}
+	var j [8]byte
+	if _, err := rand.Read(j[:]); err == nil {
+		d = d*7/8 + d/8*time.Duration(binary.BigEndian.Uint64(j[:])%2048)/2048
+	}
+	return d
+}
 
 // SweepObjects is the bounded, idempotent cleanup worker for provider
 // objects (SPEC-0087 R4.6).
@@ -57,7 +78,8 @@ func (b *Broker) sweepObjectsLocked(ctx context.Context, a identity.Actor, limit
 	for _, o := range queue {
 		processed++
 		if e := b.cfg.Providers[o.Ref.Provider].Delete(ctx, o.Ref); e != nil {
-			o.NextAt = b.now().Add(30 * time.Second)
+			o.Attempts++
+			o.NextAt = b.now().Add(sweepBackoff(o.Attempts))
 			o.UpdatedAt = b.now()
 			if _, ce := b.commit(mutation{Audit: b.audit("object.sweep", a), Objects: []objectRecord{o}}); ce != nil {
 				return processed, ce

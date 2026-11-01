@@ -371,3 +371,89 @@ func TestStoreRetainCommand(t *testing.T) {
 		t.Fatalf("audit floor = %d %v, want >= 2 after prune", floor, err)
 	}
 }
+
+// store-retain --records rotates the chained history prefix on a stopped
+// store: sealed archive out, source rows pruned, file physically compacted.
+func TestStoreRetainRecordsCommand(t *testing.T) {
+	if _, err := journal.SQLCipherVersion(); err != nil {
+		t.Skip("sqlcipher engine unavailable in this build")
+	}
+	root := filepath.Join(t.TempDir(), "install")
+	if err := app.Init(root); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "config.json")
+	cfg, err := app.ReadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := app.Build(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Broker.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(context.Background(), []string{"store-migrate", "--config", path}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(context.Background(), []string{"store-activate", "--config", path}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	cfg.AuditArchiveDir = filepath.Join(t.TempDir(), "arch")
+	cfg.AuditHotMaxBytes = 64 << 10
+	retentionConfig := filepath.Join(root, "retention.json")
+	if err := app.WriteJSON(retentionConfig, cfg); err != nil {
+		t.Fatal(err)
+	}
+	master, err := os.ReadFile(cfg.MasterKeyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j, err := journal.Open(cfg.DataDir, seal.Derive(master, "ledger"), cfg.MaxLedgerBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pad := strings.Repeat("x", 4000)
+	for i := 0; i < 40; i++ {
+		if _, err := j.AppendWith("mutation.v1", map[string]string{"pad": pad}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := run(context.Background(), []string{"store-retain", "--config", retentionConfig, "--records", "--keep-bytes", "32768", "--destroy"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"pruned":true`) {
+		t.Fatal("records pass did not prune or malformed report:", out.String())
+	}
+	j, err = journal.Open(cfg.DataDir, seal.Derive(master, "ledger"), cfg.MaxLedgerBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	floor, err := j.RecordsFloor()
+	if err != nil || floor < 2 {
+		t.Fatalf("records floor = %d %v, want >= 2 after rotation", floor, err)
+	}
+}
+
+// store-sweep drains the durable object queue on a stopped store — the
+// offline twin of the service's in-process worker.
+func TestStoreSweepCommand(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "install")
+	if err := app.Init(root); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "config.json")
+	var out bytes.Buffer
+	if err := run(context.Background(), []string{"store-sweep", "--config", path}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"swept"`) {
+		t.Fatal("store-sweep report malformed:", out.String())
+	}
+}

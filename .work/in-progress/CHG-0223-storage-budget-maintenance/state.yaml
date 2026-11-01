@@ -2,8 +2,8 @@ schema: 1
 change: CHG-0223
 title: "Полный учёт объёма и безопасное операторское обслуживание"
 status: in_progress
-branch: chore/storage-reliability-integration
-updated: "2026-10-31"
+branch: chore/storage-reliability-dev-acceptance
+updated: "2026-11-02"
 phase: integrated-code-validation
 adr: ADR-0088
 spec: SPEC-0088
@@ -17,9 +17,9 @@ design_status: accepted
 implementation_status: partial
 readiness: dependency_gated
 slices:
-  S199.1-all-owned-bytes: not_started
-  S199.2-owner-maintenance: not_started
-  S199.3-safe-operator-cli: not_started
+  S199.1-all-owned-bytes: partial
+  S199.2-owner-maintenance: partial
+  S199.3-safe-operator-cli: partial
 validation:
   documents: passed
   planning_package: passed
@@ -29,10 +29,13 @@ validation:
   security: not_run
   docker_check: not_run
   red_team: not_started
-  live_acceptance: not_started
+  live_acceptance: in_progress
 evidence: [evidence.md]
 remaining:
+  - "Broker records rotation verified by SQLCipher image tests; live dev rotation evidence pending."
+  - "Archive directory byte budget (full-footprint accounting) not yet implemented."
   - "Imported implementation requires integrated acceptance; design-only dependencies remain outstanding."
 limitations:
   - "Imported code is under validation; no live data migration performed."
   - "Security audit without destructive policy eventually stops admission at the finite cap; no infinite-retention promise."
+  - "Broker auto-retain is explicit config opt-in (audit_auto_retain/records_auto_retain); default remains export-only plus visible admission stop."

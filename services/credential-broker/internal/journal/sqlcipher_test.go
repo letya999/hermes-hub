@@ -341,7 +341,7 @@ func TestSQLCipherUncommittedTailDropped(t *testing.T) {
 	if err := sqlAttach(db, "p", filepath.Join(primary, "primary.db"), sqlKeyPass(pk, "sqlcipher-ledger/v1")); err != nil {
 		t.Fatal(err)
 	}
-	recs, prev, _, err := sqlReplay(db, "r")
+	recs, prev, _, _, err := sqlReplay(db, "r")
 	if err != nil || len(recs) != 2 {
 		t.Fatal("replay")
 	}
@@ -604,16 +604,20 @@ func TestSQLCipherAppendBound(t *testing.T) {
 	}
 	defer j.Close()
 	// Fill to just under the limit, then one more append must cross the byte
-	// bound - and poison the journal against further writes.
+	// bound — a visible admission stop, not a poisoned journal: history
+	// rotation can free headroom and the store keeps serving (SPEC-0087 R5.3).
 	big := strings.Repeat("x", (1<<20)-300)
 	if _, err := j.Append("mutation.v1", map[string]string{"blob": big}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := j.Append("mutation.v1", map[string]string{"blob": big}); err == nil {
-		t.Fatal("over-limit append accepted")
+	if _, err := j.Append("mutation.v1", map[string]string{"blob": big}); !errors.Is(err, ErrFull) {
+		t.Fatalf("over-limit append = %v, want ErrFull", err)
 	}
-	if _, err := j.Append("mutation.v1", map[string]string{"op": "small"}); err == nil {
-		t.Fatal("poisoned journal accepted an append")
+	if !j.Healthy() {
+		t.Fatal("ledger-cap stop poisoned the journal")
+	}
+	if _, err := j.Append("mutation.v1", map[string]string{"op": "small"}); err != nil {
+		t.Fatalf("post-stop append failed: %v", err)
 	}
 }
 
@@ -860,7 +864,7 @@ func TestSQLReplayRejectsCorruptRows(t *testing.T) {
 			t.Fatal(err)
 		}
 		insert(db, row.seq, row.prev, row.kind, row.body)
-		if _, _, _, err := sqlReplay(db, "r"); err == nil {
+		if _, _, _, _, err := sqlReplay(db, "r"); err == nil {
 			t.Fatalf("corrupt row %d replayed", i)
 		}
 		if err := db.Close(); err != nil {
@@ -1029,7 +1033,7 @@ func TestSQLCipherOpenRefusesPrefixDivergence(t *testing.T) {
 	if err := sqlAttach(db, "p", filepath.Join(primary, sqlPrimaryDB), sqlKeyPass(pk, "sqlcipher-ledger/v1")); err != nil {
 		t.Fatal(err)
 	}
-	recs, _, _, err := sqlReplay(db, "p")
+	recs, _, _, _, err := sqlReplay(db, "p")
 	if err != nil || len(recs) != 2 {
 		t.Fatalf("replay: %v", err)
 	}
@@ -1564,5 +1568,246 @@ func TestReadAuditArchiveRejectsBadByteCount(t *testing.T) {
 	sealFile, manifestFile, identity := writeTamperedArchive(t, func(d *auditManifestDoc) { d.Bytes = 1 })
 	if _, err := ReadAuditArchive(sealFile, manifestFile, identity); err == nil {
 		t.Fatal("corrupted byte count accepted")
+	}
+}
+
+// Records rotation exports the sealed history prefix, prunes it from both
+// legs under a verified archive and VACUUMs — the file physically shrinks and
+// replay resumes at the floor instead of the genesis record (SPEC-0087 R5.2).
+func TestRecordsRotateArchivesAndShrinks(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 0)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close() }()
+	archiveDir := filepath.Join(t.TempDir(), "archive")
+	j.SetRecordsRetention(RecordsRetention{ArchiveDir: archiveDir, Destructive: true})
+	// 40 records at ~4 KiB bodies ≈ 160 KiB of chained history.
+	pad := strings.Repeat("x", 4000)
+	for i := 0; i < 40; i++ {
+		if _, err := j.AppendWith("mutation.v1", map[string]string{"op": fmt.Sprintf("op-%d", i), "pad": pad}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, err := os.Stat(filepath.Join(primary, "primary.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Keep a ~32 KiB hot suffix: the first ~32 records must archive out.
+	rep, err := j.RetainRecords(32 << 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.Exported || !rep.Pruned {
+		t.Fatalf("report = %+v, want exported+pruned", rep)
+	}
+	if rep.SeqLo != 1 || rep.SeqHi >= 40 {
+		t.Fatalf("archived range %d-%d wrong", rep.SeqLo, rep.SeqHi)
+	}
+	sealFile := filepath.Join(archiveDir, fmt.Sprintf("records-%d-%d.seal", rep.SeqLo, rep.SeqHi))
+	manifestFile := filepath.Join(archiveDir, fmt.Sprintf("records-%d-%d.manifest.json", rep.SeqLo, rep.SeqHi))
+	if _, err := os.Stat(sealFile); err != nil {
+		t.Fatalf("no sealed records archive: %v", err)
+	}
+	recs, err := ReadRecordsArchive(sealFile, manifestFile, j.StoreIdentity())
+	if err != nil {
+		t.Fatalf("sealed records archive failed verification: %v", err)
+	}
+	if len(recs) != rep.Rows || recs[0].Sequence != 1 || recs[len(recs)-1].Sequence != rep.SeqHi {
+		t.Fatalf("archive holds %d records seq %d-%d", len(recs), recs[0].Sequence, recs[len(recs)-1].Sequence)
+	}
+	// The archive must carry the chain link: last archived hash is the first
+	// retained record's prev.
+	if floor, err := j.RecordsFloor(); err != nil || floor != rep.SeqHi+1 {
+		t.Fatalf("records floor = %d, want %d", floor, rep.SeqHi+1)
+	}
+	// The file physically shrank.
+	after, err := os.Stat(filepath.Join(primary, "primary.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Size() >= before.Size() {
+		t.Fatalf("primary.db did not shrink: %d >= %d", after.Size(), before.Size())
+	}
+	// History continues past the floor: the next append chains on.
+	seq, err := j.AppendWith("mutation.v1", map[string]string{"op": "post-rotate"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seq != 41 {
+		t.Fatalf("post-rotate seq = %d, want 41", seq)
+	}
+	// Close and reopen: replay from the floor must verify clean.
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	j2, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatalf("reopen after rotation: %v", err)
+	}
+	defer func() { _ = j2.Close() }()
+	rows, err := j2.AuditPage(0, 100, AuditScope{AnyPrincipal: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = rows
+	if got := len(j2.sqlRecords()); got != 40-rep.Rows+1 {
+		t.Fatalf("retained records = %d, want %d", got, 40-rep.Rows+1)
+	}
+}
+
+// A witness head below the retained floor is inconsistent state (an archive
+// boundary swallowed acknowledged history): open must refuse, not panic on
+// index math.
+func TestRecordsFloorAboveHeadRefusesOpen(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 0)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveDir := filepath.Join(t.TempDir(), "archive")
+	j.SetRecordsRetention(RecordsRetention{ArchiveDir: archiveDir, Destructive: true})
+	pad := strings.Repeat("x", 4000)
+	for i := 0; i < 40; i++ {
+		if _, err := j.AppendWith("mutation.v1", map[string]string{"pad": pad}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := j.RetainRecords(32 << 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Rewind the witness head below the floor: format-valid, content false.
+	anchor, err := newAnchor(anchorDir, seal.Derive(pk, "journal-store-key/v2"), rk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := anchor.writeHead(5, strings.Repeat("aa", 32)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("open with head below floor = %v, want ErrUnavailable", err)
+	}
+	// A wiped anchor head on a rotated store refuses the same way — floor
+	// arithmetic must not index below the retained window.
+	if err := anchor.writeHead(0, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("open with lost head on rotated store = %v, want ErrUnavailable", err)
+	}
+}
+
+// High-water maintenance fires without an operator: at 80% of the ledger cap
+// the history prefix rotates out and the last-ok marker persists (SPEC-0087
+// R5.2). The tick must never need a manual store-retain.
+func TestRetainMaintenanceRotatesAtHighWater(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 0)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 160<<10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close() }()
+	archiveDir := filepath.Join(t.TempDir(), "archive")
+	j.SetRecordsRetention(RecordsRetention{ArchiveDir: archiveDir, Destructive: true})
+	// ~130 KiB of history: over the 128 KiB (80%) high-water mark.
+	pad := strings.Repeat("x", 4000)
+	for i := 0; i < 40; i++ {
+		if _, err := j.AppendWith("mutation.v1", map[string]string{"pad": pad}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rep := j.RetainMaintenance()
+	if rep.LastError != "" {
+		t.Fatalf("maintenance error: %s", rep.LastError)
+	}
+	if rep.Records == nil || !rep.Records.Pruned {
+		t.Fatalf("records rotation did not run at high water: %+v", rep)
+	}
+	if rep.Marker != "retain_last_ok" {
+		t.Fatalf("first pass marker = %q, want retain_last_ok", rep.Marker)
+	}
+	floor, err := j.RecordsFloor()
+	if err != nil || floor <= 1 {
+		t.Fatalf("floor = %d after high-water rotation", floor)
+	}
+	if _, ok := sqlMetaGet(j.sql.db, "r", "retain_last_ok"); !ok {
+		t.Fatal("maintenance success was not persisted")
+	}
+	// Back over the mark again (≈60KiB over the ≤80KiB retained suffix):
+	// a repeat pass at an unchanged marker must not rewrite meta —
+	// per-second writes at sustained high water churn the WAL the same
+	// way the unbounded history did.
+	for i := 0; i < 15; i++ {
+		if _, err := j.AppendWith("mutation.v1", map[string]string{"pad": pad}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rep = j.RetainMaintenance()
+	if rep.Records == nil || !rep.Records.Pruned {
+		t.Fatalf("second high-water rotation did not run: %+v", rep)
+	}
+	if rep.Marker != "" {
+		t.Fatalf("unchanged marker rewritten as %q — want skipped write", rep.Marker)
+	}
+}
+
+// Idle maintenance ticks must not write — a write txn per second on a quiet
+// store would churn the WAL for no benefit.
+func TestRetainMaintenanceIdleWritesNothing(t *testing.T) {
+	requireCipher(t)
+	primary, recovery, anchorDir, pk, rk := sqlSetup(t)
+	seedLegacy(t, primary, recovery, anchorDir, pk, rk, 0)
+	if _, err := ImportSQLCipher(primary, recovery, anchorDir, pk, rk, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := ActivateSQLCipher(primary, recovery, anchorDir, pk, rk); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenReplicatedAnchored(primary, recovery, anchorDir, pk, rk, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = j.Close() }()
+	j.SetRecordsRetention(RecordsRetention{ArchiveDir: filepath.Join(t.TempDir(), "archive"), Destructive: true})
+	if _, err := j.AppendWith("mutation.v1", map[string]string{"op": "small"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	rep := j.RetainMaintenance()
+	if rep.Records != nil || rep.Audit != nil || rep.LastError != "" {
+		t.Fatalf("idle tick did work: %+v", rep)
+	}
+	if _, ok := sqlMetaGet(j.sql.db, "r", "retain_last_ok"); ok {
+		t.Fatal("idle tick wrote a marker")
+	}
+	if _, ok := sqlMetaGet(j.sql.db, "r", "retain_last_error"); ok {
+		t.Fatal("idle tick wrote an error marker")
 	}
 }

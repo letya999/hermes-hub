@@ -85,36 +85,38 @@ func sqlAttach(db *sql.DB, alias, path, pass string) error {
 	return sqlMustExec(db, "PRAGMA "+a+".synchronous=EXTRA")
 }
 
-// sqlReplay reads a records table and verifies the strict hash chain: the
-// digest of each canonical record encoding must be the next row's prev.
-func sqlReplay(db *sql.DB, schema string) ([]Record, string, int64, error) {
+// sqlReplay streams and verifies the record chain. A rotated store starts at
+// its floor: the first retained row must be the floor sequence and must carry
+// the floor_prev hash — the sealed link into archived history.
+func sqlReplay(db *sql.DB, schema string) ([]Record, string, int64, uint64, error) {
+	floor, floorPrev := sqlRecordsFloor(db, schema)
 	// #nosec G202 -- schema is a fixed "r"/"p" literal from call sites, never
 	// user input; the whitelisted sqlAttach aliases enforce it.
 	rows, err := db.Query("SELECT seq, prev, kind, body FROM " + schema + ".records ORDER BY seq")
 	if err != nil {
-		return nil, "", 0, ErrUnavailable
+		return nil, "", 0, 0, ErrUnavailable
 	}
 	defer rows.Close()
 	var out []Record
-	prev := ""
+	prev := floorPrev
 	var size int64
-	var expect uint64 = 1
+	expect := floor
 	for rows.Next() {
 		var seq uint64
 		var p, kind string
 		var body []byte
 		if err := rows.Scan(&seq, &p, &kind, &body); err != nil {
-			return nil, "", 0, ErrUnavailable
+			return nil, "", 0, 0, ErrUnavailable
 		}
 		if seq != expect || p != prev || kind == "" || len(body) == 0 || len(body) > MaxRecord {
-			return nil, "", 0, ErrUnavailable
+			return nil, "", 0, 0, ErrUnavailable
 		}
 		if !strictjson.Valid(body) {
-			return nil, "", 0, ErrUnavailable
+			return nil, "", 0, 0, ErrUnavailable
 		}
 		plain, err := json.Marshal(Record{Sequence: seq, Previous: p, Kind: kind, Data: json.RawMessage(body)})
 		if err != nil {
-			return nil, "", 0, err
+			return nil, "", 0, 0, err
 		}
 		sum := sha256.Sum256(plain)
 		prev = hex.EncodeToString(sum[:])
@@ -123,9 +125,9 @@ func sqlReplay(db *sql.DB, schema string) ([]Record, string, int64, error) {
 		expect++
 	}
 	if err := rows.Err(); err != nil {
-		return nil, "", 0, ErrUnavailable
+		return nil, "", 0, 0, ErrUnavailable
 	}
-	return out, prev, size, nil
+	return out, prev, size, floor, nil
 }
 
 func sqlEqual(a, b []Record) bool {
@@ -246,7 +248,7 @@ func ImportSQLCipher(primaryDir, recoveryDir, anchorDir string, primaryKey, reco
 		schema string
 		want   []Record
 	}{{"r", recovery.records}, {"p", primary.records}} {
-		got, _, _, err := sqlReplay(db, check.schema)
+		got, _, _, _, err := sqlReplay(db, check.schema)
 		if err != nil || !sqlEqual(got, check.want) {
 			return fail(ErrUnavailable)
 		}
@@ -362,7 +364,7 @@ func ImportSQLCipherSingle(dir string, key []byte, limit int64) error {
 	if err := tx.Commit(); err != nil {
 		return fail(ErrUnavailable)
 	}
-	got, _, _, err := sqlReplay(db, "r")
+	got, _, _, _, err := sqlReplay(db, "r")
 	if err != nil || !sqlEqual(got, j.records) {
 		return fail(ErrUnavailable)
 	}
@@ -385,7 +387,7 @@ func ActivateSQLCipherSingle(dir string, key []byte) error {
 	if err := sqlAttach(db, "r", filepath.Join(dir, sqlSingleDB), sqlKeyPass(key, "sqlcipher-ledger/v1")); err != nil {
 		return fail(err)
 	}
-	got, _, _, err := sqlReplay(db, "r")
+	got, _, _, _, err := sqlReplay(db, "r")
 	if err != nil || !sqlEqual(got, j.records) {
 		return fail(ErrUnavailable)
 	}

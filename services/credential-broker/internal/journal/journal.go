@@ -45,6 +45,7 @@ type Record struct {
 }
 type Journal struct {
 	retention  AuditRetention
+	retainR    RecordsRetention
 	auditBytes int64
 	mu         sync.Mutex
 	file       *os.File
@@ -275,6 +276,24 @@ func (j *Journal) SetAuditRetention(r AuditRetention) {
 	defer j.mu.Unlock()
 	j.retention = r
 	j.auditBytes = j.sqlAuditBytes()
+}
+
+// SetRecordsRetention wires the history-rotation policy onto the journal.
+// Destructive is the explicit authorization for prune+compact; without it
+// rotation only exports sealed archives.
+func (j *Journal) SetRecordsRetention(r RecordsRetention) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.retainR = r
+}
+
+// RecordsFloor returns the smallest record sequence still stored — the point
+// replay re-anchors at after history rotation.
+func (j *Journal) RecordsFloor() (uint64, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	floor, _ := sqlRecordsFloor(j.sql.db, "r")
+	return floor, nil
 }
 
 // StoreIdentity returns the journal's derived store identity — the value

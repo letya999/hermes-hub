@@ -93,6 +93,8 @@ func (j *Journal) sqlNormalized() bool { return false }
 
 func (j *Journal) sqlRecords() []Record { return nil }
 
+func sqlRecordsFloor(_ *sql.DB, _ string) (uint64, string) { return 1, "" }
+
 func (j *Journal) StateRows() ([]StateRow, error) { return nil, ErrUnavailable }
 
 func (j *Journal) AuditPage(after uint64, limit int, scope AuditScope) ([]AuditRow, error) {
@@ -105,4 +107,19 @@ func NormalizeSQLCipher(primaryDir, recoveryDir, anchorDir string, primaryKey, r
 
 func NormalizeSQLCipherSingle(dir string, key []byte, limit int64, norm NormalizeFunc) error {
 	return errNoCipher
+}
+
+// RetainRecords is unreachable on non-CGO builds; the cipher build owns it.
+func (j *Journal) RetainRecords(keepBytes int64) (RetainReport, error) {
+	return RetainReport{}, errNoCipher
+}
+
+func ReadRecordsArchive(_, _ string, _ []byte) ([]Record, error) {
+	return nil, errNoCipher
+}
+
+// RetainMaintenance is a no-op without the cipher backend: no SQL tables
+// exist to rotate.
+func (j *Journal) RetainMaintenance() MaintenanceReport {
+	return MaintenanceReport{}
 }

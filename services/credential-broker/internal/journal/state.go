@@ -85,6 +85,31 @@ type RetainReport struct {
 	OverCap  bool
 }
 
+// RecordsRetention is the history-rotation policy wired onto an open
+// Journal: ArchiveDir receives sealed records archives and Destructive is
+// the explicit opt-in that lets a verified archive's source prefix be
+// deleted and the file compacted (SPEC-0087 R5.2/R5.3). Without Destructive
+// rotation only exports — the ledger still stops admission visibly at its
+// byte cap instead of silently losing history.
+type RecordsRetention struct {
+	ArchiveDir  string
+	Destructive bool
+}
+
+// MaintenanceReport describes one high-water maintenance tick: each retain
+// pass that ran (audit / records) and the last error observed. LastError is
+// persisted on the journal so a failing cleanup stays visible across
+// restarts instead of repeating silently (SPEC-0087 R5.2).
+type MaintenanceReport struct {
+	Audit     *RetainReport
+	Records   *RetainReport
+	LastError string
+	// Marker names the persisted outcome marker written this tick; empty
+	// when the marker was already in the target state — repeats do not
+	// rewrite meta at sustained high water.
+	Marker string
+}
+
 func sqlValidateAux(aux *AuxWrites) error {
 	if aux == nil {
 		return nil

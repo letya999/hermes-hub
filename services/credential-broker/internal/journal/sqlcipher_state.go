@@ -453,6 +453,11 @@ func (j *Journal) sqlAuditRows() ([]AuditRow, error) {
 func (j *Journal) RetainAudits() (RetainReport, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	return j.retainAuditsLocked()
+}
+
+// retainAuditsLocked is RetainAudits with the caller already holding j.mu.
+func (j *Journal) retainAuditsLocked() (RetainReport, error) {
 	rep := RetainReport{}
 	if j.sql == nil {
 		return rep, ErrUnavailable

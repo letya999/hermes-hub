@@ -432,6 +432,34 @@ service in docs/services/credential-broker.md. Ops-critical facts:
   archives are verified, never overwritten — a tampered archive or manifest
   fails closed and never authorizes a prune. `/v1/events` answers report
   `earliest_available`/`gap` when a client's cursor predates the floor.
+- Records history rotation (SPEC-0087 R5.2): `store-retain --config PATH
+  --records --keep-bytes N` exports the records-chain prefix into a sealed
+  `records-LO-HI.seal` archive + manifest that re-verifies the internal hash
+  chain standalone; `--destroy` deletes the verified prefix across both
+  legs, re-anchors `records_floor`/`records_floor_prev` on the archived
+  tip hash and VACUUMs the files — the physical shrink the byte cap alone
+  never delivers. Reopen verifies the retained chain from the floor; a
+  witness head below the floor (or lost on a rotated store) fails closed.
+- Automatic high-water maintenance: `audit_auto_retain` /
+  `records_auto_retain` are the explicit destructive policies. On the
+  service tick, hot audit bytes over 80% of the audit cap export (and prune
+  under the destructive flag); hot records bytes over 80% of the ledger cap
+  rotate to a half-cap retained suffix (and prune + compact under the
+  destructive flag). Without the flags the same checks only export —
+  admission still stops visibly at the cap, nothing is silently deleted.
+  The outcome persists in journal meta (`retain_last_ok`/`retain_last_error`)
+  so a failing cleanup stays visible across restarts; idle and
+  already-in-state ticks write nothing.
+- Ledger byte cap is a visible admission stop, not a poisoned store:
+  `max_ledger_bytes` overflow answers ErrFull (HTTP 507 via
+  `ErrRetentionFull`), the journal stays healthy and rotation frees
+  headroom for later writes.
+- Provider object cleanup retries with exponential backoff (30s base,
+  doubling, capped) and durable `attempts`/`next_at` — a persistently
+  failing provider is not hammered at a fixed rate.
+- `credential-broker store-sweep --config PATH` runs the same bounded
+  object-cleanup pass offline with the service stopped — drains abandoned
+  and retired provider objects and prints a JSON `{"swept": N}` report.
 - File-delivery contracts (e.g. Google service-account JSON) need a shared
   tmpfs at the same absolute path on broker, controller and daemon — set as
   `credential_mount_root` in the controller config; requests reject without

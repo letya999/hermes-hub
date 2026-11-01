@@ -81,9 +81,11 @@ type sqlStore struct {
 // framed backend.
 func (j *Journal) appendSQL(r Record, plain []byte, aux *AuxWrites) (uint64, error) {
 	size := j.size + int64(len(r.Data)) + 64
+	// A ledger-cap refusal is a visible admission stop, not a poisoned store:
+	// history rotation can free headroom and the journal keeps serving
+	// (SPEC-0087 R5.3).
 	if size > j.limit {
-		j.poisoned = true
-		return 0, ErrUnavailable
+		return 0, ErrFull
 	}
 	// The audit admission stop is visible, not poisonous: the commit is
 	// refused before it begins so the journal stays usable and a retention
@@ -187,15 +189,21 @@ func openSQLReplicated(primaryDir, recoveryDir string, anchor *recoveryAnchor, p
 	if err := sqlEnsureSchema(db, "p"); err != nil {
 		return fail(err)
 	}
-	recovery, _, _, err := sqlReplay(db, "r")
+	recovery, _, _, floor, err := sqlReplay(db, "r")
 	if err != nil {
 		return fail(err)
 	}
-	primary, _, _, err := sqlReplay(db, "p")
+	primary, _, _, _, err := sqlReplay(db, "p")
 	if err != nil {
 		return fail(err)
 	}
-	rseq, pseq := uint64(len(recovery)), uint64(len(primary))
+	rseq, pseq := floor-1, floor-1
+	if len(recovery) > 0 {
+		rseq = recovery[len(recovery)-1].Sequence
+	}
+	if len(primary) > 0 {
+		pseq = primary[len(primary)-1].Sequence
+	}
 	if anchor == nil {
 		return fail(ErrUnavailable)
 	}
@@ -203,9 +211,15 @@ func openSQLReplicated(primaryDir, recoveryDir string, anchor *recoveryAnchor, p
 	if err != nil || latest > rseq {
 		return fail(ErrUnavailable)
 	}
+	// A witness head below the retained floor — including a lost anchor
+	// (latest=0) on a rotated store — means the archive boundary swallowed
+	// acknowledged history; refuse before index math.
+	if floor > 1 && latest < floor {
+		return fail(ErrUnavailable)
+	}
 	if latest > 0 {
 		// The witness head binds the acknowledged record's digest.
-		plain, err := json.Marshal(recovery[latest-1])
+		plain, err := json.Marshal(recovery[latest-floor])
 		if err != nil {
 			return fail(err)
 		}
@@ -218,7 +232,7 @@ func openSQLReplicated(primaryDir, recoveryDir string, anchor *recoveryAnchor, p
 	if upto > latest {
 		upto = latest
 	}
-	for i := uint64(0); i < upto; i++ {
+	for i := uint64(0); i+floor <= upto; i++ {
 		p, r := primary[i], recovery[i]
 		if p.Sequence != r.Sequence || p.Previous != r.Previous || p.Kind != r.Kind || !bytes.Equal(p.Data, r.Data) {
 			return fail(ErrUnavailable)
@@ -243,8 +257,8 @@ func openSQLReplicated(primaryDir, recoveryDir string, anchor *recoveryAnchor, p
 		}
 		// Rows committed in the recovery journal but missing from primary are
 		// still acknowledged — replay them into p inside the same transaction.
-		for i := pseq; i < latest && i < rseq; i++ {
-			r := recovery[i]
+		for s := pseq + 1; s <= latest && s <= rseq; s++ {
+			r := recovery[s-floor]
 			if _, err := tx.Exec("INSERT INTO p.records(seq,prev,kind,body) VALUES(?,?,?,?)", r.Sequence, r.Previous, r.Kind, []byte(r.Data)); err != nil {
 				_ = tx.Rollback()
 				return fail(ErrUnavailable)
@@ -254,10 +268,10 @@ func openSQLReplicated(primaryDir, recoveryDir string, anchor *recoveryAnchor, p
 			return fail(ErrUnavailable)
 		}
 	}
-	primary = recovery[:latest]
+	primary = recovery[:latest-floor+1]
 	pprev := ""
 	if latest > 0 {
-		plain, err := json.Marshal(recovery[latest-1])
+		plain, err := json.Marshal(recovery[latest-floor])
 		if err != nil {
 			return fail(err)
 		}
@@ -300,11 +314,15 @@ func openSQLSingle(dir string, key []byte, limit int64) (*Journal, error) {
 	if err := sqlEnsureSchema(db, "r"); err != nil {
 		return fail(err)
 	}
-	recs, prev, size, err := sqlReplay(db, "r")
+	recs, prev, size, _, err := sqlReplay(db, "r")
 	if err != nil {
 		return fail(err)
 	}
-	j := &Journal{lock: lock, limit: limit, seq: uint64(len(recs)), prev: prev, size: size,
+	var head uint64
+	if len(recs) > 0 {
+		head = recs[len(recs)-1].Sequence
+	}
+	j := &Journal{lock: lock, limit: limit, seq: head, prev: prev, size: size,
 		sql: &sqlStore{db: db}}
 	j.identity = seal.Derive(key, "journal-store-key/v2")
 	return j, nil

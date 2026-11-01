@@ -2,10 +2,12 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"path/filepath"
 
 	"github.com/letya999/credential-broker/broker"
+	"github.com/letya999/credential-broker/identity"
 	"github.com/letya999/credential-broker/internal/journal"
 	"github.com/letya999/credential-broker/internal/seal"
 	"github.com/letya999/credential-broker/internal/securefs"
@@ -129,4 +131,69 @@ func NormalizeStore(c Config) error {
 	recoveryKey := seal.Derive(raw, "identity/"+c.RecoveryIdentity)
 	defer clear(recoveryKey)
 	return journal.NormalizeSQLCipher(c.DataDir, filepath.Join(c.RecoveryDir, "journal"), c.RecoveryAnchorDir, seal.Derive(master, "ledger"), seal.Derive(recoveryKey, "ledger"), c.MaxLedgerBytes, broker.NormalizeRecord)
+}
+
+// SweepObjects drains the durable pending-delete queue on a stopped store —
+// the offline twin of the service's per-second sweep tick. Bound per call;
+// callers repeat until zero.
+func SweepObjects(c Config) (int, error) {
+	svc, err := Build(c)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = svc.Broker.Close() }()
+	actor := identity.Actor{PrincipalID: "maintenance"}
+	total := 0
+	for {
+		n, err := svc.Broker.SweepObjects(context.Background(), actor, 64)
+		total += n
+		if err != nil {
+			return total, err
+		}
+		if n < 64 {
+			return total, nil
+		}
+	}
+}
+
+// RetainRecords runs one history-rotation pass on a stopped store: export
+// the records prefix into a verified sealed archive and, only when
+// destructive is set, prune the verified source and compact the files. The
+// archive directory comes from configured policy — an explicit operator
+// run, never ambient deletion (SPEC-0087 R5).
+func RetainRecords(c Config, destructive bool, keepBytes int64) (journal.RetainReport, error) {
+	master, err := securefs.ReadKey(c.MasterKeyFile)
+	if err != nil {
+		return journal.RetainReport{}, err
+	}
+	defer clear(master)
+	var j *journal.Journal
+	if c.RecoveryDir == "" || c.RecoveryAnchorDir == "" {
+		j, err = journal.Open(c.DataDir, seal.Derive(master, "ledger"), c.MaxLedgerBytes)
+	} else {
+		if err := validateRecoveryLayout(c); err != nil {
+			return journal.RetainReport{}, err
+		}
+		raw, err := securefs.ReadKey(c.RecoveryKeyFile)
+		if err != nil {
+			return journal.RetainReport{}, err
+		}
+		defer clear(raw)
+		if bytes.Equal(master, raw) {
+			return journal.RetainReport{}, errors.New("recovery key must differ from master key")
+		}
+		recoveryKey := seal.Derive(raw, "identity/"+c.RecoveryIdentity)
+		defer clear(recoveryKey)
+		j, err = journal.OpenReplicatedAnchored(c.DataDir, filepath.Join(c.RecoveryDir, "journal"), c.RecoveryAnchorDir, seal.Derive(master, "ledger"), seal.Derive(recoveryKey, "ledger"), c.MaxLedgerBytes)
+	}
+	if err != nil {
+		return journal.RetainReport{}, err
+	}
+	defer func() { _ = j.Close() }()
+	archive := c.RecordsArchiveDir
+	if archive == "" {
+		archive = c.AuditArchiveDir
+	}
+	j.SetRecordsRetention(journal.RecordsRetention{ArchiveDir: archive, Destructive: destructive})
+	return j.RetainRecords(keepBytes)
 }

@@ -809,8 +809,25 @@ func TestDeleteFailureRemainsPendingAndDenied(t *testing.T) {
 	if n, _ := f.b.SweepObjects(testCtx, a, 10); n != 0 {
 		t.Fatalf("backoff-less retry re-attempted %d objects", n)
 	}
+	if f.b.objects[retiredID].Attempts != 1 {
+		t.Fatalf("attempts = %d after first failure", f.b.objects[retiredID].Attempts)
+	}
+	// Exponential backoff: the second failure pushes the window past the
+	// flat 30s — a repeat-poison provider must not get retried forever at
+	// the same rate (SPEC-0087 R5.2).
+	f.b.cfg.Now = func() time.Time { return time.Now().Add(31 * time.Second) }
+	if _, e := f.b.SweepObjects(testCtx, a, 10); e == nil {
+		t.Fatal("second failing sweep must report denial")
+	}
+	o := f.b.objects[retiredID]
+	if o.Attempts != 2 {
+		t.Fatalf("attempts = %d after second failure", o.Attempts)
+	}
+	if left := o.NextAt.Sub(f.b.now()); left <= 45*time.Second {
+		t.Fatalf("flat backoff %v after attempt 2 — want exponential growth", left)
+	}
 	// After the backoff window the retry succeeds and resolves the row.
-	f.b.cfg.Now = func() time.Time { return time.Now().Add(2 * time.Minute) }
+	f.b.cfg.Now = func() time.Time { return time.Now().Add(4 * time.Minute) }
 	w.fail.Store(false)
 	if _, e := f.b.SweepObjects(testCtx, a, 10); e != nil {
 		t.Fatalf("retry after backoff: %v", e)
