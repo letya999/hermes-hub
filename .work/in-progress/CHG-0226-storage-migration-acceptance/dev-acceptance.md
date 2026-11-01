@@ -162,6 +162,26 @@ not a test bug: under a codec-less build (`linux&&cgo` without
 - Result: `internal/journal` 80.5 → 85.3 % under the real engine, honest
   coverage of security-critical refusal branches.
 
+## Third live-found regression — managed capability admission (fixed, d166724)
+
+Real traffic surfaced a migration defect the unit suite missed: six
+`authorization:deny` audit rows (`artem_two-default`, 08:05–08:10 UTC) —
+every managed-capability tool call failed with `capability snapshot
+changed before admission`, so skills/connectors were unusable while
+regular hub tools worked.
+
+Root cause: `lockCapabilityAdmission` hashed raw `store.db` bytes but
+`diskDigest` holds the JSON *snapshot* digest under the db backend —
+never equal, always `ErrStale`. Fix: a db branch that pins the writer
+lock via held `BEGIN IMMEDIATE` (the same exclusion the `.lock` file
+gave the JSON store) and compares `meta.digest` written inside writer
+commits. Companion fixes: `statStoreStamp` now includes the `-wal`
+sidecar so `Reload` sees cross-instance commits before checkpoint, and
+`Reload` no longer leaks the fresh load's db handle. Regression test
+`TestManagedAdmissionFenceOnDBStore` covers admit → write-during-
+admission refused → committed change trips ErrStale → reload recovers.
+Toolhub dev-rebuilt, Healthy, zero denies since restart.
+
 ## Known limitations / not yet evidenced
 
 - Broker first-open replay of ~200k records takes ~30 s (one-time per
