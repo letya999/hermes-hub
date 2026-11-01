@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"github.com/letya999/hermes-hub/internal/audit"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"net/http"
@@ -207,6 +208,27 @@ func TestConnectorCLIConnectCallRefreshRevoke(t *testing.T) {
 		if err := run(ctx, append([]string{"connector", op}, append(base, extra...)...)); err != nil {
 			t.Fatalf("%s: %v", op, err)
 		}
+	}
+
+	ledger, err := audit.Open(filepath.Join(filepath.Dir(base[5]), "audit.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := ledger.List("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var admission, completion *audit.Event
+	for i := range events {
+		if events[i].Phase == "admitted" {
+			admission = &events[i]
+		}
+		if events[i].Phase == "completed" {
+			completion = &events[i]
+		}
+	}
+	if admission == nil || completion == nil || admission.OperationID != completion.OperationID || completion.Execution != "succeeded" || completion.Authorization != "allow" {
+		t.Fatal("connector call omitted its durable admission/completion pair")
 	}
 	if err := run(ctx, append([]string{"connector", "refresh"}, append(base, "--client-file", clientFile)...)); err == nil {
 		t.Fatal("revoked refresh accepted")

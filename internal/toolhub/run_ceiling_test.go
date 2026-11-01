@@ -28,6 +28,7 @@ func TestToolCallRunCeiling(t *testing.T) {
 			"alice-principal-token-0000000000000": {auth: auth},
 		},
 	}
+	attachGatewayAudit(t, g)
 	handler, err := g.Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -80,6 +81,7 @@ func TestToolCallRunCeilingMCP(t *testing.T) {
 			"alice-principal-token-0000000000000": {auth: auth},
 		},
 	}
+	attachGatewayAudit(t, g)
 	handler, err := g.Handler()
 	if err != nil {
 		t.Fatal(err)

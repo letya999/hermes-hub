@@ -3,10 +3,12 @@ package devcheck
 import (
 	"context"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/audit"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -57,11 +59,20 @@ func ToolHubGatewayContract(ctx context.Context) error {
 		}
 	}
 
+	auditDir, err := os.MkdirTemp("", "hermes-contract-audit-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(auditDir)
+	ledger, err := audit.Open(filepath.Join(auditDir, "audit.jsonl"))
+	if err != nil {
+		return err
+	}
 	gatewayToken := os.Getenv("TOOLHUB_GATEWAY_TOKEN")
 	if gatewayToken == "" {
 		gatewayToken = strings.Repeat("g", 32)
 	}
-	handler, err := (&toolhub.Gateway{Store: store, Backend: api.MCPBackend{Token: os.Getenv("TOOLHIVE_VMCP_TOKEN"), AdmissionVerifier: admission}, Tokens: map[string]identity.Envelope{gatewayToken: auth}}).Handler()
+	handler, err := (&toolhub.Gateway{AuditWrite: toolhub.LedgerAuditWriter(ledger), Store: store, Backend: api.MCPBackend{Token: os.Getenv("TOOLHIVE_VMCP_TOKEN"), AdmissionVerifier: admission}, Tokens: map[string]identity.Envelope{gatewayToken: auth}}).Handler()
 	if err != nil {
 		return err
 	}

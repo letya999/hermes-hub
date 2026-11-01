@@ -24,3 +24,7 @@ func processAlive(pid int) bool {
 }
 func notifySignals(ch chan os.Signal) { signal.Notify(ch, os.Interrupt) }
 func stopSignals(ch chan os.Signal)   { signal.Stop(ch) }
+
+// Windows rename is atomic; native power-loss acceptance requires the
+// deployment Linux filesystem.
+func syncRuntimeDirectory(string) error { return nil }

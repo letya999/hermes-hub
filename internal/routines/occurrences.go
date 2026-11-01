@@ -34,7 +34,7 @@ func (e *Engine) PutOccurrence(o commodel.RoutineOccurrence, caller identity.Env
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	path := filepath.Join(e.root, "occurrences", id+".json")
-	if b, err := os.ReadFile(path); err == nil {
+	if b, err := e.readFile(path); err == nil {
 		var existing commodel.RoutineOccurrence
 		if json.Unmarshal(b, &existing) != nil || commodel.JobFingerprint(existing.Job) != commodel.JobFingerprint(o.Job) {
 			return errors.New("occurrence identity conflict")
@@ -44,7 +44,7 @@ func (e *Engine) PutOccurrence(o commodel.RoutineOccurrence, caller identity.Env
 		return err
 	}
 	for _, dir := range []string{"receipts", "archive", "quarantine"} {
-		_, err := os.Stat(filepath.Join(e.root, "occurrences", dir, id+".json"))
+		_, err := e.lstat(filepath.Join(e.root, "occurrences", dir, id+".json"))
 		if err == nil {
 			if dir == "quarantine" {
 				return errors.New("occurrence quarantined")
@@ -61,10 +61,10 @@ func (e *Engine) PutOccurrence(o commodel.RoutineOccurrence, caller identity.Env
 // quarantineOccurrenceLocked preserves a bad durable record outside hot scans.
 func (e *Engine) quarantineOccurrenceLocked(path string) error {
 	dir := filepath.Join(e.root, "occurrences", "quarantine")
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := e.mkdirOwned(dir, true); err != nil {
 		return err
 	}
-	if err := os.Rename(path, filepath.Join(dir, filepath.Base(path))); err != nil {
+	if err := e.renameOwned(path, filepath.Join(dir, filepath.Base(path))); err != nil {
 		return err
 	}
 	log.Printf("quarantined invalid occurrence %s", filepath.Base(path))
@@ -79,22 +79,22 @@ func (e *Engine) DispatchDueOccurrences(now time.Time, authorize func(commodel.J
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	entries, err := os.ReadDir(filepath.Join(e.root, "occurrences"))
+	entries, err := e.readDir(filepath.Join(e.root, "occurrences"))
 	if err != nil {
 		return err
 	}
 	occurrences := make([]commodel.RoutineOccurrence, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	for _, name := range entries {
+		if !strings.HasSuffix(name, ".json") {
 			continue
 		}
-		path := filepath.Join(e.root, "occurrences", entry.Name())
-		b, err := os.ReadFile(path)
+		path := filepath.Join(e.root, "occurrences", name)
+		b, err := e.readFile(path)
 		if err != nil {
 			return err
 		}
 		var o commodel.RoutineOccurrence
-		if len(b) > 128*1024 || json.Unmarshal(b, &o) != nil || ValidateOccurrence(o, o.Job.Envelope, e.deps.ChannelFor) != nil || entry.Name() != occurrenceID(o)+".json" || o.Job.ID != occurrenceID(o) || o.Job.IdempotencyKey != o.Job.ID {
+		if len(b) > 128*1024 || json.Unmarshal(b, &o) != nil || ValidateOccurrence(o, o.Job.Envelope, e.deps.ChannelFor) != nil || name != occurrenceID(o)+".json" || o.Job.ID != occurrenceID(o) || o.Job.IdempotencyKey != o.Job.ID {
 			if err := e.quarantineOccurrenceLocked(path); err != nil {
 				return err
 			}
@@ -192,7 +192,7 @@ func (e *Engine) DispatchDueOccurrences(now time.Time, authorize func(commodel.J
 			pendingProbe := false
 			for _, source := range occurrences {
 				if (source.State == "pending" || source.State == "probing") && (source.JobKind == "watcher" || source.JobKind == "check") && source.Job.PrincipalID == o.Job.PrincipalID && source.Job.ContextID == o.Job.ContextID && !source.DueAt.After(now) {
-					b, err := os.ReadFile(filepath.Join(e.root, "occurrences", occurrenceID(source)+".json"))
+					b, err := e.readFile(filepath.Join(e.root, "occurrences", occurrenceID(source)+".json"))
 					var live commodel.RoutineOccurrence
 					if err == nil && json.Unmarshal(b, &live) == nil && (live.State == "pending" || live.State == "probing") {
 						pendingProbe = true

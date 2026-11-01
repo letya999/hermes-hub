@@ -614,14 +614,11 @@ func (c *ControlPlane) AuthorizeCredentials(ctx context.Context, onboardingID, n
 	if err := c.submitCredentials(onboardingID, nonce, values, lang); err != nil {
 		return err
 	}
-	if err := c.finishAuthorization(ctx, onboardingID); err != nil {
-		if latest, lerr := c.Store.onboarding(onboardingID); lerr == nil {
-			notify := latest
-			notify.Error = err.Error()
-			api.DeliverPrepareEvent(ctx, onboardingEnvelope(latest), notify, "binding-failed")
-		}
-		return fmt.Errorf("%w: %w", errCredentialSaved, err)
+	onboarding, err := c.Store.onboarding(onboardingID)
+	if err != nil {
+		return err
 	}
+	api.PostPrepareNotice(ctx, onboardingEnvelope(onboarding), onboarding, "", 0)
 	return nil
 }
 

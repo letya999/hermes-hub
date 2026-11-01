@@ -29,6 +29,37 @@ func TestRunRequiresStore(t *testing.T) {
 	}
 }
 
+func TestRunRefusesForeignInstallationWitness(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "store.json")
+	if err := toolhub.NewStore().Save(path); err != nil {
+		t.Fatal(err)
+	}
+	witness := filepath.Join(t.TempDir(), "toolhub-installation")
+	if err := os.WriteFile(witness, []byte("00ff00ff00ff00ff00ff00ff00ff00ff"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_TOOLHUB_STORE", path)
+	t.Setenv("HUB_TOOLHUB_IDENTITY_WITNESS", witness)
+	t.Setenv("HUB_RUNTIME_AUTH", strings.Repeat("a", 32))
+	t.Setenv("HUB_USER_ID", "alice")
+	t.Setenv("HUB_RUNTIME_ID", "runtime")
+	t.Setenv("HUB_CONTEXT_ID", "alice")
+	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:0")
+	t.Setenv("HUB_TOOLHIVE_ADMISSION_ENDPOINT", "")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- runWithContext(ctx) }()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "witness") {
+			t.Fatalf("startup refused for the wrong reason: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("a store foreign to the surviving witness was served")
+	}
+}
+
 func TestRunWithContextStopsOnCancel(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "store.json")
 	if err := os.WriteFile(path, []byte(`{"schema":1,"definitions":[],"connections":[],"credential_references":[],"bindings":[],"workloads":[]}`), 0600); err != nil {
@@ -57,6 +88,46 @@ func TestRunWithContextStopsOnCancel(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("server ignored cancellation")
+	}
+}
+
+func TestRunWiresDurableRestartState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "store.json")
+	if err := os.WriteFile(path, []byte(`{"schema":1,"definitions":[],"connections":[],"credential_references":[],"bindings":[],"workloads":[],"projection_revisions":{"alice\u0000alice\u0000runtime":2}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	posts := make(chan struct{}, 2)
+	supervisor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/restart-request" {
+			http.NotFound(w, r)
+			return
+		}
+		posts <- struct{}{}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer supervisor.Close()
+	t.Setenv("HUB_TOOLHUB_STORE", path)
+	t.Setenv("HUB_RUNTIME_AUTH", strings.Repeat("a", 32))
+	t.Setenv("HUB_USER_ID", "alice")
+	t.Setenv("HUB_RUNTIME_ID", "runtime")
+	t.Setenv("HUB_CONTEXT_ID", "alice")
+	t.Setenv("HUB_TOOLHUB_LISTEN", "127.0.0.1:0")
+	t.Setenv("HUB_TOOLHIVE_ADMISSION_ENDPOINT", "")
+	t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", supervisor.URL)
+	t.Setenv("HUB_COMMUNICATION_AUTH", "fixture-control")
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- runWithContext(ctx) }()
+	select {
+	case <-posts:
+	case err := <-done:
+		t.Fatalf("toolhub exited before restart: %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("pending restart revision was primed away")
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
 

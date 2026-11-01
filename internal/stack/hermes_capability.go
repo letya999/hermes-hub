@@ -112,6 +112,18 @@ func disabledToolsets(s Settings) []string {
 	return disabled
 }
 
+// managedAgentSection is the managed-mode `agent:` config block: the compiled
+// denylist plus the api_server platform-hint override. Upstream's stock hint
+// claims MEDIA: markers and non-image files are never intercepted — true for
+// a bare API caller, false behind the hub gateway, so the reviewed
+// replacement keeps the model honest about attachment delivery.
+func managedAgentSection(s Settings) M {
+	return M{
+		"disabled_toolsets": disabledToolsets(s),
+		"platform_hints":    M{"api_server": M{"replace": APIServerPlatformHint}},
+	}
+}
+
 func managedHermesConfig(s Settings) M {
 	inventory, err := ManagedCapabilityInventory()
 	if err != nil {
@@ -124,7 +136,7 @@ func managedHermesConfig(s Settings) M {
 	out := M{
 		"model":             M{"default": s.Model, "provider": "custom", "base_url": s.ModelURL, "api_key": "${OPENAI_API_KEY}"},
 		"platform_toolsets": platforms,
-		"agent":             M{"disabled_toolsets": disabledToolsets(s)},
+		"agent":             managedAgentSection(s),
 		// Hub-owned MCP endpoints render directly like the model relay: the
 		// browser sidecar is reviewed infrastructure, not a model-selectable
 		// connector. via: mcp-raw selections (organization-provided servers)

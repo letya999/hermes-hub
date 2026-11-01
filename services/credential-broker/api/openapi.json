@@ -739,12 +739,20 @@
           },
           "next_cursor": {
             "type": "integer"
+          },
+          "earliest_available": {
+            "type": "integer"
+          },
+          "gap": {
+            "type": "boolean"
           }
         },
         "additionalProperties": false,
         "required": [
           "events",
-          "next_cursor"
+          "next_cursor",
+          "earliest_available",
+          "gap"
         ]
       },
       "Error": {

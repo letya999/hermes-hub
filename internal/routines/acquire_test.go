@@ -169,9 +169,9 @@ func TestHookIntakeDrainsInbox(t *testing.T) {
 	var deliveries []commodel.Delivery
 	e.deps.EnqueueDelivery = func(d commodel.Delivery) error { deliveries = append(deliveries, d); return nil }
 	var settled [][]byte
-	e.deps.SettleEvents = func(o commodel.RoutineOccurrence, sched commodel.Schedule, body []byte, at time.Time, probeErr error, authorize func(commodel.Job) error) []commodel.Event {
+	e.deps.SettleEvents = func(o commodel.RoutineOccurrence, sched commodel.Schedule, body []byte, at time.Time, probeErr error, authorize func(commodel.Job) error) ([]commodel.Event, error) {
 		settled = append(settled, body)
-		return nil
+		return nil, nil
 	}
 	o := watchOccurrence("w-hook-1", "event", sched.Revision, env, now.Add(-time.Minute))
 	putOccurrenceState(t, e, e.root, o, "probing")
@@ -252,10 +252,10 @@ func TestHookIdleEventTickSettlesQuietly(t *testing.T) {
 	}
 	var settled [][]byte
 	var errs []error
-	e.deps.SettleEvents = func(o commodel.RoutineOccurrence, sched commodel.Schedule, body []byte, at time.Time, probeErr error, authorize func(commodel.Job) error) []commodel.Event {
+	e.deps.SettleEvents = func(o commodel.RoutineOccurrence, sched commodel.Schedule, body []byte, at time.Time, probeErr error, authorize func(commodel.Job) error) ([]commodel.Event, error) {
 		settled = append(settled, body)
 		errs = append(errs, probeErr)
-		return nil
+		return nil, nil
 	}
 	o := watchOccurrence("w-hook-evt-idle", "event", sched.Revision, env, now.Add(-time.Minute))
 	putOccurrenceState(t, e, e.root, o, "probing")

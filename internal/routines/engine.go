@@ -8,6 +8,7 @@ package routines
 
 import (
 	"context"
+	"os"
 	"sync"
 	"time"
 
@@ -55,6 +56,18 @@ type Deps struct {
 	// WriteJSONAtomic durably replaces a JSON file — the owner owns the
 	// tmp+fsync+rename primitive. Locked.
 	WriteJSONAtomic func(path string, value any) error
+	// The owner accounts every filesystem mutation, including ingress hook bytes.
+	WriteBytes func(path string, body []byte) error
+	MkdirAll   func(path string, lifecycle bool) error
+	Rename     func(from, to string) error
+	Remove     func(path string) error
+	// ReadFile, ReadDir and Lstat read durable records; nil falls back to
+	// the os primitive so the owner can store records in an embedded
+	// database instead of the filesystem (ADR-0091).
+	ReadFile func(path string) ([]byte, error)
+	ReadDir  func(dir string) ([]string, error)
+	Lstat    func(path string) (os.FileInfo, error)
+
 	// Signal nudges the owner's wakeups after an enqueue. Locked.
 	Signal func()
 	// ChannelFor resolves a provider adapter for occurrence validation and
@@ -65,7 +78,8 @@ type Deps struct {
 	ProbeScript func() ProbeScriptFunc
 	// SettleEvents settles an "event"-kind occurrence into the owner's event
 	// plane. It runs WITHOUT the engine lock — the owner re-locks internally.
-	SettleEvents func(o commodel.RoutineOccurrence, schedule commodel.Schedule, body []byte, now time.Time, probeErr error, authorize func(commodel.Job) error) []commodel.Event
+	ResumeEvents func(o commodel.RoutineOccurrence, schedule commodel.Schedule, now time.Time, authorize func(commodel.Job) error) (bool, error)
+	SettleEvents func(o commodel.RoutineOccurrence, schedule commodel.Schedule, body []byte, now time.Time, probeErr error, authorize func(commodel.Job) error) ([]commodel.Event, error)
 	// LangOf resolves an occurrence owner's workspace language for composed
 	// delivery text; nil falls back to the hub default.
 	LangOf func(principal string) locale.Lang
@@ -121,4 +135,58 @@ func (e *Engine) probeScript() ProbeScriptFunc {
 		return nil
 	}
 	return e.deps.ProbeScript()
+}
+
+func (e *Engine) mkdirOwned(path string, lifecycle bool) error {
+	if e.deps.MkdirAll != nil {
+		return e.deps.MkdirAll(path, lifecycle)
+	}
+	return os.MkdirAll(path, 0700)
+}
+func (e *Engine) renameOwned(from, to string) error {
+	if e.deps.Rename != nil {
+		return e.deps.Rename(from, to)
+	}
+	return os.Rename(from, to)
+}
+func (e *Engine) removeOwned(path string) error {
+	if e.deps.Remove != nil {
+		return e.deps.Remove(path)
+	}
+	return os.Remove(path)
+}
+func (e *Engine) writeBytes(path string, body []byte) error {
+	if e.deps.WriteBytes != nil {
+		return e.deps.WriteBytes(path, body)
+	}
+	return os.WriteFile(path, body, 0600)
+}
+func (e *Engine) readFile(path string) ([]byte, error) {
+	if e.deps.ReadFile != nil {
+		return e.deps.ReadFile(path)
+	}
+	return os.ReadFile(path)
+}
+func (e *Engine) readDir(dir string) ([]string, error) {
+	if e.deps.ReadDir != nil {
+		return e.deps.ReadDir(dir)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		names = append(names, entry.Name())
+	}
+	return names, nil
+}
+func (e *Engine) lstat(path string) (os.FileInfo, error) {
+	if e.deps.Lstat != nil {
+		return e.deps.Lstat(path)
+	}
+	return os.Lstat(path)
 }

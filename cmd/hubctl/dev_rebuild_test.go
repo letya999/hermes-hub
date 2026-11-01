@@ -66,6 +66,63 @@ func TestDevServiceRoleBases(t *testing.T) {
 	}
 }
 
+// ADR-0087: credential-broker links SQLCipher through CGO, so dev-rebuild must
+// compile it inside the pinned toolchain image, not on the host with
+// CGO_ENABLED=0 — a stub binary would silently serve no encrypted store.
+func TestDevRebuildBrokerBuildsInSqlcipherToolchain(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "space")
+	if err := stack.InitEnvironment(dir, "owner", "dev"); err != nil {
+		t.Fatal(err)
+	}
+	s, err := stack.Read(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Model, s.ModelURL = "test", "http://model.invalid/v1"
+	s.Ingress = append(s.Ingress, "telegram")
+	if err := stack.WriteSpace(dir, s); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "secrets.dev.env"), []byte("OPENAI_API_KEY=fake-for-test\nTELEGRAM_BOT_TOKEN=synthetic-bot\nTELEGRAM_ALLOWED_USERS=11\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	log := filepath.Join(bin, "calls")
+	dockerName, goName := "docker", "go"
+	dockerScript := "#!/bin/sh\nprintf 'docker %s\\n' \"$*\" >> \"$HUB_TEST_LOG\"\ncase \"$*\" in *Architecture*) echo amd64;; *.Id*) echo sha256:old;; esac\n"
+	goScript := "#!/bin/sh\nprintf 'go %s GOOS=%s GOARCH=%s CGO_ENABLED=%s\\n' \"$*\" \"$GOOS\" \"$GOARCH\" \"$CGO_ENABLED\" >> \"$HUB_TEST_LOG\"\nexit 0\n"
+	if runtime.GOOS == "windows" {
+		dockerName, goName = "docker.cmd", "go.cmd"
+		dockerScript = "@echo off\r\n>>\"%HUB_TEST_LOG%\" echo docker %*\r\necho %* | findstr /C:\"Architecture\" >nul && echo amd64\r\necho %* | findstr /C:\".Id\" >nul && echo sha256:old\r\nexit /b 0\r\n"
+		goScript = "@echo off\r\n>>\"%HUB_TEST_LOG%\" echo go %* GOOS=%GOOS% GOARCH=%GOARCH% CGO_ENABLED=%CGO_ENABLED%\r\nexit /b 0\r\n"
+	}
+	for name, script := range map[string]string{dockerName: dockerScript, goName: goScript} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("HUB_TEST_LOG", log)
+	if err := runDevRebuild(context.Background(), []string{"--dir", dir, "--root", "../..", "credential-broker"}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := string(data)
+	for _, want := range []string{"--target build", "deploy" + string(filepath.Separator) + "Dockerfile", "libsqlite3", "/src/services/credential-broker", "./cmd/credential-broker"} {
+		if !strings.Contains(calls, want) {
+			t.Fatalf("missing %s in %s", want, calls)
+		}
+	}
+	for _, line := range strings.Split(calls, "\n") {
+		if strings.HasPrefix(line, "go build") && strings.Contains(line, "credential-broker") {
+			t.Fatalf("broker compiled on host without CGO toolchain: %s", line)
+		}
+	}
+}
+
 func TestDevRebuildCompilesAndStartsOnlySelectedService(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "space")
 	if err := stack.InitEnvironment(dir, "owner", "dev"); err != nil {

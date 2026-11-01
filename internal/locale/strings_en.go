@@ -2,6 +2,13 @@ package locale
 
 func init() {
 	register(LangEN, map[string]string{
+		"hubctl.audit-rollover-usage":   "Usage: hubctl audit rollover --ledger <absolute path> [--apply --digest <sha256:...>]",
+		"hubctl.audit-rollover-ledger":  "Path to the stopped ToolHub legacy audit",
+		"hubctl.audit-rollover-apply":   "Apply the verified rollover; default is dry-run",
+		"hubctl.audit-rollover-digest":  "Plan digest required with --apply",
+		"hubctl.audit-rollover-stale":   "The legacy audit plan is stale; run the dry-run again.",
+		"hubctl.audit-rollover-invalid": "The legacy audit is invalid or cannot be rolled over safely.",
+		"hubctl.audit-rollover-failed":  "The legacy audit rollover failed; inspect the offline state before retrying.",
 		// Language picker and /language.
 		"lang.choose":   "Choose your language:",
 		"lang.saved":    "Language set: %s.",
@@ -168,9 +175,12 @@ func init() {
 		"chat.approve-usage":     "Use /approve <job-id> <request-id> <choice>.",
 		"chat.approve-denied":    "Request denied: confirmation unavailable.",
 		"chat.approve-saved":     "Confirmation response saved.",
+		"chat.confirm-button":    "Confirm connection and permissions",
+		"chat.confirm-saved":     "Connection and permissions confirmed.",
 		"chat.approve-scope":     "Request denied: job or confirmation not available in this conversation.",
 		"chat.creds-usage":       "Use /credentials <request-id> <code from the Credential Broker form>.",
 		"chat.creds-saved":       "Credential Broker confirmation saved. Return to Hermes and request the connection status.",
+		"secret.uncertain":       "Status: uncertain. Check the original operation before repeating the write.",
 		"chat.creds-expired":     "Confirmation rejected or expired. Request a new connection link.",
 		"chat.started":           "Done. You are connected to your Hermes space.",
 		"chat.cancel-usage":      "Use /cancel <job-id>.",
@@ -365,6 +375,10 @@ func init() {
 		"page.done-oauth-body":          "You can return to the chat. Calendar access was verified.",
 		"page.done-device-body":         "Device authorized. No need to go back to the chat and write \"done\".",
 		"page.confirm-title":            "Confirm MCP",
+		"page.confirm-in-chat":          "Confirm this action in the original chat.",
+		"page.confirm-in-chat-for":      "Server %s is awaiting confirmation in the original chat. This page shows status only.",
+		"page.confirm-permissions":      "Requested permissions: %s.",
+		"page.confirm-effects":          "Affected resources: %s.",
 		"page.confirm-h1":               "Confirm connection",
 		"page.confirm-body":             "Server %s will be connected and get access to the saved data.",
 		"page.confirm-btn":              "Confirm connection",

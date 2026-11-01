@@ -184,6 +184,7 @@ func TestControlErrorPathsGrantsAndOAuthCallback(t *testing.T) {
 	gateway := &Gateway{Store: store, Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 		return api.BackendResult{Text: "ok"}, nil
 	}), Tokens: map[string]identity.Envelope{aliceToken: aliceAuth()}, Control: control}
+	attachGatewayAudit(t, gateway)
 	handler, err := gateway.Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -503,7 +504,7 @@ func (c *ControlPlane) publicationForCheck(definition api.ToolDefinition) api.De
 func TestStatusBodyExposesNextAction(t *testing.T) {
 	control := &ControlPlane{Store: NewStore(), Listen: "127.0.0.1:0"}
 	confirm := control.statusBody(api.Onboarding{OnboardingID: "onboard-1", Phase: api.PhaseAwaitingConfirm, ConfirmationNonce: "nonce-1"}, false)
-	if confirm["next_action"] != "confirm" || confirm["confirmation_sent"] != true {
+	if confirm["next_action"] != "await_user_confirmation" || confirm["confirmation_sent"] != true {
 		t.Fatalf("awaiting-confirm status lacks next step: %v", confirm)
 	}
 	enable := control.statusBody(api.Onboarding{OnboardingID: "onboard-1", Phase: api.PhaseConfirmed}, false)

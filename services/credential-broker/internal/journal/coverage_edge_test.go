@@ -289,7 +289,7 @@ func TestRecoveryAnchorRejectsUnsafeState(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(anchor, "initialized"), make([]byte, 256), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if initialized, err := a.initialized(); err == nil || initialized {
+	if marker, err := a.marker(); err == nil || marker != "" {
 		t.Fatal("oversized initialization marker accepted")
 	}
 	if err := os.Remove(filepath.Join(anchor, "initialized")); err != nil {

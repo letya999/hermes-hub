@@ -567,3 +567,40 @@ func TestTelegramAssignmentNormalizesOnlyPublicChatReferences(t *testing.T) {
 		t.Fatal("invite link was treated as a public chat")
 	}
 }
+
+func TestWakeReservationIsIdempotentAcrossDayAndHonorsPause(t *testing.T) {
+	e := testEngine(t)
+	now := time.Now().UTC()
+	a := commodel.Assignment{AssignmentID: "wake-reservation", Revision: 1, Envelope: assignmentCaller(), State: "active", Plan: &commodel.AssignmentPlan{Revision: 1}, AppliedRev: 1, Grants: commodel.AssignmentGrants{MaxWakesPerDay: 1}, CreatedAt: now, UpdatedAt: now}
+	if err := os.MkdirAll(filepath.Join(e.root, "assignments"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.atomicJSON(e.AssignmentPath(a.AssignmentID), a); err != nil {
+		t.Fatal(err)
+	}
+	first, firstErr := e.ReserveAssignmentWakeLocked(a.AssignmentID, "operation-one", now, 1)
+	second, secondErr := e.ReserveAssignmentWakeLocked(a.AssignmentID, "operation-one", now.Add(24*time.Hour), 1)
+	if !first || !second || firstErr != nil || secondErr != nil {
+		t.Fatal("same operation charged or rejected across day rollover")
+	}
+	stored, err := e.loadAssignmentLocked(a.AssignmentID)
+	if err != nil || stored.Checkpoint.WakesToday != 1 || stored.Checkpoint.LLMCalls != 1 {
+		t.Fatal("reservation charged twice", err)
+	}
+	stored.State = "paused"
+	if err := e.atomicJSON(e.AssignmentPath(a.AssignmentID), stored); err != nil {
+		t.Fatal(err)
+	}
+	if allowed, _ := e.ReserveAssignmentWakeLocked(a.AssignmentID, "operation-one", now, 1); allowed {
+		t.Fatal("idempotency bypassed pause")
+	}
+	if err := e.SettleAssignmentWakeLocked(a.AssignmentID, "operation-one", 2); err == nil {
+		t.Fatal("wrong generation settled reservation")
+	}
+	if err := e.SettleAssignmentWakeLocked(a.AssignmentID, "operation-one", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.SettleAssignmentWakeLocked(a.AssignmentID, "operation-one", 1); err != nil {
+		t.Fatal("idempotent settle", err)
+	}
+}

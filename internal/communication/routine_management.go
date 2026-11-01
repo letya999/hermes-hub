@@ -190,7 +190,7 @@ func (s *Spool) GetRoutine(id string, caller identity.Envelope) (RoutineCard, er
 	state := routineState(item)
 	if os.IsNotExist(err) {
 		var body []byte
-		body, err = os.ReadFile(s.cancelPath(id)) // #nosec G703 -- id is sanitized by commodel.FileID
+		body, err = s.fsys.ReadFile(s.cancelPath(id)) // #nosec G703 -- id is sanitized by commodel.FileID
 		if err == nil {
 			err = json.Unmarshal(body, &item)
 			state = "deleted"
@@ -332,7 +332,7 @@ func (s *Spool) editRoutine(id string, caller identity.Envelope, patch map[strin
 	item.BlockedReason, item.BlockedAt = "", time.Time{}
 	item.Revision++
 	item.UpdatedAt = now
-	if err := atomicJSON(s.schedulePath(id), item); err != nil {
+	if err := s.writeJSON(s.schedulePath(id), item); err != nil {
 		return Schedule{}, err
 	}
 	return item, nil

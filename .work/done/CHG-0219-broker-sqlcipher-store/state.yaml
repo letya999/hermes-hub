@@ -1,0 +1,46 @@
+schema: 1
+change: CHG-0219
+title: "Таблицы состояния и постраничный audit Broker"
+status: done
+branch: chore/storage-reliability-dev-acceptance
+updated: "2026-11-01"
+phase: all-slices-live
+adr: ADR-0087
+spec: SPEC-0087
+requirements: [R3]
+depends_on: [CHG-0215, CHG-0218]
+workstream: storage-reliability-mvp
+github_milestone: null
+github_issue: null
+design_status: accepted
+implementation_status: done
+readiness: normalized_tables_live_on_dev
+slices:
+  S195.1-transactional-state: done
+  S195.2-events-retention: done
+  S195.3-import-and-scale: done
+validation:
+  documents: passed
+  planning_package: passed
+  planning_just_check: failed
+  just_check: not_run
+  module_check: passed
+  security: not_run
+  docker_check: passed
+  red_team: not_started
+  live_acceptance: not_started
+evidence:
+  - "../CHG-0218-broker-sqlcipher-proof/gate-result.md"
+  - "S195.1 live: dev store normalized via `store-normalize` (2026-11-01); reopen probe: normalized=true, 415 state rows (contract 27, credential 42, grant 104, request 110, session 122, state 10), audit paginated; broker serves /v1/leases + /v1/runtime at ~30ms with marker staying armed across live commits."
+  - "S195.2 (2026-11-01): bounded hot audit cap gates admission as visible ErrRetentionFull/HTTP 507 before the transaction without poisoning the journal; `store-retain` exports the hot prefix into identity-sealed .seal + HMAC manifest, verifies existing archives instead of overwriting, prunes only under --destroy in one tx across both legs and persists audit_floor; ReadAuditArchive checks identity, manifest HMAC, archive+plaintext digests, row/byte counts and range; /v1/events reports earliest_available+gap for expired cursors; module suite green in pinned SQLCipher image (18 packages)."
+  - "S195.2 live dev (2026-11-01): dev broker config set audit_hot_max_bytes=64KiB → restart looped on `audit retention full` (live admission stop, no silent delete); `store-retain` on the stopped service exported the real accumulated audit: 362,711 rows / 121,467,337 bytes into audit-1-362711.seal + manifest (pruned:false, over_cap:true); --destroy pass verified the existing archive and pruned to HotBytes=0 with audit_floor=362712; cap raised to 16MiB, broker healthy; /v1/events?after=0 answered earliest_available=362712, gap=true, next_cursor=362716 with post-floor live traffic (broker.started + real hub-media lease acquire/use/materialize/release at 15:56:47) continuing monotonically past the floor."
+  - "S195.3 scale (2026-11-01, pinned image, single encrypted store): 100 real-path appends ~12ms/commit (durable tx+anchor cost); importer-shaped bulk seed 10k=427ms, 100k=828ms, 1M=5.65s; AuditPage tail read flat ~0.4ms at 10k/100k/1M; working set flat (few MB alloc at every mark); ledger.db 3/30/300MB; reopen at 1M rows 224ms (keyed state, no replay); full destructive retention pass on 1M rows/247MB = 28.3s end-to-end (seal+verify+one-tx prune). Bounded working set confirmed."
+remaining:
+  - "Normalized schema shipped: state(kind,id,seq,body) keyed current state, audit(seq,kind,principal,context,body) paginated, meta marker; atomic aux writes on every commit; AppendWith/normalize pass idempotent; raw append degrades Normalized() until repaired."
+  - "Journal no longer retains the SQL record chain in memory; Records() streams from the table."
+  - "store-normalize + store-retain CLI wired for replicated + single layouts."
+limitations:
+  - "Retention is operator-invoked (`store-retain`); the bounded background cleaner and object lifecycle GC stay with CHG-0220."
+  - "Audit retention enforces a byte budget; an age-based budget is not wired (no per-row timestamp column on audit)."
+  - "Physical .db files do not shrink after audit prune — the records chain keeps the full hash history; file rotation remains a CHG-0220 follow-up."
+  - "Retention config is optional; the dev stack runs without a configured cap until ops sets audit_hot_max_bytes + audit_archive_dir."

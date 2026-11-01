@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -43,11 +44,11 @@ func testManager(t *testing.T, p Provider) (*Manager, *audit.Ledger) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := NewManager(cfg, ManagerOptions{
+	m := NewManager(cfg, managerOptions(t, ManagerOptions{
 		Provider: p,
 		Auth:     identity.Envelope{PrincipalID: "alice", ContextID: "user:alice", RuntimeID: "rt-1", PolicyVersion: "pol-1"},
 		Ledger:   ledger,
-	})
+	}))
 	return m, ledger
 }
 
@@ -83,6 +84,7 @@ func TestManagerOpenClose(t *testing.T) {
 		t.Fatalf("list after close: %d", got)
 	}
 	events, err := ledger.List("alice")
+	events = completedAudit(events)
 	if err != nil || len(events) != 2 {
 		t.Fatalf("audit: %v %d", err, len(events))
 	}
@@ -108,7 +110,7 @@ endpoints:
 		t.Fatal(err)
 	}
 	p := &fakeProvider{}
-	m := NewManager(cfg, ManagerOptions{Provider: p})
+	m := NewManager(cfg, managerOptions(t, ManagerOptions{Provider: p}))
 	ctx := context.Background()
 	if _, err := m.Open(ctx, "a"); err != nil {
 		t.Fatalf("open a: %v", err)
@@ -133,7 +135,8 @@ func TestManagerNoProviderFailsClosed(t *testing.T) {
 		t.Fatalf("no provider must fail closed: %v", err)
 	}
 	events, _ := ledger.List("alice")
-	if len(events) != 1 || events[0].Outcome != "denied" {
+	events = completedAudit(events)
+	if len(events) != 1 || events[0].Outcome != "unavailable" {
 		t.Fatalf("audit: %+v", events)
 	}
 }
@@ -141,14 +144,15 @@ func TestManagerNoProviderFailsClosed(t *testing.T) {
 func TestManagerProviderFailureAudited(t *testing.T) {
 	p := &fakeProvider{failErr: errors.New("admission refused")}
 	m, ledger := testManager(t, p)
-	if _, err := m.Open(context.Background(), "demo"); !errors.Is(err, ErrUnavailable) {
+	if _, err := m.Open(context.Background(), "demo"); !errors.Is(err, audit.ErrUncertain) {
 		t.Fatalf("provider failure: %v", err)
 	}
 	if len(m.List()) != 0 {
 		t.Fatal("failed open left a tunnel")
 	}
 	events, _ := ledger.List("alice")
-	if len(events) != 1 || events[0].Outcome != "failed" {
+
+	if len(events) != 1 || events[0].Phase != "admitted" || events[0].Authorization != "allow" || events[0].Execution != "unknown" {
 		t.Fatalf("audit: %+v", events)
 	}
 }
@@ -181,27 +185,28 @@ func TestManagerReapLifetime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := NewManager(cfg, ManagerOptions{
+	m := NewManager(cfg, managerOptions(t, ManagerOptions{
 		Provider: p,
 		Auth:     identity.Envelope{PrincipalID: "alice"},
 		Ledger:   ledger,
 		Now:      func() time.Time { return current },
-	})
+	}))
 	ctx := context.Background()
 	if _, err := m.Open(ctx, "demo"); err != nil {
 		t.Fatal(err)
 	}
-	if got := m.Reap(ctx); len(got) != 0 {
+	if got, err := m.Reap(ctx); len(got) != 0 || err != nil {
 		t.Fatalf("reaped early: %v", got)
 	}
 	current = now.Add(cfg.Lifetime() + time.Second)
-	if got := m.Reap(ctx); len(got) != 1 || got[0] != "demo" {
+	if got, err := m.Reap(ctx); err != nil || len(got) != 1 || got[0] != "demo" {
 		t.Fatalf("reap: %v", got)
 	}
 	if len(p.closed) != 1 || len(m.List()) != 0 {
 		t.Fatalf("post-reap: closed=%v list=%v", p.closed, m.List())
 	}
 	events, _ := ledger.List("alice")
+	events = completedAudit(events)
 	last := events[len(events)-1]
 	if last.Outcome != "close" {
 		t.Fatalf("reap receipt: %+v", last)
@@ -211,21 +216,22 @@ func TestManagerReapLifetime(t *testing.T) {
 func TestManagerReapsExpiredInBackground(t *testing.T) {
 	p := &fakeProvider{}
 	now := time.Now()
-	current := now
+	var current atomic.Int64
+	current.Store(now.UnixNano())
 	cfg, err := Load(writeConfig(t, validSishYAML))
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := NewManager(cfg, ManagerOptions{
+	m := NewManager(cfg, managerOptions(t, ManagerOptions{
 		Provider:     p,
-		Now:          func() time.Time { return current },
+		Now:          func() time.Time { return time.Unix(0, current.Load()) },
 		ReapInterval: 20 * time.Millisecond,
-	})
+	}))
 	defer m.Shutdown()
 	if _, err := m.Open(context.Background(), "demo"); err != nil {
 		t.Fatal(err)
 	}
-	current = now.Add(cfg.Lifetime() + time.Second)
+	current.Store(now.Add(cfg.Lifetime() + time.Second).UnixNano())
 	deadline := time.Now().Add(3 * time.Second)
 	for len(m.List()) != 0 {
 		if time.Now().After(deadline) {
@@ -250,26 +256,27 @@ func TestManagerReapCloseFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := NewManager(cfg, ManagerOptions{
+	m := NewManager(cfg, managerOptions(t, ManagerOptions{
 		Provider: p,
 		Auth:     identity.Envelope{PrincipalID: "alice"},
 		Ledger:   ledger,
 		Now:      func() time.Time { return current },
-	})
+	}))
 	ctx := context.Background()
 	if _, err := m.Open(ctx, "demo"); err != nil {
 		t.Fatal(err)
 	}
 	current = now.Add(cfg.Lifetime() + time.Second)
-	if got := m.Reap(ctx); len(got) != 0 {
+	if got, err := m.Reap(ctx); len(got) != 0 || !errors.Is(err, audit.ErrUncertain) {
 		t.Fatalf("failed close reported closed: %v", got)
 	}
 	if _, err := m.Status("demo"); err != nil {
 		t.Fatalf("record must stay visible on incomplete cleanup: %v", err)
 	}
 	events, _ := ledger.List("alice")
+
 	last := events[len(events)-1]
-	if last.Outcome != "failed" {
+	if last.Phase != "admitted" || last.Authorization != "allow" || last.Execution != "unknown" {
 		t.Fatalf("close-failure receipt: %+v", last)
 	}
 }
@@ -284,7 +291,33 @@ func TestManagerOpenUnknownDenied(t *testing.T) {
 		t.Fatalf("provider invoked: %v", p.opened)
 	}
 	events, err := ledger.List("alice")
+	events = completedAudit(events)
 	if err != nil || len(events) != 1 || events[0].Outcome != "denied" {
 		t.Fatalf("audit: %v %+v", err, events)
 	}
+}
+
+func managerOptions(t *testing.T, opts ManagerOptions) ManagerOptions {
+	t.Helper()
+	if opts.Auth.PrincipalID == "" {
+		opts.Auth.PrincipalID = "alice"
+	}
+	if opts.Ledger == nil {
+		ledger, err := audit.Open(filepath.Join(t.TempDir(), "audit.jsonl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		opts.Ledger = ledger
+	}
+	return opts
+}
+
+func completedAudit(events []audit.Event) []audit.Event {
+	var completed []audit.Event
+	for _, event := range events {
+		if event.Phase != "admitted" {
+			completed = append(completed, event)
+		}
+	}
+	return completed
 }

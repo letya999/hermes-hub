@@ -4,9 +4,20 @@ Chain: [ADR-0088](../../../docs/adr/ADR-0088-bounded-control-journals.md) ->
 [SPEC-0088 R1](../../../specs/active/SPEC-0088-bounded-control-journals.md) -> этот plan -> state.yaml.
 
 Workstream: Storage reliability MVP (local planning; GitHub records not created).
-Дизайн принят 2026-10-28; implementation not started.
+Дизайн принят 2026-10-28; код импортирован 2026-10-31 в
+`chore/storage-reliability-integration`. Приёмка продолжается
+(см. evidence.md и CHG-0237).
 Previous: CHG-0215. Next: CHG-0217.
 Hard dependencies: нет.
+
+## Amendment 2026-10-31 (substrate)
+
+[ADR-0091](../../../docs/adr/ADR-0091-root-services-sqlite-storage.md) /
+[SPEC-0090](../../../specs/active/SPEC-0090-root-services-sqlite.md) по
+инструкции владельца переносят substrate этого CHG с typed directories на
+records-таблицы `spool.db` (Communication). Semantic requirements SPEC-0088
+R1 (cursor не terminal history, quarantine unknown, crash-safe layout
+migration) не меняются; anchors ниже дополняются `spooldb` слоем.
 
 ## Goal
 

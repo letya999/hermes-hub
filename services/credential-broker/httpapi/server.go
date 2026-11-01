@@ -355,6 +355,8 @@ func fail(w http.ResponseWriter, e error) {
 		status, code = 410, "expired"
 	case errors.Is(e, broker.ErrReauthorize):
 		status, code = 409, "reauthorize_required"
+	case errors.Is(e, broker.ErrRetentionFull):
+		status, code = 507, "retention_full"
 	}
 	writeJSON(w, status, v1.Error{Code: code})
 }

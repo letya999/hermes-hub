@@ -787,11 +787,13 @@ func (c *ControlPlane) HandleOAuthCallback(auth identity.Envelope, onboardingID,
 	onboarding.Phase = api.PhaseAwaitingConfirm
 	onboarding.ConfirmationNonce = api.RandomNonce()
 	onboarding.ConfirmationExpires = c.now().Add(c.ttl())
+	onboarding.ConfirmationUsed = false
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return err
 	}
-	return c.finishAuthorization(context.Background(), onboardingID)
+	api.PostPrepareNotice(context.Background(), auth, onboarding, "", 0)
+	return nil
 }
 
 // completeDeviceAuth finishes an onboarding whose user authorized through
@@ -805,18 +807,29 @@ func (c *ControlPlane) completeDeviceAuth(ctx context.Context, onboarding api.On
 	onboarding.Phase = api.PhaseAwaitingConfirm
 	onboarding.ConfirmationNonce = api.RandomNonce()
 	onboarding.ConfirmationExpires = c.now().Add(c.ttl())
+	onboarding.ConfirmationUsed = false
 	onboarding.Revision++
 	if err := c.Store.PutOnboarding(onboarding); err != nil {
 		return err
 	}
-	return c.finishAuthorization(ctx, onboarding.OnboardingID)
+	api.PostPrepareNotice(ctx, onboardingEnvelope(onboarding), onboarding, "", 0)
+	return nil
 }
+
+type onboardingLookupError string
+
+func (e onboardingLookupError) Error() string      { return api.ErrNotFound.Error() + ": onboarding" }
+func (e onboardingLookupError) Unwrap() error      { return api.ErrNotFound }
+func (e onboardingLookupError) ReasonCode() string { return string(e) }
 
 func (c *ControlPlane) resolveOnboarding(auth identity.Envelope, args map[string]any) (api.Onboarding, error) {
 	if id := api.ArgString(args, "onboarding_id"); id != "" {
 		onboarding, err := c.Store.OnboardingFor(auth, id)
 		if err != nil {
-			return api.Onboarding{}, err
+			if errors.Is(err, api.ErrUnauthorized) {
+				return api.Onboarding{}, onboardingLookupError("scope")
+			}
+			return api.Onboarding{}, onboardingLookupError("unknown")
 		}
 		// Callers may hold a preparing stub that was superseded by the real
 		// record (patch bump or a reviewed definition id): follow the pointer.
@@ -851,8 +864,16 @@ func (c *ControlPlane) resolveOnboarding(auth identity.Envelope, args map[string
 	c.Store.mu.RLock()
 	defer c.Store.mu.RUnlock()
 	var matches []api.Onboarding
+	var versionMismatch bool
+	var terminal bool
 	for _, onboarding := range c.Store.onboardings {
-		if onboarding.PrincipalID != auth.PrincipalID || onboarding.ContextID != auth.ContextID || onboarding.RuntimeID != auth.RuntimeID || onboarding.PolicyVersion != auth.PolicyVersion || onboarding.Phase == api.PhaseRemoved {
+		if onboarding.PrincipalID != auth.PrincipalID || onboarding.ContextID != auth.ContextID || onboarding.RuntimeID != auth.RuntimeID || onboarding.PolicyVersion != auth.PolicyVersion {
+			continue
+		}
+		if onboarding.Phase == api.PhaseRemoved {
+			if definitionID != "" && onboarding.DefinitionID == definitionID && (version == "" || onboarding.DefinitionVersion == version) || selector != "" && onboarding.DefinitionID == selector {
+				terminal = true
+			}
 			continue
 		}
 		if selector != "" {
@@ -862,13 +883,22 @@ func (c *ControlPlane) resolveOnboarding(auth identity.Envelope, args map[string
 				continue
 			}
 		} else if onboarding.DefinitionID != definitionID || version != "" && onboarding.DefinitionVersion != version {
+			if onboarding.DefinitionID == definitionID && version != "" && onboarding.DefinitionVersion != version {
+				versionMismatch = true
+			}
 			continue
 		}
 		matches = append(matches, onboarding)
 	}
 	switch len(matches) {
 	case 0:
-		return api.Onboarding{}, fmt.Errorf("%w: onboarding", api.ErrNotFound)
+		if terminal {
+			return api.Onboarding{}, onboardingLookupError("terminal")
+		}
+		if versionMismatch {
+			return api.Onboarding{}, onboardingLookupError("version")
+		}
+		return api.Onboarding{}, onboardingLookupError("unknown")
 	case 1:
 		return matches[0], nil
 	}

@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -9,11 +10,12 @@ import (
 	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -108,7 +110,14 @@ type ExecuteResponse struct {
 	Voice string `json:"voice,omitempty"`
 }
 
-type runtimeHTTP struct{}
+type runtimeHTTP struct{ restartMu sync.Mutex }
+
+type restartMarker struct {
+	OperationID string `json:"operation_id"`
+	Reason      string `json:"reason"`
+	Revision    uint64 `json:"revision"`
+	Generation  string `json:"generation"`
+}
 
 func runtimeHandler() http.Handler {
 	return &runtimeHTTP{}
@@ -297,17 +306,8 @@ func (s *runtimeHTTP) executePersistentEvents(ctx context.Context, request Execu
 	if err := s.ensureBootstrap(ctx, request); err != nil {
 		return ExecuteResponse{Status: "failed", LastEvent: "bootstrap.not_ready"}, err
 	}
-	first, sawTool := s.admitAndObserve(ctx, request, emit)
-	if errors.Is(first.err, errAdmissionReceipt) || !retryColdWake(first.response, first.err, first.elapsed, sawTool) {
-		return first.response, first.err
-	}
-	log.Printf("runtime retrying cold-start job=%s status=%s", request.JobID, first.response.Status)
-	retry := request
-	if retry.IdempotencyKey != "" {
-		retry.IdempotencyKey += ":wake"
-	}
-	second, _ := s.admitAndObserve(ctx, retry, emit)
-	return second.response, second.err
+	// Missing tool events are not proof that an admitted run had no effects.
+	return s.admitHermesRun(ctx, request, emit)
 }
 
 func decodeExecuteRequest(w http.ResponseWriter, r *http.Request) (ExecuteRequest, error) {
@@ -390,11 +390,87 @@ func (s *runtimeHTTP) restartRequest(w http.ResponseWriter, r *http.Request) {
 		writeRuntimeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	if err := os.WriteFile(filepath.Join(state, "restart.request"), nil, 0600); err != nil {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 4097))
+	if err != nil || len(body) > 4096 {
+		writeRuntimeError(w, http.StatusBadRequest, "invalid restart marker")
+		return
+	}
+	s.restartMu.Lock()
+	defer s.restartMu.Unlock()
+	if info, err := os.Lstat(filepath.Join(state, "restart.request")); err == nil && !info.Mode().IsRegular() {
+		writeRuntimeError(w, http.StatusInternalServerError, "restart state unavailable")
+		return
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		writeRuntimeError(w, http.StatusInternalServerError, "restart state unavailable")
+		return
+	}
+	if len(body) != 0 {
+		var marker restartMarker
+		decoder := json.NewDecoder(bytes.NewReader(body))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&marker) != nil || decoder.Decode(new(any)) != io.EOF || !identity.ValidID(marker.OperationID) || marker.Reason != "tool_projection_change" || marker.Revision == 0 || marker.Generation == "" {
+			writeRuntimeError(w, http.StatusBadRequest, "invalid restart marker")
+			return
+		}
+		if marker.Generation != os.Getenv("HUB_RUNTIME_GENERATION") {
+			writeRuntimeError(w, http.StatusConflict, "runtime generation changed")
+			return
+		}
+		previous, err := os.ReadFile(filepath.Join(state, "restart.request"))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			writeRuntimeError(w, http.StatusInternalServerError, "restart state unavailable")
+			return
+		}
+		if len(previous) != 0 {
+			var existing restartMarker
+			if json.Unmarshal(previous, &existing) != nil {
+				writeRuntimeError(w, http.StatusInternalServerError, "restart state unavailable")
+				return
+			}
+			if existing.Generation != marker.Generation || existing.Revision > marker.Revision || existing.Revision == marker.Revision && existing.OperationID != marker.OperationID {
+				writeRuntimeError(w, http.StatusConflict, "restart operation stale")
+				return
+			}
+			if existing == marker {
+				writeRuntimeJSON(w, http.StatusOK, map[string]bool{"scheduled": true, "duplicate": true})
+				return
+			}
+		}
+	}
+	if err := writeRestartMarker(filepath.Join(state, "restart.request"), body, (*os.File).Sync, syncRuntimeDirectory); err != nil {
 		writeRuntimeError(w, http.StatusInternalServerError, "restart marker unavailable")
 		return
 	}
 	writeRuntimeJSON(w, http.StatusOK, map[string]bool{"scheduled": true})
+}
+
+func writeRestartMarker(path string, body []byte, syncFile func(*os.File) error, syncDir func(string) error) error {
+	f, err := os.CreateTemp(filepath.Dir(path), ".restart-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	_, err = f.Write(body)
+	if err == nil {
+		err = syncFile(f)
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		err = os.Rename(f.Name(), path)
+		if err == nil || runtime.GOOS != "windows" || time.Now().After(deadline) {
+			if err == nil {
+				err = syncDir(filepath.Dir(path))
+			}
+			return err
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 func (s *runtimeHTTP) selfEnv(w http.ResponseWriter, r *http.Request) {

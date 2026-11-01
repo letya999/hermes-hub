@@ -1,7 +1,11 @@
 package toolhub
 
 import (
+	"bytes"
+	"context"
 	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +23,9 @@ import (
 func (s *Store) lockCapabilityAdmission() (func(), error) {
 	if s.path == "" {
 		return func() {}, nil
+	}
+	if s.db != nil {
+		return s.lockDBCapabilityAdmission()
 	}
 	if err := api.SafeStorePath(s.path); err != nil {
 		return nil, err
@@ -39,6 +46,43 @@ func (s *Store) lockCapabilityAdmission() (func(), error) {
 		return nil, fmt.Errorf("%w: capability snapshot changed before admission", api.ErrStale)
 	}
 	return func() { _ = lock.Unlock() }, nil
+}
+
+// lockDBCapabilityAdmission is the SQLite form of the shared disk fence:
+// BEGIN IMMEDIATE pins the writer lock for the whole admission window, so no
+// process can commit a revoke between the digest check and the admitted
+// call — the same exclusion the .lock file gives the JSON store. Writers
+// store the snapshot digest inside their commit, which replaces the
+// file-bytes comparison.
+func (s *Store) lockDBCapabilityAdmission() (func(), error) {
+	ctx := context.Background()
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	release := func() {
+		_, _ = conn.ExecContext(ctx, "ROLLBACK")
+		_ = conn.Close()
+	}
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		release()
+		return nil, err
+	}
+	var storedDigest string
+	err = conn.QueryRowContext(ctx, `SELECT v FROM meta WHERE k = 'digest'`).Scan(&storedDigest)
+	if err != nil {
+		release()
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("%w: capability snapshot", api.ErrStale)
+		}
+		return nil, err
+	}
+	stored, err := hex.DecodeString(storedDigest)
+	if err != nil || !bytes.Equal(stored, s.diskDigest[:]) {
+		release()
+		return nil, fmt.Errorf("%w: capability snapshot changed before admission", api.ErrStale)
+	}
+	return release, nil
 }
 
 func (s *Store) PutCapabilityPolicy(policy api.CapabilityPolicy) error {

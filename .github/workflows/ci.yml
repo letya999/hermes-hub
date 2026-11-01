@@ -165,7 +165,19 @@ jobs:
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
         with:
           just-version: '1.57.0'
+      # The coverage gate only counts the SQLCipher paths when the real codec
+      # is linked; without it the engine tests skip and journal coverage
+      # understates. Production pins SQLCipher 4.6.1 statically (Dockerfile);
+      # the distro codec here only exists so the gate exercises cipher code.
+      - name: Install sqlcipher codec
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libsqlcipher-dev
+          sudo ln -sf /usr/lib/x86_64-linux-gnu/libsqlcipher.so /usr/lib/x86_64-linux-gnu/libsqlite3.so
       - run: just credential-broker-check
+        env:
+          GOFLAGS: -tags=libsqlite3
+          CGO_CFLAGS: -I/usr/include/sqlcipher
   security:
     runs-on: ubuntu-latest
     timeout-minutes: 20

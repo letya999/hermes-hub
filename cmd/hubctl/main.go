@@ -3,13 +3,16 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/agenttools"
+	"github.com/letya999/hermes-hub/internal/audit"
 	"github.com/letya999/hermes-hub/internal/companion"
 	"github.com/letya999/hermes-hub/internal/devcheck"
 	"github.com/letya999/hermes-hub/internal/diagnostics"
 	"github.com/letya999/hermes-hub/internal/hosting"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/migration"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/supervisor"
@@ -349,6 +352,65 @@ func run(ctx context.Context, args []string) error {
 			return fmt.Errorf("replay: unknown subcommand %q (export|run)", args[1])
 		}
 	}
+	if op == "storage" {
+		if len(args) < 2 {
+			return fmt.Errorf("usage: hubctl storage <status|cleanup>")
+		}
+		f := flag.NewFlagSet("storage", flag.ContinueOnError)
+		spoolDir := f.String("spool", "", "communication spool dir")
+		if args[1] == "cleanup" {
+			apply := f.Bool("apply", false, "apply the verified plan; default is dry-run")
+			digest := f.String("digest", "", "plan digest required with --apply")
+			retention := f.Duration("retention", 72*time.Hour, "terminal retention window")
+			if err := f.Parse(args[2:]); err != nil {
+				return err
+			}
+			return runStorageCleanup(os.Stdout, *spoolDir, *apply, *digest, *retention)
+		}
+		toolhubStore := f.String("toolhub-store", "", "ToolHub registry path")
+		if err := f.Parse(args[2:]); err != nil {
+			return err
+		}
+		return runStorageStatus(os.Stdout, *spoolDir, *toolhubStore)
+	}
+	if op == "audit" {
+		lang, ok := locale.Parse(os.Getenv("LANG"))
+		if !ok {
+			lang = locale.Default
+		}
+		usage := locale.T(lang, "hubctl.audit-rollover-usage")
+		if len(args) < 2 || args[1] != "rollover" {
+			return errors.New(usage)
+		}
+		f := flag.NewFlagSet("audit rollover", flag.ContinueOnError)
+		ledger := f.String("ledger", "", locale.T(lang, "hubctl.audit-rollover-ledger"))
+		apply := f.Bool("apply", false, locale.T(lang, "hubctl.audit-rollover-apply"))
+		digest := f.String("digest", "", locale.T(lang, "hubctl.audit-rollover-digest"))
+		if err := f.Parse(args[2:]); err != nil {
+			return err
+		}
+		if f.NArg() != 0 || *ledger == "" || *apply && *digest == "" {
+			return errors.New(usage)
+		}
+		var plan audit.LegacyPlan
+		var err error
+		if *apply {
+			plan, err = audit.RolloverLegacy(*ledger, *digest)
+		} else {
+			plan, err = audit.PlanLegacyRollover(*ledger)
+		}
+		if err != nil {
+			switch {
+			case errors.Is(err, audit.ErrStaleLegacyPlan):
+				return errors.New(locale.T(lang, "hubctl.audit-rollover-stale"))
+			case errors.Is(err, audit.ErrInvalid):
+				return errors.New(locale.T(lang, "hubctl.audit-rollover-invalid"))
+			default:
+				return errors.New(locale.T(lang, "hubctl.audit-rollover-failed"))
+			}
+		}
+		return json.NewEncoder(os.Stdout).Encode(plan)
+	}
 	if op == "spool" {
 		f := flag.NewFlagSet("spool", flag.ContinueOnError)
 		spoolDir := f.String("spool", "", "communication spool dir")
@@ -386,6 +448,8 @@ func run(ctx context.Context, args []string) error {
 	live := f.Bool("live", false, "doctor: verify the selected model against the live provider catalog")
 	stateSource := f.String("state-volume", "", "legacy runtime state directory")
 	toolHubStore := f.String("toolhub-store", "", "absolute ToolHub registry path")
+	brokerStore := f.Bool("broker", false, "store-migrate/store-activate: migrate the credential-broker Docker volumes via its service image")
+	storeTo := f.String("to", "", "destination store path for store-migrate (default: store.db beside the source)")
 	workspaceSource := f.String("workspace-volume", "", "legacy workspace directory")
 	userSource := f.String("user-source", "", "legacy user directory")
 	orgSource := f.String("organization-source", "", "legacy organization directory")
@@ -452,7 +516,7 @@ func run(ctx context.Context, args []string) error {
 		if !envSet {
 			supervisorEnv = ""
 		}
-		stopLog, err := diagnostics.HostLog(filepath.Join(filepath.Dir(*spacesRoot), ".local", "supervisor.log"))
+		stopLog, err := diagnostics.HostLog(filepath.Join(filepath.Dir(*spacesRoot), ".local", "diagnostics", "supervisor.log"))
 		if err != nil {
 			return err
 		}
@@ -508,6 +572,84 @@ func run(ctx context.Context, args []string) error {
 			return err
 		}
 		return json.NewEncoder(os.Stdout).Encode(report)
+	case "store-migrate":
+		if !*apply {
+			return fmt.Errorf("store-migrate requires --apply")
+		}
+		if *brokerStore {
+			if *spoolDir != "" || *toolHubStore != "" {
+				return fmt.Errorf("--broker does not combine with --spool or --toolhub-store")
+			}
+			return brokerStoreCommand(ctx, *dir, *root, *environment, "store-migrate")
+		}
+		if *spoolDir != "" {
+			spool, err := filepath.Abs(*spoolDir)
+			if err != nil {
+				return err
+			}
+			spoolReport, err := migration.MigrateSpoolSubstrate(spool)
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(os.Stdout).Encode(spoolReport)
+		}
+		if *toolHubStore == "" {
+			return fmt.Errorf("store-migrate requires --toolhub-store")
+		}
+		from, err := filepath.Abs(*toolHubStore)
+		if err != nil {
+			return err
+		}
+		to := *storeTo
+		if to == "" {
+			to = filepath.Join(filepath.Dir(from), "store.db")
+		}
+		to, err = filepath.Abs(to)
+		if err != nil {
+			return err
+		}
+		migrationReport, err := migration.MigrateStoreSubstrate(from, to)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(migrationReport)
+	case "store-activate":
+		if !*apply {
+			return fmt.Errorf("store-activate requires --apply")
+		}
+		if *brokerStore {
+			if *spoolDir != "" || *toolHubStore != "" {
+				return fmt.Errorf("--broker does not combine with --spool or --toolhub-store")
+			}
+			return brokerStoreCommand(ctx, *dir, *root, *environment, "store-activate")
+		}
+		if *spoolDir != "" {
+			spool, err := filepath.Abs(*spoolDir)
+			if err != nil {
+				return err
+			}
+			spoolReport, err := migration.ActivateSpoolSubstrate(spool)
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(os.Stdout).Encode(spoolReport)
+		}
+		if *toolHubStore == "" || *storeTo == "" {
+			return fmt.Errorf("store-activate requires --toolhub-store and --to")
+		}
+		from, err := filepath.Abs(*toolHubStore)
+		if err != nil {
+			return err
+		}
+		to, err := filepath.Abs(*storeTo)
+		if err != nil {
+			return err
+		}
+		activationReport, err := migration.ActivateStoreSubstrate(from, to)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(activationReport)
 	case "catalog":
 		return json.NewEncoder(os.Stdout).Encode(stack.Features)
 	case "companion":
@@ -528,7 +670,7 @@ func run(ctx context.Context, args []string) error {
 				explicitUser = *profile
 			}
 		})
-		return runTrace(ctx, os.Stdout, f.Arg(0), explicitUser, *spacesRoot)
+		return runTrace(ctx, os.Stdout, f.Arg(0), explicitUser, *spacesRoot, *environment)
 	}
 	if !slices.Contains([]string{"doctor", "build", "up", "down", "logs", "chat", "telegram-login", "meet-auth", "exec"}, op) {
 		return fmt.Errorf("unknown command %q", op)
@@ -842,6 +984,88 @@ func pruneDanglingImages(ctx context.Context, run func(context.Context, ...strin
 	}
 	if _, err := run(ctx, "buildx", "prune", "--max-used-space", "8gb", "-f"); err != nil {
 		return fmt.Errorf("limit build cache: %w", err)
+	}
+	return nil
+}
+
+// brokerStoreCommand runs the credential-broker image's own store-migrate /
+// store-activate against its external volumes while the service is stopped.
+// Activation brings the service back up; a failed migrate leaves it stopped
+// so the operator can inspect the untouched legacy ledgers first.
+func brokerStoreCommand(ctx context.Context, dir, root, env, op string) error {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	if err := stack.RenderEnvironment(abs, rootAbs, env); err != nil {
+		return err
+	}
+	composePath := filepath.Join(abs, "generated", "compose."+env+".yaml")
+	if _, err := os.Stat(composePath); os.IsNotExist(err) { // #nosec G703 -- operator-supplied project dir
+		composePath = filepath.Join(abs, "compose."+env+".yaml")
+	}
+	envv := supervisorComposeEnv(abs)
+	docker := func(a ...string) error {
+		cmd := exec.CommandContext(ctx, "docker", a...) // #nosec G702 -- fixed docker executable, argv without shell
+		cmd.Env, cmd.Stdout, cmd.Stderr, cmd.Stdin = envv, os.Stdout, os.Stderr, os.Stdin
+		return cmd.Run()
+	}
+	compose := []string{"compose", "-f", composePath}
+	// The live container may run a dev-rebuild overlay; migrate with the
+	// image the service actually runs, falling back to the rendered one.
+	image := ""
+	query := exec.CommandContext(ctx, "docker", append(append([]string{}, compose...), "ps", "credential-broker", "-a", "--format", "json")...) // #nosec G702 -- fixed docker executable
+	query.Env = envv
+	if out, qerr := query.Output(); qerr == nil {
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			var row struct {
+				Image string `json:"Image"`
+			}
+			if json.Unmarshal([]byte(line), &row) == nil && row.Image != "" {
+				image = row.Image
+				break
+			}
+		}
+	}
+	if image == "" {
+		query = exec.CommandContext(ctx, "docker", append(append([]string{}, compose...), "config", "--format", "json")...) // #nosec G702 -- fixed docker executable
+		query.Env = envv
+		out, err := query.Output()
+		if err != nil {
+			return fmt.Errorf("compose config: %w", err)
+		}
+		var resolved struct {
+			Services map[string]struct {
+				Image string `json:"image"`
+			} `json:"services"`
+		}
+		if err := json.Unmarshal(out, &resolved); err != nil {
+			return err
+		}
+		image = resolved.Services["credential-broker"].Image
+	}
+	if image == "" {
+		return fmt.Errorf("credential-broker image missing from compose render")
+	}
+	if err := docker(append(append([]string{}, compose...), "stop", "credential-broker")...); err != nil {
+		return err
+	}
+	args := []string{
+		"run", "--rm", "--user", "10001", "--entrypoint", "credential-broker",
+		"-v", "hermes-credential-broker-" + env + ":/var/lib/credential-broker",
+		"-v", "hermes-credential-broker-recovery-" + env + ":/var/lib/credential-broker-recovery",
+		"-v", "hermes-credential-broker-recovery-key-" + env + ":/var/lib/credential-broker-recovery-key",
+		image, op, "--config", "/var/lib/credential-broker/config.json",
+	}
+	if err := docker(args...); err != nil {
+		return err
+	}
+	if op == "store-activate" {
+		return docker(append(append([]string{}, compose...), "start", "credential-broker")...)
 	}
 	return nil
 }

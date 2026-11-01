@@ -2,6 +2,7 @@ package communication
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -104,7 +105,9 @@ func TestCeilingsTokenDaily(t *testing.T) {
 func TestCeilingsSpoolBytes(t *testing.T) {
 	t.Setenv("HUB_SPOOL_MAX_PENDING_PER_SCOPE", "0")
 	t.Setenv("HUB_SPOOL_MAX_PENDING_TOTAL", "0")
-	t.Setenv("HUB_SPOOL_MAX_BYTES", "1")
+	t.Setenv("HUB_SPOOL_MAX_BYTES", "8192")
+	t.Setenv("HUB_SPOOL_MAX_NEXT_WRITE_BYTES", "1024")
+	t.Setenv("HUB_SPOOL_LIFECYCLE_RESERVE_BYTES", "1024")
 	spool, err := NewSpool(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -120,10 +123,15 @@ func TestCeilingsSpoolBytes(t *testing.T) {
 		}
 		return nil
 	}
-	if err := enqueue("job-bytes-0"); err != nil {
-		t.Fatalf("empty spool refused: %v", err)
+	accepted := 0
+	for i := 0; i < 50; i++ {
+		if err := enqueue(fmt.Sprintf("job-bytes-%d", i)); err != nil {
+			if accepted == 0 {
+				t.Fatalf("empty spool refused: %v", err)
+			}
+			return
+		}
+		accepted++
 	}
-	if err := enqueue("job-bytes-1"); err == nil {
-		t.Fatal("storage ceiling not enforced")
-	}
+	t.Fatal("storage ceiling not enforced")
 }

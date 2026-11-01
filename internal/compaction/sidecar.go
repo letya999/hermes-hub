@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os/exec"
+	"time"
 )
 
 var (
@@ -24,6 +25,7 @@ var (
 // inside sidecarCall, so a fake Runner cannot smuggle error detail.
 var Runner = func(ctx context.Context, payload []byte) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, sidecarProg, sidecarProgArgs...)
+	cmd.WaitDelay = time.Second
 	cmd.Stdin = bytes.NewReader(payload)
 	return cmd.Output()
 }

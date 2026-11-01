@@ -285,6 +285,7 @@ func TestGovernanceGatewayFiltering(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := &Gateway{Store: s, Governance: NewGovernanceStore(govPath)}
+	attachGatewayAudit(t, g)
 	filtered, err := g.filterProjectedTools(auth, tools)
 	if err != nil || len(filtered) != len(tools) {
 		t.Fatalf("default posture filtered user-owned tool: %v %v", filtered, err)
@@ -345,7 +346,8 @@ func TestGovernanceGatewayFiltering(t *testing.T) {
 
 func TestGovernanceNilStoreIsLegacyPermissive(t *testing.T) {
 	s, auth, _ := seededStore(t)
-	g := &Gateway{Store: s} // no Governance: pre-governance deployment
+	g := &Gateway{Store: s}
+	attachGatewayAudit(t, g) // no Governance: pre-governance deployment
 	tools, err := s.ListProjectedTools(auth)
 	if err != nil {
 		t.Fatal(err)
@@ -448,6 +450,7 @@ func TestServeGrantAckForm(t *testing.T) {
 	}
 	control := &ControlPlane{Store: NewStore(), Governance: govStore, Listen: "127.0.0.1:8090", Now: time.Now}
 	g := &Gateway{Store: control.Store, Control: control, Governance: govStore}
+	attachGatewayAudit(t, g)
 	auth := identity.TelegramEnvelope("alice", 7, "runtime", "policy-1")
 	if err := putGrant(t, control.Store, api.OperatorControlGrant(auth.PrincipalID, "grant_request")); err != nil {
 		t.Fatal(err)
@@ -875,6 +878,7 @@ func TestServeGrantAckRefusals(t *testing.T) {
 	govStore := NewGovernanceStore(govPath)
 	control := &ControlPlane{Store: NewStore(), Governance: govStore, Listen: "127.0.0.1:8090", Now: time.Now}
 	g := &Gateway{Store: control.Store, Control: control, Governance: govStore}
+	attachGatewayAudit(t, g)
 	server := httptest.NewServer(http.HandlerFunc(g.serveGrantAck))
 	defer server.Close()
 	get := func(url string) int {
@@ -920,6 +924,7 @@ func TestServeGrantAckRefusals(t *testing.T) {
 	}
 	// No governance configured → 404.
 	bare := &Gateway{Store: NewStore(), Control: &ControlPlane{Store: NewStore()}}
+	attachGatewayAudit(t, bare)
 	bareServer := httptest.NewServer(http.HandlerFunc(bare.serveGrantAck))
 	defer bareServer.Close()
 	if code := get(bareServer.URL + "/grants/grant-1?nonce=n"); code != http.StatusNotFound {

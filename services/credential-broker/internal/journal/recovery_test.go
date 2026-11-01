@@ -476,7 +476,7 @@ func TestAnchoredRecoveryRejectsCorruptCommitAnchor(t *testing.T) {
 	if err := j.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(anchor, "commit-00000000000000000001"), []byte("corrupt"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(anchor, "current-head"), []byte("corrupt"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if opened, err := OpenReplicatedAnchored(primary, recovery, anchor, primaryKey, recoveryKey, 8<<20); err == nil {
@@ -557,7 +557,7 @@ func TestAnchoredRecoveryRejectsCorruptInitializationMarker(t *testing.T) {
 	}
 }
 
-func TestAnchoredRecoveryRejectsMalformedCommitEntry(t *testing.T) {
+func TestAnchoredRecoveryRejectsMalformedCurrentHead(t *testing.T) {
 	primary, primaryKey := setup(t)
 	recovery, _ := setup(t)
 	anchor, _ := setup(t)
@@ -572,7 +572,7 @@ func TestAnchoredRecoveryRejectsMalformedCommitEntry(t *testing.T) {
 	if err := j.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(anchor, "commit-malformed"), nil, 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(anchor, "current-head"), nil, 0600); err != nil {
 		t.Fatal(err)
 	}
 	if opened, err := OpenReplicatedAnchored(primary, recovery, anchor, primaryKey, recoveryKey, 8<<20); err == nil {

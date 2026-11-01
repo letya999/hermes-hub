@@ -1,0 +1,28 @@
+schema: 1
+change: CHG-0252
+title: "M29.11 Migrate legacy config safely and document the six-passport operating model"
+status: in_progress
+branch: pending
+updated: 2026-11-02
+phase: design-complete
+adr: ADR-0092
+spec: SPEC-0091
+requirements: [R11.1, R11.2]
+depends_on: ["M29.3-M29.10"]
+github_milestone: "M29 — Six-Passport Space Contract"
+github_issue: 435
+design_status: accepted
+implementation_status: not_started
+slices:
+  S11.1-contract: not_started
+  S11.2-implementation: not_started
+validation:
+  documents: pending
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence: []
+remaining:
+  - "Legacy two-user fixture migrates with no data loss, current consumers use only new revision, and all documented commands/trees match reality."
+limitations: []

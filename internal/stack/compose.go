@@ -38,6 +38,13 @@ func RuntimeService(s Settings, projectRoot, dir string) M {
 // spaces. Service names like `toolhub` resolve identically for every runtime.
 const sharedNetworkName = "hermes-hub-runtime"
 
+// regularFile reports a present, non-symlinked regular file; render only
+// ever keys substrate switches on real files the migration wrote.
+func regularFile(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.Mode().IsRegular()
+}
+
 func managedAgentNetwork(s Settings) string {
 	return "hermes-hub-agent-" + s.User + "-" + s.Environment
 }
@@ -46,7 +53,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	infra := s.RendersInfra()
 	stateVolumes := []any{
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "runtime")), "target": "/state"},
-		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "hermes")), "target": "/state/hermes"},
+		M{"type": "bind", "source": filepath.ToSlash(RuntimeHermesHome(dir, s)), "target": "/state/hermes"},
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "connections", "google")), "target": "/state/google"},
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "connections", "telegram")), "target": "/state/telegram"},
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "home")), "target": "/state/home"},
@@ -77,7 +84,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// which are the supervisor's normal lifecycle under managed mode.
 		stateVolumes = []any{
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "runtime")), "target": "/state"},
-			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "hermes")), "target": "/state/hermes"},
+			M{"type": "bind", "source": filepath.ToSlash(RuntimeHermesHome(dir, s)), "target": "/state/hermes"},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "home")), "target": "/state/home"},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "cache")), "target": "/state/cache"},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "workspace")), "target": "/workspace"},
@@ -129,7 +136,14 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	if s.OrgScoped() {
 		contextID = organizationID
 	}
-	runtimeEnv := M{"HUB_SHARED_GID": fmt.Sprint(max(0, os.Getgid())), "HUB_ORG_SCOPED": fmt.Sprint(s.OrgScoped()), "HUB_ORG_ACTIONS": strings.Join(s.effectiveOrgActions(), ","), "HUB_TOOLS_RO": strings.Join(s.readOnlyCapabilities(), ","), "HUB_SELF_ENV_KEYS": strings.Join(runtimeSelfEnvKeys(s), ","), "HUB_PROTECTED_ENV_KEYS": strings.Join(runtimeProtectedEnvKeys(s), ","), "HERMES_HOME": "/state/hermes", "HOME": "/state/home", "HUB_STATE": "/state", "HUB_WORKSPACE": "/workspace", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": "/state/toolhub/store.json", "HUB_FEATURES": strings.Join(s.featureList(), ","), "HUB_RUNTIME_LISTEN": "0.0.0.0:8080", "TZ": s.Timezone, "HUB_BROWSER": fmt.Sprint(s.Has("browser")), "HUB_MEET": fmt.Sprint(s.Has("meet")), "GITLAB_HOST": host, "GOOGLE_EMAIL": s.GoogleEmail, "GOOGLE_OAUTH_REDIRECT_URI": fmt.Sprintf("http://localhost:%d/oauth2callback", s.OAuthPort), "PYTHONDONTWRITEBYTECODE": "1", "XDG_CACHE_HOME": "/state/cache", "HERMES_AGENT_NOTIFY_INTERVAL": "60", "HUB_TOOL_POLICY": "/config/tool-policy.json", "HUB_TOOL_MANIFEST": "/config/tool-manifest.json"}
+	// The SQLite substrate activates when the verified store.db exists and
+	// the legacy store.json has been retired by store-activate (SPEC-0090
+	// R5.1): only then does the rendered path switch backends.
+	toolhubStoreEnv := "/state/toolhub/store.json"
+	if hostStoreDir := filepath.Join(dir, "runtime", "toolhub"); regularFile(filepath.Join(hostStoreDir, "store.db")) && !regularFile(filepath.Join(hostStoreDir, "store.json")) {
+		toolhubStoreEnv = "/state/toolhub/store.db"
+	}
+	runtimeEnv := M{"HUB_SHARED_GID": fmt.Sprint(max(0, os.Getgid())), "HUB_ORG_SCOPED": fmt.Sprint(s.OrgScoped()), "HUB_ORG_ACTIONS": strings.Join(s.effectiveOrgActions(), ","), "HUB_TOOLS_RO": strings.Join(s.readOnlyCapabilities(), ","), "HUB_SELF_ENV_KEYS": strings.Join(runtimeSelfEnvKeys(s), ","), "HUB_PROTECTED_ENV_KEYS": strings.Join(runtimeProtectedEnvKeys(s), ","), "HERMES_HOME": "/state/hermes", "HOME": "/state/home", "HUB_STATE": "/state", "HUB_WORKSPACE": "/workspace", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": toolhubStoreEnv, "HUB_FEATURES": strings.Join(s.featureList(), ","), "HUB_RUNTIME_LISTEN": "0.0.0.0:8080", "TZ": s.Timezone, "HUB_BROWSER": fmt.Sprint(s.Has("browser")), "HUB_MEET": fmt.Sprint(s.Has("meet")), "GITLAB_HOST": host, "GOOGLE_EMAIL": s.GoogleEmail, "GOOGLE_OAUTH_REDIRECT_URI": fmt.Sprintf("http://localhost:%d/oauth2callback", s.OAuthPort), "PYTHONDONTWRITEBYTECODE": "1", "XDG_CACHE_HOME": "/state/cache", "HERMES_AGENT_NOTIFY_INTERVAL": "60", "HUB_TOOL_POLICY": "/config/tool-policy.json", "HUB_TOOL_MANIFEST": "/config/tool-manifest.json"}
 	if s.Workspace.Goal != "" {
 		runtimeEnv["HUB_BOOTSTRAP_GOAL"] = s.Workspace.Goal
 		runtimeEnv["HUB_BOOTSTRAP_REVISION"] = fmt.Sprint(s.Workspace.BootstrapRevision)
@@ -428,7 +442,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		svc["volumes"] = []any{dockerSock,
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Dir(dir)), "target": "/spaces"},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(projectRoot, "config")), "target": "/config", "read_only": true},
-			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(projectRoot, ".local", "supervisor.log")), "target": "/.local/supervisor.log"}}
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(projectRoot, ".local", "diagnostics")), "target": "/.local/diagnostics"}}
 		svc["networks"] = []string{"default", sharedNetworkName, "supervisor-control"}
 		svc["stop_grace_period"] = "30s"
 		services["supervisor"] = svc
@@ -499,7 +513,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		cliproxy["networks"] = sharedNetworks
 		services["cliproxy"] = cliproxy
 
-		toolhubEnv := M{"HUB_STATE": "/state", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_RUNTIME_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": "/state/toolhub/store.json", "HUB_AUDIT_LEDGER": "/state/toolhub/audit.jsonl", "HUB_CREDENTIAL_STORE": "/state/credentials/store.enc", "HUB_CREDENTIAL_KEY_FILE": "/state/credential.key", "HUB_TOOLHUB_LISTEN": "0.0.0.0:8090", "HUB_TOOLHIVE_ADMISSION_ENDPOINT": "http://workload-controller:8545/admit", "HUB_ARTIFACT_DIR": "/state/artifacts", "HUB_BUILD_SECCOMP": "/opt/hub/seccomp/seccomp-buildkit-rootless.json", "HUB_BUILD_CACHE": "1", "HUB_RECIPE_CATALOGS": "mcp-registry,toolhive,docker-mcp,docker-hub,ghcr,github-search", "HUB_DOCKER_HOST_ROOT": hostRoot, "HUB_BROKER_MATERIALIZED_VOLUME": brokerMaterializedVolume, "HUB_CRED_STAGING": "/run/cred-staging", "HUB_CRED_STAGING_VOLUME": credStagingVolume, "HOME": "/tmp", "TZ": s.Timezone, "HUB_COMMUNICATION_CONTROL_URL": "http://communication-hub:8081", "HUB_TOOL_GOVERNANCE": "/state/toolhub/governance.json"}
+		toolhubEnv := M{"HUB_STATE": "/state", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_RUNTIME_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": toolhubStoreEnv, "HUB_AUDIT_LEDGER": "/state/toolhub/audit.jsonl", "HUB_CREDENTIAL_STORE": "/state/credentials/store.enc", "HUB_CREDENTIAL_KEY_FILE": "/state/credential.key", "HUB_TOOLHUB_LISTEN": "0.0.0.0:8090", "HUB_TOOLHIVE_ADMISSION_ENDPOINT": "http://workload-controller:8545/admit", "HUB_ARTIFACT_DIR": "/state/artifacts", "HUB_BUILD_SECCOMP": "/opt/hub/seccomp/seccomp-buildkit-rootless.json", "HUB_BUILD_CACHE": "1", "HUB_RECIPE_CATALOGS": "mcp-registry,toolhive,docker-mcp,docker-hub,ghcr,github-search", "HUB_DOCKER_HOST_ROOT": hostRoot, "HUB_BROKER_MATERIALIZED_VOLUME": brokerMaterializedVolume, "HUB_CRED_STAGING": "/run/cred-staging", "HUB_CRED_STAGING_VOLUME": credStagingVolume, "HOME": "/tmp", "TZ": s.Timezone, "HUB_COMMUNICATION_CONTROL_URL": "http://communication-hub:8081", "HUB_TOOL_GOVERNANCE": "/state/toolhub/governance.json"}
 		if s.CapabilityMode == "managed" {
 			toolhubEnv["HUB_CAPABILITY_MODE"] = s.CapabilityMode
 			toolhubEnv["HUB_CAPABILITY_PROFILE_ID"] = s.CapabilityProfileID
@@ -572,9 +586,13 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			toolhubEnv["HUB_DIAGNOSTICS_PROJECT"] = "hermes-hub-" + s.User + "-" + s.Environment
 			toolhubEnv["HUB_DIAGNOSTICS_AGENT_NET"] = managedAgentNetwork(s)
 			toolhubEnv["HUB_DIAGNOSTICS_OWNER"] = s.User
+			// The store sits inside the /state bind; the diagnostics host
+			// bind is the only writable mount on an independent filesystem
+			// location, so the installation witness lives there.
+			toolhubEnv["HUB_TOOLHUB_IDENTITY_WITNESS"] = "/diagnostics/.toolhub-installation"
 			toolhubVolumes = append(toolhubVolumes,
 				M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "diagnostics")), "target": "/diagnostics"},
-				M{"type": "bind", "source": filepath.ToSlash(filepath.Join(projectRoot, ".local", "supervisor.log")), "target": "/diagnostics/supervisor.log", "read_only": true})
+				M{"type": "bind", "source": filepath.ToSlash(filepath.Join(projectRoot, ".local", "diagnostics")), "target": "/diagnostics/host", "read_only": true})
 		}
 		// Extra principal tokens for secondary spaces: one JSON map per deploy,
 		// mounted read-only. Rendered only when the operator wrote the file.

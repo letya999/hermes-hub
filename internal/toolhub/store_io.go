@@ -30,11 +30,18 @@ func statStoreStamp(path string) (storeStamp, bool) {
 	if err != nil {
 		return storeStamp{}, false
 	}
-	return storeStamp{mtime: info.ModTime().UnixNano(), size: info.Size()}, true
+	stamp := storeStamp{mtime: info.ModTime().UnixNano(), size: info.Size()}
+	// WAL-mode SQLite commits land in the sidecar until a checkpoint, so a
+	// cross-instance write is invisible in the main file's stamp alone.
+	if wal, walErr := os.Stat(path + "-wal"); walErr == nil {
+		stamp.mtime = max(stamp.mtime, wal.ModTime().UnixNano())
+		stamp.size += wal.Size()
+	}
+	return stamp, true
 }
 
 func NewStore() *Store {
-	return &Store{definitions: map[string]api.ToolDefinition{}, connections: map[string]api.Connection{}, credentials: map[string]api.CredentialReference{}, bindings: map[string]api.ToolBinding{}, workloads: map[string]api.WorkloadInstance{}, projectionRevisions: map[string]uint64{}, grants: map[string]api.Grant{}, onboardings: map[string]api.Onboarding{}, operations: map[string]api.Operation{}, refreshLeases: map[string]api.RefreshLease{}, connStatus: map[string]api.Status{}, recipes: map[string]api.RecipeResolution{}, publications: map[string]api.DefinitionPublication{}, sharedPolicies: map[string]api.SharedCredentialPolicy{}, teams: map[string]api.Team{}, bindingBrokerGrants: map[string]api.BrokerBindingGrant{}, capabilityPolicies: map[string]api.CapabilityPolicy{}, capabilityProfiles: map[string]api.CapabilityProfile{}, exclusions: map[string]api.ProjectionExclusion{}}
+	return &Store{definitions: map[string]api.ToolDefinition{}, connections: map[string]api.Connection{}, credentials: map[string]api.CredentialReference{}, bindings: map[string]api.ToolBinding{}, workloads: map[string]api.WorkloadInstance{}, projectionRevisions: map[string]uint64{}, restartApplied: map[string]uint64{}, restartDigests: map[string]string{}, grants: map[string]api.Grant{}, onboardings: map[string]api.Onboarding{}, operations: map[string]api.Operation{}, refreshLeases: map[string]api.RefreshLease{}, connStatus: map[string]api.Status{}, recipes: map[string]api.RecipeResolution{}, publications: map[string]api.DefinitionPublication{}, sharedPolicies: map[string]api.SharedCredentialPolicy{}, teams: map[string]api.Team{}, bindingBrokerGrants: map[string]api.BrokerBindingGrant{}, capabilityPolicies: map[string]api.CapabilityPolicy{}, capabilityProfiles: map[string]api.CapabilityProfile{}, exclusions: map[string]api.ProjectionExclusion{}}
 }
 
 func (s *Store) Save(path string) error {
@@ -46,6 +53,9 @@ func (s *Store) Save(path string) error {
 // saveLocked lets authorization mutations become visible only after the same
 // snapshot fence and durable write used by Save have succeeded.
 func (s *Store) saveLocked(path string) error {
+	if s.db != nil || isStoreDB(path) {
+		return s.saveDBLocked(path)
+	}
 	if err := api.SafeStorePath(path); err != nil {
 		return err
 	}
@@ -55,88 +65,36 @@ func (s *Store) saveLocked(path string) error {
 	if err := api.SafeStorePath(path + ".lock"); err != nil {
 		return err
 	}
+	marker := path + ".initialized"
+	if err := api.SafeStorePath(marker); err != nil {
+		return err
+	}
 	lock := flock.New(path + ".lock")
 	if err := lock.Lock(); err != nil {
 		return err
 	}
 	defer lock.Unlock()
+	markerInfo, markerErr := os.Lstat(marker)
+	if markerErr != nil && !os.IsNotExist(markerErr) {
+		return api.ErrInvalid
+	}
+	if markerErr == nil && !markerInfo.Mode().IsRegular() {
+		return api.ErrInvalid
+	}
 	previous, err := os.ReadFile(path) // #nosec G304 -- trusted, symlink-checked registry path.
+	if os.IsNotExist(err) && (s.savedPath == path || markerErr == nil) {
+		return api.ErrConflict
+	}
 	if err == nil && (s.savedPath != path || sha256.Sum256(previous) != s.diskDigest) {
 		return api.ErrConflict
 	}
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	s.compactLocked(time.Now())
-	state := snapshot{Schema: api.SchemaVersion, ProjectionRevisions: map[string]uint64{}, CapabilityChanges: s.capabilityChanges, BindingChanges: s.bindingChanges}
-	for _, d := range s.definitions {
-		state.Definitions = append(state.Definitions, d)
+	state, err := s.buildSnapshotLocked()
+	if err != nil {
+		return err
 	}
-	for _, c := range s.connections {
-		state.Connections = append(state.Connections, c)
-	}
-	for _, r := range s.credentials {
-		state.Credentials = append(state.Credentials, r)
-	}
-	for _, b := range s.bindings {
-		state.Bindings = append(state.Bindings, b)
-	}
-	for _, w := range s.workloads {
-		state.Workloads = append(state.Workloads, w)
-	}
-	for key, revision := range s.projectionRevisions {
-		state.ProjectionRevisions[key] = revision
-	}
-	for _, grant := range s.grants {
-		state.Grants = append(state.Grants, grant)
-	}
-	for _, onboarding := range s.onboardings {
-		// A registered definition is already persisted once in the registry;
-		// embedding it per onboarding duplicates the same bytes. Drafts still
-		// awaiting admission keep their copy — nothing else can rebuild it.
-		if onboarding.Definition != nil && !onboarding.AdmissionPending {
-			if _, ok := s.definitions[definitionKey(onboarding.DefinitionID, onboarding.DefinitionVersion)]; ok {
-				onboarding.Definition = nil
-			}
-		}
-		state.Onboardings = append(state.Onboardings, onboarding)
-	}
-	for _, op := range s.operations {
-		state.Operations = append(state.Operations, op)
-	}
-	if len(s.recipes) > 0 {
-		state.Recipes = s.recipes
-	}
-	for _, pub := range s.publications {
-		state.Publications = append(state.Publications, pub)
-	}
-	for _, policy := range s.sharedPolicies {
-		state.SharedPolicies = append(state.SharedPolicies, policy)
-	}
-	for _, team := range s.teams {
-		state.Teams = append(state.Teams, team)
-	}
-	s.grantMu.Lock()
-	for _, grant := range s.bindingBrokerGrants {
-		state.BrokerGrants = append(state.BrokerGrants, grant)
-	}
-	s.grantMu.Unlock()
-	slices.SortFunc(state.Definitions, func(a, b api.ToolDefinition) int {
-		return strings.Compare(definitionKey(a.DefinitionID, a.Version), definitionKey(b.DefinitionID, b.Version))
-	})
-	slices.SortFunc(state.Connections, func(a, b api.Connection) int { return strings.Compare(a.ConnectionID, b.ConnectionID) })
-	slices.SortFunc(state.Credentials, func(a, b api.CredentialReference) int { return strings.Compare(a.CredentialRefID, b.CredentialRefID) })
-	slices.SortFunc(state.Bindings, func(a, b api.ToolBinding) int { return strings.Compare(a.ToolBindingID, b.ToolBindingID) })
-	slices.SortFunc(state.Workloads, func(a, b api.WorkloadInstance) int { return strings.Compare(a.WorkloadID, b.WorkloadID) })
-	slices.SortFunc(state.Grants, func(a, b api.Grant) int { return strings.Compare(a.GrantID, b.GrantID) })
-	slices.SortFunc(state.Onboardings, func(a, b api.Onboarding) int { return strings.Compare(a.OnboardingID, b.OnboardingID) })
-	slices.SortFunc(state.Operations, func(a, b api.Operation) int { return strings.Compare(a.OperationID, b.OperationID) })
-	slices.SortFunc(state.Publications, func(a, b api.DefinitionPublication) int {
-		return strings.Compare(definitionKey(a.DefinitionID, a.Version), definitionKey(b.DefinitionID, b.Version))
-	})
-	slices.SortFunc(state.SharedPolicies, func(a, b api.SharedCredentialPolicy) int { return strings.Compare(a.PolicyID, b.PolicyID) })
-	slices.SortFunc(state.Teams, func(a, b api.Team) int { return strings.Compare(a.TeamID, b.TeamID) })
-	slices.SortFunc(state.BrokerGrants, func(a, b api.BrokerBindingGrant) int { return strings.Compare(a.BindingID, b.BindingID) })
 	body, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
@@ -144,35 +102,69 @@ func (s *Store) saveLocked(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(filepath.Dir(path), ".toolhub-*")
+	counter, err := s.storageCounter(filepath.Dir(path))
 	if err != nil {
 		return err
 	}
-	tmp := f.Name()
-	defer os.Remove(tmp)
-	if err = f.Chmod(0600); err == nil {
-		_, err = f.Write(body)
+	write := func() error {
+		f, err := os.CreateTemp(filepath.Dir(path), ".toolhub-*")
+		if err != nil {
+			return err
+		}
+		tmp := f.Name()
+		defer os.Remove(tmp)
+		if err = f.Chmod(0600); err == nil {
+			_, err = f.Write(body)
+		}
+		if err == nil {
+			err = f.Sync()
+		}
+		if closeErr := f.Close(); err == nil {
+			err = closeErr
+		}
+		if err != nil {
+			return err
+		}
+		return os.Rename(tmp, path)
 	}
-	if err == nil {
-		err = f.Sync()
-	}
-	if closeErr := f.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := counter.Write(path, int64(len(body)), true, write); err != nil {
 		return err
 	}
 	s.savedPath, s.diskDigest = path, sha256.Sum256(body)
 	s.diskStamp, _ = statStoreStamp(path)
+	syncDirectory := s.syncDirectory
+	if syncDirectory == nil {
+		syncDirectory = syncHostingFleetDirectory
+	}
+	if err := syncDirectory(filepath.Dir(path)); err != nil {
+		return err
+	}
+	if markerErr != nil {
+		f, err := os.OpenFile(marker, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600) // #nosec G304 -- marker path was symlink-checked under the store lock
+		if err != nil {
+			return err
+		}
+		if err = f.Sync(); err != nil {
+			_ = f.Close()
+			return err
+		}
+		if err = f.Close(); err != nil {
+			return err
+		}
+		if err = syncDirectory(filepath.Dir(path)); err != nil {
+			return err
+		}
+	}
+	s.maintainStorageLocked(time.Now())
 	return nil
 }
 
 func Load(path string) (*Store, error) {
 	if err := api.SafeStorePath(path); err != nil {
 		return nil, err
+	}
+	if isStoreDB(path) {
+		return loadDB(path)
 	}
 	// Stamp before the read: a rename landing between stat and read leaves a
 	// conservative stamp (older than the bytes), so the next Reload simply
@@ -195,6 +187,20 @@ func Load(path string) (*Store, error) {
 	if state.Schema != api.SchemaVersion {
 		return nil, fmt.Errorf("%w: store schema", api.ErrInvalid)
 	}
+	store, err := storeFromSnapshot(state)
+	if err != nil {
+		return nil, err
+	}
+	store.path = path
+	store.savedPath, store.diskDigest = path, sha256.Sum256(b)
+	store.diskStamp = stamp
+	return store, nil
+}
+
+// storeFromSnapshot validates a decoded snapshot into a Store; file and
+// SQLite backends share this exact admission path.
+func storeFromSnapshot(state snapshot) (*Store, error) {
+	var err error
 	store := NewStore()
 	for _, definition := range state.Definitions {
 		if err := store.RegisterDefinition(definition); err != nil {
@@ -268,6 +274,12 @@ func Load(path string) (*Store, error) {
 			return nil, fmt.Errorf("%w: persisted projection revision", api.ErrInvalid)
 		}
 		store.projectionRevisions[key] = revision
+	}
+	for key, revision := range state.RestartApplied {
+		store.restartApplied[key] = revision
+	}
+	for key, digest := range state.RestartDigests {
+		store.restartDigests[key] = digest
 	}
 	for _, change := range state.BindingChanges {
 		if !identity.ValidID(change.BindingID) || change.FromPolicy == "" || change.ToPolicy == "" || change.Revision == 0 {
@@ -353,10 +365,98 @@ func Load(path string) (*Store, error) {
 	if err := store.validateLocked(); err != nil {
 		return nil, err
 	}
-	store.path = path
-	store.savedPath, store.diskDigest = path, sha256.Sum256(b)
-	store.diskStamp = stamp
+	store.installationID = state.InstallationID
 	return store, nil
+}
+
+// buildSnapshotLocked compacts, stamps the installation and collects every
+// persisted collection into the snapshot in its canonical sort order — the
+// single serialization both backends write. s.mu must be held.
+func (s *Store) buildSnapshotLocked() (snapshot, error) {
+	s.compactLocked(time.Now())
+	if s.installationID == "" {
+		id, err := newInstallationID()
+		if err != nil {
+			return snapshot{}, err
+		}
+		s.installationID = id
+	}
+	state := snapshot{Schema: api.SchemaVersion, InstallationID: s.installationID, ProjectionRevisions: map[string]uint64{}, RestartApplied: map[string]uint64{}, RestartDigests: map[string]string{}, CapabilityChanges: s.capabilityChanges, BindingChanges: s.bindingChanges}
+	for _, d := range s.definitions {
+		state.Definitions = append(state.Definitions, d)
+	}
+	for _, c := range s.connections {
+		state.Connections = append(state.Connections, c)
+	}
+	for _, r := range s.credentials {
+		state.Credentials = append(state.Credentials, r)
+	}
+	for _, b := range s.bindings {
+		state.Bindings = append(state.Bindings, b)
+	}
+	for _, w := range s.workloads {
+		state.Workloads = append(state.Workloads, w)
+	}
+	for key, revision := range s.projectionRevisions {
+		state.ProjectionRevisions[key] = revision
+	}
+	for key, revision := range s.restartApplied {
+		state.RestartApplied[key] = revision
+	}
+	for key, digest := range s.restartDigests {
+		state.RestartDigests[key] = digest
+	}
+	for _, grant := range s.grants {
+		state.Grants = append(state.Grants, grant)
+	}
+	for _, onboarding := range s.onboardings {
+		// A registered definition is already persisted once in the registry;
+		// embedding it per onboarding duplicates the same bytes. Drafts still
+		// awaiting admission keep their copy — nothing else can rebuild it.
+		if onboarding.Definition != nil && !onboarding.AdmissionPending {
+			if _, ok := s.definitions[definitionKey(onboarding.DefinitionID, onboarding.DefinitionVersion)]; ok {
+				onboarding.Definition = nil
+			}
+		}
+		state.Onboardings = append(state.Onboardings, onboarding)
+	}
+	for _, op := range s.operations {
+		state.Operations = append(state.Operations, op)
+	}
+	if len(s.recipes) > 0 {
+		state.Recipes = s.recipes
+	}
+	for _, pub := range s.publications {
+		state.Publications = append(state.Publications, pub)
+	}
+	for _, policy := range s.sharedPolicies {
+		state.SharedPolicies = append(state.SharedPolicies, policy)
+	}
+	for _, team := range s.teams {
+		state.Teams = append(state.Teams, team)
+	}
+	s.grantMu.Lock()
+	for _, grant := range s.bindingBrokerGrants {
+		state.BrokerGrants = append(state.BrokerGrants, grant)
+	}
+	s.grantMu.Unlock()
+	slices.SortFunc(state.Definitions, func(a, b api.ToolDefinition) int {
+		return strings.Compare(definitionKey(a.DefinitionID, a.Version), definitionKey(b.DefinitionID, b.Version))
+	})
+	slices.SortFunc(state.Connections, func(a, b api.Connection) int { return strings.Compare(a.ConnectionID, b.ConnectionID) })
+	slices.SortFunc(state.Credentials, func(a, b api.CredentialReference) int { return strings.Compare(a.CredentialRefID, b.CredentialRefID) })
+	slices.SortFunc(state.Bindings, func(a, b api.ToolBinding) int { return strings.Compare(a.ToolBindingID, b.ToolBindingID) })
+	slices.SortFunc(state.Workloads, func(a, b api.WorkloadInstance) int { return strings.Compare(a.WorkloadID, b.WorkloadID) })
+	slices.SortFunc(state.Grants, func(a, b api.Grant) int { return strings.Compare(a.GrantID, b.GrantID) })
+	slices.SortFunc(state.Onboardings, func(a, b api.Onboarding) int { return strings.Compare(a.OnboardingID, b.OnboardingID) })
+	slices.SortFunc(state.Operations, func(a, b api.Operation) int { return strings.Compare(a.OperationID, b.OperationID) })
+	slices.SortFunc(state.Publications, func(a, b api.DefinitionPublication) int {
+		return strings.Compare(definitionKey(a.DefinitionID, a.Version), definitionKey(b.DefinitionID, b.Version))
+	})
+	slices.SortFunc(state.SharedPolicies, func(a, b api.SharedCredentialPolicy) int { return strings.Compare(a.PolicyID, b.PolicyID) })
+	slices.SortFunc(state.Teams, func(a, b api.Team) int { return strings.Compare(a.TeamID, b.TeamID) })
+	slices.SortFunc(state.BrokerGrants, func(a, b api.BrokerBindingGrant) int { return strings.Compare(a.BindingID, b.BindingID) })
+	return state, nil
 }
 
 // compactLocked deletes terminal records past their retention windows so a
@@ -421,6 +521,10 @@ func (s *Store) Reload() error {
 		s.mu.Unlock()
 		return err
 	}
+	// The adopted snapshot replaces in-memory state, but the fresh handle is
+	// redundant — s keeps its own. Without this every cross-instance reload
+	// leaks a SQLite connection (and locks the file on Windows).
+	defer func() { _ = fresh.CloseDB() }()
 	// Reads must not replace pending in-process mutations with the unchanged
 	// disk snapshot, nor race a Save and restore its older predecessor.
 	if fresh.diskDigest == s.diskDigest {
@@ -443,6 +547,8 @@ func (s *Store) Reload() error {
 	s.bindings = fresh.bindings
 	s.workloads = fresh.workloads
 	s.projectionRevisions = fresh.projectionRevisions
+	s.restartApplied = fresh.restartApplied
+	s.restartDigests = fresh.restartDigests
 	s.grants = fresh.grants
 	s.onboardings = fresh.onboardings
 	s.publications = fresh.publications

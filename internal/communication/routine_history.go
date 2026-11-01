@@ -43,15 +43,15 @@ type routineDeliveryOutcome struct{ Total, Done, Uncertain int }
 func (s *Spool) routineDeliveryStatesLocked() (map[routineDeliveryKey]routineDeliveryOutcome, error) {
 	out := map[routineDeliveryKey]routineDeliveryOutcome{}
 	for _, dir := range []string{"pending", "sending", "done", "failed"} {
-		entries, err := os.ReadDir(filepath.Join(s.root, "outbox", dir))
+		entries, err := s.fsys.ReadDir(filepath.Join(s.root, "outbox", dir))
 		if err != nil {
 			return nil, err
 		}
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+		for _, name := range entries {
+			if !strings.HasSuffix(name, ".json") {
 				continue
 			}
-			body, err := os.ReadFile(filepath.Join(s.root, "outbox", dir, entry.Name()))
+			body, err := s.fsys.ReadFile(filepath.Join(s.root, "outbox", dir, name))
 			if err != nil {
 				return nil, err
 			}
@@ -117,18 +117,18 @@ func (s *Spool) RoutineHistory(id string, caller identity.Envelope) ([]RoutineRu
 	}
 	found := map[string]RoutineRun{}
 	for _, dir := range []string{"", "archive", "receipts"} {
-		entries, err := os.ReadDir(filepath.Join(s.root, "occurrences", dir))
+		entries, err := s.fsys.ReadDir(filepath.Join(s.root, "occurrences", dir))
 		if os.IsNotExist(err) {
 			continue
 		}
 		if err != nil {
 			return nil, err
 		}
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+		for _, name := range entries {
+			if !strings.HasSuffix(name, ".json") {
 				continue
 			}
-			body, err := os.ReadFile(filepath.Join(s.root, "occurrences", dir, entry.Name()))
+			body, err := s.fsys.ReadFile(filepath.Join(s.root, "occurrences", dir, name))
 			if err != nil {
 				return nil, err
 			}
@@ -146,7 +146,7 @@ func (s *Spool) RoutineHistory(id string, caller identity.Envelope) ([]RoutineRu
 				}
 				run = s.routineRunLocked(o, outcomes)
 			}
-			if entry.Name() != run.ID+".json" {
+			if name != run.ID+".json" {
 				continue
 			}
 			if _, ok := found[run.ID]; !ok {

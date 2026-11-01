@@ -93,6 +93,29 @@ type Config struct {
 	// credential form on first visit. Personal loopback deployments only;
 	// BROKER_DIRECT_FORM=1 enables it without editing this file.
 	DirectForm bool `json:"direct_form,omitempty"`
+	// AuditHotMaxBytes bounds the hot audit table (0 disables the admission
+	// gate). AuditArchiveDir receives sealed audit archives; both must be
+	// set together. AuditAutoRetain is the explicit destructive policy for
+	// automatic high-water maintenance: at 80% the prefix exports and prunes
+	// without an operator; off (default) = export-only and a visible
+	// admission stop at the cap.
+	AuditHotMaxBytes int64  `json:"audit_hot_max_bytes,omitempty"`
+	AuditArchiveDir  string `json:"audit_archive_dir,omitempty"`
+	AuditAutoRetain  bool   `json:"audit_auto_retain,omitempty"`
+	// Archive budgets bound the archive directory itself: on the tick the
+	// oldest verified archive pairs past the byte/age limit are permanently
+	// deleted — except the newest pair, which carries the provenance link
+	// to the current floor (SPEC-0087 R5.2). Zero means unbounded.
+	AuditArchiveMaxBytes   int64 `json:"audit_archive_max_bytes,omitempty"`
+	AuditArchiveMaxAgeDays int   `json:"audit_archive_max_age_days,omitempty"`
+	// RecordsArchiveDir receives sealed history-rotation archives; empty
+	// falls back to AuditArchiveDir. RecordsAutoRetain is the explicit
+	// destructive policy for automatic rotation: at 80% of the ledger cap
+	// the history prefix exports, prunes and compacts.
+	RecordsArchiveDir        string `json:"records_archive_dir,omitempty"`
+	RecordsAutoRetain        bool   `json:"records_auto_retain,omitempty"`
+	RecordsArchiveMaxBytes   int64  `json:"records_archive_max_bytes,omitempty"`
+	RecordsArchiveMaxAgeDays int    `json:"records_archive_max_age_days,omitempty"`
 }
 
 func ReadConfig(path string) (Config, error) {
@@ -120,6 +143,27 @@ func ReadConfig(path string) (Config, error) {
 	}
 	if _, _, e := net.SplitHostPort(c.Listen); e != nil {
 		return c, errors.New("invalid listen address")
+	}
+	if c.AuditHotMaxBytes < 0 || c.AuditHotMaxBytes > 1<<30 {
+		return c, errors.New("invalid audit hot cap")
+	}
+	if (c.AuditHotMaxBytes == 0) != (c.AuditArchiveDir == "") {
+		return c, errors.New("audit retention requires both audit_hot_max_bytes and audit_archive_dir")
+	}
+	if c.AuditArchiveDir != "" && !filepath.IsAbs(c.AuditArchiveDir) {
+		return c, errors.New("audit archive directory must be absolute")
+	}
+	if c.AuditAutoRetain && c.AuditArchiveDir == "" {
+		return c, errors.New("audit auto retain requires audit_archive_dir")
+	}
+	if c.AuditArchiveMaxBytes > 0 && c.AuditArchiveDir == "" {
+		return c, errors.New("audit archive budget requires audit_archive_dir")
+	}
+	if c.RecordsArchiveDir != "" && !filepath.IsAbs(c.RecordsArchiveDir) {
+		return c, errors.New("records archive directory must be absolute")
+	}
+	if c.RecordsAutoRetain && c.RecordsArchiveDir == "" && c.AuditArchiveDir == "" {
+		return c, errors.New("records auto retain requires an archive directory")
 	}
 	if len(c.TrustedKeys) == 0 || len(c.TrustedKeys) > 64 || len(c.Providers) == 0 || len(c.Providers) > 32 {
 		return c, errors.New("invalid adapter configuration")
@@ -372,6 +416,16 @@ func Build(c Config) (*Service, error) {
 	if e != nil {
 		return nil, e
 	}
+	if c.AuditHotMaxBytes > 0 {
+		ledger.SetAuditRetention(journal.AuditRetention{HotMaxBytes: c.AuditHotMaxBytes, ArchiveDir: c.AuditArchiveDir, Destructive: c.AuditAutoRetain})
+	}
+	recordsArchive := c.RecordsArchiveDir
+	if recordsArchive == "" {
+		recordsArchive = c.AuditArchiveDir
+	}
+	if recordsArchive != "" {
+		ledger.SetRecordsRetention(journal.RecordsRetention{ArchiveDir: recordsArchive, Destructive: c.RecordsAutoRetain, ArchiveMaxBytes: c.RecordsArchiveMaxBytes})
+	}
 	if initialized && len(ledger.Records()) == 0 {
 		_ = ledger.Close()
 		return nil, ErrStateRecoveryRequired
@@ -424,6 +478,9 @@ run:
 			break run
 		case <-ticker.C:
 			s.Broker.Sweep()
+			// High-water maintenance rides the same tick; in-memory checks
+			// are free at low water (SPEC-0087 R5.2).
+			s.ledger.RetainMaintenance()
 		}
 	}
 	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)

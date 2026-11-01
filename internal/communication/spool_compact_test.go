@@ -1,9 +1,11 @@
 package communication
 
 import (
+	"bytes"
 	"compress/gzip"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -13,6 +15,58 @@ import (
 
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
+
+func TestCompactDropsOnlyAgedOrphanOccurrenceSidecars(t *testing.T) {
+	s, err := NewSpool(filepath.Join(t.TempDir(), "spool"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(s.root, "occurrences")
+	old := time.Now().Add(-100 * time.Hour)
+	for _, suffix := range []string{".probe-result", ".digest-result", ".script-output"} {
+		path := filepath.Join(dir, "orphan"+suffix)
+		if err := os.WriteFile(path, []byte("receipt"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"live", "quarantined", "fresh"} {
+		path := filepath.Join(dir, name+".probe-result")
+		if err := os.WriteFile(path, []byte("receipt"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "live.json"), []byte("{}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "quarantine"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "quarantine", "quarantined.json"), []byte("{}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(filepath.Join(dir, "fresh.probe-result"), time.Now(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Compact(time.Now(), 72*time.Hour, CompactLimits{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, suffix := range []string{".probe-result", ".digest-result", ".script-output"} {
+		if _, err := os.Stat(filepath.Join(dir, "orphan"+suffix)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("aged orphan %s remains: %v", suffix, err)
+		}
+	}
+	for _, name := range []string{"live", "quarantined", "fresh"} {
+		if _, err := os.Stat(filepath.Join(dir, name+".probe-result")); err != nil {
+			t.Fatalf("protected %s sidecar removed: %v", name, err)
+		}
+	}
+}
 
 // Terminal history older than retention is not simply deleted: it lands in a
 // compressed daily bundle so a multi-week incident still has an audit trail
@@ -158,8 +212,11 @@ func TestCompactArchivesMappingsAndReceipts(t *testing.T) {
 	if err := os.Chtimes(s.mappingPath("m-old"), old, old); err != nil {
 		t.Fatal(err)
 	}
-	event := filepath.Join(root, "events", "receipt-1.json")
-	if err := atomicJSON(event, map[string]string{"delivery_id": "receipt-1"}); err != nil {
+	if err := s.writeMappingLocked(JobMapping{JobID: "receipt-1", Status: "completed"}); err != nil {
+		t.Fatal(err)
+	}
+	event := filepath.Join(root, "run-events", "receipt-1.json")
+	if err := atomicJSON(event, streamReceipt{JobID: "receipt-1", Position: 1, Event: hubruntime.ExecuteResponse{JobID: "receipt-1", EventID: "end"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chtimes(event, old, old); err != nil {
@@ -205,8 +262,11 @@ func TestCompactCapsEventReceipts(t *testing.T) {
 	now := time.Now()
 	for i := range 5 {
 		id := "rcpt-" + string(rune('a'+i))
-		path := filepath.Join(root, "events", id+".json")
-		if err := atomicJSON(path, map[string]string{"delivery_id": id}); err != nil {
+		if err := s.writeMappingLocked(JobMapping{JobID: id, Status: "completed"}); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(root, "run-events", id+".json")
+		if err := atomicJSON(path, streamReceipt{JobID: id, Position: 1, Event: hubruntime.ExecuteResponse{JobID: id, EventID: "end"}}); err != nil {
 			t.Fatal(err)
 		}
 		at := now.Add(time.Duration(i) * time.Second)
@@ -221,17 +281,17 @@ func TestCompactCapsEventReceipts(t *testing.T) {
 	if err := atomicJSON(live, Delivery{ID: "d-live"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := atomicJSON(filepath.Join(root, "events", "rcpt-live.json"), streamReceipt{Delivery: &Delivery{ID: "d-live"}}); err != nil {
+	if err := atomicJSON(filepath.Join(root, "run-events", "rcpt-live.json"), streamReceipt{Delivery: &Delivery{ID: "d-live"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Compact(now.Add(time.Minute), 336*time.Hour, CompactLimits{MaxTerminalFiles: 4, ArchiveMaxBytes: 64 << 20}); err != nil {
 		t.Fatal(err)
 	}
-	entries, _ := os.ReadDir(filepath.Join(root, "events"))
+	entries, _ := os.ReadDir(filepath.Join(root, "run-events"))
 	if len(entries) != 5 {
 		t.Fatalf("events over cap or live receipt evicted: %d", len(entries))
 	}
-	if _, err := os.Stat(filepath.Join(root, "events", "rcpt-live.json")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, "run-events", "rcpt-live.json")); err != nil {
 		t.Fatal("live receipt evicted")
 	}
 }
@@ -450,5 +510,121 @@ func TestCompactPurgesAgedArchives(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("aged archive survived retention")
+	}
+}
+
+func TestCompactKeepsPausedSourceCursorAndUnknownSchema(t *testing.T) {
+	s, err := NewSpool(filepath.Join(t.TempDir(), "spool"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	old := now.Add(-1000 * time.Hour)
+	fixtures := map[string]any{
+		"paused.json":  EventState{ScheduleID: "paused", Cursor: "resume-42", Seen: []string{"seen-1"}},
+		"unknown.json": map[string]string{"future_schema": "unrecognized"},
+	}
+	for name, v := range fixtures {
+		path := filepath.Join(s.root, "run-events", name)
+		if err = atomicJSON(path, v); err != nil {
+			t.Fatal(err)
+		}
+		if err = os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := range 3 {
+		if err = atomicJSON(filepath.Join(s.root, "run-events", fmt.Sprintf("terminal-%d.json", i)), streamReceipt{JobID: fmt.Sprint(i), Position: 1, Event: hubruntime.ExecuteResponse{JobID: fmt.Sprint(i), EventID: "end", Status: "completed", LastEvent: "run.completed"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := map[string][]byte{}
+	for name := range fixtures {
+		b, err := os.ReadFile(filepath.Join(s.root, "run-events", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		before[name] = b
+	}
+	if err = s.Compact(now, time.Hour, CompactLimits{MaxTerminalFiles: 1, ArchiveMaxBytes: 64 << 20}); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range before {
+		got, err := os.ReadFile(filepath.Join(s.root, "run-events", name))
+		if err != nil || !bytes.Equal(got, want) {
+			t.Errorf("protected state %s changed: %v", name, err)
+		}
+	}
+}
+
+func TestArchiveSyncFailureKeepsSource(t *testing.T) {
+	s, err := NewSpool(filepath.Join(t.TempDir(), "spool"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(s.root, "done", "terminal.json")
+	if err = atomicJSON(path, Job{ID: "terminal"}); err != nil {
+		t.Fatal(err)
+	}
+	s.archiveSync = func(*os.File) error { return errors.New("synthetic sync failure") }
+	if err = s.archiveTerminalLocked("done", "terminal.json", time.Now()); err == nil {
+		t.Error("archive sync failure ignored")
+	}
+	if _, err = os.Stat(path); err != nil {
+		t.Fatal("source removed before durable archive")
+	}
+}
+
+func TestArchiveReplayDoesNotDuplicateRecord(t *testing.T) {
+	s, err := NewSpool(filepath.Join(t.TempDir(), "spool"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"id":"terminal-replay"}` + "\n")
+	for _, name := range []string{"done-20261028.jsonl.gz", "done-20261029.jsonl.gz"} {
+		if err = s.appendArchiveLocked(name, body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files, err := filepath.Glob(filepath.Join(s.root, "archive", "*.jsonl.gz"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, name := range files {
+		f, err := os.Open(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gz, err := gzip.NewReader(f)
+		if err != nil {
+			_ = f.Close()
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(gz)
+		_ = gz.Close()
+		_ = f.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		count += bytes.Count(data, []byte("terminal-replay"))
+	}
+	if count != 1 {
+		t.Fatalf("canonical archive record count=%d, want 1", count)
+	}
+}
+
+func TestArchiveRejectsTraversal(t *testing.T) {
+	s, err := NewSpool(filepath.Join(t.TempDir(), "spool"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"../foreign.jsonl.gz", "..\\foreign.jsonl.gz"} {
+		if err = s.appendArchiveLocked(name, []byte("synthetic")); err == nil {
+			t.Errorf("accepted archive escape %q", name)
+		}
+	}
+	if _, err = os.Stat(filepath.Join(s.root, "foreign.jsonl.gz")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("archive escaped its owner")
 	}
 }

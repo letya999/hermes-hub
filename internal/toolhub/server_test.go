@@ -37,7 +37,7 @@ func TestEndpointHandlerLoadsSecondaryTokensFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	config := EndpointConfig{Token: token, Auth: auth, TokensFile: tokensPath, Backend: backend}
-	handler, err := NewEndpointHandler(config, store)
+	handler, err := endpointWithTestAudit(t, config, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestEndpointHandlerLoadsSecondaryTokensFile(t *testing.T) {
 	}
 	bad := config
 	bad.TokensFile = filepath.Join(t.TempDir(), "missing.json")
-	if _, err := NewEndpointHandler(bad, store); err == nil {
+	if _, err := endpointWithTestAudit(t, bad, store); err == nil {
 		t.Fatal("missing tokens file accepted")
 	}
 	dupPath := filepath.Join(t.TempDir(), "dup.json")
@@ -59,7 +59,7 @@ func TestEndpointHandlerLoadsSecondaryTokensFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	bad.TokensFile = dupPath
-	if _, err := NewEndpointHandler(bad, store); err == nil {
+	if _, err := endpointWithTestAudit(t, bad, store); err == nil {
 		t.Fatal("duplicate token accepted")
 	}
 	badJSON := filepath.Join(t.TempDir(), "bad.json")
@@ -67,7 +67,7 @@ func TestEndpointHandlerLoadsSecondaryTokensFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	bad.TokensFile = badJSON
-	if _, err := NewEndpointHandler(bad, store); err == nil {
+	if _, err := endpointWithTestAudit(t, bad, store); err == nil {
 		t.Fatal("invalid secondary identity accepted")
 	}
 }
@@ -86,7 +86,7 @@ func TestEndpointReloadsTokensFileOnAuthMiss(t *testing.T) {
 	if err := os.WriteFile(tokensPath, []byte(`{"`+strings.Repeat("c", 32)+`": `+string(carol)+`}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	handler, err := NewEndpointHandler(EndpointConfig{Token: token, Auth: auth, TokensFile: tokensPath, Backend: backend}, store)
+	handler, err := endpointWithTestAudit(t, EndpointConfig{Token: token, Auth: auth, TokensFile: tokensPath, Backend: backend}, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,25 +153,25 @@ func TestEndpointHandlerUsesOneAuthenticatedIdentity(t *testing.T) {
 	config := EndpointConfig{Token: strings.Repeat("t", 32), Auth: auth, Backend: backendFunc(func(_ context.Context, _ api.EffectiveBinding, _ api.ToolSpec, _ map[string]any) (api.BackendResult, error) {
 		return api.BackendResult{}, nil
 	})}
-	if _, err := NewEndpointHandler(config, store); err != nil {
+	if _, err := endpointWithTestAudit(t, config, store); err != nil {
 		t.Fatal(err)
 	}
 	bad := config
 	bad.Auth = identity.Envelope{Schema: identity.Schema}
-	if _, err := NewEndpointHandler(bad, store); err == nil {
+	if _, err := endpointWithTestAudit(t, bad, store); err == nil {
 		t.Fatal("invalid endpoint identity accepted")
 	}
-	if _, err := NewEndpointHandler(config, nil); err == nil {
+	if _, err := endpointWithTestAudit(t, config, nil); err == nil {
 		t.Fatal("nil store accepted")
 	}
 	bad = config
 	bad.Token = "short"
-	if _, err := NewEndpointHandler(bad, store); err == nil {
+	if _, err := endpointWithTestAudit(t, bad, store); err == nil {
 		t.Fatal("short endpoint token accepted")
 	}
 	bad = config
 	bad.Backend = nil
-	if _, err := NewEndpointHandler(bad, store); err == nil {
+	if _, err := endpointWithTestAudit(t, bad, store); err == nil {
 		t.Fatal("nil endpoint backend accepted")
 	}
 }
@@ -194,6 +194,7 @@ func TestReadinessBackendRouting(t *testing.T) {
 }
 
 func TestEndpointHandlerRunsReadinessBeforeProjection(t *testing.T) {
+	t.Setenv("HUB_COMMUNICATION_AUTH", testHumanControlToken)
 	store := NewStore()
 	grantTestControlOperations(t, store, "alice", "prepare_source", "status", "confirm")
 	definition := statefulContainerDefinition()
@@ -217,7 +218,7 @@ func TestEndpointHandlerRunsReadinessBeforeProjection(t *testing.T) {
 			return api.AdmissionReceipt{WorkloadID: effective.WorkloadID, State: "running", Enforced: true, ImageDigest: definition.Source.Digest, SidecarImages: definition.Workload.SidecarImages, Execution: definition.Execution}, nil
 		}},
 	}
-	handler, err := NewEndpointHandler(config, store)
+	handler, err := endpointWithTestAudit(t, config, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,9 +232,7 @@ func TestEndpointHandlerRunsReadinessBeforeProjection(t *testing.T) {
 	if _, err := callControl(t, session, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := callControl(t, session, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, store, prepared["onboarding_id"])}); err != nil {
-		t.Fatal(err)
-	}
+	confirmViaTrustedChannel(t, server.URL, store, prepared["onboarding_id"].(string))
 	if got := admissions.Load(); got != 1 {
 		t.Fatalf("readiness admissions=%d", got)
 	}
@@ -499,7 +498,7 @@ func TestEndpointBindsScopedLabelSeams(t *testing.T) {
 		return api.BackendResult{Text: "ok"}, nil
 	})
 	config := EndpointConfig{Token: strings.Repeat("t", 32), Auth: auth, Backend: backend}
-	handler, err := NewEndpointHandler(config, store)
+	handler, err := endpointWithTestAudit(t, config, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -508,7 +507,7 @@ func TestEndpointBindsScopedLabelSeams(t *testing.T) {
 		t.Fatal("scan seam bound without HUB_DOCKER_SCOPE")
 	}
 	t.Setenv("HUB_DOCKER_SCOPE", "own-project")
-	handler, err = NewEndpointHandler(config, store)
+	handler, err = endpointWithTestAudit(t, config, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -526,7 +525,7 @@ func TestEndpointBindsFinalizerStepDelay(t *testing.T) {
 		return api.BackendResult{Text: "ok"}, nil
 	})
 	config := EndpointConfig{Token: strings.Repeat("t", 32), Auth: auth, Backend: backend}
-	handler, err := NewEndpointHandler(config, store)
+	handler, err := endpointWithTestAudit(t, config, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -534,7 +533,7 @@ func TestEndpointBindsFinalizerStepDelay(t *testing.T) {
 		t.Fatalf("delay bound without env: %v", got)
 	}
 	t.Setenv("HUB_DEBUG_FINALIZER_DELAY_MS", "1500")
-	handler, err = NewEndpointHandler(config, store)
+	handler, err = endpointWithTestAudit(t, config, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -612,7 +611,7 @@ func TestEndpointBindsSurfaceProbe(t *testing.T) {
 	backend := backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
 		return api.BackendResult{Text: "ok"}, nil
 	})
-	handler, err := NewEndpointHandler(EndpointConfig{Token: strings.Repeat("t", 32), Auth: auth, Backend: backend}, store)
+	handler, err := endpointWithTestAudit(t, EndpointConfig{Token: strings.Repeat("t", 32), Auth: auth, Backend: backend}, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -633,6 +632,7 @@ func assertRequiredCredentialsElicitsFormURL(t *testing.T, store *Store, auth id
 		}),
 		Control: control,
 	}
+	attachGatewayAudit(t, gateway)
 	mcpServer := gateway.serverFor(auth)
 	ct, st := mcp.NewInMemoryTransports()
 	ss, err := mcpServer.Connect(context.Background(), st, nil)
@@ -726,6 +726,7 @@ func TestGatewayInjectorAndCallEnv(t *testing.T) {
 			return api.CredentialInjection{Environment: map[string]string{"GOOGLE_TOKEN": "injected"}, Cleanup: func() error { wiped.Store(true); return nil }}, nil
 		},
 	}
+	attachGatewayAudit(t, &gateway)
 	if _, err := gateway.call(context.Background(), auth, name, map[string]any{"query": "x"}); err != nil {
 		t.Fatal(err)
 	}

@@ -26,7 +26,7 @@ func (e *Engine) ReminderStateLocked(item commodel.Schedule) (string, string) {
 	}
 	state := "unavailable"
 	for _, dir := range []string{"", "archive"} {
-		body, err := os.ReadFile(filepath.Join(e.root, "occurrences", dir, id+".json"))
+		body, err := e.readFile(filepath.Join(e.root, "occurrences", dir, id+".json"))
 		if os.IsNotExist(err) {
 			continue
 		}
@@ -41,7 +41,7 @@ func (e *Engine) ReminderStateLocked(item commodel.Schedule) (string, string) {
 		return state, ""
 	}
 	for _, delivery := range []struct{ dir, state string }{{"failed", "uncertain"}, {"done", "delivered"}} {
-		_, err := os.Stat(filepath.Join(e.root, "outbox", delivery.dir, "reminder-"+id+".json"))
+		_, err := e.lstat(filepath.Join(e.root, "outbox", delivery.dir, "reminder-"+id+".json"))
 		if err == nil {
 			return state, delivery.state
 		}

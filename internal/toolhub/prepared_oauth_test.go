@@ -81,6 +81,7 @@ func testOAuthHandoffAndCallback(t *testing.T, fromRecipe bool) {
 	if err := store.PutOnboarding(on); err != nil {
 		t.Fatal(err)
 	}
+	grantTestControlOperations(t, store, auth.PrincipalID, "confirm")
 	secrets, err := credstore.Open(credstore.Options{Path: filepath.Join(t.TempDir(), "tokens.enc"), Key: bytes.Repeat([]byte("k"), 32)})
 	if err != nil {
 		t.Fatal(err)
@@ -197,9 +198,10 @@ func testOAuthHandoffAndCallback(t *testing.T, fromRecipe bool) {
 		t.Fatal("replayed callback accepted", err)
 	}
 	stored, _ := store.onboarding(on.OnboardingID)
-	if stored.Phase != api.PhaseEnabled || stored.ProviderAuthorizationURL != "" {
-		t.Fatal("onboarding did not resume")
+	if stored.Phase != api.PhaseAwaitingConfirm || stored.ConfirmationUsed || stored.ProviderAuthorizationURL != "" {
+		t.Fatal("OAuth bypassed verified human consent")
 	}
+	finishAsHuman(t, c, stored.OnboardingID)
 	if _, err := c.ensurePreparedOAuth(t.Context(), auth, stored, d, false); err == nil || !strings.Contains(err.Error(), "existing token state") {
 		t.Fatal("existing token was overwritten", err)
 	}

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -94,6 +93,9 @@ func (g *Gateway) ownsRoutineEnvelope(job Job, canonical identity.Envelope) bool
 // routine-produced job: occurrence-shaped ids go through the durable
 // occurrence record, stream batch jobs through the schedule id they carry.
 func (g *Gateway) routineConversationOf(jobID string) string {
+	if sid, _, _, ok := batchReference(jobID); ok {
+		return routineConversation(sid)
+	}
 	if o, ok := g.occurrenceFor(jobID); ok {
 		return routineConversation(o.ScheduleID)
 	}
@@ -104,7 +106,7 @@ func (g *Gateway) routineConversationOf(jobID string) string {
 }
 
 func (g *Gateway) occurrenceFor(jobID string) (RoutineOccurrence, bool) {
-	body, err := os.ReadFile(filepath.Join(g.spool.root, "occurrences", spoolFileID(jobID)+".json"))
+	body, err := g.spool.fsys.ReadFile(filepath.Join(g.spool.root, "occurrences", spoolFileID(jobID)+".json"))
 	var o RoutineOccurrence
 	if err != nil || json.Unmarshal(body, &o) != nil {
 		return RoutineOccurrence{}, false
@@ -168,6 +170,14 @@ func streamRefScheduleID(id string) string {
 // stream batch refs re-check the owning schedule stays stream-active and
 // authorized. s.mu must be held.
 func (g *Gateway) occurrenceRefAuthorizedLocked(id string) bool {
+	if strings.HasPrefix(id, "batch2-") {
+		live, ok := g.spool.batchScheduleLocked(id, g.now().UTC())
+		if !ok {
+			return false
+		}
+		job := Job{Envelope: live.Envelope, OrganizationID: live.OrganizationID, UserID: live.UserID, ActorID: live.ActorID, ScopeID: live.ScopeID, Channel: live.Channel, ChatID: live.ChatID, TaskID: live.TaskID, TopicID: live.TopicID, SlackChannel: live.SlackChannel, SlackThread: live.SlackThread, Trigger: "cron"}
+		return g.authorizeOccurrence(job) == nil
+	}
 	if o, ok := g.occurrenceFor(id); ok {
 		if !g.spool.occurrenceCurrentLocked(o) || g.authorizeOccurrence(o.Job) != nil {
 			return false

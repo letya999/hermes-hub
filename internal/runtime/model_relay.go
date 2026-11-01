@@ -243,7 +243,7 @@ func modelRelayHandler(hops []*modelHop, selectedModel string) (http.Handler, er
 		}
 		hop, resp, err := call(r.Context(), r.Method, r.URL.Path, r.Header.Get("Authorization"), r.Header.Get("Content-Type"), body)
 		if err != nil {
-			http.Error(w, "model route unavailable", http.StatusBadGateway)
+			writeModelUnavailable(w)
 			return
 		}
 		if catalog && resp.StatusCode == http.StatusOK {
@@ -279,6 +279,12 @@ func modelRelayHandler(hops []*modelHop, selectedModel string) (http.Handler, er
 		copyModelBody(w, resp)
 		_ = resp.Body.Close()
 	}), nil
+}
+
+func writeModelUnavailable(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadGateway)
+	_, _ = io.WriteString(w, `{"error":{"code":"model_route_unavailable","message":"model route unavailable"}}`)
 }
 
 func requestsSelectedModel(body []byte, selected string) bool {
@@ -604,7 +610,7 @@ func modelRelayRegistryHandler(registryPath, statePath, owner, admin string) (ht
 		}
 		hop, resp, err := modelCall(req.Context(), client, hops, req.Method, req.URL.Path, providerAuth, req.Header.Get("Content-Type"), body, hopTimeout)
 		if err != nil {
-			http.Error(w, "model route unavailable", http.StatusBadGateway)
+			writeModelUnavailable(w)
 			return
 		}
 		for key, values := range resp.Header {

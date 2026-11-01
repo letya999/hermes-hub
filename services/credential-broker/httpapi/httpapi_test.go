@@ -906,3 +906,17 @@ func TestSDKOverHTTP(t *testing.T) {
 		t.Fatal("API error")
 	}
 }
+
+// The audit admission stop surfaces as a distinct, visible status — not a
+// generic crash — so operators know to run a retention pass.
+func TestFailMapsRetentionFull(t *testing.T) {
+	w := httptest.NewRecorder()
+	fail(w, broker.ErrRetentionFull)
+	if w.Code != 507 {
+		t.Fatalf("retention-full status = %d, want 507", w.Code)
+	}
+	var body v1.Error
+	if json.Unmarshal(w.Body.Bytes(), &body) != nil || body.Code != "retention_full" {
+		t.Fatalf("retention-full body = %s", w.Body.String())
+	}
+}

@@ -1,6 +1,7 @@
 package routines
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -165,12 +166,18 @@ func TestAgentEscalationRespectsQuiet(t *testing.T) {
 	loud := commodel.Schedule{ScheduleID: "w-loud", Revision: 1, Envelope: env, Channel: "telegram_bot", Input: "zen", Timezone: "UTC", NotifyMode: "agent", Probe: &commodel.WatchProbe{URL: "https://example.com"}}
 	now := time.Date(2026, 10, 18, 21, 30, 0, 0, time.UTC)
 	for _, item := range []commodel.Schedule{quiet, loud} {
+		item.Enabled = true
+		if err := e.atomicJSON(e.SchedulePath(item.ScheduleID), item); err != nil {
+			t.Fatal(err)
+		}
 		if err := e.atomicJSON(e.WatchPath(item.ScheduleID), WatchState{ScheduleID: item.ScheduleID, Baseline: "old", Value: "old"}); err != nil {
 			t.Fatal(err)
 		}
 		o := watchOccurrence(item.ScheduleID, "watcher", 1, env, now)
 		putOccurrenceState(t, e, root, o, "probing")
-		e.SettleProbe(o, item, "new value", WatchHash("new value"), now, nil, nil)
+		if err := e.SettleProbe(o, item, "new value", WatchHash("new value"), now, nil, nil); err != nil {
+			t.Fatal(err)
+		}
 	}
 	quietLive := readOccurrence(t, root, watchOccurrence("w-quiet", "watcher", 1, env, now))
 	if quietLive.State != "capped" {
@@ -252,5 +259,44 @@ func TestHookProbeValidates(t *testing.T) {
 	in.Probe.URL = "https://example.com"
 	if err := ValidateScheduleDraft(in, caller, hooks); err == nil {
 		t.Fatal("hook probe must reject a fetchable URL")
+	}
+}
+
+func TestProbeReceiptCannotCrossItsSourceOccurrence(t *testing.T) {
+	e, d, root := newWatcherTest(t)
+	now := time.Now().UTC()
+	env := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
+	source := commodel.Schedule{ScheduleID: "source-a", Revision: 1, Envelope: env, Enabled: true, JobKind: "watcher", NotifyMode: "agent", Probe: &commodel.WatchProbe{Kind: "http", URL: "https://example.invalid/a"}}
+	foreign := source
+	foreign.ScheduleID = "source-b"
+	for _, s := range []commodel.Schedule{source, foreign} {
+		if err := e.atomicJSON(e.SchedulePath(s.ScheduleID), s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	original := watchOccurrence(source.ScheduleID, "watcher", 1, env, now)
+	putOccurrenceState(t, e, root, original, "probing")
+	other := watchOccurrence(foreign.ScheduleID, "watcher", 1, env, now)
+	putOccurrenceState(t, e, root, other, "dispatched")
+	job := other.Job
+	job.Envelope.ConversationID = RoutineConversation(foreign.ScheduleID)
+	job.Text = "foreign fixture"
+	r := ProbeResult{Occurrence: other, Watch: WatchState{ScheduleID: foreign.ScheduleID, Generation: 1}}
+	body, _ := json.Marshal(r)
+	var payload map[string]any
+	if json.Unmarshal(body, &payload) != nil {
+		t.Fatal("fixture")
+	}
+	payload["job"] = job
+	path := filepath.Join(root, "occurrences", OccurrenceID(original)+".probe-result")
+	if err := e.atomicJSON(path, payload); err != nil {
+		t.Fatal(err)
+	}
+	err := e.ProbeDueOccurrencesContext(context.Background(), now, nil, func(context.Context, string) ([]byte, error) {
+		t.Fatal("receipt recovery fetched source")
+		return nil, nil
+	}, nil, nil)
+	if err == nil || len(d.jobs) != 0 {
+		t.Fatal("foreign source receipt admitted an unrelated job")
 	}
 }

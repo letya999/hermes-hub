@@ -23,6 +23,7 @@ func TestOAuthCallbackFailureIsLogged(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := &Gateway{Control: &ControlPlane{OAuth: oauth.NewBroker(secrets, []string{"http://127.0.0.1/oauth/callback"}), Store: NewStore()}}
+	attachGatewayAudit(t, g)
 	var buf bytes.Buffer
 	restore := log.Writer()
 	log.SetOutput(&buf)

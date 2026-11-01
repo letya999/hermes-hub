@@ -240,6 +240,14 @@ func (c *ControlPlane) confirm(ctx context.Context, auth identity.Envelope, args
 	if len(onboarding.Required) > 0 && onboarding.Locator == "" {
 		return nil, fmt.Errorf("%w: credentials required", api.ErrUnauthorized)
 	}
+	if proof, ok := ctx.Value(humanConfirmationKey{}).(api.HumanConfirmation); ok {
+		onboarding, err = c.Store.ConsumeHumanConfirmation(proof, c.now())
+	} else {
+		onboarding, err = c.Store.ConsumeConfirmation(onboarding)
+	}
+	if err != nil {
+		return nil, err
+	}
 	binding, err := c.materializeBinding(ctx, auth, onboarding, definition)
 	if err != nil {
 		if errors.Is(err, api.ErrUnauthorized) || errors.Is(err, api.ErrCredentialDelivery) {
@@ -255,7 +263,6 @@ func (c *ControlPlane) confirm(ctx context.Context, auth identity.Envelope, args
 		}
 		return nil, c.persistFailure(onboarding, api.PublicPrepareError(err), err)
 	}
-	onboarding.ConfirmationUsed = true
 	onboarding.BindingID = binding.ToolBindingID
 	onboarding.ConnectionID = binding.ConnectionID
 	onboarding.CredentialRefID = binding.CredentialRefID
@@ -583,7 +590,7 @@ func (c *ControlPlane) statusBody(onboarding api.Onboarding, withHints bool) map
 			body["instructions"] = parrotInstructions("signin_url")
 		}
 	case api.PhaseAwaitingConfirm:
-		body["next_action"] = "confirm"
+		body["next_action"] = "await_user_confirmation"
 	case api.PhaseAwaitingOAuth:
 		body["next_action"] = "authorize"
 	case api.PhaseConfirmed:

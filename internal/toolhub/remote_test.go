@@ -194,13 +194,14 @@ func newRemoteMCPFixture(t *testing.T, requiredToken string) *remoteMCPFixture {
 	}))
 	t.Cleanup(server.Close)
 	fixture.URL = server.URL
-	pinRemoteFixtureClient(t, fixture, server.URL)
+	pinRemoteFixtureClient(t, fixture, server)
 	return fixture
 }
 
 // pinRemoteFixtureClient maps the fixture TLS server to a public-looking
 // answer and swaps api.RemoteHTTPClient for a fixture-dialing client.
-func pinRemoteFixtureClient(t *testing.T, fixture *remoteMCPFixture, serverURL string) {
+func pinRemoteFixtureClient(t *testing.T, fixture *remoteMCPFixture, server *httptest.Server) {
+	serverURL := server.URL
 	t.Helper()
 	originalResolve, originalClient := api.ResolveRemoteIP, api.RemoteHTTPClient
 	fixture.tlsCleanup = func() { api.ResolveRemoteIP, api.RemoteHTTPClient = originalResolve, originalClient }
@@ -210,7 +211,7 @@ func pinRemoteFixtureClient(t *testing.T, fixture *remoteMCPFixture, serverURL s
 	}
 	dialAddr := strings.TrimPrefix(serverURL, "https://")
 	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		TLSClientConfig: &tls.Config{RootCAs: server.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs, ServerName: server.Certificate().DNSNames[0], MinVersion: tls.VersionTLS12},
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "tcp", dialAddr)
 		},
@@ -313,11 +314,12 @@ func TestPrepareRemoteCredentialFreeEndToEnd(t *testing.T) {
 	if _, err := callControl(t, bob, "prepare_source", map[string]any{"definition_id": prepared["definition_id"], "version": "1.0.0"}); err == nil {
 		t.Fatal("cross-user catalog prepare allowed")
 	}
-	confirmed, err := callControl(t, alice, "confirm", map[string]any{"onboarding_id": prepared["onboarding_id"], "nonce": confirmNonceOf(t, fix.store, prepared["onboarding_id"])})
+	confirmViaTrustedChannel(t, fix.server.URL, fix.store, prepared["onboarding_id"].(string))
+	confirmed, err := callControl(t, alice, "status", map[string]any{"onboarding_id": prepared["onboarding_id"]})
 	if err != nil {
 		t.Fatalf("confirm: %v", err)
 	}
-	if confirmed["phase"] != api.PhaseConfirmed {
+	if confirmed["phase"] != api.PhaseEnabled {
 		t.Fatalf("confirm=%v", confirmed)
 	}
 	enabled, err := callControl(t, alice, "enable", map[string]any{"onboarding_id": prepared["onboarding_id"]})
@@ -413,9 +415,7 @@ func TestPrepareRemoteCredentialedFlow(t *testing.T) {
 	if onboarding.Phase != api.PhaseAwaitingConfirm || onboarding.AdmissionPending {
 		t.Fatalf("post-submit=%+v", onboarding)
 	}
-	if _, err := callControl(t, alice, "confirm", map[string]any{"onboarding_id": onboardingID, "nonce": onboarding.ConfirmationNonce}); err != nil {
-		t.Fatal(err)
-	}
+	confirmViaTrustedChannel(t, fix.server.URL, fix.store, onboardingID)
 	if _, err := callControl(t, alice, "enable", map[string]any{"onboarding_id": onboardingID}); err != nil {
 		t.Fatal(err)
 	}
@@ -502,9 +502,7 @@ func TestRemoteAllowlistNarrowsProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	onboarding := mustOnboarding(t, fix.store, prepared["onboarding_id"].(string))
-	if _, err := callControl(t, alice, "confirm", map[string]any{"onboarding_id": onboarding.OnboardingID, "nonce": onboarding.ConfirmationNonce}); err != nil {
-		t.Fatal(err)
-	}
+	confirmViaTrustedChannel(t, fix.server.URL, fix.store, onboarding.OnboardingID)
 	if _, err := callControl(t, alice, "enable", map[string]any{"onboarding_id": onboarding.OnboardingID}); err != nil {
 		t.Fatal(err)
 	}

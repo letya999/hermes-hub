@@ -38,8 +38,8 @@ func TestHTTPRunnerContract(t *testing.T) {
 	badRunner := HTTPRunner{URL: failed.URL, Auth: "secret", HTTP: failed.Client(), Limit: time.Second}
 	_, err = badRunner.Run(context.Background(), Job{Text: "hello"}, User{})
 	failed.Close()
-	if err == nil || errors.Is(err, ErrUncertain) {
-		t.Fatalf("deterministic runtime error classified incorrectly: %v", err)
+	if !errors.Is(err, ErrUncertain) {
+		t.Fatalf("unbound runtime failure must remain uncertain: %v", err)
 	}
 	terminal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -306,6 +306,7 @@ func TestHTTPRunnerRetriesUnavailableRuntime(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		if calls <= 2 {
+			w.Header().Set("X-Hub-Admission", "not-dispatched")
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
@@ -321,7 +322,11 @@ func TestHTTPRunnerRetriesUnavailableRuntime(t *testing.T) {
 	}
 
 	calls = 0
-	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { calls++; w.WriteHeader(http.StatusServiceUnavailable) }))
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.Header().Set("X-Hub-Admission", "not-dispatched")
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
 	defer dead.Close()
 	if _, err := (HTTPRunner{URL: dead.URL, Auth: "secret", HTTP: dead.Client(), Limit: time.Minute}).RunOutcome(context.Background(), Job{Text: "hello"}); err == nil || errors.Is(err, ErrUncertain) {
 		t.Fatalf("persistent unavailability must fail deterministically: %v", err)

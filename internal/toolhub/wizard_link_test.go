@@ -251,8 +251,7 @@ func TestConnectWizardAcceptsCredentialPost(t *testing.T) {
 }
 
 // The same wizard link serves the confirm step: GET renders the button and
-// POST executes finishAuthorization, then redirects back onto /connect/<id>?k=
-// so the user never leaves the one page they were given.
+// The wizard shows the action; only the verified channel callback grants consent.
 func TestConnectWizardConfirmStep(t *testing.T) {
 	store := NewStore()
 	grantTestControlOperations(t, store, "alice", api.ControlOperations...)
@@ -281,16 +280,20 @@ func TestConnectWizardConfirmStep(t *testing.T) {
 	get := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/connect/onb-wiz-confirm?k=wiz-key", nil)
 	get.Host = "127.0.0.1"
 	gateway.serveConnect(rec, get)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<form") {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "в исходном чате") || strings.Contains(rec.Body.String(), "<form") {
 		t.Fatalf("wizard confirm page status=%d", rec.Code)
 	}
 	post := httptest.NewRecorder()
 	postReq := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/connect/onb-wiz-confirm?k=wiz-key", nil)
 	postReq.Host = "127.0.0.1"
 	gateway.serveConnect(post, postReq)
-	if post.Code != http.StatusSeeOther || !strings.Contains(post.Header().Get("Location"), "/connect/onb-wiz-confirm?k=wiz-key") {
+	if post.Code != http.StatusForbidden {
 		t.Fatalf("wizard confirm post=%d location=%q", post.Code, post.Header().Get("Location"))
 	}
+	if pending := mustOnboarding(t, store, onboarding.OnboardingID); pending.ConfirmationUsed || pending.BindingID != "" {
+		t.Fatal("wizard bearer granted consent")
+	}
+	finishAsHuman(t, control, onboarding.OnboardingID)
 	latest, err := store.onboarding("onb-wiz-confirm")
 	if err != nil || (latest.Phase != api.PhaseConfirmed && latest.Phase != api.PhaseEnabled && latest.Phase != api.PhaseAwaitingOAuth) {
 		t.Fatalf("wizard confirm did not advance: phase=%v err=%v", latest.Phase, err)
@@ -301,6 +304,7 @@ func TestConnectWizardConfirmStep(t *testing.T) {
 // writes path, not a fresh authorization — same branching serveConfirm uses.
 func TestConnectWizardConfirmPendingWrites(t *testing.T) {
 	store := NewStore()
+	grantTestControlOperations(t, store, "alice", "confirm")
 	control := &ControlPlane{Store: store, WorkloadRoot: t.TempDir(), Now: time.Now}
 	auth := aliceAuth()
 	onboarding := api.Onboarding{
@@ -319,9 +323,10 @@ func TestConnectWizardConfirmPendingWrites(t *testing.T) {
 	postReq := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/connect/onb-wiz-writes?k=wiz-key", nil)
 	postReq.Host = "127.0.0.1"
 	gateway.serveConnect(post, postReq)
-	if post.Code != http.StatusSeeOther {
+	if post.Code != http.StatusForbidden {
 		t.Fatalf("wizard writes confirm=%d", post.Code)
 	}
+	finishAsHuman(t, control, onboarding.OnboardingID)
 	latest, err := store.onboarding("onb-wiz-writes")
 	if err != nil || !latest.WritesEnabled || latest.Phase != api.PhaseEnabled {
 		t.Fatalf("writes confirm did not apply: %+v err=%v", latest, err)
@@ -665,7 +670,7 @@ func TestConnectWizardBrokerPagePollsRequest(t *testing.T) {
 	req.Host = "127.0.0.1"
 	gateway.serveConnect(rec, req)
 	// The request was already ready — the page lands on the confirm step.
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Подтвердить подключение") {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "в исходном чате") {
 		t.Fatalf("broker-ready wizard page status=%d body=%.300s", rec.Code, rec.Body.String())
 	}
 	stored, err := store.onboarding("onb-wiz-broker-poll")

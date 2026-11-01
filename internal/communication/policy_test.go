@@ -1142,8 +1142,8 @@ func TestEventOverflowCounted(t *testing.T) {
 		}
 		return []byte(`{"events":[{"id":"a1","text":"first mail"}]}`), nil
 	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall, nil); err != nil {
-		t.Fatal(err)
+	if err := s.ProbeDueOccurrencesContext(context.Background(), now, g.authorizeOccurrence, nil, toolCall, nil); err == nil {
+		t.Fatal("mandatory sink admission failure was hidden")
 	}
 	b, err := os.ReadFile(s.eventPath("ev6"))
 	if err != nil {

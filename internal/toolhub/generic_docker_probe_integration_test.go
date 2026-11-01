@@ -441,6 +441,7 @@ print("mcp-secret-inaccessible")`
 		hits++
 		return api.BackendResult{Text: string(body)}, nil
 	})}
+	attachGatewayAudit(t, &gw)
 	if _, err := gw.call(context.Background(), auth, name, map[string]any{"query": "hello"}); err != nil {
 		t.Fatalf("enabled call: %v", err)
 	}

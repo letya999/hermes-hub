@@ -634,7 +634,7 @@ func TestFailedJobLogsFailed(t *testing.T) {
 	}
 	g.api = &fakeAPI{}
 	u := c.Users[0]
-	job := Job{Envelope: u.Envelope(11), UserID: u.ID, ActorID: u.ID, ScopeID: "user:" + u.ID, OrganizationID: c.OrganizationID, Channel: "telegram_bot", ChatID: 11, Text: "boom"}
+	job := Job{Envelope: u.Envelope(11), ID: "failed-log", IdempotencyKey: "failed-log", UserID: u.ID, ActorID: u.ID, ScopeID: "user:" + u.ID, OrganizationID: c.OrganizationID, Channel: "telegram_bot", ChatID: 11, Text: "boom"}
 	if _, err := g.spool.Enqueue(job); err != nil {
 		t.Fatal(err)
 	}

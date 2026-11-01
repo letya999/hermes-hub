@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/audit"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"io"
 	"io/fs"
@@ -103,7 +104,11 @@ func runChaosService(t *testing.T, configPath, role string) {
 				t.Fatal(err)
 			}
 		}
-		gateway := &toolhub.Gateway{Store: store, Backend: api.MCPBackend{}, Tokens: map[string]identity.Envelope{cfg.Token: auth}, DisableLocalhostProtection: true}
+		ledger, err := audit.Open(filepath.Join(root, "toolhub-audit.jsonl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		gateway := &toolhub.Gateway{AuditWrite: toolhub.LedgerAuditWriter(ledger), Store: store, Backend: api.MCPBackend{}, Tokens: map[string]identity.Envelope{cfg.Token: auth}, DisableLocalhostProtection: true}
 		handler, err := gateway.Handler()
 		if err != nil {
 			t.Fatal(err)

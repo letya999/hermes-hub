@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/audit"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -15,15 +16,16 @@ import (
 // connections are proxied over SSH to a pre-approved remote endpoint. Nothing
 // is published beyond the container's loopback.
 type tunnel struct {
-	id       string
-	alias    string
-	name     string
-	remote   string
-	listener net.Listener
-	client   *ssh.Client
-	created  time.Time
-	lifetime time.Duration
-	idle     time.Duration
+	operation *audit.Operation
+	id        string
+	alias     string
+	name      string
+	remote    string
+	listener  net.Listener
+	client    *ssh.Client
+	created   time.Time
+	lifetime  time.Duration
+	idle      time.Duration
 
 	mu       sync.Mutex
 	active   int
@@ -60,7 +62,7 @@ type TunnelView struct {
 
 // TunnelOpen creates a managed forward for a configured tunnel entry. The
 // ssh_tunnel grant is required; remote endpoints come only from config.
-func (s *Service) TunnelOpen(ctx context.Context, alias, name string) (*TunnelView, error) {
+func (s *Service) TunnelOpen(ctx context.Context, alias, name string) (result *TunnelView, resultErr error) {
 	if err := s.alive(); err != nil {
 		return nil, err
 	}
@@ -94,17 +96,42 @@ func (s *Service) TunnelOpen(ctx context.Context, alias, name string) (*TunnelVi
 		s.pendingTunnels--
 		s.mu.Unlock()
 	}()
-	client, err := s.dial(ctx, alias, h)
+	ticket, err := s.beginAudit("ssh.tunnel_open", alias, name)
 	if err != nil {
-		s.auditEvent("ssh-tunnel", alias, "error", "dial failed")
 		return nil, err
 	}
+	var opened *tunnel
+	defer func() {
+		ticket.finish(&resultErr)
+		if resultErr != nil {
+			result = nil
+			if opened != nil {
+				cleanup, cleanupErr := ticket.operation.BeginCleanup()
+				opened.close()
+				if cleanupErr == nil {
+					cleanupErr = cleanup.Complete("succeeded", "not_applicable", "close", "")
+				}
+				reportCleanup(cleanupErr)
+				s.mu.Lock()
+				delete(s.tunnels, opened.id)
+				s.mu.Unlock()
+			}
+		}
+	}()
+	client, err := s.dial(ctx, alias, h)
+	if err != nil {
+
+		return nil, err
+	}
+	ticket.execution = "unknown"
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		_ = client.Close()
 		return nil, fmt.Errorf("%w: listen: %v", ErrUnavailable, err)
 	}
 	t := &tunnel{id: newID("tun"), alias: alias, name: name, remote: fmt.Sprintf("%s:%d", fwd.RemoteHost, fwd.RemotePort), listener: listener, client: client, created: time.Now(), lifetime: s.tunnelLifetime(), idle: s.tunnelIdle(), lastUsed: time.Now()}
+	opened = t
+	t.operation = ticket.operation
 	go t.accept()
 	s.mu.Lock()
 	if s.closed {
@@ -114,7 +141,9 @@ func (s *Service) TunnelOpen(ctx context.Context, alias, name string) (*TunnelVi
 	}
 	s.tunnels[t.id] = t
 	s.mu.Unlock()
-	s.auditEvent("ssh-tunnel", alias, "ok", "tunnel "+name+" "+listener.Addr().String()+"->"+t.remote)
+
+	ticket.execution = "succeeded"
+	ticket.receipt = "tunnel=" + t.id
 	return t.view(), nil
 }
 
@@ -172,12 +201,16 @@ func (s *Service) TunnelClose(id string) error {
 	if err != nil {
 		return err
 	}
+	cleanup, admissionErr := t.operation.BeginCleanup()
 	t.close()
 	s.mu.Lock()
 	delete(s.tunnels, id)
 	s.mu.Unlock()
-	s.auditEvent("ssh-tunnel", t.alias, "ok", "tunnel "+t.name+" closed")
-	return nil
+
+	if admissionErr != nil {
+		return audit.ErrUncertain
+	}
+	return cleanup.Complete("succeeded", "not_applicable", "close", "tunnel="+id)
 }
 
 func (s *Service) tunnelByID(id string) (*tunnel, error) {
@@ -228,17 +261,22 @@ func (s *Service) reap() {
 
 func (s *Service) sweep(now time.Time) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	var shells, tunnels []string
 	for id, sh := range s.shells {
 		if sh.expired(now, s.shellIdle(), s.shellLifetime()) {
-			sh.close()
-			delete(s.shells, id)
+			shells = append(shells, id)
 		}
 	}
 	for id, t := range s.tunnels {
 		if t.expired(now) {
-			t.close()
-			delete(s.tunnels, id)
+			tunnels = append(tunnels, id)
 		}
+	}
+	s.mu.Unlock()
+	for _, id := range shells {
+		reportCleanup(s.ShellClose(id))
+	}
+	for _, id := range tunnels {
+		reportCleanup(s.TunnelClose(id))
 	}
 }
