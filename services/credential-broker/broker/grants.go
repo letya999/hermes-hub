@@ -318,7 +318,26 @@ func (b *Broker) DeleteCredential(ctx context.Context, a identity.Actor, id stri
 	if c.View.Status == "deleted" {
 		return nil
 	}
+	now := b.now()
+	var deleted []objectRecord
+	seen := map[string]bool{}
+	for _, o := range b.objects {
+		if o.OwnerKind != "credential" || o.OwnerID != id || o.State == "deleted" {
+			continue
+		}
+		p := b.cfg.Providers[o.Ref.Provider]
+		if p == nil || !p.Capabilities().Delete || p.Delete(ctx, o.Ref) != nil {
+			return ErrUnavailable
+		}
+		o.State = "deleted"
+		o.UpdatedAt = now
+		deleted = append(deleted, o)
+		seen[objectID(o.Ref)] = true
+	}
 	for _, ref := range c.OwnedRefs {
+		if seen[objectID(ref)] {
+			continue
+		}
 		p := b.cfg.Providers[ref.Provider]
 		if p == nil || !p.Capabilities().Delete || p.Delete(ctx, ref) != nil {
 			return ErrUnavailable
@@ -337,7 +356,22 @@ func (b *Broker) DeleteCredential(ctx context.Context, a identity.Actor, id stri
 			if p == nil {
 				return ErrUnavailable
 			}
+			for _, o := range b.objects {
+				if o.OwnerKind != "state" || o.OwnerID != sk || o.State == "deleted" {
+					continue
+				}
+				if p.Delete(ctx, o.Ref) != nil {
+					return ErrUnavailable
+				}
+				o.State = "deleted"
+				o.UpdatedAt = now
+				deleted = append(deleted, o)
+				seen[objectID(o.Ref)] = true
+			}
 			for _, ref := range s.OwnedRefs {
+				if seen[objectID(ref)] {
+					continue
+				}
 				if p.Delete(ctx, ref) != nil {
 					return ErrUnavailable
 				}
@@ -347,7 +381,7 @@ func (b *Broker) DeleteCredential(ctx context.Context, a identity.Actor, id stri
 	c.View.Status = "deleted"
 	ev := b.audit("credential.deleted", a)
 	ev.CredentialID = id
-	_, e := b.commit(mutation{Audit: ev, Credential: &c})
+	_, e := b.commit(mutation{Audit: ev, Credential: &c, Objects: deleted})
 	return e
 }
 

@@ -88,11 +88,29 @@ type credentialRecord struct {
 	ContractDigest string          `json:"contract_digest"`
 	Ref            provider.Ref    `json:"ref"`
 	Managed        bool            `json:"managed"`
-	OwnedRefs      []provider.Ref  `json:"owned_refs,omitempty"`
-	TokenRevision  uint64          `json:"token_revision"`
-	Extra          *contract.Extra `json:"extra,omitempty"`
-	Demoted        []string        `json:"demoted,omitempty"`
+	// OwnedRefs is the legacy ever-growing list — kept for replay of old
+	// records; new writes track provider objects as bounded object rows.
+	OwnedRefs     []provider.Ref  `json:"owned_refs,omitempty"`
+	TokenRevision uint64          `json:"token_revision"`
+	Extra         *contract.Extra `json:"extra,omitempty"`
+	Demoted       []string        `json:"demoted,omitempty"`
 }
+
+// objectRecord is one owned provider object with an explicit lifecycle:
+// intent → current → retired → pending-delete → deleted (SPEC-0087 R4.1).
+// ID is provider/locator — one row per physical object, metadata bounded.
+type objectRecord struct {
+	ID        string       `json:"id"`
+	OwnerKind string       `json:"owner_kind"`
+	OwnerID   string       `json:"owner_id"`
+	Ref       provider.Ref `json:"ref"`
+	State     string       `json:"state"`
+	Op        string       `json:"op"`
+	CreatedAt time.Time    `json:"created_at"`
+	UpdatedAt time.Time    `json:"updated_at"`
+}
+
+func objectID(ref provider.Ref) string { return ref.Provider + "/" + ref.Locator }
 type grantRecord struct {
 	View           v1.Grant `json:"view"`
 	ContractKey    string   `json:"contract_key"`
@@ -112,6 +130,7 @@ type stateRecord struct {
 	Ref       provider.Ref   `json:"ref"`
 	Revision  uint64         `json:"revision"`
 }
+
 type oauthRecord struct {
 	StateHash   string       `json:"state_hash"`
 	RequestID   string       `json:"request_id"`
@@ -136,6 +155,7 @@ type mutation struct {
 	State      *stateRecord      `json:"state,omitempty"`
 	OAuth      *oauthRecord      `json:"oauth,omitempty"`
 	Contract   *contractRecord   `json:"contract,omitempty"`
+	Objects    []objectRecord    `json:"objects,omitempty"`
 }
 type Broker struct {
 	mu           sync.Mutex
@@ -149,6 +169,7 @@ type Broker struct {
 	oauth        map[string]oauthRecord
 	leases       map[string]*leaseRecord
 	events       []v1.Event
+	objects      map[string]objectRecord
 	refreshLocks map[string]*sync.Mutex
 	normalized   bool
 	closed       bool

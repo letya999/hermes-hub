@@ -242,7 +242,7 @@ func (b *Broker) Submit(ctx context.Context, id, raw, csrf string, values provid
 		return ErrInvalid
 	}
 	r.Demoted = sortedDemoted(demoted)
-	ref, e := b.cfg.Providers.Put(ctx, c.Storage, values)
+	ref, e := b.putObject(ctx, r.Actor, c.Storage, "request", id, "submit.draft", values)
 	if e != nil {
 		return ErrUnavailable
 	}
@@ -280,7 +280,7 @@ func (b *Broker) SubmitTelegram(ctx context.Context, a identity.Actor, id string
 	if c.ValidateValues(values) != nil {
 		return ErrInvalid
 	}
-	ref, err := b.cfg.Providers.Put(ctx, c.Storage, values)
+	ref, err := b.putObject(ctx, a, c.Storage, "request", id, "submit.telegram", values)
 	if err != nil {
 		return ErrUnavailable
 	}
@@ -303,11 +303,16 @@ func (b *Broker) ready(r *requestRecord, ref provider.Ref, managed bool, s *sess
 	if old, ok := b.credentials[id]; ok {
 		c.OwnedRefs = append(c.OwnedRefs, old.OwnedRefs...)
 	}
-	if managed && r.DraftRef != nil {
-		c.OwnedRefs = append(c.OwnedRefs, *r.DraftRef)
-	}
+	now := b.now()
+	var objs []objectRecord
 	if managed {
-		c.OwnedRefs = append(c.OwnedRefs, ref)
+		add := func(ref provider.Ref) {
+			objs = append(objs, objectRecord{ID: objectID(ref), OwnerKind: "credential", OwnerID: id, Ref: ref, State: "current", Op: "enroll", CreatedAt: now, UpdatedAt: now})
+		}
+		if r.DraftRef != nil {
+			add(*r.DraftRef)
+		}
+		add(ref)
 	}
 	r.View.CredentialID = id
 	r.View.Revision = rev
@@ -321,7 +326,7 @@ func (b *Broker) ready(r *requestRecord, ref provider.Ref, managed bool, s *sess
 	ev.OnboardingID = r.View.OnboardingID
 	ev.ConsumerID = r.View.ConsumerID
 	ev.CredentialID = id
-	if _, e := b.commit(mutation{Audit: ev, Request: r, Credential: &c, Session: s}); e != nil {
+	if _, e := b.commit(mutation{Audit: ev, Request: r, Credential: &c, Session: s, Objects: objs}); e != nil {
 		return credentialRecord{}, e
 	}
 	b.invalidateCredential(id)

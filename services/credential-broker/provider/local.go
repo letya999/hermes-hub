@@ -86,30 +86,41 @@ func (l *Local) BackupExisting(ctx context.Context, ref Ref) error {
 }
 func (*Local) Capabilities() Capabilities { return Capabilities{true, true, true, true} }
 func (l *Local) Write(ctx context.Context, b Bundle) (Ref, error) {
+	ref := Ref{l.ID, seal.Random(), "1"}
+	if e := l.WriteRef(ctx, ref, b); e != nil {
+		return Ref{}, e
+	}
+	return ref, nil
+}
+
+// WriteRef implements RefWriter: the caller reserves the locator and can
+// therefore journal creation intent before the object exists.
+func (l *Local) WriteRef(ctx context.Context, ref Ref, b Bundle) error {
 	if ctx.Err() != nil {
-		return Ref{}, ctx.Err()
+		return ctx.Err()
+	}
+	if ref.Provider != l.ID || !locatorRE.MatchString(ref.Locator) || ref.Version != "1" {
+		return ErrUnavailable
 	}
 	raw, e := json.Marshal(b)
 	if e != nil || len(raw) > 512<<10 {
-		return Ref{}, ErrUnavailable
+		return ErrUnavailable
 	}
 	defer clear(raw)
-	id := seal.Random()
-	ref := Ref{l.ID, id, "1"}
-	enc, e := l.box.Seal(raw, []byte(l.ID+"/"+id+"/1"))
+	enc, e := l.box.Seal(raw, []byte(l.ID+"/"+ref.Locator+"/1"))
 	if e != nil {
-		return Ref{}, ErrUnavailable
+		return ErrUnavailable
 	}
 	if l.recoveryBox != nil {
-		backup, err := l.recoveryBox.Seal(raw, []byte(l.ID+"/"+id+"/1"))
-		if err != nil || securefs.Create(l.recoveryDir, id, backup, 0600) != nil {
-			return Ref{}, ErrUnavailable
+		backup, err := l.recoveryBox.Seal(raw, []byte(l.ID+"/"+ref.Locator+"/1"))
+		if err != nil || securefs.Create(l.recoveryDir, ref.Locator, backup, 0600) != nil {
+			return ErrUnavailable
 		}
 	}
-	if e = securefs.Create(l.dir, id, enc, 0600); e != nil {
-		return Ref{}, ErrUnavailable
+	if e = securefs.Create(l.dir, ref.Locator, enc, 0600); e != nil {
+		return ErrUnavailable
 	}
-	return ref, nil
+	return nil
 }
 func (l *Local) Read(ctx context.Context, r Ref) (Bundle, error) {
 	if ctx.Err() != nil {

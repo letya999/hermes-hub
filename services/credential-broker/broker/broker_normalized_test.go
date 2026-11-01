@@ -179,6 +179,31 @@ func TestBrokerNormalizedStoreRestart(t *testing.T) {
 	}
 }
 
+// Object rows are the only durable ownership record on a normalized store:
+// a restart must restore them or delete loses track of every provider object
+// the credential ever wrote (SPEC-0087 R4.1).
+func TestObjectsSurviveNormalizedRestart(t *testing.T) {
+	f := newSqlFixture(t)
+	c := f.enroll(alice, "pat", "github")
+	if len(f.b.objects) == 0 {
+		t.Fatal("enrollment recorded no object rows")
+	}
+	f.restart()
+	if len(f.b.objects) == 0 {
+		t.Fatal("object ownership lost across normalized restart")
+	}
+	if e := f.b.DeleteCredential(testCtx, alice, c.ID); e != nil {
+		t.Fatal(e)
+	}
+	entries, e := os.ReadDir(filepath.Join(f.root, "secrets"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("%d provider objects leaked after restart+delete", len(entries))
+	}
+}
+
 // Scoped pages must report an expired cursor explicitly: earliest_available
 // is the retained floor and gap marks pruned history between the cursor and
 // that floor. The floor boundary itself is contiguous (SPEC-0087 R3.5).

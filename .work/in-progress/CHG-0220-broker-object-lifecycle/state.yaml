@@ -4,7 +4,7 @@ title: "Управляемые версии secret objects и безопасны
 status: in_progress
 branch: fix/m23-live-wake
 updated: "2026-10-28"
-phase: design-complete
+phase: implementation
 adr: ADR-0087
 spec: SPEC-0087
 requirements: [R4]
@@ -13,10 +13,10 @@ workstream: storage-reliability-mvp
 github_milestone: null
 github_issue: null
 design_status: accepted
-implementation_status: not_started
+implementation_status: in_progress
 readiness: dependency_gated
 slices:
-  S196.1-version-ownership: not_started
+  S196.1-version-ownership: done
   S196.2-safe-retirement: not_started
   S196.3-bounded-cleanup: not_started
 validation:
@@ -29,8 +29,30 @@ validation:
   docker_check: not_run
   red_team: not_started
   live_acceptance: not_started
-evidence: []
+evidence:
+  - date: "2026-10-28"
+    slice: S196.1
+    kind: module_tests
+    summary: >
+      objectRecord rows (intent/current/retired/deleted) replace growing
+      OwnedRefs; provider.RefWriter + Local.WriteRef let every local write
+      persist exact-locator intent before the write on all five paths
+      (submit.draft, submit.telegram, oauth.verifier, oauth.activate,
+      oauth.refresh, state.checkpoint). Delete is union of legacy OwnedRefs
+      and owned object rows — unknown remote objects never deleted.
+    proof: >
+      go test -tags libsqlite3 ./... — all 17 module packages green in
+      sqlcipher image; new reds: TestRefreshMetadataGrowthIsLinear,
+      TestCheckpointMetadataGrowthIsLinear, TestObjectsSurviveNormalizedRestart,
+      TestLocalCreateCrashBeforeActivationOwned, TestRefresh/Activation/
+      Verifier/Checkpoint/TelegramCrashKeepsObjectOwned,
+      TestUnknownRemoteObjectNeverDeleted.
+    limitation: >
+      Remote providers without RefWriter keep post-write ordering —
+      documented unknown-orphan window. Verifier object row remains intent
+      until S196.3 ownership cleanup reconciles it (file already removed
+      at exchange; row is deletable-by-owner, not an unknown remote).
 remaining:
-  - "Implementation and all runtime acceptance remain outstanding."
+  - "S196.2 pins/dedup ordering; S196.3 pending-delete worker; acceptance 1000-cycle + live."
 limitations:
-  - "Planning record only; no production code or live state changed."
+  - "Module tests only so far; just_check/security/red_team/live_acceptance not run."

@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -425,6 +427,188 @@ func TestStateCheckpointsExclusiveLeaseAndRestart(t *testing.T) {
 	if e = f.b.DeleteCredential(testCtx, alice, c.ID); e != nil {
 		t.Fatal(e)
 	}
+}
+
+// Each quiesced checkpoint writes a fresh provider object. State metadata
+// must stay flat across cycles — ownership lives in object rows — and delete
+// removes every checkpoint version, not just the last (SPEC-0087 R4.1).
+func TestCheckpointMetadataGrowthIsLinear(t *testing.T) {
+	f := newFixture(t, stateContract())
+	c := f.enroll(alice, "session", "service")
+	g, a := f.grant(alice, c, "session", "state_binding", "state_workload")
+	for i := 0; i < 3; i++ {
+		l := f.lease(alice, g)
+		m, e := f.b.Materialize(testCtx, a, l.ID)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if e = os.WriteFile(filepath.Join(m.Mounts[1].Source, "runtime_session.json"), []byte(fmt.Sprintf(`{"session":"v%d"}`, i)), 0600); e != nil {
+			t.Fatal(e)
+		}
+		if e = f.b.Release(testCtx, a, l.ID, v1.RuntimeRelease{Checkpoint: true, Quiesced: true}); e != nil {
+			t.Fatal(e)
+		}
+	}
+	var rec stateRecord
+	for _, s := range f.b.states {
+		rec = s
+	}
+	if len(rec.OwnedRefs) > 1 {
+		t.Fatalf("state metadata grew to %d refs after 3 checkpoints", len(rec.OwnedRefs))
+	}
+	if e := f.b.DeleteCredential(testCtx, alice, c.ID); e != nil {
+		t.Fatal(e)
+	}
+	entries, e := os.ReadDir(filepath.Join(f.root, "secrets"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("%d provider objects leaked after delete", len(entries))
+	}
+}
+
+// crashWriter simulates a crash immediately after the provider write: the
+// object lands on disk but the caller observes failure. With reservable
+// refs the intent row is already durable, so the object stays owned.
+type crashWriter struct {
+	provider.Provider
+	armed atomic.Bool
+}
+
+func (w *crashWriter) WriteRef(ctx context.Context, ref provider.Ref, b provider.Bundle) error {
+	rw, ok := w.Provider.(provider.RefWriter)
+	if !ok {
+		return provider.ErrUnavailable
+	}
+	if e := rw.WriteRef(ctx, ref, b); e != nil {
+		return e
+	}
+	if w.armed.Load() {
+		return provider.ErrUnavailable
+	}
+	return nil
+}
+
+// A crash between the provider write and the activation commit must not
+// orphan the object: the intent row persisted before the write still owns
+// it after restart — it is a known owned object, never an unknown remote
+// (SPEC-0087 R4.2).
+func TestLocalCreateCrashBeforeActivationOwned(t *testing.T) {
+	f := newFixture(t)
+	w := &crashWriter{Provider: f.cfg.Providers["local"]}
+	f.cfg.Providers["local"] = w
+	w.armed.Store(true)
+	r := f.request(alice, "pat", "github", "crash_write")
+	cookie := f.pair(alice, r)
+	e := f.b.Submit(testCtx, r.ID, cookie, f.b.CSRF(cookie, r.ID), provider.Bundle{"token": []byte("x")}, nil)
+	if !errors.Is(e, ErrUnavailable) {
+		t.Fatalf("submit after injected crash = %v", e)
+	}
+	f.restart()
+	var intents int
+	for _, o := range f.b.objects {
+		if o.State == "intent" && o.OwnerKind == "request" && o.OwnerID == r.ID {
+			intents++
+		}
+	}
+	if intents != 1 {
+		t.Fatalf("crashed write left %d owned intent rows, want 1", intents)
+	}
+	entries, e := os.ReadDir(filepath.Join(f.root, "secrets"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("crashed write produced %d objects, want 1", len(entries))
+	}
+}
+
+// A crash between the checkpoint provider write and the state commit must
+// not orphan the snapshot object: the intent row owns it across restart
+// (SPEC-0087 R4.2).
+func TestCheckpointCrashKeepsObjectOwned(t *testing.T) {
+	f := newFixture(t, stateContract())
+	w := &crashWriter{Provider: f.cfg.Providers["local"]}
+	f.cfg.Providers["local"] = w
+	c := f.enroll(alice, "session", "service")
+	g, a := f.grant(alice, c, "session", "state_binding", "state_workload")
+	l := f.lease(alice, g)
+	m, e := f.b.Materialize(testCtx, a, l.ID)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = os.WriteFile(filepath.Join(m.Mounts[1].Source, "runtime_session.json"), []byte(`{"session":"v1"}`), 0600); e != nil {
+		t.Fatal(e)
+	}
+	w.armed.Store(true)
+	if e = f.b.Release(testCtx, a, l.ID, v1.RuntimeRelease{Checkpoint: true, Quiesced: true}); !errors.Is(e, ErrUnavailable) {
+		t.Fatalf("checkpoint after injected crash = %v", e)
+	}
+	f.restart()
+	var intents int
+	for _, o := range f.b.objects {
+		if o.State == "intent" && o.OwnerKind == "state" && o.Op == "state.checkpoint" {
+			intents++
+		}
+	}
+	if intents != 1 {
+		t.Fatalf("crashed checkpoint left %d owned intent rows, want 1", intents)
+	}
+}
+
+// Same crash window on the Telegram session submit path: the signed
+// session bundle reaches disk but the activation commit never runs. The
+// request-owned intent row keeps the object owned (SPEC-0087 R4.2).
+func TestTelegramCrashKeepsObjectOwned(t *testing.T) {
+	c := contract.Contract{ID: "telegram-session", Revision: 2, Title: "Telegram", Storage: "local", Fields: []contract.Field{
+		{ID: "api_id", Label: "API ID", Kind: "string", Required: true, MaxBytes: 20},
+		{ID: "api_hash", Label: "API hash", Kind: "secret", Required: true, MaxBytes: 128},
+		{ID: "session", Label: "Session", Kind: "secret", Required: true, MaxBytes: 8192},
+		{ID: "expected_user_id", Label: "Account ID", Kind: "string", Required: true, MaxBytes: 20},
+	}, Deliveries: []contract.Delivery{{Type: "env", Field: "session", Target: "TELEGRAM_SESSION_STRING"}}}
+	f := newFixture(t, c)
+	w := &crashWriter{Provider: f.cfg.Providers["local"]}
+	f.cfg.Providers["local"] = w
+	r, e := f.b.CreateRequest(testCtx, alice, v1.CreateRequest{ContractID: "telegram-session", ContractRevision: 2, ConnectionID: "tg", OnboardingID: "onboard_1", IdempotencyKey: "tg_crash", OwnerKind: "user"})
+	if e != nil {
+		t.Fatal(e)
+	}
+	w.armed.Store(true)
+	values := provider.Bundle{"api_id": []byte("123"), "api_hash": []byte("h"), "session": []byte("s"), "expected_user_id": []byte("42")}
+	if e := f.b.SubmitTelegram(testCtx, alice, r.ID, values); !errors.Is(e, ErrUnavailable) {
+		t.Fatalf("telegram submit after injected crash = %v", e)
+	}
+	f.restart()
+	var intents int
+	for _, o := range f.b.objects {
+		if o.State == "intent" && o.OwnerKind == "request" && o.OwnerID == r.ID && o.Op == "submit.telegram" {
+			intents++
+		}
+	}
+	if intents != 1 {
+		t.Fatalf("crashed telegram submit left %d owned intent rows, want 1", intents)
+	}
+}
+
+// Deletion is by-known-ref only: a provider object the broker never owned
+// is never touched by credential delete, even when it shares the store
+// (SPEC-0087 R4.2 — unknown remote objects are conservative keeps).
+func TestUnknownRemoteObjectNeverDeleted(t *testing.T) {
+	f := newFixture(t)
+	foreign, e := f.cfg.Providers.Put(testCtx, "local", provider.Bundle{"token": []byte("foreign")})
+	if e != nil {
+		t.Fatal(e)
+	}
+	c := f.enroll(alice, "pat", "github")
+	if e := f.b.DeleteCredential(testCtx, alice, c.ID); e != nil {
+		t.Fatal(e)
+	}
+	got, e := f.cfg.Providers.Resolve(testCtx, foreign)
+	if e != nil {
+		t.Fatal("unknown remote object deleted:", e)
+	}
+	got.Wipe()
 }
 
 func TestExpirationCancellationAndBrowserLimits(t *testing.T) {

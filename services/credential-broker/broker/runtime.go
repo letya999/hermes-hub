@@ -174,16 +174,19 @@ func (b *Broker) Release(ctx context.Context, a identity.Actor, id string, in v1
 		}
 		defer values.Wipe()
 		storage := b.catalog[g.ContractKey].Storage
-		ref, e := b.cfg.Providers.Put(ctx, storage, values)
+		ref, e := b.putObject(ctx, a, storage, "state", l.StateKey, "state.checkpoint", values)
 		if e != nil {
 			return ErrUnavailable
 		}
-		sr := stateRecord{Key: l.StateKey, Ref: ref, Revision: b.states[l.StateKey].Revision + 1, OwnedRefs: append(b.states[l.StateKey].OwnedRefs, ref)}
+		prev := b.states[l.StateKey]
+		sr := stateRecord{Key: l.StateKey, Ref: ref, Revision: prev.Revision + 1, OwnedRefs: prev.OwnedRefs}
+		now := b.now()
+		objs := []objectRecord{{ID: objectID(ref), OwnerKind: "state", OwnerID: l.StateKey, Ref: ref, State: "current", Op: "state.checkpoint", CreatedAt: now, UpdatedAt: now}}
 		ev := b.audit("state.checkpointed", a)
 		ev.CredentialID = c.View.ID
 		ev.LeaseID = id
 		ev.BindingID = g.View.BindingID
-		if _, e = b.commit(mutation{Audit: ev, State: &sr}); e != nil {
+		if _, e = b.commit(mutation{Audit: ev, State: &sr, Objects: objs}); e != nil {
 			return e
 		}
 	}

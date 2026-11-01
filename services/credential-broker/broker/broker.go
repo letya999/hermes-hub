@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/url"
@@ -25,7 +26,7 @@ func New(cfg Config) (*Broker, error) {
 	if u.Scheme == "http" && u.Hostname() != "127.0.0.1" && u.Hostname() != "localhost" && u.Hostname() != "::1" {
 		return nil, ErrInvalid
 	}
-	b := &Broker{cfg: cfg, catalog: map[string]contract.Contract{}, requests: map[string]requestRecord{}, sessions: map[string]sessionRecord{}, credentials: map[string]credentialRecord{}, grants: map[string]grantRecord{}, states: map[string]stateRecord{}, oauth: map[string]oauthRecord{}, leases: map[string]*leaseRecord{}, refreshLocks: map[string]*sync.Mutex{}}
+	b := &Broker{cfg: cfg, catalog: map[string]contract.Contract{}, requests: map[string]requestRecord{}, sessions: map[string]sessionRecord{}, credentials: map[string]credentialRecord{}, grants: map[string]grantRecord{}, states: map[string]stateRecord{}, oauth: map[string]oauthRecord{}, leases: map[string]*leaseRecord{}, objects: map[string]objectRecord{}, refreshLocks: map[string]*sync.Mutex{}}
 	for _, c := range cfg.Contracts {
 		k := key(c.ID, c.Revision)
 		if c.Validate() != nil || b.catalog[k].ID != "" || cfg.Providers[c.Storage] == nil {
@@ -165,6 +166,9 @@ func mutationWrites(m mutation) (*journal.AuxWrites, error) {
 	if m.Contract != nil {
 		fields = append(fields, field{"contract", key(m.Contract.Contract.ID, m.Contract.Contract.Revision), *m.Contract})
 	}
+	for i := range m.Objects {
+		fields = append(fields, field{"object", m.Objects[i].ID, m.Objects[i]})
+	}
 	for _, f := range fields {
 		if err := add(f.kind, f.id, f.v); err != nil {
 			return nil, err
@@ -176,6 +180,28 @@ func mutationWrites(m mutation) (*journal.AuxWrites, error) {
 	}
 	aux.Audit = &journal.AuditWrite{Kind: m.Audit.Kind, Principal: m.Audit.PrincipalID, Context: m.Audit.ContextID, Body: body}
 	return aux, nil
+}
+
+// putObject persists a durable creation intent — carrying the exact
+// locator — before the provider write whenever the provider honors reserved
+// refs. A crash between write and activation then leaves a known owned
+// object, never an unknown remote. Providers without reservable refs keep
+// the post-write ordering (documented unknown-orphan window).
+// Caller holds b.mu.
+func (b *Broker) putObject(ctx context.Context, a identity.Actor, storage, ownerKind, ownerID, op string, values provider.Bundle) (provider.Ref, error) {
+	if rw, ok := b.cfg.Providers[storage].(provider.RefWriter); ok {
+		ref := provider.Ref{Provider: storage, Locator: seal.Random(), Version: "1"}
+		intent := objectRecord{ID: objectID(ref), OwnerKind: ownerKind, OwnerID: ownerID, Ref: ref, State: "intent", Op: op, CreatedAt: b.now(), UpdatedAt: b.now()}
+		ev := b.audit("object.intent", a)
+		if _, e := b.commit(mutation{Audit: ev, Objects: []objectRecord{intent}}); e != nil {
+			return provider.Ref{}, e
+		}
+		if e := rw.WriteRef(ctx, ref, values); e != nil {
+			return provider.Ref{}, ErrUnavailable
+		}
+		return ref, nil
+	}
+	return b.cfg.Providers.Put(ctx, storage, values)
 }
 
 // applyStateRow decodes one normalized-table row back into the live maps.
@@ -229,6 +255,12 @@ func (b *Broker) applyStateRow(row journal.StateRow) error {
 			return ErrConflict
 		}
 		b.catalog[ck] = c.Contract
+	case "object":
+		var o objectRecord
+		if strictjson.Decode(row.Body, &o) != nil {
+			return ErrUnavailable
+		}
+		b.objects[o.ID] = o
 	default:
 		return ErrUnavailable
 	}
@@ -256,6 +288,9 @@ func (b *Broker) apply(m mutation, seq uint64) {
 	}
 	if m.Contract != nil {
 		b.catalog[key(m.Contract.Contract.ID, m.Contract.Contract.Revision)] = m.Contract.Contract
+	}
+	for _, o := range m.Objects {
+		b.objects[o.ID] = o
 	}
 	if !b.normalized {
 		// Normalized stores serve events from the audit table — no RAM clone.
