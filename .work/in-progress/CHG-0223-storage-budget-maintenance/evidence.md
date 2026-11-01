@@ -102,3 +102,6 @@ The archive directories themselves are now bounded: `sweepArchiveDir` runs on th
 - Full module `go test ./...` green in the SQLCipher image after the sweep.
 
 Dev config sets `audit_archive_max_bytes=512MiB`/`audit_archive_max_age_days=30` and `records_archive_max_bytes=2GiB`/`records_archive_max_age_days=30` — the whole broker storage footprint (hot audit, records chain, object files, archives) is now bounded on dev.
+- Live dev: rebuilt broker runs with `audit_auto_retain`, `records_auto_retain`, `audit_archive_max_bytes=512MiB/30d`, `records_archive_max_bytes=2GiB/30d`; the lone records archive (199.8MB) is correctly retained as the newest/provenance pair, and the audit archive (196MB) is inside its 512MiB budget — no-op sweep, service healthy, 0 restarts.
+
+Commit `a61805d6`.
