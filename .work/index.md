@@ -30,7 +30,6 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 | [CHG-0222](in-progress/CHG-0222-spool-durable-handoff/plan.md) | Storage reliability MVP: Один receipt для результата, доставки и обработки source batch; implementation imported, validation in progress |
 | [CHG-0221](in-progress/CHG-0221-bounded-control-audit/plan.md) | Storage reliability MVP: Ограниченный обязательный audit и честные исходы действий; implementation imported, validation in progress |
 | [CHG-0220](in-progress/CHG-0220-broker-object-lifecycle/plan.md) | Storage reliability MVP: Управляемые версии secret objects и безопасный GC; design accepted, implementation not started |
-| [CHG-0219](in-progress/CHG-0219-broker-sqlcipher-store/plan.md) | Storage reliability MVP: Таблицы состояния и постраничный audit Broker; design accepted, implementation not started |
 | [CHG-0218](in-progress/CHG-0218-broker-sqlcipher-proof/plan.md) | Storage reliability MVP: Gate сборки и аварийной атомарности SQLCipher; design accepted, implementation not started |
 | [CHG-0217](in-progress/CHG-0217-diagnostic-log-durability/plan.md) | Storage reliability MVP: Ротация, курсоры и ограниченный trace диагностики; implementation imported, validation in progress |
 | [CHG-0216](in-progress/CHG-0216-event-state-isolation/plan.md) | Storage reliability MVP: Изоляция курсоров и безопасная очистка event records; implementation imported, validation in progress |
@@ -90,6 +89,7 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 |---|---|
 | [CHG-0239](done/CHG-0239-legacy-audit-rollover/plan.md) | Done 2026-10-31: verified archival of 181,794 schema-1 ToolHub audit records, fresh bounded ledger, local dev acceptance, 15 mock E2E PASS, `just check` 86.22%. |
 | [CHG-0237](done/CHG-0237-storage-integration/plan.md) | Done 2026-10-31: merged implemented Storage reliability MVP into the dev integration branch; `just check` 86.27%, Broker check 90.3%, scoped dev builds and Docker contracts passed. Production SQLCipher/GC/cutover remain separate design-stage CHGs. |
+| [CHG-0219](done/CHG-0219-broker-sqlcipher-store/plan.md) | Done 2026-11-01: normalized state+paginated audit on SQLCipher live on dev (415 rows, ~30ms reads); bounded hot-audit retention with sealed archives — live 362,711 rows/121MB exported+pruned, /v1/events earliest_available+gap; scale evidence 1M rows: ~0.4ms pages, flat working set, 224ms reopen, 28.3s full retain. Module suite 18 pkgs green. |
 
 ## Done — M26 Lean Role Images
 
