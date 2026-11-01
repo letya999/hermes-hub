@@ -201,12 +201,18 @@ real hub-channel semantics: markdown renders, artifacts auto-deliver, MEDIA:
 attaches any workspace file, inbox_fetch materializes inbound files,
 attachments work in both directions.
 
-Verified live: re-rendered spaces/{artem_two,artem_main,local}; the pinned
-runtime image's `system_prompt._platform_hint` called against the mounted
-`generated/hermes-effective.dev.yaml` returns the hub text (not the stock
-hint). Regression test `TestAPIServerPlatformHintOverrideRendered` pins the
-override on both render paths. Managed runtimes spawn on demand — next spawn
-mounts the new effective config; no `/reset` or session action needed.
+Verified live end-to-end: re-rendered spaces/{artem_two,artem_main,local};
+dev-rebuilt supervisor + all three per-space hermes-runtime overlays (spawn
+path validates the source through `managedHermesConfig`, so every consumer
+of the render needed the new binary). On the real spawned-runtime image
+with the real mounted effective config, upstream's own loader +
+`system_prompt._platform_hint` returns the hub text for api_server — the
+stock hint is gone from the code path sessions use. Regression test
+`TestAPIServerPlatformHintOverrideRendered` pins the override on both
+render paths. Managed runtimes spawn on demand — next spawn mounts the new
+effective config and image; no `/reset` or session action needed. Base
+`hermes-hub:0.5.0-dev` had been pruned; restored by retagging
+`ghcr.io/letya999/hermes-hub/hermes-hub:edge-dev`.
 
 ## Known limitations / not yet evidenced
 
