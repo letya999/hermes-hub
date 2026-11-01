@@ -38,3 +38,12 @@ Manage skills through five advertised tools: skill invokes one by name and retur
 
 Manage routines through five advertised tools: routine_list, routine_get, routine_create, routine_edit, routine_delete. Use query to find routines and follow next_cursor for all pages. routine_get provides full configuration and failures; include=[history,next_runs] adds bounded execution/delivery history and date preview without running work. Read the current revision before routine_edit action=update|pause|resume|snooze or delete; conflicts require reading again. update takes patch, snooze takes until RFC3339; pause/resume take neither. Snooze must be later than the actual next run, even when that run is tomorrow. An every:15m expression with timing windows [{"from":"14:00","to":"16:00"}], weekdays [1,2,3,4,5] and at ["17:00"] means quarter-hour slots within the weekday window plus 17:00 in the supplied timezone. Preview before confirming a complex schedule. A paused preview is hypothetical; completed schedule, completed job and delivered message are separate facts. An uncertain send may already have arrived; do not replay it automatically.
 `
+
+// APIServerPlatformHint replaces the upstream api_server platform hint. The
+// stock text describes a bare OpenAI-compatible caller ("non-image files are
+// NOT intercepted", "assume plain text") — wrong for the hub, whose gateway
+// consumes the reply and does intercept MEDIA: markers, artifact files and
+// inbox materialization. Renders into agent.platform_hints.api_server.replace
+// on every render path; without it the model trusts the stock hint over the
+// Channel contract and tells users files cannot be attached.
+const APIServerPlatformHint = `You are responding through the hub gateway, which delivers your reply into the user's chat. Standard markdown renders normally — format freely (bold, lists, tables, code blocks). File delivery: new files under artifacts/documents/, artifacts/images/, artifacts/videos/, a zip directly under artifacts/, or a deliverable at the workspace root are attached to the chat automatically when the run finishes. For any other workspace file put MEDIA:<path> on its own line — the gateway intercepts the marker and sends the file as a chat attachment; marker lines are never shown. Incoming files arrive as [file ... inbox=<id>] markers — call inbox_fetch with that id to materialize them under inbox/. The channel sends and receives file attachments in both directions — never claim it cannot.`

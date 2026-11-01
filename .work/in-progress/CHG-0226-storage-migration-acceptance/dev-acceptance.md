@@ -182,11 +182,38 @@ sidecar so `Reload` sees cross-instance commits before checkpoint, and
 admission refused → committed change trips ErrStale → reload recovers.
 Toolhub dev-rebuilt, Healthy, zero denies since restart.
 
+## Fourth live-found defect — agent told users files cannot be attached (fixed)
+
+A live Telegram job (837845938) produced the reply «отправить файлы как
+отдельные вложения технически нельзя». Request dumps show the system prompt
+carried BOTH the hub Channel contract (MEDIA:/artifact delivery, "never tell
+the user the chat cannot receive attachments") AND upstream's api_server
+platform hint ("Non-image files are NOT intercepted anywhere ... state the
+plain file path instead") — and the model trusted the later, more technical
+upstream text.
+
+Fix uses upstream's own documented config surface, no patching:
+`agent.platform_hints.api_server.replace` (upstream `platform_hints`
+override, agent_init.py/config_defaults) now renders `APIServerPlatformHint`
+(internal/stack/prompt_contract.go) on both render paths — managed
+(`managedAgentSection`) and unmanaged (`Config`). The replacement states the
+real hub-channel semantics: markdown renders, artifacts auto-deliver, MEDIA:
+attaches any workspace file, inbox_fetch materializes inbound files,
+attachments work in both directions.
+
+Verified live: re-rendered spaces/{artem_two,artem_main,local}; the pinned
+runtime image's `system_prompt._platform_hint` called against the mounted
+`generated/hermes-effective.dev.yaml` returns the hub text (not the stock
+hint). Regression test `TestAPIServerPlatformHintOverrideRendered` pins the
+override on both render paths. Managed runtimes spawn on demand — next spawn
+mounts the new effective config; no `/reset` or session action needed.
+
 ## Known limitations / not yet evidenced
 
-- Broker first-open replay of ~200k records takes ~30 s (one-time per
-  restart while the journal replays into memory; acceptable for dev, watch
-  prod latency).
+- Broker open-time replay of ~200k records was ~30 s before CHG-0219 S195.1
+  landed normalized state/audit tables (commit 820fe14b): normalized opens
+  skip the full replay — live restarts are now instant. History rotation for
+  the `records` chain remains CHG-0220 scope.
 - No power-loss/volume-loss matrix on the live stack (unit-level tail-drop
   and catch-up tests only) — recorded as unavailable in CHG-0218 gate.
 - The dev spool contains almost no organic traffic; the toolhub bind-mount

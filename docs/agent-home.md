@@ -1,6 +1,6 @@
 ---
 description: The agent's home — SOUL.md persona contract, skills registry, bundled skills, hooks, memory and runtime-writable state.
-last_verified: 2026-10-24
+last_verified: 2026-11-01
 ---
 
 # Agent home
@@ -62,6 +62,14 @@ Both modes receive a short guide-routing rule in the hub-owned channel
 contract. Render and supervisor config materialization compose that contract
 with the owner persona into `generated/soul-effective.<env>.md`. A context
 without a persona gets the contract alone. The source `SOUL.md` is not replaced.
+
+Every hub session reaches the agent as platform `api_server`, so the rendered
+config also carries `agent.platform_hints.api_server.replace`: upstream's
+stock api_server hint describes a bare API caller (plain text only, MEDIA:
+markers never intercepted, no non-image attachments) and would override the
+channel contract's delivery rules — the replacement states the hub channel's
+real semantics (markdown renders, artifact auto-delivery, MEDIA: attaches any
+workspace file, inbox_fetch materializes incoming attachments).
 
 ## Hooks and plugins
 

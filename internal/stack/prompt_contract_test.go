@@ -57,3 +57,37 @@ func TestChannelContractRequiresHumanToolHubConfirmation(t *testing.T) {
 		}
 	}
 }
+
+// The upstream api_server platform hint claims MEDIA: markers are never
+// intercepted and non-image files never attach — true for a bare API caller,
+// false behind the hub gateway. Every render path must carry the
+// agent.platform_hints.api_server.replace override or the model trusts the
+// stock hint and tells users the chat cannot receive file attachments.
+func TestAPIServerPlatformHintOverrideRendered(t *testing.T) {
+	for name, cfg := range map[string]M{
+		"managed":   Config(Settings{CapabilityMode: "managed", Model: "m", ModelURL: "http://x", Timezone: "UTC"}),
+		"unmanaged": Config(Settings{Model: "m", ModelURL: "http://x", Timezone: "UTC"}),
+	} {
+		agent, ok := cfg["agent"].(M)
+		if !ok {
+			t.Fatalf("%s: no agent section", name)
+		}
+		hints, ok := agent["platform_hints"].(M)
+		if !ok {
+			t.Fatalf("%s: agent.platform_hints missing — stock api_server hint ships", name)
+		}
+		server, ok := hints["api_server"].(M)
+		if !ok {
+			t.Fatalf("%s: api_server hint override missing", name)
+		}
+		repl, _ := server["replace"].(string)
+		if repl != APIServerPlatformHint {
+			t.Fatalf("%s: api_server replace hint is not the reviewed hub text", name)
+		}
+		for _, want := range []string{"MEDIA:", "attachment", "inbox_fetch", "markdown"} {
+			if !strings.Contains(repl, want) {
+				t.Errorf("%s: replacement hint missing %q", name, want)
+			}
+		}
+	}
+}
