@@ -2,8 +2,8 @@ schema: 1
 change: CHG-0220
 title: "Управляемые версии secret objects и безопасный GC"
 status: in_progress
-branch: fix/m23-live-wake
-updated: "2026-10-28"
+branch: chore/storage-reliability-dev-acceptance
+updated: "2026-11-09"
 phase: implementation
 adr: ADR-0087
 spec: SPEC-0087
@@ -13,18 +13,18 @@ workstream: storage-reliability-mvp
 github_milestone: null
 github_issue: null
 design_status: accepted
-implementation_status: in_progress
+implementation_status: done
 readiness: dependency_gated
 slices:
   S196.1-version-ownership: done
-  S196.2-safe-retirement: not_started
-  S196.3-bounded-cleanup: not_started
+  S196.2-safe-retirement: done
+  S196.3-bounded-cleanup: done
 validation:
   documents: passed
   planning_package: passed
   planning_just_check: failed
   just_check: not_run
-  module_check: not_run
+  module_check: passed
   security: not_run
   docker_check: not_run
   red_team: not_started
@@ -52,7 +52,61 @@ evidence:
       documented unknown-orphan window. Verifier object row remains intent
       until S196.3 ownership cleanup reconciles it (file already removed
       at exchange; row is deletable-by-owner, not an unknown remote).
+  - date: "2026-11-09"
+    slice: S196.2
+    kind: module_tests
+    summary: >
+      stateRecord carries a canonical bundle digest; identical quiesced
+      checkpoints reuse the current version (no new object, no new row).
+      Changed checkpoints activate the replacement and retire the
+      superseded row in the same mutation — activate-before-retire.
+      Superseded versions under a live pin are marked pinned and stay
+      resolvable; OAuth rotation always mints a version (no dedup).
+      Pins: BeginUse pins the credential object per op, materialization
+      pins the state version per lease, dropLease releases both;
+      DeleteCredential denies while any owned pin is live.
+    proof: >
+      go test -tags libsqlite3 ./broker — green: TestUnchangedQuiesced-
+      CheckpointDoesNotCreateVersion, TestChangedCheckpointRetiresPrevious-
+      Version, TestSupersededCheckpointStaysResolvable,
+      TestPinnedCheckpointVersionSurvivesGC, TestRotatingOAuthReplacement-
+      NotLost, TestDropLeaseReleasesUsePins, TestSuccessfulWriteLeavesNoIntent.
+  - date: "2026-11-09"
+    slice: S196.3
+    kind: module_tests
+    summary: >
+      SweepObjects — bounded, idempotent pending-delete worker: durable
+      pending-delete commit before any physical delete, provider.Delete
+      removes primary+recovery copies with dir sync, deleted receipt only
+      after physical removal, 30s backoff on failure, request-terminal
+      intents (canceled/expired drafts and verifiers) freed through
+      ownership only. Activation retires consumed request objects in the
+      same commit; maintenance Sweep() drains a batch of 64 every second.
+    proof: >
+      go test -tags libsqlite3 ./broker — green: TestDeleteFailureRemains-
+      PendingAndDenied, TestCleanupBothCopiesBeforeReceipt,
+      TestAliasAndSharedCredentialUntouched, TestAbandonedIntentFreedBy-
+      Ownership, TestExpiredDraftFreedByOwnership,
+      TestMaintenanceSweepCollectsObjects, TestSweepHonorsBatchLimit,
+      TestSweepSkipsLivePinnedObjects, TestActivationRetiresRequestObjects.
+  - date: "2026-11-09"
+    slice: acceptance
+    kind: module_tests
+    summary: >
+      TestLifecycleScaleAcceptance — 1000 synthetic cycles (500
+      dedup/supersede checkpoints + 500 rotating OAuth refreshes) under a
+      live broker. After draining the worker: object rows settle to
+      exactly 3 current + 752 deleted, the provider directory holds 4
+      files (3 current versions + 1 foreign unknown object preserved),
+      a fresh materialize restore succeeds, and a byte-scan of all ledger
+      files finds no raw sentinel or token material.
+    proof: >
+      broker_test run inside pinned sqlcipher image:
+      acceptance: 1000 cycles, object states map[current:3 deleted:752],
+      retained files 4 — PASS (32.0s).
 remaining:
-  - "S196.2 pins/dedup ordering; S196.3 pending-delete worker; acceptance 1000-cycle + live."
+  - "Root just check, docker/live acceptance on the dev stack (maintenance sweep is wired to the 1s tick), then move CHG to done."
 limitations:
-  - "Module tests only so far; just_check/security/red_team/live_acceptance not run."
+  - "Remote providers without RefWriter keep the post-write unknown-orphan window (documented)."
+  - "Backoff is a flat 30s re-arm; exponential growth and jitter are not implemented."
+  - "Object sweep only runs inside the Broker process tick; no offline CLI variant."

@@ -1,6 +1,6 @@
 ---
 description: "Процедуры, при которых нельзя обойти fail-closed поведение."
-last_verified: "2026-11-01"
+last_verified: "2026-11-09"
 ---
 
 # Восстановление, отзыв и очистка
@@ -43,7 +43,13 @@ backup, чей подтверждённый head совпадает с неза�
 позиции. Повреждённый ciphertext и неверный ключ блокируют запуск.
 
 Local provider читает backup по первоначальному locator только если primary
-object отсутствует. Удаление managed object удаляет обе копии. Broker
+object отсутствует. Удаление managed object удаляет обе копии и выполняется
+только через owned object rows: bounded-воркер переводит версию в
+`pending-delete`, стирает primary+recovery и fsync каталогов через provider,
+и лишь затем пишет receipt `deleted`. Объект без строки владения
+(unknown remote) никогда не удаляется — в том числе при восстановлении:
+неизвестная копия в recovery каталоге остаётся консервативным keep, а не
+кандидатом на чистку. Broker
 восстанавливает owner/context, contract, grant, revoke и delete из journal;
 leases остаются только в памяти и после рестарта создаются заново через
 текущую авторизацию. Внешние Vault/Kubernetes providers сохраняются своим
