@@ -229,6 +229,40 @@ func TestRefreshMetadataGrowthIsLinear(t *testing.T) {
 	}
 }
 
+// After activation consumes them, request-owned objects (the verifier, any
+// leftover intents) must not linger as intents: activation retires them
+// through the same ownership commit (SPEC-0087 R4 — drafts/verifiers are
+// freed by ownership, and only by it).
+func TestActivationRetiresRequestObjects(t *testing.T) {
+	up := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		fmt.Fprint(w, `{"access_token":"a","refresh_token":"r","expires_in":3600,"token_type":"Bearer"}`)
+	}))
+	defer up.Close()
+	f := newFixture(t, oauthContract())
+	f.cfg.OAuth["example"] = oauthProvider(up)
+	f.start()
+	r, cookie, q := oauthBegin(t, f)
+	if e := f.b.CompleteOAuth(testCtx, cookie, q.Get("state"), "one-code"); e != nil {
+		t.Fatal(e)
+	}
+	for _, o := range f.b.objects {
+		if o.OwnerKind == "request" && o.OwnerID == r.ID && o.State == "intent" {
+			t.Fatalf("consumed request object left intent: %s %s", o.Op, o.ID)
+		}
+	}
+	if _, e := f.b.SweepObjects(testCtx, alice, 64); e != nil {
+		t.Fatal(e)
+	}
+	entries, e := os.ReadDir(filepath.Join(f.root, "secrets"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("%d objects after activation sweep, want 1 (activated credential)", len(entries))
+	}
+}
+
 // A crash mid-refresh — provider write done, activation commit never run —
 // must not orphan the rotated object: the intent row persisted before the
 // write still owns it after restart (SPEC-0087 R4.2).

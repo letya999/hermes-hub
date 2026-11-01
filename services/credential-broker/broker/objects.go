@@ -22,8 +22,13 @@ func (b *Broker) sweepObjectsLocked(ctx context.Context, a identity.Actor, limit
 		if len(queue) == limit {
 			break
 		}
+		if b.pins[o.ID] > 0 {
+			continue
+		}
 		switch o.State {
-		case "retired":
+		case "retired", "pinned":
+			// A pinned row with zero live pins is retirement-eligible: the
+			// pin is a live-count gate, not a stored flag.
 			o.State = "pending-delete"
 			o.UpdatedAt = b.now()
 			queue = append(queue, o)

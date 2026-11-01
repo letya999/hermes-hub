@@ -373,6 +373,25 @@ func (b *Broker) DeleteCredential(ctx context.Context, a identity.Actor, id stri
 			return ErrUnavailable
 		}
 	}
+	// Objects owned by the request that minted this credential (consumed
+	// drafts, spent verifiers) retire at activation but stay physically
+	// owned by the lineage — delete removes them with the credential.
+	for _, o := range b.objects {
+		if o.OwnerKind != "request" || o.State == "deleted" {
+			continue
+		}
+		r, ok := b.requests[o.OwnerID]
+		if !ok || r.View.CredentialID != id {
+			continue
+		}
+		p := b.cfg.Providers[o.Ref.Provider]
+		if p == nil || !p.Capabilities().Delete || p.Delete(ctx, o.Ref) != nil {
+			return ErrUnavailable
+		}
+		o.State = "deleted"
+		o.UpdatedAt = now
+		deleted = append(deleted, o)
+	}
 	// State snapshots have their own lifecycle. Their current versions are removed.
 	for sk, s := range b.states {
 		belongs := false

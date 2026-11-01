@@ -305,14 +305,18 @@ func (b *Broker) ready(r *requestRecord, ref provider.Ref, managed bool, s *sess
 	}
 	now := b.now()
 	var objs []objectRecord
+	// Activation consumes the request's owned objects: leftover intents
+	// (verifier, consumed drafts) retire in the same commit — freed by
+	// ownership, never by directory scanning (SPEC-0087 R4.6).
+	for _, o := range b.objects {
+		if o.OwnerKind == "request" && o.OwnerID == r.View.ID && o.State == "intent" {
+			o.State = "retired"
+			o.UpdatedAt = now
+			objs = append(objs, o)
+		}
+	}
 	if managed {
-		add := func(ref provider.Ref) {
-			objs = append(objs, objectRecord{ID: objectID(ref), OwnerKind: "credential", OwnerID: id, Ref: ref, State: "current", Op: "enroll", CreatedAt: now, UpdatedAt: now})
-		}
-		if r.DraftRef != nil {
-			add(*r.DraftRef)
-		}
-		add(ref)
+		objs = append(objs, objectRecord{ID: objectID(ref), OwnerKind: "credential", OwnerID: id, Ref: ref, State: "current", Op: "enroll", CreatedAt: now, UpdatedAt: now})
 	}
 	r.View.CredentialID = id
 	r.View.Revision = rev

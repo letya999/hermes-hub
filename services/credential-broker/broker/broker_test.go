@@ -1002,6 +1002,54 @@ func TestSweepHonorsBatchLimit(t *testing.T) {
 	}
 }
 
+// A live-pinned object is never queued by the worker: pins are checked
+// before eligibility, so active use/restore always wins over cleanup
+// (SPEC-0087 R4.2/R4.6).
+func TestSweepSkipsLivePinnedObjects(t *testing.T) {
+	f := newFixture(t, stateContract())
+	c := f.enroll(alice, "session", "service")
+	g, a := f.grant(alice, c, "session", "state_binding", "state_workload")
+	f.checkpoint(a, g, `{"session":"one"}`)
+	key := seal.Digest(c.ID + "/" + a.ContextID + "/" + g.BindingID)
+	first := f.b.states[key].Ref
+	// Live restore pins the first version, then a checkpoint supersedes it
+	// under the pin: the row is "pinned", not "retired".
+	l := f.lease(alice, g)
+	m, e := f.b.Materialize(testCtx, a, l.ID)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = os.WriteFile(filepath.Join(m.Mounts[1].Source, "runtime_session.json"), []byte(`{"session":"two"}`), 0600); e != nil {
+		t.Fatal(e)
+	}
+	if e = f.b.Release(testCtx, a, l.ID, v1.RuntimeRelease{Checkpoint: true, Quiesced: true}); e != nil {
+		t.Fatal(e)
+	}
+	// Pin released with the lease — the version now rests "pinned" but is
+	// only collectible once unpinned; sweep must collect it here since the
+	// pin is gone...
+	if n, e := f.b.SweepObjects(testCtx, a, 10); e != nil || n == 0 {
+		t.Fatalf("sweep skipped the unpinned pinned row: n=%d e=%v", n, e)
+	}
+	if f.b.objects[objectID(first)].State != "deleted" {
+		t.Fatalf("released pinned version state = %q, want deleted", f.b.objects[objectID(first)].State)
+	}
+	// ...while an object pinned by a STILL-ACTIVE use is never queued.
+	l2 := f.lease(alice, g)
+	if _, e := f.b.Materialize(testCtx, a, l2.ID); e != nil {
+		t.Fatal(e)
+	}
+	current := f.b.states[key].Ref
+	f.b.objects[objectID(current)] = objectRecord{ID: objectID(current), OwnerKind: "state", OwnerID: key, Ref: current, State: "pinned"}
+	if n, e := f.b.SweepObjects(testCtx, a, 10); e != nil || n != 0 {
+		t.Fatalf("sweep touched a live-pinned object: n=%d e=%v", n, e)
+	}
+	if _, e := os.Stat(filepath.Join(f.root, "secrets", current.Locator)); e != nil {
+		t.Fatalf("live-pinned object deleted: %v", e)
+	}
+	_ = f.b.Release(testCtx, a, l2.ID, v1.RuntimeRelease{})
+}
+
 func TestExpirationCancellationAndBrowserLimits(t *testing.T) {
 	f := newFixture(t)
 	r := f.request(alice, "pat", "pending", "pending_request")
