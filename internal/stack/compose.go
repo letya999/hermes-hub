@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -787,6 +788,14 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 				rollupAt = "04:00"
 			}
 			gatewayEnvironment["HUB_MEMORY_ROLLUP_TIME"] = rollupAt
+			// R7.5 leaf prune knobs render only when configured — zero means
+			// the lane is off and nothing reaches the gateway env.
+			if s.MemoryLeafRetentionDays > 0 {
+				gatewayEnvironment["HUB_MEMORY_LEAF_RETENTION_DAYS"] = strconv.Itoa(s.MemoryLeafRetentionDays)
+			}
+			if s.MemoryLeafFoldBytes > 0 {
+				gatewayEnvironment["HUB_MEMORY_LEAF_FOLD_BYTES"] = strconv.Itoa(s.MemoryLeafFoldBytes)
+			}
 			gateway["volumes"] = append(gateway["volumes"].([]any), M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "vault")), "target": "/vault"})
 		}
 		// Sibling Telegram identities live in this file. TELEGRAM_ALLOWED_USERS

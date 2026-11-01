@@ -1,6 +1,6 @@
 ---
 description: Frozen requirements for the M20 memory vault (provenance-aware leaves, provider seam, audience-scoped CORE, pre-turn recall, gated rollup, search, write contract, soft forget) and the opt-in OpenKnowledge UI surface.
-last_verified: 2026-10-31
+last_verified: 2026-11-01
 ---
 # SPEC-0085: Memory vault and OpenKnowledge knowledge surface
 
@@ -165,13 +165,18 @@ on past-referencing turns.
   completed step; a changed already-processed entry halts the day.
 - R5.9 Fold-up: daily→weekly needs all 7 day states incl. no-data;
   monthly = full in-month weeks + edge days; yearly = 12 months.
+- R5.10 Oversized eligible days (above `memory_leaf_fold_bytes`) ask the
+  same proposal call for `long_summary`; the detailed digest lands in
+  `summaries/daily/<day>.md` so detail survives the leaf fold — no
+  second model call.
 
 Acceptance: A5.1 seeded day → summary + evidence-linked fact; mutated
 quote rejected; A5.2 hash mismatch keeps owner edit + `truth_pending`;
 A5.3 directive replaced in place; A5.4 crafted lossy rewrite rejected,
 prior state preserved, journaled; A5.5 zero promotions from
 untrusted/background; A5.6 kill mid-step resumes; same-day second run
-no-ops; A5.7 caps enforced; A5.8 morning digest; A5.9 intent → proposal.
+no-ops; A5.7 caps enforced; A5.8 morning digest; A5.9 intent → proposal;
+A5.10 big day → long_summary persisted as the daily summary.
 
 ## R6 — `memory_card` contract, soft forget, zone guards (CHG-0208)
 
@@ -220,10 +225,31 @@ window.
 - R7.4 `hubctl memory vacuum` prunes superseded/stale per policy;
   dry-run reports accurately and never deletes without the flag; cannot
   remove non-superseded content; git history always recoverable.
+- R7.5 Nightly leaf lifecycle (CHG-0240), two fail-closed lanes after
+  the rollup + period folds, each off by default:
+  - FOLD (`memory_leaf_fold_bytes` >0): a completed day whose leaf
+    exceeds the knob gets non-promotion-eligible block bodies stubbed
+    in place through the governed writer — mem:id headers and
+    interactive owner/agent blocks stay byte-identical; a verify pass
+    must confirm id counts and eligible bodies before commit; a
+    concurrent owner edit wins the WantSHA check and the fold skips.
+  - EXPIRE (`memory_leaf_retention_days` >0, min 2): a leaf older than
+    the window is removed via `git rm`+commit and its prov.db rows drop
+    — only when the day-state is complete AND `summaries/daily/<day>.md`
+    exists. An unverified day is kept and reported, never deleted.
+  - Every action journals to `memory/REVIEW.md` under `## prune <day>`
+    and merges into the localized morning digest; both lanes are
+    idempotent and never touch today's leaf.
+  - `hubctl memory prune` dry-runs the same Scan report; `--apply`
+    executes; knobs ride the space settings and require `memory_vault`.
 
 Acceptance: A7.1 reviewable drafts, nothing commits unreviewed; A7.2
 deterministic suite green at the recall bound; A7.3 live results
-recorded; A7.4 reproducibility; A7.5 vacuum honest dry-run.
+recorded; A7.4 reproducibility; A7.5 vacuum honest dry-run; A7.6 fold
+keeps eligible bytes verbatim + stubs audit blocks; A7.7 expire only
+after complete rollup + summary; A7.8 unverified old leaves kept and
+reported; A7.9 prune actions journaled + digested; A7.10 dry-run
+mutates nothing.
 
 ## R8 — OpenKnowledge service (CHG-0209)
 

@@ -8,10 +8,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/memory"
+	"github.com/letya999/hermes-hub/internal/memory/prune"
 	"github.com/letya999/hermes-hub/internal/vault"
 )
 
@@ -375,5 +378,256 @@ func TestNightTickFoldsClosedMonthAndYear(t *testing.T) {
 	}
 	if calls != 3 {
 		t.Fatalf("expected one model call per fired fold, got %d", calls)
+	}
+}
+
+// SPEC-0085 R7.5: the leaf prune knobs reach the gateway config through env
+// on both bootstrap paths, same lane as the rollup clock.
+func TestConfigFromEnvLeafKnobs(t *testing.T) {
+	t.Setenv("TELEGRAM_BOT_TOKEN", "token")
+	t.Setenv("TELEGRAM_ALLOWED_USERS", "11")
+	t.Setenv("HUB_MEMORY_LEAF_RETENTION_DAYS", "7")
+	t.Setenv("HUB_MEMORY_LEAF_FOLD_BYTES", "65536")
+	config, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.MemoryLeafRetentionDays != 7 || config.MemoryLeafFoldBytes != 65536 {
+		t.Fatalf("leaf knobs = %d/%d, want 7/65536", config.MemoryLeafRetentionDays, config.MemoryLeafFoldBytes)
+	}
+}
+
+// SPEC-0085 R7.5: after the rollup the same tick prunes — a retention-age
+// leaf whose distillation completed is expired through the governed lane.
+func TestNightTickPrunes(t *testing.T) {
+	c := baseTestConfig(t)
+	root := filepath.Join(t.TempDir(), "vault")
+	if err := vault.Ensure(root); err != nil {
+		t.Fatal(err)
+	}
+	c.VaultDir = root
+	c.MemoryRollupTime = "00:00"
+	c.MemoryLeafRetentionDays = 7
+
+	old := time.Now().AddDate(0, 0, -30)
+	daily, err := vault.OpenDaily(root, time.Local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := daily.Append(memory.Entry{ID: "old-1", Kind: memory.KindInteractive,
+		Provenance: memory.ProvenanceOwner, Audience: memory.AudiencePrivate,
+		Body: "old day content", ObservedAt: old}, "test"); err != nil {
+		t.Fatal(err)
+	}
+	dayKey := old.Format("2006-01-02")
+	cache := filepath.Join(root, "runtime", "memory", "night", dayKey+".json")
+	if err := os.MkdirAll(filepath.Dir(cache), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cache, []byte(`{"entries":{},"steps":{"facts":true,"links":true,"truths":true,"intents":true,"core":true,"summary":true,"journal":true}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	w := vault.NewWriter(root)
+	if _, err := w.Apply(memory.WriteOp{Path: "memory/summaries/daily/" + dayKey + ".md",
+		Content: []byte("---\ntype: daily-summary\nstatus: active\ntags: []\ncreated: " + dayKey + "\nupdated: " + dayKey + "\n---\n\nold digest\n"),
+		Actor:   memory.ActorSystem}); err != nil {
+		t.Fatal(err)
+	}
+
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.nightRelay = func(ctx context.Context, system, user string) (string, error) {
+		return `{"summary":"night","facts":[]}`, nil
+	}
+	g.tickNightRollup(time.Now())
+
+	if _, err := os.Stat(filepath.Join(root, "memory", "daily", dayKey+".md")); !os.IsNotExist(err) {
+		t.Fatal("retention-age leaf still present after night tick")
+	}
+}
+
+// SPEC-0085 R7.5: the fold knob reaches the tick — an oversized completed
+// leaf inside the retention window gets its audit bodies stubbed.
+func TestNightTickFolds(t *testing.T) {
+	c := baseTestConfig(t)
+	root := filepath.Join(t.TempDir(), "vault")
+	if err := vault.Ensure(root); err != nil {
+		t.Fatal(err)
+	}
+	c.VaultDir = root
+	c.MemoryRollupTime = "00:00"
+	c.MemoryLeafFoldBytes = 1
+
+	old := time.Now().AddDate(0, 0, -3)
+	daily, err := vault.OpenDaily(root, time.Local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range []memory.Entry{
+		{ID: "own-1", Kind: memory.KindInteractive, Provenance: memory.ProvenanceOwner,
+			Audience: memory.AudiencePrivate, Body: "interactive words stay", ObservedAt: old},
+		{ID: "cron-1", Kind: memory.KindRoutine, Provenance: memory.ProvenanceSystem,
+			Audience: memory.AudiencePrivate, Body: strings.Repeat("cron chatter ", 30), ObservedAt: old},
+	} {
+		if err := daily.Append(e, "test"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dayKey := old.Format("2006-01-02")
+	cache := filepath.Join(root, "runtime", "memory", "night", dayKey+".json")
+	if err := os.MkdirAll(filepath.Dir(cache), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cache, []byte(`{"entries":{},"steps":{"facts":true,"links":true,"truths":true,"intents":true,"core":true,"summary":true,"journal":true}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.nightRelay = func(ctx context.Context, system, user string) (string, error) {
+		return `{"summary":"night","facts":[]}`, nil
+	}
+	g.tickNightRollup(time.Now())
+
+	b, err := os.ReadFile(filepath.Join(root, "memory", "daily", dayKey+".md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "cron chatter") {
+		t.Fatal("audit body survived the tick fold")
+	}
+	if !strings.Contains(string(b), "interactive words stay") {
+		t.Fatal("interactive body folded")
+	}
+}
+
+// SPEC-0085 R7.5: the fold knob also reaches the rollup itself — when
+// yesterday's eligible text exceeds it, the proposal asks for long_summary
+// so the detailed digest lands before any byte folding.
+func TestNightTickBigDayAsksLongSummary(t *testing.T) {
+	c := baseTestConfig(t)
+	root := filepath.Join(t.TempDir(), "vault")
+	if err := vault.Ensure(root); err != nil {
+		t.Fatal(err)
+	}
+	c.VaultDir = root
+	c.MemoryRollupTime = "00:00"
+	c.MemoryLeafFoldBytes = 64
+
+	yesterday := time.Now().AddDate(0, 0, -1)
+	daily, err := vault.OpenDaily(root, time.Local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := daily.Append(memory.Entry{ID: "y-1", Kind: memory.KindInteractive,
+		Provenance: memory.ProvenanceOwner, Audience: memory.AudiencePrivate,
+		Body: strings.Repeat("decisions all day long ", 20), ObservedAt: yesterday}, "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var prompt string
+	g.nightRelay = func(ctx context.Context, system, user string) (string, error) {
+		prompt = user
+		return `{"summary":"night","facts":[]}`, nil
+	}
+	g.tickNightRollup(time.Now())
+	if !strings.Contains(prompt, "long_summary") {
+		t.Fatal("big yesterday did not ask for long_summary")
+	}
+}
+
+// SPEC-0085 R7.5: prune actions surface in the morning digest as data
+// lines under the promoted facts — folded, expired and kept days all
+// named, so housekeeping is never silent.
+func TestPruneLine(t *testing.T) {
+	got := pruneLine("- fact one", prune.Report{
+		Folded:  []prune.FoldResult{{Day: "2026-04-10", Before: 4096, After: 512, Stubs: 3}},
+		Expired: []string{"memory/daily/2026-03-01.md"},
+		Kept:    []prune.KeptDay{{Day: "2026-03-02", Reason: "rollup incomplete"}},
+	}, locale.LangEN)
+	for _, want := range []string{"- fact one", "folded leaf", "expired leaf 2026-03-01", "kept leaf 2026-03-02"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("digest %q missing %q", got, want)
+		}
+	}
+	// Housekeeping lines localize like every owner-visible reply.
+	ru := pruneLine("", prune.Report{
+		Folded:  []prune.FoldResult{{Day: "2026-04-10", Before: 4096, After: 512, Stubs: 3}},
+		Expired: []string{"memory/daily/2026-03-01.md"},
+		Kept:    []prune.KeptDay{{Day: "2026-03-02", Reason: "rollup incomplete"}},
+	}, locale.LangRU)
+	for _, want := range []string{"сжал лист 2026-04-10", "удалил лист 2026-03-01", "оставил лист 2026-03-02"} {
+		if !strings.Contains(ru, want) {
+			t.Fatalf("ru digest %q missing %q", ru, want)
+		}
+	}
+	// The missing-summary keep names its own reason, not the rollup one.
+	miss := pruneLine("", prune.Report{Kept: []prune.KeptDay{{Day: "2026-03-03", Reason: "day summary missing"}}}, locale.LangEN)
+	if !strings.Contains(miss, "day summary missing") {
+		t.Fatalf("missing-summary keep mislabeled: %q", miss)
+	}
+}
+
+// SPEC-0085 R7.5: the morning DM carries prune actions merged under the
+// facts — an expired leaf lands in the owner's digest, not just REVIEW.
+func TestNightTickDigestIncludesPrune(t *testing.T) {
+	c := baseTestConfig(t)
+	root := filepath.Join(t.TempDir(), "vault")
+	if err := vault.Ensure(root); err != nil {
+		t.Fatal(err)
+	}
+	c.VaultDir = root
+	c.MemoryRollupTime = "00:00"
+	c.MemoryLeafRetentionDays = 7
+
+	old := time.Now().AddDate(0, 0, -30)
+	daily, err := vault.OpenDaily(root, time.Local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := daily.Append(memory.Entry{ID: "old-1", Kind: memory.KindInteractive,
+		Provenance: memory.ProvenanceOwner, Audience: memory.AudiencePrivate,
+		Body: "old day content", ObservedAt: old}, "test"); err != nil {
+		t.Fatal(err)
+	}
+	dayKey := old.Format("2006-01-02")
+	cache := filepath.Join(root, "runtime", "memory", "night", dayKey+".json")
+	if err := os.MkdirAll(filepath.Dir(cache), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cache, []byte(`{"entries":{},"steps":{"facts":true,"links":true,"truths":true,"intents":true,"core":true,"summary":true,"journal":true}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	w := vault.NewWriter(root)
+	if _, err := w.Apply(memory.WriteOp{Path: "memory/summaries/daily/" + dayKey + ".md",
+		Content: []byte("---\ntype: daily-summary\nstatus: active\ntags: []\ncreated: " + dayKey + "\nupdated: " + dayKey + "\n---\n\nold digest\n"),
+		Actor:   memory.ActorSystem}); err != nil {
+		t.Fatal(err)
+	}
+
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.nightRelay = func(ctx context.Context, system, user string) (string, error) {
+		return `{"summary":"night","facts":[]}`, nil
+	}
+	g.tickNightRollup(time.Now())
+
+	key := "night-digest-" + time.Now().Local().Format("2006-01-02")
+	b, err := os.ReadFile(filepath.Join(c.SpoolDir, "outbox", "pending", key+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), dayKey) {
+		t.Fatalf("digest missing prune line: %s", b)
 	}
 }

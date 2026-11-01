@@ -173,7 +173,12 @@ docs/tools.md; they are not shared personal-memory stores.
   `"HH:MM"` space-local, default 04:00) it folds the just-closed day —
   promotions, directives, REVIEW journal, owner digest, intent→draft
   assignment proposals — then closes any finished week/month/year whose
-  summary is missing. With `knowledge_ui` on, one pinned
+  summary is missing. Two opt-in settings bound the leaf tape after
+  that: `memory_leaf_fold_bytes` (>0) folds audit-kind bodies inside a
+  completed oversized leaf (interactive blocks stay verbatim), and
+  `memory_leaf_retention_days` (≥2) expires leaves past the window once
+  their rollup + daily summary provably exist — kept days and actions
+  journal to `REVIEW.md` and the morning digest (SPEC-0085 R7.5). With `knowledge_ui` on, one pinned
   `open-knowledge` container mounts the vault at `/data` on the
   space-private network; `ui_port` in `agent.yaml` is the only host
   edge — a single loopback publish `127.0.0.1:<ui_port>` → 8080

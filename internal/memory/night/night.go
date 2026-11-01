@@ -38,6 +38,11 @@ type Options struct {
 	// defaults (40 calls / 300k tokens).
 	MaxCalls       int
 	MaxInputTokens int
+	// FoldBytes marks a day "big" for the R7.5 prune contract: eligible
+	// text over this bound makes the proposal also request long_summary,
+	// so the detailed digest lands in summaries/daily before the leaf's
+	// audit bytes may be folded.
+	FoldBytes int64
 }
 
 // IntentProposal is one "remind me"-style line promoted to an owner
@@ -60,9 +65,10 @@ type Result struct {
 
 // proposal is the lenient-parsed JSON the model returns for one day.
 type proposal struct {
-	Summary  string   `json:"summary"`
-	CardRefs []string `json:"card_refs"`
-	Facts    []struct {
+	Summary     string   `json:"summary"`
+	LongSummary string   `json:"long_summary"`
+	CardRefs    []string `json:"card_refs"`
+	Facts       []struct {
 		Card  string `json:"card"`
 		Fact  string `json:"fact"`
 		Quote string `json:"quote"`
@@ -155,7 +161,8 @@ func Run(ctx context.Context, root string, day time.Time, o Options) (Result, er
 		res.Stopped = "budget"
 		return res, nil
 	}
-	if estTokens(buildPrompt(eligible)) > maxTokens {
+	wantLong := o.FoldBytes > 0 && int64(len(eligible)) > o.FoldBytes
+	if estTokens(buildPrompt(eligible, wantLong)) > maxTokens {
 		res.Stopped = "budget"
 		return res, nil
 	}
@@ -168,7 +175,7 @@ func Run(ctx context.Context, root string, day time.Time, o Options) (Result, er
 			return res, fmt.Errorf("night cached proposal JSON: %w", err)
 		}
 	} else {
-		out, err := o.Relay(ctx, proposalSystem, buildPrompt(eligible))
+		out, err := o.Relay(ctx, proposalSystem, buildPrompt(eligible, wantLong))
 		res.Calls++
 		if err != nil {
 			// The call was spent even though it failed — record it so a
@@ -187,7 +194,13 @@ func Run(ctx context.Context, root string, day time.Time, o Options) (Result, er
 			st.Entries[id] = sha256Hex([]byte(body))
 		}
 	}
-	res.SummaryMD = p.Summary
+	// R7.5: an oversized day's detailed digest becomes the written summary —
+	// the short text stays for the digest line.
+	summaryMD := p.Summary
+	if p.LongSummary != "" {
+		summaryMD = p.LongSummary
+	}
+	res.SummaryMD = summaryMD
 
 	// DryRun evaluates the proposal only — the vault, the journal, the
 	// intent sink and the day cache all stay untouched.
@@ -309,7 +322,7 @@ func Run(ctx context.Context, root string, day time.Time, o Options) (Result, er
 		}
 	}
 	if !st.done("summary") {
-		if err := writeDaySummary(w, dayKey, p.Summary, p.CardRefs); err != nil {
+		if err := writeDaySummary(w, dayKey, summaryMD, p.CardRefs); err != nil {
 			return res, err
 		}
 		st.Steps["summary"] = true
@@ -338,8 +351,12 @@ Rules: facts promote only durable preferences, decisions and people — never sm
 talk. Every fact's quote must appear verbatim in the entries. Cards name a
 memory/cards/<group>/<slug> target. Answer with JSON only.`
 
-func buildPrompt(entries string) string {
-	return "## Day entries\n\n" + entries + "\n## Task\nReturn the rollup JSON for this day."
+func buildPrompt(entries string, wantLong bool) string {
+	p := "## Day entries\n\n" + entries + "\n## Task\nReturn the rollup JSON for this day."
+	if wantLong {
+		p += " The day was very active — also return \"long_summary\" with a detailed digest covering every decision and fact in depth."
+	}
+	return p
 }
 
 // eligibleText renders only promotion-eligible entry bodies for the day —
@@ -789,6 +806,14 @@ func (st *dayState) complete() bool {
 		}
 	}
 	return true
+}
+
+// DayComplete reports whether the rollup fully processed dayKey (R7.5):
+// the prune lanes may only cut bytes whose distillation already landed —
+// an absent or partial state is a hard "keep".
+func DayComplete(root, dayKey string) bool {
+	st, err := loadDayState(root, dayKey)
+	return err == nil && st.complete()
 }
 
 // estTokens is the conservative ~4 chars-per-token input estimate the

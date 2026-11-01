@@ -136,7 +136,6 @@ func TestVaultScaffoldNeverSecrets(t *testing.T) {
 	}
 }
 
-
 // R11.4: replay mints bank ids from hub-held material the space never sees —
 // runtime/memory/scope.key is generated once, stable across opens, and
 // lives in the hub-owned sidecar zone (never a governed memory path).

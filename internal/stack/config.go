@@ -60,14 +60,21 @@ type Settings struct {
 	// memory rollup fires at (SPEC-0085 R5.1); empty renders the 04:00
 	// default while memory_vault is enabled.
 	MemoryRollupTime string `yaml:"memory_rollup_time,omitempty"`
-	Honcho           bool   `yaml:"honcho,omitempty"`
-	HonchoURL        string `yaml:"honcho_url,omitempty"`
-	GlobalSkillsDir  string `yaml:"global_skills_dir,omitempty"`
-	Schema           int    `yaml:"schema"`
-	User             string `yaml:"user"`
-	Organization     string `yaml:"organization,omitempty"`
-	Model            string `yaml:"model"`
-	ModelURL         string `yaml:"model_url"`
+	// MemoryLeafRetentionDays bounds how long rolled-up daily leaves stay in
+	// the vault working tree (SPEC-0085 R7.5): 0 keeps every leaf forever,
+	// N>=2 expires completed leaves older than N days once their day summary
+	// exists. MemoryLeafFoldBytes folds a completed oversized leaf's
+	// audit-kind blocks in place the same night (0 disables folding).
+	MemoryLeafRetentionDays int    `yaml:"memory_leaf_retention_days,omitempty"`
+	MemoryLeafFoldBytes     int    `yaml:"memory_leaf_fold_bytes,omitempty"`
+	Honcho                  bool   `yaml:"honcho,omitempty"`
+	HonchoURL               string `yaml:"honcho_url,omitempty"`
+	GlobalSkillsDir         string `yaml:"global_skills_dir,omitempty"`
+	Schema                  int    `yaml:"schema"`
+	User                    string `yaml:"user"`
+	Organization            string `yaml:"organization,omitempty"`
+	Model                   string `yaml:"model"`
+	ModelURL                string `yaml:"model_url"`
 	// Cliproxy selects the proxy topology: "shared" (default) resolves the
 	// infra space's instance; "dedicated" renders a cliproxy per space.
 	Cliproxy            string `yaml:"cliproxy,omitempty"`
@@ -480,6 +487,15 @@ func (s Settings) Validate() error {
 	}
 	if s.Has("memory_provider") && !s.Has("memory_vault") {
 		return fmt.Errorf("memory_provider requires memory_vault")
+	}
+	if s.MemoryLeafRetentionDays < 0 || (s.MemoryLeafRetentionDays > 0 && s.MemoryLeafRetentionDays < 2) {
+		return fmt.Errorf("memory_leaf_retention_days must be 0 or >=2")
+	}
+	if s.MemoryLeafFoldBytes < 0 {
+		return fmt.Errorf("memory_leaf_fold_bytes must be >=0")
+	}
+	if (s.MemoryLeafRetentionDays > 0 || s.MemoryLeafFoldBytes > 0) && !s.Has("memory_vault") {
+		return fmt.Errorf("memory leaf pruning requires memory_vault")
 	}
 	if s.Has("google") && (!strings.Contains(s.GoogleEmail, "@") || s.OAuthPort < 1024) {
 		return fmt.Errorf("google requires email and oauth_port >=1024")

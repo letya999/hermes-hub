@@ -391,7 +391,23 @@ live question set through the model relay (`HUB_MODEL_RELAY_URL`/
 timestamped judged report — relay failures are recorded per question, mocks
 never count as live. `hubctl memory vacuum` dry-runs the superseded purge
 set; only `vacuum --apply` deletes, and git history keeps everything
-recoverable.
+recoverable. `hubctl memory prune` dry-runs the leaf lifecycle report
+(fold/expire/keep predictions); only `prune --apply` executes, and every
+action journals to `memory/REVIEW.md` plus the localized morning digest.
+
+Daily leaves are bounded by two opt-in agent settings, both off by
+default: `memory_leaf_fold_bytes` (>0) folds a *completed* oversized
+leaf at the next night tick — audit-kind block bodies (routine, system,
+probe, compaction, untrusted, background replies) collapse to stub
+lines while mem:id headers and interactive owner/agent blocks stay
+byte-identical; oversized eligible days first get a `long_summary` from
+the same rollup call so detail lands in `summaries/daily/`. 
+`memory_leaf_retention_days` (≥2) expires a leaf older than the window —
+`git rm` + commit + prov.db row drop — but only after the day's rollup
+state is complete and its daily summary exists; unverified days are
+kept and reported, never deleted. Expired bytes still live in the
+vault's git history — true erasure needs a history rewrite, not this
+knob.
 
 An external memory backend rides the hub-owned provider seam, never the
 upstream plugin path: `tools: {memory_provider: {via: native}}` in

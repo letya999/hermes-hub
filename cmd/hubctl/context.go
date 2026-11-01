@@ -17,6 +17,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/memory"
 	memoryeval "github.com/letya999/hermes-hub/internal/memory/eval"
 	"github.com/letya999/hermes-hub/internal/memory/importer"
+	"github.com/letya999/hermes-hub/internal/memory/prune"
 	"github.com/letya999/hermes-hub/internal/memory/replay"
 	memorysearch "github.com/letya999/hermes-hub/internal/memory/search"
 	"github.com/letya999/hermes-hub/internal/memory/vacuum"
@@ -80,7 +81,7 @@ func runContext(_ context.Context, args []string) error {
 
 func runMemory(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("memory requires list, delete, search, import, eval, vacuum, replay or export-honcho")
+		return fmt.Errorf("memory requires list, delete, search, import, eval, vacuum, prune, replay or export-honcho")
 	}
 	sub := args[0]
 	f := flag.NewFlagSet("memory", flag.ContinueOnError)
@@ -228,6 +229,31 @@ func runMemory(ctx context.Context, args []string) error {
 			return json.NewEncoder(os.Stdout).Encode(rep)
 		}
 		rep, err := vacuum.Scan(vaultDir)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(rep)
+	case "prune":
+		// Leaf lifecycle (SPEC-0085 R7.5): knobs ride the space settings —
+		// dry-run prints the predicted report, --apply folds/expires.
+		vaultDir := filepath.Join(abs, "vault")
+		s, err := stack.ReadEnvironment(abs, *env)
+		if err != nil {
+			return err
+		}
+		o := prune.Options{
+			RetentionDays: s.MemoryLeafRetentionDays,
+			FoldBytes:     int64(s.MemoryLeafFoldBytes),
+			TZ:            time.Local,
+		}
+		if *apply {
+			rep, err := prune.Apply(vaultDir, o)
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(os.Stdout).Encode(rep)
+		}
+		rep, err := prune.Scan(vaultDir, o)
 		if err != nil {
 			return err
 		}

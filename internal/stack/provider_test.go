@@ -285,8 +285,8 @@ func TestProviderRequiresVault(t *testing.T) {
 	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC",
 		BrowserPort: 6080, OAuthPort: 8000,
 		Model: "test", ModelURL: "http://model.invalid/v1",
-		Tools:   testTools("workspace", "memory_provider"),
-		Ingress: testIngress("workspace"),
+		Tools:          testTools("workspace", "memory_provider"),
+		Ingress:        testIngress("workspace"),
 		MemoryProvider: "hindsight", MemoryProviderURL: "http://hindsight.invalid:8888"}
 	if err := s.Validate(); err == nil {
 		t.Fatal("memory_provider without memory_vault must fail")

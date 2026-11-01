@@ -1,0 +1,21 @@
+change: CHG-0240-leaf-retention-fold
+issue: 423
+status: done
+started: 2026-11-01
+slices:
+  S12.1: done   # settings + validate + rights + env render
+  S12.2: done   # internal/memory/prune Scan/Apply + gates + REVIEW journal
+  S12.3: done   # long_summary via same proposal call for big days
+  S12.4: done   # tick wiring + localized digest lines + prov.db drop
+  S12.5: done   # hubctl memory prune (dry report / --apply)
+  S12.6: done   # docs + gates
+gates:
+  unit: green (prune/night/stack/locale/communication/hubctl/vault ok)
+  coverage: "prune 86.7% (>=85 own bar); project covergo ran under just check"
+  docs-check: green
+  lint: green (vet/mod-tidy-diff/staticcheck/gosec/actionlint)
+notes: >-
+  just check go-check hit known Windows env flakes only — AV fork/exec
+  Access-denied on unrelated test binaries + lld link flake; every
+  reported failure re-ran green in isolation. Live Docker acceptance
+  stays deferred to the merge session.

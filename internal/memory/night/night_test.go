@@ -1512,3 +1512,87 @@ func TestStruckEntryNotPromoted(t *testing.T) {
 		t.Fatalf("unstruck entry missing from prompt: %q", prompt)
 	}
 }
+
+// SPEC-0085 R7.5: the prune lanes ask the rollup whether a day fully
+// distilled — only a complete day-state lets bytes be cut; absent or
+// partial states answer keep.
+func TestDayComplete(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "vault")
+	if err := vault.Ensure(root); err != nil {
+		t.Fatal(err)
+	}
+	if DayComplete(root, "2026-04-19") {
+		t.Fatal("no state answered complete")
+	}
+	cache := filepath.Join(root, "runtime", "memory", "night", "2026-04-19.json")
+	if err := os.MkdirAll(filepath.Dir(cache), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cache, []byte(`{"entries":{},"steps":{"facts":true}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if DayComplete(root, "2026-04-19") {
+		t.Fatal("partial state answered complete")
+	}
+	if err := os.WriteFile(cache, []byte(`{"entries":{},"steps":{"facts":true,"links":true,"truths":true,"intents":true,"core":true,"summary":true,"journal":true}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if !DayComplete(root, "2026-04-19") {
+		t.Fatal("complete state answered keep")
+	}
+}
+
+// SPEC-0085 R7.5: when the day's eligible text exceeds the fold knob the
+// same proposal call also asks for long_summary — the detailed digest
+// lands in summaries/daily before any byte folding can cut the leaf.
+func TestBigDayRequestsLongSummary(t *testing.T) {
+	root := fixture(t, []memory.Entry{
+		eligibleEntry("turn-1", strings.Repeat("a very busy day full of decisions ", 20)),
+	})
+	var prompt string
+	res, err := Run(context.Background(), root, dayNoon, Options{
+		Relay: func(ctx context.Context, system, user string) (string, error) {
+			prompt = user
+			return `{"summary":"short","long_summary":"detailed digest covering every decision in depth","facts":[]}`, nil
+		},
+		Now:       dayNoon.Add(24 * time.Hour),
+		FoldBytes: 64,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SummaryMD != "detailed digest covering every decision in depth" {
+		t.Fatalf("SummaryMD = %q, want the written long summary", res.SummaryMD)
+	}
+	if !strings.Contains(prompt, "long_summary") {
+		t.Fatalf("big-day prompt did not request long_summary")
+	}
+	sum, err := os.ReadFile(filepath.Join(root, "memory", "summaries", "daily", dayNoon.Format("2006-01-02")+".md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(sum), "detailed digest covering every decision") {
+		t.Fatalf("long_summary was not written: %s", sum)
+	}
+}
+
+// SPEC-0085 R7.5: a small day (or the knob off) never asks for the extra
+// digest — one summary field is enough.
+func TestSmallDayNoLongSummary(t *testing.T) {
+	root := fixture(t, []memory.Entry{eligibleEntry("turn-1", "tiny day")})
+	var prompt string
+	_, err := Run(context.Background(), root, dayNoon, Options{
+		Relay: func(ctx context.Context, system, user string) (string, error) {
+			prompt = user
+			return `{"summary":"short day","long_summary":"should not be used","facts":[]}`, nil
+		},
+		Now:       dayNoon.Add(24 * time.Hour),
+		FoldBytes: 4096,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(prompt, "long_summary") {
+		t.Fatal("small day prompt asked for long_summary")
+	}
+}

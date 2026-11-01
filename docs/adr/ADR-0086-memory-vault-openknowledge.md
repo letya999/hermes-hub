@@ -393,6 +393,24 @@ a provider seam with conformance, and soft forget.
   provider's availability. Pre-existing Honcho deployments get an
   `export-honcho` importer → reviewable cards (`source: migrated`).
 
+- **D20. Leaves are a bounded tape, not an archive.** (CHG-0240) Daily
+  leaves exist to feed the rollup and to audit; once a day's
+  distillation is *provably* done they stop earning their bytes. Two
+  deterministic night lanes run after `night.Run` + folds, both off by
+  default: FOLD stubs non-promotion-eligible block bodies in an
+  oversized completed leaf (mem:id headers and interactive owner/agent
+  blocks stay verbatim; a verify pass must confirm id counts and
+  eligible bodies or nothing commits; owner edits win the WantSHA
+  check) — and the same proposal call is asked for `long_summary` so
+  detail lands in `summaries/daily/` before bytes are cut. EXPIRE
+  `git rm`s a leaf older than `memory_leaf_retention_days` and drops its
+  prov.db rows — only when day-state is complete AND the daily summary
+  exists; unverified days are kept and reported, never deleted. Every
+  action journals to `REVIEW.md` and merges into the morning digest:
+  housekeeping is never silent. Git history still holds expired bytes —
+  true erasure needs a separate history-rewrite policy, documented not
+  hidden.
+
 ## Alternatives considered
 
 - **Upstream `memory.provider` plugin path** (Holographic/Hindsight/

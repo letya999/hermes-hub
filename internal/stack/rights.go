@@ -81,9 +81,11 @@ var settingsFieldRights = map[string]string{
 	"JudgeModel":   "",
 	// The nightly rollup clock is a schedule knob — it grants nothing and
 	// must not move the policy hash.
-	"MemoryRollupTime": "",
-	"Context":          "Context",
-	"Goals":            "Goals",
+	"MemoryRollupTime":        "",
+	"MemoryLeafRetentionDays": "",
+	"MemoryLeafFoldBytes":     "",
+	"Context":                 "Context",
+	"Goals":                   "Goals",
 	// The evaluated tool-governance view is itself a grant fence: its decisions
 	// decide which sections may render and which are capped to read-only.
 	"gov": "Governance",

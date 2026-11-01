@@ -24,6 +24,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/memory/night"
+	"github.com/letya999/hermes-hub/internal/memory/prune"
 )
 
 // nightDue reports whether the rollup should fire: the space-local clock
@@ -78,6 +79,7 @@ func (g *Gateway) tickNightRollup(now time.Time) {
 		Now:        now,
 		TZ:         time.Local,
 		IntentSink: sink,
+		FoldBytes:  int64(g.config.MemoryLeafFoldBytes),
 	})
 	if err != nil {
 		// An errored run leaves the day unmarked — the next tick resumes
@@ -88,12 +90,46 @@ func (g *Gateway) tickNightRollup(now time.Time) {
 		return
 	}
 	_ = os.WriteFile(marker, []byte(now.Local().Format("2006-01-02")), 0600)
-	if res.Digest != "" {
-		g.deliverNightDigest(res.Digest)
-	}
 	// R5.9 fold-up sweep: close the most recently finished week, month
 	// and year whose summaries are still missing.
 	g.nightFolds(now, night.Options{Relay: relay, Now: now, TZ: time.Local}, res.Calls)
+	digest := res.Digest
+	// R7.5 leaf prune: after the night's distillation, retention-age
+	// verified leaves expire and oversized completed leaves fold — every
+	// lane is fail-closed on the day's rollup state. Prune actions merge
+	// into the same morning digest so housekeeping is never silent.
+	if g.config.MemoryLeafRetentionDays > 0 || g.config.MemoryLeafFoldBytes > 0 {
+		if pr, err := prune.Apply(g.config.VaultDir, prune.Options{
+			RetentionDays: g.config.MemoryLeafRetentionDays,
+			FoldBytes:     int64(g.config.MemoryLeafFoldBytes),
+			Now:           now, TZ: time.Local,
+		}); err == nil {
+			digest = pruneLine(digest, pr, locale.LangOf(g.nightOwner().WorkspaceDir))
+		}
+	}
+	if digest != "" {
+		g.deliverNightDigest(digest)
+	}
+}
+
+// pruneLine folds the prune report into the night digest — the actions are
+// data lines like the promoted facts they follow.
+func pruneLine(digest string, pr prune.Report, lang locale.Lang) string {
+	for _, fr := range pr.Folded {
+		digest += "\n- " + locale.T(lang, "memory.prune-folded", fr.Day, fr.Before, fr.After, fr.Stubs)
+	}
+	for _, rel := range pr.Expired {
+		day := strings.TrimSuffix(filepath.Base(rel), ".md")
+		digest += "\n- " + locale.T(lang, "memory.prune-expired", day)
+	}
+	for _, k := range pr.Kept {
+		key := "memory.prune-kept-incomplete"
+		if k.Reason == "day summary missing" {
+			key = "memory.prune-kept-summary"
+		}
+		digest += "\n- " + locale.T(lang, key, k.Day)
+	}
+	return digest
 }
 
 // nightFolds attempts the R5.9 fold for each just-closed period whose
