@@ -1,0 +1,305 @@
+//go:build linux && cgo
+
+package journal
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"syscall"
+
+	_ "github.com/mattn/go-sqlite3"
+
+	"github.com/letya999/credential-broker/internal/seal"
+	"github.com/letya999/credential-broker/internal/securefs"
+)
+
+var errNoCipher = errors.New("sqlcipher engine unavailable")
+
+const (
+	sqlSchema = `CREATE TABLE IF NOT EXISTS records(
+		seq INTEGER PRIMARY KEY CHECK(seq > 0),
+		prev TEXT NOT NULL,
+		kind TEXT NOT NULL,
+		body BLOB NOT NULL
+	) WITHOUT ROWID`
+)
+
+// sqlStore is the durable backend behind an activated Journal. In replicated
+// mode both databases attach to a :memory: session — recovery as r, primary
+// as p — so one COMMIT covers both files atomically.
+type sqlStore struct {
+	db         *sql.DB
+	replicated bool
+	recLock    *os.File
+}
+
+// appendSQL commits the record into the recovery schema and, in replicated
+// mode, the attached primary schema inside one transaction, then advances the
+// witness head. A crash between COMMIT and the head write drops the
+// unacknowledged row on the next open — the same acknowledge ordering as the
+// framed backend.
+func (j *Journal) appendSQL(r Record, plain []byte) (uint64, error) {
+	size := j.size + int64(len(r.Data)) + 64
+	if size > j.limit {
+		j.poisoned = true
+		return 0, ErrUnavailable
+	}
+	tx, err := j.sql.db.Begin()
+	if err != nil {
+		j.poisoned = true
+		return 0, ErrUnavailable
+	}
+	if _, err := tx.Exec("INSERT INTO r.records(seq,prev,kind,body) VALUES(?,?,?,?)", r.Sequence, r.Previous, r.Kind, []byte(r.Data)); err != nil {
+		_ = tx.Rollback()
+		j.poisoned = true
+		return 0, ErrUnavailable
+	}
+	if j.sql.replicated {
+		if _, err := tx.Exec("INSERT INTO p.records(seq,prev,kind,body) VALUES(?,?,?,?)", r.Sequence, r.Previous, r.Kind, []byte(r.Data)); err != nil {
+			_ = tx.Rollback()
+			j.poisoned = true
+			return 0, ErrUnavailable
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		j.poisoned = true
+		return 0, ErrUnavailable
+	}
+	h := sha256.Sum256(plain)
+	if j.anchor != nil {
+		if err := j.anchor.writeHead(r.Sequence, hex.EncodeToString(h[:])); err != nil {
+			j.poisoned = true
+			return 0, ErrUnavailable
+		}
+	}
+	j.prev = hex.EncodeToString(h[:])
+	j.seq = r.Sequence
+	j.size = size
+	j.records = append(j.records, r)
+	return r.Sequence, nil
+}
+
+func sqlLock(dir string) (*os.File, error) {
+	lock, err := securefs.Open(dir, "ledger.lock", syscall.O_RDWR|syscall.O_CREAT, 0600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = lock.Close()
+		return nil, ErrUnavailable
+	}
+	return lock, nil
+}
+
+// openSQLReplicated opens the activated primary+recovery pair: recovery
+// attaches as r and primary as p on a :memory: session, so one COMMIT
+// covers both files atomically.
+func openSQLReplicated(primaryDir, recoveryDir string, anchor *recoveryAnchor, primaryKey, recoveryKey []byte, limit int64) (*Journal, error) {
+	plock, err := sqlLock(primaryDir)
+	if err != nil {
+		return nil, err
+	}
+	rlock, err := sqlLock(recoveryDir)
+	if err != nil {
+		_ = plock.Close()
+		return nil, err
+	}
+	db, err := sqlOpenDB()
+	if err != nil {
+		_ = plock.Close()
+		_ = rlock.Close()
+		return nil, err
+	}
+	fail := func(err error) (*Journal, error) {
+		_ = db.Close()
+		_ = plock.Close()
+		_ = rlock.Close()
+		return nil, err
+	}
+	if err := sqlAttach(db, "r", filepath.Join(recoveryDir, sqlRecoveryDB), sqlKeyPass(recoveryKey, "sqlcipher-recovery/v1")); err != nil {
+		return fail(err)
+	}
+	if err := sqlAttach(db, "p", filepath.Join(primaryDir, sqlPrimaryDB), sqlKeyPass(primaryKey, "sqlcipher-ledger/v1")); err != nil {
+		return fail(err)
+	}
+	recovery, _, _, err := sqlReplay(db, "r")
+	if err != nil {
+		return fail(err)
+	}
+	primary, pprev, psize, err := sqlReplay(db, "p")
+	if err != nil {
+		return fail(err)
+	}
+	rseq, pseq := uint64(len(recovery)), uint64(len(primary))
+	if anchor == nil {
+		return fail(ErrUnavailable)
+	}
+	latest, hash, err := anchor.current()
+	if err != nil || latest > rseq {
+		return fail(ErrUnavailable)
+	}
+	if latest > 0 {
+		// The witness head binds the acknowledged record's digest.
+		plain, err := json.Marshal(recovery[latest-1])
+		if err != nil {
+			return fail(err)
+		}
+		sum := sha256.Sum256(plain)
+		if hex.EncodeToString(sum[:]) != hash {
+			return fail(ErrUnavailable)
+		}
+	}
+	upto := pseq
+	if upto > latest {
+		upto = latest
+	}
+	for i := uint64(0); i < upto; i++ {
+		p, r := primary[i], recovery[i]
+		if p.Sequence != r.Sequence || p.Previous != r.Previous || p.Kind != r.Kind || !bytes.Equal(p.Data, r.Data) {
+			return fail(ErrUnavailable)
+		}
+	}
+	if rseq > latest || pseq > latest || pseq < latest {
+		tx, err := db.Begin()
+		if err != nil {
+			return fail(ErrUnavailable)
+		}
+		if rseq > latest {
+			if _, err := tx.Exec("DELETE FROM r.records WHERE seq > ?", latest); err != nil {
+				_ = tx.Rollback()
+				return fail(ErrUnavailable)
+			}
+		}
+		if pseq > latest {
+			if _, err := tx.Exec("DELETE FROM p.records WHERE seq > ?", latest); err != nil {
+				_ = tx.Rollback()
+				return fail(ErrUnavailable)
+			}
+		}
+		// Rows committed in the recovery journal but missing from primary are
+		// still acknowledged — replay them into p inside the same transaction.
+		for i := pseq; i < latest && i < rseq; i++ {
+			r := recovery[i]
+			if _, err := tx.Exec("INSERT INTO p.records(seq,prev,kind,body) VALUES(?,?,?,?)", r.Sequence, r.Previous, r.Kind, []byte(r.Data)); err != nil {
+				_ = tx.Rollback()
+				return fail(ErrUnavailable)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return fail(ErrUnavailable)
+		}
+	}
+	primary = recovery[:latest]
+	pprev = ""
+	if latest > 0 {
+		plain, err := json.Marshal(recovery[latest-1])
+		if err != nil {
+			return fail(err)
+		}
+		sum := sha256.Sum256(plain)
+		pprev = hex.EncodeToString(sum[:])
+	}
+	psize = 0
+	for _, r := range primary {
+		psize += int64(len(r.Data)) + 64
+	}
+	j := &Journal{lock: plock, limit: limit, seq: latest, prev: pprev, size: psize, records: primary,
+		sql: &sqlStore{db: db, replicated: true, recLock: rlock}}
+	j.identity = seal.Derive(primaryKey, "journal-store-key/v2")
+	j.anchor = anchor
+	return j, nil
+}
+
+// openSQLSingle opens an activated single-directory ledger.db. There is no
+// witness leg here: a committed row is durable by itself, the same ordering
+// the framed single ledger had.
+func openSQLSingle(dir string, key []byte, limit int64) (*Journal, error) {
+	lock, err := sqlLock(dir)
+	if err != nil {
+		return nil, err
+	}
+	db, err := sqlOpenDB()
+	if err != nil {
+		_ = lock.Close()
+		return nil, err
+	}
+	fail := func(err error) (*Journal, error) {
+		_ = db.Close()
+		_ = lock.Close()
+		return nil, err
+	}
+	if err := sqlAttach(db, "r", filepath.Join(dir, sqlSingleDB), sqlKeyPass(key, "sqlcipher-ledger/v1")); err != nil {
+		return fail(err)
+	}
+	recs, prev, size, err := sqlReplay(db, "r")
+	if err != nil {
+		return fail(err)
+	}
+	j := &Journal{lock: lock, limit: limit, seq: uint64(len(recs)), prev: prev, size: size, records: recs,
+		sql: &sqlStore{db: db}}
+	j.identity = seal.Derive(key, "journal-store-key/v2")
+	return j, nil
+}
+
+// sqlDispatchSingle routes the single-directory open path; an unverified
+// ledger.db without a legacy source refuses service.
+func sqlDispatchSingle(dir string, key []byte, limit int64) (*Journal, bool, error) {
+	if sqlActivated(dir) {
+		j, err := openSQLSingle(dir, key, limit)
+		return j, true, err
+	}
+	if sqlFileExists(filepath.Join(dir, sqlSingleDB)) && !sqlFileExists(filepath.Join(dir, "ledger.bin")) {
+		return nil, true, ErrUnavailable
+	}
+	return nil, false, nil
+}
+
+// sqlDispatchReplicated routes the open path. A database file without the
+// activation marker is an unverified import and refuses service.
+func sqlDispatchReplicated(primaryDir, recoveryDir string, anchor *recoveryAnchor, primaryKey, recoveryKey []byte, limit int64) (*Journal, bool, error) {
+	pact, ract := sqlActivated(primaryDir), sqlActivated(recoveryDir)
+	if pact != ract {
+		return nil, true, ErrUnavailable
+	}
+	if pact {
+		j, err := openSQLReplicated(primaryDir, recoveryDir, anchor, primaryKey, recoveryKey, limit)
+		return j, true, err
+	}
+	if sqlFileExists(filepath.Join(primaryDir, sqlPrimaryDB)) || sqlFileExists(filepath.Join(recoveryDir, sqlRecoveryDB)) {
+		if !sqlFileExists(filepath.Join(primaryDir, "ledger.bin")) && !sqlFileExists(filepath.Join(recoveryDir, "ledger.bin")) {
+			return nil, true, ErrUnavailable
+		}
+	}
+	return nil, false, nil
+}
+
+type SQLCipherManifest struct {
+	Format       int    `json:"format"`
+	Records      uint64 `json:"records"`
+	HeadSequence uint64 `json:"head_sequence"`
+	HeadDigest   string `json:"head_digest"`
+	Store        string `json:"store"`
+	StoreBytes   int64  `json:"store_bytes"`
+}
+
+// SQLCipherVersion reports the linked engine's cipher version. An empty value
+// means the binary was built without the sqlcipher tag or against a plain
+// SQLite library; every store open refuses to run in that case.
+func SQLCipherVersion() (string, error) {
+	db, err := sql.Open("sqlite3", ":memory:?_pragma=key('probe')")
+	if err != nil {
+		return "", err
+	}
+	defer db.Close()
+	var v string
+	if err := db.QueryRow("PRAGMA cipher_version").Scan(&v); err != nil || v == "" {
+		return "", errNoCipher
+	}
+	return v, nil
+}

@@ -1531,6 +1531,66 @@ func TestSpoolDBReopenWriterKeepsEventLayout(t *testing.T) {
 	defer s2.fsys.Close()
 }
 
+// An activated spool retired event-layout.json to substrate-backup while the
+// legacy events fence stays a file that dbFS cannot see. Reopening must read
+// the manifest row and accept the missing fence instead of re-running the
+// file-layout migration against the fence file.
+func TestSpoolDBActivatedReopenReadsLayoutRow(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "event-layout.json"), []byte(`{"version":2,"complete":true}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "events"), []byte(`{"version":2}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "pending"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "pending", "job-1.json"), []byte(`{"id":"job-1"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ImportSpoolRecords(root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ActivateSpoolRecords(root); err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewSpool(root)
+	if err != nil {
+		t.Fatalf("activated spool must not re-run the file layout migration: %v", err)
+	}
+	if err := s.fsys.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s2, err := NewSpool(root)
+	if err != nil {
+		t.Fatalf("second open must keep the migrated layout: %v", err)
+	}
+	defer s2.fsys.Close()
+}
+
+// The retired manifest file must not mask the row: an activated spool whose
+// layout row carries an unknown version fails closed, not "fresh migration".
+func TestSpoolDBActivatedRejectsBadLayoutRow(t *testing.T) {
+	root := t.TempDir()
+	dbBack, err := openSpoolDB(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dbBack.WriteFile(filepath.Join(root, "event-layout.json"), []byte(`{"version":999,"complete":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := dbBack.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "records.activated"), []byte("{}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewSpool(root); err == nil {
+		t.Fatal("unknown layout row silently ignored on the activated backend")
+	}
+}
+
 // Per-cursor .initialized markers are written through the record backend;
 // a corrupt row marker must fail closed instead of being silently replaced.
 func TestSpoolDBEventStateMarkerReadsRow(t *testing.T) {

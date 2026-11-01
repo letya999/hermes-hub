@@ -187,6 +187,9 @@ func OpenReplicated(primaryDir, recoveryDir string, primaryKey, recoveryKey []by
 }
 
 func openReplicated(primaryDir, recoveryDir string, primaryKey, recoveryKey []byte, limit int64, anchor *recoveryAnchor) (*Journal, error) {
+	if j, handled, err := sqlDispatchReplicated(primaryDir, recoveryDir, anchor, primaryKey, recoveryKey, limit); handled {
+		return j, err
+	}
 	recovery, err := openJournal(recoveryDir, recoveryKey, limit, false)
 	if err != nil {
 		return nil, err

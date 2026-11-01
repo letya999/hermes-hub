@@ -49,9 +49,13 @@ type Journal struct {
 	offsets  []int64
 	recovery *Journal
 	anchor   *recoveryAnchor
+	sql      *sqlStore
 }
 
 func Open(dir string, key []byte, limit int64) (*Journal, error) {
+	if j, handled, err := sqlDispatchSingle(dir, key, limit); handled {
+		return j, err
+	}
 	return openJournal(dir, key, limit, true)
 }
 
@@ -168,7 +172,7 @@ func (j *Journal) Records() []Record {
 func (j *Journal) Append(kind string, data any) (uint64, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	if j.poisoned || j.file == nil || kind == "" {
+	if j.poisoned || (j.file == nil && j.sql == nil) || kind == "" {
 		return 0, ErrUnavailable
 	}
 	raw, err := json.Marshal(data)
@@ -182,6 +186,9 @@ func (j *Journal) Append(kind string, data any) (uint64, error) {
 	}
 	if len(plain)+28 > MaxRecord {
 		return 0, errors.New("record too large")
+	}
+	if j.sql != nil {
+		return j.appendSQL(r, plain)
 	}
 	buf, compressed, err := j.frame(plain)
 	if err != nil {
@@ -233,16 +240,26 @@ func (j *Journal) Append(kind string, data any) (uint64, error) {
 func (j *Journal) Healthy() bool {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	return !j.poisoned && j.file != nil
+	return !j.poisoned && (j.file != nil || j.sql != nil)
 }
 func (j *Journal) Close() error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	if j.file == nil {
+	if j.file == nil && j.sql == nil {
 		return nil
 	}
-	err := j.file.Close()
-	j.file = nil
+	var err error
+	if j.file != nil {
+		err = j.file.Close()
+		j.file = nil
+	}
+	if j.sql != nil {
+		err = errors.Join(err, j.sql.db.Close())
+		if j.sql.recLock != nil {
+			err = errors.Join(err, j.sql.recLock.Close())
+		}
+		j.sql = nil
+	}
 	if j.lock != nil {
 		err = errors.Join(err, j.lock.Close())
 		j.lock = nil

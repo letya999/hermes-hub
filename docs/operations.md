@@ -1,6 +1,6 @@
 ---
 description: Operator runbook — stack lifecycle, user onboarding, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
-last_verified: 2026-10-31
+last_verified: 2026-11-01
 ---
 
 # Operations
@@ -411,6 +411,16 @@ service in docs/services/credential-broker.md. Ops-critical facts:
   configuration` until config.json + key/ledger material exist; migrating
   means copying volume content while stopped (`docker run --rm --user root
   -v old:/from -v new:/to … cp -a`), then `compose up -d`.
+- Broker durable store runs on encrypted SQLCipher (ADR-0087): `primary.db`
+  beside the ledger plus `recovery.db` on the recovery volume, one ATTACH
+  transaction per commit, sealed manifest + `sqlcipher.activated` markers.
+  Migrate with `hubctl store-migrate --dir spaces/<user> --env <env> --broker
+  --apply` (stops the service, runs `credential-broker store-migrate` in the
+  service image against its volumes) then `hubctl store-activate … --broker
+  --apply` (verifies the manifest, flips the markers, retires `ledger.bin`
+  into `substrate-backup/` and restarts the service). The dev image build
+  needs a CGO SQLCipher toolchain — `hubctl dev-rebuild credential-broker`
+  uses the pinned `build` stage of `services/credential-broker/deploy/Dockerfile`.
 - File-delivery contracts (e.g. Google service-account JSON) need a shared
   tmpfs at the same absolute path on broker, controller and daemon — set as
   `credential_mount_root` in the controller config; requests reject without

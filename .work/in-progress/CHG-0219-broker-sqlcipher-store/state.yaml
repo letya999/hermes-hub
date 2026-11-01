@@ -3,8 +3,8 @@ change: CHG-0219
 title: "Таблицы состояния и постраничный audit Broker"
 status: in_progress
 branch: fix/m23-live-wake
-updated: "2026-10-28"
-phase: design-complete
+updated: "2026-11-01"
+phase: substrate-implemented
 adr: ADR-0087
 spec: SPEC-0087
 requirements: [R3]
@@ -13,12 +13,12 @@ workstream: storage-reliability-mvp
 github_milestone: null
 github_issue: null
 design_status: accepted
-implementation_status: not_started
-readiness: dependency_gated
+implementation_status: partial
+readiness: substrate_done_tables_pending
 slices:
   S195.1-transactional-state: not_started
   S195.2-events-retention: not_started
-  S195.3-import-and-scale: not_started
+  S195.3-import-and-scale: partial
 validation:
   documents: passed
   planning_package: passed
@@ -26,11 +26,13 @@ validation:
   just_check: not_run
   module_check: not_run
   security: not_run
-  docker_check: not_run
+  docker_check: passed
   red_team: not_started
   live_acceptance: not_started
-evidence: []
+evidence:
+  - "../CHG-0218-broker-sqlcipher-proof/gate-result.md"
 remaining:
-  - "Implementation and all runtime acceptance remain outstanding."
+  - "Normalized state/audit/object tables (S195.1), scoped events pagination (S195.2) and large-scale import evidence (rest of S195.3) not started."
+  - "Journal SQLCipher substrate implemented: primary.db/recovery.db/ledger.db, import/activate, witness tail-drop, store-migrate/store-activate CLI."
 limitations:
-  - "Planning record only; no production code or live state changed."
+  - "Substrate shipped under CHG-0218 gate; this CHG still owns the normalized R3 surface."

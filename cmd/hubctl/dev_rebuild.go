@@ -100,14 +100,31 @@ func runDevRebuild(ctx context.Context, args []string) (retErr error) {
 		return err
 	}
 	defer os.RemoveAll(buildDir)
-	goDir := rootAbs
-	if service == "credential-broker" {
-		goDir = filepath.Join(rootAbs, "services", "credential-broker")
-	}
 	goEnv := append(os.Environ(), "GOOS=linux", "GOARCH="+arch, "CGO_ENABLED=0")
-	goArgs := []string{"build", "-buildvcs=false", "-trimpath", "-ldflags=-s -w", "-o", filepath.Join(buildDir, "binary")}
-	if err := run("go", goEnv, goDir, append(goArgs, spec.source)...); err != nil {
-		return err
+	if service == "credential-broker" {
+		// The durable store is SQLCipher: the broker needs a real Linux CGO
+		// toolchain. The production Dockerfile's build stage is that pinned
+		// toolchain and links a fully static binary, so the dev overlay stays
+		// a plain binary swap on the lean base.
+		brokerDir := filepath.Join(rootAbs, "services", "credential-broker")
+		if err := docker("build", "--target", "build", "-f", filepath.Join(brokerDir, "deploy", "Dockerfile"), "-t", "hermes-credential-broker-build:local", brokerDir); err != nil {
+			return err
+		}
+		slash := func(p string) string { return filepath.ToSlash(p) }
+		if err := docker("run", "--rm",
+			"-v", slash(rootAbs)+":/src",
+			"-v", slash(buildDir)+":/out",
+			"-w", "/src/services/credential-broker",
+			"hermes-credential-broker-build:local",
+			"go", "build", "-tags", "libsqlite3", "-buildvcs=false", "-trimpath", "-ldflags=-s -w",
+			"-o", "/out/binary", "./cmd/credential-broker"); err != nil {
+			return err
+		}
+	} else {
+		goArgs := []string{"build", "-buildvcs=false", "-trimpath", "-ldflags=-s -w", "-o", filepath.Join(buildDir, "binary")}
+		if err := run("go", goEnv, rootAbs, append(goArgs, spec.source)...); err != nil {
+			return err
+		}
 	}
 	companions := filepath.Join(buildDir, "companions")
 	if err := os.Mkdir(companions, 0700); err != nil {

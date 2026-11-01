@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/letya999/credential-broker/app"
+	"github.com/letya999/credential-broker/internal/journal"
 )
 
 type failedWriter struct{}
@@ -145,6 +146,113 @@ func TestMigrateRecoveryCommand(t *testing.T) {
 	}
 	if err := run(context.Background(), []string{"migrate-recovery", "--config", migrationConfig}, failedWriter{}); err == nil {
 		t.Fatal("migration ignored output failure")
+	}
+	svc, err = app.Build(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Broker.Close()
+}
+
+func TestStoreMigrateCommand(t *testing.T) {
+	if _, err := journal.SQLCipherVersion(); err != nil {
+		t.Skip("sqlcipher engine unavailable in this build")
+	}
+	root := filepath.Join(t.TempDir(), "install")
+	if err := app.Init(root); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "config.json")
+	cfg, err := app.ReadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := app.Build(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Broker.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cfg.RecoveryDir = filepath.Join(t.TempDir(), "recovery")
+	cfg.RecoveryAnchorDir = filepath.Join(t.TempDir(), "anchor")
+	cfg.RecoveryKeyFile = filepath.Join(root, "keys", "recovery.key")
+	cfg.RecoveryIdentity = "installation-one/dev"
+	if err := os.WriteFile(cfg.RecoveryKeyFile, bytes.Repeat([]byte{9}, 32), 0600); err != nil {
+		t.Fatal(err)
+	}
+	migrationConfig := filepath.Join(root, "migration.json")
+	if err := app.WriteJSON(migrationConfig, cfg); err != nil {
+		t.Fatal(err)
+	}
+	// Seed the replicated recovery legs, then serve once on the full triad.
+	if err := run(context.Background(), []string{"migrate-recovery", "--config", migrationConfig}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	svc, err = app.Build(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Broker.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := run(context.Background(), []string{"store-migrate", "--config", migrationConfig}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != "Store migration staged.\n" {
+		t.Fatal("unexpected output:", out.String())
+	}
+	out.Reset()
+	if err := run(context.Background(), []string{"store-activate", "--config", migrationConfig}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != "Store activated.\n" {
+		t.Fatal("unexpected output:", out.String())
+	}
+	if _, err := os.Lstat(filepath.Join(cfg.DataDir, "sqlcipher.activated")); err != nil {
+		t.Fatal("activation marker missing")
+	}
+	if _, err := os.Lstat(filepath.Join(cfg.DataDir, "substrate-backup", "ledger.bin")); err != nil {
+		t.Fatal("legacy ledger not retired")
+	}
+	// The service must come up on the SQLCipher backend.
+	svc, err = app.Build(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Broker.Close()
+}
+
+func TestStoreMigrateSingleCommand(t *testing.T) {
+	if _, err := journal.SQLCipherVersion(); err != nil {
+		t.Skip("sqlcipher engine unavailable in this build")
+	}
+	root := filepath.Join(t.TempDir(), "install")
+	if err := app.Init(root); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "config.json")
+	cfg, err := app.ReadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := app.Build(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Broker.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := run(context.Background(), []string{"store-migrate", "--config", path}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(context.Background(), []string{"store-activate", "--config", path}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(cfg.DataDir, "sqlcipher.activated")); err != nil {
+		t.Fatal("activation marker missing")
 	}
 	svc, err = app.Build(cfg)
 	if err != nil {

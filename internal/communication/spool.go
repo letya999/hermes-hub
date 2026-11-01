@@ -185,8 +185,14 @@ func InspectSpool(root string) (*Spool, error) {
 	return openSpool(root, false)
 }
 
-func openSpool(root string, create bool) (*Spool, error) {
+func openSpool(root string, create bool) (result *Spool, err error) {
 	s := &Spool{readOnly: !create, root: root, fsys: osFS{}, secret: map[string]string{}, inFlight: map[string]string{}, notify: make(chan struct{}, 1), budget: &budgetLedger{Reservations: map[string]reservation{}, Scopes: map[string]*scopeBudget{}}, limits: limitsFromEnv()}
+	// A failed open must not leak the activated backend's database handle.
+	defer func() {
+		if err != nil {
+			_ = s.fsys.Close()
+		}
+	}()
 	if spoolActivated(root) {
 		fsys, err := openSpoolDB(root, !create)
 		if err != nil {

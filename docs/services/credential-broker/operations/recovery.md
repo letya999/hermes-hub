@@ -1,6 +1,6 @@
 ---
 description: "Процедуры, при которых нельзя обойти fail-closed поведение."
-last_verified: "2026-10-31"
+last_verified: "2026-11-01"
 ---
 
 # Восстановление, отзыв и очистка
@@ -144,3 +144,39 @@ commit-файла или запуском `migrate-recovery`: это recovery-re
 перехода ведутся в CHG-0215. В CHG-0237 локальная dev-установка прошла
 проверку на копиях P/R/key, затем `migrate-head` на остановленном Broker;
 повторный запуск и `/healthz` прошли. Это не перенос production-данных.
+
+## Переход durable store на SQLCipher
+
+ADR-0087 переводит носитель записей на зашифрованную SQLCipher-подложку:
+primary `primary.db` в `data_dir` и recovery `recovery.db` в `recovery_dir/journal`
+обновляются одной ATTACH-транзакцией с прежним sealed witness head; одиночная
+установка использует `ledger.db` рядом с журналом. Ключи файлов выводятся из
+master/recovery key material (`sqlcipher-ledger/v1`, `sqlcipher-recovery/v1`),
+сами ключи не попадают в argv, env, manifest или вывод.
+
+Порядок оператора на остановленном писателе:
+
+1. Проверенный backup вне репозитория (config, contracts, TLS, keys, ledger,
+   recovery, anchor) — legacy `ledger.bin` после активации уходит в
+   `substrate-backup/` и остаётся источником сверки, не rollback.
+2. `hubctl store-migrate --dir spaces/<user> --env <env> --broker --apply`
+   останавливает сервис и запускает `credential-broker store-migrate --config`
+   в образе сервиса поверх его external volumes; альтернативно — та же
+   команда напрямую при вручную смонтированных каталогах. Импорт отказывает
+   при живом писателе, неизменённо сохраняет frames и запечатывает manifest
+   (format, records, head sequence/digest, store identity, byte limit) в оба
+   каталога. Повтор отказывает, пока существуют db-файлы или маркер.
+3. `hubctl store-activate --dir spaces/<user> --env <env> --broker --apply`
+   проверяет manifest и оба хранилища через полный путь открытия (replay,
+   witness head), пишет парные `sqlcipher.activated`, уносит `ledger.bin` в
+   `substrate-backup/` и поднимает сервис. Активация без staged import или с
+   расхождением ног отказывает и не меняет состояние.
+
+Открытие без маркера отказывается обслуживать db-файлы; частично записанный
+import безопасно удаляется удалением `primary.db`/`recovery.db`/`ledger.db`
+и `sqlcipher.manifest` (legacy frames при этом не тронуты). После активации
+startup проверяет обе цепочки и witness head: хвост сверх последнего
+подтверждённого head обрезается, недостающие в primary строки дозаписываются
+из recovery в той же транзакции, расхождение подтверждённого префикса —
+fail-closed. Неверный ключ отказывает; совпадение master и recovery key
+отклоняется ещё на валидации команды.

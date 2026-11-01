@@ -84,7 +84,13 @@ func TestProductionLayerBoundaries(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if strings.Contains(string(raw), "require ") {
-		t.Fatal("third-party runtime dependencies require an explicit ADR and gate change")
+	for _, line := range strings.Split(string(raw), "\n") {
+		if !strings.HasPrefix(strings.TrimSpace(line), "require ") {
+			continue
+		}
+		// ADR-0087 pins exactly one native dependency; anything else still fails.
+		if !strings.Contains(line, "github.com/mattn/go-sqlite3 v1.14.52") {
+			t.Fatalf("third-party runtime dependency %q requires an explicit ADR and gate change", strings.TrimSpace(line))
+		}
 	}
 }

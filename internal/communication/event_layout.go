@@ -123,7 +123,9 @@ func (s *Spool) migrateEventLayout() error {
 	manifestPath := filepath.Join(s.root, "event-layout.json")
 	legacy := filepath.Join(s.root, "events")
 	var plan eventLayout
-	body, err := readEventRecord(manifestPath)
+	// The manifest is a record: after activation it is a spool.db row and the
+	// retired file is gone, so it must be read through the record backend.
+	body, err := s.readEventRecordLocked(manifestPath)
 	switch {
 	case err == nil:
 		if strictEventJSON(body, &plan) != nil || plan.Version != eventLayoutVersion {

@@ -102,7 +102,7 @@ func (d *dbFS) ReadFile(path string) ([]byte, error) {
 
 func (d *dbFS) WriteFile(path string, body []byte) error {
 	if !spoolRecordPath(d.root, path) {
-		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil { // #nosec G703 -- non-record paths are caller-joined under the spool root
 			return err
 		}
 		return atomicBytes(path, body)

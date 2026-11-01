@@ -24,6 +24,31 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 	case "version":
 		_, e := fmt.Fprintln(out, version)
 		return e
+	case "store-migrate", "store-activate":
+		fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
+		fs.SetOutput(out)
+		path := fs.String("config", "", "absolute configuration path")
+		if e := fs.Parse(args[1:]); e != nil {
+			return e
+		}
+		if *path == "" || fs.NArg() != 0 {
+			return fmt.Errorf("--config is required")
+		}
+		cfg, e := app.ReadConfig(*path)
+		if e != nil {
+			return e
+		}
+		migrate := app.MigrateStore
+		done := "Store migration staged."
+		if args[0] == "store-activate" {
+			migrate = app.ActivateStore
+			done = "Store activated."
+		}
+		if e := migrate(cfg); e != nil {
+			return e
+		}
+		_, e = fmt.Fprintln(out, done)
+		return e
 	case "migrate-recovery", "migrate-head":
 		fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 		fs.SetOutput(out)

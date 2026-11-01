@@ -201,7 +201,7 @@ func readDBSnapshot(db *sql.DB) (snapshot, error) {
 	for rows.Next() {
 		var k, v string
 		if err := rows.Scan(&k, &v); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return state, err
 		}
 		meta[k] = v
@@ -320,11 +320,11 @@ func readDBSnapshot(db *sql.DB) (snapshot, error) {
 	for ents.Next() {
 		var r dbRow
 		if err := ents.Scan(&r.collection, &r.id, &r.seq, &r.body); err != nil {
-			ents.Close()
+			_ = ents.Close()
 			return state, err
 		}
 		if err := decode(r); err != nil {
-			ents.Close()
+			_ = ents.Close()
 			return state, err
 		}
 	}
@@ -341,14 +341,14 @@ func readDBSnapshot(db *sql.DB) (snapshot, error) {
 	for maps2.Next() {
 		var collection, k, v string
 		if err := maps2.Scan(&collection, &k, &v); err != nil {
-			maps2.Close()
+			_ = maps2.Close()
 			return state, err
 		}
 		switch collection {
 		case "projection_revision", "restart_applied":
 			n, err := strconv.ParseUint(v, 10, 64)
 			if err != nil {
-				maps2.Close()
+				_ = maps2.Close()
 				return state, fmt.Errorf("%w: store revision", api.ErrInvalid)
 			}
 			if collection == "projection_revision" {
@@ -359,12 +359,12 @@ func readDBSnapshot(db *sql.DB) (snapshot, error) {
 		case "restart_digest":
 			var s string
 			if err := strictDecode([]byte(v), &s); err != nil {
-				maps2.Close()
+				_ = maps2.Close()
 				return state, fmt.Errorf("%w: restart digest", api.ErrInvalid)
 			}
 			state.RestartDigests[k] = s
 		default:
-			maps2.Close()
+			_ = maps2.Close()
 			return state, fmt.Errorf("%w: store map collection", api.ErrInvalid)
 		}
 	}
@@ -383,26 +383,26 @@ func readDBSnapshot(db *sql.DB) (snapshot, error) {
 		var seq int
 		var body []byte
 		if err := lists.Scan(&collection, &seq, &body); err != nil {
-			lists.Close()
+			_ = lists.Close()
 			return state, err
 		}
 		switch collection {
 		case "capability_change":
 			var v api.CapabilityChange
 			if err := strictDecode(body, &v); err != nil {
-				lists.Close()
+				_ = lists.Close()
 				return state, fmt.Errorf("%w: capability change", api.ErrInvalid)
 			}
 			state.CapabilityChanges = append(state.CapabilityChanges, v)
 		case "binding_change":
 			var v bindingChange
 			if err := strictDecode(body, &v); err != nil {
-				lists.Close()
+				_ = lists.Close()
 				return state, fmt.Errorf("%w: binding change", api.ErrInvalid)
 			}
 			state.BindingChanges = append(state.BindingChanges, v)
 		default:
-			lists.Close()
+			_ = lists.Close()
 			return state, fmt.Errorf("%w: store list collection", api.ErrInvalid)
 		}
 	}
@@ -440,17 +440,17 @@ func loadDB(path string) (*Store, error) {
 	}
 	state, err := readDBSnapshot(db)
 	if err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	store, err := storeFromSnapshot(state)
 	if err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	body, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	store.db = db
@@ -541,7 +541,7 @@ func (s *Store) saveDBLocked(path string) error {
 			}
 		}
 		for _, table := range []string{"ent", "kvmap", "listrec"} {
-			if _, err := tx.Exec(`DELETE FROM ` + table); err != nil {
+			if _, err := tx.Exec(`DELETE FROM ` + table); err != nil { // #nosec G202 -- fixed table name list
 				return err
 			}
 		}

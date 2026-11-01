@@ -3,8 +3,11 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
+	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
@@ -94,5 +97,66 @@ func TestStoreMigrateCLIForSpool(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(spool, "substrate-backup", "pending", "job-c-1.json")); err != nil {
 		t.Fatal("retired record missing")
+	}
+}
+
+// The broker store lives on Docker volumes, so --broker orchestrates the
+// whole stop -> migrate -> start cycle through the service image itself:
+// the broker binary's own store-migrate/store-activate does the work.
+func TestStoreMigrateCLIForBroker(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "space")
+	if err := stack.InitEnvironment(dir, "owner", "dev"); err != nil {
+		t.Fatal(err)
+	}
+	s, err := stack.Read(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Model, s.ModelURL = "test", "http://model.invalid/v1"
+	s.Ingress = append(s.Ingress, "telegram")
+	if err := stack.WriteSpace(dir, s); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	log := filepath.Join(bin, "calls")
+	dockerName := "docker"
+	dockerScript := "#!/bin/sh\nprintf 'docker %s\n' \"$*\" >> \"$HUB_TEST_LOG\"\ncase \"$*\" in *ps*credential-broker*-a*format*json*) printf '{\"Service\":\"credential-broker\",\"Image\":\"broker-live:local\"}';; *config*format*json*) printf '{\"services\":{\"credential-broker\":{\"image\":\"broker-img:test\"}}}';; esac\n"
+	if runtime.GOOS == "windows" {
+		dockerName = "docker.cmd"
+		dockerScript = "@echo off\r\n>>\"%HUB_TEST_LOG%\" echo docker %*\r\necho %* | findstr /C:\"ps credential-broker -a\" | findstr /C:\"format json\" >nul && echo {\"Service\":\"credential-broker\",\"Image\":\"broker-live:local\"}\r\necho %* | findstr /C:\"ps credential-broker -a\" | findstr /C:\"format json\" >nul && exit /b 0\r\necho %* | findstr /C:\"format json\" >nul && echo {\"services\":{\"credential-broker\":{\"image\":\"broker-img:test\"}}}\r\nexit /b 0\r\n"
+	}
+	if err := os.WriteFile(filepath.Join(bin, dockerName), []byte(dockerScript), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("HUB_TEST_LOG", log)
+	if err := run(t.Context(), []string{"store-migrate", "--dir", dir, "--root", "../..", "--env", "dev", "--broker"}); err == nil {
+		t.Fatal("store-migrate without --apply must refuse")
+	}
+	if err := run(t.Context(), []string{"store-migrate", "--dir", dir, "--root", "../..", "--env", "dev", "--broker", "--apply"}); err != nil {
+		t.Fatalf("broker migrate: %v", err)
+	}
+	if err := run(t.Context(), []string{"store-activate", "--dir", dir, "--root", "../..", "--env", "dev", "--broker", "--apply"}); err != nil {
+		t.Fatalf("broker activate: %v", err)
+	}
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := string(data)
+	for _, want := range []string{
+		"stop credential-broker",
+		"hermes-credential-broker-dev:/var/lib/credential-broker",
+		"hermes-credential-broker-recovery-dev:/var/lib/credential-broker-recovery",
+		"hermes-credential-broker-recovery-key-dev:/var/lib/credential-broker-recovery-key",
+		"--entrypoint credential-broker",
+		"broker-live:local",
+		"store-migrate --config /var/lib/credential-broker/config.json",
+		"store-activate --config /var/lib/credential-broker/config.json",
+		"start credential-broker",
+	} {
+		if !strings.Contains(calls, want) {
+			t.Fatalf("missing %s in %s", want, calls)
+		}
 	}
 }
