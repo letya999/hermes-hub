@@ -81,3 +81,27 @@ The first watcher/rebind root run `.work/tmp/chg0198-watchers-root-check.log` ex
 `.work/tmp/chg0198-watchers-fixed-root-check.log`: `just check` exited 0, own Go statement coverage **85.91%**. Communication/routines/runtime/supervisor/Toolhub and all root static/docs/config checks passed on the stable current sources. `.work/tmp/watcher-current-fixtures-race.log` also passed Communication/routines (2.522s / 1.110s).
 
 S198.1-S198.3 are implemented pending actual acceptance. The CHG remains in-progress: dependencies' acceptance, native filesystem/container handoff and actual selected rollout are not proved by Windows fixtures. SQLCipher is still prohibited without CHG-0218 PASS. No Docker activity, live send, login, publication or working data migration was performed.
+
+## Live-found defect — superseded handoff receipt wedged recovery (2026-11-01)
+
+Dev acceptance on `spaces/local` surfaced a permanent recovery wedge: dev
+communication-hub crash-looped (51 restarts, exit-1 `communication: stale
+stream receipt`) on real migrated spool.db data. Job `mock-6638a010…` held a
+write-ahead `uncertain` handoff receipt (run-events pos 2,
+`final_state=failed`) superseded by a live `completed` terminal write
+(pos 3). On replay, `applyStreamReceiptLocked` no-ops at
+`receipt.Position <= mapping.EventPosition` so the stale check never runs;
+`finishReceiptJobLocked` then raised `errStaleReceipt` on the terminal
+cross-check — and recovery did not tolerate it there.
+
+Fix: `recoverStreamEvents` now skips `errStaleReceipt` from
+`finishReceiptJobLocked` the same way it already did from apply — the
+recorded terminal outcome wins; a straggler handoff cannot rewind it.
+Regression `TestRecoverySkipsSupersededHandoffReceipt` reproduces the live
+shape and failed with the exact production error before the fix; full
+`internal/communication` package green after.
+
+Live verify: `hubctl dev-rebuild communication-hub` → Healthy,
+RestartCount 0, real jobs processed immediately (`telegram-837845941/42`),
+`spool.db-wal` grew to 4 140 632 with 270 `rec` rows across record
+classes under live traffic.

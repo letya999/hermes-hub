@@ -1838,6 +1838,43 @@ func TestRecoverySkipsStaleTerminalReceipt(t *testing.T) {
 	}
 }
 
+// A write-ahead "uncertain" handoff receipt can sit at a lower position than
+// the terminal record that superseded it: the runtime looked lost, the spool
+// wrote the failed handoff, then the run actually finished. Its apply no-ops
+// on the recorded position, so finishReceiptJobLocked is the only place the
+// staleness still surfaces — recovery must skip it there too, or the process
+// dies on restart with "stale stream receipt".
+func TestRecoverySkipsSupersededHandoffReceipt(t *testing.T) {
+	s, job := streamJob(t)
+	if _, err := s.ClaimJob(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordStreamEvent(job, streamEvent(job)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordTerminalOutcome(job, RunOutcome{JobID: job.ID, Status: "completed", Text: "saved answer"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	mapping, found, err := s.Mapping(job.ID)
+	if err != nil || !found {
+		t.Fatalf("mapping found=%v err=%v", found, err)
+	}
+	stale := streamEvent(job)
+	stale.Status, stale.LastEvent, stale.EventID = "uncertain", "run.uncertain", "terminal:uncertain"
+	straggler := streamReceipt{JobID: job.ID, Position: mapping.EventPosition, Binding: receiptBinding(mapping), FinalState: "failed", Event: stale}
+	if err := atomicJSON(filepath.Join(s.root, "run-events", "straggler.json"), straggler); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := NewSpool(s.root)
+	if err != nil {
+		t.Fatalf("replay of a superseded handoff receipt killed recovery: %v", err)
+	}
+	mapping, _, err = reopened.Mapping(job.ID)
+	if err != nil || mapping.Status != "completed" || mapping.Result != "saved answer" {
+		t.Fatalf("terminal history moved: %+v %v", mapping, err)
+	}
+}
+
 func TestAssignmentSkipResultSendsNoStatusOrReply(t *testing.T) {
 	spool, job := streamJob(t)
 	if _, err := spool.ClaimJob(); err != nil {

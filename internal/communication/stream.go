@@ -453,6 +453,13 @@ func (s *Spool) recoverStreamEvents() error {
 			}
 		}
 		if err := s.finishReceiptJobLocked(receipt); err != nil {
+			if errors.Is(err, errStaleReceipt) {
+				// A superseded write-ahead handoff: its apply was a benign
+				// no-op under the recorded position, so only the terminal
+				// cross-check still notices the staleness. The recorded
+				// outcome wins — dropping the straggler cannot revive it.
+				continue
+			}
 			return err
 		}
 	}

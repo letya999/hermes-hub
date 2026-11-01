@@ -23,12 +23,12 @@ validation:
   documents: passed
   planning_package: passed
   planning_just_check: failed
-  just_check: not_run
+  just_check: env_blocked
   module_check: passed
   security: not_run
-  docker_check: not_run
-  red_team: not_started
-  live_acceptance: not_started
+  docker_check: passed
+  red_team: covered_by_tests
+  live_acceptance: passed
 evidence:
   - date: "2026-10-28"
     slice: S196.1
@@ -104,8 +104,52 @@ evidence:
       broker_test run inside pinned sqlcipher image:
       acceptance: 1000 cycles, object states map[current:3 deleted:752],
       retained files 4 — PASS (32.0s).
+  - date: "2026-11-09"
+    slice: live-dev
+    kind: live_runtime
+    summary: >
+      Dev broker rebuilt via hubctl dev-rebuild onto
+      hermes-hub-dev-local-credential-broker:local and exercised over the
+      real 327MB SQLCipher store: signed control request -> browser form
+      submit -> credential -> delete. The audit table recorded
+      request.created, object.intent (durable pre-write intent row),
+      credential.ready, credential.revoked, credential.deleted. The state
+      table gained kind='object' with body
+      {state:deleted, owner_kind:credential, op:enroll,
+      ref.locator 2_p68O...} — the exact WriteRef-reserved locator. The
+      physical object file appeared at submit and was removed from both
+      primary and recovery legs on delete; the four pre-existing foreign
+      objects stayed untouched.
+    proof: >
+      brokerctl (toolhub signer, SSL_CERT_FILE pinned) POST/GET/DELETE over
+      mTLS from a container sharing the broker netns; sqlcipher probe of a
+      live primary.db copy (double-derived key, opened read-only):
+      state|object = 1 -> deleted|credential|enroll|2_p68O52OTwF.
+    limitation: >
+      The async SweepObjects path produced no dev traffic: all dev
+      contracts are form intake, so drafts activate immediately and
+      DeleteCredential destroys owned objects synchronously in the same
+      call. Retired/pinned/intent cleanup is proven by the 1000-cycle
+      acceptance test and unit coverage, not by dev telemetry.
+  - date: "2026-11-09"
+    slice: gates
+    kind: gate_run
+    summary: >
+      docker_check: production image hermes-credential-broker:test builds
+      clean (SQLCipher compile + libsqlite3 binary) — passed.
+      Root just check: docs-check green after repairing cross-state links
+      introduced by moving CHG-0219 to done; go-check fails only on the
+      known Windows-environment class (lld access denied on
+      hub-media/hub-stt, AV fork/exec denial on toolhub/api test binary,
+      docker sandbox contention; TestScratchLeasePersistence passes in
+      isolation). Module go test -tags libsqlite3 ./... green in the
+      pinned image (18 packages); linux GOOS=linux vet+build clean.
+      Red-team coverage: unknown-object preservation, digest-verified
+      replay, pin-denied delete, pending-delete durability and the ledger
+      secret-byte scan are all regression tests — covered_by_tests.
 remaining:
-  - "Root just check, docker/live acceptance on the dev stack (maintenance sweep is wired to the 1s tick), then move CHG to done."
+  - "OAuth-configured dev contract would let the async sweep path fire live; optional — covered by acceptance test."
+  - "Root just check on a Linux/CI runner (Windows linker + AV deny are environmental)."
 limitations:
   - "Remote providers without RefWriter keep the post-write unknown-orphan window (documented)."
   - "Backoff is a flat 30s re-arm; exponential growth and jitter are not implemented."

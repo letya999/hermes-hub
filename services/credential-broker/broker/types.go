@@ -83,11 +83,11 @@ type sessionRecord struct {
 	Consumed  bool      `json:"consumed"`
 }
 type credentialRecord struct {
-	View           v1.Credential   `json:"view"`
-	ContractKey    string          `json:"contract_key"`
-	ContractDigest string          `json:"contract_digest"`
-	Ref            provider.Ref    `json:"ref"`
-	Managed        bool            `json:"managed"`
+	View           v1.Credential `json:"view"`
+	ContractKey    string        `json:"contract_key"`
+	ContractDigest string        `json:"contract_digest"`
+	Ref            provider.Ref  `json:"ref"`
+	Managed        bool          `json:"managed"`
 	// OwnedRefs is the legacy ever-growing list — kept for replay of old
 	// records; new writes track provider objects as bounded object rows.
 	OwnedRefs     []provider.Ref  `json:"owned_refs,omitempty"`
@@ -113,6 +113,7 @@ type objectRecord struct {
 }
 
 func objectID(ref provider.Ref) string { return ref.Provider + "/" + ref.Locator }
+
 type grantRecord struct {
 	View           v1.Grant `json:"view"`
 	ContractKey    string   `json:"contract_key"`

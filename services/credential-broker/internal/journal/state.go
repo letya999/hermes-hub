@@ -1,6 +1,5 @@
 package journal
 
-
 // StateWrite upserts one current-state row atomically with the journal record
 // it was derived from. Kind and ID stay opaque to the journal — domain
 // decoding is the caller's job.
@@ -75,15 +74,15 @@ type AuditRetention struct {
 // archive artifact, whether the source was pruned, and whether the hot table
 // is still over cap (export-only mode leaves it full).
 type RetainReport struct {
-	Exported   bool
-	Archive    string
-	SeqLo      uint64
-	SeqHi      uint64
-	Rows       int
-	Bytes      int64
-	Pruned     bool `json:"pruned"`
-	HotBytes   int64
-	OverCap    bool
+	Exported bool
+	Archive  string
+	SeqLo    uint64
+	SeqHi    uint64
+	Rows     int
+	Bytes    int64
+	Pruned   bool `json:"pruned"`
+	HotBytes int64
+	OverCap  bool
 }
 
 func sqlValidateAux(aux *AuxWrites) error {

@@ -47,21 +47,21 @@ type Journal struct {
 	retention  AuditRetention
 	auditBytes int64
 	mu         sync.Mutex
-	file     *os.File
-	lock     *os.File
-	legacy   bool
-	box      *seal.Box
-	identity []byte
-	seq      uint64
-	prev     string
-	size     int64
-	limit    int64
-	poisoned bool
-	records  []Record
-	offsets  []int64
-	recovery *Journal
-	anchor   *recoveryAnchor
-	sql      *sqlStore
+	file       *os.File
+	lock       *os.File
+	legacy     bool
+	box        *seal.Box
+	identity   []byte
+	seq        uint64
+	prev       string
+	size       int64
+	limit      int64
+	poisoned   bool
+	records    []Record
+	offsets    []int64
+	recovery   *Journal
+	anchor     *recoveryAnchor
+	sql        *sqlStore
 }
 
 func Open(dir string, key []byte, limit int64) (*Journal, error) {

@@ -214,6 +214,63 @@ effective config and image; no `/reset` or session action needed. Base
 `hermes-hub:0.5.0-dev` had been pruned; restored by retagging
 `ghcr.io/letya999/hermes-hub/hermes-hub:edge-dev`.
 
+## Fifth live-found defect — superseded handoff receipt wedged recovery (fixed, this changeset)
+
+Live acceptance surfaced a fifth defect: dev communication-hub was
+crash-looping (51 restarts, exit-1 `communication: stale stream receipt`
+every ~30 s) on real spool.db data.
+
+Root cause (job `mock-6638a010…` from the run above): a write-ahead
+"uncertain" handoff receipt (`run-events` pos 2, `final_state=failed`) was
+superseded by the live "completed" terminal write (pos 3 →
+`mapping.status=completed`, `EventPosition=3`). On open,
+`recoverStreamEvents` replays receipts sorted by position:
+`applyStreamReceiptLocked` returns nil early because
+`receipt.Position(2) <= mapping.EventPosition(3)` — the stale check never
+even runs — then `finishReceiptJobLocked` raises `errStaleReceipt` on
+`mapping.Status('completed') != receipt.Event.Status('uncertain')`, and
+recovery did not skip that sentinel there. `Gateway.Run → recover → exit 1`
+— a permanent wedge on real data.
+
+Fix (`internal/communication/stream.go`): recovery now tolerates
+`errStaleReceipt` from `finishReceiptJobLocked` exactly as it already did
+from apply — the recorded terminal state wins; a straggler receipt cannot
+rewind it. Regression test `TestRecoverySkipsSupersededHandoffReceipt`
+reproduces the live shape (completed mapping + lower-position uncertain
+handoff receipt) and failed before the fix with the exact production
+error. Full `internal/communication` package green.
+
+Verified live: `hubctl dev-rebuild communication-hub` → Healthy,
+RestartCount 0, and the service immediately worked real jobs
+(`telegram-837845941` failed-outcome delivery, `telegram-837845942`
+status-edits + completed + response). `spool.db-wal` grew to 4 140 632;
+270 `rec` rows across outbox/run-events/mappings/done — durable records
+land in SQLite under live traffic.
+
+## CHG-0220 object lifecycle — live dev evidence (2026-11-01)
+
+- Dev broker runs `hermes-hub-dev-local-credential-broker:local` built via
+  `hubctl dev-rebuild` over the real 327 MB SQLCipher store.
+- Signed control-plane exercise (brokerctl, toolhub signer, pinned cert):
+  `POST /v1/requests` → browser form submit (cookie+CSRF, multipart) →
+  `credential.ready` → `DELETE /v1/credentials/<id>` → `200`.
+- Audit rows record the chain: `request.created`, `object.intent`
+  (durable pre-write intent), `credential.ready`, `credential.revoked`,
+  `credential.deleted`.
+- Read-only sqlcipher probe of a live `primary.db` copy shows the durable
+  row: `state.kind=object` → `{state:deleted, owner_kind:credential,
+  op:enroll, ref.locator=2_p68O…}` — the exact WriteRef-reserved locator.
+- The physical object file appeared at submit and was deleted from BOTH
+  primary and recovery provider legs on credential delete; the four
+  pre-existing foreign objects stayed untouched.
+- Production image gate: `just credential-broker-docker-check` builds
+  `hermes-credential-broker:test` clean.
+- Honest gap: the async `SweepObjects` path produced no dev traffic — all
+  dev contracts are form intake, drafts activate immediately, and
+  `DeleteCredential` destroys owned objects synchronously. The worker is
+  proven by the 1000-cycle acceptance test (752 swept, bounded retention)
+  and unit coverage, not dev telemetry.
+
 ## Known limitations / not yet evidenced
 
 - Broker open-time replay of ~200k records was ~30 s before CHG-0219 S195.1

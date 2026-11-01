@@ -177,6 +177,7 @@ func TestConfigAndStartupRefusals(t *testing.T) {
 		t.Fatal("invalid contract accepted")
 	}
 }
+
 // Audit retention is always bounded and complete: a cap without an archive
 // directory (or the reverse) cannot ever work, and no value may be
 // unlimited (SPEC-0087 R5).
