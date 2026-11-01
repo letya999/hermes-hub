@@ -276,6 +276,24 @@ a hub-owned strike: `runtime/memory/forget.jsonl` for daily-leaf entries,
 recall and nightly promotion across restarts, visible only via
 `history:true` and git.
 
+Daily leaves are a bounded tape (SPEC-0085 R7.5): after the rollup and
+period folds, two opt-in deterministic lanes run at the night tick.
+`memory_leaf_fold_bytes` (>0) stubs non-promotion-eligible block bodies
+inside a *completed* oversized leaf — audit kinds (routine, system,
+probe, compaction, untrusted, background replies) collapse while every
+mem:id header and interactive owner/agent block stays byte-identical;
+oversized eligible days first pull a `long_summary` from the same
+proposal call so the detail lands in `summaries/daily/`.
+`memory_leaf_retention_days` (≥2) expires a leaf older than the window
+— `git rm` + prov.db row drop — but only once the day-state is complete
+*and* the daily summary exists; unverified days are kept and reported,
+never deleted. Both lanes go through the governed writer (owner edits
+win the hash check), journal to `memory/REVIEW.md` under
+`## prune <day>`, and merge into the localized morning digest —
+housekeeping is never silent. `hubctl memory prune` dry-runs the same
+report; `--apply` executes. Expired bytes remain in vault git history;
+true erasure is a separate history-rewrite decision.
+
 With `knowledge_ui` on, the space's `open-knowledge` container also serves
 the runtime an `mcp__open_knowledge__*` read surface (SPEC-0085 R9): exactly
 the eight verified read verbs of the pinned release — `audit`, `config`,
