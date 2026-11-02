@@ -163,12 +163,23 @@ func migrateLegacyTools(lf legacySettingsFile) (Settings, error) {
 // them merge into the same Settings. A bare workspace/agent filename reads
 // its containing directory so the pair is always validated together.
 func Read(path string) (Settings, error) {
+	return readWithPassport(path, true)
+}
+
+// ReadBase loads the owner's files plus operator profiles without the
+// published-passport overlay — the intent view migrations derive topology
+// from before a stale revision can mask it.
+func ReadBase(path string) (Settings, error) {
+	return readWithPassport(path, false)
+}
+
+func readWithPassport(path string, withPassport bool) (Settings, error) {
 	if info, err := os.Stat(path); err == nil && info.IsDir() {
-		return readSpace(path)
+		return readSpace(path, withPassport)
 	}
 	switch filepath.Base(path) {
 	case "workspace.yaml", "agent.yaml":
-		return readSpace(filepath.Dir(path))
+		return readSpace(filepath.Dir(path), withPassport)
 	default:
 		return readLegacySettings(path)
 	}
@@ -193,23 +204,27 @@ func readLegacySettings(path string) (Settings, error) {
 	if s, err = migrateLegacyTools(lf); err != nil {
 		return s, err
 	}
-	return finishRead(s, filepath.Dir(path))
+	return finishRead(s, filepath.Dir(path), true)
 }
 
 // readSpace merges agent.yaml (operator identity/runtime) with workspace.yaml
 // (user capability surface). Neither file is ever mounted into the runtime
 // container — the agent only sees the rendered, attested config.
-func readSpace(dir string) (Settings, error) {
+func readSpace(dir string, withPassport bool) (Settings, error) {
 	agentPath := filepath.Join(dir, "agent.yaml")
 	workspacePath := filepath.Join(dir, "workspace.yaml")
 	if _, err := os.Stat(workspacePath); err != nil {
 		if os.IsNotExist(err) {
 			if _, agentErr := os.Stat(agentPath); os.IsNotExist(agentErr) {
+				if passportRevision(dir) {
+					var s Settings
+					return finishRead(s, dir, withPassport)
+				}
 				return readLegacySettings(filepath.Join(dir, "settings.yaml"))
 			}
-			return Settings{}, fmt.Errorf("agent.yaml without workspace.yaml")
+		} else {
+			return Settings{}, err
 		}
-		return Settings{}, err
 	}
 	if _, err := os.Stat(agentPath); err != nil {
 		if os.IsNotExist(err) {
@@ -218,6 +233,19 @@ func readSpace(dir string) (Settings, error) {
 		return Settings{}, err
 	}
 	var lf legacySettingsFile
+	// agent.yaml without workspace.yaml is valid only under a published
+	// revision: the workspace contract (tools, ingress, mounts) is the
+	// passport's, and the slim operator file keeps just the extensions.
+	workspaceMissing := false
+	if _, err := os.Stat(workspacePath); err != nil {
+		if !os.IsNotExist(err) {
+			return Settings{}, err
+		}
+		if !passportRevision(dir) {
+			return Settings{}, fmt.Errorf("agent.yaml without workspace.yaml")
+		}
+		workspaceMissing = true
+	}
 	if err := readSpaceYAML(agentPath, &lf, func(key string) error {
 		if msg, bad := agentYAMLForbidden[key]; bad {
 			return errors.New(msg)
@@ -230,21 +258,23 @@ func readSpace(dir string) (Settings, error) {
 		return Settings{}, fmt.Errorf("agent.yaml holds no capability fields — use workspace.yaml")
 	}
 	s := lf.Settings
-	var wf workspaceFile
-	if err := readSpaceYAML(workspacePath, &wf, func(key string) error {
-		if !workspaceYAMLKeys[key] {
-			return fmt.Errorf("%s belongs in agent.yaml", key)
+	if !workspaceMissing {
+		var wf workspaceFile
+		if err := readSpaceYAML(workspacePath, &wf, func(key string) error {
+			if !workspaceYAMLKeys[key] {
+				return fmt.Errorf("%s belongs in agent.yaml", key)
+			}
+			return nil
+		}); err != nil {
+			return Settings{}, err
 		}
-		return nil
-	}); err != nil {
-		return Settings{}, err
+		if wf.Schema != 0 && wf.Schema != 3 {
+			return Settings{}, fmt.Errorf("workspace.yaml schema must be 3")
+		}
+		s.Tools, s.Ingress, s.Workspace = wf.Tools, wf.Ingress, wf.Workspace
+		s.MCP = wf.MCP
 	}
-	if wf.Schema != 0 && wf.Schema != 3 {
-		return Settings{}, fmt.Errorf("workspace.yaml schema must be 3")
-	}
-	s.Tools, s.Ingress, s.Workspace = wf.Tools, wf.Ingress, wf.Workspace
-	s.MCP = wf.MCP
-	return finishRead(s, dir)
+	return finishRead(s, dir, withPassport)
 }
 
 // WriteSpace serializes a Settings back into the agent.yaml + workspace.yaml
@@ -286,10 +316,20 @@ func WriteSpace(dir string, s Settings) error {
 	return write("workspace.yaml", workspace)
 }
 
-func finishRead(s Settings, dir string) (Settings, error) {
+func finishRead(s Settings, dir string, withPassport bool) (Settings, error) {
 	s.Environment = "prod"
 	s.SpaceDir = dir
+	if withPassport {
+		if err := s.applyPassport(dir); err != nil {
+			return s, err
+		}
+	}
 	if scope, scopeErr := ReadScope(dir); scopeErr == nil {
+		// A migrated space keeps identity only in the published revision;
+		// the scope file is the same claim in the owner's own words.
+		if s.User == "" {
+			s.User = scope.ID
+		}
 		if (scope.Kind != UserScope && scope.Kind != GroupScope) || scope.ID != s.User || scope.Organization != s.Organization {
 			return s, fmt.Errorf("user scope does not match the space files")
 		}
@@ -299,8 +339,12 @@ func finishRead(s Settings, dir string) (Settings, error) {
 	if err := applyProfiles(&s, dir); err != nil {
 		return s, err
 	}
-	if err := s.Validate(); err != nil {
-		return s, err
+	if withPassport {
+		// Runtime validation covers passport-owned fields (ports, mounts)
+		// the intent view legitimately leaves empty.
+		if err := s.Validate(); err != nil {
+			return s, err
+		}
 	}
 	return s, applyGovernance(&s)
 }
@@ -334,6 +378,18 @@ func ReadEnvironment(dir, environment string) (Settings, error) {
 	}
 	if found {
 		s.ExecutionMode, s.SupervisorURL, s.NativeCron = selection.Mode, selection.SupervisorURL, selection.NativeCron
+	}
+	// The stack passport is the spawn contract (SPEC-0092 R3.2): a declared
+	// supervised hermes-runtime selects the supervisor even when the legacy
+	// execution file was never written — the file stays rollout metadata.
+	if s.PassportServices["hermes-runtime"] == "supervised" && s.ExecutionMode != "supervisor" {
+		s.ExecutionMode = "supervisor"
+		if s.SupervisorURL == "" {
+			s.SupervisorURL = "http://supervisor:8876"
+		}
+		if s.NativeCron == "" {
+			s.NativeCron = "disabled"
+		}
 	}
 	if environment == "dev" {
 		s.BrowserPort++
@@ -420,7 +476,7 @@ func initScopeEnvironmentProfile(dir, profile, environment, organization string,
 			return err
 		}
 	}
-	for _, name := range []string{"hermes/memories", "hermes/skills", "hermes/sessions", "hermes/hooks", "hermes/plugins", "connections/google", "connections/telegram", "connections/browser", "connections/ssh/keys", "workspace", "workspace/browser", "archive", "generated", "skills"} {
+	for _, name := range []string{"hermes/memories", "hermes/skills", "hermes/sessions", "hermes/hooks", "hermes/plugins", "connections/google", "connections/telegram", "connections/browser", "connections/ssh/keys", "workspace", "workspace/browser", "workspace/inbox", "workspace/inbox/people", "workspace/inbox/services", "workspace/work", "workspace/projects", "workspace/artifacts", "workspace/artifacts/documents", "workspace/artifacts/images", "workspace/artifacts/videos", "workspace/artifacts/archives", "workspace/artifacts/services", "workspace/outbox", "archive", "generated", "skills"} {
 		if err := os.MkdirAll(filepath.Join(dir, name), 0700); err != nil {
 			return err
 		}

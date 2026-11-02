@@ -1,0 +1,28 @@
+schema: 1
+change: CHG-0258
+title: "M30.4 config.yaml drives runtime, supervision, ports and channels"
+status: in_progress
+branch: feat/m29-six-passport-contract
+updated: 2026-11-02
+phase: design-complete
+adr: ADR-0093
+spec: SPEC-0092
+requirements: [R4.1, R4.2]
+depends_on: [CHG-0257]
+github_milestone: "M30 — Imperative Passports and Capability Grants"
+github_issue: pending
+design_status: accepted
+implementation_status: in_progress
+slices:
+  S4.1-compile-config: not_started
+  S4.2-render-config: not_started
+validation:
+  documents: done
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence:
+  - "2026-11-02: config.yaml now carries runtime/ports/channels/memory and the overlay applies them in stack.Read; agent.yaml slimmed to extension keys only (image_gen, web, compression, capability wiring, gitlab_host)."
+remaining: []
+limitations: []

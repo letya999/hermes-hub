@@ -2060,6 +2060,9 @@ func TestRunArgsMountsExactContextAndLimits(t *testing.T) {
 	if err := os.MkdirAll(org, 0700); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(root, "generated", "config-view", "dev"), 0755); err != nil {
+		t.Fatal(err)
+	}
 	b := binding(root)
 	b.OrganizationRoot = org
 	args, err := m.runArgs(b, "hermes-context-test", 19000)
@@ -2067,7 +2070,7 @@ func TestRunArgsMountsExactContextAndLimits(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(args, " ")
-	for _, want := range []string{"--network hermes-hub-runtime", "src=hermes-hub-alice-dev_broker-secrets-runtime,dst=/run/broker-secrets,readonly", "--read-only", "--cap-drop ALL", "--pids-limit 1024", "--memory 2g", "--cpus 2", "127.0.0.1:19000:8080", "dst=/scope", "dst=/org", "dst=/config/config.yaml", "dst=/config/SOUL.md", "dst=/state/hermes/config.yaml,readonly", "--env-file"} {
+	for _, want := range []string{"--network hermes-hub-runtime", "src=hermes-hub-alice-dev_broker-secrets-runtime,dst=/run/broker-secrets,readonly", "--read-only", "--cap-drop ALL", "--pids-limit 1024", "--memory 2g", "--cpus 2", "127.0.0.1:19000:8080", "dst=/scope", "dst=/org", "dst=/config,readonly", "dst=/state/hermes/config.yaml,readonly", "--env-file"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("run args missing %q: %s", want, joined)
 		}

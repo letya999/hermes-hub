@@ -100,6 +100,14 @@ workload-controller, communication-hub) are rendered once by the space
 whose `agent.yaml` keeps `infra: true`; siblings join the external
 `hermes-hub-runtime` network and enroll via `toolhub-tokens.json`.
 
+For migrated spaces the published `stack.yaml` passport commands this
+split imperatively: `stack.services.<instance>.mode` decides per-space
+(local container), shared (infra-space render only) or supervised
+(`hermes-runtime` as a spawn contract, not a compose service). The compose
+file renders exactly the declared set — a declared per-space instance with
+no container fails the render, and dropping an entry removes the container
+on apply (SPEC-0092 A3).
+
 Execution selection `http://supervisor:8876` runs the supervisor in the
 main stack (ADR-0040): it receives the trusted envelope, dedupes by
 `(principal_id, context_id, runtime mode)`, spawns the pinned runtime with

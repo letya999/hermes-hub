@@ -148,6 +148,12 @@ func spaceRendersInfra(dir string) bool {
 // sectionForEntry maps an enabled tools entry to its governance section.
 // mcp-raw targets a user-declared server on a personal space (user_mcp) or
 // the merged organization catalog (org_mcp).
+// SectionForEntry exposes the section an enabled tools entry projects into —
+// migration and audit consumers need the same mapping the renderer uses.
+func (s Settings) SectionForEntry(name string, e ToolEntry) string {
+	return s.sectionForEntry(name, e)
+}
+
 func (s Settings) sectionForEntry(name string, e ToolEntry) string {
 	switch e.Via {
 	case ToolViaNative:

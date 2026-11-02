@@ -195,6 +195,15 @@ func (t *Tools) call(ctx context.Context, name string, r Input, ws, ar, org *os.
 // exactly like HUB_TOOLS_RO.
 func (t *Tools) toolPolicyDeny(name string) string {
 	p := t.ToolPolicy
+	if t.ToolPolicyPath != "" {
+		var err error
+		if p, err = api.LoadToolPolicy(t.ToolPolicyPath); err != nil {
+			// The epoch file is the authority for managed runtimes: when it
+			// cannot be read the call fails closed rather than trusting the
+			// spawn-time snapshot (R5.2 revocation is immediate).
+			return name + " is denied by tool governance on this runtime"
+		}
+	}
 	if p == nil {
 		return ""
 	}

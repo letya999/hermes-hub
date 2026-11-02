@@ -44,7 +44,7 @@ func warmTTLFlag(f *flag.FlagSet) *time.Duration {
 
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		fmt.Println("hubctl 0.5.0: init | org-init | migrate-spaces | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | artifact | build | dev-rebuild | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | grant | governance | capability | context | memory | skill | routine | apply | usage | watch | image | replay\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nConnector controllers: local-controller (fixed Telegram) or generic-controller (trusted artifact)\nSee README.md for account setup and private VPS access.")
+		fmt.Println("hubctl 0.5.0: init | org-init | migrate-spaces | space-migrate | space-audit | space apply | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | artifact | build | dev-rebuild | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | grant | governance | capability | context | memory | skill | routine | apply | usage | watch | image | replay\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nConnector controllers: local-controller (fixed Telegram) or generic-controller (trusted artifact)\nSee README.md for account setup and private VPS access.")
 		return nil
 	}
 	op := args[0]
@@ -431,6 +431,12 @@ func run(ctx context.Context, args []string) error {
 		}
 		return json.NewEncoder(os.Stdout).Encode(rep)
 	}
+	if op == "space" {
+		if len(args) < 2 || args[1] != "apply" {
+			return fmt.Errorf("usage: hubctl space apply --dir spaces/<user> --env <dev|prod> [--confirm] [--json]")
+		}
+		return runSpaceApply(ctx, args[2:])
+	}
 	f := flag.NewFlagSet(op, flag.ContinueOnError)
 	dir := f.String("dir", "", "private deployment directory")
 	root := f.String("root", ".", "source root")
@@ -550,6 +556,26 @@ func run(ctx context.Context, args []string) error {
 			return err
 		}
 		return json.NewEncoder(os.Stdout).Encode(report)
+	case "space-migrate":
+		absoluteDir, err := filepath.Abs(*dir)
+		if err != nil {
+			return err
+		}
+		report, err := migration.MigratePassport(migration.PassportOptions{Dir: absoluteDir, Environment: *environment, Apply: *apply})
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(report)
+	case "space-audit":
+		absoluteDir, err := filepath.Abs(*dir)
+		if err != nil {
+			return err
+		}
+		audit, err := migration.AuditPassport(absoluteDir)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(audit)
 	case "migrate-toolhub":
 		absoluteDir, err := filepath.Abs(*dir)
 		if err != nil {
@@ -838,12 +864,10 @@ func run(ctx context.Context, args []string) error {
 			if readErr != nil {
 				return readErr
 			}
-			if envSettings.RendersInfra() {
-				if _, rendered := stack.Compose(envSettings, rootAbs, abs)["services"].(stack.M)["hermes-runtime"]; !rendered {
-					image := "hermes-hub:0.5.0-" + *environment
-					if err := dockerCmd("build", "--target", *environment, "-t", image, "-f", dockerfile, rootAbs).Run(); err != nil {
-						return fmt.Errorf("build %s: %w", image, err)
-					}
+			if services, ok := stack.Compose(envSettings, rootAbs, abs)["services"].(stack.M); ok && stack.AgentImageRequired(envSettings, services) {
+				image := "hermes-hub:0.5.0-" + *environment
+				if err := dockerCmd("build", "--target", *environment, "-t", image, "-f", dockerfile, rootAbs).Run(); err != nil {
+					return fmt.Errorf("build %s: %w", image, err)
 				}
 			}
 			if *environment == "dev" && (len(f.Args()) == 0 || slices.Contains(f.Args(), "cliproxy")) {
@@ -929,11 +953,13 @@ func dockerCLIEnv() []string {
 // supervisorComposeEnv feeds supervisor.auth and media.grant into compose
 // variable interpolation. The rendered ${HUB_SUPERVISOR_AUTH} and
 // ${HUB_MEDIA_BROKER_GRANT} placeholders have no value otherwise; an explicit
-// process env always wins over the file.
+// process env always wins over the file. The supervisor secret is minted by
+// the infra space — secondary spaces resolve it through InfraSpaceDir, the
+// same control-plane sharing the governance read path uses.
 func supervisorComposeEnv(dir string) []string {
 	env := dockerCLIEnv()
 	if os.Getenv("HUB_SUPERVISOR_AUTH") == "" {
-		if auth, err := stack.ReadSecrets(filepath.Join(dir, "supervisor.auth")); err == nil {
+		if auth, err := stack.ReadSecrets(filepath.Join(stack.InfraSpaceDir(dir), "supervisor.auth")); err == nil {
 			if token := strings.TrimSpace(auth["HUB_SUPERVISOR_AUTH"]); token != "" {
 				env = append(env, "HUB_SUPERVISOR_AUTH="+token)
 			}

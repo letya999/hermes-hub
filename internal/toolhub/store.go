@@ -62,7 +62,14 @@ type Store struct {
 	capabilityPolicies map[string]api.CapabilityPolicy
 	capabilityProfiles map[string]api.CapabilityProfile
 	capabilityChanges  []api.CapabilityChange
-	bindingChanges     []bindingChange
+	// RightsDoc is the pinned RBAC vocabulary the PDP enforces (SPEC-0092
+	// R2): wired at server start from the image's platform catalog release.
+	// An empty doc fails Decide closed — unknown rights never allow.
+	RightsDoc api.RightsDoc
+	// RightsLedger reads the live governance document Decide evaluates;
+	// nil means no capability grants exist anywhere.
+	RightsLedger   func() (*api.Governance, error)
+	bindingChanges []bindingChange
 	// exMu guards the exclusion set separately: exclusions are observability
 	// written from read-locked projection scans, so they must not ride s.mu.
 	exMu           sync.Mutex

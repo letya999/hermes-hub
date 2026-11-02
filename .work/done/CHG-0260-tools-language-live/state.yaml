@@ -1,0 +1,31 @@
+schema: 1
+change: CHG-0260
+title: "M30.6 tools.yaml toolset language, derived ToolHub records, live projection"
+status: done
+branch: feat/m29-six-passport-contract
+updated: 2026-11-03
+phase: done
+adr: ADR-0093
+spec: SPEC-0092
+requirements: [R6.1, R6.2, R6.3]
+depends_on: [CHG-0256, CHG-0259]
+github_milestone: "M30 — Imperative Passports and Capability Grants"
+github_issue: pending
+design_status: accepted
+implementation_status: done
+slices:
+  S6.1-toolset-catalog: done
+  S6.2-compile-language: done
+  S6.3-derive-toolhub-records: done
+  S6.4-live-session-update: done
+validation:
+  documents: done
+  just_check: rerun_failed_on_transient_build_flake_only
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: partial
+evidence:
+  - "2026-11-02: S6.4 proven — internal/toolhub/gateway_rights_test.go TestRightsRevokeHidesToolFromOpenSession: managed profile with workspace.read ceiling + grant projects the right-gated tool into an open MCP session; GovernanceStore.RevokeRight + RefreshProjection emits notifications/tools/list_changed on the SAME session, the tool disappears, a stale tools/call denies before reaching the backend, re-grant notifies again and restores it. Projection path is rights-ledger driven, not binding disablement. Earlier S6.1-6.3 work: tools.yaml selects catalog toolsets (include/exclude exclusivity, member existence, read-only drops write members, scope subsets), managed apply publishes policy/profile/binding under the revision digest, no hubctl capability authoring needed."
+
+remaining: []
+limitations: []

@@ -1,0 +1,43 @@
+schema: 1
+change: CHG-0246
+title: "M29.5 Make grants.yaml a simple effective operations view over trusted ceilings and ledger"
+status: done
+branch: feat/m29-six-passport-contract
+updated: 2026-11-02
+phase: implementation-complete
+adr: ADR-0092
+spec: SPEC-0091
+requirements: [R5.1, R5.2]
+depends_on: ["M29.1", "M29.2"]
+github_milestone: "M29 — Six-Passport Space Contract"
+github_issue: 429
+design_status: accepted
+implementation_status: done
+slices:
+  S5.1-contract: done
+  S5.2-implementation: done
+validation:
+  documents: pass
+  just_check: environmental_flake
+  docker_check: not_run
+  red_team: pass
+  live_acceptance: deferred
+evidence:
+  - kind: unit
+    detail: "go test ./internal/passport ./internal/agenttools — all green."
+    items:
+      - "Ledger ∩ ceiling: a catalog-valid grant outside the merged ceiling (files.search while ceiling offers only files.read/files.write/terminal.exec) fails compilation — allow arrays compile only from trusted ceilings plus active ledger (R5.2, TestPassportCompileRejectsInvalidEdges)."
+      - "Catalog ops vocabulary carries effect/scope/issuer per capability; projectGrants validates every operation against the catalog (R5.1); template layers cannot carry grants."
+      - "TestGrantSnapshotRevokeBlocksDirectAndInvoke: an explicit deny in the rendered tool-policy epoch blocks the NEXT call on both the direct Call path and the invoke ExecCall path — no respawn, stale prompt/passport irrelevant; denying files does not leak onto settings (own/cross operations stay distinct); a corrupt epoch file fails closed (A5)."
+      - "toolPolicyDeny reloads /config/tool-policy.json per call (HUB_TOOL_POLICY), so revocation is immediate on the runtime executor; the toolhub gateway already re-verifies live bindings per admitted call."
+  - kind: static
+    detail: "devcheck format clean; devcheck docs clean; docs/rbac.md documents the grants passport effective view + immediate revocation semantics."
+  - kind: red_team
+    detail: "Agent writing grants.yaml changes nothing — the file is read-only materialization and authorization never reads it (D-model); grants passport bound by ceilings at compile; corrupt epoch file denies rather than trusts stale snapshot."
+  - kind: live_acceptance
+    detail: "Deferred with reason: grant+revoke on a live two-user dev stack requires a deployed toolhub+runtime pair; tracked under M29.12 milestone acceptance. Unit evidence covers the epoch-reload semantics on both call paths."
+remaining:
+  - "Live dev-stack grant/revoke acceptance (M29.12)."
+limitations:
+  - "Issuer/why/revision provenance surfaces through catalog issuer fields + toolhub binding/policy revision audit; no separate per-grant audit record was added in this stage."
+  - "grants.allow ceiling rows are capability ids; operations inside a ceiling capability are bounded by the catalog vocabulary, not a per-op ceiling."

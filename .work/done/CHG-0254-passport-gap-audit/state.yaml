@@ -1,0 +1,69 @@
+chg: CHG-0254
+title: "Passport gap audit and contract hardening"
+status: done
+slices:
+  - id: S0.1
+    name: "typed v2 bodies + strict Decode + normative fixtures"
+    status: done
+    tests:
+      - TestNormativeExamplesParseStrict
+      - TestNormativeExamplesRoundTripStable
+      - TestUnknownPassportKeyRejected
+  - id: S0.2
+    name: "consumer registry + leaf-coverage test"
+    status: done
+    tests:
+      - TestEverySchemaLeafHasConsumer
+      - TestEffectClassesMatchSpecTable
+  - id: S0.3
+    name: "LoadEffective loader + revision/catalog checks"
+    status: done
+    tests:
+      - TestLoadEffectiveRejectsMixedRevision
+      - TestLoadEffectiveRejectsMissingPassport
+  - id: S0.4
+    name: "v2 envelope emission (no body wrapper, provenance moved to audit)"
+    status: done
+    tests:
+      - TestPublishedFileHasNoBodyWrapper
+validation:
+  unit:
+    - "go test ./internal/passport  ok"
+    - "go test ./internal/migration  ok"
+    - "go test ./internal/stack  ok (prompt-pointer fixture r-0007 accepted by relaxed safe-format check)"
+    - "go test ./internal/sqlitedb  ok (78.1% pkg coverage, >=75 floor)"
+    - "go test ./cmd/hubctl  ok (retry after AV flake)"
+    - "go test ./internal/communication  ok (retry after AV flake)"
+    - "go test ./internal/mediasvc  ok (retry after AV flake)"
+  gates:
+    - "just lint  OK (format/vet/tidy-diff/staticcheck/gosec both modules)"
+    - "just docs-check  OK (devcheck docs + actionlint)"
+    - "just config-check  OK (TestDeploymentConfigurationContract)"
+    - "just go-check (GOFLAGS=-p=4)  OK — all packages green, statement coverage 86.12% (>=85), per-package floor 75 passed"
+  red-team:
+    - "A0 verified: temporary unregistered leaf under Stack.Identity made TestEverySchemaLeafHasConsumer FAIL with the exact leaf path; removed, test green again."
+    - "Unknown keys (body wrapper, features) rejected by KnownFields decode."
+    - "Mixed-revision and missing-passport rejection covered by loader tests."
+    - "prompt-pointer path traversal prevented: revision id restricted to ^r-[0-9a-fA-F]{1,32}$ before joining (G703)."
+  secrets-scan: "no tokens/auth bytes in fixtures or diagnostics; provenance excludes sources"
+files:
+  created:
+    - internal/passport/schema.go
+    - internal/passport/consumers.go
+    - internal/passport/effective.go
+    - internal/passport/testdata/normative/{stack,config,models,workspace,tools,grants}.yaml
+    - internal/passport/schema_test.go
+    - internal/passport/consumers_test.go
+    - internal/passport/effective_test.go
+    - internal/sqlitedb/open_test.go
+  modified:
+    - internal/passport/passport.go (v2 envelope, Provenance rename, Value/GrantAllow read top-level)
+    - internal/passport/publish.go (provenance.yaml sidecar, current-pointer G703 fix)
+    - internal/migration/audit.go (typed v2 audit docs)
+    - internal/migration/*_test.go (v2 layout in audit fixtures)
+    - internal/passport/passport_test.go (v2 envelope test)
+    - docs/spaces.md (v2 envelope + provenance note)
+limitations:
+  - "Windows AV (Defender/LLVM-MinGW ld.lld) intermittently returns 'Access is denied' on freshly-linked test binaries; full just check passes leg-by-leg, whole-suite run retried with GOFLAGS=-p=4 to reduce burst."
+  - "No runtime/compose/toolhub/relay behavior changed in this stage (by design); live acceptance applies from CHG-0255 onward."
+next: CHG-0255 space apply/reconcile with effect-class diffing and atomic rollback

@@ -24,6 +24,12 @@ func parseActions(raw string) map[string]bool {
 	return actions
 }
 func hash(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
+
+// readOnlyPathList splits the rendered HUB_WORKSPACE_RO boundary list into
+// workspace-relative directory prefixes.
+func readOnlyPathList(raw string) []string {
+	return strings.Split(raw, ",")
+}
 func safe(p string) bool {
 	return fs.ValidPath(p) && !strings.Contains(p, "\\") && !strings.ContainsRune(p, 0)
 }
@@ -144,6 +150,9 @@ func (t *Tools) fileScoped(op string, r Input, ws, ar, org *os.Root) (map[string
 	if r.Root == "archive" || r.Root == "organization" || r.Root == "skills" {
 		return nil, fmt.Errorf("%s is read-only", r.Root)
 	}
+	if err := t.guardWritable(root, r.Path); err != nil {
+		return nil, err
+	}
 	if r.exportBytes == nil && (len(r.Text) > Limit || !utf8.ValidString(r.Text)) {
 		return nil, fmt.Errorf("text must be UTF-8 and <=2 MiB")
 	}
@@ -185,6 +194,47 @@ func (t *Tools) fileScoped(op string, r Input, ws, ar, org *os.Root) (map[string
 	}
 	return map[string]any{"path": r.Path, "revision": hash(content)}, nil
 }
+
+// guardWritable rejects writes that land inside a declared read-only
+// boundary, resolved through in-root symlinks so a link cannot launder the
+// write across the boundary.
+func (t *Tools) guardWritable(root *os.Root, rel string) error {
+	resolved := resolvePathLinks(root, rel)
+	for _, ro := range t.ReadOnlyPaths {
+		if ro == "" {
+			continue
+		}
+		if rel == ro || strings.HasPrefix(rel, ro+"/") || resolved == ro || strings.HasPrefix(resolved, ro+"/") {
+			return fmt.Errorf("%s is read-only", rel)
+		}
+	}
+	return nil
+}
+
+// resolvePathLinks returns rel with a symlinked ancestor replaced by its
+// in-root target. Read-only boundaries must hold for the path the write
+// actually lands on, not just the literal string the caller sent.
+func resolvePathLinks(root *os.Root, rel string) string {
+	prefix := ""
+	for _, dir := range strings.Split(rel, "/") {
+		p := path.Join(prefix, dir)
+		info, err := root.Lstat(p)
+		if err != nil {
+			return rel
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, err := root.Readlink(p)
+			target = strings.ReplaceAll(target, "\\", "/")
+			if err != nil || path.IsAbs(target) {
+				return rel
+			}
+			return path.Join(path.Dir(p), target, strings.TrimPrefix(rel, p))
+		}
+		prefix = p
+	}
+	return rel
+}
+
 func read(root *os.Root, p string) ([]byte, error) {
 	info, err := root.Lstat(p)
 	if err != nil {

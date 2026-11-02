@@ -562,6 +562,19 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 			args = append(args, "--mount", "type=bind,src="+src+",dst=/opt/hermes/plugins/"+entry.Name()+",readonly")
 		}
 	}
+	// The published passport view is the runtime's whole /config: a stable
+	// read-only directory bind, never per-file mounts (SPEC-0092 S1.4). A
+	// space without a published revision keeps the legacy raw mounts — its
+	// heal path still reads them.
+	if info, err := os.Stat(filepath.Join(binding.ContextRoot, "generated", "config-view", env)); err == nil && info.IsDir() {
+		args = append(args, "--mount", "type=bind,src="+filepath.Join(binding.ContextRoot, "generated", "config-view", env)+",dst=/config,readonly")
+	} else {
+		for _, file := range []struct{ source, target string }{{filepath.Join(binding.ContextRoot, "hermes."+env+".yaml"), "/config/config.yaml"}, {filepath.Join(binding.ContextRoot, "SOUL.md"), "/config/SOUL.md"}} {
+			if _, err := os.Stat(file.source); err == nil {
+				args = append(args, "--mount", "type=bind,src="+file.source+",dst="+file.target+",readonly")
+			}
+		}
+	}
 	// Materialize the effective Hermes config host-side and mount it read-only
 	// over the agent-writable state dir: mcp_servers must come from ToolHub
 	// onboarding, never from terminal edits inside the runtime.
@@ -597,11 +610,6 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	args = append(args, "--label", "hermes-hub.owner="+m.ownerID(), "--label", "hermes-hub.context="+hex.EncodeToString(hashBytes(runtimeKey(binding))), "--label", "hermes-hub.generation="+generation)
 	if binding.OrganizationRoot != "" {
 		args = append(args, "--mount", "type=bind,src="+binding.OrganizationRoot+",dst=/org,readonly")
-	}
-	for _, file := range []struct{ source, target string }{{filepath.Join(binding.ContextRoot, "hermes."+env+".yaml"), "/config/config.yaml"}, {filepath.Join(binding.ContextRoot, "SOUL.md"), "/config/SOUL.md"}} {
-		if _, err := os.Stat(file.source); err == nil {
-			args = append(args, "--mount", "type=bind,src="+file.source+",dst="+file.target+",readonly")
-		}
 	}
 	args = append(args, "--add-host", "host.docker.internal:host-gateway", "--tmpfs", "/tmp:uid=10001,gid=10001,mode=1777")
 	args = append(args, "-e", "HUB_RUNTIME_LISTEN=0.0.0.0:"+strconv.Itoa(m.cfg.RuntimePort), "-e", "HUB_STATE=/state", "-e", "HUB_WORKSPACE=/workspace", "-e", "HERMES_HOME=/state/hermes", "-e", "HOME=/state/home", "-e", "HUB_USER_ID="+binding.UserID, "-e", "HUB_ORGANIZATION_ID="+binding.OrganizationID, "-e", "HUB_RUNTIME_ID="+binding.RuntimeID, "-e", "HUB_POLICY_VERSION="+binding.PolicyVersion, "-e", "API_SERVER_ENABLED=true", "-e", "API_SERVER_HOST=127.0.0.1", "-e", "API_SERVER_PORT=8642")

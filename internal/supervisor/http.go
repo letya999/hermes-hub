@@ -165,6 +165,9 @@ func (m *Manager) restartHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
 	}
+	if !m.rightsGate(w, r, binding.PrincipalID, "agents", "restart_self", "runtime") {
+		return
+	}
 	m.mu.Lock()
 	entry := m.items[runtimeKey(binding)]
 	running := entry != nil && (entry.State == Ready || entry.State == Busy || entry.State == Idle) && entry.Container != ""
@@ -292,6 +295,9 @@ func (m *Manager) restartRequestHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid restart request"})
 		return
 	}
+	if !m.rightsGate(w, r, request.PrincipalID, "agents", "restart_self", "runtime") {
+		return
+	}
 	m.mu.Lock()
 	var entry *runtimeEntry
 	for _, candidate := range m.items {
@@ -403,6 +409,9 @@ func (m *Manager) artifactHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
 	}
+	if !m.rightsGate(w, r, binding.PrincipalID, "agents", "monitor_self", "runtime") {
+		return
+	}
 	m.mu.Lock()
 	entry := m.items[runtimeKey(binding)]
 	running := entry != nil && (entry.State == Ready || entry.State == Busy || entry.State == Idle) && entry.Address != ""
@@ -448,6 +457,9 @@ func (m *Manager) usageHTTP(w http.ResponseWriter, r *http.Request) {
 	binding, err := m.bindingFor(request.ExecuteRequest)
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	if !m.rightsGate(w, r, binding.PrincipalID, "agents", "monitor_self", "runtime") {
 		return
 	}
 	// Usage is a user command: a stopped runtime is spawned exactly like a
@@ -508,6 +520,9 @@ func (m *Manager) compactHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
 	}
+	if !m.rightsGate(w, r, binding.PrincipalID, "agents", "monitor_self", "runtime") {
+		return
+	}
 	lease, runtime, err := m.Acquire(r.Context(), binding, LeaseLifecycle)
 	if err != nil || runtime.Address == "" {
 		writeRuntimeFailure(w, http.StatusServiceUnavailable, err)
@@ -549,6 +564,9 @@ func (m *Manager) goalHTTP(w http.ResponseWriter, r *http.Request) {
 	binding, err := m.bindingFor(request.ExecuteRequest)
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	if !m.rightsGate(w, r, binding.PrincipalID, "agents", "monitor_self", "runtime") {
 		return
 	}
 	lease, runtime, err := m.Acquire(r.Context(), binding, LeaseLifecycle)

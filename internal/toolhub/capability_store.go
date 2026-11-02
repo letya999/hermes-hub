@@ -15,6 +15,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 )
 
 // Called with s.mu held, preserving the same lock order as saveLocked. The
@@ -220,6 +221,32 @@ func (s *Store) capabilityProfileLocked(auth identity.Envelope) (api.CapabilityP
 		return api.CapabilityProfile{}, api.CapabilityPolicy{}, fmt.Errorf("%w: current capability policy", api.ErrUnauthorized)
 	}
 	return profile, policy, nil
+}
+
+// CoreToolNames returns the profile's pinned direct-projection set (R6.1).
+// A nil result means the profile carries no core bound — every admitted tool
+// keeps its direct schema (legacy posture for unmanaged bindings).
+func (s *Store) CoreToolNames(auth identity.Envelope) (map[string]bool, error) {
+	if auth.CapabilityProfile == "" {
+		return nil, nil
+	}
+	if err := s.Reload(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	profile, _, err := s.capabilityProfileLocked(auth)
+	if err != nil {
+		return nil, err
+	}
+	if len(profile.CoreTools) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]bool, len(profile.CoreTools))
+	for _, name := range profile.CoreTools {
+		out[name] = true
+	}
+	return out, nil
 }
 
 func (s *Store) managedToolsLocked(auth identity.Envelope) ([]api.ProjectedTool, error) {
@@ -513,6 +540,12 @@ func (s *Store) managedSelectionLocked(auth identity.Envelope, profile api.Capab
 		}
 		limits, scopes, allowed := api.CapabilityDecision(profile, policy, selection, tool, arguments, projection)
 		if !allowed {
+			break
+		}
+		// RBAC requires (SPEC-0092 R2): when the published profile carries a
+		// rights ceiling, every right the tool declares must decide-allow —
+		// a missing grant hides the tool rather than erroring at call time.
+		if len(s.rightsMissingLocked(auth, profile, tool, time.Now().UTC())) > 0 {
 			break
 		}
 		found.Definition.Execution.OutputBytes = min(found.Definition.Execution.OutputBytes, limits.OutputBytes)

@@ -12,13 +12,16 @@ import (
 // a channel. The blob sits in the spool (not the workspace — the gateway has
 // no workspace mount) until the owning tools plane fetches and consumes it.
 type InboundRecord struct {
-	ID             string    `json:"id"`
-	UserID         string    `json:"user_id"`
-	ConversationID string    `json:"conversation_id"`
-	Name           string    `json:"name"`
-	Mime           string    `json:"mime"`
-	Size           int64     `json:"size"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID             string `json:"id"`
+	UserID         string `json:"user_id"`
+	ConversationID string `json:"conversation_id"`
+	Name           string `json:"name"`
+	// Source routes the materialized copy: "people" (default) for
+	// person-sent files, "services" for service originals (R4.2).
+	Source    string    `json:"source,omitempty"`
+	Mime      string    `json:"mime"`
+	Size      int64     `json:"size"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 func validInboundID(id string) bool {

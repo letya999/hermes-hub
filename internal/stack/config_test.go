@@ -851,7 +851,7 @@ func TestSupervisedUnmanagedSpaceWiresAgentExec(t *testing.T) {
 		t.Fatal("capability env leaked onto an unmanaged space")
 	}
 	aliases := hub["networks"].(M)[sharedNetworkName].(M)["aliases"].([]string)
-	if len(aliases) != 1 || aliases[0] != "toolhub-control" || services["communication-hub"].(M)["environment"].(M)["HUB_TOOLHUB_URL"] != "http://toolhub-control:8090" {
+	if len(aliases) != 2 || aliases[0] != "toolhub-control" || aliases[1] != "toolhub-alice" || services["communication-hub"].(M)["environment"].(M)["HUB_TOOLHUB_URL"] != "http://toolhub-control:8090" {
 		t.Fatal("gateway supervisor control URL lacks its matching Docker DNS alias")
 	}
 	s2 := s
@@ -1359,6 +1359,21 @@ func TestDiagnosticRotationMountsOnlyDedicatedDirectory(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("%s lacks dedicated rotation directory", service)
+		}
+	}
+}
+
+// The runtime learns its read-only workspace boundaries from the rendered
+// environment (R4.2): inbox originals are never agent-writable, and mounts
+// declared ro join the boundary list.
+func TestComposeRendersWorkspaceReadOnlyBoundaries(t *testing.T) {
+	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools(), Ingress: testIngress(),
+		Workspace: Workspace{Mounts: []Mount{{From: "shared", To: "/workspace/shared", Mode: "ro"}}}}
+	env := Compose(s, "/source", "/space")["services"].(M)["hermes-runtime"].(M)["environment"].(M)
+	ro, _ := env["HUB_WORKSPACE_RO"].(string)
+	for _, want := range []string{"inbox", "shared"} {
+		if !strings.Contains(","+ro+",", ","+want+",") {
+			t.Fatalf("HUB_WORKSPACE_RO = %q, want %q listed", ro, want)
 		}
 	}
 }

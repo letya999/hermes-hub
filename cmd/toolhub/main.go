@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"log"
 	"net"
@@ -69,6 +70,15 @@ func runWithContext(ctx context.Context) error {
 		if err := store.VerifyInstallationWitness(witness); err != nil {
 			return fmt.Errorf("ToolHub installation witness: %w", err)
 		}
+	}
+	// The PDP's vocabulary is the pinned catalog release the image ships:
+	// manifest digests must verify before any right is enforceable. A host
+	// binary or an older dev image without the baked tree degrades to a
+	// fail-closed PDP — rights deny rather than leak.
+	if docs, err := catalog.LoadPinned(); err == nil {
+		store.RightsDoc = docs.Rights
+	} else {
+		fmt.Fprintln(os.Stderr, "hub-toolhub: rights catalog unavailable, PDP fails closed:", err)
 	}
 	handler, err := toolhub.NewEndpointHandler(config, store)
 	if err != nil {

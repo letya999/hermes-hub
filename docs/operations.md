@@ -1,6 +1,6 @@
 ---
 description: Operator runbook — stack lifecycle, user onboarding, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
-last_verified: 2026-11-01
+last_verified: 2026-11-02
 ---
 
 # Operations
@@ -76,6 +76,16 @@ Skip the ceremony and the user gets an agent with an empty tool surface.
    `tool-policy`, `tool-manifest`, hermes config), mints `runtime.auth`,
    and enrolls sibling `toolhub-tokens.json`/`model-relay-admins.json`.
    The supervised runtime spawns on first demand (pin or job).
+
+   A *managed* space additionally needs, before `up`: an execution selection
+   (`execution.<env>.json` — `mode: supervisor`,
+   `supervisor_url: http://supervisor:8876`, `native_cron: disabled`),
+   a migrated passport (`hubctl space-migrate --dir spaces/<id> --env <env>
+   --apply`), and reachable model credentials — either `cliproxy: shared`
+   against the infra instance or `cliproxy: dedicated` with the space's own
+   `cliproxy/` directory (`config.yaml`, `auths/`, `api-key`) plus
+   `OPENAI_API_KEY` and `HUB_CLIPROXY_MGMT_URL`=`http://cliproxy-<id>:8317`,
+   `HUB_CLIPROXY_MGMT_KEY`, `HUB_CLIPROXY_AUTH_INDEX` in `secrets.<env>.env`.
 8. **Verify tool surface** — `docker exec <runtime> cat
    /config/tool-manifest.json` shows the projected manifest;
    `hubctl tools --workspace <dir>` lists the reviewed vocabulary. A user
@@ -206,7 +216,16 @@ hubctl capability --kind tools --settings <space> \
 hubctl governance --kind rule --scope user --user alice \
     --section native:terminal --effect allow --reason "reviewed" --confirm
 hubctl governance --kind grant --user alice --section user_mcp --expires 72h --confirm
+hubctl governance --kind right --user alice --cap workspace --op write --expires 168h --confirm
+hubctl governance --kind revoke-right --user alice --grant right-alice-workspace-write --reason "offboard" --confirm
 ```
+
+`--kind right`/`revoke-right` mint and revoke RBAC capability grants
+(`capability.operation` from `rights.yaml`; `--bind` scopes path/model/
+toolset/target). Issuers are enforced against the vocabulary — cross-subject
+rights are never operator-minted. Passport-derived `right-<user>-*` rows are
+rewritten on every publish; manual grants live alongside and stay bounded
+by the published ceiling.
 
 Connector verbs run identically on three surfaces — `connector_*` tools,
 `hubctl connector <verb> --target <sel>` (`--profile`/`--env`/`--generation`),
@@ -481,12 +500,21 @@ All explicit, dry-run first, never overwrite:
 
 ```text
 hubctl migrate-spaces --user artem --org acme [--apply]
+hubctl space-migrate --dir spaces/artem --env dev [--apply]   # legacy authority -> six-passport sources
+hubctl space apply --dir spaces/artem --env dev [--confirm]   # compile passport-src, classified diff, publish + reconcile
+hubctl space-audit --dir spaces/artem                         # revision-only effective inventory
 hubctl spool migrate --spool <dir> --state <dir> [--apply]   # legacy knowledge tree
 hubctl context backup|restore|export|purge [--spool <dir>] [--confirm]
 ```
 
 `migrate-spaces` rejects symlinks, ID collisions, unrelated data and active
-runtimes; reports JSON paths/counts/checksums, no secret values. `spool
+runtimes; reports JSON paths/counts/checksums, no secret values. `space-migrate`
+compiles the space's editable authority into the layered six-passport sources,
+publishes the revision atomically and keeps a sha256-verified backup plus a
+rollback fence under `generated/migration-backup/<revision>/` — nothing is
+deleted, conflicts are reported, never silently retyped. `space-audit` reads
+only the published revision: services, routes, workspace tree, core/extended
+toolsets, grants, deny reasons and layer provenance. `spool
 migrate` copies (never moves) knowledge into `<state>/knowledge/<principal>`;
 other spool dirs (`schedules`, `occurrences`, `watchers`, `digests`, `tasks`,
 `events`, `outbox`, `mappings`, `conversations`, `inbound`, `callbacks`) keep
@@ -798,6 +826,19 @@ re-render. Fallback for standalone runs: `HUB_MEDIA_UPSTREAM_KEY`/
 `OPENAI_API_KEY`/`FAL_KEY` env; a fal engine with neither refuses to boot.
 
 Operational facts proven by live acceptance:
+
+- Ten managed spaces on one infra (`m29-acc-01..10`, each with a dedicated
+  cliproxy + model-relay) project distinct bounded tool surfaces and answer
+  real provider calls independently: 10/10 `chat/completions` 200,
+  8 distinct live MCP core projections from 10 passports, one 43-selection
+  profile held to a 20-tool direct core, a non-admitted call denied as
+  `unknown tool`, and unauthenticated MCP requests 401. Publishing the
+  capability records requires policy → profile → `agent-tools` → sibling
+  token enrollment (docs/services/toolhub.md); a profile pinning an older
+  `hub-agent-tools` implementation digest than the bound version resolves
+  to zero admitted tools, and a ToolHub image older than the profile schema
+  (`core_tools`) fails its store load outright — rebuild via
+  `dev-rebuild toolhub` before judging profile data.
 
 - `media.grant` reaches the container only through `hubctl up`/`down`,
   which feeds the file into compose interpolation (`${HUB_MEDIA_BROKER_GRANT}`).

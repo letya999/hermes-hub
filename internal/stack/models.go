@@ -42,8 +42,29 @@ func (p ModelProvider) Allows(owner string) bool {
 }
 
 type ModelHopRef struct {
-	Provider string `yaml:"provider"`
-	Model    string `yaml:"model"`
+	Provider string       `yaml:"provider"`
+	Model    string       `yaml:"model,omitempty"`
+	Models   []string     `yaml:"models,omitempty"`
+	Limits   []ModelLimit `yaml:"limits,omitempty"`
+	// Reasoning declares the service accepts reasoning parameters; requests
+	// carrying them skip services that never declared support.
+	Reasoning bool `yaml:"reasoning,omitempty"`
+	// Sharing declares who the credential principal serves: "shared" (one
+	// principal for every admitted owner) or "personal" (per-owner
+	// broker-granted material — a shared key_env cannot be personal).
+	Sharing string `yaml:"sharing,omitempty"`
+}
+
+// ModelLimit is one durable quota window for the hop's credential principal:
+// a fixed {of, amount, per} grammar. "requests" counts every upstream call,
+// "tokens" reserves the conservative request estimate up front. Counters live
+// in the relay state directory and never cross spaces; scope "shared" meters
+// the principal, "personal" meters each owner separately.
+type ModelLimit struct {
+	Of     string `yaml:"of"`
+	Amount int64  `yaml:"amount"`
+	Per    string `yaml:"per"`
+	Scope  string `yaml:"scope,omitempty"`
 }
 
 type ModelEntry struct {
@@ -103,6 +124,29 @@ func LoadModelRegistry(dir string, s Settings) (*ModelRegistry, error) {
 		for name, m := range layer.Models {
 			reg.Models[name] = m
 		}
+		if reg.Switch == nil {
+			reg.Switch = map[string]string{}
+		}
+		for name, level := range layer.Switch {
+			reg.Switch[name] = level
+		}
+	}
+	// The published models doc is the imperative runtime contract: routes and
+	// the switch policy come from it alone. Providers it declares take the
+	// endpoint/credential the passport carries; broker grant ids and owner
+	// scoping stay a credential-plane detail and pass through from the legacy
+	// layer under the same provider name.
+	if layer := passportRegistryLayer(dir); len(layer.Models)+len(layer.Providers)+len(layer.Switch) > 0 {
+		for name, p := range layer.Providers {
+			if old, ok := reg.Providers[name]; ok {
+				p.BrokerGrants = old.BrokerGrants
+				p.Owners = old.Owners
+				p.KeyEnv = old.KeyEnv
+				p.AllowPrivate = old.AllowPrivate
+			}
+			reg.Providers[name] = p
+		}
+		reg.Models = layer.Models
 		if reg.Switch == nil {
 			reg.Switch = map[string]string{}
 		}
@@ -173,8 +217,46 @@ func (r *ModelRegistry) Validate() error {
 			if _, ok := r.Providers[hop.Provider]; !ok && hop.Provider != "cliproxy" {
 				return fmt.Errorf("models.yaml: model %q uses unknown provider %q", name, hop.Provider)
 			}
-			if strings.TrimSpace(hop.Model) == "" || !registryModelPattern.MatchString(hop.Model) {
-				return fmt.Errorf("models.yaml: model %q bad provider model id %q", name, hop.Model)
+			ids := hop.Models
+			if len(ids) == 0 {
+				ids = []string{hop.Model}
+			} else if strings.TrimSpace(hop.Model) != "" {
+				return fmt.Errorf("models.yaml: model %q sets both model and models", name)
+			}
+			for _, id := range ids {
+				if strings.TrimSpace(id) == "" || !registryModelPattern.MatchString(id) {
+					return fmt.Errorf("models.yaml: model %q bad provider model id %q", name, id)
+				}
+			}
+			switch hop.Sharing {
+			case "", "shared":
+			case "personal":
+				if p := r.Providers[hop.Provider]; len(p.BrokerGrants) == 0 {
+					return fmt.Errorf("models.yaml: model %q provider %q personal sharing needs broker_grants", name, hop.Provider)
+				}
+			default:
+				return fmt.Errorf("models.yaml: model %q sharing %q unknown", name, hop.Sharing)
+			}
+			for _, limit := range hop.Limits {
+				if limit.Amount <= 0 {
+					return fmt.Errorf("models.yaml: model %q limit needs amount > 0", name)
+				}
+				switch limit.Of {
+				case "requests", "tokens":
+				default:
+					// provider_quota_percent needs verified session telemetry
+					// and spend needs a price feed — neither exists yet, so the
+					// configuration fails closed instead of drifting unbounded.
+					return fmt.Errorf("models.yaml: model %q limit of %q requires verified usage telemetry", name, limit.Of)
+				}
+				switch limit.Per {
+				case "5h", "1d", "1w":
+				default:
+					return fmt.Errorf("models.yaml: model %q limit per %q unknown", name, limit.Per)
+				}
+				if limit.Scope != "" && limit.Scope != "shared" && limit.Scope != "personal" {
+					return fmt.Errorf("models.yaml: model %q limit scope %q unknown", name, limit.Scope)
+				}
 			}
 		}
 	}

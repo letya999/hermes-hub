@@ -1,6 +1,6 @@
 ---
 description: model-relay — per-space model selection endpoint for managed spaces; layered models.yaml, owner switch bearer, cliproxy upstream.
-last_verified: 2026-10-31
+last_verified: 2026-11-02
 ---
 
 # model-relay
@@ -112,13 +112,31 @@ and pinned at dial time; redirects and environment HTTP proxies are disabled.
 provider. It permits private and loopback addresses, but not metadata/link-local,
 multicast or other reserved ranges. Built-in CLIProxy has this local trust.
 
-Every ladder has 1–8 ordered hops. Auth/quota failures, server failures and
-transport failures put that account on a 60-second cooldown and try the next
-declared hop. Other HTTP statuses pass through. Each attempt/skip is logged
+Every ladder has 1–8 ordered hops — one credential principal per hop.
+Auth/quota failures, server failures and transport failures put that account
+on a 60-second cooldown and try the next declared hop. A hop may carry
+`models: [...]`, the ordered in-service model list: a model-level failure
+(400/404 — the account does not serve that model) retries the next model on
+the same principal instead of advancing the ladder; `model:` stays the
+single-model shorthand. Once a response has started it is never replayed to
+another hop. `reasoning: true` declares the service accepts reasoning
+parameters; a request carrying `reasoning_effort`, `reasoning` or `thinking`
+skips hops that never declared support. `sharing: personal` requires
+`broker_grants` — a shared `key_env` principal cannot be declared personal.
+Other HTTP statuses pass through. Each attempt/skip is logged
 without request contents or keys. `GET /v1/hops` exposes the selected ladder's
 cooldown under owner/admin authentication. Defaults are 5 minutes per hop
 (`HUB_MODEL_RELAY_HOP_TIMEOUT`, maximum 5 minutes) and 6 minutes for the whole
 request (`HUB_MODEL_RELAY_TIMEOUT`, maximum 10 minutes); hop cannot exceed total.
+Durable `{of, amount, per, scope}` limits may be declared per hop:
+`of: requests` counts every upstream call, `of: tokens` reserves the
+conservative request estimate up front; `per` is `5h`, `1d` or `1w` in aligned
+windows; `scope` is `shared` (the principal) or `personal` (per owner).
+Counters persist under the relay state directory, survive restarts, are
+isolated per space, and a full window parks the hop so the ladder advances.
+`of: spend` and `of: provider_quota_percent` are rejected until a verified
+price feed or per-session usage/reset telemetry exists — an unverifiable
+quota must fail closed rather than drift.
 The hop bound covers the entire exchange, including a streamed body. A transport
 timeout allows one bounded recovery attempt after cooldown on a later request;
 concurrent callers do not all probe the recovering hop. The request budget leaves room for cooldown and one more bounded attempt.
@@ -150,3 +168,25 @@ and workload `model-relay`. Acquire/materialize/release use TLS and signed
 audiences; no signing key is mounted into Hermes. Shared secret use requires an
 explicit Broker contract and separate authorized owner grants. Provisioning and
 live account verification are separate from code/fixture verification.
+
+### Reviewed model contracts (ADR-0092 R7)
+
+Two contract types ship in `services/credential-broker/examples/contracts/`
+and must be installed into the space broker `contracts_dir` by the operator:
+
+- `model-api-key` — one bounded API key, delivered only as `MODEL_API_KEY`
+  env on the `model-relay` workload lease (`broker_grants` + `credential_env`
+  in `models.yaml` reference it; the relay resolves per call and releases).
+- `cliproxy-session` — one bounded OAuth account session file, delivered as
+  a mounted file (`env_name` points at the path, never the contents) into the
+  owning dedicated cliproxy's `auths/` view. Each account is a separate
+  credential with its own grants; rotation mints a new revision under the
+  same connection and revocation kills existing leases at next acquire —
+  independently per account, never across principals.
+
+Migrating a space off the legacy `cliproxy/api-key` + `auths/` material or a
+`key_env` provider is an explicit operator action: enroll each account as a
+`cliproxy-session` credential, grant it to workload `model-relay`/`cliproxy`
+with execution `dedicated`, point `broker_grants` at the new grant ids, then
+re-render. Bytes never enter passports, ledger DTOs, argv or diagnostics —
+the journal and every API view carry refs only.

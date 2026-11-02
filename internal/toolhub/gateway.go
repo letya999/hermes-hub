@@ -47,6 +47,11 @@ type Gateway struct {
 	// read a principal's connector inventory via X-Hub-Principal. Principal
 	// bearers always pin their own envelope and never use the header.
 	ControlToken string
+
+	// SpacePrincipal is this deployment's space user id: control-token
+	// /v1/rights/decide calls may only assert it — cross-space assertions
+	// refuse (SPEC-0092 R2.2). Empty disables asserted decisions.
+	SpacePrincipal string
 	// CLIRelease drops bounded-cli cells for the caller's principal; the
 	// /v1/cli-jobs/release route uses it for job-end task-cell teardown.
 	CLIRelease  func(context.Context, api.CliReleaseRequest) error
@@ -110,6 +115,7 @@ func (g *Gateway) Handler() (http.Handler, error) {
 	mux.Handle("/v1/confirmations", http.HandlerFunc(g.serveHumanConfirmation))
 	mux.Handle("/v1/tool-call", http.HandlerFunc(g.serveToolCall))
 	mux.Handle("/v1/cli-jobs/release", http.HandlerFunc(g.serveCLIJobRelease))
+	mux.Handle("/v1/rights/decide", http.HandlerFunc(g.serveRightsDecide))
 	mux.Handle("/v1/admin/onboardings", http.HandlerFunc(g.serveAdminOnboardings))
 	mux.Handle("/v1/admin/diagnose/", http.HandlerFunc(g.serveAdminDiagnose))
 	mux.Handle("/v1/admin/inspect-source", http.HandlerFunc(g.serveAdminInspectSource))

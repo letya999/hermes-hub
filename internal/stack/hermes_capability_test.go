@@ -342,7 +342,7 @@ func TestManagedComposeSeparatesHermesDataFromControl(t *testing.T) {
 	if control["networks"].(M)[managedAgentNetwork(s)] != nil {
 		t.Fatal("ToolHub control endpoints are directly reachable from agent network")
 	}
-	if control["networks"].(M)[sharedNetworkName].(M)["aliases"].([]string)[0] != "toolhub-control" {
+	if control["networks"].(M)[sharedNetworkName].(M)["aliases"].([]string)[0] != "toolhub-control" || control["networks"].(M)[sharedNetworkName].(M)["aliases"].([]string)[1] != "toolhub-alice" {
 		t.Fatal("ToolHub control alias is missing from shared network")
 	}
 	if _, ok := services["model-relay"].(M)["networks"].(M)[managedAgentNetwork(s)]; !ok {

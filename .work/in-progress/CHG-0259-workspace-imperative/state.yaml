@@ -1,0 +1,29 @@
+schema: 1
+change: CHG-0259
+title: "M30.5 workspace.yaml drives container filesystem and file admission"
+status: in_progress
+branch: feat/m29-six-passport-contract
+updated: 2026-11-02
+phase: design-complete
+adr: ADR-0093
+spec: SPEC-0092
+requirements: [R5.1, R5.2, R5.3]
+depends_on: [CHG-0255, CHG-0256]
+github_milestone: "M30 — Imperative Passports and Capability Grants"
+github_issue: pending
+design_status: accepted
+implementation_status: in_progress
+slices:
+  S5.1-tree-ascii: not_started
+  S5.2-mount-plan: not_started
+  S5.3-live-file-admission: not_started
+validation:
+  documents: done
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence:
+  - "2026-11-02: workspace.yaml retired for artem_two — tree/writable/read_only/mounts come from the passport; overlay materializes mounts back into Settings.Workspace.Mounts; completeness guard refuses a revision with no writable path."
+remaining: []
+limitations: []

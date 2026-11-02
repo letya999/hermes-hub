@@ -1,6 +1,6 @@
 ---
 description: Complete agent-visible tool surface — toolhub control tools, connector_* facade, hub:tools catalog, effect/grant requirements, delivery directives.
-last_verified: "2026-10-31"
+last_verified: "2026-11-02"
 ---
 
 # Tool surface
@@ -13,6 +13,44 @@ as `mcp_servers.hub` (`mcp__hub__*`, implementation name `hermes-hub-tools`;
 the `hub:tools` governance section) for workspace/user tools. Every tool declares read or
 write effect; write effects additionally need the active write path
 (described per group).
+
+## Platform catalogs (ADR-0092 D3)
+
+The platform vocabulary every space contract references is generated — never
+hand-edited — into immutable release directories:
+
+- `platform/catalogs/<release>/capabilities.yaml` — executor capabilities
+  (`<family>.<verb>`) with their full operation/resource vocabulary, worst-case
+  effect, `call|path` scope, issuer, admitted executor (`via`), member tools,
+  plus the control-plane operations and governance sections.
+- `platform/catalogs/<release>/toolsets.yaml` — placeable surfaces keyed
+  section-style: `native:<name>` (upstream/pseudo, `via: native`, `carveout`
+  marks managed re-enablement), `hub:<family>` (executor families,
+  `via: toolhub`, member tools + `tools:` aliases), `hub:<connector>` MCP
+  surfaces, `connectors` (the nine-tool connector_* pack), `hub:tools` (the
+  executor surface itself), and the raw-MCP surfaces `user_mcp`/`org_mcp`
+  (`via: mcp-raw`, members projected dynamically by declared servers).
+  Denied-by-construction upstream names carry no section and no `via`; an
+  ad-hoc `mcp-raw:<server>` is never a toolset — it cannot mint a section.
+- `platform/catalogs/<release>/services.yaml` — `features:` (owner-enabled
+  connectors: requires/depends_on/self_service) and `infra:` platform service
+  kinds with instance cardinality and allowed dependency edges.
+- `manifest.yaml` binds each release with sha256 file digests.
+
+- `platform/catalogs/<release>/rights.yaml` — the RBAC vocabulary
+  (SPEC-0092 R2): fundamental rights domains (`workspace`, `memory`,
+  `models`, `tools`, `skills`, `connectors`, `agents`, `users`, `stack`,
+  `config`, `channels`, `observability`) with every operation's subject
+  (self|cross), scope kind, issuers, PEP enforcement sites, effect class and
+  norm description. `grants.yaml` allows are subsets of this vocabulary —
+  a domain or operation absent from `rights.yaml` cannot be granted.
+
+`devcheck catalog-emit` regenerates the current release; it refuses to
+overwrite drifted bytes — a vocabulary change must bump `catalog.Release`
+and land as a new directory. `internal/catalog`'s parity test proves the
+catalogs match the real handlers, sections, compose services and this file;
+a space loads only a pinned release (`catalog.Load`) and every unknown
+capability, operation, toolset, service or release fails closed.
 
 ## mcp__toolhub__ — control plane
 
@@ -47,7 +85,21 @@ Three further tools sit beside the allowlist (ADR-0089):
 |---|---|
 | `system_guide` | Static reference document — concepts and formats, no account data; always projected |
 | `tools_list` | Live caller-scoped inventory — exact admitted names re-read on every call, including tools enabled in this or another session. Compact `{name, definition, effect}` entries plus `controls`; `query` filters names, `name` returns one full spec with `input_schema`. Always projected |
-| `invoke` | Dispatch one admitted projected tool by exact `{tool, arguments}` through the same `AuthorizeProjectedCall` admission — for names the client's cached tools/list has not yet refreshed. Projected with the connectors bundle (`connectors` = `personal`/`personal+team`) or an explicit `invoke` grant |
+| `invoke` | Dispatch one admitted projected tool by exact `{tool, arguments}` through the same `AuthorizeProjectedCall` admission — for names the client's cached tools/list has not yet refreshed, and for extended tools outside the bounded core. Projected with the connectors bundle (`connectors` = `personal`/`personal+team`) or an explicit `invoke` grant |
+
+### Core and extended projection (ADR-0092 D6)
+
+`tools.yaml` in a space's six-passport revision groups whole toolsets into
+`core` and `extended`. Core carries at most 20 selected tools plus the pinned
+discovery pair (`tools_list`, `invoke`); a toolset that would overflow moves
+to `extended` wholesale — no family is ever split — and ordering follows the
+pinned `toolsets.yaml` release so a catalog bump is a visible revision diff,
+never silent growth. Only core names receive a direct MCP schema; extended
+tools stay reachable through `tools_list` and `invoke`, and every call —
+direct or invoked — re-resolves admission, so the boundary hides schemas, not
+authority. Per-toolset `rules` (`include` xor `exclude`, `access: read`,
+`scope`, per-tool rules) compile only for toolhub-routed toolsets; a native
+or raw-MCP surface that cannot provably enforce them fails closed at compile.
 
 ## connector_* — unified facade
 
@@ -80,7 +132,7 @@ Grouped by capability resource (internal/agenttools/capability.go):
 | documents | `document_extract`, `document_create`, `document_edit`, `document_convert` | txt, md, csv, html, pdf, xlsx, pptx |
 | images | `image_inspect`, `images_inspect`, `image_convert`; `image_generate`, `image_edit` | generate/edit absent until the `image_gen` grant is active; png/jpeg/webp |
 | artifacts | `archive_create`, `archive_unpack`, `artifact_remove` | artifacts/ scope |
-| inbox | `inbox_fetch` | materialize a user-sent file into `inbox/`; zips unpack from memory |
+| inbox | `inbox_fetch` | materialize a user- or service-sent file into `inbox/{people,services}/`; zips unpack from memory |
 | knowledge | `knowledge_list`, `knowledge_search`, `knowledge_read` | read-only staged sources; content returns as output, never lands in workspace |
 | ssh | `ssh_hosts`, `ssh_exec`, `ssh_read`, `ssh_write`, `ssh_shell_*`, `ssh_tunnel_*` | declared hosts only; write/shell/tunnel each need their own grant |
 | hh | `hh_search`, `hh_vacancy`, `hh_resumes`, `hh_apply` | apply sends externally — exact user-authorized inputs only |
@@ -163,9 +215,12 @@ Grouped by capability resource (internal/agenttools/capability.go):
   `metadata.hermes.config` declares non-secret per-user settings that
   `skill()` surfaces effective (stored-or-default); `skill_manage`
   `configure` writes them to `.state/settings`.
-- **inbox_fetch**: an incoming transfer lands in `inbox/<id>/files/`; ZIPs
-  extract there and a `inbox/<id>/receipt.json` is stored *before* the staged
-  copy is acknowledged — retry reuses the receipt, never re-downloads.
+- **inbox_fetch**: an incoming transfer lands in `inbox/<source>/<id>/files/`
+  (`people` for user-sent files, `services` for service originals); ZIPs
+  extract there and a `inbox/<source>/<id>/receipt.json` carrying the original
+  name and source is stored *before* the staged copy is acknowledged — retry
+  reuses the receipt, never re-downloads. The whole `inbox/` tree is
+  read-only to file/archive tools; copies into `work/` are the editable ones.
   `acknowledged=false` = files exist locally but the staged copy still needs
   ack. A pre-existing directory without a valid receipt needs operator
   inspection — never overwritten. ZIP extraction checks entry count,

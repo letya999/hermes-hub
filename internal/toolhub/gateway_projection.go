@@ -70,8 +70,19 @@ func (g *Gateway) projectedServer(auth identity.Envelope) (*mcp.Server, map[stri
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: systemguide.Skill}}}, nil
 	})
 	g.addToolsListTool(server, auth)
+	// R6.1: a profile carrying a compiled core bound projects direct schemas
+	// only for those names. Extended tools stay reachable through tools_list
+	// and invoke — admission is re-resolved per call, so the boundary never
+	// becomes an authority edge.
+	core, err := g.Store.CoreToolNames(auth)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	tools := make(map[string]api.ToolSpec, len(projected))
 	for _, projectedTool := range projected {
+		if core != nil && !core[projectedTool.Name] {
+			continue
+		}
 		g.addProjectedTool(server, auth, projectedTool)
 		tools[projectedTool.Name] = projectedTool.Tool
 	}
@@ -207,8 +218,15 @@ func (g *Gateway) refreshProjection(projection *gatewayProjection) error {
 	if err != nil {
 		return err
 	}
+	core, err := g.Store.CoreToolNames(projection.auth)
+	if err != nil {
+		return err
+	}
 	next := make(map[string]api.ToolSpec, len(projected))
 	for _, tool := range projected {
+		if core != nil && !core[tool.Name] {
+			continue
+		}
 		next[tool.Name] = tool.Tool
 	}
 	projection.mu.Lock()
@@ -230,6 +248,9 @@ func (g *Gateway) refreshProjection(projection *gatewayProjection) error {
 		}
 	}
 	for _, tool := range projected {
+		if core != nil && !core[tool.Name] {
+			continue
+		}
 		if old, ok := projection.tools[tool.Name]; !ok || !reflect.DeepEqual(old, tool.Tool) {
 			g.addProjectedTool(projection.server, projection.auth, tool)
 		}

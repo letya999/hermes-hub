@@ -1,6 +1,6 @@
 ---
 description: spaces/<id>/ layout — settings.yaml, generated configs, secrets/env files, state dirs, and what is hand-edited vs rendered.
-last_verified: 2026-10-30
+last_verified: "2026-11-02"
 ---
 
 # Spaces
@@ -151,8 +151,10 @@ docs/tools.md; they are not shared personal-memory stores.
   `credential.key`, `artifacts/`, `hermes/` (agent-visible Hermes state; in
   managed mode skills/hooks/plugins/bundles/scripts/bin/node/lsp are read-only
   tmpfs shadows), routines/watch state, job mappings (ADR-0015).
-- `home/` — the agent's home; `workspace/` — the admitted workspace scope;
-  `archive/` — read-only extracted archive; `inbox/` — user-file intake.
+- `home/` — the agent's home; `workspace/` — the admitted workspace scope:
+  `inbox/{people,services}/` user- and service-file intake (read-only to the
+  agent), `work/`, `projects/`, `artifacts/{documents,images,videos,archives,
+  services}/`, `outbox/`; `archive/` — read-only extracted archive.
 - `broker/` — broker materialization output; `cache/`, `cliproxy/` —
   service-local state; `managed/<env>/model-relay` — relay selection state.
 - `diagnostics/` — bounded log surface backing `mcp__toolhub__diagnostics`
@@ -216,6 +218,100 @@ references in `models.yaml`; see [model-relay](services/model-relay.md). Re-rend
 only affected spaces. Model registry edits reload after rendering; provider env
 rotation recreates that owner's relay; Broker rotation resolves on the next call
 without a relay restart. Model identity changes apply to the next owner runtime.
+
+
+## Migrating a legacy space to the six-passport contract
+
+`hubctl space-migrate --dir spaces/<user> --env dev [--apply]` converts one
+space's editable authority into layered six-passport sources. Dry-run (the
+default) prints the field-level mapping — enabled `tools.*` entries →
+`tools.core.<toolset>` with the catalog-routed `via`, `workspace.mounts` →
+`workspace.writable`/`read_only`, `models.yaml` providers + ladders →
+`models.services`/`routes`, the compose-rendered service set →
+`stack.services.<instance>` with catalog instance modes, active ToolHub
+section grants → the `grants.allow` ledger — plus every conflict needing an
+operator decision. Nothing is written until `--apply`.
+
+Apply writes `passport-src/{platform-ceiling,platform-template,user}.yaml`,
+compiles and atomically publishes the revision under `generated/passports/
+<revision>/`, and stores a verified backup of every editable authority file
+(`settings.yaml`, `agent.yaml`, `workspace.yaml`, `models.yaml`, `SOUL.md`)
+under `generated/migration-backup/<revision>/` with a sha256 manifest. The
+report's `rollback` field is the fence: restore the backup over the space,
+then remove the published revision and `current`. Nothing is ever deleted —
+unknown files, project trees, journals and runtime state stay in place.
+Symlinked authority files are refused; mixed `settings.yaml` +
+`agent.yaml`/`workspace.yaml` authority is reported as a conflict, never
+silently merged; grants on sections without cataloged capabilities stay in
+the ToolHub store and are listed as conflicts.
+
+Each published file carries `apiVersion: six-passport/v2`,
+`kind: <passport name>` and its contract keys top-level — there is no
+`body:` wrapper. Layer provenance (`updated_at`, `sources`, per-catalog
+pins) lives in `generated/passports/<revision>/provenance.yaml`, not inside
+the six passports.
+
+`hubctl space-audit --dir spaces/<user>` answers the effective inventory from
+the published revision only: running services, model routes, the workspace
+writable/read-only tree, core/extended toolset projection, the grants ledger,
+per-toolset deny reasons (raw MCP surfaces are default-deny without a
+reviewed grant) and layer provenance. It never reads editable sources.
+
+## Applying passport sources
+
+`hubctl space apply --dir spaces/<user> --env dev [--confirm]` compiles the
+`passport-src/` layers and diffs the result against the published revision.
+The default dry-run prints a JSON receipt: every changed leaf with its
+before/after (credential refs render as `<ref:name>`, never material), the
+effect class (live/respawn/recreate/rebuild) and owning consumer, plus the
+ordered minimum action plan — nothing is written. `--confirm` publishes the
+new revision atomically, re-renders `generated/compose.<env>.yaml` from that
+revision, then reconciles in order: rebuild only the service images that
+changed, recreate only the affected containers, run one compose
+`--remove-orphans` sweep when instances were dropped (a removed
+`stack.services` entry removes exactly that container), mark the runtime
+for a deferred supervisor restart-request when its boundary moved, and run
+registered live hooks. Any failure repoints `current` at the previous
+revision, re-runs the live hooks that already applied and reports
+`rolled_back` with the failed action — a half-active revision is never left
+behind.
+
+The rendered compose set is commanded by `stack.services`: `per-space`
+instances become local containers, `shared` instances render only on the
+infra space, `supervised` keeps `hermes-runtime` as a spawn contract. A
+declared per-space instance with no rendered container — or an instance
+name that resolves to no catalog service — fails the render; the compose
+file never silently shrinks.
+
+Publishing also refreshes the runtime's `/config`: a stable read-only
+directory bind at `generated/config-view/<env>/` whose individual files are
+replaced atomically per revision — the six passports, `prompt-pointer.txt`
+and the space's `SOUL.md` — instead of Docker single-file binds that never
+see updates.
+
+Multi-space live acceptance was exercised against ten disposable managed
+spaces (`m29-acc-01..10`, `infra: false`, dedicated `cliproxy`), each with a
+distinct `tools:` selection and capability profile. After migration,
+capability records were published into the shared ToolHub store (policy +
+profile + `agent-tools` binding per principal), tokens enrolled through the
+infra space render, and each space's `toolhub` relay answered a live MCP
+`initialize`/`tools/list` handshake with exactly its own bounded core —
+four-tool file surfaces, a three-tool read-only file surface, document,
+assignment, routine/service/settings, artifact/hh and mixed profiles, and a
+43-selection profile capped at a 20-tool direct core. All ten model relays
+returned real provider completions; unauthenticated MCP requests answered
+401 and a non-admitted tool call answered `unknown tool`. See
+docs/services/toolhub.md for the publication sequence this requires.
+
+Two derivations matter for real spaces. `stack.services` lists the services
+the space's managed topology *consumes*, not only the containers it runs: a
+secondary space (`infra: false`) resolves catalog `depends_on` transitively,
+so its compiled service set includes the shared mesh (toolhub →
+credential-broker, communication-hub → supervisor, model-relay → cliproxy)
+hosted on the infra space. And `cliproxy` is the built-in model provider —
+ladders may reference `provider: cliproxy` without a `providers:` entry (the
+relay admits it implicitly); the migrator then declares `cliproxy` inside
+`models.services` so `models.default` still resolves inside the compiled set.
 
 ## Hosting policy
 

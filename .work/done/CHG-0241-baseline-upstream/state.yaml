@@ -1,0 +1,36 @@
+schema: 1
+change: CHG-0241
+title: "M29.0 Baseline, migration matrix, and pinned Hermes context spike"
+status: done
+branch: feat/m29-six-passport-contract
+updated: 2026-11-02
+phase: implementation-complete
+adr: ADR-0092
+spec: SPEC-0091
+requirements: [R0.1, R0.2]
+depends_on: []
+github_milestone: "M29 — Six-Passport Space Contract"
+github_issue: 424
+design_status: accepted
+implementation_status: implemented
+slices:
+  S0.1-contract: done
+  S0.2-implementation: done
+validation:
+  documents: research.md updated with field-level matrix and pinned-build evidence
+  just_check: pending_full_run
+  docker_check: not_run
+  red_team: done
+  live_acceptance: container-level evidence only
+evidence:
+  - "Field-level migration matrix in research.md: every Settings field, scope, profiles, models, grants, ToolHub, skills, channel and runtime-state source mapped to its M29 passport owner with move/preserve/retire."
+  - "Pinned-build prompt-source proof inside hermes-hub-dev-local-hermes-runtime:local (hermes-agent 0.21.0 @869228ca): real run_agent.AIAgent managed-turn assembly with distinct markers — ro soul-effective and workspace-context AGENTS.md reach the prompt; managed render keeps MEMORY/USER out; extension roots sealed."
+  - "skip_context_files+skip_memory suppression proven: SOUL survives via load_soul_identity, agent-writable sources drop; --ignore-rules is chat-path only, gateway lever is gateway.platforms.<plat>.skip_context_files with no skip_memory equivalent."
+  - "Red-team: benign-worded AGENTS.md in agent-writable context cwd loads into every managed turn (injection scanner blocks only known phrasing); trigger-phrase variant blocked upstream."
+  - "TestManagedPromptSourcesInventory green — pins the inventory and heal/validate fail-closed cases."
+remaining:
+  - "Full just check on this branch before milestone closeout (run per stage going forward)."
+  - "Dev-stack end-to-end chat turn through a real model is deferred to M29.12 acceptance — this stage produced container-level pinned-build evidence only."
+limitations:
+  - "The marker turn exercised AIAgent prompt assembly (the same code path the gateway uses) rather than a live model call; no provider evidence claimed."
+  - "Windows local gate intermittency noted in the planning pass (docker.exe / ld.lld.exe Access is denied) may affect full just check runs."

@@ -71,6 +71,9 @@ var settingsFieldRights = map[string]string{
 	"JudgeModel":   "",
 	"Context":      "Context",
 	"Goals":        "Goals",
+	// The stack passport's services map is render state consumed by the
+	// compose plan; grants live in grants.yaml, not the topology.
+	"PassportServices": "",
 	// The evaluated tool-governance view is itself a grant fence: its decisions
 	// decide which sections may render and which are capped to read-only.
 	"gov": "Governance",

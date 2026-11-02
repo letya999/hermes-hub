@@ -42,6 +42,12 @@ func (m *Manager) selfEnv(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "invalid runtime scope"})
 		return
 	}
+	if !m.rightsGate(w, r, binding.PrincipalID, "agents", "monitor_self", "runtime") {
+		return
+	}
+	if !m.rightsGate(w, r, binding.PrincipalID, "agents", "inspect_self", "runtime") {
+		return
+	}
 	lease, runtime, err := m.Acquire(r.Context(), binding, LeaseLifecycle)
 	if err != nil {
 		writeRuntimeFailure(w, http.StatusServiceUnavailable, err)
@@ -99,6 +105,9 @@ func (m *Manager) skillApply(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "invalid runtime scope"})
 		return
 	}
+	if !m.rightsGate(w, r, binding.PrincipalID, "agents", "monitor_self", "runtime") {
+		return
+	}
 	lease, runtime, err := m.Acquire(r.Context(), binding, LeaseLifecycle)
 	if err != nil {
 		writeRuntimeFailure(w, http.StatusServiceUnavailable, err)
@@ -151,6 +160,9 @@ func (m *Manager) skillCreds(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("supervisor skill-creds binding rejected principal=%s context=%s scope=%s: %v", request.PrincipalID, request.ContextID, request.ScopeID, err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "invalid runtime scope"})
+		return
+	}
+	if !m.rightsGate(w, r, binding.PrincipalID, "agents", "monitor_self", "runtime") {
 		return
 	}
 	lease, runtime, err := m.Acquire(r.Context(), binding, LeaseLifecycle)

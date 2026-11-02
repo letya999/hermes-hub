@@ -1,0 +1,23 @@
+apiVersion: six-passport/v2
+kind: config
+metadata: {space: alice, environment: dev, revision: r-0123456789abcdef, generated_at: 2026-11-02T00:00:00Z, template: platform/personal@3, catalogs: "4"}
+runtime:
+  timezone: Europe/Moscow
+  locale: ru
+  context: {compaction: auto, parallel_lanes: 2}
+supervision:
+  idle_stop: 5m
+  restart: on-failure
+  watchers:
+    stack-health: {protected: true, every: 1m}
+ports:
+  oauth-callback: 8008
+  browser-vnc: 6081
+channels:
+  telegram:
+    bot: {ref: telegram-bot-alice}
+    allowed_users: {ref: telegram-allow-alice}
+    voice: {in: transcribe, out: tts}
+memory:
+  backend: vault
+  nightly_rollup: "03:00"

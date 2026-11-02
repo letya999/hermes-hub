@@ -27,26 +27,35 @@ func (t *Tools) inboxFetch(ctx context.Context, ws *os.Root, r Input) (result ma
 		}
 		defer t.lock.Unlock()
 	}
-	target := "inbox/" + r.ID
-	receipt := target + "/receipt.json"
-	if body, err := ws.ReadFile(receipt); err == nil {
+	for _, source := range []string{"people", "services"} {
+		receipt := "inbox/" + source + "/" + r.ID + "/receipt.json"
+		body, err := ws.ReadFile(receipt)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
 		if err := json.Unmarshal(body, &result); err != nil || result == nil {
 			return nil, errors.New("invalid inbound receipt")
 		}
 		result["acknowledged"] = t.inboundConsume(ctx, r.ID) == nil
 		return result, nil
-	} else if !os.IsNotExist(err) {
-		return nil, err
 	}
-	name, data, err := t.inboundGet(ctx, r.ID)
+	name, source, data, err := t.inboundGet(ctx, r.ID)
 	if err != nil {
 		return nil, err
 	}
+	if source != "people" && source != "services" {
+		return nil, errors.New("unknown inbound source")
+	}
+	target := "inbox/" + source + "/" + r.ID
+	receipt := target + "/receipt.json"
 	base := path.Base(name)
 	if !safe(base) || base == "." {
 		return nil, errors.New("unsafe file name")
 	}
-	if err := ws.MkdirAll("inbox", 0700); err != nil {
+	if err := ws.MkdirAll("inbox/"+source, 0700); err != nil {
 		return nil, err
 	}
 	if err := ws.Mkdir(target, 0700); err != nil {
@@ -90,6 +99,8 @@ func (t *Tools) inboxFetch(ctx context.Context, ws *os.Root, r Input) (result ma
 		}
 		result = map[string]any{"path": dest, "size": len(data)}
 	}
+	result["name"] = base
+	result["source"] = source
 	body, err := json.Marshal(result)
 	if err != nil {
 		return nil, err
@@ -134,24 +145,28 @@ func (t *Tools) inboundCall(ctx context.Context, method, id string) (*http.Respo
 	return client.Do(req)
 }
 
-func (t *Tools) inboundGet(ctx context.Context, id string) (string, []byte, error) {
+func (t *Tools) inboundGet(ctx context.Context, id string) (string, string, []byte, error) {
 	resp, err := t.inboundCall(ctx, http.MethodGet, id)
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", nil, fmt.Errorf("inbound fetch rejected: %d", resp.StatusCode)
+		return "", "", nil, fmt.Errorf("inbound fetch rejected: %d", resp.StatusCode)
 	}
 	name := resp.Header.Get("X-Hub-Name")
+	source := resp.Header.Get("X-Hub-Source")
+	if source == "" {
+		source = "people"
+	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, (9<<20)+1))
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
 	if len(data) > 9<<20 {
-		return "", nil, errors.New("inbound file exceeds size limit")
+		return "", "", nil, errors.New("inbound file exceeds size limit")
 	}
-	return name, data, nil
+	return name, source, data, nil
 }
 
 func (t *Tools) inboundConsume(ctx context.Context, id string) error {

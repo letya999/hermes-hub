@@ -156,13 +156,17 @@ type OwnerRef struct {
 }
 
 type ToolSpec struct {
-	Name           string            `json:"name"`
-	Description    string            `json:"description,omitempty"`
-	Effect         Effect            `json:"effect"`
-	Arguments      []CLIArgument     `json:"arguments,omitempty"`
-	InputSchema    json.RawMessage   `json:"input_schema,omitempty"`
-	CapabilityID   string            `json:"capability_id,omitempty"`
-	Uses           []CapabilityUse   `json:"capability_uses,omitempty"`
+	Name         string          `json:"name"`
+	Description  string          `json:"description,omitempty"`
+	Effect       Effect          `json:"effect"`
+	Arguments    []CLIArgument   `json:"arguments,omitempty"`
+	InputSchema  json.RawMessage `json:"input_schema,omitempty"`
+	CapabilityID string          `json:"capability_id,omitempty"`
+	Uses         []CapabilityUse `json:"capability_uses,omitempty"`
+	// Requires lists the RBAC domain.operation rights (SPEC-0092 R2) a
+	// caller must hold for the PDP to project or invoke this tool — the
+	// catalog toolset member declares the same vocabulary.
+	Requires       []string          `json:"requires,omitempty"`
 	ArgumentEquals map[string]string `json:"argument_equals,omitempty"`
 	// Sandboxed marks a tool dispatched to the disposable scratch executor
 	// rather than the per-call in-runtime executor. Only the AgentTools

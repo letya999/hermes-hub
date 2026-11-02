@@ -120,7 +120,17 @@ type CapabilityProfile struct {
 	// entirely, "personal" projects the nine connector_* tools over the
 	// principal's own connections, "personal+team" additionally allows
 	// lifecycle on team connections where the caller is a member.
-	Connectors   string        `json:"connectors,omitempty"`
+	Connectors string `json:"connectors,omitempty"`
+	// Rights is the compiled grants.yaml allow flattened to
+	// capability.operation ceiling rows (SPEC-0092 R2): the PDP refuses any
+	// right the published revision never carried, and live ledger grants can
+	// only narrow inside it.
+	Rights []RightRule `json:"rights,omitempty"`
+	// CoreTools is the compiled revision's direct-schema allowlist (ADR-0092
+	// D6, R6.1): only these selected names get a projected MCP schema; the
+	// rest of the admitted surface stays callable through tools_list/invoke.
+	// Empty keeps the legacy all-projected posture for unmanaged bindings.
+	CoreTools    []string      `json:"core_tools,omitempty"`
 	Confirmation *Confirmation `json:"confirmation,omitempty"`
 }
 
@@ -334,6 +344,16 @@ func (p CapabilityProfile) ValidateStructure() error {
 			return fmt.Errorf("%w: reviewed control operation", ErrInvalid)
 		}
 		seenOps[operation] = true
+	}
+	if len(p.CoreTools) > 20 {
+		return fmt.Errorf("%w: core projection over the tool budget", ErrInvalid)
+	}
+	coreSeen := map[string]bool{}
+	for _, name := range p.CoreTools {
+		if !names[name] || coreSeen[name] {
+			return fmt.Errorf("%w: core tool outside the admitted selections", ErrInvalid)
+		}
+		coreSeen[name] = true
 	}
 	switch p.Connectors {
 	case "", ConnectorsNone, ConnectorsPersonal, ConnectorsPersonalTeam:

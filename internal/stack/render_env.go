@@ -96,7 +96,7 @@ func RenderEnvironment(dir, root, environment string) error {
 			return err
 		}
 	}
-	for _, name := range []string{"archive", "runtime", "runtime/artifacts", "runtime/toolhub", "runtime/credentials", "runtime/materialized", "broker", "broker/keys", "broker/tls", "cliproxy", "hermes", "hermes/memories", "hermes/skills", "connections", "connections/google", "connections/telegram", "connections/browser", "connections/ssh/keys", "home", "cache", "workspace", "workspace/browser", "workspace/artifacts", "workspace/artifacts/documents", "workspace/artifacts/images", "skills"} {
+	for _, name := range []string{"archive", "runtime", "runtime/artifacts", "runtime/toolhub", "runtime/credentials", "runtime/materialized", "broker", "broker/keys", "broker/tls", "cliproxy", "hermes", "hermes/memories", "hermes/skills", "connections", "connections/google", "connections/telegram", "connections/browser", "connections/ssh/keys", "home", "cache", "workspace", "workspace/browser", "workspace/artifacts", "workspace/artifacts/documents", "workspace/artifacts/images", "workspace/artifacts/videos", "workspace/artifacts/archives", "workspace/artifacts/services", "workspace/inbox", "workspace/inbox/people", "workspace/inbox/services", "workspace/projects", "workspace/work", "workspace/outbox", "skills"} {
 		if err = os.MkdirAll(filepath.Join(dir, name), 0700); err != nil {
 			return err
 		}
@@ -257,7 +257,11 @@ func RenderEnvironment(dir, root, environment string) error {
 	if err = writeBrowserFiles(dir, s); err != nil {
 		return err
 	}
-	outputs := map[string]any{"hermes." + environment + ".yaml": Config(s), "compose." + environment + ".yaml": Compose(s, root, dir)}
+	compose, err := ComposeChecked(s, root, dir)
+	if err != nil {
+		return err
+	}
+	outputs := map[string]any{"hermes." + environment + ".yaml": Config(s), "compose." + environment + ".yaml": compose}
 	// Generated files are reproducible; secrets and agent memories are never overwritten.
 	for name, v := range outputs {
 		b, err := yaml.Marshal(v)

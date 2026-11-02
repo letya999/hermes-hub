@@ -23,7 +23,7 @@ func (g *Gateway) addToolsListTool(server *mcp.Server, auth identity.Envelope) {
 	}
 	server.AddTool(&mcp.Tool{
 		Name:        "tools_list",
-		Description: "List the ToolHub tools currently admitted for you: exact names, re-read on every call, including tools enabled during this or another session. Pass name for one tool's full spec, or query to filter. A name listed here but missing from your visible tool list is callable through invoke. Call this before telling the user a capability is missing.",
+		Description: "List the ToolHub tools currently admitted for you: exact names, re-read on every call, including tools enabled during this or another session. Pass name for one tool's full spec, or query to filter. A name listed here but missing from your visible tool list is extended inventory, callable through invoke — the visible list is a bounded core projection, never a permission boundary. Call this before telling the user a capability is missing.",
 		InputSchema: map[string]any{
 			"type": "object", "additionalProperties": false,
 			"properties": map[string]any{
@@ -103,6 +103,28 @@ func (g *Gateway) toolsList(auth identity.Envelope, query, name string, limit in
 		"total":    matched,
 		"returned": len(entries),
 		"note":     "Admitted ToolHub tools, re-read on every call — including tools enabled during this or another session. A name listed here but missing from your visible tool list is callable through invoke({tool, arguments}). Hub workspace tools (mcp__hub__*) and the skills inventory (skills_list) live on the hub server.",
+	}
+	// Rights-denied selections surface as unavailable: the agent learns the
+	// missing capability.operation instead of guessing the tool vanished.
+	if denials, err := g.Store.RightsDenials(auth); err == nil && len(denials) > 0 {
+		unavailable := make([]map[string]any, 0, len(denials))
+		for _, denial := range denials {
+			if name != "" && denial.Name != name {
+				continue
+			}
+			unavailable = append(unavailable, map[string]any{"name": denial.Name, "unavailable": true, "missing_right": denial.Missing})
+		}
+		if len(unavailable) > 0 {
+			body["unavailable"] = unavailable
+		}
+		if name != "" && matched == 0 {
+			for _, denial := range denials {
+				if denial.Name == name {
+					body["missing_right"] = denial.Missing
+					break
+				}
+			}
+		}
 	}
 	if name != "" {
 		body["found"] = matched > 0

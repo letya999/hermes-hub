@@ -228,6 +228,13 @@ func (c *ControlPlane) diagnostics(ctx context.Context, auth identity.Envelope, 
 	if err != nil {
 		return nil, err
 	}
+	denied, err := c.Store.RightsGated(auth, "observability", "read_own_logs", time.Now())
+	if err != nil {
+		return nil, err
+	}
+	if denied {
+		return nil, fmt.Errorf("%w: observability.read_own_logs", api.ErrUnauthorized)
+	}
 	excluded, err := c.Store.ProjectionExclusions(auth)
 	if err != nil {
 		return nil, err

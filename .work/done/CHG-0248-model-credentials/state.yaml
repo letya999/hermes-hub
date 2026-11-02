@@ -1,0 +1,33 @@
+schema: 1
+change: CHG-0248
+title: "M29.7 Broker model API keys and OAuth session material through scoped contracts"
+status: done
+branch: feat/m29-six-passport-contract
+updated: 2026-11-02
+phase: complete
+adr: ADR-0092
+spec: SPEC-0091
+requirements: [R7.1, R7.2]
+depends_on: ["M29.1"]
+github_milestone: "M29 — Six-Passport Space Contract"
+github_issue: 431
+design_status: accepted
+implementation_status: complete
+slices:
+  S7.1-contract: done
+  S7.2-implementation: done
+validation:
+  documents: done
+  just_check: environment_blocked
+  docker_check: not_run
+  red_team: done
+  live_acceptance: pending
+evidence:
+  - "Reviewed contract types shipped: services/credential-broker/examples/contracts/model-api-key.json (bounded key -> MODEL_API_KEY env on the model-relay workload lease) and cliproxy-session.json (bounded OAuth account session file -> mounted auths file, env_name carries the path never the contents); TestShippedContractsAreValid passes both incl. ru/kk/es i18n."
+  - "TestModelSessionLeaseOwnerRotationAndRevocation (broker/): two session principals plus one API key enroll, grant and lease independently — cross-principal acquire/view denied, rotation mints a new revision without disturbing the sibling session or the key, revocation kills leases at next acquire, and no sentinel byte appears in DTOs, events, the ledger or the provider store (tmpfs lease mounts are the only plaintext boundary)."
+  - "Consumer wire already landed: models.yaml broker_grants + credential_env resolve per call via credentialbroker.ResolveEnv with a bounded release; docs/services/model-relay.md documents the reviewed contracts and the explicit operator migration off legacy cliproxy/auths + key_env."
+remaining:
+  - "Live acceptance (real cliproxy/model-relay workload acquiring rotated+revoked grants in a running dev stack) rides the CHG-0253 acceptance stage; unit+integration evidence only."
+limitations:
+  - "Broker module tests run Linux-only (securefs): executed inside golang:1.27.3-bookworm — broker and contract suites green; the app suite fails in the vanilla image on 'sqlcipher engine unavailable' (missing cgo dep, unchanged code, environment limitation)."
+  - "just check for the hub module remains AV-toolchain-blocked on this host (same as CHG-0246/0247)."

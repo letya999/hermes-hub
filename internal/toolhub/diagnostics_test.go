@@ -336,3 +336,49 @@ func TestDiagnosticsOmitsLegacyContentAndSearchSideChannel(t *testing.T) {
 		t.Fatal("search revealed omitted private content")
 	}
 }
+
+// The diagnostics op is a declared PEP site for observability.read_own_logs:
+// a managed profile carrying a rights ceiling must Decide-allow the op;
+// profiles without a ceiling keep the legacy posture (see TestDiagnostics*).
+func TestDiagnosticsRightsGate(t *testing.T) {
+	store, auth, _, _ := managedStore(t)
+	store.RightsDoc = rightsVocabulary()
+	gov := NewGovernanceStore(filepath.Join(t.TempDir(), "governance.json"))
+	store.RightsLedger = gov.Load
+	dir := t.TempDir()
+	diagWrite(t, dir, diagLine("2026-09-28T10:00:00Z", "c1", "collected line"))
+	control := &ControlPlane{Store: store, DiagnosticsDir: dir}
+
+	if err := DeriveRights(store, gov, store.RightsDoc, auth.PrincipalID, map[string][]string{"workspace": {"read"}}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.diagnostics(t.Context(), auth, map[string]any{}); err == nil || !strings.Contains(err.Error(), "observability.read_own_logs") {
+		t.Fatalf("ceiling without the right must deny diagnostics: %v", err)
+	}
+	if err := DeriveRights(store, gov, store.RightsDoc, auth.PrincipalID, map[string][]string{"observability": {"read_own_logs"}}, time.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.diagnostics(t.Context(), auth, map[string]any{}); err != nil {
+		t.Fatalf("granted right must allow diagnostics: %v", err)
+	}
+	// Revoke the derived grant: the next call denies without a republish.
+	grants, err := gov.RightGrants()
+	if err != nil {
+		t.Fatal(err)
+	}
+	revoked := false
+	for _, grant := range grants {
+		if grant.Capability == "observability" && grant.Operation == "read_own_logs" {
+			revoked = true
+			if err := gov.RevokeRight(grant.GrantID, "test", "operator", time.Now()); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if !revoked {
+		t.Fatal("derived observability grant expected")
+	}
+	if _, err := control.diagnostics(t.Context(), auth, map[string]any{}); err == nil {
+		t.Fatal("revoked grant must deny diagnostics on the next call")
+	}
+}

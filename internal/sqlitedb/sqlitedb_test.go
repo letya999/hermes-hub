@@ -67,3 +67,38 @@ func TestOpenEnablesWALAndFullSync(t *testing.T) {
 	}
 	_ = mode
 }
+
+// A failed migration rolls back: the store keeps no user_version and no
+// partial table, so the next Open re-runs the migration cleanly.
+func TestOpenRollsBackFailedMigration(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.db")
+	sentinel := errors.New("boom")
+	if _, err := Open(path, 1, func(tx *sql.Tx) error {
+		if _, err := tx.Exec("CREATE TABLE rec(id TEXT)"); err != nil {
+			return err
+		}
+		return sentinel
+	}); !errors.Is(err, sentinel) {
+		t.Fatalf("expected migration error, got %v", err)
+	}
+	db, err := Open(path, 1, func(tx *sql.Tx) error {
+		_, err := tx.Exec("CREATE TABLE rec(id TEXT)")
+		return err
+	})
+	if err != nil {
+		t.Fatalf("reopen after rollback: %v", err)
+	}
+	var n int
+	if err := db.QueryRow("SELECT count(*) FROM sqlite_master WHERE name='rec'").Scan(&n); err != nil || n != 1 {
+		t.Fatalf("rollback left a partial migration: n=%d err=%v", n, err)
+	}
+	_ = db.Close()
+}
+
+// A store path inside a missing directory fails at Ping — no db leaks.
+func TestOpenFailsOnUnreachablePath(t *testing.T) {
+	if _, err := Open(filepath.Join(t.TempDir(), "missing", "s.db"), 1, nil); err == nil {
+		t.Fatal("unreachable store path opened")
+	}
+}

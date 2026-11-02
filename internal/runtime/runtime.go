@@ -822,19 +822,3 @@ func readOnlyWrite(err error) bool {
 	text := strings.ToLower(err.Error())
 	return strings.Contains(text, "read-only") || strings.Contains(text, "read only") || strings.Contains(text, "erofs")
 }
-
-func copyIfExists(source, destination string, overwrite bool) error {
-	if !overwrite {
-		if _, err := os.Stat(destination); err == nil {
-			return nil
-		}
-	}
-	body, err := os.ReadFile(source)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(destination, body, 0660) // #nosec G703 -- effective config destination from operator layout
-}

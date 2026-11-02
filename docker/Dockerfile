@@ -69,6 +69,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 COPY --from=go_build /hubctl /hub-runtime /toolhub /communication-hub /credential-broker /hub-media /cellinit /usr/local/bin/
 COPY --from=cliproxy_build /cli-proxy-api /usr/local/bin/cli-proxy-api
 COPY docker/seccomp-buildkit-rootless.json docker/seccomp-mcp-runtime.json /opt/hub/seccomp/
+# Immutable platform catalogs (rights vocabulary, toolsets, service kinds):
+# root-owned read-only files baked into the image — the agent uid can read
+# but never edit them (SPEC-0092 R2, ADR-0093 D3).
+COPY platform/catalogs /opt/hub/platform/catalogs/
+RUN chmod -R a-w /opt/hub/platform/catalogs
 RUN ln -s /usr/local/bin/communication-hub /usr/local/bin/hub-communication && ln -s /usr/local/bin/toolhub /usr/local/bin/hub-toolhub && ln -s /usr/local/bin/credential-broker /usr/local/bin/hub-credential-broker
 ENV HOME=/state/home
 RUN groupadd -g 10001 agent && useradd -u 10001 -g agent -d /state/home -s /bin/bash agent && mkdir -p /state /workspace /archive /data && chown 10001:10001 /state /workspace /archive /data

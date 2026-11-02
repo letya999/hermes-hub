@@ -1,0 +1,15 @@
+apiVersion: six-passport/v2
+kind: grants
+metadata: {space: alice, environment: dev, revision: r-0123456789abcdef, generated_at: 2026-11-02T00:00:00Z, template: platform/personal@3, catalogs: "4"}
+allow:
+  workspace:     [read, write, create_project]
+  memory:        [read, search, remember]
+  models:        [list, use, switch]
+  tools:         [list, select]
+  skills:        [list, invoke, draft]
+  connectors:    [discover, prepare, enable]
+  agents:        [inspect_self, restart_self, monitor_self]
+  stack:         [inspect]
+  config:        [read, edit_own]
+  channels:      [send_voice]
+  observability: [read_own_logs]

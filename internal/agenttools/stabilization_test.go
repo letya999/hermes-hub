@@ -74,20 +74,20 @@ func TestM10InboxRetryAcknowledgesWithoutRefetch(t *testing.T) {
 	if err != nil || second["acknowledged"] != true || fetches != 1 || acks != 2 {
 		t.Fatalf("retry=%v fetches=%d acks=%d %v", second, fetches, acks, err)
 	}
-	body, err := v.Workspace.ReadFile("inbox/retry/files/note.txt")
+	body, err := v.Workspace.ReadFile("inbox/people/retry/files/note.txt")
 	if err != nil || string(body) != "original" {
 		t.Fatalf("original=%q %v", body, err)
 	}
-	if err = v.Workspace.MkdirAll("inbox/conflict", 0700); err != nil {
+	if err = v.Workspace.MkdirAll("inbox/people/conflict", 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err = v.Workspace.WriteFile("inbox/conflict/keep.txt", []byte("keep"), 0600); err != nil {
+	if err = v.Workspace.WriteFile("inbox/people/conflict/keep.txt", []byte("keep"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = v.inboxFetch(context.Background(), v.Workspace, Input{ID: "conflict"}); err == nil {
 		t.Fatal("preexisting incomplete directory replaced")
 	}
-	body, err = v.Workspace.ReadFile("inbox/conflict/keep.txt")
+	body, err = v.Workspace.ReadFile("inbox/people/conflict/keep.txt")
 	if err != nil || !strings.EqualFold(string(body), "keep") {
 		t.Fatal("preexisting data removed")
 	}
@@ -202,18 +202,18 @@ func TestM10InboundFailuresNeverAcknowledgeOrReplaceFiles(t *testing.T) {
 			if acks != 0 {
 				t.Fatal("failed transfer acknowledged")
 			}
-			if _, err := v.Workspace.Stat("inbox/failed"); !os.IsNotExist(err) {
+			if _, err := v.Workspace.Stat("inbox/people/failed"); !os.IsNotExist(err) {
 				t.Fatalf("partial output left: %v", err)
 			}
 		})
 	}
 	v := fixture(t)
 	v.CommunicationURL = "http://unused"
-	if err := v.Workspace.MkdirAll("inbox/corrupt", 0700); err != nil {
+	if err := v.Workspace.MkdirAll("inbox/people/corrupt", 0700); err != nil {
 		t.Fatal(err)
 	}
 	for _, body := range []string{"broken", "null"} {
-		if err := v.Workspace.WriteFile("inbox/corrupt/receipt.json", []byte(body), 0600); err != nil {
+		if err := v.Workspace.WriteFile("inbox/people/corrupt/receipt.json", []byte(body), 0600); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := v.inboxFetch(context.Background(), v.Workspace, Input{ID: "corrupt"}); err == nil {
@@ -232,10 +232,10 @@ func TestM10NegativeArchiveLimitFailsBeforeCreatingOutput(t *testing.T) {
 	old := maxUnpackBytes
 	maxUnpackBytes = -1
 	t.Cleanup(func() { maxUnpackBytes = old })
-	if _, err := unpackZip(v.Workspace, zr, "inbox/negative"); err == nil {
+	if _, err := unpackZip(v.Workspace, zr, "inbox/people/negative"); err == nil {
 		t.Fatal("negative byte limit accepted")
 	}
-	if _, err := v.Workspace.Stat("inbox/negative"); !os.IsNotExist(err) {
+	if _, err := v.Workspace.Stat("inbox/people/negative"); !os.IsNotExist(err) {
 		t.Fatalf("failed extraction created output: %v", err)
 	}
 }

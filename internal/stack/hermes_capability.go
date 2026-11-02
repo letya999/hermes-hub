@@ -136,7 +136,14 @@ func managedHermesConfig(s Settings) M {
 	out := M{
 		"model":             M{"default": s.Model, "provider": "custom", "base_url": s.ModelURL, "api_key": "${OPENAI_API_KEY}"},
 		"platform_toolsets": platforms,
-		"agent":             managedAgentSection(s),
+		// R9.1: upstream's per-platform context-file suppression pins the one
+		// read-only prompt authority. Without it the gateway discovers
+		// SOUL.md/USER.md/MEMORY.md/AGENTS.md under the agent-writable context
+		// root and a second, unreviewed authority joins every managed turn.
+		// load_soul_identity stays true upstream, so the mounted effective
+		// SOUL still injects — exactly once, from a read-only mount.
+		"gateway": M{"platforms": M{"api_server": M{"skip_context_files": true}}},
+		"agent":   managedAgentSection(s),
 		// Hub-owned MCP endpoints render directly like the model relay: the
 		// browser sidecar is reviewed infrastructure, not a model-selectable
 		// connector. via: mcp-raw selections (organization-provided servers)

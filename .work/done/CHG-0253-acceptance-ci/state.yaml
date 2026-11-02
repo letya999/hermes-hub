@@ -1,0 +1,41 @@
+schema: 1
+change: CHG-0253
+title: "M29.12 Multi-user live acceptance, CI gates, and milestone closeout"
+status: done
+branch: feat/m29-six-passport-contract
+updated: 2026-11-05
+phase: complete
+adr: ADR-0092
+spec: SPEC-0091
+requirements: [R12.1, R12.2]
+depends_on: ["M29.0-M29.11"]
+github_milestone: "M29 — Six-Passport Space Contract"
+github_issue: 436
+design_status: accepted
+implementation_status: done
+slices:
+  S12.1-contract: done
+  S12.2-implementation: done
+validation:
+  documents: pass
+  just_check: partial
+  docker_check: pass
+  red_team: done
+  live_acceptance: done
+evidence:
+  - unit: "internal/migration TestM29TwoUserPassportEndToEnd — two differently-shaped spaces compile isolated revisions (alice r-*, bob r-* distinct ids), no cross-user section/grant leakage (bob lacks alice's native:terminal + terminal.* grants), per-user prompt pointers, preserved settings/backup, isolated audits — green"
+  - unit: "TestLegacySpaceMigrationPlanApplyRollbackAndUnknownFiles, TestMigrationRejectsMixedAuthorityCorruptStoreAndSecretLeak, TestSpaceAuditReportsInventoryAndDenyReasons — green; migration own-package coverage 82.6% (>75% floor)"
+  - just_check: "ran full suite: all packages green except environmental flakes — sqlitedb/supervisor hit Windows AV linker/fork blocks (ld.lld.exe/compile.exe Access is denied), internal/communication TestRunnerPassesUserLang timed out under parallel load then PASSED isolated; devcheck format+docs+config green; actionlint green"
+  - docker_prebuilt: "docker-pull prod pulled all 6 edge images (rev 0bde6bd — predates branch); prebuilt gate passed image budgets, docker smoke, pinned Hermes 0.21.0 API contract, two-user real gateway (five-minute lifecycle), host supervisor smoke, capability probe, managed mount canary — then failed 'managed config preflight' (image rev predates branch managed-profile contract; devcheck expectation is current-tree)"
+  - docker_check: "just docker-check prod PASSED on locally built images containing the branch code: 6 image builds, image budgets, standalone runtime smoke, pinned Hermes 0.21.0 API contract (sessions/idempotency/SSE/stop/approvals/cron/restart), real gateway two-authenticated-users five-minute lifecycle, host supervisor smoke, zero-capability probe, managed mount/config-preflight/network canaries, managed supervisor canary (real spawn + isolation attestation + restart parity), scratch workload canary, docker-clean — EXIT:0 (log .work/tmp/m29-accept/docker-check.log)"
+  - live: "two-user space-migrate/space-audit acceptance on disposable dev copies (CHG-0252): alice r-d504b3252197806d, bob r-6ecd4b01cd835305; verified backup manifests, rollback fences, isolated inventories, conflict reporting, zero data loss"
+  - live_real_spaces: "space-migrate --apply on the operator's real managed dev spaces: artem_main rev r-da041a3c2da009c5, artem_two rev r-256669d55c81fd23 — zero conflicts, sha256 backups + rollback fences written; dry-run on real shapes exposed and fixed two contract gaps: managed secondary spaces consume shared mesh deps transitively (toolhub->credential-broker/supervisor, model-relay->cliproxy), and cliproxy is an implicit built-in provider (models.go:194) declared when ladders reference it"
+  - live_dev_stack: "hubctl up --env dev rebuilt dev images from branch code (BuildKit) and respawned both managed spaces — model-relay/toolhub-relay/egress-relay/cliproxy all Healthy; generated hermes-effective.dev.yaml carries passport pins (skip_context_files: true, disabled_toolsets)"
+  - live_model: "authenticated real provider calls through each space's model-relay on hermes-hub-runtime: GET /v1/models -> {default, alt}; POST /v1/chat/completions model=default -> HTTP 200 real completions (artem_main gemini-3-flash, artem_two gemini-3.8-flash-n incl. reasoning_tokens metering); unauthenticated request correctly 403 forbidden"
+  - live_ten_space_acceptance: "ten disposable managed spaces m29-acc-01..10 (infra:false, dedicated cliproxy + model-relay) spawned via init->migrate->up; capability records published to the shared ToolHub store (policy rev3 + profile rev5 + agent-tools binding v5.11.0 per principal); live MCP initialize/tools/list per enrolled principal returned 8 distinct bounded-core surfaces (4-file rw, 3-file ro, documents+files, assignments+documents, files+code_exec, routines+services+settings, artifacts+files+hh, 43-selection profile held to a 20-tool direct core); 10/10 POST /v1/chat/completions HTTP 200 real gemini-3-flash completions through each space's own relay; unauthenticated MCP request 401; non-admitted code_exec call denied 'unknown tool' (evidence under .work/tmp/m29-accept/)"
+  - live_bugfix: "ten-space acceptance exposed refreshProjection ignoring the profile core bound (an extended selection re-admitted on refresh regained a direct schema — acc-10 listed 43 direct tools instead of 20); fixed by applying CoreToolNames inside refreshProjection; regression test TestToolsetCoreBoundSurvivesRefresh added, internal/toolhub suite green, fix verified live (acc-10 direct list = 20)"
+limitations:
+  - "Post-closeout gap audit (CHG-0254 research.md): the published six-passport revision is not consumed by render/compose/supervisor/ToolHub/model-relay (only prompt-pointer.txt is read) and body shapes do not match the task examples; M29 delivered compiler/publication/migration, not an imperative contract. Remediation is milestone M30 (ADR-0093, SPEC-0092, CHG-0254..0262)."
+  - "Docker gates run on this Windows host; AV periodically blocks toolchain/linker execs — flakes recorded, never counted as failures"
+  - "Telegram/external-channel accounts were not exercised — channel integrations remain opt-in per AGENTS and were out of scope; provider (model) path is proven live"
+remaining: []

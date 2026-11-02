@@ -112,6 +112,10 @@ type Settings struct {
 	Goals        ContextGoals   `yaml:"goals,omitempty"`
 	SummaryModel string         `yaml:"summary_model,omitempty"`
 	JudgeModel   string         `yaml:"judge_model,omitempty"`
+	// PassportServices carries the published stack passport's services map
+	// (instance → mode) into the compose plan; render state only, never
+	// serialized back to agent.yaml.
+	PassportServices map[string]string `yaml:"-"`
 }
 
 // DefaultGlobalSkillsDir resolves the platform catalog without changing operator rights.

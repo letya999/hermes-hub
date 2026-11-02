@@ -1,0 +1,49 @@
+schema: 1
+change: CHG-0255
+title: "M30.1 space apply with classified diff, reconcile and /config view"
+status: done
+branch: feat/m29-six-passport-contract
+updated: 2026-11-03
+phase: done
+adr: ADR-0093
+spec: SPEC-0092
+requirements: [R1.1, R1.2, R1.3]
+depends_on: [CHG-0254]
+github_milestone: "M30 — Imperative Passports and Capability Grants"
+github_issue: pending
+design_status: accepted
+implementation_status: done
+slices:
+  S1.0-compile-v2: done
+  S1.0b-migration-v2: done
+  S1.1-diff: done
+  S1.2-space-apply: done
+  S1.3-reconcile-rollback: done
+  S1.4-config-view: done
+notes: >-
+  Per owner direction (no backward compatibility), the v2 compile work
+  planned as the S*.1 slices of CHG-0257..0261 landed here: Compile now emits
+  strictly normative v2 bodies for all six passports (keyset-narrow layer
+  merge, catalog-validated services/toolsets/models), space-migrate writes
+  v2 layers, PromptPointer/space-audit read v2 maps. Those stages keep
+  consumer wiring + domain validation.
+validation:
+  documents: done
+  just_check: passed
+  docker_check: partial
+  red_team: not_started
+  live_acceptance: not_started
+evidence:
+  - "internal/passport: compile emits six strict v2 bodies; all M29 vocab rejected (tests green)"
+  - "internal/migration: passportLayers emits v2 layers; space-migrate end-to-end green"
+  - "internal/reconcile: ordered plan rebuild<recreate<respawn<live + rollback to prior current + live re-run (tests green)"
+  - "cmd/hubctl space apply: --dir --env [--confirm] [--json]; dry-run writes nothing; JSON receipt"
+  - "S1.4: generated/config-view/<env> stable-inode per-file refresh (FileIndex test), compose+supervisor /config dir binds ro"
+  - "migration derivedServices: normalize <kind>-<user>-<env>(-init|-ctl) compose keys to catalog kinds (regression test; verified end-to-end on real spaces/local copy)"
+limitations:
+  - "live consumers are pending:CHG-02NN — recorded as deferred in receipts"
+  - "rebuild/recreate use rendered compose.<env>.yaml; passport-driven render lands in CHG-0257/0258"
+  - "respawn is the supervisor deferred restart-request, not an immediate kill"
+  - "docker-check-prebuilt: 9/11 steps verified (pull, version, budgets, smoke, hermes+capability contracts, stdio-reminder, scratch-canary, quarantine test); managed-network-canary and managed-supervisor-canary env-blocked — each needs 3 free /20 IPAM slots, daemon has 2 allocatable (~30 live dev-space networks; 192.168.64.0/20 not allocatable)"
+remaining:
+  - "rerun docker-check-prebuilt once host frees >=1 dev-space network (or accept partial gate)"
