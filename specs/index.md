@@ -7,6 +7,7 @@ record it points to. `archive/` holds only pre-renumbering originals.
 
 | Specification | Status |
 |---|---|
+| [SPEC-0093](active/SPEC-0093-consolidated-model-tool-surface.md) | Frozen: M31 catalog r5 — toolset dictionary, via/executor routing, audiences, fail-closed requires, envelope, verification suite (ADR-0094) |
 | [SPEC-0092](active/SPEC-0092-imperative-passports-capability-grants.md) | Frozen: M30 normative v2 passport shapes, rights vocabulary + PDP/PEP, apply/reconcile effect classes, per-service cliproxy sessions, live acceptance (ADR-0093); supersedes SPEC-0091 body-shape/vocabulary clauses |
 | [SPEC-0091](active/SPEC-0091-six-passport-space-contract.md) | Frozen, partly superseded by SPEC-0092 (body shapes, grants vocabulary, tools language): M29 six-passport MVP, catalogs/templates, brokered model sessions, ToolHub/grants, prompt, migration and live acceptance (ADR-0092) |
 | [SPEC-0090](active/SPEC-0090-root-services-sqlite.md) | Frozen: SQLite storage for ToolHub/Communication + shared migration contract for all three services (ADR-0091, CHG-0215–0226); supersedes SPEC-0088 substrate clauses for the two services |
