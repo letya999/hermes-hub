@@ -134,6 +134,7 @@ func TestDevRebuildCompilesAndStartsOnlySelectedService(t *testing.T) {
 	}
 	s.Model, s.ModelURL = "test", "http://model.invalid/v1"
 	s.Ingress = append(s.Ingress, "telegram")
+	s.Tools["media"] = stack.ToolEntry{Via: stack.ToolViaOff}
 	if err := stack.WriteSpace(dir, s); err != nil {
 		t.Fatal(err)
 	}

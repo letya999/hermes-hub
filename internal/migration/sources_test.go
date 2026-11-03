@@ -36,7 +36,7 @@ docs:
   tools:
     core:
       native:file: {via: native}
-      hub:files: {via: toolhub}
+      files: {via: toolhub}
   workspace:
     writable: [/workspace]
     read_only: [/config]

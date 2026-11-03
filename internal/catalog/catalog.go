@@ -26,7 +26,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
-const Release = "4"
+const Release = "6"
 
 const (
 	CapabilitiesFile = "capabilities.yaml"
@@ -98,15 +98,18 @@ type CapabilitiesDoc struct {
 }
 
 type Toolset struct {
-	Kind     string              `yaml:"kind"`
-	Effect   string              `yaml:"effect"`
-	Via      []string            `yaml:"via,omitempty"`
-	Carveout bool                `yaml:"carveout,omitempty"`
-	Section  string              `yaml:"section,omitempty"`
-	Aliases  []string            `yaml:"aliases,omitempty"`
-	Members  []string            `yaml:"members,omitempty"`
-	Actions  []string            `yaml:"actions,omitempty"`
-	Requires map[string][]string `yaml:"requires,omitempty"`
+	Kind      string              `yaml:"kind"`
+	Effect    string              `yaml:"effect"`
+	Via       []string            `yaml:"via,omitempty"`
+	Executor  api.Executor        `yaml:"executor,omitempty"`
+	Carveout  bool                `yaml:"carveout,omitempty"`
+	Pinned    bool                `yaml:"pinned,omitempty"`
+	Uncurated bool                `yaml:"uncurated,omitempty"`
+	Section   string              `yaml:"section,omitempty"`
+	Aliases   []string            `yaml:"aliases,omitempty"`
+	Members   []string            `yaml:"members,omitempty"`
+	Actions   []string            `yaml:"actions,omitempty"`
+	Requires  map[string][]string `yaml:"requires,omitempty"`
 }
 
 type ToolsetsDoc struct {
@@ -200,6 +203,14 @@ func generateCapabilities() CapabilitiesDoc {
 		if cap.Scope == "" {
 			cap.Scope = "call"
 		}
+		// Remote-executor capabilities (runtime:, connector:, flow:) carry
+		// no in-runtime uses: the family.id spelling is the honest op —
+		// <family>.<action> over resource <family>.
+		if len(cap.Operations) == 0 {
+			family, action, _ := strings.Cut(id, ".")
+			cap.Operations = []string{action}
+			cap.Resources = []string{family}
+		}
 		cap.Issuer = "platform"
 		cap.Via = []string{"toolhub"}
 		slices.Sort(cap.Tools)
@@ -263,16 +274,25 @@ func generateToolsets(caps CapabilitiesDoc) (map[string]Toolset, error) {
 		if pseudo[name] {
 			ts.Kind = "pseudo"
 		}
-		if sec, ok := caps.Sections[key]; ok {
+		// Only the reviewed carveouts and pseudo-toolsets are placeable;
+		// every other inventory name stays denied-by-design — cataloged
+		// with its reason, but no governance section and no route.
+		if sec, ok := caps.Sections[key]; ok && (carveouts[name] || pseudo[name]) {
 			ts.Section = key
 			ts.Effect = sec.Effect
 			ts.Via = []string{"native"}
+			ts.Executor = api.ExecutorNative
 		}
 		out[key] = ts
 	}
-	// Executor families: union of the capability ids member tools consume and
-	// the `tools:` entry capability vocabulary (aliases collapse onto the
-	// canonical family).
+	// First-party families (catalog r5, ADR-0094 D1): placeable under their
+	// logical name, executor taken from the member tool specs. Members are
+	// model-audience tools only — a family with no model members (inbox)
+	// never mints a placeable surface.
+	specByName := map[string]api.ToolSpec{}
+	for _, spec := range agenttools.HubToolsDefinition().Tools {
+		specByName[spec.Name] = spec
+	}
 	families := map[string]bool{}
 	aliases := map[string][]string{}
 	for id := range caps.Capabilities {
@@ -285,13 +305,25 @@ func generateToolsets(caps CapabilitiesDoc) (map[string]Toolset, error) {
 		}
 	}
 	members := map[string][]string{}
-	var allTools []string
 	for id, cap := range caps.Capabilities {
 		family := strings.SplitN(id, ".", 2)[0]
-		members[family] = append(members[family], cap.Tools...)
-		allTools = append(allTools, cap.Tools...)
+		for _, member := range cap.Tools {
+			if spec, ok := specByName[member]; !ok || spec.Audience != api.AudienceModel {
+				continue
+			}
+			members[family] = append(members[family], member)
+		}
 	}
 	for family := range families {
+		names := sorted(members[family])
+		if len(names) == 0 {
+			continue
+		}
+		executor := specByName[names[0]].Executor
+		if family == "platform" {
+			out[family] = Toolset{Kind: "family", Effect: "mutate", Via: []string{"toolhub"}, Executor: executor, Pinned: true, Members: names}
+			continue
+		}
 		section := "hub:" + family
 		effect, known := "", false
 		if sec, ok := caps.Sections[section]; ok {
@@ -307,33 +339,30 @@ func generateToolsets(caps CapabilitiesDoc) (map[string]Toolset, error) {
 				}
 			}
 		}
-		out["hub:"+family] = Toolset{Kind: "hub", Effect: effect, Via: []string{"toolhub"}, Section: section, Aliases: sorted(aliases[family]), Members: sorted(members[family])}
+		out[family] = Toolset{Kind: "family", Effect: effect, Via: []string{"toolhub"}, Executor: executor, Section: section, Aliases: sorted(aliases[family]), Members: names}
 	}
-	// The executor surface itself is one toolset: section hub:tools admits
-	// the whole in-runtime executor contract.
-	slices.Sort(allTools)
-	out[api.SectionHubTools] = Toolset{Kind: "executor", Effect: "mutate", Via: []string{"toolhub"}, Section: api.SectionHubTools, Members: allTools}
-	// Hub connector surfaces that are not executor families: browser,
-	// browser_guest and the per-provider connectors. Members are projected
-	// dynamically by the connector owner, never listed by the platform.
+	// Connector toolsets: curated MCP surfaces (github, google, ...) named
+	// after their governance section minus the hub: prefix, members
+	// projected dynamically by the connector owner — never listed by the
+	// platform. A name already claimed by a family (browser) is served by
+	// the family's curated tools instead.
 	for id, sec := range caps.Sections {
-		if !strings.HasPrefix(id, "hub:") {
+		if !strings.HasPrefix(id, "hub:") || id == api.SectionHubTools {
 			continue
 		}
-		if _, exists := out[id]; exists {
+		name := strings.TrimPrefix(id, "hub:")
+		if _, isFamily := out[name]; isFamily {
 			continue
 		}
-		out[id] = Toolset{Kind: "mcp", Effect: sec.Effect, Via: []string{"mcp"}, Section: id}
+		out[name] = Toolset{Kind: "connector", Effect: sec.Effect, Via: []string{"mcp"}, Executor: "connector:" + name, Section: id}
 	}
-	// The connector_* pack: a fixed nine-tool control surface projected
-	// through ToolHub under the dynamic toolhub section.
-	out["connectors"] = Toolset{Kind: "pack", Effect: "mutate", Via: []string{"toolhub"}, Section: api.SectionToolHub, Members: sorted(api.ConnectorTools)}
 	// Raw MCP stays default-denied (R10.1): the only placeable raw surfaces
-	// are the reviewed user/org catalogs, members projected dynamically by
-	// the declared servers. An ad-hoc mcp-raw:<server> name is never a
-	// toolset — it cannot mint its own section.
-	out[api.SectionUserMCP] = Toolset{Kind: "mcp-raw", Effect: "mutate", Via: []string{"mcp-raw"}, Section: api.SectionUserMCP}
-	out[api.SectionOrgMCP] = Toolset{Kind: "mcp-raw", Effect: "mutate", Via: []string{"mcp-raw"}, Section: api.SectionOrgMCP}
+	// are the reviewed user/org catalogs — uncurated, members projected
+	// dynamically by the declared servers, never in core. An ad-hoc
+	// mcp-raw:<server> name is never a toolset — it cannot mint its own
+	// section.
+	out[api.SectionUserMCP] = Toolset{Kind: "connector", Effect: "mutate", Via: []string{"mcp-raw"}, Executor: api.ExecutorNative, Uncurated: true, Section: api.SectionUserMCP}
+	out[api.SectionOrgMCP] = Toolset{Kind: "connector", Effect: "mutate", Via: []string{"mcp-raw"}, Executor: api.ExecutorNative, Uncurated: true, Section: api.SectionOrgMCP}
 	annotateToolsets(out, caps)
 	return out, nil
 }
@@ -566,12 +595,19 @@ func (d Docs) Project(admittedSections map[string]bool) Docs {
 	}
 	admittedFamilies := map[string]bool{}
 	for name, ts := range d.Toolsets.Toolsets {
+		if ts.Pinned {
+			out.Toolsets.Toolsets[name] = ts
+			if ts.Kind == "family" {
+				admittedFamilies[name] = true
+			}
+			continue
+		}
 		if ts.Section == "" || !admittedSections[ts.Section] {
 			continue
 		}
 		out.Toolsets.Toolsets[name] = ts
-		if ts.Kind == "hub" {
-			admittedFamilies[strings.TrimPrefix(name, "hub:")] = true
+		if ts.Kind == "family" {
+			admittedFamilies[name] = true
 		}
 	}
 	for id, sec := range d.Capabilities.Sections {
@@ -603,7 +639,7 @@ func (d Docs) Validate() error {
 	}
 	for name, ts := range d.Toolsets.Toolsets {
 		switch ts.Kind {
-		case "executor", "hub", "mcp", "mcp-raw", "pack", "native", "pseudo":
+		case "family", "connector", "native", "pseudo":
 		default:
 			return fmt.Errorf("toolset %q: unknown kind %q", name, ts.Kind)
 		}
@@ -621,7 +657,7 @@ func (d Docs) Validate() error {
 		}
 	}
 	validSubject := map[string]bool{"self": true, "cross": true}
-	validScope := map[string]bool{"none": true, "path": true, "model": true, "toolset": true, "skill": true, "connector": true, "service": true, "channel": true, "log": true}
+	validScope := map[string]bool{"none": true, "path": true, "model": true, "toolset": true, "skill": true, "connector": true, "service": true, "channel": true, "log": true, "session": true, "url": true, "host": true}
 	validIssuer := map[string]bool{"platform": true, "org": true, "operator": true}
 	validEffect := map[string]bool{"read": true, "write": true, "control": true}
 	for name, cap := range d.Rights.Capabilities {

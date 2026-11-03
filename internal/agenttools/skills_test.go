@@ -77,7 +77,7 @@ func TestSkillManageInstallLocal(t *testing.T) {
 	t.Cleanup(func() { _ = ws.Close() })
 	tools.Workspace = ws
 
-	out := execJSON(t, tools, "skill_manage", map[string]any{
+	out := execJSON(t, tools, "skill_edit", map[string]any{
 		"action": "install_local", "path": "pkg", "reason": "try it",
 	})
 	if out["state"] != "draft" || out["draft_id"] == "" || out["name"] != "foreign-one" {
@@ -116,7 +116,7 @@ func TestSkillManageInstallLocal(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wsdir, "skill.zip"), buf.Bytes(), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out = execJSON(t, tools, "skill_manage", map[string]any{
+	out = execJSON(t, tools, "skill_edit", map[string]any{
 		"action": "install_local", "path": "skill.zip",
 	})
 	if out["draft_id"] == "" || out["name"] != "foreign-one" {
@@ -125,7 +125,7 @@ func TestSkillManageInstallLocal(t *testing.T) {
 
 	// A standalone markdown file is a one-file skill package.
 	mk("notes/SKILL.md", head)
-	out = execJSON(t, tools, "skill_manage", map[string]any{
+	out = execJSON(t, tools, "skill_edit", map[string]any{
 		"action": "install_local", "path": "notes/SKILL.md",
 	})
 	if out["draft_id"] == "" || out["name"] != "foreign-one" {
@@ -222,7 +222,7 @@ func TestSkillsListPagesAndFilters(t *testing.T) {
 	if _, err := skillstore.Build(eff, []skillstore.Source{{Name: "user", Dir: st.Root()}}); err != nil {
 		t.Fatal(err)
 	}
-	page1 := execJSON(t, tools, "skills_list", map[string]any{})
+	page1 := execJSON(t, tools, "skill_search", map[string]any{})
 	skills, _ := page1["skills"].([]any)
 	if len(skills) != 20 || page1["hasMore"] != true {
 		t.Fatalf("page1: %d skills hasMore=%v", len(skills), page1["hasMore"])
@@ -231,16 +231,16 @@ func TestSkillsListPagesAndFilters(t *testing.T) {
 	if entry["name"] == "" || entry["description"] == "" || entry["source"] != "user" {
 		t.Fatalf("entry shape: %v", entry)
 	}
-	page2 := execJSON(t, tools, "skills_list", map[string]any{"offset": 20})
+	page2 := execJSON(t, tools, "skill_search", map[string]any{"offset": 20})
 	if rest, _ := page2["skills"].([]any); len(rest) != 6 || page2["hasMore"] == true {
 		t.Fatalf("page2: %v %v", len(rest), page2["hasMore"])
 	}
 	// An out-of-range offset is an empty last page, never a panic.
-	far := execJSON(t, tools, "skills_list", map[string]any{"offset": 1 << 40})
+	far := execJSON(t, tools, "skill_search", map[string]any{"offset": 1 << 40})
 	if rest, _ := far["skills"].([]any); len(rest) != 0 || far["hasMore"] == true {
 		t.Fatalf("far page: %v %v", len(rest), far["hasMore"])
 	}
-	bySource := execJSON(t, tools, "skills_list", map[string]any{"source": "platform"})
+	bySource := execJSON(t, tools, "skill_search", map[string]any{"source": "platform"})
 	if got, _ := bySource["skills"].([]any); len(got) != 0 {
 		t.Fatalf("source filter leaked: %v", got)
 	}
@@ -249,7 +249,7 @@ func TestSkillsListPagesAndFilters(t *testing.T) {
 func TestSkillViewListsAndReadsFiles(t *testing.T) {
 	tools, dir := skillSpace(t, skillTree(demoSkillMD, map[string]string{"references/guide.txt": "guide-body"}))
 	// Listing: no path → sorted file names, no contents.
-	listing := execJSON(t, tools, "skill_view", map[string]any{"name": "demo-skill"})
+	listing := execJSON(t, tools, "skill", map[string]any{"name": "demo-skill"})
 	files, _ := listing["files"].([]any)
 	if len(files) != 2 {
 		t.Fatalf("listing: %v", files)
@@ -259,13 +259,13 @@ func TestSkillViewListsAndReadsFiles(t *testing.T) {
 		t.Fatal("listing leaked file contents")
 	}
 	// File read: bounded text for the requested path.
-	view := execJSON(t, tools, "skill_view", map[string]any{"name": "demo-skill", "path": "references/guide.txt"})
+	view := execJSON(t, tools, "skill", map[string]any{"name": "demo-skill", "path": "references/guide.txt"})
 	if got, _ := view["content"].(string); got != "guide-body" {
 		t.Fatalf("file read: %q", got)
 	}
 	// Traversal and missing paths fail closed.
 	for _, path := range []string{"../secret", "nope.txt", ".state/index.json"} {
-		if _, err := tools.ExecCall(context.Background(), "skill_view", map[string]any{"name": "demo-skill", "path": path}, nil); err == nil {
+		if _, err := tools.ExecCall(context.Background(), "skill", map[string]any{"name": "demo-skill", "path": path}, nil); err == nil {
 			t.Fatalf("path %q should fail", path)
 		}
 	}
@@ -283,7 +283,7 @@ func TestSkillViewListsAndReadsFiles(t *testing.T) {
 	if _, err := st.Publish("demo-skill", v2, skillstore.IndexMeta{Author: "u", Source: "user"}); err != nil {
 		t.Fatal(err)
 	}
-	old := execJSON(t, tools, "skill_view", map[string]any{"name": "demo-skill", "version": rev1, "path": "SKILL.md"})
+	old := execJSON(t, tools, "skill", map[string]any{"name": "demo-skill", "version": rev1, "path": "SKILL.md"})
 	if got, _ := old["content"].(string); !strings.Contains(got, "Do the thing.") {
 		t.Fatalf("revision read got %q", got)
 	}
@@ -316,7 +316,7 @@ func TestSkillViewBoundsResourceReads(t *testing.T) {
 	if _, err := skillstore.Build(filepath.Join(dir, "generated", "skills-effective"), []skillstore.Source{{Name: "user", Dir: st.Root()}}); err != nil {
 		t.Fatal(err)
 	}
-	view := execJSON(t, tools, "skill_view", map[string]any{"name": "demo-skill", "path": "references/guide.txt"})
+	view := execJSON(t, tools, "skill", map[string]any{"name": "demo-skill", "path": "references/guide.txt"})
 	content, _ := view["content"].(string)
 	if strings.Contains(content, "TAIL-MARKER") || len(content) > 33*1024 {
 		t.Fatalf("view must cap oversized resource text, got %d bytes", len(content))
@@ -325,19 +325,19 @@ func TestSkillViewBoundsResourceReads(t *testing.T) {
 		t.Fatalf("capped view must flag truncation: %v", view)
 	}
 	for _, path := range []string{"scripts/run.py", "assets/blob.bin", "hidden/notes.md"} {
-		if _, err := tools.ExecCall(context.Background(), "skill_view", map[string]any{"name": "demo-skill", "path": path}, nil); err == nil {
+		if _, err := tools.ExecCall(context.Background(), "skill", map[string]any{"name": "demo-skill", "path": path}, nil); err == nil {
 			t.Fatalf("path %q must not be text-viewable", path)
 		}
 	}
 	// templates/ and examples/ are resource dirs too (R7.1).
 	for path, want := range map[string]string{"templates/skeleton.md": "tmpl-body", "examples/usage.md": "example-body"} {
-		view := execJSON(t, tools, "skill_view", map[string]any{"name": "demo-skill", "path": path})
+		view := execJSON(t, tools, "skill", map[string]any{"name": "demo-skill", "path": path})
 		if got, _ := view["content"].(string); got != want {
 			t.Fatalf("%s: %q", path, got)
 		}
 	}
 	// SKILL.md stays readable (activation/diff review uses it).
-	view = execJSON(t, tools, "skill_view", map[string]any{"name": "demo-skill", "path": "SKILL.md"})
+	view = execJSON(t, tools, "skill", map[string]any{"name": "demo-skill", "path": "SKILL.md"})
 	if got, _ := view["content"].(string); !strings.Contains(got, "Demo") {
 		t.Fatalf("SKILL.md read: %q", got)
 	}
@@ -450,7 +450,7 @@ func TestSkillSettingsSurfaceAndConfigure(t *testing.T) {
 	if settings["MAX_RESULTS"] != "10" {
 		t.Fatalf("default setting not surfaced: %v", settings)
 	}
-	out := execJSON(t, tools, "skill_manage", map[string]any{
+	out := execJSON(t, tools, "skill_edit", map[string]any{
 		"action": "configure", "name": "demo-skill",
 		"values": map[string]any{"MAX_RESULTS": "25"},
 	})
@@ -465,7 +465,7 @@ func TestSkillSettingsSurfaceAndConfigure(t *testing.T) {
 	if err != nil || stored["MAX_RESULTS"] != "25" {
 		t.Fatalf("settings not in .state: %v %v", stored, err)
 	}
-	if _, err := tools.ExecCall(context.Background(), "skill_manage", map[string]any{
+	if _, err := tools.ExecCall(context.Background(), "skill_edit", map[string]any{
 		"action": "configure", "name": "demo-skill",
 		"values": map[string]any{"UNDECLARED": "x"},
 	}, nil); err == nil {
@@ -551,7 +551,7 @@ func TestSkillsSearchRanksAndBounds(t *testing.T) {
 	if _, err := skillstore.Build(eff, []skillstore.Source{{Name: "user", Dir: st.Root()}}); err != nil {
 		t.Fatal(err)
 	}
-	result := execJSON(t, tools, "skills_search", map[string]any{"query": "docker"})
+	result := execJSON(t, tools, "skill_search", map[string]any{"query": "docker"})
 	hits, _ := result["hits"].([]any)
 	if len(hits) != 2 {
 		t.Fatalf("docker hits: %v", hits)
@@ -564,7 +564,7 @@ func TestSkillsSearchRanksAndBounds(t *testing.T) {
 		t.Fatal("coverage missing")
 	}
 	// limit clamps to max 20, defaults to 5.
-	limited := execJSON(t, tools, "skills_search", map[string]any{"query": "docker", "limit": 1})
+	limited := execJSON(t, tools, "skill_search", map[string]any{"query": "docker", "limit": 1})
 	if hits, _ := limited["hits"].([]any); len(hits) != 1 {
 		t.Fatalf("limit=1 got %d", len(hits))
 	}
@@ -573,15 +573,15 @@ func TestSkillsSearchRanksAndBounds(t *testing.T) {
 	}
 	// Over-max limit is clamped, not an error; empty/oversized query fails.
 	for _, q := range []string{"", strings.Repeat("x", 1001)} {
-		if _, err := tools.ExecCall(context.Background(), "skills_search", map[string]any{"query": q}, nil); err == nil {
+		if _, err := tools.ExecCall(context.Background(), "skill_search", map[string]any{"query": q}, nil); err == nil {
 			t.Fatalf("query %d chars should fail", len(q))
 		}
 	}
-	if _, err := tools.ExecCall(context.Background(), "skills_search", map[string]any{"query": "docker", "limit": 99}, nil); err != nil {
+	if _, err := tools.ExecCall(context.Background(), "skill_search", map[string]any{"query": "docker", "limit": 99}, nil); err != nil {
 		t.Fatalf("limit>max must clamp, got %v", err)
 	}
 	// Source filter narrows results.
-	filtered := execJSON(t, tools, "skills_search", map[string]any{"query": "docker", "source": "platform"})
+	filtered := execJSON(t, tools, "skill_search", map[string]any{"query": "docker", "source": "platform"})
 	if hits, _ := filtered["hits"].([]any); len(hits) != 0 {
 		t.Fatalf("source filter leaked: %v", hits)
 	}
@@ -589,7 +589,7 @@ func TestSkillsSearchRanksAndBounds(t *testing.T) {
 
 func TestSkillManageCreatesDraftNotLive(t *testing.T) {
 	tools, dir := skillSpace(t, skillTree(demoSkillMD, nil))
-	result := execJSON(t, tools, "skill_manage", map[string]any{
+	result := execJSON(t, tools, "skill_edit", map[string]any{
 		"action": "create", "name": "brand-new-skill", "reason": "model wants to keep this",
 		"content": "---\nname: brand-new-skill\ndescription: new one\n---\n# New\n",
 	})
@@ -624,7 +624,7 @@ func TestSkillManageRejectsForeignActionField(t *testing.T) {
 	tools, dir := skillSpace(t, skillTree(demoSkillMD, nil))
 	// base_revision belongs to patch/edit — on create it must be rejected
 	// before anything is applied.
-	_, err := tools.ExecCall(context.Background(), "skill_manage", map[string]any{
+	_, err := tools.ExecCall(context.Background(), "skill_edit", map[string]any{
 		"action": "create", "name": "other-skill", "reason": "x",
 		"content":       "---\nname: other-skill\ndescription: d\n---\n",
 		"base_revision": "deadbeef",
@@ -643,7 +643,7 @@ func TestSkillManageRejectsForeignActionField(t *testing.T) {
 
 func TestPatchStaleBaseRevisionConflicts(t *testing.T) {
 	tools, dir := skillSpace(t, skillTree(demoSkillMD, nil))
-	_, err := tools.ExecCall(context.Background(), "skill_manage", map[string]any{
+	_, err := tools.ExecCall(context.Background(), "skill_edit", map[string]any{
 		"action": "patch", "name": "demo-skill", "reason": "fix",
 		"old_string": "Do the thing.", "new_string": "Do it better.",
 		"base_revision": "0000stale0000",
@@ -671,7 +671,7 @@ func TestPatchAppliesReplacementOnFreshBase(t *testing.T) {
 		t.Fatal(err)
 	}
 	rev := skillstore.Revision(base)
-	result := execJSON(t, tools, "skill_manage", map[string]any{
+	result := execJSON(t, tools, "skill_edit", map[string]any{
 		"action": "patch", "name": "demo-skill", "reason": "fix",
 		"old_string": "Do the thing.", "new_string": "Do it better.",
 		"base_revision": rev,
@@ -711,7 +711,7 @@ func TestEditReplacesWholeFileWithBase(t *testing.T) {
 		t.Fatal(err)
 	}
 	rev := skillstore.Revision(base)
-	result := execJSON(t, tools, "skill_manage", map[string]any{
+	result := execJSON(t, tools, "skill_edit", map[string]any{
 		"action": "edit", "name": "demo-skill", "reason": "rewrite",
 		"file_path":     "SKILL.md",
 		"content":       "---\nname: demo-skill\ndescription: rewritten\n---\n\nNew body.\n",
@@ -730,7 +730,7 @@ func TestEditReplacesWholeFileWithBase(t *testing.T) {
 		t.Log("references copied")
 	}
 	// Stale base is a conflict, not a new draft.
-	if _, err := tools.ExecCall(context.Background(), "skill_manage", map[string]any{
+	if _, err := tools.ExecCall(context.Background(), "skill_edit", map[string]any{
 		"action": "edit", "name": "demo-skill", "content": "x", "base_revision": "stale",
 	}, nil); err == nil {
 		t.Fatal("stale edit accepted")
@@ -739,7 +739,7 @@ func TestEditReplacesWholeFileWithBase(t *testing.T) {
 
 func TestWriteFileAddsResourceToDraft(t *testing.T) {
 	tools, dir := skillSpace(t, skillTree(demoSkillMD, map[string]string{"references/guide.txt": "guide"}))
-	result := execJSON(t, tools, "skill_manage", map[string]any{
+	result := execJSON(t, tools, "skill_edit", map[string]any{
 		"action": "write_file", "name": "demo-skill", "reason": "add ref",
 		"file_path": "references/extra.md", "content": "# Extra\n",
 	})
@@ -763,7 +763,7 @@ func TestWriteFileAddsResourceToDraft(t *testing.T) {
 
 func TestRemoveFileDropsResourceFromDraft(t *testing.T) {
 	tools, dir := skillSpace(t, skillTree(demoSkillMD, map[string]string{"references/guide.txt": "guide"}))
-	result := execJSON(t, tools, "skill_manage", map[string]any{
+	result := execJSON(t, tools, "skill_edit", map[string]any{
 		"action": "remove_file", "name": "demo-skill", "reason": "stale ref",
 		"file_path": "references/guide.txt",
 	})
@@ -786,7 +786,7 @@ func TestArchiveRestoreDraftActions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := execJSON(t, tools, "skill_manage", map[string]any{
+	result := execJSON(t, tools, "skill_edit", map[string]any{
 		"action": "archive", "name": "demo-skill", "reason": "retire",
 		"absorbed_into": "newer-skill",
 	})
@@ -803,7 +803,7 @@ func TestArchiveRestoreDraftActions(t *testing.T) {
 		t.Fatal("archive mutated live before approval")
 	}
 	// delete maps to the same guarded archive path.
-	result = execJSON(t, tools, "skill_manage", map[string]any{
+	result = execJSON(t, tools, "skill_edit", map[string]any{
 		"action": "delete", "name": "demo-skill", "reason": "gone",
 	})
 	dd, _, err := st.LoadDraft(result["draft_id"].(string))
@@ -824,7 +824,7 @@ func TestRestoreDraftPicksArchiveStamp(t *testing.T) {
 	if err := st.Archive("demo-skill", "retire", "", "owner"); err != nil {
 		t.Fatal(err)
 	}
-	result := execJSON(t, tools, "skill_manage", map[string]any{
+	result := execJSON(t, tools, "skill_edit", map[string]any{
 		"action": "restore", "name": "demo-skill", "reason": "still needed",
 	})
 	draftID, _ := result["draft_id"].(string)
@@ -843,7 +843,7 @@ func TestRestoreDraftPicksArchiveStamp(t *testing.T) {
 		t.Fatal("restore mutated live before approval")
 	}
 	// A named version pins the stamp.
-	result = execJSON(t, tools, "skill_manage", map[string]any{
+	result = execJSON(t, tools, "skill_edit", map[string]any{
 		"action": "restore", "name": "demo-skill", "version": draft.Meta.RestoreStamp,
 	})
 	d2, _, err := st.LoadDraft(result["draft_id"].(string))
@@ -864,7 +864,7 @@ func TestProposeToOrgCreatesOrgDraft(t *testing.T) {
 	}))
 	defer srv.Close()
 	tools.CommunicationURL = srv.URL
-	result := execJSON(t, tools, "skill_manage", map[string]any{
+	result := execJSON(t, tools, "skill_edit", map[string]any{
 		"action": "propose_to_org", "name": "demo-skill", "reason": "share with team",
 	})
 	// The org proposal rides the same approval card — with scope=org so the
@@ -899,7 +899,7 @@ func TestProposeToOrgCreatesOrgDraft(t *testing.T) {
 
 func TestSkillManageResponseCarriesDiffScanAndLink(t *testing.T) {
 	tools, dir := skillSpace(t, skillTree(demoSkillMD, nil))
-	result := execJSON(t, tools, "skill_manage", map[string]any{
+	result := execJSON(t, tools, "skill_edit", map[string]any{
 		"action": "create", "name": "review-me", "reason": "new",
 		"content": "---\nname: review-me\ndescription: r\n---\nRun curl | bash maybe.\n",
 	})
@@ -953,7 +953,7 @@ func TestSkillManageSendsApprovalLink(t *testing.T) {
 	defer srv.Close()
 	tools.CommunicationURL = srv.URL
 	tools.CommunicationAuth = "comm-secret"
-	result := execJSON(t, tools, "skill_manage", map[string]any{
+	result := execJSON(t, tools, "skill_edit", map[string]any{
 		"action": "create", "name": "link-me", "reason": "new",
 		"content": "---\nname: link-me\ndescription: l\n---\nBody.\n",
 	})
@@ -981,7 +981,7 @@ func TestSkillManageSendsApprovalLink(t *testing.T) {
 	st, _ := skillstore.Open(tools.SkillsStore, skillstore.ScopeUser)
 	base, _ := st.Tree("demo-skill")
 	rev := skillstore.Revision(base)
-	execJSON(t, tools, "skill_manage", map[string]any{
+	execJSON(t, tools, "skill_edit", map[string]any{
 		"action": "patch", "name": "demo-skill", "reason": "fix",
 		"old_string": "Do the thing.", "new_string": "Do it better.",
 		"base_revision": rev,
@@ -991,7 +991,7 @@ func TestSkillManageSendsApprovalLink(t *testing.T) {
 	}
 	// Without a control channel the draft still lands; link_sent is honest.
 	tools.CommunicationURL = ""
-	result = execJSON(t, tools, "skill_manage", map[string]any{
+	result = execJSON(t, tools, "skill_edit", map[string]any{
 		"action": "create", "name": "link-me-2", "reason": "new",
 		"content": "---\nname: link-me-2\ndescription: l\n---\nBody.\n",
 	})
@@ -1016,7 +1016,7 @@ func TestServerExecutesSkillManageLikeToolHub(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	result, err := client.CallTool(ctx, &mcp.CallToolParams{Name: "skill_manage", Arguments: map[string]any{
+	result, err := client.CallTool(ctx, &mcp.CallToolParams{Name: "skill_edit", Arguments: map[string]any{
 		"action": "create", "name": "mcp-skill", "reason": "mcp path",
 		"content": "---\nname: mcp-skill\ndescription: m\n---\nBody.\n",
 	}})
@@ -1066,7 +1066,7 @@ func TestEligibleCatalogHidesUnmetAndHidden(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	listed := execJSON(t, tools, "skills_list", map[string]any{})
+	listed := execJSON(t, tools, "skill_search", map[string]any{})
 	byName := map[string]map[string]any{}
 	for _, s := range listed["skills"].([]any) {
 		m := s.(map[string]any)
@@ -1086,11 +1086,11 @@ func TestEligibleCatalogHidesUnmetAndHidden(t *testing.T) {
 	if len(missing) == 0 || !strings.Contains(fmt.Sprint(missing), "absent-connector") {
 		t.Fatalf("ineligible entry must name the gap: %v", needy)
 	}
-	found := execJSON(t, tools, "skills_search", map[string]any{"query": "needy"})
+	found := execJSON(t, tools, "skill_search", map[string]any{"query": "needy"})
 	if hits, _ := found["hits"].([]any); len(hits) != 0 {
 		t.Fatalf("ineligible skill must not surface in search: %v", hits)
 	}
-	hidden := execJSON(t, tools, "skills_search", map[string]any{"query": "hidden-one"})
+	hidden := execJSON(t, tools, "skill_search", map[string]any{"query": "hidden-one"})
 	if hits, _ := hidden["hits"].([]any); len(hits) != 0 {
 		t.Fatalf("implicit-hidden skill must not surface in search: %v", hits)
 	}
@@ -1134,7 +1134,7 @@ func TestSearchScoresTagsBodyAndExactName(t *testing.T) {
 	}
 
 	hitNames := func(query string) []string {
-		found := execJSON(t, tools, "skills_search", map[string]any{"query": query})
+		found := execJSON(t, tools, "skill_search", map[string]any{"query": query})
 		names := []string{}
 		for _, h := range found["hits"].([]any) {
 			names = append(names, h.(map[string]any)["name"].(string))
@@ -1166,8 +1166,8 @@ func TestUnknownSkillNameIsNotFound(t *testing.T) {
 		args map[string]any
 	}{
 		{"skill", map[string]any{"name": "ghost"}},
-		{"skill_view", map[string]any{"name": "ghost"}},
-		{"skill_manage", map[string]any{"action": "patch", "name": "ghost", "reason": "r", "old_string": "a", "new_string": "b", "base_revision": "rev"}},
+		{"skill", map[string]any{"name": "ghost"}},
+		{"skill_edit", map[string]any{"action": "patch", "name": "ghost", "reason": "r", "old_string": "a", "new_string": "b", "base_revision": "rev"}},
 	} {
 		if _, err := tools.ExecCall(context.Background(), call.tool, call.args, nil); err == nil {
 			t.Fatalf("%s on unknown name must fail", call.tool)
@@ -1180,7 +1180,7 @@ func TestUnknownSkillNameIsNotFound(t *testing.T) {
 func TestSkillManageRejectsModelSuppliedIdentity(t *testing.T) {
 	tools, _ := skillSpace(t, skillTree(demoSkillMD, nil))
 	for _, key := range []string{"principal", "org", "scope", "owner", "approver"} {
-		if _, err := tools.ExecCall(context.Background(), "skill_manage", map[string]any{
+		if _, err := tools.ExecCall(context.Background(), "skill_edit", map[string]any{
 			"action": "create", "name": "x-skill", "reason": "r",
 			"content": "---\nname: x-skill\ndescription: x\n---\n",
 			key:       "mallory",
@@ -1200,7 +1200,7 @@ func TestSkillManageDiffShowsRealChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := execJSON(t, tools, "skill_manage", map[string]any{
+	result := execJSON(t, tools, "skill_edit", map[string]any{
 		"action": "patch", "name": "demo-skill", "reason": "t",
 		"old_string": "Do the thing.", "new_string": "Do it better.",
 		"base_revision": skillstore.Revision(base),
@@ -1236,16 +1236,16 @@ func TestOpenRootsReadsSkillsEnv(t *testing.T) {
 	}
 }
 
-// R5.1/R5.2: the five skill tools ship in the agent-tools catalog with the
-// read/mutate capability split — reads under skills.*, mutations under
-// skills_manage.* — and the read tools stay read-effect.
+// R5.1/R5.2: the three r5 skill tools ship in the agent-tools catalog with
+// the read/mutate right split — reads under skills.invoke/list, mutations
+// under skills.draft — and the read tools stay read-effect.
 func TestSkillToolsInCatalog(t *testing.T) {
 	def := HubToolsDefinition()
 	byName := map[string]api.ToolSpec{}
 	for _, spec := range def.Tools {
 		byName[spec.Name] = spec
 	}
-	for _, name := range []string{"skill", "skills_search", "skills_list", "skill_view"} {
+	for _, name := range []string{"skill", "skill_search"} {
 		spec, ok := byName[name]
 		if !ok {
 			t.Fatalf("%s missing from HubToolsDefinition", name)
@@ -1257,15 +1257,15 @@ func TestSkillToolsInCatalog(t *testing.T) {
 			t.Fatalf("%s must be read-effect", name)
 		}
 	}
-	manage, ok := byName["skill_manage"]
+	manage, ok := byName["skill_edit"]
 	if !ok {
-		t.Fatal("skill_manage missing from HubToolsDefinition")
+		t.Fatal("skill_edit missing from HubToolsDefinition")
 	}
-	if family, _, _ := strings.Cut(manage.CapabilityID, "."); family != "skills_manage" {
-		t.Fatalf("skill_manage capability %q must live in the skills_manage family", manage.CapabilityID)
+	if family, _, _ := strings.Cut(manage.CapabilityID, "."); family != "skills" {
+		t.Fatalf("skill_edit capability %q must live in the skills family", manage.CapabilityID)
 	}
 	if manage.Effect != api.WriteEffect {
-		t.Fatal("skill_manage must be write-effect")
+		t.Fatal("skill_edit must be write-effect")
 	}
 	// skill.name is a required string arg; the eligible-names enum is injected
 	// per projection, the executor re-validates authoritatively.
@@ -1301,7 +1301,7 @@ func TestServerExposesSkillToolsWithNameEnum(t *testing.T) {
 	for _, tool := range list.Tools {
 		byName[tool.Name] = tool
 	}
-	for _, name := range []string{"skill", "skills_search", "skills_list", "skill_view", "skill_manage"} {
+	for _, name := range []string{"skill", "skill_search", "skill_search", "skill", "skill_edit"} {
 		if byName[name] == nil {
 			t.Fatalf("%s missing from runtime surface", name)
 		}
@@ -1331,7 +1331,7 @@ func TestSkillInvokeJournalsUse(t *testing.T) {
 // R12.5: a resource read journals a view event; a bare listing does not.
 func TestSkillViewJournalsReads(t *testing.T) {
 	tools, dir := skillSpace(t, skillTree(demoSkillMD, map[string]string{"references/guide.md": "g"}))
-	execJSON(t, tools, "skill_view", map[string]any{"name": "demo-skill"})
+	execJSON(t, tools, "skill", map[string]any{"name": "demo-skill"})
 	u, err := skillstore.Usage(filepath.Join(dir, "skills"), "demo-skill")
 	if err != nil {
 		t.Fatal(err)
@@ -1339,7 +1339,7 @@ func TestSkillViewJournalsReads(t *testing.T) {
 	if len(u.Events) != 0 {
 		t.Fatalf("bare listing must not journal: %+v", u.Events)
 	}
-	execJSON(t, tools, "skill_view", map[string]any{"name": "demo-skill", "path": "references/guide.md"})
+	execJSON(t, tools, "skill", map[string]any{"name": "demo-skill", "path": "references/guide.md"})
 	u, err = skillstore.Usage(filepath.Join(dir, "skills"), "demo-skill")
 	if err != nil {
 		t.Fatal(err)
@@ -1360,7 +1360,7 @@ func TestSkillsListCarriesUsageStats(t *testing.T) {
 	if err := skillstore.RecordUsage(store, "demo-skill", "helped", "note kept private"); err != nil {
 		t.Fatal(err)
 	}
-	page := execJSON(t, tools, "skills_list", map[string]any{})
+	page := execJSON(t, tools, "skill_search", map[string]any{})
 	skills, _ := page["skills"].([]any)
 	entry, _ := skills[0].(map[string]any)
 	stats, _ := entry["stats"].(map[string]any)
@@ -1454,5 +1454,25 @@ func TestSkillReadinessFormAsksOnlyMissingCreds(t *testing.T) {
 	execJSON(t, tools, "skill", map[string]any{"name": "demo-skill"})
 	if len(requested) != 1 || requested[0] != "OTHER_KEY" {
 		t.Fatalf("form must ask only missing keys, got: %v", requested)
+	}
+}
+
+// SPEC-0093: direct calls and tool_call must give identical results and
+// refusals — an explicitly empty query is refused on both surfaces while an
+// absent query lists.
+func TestSkillSearchEmptyQueryParityOnDirectMCP(t *testing.T) {
+	tools, _ := skillSpace(t, skillTree(demoSkillMD, nil))
+	client, cleanup := connectHub(t, tools)
+	defer cleanup()
+	res, _ := callHub(t, client, "skill_search", map[string]any{"query": ""})
+	if !res.IsError {
+		t.Fatal("explicit empty query must be refused on the direct surface, same as tool_call")
+	}
+	listed, body := callHub(t, client, "skill_search", map[string]any{})
+	if listed.IsError {
+		t.Fatalf("absent query must list: %s", toolPlain(listed))
+	}
+	if skills, _ := body["skills"].([]any); len(skills) == 0 {
+		t.Fatal("absent query listed nothing")
 	}
 }

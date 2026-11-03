@@ -839,11 +839,9 @@ func TestSkillGovernanceSections(t *testing.T) {
 	if !ok || read.Default != api.RuleAllow || !read.Official {
 		t.Fatalf("hub:skills section missing or wrong: %+v", read)
 	}
-	manage, ok := inventory["hub:skills_manage"]
-	if !ok || manage.Default != api.RuleAllow || !manage.Official {
-		t.Fatalf("hub:skills_manage section missing or wrong: %+v", manage)
-	}
-	if ToolHubCapabilityID("skills") != "skills" || ToolHubCapabilityID("skills_manage") != "skills_manage" {
+	// Catalog r5 has one skills family; the legacy skills_manage entry name
+	// is an alias onto it (SPEC-0093 R5.2).
+	if ToolHubCapabilityID("skills") != "skills" || ToolHubCapabilityID("skills_manage") != "skills" {
 		t.Fatal("toolhub capability map missing skills families")
 	}
 }

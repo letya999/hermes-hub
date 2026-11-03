@@ -91,19 +91,19 @@ func atomic(path string, body []byte) error {
 
 // PromptPointer renders the short per-turn inventory line R9.1 injects: the
 // revision id, the bounded core tool names and the extended count, plus the
-// live discovery pointer. It never embeds catalog bodies — tools_list keeps
+// pinned platform pointer. It never embeds catalog bodies — tool_search keeps
 // discovery lazy inside the turn.
 func (r Revision) PromptPointer() string {
 	core, _ := r.value("tools", "core").(map[string]any)
 	extended, _ := r.value("tools", "extended").(map[string]any)
 	names := make([]string, 0, len(core))
 	for k := range core {
-		if k != "discovery" {
+		if k != "platform" && k != "discovery" {
 			names = append(names, k)
 		}
 	}
 	slices.Sort(names)
-	return fmt.Sprintf("revision=%s core=%s extended=+%d discovery=tools_list+invoke\n",
+	return fmt.Sprintf("revision=%s core=%s extended=+%d platform=tool_search+tool_call\n",
 		r.ID, strings.Join(names, ","), len(extended))
 }
 

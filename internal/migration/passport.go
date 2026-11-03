@@ -196,12 +196,12 @@ func passportLayers(dir string, s stack.Settings, env string, docs catalog.Docs)
 			conflicts = append(conflicts, fmt.Sprintf("tools.%s: via %q has no governance section", name, e.Via))
 			continue
 		}
-		ts, err := docs.Toolset(sec)
+		display := toolsetDisplayName(docs, sec)
+		ts, err := docs.Toolset(display)
 		if err != nil || len(ts.Via) == 0 {
 			conflicts = append(conflicts, fmt.Sprintf("tools.%s: section %q has no v2 toolset — preserved in toolhub store", name, sec))
 			continue
 		}
-		display := toolsetDisplayName(docs, sec)
 		spec := map[string]any{"via": ts.Via[0]}
 		if display == "files" {
 			// The normative files contract: read scope covers every reachable
@@ -757,18 +757,17 @@ func writeFileAtomic(path string, body []byte, mode os.FileMode) error {
 // exactly one catalog toolset; an ambiguous short name keeps its full
 // section id so the binding stays exact.
 func toolsetDisplayName(docs catalog.Docs, section string) string {
-	short := strings.TrimPrefix(strings.TrimPrefix(section, "hub:"), "native:")
-	if short == section {
+	// Catalog r5 (ADR-0094 D1): native surfaces keep their namespace, while a
+	// hub:<family> section is placeable under its logical name — the two can
+	// share one word (terminal) without collision.
+	if strings.HasPrefix(section, "native:") {
 		return section
 	}
-	if _, err := docs.Toolset(short); err == nil {
-		return short
-	}
-	if _, err := docs.Toolset("hub:" + short); err == nil {
-		if _, err := docs.Toolset("native:" + short); err != nil {
+	short := strings.TrimPrefix(section, "hub:")
+	if short != section {
+		if _, err := docs.Toolset(short); err == nil {
 			return short
 		}
-		return section // hub: and native: collide — keep the exact name
 	}
 	return section
 }

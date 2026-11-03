@@ -316,7 +316,7 @@ func TestRemoteOAuthGenericFlow(t *testing.T) {
 	if projectedName == "" {
 		t.Fatal("oauth-admitted remote tool not projected")
 	}
-	if _, err := alice.CallTool(context.Background(), &mcp.CallToolParams{Name: "invoke", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{"q": "x"}}}); err != nil {
+	if _, err := alice.CallTool(context.Background(), &mcp.CallToolParams{Name: "tool_call", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{"q": "x"}}}); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
 	if got := fixture.lastAuth.Load(); got != "Bearer oauth-at-1" {
@@ -398,7 +398,7 @@ func TestRemoteOAuthRefreshRetriesCall(t *testing.T) {
 	fix.gateway.OAuthRefresh = remoteOAuthRefresh(fix.secrets, restarted, fix.store)
 	// The AS rotates the accepted token; the next call must refresh and retry.
 	fixture.accepted.Store("oauth-at-2")
-	invoked, err := alice.CallTool(context.Background(), &mcp.CallToolParams{Name: "invoke", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{"q": "x"}}})
+	invoked, err := alice.CallTool(context.Background(), &mcp.CallToolParams{Name: "tool_call", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{"q": "x"}}})
 	if err != nil || invoked.IsError {
 		t.Fatalf("refresh-retry invoke=%+v err=%v", invoked, err)
 	}
@@ -1052,7 +1052,7 @@ func TestRemoteSharedOAuthMemberCallsRefresh(t *testing.T) {
 	if projectedName == "" {
 		t.Fatal("shared remote tool not projected for member")
 	}
-	if _, err := bob.CallTool(context.Background(), &mcp.CallToolParams{Name: "invoke", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{"q": "x"}}}); err != nil {
+	if _, err := bob.CallTool(context.Background(), &mcp.CallToolParams{Name: "tool_call", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{"q": "x"}}}); err != nil {
 		t.Fatalf("bob invoke: %v", err)
 	}
 	if got := fixture.lastAuth.Load(); got != "Bearer oauth-at-1" {
@@ -1060,7 +1060,7 @@ func TestRemoteSharedOAuthMemberCallsRefresh(t *testing.T) {
 	}
 	// Rotation: bob's next call must refresh alice's locator and retry once.
 	fixture.accepted.Store("oauth-at-2")
-	if _, err := bob.CallTool(context.Background(), &mcp.CallToolParams{Name: "invoke", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{"q": "x"}}}); err != nil {
+	if _, err := bob.CallTool(context.Background(), &mcp.CallToolParams{Name: "tool_call", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{"q": "x"}}}); err != nil {
 		t.Fatalf("bob refresh-retry invoke: %v", err)
 	}
 	if got := fixture.lastAuth.Load(); got != "Bearer oauth-at-2" {
@@ -1265,7 +1265,7 @@ func TestInsufficientScopeDoesNotRefreshLoop(t *testing.T) {
 	}
 	before := fixture.tokenHits.Load()
 	fixture.insufficient.Store(true)
-	_, err = alice.CallTool(context.Background(), &mcp.CallToolParams{Name: "invoke", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{"q": "x"}}})
+	_, err = alice.CallTool(context.Background(), &mcp.CallToolParams{Name: "tool_call", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{"q": "x"}}})
 	if got := fixture.tokenHits.Load(); got != before {
 		t.Fatalf("insufficient_scope triggered %d refresh attempts; want re-consent, no refresh", got-before)
 	}

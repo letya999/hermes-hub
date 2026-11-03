@@ -5,6 +5,7 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/agenttools"
 	"github.com/letya999/hermes-hub/internal/catalog"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
 // The agent-tools contract is a catalog surface: every declared requires
@@ -35,11 +36,16 @@ func TestHubToolsRequiresAreCatalogRights(t *testing.T) {
 		}
 		want := catalog.RequiredRight(spec.CapabilityID)
 		if spec.Requires[0] != want {
-			t.Fatalf("tool %s requires %q, catalog maps %s to %q", spec.Name, spec.Requires[0], spec.CapabilityID, want)
+			t.Errorf("tool %s requires %q, catalog maps %s to %q", spec.Name, spec.Requires[0], spec.CapabilityID, want)
+		}
+		// Only model-audience tools carry toolset membership; internal
+		// callables (inbox_fetch) declare requires on the spec alone.
+		if spec.Audience != api.AudienceModel {
+			continue
 		}
 		for _, right := range spec.Requires {
 			if !memberRights[spec.Name][right] {
-				t.Fatalf("tool %s requires %q the catalog never assigned to it", spec.Name, right)
+				t.Errorf("tool %s requires %q the catalog never assigned to it", spec.Name, right)
 			}
 		}
 	}

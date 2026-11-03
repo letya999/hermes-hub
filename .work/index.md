@@ -16,18 +16,18 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 
 | Change | State |
 |---|---|
-| [CHG-0274](in-progress/CHG-0274-verification-suite/plan.md) | M31.11 charter verification suite: lints, parity tests and intent evals (#448) |
-| [CHG-0273](in-progress/CHG-0273-docs-migration-release/plan.md) | M31.10 documentation, tools.yaml migration and catalog r5 release (#447) |
-| [CHG-0272](in-progress/CHG-0272-logical-names-admission-prompt/plan.md) | M31.9 logical names, admission dispatch and modular prompt contract (#446) |
-| [CHG-0271](in-progress/CHG-0271-platform-layer/plan.md) | M31.8 pinned platform layer: guide, status, bootstrap, usage, tool_search, tool_call (#445) |
-| [CHG-0270](in-progress/CHG-0270-capability-families/plan.md) | M31.7 capability families: skills, connectors, web, sites, research, browser (#444) |
-| [CHG-0269](in-progress/CHG-0269-agent-self-families/plan.md) | M31.6 agent-self families: context, settings, sessions, models (#443) |
-| [CHG-0268](in-progress/CHG-0268-work-families/plan.md) | M31.5 work families: routines, watches, assignments, goals (#442) |
-| [CHG-0267](in-progress/CHG-0267-execution-families/plan.md) | M31.4 execution families: terminal, ssh, exposure (#441) |
-| [CHG-0266](in-progress/CHG-0266-content-families/plan.md) | M31.3 content families: files, documents, media (#440) |
-| [CHG-0265](in-progress/CHG-0265-schemas-annotations-envelope/plan.md) | M31.2 typed schemas, contract descriptions, MCP annotations, result envelope (#439) |
-| [CHG-0264](in-progress/CHG-0264-rights-domains-requires/plan.md) | M31.1 rights.yaml domains and member requires, fail closed (#438) |
-| [CHG-0263](in-progress/CHG-0263-catalog-r5-vocabulary/plan.md) | M31.0 catalog r5 vocabulary, via/executor model, tool audiences (#437) |
+| [CHG-0274](done/CHG-0274-verification-suite/plan.md) | M31.11 charter verification suite: lints, parity tests and intent evals (#448); done: vocabulary/requires/description lints, direct↔tool_call admission parity, annotation parity, 40-intent eval baseline 1.000, Appendix D rule→test table |
+| [CHG-0273](done/CHG-0273-docs-migration-release/plan.md) | M31.10 documentation, tools.yaml migration and catalog r5 release (#447); done: tool-design appendices A–D, docs sweep to r5, r4→r5 migration rename hints, immutable catalog release 6 emitted |
+| [CHG-0272](done/CHG-0272-logical-names-admission-prompt/plan.md) | M31.9 logical names, admission dispatch and modular prompt contract (#446); done: passport pins `platform`, executor dispatch (runtime:/flow:/handler:), nested tool_call fresh ToolCallID, prompt contract + pointer on r5 names |
+| [CHG-0271](done/CHG-0271-platform-layer/plan.md) | M31.8 pinned platform layer: guide, status, bootstrap, usage, tool_search, tool_call (#445); done: gateway surface renamed to r5, platform_status/bootstrap/usage implemented on ToolHub, usage sources mounted into runtime |
+| [CHG-0270](done/CHG-0270-capability-families/plan.md) | M31.7 capability families: skills, connectors, web, sites, research, browser (#444); done |
+| [CHG-0269](done/CHG-0269-agent-self-families/plan.md) | M31.6 agent-self families: context, settings, sessions, models (#443); done |
+| [CHG-0268](done/CHG-0268-work-families/plan.md) | M31.5 work families: routines, watches, assignments, goals (#442); done |
+| [CHG-0267](done/CHG-0267-execution-families/plan.md) | M31.4 execution families: terminal, ssh, exposure (#441); done |
+| [CHG-0266](done/CHG-0266-content-families/plan.md) | M31.3 content families: files, documents, media (#440); done |
+| [CHG-0265](done/CHG-0265-schemas-annotations-envelope/plan.md) | M31.2 typed schemas, contract descriptions, MCP annotations, result envelope (#439); done |
+| [CHG-0264](done/CHG-0264-rights-domains-requires/plan.md) | M31.1 rights.yaml domains and member requires, fail closed (#438); done |
+| [CHG-0263](done/CHG-0263-catalog-r5-vocabulary/plan.md) | M31.0 catalog r5 vocabulary, via/executor model, tool audiences (#437); done |
 | [CHG-0258](in-progress/CHG-0258-config-imperative/plan.md) | M30.4 config.yaml runtime/supervision/ports/channels/memory drive their renderers; design complete |
 | [CHG-0259](in-progress/CHG-0259-workspace-imperative/plan.md) | M30.5 workspace.yaml ASCII tree + writable/read_only/mounts drive container mounts and live file admission; design complete |
 | [CHG-0261](in-progress/CHG-0261-models-routes-sessions/plan.md) | M30.7 models.yaml routes/services, per-service cliproxy instance + Broker session, relay registry from passport; design complete |

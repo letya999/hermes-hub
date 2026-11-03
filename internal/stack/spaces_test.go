@@ -37,10 +37,10 @@ func TestIndependentSpacesAndExternalMCP(t *testing.T) {
 			compose := Compose(s, "/source", d)
 			configs = append(configs, compose)
 			services := compose["services"].(M)
-			// Six services: runtime + core/control daemons + the browser
-			// sidecar the default feature set enables.
-			if len(services) != 6 {
-				t.Fatal("embedded service")
+			// Seven services: runtime + core/control daemons + the browser
+			// and hub-media sidecars the default tool wishes enable.
+			if len(services) != 7 {
+				t.Fatal("embedded service", len(services))
 			}
 			if _, ok := services["communication-hub"]; ok {
 				t.Fatal("gateway started without a messaging feature")

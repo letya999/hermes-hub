@@ -760,7 +760,7 @@ rejected — dead links out of `SKILL.md` itself stay hard errors. Zip
 extraction is bounded (entry count/bytes, path traversal and special
 files refused); binary payloads like images in `assets/` survive intact.
 Inside a runtime the agent reaches the same path with
-`skill_manage action=install_local` and a workspace-relative `path` —
+`skill_edit action=install_local` and a workspace-relative `path` —
 inbox downloads staged by `inbox_fetch`, unpacked archives, checkouts.
 
 ## Skill quality: lint, stats, evals

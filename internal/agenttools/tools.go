@@ -125,6 +125,18 @@ type Input struct {
 	// JSON array string of {name?,tool?,args} entries merged onto the
 	// probe's tool+args per stream round.
 	Sources string `json:"sources,omitempty"`
+	// Surgical file-edit and mkdir fields (files family r5).
+	OldString  string `json:"old_string,omitempty"`
+	NewString  string `json:"new_string,omitempty"`
+	ReplaceAll bool   `json:"replace_all,omitempty"`
+	Parents    bool   `json:"parents,omitempty"`
+	// Terminal exec fields (terminal family r5).
+	Cmd        string `json:"cmd,omitempty"`
+	Cwd        string `json:"cwd,omitempty"`
+	Stdin      string `json:"stdin,omitempty"`
+	Shell      string `json:"shell,omitempty"`
+	Background bool   `json:"background,omitempty"`
+	Job        string `json:"job,omitempty"`
 }
 type Tools struct {
 	Workspace, Archive, Organization *os.Root

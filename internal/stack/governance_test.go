@@ -133,7 +133,7 @@ func TestGovernanceAssignmentsSection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wsBody = []byte(strings.Replace(string(wsBody), "  images: toolhub", "  images: toolhub\n  assignments: toolhub", 1))
+	wsBody = []byte(strings.Replace(string(wsBody), "  media: toolhub", "  media: toolhub\n  assignments: toolhub", 1))
 	if err := os.WriteFile(wsPath, wsBody, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -142,10 +142,9 @@ func TestGovernanceAssignmentsSection(t *testing.T) {
 	}
 }
 
-// TestGovernanceSkillsSections: the skill families are governed hub sections —
-// the default workspace wishes `skills`/`skills_manage` must resolve to the
-// hub:skills / hub:skills_manage inventory entries (SPEC-0084), not fail as
-// unknown capability families.
+// TestGovernanceSkillsSections: the skills family is a governed hub section —
+// the default workspace wish `skills` must resolve to the hub:skills
+// inventory entry (SPEC-0084), not fail as an unknown capability family.
 func TestGovernanceSkillsSections(t *testing.T) {
 	d := t.TempDir()
 	if err := Init(d, "me"); err != nil {
@@ -155,10 +154,8 @@ func TestGovernanceSkillsSections(t *testing.T) {
 	if err != nil {
 		t.Fatalf("skills wishes must resolve to known sections: %v", err)
 	}
-	for _, name := range []string{"skills", "skills_manage"} {
-		if entry, ok := s.Tools[name]; !ok || entry.Via != ToolViaToolHub {
-			t.Fatalf("default workspace must wish %s: toolhub, got %+v", name, s.Tools[name])
-		}
+	if entry, ok := s.Tools["skills"]; !ok || entry.Via != ToolViaToolHub {
+		t.Fatalf("default workspace must wish skills: toolhub, got %+v", s.Tools["skills"])
 	}
 }
 
@@ -237,17 +234,17 @@ func TestGovernancePolicySnapshotRendered(t *testing.T) {
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
-	// cap:read on the hh family narrows it to read_only in the snapshot; an
-	// explicit-entry deny would fail the read instead (proven above), so the
-	// deny list is exercised through a default-scope attribute deny on a
+	// cap:read on a selected family narrows it to read_only in the snapshot;
+	// an explicit-entry deny would fail the read instead (proven above), so
+	// the deny list is exercised through a default-scope attribute deny on a
 	// family the space does not select.
 	seedGovernance(t, d, func(doc *api.Governance) {
 		doc.Rules = append(doc.Rules,
-			api.PolicyRule{RuleID: "cap-hh", Scope: api.ScopeGlobal, Section: "hub:hh", Effect: api.RuleCapRead, Reason: "test", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1},
+			api.PolicyRule{RuleID: "cap-media", Scope: api.ScopeGlobal, Section: "hub:media", Effect: api.RuleCapRead, Reason: "test", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1},
 			api.PolicyRule{RuleID: "deny-terminal-family", Scope: api.ScopeGlobal, Section: "hub:terminal", Effect: api.RuleDeny, Reason: "test", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1})
 	})
 	if _, err := Read(d); err != nil {
-		t.Fatalf("hh deny: %v", err)
+		t.Fatalf("media cap: %v", err)
 	}
 	if err := Render(d, root); err != nil {
 		t.Fatal(err)
@@ -260,7 +257,7 @@ func TestGovernancePolicySnapshotRendered(t *testing.T) {
 	if err := json.Unmarshal(body, &snapshot); err != nil {
 		t.Fatal(err)
 	}
-	if !snapshot.CappedReadOnly("hh") || snapshot.Denied("hh") || snapshot.Denied("files") {
+	if !snapshot.CappedReadOnly("media") || snapshot.Denied("media") || snapshot.Denied("files") {
 		t.Fatalf("snapshot sets wrong: %+v", snapshot)
 	}
 	if snapshot.Principal != "me" {

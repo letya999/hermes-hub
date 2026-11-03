@@ -174,6 +174,77 @@ models:
 	var _ = json.Marshal // silence unused import across skips
 }
 
+// TestMigrationMapsLegacyToolNamesToR5Toolsets pins the r4->r5 rename hints:
+// every retired `via: toolhub` alias lands on the catalog r5 toolset that
+// absorbed it, so the operator sees the new logical name in the plan.
+func TestMigrationMapsLegacyToolNamesToR5Toolsets(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "spaces", "alice")
+	write := func(name, body string) {
+		p := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("settings.yaml", `schema: 3
+user: alice
+model: default
+model_url: https://models.example.test
+oauth_port: 13001
+browser_port: 13002
+tools:
+  artifacts:
+    via: toolhub
+  code_exec:
+    via: toolhub
+  docs:
+    via: toolhub
+  hosting:
+    via: toolhub
+  image_gen:
+    via: toolhub
+  services:
+    via: toolhub
+  skills_manage:
+    via: toolhub
+`)
+	write("models.yaml", `providers:
+  acme:
+    url: https://acme.example.test
+models:
+  default:
+    ladder:
+      - provider: acme
+        model: acme-pro
+`)
+
+	rep, err := MigratePassport(PassportOptions{Dir: dir, Now: time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatalf("dry-run: %v", err)
+	}
+	joined := strings.Join(rep.Mapped, "\n")
+	for _, want := range []string{
+		"tools.artifacts -> tools.core.files",
+		"tools.code_exec -> tools.core.terminal",
+		"tools.docs -> tools.core.documents",
+		"tools.hosting -> tools.core.sites",
+		"tools.image_gen -> tools.core.media",
+		"tools.services -> tools.core.connectors",
+		"tools.skills_manage -> tools.core.skills",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("mapped missing %q:\n%s", want, joined)
+		}
+	}
+	for _, c := range rep.Conflicts {
+		if strings.Contains(c, "tools.") {
+			t.Fatalf("legacy tool name produced a conflict: %s", c)
+		}
+	}
+}
+
 // TestMigrationRejectsMixedAuthorityCorruptStoreAndSecretLeak covers the
 // remaining S11.1 failure cases: mixed legacy/new authority must be
 // reported, a corrupt governance store fails before any write, and the

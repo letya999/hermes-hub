@@ -6,16 +6,16 @@ import (
 )
 
 // The stable prompt contract is the agent's only routing map for monitoring
-// asks: it must steer "follow/monitor a source" requests to watch_subscribe
+// asks: it must steer "follow/monitor a source" requests to watch_create
 // and away from the cron-shaped kind=agent misuse that re-wakes the model
 // on a timer to re-check a source that produced nothing.
 func TestChannelContractGuidesWatchSubscription(t *testing.T) {
 	for _, want := range []string{
-		"watch_subscribe",
+		"watch_create",
 		"sink=notify",
 		"sink=agent",
 		"delivery=stream",
-		"watch_resume",
+		"watch_edit",
 		"filter",
 		"assignment_plan",
 	} {
@@ -39,14 +39,42 @@ func TestChannelContractDescribesSkillInventory(t *testing.T) {
 }
 
 // The contract names the live inventory path: without it the model cannot
-// know that a tool enabled mid-session is already visible through tools_list
-// and dispatchable through invoke (ADR-0089 D1/D3).
+// know that a tool enabled mid-session is already visible through tool_search
+// and dispatchable through tool_call (ADR-0089 D1/D3, ADR-0094 D6).
 func TestChannelContractNamesLiveToolInventory(t *testing.T) {
-	if !strings.Contains(ChannelContract, "tools_list") {
-		t.Error("channel contract must name tools_list as the live caller-scoped inventory")
+	if !strings.Contains(ChannelContract, "tool_search") {
+		t.Error("channel contract must name tool_search as the live caller-scoped inventory")
 	}
-	if !strings.Contains(ChannelContract, "invoke") {
-		t.Error("channel contract must explain that a listed name absent from the visible tool list is callable through invoke")
+	if !strings.Contains(ChannelContract, "tool_call") {
+		t.Error("channel contract must explain that a listed name absent from the visible tool list is callable through tool_call")
+	}
+}
+
+// M31.9: the contract teaches the model the frozen catalog r5 wire names.
+// A legacy name in the guidance steers calls at tools the surface no longer
+// projects, so every retired name is forbidden and the r5 name that replaced
+// it is required.
+func TestChannelContractUsesR5ToolNames(t *testing.T) {
+	for _, stale := range []string{
+		"system_guide", "tools_list", " invoke ", "watch_subscribe", "watch_pause",
+		"watch_resume", "watch_delete", "assignment_update", "assignment_apply",
+		"assignment_progress", "routine_get", "routine_delete", "skills_search",
+		"skills_list", "skill_view", "skill_manage", "image_inspect", "code_exec",
+		"exposure_open", "exposure_close", "search_files",
+	} {
+		if strings.Contains(ChannelContract, stale) {
+			t.Errorf("channel contract still names retired tool %q", stale)
+		}
+	}
+	for _, name := range []string{
+		"platform_guide", "tool_search", "tool_call", "watch_create", "watch_edit",
+		"watch_remove", "watch_list", "watch_sample", "assignment_edit",
+		"routine_read", "skill_search", "skill_edit", "media_inspect",
+		"terminal_exec", "exposure_create", "exposure_remove", "file_search",
+	} {
+		if !strings.Contains(ChannelContract, name) {
+			t.Errorf("channel contract missing r5 tool %q", name)
+		}
 	}
 }
 

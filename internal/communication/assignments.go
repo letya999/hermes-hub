@@ -102,6 +102,27 @@ func (g *Gateway) handleAssignmentItem(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, item)
 		return
 	}
+	// DELETE retires the record terminally (ADR-0094 assignment_remove):
+	// CAS-guarded like every mutation; applied artifacts retire with it.
+	if r.Method == http.MethodDelete && action == "" {
+		var control struct {
+			ExpectedRevision *uint64 `json:"expected_revision"`
+		}
+		if decodeJSON(r, &control) != nil || control.ExpectedRevision == nil || *control.ExpectedRevision != item.Revision {
+			http.Error(w, "revision conflict", http.StatusConflict)
+			return
+		}
+		if err := g.spool.rt.DeleteAssignment(id, caller, *control.ExpectedRevision); err != nil {
+			status := http.StatusBadRequest
+			if errors.Is(err, routines.ErrRoutineRevision) {
+				status = http.StatusConflict
+			}
+			http.Error(w, err.Error(), status)
+			return
+		}
+		writeJSON(w, map[string]string{"deleted": id})
+		return
+	}
 	if action == "plan" && r.Method == http.MethodPost {
 		g.assignmentPlanUpdate(w, r, id, caller, item)
 		return

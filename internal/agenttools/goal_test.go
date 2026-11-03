@@ -108,7 +108,7 @@ func TestGoalToolsDispatchAndCatalog(t *testing.T) {
 			t.Fatalf("%s posted op %q", name, lastOp)
 		}
 	}
-	for _, name := range []string{"goal_set", "goal_status", "goal_pause", "goal_clear", "goal_resume"} {
+	for _, name := range []string{"goal_status", "goal_edit", "goal_remove"} {
 		found := false
 		for _, spec := range HubToolsDefinition().Tools {
 			if spec.Name == name {
@@ -128,7 +128,7 @@ func TestGoalToolsDispatchAndCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"goal_set", "goal_status", "goal_pause", "goal_clear", "goal_resume"} {
+	for _, name := range []string{"goal_status", "goal_edit", "goal_remove"} {
 		exposed := false
 		for _, tool := range list.Tools {
 			if tool.Name == name {

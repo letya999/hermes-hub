@@ -100,7 +100,7 @@ func TestContextCompactDispatchAndCatalog(t *testing.T) {
 	}
 	found := false
 	for _, spec := range HubToolsDefinition().Tools {
-		if spec.Name == "context_compact" {
+		if spec.Name == "context_edit" {
 			found = true
 			if spec.Effect != api.WriteEffect || spec.CapabilityID == "" {
 				t.Fatalf("spec: %+v", spec)
@@ -108,7 +108,7 @@ func TestContextCompactDispatchAndCatalog(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatal("context_compact absent from the tool catalog")
+		t.Fatal("context_edit absent from the tool catalog")
 	}
 	client, closeConn := connectHub(t, fixture(t))
 	defer closeConn()
@@ -118,7 +118,7 @@ func TestContextCompactDispatchAndCatalog(t *testing.T) {
 	}
 	exposed := false
 	for _, tool := range list.Tools {
-		if tool.Name == "context_compact" {
+		if tool.Name == "context_edit" {
 			exposed = true
 		}
 	}

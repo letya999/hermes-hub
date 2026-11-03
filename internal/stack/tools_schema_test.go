@@ -160,8 +160,12 @@ func TestLegacySettingsMigration(t *testing.T) {
 	if !s.Tools["ssh"].Tools["write"] {
 		t.Fatalf("ssh_write migration lost: %+v", s.Tools["ssh"])
 	}
-	if s.Tools["terminal"].Via != "native" || s.Tools["hh"].Via != "toolhub" || s.Tools["clickhouse"].Via != "off" {
+	if s.Tools["terminal"].Via != "native" || s.Tools["clickhouse"].Via != "off" {
 		t.Fatalf("legacy fields not migrated: %+v", s.Tools)
+	}
+	// Catalog r5 has no hh executor — the migrated wish is pruned on read.
+	if _, ok := s.Tools["hh"]; ok {
+		t.Fatalf("dropped r4 family survived migration: %+v", s.Tools)
 	}
 	if !slices.Equal(s.Ingress, []string{"telegram"}) {
 		t.Fatalf("ingress migration lost: %v", s.Ingress)
@@ -246,7 +250,7 @@ func TestInitSeedsDefaultTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Tools["browser"].Via != "mcp" || s.Tools["hh"].Via != "toolhub" {
+	if s.Tools["browser"].Via != "mcp" || s.Tools["media"].Via != "toolhub" || s.Tools["skills"].Via != "toolhub" {
 		t.Fatalf("seeded tools wrong: %+v", s.Tools)
 	}
 	if _, ok := s.Tools["memory"]; ok {

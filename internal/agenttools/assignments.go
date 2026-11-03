@@ -26,6 +26,7 @@ var assignmentRoutes = map[string][2]string{
 	"assignment_cancel":   {http.MethodPost, "/v1/assignments/{id}/cancel"},
 	"assignment_complete": {http.MethodPost, "/v1/assignments/{id}/complete"},
 	"assignment_progress": {http.MethodPost, "/v1/assignments/{id}/progress"},
+	"assignment_remove":   {http.MethodDelete, "/v1/assignments/{id}"},
 }
 
 // Assignment dispatches the assignment_* ops onto the assignment REST
@@ -64,7 +65,7 @@ func (t *Tools) Assignment(ctx context.Context, op string, r Input) (map[string]
 			return nil, errors.New("plan must be a JSON object")
 		}
 		payload = map[string]any{"plan": plan, "expected_revision": r.ExpectedRevision}
-	case "assignment_apply", "assignment_pause", "assignment_resume", "assignment_cancel", "assignment_complete":
+	case "assignment_apply", "assignment_pause", "assignment_resume", "assignment_cancel", "assignment_complete", "assignment_remove":
 		payload = map[string]any{"expected_revision": r.ExpectedRevision}
 	case "assignment_progress":
 		payload = map[string]any{"expected_revision": r.ExpectedRevision, "job_id": r.JobID, "summary": r.Summary, "finding": r.Finding, "next_step": r.NextStep, "complete": r.Complete}

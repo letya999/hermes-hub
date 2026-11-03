@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"time"
 )
 
@@ -66,9 +67,12 @@ func (g *Gateway) projectedServer(auth identity.Envelope) (*mcp.Server, map[stri
 	if projected, err = g.filterProjectedTools(auth, projected); err != nil {
 		return nil, nil, nil, err
 	}
-	server.AddTool(&mcp.Tool{Name: "system_guide", Description: "Read the Hermes Hub system guide: concepts, MCP/connector/CLI formats, ownership, access, inventory and recovery evidence. Static documentation; no account data or mutations.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	server.AddTool(&mcp.Tool{Name: "platform_guide", Description: "Read the Hermes Hub system guide: concepts, MCP/connector/CLI formats, ownership, access, inventory and recovery evidence. Static documentation; no account data or mutations.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: systemguide.Skill}}}, nil
 	})
+	g.addPlatformStatusTool(server, auth)
+	g.addPlatformBootstrapTool(server, auth)
+	g.addPlatformUsageTool(server, auth)
 	g.addToolsListTool(server, auth)
 	// R6.1: a profile carrying a compiled core bound projects direct schemas
 	// only for those names. Extended tools stay reachable through tools_list
@@ -99,7 +103,14 @@ func (g *Gateway) allowedControls(auth identity.Envelope) (map[string]bool, erro
 func (g *Gateway) addProjectedTool(server *mcp.Server, auth identity.Envelope, projected api.ProjectedTool) {
 	name, tool := projected.Name, projected.Tool
 	schema := g.projectedToolSchema(tool)
-	server.AddTool(&mcp.Tool{Name: name, Description: tool.Description, InputSchema: schema}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	// Annotations derive from the declared effect (tool-design 6.4): a read
+	// tool is readOnlyHint, a terminal deletion carries destructiveHint.
+	annotations := &mcp.ToolAnnotations{ReadOnlyHint: tool.Effect == api.ReadEffect}
+	if strings.HasSuffix(name, "_remove") {
+		destructive := true
+		annotations.DestructiveHint = &destructive
+	}
+	server.AddTool(&mcp.Tool{Name: name, Description: tool.Description, InputSchema: schema, Annotations: annotations}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		// Per-request correlation rides in the HTTP headers; the streamable
 		// session detaches the outer request context, so RequestExtra.Header
 		// is the only carrier that reaches the tool call itself.

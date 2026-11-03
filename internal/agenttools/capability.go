@@ -1,6 +1,8 @@
 package agenttools
 
 import (
+	"strings"
+
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
@@ -10,10 +12,12 @@ import (
 const HubToolsDefinitionID = "hub-agent-tools"
 
 // HubToolsDefinition returns the reviewed agent-tools catalog: one ToolSpec
-// per handler with the exact capability tuple it consumes. The operator
-// selects tools (with capability, implementation digest, path prefixes and
-// limits) into capability profiles; nothing here is reachable without a
-// selection.
+// per callable under the catalog r5 vocabulary (ADR-0094 D1). Every model
+// tool carries its family capability id, its RBAC `requires` and the
+// executor that runs the call behind the PEP — `handler:<family>` for the
+// in-runtime agenttools executor, `runtime:<api>`/`connector:<name>`/
+// `flow:<name>` for surfaces dispatched outside it. `internal`/`operator`
+// tools execute through ToolHub but are never placeable or model-visible.
 func HubToolsDefinition() api.ToolDefinition {
 	arg := func(name, typ string, required bool) api.CLIArgument {
 		return api.CLIArgument{Name: name, Type: typ, Required: required}
@@ -21,19 +25,40 @@ func HubToolsDefinition() api.ToolDefinition {
 	path := arg("path", "string", true)
 	str := func(name string) api.CLIArgument { return arg(name, "string", true) }
 	opt := func(name string) api.CLIArgument { return arg(name, "string", false) }
+	intArg := func(name string, required bool) api.CLIArgument { return arg(name, "integer", required) }
+	boolArg := func(name string, required bool) api.CLIArgument { return arg(name, "boolean", required) }
+	arrArg := func(name string, required bool) api.CLIArgument { return arg(name, "array", required) }
+	objArg := func(name string, required bool) api.CLIArgument { return arg(name, "object", required) }
 	use := func(action, resource string, args ...string) []api.CapabilityUse {
 		if len(args) > 0 {
 			return []api.CapabilityUse{{Action: action, Resource: resource, PathArgument: args[0]}}
 		}
 		return []api.CapabilityUse{{Action: action, Resource: resource}}
 	}
+	// tool builds a model-audience spec whose executor defaults to the
+	// in-runtime handler of its capability family.
 	tool := func(name, capability, right, description string, effect api.Effect, uses []api.CapabilityUse, arguments ...api.CLIArgument) api.ToolSpec {
-		return api.ToolSpec{Name: name, Effect: effect, CapabilityID: capability, Requires: []string{right}, Description: description, Uses: uses, Arguments: arguments}
+		family, _, _ := strings.Cut(capability, ".")
+		return api.ToolSpec{
+			Name: name, Effect: effect, CapabilityID: capability,
+			Requires: []string{right}, Description: description, Uses: uses,
+			Arguments: arguments, Audience: api.AudienceModel, Executor: "handler:" + family,
+		}
+	}
+	// remote builds a spec executed outside the in-runtime handler —
+	// connector:, flow: or runtime: executors; still cataloged by the one
+	// definition so projection and rights stay single-sourced.
+	remote := func(name, capability, right, description string, effect api.Effect, executor api.Executor, arguments ...api.CLIArgument) api.ToolSpec {
+		return api.ToolSpec{
+			Name: name, Effect: effect, CapabilityID: capability,
+			Requires: []string{right}, Description: description,
+			Arguments: arguments, Audience: api.AudienceModel, Executor: executor,
+		}
 	}
 	return api.ToolDefinition{
 		Schema:       api.SchemaVersion,
 		DefinitionID: HubToolsDefinitionID,
-		Version:      "5.12.0",
+		Version:      "6.0.0",
 		Transport:    api.AgentTools,
 		Source:       api.DefinitionSource{},
 		Workload: api.WorkloadPolicy{
@@ -46,117 +71,160 @@ func HubToolsDefinition() api.ToolDefinition {
 			CPUMillis:      500,
 			MemoryMiB:      256,
 			MaxPIDs:        32,
-			// Declared egress contract for provider-facing tools. The executor
-			// runs inside the agent network where egress is relay-bounded; SSH
-			// endpoints come from the operator-reviewed ssh capability config.
-			Egress: []string{"api.hh.ru", "communication-hub"},
+			Egress:         []string{"api.hh.ru", "communication-hub"},
 		},
 		Health: api.HealthProbe{Kind: "exec", Value: "hubctl", TimeoutSeconds: 5},
 		Tools: []api.ToolSpec{
-			tool("file_list", "files.list", "workspace.read", "List files inside the admitted workspace scope.", api.ReadEffect, use("list", "files", "path"), opt("root"), opt("path")),
-			tool("file_read", "files.read", "workspace.read", "Read one file inside the admitted workspace scope.", api.ReadEffect, use("read", "files", "path"), opt("root"), path),
-			tool("file_write", "files.write", "workspace.write", "Create or update one file inside the admitted workspace scope; revision-guarded.", api.WriteEffect, use("write", "files", "path"), opt("root"), path, str("text"), opt("revision")),
-			tool("file_search", "files.search", "workspace.read", "Search file contents inside the admitted workspace scope.", api.ReadEffect, use("search", "files", "path"), opt("root"), opt("path"), str("query")),
-			tool("service_catalog", "services.read", "stack.inspect", "List optional services available on this runtime.", api.ReadEffect, use("read", "services")),
-			tool("service_enable", "services.enable", "stack.change", "Enable one self-service integration declared in the catalog.", api.WriteEffect, use("enable", "services"), str("service")),
-			tool("service_disable", "services.disable", "stack.change", "Disable one self-service integration declared in the catalog.", api.WriteEffect, use("disable", "services"), str("service")),
-			// Runtime self-settings: the same admitted/audited discipline as
-			// service_* — a reviewed key allowlist, typed values, atomic file,
-			// restart-scheduled application. No arbitrary config writes.
-			tool("settings_get", "settings.read", "config.read", "Show runtime self-setting overrides: the manageable key allowlist, current overrides and their effective values. Secret values are never shown.", api.ReadEffect, use("read", "settings"), opt("key")),
-			tool("context_status", "context.read", "memory.read", "Show this session's context control state: effective threshold, journaled compaction count and last event, live token estimate. Unknown is null.", api.ReadEffect, use("read", "context"), opt("id"), opt("context")),
-			tool("context_compact", "context.compact", "memory.remember", "Compact this session's transcript at a turn boundary: prune tool outputs, summarize the head, keep a verbatim tail. A busy session refuses deterministically unless queue parks the request. Result is metadata only.", api.WriteEffect, use("compact", "context"), opt("id"), opt("context"), opt("focus"), opt("engine"), arg("here", "integer", false), arg("prune", "boolean", false), arg("preview", "boolean", false), arg("queue", "boolean", false)),
-			tool("goal_set", "goals.set", "tools.select", "Set or replace this conversation's persistent goal. The goal keeps working across turns with verified completion and a bounded turn budget.", api.WriteEffect, use("set", "goals"), str("text")),
-			tool("goal_status", "goals.read", "tools.select", "Show this conversation's goal record: status, turns used against the budget, last verdict and bounded reason.", api.ReadEffect, use("read", "goals")),
-			tool("goal_pause", "goals.pause", "tools.select", "Pause this conversation's goal: queued continuations no-op until resume.", api.WriteEffect, use("pause", "goals")),
-			tool("goal_resume", "goals.resume", "tools.select", "Resume a paused goal and queue its next turn.", api.WriteEffect, use("resume", "goals")),
-			tool("goal_clear", "goals.delete", "tools.select", "Clear this conversation's goal record entirely.", api.WriteEffect, use("delete", "goals")),
-			tool("settings_set", "settings.write", "config.edit_own", "Set one manageable runtime setting or reset it to the rendered default. Applies after the scheduled runtime restart.", api.WriteEffect, use("write", "settings"), str("key"), opt("value")),
-			tool("routine_create", "routines.create", "tools.select", routineDescriptions["routine_create"], api.WriteEffect, use("create", "routines"), str("id"), str("timezone"), str("expression"), str("text"), opt("origin_job_id"), opt("destination_task_id"), opt("kind"), opt("url"), opt("regex"), opt("expect"), opt("probe_kind"), opt("tool"), opt("args"), opt("service"), opt("steps"), opt("wait_for"), opt("needs"), opt("recipe"), opt("extract"), opt("probe_script"), opt("deliver_mode"), opt("artifact_name"), opt("notify_mode"), opt("quiet_from"), opt("quiet_to"), arg("daily_limit", "integer", false), arg("max_retries", "integer", false), arg("source_ids", "array", false), arg("timing", "object", false)),
-			tool("routine_list", "routines.list", "tools.select", routineDescriptions["routine_list"], api.ReadEffect, use("list", "routines"), arg("limit", "integer", false), opt("cursor"), opt("kind"), opt("state"), opt("query"), opt("view")),
-			tool("routine_get", "routines.get", "tools.select", routineDescriptions["routine_get"], api.ReadEffect, use("list", "routines"), str("id"), arg("include", "array", false), arg("history_limit", "integer", false), opt("history_cursor"), arg("preview_limit", "integer", false)),
-			tool("routine_edit", "routines.update", "tools.select", routineDescriptions["routine_edit"], api.WriteEffect, use("update", "routines"), str("id"), str("action"), arg("expected_revision", "integer", true), arg("patch", "object", false), opt("until"), opt("origin_job_id")),
-			tool("routine_delete", "routines.delete", "tools.select", routineDescriptions["routine_delete"], api.WriteEffect, use("delete", "routines"), str("id"), arg("expected_revision", "integer", true)),
-			tool("watch_subscribe", "watches.create", "stack.change", routineDescriptions["watch_subscribe"], api.WriteEffect, use("create", "watches"), str("id"), str("timezone"), str("expression"), str("text"), str("tool"), opt("sink"), opt("args"), opt("delivery"), opt("filter"), opt("sources"), opt("cursor_arg"), arg("min_interval_seconds", "integer", false)),
-			tool("watch_list", "watches.list", "observability.read_own_logs", routineDescriptions["watch_list"], api.ReadEffect, use("list", "watches")),
-			tool("watch_pause", "watches.pause", "stack.change", routineDescriptions["watch_pause"], api.WriteEffect, use("update", "watches"), str("id")),
-			tool("watch_resume", "watches.resume", "stack.change", routineDescriptions["watch_resume"], api.WriteEffect, use("update", "watches"), str("id")),
-			tool("watch_delete", "watches.delete", "stack.change", routineDescriptions["watch_delete"], api.WriteEffect, use("delete", "watches"), str("id")),
-			tool("watch_sample", "watches.sample", "observability.read_own_logs", routineDescriptions["watch_sample"], api.ReadEffect, use("read", "watches"), str("id"), opt("filter")),
-			// Standing assignments (SPEC-0080 R2.3): the agent plans and
-			// steers; the owner alone widens grants via chat authorize —
-			// no authorize argument exists on any assignment tool.
-			tool("assignment_plan", "assignments.plan", "tools.select", "Dry-run an already-saved draft assignment plan before apply: pass plan as JSON {sources:[{name,schedule}],specialist:{instructions,reply},unavailable:[{reference,reason}]}. Returns per-source structural verdicts; persists nothing.", api.ReadEffect, use("plan", "assignments"), str("plan")),
-			tool("assignment_create", "assignments.create", "tools.select", "Immediately save the owner's verbatim intent as a durable draft before checking any sources. Pass text and optional title, omit plan and queue. Later use assignment_update to save bounded source-check batches, assignment_plan for structural dry-run, then assignment_apply. Grants bound LLM spend (default daily wake cap 20).", api.WriteEffect, use("create", "assignments"), str("text"), opt("title"), opt("plan"), arg("queue", "boolean", false)),
-			tool("assignment_list", "assignments.list", "tools.select", "List the owner's standing assignments: id, title, state (draft|active|waiting|paused|completed|cancelled|failed), blocked reason, durable counters.", api.ReadEffect, use("list", "assignments"), arg("limit", "integer", false), opt("cursor")),
-			tool("assignment_get", "assignments.get", "tools.select", "Read one assignment card: state, applied schedule receipts, plan revision, grants, checkpoint counters, blocked reason.", api.ReadEffect, use("list", "assignments"), str("id")),
-			tool("assignment_update", "assignments.update", "tools.select", "Save an assignment draft's plan after each bounded source-check batch: plan JSON may include unavailable:[{reference,reason}]; include only verified accessible chats in probe.sources. Use expected_revision from get/list. Grant widening remains owner-only.", api.WriteEffect, use("update", "assignments"), str("id"), str("plan"), arg("expected_revision", "integer", true)),
-			tool("assignment_apply", "assignments.apply", "tools.select", "Provision or repair an assignment's schedule artifacts (idempotent). Requires expected_revision.", api.WriteEffect, use("update", "assignments"), str("id"), arg("expected_revision", "integer", true)),
-			tool("assignment_pause", "assignments.pause", "tools.select", "Pause an assignment and all its sources; wakes and deliveries stop until resume. Requires expected_revision.", api.WriteEffect, use("update", "assignments"), str("id"), arg("expected_revision", "integer", true)),
-			tool("assignment_resume", "assignments.resume", "tools.select", "Resume a paused assignment; schedules recompute their next due times. Requires expected_revision.", api.WriteEffect, use("update", "assignments"), str("id"), arg("expected_revision", "integer", true)),
-			tool("assignment_cancel", "assignments.delete", "tools.select", "Cancel an assignment — terminal: sources retire and stale effects stay fenced. Does not recall messages already sent. Requires expected_revision.", api.WriteEffect, use("delete", "assignments"), str("id"), arg("expected_revision", "integer", true)),
-			tool("assignment_complete", "assignments.complete", "tools.select", "Mark an assignment completed and retire its sources. Requires expected_revision.", api.WriteEffect, use("update", "assignments"), str("id"), arg("expected_revision", "integer", true)),
-			tool("assignment_progress", "assignments.progress", "tools.select", "Record one triggered specialist result: bounded summary, optional finding to accumulate, next_step, and complete=true only when the owner's completion condition is met. Requires this running trigger's job_id and the current expected_revision from assignment_get; retries for the same job are idempotent.", api.WriteEffect, use("update", "assignments"), str("id"), str("job_id"), str("summary"), opt("finding"), opt("next_step"), arg("complete", "boolean", false), arg("expected_revision", "integer", true)),
-			tool("document_extract", "documents.read", "workspace.read", "Extract text from a document inside the admitted scope.", api.ReadEffect, use("read", "documents", "path"), path),
+			// ---- files (8): absorbs archives, artifacts, knowledge; inbox is
+			// internal. root selects the admitted filesystem root.
+			tool("file_list", "files.list", "workspace.read", "List files under an admitted root.", api.ReadEffect, use("list", "files", "path"), opt("root"), opt("path"), intArg("limit", false), opt("cursor")),
+			tool("file_read", "files.read", "workspace.read", "Read one file under an admitted root with bounded output; pass next_offset as offset for the following chunk.", api.ReadEffect, use("read", "files", "path"), opt("root"), path, intArg("offset", false), intArg("limit", false)),
+			tool("file_search", "files.search", "workspace.read", "Search file contents under an admitted root; returns matching snippets with line numbers.", api.ReadEffect, use("search", "files", "path"), opt("root"), opt("path"), str("query"), intArg("limit", false)),
+			tool("file_write", "files.write", "workspace.write", "Create or overwrite one file under a writable root, creating parent directories; revision-guarded on existing files.", api.WriteEffect, use("write", "files", "path"), opt("root"), path, str("text"), opt("revision")),
+			tool("file_edit", "files.edit", "workspace.write", "Replace text inside one existing file under a writable root; revision-guarded.", api.WriteEffect, use("edit", "files", "path"), opt("root"), path, str("old_string"), str("new_string"), boolArg("replace_all", false), opt("revision")),
+			tool("file_mkdir", "files.mkdir", "workspace.write", "Create a directory under a writable root.", api.WriteEffect, use("create", "files", "path"), opt("root"), path, boolArg("parents", false)),
+			tool("file_archive", "files.archive", "workspace.write", "Pack files into an archive or unpack one inside the admitted scope.", api.WriteEffect, append(use("read", "files", "paths"), use("create", "artifacts", "path")...), str("action"), opt("path"), arrArg("paths", false), opt("name")),
+			tool("file_remove", "files.remove", "workspace.write", "Delete one file under a writable root.", api.WriteEffect, use("remove", "files", "path"), opt("root"), path),
+			{
+				Name: "inbox_fetch", CapabilityID: "inbox.fetch", Requires: []string{"workspace.read"},
+				Effect: api.WriteEffect, Audience: api.AudienceInternal, Executor: "handler:files",
+				Description: "Materialize a file the user sent to the chat into workspace inbox/; a zip is unpacked from memory and never written as an archive.",
+				Uses:        append(use("fetch", "inbound"), use("create", "files")...), Arguments: []api.CLIArgument{str("id")},
+			},
+
+			// ---- documents (5)
+			tool("document_extract", "documents.read", "workspace.read", "Extract text from a document inside the admitted scope. Supported: txt, md, csv, html, pdf, xlsx, pptx; doc and docx stay unsupported.", api.ReadEffect, use("read", "documents", "path"), path),
 			tool("document_create", "documents.create", "workspace.write", "Create a document artifact from supplied text.", api.WriteEffect, use("create", "documents"), str("name"), str("format"), str("text")),
 			tool("document_edit", "documents.edit", "workspace.write", "Replace the text of a document artifact inside the admitted scope.", api.WriteEffect, use("edit", "documents", "path"), path, str("text")),
 			tool("document_convert", "documents.convert", "workspace.write", "Convert a document inside the admitted scope into a new artifact.", api.WriteEffect, append(use("convert", "documents", "path"), use("create", "artifacts")...), path, str("name"), str("format")),
-			tool("image_inspect", "images.read", "workspace.read", "Inspect one or more images inside the admitted scope.", api.ReadEffect, use("read", "images", "path"), path),
-			tool("images_inspect", "images.inspect", "workspace.read", "Compare up to eight images in one request within an admitted directory.", api.ReadEffect, use("read", "images", "paths"), arg("paths", "array", true)),
-			tool("archive_create", "archives.create", "workspace.write", "Pack workspace files into a new zip under artifacts.", api.WriteEffect, append(use("read", "files", "paths"), use("create", "artifacts", "path")...), path, arg("paths", "array", true)),
-			tool("archive_unpack", "archives.unpack", "workspace.write", "Unpack a zip inside the admitted scope into artifacts/unpacked.", api.WriteEffect, append(use("read", "files", "path"), use("create", "artifacts")...), path, str("name")),
-			tool("inbox_fetch", "inbox.fetch", "workspace.read", "Materialize a file the user sent to the chat into workspace inbox/; a zip is unpacked from memory and never written as an archive.", api.WriteEffect, append(use("fetch", "inbound"), use("create", "files")...), str("id")),
-			tool("knowledge_list", "knowledge.list", "memory.read", "List read-only knowledge sources staged for this user on the hub.", api.ReadEffect, use("read", "knowledge")),
-			tool("knowledge_search", "knowledge.search", "memory.search", "Search read-only knowledge; excerpts include source, line and content hash.", api.ReadEffect, use("read", "knowledge"), str("query")),
-			tool("knowledge_read", "knowledge.read", "memory.read", "Read one staged knowledge source; the content returns as tool output and never lands in the workspace.", api.ReadEffect, use("read", "knowledge"), str("name")),
-			tool("image_convert", "images.convert", "workspace.write", "Convert an image inside the admitted scope into a new artifact.", api.WriteEffect, append(use("convert", "images", "path"), use("create", "artifacts")...), str("name"), path, str("format")),
-			tool("artifact_remove", "artifacts.delete", "workspace.write", "Remove one artifact inside the admitted scope.", api.WriteEffect, use("delete", "artifacts", "path"), path),
-			tool("image_generate", "image_gen.generate", "workspace.write", "Generate an image with the granted provider.", api.WriteEffect, use("generate", "images"), str("name"), str("prompt")),
-			tool("image_edit", "image_gen.edit", "workspace.write", "Edit an image inside the admitted scope with the granted provider.", api.WriteEffect, use("edit", "images", "path"), str("name"), path, str("prompt")),
+			tool("document_remove", "documents.remove", "workspace.write", "Delete one document artifact inside the admitted scope.", api.WriteEffect, use("remove", "documents", "path"), path),
+
+			// ---- media (7): images, conversion, generation, STT/TTS
+			tool("media_inspect", "media.inspect", "workspace.read", "Inspect or compare images inside the admitted scope.", api.ReadEffect, use("read", "media", "paths"), arrArg("paths", true)),
+			tool("media_convert", "media.convert", "workspace.write", "Convert a media file inside the admitted scope into a new artifact.", api.WriteEffect, append(use("convert", "media", "path"), use("create", "artifacts")...), str("name"), path, str("format")),
+			tool("media_generate", "media.generate", "workspace.write", "Generate an image or submit a video job with the granted provider.", api.WriteEffect, use("generate", "media"), str("name"), str("prompt"), str("kind")),
+			tool("media_edit", "media.edit", "workspace.write", "Edit an image inside the admitted scope with the granted provider.", api.WriteEffect, use("edit", "media", "path"), str("name"), path, str("prompt")),
+			tool("media_fetch", "media.fetch", "workspace.read", "Check one media job by id and stage the finished result under artifacts.", api.ReadEffect, use("fetch", "media"), str("id"), opt("name")),
+			tool("media_transcribe", "media.transcribe", "workspace.read", "Transcribe an audio file inside the admitted scope to text.", api.ReadEffect, use("read", "media", "path"), path, opt("language"), boolArg("timestamps", false)),
+			tool("media_speak", "media.speak", "channels.send_voice", "Synthesize text to audio delivered through the active channel.", api.WriteEffect, use("speak", "media"), str("text"), opt("language")),
+
+			// ---- terminal (2): persistent exec + job control. Runs on the
+			// in-runtime daemon executor — background jobs live in its
+			// registry and outlive the call (#441 S1).
 			{
-				Name:         "code_exec",
-				CapabilityID: "terminal.exec",
-				Requires:     []string{"tools.select"},
-				Effect:       api.WriteEffect,
-				Sandboxed:    true,
-				Description:  "Run a bounded script in a disposable container: read-only inputs from the admitted scope, private scratch, no network; exported files land under the scope. Optional `skill` leases that skill's stored credentials into this one call — nothing else ever sees them.",
-				Uses:         append(append(use("exec", "terminal"), use("read", "files", "path")...), use("write", "files", "path")...),
+				Name: "terminal_exec", CapabilityID: "terminal.exec", Requires: []string{"exec.run"},
+				Effect: api.WriteEffect, Audience: api.AudienceModel, Executor: "handler:terminal",
+				Description: "Run a bounded command in the workspace execution environment; returns bounded output or a job id for background runs.",
+				Uses:        append(append(use("exec", "terminal"), use("read", "files", "path")...), use("write", "files", "path")...),
 				Arguments: []api.CLIArgument{
-					arg("command", "string", true), arg("path", "string", true), opt("skill"),
+					str("cmd"), opt("cwd"), intArg("timeout", false), opt("stdin"), opt("shell"),
+					boolArg("background", false), opt("path"), opt("skill"),
 				},
 			},
-			tool("hh_search", "hh.search", "tools.select", "Search HeadHunter vacancies for the authorized query.", api.ReadEffect, use("read", "hh"), str("query"), api.CLIArgument{Name: "page", Type: "integer"}),
-			tool("hh_vacancy", "hh.vacancy", "tools.select", "Read one HeadHunter vacancy.", api.ReadEffect, use("read", "hh"), str("id")),
-			tool("hh_resumes", "hh.resumes", "tools.select", "List the owner resumes on HeadHunter.", api.ReadEffect, use("read", "hh")),
-			tool("hh_apply", "hh.apply", "tools.select", "Apply to one HeadHunter vacancy with the reviewed resume and message.", api.WriteEffect, use("apply", "hh"), str("id"), str("resume_id"), str("message"), api.CLIArgument{Name: "authorized", Type: "boolean", Required: true}),
-			tool("ssh_hosts", "ssh.list", "tools.select", "List SSH hosts declared in the reviewed capability config.", api.ReadEffect, use("list", "ssh")),
-			tool("ssh_exec", "ssh.exec", "tools.select", "Run a bounded command on a declared SSH host. Reconcile uncertain outcomes before any repeat; audit admission is required.", api.WriteEffect, use("exec", "ssh"), str("host"), str("command")),
-			tool("ssh_read", "ssh.read", "tools.select", "Read a remote file on a declared SSH host. Reconcile uncertain outcomes before any repeat; close still attempts cleanup if audit fails.", api.ReadEffect, use("read", "ssh"), str("host"), path),
-			tool("ssh_write", "ssh.write", "tools.select", "Write a remote file on a declared SSH host when the write grant is active. Reconcile uncertain outcomes before any repeat; close still attempts cleanup if audit fails.", api.WriteEffect, use("write", "ssh"), str("host"), path, str("text")),
-			tool("ssh_shell_open", "ssh.shell", "tools.select", "Open an interactive shell on a declared SSH host when the shell grant is active. Reconcile uncertain outcomes before any repeat; close still attempts cleanup if audit fails.", api.WriteEffect, use("shell", "ssh"), str("host")),
-			tool("ssh_shell_send", "ssh.shell_send", "tools.select", "Send input to an open SSH shell. Reconcile uncertain outcomes before any repeat; close still attempts cleanup if audit fails.", api.WriteEffect, use("shell", "ssh"), str("id"), str("data")),
-			tool("ssh_shell_read", "ssh.shell_read", "tools.select", "Read output from an open SSH shell. Reconcile uncertain outcomes before any repeat; close still attempts cleanup if audit fails.", api.ReadEffect, use("shell", "ssh"), str("id"), api.CLIArgument{Name: "offset", Type: "integer"}),
-			tool("ssh_shell_close", "ssh.shell_close", "tools.select", "Close an open SSH shell. Reconcile uncertain outcomes before any repeat; close still attempts cleanup if audit fails.", api.WriteEffect, use("shell", "ssh"), str("id")),
-			tool("ssh_tunnel_open", "ssh.tunnel", "tools.select", "Open a tunnel through a declared SSH host when the tunnel grant is active. Reconcile uncertain outcomes before any repeat; close still attempts cleanup if audit fails.", api.WriteEffect, use("tunnel", "ssh"), str("host"), str("name")),
-			tool("ssh_tunnel_list", "ssh.tunnel_list", "tools.select", "List open SSH tunnels.", api.ReadEffect, use("tunnel", "ssh")),
-			tool("ssh_tunnel_close", "ssh.tunnel_close", "tools.select", "Close an SSH tunnel. Reconcile uncertain outcomes before any repeat; close still attempts cleanup if audit fails.", api.WriteEffect, use("tunnel", "ssh"), str("id")),
-			tool("site_list", "hosting.list", "stack.inspect", "List own hosted sites without share tokens.", api.ReadEffect, use("list", "hosting")),
-			tool("site_status", "hosting.status", "stack.inspect", "Show own site state and revision.", api.ReadEffect, use("read", "hosting"), str("name")),
-			tool("site_unpublish", "hosting.unpublish", "stack.change", "Revoke and remove an own site revision.", api.WriteEffect, use("remove", "hosting"), str("name"), str("request_id"), arg("expected_revision", "integer", true)),
-			tool("site_publish", "hosting.publish", "stack.change", "Publish prebuilt workspace files to an own site slot.", api.WriteEffect, append(use("publish", "hosting"), use("read", "files", "path")...), str("name"), path, str("request_id"), arg("expected_revision", "integer", true), opt("mode"), opt("access"), opt("profile"), arg("lifetime_seconds", "integer", false), arg("authorized", "boolean", false)),
-			tool("exposure_list", "exposure.list", "stack.inspect", "List live public exposures, including uncertain effects requiring reconciliation.", api.ReadEffect, use("list", "exposure")),
-			tool("exposure_status", "exposure.status", "stack.inspect", "Show one live public exposure; uncertain=true requires reconciliation.", api.ReadEffect, use("read", "exposure"), str("name")),
-			tool("exposure_open", "exposure.open", "stack.change", "Open one declared endpoint's public tunnel. Reconcile uncertain outcomes before any repeat.", api.WriteEffect, use("open", "exposure"), str("name")),
-			tool("exposure_close", "exposure.close", "stack.change", "Close one live public exposure. An audit failure must not prevent stopping access; reconcile uncertain outcomes.", api.WriteEffect, use("close", "exposure"), str("name")),
-			// SPEC-0083 R5.*: governed skills surface. Reads live under the
-			// skills family, every mutation under skills_manage and always
-			// lands as a draft — publication is a human confirmation.
-			tool("skill", "skills.invoke", "skills.invoke", "Activate a skill by name: returns its frontmatter-stripped instructions, resource file names (never contents) and the read-only skill directory.", api.ReadEffect, use("invoke", "skills"), str("name"), opt("args")),
-			tool("skills_search", "skills.search", "skills.list", "Search the eligible skill catalog by name and description; returns name, source and short description.", api.ReadEffect, use("read", "skills"), str("query"), api.CLIArgument{Name: "limit", Type: "integer"}, opt("source")),
-			tool("skills_list", "skills.read", "skills.list", "List catalog skills in pages of 20 with source, description and usage counters; entries carry eligible and unavailable ones name their missing requirements.", api.ReadEffect, use("read", "skills"), opt("source"), api.CLIArgument{Name: "offset", Type: "integer"}),
-			tool("skill_view", "skills.view", "skills.list", "Inspect one skill: file listing or bounded file text; version reads a retained revision.", api.ReadEffect, use("read", "skills"), str("name"), opt("path"), opt("version")),
-			tool("skill_manage", "skills_manage.manage", "skills.draft", "Propose a skill change: create/patch/edit/write_file/remove_file/delete/archive/restore/propose_to_org, install/update from a GitHub or GitLab URL, install_local from a workspace path (directory, zip archive or SKILL.md file), check_updates. Every mutating action returns a draft with diff, lint and scan — nothing goes live without the owner's approval card.", api.WriteEffect, use("manage", "skills_manage"),
-				str("action"), str("name"), str("reason"), opt("content"), opt("category"), opt("old_string"), opt("new_string"), opt("file_path"), opt("base_revision"), opt("absorbed_into"), opt("version"), opt("url"), opt("ref"), opt("path"), opt("grant")),
+			tool("terminal_job", "terminal.job", "exec.run", "Poll, feed, kill or list background jobs started by terminal_exec.", api.WriteEffect, use("exec", "jobs"), str("action"), opt("job"), opt("data")),
+
+			// ---- ssh (6): consolidated from 11
+			tool("ssh_list", "ssh.list", "ssh.list", "List SSH hosts declared in the reviewed capability config.", api.ReadEffect, use("list", "ssh")),
+			tool("ssh_read", "ssh.read", "ssh.read", "Read a remote file on a declared SSH host.", api.ReadEffect, use("read", "ssh"), str("host"), path),
+			tool("ssh_write", "ssh.write", "ssh.write", "Write a remote file on a declared SSH host when the write grant is active.", api.WriteEffect, use("write", "ssh"), str("host"), path, str("text")),
+			tool("ssh_exec", "ssh.exec", "ssh.exec", "Run a bounded command on a declared SSH host.", api.WriteEffect, use("exec", "ssh"), str("host"), str("command"), intArg("timeout", false)),
+			tool("ssh_shell", "ssh.shell", "ssh.shell", "Drive an interactive shell on a declared SSH host: open a session, send input, read output, close.", api.WriteEffect, use("shell", "ssh"), str("action"), opt("host"), opt("session"), opt("data"), intArg("offset", false)),
+			tool("ssh_tunnel", "ssh.tunnel", "ssh.tunnel", "Open, list or close tunnels through a declared SSH host.", api.WriteEffect, use("tunnel", "ssh"), str("action"), opt("host"), opt("name"), opt("session")),
+
+			// ---- exposure (3): consolidated from 4
+			tool("exposure_list", "exposure.list", "exposure.list", "List live public exposures or show one by id, including uncertain effects requiring reconciliation.", api.ReadEffect, use("list", "exposure"), opt("id")),
+			tool("exposure_create", "exposure.create", "exposure.create", "Open one declared endpoint's public tunnel.", api.WriteEffect, use("create", "exposure"), str("name")),
+			tool("exposure_remove", "exposure.remove", "exposure.remove", "Close one live public exposure; a close still attempts to stop access on audit failure.", api.WriteEffect, use("remove", "exposure"), str("name")),
+
+			// ---- routines (5)
+			tool("routine_list", "routines.list", "tasks.schedule", routineDescriptions["routine_list"], api.ReadEffect, use("list", "routines"), intArg("limit", false), opt("cursor"), opt("kind"), opt("state"), opt("query"), opt("view")),
+			tool("routine_read", "routines.read", "tasks.schedule", routineDescriptions["routine_get"], api.ReadEffect, use("read", "routines"), str("id"), arrArg("include", false), intArg("history_limit", false), opt("history_cursor"), intArg("preview_limit", false)),
+			tool("routine_create", "routines.create", "tasks.schedule", routineDescriptions["routine_create"], api.WriteEffect, use("create", "routines"), str("id"), str("timezone"), str("expression"), str("text"), opt("origin_job_id"), opt("destination_task_id"), opt("kind"), opt("url"), opt("regex"), opt("expect"), opt("probe_kind"), opt("tool"), opt("args"), opt("service"), opt("steps"), opt("wait_for"), opt("needs"), opt("recipe"), opt("extract"), opt("probe_script"), opt("deliver_mode"), opt("artifact_name"), opt("notify_mode"), opt("quiet_from"), opt("quiet_to"), intArg("daily_limit", false), intArg("max_retries", false), arrArg("source_ids", false), objArg("timing", false)),
+			tool("routine_edit", "routines.edit", "tasks.schedule", routineDescriptions["routine_edit"], api.WriteEffect, use("update", "routines"), str("id"), str("action"), intArg("expected_revision", true), objArg("patch", false), opt("until"), opt("origin_job_id")),
+			tool("routine_remove", "routines.remove", "tasks.schedule", routineDescriptions["routine_delete"], api.WriteEffect, use("remove", "routines"), str("id"), intArg("expected_revision", true)),
+
+			// ---- watches (5)
+			tool("watch_list", "watches.list", "tasks.observe", routineDescriptions["watch_list"], api.ReadEffect, use("list", "watches")),
+			tool("watch_create", "watches.create", "tasks.observe", routineDescriptions["watch_subscribe"], api.WriteEffect, use("create", "watches"), str("id"), str("timezone"), str("expression"), str("text"), str("tool"), opt("sink"), opt("args"), opt("delivery"), opt("filter"), arrArg("sources", false), opt("cursor_arg"), intArg("min_interval_seconds", false)),
+			tool("watch_edit", "watches.edit", "tasks.observe", "Pause or resume one owned event subscription by schedule id.", api.WriteEffect, use("update", "watches"), str("id"), str("action")),
+			tool("watch_remove", "watches.remove", "tasks.observe", routineDescriptions["watch_delete"], api.WriteEffect, use("remove", "watches"), str("id")),
+			tool("watch_sample", "watches.sample", "tasks.observe", routineDescriptions["watch_sample"], api.ReadEffect, use("read", "watches"), str("id"), opt("filter")),
+
+			// ---- assignments (6): plan stays separate, lifecycle via edit
+			tool("assignment_list", "assignments.list", "tasks.delegate", "List the owner's standing assignments: id, title, state, blocked reason, durable counters.", api.ReadEffect, use("list", "assignments"), intArg("limit", false), opt("cursor")),
+			tool("assignment_read", "assignments.read", "tasks.delegate", "Read one assignment card: state, applied schedule receipts, plan revision, grants, checkpoint counters, blocked reason.", api.ReadEffect, use("read", "assignments"), str("id")),
+			tool("assignment_plan", "assignments.plan", "tasks.delegate", "Dry-run a saved draft assignment plan before apply: returns per-source structural verdicts; persists nothing.", api.ReadEffect, use("plan", "assignments"), objArg("plan", true)),
+			tool("assignment_create", "assignments.create", "tasks.delegate", "Save the owner's verbatim intent as a durable draft before checking any sources; grants bound LLM spend.", api.WriteEffect, use("create", "assignments"), str("text"), opt("title"), objArg("plan", false), boolArg("queue", false)),
+			tool("assignment_edit", "assignments.edit", "tasks.delegate", "Steer one assignment: update plan, apply, pause, resume, record progress, cancel or complete. Cancel terminates work; removal is assignment_remove.", api.WriteEffect, use("update", "assignments"), str("id"), str("action"), intArg("expected_revision", true), objArg("plan", false), opt("job_id"), opt("summary"), opt("finding"), opt("next_step"), boolArg("complete", false)),
+			tool("assignment_remove", "assignments.remove", "tasks.delegate", "Delete one assignment record; does not recall messages already sent.", api.WriteEffect, use("remove", "assignments"), str("id"), intArg("expected_revision", true)),
+
+			// ---- goals (3)
+			tool("goal_status", "goals.read", "goals.read", "Show this conversation's goal record: status, turns used against the budget, last verdict and bounded reason.", api.ReadEffect, use("read", "goals")),
+			tool("goal_edit", "goals.edit", "goals.edit", "Set, pause or resume this conversation's persistent goal.", api.WriteEffect, use("update", "goals"), str("action"), opt("text")),
+			tool("goal_remove", "goals.remove", "goals.remove", "Clear this conversation's goal record entirely.", api.WriteEffect, use("remove", "goals")),
+
+			// ---- context (2)
+			tool("context_status", "context.read", "context.read", "Show this session's context control state: effective threshold, journaled compaction count and last event, live token estimate.", api.ReadEffect, use("read", "context"), opt("id"), opt("context")),
+			tool("context_edit", "context.edit", "context.edit", "Compact this session's transcript at a turn boundary (action=compact): prune tool outputs, summarize the head, keep a verbatim tail.", api.WriteEffect, use("update", "context"), str("action"), opt("id"), opt("context"), opt("focus"), opt("engine"), intArg("here", false), boolArg("prune", false), boolArg("preview", false), boolArg("queue", false)),
+
+			// ---- settings (2)
+			tool("settings_read", "settings.read", "config.read", "Show runtime self-setting overrides: the manageable key allowlist, current overrides and their effective values. Secret values are never shown.", api.ReadEffect, use("read", "settings"), opt("key")),
+			tool("settings_edit", "settings.edit", "config.edit_own", "Set one manageable runtime setting or reset it to the rendered default. Applies after the scheduled runtime restart.", api.WriteEffect, use("update", "settings"), str("key"), opt("value")),
+
+			// ---- sessions (6): hub-runtime SessionStore; unavailable without it
+			remote("session_list", "sessions.list", "sessions.list", "List sessions of this space: id, channel, created/last_active, status, size.", api.ReadEffect, "runtime:sessions", intArg("limit", false), opt("cursor")),
+			remote("session_search", "sessions.search", "sessions.search", "Search sessions of this space by content or title.", api.ReadEffect, "runtime:sessions", str("query"), intArg("limit", false)),
+			remote("session_read", "sessions.read", "sessions.read", "Read a bounded transcript of one session in this space.", api.ReadEffect, "runtime:sessions", str("id"), intArg("offset", false), intArg("limit", false)),
+			remote("session_switch", "sessions.switch", "sessions.switch", "Move the active-session pointer; returns switched_to and resumed_from.", api.WriteEffect, "runtime:sessions", str("id")),
+			remote("session_edit", "sessions.edit", "sessions.manage", "Archive or restore one session of this space; archive keeps the transcript.", api.WriteEffect, "runtime:sessions", str("id"), str("action")),
+			remote("session_remove", "sessions.remove", "sessions.manage", "Delete one session of this space terminally.", api.WriteEffect, "runtime:sessions", str("id")),
+
+			// ---- models (2): hub-side model-relay serves the passport view
+			remote("model_list", "models.list", "models.list", "List routes, ladders and per-service status from the models passport.", api.ReadEffect, "runtime:models"),
+			remote("model_switch", "models.switch", "models.switch", "Switch the active model or route inside the granted ladder.", api.WriteEffect, "runtime:models", str("name")),
+
+			// ---- skills (3): Agent Skills invocation convention
+			tool("skill", "skills.invoke", "skills.invoke", "Activate a skill by name: returns its frontmatter-stripped instructions, resource file names (never contents) and the read-only skill directory.", api.ReadEffect, use("invoke", "skills"), str("name"), opt("path"), opt("args")),
+			tool("skill_search", "skills.search", "skills.list", "Search or list the skill catalog: name, source, description, eligibility and usage counters; an empty query lists all.", api.ReadEffect, use("read", "skills"), opt("query"), intArg("limit", false), opt("source"), intArg("offset", false)),
+			tool("skill_edit", "skills.edit", "skills.draft", "Propose a skill change: create/patch/edit/write_file/remove_file/delete/archive/restore/propose_to_org/install/update/install_local/check_updates/configure. Every mutating action returns a draft with diff, lint and scan.", api.WriteEffect, use("manage", "skills"),
+				str("action"), str("name"), opt("reason"), opt("content"), opt("category"), opt("old_string"), opt("new_string"), opt("file_path"), opt("base_revision"), opt("absorbed_into"), opt("version"), opt("url"), opt("ref"), opt("path"), opt("grant")),
+
+			// ---- connectors (5): ToolHub connector control; credentials never
+			// travel through tool args or results.
+			remote("connector_search", "connectors.search", "connectors.discover", "Search the connector catalog by name and kind; returns connector ids and availability.", api.ReadEffect, "runtime:connectors", opt("query"), opt("kind"), intArg("limit", false)),
+			remote("connector_list", "connectors.list", "connectors.discover", "List connectors visible to this space with their status.", api.ReadEffect, "runtime:connectors"),
+			remote("connector_status", "connectors.status", "connectors.discover", "Show one connector's status; verbose adds diagnostics.", api.ReadEffect, "runtime:connectors", str("name"), boolArg("verbose", false)),
+			remote("connector_install", "connectors.install", "connectors.prepare", "Install a connector of a declared kind; returns a protected credential form when required — never accepts secrets in arguments.", api.WriteEffect, "runtime:connectors", str("name"), opt("kind")),
+			remote("connector_edit", "connectors.edit", "connectors.enable", "Change a connector's lifecycle: enable, disable, allow_writes, reauth (returns a protected URL only) or remove.", api.WriteEffect, "runtime:connectors", str("name"), str("action")),
+
+			// ---- web (2): hub-side web provider relay; cataloged names over
+			// the space's configured search/fetch backends
+			remote("web_search", "web.search", "web.search", "Search the web through the space's configured provider.", api.ReadEffect, "runtime:web", str("query"), intArg("limit", false)),
+			remote("web_fetch", "web.fetch", "web.read", "Fetch one URL's content as bounded text; untrusted data.", api.ReadEffect, "runtime:web", str("url")),
+
+			// ---- sites (3): publishing lifecycle; was hosting
+			tool("site_list", "sites.list", "stack.inspect", "List own hosted sites or show one by id, without share tokens.", api.ReadEffect, use("list", "sites"), opt("id")),
+			tool("site_publish", "sites.publish", "stack.change", "Publish prebuilt workspace files to an own site slot.", api.WriteEffect, append(use("publish", "sites"), use("read", "files", "path")...), str("name"), path, str("request_id"), intArg("expected_revision", true), opt("mode"), opt("access"), opt("profile"), intArg("lifetime_seconds", false), boolArg("authorized", false)),
+			tool("site_remove", "sites.remove", "stack.change", "Revoke and remove an own site revision terminally.", api.WriteEffect, use("remove", "sites"), str("name"), str("request_id"), intArg("expected_revision", true)),
+
+			// ---- research (3): async deep-research flow
+			remote("research_create", "research.create", "research.create", "Start an async deep-research job on a topic; returns a job id.", api.WriteEffect, "flow:deep_research", str("topic"), opt("depth"), arrArg("sources", false)),
+			remote("research_read", "research.read", "research.read", "Read a research job's status and report reference.", api.ReadEffect, "flow:deep_research", str("id")),
+			remote("research_list", "research.list", "research.read", "List research jobs of this space.", api.ReadEffect, "flow:deep_research", intArg("limit", false)),
+
+			// ---- browser (4): curated names over the browser connector
+			remote("browser_open", "browser.open", "browser.open", "Open a browser session on a URL under the user or guest profile; returns a session id.", api.WriteEffect, "connector:browser", str("url"), opt("profile")),
+			remote("browser_read", "browser.read", "browser.read", "Read a browser session's page content or snapshot as bounded markdown.", api.ReadEffect, "connector:browser", str("session")),
+			remote("browser_act", "browser.act", "browser.act", "Act in a browser session: click, type, scroll, press, select, wait or close.", api.WriteEffect, "connector:browser", str("session"), str("action"), opt("target"), opt("value")),
+			remote("browser_capture", "browser.capture", "browser.capture", "Capture a browser session as a screenshot or pdf written to the workspace.", api.ReadEffect, "connector:browser", str("session"), str("kind")),
+
+			// ---- platform (6): pinned discovery/self layer
+			remote("platform_guide", "platform.guide", "platform.guide", "Orient in this space: channels, active families, working directory and how to reach the rest.", api.ReadEffect, "runtime:toolhub"),
+			remote("platform_status", "platform.status", "platform.status", "Show own health and diagnostics with allowlisted fields only.", api.ReadEffect, "runtime:toolhub"),
+			remote("platform_bootstrap", "platform.bootstrap", "platform.bootstrap", "Show or complete pending first-run setup steps; idempotent after completion.", api.WriteEffect, "runtime:toolhub", opt("action"), opt("step")),
+			remote("platform_usage", "platform.usage", "platform.usage", "Show space consumption: tokens and cost per model and period against models.yaml limits.", api.ReadEffect, "runtime:toolhub", opt("period")),
+			remote("tool_search", "platform.search", "tools.list", "Search the extended tool inventory by name, description, parameters or definition; names matching here are callable through tool_call.", api.ReadEffect, "runtime:toolhub", opt("query"), opt("name"), intArg("limit", false)),
+			remote("tool_call", "platform.call", "tools.select", "Invoke one extended tool by name with arguments; admission identical to a direct call.", api.WriteEffect, "runtime:toolhub", str("tool"), objArg("arguments", true)),
 		},
 	}
 }

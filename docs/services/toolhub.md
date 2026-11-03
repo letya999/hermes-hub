@@ -1,6 +1,6 @@
 ---
 description: toolhub — capability gateway: tool admission, governance evaluation, connector lifecycle, audit ledger.
-last_verified: 2026-11-02
+last_verified: 2026-11-03
 ---
 
 # toolhub
@@ -60,9 +60,9 @@ tool call crosses. Listens `0.0.0.0:8090`, host-bound to `127.0.0.1:8090`.
   `--kind agent-tools` (installs the cataloged definition and mints the
   binding under the principal's exact context/runtime/policy envelope), and
   sibling token enrollment via the infra space render. The MCP session then
-  projects `system_guide`/`tools_list` plus the bounded core directly;
-  extended selections stay live through `tools_list` and `invoke` under the
-  connectors contract. The periodic projection refresh applies the same
+  projects `platform_guide`/`tool_search` plus the bounded core directly;
+  extended selections stay live through `tool_search` and `tool_call` under
+  the connectors contract. The periodic projection refresh applies the same
   core bound as the initial build — an extended selection re-admitted by a
   profile revision never regains a direct schema. Profiles whose identity
   (principal/context/runtime/environment/generation/policy_version) or

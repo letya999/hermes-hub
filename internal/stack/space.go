@@ -339,6 +339,9 @@ func finishRead(s Settings, dir string, withPassport bool) (Settings, error) {
 	if err := applyProfiles(&s, dir); err != nil {
 		return s, err
 	}
+	for name := range droppedToolhubFamilies {
+		delete(s.Tools, name)
+	}
 	if withPassport {
 		// Runtime validation covers passport-owned fields (ports, mounts)
 		// the intent view legitimately leaves empty.

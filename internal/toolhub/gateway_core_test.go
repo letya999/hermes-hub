@@ -3,6 +3,7 @@ package toolhub
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,6 +96,15 @@ func TestToolsetCoreLimitAndExtendedInvokeRevoke(t *testing.T) {
 	}
 	if !names["workspace_read"] || !names["workspace_send"] {
 		t.Fatalf("extended tool missing from live inventory: %v", names)
+	}
+	// M31.9: the live-inventory guidance names only r5 wire tools — a retired
+	// name here steers the model at a tool the surface no longer projects.
+	note, _ := listed["note"].(string)
+	if !strings.Contains(note, "tool_call") || !strings.Contains(note, "skill_search") {
+		t.Fatalf("inventory note must name the r5 dispatch and skills tools: %q", note)
+	}
+	if strings.Contains(note, "invoke") || strings.Contains(note, "skills_list") {
+		t.Fatalf("inventory note still names retired tools: %q", note)
 	}
 
 	// The extended name is admitted through the same dispatch a direct call

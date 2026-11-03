@@ -155,6 +155,29 @@ type OwnerRef struct {
 	ID   string    `json:"id"`
 }
 
+// Audience marks who a tool is for (ADR-0094 D3, SPEC-0093 R1.3). Model
+// tools are the only ones a toolset may carry and the only ones the model
+// surfaces may project; internal/operator tools still execute through
+// ToolHub but are never placeable, never searchable and never in a
+// direct schema.
+type Audience string
+
+const (
+	AudienceModel    Audience = "model"
+	AudienceInternal Audience = "internal"
+	AudienceOperator Audience = "operator"
+)
+
+// Executor names who runs the call behind the PEP (ADR-0094 D2), spelled
+// as handler:<family>, connector:<name>, flow:<name>, runtime:<api>,
+// native or off. `via` stays the delivery/admission route.
+type Executor = string
+
+const (
+	ExecutorNative = "native"
+	ExecutorOff    = "off"
+)
+
 type ToolSpec struct {
 	Name         string          `json:"name"`
 	Description  string          `json:"description,omitempty"`
@@ -168,6 +191,12 @@ type ToolSpec struct {
 	// catalog toolset member declares the same vocabulary.
 	Requires       []string          `json:"requires,omitempty"`
 	ArgumentEquals map[string]string `json:"argument_equals,omitempty"`
+	// Audience defaults to model; internal/operator tools never reach the
+	// model surface (ADR-0094 D3).
+	Audience Audience `json:"audience,omitempty"`
+	// Executor records which backend runs the call behind the PEP;
+	// empty means the toolset's own executor (ADR-0094 D2).
+	Executor Executor `json:"executor,omitempty"`
 	// Sandboxed marks a tool dispatched to the disposable scratch executor
 	// rather than the per-call in-runtime executor. Only the AgentTools
 	// transport may carry it: it changes which control channel runs the call.

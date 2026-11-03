@@ -11,11 +11,11 @@
 #   off           explicit deny; absent means denied
 # access: ro      strips every mutation path the backend can honour
 tools:
-  file:
+  files:
     via: toolhub
     paths: [docs]
   documents: toolhub
-  images: toolhub
+  media: toolhub
   # Native Hermes toolsets are default-deny (SPEC-0083 R3.1): uncomment a
   # wish AND grant it — hubctl governance --kind grant native:<name>.
   # todo: native
@@ -23,9 +23,7 @@ tools:
   # web: native         # web search/extract toolset; provider keys via secrets
   # deep_research: native # bundled bounded deep-research skill; needs web
   browser: mcp        # playwright read/navigate; tools: {act: true} adds mutations
-  hh: toolhub
-  skills: toolhub        # agent skills catalog: search/list/view/invoke
-  skills_manage: toolhub # skill drafts + owner-approved publish
+  skills: toolhub        # agent skills: invoke/search/view plus draft edits
   # terminal: native   # relaxed grant: full workspace reach, no call audit
   # code_exec: toolhub # sandboxed execution in a disposable container
   # ssh: {via: toolhub, access: ro}

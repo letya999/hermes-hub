@@ -47,9 +47,9 @@ func fixtureInputs(t *testing.T) passport.Inputs {
 					"memory": map[string]any{"backend": []any{"local", "honcho"}},
 				},
 				"tools": {"core": map[string]any{
-					"native:file":  map[string]any{"via": "native"},
-					"hub:files":    map[string]any{"via": "toolhub"},
-					"hub:terminal": map[string]any{"via": "toolhub"},
+					"native:file": map[string]any{"via": "native"},
+					"files":       map[string]any{"via": "toolhub"},
+					"terminal":    map[string]any{"via": "toolhub"},
 				}},
 				"workspace": {
 					"writable":  []any{"/workspace", "/vault"},
@@ -87,7 +87,7 @@ func fixtureInputs(t *testing.T) passport.Inputs {
 						},
 					},
 				},
-				"tools":     {"core": map[string]any{"native:file": map[string]any{"via": "native"}, "hub:files": map[string]any{"via": "toolhub"}}},
+				"tools":     {"core": map[string]any{"native:file": map[string]any{"via": "native"}, "files": map[string]any{"via": "toolhub"}}},
 				"workspace": {"writable": []any{"/workspace"}, "read_only": []any{"/config", "/skills"}},
 				"models": {
 					"default": "everyday",
@@ -107,7 +107,7 @@ func fixtureInputs(t *testing.T) passport.Inputs {
 		OrgCeiling: passport.Layer{
 			Name: "acme-ceiling", Version: 3,
 			Docs: map[string]map[string]any{
-				"tools":  {"core": map[string]any{"native:file": map[string]any{"via": "native"}, "hub:files": map[string]any{"via": "toolhub"}}},
+				"tools":  {"core": map[string]any{"native:file": map[string]any{"via": "native"}, "files": map[string]any{"via": "toolhub"}}},
 				"grants": {"allow": []any{"workspace", "tools"}},
 			},
 		},
@@ -564,8 +564,9 @@ func TestWorkspaceTreeDerivedFromLayout(t *testing.T) {
 
 // R6.1/A6: tools.yaml projects whole toolsets — core never exceeds twenty
 // selected tools and never splits a family, overflow lands in extended in
-// deterministic catalog order, discovery stays core, and the catalog pin
-// makes a release bump a visible diff rather than a silent growth.
+// deterministic catalog order, the platform layer stays pinned in core, and
+// the catalog pin makes a release bump a visible diff rather than a silent
+// growth.
 func TestToolsetCoreLimitAndExtendedInvokeRevoke(t *testing.T) {
 	rev := compileFixture(t)
 	core, err := rev.Value("tools", "core")
@@ -579,19 +580,27 @@ func TestToolsetCoreLimitAndExtendedInvokeRevoke(t *testing.T) {
 	if _, ok := coreMap["native:file"]; !ok {
 		t.Fatalf("user toolset selection lost: %v", coreMap)
 	}
-	disc, _ := coreMap["discovery"].(map[string]any)
-	if fmt.Sprint(disc["via"]) != "toolhub" {
-		t.Fatalf("discovery not pinned in core: %v", coreMap)
+	platform, _ := coreMap["platform"].(map[string]any)
+	if fmt.Sprint(platform["via"]) != "toolhub" {
+		t.Fatalf("platform layer not pinned in core: %v", coreMap)
+	}
+	if _, leaked := coreMap["discovery"]; leaked {
+		t.Fatalf("legacy discovery pseudo-toolset leaked into core: %v", coreMap)
 	}
 
 	// A toolset whose members would overflow the core budget moves to
 	// extended wholesale — no family is ever split.
 	in := fixtureInputs(t)
-	in.PlatformCeiling.Docs["tools"]["core"].(map[string]any)["hub:tools"] = map[string]any{"via": "toolhub"}
-	in.OrgCeiling.Docs["tools"]["core"].(map[string]any)["hub:tools"] = map[string]any{"via": "toolhub"}
+	for _, fat := range []string{"assignments", "goals", "sessions", "watches"} {
+		in.PlatformCeiling.Docs["tools"]["core"].(map[string]any)[fat] = map[string]any{"via": "toolhub"}
+		in.OrgCeiling.Docs["tools"]["core"].(map[string]any)[fat] = map[string]any{"via": "toolhub"}
+	}
 	in.User.Docs["tools"]["core"] = map[string]any{
 		"native:file": map[string]any{"via": "native"},
-		"hub:tools":   map[string]any{"via": "toolhub"},
+		"assignments": map[string]any{"via": "toolhub"},
+		"goals":       map[string]any{"via": "toolhub"},
+		"sessions":    map[string]any{"via": "toolhub"},
+		"watches":     map[string]any{"via": "toolhub"},
 	}
 	fat, err := passport.Compile(in)
 	if err != nil {
@@ -602,11 +611,11 @@ func TestToolsetCoreLimitAndExtendedInvokeRevoke(t *testing.T) {
 		t.Fatalf("tools.extended: %v", err)
 	}
 	extMap, _ := extended.(map[string]any)
-	if _, ok := extMap["hub:tools"]; !ok {
+	if _, ok := extMap["watches"]; !ok {
 		t.Fatalf("overflowing toolset not moved to extended: %v", extMap)
 	}
 	core2, _ := fat.Value("tools", "core")
-	if _, inCore := core2.(map[string]any)["hub:tools"]; inCore {
+	if _, inCore := core2.(map[string]any)["watches"]; inCore {
 		t.Fatal("overflow toolset stayed in core — family split")
 	}
 
@@ -617,7 +626,7 @@ func TestToolsetCoreLimitAndExtendedInvokeRevoke(t *testing.T) {
 	restricted := fixtureInputs(t)
 	restricted.User.Docs["tools"]["core"] = map[string]any{
 		"native:file": map[string]any{"via": "native"},
-		"hub:files": map[string]any{
+		"files": map[string]any{
 			"via":    "toolhub",
 			"access": "read",
 			"tools":  map[string]any{"exclude": []any{"file_write"}},
@@ -627,7 +636,7 @@ func TestToolsetCoreLimitAndExtendedInvokeRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("enforceable toolset restriction rejected: %v", err)
 	}
-	hf, _ := okRev.Value("tools", "core.hub:files")
+	hf, _ := okRev.Value("tools", "core.files")
 	if fmt.Sprint(hf.(map[string]any)["access"]) != "read" {
 		t.Fatalf("access restriction lost: %v", hf)
 	}
@@ -646,7 +655,7 @@ func TestToolsetCoreLimitAndExtendedInvokeRevoke(t *testing.T) {
 		bad := fixtureInputs(t)
 		bad.User.Docs["tools"]["core"] = map[string]any{
 			"native:file": map[string]any{"via": "native"},
-			"hub:files":   spec,
+			"files":       spec,
 		}
 		if _, err := passport.Compile(bad); err == nil {
 			t.Fatalf("%s compiled", name)
@@ -672,19 +681,18 @@ func TestToolsetCoreLimitAndExtendedInvokeRevoke(t *testing.T) {
 func TestSkillConnectorPassportProjectionAndRawMCPDenial(t *testing.T) {
 	in := fixtureInputs(t)
 	offer := map[string]any{
-		"native:file":       map[string]any{"via": "native"},
-		"hub:files":         map[string]any{"via": "toolhub"},
-		"hub:skills":        map[string]any{"via": "toolhub"},
-		"hub:skills_manage": map[string]any{"via": "toolhub"},
-		"connectors":        map[string]any{"via": "toolhub"},
-		"user_mcp":          map[string]any{"via": "mcp-raw"},
-		"org_mcp":           map[string]any{"via": "mcp-raw"},
+		"native:file": map[string]any{"via": "native"},
+		"files":       map[string]any{"via": "toolhub"},
+		"skills":      map[string]any{"via": "toolhub"},
+		"connectors":  map[string]any{"via": "toolhub"},
+		"user_mcp":    map[string]any{"via": "mcp-raw"},
+		"org_mcp":     map[string]any{"via": "mcp-raw"},
 	}
 	in.PlatformCeiling.Docs["tools"]["core"] = offer
 	in.OrgCeiling.Docs["tools"] = map[string]any{"core": offer}
 	in.User.Docs["tools"]["core"] = map[string]any{
 		"native:file": map[string]any{"via": "native"},
-		"hub:skills":  map[string]any{"via": "toolhub"},
+		"skills":      map[string]any{"via": "toolhub"},
 		"connectors":  map[string]any{"via": "toolhub"},
 		"org_mcp":     map[string]any{"via": "mcp-raw"},
 	}
@@ -701,9 +709,19 @@ func TestSkillConnectorPassportProjectionAndRawMCPDenial(t *testing.T) {
 		t.Fatal(err)
 	}
 	coreMap, _ := core.(map[string]any)
-	for _, want := range []string{"hub:skills", "connectors", "org_mcp"} {
+	extended, err := rev.Value("tools", "extended")
+	if err != nil {
+		t.Fatal(err)
+	}
+	extMap, _ := extended.(map[string]any)
+	// The pinned platform family occupies six of the twenty-member core
+	// budget, so an admitted toolset may land in extended — the projection
+	// must carry it either way.
+	for _, want := range []string{"skills", "connectors", "org_mcp"} {
 		if _, ok := coreMap[want]; !ok {
-			t.Fatalf("compiled projection lost admitted toolset %s: %v", want, coreMap)
+			if _, ok := extMap[want]; !ok {
+				t.Fatalf("compiled projection lost admitted toolset %s: core=%v extended=%v", want, coreMap, extMap)
+			}
 		}
 	}
 

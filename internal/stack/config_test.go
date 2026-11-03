@@ -1265,7 +1265,7 @@ func TestManagedRenderNoProxyCoversBrowserSidecar(t *testing.T) {
 	settings.CapabilityMode = "managed"
 	settings.CapabilityProfileID = "p"
 	settings.CapabilityGeneration = 1
-	settings.Tools, settings.Ingress = testTools("browser", "hh=toolhub"), testIngress("browser")
+	settings.Tools, settings.Ingress = testTools("browser", "media=toolhub"), testIngress("browser")
 	if err := saveSpace(dir, settings); err != nil {
 		t.Fatal(err)
 	}

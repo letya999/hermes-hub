@@ -80,7 +80,7 @@ func TestSystemGuideRoutingSurvivesCustomPersona(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, required := range []string{"hermes-hub-system-guide", "system_guide", "MCP", "CLI", "connector", "provider access"} {
+			for _, required := range []string{"hermes-hub-system-guide", "platform_guide", "MCP", "CLI", "connector", "provider access"} {
 				if !strings.Contains(string(body), required) {
 					t.Errorf("mode=%q env=%s: required guide routing %q missing", mode, env, required)
 				}

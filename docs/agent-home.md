@@ -1,6 +1,6 @@
 ---
 description: The agent's home — SOUL.md persona contract, skills registry, bundled skills, hooks, memory and runtime-writable state.
-last_verified: 2026-11-02
+last_verified: 2026-11-03
 ---
 
 # Agent home
@@ -39,7 +39,7 @@ Two bundled defaults under `config/skills/`:
 
 The mandatory English `hermes-hub-system-guide` is maintained separately at
 [`internal/systemguide/SKILL.md`](../internal/systemguide/SKILL.md). Its compiled
-content is the single source for the installed skill and ToolHub `system_guide`.
+content is the single source for the installed skill and ToolHub `platform_guide`.
 It covers vocabulary, formats, ownership, surfaces, inventory, status evidence,
 credential diagnosis and source navigation. See [system guide delivery](system-guide.md).
 
@@ -55,8 +55,8 @@ registry at `skills/registry.json` (`internal/skills`). Each `Record` carries
 result, `consent`, enable/rollback revisions and a `revoked` flag — a staged
 skill is data until consented, and revocation is durable. Managed capability
 mode disables the native skill loader and shadows extension roots. Its reviewed
-reference is the authenticated, static ToolHub `system_guide` read tool; it does
-not enable native skills, plugins or connector lifecycle permissions.
+reference is the authenticated, static ToolHub `platform_guide` read tool; it
+does not enable native skills, plugins or connector lifecycle permissions.
 
 Both modes receive a short guide-routing rule in the hub-owned channel
 contract. Render and supervisor config materialization compose that contract
@@ -79,8 +79,8 @@ entrypoints, and upstream's `load_soul_identity` still injects the mounted
 `generated/soul-effective.<env>.md` — the single contract, read-only. A
 published passport revision appends a `<hub_contract>` pointer to that file:
 `revision=<id>`, the bounded core tool names, an `extended=+N` count and the
-`tools_list`/`invoke` discovery pointer — inventory stays lazy, never a
-catalog dump.
+`platform=tool_search+tool_call` discovery pointer — inventory stays lazy,
+never a catalog dump.
 
 ## Hooks and plugins
 

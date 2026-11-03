@@ -184,13 +184,25 @@ func (e ToolEntry) enabled() bool { return e.Via != "" && e.Via != ToolViaOff }
 // toolhubFamilies are the capability families the managed agenttools executor
 // can serve. internal/agenttools tests assert its catalog stays within this
 // set — the names are the operator-facing vocabulary, not implementation.
+// Catalog r5 keeps the absorbed legacy entry names as aliases (SPEC-0093
+// R5.2); `hh` is gone for good — see droppedToolhubFamilies.
 var toolhubFamilies = map[string]bool{
 	"files": true, "file": true, "documents": true, "docs": true,
-	"images": true, "artifacts": true, "routines": true, "services": true,
-	"hh": true, "ssh": true, "image_gen": true, "terminal": true,
+	"media": true, "images": true, "artifacts": true, "routines": true,
+	"ssh": true, "image_gen": true, "terminal": true,
 	"code_exec": true, "web": true, "settings": true, "exposure": true, "hosting": true,
 	"assignments": true, "skills": true, "skills_manage": true,
+	"services": true,
+	// Catalog r5 families (ADR-0094).
+	"watches": true, "goals": true, "context": true, "sites": true,
+	"research": true, "connectors": true, "models": true, "sessions": true,
+	"browser": true,
 }
+
+// droppedToolhubFamilies are r4 capability families with no r5 executor —
+// catalog r5 moved them to recipes. A stale wish is pruned on read so it
+// cannot pin a governance section that no longer exists (SPEC-0093 R5.2).
+var droppedToolhubFamilies = map[string]bool{"hh": true}
 
 // mcpConnectors are builtin MCP-provided capabilities: rendered directly only
 // in unmanaged mode where a local server exists; under managed mode they are
@@ -227,12 +239,16 @@ var toolToggleTokens = map[string]map[string]bool{
 // not depend on profile wording.
 var toolhubCapabilityID = map[string]string{
 	"files": "files", "file": "files", "documents": "documents", "docs": "documents",
-	"images": "images", "artifacts": "artifacts", "routines": "routines",
-	"services": "services", "hh": "hh", "ssh": "ssh", "image_gen": "image_gen",
+	"media": "media", "images": "media", "artifacts": "files", "routines": "routines",
+	"services": "connectors", "connectors": "connectors", "ssh": "ssh", "image_gen": "media",
 	"terminal": "terminal", "code_exec": "terminal", "web": "web",
-	"settings": "settings", "exposure": "exposure", "hosting": "hosting",
+	"settings": "settings", "exposure": "exposure", "hosting": "sites", "sites": "sites",
 	"assignments": "assignments",
-	"skills":      "skills", "skills_manage": "skills_manage",
+	"skills":      "skills", "skills_manage": "skills",
+	// Catalog r5 families map onto their own capability id (ADR-0094).
+	"watches": "watches", "goals": "goals", "context": "context",
+	"research": "research", "models": "models", "sessions": "sessions",
+	"browser": "browser",
 }
 
 // ToolHubCapabilityID reports the executor capability family a `via: toolhub`
@@ -670,6 +686,9 @@ func (s Settings) Has(name string) bool {
 		return s.toolToggle("google", "write")
 	case "telegram_write":
 		return s.toolToggle("telegram_user", "write")
+	case "image_gen":
+		// The r5 media family covers the image_gen surface.
+		return s.toolEntry("image_gen").enabled() || s.toolEntry("media").enabled()
 	default:
 		return s.toolEntry(name).enabled()
 	}
@@ -679,7 +698,7 @@ func (s Settings) Has(name string) bool {
 // per-backend field discipline and the managed/native boundary.
 func (s Settings) validateTools() error {
 	if s.toolEntry("terminal").Via == ToolViaToolHub && s.toolEntry("code_execution").Via == ToolViaNative {
-		return fmt.Errorf("terminal: toolhub conflicts with native code_execution; use the networkless code_exec tool")
+		return fmt.Errorf("terminal: toolhub conflicts with native code_execution; use the networkless terminal_exec tool")
 	}
 	managed := s.CapabilityMode == "managed"
 	for name, e := range s.Tools {

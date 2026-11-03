@@ -76,7 +76,7 @@ func v2FixtureInputs(t *testing.T) Inputs {
 				},
 			},
 			"workspace": {"writable": []any{"/workspace"}},
-			"tools":     {"extended": map[string]any{"connectors": map[string]any{"via": "toolhub", "tools": map[string]any{"exclude": []any{"connector_remove"}}}}},
+			"tools":     {"extended": map[string]any{"connectors": map[string]any{"via": "toolhub", "tools": map[string]any{"exclude": []any{"connector_install"}}}}},
 		}},
 		Grants: map[string][]string{
 			"workspace": {"read", "write"},

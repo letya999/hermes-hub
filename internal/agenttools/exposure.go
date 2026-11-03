@@ -2,6 +2,7 @@ package agenttools
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 
@@ -70,7 +71,10 @@ func (t *Tools) exposureService() (*exposure.Manager, error) {
 	if t.Exposure != nil {
 		return t.Exposure, nil
 	}
-	return nil, t.exposureErr
+	if t.exposureErr != nil {
+		return nil, t.exposureErr
+	}
+	return nil, errors.New("exposure capability is not configured on this runtime")
 }
 
 func (t *Tools) exposureDispatch(ctx context.Context, name string, r Input) (any, error) {

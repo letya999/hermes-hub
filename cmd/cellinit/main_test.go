@@ -233,13 +233,14 @@ func TestProxyHandlerPathHostAndUpstreamError(t *testing.T) {
 	// A listed host that cannot be dialed: exercises the host extraction and
 	// header injection, then reports the upstream failure honestly.
 	h := &proxyHandler{rules: map[string]proxyRule{
-		"localhost": {Headers: map[string]string{"Authorization": "Bearer x"}, Scheme: "http"},
+		"127.0.0.1:1": {Headers: map[string]string{"Authorization": "Bearer x"}, Scheme: "http"},
 	}}
 	rec := httptest.NewRecorder()
-	// No URL host: the first path segment carries it.
-	req := httptest.NewRequest(http.MethodGet, "http://proxy/localhost/v1/data", nil)
+	// No URL host: the first path segment carries it. Port 1 is privileged
+	// and never serves, so the dial fails regardless of local daemons.
+	req := httptest.NewRequest(http.MethodGet, "http://proxy/127.0.0.1:1/v1/data", nil)
 	req.URL.Host = ""
-	req.URL.Path = "/localhost/v1/data"
+	req.URL.Path = "/127.0.0.1:1/v1/data"
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("unreachable upstream status=%d body=%s", rec.Code, rec.Body.String())

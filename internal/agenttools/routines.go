@@ -20,15 +20,15 @@ var routineDescriptions = map[string]string{
 	"routine_edit":    "Modify an owned routine: action=update|pause|resume|snooze, id, expected_revision from get/list. update requires nonempty patch and no until; pause/resume accept neither; snooze requires until RFC3339 and no patch. To move future results, use update patch={destination_task_id:<ID>} after routine_list view=destinations; use destination_task_id=current with origin_job_id from current run instructions. Move keeps timing, pause, snooze and prior history; old admitted work keeps its audience. Other patch fields: input, expression, timezone, job_kind, probe, expect, max_retries, notify_mode, quiet_from, quiet_to, daily_limit, source_ids, sink, delivery, catch_up_window_ns, timing. Text edits preserve due/pause/snooze; timing edits clear snooze/reset anchor. Conflict requires rereading. Delete is separate.",
 	"routine_get":     "Read full owner/context routine card: revision, configuration, state, saved destination name/chat/topic and active|archived|unavailable status, plus probe errors. Known retired IDs remain readable. Optional include=[history,next_runs]. history_limit 1..100 default 10, history_cursor for next page; preview_limit 1..20 default 5. History separates occurrence, execution and delivery (including partial/uncertain), normally retained 14 days; delivered does not mean read. next_runs previews dates without effects; paused dates are hypothetical, completed/deleted have none. Stream health is event_state. Extra reads are not an atomic snapshot; a failed component fails the call.",
 	"routine_resume":  "Resume an owned routine using expected_revision from get/list. Expired once schedules need a new due time first. This does not replay past occurrences.",
-	"routine_history": "Read a page of retained routine runs with separate occurrence, verified agent execution and delivery outcomes, including partial or uncertain multipart delivery. Pass next_cursor as cursor. Detail is retained 48h; summaries follow spool retention (normally 14d). Delivery is not a read receipt. Stream subscriptions expose current event_state in routine_get instead of occurrences.",
+	"routine_history": "Read a page of retained routine runs with separate occurrence, verified agent execution and delivery outcomes, including partial or uncertain multipart delivery. Pass next_cursor as cursor. Detail is retained 48h; summaries follow spool retention (normally 14d). Delivery is not a read receipt. Stream subscriptions expose current event_state in routine_read instead of occurrences.",
 	"routine_preview": "Read planned slots without running a probe, model or delivery. Includes next snoozed due then original cadence. limit is 1..20. State=paused means hypothetical dates until resume; completed/deleted have no future slots.",
-	"routine_create":  "Create owner/context routine. Pass origin_job_id from the run or destination_task_id from routine_list view=destinations; current needs origin_job_id. Never guess chat/topic IDs. kind=agent default wakes the model — for monitoring a source's events use watch_subscribe instead; reminder sends exact text; deterministic kinds never wake. after:180s fires once; once:RFC3339, cron or every:15m (1m..8760h). timing windows/weekdays/at. watcher probe_kind: http url (regex capture or extract steps css/html2text/grep/drop_regex/sort_lines/json_path/rss), mcp_tool/tool (tool+args), script probe_script+input, command (watch/ files), render|service named; needs {tool,args}; deliver_mode=content|artifact(+artifact_name); baseline silent; changes old/new. check: expect changed|unchanged|equals:v on url|task|tool. quiet/daily_limit bound notices; notify_mode=agent escalates; dead probes alert once per error (last_error). brief: slot snapshot of changed watches (source_ids; empty=all owned); model composes; quiet defers.",
-	"routine_list":    "Find compact owner/context routine cards in stable ID pages. view=destinations instead lists live owned session/task names with task_id, chat_id, topic_id and conversation_id for routing. Optional case-insensitive query searches ID/text (routine view) or task name/ID (destination view) before paging; kind/state filters apply to routine view. limit 1..100 default 20; pass next_cursor as cursor. Use routine_get for full text, destination availability, outcomes and errors. Inspect the same ID after uncertain creation before proposing a replacement.",
+	"routine_create":  "Create owner/context routine. Pass origin_job_id from the run or destination_task_id from routine_list view=destinations; current needs origin_job_id. Never guess chat/topic IDs. kind=agent default wakes the model — for monitoring a source's events use watch_create instead; reminder sends exact text; deterministic kinds never wake. after:180s fires once; once:RFC3339, cron or every:15m (1m..8760h). timing windows/weekdays/at. watcher probe_kind: http url (regex capture or extract steps css/html2text/grep/drop_regex/sort_lines/json_path/rss), mcp_tool/tool (tool+args), script probe_script+input, command (watch/ files), render|service named; needs {tool,args}; deliver_mode=content|artifact(+artifact_name); baseline silent; changes old/new. check: expect changed|unchanged|equals:v on url|task|tool. quiet/daily_limit bound notices; notify_mode=agent escalates; dead probes alert once per error (last_error). brief: slot snapshot of changed watches (source_ids; empty=all owned); model composes; quiet defers.",
+	"routine_list":    "Find compact owner/context routine cards in stable ID pages. view=destinations instead lists live owned session/task names with task_id, chat_id, topic_id and conversation_id for routing. Optional case-insensitive query searches ID/text (routine view) or task name/ID (destination view) before paging; kind/state filters apply to routine view. limit 1..100 default 20; pass next_cursor as cursor. Use routine_read for full text, destination availability, outcomes and errors. Inspect the same ID after uncertain creation before proposing a replacement.",
 	"routine_update":  "Edit patch using expected_revision from get/list; conflict means read and reconsider. Fields: input, expression, timezone, job_kind, probe, expect, max_retries, notify_mode, quiet_from, quiet_to, daily_limit, source_ids, sink, delivery, catch_up_window_ns, timing. Text retains due/pause/snooze; timing clears snooze and resets anchor, preserving pause. Kind change clears old action fields; supply complete target configuration. Clear optional probe/timing with null. once:RFC3339, five-field cron or every:15m; after: is creation-only. timing: windows [{from:HH:MM,to:HH:MM}], weekdays [0..6], at [HH:MM], start_at/end_at RFC3339. Opening inclusive, close exclusive, overnight allowed; extras form union. Identity/routing immutable.",
 	"routine_snooze":  "Snooze one owned routine until expression (RFC3339); this updates the existing schedule ID.",
 	"routine_pause":   "Pause an owned routine; already queued occurrences recheck its state before execution.",
 	"routine_delete":  "Retire an owned routine; the same schedule ID cannot reactivate it. This does not recall messages already sent.",
-	"watch_subscribe": "Subscribe to a source's events via one projected read tool (args is a JSON object string). For several chats/feeds pass sources — a JSON array of up to 32 {name?,tool?,args} merged onto tool+args: one watch fans out, dedups per source and wakes once per merged batch. filter is REQUIRED when source scope exceeds the user's ask — a Starlark script where input() returns full bounded event JSON and emit(\"keep\"|\"drop\"|\"urgent\"). For cursor-based non-consuming reads set cursor_arg to the tool's cursor parameter: next_cursor is fed back per source only after its events are admitted or dropped. Telegram chat monitoring uses watch_chat_messages with cursor_arg=cursor and min_interval_seconds. Inspect event shape first with watch_sample or a direct read. sink=notify sends per event; sink=agent one wake per batch. delivery=stream for wait-style tools; a poll tool needs min_interval_seconds (5..3600). Manage via watch_list/pause/resume/delete and routine_edit.",
+	"watch_subscribe": "Subscribe to a source's events via one projected read tool (args is a JSON object string). For several chats/feeds pass sources — a JSON array of up to 32 {name?,tool?,args} merged onto tool+args: one watch fans out, dedups per source and wakes once per merged batch. filter is REQUIRED when source scope exceeds the user's ask — a Starlark script where input() returns full bounded event JSON and emit(\"keep\"|\"drop\"|\"urgent\"). For cursor-based non-consuming reads set cursor_arg to the tool's cursor parameter: next_cursor is fed back per source only after its events are admitted or dropped. Telegram chat monitoring uses watch_chat_messages with cursor_arg=cursor and min_interval_seconds. Inspect event shape first with watch_sample or a direct read. sink=notify sends per event; sink=agent one wake per batch. delivery=stream for wait-style tools; a poll tool needs min_interval_seconds (5..3600). Manage via watch_list/watch_edit/watch_remove and routine_edit.",
 	"watch_list":      "List owned event subscriptions only — reminders, watchers and other routines are not included.",
 	"watch_pause":     "Pause one owned event subscription by schedule id.",
 	"watch_resume":    "Resume one paused owned event subscription by schedule id.",
@@ -45,12 +45,12 @@ func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any
 	}
 	if op == "routine_get" {
 		if r.HistoryLimit < 0 || r.HistoryLimit > 100 || r.PreviewLimit < 0 || r.PreviewLimit > 20 {
-			return nil, errors.New("routine_get: history_limit must be 1..100 and preview_limit 1..20; zero selects defaults")
+			return nil, errors.New("routine_read: history_limit must be 1..100 and preview_limit 1..20; zero selects defaults")
 		}
 		seen := map[string]bool{}
 		for _, include := range r.Include {
 			if (include != "history" && include != "next_runs") || seen[include] {
-				return nil, errors.New("routine_get: include accepts unique history or next_runs entries")
+				return nil, errors.New("routine_read: include accepts unique history or next_runs entries")
 			}
 			seen[include] = true
 		}
@@ -63,7 +63,7 @@ func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any
 			}
 			card, ok := out["result"].(map[string]any)
 			if !ok {
-				return nil, errors.New("routine_get: invalid card response")
+				return nil, errors.New("routine_read: invalid card response")
 			}
 			for _, include := range includes {
 				operation := "routine_history"
@@ -116,7 +116,7 @@ func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any
 	switch op {
 	case "routine_update", "routine_pause", "routine_resume", "routine_snooze", "routine_delete":
 		if r.ExpectedRevision == 0 {
-			return nil, errors.New("expected_revision from routine_get or routine_list is required")
+			return nil, errors.New("expected_revision from routine_read or routine_list is required")
 		}
 	}
 	principal := os.Getenv("HUB_PRINCIPAL_ID")
@@ -219,9 +219,9 @@ func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any
 		}
 		// Probe-shaped args (a source tool or its args) on a non-probe kind
 		// are silently dropped here and meaningless at the hub — refuse with
-		// a pointer to watch_subscribe, the cron-shaped misuse it prevents.
+		// a pointer to watch_create, the cron-shaped misuse it prevents.
 		if kind != "watcher" && kind != "check" && (r.Tool != "" || r.Args != "") {
-			return nil, errors.New("probe-shaped args (tool/args) only apply to kind=watcher|check; for monitoring a source's events use watch_subscribe instead — kind=agent wakes the model on a timer with no source probe")
+			return nil, errors.New("probe-shaped args (tool/args) only apply to kind=watcher|check; for monitoring a source's events use watch_create instead — kind=agent wakes the model on a timer with no source probe")
 		}
 		if kind == "script" {
 			if len(r.Text) > 16*1024 {

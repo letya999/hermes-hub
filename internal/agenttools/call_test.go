@@ -230,12 +230,12 @@ func TestReadOnlyToolNamesEmpty(t *testing.T) {
 	// Every write-effect tool of a capability is gated; read-effect tools of
 	// the same capability are not.
 	names := readOnlyToolNames(map[string]bool{"ssh": true})
-	for _, want := range []string{"ssh_exec", "ssh_write", "ssh_shell_open", "ssh_tunnel_open"} {
+	for _, want := range []string{"ssh_exec", "ssh_write", "ssh_shell", "ssh_tunnel"} {
 		if !names[want] {
 			t.Fatalf("ssh write tool %s not gated: %v", want, names)
 		}
 	}
-	if names["service_catalog"] {
+	if names["ssh_list"] {
 		t.Fatal("read-effect tool gated")
 	}
 }

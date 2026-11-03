@@ -146,7 +146,7 @@ func TestManagedTurnHasSinglePinnedPromptAcrossEntrypoints(t *testing.T) {
 	if err := os.MkdirAll(rev, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(rev, "prompt-pointer.txt"), []byte("revision=r-0007 core=terminal,files extended=+12 discovery=tools_list+invoke\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(rev, "prompt-pointer.txt"), []byte("revision=r-0007 core=terminal,files extended=+12 platform=tool_search+tool_call\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "generated", "passports", "current"), []byte("r-0007\n"), 0600); err != nil {

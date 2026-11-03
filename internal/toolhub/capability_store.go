@@ -153,7 +153,7 @@ func (s *Store) validateProfileAdmissionLocked(profile api.CapabilityProfile) (a
 	for _, selection := range profile.Selections {
 		definition, exists := s.definitions[definitionKey(selection.DefinitionID, selection.DefinitionVersion)]
 		if !exists || api.DefinitionDigest(definition) != selection.ImplementationDigest || !slices.ContainsFunc(definition.Tools, func(tool api.ToolSpec) bool {
-			return tool.Name == selection.ToolName && tool.CapabilityID == selection.CapabilityID && len(tool.Uses) > 0
+			return tool.Name == selection.ToolName && tool.CapabilityID == selection.CapabilityID && (len(tool.Uses) > 0 || api.RemoteExecutor(tool.Executor))
 		}) {
 			return api.CapabilityPolicy{}, fmt.Errorf("%w: unreviewed capability implementation", api.ErrUnauthorized)
 		}

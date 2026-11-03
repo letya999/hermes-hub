@@ -108,7 +108,7 @@ func TestGatewayMCPWireRechecksBindingAndRejectsAuthorityArguments(t *testing.T)
 	}
 	defer session.Close()
 	tools, err := session.ListTools(context.Background(), nil)
-	if err != nil || len(tools.Tools) != 4 || !toolListed(tools, "system_guide") || !toolListed(tools, "tools_list") {
+	if err != nil || len(tools.Tools) != 7 || !toolListed(tools, "platform_guide") || !toolListed(tools, "tool_search") {
 		t.Fatalf("tools/list=%+v err=%v", tools, err)
 	}
 	name := api.ProjectedToolName("google-work", "1.0.0", "search")

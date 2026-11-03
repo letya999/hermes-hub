@@ -574,6 +574,30 @@ func (e *Engine) CancelAssignment(id string, caller identity.Envelope, expected 
 	return e.atomicJSON(e.AssignmentPath(id), item)
 }
 
+// DeleteAssignment removes the record terminally (ADR-0094 assignment_remove):
+// applied artifacts retire through the same schedule path as cancel, then the
+// record file itself is deleted — nothing is kept for recall.
+func (e *Engine) DeleteAssignment(id string, caller identity.Envelope, expected ...uint64) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	item, err := e.assignmentForCallerLocked(id, caller)
+	if err != nil {
+		return err
+	}
+	if len(expected) > 0 && expected[0] != item.Revision {
+		return ErrRoutineRevision
+	}
+	for _, rc := range item.Applied {
+		if rc.Action == "removed" {
+			continue
+		}
+		if err := e.deleteScheduleLocked(rc.ScheduleID, item.Envelope); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return e.removeOwned(e.AssignmentPath(id))
+}
+
 // CompleteAssignment retires sources like cancel but lands in the terminal
 // "completed" state (SPEC-0080 R1.5) — the owner marks the watch finished.
 func (e *Engine) CompleteAssignment(id string, caller identity.Envelope, expected ...uint64) (commodel.Assignment, error) {

@@ -17,7 +17,7 @@ func Config(s Settings) M {
 	servers := M{}
 	// The hub executor server is the hub:tools section: governance can cut it
 	// without touching the filesystem contract (the snapshot denies calls too).
-	if s.govAllows(api.SectionHubTools) && (s.Has("workspace") || s.Has("hh") || s.Has("ssh")) {
+	if s.govAllows(api.SectionHubTools) && (s.Has("workspace") || s.Has("ssh")) {
 		e := env("HH_TOKEN", "HH_USER_AGENT")
 		e["HUB_HH_ENABLED"] = fmt.Sprint(s.Has("hh"))
 		e["HUB_ORG_ACTIONS"] = "${HUB_ORG_ACTIONS}"
