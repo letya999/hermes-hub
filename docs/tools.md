@@ -144,11 +144,11 @@ word where one exists):
 | ssh | `ssh_list`, `ssh_read`, `ssh_write`, `ssh_exec`, `ssh_shell`, `ssh_tunnel` | handler:ssh | declared hosts only; `ssh_shell` action open\|send\|read\|close, `ssh_tunnel` action open\|list\|close; write/shell/tunnel need their own grant |
 | exposure | `exposure_list`, `exposure_create`, `exposure_remove` | handler:exposure | live public tunnels on declared endpoints only |
 | sites | `site_list`, `site_publish`, `site_remove` | handler:sites | own hosted sites (was hosting); publish/remove are `request_id` + `expected_revision` fenced |
-| web | `web_search`, `web_fetch` | handler:web | configured provider only; fetched content is untrusted data |
+| web | `web_search`, `web_fetch` | runtime:web | configured provider only; fetched content is untrusted data; without a hub web relay calls return `unavailable` |
 | connectors | `connector_search`, `connector_list`, `connector_status`, `connector_install`, `connector_edit` | runtime:connectors | control surface (see below); credentials never travel args/results |
 | research | `research_create`, `research_read`, `research_list` | flow:deep_research | async deep-research jobs; create returns a job id |
 | browser | `browser_open`, `browser_read`, `browser_act`, `browser_capture` | connector:browser | curated calls over the browser connector; `profile` selects user or guest profile |
-| models | `model_list`, `model_switch` | handler:models | routes, ladders and status from the models passport; switch stays inside the granted ladder |
+| models | `model_list`, `model_switch` | runtime:models | routes, ladders and status from the models passport; switch stays inside the granted ladder; without a hub models plane calls return `unavailable` |
 | sessions | `session_list`, `session_search`, `session_read`, `session_switch`, `session_edit`, `session_remove` | runtime:sessions | own-space sessions only; `session_edit` action archive\|restore; without a session store calls return `unavailable` |
 
 ## connectors — the control surface

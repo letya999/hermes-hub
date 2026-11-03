@@ -33,7 +33,17 @@ func (g *Gateway) execRemote(ctx context.Context, auth identity.Envelope, tool a
 	if tool.Executor == "runtime:toolhub" {
 		return g.execPlatform(ctx, auth, tool, arguments)
 	}
-	return api.BackendResult{IsError: true, Text: fmt.Sprintf("%s is unavailable: executor %s is not configured on this ToolHub", tool.Name, tool.Executor)}, nil
+	return api.BackendResult{IsError: true, Text: fmt.Sprintf("%s is unavailable: %s", tool.Name, remoteBackendHint(tool.Executor))}, nil
+}
+
+// remoteBackendHint names the missing backend an unconfigured executor
+// family needs, so an unavailable call tells the caller why (#443/#444 —
+// the contract ships; hub-side backends land in follow-ups).
+func remoteBackendHint(executor string) string {
+	if executor == "flow:deep_research" {
+		return "the deep-research flow backend is not enabled"
+	}
+	return fmt.Sprintf("executor %s is not configured on this ToolHub", executor)
 }
 
 // execPlatform routes pinned platform members to the same handlers the
@@ -54,6 +64,8 @@ func (g *Gateway) execPlatform(ctx context.Context, auth identity.Envelope, tool
 		return api.BackendResult{Text: systemguide.Skill}, nil
 	case "platform_bootstrap":
 		return body(g.platformBootstrap(auth, api.ArgString(arguments, "action"), api.ArgString(arguments, "step")))
+	case "platform_usage":
+		return body(g.platformUsage(auth, api.ArgString(arguments, "period")))
 	case "tool_search":
 		return body(g.toolsList(auth, api.ArgString(arguments, "query"), api.ArgString(arguments, "name"), 0))
 	case "tool_call":

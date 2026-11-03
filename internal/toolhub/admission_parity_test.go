@@ -91,6 +91,25 @@ func TestDirectAndToolCallAdmissionParity(t *testing.T) {
 		t.Fatalf("parity broken: direct=%q nested=%q", d, n)
 	}
 
+	// platform_usage: the pinned usage member must reach its real handler
+	// through the projected path — parity on an identical "no handler" error
+	// would be parity of a dead feature.
+	usageDirect, err := call("platform_usage", map[string]any{})
+	if err != nil {
+		t.Fatalf("direct platform_usage: %v", err)
+	}
+	usageNested, err := call("tool_call", map[string]any{"tool": "platform_usage", "arguments": map[string]any{}})
+	if err != nil {
+		t.Fatalf("nested platform_usage: %v", err)
+	}
+	d, n := text(usageDirect), text(usageNested)
+	if d == "" || d != n {
+		t.Fatalf("platform_usage parity broken: direct=%q nested=%q", d, n)
+	}
+	if !strings.Contains(d, `"available"`) || strings.Contains(d, "no platform handler") {
+		t.Fatalf("platform_usage never reached its handler: %q", d)
+	}
+
 	// Unselected member: refused through both paths, executor untouched.
 	if _, err := call("session_orphan", map[string]any{}); err == nil {
 		t.Fatal("unselected member callable directly")

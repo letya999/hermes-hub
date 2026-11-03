@@ -41,6 +41,9 @@ func r5ExecutorDefinition() api.ToolDefinition {
 			{Name: "research_create", Effect: api.WriteEffect, CapabilityID: "research.create", Executor: "flow:deep_research", Requires: []string{"research.create"}, Audience: api.AudienceModel,
 				Description: "Start an async deep-research job.",
 				Arguments:   []api.CLIArgument{{Name: "topic", Type: "string", Required: true}}},
+			{Name: "browser_act", Effect: api.WriteEffect, CapabilityID: "browser.act", Executor: "connector:browser", Requires: []string{"browser.act"}, Audience: api.AudienceModel,
+				Description: "Drive one browser action.",
+				Arguments:   []api.CLIArgument{{Name: "action", Type: "string", Required: true}}},
 		},
 	}
 }
@@ -137,13 +140,23 @@ func TestRemoteExecutorDispatch(t *testing.T) {
 		}
 	}
 
-	// An executor with no hub backend reports unavailable honestly.
-	res, err = call("research_create", map[string]any{"topic": "t"})
-	if err != nil {
-		t.Fatalf("research_create: %v", err)
-	}
-	if body := text(res); !strings.Contains(body, "unavailable") {
-		t.Fatalf("unimplemented executor must report unavailable, got: %s", body)
+	// Executors without a hub backend report unavailable honestly and the
+	// message hints at which backend the family needs (#443/#444).
+	for _, tc := range []struct {
+		name string
+		args map[string]any
+		hint string
+	}{
+		{"research_create", map[string]any{"topic": "t"}, "deep-research"},
+		{"browser_act", map[string]any{"action": "click"}, "browser"},
+	} {
+		res, err = call(tc.name, tc.args)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if body := text(res); !strings.Contains(body, "unavailable") || !strings.Contains(body, tc.hint) {
+			t.Fatalf("unconfigured executor must report unavailable with a hint, got: %s", body)
+		}
 	}
 
 	for _, name := range backendCalls {
