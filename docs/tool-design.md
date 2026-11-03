@@ -244,7 +244,12 @@ everything"), marketing, prose that repeats the schema.
 
 **8.3 Modular prompt contract.** Tool guidance in the system prompt is
 assembled from the space's active families only — a denied family is never
-mentioned (no hallucinated references, no wasted tokens).
+mentioned (no hallucinated references, no wasted tokens). Under a published
+passport the tools projection is the admission authority: a family absent
+from it emits no section, and a clause inside another family's section that
+names the family's tools drops with it. Without a published revision a
+section drops only on an explicit `via: off`, so a legacy space renders the
+complete contract.
 
 **8.4 One disclosure mechanism.** The long tail is reachable through one path
 (`tool_search`+`tool_call` on the ToolHub surface, or the native tool-search
@@ -365,7 +370,7 @@ Every normative rule above has a named, automated check. The lints live in
 | 7.2 | bounded output | `agenttools.TestContextStatusToolReportsBoundedView`, `agenttools.TestRoutineListRequestsBoundedDefaultPage`, `agenttools.TestRoutineGetIncludesBoundedHistoryAndPreview` |
 | 7.3 | evidence for side effects | `agenttools.TestRoutineMutationRequiresObservedRevision`, `agenttools.TestAssignmentToolRequiresRevision` |
 | 8.2 | description budget; stuffing penalized | `agenttools.TestDescriptionBudgetLint`, `agenttools.TestIntentSelectionEval` (density-normalized scoring) |
-| 8.3 | modular prompt contract | `passport.TestPromptPointerNamesR5PlatformPair`, `stack.TestChannelContractIsModular`, `stack.TestSoulEffectiveHonorsFamilyOff` |
+| 8.3 | modular prompt contract | `passport.TestPromptPointerNamesR5PlatformPair`, `stack.TestChannelContractIsModular`, `stack.TestChannelContractDropsAbsentFamilies`, `stack.TestChannelContractHonorsAliases`, `stack.TestChannelContractDropsCrossFamilyClauses`, `stack.TestSoulEffectiveHonorsFamilyOff`, `stack.TestSoulEffectiveGovernedDropsAbsentFamilies` |
 | 8.4 | one disclosure mechanism | `catalog.TestR5Vocabulary` (pinned `platform` member list), `toolhub.TestConnectorSurfaceR5Names` |
 | 9.2 | eval-driven iteration | `agenttools.TestIntentSelectionEval` |
 

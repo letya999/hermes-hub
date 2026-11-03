@@ -201,3 +201,37 @@ func TestSoulEffectiveHonorsFamilyOff(t *testing.T) {
 		t.Fatal("soul-effective lost routine guidance")
 	}
 }
+
+// TestSoulEffectiveGovernedDropsAbsentFamilies (M31.9 S4): once a space has a
+// published passport revision, its tools projection is the admission
+// authority — a family that projection does not declare contributes no
+// guidance even without an explicit `via: off`.
+func TestSoulEffectiveGovernedDropsAbsentFamilies(t *testing.T) {
+	dir := t.TempDir()
+	passports := filepath.Join(dir, "generated", "passports")
+	if err := os.MkdirAll(passports, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(passports, "current"), []byte("rev-test"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := Settings{Environment: "dev", Tools: map[string]ToolEntry{
+		"routines": {Via: ToolViaToolHub},
+	}}
+	if err := MaterializeSoulEffective(dir, s); err != nil {
+		t.Fatal(err)
+	}
+	effective, err := os.ReadFile(filepath.Join(dir, "generated", "soul-effective.dev.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(effective)
+	for _, gone := range []string{"watch_create", "skill_search", "file_search", "exposure_create", "await_user_confirmation"} {
+		if strings.Contains(text, gone) {
+			t.Fatalf("governed soul-effective leaked %q for an undeclared family", gone)
+		}
+	}
+	if !strings.Contains(text, "routine_create") {
+		t.Fatal("governed soul-effective lost the declared family's guidance")
+	}
+}
