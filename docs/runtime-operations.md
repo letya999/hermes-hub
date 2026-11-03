@@ -1,6 +1,6 @@
 ---
 description: Runtime images, supervisor lifecycle, per-context rollout and preparation runbook.
-last_verified: 2026-10-31
+last_verified: 2026-11-04
 ---
 
 # Runtime operations

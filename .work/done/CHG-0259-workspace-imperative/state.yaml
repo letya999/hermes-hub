@@ -10,7 +10,7 @@ spec: SPEC-0092
 requirements: [R5.1, R5.2, R5.3]
 depends_on: [CHG-0255, CHG-0256]
 github_milestone: "M30 — Imperative Passports and Capability Grants"
-github_issue: pending
+github_issue: 454
 design_status: accepted
 implementation_status: done
 slices:

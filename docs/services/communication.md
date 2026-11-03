@@ -1,6 +1,6 @@
 ---
 description: communication-hub — channel gateway: Telegram/Slack adapters, inbound routing, credential forms, spool, control API.
-last_verified: 2026-11-03
+last_verified: 2026-11-04
 ---
 
 # communication-hub

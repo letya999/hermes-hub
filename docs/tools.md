@@ -1,6 +1,6 @@
 ---
 description: Complete agent-visible tool surface — toolhub control tools, connector_* facade, hub:tools catalog, effect/grant requirements, delivery directives.
-last_verified: "2026-11-03"
+last_verified: "2026-11-04"
 ---
 
 # Tool surface

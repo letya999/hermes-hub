@@ -1,6 +1,6 @@
 ---
 description: model-relay — per-space model selection endpoint for managed spaces; layered models.yaml, owner switch bearer, cliproxy upstream.
-last_verified: 2026-11-03
+last_verified: 2026-11-04
 ---
 
 # model-relay

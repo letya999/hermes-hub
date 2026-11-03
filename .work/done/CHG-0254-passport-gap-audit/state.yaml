@@ -1,6 +1,8 @@
 chg: CHG-0254
 title: "Passport gap audit and contract hardening"
 status: done
+github_milestone: "M30 — Imperative Passports and Capability Grants"
+github_issue: 449
 slices:
   - id: S0.1
     name: "typed v2 bodies + strict Decode + normative fixtures"
