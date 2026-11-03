@@ -1,6 +1,6 @@
 ---
 description: The agent's home — SOUL.md persona contract, skills registry, bundled skills, hooks, memory and runtime-writable state.
-last_verified: 2026-11-02
+last_verified: 2026-11-03
 ---
 
 # Agent home
@@ -84,10 +84,12 @@ catalog dump.
 
 ## Hooks and plugins
 
-`settings.yaml` `hooks:` map renders into Hermes config; hub-gated plugins
-materialize under `generated/plugins/<name>` and mount read-only into
-`/opt/hermes/plugins/` (bundled + backend = auto-load, agent-untouchable).
-Managed mode additionally read-only-shadows `hermes/hooks`.
+An unmanaged space's `settings.yaml` `hooks:` map renders into Hermes
+config (managed spaces reject hooks — the contract admits no hook
+extensions); hub-gated plugins materialize under `generated/plugins/<name>`
+and mount read-only into `/opt/hermes/plugins/` (bundled + backend =
+auto-load, agent-untouchable). Managed mode additionally
+read-only-shadows `hermes/hooks`.
 
 ## Memory and state
 

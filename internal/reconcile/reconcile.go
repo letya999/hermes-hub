@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/letya999/hermes-hub/internal/passport"
+	"github.com/letya999/hermes-hub/internal/passportview"
 )
 
 // Kind is the ordered action class — execution always runs rebuild, then
@@ -56,8 +57,8 @@ type Report struct {
 // Plan groups a classified diff into ordered unique actions. The action
 // target is the service instance a stack change names, "hermes-runtime" for
 // config/model changes (the runtime consumes them) and the consumer name for
-// live leaves.
-func Plan(changes []passport.Change) []Action {
+// live leaves. services is the new revision's stack.services set.
+func Plan(changes []passport.Change, services map[string]passportview.ServiceSpec) []Action {
 	byKey := map[string]*Action{}
 	get := func(k Kind, target string) *Action {
 		key := string(k) + ":" + target
@@ -82,7 +83,14 @@ func Plan(changes []passport.Change) []Action {
 				a = get(Rebuild, stackTarget(c.Path))
 			}
 		case passport.EffectRecreate:
-			a = get(Recreate, runtimeTarget(c.Path))
+			target := runtimeTarget(c.Path)
+			if _, rendered := services[target]; !rendered {
+				// The owner is dead config — the new revision declares no
+				// such service, so there is no container to recreate (the
+				// leaf still shows in the classified diff).
+				continue
+			}
+			a = get(Recreate, target)
 		case passport.EffectRespawn:
 			a = get(Respawn, "hermes-runtime")
 		default:
@@ -124,11 +132,21 @@ func stackTarget(path string) string {
 }
 
 // runtimeTarget maps a recreate-class leaf to the container that consumes it:
-// config and models changes land on hermes-runtime; a stack.services leaf
-// recreates its own service.
+// config.ports.<name> recreates the declared owner, config.channels the shared
+// gateway, a stack.services leaf its own service; remaining config/models
+// changes land on hermes-runtime.
 func runtimeTarget(path string) string {
 	if strings.HasPrefix(path, "stack.services.") {
 		return stackTarget(path)
+	}
+	if name, ok := strings.CutPrefix(path, "config.ports."); ok {
+		if owner, known := passport.PortOwners[name]; known {
+			return owner
+		}
+		return "hermes-runtime"
+	}
+	if strings.HasPrefix(path, "config.channels") {
+		return "communication-hub"
 	}
 	return "hermes-runtime"
 }

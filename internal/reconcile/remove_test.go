@@ -13,7 +13,7 @@ import (
 func TestRemovedStackInstancePlansRemoveNotRebuild(t *testing.T) {
 	actions := Plan([]passport.Change{
 		{Path: "stack.services.cliproxy-google-2.mode", Before: "per-space", After: "", Effect: passport.EffectRebuild, Consumer: "pending:CHG-0257"},
-	})
+	}, allServices)
 	if len(actions) != 1 {
 		t.Fatalf("removal must plan exactly one action: %+v", actions)
 	}
@@ -27,7 +27,7 @@ func TestRemovedStackInstancePlansRemoveNotRebuild(t *testing.T) {
 func TestAddedStackInstanceKeepsRebuild(t *testing.T) {
 	actions := Plan([]passport.Change{
 		{Path: "stack.services.cliproxy-google-2.mode", Before: "", After: "per-space", Effect: passport.EffectRebuild, Consumer: "pending:CHG-0257"},
-	})
+	}, allServices)
 	if len(actions) != 1 || actions[0].Kind != Rebuild || actions[0].Target != "cliproxy-google-2" {
 		t.Fatalf("addition must stay rebuild <instance>: %+v", actions)
 	}

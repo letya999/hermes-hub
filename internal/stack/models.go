@@ -35,6 +35,12 @@ type ModelProvider struct {
 	AllowPrivate  bool              `yaml:"allow_private,omitempty"`
 	URL           string            `yaml:"url"`
 	KeyEnv        string            `yaml:"key_env,omitempty"`
+	// Via and UpstreamKind are the passport service's transport and upstream
+	// credential kind ("cliproxy"/"openai-compatible", "oauth-session"/
+	// "broker-key") — the relay reads them to decide which limit kinds the
+	// service's own telemetry can measure.
+	Via          string `yaml:"via,omitempty"`
+	UpstreamKind string `yaml:"upstream_kind,omitempty"`
 }
 
 func (p ModelProvider) Allows(owner string) bool {
@@ -56,14 +62,19 @@ type ModelHopRef struct {
 }
 
 // ModelLimit is one durable quota window for the hop's credential principal:
-// a fixed {of, amount, per} grammar. "requests" counts every upstream call,
-// "tokens" reserves the conservative request estimate up front. Counters live
-// in the relay state directory and never cross spaces; scope "shared" meters
+// a fixed {of, amount, unit?, per, clock?} grammar. "requests" counts every
+// upstream call, "tokens" reserves the conservative request estimate up
+// front; "provider_quota" and "spend_usd" are declared but only measurable
+// where the service reports per-session usage or a catalog price exists —
+// the relay disables a hop whose limits it cannot measure. Counters live in
+// the relay state directory and never cross spaces; scope "shared" meters
 // the principal, "personal" meters each owner separately.
 type ModelLimit struct {
 	Of     string `yaml:"of"`
 	Amount int64  `yaml:"amount"`
+	Unit   string `yaml:"unit,omitempty"`
 	Per    string `yaml:"per"`
+	Clock  string `yaml:"clock,omitempty"`
 	Scope  string `yaml:"scope,omitempty"`
 }
 
@@ -103,6 +114,23 @@ func validateProviderURL(raw string) error {
 // LoadModelRegistry merges spaces/models.yaml, spaces/<org>/models.yaml and
 // spaces/<user>/models.yaml for the space rooted at dir.
 func LoadModelRegistry(dir string, s Settings) (*ModelRegistry, error) {
+	if passportRevision(dir) {
+		// Managed space: the published models doc is the sole registry
+		// authority — retired spaces/models.yaml layers never merge.
+		reg := &ModelRegistry{Providers: map[string]ModelProvider{}, Models: map[string]ModelEntry{}}
+		layer, err := passportRegistryLayer(dir)
+		if err != nil {
+			return nil, err
+		}
+		reg.Providers, reg.Models, reg.Switch = layer.Providers, layer.Models, layer.Switch
+		return reg, reg.Validate()
+	}
+	return LoadModelRegistryBase(dir, s)
+}
+
+// LoadModelRegistryBase is the layered legacy merge without the published
+// passport — the intent view migration re-derives model layers from.
+func LoadModelRegistryBase(dir string, s Settings) (*ModelRegistry, error) {
 	reg := &ModelRegistry{Providers: map[string]ModelProvider{}, Models: map[string]ModelEntry{}}
 	root := filepath.Dir(filepath.Clean(dir))
 	if filepath.Base(root) != "spaces" {
@@ -124,29 +152,6 @@ func LoadModelRegistry(dir string, s Settings) (*ModelRegistry, error) {
 		for name, m := range layer.Models {
 			reg.Models[name] = m
 		}
-		if reg.Switch == nil {
-			reg.Switch = map[string]string{}
-		}
-		for name, level := range layer.Switch {
-			reg.Switch[name] = level
-		}
-	}
-	// The published models doc is the imperative runtime contract: routes and
-	// the switch policy come from it alone. Providers it declares take the
-	// endpoint/credential the passport carries; broker grant ids and owner
-	// scoping stay a credential-plane detail and pass through from the legacy
-	// layer under the same provider name.
-	if layer := passportRegistryLayer(dir); len(layer.Models)+len(layer.Providers)+len(layer.Switch) > 0 {
-		for name, p := range layer.Providers {
-			if old, ok := reg.Providers[name]; ok {
-				p.BrokerGrants = old.BrokerGrants
-				p.Owners = old.Owners
-				p.KeyEnv = old.KeyEnv
-				p.AllowPrivate = old.AllowPrivate
-			}
-			reg.Providers[name] = p
-		}
-		reg.Models = layer.Models
 		if reg.Switch == nil {
 			reg.Switch = map[string]string{}
 		}
@@ -242,12 +247,15 @@ func (r *ModelRegistry) Validate() error {
 					return fmt.Errorf("models.yaml: model %q limit needs amount > 0", name)
 				}
 				switch limit.Of {
-				case "requests", "tokens":
+				case "requests", "tokens", "provider_quota", "spend_usd":
 				default:
-					// provider_quota_percent needs verified session telemetry
-					// and spend needs a price feed — neither exists yet, so the
-					// configuration fails closed instead of drifting unbounded.
-					return fmt.Errorf("models.yaml: model %q limit of %q requires verified usage telemetry", name, limit.Of)
+					return fmt.Errorf("models.yaml: model %q limit of %q unknown", name, limit.Of)
+				}
+				if limit.Unit != "" && limit.Unit != "percent" {
+					return fmt.Errorf("models.yaml: model %q limit unit %q unknown", name, limit.Unit)
+				}
+				if limit.Clock != "" && limit.Clock != "provider" {
+					return fmt.Errorf("models.yaml: model %q limit clock %q unknown", name, limit.Clock)
 				}
 				switch limit.Per {
 				case "5h", "1d", "1w":

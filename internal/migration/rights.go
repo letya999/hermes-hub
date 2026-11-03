@@ -25,7 +25,7 @@ import (
 // rights ledger live in the infra sibling's store + governance document —
 // the same files the shared ToolHub serves — so derivation resolves through
 // InfraSpaceDir, exactly like the governance read path.
-func DeriveSpaceRights(dir, user string, rev passport.Revision, docs catalog.Docs, now time.Time) error {
+func DeriveSpaceRights(dir, user, environment string, rev passport.Revision, docs catalog.Docs, now time.Time) error {
 	root := filepath.Join(stack.InfraSpaceDir(dir), "runtime", "toolhub")
 	storePath := filepath.Join(root, "store.json")
 	if _, err := os.Stat(filepath.Join(root, "store.db")); err == nil {
@@ -46,6 +46,10 @@ func DeriveSpaceRights(dir, user string, rev passport.Revision, docs catalog.Doc
 	if err != nil {
 		return fmt.Errorf("rights derivation: %w", err)
 	}
+	settings, err := stack.ReadEnvironment(dir, environment)
+	if err != nil {
+		return fmt.Errorf("rights derivation: %w", err)
+	}
 	gov := toolhub.NewGovernanceStore(toolhub.GovernanceStorePath(storePath))
-	return toolhub.DeriveRights(store, gov, docs.Rights, user, allow, now)
+	return toolhub.DeriveRights(store, gov, docs.Rights, user, allow, environment, stack.PolicyVersion(settings), now)
 }

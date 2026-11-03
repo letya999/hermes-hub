@@ -80,7 +80,7 @@ func fixtureInputs(t *testing.T) passport.Inputs {
 				"config": {
 					"memory":  map[string]any{"backend": "local"},
 					"runtime": map[string]any{"timezone": "UTC"},
-					"ports":   map[string]any{"browser": 6080},
+					"ports":   map[string]any{"browser-vnc": 6080},
 					"supervision": map[string]any{
 						"watchers": map[string]any{
 							"nightly-rollup": map[string]any{"protected": true},
@@ -402,17 +402,14 @@ func TestStackConfigRejectsMissingServiceAndPortCollision(t *testing.T) {
 	if !running["hermes-runtime"] || !running["browser"] {
 		t.Fatalf("stack.services = %v, want hermes-runtime+browser", services)
 	}
-	if port, err := rev.Value("config", "ports.browser"); err != nil || fmt.Sprint(port) != "6080" {
-		t.Fatalf("config.ports.browser = %v %v, want 6080", port, err)
+	if port, err := rev.Value("config", "ports.browser-vnc"); err != nil || fmt.Sprint(port) != "6080" {
+		t.Fatalf("config.ports.browser-vnc = %v %v, want 6080", port, err)
 	}
-
-	// Port-owner derivation (catalog port table) is S4.1's; the port map
-	// itself already enforces host-port uniqueness.
 
 	// Two services claiming one host port fail before compose.
 	collide := fixtureInputs(t)
 	collide.User.Docs["config"] = map[string]any{
-		"ports": map[string]any{"browser": 6080, "toolhub": 6080},
+		"ports": map[string]any{"browser-vnc": 6080, "oauth-callback": 6080},
 	}
 	if _, err := passport.Compile(collide); err == nil {
 		t.Fatal("host port collision compiled")
@@ -519,6 +516,146 @@ func TestStackConfigRejectsMissingServiceAndPortCollision(t *testing.T) {
 	}
 	if _, err := passport.Compile(unprotect); err == nil {
 		t.Fatal("user dropped a protected watcher")
+	}
+}
+
+// Port names are a fixed vocabulary bound to their owning service
+// (SPEC-0092 R4.1): an unknown name, a port for a service the stack does
+// not run, a shared owner's port on a non-infra space and a sibling's
+// claimed port all fail the compile.
+func TestConfigPortsUniqueAndOwned(t *testing.T) {
+	// Only the declared port names compile.
+	unknown := fixtureInputs(t)
+	unknown.User.Docs["config"] = map[string]any{
+		"ports": map[string]any{"garage": 9000},
+	}
+	if _, err := passport.Compile(unknown); err == nil {
+		t.Fatal("unknown port name compiled")
+	}
+
+	// A non-numeric host port is not a port.
+	notPort := fixtureInputs(t)
+	notPort.User.Docs["config"] = map[string]any{
+		"ports": map[string]any{"oauth-callback": "later"},
+	}
+	if _, err := passport.Compile(notPort); err == nil {
+		t.Fatal("non-numeric port compiled")
+	}
+
+	// oauth-callback belongs to hermes-runtime — absent owner fails.
+	orphan := fixtureInputs(t)
+	orphan.PlatformCeiling.Docs["stack"]["services"] = map[string]any{
+		"browser":  map[string]any{"mode": "per-space"},
+		"cliproxy": map[string]any{"mode": "per-space"},
+	}
+	orphan.User.Docs["config"] = map[string]any{
+		"ports": map[string]any{"oauth-callback": 8008},
+	}
+	if _, err := passport.Compile(orphan); err == nil {
+		t.Fatal("port for a service the stack does not run compiled")
+	}
+
+	// slack-events is published by the shared communication-hub: only the
+	// infra-rendering space may declare it.
+	shared := fixtureInputs(t)
+	shared.RendersInfra = false
+	shared.User.Docs["config"] = map[string]any{
+		"ports": map[string]any{"slack-events": 8094},
+	}
+	if _, err := passport.Compile(shared); err == nil {
+		t.Fatal("shared port published by a non-infra space")
+	}
+	shared.RendersInfra = true
+	if _, err := passport.Compile(shared); err != nil {
+		t.Fatalf("infra space publishing its shared gateway port: %v", err)
+	}
+
+	// A port a sibling space already published is reserved.
+	reserved := fixtureInputs(t)
+	reserved.User.Docs["config"] = map[string]any{
+		"ports": map[string]any{"oauth-callback": 8008},
+	}
+	reserved.ReservedPorts = map[int]string{8008: "bob"}
+	if _, err := passport.Compile(reserved); err == nil {
+		t.Fatal("port claimed by a sibling space compiled")
+	}
+	reserved.ReservedPorts = map[int]string{8009: "bob"}
+	if _, err := passport.Compile(reserved); err != nil {
+		t.Fatalf("unclaimed port: %v", err)
+	}
+}
+
+// Channel entries name ingress transports bound to a catalog feature
+// (SPEC-0092 R4.1): an unknown channel name fails, literal credentials are
+// forbidden and only {ref:} credential contracts compile.
+func TestConfigChannelRefsOnly(t *testing.T) {
+	// A channel name outside the ingress vocabulary fails.
+	unknown := fixtureInputs(t)
+	unknown.User.Docs["config"] = map[string]any{
+		"channels": map[string]any{"icq": map[string]any{"bot": map[string]any{"ref": "icq-bot"}}},
+	}
+	if _, err := passport.Compile(unknown); err == nil {
+		t.Fatal("unknown channel name compiled")
+	}
+
+	// A catalog feature that is not an ingress transport is not a channel.
+	notChannel := fixtureInputs(t)
+	notChannel.User.Docs["config"] = map[string]any{
+		"channels": map[string]any{"browser": map[string]any{"bot": map[string]any{"ref": "x"}}},
+	}
+	if _, err := passport.Compile(notChannel); err == nil {
+		t.Fatal("non-transport feature compiled as a channel")
+	}
+
+	// A channel without the shared gateway that consumes it fails.
+	noHub := fixtureInputs(t)
+	noHub.PlatformCeiling.Docs["stack"]["services"] = map[string]any{
+		"browser":  map[string]any{"mode": "per-space"},
+		"cliproxy": map[string]any{"mode": "per-space"},
+	}
+	noHub.User.Docs["config"] = map[string]any{
+		"channels": map[string]any{"telegram": map[string]any{"bot": map[string]any{"ref": "telegram-bot-alice"}}},
+	}
+	if _, err := passport.Compile(noHub); err == nil {
+		t.Fatal("channel without communication-hub compiled")
+	}
+
+	// Literal credentials never compile — refs only.
+	literal := fixtureInputs(t)
+	literal.User.Docs["config"] = map[string]any{
+		"channels": map[string]any{"telegram": map[string]any{
+			"bot": "xoxb-real-token",
+		}},
+	}
+	if _, err := passport.Compile(literal); err == nil {
+		t.Fatal("literal channel credential compiled")
+	}
+	literal.User.Docs["config"] = map[string]any{
+		"channels": map[string]any{"telegram": map[string]any{
+			"bot":           map[string]any{"ref": "telegram-bot-alice"},
+			"allowed_users": []any{"@alice"},
+		}},
+	}
+	if _, err := passport.Compile(literal); err == nil {
+		t.Fatal("non-ref allowed_users compiled")
+	}
+
+	// Both ingress channels compile with ref credentials.
+	ok := fixtureInputs(t)
+	ok.User.Docs["config"] = map[string]any{
+		"channels": map[string]any{
+			"telegram": map[string]any{
+				"bot":           map[string]any{"ref": "telegram-bot-alice"},
+				"allowed_users": map[string]any{"ref": "telegram-allow-alice"},
+			},
+			"slack_app": map[string]any{
+				"bot":           map[string]any{"ref": "slack-app-alice"},
+				"allowed_users": map[string]any{"ref": "slack-allow-alice"},
+			},
+		},
+	}
+	if _, err := passport.Compile(ok); err != nil {
+		t.Fatalf("ref-only channels: %v", err)
 	}
 }
 
@@ -700,10 +837,19 @@ func TestSkillConnectorPassportProjectionAndRawMCPDenial(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	extended, err := rev.Value("tools", "extended")
+	if err != nil {
+		t.Fatal(err)
+	}
 	coreMap, _ := core.(map[string]any)
+	extMap, _ := extended.(map[string]any)
+	// A member-count overflow lands whole toolsets in extended (R6.1) — the
+	// projection is core∪extended, never a dropped selection.
 	for _, want := range []string{"hub:skills", "connectors", "org_mcp"} {
-		if _, ok := coreMap[want]; !ok {
-			t.Fatalf("compiled projection lost admitted toolset %s: %v", want, coreMap)
+		_, inCore := coreMap[want]
+		_, inExt := extMap[want]
+		if !inCore && !inExt {
+			t.Fatalf("compiled projection lost admitted toolset %s: core=%v extended=%v", want, coreMap, extMap)
 		}
 	}
 

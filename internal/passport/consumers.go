@@ -28,86 +28,92 @@ type Consumer struct {
 }
 
 // Consumers is the R0.3 registry keyed by schema leaf path ("*" is the
-// dynamic map-key segment). Nothing consumes the published revision yet —
-// pending names mark the stage that wires each leaf (ADR-0093 D1);
-// CHG-0262 forbids pending entries.
+// dynamic map-key segment). Every leaf names the component that reads it —
+// the compose render, the hot-reloaded relay registry, the mtime-reloaded
+// admission PEP, the publish-derived ledger/policy stores, the rendered env,
+// or the rendered hermes config/supervisor policy; CHG-0262 forbids pending
+// names (guarded by TestNoPendingConsumers).
 var Consumers = map[string]Consumer{
 	// stack -> compose project, build set, supervisor spawn (CHG-0257)
-	"stack.identity.user":         {"pending:CHG-0257", EffectRebuild},
-	"stack.identity.organization": {"pending:CHG-0257", EffectRebuild},
-	"stack.services":              {"pending:CHG-0257", EffectRebuild},
-	"stack.services.*.mode":       {"pending:CHG-0257", EffectRebuild},
+	"stack.identity.user":         {"compose", EffectRebuild},
+	"stack.identity.organization": {"compose", EffectRebuild},
+	"stack.services":              {"compose", EffectRebuild},
+	"stack.services.*.mode":       {"compose", EffectRebuild},
 
 	// config -> effective hermes config, supervisor policy, compose (CHG-0258)
-	"config.runtime.timezone":                 {"pending:CHG-0258", EffectRespawn},
-	"config.runtime.locale":                   {"pending:CHG-0258", EffectRespawn},
-	"config.runtime.context.compaction":       {"pending:CHG-0258", EffectRespawn},
-	"config.runtime.context.parallel_lanes":   {"pending:CHG-0258", EffectRespawn},
-	"config.supervision.idle_stop":            {"pending:CHG-0258", EffectLive},
-	"config.supervision.restart":              {"pending:CHG-0258", EffectLive},
-	"config.supervision.watchers":             {"pending:CHG-0258", EffectLive},
-	"config.supervision.watchers.*.protected": {"pending:CHG-0258", EffectLive},
-	"config.supervision.watchers.*.every":     {"pending:CHG-0258", EffectLive},
-	"config.ports":                            {"pending:CHG-0258", EffectRecreate},
-	"config.channels":                         {"pending:CHG-0258", EffectRecreate},
-	"config.channels.*.bot.ref":               {"pending:CHG-0258", EffectRecreate},
-	"config.channels.*.allowed_users.ref":     {"pending:CHG-0258", EffectRecreate},
-	"config.channels.*.voice.in":              {"pending:CHG-0258", EffectRecreate},
-	"config.channels.*.voice.out":             {"pending:CHG-0258", EffectRecreate},
-	"config.memory.backend":                   {"pending:CHG-0258", EffectRespawn},
-	"config.memory.nightly_rollup":            {"pending:CHG-0258", EffectRespawn},
+	"config.runtime.timezone":                 {"hermes-config", EffectRespawn},
+	"config.runtime.locale":                   {"hermes-config", EffectRespawn},
+	"config.runtime.context.compaction":       {"hermes-config", EffectRespawn},
+	"config.runtime.context.parallel_lanes":   {"hermes-config", EffectRespawn},
+	"config.supervision.idle_stop":            {"supervisor-policy", EffectLive},
+	"config.supervision.restart":              {"supervisor-policy", EffectLive},
+	"config.supervision.watchers":             {"supervisor-policy", EffectLive},
+	"config.supervision.watchers.*.protected": {"supervisor-policy", EffectLive},
+	"config.supervision.watchers.*.every":     {"supervisor-policy", EffectLive},
+	"config.ports":                            {"compose", EffectRecreate},
+	"config.channels":                         {"communication", EffectRecreate},
+	"config.channels.*.bot.ref":               {"communication", EffectRecreate},
+	"config.channels.*.allowed_users.ref":     {"communication", EffectRecreate},
+	"config.channels.*.voice.in":              {"communication", EffectRecreate},
+	"config.channels.*.voice.out":             {"communication", EffectRecreate},
+	"config.memory.backend":                   {"hermes-config", EffectRespawn},
+	// The nightly rollup schedule rides the published config doc the
+	// supervisor reads for each space (CHG-0206 anchors the per-space
+	// scheduler in internal/supervisor; the rendered policy file is its
+	// live input channel, the doc is the schedule's authority).
+	"config.memory.nightly_rollup": {"supervisor", EffectRespawn},
 
-	// models -> relay registry, broker leases (CHG-0261)
-	"models.default":                           {"pending:CHG-0261", EffectLive},
-	"models.routes":                            {"pending:CHG-0261", EffectLive},
-	"models.routes.*.ladder":                   {"pending:CHG-0261", EffectLive},
-	"models.services":                          {"pending:CHG-0261", EffectRecreate},
-	"models.services.*.via":                    {"pending:CHG-0261", EffectRecreate},
-	"models.services.*.endpoint":               {"pending:CHG-0261", EffectRecreate},
-	"models.services.*.auth.upstream.kind":     {"pending:CHG-0261", EffectRecreate},
-	"models.services.*.auth.upstream.ref":      {"pending:CHG-0261", EffectRecreate},
-	"models.services.*.auth.proxy_access.kind": {"pending:CHG-0261", EffectRecreate},
-	"models.services.*.auth.proxy_access.ref":  {"pending:CHG-0261", EffectRecreate},
-	"models.services.*.sharing":                {"pending:CHG-0261", EffectRecreate},
-	"models.services.*.limits":                 {"pending:CHG-0261", EffectLive},
-	"models.services.*.models":                 {"pending:CHG-0261", EffectLive},
+	// models -> relay registry (hot-reloaded live) / service set (recreate)
+	"models.default":                           {"model-relay", EffectLive},
+	"models.routes":                            {"model-relay", EffectLive},
+	"models.routes.*.ladder":                   {"model-relay", EffectLive},
+	"models.services":                          {"model-relay", EffectRecreate},
+	"models.services.*.via":                    {"model-relay", EffectRecreate},
+	"models.services.*.endpoint":               {"model-relay", EffectRecreate},
+	"models.services.*.auth.upstream.kind":     {"model-relay", EffectRecreate},
+	"models.services.*.auth.upstream.ref":      {"model-relay", EffectRecreate},
+	"models.services.*.auth.proxy_access.kind": {"model-relay", EffectRecreate},
+	"models.services.*.auth.proxy_access.ref":  {"model-relay", EffectRecreate},
+	"models.services.*.sharing":                {"model-relay", EffectRecreate},
+	"models.services.*.limits":                 {"model-relay", EffectLive},
+	"models.services.*.models":                 {"model-relay", EffectLive},
 
-	// workspace -> file-tool PEP, supervisor mount plan (CHG-0259)
-	"workspace.tree":            {"pending:CHG-0259", EffectRespawn},
-	"workspace.writable":        {"pending:CHG-0259", EffectLive},
-	"workspace.read_only":       {"pending:CHG-0259", EffectLive},
-	"workspace.mounts":          {"pending:CHG-0259", EffectRespawn},
-	"workspace.mounts.*.source": {"pending:CHG-0259", EffectRespawn},
-	"workspace.mounts.*.mode":   {"pending:CHG-0259", EffectRespawn},
+	// workspace -> file-tool PEP (mtime reload), supervisor mount plan
+	"workspace.tree":            {"mount-plan", EffectRespawn},
+	"workspace.writable":        {"file-admission", EffectLive},
+	"workspace.read_only":       {"file-admission", EffectLive},
+	"workspace.mounts":          {"mount-plan", EffectRespawn},
+	"workspace.mounts.*.source": {"mount-plan", EffectRespawn},
+	"workspace.mounts.*.mode":   {"mount-plan", EffectRespawn},
 
-	// tools -> ToolHub projection + hermes disabled_toolsets (CHG-0260)
-	"tools.core":                           {"pending:CHG-0260", EffectLive},
-	"tools.core.*.via":                     {"pending:CHG-0260", EffectRespawn},
-	"tools.core.*.tools.include":           {"pending:CHG-0260", EffectLive},
-	"tools.core.*.tools.exclude":           {"pending:CHG-0260", EffectLive},
-	"tools.core.*.access":                  {"pending:CHG-0260", EffectLive},
-	"tools.core.*.scope.paths":             {"pending:CHG-0260", EffectLive},
-	"tools.core.*.scope.hosts":             {"pending:CHG-0260", EffectLive},
-	"tools.core.*.scope.urls":              {"pending:CHG-0260", EffectLive},
-	"tools.core.*.rules":                   {"pending:CHG-0260", EffectLive},
-	"tools.core.*.rules.*.scope.paths":     {"pending:CHG-0260", EffectLive},
-	"tools.core.*.rules.*.scope.hosts":     {"pending:CHG-0260", EffectLive},
-	"tools.core.*.rules.*.scope.urls":      {"pending:CHG-0260", EffectLive},
-	"tools.extended":                       {"pending:CHG-0260", EffectLive},
-	"tools.extended.*.via":                 {"pending:CHG-0260", EffectRespawn},
-	"tools.extended.*.tools.include":       {"pending:CHG-0260", EffectLive},
-	"tools.extended.*.tools.exclude":       {"pending:CHG-0260", EffectLive},
-	"tools.extended.*.access":              {"pending:CHG-0260", EffectLive},
-	"tools.extended.*.scope.paths":         {"pending:CHG-0260", EffectLive},
-	"tools.extended.*.scope.hosts":         {"pending:CHG-0260", EffectLive},
-	"tools.extended.*.scope.urls":          {"pending:CHG-0260", EffectLive},
-	"tools.extended.*.rules":               {"pending:CHG-0260", EffectLive},
-	"tools.extended.*.rules.*.scope.paths": {"pending:CHG-0260", EffectLive},
-	"tools.extended.*.rules.*.scope.hosts": {"pending:CHG-0260", EffectLive},
-	"tools.extended.*.rules.*.scope.urls":  {"pending:CHG-0260", EffectLive},
+	// tools -> ToolHub admission policy (publish-derived) + runtime env (via)
+	"tools.core":                           {"tool-policy", EffectLive},
+	"tools.core.*.via":                     {"runtime-env", EffectRespawn},
+	"tools.core.*.tools.include":           {"tool-policy", EffectLive},
+	"tools.core.*.tools.exclude":           {"tool-policy", EffectLive},
+	"tools.core.*.access":                  {"tool-policy", EffectLive},
+	"tools.core.*.scope.paths":             {"tool-policy", EffectLive},
+	"tools.core.*.scope.hosts":             {"tool-policy", EffectLive},
+	"tools.core.*.scope.urls":              {"tool-policy", EffectLive},
+	"tools.core.*.rules":                   {"tool-policy", EffectLive},
+	"tools.core.*.rules.*.scope.paths":     {"tool-policy", EffectLive},
+	"tools.core.*.rules.*.scope.hosts":     {"tool-policy", EffectLive},
+	"tools.core.*.rules.*.scope.urls":      {"tool-policy", EffectLive},
+	"tools.extended":                       {"tool-policy", EffectLive},
+	"tools.extended.*.via":                 {"runtime-env", EffectRespawn},
+	"tools.extended.*.tools.include":       {"tool-policy", EffectLive},
+	"tools.extended.*.tools.exclude":       {"tool-policy", EffectLive},
+	"tools.extended.*.access":              {"tool-policy", EffectLive},
+	"tools.extended.*.scope.paths":         {"tool-policy", EffectLive},
+	"tools.extended.*.scope.hosts":         {"tool-policy", EffectLive},
+	"tools.extended.*.scope.urls":          {"tool-policy", EffectLive},
+	"tools.extended.*.rules":               {"tool-policy", EffectLive},
+	"tools.extended.*.rules.*.scope.paths": {"tool-policy", EffectLive},
+	"tools.extended.*.rules.*.scope.hosts": {"tool-policy", EffectLive},
+	"tools.extended.*.rules.*.scope.urls":  {"tool-policy", EffectLive},
 
-	// grants -> PDP ledger snapshot (CHG-0256)
-	"grants.allow": {"pending:CHG-0256", EffectLive},
+	// grants -> PDP ledger snapshot (DeriveSpaceRights at publish)
+	"grants.allow": {"rights-ledger", EffectLive},
 }
 
 // schemaLeaves enumerates every leaf path of the six v2 bodies. A map is

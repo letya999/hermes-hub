@@ -33,7 +33,7 @@ func HubToolsDefinition() api.ToolDefinition {
 	return api.ToolDefinition{
 		Schema:       api.SchemaVersion,
 		DefinitionID: HubToolsDefinitionID,
-		Version:      "5.12.0",
+		Version:      "5.13.0",
 		Transport:    api.AgentTools,
 		Source:       api.DefinitionSource{},
 		Workload: api.WorkloadPolicy{
@@ -57,6 +57,10 @@ func HubToolsDefinition() api.ToolDefinition {
 			tool("file_read", "files.read", "workspace.read", "Read one file inside the admitted workspace scope.", api.ReadEffect, use("read", "files", "path"), opt("root"), path),
 			tool("file_write", "files.write", "workspace.write", "Create or update one file inside the admitted workspace scope; revision-guarded.", api.WriteEffect, use("write", "files", "path"), opt("root"), path, str("text"), opt("revision")),
 			tool("file_search", "files.search", "workspace.read", "Search file contents inside the admitted workspace scope.", api.ReadEffect, use("search", "files", "path"), opt("root"), opt("path"), str("query")),
+			// Project creation is a distinct right: a new top-level directory
+			// under projects/ never appears through file_write — the model
+			// calls this once and plain writes land inside the project.
+			tool("project_create", "files.create_project", "workspace.create_project", "Initialize a new project directory under projects/; file_write then works inside it. Existing names return created=false.", api.WriteEffect, use("create", "projects"), str("name")),
 			tool("service_catalog", "services.read", "stack.inspect", "List optional services available on this runtime.", api.ReadEffect, use("read", "services")),
 			tool("service_enable", "services.enable", "stack.change", "Enable one self-service integration declared in the catalog.", api.WriteEffect, use("enable", "services"), str("service")),
 			tool("service_disable", "services.disable", "stack.change", "Disable one self-service integration declared in the catalog.", api.WriteEffect, use("disable", "services"), str("service")),

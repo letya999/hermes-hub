@@ -1,6 +1,6 @@
 ---
 description: spaces/<id>/ layout — settings.yaml, generated configs, secrets/env files, state dirs, and what is hand-edited vs rendered.
-last_verified: "2026-11-02"
+last_verified: "2026-11-03"
 ---
 
 # Spaces
@@ -17,18 +17,33 @@ Two YAML files with different owners — the pair is deliberately split so
 capability intent never masquerades as runtime config. Keys placed in the
 wrong file are rejected by name, not merged.
 
+**Managed (published) spaces**: once `hubctl space-migrate`/`space apply`
+publishes a revision, the six passports under `generated/passports/
+<revision>/` are the sole runtime authority — render, supervisor spawn,
+sibling enrollment, `hubctl up/chat/doctor/trace` and execution selection
+resolve through `stack.ReadEffective`, which opens the revision plus the
+slim `agent.yaml` extension file alone. `settings.yaml`, `workspace.yaml`
+and the space's own `models.yaml` are retired: they are never opened on any
+runtime path (SPEC-0092 R8.1). A managed claim — the `current` pointer or
+`capability_mode: managed` in `agent.yaml` — without a loadable revision
+fails closed, never downgrades to the retired files. `agent.yaml` keeps
+only the extension fields the contract does not govern (`infra`, `web`,
+`image_gen`, `cli_toolboxes`, `capability_profile_id`,
+`capability_generation`, `hosting`); passport-owned keys inside it are
+rejected by name.
+
 | File | Owner | Contents |
 |---|---|---|
 | `scope.yaml` | operator | Host-owned `kind` (`user`, `group`, `organization`), `id` and optional organization binding; group init refuses existing personal scopes |
-| `agent.yaml` (schema 3) | operator | runtime config: `user`, `organization`, `model`, `model_url`, `timezone`, ports (`oauth_port`, `browser_port`, `slack_events_port`), `hooks`, `memory`, `honcho`, `cliproxy`, `infra` (exactly one deployed space renders the shared control plane), `diagnostics`, `image_gen`, `web`, `cli_registries`, managed-mode pin (`capability_mode`, `capability_profile_id`, `capability_generation`) |
-| `workspace.yaml` (schema 3) | capability intent | the `tools:` map, `ingress:` channels, `workspace:` mounts plus optional `goal`/`bootstrap_revision`, `mcp:` raw server definitions. **Visibility, not authority** — ToolHub profiles/grants still govern admission |
-| `settings.yaml` (schema 1, legacy) | — | pre-split file; still parses — `features`, `native_toolsets`, `disabled_mcp` migrate into the pair at load — but mixing old keys with the new pair is rejected. `internal/stack/defaults/{agent,workspace}.yaml` seed new spaces |
+| `agent.yaml` (schema 3) | operator | unmanaged: full runtime config (`user`, `organization`, `model`, `model_url`, `timezone`, ports, `hooks`, `memory`, `honcho`, `cliproxy`, `infra`, `diagnostics`, `image_gen`, `web`, `cli_registries`, managed-mode pin). **Managed: slim extension only** — the fields above that the passport contract does not govern |
+| `workspace.yaml` (schema 3) | capability intent | unmanaged: the `tools:` map, `ingress:` channels, `workspace:` mounts plus optional `goal`/`bootstrap_revision`, `mcp:` raw server definitions. **Retired under a published revision** — `tools.yaml`/`workspace.yaml`/`grants.yaml` passports replace it |
+| `settings.yaml` (schema 1, legacy) | — | pre-split file; still parses for unmigrated spaces — `features`, `native_toolsets`, `disabled_mcp` migrate into the pair at load — but mixing old keys with the new pair is rejected. **Retired under a published revision.** `internal/stack/defaults/{agent,workspace}.yaml` seed new spaces |
+| `models.yaml` | operator | unmanaged: logical model registry (ids without dots, ladder hops into cliproxy `/v1/models`). **Retired under a published revision** — the `models.yaml` passport (`services`/`routes`/`default`) is the only registry the relay reads |
 | `SOUL.md` | owner | The persona/agent-home document — see docs/agent-home.md |
 | `secrets.<env>.env` | operator | Provider keys for this space (`TELEGRAM_BOT_TOKEN`, `GOOGLE_*`, `GITLAB_TOKEN`, …) — named by feature `requires`. Never committed beyond the local operator flow |
 | `runtime.<env>.env`, `communication.<env>.env`, `model-relay.<env>.env` | operator | Per-service env, one file per environment |
 | `runtime.auth`, `media.auth`, `model-relay.auth`, `toolhub-tokens.json`, `supervisor.auth` | operator | Bearer files — auth between services, never literal secrets in compose |
 | `communication.users.yaml` | operator | Sibling Telegram identities for the gateway; `id`/`runtime_id`/`telegram_ids`/`policy_version` must match the rendered stack policy or tool projection silently returns an empty list; `TELEGRAM_ALLOWED_USERS` is the bot-level allowlist and must contain every owner's id |
-| `models.yaml` | operator | Logical model registry: ids without dots (`default`, `alt`), each ladder hop's `model:` an upstream name present in that space's cliproxy `/v1/models`. `agent.yaml model:` references a registry id. Hot-reloaded by model-relay |
 | `media.grant` | operator | hub-media's broker grant id — not a secret; consumed only through `hubctl up` compose interpolation, never mounted |
 | `cliproxy/` | operator | Dedicated-proxy material (`config.yaml`, `api-key`, `auths/`) when `cliproxy: dedicated` — per-owner accounts, never copied between spaces |
 | `telegram-auth.<env>.env` | operator | Telegram QR auth app API pair when `telegram_auth` is on (default for telegram stacks) |
@@ -288,6 +303,18 @@ directory bind at `generated/config-view/<env>/` whose individual files are
 replaced atomically per revision — the six passports, `prompt-pointer.txt`
 and the space's `SOUL.md` — instead of Docker single-file binds that never
 see updates.
+
+`config.yaml` commands the runtime contract: `runtime.timezone`/`locale`
+and `context.{compaction,parallel_lanes}` land in the rendered environment
+and the managed context policy; `ports.<name>` publishes exactly its owning
+service (`oauth-callback` → hermes-runtime, `browser-vnc` → the browser
+sidecar, `slack-events` → communication-hub) and `GOOGLE_OAUTH_REDIRECT_URI`
+re-derives from `ports.oauth-callback`; `supervision` renders
+`runtime.<env>.policy.json` beside the env files — the supervisor re-reads
+it per decision, so `idle_stop`, `restart` and `watchers` apply live without
+a respawn; `channels` names become ingress transports, `voice` wires the
+STT/TTS endpoints and credential `{ref:}` names resolve through the existing
+secret path at service start; `memory.backend` flips the Honcho contract.
 
 Multi-space live acceptance was exercised against ten disposable managed
 spaces (`m29-acc-01..10`, `infra: false`, dedicated `cliproxy`), each with a

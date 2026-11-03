@@ -10,6 +10,7 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/passport"
+	"github.com/letya999/hermes-hub/internal/stack"
 )
 
 // sourceFileNames is the fixed layer order under passport-src/ — the same
@@ -64,5 +65,7 @@ func CompileSources(dir, env string, now time.Time) (passport.Revision, error) {
 		User:             layers[4],
 		Grants:           ledger,
 		Catalog:          docs,
+		RendersInfra:     stack.SpaceRendersInfra(dir),
+		ReservedPorts:    stack.ReservedSiblingPorts(dir),
 	})
 }

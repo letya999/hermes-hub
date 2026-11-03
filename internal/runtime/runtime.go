@@ -99,6 +99,8 @@ func Run(args []string) error {
 			return errors.New("verify-managed requires managed capability mode")
 		}
 		return managedPreflight()
+	case "cliproxy-materialize":
+		return runCliproxyMaterialize(context.Background())
 	case "health":
 		return Health(filepath.Join(state, "runtime.json"))
 	case "prepare":

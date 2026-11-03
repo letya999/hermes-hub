@@ -207,7 +207,7 @@ func TestDeriveRightsStampsManagedState(t *testing.T) {
 	store.RightsLedger = gov.Load
 	now := time.Now()
 	allow := map[string][]string{"workspace": {"read", "write"}, "models": {"switch"}}
-	if err := DeriveRights(store, gov, doc, auth.PrincipalID, allow, now); err != nil {
+	if err := DeriveRights(store, gov, doc, auth.PrincipalID, allow, auth.Environment, auth.PolicyVersion, now); err != nil {
 		t.Fatal(err)
 	}
 	profile, _, err := store.capabilityProfileLocked(auth)
@@ -226,7 +226,7 @@ func TestDeriveRightsStampsManagedState(t *testing.T) {
 	// Re-derive with a shrunk allow: the dropped right is revoked in place,
 	// the surviving rows keep their grants (no revision churn).
 	allow2 := map[string][]string{"workspace": {"read"}}
-	if err := DeriveRights(store, gov, doc, auth.PrincipalID, allow2, now.Add(time.Minute)); err != nil {
+	if err := DeriveRights(store, gov, doc, auth.PrincipalID, allow2, auth.Environment, auth.PolicyVersion, now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if d, _ := store.Decide(auth, "workspace", "write", "", now); d.Allow {
@@ -242,7 +242,7 @@ func TestDeriveRightsStampsManagedState(t *testing.T) {
 	// Idempotent: deriving the same allow twice changes nothing.
 	grants, _ := gov.RightGrants()
 	before := len(grants)
-	if err := DeriveRights(store, gov, doc, auth.PrincipalID, allow2, now.Add(2*time.Minute)); err != nil {
+	if err := DeriveRights(store, gov, doc, auth.PrincipalID, allow2, auth.Environment, auth.PolicyVersion, now.Add(2*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	grants, _ = gov.RightGrants()

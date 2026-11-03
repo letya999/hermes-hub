@@ -55,3 +55,36 @@ func TestPublishRefreshesConfigViewWithStableInode(t *testing.T) {
 		t.Fatal("space SOUL.md not published into the view")
 	}
 }
+
+// R5.2: the executor contracts materialize inside the view so the single
+// read-only /config bind covers them; publishing a revision must preserve
+// them (render/spawn rewrites them).
+func TestPublishPreservesExecutorContractsInConfigView(t *testing.T) {
+	dir := t.TempDir()
+	rev := Revision{
+		ID:         "r-0001",
+		Provenance: Provenance{Space: "alice", Environment: "dev", UpdatedAt: time.Now(), GeneratedAt: time.Now()},
+		Docs:       map[string][]byte{},
+	}
+	for _, name := range Names {
+		rev.Docs[name] = []byte("apiVersion: six-passport/v2\nkind: " + name + "\n")
+	}
+	if err := rev.Publish(dir); err != nil {
+		t.Fatal(err)
+	}
+	viewDir := filepath.Join(dir, "generated", "config-view", "dev")
+	for _, name := range []string{"tool-policy.json", "tool-manifest.json"} {
+		if err := os.WriteFile(filepath.Join(viewDir, name), []byte("{}"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rev.ID = "r-0002"
+	if err := rev.Publish(dir); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"tool-policy.json", "tool-manifest.json"} {
+		if _, err := os.Stat(filepath.Join(viewDir, name)); err != nil {
+			t.Fatalf("publish dropped executor contract %s", name)
+		}
+	}
+}

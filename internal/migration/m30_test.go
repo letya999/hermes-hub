@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/catalog"
+	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/passport"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub"
@@ -27,7 +28,7 @@ func TestM30MigrationEmitsFullContract(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, "runtime", "toolhub"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	settings := "schema: 3\nuser: carol\ntimezone: Europe/Moscow\nmodel: default\nmodel_url: http://model-relay:8318/v1\noauth_port: 8101\nbrowser_port: 8102\ngitlab_host: gitlab.example.test\ntools:\n  files:\n    via: toolhub\n  terminal:\n    via: toolhub\n  memory:\n    via: native\ningress:\n  - telegram\nworkspace:\n  mounts:\n    - from: shared\n      to: /shared/data\n      mode: ro\n"
+	settings := "schema: 3\nuser: carol\ntimezone: Europe/Moscow\nmodel: default\nmodel_url: http://model-relay:8318/v1\noauth_port: 8101\nbrowser_port: 8102\ngitlab_host: gitlab.example.test\ntools:\n  files:\n    via: toolhub\n  terminal:\n    via: toolhub\n  memory:\n    via: native\n  browser:\n    via: mcp\ningress:\n  - telegram\nworkspace:\n  mounts:\n    - from: shared\n      to: /shared/data\n      mode: ro\n"
 	if err := os.WriteFile(filepath.Join(dir, "settings.yaml"), []byte(settings), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -111,8 +112,14 @@ func TestM30MigrationEmitsFullContract(t *testing.T) {
 	if _, bad := ws["layout"]; bad {
 		t.Fatal("workspace still carries the removed layout key")
 	}
-	if !strings.Contains(ws["tree"].(string), "/workspace") {
-		t.Fatalf("workspace lost the materialized tree: %v", ws["tree"])
+	tree := ws["tree"].(string)
+	if !strings.Contains(tree, "├── workspace/") {
+		t.Fatalf("workspace lost the materialized tree: %v", tree)
+	}
+	for _, want := range []string{"people/<channel>/<date>/<attachment-id>/", "services/<service>/<date>/<attachment-id>/"} {
+		if !strings.Contains(tree, want) {
+			t.Fatalf("workspace tree lost the inbox placeholder %q: %v", want, tree)
+		}
 	}
 	mounts, _ := ws["mounts"].(map[string]any)
 	m, _ := mounts["/shared/data"].(map[string]any)
@@ -197,8 +204,125 @@ func TestM30MigrationEmitsFullContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadModelRegistry: %v", err)
 	}
-	if len(reg.Models) != 2 || reg.Switch["carol"] != "catalog" {
-		t.Fatalf("registry dropped the passport routes/switch: %+v", reg)
+	if len(reg.Models) != 2 {
+		t.Fatalf("registry dropped the passport routes: %+v", reg)
+	}
+	// The legacy switch grant survives as the models.switch right in the
+	// grants doc — the RBAC right is the switch policy now, not a file map.
+	modelOps, _ := allow["models"].([]any)
+	flat = flat[:0]
+	for _, op := range modelOps {
+		flat = append(flat, op.(string))
+	}
+	if !contains(flat, "switch") {
+		t.Fatalf("grants dropped the model switch right: %v", allow["models"])
+	}
+}
+
+// Ports and channels migrate through the imperative vocabulary
+// (SPEC-0092 R4.1): slack-events is emitted only by the space rendering
+// the shared control plane, slack_app ingress becomes a channel entry, and
+// a port a sibling space already published fails the migrate compile.
+func TestMigrationPreservesPortsAndChannels(t *testing.T) {
+	parent := t.TempDir()
+	spaces := filepath.Join(parent, "spaces")
+
+	// The infra owner publishes its shared gateway port and both channels.
+	infra := filepath.Join(spaces, "local")
+	if err := os.MkdirAll(filepath.Join(infra, "runtime", "toolhub"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	body := "schema: 3\nuser: local\ntimezone: UTC\nmodel: default\nmodel_url: http://model-relay:8318/v1\ntools:\n  files:\n    via: toolhub\noauth_port: 8100\nbrowser_port: 6080\nslack_events_port: 8088\ningress:\n  - telegram\n  - slack_app\n"
+	if err := os.WriteFile(filepath.Join(infra, "settings.yaml"), []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	models := "models:\n    default:\n        ladder:\n            - provider: cliproxy\n              model: gemini-3-flash\n"
+	if err := os.WriteFile(filepath.Join(infra, "models.yaml"), []byte(models), 0600); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := MigratePassport(PassportOptions{Dir: infra, Environment: "dev", Apply: true})
+	if err != nil {
+		t.Fatalf("migrate infra: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(infra, "generated", "passports", rep.Revision, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg map[string]any
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	ports, _ := cfg["ports"].(map[string]any)
+	if ports["slack-events"] != 8088 {
+		t.Fatalf("infra lost the shared gateway port: %v", ports)
+	}
+	channels, _ := cfg["channels"].(map[string]any)
+	if _, ok := channels["telegram"]; !ok {
+		t.Fatalf("infra lost telegram: %v", channels)
+	}
+	slack, _ := channels["slack_app"].(map[string]any)
+	if slack == nil {
+		t.Fatalf("infra lost slack_app: %v", channels)
+	}
+	if bot, _ := slack["bot"].(map[string]any); bot["ref"] == "" {
+		t.Fatalf("slack_app bot is not a ref: %v", slack)
+	}
+
+	// A non-infra space must not claim the shared gateway's host port —
+	// the migrated config simply drops the meaningless assignment.
+	user := filepath.Join(spaces, "bob")
+	if err := os.MkdirAll(filepath.Join(user, "runtime", "toolhub"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	body = "schema: 3\nuser: bob\ninfra: false\ntimezone: UTC\nmodel: default\nmodel_url: http://model-relay:8318/v1\ntools:\n  files:\n    via: toolhub\nslack_events_port: 8090\nbrowser_port: 6081\noauth_port: 8200\ntelegram_auth: false\ncompression:\n  enabled: false\n"
+	if err := os.WriteFile(filepath.Join(user, "settings.yaml"), []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(user, "models.yaml"), []byte(models), 0600); err != nil {
+		t.Fatal(err)
+	}
+	rep, err = MigratePassport(PassportOptions{Dir: user, Environment: "dev", Apply: true})
+	if err != nil {
+		t.Fatalf("migrate user: %v", err)
+	}
+	raw, err = os.ReadFile(filepath.Join(user, "generated", "passports", rep.Revision, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg = map[string]any{}
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	ports, _ = cfg["ports"].(map[string]any)
+	if _, bad := ports["slack-events"]; bad {
+		t.Fatalf("non-infra space claimed a shared port: %v", ports)
+	}
+	if ports["oauth-callback"] != 8200 {
+		t.Fatalf("user lost the runtime oauth port: %v", ports)
+	}
+	// Keys with no passport leaf are reported, never silently dropped.
+	joined := strings.Join(rep.Conflicts, " ")
+	for _, want := range []string{"telegram_auth", "compression"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("migration must report %q as a preserved conflict: %v", want, rep.Conflicts)
+		}
+	}
+
+	// A port a sibling space already published cannot be re-claimed: bob's
+	// published oauth port reserves 8200 on this host.
+	carol := filepath.Join(spaces, "carol")
+	if err := os.MkdirAll(filepath.Join(carol, "runtime", "toolhub"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	body = "schema: 3\nuser: carol\ninfra: false\ntimezone: UTC\nmodel: default\nmodel_url: http://model-relay:8318/v1\ntools:\n  files:\n    via: toolhub\nbrowser_port: 6082\noauth_port: 8200\n"
+	if err := os.WriteFile(filepath.Join(carol, "settings.yaml"), []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(carol, "models.yaml"), []byte(models), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = MigratePassport(PassportOptions{Dir: carol, Environment: "dev", Apply: true}); err == nil {
+		t.Fatal("sibling-claimed port migrated")
 	}
 }
 
@@ -247,6 +371,11 @@ func TestM30DedicatedCliproxyMigratesPerSpaceInstance(t *testing.T) {
 	cx, _ := modelSvcs["cliproxy"].(map[string]any)
 	if cx["endpoint"] != "http://cliproxy-carol:8317/v1" {
 		t.Fatalf("models endpoint must address the dedicated instance, got %v", cx["endpoint"])
+	}
+	auth, _ := cx["auth"].(map[string]any)
+	up, _ := auth["upstream"].(map[string]any)
+	if up["kind"] != "oauth-session" || up["ref"] != "cliproxy-carol" {
+		t.Fatalf("cliproxy service must declare its session upstream for models login: %v", auth)
 	}
 }
 
@@ -341,7 +470,10 @@ func TestDeriveSpaceRightsSharedInfraStore(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(infra, "agent.yaml"), []byte("user: infra-a\ninfra: true\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(sibling, "agent.yaml"), []byte("user: sib-one\ninfra: false\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(sibling, "agent.yaml"), []byte("schema: 3\nuser: sib-one\ninfra: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sibling, "workspace.yaml"), []byte("tools:\n  files:\n    via: toolhub\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	root := filepath.Join(infra, "runtime", "toolhub")
@@ -351,13 +483,18 @@ func TestDeriveSpaceRightsSharedInfraStore(t *testing.T) {
 	if err := toolhub.NewStore().Save(filepath.Join(root, "store.json")); err != nil {
 		t.Fatal(err)
 	}
+	// The production layout always has the infra space's governance document —
+	// sibling reads resolve to it instead of seeding a space-local copy.
+	if err := api.SaveGovernance(filepath.Join(root, "governance.json"), api.NewGovernance()); err != nil {
+		t.Fatal(err)
+	}
 	docs := catalog.Docs{Rights: api.RightsDoc{Capabilities: map[string]api.RightCapability{
 		"workspace": {Operations: map[string]api.RightOperation{
 			"read": {Subject: "self", Issuers: []string{"platform"}},
 		}},
 	}}}
 	rev := passport.Revision{Docs: map[string][]byte{"grants": []byte("allow:\n  workspace:\n    - read\n")}}
-	if err := DeriveSpaceRights(sibling, "sib-one", rev, docs, time.Now().UTC()); err != nil {
+	if err := DeriveSpaceRights(sibling, "sib-one", "dev", rev, docs, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(sibling, "runtime", "toolhub")); !os.IsNotExist(err) {
@@ -384,8 +521,101 @@ func TestDeriveSpaceRightsSharedInfraStore(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(lonely, "agent.yaml"), []byte("user: lonely\ninfra: false\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := DeriveSpaceRights(lonely, "lonely", rev, docs, time.Now().UTC()); err != nil {
+	if err := DeriveSpaceRights(lonely, "lonely", "dev", rev, docs, time.Now().UTC()); err != nil {
 		t.Fatalf("unmanaged sibling must skip derivation, got: %v", err)
+	}
+}
+
+// Rights-bearing config churns the settings policy hash on every apply; the
+// enrolled toolhub token is re-written with the fresh value, so a capability
+// profile still pinned to the pre-apply policy denies every projection.
+// Derivation must re-pin the matching-environment profile's PolicyVersion to
+// the just-published revision's policy (SPEC-0092 R2.1) — other
+// environments' pins are not the apply's business.
+func TestDeriveSpaceRightsRepinsStalePolicyVersion(t *testing.T) {
+	spaces := filepath.Join(t.TempDir(), "spaces")
+	infra := filepath.Join(spaces, "infra-b")
+	sibling := filepath.Join(spaces, "sib-two")
+	for _, dir := range []string{infra, sibling} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(infra, "agent.yaml"), []byte("user: infra-b\ninfra: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sibling, "agent.yaml"), []byte("schema: 3\nuser: sib-two\ninfra: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sibling, "workspace.yaml"), []byte("tools:\n  files:\n    via: toolhub\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(infra, "runtime", "toolhub")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	storePath := filepath.Join(root, "store.json")
+	store := toolhub.NewStore()
+	now := time.Now().UTC()
+	policy := api.CapabilityPolicy{Schema: api.SchemaVersion, PolicyID: "sib-two-default-policy", Members: []string{"sib-two"}, Revision: 4, IssuedBy: "platform", IssuedAt: now, Reason: "fixture", Status: api.ActiveStatus}
+	if err := api.Confirm(&policy, "platform", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutCapabilityPolicy(policy); err != nil {
+		t.Fatal(err)
+	}
+	profile := api.CapabilityProfile{Schema: api.SchemaVersion, ProfileID: "sib-two-default", PrincipalID: "sib-two", ContextID: "sib-two", RuntimeID: "sib-two",
+		Environment: "dev", Generation: 1, PolicyVersion: "policy-stale", PolicyID: policy.PolicyID, PolicyRevision: policy.Revision,
+		Revision: 7, IssuedBy: "platform", IssuedAt: now, Reason: "fixture", Status: api.ActiveStatus}
+	if err := api.Confirm(&profile, "platform", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutCapabilityProfile(profile); err != nil {
+		t.Fatal(err)
+	}
+	prod := api.CapabilityProfile{Schema: api.SchemaVersion, ProfileID: "sib-two-prod", PrincipalID: "sib-two", ContextID: "sib-two", RuntimeID: "sib-two",
+		Environment: "prod", Generation: 2, PolicyVersion: "policy-prod-stale", PolicyID: policy.PolicyID, PolicyRevision: policy.Revision,
+		Revision: 3, IssuedBy: "platform", IssuedAt: now, Reason: "fixture", Status: api.ActiveStatus}
+	if err := api.Confirm(&prod, "platform", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutCapabilityProfile(prod); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(storePath); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := stack.ReadEnvironment(sibling, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := stack.PolicyVersion(settings)
+	if want == "policy-stale" {
+		t.Fatal("fixture policy must differ from the live projection")
+	}
+	docs := catalog.Docs{Rights: api.RightsDoc{Capabilities: map[string]api.RightCapability{
+		"workspace": {Operations: map[string]api.RightOperation{
+			"read": {Subject: "self", Issuers: []string{"platform"}},
+		}},
+	}}}
+	rev := passport.Revision{Docs: map[string][]byte{"grants": []byte("allow:\n  workspace:\n    - read\n")}}
+	if err := DeriveSpaceRights(sibling, "sib-two", "dev", rev, docs, now); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := toolhub.Load(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope := func(profile, env string, gen uint64, policy string) identity.Envelope {
+		return identity.Envelope{Schema: identity.Schema, PrincipalID: "sib-two", ExternalIdentityID: "sib-two", ContextID: "sib-two",
+			RuntimeID: "sib-two", ConversationID: "toolhub", DeliveryTargetID: "toolhub", PolicyVersion: policy,
+			CapabilityProfile: profile, Environment: env, Generation: gen}
+	}
+	if _, err := reloaded.ListProjectedTools(envelope("sib-two-default", "dev", 1, want)); err != nil {
+		t.Fatalf("dev envelope with the live policy must authorize: %v", err)
+	}
+	if _, err := reloaded.ListProjectedTools(envelope("sib-two-prod", "prod", 2, want)); err == nil {
+		t.Fatal("prod profile must not be re-pinned by a dev apply")
 	}
 }
 
@@ -448,5 +678,54 @@ func TestM30RemigrateHonorsProfileDedicatedCliproxy(t *testing.T) {
 	}
 	if _, ok := services["cliproxy"]; ok {
 		t.Fatalf("stale shared cliproxy survived re-migration: %v", services)
+	}
+}
+
+// A stale v1 published revision must not block re-migration: the migrator
+// re-derives from the editable legacy files (the best available intent)
+// when the overlay cannot load the old envelope.
+func TestM30MigrateOverStaleV1Revision(t *testing.T) {
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "spaces", "emma")
+	if err := os.MkdirAll(filepath.Join(dir, "runtime", "toolhub"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "agent.yaml"), []byte("schema: 3\nuser: emma\nmodel: default\nmodel_url: http://model-relay:8318/v1\ntimezone: UTC\noauth_port: 8007\nbrowser_port: 6086\ninfra: false\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "workspace.yaml"), []byte("schema: 3\ntools:\n  file: toolhub\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "models.yaml"), []byte("models:\n    default:\n        ladder:\n            - provider: cliproxy\n              model: gemini-3-flash\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// The stale v1 envelope the previous compiler published — body: wrapper,
+	// kind: passport, per-passport metadata shape the v2 decoder refuses.
+	revDir := filepath.Join(dir, "generated", "passports", "r-deadbeef00000000")
+	for _, name := range []string{"stack", "config", "models", "workspace", "tools", "grants"} {
+		v1 := "apiVersion: six-passport/v1\nkind: passport\nmetadata:\n    passport: " + name + "\n    space: emma\n    revision: r-deadbeef00000000\nbody: {}\n"
+		if err := os.MkdirAll(revDir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(revDir, name+".yaml"), []byte(v1), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "generated", "passports", "current"), []byte("r-deadbeef00000000\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := MigratePassport(PassportOptions{Dir: dir, Environment: "dev", Apply: true})
+	if err != nil {
+		t.Fatalf("stale v1 revision must not block re-migration: %v", err)
+	}
+	if rep.Revision == "" || rep.Revision == "r-deadbeef00000000" {
+		t.Fatalf("expected a fresh revision, got %q", rep.Revision)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "generated", "passports", rep.Revision, "stack.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "apiVersion: six-passport/v2") {
+		t.Fatalf("new revision is not v2:\n%s", b)
 	}
 }

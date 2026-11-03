@@ -79,7 +79,7 @@ func equalRightRules(a, b []api.RightRule) bool {
 	return true
 }
 
-func DeriveRights(store *Store, gov *GovernanceStore, doc api.RightsDoc, principal string, allow map[string][]string, now time.Time) error {
+func DeriveRights(store *Store, gov *GovernanceStore, doc api.RightsDoc, principal string, allow map[string][]string, environment, policyVersion string, now time.Time) error {
 	rules := make([]api.RightRule, 0, len(allow))
 	for capability, ops := range allow {
 		for _, op := range ops {
@@ -93,10 +93,14 @@ func DeriveRights(store *Store, gov *GovernanceStore, doc api.RightsDoc, princip
 		return rules[i].Operation < rules[j].Operation
 	})
 	for _, profile := range store.profilesForPrincipal(principal) {
-		if equalRightRules(profile.Rights, rules) {
+		repin := profile.Environment == environment && policyVersion != "" && profile.PolicyVersion != policyVersion
+		if equalRightRules(profile.Rights, rules) && !repin {
 			continue
 		}
 		profile.Rights = rules
+		if repin {
+			profile.PolicyVersion = policyVersion
+		}
 		profile.Revision++
 		profile.IssuedBy = "platform"
 		profile.IssuedAt = now.UTC()

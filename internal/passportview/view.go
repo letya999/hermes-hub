@@ -22,11 +22,21 @@ var Names = []string{"stack", "config", "models", "workspace", "tools", "grants"
 
 // Current returns the active revision id.
 func Current(spaceDir string) (string, error) {
-	b, err := os.ReadFile(filepath.Join(spaceDir, "generated", "passports", "current"))
+	return currentGenerated(filepath.Join(spaceDir, "generated"))
+}
+
+// currentGenerated reads the current pointer inside a generated/ dir and
+// rejects ids that could escape the passports tree.
+func currentGenerated(genDir string) (string, error) {
+	b, err := os.ReadFile(filepath.Join(genDir, "passports", "current"))
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(string(b)), nil
+	rev := strings.TrimSpace(string(b))
+	if !filepath.IsLocal(rev) {
+		return "", fmt.Errorf("current names a non-local revision %q", rev)
+	}
+	return rev, nil
 }
 
 // Effective is the current revision as typed data — the single read path
@@ -46,12 +56,19 @@ type Effective struct {
 // all six passports strictly. There is no fallback to legacy files: a space
 // without a published revision, or a corrupted one, is an error.
 func LoadEffective(spaceDir string) (Effective, error) {
+	return LoadEffectiveGenerated(filepath.Join(spaceDir, "generated"))
+}
+
+// LoadEffectiveGenerated is LoadEffective rooted at the generated/ dir
+// itself — mount views like the cliproxy init companion's /run/model-gen
+// carry no enclosing space dir.
+func LoadEffectiveGenerated(genDir string) (Effective, error) {
 	var eff Effective
-	rev, err := Current(spaceDir)
+	rev, err := currentGenerated(genDir)
 	if err != nil {
 		return eff, fmt.Errorf("load effective: %w", err)
 	}
-	revDir := filepath.Join(spaceDir, "generated", "passports", rev)
+	revDir := filepath.Join(genDir, "passports", rev)
 	catalogs := ""
 	for _, name := range Names {
 		b, err := os.ReadFile(filepath.Join(revDir, name+".yaml")) // #nosec G304 -- revision dir is published authority

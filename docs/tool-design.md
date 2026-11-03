@@ -1,6 +1,6 @@
 ---
 description: Normative tool-design rules — one catalog, closed verb vocabulary, typed schemas, rights-vs-schema separation, bounded results, context budget, machine-checkable conformance.
-last_verified: "2026-11-02"
+last_verified: "2026-11-03"
 ---
 
 # Tool design charter

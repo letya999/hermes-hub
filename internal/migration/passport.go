@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -68,6 +69,12 @@ func MigratePassport(opts PassportOptions) (PassportReport, error) {
 		report.Mode = "apply"
 	}
 	s, err := stack.Read(opts.Dir)
+	if err != nil && errors.Is(err, stack.ErrRevisionUnloadable) {
+		// A stale/unloadable published revision (e.g. a v1 envelope from the
+		// previous compiler) must not block re-migration: the editable legacy
+		// files are the intent to transform — read them without the overlay.
+		s, err = stack.ReadBase(opts.Dir)
+	}
 	if err != nil {
 		return report, fmt.Errorf("space-migrate: %w", err)
 	}
@@ -121,6 +128,8 @@ func MigratePassport(opts PassportOptions) (PassportReport, error) {
 		User:             layers[4],
 		Grants:           ledger,
 		Catalog:          docs,
+		RendersInfra:     s.RendersInfra(),
+		ReservedPorts:    stack.ReservedSiblingPorts(opts.Dir),
 	})
 	if err != nil {
 		return report, fmt.Errorf("space-migrate: compile failed, nothing changed: %w", err)
@@ -160,7 +169,7 @@ func MigratePassport(opts PassportOptions) (PassportReport, error) {
 	if err := rev.Publish(opts.Dir); err != nil {
 		return report, err
 	}
-	if err := DeriveSpaceRights(opts.Dir, s.User, rev, docs, now); err != nil {
+	if err := DeriveSpaceRights(opts.Dir, s.User, opts.Environment, rev, docs, now); err != nil {
 		return report, err
 	}
 	report.Files = []string{
@@ -231,7 +240,7 @@ func passportLayers(dir string, s stack.Settings, env string, docs catalog.Docs)
 				toolsets[sec] = map[string]any{"via": ts.Via[0]}
 			}
 		}
-		mapped = append(mapped, fmt.Sprintf("mcp servers -> tools.core.%s", sec))
+		mapped = append(mapped, fmt.Sprintf("mcp_servers -> tools.core.%s", sec))
 	}
 	services, err := derivedServices(dir, s, docs)
 	if err != nil {
@@ -249,6 +258,24 @@ func passportLayers(dir string, s stack.Settings, env string, docs catalog.Docs)
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	// The legacy model: key is the default-route selector — it maps only
+	// when it names a route the registry actually migrated; anything else
+	// is reported rather than minting a phantom default (R8.1).
+	if s.Model != "" {
+		if _, ok := routes[s.Model]; ok {
+			def = s.Model
+			mapped = append(mapped, "model -> models.default")
+		} else {
+			conflicts = append(conflicts, fmt.Sprintf("model: %q is not a migrated route — no default emitted", s.Model))
+		}
+	}
+	if s.ModelURL != "" {
+		if s.ModelURL == "http://model-relay:8318/v1" {
+			mapped = append(mapped, "model_url -> model-relay service endpoint")
+		} else {
+			conflicts = append(conflicts, fmt.Sprintf("model_url %q: no v2 leaf — relay addressing is topology-derived", s.ModelURL))
+		}
+	}
 	svcMap := map[string]any{}
 	for instance, mode := range services {
 		svcMap[instance] = map[string]any{"mode": mode}
@@ -262,40 +289,68 @@ func passportLayers(dir string, s stack.Settings, env string, docs catalog.Docs)
 	if s.Honcho {
 		memoryBackend = "honcho"
 	}
-	layout := []any{"/workspace/inbox/people", "/workspace/inbox/services",
+	layout := []any{
+		map[string]any{"path": "/workspace/inbox/people", "placeholder": "<channel>/<date>/<attachment-id>"},
+		map[string]any{"path": "/workspace/inbox/services", "placeholder": "<service>/<date>/<attachment-id>"},
 		"/workspace/work", "/workspace/projects",
 		"/workspace/artifacts/documents", "/workspace/artifacts/images",
 		"/workspace/artifacts/videos", "/workspace/artifacts/archives",
 		"/workspace/artifacts/services", "/workspace/outbox"}
 
-	// ports: host-bound listeners the legacy agent file declared.
+	// ports: host-bound listeners the legacy agent file declared. Each
+	// source key lands in mapped or conflicts — a port the migrated stack
+	// cannot own is reported dropped, never silently erased (R8.1).
 	ports := map[string]any{}
 	if s.OAuthPort > 0 {
 		ports["oauth-callback"] = s.OAuthPort
+		mapped = append(mapped, "oauth_port -> config.ports.oauth-callback")
 	}
+	// A browser port without the browser sidecar is dead weight — the
+	// owning service must exist before the passport publishes its port
+	// (SPEC-0092 R4.1).
 	if s.BrowserPort > 0 {
-		ports["browser-vnc"] = s.BrowserPort
+		if _, ok := svcMap["browser"]; ok {
+			ports["browser-vnc"] = s.BrowserPort
+			mapped = append(mapped, "browser_port -> config.ports.browser-vnc")
+		} else {
+			conflicts = append(conflicts, "browser_port: dropped — no browser service in the migrated stack")
+		}
 	}
+	// The shared gateway's host port belongs to the space rendering infra —
+	// a consumer space's stale slack_events_port is dead weight.
 	if s.SlackEventsPort > 0 {
-		ports["slack-events"] = s.SlackEventsPort
+		if s.RendersInfra() {
+			ports["slack-events"] = s.SlackEventsPort
+			mapped = append(mapped, "slack_events_port -> config.ports.slack-events")
+		} else {
+			conflicts = append(conflicts, "slack_events_port: dropped — only the infra space publishes the shared gateway port")
+		}
 	}
 	// channels: ingress transports carry credential refs only — the names
 	// follow the broker contract the space already provisions.
 	channels := map[string]any{}
 	for _, ingress := range s.Ingress {
-		if ingress != "telegram" {
-			continue
-		}
-		ch := map[string]any{
-			"bot":           map[string]any{"ref": "telegram-bot-" + s.User},
-			"allowed_users": map[string]any{"ref": "telegram-allow-" + s.User},
-		}
-		if _, stt := svcMap["hub-stt"]; stt {
-			if _, tts := svcMap["hub-tts"]; tts {
-				ch["voice"] = map[string]any{"in": "transcribe", "out": "tts"}
+		var ch map[string]any
+		switch ingress {
+		case "telegram":
+			ch = map[string]any{
+				"bot":           map[string]any{"ref": "telegram-bot-" + s.User},
+				"allowed_users": map[string]any{"ref": "telegram-allow-" + s.User},
+			}
+			if _, stt := svcMap["hub-stt"]; stt {
+				if _, tts := svcMap["hub-tts"]; tts {
+					ch["voice"] = map[string]any{"in": "transcribe", "out": "tts"}
+				}
+			}
+		case "slack_app":
+			ch = map[string]any{
+				"bot":           map[string]any{"ref": "slack-app-" + s.User},
+				"allowed_users": map[string]any{"ref": "slack-allow-" + s.User},
 			}
 		}
-		channels["telegram"] = ch
+		if ch != nil {
+			channels[ingress] = ch
+		}
 	}
 	// mounts keep their source/mode — flattening them into the boundary
 	// lists alone would lose the imperative mount contract.
@@ -334,18 +389,80 @@ func passportLayers(dir string, s stack.Settings, env string, docs catalog.Docs)
 		"models":    modelDocs(modelSvcs, routes, def),
 	}
 	mapped = append(mapped,
+		"schema -> apiVersion six-passport/v2",
+		"user -> stack.identity.user",
+		"timezone -> config.runtime.timezone",
+		"memory/honcho -> config.memory.backend",
 		"tools.* -> tools.core",
 		"workspace.mounts -> workspace.writable/read_only/mounts",
 		"ingress -> config.channels",
-		"ports -> config.ports",
 		"models.yaml providers -> models.services + models.routes",
 		"toolhub grants -> grants ledger",
 	)
+	if s.Organization != "" {
+		mapped = append(mapped, "organization -> stack.identity.organization")
+	}
+	if s.Context.Compact.Engine != "" {
+		mapped = append(mapped, "context.compact.engine -> config.runtime.context.compaction")
+	}
+	if s.Infra != nil {
+		mapped = append(mapped, "infra -> stack.services modes and shared ports")
+	}
+	if s.Cliproxy != "" {
+		mapped = append(mapped, "cliproxy -> stack.services instance topology")
+	}
+	if s.CliproxyCredentials != "" {
+		mapped = append(mapped, "cliproxy_credentials -> dedicated credential plane")
+	}
 	if len(features) > 0 {
 		conflicts = append(conflicts, fmt.Sprintf("features: %s preserved in settings (no v2 passport field)", strings.Join(features, ", ")))
 	}
+	// No silent drop (SPEC-0092 R8.1): every legacy key the v2 contract
+	// cannot hold is reported by name so the operator decides its fate —
+	// kept in settings until a passport leaf exists or retired knowingly.
+	preserved := []struct {
+		key string
+		set bool
+	}{
+		{"capability_mode", s.CapabilityMode != ""},
+		{"capability_profile_id", s.CapabilityProfileID != ""},
+		{"capability_generation", s.CapabilityGeneration != 0},
+		{"cli_registries", len(s.CLIRegistries) > 0},
+		{"cli_runtime", s.CLIRuntime != ""},
+		{"cli_per_principal_uid", s.CLIPerPrincipalUID},
+		{"cli_toolboxes", len(s.CLIToolboxes) > 0},
+		{"hosting", len(s.Hosting.Slots) > 0 || s.Hosting.Image != "" || s.Hosting.Runtime != ""},
+		{"global_skills_dir", s.GlobalSkillsDir != ""},
+		{"honcho_url", s.HonchoURL != ""},
+		{"google_email", s.GoogleEmail != ""},
+		{"gitlab_host", s.GitLabHost != ""},
+		{"desktop_url", s.DesktopURL != ""},
+		{"drafts_url", s.DraftsURL != ""},
+		{"diagnostics", s.Diagnostics != nil},
+		{"web", !reflect.DeepEqual(s.Web, stack.WebSettings{})},
+		{"image_gen", s.ImageGen.Provider != "" || s.ImageGen.Model != "" || s.ImageGen.Delivery != ""},
+		{"goals", s.Goals != (stack.ContextGoals{})},
+		{"summary_model", s.SummaryModel != ""},
+		{"judge_model", s.JudgeModel != ""},
+		{"workspace.goal", s.Workspace.Goal != ""},
+		{"workspace.bootstrap_revision", s.Workspace.BootstrapRevision != 0},
+		{"context.compact.engines", len(s.Context.Compact.Engines) > 0},
+	}
+	for _, p := range preserved {
+		if p.set {
+			conflicts = append(conflicts, fmt.Sprintf("%s: preserved in settings (no v2 passport field)", p.key))
+		}
+	}
 	if len(s.Hooks) > 0 {
 		conflicts = append(conflicts, "hooks: preserved in settings (no passport field yet)")
+	}
+	// The channel vocabulary has no auth toggle leaf — an explicit
+	// telegram_auth choice (either direction) cannot be expressed.
+	if s.TelegramAuth != nil {
+		conflicts = append(conflicts, fmt.Sprintf("telegram_auth: %v preserved in settings (no v2 passport field)", *s.TelegramAuth))
+	}
+	if len(s.Compression) > 0 {
+		conflicts = append(conflicts, "compression: preserved in settings (no v2 passport field)")
 	}
 
 	// The generated ceiling bounds exactly what this space migrated to —
@@ -485,6 +602,11 @@ func derivedServices(dir string, s stack.Settings, docs catalog.Docs) (map[strin
 // model layer requires (a cliproxy instance per cliproxy provider).
 func derivedModels(dir string, s stack.Settings, docs catalog.Docs) (stackInstances, services, routes map[string]any, def string, err error) {
 	reg, err := stack.LoadModelRegistry(dir, s)
+	if err != nil && errors.Is(err, stack.ErrRevisionUnloadable) {
+		// Same fallback as the settings read: a stale revision must not
+		// block re-migration — the legacy layered registry is the intent.
+		reg, err = stack.LoadModelRegistryBase(dir, s)
+	}
 	if err != nil {
 		return nil, nil, nil, "", err
 	}
@@ -505,6 +627,7 @@ func derivedModels(dir string, s stack.Settings, docs catalog.Docs) (stackInstan
 			"endpoint": "http://" + cliproxyInstance + ":8317/v1",
 			"sharing":  "personal",
 			"auth": map[string]any{
+				"upstream":     map[string]any{"kind": "oauth-session", "ref": cliproxyInstance},
 				"proxy_access": map[string]any{"kind": "broker-key", "ref": "cliproxy"},
 			},
 		}
@@ -660,19 +783,23 @@ func grantLedger(dir string, docs catalog.Docs, layers []passport.Layer) (map[st
 	// The legacy registry's switch policy is the models.* right: a space with
 	// routes uses and lists models, and any non-"none" switch level admits
 	// models.switch. Losing it would quietly demote the relay to ladders.
-	if s, sErr := stack.Read(dir); sErr == nil {
-		if reg, rErr := stack.LoadModelRegistry(dir, s); rErr == nil {
-			if len(reg.Models) > 0 {
-				addRight("models.use")
-				addRight("models.list")
+	// Identity comes from the compiled layers — a full stack.Read here would
+	// seed runtime/toolhub/governance.json on an infra space, a write a pure
+	// compile must not perform. The identity leaf is ceiling-owned.
+	id, _ := layers[0].Docs["stack"]["identity"].(map[string]any)
+	uname, _ := id["user"].(string)
+	org, _ := id["organization"].(string)
+	if reg, rErr := stack.LoadModelRegistry(dir, stack.Settings{User: uname, Organization: org}); rErr == nil {
+		if len(reg.Models) > 0 {
+			addRight("models.use")
+			addRight("models.list")
+		}
+		for owner, level := range reg.Switch {
+			if owner != "" && owner != uname {
+				continue
 			}
-			for owner, level := range reg.Switch {
-				if owner != "" && owner != s.User {
-					continue
-				}
-				if level != "none" {
-					addRight("models.switch")
-				}
+			if level != "none" {
+				addRight("models.switch")
 			}
 		}
 	}

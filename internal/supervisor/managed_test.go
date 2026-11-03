@@ -50,6 +50,66 @@ func writeManagedFixtures(t *testing.T, ctxRoot string) stack.Settings {
 	return settings
 }
 
+// writeManagedRevisionFixtures installs a managed space whose only settings
+// surface is the slim agent.yaml plus the published six-document revision:
+// settings.yaml and workspace.yaml are retired (SPEC-0092 R8.1).
+func writeManagedRevisionFixtures(t *testing.T, ctxRoot string) {
+	t.Helper()
+	// The published pointer alone claims managed: agent.yaml carries only the
+	// operator extensions, no capability_mode authority key.
+	if err := os.WriteFile(filepath.Join(ctxRoot, "agent.yaml"), []byte(
+		"schema: 3\nuser: alice\ntimezone: UTC\ncapability_profile_id: alice-default\ncapability_generation: 1\nmodel: synthetic\nmodel_url: http://model-relay:8318/v1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ctxRoot, "managed-runtime.prod.env"), []byte("HUB_TOOLHUB_ENDPOINT=http://toolhub:8090/mcp\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// The reviewed source config mirrors what RenderEnvironment wrote for the
+	// published revision: the passport-resolved model identity.
+	source, err := yaml.Marshal(stack.Config(stack.Settings{User: "alice", Model: "m", ModelURL: "http://cliproxy:8317/v1", Timezone: "UTC", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ctxRoot, "hermes.prod.yaml"), source, 0600); err != nil {
+		t.Fatal(err)
+	}
+	rev := "r-0123456789abcdef"
+	revDir := filepath.Join(ctxRoot, "generated", "passports", rev)
+	if err := os.MkdirAll(revDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	env := "apiVersion: six-passport/v2\nmetadata: {space: alice, environment: prod, revision: " + rev + ", generated_at: 2026-11-02T00:00:00Z, catalogs: \"4\"}\n"
+	docs := map[string]string{
+		"stack": "kind: stack\nidentity: {user: alice}\nservices:\n" +
+			"  hermes-runtime: {mode: supervised}\n" +
+			"  model-relay: {mode: per-space}\n" +
+			"  toolhub-relay: {mode: per-space}\n" +
+			"  toolhub: {mode: shared}\n" +
+			"  credential-broker: {mode: shared}\n",
+		"config":    "kind: config\nruntime: {timezone: UTC}\nports: {oauth-callback: 8008, browser-vnc: 6081}\n",
+		"models":    "kind: models\ndefault: m\nroutes:\n  m: {ladder: [cliproxy]}\nservices:\n  cliproxy: {via: cliproxy, endpoint: http://cliproxy:8317/v1, models: [{id: m}]}\n",
+		"workspace": "kind: workspace\nwritable: [/workspace]\nread_only: [/vault/memory]\n",
+		"tools":     "kind: tools\ncore:\n  discovery: {via: toolhub}\n  files: {via: toolhub}\n",
+		"grants":    "kind: grants\nallow: {}\n",
+	}
+	for _, name := range []string{"stack", "config", "models", "workspace", "tools", "grants"} {
+		if err := os.WriteFile(filepath.Join(revDir, name+".yaml"), []byte(env+docs[name]), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(ctxRoot, "generated", "passports", "current"), []byte(rev+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	selection := stack.ExecutionSelection{Schema: 1, User: "alice", Environment: "prod", Mode: "supervisor", SupervisorURL: "http://localhost:8876", NativeCron: "disabled", CompatibilityRelease: "0.3.0"}
+	selectionBody, err := json.Marshal(selection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ctxRoot, stack.ExecutionPath("prod")), selectionBody, 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func argAfter(args []string, flag string) string {
 	for i := 0; i+1 < len(args); i++ {
 		if args[i] == flag {
@@ -170,6 +230,44 @@ func TestManagedNormalizeCreatesSeparateStateAndRejectsMissingEnv(t *testing.T) 
 	}
 	if _, err := m.normalize(binding(root)); err == nil {
 		t.Fatal("managed context normalized without its env file")
+	}
+}
+
+// The managed spawn path must read the published revision, not the retired
+// files: a space carried entirely by agent.yaml + generated/passports still
+// resolves as managed (SPEC-0092 R8.1).
+func TestManagedEnsureConsumesPublishedRevision(t *testing.T) {
+	command := func(_ context.Context, args ...string) ([]byte, error) {
+		switch {
+		case args[0] == "inspect" && args[2] == "{{.State.Status}}":
+			return nil, errors.New("no such container")
+		case args[0] == "network" && args[1] == "inspect" && strings.Contains(strings.Join(args, " "), "Internal"):
+			return []byte("true"), nil
+		case args[0] == "network" && args[1] == "inspect":
+			return []byte("existing-id"), nil
+		case args[0] == "run":
+			return []byte("cid"), nil
+		}
+		return []byte(""), nil
+	}
+	m, root := testManager(t, command, func(context.Context, string, string) error { return nil })
+	writeManagedRevisionFixtures(t, root)
+	runtime, err := m.Ensure(context.Background(), binding(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !runtime.Managed {
+		t.Fatal("passport-carried space did not resolve as managed")
+	}
+}
+
+// Policy resolution hashes what a render would consume: the published
+// revision, not a retired file (SPEC-0092 R8.1).
+func TestManagedPolicyVersionReadsPublishedRevision(t *testing.T) {
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("ok"), nil }, nil)
+	writeManagedRevisionFixtures(t, root)
+	if v := m.currentPolicyVersion("alice"); v == "" {
+		t.Fatal("managed revision produced no policy version")
 	}
 }
 

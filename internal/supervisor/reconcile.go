@@ -57,8 +57,18 @@ func (m *Manager) ReconcileHealth(ctx context.Context, now time.Time) {
 		snapshot := entry.Runtime
 		desired := m.runtimeDesiredLocked(entry)
 		auth := entry.auth
+		binding := entry.binding
+		healthChecked := entry.HealthCheckedAt
 		m.mu.Unlock()
 		lock.Unlock()
+		// config.supervision is the imperative per-space policy: the
+		// stack-health watcher's cadence bounds how often this entry is
+		// probed.
+		policy := m.loadSupervisionPolicy(binding)
+		if every, err := time.ParseDuration(policy.Watchers["stack-health"].Every); err == nil && every > 0 &&
+			!healthChecked.IsZero() && now.Sub(healthChecked) < every {
+			continue
+		}
 		health, readiness := "stopped", "not_checked"
 		connectorHealth := "not_checked"
 		ownership := "not_checked"
@@ -133,6 +143,12 @@ func (m *Manager) ReconcileHealth(ctx context.Context, now time.Time) {
 			remediate = personal || wedged && len(current.leases) == 0 && current.consecutiveUncertain >= 2 &&
 				now.Sub(current.readinessBadSince) >= wedgedReadinessWindow &&
 				now.Sub(current.lastRemediatedAt) >= wedgedRemediationCooldown
+			// restart: never forbids the action outright — the sweep still
+			// observes and reports the wedged state. A protected stack-health
+			// watcher observes too but never restarts.
+			if policy.Restart == "never" || policy.Watchers["stack-health"].Protected {
+				remediate = false
+			}
 			if remediate {
 				m.recordIncidentLocked(current, "wedged")
 			}

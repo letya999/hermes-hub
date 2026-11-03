@@ -128,15 +128,28 @@ type Input struct {
 }
 type Tools struct {
 	Workspace, Archive, Organization *os.Root
-	HTTP                             *http.Client
-	HHURL, HHKey, UserAgent          string
-	HHEnabled, OrgScoped             bool
-	OrgActions                       map[string]bool
-	ReadOnlyTools                    map[string]bool
+	// Vault is the /vault mount opened as an executor root: memory stays
+	// read-mostly while library and attachments follow the published
+	// writable boundary (SPEC-0092 R5.3). Nil on pre-passport runtimes.
+	Vault                   *os.Root
+	HTTP                    *http.Client
+	HHURL, HHKey, UserAgent string
+	HHEnabled, OrgScoped    bool
+	OrgActions              map[string]bool
+	ReadOnlyTools           map[string]bool
 	// ReadOnlyPaths lists workspace-relative directory prefixes the file
 	// tools refuse to write: inbox originals, shared mounts and vault
 	// memory land here, rendered from the workspace passport.
 	ReadOnlyPaths []string
+	// BoundaryPath is the mounted /config/workspace.yaml the file tools
+	// reload (mtime-cached) for the writable/read_only contract (SPEC-0092
+	// R5.3). Empty keeps the legacy HUB_WORKSPACE_RO semantics.
+	BoundaryPath  string
+	boundaryValid bool
+	boundaryMod   time.Time
+	boundarySize  int64
+	boundaryVal   *workspaceBoundary
+	boundaryErr   error
 	// ToolPolicyPath is the rendered snapshot location (HUB_TOOL_POLICY):
 	// toolPolicyDeny reloads it per call so a revoke lands on the next call,
 	// not the next respawn (R5.2 grant epoch).
@@ -249,7 +262,26 @@ func OpenRoots(workspace, archive, organization string) (*Tools, error) {
 	if eff := os.Getenv("HUB_SKILLS_EFFECTIVE"); eff != "" {
 		sk, _ = os.OpenRoot(eff)
 	}
-	t := &Tools{Workspace: w, Archive: a, Organization: o, Skills: sk, OrgScoped: o != nil, OrgActions: parseActions(os.Getenv("HUB_ORG_ACTIONS")), ReadOnlyTools: readOnlyToolNames(parseActions(os.Getenv("HUB_TOOLS_RO"))), ReadOnlyPaths: readOnlyPathList(os.Getenv("HUB_WORKSPACE_RO")), ToolPolicyPath: strings.TrimSpace(os.Getenv("HUB_TOOL_POLICY")), ToolPolicy: toolPolicy, StateDir: stateDir, ToolHub: toolHubStore, ToolHubAuth: toolHubAuth, Restart: func() error { return restartRuntime(stateDir) }, CommunicationURL: strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_CONTROL_URL")), CommunicationAuth: communicationAuth, SkillsEffective: os.Getenv("HUB_SKILLS_EFFECTIVE"), SkillsStore: os.Getenv("HUB_SKILLS_STORE"), SkillsOrg: os.Getenv("HUB_SKILLS_ORG"), Media: media.New(w), lock: flock.New(filepath.Join(workspace, ".hub-writer.lock")), envLock: flock.New(filepath.Join(stateDir, ".self-env.lock")), HHURL: "https://api.hh.ru", HHKey: os.Getenv("HH_TOKEN"), UserAgent: os.Getenv("HH_USER_AGENT"), HHEnabled: os.Getenv("HUB_HH_ENABLED") == "true", HTTP: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	// The workspace passport is the write boundary once /config/workspace.yaml
+	// is mounted: the vault opens as its own root, and admission reloads the
+	// published file by mtime. Without the file the runtime keeps the legacy
+	// HUB_WORKSPACE_RO semantics (SPEC-0092 R5.3).
+	boundaryPath := strings.TrimSpace(os.Getenv("HUB_WORKSPACE_BOUNDARY"))
+	if boundaryPath == "" {
+		boundaryPath = "/config/workspace.yaml"
+	}
+	if info, err := os.Stat(boundaryPath); err != nil || info.IsDir() { // #nosec G703 -- fixed mount point or operator-set env override
+		boundaryPath = ""
+	}
+	var vault *os.Root
+	if boundaryPath != "" {
+		vaultDir := strings.TrimSpace(os.Getenv("HUB_VAULT"))
+		if vaultDir == "" {
+			vaultDir = "/vault"
+		}
+		vault, _ = os.OpenRoot(vaultDir)
+	}
+	t := &Tools{Workspace: w, Archive: a, Organization: o, Skills: sk, Vault: vault, OrgScoped: o != nil, OrgActions: parseActions(os.Getenv("HUB_ORG_ACTIONS")), ReadOnlyTools: readOnlyToolNames(parseActions(os.Getenv("HUB_TOOLS_RO"))), ReadOnlyPaths: readOnlyPathList(os.Getenv("HUB_WORKSPACE_RO")), BoundaryPath: boundaryPath, ToolPolicyPath: strings.TrimSpace(os.Getenv("HUB_TOOL_POLICY")), ToolPolicy: toolPolicy, StateDir: stateDir, ToolHub: toolHubStore, ToolHubAuth: toolHubAuth, Restart: func() error { return restartRuntime(stateDir) }, CommunicationURL: strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_CONTROL_URL")), CommunicationAuth: communicationAuth, SkillsEffective: os.Getenv("HUB_SKILLS_EFFECTIVE"), SkillsStore: os.Getenv("HUB_SKILLS_STORE"), SkillsOrg: os.Getenv("HUB_SKILLS_ORG"), Media: media.New(w), lock: flock.New(filepath.Join(workspace, ".hub-writer.lock")), envLock: flock.New(filepath.Join(stateDir, ".self-env.lock")), HHURL: "https://api.hh.ru", HHKey: os.Getenv("HH_TOKEN"), UserAgent: os.Getenv("HH_USER_AGENT"), HHEnabled: os.Getenv("HUB_HH_ENABLED") == "true", HTTP: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	t.openSSH()
 	t.openExposure()
 	return t, nil

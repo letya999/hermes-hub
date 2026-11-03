@@ -36,6 +36,7 @@ var capRights = map[string]string{
 	"exposure.list":        "stack.inspect",
 	"exposure.open":        "stack.change",
 	"exposure.status":      "stack.inspect",
+	"files.create_project": "workspace.create_project",
 	"files.list":           "workspace.read",
 	"files.read":           "workspace.read",
 	"files.search":         "workspace.read",

@@ -39,7 +39,7 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 	if selected && selection.Mode != "supervisor" {
 		return Runtime{}, errors.New("context selected the legacy executor")
 	}
-	managedSettings, managedErr := stack.Read(binding.ContextRoot)
+	managedSettings, managedErr := stack.ReadEffectiveSpace(binding.ContextRoot)
 	if managedErr != nil && !os.IsNotExist(managedErr) {
 		return Runtime{}, fmt.Errorf("context settings unavailable: %w", managedErr)
 	}
@@ -403,7 +403,7 @@ func (m *Manager) normalize(binding Binding) (Binding, error) {
 		return Binding{}, errors.New("runtime env file escapes context")
 	}
 	binding.EnvFile = envFile
-	settings, settingsErr := stack.ReadEnvironment(abs, m.environment())
+	settings, settingsErr := stack.ReadEffective(abs, m.environment())
 	if settingsErr != nil && !os.IsNotExist(settingsErr) {
 		return Binding{}, fmt.Errorf("context settings unavailable: %w", settingsErr)
 	}
@@ -470,7 +470,7 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	env := m.environment()
 	// Environment-aware: the managed env contract (HUB_CAPABILITY_ENVIRONMENT,
 	// dev port offsets, execution selection) must match the rendered compose.
-	settings, settingsErr := stack.ReadEnvironment(binding.ContextRoot, env)
+	settings, settingsErr := stack.ReadEffective(binding.ContextRoot, env)
 	if settingsErr != nil && !os.IsNotExist(settingsErr) {
 		return nil, settingsErr
 	}
@@ -489,7 +489,7 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	args = append(args, "--env-file", binding.EnvFile)
 	args = append(args, "--mount", "type=volume,src="+project+"_broker-secrets-runtime,dst=/run/broker-secrets,readonly")
 	args = append(args, "--mount", "type=bind,src="+filepath.Join(binding.ContextRoot, "workspace")+",dst=/scope,readonly")
-	if settings, err := stack.ReadEnvironment(binding.ContextRoot, env); err == nil {
+	if settings, err := stack.ReadEffective(binding.ContextRoot, env); err == nil {
 		service := stack.RuntimeService(settings, "", binding.ContextRoot)
 		keys := make([]string, 0)
 		for key := range service["environment"].(stack.M) {
@@ -500,7 +500,7 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 			args = append(args, "-e", key+"="+fmt.Sprint(service["environment"].(stack.M)[key]))
 		}
 	}
-	for _, mount := range []struct{ source, target string }{{"runtime", "/state"}, {"hermes", "/state/hermes"}, {"connections/google", "/state/google"}, {"connections/telegram", "/state/telegram"}, {"home", "/state/home"}, {"cache", "/state/cache"}, {"workspace", "/workspace"}, {"archive", "/archive"}} {
+	for _, mount := range []struct{ source, target string }{{"runtime", "/state"}, {"hermes", "/state/hermes"}, {"connections/google", "/state/google"}, {"connections/telegram", "/state/telegram"}, {"home", "/state/home"}, {"cache", "/state/cache"}, {"archive", "/archive"}} {
 		value := "type=bind,src=" + filepath.Join(binding.ContextRoot, filepath.FromSlash(mount.source)) + ",dst=" + mount.target
 		if mount.target == "/archive" {
 			value += ",readonly"
@@ -513,9 +513,25 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	// improvises installs through terminal instead of ToolHub control ops.
 	// The mount is the per-space filtered copy materialized at spawn so
 	// feature gating applies even when Render was not rerun after a toggle.
-	spawnSettings, serr := stack.ReadEnvironment(binding.ContextRoot, env)
+	spawnSettings, serr := stack.ReadEffective(binding.ContextRoot, env)
 	if serr != nil {
 		spawnSettings = stack.Settings{}
+	}
+	// The workspace passport owns the container filesystem once a revision is
+	// published (SPEC-0092 R5.2): /config, /workspace with read-only
+	// sub-binds, /vault, /skills and /shared/* come from the MountPlan —
+	// identical to the rendered Compose service. Without a revision the
+	// space keeps the legacy workspace bind and raw /config mounts.
+	if spawnSettings.PassportWorkspace != nil {
+		for _, pm := range stack.MountPlan(binding.ContextRoot, env, binding.ContextRoot, spawnSettings, *spawnSettings.PassportWorkspace) {
+			value := "type=bind,src=" + pm.Source + ",dst=" + pm.Target
+			if pm.ReadOnly {
+				value += ",readonly"
+			}
+			args = append(args, "--mount", value)
+		}
+	} else {
+		args = append(args, "--mount", "type=bind,src="+filepath.Join(binding.ContextRoot, "workspace")+",dst=/workspace")
 	}
 	if strings.TrimSpace(spawnSettings.GlobalSkillsDir) == "" {
 		spawnSettings.DefaultGlobalSkillsDir(filepath.Join(filepath.Dir(filepath.Dir(binding.ContextRoot)), "config", "skills"))
@@ -528,7 +544,10 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	if _, err := stack.MaterializeEffectiveSkills(binding.ContextRoot, spawnSettings); err != nil {
 		return nil, fmt.Errorf("effective skills view: %w", err)
 	}
-	args = append(args, "--mount", "type=bind,src="+stack.GeneratedEffectiveSkillsDir(binding.ContextRoot)+",dst=/skills,readonly")
+	// A published workspace passport carries /skills through the MountPlan.
+	if spawnSettings.PassportWorkspace == nil {
+		args = append(args, "--mount", "type=bind,src="+stack.GeneratedEffectiveSkillsDir(binding.ContextRoot)+",dst=/skills,readonly")
+	}
 	// Post-publish rebuild contract: the platform tier and the render
 	// snapshot mount read-only; the view gets a second writable bind so
 	// /v1/skill-apply can recompose it in place without a respawn.
@@ -565,13 +584,16 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	// The published passport view is the runtime's whole /config: a stable
 	// read-only directory bind, never per-file mounts (SPEC-0092 S1.4). A
 	// space without a published revision keeps the legacy raw mounts — its
-	// heal path still reads them.
-	if info, err := os.Stat(filepath.Join(binding.ContextRoot, "generated", "config-view", env)); err == nil && info.IsDir() {
-		args = append(args, "--mount", "type=bind,src="+filepath.Join(binding.ContextRoot, "generated", "config-view", env)+",dst=/config,readonly")
-	} else {
-		for _, file := range []struct{ source, target string }{{filepath.Join(binding.ContextRoot, "hermes."+env+".yaml"), "/config/config.yaml"}, {filepath.Join(binding.ContextRoot, "SOUL.md"), "/config/SOUL.md"}} {
-			if _, err := os.Stat(file.source); err == nil {
-				args = append(args, "--mount", "type=bind,src="+file.source+",dst="+file.target+",readonly")
+	// heal path still reads them. A published workspace passport already
+	// carries /config through the MountPlan.
+	if spawnSettings.PassportWorkspace == nil {
+		if info, err := os.Stat(filepath.Join(binding.ContextRoot, "generated", "config-view", env)); err == nil && info.IsDir() {
+			args = append(args, "--mount", "type=bind,src="+filepath.Join(binding.ContextRoot, "generated", "config-view", env)+",dst=/config,readonly")
+		} else {
+			for _, file := range []struct{ source, target string }{{filepath.Join(binding.ContextRoot, "hermes."+env+".yaml"), "/config/config.yaml"}, {filepath.Join(binding.ContextRoot, "SOUL.md"), "/config/SOUL.md"}} {
+				if _, err := os.Stat(file.source); err == nil {
+					args = append(args, "--mount", "type=bind,src="+file.source+",dst="+file.target+",readonly")
+				}
 			}
 		}
 	}
@@ -593,13 +615,20 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	if err != nil {
 		return nil, fmt.Errorf("materialize tool policy: %w", err)
 	}
-	args = append(args, "--mount", "type=bind,src="+policyPath+",dst=/config/tool-policy.json,readonly")
+	// A published workspace passport owns /config as one read-only directory
+	// bind: nested per-file mounts cannot create mountpoints under it, so the
+	// snapshot and manifest ride inside the view instead (SPEC-0092 R5.2).
+	if spawnSettings.PassportWorkspace == nil {
+		args = append(args, "--mount", "type=bind,src="+policyPath+",dst=/config/tool-policy.json,readonly")
+	}
 	// The render-time tool-surface expectation, mounted read-only like the
 	// policy snapshot; the runtime's /v1/health probe reads it and nothing
 	// inside the container can rewrite it.
-	if manifest := filepath.Join(binding.ContextRoot, "generated", "tool-manifest."+env+".json"); fileExists(manifest) {
-		args = append(args, "--mount", "type=bind,src="+manifest+",dst=/config/tool-manifest.json,readonly")
-		args = append(args, "-e", "HUB_TOOL_MANIFEST=/config/tool-manifest.json")
+	if spawnSettings.PassportWorkspace == nil {
+		if manifest := filepath.Join(binding.ContextRoot, "generated", "tool-manifest."+env+".json"); fileExists(manifest) {
+			args = append(args, "--mount", "type=bind,src="+manifest+",dst=/config/tool-manifest.json,readonly")
+			args = append(args, "-e", "HUB_TOOL_MANIFEST=/config/tool-manifest.json")
+		}
 	}
 	// The rendered effective SOUL — persona plus channel contract — is what
 	// Hermes reads at $HERMES_HOME/SOUL.md. Without it (pre-R1.8 space) the
@@ -663,8 +692,24 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 			}
 		}
 	}
-	for _, name := range []struct{ source, target string }{{"runtime", "/state"}, {"hermes", "/state/hermes"}, {"home", "/state/home"}, {"cache", "/state/cache"}, {"workspace", "/workspace"}} {
+	for _, name := range []struct{ source, target string }{{"runtime", "/state"}, {"hermes", "/state/hermes"}, {"home", "/state/home"}, {"cache", "/state/cache"}} {
 		args = append(args, "--mount", "type=bind,src="+filepath.Join(managedDir, name.source)+",dst="+name.target)
+	}
+	// The workspace passport owns the container filesystem once a revision is
+	// published (SPEC-0092 R5.2): /config, /workspace with read-only
+	// sub-binds, /vault, /skills and /shared/* come from the MountPlan —
+	// identical to the rendered Compose service. Without a revision the
+	// space keeps the legacy workspace bind.
+	if settings.PassportWorkspace != nil {
+		for _, pm := range stack.MountPlan(binding.ContextRoot, env, managedDir, settings, *settings.PassportWorkspace) {
+			value := "type=bind,src=" + pm.Source + ",dst=" + pm.Target
+			if pm.ReadOnly {
+				value += ",readonly"
+			}
+			args = append(args, "--mount", value)
+		}
+	} else {
+		args = append(args, "--mount", "type=bind,src="+filepath.Join(managedDir, "workspace")+",dst=/workspace")
 	}
 	// Same skill contract as unmanaged spawns: the hub-built effective view
 	// mounts read-only at /skills and a failed build refuses the spawn.
@@ -677,7 +722,10 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 	if _, err := stack.MaterializeEffectiveSkills(binding.ContextRoot, settings); err != nil {
 		return nil, fmt.Errorf("effective skills view: %w", err)
 	}
-	args = append(args, "--mount", "type=bind,src="+stack.GeneratedEffectiveSkillsDir(binding.ContextRoot)+",dst=/skills,readonly")
+	// A published workspace passport carries /skills through the MountPlan.
+	if settings.PassportWorkspace == nil {
+		args = append(args, "--mount", "type=bind,src="+stack.GeneratedEffectiveSkillsDir(binding.ContextRoot)+",dst=/skills,readonly")
+	}
 	// Post-publish rebuild contract: the platform tier and the render
 	// snapshot mount read-only; the view gets a second writable bind so
 	// /v1/skill-apply can recompose it in place without a respawn.
@@ -707,10 +755,15 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 	if err != nil {
 		return nil, fmt.Errorf("materialize tool policy: %w", err)
 	}
-	args = append(args, "--mount", "type=bind,src="+policyPath+",dst=/config/tool-policy.json,readonly")
-	if manifest := filepath.Join(binding.ContextRoot, "generated", "tool-manifest."+env+".json"); fileExists(manifest) {
-		args = append(args, "--mount", "type=bind,src="+manifest+",dst=/config/tool-manifest.json,readonly")
-		args = append(args, "-e", "HUB_TOOL_MANIFEST=/config/tool-manifest.json")
+	// A published workspace passport owns /config as one read-only directory
+	// bind: nested per-file mounts cannot create mountpoints under it, so the
+	// snapshot and manifest ride inside the view instead (SPEC-0092 R5.2).
+	if settings.PassportWorkspace == nil {
+		args = append(args, "--mount", "type=bind,src="+policyPath+",dst=/config/tool-policy.json,readonly")
+		if manifest := filepath.Join(binding.ContextRoot, "generated", "tool-manifest."+env+".json"); fileExists(manifest) {
+			args = append(args, "--mount", "type=bind,src="+manifest+",dst=/config/tool-manifest.json,readonly")
+			args = append(args, "-e", "HUB_TOOL_MANIFEST=/config/tool-manifest.json")
+		}
 	}
 	args = append(args, "--tmpfs", "/tmp:uid=10001,gid=10001,mode=1777")
 	for _, name := range managedExtensionRootTmpfs {

@@ -57,6 +57,8 @@ func (t *Tools) openExposure() {
 
 // setExposureProvider replaces the tunnel provider — tests inject fakes
 // through it so the previous real provider's config root is released.
+//
+//lint:ignore U1000 test-only injection seam; production sets the provider via config root
 func (t *Tools) setExposureProvider(p exposure.Provider) {
 	if c, ok := t.exposureProvider.(interface{ Shutdown() }); ok {
 		c.Shutdown()

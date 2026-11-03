@@ -1,6 +1,6 @@
 ---
 description: supervisor — per-space runtime spawner/manager; owns warm pools, docker exec agent-tools path, control channel.
-last_verified: 2026-10-31
+last_verified: 2026-11-03
 ---
 
 # supervisor
@@ -39,11 +39,18 @@ spaces dir at `/spaces`, project `config/` read-only, and the host
 - Every spawned runtime joins the shared network where `toolhub`,
   `credential-broker` and `cliproxy` resolve to the single instances.
 - Route every control-plane call (`/v1/jobs`, `/v1/resume`, `/v1/control`,
-  `/v1/self-env`, `/v1/skill-ref-lease`, `/v1/restart`, `/v1/restart-request`) to the correct
+  `/v1/self-env`, `/v1/skill-ref-lease`, `/v1/restart`, `/v1/restart-request`,
+  `/v1/respawn`) to the correct
   user's spawned runtime by the job's durable identity; the
   restart-after-delivery hook carries the same identity so the spawned
   Hermes bounces per turn. A restart for an absent/stopped runtime is a
-  successful no-op — next lease spawns fresh. Secondary spaces
+  successful no-op — next lease spawns fresh. `/v1/respawn` is the
+  operator's recreate path: a deferred restart remounts files but keeps the
+  container's baked env, so an idle/ready container is destroyed and
+  re-spawned from the published revision — that is how env-carried passport
+  config (`config.ports`, feature flags) actually takes effect. A busy or
+  absent runtime answers `scheduled:false` and converges on its next natural
+  spawn. Secondary spaces
   (`infra: false`) render no `hermes-runtime` service; the infra owner drops
   it when `HUB_RUNTIME_SUPERVISOR_URL` is configured.
   Skill ref leases require the exact principal, context, runtime and policy
@@ -54,6 +61,13 @@ spaces dir at `/spaces`, project `config/` read-only, and the host
   approvals/streams are reported, not remediated. Genuine anomalies append
   one bounded line per class to `signals.jsonl` under the supervisor state
   dir and keep a persisted per-runtime incident record.
+- The per-space supervision policy `runtime.<env>.policy.json` (rendered
+  from `config.supervision`) is re-read on every decision: `idle_stop`
+  bounds warm idle retention at lease release and the stale-lease sweep,
+  `restart: never` and `watchers.stack-health.protected` keep the runtime
+  observed but suppress remediation, `watchers.stack-health.every` throttles
+  the health-probe cadence. A missing or malformed file degrades to the
+  deployment defaults — no respawn is needed for a policy change to apply.
 - One bounded `docker stats --no-stream` call per watchdog sweep samples
   owned containers' CPU/memory; sweep cost is reported through
   `WatchdogMetrics` (in-memory counters).

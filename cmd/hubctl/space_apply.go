@@ -73,7 +73,7 @@ func runSpaceApply(ctx context.Context, args []string) error {
 		return fmt.Errorf("space apply: %w", err)
 	}
 	changes := passport.Diff(prev, next)
-	actions := reconcile.Plan(changes)
+	actions := reconcile.Plan(changes, next.Stack.Services)
 	receipt := applyReceipt{
 		Revision:         rev.ID,
 		PreviousRevision: prevID,
@@ -118,7 +118,7 @@ func applyConfirm(ctx context.Context, abs, rootAbs, env string, rev passport.Re
 		if err != nil {
 			return err
 		}
-		return migration.DeriveSpaceRights(abs, filepath.Base(abs), revision, docs, time.Now().UTC())
+		return migration.DeriveSpaceRights(abs, filepath.Base(abs), env, revision, docs, time.Now().UTC())
 	}
 	if err := derive(rev); err != nil {
 		return report, fmt.Errorf("space apply: rights derivation: %w", err)
@@ -154,6 +154,11 @@ func printApply(r applyReceipt) error {
 // file's build path (BuildKit via dockerCLIEnv), recreate through compose up
 // --force-recreate, respawn through the supervisor's deferred restart
 // request. Live hooks stay empty — consumers are wired by their own stages.
+// respawnHTTPClient bounds operator-side respawn calls: a container replace
+// runs destroy+spawn+readiness inside the supervisor's 4-minute operation
+// context — a shorter client bound would fail the apply mid-replacement.
+var respawnHTTPClient = &http.Client{Timeout: 5 * time.Minute}
+
 // dockerCompose is the compose invocation the apply handlers run — a var so
 // tests can capture argv without a daemon.
 var dockerCompose = func(ctx context.Context, dir string, a ...string) error {
@@ -173,12 +178,38 @@ func applyHandlers(ctx context.Context, dir, env string) reconcile.Handlers {
 		Rebuild: func(service string) error {
 			args := []string{"compose", "-f", composeFile, "build"}
 			if service != "*" {
-				args = append(args, service)
+				settings, err := stack.ReadEffective(dir, env)
+				if err != nil {
+					return err
+				}
+				name := stack.ComposeServiceName(settings, service)
+				if name == "" {
+					// Shared services render in the infra space's project —
+					// the same fallback Recreate uses for them.
+					infraCompose := filepath.Join(stack.InfraSpaceDir(dir), "generated", "compose."+env+".yaml")
+					return docker("compose", "-f", infraCompose, "build", service)
+				}
+				args = append(args, name)
 			}
 			return docker(args...)
 		},
 		Recreate: func(service string) error {
-			return docker("compose", "-f", composeFile, "up", "-d", "--wait", "--wait-timeout", "180", "--force-recreate", "--no-deps", service)
+			settings, err := stack.ReadEffective(dir, env)
+			if err != nil {
+				return err
+			}
+			name := stack.ComposeServiceName(settings, service)
+			if name == "" {
+				if service == "hermes-runtime" {
+					// Supervised runtimes render no compose service — the
+					// deferred-restart path replaces the container.
+					return respawnRuntime(ctx, dir, env)
+				}
+				// Shared services render in the infra space's project.
+				infraCompose := filepath.Join(stack.InfraSpaceDir(dir), "generated", "compose."+env+".yaml")
+				return docker("compose", "-f", infraCompose, "up", "-d", "--wait", "--wait-timeout", "180", "--force-recreate", "--no-deps", service)
+			}
+			return docker("compose", "-f", composeFile, "up", "-d", "--wait", "--wait-timeout", "180", "--force-recreate", "--no-deps", name)
 		},
 		// One sweep covers every instance the new revision dropped:
 		// containers whose services no longer exist in the just-rendered
@@ -187,24 +218,42 @@ func applyHandlers(ctx context.Context, dir, env string) reconcile.Handlers {
 			return docker("compose", "-f", composeFile, "up", "-d", "--remove-orphans", "--wait", "--wait-timeout", "180")
 		},
 		Respawn: func() error {
-			return respawnRuntime(ctx, dir)
+			return respawnRuntime(ctx, dir, env)
 		},
-		Live: map[string]func() error{},
+		Live: map[string]func() error{
+			// applyConfirm renders before reconcile runs: the new
+			// runtime.<env>.policy.json is already on disk and the
+			// supervisor re-reads it per decision — the leaf is applied.
+			"supervisor-policy": func() error { return nil },
+			// The mounted model registry re-reads on change; the render
+			// already swapped it in place.
+			"model-relay": func() error { return nil },
+			// File admission reloads /config/workspace.yaml by mtime; the
+			// mounted passport file is already the new revision.
+			"file-admission": func() error { return nil },
+			// DeriveSpaceRights rewrote the managed profiles/ledger at
+			// publish; admission reads them per call.
+			"tool-policy":   func() error { return nil },
+			"rights-ledger": func() error { return nil },
+		},
 	}
 }
 
-// respawnRuntime marks the space's managed runtime for a deferred restart —
-// the supervisor drains it when the current turn finishes. A space without a
-// supervisor endpoint has no runtime to respawn, which is a no-op rather
-// than a failure.
-func respawnRuntime(ctx context.Context, dir string) error {
-	settings, err := stack.Read(dir)
+// respawnRuntime asks the supervisor to replace the space's runtime container
+// — the recreate/respawn effect for a supervised runtime: an idle container
+// is re-created from the published revision so env-carried config applies; a
+// busy one converges on its next spawn. A space without a supervisor endpoint
+// has no runtime to respawn, which is a no-op rather than a failure.
+func respawnRuntime(ctx context.Context, dir, env string) error {
+	settings, err := stack.ReadEffective(dir, env)
 	if err != nil {
 		return err
 	}
-	endpoint := strings.TrimSpace(settings.SupervisorURL)
+	// Apply runs on the operator's host: the recorded supervisor_url names
+	// the in-network endpoint, so an explicit operator endpoint wins.
+	endpoint := strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL"))
 	if endpoint == "" {
-		endpoint = strings.TrimSpace(os.Getenv("HUB_RUNTIME_SUPERVISOR_URL"))
+		endpoint = strings.TrimSpace(settings.SupervisorURL)
 	}
 	if endpoint == "" {
 		return nil
@@ -219,22 +268,37 @@ func respawnRuntime(ctx context.Context, dir string) error {
 		"principal_id": settings.User,
 		"context_id":   settings.User,
 	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(endpoint, "/")+"/v1/restart-request", bytes.NewReader(body)) // #nosec G704 -- operator-configured hub endpoint
-	if err != nil {
+	post := func(path string) (int, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			strings.TrimRight(endpoint, "/")+path, bytes.NewReader(body)) // #nosec G704 -- operator-configured hub endpoint
+		if err != nil {
+			return 0, err
+		}
+		if auth != "" {
+			req.Header.Set("Authorization", "Bearer "+auth)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := respawnHTTPClient.Do(req) // #nosec G704 -- operator-configured hub endpoint
+		if err != nil {
+			return 0, err
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode, nil
+	}
+	// Recreate needs a real container replacement for env-carried leaves —
+	// the /v1/respawn route replaces the container; an older supervisor image
+	// answers 404 and falls back to the deferred restart-request marker.
+	if status, err := post("/v1/respawn"); err != nil {
 		return err
-	}
-	if auth != "" {
-		req.Header.Set("Authorization", "Bearer "+auth)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req) // #nosec G704 -- operator-configured hub endpoint
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("supervisor restart-request: %s", resp.Status)
+	} else if status == http.StatusNotFound {
+		if fallback, err := post("/v1/restart-request"); err != nil {
+			return err
+		} else if fallback >= 300 {
+			return fmt.Errorf("supervisor restart-request: %d", fallback)
+		}
+		return nil
+	} else if status >= 300 {
+		return fmt.Errorf("supervisor respawn: %d", status)
 	}
 	return nil
 }

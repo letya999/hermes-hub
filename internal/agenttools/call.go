@@ -89,6 +89,8 @@ func (t *Tools) call(ctx context.Context, name string, r Input, ws, ar, org *os.
 		return t.fileScoped("write", r, ws, ar, org)
 	case "file_search":
 		return t.fileScoped("search", r, ws, ar, org)
+	case "project_create":
+		return t.projectCreate(ws, r)
 	case "service_catalog":
 		return t.ServiceCatalog()
 	case "service_enable":

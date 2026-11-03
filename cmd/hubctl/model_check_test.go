@@ -50,21 +50,7 @@ func TestDoctorReportsEffectiveModelScopeAndRestartBoundary(t *testing.T) {
 
 func TestManagedDoctorIncludesOwnerModelApplyPlan(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "spaces", "alice")
-	if err := stack.InitEnvironment(dir, "alice", "prod"); err != nil {
-		t.Fatal(err)
-	}
-	settings, err := stack.ReadEnvironment(dir, "prod")
-	if err != nil {
-		t.Fatal(err)
-	}
-	settings.Model = "fixture-model"
-	settings.ModelURL = "http://model-relay:8318/v1"
-	settings.CapabilityMode = "managed"
-	settings.CapabilityProfileID = "p"
-	settings.CapabilityGeneration = 1
-	if err := stack.WriteSpace(dir, settings); err != nil {
-		t.Fatal(err)
-	}
+	writeManagedSpaceFixture(t, dir, "alice")
 	if err := os.WriteFile(filepath.Join(dir, "secrets.prod.env"), []byte("OPENAI_API_KEY=private-fixture-value\n"), 0600); err != nil {
 		t.Fatal(err)
 	}

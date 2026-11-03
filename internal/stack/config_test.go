@@ -44,7 +44,10 @@ func TestValidation(t *testing.T) {
 		s.Tools = map[string]ToolEntry{"telegram_user": {Via: "off", Tools: map[string]bool{"write": true}}}
 	}, func(s *Settings) {
 		s.Tools = map[string]ToolEntry{"google": {Via: "mcp", Tools: map[string]bool{"bogus": true}}}
-	}, func(s *Settings) { s.Ingress = []string{"bogus"} }, func(s *Settings) { s.ModelURL = "http://" + "user:secret" + "@host/v1" }, func(s *Settings) { s.Timezone = "invalid/zone" }, func(s *Settings) { s.BrowserPort = 8000 }} {
+	}, func(s *Settings) { s.Ingress = []string{"bogus"} }, func(s *Settings) { s.ModelURL = "http://" + "user:secret" + "@host/v1" }, func(s *Settings) { s.Timezone = "invalid/zone" }, func(s *Settings) {
+		s.Tools = testTools("browser")
+		s.BrowserPort = 8000
+	}} {
 		copy := s
 		modify(&copy)
 		if copy.Validate() == nil {
@@ -300,6 +303,16 @@ func TestRenderRoutesCliproxyManagementToModelRelay(t *testing.T) {
 	if err := saveSpace(d, settings); err != nil {
 		t.Fatal(err)
 	}
+	docs := managedDocs("alice")
+	docs["config"] = "kind: config\nruntime: {timezone: UTC}\nports: {oauth-callback: 8008, browser-vnc: 6081}\nchannels:\n  telegram: {}\n"
+	docs["stack"] = "kind: stack\nidentity: {user: alice}\nservices:\n" +
+		"  hermes-runtime: {mode: supervised}\n" +
+		"  model-relay: {mode: per-space}\n" +
+		"  toolhub-relay: {mode: per-space}\n" +
+		"  toolhub: {mode: shared}\n" +
+		"  communication-hub: {mode: shared}\n" +
+		"  credential-broker: {mode: shared}\n"
+	publishManagedDocs(t, d, "alice", "r-0123456789abcdef", docs)
 	selection := `{"schema":1,"user":"alice","environment":"prod","mode":"supervisor","supervisor_url":"http://localhost:8876","native_cron":"disabled","compatibility_release":"0.3.0"}`
 	if err := os.WriteFile(filepath.Join(d, ExecutionPath("prod")), []byte(selection), 0600); err != nil {
 		t.Fatal(err)
@@ -1228,6 +1241,7 @@ func TestManagedRenderProvisionsSkillsStoreDir(t *testing.T) {
 	if err := saveSpace(dir, settings); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, dir, "alice", "r-0123456789abcdef")
 	selection := `{"schema":1,"user":"alice","environment":"prod","mode":"supervisor","supervisor_url":"http://localhost:8876","native_cron":"disabled","compatibility_release":"0.3.0"}`
 	if err := os.WriteFile(filepath.Join(dir, ExecutionPath("prod")), []byte(selection), 0600); err != nil {
 		t.Fatal(err)
@@ -1269,6 +1283,16 @@ func TestManagedRenderNoProxyCoversBrowserSidecar(t *testing.T) {
 	if err := saveSpace(dir, settings); err != nil {
 		t.Fatal(err)
 	}
+	docs := managedDocs("alice")
+	docs["stack"] = "kind: stack\nidentity: {user: alice}\nservices:\n" +
+		"  hermes-runtime: {mode: supervised}\n" +
+		"  model-relay: {mode: per-space}\n" +
+		"  toolhub-relay: {mode: per-space}\n" +
+		"  browser: {mode: per-space}\n" +
+		"  toolhub: {mode: shared}\n" +
+		"  credential-broker: {mode: shared}\n"
+	docs["tools"] = "kind: tools\ncore:\n  discovery: {via: toolhub}\nextended:\n  browser: {via: \"mcp:playwright\"}\n  hh: {via: toolhub}\n"
+	publishManagedDocs(t, dir, "alice", "r-0123456789abcdef", docs)
 	selection := `{"schema":1,"user":"alice","environment":"prod","mode":"supervisor","supervisor_url":"http://localhost:8876","native_cron":"disabled","compatibility_release":"0.3.0"}`
 	if err := os.WriteFile(filepath.Join(dir, ExecutionPath("prod")), []byte(selection), 0600); err != nil {
 		t.Fatal(err)

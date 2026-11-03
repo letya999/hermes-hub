@@ -1,6 +1,6 @@
 ---
 description: Complete agent-visible tool surface — toolhub control tools, connector_* facade, hub:tools catalog, effect/grant requirements, delivery directives.
-last_verified: "2026-11-02"
+last_verified: "2026-11-03"
 ---
 
 # Tool surface
@@ -120,7 +120,7 @@ Grouped by capability resource (internal/agenttools/capability.go):
 
 | Group | Tools | Notes |
 |---|---|---|
-| files | `file_list`, `file_read`, `file_write`, `file_search` | admitted workspace scope; `file_write` is revision-guarded; `root=skills` opens the read-only effective skills view |
+| files | `file_list`, `file_read`, `file_write`, `file_search`, `project_create` | admitted workspace scope; `file_write` is revision-guarded and never mints a new project dir — `project_create` (workspace.create_project) does; `root=skills` opens the read-only effective skills view; `root=vault` reaches the vault boundary |
 | services | `service_catalog` (read), `service_enable`, `service_disable` | self-service catalog only; enable needs explicit owner request, never returns credentials, refuses org-scoped changes |
 | settings | `settings_get`, `settings_set` | manageable key allowlist; secrets never shown; applies after scheduled restart |
 | context | `context_status`, `context_compact` | bounded session view (threshold/journal/live estimate) and turn-boundary compaction; busy sessions refuse deterministically, `queue` parks; results are metadata only |

@@ -2364,5 +2364,18 @@
     "prerequisites": "Synthetic running job and owner envelope; no external send",
     "level": "contract",
     "cleanup": "Remove synthetic spool with the fixture"
+  },
+  {
+    "id": "E2E-183",
+    "surface": "hub",
+    "name": "project_create",
+    "title": "project_create",
+    "action": "Создай проект projects/e2e-{run}; запиши в него файл через file_write; повтори project_create.",
+    "expected": "Каталог создан один раз (created=false при повторе); file_write в новый top-level каталог без project_create отклонён.",
+    "package": "agenttools",
+    "test": "TestProjectCreationRequiresCreateProject",
+    "prerequisites": "Тестовый managed-профиль; отдельные fixtures, без рабочих данных",
+    "level": "contract",
+    "cleanup": "Удалить только созданные тестом ресурсы; восстановить исходную настройку"
   }
 ]

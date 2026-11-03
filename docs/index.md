@@ -28,7 +28,7 @@ last_verified: 2026-10-26
 | [threat-model.md](threat-model.md) | Trust boundaries, threat table, deny-path requirements |
 | [tools.md](tools.md) | Agent-visible tool catalog with action/resource/effect per tool |
 | [tool-design.md](tool-design.md) | Normative tool-design charter — vocabulary, naming, schemas, rights, results, context budget |
-| [spaces.md](spaces.md) | `agent.yaml`/`workspace.yaml` fields, space layout, feature registry |
+| [spaces.md](spaces.md) | space layout, `agent.yaml`/`workspace.yaml` fields (unmanaged), six-passport authority (managed), feature registry |
 | [agent-home.md](agent-home.md) | SOUL.md semantics, default skills, hook surface |
 | [system-guide.md](system-guide.md) | Mandatory English reference skill, delivery paths and evidence boundaries |
 

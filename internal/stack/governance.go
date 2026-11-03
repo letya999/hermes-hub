@@ -3,6 +3,7 @@ package stack
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/passportview"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"gopkg.in/yaml.v3"
 	"os"
@@ -143,6 +144,76 @@ func spaceRendersInfra(dir string) bool {
 		return probe.Infra == nil || *probe.Infra
 	}
 	return false
+}
+
+// SpaceRendersInfra exposes the infra-flag peek for compile-time inputs —
+// the same answer spaceRendersInfra gives governance without a full Read.
+func SpaceRendersInfra(dir string) bool { return spaceRendersInfra(dir) }
+
+// ReservedSiblingPorts reports the host ports sibling spaces already claim
+// (port -> space name): the published config passport is authoritative, and
+// sibling legacy port keys cover spaces not yet migrated. Compile consumes
+// the result so a new revision cannot bind a port already published on this
+// host (SPEC-0092 R4.1 — ports unique per host).
+func ReservedSiblingPorts(dir string) map[int]string {
+	out := map[int]string{}
+	parent := filepath.Dir(dir)
+	if filepath.Base(parent) != "spaces" {
+		return out
+	}
+	siblings, err := os.ReadDir(parent)
+	if err != nil {
+		return out
+	}
+	self := filepath.Base(dir)
+	for _, sibling := range siblings {
+		if !sibling.IsDir() || sibling.Name() == self {
+			continue
+		}
+		for _, p := range siblingPorts(filepath.Join(parent, sibling.Name())) {
+			out[p] = sibling.Name()
+		}
+	}
+	return out
+}
+
+// siblingPorts lists the host ports one space claims: its published config
+// passport first, the legacy port keys when nothing is published.
+func siblingPorts(dir string) []int {
+	if rev, err := passportview.Current(dir); err == nil {
+		var probe struct {
+			Ports map[string]int `yaml:"ports"`
+		}
+		if b, rerr := os.ReadFile(filepath.Join(dir, "generated", "passports", rev, "config.yaml")); rerr == nil && yaml.Unmarshal(b, &probe) == nil { // #nosec G304 -- operator-owned space dir
+			out := make([]int, 0, len(probe.Ports))
+			for _, p := range probe.Ports {
+				out = append(out, p)
+			}
+			return out
+		}
+	}
+	for _, name := range []string{"agent.yaml", "settings.yaml"} {
+		body, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			continue
+		}
+		var probe struct {
+			OAuth   int `yaml:"oauth_port"`
+			Browser int `yaml:"browser_port"`
+			Slack   int `yaml:"slack_events_port"`
+		}
+		if err := yaml.Unmarshal(body, &probe); err != nil {
+			continue
+		}
+		out := []int{}
+		for _, p := range []int{probe.OAuth, probe.Browser, probe.Slack} {
+			if p > 0 {
+				out = append(out, p)
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 // sectionForEntry maps an enabled tools entry to its governance section.
@@ -409,5 +480,21 @@ func writeToolPolicySnapshot(dir string, s Settings) error {
 	if err != nil {
 		return err
 	}
-	return os.Rename(name, path)
+	if err = os.Rename(name, path); err != nil {
+		return err
+	}
+	// A published workspace passport turns /config into one read-only
+	// directory bind (SPEC-0092 R5.2): per-file mounts into it cannot create
+	// mountpoints, so the policy snapshot rides inside the view instead.
+	if view := filepath.Join(dir, "generated", "config-view", s.Environment); dirExists(view) {
+		if err := atomic(filepath.Join(view, "tool-policy.json"), body); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }

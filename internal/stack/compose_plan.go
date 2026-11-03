@@ -130,6 +130,19 @@ func (p *composePlan) check(services M) error {
 	return nil
 }
 
+// ComposeServiceName resolves a stack instance name to the compose service
+// key this space renders — per-space instances carry their emitted name
+// (SPEC-0092 A4: a recreate acts on the owning container). "" means the
+// target has no compose service here: a supervised hermes-runtime is
+// supervisor-spawned, a shared service renders only in the infra project.
+func ComposeServiceName(s Settings, instance string) string {
+	mode := s.PassportServices[instance]
+	if mode == "supervised" || (mode == "shared" && !s.RendersInfra()) {
+		return ""
+	}
+	return planServiceName(instance, s)
+}
+
 // AgentImageRequired reports whether the build set must produce the agent
 // image tag explicitly: a supervised hermes-runtime never renders a compose
 // service, yet the supervisor spawns it by tag at container start. The

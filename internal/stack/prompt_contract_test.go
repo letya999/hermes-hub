@@ -50,6 +50,14 @@ func TestChannelContractNamesLiveToolInventory(t *testing.T) {
 	}
 }
 
+// The contract steers project creation to project_create: file_write never
+// mints a new top-level project directory (SPEC-0092 R5.3).
+func TestChannelContractGuidesProjectCreate(t *testing.T) {
+	if !strings.Contains(ChannelContract, "project_create") {
+		t.Error("channel contract must name project_create as the only way to mint a project directory")
+	}
+}
+
 func TestChannelContractRequiresHumanToolHubConfirmation(t *testing.T) {
 	for _, want := range []string{"await_user_confirmation", "verified channel callback", "actor", "action", "revision", "expiry", "confirmation button", "original chat", "status only", "never human consent"} {
 		if !strings.Contains(ChannelContract, want) {

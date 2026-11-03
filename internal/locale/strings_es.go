@@ -61,6 +61,11 @@ func init() {
 		"slack.artifact-failed": "No se pudo entregar el archivo: %s",
 		"artifact.failed":       "No se pudo entregar el archivo: %s",
 
+		// Árbol del pasaporte workspace (mapa ASCII de workspace.yaml).
+		"workspace.marker.read_only":   "[solo lectura]",
+		"workspace.note.system_prompt": "prompt de sistema efectivo",
+		"workspace.note.skills":        "catálogo compilado",
+
 		// Consola del operador (hubctl, scripts locales).
 		"op.names-status":       "Nombres: %s. Estado: %s.",
 		"op.status-only":        "Estado: %s.",

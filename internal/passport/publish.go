@@ -142,6 +142,12 @@ func (r Revision) refreshConfigView(spaceDir string) error {
 			return err
 		}
 	}
+	// Executor contracts (tool policy snapshot, tool surface manifest)
+	// materialize inside the view so the read-only /config bind covers them;
+	// they are not passport documents — publish preserves them while
+	// render/spawn rewrites their contents.
+	want["tool-policy.json"] = true
+	want["tool-manifest.json"] = true
 	entries, err := os.ReadDir(viewDir)
 	if err != nil {
 		return err

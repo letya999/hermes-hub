@@ -43,7 +43,7 @@ func v2FixtureInputs(t *testing.T) Inputs {
 				"writable":  []any{"/workspace", "/vault"},
 				"read_only": []any{"/config", "/skills", "/shared"},
 				"layout":    []any{"/workspace/work", "/workspace/inbox"},
-				"mounts":    map[string]any{"acme-docs": map[string]any{"source": "org/acme/docs", "mode": "ro"}},
+				"mounts":    map[string]any{"/shared/acme-docs": map[string]any{"source": "org/acme/docs", "mode": "ro"}},
 			},
 			"tools": {
 				"core":     map[string]any{"files": map[string]any{"via": "toolhub"}},
@@ -121,6 +121,45 @@ func TestStackPassportNormativeShape(t *testing.T) {
 	}
 	if _, stray := s.Services["mode"]; stray {
 		t.Fatal("legacy mode leaked into services map")
+	}
+}
+
+// config.yaml is the v2 runtime contract: runtime, supervision, ports,
+// channels and memory all decode into the strict view (SPEC-0092 R4.1).
+func TestConfigPassportNormativeShape(t *testing.T) {
+	in := v2FixtureInputs(t)
+	in.PlatformCeiling.Docs["config"]["channels"] = map[string]any{
+		"telegram": map[string]any{"bot": map[string]any{"ref": "x"}},
+	}
+	in.User.Docs["config"]["channels"] = map[string]any{
+		"telegram": map[string]any{
+			"bot":           map[string]any{"ref": "telegram-bot-alice"},
+			"allowed_users": map[string]any{"ref": "telegram-allow-alice"},
+		},
+	}
+	rev, err := Compile(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := Decode("config", rev.Docs["config"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := raw.(*ConfigDoc).Config
+	if c.Runtime.Timezone != "Europe/Moscow" {
+		t.Fatalf("runtime.timezone lost: %+v", c.Runtime)
+	}
+	if c.Supervision.IdleStop != "5m" || c.Supervision.Restart != "on-failure" {
+		t.Fatalf("supervision lost: %+v", c.Supervision)
+	}
+	if c.Ports["oauth-callback"] != 8008 {
+		t.Fatalf("ports lost: %+v", c.Ports)
+	}
+	if c.Channels["telegram"].Bot.Ref != "telegram-bot-alice" || c.Channels["telegram"].AllowedUsers.Ref != "telegram-allow-alice" {
+		t.Fatalf("channels lost refs: %+v", c.Channels)
+	}
+	if c.Memory.Backend != "local" {
+		t.Fatalf("memory.backend lost: %+v", c.Memory)
 	}
 }
 

@@ -349,13 +349,13 @@ func TestDiagnosticsRightsGate(t *testing.T) {
 	diagWrite(t, dir, diagLine("2026-09-28T10:00:00Z", "c1", "collected line"))
 	control := &ControlPlane{Store: store, DiagnosticsDir: dir}
 
-	if err := DeriveRights(store, gov, store.RightsDoc, auth.PrincipalID, map[string][]string{"workspace": {"read"}}, time.Now()); err != nil {
+	if err := DeriveRights(store, gov, store.RightsDoc, auth.PrincipalID, map[string][]string{"workspace": {"read"}}, auth.Environment, auth.PolicyVersion, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := control.diagnostics(t.Context(), auth, map[string]any{}); err == nil || !strings.Contains(err.Error(), "observability.read_own_logs") {
 		t.Fatalf("ceiling without the right must deny diagnostics: %v", err)
 	}
-	if err := DeriveRights(store, gov, store.RightsDoc, auth.PrincipalID, map[string][]string{"observability": {"read_own_logs"}}, time.Now().Add(time.Minute)); err != nil {
+	if err := DeriveRights(store, gov, store.RightsDoc, auth.PrincipalID, map[string][]string{"observability": {"read_own_logs"}}, auth.Environment, auth.PolicyVersion, time.Now().Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := control.diagnostics(t.Context(), auth, map[string]any{}); err != nil {

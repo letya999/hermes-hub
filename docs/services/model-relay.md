@@ -1,6 +1,6 @@
 ---
 description: model-relay — per-space model selection endpoint for managed spaces; layered models.yaml, owner switch bearer, cliproxy upstream.
-last_verified: 2026-11-02
+last_verified: 2026-11-03
 ---
 
 # model-relay
@@ -70,9 +70,13 @@ provider credential. A foreign bearer or ungranted requested model is rejected
 before dispatch. The pinned Hermes model name is an alias for the owner's saved
 selection, so `/model` switching does not require editing Hermes.
 
-Registry layers are `spaces/models.yaml`, `spaces/<organization>/models.yaml`,
-then `spaces/<owner>/models.yaml`; later entries replace the same named entry.
-For example, these are references, not credential values:
+Registry layers on unmanaged spaces are `spaces/models.yaml`,
+`spaces/<organization>/models.yaml`, then `spaces/<owner>/models.yaml`;
+later entries replace the same named entry. Under a published passport
+revision the layered files are never consulted — the `models.yaml`
+passport (`services`/`routes`/`default`) compiles into the mounted
+registry alone and is the only model authority. For example, these are
+references, not credential values:
 
 ```yaml
 providers:
@@ -190,3 +194,43 @@ Migrating a space off the legacy `cliproxy/api-key` + `auths/` material or a
 with execution `dedicated`, point `broker_grants` at the new grant ids, then
 re-render. Bytes never enter passports, ledger DTOs, argv or diagnostics —
 the journal and every API view carry refs only.
+
+### Per-instance session delivery (S7.3)
+
+Each declared `cliproxy-*` instance gets its own init companion
+(`<instance>-init`, entrypoint `hub-runtime cliproxy-materialize`) and two
+tmpfs volumes: `cliproxy-session-<instance>` mounted at `/cliproxy/auths` and
+`cliproxy-cfg-<instance>` mounted at `/run/cliproxy-cfg`. The init companion
+is the only container that sees the shared `broker-materialized` lease view;
+the cliproxy process never mounts it. The companion reads the published
+models passport and `generated/model-grants.json` at `/run/model-gen`,
+acquires the workload lease for the service whose endpoint names its
+instance, copies the materialized session file into `auths/` as exactly
+`session.json`, renders the operator config plus the `proxy_access` key into
+`/run/cliproxy-cfg/config.yaml` (`api-keys:`), and releases the lease. A tmpfs
+volume only exists while a live container holds its mount, so the companion
+then stays up holding the session and cfg mounts; its healthcheck reports the
+moment both files exist and the runtime service depends on `service_healthy`.
+
+Enrollment is `hubctl models login --dir <space> --service <name>`: it mints
+an idempotent `cliproxy-session` + `model-api-key` request per auth ref, the
+owner submits secrets through the reviewed link, and a re-run grants each
+ready credential to binding/workload `<instance>` (execution `dedicated`) and
+records ref→grant ids in `generated/model-grants.json`. The registry
+projection resolves each hop's credential through that map, so rotation is a
+map update, not a passport change. Once both grants exist the command
+removes the plaintext `session.json` under the instance bind `auths/` — the
+tmpfs delivery is the only place session material may exist.
+
+For sibling spaces the external `broker-materialized` reference resolves to
+the infra project's volume (`hermes-hub-<infra-owner>-<env>-broker-materialized`),
+located through `InfraSpaceDir`; a space rendering its own infra declares the
+tmpfs locally instead.
+
+Every space rendering cliproxy instances also declares `broker-secrets-cliproxy`
+(project-local, mounted read-only only in the init companion). Provision its
+CA as `server.crt` and an Ed25519 signing key as `cliproxy.private`, owned by
+the service uid with mode 0600 — the same procedure as `broker-secrets-model`
+above — and register the public key with the Broker under ID `cliproxy`,
+issuer `hermes-cliproxy-session`, audiences `broker:control` and
+`broker:runtime`.

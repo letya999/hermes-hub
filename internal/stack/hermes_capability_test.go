@@ -187,6 +187,16 @@ func TestManagedRenderFailsUntilRuntimeIsolationExists(t *testing.T) {
 	if err := WriteSpace(dir, settings); err != nil {
 		t.Fatal(err)
 	}
+	// No supervisor execution file and an unsupervised runtime mode: the
+	// render must still refuse at the isolation boundary.
+	docs := managedDocs("alice")
+	docs["stack"] = "kind: stack\nidentity: {user: alice}\nservices:\n" +
+		"  hermes-runtime: {mode: per-space}\n" +
+		"  model-relay: {mode: per-space}\n" +
+		"  toolhub-relay: {mode: per-space}\n" +
+		"  toolhub: {mode: shared}\n" +
+		"  credential-broker: {mode: shared}\n"
+	publishManagedDocs(t, dir, "alice", "r-0123456789abcdef", docs)
 	if err := RenderEnvironment(dir, root, "dev"); err == nil || !strings.Contains(err.Error(), "managed runtime requires supervisor-executed runtimes") {
 		t.Fatalf("managed runtime did not fail at isolation boundary: %v", err)
 	}
@@ -209,6 +219,7 @@ func TestManagedSupervisedRenderOmitsRuntimeService(t *testing.T) {
 	if err := WriteSpace(dir, settings); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, dir, "alice", "r-0123456789abcdef")
 	selection := ExecutionSelection{Schema: 1, User: "alice", Environment: "dev", Mode: "supervisor", SupervisorURL: "http://localhost:8876", NativeCron: "disabled", CompatibilityRelease: "0.3.0"}
 	selectionBody, err := json.Marshal(selection)
 	if err != nil {
@@ -600,6 +611,16 @@ func TestManagedEgressRelayRenders(t *testing.T) {
 	if err := WriteSpace(dir, settings); err != nil {
 		t.Fatal(err)
 	}
+	docs := managedDocs("alice")
+	docs["stack"] = "kind: stack\nidentity: {user: alice}\nservices:\n" +
+		"  hermes-runtime: {mode: supervised}\n" +
+		"  model-relay: {mode: per-space}\n" +
+		"  toolhub-relay: {mode: per-space}\n" +
+		"  egress-relay: {mode: per-space}\n" +
+		"  toolhub: {mode: shared}\n" +
+		"  credential-broker: {mode: shared}\n"
+	docs["tools"] = "kind: tools\ncore:\n  discovery: {via: toolhub}\n  files: {via: toolhub}\n  documents: {via: toolhub}\n  images: {via: toolhub}\n  artifacts: {via: toolhub}\n  routines: {via: toolhub}\n  services: {via: toolhub}\n  image_gen: {via: toolhub}\nextended:\n  web: {via: native}\n  search: {via: native}\n  memory: {via: native}\n  todo: {via: native}\n"
+	publishManagedDocs(t, dir, "alice", "r-0123456789abcdef", docs)
 	// Native toolsets are default-deny (SPEC-0083 R3.1): grant the fixture's
 	// native selections before render.
 	seedGovernance(t, dir, func(doc *api.Governance) {
@@ -709,7 +730,11 @@ func TestManagedEgressRelayRenders(t *testing.T) {
 	// the web and image_gen selections arrive with the materialize options.
 	attestOpts := MaterializeOptions{Managed: true, ToolHubEndpoint: "http://toolhub:8090/mcp", ToolHubTokenEnv: "HUB_RUNTIME_AUTH", RuntimeAuthPresent: true, ToolHubReconnect: true,
 		NativeToolsets: settings.nativeCarveouts(), Web: carried, ImageGen: carriedGen}
-	validate := Settings{Model: settings.Model, ModelURL: settings.ModelURL, Timezone: settings.Timezone}
+	effectiveSettings, err := ReadEffective(dir, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	validate := Settings{Model: effectiveSettings.Model, ModelURL: effectiveSettings.ModelURL, Timezone: effectiveSettings.Timezone}
 	effectivePath := filepath.Join(dir, "generated", "hermes-effective.dev.yaml")
 	if err := ValidateManagedEffectiveConfig(effectivePath, validate, attestOpts); err != nil {
 		t.Fatalf("effective config rejected with carried web selection: %v", err)
@@ -993,6 +1018,16 @@ func TestManagedRenderEnvironmentCarriesBrowserGrant(t *testing.T) {
 	if err := WriteSpace(dir, settings); err != nil {
 		t.Fatal(err)
 	}
+	docs := managedDocs("alice")
+	docs["stack"] = "kind: stack\nidentity: {user: alice}\nservices:\n" +
+		"  hermes-runtime: {mode: supervised}\n" +
+		"  model-relay: {mode: per-space}\n" +
+		"  toolhub-relay: {mode: per-space}\n" +
+		"  browser: {mode: per-space}\n" +
+		"  toolhub: {mode: shared}\n" +
+		"  credential-broker: {mode: shared}\n"
+	docs["tools"] = "kind: tools\ncore:\n  discovery: {via: toolhub}\nextended:\n  browser: {via: \"mcp:playwright\", tools: {include: [act]}}\n"
+	publishManagedDocs(t, dir, "alice", "r-0123456789abcdef", docs)
 	selection := ExecutionSelection{Schema: 1, User: "alice", Environment: "dev", Mode: "supervisor", SupervisorURL: "http://localhost:8876", NativeCron: "disabled", CompatibilityRelease: "0.3.0"}
 	selectionBody, err := json.Marshal(selection)
 	if err != nil {

@@ -1,0 +1,35 @@
+schema: 1
+change: CHG-0259
+title: "M30.5 workspace.yaml drives container filesystem and file admission"
+status: done
+branch: feat/m29-six-passport-contract
+updated: 2026-11-03
+phase: acceptance
+adr: ADR-0093
+spec: SPEC-0092
+requirements: [R5.1, R5.2, R5.3]
+depends_on: [CHG-0255, CHG-0256]
+github_milestone: "M30 — Imperative Passports and Capability Grants"
+github_issue: pending
+design_status: accepted
+implementation_status: done
+slices:
+  S5.1-tree-ascii: done
+  S5.2-mount-plan: done
+  S5.3-live-file-admission: done
+validation:
+  documents: done
+  just_check: pass
+  docker_check: pass
+  red_team: pass
+  live_acceptance: pass
+evidence:
+  - "2026-11-02: workspace.yaml retired for artem_two — tree/writable/read_only/mounts come from the passport; overlay materializes mounts back into Settings.Workspace.Mounts; completeness guard refuses a revision with no writable path."
+  - "2026-11-03 S5.1: typed layout nodes (path/note/mode/placeholder) merge across layers; box-drawing tree with ro-markers localized via config.runtime.locale; invariants /config /skills /workspace/inbox /workspace/artifacts/services /vault/memory always read-only; mount targets pinned under /shared/ with org:/user: scope prefixes; overlapping writable+read_only rejected."
+  - "2026-11-03 S5.2: stack.MountPlan emits /config view, /workspace base, nested read-only binds, vault trio, /skills, declared /shared mounts; compose + both supervisor spawn paths consume it with legacy fallback; MaterializeWorkspaceLayout creates skeleton + declared dirs for unmanaged and managed bases without touching existing projects trees."
+  - "2026-11-03 S5.3: agenttools loads /config/workspace.yaml by mtime (HUB_WORKSPACE_BOUNDARY override), fails closed when absent/undecodable; longest-prefix decision read_only wins on literal and symlink-resolved paths across workspace/vault roots; file_write cannot mint projects/<name>; project_create added (workspace.create_project right, hub-agent-tools 5.13.0, catalog release 5, direct MCP surface + prompt contract + docs/tools.md)."
+  - "2026-11-03 defects fixed on live: (a) nested tool-policy/tool-manifest binds inside the now-read-only /config broke docker start — policy/manifest are materialized into the config view and per-file mounts skipped under a published passport; (b) emitted boundary missed the rw-mounted /vault/library + /vault/attachments — compile now adds invariantWritable defaults plus rw mount targets to writable, still narrowable by declared read_only, and the no-writable floor checks the declared set before defaults; (c) project_create mints a missing projects/ parent in pre-M30 workspaces."
+  - "2026-11-03 A5 live acceptance on artem_two r-4c3936754906d232 (gen-508): docker inspect mounts == MountPlan (/config ro, /workspace rw, inbox+artifacts/services ro sub-binds, vault memory ro / library+attachments rw, /skills ro, /shared none declared); kernel rejects writes to /config, /workspace/inbox, /vault/memory; boundary-only revision applied with zero respawn (live reload contract); live narrowing to writable:/workspace/work denied /workspace/a5-narrow.txt and project_create, allowed work/ writes, restored cleanly; project_create minted projects/a5-proj, idempotent, file_write inside succeeds; vault library+attachments writes succeed, vault/memory denied; E2E-183 registered; just check green at 86.03% own coverage."
+remaining: []
+limitations:
+  - "HUB_WORKSPACE_RO env stays as legacy fallback for spaces without a published workspace.yaml; it is not consulted once the boundary file is mounted"

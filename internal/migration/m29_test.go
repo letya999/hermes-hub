@@ -11,12 +11,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// TestM29TwoUserPassportEndToEnd is the milestone golden (R12.1): two
-// differently-shaped legacy spaces migrate to isolated, versioned revisions
-// — no cross-user leakage of sections, grants, routes or mounts, no stale
-// authorization, distinct rollback fences. Receipts come only from the
-// published artifacts, never from shared caches.
-func TestM29TwoUserPassportEndToEnd(t *testing.T) {
+// TestMigrationV2TwoUserIsolation is the milestone golden (R12.1/R8.1):
+// two differently-shaped legacy spaces migrate to isolated, versioned v2
+// revisions — no cross-user leakage of sections, grants, routes or mounts,
+// no stale authorization, distinct rollback fences. Receipts come only from
+// the published artifacts, never from shared caches.
+func TestMigrationV2TwoUserIsolation(t *testing.T) {
 	settings := func(user, tz string, oauth, browser int, tools string) string {
 		return fmt.Sprintf("schema: 3\nuser: %s\ntimezone: %s\nmemory: true\nmodel: default\nmodel_url: https://models.example.test\ngoogle_email: %s@example.test\ngitlab_host: gitlab.example.test\ndesktop_url: https://desktop.example.test\ndrafts_url: https://drafts.example.test\noauth_port: %d\nbrowser_port: %d\ntools:\n%s", user, tz, user, oauth, browser, tools)
 	}

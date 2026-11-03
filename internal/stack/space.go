@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	_ "time/tzdata"
+
+	"github.com/letya999/hermes-hub/internal/passportview"
 )
 
 // legacySettingsFile keeps schema-1 capability fields parseable so Read can
@@ -324,6 +326,26 @@ func finishRead(s Settings, dir string, withPassport bool) (Settings, error) {
 			return s, err
 		}
 	}
+	return finishSpaceRead(s, dir, withPassport)
+}
+
+// finishManagedRead applies the already-loaded effective revision onto the
+// extension-file base: the passport is the authority, managed mode is the
+// space's declared contract, and the shared tail still runs.
+func finishManagedRead(s Settings, dir string, eff passportview.Effective) (Settings, error) {
+	s.Environment = "prod"
+	s.SpaceDir = dir
+	s.CapabilityMode = "managed"
+	if err := s.applyEffective(eff); err != nil {
+		return s, err
+	}
+	return finishSpaceRead(s, dir, true)
+}
+
+// finishSpaceRead is the shared tail of every space read: the scope
+// identity cross-check, profile zero-fill, runtime validation and the
+// governance overlay.
+func finishSpaceRead(s Settings, dir string, validate bool) (Settings, error) {
 	if scope, scopeErr := ReadScope(dir); scopeErr == nil {
 		// A migrated space keeps identity only in the published revision;
 		// the scope file is the same claim in the owner's own words.
@@ -339,7 +361,7 @@ func finishRead(s Settings, dir string, withPassport bool) (Settings, error) {
 	if err := applyProfiles(&s, dir); err != nil {
 		return s, err
 	}
-	if withPassport {
+	if validate {
 		// Runtime validation covers passport-owned fields (ports, mounts)
 		// the intent view legitimately leaves empty.
 		if err := s.Validate(); err != nil {
@@ -349,12 +371,99 @@ func finishRead(s Settings, dir string, withPassport bool) (Settings, error) {
 	return s, applyGovernance(&s)
 }
 
-// ReadEnvironment selects runtime settings without making dev/prod a user namespace.
+// managedClaim reports whether the space is managed: a published-revision
+// pointer is itself the managed marker; otherwise the extension file may
+// declare capability_mode: managed — either claim demands a loadable
+// revision as the space's only authority.
+func managedClaim(dir string) bool {
+	if passportRevision(dir) {
+		return true
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "agent.yaml"))
+	if err != nil {
+		return false
+	}
+	var probe struct {
+		Mode string `yaml:"capability_mode"`
+	}
+	return yaml.Unmarshal(body, &probe) == nil && probe.Mode == "managed"
+}
+
+// readManagedAgent decodes the slim operator extension file: under a
+// published revision agent.yaml keeps only the fields the six-doc contract
+// does not govern — the retired authority files are never opened here.
+func readManagedAgent(dir string) (Settings, error) {
+	var s Settings
+	agentPath := filepath.Join(dir, "agent.yaml")
+	if _, err := os.Stat(agentPath); err != nil {
+		if os.IsNotExist(err) {
+			return s, nil
+		}
+		return s, err
+	}
+	var lf legacySettingsFile
+	if err := readSpaceYAML(agentPath, &lf, func(key string) error {
+		if msg, bad := agentYAMLForbidden[key]; bad {
+			return errors.New(msg)
+		}
+		return nil
+	}); err != nil {
+		return s, err
+	}
+	if len(lf.LegacyFeatures)+len(lf.LegacyNative)+len(lf.LegacyMCP) > 0 {
+		return s, fmt.Errorf("agent.yaml holds no capability fields — they live in the passport")
+	}
+	return lf.Settings, nil
+}
+
+// ReadEffective is the runtime read path. A managed space resolves settings
+// from the effective revision plus the agent.yaml extension file alone:
+// settings.yaml, workspace.yaml and the space's own models.yaml are never
+// opened, and a managed claim without a loadable revision refuses rather
+// than silently downgrading to legacy. An unmanaged space reads the legacy
+// layout unchanged.
+func ReadEffective(dir, environment string) (Settings, error) {
+	s, err := ReadEffectiveSpace(dir)
+	if err != nil {
+		return s, err
+	}
+	return environmentTail(s, dir, environment)
+}
+
+// ReadEffectiveSpace is the prod-semantics managed-aware read without the
+// environment tail — for callers (the supervisor's policy resolution) that
+// apply the environment adjustments themselves.
+func ReadEffectiveSpace(dir string) (Settings, error) {
+	if managedClaim(dir) {
+		eff, err := passportview.LoadEffective(dir)
+		if err != nil {
+			return Settings{}, fmt.Errorf("managed space has no loadable published revision: %w", err)
+		}
+		s, err := readManagedAgent(dir)
+		if err != nil {
+			return s, err
+		}
+		return finishManagedRead(s, dir, eff)
+	}
+	return Read(dir)
+}
+
+// ReadEnvironment selects runtime settings without making dev/prod a user
+// namespace. It reads the legacy authority files (settings.yaml or the
+// agent+workspace pair) with the passport overlay — the view the migrator
+// and legacy-file tooling need. Runtime paths call ReadEffective instead.
 func ReadEnvironment(dir, environment string) (Settings, error) {
 	s, err := Read(dir)
 	if err != nil {
 		return s, err
 	}
+	return environmentTail(s, dir, environment)
+}
+
+// environmentTail is the post-load tail both read paths share: the
+// organization merge, the environment's execution selection and the dev
+// port offsets.
+func environmentTail(s Settings, dir, environment string) (Settings, error) {
 	if s.Organization != "" {
 		orgDir := resolvedOrganizationDir(dir, s.Organization)
 		org, e := ReadOrganization(orgDir)

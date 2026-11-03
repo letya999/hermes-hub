@@ -61,6 +61,11 @@ func init() {
 		"slack.artifact-failed": "Файлды жеткізу мүмкін болмады: %s",
 		"artifact.failed":       "Файлды жеткізу мүмкін болмады: %s",
 
+		// Workspace паспортының ағашы (workspace.yaml ASCII картасы).
+		"workspace.marker.read_only":   "[тек оқуға]",
+		"workspace.note.system_prompt": "қорытынды жүйелік промпт",
+		"workspace.note.skills":        "жиналған каталог",
+
 		// Оператор консолі (hubctl, жергілікті скриптілер).
 		"op.names-status":       "Аттары: %s. Күйі: %s.",
 		"op.status-only":        "Күйі: %s.",

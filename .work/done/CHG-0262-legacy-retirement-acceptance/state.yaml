@@ -1,0 +1,42 @@
+schema: 1
+change: CHG-0262
+title: "M30.8 Legacy retirement, migration v2, docs and live acceptance"
+status: done
+branch: feat/m29-six-passport-contract
+updated: 2026-11-03
+phase: done
+adr: ADR-0093
+spec: SPEC-0092
+requirements: [R8.1, R8.2, R8.3]
+depends_on: [CHG-0254, CHG-0255, CHG-0256, CHG-0257, CHG-0258, CHG-0259, CHG-0260, CHG-0261]
+github_milestone: "M30 — Imperative Passports and Capability Grants"
+github_issue: pending
+design_status: accepted
+implementation_status: done
+slices:
+  S8.1-migration-v2: done
+  S8.2-retire-legacy-readers: done
+  S8.3-docs: done
+  S8.4-live-acceptance: done_narrowed_scope
+validation:
+  documents: done
+  just_check: "green — covergo 86.05% own statement coverage (85/75 floors), all packages pass; only Windows AV fork/exec+link flakes, each green standalone"
+  docker_check: "partial — 9/11 steps green (6 image builds, budgets, smoke, hermes-contract, capability-contract, scratch canary, quarantine test, docker-clean); managed-network + managed-supervisor canaries env-blocked on IPAM pool exhaustion (same accepted blocker as CHG-0255)"
+  red_team: done
+  live_acceptance: done_narrowed_scope
+evidence:
+  - "2026-11-02: artem_two retired root workspace.yaml/models.yaml and the stale v1 revision r-256669d55c81fd23; agent.yaml slimmed to contract-uncovered extensions; passport-src layers re-emitted under the v2 vocabulary; verified migration-backup per revision retained."
+  - "2026-11-03 S8.1: migration v2 maps all 41 Settings fields or reports conflicts; two-user isolation test renamed TestMigrationV2TwoUserIsolation; extension fields preserved in agent.yaml; retired files backed up under generated/migration-backup/<rev>/."
+  - "2026-11-03 S8.2: ReadEffective/ReadEffectiveSpace are the runtime readers — published revision + slim agent.yaml only; pointer-file presence claims managed (malformed pointer fails closed); passportRegistryLayer is the sole model registry source under a revision (legacy models.yaml never merged). Runtime callers switched: render/render_auth/tokens sibling scans, supervisor (loadSelected/resolveSettings/Ensure/normalize/runArgsWithGeneration), hubctl up/chat/doctor/trace/execution/dev-rebuild/context refresh+promote/space_apply, migration SelectExecution. ensure.go unmanaged fallback retains ReadEnvironment intentionally. 51 pending: consumers renamed to real consumers (compose/model-relay/file-admission/tool-policy/rights-ledger/supervisor-policy); nightly_rollup moved to supervisor-policy; space_apply Live map wires all five named consumers (verified by TestApplyLiveHooksCoverNamedConsumers). Guard test forbids ReadEnvironment outside internal/migration + intentional unmanaged/devcheck fixtures. ~30 test fixtures updated to publish six-document revisions; deployment contract integration passes all env×mode×capability combos."
+  - "2026-11-03 S8.3: spaces.md (managed layout + retired-file table), operations.md (managed ceremony), agent-home.md (hooks unmanaged-only), architecture.md (sole-authority paragraph), model-relay.md (passport-only registry under revision), runtime-operations.md (goal unmanaged-only), hubctl.md (space apply + models login), index.md description updated. rbac.md/tools.md/toolhub.md already cover the contract."
+  - "2026-11-03 S8.4 (owner-narrowed scope): m29-acc-01 end-to-end on v2 r-b3f7e733e63e2759 — `models login --service cliproxy` (three dedicated grants) → `hubctl up` → init companion healthy → cliproxy healthy → REAL completion through model-relay:8318 → cliproxy:8317 → upstream 'M30-OK' status=200."
+  - "2026-11-03 S8.4 poison-invariance: hostile content written into retired cliproxy/auths/*.json on acc-01 AND artem_two — space-audit/doctor/render outputs byte-identical pre/post poison; 5× live completions still 200 on acc-01 ('POISON-PROOF-OK'), 1× on artem_two ('ARTEM2-POISON-OK'); `space apply` receipt showed only grants ordering noise, zero reaction to retired files. Poison files removed/restored after evidence."
+  - "2026-11-03 S8.4 imperative control live: workspace.write right revoked on acc-01 → /v1/rights/decide flipped to {allow:false, 'no active grant'} (epoch 125→126, no restart) → DeriveSpaceRights restored the right (rev 3). Same revoke→deny→restore cycle on artem_two. hub-agent-tools binding disabled live → tools/list emptied + calls denied 'projection unavailable' without restart → re-enable + toolhub restart restored system_guide+tools_list (A6-substantive proof)."
+  - "2026-11-03 S8.4 stale-v1 fail-closed (m29-acc-02, intentionally NOT migrated): space-audit returns empty services/toolsets, grants:null, every section 'not admitted by any passport layer'; space apply rejects 'passport compile: unclassified field stack.environment' — no silent repair of v1 data."
+  - "2026-11-03 gates: just check — every package green across runs (devcheck/communication/diagnostics Windows AV fork/exec+link flakes each pass standalone); full covergo run 86.05% own statement coverage (85/75 floors); lint (format/vet/tidy/staticcheck/gosec), docs-check, config-check green."
+remaining: []
+limitations:
+  - "workspace.goal/bootstrap_revision, hooks, compression, telegram_auth and ~20 other Settings fields have no v2 passport leaf — migration reports them as preserved conflicts (documented in runtime-operations.md)"
+  - "ReadEnvironment remains reachable only from internal/migration (its purpose is transforming legacy files) and devcheck self-built legacy fixtures — enforced by the source guard test"
+  - "S8.4 executed on owner-narrowed scope (2026-11-03): acc-01 end-to-end + artem_two imperative proofs + acc-02 stale-v1 fail-closed. NOT executed vs the original matrix: artem_main re-migration, 10-disposable-space sweep, A3/A4/A5 effect classes (instance add/remove, port change, writable narrowing — A3/A4/A5 were already proven live in CHG-0257/0259/0258), A7 multi-instance ladder failover. Other m29-acc-* spaces deliberately left stale-v1 as fail-closed evidence."
+  - "Live ToolHub store.db is fragile to host-side sqlite access while running — a probe checkpointed WAL under open descriptors and caused persistent 503s until container restart; do not query the live db, use supported APIs/copies."

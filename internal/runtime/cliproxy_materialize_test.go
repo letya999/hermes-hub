@@ -1,0 +1,280 @@
+package runtime
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// cliproxyMaterialize delivers one oauth session file and one proxy_access
+// key into the instance's tmpfs views: /cliproxy/auths holds exactly the
+// session file, /run/cliproxy-cfg holds the operator config plus api-keys.
+func TestCliproxyMaterializeWritesSessionAndRenderedConfig(t *testing.T) {
+	dir := t.TempDir()
+	gen := filepath.Join(dir, "generated")
+	if err := os.MkdirAll(filepath.Join(gen, "passports", "r-x"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	head := "apiVersion: six-passport/v2\nmetadata: {space: alice, environment: dev, revision: r-x}\n"
+	docs := map[string]string{
+		"stack.yaml":     head + "kind: stack\nidentity: {user: alice}\n",
+		"config.yaml":    head + "kind: config\n",
+		"models.yaml":    head + "kind: models\nservices:\n  google-pro-1:\n    via: cliproxy\n    endpoint: http://cliproxy-google-1:8317/v1\n    auth: {upstream: {kind: oauth-session, ref: google-one-1}, proxy_access: {kind: broker-key, ref: cliproxy-google-1}}\n",
+		"workspace.yaml": head + "kind: workspace\n",
+		"tools.yaml":     head + "kind: tools\n",
+		"grants.yaml":    head + "kind: grants\n",
+	}
+	for name, body := range docs {
+		if err := os.WriteFile(filepath.Join(gen, "passports", "r-x", name), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(gen, "passports", "current"), []byte("r-x\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	grants := `{"google-pro-1": {"google-one-1": {"init": "g-sess"}, "cliproxy-google-1": {"init": "g-key", "relay": "g-key-r"}}}`
+	if err := os.WriteFile(filepath.Join(gen, "model-grants.json"), []byte(grants), 0600); err != nil {
+		t.Fatal(err)
+	}
+	base := filepath.Join(dir, "base")
+	if err := os.MkdirAll(base, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "config.yaml"), []byte("host: \"\"\nport: 8317\nauth-dir: \"/cliproxy/auths\"\napi-keys: [\"STALE-BIND-KEY\"]\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	auths := filepath.Join(dir, "auths")
+	cfg := filepath.Join(dir, "cfg")
+	resolver := &fakeCliproxyPlane{files: map[string][]byte{"g-sess": []byte(`{"token":"SENTINEL"}`)}, envs: map[string]string{"g-key/MODEL_API_KEY": "SENTINEL-KEY"}}
+	err := cliproxyMaterialize(context.Background(), resolver, cliproxyMaterializeArgs{
+		Instance: "cliproxy-google-1", Owner: "alice",
+		GeneratedDir: gen, BaseDir: base, AuthsDir: auths, CfgDir: cfg,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := os.ReadFile(filepath.Join(auths, "session.json"))
+	if err != nil || !strings.Contains(string(session), "SENTINEL") {
+		t.Fatalf("session file not delivered: %v", err)
+	}
+	rendered, err := os.ReadFile(filepath.Join(cfg, "config.yaml"))
+	if err != nil || !strings.Contains(string(rendered), "SENTINEL-KEY") || !strings.Contains(string(rendered), "api-keys") {
+		t.Fatalf("rendered config missing api-keys: %v %s", err, rendered)
+	}
+	// The bind's plaintext api-keys are retired material: the rendered config
+	// must carry only the Broker-materialized key, not a duplicate section.
+	if strings.Contains(string(rendered), "STALE-BIND-KEY") || strings.Count(string(rendered), "api-keys") != 1 {
+		t.Fatalf("stale bind api-keys must not leak into the rendered config: %s", rendered)
+	}
+	if resolver.calls["file"] != 1 || resolver.calls["env"] != 1 {
+		t.Fatalf("expected one session + one key resolution, got %v", resolver.calls)
+	}
+}
+
+// The init companion of an instance with no declared cliproxy service must
+// fail: it can never materialize a session it was not granted for.
+func TestCliproxyMaterializeRejectsUndeclaredInstance(t *testing.T) {
+	dir := t.TempDir()
+	gen := filepath.Join(dir, "generated")
+	if err := os.MkdirAll(filepath.Join(gen, "passports", "r-x"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	head := "apiVersion: six-passport/v2\nmetadata: {space: alice, environment: dev, revision: r-x}\n"
+	docs := map[string]string{
+		"stack.yaml":     head + "kind: stack\nidentity: {user: alice}\n",
+		"config.yaml":    head + "kind: config\n",
+		"models.yaml":    head + "kind: models\nservices:\n  google-pro-1:\n    via: cliproxy\n    endpoint: http://cliproxy-google-1:8317/v1\n    auth: {upstream: {kind: oauth-session, ref: google-one-1}, proxy_access: {kind: broker-key, ref: cliproxy-google-1}}\n",
+		"workspace.yaml": head + "kind: workspace\n",
+		"tools.yaml":     head + "kind: tools\n",
+		"grants.yaml":    head + "kind: grants\n",
+	}
+	for name, body := range docs {
+		if err := os.WriteFile(filepath.Join(gen, "passports", "r-x", name), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(gen, "passports", "current"), []byte("r-x\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gen, "model-grants.json"), []byte(`{"google-pro-1": {"google-one-1": {"init": "g-sess"}, "cliproxy-google-1": {"init": "g-key", "relay": "g-key-r"}}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	resolver := &fakeCliproxyPlane{}
+	err := cliproxyMaterialize(context.Background(), resolver, cliproxyMaterializeArgs{
+		Instance: "cliproxy-google-2", Owner: "alice",
+		GeneratedDir: gen, BaseDir: t.TempDir(), AuthsDir: t.TempDir(), CfgDir: t.TempDir(),
+	})
+	if err == nil || !strings.Contains(err.Error(), "cliproxy-google-2") {
+		t.Fatalf("undeclared instance must fail: %v", err)
+	}
+	if len(resolver.calls) != 0 {
+		t.Fatalf("no lease may be touched for a foreign instance: %v", resolver.calls)
+	}
+}
+
+// A mounted view missing sibling passports is a broken publish: the init
+// companion refuses rather than materialize off a partial contract.
+func TestCliproxyMaterializeRejectsIncompleteRevision(t *testing.T) {
+	dir := t.TempDir()
+	gen := filepath.Join(dir, "generated")
+	if err := os.MkdirAll(filepath.Join(gen, "passports", "r-x"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	head := "apiVersion: six-passport/v2\nmetadata: {space: alice, environment: dev, revision: r-x}\n"
+	models := head + "kind: models\nservices:\n  google-pro-1:\n    via: cliproxy\n    endpoint: http://cliproxy-google-1:8317/v1\n    auth: {upstream: {kind: oauth-session, ref: google-one-1}, proxy_access: {kind: broker-key, ref: cliproxy-google-1}}\n"
+	if err := os.WriteFile(filepath.Join(gen, "passports", "r-x", "models.yaml"), []byte(models), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gen, "passports", "current"), []byte("r-x\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gen, "model-grants.json"), []byte(`{"google-pro-1": {"google-one-1": {"init": "g-sess"}, "cliproxy-google-1": {"init": "g-key", "relay": "g-key-r"}}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	resolver := &fakeCliproxyPlane{files: map[string][]byte{"g-sess": []byte(`{}`)}, envs: map[string]string{"g-key/MODEL_API_KEY": "k"}}
+	err := cliproxyMaterialize(context.Background(), resolver, cliproxyMaterializeArgs{
+		Instance: "cliproxy-google-1", Owner: "alice",
+		GeneratedDir: gen, BaseDir: t.TempDir(), AuthsDir: t.TempDir(), CfgDir: t.TempDir(),
+	})
+	if err == nil || !strings.Contains(err.Error(), "load effective") {
+		t.Fatalf("incomplete revision must fail the load: %v", err)
+	}
+	if len(resolver.calls) != 0 {
+		t.Fatalf("no lease may be touched off a partial contract: %v", resolver.calls)
+	}
+}
+
+// A cliproxy service without its auth contract (a stale pre-S7 revision)
+// must fail with a named error — never panic the init companion.
+func TestCliproxyMaterializeRejectsMissingAuthRefs(t *testing.T) {
+	dir := t.TempDir()
+	gen := filepath.Join(dir, "generated")
+	if err := os.MkdirAll(filepath.Join(gen, "passports", "r-x"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	head := "apiVersion: six-passport/v2\nmetadata: {space: alice, environment: dev, revision: r-x}\n"
+	docs := map[string]string{
+		"stack.yaml":     head + "kind: stack\nidentity: {user: alice}\n",
+		"config.yaml":    head + "kind: config\n",
+		"models.yaml":    head + "kind: models\nservices:\n  google-pro-1:\n    via: cliproxy\n    endpoint: http://cliproxy-google-1:8317/v1\n",
+		"workspace.yaml": head + "kind: workspace\n",
+		"tools.yaml":     head + "kind: tools\n",
+		"grants.yaml":    head + "kind: grants\n",
+	}
+	for name, body := range docs {
+		if err := os.WriteFile(filepath.Join(gen, "passports", "r-x", name), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(gen, "passports", "current"), []byte("r-x\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gen, "model-grants.json"), []byte(`{}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	resolver := &fakeCliproxyPlane{}
+	var err error
+	func() {
+		defer func() {
+			if p := recover(); p != nil {
+				err = fmt.Errorf("panic: %v", p)
+			}
+		}()
+		err = cliproxyMaterialize(context.Background(), resolver, cliproxyMaterializeArgs{
+			Instance: "cliproxy-google-1", Owner: "alice",
+			GeneratedDir: gen, BaseDir: t.TempDir(), AuthsDir: t.TempDir(), CfgDir: t.TempDir(),
+		})
+	}()
+	if err == nil || !strings.Contains(err.Error(), "google-pro-1") {
+		t.Fatalf("missing auth refs must fail by name: %v", err)
+	}
+	if len(resolver.calls) != 0 {
+		t.Fatalf("no lease may be touched without auth refs: %v", resolver.calls)
+	}
+}
+
+// A base config that is not a mapping document cannot take an api-keys
+// entry — the init companion fails by name instead of panicking.
+func TestCliproxyMaterializeRejectsNonMapBaseConfig(t *testing.T) {
+	dir := t.TempDir()
+	gen := filepath.Join(dir, "generated")
+	if err := os.MkdirAll(filepath.Join(gen, "passports", "r-x"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	head := "apiVersion: six-passport/v2\nmetadata: {space: alice, environment: dev, revision: r-x}\n"
+	docs := map[string]string{
+		"stack.yaml":     head + "kind: stack\nidentity: {user: alice}\n",
+		"config.yaml":    head + "kind: config\n",
+		"models.yaml":    head + "kind: models\nservices:\n  google-pro-1:\n    via: cliproxy\n    endpoint: http://cliproxy-google-1:8317/v1\n    auth: {upstream: {kind: oauth-session, ref: google-one-1}, proxy_access: {kind: broker-key, ref: cliproxy-google-1}}\n",
+		"workspace.yaml": head + "kind: workspace\n",
+		"tools.yaml":     head + "kind: tools\n",
+		"grants.yaml":    head + "kind: grants\n",
+	}
+	for name, body := range docs {
+		if err := os.WriteFile(filepath.Join(gen, "passports", "r-x", name), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(gen, "passports", "current"), []byte("r-x\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gen, "model-grants.json"), []byte(`{"google-pro-1": {"google-one-1": {"init": "g-sess"}, "cliproxy-google-1": {"init": "g-key", "relay": "g-key-r"}}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	base := filepath.Join(dir, "base")
+	if err := os.MkdirAll(base, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "config.yaml"), []byte(""), 0600); err != nil {
+		t.Fatal(err)
+	}
+	resolver := &fakeCliproxyPlane{files: map[string][]byte{"g-sess": []byte(`{}`)}, envs: map[string]string{"g-key/MODEL_API_KEY": "k"}}
+	var err error
+	func() {
+		defer func() {
+			if p := recover(); p != nil {
+				err = fmt.Errorf("panic: %v", p)
+			}
+		}()
+		err = cliproxyMaterialize(context.Background(), resolver, cliproxyMaterializeArgs{
+			Instance: "cliproxy-google-1", Owner: "alice",
+			GeneratedDir: gen, BaseDir: base, AuthsDir: t.TempDir(), CfgDir: t.TempDir(),
+		})
+	}()
+	if err == nil || !strings.Contains(err.Error(), "cliproxy materialize") {
+		t.Fatalf("non-mapping base config must fail by name: %v", err)
+	}
+}
+
+type fakeCliproxyPlane struct {
+	files map[string][]byte
+	envs  map[string]string
+	calls map[string]int
+}
+
+func (f *fakeCliproxyPlane) File(_ context.Context, grant string) ([]byte, error) {
+	if f.calls == nil {
+		f.calls = map[string]int{}
+	}
+	f.calls["file"]++
+	b, ok := f.files[grant]
+	if !ok {
+		return nil, fmt.Errorf("no file for grant %s", grant)
+	}
+	return b, nil
+}
+
+func (f *fakeCliproxyPlane) Env(_ context.Context, grant, target string) (string, error) {
+	if f.calls == nil {
+		f.calls = map[string]int{}
+	}
+	f.calls["env"]++
+	v, ok := f.envs[grant+"/"+target]
+	if !ok {
+		return "", fmt.Errorf("no env for grant %s", grant)
+	}
+	return v, nil
+}

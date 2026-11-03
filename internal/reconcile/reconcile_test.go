@@ -6,10 +6,20 @@ import (
 	"testing"
 
 	"github.com/letya999/hermes-hub/internal/passport"
+	"github.com/letya999/hermes-hub/internal/passportview"
 )
 
 func ch(path, consumer string, e passport.Effect) passport.Change {
 	return passport.Change{Path: path, Before: "a", After: "b", Effect: e, Consumer: consumer}
+}
+
+// allServices stands in for a new revision declaring the owners these
+// tests recreate.
+var allServices = map[string]passportview.ServiceSpec{
+	"hermes-runtime":    {Mode: "supervised"},
+	"browser":           {Mode: "per-space"},
+	"cliproxy":          {Mode: "per-space"},
+	"communication-hub": {Mode: "shared"},
 }
 
 func TestPlanOrdersAndDeduplicates(t *testing.T) {
@@ -20,7 +30,7 @@ func TestPlanOrdersAndDeduplicates(t *testing.T) {
 		ch("workspace.mounts.docs.mode", "pending:workspace", passport.EffectRespawn),
 		ch("stack.services.cliproxy.endpoint", "pending:stack", passport.EffectRebuild),
 		ch("grants.allow.files.read", "pending:grants", passport.EffectLive),
-	})
+	}, allServices)
 	kinds := []Kind{}
 	for _, a := range actions {
 		kinds = append(kinds, a.Kind)
@@ -54,7 +64,7 @@ func TestPlanTargetsOwnServiceAndRuntime(t *testing.T) {
 	actions := Plan([]passport.Change{
 		ch("stack.services.browser.mode", "pending:stack", passport.EffectRecreate),
 		ch("config.ports.x", "pending:config", passport.EffectRecreate),
-	})
+	}, allServices)
 	var svc, rt bool
 	for _, a := range actions {
 		if a.Kind == Recreate && a.Target == "browser" {
@@ -68,9 +78,69 @@ func TestPlanTargetsOwnServiceAndRuntime(t *testing.T) {
 		t.Fatalf("recreate targets: %+v", actions)
 	}
 	// stack.identity affects every image.
-	actions = Plan([]passport.Change{ch("stack.identity.user", "pending:stack", passport.EffectRebuild)})
+	actions = Plan([]passport.Change{ch("stack.identity.user", "pending:stack", passport.EffectRebuild)}, allServices)
 	if len(actions) != 1 || actions[0].Target != "*" {
 		t.Fatalf("identity rebuild target: %+v", actions)
+	}
+}
+
+// config.ports and config.channels recreate the service that consumes them —
+// the port owner per the compile's PortOwners map, the gateway for channels —
+// not the whole stack (SPEC-0092 effect table, A4).
+func TestPlanTargetsConfigOwners(t *testing.T) {
+	actions := Plan([]passport.Change{
+		ch("config.ports.oauth-callback", "c", passport.EffectRecreate),
+		ch("config.ports.browser-vnc", "c", passport.EffectRecreate),
+		ch("config.ports.slack-events", "c", passport.EffectRecreate),
+		ch("config.channels.telegram.bot.ref", "c", passport.EffectRecreate),
+	}, allServices)
+	want := map[string]bool{
+		"hermes-runtime":    true, // oauth-callback owner
+		"browser":           true, // browser-vnc owner
+		"communication-hub": true, // slack-events + channels
+	}
+	got := map[string]bool{}
+	for _, a := range actions {
+		if a.Kind != Recreate {
+			t.Fatalf("config ports/channels are recreate-class: %+v", a)
+		}
+		got[a.Target] = true
+	}
+	if len(got) != len(want) {
+		t.Fatalf("recreate targets %v, want %v", got, want)
+	}
+	for target := range want {
+		if !got[target] {
+			t.Fatalf("missing recreate target %s in %v", target, got)
+		}
+	}
+}
+
+// A port/channel leaf whose owner the new revision does not declare is
+// dead config — nothing renders the container, so the plan must not
+// schedule a recreate for it (the compose call would fail on a phantom
+// service and roll the whole apply back).
+func TestPlanSkipsRecreateForUndeclaredOwners(t *testing.T) {
+	actions := Plan([]passport.Change{
+		ch("config.ports.browser-vnc", "compose", passport.EffectRecreate),
+		ch("config.ports.oauth-callback", "compose", passport.EffectRecreate),
+		ch("config.channels.telegram.voice.in", "communication", passport.EffectRecreate),
+	}, map[string]passportview.ServiceSpec{
+		"hermes-runtime":    {Mode: "supervised"},
+		"communication-hub": {Mode: "shared"},
+	})
+	if len(actions) != 2 {
+		t.Fatalf("want 2 recreate actions (runtime + shared gateway), got %+v", actions)
+	}
+	var targets []string
+	for _, a := range actions {
+		targets = append(targets, a.Target)
+	}
+	if !slices.Contains(targets, "hermes-runtime") || !slices.Contains(targets, "communication-hub") {
+		t.Fatalf("missing declared owners in %v", targets)
+	}
+	if slices.Contains(targets, "browser") {
+		t.Fatalf("undeclared owner must not be recreated: %v", targets)
 	}
 }
 
@@ -90,7 +160,7 @@ func TestRunRollbackOnFailure(t *testing.T) {
 		ch("config.ports.p", "pending:config", passport.EffectRecreate),
 		ch("tools.core.x.via", "toolhub-projection", passport.EffectLive),
 		ch("tools.core.y.via", "zz-failing-hook", passport.EffectLive),
-	})
+	}, allServices)
 	rep := Run(actions, h, func() error { calls = append(calls, "pointer:prev"); return nil }, "r-new", "r-prev")
 	if !rep.RolledBack || rep.Failed == nil || rep.Failed.Kind != Recreate {
 		t.Fatalf("expected recreate failure + rollback: %+v", rep)
@@ -104,7 +174,7 @@ func TestRunRollbackOnFailure(t *testing.T) {
 	actions = Plan([]passport.Change{
 		ch("tools.core.x.via", "toolhub-projection", passport.EffectLive),
 		ch("tools.core.y.via", "zz-failing-hook", passport.EffectLive),
-	})
+	}, allServices)
 	rep = Run(actions, h, func() error { calls = append(calls, "pointer:prev"); return nil }, "r-new", "r-prev")
 	if !rep.RolledBack || rep.Failed == nil || rep.Failed.Target != "zz-failing-hook" {
 		t.Fatalf("expected live failure + rollback: %+v", rep)
@@ -121,7 +191,7 @@ func TestRunPendingConsumersDeferNotFail(t *testing.T) {
 		Respawn:  func() error { return nil },
 		Live:     map[string]func() error{},
 	}
-	actions := Plan([]passport.Change{ch("grants.allow.x", "pending:CHG-0259", passport.EffectLive)})
+	actions := Plan([]passport.Change{ch("grants.allow.x", "pending:CHG-0259", passport.EffectLive)}, allServices)
 	rep := Run(actions, h, func() error { return nil }, "r-1", "r-0")
 	if rep.RolledBack || rep.Failed != nil {
 		t.Fatalf("deferred live consumer must not fail the apply: %+v", rep)
@@ -136,7 +206,7 @@ func TestRunFailureRollbackErrorReported(t *testing.T) {
 		Rebuild: func(string) error { return errors.New("image failed") },
 		Live:    map[string]func() error{},
 	}
-	actions := Plan([]passport.Change{ch("stack.identity.user", "pending:stack", passport.EffectRebuild)})
+	actions := Plan([]passport.Change{ch("stack.identity.user", "pending:stack", passport.EffectRebuild)}, allServices)
 	rep := Run(actions, h, func() error { return errors.New("disk full") }, "r-1", "r-0")
 	if !rep.RolledBack || rep.Failed == nil {
 		t.Fatalf("expected failure: %+v", rep)

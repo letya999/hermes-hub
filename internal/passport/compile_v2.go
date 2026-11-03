@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"path"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/letya999/hermes-hub/internal/catalog"
@@ -110,9 +111,26 @@ var serviceModes = map[string][]string{
 	"per-space-env":    {"per-space"},
 }
 
+// intPort normalizes a YAML-decoded port value; non-numeric input is 0.
+func intPort(v any) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	case string:
+		p, _ := strconv.Atoi(strings.TrimSpace(n))
+		return p
+	}
+	return 0
+}
+
 type instInfo struct {
-	id  string
-	svc catalog.Service
+	id   string
+	mode string
+	svc  catalog.Service
 }
 
 // resolveInstance maps an instance name to its catalog service: the exact
@@ -151,6 +169,7 @@ func checkStack(bodies map[string]map[string]any, docs catalog.Docs) (map[string
 		if !slices.Contains(allowed, mode) {
 			return nil, fmt.Errorf("passport compile: stack.services.%s mode %q not allowed for %s instances (%s)", name, mode, inst.svc.Instances, strings.Join(allowed, "|"))
 		}
+		inst.mode = mode
 		out[name] = inst
 	}
 	// A space without hermes-runtime is simply unmanaged — the runtime's
@@ -185,18 +204,33 @@ func checkWorkspace(bodies map[string]map[string]any) error {
 		if clean := path.Clean(s); clean != s {
 			return fmt.Errorf("passport compile: workspace.writable %q is not a canonical path", s)
 		}
-		if readonly[s] {
-			return fmt.Errorf("passport compile: workspace path %q is both writable and read_only", s)
+		// Longest-prefix resolution: a read_only entry at or above the
+		// writable path makes it dead — the declaration contradicts itself
+		// and is rejected. An ro descendant under a writable parent narrows
+		// it legally: read_only wins inside.
+		for ro := range readonly {
+			if pathWithin(s, ro) {
+				return fmt.Errorf("passport compile: workspace path %q is writable under read-only %s", s, ro)
+			}
 		}
 	}
 	for name, raw := range asMap(ws["mounts"]) {
 		m, _ := raw.(map[string]any)
-		if mode := fmt.Sprint(m["mode"]); mode != "ro" && mode != "rw" {
+		if clean := path.Clean(name); clean != name || !strings.HasPrefix(name, "/shared/") {
+			return fmt.Errorf("passport compile: workspace.mounts target %q must be a canonical path under /shared/", name)
+		}
+		mode := fmt.Sprint(m["mode"])
+		if mode != "ro" && mode != "rw" {
 			return fmt.Errorf("passport compile: workspace.mounts.%s mode %q must be ro or rw", name, mode)
 		}
 		src := fmt.Sprint(m["source"])
-		if src == "" || strings.Contains(src, "..") {
+		if src == "" || strings.Contains(src, "..") || strings.HasPrefix(src, "/") {
 			return fmt.Errorf("passport compile: workspace.mounts.%s has an unsafe source", name)
+		}
+		// Organization mounts resolve outside the user space — a writable
+		// handle on them would let one space write every sibling's mirror.
+		if strings.HasPrefix(src, "org:") && mode != "ro" {
+			return fmt.Errorf("passport compile: workspace.mounts.%s mounts organization scope — mode must be read-only", name)
 		}
 	}
 	return nil
@@ -204,17 +238,57 @@ func checkWorkspace(bodies map[string]map[string]any) error {
 
 // ---- config (R4) ----
 
-func checkConfig(bodies map[string]map[string]any, instances map[string]instInfo) error {
+// PortOwners binds each declared host port to the stack service that
+// publishes it (SPEC-0092 R4.1): oauth-callback is the runtime's OAuth
+// listener, browser-vnc the browser sidecar's noVNC, slack-events the
+// shared gateway's Slack ingress. A port naming anything else is a
+// compile error.
+var PortOwners = map[string]string{
+	"oauth-callback": "hermes-runtime",
+	"browser-vnc":    "browser",
+	"slack-events":   "communication-hub",
+}
+
+// channelVocabulary is the set of ingress transports config.channels may
+// name; each is also a catalog feature the compile verifies. It mirrors
+// the stack ingress adapters until the catalog grows a channel class.
+var channelVocabulary = map[string]bool{"telegram": true, "slack_app": true}
+
+func checkConfig(bodies map[string]map[string]any, instances map[string]instInfo, in Inputs) error {
 	cfg := bodies["config"]
 	claimed := map[string]string{}
 	for name, p := range asMap(cfg["ports"]) {
-		port := fmt.Sprint(p)
-		if prev, dup := claimed[port]; dup {
-			return fmt.Errorf("passport compile: host port %s claimed by both %s and %s", port, prev, name)
+		owner, known := PortOwners[name]
+		if !known {
+			return fmt.Errorf("passport compile: config.ports.%s is not a declared port name", name)
 		}
-		claimed[port] = name
+		inst, ok := instances[owner]
+		if !ok {
+			return fmt.Errorf("passport compile: config.ports.%s declares a port for %s, which is not in the stack", name, owner)
+		}
+		if inst.mode == "shared" && !in.RendersInfra {
+			return fmt.Errorf("passport compile: config.ports.%s is published by shared %s — only the infra space declares it", name, owner)
+		}
+		port := intPort(p)
+		if port <= 0 || port > 65535 {
+			return fmt.Errorf("passport compile: config.ports.%s must be a host port number, got %v", name, p)
+		}
+		portKey := fmt.Sprint(port)
+		if prev, dup := claimed[portKey]; dup {
+			return fmt.Errorf("passport compile: host port %s claimed by both %s and %s", portKey, prev, name)
+		}
+		if space, reserved := in.ReservedPorts[port]; reserved {
+			return fmt.Errorf("passport compile: host port %d already published by space %q", port, space)
+		}
+		claimed[portKey] = name
 	}
 	for name, raw := range asMap(cfg["channels"]) {
+		if !channelVocabulary[name] {
+			return fmt.Errorf("passport compile: config.channels.%s is not a known channel", name)
+		}
+		if _, ok := instances["communication-hub"]; !ok {
+			return fmt.Errorf("passport compile: config.channels.%s requires communication-hub in the stack", name)
+		}
 		ch, _ := raw.(map[string]any)
 		for _, key := range []string{"bot", "allowed_users"} {
 			if v, set := ch[key]; set {
@@ -266,6 +340,13 @@ func checkModels(bodies map[string]map[string]any, instances map[string]instInfo
 			return fmt.Errorf("passport compile: models.services.%s via %q must be %s", sname, via, strings.Join(modelVias, "|"))
 		}
 		auth, _ := s["auth"].(map[string]any)
+		// auth.proxy_access is a Broker contract ref — a {kind, ref} map; a
+		// literal string would put credential material in the passport.
+		if raw, set := auth["proxy_access"]; set {
+			if _, isMap := raw.(map[string]any); !isMap {
+				return fmt.Errorf("passport compile: models.services.%s auth.proxy_access must be a {kind, ref} contract reference", sname)
+			}
+		}
 		_, hasProxyAccess := auth["proxy_access"]
 		if via == "cliproxy" {
 			u, err := url.Parse(fmt.Sprint(s["endpoint"]))
@@ -503,9 +584,6 @@ func checkComplete(bodies map[string]map[string]any, instances map[string]instIn
 	}
 	if nonDiscovery == 0 {
 		return fmt.Errorf("passport compile: managed revision admits no toolsets beyond discovery")
-	}
-	if len(asList(bodies["workspace"]["writable"])) == 0 {
-		return fmt.Errorf("passport compile: managed revision grants no writable workspace path")
 	}
 	return nil
 }

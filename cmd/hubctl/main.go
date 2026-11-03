@@ -144,6 +144,9 @@ func run(ctx context.Context, args []string) error {
 	if op == "credentials" {
 		return runCredentials(ctx, args[1:])
 	}
+	if op == "models" {
+		return runModels(ctx, args[1:])
+	}
 	if op == "grant" {
 		return runGrant(ctx, args[1:])
 	}
@@ -702,7 +705,7 @@ func run(ctx context.Context, args []string) error {
 		return fmt.Errorf("unknown command %q", op)
 	}
 	if op == "doctor" || op == "up" {
-		s, err := stack.ReadEnvironment(*dir, *environment)
+		s, err := stack.ReadEffective(*dir, *environment)
 		if err != nil {
 			return err
 		}
@@ -804,7 +807,7 @@ func run(ctx context.Context, args []string) error {
 			return fmt.Errorf("compose configuration preflight: %w", err)
 		}
 		if op == "up" {
-			s, readErr := stack.ReadEnvironment(*dir, *environment)
+			s, readErr := stack.ReadEffective(*dir, *environment)
 			if readErr != nil {
 				return readErr
 			}
@@ -860,7 +863,7 @@ func run(ctx context.Context, args []string) error {
 			// Supervisor and managed renders drop the hermes-runtime service,
 			// so no compose build section produces the tag there — build it
 			// explicitly like the cell images above.
-			envSettings, readErr := stack.ReadEnvironment(*dir, *environment)
+			envSettings, readErr := stack.ReadEffective(*dir, *environment)
 			if readErr != nil {
 				return readErr
 			}
@@ -881,7 +884,7 @@ func run(ctx context.Context, args []string) error {
 		if op == "build" {
 			return nil
 		}
-		s, readErr := stack.ReadEnvironment(*dir, *environment)
+		s, readErr := stack.ReadEffective(*dir, *environment)
 		if readErr != nil {
 			return readErr
 		}
@@ -915,7 +918,7 @@ func run(ctx context.Context, args []string) error {
 		}
 		return docker(append([]string{"exec", "hermes-runtime"}, f.Args()...)...)
 	case "chat":
-		s, err := stack.ReadEnvironment(abs, *environment)
+		s, err := stack.ReadEffective(abs, *environment)
 		if err != nil {
 			return err
 		}

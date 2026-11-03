@@ -175,6 +175,9 @@ func TestRenderEnvironmentFailsClosedOnTopologyDrift(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "generated", "passports", "current"), []byte("r-0123456789abcdef\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, "agent.yaml"), []byte("schema: 3\ncapability_profile_id: alice-default\ncapability_generation: 1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(dir, "secrets.dev.env"), []byte(""), 0600); err != nil {
 		t.Fatal(err)
 	}

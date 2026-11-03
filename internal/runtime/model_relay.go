@@ -40,6 +40,8 @@ type modelHop struct {
 	model     string // provider-side model id; empty forwards the request model
 	models    []string
 	limits    []stack.ModelLimit
+	quota     []stack.ModelLimit // measurable provider_quota windows
+	disabled  string             // non-empty: service parked, reason for logs
 	reasoning bool
 	meter     *relayMeter
 	owner     string
@@ -100,6 +102,9 @@ func parseModelHops(spec string) ([]*modelHop, error) {
 func (h *modelHop) availableFor(now time.Time, reserved bool) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.disabled != "" {
+		return false
+	}
 	return (!h.retrying || reserved) && (h.cool.IsZero() || !h.cool.After(now))
 }
 
@@ -354,6 +359,19 @@ func modelCall(ctx context.Context, client *http.Client, hops []*modelHop, metho
 			log.Printf("model-relay hop=%s path=%s skipped (quota)", hop.name, path) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
 			continue
 		}
+		if len(hop.quota) > 0 {
+			exhausted, err := hop.providerQuotaExhausted(ctx)
+			if err != nil {
+				hop.fail()
+				log.Printf("model-relay hop=%s path=%s skipped (quota unread)", hop.name, path) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
+				continue
+			}
+			if exhausted {
+				hop.fail()
+				log.Printf("model-relay hop=%s path=%s skipped (provider_quota)", hop.name, path) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
+				continue
+			}
+		}
 		hopBody := body
 		if len(hop.models) > 0 {
 			if remapped, err := rewriteModelField(body, hop.models[0]); err == nil {
@@ -439,11 +457,22 @@ func modelCall(ctx context.Context, client *http.Client, hops []*modelHop, metho
 				_ = resp.Body.Close()
 				break
 			}
-			if (resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusNotFound) && attempt+1 < len(hop.models) {
-				log.Printf("model-relay hop=%s path=%s model=%s status=%d", hop.name, path, hop.models[attempt], resp.StatusCode) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
-				_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
-				_ = resp.Body.Close()
-				continue
+			if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusNotFound {
+				if attempt+1 < len(hop.models) {
+					log.Printf("model-relay hop=%s path=%s model=%s status=%d", hop.name, path, hop.models[attempt], resp.StatusCode) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
+					_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+					_ = resp.Body.Close()
+					continue
+				}
+				if len(hop.models) > 0 {
+					// Every declared model refused — the service does not
+					// serve this request shape; the ladder advances without
+					// parking the hop (the verdict is request-specific).
+					log.Printf("model-relay hop=%s path=%s model=%s status=%d", hop.name, path, hop.models[attempt], resp.StatusCode) // #nosec G706 -- diagnostics log on the internal relay; hop/path are operator scope
+					_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+					_ = resp.Body.Close()
+					break
+				}
 			}
 			hop.mu.Lock()
 			hop.cool, hop.recoverable = time.Time{}, false
@@ -869,8 +898,28 @@ func (r *relayRegistry) ladderFor(file *relayRegistryFile, name string, entry re
 				r.health[ref.Provider] = health
 			}
 		}
-		hop := &modelHop{modelHealth: health, name: ref.Provider, base: base, keyEnv: p.KeyEnv, model: ref.Model, models: ref.Models, limits: ref.Limits, reasoning: ref.Reasoning, owner: r.owner}
-		if len(ref.Limits) > 0 {
+		hop := &modelHop{modelHealth: health, name: ref.Provider, base: base, keyEnv: p.KeyEnv, model: ref.Model, models: ref.Models, reasoning: ref.Reasoning, owner: r.owner}
+		// Declared limits split by measurability (SPEC-0092 R7.3): requests
+		// and tokens meter locally; provider_quota needs the service's own
+		// per-session telemetry — a cliproxy OAuth session readable through
+		// the instance's management API. spend_usd has no price feed. A
+		// service whose limits cannot be measured is disabled — drifting
+		// unbounded is worse than parking it.
+		for _, l := range ref.Limits {
+			switch l.Of {
+			case "requests", "tokens":
+				hop.limits = append(hop.limits, l)
+			case "provider_quota":
+				if p.Via == "cliproxy" && p.UpstreamKind == "oauth-session" && strings.TrimSpace(os.Getenv("HUB_CLIPROXY_MGMT_KEY")) != "" {
+					hop.quota = append(hop.quota, l)
+				} else {
+					hop.disabled = "limit_unmeasurable"
+				}
+			default: // spend_usd: no price feed exists
+				hop.disabled = "limit_unmeasurable"
+			}
+		}
+		if len(hop.limits) > 0 {
 			hop.meter = r.usageMeter()
 		}
 		if grant := p.BrokerGrants[r.owner]; grant != "" {
@@ -878,7 +927,9 @@ func (r *relayRegistry) ladderFor(file *relayRegistryFile, name string, entry re
 			actor := identity.Envelope{Schema: identity.Schema, PrincipalID: r.owner, ContextID: r.owner, RuntimeID: r.owner, ExternalIdentityID: r.owner, ConversationID: "model-relay", DeliveryTargetID: "model-relay", PolicyVersion: "model-relay"}
 			binding := "model-relay-" + ref.Provider
 			hop.keyFor = func(ctx context.Context) (string, error) {
-				return r.broker.ResolveEnv(ctx, actor, binding, "model-relay", grant, target)
+				// The dedicated grant pins binding and workload to the
+				// relay's per-provider slot; both must be presented.
+				return r.broker.ResolveEnv(ctx, actor, binding, binding, grant, target)
 			}
 		}
 		hop.transport = netguard.Transport(p.AllowPrivate)

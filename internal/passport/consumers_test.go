@@ -1,6 +1,9 @@
 package passport
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // R0.3: every schema leaf has a registered consumer and effect class —
 // a decorative field cannot be added silently; a registry entry naming a
@@ -115,6 +118,17 @@ func TestEffectClassesMatchSpecTable(t *testing.T) {
 		}
 		if c.Name == "" {
 			t.Errorf("%s: no consumer named", leaf)
+		}
+	}
+}
+
+// R8.1/CHG-0262: every leaf names the component that reads it — a
+// "pending:<stage>" placeholder means the passport carries a field nothing
+// consumes, which the imperative contract forbids.
+func TestNoPendingConsumers(t *testing.T) {
+	for leaf, c := range Consumers {
+		if strings.HasPrefix(c.Name, "pending:") {
+			t.Errorf("%s: consumer still pending (%s)", leaf, c.Name)
 		}
 	}
 }

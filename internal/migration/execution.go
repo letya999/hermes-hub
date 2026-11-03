@@ -117,7 +117,7 @@ func SelectExecution(dir string, selection stack.ExecutionSelection, audit Execu
 	if err := selection.Validate(); err != nil {
 		return audit, err
 	}
-	settings, err := stack.ReadEnvironment(dir, selection.Environment)
+	settings, err := stack.ReadEffective(dir, selection.Environment)
 	if err != nil {
 		return audit, err
 	}

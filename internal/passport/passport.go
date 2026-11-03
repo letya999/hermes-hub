@@ -11,12 +11,14 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/letya999/hermes-hub/internal/catalog"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/passportview"
 )
 
@@ -50,6 +52,13 @@ type Inputs struct {
 	Grants           map[string][]string
 	Catalog          catalog.Docs
 	Now              time.Time
+	// RendersInfra marks the space that owns the shared control plane —
+	// only it may publish a shared service's host port. ReservedPorts
+	// carries the host ports sibling spaces already published
+	// (port -> space name) so a cross-space collision fails at compile
+	// rather than at docker-proxy bind.
+	RendersInfra  bool
+	ReservedPorts map[int]string
 }
 
 // Provenance is the common record every passport revision carries: which
@@ -178,6 +187,12 @@ func Compile(in Inputs) (Revision, error) {
 				flatten(tree, "", leaves)
 			}
 			for p, raw := range leaves {
+				// workspace.layout merges through mergeWorkspaceLayout —
+				// typed nodes narrow by path and mode, not by the generic
+				// scalar-membership bound.
+				if doc == "workspace" && p == "layout" {
+					continue
+				}
 				class, base, ok := leafClass(doc, p)
 				if !ok {
 					return rev, fmt.Errorf("passport compile: unclassified field %s.%s", doc, p)
@@ -262,6 +277,63 @@ func Compile(in Inputs) (Revision, error) {
 		return rev, err
 	}
 	bodies["grants"] = grants
+	// The effective workspace boundary is derived before the cross-file
+	// checks: layout nodes marked ro, the invariant roots, and ro mount
+	// targets join the declared read_only list so checks and the emitted
+	// passport see one boundary (SPEC-0092 R5.1).
+	nodes, err := mergeWorkspaceLayout(layers)
+	if err != nil {
+		return rev, err
+	}
+	roSet := readOnlySet(bodies["workspace"], nodes)
+	roList := make([]any, 0, len(roSet))
+	sorted := make([]string, 0, len(roSet))
+	for p := range roSet {
+		sorted = append(sorted, p)
+	}
+	sort.Strings(sorted)
+	for _, p := range sorted {
+		roList = append(roList, p)
+	}
+	bodies["workspace"]["read_only"] = roList
+	// The fixed skeleton mounts the vault's library/attachments halves rw —
+	// the emitted boundary must admit them even when no layer names them.
+	// rw mount targets join too: a mount the kernel allows but the passport
+	// denies is an inconsistency. The floor below runs on what the space
+	// itself declared (writable list + rw mounts) so a layer granting no
+	// writable surface stays a compile error.
+	wrList := asList(bodies["workspace"]["writable"])
+	have := map[string]bool{}
+	for _, p := range wrList {
+		have[fmt.Sprint(p)] = true
+	}
+	for target, raw := range asMap(bodies["workspace"]["mounts"]) {
+		if m, _ := raw.(map[string]any); fmt.Sprint(m["mode"]) == "rw" && !have[target] {
+			wrList = append(wrList, target)
+			have[target] = true
+		}
+	}
+	if len(wrList) == 0 {
+		return rev, fmt.Errorf("passport compile: managed revision grants no writable workspace path")
+	}
+	for _, p := range invariantWritable {
+		if have[p] {
+			continue
+		}
+		// A declared read_only above the default narrows it away — only an
+		// explicit writable under ro is a contradiction for checkWorkspace.
+		shadowed := false
+		for ro := range roSet {
+			if pathWithin(p, ro) {
+				shadowed = true
+				break
+			}
+		}
+		if !shadowed {
+			wrList = append(wrList, p)
+		}
+	}
+	bodies["workspace"]["writable"] = wrList
 	// Cross-file contract checks on the v2 shapes (R3-R7): stack resolves
 	// instances and derives dependencies first — models endpoints and
 	// config channels reference the running set.
@@ -272,7 +344,7 @@ func Compile(in Inputs) (Revision, error) {
 	if err := checkWorkspace(bodies); err != nil {
 		return rev, err
 	}
-	if err := checkConfig(bodies, instances); err != nil {
+	if err := checkConfig(bodies, instances, in); err != nil {
 		return rev, err
 	}
 	if err := checkModels(bodies, instances); err != nil {
@@ -302,15 +374,16 @@ func Compile(in Inputs) (Revision, error) {
 		}
 	}
 	// The ASCII tree is derived from the approved layout, never written by
-	// a layer (ADR-0092 D5): every declared directory appears once. The
-	// layout source field itself is not part of the v2 file contract.
-	if list, ok := bodies["workspace"]["layout"].([]any); ok {
-		paths := make([]string, 0, len(list))
-		for _, p := range list {
-			paths = append(paths, fmt.Sprint(p))
+	// a layer (ADR-0092 D5): the fixed skeleton, layout nodes and mounts
+	// render as one box-drawing map. The layout source field itself is not
+	// part of the v2 file contract.
+	lang := locale.Default
+	if rt, ok := bodies["config"]["runtime"].(map[string]any); ok {
+		if l, ok := rt["locale"].(string); ok && l != "" {
+			lang = locale.Lang(l)
 		}
-		bodies["workspace"]["tree"] = strings.Join(paths, "\n")
 	}
+	bodies["workspace"]["tree"] = renderTree(nodes, asMap(bodies["workspace"]["mounts"]), lang)
 	delete(bodies["workspace"], "layout")
 	rev.Provenance = Provenance{
 		Space: in.Space, Environment: in.Environment,

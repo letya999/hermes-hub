@@ -1,6 +1,6 @@
 ---
 description: Operator runbook — stack lifecycle, user onboarding, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
-last_verified: 2026-11-02
+last_verified: 2026-11-03
 ---
 
 # Operations
@@ -39,15 +39,20 @@ Skip the ceremony and the user gets an agent with an empty tool surface.
    overwrites; a fleet default lives in `policies/agent-default.yaml` /
    `policies/workspace-default.yaml` when present.
 2. **agent.yaml** — set `model` and `model_url`. Managed mode requires
-   `model_url: http://model-relay:8318/v1`, `capability_mode: managed`, the
-   `capability_profile_id` you will publish below, and
-   `capability_generation` (start at 1). Ports are allocated at init; pick
-   free `oauth_port`/`browser_port` when they collide. Under managed mode
-   only carve-out toolsets may go `via: native`, hooks/memory/native
-   extensions are rejected, and raw MCP on a personal space is forbidden.
+   `capability_mode: managed`, the `capability_profile_id` you will publish
+   below, and `capability_generation` (start at 1); the effective
+   `model_url` resolves through the published `models.yaml` passport
+   (`http://model-relay:8318/v1` on spaces that consume the shared relay).
+   Ports are allocated at init; pick free `oauth_port`/`browser_port` when
+   they collide. Under managed mode only carve-out toolsets may go `via:
+   native`, hooks/memory/native extensions are rejected, and raw MCP on a
+   personal space is forbidden.
 3. **workspace.yaml** — the wish list (`tools:` map). Keep the template:
    `file/documents/images/hh` via `toolhub`, `todo/memory/web/deep_research`
-   native, `browser: mcp`. Wishes still admit nothing — step 5 does.
+   native, `browser: mcp`. Wishes still admit nothing — step 5 does. Under
+   a published revision this file is retired: the `tools.yaml`,
+   `workspace.yaml` and `grants.yaml` passports carry the same intent and
+   are the only files the runtime opens (see docs/spaces.md).
 4. **Secrets** — fill `secrets.<env>.env` (`OPENAI_API_KEY` at minimum —
    the model relay authenticates upstream with it). Never commit or paste
    this file.
@@ -83,8 +88,11 @@ Skip the ceremony and the user gets an agent with an empty tool surface.
    a migrated passport (`hubctl space-migrate --dir spaces/<id> --env <env>
    --apply`), and reachable model credentials — either `cliproxy: shared`
    against the infra instance or `cliproxy: dedicated` with the space's own
-   `cliproxy/` directory (`config.yaml`, `auths/`, `api-key`) plus
-   `OPENAI_API_KEY` and `HUB_CLIPROXY_MGMT_URL`=`http://cliproxy-<id>:8317`,
+   `cliproxy/` directory (`config.yaml`). Dedicated instances are enrolled
+   with `hubctl models login --dir spaces/<id> --service <name>`: submit each
+   reviewed link (OAuth session + client key), re-run to record the grants in
+   `generated/model-grants.json`, and keep `OPENAI_API_KEY`,
+   `HUB_CLIPROXY_MGMT_URL`=`http://cliproxy-<id>:8317`,
    `HUB_CLIPROXY_MGMT_KEY`, `HUB_CLIPROXY_AUTH_INDEX` in `secrets.<env>.env`.
 8. **Verify tool surface** — `docker exec <runtime> cat
    /config/tool-manifest.json` shows the projected manifest;
@@ -522,6 +530,21 @@ their paths. `context restore` refuses another user and never reactivates
 revoked credentials; plaintext secrets stay on `hubctl secret backup`,
 never in the general archive. `down` never deletes homes; `purge` needs
 `--confirm`.
+
+A `config.supervision` change needs no respawn: `space apply` re-renders
+`runtime.<env>.policy.json` and the supervisor picks it up on its next
+decision sweep — `idle_stop` bounds warm retention, `restart: never` or
+`watchers.stack-health.protected` keep the container observed but never
+remediated, `watchers.stack-health.every` throttles the health-probe
+cadence. Port and channel changes (`config.ports`, `config.channels`) are
+recreate-class: only the owning container restarts — `hermes-runtime` is
+supervised, so the apply asks the supervisor's `/v1/respawn` to destroy and
+re-spawn it (env-baked config needs a new container, unlike a deferred
+restart's remount); a shared gateway such as `communication-hub` recreates
+in the infra space's project; a port leaf whose owner the revision doesn't
+declare is dead config and plans no recreate. From the operator host the
+supervisor is in-network-only — set `HUB_RUNTIME_SUPERVISOR_URL` to a
+reachable endpoint or the respawn cannot be signaled.
 
 Memory: native files under `spaces/<id>/hermes/memories` (`MEMORY.md`,
 `USER.md`) — `hubctl memory list` / `hubctl memory delete --name`. Honcho is

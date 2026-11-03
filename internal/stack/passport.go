@@ -1,6 +1,11 @@
 package stack
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -14,14 +19,29 @@ import (
 // compression, capability wiring) keep coming from agent.yaml, so a managed
 // space may slim its legacy files to exactly those keys.
 //
-// applyPassport is an overlay, not a replace: a space without a published
-// revision keeps the legacy authority unchanged.
+// applyPassport is an overlay, not a replace — but never a silent one:
+// once a current pointer exists the revision must load, or the space is a
+// failed publish and every view refuses rather than downgrading to legacy.
+
+// ErrRevisionUnloadable marks the fail-closed class: a published-revision
+// pointer exists but the revision cannot be decoded. Migration catches it
+// to re-derive from the editable files — every other reader refuses.
+var ErrRevisionUnloadable = errors.New("published revision does not load")
 
 func (s *Settings) applyPassport(dir string) error {
 	eff, err := passportview.LoadEffective(dir)
 	if err != nil {
+		if passportRevision(dir) {
+			return fmt.Errorf("%w: %w", ErrRevisionUnloadable, err)
+		}
 		return nil // no published revision — legacy files remain the authority
 	}
+	return s.applyEffective(eff)
+}
+
+// applyEffective carries one loaded revision's fields onto the settings the
+// extension files supplied.
+func (s *Settings) applyEffective(eff passportview.Effective) error {
 	if s.Schema == 0 {
 		s.Schema = 3 // a published revision implies the v3 vocabulary
 	}
@@ -31,8 +51,12 @@ func (s *Settings) applyPassport(dir string) error {
 	if org := eff.Stack.Identity.Organization; org != "" {
 		s.Organization = org
 	}
+	s.PassportConfig = &eff.Config
 	if tz := eff.Config.Runtime.Timezone; tz != "" {
 		s.Timezone = tz
+	}
+	if engine := eff.Config.Runtime.Context.Compaction; engine != "" {
+		s.Context.Compact.Engine = engine
 	}
 	if p := eff.Config.Ports["oauth-callback"]; p != 0 {
 		s.OAuthPort = p
@@ -52,15 +76,22 @@ func (s *Settings) applyPassport(dir string) error {
 		slices.Sort(ingress)
 		s.Ingress = ingress
 	}
-	// memory.backend is informational under managed mode: the memory toolset
-	// comes through tools, and s.Memory/s.Honcho remain the legacy-extension
-	// flags managed validation forbids.
+	// memory.backend is the imperative memory switch: honcho turns on the
+	// Honcho contract; its URL stays a host-level extension. Under managed
+	// mode s.Honcho is forbidden, so a managed space declaring honcho fails
+	// validation honestly rather than silently diverging.
+	if backend := eff.Config.Memory.Backend; backend != "" {
+		s.Honcho = backend == "honcho"
+	}
 	if def := eff.Models.Default; def != "" {
 		s.Model = def
 	}
 	if _, ok := eff.Stack.Services["model-relay"]; ok {
 		s.ModelURL = "http://model-relay:8318/v1"
 	}
+	// The workspace boundary is imperative too: the mount plan and file
+	// admission read the published writable/read_only/mounts verbatim.
+	s.PassportWorkspace = &eff.Workspace
 	// Workspace mounts: the imperative mount contract, source and mode intact.
 	if len(eff.Workspace.Mounts) > 0 {
 		mounts := make([]Mount, 0, len(eff.Workspace.Mounts))
@@ -115,14 +146,20 @@ func passportTools(t passportview.Tools) map[string]ToolEntry {
 				continue
 			}
 			entry := ToolEntry{Via: ToolViaToolHub}
+			name = strings.TrimPrefix(strings.TrimPrefix(name, "hub:"), "native:")
 			switch {
 			case ts.Via == "native":
 				entry.Via = ToolViaNative
+			case strings.HasPrefix(ts.Via, "mcp:") && mcpConnectors[name]:
+				// Reviewed connector surfaces carry their own server name —
+				// no s.MCP definition is needed to rebind them.
+				entry.Via = ToolViaMCP
+				entry.Server = strings.TrimPrefix(ts.Via, "mcp:")
 			case ts.Via == "mcp" || ts.Via == "mcp-raw" || strings.HasPrefix(ts.Via, "mcp:"):
-				// Raw-MCP and connector entries bind to server definitions
-				// (s.MCP) the passport contract does not carry — one toolset
-				// cannot rebuild per-server entries, so the slim operator
-				// file keeps them as extensions.
+				// Raw-MCP and unreviewed connector entries bind to server
+				// definitions (s.MCP) the passport contract does not carry —
+				// one toolset cannot rebuild per-server entries, so the slim
+				// operator file keeps them as extensions.
 				continue
 			}
 			if ts.Access == "read" {
@@ -141,33 +178,57 @@ func passportTools(t passportview.Tools) map[string]ToolEntry {
 				}
 				entry.Paths = paths
 			}
-			out[strings.TrimPrefix(strings.TrimPrefix(name, "hub:"), "native:")] = entry
+			out[name] = entry
 		}
 	}
 	return out
 }
 
 // passportRegistryLayer turns the published models doc into the registry
-// layer LoadModelRegistry merges — providers the file registry does not
-// declare stay builtin (cliproxy), openai-compatible services carry their
-// endpoint, and the ladder's model ids come off each service's cataloged
-// list. The grants doc answers the switch policy: models.switch allowed
-// means catalog, denied means none — the RBAC right is the switch map.
-func passportRegistryLayer(dir string) modelRegistryYAML {
+// layer LoadModelRegistry merges (SPEC-0092 R7.3): every service becomes a
+// provider hop with its own endpoint and credential contract — per-instance
+// cliproxy included — each route's ladder names services and carries their
+// cataloged model list, limits and reasoning support through. The hop's
+// credential is the service's client key: proxy_access for cliproxy, the
+// broker-key upstream for openai-compatible; oauth-session material lives
+// inside the cliproxy instance and never reaches the relay. Switching is
+// governed by the models.switch right at the relay PEP — the file carries
+// no switch map.
+func passportRegistryLayer(dir string) (modelRegistryYAML, error) {
 	var layer modelRegistryYAML
 	eff, err := passportview.LoadEffective(dir)
 	if err != nil {
-		return layer
+		return layer, fmt.Errorf("%w: %w", ErrRevisionUnloadable, err)
+	}
+	owner := eff.Stack.Identity.User
+	var grantMap map[string]map[string]map[string]string
+	if raw, err := os.ReadFile(filepath.Join(dir, "generated", "model-grants.json")); err == nil {
+		_ = json.Unmarshal(raw, &grantMap)
 	}
 	layer.Providers = map[string]ModelProvider{}
 	layer.Models = map[string]ModelEntry{}
 	for name, svc := range eff.Models.Services {
-		if svc.Via != "openai-compatible" {
-			continue // cliproxy stays the builtin provider
+		p := ModelProvider{URL: svc.Endpoint, Via: svc.Via}
+		if svc.Auth.Upstream != nil {
+			p.UpstreamKind = svc.Auth.Upstream.Kind
 		}
-		p := ModelProvider{URL: svc.Endpoint}
-		if svc.Auth.Upstream != nil && svc.Auth.Upstream.Kind == "broker-key" {
-			p.CredentialEnv = svc.Auth.Upstream.Ref
+		var keyRef *passportview.AuthRef
+		if svc.Via == "cliproxy" {
+			p.AllowPrivate = true
+			keyRef = svc.Auth.ProxyAccess
+		} else if svc.Auth.Upstream != nil && svc.Auth.Upstream.Kind == "broker-key" {
+			keyRef = svc.Auth.Upstream
+		}
+		if keyRef != nil && keyRef.Kind == "broker-key" && owner != "" {
+			// The hop credential resolves to the relay-bound grant id; a
+			// service whose key was never enrolled for the relay keeps the
+			// ref and fails closed at acquire time.
+			grant := grantMap[name][keyRef.Ref]["relay"]
+			if grant == "" {
+				grant = keyRef.Ref
+			}
+			p.BrokerGrants = map[string]string{owner: grant}
+			p.CredentialEnv = "MODEL_API_KEY"
 		}
 		layer.Providers[name] = p
 	}
@@ -177,35 +238,46 @@ func passportRegistryLayer(dir string) modelRegistryYAML {
 			ref := ModelHopRef{Provider: hop}
 			if svc, ok := eff.Models.Services[hop]; ok {
 				ids := make([]string, 0, len(svc.Models))
+				reasoning := false
 				for _, m := range svc.Models {
 					ids = append(ids, m.ID)
+					if m.Reasoning != "" && m.Reasoning != "none" {
+						reasoning = true
+					}
 				}
 				ref.Models = ids
+				ref.Reasoning = reasoning
 				// cliproxy is personal by construction (broker-key
-				// proxy_access); the hop does not redeclare it, and the
-				// registry validator has no cliproxy provider entry to
-				// check broker_grants against.
+				// proxy_access); stale revisions predate that auth contract
+				// and re-migration must still read them, so the hop does not
+				// redeclare sharing — admission rides on the provider grant.
 				if svc.Sharing != "" && svc.Via != "cliproxy" {
 					ref.Sharing = svc.Sharing
+				}
+				for _, l := range svc.Limits {
+					ref.Limits = append(ref.Limits, ModelLimit{
+						Of:     l.Of,
+						Amount: int64(l.Amount),
+						Unit:   l.Unit,
+						Per:    l.Per,
+						Clock:  l.Clock,
+						Scope:  svc.Sharing,
+					})
 				}
 			}
 			entry.Ladder = append(entry.Ladder, ref)
 		}
 		layer.Models[name] = entry
 	}
-	if user := eff.Stack.Identity.User; user != "" && eff.Grants.Allow != nil {
-		level := "none"
-		if slices.Contains(eff.Grants.Allow["models"], "switch") {
-			level = "catalog"
-		}
-		layer.Switch = map[string]string{user: level}
-	}
-	return layer
+	return layer, nil
 }
 
-// passportRevision reports whether the space carries a published revision —
-// the boundary where legacy config files stop being the authority.
+// passportRevision reports whether the space carries a published-revision
+// pointer — the boundary where legacy config files stop being the
+// authority. The gate is the marker's presence, not its decodability: a
+// malformed or dangling pointer still claims managed status, and the load
+// path then fails closed rather than downgrading to legacy reads.
 func passportRevision(dir string) bool {
-	_, err := passportview.Current(dir)
-	return err == nil
+	info, err := os.Stat(filepath.Join(dir, "generated", "passports", "current"))
+	return err == nil && !info.IsDir()
 }

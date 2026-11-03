@@ -35,6 +35,7 @@ func TestSharedModelSettingsNeverShareOwnerStateOrRotation(t *testing.T) {
 		if err := WriteSpace(dir, settings); err != nil {
 			t.Fatal(err)
 		}
+		publishManagedRevision(t, dir, owner, "r-0123456789abcdef")
 		selection := fmt.Sprintf(`{"schema":1,"user":%q,"environment":"prod","mode":"supervisor","supervisor_url":"http://localhost:8876","native_cron":"disabled","compatibility_release":"0.3.0"}`, owner)
 		if err := os.WriteFile(filepath.Join(dir, "execution.prod.json"), []byte(selection), 0600); err != nil {
 			t.Fatal(err)
@@ -294,6 +295,9 @@ func TestRenderEnvironmentWritesModelRegistry(t *testing.T) {
 	if err := WriteSpace(user, s); err != nil {
 		t.Fatal(err)
 	}
+	docs := managedDocs("alice")
+	docs["models"] = "kind: models\ndefault: m\nroutes:\n  m: {ladder: [cliproxy, openai]}\nservices:\n  cliproxy: {via: cliproxy, endpoint: http://cliproxy:8317/v1, auth: {proxy_access: {kind: broker-key, ref: cliproxy}}, models: [{id: gemini-3-pro}]}\n  openai: {via: openai-compatible, endpoint: https://api.openai.com/v1, auth: {upstream: {kind: broker-key, ref: openai-key}}, models: [{id: gpt-5}]}\n"
+	publishManagedDocs(t, user, "alice", "r-0123456789abcdef", docs)
 	selection := `{"schema":1,"user":"alice","environment":"prod","mode":"supervisor","supervisor_url":"http://localhost:8876","native_cron":"disabled","compatibility_release":"0.3.0"}`
 	if err := os.WriteFile(filepath.Join(user, "execution.prod.json"), []byte(selection), 0600); err != nil {
 		t.Fatal(err)
@@ -386,6 +390,7 @@ func TestRenderEnvironmentSynthesizesDefaultRegistry(t *testing.T) {
 	if err := WriteSpace(user, s); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, user, "alice", "r-0123456789abcdef")
 	selection := `{"schema":1,"user":"alice","environment":"prod","mode":"supervisor","supervisor_url":"http://localhost:8876","native_cron":"disabled","compatibility_release":"0.3.0"}`
 	if err := os.WriteFile(filepath.Join(user, "execution.prod.json"), []byte(selection), 0600); err != nil {
 		t.Fatal(err)

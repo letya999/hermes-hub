@@ -81,6 +81,39 @@ func TestSecondaryMediaUsesUniqueSharedOwnerAuth(t *testing.T) {
 	}
 }
 
+// A managed infra owner carried only by its published revision still owns the
+// shared media auth: the consumer's scan resolves siblings through the
+// managed-aware reader (SPEC-0092 R8.1).
+func TestSharedMediaAuthReadsManagedOwnerRevision(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "spaces")
+	owner := filepath.Join(root, "infra")
+	secondary := filepath.Join(root, "alice")
+	for _, dir := range []string{owner, secondary} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(owner, "agent.yaml"), []byte(
+		"schema: 3\nuser: infra\ntimezone: UTC\ncapability_profile_id: infra-default\ncapability_generation: 1\nmodel: m\nmodel_url: http://model-relay:8318/v1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	docs := managedDocs("infra")
+	docs["tools"] = "kind: tools\ncore:\n  discovery: {via: toolhub}\n  image_gen: {via: toolhub}\n"
+	publishManagedDocs(t, owner, "infra", "r-0123456789abcdef", docs)
+	if err := os.WriteFile(filepath.Join(owner, "media.auth"), []byte("HUB_MEDIA_AUTH=shared-synthetic\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	no := false
+	s := Settings{Schema: 1, User: "alice", Infra: &no, Timezone: "UTC", Model: "m", ModelURL: "http://model.invalid/v1", Tools: testTools("workspace", "image_gen"), Ingress: testIngress("workspace", "image_gen"), BrowserPort: 6080, OAuthPort: 8000, Environment: "dev"}
+	if err := WriteSpace(secondary, s); err != nil {
+		t.Fatal(err)
+	}
+	auth, err := runtimeMediaAuth(secondary, s)
+	if err != nil || auth["HUB_MEDIA_AUTH"] != "shared-synthetic" {
+		t.Fatalf("secondary did not resolve the managed owner's shared auth: %v", err)
+	}
+}
+
 func TestMediaProfileBuildsSharedImageOnce(t *testing.T) {
 	for _, environment := range []string{"dev", "prod"} {
 		t.Run(environment, func(t *testing.T) {
