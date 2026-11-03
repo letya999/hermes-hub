@@ -1,6 +1,6 @@
 ---
 description: Operator runbook — stack lifecycle, user onboarding, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
-last_verified: 2026-11-03
+last_verified: 2026-11-04
 ---
 
 # Operations
@@ -69,7 +69,10 @@ Skip the ceremony and the user gets an agent with an empty tool surface.
    - agent-tools surface: `hubctl capability --kind agent-tools --principal
      <id> --context <id> --runtime <id> --policy-version <v>
      --toolhub-store <store>` — registers the reviewed hub-tools catalog
-     definition and enables it for the identity.
+     definition and enables it for the identity. On a policy rotation where
+     the profile already pins a specific catalog version, pass `--version
+     <v>` to repin the binding to that stored definition instead of the
+     binary's compiled catalog; a pv-stale binding projects zero tools.
    Every record prints a review digest first and refuses without
    `--confirm`; the store re-checks issuer identity at admission.
 6. **Channel routing** — for Telegram delivery add the user to the infra

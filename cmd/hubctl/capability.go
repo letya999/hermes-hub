@@ -30,7 +30,7 @@ func runCapability(args []string) error {
 	kind := f.String("kind", "", "policy, profile, group, agent-tools, preview, connectors, tools, team, team-share or team-drop")
 	teamID := f.String("team", "", "team id for team-share")
 	definitionID := f.String("definition", "", "definition id for team-share")
-	definitionVersion := f.String("version", "", "definition version for team-share")
+	definitionVersion := f.String("version", "", "definition version for team-share, or the already-registered version agent-tools repins to")
 	backend := f.String("backend", "", "credential backend for team-share")
 	locator := f.String("locator", "", "credential locator for team-share")
 	brokerContext := f.String("broker-context", "", "Broker context owning the shared credential (required for credential-broker team-share)")
@@ -160,7 +160,17 @@ func runCapability(args []string) error {
 		// protected store, and the binding carries only operator-supplied
 		// identity (never model arguments).
 		definition := agenttools.HubToolsDefinition()
-		if err := store.RegisterDefinition(definition); err != nil {
+		if *definitionVersion != "" {
+			// Repin onto an already-registered immutable definition —
+			// a managed profile pins the exact reviewed version, so a
+			// policy-rotation repair must bind that version, not the
+			// binary's compiled catalog.
+			stored, err := store.Definition(definition.DefinitionID, *definitionVersion)
+			if err != nil {
+				return err
+			}
+			definition = stored
+		} else if err := store.RegisterDefinition(definition); err != nil {
 			return err
 		}
 		auth := identity.Envelope{Schema: identity.Schema, PrincipalID: *principal, ExternalIdentityID: *principal,

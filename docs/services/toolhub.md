@@ -58,7 +58,10 @@ tool call crosses. Listens `0.0.0.0:8090`, host-bound to `127.0.0.1:8090`.
   `core_tools` a subset of selection names capped at 20, and every
   `implementation_digest` pinned to the *bound* `hub-agent-tools` version),
   `--kind agent-tools` (installs the cataloged definition and mints the
-  binding under the principal's exact context/runtime/policy envelope), and
+  binding under the principal's exact context/runtime/policy envelope;
+  `--version <v>` repins onto an already-registered definition when the
+  profile's selections pin that version — required after a policy rotation
+  lands on a pv the binding never followed), and
   sibling token enrollment via the infra space render. The MCP session then
   projects `system_guide`/`tools_list` plus the bounded core directly;
   extended selections stay live through `tools_list` and `invoke` under the

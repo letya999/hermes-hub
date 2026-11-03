@@ -74,6 +74,38 @@ func TestAgentToolsRegistrationSupersedesStaleBindingAndNotifies(t *testing.T) {
 	}
 }
 
+func TestAgentToolsExplicitVersionPinsStoredDefinition(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "store.json")
+	store := toolhub.NewStore()
+	pinned := agenttools.HubToolsDefinition()
+	pinned.Version = "1.3.0"
+	pinned.Tools = slices.DeleteFunc(pinned.Tools, func(tool api.ToolSpec) bool { return tool.Name == "routine_get" })
+	if err := store.RegisterDefinition(pinned); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(storePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := runCapability([]string{"--kind", "agent-tools", "--version", "1.3.0", "--toolhub-store", storePath, "--principal", "alice", "--context", "alice", "--runtime", "alice", "--policy-version", "policy-new"}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := toolhub.Load(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := identity.Envelope{Schema: identity.Schema, PrincipalID: "alice", ExternalIdentityID: "alice", ContextID: "alice", RuntimeID: "alice", ConversationID: "test", DeliveryTargetID: "test", PolicyVersion: "policy-new"}
+	tools, err := store.ListProjectedTools(auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools) == 0 {
+		t.Fatal("pinned version projected no tools")
+	}
+	if slices.ContainsFunc(tools, func(v api.ProjectedTool) bool { return v.Tool.Name == "routine_get" }) {
+		t.Fatal("compiled catalog leaked into pinned-version projection")
+	}
+}
+
 func TestCapabilityCLIProtectedPublicationAndRevoke(t *testing.T) {
 	dir := t.TempDir()
 	storePath, input := filepath.Join(dir, "store.json"), filepath.Join(dir, "reviewed.json")
