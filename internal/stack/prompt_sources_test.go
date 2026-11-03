@@ -175,3 +175,29 @@ func readFile(t *testing.T, path string) string {
 	}
 	return string(b)
 }
+
+// TestSoulEffectiveHonorsFamilyOff (M31.9): the rendered soul-effective
+// composes the modular contract — a family switched off contributes no
+// section to the materialized prompt.
+func TestSoulEffectiveHonorsFamilyOff(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "generated"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	s := Settings{Environment: "dev", Tools: map[string]ToolEntry{
+		"watches": {Via: ToolViaOff},
+	}}
+	if err := MaterializeSoulEffective(dir, s); err != nil {
+		t.Fatal(err)
+	}
+	effective, err := os.ReadFile(filepath.Join(dir, "generated", "soul-effective.dev.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(effective), "For a standalone watch") {
+		t.Fatal("soul-effective renders watch guidance for a space with watches off")
+	}
+	if !strings.Contains(string(effective), "routine_create") {
+		t.Fatal("soul-effective lost routine guidance")
+	}
+}

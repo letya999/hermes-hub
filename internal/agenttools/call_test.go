@@ -278,3 +278,22 @@ func TestPrivateScratchExportPreservesBinaryAndScope(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// The r5 schema types watch_create.args as an object — a model sending the
+// JSON object the schema advertises must reach the handler, not die in
+// decode because the wire shape matches the schema.
+func TestExecCallStructuredArgsReachHandler(t *testing.T) {
+	v := &Tools{}
+	_, err := v.ExecCall(context.Background(), "watch_create", map[string]any{
+		"id": "w1", "timezone": "UTC", "expression": "every:15m", "text": "watch it",
+		"tool": "connector_poll", "args": map[string]any{"chat_id": "123"},
+		"sources": []any{map[string]any{"tool": "poll", "args": map[string]any{"chat_id": "9"}}},
+		"needs":   []any{map[string]any{"tool": "file_read", "args": map[string]any{"path": "x"}}},
+		"steps":   []any{map[string]any{"op": "click", "target": "#go"}},
+	}, nil)
+	// The handler must see the arguments — any error here is the routine
+	// backend's, never a JSON-decode rejection of a schema-honest object.
+	if err != nil && strings.Contains(err.Error(), "executor arguments") {
+		t.Fatalf("object args died in decode: %v", err)
+	}
+}

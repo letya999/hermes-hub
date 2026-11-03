@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 )
@@ -8,9 +9,9 @@ import (
 // Member requires (SPEC-0092 R2.1, SPEC-0093 R2): every toolset member
 // declares the RBAC operations a caller must hold to invoke it. capRights
 // spells the mapping out capability id by capability id — a wrong right is
-// a security bug, so nothing here is derived by string tricks. Ids absent
-// from the table fall back to tools.select only where that is the honest
-// right (platform.call); every other capability must map explicitly.
+// a security bug, so nothing here is derived by string tricks. An id
+// absent from the table resolves to "" and fails catalog generation:
+// unmapped members are never emitted with a substitute floor right.
 var capRights = map[string]string{
 	// files: workspace paths; knowledge/archive roots share the same right.
 	"files.list":    "workspace.read",
@@ -132,29 +133,32 @@ var connectorRights = map[string]string{
 }
 
 // RequiredRight is the exported form of rightForCap for contract surfaces
-// that must declare a tool's RBAC requirement (agent-tools ToolSpec).
+// that must declare a tool's RBAC requirement (agent-tools ToolSpec). An
+// unmapped capability id returns "" — callers must refuse to emit a spec
+// rather than substitute a floor right.
 func RequiredRight(id string) string { return rightForCap(id) }
 
 // rightForCap resolves one tool-level capability id to its required RBAC
-// operation; unknown ids land on the tools.select floor.
+// operation. Unknown ids resolve to "" — an unmapped capability fails
+// closed (SPEC-0093: no floor right substitutes for an explicit mapping).
 func rightForCap(id string) string {
-	if op, ok := capRights[id]; ok {
-		return op
-	}
-	return "tools.select"
+	return capRights[id]
 }
 
 // annotateToolsets attaches actions — the tool-level capability ids the
 // family carries (R2.1: capability ids become toolset actions) — and
 // requires — the RBAC operations every member demands — to each generated
-// toolset.
-func annotateToolsets(out map[string]Toolset, caps CapabilitiesDoc) {
+// toolset. A member no mapping admits fails generation: cataloging a tool
+// without its right would either over-admit (floor right) or under-admit
+// (empty requires the PEP reads as uncallable).
+func annotateToolsets(out map[string]Toolset, caps CapabilitiesDoc) error {
 	memberCaps := map[string][]string{}
 	for id, cap := range caps.Capabilities {
 		for _, tool := range cap.Tools {
 			memberCaps[tool] = append(memberCaps[tool], id)
 		}
 	}
+	var unmapped []string
 	for name, ts := range out {
 		family := strings.TrimPrefix(name, "hub:")
 		var actions []string
@@ -169,11 +173,17 @@ func annotateToolsets(out map[string]Toolset, caps CapabilitiesDoc) {
 			if op, ok := connectorRights[member]; ok {
 				rights[op] = true
 			}
+			mapped := true
 			for _, id := range memberCaps[member] {
-				rights[rightForCap(id)] = true
+				op := rightForCap(id)
+				if op == "" {
+					mapped = false
+					continue
+				}
+				rights[op] = true
 			}
-			if len(rights) == 0 {
-				rights["tools.select"] = true
+			if len(rights) == 0 || !mapped {
+				unmapped = append(unmapped, name+"."+member)
 			}
 			list := make([]string, 0, len(rights))
 			for op := range rights {
@@ -186,4 +196,9 @@ func annotateToolsets(out map[string]Toolset, caps CapabilitiesDoc) {
 		ts.Requires = requires
 		out[name] = ts
 	}
+	if len(unmapped) > 0 {
+		slices.Sort(unmapped)
+		return fmt.Errorf("unmapped toolset members have no RBAC right: %s", strings.Join(unmapped, ", "))
+	}
+	return nil
 }

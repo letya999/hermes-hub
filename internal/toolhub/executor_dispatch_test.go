@@ -17,7 +17,7 @@ import (
 // executor that has no hub-side backend yet.
 func r5ExecutorDefinition() api.ToolDefinition {
 	return api.ToolDefinition{
-		Schema: api.SchemaVersion, DefinitionID: "hub-agent-tools", Version: "6.0.0", Transport: api.AgentTools,
+		Schema: api.SchemaVersion, DefinitionID: "hub-agent-tools", Version: "7.0.0", Transport: api.AgentTools,
 		Source:    api.DefinitionSource{},
 		Workload:  api.WorkloadPolicy{Class: api.PerUser, Rationale: "in-runtime executor inside the owning runtime"},
 		Execution: api.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 1 << 20, CPUMillis: 500, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"api.example.com"}},
@@ -148,5 +148,24 @@ func TestRemoteExecutorDispatch(t *testing.T) {
 
 	for _, name := range backendCalls {
 		t.Fatalf("remote-executor tool %q reached the in-runtime backend", name)
+	}
+}
+
+// TestPlatformStatusAllowlist (M31.8/#445): platform_status may only ever
+// emit its closed diagnostic field set — a red-team pin so a future field
+// addition is a deliberate, reviewed change, not a silent leak.
+func TestPlatformStatusAllowlist(t *testing.T) {
+	t.Setenv("HUB_STATE", t.TempDir())
+	s, auth, _, _ := managedStore(t)
+	g := &Gateway{Store: s}
+	out, err := g.platformStatus(auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowed := map[string]bool{"service": true, "tools_admitted": true, "tools_visible": true, "tools_extended": true}
+	for key := range out {
+		if !allowed[key] {
+			t.Fatalf("platform_status emits non-allowlisted field %q — diagnostic surfaces stay closed (ADR-0094)", key)
+		}
 	}
 }

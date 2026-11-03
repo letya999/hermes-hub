@@ -179,8 +179,8 @@ func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any
 	case "watch_subscribe":
 		method, path = http.MethodPost, "/v1/routines"
 		var args map[string]any
-		if r.Args != "" {
-			if err := json.Unmarshal([]byte(r.Args), &args); err != nil {
+		if hasParam(r.Args) {
+			if err := jsonParam(r.Args, &args); err != nil {
 				return nil, errors.New("watch args must be a JSON object")
 			}
 		}
@@ -197,9 +197,9 @@ func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any
 		if r.CursorArg != "" {
 			create["probe"].(map[string]any)["cursor_arg"] = r.CursorArg
 		}
-		if r.Sources != "" {
+		if hasParam(r.Sources) {
 			var sources []any
-			if err := json.Unmarshal([]byte(r.Sources), &sources); err != nil {
+			if err := jsonParam(r.Sources, &sources); err != nil {
 				return nil, errors.New("watch sources must be a JSON array of {name?,tool?,args}")
 			}
 			create["probe"].(map[string]any)["sources"] = sources
@@ -220,7 +220,7 @@ func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any
 		// Probe-shaped args (a source tool or its args) on a non-probe kind
 		// are silently dropped here and meaningless at the hub — refuse with
 		// a pointer to watch_create, the cron-shaped misuse it prevents.
-		if kind != "watcher" && kind != "check" && (r.Tool != "" || r.Args != "") {
+		if kind != "watcher" && kind != "check" && (r.Tool != "" || hasParam(r.Args)) {
 			return nil, errors.New("probe-shaped args (tool/args) only apply to kind=watcher|check; for monitoring a source's events use watch_create instead — kind=agent wakes the model on a timer with no source probe")
 		}
 		if kind == "script" {
@@ -250,9 +250,9 @@ func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any
 			if r.Recipe != "" {
 				probe["recipe"] = r.Recipe
 			}
-			if r.Extract != "" {
+			if hasParam(r.Extract) {
 				var steps []map[string]any
-				if err := json.Unmarshal([]byte(r.Extract), &steps); err != nil {
+				if err := jsonParam(r.Extract, &steps); err != nil {
 					return nil, errors.New("extract must be a JSON array of steps")
 				}
 				probe["extract"] = steps
@@ -260,9 +260,9 @@ func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any
 			if r.ProbeScript != "" {
 				probe["script"] = r.ProbeScript
 			}
-			if r.Needs != "" {
+			if hasParam(r.Needs) {
 				var needs []map[string]any
-				if err := json.Unmarshal([]byte(r.Needs), &needs); err != nil {
+				if err := jsonParam(r.Needs, &needs); err != nil {
 					return nil, errors.New("needs must be a JSON array of {tool,args}")
 				}
 				probe["needs"] = needs
@@ -270,9 +270,9 @@ func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any
 			if r.Service != "" {
 				probe["service"] = r.Service
 			}
-			if r.Steps != "" {
+			if hasParam(r.Steps) {
 				var steps []map[string]any
-				if err := json.Unmarshal([]byte(r.Steps), &steps); err != nil {
+				if err := jsonParam(r.Steps, &steps); err != nil {
 					return nil, errors.New("steps must be a JSON array of browser actions")
 				}
 				probe["steps"] = steps
@@ -280,9 +280,9 @@ func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any
 			if r.WaitFor != "" {
 				probe["wait_for"] = r.WaitFor
 			}
-			if r.Args != "" {
+			if hasParam(r.Args) {
 				var args map[string]any
-				if err := json.Unmarshal([]byte(r.Args), &args); err != nil {
+				if err := jsonParam(r.Args, &args); err != nil {
 					return nil, errors.New("args must be a JSON object")
 				}
 				probe["args"] = args

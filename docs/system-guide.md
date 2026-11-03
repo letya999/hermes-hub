@@ -1,6 +1,6 @@
 ---
 description: Mandatory English system reference, delivery paths and evidence boundaries.
-last_verified: 2026-10-24
+last_verified: 2026-11-03
 ---
 # System guide
 

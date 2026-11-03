@@ -89,3 +89,29 @@ compile error и catalog test.
   прав и executors. Схемы и описания — в Go, вне эмитируемых байт.
 - Старые имена — только в rename-map (tool-design.md §migration) и в
   миграторе; обратных шимов в исполнении нет.
+
+## Addendum (2026-11-03): typed schemas, modular contract, fail-closed requires
+
+Реализация M31 зафиксировала три уточнения, не меняющие замороженный
+словарь r5:
+
+- **Typed arguments (definition 7.0.0).** `CLIArgument` несёт `description`,
+  `enum` и `items`; `CliInputSchema` всегда эмитит
+  `additionalProperties: false`, включая инструменты без аргументов.
+  Структурные параметры (`args`, `sources`, `needs`, `steps`, `extract`,
+  `plan`) типизированы `object`/`array` — wire-форма совпадает со схемой;
+  внутренние `Input`-поля принимают `any`, и `jsonParam`/`hasParam`
+  декодируют обе формы (объект и legacy JSON-строку) одинаково.
+- **Fail-closed requires.** `rightForCap` не имеет фолбэка на
+  `tools.select`: незамапленный capability id даёт пустое право, а
+  `annotateToolsets` ломает генерацию каталога с перечнем членов.
+- **Uncurated never in core.** `user_mcp`/`org_mcp` (и любой тулсет с
+  `uncurated: true`) демотируются компилятором из `core` в `extended`
+  до обработки бюджета.
+- **Modular channel contract.** Контракт — композиция секций по
+  семействам; секция рендерится, пока у семейства нет явного `via: off`.
+  `Settings{}` воспроизводит полный контракт, поэтому ungoverned-спейсы
+  не теряют гайд.
+- **Closed diagnostics.** `platform_status` эмитит ровно четыре
+  allowlisted поля; коннектор-инструменты не объявляют аргументов
+  формы credential — секреты ходят только через защищённую форму.

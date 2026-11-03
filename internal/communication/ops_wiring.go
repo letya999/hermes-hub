@@ -148,18 +148,6 @@ func (g *Gateway) opsDeps() commops.Deps {
 
 func canaryInterval() time.Duration { return commops.Interval() }
 
-func (g *Gateway) runCanary(ctx context.Context, now time.Time) string {
-	return g.opsEngine().Run(ctx, now)
-}
-
-func (g *Gateway) canaryToolCheck(jobID string) string {
-	return g.opsEngine().ToolCheck(jobID)
-}
-
-func (g *Gateway) recordCanary(ctx context.Context, now time.Time, class string) {
-	g.opsEngine().Record(ctx, now, class)
-}
-
 func (g *Gateway) canaryLoop(ctx context.Context, interval time.Duration) {
 	g.opsEngine().Loop(ctx, interval)
 }

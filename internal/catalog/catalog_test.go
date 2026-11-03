@@ -394,12 +394,6 @@ func TestPlatformCatalogParityAndPinnedToolset(t *testing.T) {
 	}
 }
 
-func sortedConnectorTools() []string {
-	out := append([]string(nil), api.ConnectorTools...)
-	slices.Sort(out)
-	return out
-}
-
 // normalizeServiceName derives the infra kind from an emitted compose
 // service name: <kind>[-<user>][-<env>] with hosting's -ctl/-init siblings
 // folding into the hosting kind.

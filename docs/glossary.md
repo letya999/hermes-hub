@@ -1,6 +1,6 @@
 ---
 description: Canonical terms — feature, tool, toolset, capability, connector, backend/via.
-last_verified: 2026-10-27
+last_verified: 2026-11-03
 ---
 # Glossary
 
@@ -28,6 +28,17 @@ The column on the left is the config-facing name; the rest is what it means in c
 | `container-mcp` / `remote-mcp` | ToolHub backend transports for managed MCP workloads / remote MCP endpoints. `mcp-raw:<name>` is instead a configuration route. |
 | bundled CLI / `bounded-cli` | Bundled describes binary packaging; bounded CLI is a transport with validated arguments and execution limits. Neither proves provider authentication. |
 | `lang` / locale | A `locale.Lang` code (`en`/`ru`/`kk`/`es`). User-facing text follows `Delivery.Lang` — stamped once per user from the workspace `preferences.json`; operator tooling (`hubctl`, scripts) instead resolves `HUB_LANG`/`LANG`/OS culture and never reads a workspace. |
+
+Catalog r5 terms (ADR-0094, docs/tool-design.md):
+
+| Term | Meaning |
+|---|---|
+| `core` / `extended` | The two placement tiers of an admitted toolset: `core` is the ≤20-member visible prefix, `extended` is everything else, reachable by name through `tool_search`/`tool_call`. Placement is a whole-toolset property — a family never splits. |
+| `audience` | Who a tool serves: `model` (projected), `internal` (hub plumbing, never projected), `operator` (control surface only). |
+| `uncurated` | Toolset flag for raw MCP surfaces (`user_mcp`, `org_mcp`): content is not reviewed, so the family can never sit in `core` — the compiler demotes it to `extended`. |
+| `requires` | The explicit rights a tool member demands (e.g. `files.read`, `exec.run`). No implicit floor: an unmapped member fails catalog generation. |
+| `executor` | Where a member runs: `handler:` (in-runtime), `runtime:` (hub facade), `flow:` (async job) — the footprint ladder, distinct from config `via:`. |
+| `tool_call` / `tool_search` | The pinned platform pair that discovers and invokes extended tools; admission is identical to a direct call. |
 
 The full agent-facing reference is
 [`hermes-hub-system-guide`](../internal/systemguide/SKILL.md). Inventory answers

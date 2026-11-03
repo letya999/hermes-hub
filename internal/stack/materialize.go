@@ -31,7 +31,7 @@ func MaterializeSoulEffective(dir string, s Settings) error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	body := ChannelContract + promptPointer(dir)
+	body := s.channelContract() + promptPointer(dir)
 	if org := orgSoulLayer(s); org != "" {
 		body += "\n\n" + org
 	}

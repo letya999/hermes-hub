@@ -119,3 +119,29 @@ func TestAPIServerPlatformHintOverrideRendered(t *testing.T) {
 		}
 	}
 }
+
+// TestChannelContractIsModular (M31.9): the contract composes per-family
+// sections — a family the operator switched off contributes no guidance,
+// while families without an explicit off entry keep theirs.
+func TestChannelContractIsModular(t *testing.T) {
+	s := Settings{Tools: map[string]ToolEntry{
+		"watches": {Via: ToolViaOff},
+		"skills":  {Via: ToolViaOff},
+	}}
+	body := s.channelContract()
+	for _, gone := range []string{"watch_create", "watch_sample", "skill_search", "skill_edit"} {
+		if strings.Contains(body, gone) {
+			t.Fatalf("off family leaked guidance %q into contract", gone)
+		}
+	}
+	for _, kept := range []string{"routine_create", "tool_search", "MEDIA:", "inbox_fetch"} {
+		if !strings.Contains(body, kept) {
+			t.Fatalf("enabled/always family lost guidance %q", kept)
+		}
+	}
+	// No tools config at all → full contract, identical to the const.
+	full := Settings{}.channelContract()
+	if full != ChannelContract {
+		t.Fatal("ungoverned space must render the complete channel contract")
+	}
+}

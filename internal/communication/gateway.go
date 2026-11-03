@@ -886,26 +886,6 @@ func formatElapsed(lang locale.Lang, d time.Duration) string {
 	}
 }
 
-// mediaReady resolves readiness for either an embedded command worker (binary
-// must exist) or a URL-configured sidecar (health endpoint must answer).
-func mediaReady(impl any, command, url string) bool {
-	if impl == nil {
-		return false
-	}
-	if strings.TrimSpace(url) == "" {
-		return commandAvailable(command)
-	}
-	type healthchecker interface {
-		Healthy(context.Context) bool
-	}
-	if h, ok := impl.(healthchecker); ok {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		return h.Healthy(ctx)
-	}
-	return true
-}
-
 func (g *Gateway) interceptSecret(ctx context.Context, user User, updateID int, chatID, topicID int64, messageID int, text string) error {
 	_ = g.api.DeleteMessage(ctx, chatID, messageID)
 	lang := locale.LangOf(user.WorkspaceDir)

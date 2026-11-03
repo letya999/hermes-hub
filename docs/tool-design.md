@@ -348,23 +348,24 @@ Every normative rule above has a named, automated check. The lints live in
 | 1.4 | immutable vocabulary | `catalog.TestPlatformCatalogParityAndPinnedToolset`, `agenttools.TestCatalogDeniesRetiredNames` |
 | 2.1 | toolsets, not tools | `passport.TestPassportCatalogBoundaryRejected` |
 | 2.2 | family = plural noun, closed list | `catalog.TestR5Vocabulary`, `stack.TestEveryR5FamilyAcceptsToolhubVia` |
-| 2.3 | indivisible placement; core ≤ 20; include ⊥ exclude | `passport.TestToolsetCoreLimitAndExtendedInvokeRevoke`, `toolhub.TestToolsetCoreLimitAndExtendedInvokeRevoke` |
+| 2.3 | indivisible placement; core ≤ 20; include ⊥ exclude | `passport.TestToolsetCoreLimitAndExtendedInvokeRevoke`, `toolhub.TestToolsetCoreLimitAndExtendedInvokeRevoke`, `passport.TestUncuratedToolsetNeverInCore` |
 | 2.4 | extended lives through `tool_search`/`tool_call` | `toolhub.TestDirectAndToolCallAdmissionParity` |
 | 3.1 | `<noun>_<verb>` ≤ 40 chars | `agenttools.TestCatalogVocabularyLint` |
 | 3.2 | closed verb dictionary | `agenttools.TestCatalogVocabularyLint` |
-| 3.3 | unknown/colliding names fail closed | `passport.TestPassportCatalogBoundaryRejected` |
+| 3.3 | unknown/colliding names fail closed | `passport.TestPassportCatalogBoundaryRejected`, `passport.TestAmbiguousToolsetNameFailsClosed` |
 | 3.4 | no vendor or endpoint names | `agenttools.TestCatalogVocabularyLint`, `agenttools.TestCatalogDeniesRetiredNames` |
-| 4.x | typed schemas, stable per release | `catalog.TestPlatformCatalogParityAndPinnedToolset` (schema drift breaks byte parity) |
+| 4.x | typed schemas, stable per release | `catalog.TestPlatformCatalogParityAndPinnedToolset` (schema drift breaks byte parity), `agenttools.TestCharterSchemaContract`, `agenttools.TestWatchCreateStructuredArgsReachBackend`, `api.TestCliInputSchemaZeroArgsClosesBoundary`, `api.TestCliInputSchemaCarriesContractMetadata` |
 | 5.2 | no competing tools | `agenttools.TestIntentSelectionEval` (a score tie fails the intent) |
 | 5.3 | one dispatch, identical semantics | `agenttools.TestEveryCatalogedHandlerToolDispatches`, `toolhub.TestDirectAndToolCallAdmissionParity`, `agenttools.TestKnowledgeMCPTransportParity` |
-| 6.1 | real `requires`; `tools.select` only on `tool_call` | `agenttools.TestEveryModelToolRequiresRight`, `catalog.TestEveryToolDeclaresRequires`, `catalog.TestHubToolsRequiresAreCatalogRights` |
+| 6.1 | real `requires`; `tools.select` only on `tool_call`; unmapped fails closed | `agenttools.TestEveryModelToolRequiresRight`, `catalog.TestEveryToolDeclaresRequires`, `catalog.TestHubToolsRequiresAreCatalogRights`, `catalog.TestUnmappedRequiresFailClosed` |
 | 6.2 | per-call admission; epoch revocation bites next call; PEP bounds | `toolhub.TestDirectAndToolCallAdmissionParity`, `toolhub.TestConcurrentRevocationCannotPassAdmission`, `agenttools.TestExecCallReadOnlyGate`, `agenttools.TestExecCallScopeBoundaries`, `agenttools.TestToolPolicyDispatchDeny` |
 | 6.4 | MCP annotations derive from `Effect` | `toolhub.TestProjectedToolAnnotationsMatchEffect` |
 | 7.1, 7.4 | result envelope; errors teach r5 names | `agenttools.TestRoutineErrorsTeachR5Names`, `toolhub.TestAgentExecErrorSurvivesGateway` |
+| 7.4 | secrets never travel in tool arguments; diagnostics stay closed | `agenttools.TestConnectorToolsNeverTakeCredentials`, `toolhub.TestPlatformStatusAllowlist` |
 | 7.2 | bounded output | `agenttools.TestContextStatusToolReportsBoundedView`, `agenttools.TestRoutineListRequestsBoundedDefaultPage`, `agenttools.TestRoutineGetIncludesBoundedHistoryAndPreview` |
 | 7.3 | evidence for side effects | `agenttools.TestRoutineMutationRequiresObservedRevision`, `agenttools.TestAssignmentToolRequiresRevision` |
 | 8.2 | description budget; stuffing penalized | `agenttools.TestDescriptionBudgetLint`, `agenttools.TestIntentSelectionEval` (density-normalized scoring) |
-| 8.3 | modular prompt contract | `passport.TestPromptPointerNamesR5PlatformPair` |
+| 8.3 | modular prompt contract | `passport.TestPromptPointerNamesR5PlatformPair`, `stack.TestChannelContractIsModular`, `stack.TestSoulEffectiveHonorsFamilyOff` |
 | 8.4 | one disclosure mechanism | `catalog.TestR5Vocabulary` (pinned `platform` member list), `toolhub.TestConnectorSurfaceR5Names` |
 | 9.2 | eval-driven iteration | `agenttools.TestIntentSelectionEval` |
 

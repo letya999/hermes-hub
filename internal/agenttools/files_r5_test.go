@@ -76,8 +76,7 @@ func TestFilesR5Verbs(t *testing.T) {
 	// file_archive: action routes create/unpack; the zip output stays under
 	// the artifacts/ boundary the capability admits.
 	write("src/one.txt", "1")
-	out, err = v.Call(ctx, "file_archive", Input{Action: "create", Path: "artifacts/packed.zip", Paths: []string{"src/one.txt"}})
-	if err != nil {
+	if _, err = v.Call(ctx, "file_archive", Input{Action: "create", Path: "artifacts/packed.zip", Paths: []string{"src/one.txt"}}); err != nil {
 		t.Fatalf("file_archive create: %v", err)
 	}
 	if _, err := v.Call(ctx, "file_archive", Input{Action: "unpack", Path: "artifacts/packed.zip", Name: "unpacked-one"}); err != nil {

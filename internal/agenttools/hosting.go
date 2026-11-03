@@ -12,7 +12,6 @@ import (
 	"strings"
 
 	"github.com/letya999/hermes-hub/internal/hosting"
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func (t *Tools) hostingCall(ctx context.Context, name string, r Input, workspace *os.Root) (any, error) {
@@ -100,15 +99,4 @@ func (t *Tools) hostingCall(ctx context.Context, name string, r Input, workspace
 		return nil, hosting.ErrUnavailable
 	}
 	return out, nil
-}
-func (t *Tools) registerHosting(server *mcp.Server) {
-	if os.Getenv("HUB_HOSTING_URL") == "" {
-		return
-	}
-	for _, name := range []string{"site_publish", "site_unpublish", "site_list", "site_status"} {
-		mcp.AddTool(server, &mcp.Tool{Name: name, Description: "Manage one owner-bound hosted site. Publish prebuilt workspace files; URLs are returned only when ready. Public access requires explicit authorization."}, func(ctx context.Context, _ *mcp.CallToolRequest, r Input) (*mcp.CallToolResult, any, error) {
-			out, err := t.hostingCall(ctx, name, r, t.Workspace)
-			return nil, out, err
-		})
-	}
 }

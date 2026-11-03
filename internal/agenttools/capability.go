@@ -55,10 +55,10 @@ func HubToolsDefinition() api.ToolDefinition {
 			Arguments: arguments, Audience: api.AudienceModel, Executor: executor,
 		}
 	}
-	return api.ToolDefinition{
+	def := api.ToolDefinition{
 		Schema:       api.SchemaVersion,
 		DefinitionID: HubToolsDefinitionID,
-		Version:      "6.0.0",
+		Version:      "7.0.0",
 		Transport:    api.AgentTools,
 		Source:       api.DefinitionSource{},
 		Workload: api.WorkloadPolicy{
@@ -139,13 +139,13 @@ func HubToolsDefinition() api.ToolDefinition {
 			// ---- routines (5)
 			tool("routine_list", "routines.list", "tasks.schedule", routineDescriptions["routine_list"], api.ReadEffect, use("list", "routines"), intArg("limit", false), opt("cursor"), opt("kind"), opt("state"), opt("query"), opt("view")),
 			tool("routine_read", "routines.read", "tasks.schedule", routineDescriptions["routine_get"], api.ReadEffect, use("read", "routines"), str("id"), arrArg("include", false), intArg("history_limit", false), opt("history_cursor"), intArg("preview_limit", false)),
-			tool("routine_create", "routines.create", "tasks.schedule", routineDescriptions["routine_create"], api.WriteEffect, use("create", "routines"), str("id"), str("timezone"), str("expression"), str("text"), opt("origin_job_id"), opt("destination_task_id"), opt("kind"), opt("url"), opt("regex"), opt("expect"), opt("probe_kind"), opt("tool"), opt("args"), opt("service"), opt("steps"), opt("wait_for"), opt("needs"), opt("recipe"), opt("extract"), opt("probe_script"), opt("deliver_mode"), opt("artifact_name"), opt("notify_mode"), opt("quiet_from"), opt("quiet_to"), intArg("daily_limit", false), intArg("max_retries", false), arrArg("source_ids", false), objArg("timing", false)),
+			tool("routine_create", "routines.create", "tasks.schedule", routineDescriptions["routine_create"], api.WriteEffect, use("create", "routines"), str("id"), str("timezone"), str("expression"), str("text"), opt("origin_job_id"), opt("destination_task_id"), opt("kind"), opt("url"), opt("regex"), opt("expect"), opt("probe_kind"), opt("tool"), objArg("args", false), opt("service"), arrArg("steps", false), opt("wait_for"), arrArg("needs", false), opt("recipe"), arrArg("extract", false), opt("probe_script"), opt("deliver_mode"), opt("artifact_name"), opt("notify_mode"), opt("quiet_from"), opt("quiet_to"), intArg("daily_limit", false), intArg("max_retries", false), arrArg("source_ids", false), objArg("timing", false)),
 			tool("routine_edit", "routines.edit", "tasks.schedule", routineDescriptions["routine_edit"], api.WriteEffect, use("update", "routines"), str("id"), str("action"), intArg("expected_revision", true), objArg("patch", false), opt("until"), opt("origin_job_id")),
 			tool("routine_remove", "routines.remove", "tasks.schedule", routineDescriptions["routine_delete"], api.WriteEffect, use("remove", "routines"), str("id"), intArg("expected_revision", true)),
 
 			// ---- watches (5)
 			tool("watch_list", "watches.list", "tasks.observe", routineDescriptions["watch_list"], api.ReadEffect, use("list", "watches")),
-			tool("watch_create", "watches.create", "tasks.observe", routineDescriptions["watch_subscribe"], api.WriteEffect, use("create", "watches"), str("id"), str("timezone"), str("expression"), str("text"), str("tool"), opt("sink"), opt("args"), opt("delivery"), opt("filter"), arrArg("sources", false), opt("cursor_arg"), intArg("min_interval_seconds", false)),
+			tool("watch_create", "watches.create", "tasks.observe", routineDescriptions["watch_subscribe"], api.WriteEffect, use("create", "watches"), str("id"), str("timezone"), str("expression"), str("text"), str("tool"), opt("sink"), objArg("args", false), opt("delivery"), opt("filter"), arrArg("sources", false), opt("cursor_arg"), intArg("min_interval_seconds", false)),
 			tool("watch_edit", "watches.edit", "tasks.observe", "Pause or resume one owned event subscription by schedule id.", api.WriteEffect, use("update", "watches"), str("id"), str("action")),
 			tool("watch_remove", "watches.remove", "tasks.observe", routineDescriptions["watch_delete"], api.WriteEffect, use("remove", "watches"), str("id")),
 			tool("watch_sample", "watches.sample", "tasks.observe", routineDescriptions["watch_sample"], api.ReadEffect, use("read", "watches"), str("id"), opt("filter")),
@@ -184,7 +184,7 @@ func HubToolsDefinition() api.ToolDefinition {
 			remote("model_switch", "models.switch", "models.switch", "Switch the active model or route inside the granted ladder.", api.WriteEffect, "runtime:models", str("name")),
 
 			// ---- skills (3): Agent Skills invocation convention
-			tool("skill", "skills.invoke", "skills.invoke", "Activate a skill by name: returns its frontmatter-stripped instructions, resource file names (never contents) and the read-only skill directory.", api.ReadEffect, use("invoke", "skills"), str("name"), opt("path"), opt("args")),
+			tool("skill", "skills.invoke", "skills.invoke", "Activate a skill by name: returns its frontmatter-stripped instructions, resource file names (never contents) and the read-only skill directory.", api.ReadEffect, use("invoke", "skills"), str("name"), opt("path")),
 			tool("skill_search", "skills.search", "skills.list", "Search or list the skill catalog: name, source, description, eligibility and usage counters; an empty query lists all.", api.ReadEffect, use("read", "skills"), opt("query"), intArg("limit", false), opt("source"), intArg("offset", false)),
 			tool("skill_edit", "skills.edit", "skills.draft", "Propose a skill change: create/patch/edit/write_file/remove_file/delete/archive/restore/propose_to_org/install/update/install_local/check_updates/configure. Every mutating action returns a draft with diff, lint and scan.", api.WriteEffect, use("manage", "skills"),
 				str("action"), str("name"), opt("reason"), opt("content"), opt("category"), opt("old_string"), opt("new_string"), opt("file_path"), opt("base_revision"), opt("absorbed_into"), opt("version"), opt("url"), opt("ref"), opt("path"), opt("grant")),
@@ -194,7 +194,7 @@ func HubToolsDefinition() api.ToolDefinition {
 			remote("connector_search", "connectors.search", "connectors.discover", "Search the connector catalog by name and kind; returns connector ids and availability.", api.ReadEffect, "runtime:connectors", opt("query"), opt("kind"), intArg("limit", false)),
 			remote("connector_list", "connectors.list", "connectors.discover", "List connectors visible to this space with their status.", api.ReadEffect, "runtime:connectors"),
 			remote("connector_status", "connectors.status", "connectors.discover", "Show one connector's status; verbose adds diagnostics.", api.ReadEffect, "runtime:connectors", str("name"), boolArg("verbose", false)),
-			remote("connector_install", "connectors.install", "connectors.prepare", "Install a connector of a declared kind; returns a protected credential form when required — never accepts secrets in arguments.", api.WriteEffect, "runtime:connectors", str("name"), opt("kind")),
+			remote("connector_install", "connectors.install", "connectors.prepare", "Install a connector candidate from connector_search; returns a protected credential form when required — never accepts secrets in arguments.", api.WriteEffect, "runtime:connectors", str("name"), opt("version")),
 			remote("connector_edit", "connectors.edit", "connectors.enable", "Change a connector's lifecycle: enable, disable, allow_writes, reauth (returns a protected URL only) or remove.", api.WriteEffect, "runtime:connectors", str("name"), str("action")),
 
 			// ---- web (2): hub-side web provider relay; cataloged names over
@@ -227,4 +227,6 @@ func HubToolsDefinition() api.ToolDefinition {
 			remote("tool_call", "platform.call", "tools.select", "Invoke one extended tool by name with arguments; admission identical to a direct call.", api.WriteEffect, "runtime:toolhub", str("tool"), objArg("arguments", true)),
 		},
 	}
+	applyArgDocs(&def)
+	return def
 }

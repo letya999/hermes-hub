@@ -26,7 +26,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
-const Release = "6"
+const Release = "7"
 
 const (
 	CapabilitiesFile = "capabilities.yaml"
@@ -363,7 +363,9 @@ func generateToolsets(caps CapabilitiesDoc) (map[string]Toolset, error) {
 	// section.
 	out[api.SectionUserMCP] = Toolset{Kind: "connector", Effect: "mutate", Via: []string{"mcp-raw"}, Executor: api.ExecutorNative, Uncurated: true, Section: api.SectionUserMCP}
 	out[api.SectionOrgMCP] = Toolset{Kind: "connector", Effect: "mutate", Via: []string{"mcp-raw"}, Executor: api.ExecutorNative, Uncurated: true, Section: api.SectionOrgMCP}
-	annotateToolsets(out, caps)
+	if err := annotateToolsets(out, caps); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 

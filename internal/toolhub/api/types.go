@@ -217,6 +217,14 @@ type CLIArgument struct {
 	// Pattern is a mandatory regexp for positional operands and an optional
 	// extra constraint for flag values; it applies to string arguments only.
 	Pattern string `json:"pattern,omitempty"`
+	// Description is the model-facing one-line contract for the argument
+	// (tool-design §4.3): emitted into the MCP input schema.
+	Description string `json:"description,omitempty"`
+	// Enum enumerates the closed vocabulary for string arguments — the
+	// schema publishes exactly what the executor validates.
+	Enum []string `json:"enum,omitempty"`
+	// Items declares the element type for array arguments (string, object).
+	Items string `json:"items,omitempty"`
 }
 
 type CredentialInput struct {

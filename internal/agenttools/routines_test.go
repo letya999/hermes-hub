@@ -957,3 +957,38 @@ func TestCredentialFormCallCommunicationHub(t *testing.T) {
 		t.Fatal("env_update accepted credentials with protected form configured")
 	}
 }
+
+// TestWatchCreateStructuredArgsReachBackend (M31.2): the r5 schema types
+// watch args/sources as object/array — values sent in that wire shape must
+// land in the probe payload, not be dropped by a string-only decode.
+func TestWatchCreateStructuredArgsReachBackend(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		_, _ = io.WriteString(w, `{"schedule_id":"w1","state":"active"}`)
+	}))
+	defer server.Close()
+	v := fixture(t)
+	v.CommunicationURL, v.CommunicationAuth = server.URL, "token"
+	in := Input{
+		ID: "w1", Timezone: "UTC", Expression: "every:15m", Text: "watch it", Tool: "connector_poll",
+		Args:    map[string]any{"chat_id": "9"},
+		Sources: []any{map[string]any{"tool": "poll", "args": map[string]any{"chat_id": "9"}}},
+	}
+	if _, err := v.Routine(context.Background(), "watch_subscribe", in); err != nil {
+		t.Fatalf("watch_create failed: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(gotBody, &body); err != nil {
+		t.Fatalf("backend body not JSON: %v", err)
+	}
+	probe, _ := body["probe"].(map[string]any)
+	args, _ := probe["args"].(map[string]any)
+	if args["chat_id"] != "9" {
+		t.Fatalf("object args did not reach probe payload: %s", gotBody)
+	}
+	sources, _ := probe["sources"].([]any)
+	if len(sources) != 1 {
+		t.Fatalf("array sources did not reach probe payload: %s", gotBody)
+	}
+}

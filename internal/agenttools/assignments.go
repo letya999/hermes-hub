@@ -42,15 +42,19 @@ func (t *Tools) Assignment(ctx context.Context, op string, r Input) (map[string]
 	var payload any
 	switch op {
 	case "assignment_plan":
-		payload = json.RawMessage(r.Plan)
+		if text, ok := r.Plan.(string); ok {
+			payload = json.RawMessage(text)
+		} else {
+			payload = r.Plan
+		}
 	case "assignment_create":
 		body := map[string]any{"intent": r.Text}
 		if r.Title != "" {
 			body["title"] = r.Title
 		}
-		if r.Plan != "" {
+		if hasParam(r.Plan) {
 			var plan map[string]any
-			if err := json.Unmarshal([]byte(r.Plan), &plan); err != nil {
+			if err := jsonParam(r.Plan, &plan); err != nil {
 				return nil, errors.New("plan must be a JSON object")
 			}
 			body["plan"] = plan
@@ -61,7 +65,7 @@ func (t *Tools) Assignment(ctx context.Context, op string, r Input) (map[string]
 		payload = body
 	case "assignment_update":
 		var plan map[string]any
-		if err := json.Unmarshal([]byte(r.Plan), &plan); err != nil {
+		if err := jsonParam(r.Plan, &plan); err != nil || plan == nil {
 			return nil, errors.New("plan must be a JSON object")
 		}
 		payload = map[string]any{"plan": plan, "expected_revision": r.ExpectedRevision}

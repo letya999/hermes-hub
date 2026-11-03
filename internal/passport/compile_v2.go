@@ -413,11 +413,26 @@ func checkTools(bodies map[string]map[string]any, docs catalog.Docs) error {
 		name    string
 		members []string
 	}
+	if extended == nil {
+		extended = map[string]any{}
+	}
+	if core == nil {
+		core = map[string]any{}
+	}
 	var coreEntries []entry
 	for name, raw := range core {
 		members, err := validate(name, raw)
 		if err != nil {
 			return err
+		}
+		// Uncurated surfaces (raw MCP catalogs) never enter core (ADR-0094
+		// R6): an operator writing one into core gets the honest demotion,
+		// not a compile error — the projection must exist for the runtime
+		// to enumerate its declared servers at all.
+		if ts, rerr := ResolveToolset(docs, name); rerr == nil && ts.Uncurated {
+			extended[name] = core[name]
+			delete(core, name)
+			continue
 		}
 		coreEntries = append(coreEntries, entry{name, members})
 	}
@@ -425,12 +440,6 @@ func checkTools(bodies map[string]map[string]any, docs catalog.Docs) error {
 		if _, err := validate(name, raw); err != nil {
 			return err
 		}
-	}
-	if extended == nil {
-		extended = map[string]any{}
-	}
-	if core == nil {
-		core = map[string]any{}
 	}
 	slices.SortFunc(coreEntries, func(a, b entry) int { return strings.Compare(a.name, b.name) })
 	// The pinned platform family (ADR-0094): always in core, never

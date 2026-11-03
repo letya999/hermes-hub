@@ -81,12 +81,12 @@ func (g *Gateway) platformUsage(auth identity.Envelope, period string) (map[stri
 		}, nil
 	}
 	meter := map[string]usageMeterRecord{}
-	raw, err := os.ReadFile(usagePath) // #nosec G304 -- operator-mounted usage path
+	raw, err := os.ReadFile(usagePath) // #nosec G304 G703 -- operator-mounted usage path
 	if err != nil {
 		return map[string]any{"available": false, "status": "unavailable", "reason": "usage meter unreadable"}, nil
 	}
 	_ = json.Unmarshal(raw, &meter)
-	registryRaw, err := os.ReadFile(registryPath) // #nosec G304 -- operator-mounted registry path
+	registryRaw, err := os.ReadFile(registryPath) // #nosec G304 G703 -- operator-mounted registry path
 	if err != nil {
 		return map[string]any{"available": false, "status": "unavailable", "reason": "models.yaml registry unreadable"}, nil
 	}

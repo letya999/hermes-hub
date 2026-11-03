@@ -19,7 +19,7 @@ func TestProjectedToolAnnotationsMatchEffect(t *testing.T) {
 	t.Setenv("HUB_STATE", t.TempDir())
 	s, auth, _, profile := managedStore(t)
 	definition := api.ToolDefinition{
-		Schema: api.SchemaVersion, DefinitionID: "hub-agent-tools", Version: "6.0.0", Transport: api.AgentTools,
+		Schema: api.SchemaVersion, DefinitionID: "hub-agent-tools", Version: "7.0.0", Transport: api.AgentTools,
 		Source:    api.DefinitionSource{},
 		Workload:  api.WorkloadPolicy{Class: api.PerUser, Rationale: "in-runtime executor inside the owning runtime"},
 		Execution: api.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 1 << 20, CPUMillis: 500, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"api.example.com"}},
