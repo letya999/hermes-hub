@@ -456,14 +456,16 @@ func (m *Manager) loadSelected(userID string) (stack.Settings, error) {
 	if !found {
 		return stack.Settings{}, errors.New("current settings unavailable")
 	}
-	return stack.Read(root)
+	return stack.ReadEffectiveSpace(root)
 }
 
 // resolveSettings applies the organization merge and this environment's
 // adjustments so a derived policy version hashes exactly what a render would.
 func (m *Manager) resolveSettings(selected stack.Settings) (stack.Settings, error) {
 	settings := selected
-	if selected.Organization != "" {
+	// ReadEffectiveSpace already applied the organization merge; applying it
+	// again is not idempotent (organization MCP grafting rejects a re-read).
+	if selected.Organization != "" && selected.OrganizationDir == "" {
 		orgRoot := filepath.Join(m.cfg.SpacesRoot, selected.Organization)
 		for _, name := range []string{"scope.yaml", "settings.yaml"} {
 			info, e := os.Lstat(filepath.Join(orgRoot, name))

@@ -1,6 +1,6 @@
 ---
 description: hubctl — host-side control CLI: stack lifecycle, builds, spaces, grants, connector controllers.
-last_verified: 2026-10-31
+last_verified: 2026-11-04
 ---
 
 # hubctl
@@ -14,7 +14,11 @@ a human confirmation link minted through the communication gateway.
 `hubctl` (no args) prints the authoritative list:
 
 - **Stack lifecycle**: `init`, `org-init`, `up`, `down`, `logs`, `doctor`,
-  `render`, `migrate-spaces`, `migrate-toolhub`, `apply`.
+  `render`, `migrate-spaces`, `space-migrate`, `space-audit`,
+  `space apply` (compile `passport-src/` layers, classified diff, publish +
+  reconcile under `--confirm`), `migrate-toolhub`, `apply`.
+- **Models**: `models login` (per-service cliproxy OAuth enrollment +
+  `model-grants.json` grant recording).
 - **Images**: `build`, `dev-rebuild` (the only sanctioned local build paths —
   they force BuildKit, prune superseded hub images, cap build cache at 8 GB).
 - **Spaces/selection**: `execution-audit`, `select-execution`.

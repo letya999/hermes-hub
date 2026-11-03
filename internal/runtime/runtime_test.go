@@ -632,32 +632,6 @@ func TestCopySoulUnlessEditedReplacesOnlyTheStub(t *testing.T) {
 	}
 }
 
-func TestCopyIfExists(t *testing.T) {
-	root := t.TempDir()
-	source, destination := filepath.Join(root, "source"), filepath.Join(root, "destination")
-	if err := copyIfExists(source, destination, true); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(source, []byte("new"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(destination, []byte("old"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := copyIfExists(source, destination, false); err != nil {
-		t.Fatal(err)
-	}
-	if body, _ := os.ReadFile(destination); string(body) != "old" {
-		t.Fatal("existing destination overwritten")
-	}
-	if err := copyIfExists(source, destination, true); err != nil {
-		t.Fatal(err)
-	}
-	if body, _ := os.ReadFile(destination); string(body) != "new" {
-		t.Fatal("destination not updated")
-	}
-}
-
 func TestClearBrowserLocksRemovesOnlySymlinks(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"SingletonCookie", "SingletonLock", "SingletonSocket"} {

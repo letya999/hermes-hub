@@ -1,0 +1,29 @@
+chg: CHG-0263
+title: Managed binding policy_version repin in DeriveRights
+status: done
+github_issue: "458"
+started: 2026-11-04
+finished: 2026-11-04
+plan: plan.md
+origin: live incident — artem_two/m29-acc-01 projected zero tools after pv rotation
+slices:
+  S1:
+    title: Regression test — pv rotation keeps projection alive
+    status: done
+  S2:
+    title: Repin implementation in DeriveRights
+    status: done
+validation:
+  - "go test ./internal/toolhub/ -count=1 → ok 88.150s (TestDeriveRightsRepinsManagedBinding red before fix, green after)"
+  - "go test ./internal/migration ./cmd/hubctl → ok"
+  - "live proof artem_two: forced binding pv=policy-1d2bbf… → ListProjectedTools=0; DeriveSpaceRights → repinned, ListProjectedTools=83"
+  - "gofmt/vet clean; docs-check/lint/config-check legs green"
+  - "just check: lint/docs-check/config-check green; go-check tripped two unrelated timing flakes under load — both green isolated; covergo full re-run all-green, own Go statement coverage 86.04%"
+  - "just docker-check (branch source): ALL green — 6 images built; budgets ×4, docker-smoke, hermes native contract, supervisor smoke (readmit/approval/recovery), gateway 5-min lifecycle, capability-contract, stdio-reminder, scratch-workload-canary, scratch-quarantine; managed-network + managed-supervisor canaries green after freeing IPAM (m29-acc-01..10 fixture stacks torn down via hubctl down — 20 networks released)"
+notes:
+  - Repin scope: active bindings, same principal/context/runtime, credential-free definitions selected by the profile; Store.Enable restamps in place and supersedes stale siblings.
+  - Credential-bearing connector bindings intentionally stay on the manual `hubctl capability` path (connection/credential revisions are operator state).
+  - Does not invent bindings for definitions the principal never bound.
+limitations:
+  - m29-acc-01 was repaired manually via `capability --kind agent-tools --version 5.11.0` before this code landed; the auto-repin covers future rotations.
+  - m29-acc-01..10 fixture stacks torn down (hubctl down, dirs/volumes kept) to release Docker IPAM subnets for the canary legs — `hubctl up` restores any of them on demand.

@@ -117,7 +117,7 @@ func gatewayLifecycleSmoke(ctx context.Context, image, providerURL string) error
 			return err
 		}
 
-		settingsValue, err := stack.ReadEnvironment(dir, "prod")
+		settingsValue, err := stack.ReadEffective(dir, "prod")
 		if err != nil {
 			return err
 		}

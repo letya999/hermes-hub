@@ -1,0 +1,48 @@
+schema: 1
+change: CHG-0256
+title: "M30.2 Agent capability vocabulary, PDP and PEPs"
+status: done
+branch: feat/m29-six-passport-contract
+updated: 2026-11-02
+phase: done
+adr: ADR-0093
+spec: SPEC-0092
+requirements: [R2.1, R2.2, R2.3]
+depends_on: [CHG-0254, CHG-0255]
+github_milestone: "M30 — Imperative Passports and Capability Grants"
+github_issue: 451
+design_status: accepted
+implementation_status: done
+slices:
+  S2.1-rights-catalog: done
+  S2.2-tool-requires: done
+  S2.3-pdp-ledger: done
+  S2.4-pep-wiring: done
+validation:
+  documents: done
+  just_check: done
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence:
+  - platform/catalogs/4/rights.yaml — immutable RBAC vocabulary, 12 domains, per-op subject/scope/issuers/pep/effect/description; shipped in image (Dockerfile COPY) + LoadPinned + probe assert
+  - internal/toolhub/api/rights.go — RightsDoc/RightGrant/RightDecision types; DecideClient service PEP client (Enabled opt-in)
+  - internal/toolhub/rights.go — Store.Decide PDP: vocabulary + managed profile ceiling + live ledger triad; cross-subject scope; issuer allowlist; epoch on every verdict
+  - internal/toolhub/rights_ledger.go — GovernanceStore.GrantRight/RevokeRight + DeriveRights (profile.Rights ceiling + deterministic platform grants, revoke-on-drop, idempotent)
+  - internal/migration/rights.go — DeriveSpaceRights wired into space-migrate, hubctl space apply and apply-rollback re-derive
+  - /v1/rights/decide — runtime-token (envelope) + control-asserted (ControlToken + HUB_PRINCIPAL_ID pin) identity modes; foreign principal never trusted
+  - admission PEP: managedSelectionLocked denies projections whose ToolSpec.Requires fail Decide; tools_list reports unavailable + missing_right; catalog 5.12.0
+  - cross-service PEPs: supervisor (agents.restart_self/inspect_self/monitor_self on restart, self-env, skill, artifact, usage, compact, goal, script), model-relay (models.list/switch/use), communication-hub (channels.send voice leg degrades to text on deny; text leg gated on mapped principal); per-space alias toolhub-<user> + HUB_TOOLHUB_URL_PATTERN
+  - diagnostics PEP: Store.RightsGated gates the toolhub diagnostics op on observability.read_own_logs (TestDiagnosticsRightsGate: deny→allow→revoke-deny)
+  - tests: Decide suite (missing op, active grant, revoke epoch, managed ceiling, foreign principal, control assert), DeriveRights, ManagedAdmissionRequiresRights(+fences), tools_list live isolation, RightsGateDecides, ModelRelayGrantsRight
+  - docs: docs/rbac.md rewritten (PDP/ceiling/ledger, control-asserted decide, derived rights), docs/operations.md hubctl governance right examples, docs/tools.md+routines.md catalog 5.12.0
+  - just check: lint + docs-check + config-check green; covergo suite all packages pass — Go statement coverage 85.85% (floor 85, per-package 75); bulk run hit Windows AV file-lock/TSAN/timing flakes, every failed package re-verified green in isolation
+remaining:
+  - workspace executable tree materialization + mounts (CHG-0259 scope)
+  - tools live projection via tools/list_changed (CHG-0260 scope)
+  - docker image/live acceptance unrun — heavy gates deferred to CI/docker-check
+limitations:
+  - users.* and agents.inspect_other have no agent-facing action sites yet — vocabulary declared, wiring deferred until sites exist
+  - profiles without Rights rows keep the legacy posture; every published revision stamps Rights via DeriveRights
+  - unmanaged principals skip the ceiling layer; the live ledger alone bounds them
+  - services without toolhub wiring (no env) keep legacy auth posture — PEP activates only where HUB_TOOLHUB_* envs render (managed/supervised stacks)

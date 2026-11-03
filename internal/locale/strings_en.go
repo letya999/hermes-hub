@@ -61,6 +61,11 @@ func init() {
 		"slack.artifact-failed": "The file could not be delivered: %s",
 		"artifact.failed":       "The file could not be delivered: %s",
 
+		// Passport workspace tree (workspace.yaml ASCII map).
+		"workspace.marker.read_only":   "[read-only]",
+		"workspace.note.system_prompt": "effective system prompt",
+		"workspace.note.skills":        "compiled catalog",
+
 		// Operator console tooling (hubctl, local scripts).
 		"op.names-status":       "Names: %s. Status: %s.",
 		"op.status-only":        "Status: %s.",

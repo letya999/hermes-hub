@@ -63,7 +63,7 @@ func runDevRebuild(ctx context.Context, args []string) (retErr error) {
 	if err != nil {
 		return err
 	}
-	settings, err := stack.ReadEnvironment(dirAbs, "dev")
+	settings, err := stack.ReadEffective(dirAbs, "dev")
 	if err != nil {
 		return err
 	}

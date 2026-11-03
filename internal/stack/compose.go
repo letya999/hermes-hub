@@ -58,10 +58,8 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "connections", "telegram")), "target": "/state/telegram"},
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "home")), "target": "/state/home"},
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "cache")), "target": "/state/cache"},
-		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "workspace")), "target": "/workspace"},
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "archive")), "target": "/archive", "read_only": true},
-		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "hermes."+s.Environment+".yaml")), "target": "/config/config.yaml", "read_only": true},
-		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "SOUL.md")), "target": "/config/SOUL.md", "read_only": true},
+
 		// Hermes reads the effective SOUL — persona plus the rendered channel
 		// contract — not the owner's raw file (SPEC-0053 R1.8/D7).
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "soul-effective."+s.Environment+".md")), "target": "/state/hermes/SOUL.md", "read_only": true},
@@ -69,14 +67,19 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// read-only over the agent-writable state dir: mcp_servers must come
 		// from ToolHub onboarding, never from terminal edits inside the runtime.
 		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "hermes-effective."+s.Environment+".yaml")), "target": "/state/hermes/config.yaml", "read_only": true},
-		// The executor's compiled governance extract: written host-side,
-		// mounted read-only, consumed by `hubctl tools`/tools-exec via
-		// HUB_TOOL_POLICY.
-		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "tool-policy."+s.Environment+".json")), "target": "/config/tool-policy.json", "read_only": true},
-		// The render-time expectation for the runtime tool surface; the
-		// runtime's /v1/health probe reads it via HUB_TOOL_MANIFEST and can
-		// never write it (read-only bind, agent-writable /state stays clean).
-		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "tool-manifest."+s.Environment+".json")), "target": "/config/tool-manifest.json", "read_only": true},
+	}
+	if s.PassportWorkspace == nil {
+		stateVolumes = append(stateVolumes,
+			// The executor's compiled governance extract: written host-side,
+			// mounted read-only, consumed by `hubctl tools`/tools-exec via
+			// HUB_TOOL_POLICY. A published workspace passport carries it
+			// inside the /config view bind instead.
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "tool-policy."+s.Environment+".json")), "target": "/config/tool-policy.json", "read_only": true},
+			// The render-time expectation for the runtime tool surface; the
+			// runtime's /v1/health probe reads it via HUB_TOOL_MANIFEST and can
+			// never write it (read-only bind, agent-writable /state stays clean).
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "tool-manifest."+s.Environment+".json")), "target": "/config/tool-manifest.json", "read_only": true},
+		)
 	}
 	if s.CapabilityMode == "managed" {
 		// The managed workspace is a durable bind, not tmpfs: admitted file,
@@ -87,12 +90,32 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			M{"type": "bind", "source": filepath.ToSlash(RuntimeHermesHome(dir, s)), "target": "/state/hermes"},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "home")), "target": "/state/home"},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "cache")), "target": "/state/cache"},
-			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "workspace")), "target": "/workspace"},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "hermes-effective."+s.Environment+".yaml")), "target": "/state/hermes/config.yaml", "read_only": true},
-			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "tool-policy."+s.Environment+".json")), "target": "/config/tool-policy.json", "read_only": true},
-			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "tool-manifest."+s.Environment+".json")), "target": "/config/tool-manifest.json", "read_only": true},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "soul-effective."+s.Environment+".md")), "target": "/state/hermes/SOUL.md", "read_only": true},
 		}
+		if s.PassportWorkspace == nil {
+			stateVolumes = append(stateVolumes,
+				M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "tool-policy."+s.Environment+".json")), "target": "/config/tool-policy.json", "read_only": true},
+				M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "tool-manifest."+s.Environment+".json")), "target": "/config/tool-manifest.json", "read_only": true},
+			)
+		}
+	}
+	// The workspace passport owns the container filesystem once a revision
+	// is published (SPEC-0092 R5.2): /config, /workspace with read-only
+	// sub-binds, /vault, /skills and every /shared/* mount come from the
+	// MountPlan. Without a revision the space keeps the legacy workspace
+	// bind and raw /config mounts its heal path still reads.
+	wsBase := dir
+	if s.CapabilityMode == "managed" {
+		wsBase = filepath.Join(dir, "managed", s.Environment)
+	}
+	if s.PassportWorkspace != nil {
+		for _, pm := range MountPlan(dir, s.Environment, wsBase, s, *s.PassportWorkspace) {
+			stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(pm.Source), "target": pm.Target, "read_only": pm.ReadOnly})
+		}
+	} else {
+		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(wsBase, "workspace")), "target": "/workspace"})
+		stateVolumes = append(stateVolumes, configMounts(dir, s.Environment)...)
 	}
 	if s.Has("ssh") {
 		// The whole SSH capability — host bindings, pinned host keys and any
@@ -104,12 +127,16 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// file: key — is operator-owned and read-only inside the runtime.
 		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "connections", "exposure")), "target": "/state/exposure", "read_only": true})
 	}
-	for _, m := range s.Workspace.Mounts {
-		source, readOnly, err := s.resolveMount(m)
-		if err != nil {
-			continue // validate() already rejected it; render stays total
+	// Declared mounts are part of the MountPlan when a workspace passport is
+	// published; the legacy loop runs only for spaces without a revision.
+	if s.PassportWorkspace == nil {
+		for _, m := range s.Workspace.Mounts {
+			source, readOnly, err := s.resolveMount(m)
+			if err != nil {
+				continue // validate() already rejected it; render stays total
+			}
+			stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(source), "target": m.To, "read_only": readOnly})
 		}
-		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(source), "target": m.To, "read_only": readOnly})
 	}
 	ports := []string{}
 	// SPEC-0082 R4.2: the noVNC publish lives on the browser sidecar, not the
@@ -143,10 +170,13 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	if hostStoreDir := filepath.Join(dir, "runtime", "toolhub"); regularFile(filepath.Join(hostStoreDir, "store.db")) && !regularFile(filepath.Join(hostStoreDir, "store.json")) {
 		toolhubStoreEnv = "/state/toolhub/store.db"
 	}
-	runtimeEnv := M{"HUB_SHARED_GID": fmt.Sprint(max(0, os.Getgid())), "HUB_ORG_SCOPED": fmt.Sprint(s.OrgScoped()), "HUB_ORG_ACTIONS": strings.Join(s.effectiveOrgActions(), ","), "HUB_TOOLS_RO": strings.Join(s.readOnlyCapabilities(), ","), "HUB_SELF_ENV_KEYS": strings.Join(runtimeSelfEnvKeys(s), ","), "HUB_PROTECTED_ENV_KEYS": strings.Join(runtimeProtectedEnvKeys(s), ","), "HERMES_HOME": "/state/hermes", "HOME": "/state/home", "HUB_STATE": "/state", "HUB_WORKSPACE": "/workspace", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": toolhubStoreEnv, "HUB_FEATURES": strings.Join(s.featureList(), ","), "HUB_RUNTIME_LISTEN": "0.0.0.0:8080", "TZ": s.Timezone, "HUB_BROWSER": fmt.Sprint(s.Has("browser")), "HUB_MEET": fmt.Sprint(s.Has("meet")), "GITLAB_HOST": host, "GOOGLE_EMAIL": s.GoogleEmail, "GOOGLE_OAUTH_REDIRECT_URI": fmt.Sprintf("http://localhost:%d/oauth2callback", s.OAuthPort), "PYTHONDONTWRITEBYTECODE": "1", "XDG_CACHE_HOME": "/state/cache", "HERMES_AGENT_NOTIFY_INTERVAL": "60", "HUB_TOOL_POLICY": "/config/tool-policy.json", "HUB_TOOL_MANIFEST": "/config/tool-manifest.json"}
+	runtimeEnv := M{"HUB_SHARED_GID": fmt.Sprint(max(0, os.Getgid())), "HUB_ORG_SCOPED": fmt.Sprint(s.OrgScoped()), "HUB_ORG_ACTIONS": strings.Join(s.effectiveOrgActions(), ","), "HUB_TOOLS_RO": strings.Join(s.readOnlyCapabilities(), ","), "HUB_WORKSPACE_RO": strings.Join(s.workspaceReadOnlyPaths(), ","), "HUB_SELF_ENV_KEYS": strings.Join(runtimeSelfEnvKeys(s), ","), "HUB_PROTECTED_ENV_KEYS": strings.Join(runtimeProtectedEnvKeys(s), ","), "HERMES_HOME": "/state/hermes", "HOME": "/state/home", "HUB_STATE": "/state", "HUB_WORKSPACE": "/workspace", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": toolhubStoreEnv, "HUB_FEATURES": strings.Join(s.featureList(), ","), "HUB_RUNTIME_LISTEN": "0.0.0.0:8080", "TZ": s.Timezone, "HUB_BROWSER": fmt.Sprint(s.Has("browser")), "HUB_MEET": fmt.Sprint(s.Has("meet")), "GITLAB_HOST": host, "GOOGLE_EMAIL": s.GoogleEmail, "GOOGLE_OAUTH_REDIRECT_URI": fmt.Sprintf("http://localhost:%d/oauth2callback", s.OAuthPort), "PYTHONDONTWRITEBYTECODE": "1", "XDG_CACHE_HOME": "/state/cache", "HERMES_AGENT_NOTIFY_INTERVAL": "60", "HUB_TOOL_POLICY": "/config/tool-policy.json", "HUB_TOOL_MANIFEST": "/config/tool-manifest.json"}
 	if s.Workspace.Goal != "" {
 		runtimeEnv["HUB_BOOTSTRAP_GOAL"] = s.Workspace.Goal
 		runtimeEnv["HUB_BOOTSTRAP_REVISION"] = fmt.Sprint(s.Workspace.BootstrapRevision)
+	}
+	if cfg := s.PassportConfig; cfg != nil && cfg.Runtime.Locale != "" {
+		runtimeEnv["HUB_DEFAULT_LANG"] = cfg.Runtime.Locale
 	}
 	runtimeEnv["HUB_SCOPE_KIND"] = string(UserScope)
 	if s.Has("browser") || s.Has("meet") {
@@ -161,6 +191,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		runtimeEnv["HUB_RUNTIME_GENERATION"] = "static-" + s.User + "-" + s.Environment
 	}
 	runtimeEnv["HUB_CAPABILITY_MODE"] = s.CapabilityMode
+	if s.CapabilityMode == "managed" {
+		// R9.1: defense-in-depth for non-gateway Hermes entrypoints inside the
+		// managed runtime — the same context-file fence the gateway renders.
+		runtimeEnv["HERMES_IGNORE_RULES"] = "1"
+	}
 	if s.CapabilityMode == "managed" {
 		delete(runtimeEnv, "HUB_TOOLHUB_STORE")
 		runtimeEnv["HUB_CAPABILITY_PROFILE_ID"] = s.CapabilityProfileID
@@ -212,8 +247,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	}
 	// The mounted dir is the read-only effective view materialized by
 	// Render: platform > org > user, with gated platform skills absent
-	// entirely when the feature is off.
-	stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(GeneratedEffectiveSkillsDir(dir)), "target": "/skills", "read_only": true})
+	// entirely when the feature is off. A published workspace passport
+	// already carries /skills through the MountPlan.
+	if s.PassportWorkspace == nil {
+		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(GeneratedEffectiveSkillsDir(dir)), "target": "/skills", "read_only": true})
+	}
 	// R5.1: the owner store is writable beside the read-only view; env tells
 	// the executor which path is which. Drafts never touch /skills.
 	stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "skills")), "target": "/skills-store"})
@@ -396,6 +434,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	hostRoot := "/state=" + hostRuntimeDir
 	brokerMaterializedVolume := "hermes-hub-" + s.User + "-" + s.Environment + "-broker-materialized"
 	brokerMaterializedMount := M{"type": "volume", "source": "broker-materialized", "target": "/run/broker-materialized"}
+	var cliproxySessionVolumes []string
 	// Per-call credential material (credentials.env, <name>.secret) stages on
 	// tmpfs shared by ToolHub and the workload controller — it must never
 	// reach the persistent state bind or the host disk.
@@ -438,7 +477,12 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			// Run-budget knobs are operator-tunable for drills and squeeze
 			// tests; empty resolves to the code defaults (30m / 60s).
 			"HUB_RUN_BUDGET":  "${HUB_RUN_BUDGET:-}",
-			"HUB_STREAM_IDLE": "${HUB_STREAM_IDLE:-}"}
+			"HUB_STREAM_IDLE": "${HUB_STREAM_IDLE:-}",
+			// Rights PDP: runtime-facing routes decide against this
+			// deployment's ToolHub — one control plane serves every space,
+			// and the store's profile set is the cross-space boundary, so
+			// the address is the shared alias, not a per-space pattern.
+			"HUB_TOOLHUB_URL_PATTERN": "http://toolhub-control:8090"}
 		svc["volumes"] = []any{dockerSock,
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Dir(dir)), "target": "/spaces"},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(projectRoot, "config")), "target": "/config", "read_only": true},
@@ -467,6 +511,13 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			"HUB_MODEL_RELAY_STATE":    "/run/model-state/model-select.json",
 			"HUB_MODEL_RELAY_OWNER":    s.User,
 			"HUB_MODEL_RELAY_CLIPROXY": cliproxyURL,
+			"HUB_ENVIRONMENT":          s.Environment,
+			// Rights PDP (SPEC-0092 R2.2): model-relay PEPs decide against
+			// this space's toolhub through the control-plane bearer. A
+			// secondary space shares the infra toolhub — its own
+			// toolhub-<user> alias never exists there.
+			"HUB_TOOLHUB_URL":     toolhubDecideURL(infra, s.User),
+			"HUB_TOOLHUB_CONTROL": "${HUB_SUPERVISOR_AUTH:-}",
 		}
 		for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_MODEL_", "model", "hermes-model-relay") {
 			modelRelay["environment"].(M)[key] = value
@@ -609,7 +660,10 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		toolhub["ports"] = []string{"127.0.0.1:8090:8090"}
 		toolhub["networks"] = sharedNetworks
 		if s.CapabilityMode == "managed" || supervisorURL != "" {
-			toolhub["networks"] = M{"default": M{}, sharedNetworkName: M{"aliases": []string{"toolhub-control"}}}
+			// toolhub-<user> is the rights-PDP address sibling services
+			// (supervisor, model-relay) call; the flat toolhub-control alias
+			// stays for the gateway's legacy URL.
+			toolhub["networks"] = M{"default": M{}, sharedNetworkName: M{"aliases": []string{"toolhub-control", "toolhub-" + s.User}}}
 		}
 		// Bounded-cli children share this cgroup: the admission receipt can
 		// claim cpu/memory/pid bounds only when the measured container cap is
@@ -654,13 +708,65 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	// after the owner so its implicit Compose aliases can never collide
 	// with the shared infra "cliproxy" name on the runtime network.
 	if !infra && s.Cliproxy == "dedicated" {
-		cliproxy := cloneMap(coreCommon)
-		cliproxy["build"] = coreBuild
-		cliproxy["entrypoint"] = []string{"cli-proxy-api", "-config", "/cliproxy/config.yaml"}
-		cliproxy["volumes"] = []any{M{"type": "bind", "source": hostCliproxyDir, "target": "/cliproxy"}}
-		name := "cliproxy-" + s.User
-		cliproxy["networks"] = M{"default": M{"aliases": []string{name}}, sharedNetworkName: M{"aliases": []string{name}}}
-		services[name] = cliproxy
+		names := newComposePlan(s).cliproxyNames()
+		if names == nil {
+			names = []string{"cliproxy-" + s.User}
+		}
+		cliproxySessionVolumes = []string{}
+		for _, name := range names {
+			bindDir := hostCliproxyDir
+			if name != "cliproxy-"+s.User {
+				bindDir = filepath.ToSlash(filepath.Join(dir, "cliproxy", name))
+			}
+			sessionVol := "cliproxy-session-" + name
+			cfgVol := "cliproxy-cfg-" + name
+			cliproxySessionVolumes = append(cliproxySessionVolumes, sessionVol, cfgVol)
+			cliproxy := cloneMap(coreCommon)
+			cliproxy["build"] = coreBuild
+			// The init companion renders the operator config plus the
+			// instance's proxy_access key into this tmpfs — the bind never
+			// carries credential material.
+			cliproxy["entrypoint"] = []string{"cli-proxy-api", "-config", "/run/cliproxy-cfg/config.yaml"}
+			// The instance bind carries operator config and static assets
+			// only; auth-dir is a dedicated tmpfs the init companion fills
+			// with exactly one Broker-materialized session file (R7.2).
+			cliproxy["volumes"] = []any{
+				M{"type": "bind", "source": bindDir, "target": "/cliproxy"},
+				M{"type": "volume", "source": sessionVol, "target": "/cliproxy/auths"},
+				M{"type": "volume", "source": cfgVol, "target": "/run/cliproxy-cfg"},
+			}
+			// The tmpfs volumes exist only while a live container holds their
+			// mounts: a completed init would drop them before the service could
+			// attach, so the companion stays up holding the mounts and reports
+			// readiness through its healthcheck.
+			cliproxy["depends_on"] = M{name + "-init": M{"condition": "service_healthy"}}
+			cliproxy["networks"] = M{"default": M{"aliases": []string{name}}, sharedNetworkName: M{"aliases": []string{name}}}
+			services[name] = cliproxy
+			init := cloneMap(coreCommon)
+			init["restart"] = "no"
+			// Materialize, then hold the tmpfs mounts open for the service's
+			// lifetime — an exiting companion would destroy the volumes.
+			init["entrypoint"] = []string{"sh", "-c", "hub-runtime cliproxy-materialize && exec sleep infinity"}
+			init["healthcheck"] = M{"test": []string{"CMD-SHELL", "test -f /run/cliproxy-cfg/config.yaml && test -f /cliproxy/auths/session.json"}, "interval": "2s", "timeout": "5s", "retries": 30}
+			init["environment"] = M{"HUB_CLIPROXY_INSTANCE": name, "HUB_USER_ID": s.User}
+			for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_CLIPROXY_", "cliproxy", "hermes-cliproxy-session") {
+				init["environment"].(M)[key] = value
+			}
+			init["volumes"] = []any{
+				// The init only reads the lease's materialized files —
+				// the shared view stays read-only to it.
+				M{"type": "volume", "source": "broker-materialized", "target": "/run/broker-materialized", "read_only": true},
+				M{"type": "volume", "source": sessionVol, "target": "/cliproxy/auths"},
+				M{"type": "volume", "source": cfgVol, "target": "/run/cliproxy-cfg"},
+				M{"type": "bind", "source": bindDir, "target": "/cliproxy-base", "read_only": true},
+				M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated")), "target": "/run/model-gen", "read_only": true},
+				brokerSecrets("cliproxy"),
+			}
+			// The companion resolves Broker grants over the shared runtime
+			// network; default only attaches it to the project network.
+			init["networks"] = M{"default": M{}, sharedNetworkName: M{}}
+			services[name+"-init"] = init
+		}
 	}
 
 	if infra && includeGateway && (s.Has("telegram") || s.Has("slack_app")) {
@@ -685,6 +791,14 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			gatewayRuntimeURL = supervisorURL
 		}
 		gatewayEnvironment := M{"HUB_USER_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_FEATURES": strings.Join(s.featureList(), ","), "HUB_RUNTIME_URL": gatewayRuntimeURL, "HUB_RUNTIME_SUPERVISOR_URL": "${HUB_RUNTIME_SUPERVISOR_URL}", "HUB_COMMUNICATION_SPOOL": "/data", "HUB_CONFIGURED_ENV": strings.Join(configuredEnvKeys(s, dir), ","), "HUB_NATIVE_CRON": s.NativeCron, "HUB_DIAGNOSTICS_ENABLED": fmt.Sprint(s.DiagnosticsEnabled())}
+		if cfg := s.PassportConfig; cfg != nil {
+			if cfg.Runtime.Locale != "" {
+				gatewayEnvironment["HUB_DEFAULT_LANG"] = cfg.Runtime.Locale
+			}
+			if cfg.Runtime.Context.ParallelLanes > 0 {
+				gatewayEnvironment["HUB_CONTEXT_MAX_PARALLEL"] = fmt.Sprint(cfg.Runtime.Context.ParallelLanes)
+			}
+		}
 		if s.Has("telegram") {
 			gatewayEnvironment["HUB_TELEGRAM_AUTH_ENABLED"] = fmt.Sprint(s.Has("telegram_auth"))
 		}
@@ -703,7 +817,18 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			gatewayEnvironment["HUB_MODEL_RELAY_URL"] = "http://model-relay-" + s.User + ":8318"
 			gatewayEnvFiles = append(gatewayEnvFiles, M{"path": filepath.ToSlash(filepath.Join(dir, "model-relay.auth")), "format": "raw"})
 		}
-		if s.Has("transcription") {
+		// config.channels.*.voice is the imperative voice contract: any
+		// channel carrying an in/out block wires the same service endpoints
+		// the legacy transcription feature does (SPEC-0092 R4.2).
+		channelsVoice := s.Has("transcription")
+		if cfg := s.PassportConfig; cfg != nil {
+			for _, ch := range cfg.Channels {
+				if ch.Voice.In != "" || ch.Voice.Out != "" {
+					channelsVoice = true
+				}
+			}
+		}
+		if channelsVoice {
 			// SPEC-0082 R2: voice is service-only — the gateway talks to the
 			// dedicated hub-stt/hub-tts services or reports voice unavailable.
 			gatewayEnvironment["HUB_STT_URL"] = "http://hub-stt:8090"
@@ -915,6 +1040,19 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	// Secondary spaces still declare broker-secrets-runtime: the supervisor
 	// mounts it by project-derived name into that user's spawned runtimes.
 	volumes := M{"broker-secrets-runtime": M{}}
+	for _, name := range cliproxySessionVolumes {
+		volumes[name] = M{"driver": "local", "driver_opts": M{"type": "tmpfs", "device": "tmpfs", "o": "size=8m,uid=10001,gid=10001,mode=0700"}}
+	}
+	if len(cliproxySessionVolumes) > 0 {
+		volumes["broker-secrets-cliproxy"] = M{}
+		if !infra {
+			// The shared Broker materializes leases inside its own infra
+			// project volume; a sibling's session-init reads it there. The
+			// volume is named after the infra owner, not this space.
+			infraOwner := filepath.Base(InfraSpaceDir(dir))
+			volumes["broker-materialized"] = M{"external": true, "name": "hermes-hub-" + infraOwner + "-" + s.Environment + "-broker-materialized"}
+		}
+	}
 	if s.Has("hosting") {
 		hostingVolumes := runtimeService["volumes"].([]any)
 		addHosting(services, volumes, s, dir, common, runtimeEnv, &hostingVolumes)
@@ -927,6 +1065,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	}
 	if s.CapabilityMode == "managed" {
 		volumes["broker-secrets-model"] = M{}
+	}
+	if includeGateway {
+		// The stack passport bounds the emitted set: services map modes
+		// decide what renders locally; undeclared emission is dropped (R3.2).
+		services = newComposePlan(s).filter(services)
 	}
 	result := M{"name": "hermes-hub-" + s.User + "-" + s.Environment, "services": services, "volumes": volumes}
 	if composeSecrets != nil {
@@ -1044,4 +1187,29 @@ var cliRegistryHosts = map[string][]string{
 	"npm":   {"registry.npmjs.org"},
 	"cargo": {"index.crates.io", "static.crates.io", "crates.io"},
 	"go":    {"proxy.golang.org", "sum.golang.org", "storage.googleapis.com"},
+}
+
+// configMounts renders the /config bind set: the published passport view
+// as one read-only directory once a revision exists, else the legacy raw
+// env config + SOUL the heal path expects (SPEC-0092 S1.4 — single-file
+// binds are not a refresh mechanism, but unpublished spaces still boot).
+func configMounts(dir, env string) []any {
+	view := filepath.Join(dir, "generated", "config-view", env)
+	if info, err := os.Stat(view); err == nil && info.IsDir() {
+		return []any{M{"type": "bind", "source": filepath.ToSlash(view), "target": "/config", "read_only": true}}
+	}
+	return []any{
+		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "hermes."+env+".yaml")), "target": "/config/config.yaml", "read_only": true},
+		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "SOUL.md")), "target": "/config/SOUL.md", "read_only": true},
+	}
+}
+
+// toolhubDecideURL is the rights-PDP address for a space's out-of-process
+// PEPs: the infra space's own ToolHub answers at toolhub-<user>; secondary
+// spaces share that control plane through its stable toolhub-control alias.
+func toolhubDecideURL(infra bool, user string) string {
+	if infra {
+		return "http://toolhub-" + user + ":8090"
+	}
+	return "http://toolhub-control:8090"
 }

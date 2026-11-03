@@ -1,11 +1,12 @@
 ---
 description: Architectural decisions and clearly marked proposals; append new records when changing direction.
-last_verified: 2026-11-01
+last_verified: 2026-11-02
 ---
 # Decisions
 
 | Record | Decision |
 |---|---|
+| [ADR-0093](ADR-0093-imperative-passports-capability-grants.md) | Accepted direction: passports are the imperative sole input to build/spawn/admission; agent capability grants (PDP/PEP) instead of tool ids; effect classes live/respawn/recreate/rebuild; amends ADR-0092 D1–D3, D6 (M30) |
 | [ADR-0092](ADR-0092-six-passport-space-contract.md) | Accepted direction: six effective per-space passports, versioned platform catalogs/templates, grant ceilings and verified migration (M29) |
 | [ADR-0091](ADR-0091-root-services-sqlite-storage.md) | Accepted direction: SQLite substrate for ToolHub/Communication (pure-Go driver, per-space DBs, shared migration contract); amends ADR-0087 alternatives + ADR-0088 D1 exclusion (CHG-0215-0226) |
 | [ADR-0090](ADR-0090-conversation-parallel-lanes.md) | Accepted: parallel sessions inside one context — lane key (principal, context, conversation), fairness per context, per-context cap below upstream; amends ADR-0025 (CHG-0234) |

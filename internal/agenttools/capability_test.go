@@ -46,6 +46,31 @@ func TestExposureToolsInCatalog(t *testing.T) {
 	}
 }
 
+// The direct MCP surface carries the catalog's file-family tools too:
+// unmanaged runtimes without a ToolHub projection still expose
+// project_create, so a missing top-level project can never dead-end.
+func TestProjectCreateOnDirectSurface(t *testing.T) {
+	client, close := connectHub(t, fixture(t))
+	defer close()
+	list, err := client.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]string{}
+	for _, tool := range list.Tools {
+		names[tool.Name] = tool.Description
+	}
+	var want string
+	for _, spec := range HubToolsDefinition().Tools {
+		if spec.Name == "project_create" {
+			want = spec.Description
+		}
+	}
+	if got, ok := names["project_create"]; !ok || got != want {
+		t.Fatalf("direct MCP surface lacks catalog project_create: %v", names)
+	}
+}
+
 func TestHubToolsDefinitionValidatesSandboxed(t *testing.T) {
 	d := HubToolsDefinition()
 	if err := d.Validate(); err != nil {

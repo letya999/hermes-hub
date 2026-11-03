@@ -56,7 +56,7 @@ func runTrace(ctx context.Context, out io.Writer, jobID, user, spacesRoot string
 		Environment: environment,
 		Home: func(contextID, environment string) (string, error) {
 			dir := filepath.Join(spacesRoot, contextID)
-			settings, err := stack.ReadEnvironment(dir, environment)
+			settings, err := stack.ReadEffective(dir, environment)
 			if errors.Is(err, os.ErrNotExist) {
 				root, openErr := os.OpenRoot(dir)
 				if os.IsNotExist(openErr) {

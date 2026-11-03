@@ -135,6 +135,11 @@ func (t *Tools) Server() *mcp.Server {
 	for _, op := range []string{"list", "read", "write", "search"} {
 		add("file_"+op, "Bounded "+op+" on workspace or read-only archive; updates require revision from read")
 	}
+	for _, tool := range HubToolsDefinition().Tools {
+		if tool.Name == "project_create" {
+			add(tool.Name, tool.Description)
+		}
+	}
 	for _, op := range []string{"knowledge_list", "knowledge_read", "knowledge_search"} {
 		for _, tool := range HubToolsDefinition().Tools {
 			if tool.Name == op {

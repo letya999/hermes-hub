@@ -27,7 +27,7 @@ func TestModelTokenPreflightDoesNotSend(t *testing.T) {
 	if response.StatusCode != 413 || calls != 0 {
 		t.Fatalf("budget refusal status=%d upstream calls=%d", response.StatusCode, calls)
 	}
-	if !hop.available(time.Now()) {
+	if !hop.availableFor(time.Now(), false) {
 		t.Fatal("budget refusal poisoned provider cooldown")
 	}
 }

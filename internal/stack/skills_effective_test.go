@@ -671,6 +671,7 @@ func TestManagedRenderIncludesPlatformCatalogInView(t *testing.T) {
 	if err := saveSpace(d, s); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, d, "me", "r-0123456789abcdef")
 	selection := `{"schema":1,"user":"me","environment":"prod","mode":"supervisor","supervisor_url":"http://localhost:8876","native_cron":"disabled","compatibility_release":"0.3.0"}`
 	if err := os.WriteFile(filepath.Join(d, ExecutionPath("prod")), []byte(selection), 0600); err != nil {
 		t.Fatal(err)

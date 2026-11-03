@@ -26,6 +26,9 @@ func (m *Manager) skillRefLease(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid lease request"})
 		return
 	}
+	if !m.rightsGate(w, r, request.PrincipalID, "agents", "monitor_self", "runtime") {
+		return
+	}
 	m.mu.Lock()
 	entry := m.items[runtimeKey(Binding{PrincipalID: request.PrincipalID, ContextID: request.ContextID, RuntimeMode: "gateway"})]
 	if entry == nil || entry.RuntimeID != request.RuntimeID || entry.PolicyVersion != request.PolicyVersion || entry.State != Ready && entry.State != Busy && entry.State != Idle {

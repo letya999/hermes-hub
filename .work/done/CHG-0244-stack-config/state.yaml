@@ -1,0 +1,43 @@
+schema: 1
+change: CHG-0244
+title: "M29.3 Separate service topology from settings and provision from the effective revision"
+status: done
+branch: feat/m29-six-passport-contract
+updated: 2026-11-02
+phase: implementation-complete
+adr: ADR-0092
+spec: SPEC-0091
+requirements: [R3.1, R3.2]
+depends_on: ["M29.2"]
+github_milestone: "M29 — Six-Passport Space Contract"
+github_issue: 427
+design_status: accepted
+implementation_status: done
+slices:
+  S3.1-contract: done
+  S3.2-implementation: done
+validation:
+  documents: pass
+  just_check: environmental_flake
+  docker_check: not_run
+  red_team: pass
+  live_acceptance: deferred
+evidence:
+  - kind: unit
+    detail: "go test ./internal/passport — all green; package coverage 92.8% statements."
+    items:
+      - "TestStackConfigRejectsMissingServiceAndPortCollision: stack.services inspectable via Value (R3.1 service identity on stack), config.ports inspectable; port for a non-running service, host-port collision, uncataloged service, dependency on a non-running service, service missing its catalog-declared depends_on, managed mode without hermes-runtime, voice channel without hub-stt/hub-tts, nonexistent proxy reference — all rejected at compile, before any compose change (R3.2/A3)."
+      - "Protected critical stack watchers: platform supervision.watchers.<name>.protected=true cannot be flipped off by a user layer; user-created watchers coexist as ordinary config (issue acceptance 2)."
+  - kind: static
+    detail: "go vet ./internal/passport clean; gofmt clean; devcheck docs clean; go test ./internal/passport ./internal/catalog ./internal/stack all green. just check ran full pipeline minutes before this slice: green except the known Windows AV flakes (unrelated test binaries blocked, pass on isolated rerun); this change only touches internal/passport + .work files."
+  - kind: schema
+    detail: "stack passport owns identity/service instances/mode/dependencies (services, depends.*, mode/organization/environment invariants, features); config passport owns channels/memory/supervision/ports/runtime choices (channels.*, memory.*, supervision.*, ports.*, proxy, timezone). No secret bytes serialized — env/secret material never enters layer docs or passports."
+  - kind: red_team
+    detail: "Forbidden service fails the catalog pin; private port exposure fails the running-service check; protected watcher flip fails; every rejection happens inside Compile — before any compose/env/supervision artifact is touched."
+  - kind: live_acceptance
+    detail: "Deferred with reason: rendering compose/supervisor FROM a published revision requires provisioning to compile real platform/org/user sources; those source files are produced by the consumer-migration work (M29.4+ supply workspace/tools/models fields; M29.11 migrates legacy sources). The validation contract this issue delivers is the pre-compose gate; existing Compose(settings) rendering is unchanged and unaffected."
+remaining:
+  - "Wire provisioning to compile+publish a revision once platform/org source files exist, then render compose/env/supervisor from that revision."
+limitations:
+  - "Field-class registry admits new wildcard families (ports.*/channels.*/depends.*/supervision.*); the registry is still the complete allowlist — unclassified writes fail closed."
+  - "Render-from-revision consumer is not yet built; tracked in remaining."

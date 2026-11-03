@@ -3,6 +3,7 @@ package stack
 import (
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/media"
+	"github.com/letya999/hermes-hub/internal/passportview"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -112,6 +113,18 @@ type Settings struct {
 	Goals        ContextGoals   `yaml:"goals,omitempty"`
 	SummaryModel string         `yaml:"summary_model,omitempty"`
 	JudgeModel   string         `yaml:"judge_model,omitempty"`
+	// PassportServices carries the published stack passport's services map
+	// (instance → mode) into the compose plan; render state only, never
+	// serialized back to agent.yaml.
+	PassportServices map[string]string `yaml:"-"`
+	// PassportConfig carries the published config.yaml section so consumers
+	// without a Settings leaf (locale, parallel lanes, supervision, channel
+	// refs, memory) still read the imperative value. Render state only.
+	PassportConfig *passportview.Config `yaml:"-"`
+	// PassportWorkspace carries the published workspace.yaml boundary —
+	// writable/read_only/mounts — for the mount plan and file admission.
+	// Render state only, never serialized.
+	PassportWorkspace *passportview.Workspace `yaml:"-"`
 }
 
 // DefaultGlobalSkillsDir resolves the platform catalog without changing operator rights.
@@ -465,8 +478,16 @@ func (s Settings) Validate() error {
 	if err := s.validateContext(); err != nil {
 		return err
 	}
-	if s.BrowserPort < 1024 || s.BrowserPort > 65535 || s.OAuthPort > 65535 || s.BrowserPort == s.OAuthPort {
+	if s.OAuthPort > 65535 {
 		return fmt.Errorf("invalid or colliding host ports")
+	}
+	// The noVNC port is meaningful only while the browser sidecar publishes
+	// it — the same gate compose uses (browser or meet). A managed space
+	// without that service legitimately declares no browser-vnc port.
+	if s.Has("browser") || s.Has("meet") {
+		if s.BrowserPort < 1024 || s.BrowserPort > 65535 || s.BrowserPort == s.OAuthPort {
+			return fmt.Errorf("invalid or colliding host ports")
+		}
 	}
 	if s.Has("slack_app") {
 		port := slackEventsHostPort(s)

@@ -420,6 +420,11 @@ func (g *Gateway) handleInbound(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && action == "":
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("X-Hub-Name", rec.Name)
+		src := rec.Source
+		if src == "" {
+			src = "people"
+		}
+		w.Header().Set("X-Hub-Source", src)
 		_, _ = w.Write(data)
 	case r.Method == http.MethodPost && action == "consume":
 		if err := g.spool.ConsumeInbound(id); err != nil {

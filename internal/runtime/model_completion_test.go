@@ -83,7 +83,7 @@ func TestRegistryProviderCooldownAppliesAcrossLogicalModels(t *testing.T) {
 	first := registry.ladderFor(file, "first", file.Models["first"])
 	second := registry.ladderFor(file, "second", file.Models["second"])
 	first[0].fail()
-	if second[0].available(time.Now()) {
+	if second[0].availableFor(time.Now(), false) {
 		t.Error("exhausted provider account remains usable through another logical model")
 	}
 }

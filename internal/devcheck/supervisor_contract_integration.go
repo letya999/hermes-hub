@@ -82,7 +82,7 @@ func supervisorSmoke(ctx context.Context, image, providerURL string) error {
 	if err := os.WriteFile(filepath.Join(contextRoot, "settings.yaml"), []byte("schema: 1\nuser: "+userID+"\ntimezone: UTC\nbrowser_port: 9222\nfeatures: [workspace, web]\n"), 0600); err != nil {
 		return err
 	}
-	settings, err := stack.ReadEnvironment(contextRoot, "prod")
+	settings, err := stack.ReadEffective(contextRoot, "prod")
 	if err != nil {
 		return err
 	}

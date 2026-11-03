@@ -5,6 +5,7 @@ package main
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -231,15 +232,26 @@ func TestProxyHandlerDeniesUnlistedHost(t *testing.T) {
 
 func TestProxyHandlerPathHostAndUpstreamError(t *testing.T) {
 	// A listed host that cannot be dialed: exercises the host extraction and
-	// header injection, then reports the upstream failure honestly.
+	// header injection, then reports the upstream failure honestly. The port
+	// is a just-released ephemeral one — no listener races the refusal —
+	// because fixed ports like :80 may legitimately serve on a dev machine.
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := lis.Addr().(*net.TCPAddr).Port
+	if err := lis.Close(); err != nil {
+		t.Fatal(err)
+	}
+	host := "localhost:" + strconv.Itoa(port)
 	h := &proxyHandler{rules: map[string]proxyRule{
-		"localhost": {Headers: map[string]string{"Authorization": "Bearer x"}, Scheme: "http"},
+		host: {Headers: map[string]string{"Authorization": "Bearer x"}, Scheme: "http"},
 	}}
 	rec := httptest.NewRecorder()
 	// No URL host: the first path segment carries it.
-	req := httptest.NewRequest(http.MethodGet, "http://proxy/localhost/v1/data", nil)
+	req := httptest.NewRequest(http.MethodGet, "http://proxy/"+host+"/v1/data", nil)
 	req.URL.Host = ""
-	req.URL.Path = "/localhost/v1/data"
+	req.URL.Path = "/" + host + "/v1/data"
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("unreachable upstream status=%d body=%s", rec.Code, rec.Body.String())

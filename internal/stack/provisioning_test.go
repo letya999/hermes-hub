@@ -256,6 +256,95 @@ func TestInitProfileLayoutDirs(t *testing.T) {
 	}
 }
 
+// R4.1: provisioning materializes the approved workspace tree — inbox split
+// by source, work, projects, artifacts branches and outbox — and never
+// disturbs content the user already placed there (nested Git projects live
+// under workspace/projects).
+func TestInitMaterializesWorkspaceTree(t *testing.T) {
+	root := t.TempDir()
+	space := filepath.Join(root, "spaces", "alice")
+	dir := filepath.Join(root, "policies", "profiles", "dev")
+	writeProfileFile(t, dir, "workspace.yaml", "tools: {}\n")
+	if err := InitEnvironmentProvision(space, "alice", "prod", "dev"); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{
+		"workspace/inbox/people", "workspace/inbox/services",
+		"workspace/work", "workspace/projects",
+		"workspace/artifacts/documents", "workspace/artifacts/images",
+		"workspace/artifacts/videos", "workspace/artifacts/archives",
+		"workspace/artifacts/services", "workspace/outbox",
+	} {
+		info, err := os.Stat(filepath.Join(space, rel))
+		if err != nil || !info.IsDir() {
+			t.Fatalf("workspace tree dir %q not created: %v", rel, err)
+		}
+	}
+
+	// Re-rendering a space that already has a nested Git project and an
+	// inbox original preserves both byte-for-byte.
+	project := filepath.Join(space, "workspace", "projects", "app", ".git")
+	if err := os.MkdirAll(project, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "HEAD"), []byte("ref: refs/heads/main\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	attachment := filepath.Join(space, "workspace", "inbox", "people", "att1", "files")
+	if err := os.MkdirAll(attachment, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(attachment, "report.csv"), []byte("a,b\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "config"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config", "SOUL.md"), []byte("soul"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// A legacy space without the new branches gets them on the next render
+	// while its own content (Git project, inbox original) stays untouched.
+	for _, rel := range []string{
+		"workspace/inbox/services", "workspace/work", "workspace/outbox",
+		"workspace/artifacts/videos", "workspace/artifacts/archives",
+		"workspace/artifacts/services",
+	} {
+		if err := os.RemoveAll(filepath.Join(space, rel)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := RenderEnvironment(space, root, "prod"); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{
+		"workspace/projects/app/.git/HEAD", "workspace/inbox/people/att1/files/report.csv",
+		"workspace/inbox/services", "workspace/work", "workspace/outbox",
+		"workspace/artifacts/videos", "workspace/artifacts/archives",
+		"workspace/artifacts/services",
+	} {
+		if _, err := os.Stat(filepath.Join(space, rel)); err != nil {
+			t.Fatalf("existing content %q lost or dir not restored: %v", rel, err)
+		}
+	}
+
+	// A pre-R4 space has no inbox or projects branches at all: render
+	// recreates them wholesale.
+	for _, rel := range []string{"workspace/inbox", "workspace/projects"} {
+		if err := os.RemoveAll(filepath.Join(space, rel)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := RenderEnvironment(space, root, "prod"); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{"workspace/inbox/people", "workspace/inbox/services", "workspace/projects"} {
+		if info, err := os.Stat(filepath.Join(space, rel)); err != nil || !info.IsDir() {
+			t.Fatalf("legacy branch %q not restored: %v", rel, err)
+		}
+	}
+}
+
 // R9.4: the effective SOUL layers platform contract → org → profile → user.
 func TestEffectiveSoulLayerOrder(t *testing.T) {
 	root := t.TempDir()

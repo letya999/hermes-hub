@@ -38,7 +38,7 @@ func TestModelRelayBrokerCredentialIsOwnerBoundAndLeaseReleased(t *testing.T) {
 			audience = "broker:control"
 		}
 		actor, err := verifier.Verify(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), audience, r.Method, r.URL.RequestURI(), body)
-		if err != nil || actor.PrincipalID != "alice" || actor.ContextID != "alice" || actor.RuntimeID != "alice" || actor.BindingID != "model-relay-p" || actor.WorkloadID != "model-relay" {
+		if err != nil || actor.PrincipalID != "alice" || actor.ContextID != "alice" || actor.RuntimeID != "alice" || actor.BindingID != "model-relay-p" || actor.WorkloadID != "model-relay-p" {
 			http.Error(w, "wrong actor", http.StatusForbidden)
 			return
 		}

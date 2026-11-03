@@ -1,6 +1,6 @@
 ---
 description: Authorization model — principals, sections, evaluation order, grants, capability policies, profiles, teams, connector lifecycle.
-last_verified: 2026-10-30
+last_verified: "2026-11-04"
 ---
 
 # RBAC, grants and capability policy
@@ -85,6 +85,65 @@ bundle (`personal` / `personal+team`); under `connectors: ""` the strict
 `tools_list` are always projected and never grant anything — both only
 expose the caller's own admitted surface.
 
+## Rights vocabulary and the PDP
+
+`platform/catalogs/<release>/rights.yaml` is the immutable RBAC vocabulary
+shipped in the image: fundamental capability domains (`workspace`, `memory`,
+`models`, `tools`, `skills`, `connectors`, `agents`, `stack`, `config`,
+`channels`, `observability`, `users`) with per-operation `subject`
+(self|cross), `scope`, `issuers`, `pep`, `effect` and a norm description.
+Every operation names its enforcement point; the vocabulary is verified by
+manifest digest and cannot be edited at runtime.
+
+ToolHub's `Store.Decide(envelope, capability, operation, scope)` is the
+single policy decision point. Each verdict intersects three authorities:
+
+1. the vocabulary — an unknown `capability.operation` never allows;
+2. the published ceiling — a managed principal holds only the flattened
+   `grants.yaml` allow its active `CapabilityProfile.Rights` carries;
+3. the live ledger — `Governance.Rights` grants that are active, unexpired
+   and scope-covering. Cross-subject operations additionally require a
+   scope naming the target and are never operator-minted.
+
+Revocation is immediate: `RevokeRightGrant` flips the ledger record and the
+next Decide denies without a republish or respawn; `RightDecision.epoch`
+reports the governance revision the verdict was taken at.
+
+`/v1/rights/decide` serves both identity modes. Runtime tokens decide
+against the bearer envelope — a body-supplied foreign principal is denied,
+never trusted. The control-plane bearer lets in-space services assert this
+space's principal for their own PEP sites: supervisor gates
+`agents.restart_self`/`inspect_self`/`monitor_self` on runtime-facing
+routes, model-relay gates `models.list`/`switch`/`use`, communication-hub
+gates `channels.send`/`send_voice` (a denied voice leg degrades to text).
+The asserted principal must equal the toolhub's `HUB_PRINCIPAL_ID` pin —
+cross-space assertions refuse. Hub tools enforce their declared `requires`
+inside admission itself, so a missing right hides the tool and `tools_list`
+reports it `unavailable` with the missing `capability.operation`.
+
+Managed rights state is always derived, never authored: publishing a
+revision (`space apply`, `space-migrate`) calls `DeriveRights`, which stamps
+`profile.Rights` from the allow and reconciles platform-issued ledger
+grants — rows a later revision drops are revoked in place.
+
+## Grants passport (effective view)
+
+Each managed space's `generated/passports/<rev>/grants.yaml` is the
+published imperative for agent rights: `allow: {capability: [operations]}`
+is the ceiling every per-call decision enforces. It compiles from the
+trusted grant ledger intersected with the merged platform/org ceilings —
+a ledger entry outside the ceiling fails compilation, and an empty allow
+fails outright because an admitted space holds no rights (SPEC-0092 R5.2).
+Editing the file changes nothing: the next publish rewrites it, and live
+decisions read the derived profile ceiling plus the live ledger, not the
+snapshot itself.
+
+Revocation is immediate on both agent-facing paths. The toolhub gateway
+re-verifies the binding on every admitted call (`ReverifyEffective`), and
+the runtime executor reloads `/config/tool-policy.json` on every direct or
+invoke call (`toolPolicyDeny`), so an explicit deny lands on the next call
+even when the prompt text or the passport snapshot is stale.
+
 ## Capability policy (org ceiling)
 
 `CapabilityPolicy` binds an organization: `ceiling` (the hard maximum),
@@ -108,6 +167,10 @@ definitions project), `allows`/`allow_groups`, `denies`, plus:
   legacy per-operation grants, `none` hides them, `personal` projects them
   over own connections, `personal+team` adds lifecycle on team connections
   where the caller is a member.
+- `rights` — the published grants allow flattened to
+  `capability.operation` ceiling rows; `DeriveRights` rewrites it on every
+  publish, so the row set is always the active passport, never a manual
+  edit.
 
 ## Capability rules
 

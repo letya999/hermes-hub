@@ -30,7 +30,7 @@ func EnrollSiblingRuntimeTokens(spaceDir, environment string) error {
 	if filepath.Base(parent) != "spaces" {
 		return nil
 	}
-	owner, err := ReadEnvironment(spaceDir, environment)
+	owner, err := ReadEffective(spaceDir, environment)
 	if err != nil {
 		return err
 	}
@@ -52,7 +52,7 @@ func EnrollSiblingRuntimeTokens(spaceDir, environment string) error {
 		if sameDir(sibDir, spaceDir) {
 			continue
 		}
-		settings, readErr := ReadEnvironment(sibDir, environment)
+		settings, readErr := ReadEffective(sibDir, environment)
 		if readErr != nil {
 			continue
 		}
@@ -123,7 +123,7 @@ func EnrollSiblingModelRelayAdmins(spaceDir, environment string) error {
 		if sameDir(sibDir, spaceDir) {
 			continue
 		}
-		settings, readErr := ReadEnvironment(sibDir, environment)
+		settings, readErr := ReadEffective(sibDir, environment)
 		if readErr != nil || settings.CapabilityMode != "managed" {
 			continue
 		}

@@ -601,7 +601,7 @@ func TestMCPWire(t *testing.T) {
 	}
 	defer client.Close()
 	list, err := client.ListTools(ctx, nil)
-	if err != nil || len(list.Tools) != 57 {
+	if err != nil || len(list.Tools) != 58 {
 		t.Fatal(len(list.Tools), err)
 	}
 	for _, name := range []string{"document_extract", "document_create", "image_inspect", "artifact_remove", "settings_get", "settings_set", "archive_create", "archive_unpack", "inbox_fetch"} {
@@ -730,7 +730,7 @@ func TestMediaThroughHubMCP(t *testing.T) {
 	client, cleanup := connectHub(t, v)
 	defer cleanup()
 	list, err := client.ListTools(ctx, nil)
-	if err != nil || len(list.Tools) != 57 {
+	if err != nil || len(list.Tools) != 58 {
 		t.Fatal(len(list.Tools), err)
 	}
 	for _, tool := range list.Tools {
@@ -821,7 +821,7 @@ func TestMediaThroughHubMCP(t *testing.T) {
 	granted, cleanupGranted := connectHub(t, v)
 	defer cleanupGranted()
 	listed, err := granted.ListTools(ctx, nil)
-	if err != nil || len(listed.Tools) != 61 {
+	if err != nil || len(listed.Tools) != 62 {
 		t.Fatal(len(listed.Tools), err)
 	}
 	made, body := callHub(t, granted, "image_generate", map[string]any{"name": "pic", "prompt": "a red square"})
@@ -940,5 +940,158 @@ func TestToolHubEnvOr(t *testing.T) {
 	t.Setenv("X_ENV_PRESENT", "v")
 	if toolHubEnvOr("X_ENV_PRESENT", "fb") != "v" || toolHubEnvOr("X_ENV_ABSENT", "fb") != "fb" {
 		t.Fatal("toolHubEnvOr")
+	}
+}
+
+// TestWorkspaceLayoutRejectsSymlinkAndCrossUserWrite — M29.4/A4: two users
+// keep their own projects and attachments; read-only subtrees and symlinks
+// cannot launder a write across boundaries.
+func TestWorkspaceLayoutRejectsSymlinkAndCrossUserWrite(t *testing.T) {
+	aliceDir, bobDir := t.TempDir(), t.TempDir()
+	alice, err := Open(aliceDir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer alice.Close()
+	bob, err := Open(bobDir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bob.Close()
+
+	write(t, alice, "projects/notes/readme.md", "alice repo")
+	write(t, alice, "inbox/in-1/files/photo.txt", "alice attachment")
+	write(t, bob, "projects/app/go.mod", "module example.com/bob")
+
+	// One user cannot reach the other's tree: each root opens only its own.
+	if _, err := bob.File("read", Input{Path: "projects/notes/readme.md"}); err == nil {
+		t.Fatal("bob read alice's project")
+	}
+
+	// A symlink inside bob's root pointing at alice's tree is not followed.
+	if err := os.Symlink(filepath.Join(aliceDir, "projects"), filepath.Join(bobDir, "link")); err == nil {
+		if _, err := bob.File("read", Input{Path: "link/readme.md"}); err == nil {
+			t.Fatal("symlink read escaped into another user tree")
+		}
+		if _, err := bob.File("write", Input{Path: "link/evil.md", Text: "x"}); err == nil {
+			t.Fatal("symlink write escaped into another user tree")
+		}
+	}
+
+	// Read-only subtrees (inbox originals, shared mounts, vault memory)
+	// refuse file_write at any depth.
+	alice.ReadOnlyPaths = []string{"inbox"}
+	if _, err := alice.File("write", Input{Path: "inbox/in-1/files/photo.txt", Text: "tamper"}); err == nil {
+		t.Fatal("inbox original rewritten")
+	}
+	if _, err := alice.File("write", Input{Path: "inbox/new/file.txt", Text: "x"}); err == nil {
+		t.Fatal("new path under a read-only boundary written")
+	}
+	// An in-root symlink cannot launder a write into a read-only subtree:
+	// the guard applies to the resolved path, not the literal one.
+	if err := os.Symlink("inbox", filepath.Join(aliceDir, "alias")); err == nil {
+		if _, err := alice.File("write", Input{Path: "alias/in-1/files/photo.txt", Text: "tamper"}); err == nil {
+			t.Fatal("symlinked path bypassed the read-only boundary")
+		}
+		if _, err := alice.File("write", Input{Path: "alias/new.txt", Text: "x"}); err == nil {
+			t.Fatal("symlinked path created content in a read-only subtree")
+		}
+	}
+
+	// Archive surfaces honor the same boundary: a symlinked unpack target
+	// cannot redirect output into a read-only subtree.
+	if err := alice.Workspace.MkdirAll("artifacts", 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../inbox", filepath.Join(aliceDir, "artifacts", "unpacked")); err == nil {
+		if err := alice.Workspace.MkdirAll("docs", 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := alice.Workspace.WriteFile("docs/pack.zip", zipBytes(t, map[string]string{"e.txt": "evil"}), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := alice.Call(context.Background(), "archive_unpack", Input{Path: "docs/pack.zip", Name: "new"}); err == nil {
+			t.Fatal("archive unpack into a read-only subtree accepted")
+		}
+		if _, err := alice.File("read", Input{Path: "inbox/new/e.txt"}); err == nil {
+			t.Fatal("archive unpack laundered content into inbox")
+		}
+	}
+	if err := alice.Workspace.RemoveAll("artifacts"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("inbox", filepath.Join(aliceDir, "artifacts")); err == nil {
+		if _, err := alice.Call(context.Background(), "archive_create", Input{Path: "artifacts/out.zip", Paths: []string{"docs/pack.zip"}}); err == nil {
+			t.Fatal("archive create into a read-only subtree accepted")
+		}
+		if _, err := alice.File("read", Input{Path: "inbox/out.zip"}); err == nil {
+			t.Fatal("archive create laundered content into inbox")
+		}
+	}
+
+	// Ordinary writable space keeps working; projects and attachments keep
+	// their content.
+	write(t, alice, "work/draft.md", "draft")
+	if got, err := alice.File("read", Input{Path: "projects/notes/readme.md"}); err != nil || got["text"] != "alice repo" {
+		t.Fatal("project file changed")
+	}
+}
+
+// A5: per-call admission consults the current grant epoch, not the snapshot
+// the process was spawned with — an explicit revoke lands on the next call
+// on both the direct and the invoke paths, and an absent operation denies.
+func TestGrantSnapshotRevokeBlocksDirectAndInvoke(t *testing.T) {
+	v := fixture(t)
+	dir := t.TempDir()
+	policy := filepath.Join(dir, "tool-policy.json")
+	write := func(body string) {
+		if err := os.WriteFile(policy, []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(`{"schema":1,"revision":1,"principal":"alice"}`)
+	v.ToolPolicyPath = policy
+
+	ctx := context.Background()
+	if _, err := v.Call(ctx, "file_list", Input{Path: "."}); err != nil {
+		t.Fatalf("admitted call denied under epoch 1: %v", err)
+	}
+
+	// The operator revokes the files family: the rendered snapshot moves to
+	// epoch 2. Nothing respawned — the prompt and the passport file still
+	// claim the grant — yet the next call must deny on both paths.
+	write(`{"schema":1,"revision":2,"principal":"alice","deny":["files"]}`)
+	if _, err := v.Call(ctx, "file_list", Input{Path: "."}); err == nil {
+		t.Fatal("revoked capability still callable on the direct path")
+	}
+	if _, err := v.ExecCall(ctx, "file_list", map[string]any{"path": "."}, nil); err == nil {
+		t.Fatal("revoked capability still callable on the invoke path")
+	}
+
+	// Own and cross-boundary operations stay distinct: denying files does
+	// not deny the settings family.
+	write(`{"schema":1,"revision":3,"principal":"alice","deny":["files"],"read_only":[]}`)
+	if _, err := v.Call(ctx, "settings_get", Input{}); err != nil && strings.Contains(err.Error(), "denied") {
+		t.Fatalf("files revoke leaked onto settings: %v", err)
+	}
+}
+
+// The runtime learns its read-only workspace boundaries from the rendered
+// environment (HUB_WORKSPACE_RO), the same channel HUB_TOOLS_RO uses.
+func TestWorkspaceReadOnlyPathsFromEnv(t *testing.T) {
+	t.Setenv("HUB_WORKSPACE_RO", "inbox,shared,vault/memory")
+	v, err := Open(t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	want := []string{"inbox", "shared", "vault/memory"}
+	if len(v.ReadOnlyPaths) != len(want) {
+		t.Fatalf("ReadOnlyPaths = %v, want %v", v.ReadOnlyPaths, want)
+	}
+	for i := range want {
+		if v.ReadOnlyPaths[i] != want[i] {
+			t.Fatalf("ReadOnlyPaths = %v, want %v", v.ReadOnlyPaths, want)
+		}
 	}
 }

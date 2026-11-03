@@ -257,6 +257,21 @@ func (s Settings) readOnlyCapabilities() []string {
 	return out
 }
 
+// workspaceReadOnlyPaths lists the workspace-relative boundaries the file
+// tools may not write: inbox originals and every mount declared ro inside
+// /workspace (R4.2).
+func (s Settings) workspaceReadOnlyPaths() []string {
+	out := []string{"inbox"}
+	for _, m := range s.Workspace.Mounts {
+		if m.Mode == "ro" {
+			if rel := strings.TrimPrefix(m.To, "/workspace/"); rel != m.To {
+				out = append(out, rel)
+			}
+		}
+	}
+	return out
+}
+
 // mcpRawMutationTools names the state-changing tools of reviewed mcp-raw
 // servers so `access: ro` can render a real tools.exclude filter. Servers not
 // in this table require an explicit `except:` list — a bare `ro` there would
@@ -393,6 +408,29 @@ func (s Settings) nativeCarveouts() []string {
 // NativeCarveouts exposes the derived list for callers outside the package
 // (supervisor env contract, capability CLI).
 func (s Settings) NativeCarveouts() []string { return s.nativeCarveouts() }
+
+// PseudoToolsetNames returns the sorted `via: native` pseudo-toolsets —
+// native subsystems that are not upstream toolsets — for the platform
+// catalog.
+func PseudoToolsetNames() []string {
+	names := make([]string, 0, len(pseudoToolsets))
+	for name := range pseudoToolsets {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
+}
+
+// ToolHubEntryCapabilities returns a copy of the `tools:` entry-name →
+// executor-capability-id map so the platform catalog records canonical
+// families and their accepted aliases without exposing the mutable table.
+func ToolHubEntryCapabilities() map[string]string {
+	out := make(map[string]string, len(toolhubCapabilityID))
+	for name, id := range toolhubCapabilityID {
+		out[name] = id
+	}
+	return out
+}
 
 // nativeToolsEntries rebuilds the tools-map form of a plain carve-out list —
 // used where the attestation path receives names rather than settings.
@@ -576,6 +614,10 @@ var toolToggleFeatureNames = map[string]map[string]string{
 // and the vocabulary organization ceilings govern. Tool entries that are not
 // classic features — the ToolHub families and upstream toolsets — never
 // appear: they are admitted by profile/grant, not by feature policy.
+// FeatureList exposes the derived feature names (features + ingress) for
+// migration/audit consumers; derived, never stored.
+func (s Settings) FeatureList() []string { return s.featureList() }
+
 func (s Settings) featureList() []string {
 	out := []string{"workspace"}
 	for name, entry := range s.Tools {

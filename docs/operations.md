@@ -1,6 +1,6 @@
 ---
 description: Operator runbook — stack lifecycle, user onboarding, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
-last_verified: 2026-11-01
+last_verified: 2026-11-04
 ---
 
 # Operations
@@ -39,15 +39,20 @@ Skip the ceremony and the user gets an agent with an empty tool surface.
    overwrites; a fleet default lives in `policies/agent-default.yaml` /
    `policies/workspace-default.yaml` when present.
 2. **agent.yaml** — set `model` and `model_url`. Managed mode requires
-   `model_url: http://model-relay:8318/v1`, `capability_mode: managed`, the
-   `capability_profile_id` you will publish below, and
-   `capability_generation` (start at 1). Ports are allocated at init; pick
-   free `oauth_port`/`browser_port` when they collide. Under managed mode
-   only carve-out toolsets may go `via: native`, hooks/memory/native
-   extensions are rejected, and raw MCP on a personal space is forbidden.
+   `capability_mode: managed`, the `capability_profile_id` you will publish
+   below, and `capability_generation` (start at 1); the effective
+   `model_url` resolves through the published `models.yaml` passport
+   (`http://model-relay:8318/v1` on spaces that consume the shared relay).
+   Ports are allocated at init; pick free `oauth_port`/`browser_port` when
+   they collide. Under managed mode only carve-out toolsets may go `via:
+   native`, hooks/memory/native extensions are rejected, and raw MCP on a
+   personal space is forbidden.
 3. **workspace.yaml** — the wish list (`tools:` map). Keep the template:
    `file/documents/images/hh` via `toolhub`, `todo/memory/web/deep_research`
-   native, `browser: mcp`. Wishes still admit nothing — step 5 does.
+   native, `browser: mcp`. Wishes still admit nothing — step 5 does. Under
+   a published revision this file is retired: the `tools.yaml`,
+   `workspace.yaml` and `grants.yaml` passports carry the same intent and
+   are the only files the runtime opens (see docs/spaces.md).
 4. **Secrets** — fill `secrets.<env>.env` (`OPENAI_API_KEY` at minimum —
    the model relay authenticates upstream with it). Never commit or paste
    this file.
@@ -64,7 +69,15 @@ Skip the ceremony and the user gets an agent with an empty tool surface.
    - agent-tools surface: `hubctl capability --kind agent-tools --principal
      <id> --context <id> --runtime <id> --policy-version <v>
      --toolhub-store <store>` — registers the reviewed hub-tools catalog
-     definition and enables it for the identity.
+     definition and enables it for the identity. On a policy rotation,
+     `DeriveRights` (the passport-derived rights writer) repins eligible
+     credential-free bindings onto the new `policy_version` automatically —
+     the binding follows the pv the platform already moved the profile to.
+     The manual `--version <v>` flag repins the binding onto an
+     already-registered definition when the profile's selections pin that
+     version instead of the binary's compiled catalog; it remains the
+     operator path for credential-bearing bindings and catalog-version
+     moves. A pv-stale binding projects zero tools.
    Every record prints a review digest first and refuses without
    `--confirm`; the store re-checks issuer identity at admission.
 6. **Channel routing** — for Telegram delivery add the user to the infra
@@ -76,6 +89,19 @@ Skip the ceremony and the user gets an agent with an empty tool surface.
    `tool-policy`, `tool-manifest`, hermes config), mints `runtime.auth`,
    and enrolls sibling `toolhub-tokens.json`/`model-relay-admins.json`.
    The supervised runtime spawns on first demand (pin or job).
+
+   A *managed* space additionally needs, before `up`: an execution selection
+   (`execution.<env>.json` — `mode: supervisor`,
+   `supervisor_url: http://supervisor:8876`, `native_cron: disabled`),
+   a migrated passport (`hubctl space-migrate --dir spaces/<id> --env <env>
+   --apply`), and reachable model credentials — either `cliproxy: shared`
+   against the infra instance or `cliproxy: dedicated` with the space's own
+   `cliproxy/` directory (`config.yaml`). Dedicated instances are enrolled
+   with `hubctl models login --dir spaces/<id> --service <name>`: submit each
+   reviewed link (OAuth session + client key), re-run to record the grants in
+   `generated/model-grants.json`, and keep `OPENAI_API_KEY`,
+   `HUB_CLIPROXY_MGMT_URL`=`http://cliproxy-<id>:8317`,
+   `HUB_CLIPROXY_MGMT_KEY`, `HUB_CLIPROXY_AUTH_INDEX` in `secrets.<env>.env`.
 8. **Verify tool surface** — `docker exec <runtime> cat
    /config/tool-manifest.json` shows the projected manifest;
    `hubctl tools --workspace <dir>` lists the reviewed vocabulary. A user
@@ -206,7 +232,16 @@ hubctl capability --kind tools --settings <space> \
 hubctl governance --kind rule --scope user --user alice \
     --section native:terminal --effect allow --reason "reviewed" --confirm
 hubctl governance --kind grant --user alice --section user_mcp --expires 72h --confirm
+hubctl governance --kind right --user alice --cap workspace --op write --expires 168h --confirm
+hubctl governance --kind revoke-right --user alice --grant right-alice-workspace-write --reason "offboard" --confirm
 ```
+
+`--kind right`/`revoke-right` mint and revoke RBAC capability grants
+(`capability.operation` from `rights.yaml`; `--bind` scopes path/model/
+toolset/target). Issuers are enforced against the vocabulary — cross-subject
+rights are never operator-minted. Passport-derived `right-<user>-*` rows are
+rewritten on every publish; manual grants live alongside and stay bounded
+by the published ceiling.
 
 Connector verbs run identically on three surfaces — `connector_*` tools,
 `hubctl connector <verb> --target <sel>` (`--profile`/`--env`/`--generation`),
@@ -481,12 +516,21 @@ All explicit, dry-run first, never overwrite:
 
 ```text
 hubctl migrate-spaces --user artem --org acme [--apply]
+hubctl space-migrate --dir spaces/artem --env dev [--apply]   # legacy authority -> six-passport sources
+hubctl space apply --dir spaces/artem --env dev [--confirm]   # compile passport-src, classified diff, publish + reconcile
+hubctl space-audit --dir spaces/artem                         # revision-only effective inventory
 hubctl spool migrate --spool <dir> --state <dir> [--apply]   # legacy knowledge tree
 hubctl context backup|restore|export|purge [--spool <dir>] [--confirm]
 ```
 
 `migrate-spaces` rejects symlinks, ID collisions, unrelated data and active
-runtimes; reports JSON paths/counts/checksums, no secret values. `spool
+runtimes; reports JSON paths/counts/checksums, no secret values. `space-migrate`
+compiles the space's editable authority into the layered six-passport sources,
+publishes the revision atomically and keeps a sha256-verified backup plus a
+rollback fence under `generated/migration-backup/<revision>/` — nothing is
+deleted, conflicts are reported, never silently retyped. `space-audit` reads
+only the published revision: services, routes, workspace tree, core/extended
+toolsets, grants, deny reasons and layer provenance. `spool
 migrate` copies (never moves) knowledge into `<state>/knowledge/<principal>`;
 other spool dirs (`schedules`, `occurrences`, `watchers`, `digests`, `tasks`,
 `events`, `outbox`, `mappings`, `conversations`, `inbound`, `callbacks`) keep
@@ -494,6 +538,21 @@ their paths. `context restore` refuses another user and never reactivates
 revoked credentials; plaintext secrets stay on `hubctl secret backup`,
 never in the general archive. `down` never deletes homes; `purge` needs
 `--confirm`.
+
+A `config.supervision` change needs no respawn: `space apply` re-renders
+`runtime.<env>.policy.json` and the supervisor picks it up on its next
+decision sweep — `idle_stop` bounds warm retention, `restart: never` or
+`watchers.stack-health.protected` keep the container observed but never
+remediated, `watchers.stack-health.every` throttles the health-probe
+cadence. Port and channel changes (`config.ports`, `config.channels`) are
+recreate-class: only the owning container restarts — `hermes-runtime` is
+supervised, so the apply asks the supervisor's `/v1/respawn` to destroy and
+re-spawn it (env-baked config needs a new container, unlike a deferred
+restart's remount); a shared gateway such as `communication-hub` recreates
+in the infra space's project; a port leaf whose owner the revision doesn't
+declare is dead config and plans no recreate. From the operator host the
+supervisor is in-network-only — set `HUB_RUNTIME_SUPERVISOR_URL` to a
+reachable endpoint or the respawn cannot be signaled.
 
 Memory: native files under `spaces/<id>/hermes/memories` (`MEMORY.md`,
 `USER.md`) — `hubctl memory list` / `hubctl memory delete --name`. Honcho is
@@ -799,6 +858,19 @@ re-render. Fallback for standalone runs: `HUB_MEDIA_UPSTREAM_KEY`/
 
 Operational facts proven by live acceptance:
 
+- Ten managed spaces on one infra (`m29-acc-01..10`, each with a dedicated
+  cliproxy + model-relay) project distinct bounded tool surfaces and answer
+  real provider calls independently: 10/10 `chat/completions` 200,
+  8 distinct live MCP core projections from 10 passports, one 43-selection
+  profile held to a 20-tool direct core, a non-admitted call denied as
+  `unknown tool`, and unauthenticated MCP requests 401. Publishing the
+  capability records requires policy → profile → `agent-tools` → sibling
+  token enrollment (docs/services/toolhub.md); a profile pinning an older
+  `hub-agent-tools` implementation digest than the bound version resolves
+  to zero admitted tools, and a ToolHub image older than the profile schema
+  (`core_tools`) fails its store load outright — rebuild via
+  `dev-rebuild toolhub` before judging profile data.
+
 - `media.grant` reaches the container only through `hubctl up`/`down`,
   which feeds the file into compose interpolation (`${HUB_MEDIA_BROKER_GRANT}`).
   A raw `docker compose up` renders the variable empty: hub-media then runs
@@ -861,10 +933,12 @@ Files and records per owner:
   `HUB_MODEL_RELAY_ADMIN` (the owner-facing `PUT /v1/model` switch — the
   chat bearer gets 403 on it by design).
 - Capability store — after a rename/re-render the stack policy id changes;
-  reconfirm the owner's profile onto the new `policy_version` and create
-  the `hub-agent-tools` binding via `hubctl capability … --confirm`. Stop
-  toolhub during store writes: a running toolhub rewrites `store.json`
-  between the CLI's load and save, and the write fails on drift.
+  `DeriveSpaceRights`/`space apply` reconfirms the profile and repins
+  credential-free bindings onto the new `policy_version` in the same pass.
+  Credential-bearing connector bindings stay an explicit step: re-create
+  them via `hubctl capability … --confirm`. Stop toolhub during store
+  writes: a running toolhub rewrites `store.json` between the CLI's load
+  and save, and the write fails on drift.
 - Infra re-render — re-render the infra space (`spaces/local`) after adding
   or renaming a principal: `EnrollSiblingRuntimeTokens` rewrites
   `toolhub-tokens.json`, and comm-hub only accepts enrolled runtime tokens.

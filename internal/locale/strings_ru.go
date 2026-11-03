@@ -61,6 +61,11 @@ func init() {
 		"slack.artifact-failed": "Файл не удалось доставить: %s",
 		"artifact.failed":       "Файл не удалось доставить: %s",
 
+		// Дерево workspace-паспорта (ASCII-карта workspace.yaml).
+		"workspace.marker.read_only":   "[только чтение]",
+		"workspace.note.system_prompt": "итоговый системный промпт",
+		"workspace.note.skills":        "собранный каталог",
+
 		// Консоль оператора (hubctl, локальные скрипты).
 		"op.names-status":       "Имена: %s. Статус: %s.",
 		"op.status-only":        "Статус: %s.",

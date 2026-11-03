@@ -1,0 +1,44 @@
+schema: 1
+change: CHG-0243
+title: "M29.2 Compile platform, organization, and user sources into one six-passport revision"
+status: done
+branch: feat/m29-six-passport-contract
+updated: 2026-11-02
+phase: implementation-complete
+adr: ADR-0092
+spec: SPEC-0091
+requirements: [R2.1, R2.2]
+depends_on: ["M29.1"]
+github_milestone: "M29 — Six-Passport Space Contract"
+github_issue: 426
+design_status: accepted
+implementation_status: done
+slices:
+  S2.1-contract: done
+  S2.2-implementation: done
+validation:
+  documents: pass
+  just_check: environmental_flake
+  docker_check: not_run
+  red_team: pass
+  live_acceptance: deferred
+evidence:
+  - kind: unit
+    detail: "go test ./internal/passport — all green; package coverage 90.4% statements (>=85% own gate)."
+    items:
+      - "TestPassportCompilerAtomicSixFileRevision: six docs, common envelope metadata, deterministic revision id, Value/GrantAllow views, atomic publish, republish idempotent, invalid layer leaves all six active bytes unchanged, invariant/choice/grant-ceiling/unknown-toolset rejects, failed publish keeps previous active, incomplete revision never publishes."
+      - "TestPassportTemplateCarriesNoGrants: grants doc in org or platform template rejects the whole compile."
+      - "TestPassportCompileRejectsInvalidEdges: undeclared grant op, models.default outside declared services, unclassified field."
+      - "TestPassportCatalogBoundaryRejected: denied-by-construction (native:bot_room) and unknown (native:ghost) toolsets reject."
+  - kind: static
+    detail: "go vet ./internal/passport clean; gofmt clean; devcheck docs clean; devcheck format clean (via just check)."
+  - kind: just_check
+    detail: "just check ran full go-check+lint+docs+config pipeline; only failures were two Windows AV toolchain flakes — internal/channel test.exe fork Access denied and internal/identity ld.lld.exe Access denied — both packages pass on isolated rerun (go test -count=1 ./internal/channel ./internal/identity ok). passport/catalog/devcheck/stack all green inside the pipeline."
+  - kind: red_team
+    detail: "Template-layer grants rejected; ledger keys validated against catalog operations AND the effective grants ceiling; toolset names must resolve to admitted catalog sections; generated docs carry no env/secret material; publish refuses to move the pointer on any error so a bad revision never activates."
+  - kind: live_acceptance
+    detail: "Not yet runnable end-to-end: the compiler is not wired into provisioning — consumer migration is S3.x / CHG-0244 (stack/config topology split provisions FROM a revision). Live two-user dry-run/apply evidence lands there; unit/rollback evidence stands in for it here per plan note that invalid layer changes none of the six active files."
+remaining: []
+limitations:
+  - "Global 85% covergo gate could not complete in this environment due to the AV flake on unrelated packages; internal/passport itself measures 90.4%."
+  - "Field-class registry covers the schema fields exercised by the contract fixtures; adding new passport fields requires extending the registry (unclassified writes fail closed)."

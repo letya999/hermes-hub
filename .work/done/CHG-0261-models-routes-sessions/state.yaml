@@ -1,0 +1,46 @@
+schema: 1
+change: CHG-0261
+title: "M30.7 models.yaml routes and per-service cliproxy sessions via Broker"
+status: done
+branch: feat/m29-six-passport-contract
+updated: 2026-11-03
+phase: done
+adr: ADR-0093
+spec: SPEC-0092
+requirements: [R7.1, R7.2, R7.3]
+depends_on: [CHG-0256, CHG-0257, CHG-0258]
+github_milestone: "M30 — Imperative Passports and Capability Grants"
+github_issue: 456
+design_status: accepted
+implementation_status: done
+slices:
+  S7.0-cliproxy-spike: done
+  S7.1-compile-models: done
+  S7.2-relay-registry: done
+  S7.3-session-delivery-login: done
+validation:
+  documents: done
+  just_check: "green — covergo 86.05% own statement coverage (85/75 floors), all packages pass; only Windows AV fork/exec+link flakes, each green standalone"
+  docker_check: "partial — 9/11 steps green (6 image builds, budgets, smoke, hermes-contract, capability-contract, scratch canary, quarantine test, docker-clean); managed-network + managed-supervisor canaries env-blocked on IPAM pool exhaustion (same accepted blocker as CHG-0255)"
+  red_team: done
+  live_acceptance: done_narrowed_scope
+evidence:
+  - "2026-11-02: LoadModelRegistry reads routes/services/switch from the effective models.yaml — legacy models.yaml deleted for artem_two; cliproxy hops stay builtin; provider broker_grants/owners pass through as credential-plane data."
+  - "2026-11-03: S7.1 normative pins green — default→route, via enum, cliproxy endpoint=stack instance, ladder refs known services, auth fields are {kind,ref} maps (literal string rejected), proxy_access cliproxy-only."
+  - "2026-11-03: S7.2 relay — passportRegistryLayer projects services (endpoint/via/upstream_kind/proxy_access) and routes→ladders with models/reasoning/sharing/limits; hops disable on unmeasurable limits (spend_usd always, provider_quota without cliproxy oauth-session telemetry); provider_quota polled via /v0/management auth-files+api-call with $TOKEN$ placeholder; exhausted multi-model hop advances the ladder without parking; PUT /v1/model requires PDP models.switch."
+  - "2026-11-03: legacy `switch:` registry field still decoded for live spaces (artem_main models.yaml carries it) — its removal is CHG-0262 legacy retirement, deferred there."
+  - "2026-11-03: S7.3 delivery — each cliproxy-* instance gets tmpfs cliproxy-session-<i> (/cliproxy/auths) + cliproxy-cfg-<i> (/run/cliproxy-cfg) and an <i>-init companion (hub-runtime cliproxy-materialize) that alone mounts broker-materialized + /run/model-gen; init acquires the instance workload lease, writes exactly session.json + rendered config (api-keys), releases; cliproxy service depends_on service_completed_successfully and never sees the lease view. Undeclared-instance init fails before touching leases."
+  - "2026-11-03: credentialbroker.ResolveFile (bounded acquire→materialize→read-mount→release) + hubctl models login --dir --service (idempotent two-pass enrollment, reviewed links, grants pinned binding=workload=<instance>, ref→grant map in generated/model-grants.json, plaintext bind session removed); registry resolves hop credentials through the map; sibling init resolves the infra project's broker-materialized volume via InfraSpaceDir."
+  - "2026-11-03: hardening — materialize + models login read the mounted generated dir through passportview.LoadEffectiveGenerated (full six-doc validation; incomplete revision refuses before touching leases/requests); current pointer revision validated filepath.IsLocal (G703 clean). Re-migration reads stale pre-S7 revisions: cliproxy hops skip hop-level sharing (provider grants gate admission), switch policy stays out of the file layer (models.switch right is the contract). just check legs all green: config-check, covergo 86.02% (85/75 gates), lint (format/vet/tidy/staticcheck/gosec), docs-check; only failures were Windows AV fork/exec flakes that pass standalone."
+  - "2026-11-03: red-team findings fixed — ResolveFile now reads the materialized mount before Release (dropLease deletes the mount dir; the fake masked it), nil auth.upstream guard, non-map/empty base config rejected before cfg.Content[0], init's broker-materialized mount read-only, broker-secrets-cliproxy RO-scoped to init only."
+  - "2026-11-03: catalog executability sweep — every placeable toolset compiles under each declared via, enforceable toolsets accept the full option surface (include/access/scope/rules), denied-by-construction toolsets fail closed, every rights domain.op lands in grants.yaml (internal/passport/catalog_sweep_test.go)."
+  - "2026-11-03: login fix (red→green) — modelsLogin grant actor envelope sent ContextID 'operator', broker rejected with HTTP 400 (grant requires in.ContextID == credential.ContextID); now the space identity from eff.Header.Metadata.Space. Regression tests in cmd/hubctl/models_cmd_test.go + models_login*_test.go."
+  - "2026-11-03: grant contract expanded to THREE dedicated grants — session→init (workload <instance>, policy cliproxy-materialize), proxy_access key→init (workload <instance>-key), proxy_access key→relay (workload model-relay-<service>, policy model-relay); model-grants.json is nested service→ref→{init,relay}; materialize readers [init], registry readers [relay]. Driven by broker's one-grant-per-(binding,context,principal) and one-grant-per-workload constraints (HTTP 409 on collision, observed live)."
+  - "2026-11-03: live m29-acc-01 (v2 r-b3f7e733e63e2759) — `models login --service cliproxy` minted all three grants via Broker; init companion acquired/materialized/released both credentials; cliproxy healthy; REAL completion via model-relay:8318 → cliproxy:8317 → upstream returned 'M30-OK' with relay log hop=cliproxy path=/v1/chat/completions status=200. Plaintext bind credentials (auths/*.json incl. email-named + api-key) removed by login; render strips pre-existing api-keys from base config before appending the materialized key (no duplicate plaintext)."
+  - "2026-11-03: tmpfs lifecycle fix (red→green) — tmpfs credential volumes die when the last mount holder exits; empirically proven that service_completed_successfully left an empty volume for cliproxy. Init companion now materializes then stays alive holding the mount (sleep infinity), reporting healthy only after session.json+config.yaml exist; cliproxy depends_on service_healthy. Init also joins hermes-hub-runtime network to reach credential-broker."
+  - "2026-11-03: live imperative proofs — poisoned retired cliproxy/auths/*.json on acc-01 and artem_two: audit/doctor/render byte-identical pre/post poison, runtime completions still 200 ('POISON-PROOF-OK' ×5, 'ARTEM2-POISON-OK'); space apply receipt unaffected by retired files."
+remaining: []
+limitations:
+  - "spend_usd limits stay unmeasurable (no catalog price feed)"
+  - "provider_quota measurable only for via=cliproxy + oauth-session + management telemetry"
+  - "A7 scope amended by owner instruction 2026-11-03: live evidence collected on m29-acc-01 (three-grant login, materialization, real completion) + artem_two (relay completion). NOT executed vs the original A7 matrix: three named cliproxy instances (google-1/google-2/codex), google-pro-1→google-pro-2 limit failover, models.switch deny/allow toggle, broker-grant-revoke ladder drop, /v1/models 'everyday' route listing. These remain open if the owner wants the full matrix."

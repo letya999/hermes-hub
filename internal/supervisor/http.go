@@ -70,6 +70,8 @@ func (m *Manager) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		m.restartHTTP(w, r)
 	case "/v1/restart-request":
 		m.restartRequestHTTP(w, r)
+	case "/v1/respawn":
+		m.respawnHTTP(w, r)
 	case "/v1/artifact":
 		m.artifactHTTP(w, r)
 	case "/v1/usage":
@@ -163,6 +165,9 @@ func (m *Manager) restartHTTP(w http.ResponseWriter, r *http.Request) {
 	binding, err := m.bindingFor(request)
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	if !m.rightsGate(w, r, binding.PrincipalID, "agents", "restart_self", "runtime") {
 		return
 	}
 	m.mu.Lock()
@@ -292,6 +297,9 @@ func (m *Manager) restartRequestHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid restart request"})
 		return
 	}
+	if !m.rightsGate(w, r, request.PrincipalID, "agents", "restart_self", "runtime") {
+		return
+	}
 	m.mu.Lock()
 	var entry *runtimeEntry
 	for _, candidate := range m.items {
@@ -378,6 +386,89 @@ func (m *Manager) restartRequestHTTP(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"scheduled": true, "applied": applied})
 }
 
+// respawnHTTP replaces a managed runtime's container outright — the recreate
+// counterpart to restart-request: a deferred restart remounts files but keeps
+// the container's baked env, so env-carried passport config (ports, feature
+// flags) only takes effect on a real re-create (SPEC-0092 R4.2, A4).
+func (m *Manager) respawnHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	defer r.Body.Close()
+	var request struct {
+		PrincipalID string `json:"principal_id"`
+		ContextID   string `json:"context_id"`
+		RuntimeID   string `json:"runtime_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || !validID(request.PrincipalID) || !validID(request.ContextID) || (request.RuntimeID != "" && !validID(request.RuntimeID)) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid respawn request"})
+		return
+	}
+	if !m.rightsGate(w, r, request.PrincipalID, "agents", "restart_self", "runtime") {
+		return
+	}
+	m.mu.Lock()
+	var entry *runtimeEntry
+	for _, candidate := range m.items {
+		if candidate.Runtime.PrincipalID == request.PrincipalID && candidate.Runtime.ContextID == request.ContextID && (request.RuntimeID == "" || candidate.Runtime.RuntimeID == request.RuntimeID) {
+			entry = candidate
+			break
+		}
+	}
+	// Only a lease-free idle container may be replaced; a busy or absent one
+	// answers scheduled:false — nothing is queued, the next spawn reads the
+	// new revision anyway.
+	if entry == nil || entry.Container == "" || (entry.State != Ready && entry.State != Idle) || entry.Leases != 0 {
+		m.mu.Unlock()
+		writeJSON(w, http.StatusOK, map[string]bool{"scheduled": false})
+		return
+	}
+	snapshot := entry.Runtime
+	key := runtimeKey(Binding{PrincipalID: snapshot.PrincipalID, ContextID: snapshot.ContextID, RuntimeMode: snapshot.RuntimeMode})
+	m.mu.Unlock()
+	// Serialize on the runtime key and re-verify under it — a lease acquired
+	// between the lookup and here makes the destroy a mid-lease kill.
+	lock := m.lockFor(key)
+	lock.Lock()
+	m.mu.Lock()
+	current := m.items[key]
+	valid := current != nil && current.Container == snapshot.Container && current.Generation == snapshot.Generation && current.Leases == 0
+	var binding Binding
+	if valid {
+		binding = current.binding
+	}
+	m.mu.Unlock()
+	if !valid {
+		lock.Unlock()
+		writeJSON(w, http.StatusOK, map[string]bool{"scheduled": false})
+		return
+	}
+	// The respawn outlives the client's deadline like an accepted restart.
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	_, _ = m.command(ctx, "stop", "--time", "30", snapshot.Container) // a dead container makes rm authoritative anyway
+	if err := m.removeOwnedRuntime(ctx, snapshot); err != nil && !errors.Is(err, ErrRuntimeMissing) {
+		lock.Unlock()
+		writeRuntimeFailure(w, http.StatusBadGateway, err)
+		return
+	}
+	m.mu.Lock()
+	current.State, current.IdleDeadline = Stopped, time.Time{}
+	_ = m.persistLocked()
+	m.mu.Unlock()
+	lock.Unlock()
+	respawned, err := m.Ensure(ctx, binding)
+	if err != nil {
+		writeRuntimeFailure(w, http.StatusBadGateway, err)
+		return
+	}
+	// Like wake: the respawn is a warm-up peek, not a hold — the Ensure
+	// reference returns so the fresh runtime settles to idle.
+	_ = m.ReleaseBinding(binding)
+	writeJSON(w, http.StatusOK, map[string]bool{"scheduled": true, "applied": respawned.Container != ""})
+}
+
 // artifactHTTP forwards one bounded artifact fetch to the runtime bound to the
 // request envelope. No lease: the gateway asks while the runtime is answering
 // the job, so a lookup-only forward never keeps a runtime alive for it.
@@ -401,6 +492,9 @@ func (m *Manager) artifactHTTP(w http.ResponseWriter, r *http.Request) {
 	binding, err := m.bindingFor(request.ExecuteRequest)
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	if !m.rightsGate(w, r, binding.PrincipalID, "agents", "monitor_self", "runtime") {
 		return
 	}
 	m.mu.Lock()
@@ -448,6 +542,9 @@ func (m *Manager) usageHTTP(w http.ResponseWriter, r *http.Request) {
 	binding, err := m.bindingFor(request.ExecuteRequest)
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	if !m.rightsGate(w, r, binding.PrincipalID, "agents", "monitor_self", "runtime") {
 		return
 	}
 	// Usage is a user command: a stopped runtime is spawned exactly like a
@@ -508,6 +605,9 @@ func (m *Manager) compactHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
 	}
+	if !m.rightsGate(w, r, binding.PrincipalID, "agents", "monitor_self", "runtime") {
+		return
+	}
 	lease, runtime, err := m.Acquire(r.Context(), binding, LeaseLifecycle)
 	if err != nil || runtime.Address == "" {
 		writeRuntimeFailure(w, http.StatusServiceUnavailable, err)
@@ -549,6 +649,9 @@ func (m *Manager) goalHTTP(w http.ResponseWriter, r *http.Request) {
 	binding, err := m.bindingFor(request.ExecuteRequest)
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	if !m.rightsGate(w, r, binding.PrincipalID, "agents", "monitor_self", "runtime") {
 		return
 	}
 	lease, runtime, err := m.Acquire(r.Context(), binding, LeaseLifecycle)

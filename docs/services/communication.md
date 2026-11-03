@@ -1,6 +1,6 @@
 ---
 description: communication-hub — channel gateway: Telegram/Slack adapters, inbound routing, credential forms, spool, control API.
-last_verified: 2026-10-28
+last_verified: 2026-11-04
 ---
 
 # communication-hub
@@ -59,7 +59,9 @@ caller's relay from the authenticated identity. Slash commands share one
 dispatcher across channels: Telegram updates and `/v1/mock/message` texts
 starting with `/` both run it, so mock replies land in `mock-sent` and
 never enqueue an agent job,
-`HUB_STT_URL`/`HUB_TTS_URL` + `media.auth` when `transcription` is on,
+`HUB_STT_URL`/`HUB_TTS_URL` + `media.auth` when the space renders a voice
+channel (`config.channels.*.voice` in the published revision, or the legacy
+`transcription` feature),
 `HUB_CREDENTIAL_BROKER_APPROVE_*` (broker client for approvals).
 
 Admission ceilings (host-only, read at spool open): `HUB_SPOOL_MAX_PENDING_PER_SCOPE`

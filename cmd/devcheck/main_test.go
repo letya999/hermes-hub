@@ -84,6 +84,21 @@ func TestRunCoverageAndValidation(t *testing.T) {
 	if err := run([]string{"covergo", profile, "bad"}); err == nil {
 		t.Fatal("covergo accepted invalid minimum")
 	}
+	// catalog-emit is idempotent over the committed immutable catalogs: a
+	// drifted release is a hard error, not a silent rewrite.
+	cwd, _ := os.Getwd()
+	if err := os.Chdir(filepath.Join("..", "..")); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"catalog-emit"}); err != nil {
+		t.Fatalf("catalog-emit over identical catalogs: %v", err)
+	}
+	if err := os.Chdir(cwd); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"catalog-emit", "extra"}); err == nil {
+		t.Fatal("catalog-emit accepted extra args")
+	}
 	if err := run([]string{"hermes-contract", "test-image"}); err == nil {
 		t.Fatal("integration-only Hermes contract accepted without build tag")
 	}

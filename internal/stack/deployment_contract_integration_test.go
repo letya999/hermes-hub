@@ -43,6 +43,19 @@ func TestDeploymentConfigurationContract(t *testing.T) {
 					if err := WriteSpace(dir, s); err != nil {
 						t.Fatal(err)
 					}
+					if capability == "managed" {
+						// S8.2: managed status is the published revision itself, not
+						// a file flag. The static leg drops supervised hermes-runtime
+						// from the topology — an unmanaged execution selection with a
+						// managed space must still refuse to render.
+						docs := managedDocs("contract")
+						if mode == "static" {
+							docs["stack"] = "kind: stack\nidentity: {user: contract}\nservices:\n" +
+								"  model-relay: {mode: per-space}\n  toolhub-relay: {mode: per-space}\n" +
+								"  toolhub: {mode: shared}\n  credential-broker: {mode: shared}\n"
+						}
+						publishManagedDocs(t, dir, "contract", "r-0123456789abcdef", docs)
+					}
 					if err := os.WriteFile(filepath.Join(dir, "secrets."+environment+".env"), []byte("OPENAI_API_KEY=synthetic-contract-only\n"), 0600); err != nil {
 						t.Fatal(err)
 					}

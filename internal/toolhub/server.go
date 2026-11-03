@@ -285,12 +285,18 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 		DisableLocalhostProtection: nonLoopbackListen(config.Listen),
 		// Rendered as the supervisor bearer so communication-hub can list a
 		// principal's connectors without holding that principal's token.
-		ControlToken: strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_AUTH")),
+		ControlToken:   strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_AUTH")),
+		SpacePrincipal: strings.TrimSpace(os.Getenv("HUB_PRINCIPAL_ID")),
 		// Tool governance sits beside the registry; the env pin exists for
 		// deployments that keep the policy document elsewhere.
 		Governance: NewGovernanceStore(api.EnvOr("HUB_TOOL_GOVERNANCE", GovernanceStorePath(os.Getenv("HUB_TOOLHUB_STORE")))),
 		// Job-end cell release shares the controller release channel.
 		CLIRelease: config.CLIRelease,
+	}
+	if gateway.Governance != nil {
+		// The PDP's live ledger is the same governance document every other
+		// control path mutates — grants and revokes reach Decide on reload.
+		store.RightsLedger = gateway.Governance.Load
 	}
 	var secrets credstore.Backend
 	var injector api.CredentialInjector

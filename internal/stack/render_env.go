@@ -58,7 +58,7 @@ func RenderEnvironment(dir, root, environment string) error {
 	if err != nil {
 		return err
 	}
-	s, err := ReadEnvironment(dir, environment)
+	s, err := ReadEffective(dir, environment)
 	if err != nil {
 		return err
 	}
@@ -96,7 +96,7 @@ func RenderEnvironment(dir, root, environment string) error {
 			return err
 		}
 	}
-	for _, name := range []string{"archive", "runtime", "runtime/artifacts", "runtime/toolhub", "runtime/credentials", "runtime/materialized", "broker", "broker/keys", "broker/tls", "cliproxy", "hermes", "hermes/memories", "hermes/skills", "connections", "connections/google", "connections/telegram", "connections/browser", "connections/ssh/keys", "home", "cache", "workspace", "workspace/browser", "workspace/artifacts", "workspace/artifacts/documents", "workspace/artifacts/images", "skills"} {
+	for _, name := range []string{"archive", "runtime", "runtime/artifacts", "runtime/toolhub", "runtime/credentials", "runtime/materialized", "broker", "broker/keys", "broker/tls", "cliproxy", "hermes", "hermes/memories", "hermes/skills", "connections", "connections/google", "connections/telegram", "connections/browser", "connections/ssh/keys", "home", "cache", "workspace", "workspace/browser", "workspace/artifacts", "workspace/artifacts/documents", "workspace/artifacts/images", "workspace/artifacts/videos", "workspace/artifacts/archives", "workspace/artifacts/services", "workspace/inbox", "workspace/inbox/people", "workspace/inbox/services", "workspace/projects", "workspace/work", "workspace/outbox", "skills"} {
 		if err = os.MkdirAll(filepath.Join(dir, name), 0700); err != nil {
 			return err
 		}
@@ -125,6 +125,20 @@ func RenderEnvironment(dir, root, environment string) error {
 	if s.CapabilityMode == "managed" {
 		for _, name := range []string{"runtime", "hermes", "home", "cache", "workspace", "skills"} {
 			if err = os.MkdirAll(filepath.Join(dir, "managed", s.Environment, name), 0700); err != nil {
+				return err
+			}
+		}
+	}
+	// A published workspace passport declares the layout: Render creates
+	// every boundary directory the MountPlan binds — including the /vault
+	// skeleton — without writing content into them (SPEC-0092 R5.2).
+	if s.PassportWorkspace != nil {
+		bases := []string{dir}
+		if s.CapabilityMode == "managed" {
+			bases = append(bases, filepath.Join(dir, "managed", s.Environment))
+		}
+		for _, base := range bases {
+			if err = MaterializeWorkspaceLayout(base, *s.PassportWorkspace); err != nil {
 				return err
 			}
 		}
@@ -201,6 +215,9 @@ func RenderEnvironment(dir, root, environment string) error {
 	if err = writeRuntimeEnvFiles(dir, s.Environment, secrets, orgSecrets, omitted, runtimeExtra); err != nil {
 		return err
 	}
+	if err = writeSupervisorPolicy(dir, s); err != nil {
+		return err
+	}
 	if s.CapabilityMode == "managed" {
 		relayAuth, err := ReadSecrets(filepath.Join(dir, "model-relay.auth"))
 		if err != nil {
@@ -257,7 +274,11 @@ func RenderEnvironment(dir, root, environment string) error {
 	if err = writeBrowserFiles(dir, s); err != nil {
 		return err
 	}
-	outputs := map[string]any{"hermes." + environment + ".yaml": Config(s), "compose." + environment + ".yaml": Compose(s, root, dir)}
+	compose, err := ComposeChecked(s, root, dir)
+	if err != nil {
+		return err
+	}
+	outputs := map[string]any{"hermes." + environment + ".yaml": Config(s), "compose." + environment + ".yaml": compose}
 	// Generated files are reproducible; secrets and agent memories are never overwritten.
 	for name, v := range outputs {
 		b, err := yaml.Marshal(v)
@@ -477,6 +498,43 @@ func writeRuntimeEnvFiles(dir, environment string, user, organization map[string
 		return err
 	}
 	return writeEnvFile(filepath.Join(dir, "communication."+environment+".env"), gateway)
+}
+
+// writeSupervisorPolicy renders the space's published config.supervision as
+// runtime.<env>.policy.json beside the runtime env file (SPEC-0092 R4.2). The
+// supervisor re-reads it per decision, so supervision changes apply live.
+// An empty supervision section removes the file — the deployment defaults
+// (WarmTTL, remediate-unhealthy) then govern.
+func writeSupervisorPolicy(dir string, s Settings) error {
+	path := filepath.Join(dir, "runtime."+s.Environment+".policy.json")
+	type watcher struct {
+		Protected bool   `json:"protected,omitempty"`
+		Every     string `json:"every,omitempty"`
+	}
+	type policy struct {
+		IdleStop string             `json:"idle_stop,omitempty"`
+		Restart  string             `json:"restart,omitempty"`
+		Watchers map[string]watcher `json:"watchers,omitempty"`
+	}
+	if s.PassportConfig == nil {
+		return removeIfExists(path)
+	}
+	sup := s.PassportConfig.Supervision
+	if strings.TrimSpace(sup.IdleStop) == "" && strings.TrimSpace(sup.Restart) == "" && len(sup.Watchers) == 0 {
+		return removeIfExists(path)
+	}
+	out := policy{IdleStop: sup.IdleStop, Restart: sup.Restart}
+	if len(sup.Watchers) > 0 {
+		out.Watchers = make(map[string]watcher, len(sup.Watchers))
+		for name, w := range sup.Watchers {
+			out.Watchers[name] = watcher{Protected: w.Protected, Every: w.Every}
+		}
+	}
+	body, err := json.Marshal(out)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(body, '\n'), 0600)
 }
 
 // writeToolHubFiles provisions the controller config, its protected admission

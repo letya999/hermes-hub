@@ -141,7 +141,7 @@ func runSkill(ctx context.Context, args []string) error {
 	// way /v1/skill-apply does; a failed rebuild warns, it does not undo
 	// the applied store change.
 	refresh := func() {
-		s, err := stack.ReadEnvironment(abs, *env)
+		s, err := stack.ReadEffective(abs, *env)
 		if err != nil {
 			return
 		}
@@ -467,7 +467,7 @@ func runSkill(ctx context.Context, args []string) error {
 		if *id == "" {
 			return fmt.Errorf("skill promote requires --id")
 		}
-		s, err := stack.ReadEnvironment(abs, "prod")
+		s, err := stack.ReadEffective(abs, "prod")
 		if err != nil {
 			return err
 		}

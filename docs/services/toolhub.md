@@ -1,6 +1,6 @@
 ---
 description: toolhub — capability gateway: tool admission, governance evaluation, connector lifecycle, audit ledger.
-last_verified: 2026-10-31
+last_verified: 2026-11-04
 ---
 
 # toolhub
@@ -50,6 +50,33 @@ tool call crosses. Listens `0.0.0.0:8090`, host-bound to `127.0.0.1:8090`.
   once; `infra: false` renders only runtime outputs. Rendered spaces default
   `HUB_TOOLHUB_ENDPOINT=http://toolhub:8090/mcp` on the shared
   `hermes-hub-runtime` network; explicit env override, empty = opt out.
+- **Managed capability admission** (six-passport spaces): a passport's
+  `tools` projection reaches the live MCP surface only after four operator
+  acts on the protected store — `hubctl capability --kind policy` (ceiling
+  plus the principal as sole member), `--kind profile` (selections narrowed
+  to the passport's admitted capability families, allows inside the ceiling,
+  `core_tools` a subset of selection names capped at 20, and every
+  `implementation_digest` pinned to the *bound* `hub-agent-tools` version),
+  `--kind agent-tools` (installs the cataloged definition and mints the
+  binding under the principal's exact context/runtime/policy envelope;
+  `--version <v>` repins onto an already-registered definition when the
+  profile's selections pin that version), and
+  sibling token enrollment via the infra space render. The MCP session then
+  projects `system_guide`/`tools_list` plus the bounded core directly;
+  extended selections stay live through `tools_list` and `invoke` under the
+  connectors contract. The periodic projection refresh applies the same
+  core bound as the initial build — an extended selection re-admitted by a
+  profile revision never regains a direct schema. Profiles whose identity
+  (principal/context/runtime/environment/generation/policy_version) or
+  `policy_revision` pin diverges from the runtime envelope resolve to an
+  unauthorized projection: the session degrades to meta tools, never to a
+  widened surface. On `policy_version` rotation the passport-derived
+  `DeriveRights` pass repins each active credential-free binding covered by
+  the profile's selections onto the new pv through the same `Enable`
+  admission — the binding follows the pv the platform already moved the
+  profile and sibling tokens to; credential-bearing bindings still require
+  the explicit `--kind` re-issue because their connection/credential
+  revisions are operator state.
 - **Control-plane reads**: `POST /v1/tool-call` (owner-pinned, read-effect
   tools only, bounded args — powers `mcp_tool` watch probes and
   `delivery=stream` polls) and `GET /v1/connectors` (caller-scoped inventory

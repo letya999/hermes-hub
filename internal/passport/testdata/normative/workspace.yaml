@@ -1,0 +1,64 @@
+apiVersion: six-passport/v2
+kind: workspace
+metadata: {space: alice, environment: dev, revision: r-0123456789abcdef, generated_at: 2026-11-02T00:00:00Z, template: platform/personal@3, catalogs: "4"}
+tree: |
+  /
+  ├── config/                         [только чтение]
+  │   ├── stack.yaml
+  │   ├── config.yaml
+  │   ├── models.yaml
+  │   ├── workspace.yaml
+  │   ├── tools.yaml
+  │   ├── grants.yaml
+  │   ├── system-prompt.md            итоговый системный промпт
+  │   ├── SOUL.md
+  │   ├── USER.md
+  │   └── AGENTS.md
+  ├── workspace/
+  │   ├── inbox/                      оригиналы того, что пришло извне
+  │   │   ├── people/<channel>/<date>/<attachment-id>/
+  │   │   └── services/<service>/<date>/<attachment-id>/
+  │   ├── work/                       рабочие файлы
+  │   ├── projects/                   проекты Alice, включая вложенные Git-репозитории
+  │   │   ├── website/.git/
+  │   │   └── research/.git/
+  │   ├── artifacts/                  то, что создал агент или сервис
+  │   │   ├── documents/
+  │   │   ├── images/
+  │   │   ├── videos/
+  │   │   ├── archives/
+  │   │   └── services/<service>/
+  │   └── outbox/                     подготовленные к отправке файлы
+  ├── vault/
+  │   ├── memory/
+  │   │   ├── CORE.md
+  │   │   ├── CORE.history.md
+  │   │   ├── daily/
+  │   │   ├── cards/{contacts,projects,decisions,ideas,notes}/
+  │   │   └── summaries/{daily,weekly,monthly,yearly}/
+  │   ├── library/
+  │   └── attachments/
+  ├── skills/                         [только чтение; собранный каталог]
+  └── shared/acme-docs/               [только чтение]
+
+writable:
+  - /workspace/work
+  - /workspace/projects
+  - /workspace/artifacts/documents
+  - /workspace/artifacts/images
+  - /workspace/artifacts/videos
+  - /workspace/artifacts/archives
+  - /workspace/outbox
+  - /vault/library
+  - /vault/attachments
+
+read_only:
+  - /config
+  - /workspace/inbox
+  - /workspace/artifacts/services
+  - /vault/memory
+  - /skills
+  - /shared/acme-docs
+
+mounts:
+  /shared/acme-docs: {source: org/acme/docs, mode: ro}

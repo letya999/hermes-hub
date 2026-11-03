@@ -13,6 +13,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/diagnostics"
 	"github.com/letya999/hermes-hub/internal/locale"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
 // editThrottle bounds status-message edits to one per interval per chat
@@ -348,6 +349,15 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 					return
 				}
 			}
+			// channels.send is a governed action (SPEC-0092 R2.2): the
+			// space's rights PDP must allow before text or attachments go
+			// out; a denial settles the delivery unconfirmed rather than
+			// leaking the message.
+			if !g.sendRight(*delivery, mapping.PrincipalID) {
+				log.Printf("gateway send rights denied principal=%s channel=%s delivery_id=%q", mapping.PrincipalID, mapping.Channel, delivery.ID)
+				g.uncertainDelivery(*delivery)
+				return
+			}
 		}
 	}
 	if delivery.OccurrenceID != "" {
@@ -486,12 +496,59 @@ func (g *Gateway) sendDeliveryArtifacts(ctx context.Context, ch Channel, deliver
 // voicePlan decides what is spoken and whether the voice message replaces
 // text delivery. Speech is a per-reply tool: only an upstream VOICE: marker
 // requests it (marker-only replies are voice-only, text+marker sends both).
-// There is no conversation-level voice mode.
+// There is no conversation-level voice mode. The voice leg is a governed
+// action: channels.send_voice must decide-allow for the delivery's owner —
+// a denied or unconfigured right degrades the reply to text, it never
+// blocks it (SPEC-0092 R2.2).
 func (g *Gateway) voicePlan(delivery Delivery) (speak string, voiceOnly bool) {
-	if speak = strings.TrimSpace(delivery.Voice); speak != "" {
-		return speak, strings.TrimSpace(delivery.Text) == ""
+	if speak = strings.TrimSpace(delivery.Voice); speak == "" {
+		return "", false
 	}
-	return "", false
+	if !g.voiceRight(delivery) {
+		return "", false
+	}
+	return speak, strings.TrimSpace(delivery.Text) == ""
+}
+
+// sendRight is the text-leg half of the channels PEP: the caller supplies
+// the already-resolved owner principal. Same posture rule as voiceRight —
+// absent toolhub wiring admits, a present-but-failing PDP denies.
+func (g *Gateway) sendRight(delivery Delivery, principal string) bool {
+	token := strings.TrimSpace(os.Getenv("HUB_SUPERVISOR_AUTH"))
+	url := strings.TrimSpace(g.config.ToolHubURL)
+	if token == "" || url == "" || principal == "" {
+		return true
+	}
+	allow, err := api.DecideClient{URL: url, Token: token, Principal: principal}.GrantsRight(context.Background(), "channels", "send", delivery.Channel)
+	if err != nil {
+		log.Printf("gateway send rights decide principal=%s err=%v", principal, err)
+	}
+	return allow
+}
+
+// voiceRight resolves the delivery's owner principal and asks the space's
+// rights PDP. Missing toolhub wiring keeps the legacy posture; an
+// unresolvable principal denies the voice leg outright.
+func (g *Gateway) voiceRight(delivery Delivery) bool {
+	token := strings.TrimSpace(os.Getenv("HUB_SUPERVISOR_AUTH"))
+	url := strings.TrimSpace(g.config.ToolHubURL)
+	if token == "" || url == "" {
+		return true
+	}
+	principal := ""
+	if delivery.JobID != "" {
+		if mapping, found, err := g.spool.Mapping(delivery.JobID); err == nil && found {
+			principal = mapping.PrincipalID
+		}
+	}
+	if principal == "" {
+		return false
+	}
+	allow, err := api.DecideClient{URL: url, Token: token, Principal: principal}.GrantsRight(context.Background(), "channels", "send_voice", delivery.Channel)
+	if err != nil {
+		log.Printf("gateway voice rights decide principal=%s err=%v", principal, err)
+	}
+	return allow
 }
 
 // sendVoiceReply synthesizes the payload and posts it as a voice message.

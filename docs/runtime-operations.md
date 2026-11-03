@@ -1,6 +1,6 @@
 ---
 description: Runtime images, supervisor lifecycle, per-context rollout and preparation runbook.
-last_verified: 2026-10-31
+last_verified: 2026-11-04
 ---
 
 # Runtime operations
@@ -145,7 +145,9 @@ do not reactivate native definitions already migrated to hub occurrences.
 
 ## M16 runtime preparation and group scopes
 
-Optional managed-sandbox preparation lives in `workspace.yaml`:
+Optional managed-sandbox preparation lives in `workspace.yaml` (unmanaged
+spaces only — the v2 passport vocabulary has no `goal`/`bootstrap_revision`
+leaf yet, so migration reports them as preserved conflicts):
 
 ```yaml
 workspace:

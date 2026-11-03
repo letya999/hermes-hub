@@ -1,0 +1,36 @@
+schema: 1
+change: CHG-0250
+title: "M29.9 Guarantee one read-only system prompt and Hub rules in every managed Hermes turn"
+status: done
+branch: feat/m29-six-passport-contract
+updated: 2026-11-02
+phase: complete
+adr: ADR-0092
+spec: SPEC-0091
+requirements: [R9.1, R9.2]
+depends_on: ["M29.0", "M29.2", "M29.6"]
+github_milestone: "M29 — Six-Passport Space Contract"
+github_issue: 433
+design_status: accepted
+implementation_status: implemented
+slices:
+  S9.1-contract: done
+  S9.2-implementation: done
+validation:
+  documents: pass
+  just_check: failed_environmental
+  docker_check: not_run
+  red_team: reviewed
+  live_acceptance: not_run
+evidence:
+  - unit: "TestManagedTurnHasSinglePinnedPromptAcrossEntrypoints green: managed config pins gateway.platforms.api_server.skip_context_files; RuntimeService env carries HERMES_IGNORE_RULES=1 (managed-only); soul-effective carries revision+bounded core inventory+extended count exactly once; planted agent-writable AGENTS.md never enters the prompt."
+  - upstream_evidence: "Pinned-binary spike (M29.0): gateway.platforms.<plat>.skip_context_files -> AIAgent skip_context_files kills SOUL/USER/MEMORY/AGENTS/.cursorrules injection; load_soul_identity still injects the read-only mounted effective SOUL; managed memory_enabled/user_profile_enabled=false already gate MEMORY.md/USER.md store loads."
+  - pointer: "passport.Publish writes prompt-pointer.txt (revision=..., core names, extended=+N, discovery=tools_list+invoke); MaterializeSoulEffective appends it inside the single contract layer; publish test asserts the file."
+  - scope_guard: "HERMES_IGNORE_RULES scoped to managed runtime env only — unmanaged spaces keep implicit context files."
+  - stack_tests: "internal/stack + internal/passport green; devcheck docs/format clean."
+  - just_check: "Full gate attempted; failures are environmental: AV denied llvm-mingw ld.lld (cmd/devcheck, cmd/e2e build), plus one timing flake TestModelHopDeadlineIncludesCredentialResolution that passes 3/3 isolated. No code-attributable failures."
+  - live: "Marker-based dev runtime acceptance (chat/routine/voice paths) not run — deferred to M29.12."
+remaining:
+  - "M29.12: live marker evidence that a planted /state/home AGENTS.md cannot inject into a managed turn."
+limitations:
+  - "skip_memory has no config path on api_server; managed relies on memory_enabled/user_profile_enabled=false and the disabled native memory toolset — verified against upstream _init_memory."

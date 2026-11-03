@@ -90,7 +90,10 @@ func applyProfiles(s *Settings, dir string) error {
 		if !ownModelURL && o.ModelURL != "" {
 			s.ModelURL = o.ModelURL
 		}
-		if !ownCredentials && o.CliproxyCredentials != "" {
+		// private credentials only attach to a dedicated placement — when the
+		// governed topology keeps the proxy shared the claim is unhonorable
+		// and drops rather than trip validation on a passport-owned field.
+		if !ownCredentials && o.CliproxyCredentials != "" && (o.CliproxyCredentials != "private" || s.Cliproxy == "dedicated") {
 			s.CliproxyCredentials = o.CliproxyCredentials
 		}
 	}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -333,5 +334,100 @@ func TestModelRelayRegistrySelectionWriteFailure(t *testing.T) {
 	handler.ServeHTTP(response, req)
 	if response.Code == http.StatusOK {
 		t.Fatal("selection confirmed while persistence failed")
+	}
+}
+
+// A8: the service ladder keeps one credential principal per entry; an
+// unavailable model stays inside its service, an exhausted service advances,
+// owner meters stay isolated and a started stream is never replayed.
+func TestModelServiceLadderQuotaIsolationAndStreamFence(t *testing.T) {
+	var mu sync.Mutex
+	var aModels []string
+	bCalls := 0
+	srvA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		model := decodeModel(r)
+		mu.Lock()
+		aModels = append(aModels, model)
+		mu.Unlock()
+		if model == "m2" {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: {\"x\":1}\n\n") // partial stream, then close
+			return
+		}
+		w.WriteHeader(http.StatusNotFound) // m1 unavailable on this account
+	}))
+	defer srvA.Close()
+	srvB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		mu.Lock()
+		bCalls++
+		mu.Unlock()
+		_, _ = io.WriteString(w, `{"choices":[]}`)
+	}))
+	defer srvB.Close()
+
+	dir := t.TempDir()
+	registry := filepath.Join(dir, "models.yaml")
+	content := "providers:\n" +
+		"  a:\n    allow_private: true\n    url: " + srvA.URL + "\n" +
+		"  b:\n    allow_private: true\n    url: " + srvB.URL + "\n" +
+		"models:\n" +
+		"  default:\n    ladder:\n" +
+		"      - {provider: a, models: [m1, m2], limits: [{of: requests, amount: 2, per: 1d}, {of: tokens, amount: 50000, per: 5h}]}\n" +
+		"      - {provider: b, model: m3, reasoning: true}\n"
+	if err := os.WriteFile(registry, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := modelRelayRegistryHandler(registry, filepath.Join(dir, "letya.json"), "letya", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Call one: m1 404 stays in service a -> m2 serves; service b untouched.
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, chatRequest())
+	mu.Lock()
+	gotA := append([]string{}, aModels...)
+	gotB := bCalls
+	mu.Unlock()
+	if response.Code != http.StatusOK || len(gotA) != 2 || gotA[0] != "m1" || gotA[1] != "m2" || gotB != 0 {
+		t.Fatalf("in-service model retry broken: status=%d a=%v b=%d", response.Code, gotA, gotB)
+	}
+	// Call two: letya's principal used its two-request window -> advance to b.
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, chatRequest())
+	mu.Lock()
+	gotA = append([]string{}, aModels...)
+	gotB = bCalls
+	mu.Unlock()
+	if response.Code != http.StatusOK || len(gotA) != 2 || gotB != 1 {
+		t.Fatalf("exhausted service did not advance: status=%d a=%v b=%d", response.Code, gotA, gotB)
+	}
+	// A second owner keeps her own meter and the same declared order.
+	other, err := modelRelayRegistryHandler(registry, filepath.Join(dir, "mira.json"), "mira", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response = httptest.NewRecorder()
+	other.ServeHTTP(response, chatRequest())
+	mu.Lock()
+	gotA = append([]string{}, aModels...)
+	gotB = bCalls
+	mu.Unlock()
+	if response.Code != http.StatusOK || len(gotA) != 4 || gotA[2] != "m1" || gotA[3] != "m2" || gotB != 1 {
+		t.Fatalf("owner meter isolation or order broken: status=%d a=%v b=%d", response.Code, gotA, gotB)
+	}
+	// A request needing reasoning skips service a entirely: only b declares
+	// reasoning support, and capability checks run before the principal burns.
+	reasoning := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"synthetic","reasoning_effort":"high"}`))
+	reasoning.Header.Set("Content-Type", "application/json")
+	response = httptest.NewRecorder()
+	other.ServeHTTP(response, reasoning)
+	mu.Lock()
+	gotA = append([]string{}, aModels...)
+	gotB = bCalls
+	mu.Unlock()
+	if response.Code != http.StatusOK || len(gotA) != 4 || gotB != 2 {
+		t.Fatalf("reasoning capability check broken: status=%d a=%v b=%d", response.Code, gotA, gotB)
 	}
 }

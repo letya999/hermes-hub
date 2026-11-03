@@ -117,7 +117,7 @@ func runtimeMediaAuth(dir string, s Settings) (map[string]string, error) {
 				continue
 			}
 			candidate := filepath.Join(parent, entry.Name())
-			settings, err := ReadEnvironment(candidate, s.Environment)
+			settings, err := ReadEffective(candidate, s.Environment)
 			if err != nil || !settings.RendersInfra() || !settings.Has("image_gen") {
 				continue
 			}

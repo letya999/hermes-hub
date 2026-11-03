@@ -1,6 +1,6 @@
 ---
 description: The agent's home — SOUL.md persona contract, skills registry, bundled skills, hooks, memory and runtime-writable state.
-last_verified: 2026-11-01
+last_verified: 2026-11-04
 ---
 
 # Agent home
@@ -71,12 +71,25 @@ channel contract's delivery rules — the replacement states the hub channel's
 real semantics (markdown renders, artifact auto-delivery, MEDIA: attaches any
 workspace file, inbox_fetch materializes incoming attachments).
 
+Managed renders pin one read-only prompt authority per turn (SPEC-0091
+R9.1): `gateway.platforms.api_server.skip_context_files: true` suppresses
+upstream's implicit discovery of SOUL.md/USER.md/MEMORY.md/AGENTS.md under
+the agent-writable context root, `HERMES_IGNORE_RULES=1` covers non-gateway
+entrypoints, and upstream's `load_soul_identity` still injects the mounted
+`generated/soul-effective.<env>.md` — the single contract, read-only. A
+published passport revision appends a `<hub_contract>` pointer to that file:
+`revision=<id>`, the bounded core tool names, an `extended=+N` count and the
+`tools_list`/`invoke` discovery pointer — inventory stays lazy, never a
+catalog dump.
+
 ## Hooks and plugins
 
-`settings.yaml` `hooks:` map renders into Hermes config; hub-gated plugins
-materialize under `generated/plugins/<name>` and mount read-only into
-`/opt/hermes/plugins/` (bundled + backend = auto-load, agent-untouchable).
-Managed mode additionally read-only-shadows `hermes/hooks`.
+An unmanaged space's `settings.yaml` `hooks:` map renders into Hermes
+config (managed spaces reject hooks — the contract admits no hook
+extensions); hub-gated plugins materialize under `generated/plugins/<name>`
+and mount read-only into `/opt/hermes/plugins/` (bundled + backend =
+auto-load, agent-untouchable). Managed mode additionally
+read-only-shadows `hermes/hooks`.
 
 ## Memory and state
 

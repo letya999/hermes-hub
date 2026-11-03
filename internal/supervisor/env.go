@@ -42,6 +42,12 @@ func (m *Manager) selfEnv(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "invalid runtime scope"})
 		return
 	}
+	if !m.rightsGate(w, r, binding.PrincipalID, "agents", "monitor_self", "runtime") {
+		return
+	}
+	if !m.rightsGate(w, r, binding.PrincipalID, "agents", "inspect_self", "runtime") {
+		return
+	}
 	lease, runtime, err := m.Acquire(r.Context(), binding, LeaseLifecycle)
 	if err != nil {
 		writeRuntimeFailure(w, http.StatusServiceUnavailable, err)
@@ -99,6 +105,9 @@ func (m *Manager) skillApply(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "invalid runtime scope"})
 		return
 	}
+	if !m.rightsGate(w, r, binding.PrincipalID, "agents", "monitor_self", "runtime") {
+		return
+	}
 	lease, runtime, err := m.Acquire(r.Context(), binding, LeaseLifecycle)
 	if err != nil {
 		writeRuntimeFailure(w, http.StatusServiceUnavailable, err)
@@ -151,6 +160,9 @@ func (m *Manager) skillCreds(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("supervisor skill-creds binding rejected principal=%s context=%s scope=%s: %v", request.PrincipalID, request.ContextID, request.ScopeID, err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "invalid runtime scope"})
+		return
+	}
+	if !m.rightsGate(w, r, binding.PrincipalID, "agents", "monitor_self", "runtime") {
 		return
 	}
 	lease, runtime, err := m.Acquire(r.Context(), binding, LeaseLifecycle)
@@ -240,7 +252,7 @@ func (m *Manager) prepareSpawnFiles(binding Binding, env string) {
 			log.Printf("supervisor soul heal skipped")
 		}
 	}
-	settings, err := stack.ReadEnvironment(binding.ContextRoot, env)
+	settings, err := stack.ReadEffective(binding.ContextRoot, env)
 	if err != nil || !settings.RendersInfra() {
 		return
 	}
@@ -255,7 +267,7 @@ func (m *Manager) prepareSpawnFiles(binding Binding, env string) {
 func (m *Manager) materializeHermesConfig(binding Binding, env string) (string, error) {
 	settings := stack.Settings{}
 	hasConfig := false
-	for _, name := range []string{"settings.yaml", "agent.yaml", "workspace.yaml"} {
+	for _, name := range []string{"settings.yaml", "agent.yaml", "workspace.yaml", filepath.Join("generated", "passports", "current")} {
 		if _, err := os.Stat(filepath.Join(binding.ContextRoot, name)); err == nil {
 			hasConfig = true
 		} else if !os.IsNotExist(err) {
@@ -264,7 +276,7 @@ func (m *Manager) materializeHermesConfig(binding Binding, env string) (string, 
 	}
 	if hasConfig {
 		var err error
-		settings, err = stack.ReadEnvironment(binding.ContextRoot, env)
+		settings, err = stack.ReadEffective(binding.ContextRoot, env)
 		if err != nil {
 			return "", err
 		}

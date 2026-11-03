@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/letya999/hermes-hub/internal/skillstore"
@@ -30,7 +31,7 @@ func MaterializeSoulEffective(dir string, s Settings) error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	body := ChannelContract
+	body := ChannelContract + promptPointer(dir)
 	if org := orgSoulLayer(s); org != "" {
 		body += "\n\n" + org
 	}
@@ -46,6 +47,33 @@ func MaterializeSoulEffective(dir string, s Settings) error {
 	// hermes-effective materialization it must stay world-readable past
 	// atomic's 0600, or the container dies on SOUL.md permission denied.
 	return os.Chmod(path, 0644)
+}
+
+// revisionID admits only the published id shape: an r- prefixed token with
+// no dots or separators, so a tampered `current` pointer cannot traverse
+// out of the revision root.
+var revisionID = regexp.MustCompile(`^r-[0-9a-zA-Z_-]{1,32}$`)
+
+// promptPointer appends the short revision/core inventory the published
+// passport revision stamps for the prompt (R9.1). The pointer file is
+// generated authority written by passport.Publish — stack cannot import
+// passport (catalog -> stack is already an edge), so it reads the rendered
+// file directly. No published revision, no pointer: unmanaged spaces keep
+// their existing prompt.
+func promptPointer(dir string) string {
+	current, err := os.ReadFile(filepath.Join(dir, "generated", "passports", "current"))
+	if err != nil {
+		return ""
+	}
+	id := strings.TrimSpace(string(current))
+	if !revisionID.MatchString(id) {
+		return ""
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "generated", "passports", id, "prompt-pointer.txt")) // #nosec G304 G703 -- id validated to a separator-free token above; generated authority path
+	if err != nil {
+		return ""
+	}
+	return "\n\n<hub_contract>\n" + strings.TrimSpace(string(body)) + "\n</hub_contract>"
 }
 
 // orgSoulLayer reads the organization's SOUL.md for the org→profile→user
