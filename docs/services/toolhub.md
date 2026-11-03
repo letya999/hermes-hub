@@ -60,8 +60,7 @@ tool call crosses. Listens `0.0.0.0:8090`, host-bound to `127.0.0.1:8090`.
   `--kind agent-tools` (installs the cataloged definition and mints the
   binding under the principal's exact context/runtime/policy envelope;
   `--version <v>` repins onto an already-registered definition when the
-  profile's selections pin that version — required after a policy rotation
-  lands on a pv the binding never followed), and
+  profile's selections pin that version), and
   sibling token enrollment via the infra space render. The MCP session then
   projects `system_guide`/`tools_list` plus the bounded core directly;
   extended selections stay live through `tools_list` and `invoke` under the
@@ -71,7 +70,13 @@ tool call crosses. Listens `0.0.0.0:8090`, host-bound to `127.0.0.1:8090`.
   (principal/context/runtime/environment/generation/policy_version) or
   `policy_revision` pin diverges from the runtime envelope resolve to an
   unauthorized projection: the session degrades to meta tools, never to a
-  widened surface.
+  widened surface. On `policy_version` rotation the passport-derived
+  `DeriveRights` pass repins each active credential-free binding covered by
+  the profile's selections onto the new pv through the same `Enable`
+  admission — the binding follows the pv the platform already moved the
+  profile and sibling tokens to; credential-bearing bindings still require
+  the explicit `--kind` re-issue because their connection/credential
+  revisions are operator state.
 - **Control-plane reads**: `POST /v1/tool-call` (owner-pinned, read-effect
   tools only, bounded args — powers `mcp_tool` watch probes and
   `delivery=stream` polls) and `GET /v1/connectors` (caller-scoped inventory

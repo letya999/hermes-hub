@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
@@ -112,6 +113,11 @@ func DeriveRights(store *Store, gov *GovernanceStore, doc api.RightsDoc, princip
 			return err
 		}
 	}
+	for _, profile := range store.profilesForPrincipal(principal) {
+		if err := store.repinManagedBindings(profile, environment, policyVersion); err != nil {
+			return err
+		}
+	}
 	if gov == nil {
 		return nil
 	}
@@ -176,4 +182,55 @@ func DeriveRights(store *Store, gov *GovernanceStore, doc api.RightsDoc, princip
 		}
 		return nil
 	})
+}
+
+// repinManagedBindings carries the principal's existing bindings onto a
+// rotated policy_version. resolveLocked requires binding pv == envelope
+// pv, so a rotation that repins the profile but not its bindings silently
+// drops every managed selection — the space's projection collapses to
+// zero tools (CHG-0263 live incident). For each credential-free
+// definition the profile's selections reference, an existing active
+// binding is re-enabled under the new pv — Enable restamps the
+// deterministic row in place and supersedes stale siblings. A definition
+// the principal never bound stays an operator act; credential-bearing
+// bindings keep their documented manual repin path.
+func (s *Store) repinManagedBindings(profile api.CapabilityProfile, environment, policyVersion string) error {
+	if profile.Environment != environment || profile.PolicyVersion != policyVersion || policyVersion == "" {
+		return nil
+	}
+	selected := map[string]bool{}
+	for _, selection := range profile.Selections {
+		selected[selection.DefinitionID+"\x00"+selection.DefinitionVersion] = true
+	}
+	if len(selected) == 0 {
+		return nil
+	}
+	s.mu.RLock()
+	var stale []api.ToolBinding
+	for _, binding := range s.bindings {
+		if binding.Status != api.ActiveStatus || binding.PolicyVersion == policyVersion ||
+			binding.PrincipalID != profile.PrincipalID || binding.ContextID != profile.ContextID || binding.RuntimeID != profile.RuntimeID {
+			continue
+		}
+		if !selected[binding.DefinitionID+"\x00"+binding.DefinitionVersion] {
+			continue
+		}
+		definition, ok := s.definitions[definitionKey(binding.DefinitionID, binding.DefinitionVersion)]
+		if !ok || len(definition.Credentials) > 0 {
+			continue
+		}
+		stale = append(stale, binding)
+	}
+	s.mu.RUnlock()
+	if len(stale) == 0 {
+		return nil
+	}
+	auth := identity.Envelope{Schema: identity.Schema, PrincipalID: profile.PrincipalID, ExternalIdentityID: profile.PrincipalID,
+		ContextID: profile.ContextID, RuntimeID: profile.RuntimeID, ConversationID: "platform", DeliveryTargetID: "platform", PolicyVersion: policyVersion}
+	for _, binding := range stale {
+		if _, err := s.Enable(auth, binding.DefinitionID, binding.DefinitionVersion); err != nil {
+			return fmt.Errorf("binding repin %s@%s: %w", binding.DefinitionID, binding.DefinitionVersion, err)
+		}
+	}
+	return nil
 }

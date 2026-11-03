@@ -251,6 +251,70 @@ func TestDeriveRightsStampsManagedState(t *testing.T) {
 	}
 }
 
+// A policy rotation must carry the space's agent-tools binding forward:
+// the profile and token envelope follow the revision automatically, and a
+// stale-pv binding silently zeroes the managed projection — the live
+// incident behind CHG-0263 (artem_two saw 83 selections collapse to zero
+// tools until the binding was repinned by hand).
+func TestDeriveRightsRepinsManagedBinding(t *testing.T) {
+	store := NewStore()
+	definition := api.ToolDefinition{
+		Schema: api.SchemaVersion, DefinitionID: "hub-agent-tools", Version: "9.9.9",
+		Transport: api.AgentTools, Workload: api.WorkloadPolicy{Class: api.PerUser, Rationale: "fixture catalog"},
+		Execution: api.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 1 << 20, CPUMillis: 500, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"communication-hub"}},
+		Health:    api.HealthProbe{Kind: "exec", Value: "true", TimeoutSeconds: 5},
+		Tools: []api.ToolSpec{{Name: "search", Effect: api.ReadEffect, CapabilityID: "files.read",
+			Uses: []api.CapabilityUse{{Action: "read", Resource: "workspace"}}}},
+	}
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	auth := identity.Envelope{Schema: identity.Schema, PrincipalID: "alice", ExternalIdentityID: "alice",
+		ContextID: "alice", RuntimeID: "runtime", ConversationID: "test", DeliveryTargetID: "test",
+		PolicyVersion: "policy-1", CapabilityProfile: "alice-default", Environment: "dev", Generation: 1}
+	rule := api.CapabilityRule{CapabilityID: "files.read", ImplementationDigest: api.DefinitionDigest(definition), Action: "read", Resource: "workspace", Limits: api.CapabilityLimits{OutputBytes: 8192, TimeoutSeconds: 10}}
+	if err := putPolicy(t, store, api.CapabilityPolicy{Schema: api.SchemaVersion, PolicyID: "org-default", Members: []string{"alice"}, Revision: 1,
+		IssuedBy: "operator", IssuedAt: time.Now().UTC(), Reason: "fixture", Status: api.ActiveStatus, Ceiling: []api.CapabilityRule{rule}, Defaults: []api.CapabilityRule{rule}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := putProfile(t, store, api.CapabilityProfile{Schema: api.SchemaVersion, ProfileID: "alice-default", PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime",
+		Environment: "dev", Generation: 1, PolicyVersion: "policy-1", PolicyID: "org-default", PolicyRevision: 1, Revision: 1,
+		IssuedBy: "operator", IssuedAt: time.Now().UTC(), Reason: "fixture", Status: api.ActiveStatus,
+		Selections: []api.CapabilitySelection{{CapabilityID: rule.CapabilityID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ImplementationDigest: rule.ImplementationDigest, ToolName: "search", Name: "agent_search"}}}); err != nil {
+		t.Fatal(err)
+	}
+	binding := api.ToolBinding{Schema: api.SchemaVersion, PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime",
+		DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, PolicyVersion: "policy-1",
+		WorkloadClass: definition.Workload.Class, Status: api.ActiveStatus, Revision: 1, ProjectionRevision: 1}
+	if err := store.PutBinding(binding); err != nil {
+		t.Fatal(err)
+	}
+	binding.ToolBindingID = api.DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
+
+	doc := rightsVocabulary()
+	store.RightsDoc = doc
+	gov := NewGovernanceStore(filepath.Join(t.TempDir(), "governance.json"))
+	store.RightsLedger = gov.Load
+	if err := DeriveRights(store, gov, doc, "alice", map[string][]string{"workspace": {"read"}}, "dev", "policy-2", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	current, err := store.binding(binding.ToolBindingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.PolicyVersion != "policy-2" {
+		t.Fatalf("binding stayed on rotated pv: %s", current.PolicyVersion)
+	}
+	auth.PolicyVersion = "policy-2"
+	tools, err := store.ListProjectedTools(auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools) != 1 || tools[0].Name != "agent_search" {
+		t.Fatalf("repinned selection must project: %+v", tools)
+	}
+}
+
 // A managed tool projects only while every declared Requires decides allow:
 // the ceiling alone is not enough — the ledger grant must live too (R2.2).
 func TestManagedAdmissionRequiresRights(t *testing.T) {

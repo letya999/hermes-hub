@@ -69,10 +69,15 @@ Skip the ceremony and the user gets an agent with an empty tool surface.
    - agent-tools surface: `hubctl capability --kind agent-tools --principal
      <id> --context <id> --runtime <id> --policy-version <v>
      --toolhub-store <store>` — registers the reviewed hub-tools catalog
-     definition and enables it for the identity. On a policy rotation where
-     the profile already pins a specific catalog version, pass `--version
-     <v>` to repin the binding to that stored definition instead of the
-     binary's compiled catalog; a pv-stale binding projects zero tools.
+     definition and enables it for the identity. On a policy rotation,
+     `DeriveRights` (the passport-derived rights writer) repins eligible
+     credential-free bindings onto the new `policy_version` automatically —
+     the binding follows the pv the platform already moved the profile to.
+     The manual `--version <v>` flag repins the binding onto an
+     already-registered definition when the profile's selections pin that
+     version instead of the binary's compiled catalog; it remains the
+     operator path for credential-bearing bindings and catalog-version
+     moves. A pv-stale binding projects zero tools.
    Every record prints a review digest first and refuses without
    `--confirm`; the store re-checks issuer identity at admission.
 6. **Channel routing** — for Telegram delivery add the user to the infra
@@ -928,10 +933,12 @@ Files and records per owner:
   `HUB_MODEL_RELAY_ADMIN` (the owner-facing `PUT /v1/model` switch — the
   chat bearer gets 403 on it by design).
 - Capability store — after a rename/re-render the stack policy id changes;
-  reconfirm the owner's profile onto the new `policy_version` and create
-  the `hub-agent-tools` binding via `hubctl capability … --confirm`. Stop
-  toolhub during store writes: a running toolhub rewrites `store.json`
-  between the CLI's load and save, and the write fails on drift.
+  `DeriveSpaceRights`/`space apply` reconfirms the profile and repins
+  credential-free bindings onto the new `policy_version` in the same pass.
+  Credential-bearing connector bindings stay an explicit step: re-create
+  them via `hubctl capability … --confirm`. Stop toolhub during store
+  writes: a running toolhub rewrites `store.json` between the CLI's load
+  and save, and the write fails on drift.
 - Infra re-render — re-render the infra space (`spaces/local`) after adding
   or renaming a principal: `EnrollSiblingRuntimeTokens` rewrites
   `toolhub-tokens.json`, and comm-hub only accepts enrolled runtime tokens.
