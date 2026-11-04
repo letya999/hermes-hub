@@ -52,6 +52,96 @@ func generateRights() RightsDoc {
 				"switch": rop("self", "model", selfIssuers, []string{"model-relay"}, "control", "Move the session to another model or route inside the granted ladder."),
 			},
 		},
+		"sessions": {
+			Description: "Rights over this space's session store: listing, searching, reading, switching and lifecycle of own sessions.",
+			Operations: map[string]RightOperation{
+				"list":   rop("self", "session", selfIssuers, []string{"session tools"}, "read", "List sessions of this space."),
+				"read":   rop("self", "session", selfIssuers, []string{"session tools"}, "read", "Read a bounded transcript of an own session."),
+				"search": rop("self", "session", selfIssuers, []string{"session tools"}, "read", "Search own sessions by content or title."),
+				"switch": rop("self", "session", selfIssuers, []string{"session tools"}, "control", "Move the active-session pointer inside this space."),
+				"manage": rop("self", "session", selfIssuers, []string{"session tools"}, "control", "Archive, restore or delete sessions of this space."),
+			},
+		},
+		"tasks": {
+			Description: "Rights over the task graph: scheduled routines, observed watches and delegated assignments.",
+			Operations: map[string]RightOperation{
+				"schedule": rop("self", "none", selfIssuers, []string{"routine tools"}, "control", "Create and steer routines — recurring or one-shot scheduled work."),
+				"observe":  rop("self", "none", selfIssuers, []string{"watch tools"}, "control", "Create and steer watches — event subscriptions over admitted sources."),
+				"delegate": rop("self", "none", selfIssuers, []string{"assignment tools"}, "control", "Create and steer assignments — delegated multi-step work with spend grants."),
+			},
+		},
+		"ssh": {
+			Description: "Rights over declared SSH hosts: reads, writes, exec, interactive shells and tunnels.",
+			Operations: map[string]RightOperation{
+				"list":   rop("self", "none", selfIssuers, []string{"ssh tools"}, "read", "List SSH hosts declared in the capability config."),
+				"read":   rop("self", "host", selfIssuers, []string{"ssh tools"}, "read", "Read remote files on a granted SSH host."),
+				"write":  rop("self", "host", selfIssuers, []string{"ssh tools"}, "write", "Write remote files on a granted SSH host."),
+				"exec":   rop("self", "host", selfIssuers, []string{"ssh tools"}, "control", "Run bounded commands on a granted SSH host."),
+				"shell":  rop("self", "host", selfIssuers, []string{"ssh tools"}, "control", "Drive an interactive shell on a granted SSH host."),
+				"tunnel": rop("self", "host", selfIssuers, []string{"ssh tools"}, "control", "Open or close tunnels through a granted SSH host."),
+			},
+		},
+		"exposure": {
+			Description: "Rights over public exposure of space endpoints: listing, opening and closing tunnels.",
+			Operations: map[string]RightOperation{
+				"list":   rop("self", "none", selfIssuers, []string{"exposure tools"}, "read", "List live exposures and their state."),
+				"create": rop("self", "url", selfIssuers, []string{"exposure tools"}, "control", "Open a declared endpoint's public tunnel."),
+				"remove": rop("self", "url", selfIssuers, []string{"exposure tools"}, "control", "Close a live public exposure."),
+			},
+		},
+		"research": {
+			Description: "Rights over async deep-research jobs of this space.",
+			Operations: map[string]RightOperation{
+				"create": rop("self", "none", selfIssuers, []string{"deep_research flow"}, "write", "Start an async deep-research job."),
+				"read":   rop("self", "none", selfIssuers, []string{"deep_research flow"}, "read", "Read research job status and reports."),
+			},
+		},
+		"browser": {
+			Description: "Rights over the browser connector: opening sessions, reading pages, acting and capturing.",
+			Operations: map[string]RightOperation{
+				"open":    rop("self", "url", selfIssuers, []string{"browser connector"}, "write", "Open a browser session on a URL."),
+				"read":    rop("self", "url", selfIssuers, []string{"browser connector"}, "read", "Read a browser session's page content."),
+				"act":     rop("self", "url", selfIssuers, []string{"browser connector"}, "control", "Click, type, scroll and otherwise act in a browser session."),
+				"capture": rop("self", "url", selfIssuers, []string{"browser connector"}, "read", "Capture a browser session as screenshot or pdf."),
+			},
+		},
+		"platform": {
+			Description: "Rights over the pinned platform layer: orientation, own status, onboarding and usage — always subject self.",
+			Operations: map[string]RightOperation{
+				"guide":     rop("self", "none", selfIssuers, []string{"ToolHub platform ops"}, "read", "Read the space orientation guide."),
+				"status":    rop("self", "none", selfIssuers, []string{"ToolHub platform ops"}, "read", "Read own health and allowlisted diagnostics."),
+				"usage":     rop("self", "none", selfIssuers, []string{"ToolHub platform ops"}, "read", "Read own consumption against models.yaml limits."),
+				"bootstrap": rop("self", "none", selfIssuers, []string{"ToolHub platform ops"}, "control", "Complete pending first-run setup steps."),
+			},
+		},
+		"exec": {
+			Description: "Rights over the workspace execution environment: running bounded commands and steering background jobs.",
+			Operations: map[string]RightOperation{
+				"run": rop("self", "none", selfIssuers, []string{"exec cell"}, "control", "Run a bounded command in the workspace execution environment."),
+			},
+		},
+		"web": {
+			Description: "Rights over outbound web access: searching through the configured provider and fetching URLs.",
+			Operations: map[string]RightOperation{
+				"search": rop("self", "none", selfIssuers, []string{"web provider"}, "read", "Search the web through the space's provider."),
+				"read":   rop("self", "url", selfIssuers, []string{"web provider"}, "read", "Fetch a URL's content as bounded text."),
+			},
+		},
+		"context": {
+			Description: "Rights over this session's context window: reading state and requesting compaction.",
+			Operations: map[string]RightOperation{
+				"read": rop("self", "session", selfIssuers, []string{"context tools"}, "read", "Read the session's context control state."),
+				"edit": rop("self", "session", selfIssuers, []string{"context tools"}, "control", "Compact the session transcript at a turn boundary."),
+			},
+		},
+		"goals": {
+			Description: "Rights over this conversation's persistent goal record.",
+			Operations: map[string]RightOperation{
+				"read":   rop("self", "none", selfIssuers, []string{"goal tools"}, "read", "Read the conversation's goal record and budget state."),
+				"edit":   rop("self", "none", selfIssuers, []string{"goal tools"}, "control", "Set, pause or resume the conversation's goal."),
+				"remove": rop("self", "none", selfIssuers, []string{"goal tools"}, "control", "Clear the conversation's goal record."),
+			},
+		},
 		"tools": {
 			Description: "Rights over the tool surface itself: discovering and selecting toolsets into the live session.",
 			Operations: map[string]RightOperation{

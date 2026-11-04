@@ -36,7 +36,7 @@ docs:
   tools:
     core:
       native:file: {via: native}
-      hub:files: {via: toolhub}
+      files: {via: toolhub}
   workspace:
     writable: [/workspace]
     read_only: [/config]
@@ -143,7 +143,7 @@ docs:
       cliproxy: {mode: shared}
   tools:
     core:
-      hub:files: {via: toolhub}
+      files: {via: toolhub}
   workspace:
     writable: [/workspace]
   models:
@@ -199,7 +199,7 @@ docs:
     ports: {slack-events: 8088}
   tools:
     core:
-      hub:files: {via: toolhub}
+      files: {via: toolhub}
   workspace:
     writable: [/workspace]
   models:
@@ -246,7 +246,7 @@ docs:
     ports: {slack-events: 8088}
   tools:
     core:
-      hub:files: {via: toolhub}
+      files: {via: toolhub}
   workspace:
     writable: [/workspace]
   models:

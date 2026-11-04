@@ -363,11 +363,25 @@ func (p CapabilityProfile) ValidateStructure() error {
 	return nil
 }
 
+// RemoteExecutor reports whether the executor runs the call behind the PEP
+// outside the in-runtime handler channel: connector:<name>, flow:<name> or
+// runtime:<api> (ADR-0094 D2). Remote tools carry no path scopes; their
+// admission is the selection plus the declared `requires` rights.
+func RemoteExecutor(executor Executor) bool {
+	return strings.HasPrefix(executor, "connector:") ||
+		strings.HasPrefix(executor, "flow:") ||
+		strings.HasPrefix(executor, "runtime:")
+}
+
 func validateToolCapability(tool ToolSpec) error {
 	if tool.CapabilityID == "" && len(tool.Uses) == 0 && len(tool.ArgumentEquals) == 0 {
 		return nil
 	}
-	if !capabilityIDPattern.MatchString(tool.CapabilityID) || len(tool.Uses) == 0 || len(tool.Uses) > 16 || len(tool.ArgumentEquals) > 32 {
+	// Remote executors (connector:, flow:, runtime:) carry no capability-use
+	// path scopes: their calls never reach an os.Root boundary, so a zero
+	// Uses list is legal; handler: tools keep requiring ≥1 use.
+	remote := RemoteExecutor(tool.Executor)
+	if !capabilityIDPattern.MatchString(tool.CapabilityID) || (!remote && len(tool.Uses) == 0) || len(tool.Uses) > 16 || len(tool.ArgumentEquals) > 32 {
 		return fmt.Errorf("%w: reviewed tool capability", ErrInvalid)
 	}
 	for _, use := range tool.Uses {
@@ -457,7 +471,7 @@ func CapabilityDecision(profile CapabilityProfile, policy CapabilityPolicy, sele
 			limits.TimeoutSeconds = min(limits.TimeoutSeconds, bound.TimeoutSeconds)
 		}
 	}
-	return limits, scopes, len(tool.Uses) > 0
+	return limits, scopes, len(tool.Uses) > 0 || RemoteExecutor(tool.Executor)
 }
 
 // ProfilePreviewEntry is one selection's dispatch outcome in a preview: either

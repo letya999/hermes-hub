@@ -74,7 +74,7 @@ func TestToolsListLiveInventoryAndIsolation(t *testing.T) {
 	alice := fix.session(t, aliceToken)
 	bob := fix.session(t, bobToken)
 
-	before, err := callControl(t, alice, "tools_list", nil)
+	before, err := callControl(t, alice, "tool_search", nil)
 	if err != nil {
 		t.Fatalf("tools_list: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestToolsListLiveInventoryAndIsolation(t *testing.T) {
 	search := api.ProjectedToolName(definition.DefinitionID, definition.Version, "search")
 	send := api.ProjectedToolName(definition.DefinitionID, definition.Version, "send")
 
-	after, err := callControl(t, alice, "tools_list", nil)
+	after, err := callControl(t, alice, "tool_search", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,14 +105,14 @@ func TestToolsListLiveInventoryAndIsolation(t *testing.T) {
 	if entry["definition"] != definition.DefinitionID || entry["effect"] != "read" {
 		t.Fatalf("compact entry=%v", entry)
 	}
-	bobList, err := callControl(t, bob, "tools_list", nil)
+	bobList, err := callControl(t, bob, "tool_search", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if names := toolsListNames(t, bobList); names[search] || names[send] {
 		t.Fatalf("bob listed alice binding: %v", names)
 	}
-	if _, err := bob.CallTool(context.Background(), &mcp.CallToolParams{Name: "invoke", Arguments: map[string]any{"tool": search, "arguments": map[string]any{}}}); err == nil {
+	if _, err := bob.CallTool(context.Background(), &mcp.CallToolParams{Name: "tool_call", Arguments: map[string]any{"tool": search, "arguments": map[string]any{}}}); err == nil {
 		t.Fatal("bob invoked alice binding through invoke")
 	}
 
@@ -121,14 +121,14 @@ func TestToolsListLiveInventoryAndIsolation(t *testing.T) {
 	if err := fix.store.SetBindingStatus(binding.ToolBindingID, api.DisabledStatus); err != nil {
 		t.Fatal(err)
 	}
-	disabled, err := callControl(t, alice, "tools_list", nil)
+	disabled, err := callControl(t, alice, "tool_search", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if names := toolsListNames(t, disabled); names[search] {
 		t.Fatal("disabled binding still listed")
 	}
-	if _, err := alice.CallTool(context.Background(), &mcp.CallToolParams{Name: "invoke", Arguments: map[string]any{"tool": search, "arguments": map[string]any{}}}); err == nil {
+	if _, err := alice.CallTool(context.Background(), &mcp.CallToolParams{Name: "tool_call", Arguments: map[string]any{"tool": search, "arguments": map[string]any{}}}); err == nil {
 		t.Fatal("invoke called a tool that tools_list no longer reports")
 	}
 }
@@ -143,7 +143,7 @@ func TestToolsListFiltersBoundsAndSecrets(t *testing.T) {
 	alice := fix.session(t, aliceToken)
 	search := api.ProjectedToolName(definition.DefinitionID, definition.Version, "search")
 
-	compact, err := callControl(t, alice, "tools_list", nil)
+	compact, err := callControl(t, alice, "tool_search", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestToolsListFiltersBoundsAndSecrets(t *testing.T) {
 		t.Fatalf("default listing leaked schemas: %v", entry)
 	}
 
-	filtered, err := callControl(t, alice, "tools_list", map[string]any{"query": "send"})
+	filtered, err := callControl(t, alice, "tool_search", map[string]any{"query": "send"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,24 +163,24 @@ func TestToolsListFiltersBoundsAndSecrets(t *testing.T) {
 		t.Fatalf("query result lacks full spec: %v", entry)
 	}
 
-	empty, err := callControl(t, alice, "tools_list", map[string]any{"query": "zzz-no-match"})
+	empty, err := callControl(t, alice, "tool_search", map[string]any{"query": "zzz-no-match"})
 	if err != nil || len(toolsListNames(t, empty)) != 0 {
 		t.Fatalf("no-match query returned tools: %v", empty)
 	}
 
-	named, err := callControl(t, alice, "tools_list", map[string]any{"name": search})
+	named, err := callControl(t, alice, "tool_search", map[string]any{"name": search})
 	if err != nil || named["found"] != true {
 		t.Fatalf("exact name=%v err=%v", named, err)
 	}
 	if entry := toolsListEntry(t, named, search); entry == nil || entry["input_schema"] == nil {
 		t.Fatalf("exact name lacks full spec: %v", named)
 	}
-	missing, err := callControl(t, alice, "tools_list", map[string]any{"name": "hub-not-a-tool-000000"})
+	missing, err := callControl(t, alice, "tool_search", map[string]any{"name": "hub-not-a-tool-000000"})
 	if err != nil || missing["found"] != false || len(toolsListNames(t, missing)) != 0 {
 		t.Fatalf("unknown name=%v err=%v", missing, err)
 	}
 
-	limited, err := callControl(t, alice, "tools_list", map[string]any{"limit": 1})
+	limited, err := callControl(t, alice, "tool_search", map[string]any{"limit": 1})
 	if err != nil || limited["returned"].(float64) != 1 || limited["total"].(float64) != 2 {
 		t.Fatalf("limit not honoured: %v", limited)
 	}
@@ -188,6 +188,46 @@ func TestToolsListFiltersBoundsAndSecrets(t *testing.T) {
 	raw, _ := json.Marshal(compact)
 	if strings.Contains(string(raw), "local://") || strings.Contains(string(raw), "GOOGLE_TOKEN=") {
 		t.Fatalf("tools_list leaked locator or secret material: %s", raw)
+	}
+}
+
+// M31.8 S5: tool_search matches description text, parameter names and the
+// definition_id — not only the projected tool name.
+func TestToolSearchMatchesBeyondName(t *testing.T) {
+	fix := newControlFixture(t, nil)
+	definition := remoteDefinition()
+	definition.Tools = []api.ToolSpec{
+		{Name: "search", Effect: api.ReadEffect, Description: "query your mail inbox",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"mailbox":{"type":"string"}}}`)},
+		{Name: "send", Effect: api.WriteEffect, Description: "deliver a message"},
+	}
+	if err := fix.store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	putToolsListBinding(t, fix.store, aliceAuth(), definition)
+	alice := fix.session(t, aliceToken)
+	search := api.ProjectedToolName(definition.DefinitionID, definition.Version, "search")
+
+	byDescription, err := callControl(t, alice, "tool_search", map[string]any{"query": "inbox"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if names := toolsListNames(t, byDescription); !names[search] {
+		t.Fatalf("description query missed %q: %v", search, names)
+	}
+	byParam, err := callControl(t, alice, "tool_search", map[string]any{"query": "mailbox"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if names := toolsListNames(t, byParam); !names[search] {
+		t.Fatalf("parameter query missed %q: %v", search, names)
+	}
+	byDefinition, err := callControl(t, alice, "tool_search", map[string]any{"query": "google-work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if names := toolsListNames(t, byDefinition); !names[search] {
+		t.Fatalf("definition_id query missed %q: %v", search, names)
 	}
 }
 
@@ -262,23 +302,23 @@ func TestManagedInvokeCallsAdmittedTool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !toolListed(listed, "invoke") || !toolListed(listed, "tools_list") {
-		t.Fatal("managed session missing invoke or tools_list")
+	if !toolListed(listed, "tool_call") || !toolListed(listed, "tool_search") {
+		t.Fatal("managed session missing tool_call or tool_search")
 	}
 
 	args := map[string]any{"path": "docs/a", "scope": "workspace"}
-	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "invoke", Arguments: map[string]any{"tool": "workspace_read", "arguments": args}})
+	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "tool_call", Arguments: map[string]any{"tool": "workspace_read", "arguments": args}})
 	if err != nil || result.IsError {
 		t.Fatalf("managed invoke: %v %+v", err, result)
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("backend calls=%d", calls.Load())
 	}
-	if _, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "invoke", Arguments: map[string]any{"tool": "hub-foreign-000000", "arguments": map[string]any{}}}); err == nil {
+	if _, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "tool_call", Arguments: map[string]any{"tool": "hub-foreign-000000", "arguments": map[string]any{}}}); err == nil {
 		t.Fatal("invoke admitted a tool outside the managed profile")
 	}
 	// tools_list under the managed envelope reports the admitted selection.
-	body, err := callControl(t, session, "tools_list", nil)
+	body, err := callControl(t, session, "tool_search", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

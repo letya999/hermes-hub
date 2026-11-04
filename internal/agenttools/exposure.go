@@ -2,10 +2,9 @@ package agenttools
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
-
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/letya999/hermes-hub/internal/audit"
 	"github.com/letya999/hermes-hub/internal/credentialbroker"
@@ -72,7 +71,10 @@ func (t *Tools) exposureService() (*exposure.Manager, error) {
 	if t.Exposure != nil {
 		return t.Exposure, nil
 	}
-	return nil, t.exposureErr
+	if t.exposureErr != nil {
+		return nil, t.exposureErr
+	}
+	return nil, errors.New("exposure capability is not configured on this runtime")
 }
 
 func (t *Tools) exposureDispatch(ctx context.Context, name string, r Input) (any, error) {
@@ -110,19 +112,4 @@ func (t *Tools) exposureDispatch(ctx context.Context, name string, r Input) (any
 		return nil, err
 	}
 	return tunnelView(tunnel), nil
-}
-
-func (t *Tools) registerExposure(s *mcp.Server) {
-	if os.Getenv("HUB_EXPOSURE_CONFIG") == "" {
-		return
-	}
-	add := func(name, description string) {
-		mcp.AddTool(s, &mcp.Tool{Name: name, Description: description}, func(ctx context.Context, _ *mcp.CallToolRequest, r Input) (*mcp.CallToolResult, map[string]any, error) {
-			return nil, nil, nil
-		})
-	}
-	add("exposure_list", "List live public exposures on this runtime, including uncertain effects requiring reconciliation.")
-	add("exposure_status", "Show one live public exposure by endpoint name; uncertain=true means its effect or audit completion is unverified.")
-	add("exposure_open", "Open one declared endpoint's public tunnel. An uncertain result must be reconciled, never blindly repeated. Name-only: binds, targets and relay details come from the reviewed config, never from arguments.")
-	add("exposure_close", "Close one live public exposure by endpoint name. Audit failure never prevents stopping access; an uncertain result requires reconciliation.")
 }

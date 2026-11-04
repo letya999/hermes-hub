@@ -4,7 +4,7 @@ last_verified: 2026-10-12
 ---
 # CLI policy and operator catalog
 
-`tools.terminal: toolhub` selects the existing `code_exec` scratch executor.
+`tools.terminal: toolhub` selects the `terminal_exec` scratch executor.
 It removes native `terminal` and native `code_execution` on every channel,
 including Telegram and unmanaged supervisor spaces. Scratch execution has
 network none, a read-only root and no Hermes home or control state. It may

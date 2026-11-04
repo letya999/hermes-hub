@@ -391,9 +391,16 @@ func checkModels(bodies map[string]map[string]any, instances map[string]instInfo
 
 const coreBudget = 20
 
+// platformPinnedMembers is the frozen platform layer (ADR-0094 D1): six
+// model tools pinned into every space's core, never operator-selectable.
+var platformPinnedMembers = []string{
+	"platform_bootstrap", "platform_guide", "platform_status", "platform_usage",
+	"tool_call", "tool_search",
+}
+
 // checkTools validates the core/extended toolset maps against the catalog
 // executor contracts, applies the core member budget (an overflowing
-// toolset moves whole into extended) and pins discovery in core.
+// toolset moves whole into extended) and pins the platform layer in core.
 func checkTools(bodies map[string]map[string]any, docs catalog.Docs) error {
 	t := bodies["tools"]
 	core := asMap(t["core"])
@@ -487,11 +494,26 @@ func checkTools(bodies map[string]map[string]any, docs catalog.Docs) error {
 		name    string
 		members []string
 	}
+	if extended == nil {
+		extended = map[string]any{}
+	}
+	if core == nil {
+		core = map[string]any{}
+	}
 	var coreEntries []entry
 	for name, raw := range core {
 		members, err := validate(name, raw)
 		if err != nil {
 			return err
+		}
+		// Uncurated surfaces (raw MCP catalogs) never enter core (ADR-0094
+		// R6): an operator writing one into core gets the honest demotion,
+		// not a compile error — the projection must exist for the runtime
+		// to enumerate its declared servers at all.
+		if ts, rerr := ResolveToolset(docs, name); rerr == nil && ts.Uncurated {
+			extended[name] = core[name]
+			delete(core, name)
+			continue
 		}
 		coreEntries = append(coreEntries, entry{name, members})
 	}
@@ -500,14 +522,11 @@ func checkTools(bodies map[string]map[string]any, docs catalog.Docs) error {
 			return err
 		}
 	}
-	if extended == nil {
-		extended = map[string]any{}
-	}
-	if core == nil {
-		core = map[string]any{}
-	}
 	slices.SortFunc(coreEntries, func(a, b entry) int { return strings.Compare(a.name, b.name) })
-	count := 0
+	// The pinned platform family (ADR-0094): always in core, never
+	// operator-selectable, and its six members count inside the same
+	// budget — the model surface never exceeds coreBudget tools.
+	count := len(platformPinnedMembers)
 	for _, e := range coreEntries {
 		if count+len(e.members) > coreBudget {
 			extended[e.name] = core[e.name]
@@ -516,7 +535,7 @@ func checkTools(bodies map[string]map[string]any, docs catalog.Docs) error {
 		}
 		count += len(e.members)
 	}
-	core["discovery"] = map[string]any{"via": "toolhub"}
+	core["platform"] = map[string]any{"via": "toolhub"}
 	bodies["tools"] = map[string]any{"core": core, "extended": extended}
 	return nil
 }
@@ -574,16 +593,16 @@ func checkComplete(bodies map[string]map[string]any, instances map[string]instIn
 		}
 	}
 	tools := bodies["tools"]
-	nonDiscovery := 0
+	nonPlatform := 0
 	for _, area := range []string{"core", "extended"} {
 		for name := range asMap(tools[area]) {
-			if name != "discovery" {
-				nonDiscovery++
+			if name != "platform" {
+				nonPlatform++
 			}
 		}
 	}
-	if nonDiscovery == 0 {
-		return fmt.Errorf("passport compile: managed revision admits no toolsets beyond discovery")
+	if nonPlatform == 0 {
+		return fmt.Errorf("passport compile: managed revision admits no toolsets beyond the pinned platform layer")
 	}
 	return nil
 }

@@ -75,9 +75,11 @@ func TestCliInputSchemaAndRouting(t *testing.T) {
 	if req := schema["required"].([]string); len(req) != 1 || req[0] != "path" {
 		t.Fatalf("required: %v", req)
 	}
-	open := CliInputSchema(ToolSpec{})
-	if open["additionalProperties"] != true {
-		t.Fatalf("empty schema not open: %v", open)
+	// r5: the boundary stays closed even with no declared arguments — an
+	// unnamed key is a contract violation, never a tolerated extra.
+	closed := CliInputSchema(ToolSpec{})
+	if closed["additionalProperties"] != false {
+		t.Fatalf("empty schema must stay closed: %v", closed)
 	}
 	// routing: transport selects backend, missing backend fails closed
 	routing := RoutingBackend{}

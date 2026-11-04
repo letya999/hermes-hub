@@ -8,7 +8,6 @@ import (
 	"io/fs"
 	"os"
 	"path"
-	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -73,14 +72,26 @@ func (t *Tools) fileScoped(op string, r Input, ws, ar, org *os.Root) (map[string
 		}
 		defer t.lock.Unlock()
 	}
+	knowledge := r.Root == "knowledge"
 	var root *os.Root
-	if r.Root == "vault" {
+	var err error
+	switch {
+	case r.Root == "vault":
 		if t.Vault == nil {
 			return nil, fmt.Errorf("vault root is not configured")
 		}
 		root = t.Vault
-	} else {
-		var err error
+	case knowledge:
+		// root=knowledge resolves the staged knowledge directory for this
+		// runtime's own principal (ADR-0094 S1); it stays read-only.
+		root, err = t.knowledgeRoot()
+		if err != nil {
+			return nil, err
+		}
+		if root != nil {
+			defer root.Close()
+		}
+	default:
 		root, err = rootOf(r.Root, ws, ar, org, t.Skills)
 		if err != nil {
 			return nil, err
@@ -96,6 +107,9 @@ func (t *Tools) fileScoped(op string, r Input, ws, ar, org *os.Root) (map[string
 		return nil, fmt.Errorf("reserved lock file")
 	}
 	if op == "list" {
+		if root == nil {
+			return map[string]any{"items": []map[string]any{}, "truncated": false}, nil
+		}
 		entries, err := fs.ReadDir(root.FS(), r.Path)
 		if err != nil {
 			return nil, err
@@ -118,6 +132,10 @@ func (t *Tools) fileScoped(op string, r Input, ws, ar, org *os.Root) (map[string
 		}
 		items := []map[string]any{}
 		scanned := 0
+		if root == nil {
+			return map[string]any{"items": items, "scanned": scanned, "bounded": true}, nil
+		}
+		needle := strings.ToLower(r.Query)
 		err := fs.WalkDir(root.FS(), r.Path, func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return err
@@ -132,31 +150,53 @@ func (t *Tools) fileScoped(op string, r Input, ws, ar, org *os.Root) (map[string
 			if scanned > 5000 || len(items) >= 50 {
 				return fs.SkipAll
 			}
-			if !slices.Contains([]string{".md", ".txt", ".json", ".html", ".csv", ".eml", ".mbox"}, strings.ToLower(path.Ext(p))) {
-				return nil
-			}
 			b, err := read(root, p)
 			if err != nil {
 				return nil
 			}
-			if strings.Contains(strings.ToLower(string(b)), strings.ToLower(r.Query)) {
-				items = append(items, map[string]any{"path": p, "revision": hash(b), "bytes": len(b)})
+			if !strings.Contains(strings.ToLower(string(b)), needle) {
+				return nil
 			}
+			snippets := []map[string]any{}
+			for line, text := range strings.Split(string(b), "\n") {
+				if strings.Contains(strings.ToLower(text), needle) {
+					snippets = append(snippets, map[string]any{"line": line + 1, "text": boundedKnowledgeText(text)})
+					if len(snippets) == 8 {
+						break
+					}
+				}
+			}
+			items = append(items, map[string]any{"path": p, "revision": hash(b), "bytes": len(b), "snippets": snippets})
 			return nil
 		})
 		return map[string]any{"items": items, "scanned": scanned, "bounded": true}, err
 	}
-	b, err := read(root, r.Path)
 	if op == "read" {
+		if root == nil {
+			return nil, fmt.Errorf("knowledge unavailable")
+		}
+		b, err := read(root, r.Path)
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"path": r.Path, "text": string(b), "revision": hash(b)}, nil
+		if r.Offset > uint64(len(b)) {
+			return nil, fmt.Errorf("offset beyond end of file")
+		}
+		chunk := b[r.Offset:]
+		limit := len(chunk)
+		if r.Limit > 0 && r.Limit < limit {
+			limit = r.Limit
+		}
+		res := map[string]any{"path": r.Path, "text": string(chunk[:limit]), "revision": hash(b)}
+		if r.Offset+uint64(limit) < uint64(len(b)) {
+			res["next_offset"] = float64(r.Offset + uint64(limit))
+		}
+		return res, nil
 	}
-	if op != "write" {
+	if op != "write" && op != "edit" && op != "mkdir" && op != "remove" {
 		return nil, fmt.Errorf("unknown file operation")
 	}
-	if r.Root == "archive" || r.Root == "organization" || r.Root == "skills" {
+	if knowledge || r.Root == "archive" || r.Root == "organization" || r.Root == "skills" {
 		return nil, fmt.Errorf("%s is read-only", r.Root)
 	}
 	boundary, berr := t.boundary()
@@ -190,46 +230,92 @@ func (t *Tools) fileScoped(op string, r Input, ws, ar, org *os.Root) (map[string
 	} else if err := t.guardWritable(root, r.Path); err != nil {
 		return nil, err
 	}
-	if r.exportBytes == nil && (len(r.Text) > Limit || !utf8.ValidString(r.Text)) {
-		return nil, fmt.Errorf("text must be UTF-8 and <=2 MiB")
+	if op == "mkdir" {
+		if r.Parents {
+			err = root.MkdirAll(r.Path, 0700)
+		} else {
+			err = root.Mkdir(r.Path, 0700)
+		}
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"path": r.Path}, nil
 	}
-	content := r.exportBytes
-	if content == nil {
-		content = []byte(r.Text)
+	if op == "remove" {
+		if err := root.Remove(r.Path); err != nil {
+			return nil, err
+		}
+		return map[string]any{"path": r.Path, "removed": true}, nil
 	}
-	if err == nil {
+	var content []byte
+	if op == "edit" {
+		if r.OldString == "" {
+			return nil, fmt.Errorf("old_string required")
+		}
+		b, err := read(root, r.Path)
+		if err != nil {
+			return nil, err
+		}
 		if r.Revision == "" || r.Revision != hash(b) {
 			return nil, fmt.Errorf("revision conflict")
 		}
-	} else if !os.IsNotExist(err) {
-		return nil, err
-	} else if r.Revision != "" {
-		return nil, fmt.Errorf("revision conflict: file missing")
+		text := string(b)
+		if !strings.Contains(text, r.OldString) {
+			return nil, fmt.Errorf("old_string not found")
+		}
+		content = []byte(strings.Replace(text, r.OldString, r.NewString, 1))
+		if len(content) > Limit || !utf8.Valid(content) {
+			return nil, fmt.Errorf("text must be UTF-8 and <=2 MiB")
+		}
+	} else {
+		if r.exportBytes == nil && (len(r.Text) > Limit || !utf8.ValidString(r.Text)) {
+			return nil, fmt.Errorf("text must be UTF-8 and <=2 MiB")
+		}
+		content = r.exportBytes
+		if content == nil {
+			content = []byte(r.Text)
+		}
+		b, err := read(root, r.Path)
+		if err == nil {
+			if r.Revision == "" || r.Revision != hash(b) {
+				return nil, fmt.Errorf("revision conflict")
+			}
+		} else if !os.IsNotExist(err) {
+			return nil, err
+		} else if r.Revision != "" {
+			return nil, fmt.Errorf("revision conflict: file missing")
+		}
 	}
-	if err = root.MkdirAll(path.Dir(r.Path), 0700); err != nil {
+	if err = commitFile(root, r.Path, content); err != nil {
 		return nil, err
 	}
-	tmp := path.Join(path.Dir(r.Path), ".hub-"+hash([]byte(time.Now().String()))[:24])
+	return map[string]any{"path": r.Path, "revision": hash(content)}, nil
+}
+
+// commitFile writes content to rel inside root atomically: a tmp file in the
+// same directory is synced, closed, then renamed over the target.
+func commitFile(root *os.Root, rel string, content []byte) error {
+	if err := root.MkdirAll(path.Dir(rel), 0700); err != nil {
+		return err
+	}
+	tmp := path.Join(path.Dir(rel), ".hub-"+hash([]byte(time.Now().String()))[:24])
 	f, err := root.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer func() { _ = root.Remove(tmp) }()
 	if _, err = f.Write(content); err != nil {
 		_ = f.Close()
-		return nil, err
+		return err
 	}
 	if err = f.Sync(); err != nil {
 		_ = f.Close()
-		return nil, err
+		return err
 	}
 	if err = f.Close(); err != nil {
-		return nil, err
+		return err
 	}
-	if err = root.Rename(tmp, r.Path); err != nil {
-		return nil, err
-	}
-	return map[string]any{"path": r.Path, "revision": hash(content)}, nil
+	return root.Rename(tmp, rel)
 }
 
 // guardWritable rejects writes that land inside a declared read-only

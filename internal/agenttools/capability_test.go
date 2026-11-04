@@ -39,7 +39,7 @@ func TestExposureToolsInCatalog(t *testing.T) {
 	for _, tool := range HubToolsDefinition().Tools {
 		names[tool.Name] = true
 	}
-	for _, want := range []string{"exposure_list", "exposure_status", "exposure_open", "exposure_close"} {
+	for _, want := range []string{"exposure_list", "exposure_create", "exposure_remove"} {
 		if !names[want] {
 			t.Fatal("catalog spec missing:", want)
 		}
@@ -78,27 +78,27 @@ func TestHubToolsDefinitionValidatesSandboxed(t *testing.T) {
 	}
 	var found bool
 	for _, tool := range d.Tools {
-		if tool.Sandboxed && tool.Name != "code_exec" {
+		if tool.Sandboxed {
 			t.Fatalf("unexpected sandboxed tool %q", tool.Name)
 		}
-		if tool.Name == "code_exec" {
+		if tool.Name == "terminal_exec" {
 			found = true
-			if !tool.Sandboxed || len(tool.Uses) != 3 {
-				t.Fatalf("code_exec contract wrong: %+v", tool)
+			if tool.Sandboxed || len(tool.Uses) != 3 {
+				t.Fatalf("terminal_exec contract wrong: %+v", tool)
 			}
 		}
 	}
 	if !found {
-		t.Fatal("code_exec missing from the hub catalog")
+		t.Fatal("terminal_exec missing from the hub catalog")
 	}
 }
 
-// R8.3: code_exec's optional `skill` argument is the schema-only lease marker
-// — the agent names the skill, the executor resolves the one-call env.
+// R8.3: terminal_exec's optional `skill` argument is the schema-only lease
+// marker — the agent names the skill, the executor resolves the one-call env.
 func TestCodeExecDeclaresSkillLeaseArgument(t *testing.T) {
 	d := HubToolsDefinition()
 	for _, tool := range d.Tools {
-		if tool.Name != "code_exec" {
+		if tool.Name != "terminal_exec" {
 			continue
 		}
 		for _, a := range tool.Arguments {
@@ -109,17 +109,17 @@ func TestCodeExecDeclaresSkillLeaseArgument(t *testing.T) {
 				return
 			}
 		}
-		t.Fatalf("code_exec arguments lack skill: %+v", tool.Arguments)
+		t.Fatalf("terminal_exec arguments lack skill: %+v", tool.Arguments)
 	}
-	t.Fatal("code_exec missing from the hub catalog")
+	t.Fatal("terminal_exec missing from the hub catalog")
 }
 
-// R10.6: skill_manage's git actions ride the same tool — url/ref/path/grant
+// R10.6: skill_edit's git actions ride the same tool — url/ref/path/grant
 // are optional because the non-git actions still dominate the call shape.
 func TestSkillManageDeclaresGitArguments(t *testing.T) {
 	d := HubToolsDefinition()
 	for _, tool := range d.Tools {
-		if tool.Name != "skill_manage" {
+		if tool.Name != "skill_edit" {
 			continue
 		}
 		declared := map[string]bool{}
@@ -128,13 +128,13 @@ func TestSkillManageDeclaresGitArguments(t *testing.T) {
 		}
 		for _, want := range []string{"url", "ref", "path", "grant"} {
 			if !declared[want] {
-				t.Fatalf("skill_manage arguments lack %q: %+v", want, tool.Arguments)
+				t.Fatalf("skill_edit arguments lack %q: %+v", want, tool.Arguments)
 			}
 		}
 		if !strings.Contains(tool.Description, "install") {
-			t.Fatalf("skill_manage description hides the git actions: %q", tool.Description)
+			t.Fatalf("skill_edit description hides the git actions: %q", tool.Description)
 		}
 		return
 	}
-	t.Fatal("skill_manage missing from the hub catalog")
+	t.Fatal("skill_edit missing from the hub catalog")
 }

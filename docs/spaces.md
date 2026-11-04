@@ -109,8 +109,7 @@ tools:
   file:    {via: toolhub, only: [file_read, file_list], paths: [docs, inbox]}
   browser: mcp:playwright     # ToolHub-mediated connector
   gitea:   mcp-raw:gitea      # renders mcp.gitea below
-  code_exec: off
-  skills:  toolhub            # skill catalog reads; skills_manage covers drafts+publish
+  skills:  toolhub            # skill catalog reads; skill_edit covers drafts+publish
   ssh:     {via: toolhub, access: ro, tools: {shell: false, tunnel: false}}
 ingress: [telegram]           # transport channels, never agent tools
 workspace:

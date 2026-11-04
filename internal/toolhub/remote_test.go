@@ -352,7 +352,7 @@ func TestPrepareRemoteCredentialFreeEndToEnd(t *testing.T) {
 			t.Fatalf("owner-scoped remote leaked to bob: %s", tool.Name)
 		}
 	}
-	invoked, err := alice.CallTool(context.Background(), &mcp.CallToolParams{Name: "invoke", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{"q": "x"}}})
+	invoked, err := alice.CallTool(context.Background(), &mcp.CallToolParams{Name: "tool_call", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{"q": "x"}}})
 	if err != nil || invoked.IsError {
 		t.Fatalf("invoke=%+v err=%v", invoked, err)
 	}
@@ -360,14 +360,14 @@ func TestPrepareRemoteCredentialFreeEndToEnd(t *testing.T) {
 		t.Fatal("remote fixture did not receive the call")
 	}
 	// Bob reusing the projected name is denied at call time.
-	if _, err := bob.CallTool(context.Background(), &mcp.CallToolParams{Name: "invoke", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{}}}); err == nil {
+	if _, err := bob.CallTool(context.Background(), &mcp.CallToolParams{Name: "tool_call", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{}}}); err == nil {
 		t.Fatal("cross-user projected call allowed")
 	}
 	// Revoke removes the projection and cuts the call path mid-session.
 	if _, err := callControl(t, alice, "revoke", map[string]any{"onboarding_id": prepared["onboarding_id"]}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := alice.CallTool(context.Background(), &mcp.CallToolParams{Name: "invoke", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{}}}); err == nil {
+	if _, err := alice.CallTool(context.Background(), &mcp.CallToolParams{Name: "tool_call", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{}}}); err == nil {
 		t.Fatal("revoked remote call still succeeded")
 	}
 	refreshed, err := alice.ListTools(context.Background(), nil)
@@ -432,7 +432,7 @@ func TestPrepareRemoteCredentialedFlow(t *testing.T) {
 	if projectedName == "" {
 		t.Fatal("credentialed remote tool not projected")
 	}
-	result, err := alice.CallTool(context.Background(), &mcp.CallToolParams{Name: "invoke", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{}}})
+	result, err := alice.CallTool(context.Background(), &mcp.CallToolParams{Name: "tool_call", Arguments: map[string]any{"tool": projectedName, "arguments": map[string]any{}}})
 	if err != nil || result.IsError {
 		t.Fatalf("invoke failed: %+v %v", result, err)
 	}

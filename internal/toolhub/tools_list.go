@@ -12,8 +12,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// tools_list is the live caller-scoped inventory (ADR-0089 D1-D4). It is
-// registered unconditionally beside system_guide because it reports only the
+// tool_search is the live caller-scoped inventory (ADR-0089 D1-D4). It is
+// registered unconditionally beside platform_guide because it reports only the
 // caller's own admitted surface — the same inputs that feed tools/list — so
 // the answer stays true when a connector or MCP tool is enabled in this or a
 // neighbouring session, without reconnect, respawn or prompt regeneration.
@@ -22,12 +22,12 @@ func (g *Gateway) addToolsListTool(server *mcp.Server, auth identity.Envelope) {
 		return
 	}
 	server.AddTool(&mcp.Tool{
-		Name:        "tools_list",
-		Description: "List the ToolHub tools currently admitted for you: exact names, re-read on every call, including tools enabled during this or another session. Pass name for one tool's full spec, or query to filter. A name listed here but missing from your visible tool list is extended inventory, callable through invoke — the visible list is a bounded core projection, never a permission boundary. Call this before telling the user a capability is missing.",
+		Name:        "tool_search",
+		Description: "List the ToolHub tools currently admitted for you: exact names, re-read on every call, including tools enabled during this or another session. Pass name for one tool's full spec, or query to filter. A name listed here but missing from your visible tool list is extended inventory, callable through tool_call — the visible list is a bounded core projection, never a permission boundary. Call this before telling the user a capability is missing.",
 		InputSchema: map[string]any{
 			"type": "object", "additionalProperties": false,
 			"properties": map[string]any{
-				"query": map[string]any{"type": "string", "maxLength": 256, "description": "Case-insensitive substring over tool names. Matching entries include description and input schema."},
+				"query": map[string]any{"type": "string", "maxLength": 256, "description": "Case-insensitive substring over tool names, descriptions, parameter names and definition ids. Matching entries include description and input schema."},
 				"name":  map[string]any{"type": "string", "maxLength": 128, "description": "Exact projected tool name; returns its full spec."},
 				"limit": map[string]any{"type": "integer", "minimum": 1, "description": "Maximum tools returned."},
 			},
@@ -53,6 +53,28 @@ func (g *Gateway) addToolsListTool(server *mcp.Server, auth identity.Envelope) {
 	})
 }
 
+// toolQueryMatch implements the r5 search contract (ADR-0094 M31.8 S5): the
+// query matches the projected name, description text, input parameter names
+// and the backing definition_id — case-insensitive substrings.
+func toolQueryMatch(tool api.ProjectedTool, query string) bool {
+	if strings.Contains(strings.ToLower(tool.Name), query) ||
+		strings.Contains(strings.ToLower(tool.Tool.Description), query) ||
+		strings.Contains(strings.ToLower(tool.DefinitionID), query) {
+		return true
+	}
+	var schema struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if json.Unmarshal(tool.Tool.InputSchema, &schema) == nil {
+		for param := range schema.Properties {
+			if strings.Contains(strings.ToLower(param), query) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (g *Gateway) toolsList(auth identity.Envelope, query, name string, limit int) (map[string]any, error) {
 	projected, err := g.Store.ListProjectedTools(auth)
 	if err != nil {
@@ -70,7 +92,7 @@ func (g *Gateway) toolsList(auth identity.Envelope, query, name string, limit in
 		if name != "" && tool.Name != name {
 			continue
 		}
-		if query != "" && !strings.Contains(strings.ToLower(tool.Name), query) {
+		if query != "" && !toolQueryMatch(tool, query) {
 			continue
 		}
 		matched++
@@ -102,7 +124,7 @@ func (g *Gateway) toolsList(auth identity.Envelope, query, name string, limit in
 		"controls": controlNames,
 		"total":    matched,
 		"returned": len(entries),
-		"note":     "Admitted ToolHub tools, re-read on every call — including tools enabled during this or another session. A name listed here but missing from your visible tool list is callable through invoke({tool, arguments}). Hub workspace tools (mcp__hub__*) and the skills inventory (skills_list) live on the hub server.",
+		"note":     "Admitted ToolHub tools, re-read on every call — including tools enabled during this or another session. A name listed here but missing from your visible tool list is callable through tool_call({tool, arguments}). Hub workspace tools (mcp__hub__*) and the skills inventory (skill_search) live on the hub server.",
 	}
 	// Rights-denied selections surface as unavailable: the agent learns the
 	// missing capability.operation instead of guessing the tool vanished.

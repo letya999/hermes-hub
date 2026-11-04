@@ -70,17 +70,6 @@ func serviceSynthesizer(base, auth, voice string, voices map[locale.Lang]string)
 	return nil
 }
 
-// commandAvailable reports whether the configured worker binary can actually
-// run: an empty command or an unresolvable path both mean "not available".
-func commandAvailable(command string) bool {
-	command = strings.TrimSpace(command)
-	if command == "" {
-		return false
-	}
-	_, err := exec.LookPath(command)
-	return err == nil
-}
-
 type CommandTranscriber struct {
 	Command string
 	Timeout time.Duration

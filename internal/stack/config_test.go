@@ -1279,7 +1279,7 @@ func TestManagedRenderNoProxyCoversBrowserSidecar(t *testing.T) {
 	settings.CapabilityMode = "managed"
 	settings.CapabilityProfileID = "p"
 	settings.CapabilityGeneration = 1
-	settings.Tools, settings.Ingress = testTools("browser", "hh=toolhub"), testIngress("browser")
+	settings.Tools, settings.Ingress = testTools("browser", "media=toolhub"), testIngress("browser")
 	if err := saveSpace(dir, settings); err != nil {
 		t.Fatal(err)
 	}
@@ -1291,7 +1291,7 @@ func TestManagedRenderNoProxyCoversBrowserSidecar(t *testing.T) {
 		"  browser: {mode: per-space}\n" +
 		"  toolhub: {mode: shared}\n" +
 		"  credential-broker: {mode: shared}\n"
-	docs["tools"] = "kind: tools\ncore:\n  discovery: {via: toolhub}\nextended:\n  browser: {via: \"mcp:playwright\"}\n  hh: {via: toolhub}\n"
+	docs["tools"] = "kind: tools\ncore:\n  discovery: {via: toolhub}\nextended:\n  browser: {via: \"mcp:playwright\"}\n  routines: {via: toolhub}\n"
 	publishManagedDocs(t, dir, "alice", "r-0123456789abcdef", docs)
 	selection := `{"schema":1,"user":"alice","environment":"prod","mode":"supervisor","supervisor_url":"http://localhost:8876","native_cron":"disabled","compatibility_release":"0.3.0"}`
 	if err := os.WriteFile(filepath.Join(dir, ExecutionPath("prod")), []byte(selection), 0600); err != nil {

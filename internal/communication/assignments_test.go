@@ -78,6 +78,25 @@ func TestAssignmentAPIRoundTrip(t *testing.T) {
 	if w.Code == http.StatusOK {
 		t.Fatal("cancelled assignment must not re-apply")
 	}
+	// DELETE removes the record under the same CAS fence (ADR-0094
+	// assignment_remove): a stale revision conflicts, a matching one deletes
+	// and the id reads 404 afterwards.
+	current, err := g.spool.rt.LoadAssignment(id, g.users[11].Envelope(11))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w = destinationRequest(g, http.MethodDelete, "/v1/assignments/"+id, `{"expected_revision":`+itoa(current.Revision+9)+`}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("stale remove must conflict, got %d", w.Code)
+	}
+	w = destinationRequest(g, http.MethodDelete, "/v1/assignments/"+id, `{"expected_revision":`+itoa(current.Revision)+`}`)
+	if w.Code != http.StatusOK && w.Code != http.StatusNoContent {
+		t.Fatalf("remove failed: %d %s", w.Code, w.Body.String())
+	}
+	w = destinationRequest(g, http.MethodGet, "/v1/assignments/"+id, "")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("removed assignment must 404, got %d", w.Code)
+	}
 	// Foreign id ⇒ 404-class everywhere.
 	for _, path := range []string{"/v1/assignments/nope", "/v1/assignments/nope/pause"} {
 		w = destinationRequest(g, http.MethodGet, path, "")

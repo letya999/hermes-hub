@@ -1,0 +1,25 @@
+schema: 1
+change: CHG-0266
+title: M31.3 Consolidate content families: files, documents, media
+status: done
+branch: feat/m31-model-tool-surface
+updated: 2026-11-03
+phase: done
+adr: ADR-0094
+spec: SPEC-0093
+requirements: [R3.1, R3.2]
+depends_on: []
+github_milestone: "M31 — Consolidated Model Tool Surface (catalog r5)"
+github_issue: "440"
+design_status: accepted
+implementation_status: done
+slices: {}
+validation:
+  documents: done
+  just_check: pass
+  docker_check: not_applicable
+  red_team: done
+  live_acceptance: not_applicable
+evidence: []
+remaining: []
+limitations: []

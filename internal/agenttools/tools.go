@@ -1,6 +1,7 @@
 package agenttools
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/gofrs/flock"
 	"github.com/letya999/hermes-hub/internal/exposure"
@@ -84,16 +85,20 @@ type Input struct {
 	Regex              string `json:"regex,omitempty"`
 	ProbeKind          string `json:"probe_kind,omitempty"`
 	Recipe             string `json:"recipe,omitempty"`
-	Extract            string `json:"extract,omitempty"`
-	ProbeScript        string `json:"probe_script,omitempty"`
-	// Needs is a JSON array of {"tool","args"} read-tool calls the hub runs
-	// before a script/command probe so needs() returns their results.
-	Needs        string `json:"needs,omitempty"`
+	// Extract is a list of extraction steps applied to watched output. The
+	// r5 schema types it array; the legacy JSON-string form still decodes.
+	Extract     any    `json:"extract,omitempty"`
+	ProbeScript string `json:"probe_script,omitempty"`
+	// Needs is a list of {"tool","args"} read-tool calls the hub runs
+	// before a script/command probe so needs() returns their results. The
+	// r5 schema types it array; the legacy JSON-string form still decodes.
+	Needs        any    `json:"needs,omitempty"`
 	DeliverMode  string `json:"deliver_mode,omitempty"`
 	ArtifactName string `json:"artifact_name,omitempty"`
-	// Steps is a JSON array of declarative browser actions for render probes;
+	// Steps is a list of declarative browser actions for render probes. The
+	// r5 schema types it array; the legacy JSON-string form still decodes.
 	// WaitFor is the terminal wait condition the render service honors.
-	Steps      string   `json:"steps,omitempty"`
+	Steps      any      `json:"steps,omitempty"`
 	WaitFor    string   `json:"wait_for,omitempty"`
 	Tool       string   `json:"tool,omitempty"`
 	NotifyMode string   `json:"notify_mode,omitempty"`
@@ -103,9 +108,10 @@ type Input struct {
 	QuietTo    string   `json:"quiet_to,omitempty"`
 	DailyLimit int      `json:"daily_limit,omitempty"`
 	MaxRetries int      `json:"max_retries,omitempty"`
-	// Plan carries an assignment plan as a JSON object string; Title names
+	// Plan carries an assignment plan object. The r5 schema types it
+	// object; the legacy JSON-string form still decodes. Title names
 	// the assignment for the owner. Intent rides the existing Text field.
-	Plan     string `json:"plan,omitempty"`
+	Plan     any    `json:"plan,omitempty"`
 	Title    string `json:"title,omitempty"`
 	JobID    string `json:"job_id,omitempty"`
 	Summary  string `json:"summary,omitempty"`
@@ -114,7 +120,9 @@ type Input struct {
 	Complete bool   `json:"complete,omitempty"`
 	Sink     string `json:"sink,omitempty"`
 	Delivery string `json:"delivery,omitempty"`
-	Args     string `json:"args,omitempty"`
+	// Args is the tool-arguments object for mcp_tool/event probes. The r5
+	// schema types it object; the legacy JSON-string form still decodes.
+	Args any `json:"args,omitempty"`
 	// Filter is the deterministic per-event Starlark gate for event
 	// subscriptions (probe.filter); MinIntervalSeconds declares the source
 	// cadence for stream delivery on poll-style tools.
@@ -122,9 +130,22 @@ type Input struct {
 	MinIntervalSeconds int    `json:"min_interval_seconds,omitempty"`
 	CursorArg          string `json:"cursor_arg,omitempty"`
 	// Sources fans one subscription out over several acquisition inputs: a
-	// JSON array string of {name?,tool?,args} entries merged onto the
-	// probe's tool+args per stream round.
-	Sources string `json:"sources,omitempty"`
+	// list of {name?,tool?,args} entries merged onto the probe's tool+args
+	// per stream round. The r5 schema types it array; the legacy
+	// JSON-string form still decodes.
+	Sources any `json:"sources,omitempty"`
+	// Surgical file-edit and mkdir fields (files family r5).
+	OldString  string `json:"old_string,omitempty"`
+	NewString  string `json:"new_string,omitempty"`
+	ReplaceAll bool   `json:"replace_all,omitempty"`
+	Parents    bool   `json:"parents,omitempty"`
+	// Terminal exec fields (terminal family r5).
+	Cmd        string `json:"cmd,omitempty"`
+	Cwd        string `json:"cwd,omitempty"`
+	Stdin      string `json:"stdin,omitempty"`
+	Shell      string `json:"shell,omitempty"`
+	Background bool   `json:"background,omitempty"`
+	Job        string `json:"job,omitempty"`
 }
 type Tools struct {
 	Workspace, Archive, Organization *os.Root
@@ -385,4 +406,33 @@ func (t *Tools) Close() {
 	if t.Skills != nil {
 		_ = t.Skills.Close()
 	}
+}
+
+// hasParam reports whether a structured `any` argument carries a value —
+// either a non-empty legacy JSON string or a decoded object/array.
+func hasParam(v any) bool {
+	if s, ok := v.(string); ok {
+		return strings.TrimSpace(s) != ""
+	}
+	return v != nil
+}
+
+// jsonParam decodes one structured call argument into out. The r5 schema
+// sends real objects/arrays; the older internal caller convention passed
+// the same JSON as a string — both forms decode identically here.
+func jsonParam(v any, out any) error {
+	if s, ok := v.(string); ok {
+		if strings.TrimSpace(s) == "" {
+			return nil
+		}
+		return json.Unmarshal([]byte(s), out)
+	}
+	if v == nil {
+		return nil
+	}
+	body, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(body, out)
 }

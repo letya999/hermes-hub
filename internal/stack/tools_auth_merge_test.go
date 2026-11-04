@@ -27,6 +27,7 @@ func TestValidateToolsEdgeBranchesAndAuthFiles(t *testing.T) {
 		}
 	}
 	check(map[string]ToolEntry{"terminal": {Via: ToolViaToolHub}, "code_execution": {Via: ToolViaNative}}, "conflicts with native code_execution")
+	check(map[string]ToolEntry{"terminal": {Via: ToolViaToolHub}, "code_execution": {Via: ToolViaNative}}, "terminal_exec")
 	check(map[string]ToolEntry{"file": {Via: ToolViaToolHub, Access: "execute"}}, "access must be ro or rw")
 	check(map[string]ToolEntry{"file": {Via: ToolViaNative, Access: ToolAccessRO}}, "access ro cannot apply to native")
 	check(map[string]ToolEntry{"file": {Via: ToolViaNative, Only: []string{"read"}}}, "native grants are whole-toolset")

@@ -6,6 +6,7 @@ last_verified: 2026-11-02
 
 | Record | Decision |
 |---|---|
+| [ADR-0094](ADR-0094-consolidated-model-tool-surface.md) | Accepted direction: catalog r5 — 20 first-party families + pinned platform under logical names, via/executor two-level routing, model\|internal\|operator audiences, fail-closed requires (M31) |
 | [ADR-0093](ADR-0093-imperative-passports-capability-grants.md) | Accepted direction: passports are the imperative sole input to build/spawn/admission; agent capability grants (PDP/PEP) instead of tool ids; effect classes live/respawn/recreate/rebuild; amends ADR-0092 D1–D3, D6 (M30) |
 | [ADR-0092](ADR-0092-six-passport-space-contract.md) | Accepted direction: six effective per-space passports, versioned platform catalogs/templates, grant ceilings and verified migration (M29) |
 | [ADR-0091](ADR-0091-root-services-sqlite-storage.md) | Accepted direction: SQLite substrate for ToolHub/Communication (pure-Go driver, per-space DBs, shared migration contract); amends ADR-0087 alternatives + ADR-0088 D1 exclusion (CHG-0215-0226) |

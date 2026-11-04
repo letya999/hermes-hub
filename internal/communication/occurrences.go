@@ -16,10 +16,6 @@ import (
 	"github.com/letya999/hermes-hub/internal/identity"
 )
 
-// tickProactive is the proactive pass of the control loop: schedule -> due
-// occurrence -> dispatch -> deterministic probing for watcher/check kinds.
-func (g *Gateway) tickProactive(now time.Time) { g.tickProactiveContext(context.Background(), now) }
-
 func (g *Gateway) tickProactiveContext(ctx context.Context, now time.Time) {
 	steps := []func() error{
 		func() error { return g.spool.TickSchedules(now, g.config.NativeCron, g.authorizeOccurrence) },

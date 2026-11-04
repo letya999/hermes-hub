@@ -188,7 +188,7 @@ func DeriveRights(store *Store, gov *GovernanceStore, doc api.RightsDoc, princip
 // rotated policy_version. resolveLocked requires binding pv == envelope
 // pv, so a rotation that repins the profile but not its bindings silently
 // drops every managed selection — the space's projection collapses to
-// zero tools (CHG-0263 live incident). For each credential-free
+// zero tools (CHG-0275 live incident). For each credential-free
 // definition the profile's selections reference, an existing active
 // binding is re-enabled under the new pv — Enable restamps the
 // deterministic row in place and supersedes stale siblings. A definition

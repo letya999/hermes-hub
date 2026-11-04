@@ -5,6 +5,8 @@ import (
 	"testing"
 )
 
+// The direct MCP surface carries the files family that serves
+// root=knowledge; no knowledge_* names remain discoverable (SPEC-0093 R3.1).
 func TestKnowledgeMCPTransportParity(t *testing.T) {
 	client, close := connectHub(t, fixture(t))
 	defer close()
@@ -12,15 +14,18 @@ func TestKnowledgeMCPTransportParity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"knowledge_list", "knowledge_read", "knowledge_search"} {
-		found := false
-		for _, tool := range list.Tools {
-			if tool.Name == name {
-				found = true
-			}
-		}
-		if !found {
+	present := map[string]bool{}
+	for _, tool := range list.Tools {
+		present[tool.Name] = true
+	}
+	for _, name := range []string{"file_list", "file_read", "file_search"} {
+		if !present[name] {
 			t.Errorf("%s missing from MCP discovery", name)
+		}
+	}
+	for _, tool := range list.Tools {
+		if len(tool.Name) > 9 && tool.Name[:9] == "knowledge" {
+			t.Errorf("knowledge tool %s survived on the MCP surface", tool.Name)
 		}
 	}
 }

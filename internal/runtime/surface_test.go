@@ -21,7 +21,7 @@ func TestSurfaceProbeReportsMissingProjectedNames(t *testing.T) {
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"connectors": []map[string]any{
-			{"definition_id": "hub-agent-tools", "tools": []string{"code_exec"}},
+			{"definition_id": "hub-agent-tools", "tools": []string{"terminal_exec"}},
 			{"definition_id": "gitlab-mcp", "tools": []string{"search"}},
 		}})
 	}))
@@ -79,7 +79,7 @@ func TestSurfaceProbeAbsentManifestNotProbed(t *testing.T) {
 func TestSurfaceProbeFlagsUnresolvedChildEnv(t *testing.T) {
 	connectors := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"connectors": []map[string]any{
-			{"definition_id": "hub-agent-tools", "tools": []string{"code_exec"}},
+			{"definition_id": "hub-agent-tools", "tools": []string{"terminal_exec"}},
 		}})
 	}))
 	defer connectors.Close()
@@ -116,7 +116,7 @@ func TestSurfaceProbeFlagsUnresolvedChildEnv(t *testing.T) {
 func TestSurfaceProbeHubChildSpawnFails(t *testing.T) {
 	connectors := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"connectors": []map[string]any{
-			{"definition_id": "hub-agent-tools", "tools": []string{"code_exec"}},
+			{"definition_id": "hub-agent-tools", "tools": []string{"terminal_exec"}},
 		}})
 	}))
 	defer connectors.Close()
@@ -150,7 +150,7 @@ func TestSurfaceProbeHubChildSpawnFails(t *testing.T) {
 func TestSurfaceProbeHubChildDiesOnInit(t *testing.T) {
 	connectors := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"connectors": []map[string]any{
-			{"definition_id": "hub-agent-tools", "tools": []string{"code_exec"}},
+			{"definition_id": "hub-agent-tools", "tools": []string{"terminal_exec"}},
 		}})
 	}))
 	defer connectors.Close()
@@ -231,7 +231,7 @@ func TestSpawnHubChildHonorsGraceWindow(t *testing.T) {
 func TestSurfaceProbeHubChildSelfTestRunsOnce(t *testing.T) {
 	connectors := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"connectors": []map[string]any{
-			{"definition_id": "hub-agent-tools", "tools": []string{"code_exec"}},
+			{"definition_id": "hub-agent-tools", "tools": []string{"terminal_exec"}},
 		}})
 	}))
 	defer connectors.Close()

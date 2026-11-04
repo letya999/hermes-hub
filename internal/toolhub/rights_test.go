@@ -254,7 +254,7 @@ func TestDeriveRightsStampsManagedState(t *testing.T) {
 // A policy rotation must carry the space's agent-tools binding forward:
 // the profile and token envelope follow the revision automatically, and a
 // stale-pv binding silently zeroes the managed projection — the live
-// incident behind CHG-0263 (artem_two saw 83 selections collapse to zero
+// incident behind CHG-0275 (artem_two saw 83 selections collapse to zero
 // tools until the binding was repinned by hand).
 func TestDeriveRightsRepinsManagedBinding(t *testing.T) {
 	store := NewStore()

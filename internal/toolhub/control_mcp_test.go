@@ -316,7 +316,7 @@ func TestControlMCPOperationsAndIsolation(t *testing.T) {
 			t.Fatalf("missing control operation %s", op)
 		}
 	}
-	if !have["invoke"] {
+	if !have["tool_call"] {
 		t.Fatal("missing stable projected-tool invoke operation")
 	}
 	prepared, err := callControl(t, alice, "prepare_source", map[string]any{"definition_id": "catalog-read", "version": "1.0.0", "request_key": "cat-1"})

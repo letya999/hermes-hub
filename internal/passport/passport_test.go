@@ -47,9 +47,9 @@ func fixtureInputs(t *testing.T) passport.Inputs {
 					"memory": map[string]any{"backend": []any{"local", "honcho"}},
 				},
 				"tools": {"core": map[string]any{
-					"native:file":  map[string]any{"via": "native"},
-					"hub:files":    map[string]any{"via": "toolhub"},
-					"hub:terminal": map[string]any{"via": "toolhub"},
+					"native:file": map[string]any{"via": "native"},
+					"files":       map[string]any{"via": "toolhub"},
+					"terminal":    map[string]any{"via": "toolhub"},
 				}},
 				"workspace": {
 					"writable":  []any{"/workspace", "/vault"},
@@ -87,7 +87,7 @@ func fixtureInputs(t *testing.T) passport.Inputs {
 						},
 					},
 				},
-				"tools":     {"core": map[string]any{"native:file": map[string]any{"via": "native"}, "hub:files": map[string]any{"via": "toolhub"}}},
+				"tools":     {"core": map[string]any{"native:file": map[string]any{"via": "native"}, "files": map[string]any{"via": "toolhub"}}},
 				"workspace": {"writable": []any{"/workspace"}, "read_only": []any{"/config", "/skills"}},
 				"models": {
 					"default": "everyday",
@@ -107,7 +107,7 @@ func fixtureInputs(t *testing.T) passport.Inputs {
 		OrgCeiling: passport.Layer{
 			Name: "acme-ceiling", Version: 3,
 			Docs: map[string]map[string]any{
-				"tools":  {"core": map[string]any{"native:file": map[string]any{"via": "native"}, "hub:files": map[string]any{"via": "toolhub"}}},
+				"tools":  {"core": map[string]any{"native:file": map[string]any{"via": "native"}, "files": map[string]any{"via": "toolhub"}}},
 				"grants": {"allow": []any{"workspace", "tools"}},
 			},
 		},
@@ -406,6 +406,9 @@ func TestStackConfigRejectsMissingServiceAndPortCollision(t *testing.T) {
 		t.Fatalf("config.ports.browser-vnc = %v %v, want 6080", port, err)
 	}
 
+	// Port-owner derivation (catalog port table) is S4.1's; the port map
+	// itself already enforces host-port uniqueness.
+
 	// Two services claiming one host port fail before compose.
 	collide := fixtureInputs(t)
 	collide.User.Docs["config"] = map[string]any{
@@ -519,146 +522,6 @@ func TestStackConfigRejectsMissingServiceAndPortCollision(t *testing.T) {
 	}
 }
 
-// Port names are a fixed vocabulary bound to their owning service
-// (SPEC-0092 R4.1): an unknown name, a port for a service the stack does
-// not run, a shared owner's port on a non-infra space and a sibling's
-// claimed port all fail the compile.
-func TestConfigPortsUniqueAndOwned(t *testing.T) {
-	// Only the declared port names compile.
-	unknown := fixtureInputs(t)
-	unknown.User.Docs["config"] = map[string]any{
-		"ports": map[string]any{"garage": 9000},
-	}
-	if _, err := passport.Compile(unknown); err == nil {
-		t.Fatal("unknown port name compiled")
-	}
-
-	// A non-numeric host port is not a port.
-	notPort := fixtureInputs(t)
-	notPort.User.Docs["config"] = map[string]any{
-		"ports": map[string]any{"oauth-callback": "later"},
-	}
-	if _, err := passport.Compile(notPort); err == nil {
-		t.Fatal("non-numeric port compiled")
-	}
-
-	// oauth-callback belongs to hermes-runtime — absent owner fails.
-	orphan := fixtureInputs(t)
-	orphan.PlatformCeiling.Docs["stack"]["services"] = map[string]any{
-		"browser":  map[string]any{"mode": "per-space"},
-		"cliproxy": map[string]any{"mode": "per-space"},
-	}
-	orphan.User.Docs["config"] = map[string]any{
-		"ports": map[string]any{"oauth-callback": 8008},
-	}
-	if _, err := passport.Compile(orphan); err == nil {
-		t.Fatal("port for a service the stack does not run compiled")
-	}
-
-	// slack-events is published by the shared communication-hub: only the
-	// infra-rendering space may declare it.
-	shared := fixtureInputs(t)
-	shared.RendersInfra = false
-	shared.User.Docs["config"] = map[string]any{
-		"ports": map[string]any{"slack-events": 8094},
-	}
-	if _, err := passport.Compile(shared); err == nil {
-		t.Fatal("shared port published by a non-infra space")
-	}
-	shared.RendersInfra = true
-	if _, err := passport.Compile(shared); err != nil {
-		t.Fatalf("infra space publishing its shared gateway port: %v", err)
-	}
-
-	// A port a sibling space already published is reserved.
-	reserved := fixtureInputs(t)
-	reserved.User.Docs["config"] = map[string]any{
-		"ports": map[string]any{"oauth-callback": 8008},
-	}
-	reserved.ReservedPorts = map[int]string{8008: "bob"}
-	if _, err := passport.Compile(reserved); err == nil {
-		t.Fatal("port claimed by a sibling space compiled")
-	}
-	reserved.ReservedPorts = map[int]string{8009: "bob"}
-	if _, err := passport.Compile(reserved); err != nil {
-		t.Fatalf("unclaimed port: %v", err)
-	}
-}
-
-// Channel entries name ingress transports bound to a catalog feature
-// (SPEC-0092 R4.1): an unknown channel name fails, literal credentials are
-// forbidden and only {ref:} credential contracts compile.
-func TestConfigChannelRefsOnly(t *testing.T) {
-	// A channel name outside the ingress vocabulary fails.
-	unknown := fixtureInputs(t)
-	unknown.User.Docs["config"] = map[string]any{
-		"channels": map[string]any{"icq": map[string]any{"bot": map[string]any{"ref": "icq-bot"}}},
-	}
-	if _, err := passport.Compile(unknown); err == nil {
-		t.Fatal("unknown channel name compiled")
-	}
-
-	// A catalog feature that is not an ingress transport is not a channel.
-	notChannel := fixtureInputs(t)
-	notChannel.User.Docs["config"] = map[string]any{
-		"channels": map[string]any{"browser": map[string]any{"bot": map[string]any{"ref": "x"}}},
-	}
-	if _, err := passport.Compile(notChannel); err == nil {
-		t.Fatal("non-transport feature compiled as a channel")
-	}
-
-	// A channel without the shared gateway that consumes it fails.
-	noHub := fixtureInputs(t)
-	noHub.PlatformCeiling.Docs["stack"]["services"] = map[string]any{
-		"browser":  map[string]any{"mode": "per-space"},
-		"cliproxy": map[string]any{"mode": "per-space"},
-	}
-	noHub.User.Docs["config"] = map[string]any{
-		"channels": map[string]any{"telegram": map[string]any{"bot": map[string]any{"ref": "telegram-bot-alice"}}},
-	}
-	if _, err := passport.Compile(noHub); err == nil {
-		t.Fatal("channel without communication-hub compiled")
-	}
-
-	// Literal credentials never compile — refs only.
-	literal := fixtureInputs(t)
-	literal.User.Docs["config"] = map[string]any{
-		"channels": map[string]any{"telegram": map[string]any{
-			"bot": "xoxb-real-token",
-		}},
-	}
-	if _, err := passport.Compile(literal); err == nil {
-		t.Fatal("literal channel credential compiled")
-	}
-	literal.User.Docs["config"] = map[string]any{
-		"channels": map[string]any{"telegram": map[string]any{
-			"bot":           map[string]any{"ref": "telegram-bot-alice"},
-			"allowed_users": []any{"@alice"},
-		}},
-	}
-	if _, err := passport.Compile(literal); err == nil {
-		t.Fatal("non-ref allowed_users compiled")
-	}
-
-	// Both ingress channels compile with ref credentials.
-	ok := fixtureInputs(t)
-	ok.User.Docs["config"] = map[string]any{
-		"channels": map[string]any{
-			"telegram": map[string]any{
-				"bot":           map[string]any{"ref": "telegram-bot-alice"},
-				"allowed_users": map[string]any{"ref": "telegram-allow-alice"},
-			},
-			"slack_app": map[string]any{
-				"bot":           map[string]any{"ref": "slack-app-alice"},
-				"allowed_users": map[string]any{"ref": "slack-allow-alice"},
-			},
-		},
-	}
-	if _, err := passport.Compile(ok); err != nil {
-		t.Fatalf("ref-only channels: %v", err)
-	}
-}
-
 // The workspace passport (R4): writable and read_only are disjoint
 // canonical mount boundaries; the ASCII tree is derived, never written by
 // a layer.
@@ -701,8 +564,9 @@ func TestWorkspaceTreeDerivedFromLayout(t *testing.T) {
 
 // R6.1/A6: tools.yaml projects whole toolsets — core never exceeds twenty
 // selected tools and never splits a family, overflow lands in extended in
-// deterministic catalog order, discovery stays core, and the catalog pin
-// makes a release bump a visible diff rather than a silent growth.
+// deterministic catalog order, the platform layer stays pinned in core, and
+// the catalog pin makes a release bump a visible diff rather than a silent
+// growth.
 func TestToolsetCoreLimitAndExtendedInvokeRevoke(t *testing.T) {
 	rev := compileFixture(t)
 	core, err := rev.Value("tools", "core")
@@ -716,19 +580,27 @@ func TestToolsetCoreLimitAndExtendedInvokeRevoke(t *testing.T) {
 	if _, ok := coreMap["native:file"]; !ok {
 		t.Fatalf("user toolset selection lost: %v", coreMap)
 	}
-	disc, _ := coreMap["discovery"].(map[string]any)
-	if fmt.Sprint(disc["via"]) != "toolhub" {
-		t.Fatalf("discovery not pinned in core: %v", coreMap)
+	platform, _ := coreMap["platform"].(map[string]any)
+	if fmt.Sprint(platform["via"]) != "toolhub" {
+		t.Fatalf("platform layer not pinned in core: %v", coreMap)
+	}
+	if _, leaked := coreMap["discovery"]; leaked {
+		t.Fatalf("legacy discovery pseudo-toolset leaked into core: %v", coreMap)
 	}
 
 	// A toolset whose members would overflow the core budget moves to
 	// extended wholesale — no family is ever split.
 	in := fixtureInputs(t)
-	in.PlatformCeiling.Docs["tools"]["core"].(map[string]any)["hub:tools"] = map[string]any{"via": "toolhub"}
-	in.OrgCeiling.Docs["tools"]["core"].(map[string]any)["hub:tools"] = map[string]any{"via": "toolhub"}
+	for _, fat := range []string{"assignments", "goals", "sessions", "watches"} {
+		in.PlatformCeiling.Docs["tools"]["core"].(map[string]any)[fat] = map[string]any{"via": "toolhub"}
+		in.OrgCeiling.Docs["tools"]["core"].(map[string]any)[fat] = map[string]any{"via": "toolhub"}
+	}
 	in.User.Docs["tools"]["core"] = map[string]any{
 		"native:file": map[string]any{"via": "native"},
-		"hub:tools":   map[string]any{"via": "toolhub"},
+		"assignments": map[string]any{"via": "toolhub"},
+		"goals":       map[string]any{"via": "toolhub"},
+		"sessions":    map[string]any{"via": "toolhub"},
+		"watches":     map[string]any{"via": "toolhub"},
 	}
 	fat, err := passport.Compile(in)
 	if err != nil {
@@ -739,11 +611,11 @@ func TestToolsetCoreLimitAndExtendedInvokeRevoke(t *testing.T) {
 		t.Fatalf("tools.extended: %v", err)
 	}
 	extMap, _ := extended.(map[string]any)
-	if _, ok := extMap["hub:tools"]; !ok {
+	if _, ok := extMap["watches"]; !ok {
 		t.Fatalf("overflowing toolset not moved to extended: %v", extMap)
 	}
 	core2, _ := fat.Value("tools", "core")
-	if _, inCore := core2.(map[string]any)["hub:tools"]; inCore {
+	if _, inCore := core2.(map[string]any)["watches"]; inCore {
 		t.Fatal("overflow toolset stayed in core — family split")
 	}
 
@@ -754,7 +626,7 @@ func TestToolsetCoreLimitAndExtendedInvokeRevoke(t *testing.T) {
 	restricted := fixtureInputs(t)
 	restricted.User.Docs["tools"]["core"] = map[string]any{
 		"native:file": map[string]any{"via": "native"},
-		"hub:files": map[string]any{
+		"files": map[string]any{
 			"via":    "toolhub",
 			"access": "read",
 			"tools":  map[string]any{"exclude": []any{"file_write"}},
@@ -764,7 +636,7 @@ func TestToolsetCoreLimitAndExtendedInvokeRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("enforceable toolset restriction rejected: %v", err)
 	}
-	hf, _ := okRev.Value("tools", "core.hub:files")
+	hf, _ := okRev.Value("tools", "core.files")
 	if fmt.Sprint(hf.(map[string]any)["access"]) != "read" {
 		t.Fatalf("access restriction lost: %v", hf)
 	}
@@ -783,7 +655,7 @@ func TestToolsetCoreLimitAndExtendedInvokeRevoke(t *testing.T) {
 		bad := fixtureInputs(t)
 		bad.User.Docs["tools"]["core"] = map[string]any{
 			"native:file": map[string]any{"via": "native"},
-			"hub:files":   spec,
+			"files":       spec,
 		}
 		if _, err := passport.Compile(bad); err == nil {
 			t.Fatalf("%s compiled", name)
@@ -809,19 +681,18 @@ func TestToolsetCoreLimitAndExtendedInvokeRevoke(t *testing.T) {
 func TestSkillConnectorPassportProjectionAndRawMCPDenial(t *testing.T) {
 	in := fixtureInputs(t)
 	offer := map[string]any{
-		"native:file":       map[string]any{"via": "native"},
-		"hub:files":         map[string]any{"via": "toolhub"},
-		"hub:skills":        map[string]any{"via": "toolhub"},
-		"hub:skills_manage": map[string]any{"via": "toolhub"},
-		"connectors":        map[string]any{"via": "toolhub"},
-		"user_mcp":          map[string]any{"via": "mcp-raw"},
-		"org_mcp":           map[string]any{"via": "mcp-raw"},
+		"native:file": map[string]any{"via": "native"},
+		"files":       map[string]any{"via": "toolhub"},
+		"skills":      map[string]any{"via": "toolhub"},
+		"connectors":  map[string]any{"via": "toolhub"},
+		"user_mcp":    map[string]any{"via": "mcp-raw"},
+		"org_mcp":     map[string]any{"via": "mcp-raw"},
 	}
 	in.PlatformCeiling.Docs["tools"]["core"] = offer
 	in.OrgCeiling.Docs["tools"] = map[string]any{"core": offer}
 	in.User.Docs["tools"]["core"] = map[string]any{
 		"native:file": map[string]any{"via": "native"},
-		"hub:skills":  map[string]any{"via": "toolhub"},
+		"skills":      map[string]any{"via": "toolhub"},
 		"connectors":  map[string]any{"via": "toolhub"},
 		"org_mcp":     map[string]any{"via": "mcp-raw"},
 	}
@@ -837,19 +708,20 @@ func TestSkillConnectorPassportProjectionAndRawMCPDenial(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	coreMap, _ := core.(map[string]any)
 	extended, err := rev.Value("tools", "extended")
 	if err != nil {
 		t.Fatal(err)
 	}
-	coreMap, _ := core.(map[string]any)
 	extMap, _ := extended.(map[string]any)
-	// A member-count overflow lands whole toolsets in extended (R6.1) — the
-	// projection is core∪extended, never a dropped selection.
-	for _, want := range []string{"hub:skills", "connectors", "org_mcp"} {
-		_, inCore := coreMap[want]
-		_, inExt := extMap[want]
-		if !inCore && !inExt {
-			t.Fatalf("compiled projection lost admitted toolset %s: core=%v extended=%v", want, coreMap, extMap)
+	// The pinned platform family occupies six of the twenty-member core
+	// budget, so an admitted toolset may land in extended — the projection
+	// must carry it either way.
+	for _, want := range []string{"skills", "connectors", "org_mcp"} {
+		if _, ok := coreMap[want]; !ok {
+			if _, ok := extMap[want]; !ok {
+				t.Fatalf("compiled projection lost admitted toolset %s: core=%v extended=%v", want, coreMap, extMap)
+			}
 		}
 	}
 

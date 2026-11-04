@@ -21,12 +21,29 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+// connectorSurfaceTools is the r5 model-visible connector surface
+// (ADR-0094 D1): five curated names. connector_edit multiplexes the legacy
+// lifecycle verbs — it projects when any connector write op is admitted.
+var connectorSurfaceTools = []string{"connector_list", "connector_search", "connector_status", "connector_install", "connector_edit"}
+
+func connectorSurfaceAllowed(allowed map[string]bool, tool string) bool {
+	if tool == "connector_edit" {
+		for _, op := range []string{"connector_enable", "connector_disable", "connector_remove", "connector_reauth", "connector_allow_writes"} {
+			if allowed[op] {
+				return true
+			}
+		}
+		return false
+	}
+	return allowed[tool]
+}
+
 func (g *Gateway) addControlTools(server *mcp.Server, auth identity.Envelope, allowed map[string]bool) {
 	if g == nil || g.Control == nil || server == nil {
 		return
 	}
-	for _, tool := range api.ConnectorTools {
-		if !allowed[tool] {
+	for _, tool := range connectorSurfaceTools {
+		if !connectorSurfaceAllowed(allowed, tool) {
 			continue
 		}
 		name := tool
@@ -87,7 +104,9 @@ func (g *Gateway) addControlTools(server *mcp.Server, auth identity.Envelope, al
 	if !allowed["invoke"] {
 		return
 	}
-	server.AddTool(&mcp.Tool{Name: "invoke", Description: "Call an enabled ToolHub projected tool without reconnecting the MCP client. Pass the exact projected tool name and its arguments. An uncertain application result carries operation_id and retryable=false; reconcile it before any repeat.", InputSchema: map[string]any{
+	// The r5 model surface names this tool_call; `invoke` remains the PDP
+	// control operation a grant names to admit it (ADR-0094 D6).
+	server.AddTool(&mcp.Tool{Name: "tool_call", Description: "Call an enabled ToolHub projected tool without reconnecting the MCP client. Pass the exact projected tool name and its arguments; admission is identical to a direct call. An uncertain application result carries operation_id and retryable=false; reconcile it before any repeat.", InputSchema: map[string]any{
 		"type": "object", "required": []string{"tool"}, "additionalProperties": false,
 		"properties": map[string]any{"tool": map[string]any{"type": "string"}, "arguments": map[string]any{"type": "object"}},
 	}}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -99,7 +118,7 @@ func (g *Gateway) addControlTools(server *mcp.Server, auth identity.Envelope, al
 			Arguments map[string]any `json:"arguments"`
 		}
 		if request == nil || json.Unmarshal(request.Params.Arguments, &arguments) != nil || strings.TrimSpace(arguments.Tool) == "" {
-			return nil, fmt.Errorf("%w: invoke arguments", api.ErrInvalid)
+			return nil, fmt.Errorf("%w: tool_call arguments", api.ErrInvalid)
 		}
 		return g.mcpCall(ctx, auth, arguments.Tool, arguments.Arguments)
 	})

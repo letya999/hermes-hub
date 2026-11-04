@@ -125,7 +125,7 @@ func (s *Settings) applyEffective(eff passportview.Effective) error {
 		}
 	}
 	// The toolset surface rebuilds the tools map: core and extended both
-	// admit, discovery is platform-pinned and never a legacy entry.
+	// admit, the platform family is pinned and never a legacy entry.
 	if tools := passportTools(eff.Tools); tools != nil {
 		s.Tools = tools
 	}
@@ -142,7 +142,10 @@ func passportTools(t passportview.Tools) map[string]ToolEntry {
 	out := map[string]ToolEntry{}
 	for _, area := range []map[string]passportview.Toolset{t.Core, t.Extended} {
 		for name, ts := range area {
-			if name == "discovery" {
+			// The pinned platform family is not an operator toolset; the
+			// legacy discovery pin it replaced is skipped the same way for
+			// passports published before r5.
+			if name == "platform" || name == "discovery" {
 				continue
 			}
 			entry := ToolEntry{Via: ToolViaToolHub}

@@ -33,7 +33,13 @@ func TestEveryPlaceableToolsetCompiles(t *testing.T) {
 		placeable++
 		for _, via := range ts.Via {
 			in := v2FixtureInputs(t)
-			in.PlatformCeiling.Docs["tools"]["extended"].(map[string]any)[name] = map[string]any{"via": via}
+			// A fresh tools doc: the fixture's baseline core already carries
+			// `files`, so extending it with every catalog toolset would make
+			// `files` a genuine core+extended duplicate, not a probe. The
+			// user layer clears too — its connectors write would fall
+			// outside the probe's ceiling key set.
+			in.User.Docs["tools"] = map[string]any{}
+			in.PlatformCeiling.Docs["tools"] = map[string]any{"extended": map[string]any{name: map[string]any{"via": via}}}
 			if _, err := Compile(in); err != nil {
 				t.Fatalf("placeable toolset %s via %s rejected: %v", name, via, err)
 			}
@@ -52,13 +58,13 @@ func TestEveryPlaceableToolsetCompiles(t *testing.T) {
 		// The fixture's own connectors spec carries exclude — merged with an
 		// include probe it would be a genuine contradiction, not a catalog gap.
 		in.User.Docs["tools"] = map[string]any{}
-		in.PlatformCeiling.Docs["tools"]["extended"].(map[string]any)[name] = map[string]any{
+		in.PlatformCeiling.Docs["tools"] = map[string]any{"extended": map[string]any{name: map[string]any{
 			"via":    ts.Via[0],
 			"tools":  map[string]any{"include": []any{member}},
 			"access": "read",
 			"scope":  map[string]any{"paths": []any{"/workspace"}},
 			"rules":  map[string]any{member: map[string]any{"confirm": true}},
-		}
+		}}}
 		if _, err := Compile(in); err != nil {
 			t.Fatalf("toolset %s rejects its own option surface: %v", name, err)
 		}

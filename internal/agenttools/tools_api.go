@@ -132,127 +132,67 @@ func (t *Tools) Server() *mcp.Server {
 			return nil, result, nil
 		})
 	}
-	for _, op := range []string{"list", "read", "write", "search"} {
-		add("file_"+op, "Bounded "+op+" on workspace or read-only archive; updates require revision from read")
-	}
-	for _, tool := range HubToolsDefinition().Tools {
-		if tool.Name == "project_create" {
-			add(tool.Name, tool.Description)
-		}
-	}
-	for _, op := range []string{"knowledge_list", "knowledge_read", "knowledge_search"} {
-		for _, tool := range HubToolsDefinition().Tools {
-			if tool.Name == op {
-				add(op, tool.Description)
-			}
-		}
-	}
-	add("service_catalog", "List connectors and optional services this runtime can offer, with required env key names, self-service flag and status. Catalog presence means 'can be enabled', not 'connected' — report a connector as usable only when status=ready or its tools are actually present on your tool list; status=available/missing-credentials/host-managed/policy-disabled all mean it is NOT currently usable. Never returns secrets.")
-	add("service_enable", "After a direct owner request, enable one self-service catalog feature. A public GitHub repository is not a feature name: do not install it here, in the terminal, or in config.yaml. If credentials are missing, always returns input=protected-form with form_url; never ask the owner for KEY=value in chat.")
-	add("service_disable", "After a direct owner request, disable one ToolHub binding without deleting its historical owner or credential metadata.")
-	for _, op := range []string{"routine_create", "routine_list", "routine_edit", "routine_delete", "routine_get",
-		"watch_subscribe", "watch_list", "watch_pause", "watch_resume", "watch_delete", "watch_sample"} {
-		add(op, routineDescriptions[op])
-	}
-	for _, op := range []string{"assignment_plan", "assignment_create", "assignment_list", "assignment_get",
-		"assignment_update", "assignment_apply", "assignment_pause", "assignment_resume",
-		"assignment_cancel", "assignment_complete", "assignment_progress"} {
-		for _, tool := range HubToolsDefinition().Tools {
-			if tool.Name == op {
-				add(op, tool.Description)
-			}
-		}
-	}
-	add("document_extract", "Extract text from one workspace document. Supported formats: txt, md, csv, html, pdf, xlsx, pptx. Unsupported: doc, docx, xls, ppt, odt, rtf, epub, pages. This does not update the file.")
-	add("document_create", "Create a new document under artifacts/documents. Supported formats: txt, md, csv, html, pdf, xlsx, pptx. html escapes the supplied plain text into a page and rejects markup input; use file_write for raw html. pdf, xlsx, and pptx store the supplied text. Does not update an existing file and is separate from file_write.")
-	add("document_edit", "Replace the text of one existing file under artifacts/documents. Supported formats: txt, md, csv, html, pdf, xlsx, pptx. html escapes the supplied plain text and rejects markup input. pdf, xlsx, and pptx are rewritten from the new text. Does not create a file.")
-	add("document_convert", "Write a new document under artifacts/documents in another supported format: txt, md, csv, html, pdf, xlsx, pptx. csv is a target only for xlsx. doc and docx stay unsupported.")
-	add("image_inspect", "Describe one or more png, jpeg, or webp files in this workspace. Set paths for a set of up to 8 images; the images are compared together in one request, and an unreadable image fails the set. Uses the model credential, not the image-generation credential. Unsupported: gif, bmp, svg, tif, heic, avif.")
-	add("images_inspect", "Compare up to eight workspace images together in one model request. Every path must be authorized.")
-	add("image_convert", "Convert one workspace png, jpeg, or webp into another of those formats and write a new file under artifacts/images. This does not call an image provider.")
-	add("artifact_remove", "Delete one generated file under artifacts/documents, artifacts/images, or artifacts/videos. Does not delete source files or other workspace paths.")
-	add("archive_create", "Pack listed workspace files into a new zip under artifacts/. Paths must be distinct existing regular files; the destination must not exist.")
-	add("archive_unpack", "Unpack a workspace zip into a new directory under artifacts/unpacked/<name>. Encrypted, symlink, and non-file entries are rejected; the target must not exist.")
-	add("inbox_fetch", "Materialize a file the user sent to the chat. Set id to the staged file id from the [file ... inbox=<id>] metadata line. The file lands under inbox/; a zip is unpacked into inbox/<id>/files/ without keeping the archive. Call this before reading or inspecting an inbound file.")
-	add("context_status", "Show this session's context control state: effective sweep threshold with declared/default provenance, journaled compaction count and last event, and the live transcript token estimate. Unknown values are null, never estimated from transcript text.")
-	add("context_compact", "Compact this session's transcript at a turn boundary. here keeps that many trailing exchanges verbatim; focus steers the summary; prune only strips tool outputs with zero model calls; preview reports would_method without mutating. A busy session refuses deterministically; queue=true parks the request for the next turn boundary. The result is metadata only — never summary text.")
-	for _, op := range []string{"goal_set", "goal_status", "goal_pause", "goal_resume", "goal_clear"} {
-		add(op, "Goal mode: "+strings.TrimPrefix(op, "goal_")+" operates on this conversation's persistent goal record — the same record /goal manages. set takes text; status reports turns/verdict; pause/resume/clear control the bounded continuation loop.")
-	}
-	add("settings_get", "Show runtime self-settings: the manageable key allowlist, current overrides and effective values. Settings never include credential values.")
-	add("settings_set", "Set one manageable runtime setting (compression, display, image_gen model/delivery) or reset it with an empty value. The change applies after the scheduled runtime restart.")
-	if t.session().ImageGranted() {
-		add("image_generate", "Generate one image with the active image_gen provider, model, and delivery. The model selects the images endpoint or the Gemini chat image call. workspace writes artifacts/images in the returned format. url returns an http(s) provider URL and does not write a file. The credential is never returned.")
-		add("image_edit", "Edit one workspace png, jpeg, or webp with the active image_gen provider and model. webp is sent as png. A Gemini image model uses the chat image call. fal does not support edit. Delivery follows the grant. The credential is never returned.")
-		add("video_generate", "Submit one async video generation job through the media service. Returns a job id immediately; the render continues in the background and may take minutes. Poll it with media_fetch.")
-		add("media_fetch", "Check one media job by id and, when done, stage the result file under artifacts. Returns status while the job is still queued or running.")
-	}
-	for _, op := range []string{"hh_search", "hh_vacancy", "hh_resumes", "hh_apply"} {
-		if !t.HHEnabled {
-			continue
-		}
-		add(op, op+": official API operation; hh_apply sends externally")
-	}
-	t.registerSSH(s)
-	t.registerExposure(s)
-	t.registerHosting(s)
-	t.registerSkills(s)
-	return s
-}
-
-// registerSkills exposes the governed skills surface (SPEC-0083 R5.1). The
-// skill.name enum is filled from the mounted effective index so the model
-// sees exactly the names it may activate; the executor still re-validates.
-func (t *Tools) registerSkills(s *mcp.Server) {
-	names := []string{}
+	// The direct surface publishes exactly the model-audience handler
+	// executors of the same catalog that admits ToolHub calls — names and
+	// descriptions cannot drift (SPEC-0093 R2.3). Remote executors and
+	// non-model tools stay off it; grant and backend checks happen inside
+	// the call, not at registration.
+	skillNames := []string{}
 	if idx, err := t.effectiveIndex(); err == nil {
 		for _, e := range idx.Skills {
-			names = append(names, e.Name)
+			skillNames = append(skillNames, e.Name)
 		}
 	}
-	slices.Sort(names)
-	enum, _ := json.Marshal(names)
-	skillSchema := json.RawMessage(`{"type":"object","properties":{"name":{"type":"string","enum":` + string(enum) + `},"args":{"type":"string"}},"required":["name"],"additionalProperties":false}`)
-	add := func(spec api.ToolSpec) {
-		tool := &mcp.Tool{Name: spec.Name, Description: spec.Description}
-		if len(spec.InputSchema) > 0 {
-			tool.InputSchema = spec.InputSchema
+	slices.Sort(skillNames)
+	skillEnum, _ := json.Marshal(skillNames)
+	granted := t.session().ImageGranted()
+	for _, spec := range HubToolsDefinition().Tools {
+		if spec.Audience != api.AudienceModel || !strings.HasPrefix(spec.Executor, "handler:") {
+			continue
 		}
-		mcp.AddTool(s, tool, func(ctx context.Context, req *mcp.CallToolRequest, r Input) (*mcp.CallToolResult, map[string]any, error) {
-			var out any
-			var err error
-			if spec.Name == "skill_manage" {
-				// Input cannot carry the action fields — ExecCall re-validates
-				// the raw map, identical to the ToolHub-admitted path.
+		switch spec.Name {
+		case "media_generate", "media_edit", "media_fetch":
+			if !granted {
+				continue
+			}
+		case "skill":
+			tool := &mcp.Tool{Name: spec.Name, Description: spec.Description, InputSchema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string","enum":` + string(skillEnum) + `},"path":{"type":"string"},"version":{"type":"string"},"args":{"type":"string"}},"required":["name"],"additionalProperties":false}`)}
+			mcp.AddTool(s, tool, func(ctx context.Context, _ *mcp.CallToolRequest, r Input) (*mcp.CallToolResult, map[string]any, error) {
+				out, err := t.Call(ctx, "skill", r)
+				if err != nil {
+					return nil, nil, err
+				}
+				result, ok := out.(map[string]any)
+				if !ok {
+					return nil, nil, fmt.Errorf("tool skill returned a non-object result")
+				}
+				return nil, result, nil
+			})
+			continue
+		case "skill_search", "skill_edit":
+			// Input cannot carry the per-action manage fields, and a typed
+			// bind loses "query present but empty" — the raw argument map
+			// re-validates through ExecCall, identical to the ToolHub-admitted
+			// path.
+			schema, _ := json.Marshal(api.CliInputSchema(spec))
+			mcp.AddTool(s, &mcp.Tool{Name: spec.Name, Description: spec.Description, InputSchema: json.RawMessage(schema)}, func(ctx context.Context, req *mcp.CallToolRequest, _ Input) (*mcp.CallToolResult, map[string]any, error) {
 				var args map[string]any
 				if uerr := json.Unmarshal(req.Params.Arguments, &args); uerr != nil {
 					return nil, nil, uerr
 				}
-				out, err = t.ExecCall(ctx, spec.Name, args, nil)
-			} else {
-				out, err = t.Call(ctx, spec.Name, r)
-			}
-			if err != nil {
-				return nil, nil, err
-			}
-			result, ok := out.(map[string]any)
-			if !ok {
-				return nil, nil, fmt.Errorf("tool %s returned a non-object result", spec.Name)
-			}
-			return nil, result, nil
-		})
-	}
-	for _, spec := range HubToolsDefinition().Tools {
-		family, _, _ := strings.Cut(spec.CapabilityID, ".")
-		if family != "skills" && family != "skills_manage" {
+				out, err := t.ExecCall(ctx, spec.Name, args, nil)
+				if err != nil {
+					return nil, nil, err
+				}
+				result, ok := out.(map[string]any)
+				if !ok {
+					return nil, nil, fmt.Errorf("tool %s returned a non-object result", spec.Name)
+				}
+				return nil, result, nil
+			})
 			continue
 		}
-		if spec.Name == "skill" {
-			spec.InputSchema = skillSchema
-		}
-		if spec.Name == "skill_manage" {
-			spec.InputSchema, _ = json.Marshal(api.CliInputSchema(spec))
-		}
-		add(spec)
+		add(spec.Name, spec.Description)
 	}
+	return s
 }

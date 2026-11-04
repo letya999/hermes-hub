@@ -381,10 +381,6 @@ func (g *Gateway) toolHubJobDone(jobID, principalID string) {
 	defer resp.Body.Close()
 }
 
-func connectionList(user User) string {
-	return connectionListWithLang(locale.LangOf(user.WorkspaceDir), user)
-}
-
 func connectionListWithLang(lang locale.Lang, user User) string {
 	lines := []string{locale.T(lang, "connections.title")}
 	for _, service := range stack.ServiceCatalog() {

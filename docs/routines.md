@@ -1,6 +1,6 @@
 ---
 description: Routine business tools, interval windows, lifecycle, authorization and delivery evidence.
-last_verified: 2026-11-02
+last_verified: "2026-11-03"
 ---
 # Routines
 
@@ -32,9 +32,9 @@ Deterministic and MCP contract tests do not establish deployed acceptance.
 |---|---|
 | routine_create | Save ID, timezone, expression, text, action and destination; return configuration and deadline. Repeating the same intent returns current state. |
 | routine_list | Find compact cards sorted by ID. `view=destinations` instead lists live owned session/task names and routing IDs. Query and cursor work in both views. |
-| routine_get | Full configuration, revision, state, named saved destination and its availability, baseline/errors and event health. Optional include=[history,next_runs] adds bounded history and planned dates. A known retired ID remains readable. |
+| routine_read | Full configuration, revision, state, named saved destination and its availability, baseline/errors and event health. Optional include=[history,next_runs] adds bounded history and planned dates. A known retired ID remains readable. |
 | routine_edit | Apply action=update, pause, resume or snooze using expected_revision. update takes patch, including destination_task_id for moving future results; snooze takes until RFC3339. pause/resume accept neither field. |
-| routine_delete | Permanently retire ID, retain evidence and stop admission. Already sent messages remain sent. |
+| routine_remove | Permanently retire ID, retain evidence and stop admission. Already sent messages remain sent. |
 
 There are exactly five public routine tools. For edit, update requires a nonempty
 patch. Pause stops future admission, including stream responses already in flight.
@@ -164,7 +164,7 @@ settle into the new revision.
 ## Event subscriptions (watches)
 
 A watch is an event-kind schedule subscribed to one `mcp_tool` source through
-`watch_subscribe`: its probe is `{kind:mcp_tool, tool, args}` and the sink is
+`watch_create`: its probe is `{kind:mcp_tool, tool, args}` and the sink is
 `notify` (one message per fresh event) or `agent` (one job per batch, events
 flagged untrusted). The probe never calls a model — unchanged sources and
 `filter`-dropped events cost zero model wakes. `filter` is a Starlark script
@@ -179,7 +179,7 @@ are bounded long-polls and need no interval; a plain poll tool must declare
 between starts of successful rounds (read time counts). Validation rejects stream
 on non-`mcp_tool` probes and on poll tools without a declared interval; it
 also rejects probes on non-probe job kinds, pointing agent-kind misuse at
-`watch_subscribe`. The cron expression anchors liveness bookkeeping only —
+`watch_create`. The cron expression anchors liveness bookkeeping only —
 it is not the poll cadence — and the global one-minute floor for ordinary
 scheduled routines is unchanged. Before each stream round, the hub refreshes the
 supervisor hold projection; a failed refresh blocks acquisition, and an admitted
@@ -191,8 +191,8 @@ Events dedupe durably per schedule revision; `next_cursor` persists for
 restart resume; batch settlement fans out once — sink=agent wakes the model
 once per batch, not per event, honoring quiet windows, daily limits and
 assignment wake budgets. Connector auth failures mark the subscription
-`degraded` instead of emitting fake empties. `watch_list`, `watch_pause`,
-`watch_resume` and `watch_delete` are scoped to event-kind schedules;
+`degraded` instead of emitting fake empties. `watch_list`, `watch_edit`
+(pause|resume) and `watch_remove` are scoped to event-kind schedules;
 `routine_edit` update/pause/resume manages them under the same revision
 fence. One subscription should cover the broadest scope the source tool
 offers (e.g. account-wide args); narrowing belongs to `filter` — durable
@@ -280,7 +280,7 @@ and the `/assignments` `/assignment <id> …` chat commands.
   delivered once through the usual bound Telegram job reply with the requested
   mention. Failure notices remain visible.
 - The specialist receives the owner intent, previous summary and next step
-  with each filtered trigger. `assignment_progress` requires that running
+  with each filtered trigger. `assignment_edit action=progress` requires that running
   trigger's job id and current assignment revision, and stores a bounded
   summary, one new finding and next step; `complete=true` retires sources
   only when the owner-defined completion condition is met.
@@ -364,7 +364,7 @@ by name, and pass the returned `task_id` as `destination_task_id`. The explicit
 `default` target is the root chat. The public create tool requires an origin or
 explicit destination; old private HTTP clients retain their prior behavior.
 
-`routine_get` displays the saved task name, chat/topic IDs, and `active`,
+`routine_read` displays the saved task name, chat/topic IDs, and `active`,
 `archived`, or `unavailable` status. An archived task is marked `archived`;
 a revoked or broken binding is `unavailable`. Neither is silently rerouted.
 To move a routine, use

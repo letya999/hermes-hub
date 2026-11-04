@@ -267,7 +267,7 @@ secret files. Agent runtimes may not have the repository mounted.
 | How are messages/runtimes routed? | `internal/communication/`, `internal/supervisor/` and matching service docs. |
 | How do operators diagnose/deploy? | `docs/operations.md`, `docs/services/hubctl.md`; use scoped supported commands. |
 | What are the rules and decisions? | `AGENTS.md` rules; `docs/` current system; `docs/adr/` immutable decisions; `specs/` frozen requirements; `.work/` implementation progress/evidence. |
-| Where is this reference maintained? | `internal/systemguide/SKILL.md`; delivered as a skill or through ToolHub `system_guide`. |
+| Where is this reference maintained? | `internal/systemguide/SKILL.md`; delivered as a skill or through ToolHub `platform_guide`. |
 
 Prefer live safe metadata to raw registry files. Never dump auth files, credential
 stores, container environments, headers or dictionary keys: a key can itself be
