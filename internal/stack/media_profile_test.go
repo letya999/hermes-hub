@@ -395,3 +395,12 @@ func TestDocumentImageProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// The r5 `media` toolset is the canonical admission for an image_gen operator
+// grant; the managed check must not demand the retired legacy entry name.
+func TestManagedImageGenAcceptsMediaToolset(t *testing.T) {
+	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", Model: "m", ModelURL: "http://model-relay:8318/v1", BrowserPort: 6080, OAuthPort: 8000, CapabilityMode: "managed", CapabilityProfileID: "p", CapabilityGeneration: 1, Tools: testTools("media=toolhub"), ImageGen: media.ImageGen{Provider: media.ProviderCLIProxy}}
+	if err := s.Validate(); err != nil {
+		t.Fatalf("r5 media toolset rejected for image_gen grant: %v", err)
+	}
+}

@@ -399,8 +399,10 @@ func (s Settings) Validate() error {
 		// only the normalized grant (provider/model/delivery) into the effective
 		// config — admission still goes through the ToolHub capability, so an
 		// operator block without the toolhub selection is a rejected ambiguity.
-		if s.ImageGen != (media.ImageGen{}) && s.toolEntry("image_gen").Via != ToolViaToolHub {
-			return fmt.Errorf("image_gen belongs to a tools.image_gen: toolhub selection under managed mode")
+		// The r5 `media` family is the canonical admission; `image_gen` is the
+		// retired legacy entry name (toolhubCapabilityID maps it onto media).
+		if s.ImageGen != (media.ImageGen{}) && s.toolEntry("image_gen").Via != ToolViaToolHub && s.toolEntry("media").Via != ToolViaToolHub {
+			return fmt.Errorf("image_gen belongs to a media/image_gen toolhub selection under managed mode")
 		}
 		// Under managed mode raw MCP servers may only come from the
 		// organization catalog (merged in by ApplyOrganization); definitions

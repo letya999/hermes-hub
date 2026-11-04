@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
@@ -469,5 +470,50 @@ func TestUncertainHandoffSurvivesTrustedGenerationRebind(t *testing.T) {
 	}
 	if current != 1 {
 		t.Fatal("new uncertain generation has no single canonical outcome")
+	}
+}
+
+// Re-admission regresses the mapping to running while the finished uncertain
+// receipt still owns the outcome; the next identical uncertain handoff must
+// re-assert that receipt — reporting it stale strands the job in running and
+// deadlocks the conversation lane (live incident: telegram-837845960).
+func TestUncertainReclaimReassertsFinishedReceipt(t *testing.T) {
+	s, job := streamJob(t)
+	claimed, err := s.ClaimJob()
+	if err != nil || claimed == nil {
+		t.Fatalf("claim: %v %v", claimed, err)
+	}
+	outcome := RunOutcome{JobID: job.ID, Status: "uncertain", LastEvent: "run.unknown"}
+	if err := s.RecordTerminalOutcome(*claimed, outcome, nil); err != nil {
+		t.Fatal(err)
+	}
+	first, _, err := s.Mapping(job.ID)
+	if err != nil || first.Status != "uncertain" || first.UncertainSince.IsZero() {
+		t.Fatalf("first uncertain outcome not recorded: %+v %v", first, err)
+	}
+	if err := s.RequeueObservations(time.Now(), true); err != nil {
+		t.Fatal(err)
+	}
+	reclaimed, err := s.ClaimJob()
+	if err != nil || reclaimed == nil || reclaimed.ID != job.ID {
+		t.Fatalf("reclaim: %v %v", reclaimed, err)
+	}
+	queued := Job{Envelope: job.Envelope, ID: "stream-job-2", OrganizationID: job.OrganizationID, UserID: job.UserID, ActorID: job.ActorID, ScopeID: job.ScopeID, Channel: job.Channel, Trigger: job.Trigger, IdempotencyKey: "stream-key-2", ChatID: job.ChatID, Text: "next"}
+	if _, err := s.Enqueue(queued); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordTerminalOutcome(*reclaimed, outcome, nil); err != nil {
+		t.Fatalf("re-admitted uncertain outcome mislabeled stale: %v", err)
+	}
+	m, _, err := s.Mapping(job.ID)
+	if err != nil || m.Status != "uncertain" || !m.UncertainSince.Equal(first.UncertainSince) {
+		t.Fatalf("outcome not re-asserted at first-uncertain anchor: %+v %v", m, err)
+	}
+	if _, err := os.Lstat(filepath.Join(s.root, "failed", spoolFileID(job.ID)+".json")); err != nil {
+		t.Fatalf("job did not return to failed: %v", err)
+	}
+	next, err := s.ClaimJob()
+	if err != nil || next == nil || next.ID != queued.ID {
+		t.Fatalf("conversation lane still held: %v %v", next, err)
 	}
 }

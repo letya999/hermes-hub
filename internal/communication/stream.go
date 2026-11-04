@@ -380,6 +380,13 @@ func (s *Spool) applyStreamReceiptLocked(receipt streamReceipt) error {
 		return errStaleReceipt
 	}
 	if receipt.Position <= mapping.EventPosition {
+		// Re-admission regresses the mapping below its latest finished
+		// receipt; the receipt stays authoritative and must be re-asserted,
+		// not reported stale — otherwise the job strands in running and the
+		// conversation lane wedges.
+		if receipt.Position == mapping.EventPosition && receipt.FinalState != "" && !terminalStatus(mapping.Status) && mapping.Status != receipt.Event.Status {
+			return s.updateMappingLocked(receipt.JobID, outcomeFromEvent(receipt.Event), receipt.Event.Status, terminalStatus(receipt.Event.Status))
+		}
 		return nil
 	}
 	if staleReceipt(mapping, receipt.Event) {
