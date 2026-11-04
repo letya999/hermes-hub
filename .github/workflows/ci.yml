@@ -281,6 +281,7 @@ jobs:
         run: |
           go run ./cmd/devcheck docker-publish "${{ matrix.target }}-core"
           go run ./cmd/devcheck docker-publish "${{ matrix.target }}-browser"
+          go run ./cmd/devcheck docker-publish "${{ matrix.target }}-knowledge"
         env:
           HUB_DOCKER_CACHE_FROM: type=gha,scope=hermes-hub-${{ matrix.target }}
           HUB_DOCKER_CACHE_TO: type=gha,scope=hermes-hub-${{ matrix.target }}-roles,mode=max
@@ -297,6 +298,8 @@ jobs:
           go run ./cmd/devcheck image-budget "hermes-hub:test-${{ matrix.target }}" runtime
           go run ./cmd/devcheck docker-pull "hermes-hub:test-${{ matrix.target }}-browser" "${{ matrix.target }}-browser"
           go run ./cmd/devcheck image-budget "hermes-hub:test-${{ matrix.target }}-browser" browser
+          go run ./cmd/devcheck docker-pull "hermes-hub:test-${{ matrix.target }}-knowledge" "${{ matrix.target }}-knowledge"
+          go run ./cmd/devcheck image-budget "hermes-hub:test-${{ matrix.target }}-knowledge" knowledge
       - name: Verify baked TTS model without network
         if: matrix.target == 'tts'
         run: |

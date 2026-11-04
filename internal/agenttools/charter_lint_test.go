@@ -44,6 +44,7 @@ var charterExceptions = map[string]string{
 	"platform_usage":     "pinned platform layer",
 	"tool_search":        "pinned platform layer",
 	"tool_call":          "pinned platform layer",
+	"memory_card":        "write-path multiplex via op enum: remember/fact/truth/merge/forget",
 }
 
 // charterFamilies maps the noun prefix to the catalog family it must equal
@@ -56,7 +57,7 @@ var charterFamilies = map[string]string{
 	"site": "sites", "web": "web", "browser": "browser",
 	"research": "research", "connector": "connectors", "model": "models",
 	"session": "sessions", "terminal": "terminal", "project": "files",
-	"platform": "platform", "tool": "platform",
+	"platform": "platform", "tool": "platform", "memory": "memory",
 }
 
 var charterNamePattern = regexp.MustCompile(`^[a-z][a-z0-9]*(_[a-z0-9]+)*$`)

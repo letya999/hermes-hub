@@ -95,6 +95,9 @@ type Spool struct {
 	// JobDone, when set, runs asynchronously at each terminal outcome so the
 	// ToolHub cell controller can reap task-tier cells keyed by the job.
 	JobDone func(jobID, principalID string)
+	// onAccepted captures an accepted turn into the memory vault before the
+	// enqueue is acknowledged (SPEC-0085 R2.1 persist-before-ack); nil disables.
+	onAccepted func(job Job) error
 	// probeScript, when set, runs a watcher script probe inside the isolated
 	// script runtime: (occurrence, source, fetched input, mount-space flag,
 	// prefetched need results). Nil fails the probe — a script probe without
@@ -1106,6 +1109,9 @@ func (s *Spool) enqueueLocked(job Job) (bool, error) {
 			if hold.Active {
 				// Administrative hold: the enqueue is accepted but suppressed —
 				// the same fence enqueueChannelJob applies before dispatch.
+				if err := s.captureAcceptedLocked(job); err != nil {
+					return false, err
+				}
 				return true, nil
 			}
 			job.OperationalEpoch = hold.Epoch
@@ -1167,7 +1173,21 @@ func (s *Spool) enqueueLocked(job Job) (bool, error) {
 		}
 	}
 	s.signal()
+	if err := s.captureAcceptedLocked(job); err != nil {
+		return false, err
+	}
 	return true, nil
+}
+
+// captureAcceptedLocked runs the memory-vault turn capture for an accepted
+// job. It runs under the spool lock so inner producers (bundle jobs enqueue
+// while holding it) are covered by the same persist-before-ack ordering; a
+// capture failure rejects the enqueue the same way a job-file failure does.
+func (s *Spool) captureAcceptedLocked(job Job) error {
+	if s.onAccepted == nil {
+		return nil
+	}
+	return s.onAccepted(job)
 }
 
 func (s *Spool) findIdempotencyLocked(key string) (JobMapping, bool, error) {

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -117,6 +118,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(wsBase, "workspace")), "target": "/workspace"})
 		stateVolumes = append(stateVolumes, configMounts(dir, s.Environment)...)
 	}
+	if s.Has("memory_vault") {
+		// The vault is a per-space git tree the governed writer commits into;
+		// it mounts read-write for the runtime in both render modes.
+		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "vault")), "target": "/vault"})
+	}
 	if s.Has("ssh") {
 		// The whole SSH capability — host bindings, pinned host keys and any
 		// file: credentials — is operator-owned and read-only inside the runtime.
@@ -198,6 +204,9 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	}
 	if s.ExecutionMode != "supervisor" {
 		runtimeEnv["HUB_RUNTIME_GENERATION"] = "static-" + s.User + "-" + s.Environment
+	}
+	if s.Has("memory_vault") {
+		runtimeEnv["HUB_VAULT"] = "/vault"
 	}
 	runtimeEnv["HUB_CAPABILITY_MODE"] = s.CapabilityMode
 	if s.CapabilityMode == "managed" {
@@ -435,6 +444,49 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			browserService["networks"] = M{"default": M{"aliases": []string{"browser-" + s.User}}}
 		}
 		services["browser-"+s.User] = browserService
+	}
+	// SPEC-0085 R8: knowledge_ui renders one pinned OpenKnowledge replica per
+	// space over the vault — private network only, no published ports (the
+	// loopback edge is CHG-0211). First boot inits the project; later boots
+	// find .ok/ and start directly.
+	if s.Has("knowledge_ui") {
+		okService := cloneMap(common)
+		okService["image"] = "hermes-hub:0.5.0-" + s.Environment + "-knowledge"
+		okService["build"] = imageBuild(s.Environment + "-knowledge")
+		okService["deploy"] = M{"replicas": 1}
+		okService["command"] = "sh -c '[ -d .ok ] || ok init --no-mcp --no-skills; exec ok start'"
+		// R8.2: the vault is the OpenKnowledge project root; OK state (.ok/,
+		// .git/ok/, .graph/) lands inside it on .okignore'd paths.
+		okService["volumes"] = []any{
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "vault")), "target": "/data"},
+		}
+		// OK binds its container interface only so space-net peers can reach
+		// it: a non-loopback bind needs the allowExternal consent interlock
+		// (upstream boot refuses it otherwise), and PORT pins the listener the
+		// mcp_servers URL points at — unset, OK picks a dynamic port.
+		// HOME lands on tmpfs: the image's /state/home sits on the read-only
+		// rootfs, while every durable OK path is project-local .ok/ under /data.
+		okService["environment"] = M{"OK_ALLOW_EXTERNAL": "1", "OK_BIND": "0.0.0.0", "PORT": "8080", "HOME": "/tmp"}
+		// R10.1: ui_port opts into one loopback publish — the only host
+		// reachability the unauthenticated editor ever gets; the owner
+		// tunnels in over ssh -L. Unset keeps the network-only stance.
+		if s.UIPort > 0 {
+			bind := s.UIBind
+			if bind == "" {
+				bind = "127.0.0.1"
+			}
+			if strings.Contains(bind, ":") {
+				bind = "[" + bind + "]"
+			}
+			okService["ports"] = []string{fmt.Sprintf("%s:%d:8080", bind, s.UIPort)}
+			okService["environment"].(M)["OK_EXTERNAL_URL"] = fmt.Sprintf("http://localhost:%d", s.UIPort)
+		}
+		if s.CapabilityMode == "managed" {
+			okService["networks"] = M{managedAgentNetwork(s): M{}}
+		} else {
+			okService["networks"] = M{"default": M{}}
+		}
+		services["open-knowledge"] = okService
 	}
 	hostRuntimeDir := filepath.ToSlash(filepath.Join(dir, "runtime"))
 	hostCliproxyDir := filepath.ToSlash(filepath.Join(dir, "cliproxy"))
@@ -877,6 +929,26 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			M{"type": "bind", "source": filepath.ToSlash(GeneratedEffectiveSkillsDir(dir)), "target": "/skills-effective", "read_only": true},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "skills")), "target": "/skills-store"},
 			brokerSecrets("communication"),
+		}
+		if s.Has("memory_vault") {
+			// The gateway reads CORE for private-run injection and writes the
+			// daily leaf capture (SPEC-0085 R2.1) — read-write; confinement
+			// lives in the governed Writer, not the mount.
+			gatewayEnvironment["HUB_VAULT"] = "/vault"
+			rollupAt := s.MemoryRollupTime
+			if rollupAt == "" {
+				rollupAt = "04:00"
+			}
+			gatewayEnvironment["HUB_MEMORY_ROLLUP_TIME"] = rollupAt
+			// R7.5 leaf prune knobs render only when configured — zero means
+			// the lane is off and nothing reaches the gateway env.
+			if s.MemoryLeafRetentionDays > 0 {
+				gatewayEnvironment["HUB_MEMORY_LEAF_RETENTION_DAYS"] = strconv.Itoa(s.MemoryLeafRetentionDays)
+			}
+			if s.MemoryLeafFoldBytes > 0 {
+				gatewayEnvironment["HUB_MEMORY_LEAF_FOLD_BYTES"] = strconv.Itoa(s.MemoryLeafFoldBytes)
+			}
+			gateway["volumes"] = append(gateway["volumes"].([]any), M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "vault")), "target": "/vault"})
 		}
 		// Sibling Telegram identities live in this file. TELEGRAM_ALLOWED_USERS
 		// stays the single infra-owner fallback when the file is absent.

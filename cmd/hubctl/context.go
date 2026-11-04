@@ -14,11 +14,19 @@ import (
 	"github.com/letya999/hermes-hub/internal/communication"
 	"github.com/letya999/hermes-hub/internal/contextlife"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/memory"
+	memoryeval "github.com/letya999/hermes-hub/internal/memory/eval"
+	"github.com/letya999/hermes-hub/internal/memory/importer"
+	"github.com/letya999/hermes-hub/internal/memory/prune"
+	"github.com/letya999/hermes-hub/internal/memory/replay"
+	memorysearch "github.com/letya999/hermes-hub/internal/memory/search"
+	"github.com/letya999/hermes-hub/internal/memory/vacuum"
 	"github.com/letya999/hermes-hub/internal/skilleval"
 	"github.com/letya999/hermes-hub/internal/skillstore"
 	"github.com/letya999/hermes-hub/internal/skillstore/gitsource"
 	"github.com/letya999/hermes-hub/internal/skillstore/scan"
 	"github.com/letya999/hermes-hub/internal/stack"
+	"github.com/letya999/hermes-hub/internal/vault"
 )
 
 func runContext(_ context.Context, args []string) error {
@@ -71,15 +79,21 @@ func runContext(_ context.Context, args []string) error {
 	}
 }
 
-func runMemory(_ context.Context, args []string) error {
+func runMemory(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("memory requires list or delete")
+		return fmt.Errorf("memory requires list, delete, search, import, eval, vacuum, prune, replay or export-honcho")
 	}
 	sub := args[0]
 	f := flag.NewFlagSet("memory", flag.ContinueOnError)
 	dir := f.String("dir", "", "private deployment directory")
 	profile := f.String("user", "me", "person identifier")
 	name := f.String("name", "", "memory file name")
+	reindex := f.Bool("reindex", false, "rebuild the vault search index")
+	apply := f.Bool("apply", false, "commit the reported mutation (import/vacuum)")
+	questions := f.String("questions", "", "live-eval question set JSON")
+	outDir := f.String("out-dir", "", "report directory (default .work/tmp)")
+	env := f.String("env", "prod", "dev or prod")
+	file := f.String("file", "", "export file path (export-honcho)")
 	if err := f.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -91,6 +105,20 @@ func runMemory(_ context.Context, args []string) error {
 		return err
 	}
 	switch sub {
+	case "search":
+		if !*reindex {
+			return fmt.Errorf("memory search requires --reindex")
+		}
+		_, rebuilt, err := memorysearch.NewIndexer(filepath.Join(abs, "vault")).Ensure()
+		if err != nil {
+			return err
+		}
+		state := "fresh"
+		if rebuilt {
+			state = "rebuilt"
+		}
+		fmt.Printf("memory index %s\n", state)
+		return nil
 	case "list":
 		names, err := contextlife.MemoryFiles(abs)
 		if err != nil {
@@ -102,6 +130,193 @@ func runMemory(_ context.Context, args []string) error {
 			return fmt.Errorf("memory delete requires --name")
 		}
 		return contextlife.DeleteMemory(abs, *name)
+	case "import":
+		// Native import (SPEC-0085 R7.1): stage reviewable drafts first;
+		// --apply commits what is staged. Nothing lands silently.
+		vaultDir := filepath.Join(abs, "vault")
+		if *apply {
+			res, err := importer.Apply(vaultDir)
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(os.Stdout).Encode(res)
+		}
+		rep, err := importer.Parse(filepath.Join(abs, "hermes", "memories"))
+		if err != nil {
+			return err
+		}
+		if err := importer.Stage(vaultDir, rep); err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(rep)
+	case "eval":
+		// Live eval (SPEC-0085 R7.3): each question rides the model-relay
+		// with the vault's top-4 evidence as context; the judged report is
+		// recorded under --out-dir (default .work/tmp). Requires relay env.
+		if *questions == "" {
+			return fmt.Errorf("memory eval requires --questions")
+		}
+		data, err := os.ReadFile(*questions)
+		if err != nil {
+			return err
+		}
+		var qs []memoryeval.Question
+		if err := json.Unmarshal(data, &qs); err != nil {
+			return err
+		}
+		idx, _, err := memorysearch.NewIndexer(filepath.Join(abs, "vault")).Ensure()
+		if err != nil {
+			return err
+		}
+		now := time.Now()
+		for i := range qs {
+			var b strings.Builder
+			b.WriteString(qs[i].Text + "\n\nCandidate evidence:\n")
+			for _, h := range idx.Search(qs[i].Text, memorysearch.Options{Audience: "private", Limit: 4, Now: now}) {
+				snip := strings.Join(strings.Fields(h.Doc.Text), " ")
+				if len(snip) > 160 {
+					snip = snip[:160]
+				}
+				fmt.Fprintf(&b, "- %s: %s\n", h.Evidence, snip)
+			}
+			qs[i].Text = b.String()
+		}
+		rep := memoryeval.RunLive(ctx, memoryeval.RelayAsker(), qs)
+		out := *outDir
+		if out == "" {
+			out = filepath.Join(".work", "tmp")
+		}
+		if err := os.MkdirAll(out, 0o755); err != nil {
+			return err
+		}
+		body, err := json.Marshal(rep)
+		if err != nil {
+			return err
+		}
+		base := "memory-eval-" + now.UTC().Format("20060102T150405Z")
+		for i := 0; ; i++ {
+			name := base
+			if i > 0 {
+				name = fmt.Sprintf("%s-%d", base, i)
+			}
+			f, err := os.OpenFile(filepath.Join(out, name+".json"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+			if errors.Is(err, os.ErrExist) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			_, werr := f.Write(body)
+			cerr := f.Close()
+			if werr != nil {
+				return werr
+			}
+			if cerr != nil {
+				return cerr
+			}
+			break
+		}
+		return json.NewEncoder(os.Stdout).Encode(rep)
+	case "vacuum":
+		// Hard purge (SPEC-0085 R7.4): dry-run reports the purge set; only
+		// --apply deletes. Git history keeps everything recoverable.
+		vaultDir := filepath.Join(abs, "vault")
+		if *apply {
+			rep, err := vacuum.Apply(vaultDir)
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(os.Stdout).Encode(rep)
+		}
+		rep, err := vacuum.Scan(vaultDir)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(rep)
+	case "prune":
+		// Leaf lifecycle (SPEC-0085 R7.5): knobs ride the space settings —
+		// dry-run prints the predicted report, --apply folds/expires.
+		vaultDir := filepath.Join(abs, "vault")
+		s, err := stack.ReadEffective(abs, *env)
+		if err != nil {
+			return err
+		}
+		o := prune.Options{
+			RetentionDays: s.MemoryLeafRetentionDays,
+			FoldBytes:     int64(s.MemoryLeafFoldBytes),
+			TZ:            time.Local,
+		}
+		if *apply {
+			rep, err := prune.Apply(vaultDir, o)
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(os.Stdout).Encode(rep)
+		}
+		rep, err := prune.Scan(vaultDir, o)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(rep)
+	case "replay":
+		// Provider migration (SPEC-0085 R11.4): the prov.db audit spine
+		// streams into the rendered provider with stable ids — resumable
+		// via the hub-owned cursor, idempotent on retry.
+		vaultDir := filepath.Join(abs, "vault")
+		s, err := stack.ReadEffective(abs, *env)
+		if err != nil {
+			return err
+		}
+		p, err := stack.OpenProvider(abs, s)
+		if err != nil {
+			return err
+		}
+		prov, err := memory.OpenProvDB(filepath.Join(vaultDir, "runtime", "memory"))
+		if err != nil {
+			return err
+		}
+		entries, err := prov.Entries()
+		if err != nil {
+			return err
+		}
+		material, err := vault.OpenScopeMaterial(vaultDir)
+		if err != nil {
+			return err
+		}
+		mint := func(a memory.Audience) memory.Scope {
+			return memory.MintScope(material, *env, *profile, string(a))
+		}
+		cursor := filepath.Join(vaultDir, "runtime", "memory", "replay.cursor")
+		rep, err := replay.New(p, mint, cursor).Run(ctx, entries)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(rep)
+	case "export-honcho":
+		// Honcho migration (SPEC-0085 R11.5): the export file becomes
+		// reviewable card drafts in the staging lane; only --apply commits.
+		if *file == "" {
+			return fmt.Errorf("memory export-honcho requires --file")
+		}
+		vaultDir := filepath.Join(abs, "vault")
+		rep, err := importer.ParseHoncho(*file)
+		if err != nil {
+			return err
+		}
+		if *apply {
+			if err := importer.Stage(vaultDir, rep); err != nil {
+				return err
+			}
+			res, err := importer.Apply(vaultDir)
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(os.Stdout).Encode(res)
+		}
+		if err := importer.Stage(vaultDir, rep); err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(rep)
 	default:
 		return fmt.Errorf("unknown memory command %q", sub)
 	}

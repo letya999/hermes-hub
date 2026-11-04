@@ -99,7 +99,7 @@ func (g *Gateway) handleMockMessage(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"job_id": id, "task_id": task.TaskID, "command": true})
 		return
 	}
-	if err := g.enqueueChannelJob(r.Context(), user, task, "mock", id, key, in.ChatID, 0, in.Text, in.ChatID, ""); err != nil {
+	if err := g.enqueueChannelJob(r.Context(), user, task, "mock", id, key, in.ChatID, 0, in.Text, in.ChatID, "", false); err != nil {
 		http.Error(w, "enqueue failed", http.StatusInternalServerError)
 		return
 	}

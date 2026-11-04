@@ -57,6 +57,15 @@ func SeedInventory() []ToolSection {
 		native("meet", EffectMutate),
 		native("transcription", EffectRead),
 		native("deep_research", EffectRead),
+		// memory_vault is a hub-side subsystem flag, not an agent toolset;
+		// it still opts in through the same wish + grant posture.
+		native("memory_vault", EffectRead),
+		// knowledge_ui is the same hub-side flag: wish + grant admit it; the
+		// section governs the read-only MCP projection (SPEC-0085 R9/R10).
+		native("knowledge_ui", EffectRead),
+		// memory_provider likewise: the section governs the rendered
+		// external-provider config + egress (SPEC-0085 R11).
+		native("memory_provider", EffectRead),
 		// Hub-owned MCP surfaces rendered into the effective config.
 		// browser_guest is a distinct anonymous-profile emission under its
 		// own section so governance can gate it separately.

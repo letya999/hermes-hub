@@ -72,11 +72,14 @@ var capRights = map[string]string{
 	"assignments.edit":   "tasks.delegate",
 	"assignments.remove": "tasks.delegate",
 	// goals / context — self-scope domains.
-	"goals.read":    "goals.read",
-	"goals.edit":    "goals.edit",
-	"goals.remove":  "goals.remove",
-	"context.read":  "context.read",
-	"context.edit":  "context.edit",
+	"goals.read":   "goals.read",
+	"goals.edit":   "goals.edit",
+	"goals.remove": "goals.remove",
+	"context.read": "context.read",
+	"context.edit": "context.edit",
+	// memory — the vault contract: search reads, card writes persist.
+	"memory.search": "memory.search",
+	"memory.write":  "memory.remember",
 	"settings.read": "config.read",
 	"settings.edit": "config.edit_own",
 	// sessions

@@ -40,12 +40,18 @@ func MountPlan(dir, env, wsBase string, s Settings, ws passportview.Workspace) [
 			plan = append(plan, PlanMount{Source: filepath.Join(wsBase, filepath.FromSlash(p)), Target: p, ReadOnly: true})
 		}
 	}
-	plan = append(plan,
-		PlanMount{Source: filepath.Join(wsBase, "vault", "memory"), Target: "/vault/memory", ReadOnly: true},
-		PlanMount{Source: filepath.Join(wsBase, "vault", "library"), Target: "/vault/library"},
-		PlanMount{Source: filepath.Join(wsBase, "vault", "attachments"), Target: "/vault/attachments"},
-		PlanMount{Source: GeneratedEffectiveSkillsDir(dir), Target: "/skills", ReadOnly: true},
-	)
+	if !s.Has("memory_vault") {
+		// The skeleton only applies to the legacy vault shape: under
+		// memory_vault the whole dir/vault tree bind-mounts read-write —
+		// these sub-mounts would shadow it with an empty managed tree and
+		// RO-block the governed writer (SPEC-0085 R1.1).
+		plan = append(plan,
+			PlanMount{Source: filepath.Join(wsBase, "vault", "memory"), Target: "/vault/memory", ReadOnly: true},
+			PlanMount{Source: filepath.Join(wsBase, "vault", "library"), Target: "/vault/library"},
+			PlanMount{Source: filepath.Join(wsBase, "vault", "attachments"), Target: "/vault/attachments"},
+		)
+	}
+	plan = append(plan, PlanMount{Source: GeneratedEffectiveSkillsDir(dir), Target: "/skills", ReadOnly: true})
 	targets := make([]string, 0, len(ws.Mounts))
 	for t := range ws.Mounts {
 		targets = append(targets, t)

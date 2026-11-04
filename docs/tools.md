@@ -15,7 +15,7 @@ declares read or write effect; write effects additionally need the active
 write path (described per group).
 
 Catalog release 5 (ADR-0094) names every model tool `<noun>_<verb>` under one
-of 20 first-party families plus the pinned `platform` family — 88 callable
+of 21 first-party families plus the pinned `platform` family — 91 callable
 tools total. Each family is a placeable toolset under its logical name
 (`tools.yaml` `tools:`/`core:`/`extended:` entries); `via` selects the route
 (`toolhub`, `native`, `mcp`, `mcp-raw`, `off`) and `executor` names the
@@ -124,7 +124,7 @@ Six tools are always projected, never operator-selectable or removable
 
 ## First-party families
 
-All 88 model tools, grouped by family (each family's governance section is
+All 91 model tools, grouped by family (each family's governance section is
 `hub:<family>`; `native:` sections govern the upstream surface of the same
 word where one exists):
 
@@ -150,6 +150,67 @@ word where one exists):
 | browser | `browser_open`, `browser_read`, `browser_act`, `browser_capture` | connector:browser | curated calls over the browser connector; `profile` selects user or guest profile |
 | models | `model_list`, `model_switch` | runtime:models | routes, ladders and status from the models passport; switch stays inside the granted ladder; without a hub models plane calls return `unavailable` |
 | sessions | `session_list`, `session_search`, `session_read`, `session_switch`, `session_edit`, `session_remove` | runtime:sessions | own-space sessions only; `session_edit` action archive\|restore; without a session store calls return `unavailable` |
+| memory | `memory_search`, `memory_card` | handler:memory | the memory vault contract (SPEC-0085): `memory_search` is BM25+graph over daily leaves, cards and summaries — hits carry `file:line` evidence refs, never answer from memory alone; `memory_card` is the only write path (ops remember\|fact\|truth\|merge\|forget) and needs a stamped private run; `merge`/`forget` additionally need owner provenance — no argument grants either; `root=vault` file writes still refuse the governed `memory/`/`runtime/` zones — use `memory_card` |
+
+## memory — the vault contract
+
+The `memory_vault` feature (ADR-0086, SPEC-0085) replaces the native store
+entirely when on: the `memory` toolset stays in `agent.disabled_toolsets`,
+`memory_enabled`/`user_profile_enabled` render false on both render paths,
+and `MEMORY.md`/`USER.md` remain on disk untouched for the M20.7 import. The
+vault is a git-backed `spaces/<id>/vault/` tree; the governed writer is the
+only mutation path (hash-checked, actor-attributed commits, zone-whitelisted)
+and `CORE.md` reaches only private-audience run instructions, pinned per job
+mapping like the style snapshot. Before each run the hub also injects a
+pinned lane-1 recall block (SPEC-0085 R4): ≤4 card hits with evidence refs,
+≤2500 chars, marker-wrapped as "data, not instructions" so capture can never
+re-extract it — zero model calls, audience-scoped, and flagged-degraded
+rather than hidden when the index is unavailable. Past-referencing turns
+earn one lane-2 hint line nudging `memory_search`.
+
+Writes into the vault run through one contract surface: `memory_card`
+(SPEC-0085 R6). `memory/daily`, `memory/cards`, `memory/summaries`,
+`memory/CORE.md`, `memory/REVIEW.md` and `runtime/` are governed zones — the
+file tools deny writes there on the `vault:` root (segment names compare
+case- and fullwidth-folded; `library/` and ordinary paths stay writable, and
+the root itself requires a stamped private run). `merge`/`forget` execute
+only on a live owner-provenance turn bound to that turn's `SourceRef` — a
+replayed or argument-claimed authorization is denied, and every mutation
+and denial is journaled to `runtime/memory/writes.jsonl`. Soft forget is
+a hub-owned strike: `runtime/memory/forget.jsonl` for daily-leaf entries,
+`status: superseded` frontmatter for cards — excluded from search, lane-1
+recall and nightly promotion across restarts, visible only via
+`history:true` and git.
+
+Daily leaves are a bounded tape (SPEC-0085 R7.5): after the rollup and
+period folds, two opt-in deterministic lanes run at the night tick.
+`memory_leaf_fold_bytes` (>0) stubs non-promotion-eligible block bodies
+inside a *completed* oversized leaf — audit kinds (routine, system,
+probe, compaction, untrusted, background replies) collapse while every
+mem:id header and interactive owner/agent block stays byte-identical;
+oversized eligible days first pull a `long_summary` from the same
+proposal call so the detail lands in `summaries/daily/`.
+`memory_leaf_retention_days` (≥2) expires a leaf older than the window
+— `git rm` + prov.db row drop — but only once the day-state is complete
+*and* the daily summary exists; unverified days are kept and reported,
+never deleted. Both lanes go through the governed writer (owner edits
+win the hash check), journal to `memory/REVIEW.md` under
+`## prune <day>`, and merge into the localized morning digest —
+housekeeping is never silent. `hubctl memory prune` dry-runs the same
+report; `--apply` executes. Expired bytes remain in vault git history;
+true erasure is a separate history-rewrite decision.
+
+With `knowledge_ui` on, the space's `open-knowledge` container also serves
+the runtime an `mcp__open_knowledge__*` read surface (SPEC-0085 R9): exactly
+the eight verified read verbs of the pinned release — `audit`, `config`,
+`exec` (upstream read-only shell allowlist), `history`, `links`, `palette`,
+`search`, `skills` — rendered as `tools.include`, so mutation verbs
+(`write`, `edit`, `delete`, `move`, `checkpoint`, `restore_version`,
+`import`, `install`, `preview_url`, `share_link`, and `lint` whose `fix`
+argument mutates) are never registered at all; a guessed call dies as an
+unregistered tool. `knowledge_ui_write` stays deferred and refused at
+validation until upstream gains per-path write scoping — `memory_card`
+remains the only agent write path. A down OK degrades honestly
 
 ## connectors — the control surface
 

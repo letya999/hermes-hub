@@ -73,6 +73,7 @@ func (s *Spool) startSourceBatchLocked(st *EventState, schedule Schedule, job Jo
 		id := fmt.Sprintf("batch2-%d-%s-%d-%d-%s", len(schedule.ScheduleID), schedule.ScheduleID, schedule.Revision, schedule.ProbeRevision, watchHash(seed + string(body))[:16])
 		j := b.Job
 		j.ID = id
+		j.Untrusted = true // bundled event evidence is external content
 		j.IdempotencyKey = id
 		j.AssignmentID = schedule.AssignmentID
 		j.AssignmentPlanRevision = schedule.AssignmentPlanRevision

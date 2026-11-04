@@ -123,6 +123,26 @@ var argDocs = map[string]map[string]argDoc{
 		"language": {Desc: "Voice language, when known."},
 	},
 
+	// ---- memory
+	"memory_search": {
+		"query":   {Desc: "Text matched over daily leaves, cards and summaries."},
+		"limit":   {Desc: "Maximum entries to return."},
+		"from":    {Desc: "Lower entry-date bound, YYYY-MM-DD."},
+		"to":      {Desc: "Upper entry-date bound, YYYY-MM-DD."},
+		"kinds":   {Desc: "Entry kinds to include.", Items: "string"},
+		"history": {Desc: "Include superseded/forgotten entries."},
+	},
+	"memory_card": {
+		"op":       {Desc: "Write operation.", Enum: []string{"remember", "fact", "truth", "merge", "forget"}},
+		"text":     {Desc: "Note text (remember) or evidence line (fact/truth)."},
+		"card":     {Desc: "Target card id or path for fact/truth/merge."},
+		"name":     {Desc: "Optional note title for remember."},
+		"to":       {Desc: "Destination card for merge."},
+		"id":       {Desc: "Entry id to forget."},
+		"evidence": {Desc: "Source reference cited by a fact."},
+		"tags":     {Desc: "Optional tags on the written entry.", Items: "string"},
+	},
+
 	// ---- terminal
 	"terminal_exec": {
 		"cmd":        {Desc: "Command line to run in the workspace execution environment."},

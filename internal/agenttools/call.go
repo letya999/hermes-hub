@@ -194,6 +194,10 @@ func (t *Tools) call(ctx context.Context, name string, r Input, ws, ar, org *os.
 		return t.knowledgeSearch(ctx, r.Query)
 	case "knowledge_read":
 		return t.knowledgeRead(ctx, r)
+	case "memory_search":
+		return t.memorySearch(r)
+	case "memory_card":
+		return t.memoryCard(r)
 	case "image_inspect", "images_inspect", "media_inspect":
 		if rel, ok := strings.CutPrefix(r.Path, "skills:"); ok {
 			return media.New(t.Skills).Inspect(ctx, rel)

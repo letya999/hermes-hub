@@ -10,6 +10,7 @@ import (
 	"path"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -77,10 +78,26 @@ func (t *Tools) fileScoped(op string, r Input, ws, ar, org *os.Root) (map[string
 	var err error
 	switch {
 	case r.Root == "vault":
-		if t.Vault == nil {
+		if t.VaultDir != "" {
+			// The m20 vault contract: a stamped private run authorizes the
+			// file root; governed zones stay off-limits on writes (R6.4).
+			_, live, _ := runCardAuth(t.VaultDir)
+			if !live {
+				return nil, fmt.Errorf("vault root requires a stamped private run")
+			}
+			vr, verr := os.OpenRoot(t.VaultDir)
+			if verr != nil {
+				return nil, verr
+			}
+			defer vr.Close()
+			root = vr
+		} else if t.Vault != nil {
+			// Legacy boundary-managed mount (SPEC-0092 R5.3): the workspace
+			// passport's writable prefixes govern /vault/* writes.
+			root = t.Vault
+		} else {
 			return nil, fmt.Errorf("vault root is not configured")
 		}
-		root = t.Vault
 	case knowledge:
 		// root=knowledge resolves the staged knowledge directory for this
 		// runtime's own principal (ADR-0094 S1); it stays read-only.
@@ -199,6 +216,9 @@ func (t *Tools) fileScoped(op string, r Input, ws, ar, org *os.Root) (map[string
 	if knowledge || r.Root == "archive" || r.Root == "organization" || r.Root == "skills" {
 		return nil, fmt.Errorf("%s is read-only", r.Root)
 	}
+	if r.Root == "vault" && t.VaultDir != "" && !vaultWritable(r.Path) {
+		return nil, fmt.Errorf("governed zone — use memory_card")
+	}
 	boundary, berr := t.boundary()
 	if berr != nil {
 		return nil, berr // published passport undecodable or gone: fail closed
@@ -290,6 +310,26 @@ func (t *Tools) fileScoped(op string, r Input, ws, ar, org *os.Root) (map[string
 		return nil, err
 	}
 	return map[string]any{"path": r.Path, "revision": hash(content)}, nil
+}
+
+// vaultWritable is the R6.4 zone guard for the vault file root: memory/ and
+// runtime/ are contract-governed (memory_card and hub sidecars only) and dot
+// paths are never write surfaces; library/ and ordinary paths stay writable.
+// Segments compare folded — fullwidth ASCII to plain ASCII, case-insensitive.
+func vaultWritable(rel string) bool {
+	for _, seg := range strings.Split(path.Clean(rel), "/") {
+		var b strings.Builder
+		for _, r := range seg {
+			if r >= 0xFF01 && r <= 0xFF5E {
+				r -= 0xFEE0
+			}
+			b.WriteRune(unicode.ToLower(r))
+		}
+		if s := b.String(); s == "memory" || s == "runtime" || strings.HasPrefix(s, ".") {
+			return false
+		}
+	}
+	return true
 }
 
 // commitFile writes content to rel inside root atomically: a tmp file in the

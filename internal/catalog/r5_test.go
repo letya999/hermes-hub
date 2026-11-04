@@ -17,12 +17,13 @@ var r5Families = []string{
 	"files", "terminal", "documents", "media", "skills", "routines",
 	"watches", "assignments", "goals", "context", "settings", "ssh",
 	"exposure", "sites", "web", "browser", "research", "connectors",
-	"models", "sessions",
+	"models", "sessions", "memory",
 }
 
-// r5Members is the frozen model-tool membership per family — 89 tools total.
+// r5Members is the frozen model-tool membership per family — 91 tools total.
 var r5Members = map[string][]string{
 	"files":       {"file_list", "file_read", "file_search", "file_write", "file_edit", "file_mkdir", "file_archive", "file_remove", "project_create"},
+	"memory":      {"memory_search", "memory_card"},
 	"documents":   {"document_extract", "document_create", "document_edit", "document_convert", "document_remove"},
 	"media":       {"media_inspect", "media_convert", "media_generate", "media_edit", "media_fetch", "media_transcribe", "media_speak"},
 	"terminal":    {"terminal_exec", "terminal_job"},
@@ -62,8 +63,8 @@ func TestR5Vocabulary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	if Release != "8" {
-		t.Fatalf("catalog release = %q, want 8", Release)
+	if Release != "9" {
+		t.Fatalf("catalog release = %q, want 9", Release)
 	}
 	// --- families under logical names with the frozen member list
 	for _, family := range r5Families {
@@ -182,8 +183,8 @@ func TestR5Vocabulary(t *testing.T) {
 	for _, members := range r5Members {
 		total += len(members)
 	}
-	if total != 89 {
-		t.Fatalf("r5 member table holds %d tools, want 89", total)
+	if total != 91 {
+		t.Fatalf("r5 member table holds %d tools, want 91", total)
 	}
 	// --- via/executor consistency: the route must be able to serve the
 	// declared executor.

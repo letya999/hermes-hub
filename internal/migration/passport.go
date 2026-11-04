@@ -367,6 +367,10 @@ func passportLayers(dir string, s stack.Settings, env string, docs catalog.Docs)
 		"memory":  map[string]any{"backend": memoryBackend},
 		"runtime": map[string]any{"timezone": s.Timezone},
 	}
+	if s.MemoryRollupTime != "" {
+		configDoc["memory"].(map[string]any)["nightly_rollup"] = s.MemoryRollupTime
+		mapped = append(mapped, "memory_rollup_time -> config.memory.nightly_rollup")
+	}
 	if s.Context.Compact.Engine != "" {
 		configDoc["runtime"].(map[string]any)["context"] = map[string]any{"compaction": s.Context.Compact.Engine}
 	}
@@ -447,6 +451,16 @@ func passportLayers(dir string, s stack.Settings, env string, docs catalog.Docs)
 		{"workspace.goal", s.Workspace.Goal != ""},
 		{"workspace.bootstrap_revision", s.Workspace.BootstrapRevision != 0},
 		{"context.compact.engines", len(s.Context.Compact.Engines) > 0},
+		// The vault lifecycle knobs and provider/UI edge fields ride the
+		// agent.yaml extension surface — the six-passport contract has no
+		// leaf for them today.
+		{"memory_leaf_retention_days", s.MemoryLeafRetentionDays != 0},
+		{"memory_leaf_fold_bytes", s.MemoryLeafFoldBytes != 0},
+		{"memory_provider", s.MemoryProvider != ""},
+		{"memory_provider_url", s.MemoryProviderURL != ""},
+		{"memory_provider_token_env", s.MemoryProviderTokenEnv != ""},
+		{"ui_port", s.UIPort != 0},
+		{"ui_bind", s.UIBind != ""},
 	}
 	for _, p := range preserved {
 		if p.set {

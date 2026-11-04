@@ -169,6 +169,45 @@ docs/tools.md; they are not shared personal-memory stores.
   `inbox/{people,services}/` user- and service-file intake (read-only to the
   agent), `work/`, `projects/`, `artifacts/{documents,images,videos,archives,
   services}/`, `outbox/`; `archive/` — read-only extracted archive.
+- `vault/` — the git-backed memory vault when `memory_vault` is on
+  (ADR-0086): `memory/` markdown (`daily/`, `cards/`, `summaries/`,
+  `CORE.md`, `REVIEW.md`, `schema.json`) committed by the governed
+  writer, runtime sidecars under `runtime/` (`.okignore`d, never
+  committed: `prov.db`, `index/`, `run-scope/` (audience + provenance
+  stamps), `night/` day states + `truth_pending`, `memory/forget.jsonl`
+  soft-forget strikes, `memory/writes.jsonl` the card-write audit
+  journal, `memory/import/` the staged native-import drafts,
+  `memory/scope.key` the hub-generated replay mint material,
+  `memory/provider.json` the rendered external-provider record and
+  `memory/replay.cursor` the migration checkpoint). Agent write access
+  goes through the `memory_card` contract or the `vault:` file root —
+  both require a stamped private run and deny the governed zones
+  (`memory/`, `runtime/`, dot paths); `library/` stays writable
+  (SPEC-0085 R6). Mounts rw at `/vault` in the runtime and in the
+  communication gateway — the gateway is the capture writer, the
+  pre-turn recall/CORE pinning plane, and the nightly rollup driver
+  (SPEC-0085 R2/R4/R5): at `memory_rollup_time` (agent settings,
+  `"HH:MM"` space-local, default 04:00) it folds the just-closed day —
+  promotions, directives, REVIEW journal, owner digest, intent→draft
+  assignment proposals — then closes any finished week/month/year whose
+  summary is missing. Two opt-in settings bound the leaf tape after
+  that: `memory_leaf_fold_bytes` (>0) folds audit-kind bodies inside a
+  completed oversized leaf (interactive blocks stay verbatim), and
+  `memory_leaf_retention_days` (≥2) expires leaves past the window once
+  their rollup + daily summary provably exist — kept days and actions
+  journal to `REVIEW.md` and the morning digest (SPEC-0085 R7.5). With
+  `knowledge_ui` on, one pinned `open-knowledge` container mounts the
+  vault at `/data` on the space-private network; `ui_port` in
+  `agent.yaml` is the only host edge — a single loopback publish
+  `127.0.0.1:<ui_port>` → 8080 (loopback-only `ui_bind`, no public
+  path), for the owner reaching the unauthenticated editor over
+  `ssh -L` (SPEC-0085 R10). The runtime reaches it as the
+  `mcp__open_knowledge__*` read-only MCP surface — eight verified read
+  verbs via `tools.include`, write verbs never registered (SPEC-0085
+  R9). Edits landing outside the governed writer — the editor or
+  direct file changes — are swept into history as `hermes-owner` by
+  `CommitExternalEdits` at the head of every rollup, so owner
+  provenance survives and wins (SPEC-0085 R8).
 - `broker/` — broker materialization output; `cache/`, `cliproxy/` —
   service-local state; `managed/<env>/model-relay` — relay selection state.
 - `diagnostics/` — bounded log surface backing `mcp__toolhub__diagnostics`
@@ -182,7 +221,7 @@ In legacy `settings.yaml` the opt-in contract is the `features` list from
 `ssh_tunnel`, `hh`, `telegram`, `slack_app`, `telegram_user`,
 `telegram_write`, `google`, `google_write`, `gitlab`, `meet`,
 `transcription`, `image_gen`, `github`, `slack`, `atlassian`, `desktop`,
-`drafts` —
+`drafts`, `memory_vault`, `knowledge_ui`, `memory_provider` —
 each with declared `requires` env keys and a scope note. Write-effect
 features (`*_write`, `browser_act`, `ssh_shell`, `ssh_tunnel`) are separate
 opt-ins on top of their read parent, matching deny-wins. In schema-3 spaces

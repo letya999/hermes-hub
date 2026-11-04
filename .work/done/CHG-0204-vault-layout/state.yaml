@@ -1,0 +1,41 @@
+schema: 1
+change: CHG-0204
+title: Vault substrate, provider seam, audience-scoped CORE
+status: done
+branch: feat/m20-memory-vault
+updated: 2026-10-31
+phase: done
+adr: ADR-0086
+spec: SPEC-0085
+requirements: [R1.1, R1.2, R1.3, R1.4, R1.5, R1.6, R1.7]
+depends_on: []
+github_milestone: M20 — Memory Vault and Knowledge Surface
+github_issue: 299
+design_status: accepted
+implementation_status: complete
+slices:
+  S1.1-feature: done
+  S1.2-scaffold-mount: done
+  S1.3-card-schema: done
+  S1.4-provider-seam: done
+  S1.5-vault-writer: done
+  S1.6-audience-core: done
+  S1.7-native-off: done
+validation:
+  documents: updated
+  just_check: pending
+  docker_check: skipped — no-docker scope
+  red_team: covered by tests (symlink, traversal, scope-minting, conflict)
+  live_acceptance: "pending: requires live stack (deferred — no-docker scope)"
+evidence:
+  - "go test ./internal/vault ./internal/memory/... — green; vault coverage 89%"
+  - "go test ./internal/stack -run 'TestMemoryVault|TestRenderVaultMountGated|TestGatewayVaultMountReadOnly|TestNativeMemoryDisabledWithVault|TestNativeFilesUntouched|TestRenderCreatesVaultTree' — green"
+  - "go test ./internal/communication -run 'TestCore|TestConfigFromEnvVaultDir' — green; package coverage 86.7%"
+  - "TestConformanceVault green on the vault provider; TestConformanceFake + TestConformanceLimitedProvider green on memorytest"
+  - "offline only: no compose/up run; live verification deferred"
+remaining:
+  - "live acceptance A1.1-A1.7 on a real stack (init → tree+git; private run → CORE in instructions; group → none) — pending: requires live stack (deferred — no-docker scope)"
+  - "M20.3/M20.4 deliver Recall/Search; provider currently reports ErrUnsupported honestly"
+limitations:
+  - "CORE block capped at 3600 chars; instruction assembly truncates the injected block to the 4096-byte admission ceiling after existing per-run content"
+  - "Recall/Search lanes return ErrUnsupported until M20.3/M20.4 — capability flags report them absent"

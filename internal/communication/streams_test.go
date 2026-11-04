@@ -206,6 +206,9 @@ func TestSettleStreamEventsAgentSink(t *testing.T) {
 	if !strings.Contains(job.Text, "untrusted") || !strings.Contains(job.Text, "777") || !strings.Contains(job.Text, "answer Danil for me") {
 		t.Fatalf("stream agent bundle: %q", job.Text)
 	}
+	if !job.Probe {
+		t.Fatal("probe-settled job lost its probe stamp — memory capture would mislabel it routine")
+	}
 	if err := g.authorizeOccurrence(*job); err != nil {
 		t.Fatalf("stream agent bundle fails send-time re-authorization: %v", err)
 	}

@@ -99,6 +99,12 @@ func (g *Gateway) worker(ctx context.Context) {
 				continue
 			}
 			g.busy.Add(1)
+			// SPEC-0085 R3.4: stamp the run's audience into the
+			// agent-read-only vault sidecar so memory_search confines the
+			// run; cleared on return, expired with the run budget.
+			if g.config.VaultDir != "" {
+				stampRunScope(g.config.VaultDir, job.ID, job.MemoryAudience(), job.MemoryTurnProvenance())
+			}
 			var response string
 			var outcome RunOutcome
 			var runErr error
@@ -111,6 +117,9 @@ func (g *Gateway) worker(ctx context.Context) {
 				if runErr != nil {
 					outcome.Status = "failed"
 				}
+			}
+			if g.config.VaultDir != "" {
+				clearRunScope(g.config.VaultDir, job.ID)
 			}
 			g.busy.Add(-1)
 			if runErr == nil && outcome.Status != "" && outcome.Status != "completed" {
@@ -211,6 +220,11 @@ func (g *Gateway) worker(ctx context.Context) {
 				if err := g.spool.RecordTerminalOutcome(*job, outcome, delivery); err != nil {
 					log.Printf("gateway job_id=%q status=uncertain reason=terminal_handoff", job.ID)
 					continue
+				}
+				if cerr := g.captureReply(*job, response); cerr != nil {
+					// The reply still reaches the owner — capture is audit;
+					// a vault hiccup must not eat deliveries (SPEC-0085 R2.1).
+					log.Printf("memory capture failed for job %s: %v", job.ID, cerr)
 				}
 				if job.Trigger == "cron" {
 					if o, ok := g.occurrenceFor(job.ID); ok {

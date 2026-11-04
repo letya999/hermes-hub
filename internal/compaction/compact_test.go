@@ -957,3 +957,49 @@ func TestPruneArgForcesStage(t *testing.T) {
 		t.Fatalf("journal: %+v", events)
 	}
 }
+
+// SPEC-0085 R2.6: before a summary compaction drops the transcript head, the
+// Flush hook receives the exact dropped messages — the leaf gets what
+// summarization would lose.
+func TestCompactionFlushCaptured(t *testing.T) {
+	t0 := time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC)
+	bigUser := strings.Repeat("u", 800000)
+	calls := stubRunner(t, map[string]string{
+		"estimate_tokens":  `{"ok":true,"tokens":300000,"message_count":6}`,
+		"lease":            `{"ok":true,"acquired":true}`,
+		"lock":             `{"ok":true,"locked":true}`,
+		"read_transcript":  `{"ok":true,"session_id":"hub-abc","watermark":6,"messages":[{"role":"user","content":"` + bigUser + `"},{"role":"assistant","content":"m2"},{"role":"user","content":"m3"},{"role":"assistant","content":"m4"},{"role":"user","content":"m5"},{"role":"assistant","content":"m6"}]}`,
+		"apply_transcript": `{"ok":true,"active_count":4}`,
+		"unlock":           `{"ok":true}`,
+		"unlease":          `{"ok":true}`,
+	})
+	var flushed []map[string]any
+	order := []string{}
+	_, err := Compact(context.Background(), CompactOptions{
+		StateDir: t.TempDir(), SessionID: "hub-abc", Holder: "hub-compact",
+		Trigger: TriggerManual, Engine: EngineHub, ResolvedModel: "m1",
+		Threshold: 160000, TailCount: 2, Args: CompactArgs{Focus: "x"},
+		Now: func() time.Time { return t0 },
+		Summarize: func(_ context.Context, _ string, _ []map[string]any, _ string) (string, error) {
+			return "s", nil
+		},
+		Flush: func(dropped []map[string]any) {
+			order = append(order, "flush")
+			flushed = dropped
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(flushed) != 4 {
+		t.Fatalf("flush got %d messages, want the 4 dropped head messages", len(flushed))
+	}
+	for _, req := range *calls {
+		if req["op"] == "apply_transcript" {
+			order = append(order, "apply")
+		}
+	}
+	if len(order) != 2 || order[0] != "flush" || order[1] != "apply" {
+		t.Fatalf("flush must precede apply: %v", order)
+	}
+}

@@ -26,7 +26,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
-const Release = "8"
+const Release = "9"
 
 const (
 	CapabilitiesFile = "capabilities.yaml"
@@ -158,6 +158,7 @@ var infraServices = map[string]Service{
 	"hub-tts":             {Kind: "infra", Instances: "per-stack"},
 	"browser":             {Kind: "infra", Instances: "per-space"},
 	"hosting":             {Kind: "infra", Instances: "per-space-env", DependsOn: []string{"workload-controller"}},
+	"open-knowledge":      {Kind: "infra", Instances: "per-space"},
 }
 
 func sorted(values []string) []string {

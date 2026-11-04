@@ -282,6 +282,9 @@ func TestOpenRootsPicksPassportBoundary(t *testing.T) {
 	} else {
 		defer tools.Vault.Close()
 	}
+	if tools.VaultDir != vaultDir {
+		t.Errorf("vault dir not mapped from HUB_VAULT: %q", tools.VaultDir)
+	}
 	if _, err := tools.File("write", Input{Path: "inbox/x.md", Text: "tamper"}); err == nil {
 		t.Error("write outside the published writable list succeeded")
 	}

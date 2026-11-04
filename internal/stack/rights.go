@@ -29,9 +29,19 @@ var settingsFieldRights = map[string]string{
 	"OAuthPort":           "",
 	"BrowserPort":         "",
 	"SlackEventsPort":     "",
-	"Infra":               "",
-	"Diagnostics":         "",
-	"SpaceDir":            "",
+	// R10.1/R10.3: the UI host edge is a publish knob like the other ports —
+	// deployment state, not a grant; ui_expose is inert until M18 lands it.
+	"UIPort":   "",
+	"UIBind":   "",
+	"UIExpose": "",
+	// R11: provider endpoint fields are operator-owned deployment config —
+	// the capability gate is the tools entry, never these fields.
+	"MemoryProvider":         "",
+	"MemoryProviderURL":      "",
+	"MemoryProviderTokenEnv": "",
+	"Infra":                  "",
+	"Diagnostics":            "",
+	"SpaceDir":               "",
 
 	"CapabilityMode":        "CapabilityMode",
 	"CapabilityProfileID":   "CapabilityProfileID",
@@ -69,8 +79,13 @@ var settingsFieldRights = map[string]string{
 	"Compression":  "",
 	"SummaryModel": "",
 	"JudgeModel":   "",
-	"Context":      "Context",
-	"Goals":        "Goals",
+	// The nightly rollup clock is a schedule knob — it grants nothing and
+	// must not move the policy hash.
+	"MemoryRollupTime":        "",
+	"MemoryLeafRetentionDays": "",
+	"MemoryLeafFoldBytes":     "",
+	"Context":                 "Context",
+	"Goals":                   "Goals",
 	// The stack passport's services map and the config section are render
 	// state consumed by the compose plan and env/supervision renders; grants
 	// live in grants.yaml, not the topology.

@@ -52,19 +52,30 @@ type Settings struct {
 	Ingress []string             `yaml:"ingress,omitempty"`
 	// TelegramAuth is tri-state: nil auto-enables QR login whenever telegram
 	// ingress runs, true forces it on (still requires telegram), false opts out.
-	TelegramAuth    *bool                `yaml:"telegram_auth,omitempty"`
-	Workspace       Workspace            `yaml:"workspace,omitempty"`
-	MCP             map[string]MCPServer `yaml:"mcp_servers,omitempty"`
-	Hooks           map[string]any       `yaml:"hooks,omitempty"`
-	Memory          bool                 `yaml:"memory"`
-	Honcho          bool                 `yaml:"honcho,omitempty"`
-	HonchoURL       string               `yaml:"honcho_url,omitempty"`
-	GlobalSkillsDir string               `yaml:"global_skills_dir,omitempty"`
-	Schema          int                  `yaml:"schema"`
-	User            string               `yaml:"user"`
-	Organization    string               `yaml:"organization,omitempty"`
-	Model           string               `yaml:"model"`
-	ModelURL        string               `yaml:"model_url"`
+	TelegramAuth *bool                `yaml:"telegram_auth,omitempty"`
+	Workspace    Workspace            `yaml:"workspace,omitempty"`
+	MCP          map[string]MCPServer `yaml:"mcp_servers,omitempty"`
+	Hooks        map[string]any       `yaml:"hooks,omitempty"`
+	Memory       bool                 `yaml:"memory"`
+	// MemoryRollupTime is the space-local "HH:MM" the hub-owned nightly
+	// memory rollup fires at (SPEC-0085 R5.1); empty renders the 04:00
+	// default while memory_vault is enabled.
+	MemoryRollupTime string `yaml:"memory_rollup_time,omitempty"`
+	// MemoryLeafRetentionDays bounds how long rolled-up daily leaves stay in
+	// the vault working tree (SPEC-0085 R7.5): 0 keeps every leaf forever,
+	// N>=2 expires completed leaves older than N days once their day summary
+	// exists. MemoryLeafFoldBytes folds a completed oversized leaf's
+	// audit-kind blocks in place the same night (0 disables folding).
+	MemoryLeafRetentionDays int    `yaml:"memory_leaf_retention_days,omitempty"`
+	MemoryLeafFoldBytes     int    `yaml:"memory_leaf_fold_bytes,omitempty"`
+	Honcho                  bool   `yaml:"honcho,omitempty"`
+	HonchoURL               string `yaml:"honcho_url,omitempty"`
+	GlobalSkillsDir         string `yaml:"global_skills_dir,omitempty"`
+	Schema                  int    `yaml:"schema"`
+	User                    string `yaml:"user"`
+	Organization            string `yaml:"organization,omitempty"`
+	Model                   string `yaml:"model"`
+	ModelURL                string `yaml:"model_url"`
 	// Cliproxy selects the proxy topology: "shared" (default) resolves the
 	// infra space's instance; "dedicated" renders a cliproxy per space.
 	Cliproxy            string `yaml:"cliproxy,omitempty"`
@@ -77,6 +88,32 @@ type Settings struct {
 	OAuthPort           int    `yaml:"oauth_port"`
 	BrowserPort         int    `yaml:"browser_port"`
 	SlackEventsPort     int    `yaml:"slack_events_port,omitempty"`
+	// UIPort opts the knowledge_ui edge into a loopback publish
+	// (127.0.0.1:<ui_port> → OK's 8080). Zero keeps the container
+	// network-only — no host reachability at all.
+	UIPort int `yaml:"ui_port,omitempty"`
+	// UIBind is the publish address — loopback only; anything wider would
+	// expose the unauthenticated editor to the LAN.
+	UIBind string `yaml:"ui_bind,omitempty"`
+	// UIExpose is reserved for M18 — the named edge service that will mint
+	// one-time ?t= links. Setting it today is an honest validation error,
+	// so the key can never silently half-work before its contract lands.
+	UIExpose string `yaml:"ui_expose,omitempty"`
+	// MemoryProvider selects the external memory backend behind the
+	// hub-owned provider seam (SPEC-0085 R11): "hindsight" is the only
+	// adapter today — an unknown kind fails validation, never a silent
+	// fallback. It is inert until the memory_provider capability is
+	// granted; the provider sees only scope-minted traffic.
+	MemoryProvider string `yaml:"memory_provider,omitempty"`
+	// MemoryProviderURL is the provider's HTTP endpoint — typically a
+	// space-network or host-side Hindsight deployment; a cloud endpoint is
+	// legal only through the explicit capability grant (it adds the host
+	// to the managed egress allowlist).
+	MemoryProviderURL string `yaml:"memory_provider_url,omitempty"`
+	// MemoryProviderTokenEnv names the secrets variable holding the
+	// provider credential for cloud egress — a name, never a value, so no
+	// credential material lands in config, renders or diagnostics.
+	MemoryProviderTokenEnv string `yaml:"memory_provider_token_env,omitempty"`
 	// Infra marks the space that renders the shared control plane (ToolHub,
 	// Credential Broker, workload-controller, cliproxy, communication-hub).
 	// Exactly one deployed space must render it; secondary spaces set
@@ -169,6 +206,9 @@ var Features = []Feature{
 	{"drafts", []string{"DRAFTS_TOKEN"}, "Authenticated companion for the macOS Drafts app"},
 	{"hosting", nil, "Owner-bound immutable static and isolated dynamic sites; requires reviewed hosting config and exposure"},
 	{"exposure", nil, "Named outbound public endpoints over a per-binding tunnel workload (sish/cloudflared); requires a reviewed connections/exposure/config.yaml"},
+	{"memory_vault", nil, "Git-backed per-space memory vault at spaces/<id>/vault; removes the native memory toolset and scopes CORE to private runs"},
+	{"knowledge_ui", nil, "OpenKnowledge editor over the space memory vault: one pinned replica, private network only; requires memory_vault"},
+	{"memory_provider", nil, "External memory backend behind the hub-owned provider seam (first adapter: Hindsight); requires memory_vault"},
 }
 var idPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,39}$`)
 var envReferencePattern = regexp.MustCompile(`\$\{([A-Z][A-Z0-9_]*)\}`)
@@ -455,6 +495,21 @@ func (s Settings) Validate() error {
 	if s.Has("browser_act") && !s.Has("browser") {
 		return fmt.Errorf("browser_act requires browser")
 	}
+	if s.Has("knowledge_ui") && !s.Has("memory_vault") {
+		return fmt.Errorf("knowledge_ui requires memory_vault")
+	}
+	if s.Has("memory_provider") && !s.Has("memory_vault") {
+		return fmt.Errorf("memory_provider requires memory_vault")
+	}
+	if s.MemoryLeafRetentionDays < 0 || (s.MemoryLeafRetentionDays > 0 && s.MemoryLeafRetentionDays < 2) {
+		return fmt.Errorf("memory_leaf_retention_days must be 0 or >=2")
+	}
+	if s.MemoryLeafFoldBytes < 0 {
+		return fmt.Errorf("memory_leaf_fold_bytes must be >=0")
+	}
+	if (s.MemoryLeafRetentionDays > 0 || s.MemoryLeafFoldBytes > 0) && !s.Has("memory_vault") {
+		return fmt.Errorf("memory leaf pruning requires memory_vault")
+	}
 	if s.Has("google") && (!strings.Contains(s.GoogleEmail, "@") || s.OAuthPort < 1024) {
 		return fmt.Errorf("google requires email and oauth_port >=1024")
 	}
@@ -489,11 +544,30 @@ func (s Settings) Validate() error {
 			return fmt.Errorf("invalid or colliding host ports")
 		}
 	}
+	// R10.1: the unauthenticated OK editor may only ever bind loopback —
+	// a wider address is a hard validation error, not a warning.
+	if s.UIBind != "" && s.UIBind != "127.0.0.1" && s.UIBind != "::1" {
+		return fmt.Errorf("ui_bind must be loopback (127.0.0.1 or ::1), got %q", s.UIBind)
+	}
+	slackPort := 0
 	if s.Has("slack_app") {
-		port := slackEventsHostPort(s)
-		if port < 1024 || port > 65535 || port == s.BrowserPort || port == s.OAuthPort {
+		slackPort = slackEventsHostPort(s)
+		if slackPort < 1024 || slackPort > 65535 || slackPort == s.BrowserPort || slackPort == s.OAuthPort {
 			return fmt.Errorf("invalid or colliding host ports")
 		}
 	}
-	return nil
+	if s.UIPort > 0 {
+		if !s.Has("knowledge_ui") {
+			return fmt.Errorf("ui_port requires knowledge_ui")
+		}
+		if s.UIPort < 1024 || s.UIPort > 65535 || s.UIPort == s.BrowserPort || s.UIPort == s.OAuthPort || s.UIPort == slackPort {
+			return fmt.Errorf("invalid or colliding host ports")
+		}
+	}
+	// R10.3: ui_expose is the reserved M18 hook — it must fail honestly
+	// until the one-time-link edge contract is decided there.
+	if s.UIExpose != "" {
+		return fmt.Errorf("ui_expose is reserved for M18 and not implemented")
+	}
+	return s.validateProviderConfig()
 }

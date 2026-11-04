@@ -129,6 +129,31 @@ tools:
   files:
     via: toolhub
 `,
+		// The memory-vault surface (SPEC-0085): lifecycle knobs, provider
+		// fields and the loopback UI edge all ride agent.yaml today.
+		"memory": `schema: 3
+user: dana
+infra: false
+timezone: UTC
+model: default
+model_url: http://model-relay:8318/v1
+oauth_port: 8300
+memory_rollup_time: "04:30"
+memory_leaf_retention_days: 30
+memory_leaf_fold_bytes: 65536
+memory_provider: hindsight
+memory_provider_url: http://memory.example.test
+memory_provider_token_env: MEMORY_PROVIDER_TOKEN
+ui_port: 8443
+ui_bind: "127.0.0.1"
+tools:
+  memory_vault:
+    via: native
+  knowledge_ui:
+    via: native
+  memory_provider:
+    via: native
+`,
 	}
 	models := "models:\n    default:\n        ladder:\n            - provider: cliproxy\n              model: m1\n"
 	covered := map[string]bool{}
@@ -160,6 +185,10 @@ tools:
 			}
 		}
 	}
+	// ui_expose is deliberately unloadable — validation refuses the key on
+	// every space until M18 lands (SPEC-0085 R10.3), so no loadable fixture
+	// can carry it. It is exempt from the sweep by contract, not by accident.
+	covered["ui_expose"] = true
 	for key := range allKeys {
 		if !covered[key] {
 			t.Errorf("no fixture exercises Settings.%s — extend the sweep", key)

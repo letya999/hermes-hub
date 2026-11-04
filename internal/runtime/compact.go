@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/compaction"
+	"github.com/letya999/hermes-hub/internal/vault"
 )
 
 // CompactRequest is the /v1/compact body: the same trusted envelope the run
@@ -90,6 +91,7 @@ func (s *runtimeHTTP) compact(w http.ResponseWriter, r *http.Request) {
 		},
 		Now:       time.Now().UTC,
 		Summarize: compactSummarize,
+		Flush:     compactFlush(sessionID),
 	})
 	if err != nil {
 		writeRuntimeError(w, http.StatusInternalServerError, "compact failed")
@@ -104,4 +106,15 @@ func (s *runtimeHTTP) compact(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeRuntimeJSON(w, http.StatusOK, result)
+}
+
+// compactFlush binds the memory-vault capture to a compaction run when the
+// stack mounts /vault: the dropped transcript head lands in the daily leaf
+// before apply removes it (SPEC-0085 R2.6). Nil without a mount — the hook
+// is a no-op and compaction behaves exactly as before.
+func compactFlush(sessionID string) func([]map[string]any) {
+	if v := env("HUB_VAULT", ""); v != "" {
+		return vault.OpenFlush(v, time.Local, sessionID)
+	}
+	return nil
 }

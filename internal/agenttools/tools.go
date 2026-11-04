@@ -66,6 +66,10 @@ type Input struct {
 	Queue              bool           `json:"queue,omitempty"`
 	Timing             map[string]any `json:"timing,omitempty"`
 	Limit              int            `json:"limit,omitempty"`
+	From               string         `json:"from,omitempty"`
+	To                 string         `json:"to,omitempty"`
+	Kinds              []string       `json:"kinds,omitempty"`
+	History            bool           `json:"history,omitempty"`
 	Cursor             string         `json:"cursor,omitempty"`
 	State              string         `json:"state,omitempty"`
 	Host               string         `json:"host,omitempty"`
@@ -146,6 +150,13 @@ type Input struct {
 	Shell      string `json:"shell,omitempty"`
 	Background bool   `json:"background,omitempty"`
 	Job        string `json:"job,omitempty"`
+	// memory_card contract (SPEC-0085 R6): Op selects the write; Card/To
+	// name cards, Evidence anchors a fact to a captured entry, Tags sets
+	// frontmatter on created cards.
+	Op       string   `json:"op,omitempty"`
+	Card     string   `json:"card,omitempty"`
+	Evidence string   `json:"evidence,omitempty"`
+	Tags     []string `json:"tags,omitempty"`
 }
 type Tools struct {
 	Workspace, Archive, Organization *os.Root
@@ -181,6 +192,7 @@ type Tools struct {
 	// the managed mount.
 	ToolPolicy        *api.ToolPolicySnapshot
 	StateDir          string
+	VaultDir          string
 	ToolHub           *toolhub.Store
 	ToolHubAuth       identity.Envelope
 	SSH               *sshcap.Service
@@ -202,6 +214,9 @@ type Tools struct {
 	Media         *media.Session
 	mu            sync.Mutex
 	lock, envLock *flock.Flock
+	// cardInvalids counts repeated identical malformed memory_card calls —
+	// R6.6's bounded-failure path escalates a retry loop to a refusal.
+	cardInvalids map[string]int
 }
 
 var signalRuntime = func(process *os.Process) {
@@ -302,7 +317,7 @@ func OpenRoots(workspace, archive, organization string) (*Tools, error) {
 		}
 		vault, _ = os.OpenRoot(vaultDir)
 	}
-	t := &Tools{Workspace: w, Archive: a, Organization: o, Skills: sk, Vault: vault, OrgScoped: o != nil, OrgActions: parseActions(os.Getenv("HUB_ORG_ACTIONS")), ReadOnlyTools: readOnlyToolNames(parseActions(os.Getenv("HUB_TOOLS_RO"))), ReadOnlyPaths: readOnlyPathList(os.Getenv("HUB_WORKSPACE_RO")), BoundaryPath: boundaryPath, ToolPolicyPath: strings.TrimSpace(os.Getenv("HUB_TOOL_POLICY")), ToolPolicy: toolPolicy, StateDir: stateDir, ToolHub: toolHubStore, ToolHubAuth: toolHubAuth, Restart: func() error { return restartRuntime(stateDir) }, CommunicationURL: strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_CONTROL_URL")), CommunicationAuth: communicationAuth, SkillsEffective: os.Getenv("HUB_SKILLS_EFFECTIVE"), SkillsStore: os.Getenv("HUB_SKILLS_STORE"), SkillsOrg: os.Getenv("HUB_SKILLS_ORG"), Media: media.New(w), lock: flock.New(filepath.Join(workspace, ".hub-writer.lock")), envLock: flock.New(filepath.Join(stateDir, ".self-env.lock")), HHURL: "https://api.hh.ru", HHKey: os.Getenv("HH_TOKEN"), UserAgent: os.Getenv("HH_USER_AGENT"), HHEnabled: os.Getenv("HUB_HH_ENABLED") == "true", HTTP: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	t := &Tools{Workspace: w, Archive: a, Organization: o, Skills: sk, Vault: vault, VaultDir: strings.TrimSpace(os.Getenv("HUB_VAULT")), OrgScoped: o != nil, OrgActions: parseActions(os.Getenv("HUB_ORG_ACTIONS")), ReadOnlyTools: readOnlyToolNames(parseActions(os.Getenv("HUB_TOOLS_RO"))), ReadOnlyPaths: readOnlyPathList(os.Getenv("HUB_WORKSPACE_RO")), BoundaryPath: boundaryPath, ToolPolicyPath: strings.TrimSpace(os.Getenv("HUB_TOOL_POLICY")), ToolPolicy: toolPolicy, StateDir: stateDir, ToolHub: toolHubStore, ToolHubAuth: toolHubAuth, Restart: func() error { return restartRuntime(stateDir) }, CommunicationURL: strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_CONTROL_URL")), CommunicationAuth: communicationAuth, SkillsEffective: os.Getenv("HUB_SKILLS_EFFECTIVE"), SkillsStore: os.Getenv("HUB_SKILLS_STORE"), SkillsOrg: os.Getenv("HUB_SKILLS_ORG"), Media: media.New(w), lock: flock.New(filepath.Join(workspace, ".hub-writer.lock")), envLock: flock.New(filepath.Join(stateDir, ".self-env.lock")), HHURL: "https://api.hh.ru", HHKey: os.Getenv("HH_TOKEN"), UserAgent: os.Getenv("HH_USER_AGENT"), HHEnabled: os.Getenv("HUB_HH_ENABLED") == "true", HTTP: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	t.openSSH()
 	t.openExposure()
 	return t, nil

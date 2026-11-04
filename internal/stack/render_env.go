@@ -8,6 +8,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/exposure"
 	"github.com/letya999/hermes-hub/internal/skillstore"
 	"github.com/letya999/hermes-hub/internal/sshcap"
+	"github.com/letya999/hermes-hub/internal/vault"
 	"gopkg.in/yaml.v3"
 	"os"
 	"path/filepath"
@@ -100,6 +101,18 @@ func RenderEnvironment(dir, root, environment string) error {
 		if err = os.MkdirAll(filepath.Join(dir, name), 0700); err != nil {
 			return err
 		}
+	}
+	if s.Has("memory_vault") {
+		// The git-backed vault is materialized with the rest of the space
+		// tree; Ensure is idempotent so re-renders never disturb content.
+		if err = vault.Ensure(filepath.Join(dir, "vault")); err != nil {
+			return err
+		}
+	}
+	// SPEC-0085 R11: the external provider record renders or revokes with
+	// the capability — a stale file can never drive a later replay.
+	if err = renderProviderConfig(dir, s); err != nil {
+		return err
 	}
 	// SPEC-0083 R3.3: upstream must never seed bundled skills into the
 	// runtime home — the hub-built effective view at /skills is the only
@@ -422,6 +435,14 @@ func managedEgressHosts(s Settings, dir string) []string {
 		// Image generation always goes through the hub-media sidecar; the
 		// runtime never holds provider keys.
 		hosts["hub-media"] = true
+	}
+	if s.providerEnabled() {
+		// SPEC-0085 R11.2: the provider endpoint is the reviewed egress hop
+		// for provider-bound capture; revoking the capability drops the
+		// host from the relay allowlist with the render.
+		if host := providerEgressHost(s.MemoryProviderURL); host != "" {
+			hosts[host] = true
+		}
 	}
 	for name, entry := range s.Tools {
 		if entry.Via != ToolViaToolHub {

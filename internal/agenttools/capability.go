@@ -58,7 +58,7 @@ func HubToolsDefinition() api.ToolDefinition {
 	def := api.ToolDefinition{
 		Schema:       api.SchemaVersion,
 		DefinitionID: HubToolsDefinitionID,
-		Version:      "8.0.0",
+		Version:      "9.0.0",
 		Transport:    api.AgentTools,
 		Source:       api.DefinitionSource{},
 		Workload: api.WorkloadPolicy{
@@ -95,6 +95,12 @@ func HubToolsDefinition() api.ToolDefinition {
 				Description: "Materialize a file the user sent to the chat into workspace inbox/; a zip is unpacked from memory and never written as an archive.",
 				Uses:        append(use("fetch", "inbound"), use("create", "files")...), Arguments: []api.CLIArgument{str("id")},
 			},
+
+			// ---- memory (2): the vault's read/write contract (SPEC-0085
+			// R6). The stamped-run gate and zone guard live in the executor,
+			// never in arguments.
+			tool("memory_search", "memory.search", "memory.search", "Search the owner's memory vault: BM25 over daily leaves, cards and summaries with link-graph expansion. Arguments: query (required), limit, from, to (YYYY-MM-DD bounds on entry date), kinds (entry kinds), history:true includes superseded/forgotten. Every hit carries an evidence ref file:line-end — cite it, never answer from memory alone; status=degraded|unavailable is reported honestly.", api.ReadEffect, use("read", "memory"), str("query"), intArg("limit", false), opt("from"), opt("to"), arrArg("kinds", false), boolArg("history", false)),
+			tool("memory_card", "memory.write", "memory.remember", "The only write path into the memory vault. Ops: remember (text[, name]) lands an inbox note searchable the same day; fact (card, text[, evidence]) appends a dated evidence line; truth (card, text) replaces the card's Compiled Truth through a hash-checked write; merge (card, to) folds one card into another; forget (id or card) soft-removes an entry or card from search, recall and promotion while keeping git history. merge/forget run only on a live owner-provenance turn — no argument grants that. Writes need a stamped private run; status=denied|invalid is honest, invalid carries errors and the corrected shape.", api.WriteEffect, use("write", "memory"), str("op"), opt("text"), opt("card"), opt("name"), opt("to"), opt("id"), opt("evidence"), arrArg("tags", false)),
 
 			// ---- documents (5)
 			tool("document_extract", "documents.read", "workspace.read", "Extract text from a document inside the admitted scope. Supported: txt, md, csv, html, pdf, xlsx, pptx; doc and docx stay unsupported.", api.ReadEffect, use("read", "documents", "path"), path),

@@ -238,3 +238,23 @@ func TestChannelContractDropsCrossFamilyClauses(t *testing.T) {
 		}
 	}
 }
+
+// R6 contract guidance: the stable prompt names the memory write path and
+// its denial semantics — remember/fact/truth lanes plus the owner-turn rule
+// for merge/forget and the invalid-shape retry discipline.
+func TestChannelContractGuidesMemoryCard(t *testing.T) {
+	for _, want := range []string{"memory_card", "remember", "status=denied", "status=invalid"} {
+		if !strings.Contains(ChannelContract, want) {
+			t.Fatalf("contract missing %q", want)
+		}
+	}
+	// Governed spaces keep the section only while memory_vault is admitted —
+	// the feature name, never the evicted native "memory" toolset.
+	governed := Settings{Tools: map[string]ToolEntry{"memory_vault": {Via: ToolViaNative}}}
+	if body := governed.channelContract(true); !strings.Contains(body, "memory_card") {
+		t.Fatal("memory_vault space lost the memory guidance")
+	}
+	if body := (Settings{Tools: map[string]ToolEntry{"memory_vault": {Via: ToolViaOff}}}).channelContract(true); strings.Contains(body, "memory_card") {
+		t.Fatal("denied memory_vault kept the memory guidance")
+	}
+}
