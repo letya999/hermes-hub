@@ -118,9 +118,10 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(wsBase, "workspace")), "target": "/workspace"})
 		stateVolumes = append(stateVolumes, configMounts(dir, s.Environment)...)
 	}
-	if s.Has("memory_vault") {
+	if s.Has("memory_vault") && s.PassportWorkspace == nil {
 		// The vault is a per-space git tree the governed writer commits into;
-		// it mounts read-write for the runtime in both render modes.
+		// it mounts read-write for the runtime in both render modes. With a
+		// published workspace passport the MountPlan already carries /vault.
 		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "vault")), "target": "/vault"})
 	}
 	if s.Has("ssh") {
@@ -250,6 +251,16 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			if grantJSON, err := json.Marshal(grant); err == nil {
 				runtimeEnv["HUB_MANAGED_BROWSER"] = string(grantJSON)
 			}
+		}
+		// Same contract for the hub-side subsystem flags: pseudo-toolset
+		// wishes (knowledge_ui, memory_vault) are `via: native` markers that
+		// never join the carve-out list, so their reviewed admission rides
+		// its own env bits for the in-container replay.
+		if s.managedKnowledgeUIGrant() {
+			runtimeEnv["HUB_MANAGED_KNOWLEDGE_UI"] = "1"
+		}
+		if s.managedMemoryVaultFlag() {
+			runtimeEnv["HUB_MANAGED_MEMORY_VAULT"] = "1"
 		}
 	}
 	// The declared context-control section rides env so the materialized
@@ -466,7 +477,14 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// mcp_servers URL points at — unset, OK picks a dynamic port.
 		// HOME lands on tmpfs: the image's /state/home sits on the read-only
 		// rootfs, while every durable OK path is project-local .ok/ under /data.
-		okService["environment"] = M{"OK_ALLOW_EXTERNAL": "1", "OK_BIND": "0.0.0.0", "PORT": "8080", "HOME": "/tmp"}
+		okService["environment"] = M{"OK_ALLOW_EXTERNAL": "1", "OK_BIND": "0.0.0.0", "PORT": "8080", "HOME": "/tmp", "OK_EXTERNAL_URL": "http://open-knowledge:8080"}
+		// ok resolves its server-authority registry through the passwd home
+		// (/state/home), not $HOME — a read-only-rootfs mkdir fails closed, so
+		// the disposable home gets its own tmpfs alongside /tmp.
+		okService["tmpfs"] = append(okService["tmpfs"].([]string), "/state/home:uid=10001,gid=10001,mode=0700")
+		// OK's Host/Origin allowlist admits only the external URL's host: the
+		// space-net alias is what the mcp_servers URL dials, so it must be the
+		// canonical origin whenever no loopback UI edge overrides it.
 		// R10.1: ui_port opts into one loopback publish — the only host
 		// reachability the unauthenticated editor ever gets; the owner
 		// tunnels in over ssh -L. Unset keeps the network-only stance.

@@ -33,6 +33,9 @@ func rightsVocabulary() api.RightsDoc {
 		"observability": {Description: "fixture", Operations: map[string]api.RightOperation{
 			"read_own_logs": op("self", "log", selfIssuers),
 		}},
+		"tools": {Description: "fixture", Operations: map[string]api.RightOperation{
+			"select": op("self", "toolset", selfIssuers),
+		}},
 	}}
 }
 
@@ -193,6 +196,48 @@ func TestRightsDecideRejectsForeignPrincipal(t *testing.T) {
 	code, payload = call(`{"capability":"workspace","operation":"read"}`)
 	if code != http.StatusOK || payload["allow"] != true {
 		t.Fatalf("envelope principal with a live grant must allow: %d %v", code, payload)
+	}
+}
+
+// A published tools.select right admits the invoke control on a managed
+// profile with no connectors bundle: SPEC-0092 names select "invoke a tool
+// from a selected toolset" and the profile's control_operations allowlist
+// cannot express it — without this derivation every extended selection on a
+// connector-free space is listable but never callable through tool_call.
+func TestManagedInvokeFollowsToolsSelectRight(t *testing.T) {
+	store, auth, _, _ := managedStore(t)
+	doc := rightsVocabulary()
+	store.RightsDoc = doc
+	gov := NewGovernanceStore(filepath.Join(t.TempDir(), "governance.json"))
+	store.RightsLedger = gov.Load
+	now := time.Now()
+	allowed, err := store.AllowedControlOperations(auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allowed["invoke"] {
+		t.Fatal("invoke admitted before the published right exists")
+	}
+	if err := DeriveRights(store, gov, doc, auth.PrincipalID, map[string][]string{"tools": {"select"}}, auth.Environment, auth.PolicyVersion, now); err != nil {
+		t.Fatal(err)
+	}
+	allowed, err = store.AllowedControlOperations(auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !allowed["invoke"] {
+		t.Fatal("tools.select right must admit invoke on a connector-free managed profile")
+	}
+	// Dropping the right from the published ceiling revokes the control.
+	if err := DeriveRights(store, gov, doc, auth.PrincipalID, map[string][]string{"tools": {}}, auth.Environment, auth.PolicyVersion, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	allowed, err = store.AllowedControlOperations(auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allowed["invoke"] {
+		t.Fatal("invoke must close when the revision drops tools.select")
 	}
 }
 

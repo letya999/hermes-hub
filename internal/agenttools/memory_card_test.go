@@ -527,8 +527,8 @@ func TestCommitAttribution(t *testing.T) {
 // the memory.write capability and dispatches through Call like every tool.
 func TestMemoryCardCatalog(t *testing.T) {
 	def := HubToolsDefinition()
-	if def.Version != "9.0.0" {
-		t.Fatalf("catalog version = %s, want 9.0.0", def.Version)
+	if def.Version != "10.0.0" {
+		t.Fatalf("catalog version = %s, want 10.0.0", def.Version)
 	}
 	var spec *struct {
 		found, write bool
@@ -565,6 +565,23 @@ func TestMemoryCardCatalog(t *testing.T) {
 	}
 	if res, _ := out.(map[string]any); res["status"] != "ok" {
 		t.Fatalf("dispatched remember: %v", out)
+	}
+}
+
+// R6.5 edge: cardAudit with no configured vault must no-op — writing a
+// relative runtime/memory tree under the process working directory is a
+// source-tree leak, not an audit record.
+func TestCardAuditEmptyRootNoop(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	leak := filepath.Join(wd, "runtime")
+	_ = os.RemoveAll(leak)
+	t.Cleanup(func() { _ = os.RemoveAll(leak) })
+	cardAudit("", "remember", "", "", "denied")
+	if _, err := os.Stat(leak); !os.IsNotExist(err) {
+		t.Fatalf("cardAudit with empty root materialized %s", leak)
 	}
 }
 

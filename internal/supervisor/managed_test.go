@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/stack"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"gopkg.in/yaml.v3"
 )
 
@@ -606,6 +607,71 @@ features: [workspace]
 // browser grant into the effective config the spawned runtime mounts: the
 // review surface (governance decisions, browser_act) is evaluated on the
 // fully loaded Settings here, never re-derived in the container.
+// A memory-vault + knowledge managed spawn replays the reviewed subsystem
+// flags: the materialized effective config keeps the open_knowledge endpoint
+// and the evicted native memory backend instead of attesting them as drift.
+func TestManagedMaterializeCarriesFeatureFlags(t *testing.T) {
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("ok"), nil }, nil)
+	writeManagedFixtures(t, root)
+	settings, err := stack.ReadEnvironment(root, "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.Tools = map[string]stack.ToolEntry{
+		"knowledge_ui": {Via: stack.ToolViaNative},
+		"memory_vault": {Via: stack.ToolViaNative},
+	}
+	settingsBody, err := yaml.Marshal(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "settings.yaml"), settingsBody, 0600); err != nil {
+		t.Fatal(err)
+	}
+	doc := api.NewGovernance()
+	now := time.Now().UTC()
+	for _, section := range []string{"native:knowledge_ui", "native:memory_vault"} {
+		grant := api.NewToolGrant("grant-alice-"+strings.ReplaceAll(section, ":", "-"), "alice", section, "test grant", "operator", now.Add(time.Hour), nil)
+		if err := api.Confirm(&grant, "operator", now); err != nil {
+			t.Fatal(err)
+		}
+		if err := doc.PutToolGrant(grant, now); err != nil {
+			t.Fatal(err)
+		}
+		stamped, err := doc.RequestToolGrant("alice", grant.GrantID, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := doc.AcknowledgeToolGrant("alice", grant.GrantID, stamped.RequestNonce, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := api.SaveGovernance(filepath.Join(root, "runtime", "toolhub", "governance.json"), doc); err != nil {
+		t.Fatal(err)
+	}
+	source, err := yaml.Marshal(stack.Config(settings))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "hermes.prod.yaml"), source, 0600); err != nil {
+		t.Fatal(err)
+	}
+	configPath, err := m.materializeHermesConfig(binding(root), "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	for _, want := range []string{"open_knowledge", "open-knowledge:8080/mcp", "memory_enabled: false", "toolhub"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("materialized config missing %q:\n%s", want, text)
+		}
+	}
+}
+
 func TestManagedMaterializeCarriesBrowserGrant(t *testing.T) {
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("ok"), nil }, nil)
 	writeManagedFixtures(t, root)

@@ -40,7 +40,14 @@ func MountPlan(dir, env, wsBase string, s Settings, ws passportview.Workspace) [
 			plan = append(plan, PlanMount{Source: filepath.Join(wsBase, filepath.FromSlash(p)), Target: p, ReadOnly: true})
 		}
 	}
-	if !s.Has("memory_vault") {
+	if s.Has("memory_vault") {
+		// The vault is a per-space git tree the governed writer commits
+		// into: the whole dir/vault tree bind-mounts read-write in both
+		// render modes (SPEC-0085 R1.1). The supervised spawn path mounts
+		// only what this plan returns, so the bind must live here — the
+		// unmanaged Compose path skips its own duplicate append.
+		plan = append(plan, PlanMount{Source: filepath.Join(dir, "vault"), Target: "/vault"})
+	} else {
 		// The skeleton only applies to the legacy vault shape: under
 		// memory_vault the whole dir/vault tree bind-mounts read-write —
 		// these sub-mounts would shadow it with an empty managed tree and

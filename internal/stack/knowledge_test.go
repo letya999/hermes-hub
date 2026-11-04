@@ -124,6 +124,38 @@ func TestOKNoPublishedPorts(t *testing.T) {
 	}
 }
 
+// R8.1/R8.5: ok resolves its server-authority registry through the passwd
+// home (/state/home), not $HOME — on the read-only rootfs that mkdir fails
+// closed and the service crash-loops, so the disposable home needs its own
+// tmpfs alongside /tmp.
+func TestOKWritablePasswdHome(t *testing.T) {
+	services, _ := knowledgeSpace(t, "knowledge_ui")
+	svc := services["open-knowledge"].(M)
+	tmpfs, _ := svc["tmpfs"].([]string)
+	found := false
+	for _, mount := range tmpfs {
+		if strings.HasPrefix(mount, "/state/home") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("open-knowledge must tmpfs /state/home — the passwd-home registry cannot mkdir on the read-only rootfs: %v", tmpfs)
+	}
+}
+
+// R8.1/R8.5: OK's Host allowlist only admits the configured external origin —
+// unset, in-network MCP peers dialing http://open-knowledge:8080 get
+// urn:ok:error:host-not-allowed 403s. The space-net alias is the canonical
+// external URL whenever ui_port is off.
+func TestOKExternalURLAdmitsPeerAlias(t *testing.T) {
+	services, _ := knowledgeSpace(t, "knowledge_ui")
+	svc := services["open-knowledge"].(M)
+	env, _ := svc["environment"].(M)
+	if got := fmt.Sprint(env["OK_EXTERNAL_URL"]); got != "http://open-knowledge:8080" {
+		t.Fatalf("peer MCP calls need the space alias admitted as external URL, got %q", got)
+	}
+}
+
 // R8.1/R8.5: the service joins only the space-private network — the project
 // default net in static mode, the internal agent net in managed mode — never
 // the shared hub net or a publishable net. It keeps the DNS alias

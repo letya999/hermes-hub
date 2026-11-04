@@ -103,6 +103,7 @@ func SeedInventory() []ToolSection {
 		hub("hub:connectors", EffectMutate),
 		hub("hub:models", EffectMutate),
 		hub("hub:sessions", EffectMutate),
+		hub("hub:memory", EffectMutate),
 		// The two mutable per-principal surfaces.
 		{ID: SectionUserMCP, Owner: OwnerUser, Effect: EffectCredential, Default: RuleDeny},
 		{ID: SectionOrgMCP, Owner: OwnerOrg, Official: true, Prepared: true, Effect: EffectMutate, Default: RuleAllow},

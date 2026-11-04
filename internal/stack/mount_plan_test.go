@@ -115,6 +115,54 @@ func TestComposeManagedRuntimeSkipsNestedConfigMounts(t *testing.T) {
 	}
 }
 
+// Under memory_vault + a published workspace passport the whole space vault
+// bind-mounts read-write at /vault (SPEC-0085 R1.1) — the managed MountPlan
+// is the only mount source on the supervised spawn path, so dropping the
+// skeleton without the real bind leaves HUB_VAULT dangling. Exactly one
+// /vault bind, no shadowing sub-mounts (SPEC-0092 R5.2).
+func TestMountPlanMemoryVaultBindsRealVault(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "spaces", "alice")
+	rev := "r-0123456789abcdef"
+	writeSixPassports(t, dir, "alice", rev, map[string]string{
+		"workspace.yaml": "apiVersion: six-passport/v2\nkind: workspace\nmetadata: {space: alice, environment: prod, revision: " + rev + "}\n" +
+			"writable: [/workspace, /vault/library, /vault/attachments]\n" +
+			"read_only: [/config, /skills, /vault/memory]\n",
+	})
+	if err := os.WriteFile(filepath.Join(dir, "agent.yaml"), []byte("schema: 3\nuser: alice\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "scope.yaml"), []byte("kind: user\nid: alice\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Read(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Tools = map[string]ToolEntry{"memory_vault": {Via: ToolViaNative}}
+	if s.PassportWorkspace == nil {
+		t.Fatal("fixture lost the workspace passport")
+	}
+	var vaultMounts int
+	for _, pm := range MountPlan(dir, "prod", filepath.Join(dir, "managed", "prod"), s, *s.PassportWorkspace) {
+		if pm.Target == "/vault" {
+			vaultMounts++
+			if pm.Source != filepath.Join(dir, "vault") {
+				t.Errorf("/vault source = %q, want the space vault %q", pm.Source, filepath.Join(dir, "vault"))
+			}
+			if pm.ReadOnly {
+				t.Error("/vault must mount read-write — the governed writer commits into it")
+			}
+		}
+		if strings.HasPrefix(pm.Target, "/vault/") {
+			t.Errorf("skeleton sub-mount %s shadows the whole-vault bind", pm.Target)
+		}
+	}
+	if vaultMounts != 1 {
+		t.Fatalf("/vault bind count = %d, want 1", vaultMounts)
+	}
+}
+
 // Render materializes every directory the MountPlan binds from the space —
 // including the /vault skeleton — without writing memory content or
 // touching an existing projects tree (SPEC-0092 R5.2).

@@ -158,3 +158,25 @@ func TestMaterializeOptionsFromEnvCarriesBrowserGrant(t *testing.T) {
 		t.Fatal("invalid browser grant env accepted")
 	}
 }
+
+// HUB_MANAGED_KNOWLEDGE_UI / HUB_MANAGED_MEMORY_VAULT carry the
+// render-admitted subsystem flags into the container; the in-container
+// preflight replays them so the emitted bytes match the host render.
+func TestMaterializeOptionsFromEnvCarriesFeatureFlags(t *testing.T) {
+	opts, err := materializeOptionsFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.KnowledgeUI || opts.MemoryVault {
+		t.Fatalf("absent env produced feature flags: %+v", opts)
+	}
+	t.Setenv("HUB_MANAGED_KNOWLEDGE_UI", "1")
+	t.Setenv("HUB_MANAGED_MEMORY_VAULT", "1")
+	opts, err = materializeOptionsFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opts.KnowledgeUI || !opts.MemoryVault {
+		t.Fatalf("feature flags lost in env transit: %+v", opts)
+	}
+}

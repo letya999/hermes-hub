@@ -116,6 +116,25 @@ func TestPlatformCatalogParityAndPinnedToolset(t *testing.T) {
 			}
 		}
 	}
+	// --- parity in the other direction: every placeable toolhub family
+	// owns a hub:<name> governance section in the inventory — a family
+	// falling back to hub:tools cannot be admitted or denied separately.
+	inventoried := map[string]bool{}
+	for _, section := range api.SeedInventory() {
+		inventoried[section.ID] = true
+	}
+	for name, ts := range docs.Toolsets.Toolsets {
+		if ts.Kind != "family" || !slices.Contains(ts.Via, "toolhub") || ts.Pinned {
+			continue
+		}
+		section := "hub:" + name
+		if ts.Section != section {
+			t.Errorf("family %s governs under %q, want own section %q", name, ts.Section, section)
+		}
+		if !inventoried[section] {
+			t.Errorf("family %s section %s missing from governance inventory", name, section)
+		}
+	}
 
 	// --- parity: every pinned upstream toolset is cataloged; carve-outs match
 	inventory, err := stack.ManagedCapabilityInventory()

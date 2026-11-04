@@ -62,6 +62,14 @@ type MaterializeOptions struct {
 	// (browser-<user>), so the reconstruction cannot derive it from the file
 	// under review and takes it from HUB_USER_ID instead.
 	User string
+	// KnowledgeUI is the render-time open_knowledge admission (SPEC-0085
+	// R9/R10): the reviewed settings emitted the read-only vault endpoint,
+	// so the attestation replays it. False means no knowledge server.
+	KnowledgeUI bool
+	// MemoryVault is the render-time memory_vault flag (SPEC-0085 R1.6):
+	// it evicts the native memory backend and re-denies a carved memory
+	// toolset, so the attestation must replay it to reproduce those bytes.
+	MemoryVault bool
 }
 
 // MaterializeHermesConfig renders the effective Hermes config on the host so
@@ -205,6 +213,7 @@ func validateManagedSourceConfig(configPath string, opts MaterializeOptions) err
 	}
 	settings := Settings{Model: name, ModelURL: url, Timezone: zone, Tools: tools, Web: opts.Web, ImageGen: opts.ImageGen, User: opts.User}
 	applyBrowserGrant(&settings, opts.Browser)
+	applyManagedFeatureFlags(&settings, opts)
 	expected, err := yaml.Marshal(managedHermesConfig(settings))
 	if err != nil {
 		return err
@@ -245,6 +254,31 @@ func applyBrowserGrant(s *Settings, grant BrowserGrant) {
 		api.SectionHubBrowser: {Effect: effect(grant.Persistent)},
 		"hub:browser_guest":   {Effect: effect(grant.Guest)},
 	}}
+}
+
+// applyManagedFeatureFlags replays the hub-side subsystem flags the reviewed
+// render carried but a carried grant list cannot express: pseudo-toolsets are
+// `via: native` wishes — never carve-outs — so they cannot ride
+// NativeToolsets. The Tools entries reproduce Has() while the decisions map
+// reproduces the render-time govAllows checks.
+func applyManagedFeatureFlags(s *Settings, opts MaterializeOptions) {
+	if !opts.KnowledgeUI && !opts.MemoryVault {
+		return
+	}
+	if s.Tools == nil {
+		s.Tools = map[string]ToolEntry{}
+	}
+	if s.gov == nil {
+		s.gov = &toolGovernance{decisions: map[string]api.PolicyDecision{}}
+	}
+	if opts.KnowledgeUI {
+		s.Tools["knowledge_ui"] = ToolEntry{Via: ToolViaNative}
+		s.gov.decisions["native:knowledge_ui"] = api.PolicyDecision{Effect: api.RuleAllow}
+	}
+	if opts.MemoryVault {
+		s.Tools["memory_vault"] = ToolEntry{Via: ToolViaNative}
+		s.gov.decisions["native:memory_vault"] = api.PolicyDecision{Effect: api.RuleAllow}
+	}
 }
 
 // applyContextConfig merges the declared context-control section onto the
@@ -338,6 +372,7 @@ func ValidateManagedEffectiveConfig(configPath string, s Settings, opts Material
 	s.ImageGen = opts.ImageGen
 	s.User = opts.User
 	applyBrowserGrant(&s, opts.Browser)
+	applyManagedFeatureFlags(&s, opts)
 	expected := managedHermesConfig(s)
 	servers := expected["mcp_servers"].(M)
 	servers["toolhub"] = M{

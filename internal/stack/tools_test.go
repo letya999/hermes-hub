@@ -51,9 +51,9 @@ func TestEveryR5FamilyAcceptsToolhubVia(t *testing.T) {
 	// minus the pinned platform layer.
 	families := []string{
 		"assignments", "browser", "connectors", "context", "documents",
-		"exposure", "files", "goals", "media", "models", "research",
-		"routines", "sessions", "settings", "sites", "skills", "ssh",
-		"terminal", "watches", "web",
+		"exposure", "files", "goals", "media", "memory", "models",
+		"research", "routines", "sessions", "settings", "sites", "skills",
+		"ssh", "terminal", "watches", "web",
 	}
 	for _, family := range families {
 		s := validSettings()

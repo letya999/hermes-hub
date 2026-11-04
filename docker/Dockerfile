@@ -159,6 +159,9 @@ CMD ["browser"]
 # publishes to the host in this stage. The upstream package is pinned exactly
 # — no floating tag may resurrect an unreviewed release.
 FROM node AS knowledge
+# ok needs git: the vault mount at /data is a git-backed project and upstream
+# refuses to boot without the binary (git_preflight_fail).
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN set -e; for i in 1 2 3 4; do if npm i -g --ignore-scripts @inkeep/open-knowledge@0.88.2; then break; fi; if [ "$i" = 4 ]; then exit 1; fi; sleep 10; done; npm cache clean --force
 RUN groupadd -g 10001 agent && useradd -u 10001 -g agent -d /state/home -s /bin/bash agent && mkdir -p /state/home /data && chown 10001:10001 /state/home /data
 ENV HOME=/state/home

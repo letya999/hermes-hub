@@ -540,6 +540,52 @@ func TestNativeCarveoutMaterializeAndAttest(t *testing.T) {
 	}
 }
 
+// The open_knowledge endpoint renders inside managedMCPServers; the source
+// attestation must replay the same admission or every knowledge-carrying
+// managed config reads as unreviewed drift (SPEC-0085 R9/R10).
+func TestManagedKnowledgeUISourceAttestation(t *testing.T) {
+	s := Settings{Schema: 1, Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, User: "alice", Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
+		Tools: map[string]ToolEntry{"knowledge_ui": {Via: ToolViaNative}, "memory_vault": {Via: ToolViaNative}, "memory": {Via: ToolViaNative}}}
+	zero := Config(s)
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source.yaml")
+	body, err := yaml.Marshal(zero)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(dir, "effective.yaml")
+	opts := MaterializeOptions{Managed: true, ToolHubEndpoint: "http://toolhub:8090/mcp", ToolHubTokenEnv: "HUB_RUNTIME_AUTH", RuntimeAuthPresent: true,
+		NativeToolsets: []string{"memory"}, KnowledgeUI: true, MemoryVault: true}
+	if err := MaterializeHermesConfig(source, dest, opts); err != nil {
+		t.Fatalf("knowledge-carrying source rejected: %v", err)
+	}
+	if err := ValidateManagedEffectiveConfig(dest, s, opts); err != nil {
+		t.Fatalf("knowledge-carrying effective config rejected: %v", err)
+	}
+	var effective M
+	raw, _ := os.ReadFile(dest)
+	if err := yaml.Unmarshal(raw, &effective); err != nil {
+		t.Fatal(err)
+	}
+	servers, _ := effective["mcp_servers"].(map[string]any)
+	if _, ok := servers["open_knowledge"]; !ok {
+		t.Fatal("attested effective config lost the open_knowledge endpoint")
+	}
+	if effective["memory"].(map[string]any)["memory_enabled"] != false {
+		t.Fatal("memory_vault must evict the native memory backend")
+	}
+	// Without the carried grant the same source is unreviewed drift.
+	omitted := opts
+	omitted.KnowledgeUI = false
+	omitted.MemoryVault = false
+	if err := MaterializeHermesConfig(source, dest, omitted); err == nil {
+		t.Fatal("knowledge-carrying source attested without its grant replay")
+	}
+}
+
 func TestManagedOrganizationRuntimeDoesNotMountOrgDocuments(t *testing.T) {
 	s := Settings{Schema: 1, User: "alice", Organization: "acme", OrganizationDocsDir: t.TempDir(), Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, Timezone: "UTC", OAuthPort: 8000, BrowserPort: 6080}
 	for _, infra := range []bool{true, false} {
@@ -993,6 +1039,87 @@ func TestManagedRuntimeEnvCarriesBrowserGrant(t *testing.T) {
 	env = RuntimeService(plain, t.TempDir(), t.TempDir())["environment"].(M)
 	if env["HUB_MANAGED_BROWSER"] != nil {
 		t.Fatalf("browser grant rendered without a wish: %v", env["HUB_MANAGED_BROWSER"])
+	}
+}
+
+// The spawned managed runtime replays the knowledge/memory subsystem flags
+// inside the container; they ride RuntimeService env like HUB_MANAGED_BROWSER
+// so the in-container preflight emits the identical bytes without consulting
+// agent-editable state.
+func TestManagedRuntimeEnvCarriesFeatureFlags(t *testing.T) {
+	s := Settings{Schema: 1, User: "alice", Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, Timezone: "UTC", OAuthPort: 8000, BrowserPort: 6080,
+		Tools: map[string]ToolEntry{"knowledge_ui": {Via: ToolViaNative}, "memory_vault": {Via: ToolViaNative}}}
+	env := RuntimeService(s, t.TempDir(), t.TempDir())["environment"].(M)
+	if env["HUB_MANAGED_KNOWLEDGE_UI"] != "1" {
+		t.Fatalf("HUB_MANAGED_KNOWLEDGE_UI absent under a knowledge_ui wish: %v", env)
+	}
+	if env["HUB_MANAGED_MEMORY_VAULT"] != "1" {
+		t.Fatalf("HUB_MANAGED_MEMORY_VAULT absent under a memory_vault wish: %v", env)
+	}
+	plain := s
+	plain.Tools = nil
+	env = RuntimeService(plain, t.TempDir(), t.TempDir())["environment"].(M)
+	if env["HUB_MANAGED_KNOWLEDGE_UI"] != nil || env["HUB_MANAGED_MEMORY_VAULT"] != nil {
+		t.Fatalf("feature flags rendered without wishes: %v", env)
+	}
+}
+
+// RenderEnvironment on a memory-vault + knowledge space must materialize and
+// attest: the managed source carries open_knowledge and the evicted memory
+// backend, so the host materialization has to replay both flags or the
+// reviewed render reads as unreviewed drift.
+func TestManagedRenderEnvironmentCarriesFeatureFlags(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "spaces", "alice")
+	if err := Init(dir, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := Read(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.CapabilityMode, settings.CapabilityProfileID, settings.CapabilityGeneration = "managed", "alice-default", 1
+	settings.Model = "synthetic"
+	settings.ModelURL = "http://model-relay:8318/v1"
+	settings.Memory, settings.Ingress = false, nil
+	if err := WriteSpace(dir, settings); err != nil {
+		t.Fatal(err)
+	}
+	docs := managedDocs("alice")
+	docs["tools"] = "kind: tools\ncore:\n  files: {via: toolhub}\n  memory: {via: toolhub}\nextended:\n  memory_vault: {via: native}\n  knowledge_ui: {via: native}\n"
+	publishManagedDocs(t, dir, "alice", "r-0123456789abcdef", docs)
+	seedGovernance(t, dir, func(doc *api.Governance) {
+		for _, section := range []string{"native:memory_vault", "native:knowledge_ui"} {
+			activeToolGrant(t, doc, "alice", section, time.Hour)
+		}
+	})
+	selection := ExecutionSelection{Schema: 1, User: "alice", Environment: "dev", Mode: "supervisor", SupervisorURL: "http://localhost:8876", NativeCron: "disabled", CompatibilityRelease: "0.3.0"}
+	selectionBody, err := json.Marshal(selection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ExecutionPath("dev")), selectionBody, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "config"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config", "SOUL.md"), []byte("# soul\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenderEnvironment(dir, root, "dev"); err != nil {
+		t.Fatalf("managed knowledge render: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "generated", "hermes-effective.dev.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	if !strings.Contains(text, "open_knowledge") {
+		t.Fatalf("effective render lost the open_knowledge endpoint:\n%s", text)
+	}
+	if !strings.Contains(text, "memory_enabled: false") {
+		t.Fatalf("memory_vault must evict the native backend:\n%s", text)
 	}
 }
 

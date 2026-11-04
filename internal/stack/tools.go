@@ -196,7 +196,7 @@ var toolhubFamilies = map[string]bool{
 	// Catalog r5 families (ADR-0094).
 	"watches": true, "goals": true, "context": true, "sites": true,
 	"research": true, "connectors": true, "models": true, "sessions": true,
-	"browser": true,
+	"browser": true, "memory": true,
 }
 
 // droppedToolhubFamilies are r4 capability families with no r5 executor —
@@ -248,7 +248,7 @@ var toolhubCapabilityID = map[string]string{
 	// Catalog r5 families map onto their own capability id (ADR-0094).
 	"watches": "watches", "goals": "goals", "context": "context",
 	"research": "research", "models": "models", "sessions": "sessions",
-	"browser": "browser",
+	"browser": "browser", "memory": "memory",
 }
 
 // ToolHubCapabilityID reports the executor capability family a `via: toolhub`

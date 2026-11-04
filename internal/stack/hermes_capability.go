@@ -282,6 +282,26 @@ func (s Settings) managedBrowserGrant() BrowserGrant {
 // for a spawned managed runtime.
 func (s Settings) ManagedBrowserGrant() BrowserGrant { return s.managedBrowserGrant() }
 
+// managedKnowledgeUIGrant resolves the render-time open_knowledge admission:
+// the workspace wish plus the same native:knowledge_ui section decision the
+// unmanaged render consults (SPEC-0085 R9/R10).
+func (s Settings) managedKnowledgeUIGrant() bool {
+	return s.Has("knowledge_ui") && s.govAllows("native:knowledge_ui")
+}
+
+// ManagedKnowledgeUIGrant exposes the grant to the supervisor, which
+// reproduces this render's MaterializeOptions for a spawned managed runtime.
+func (s Settings) ManagedKnowledgeUIGrant() bool { return s.managedKnowledgeUIGrant() }
+
+// managedMemoryVaultFlag reports whether the reviewed render carried
+// memory_vault: a denied wish never reaches render — applyGovernance fails
+// the read on an explicit denial — so the flag is the Has() check itself.
+func (s Settings) managedMemoryVaultFlag() bool { return s.Has("memory_vault") }
+
+// ManagedMemoryVaultFlag exposes the flag to the supervisor, which
+// reproduces this render's MaterializeOptions for a spawned managed runtime.
+func (s Settings) ManagedMemoryVaultFlag() bool { return s.managedMemoryVaultFlag() }
+
 // ManagedImageGenGrant exposes the normalized grant to the supervisor, which
 // reproduces this render's MaterializeOptions when it materializes the
 // effective config for a spawned managed runtime.

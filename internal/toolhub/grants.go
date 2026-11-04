@@ -397,6 +397,14 @@ func (s *Store) AllowedControlOperations(auth identity.Envelope) (map[string]boo
 			}
 			return allowed, nil
 		}
+		// SPEC-0092: a published tools.select right names the invoke control —
+		// the tool_call dispatch path for extended selections — and the
+		// profile's own control_operations allowlist cannot express it. The
+		// right is re-decided on every call, so a revoked or ceiling-dropped
+		// right closes the control on the next projection refresh.
+		if decision, err := s.decideLocked(auth, "tools", "select", "", time.Now().UTC()); err == nil && decision.Allow {
+			allowed["invoke"] = true
+		}
 		if profile.Connectors == api.ConnectorsNone {
 			return allowed, nil
 		}

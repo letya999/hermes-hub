@@ -80,6 +80,9 @@ func auditTarget(out map[string]any) string {
 // cardAudit appends one journal line to runtime/memory/writes.jsonl — R6.5:
 // every mutation and every denial carries the authorizing turn's SourceRef.
 func cardAudit(root, op, target, sourceRef, status string) {
+	if root == "" {
+		return
+	}
 	entry, err := json.Marshal(map[string]string{
 		"ts": time.Now().UTC().Format(time.RFC3339), "op": op,
 		"target": target, "source_ref": sourceRef, "status": status,

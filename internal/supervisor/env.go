@@ -317,7 +317,11 @@ func (m *Manager) materializeHermesConfig(binding Binding, env string) (string, 
 		// attestation replays; without it the source-vs-template check
 		// rejects every browser-carrying managed config.
 		Browser: settings.ManagedBrowserGrant(),
-		User:    settings.User,
+		// The hub-side subsystem flags replay the reviewed render's
+		// admission the same way the browser grant does.
+		KnowledgeUI: settings.ManagedKnowledgeUIGrant(),
+		MemoryVault: settings.ManagedMemoryVaultFlag(),
+		User:        settings.User,
 	}
 	if settings.CapabilityMode == "managed" {
 		opts.SelfSettingsPath = filepath.Join(binding.ContextRoot, "managed", env, "runtime", selfsettings.FileName)
