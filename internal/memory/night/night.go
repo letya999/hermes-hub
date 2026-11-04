@@ -186,10 +186,10 @@ func Run(ctx context.Context, root string, day time.Time, o Options) (Result, er
 			}
 			return res, fmt.Errorf("night proposal: %w", err)
 		}
-		if err := json.Unmarshal([]byte(out), &p); err != nil {
+		if err := json.Unmarshal([]byte(proposalText(out)), &p); err != nil {
 			return res, fmt.Errorf("night proposal JSON: %w", err)
 		}
-		st.Proposal = json.RawMessage(out)
+		st.Proposal = json.RawMessage(proposalText(out))
 		for id, body := range blocks {
 			st.Entries[id] = sha256Hex([]byte(body))
 		}
@@ -342,6 +342,23 @@ func Run(ctx context.Context, root string, day time.Time, o Options) (Result, er
 		}
 	}
 	return res, nil
+}
+
+// proposalText unwraps a chat model's JSON proposal — relays commonly
+// wrap the structured answer in ```json fences; anything else passes
+// through unchanged so the caller's unmarshal reports the honest error.
+func proposalText(out string) string {
+	s := strings.TrimSpace(out)
+	if !strings.HasPrefix(s, "```") {
+		return s
+	}
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[i+1:]
+	}
+	if j := strings.LastIndex(s, "```"); j >= 0 {
+		s = s[:j]
+	}
+	return strings.TrimSpace(s)
 }
 
 const proposalSystem = `You are the nightly memory rollup of a personal assistant.
@@ -868,7 +885,7 @@ func FoldWeek(ctx context.Context, root string, day time.Time, o Options) (Resul
 		return res, fmt.Errorf("night weekly proposal: %w", err)
 	}
 	var p proposal
-	if err := json.Unmarshal([]byte(out), &p); err != nil {
+	if err := json.Unmarshal([]byte(proposalText(out)), &p); err != nil {
 		return res, fmt.Errorf("night weekly proposal JSON: %w", err)
 	}
 	content := "---\ntype: weekly-summary\nstatus: active\ntags: []\ncreated: " + monday.Format("2006-01-02") + "\nupdated: " + monday.Format("2006-01-02") + "\n---\n\n" + strings.TrimSpace(p.Summary) + "\n"
@@ -910,7 +927,7 @@ func FoldYear(ctx context.Context, root string, day time.Time, o Options) (Resul
 		return res, fmt.Errorf("night yearly proposal: %w", err)
 	}
 	var p proposal
-	if err := json.Unmarshal([]byte(out), &p); err != nil {
+	if err := json.Unmarshal([]byte(proposalText(out)), &p); err != nil {
 		return res, fmt.Errorf("night yearly proposal JSON: %w", err)
 	}
 	first := time.Date(year, 1, 1, 0, 0, 0, 0, tz)
@@ -987,7 +1004,7 @@ func FoldMonth(ctx context.Context, root string, day time.Time, o Options) (Resu
 		return res, fmt.Errorf("night monthly proposal: %w", err)
 	}
 	var p proposal
-	if err := json.Unmarshal([]byte(out), &p); err != nil {
+	if err := json.Unmarshal([]byte(proposalText(out)), &p); err != nil {
 		return res, fmt.Errorf("night monthly proposal JSON: %w", err)
 	}
 	content := "---\ntype: monthly-summary\nstatus: active\ntags: []\ncreated: " + first.Format("2006-01-02") + "\nupdated: " + first.Format("2006-01-02") + "\n---\n\n" + strings.TrimSpace(p.Summary) + "\n"

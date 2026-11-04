@@ -532,6 +532,12 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 		}
 	} else {
 		args = append(args, "--mount", "type=bind,src="+filepath.Join(binding.ContextRoot, "workspace")+",dst=/workspace")
+		if spawnSettings.Has("memory_vault") {
+			// Same contract as the rendered Compose service: memory_vault
+			// mounts the real space vault read-write (SPEC-0085 R1.6) — the
+			// skeleton mounts are the workspace passport's job.
+			args = append(args, "--mount", "type=bind,src="+filepath.Join(binding.ContextRoot, "vault")+",dst=/vault")
+		}
 	}
 	if strings.TrimSpace(spawnSettings.GlobalSkillsDir) == "" {
 		spawnSettings.DefaultGlobalSkillsDir(filepath.Join(filepath.Dir(filepath.Dir(binding.ContextRoot)), "config", "skills"))
@@ -710,6 +716,12 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 		}
 	} else {
 		args = append(args, "--mount", "type=bind,src="+filepath.Join(managedDir, "workspace")+",dst=/workspace")
+		if settings.Has("memory_vault") {
+			// A managed space whose revision is not yet published keeps the
+			// legacy bind set — memory_vault still owes the real vault, the
+			// same source the unmanaged spawn and compose both use.
+			args = append(args, "--mount", "type=bind,src="+filepath.Join(binding.ContextRoot, "vault")+",dst=/vault")
+		}
 	}
 	// Same skill contract as unmanaged spawns: the hub-built effective view
 	// mounts read-only at /skills and a failed build refuses the spawn.

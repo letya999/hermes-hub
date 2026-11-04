@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -108,8 +107,7 @@ func (w *Writer) commit(op memory.WriteOp) error {
 		{"add", "--", op.Path},
 		{"-c", "user.name=" + actor, "-c", "user.email=" + string(op.Actor) + "@vault.local", "commit", "--quiet", "-m", message},
 	} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = w.root
+		cmd := gitCmd(w.root, args...)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("vault git %s: %w (%s)", args[0], err, out)
 		}

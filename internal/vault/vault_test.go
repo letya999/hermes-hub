@@ -85,6 +85,31 @@ func TestVaultEnsureGitRepo(t *testing.T) {
 	}
 }
 
+// A bind-mounted vault is host-owned while the governed writer runs under a
+// fixed container uid: every git invocation must mark the root safe via
+// -c safe.directory=<abs slash path> or git aborts on "dubious ownership".
+func TestGitCmdMarksVaultSafe(t *testing.T) {
+	dir := t.TempDir()
+	cmd := gitCmd(dir, "status", "--porcelain")
+	if cmd.Dir != dir {
+		t.Fatalf("gitCmd dir = %q, want %q", cmd.Dir, dir)
+	}
+	if len(cmd.Args) < 3 || cmd.Args[0] != "git" || cmd.Args[1] != "-c" {
+		t.Fatalf("git argv shape broken: %v", cmd.Args)
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "safe.directory=" + filepath.ToSlash(abs)
+	if cmd.Args[2] != want {
+		t.Fatalf("git safety pin = %q, want %q", cmd.Args[2], want)
+	}
+	if cmd.Args[3] != "status" {
+		t.Fatalf("caller args lost after safety pin: %v", cmd.Args[3:])
+	}
+}
+
 func TestVaultSymlinkRejected(t *testing.T) {
 	dir := t.TempDir()
 	real := filepath.Join(dir, "real")

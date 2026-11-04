@@ -7,6 +7,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/letya999/hermes-hub/internal/stack"
+	"gopkg.in/yaml.v3"
 )
 
 // publishWorkspace writes a published revision whose workspace passport
@@ -139,5 +142,57 @@ func TestSupervisorUnmanagedMountsKeepLegacyLayout(t *testing.T) {
 		if strings.Contains(joined, denied) {
 			t.Errorf("unmanaged spawn mounted passport-only path %q: %s", denied, joined)
 		}
+	}
+}
+
+// An unmanaged space with memory_vault owns the same /vault contract the
+// compose service renders (SPEC-0085 R1.6): HUB_VAULT=/vault reaches the
+// env through the service contract, so the spawn must bind the real vault
+// or the agent's memory tools point at an empty rootfs path.
+func TestSupervisorUnmanagedMemoryVaultBindsRealVault(t *testing.T) {
+	m, root := testManager(t, func(ctx context.Context, args ...string) ([]byte, error) { return []byte("ok"), nil }, nil)
+	if err := os.WriteFile(filepath.Join(root, "settings.yaml"), []byte(
+		"schema: 1\nuser: alice\ntimezone: UTC\nmodel: synthetic\nmodel_url: http://model-relay:8318/v1\ntools:\n    memory_vault: {via: native}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	bound, err := m.normalize(binding(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, err := m.runArgsWithGeneration(bound, "hub-test-container", 0, "gen-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "type=bind,src=" + filepath.Join(root, "vault") + ",dst=/vault"
+	if !slices.Contains(args, want) {
+		t.Fatalf("memory_vault spawn missing %s", want)
+	}
+}
+
+// The managed spawn's legacy branch (no published workspace passport yet)
+// owes the same bind: managedRunArgs mirrors RuntimeService, whose env
+// already carries HUB_VAULT under the same wish.
+func TestSupervisorManagedLegacyMemoryVaultBindsRealVault(t *testing.T) {
+	m, root := testManager(t, func(ctx context.Context, args ...string) ([]byte, error) { return []byte("ok"), nil }, nil)
+	settings := writeManagedFixtures(t, root)
+	settings.Tools = map[string]stack.ToolEntry{"memory_vault": {Via: stack.ToolViaNative}}
+	body, err := yaml.Marshal(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "settings.yaml"), body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	bound, err := m.normalize(binding(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, err := m.runArgsWithGeneration(bound, "hub-test-container", 0, "gen-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "type=bind,src=" + filepath.Join(root, "vault") + ",dst=/vault"
+	if !slices.Contains(args, want) {
+		t.Fatalf("managed legacy spawn missing %s", want)
 	}
 }

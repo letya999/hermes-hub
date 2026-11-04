@@ -118,6 +118,30 @@ func TestDaySummarySeeded(t *testing.T) {
 	}
 }
 
+// Live-observed model shape: chat-completion relays wrap the JSON
+// proposal in ```json fences. The rollup must lenient-parse it instead
+// of failing the day and burning a model call on every tick forever.
+func TestProposalWrappedInCodeFence(t *testing.T) {
+	root := fixture(t, []memory.Entry{
+		eligibleEntry("turn-1", "the harbor project uses a blue door on the boathouse"),
+	})
+	res, err := Run(context.Background(), root, dayNoon, Options{
+		Relay: func(ctx context.Context, system, user string) (string, error) {
+			return "```json\n{\"summary\":\"The owner noted the boathouse door.\",\"facts\":[{\"card\":\"notes/harbor\",\"fact\":\"boathouse door is blue\",\"quote\":\"the harbor project uses a blue door on the boathouse\"}]}\n```", nil
+		},
+		Now: dayNoon.Add(24 * time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Facts != 1 {
+		t.Fatalf("fenced proposal not parsed: %+v", res)
+	}
+	if _, err := os.Stat(filepath.Join(root, "memory", "summaries", "daily", "2026-04-19.md")); err != nil {
+		t.Fatalf("no day summary written: %v", err)
+	}
+}
+
 // R5.3: background-kind entries (cron/assignment/probe/system) are
 // promotion-ineligible — they never reach the prompt or a fact's quote.
 func TestPromotionGateExcludesKinds(t *testing.T) {
@@ -868,6 +892,40 @@ func TestWeeklyFoldsAllSeven(t *testing.T) {
 	}
 }
 
+// The fold seams share the day rollup's relay contract — a fenced
+// proposal must parse here too, or every night's fold sweep burns a
+// model call and retries forever.
+func TestWeeklyFoldWrappedInCodeFence(t *testing.T) {
+	root := fixture(t, nil)
+	monday := time.Date(2026, 4, 13, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 7; i++ {
+		d := monday.AddDate(0, 0, i).Format("2006-01-02")
+		cache := filepath.Join(root, "runtime", "memory", "night", d+".json")
+		if err := os.MkdirAll(filepath.Dir(cache), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(cache, []byte(`{"entries":{},"steps":{"facts":true,"links":true,"truths":true,"intents":true,"core":true,"summary":true,"journal":true}}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err := FoldWeek(context.Background(), root, monday, Options{
+		Relay: func(ctx context.Context, system, user string) (string, error) {
+			return "```json\n{\"summary\":\"fenced week\",\"facts\":[]}\n```", nil
+		},
+		Now: monday.AddDate(0, 0, 8),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(root, "memory", "summaries", "weekly", "2026-W16.md"))
+	if err != nil {
+		t.Fatalf("weekly summary missing: %v", err)
+	}
+	if !strings.Contains(string(body), "fenced week") {
+		t.Fatalf("weekly summary wrong: %q", body)
+	}
+}
+
 // R5.8: a resumed run keeps the pre-crash journal lines and digest —
 // the day's REVIEW section and the owner brief reflect every promotion
 // the day made, not only the resume's slice.
@@ -1155,6 +1213,38 @@ func TestMonthlyNeedsCompleteMonth(t *testing.T) {
 	}
 }
 
+// The monthly fold shares the relay contract — fenced JSON must parse.
+func TestMonthlyFoldWrappedInCodeFence(t *testing.T) {
+	root := fixture(t, nil)
+	first := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
+	for d := 0; d < 30; d++ {
+		key := first.AddDate(0, 0, d).Format("2006-01-02")
+		cache := filepath.Join(root, "runtime", "memory", "night", key+".json")
+		if err := os.MkdirAll(filepath.Dir(cache), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(cache, []byte(`{"steps":{"facts":true,"links":true,"truths":true,"intents":true,"core":true,"summary":true,"journal":true}}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err := FoldMonth(context.Background(), root, first, Options{
+		Relay: func(ctx context.Context, system, user string) (string, error) {
+			return "```json\n{\"summary\":\"fenced april\",\"facts\":[]}\n```", nil
+		},
+		Now: first.AddDate(0, 1, 0),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(root, "memory", "summaries", "monthly", "2026-04.md"))
+	if err != nil {
+		t.Fatalf("monthly summary missing: %v", err)
+	}
+	if !strings.Contains(string(body), "fenced april") {
+		t.Fatalf("monthly summary wrong: %q", body)
+	}
+}
+
 // R5.9: the monthly prompt composes full in-month weeks from their
 // weekly summaries — the covered days are not repeated as dailies —
 // and only the partial-week edge days land as daily material.
@@ -1255,6 +1345,38 @@ func TestYearlyNeedsTwelveMonths(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "memory", "summaries", "yearly", "2026.md")); err != nil {
 		t.Fatalf("complete year wrote no summary: %v", err)
+	}
+}
+
+// The yearly fold shares the relay contract — fenced JSON must parse.
+func TestYearlyFoldWrappedInCodeFence(t *testing.T) {
+	root := fixture(t, nil)
+	dir := filepath.Join(root, "memory", "summaries", "monthly")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for m := 1; m <= 12; m++ {
+		path := filepath.Join(dir, fmt.Sprintf("2026-%02d.md", m))
+		if err := os.WriteFile(path, []byte("---\ntype: monthly-summary\n---\n\nmonth\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	day := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+	_, err := FoldYear(context.Background(), root, day, Options{
+		Relay: func(ctx context.Context, system, user string) (string, error) {
+			return "```json\n{\"summary\":\"fenced year\",\"facts\":[]}\n```", nil
+		},
+		Now: time.Date(2027, 1, 5, 12, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(root, "memory", "summaries", "yearly", "2026.md"))
+	if err != nil {
+		t.Fatalf("yearly summary missing: %v", err)
+	}
+	if !strings.Contains(string(body), "fenced year") {
+		t.Fatalf("yearly summary wrong: %q", body)
 	}
 }
 

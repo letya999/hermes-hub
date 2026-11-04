@@ -28,6 +28,19 @@ var okMutationTools = []string{
 // okServer renders the hub-owned OpenKnowledge endpoint for the runtime's
 // mcp_servers map. The service name resolves on the space-private network
 // (R8.3) and PORT is pinned by the compose environment so the URL is stable.
-func okServer() M {
-	return M{"url": "http://open-knowledge:8080/mcp", "timeout": 120, "skip_preflight": true, "tools": MCPTools{Include: okReadTools}}
+// On a supervisor-mode unmanaged space the runtime lives on the shared hub
+// net, where the service publishes the space-scoped alias the compose
+// render attaches — identical contract, collision-free name.
+func okServer(s Settings) M {
+	return M{"url": "http://" + okServiceHost(s) + ":8080/mcp", "timeout": 120, "skip_preflight": true, "tools": MCPTools{Include: okReadTools}}
+}
+
+// okServiceHost is the resolvable name peers dial: the plain service name
+// on space-private nets, the space-scoped shared-net alias on
+// supervisor-mode unmanaged stacks.
+func okServiceHost(s Settings) string {
+	if s.CapabilityMode != "managed" && s.ExecutionMode == "supervisor" {
+		return "open-knowledge-" + s.User
+	}
+	return "open-knowledge"
 }

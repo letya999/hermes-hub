@@ -18,8 +18,11 @@ import (
 // captureTurn is the spool's onAccepted hook: it runs after the job file is
 // durable and before Enqueue returns — persist-before-ack. The leaf write is
 // synchronous so a kill after acceptance still finds the turn on disk.
+// The vault belongs to the owning space: on a shared gateway only the
+// owner's jobs feed its lanes — sibling turns stay out of the owner's
+// leaves entirely (SPEC-0085 R2.1).
 func (g *Gateway) captureTurn(job Job) error {
-	if g.memory == nil {
+	if g.memory == nil || job.UserID != g.nightOwner().ID {
 		return nil
 	}
 	return g.memory.Append(memory.Entry{
@@ -36,7 +39,7 @@ func (g *Gateway) captureTurn(job Job) error {
 // captureReply records the agent's response under the same job — provenance
 // is always agent; kind follows the turn's trigger for audit pairing.
 func (g *Gateway) captureReply(job Job, response string) error {
-	if g.memory == nil || job.Sensitive {
+	if g.memory == nil || job.Sensitive || job.UserID != g.nightOwner().ID {
 		return nil // sensitive exchanges stay out of durable memory entirely
 	}
 	return g.memory.Append(memory.Entry{

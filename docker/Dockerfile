@@ -64,8 +64,10 @@ RUN set -e; git init; git remote add origin https://github.com/nousresearch/herm
 # image-budget probe fails the image if any appear.
 FROM debian:13.6-slim AS core
 # debian-slim has no CA bundle: ca-certificates is the one install that cannot
-# ride https sources, and apt signature checks do not need TLS anyway.
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+# ride https sources, and apt signature checks do not need TLS anyway. git is
+# the vault writer's commit backend (SPEC-0085 R1): the communication gateway
+# mounts the memory vault and lands governed writes as git commits.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git && rm -rf /var/lib/apt/lists/*
 COPY --from=go_build /hubctl /hub-runtime /toolhub /communication-hub /credential-broker /hub-media /cellinit /usr/local/bin/
 COPY --from=cliproxy_build /cli-proxy-api /usr/local/bin/cli-proxy-api
 COPY docker/seccomp-buildkit-rootless.json docker/seccomp-mcp-runtime.json /opt/hub/seccomp/

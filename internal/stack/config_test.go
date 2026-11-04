@@ -280,6 +280,55 @@ func TestRenderSplitsGatewaySecretsFromRuntime(t *testing.T) {
 	}
 }
 
+// An unmanaged owner has no rendered model-relay, so the night rollup's
+// model seam (SPEC-0085 R5.1) opts in through secrets: the relay URL and
+// caller bearer reach the gateway env file, and — unlike gateway-owned
+// secrets — the same keys still reach the runtime env unchanged.
+func TestRenderRoutesRelayEnvPairToGateway(t *testing.T) {
+	d := t.TempDir()
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "config"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config", "SOUL.md"), []byte("soul"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Init(d, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := Read(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.Model = "test"
+	settings.ModelURL = "http://model.invalid/v1"
+	settings.Tools, settings.Ingress = testTools("workspace", "telegram"), testIngress("workspace", "telegram")
+	if err := saveSpace(d, settings); err != nil {
+		t.Fatal(err)
+	}
+	secrets := "TELEGRAM_BOT_TOKEN=bot\nTELEGRAM_ALLOWED_USERS=11\nHUB_MODEL_RELAY_URL=http://relay.invalid:8318\nHUB_MODEL_RELAY_AUTH=caller-bearer\nHUB_MODEL_RELAY_ADMIN=admin-bearer\n"
+	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte(secrets), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenderEnvironment(d, root, "prod"); err != nil {
+		t.Fatal(err)
+	}
+	gatewayEnv, err := os.ReadFile(filepath.Join(d, "communication.prod.env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(gatewayEnv), "HUB_MODEL_RELAY_URL=http://relay.invalid:8318") || !strings.Contains(string(gatewayEnv), "HUB_MODEL_RELAY_AUTH=caller-bearer") || !strings.Contains(string(gatewayEnv), "HUB_MODEL_RELAY_ADMIN=admin-bearer") {
+		t.Fatalf("relay env pair not routed to the gateway: %q", gatewayEnv)
+	}
+	runtimeEnv, err := os.ReadFile(filepath.Join(d, "runtime.prod.env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(runtimeEnv), "HUB_MODEL_RELAY_URL=http://relay.invalid:8318") {
+		t.Fatalf("relay url stripped from runtime env: %q", runtimeEnv)
+	}
+}
+
 func TestRenderRoutesCliproxyManagementToModelRelay(t *testing.T) {
 	d := t.TempDir()
 	root := t.TempDir()

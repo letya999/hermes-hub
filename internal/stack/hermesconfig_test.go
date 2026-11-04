@@ -187,6 +187,19 @@ func TestHubImageEnvironmentUsesEffectiveConfigWithoutParentLeak(t *testing.T) {
 	}
 }
 
+func TestHubChildCarriesVaultWhenMemoryVaultEnabled(t *testing.T) {
+	cfg := Config(Settings{User: "alice", Model: "synthetic", ModelURL: "http://model:8000/v1", Tools: map[string]ToolEntry{"workspace": {Via: ToolViaNative}, "memory_vault": {Via: ToolViaNative}}})
+	e := cfg["mcp_servers"].(M)["hub"].(M)["env"].(M)
+	if e["HUB_VAULT"] != "${HUB_VAULT}" {
+		t.Fatalf("hub child lost the vault pin the memory tools resolve: %v", e["HUB_VAULT"])
+	}
+	cfg = Config(Settings{User: "alice", Model: "synthetic", ModelURL: "http://model:8000/v1", Tools: map[string]ToolEntry{"workspace": {Via: ToolViaNative}}})
+	e = cfg["mcp_servers"].(M)["hub"].(M)["env"].(M)
+	if _, ok := e["HUB_VAULT"]; ok {
+		t.Fatalf("vault pin rendered without memory_vault: %v", e["HUB_VAULT"])
+	}
+}
+
 func TestHubChildCarriesPolicyAndFullRuntimeIdentity(t *testing.T) {
 	cfg := Config(Settings{User: "alice", Model: "synthetic", ModelURL: "http://model:8000/v1", Tools: map[string]ToolEntry{"workspace": {Via: ToolViaNative}}})
 	e := cfg["mcp_servers"].(M)["hub"].(M)["env"].(M)

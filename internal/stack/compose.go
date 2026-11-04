@@ -477,7 +477,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// mcp_servers URL points at — unset, OK picks a dynamic port.
 		// HOME lands on tmpfs: the image's /state/home sits on the read-only
 		// rootfs, while every durable OK path is project-local .ok/ under /data.
-		okService["environment"] = M{"OK_ALLOW_EXTERNAL": "1", "OK_BIND": "0.0.0.0", "PORT": "8080", "HOME": "/tmp", "OK_EXTERNAL_URL": "http://open-knowledge:8080"}
+		okService["environment"] = M{"OK_ALLOW_EXTERNAL": "1", "OK_BIND": "0.0.0.0", "PORT": "8080", "HOME": "/tmp", "OK_EXTERNAL_URL": "http://" + okServiceHost(s) + ":8080"}
 		// ok resolves its server-authority registry through the passwd home
 		// (/state/home), not $HOME — a read-only-rootfs mkdir fails closed, so
 		// the disposable home gets its own tmpfs alongside /tmp.
@@ -497,10 +497,17 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 				bind = "[" + bind + "]"
 			}
 			okService["ports"] = []string{fmt.Sprintf("%s:%d:8080", bind, s.UIPort)}
-			okService["environment"].(M)["OK_EXTERNAL_URL"] = fmt.Sprintf("http://localhost:%d", s.UIPort)
+			// OK admits loopback hosts unconditionally — the allowlist URL
+			// must stay the peer alias or the runtime's own MCP calls 403.
 		}
 		if s.CapabilityMode == "managed" {
 			okService["networks"] = M{managedAgentNetwork(s): M{}}
+		} else if s.ExecutionMode == "supervisor" {
+			// Supervisor-mode runtimes spawn onto the shared hub net, not the
+			// project default — the space-scoped alias keeps several
+			// unmanaged spaces collision-free while their mcp_servers URL
+			// dials the same name.
+			okService["networks"] = M{"default": M{}, sharedNetworkName: M{"aliases": []string{"open-knowledge-" + s.User}}}
 		} else {
 			okService["networks"] = M{"default": M{}}
 		}

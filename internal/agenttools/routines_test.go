@@ -148,14 +148,21 @@ func TestRoutinePublishedLifecycleDispatch(t *testing.T) {
 	for _, tool := range listed.Tools {
 		descriptions[tool.Name] = tool.Description
 	}
+	// Each op takes only the arguments the catalog declares for it — the
+	// advertised schema is closed, matching ToolHub admission.
+	opArgs := map[string]map[string]any{
+		"create": {"id": "item", "timezone": "UTC", "expression": "2100-01-01T10:00:00Z", "text": "fixture", "destination_task_id": "default", "timing": map[string]any{"windows": []any{map[string]any{"from": "14:00", "to": "16:00"}}}},
+		"list":   {"limit": 7, "cursor": "cursor-a", "kind": "reminder", "state": "paused"},
+		"read":   {"id": "item", "include": []string{"history", "next_runs"}, "history_cursor": "cursor-a"},
+		"edit":   {"id": "item", "action": "update", "expected_revision": 3, "patch": map[string]any{"input": "edited"}},
+		"remove": {"id": "item", "expected_revision": 3},
+	}
 	for _, op := range []string{"create", "list", "read", "edit", "remove"} {
 		name := "routine_" + op
 		if descriptions[name] == "" {
 			t.Errorf("missing documented MCP tool %s", name)
 		}
-		args := map[string]any{"id": "item", "action": "update", "expected_revision": 3, "limit": 7, "cursor": "cursor-a", "include": []string{"history", "next_runs"}, "history_cursor": "cursor-a", "kind": "reminder", "state": "paused", "timezone": "UTC", "expression": "2100-01-01T10:00:00Z", "text": "fixture", "patch": map[string]any{"input": "edited"}, "timing": map[string]any{"windows": []any{map[string]any{"from": "14:00", "to": "16:00"}}}}
-		args["destination_task_id"] = "default"
-		result, err := client.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: args})
+		result, err := client.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: opArgs[op]})
 		if err != nil || result.IsError {
 			t.Errorf("published %s call failed: %+v %v", name, result, err)
 		}

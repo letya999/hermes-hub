@@ -191,6 +191,45 @@ func TestOKPrivateNetOnly(t *testing.T) {
 	}
 }
 
+// A supervisor-mode unmanaged space runs its runtime on the shared
+// hermes-hub-runtime network, not the project default — the private-net
+// rule must still give that runtime a resolvable alias. The alias is
+// space-scoped (`open-knowledge-<user>`) so several unmanaged spaces can
+// share the hub net without colliding, and the mcp_servers URL matches it.
+func TestOKSupervisorSharedNetAlias(t *testing.T) {
+	s := Settings{Schema: 1, Environment: "dev", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
+		Model: "test", ModelURL: "http://model.invalid/v1", ExecutionMode: "supervisor",
+		Tools: testTools("knowledge_ui", "memory_vault"), Ingress: testIngress()}
+	svc := Compose(s, t.TempDir(), t.TempDir())["services"].(M)["open-knowledge"].(M)
+	nets, _ := svc["networks"].(M)
+	shared, ok := nets["hermes-hub-runtime"].(M)
+	if !ok {
+		t.Fatalf("supervisor-mode OK must join the shared runtime net: %v", nets)
+	}
+	aliases, _ := shared["aliases"].([]string)
+	if !slices.Contains(aliases, "open-knowledge-alice") {
+		t.Fatalf("shared-net alias must be space-scoped: %v", shared)
+	}
+	server, ok := Config(s)["mcp_servers"].(M)["open_knowledge"].(M)
+	if !ok || server["url"] != "http://open-knowledge-alice:8080/mcp" {
+		t.Fatalf("supervisor-mode mcp url must dial the scoped alias: %v", server)
+	}
+}
+
+// The allowlist URL must be the name peers actually dial: on a
+// supervisor-mode unmanaged stack that is the space-scoped alias, and a
+// ui_port publish must never re-point it at the loopback edge or the
+// runtime's own MCP calls 403 (OK admits loopback hosts anyway).
+func TestOKExternalURLFollowsServiceHost(t *testing.T) {
+	s := Settings{Schema: 1, Environment: "dev", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
+		Model: "test", ModelURL: "http://model.invalid/v1", ExecutionMode: "supervisor", UIPort: 8443,
+		Tools: testTools("knowledge_ui", "memory_vault"), Ingress: testIngress()}
+	env := Compose(s, t.TempDir(), t.TempDir())["services"].(M)["open-knowledge"].(M)["environment"].(M)
+	if env["OK_EXTERNAL_URL"] != "http://open-knowledge-alice:8080" {
+		t.Fatalf("the allowlist URL must stay the peer alias under ui_port: %v", env)
+	}
+}
+
 // R8.3: the external-write coexistence contract is operator-visible in
 // docs/operations.md — the spike-verified OK behavior (stale save rejected,
 // conflicts surfaced, nothing silently overwritten, owner wins rollup) is
@@ -406,8 +445,11 @@ func TestUIPortLoopbackOnly(t *testing.T) {
 		t.Fatalf("ui_port must publish exactly 127.0.0.1:<ui_port>:8080: %v", ports)
 	}
 	env := svc["environment"].(M)
-	if env["OK_EXTERNAL_URL"] != "http://localhost:8443" {
-		t.Fatalf("OK_EXTERNAL_URL must be the owner-facing loopback URL: %v", env)
+	// The loopback UI edge rides OK's unconditional loopback admission; the
+	// allowlist URL must remain the peer alias or the runtime's MCP calls
+	// lose their admitted host the moment a port publishes.
+	if env["OK_EXTERNAL_URL"] != "http://open-knowledge:8080" {
+		t.Fatalf("OK_EXTERNAL_URL must stay the peer alias under ui_port: %v", env)
 	}
 
 	// An explicit ::1 bind publishes on IPv6 loopback — the only other

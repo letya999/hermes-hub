@@ -499,6 +499,15 @@ func writeRuntimeEnvFiles(dir, environment string, user, organization map[string
 			gateway[key] = value
 		}
 	}
+	// The night rollup's model seam (SPEC-0085 R5.1) resolves the relay
+	// through the env pair. Managed spaces get both rendered onto the
+	// service; an unmanaged owner opts in through secrets — the keys stay
+	// runtime-visible too since they are not gateway-owned secrets.
+	for _, key := range []string{"HUB_MODEL_RELAY_URL", "HUB_MODEL_RELAY_AUTH", "HUB_MODEL_RELAY_ADMIN"} {
+		if value := user[key]; value != "" {
+			gateway[key] = value
+		}
+	}
 	// The managed runtime authenticates control-plane calls (credential forms,
 	// prepare outcomes, routine management) with its own HUB_RUNTIME_AUTH. In
 	// the infra owner's space that token becomes the gateway's primary control

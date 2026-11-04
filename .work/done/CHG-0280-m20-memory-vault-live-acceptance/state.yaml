@@ -1,0 +1,86 @@
+schema: 1
+change: CHG-0280
+title: "M20 memory vault live acceptance on spaces/local: real turns, vault writes, recall, rollup, OpenKnowledge"
+status: done
+branch: chore/merge-m31-m20-into-dev
+updated: 2026-11-04
+phase: done
+adr: ADR-0086
+spec: SPEC-0085
+requirements: []
+depends_on: [CHG-0279]
+github_milestone: "M20 — Memory Vault"
+design_status: accepted
+implementation_status: done
+slices: {}
+validation:
+  documents: "done — docs surface already accurate for all fixes; devcheck docs leg green (index↔file sync, last_verified)"
+  just_check: "passed — clean full covergo rerun exit 0, Go statement coverage 86.13% (>=85%); one earlier run failed on a cmd/hub-tts ThreadSanitizer allocation error (Windows race-detector flake), passed on isolated and full rerun; go vet + gofmt + docs + config legs green"
+  docker_check: "partial — dev-core rebuilt with git (BuildKit via hubctl build), communication-hub + hermes-runtime dev overlays rebuilt via hubctl dev-rebuild and verified healthy on the new code; heavy image-budget matrix stays in CI per AGENTS.md"
+  security: "govulncheck + npm audit run at close (no dependency changes in the diff; Dockerfile adds apt git only)"
+  live_acceptance: |
+    done on spaces/local (unmanaged owner space, shared gateway):
+    - REAL TURN WRITE: mock turn mock-f3e56701 → stamped run-scope → managed runtime → cliproxy → gemini-3-flash → in-turn mcp__hub__memory_card wrote memory/cards/notes/inbox/lighthouse-keeper.md, governed git commit "vault: agent write" + writes.jsonl {op:remember,status:ok}; reply delivered via channels.send (PDP allow:true)
+    - LEAF CAPTURE: daily leaf gained turn+reply entries with fenced mem: provenance (prov=owner/agent, channel=mock, ref=job id); committed per-write
+    - REAL RECALL: next turn "what do you remember" → model quoted memory/cards/notes/inbox/lighthouse-keeper.md:1-12 verbatim — index.json doc Line=1 EndLine=12 matches the citation exactly
+    - SIBLING ISOLATION (live): artem_main turn through the same shared gateway completed uncertain — zero writes to local's vault (leaf unchanged, no writes.jsonl row, no new commits); owner-gate holds on the outcome seam
+    - UNSTAMPED DENY: tool_call memory_card with no run stamp denied "no stamped private run authorizes vault writes" (verified on acc-03 earlier + local's own unstamped tool surface before the gateway-stamped turn)
+    - OPENKNOWLEDGE: UI 200 on loopback:18080, /api/search indexes the real vault (lighthouse-keeper card + daily leaves + CORE), .okignore excludes .git/.graph/.ok/runtime
+    - MCP SURFACE: hub MCP connects inside the runtime with memory_card+memory_search projected (mcp_schema_cache.json) after the pydantic-schema fix
+    - ROLLUP (full live evidence): tick at 08:15 found the seeded D-1 leaf had no
+      prov.db rows (capture is the only eligible-entry writer — manual leaf seeds
+      are correctly invisible, the day completed vacuously). Seeded 4 prov rows
+      matching the leaf's mem:ids (capture-shape JSON, observed_at on D-1) →
+      next tick ran the REAL rollup: calls:1 through acc-03 model-relay →
+      gemini-3-flash → ```json-fenced proposal → lenient-parsed →
+      summaries/daily/2026-11-03.md written + 2 quote-verified fact cards
+      (notes/harbor-project, notes/keeper-preferences with [[daily/2026-11-03]]
+      evidence links) + REVIEW.md journal section + last-run.txt marked.
+      Prune lane: D-3 leaf kept fail-closed "rollup incomplete" (its own day
+      never ran) — auditable journal note. Digest enqueued as
+      night-digest-2026-11-04 (one-per-day idempotent key) to the owner's
+      configured telegram target — external send stays a gated action.
+      Weekly/monthly/yearly folds self-gated "incomplete" honestly.
+    - ROLLUP DEFECT FOUND+FIXED LIVE: gemini-3-flash answers the proposal
+      prompt inside ```json fences; strict json.Unmarshal rejected it —
+      "night proposal JSON: invalid character '`'" → day never completes,
+      model call burned every 60s tick forever (silent retry loop). Fixed:
+      proposalText() unwraps the fence on all FOUR proposal seams (day
+      rollup + weekly/monthly/yearly folds); cached proposal stored
+      normalized so resume parses. Tests: TestProposalWrappedInCodeFence,
+      TestWeeklyFoldWrappedInCodeFence, TestMonthlyFoldWrappedInCodeFence,
+      TestYearlyFoldWrappedInCodeFence — live-verified: the fixed binary
+      rolled the same day on the next tick.
+    - DENY MATRIX (real tools-exec seam, crafted run-scope stamps):
+      expired stamp → denied "no stamped private run"; group-audience stamp
+      → denied; agent-provenance stamp + op=forget → denied "requires a
+      live owner-provenance turn"; all three landed writes.jsonl denied
+      rows with correct source_ref attribution. Earlier live evidence:
+      unstamped tool call denied (acc-03 + local), sibling turn zero
+      writes, governed writer refuses runtime/ zone (stamp can't be lifted).
+    - PROVIDER: memory_provider capability not selected on spaces/local —
+      vault is the sole backend; Hindsight adapter (internal/memory/providers/
+      hindsight, conformance fixtures in memorytest) stays inert by design
+      (opt-in capability + explicit URL/token). Honest: no external
+      provider exercised; the seam's Caps/ErrUnsupported contract is
+      unit-covered, not live-covered.
+  merge_gaps_fixed:
+    - "channels.send denied for unmanaged principals: space had zero ledger grants; derived via space-migrate publish (19 platform grants, profile rev 4) then un-published to keep local unmanaged — ledger is the live authority"
+    - "git absent from core image: communication-hub couldn't commit governed writes; docker/Dockerfile core stage now installs git"
+    - "git dubious ownership on bind-mounted vault: every vault git call now carries -c safe.directory=<abs root> (gitCmd helper, argv-contract test)"
+    - "pydantic MCP rejection: union Input struct projected `any` fields as bare `true` in inputSchema → 360 validation errors parked the hub server; add() now advertises api.CliInputSchema per tool (regression test walks every listed schema)"
+    - "HUB_VAULT missing from mcp_servers.hub env → hubctl tools could not resolve the vault in the spawned runtime (render fix + test)"
+    - "sibling vault leak: capture/stamp/CORE+recall ran for every enrolled principal — owner-gated (earlier test-driven fixes)"
+    - "uncertain outcome holds the conversation lane by design (spool FailJob release flag) — confirmed, documented"
+evidence:
+  - "card file spaces/local/vault/memory/cards/notes/inbox/lighthouse-keeper.md + git log agent-write commits"
+  - "writes.jsonl row {op:remember, source_ref:mock-f3e56701…, status:ok} inside /vault/runtime/memory/"
+  - "index.json docs: card entry lighthouse-keeper Line=1 EndLine=12; turn/reply entries with prov=owner/agent"
+  - "decide probe POST /v1/rights/decide principal=local channels.send mock → {allow:true,epoch:183}"
+  - "sibling probe: mock-f2f32ff6 principal=artem_main outcome=uncertain; local vault untouched (git log stable, leaf line count stable)"
+  - "rollup relay probe: POST acc-03 model-relay /v1/chat/completions model:\"\" → gemini-3-flash 'pong' with local's enrolled bearer"
+  - "OK edge: http://127.0.0.1:18080 200 + /api/search returns lighthouse-keeper page + daily leaf"
+  - "rollup: night/2026-11-03.json calls:1 + summaries/daily/2026-11-03.md + cards notes/harbor-project + notes/keeper-preferences (system commits ce7e355/fd27e35/a5b2e02) + REVIEW.md journal + last-run.txt=2026-11-04"
+  - "fenced-proposal defect: live relay answer '```json\\n{…}\\n```' rejected by strict unmarshal; fixed via proposalText() on all 4 seams + 4 regression tests; same day re-rolled successfully on the fixed binary"
+  - "deny matrix: tools-exec probes — expired/group stamps → 'no stamped private run' denied; agent-prov + forget → 'requires a live owner-provenance turn'; writes.jsonl denied rows 08:40:08/08:40:13/08:40:14"
+  - "digest: spool row night-digest-2026-11-04 'What I remembered last night: - kept leaf 2026-11-01 (rollup incomplete)' enqueued to telegram_bot chat_id=2 (synthetic — external send not authorized)"

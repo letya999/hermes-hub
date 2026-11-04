@@ -2,7 +2,6 @@ package vault
 
 import (
 	"fmt"
-	"os/exec"
 	"strings"
 )
 
@@ -19,8 +18,7 @@ var externalExcludes = []string{".git/", ".graph/", ".ok/", "runtime/"}
 // absorb the same bytes under a system author. Returns the swept path
 // count; a clean tree sweeps nothing and creates no commit.
 func CommitExternalEdits(root string) (int, error) {
-	status := exec.Command("git", "status", "--porcelain", "--untracked-files=all")
-	status.Dir = root
+	status := gitCmd(root, "status", "--porcelain", "--untracked-files=all")
 	out, err := status.Output()
 	if err != nil {
 		return 0, fmt.Errorf("vault external sweep: %w", err)
@@ -42,8 +40,7 @@ func CommitExternalEdits(root string) (int, error) {
 		append([]string{"add", "-A", "--"}, paths...),
 		{"-c", "user.name=hermes-owner", "-c", "user.email=owner@vault.local", "commit", "--quiet", "-m", "vault: owner external edits"},
 	} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = root
+		cmd := gitCmd(root, args...)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return 0, fmt.Errorf("vault external sweep git %s: %w (%s)", args[0], err, out)
 		}

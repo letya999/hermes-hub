@@ -72,6 +72,23 @@ func Ensure(root string) error {
 	return ensureGit(root)
 }
 
+// gitCmd builds a git invocation pinned to the vault root. The governed
+// writer owns this repository by contract (ADR-0086 D1) but may run under a
+// fixed container uid while the bind-mounted checkout stays host-owned: git's
+// dubious-ownership guard would then refuse every operation, so each call
+// carries -c safe.directory=<abs root>. The slash form keeps the pin valid on
+// Windows checkouts too.
+func gitCmd(root string, args ...string) *exec.Cmd {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		abs = root
+	}
+	full := append([]string{"-c", "safe.directory=" + filepath.ToSlash(abs)}, args...)
+	cmd := exec.Command("git", full...)
+	cmd.Dir = root
+	return cmd
+}
+
 // ensureGit initializes the vault repository and records the scaffold commit
 // on first run. An existing .git is left alone — history is never reset.
 func ensureGit(root string) error {
@@ -85,8 +102,7 @@ func ensureGit(root string) error {
 		{"add", "-A"},
 		{"-c", "user.name=hermes-vault", "-c", "user.email=vault@localhost", "commit", "--quiet", "-m", "vault: scaffold"},
 	} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = root
+		cmd := gitCmd(root, args...)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("vault git %s: %w (%s)", args[0], err, out)
 		}

@@ -37,6 +37,10 @@ type HTTPRunner struct {
 	// VaultDir is the mounted memory vault root; set only when the space's
 	// memory_vault feature is on — its presence is the feature gate.
 	VaultDir string
+	// Owner is the vault-owning principal: on a shared gateway only the
+	// owner's jobs may carry CORE/recall bytes — a sibling's run never
+	// sees this vault's contents.
+	Owner string
 }
 
 // instructionCeiling is the runtime admission bound on ExecuteRequest
@@ -148,7 +152,7 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 	// style snapshot — group prompts never see a private byte. The assembled
 	// field must stay inside the runtime admission ceiling, so the pinned
 	// block yields whatever the other sections leave.
-	if r.VaultDir != "" && r.Spool != nil {
+	if r.VaultDir != "" && r.Spool != nil && (r.Owner == "" || job.UserID == r.Owner) {
 		core, coreErr := r.Spool.CoreForRun(job, r.VaultDir)
 		if coreErr != nil {
 			return RunOutcome{}, coreErr

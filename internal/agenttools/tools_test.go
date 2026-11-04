@@ -774,8 +774,13 @@ func TestMediaThroughHubMCP(t *testing.T) {
 	if shot.IsError || body["path"] != "artifacts/images/shot.jpg" {
 		t.Fatal(shot, body)
 	}
-	seen, body := callHub(t, client, "media_inspect", map[string]any{"path": "dot.png"})
-	if seen.IsError || body["text"] != "a red pixel" || jsonNumber(body["width"]) != 2 || jsonNumber(body["height"]) != 3 || !sawInspect.Load() {
+	seen, body := callHub(t, client, "media_inspect", map[string]any{"paths": []string{"dot.png"}})
+	seenResults, _ := body["results"].([]any)
+	var seenFirst map[string]any
+	if len(seenResults) > 0 {
+		seenFirst, _ = seenResults[0].(map[string]any)
+	}
+	if seen.IsError || body["text"] != "a red pixel" || jsonNumber(seenFirst["width"]) != 2 || jsonNumber(seenFirst["height"]) != 3 || !sawInspect.Load() {
 		t.Fatal(seen, body)
 	}
 	set, body := callHub(t, client, "media_inspect", map[string]any{"paths": []string{"dot.png", "dot.png"}})
@@ -1092,6 +1097,44 @@ func TestWorkspaceReadOnlyPathsFromEnv(t *testing.T) {
 	for i := range want {
 		if v.ReadOnlyPaths[i] != want[i] {
 			t.Fatalf("ReadOnlyPaths = %v, want %v", v.ReadOnlyPaths, want)
+		}
+	}
+}
+
+// The strict pydantic MCP client upstream Hermes ships requires every
+// inputSchema property to be an object — a bare `true` (the JSON-Schema
+// encoding of an `any`-typed struct field) parks the whole hub server on
+// connect and the model loses the entire native surface (SPEC-0085 R1.6).
+func TestMCPSurfaceSchemasArePydanticClean(t *testing.T) {
+	client, closeConn := connectHub(t, fixture(t))
+	defer closeConn()
+	list, err := client.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Tools) == 0 {
+		t.Fatal("hub MCP surface is empty")
+	}
+	for _, tool := range list.Tools {
+		var schema struct {
+			Type       string                     `json:"type"`
+			Properties map[string]json.RawMessage `json:"properties"`
+		}
+		raw, err := json.Marshal(tool.InputSchema)
+		if err != nil || len(raw) == 0 || string(raw) == "null" {
+			t.Fatalf("tool %s carries no inputSchema", tool.Name)
+		}
+		if err := json.Unmarshal(raw, &schema); err != nil {
+			t.Fatalf("tool %s inputSchema not JSON: %v", tool.Name, err)
+		}
+		if schema.Type != "object" {
+			t.Fatalf("tool %s inputSchema type = %q, want object", tool.Name, schema.Type)
+		}
+		for name, prop := range schema.Properties {
+			var asObject map[string]any
+			if err := json.Unmarshal(prop, &asObject); err != nil || asObject == nil {
+				t.Fatalf("tool %s property %q is not a schema object: %s", tool.Name, name, string(prop))
+			}
 		}
 	}
 }
