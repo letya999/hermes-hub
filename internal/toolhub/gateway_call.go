@@ -13,12 +13,9 @@ import (
 	"log/slog"
 	"maps"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/letya999/hermes-hub/internal/passportview"
 )
 
 // chargeRunCall counts a call against its run (job) correlation;
@@ -248,14 +245,7 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 }
 
 func (g *Gateway) requireMemoryEnabled(principal, environment string) error {
-	if g.PassportRoot == "" || !identity.ValidID(principal) || environment == "" {
-		return fmt.Errorf("%w: memory passport unavailable", api.ErrUnauthorized)
-	}
-	eff, err := passportview.LoadEffectiveGenerated(filepath.Join(g.PassportRoot, principal))
-	if err != nil || eff.Header.Metadata.Space != principal || eff.Header.Metadata.Environment != environment || eff.Config.Memory.Enabled == nil || !*eff.Config.Memory.Enabled {
-		return fmt.Errorf("%w: memory disabled", api.ErrUnauthorized)
-	}
-	return nil
+	return memoryEnrollment(g.PassportRoot, principal, environment)
 }
 
 // CallAuthorized is the protected host CLI path; it uses the identical

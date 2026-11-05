@@ -55,6 +55,10 @@ type Gateway struct {
 	// PassportRoot contains one read-only published revision per principal.
 	// Memory admission resolves it from the authenticated envelope only.
 	PassportRoot string
+	// Vaults resolves a verified principal/environment to that principal's
+	// vault through the server-rendered bindings (HUB_VAULTS_BY_PRINCIPAL).
+	// Nil when no bindings root is rendered — memory stays unavailable.
+	Vaults *VaultResolver
 	// CLIRelease drops bounded-cli cells for the caller's principal; the
 	// /v1/cli-jobs/release route uses it for job-end task-cell teardown.
 	CLIRelease  func(context.Context, api.CliReleaseRequest) error

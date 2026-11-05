@@ -2,12 +2,8 @@ package toolhub
 
 import (
 	"context"
-	"fmt"
-	"os"
-	"path/filepath"
 	"testing"
 
-	"github.com/letya999/hermes-hub/internal/passportview"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
@@ -17,22 +13,7 @@ func writeMemoryPassport(t *testing.T, root, user string, enabled bool) {
 	if enabled {
 		revision = "r-0123456789abcdee"
 	}
-	dir := filepath.Join(root, user, "passports", revision)
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range passportview.Names {
-		body := fmt.Sprintf("apiVersion: six-passport/v2\nkind: %s\nmetadata: {space: %s, environment: dev, revision: %s}\n", name, user, revision)
-		if name == "config" {
-			body += fmt.Sprintf("memory: {enabled: %t}\n", enabled)
-		}
-		if err := os.WriteFile(filepath.Join(dir, name+".yaml"), []byte(body), 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(root, user, "passports", "current"), []byte(revision+"\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeMemoryPassportDecl(t, root, user, user, revision, "dev", enabled)
 }
 
 func TestMemoryCallChecksPublishedSwitchBeforeBackend(t *testing.T) {

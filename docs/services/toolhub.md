@@ -1,6 +1,6 @@
 ---
 description: toolhub — capability gateway: tool admission, governance evaluation, connector lifecycle, audit ledger.
-last_verified: 2026-11-04
+last_verified: 2026-11-05
 ---
 
 # toolhub
@@ -42,6 +42,15 @@ tool call crosses. Listens `0.0.0.0:8090`, host-bound to `127.0.0.1:8090`.
   server still needs its runtime restarted before retry). Backend hop pins
   `MCP-Protocol-Version: 2025-11-25` for legacy-wire servers (Serena 1.5.x);
   standalone SSE off — calls are request/response.
+- **Per-user vault resolver** (`vault_resolver.go`): `HUB_VAULTS_BY_PRINCIPAL`
+  names the stack-rendered bindings root — one mount per enrolled,
+  memory-enabled, environment-matching principal. Startup scans it into a
+  binding table; `Resolve(principal, environment)` then requires an
+  identity-valid principal present in the table plus the live published
+  passport record (`HUB_PASSPORTS_BY_PRINCIPAL`) declaring the same
+  space/environment with memory enabled — only then is the vault opened,
+  under a per-user lock so one user's blocked operation never serializes
+  another's. A caller-supplied path is never consulted.
 - **Multi-tenant auth**: `toolhub-tokens.json` (`HUB_TOOLHUB_TOKENS_FILE`)
   maps sibling-space bearers to full identity envelopes; render/supervisor
   write each sibling's `HUB_RUNTIME_AUTH` in place (same inode → live bind
@@ -246,7 +255,9 @@ owner-registered bounded CLI commands), `HUB_RECIPE_CATALOGS`,
 `HUB_AGENT_EXEC_MODE=supervisor` (agent-tools exec via docker exec, never the
 agent network), `HUB_CAPABILITY_MODE`/`_PROFILE_ID`/`_GENERATION`/`_ENVIRONMENT`
 (managed mode), `HUB_CREDENTIAL_BROKER_*` client env, `HUB_BUILD_SECCOMP`
-(rootless buildkit profile), `HUB_COMMUNICATION_CONTROL_URL`.
+(rootless buildkit profile), `HUB_COMMUNICATION_CONTROL_URL`,
+`HUB_PASSPORTS_BY_PRINCIPAL` + `HUB_VAULTS_BY_PRINCIPAL` (per-principal
+passport/vault mount roots).
 
 ## Boundaries
 
