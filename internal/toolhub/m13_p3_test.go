@@ -917,8 +917,8 @@ func TestConnectorAllowWritesJournal(t *testing.T) {
 	if err != nil || !armed.WritesEnabled || armed.Phase != api.PhaseEnabled {
 		t.Fatalf("onboarding after write confirm: %v %+v", err, armed)
 	}
-	if tools, err := store.ListProjectedTools(auth); err != nil || !slices.ContainsFunc(tools, func(pt api.ProjectedTool) bool { return pt.Name == writeName }) {
-		t.Fatalf("write tool missing after allow_writes: %v %v", tools, err)
+	if tools, err := store.ListProjectedTools(auth); err != nil || slices.ContainsFunc(tools, func(pt api.ProjectedTool) bool { return pt.Name == writeName }) {
+		t.Fatalf("allow_writes selected a tool outside tools.yaml: %v %v", tools, err)
 	}
 	resumed, err := c.InvokeConnector(context.Background(), auth, "connector_allow_writes", map[string]any{"target": "wri-mcp", "on": true})
 	if err != nil {

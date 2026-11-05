@@ -231,6 +231,13 @@ func TestCompileCarriesToolsConnectors(t *testing.T) {
 }
 
 func TestCompileRejectsBadConnector(t *testing.T) {
+	for _, invalid := range []any{"missing declaration", []any{"gitea"}, map[string]any{"gitea": "not a definition"}} {
+		in := v2FixtureInputs(t)
+		in.User.Docs["tools"]["connectors"] = invalid
+		if _, err := Compile(in); err == nil {
+			t.Fatal("malformed connector declaration compiled")
+		}
+	}
 	for name, def := range map[string]map[string]any{
 		"both url and command": {"url": "https://mcp.example.com/x", "command": "npx"},
 		"neither":              {"timeout": 5},

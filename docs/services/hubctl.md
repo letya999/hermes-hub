@@ -39,6 +39,11 @@ Flags: `--dir spaces/<user>`, `--root .`, `--user`, `--org`, `--env prod|dev`.
 
 ## What it writes
 
+`space apply` validates selected connector bindings and tool names before
+publishing a revision. A missing or malformed `tools.yaml` declaration leaves
+the current revision active. Applying a selection updates the bound profile;
+it does not create a connection, credential or issued grant.
+
 `render`/`init`/`up` generate the space compose (`compose.dev.yaml`), config,
 and materialized dirs under `spaces/<user>/` — see docs/spaces.md. Nothing in
 `generated/` is hand-edited; re-render instead.

@@ -1424,8 +1424,8 @@ func testManagedSelfInstallAndControlOperations(t *testing.T, mode string) {
 			found = true
 		}
 	}
-	if !found || len(projected) != 2 {
-		t.Fatalf("self-installed tool not projected: %v", projected)
+	if found || len(projected) != 1 {
+		t.Fatalf("installation selected a tool outside tools.yaml: %v", projected)
 	}
 	dispatched := false
 	g := &Gateway{Store: s, AuditWrite: func(string, map[string]string) error { return nil },
@@ -1433,8 +1433,8 @@ func testManagedSelfInstallAndControlOperations(t *testing.T, mode string) {
 			dispatched = true
 			return api.BackendResult{Text: "ok"}, nil
 		})}
-	if _, err := g.CallAuthorized(t.Context(), auth, name, map[string]any{}); err != nil || !dispatched {
-		t.Fatalf("self-installed call denied: %v", err)
+	if _, err := g.CallAuthorized(t.Context(), auth, name, map[string]any{}); err == nil || dispatched {
+		t.Fatalf("unselected self-installed call reached backend: %v", err)
 	}
 
 	// A catalog onboarding does not admit the binding; nor does a pre-managed

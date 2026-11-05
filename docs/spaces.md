@@ -5,6 +5,14 @@ last_verified: "2026-11-05"
 
 # Spaces
 
+In a managed space, `passports/tools.yaml` selects reviewed connector tools
+through cataloged `via: mcp` toolsets. Removing a toolset removes its model
+projection after apply while its operational connection and credentials stay.
+Raw MCP declarations stay under `tools.connectors`; a `via: off` entry for
+one server deselects that server without removing its declaration. The
+published revision drives runtime rendering, and a raw MCP selection change
+respawns the managed runtime.
+
 One `spaces/<id>/` directory is one principal's deployment unit: its config,
 secrets, generated artifacts and state. `hubctl init`/`render`/`up` work on a
 `--dir spaces/<id>` target. `hubctl init` creates a user scope;

@@ -208,8 +208,8 @@ func testTelegramSendRetainsOwnerSession(t *testing.T, managed bool) {
 	}
 	if managed {
 		tools, err := c.Store.ListProjectedTools(auth)
-		if err != nil || len(tools) != 3 {
-			t.Fatalf("managed projection lost read or send tools: %v %v", tools, err)
+		if err != nil || len(tools) != 1 {
+			t.Fatalf("connection update selected tools outside tools.yaml: %v %v", tools, err)
 		}
 	}
 }

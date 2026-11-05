@@ -172,7 +172,8 @@ definitions project), `allows`/`allow_groups`, `denies`, plus:
 - `control_operations` — reviewed allowlist of control-plane ops for the
   managed token; absent means none.
 - `self_install` — admits the GitHub-source prepare path; installation still
-  requires the single-use human confirmation (SPEC-0041 CP-05).
+  requires the single-use human confirmation (SPEC-0041 CP-05). Installation
+  does not select model tools; a published `tools.yaml` selection is required.
 - `connectors` — projection mode for the nine `connector_*` tools: `""` keeps
   legacy per-operation grants, `none` hides them, `personal` projects them
   over own connections, `personal+team` adds lifecycle on team connections
@@ -181,6 +182,13 @@ definitions project), `allows`/`allow_groups`, `denies`, plus:
   `capability.operation` ceiling rows; `DeriveRights` rewrites it on every
   publish, so the row set is always the active passport, never a manual
   edit.
+
+For managed connector tools, `selections` is replaced from the published
+`tools.yaml` on apply. An old profile selection, active connection or cached
+MCP schema cannot restore a removed tool. Connection records, credential
+references and issued grants have separate lifecycles; selection alone grants
+no right. Connector selection changes keep the session policy version stable,
+while each call still checks the current profile revision and live grants.
 
 ## Capability rules
 

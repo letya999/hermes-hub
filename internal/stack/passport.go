@@ -189,6 +189,14 @@ func passportTools(t passportview.Tools) map[string]ToolEntry {
 		return nil
 	}
 	out := map[string]ToolEntry{}
+	denied := map[string]bool{}
+	for _, area := range []map[string]passportview.Toolset{t.Core, t.Extended} {
+		for name, entry := range area {
+			if entry.Via == "off" {
+				denied[name] = true
+			}
+		}
+	}
 	for _, area := range []map[string]passportview.Toolset{t.Core, t.Extended} {
 		for name, ts := range area {
 			// The pinned platform family is not an operator toolset; the
@@ -217,7 +225,9 @@ func passportTools(t passportview.Tools) map[string]ToolEntry {
 				// one mcp-raw selection per declared server so the
 				// selector/governance paths keep naming each.
 				for server := range t.Connectors {
-					out[server] = ToolEntry{Via: ToolViaMCPRaw, Server: server}
+					if !denied[server] {
+						out[server] = ToolEntry{Via: ToolViaMCPRaw, Server: server}
+					}
 				}
 				continue
 			case ts.Via == "mcp" || strings.HasPrefix(ts.Via, "mcp:"):

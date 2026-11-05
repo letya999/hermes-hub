@@ -151,13 +151,26 @@ type rightsView struct {
 }
 
 func rightsProjection(s Settings) rightsView {
+	tools := s.Tools
+	if s.CapabilityMode == "managed" {
+		// Managed connector selection is fenced by the published profile
+		// revision. Keep the session policy version stable when only that
+		// selection changes, so a sibling connector remains callable.
+		tools = make(map[string]ToolEntry, len(s.Tools))
+		for name, entry := range s.Tools {
+			if name != "browser" && mcpConnectors[name] || s.MCP[name].URL != "" || s.MCP[name].Command != "" {
+				continue
+			}
+			tools[name] = entry
+		}
+	}
 	view := rightsView{
 		CapabilityMode:        s.CapabilityMode,
 		CapabilityProfileID:   s.CapabilityProfileID,
 		CapabilityGeneration:  s.CapabilityGeneration,
 		CLIRegistries:         s.CLIRegistries,
 		CLIToolboxes:          s.CLIToolboxes,
-		Tools:                 s.Tools,
+		Tools:                 tools,
 		Ingress:               s.Ingress,
 		TelegramAuth:          s.Has("telegram_auth"),
 		Workspace:             s.Workspace,

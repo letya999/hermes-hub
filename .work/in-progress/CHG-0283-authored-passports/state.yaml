@@ -20,18 +20,23 @@ slices:
     issue: 509
     branch: codex/m32-track-1
     status: implemented_pending_live_acceptance
+  C2:
+    issue: 510
+    branch: codex/m32-track-1
+    status: implemented_pending_live_acceptance
 historical_slices:
   S2.1-authoring: in_progress
   S2.2-rights: in_progress
   S2.3-legacy-removal: in_progress
 validation:
   documents: passed_2026-11-05
-  just_check: failed_windows_vault_test_launch_2026-11-05
-  go_check: failed_windows_vault_test_launch_2026-11-05
-  docker_check: passed_2026-11-05
-  red_team: C1_scoped_regressions_passed_2026-11-05
+  just_check: passed_2026-11-05_85_99pct
+  go_check: passed_2026-11-05_85_99pct
+  docker_check: passed_C2_2026-11-05
+  red_team: C2_scoped_regressions_passed_2026-11-05
   live_acceptance: not_started
 evidence:
+  - "2026-11-05 #510 C2 on codex/m32-track-1 after #509 15c7978d: tools.yaml now replaces all managed profile selections, including connector definitions; managed MCP list/call cannot recover a removed self-installed selection. Connector selections resolve from declared toolsets and active bindings before publish. A published removal in TestPassportRemovalRevokesConnectorSelection removes one of two synthetic credential-bearing connectors from list and rejects its call in the same live MCP session before backend while the sibling remains callable. Connections, credential references and issued grants are unchanged; repeated derivation with both connectors and after removal is byte-identical; re-selection without a live grant is denied. Raw MCP via off suppresses the selected server while preserving its declaration; malformed connector declarations fail compilation. Full scoped toolhub/stack/migration/passport/hubctl tests passed; focused connector test passed ten repeats and under race. just check exit 0, own Go statement coverage 85.99%; format/vet/tidy/staticcheck/gosec/docs/actionlint/config passed. just docker-check exit 0: seven images, budgets, smoke, pinned Hermes API/capability, two-user gateway cold restore, managed network/supervisor, scratch/quarantine, project docker-clean. No live provider/account acceptance claimed."
   - "2026-11-05 #509 C1 on codex/m32-track-1 from dev 6eae50d4: unsupported host/URL, unknown rule and non-file executor scopes now fail passport compilation before publication. Authored tools scope reaches Gateway admission and agenttools executor in TestAuthoredToolScopeReachesExecutor; allowed path succeeds, sibling/traversal/wrong-root/malformed/unselected/stale calls refuse before backend, symlink escape refuses at executor. Scoped full packages passport/migration/toolhub/agenttools/hubctl passed; focused rerun, just lint, just docs-check, just config-check and staged gitleaks passed. just check reached final vault package but Windows refused to launch vault.test.exe; isolated vault race test passed, total own statement coverage remains unverified. just docker-check built current images and passed image budgets, smoke, Hermes API/capability, two-user synthetic gateway cold restore, managed network/supervisor, scratch/quarantine; project docker-clean completed. No live provider or authored-scope container call claimed; #510–#512 untouched."
   - "2026-11-05 bounded-plan verification: devcheck docs passed (exit 0); 17 current planning files passed relative-link/whitespace checks and the 20-issue dependency graph is acyclic. Milestone 43 and all 20 English issue contracts were synchronized. just check was invoked but intentionally interrupted during the test leg (exit 1); no full-suite or coverage pass claimed. No production code, worktree, commit or deployment created by this planning update."
   - "2026-11-05 decomposition update: ADR-0097 and SPEC-0096/0097/0098/0099 define current small assignments; foundation packages/verifies only. First wave is #509/#513/#521. #508 requires #511/#512; #522 requires #521/#514; #523 performs the sole automation owner switch. No new implementation or gate pass claimed; historical evidence below retains its original snapshot."
@@ -102,6 +107,7 @@ evidence:
   - "2026-11-04: reconcile.Run RolledBack is now true only when the pointer restore actually succeeded; applyConfirm reports rollback divergence instead of 'rolled back to', surfaces rights-ledger restore failures (previously swallowed), and a rolled-back first apply restores the empty ceiling via migration.RestoreSpaceRights (policy versions untouched). Regressions red→green; full cmd/hubctl, internal/migration, internal/reconcile, internal/toolhub suites pass."
 remaining: [real_authored_lifecycle_acceptance, sole_config_authority, tool_projection, transactional_recovery, consumer_wiring, quality_gates, live_acceptance]
 limitations:
-  - "The latest full just check exited 1 on a Windows compile.exe launch failure during staticcheck; its race/coverage leg passed at 85.98%, and isolated lint/docs/config legs passed. Those gates and the passing Docker gate predate the subsequent org-policy source edit. Live provider/user integration is not verified."
+  - "C2 raw MCP projection is verified at effective-config rendering; an already running raw Hermes MCP session requires the existing respawn consumer and has not been live-tested. Connector admission is verified through a real local MCP session with a synthetic backend, not a provider service."
+  - "C2 just check and just docker-check passed on this source revision. Live provider/user integration is not verified."
   - "Apply lock and stale-base guard do not provide atomic current/view/profile/service activation or complete rollback."
   - "ToolHub memory gate is wired for projected model tools, while capture/recall/dreaming and vault writes remain communication/runtime-owned; moving those workers is required before memory disablement is complete."

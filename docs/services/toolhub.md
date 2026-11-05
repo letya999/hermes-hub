@@ -71,12 +71,11 @@ tool call crosses. Listens `0.0.0.0:8090`, host-bound to `127.0.0.1:8090`.
   `policy_revision` pin diverges from the runtime envelope resolve to an
   unauthorized projection: the session degrades to meta tools, never to a
   widened surface. On `policy_version` rotation the passport-derived
-  `DeriveRights` pass repins each active credential-free binding covered by
-  the profile's selections onto the new pv through the same `Enable`
-  admission — the binding follows the pv the platform already moved the
-  profile and sibling tokens to; credential-bearing bindings still require
-  the explicit `--kind` re-issue because their connection/credential
-  revisions are operator state.
+  `DeriveRights` pass repins active bindings covered by the published
+  selections through the same `Enable` admission. Credential-bearing
+  bindings retain their connection and credential references. Deselecting a
+  tool removes its open-session projection without disabling its binding or
+  revoking credentials or grants. Re-selection still needs live rights.
   For first-party file tools, `tools.yaml` path scopes narrow the selected
   member after policy admission and before backend dispatch. The executor
   receives the intersected prefix as an `os.Root` boundary. Unsupported

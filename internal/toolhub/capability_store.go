@@ -290,17 +290,6 @@ func (s *Store) managedToolsLocked(auth identity.Envelope) ([]api.ProjectedTool,
 			return nil, err
 		}
 	}
-	seen := make(map[string]bool, len(result))
-	for _, tool := range result {
-		seen[tool.Name] = true
-	}
-	for _, tool := range s.managedSelfInstallToolsLocked(auth, profile) {
-		if seen[tool.Name] {
-			continue
-		}
-		seen[tool.Name] = true
-		result = append(result, tool)
-	}
 	slices.SortFunc(result, func(a, b api.ProjectedTool) int { return strings.Compare(a.Name, b.Name) })
 	return result, nil
 }
@@ -671,5 +660,5 @@ func (s *Store) managedToolLocked(auth identity.Envelope, name string, arguments
 			break
 		}
 	}
-	return s.managedSelfInstallToolLocked(auth, profile, name)
+	return api.ProjectedTool{}, api.EffectiveBinding{}, api.ErrNotFound
 }

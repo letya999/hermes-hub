@@ -829,7 +829,11 @@ func checkTools(bodies map[string]map[string]any, docs catalog.Docs) error {
 		bodies["tools"]["binding"] = binding
 	}
 	if connectors, present := t["connectors"]; present {
-		if err := checkConnectors(asMap(connectors), docs); err != nil {
+		servers, ok := connectors.(map[string]any)
+		if !ok {
+			return fmt.Errorf("passport compile: connectors must be a map")
+		}
+		if err := checkConnectors(servers, docs); err != nil {
 			return err
 		}
 		bodies["tools"]["connectors"] = connectors
@@ -850,7 +854,10 @@ func checkConnectors(servers map[string]any, docs catalog.Docs) error {
 		if _, err := docs.Toolset(name); err == nil || !identity.ValidID(name) || reserved[name] {
 			return fmt.Errorf("passport compile: connector %q is reserved or invalid", name)
 		}
-		spec, _ := raw.(map[string]any)
+		spec, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("passport compile: connector %q must be a map", name)
+		}
 		for k := range spec {
 			if !slices.Contains([]string{"url", "command", "args", "env", "headers", "tools", "auth", "timeout"}, k) {
 				return fmt.Errorf("passport compile: connector %q has unknown field %q", name, k)

@@ -195,6 +195,15 @@ func TestSpaceApplyCompilesSixAuthoredPassports(t *testing.T) {
 	if current, err := passport.Current(space); err != nil || current != rev.ID {
 		t.Fatalf("rejected scope displaced current revision: %q %v", current, err)
 	}
+	if err := os.WriteFile(toolsPath, []byte("binding: {profile_id: alice-default, generation: 1}\nextended: {github: {via: mcp}}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runSpaceApply(context.Background(), []string{"--dir", space, "--env", "dev", "--confirm"}); err == nil {
+		t.Fatal("missing connector binding reached publication")
+	}
+	if current, err := passport.Current(space); err != nil || current != rev.ID {
+		t.Fatalf("missing connector binding displaced current revision: %q %v", current, err)
+	}
 	if err := os.WriteFile(toolsPath, []byte("binding: {profile_id: alice-default, generation: 1}\nextended: {files: {via: toolhub}}\n"), 0600); err != nil {
 		t.Fatal(err)
 	}

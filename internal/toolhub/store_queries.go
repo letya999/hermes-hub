@@ -16,6 +16,24 @@ func (s *Store) Definition(id, version string) (api.ToolDefinition, error) {
 	return definition, nil
 }
 
+// BindingsForProfile returns operational bindings for a managed profile;
+// selection is derived separately from the published tools passport.
+func (s *Store) BindingsForProfile(profileID string) ([]api.ToolBinding, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	profile, ok := s.capabilityProfiles[profileID]
+	if !ok || profile.Status != api.ActiveStatus {
+		return nil, api.ErrNotFound
+	}
+	var out []api.ToolBinding
+	for _, binding := range s.bindings {
+		if binding.Status == api.ActiveStatus && binding.PrincipalID == profile.PrincipalID && binding.ContextID == profile.ContextID && binding.RuntimeID == profile.RuntimeID {
+			out = append(out, binding)
+		}
+	}
+	return out, nil
+}
+
 func (s *Store) publicationFor(definition api.ToolDefinition) api.DefinitionPublication {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

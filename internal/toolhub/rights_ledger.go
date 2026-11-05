@@ -111,9 +111,8 @@ func DeriveRights(store *Store, gov *GovernanceStore, doc api.RightsDoc, princip
 	return deriveRights(store, gov, doc, principal, allow, environment, profileID, policyVersion, "", nil, nil, now)
 }
 
-// DeriveRightsAndSelections applies the published rights and first-party tool
-// selection to the same bound profile revision. Other registered definitions
-// retain their independent connection lifecycle.
+// DeriveRightsAndSelections replaces the bound profile's selections with the
+// published tools passport. Bindings and connections keep their own lifecycle.
 func DeriveRightsAndSelections(store *Store, gov *GovernanceStore, doc api.RightsDoc, principal string, allow map[string][]string, environment, profileID, policyVersion, definitionID string, selections []api.CapabilitySelection, core []string, now time.Time) error {
 	return deriveRights(store, gov, doc, principal, allow, environment, profileID, policyVersion, definitionID, selections, core, now)
 }
@@ -150,22 +149,13 @@ func deriveRights(store *Store, gov *GovernanceStore, doc api.RightsDoc, princip
 	}
 	for _, profile := range bound {
 		repin := policyVersion != "" && profile.PolicyVersion != policyVersion
-		var selected []api.CapabilitySelection
-		if definitionID != "" {
-			for _, current := range profile.Selections {
-				if current.DefinitionID != definitionID {
-					selected = append(selected, current)
-				}
-			}
-			selected = append(selected, selections...)
-		}
-		selectionChanged := definitionID != "" && (!reflect.DeepEqual(profile.Selections, selected) || !slices.Equal(profile.CoreTools, core) || !profile.CoreBound)
+		selectionChanged := definitionID != "" && (!reflect.DeepEqual(profile.Selections, selections) || !slices.Equal(profile.CoreTools, core) || !profile.CoreBound)
 		if equalRightRules(profile.Rights, rules) && !repin && !selectionChanged {
 			continue
 		}
 		profile.Rights = rules
 		if definitionID != "" {
-			profile.Selections = selected
+			profile.Selections = slices.Clone(selections)
 			profile.CoreBound = true
 			profile.CoreTools = slices.Clone(core)
 		}
@@ -246,8 +236,8 @@ func (s *Store) repinManagedBindings(profile api.CapabilityProfile, environment,
 		if !selected[binding.DefinitionID+"\x00"+binding.DefinitionVersion] {
 			continue
 		}
-		definition, ok := s.definitions[definitionKey(binding.DefinitionID, binding.DefinitionVersion)]
-		if !ok || len(definition.Credentials) > 0 {
+		_, ok := s.definitions[definitionKey(binding.DefinitionID, binding.DefinitionVersion)]
+		if !ok {
 			continue
 		}
 		stale = append(stale, binding)

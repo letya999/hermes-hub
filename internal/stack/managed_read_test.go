@@ -615,6 +615,36 @@ func TestManagedConnectorsProjectRawMCP(t *testing.T) {
 	}
 }
 
+func TestPassportRemovalRevokesRawMCPSelection(t *testing.T) {
+	dir := t.TempDir()
+	docs := managedDocs("alice")
+	base := "kind: tools\nbinding: {profile_id: alice-default, generation: 1}\nextended:\n  user_mcp: {via: mcp-raw}\n"
+	declarations := "connectors:\n  gitea: {url: 'https://mcp.example.com/gitea'}\n  notes: {url: 'https://mcp.example.com/notes'}\n"
+	docs["tools"] = base + declarations
+	publishManagedDocs(t, dir, "alice", "r-1111111111111111", docs)
+	seedGovernance(t, dir, func(doc *api.Governance) { activeToolGrant(t, doc, "alice", api.SectionUserMCP, time.Hour) })
+	check := func(wantGitea bool) {
+		t.Helper()
+		s, err := ReadEffectiveSpace(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(s.MCP) != 2 {
+			t.Fatal("deselection deleted a raw MCP declaration")
+		}
+		servers := rawMCPServers(s)
+		_, got := servers["gitea"]
+		if got != wantGitea || servers["notes"] == nil {
+			t.Fatalf("raw MCP projection: gitea=%v notes=%v", got, servers["notes"] != nil)
+		}
+	}
+	check(true)
+	docs["tools"] = base + "  gitea: {via: off}\n" + declarations
+	publishManagedDocs(t, dir, "alice", "r-2222222222222222", docs)
+	check(false)
+	check(false)
+}
+
 // A `via: off` tools entry is the documented self-deny surface — it must
 // project verbatim so org narrowing and disabledMCPNames consumers see it.
 func TestManagedToolsOffProjectsDeny(t *testing.T) {
