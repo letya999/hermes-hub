@@ -527,8 +527,8 @@ func TestCommitAttribution(t *testing.T) {
 // the memory.write capability and dispatches through Call like every tool.
 func TestMemoryCardCatalog(t *testing.T) {
 	def := HubToolsDefinition()
-	if def.Version != "10.0.0" {
-		t.Fatalf("catalog version = %s, want 10.0.0", def.Version)
+	if def.Version != "12.0.0" {
+		t.Fatalf("catalog version = %s, want 12.0.0", def.Version)
 	}
 	var spec *struct {
 		found, write bool

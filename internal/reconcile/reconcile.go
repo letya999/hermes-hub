@@ -70,6 +70,41 @@ func Plan(changes []passport.Change, services map[string]passportview.ServiceSpe
 		return a
 	}
 	for _, c := range changes {
+		if strings.HasPrefix(c.Path, "config.hosting.") {
+			if _, rendered := services["hosting"]; !rendered {
+				continue
+			}
+			a := get(Recreate, "hosting")
+			a.Consumers = appendUnique(a.Consumers, c.Consumer)
+			a.Paths = appendUnique(a.Paths, c.Path)
+			if c.Path != "config.hosting.slots" {
+				kind, target := Recreate, "hosting-controller"
+				if c.Path == "config.hosting.image" && c.After == "" {
+					kind, target = Remove, "*"
+				} else if c.After == "" {
+					continue
+				}
+				a = get(kind, target)
+				a.Consumers = appendUnique(a.Consumers, c.Consumer)
+				a.Paths = appendUnique(a.Paths, c.Path)
+			}
+			continue
+		}
+		if c.Path == "config.memory.enabled" {
+			for _, target := range []string{"communication-hub", "toolhub"} {
+				if _, rendered := services[target]; rendered {
+					a := get(Recreate, target)
+					a.Consumers = appendUnique(a.Consumers, c.Consumer)
+					a.Paths = appendUnique(a.Paths, c.Path)
+				}
+			}
+			if _, rendered := services["hermes-runtime"]; rendered {
+				a := get(Respawn, "hermes-runtime")
+				a.Consumers = appendUnique(a.Consumers, c.Consumer)
+				a.Paths = appendUnique(a.Paths, c.Path)
+			}
+			continue
+		}
 		var a *Action
 		switch c.Effect {
 		case passport.EffectRebuild:
@@ -172,13 +207,11 @@ type Handlers struct {
 	Live     map[string]func() error
 }
 
-// Run executes the plan in order. The first failure rolls the current
-// pointer back to previous and re-runs the already-applied live hooks so
-// their state matches the restored revision; the report always names the
-// failed action.
+// Run executes the plan in order. On failure it restores the previous
+// revision and replays every action that may already have changed a service.
 func Run(actions []Action, h Handlers, publishRollback func() error, revision, previous string) Report {
 	rep := Report{Revision: revision, Previous: previous}
-	var appliedLive []Action
+	var applied []Action
 	for _, a := range actions {
 		step := StepResult{Kind: a.Kind, Target: a.Target, Status: "applied"}
 		var err error
@@ -207,23 +240,38 @@ func Run(actions []Action, h Handlers, publishRollback func() error, revision, p
 			rep.Steps = append(rep.Steps, step)
 			failed := a
 			rep.Failed = &failed
-			rep.RolledBack = true
 			if rbErr := publishRollback(); rbErr != nil {
 				rep.Steps = append(rep.Steps, StepResult{Kind: a.Kind, Target: a.Target, Status: "failed", Detail: "rollback pointer: " + rbErr.Error()})
-			}
-			for _, la := range appliedLive {
-				st := StepResult{Kind: Live, Target: la.Target, Status: "rolled-back"}
-				if hook := h.Live[la.Target]; hook != nil {
-					if err := hook(); err != nil {
-						st.Status, st.Detail = "failed", "live rollback: "+err.Error()
-					}
+			} else {
+				rep.RolledBack = true
+				if a.Kind != Rebuild {
+					applied = append(applied, a) // a failed handler may have changed its target.
 				}
-				rep.Steps = append(rep.Steps, st)
+				for i := len(applied) - 1; i >= 0; i-- {
+					prior := applied[i]
+					st := StepResult{Kind: prior.Kind, Target: prior.Target, Status: "rolled-back"}
+					var replayErr error
+					switch prior.Kind {
+					case Recreate:
+						replayErr = h.Recreate(prior.Target)
+					case Remove:
+						replayErr = h.Remove()
+					case Respawn:
+						replayErr = h.Respawn()
+					case Live:
+						replayErr = h.Live[prior.Target]()
+					}
+					if replayErr != nil {
+						st.Status, st.Detail = "failed", "rollback: "+replayErr.Error()
+						rep.RolledBack = false
+					}
+					rep.Steps = append(rep.Steps, st)
+				}
 			}
 			return rep
 		}
-		if a.Kind == Live && step.Status == "applied" {
-			appliedLive = append(appliedLive, a)
+		if a.Kind != Rebuild && step.Status == "applied" {
+			applied = append(applied, a)
 		}
 		rep.Steps = append(rep.Steps, step)
 	}

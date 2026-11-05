@@ -34,6 +34,7 @@ func generateRights() RightsDoc {
 				"write":          rop("self", "path", selfIssuers, []string{"file tools"}, "write", "Create, modify or delete files inside writable workspace paths."),
 				"create_project": rop("self", "path", selfIssuers, []string{"file tools", "project init"}, "write", "Initialize a new project directory — including nested git repositories — under /workspace/projects."),
 				"read_other":     rop("cross", "path", crossIssuers, []string{"file tools"}, "read", "Read another space's explicitly shared workspace export."),
+				"configure":      rop("self", "none", selfIssuers, []string{"passport publisher"}, "write", "Edit the workspace passport boundary without granting file access."),
 			},
 		},
 		"memory": {
@@ -42,14 +43,17 @@ func generateRights() RightsDoc {
 				"read":     rop("self", "path", selfIssuers, []string{"vault tools"}, "read", "Read memory files under /vault/memory."),
 				"search":   rop("self", "path", selfIssuers, []string{"vault tools"}, "read", "Run semantic or lexical search across memory entries."),
 				"remember": rop("self", "path", selfIssuers, []string{"vault tools"}, "write", "Persist new facts, cards and summaries into memory."),
+				"edit":     rop("self", "path", selfIssuers, []string{"vault tools"}, "write", "Edit or remove existing memory after verified owner confirmation."),
+				"dreaming": rop("self", "none", selfIssuers, []string{"ToolHub night routine"}, "control", "Run the owner's nightly memory consolidation."),
 			},
 		},
 		"models": {
 			Description: "Rights over model routing: which routes the agent may see, call and switch between.",
 			Operations: map[string]RightOperation{
-				"list":   rop("self", "none", selfIssuers, []string{"model-relay"}, "read", "List the models and routes visible to this space."),
-				"use":    rop("self", "model", selfIssuers, []string{"model-relay"}, "write", "Send inference requests to a service the route ladder admits."),
-				"switch": rop("self", "model", selfIssuers, []string{"model-relay"}, "control", "Move the session to another model or route inside the granted ladder."),
+				"list":      rop("self", "none", selfIssuers, []string{"model-relay"}, "read", "List the models and routes visible to this space."),
+				"use":       rop("self", "model", selfIssuers, []string{"model-relay"}, "write", "Send inference requests to a service the route ladder admits."),
+				"switch":    rop("self", "model", selfIssuers, []string{"model-relay"}, "control", "Move the session to another model or route inside the granted ladder."),
+				"configure": rop("self", "none", selfIssuers, []string{"passport publisher"}, "write", "Edit the models passport without granting model use."),
 			},
 		},
 		"sessions": {
@@ -143,10 +147,17 @@ func generateRights() RightsDoc {
 			},
 		},
 		"tools": {
-			Description: "Rights over the tool surface itself: discovering and selecting toolsets into the live session.",
+			Description: "Rights over using and configuring the selected tool surface.",
 			Operations: map[string]RightOperation{
-				"list":   rop("self", "none", selfIssuers, []string{"ToolHub projection"}, "read", "Enumerate the toolsets and tools admitted for this space."),
-				"select": rop("self", "toolset", selfIssuers, []string{"ToolHub projection", "apply"}, "control", "Invoke a tool from a selected toolset whose scope and rules match."),
+				"list":      rop("self", "none", selfIssuers, []string{"ToolHub projection"}, "read", "Enumerate the toolsets and tools admitted for this space."),
+				"use":       rop("self", "none", selfIssuers, []string{"ToolHub projection", "ToolHub dispatch"}, "control", "Invoke a selected tool when its own operation right also allows the call."),
+				"configure": rop("self", "none", selfIssuers, []string{"passport publisher"}, "write", "Edit the selected tool surface without granting tool use."),
+			},
+		},
+		"grants": {
+			Description: "Rights over the grants passport itself: editing the space's intended rights document.",
+			Operations: map[string]RightOperation{
+				"configure": rop("self", "none", selfIssuers, []string{"passport publisher"}, "write", "Edit the grants passport; published content still must fit the issued ceiling."),
 			},
 		},
 		"skills": {

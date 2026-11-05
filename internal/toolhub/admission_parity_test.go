@@ -50,6 +50,7 @@ func TestDirectAndToolCallAdmissionParity(t *testing.T) {
 	if err := putProfile(t, s, profile); err != nil {
 		t.Fatal(err)
 	}
+	grantDefinitionRights(t, s, auth, definition)
 	var backendCalls []string
 	g := &Gateway{Store: s, Tokens: map[string]identity.Envelope{aliceToken: auth},
 		Control: &ControlPlane{Store: s, Now: time.Now},

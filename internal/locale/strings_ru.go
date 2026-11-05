@@ -2,13 +2,17 @@ package locale
 
 func init() {
 	register(LangRU, map[string]string{
-		"hubctl.audit-rollover-usage":   "Использование: hubctl audit rollover --ledger <абсолютный путь> [--apply --digest <sha256:...>]",
-		"hubctl.audit-rollover-ledger":  "Путь к старому audit остановленного ToolHub",
-		"hubctl.audit-rollover-apply":   "Применить проверенный перенос; по умолчанию только план",
-		"hubctl.audit-rollover-digest":  "Digest плана для --apply",
-		"hubctl.audit-rollover-stale":   "План старого audit устарел; получите его заново.",
-		"hubctl.audit-rollover-invalid": "Старый audit повреждён или не допускает безопасный перенос.",
-		"hubctl.audit-rollover-failed":  "Перенос старого audit не завершился; проверьте offline-состояние перед повтором.",
+		"hubctl.space-apply-passport-right":       "Для этого изменения паспорта требуется право %s.",
+		"hubctl.space-apply-scope-kind":           "Тип области прошивается при инициализации и не может меняться между ревизиями.",
+		"hubctl.space-apply-organization-binding": "Для применения пространства организации нужна привязка управляемого профиля.",
+		"hubctl.space-apply-organization-policy":  "Политика организации недоступна или запрошенные права превышают её предел.",
+		"hubctl.audit-rollover-usage":             "Использование: hubctl audit rollover --ledger <абсолютный путь> [--apply --digest <sha256:...>]",
+		"hubctl.audit-rollover-ledger":            "Путь к старому audit остановленного ToolHub",
+		"hubctl.audit-rollover-apply":             "Применить проверенный перенос; по умолчанию только план",
+		"hubctl.audit-rollover-digest":            "Digest плана для --apply",
+		"hubctl.audit-rollover-stale":             "План старого audit устарел; получите его заново.",
+		"hubctl.audit-rollover-invalid":           "Старый audit повреждён или не допускает безопасный перенос.",
+		"hubctl.audit-rollover-failed":            "Перенос старого audit не завершился; проверьте offline-состояние перед повтором.",
 		// Language picker and /language.
 		"lang.choose":   "Выберите язык для взаимодействия:",
 		"lang.saved":    "Язык установлен: %s.",

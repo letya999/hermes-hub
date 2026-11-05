@@ -1,0 +1,35 @@
+schema: 1
+change: CHG-0287
+title: "ToolHub system dreaming"
+status: in_progress
+branch: chore/merge-m31-m20-into-dev
+updated: 2026-11-05
+phase: design-complete
+adr: [ADR-0095, ADR-0097]
+spec: SPEC-0099
+requirements: [A4, A5]
+depends_on: [CHG-0281]
+issue_dependencies: "../CHG-0281-m32-per-space-memory-plane/github-issues.json"
+github_milestone: "M32 MVP — Passports, Memory, and Automation in ToolHub"
+github_milestone_number: 43
+github_issues: [524, 525]
+design_status: accepted
+implementation_status: not_started
+slices: {}
+historical_slices:
+  S6.1-clock: not_started
+  S6.2-run: not_started
+  S6.3-delivery: not_started
+validation:
+  documents: passed_2026-11-05
+  just_check: not_run
+  docker_check: not_run
+  red_team: not_started
+  live_acceptance: not_started
+evidence:
+  - "2026-11-05 bounded-plan verification: devcheck docs passed (exit 0); 17 current planning files passed relative-link/whitespace checks and the 20-issue dependency graph is acyclic. Milestone 43 and all 20 English issue contracts were synchronized. just check was invoked but intentionally interrupted during the test leg (exit 1); no full-suite or coverage pass claimed. No production code, worktree, commit or deployment created by this planning update."
+  - "2026-11-05 decomposition update: ADR-0097 and SPEC-0096/0097/0098/0099 define current small assignments; foundation packages/verifies only. First wave is #509/#513/#521. #508 requires #511/#512; #522 requires #521/#514; #523 performs the sole automation owner switch. No new implementation or gate pass claimed; historical evidence below retains its original snapshot."
+  - "2026-11-05 GitHub planning: milestone 43 and issues 524, 525 created. GitHub owns current issue status; parallel-work.md defines foundation/worktree assignments. Foundation and implementation worktrees are not created by this planning session."
+remaining: [implementation, quality_gates, live_acceptance]
+limitations: []
+

@@ -2,13 +2,17 @@ package locale
 
 func init() {
 	register(LangES, map[string]string{
-		"hubctl.audit-rollover-usage":   "Uso: hubctl audit rollover --ledger <ruta absoluta> [--apply --digest <sha256:...>]",
-		"hubctl.audit-rollover-ledger":  "Ruta del audit antiguo con ToolHub detenido",
-		"hubctl.audit-rollover-apply":   "Aplicar la migración verificada; por defecto solo planifica",
-		"hubctl.audit-rollover-digest":  "Digest del plan requerido con --apply",
-		"hubctl.audit-rollover-stale":   "El plan del audit antiguo está desactualizado; genere otro.",
-		"hubctl.audit-rollover-invalid": "El audit antiguo es inválido o no permite una migración segura.",
-		"hubctl.audit-rollover-failed":  "Falló la migración del audit antiguo; revise el estado sin conexión antes de reintentar.",
+		"hubctl.space-apply-passport-right":       "Este cambio de pasaporte requiere el permiso %s.",
+		"hubctl.space-apply-scope-kind":           "El tipo de ámbito queda fijado en el aprovisionamiento y no puede cambiar entre revisiones.",
+		"hubctl.space-apply-organization-binding": "Aplicar un espacio de organización requiere un perfil administrado vinculado.",
+		"hubctl.space-apply-organization-policy":  "La política de organización no está disponible o los permisos solicitados superan su límite.",
+		"hubctl.audit-rollover-usage":             "Uso: hubctl audit rollover --ledger <ruta absoluta> [--apply --digest <sha256:...>]",
+		"hubctl.audit-rollover-ledger":            "Ruta del audit antiguo con ToolHub detenido",
+		"hubctl.audit-rollover-apply":             "Aplicar la migración verificada; por defecto solo planifica",
+		"hubctl.audit-rollover-digest":            "Digest del plan requerido con --apply",
+		"hubctl.audit-rollover-stale":             "El plan del audit antiguo está desactualizado; genere otro.",
+		"hubctl.audit-rollover-invalid":           "El audit antiguo es inválido o no permite una migración segura.",
+		"hubctl.audit-rollover-failed":            "Falló la migración del audit antiguo; revise el estado sin conexión antes de reintentar.",
 		// Language picker and /language.
 		"lang.choose":   "Elige tu idioma:",
 		"lang.saved":    "Idioma establecido: %s.",

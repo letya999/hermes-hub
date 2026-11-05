@@ -630,9 +630,11 @@ func mcpAllowedHosts(port string) string {
 	return net.JoinHostPort(os.Getenv("HUB_BROWSER_HOST"), port)
 }
 
+var displayLockPaths = []string{"/tmp/.X99-lock", "/tmp/.X11-unix/X99"}
+
 func clearDisplayLocks(paths ...string) error {
 	if len(paths) == 0 {
-		paths = []string{"/tmp/.X99-lock", "/tmp/.X11-unix/X99"}
+		paths = displayLockPaths
 	}
 	for _, path := range paths {
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {

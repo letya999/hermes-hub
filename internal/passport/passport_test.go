@@ -127,7 +127,7 @@ func fixtureInputs(t *testing.T) passport.Inputs {
 		},
 		Grants: map[string][]string{
 			"workspace": {"read", "write"},
-			"tools":     {"list", "select"},
+			"tools":     {"list", "use"},
 		},
 	}
 

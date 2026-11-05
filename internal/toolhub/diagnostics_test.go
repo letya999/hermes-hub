@@ -345,23 +345,25 @@ func TestDiagnosticsRightsGate(t *testing.T) {
 	store.RightsDoc = rightsVocabulary()
 	gov := NewGovernanceStore(filepath.Join(t.TempDir(), "governance.json"))
 	store.RightsLedger = gov.Load
+	mintRight(t, gov, store.RightsDoc, api.NewRightGrant("rightgrant-alice-read", auth.PrincipalID, "workspace", "read", "", "fixture", "operator", time.Now().Add(time.Hour)))
+	mintRight(t, gov, store.RightsDoc, api.NewRightGrant("rightgrant-alice-diag", auth.PrincipalID, "observability", "read_own_logs", "", "fixture", "operator", time.Now().Add(time.Hour)))
 	dir := t.TempDir()
 	diagWrite(t, dir, diagLine("2026-09-28T10:00:00Z", "c1", "collected line"))
 	control := &ControlPlane{Store: store, DiagnosticsDir: dir}
 
-	if err := DeriveRights(store, gov, store.RightsDoc, auth.PrincipalID, map[string][]string{"workspace": {"read"}}, auth.Environment, auth.PolicyVersion, time.Now()); err != nil {
+	if err := DeriveRights(store, gov, store.RightsDoc, auth.PrincipalID, map[string][]string{"workspace": {"read"}}, auth.Environment, auth.CapabilityProfile, auth.PolicyVersion, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := control.diagnostics(t.Context(), auth, map[string]any{}); err == nil || !strings.Contains(err.Error(), "observability.read_own_logs") {
 		t.Fatalf("ceiling without the right must deny diagnostics: %v", err)
 	}
-	if err := DeriveRights(store, gov, store.RightsDoc, auth.PrincipalID, map[string][]string{"observability": {"read_own_logs"}}, auth.Environment, auth.PolicyVersion, time.Now().Add(time.Minute)); err != nil {
+	if err := DeriveRights(store, gov, store.RightsDoc, auth.PrincipalID, map[string][]string{"observability": {"read_own_logs"}}, auth.Environment, auth.CapabilityProfile, auth.PolicyVersion, time.Now().Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := control.diagnostics(t.Context(), auth, map[string]any{}); err != nil {
 		t.Fatalf("granted right must allow diagnostics: %v", err)
 	}
-	// Revoke the derived grant: the next call denies without a republish.
+	// Revoke the issued grant: the next call denies without a republish.
 	grants, err := gov.RightGrants()
 	if err != nil {
 		t.Fatal(err)
@@ -376,7 +378,7 @@ func TestDiagnosticsRightsGate(t *testing.T) {
 		}
 	}
 	if !revoked {
-		t.Fatal("derived observability grant expected")
+		t.Fatal("issued observability grant expected")
 	}
 	if _, err := control.diagnostics(t.Context(), auth, map[string]any{}); err == nil {
 		t.Fatal("revoked grant must deny diagnostics on the next call")

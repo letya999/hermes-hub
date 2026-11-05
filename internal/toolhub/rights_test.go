@@ -2,9 +2,11 @@ package toolhub
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -34,7 +36,8 @@ func rightsVocabulary() api.RightsDoc {
 			"read_own_logs": op("self", "log", selfIssuers),
 		}},
 		"tools": {Description: "fixture", Operations: map[string]api.RightOperation{
-			"select": op("self", "toolset", selfIssuers),
+			"use":       op("self", "none", selfIssuers),
+			"configure": op("self", "none", selfIssuers),
 		}},
 	}}
 }
@@ -56,6 +59,49 @@ func mintRight(t *testing.T, gov *GovernanceStore, doc api.RightsDoc, grant api.
 		t.Fatal(err)
 	}
 	if err := gov.GrantRight(grant, doc, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func grantToolUse(t *testing.T, store *Store, auth identity.Envelope) *GovernanceStore {
+	t.Helper()
+	store.RightsDoc = rightsVocabulary()
+	gov := NewGovernanceStore(filepath.Join(t.TempDir(), "governance.json"))
+	store.RightsLedger = gov.Load
+	mintRight(t, gov, store.RightsDoc, api.NewRightGrant("rightgrant-"+auth.PrincipalID+"-use", auth.PrincipalID, "tools", "use", "", "fixture", "operator", time.Now().Add(time.Hour)))
+	return gov
+}
+
+func grantDefinitionRights(t *testing.T, store *Store, auth identity.Envelope, definition api.ToolDefinition) {
+	t.Helper()
+	doc := api.RightsDoc{Release: "fixture", DefinitionID: "hub-agent-rights", Capabilities: map[string]api.RightCapability{}}
+	gov := NewGovernanceStore(filepath.Join(t.TempDir(), "governance.json"))
+	store.RightsLedger = gov.Load
+	allow := map[string][]string{}
+	for _, tool := range definition.Tools {
+		for _, right := range append([]string{"tools.use"}, tool.Requires...) {
+			capability, operation, ok := strings.Cut(right, ".")
+			if !ok {
+				t.Fatalf("invalid required right %q", right)
+			}
+			group := doc.Capabilities[capability]
+			if group.Operations == nil {
+				group.Operations = map[string]api.RightOperation{}
+			}
+			group.Operations[operation] = api.RightOperation{Subject: "self", Scope: "none", Issuers: []string{"platform"}, PEP: []string{"test"}, Effect: "read", Description: "fixture"}
+			doc.Capabilities[capability] = group
+			if !slices.Contains(allow[capability], operation) {
+				allow[capability] = append(allow[capability], operation)
+			}
+		}
+	}
+	store.RightsDoc = doc
+	for capability, operations := range allow {
+		for _, operation := range operations {
+			mintRight(t, gov, doc, api.NewRightGrant(api.DeterministicID("rightgrant", auth.PrincipalID, capability, operation), auth.PrincipalID, capability, operation, "", "fixture", "platform", time.Now().Add(time.Hour)))
+		}
+	}
+	if err := DeriveRights(store, gov, doc, auth.PrincipalID, allow, auth.Environment, auth.CapabilityProfile, auth.PolicyVersion, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -199,12 +245,11 @@ func TestRightsDecideRejectsForeignPrincipal(t *testing.T) {
 	}
 }
 
-// A published tools.select right admits the invoke control on a managed
-// profile with no connectors bundle: SPEC-0092 names select "invoke a tool
-// from a selected toolset" and the profile's control_operations allowlist
+// A published tools.use right admits the invoke control on a managed
+// profile with no connectors bundle: the profile's control_operations allowlist
 // cannot express it — without this derivation every extended selection on a
 // connector-free space is listable but never callable through tool_call.
-func TestManagedInvokeFollowsToolsSelectRight(t *testing.T) {
+func TestManagedInvokeFollowsToolsUseRight(t *testing.T) {
 	store, auth, _, _ := managedStore(t)
 	doc := rightsVocabulary()
 	store.RightsDoc = doc
@@ -218,7 +263,8 @@ func TestManagedInvokeFollowsToolsSelectRight(t *testing.T) {
 	if allowed["invoke"] {
 		t.Fatal("invoke admitted before the published right exists")
 	}
-	if err := DeriveRights(store, gov, doc, auth.PrincipalID, map[string][]string{"tools": {"select"}}, auth.Environment, auth.PolicyVersion, now); err != nil {
+	mintRight(t, gov, doc, api.NewRightGrant("rightgrant-alice-use", auth.PrincipalID, "tools", "use", "", "fixture", "operator", now.Add(time.Hour)))
+	if err := DeriveRights(store, gov, doc, auth.PrincipalID, map[string][]string{"tools": {"use"}}, auth.Environment, auth.CapabilityProfile, auth.PolicyVersion, now); err != nil {
 		t.Fatal(err)
 	}
 	allowed, err = store.AllowedControlOperations(auth)
@@ -226,10 +272,10 @@ func TestManagedInvokeFollowsToolsSelectRight(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !allowed["invoke"] {
-		t.Fatal("tools.select right must admit invoke on a connector-free managed profile")
+		t.Fatal("tools.use right must admit invoke on a connector-free managed profile")
 	}
 	// Dropping the right from the published ceiling revokes the control.
-	if err := DeriveRights(store, gov, doc, auth.PrincipalID, map[string][]string{"tools": {}}, auth.Environment, auth.PolicyVersion, now.Add(time.Minute)); err != nil {
+	if err := DeriveRights(store, gov, doc, auth.PrincipalID, map[string][]string{"tools": {}}, auth.Environment, auth.CapabilityProfile, auth.PolicyVersion, now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	allowed, err = store.AllowedControlOperations(auth)
@@ -237,7 +283,7 @@ func TestManagedInvokeFollowsToolsSelectRight(t *testing.T) {
 		t.Fatal(err)
 	}
 	if allowed["invoke"] {
-		t.Fatal("invoke must close when the revision drops tools.select")
+		t.Fatal("invoke must close when the revision drops tools.use")
 	}
 }
 
@@ -252,7 +298,12 @@ func TestDeriveRightsStampsManagedState(t *testing.T) {
 	store.RightsLedger = gov.Load
 	now := time.Now()
 	allow := map[string][]string{"workspace": {"read", "write"}, "models": {"switch"}}
-	if err := DeriveRights(store, gov, doc, auth.PrincipalID, allow, auth.Environment, auth.PolicyVersion, now); err != nil {
+	for capability, operations := range allow {
+		for _, operation := range operations {
+			mintRight(t, gov, doc, api.NewRightGrant(api.DeterministicID("rightgrant", auth.PrincipalID, capability, operation), auth.PrincipalID, capability, operation, "", "fixture", "operator", now.Add(time.Hour)))
+		}
+	}
+	if err := DeriveRights(store, gov, doc, auth.PrincipalID, allow, auth.Environment, auth.CapabilityProfile, auth.PolicyVersion, now); err != nil {
 		t.Fatal(err)
 	}
 	profile, _, err := store.capabilityProfileLocked(auth)
@@ -271,7 +322,7 @@ func TestDeriveRightsStampsManagedState(t *testing.T) {
 	// Re-derive with a shrunk allow: the dropped right is revoked in place,
 	// the surviving rows keep their grants (no revision churn).
 	allow2 := map[string][]string{"workspace": {"read"}}
-	if err := DeriveRights(store, gov, doc, auth.PrincipalID, allow2, auth.Environment, auth.PolicyVersion, now.Add(time.Minute)); err != nil {
+	if err := DeriveRights(store, gov, doc, auth.PrincipalID, allow2, auth.Environment, auth.CapabilityProfile, auth.PolicyVersion, now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if d, _ := store.Decide(auth, "workspace", "write", "", now); d.Allow {
@@ -287,12 +338,85 @@ func TestDeriveRightsStampsManagedState(t *testing.T) {
 	// Idempotent: deriving the same allow twice changes nothing.
 	grants, _ := gov.RightGrants()
 	before := len(grants)
-	if err := DeriveRights(store, gov, doc, auth.PrincipalID, allow2, auth.Environment, auth.PolicyVersion, now.Add(2*time.Minute)); err != nil {
+	if err := DeriveRights(store, gov, doc, auth.PrincipalID, allow2, auth.Environment, auth.CapabilityProfile, auth.PolicyVersion, now.Add(2*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	grants, _ = gov.RightGrants()
 	if len(grants) != before {
 		t.Fatalf("re-derivation must not churn the ledger: %d -> %d", before, len(grants))
+	}
+}
+
+// A derivation rewrites only the bound principal/environment/profile: a dev
+// apply must never touch the prod profile's ceiling, and a revision naming
+// tools.binding rewrites only that profile (SPEC-0095 R2).
+func TestDeriveRightsScopesExactProfile(t *testing.T) {
+	store, auth, _, devProfile := managedStore(t)
+	doc := rightsVocabulary()
+	store.RightsDoc = doc
+	gov := NewGovernanceStore(filepath.Join(t.TempDir(), "governance.json"))
+	store.RightsLedger = gov.Load
+	prod := devProfile
+	prod.ProfileID = "alice-prod"
+	prod.Environment = "prod"
+	prod.Generation = 2
+	sibling := devProfile
+	sibling.ProfileID = "alice-dev-other"
+	sibling.Generation = 3
+	sibling.Rights = nil
+	if err := putProfile(t, store, prod); err != nil {
+		t.Fatal(err)
+	}
+	if err := putProfile(t, store, sibling); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	mintRight(t, gov, doc, api.NewRightGrant("rightgrant-alice-wread", auth.PrincipalID, "workspace", "read", "", "fixture", "operator", now.Add(time.Hour)))
+	allow := map[string][]string{"workspace": {"read"}}
+	if err := DeriveRights(store, gov, doc, auth.PrincipalID, allow, "dev", devProfile.ProfileID, auth.PolicyVersion, now); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.capabilityProfiles[devProfile.ProfileID].Rights; len(got) != 1 || got[0].Capability != "workspace" {
+		t.Fatalf("bound dev profile must carry the derived ceiling: %+v", got)
+	}
+	if got := store.capabilityProfiles["alice-prod"].Rights; len(got) != 1 || got[0].Operation != "use" {
+		t.Fatalf("prod profile must be untouched by a dev apply: %+v", got)
+	}
+	if got := store.capabilityProfiles["alice-dev-other"].Rights; len(got) != 0 {
+		t.Fatalf("unbound dev profile must stay empty under a bound apply: %+v", got)
+	}
+	// A revision without tools.binding covers every same-environment
+	// profile but still never crosses the environment boundary.
+	if err := DeriveRights(store, gov, doc, auth.PrincipalID, allow, "dev", "", auth.PolicyVersion, now); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.capabilityProfiles["alice-dev-other"].Rights; len(got) != 1 {
+		t.Fatalf("unbound dev apply must cover sibling dev profiles: %+v", got)
+	}
+	if got := store.capabilityProfiles["alice-prod"].Rights; len(got) != 1 || got[0].Operation != "use" {
+		t.Fatalf("prod profile must stay untouched: %+v", got)
+	}
+}
+
+func TestEmptyPublishedRightsDenyManagedCalls(t *testing.T) {
+	store, auth, _, _ := managedStore(t)
+	doc := rightsVocabulary()
+	store.RightsDoc = doc
+	gov := NewGovernanceStore(filepath.Join(t.TempDir(), "governance.json"))
+	store.RightsLedger = gov.Load
+	if err := DeriveRights(store, gov, doc, auth.PrincipalID, map[string][]string{}, auth.Environment, auth.CapabilityProfile, auth.PolicyVersion, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	profile, _, err := store.capabilityProfileLocked(auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := api.ToolSpec{Requires: []string{"workspace.read"}}
+	if missing := store.rightsMissingLocked(auth, profile, tool, time.Now()); len(missing) != 2 {
+		t.Fatalf("empty ceiling admitted a required right: %v", missing)
+	}
+	if denied, err := store.RightsGated(auth, "workspace", "read", time.Now()); err != nil || !denied {
+		t.Fatalf("empty ceiling bypassed PEP: denied=%v err=%v", denied, err)
 	}
 }
 
@@ -340,7 +464,9 @@ func TestDeriveRightsRepinsManagedBinding(t *testing.T) {
 	store.RightsDoc = doc
 	gov := NewGovernanceStore(filepath.Join(t.TempDir(), "governance.json"))
 	store.RightsLedger = gov.Load
-	if err := DeriveRights(store, gov, doc, "alice", map[string][]string{"workspace": {"read"}}, "dev", "policy-2", time.Now()); err != nil {
+	mintRight(t, gov, doc, api.NewRightGrant("rightgrant-alice-read", "alice", "workspace", "read", "", "fixture", "operator", time.Now().Add(time.Hour)))
+	mintRight(t, gov, doc, api.NewRightGrant("rightgrant-alice-use", "alice", "tools", "use", "", "fixture", "operator", time.Now().Add(time.Hour)))
+	if err := DeriveRights(store, gov, doc, "alice", map[string][]string{"workspace": {"read"}, "tools": {"use"}}, "dev", "", "policy-2", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	current, err := store.binding(binding.ToolBindingID)
@@ -357,6 +483,44 @@ func TestDeriveRightsRepinsManagedBinding(t *testing.T) {
 	}
 	if len(tools) != 1 || tools[0].Name != "agent_search" {
 		t.Fatalf("repinned selection must project: %+v", tools)
+	}
+}
+
+func TestPublishedSelectionRevokesOpenSessionWithoutChangingGrants(t *testing.T) {
+	store, auth, _, profile := managedStore(t)
+	gov := NewGovernanceStore(filepath.Join(t.TempDir(), "governance.json"))
+	store.RightsLedger = gov.Load
+	mintRight(t, gov, store.RightsDoc, api.NewRightGrant("rightgrant-selection-use", "alice", "tools", "use", "", "fixture", "operator", time.Now().Add(time.Hour)))
+	allow := map[string][]string{"tools": {"use"}}
+	selected := profile.Selections
+	check := func(want bool) {
+		t.Helper()
+		listed, err := store.ListProjectedTools(auth)
+		if err != nil || (len(listed) == 1) != want {
+			t.Fatalf("projection after selection change: count=%d err=%v want=%v", len(listed), err, want)
+		}
+		called := false
+		err = store.AuthorizeProjectedCall(auth, "workspace_read", map[string]any{"path": "docs/a", "scope": "workspace"}, func(api.ProjectedTool, api.EffectiveBinding) error {
+			called = true
+			return nil
+		})
+		if (err == nil) != want || called != want {
+			t.Fatalf("call after selection change: err=%v called=%v want=%v", err, called, want)
+		}
+	}
+	check(true)
+	for _, step := range []struct {
+		selections []api.CapabilitySelection
+		want       bool
+	}{{nil, false}, {selected, true}} {
+		if err := DeriveRightsAndSelections(store, gov, store.RightsDoc, "alice", allow, "dev", profile.ProfileID, "", selected[0].DefinitionID, step.selections, nil, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		core, err := store.CoreToolNames(auth)
+		if err != nil || core == nil || len(core) != 0 {
+			t.Fatalf("empty published core became unbounded: %v %v", core, err)
+		}
+		check(step.want)
 	}
 }
 
@@ -379,6 +543,7 @@ func TestManagedAdmissionRequiresRights(t *testing.T) {
 		t.Fatal(err)
 	}
 	auth.CapabilityProfile, auth.Environment, auth.Generation = "alice-default", "dev", 1
+	auth.Organization = "example"
 	rule := api.CapabilityRule{CapabilityID: "files.read", ImplementationDigest: api.DefinitionDigest(definition), Action: "read", Resource: "workspace", ConnectionID: binding.ConnectionID,
 		PathPrefix: "docs", Limits: api.CapabilityLimits{OutputBytes: 8192, TimeoutSeconds: 10}}
 	policy := api.CapabilityPolicy{Schema: api.SchemaVersion, PolicyID: "org-default", Organization: "example", Members: []string{"alice", "bob"}, Revision: 1,
@@ -386,9 +551,10 @@ func TestManagedAdmissionRequiresRights(t *testing.T) {
 	profile := api.CapabilityProfile{Schema: api.SchemaVersion, ProfileID: auth.CapabilityProfile, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID,
 		Environment: auth.Environment, Generation: auth.Generation, PolicyVersion: auth.PolicyVersion, PolicyID: policy.PolicyID, PolicyRevision: policy.Revision,
 		Revision: 1, IssuedBy: "operator", IssuedAt: policy.IssuedAt, Reason: "Reviewed synthetic fixture", Status: api.ActiveStatus,
-		Rights: []api.RightRule{{Capability: "workspace", Operation: "read"}},
+		Rights: []api.RightRule{{Capability: "workspace", Operation: "read"}, {Capability: "tools", Operation: "use"}},
 		Selections: []api.CapabilitySelection{{CapabilityID: rule.CapabilityID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ImplementationDigest: rule.ImplementationDigest,
 			ToolName: "search", Name: "workspace_read", ConnectionID: binding.ConnectionID}}}
+	policy.RightCeiling = profile.Rights
 	if err := putPolicy(t, s, policy); err != nil {
 		t.Fatal(err)
 	}
@@ -398,6 +564,7 @@ func TestManagedAdmissionRequiresRights(t *testing.T) {
 	s.RightsDoc = rightsVocabulary()
 	gov := NewGovernanceStore(filepath.Join(t.TempDir(), "governance.json"))
 	s.RightsLedger = gov.Load
+	mintRight(t, gov, s.RightsDoc, api.NewRightGrant("rightgrant-alice-use", auth.PrincipalID, "tools", "use", "", "fixture", "operator", time.Now().Add(time.Hour)))
 	// Ceiling carries the right but the ledger grant does not exist: hidden.
 	if tools, err := s.ListProjectedTools(auth); err == nil && len(tools) != 0 {
 		t.Fatalf("tool must hide while its required right lacks a grant: %v", tools)
@@ -419,6 +586,70 @@ func TestManagedAdmissionRequiresRights(t *testing.T) {
 	}
 	if tools, err := s.ListProjectedTools(auth); err == nil && len(tools) != 0 {
 		t.Fatalf("revoked right must hide the tool live: %v", tools)
+	}
+}
+
+func TestOrganizationRightCeiling(t *testing.T) {
+	store, auth, _, profile := managedStore(t)
+	if organization, err := store.ProfileOrganization(auth); err != nil || organization != "example" {
+		t.Fatalf("protected profile organization: %q %v", organization, err)
+	}
+	wrongGeneration := auth
+	wrongGeneration.Generation++
+	if _, err := store.ProfileOrganization(wrongGeneration); !errors.Is(err, api.ErrUnauthorized) {
+		t.Fatalf("wrong generation resolved organization: %v", err)
+	}
+	wrongOrg := auth
+	wrongOrg.Organization = "other"
+	if _, err := store.Decide(wrongOrg, "tools", "use", "", time.Now()); !errors.Is(err, api.ErrUnauthorized) {
+		t.Fatalf("organization mismatch in authenticated envelope: %v", err)
+	}
+	if err := store.CheckOrganizationRights(auth.PrincipalID, "dev", "example", profile.ProfileID, profile.Generation,
+		map[string][]string{"workspace": {"read"}}); err != nil {
+		t.Fatalf("inside organization ceiling: %v", err)
+	}
+	for _, tc := range []struct {
+		name, environment, organization string
+		allow                           map[string][]string
+	}{
+		{"right", "dev", "example", map[string][]string{"users": {"delete"}}},
+		{"environment", "prod", "example", map[string][]string{"workspace": {"read"}}},
+		{"organization", "dev", "other", map[string][]string{"workspace": {"read"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := store.CheckOrganizationRights(auth.PrincipalID, tc.environment, tc.organization, profile.ProfileID, profile.Generation, tc.allow); !errors.Is(err, api.ErrUnauthorized) {
+				t.Fatalf("outside organization ceiling: %v", err)
+			}
+		})
+	}
+	profile.Rights = append(profile.Rights, api.RightRule{Capability: "users", Operation: "delete"})
+	profile.Revision++
+	if err := putProfile(t, store, profile); !errors.Is(err, api.ErrUnauthorized) {
+		t.Fatalf("profile publication outside organization ceiling: %v", err)
+	}
+	legacy := store.capabilityProfiles[profile.ProfileID]
+	legacy.Rights = append(legacy.Rights, api.RightRule{Capability: "tools", Operation: "configure"})
+	store.capabilityProfiles[profile.ProfileID] = legacy
+	gov := NewGovernanceStore(filepath.Join(t.TempDir(), "governance.json"))
+	store.RightsLedger = gov.Load
+	mintRight(t, gov, store.RightsDoc, api.NewRightGrant("rightgrant-alice-configure", auth.PrincipalID, "tools", "configure", "", "fixture", "operator", time.Now().Add(time.Hour)))
+	if decision, err := store.Decide(auth, "tools", "configure", "", time.Now()); err != nil || decision.Allow {
+		t.Fatalf("legacy wider profile bypassed organization ceiling: %+v %v", decision, err)
+	}
+}
+
+func TestAssertedRightsDenyAmbiguousGenerations(t *testing.T) {
+	store, auth, _, profile := managedStore(t)
+	if decision, err := store.DecideAsserted(auth.PrincipalID, "dev", "tools", "use", "", time.Now()); err != nil || !decision.Allow {
+		t.Fatalf("single active generation: %+v %v", decision, err)
+	}
+	profile.ProfileID = "alice-next"
+	profile.Generation++
+	if err := putProfile(t, store, profile); err != nil {
+		t.Fatal(err)
+	}
+	if decision, err := store.DecideAsserted(auth.PrincipalID, "dev", "tools", "use", "", time.Now()); err != nil || decision.Allow {
+		t.Fatalf("ambiguous active generations must deny: %+v %v", decision, err)
 	}
 }
 
@@ -454,18 +685,18 @@ func TestRightsDecideControlAssertedPrincipal(t *testing.T) {
 		return w.Code, payload
 	}
 	// Asserted principal matches the space pin and holds ceiling+grant.
-	code, payload := call("control-token-000000000000000000", `{"principal_id":"alice","capability":"workspace","operation":"read"}`)
+	code, payload := call("control-token-000000000000000000", `{"principal_id":"alice","environment":"dev","capability":"workspace","operation":"read"}`)
 	if code != http.StatusOK || payload["allow"] != true {
 		t.Fatalf("asserted space principal must decide allow: %d %v", code, payload)
 	}
 	// Ceiling binds the asserted path too: write has a ledger grant absent —
 	// but even with one, a right outside profile.Rights must deny.
-	code, payload = call("control-token-000000000000000000", `{"principal_id":"alice","capability":"workspace","operation":"write"}`)
+	code, payload = call("control-token-000000000000000000", `{"principal_id":"alice","environment":"dev","capability":"workspace","operation":"write"}`)
 	if code != http.StatusOK || payload["allow"] != false {
 		t.Fatalf("right outside the published ceiling must deny: %d %v", code, payload)
 	}
 	// A foreign principal under the control token is refused outright.
-	code, _ = call("control-token-000000000000000000", `{"principal_id":"bob","capability":"workspace","operation":"read"}`)
+	code, _ = call("control-token-000000000000000000", `{"principal_id":"bob","environment":"dev","capability":"workspace","operation":"read"}`)
 	if code != http.StatusForbidden {
 		t.Fatalf("cross-space assertion must refuse: %d", code)
 	}
@@ -479,7 +710,7 @@ func TestRightsDecideControlAssertedPrincipal(t *testing.T) {
 		t.Fatal(err)
 	}
 	mintRight(t, gov, store.RightsDoc, api.NewRightGrant("rightgrant-bob-read", "bob", "workspace", "read", "", "fixture", "operator", time.Now().Add(time.Hour)))
-	code, payload = call("control-token-000000000000000000", `{"principal_id":"bob","capability":"workspace","operation":"read"}`)
+	code, payload = call("control-token-000000000000000000", `{"principal_id":"bob","environment":"dev","capability":"workspace","operation":"read"}`)
 	if code != http.StatusOK || payload["allow"] != true {
 		t.Fatalf("sibling principal with an active profile must decide: %d %v", code, payload)
 	}
@@ -487,12 +718,21 @@ func TestRightsDecideControlAssertedPrincipal(t *testing.T) {
 	// does not know still refuse, principals it serves still decide.
 	g.SpacePrincipal = ""
 	handler, _ = g.Handler()
-	code, _ = call("control-token-000000000000000000", `{"principal_id":"carol","capability":"workspace","operation":"read"}`)
+	code, _ = call("control-token-000000000000000000", `{"principal_id":"carol","environment":"dev","capability":"workspace","operation":"read"}`)
 	if code != http.StatusForbidden {
 		t.Fatalf("unprofiled principal must refuse with no pin: %d", code)
 	}
-	code, payload = call("control-token-000000000000000000", `{"principal_id":"alice","capability":"workspace","operation":"read"}`)
+	code, payload = call("control-token-000000000000000000", `{"principal_id":"alice","environment":"dev","capability":"workspace","operation":"read"}`)
 	if code != http.StatusOK || payload["allow"] != true {
 		t.Fatalf("profiled principal must decide with no pin: %d %v", code, payload)
+	}
+	for _, body := range []string{
+		`{"principal_id":"alice","capability":"workspace","operation":"read"}`,
+		`{"principal_id":"alice","environment":"prod","capability":"workspace","operation":"read"}`,
+	} {
+		code, payload = call("control-token-000000000000000000", body)
+		if code != http.StatusOK || payload["allow"] != false {
+			t.Fatalf("missing or mismatched environment borrowed the dev ceiling: %d %v", code, payload)
+		}
 	}
 }

@@ -23,10 +23,20 @@ func publishWorkspace(t *testing.T, ctxRoot, env string) {
 	}
 	header := "apiVersion: six-passport/v2\nmetadata: {space: alice, environment: " + env + ", revision: " + rev + "}\n"
 	docs := map[string]string{
+		"stack": "kind: stack\nidentity: {user: alice, infra: false}\nservices:\n" +
+			"  hermes-runtime: {mode: supervised}\n" +
+			"  model-relay: {mode: per-space}\n" +
+			"  toolhub-relay: {mode: per-space}\n" +
+			"  toolhub: {mode: shared}\n" +
+			"  credential-broker: {mode: shared}\n",
+		"config": "kind: config\nruntime: {timezone: UTC}\nports: {oauth-callback: 8008, browser-vnc: 6081}\n",
+		"models": "kind: models\ndefault: m\nroutes:\n  m: {ladder: [cliproxy]}\nservices:\n  cliproxy: {via: cliproxy, endpoint: http://cliproxy:8317/v1, models: [{id: m}]}\n",
 		"workspace": "kind: workspace\n" +
-			"writable: [/workspace/work, /workspace/outbox, /vault/library, /vault/attachments]\n" +
-			"read_only: [/config, /skills, /workspace/inbox, /vault/memory, /shared/docs]\n" +
+			"writable: [/workspace/work, /workspace/outbox]\n" +
+			"read_only: [/config, /skills, /workspace/inbox, /shared/docs]\n" +
 			"mounts:\n    /shared/docs: {source: docs-src, mode: ro}\n",
+		"tools":  "kind: tools\nbinding: {profile_id: alice-default, generation: 1}\ncore:\n  discovery: {via: toolhub}\n  files: {via: toolhub}\n",
+		"grants": "kind: grants\nallow: {}\n",
 	}
 	for _, name := range []string{"stack", "config", "models", "workspace", "tools", "grants"} {
 		body := header + "kind: " + name + "\n"
@@ -71,13 +81,15 @@ func TestSupervisorMountsFollowWorkspacePassport(t *testing.T) {
 		"type=bind,src=" + filepath.Join(root, "generated", "config-view", "prod") + ",dst=/config,readonly",
 		"type=bind,src=" + filepath.Join(managedDir, "workspace") + ",dst=/workspace",
 		"type=bind,src=" + filepath.Join(managedDir, "workspace", "inbox") + ",dst=/workspace/inbox,readonly",
-		"type=bind,src=" + filepath.Join(managedDir, "vault", "memory") + ",dst=/vault/memory,readonly",
-		"type=bind,src=" + filepath.Join(managedDir, "vault", "library") + ",dst=/vault/library",
-		"type=bind,src=" + filepath.Join(managedDir, "vault", "attachments") + ",dst=/vault/attachments",
 		"type=bind,src=" + filepath.Join(root, "docs-src") + ",dst=/shared/docs,readonly",
 	} {
 		if !slices.Contains(args, want) {
 			t.Errorf("supervised run args missing %s", want)
+		}
+	}
+	for _, arg := range args {
+		if strings.Contains(arg, "dst=/vault") {
+			t.Errorf("supervised runtime mounts vault: %s", arg)
 		}
 	}
 }
@@ -111,14 +123,11 @@ func TestSupervisorPassportConfigSkipsNestedConfigMounts(t *testing.T) {
 	}
 }
 
-// An unmanaged space — no published revision — keeps the legacy bind set:
-// the workspace passport does not apply until the space migrates (R8.1).
+// The managed layout is the only spawn contract left: the published config
+// view mounts read-only at /config, managed state dirs carry /state, and the
+// legacy /scope, /archive and top-level context binds never appear.
 func TestSupervisorUnmanagedMountsKeepLegacyLayout(t *testing.T) {
 	m, root := testManager(t, func(ctx context.Context, args ...string) ([]byte, error) { return []byte("ok"), nil }, nil)
-	if err := os.WriteFile(filepath.Join(root, "settings.yaml"), []byte(
-		"schema: 1\nuser: alice\ntimezone: UTC\nmodel: synthetic\nmodel_url: http://model-relay:8318/v1\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
 	bound, err := m.normalize(binding(root))
 	if err != nil {
 		t.Fatal(err)
@@ -127,29 +136,21 @@ func TestSupervisorUnmanagedMountsKeepLegacyLayout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{
-		"type=bind,src=" + filepath.Join(root, "workspace") + ",dst=/scope,readonly",
-		"type=bind,src=" + filepath.Join(root, "runtime") + ",dst=/state",
-		"type=bind,src=" + filepath.Join(root, "hermes") + ",dst=/state/hermes",
-		"type=bind,src=" + filepath.Join(root, "archive") + ",dst=/archive,readonly",
-	} {
-		if !slices.Contains(args, want) {
-			t.Errorf("unmanaged run args missing %s", want)
+	joined := strings.Join(args, " ")
+	for _, want := range []string{"dst=/config,readonly", ",dst=/state ", ",dst=/state/hermes", ",dst=/workspace"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("managed run args missing %s: %s", want, joined)
 		}
 	}
-	joined := strings.Join(args, " ")
-	for _, denied := range []string{"dst=/config,readonly", "managed\\prod", "managed/prod", "dst=/shared/"} {
+	for _, denied := range []string{"dst=/scope", "dst=/archive", "dst=/shared/", filepath.Join(root, "runtime") + ",dst=/state,"} {
 		if strings.Contains(joined, denied) {
-			t.Errorf("unmanaged spawn mounted passport-only path %q: %s", denied, joined)
+			t.Errorf("managed spawn mounted legacy path %q: %s", denied, joined)
 		}
 	}
 }
 
-// An unmanaged space with memory_vault owns the same /vault contract the
-// compose service renders (SPEC-0085 R1.6): HUB_VAULT=/vault reaches the
-// env through the service contract, so the spawn must bind the real vault
-// or the agent's memory tools point at an empty rootfs path.
-func TestSupervisorUnmanagedMemoryVaultBindsRealVault(t *testing.T) {
+// A legacy memory flag cannot widen the runtime filesystem boundary.
+func TestSupervisorUnmanagedMemoryVaultHasNoVaultMount(t *testing.T) {
 	m, root := testManager(t, func(ctx context.Context, args ...string) ([]byte, error) { return []byte("ok"), nil }, nil)
 	if err := os.WriteFile(filepath.Join(root, "settings.yaml"), []byte(
 		"schema: 1\nuser: alice\ntimezone: UTC\nmodel: synthetic\nmodel_url: http://model-relay:8318/v1\ntools:\n    memory_vault: {via: native}\n"), 0600); err != nil {
@@ -163,16 +164,15 @@ func TestSupervisorUnmanagedMemoryVaultBindsRealVault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "type=bind,src=" + filepath.Join(root, "vault") + ",dst=/vault"
-	if !slices.Contains(args, want) {
-		t.Fatalf("memory_vault spawn missing %s", want)
+	for _, arg := range args {
+		if strings.Contains(arg, "dst=/vault") {
+			t.Fatalf("memory_vault spawn mounted vault: %s", arg)
+		}
 	}
 }
 
-// The managed spawn's legacy branch (no published workspace passport yet)
-// owes the same bind: managedRunArgs mirrors RuntimeService, whose env
-// already carries HUB_VAULT under the same wish.
-func TestSupervisorManagedLegacyMemoryVaultBindsRealVault(t *testing.T) {
+// The managed spawn without a published workspace passport also stays sealed.
+func TestSupervisorManagedLegacyMemoryVaultHasNoVaultMount(t *testing.T) {
 	m, root := testManager(t, func(ctx context.Context, args ...string) ([]byte, error) { return []byte("ok"), nil }, nil)
 	settings := writeManagedFixtures(t, root)
 	settings.Tools = map[string]stack.ToolEntry{"memory_vault": {Via: stack.ToolViaNative}}
@@ -191,8 +191,9 @@ func TestSupervisorManagedLegacyMemoryVaultBindsRealVault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "type=bind,src=" + filepath.Join(root, "vault") + ",dst=/vault"
-	if !slices.Contains(args, want) {
-		t.Fatalf("managed legacy spawn missing %s", want)
+	for _, arg := range args {
+		if strings.Contains(arg, "dst=/vault") {
+			t.Fatalf("managed legacy spawn mounted vault: %s", arg)
+		}
 	}
 }

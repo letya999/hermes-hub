@@ -36,7 +36,7 @@ func r5ExecutorDefinition() api.ToolDefinition {
 				Description: "Show space consumption.", Arguments: []api.CLIArgument{{Name: "period", Type: "string"}}},
 			{Name: "tool_search", Effect: api.ReadEffect, CapabilityID: "platform.search", Executor: "runtime:toolhub", Requires: []string{"tools.list"}, Audience: api.AudienceModel,
 				Description: "Search the extended tool inventory.", Arguments: []api.CLIArgument{{Name: "query", Type: "string"}, {Name: "name", Type: "string"}, {Name: "limit", Type: "integer"}}},
-			{Name: "tool_call", Effect: api.WriteEffect, CapabilityID: "platform.call", Executor: "runtime:toolhub", Requires: []string{"tools.select"}, Audience: api.AudienceModel,
+			{Name: "tool_call", Effect: api.WriteEffect, CapabilityID: "platform.call", Executor: "runtime:toolhub", Requires: []string{"tools.use"}, Audience: api.AudienceModel,
 				Description: "Invoke one extended tool by name.", Arguments: []api.CLIArgument{{Name: "tool", Type: "string", Required: true}, {Name: "arguments", Type: "object", Required: true}}},
 			{Name: "research_create", Effect: api.WriteEffect, CapabilityID: "research.create", Executor: "flow:deep_research", Requires: []string{"research.create"}, Audience: api.AudienceModel,
 				Description: "Start an async deep-research job.",
@@ -78,6 +78,7 @@ func TestRemoteExecutorDispatch(t *testing.T) {
 	if err := putProfile(t, s, profile); err != nil {
 		t.Fatal(err)
 	}
+	grantDefinitionRights(t, s, auth, definition)
 	var backendCalls []string
 	g := &Gateway{Store: s, Tokens: map[string]identity.Envelope{aliceToken: auth},
 		Control: &ControlPlane{Store: s, Now: time.Now},

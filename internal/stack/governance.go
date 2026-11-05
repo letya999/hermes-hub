@@ -124,26 +124,48 @@ func InfraSpaceDir(dir string) string {
 	return dir
 }
 
-// spaceRendersInfra peeks at a space's own files for the infra flag without
-// running Read — full settings load would recurse into governance
-// resolution. The flag lives in agent.yaml (split layout) or settings.yaml
-// (legacy single file); absence means the space renders the shared control
-// plane — Settings.RendersInfra semantics.
+// spaceRendersInfra peeks at a space's own passport authority for the infra
+// flag without running the full read — a settings load would recurse into
+// governance resolution. The published revision answers first; before the
+// first apply the authored stack passport is the pending claim. Absence
+// means the space does not render the shared control plane.
 func spaceRendersInfra(dir string) bool {
-	for _, name := range []string{"agent.yaml", "settings.yaml"} {
-		body, err := os.ReadFile(filepath.Join(dir, name))
-		if err != nil {
-			continue
+	if _, err := passportview.Current(dir); err == nil {
+		eff, err := passportview.LoadEffective(dir)
+		if err != nil || eff.Header.Metadata.Space != filepath.Base(dir) || eff.Stack.Identity.User != filepath.Base(dir) {
+			return false
 		}
-		var probe struct {
-			Infra *bool `yaml:"infra"`
-		}
-		if err := yaml.Unmarshal(body, &probe); err != nil {
-			continue
-		}
-		return probe.Infra == nil || *probe.Infra
+		return eff.Stack.Identity.Infra != nil && *eff.Stack.Identity.Infra
 	}
-	return false
+	identity, err := authoredStackIdentity(dir)
+	if err != nil || identity.User != filepath.Base(dir) {
+		return false
+	}
+	return identity.Infra != nil && *identity.Infra
+}
+
+// authoredStackIdentity reads the identity block of the authored stack
+// passport — the pending claim before the first space apply publishes a
+// revision. It never falls back to retired files.
+type stackIdentity struct {
+	User         string `yaml:"user"`
+	Organization string `yaml:"organization"`
+	Kind         string `yaml:"kind"`
+	Infra        *bool  `yaml:"infra"`
+}
+
+func authoredStackIdentity(dir string) (stackIdentity, error) {
+	var probe struct {
+		Identity stackIdentity `yaml:"identity"`
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "passports", "stack.yaml")) // #nosec G304 -- operator-owned space dir
+	if err != nil {
+		return probe.Identity, err
+	}
+	if err := yaml.Unmarshal(body, &probe); err != nil {
+		return probe.Identity, err
+	}
+	return probe.Identity, nil
 }
 
 // SpaceRendersInfra exposes the infra-flag peek for compile-time inputs —
@@ -178,7 +200,7 @@ func ReservedSiblingPorts(dir string) map[int]string {
 }
 
 // siblingPorts lists the host ports one space claims: its published config
-// passport first, the legacy port keys when nothing is published.
+// passport first, the authored config passport before the first apply.
 func siblingPorts(dir string) []int {
 	if rev, err := passportview.Current(dir); err == nil {
 		var probe struct {
@@ -192,24 +214,13 @@ func siblingPorts(dir string) []int {
 			return out
 		}
 	}
-	for _, name := range []string{"agent.yaml", "settings.yaml"} {
-		body, err := os.ReadFile(filepath.Join(dir, name))
-		if err != nil {
-			continue
-		}
-		var probe struct {
-			OAuth   int `yaml:"oauth_port"`
-			Browser int `yaml:"browser_port"`
-			Slack   int `yaml:"slack_events_port"`
-		}
-		if err := yaml.Unmarshal(body, &probe); err != nil {
-			continue
-		}
-		out := []int{}
-		for _, p := range []int{probe.OAuth, probe.Browser, probe.Slack} {
-			if p > 0 {
-				out = append(out, p)
-			}
+	var probe struct {
+		Ports map[string]int `yaml:"ports"`
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, "passports", "config.yaml")); err == nil && yaml.Unmarshal(b, &probe) == nil { // #nosec G304 -- operator-owned space dir
+		out := make([]int, 0, len(probe.Ports))
+		for _, p := range probe.Ports {
+			out = append(out, p)
 		}
 		return out
 	}

@@ -30,6 +30,7 @@ func TestRuntimePerPrincipalCeiling(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(secondCtx, "runtime.auth"), []byte("HUB_RUNTIME_AUTH=secret\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	publishSpaceRevision(t, secondCtx, "ctx2", nil)
 	writeHermesSources(t, secondCtx)
 	second := binding(secondCtx)
 	second.ContextID = "ctx2"
@@ -43,6 +44,7 @@ func TestRuntimePerPrincipalCeiling(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(bobCtx, "runtime.auth"), []byte("HUB_RUNTIME_AUTH=secret\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	publishSpaceRevision(t, bobCtx, "bob", nil)
 	writeHermesSources(t, bobCtx)
 	bob := binding(bobCtx)
 	bob.PrincipalID, bob.ContextID, bob.RuntimeID, bob.UserID = "bob", "bob", "bob", "bob"

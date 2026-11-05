@@ -27,7 +27,8 @@ func (s *Store) semanticRestartDigestLocked(principal, contextID, runtimeID stri
 	managed := []managedSurface{}
 	for _, profile := range s.capabilityProfiles {
 		if profile.PrincipalID == principal && profile.ContextID == contextID && profile.RuntimeID == runtimeID {
-			auth := identity.Envelope{Schema: identity.Schema, ExternalIdentityID: principal, ConversationID: contextID, DeliveryTargetID: contextID, PrincipalID: principal, ContextID: contextID, RuntimeID: runtimeID, PolicyVersion: profile.PolicyVersion, CapabilityProfile: profile.ProfileID, Environment: profile.Environment, Generation: profile.Generation}
+			policy := s.capabilityPolicies[profile.PolicyID]
+			auth := identity.Envelope{Schema: identity.Schema, ExternalIdentityID: principal, ConversationID: contextID, DeliveryTargetID: contextID, PrincipalID: principal, ContextID: contextID, RuntimeID: runtimeID, PolicyVersion: profile.PolicyVersion, CapabilityProfile: profile.ProfileID, Environment: profile.Environment, Generation: profile.Generation, Organization: policy.Organization}
 			tools, err := s.managedToolsLocked(auth)
 			if err != nil {
 				return ""

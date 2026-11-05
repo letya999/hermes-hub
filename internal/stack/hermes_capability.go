@@ -54,6 +54,20 @@ var nativeCarveoutToolsets = map[string]bool{
 	"debugging": true, "project": true, "safe": true, "code_execution": true,
 }
 
+// Pinned Hermes removes an entire selected toolset when a disabled composite
+// contains one of its tools. These overlapping names must leave the denylist
+// for the explicitly selected native toolset to work on api_server.
+var nativeCompositeUnblock = map[string][]string{
+	"file":         {"debugging"},
+	"terminal":     {"debugging"},
+	"web":          {"debugging", "safe"},
+	"search":       {"debugging", "safe", "web"},
+	"image_gen":    {"safe"},
+	"vision":       {"safe"},
+	"feishu_doc":   {"hermes-feishu", "hermes-gateway"},
+	"feishu_drive": {"hermes-feishu", "hermes-gateway"},
+}
+
 var nativeToolsetName = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 
 // NativeCarveoutToolsets returns the sorted set of upstream toolsets a managed
@@ -95,16 +109,19 @@ func disabledToolsets(s Settings) []string {
 		panic(err) // Corrupt compiled inventory must never render a permissive config.
 	}
 	carveouts := s.nativeCarveouts()
-	disabled := make([]string, 0, len(inventory.DisabledToolsets))
-	for _, name := range inventory.DisabledToolsets {
-		if !slices.Contains(carveouts, name) {
-			disabled = append(disabled, name)
+	unblock := map[string]bool{}
+	for _, name := range carveouts {
+		if !s.govAllows("native:" + name) {
+			continue
+		}
+		unblock[name] = true
+		for _, composite := range nativeCompositeUnblock[name] {
+			unblock[composite] = true
 		}
 	}
-	// Tool governance is a second, independent fence: a carve-out whose
-	// native:<name> section is denied goes back onto the emitted denylist.
-	for _, name := range carveouts {
-		if !s.govAllows("native:"+name) && !slices.Contains(disabled, name) {
+	disabled := make([]string, 0, len(inventory.DisabledToolsets))
+	for _, name := range inventory.DisabledToolsets {
+		if !unblock[name] {
 			disabled = append(disabled, name)
 		}
 	}
@@ -138,6 +155,11 @@ func managedHermesConfig(s Settings) M {
 	for _, platform := range inventory.Platforms {
 		platforms[platform] = []string{}
 	}
+	for _, name := range s.nativeCarveouts() {
+		if s.govAllows("native:" + name) {
+			platforms["api_server"] = append(platforms["api_server"].([]string), name)
+		}
+	}
 	out := M{
 		"model":             M{"default": s.Model, "provider": "custom", "base_url": s.ModelURL, "api_key": "${OPENAI_API_KEY}"},
 		"platform_toolsets": platforms,
@@ -155,6 +177,7 @@ func managedHermesConfig(s Settings) M {
 		// join them; every connector still goes through the ToolHub
 		// projection.
 		"mcp_servers": managedMCPServers(s),
+		"timeouts":    M{"tools": M{"sequential_call": 1800, "concurrent_batch": 1800}},
 		"plugins":     M{"enabled": []string{}},
 		"skills":      M{},
 		"hooks":       M{},

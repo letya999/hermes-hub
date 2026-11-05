@@ -1,6 +1,6 @@
 ---
-description: spaces/<id>/ layout — settings.yaml, generated configs, secrets/env files, state dirs, and what is hand-edited vs rendered.
-last_verified: "2026-11-04"
+description: spaces/<id>/ layout — six authored passports, generated configs, secrets/env files, and state dirs.
+last_verified: "2026-11-05"
 ---
 
 # Spaces
@@ -13,29 +13,24 @@ home. Org-level material lives in the referenced organization directories.
 
 ## Hand-edited inputs
 
-Two YAML files with different owners — the pair is deliberately split so
-capability intent never masquerades as runtime config. Keys placed in the
-wrong file are rejected by name, not merged.
+Managed spaces author `passports/{stack,config,models,workspace,tools,grants}.yaml`.
+`hubctl space apply` validates and publishes one immutable revision of all six.
+Tool selection and intended grants are separate documents.
 
-**Managed (published) spaces**: once `hubctl space-migrate`/`space apply`
+**Managed (published) spaces**: once `hubctl space apply`
 publishes a revision, the six passports under `generated/passports/
 <revision>/` are the sole runtime authority — render, supervisor spawn,
 sibling enrollment, `hubctl up/chat/doctor/trace` and execution selection
-resolve through `stack.ReadEffective`, which opens the revision plus the
-slim `agent.yaml` extension file alone. `settings.yaml`, `workspace.yaml`
-and the space's own `models.yaml` are retired: they are never opened on any
-runtime path (SPEC-0092 R8.1). A managed claim — the `current` pointer or
-`capability_mode: managed` in `agent.yaml` — without a loadable revision
-fails closed, never downgrades to the retired files. `agent.yaml` keeps
-only the extension fields the contract does not govern (`infra`, `web`,
-`image_gen`, `cli_toolboxes`, `capability_profile_id`,
-`capability_generation`, `hosting`); passport-owned keys inside it are
-rejected by name.
+resolve through `stack.ReadEffective`, which opens the revision without
+`agent.yaml`, `settings.yaml`, or the old `workspace.yaml` and `models.yaml`
+files (SPEC-0095 R1.2). A present `current` pointer without a loadable
+revision fails closed. The unpublished legacy reader remains until the
+CHG-0283 cutover is finished; it is not a managed-space authority.
 
 | File | Owner | Contents |
 |---|---|---|
 | `scope.yaml` | operator | Host-owned `kind` (`user`, `group`, `organization`), `id` and optional organization binding; group init refuses existing personal scopes |
-| `agent.yaml` (schema 3) | operator | unmanaged: full runtime config (`user`, `organization`, `model`, `model_url`, `timezone`, ports, `hooks`, `memory`, `honcho`, `cliproxy`, `infra`, `diagnostics`, `image_gen`, `web`, `cli_registries`, managed-mode pin). **Managed: slim extension only** — the fields above that the passport contract does not govern |
+| `agent.yaml` (schema 3) | retired | Legacy unpublished reader only; it cannot extend a published managed revision |
 | `workspace.yaml` (schema 3) | capability intent | unmanaged: the `tools:` map, `ingress:` channels, `workspace:` mounts plus optional `goal`/`bootstrap_revision`, `mcp:` raw server definitions. **Retired under a published revision** — `tools.yaml`/`workspace.yaml`/`grants.yaml` passports replace it |
 | `settings.yaml` (schema 1, legacy) | — | pre-split file; still parses for unmigrated spaces — `features`, `native_toolsets`, `disabled_mcp` migrate into the pair at load — but mixing old keys with the new pair is rejected. **Retired under a published revision.** `internal/stack/defaults/{agent,workspace}.yaml` seed new spaces |
 | `models.yaml` | operator | unmanaged: logical model registry (ids without dots, ladder hops into cliproxy `/v1/models`). **Retired under a published revision** — the `models.yaml` passport (`services`/`routes`/`default`) is the only registry the relay reads |
@@ -48,6 +43,11 @@ rejected by name.
 | `cliproxy/` | operator | Dedicated-proxy material (`config.yaml`, `api-key`, `auths/`) when `cliproxy: dedicated` — per-owner accounts, never copied between spaces |
 | `telegram-auth.<env>.env` | operator | Telegram QR auth app API pair when `telegram_auth` is on (default for telegram stacks) |
 | `profile.lock` | host | init-stamped provisioning baseline: profile name, version and sha256 of each stamped file — the 3-way reference for `hubctl profile diff|apply`. Hand-editing it cannot widen an org assignment (the org member/default wins at render) |
+
+In an organization directory, `settings.yaml` is the host-owned organization
+policy for members, features and organization actions. `scope.yaml` is only its
+kind/ID marker; changing it does not alter the running policy. The retired
+`settings.yaml` row above describes a user space, not an organization directory.
 
 ## Provisioning profiles (SPEC-0083 R9)
 
@@ -71,8 +71,12 @@ Assignment resolution: `hubctl init --profile <name>` → the member's
 (which resolves to the legacy `*-default.yaml` templates). Members keep the
 legacy scalar form `alice: member` or the map form
 `alice: {role: member, profile: sales}`. Init stamps `agent.yaml` and
-`workspace.yaml`, creates `skills/`, writes `profile.lock` and materializes
-`layout.yaml` dirs (entries containing `..` are rejected). `hubctl org
+`workspace.yaml` during the ongoing cutover, and creates the six authored
+`passports/*.yaml` from per-file profile overrides or embedded defaults.
+`profile.lock` records the six passport baselines; `hubctl profile diff|apply`
+updates only unchanged authored passports and never publishes them. Init also
+creates `skills/` and materializes `layout.yaml` dirs (entries containing
+`..` are rejected). `hubctl org
 sync-members --org acme --org-dir <dir> [--spaces root] [--dry-run]` creates
 missing member spaces idempotently and never overwrites.
 
@@ -84,7 +88,7 @@ error. `grants.yaml` only becomes authority through
 rules as `defaults`, ceiling untouched) followed by the confirmed
 `hubctl capability --kind policy --confirm` publish — the store still
 rejects anything outside the organization ceiling. `hubctl profile diff` /
-`apply` three-way the stamped files against `profile.lock`: untouched files
+`apply` three-way the six authored passports against `profile.lock`: untouched files
 update, customized files are kept and reported.
 
 `tools:` backends: `native` (upstream toolset in-runtime — no per-call
@@ -102,6 +106,11 @@ ToolHub grant covers `native:<name>` (`hubctl governance --kind grant`),
 otherwise the read fails closed. The native `skills` toolset is never
 grantable: the hub-built effective view at `/skills` replaces upstream
 loading in both modes, and the curator stays disabled.
+For a supervised runtime, the selected and granted native set is also the
+`api_server` platform set. The renderer removes an upstream disabled composite
+only when it overlaps a selected native toolset; unrelated native sets stay
+disabled. This is required for the pinned Hermes API path to register the
+selected tool in an actual run.
 
 ```yaml
 tools:
@@ -183,8 +192,8 @@ docs/tools.md; they are not shared personal-memory stores.
   goes through the `memory_card` contract or the `vault:` file root —
   both require a stamped private run and deny the governed zones
   (`memory/`, `runtime/`, dot paths); `library/` stays writable
-  (SPEC-0085 R6). Mounts rw at `/vault` in the runtime and in the
-  communication gateway — the gateway is the capture writer, the
+  (SPEC-0085 R6). The runtime no longer mounts `/vault`; during the
+  CHG-0285 cutover the communication gateway remains the capture writer,
   pre-turn recall/CORE pinning plane, and the nightly rollup driver
   (SPEC-0085 R2/R4/R5): at `memory_rollup_time` (agent settings,
   `"HH:MM"` space-local, default 04:00) it folds the just-closed day —
@@ -273,61 +282,60 @@ rotation recreates that owner's relay; Broker rotation resolves on the next call
 without a relay restart. Model identity changes apply to the next owner runtime.
 
 
-## Migrating a legacy space to the six-passport contract
+## Applying authored passports
 
-`hubctl space-migrate --dir spaces/<user> --env dev [--apply]` converts one
-space's editable authority into layered six-passport sources. Dry-run (the
-default) prints the field-level mapping — enabled `tools.*` entries →
-`tools.core.<toolset>` with the catalog-routed `via`, `workspace.mounts` →
-`workspace.writable`/`read_only`, `models.yaml` providers + ladders →
-`models.services`/`routes`, the compose-rendered service set →
-`stack.services.<instance>` with catalog instance modes, active ToolHub
-section grants → the `grants.allow` ledger — plus every conflict needing an
-operator decision. Nothing is written until `--apply`.
-
-Apply writes `passport-src/{platform-ceiling,platform-template,user}.yaml`,
-compiles and atomically publishes the revision under `generated/passports/
-<revision>/`, and stores a verified backup of every editable authority file
-(`settings.yaml`, `agent.yaml`, `workspace.yaml`, `models.yaml`, `SOUL.md`)
-under `generated/migration-backup/<revision>/` with a sha256 manifest. The
-report's `rollback` field is the fence: restore the backup over the space,
-then remove the published revision and `current`. Nothing is ever deleted —
-unknown files, project trees, journals and runtime state stay in place.
-Symlinked authority files are refused; mixed `settings.yaml` +
-`agent.yaml`/`workspace.yaml` authority is reported as a conflict, never
-silently merged; grants on sections without cataloged capabilities stay in
-the ToolHub store and are listed as conflicts.
-
-Each published file carries `apiVersion: six-passport/v2`,
-`kind: <passport name>` and its contract keys top-level — there is no
-`body:` wrapper. Layer provenance (`updated_at`, `sources`, per-catalog
-pins) lives in `generated/passports/<revision>/provenance.yaml`, not inside
-the six passports.
-
-`hubctl space-audit --dir spaces/<user>` answers the effective inventory from
-the published revision only: running services, model routes, the workspace
-writable/read-only tree, core/extended toolset projection, the grants ledger,
-per-toolset deny reasons (raw MCP surfaces are default-deny without a
-reviewed grant) and layer provenance. It never reads editable sources.
-
-## Applying passport sources
+`hubctl init` now stamps all six files from embedded defaults or a profile's
+`passports/<name>.yaml` overrides. Profile inheritance resolves each file
+independently. `models.yaml` is intentionally blank until the owner selects
+a route and enrolls its credential; apply rejects that incomplete model.
+The old init files remain during CHG-0283 and are not the intended final
+configuration authority.
 
 `hubctl space apply --dir spaces/<user> --env dev [--confirm]` compiles the
-`passport-src/` layers and diffs the result against the published revision.
+six authored files in `passports/` and diffs the result against the published
+revision. Each `stack.yaml` must declare `identity.user` equal to the space
+name and a boolean `identity.infra`. `grants.yaml` may contain `allow: {}` to
+disable all granted operations; tool selection does not add rights. The host
+publisher accepts only active self grants already issued in the protected
+ledger. A later tools selection change requires `tools.configure` in both the
+current published allow and that ledger.
+For `identity.organization`, every authored grant must also fit the protected
+organization policy's `right_ceiling`; apply verifies its exact active profile,
+generation and environment before publishing. An absent policy or ceiling
+denies requested rights.
+`config.memory.enabled` is required in authored sets and controls whether the
+vault feature is active independently of tool selection. The same
+`config.memory` block carries `nightly_rollup` (`HH:MM`),
+`leaf_retention_days` (0 or at least 2) and `leaf_fold_bytes` (nonnegative).
+Published values override the old `agent.yaml` memory schedule and retention
+fields; absent values reset to their defaults.
+Managed spaces also declare `tools.binding.profile_id` and a positive
+`tools.binding.generation`; the published binding supplies the runtime and
+ToolHub identity even when `agent.yaml` disagrees or is absent.
+Missing authored passports fail; `passport-src/` is no longer read by this
+command. The unpublished legacy reader remains pending CHG-0283 removal.
+For a deployed `spaces/<user>` path, managed reads and infra-owner selection
+reject a published set whose `metadata.space` or `stack.identity.user` names
+another user, even if no `scope.yaml` exists.
 The default dry-run prints a JSON receipt: every changed leaf with its
 before/after (credential refs render as `<ref:name>`, never material), the
 effect class (live/respawn/recreate/rebuild) and owning consumer, plus the
-ordered minimum action plan — nothing is written. `--confirm` publishes the
-new revision atomically, re-renders `generated/compose.<env>.yaml` from that
+ordered minimum action plan — nothing is written. `--confirm` atomically moves
+the revision pointer, re-renders `generated/compose.<env>.yaml` from that
 revision, then reconciles in order: rebuild only the service images that
 changed, recreate only the affected containers, run one compose
 `--remove-orphans` sweep when instances were dropped (a removed
 `stack.services` entry removes exactly that container), mark the runtime
 for a deferred supervisor restart-request when its boundary moved, and run
-registered live hooks. Any failure repoints `current` at the previous
-revision, re-runs the live hooks that already applied and reports
-`rolled_back` with the failed action — a half-active revision is never left
-behind.
+registered live hooks. On failure, reconcile repoints `current` at the previous
+revision and replays affected service actions and live hooks against the
+restored render. `rolled_back` is false if any replay fails. A render or view-refresh failure also
+restores the previous `current` pointer and mounted passport view. When a
+previous revision exists, rollback also re-renders its generated service
+files. The restored profile ceiling includes only previous passport rights
+that still have an active issued grant; a concurrent grant revocation stays
+revoked. A failed rights restore reports rollback divergence. Transactional
+recovery of every partially updated consumer remains part of CHG-0283.
 
 The rendered compose set is commanded by `stack.services`: `per-space`
 instances become local containers, `shared` instances render only on the
@@ -380,4 +388,4 @@ relay admits it implicitly); the migrator then declares `cliproxy` inside
 
 ## Hosting policy
 
-Opt-in `hosting` uses `hosting.slots` (up to four), optional digest-pinned `hosting.image` and explicit `hosting.runtime` (`runsc` or `kata`) in agent settings. These are rights-bearing fields. Published sites live in per-user/env named volumes, not the full workspace mount. See [hosting](services/hosting.md).
+Opt-in `hosting` uses `passports/config.yaml` for `hosting.slots` (up to four), optional digest-pinned `hosting.image` and explicit `hosting.runtime` (`runsc` or `kata`). `passports/tools.yaml` selects hosting separately from grants. Published sites live in per-user/env named volumes, not the full workspace mount. See [hosting](services/hosting.md).

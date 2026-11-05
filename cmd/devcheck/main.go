@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 
 	"github.com/letya999/hermes-hub/internal/devcheck"
@@ -20,13 +21,17 @@ func main() {
 }
 
 // coverTest runs the whole suite in one invocation like a CI shard
-// (.github/workflows/ci.yml): go test parallelizes package binaries across
-// GOMAXPROCS and merges the -coverpkg=./... profiles natively. The old
+// (.github/workflows/ci.yml): Go merges the -coverpkg=./... profiles natively.
+// Windows serializes package binaries to avoid intermittent Access is denied
+// when several instrumented tests launch child processes. The old
 // per-package loop re-linked and ran the same instrumented binary 49 times
 // serially (15-20 min locally).
 var coverTest = func(profile string) *exec.Cmd {
-	return exec.Command("go", "test", "-race", "-shuffle=on", "-count=1", "-timeout=10m",
-		"-coverpkg=./...", "-coverprofile="+profile, "./...")
+	args := []string{"test", "-race", "-shuffle=on", "-count=1", "-timeout=10m", "-coverpkg=./...", "-coverprofile=" + profile}
+	if runtime.GOOS == "windows" {
+		args = append(args, "-p=1")
+	}
+	return exec.Command("go", append(args, "./...")...)
 }
 
 func run(args []string) error {

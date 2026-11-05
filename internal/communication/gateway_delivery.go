@@ -535,7 +535,7 @@ func (g *Gateway) sendRight(delivery Delivery, principal string) bool {
 	if token == "" || url == "" || principal == "" {
 		return true
 	}
-	allow, err := api.DecideClient{URL: url, Token: token, Principal: principal}.GrantsRight(context.Background(), "channels", "send", delivery.Channel)
+	allow, err := api.DecideClient{URL: url, Token: token, Principal: principal, Environment: g.config.Environment}.GrantsRight(context.Background(), "channels", "send", delivery.Channel)
 	if err != nil {
 		log.Printf("gateway send rights decide principal=%s err=%v", principal, err)
 	}
@@ -560,7 +560,7 @@ func (g *Gateway) voiceRight(delivery Delivery) bool {
 	if principal == "" {
 		return false
 	}
-	allow, err := api.DecideClient{URL: url, Token: token, Principal: principal}.GrantsRight(context.Background(), "channels", "send_voice", delivery.Channel)
+	allow, err := api.DecideClient{URL: url, Token: token, Principal: principal, Environment: g.config.Environment}.GrantsRight(context.Background(), "channels", "send_voice", delivery.Channel)
 	if err != nil {
 		log.Printf("gateway voice rights decide principal=%s err=%v", principal, err)
 	}

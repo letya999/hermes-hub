@@ -12,32 +12,73 @@ import (
 	"testing"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/catalog"
+	"github.com/letya999/hermes-hub/internal/passport"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
-	"gopkg.in/yaml.v3"
 )
 
+// publishAliceRevision authors the six passports and runs the real
+// authored → compile → publish path (SPEC-0095 R1): the fixture exercises
+// the same revision the supervisor's loadSelected reads, with the retired
+// settings.yaml/agent.yaml out of the loop entirely. mutate may adjust the
+// authored docs before compilation.
+func publishAliceRevision(t *testing.T, ctxRoot string, mutate func(map[string]string)) {
+	t.Helper()
+	publishSpaceRevision(t, ctxRoot, "alice", mutate)
+}
+
+func publishSpaceRevision(t *testing.T, ctxRoot, user string, mutate func(map[string]string)) {
+	t.Helper()
+	docs := map[string]string{
+		"stack": "identity: {user: " + user + ", infra: false}\nservices:\n" +
+			"  hermes-runtime: {mode: supervised}\n" +
+			"  model-relay: {mode: per-space}\n" +
+			"  toolhub-relay: {mode: per-space}\n" +
+			"  toolhub: {mode: shared}\n" +
+			"  credential-broker: {mode: shared}\n" +
+			"  communication-hub: {mode: shared}\n" +
+			"  supervisor: {mode: shared}\n" +
+			"  cliproxy: {mode: per-space}\n",
+		"config": "runtime: {timezone: UTC}\nmemory: {enabled: false}\n",
+		"models": "default: synthetic\nroutes: {synthetic: {ladder: [cliproxy]}}\nservices:\n" +
+			"  cliproxy:\n    via: cliproxy\n    endpoint: http://cliproxy:8317/v1\n" +
+			"    auth: {proxy_access: {kind: broker-key, ref: cliproxy}}\n    models: [{id: synthetic}]\n",
+		"workspace": "writable: [/workspace]\nread_only: [/vault/memory]\n",
+		"tools":     "binding: {profile_id: " + user + "-default, generation: 1}\ncore:\n  files: {via: toolhub}\n",
+		"grants":    "allow: {}\n",
+	}
+	if mutate != nil {
+		mutate(docs)
+	}
+	if err := os.MkdirAll(filepath.Join(ctxRoot, "passports"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"stack", "config", "models", "workspace", "tools", "grants"} {
+		if err := os.WriteFile(filepath.Join(ctxRoot, "passports", name+".yaml"), []byte(docs[name]), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	catalogDocs, err := catalog.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rev, err := passport.CompileAuthored(ctxRoot, "prod", time.Now(), catalogDocs, stack.ReservedSiblingPorts(ctxRoot), map[string][]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rev.Publish(ctxRoot); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // writeManagedFixtures installs the host-side files a managed supervised
-// context needs: reviewed settings, the managed env file, a zero-template
-// source config and the supervisor execution selection.
+// context needs: a published six-passport revision, the managed env file,
+// a zero-template source config and the supervisor execution selection.
 func writeManagedFixtures(t *testing.T, ctxRoot string) stack.Settings {
 	t.Helper()
-	settings := stack.Settings{Schema: 1, User: "alice", Environment: "prod", Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1}
-	body, err := yaml.Marshal(settings)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(ctxRoot, "settings.yaml"), body, 0600); err != nil {
-		t.Fatal(err)
-	}
+	publishAliceRevision(t, ctxRoot, nil)
 	if err := os.WriteFile(filepath.Join(ctxRoot, "managed-runtime.prod.env"), []byte("HUB_TOOLHUB_ENDPOINT=http://toolhub:8090/mcp\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	source, err := yaml.Marshal(stack.Config(settings))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(ctxRoot, "hermes.prod.yaml"), source, 0600); err != nil {
 		t.Fatal(err)
 	}
 	selection := stack.ExecutionSelection{Schema: 1, User: "alice", Environment: "prod", Mode: "supervisor", SupervisorURL: "http://localhost:8876", NativeCron: "disabled", CompatibilityRelease: "0.3.0"}
@@ -48,57 +89,20 @@ func writeManagedFixtures(t *testing.T, ctxRoot string) stack.Settings {
 	if err := os.WriteFile(filepath.Join(ctxRoot, stack.ExecutionPath("prod")), selectionBody, 0600); err != nil {
 		t.Fatal(err)
 	}
-	return settings
-}
-
-// writeManagedRevisionFixtures installs a managed space whose only settings
-// surface is the slim agent.yaml plus the published six-document revision:
-// settings.yaml and workspace.yaml are retired (SPEC-0092 R8.1).
-func writeManagedRevisionFixtures(t *testing.T, ctxRoot string) {
-	t.Helper()
-	// The published pointer alone claims managed: agent.yaml carries only the
-	// operator extensions, no capability_mode authority key.
-	if err := os.WriteFile(filepath.Join(ctxRoot, "agent.yaml"), []byte(
-		"schema: 3\nuser: alice\ntimezone: UTC\ncapability_profile_id: alice-default\ncapability_generation: 1\nmodel: synthetic\nmodel_url: http://model-relay:8318/v1\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(ctxRoot, "managed-runtime.prod.env"), []byte("HUB_TOOLHUB_ENDPOINT=http://toolhub:8090/mcp\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	// The reviewed source config mirrors what RenderEnvironment wrote for the
-	// published revision: the passport-resolved model identity.
-	source, err := yaml.Marshal(stack.Config(stack.Settings{User: "alice", Model: "m", ModelURL: "http://cliproxy:8317/v1", Timezone: "UTC", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1}))
+	settings, err := stack.ReadEnvironment(ctxRoot, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(ctxRoot, "hermes.prod.yaml"), source, 0600); err != nil {
-		t.Fatal(err)
-	}
-	rev := "r-0123456789abcdef"
-	revDir := filepath.Join(ctxRoot, "generated", "passports", rev)
-	if err := os.MkdirAll(revDir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	env := "apiVersion: six-passport/v2\nmetadata: {space: alice, environment: prod, revision: " + rev + ", generated_at: 2026-11-02T00:00:00Z, catalogs: \"4\"}\n"
-	docs := map[string]string{
-		"stack": "kind: stack\nidentity: {user: alice}\nservices:\n" +
-			"  hermes-runtime: {mode: supervised}\n" +
-			"  model-relay: {mode: per-space}\n" +
-			"  toolhub-relay: {mode: per-space}\n" +
-			"  toolhub: {mode: shared}\n" +
-			"  credential-broker: {mode: shared}\n",
-		"config":    "kind: config\nruntime: {timezone: UTC}\nports: {oauth-callback: 8008, browser-vnc: 6081}\n",
-		"models":    "kind: models\ndefault: m\nroutes:\n  m: {ladder: [cliproxy]}\nservices:\n  cliproxy: {via: cliproxy, endpoint: http://cliproxy:8317/v1, models: [{id: m}]}\n",
-		"workspace": "kind: workspace\nwritable: [/workspace]\nread_only: [/vault/memory]\n",
-		"tools":     "kind: tools\ncore:\n  discovery: {via: toolhub}\n  files: {via: toolhub}\n",
-		"grants":    "kind: grants\nallow: {}\n",
-	}
-	for _, name := range []string{"stack", "config", "models", "workspace", "tools", "grants"} {
-		if err := os.WriteFile(filepath.Join(revDir, name+".yaml"), []byte(env+docs[name]), 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(ctxRoot, "generated", "passports", "current"), []byte(rev+"\n"), 0600); err != nil {
+	return settings
+}
+
+// writeManagedRevisionFixtures installs a managed space carried entirely by
+// the published six-document revision: settings.yaml, agent.yaml and
+// workspace.yaml are retired (SPEC-0092 R8.1, SPEC-0095).
+func writeManagedRevisionFixtures(t *testing.T, ctxRoot string) {
+	t.Helper()
+	publishAliceRevision(t, ctxRoot, nil)
+	if err := os.WriteFile(filepath.Join(ctxRoot, "managed-runtime.prod.env"), []byte("HUB_TOOLHUB_ENDPOINT=http://toolhub:8090/mcp\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	selection := stack.ExecutionSelection{Schema: 1, User: "alice", Environment: "prod", Mode: "supervisor", SupervisorURL: "http://localhost:8876", NativeCron: "disabled", CompatibilityRelease: "0.3.0"}
@@ -275,6 +279,12 @@ func TestManagedPolicyVersionReadsPublishedRevision(t *testing.T) {
 func TestManagedEnsureRequiresSupervisorSelection(t *testing.T) {
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("ok"), nil }, nil)
 	writeManagedFixtures(t, root)
+	// The stack passport is itself the spawn contract (SPEC-0092 R3.2):
+	// dropping the supervised hermes-runtime declaration leaves the space
+	// with no authority to spawn once the execution file is gone too.
+	publishAliceRevision(t, root, func(docs map[string]string) {
+		docs["stack"] = strings.Replace(docs["stack"], "  hermes-runtime: {mode: supervised}\n", "", 1)
+	})
 	if err := os.Remove(filepath.Join(root, stack.ExecutionPath("prod"))); err != nil {
 		t.Fatal(err)
 	}
@@ -383,21 +393,18 @@ func TestManagedRelayFailureRemovesSidecar(t *testing.T) {
 func TestManagedMaterializeCarriesDeclaredContext(t *testing.T) {
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("ok"), nil }, nil)
 	writeManagedFixtures(t, root)
-	settings, err := stack.ReadEnvironment(root, "prod")
-	if err != nil {
-		t.Fatal(err)
-	}
-	settings.Compression = map[string]any{"threshold_tokens": 150000}
-	settings.Context = stack.ContextSection{Compact: stack.ContextCompact{Engine: "hub"}}
-	settings.Goals = stack.ContextGoals{Engine: "hub", Judge: "aux", MaxTurns: 10}
-	settings.SummaryModel = "small-summary"
-	settingsBody, err := yaml.Marshal(settings)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "settings.yaml"), settingsBody, 0600); err != nil {
-		t.Fatal(err)
-	}
+	// Context policy is authored in the config passport and carried into
+	// materialization through the effective read — the retired
+	// settings.yaml can no longer inject it.
+	publishAliceRevision(t, root, func(docs map[string]string) {
+		docs["config"] = "runtime:\n" +
+			"  timezone: UTC\n" +
+			"  compression: {threshold_tokens: 150000}\n" +
+			"  context: {compaction: hub, engines: [hub]}\n" +
+			"  goals: {engine: hub, judge: aux, max_turns: 10}\n" +
+			"  auxiliary: {summary_model: small-summary}\n" +
+			"memory: {enabled: false}\n"
+	})
 	configPath, err := m.materializeHermesConfig(binding(root), "prod")
 	if err != nil {
 		t.Fatal(err)
@@ -442,8 +449,12 @@ func TestManagedReapRemovesRuntimeAndSidecar(t *testing.T) {
 	if err := m.Reap(context.Background(), m.cfg.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if len(removed) != 2 || removed[0] == runtime.Container+"-ctl" || removed[1] != runtime.Container+"-ctl" {
-		t.Fatalf("managed reap did not remove runtime then its relay: %v", removed)
+	// Both removals go through the immutable container IDs the fake docker
+	// minted at run time — never the mutable names.
+	runtimeID := hex.EncodeToString(hashBytes(runtime.Container + runtime.Generation))
+	relayID := hex.EncodeToString(hashBytes(runtime.Container + "-ctl" + runtime.Generation))
+	if len(removed) != 2 || removed[0] != runtimeID || removed[1] != relayID {
+		t.Fatalf("managed reap did not remove runtime then its relay by ID: %v", removed)
 	}
 }
 
@@ -567,22 +578,11 @@ features: [workspace]
 	if err := os.WriteFile(filepath.Join(orgDir, "settings.yaml"), []byte(orgSettings), 0600); err != nil {
 		t.Fatal(err)
 	}
-	userSettings := `schema: 1
-user: alice
-organization: acme
-model: synthetic
-model_url: http://model-relay:8318/v1
-timezone: UTC
-browser_port: 6080
-oauth_port: 8000
-capability_mode: managed
-capability_profile_id: alice-default
-capability_generation: 1
-features: [workspace]
-`
-	if err := os.WriteFile(filepath.Join(root, "settings.yaml"), []byte(userSettings), 0600); err != nil {
-		t.Fatal(err)
-	}
+	// Organization membership is authored in the stack passport identity;
+	// the org scope document carries the policy.
+	publishAliceRevision(t, root, func(docs map[string]string) {
+		docs["stack"] = strings.Replace(docs["stack"], "identity: {user: alice, infra: false}", "identity: {user: alice, infra: false, organization: acme}", 1)
+	})
 	bound := binding(root)
 	bound.OrganizationID = "acme"
 	normalized, err := m.normalize(bound)
@@ -613,21 +613,14 @@ features: [workspace]
 func TestManagedMaterializeCarriesFeatureFlags(t *testing.T) {
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("ok"), nil }, nil)
 	writeManagedFixtures(t, root)
-	settings, err := stack.ReadEnvironment(root, "prod")
-	if err != nil {
-		t.Fatal(err)
-	}
-	settings.Tools = map[string]stack.ToolEntry{
-		"knowledge_ui": {Via: stack.ToolViaNative},
-		"memory_vault": {Via: stack.ToolViaNative},
-	}
-	settingsBody, err := yaml.Marshal(settings)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "settings.yaml"), settingsBody, 0600); err != nil {
-		t.Fatal(err)
-	}
+	// Native pseudo-toolsets are authored in the tools passport; the
+	// ToolHub governance doc still carries the section grants.
+	publishAliceRevision(t, root, func(docs map[string]string) {
+		docs["tools"] = strings.Replace(docs["tools"], "files: {via: toolhub}", "files: {via: toolhub}\n  knowledge_ui: {via: native}\n  memory_vault: {via: native}", 1)
+		// memory.enabled is the passport's own vault switch — the native
+		// toolset entry alone does not flip Has("memory_vault").
+		docs["config"] = strings.Replace(docs["config"], "memory: {enabled: false}", "memory: {enabled: true}", 1)
+	})
 	doc := api.NewGovernance()
 	now := time.Now().UTC()
 	for _, section := range []string{"native:knowledge_ui", "native:memory_vault"} {
@@ -649,13 +642,7 @@ func TestManagedMaterializeCarriesFeatureFlags(t *testing.T) {
 	if err := api.SaveGovernance(filepath.Join(root, "runtime", "toolhub", "governance.json"), doc); err != nil {
 		t.Fatal(err)
 	}
-	source, err := yaml.Marshal(stack.Config(settings))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "hermes.prod.yaml"), source, 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeHermesSources(t, root)
 	configPath, err := m.materializeHermesConfig(binding(root), "prod")
 	if err != nil {
 		t.Fatal(err)
@@ -675,25 +662,36 @@ func TestManagedMaterializeCarriesFeatureFlags(t *testing.T) {
 func TestManagedMaterializeCarriesBrowserGrant(t *testing.T) {
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("ok"), nil }, nil)
 	writeManagedFixtures(t, root)
-	settings, err := stack.ReadEnvironment(root, "prod")
-	if err != nil {
+	// The browser toolset rides the tools passport with its mutation member;
+	// the hub:browser / hub:browser_guest sections stay granted through the
+	// ToolHub governance doc the reviewed render consulted.
+	publishAliceRevision(t, root, func(docs map[string]string) {
+		docs["tools"] = strings.Replace(docs["tools"], "files: {via: toolhub}", "files: {via: toolhub}\n  browser: {via: toolhub, tools: {include: [browser_open, browser_read, browser_act, browser_capture]}}", 1)
+		docs["stack"] += "  browser: {mode: per-space}\n"
+		docs["config"] = strings.Replace(docs["config"], "memory: {enabled: false}", "ports: {browser-vnc: 6080}\nmemory: {enabled: false}", 1)
+	})
+	doc := api.NewGovernance()
+	now := time.Now().UTC()
+	for _, section := range []string{api.SectionHubBrowser, "hub:browser_guest"} {
+		grant := api.NewToolGrant("grant-alice-"+strings.ReplaceAll(section, ":", "-"), "alice", section, "test grant", "operator", now.Add(time.Hour), nil)
+		if err := api.Confirm(&grant, "operator", now); err != nil {
+			t.Fatal(err)
+		}
+		if err := doc.PutToolGrant(grant, now); err != nil {
+			t.Fatal(err)
+		}
+		stamped, err := doc.RequestToolGrant("alice", grant.GrantID, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := doc.AcknowledgeToolGrant("alice", grant.GrantID, stamped.RequestNonce, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := api.SaveGovernance(filepath.Join(root, "runtime", "toolhub", "governance.json"), doc); err != nil {
 		t.Fatal(err)
 	}
-	settings.Tools = map[string]stack.ToolEntry{"browser": {Via: stack.ToolViaMCP, Tools: map[string]bool{"act": true}}}
-	settingsBody, err := yaml.Marshal(settings)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "settings.yaml"), settingsBody, 0600); err != nil {
-		t.Fatal(err)
-	}
-	source, err := yaml.Marshal(stack.Config(settings))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "hermes.prod.yaml"), source, 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeHermesSources(t, root)
 	configPath, err := m.materializeHermesConfig(binding(root), "prod")
 	if err != nil {
 		t.Fatal(err)

@@ -12,10 +12,31 @@ import (
 	"testing"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/media"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"gopkg.in/yaml.v3"
 )
+
+func TestManagedNativeSelectionReachesAPIServer(t *testing.T) {
+	s := Settings{Schema: 3, Environment: "prod", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, User: "alice", Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", Tools: map[string]ToolEntry{"terminal": {Via: ToolViaNative}}}
+	if err := s.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config(s)
+	platforms := cfg["platform_toolsets"].(M)
+	for platform, selected := range platforms {
+		want := []string{}
+		if platform == "api_server" {
+			want = []string{"terminal"}
+		}
+		if !slices.Equal(selected.([]string), want) {
+			t.Fatalf("managed native selection for %s: %v, want %v", platform, selected, want)
+		}
+	}
+	disabled := cfg["agent"].(M)["disabled_toolsets"].([]string)
+	if slices.Contains(disabled, "terminal") || slices.Contains(disabled, "debugging") || !slices.Contains(disabled, "file") || !slices.Contains(disabled, "project") {
+		t.Fatalf("managed native denylist does not match the selected carveout: %v", disabled)
+	}
+}
 
 func TestManagedHermesSourceRejectsEveryAlternativeIngress(t *testing.T) {
 	inventory, err := ManagedCapabilityInventory()
@@ -176,7 +197,8 @@ func TestManagedRenderFailsUntilRuntimeIsolationExists(t *testing.T) {
 	if err := Init(dir, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := Read(dir)
+	publishManagedRevision(t, dir, "alice", "r-0000000000000001")
+	settings, err := ReadEffective(dir, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +206,7 @@ func TestManagedRenderFailsUntilRuntimeIsolationExists(t *testing.T) {
 	settings.Model = "synthetic"
 	settings.ModelURL = "http://model-relay:8318/v1"
 	settings.Memory, settings.Tools, settings.Ingress = false, nil, nil
-	if err := WriteSpace(dir, settings); err != nil {
+	if err := saveSpace(t, dir, settings); err != nil {
 		t.Fatal(err)
 	}
 	// No supervisor execution file and an unsupervised runtime mode: the
@@ -208,7 +230,8 @@ func TestManagedSupervisedRenderOmitsRuntimeService(t *testing.T) {
 	if err := Init(dir, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := Read(dir)
+	publishManagedRevision(t, dir, "alice", "r-0000000000000001")
+	settings, err := ReadEffective(dir, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +239,7 @@ func TestManagedSupervisedRenderOmitsRuntimeService(t *testing.T) {
 	settings.Model = "synthetic"
 	settings.ModelURL = "http://model-relay:8318/v1"
 	settings.Memory, settings.Tools, settings.Ingress = false, nil, nil
-	if err := WriteSpace(dir, settings); err != nil {
+	if err := saveSpace(t, dir, settings); err != nil {
 		t.Fatal(err)
 	}
 	publishManagedRevision(t, dir, "alice", "r-0123456789abcdef")
@@ -464,13 +487,13 @@ func TestNativeCarveoutSubtractsRenderedDenylist(t *testing.T) {
 		Tools: testNativeTools("terminal", "memory", "todo")}
 	zero := Config(s)
 	disabled := zero["agent"].(M)["disabled_toolsets"].([]string)
-	for _, carved := range []string{"terminal", "memory", "todo"} {
+	for _, carved := range []string{"terminal", "memory", "todo", "debugging"} {
 		if slices.Contains(disabled, carved) {
 			t.Fatalf("carved-out toolset %s still denied", carved)
 		}
 	}
-	if len(disabled) != len(inventory.DisabledToolsets)-3 {
-		t.Fatalf("denylist shrank by %d, expected 3", len(inventory.DisabledToolsets)-len(disabled))
+	if len(disabled) != len(inventory.DisabledToolsets)-4 {
+		t.Fatalf("denylist shrank by %d, expected 4", len(inventory.DisabledToolsets)-len(disabled))
 	}
 	// The carved-out memory toolset needs its subsystem flag; the rest stay
 	// at the reviewed zero posture.
@@ -632,7 +655,8 @@ func TestManagedEgressRelayRenders(t *testing.T) {
 	if err := Init(dir, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := Read(dir)
+	publishManagedRevision(t, dir, "alice", "r-0000000000000001")
+	settings, err := ReadEffective(dir, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -654,7 +678,7 @@ func TestManagedEgressRelayRenders(t *testing.T) {
 		"image_gen": {Via: ToolViaToolHub},
 	}
 	settings.Web = WebSettings{SearchBackend: "keenable", ExtractBackend: "keenable", SearchProviders: []string{"keenable", "ddgs"}}
-	if err := WriteSpace(dir, settings); err != nil {
+	if err := saveSpace(t, dir, settings); err != nil {
 		t.Fatal(err)
 	}
 	docs := managedDocs("alice")
@@ -706,7 +730,7 @@ func TestManagedEgressRelayRenders(t *testing.T) {
 		t.Fatal("egress relay not rendered")
 	}
 	hosts := relay["environment"].(M)["HUB_EGRESS_RELAY_HOSTS"].(string)
-	for _, want := range []string{"api.keenable.ai", "duckduckgo.com", "hub-media", "communication-hub"} {
+	for _, want := range []string{"hub-media", "communication-hub"} {
 		if !strings.Contains(hosts, want) {
 			t.Fatalf("egress allowlist misses %s: %s", want, hosts)
 		}
@@ -722,7 +746,6 @@ func TestManagedEgressRelayRenders(t *testing.T) {
 		"HTTPS_PROXY":                   "http://egress-relay:8319",
 		"HTTP_PROXY":                    "http://egress-relay:8319",
 		"HUB_EGRESS_PROXY":              "http://egress-relay:8319",
-		"KEENABLE_API_KEY":              "kk-test",
 		"HUB_MEDIA_URL":                 "http://hub-media:8090",
 		"HUB_COMMUNICATION_CONTROL_URL": "http://communication-hub:8081",
 	} {
@@ -733,66 +756,16 @@ func TestManagedEgressRelayRenders(t *testing.T) {
 	if env["HUB_MEDIA_AUTH"] == "" || env["HUB_COMMUNICATION_AUTH"] == "" {
 		t.Fatal("managed env lost media or communication auth")
 	}
-	// The effective Hermes config carries the operator's provider selection.
+	if env["KEENABLE_API_KEY"] != "" {
+		t.Fatal("retired agent.yaml web selection leaked a provider key")
+	}
+	// Retired agent.yaml extensions cannot change the published web selection.
 	effective, err := os.ReadFile(filepath.Join(dir, "generated", "hermes-effective.dev.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(effective), "keenable") {
-		t.Fatal("managed effective config dropped web provider selection")
-	}
-	// The spawned container reconstructs the same expectation from env: the
-	// web provider selection must ride HUB_MANAGED_WEB into the runtime.
-	runtimeService := RuntimeService(settings, "", dir)
-	envMap, ok := runtimeService["environment"].(M)
-	if !ok {
-		t.Fatal("runtime service has no environment")
-	}
-	webJSON, ok := envMap["HUB_MANAGED_WEB"].(string)
-	if !ok || webJSON == "" {
-		t.Fatal("managed runtime env lost HUB_MANAGED_WEB")
-	}
-	var carried WebSettings
-	if err := json.Unmarshal([]byte(webJSON), &carried); err != nil {
-		t.Fatalf("HUB_MANAGED_WEB is not JSON: %v", err)
-	}
-	if !reflect.DeepEqual(carried, settings.Web) {
-		t.Fatalf("HUB_MANAGED_WEB round-trip changed the selection: %+v", carried)
-	}
-	// The image_gen grant rides the same contract: the spawned runtime
-	// reconstructs the block from HUB_MANAGED_IMAGE_GEN.
-	imageGenJSON, ok := envMap["HUB_MANAGED_IMAGE_GEN"].(string)
-	if !ok || imageGenJSON == "" {
-		t.Fatal("managed runtime env lost HUB_MANAGED_IMAGE_GEN")
-	}
-	var carriedGen media.ImageGen
-	if err := json.Unmarshal([]byte(imageGenJSON), &carriedGen); err != nil {
-		t.Fatalf("HUB_MANAGED_IMAGE_GEN is not JSON: %v", err)
-	}
-	if carriedGen != settings.managedImageGenGrant() {
-		t.Fatalf("HUB_MANAGED_IMAGE_GEN round-trip changed the grant: %+v", carriedGen)
-	}
-	// Attestation must accept the effective config when — and only when —
-	// the web and image_gen selections arrive with the materialize options.
-	attestOpts := MaterializeOptions{Managed: true, ToolHubEndpoint: "http://toolhub:8090/mcp", ToolHubTokenEnv: "HUB_RUNTIME_AUTH", RuntimeAuthPresent: true, ToolHubReconnect: true,
-		NativeToolsets: settings.nativeCarveouts(), Web: carried, ImageGen: carriedGen}
-	effectiveSettings, err := ReadEffective(dir, "dev")
-	if err != nil {
-		t.Fatal(err)
-	}
-	validate := Settings{Model: effectiveSettings.Model, ModelURL: effectiveSettings.ModelURL, Timezone: effectiveSettings.Timezone}
-	effectivePath := filepath.Join(dir, "generated", "hermes-effective.dev.yaml")
-	if err := ValidateManagedEffectiveConfig(effectivePath, validate, attestOpts); err != nil {
-		t.Fatalf("effective config rejected with carried web selection: %v", err)
-	}
-	attestOpts.Web = WebSettings{}
-	if err := ValidateManagedEffectiveConfig(effectivePath, validate, attestOpts); err == nil {
-		t.Fatal("web block accepted without the provider selection in transit")
-	}
-	attestOpts.Web = carried
-	attestOpts.ImageGen = media.ImageGen{}
-	if err := ValidateManagedEffectiveConfig(effectivePath, validate, attestOpts); err == nil {
-		t.Fatal("image_gen block accepted without the grant in transit")
+	if strings.Contains(string(effective), "keenable") {
+		t.Fatal("retired agent.yaml web selection reached managed config")
 	}
 }
 
@@ -838,7 +811,8 @@ func TestNativeSkillsToolsetAlwaysDenied(t *testing.T) {
 	if err := Init(d, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	s, err := Read(d)
+	publishManagedRevision(t, d, "alice", "r-0000000000000001")
+	s, err := ReadEffective(d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -846,14 +820,14 @@ func TestNativeSkillsToolsetAlwaysDenied(t *testing.T) {
 	// A `skills: {via: native}` wish can be persisted but never renders —
 	// validation refuses it before any grant question.
 	s.Tools = map[string]ToolEntry{"skills": {Via: ToolViaNative}}
-	if err := saveSpace(d, s); err != nil {
+	if err := saveSpace(t, d, s); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenderEnvironment(d, root, "prod"); err == nil || !strings.Contains(err.Error(), "not a reviewed native toolset") {
+	if err := RenderEnvironment(d, root, "prod"); err == nil || !strings.Contains(err.Error(), "cannot be enabled natively under managed mode") {
 		t.Fatalf("skills wish rendered: %v", err)
 	}
 	s.Tools = map[string]ToolEntry{}
-	if err := saveSpace(d, s); err != nil {
+	if err := saveSpace(t, d, s); err != nil {
 		t.Fatal(err)
 	}
 	if err := RenderEnvironment(d, root, "prod"); err != nil {
@@ -1074,7 +1048,8 @@ func TestManagedRenderEnvironmentCarriesFeatureFlags(t *testing.T) {
 	if err := Init(dir, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := Read(dir)
+	publishManagedRevision(t, dir, "alice", "r-0000000000000001")
+	settings, err := ReadEffective(dir, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1082,7 +1057,7 @@ func TestManagedRenderEnvironmentCarriesFeatureFlags(t *testing.T) {
 	settings.Model = "synthetic"
 	settings.ModelURL = "http://model-relay:8318/v1"
 	settings.Memory, settings.Ingress = false, nil
-	if err := WriteSpace(dir, settings); err != nil {
+	if err := saveSpace(t, dir, settings); err != nil {
 		t.Fatal(err)
 	}
 	docs := managedDocs("alice")
@@ -1133,7 +1108,8 @@ func TestManagedRenderEnvironmentCarriesBrowserGrant(t *testing.T) {
 	if err := Init(dir, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := Read(dir)
+	publishManagedRevision(t, dir, "alice", "r-0000000000000001")
+	settings, err := ReadEffective(dir, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1142,7 +1118,7 @@ func TestManagedRenderEnvironmentCarriesBrowserGrant(t *testing.T) {
 	settings.ModelURL = "http://model-relay:8318/v1"
 	settings.Memory, settings.Ingress = false, nil
 	settings.Tools = map[string]ToolEntry{"browser": {Via: ToolViaMCP, Tools: map[string]bool{"act": true}}}
-	if err := WriteSpace(dir, settings); err != nil {
+	if err := saveSpace(t, dir, settings); err != nil {
 		t.Fatal(err)
 	}
 	docs := managedDocs("alice")

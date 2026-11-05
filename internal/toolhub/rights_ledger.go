@@ -1,8 +1,8 @@
 package toolhub
 
 import (
-	"crypto/sha256"
 	"fmt"
+	"reflect"
 	"slices"
 	"sort"
 	"time"
@@ -61,13 +61,9 @@ func (s *Store) profilesForPrincipal(principal string) []api.CapabilityProfile {
 	return out
 }
 
-// DeriveRights stamps the published grants.yaml allow onto the space's
-// managed records (SPEC-0092 R2.1): every active capability profile bound
-// to the principal carries the flattened allow as its Rights ceiling, and
-// the governance ledger holds platform-issued grants for exactly those
-// capability.operation rows. Rows the revision dropped are revoked in
-// place, so Decide denies them on the next action — rights a passport no
-// longer carries cannot linger in the ledger.
+// DeriveRights binds a published grants ceiling to active profiles. Every
+// requested row must already have an independently issued live ledger grant;
+// publishing a passport never issues or revokes a grant.
 func equalRightRules(a, b []api.RightRule) bool {
 	if len(a) != len(b) {
 		return false
@@ -80,10 +76,59 @@ func equalRightRules(a, b []api.RightRule) bool {
 	return true
 }
 
-func DeriveRights(store *Store, gov *GovernanceStore, doc api.RightsDoc, principal string, allow map[string][]string, environment, policyVersion string, now time.Time) error {
+// CheckOrganizationRights preflights an authored grants revision against the
+// exact protected profile and its active organization policy before publish.
+func (s *Store) CheckOrganizationRights(principal, environment, organization, profileID string, generation uint64, allow map[string][]string) error {
+	if err := s.Reload(); err != nil {
+		return err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	profile, ok := s.capabilityProfiles[profileID]
+	if !ok || profile.Status != api.ActiveStatus || profile.PrincipalID != principal || profile.Environment != environment || profile.Generation != generation {
+		return fmt.Errorf("%w: organization profile unavailable", api.ErrUnauthorized)
+	}
+	policy, ok := s.capabilityPolicies[profile.PolicyID]
+	if !ok || policy.Status != api.ActiveStatus || policy.Revision != profile.PolicyRevision || policy.Organization != organization || !slices.Contains(policy.Members, principal) {
+		return fmt.Errorf("%w: organization policy unavailable", api.ErrUnauthorized)
+	}
+	for capability, operations := range allow {
+		for _, operation := range operations {
+			if !slices.Contains(policy.RightCeiling, api.RightRule{Capability: capability, Operation: operation}) {
+				return fmt.Errorf("%w: %s.%s exceeds organization ceiling", api.ErrUnauthorized, capability, operation)
+			}
+		}
+	}
+	return nil
+}
+
+// DeriveRights rewrites the managed rights ceiling of exactly the profiles
+// the published revision binds: same principal, same environment, and — when
+// the revision's tools.binding names a profile — only that profile. A dev
+// apply must never rewrite the prod profile's rights, and a bound revision
+// must never touch a sibling generation.
+func DeriveRights(store *Store, gov *GovernanceStore, doc api.RightsDoc, principal string, allow map[string][]string, environment, profileID, policyVersion string, now time.Time) error {
+	return deriveRights(store, gov, doc, principal, allow, environment, profileID, policyVersion, "", nil, nil, now)
+}
+
+// DeriveRightsAndSelections applies the published rights and first-party tool
+// selection to the same bound profile revision. Other registered definitions
+// retain their independent connection lifecycle.
+func DeriveRightsAndSelections(store *Store, gov *GovernanceStore, doc api.RightsDoc, principal string, allow map[string][]string, environment, profileID, policyVersion, definitionID string, selections []api.CapabilitySelection, core []string, now time.Time) error {
+	return deriveRights(store, gov, doc, principal, allow, environment, profileID, policyVersion, definitionID, selections, core, now)
+}
+
+func deriveRights(store *Store, gov *GovernanceStore, doc api.RightsDoc, principal string, allow map[string][]string, environment, profileID, policyVersion, definitionID string, selections []api.CapabilitySelection, core []string, now time.Time) error {
+	issued, err := IssuedRightCeiling(gov, doc, principal, now)
+	if err != nil {
+		return err
+	}
 	rules := make([]api.RightRule, 0, len(allow))
 	for capability, ops := range allow {
 		for _, op := range ops {
+			if !slices.Contains(issued[capability], op) {
+				return fmt.Errorf("%w: %s.%s has no active issued grant", api.ErrUnauthorized, capability, op)
+			}
 			rules = append(rules, api.RightRule{Capability: capability, Operation: op})
 		}
 	}
@@ -93,12 +138,37 @@ func DeriveRights(store *Store, gov *GovernanceStore, doc api.RightsDoc, princip
 		}
 		return rules[i].Operation < rules[j].Operation
 	})
+	var bound []api.CapabilityProfile
 	for _, profile := range store.profilesForPrincipal(principal) {
-		repin := profile.Environment == environment && policyVersion != "" && profile.PolicyVersion != policyVersion
-		if equalRightRules(profile.Rights, rules) && !repin {
+		if profile.Environment != environment {
+			continue
+		}
+		if profileID != "" && profile.ProfileID != profileID {
+			continue
+		}
+		bound = append(bound, profile)
+	}
+	for _, profile := range bound {
+		repin := policyVersion != "" && profile.PolicyVersion != policyVersion
+		var selected []api.CapabilitySelection
+		if definitionID != "" {
+			for _, current := range profile.Selections {
+				if current.DefinitionID != definitionID {
+					selected = append(selected, current)
+				}
+			}
+			selected = append(selected, selections...)
+		}
+		selectionChanged := definitionID != "" && (!reflect.DeepEqual(profile.Selections, selected) || !slices.Equal(profile.CoreTools, core) || !profile.CoreBound)
+		if equalRightRules(profile.Rights, rules) && !repin && !selectionChanged {
 			continue
 		}
 		profile.Rights = rules
+		if definitionID != "" {
+			profile.Selections = selected
+			profile.CoreBound = true
+			profile.CoreTools = slices.Clone(core)
+		}
 		if repin {
 			profile.PolicyVersion = policyVersion
 		}
@@ -118,70 +188,31 @@ func DeriveRights(store *Store, gov *GovernanceStore, doc api.RightsDoc, princip
 			return err
 		}
 	}
+	return nil
+}
+
+// IssuedRightCeiling exposes only active, unscoped self grants for this
+// principal. A path-scoped grant remains a live PDP constraint, never a
+// blanket passport operation.
+func IssuedRightCeiling(gov *GovernanceStore, doc api.RightsDoc, principal string, now time.Time) (map[string][]string, error) {
 	if gov == nil {
-		return nil
+		return nil, fmt.Errorf("%w: rights ledger unavailable", api.ErrUnauthorized)
 	}
-	return gov.Update(now, func(ledger *api.Governance) error {
-		keep := map[string]bool{}
-		caps := make([]string, 0, len(allow))
-		for capability := range allow {
-			caps = append(caps, capability)
+	grants, err := gov.RightGrants()
+	if err != nil {
+		return nil, err
+	}
+	out := map[string][]string{}
+	for _, grant := range grants {
+		row, ok := doc.Lookup(grant.Capability, grant.Operation)
+		if !ok || !grant.Active(now) || grant.PrincipalID != principal || grant.Scope != "" || row.Subject != "self" || !slices.Contains(row.Issuers, grant.GrantedBy) {
+			continue
 		}
-		sort.Strings(caps)
-		for _, capability := range caps {
-			ops := append([]string(nil), allow[capability]...)
-			sort.Strings(ops)
-			for _, op := range ops {
-				row, ok := doc.Lookup(capability, op)
-				if !ok {
-					return fmt.Errorf("%w: derived right %s.%s", api.ErrInvalid, capability, op)
-				}
-				if row.Subject == "cross" || !slices.Contains(row.Issuers, "platform") {
-					continue // scoped cross-subject grants stay operator-minted
-				}
-				// Grant IDs must stay inside the 40-char identity bound;
-				// the principal is readable-prefix, capability.operation
-				// hashes onto a fixed suffix so long pairs always fit.
-				sum := sha256.Sum256([]byte(principal + "|" + capability + "." + op))
-				short := principal
-				if len(short) > 23 {
-					short = short[:23]
-				}
-				grantID := fmt.Sprintf("right-%s-%x", short, sum[:5])
-				keep[grantID] = true
-				var existing *api.RightGrant
-				for i := range ledger.Rights {
-					if ledger.Rights[i].GrantID == grantID {
-						existing = &ledger.Rights[i]
-						break
-					}
-				}
-				if existing != nil && existing.Active(now) {
-					continue
-				}
-				grant := api.NewRightGrant(grantID, principal, capability, op, "", "passport-derived right", "platform", now.AddDate(1, 0, 0))
-				if existing != nil {
-					grant.Revision = existing.Revision + 1
-					grant.CreatedAt = existing.CreatedAt
-				}
-				if err := api.Confirm(&grant, "platform", now); err != nil {
-					return err
-				}
-				if err := ledger.PutRightGrant(grant, row, now); err != nil {
-					return err
-				}
-			}
+		if !slices.Contains(out[grant.Capability], grant.Operation) {
+			out[grant.Capability] = append(out[grant.Capability], grant.Operation)
 		}
-		for _, grant := range ledger.Rights {
-			if grant.PrincipalID != principal || grant.GrantedBy != "platform" || keep[grant.GrantID] || grant.Status == api.GrantRevoked {
-				continue
-			}
-			if err := ledger.RevokeRightGrant(grant.GrantID, "platform", "passport revision no longer carries the right", now); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+	}
+	return out, nil
 }
 
 // repinManagedBindings carries the principal's existing bindings onto a

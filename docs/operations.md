@@ -93,8 +93,8 @@ Skip the ceremony and the user gets an agent with an empty tool surface.
    A *managed* space additionally needs, before `up`: an execution selection
    (`execution.<env>.json` — `mode: supervisor`,
    `supervisor_url: http://supervisor:8876`, `native_cron: disabled`),
-   a migrated passport (`hubctl space-migrate --dir spaces/<id> --env <env>
-   --apply`), and reachable model credentials — either `cliproxy: shared`
+   six authored passports published with `hubctl space apply --dir
+   spaces/<id> --env <env> --confirm`, and reachable model credentials — either `cliproxy: shared`
    against the infra instance or `cliproxy: dedicated` with the space's own
    `cliproxy/` directory (`config.yaml`). Dedicated instances are enrolled
    with `hubctl models login --dir spaces/<id> --service <name>`: submit each
@@ -227,8 +227,7 @@ hubctl org sync-members --org acme --org-dir spaces/acme \
     --spaces spaces --dry-run                                          # report, then drop --dry-run to provision
 hubctl capability --kind group --file g.json --toolhub-store <path>   # validate+print digest only
 hubctl capability --kind preview --file draft.json --toolhub-store <path>  # old→new diff, never writes
-hubctl capability --kind tools --settings <space> \
-    --set terminal=native,browser=mcp:playwright+ro --confirm          # surgical workspace.yaml write
+hubctl space apply --dir spaces/<user> --env dev --confirm             # publish passports/tools.yaml with separate grants.yaml
 hubctl governance --kind rule --scope user --user alice \
     --section native:terminal --effect allow --reason "reviewed" --confirm
 hubctl governance --kind grant --user alice --section user_mcp --expires 72h --confirm
@@ -510,28 +509,19 @@ service in docs/services/credential-broker.md. Ops-critical facts:
   proxy environment parameter` — move offending names to `environment` and
   restart toolhub.
 
-## Migrations
+## Space publication and data maintenance
 
-All explicit, dry-run first, never overwrite:
+Space publication is an explicit dry-run followed by `--confirm`:
 
 ```text
-hubctl migrate-spaces --user artem --org acme [--apply]
-hubctl space-migrate --dir spaces/artem --env dev [--apply]   # legacy authority -> six-passport sources
-hubctl space apply --dir spaces/artem --env dev [--confirm]   # compile passport-src, classified diff, publish + reconcile
-hubctl space-audit --dir spaces/artem                         # revision-only effective inventory
+hubctl space apply --dir spaces/artem --env dev [--confirm]   # compile six authored passports, publish + reconcile
 hubctl spool migrate --spool <dir> --state <dir> [--apply]   # legacy knowledge tree
 hubctl context backup|restore|export|purge [--spool <dir>] [--confirm]
 ```
 
-`migrate-spaces` rejects symlinks, ID collisions, unrelated data and active
-runtimes; reports JSON paths/counts/checksums, no secret values. `space-migrate`
-compiles the space's editable authority into the layered six-passport sources,
-publishes the revision atomically and keeps a sha256-verified backup plus a
-rollback fence under `generated/migration-backup/<revision>/` — nothing is
-deleted, conflicts are reported, never silently retyped. `space-audit` reads
-only the published revision: services, routes, workspace tree, core/extended
-toolsets, grants, deny reasons and layer provenance. `spool
-migrate` copies (never moves) knowledge into `<state>/knowledge/<principal>`;
+The publisher checks all six authored files, current issued rights and the
+organization ceiling before switching the revision. `spool migrate` copies
+(never moves) knowledge into `<state>/knowledge/<principal>`;
 other spool dirs (`schedules`, `occurrences`, `watchers`, `digests`, `tasks`,
 `events`, `outbox`, `mappings`, `conversations`, `inbound`, `callbacks`) keep
 their paths. `context restore` refuses another user and never reactivates

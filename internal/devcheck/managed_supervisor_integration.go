@@ -17,9 +17,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/catalog"
+	"github.com/letya999/hermes-hub/internal/passport"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/supervisor"
-	"gopkg.in/yaml.v3"
 )
 
 // ManagedSupervisorCanary proves the supervisor-managed lifecycle end to end
@@ -484,34 +485,55 @@ sys.exit(1)`
 	return nil
 }
 
-// managedCanaryContext writes the reviewed settings, execution selection,
-// env files and managed state directories one supervised context needs.
+// managedCanaryContext publishes the synthetic passports and execution selection
+// one supervised context needs.
 func managedCanaryContext(root, userID, env string) (string, error) {
 	contextRoot := filepath.Join(root, userID)
-	if err := os.MkdirAll(contextRoot, 0700); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "config"), 0700); err != nil {
 		return "", err
 	}
-	settings := stack.Settings{Schema: 1, User: userID, Environment: env, Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1}
-	body, err := yaml.Marshal(settings)
+	if err := os.WriteFile(filepath.Join(root, "config", "SOUL.md"), []byte("# managed canary\n"), 0644); err != nil {
+		return "", err
+	}
+	if err := stack.InitEnvironment(contextRoot, userID, env); err != nil {
+		return "", err
+	}
+	for name, body := range map[string]string{
+		"stack":  "identity: {user: " + userID + ", infra: true}\nservices:\n  hermes-runtime: {mode: supervised}\n  model-relay: {mode: shared}\n  cliproxy: {mode: shared}\n  toolhub: {mode: shared}\n  credential-broker: {mode: shared}\n  communication-hub: {mode: shared}\n  supervisor: {mode: shared}\n",
+		"config": "runtime: {timezone: UTC}\nmemory: {enabled: false}\nchannels:\n  telegram: {bot: {ref: telegram-bot-contract}}\n",
+		"models": "default: synthetic\nroutes: {synthetic: {ladder: [upstream]}}\nservices:\n  upstream: {via: openai-compatible, endpoint: http://cliproxy:8317/v1, models: [{id: synthetic}]}\n",
+		"tools":  "binding: {profile_id: " + userID + "-default, generation: 1}\ncore:\n  files: {via: toolhub}\n",
+	} {
+		if err := os.WriteFile(filepath.Join(contextRoot, "passports", name+".yaml"), []byte(body), 0600); err != nil {
+			return "", err
+		}
+	}
+	catalogDocs, err := catalog.Generate()
 	if err != nil {
 		return "", err
 	}
-	source, err := yaml.Marshal(stack.Config(settings))
+	revision, err := passport.CompileAuthored(contextRoot, env, time.Now().UTC(), catalogDocs, stack.ReservedSiblingPorts(contextRoot), map[string][]string{})
 	if err != nil {
 		return "", err
 	}
-	selection := stack.ExecutionSelection{Schema: 1, User: userID, Environment: env, Mode: "supervisor", SupervisorURL: "http://localhost:8876", NativeCron: "disabled", CompatibilityRelease: "0.3.0"}
+	if err := revision.Publish(contextRoot); err != nil {
+		return "", err
+	}
+	selection := stack.ExecutionSelection{Schema: 1, User: userID, Environment: env, Mode: "supervisor", SupervisorURL: "http://supervisor:8876", NativeCron: "disabled", CompatibilityRelease: "0.3.0"}
 	selectionBody, err := json.Marshal(selection)
 	if err != nil {
 		return "", err
 	}
+	if err := os.WriteFile(filepath.Join(contextRoot, stack.ExecutionPath(env)), selectionBody, 0600); err != nil {
+		return "", err
+	}
+	if err := stack.RenderEnvironment(contextRoot, root, env); err != nil {
+		return "", err
+	}
 	files := map[string][]byte{
-		"settings.yaml":                   body,
 		"managed-runtime." + env + ".env": []byte("OPENAI_API_KEY=probe-key\nHUB_TOOLHUB_ENDPOINT=http://toolhub:8090/mcp\n"),
 		"runtime.auth":                    []byte("HUB_RUNTIME_AUTH=managed-canary-auth-0123456789abcdef\n"),
 		"SOUL.md":                         []byte("# managed canary\n"),
-		"hermes." + env + ".yaml":         source,
-		stack.ExecutionPath(env):          selectionBody,
 	}
 	for name, content := range files {
 		if err := os.WriteFile(filepath.Join(contextRoot, name), content, 0600); err != nil {

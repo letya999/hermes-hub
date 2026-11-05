@@ -1,9 +1,78 @@
 package stack
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
+
+// The legacy feature vocabulary survives in test fixtures only: these
+// tables translate the old `features:` names into the tools/ingress
+// selections a published revision would carry.
+var featureToolMigration = map[string]ToolEntry{
+	"browser":         {Via: ToolViaMCP, Server: "playwright"},
+	"web":             {Via: ToolViaNative},
+	"deep_research":   {Via: ToolViaNative},
+	"hh":              {Via: ToolViaToolHub},
+	"ssh":             {Via: ToolViaToolHub},
+	"image_gen":       {Via: ToolViaToolHub},
+	"meet":            {Via: ToolViaNative},
+	"transcription":   {Via: ToolViaNative},
+	"google":          {Via: ToolViaMCP},
+	"gitlab":          {Via: ToolViaMCP},
+	"github":          {Via: ToolViaMCP},
+	"slack":           {Via: ToolViaMCP},
+	"atlassian":       {Via: ToolViaMCP},
+	"telegram_user":   {Via: ToolViaMCP},
+	"desktop":         {Via: ToolViaMCP},
+	"drafts":          {Via: ToolViaMCP},
+	"exposure":        {Via: ToolViaToolHub},
+	"hosting":         {Via: ToolViaToolHub},
+	"memory_vault":    {Via: ToolViaNative},
+	"knowledge_ui":    {Via: ToolViaNative},
+	"memory_provider": {Via: ToolViaNative},
+}
+
+var featureToggleMigration = map[string][2]string{
+	"browser_act":    {"browser", "act"},
+	"ssh_write":      {"ssh", "write"},
+	"ssh_shell":      {"ssh", "shell"},
+	"ssh_tunnel":     {"ssh", "tunnel"},
+	"google_write":   {"google", "write"},
+	"telegram_write": {"telegram_user", "write"},
+}
+
+// featureTools converts legacy feature names into their tools/ingress
+// equivalents — the fixture vocabulary the retired migration used to
+// provide.
+func featureTools(features []string) (map[string]ToolEntry, []string, error) {
+	tools := map[string]ToolEntry{}
+	var ingress []string
+	for _, feature := range features {
+		switch {
+		case feature == "workspace":
+		case feature == "telegram" || feature == "slack_app":
+			ingress = append(ingress, feature)
+		case featureToolMigration[feature].Via != "":
+			tools[feature] = featureToolMigration[feature]
+		default:
+			pair, ok := featureToggleMigration[feature]
+			if !ok {
+				return nil, nil, fmt.Errorf("unknown legacy feature %q", feature)
+			}
+			e := tools[pair[0]]
+			if e.Via == "" {
+				e = featureToolMigration[pair[0]]
+			}
+			if e.Tools == nil {
+				e.Tools = map[string]bool{}
+			}
+			e.Tools[pair[1]] = true
+			tools[pair[0]] = e
+		}
+	}
+	return tools, ingress, nil
+}
 
 // testTools builds a tools map from legacy feature names or explicit
 // `name=backend` pairs, so fixtures stay terse after the schema-2 switch.
@@ -17,7 +86,7 @@ func testTools(args ...string) map[string]ToolEntry {
 		}
 		features = append(features, arg)
 	}
-	tools, _, err := LegacyFeatureTools(features)
+	tools, _, err := featureTools(features)
 	if err != nil {
 		panic(err)
 	}
@@ -35,7 +104,7 @@ func testIngress(args ...string) []string {
 			features = append(features, arg)
 		}
 	}
-	_, ingress, err := LegacyFeatureTools(features)
+	_, ingress, err := featureTools(features)
 	if err != nil {
 		panic(err)
 	}

@@ -69,6 +69,7 @@ type CapabilityPolicy struct {
 	Reason        string            `json:"reason"`
 	Status        Status            `json:"status"`
 	Ceiling       []CapabilityRule  `json:"ceiling"`
+	RightCeiling  []RightRule       `json:"right_ceiling,omitempty"`
 	Defaults      []CapabilityRule  `json:"defaults"`
 	DefaultGroups []CapabilityGroup `json:"default_groups,omitempty"`
 	Denies        []CapabilityRule  `json:"denies,omitempty"`
@@ -76,13 +77,14 @@ type CapabilityPolicy struct {
 }
 
 type CapabilitySelection struct {
-	CapabilityID         string `json:"capability_id"`
-	DefinitionID         string `json:"definition_id"`
-	DefinitionVersion    string `json:"definition_version"`
-	ImplementationDigest string `json:"implementation_digest"`
-	ToolName             string `json:"tool_name"`
-	Name                 string `json:"name"`
-	ConnectionID         string `json:"connection_id,omitempty"`
+	CapabilityID         string   `json:"capability_id"`
+	DefinitionID         string   `json:"definition_id"`
+	DefinitionVersion    string   `json:"definition_version"`
+	ImplementationDigest string   `json:"implementation_digest"`
+	ToolName             string   `json:"tool_name"`
+	Name                 string   `json:"name"`
+	ConnectionID         string   `json:"connection_id,omitempty"`
+	PathScopes           []string `json:"path_scopes,omitempty"`
 }
 
 // A profile is published by the host control path for an exact runtime
@@ -130,6 +132,7 @@ type CapabilityProfile struct {
 	// D6, R6.1): only these selected names get a projected MCP schema; the
 	// rest of the admitted surface stays callable through tools_list/invoke.
 	// Empty keeps the legacy all-projected posture for unmanaged bindings.
+	CoreBound    bool          `json:"core_bound,omitempty"`
 	CoreTools    []string      `json:"core_tools,omitempty"`
 	Confirmation *Confirmation `json:"confirmation,omitempty"`
 }
@@ -168,6 +171,11 @@ func ValidCapabilityPath(value string) bool {
 	return value == "" || (len(value) <= 4096 && value != "." && !strings.HasPrefix(value, "/") &&
 		!strings.ContainsAny(value, "\\:\x00\r\n") && path.Clean(value) == value &&
 		value != ".." && !strings.HasPrefix(value, "../"))
+}
+
+func ValidSelectionPath(value string) bool {
+	return len(value) <= 4096 && strings.HasPrefix(value, "/") && value != "/" &&
+		!strings.ContainsAny(value, "\\:\x00\r\n") && path.Clean(value) == value
 }
 
 func prefixContains(prefix, value string) bool {
@@ -271,6 +279,16 @@ func (p CapabilityPolicy) Validate() error {
 	if p.Organization == "" && len(p.Members) != 1 {
 		return fmt.Errorf("%w: personal policy has one member", ErrInvalid)
 	}
+	if len(p.RightCeiling) > 4096 {
+		return fmt.Errorf("%w: too many rights in policy ceiling", ErrInvalid)
+	}
+	rights := map[RightRule]bool{}
+	for _, right := range p.RightCeiling {
+		if !rightNamePattern.MatchString(right.Capability) || !rightNamePattern.MatchString(right.Operation) || rights[right] {
+			return fmt.Errorf("%w: policy right ceiling", ErrInvalid)
+		}
+		rights[right] = true
+	}
 	for _, rules := range [][]CapabilityRule{p.Ceiling, p.Defaults} {
 		if err := validateCapabilityRules(rules, false); err != nil {
 			return err
@@ -332,6 +350,11 @@ func (p CapabilityProfile) ValidateStructure() error {
 			ValidateProjectedName(selection.Name) != nil || !McpToolNamePattern.MatchString(selection.ToolName) ||
 			(selection.ConnectionID != "" && !identity.ValidID(selection.ConnectionID)) || names[selection.Name] || capabilities[key] || ValidControlOperation(selection.Name) {
 			return fmt.Errorf("%w: ambiguous capability selection", ErrInvalid)
+		}
+		for _, scope := range selection.PathScopes {
+			if !ValidSelectionPath(scope) {
+				return fmt.Errorf("%w: invalid selected path scope", ErrInvalid)
+			}
 		}
 		names[selection.Name], capabilities[key] = true, true
 	}
@@ -472,6 +495,116 @@ func CapabilityDecision(profile CapabilityProfile, policy CapabilityPolicy, sele
 		}
 	}
 	return limits, scopes, len(tool.Uses) > 0 || RemoteExecutor(tool.Executor)
+}
+
+// NarrowSelectionScopes intersects authored paths with the admitted policy
+// prefixes before dispatch. The resulting prefix also reaches the executor's
+// os.Root guard, so a symlink cannot escape a lexical argument check.
+func NarrowSelectionScopes(selection CapabilitySelection, tool ToolSpec, arguments map[string]any, admitted []CapabilityScope, projection bool) ([]CapabilityScope, bool) {
+	if len(selection.PathScopes) == 0 {
+		return admitted, true
+	}
+	if tool.Executor != "handler:files" || len(tool.Uses) == 0 {
+		return nil, false
+	}
+	for _, use := range tool.Uses {
+		if use.PathArgument == "" {
+			return nil, false
+		}
+	}
+	if len(admitted) == 0 {
+		return nil, false
+	}
+	if projection {
+		return admitted, true
+	}
+	root := "workspace"
+	if value, present := arguments["root"]; present {
+		name, ok := value.(string)
+		if !ok {
+			return nil, false
+		}
+		if name != "" {
+			root = name
+		}
+	}
+	switch root {
+	case "workspace", "archive", "organization":
+	default:
+		return nil, false
+	}
+	out := slices.Clone(admitted)
+	byArgument := map[string]string{}
+	for i, scope := range out {
+		var values []string
+		switch value := arguments[scope.PathArgument].(type) {
+		case nil:
+			values = []string{""}
+		case string:
+			values = []string{value}
+		case []string:
+			values = value
+		case []any:
+			for _, item := range value {
+				v, ok := item.(string)
+				if !ok {
+					return nil, false
+				}
+				values = append(values, v)
+			}
+		default:
+			return nil, false
+		}
+		if len(values) == 0 {
+			return nil, false
+		}
+		chosen := ""
+		selected := false
+		for _, value := range values {
+			if value == "." {
+				value = ""
+			}
+			if !ValidCapabilityPath(value) {
+				return nil, false
+			}
+			matched := false
+			valuePrefix := ""
+			for _, allowed := range selection.PathScopes {
+				base := "/" + root
+				if allowed != base && !strings.HasPrefix(allowed, base+"/") {
+					continue
+				}
+				prefix := strings.TrimPrefix(strings.TrimPrefix(allowed, base), "/")
+				if !prefixContains(prefix, value) {
+					continue
+				}
+				if prefixContains(scope.PathPrefix, prefix) {
+					// The authored prefix is narrower than the policy grant.
+				} else if prefixContains(prefix, scope.PathPrefix) {
+					prefix = scope.PathPrefix
+				} else {
+					continue
+				}
+				if !matched || len(prefix) > len(valuePrefix) {
+					valuePrefix = prefix
+				}
+				matched = true
+			}
+			if !matched {
+				return nil, false
+			}
+			if selected && chosen != valuePrefix {
+				return nil, false
+			}
+			chosen, selected = valuePrefix, true
+		}
+		if prior, set := byArgument[scope.PathArgument]; set && prior != chosen {
+			return nil, false
+		}
+		byArgument[scope.PathArgument] = chosen
+		out[i].PathPrefix = chosen
+	}
+	return out, true
 }
 
 // ProfilePreviewEntry is one selection's dispatch outcome in a preview: either

@@ -3,6 +3,8 @@ package stack
 import (
 	"strings"
 	"testing"
+
+	"github.com/letya999/hermes-hub/internal/passportview"
 )
 
 // The stable prompt contract is the agent's only routing map for monitoring
@@ -244,15 +246,20 @@ func TestChannelContractDropsCrossFamilyClauses(t *testing.T) {
 // for merge/forget and the invalid-shape retry discipline.
 func TestChannelContractGuidesMemoryCard(t *testing.T) {
 	for _, want := range []string{"memory_card", "remember", "status=denied", "status=invalid"} {
-		if !strings.Contains(ChannelContract, want) {
+		if !strings.Contains(contractMemory, want) {
 			t.Fatalf("contract missing %q", want)
 		}
 	}
-	// Governed spaces keep the section only while memory_vault is admitted —
-	// the feature name, never the evicted native "memory" toolset.
-	governed := Settings{Tools: map[string]ToolEntry{"memory_vault": {Via: ToolViaNative}}}
+	// The selected tool and the independent config switch must both admit
+	// the section. A disabled switch leaves the tool selected but inert.
+	enabled, disabled := true, false
+	governed := Settings{Tools: map[string]ToolEntry{"memory_vault": {Via: ToolViaNative}}, PassportConfig: &passportview.Config{Memory: passportview.Memory{Enabled: &enabled}}}
 	if body := governed.channelContract(true); !strings.Contains(body, "memory_card") {
-		t.Fatal("memory_vault space lost the memory guidance")
+		t.Fatal("enabled memory space lost the memory guidance")
+	}
+	governed.PassportConfig.Memory.Enabled = &disabled
+	if body := governed.channelContract(true); strings.Contains(body, "memory_card") {
+		t.Fatal("disabled memory kept the memory guidance")
 	}
 	if body := (Settings{Tools: map[string]ToolEntry{"memory_vault": {Via: ToolViaOff}}}).channelContract(true); strings.Contains(body, "memory_card") {
 		t.Fatal("denied memory_vault kept the memory guidance")

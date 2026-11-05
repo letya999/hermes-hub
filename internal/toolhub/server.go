@@ -287,6 +287,7 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 		// principal's connectors without holding that principal's token.
 		ControlToken:   strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_AUTH")),
 		SpacePrincipal: strings.TrimSpace(os.Getenv("HUB_PRINCIPAL_ID")),
+		PassportRoot:   strings.TrimSpace(os.Getenv("HUB_PASSPORTS_BY_PRINCIPAL")),
 		// Tool governance sits beside the registry; the env pin exists for
 		// deployments that keep the policy document elsewhere.
 		Governance: NewGovernanceStore(api.EnvOr("HUB_TOOL_GOVERNANCE", GovernanceStorePath(os.Getenv("HUB_TOOLHUB_STORE")))),

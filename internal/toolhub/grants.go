@@ -391,22 +391,24 @@ func (s *Store) AllowedControlOperations(auth identity.Envelope) (map[string]boo
 		// AuthorizeProjectedCall (ADR-0089 D3). Under "" the profile's own
 		// control_operations allowlist stays the strict contract.
 		if profile.Connectors == api.ConnectorsPersonal || profile.Connectors == api.ConnectorsPersonalTeam {
-			allowed["invoke"] = true
+			if decision, err := s.decideLocked(auth, "tools", "use", "", time.Now().UTC()); err == nil && decision.Allow {
+				allowed["invoke"] = true
+			}
 			for _, tool := range api.ConnectorTools {
 				allowed[tool] = true
 			}
 			return allowed, nil
 		}
-		// SPEC-0092: a published tools.select right names the invoke control —
+		if profile.Connectors == api.ConnectorsNone {
+			return allowed, nil
+		}
+		// The published tools.use right admits the invoke control —
 		// the tool_call dispatch path for extended selections — and the
 		// profile's own control_operations allowlist cannot express it. The
 		// right is re-decided on every call, so a revoked or ceiling-dropped
 		// right closes the control on the next projection refresh.
-		if decision, err := s.decideLocked(auth, "tools", "select", "", time.Now().UTC()); err == nil && decision.Allow {
+		if decision, err := s.decideLocked(auth, "tools", "use", "", time.Now().UTC()); err == nil && decision.Allow {
 			allowed["invoke"] = true
-		}
-		if profile.Connectors == api.ConnectorsNone {
-			return allowed, nil
 		}
 		for _, operation := range profile.ControlOperations {
 			if slices.Contains(api.ControlOperations, operation) {

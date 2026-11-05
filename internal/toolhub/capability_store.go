@@ -140,8 +140,15 @@ func (s *Store) PutCapabilityPolicy(policy api.CapabilityPolicy) error {
 // apply would admit.
 func (s *Store) validateProfileAdmissionLocked(profile api.CapabilityProfile) (api.CapabilityPolicy, error) {
 	policy, exists := s.capabilityPolicies[profile.PolicyID]
-	if !exists || policy.Revision != profile.PolicyRevision || !slices.Contains(policy.Members, profile.PrincipalID) {
+	if !exists || policy.Status != api.ActiveStatus || policy.Revision != profile.PolicyRevision || !slices.Contains(policy.Members, profile.PrincipalID) {
 		return api.CapabilityPolicy{}, fmt.Errorf("%w: profile policy or membership", api.ErrUnauthorized)
+	}
+	if policy.Organization != "" {
+		for _, right := range profile.Rights {
+			if !slices.Contains(policy.RightCeiling, right) {
+				return api.CapabilityPolicy{}, fmt.Errorf("%w: profile right exceeds organization ceiling", api.ErrUnauthorized)
+			}
+		}
 	}
 	for _, rules := range append([][]api.CapabilityRule{profile.Allows}, api.GroupRuleSets(profile.AllowGroups)...) {
 		for _, rule := range rules {
@@ -217,10 +224,30 @@ func (s *Store) capabilityProfileLocked(auth identity.Envelope) (api.CapabilityP
 		return api.CapabilityProfile{}, api.CapabilityPolicy{}, fmt.Errorf("%w: capability runtime scope", api.ErrUnauthorized)
 	}
 	policy, exists := s.capabilityPolicies[profile.PolicyID]
-	if !exists || policy.Status != api.ActiveStatus || policy.Revision != profile.PolicyRevision || !slices.Contains(policy.Members, auth.PrincipalID) {
+	if !exists || policy.Status != api.ActiveStatus || policy.Revision != profile.PolicyRevision || policy.Organization != auth.Organization || !slices.Contains(policy.Members, auth.PrincipalID) {
 		return api.CapabilityProfile{}, api.CapabilityPolicy{}, fmt.Errorf("%w: current capability policy", api.ErrUnauthorized)
 	}
 	return profile, policy, nil
+}
+
+// ProfileOrganization reads the protected policy binding for a host CLI that
+// constructs its own envelope before invoking a managed control operation.
+func (s *Store) ProfileOrganization(auth identity.Envelope) (string, error) {
+	if err := s.Reload(); err != nil {
+		return "", err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	profile, ok := s.capabilityProfiles[auth.CapabilityProfile]
+	if !ok || profile.Status != api.ActiveStatus || profile.PrincipalID != auth.PrincipalID || profile.ContextID != auth.ContextID ||
+		profile.RuntimeID != auth.RuntimeID || profile.Environment != auth.Environment || profile.Generation != auth.Generation || profile.PolicyVersion != auth.PolicyVersion {
+		return "", api.ErrUnauthorized
+	}
+	policy, ok := s.capabilityPolicies[profile.PolicyID]
+	if !ok || policy.Status != api.ActiveStatus || policy.Revision != profile.PolicyRevision || !slices.Contains(policy.Members, auth.PrincipalID) {
+		return "", api.ErrUnauthorized
+	}
+	return policy.Organization, nil
 }
 
 // CoreToolNames returns the profile's pinned direct-projection set (R6.1).
@@ -239,7 +266,7 @@ func (s *Store) CoreToolNames(auth identity.Envelope) (map[string]bool, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(profile.CoreTools) == 0 {
+	if len(profile.CoreTools) == 0 && !profile.CoreBound {
 		return nil, nil
 	}
 	out := make(map[string]bool, len(profile.CoreTools))
@@ -362,6 +389,9 @@ func (s *Store) managedSelfInstallToolsLocked(auth identity.Envelope, profile ap
 			if tool.Effect == api.WriteEffect && !s.selfInstallWritesLocked(binding.ToolBindingID) {
 				continue
 			}
+			if len(s.rightsMissingLocked(auth, profile, tool, time.Now().UTC())) > 0 {
+				continue
+			}
 			result = append(result, api.ProjectedTool{
 				Name:         api.ProjectedToolName(effective.Definition.DefinitionID, effective.Definition.Version, tool.Name),
 				BindingID:    effective.Binding.ToolBindingID,
@@ -390,12 +420,16 @@ func (s *Store) managedSelfInstallToolLocked(auth identity.Envelope, profile api
 			if tool.Effect == api.WriteEffect && !s.selfInstallWritesLocked(binding.ToolBindingID) {
 				continue
 			}
+			if len(s.rightsMissingLocked(auth, profile, tool, time.Now().UTC())) > 0 {
+				continue
+			}
 			if api.ProjectedToolName(effective.Definition.DefinitionID, effective.Definition.Version, tool.Name) != name {
 				continue
 			}
 			effective.CapabilityProfileID, effective.CapabilityProfileRevision = profile.ProfileID, profile.Revision
 			effective.CapabilityPolicyID, effective.CapabilityPolicyRevision = profile.PolicyID, profile.PolicyRevision
 			effective.ImplementationDigest = api.DefinitionDigest(effective.Definition)
+			effective.SelectedToolName = tool.Name
 			return api.ProjectedTool{Name: name, BindingID: binding.ToolBindingID, DefinitionID: effective.Definition.DefinitionID,
 				Version: effective.Definition.Version, Tool: tool}, effective, nil
 		}
@@ -476,7 +510,7 @@ func (s *Store) PreviewCapabilityProfile(candidate api.CapabilityProfile) (api.P
 func (s *Store) previewSelectionsLocked(profile api.CapabilityProfile, policy api.CapabilityPolicy) []api.ProfilePreviewEntry {
 	auth := identity.Envelope{Schema: identity.Schema, PrincipalID: profile.PrincipalID, ContextID: profile.ContextID, RuntimeID: profile.RuntimeID,
 		ExternalIdentityID: profile.ContextID, ConversationID: profile.ContextID, DeliveryTargetID: profile.ContextID,
-		PolicyVersion: profile.PolicyVersion, CapabilityProfile: profile.ProfileID, Environment: profile.Environment, Generation: profile.Generation}
+		PolicyVersion: profile.PolicyVersion, CapabilityProfile: profile.ProfileID, Environment: profile.Environment, Generation: profile.Generation, Organization: policy.Organization}
 	entries := []api.ProfilePreviewEntry{}
 	for _, selection := range profile.Selections {
 		entry := api.ProfilePreviewEntry{Name: selection.Name, CapabilityID: selection.CapabilityID}
@@ -542,6 +576,10 @@ func (s *Store) managedSelectionLocked(auth identity.Envelope, profile api.Capab
 		if !allowed {
 			break
 		}
+		scopes, allowed = api.NarrowSelectionScopes(selection, tool, arguments, scopes, projection)
+		if !allowed {
+			break
+		}
 		// RBAC requires (SPEC-0092 R2): when the published profile carries a
 		// rights ceiling, every right the tool declares must decide-allow —
 		// a missing grant hides the tool rather than erroring at call time.
@@ -553,10 +591,14 @@ func (s *Store) managedSelectionLocked(auth identity.Envelope, profile api.Capab
 		found.CapabilityID, found.CapabilityPolicyRevision, found.CapabilityProfileRevision = selection.CapabilityID, policy.Revision, profile.Revision
 		found.CapabilityPolicyID, found.CapabilityProfileID = policy.PolicyID, profile.ProfileID
 		found.ImplementationDigest = selection.ImplementationDigest
+		found.SelectedToolName = tool.Name
 		found.CapabilityScopes = scopes
 		if projection {
 			// Allowed-only description: the model sees the admitted boundary,
 			// never the full catalog surface this tool could serve elsewhere.
+			if len(selection.PathScopes) > 0 {
+				tool.Description = strings.TrimSpace(tool.Description + " Selected paths: " + strings.Join(selection.PathScopes, ", ") + ".")
+			}
 			for _, scope := range scopes {
 				if scope.PathPrefix == "" {
 					continue
@@ -604,7 +646,15 @@ func (s *Store) ReverifyEffective(effective api.EffectiveBinding) error {
 	if !ok || policy.Status != api.ActiveStatus || policy.Revision != effective.CapabilityPolicyRevision {
 		return fmt.Errorf("%w: capability policy changed", api.ErrUnauthorized)
 	}
-	return nil
+	for _, tool := range effective.Definition.ProjectedToolSpecs(binding) {
+		if tool.Name == effective.SelectedToolName {
+			if missing := s.rightsMissingLocked(identity.Envelope{PrincipalID: profile.PrincipalID}, profile, tool, time.Now().UTC()); len(missing) == 0 {
+				return nil
+			}
+			return fmt.Errorf("%w: right revoked", api.ErrUnauthorized)
+		}
+	}
+	return fmt.Errorf("%w: selected tool unavailable", api.ErrUnauthorized)
 }
 
 func (s *Store) managedToolLocked(auth identity.Envelope, name string, arguments map[string]any, projection bool) (api.ProjectedTool, api.EffectiveBinding, error) {

@@ -118,8 +118,12 @@ type Settings struct {
 	// Credential Broker, workload-controller, cliproxy, communication-hub).
 	// Exactly one deployed space must render it; secondary spaces set
 	// `infra: false` and consume the shared services over the shared network.
-	Infra                 *bool    `yaml:"infra,omitempty"`
-	Diagnostics           *bool    `yaml:"diagnostics,omitempty"`
+	Infra       *bool `yaml:"infra,omitempty"`
+	Diagnostics *bool `yaml:"diagnostics,omitempty"`
+	// ScopeKind is the published revision's identity kind — "user" or
+	// "group" — never an editable field; compose and the supervisor consult
+	// it where the retired scope.yaml used to answer.
+	ScopeKind             string   `yaml:"-"`
 	OrganizationDir       string   `yaml:"-"`
 	OrganizationDocsDir   string   `yaml:"-"`
 	OrganizationSkillsDir string   `yaml:"-"`
@@ -162,6 +166,11 @@ type Settings struct {
 	// writable/read_only/mounts — for the mount plan and file admission.
 	// Render state only, never serialized.
 	PassportWorkspace *passportview.Workspace `yaml:"-"`
+	// PassportConnectors marks s.MCP entries the published tools passport
+	// declared (its connectors map): the managed-mode raw-MCP restriction
+	// applies only to legacy-file sources, not the governed authored
+	// declaration. Render state only.
+	PassportConnectors bool `yaml:"-"`
 }
 
 // DefaultGlobalSkillsDir resolves the platform catalog without changing operator rights.
@@ -404,11 +413,12 @@ func (s Settings) Validate() error {
 		if s.ImageGen != (media.ImageGen{}) && s.toolEntry("image_gen").Via != ToolViaToolHub && s.toolEntry("media").Via != ToolViaToolHub {
 			return fmt.Errorf("image_gen belongs to a media/image_gen toolhub selection under managed mode")
 		}
-		// Under managed mode raw MCP servers may only come from the
-		// organization catalog (merged in by ApplyOrganization); definitions
-		// written into a personal space stay forbidden. Which of them render
-		// is selected per-entry with via: mcp-raw.
-		if len(s.MCP) > 0 && !s.OrgScoped() {
+		// Under managed mode raw MCP servers come from the organization
+		// catalog (merged in by ApplyOrganization) or the published tools
+		// passport's connectors; definitions written into a legacy file
+		// stay forbidden. Which of them render is selected per-entry with
+		// via: mcp-raw.
+		if len(s.MCP) > 0 && !s.OrgScoped() && !s.PassportConnectors {
 			return fmt.Errorf("managed capabilities require reviewed ToolHub definitions, not direct MCP or native extensions")
 		}
 		for name, entry := range s.Tools {

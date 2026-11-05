@@ -23,6 +23,7 @@ func TestSharedModelSettingsNeverShareOwnerStateOrRotation(t *testing.T) {
 		if err := InitEnvironment(dir, owner, "prod"); err != nil {
 			t.Fatal(err)
 		}
+		publishManagedRevision(t, dir, owner, "r-0123456789abcdef")
 		settings, err := ReadEnvironment(dir, "prod")
 		if err != nil {
 			t.Fatal(err)
@@ -32,10 +33,9 @@ func TestSharedModelSettingsNeverShareOwnerStateOrRotation(t *testing.T) {
 		settings.CapabilityGeneration = 1
 		settings.Model = "shared-model"
 		settings.ModelURL = "http://model-relay:8318/v1"
-		if err := WriteSpace(dir, settings); err != nil {
+		if err := saveSpace(t, dir, settings); err != nil {
 			t.Fatal(err)
 		}
-		publishManagedRevision(t, dir, owner, "r-0123456789abcdef")
 		selection := fmt.Sprintf(`{"schema":1,"user":%q,"environment":"prod","mode":"supervisor","supervisor_url":"http://localhost:8876","native_cron":"disabled","compatibility_release":"0.3.0"}`, owner)
 		if err := os.WriteFile(filepath.Join(dir, "execution.prod.json"), []byte(selection), 0600); err != nil {
 			t.Fatal(err)
@@ -110,6 +110,7 @@ func TestModelRegistryLayersMerge(t *testing.T) {
 	if err := InitEnvironment(org, "acme", "prod"); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, org, "acme", "r-0000000000000001")
 	saveYAML(t, filepath.Join(org, "models.yaml"), map[string]any{
 		"models": map[string]any{
 			"cheap": map[string]any{"owners": []string{"alice"}, "ladder": []any{map[string]any{"provider": "aistudio", "model": "gemini-2.5-flash"}}},
@@ -122,17 +123,18 @@ func TestModelRegistryLayersMerge(t *testing.T) {
 	if err := InitEnvironment(user, "alice", "prod"); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, user, "alice", "r-0000000000000001")
 	// Org dir is not a user space — alice declares her org by settings.
 	s, err := ReadEnvironment(user, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.Organization = "acme"
-	if err := WriteSpace(user, s); err != nil {
+	if err := saveSpace(t, user, s); err != nil {
 		t.Fatal(err)
 	}
 
-	reg, err := LoadModelRegistry(user, s)
+	reg, err := LoadModelRegistryBase(user, s)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,6 +171,7 @@ func TestModelRegistrySwitchLevels(t *testing.T) {
 	if err := InitEnvironment(user, "alice", "prod"); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, user, "alice", "r-0000000000000001")
 	// The owner layer narrows her own grant; other keys merge through.
 	saveYAML(t, filepath.Join(user, "models.yaml"), map[string]any{
 		"switch": map[string]any{"alice": "logical"},
@@ -177,7 +180,7 @@ func TestModelRegistrySwitchLevels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reg, err := LoadModelRegistry(user, s)
+	reg, err := LoadModelRegistryBase(user, s)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +194,7 @@ func TestModelRegistrySwitchLevels(t *testing.T) {
 		"empty_level":    {"alice": ""},
 	} {
 		saveYAML(t, filepath.Join(user, "models.yaml"), map[string]any{"switch": sw})
-		if _, err := LoadModelRegistry(user, s); err == nil {
+		if _, err := LoadModelRegistryBase(user, s); err == nil {
 			t.Fatalf("%s accepted", name)
 		}
 	}
@@ -203,6 +206,7 @@ func TestModelRegistryValidation(t *testing.T) {
 	if err := InitEnvironment(user, "alice", "prod"); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, user, "alice", "r-0000000000000001")
 	s, err := ReadEnvironment(user, "prod")
 	if err != nil {
 		t.Fatal(err)
@@ -219,7 +223,7 @@ func TestModelRegistryValidation(t *testing.T) {
 	}
 	for name, doc := range cases {
 		saveYAML(t, filepath.Join(spaces, "models.yaml"), doc)
-		if _, err := LoadModelRegistry(user, s); err == nil {
+		if _, err := LoadModelRegistryBase(user, s); err == nil {
 			t.Fatalf("%s accepted", name)
 		}
 	}
@@ -286,13 +290,14 @@ func TestRenderEnvironmentWritesModelRegistry(t *testing.T) {
 	if err := InitEnvironment(user, "alice", "prod"); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, user, "alice", "r-0000000000000001")
 	s, err := ReadEnvironment(user, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.CapabilityMode, s.CapabilityProfileID, s.CapabilityGeneration = "managed", "p", 1
 	s.Model, s.ModelURL = "m", "http://model-relay:8318/v1"
-	if err := WriteSpace(user, s); err != nil {
+	if err := saveSpace(t, user, s); err != nil {
 		t.Fatal(err)
 	}
 	docs := managedDocs("alice")
@@ -381,13 +386,14 @@ func TestRenderEnvironmentSynthesizesDefaultRegistry(t *testing.T) {
 	if err := InitEnvironment(user, "alice", "prod"); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, user, "alice", "r-0000000000000001")
 	s, err := ReadEnvironment(user, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.CapabilityMode, s.CapabilityProfileID, s.CapabilityGeneration = "managed", "p", 1
 	s.Model, s.ModelURL = "m", "http://model-relay:8318/v1"
-	if err := WriteSpace(user, s); err != nil {
+	if err := saveSpace(t, user, s); err != nil {
 		t.Fatal(err)
 	}
 	publishManagedRevision(t, user, "alice", "r-0123456789abcdef")

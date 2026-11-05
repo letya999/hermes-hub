@@ -28,29 +28,31 @@ func TestProviderGrantGated(t *testing.T) {
 	if err := Init(d, "alice"); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, d, "alice", "r-0000000000000001")
 	seedGovernance(t, d, func(doc *api.Governance) {
 		activeToolGrant(t, doc, "alice", "native:memory_vault", time.Hour)
 	})
-	settings, err := Read(d)
+	settings, err := ReadEffective(d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
 	settings.Model = "test"
 	settings.ModelURL = "http://model.invalid/v1"
 	settings.Tools, settings.Ingress = testTools("workspace", "memory_vault", "memory_provider"), testIngress("workspace")
+	settings.Memory = true
 	settings.MemoryProvider = "hindsight"
 	settings.MemoryProviderURL = "http://hindsight.local:8888"
-	if err := saveSpace(d, settings); err != nil {
+	if err := saveSpace(t, d, settings); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Read(d); err == nil {
+	if _, err := ReadEffective(d, "prod"); err == nil {
 		t.Fatal("provider wish without a native:memory_provider grant must fail closed")
 	}
 	seedGovernance(t, d, func(doc *api.Governance) {
 		activeToolGrant(t, doc, "alice", "native:memory_vault", time.Hour)
 		activeToolGrant(t, doc, "alice", "native:memory_provider", time.Hour)
 	})
-	if _, err := Read(d); err != nil {
+	if _, err := ReadEffective(d, "prod"); err != nil {
 		t.Fatalf("granted provider wish must read: %v", err)
 	}
 	if err := RenderEnvironment(d, root, "prod"); err != nil {
@@ -87,20 +89,22 @@ func TestProviderDisableRemovesConfig(t *testing.T) {
 	if err := Init(d, "alice"); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, d, "alice", "r-0000000000000001")
 	seedGovernance(t, d, func(doc *api.Governance) {
 		activeToolGrant(t, doc, "alice", "native:memory_vault", time.Hour)
 		activeToolGrant(t, doc, "alice", "native:memory_provider", time.Hour)
 	})
-	settings, err := Read(d)
+	settings, err := ReadEffective(d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
 	settings.Model = "test"
 	settings.ModelURL = "http://model.invalid/v1"
 	settings.Tools, settings.Ingress = testTools("workspace", "memory_vault", "memory_provider"), testIngress("workspace")
+	settings.Memory = true
 	settings.MemoryProvider = "hindsight"
 	settings.MemoryProviderURL = "http://hindsight.local:8888"
-	if err := saveSpace(d, settings); err != nil {
+	if err := saveSpace(t, d, settings); err != nil {
 		t.Fatal(err)
 	}
 	if err := RenderEnvironment(d, root, "prod"); err != nil {
@@ -114,7 +118,7 @@ func TestProviderDisableRemovesConfig(t *testing.T) {
 	settings.Tools = testTools("workspace", "memory_vault")
 	settings.MemoryProvider = ""
 	settings.MemoryProviderURL = ""
-	if err := saveSpace(d, settings); err != nil {
+	if err := saveSpace(t, d, settings); err != nil {
 		t.Fatal(err)
 	}
 	if err := RenderEnvironment(d, root, "prod"); err != nil {

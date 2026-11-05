@@ -119,8 +119,7 @@ func TestRunCoverageAndValidation(t *testing.T) {
 }
 
 // The coverage gate must run the suite batched, like a CI shard: one go test
-// invocation over ./... so package binaries parallelize across GOMAXPROCS and
-// profiles merge natively. A per-package loop re-links the same
+// invocation over ./... so profiles merge natively. A per-package loop re-links the same
 // -coverpkg=./... binary per package (49 serial instrumented runs locally).
 func TestCoverTestBatchesWholeSuite(t *testing.T) {
 	var cmd *exec.Cmd = coverTest("profile.out")
@@ -132,6 +131,9 @@ func TestCoverTestBatchesWholeSuite(t *testing.T) {
 	}
 	if cmd.Args[len(cmd.Args)-1] != "./..." {
 		t.Fatalf("coverTest must run the whole suite in one invocation, got %v", cmd.Args)
+	}
+	if runtime.GOOS == "windows" && !strings.Contains(joined, "-p=1") {
+		t.Fatalf("coverTest must serialize Windows package binaries: %v", cmd.Args)
 	}
 }
 

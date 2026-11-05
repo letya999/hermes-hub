@@ -265,21 +265,12 @@ func (m *Manager) prepareSpawnFiles(binding Binding, env string) {
 // the spawned runtime mounts it read-only. Inputs mirror the rendered
 // runtime contract: secrets.<env>.env endpoint override and self-services.
 func (m *Manager) materializeHermesConfig(binding Binding, env string) (string, error) {
-	settings := stack.Settings{}
-	hasConfig := false
-	for _, name := range []string{"settings.yaml", "agent.yaml", "workspace.yaml", filepath.Join("generated", "passports", "current")} {
-		if _, err := os.Stat(filepath.Join(binding.ContextRoot, name)); err == nil {
-			hasConfig = true
-		} else if !os.IsNotExist(err) {
-			return "", err
-		}
-	}
-	if hasConfig {
-		var err error
-		settings, err = stack.ReadEffective(binding.ContextRoot, env)
-		if err != nil {
-			return "", err
-		}
+	// A spawned runtime is configured by the published revision alone —
+	// missing, corrupt or foreign revisions deny the materialization
+	// instead of producing a config from empty settings (SPEC-0095).
+	settings, err := stack.ReadEffective(binding.ContextRoot, env)
+	if err != nil {
+		return "", err
 	}
 	source := filepath.Join(binding.ContextRoot, "hermes."+env+".yaml")
 	dest := filepath.Join(binding.ContextRoot, "generated", "hermes-effective."+env+".yaml")

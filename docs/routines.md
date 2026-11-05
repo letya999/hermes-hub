@@ -1,6 +1,6 @@
 ---
 description: Routine business tools, interval windows, lifecycle, authorization and delivery evidence.
-last_verified: "2026-11-03"
+last_verified: "2026-11-04"
 ---
 # Routines
 
@@ -9,6 +9,11 @@ Hermes interprets requests and calls business tools through ToolHub. A reminder
 delivers its exact text without waking a model. Agent tasks use current runtime
 authorization; deterministic probes/scripts use existing bounded paths. The hub
 must be running to fire a routine.
+
+M32 moves the clock, assignments, watches and dreaming to ToolHub (ADR-0095,
+SPEC-0094). Until cutover, communication-hub runs them with published memory
+settings. Memory disablement overrides tool selection. Calls require `tools.use`
+and their own `tasks.schedule`, `tasks.observe` or `tasks.delegate` right.
 
 Decision: [ADR-0042](adr/ADR-0042-routine-lifecycle.md). Requirements:
 [SPEC-0056](../specs/active/SPEC-0056-routine-lifecycle.md). Acceptance:

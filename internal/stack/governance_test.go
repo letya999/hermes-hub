@@ -2,6 +2,7 @@ package stack
 
 import (
 	"encoding/json"
+	"fmt"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"path/filepath"
@@ -46,18 +47,40 @@ func activeToolGrant(t *testing.T, doc *api.Governance, principal, section strin
 	}
 }
 
-// appendWorkspaceKey injects a raw block into the space's workspace.yaml so
-// the fixture arrives before the first Read — migration only preserves
-// sections already selected at seed time.
-func appendWorkspaceKey(t *testing.T, dir, block string) {
-	t.Helper()
-	path := filepath.Join(dir, "workspace.yaml")
-	body, err := os.ReadFile(path)
+// Before the first apply, the authored stack passport is the only infra
+// claim a fresh space has — the peek must consult it so the sibling that
+// renders the control plane is found before any publication exists.
+func TestSpaceRendersInfraFromAuthoredPassport(t *testing.T) {
+	spaces := filepath.Join(t.TempDir(), "spaces")
+	for _, name := range []string{"infra", "member"} {
+		if err := os.MkdirAll(filepath.Join(spaces, name), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := InitEnvironment(filepath.Join(spaces, "infra"), "infra", "prod"); err != nil {
+		t.Fatal(err)
+	}
+	if err := InitEnvironment(filepath.Join(spaces, "member"), "member", "prod"); err != nil {
+		t.Fatal(err)
+	}
+	// The member's operator narrows the default infra:true stamp before the
+	// first apply — a peer-space home shares the control plane.
+	stackPath := filepath.Join(spaces, "member", "passports", "stack.yaml")
+	body, err := os.ReadFile(stackPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, append(body, []byte(block)...), 0600); err != nil {
+	if err := os.WriteFile(stackPath, []byte(strings.Replace(string(body), "{user: member, infra: true}", "{user: member, infra: false}", 1)), 0600); err != nil {
 		t.Fatal(err)
+	}
+	if !SpaceRendersInfra(filepath.Join(spaces, "infra")) {
+		t.Fatal("authored infra:true passport not consulted")
+	}
+	if SpaceRendersInfra(filepath.Join(spaces, "member")) {
+		t.Fatal("non-infra authored passport claimed the control plane")
+	}
+	if got := InfraSpaceDir(filepath.Join(spaces, "member")); got != filepath.Join(spaces, "infra") {
+		t.Fatalf("member did not resolve the infra sibling through authored passports: %q", got)
 	}
 }
 
@@ -66,8 +89,10 @@ func TestGovernanceUserMCPDeniedByDefault(t *testing.T) {
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
-	appendWorkspaceKey(t, d, "\nmcp:\n  gitea: {url: \"https://mcp.example.com/gitea\"}\n")
-	_, err := Read(d)
+	docs := managedDocs("me")
+	docs["tools"] += "extended:\n  user_mcp: {via: mcp-raw}\nconnectors:\n  gitea: {url: \"https://mcp.example.com/gitea\"}\n"
+	publishManagedDocs(t, d, "me", "r-0000000000000001", docs)
+	_, err := ReadEffective(d, "prod")
 	if err == nil || !strings.Contains(err.Error(), "user_mcp") {
 		t.Fatalf("user-declared MCP admitted without a grant: %v", err)
 	}
@@ -78,11 +103,13 @@ func TestGovernanceUserMCPGrantUnlocks(t *testing.T) {
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
-	appendWorkspaceKey(t, d, "\nmcp:\n  gitea: {url: \"https://mcp.example.com/gitea\"}\n")
+	docs := managedDocs("me")
+	docs["tools"] += "extended:\n  user_mcp: {via: mcp-raw}\nconnectors:\n  gitea: {url: \"https://mcp.example.com/gitea\"}\n"
+	publishManagedDocs(t, d, "me", "r-0000000000000001", docs)
 	seedGovernance(t, d, func(doc *api.Governance) {
 		activeToolGrant(t, doc, "me", api.SectionUserMCP, time.Hour)
 	})
-	s, err := Read(d)
+	s, err := ReadEffective(d, "prod")
 	if err != nil {
 		t.Fatalf("granted user_mcp still denied: %v", err)
 	}
@@ -96,26 +123,24 @@ func TestGovernanceExplicitWishDenied(t *testing.T) {
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, d, "me", "r-0000000000000001")
 	// Default workspace selects `file: toolhub`; a global deny on that section
 	// must fail the whole read, not silently filter. `web: native` is an
 	// explicit wish now (R3.1) — grant nothing and a deny must fail the read.
 	seedGovernance(t, d, func(doc *api.Governance) {
 		doc.Rules = append(doc.Rules, api.PolicyRule{RuleID: "deny-files", Scope: api.ScopeGlobal, Section: "hub:files", Effect: api.RuleDeny, Reason: "test deny", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1})
 	})
-	_, err := Read(d)
+	_, err := ReadEffective(d, "prod")
 	if err == nil || !strings.Contains(err.Error(), "hub:files") {
 		t.Fatalf("denied explicit tools entry admitted: %v", err)
 	}
-	wsPath := filepath.Join(d, "workspace.yaml")
-	wsBody, _ := os.ReadFile(wsPath)
-	wsBody = []byte(strings.Replace(string(wsBody), "  # web: native", "  web: {via: native}", 1))
-	if err := os.WriteFile(wsPath, wsBody, 0600); err != nil {
-		t.Fatal(err)
-	}
+	docs := managedDocs("me")
+	docs["tools"] += "extended:\n  web: {via: native}\n"
+	publishManagedDocs(t, d, "me", "r-0000000000000002", docs)
 	seedGovernance(t, d, func(doc *api.Governance) {
 		doc.Rules = append(doc.Rules, api.PolicyRule{RuleID: "deny-web", Scope: api.ScopeGlobal, Section: "native:web", Effect: api.RuleDeny, Reason: "test deny", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1})
 	})
-	if _, err := Read(d); err == nil || !strings.Contains(err.Error(), "native:web") {
+	if _, err := ReadEffective(d, "prod"); err == nil || !strings.Contains(err.Error(), "native:web") {
 		t.Fatalf("denied native toolset admitted: %v", err)
 	}
 }
@@ -128,16 +153,11 @@ func TestGovernanceAssignmentsSection(t *testing.T) {
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
-	wsPath := filepath.Join(d, "workspace.yaml")
-	wsBody, err := os.ReadFile(wsPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wsBody = []byte(strings.Replace(string(wsBody), "  media: toolhub", "  media: toolhub\n  assignments: toolhub", 1))
-	if err := os.WriteFile(wsPath, wsBody, 0600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Read(d); err != nil {
+	publishManagedRevision(t, d, "me", "r-0000000000000001")
+	docs := managedDocs("me")
+	docs["tools"] += "extended:\n  assignments: {via: toolhub}\n"
+	publishManagedDocs(t, d, "me", "r-0000000000000001", docs)
+	if _, err := ReadEffective(d, "prod"); err != nil {
 		t.Fatalf("assignments: toolhub must be a known section: %v", err)
 	}
 }
@@ -150,7 +170,10 @@ func TestGovernanceSkillsSections(t *testing.T) {
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
-	s, err := Read(d)
+	docs := managedDocs("me")
+	docs["tools"] += "extended:\n  skills: {via: toolhub}\n"
+	publishManagedDocs(t, d, "me", "r-0000000000000001", docs)
+	s, err := ReadEffective(d, "prod")
 	if err != nil {
 		t.Fatalf("skills wishes must resolve to known sections: %v", err)
 	}
@@ -165,18 +188,11 @@ func TestGovernanceMigrationPreservesSelection(t *testing.T) {
 		t.Fatal(err)
 	}
 	// terminal is deny-by-default; a space that selected it before governance
-	// existed keeps it as an explicit recorded migration allow. The default
-	// template ships the entry commented — uncomment it.
-	wsPath := filepath.Join(d, "workspace.yaml")
-	wsBody, err := os.ReadFile(wsPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wsBody = []byte(strings.Replace(string(wsBody), "# terminal: native", "terminal: native", 1))
-	if err := os.WriteFile(wsPath, wsBody, 0600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Read(d); err != nil {
+	// existed keeps it as an explicit recorded migration allow.
+	docs := managedDocs("me")
+	docs["tools"] += "extended:\n  terminal: {via: native}\n"
+	publishManagedDocs(t, d, "me", "r-0000000000000001", docs)
+	if _, err := ReadEffective(d, "prod"); err != nil {
 		t.Fatalf("migration seed read: %v", err)
 	}
 	doc, err := api.LoadGovernance(filepath.Join(d, "runtime", "toolhub", "governance.json"))
@@ -207,6 +223,7 @@ func TestGovernanceImplicitSectionsFilteredAtRender(t *testing.T) {
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, d, "me", "r-0000000000000001")
 	// A native the space never wished for stays off even when a policy rule
 	// names it — and evaluating it must never fail the read (R3.1/R3.2).
 	// Unemitted sections are simply not on the render; govAllows reports the
@@ -214,7 +231,7 @@ func TestGovernanceImplicitSectionsFilteredAtRender(t *testing.T) {
 	seedGovernance(t, d, func(doc *api.Governance) {
 		doc.Rules = append(doc.Rules, api.PolicyRule{RuleID: "deny-cronjob", Scope: api.ScopeGlobal, Section: "native:cronjob", Effect: api.RuleDeny, Reason: "test", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1})
 	})
-	s, err := Read(d)
+	s, err := ReadEffective(d, "prod")
 	if err != nil {
 		t.Fatalf("unwished native section deny must not fail the read: %v", err)
 	}
@@ -234,6 +251,9 @@ func TestGovernancePolicySnapshotRendered(t *testing.T) {
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
+	docs := managedDocs("me")
+	docs["tools"] += "extended:\n  media: {via: toolhub}\n"
+	publishManagedDocs(t, d, "me", "r-0000000000000001", docs)
 	// cap:read on a selected family narrows it to read_only in the snapshot;
 	// an explicit-entry deny would fail the read instead (proven above), so
 	// the deny list is exercised through a default-scope attribute deny on a
@@ -243,7 +263,7 @@ func TestGovernancePolicySnapshotRendered(t *testing.T) {
 			api.PolicyRule{RuleID: "cap-media", Scope: api.ScopeGlobal, Section: "hub:media", Effect: api.RuleCapRead, Reason: "test", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1},
 			api.PolicyRule{RuleID: "deny-terminal-family", Scope: api.ScopeGlobal, Section: "hub:terminal", Effect: api.RuleDeny, Reason: "test", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1})
 	})
-	if _, err := Read(d); err != nil {
+	if _, err := ReadEffective(d, "prod"); err != nil {
 		t.Fatalf("media cap: %v", err)
 	}
 	if err := Render(d, root); err != nil {
@@ -263,35 +283,56 @@ func TestGovernancePolicySnapshotRendered(t *testing.T) {
 	if snapshot.Principal != "me" {
 		t.Fatalf("snapshot principal: %+v", snapshot)
 	}
-	// Compose mounts the snapshot read-only and pins the env.
-	compose, err := os.ReadFile(filepath.Join(d, "generated", "compose.prod.yaml"))
+	// A published workspace passport binds the whole /config view read-only
+	// (SPEC-0092 R5.2) — the snapshot rides inside it rather than as its own
+	// per-file mount. The supervised runtime is spawned by the supervisor,
+	// so compose.prod.yaml carries no runtime volumes; the view file is the
+	// render artifact the spawn spec binds.
+	view, err := os.ReadFile(filepath.Join(d, "generated", "config-view", "prod", "tool-policy.json"))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("policy snapshot missing from the config view: %v", err)
 	}
-	if !strings.Contains(string(compose), "tool-policy.prod.json") || !strings.Contains(string(compose), "/config/tool-policy.json") {
-		t.Fatal("policy snapshot mount missing from compose")
+	if !strings.Contains(string(view), `"principal": "me"`) {
+		t.Fatalf("config view snapshot is a different document: %s", view)
 	}
 }
 
 func TestGovernanceOrgScopedCatalog(t *testing.T) {
 	d := t.TempDir()
+	orgDir := filepath.Join(filepath.Dir(d), "organizations", "acme")
+	if err := InitOrganization(orgDir, "acme", "me"); err != nil {
+		t.Fatal(err)
+	}
+	// The org's raw catalog lives in its own authority file; the user space
+	// merges it as org_mcp instead of declaring connectors itself.
+	orgSettings := filepath.Join(orgDir, "settings.yaml")
+	body, err := os.ReadFile(orgSettings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(orgSettings, append(body, []byte("mcp_servers:\n  orgwiki: {url: \"https://wiki.acme.example/mcp\", tools: {include: [search]}}\nread_only_mcp: [orgwiki]\n")...), 0600); err != nil {
+		t.Fatal(err)
+	}
 	if err := initEnvironment(d, "me", "prod", "acme"); err != nil {
 		t.Fatal(err)
 	}
 	// An org-scoped space treats its merged catalog as org_mcp; deny that
 	// section and the read must fail.
-	appendWorkspaceKey(t, d, "\nmcp:\n  orgwiki: {url: \"https://wiki.acme.example/mcp\"}\n")
+	docs := managedDocs("me")
+	docs["stack"] = strings.Replace(docs["stack"], "identity: {user: me", "identity: {user: me, organization: acme", 1)
+	docs["tools"] += "extended:\n  org_mcp: {via: mcp-raw}\n"
+	publishManagedDocs(t, d, "me", "r-0000000000000001", docs)
 	seedGovernance(t, d, func(doc *api.Governance) {
 		doc.Rules = append(doc.Rules, api.PolicyRule{RuleID: "deny-orgmcp", Scope: api.ScopeOrg, Subject: "acme", Section: api.SectionOrgMCP, Effect: api.RuleDeny, Reason: "org freeze", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1})
 	})
-	if _, err := Read(d); err == nil || !strings.Contains(err.Error(), "org_mcp") {
+	if _, err := ReadEffective(d, "prod"); err == nil || !strings.Contains(err.Error(), "org_mcp") {
 		t.Fatalf("org catalog deny ignored: %v", err)
 	}
 	// The same deny for a different organization does not touch this space.
 	seedGovernance(t, d, func(doc *api.Governance) {
 		doc.Rules = append(doc.Rules, api.PolicyRule{RuleID: "deny-orgmcp-other", Scope: api.ScopeOrg, Subject: "otherorg", Section: api.SectionOrgMCP, Effect: api.RuleDeny, Reason: "org freeze", GrantedBy: "operator", Status: api.ActiveStatus, Revision: 1})
 	})
-	if _, err := Read(d); err != nil {
+	if _, err := ReadEffective(d, "prod"); err != nil {
 		t.Fatalf("foreign-org deny applied: %v", err)
 	}
 }
@@ -301,6 +342,7 @@ func TestGovernanceCorruptDocFailsClosed(t *testing.T) {
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, d, "me", "r-0000000000000001")
 	path := filepath.Join(d, "runtime", "toolhub", "governance.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		t.Fatal(err)
@@ -308,7 +350,7 @@ func TestGovernanceCorruptDocFailsClosed(t *testing.T) {
 	if err := os.WriteFile(path, []byte("{not json"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Read(d); err == nil {
+	if _, err := ReadEffective(d, "prod"); err == nil {
 		t.Fatal("corrupt governance document read permissively")
 	}
 }
@@ -369,11 +411,11 @@ func TestGovernanceDocPathInfraSibling(t *testing.T) {
 		}
 	}
 	doc := filepath.Join("runtime", "toolhub", "governance.json")
-	write("artem_main", "agent.yaml", "schema: 2\nuser: artem_main\ninfra: false\n")
+	write("artem_main", filepath.Join("passports", "stack.yaml"), "kind: stack\nidentity: {user: artem_main, infra: false}\n")
 	write("artem_main", doc, "{}")
-	write("local", "settings.yaml", "user: local\n")
+	write("local", filepath.Join("passports", "stack.yaml"), "kind: stack\nidentity: {user: local, infra: true}\n")
 	write("local", doc, "{}")
-	write("artem_two", "agent.yaml", "schema: 2\nuser: artem_two\ninfra: false\n")
+	write("artem_two", filepath.Join("passports", "stack.yaml"), "kind: stack\nidentity: {user: artem_two, infra: false}\n")
 
 	want := filepath.Join(spaces, "local", doc)
 	if got := governanceDocPath(filepath.Join(spaces, "artem_two")); got != want {
@@ -454,6 +496,28 @@ func TestGovViewAbsent(t *testing.T) {
 	}
 }
 
+// Before the first apply, a sibling's authored config passport is the only
+// port claim — collision detection must honor it exactly like the published
+// revision.
+func TestReservedSiblingPortsFromAuthoredPassport(t *testing.T) {
+	spaces := filepath.Join(t.TempDir(), "spaces")
+	member := filepath.Join(spaces, "member")
+	if err := os.MkdirAll(member, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(spaces, "peer", "passports"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	authored := "kind: config\nports: {oauth-callback: 8008, browser-vnc: 6081}\n"
+	if err := os.WriteFile(filepath.Join(spaces, "peer", "passports", "config.yaml"), []byte(authored), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got := ReservedSiblingPorts(member)
+	if got[8008] != "peer" || got[6081] != "peer" {
+		t.Fatalf("authored sibling ports not reserved: %v", got)
+	}
+}
+
 // The shared workload-controller lives on the infra-owner's compose project;
 // a secondary space's operator calls must present the infra sibling's
 // credentials. InfraSpaceDir mirrors governanceDocPath's precedence: own
@@ -468,12 +532,17 @@ func TestInfraSpaceDir(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(local, "agent.yaml"), []byte("user: me\n"), 0o644); err != nil {
-		t.Fatal(err)
+	writeAuthoredStack := func(dir, user string, infra bool) {
+		if err := os.MkdirAll(filepath.Join(dir, "passports"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		body := "kind: stack\nidentity: {user: " + user + ", infra: " + fmt.Sprint(infra) + "}\n"
+		if err := os.WriteFile(filepath.Join(dir, "passports", "stack.yaml"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := os.WriteFile(filepath.Join(member, "agent.yaml"), []byte("infra: false\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeAuthoredStack(local, "local", true)
+	writeAuthoredStack(member, "member", false)
 	if got := InfraSpaceDir(member); got != local {
 		t.Fatalf("member must resolve the infra sibling, got %s", got)
 	}
@@ -494,9 +563,7 @@ func TestInfraSpaceDir(t *testing.T) {
 	if err := os.MkdirAll(lonely, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(lonely, "agent.yaml"), []byte("infra: false\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeAuthoredStack(lonely, "solo", false)
 	if got := InfraSpaceDir(lonely); got != lonely {
 		t.Fatalf("no infra sibling falls back to caller, got %s", got)
 	}

@@ -71,18 +71,9 @@ func TestDevServiceRoleBases(t *testing.T) {
 // CGO_ENABLED=0 — a stub binary would silently serve no encrypted store.
 func TestDevRebuildBrokerBuildsInSqlcipherToolchain(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "space")
-	if err := stack.InitEnvironment(dir, "owner", "dev"); err != nil {
-		t.Fatal(err)
-	}
-	s, err := stack.Read(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.Model, s.ModelURL = "test", "http://model.invalid/v1"
-	s.Ingress = append(s.Ingress, "telegram")
-	if err := stack.WriteSpace(dir, s); err != nil {
-		t.Fatal(err)
-	}
+	// Infra owner with a telegram channel: the shared gateway renders, which
+	// is what the dev-rebuild assertions below inspect.
+	writeManagedSpaceDocs(t, dir, "owner", managedInfraDocs("owner", true))
 	if err := os.WriteFile(filepath.Join(dir, "secrets.dev.env"), []byte("OPENAI_API_KEY=fake-for-test\nTELEGRAM_BOT_TOKEN=synthetic-bot\nTELEGRAM_ALLOWED_USERS=11\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -125,20 +116,17 @@ func TestDevRebuildBrokerBuildsInSqlcipherToolchain(t *testing.T) {
 
 func TestDevRebuildCompilesAndStartsOnlySelectedService(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "space")
-	if err := stack.InitEnvironment(dir, "owner", "dev"); err != nil {
-		t.Fatal(err)
-	}
-	s, err := stack.Read(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.Model, s.ModelURL = "test", "http://model.invalid/v1"
-	s.Ingress = append(s.Ingress, "telegram")
-	s.Tools["media"] = stack.ToolEntry{Via: stack.ToolViaOff}
-	if err := stack.WriteSpace(dir, s); err != nil {
-		t.Fatal(err)
-	}
+	// Infra owner with telegram: hub-media is never declared, so asking
+	// dev-rebuild for it must be refused, not silently skipped.
+	ownerDocs := managedInfraDocs("owner", true)
+	ownerDocs["stack"] = strings.Replace(ownerDocs["stack"], "  supervisor: {mode: shared}\n", "  supervisor: {mode: shared}\n  workload-controller: {mode: shared}\n", 1)
+	writeManagedSpaceDocs(t, dir, "owner", ownerDocs)
 	if err := os.WriteFile(filepath.Join(dir, "secrets.dev.env"), []byte("OPENAI_API_KEY=fake-for-test\nTELEGRAM_BOT_TOKEN=synthetic-bot\nTELEGRAM_ALLOWED_USERS=11\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// In-project supervisor: the declared shared supervisor renders only
+	// under this exact supervisor-mode selection.
+	if err := os.WriteFile(filepath.Join(dir, stack.ExecutionPath("dev")), []byte(`{"schema":1,"user":"owner","environment":"dev","mode":"supervisor","supervisor_url":"http://supervisor:8876","native_cron":"disabled","compatibility_release":"0.3.0"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	bin := t.TempDir()
@@ -186,8 +174,20 @@ func TestDevRebuildCompilesAndStartsOnlySelectedService(t *testing.T) {
 			t.Fatal(tc.service, err)
 		}
 		all, _ := os.ReadFile(log)
-		if tc.service == "hermes-runtime" && !strings.Contains(string(all[len(before):]), "./cmd/hubctl") {
-			t.Error("runtime overlay must rebuild its tools executor hubctl alongside hub-runtime")
+		if tc.service == "hermes-runtime" {
+			if !strings.Contains(string(all[len(before):]), "./cmd/hubctl") {
+				t.Error("runtime overlay must rebuild its tools executor hubctl alongside hub-runtime")
+			}
+			// Supervised runtimes never compose-up: the rebuilt tag is
+			// pinned for the next spawn instead.
+			stamped, serr := os.ReadFile(filepath.Join(dir, "generated", "dev-runtime-image"))
+			if serr != nil || strings.TrimSpace(string(stamped)) != "hermes-hub-dev-owner-hermes-runtime:local" {
+				t.Fatalf("supervised runtime image not pinned: %q %v", stamped, serr)
+			}
+			if strings.Contains(string(all[len(before):]), "--no-deps hermes-runtime") {
+				t.Fatalf("supervised runtime must not compose-up: %s", all)
+			}
+			continue
 		}
 		for _, want := range []string{tc.source, "BASE=" + tc.base, "--no-build --no-deps " + tc.service} {
 			if !strings.Contains(string(all), want) {
@@ -198,7 +198,7 @@ func TestDevRebuildCompilesAndStartsOnlySelectedService(t *testing.T) {
 	if err := runDevRebuild(context.Background(), []string{"--dir", dir, "--root", "../..", "hub-media"}); err == nil {
 		t.Fatal("built disabled hub-media service")
 	}
-	selection, _ := json.Marshal(stack.ExecutionSelection{Schema: 1, User: "owner", Environment: "dev", Mode: "supervisor", SupervisorURL: "http://host.docker.internal:8876", NativeCron: "disabled", CompatibilityRelease: "0.3.0"})
+	selection, _ := json.Marshal(stack.ExecutionSelection{Schema: 1, User: "owner", Environment: "dev", Mode: "supervisor", SupervisorURL: "http://supervisor:8876", NativeCron: "disabled", CompatibilityRelease: "0.3.0"})
 	if err := os.WriteFile(filepath.Join(dir, stack.ExecutionPath("dev")), selection, 0600); err != nil {
 		t.Fatal(err)
 	}

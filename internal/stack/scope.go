@@ -44,21 +44,15 @@ func (s Scope) Validate() error {
 }
 
 func ReadScope(dir string) (Scope, error) {
-	var s Scope
-	if err := noSymlinkPath(filepath.Join(dir, "scope.yaml")); err != nil {
-		return s, err
-	}
-	b, err := os.ReadFile(filepath.Join(dir, "scope.yaml"))
+	// Scope identity is the authored stack passport's identity block;
+	// scope.yaml is retired with the rest of the legacy authority files.
+	identity, err := authoredStackIdentity(dir)
 	if err != nil {
-		return s, err
+		return Scope{}, err
 	}
-	d := yaml.NewDecoder(strings.NewReader(string(b)))
-	if err = d.Decode(&s); err != nil {
-		return s, err
-	}
-	var extra any
-	if err = d.Decode(&extra); err != io.EOF {
-		return s, fmt.Errorf("one YAML document expected")
+	s := Scope{Kind: ScopeKind(identity.Kind), ID: identity.User, Organization: identity.Organization}
+	if s.Kind == "" {
+		s.Kind = UserScope
 	}
 	return s, s.Validate()
 }
@@ -207,17 +201,8 @@ func (o OrganizationSettings) Validate() error {
 
 func ReadOrganization(path string) (OrganizationSettings, error) {
 	var o OrganizationSettings
-	dir := ""
 	if info, err := os.Stat(path); err == nil && info.IsDir() {
-		dir = path
-		scopePath, settingsPath := filepath.Join(path, "scope.yaml"), filepath.Join(path, "settings.yaml")
-		selected := scopePath
-		if scopeInfo, scopeErr := os.Stat(scopePath); scopeErr != nil {
-			selected = settingsPath
-		} else if settingsInfo, settingsErr := os.Stat(settingsPath); settingsErr == nil && !settingsInfo.ModTime().Before(scopeInfo.ModTime()) {
-			selected = settingsPath
-		}
-		path = selected
+		path = filepath.Join(path, "settings.yaml")
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -231,17 +216,6 @@ func ReadOrganization(path string) (OrganizationSettings, error) {
 	var extra any
 	if err = d.Decode(&extra); err != io.EOF {
 		return o, fmt.Errorf("one YAML document expected")
-	}
-	if dir != "" {
-		scope, scopeErr := ReadScope(dir)
-		if scopeErr == nil {
-			if (o.Kind != "" && o.Kind != scope.Kind) || (o.ID != "" && o.ID != scope.ID) {
-				return o, fmt.Errorf("organization identity mismatch")
-			}
-			o.Kind, o.ID = scope.Kind, scope.ID
-		} else if !errors.Is(scopeErr, os.ErrNotExist) {
-			return o, scopeErr
-		}
 	}
 	return o, o.Validate()
 }
@@ -433,7 +407,7 @@ func InitOrganization(dir, organization, owner string) error {
 		Kind: OrganizationScope, ID: organization, Schema: 1, Organization: organization, Members: members,
 		Features: organizationFeatures(),
 	}
-	scopeBody, err := yaml.Marshal(o)
+	scopeBody, err := yaml.Marshal(Scope{Kind: OrganizationScope, ID: organization, Organization: organization})
 	if err != nil {
 		return err
 	}

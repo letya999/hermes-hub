@@ -3,7 +3,9 @@ package stack
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/media"
+	"github.com/letya999/hermes-hub/internal/passportview"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"maps"
 	"os"
@@ -118,12 +120,6 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(wsBase, "workspace")), "target": "/workspace"})
 		stateVolumes = append(stateVolumes, configMounts(dir, s.Environment)...)
 	}
-	if s.Has("memory_vault") && s.PassportWorkspace == nil {
-		// The vault is a per-space git tree the governed writer commits into;
-		// it mounts read-write for the runtime in both render modes. With a
-		// published workspace passport the MountPlan already carries /vault.
-		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "vault")), "target": "/vault"})
-	}
 	if s.Has("ssh") {
 		// The whole SSH capability — host bindings, pinned host keys and any
 		// file: credentials — is operator-owned and read-only inside the runtime.
@@ -200,14 +196,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// browser_cdp tool and health probe attach over the internal alias.
 		runtimeEnv["BROWSER_CDP_URL"] = "http://browser-" + s.User + ":9222"
 	}
-	if scope, err := ReadScope(dir); err == nil && scope.Kind == GroupScope {
+	if s.ScopeKind == string(GroupScope) {
 		runtimeEnv["HUB_SCOPE_KIND"] = string(GroupScope)
 	}
 	if s.ExecutionMode != "supervisor" {
 		runtimeEnv["HUB_RUNTIME_GENERATION"] = "static-" + s.User + "-" + s.Environment
-	}
-	if s.Has("memory_vault") {
-		runtimeEnv["HUB_VAULT"] = "/vault"
 	}
 	runtimeEnv["HUB_CAPABILITY_MODE"] = s.CapabilityMode
 	if s.CapabilityMode == "managed" {
@@ -699,10 +692,22 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		if parent := filepath.Dir(dir); filepath.Base(parent) == "spaces" {
 			toolhubEnv["HUB_SKILLS_BY_PRINCIPAL"] = "/skills-effective-by"
 			toolhubEnv["HUB_SKILLS_STORE_BY"] = "/skills-store-by"
+			toolhubEnv["HUB_PASSPORTS_BY_PRINCIPAL"] = "/passports-by"
+			toolhubEnv["HUB_VAULTS_BY_PRINCIPAL"] = "/vaults-by"
 			if siblings, err := os.ReadDir(parent); err == nil {
 				for _, sibling := range siblings {
-					if !sibling.IsDir() {
+					if !sibling.IsDir() || !identity.ValidID(sibling.Name()) {
 						continue
+					}
+					published := filepath.Join(parent, sibling.Name(), "generated", "passports")
+					if info, err := os.Lstat(published); err == nil && info.IsDir() {
+						toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(published), "target": "/passports-by/" + sibling.Name() + "/passports", "read_only": true})
+					}
+					vaultRoot := filepath.Join(parent, sibling.Name(), "vault")
+					if info, err := os.Lstat(vaultRoot); err == nil && info.IsDir() {
+						if effective, err := passportview.LoadEffective(filepath.Join(parent, sibling.Name())); err == nil && effective.Config.Memory.Enabled != nil && *effective.Config.Memory.Enabled && effective.Header.Metadata.Environment == s.Environment {
+							toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(vaultRoot), "target": "/vaults-by/" + sibling.Name()})
+						}
 					}
 					view := filepath.Join(parent, sibling.Name(), "generated", "skills-effective")
 					if info, err := os.Stat(view); err == nil && info.IsDir() {
@@ -876,7 +881,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		if supervisorURL != "" {
 			gatewayRuntimeURL = supervisorURL
 		}
-		gatewayEnvironment := M{"HUB_USER_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_FEATURES": strings.Join(s.featureList(), ","), "HUB_RUNTIME_URL": gatewayRuntimeURL, "HUB_RUNTIME_SUPERVISOR_URL": "${HUB_RUNTIME_SUPERVISOR_URL}", "HUB_COMMUNICATION_SPOOL": "/data", "HUB_CONFIGURED_ENV": strings.Join(configuredEnvKeys(s, dir), ","), "HUB_NATIVE_CRON": s.NativeCron, "HUB_DIAGNOSTICS_ENABLED": fmt.Sprint(s.DiagnosticsEnabled())}
+		gatewayEnvironment := M{"HUB_USER_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_ENVIRONMENT": s.Environment, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_FEATURES": strings.Join(s.featureList(), ","), "HUB_RUNTIME_URL": gatewayRuntimeURL, "HUB_RUNTIME_SUPERVISOR_URL": "${HUB_RUNTIME_SUPERVISOR_URL}", "HUB_COMMUNICATION_SPOOL": "/data", "HUB_CONFIGURED_ENV": strings.Join(configuredEnvKeys(s, dir), ","), "HUB_NATIVE_CRON": s.NativeCron, "HUB_DIAGNOSTICS_ENABLED": fmt.Sprint(s.DiagnosticsEnabled())}
 		if cfg := s.PassportConfig; cfg != nil {
 			if cfg.Runtime.Locale != "" {
 				gatewayEnvironment["HUB_DEFAULT_LANG"] = cfg.Runtime.Locale

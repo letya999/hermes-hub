@@ -8,17 +8,63 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/letya999/hermes-hub/internal/catalog"
+	"github.com/letya999/hermes-hub/internal/passport"
 	"github.com/letya999/hermes-hub/internal/stack"
 )
 
-// writeManagedSpaceFixture installs a migrated managed space: the slim
-// agent.yaml extension file (profile identity, no capability_mode key) plus
-// a published six-document revision under generated/passports — the retired
-// settings/workspace/models trio is absent (SPEC-0092 R8.1).
+// publishAuthored compiles the space's authored passports and publishes the
+// revision — the real CompileAuthored → Publish path `space apply` takes,
+// short of the reconcile handlers that need a live Docker daemon.
+func publishAuthored(t *testing.T, dir, env string) {
+	t.Helper()
+	catalogDocs, err := catalog.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rev, err := passport.CompileAuthored(dir, env, time.Now(), catalogDocs, stack.ReservedSiblingPorts(dir), map[string][]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rev.Publish(dir); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeManagedSpaceFixture installs a migrated managed space: a published
+// six-document revision under generated/passports — no retired
+// settings/workspace/models/agent/scope files at all (SPEC-0095).
 func writeManagedSpaceFixture(t *testing.T, dir, user string) {
 	t.Helper()
 	writeManagedSpaceDocs(t, dir, user, nil)
+}
+
+// managedInfraDocs renders an infra space: every shared service declared,
+// plus — when withGateway — a telegram channel so the shared gateway has a
+// reason to render (the plan check refuses a declared-but-unrendered
+// communication-hub).
+func managedInfraDocs(user string, withGateway bool) map[string]string {
+	services := "  hermes-runtime: {mode: supervised}\n" +
+		"  toolhub: {mode: shared}\n" +
+		"  model-relay: {mode: shared}\n" +
+		"  cliproxy: {mode: shared}\n" +
+		"  credential-broker: {mode: shared}\n" +
+		"  supervisor: {mode: shared}\n"
+	config := "kind: config\nruntime: {timezone: UTC}\nmemory: {enabled: false}\nports: {oauth-callback: 8008, browser-vnc: 6081}\n"
+	if withGateway {
+		services += "  communication-hub: {mode: shared}\n"
+		config += "channels:\n  telegram: {}\n"
+	}
+	return map[string]string{
+		"stack":     "kind: stack\nidentity: {user: " + user + ", infra: true}\nservices:\n" + services,
+		"config":    config,
+		"models":    "kind: models\ndefault: m\nroutes:\n  m: {ladder: [cliproxy]}\nservices:\n  cliproxy: {via: cliproxy, endpoint: http://cliproxy:8317/v1, models: [{id: m}]}\n",
+		"workspace": "kind: workspace\nwritable: [/workspace]\nread_only: [/vault/memory]\n",
+		"tools":     "kind: tools\nbinding: {profile_id: " + user + "-default, generation: 1}\ncore:\n  files: {via: toolhub}\n",
+		"grants":    "kind: grants\nallow: {}\n",
+	}
 }
 
 // writeManagedSpaceDocs installs the fixture with per-doc overrides keyed by
@@ -28,13 +74,8 @@ func writeManagedSpaceDocs(t *testing.T, dir, user string, overrides map[string]
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "agent.yaml"), []byte(
-		"schema: 3\nuser: "+user+"\ntimezone: UTC\ninfra: false\ncapability_profile_id: "+user+"-default\ncapability_generation: 1\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "scope.yaml"), []byte("kind: user\nid: "+user+"\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	// No agent.yaml/scope.yaml stubs: the published revision alone must
+	// carry every consumer (SPEC-0095) — retired files are not an input.
 	rev := "r-0123456789abcdef"
 	revDir := filepath.Join(dir, "generated", "passports", rev)
 	if err := os.MkdirAll(revDir, 0700); err != nil {
@@ -42,7 +83,7 @@ func writeManagedSpaceDocs(t *testing.T, dir, user string, overrides map[string]
 	}
 	env := "apiVersion: six-passport/v2\nmetadata: {space: " + user + ", environment: dev, revision: " + rev + ", generated_at: 2026-11-02T00:00:00Z}\n"
 	docs := map[string]string{
-		"stack": "kind: stack\nidentity: {user: " + user + "}\nservices:\n" +
+		"stack": "kind: stack\nidentity: {user: " + user + ", infra: false}\nservices:\n" +
 			"  hermes-runtime: {mode: supervised}\n" +
 			"  model-relay: {mode: per-space}\n" +
 			"  toolhub-relay: {mode: per-space}\n" +
@@ -51,13 +92,16 @@ func writeManagedSpaceDocs(t *testing.T, dir, user string, overrides map[string]
 		"config":    "kind: config\nruntime: {timezone: UTC}\nports: {oauth-callback: 8008, browser-vnc: 6081}\n",
 		"models":    "kind: models\ndefault: m\nroutes:\n  m: {ladder: [upstream]}\nservices:\n  upstream: {via: openai-compatible, endpoint: http://model-relay:8318/v1, models: [{id: m}]}\n",
 		"workspace": "kind: workspace\nwritable: [/workspace]\nread_only: [/vault/memory]\n",
-		"tools":     "kind: tools\ncore:\n  discovery: {via: toolhub}\n  files: {via: toolhub}\n",
+		"tools":     "kind: tools\nbinding: {profile_id: " + user + "-default, generation: 1}\ncore:\n  discovery: {via: toolhub}\n  files: {via: toolhub}\n",
 		"grants":    "kind: grants\nallow: {}\n",
 	}
 	for name, body := range overrides {
 		docs[name] = body
 	}
 	for _, name := range []string{"stack", "config", "models", "workspace", "tools", "grants"} {
+		if name == "tools" && !strings.Contains(docs[name], "binding:") {
+			docs[name] += "binding: {profile_id: " + user + "-default, generation: 1}\n"
+		}
 		if err := os.WriteFile(filepath.Join(revDir, name+".yaml"), []byte(env+docs[name]), 0600); err != nil {
 			t.Fatal(err)
 		}

@@ -3,6 +3,7 @@ package stack
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/letya999/hermes-hub/internal/exposure"
@@ -70,7 +71,15 @@ func writeHostingFiles(dir string, s Settings) error {
 	if err != nil {
 		return err
 	}
-	return atomic(filepath.Join(dir, "generated", "hosting."+s.Environment+".json"), append(body, '\n'))
+	if err := atomic(filepath.Join(dir, "generated", "hosting."+s.Environment+".json"), append(body, '\n')); err != nil {
+		return err
+	}
+	if s.Hosting.Image == "" {
+		if err := os.Remove(filepath.Join(dir, "generated", "hosting-controller."+s.Environment+".json")); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
 }
 func hostingIssues(s Settings) []string {
 	if !s.Has("hosting") {
@@ -102,21 +111,7 @@ func hostingIssues(s Settings) []string {
 	}
 	return issues
 }
-func identitySiteSlot(n string) bool {
-	if len(n) < 1 || len(n) > 40 || n[0] < 'a' || n[0] > 'z' || n[len(n)-1] == '-' {
-		return false
-	}
-	switch n {
-	case "api", "admin", "auth", "broker", "hub", "control", "localhost":
-		return false
-	}
-	for _, r := range n {
-		if r != '-' && (r < 'a' || r > 'z') && (r < '0' || r > '9') {
-			return false
-		}
-	}
-	return true
-}
+func identitySiteSlot(n string) bool { return exposure.ValidSiteSlot(n) }
 func addHosting(services, volumes M, s Settings, dir string, common M, runtimeEnv M, runtimeVolumes *[]any) {
 	if !s.Has("hosting") {
 		return

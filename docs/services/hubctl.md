@@ -14,9 +14,8 @@ a human confirmation link minted through the communication gateway.
 `hubctl` (no args) prints the authoritative list:
 
 - **Stack lifecycle**: `init`, `org-init`, `up`, `down`, `logs`, `doctor`,
-  `render`, `migrate-spaces`, `space-migrate`, `space-audit`,
-  `space apply` (compile `passport-src/` layers, classified diff, publish +
-  reconcile under `--confirm`), `migrate-toolhub`, `apply`.
+  `render`, `space apply` (compile six authored passports, classified diff,
+  publish + reconcile under `--confirm`), `apply`.
 - **Models**: `models login` (per-service cliproxy OAuth enrollment +
   `model-grants.json` grant recording).
 - **Images**: `build`, `dev-rebuild` (the only sanctioned local build paths —

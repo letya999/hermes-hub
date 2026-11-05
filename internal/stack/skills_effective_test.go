@@ -659,7 +659,8 @@ func TestManagedRenderIncludesPlatformCatalogInView(t *testing.T) {
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
-	s, err := Read(d)
+	publishManagedRevision(t, d, "me", "r-0000000000000001")
+	s, err := ReadEffective(d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -668,7 +669,7 @@ func TestManagedRenderIncludesPlatformCatalogInView(t *testing.T) {
 	s.ExecutionMode = "supervisor"
 	s.SupervisorURL = "http://localhost:8876"
 	s.Tools, s.Ingress = testTools("workspace"), testIngress("workspace")
-	if err := saveSpace(d, s); err != nil {
+	if err := saveSpace(t, d, s); err != nil {
 		t.Fatal(err)
 	}
 	publishManagedRevision(t, d, "me", "r-0123456789abcdef")
@@ -701,6 +702,7 @@ func TestOrganizationInitCreatesUnifiedSkillsStore(t *testing.T) {
 	if err := InitEnvironmentWithOrganization(space, "alice", "prod", "acme"); err != nil {
 		t.Fatal(err)
 	}
+	publishOrgRevision(t, space, "alice", "acme", "r-0000000000000001")
 	s, err := ReadEnvironment(space, "prod")
 	if err != nil {
 		t.Fatal(err)
@@ -718,13 +720,14 @@ func TestRenderMigratesLegacyHermesSkillsIntoStore(t *testing.T) {
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
-	s, err := Read(d)
+	publishManagedRevision(t, d, "me", "r-0000000000000001")
+	s, err := ReadEffective(d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.Model, s.ModelURL = "test", "http://model-relay:8318/v1"
 	s.Tools, s.Ingress = testTools("workspace"), testIngress("workspace")
-	if err := saveSpace(d, s); err != nil {
+	if err := saveSpace(t, d, s); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte("OPENAI_API_KEY=model\n"), 0600); err != nil {
@@ -778,13 +781,14 @@ func TestRenderMigratesLegacyOrgSkillsIntoOrgStore(t *testing.T) {
 	if err := InitEnvironmentWithOrganization(d, "alice", "prod", "acme"); err != nil {
 		t.Fatal(err)
 	}
-	s, err := Read(d)
+	publishOrgRevision(t, d, "alice", "acme", "r-0000000000000001")
+	s, err := ReadEffective(d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.Model, s.ModelURL = "test", "http://model-relay:8318/v1"
 	s.Tools, s.Ingress = testTools("workspace"), testIngress("workspace")
-	if err := saveSpace(d, s); err != nil {
+	if err := saveSpace(t, d, s); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte("OPENAI_API_KEY=model\n"), 0600); err != nil {
@@ -809,6 +813,7 @@ func TestInitCreatesUnifiedSkillsStore(t *testing.T) {
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, d, "me", "r-0000000000000001")
 	if info, err := os.Stat(filepath.Join(d, "skills")); err != nil || !info.IsDir() {
 		t.Fatalf("init did not create the unified skills store: %v", err)
 	}

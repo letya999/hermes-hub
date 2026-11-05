@@ -16,6 +16,7 @@ func TestEnrollSiblingRuntimeTokens(t *testing.T) {
 	if err := Init(outside, "alice"); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, outside, "alice", "r-0000000000000001")
 	if err := EnrollSiblingRuntimeTokens(outside, "prod"); err != nil {
 		t.Fatal(err)
 	}
@@ -30,12 +31,15 @@ func TestEnrollSiblingRuntimeTokens(t *testing.T) {
 	if err := Init(owner, "alice"); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, owner, "alice", "r-0000000000000001")
 	if err := Init(sibling, "bob"); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, sibling, "bob", "r-0000000000000001")
 	if err := Init(short, "dave"); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, short, "dave", "r-0000000000000001")
 	ownerToken := strings.Repeat("a", 64)
 	oldBob := strings.Repeat("b", 64)
 	newBob := strings.Repeat("d", 64)
@@ -129,6 +133,7 @@ func TestEnrollSiblingRuntimeTokens(t *testing.T) {
 	if err := Init(lonely, "erin"); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, lonely, "erin", "r-0000000000000001")
 	onlyToken := strings.Repeat("f", 64)
 	onlyPath := filepath.Join(lonely, "toolhub-tokens.json")
 	onlySeed := map[string]identity.Envelope{
@@ -166,17 +171,6 @@ func TestEnrollSiblingModelRelayAdmins(t *testing.T) {
 	}
 	// Only managed spaces have a model-relay; unmanaged siblings must not
 	// appear in the admins file even when an auth file is present.
-	agent := filepath.Join(managed, "agent.yaml")
-	body, err := os.ReadFile(agent)
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := strings.Replace(string(body), `model: ""`, "model: default", 1)
-	text = strings.Replace(text, `model_url: ""`, "model_url: http://model-relay:8318/v1", 1)
-	text += "capability_mode: managed\ncapability_profile_id: alice-default\ncapability_generation: 1\n"
-	if err := os.WriteFile(agent, []byte(text), 0600); err != nil {
-		t.Fatal(err)
-	}
 	publishManagedRevision(t, managed, "alice", "r-0123456789abcdef")
 	admin := strings.Repeat("m", 64)
 	if err := os.WriteFile(filepath.Join(managed, "model-relay.auth"), []byte("HUB_MODEL_RELAY_AUTH=x\nHUB_MODEL_RELAY_ADMIN="+admin+"\n"), 0600); err != nil {
@@ -254,17 +248,7 @@ func TestEnrollSiblingRuntimeTokensReadsManagedRevision(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	agent := filepath.Join(sibling, "agent.yaml")
-	body, err := os.ReadFile(agent)
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := strings.Replace(string(body), `model: ""`, "model: default", 1)
-	text = strings.Replace(text, `model_url: ""`, "model_url: http://model-relay:8318/v1", 1)
-	text += "capability_profile_id: bob-default\ncapability_generation: 1\n"
-	if err := os.WriteFile(agent, []byte(text), 0600); err != nil {
-		t.Fatal(err)
-	}
+	publishManagedRevision(t, owner, "alice", "r-0000000000000001")
 	publishManagedRevision(t, sibling, "bob", "r-0123456789abcdef")
 	bobToken := strings.Repeat("d", 64)
 	if err := os.WriteFile(filepath.Join(sibling, "runtime.auth"), []byte("HUB_RUNTIME_AUTH="+bobToken+"\n"), 0600); err != nil {
@@ -302,17 +286,6 @@ func TestEnrollSiblingModelRelayAdminsReadsManagedRevision(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	agent := filepath.Join(managed, "agent.yaml")
-	body, err := os.ReadFile(agent)
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := strings.Replace(string(body), `model: ""`, "model: default", 1)
-	text = strings.Replace(text, `model_url: ""`, "model_url: http://model-relay:8318/v1", 1)
-	text += "capability_profile_id: alice-default\ncapability_generation: 1\n"
-	if err := os.WriteFile(agent, []byte(text), 0600); err != nil {
-		t.Fatal(err)
-	}
 	publishManagedRevision(t, managed, "alice", "r-0123456789abcdef")
 	admin := strings.Repeat("m", 64)
 	if err := os.WriteFile(filepath.Join(managed, "model-relay.auth"), []byte("HUB_MODEL_RELAY_AUTH=x\nHUB_MODEL_RELAY_ADMIN="+admin+"\n"), 0600); err != nil {
@@ -346,29 +319,20 @@ func TestRenderEnvironmentEnrollsModelRelayAdmins(t *testing.T) {
 	if err := Init(infra, "infra"); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, infra, "infra", "r-0000000000000001")
 	if err := Init(managed, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := Read(infra)
+	publishManagedRevision(t, managed, "alice", "r-0000000000000001")
+	settings, err := ReadEffective(infra, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
 	settings.Model, settings.ModelURL = "test", "http://model.invalid/v1"
-	if err := WriteSpace(infra, settings); err != nil {
+	if err := saveSpace(t, infra, settings); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(infra, "secrets.prod.env"), []byte("OPENAI_API_KEY=x\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	agent := filepath.Join(managed, "agent.yaml")
-	body, err := os.ReadFile(agent)
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := strings.Replace(string(body), `model: ""`, "model: default", 1)
-	text = strings.Replace(text, `model_url: ""`, "model_url: http://model-relay:8318/v1", 1)
-	text += "capability_mode: managed\ncapability_profile_id: alice-default\ncapability_generation: 1\n"
-	if err := os.WriteFile(agent, []byte(text), 0600); err != nil {
 		t.Fatal(err)
 	}
 	publishManagedRevision(t, managed, "alice", "r-0123456789abcdef")

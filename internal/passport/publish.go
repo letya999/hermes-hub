@@ -24,6 +24,10 @@ func (r Revision) Publish(spaceDir string) error {
 			return fmt.Errorf("passport publish: revision is missing %s", name)
 		}
 	}
+	previous, err := Current(spaceDir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("passport publish: current revision: %w", err)
+	}
 	root := filepath.Join(spaceDir, "generated", "passports")
 	staging := filepath.Join(root, ".staging-"+r.ID)
 	if err := os.RemoveAll(staging); err != nil {
@@ -64,7 +68,10 @@ func (r Revision) Publish(spaceDir string) error {
 	if err := atomic(filepath.Join(root, "current"), []byte(r.ID+"\n")); err != nil {
 		return err
 	}
-	return r.refreshConfigView(spaceDir)
+	if err := r.refreshConfigView(spaceDir); err != nil {
+		return errors.Join(err, RestoreCurrent(spaceDir, previous, r.Provenance.Environment))
+	}
+	return nil
 }
 
 // atomic writes body to path via a same-directory temp file + rename.
@@ -110,7 +117,52 @@ func (r Revision) PromptPointer() string {
 // PointCurrent repoints the active revision pointer — the rollback half of
 // Publish's commit point, used when post-publish reconciliation fails.
 func PointCurrent(spaceDir, revisionID string) error {
-	return atomic(filepath.Join(spaceDir, "generated", "passports", "current"), []byte(revisionID+"\n"))
+	path := filepath.Join(spaceDir, "generated", "passports", "current")
+	if revisionID == "" {
+		err := os.Remove(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	return atomic(path, []byte(revisionID+"\n"))
+}
+
+// RestoreCurrent puts the pointer and mounted config view back on the same
+// revision after a post-publish failure. Generated revision files remain
+// immutable, so the old view can be reconstructed without editable inputs.
+func RestoreCurrent(spaceDir, revisionID, environment string) error {
+	viewDir := filepath.Join(spaceDir, "generated", "config-view", environment)
+	if revisionID == "" {
+		if err := PointCurrent(spaceDir, ""); err != nil {
+			return err
+		}
+		for _, name := range append(append([]string{}, Names...), "prompt-pointer") {
+			filename := name + ".yaml"
+			if name == "prompt-pointer" {
+				filename = "prompt-pointer.txt"
+			}
+			if err := os.Remove(filepath.Join(viewDir, filename)); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		}
+		return nil
+	}
+	if !filepath.IsLocal(revisionID) {
+		return fmt.Errorf("passport restore: invalid revision id")
+	}
+	rev := Revision{ID: revisionID, Provenance: Provenance{Environment: environment}, Docs: map[string][]byte{}}
+	for _, name := range Names {
+		body, err := os.ReadFile(filepath.Join(spaceDir, "generated", "passports", revisionID, name+".yaml"))
+		if err != nil {
+			return err
+		}
+		rev.Docs[name] = body
+	}
+	if err := PointCurrent(spaceDir, revisionID); err != nil {
+		return err
+	}
+	return rev.refreshConfigView(spaceDir)
 }
 
 // refreshConfigView republishes the runtime /config directory: the six

@@ -1,0 +1,47 @@
+schema: 1
+change: CHG-0288
+title: "M32 cutover and acceptance"
+status: in_progress
+branch: chore/merge-m31-m20-into-dev
+updated: 2026-11-05
+phase: design-complete
+adr: [ADR-0095, ADR-0097]
+spec: [SPEC-0097, SPEC-0098, SPEC-0099]
+requirements: []
+depends_on: [CHG-0281]
+issue_dependencies: "../CHG-0281-m32-per-space-memory-plane/github-issues.json"
+github_milestone: "M32 MVP — Passports, Memory, and Automation in ToolHub"
+github_milestone_number: 43
+github_issues: [526, 527]
+design_status: accepted
+implementation_status: not_started
+slices: {}
+historical_slices:
+  S7.1-remove: not_started
+  S7.2-contract: not_started
+  S7.3-accept: not_started
+validation:
+  documents: passed_2026-11-05
+  just_check: stale_after_unregistered_definition_refusal_2026-11-05
+  go_check: stale_after_unregistered_definition_refusal_2026-11-05
+  docker_check: stale_after_unregistered_definition_refusal_2026-11-05
+  red_team: not_started
+  live_acceptance: not_started
+evidence:
+  - "2026-11-05 bounded-plan verification: devcheck docs passed (exit 0); 17 current planning files passed relative-link/whitespace checks and the 20-issue dependency graph is acyclic. Milestone 43 and all 20 English issue contracts were synchronized. just check was invoked but intentionally interrupted during the test leg (exit 1); no full-suite or coverage pass claimed. No production code, worktree, commit or deployment created by this planning update."
+  - "2026-11-05 decomposition update: ADR-0097 and SPEC-0096/0097/0098/0099 define current small assignments; foundation packages/verifies only. First wave is #509/#513/#521. #508 requires #511/#512; #522 requires #521/#514; #523 performs the sole automation owner switch. No new implementation or gate pass claimed; historical evidence below retains its original snapshot."
+  - "2026-11-05 GitHub planning: milestone 43 and issues 526, 527 created. GitHub owns current issue status; parallel-work.md defines foundation/worktree assignments. Foundation and implementation worktrees are not created by this planning session."
+  - "2026-11-05 continuation: a subsequent first-party definition fail-closed edit and fixture update passed focused migration/hubctl apply tests, exit 0; the full quality and Docker passes immediately before it are stale for the current source tree."
+  - "2026-11-05 continuation: just docker-check passed on the current source tree, exit 0, including image budgets, pinned Hermes API, two-user gateway lifecycle with real five-minute idle/cold restore, managed network/supervisor and scratch quarantine; project-scoped cleanup passed. Telegram and model were local fixtures; live provider/user acceptance remains pending."
+  - "2026-11-05 continuation: just check passed on the current source tree, exit 0, with 86.00% own Go statement coverage; full Docker gate predates subsequent org-policy and tool-projection edits and is stale. Live provider/user acceptance remains pending."
+  - "2026-11-05 continuation: just docker-check passed, exit 0, including pinned Hermes API, two-user gateway with real five-minute idle/restart, managed network/supervisor, scratch isolation and quarantine; docker-clean ran. just check exited 1 only after a passing race/coverage leg (own Go 85.98%) because Windows denied compile.exe during staticcheck; just lint, just docs-check and just config-check passed separately, exit 0. This is container integration with synthetic Telegram/model/ToolHub, not live provider/user acceptance."
+  - "2026-11-05 continuation: second just docker-check exited 1 at a stale SupervisorContract fixture after all image budgets, Docker smoke and pinned Hermes API contract passed. The repaired synthetic SupervisorContract then passed in a targeted command (go run -tags integration ./cmd/devcheck supervisor-contract hermes-hub:test, exit 0). The full Docker gate is pending. None of this is live provider/user acceptance."
+  - "2026-11-05 continuation: go run -tags integration ./cmd/devcheck gateway-lifecycle hermes-hub:test passed, exit 0, after publishing both users' authored passports and moving the isolation marker into their managed homes. Real pinned containers completed separate Alice/Bob runs, duplicate Telegram-fixture updates once, warm reuse, real five-minute idle shutdown and cold session restore. Docker fixture relays and networks cleaned. The transport and model provider were local fixtures; this is not live-account acceptance."
+  - "2026-11-05 continuation: first just docker-check exited 1 at knowledge image-budget setuid violations before smoke/contracts. Dockerfile hardened and just docker-clean passed; retry running. Post-fix just go-check exited 1 on isolated-pass sshcap local timeout during Docker load, so current-tree coverage remains unverified."
+  - "2026-11-05 continuation: deployment configuration contract passed in just check, but the full gate exited 1 on parallel Windows process failures (diagnostics.test.exe Access is denied and ToolHub scratch input materialization). Isolated packages and just go-check passed; own Go coverage 85.99%. Docker gate is running. No live acceptance or catalog rebind/respawn is claimed."
+  - "2026-11-05 follow-up: unit packages repaired and stack/hubctl/migration/passport/passportview/reconcile pass; just check still fails all eight deployment-contract cases. Follow-up audit supersedes old open statuses; plan/handoff updated, devcheck docs passed. No stage acceptance claimed."
+  - "2026-11-05: Cross-stage audit and handoff recorded under CHG-0281. Acceptance plan strengthened for real process exit status, clean passport-only lifecycle, exact-profile rollback and actual ToolHub memory execution. Stage implementation remains not_started."
+remaining: [implementation, quality_gates, live_acceptance]
+limitations:
+  - "Unfinished ownership/authority changes prevent acceptance; full just check success, current-tree coverage/Docker gate after the org-policy source edit, catalog rebind and two-user live provider checks remain unverified. The previous tree passed own Go coverage 85.98% and the Docker gate with local fixtures."
+

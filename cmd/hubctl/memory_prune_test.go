@@ -17,10 +17,10 @@ import (
 // stays; --apply expires a retention-age day once its gates pass.
 func TestMemoryPruneCLI(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "settings.yaml"),
-		[]byte("schema: 1\nuser: alice\nmodel: test\noauth_port: 8000\nbrowser_port: 6080\nfeatures: [memory_vault]\nmemory_leaf_retention_days: 7\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeManagedSpaceDocs(t, dir, "alice", map[string]string{
+		"config": "kind: config\nruntime: {timezone: UTC}\nmemory: {enabled: true, leaf_retention_days: 7}\n",
+		"tools":  "kind: tools\nbinding: {profile_id: alice-default, generation: 1}\ncore:\n  files: {via: toolhub}\nextended:\n  memory_vault: {via: native}\n",
+	})
 	if err := os.WriteFile(filepath.Join(dir, "runtime.prod.env"), []byte("# none\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}

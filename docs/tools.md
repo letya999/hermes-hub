@@ -1,6 +1,6 @@
 ---
 description: Complete agent-visible tool surface — catalog r5 families, pinned platform layer, connector_* facade, effect/grant requirements, delivery directives.
-last_verified: "2026-11-04"
+last_verified: "2026-11-05"
 ---
 
 # Tool surface
@@ -107,6 +107,9 @@ schemas, not authority. Per-toolset `rules` (`include` xor `exclude`,
 `access: read`, `scope`, per-tool rules) compile only for toolhub-routed
 toolsets; a native or raw-MCP surface that cannot provably enforce them fails
 closed at compile.
+The same document carries `binding: {profile_id, generation}` for a managed
+space. The compiler validates both fields, and runtime/ToolHub use the
+published binding rather than values in `agent.yaml`.
 
 ## platform — the pinned layer
 
@@ -121,6 +124,25 @@ Six tools are always projected, never operator-selectable or removable
 | `platform_usage` | Own consumption per model/period against models.yaml limits |
 | `tool_search` | Search the extended inventory by name, description, params, definition |
 | `tool_call` | Invoke one extended tool `{tool, arguments}` — admission identical to a direct call |
+
+Selection in `tools.yaml` and rights in `grants.yaml` are independent.
+On apply, first-party `toolhub` family members in the published revision
+replace that definition's selections in the bound capability profile. The
+profile's core bound controls direct schemas, including an empty core; an
+open session re-reads the profile for list and call admission. A tool with no
+active `tools.use` or domain grant remains unavailable. For the `files`
+handler, selected `scope.paths` narrow the admitted path before dispatch and
+reach the executor's filesystem root. Supported roots are `/workspace`,
+`/archive` and `/organization`; unsupported path roots, host/URL scopes and
+tools without a path argument refuse apply. Per-tool path rules intersect
+with their toolset scope.
+Apply also refuses a selected first-party family when the pinned ToolHub
+definition has not been registered.
+Managed calls, including `tool_call` and self-installed connector tools,
+require a live `tools.use` grant plus the selected tool's own operation right.
+`tools.configure` authorizes changing the selection and grants no invocation.
+The authored grants passport may only publish rights already issued in
+ToolHub's protected ledger; editing the passport cannot issue a right.
 
 ## First-party families
 
@@ -153,6 +175,13 @@ word where one exists):
 | memory | `memory_search`, `memory_card` | handler:memory | the memory vault contract (SPEC-0085): `memory_search` is BM25+graph over daily leaves, cards and summaries — hits carry `file:line` evidence refs, never answer from memory alone; `memory_card` is the only write path (ops remember\|fact\|truth\|merge\|forget) and needs a stamped private run; `merge`/`forget` additionally need owner provenance — no argument grants either; `root=vault` file writes still refuse the governed `memory/`/`runtime/` zones — use `memory_card` |
 
 ## memory — the vault contract
+
+In managed spaces, ToolHub checks the caller's published
+`config.memory.enabled` before and immediately before executing a memory
+tool. The caller's principal selects the read-only passport mount; tool
+arguments cannot choose another space. A selected `memory_search` or
+`memory_card` remains inert while this switch is false, even if the tool is
+still visible in a session. The operation right is checked separately.
 
 The `memory_vault` feature (ADR-0086, SPEC-0085) replaces the native store
 entirely when on: the `memory` toolset stays in `agent.disabled_toolsets`,

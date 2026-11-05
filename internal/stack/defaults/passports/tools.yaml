@@ -1,0 +1,3 @@
+binding: {profile_id: __USER__-default, generation: 1}
+core:
+  files: {via: toolhub}

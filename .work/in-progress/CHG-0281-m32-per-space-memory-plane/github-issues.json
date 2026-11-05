@@ -1,0 +1,249 @@
+{
+  "milestone": 43,
+  "url": "https://github.com/letya999/hermes-hub/milestone/43",
+  "status_authority": "GitHub issues; this file is an ID/dependency map, not a duplicate status tracker",
+  "foundation_required": false,
+  "integration_branch": "dev",
+  "issues": [
+    {
+      "task": "M32.01",
+      "issue": 508,
+      "url": "https://github.com/letya999/hermes-hub/issues/508",
+      "lane": "config",
+      "change": "CHG-0283",
+      "depends_on": [
+        511,
+        512
+      ],
+      "contract": "SPEC-0097"
+    },
+    {
+      "task": "M32.02",
+      "issue": 509,
+      "url": "https://github.com/letya999/hermes-hub/issues/509",
+      "lane": "config",
+      "change": "CHG-0283",
+      "depends_on": [],
+      "contract": "SPEC-0097"
+    },
+    {
+      "task": "M32.03",
+      "issue": 510,
+      "url": "https://github.com/letya999/hermes-hub/issues/510",
+      "lane": "config",
+      "change": "CHG-0283",
+      "depends_on": [],
+      "contract": "SPEC-0097"
+    },
+    {
+      "task": "M32.04",
+      "issue": 511,
+      "url": "https://github.com/letya999/hermes-hub/issues/511",
+      "lane": "config",
+      "change": "CHG-0283",
+      "depends_on": [],
+      "contract": "SPEC-0097"
+    },
+    {
+      "task": "M32.05",
+      "issue": 512,
+      "url": "https://github.com/letya999/hermes-hub/issues/512",
+      "lane": "config",
+      "change": "CHG-0283",
+      "depends_on": [
+        511
+      ],
+      "contract": "SPEC-0097"
+    },
+    {
+      "task": "M32.06",
+      "issue": 513,
+      "url": "https://github.com/letya999/hermes-hub/issues/513",
+      "lane": "memory",
+      "change": "CHG-0285",
+      "depends_on": [],
+      "contract": "SPEC-0098"
+    },
+    {
+      "task": "M32.07",
+      "issue": 514,
+      "url": "https://github.com/letya999/hermes-hub/issues/514",
+      "lane": "memory",
+      "change": "CHG-0285",
+      "depends_on": [],
+      "contract": "SPEC-0098"
+    },
+    {
+      "task": "M32.08",
+      "issue": 515,
+      "url": "https://github.com/letya999/hermes-hub/issues/515",
+      "lane": "memory",
+      "change": "CHG-0286",
+      "depends_on": [
+        513,
+        514
+      ],
+      "contract": "SPEC-0098"
+    },
+    {
+      "task": "M32.09",
+      "issue": 516,
+      "url": "https://github.com/letya999/hermes-hub/issues/516",
+      "lane": "memory",
+      "change": "CHG-0285",
+      "depends_on": [
+        513,
+        514
+      ],
+      "contract": "SPEC-0098"
+    },
+    {
+      "task": "M32.10",
+      "issue": 517,
+      "url": "https://github.com/letya999/hermes-hub/issues/517",
+      "lane": "memory",
+      "change": "CHG-0285",
+      "depends_on": [
+        515,
+        516
+      ],
+      "contract": "SPEC-0098"
+    },
+    {
+      "task": "M32.11",
+      "issue": 518,
+      "url": "https://github.com/letya999/hermes-hub/issues/518",
+      "lane": "memory",
+      "change": "CHG-0286",
+      "depends_on": [
+        515,
+        516
+      ],
+      "contract": "SPEC-0098"
+    },
+    {
+      "task": "M32.12",
+      "issue": 519,
+      "url": "https://github.com/letya999/hermes-hub/issues/519",
+      "lane": "memory",
+      "change": "CHG-0286",
+      "depends_on": [
+        518
+      ],
+      "contract": "SPEC-0098"
+    },
+    {
+      "task": "M32.13",
+      "issue": 520,
+      "url": "https://github.com/letya999/hermes-hub/issues/520",
+      "lane": "memory",
+      "change": "CHG-0286",
+      "depends_on": [
+        517,
+        519
+      ],
+      "contract": "SPEC-0098"
+    },
+    {
+      "task": "M32.14",
+      "issue": 521,
+      "url": "https://github.com/letya999/hermes-hub/issues/521",
+      "lane": "automation",
+      "change": "CHG-0284",
+      "depends_on": [],
+      "contract": "SPEC-0099"
+    },
+    {
+      "task": "M32.15",
+      "issue": 522,
+      "url": "https://github.com/letya999/hermes-hub/issues/522",
+      "lane": "automation",
+      "change": "CHG-0284",
+      "depends_on": [
+        521,
+        514
+      ],
+      "contract": "SPEC-0099"
+    },
+    {
+      "task": "M32.16",
+      "issue": 523,
+      "url": "https://github.com/letya999/hermes-hub/issues/523",
+      "lane": "automation",
+      "change": "CHG-0284",
+      "depends_on": [
+        522
+      ],
+      "contract": "SPEC-0099"
+    },
+    {
+      "task": "M32.17",
+      "issue": 524,
+      "url": "https://github.com/letya999/hermes-hub/issues/524",
+      "lane": "automation",
+      "change": "CHG-0287",
+      "depends_on": [
+        523,
+        516
+      ],
+      "contract": "SPEC-0099"
+    },
+    {
+      "task": "M32.18",
+      "issue": 525,
+      "url": "https://github.com/letya999/hermes-hub/issues/525",
+      "lane": "automation",
+      "change": "CHG-0287",
+      "depends_on": [
+        524,
+        518
+      ],
+      "contract": "SPEC-0099"
+    },
+    {
+      "task": "M32.19",
+      "issue": 526,
+      "url": "https://github.com/letya999/hermes-hub/issues/526",
+      "lane": "integration",
+      "change": "CHG-0288",
+      "depends_on": [
+        508,
+        509,
+        510,
+        511,
+        512,
+        513,
+        514,
+        515,
+        516,
+        517,
+        518,
+        519,
+        520,
+        521,
+        522,
+        523,
+        524,
+        525
+      ],
+      "contract": "SPEC-0097–0099"
+    },
+    {
+      "task": "M32.20",
+      "issue": 527,
+      "url": "https://github.com/letya999/hermes-hub/issues/527",
+      "lane": "integration",
+      "change": "CHG-0288",
+      "depends_on": [
+        526
+      ],
+      "contract": "SPEC-0097–0099"
+    }
+  ],
+  "first_wave": [
+    509,
+    513,
+    521
+  ],
+  "common_base": "Reviewed current changes committed and verified, then merged into dev; first-wave branches from one dev SHA."
+}

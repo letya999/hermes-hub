@@ -38,6 +38,7 @@ func TestToolsetCoreLimitAndExtendedInvokeRevoke(t *testing.T) {
 	}
 	auth := identity.TelegramEnvelope("alice", 7, "runtime", "policy-1")
 	auth.CapabilityProfile, auth.Environment, auth.Generation = "alice-default", "dev", 1
+	auth.Organization = "example"
 	binding := api.ToolBinding{Schema: api.SchemaVersion, PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ConnectionID: connection.ConnectionID, ConnectionRevision: connection.Revision, CredentialRefID: credential.CredentialRefID, CredentialRevision: credential.Revision, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: api.ActiveStatus, Revision: 1, ProjectionRevision: 1}
 	binding.ToolBindingID = api.DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
 	if err := store.PutBinding(binding); err != nil {
@@ -58,13 +59,16 @@ func TestToolsetCoreLimitAndExtendedInvokeRevoke(t *testing.T) {
 		},
 		CoreTools:  []string{"workspace_read"},
 		Connectors: api.ConnectorsPersonal,
+		Rights:     []api.RightRule{{Capability: "tools", Operation: "use"}},
 	}
+	policy.RightCeiling = profile.Rights
 	if err := putPolicy(t, store, policy); err != nil {
 		t.Fatal(err)
 	}
 	if err := putProfile(t, store, profile); err != nil {
 		t.Fatal(err)
 	}
+	grantToolUse(t, store, auth)
 
 	called := map[string]bool{}
 	g := &Gateway{Store: store, AuditWrite: func(string, map[string]string) error { return nil },
@@ -172,6 +176,7 @@ func TestToolsetCoreBoundSurvivesRefresh(t *testing.T) {
 	}
 	auth := identity.TelegramEnvelope("alice", 7, "runtime", "policy-1")
 	auth.CapabilityProfile, auth.Environment, auth.Generation = "alice-default", "dev", 1
+	auth.Organization = "example"
 	binding := api.ToolBinding{Schema: api.SchemaVersion, PrincipalID: "alice", ContextID: "alice", RuntimeID: "runtime", DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ConnectionID: connection.ConnectionID, ConnectionRevision: connection.Revision, CredentialRefID: credential.CredentialRefID, CredentialRevision: credential.Revision, PolicyVersion: auth.PolicyVersion, WorkloadClass: definition.Workload.Class, Status: api.ActiveStatus, Revision: 1, ProjectionRevision: 1}
 	binding.ToolBindingID = api.DeterministicBindingID(binding.PrincipalID, binding.ContextID, binding.RuntimeID, binding.DefinitionID, binding.DefinitionVersion, binding.ConnectionID, binding.CredentialRefID)
 	if err := store.PutBinding(binding); err != nil {
@@ -192,13 +197,16 @@ func TestToolsetCoreBoundSurvivesRefresh(t *testing.T) {
 		},
 		CoreTools:  []string{"workspace_read"},
 		Connectors: api.ConnectorsPersonal,
+		Rights:     []api.RightRule{{Capability: "tools", Operation: "use"}},
 	}
+	policy.RightCeiling = profile.Rights
 	if err := putPolicy(t, store, policy); err != nil {
 		t.Fatal(err)
 	}
 	if err := putProfile(t, store, profile); err != nil {
 		t.Fatal(err)
 	}
+	grantToolUse(t, store, auth)
 
 	g := &Gateway{Store: store, Tokens: map[string]identity.Envelope{"alice-principal-token-0000000000000": auth}, projections: map[string]*gatewayProjection{}}
 	projection, err := g.projectionFor("alice-principal-token-0000000000000")

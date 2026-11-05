@@ -2,13 +2,17 @@ package locale
 
 func init() {
 	register(LangKK, map[string]string{
-		"hubctl.audit-rollover-usage":   "Қолдану: hubctl audit rollover --ledger <толық жол> [--apply --digest <sha256:...>]",
-		"hubctl.audit-rollover-ledger":  "Тоқтатылған ToolHub ескі audit файлының жолы",
-		"hubctl.audit-rollover-apply":   "Тексерілген көшіруді қолдану; әдепкіде тек жоспар",
-		"hubctl.audit-rollover-digest":  "--apply үшін жоспар digest мәні",
-		"hubctl.audit-rollover-stale":   "Ескі audit жоспары ескірді; жоспарды қайта алыңыз.",
-		"hubctl.audit-rollover-invalid": "Ескі audit жарамсыз немесе оны қауіпсіз көшіру мүмкін емес.",
-		"hubctl.audit-rollover-failed":  "Ескі audit көшіруі аяқталмады; қайта бастар алдында offline күйін тексеріңіз.",
+		"hubctl.space-apply-passport-right":       "Бұл паспорт өзгерісі үшін %s құқығы қажет.",
+		"hubctl.space-apply-scope-kind":           "Әдіс түрі инициализация кезінде бекітіледі және ревизиялар арасында өзгермейді.",
+		"hubctl.space-apply-organization-binding": "Ұйым кеңістігін қолдану үшін басқарылатын профиль байланысы қажет.",
+		"hubctl.space-apply-organization-policy":  "Ұйым саясаты қолжетімсіз немесе сұралған құқықтар оның шегінен асады.",
+		"hubctl.audit-rollover-usage":             "Қолдану: hubctl audit rollover --ledger <толық жол> [--apply --digest <sha256:...>]",
+		"hubctl.audit-rollover-ledger":            "Тоқтатылған ToolHub ескі audit файлының жолы",
+		"hubctl.audit-rollover-apply":             "Тексерілген көшіруді қолдану; әдепкіде тек жоспар",
+		"hubctl.audit-rollover-digest":            "--apply үшін жоспар digest мәні",
+		"hubctl.audit-rollover-stale":             "Ескі audit жоспары ескірді; жоспарды қайта алыңыз.",
+		"hubctl.audit-rollover-invalid":           "Ескі audit жарамсыз немесе оны қауіпсіз көшіру мүмкін емес.",
+		"hubctl.audit-rollover-failed":            "Ескі audit көшіруі аяқталмады; қайта бастар алдында offline күйін тексеріңіз.",
 		// Language picker and /language.
 		"lang.choose":   "Тілді таңдаңыз:",
 		"lang.saved":    "Тіл орнатылды: %s.",

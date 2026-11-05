@@ -41,8 +41,10 @@ func TestRunDispatchGuards(t *testing.T) {
 	}
 
 	root := t.TempDir()
-	if err := run(ctx, []string{"migrate-spaces", "--root", root, "--user", "me"}); err != nil {
-		t.Fatalf("migrate-spaces dry-run: %v", err)
+	for _, retired := range []string{"migrate-spaces", "space-migrate", "space-audit", "migrate-toolhub"} {
+		if err := run(ctx, []string{retired, "--root", root, "--user", "me"}); err == nil {
+			t.Fatalf("retired migration command %q remained callable", retired)
+		}
 	}
 	emptySpool := filepath.Join(root, "empty-spool")
 	for _, sub := range []string{"pending", "running", "done", "failed", "outbox/pending", "outbox/sending", "outbox/failed", "mappings"} {

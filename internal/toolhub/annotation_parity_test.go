@@ -29,7 +29,7 @@ func TestProjectedToolAnnotationsMatchEffect(t *testing.T) {
 				Description: "Show own health."},
 			{Name: "session_read", Effect: api.ReadEffect, CapabilityID: "sessions.read", Executor: "runtime:sessions", Requires: []string{"sessions.read"}, Audience: api.AudienceModel,
 				Description: "Read one session."},
-			{Name: "session_remove", Effect: api.WriteEffect, CapabilityID: "sessions.remove", Executor: "runtime:sessions", Requires: []string{"sessions.remove"}, Audience: api.AudienceModel,
+			{Name: "session_remove", Effect: api.WriteEffect, CapabilityID: "sessions.remove", Executor: "runtime:sessions", Requires: []string{"sessions.manage"}, Audience: api.AudienceModel,
 				Description: "Delete one session."},
 		},
 	}
@@ -54,6 +54,7 @@ func TestProjectedToolAnnotationsMatchEffect(t *testing.T) {
 	if err := putProfile(t, s, profile); err != nil {
 		t.Fatal(err)
 	}
+	grantDefinitionRights(t, s, auth, definition)
 	g := &Gateway{Store: s, Tokens: map[string]identity.Envelope{aliceToken: auth},
 		Control: &ControlPlane{Store: s, Now: time.Now},
 		Backend: backendFunc(func(_ context.Context, _ api.EffectiveBinding, tool api.ToolSpec, _ map[string]any) (api.BackendResult, error) {

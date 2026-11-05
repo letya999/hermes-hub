@@ -1,0 +1,10 @@
+# One user is one agent. Only one deployed space should set infra: true.
+identity: {user: __USER__, infra: true}
+services:
+  hermes-runtime: {mode: supervised}
+  toolhub: {mode: shared}
+  model-relay: {mode: shared}
+  cliproxy: {mode: shared}
+  communication-hub: {mode: shared}
+  credential-broker: {mode: shared}
+  supervisor: {mode: shared}

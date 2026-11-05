@@ -33,6 +33,8 @@ func planServiceName(instance string, s Settings) string {
 		return instance + "-" + s.User
 	case "hosting":
 		return hostingName(s)
+	case "hosting-controller":
+		return hostingName(s) + "-ctl"
 	}
 	return instance
 }

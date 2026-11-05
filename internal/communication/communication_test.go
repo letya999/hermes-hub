@@ -663,6 +663,37 @@ func TestJobMappingRejectsMismatchedOutcomeAndCorruptConversation(t *testing.T) 
 	}
 }
 
+func TestChannelConfigCarriesRightsEnvironment(t *testing.T) {
+	t.Setenv("HUB_ENVIRONMENT", "dev")
+	var config Config
+	fillChannelSecrets(&config)
+	if config.Environment != "dev" {
+		t.Fatalf("rights environment = %q, want dev", config.Environment)
+	}
+}
+
+func TestSendRightAssertsConfiguredEnvironment(t *testing.T) {
+	t.Setenv("HUB_SUPERVISOR_AUTH", "test-control-token")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Principal   string `json:"principal_id"`
+			Environment string `json:"environment"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+		}
+		if request.Principal != "alice" || request.Environment != "dev" {
+			t.Errorf("rights assertion = %q/%q", request.Principal, request.Environment)
+		}
+		_, _ = w.Write([]byte(`{"allow":true}`))
+	}))
+	defer server.Close()
+	g := &Gateway{config: Config{ToolHubURL: server.URL, Environment: "dev"}}
+	if !g.sendRight(Delivery{Channel: "telegram_bot"}, "alice") {
+		t.Fatal("configured environment lost before rights request")
+	}
+}
+
 func TestConfigFromEnvAndIDs(t *testing.T) {
 	t.Setenv("HUB_USER_ID", "alice")
 	t.Setenv("HUB_ORGANIZATION_ID", "acme")

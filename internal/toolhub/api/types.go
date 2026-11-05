@@ -472,6 +472,7 @@ type EffectiveBinding struct {
 	// CapabilityScopes are the path-grant boundaries the admission bound for
 	// this call; executors must map them to os.Root scopes, never recompute.
 	CapabilityScopes []CapabilityScope `json:"-"`
+	SelectedToolName string            `json:"-"`
 }
 
 type WorkloadStopper interface {

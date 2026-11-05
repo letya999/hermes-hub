@@ -3,6 +3,7 @@ package supervisor
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -306,8 +307,11 @@ func TestMasterContainsOnlyVerifiedScope(t *testing.T) {
 			if w.Code != 200 {
 				t.Fatalf("containment: %d %s", w.Code, w.Body.String())
 			}
-			if len(stopped) != 1 || stopped[0] != owned || len(removed) != 1 || removed[0] != owned {
-				t.Errorf("verified tree not stopped with bounded fallback: stop=%v remove=%v expected=%s", stopped, removed, owned)
+			// Managed cleanup removes the verified control relay with its
+			// runtime: exactly two removals, runtime first.
+			relay := hex.EncodeToString(hashBytes(a.Container + "-ctl" + a.Generation))
+			if len(stopped) != 1 || stopped[0] != owned || len(removed) != 2 || removed[0] != owned || removed[1] != relay {
+				t.Errorf("verified tree not stopped with bounded fallback: stop=%v remove=%v expected=[%s %s]", stopped, removed, owned, relay)
 			}
 			if m.items[runtimeKey(binding(root))].State != Stopped {
 				t.Error("contained runtime remains active")

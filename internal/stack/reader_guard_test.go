@@ -28,7 +28,7 @@ func TestReadEnvironmentMigrationOnly(t *testing.T) {
 			return err
 		}
 		if d.IsDir() {
-			if name := d.Name(); name == ".git" || name == "node_modules" || name == "vendor" || name == ".work" || name == ".local" || name == ".tmpgen" {
+			if name := d.Name(); name == ".git" || name == "node_modules" || name == "vendor" || name == ".work" || name == ".local" || name == ".tmpgen" || name == "spaces" {
 				return filepath.SkipDir
 			}
 			return nil

@@ -4,7 +4,6 @@ import (
 	_ "embed"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
-	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -12,108 +11,6 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
-
-// The embedded defaults are the fleet profile every space starts from. An
-// operator can override either half fleet-wide by dropping a file into
-// <hub-root>/policies/agent-default.yaml or policies/workspace-default.yaml —
-// Init prefers those over the embedded copies.
-//
-//go:embed defaults/agent.yaml
-var defaultAgentYAML []byte
-
-//go:embed defaults/workspace.yaml
-var defaultWorkspaceYAML []byte
-
-// policyTemplate resolves the fleet template for one space file: a
-// policies/<name> override beside the spaces/ directory wins, else the
-// embedded default.
-func policyTemplate(spaceDir, name string, embedded []byte) []byte {
-	root := filepath.Dir(spaceDir)
-	if filepath.Base(root) == "spaces" {
-		root = filepath.Dir(root)
-	}
-	if b, err := os.ReadFile(filepath.Join(root, "policies", name)); err == nil {
-		return b
-	}
-	return embedded
-}
-
-// renderAgent stamps the resolved agent template with the space identity and
-// the allocated host ports while preserving its comments.
-func renderAgent(template []byte, user, organization string, ports spacePorts) ([]byte, error) {
-	var doc yaml.Node
-	if err := yaml.Unmarshal(template, &doc); err != nil {
-		return nil, err
-	}
-	root := doc.Content[0]
-	orgSet := organization == ""
-	for i := 0; i+1 < len(root.Content); i += 2 {
-		switch root.Content[i].Value {
-		case "user":
-			root.Content[i+1].Value = user
-		case "organization":
-			root.Content[i+1].Value = organization
-			orgSet = true
-		case "oauth_port":
-			root.Content[i+1] = &yaml.Node{Kind: yaml.ScalarNode, Value: fmt.Sprint(ports.oauth), Tag: "!!int"}
-		case "browser_port":
-			root.Content[i+1] = &yaml.Node{Kind: yaml.ScalarNode, Value: fmt.Sprint(ports.browser), Tag: "!!int"}
-		case "slack_events_port":
-			root.Content[i+1] = &yaml.Node{Kind: yaml.ScalarNode, Value: fmt.Sprint(ports.slack), Tag: "!!int"}
-		}
-	}
-	if !orgSet {
-		root.Content = append(root.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "organization"}, &yaml.Node{Kind: yaml.ScalarNode, Value: organization})
-	}
-	return yaml.Marshal(&doc)
-}
-
-// spacePorts are the host ports Init allocates per space. Ports are an
-// allocation, not a preference: hubctl scans sibling spaces and picks the
-// lowest free values so two spaces can never collide.
-type spacePorts struct {
-	oauth, browser, slack int
-}
-
-func allocatePorts(spaceDir string) spacePorts {
-	ports := spacePorts{oauth: 8000, browser: 6080, slack: 8081}
-	root := filepath.Dir(spaceDir)
-	if filepath.Base(root) != "spaces" {
-		return ports
-	}
-	used := map[int]bool{}
-	if siblings, err := os.ReadDir(root); err == nil {
-		for _, sibling := range siblings {
-			if !sibling.IsDir() {
-				continue
-			}
-			for _, name := range []string{"agent.yaml", "settings.yaml"} {
-				b, err := os.ReadFile(filepath.Join(root, sibling.Name(), name))
-				if err != nil {
-					continue
-				}
-				var p struct {
-					OAuth   int `yaml:"oauth_port"`
-					Browser int `yaml:"browser_port"`
-					Slack   int `yaml:"slack_events_port"`
-				}
-				if yaml.Unmarshal(b, &p) == nil {
-					used[p.OAuth], used[p.Browser], used[p.Slack] = true, true, true
-				}
-			}
-		}
-	}
-	for used[ports.oauth] {
-		ports.oauth++
-	}
-	for used[ports.browser] || ports.browser == ports.oauth {
-		ports.browser++
-	}
-	for used[ports.slack] || ports.slack == ports.oauth || ports.slack == ports.browser {
-		ports.slack++
-	}
-	return ports
-}
 
 // ToolEntry is one line of the `tools:` map in workspace.yaml — the single
 // operator surface for "how is this capability served". The scalar form is
@@ -324,7 +221,8 @@ var deniedMountSegments = map[string]bool{
 	"connections": true, "hermes": true, "runtime": true, "managed": true,
 	"generated": true, "cache": true, "home": true,
 	"settings.yaml": true, "workspace.yaml": true, "agent.yaml": true,
-	"scope.yaml": true, "soul.md": true,
+	"scope.yaml": true, "soul.md": true, "passports": true,
+	"profile.lock": true,
 }
 
 // deniedMountBase is the NanoClaw-style blocklist on basenames: credential
@@ -456,38 +354,6 @@ func nativeToolsEntries(names []string) map[string]ToolEntry {
 		entries[name] = ToolEntry{Via: ToolViaNative}
 	}
 	return entries
-}
-
-// LegacyFeatureTools converts schema-1 feature names into their `tools:`/
-// `ingress:` equivalents. Read uses it for migration; tests use it to write
-// fixtures in the old vocabulary without keeping the field alive.
-func LegacyFeatureTools(features []string) (map[string]ToolEntry, []string, error) {
-	tools := map[string]ToolEntry{}
-	var ingress []string
-	for _, feature := range features {
-		switch {
-		case feature == "workspace":
-		case feature == "telegram" || feature == "slack_app":
-			ingress = append(ingress, feature)
-		case featureToolMigration[feature].Via != "":
-			tools[feature] = featureToolMigration[feature]
-		default:
-			pair, ok := featureToggleMigration[feature]
-			if !ok {
-				return nil, nil, fmt.Errorf("unknown legacy feature %q", feature)
-			}
-			e := tools[pair[0]]
-			if e.Via == "" {
-				e = featureToolMigration[pair[0]]
-			}
-			if e.Tools == nil {
-				e.Tools = map[string]bool{}
-			}
-			e.Tools[pair[1]] = true
-			tools[pair[0]] = e
-		}
-	}
-	return tools, ingress, nil
 }
 
 // ToolPlan is the compiled view of the `tools:` map — what each backend
@@ -637,7 +503,7 @@ func (s Settings) FeatureList() []string { return s.featureList() }
 func (s Settings) featureList() []string {
 	out := []string{"workspace"}
 	for name, entry := range s.Tools {
-		if !entry.enabled() {
+		if !entry.enabled() || (name == "memory_vault" && !s.Has(name)) {
 			continue
 		}
 		if slices.ContainsFunc(Features, func(f Feature) bool { return f.Name == name }) {
@@ -652,6 +518,9 @@ func (s Settings) featureList() []string {
 			}
 		}
 	}
+	if s.PassportConfig != nil && s.PassportConfig.Memory.Enabled != nil && *s.PassportConfig.Memory.Enabled && !s.toolEntry("memory_vault").enabled() {
+		out = append(out, "memory_vault")
+	}
 	out = append(out, s.Ingress...)
 	slices.Sort(out)
 	return out
@@ -661,13 +530,30 @@ func (s Settings) toolToggle(name, token string) bool {
 	e := s.toolEntry(name)
 	// access: ro forces every mutation toggle off — all named toggles are
 	// write-paths, so read-only means none of them may be asserted.
-	return e.enabled() && e.Access != ToolAccessRO && e.Tools[token]
+	if !e.enabled() || e.Access == ToolAccessRO {
+		return false
+	}
+	if e.Tools[token] {
+		return true
+	}
+	// The tools passport selects members by capability id, not by toggle
+	// token: browser_act inside the include list is the same act grant the
+	// legacy tools: toggle expressed (SPEC-0095 field matrix).
+	if member, ok := toolToggleFeatureNames[name][token]; ok {
+		return slices.Contains(e.Only, member)
+	}
+	return false
 }
 
 // Has reports feature enablement in the pre-`tools:` vocabulary so every
 // render, doctor and scope call site keeps one lookup. Derived, never stored.
 func (s Settings) Has(name string) bool {
 	switch name {
+	case "memory_vault":
+		if s.PassportConfig != nil && s.PassportConfig.Memory.Enabled != nil {
+			return *s.PassportConfig.Memory.Enabled
+		}
+		return s.toolEntry(name).enabled()
 	case "workspace":
 		return true
 	case "telegram", "slack_app":

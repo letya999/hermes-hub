@@ -39,6 +39,22 @@ func TestMemoryVaultFeatureRegistered(t *testing.T) {
 	}
 }
 
+func TestPublishedMemorySwitchOverridesSelectedTool(t *testing.T) {
+	disabled := false
+	enabled := true
+	s := validSettings()
+	s.Tools = map[string]ToolEntry{"memory_vault": {Via: ToolViaNative}}
+	s.PassportConfig = &passportview.Config{Memory: passportview.Memory{Enabled: &disabled}}
+	if s.Has("memory_vault") || slices.Contains(s.FeatureList(), "memory_vault") {
+		t.Fatal("selected memory tool enabled a passport-disabled vault")
+	}
+	s.Tools = nil
+	s.PassportConfig.Memory.Enabled = &enabled
+	if !s.Has("memory_vault") || !slices.Contains(s.FeatureList(), "memory_vault") {
+		t.Fatal("passport-enabled vault still depends on tool selection")
+	}
+}
+
 // SPEC-0085 R1.1/R1.6: memory_vault is a hub-side flag, not an agent toolset —
 // enabled it still emits nothing onto the projected tool surface, and denied
 // (absent or off) it leaves zero traces in the render.
@@ -64,9 +80,8 @@ func TestMemoryVaultDeniedRendersNothing(t *testing.T) {
 	}
 }
 
-// SPEC-0085 R1.1: the vault bind-mounts at /vault read-write only while the
-// feature is on; an absent or denied feature renders no mount and no env.
-func TestRenderVaultMountGated(t *testing.T) {
+// Vault state belongs to ToolHub and never mounts into the runtime.
+func TestRuntimeNeverMountsVault(t *testing.T) {
 	dir := t.TempDir()
 	vaultMount := func(s Settings) M {
 		for _, v := range RuntimeService(s, t.TempDir(), dir)["volumes"].([]any) {
@@ -82,25 +97,18 @@ func TestRenderVaultMountGated(t *testing.T) {
 		t.Fatal("vault mount rendered without the feature")
 	}
 	s.Tools = map[string]ToolEntry{"memory_vault": {Via: ToolViaNative}}
-	mount := vaultMount(s)
-	if mount == nil {
-		t.Fatal("vault mount missing with memory_vault enabled")
+	if vaultMount(s) != nil {
+		t.Fatal("runtime mounted ToolHub-owned vault")
 	}
-	if mount["read_only"] == true {
-		t.Fatal("vault must mount read-write — the writer commits into it")
+	if env := RuntimeService(s, t.TempDir(), dir)["environment"].(M); env["HUB_VAULT"] != nil {
+		t.Fatalf("runtime received HUB_VAULT: %v", env["HUB_VAULT"])
 	}
-	if env := RuntimeService(s, t.TempDir(), dir)["environment"].(M); env["HUB_VAULT"] != "/vault" {
-		t.Fatalf("runtime env missing HUB_VAULT: %v", env["HUB_VAULT"])
-	}
-	// Under managed mode the whole-vault bind must not be shadowed by the
-	// passport skeleton's /vault/* sub-mounts — they source a different,
-	// empty tree and would hide the real vault (and RO-block the writer).
 	s.CapabilityMode = "managed"
 	s.PassportWorkspace = &passportview.Workspace{Writable: []string{"/workspace"}}
 	for _, v := range RuntimeService(s, t.TempDir(), dir)["volumes"].([]any) {
 		m := v.(M)
-		if target, _ := m["target"].(string); strings.HasPrefix(target, "/vault/") {
-			t.Fatalf("vault skeleton mount %s shadows the memory_vault bind", target)
+		if target, _ := m["target"].(string); target == "/vault" || strings.HasPrefix(target, "/vault/") {
+			t.Fatalf("runtime mounted ToolHub-owned vault at %s", target)
 		}
 	}
 }
@@ -201,17 +209,18 @@ func TestNativeFilesUntouched(t *testing.T) {
 	if err := Init(dir, "alice"); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, dir, "alice", "r-0000000000000001")
 	seedGovernance(t, dir, func(doc *api.Governance) {
 		activeToolGrant(t, doc, "alice", "native:memory_vault", time.Hour)
 	})
-	settings, err := Read(dir)
+	settings, err := ReadEffective(dir, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
 	settings.Model = "test"
 	settings.ModelURL = "http://model.invalid/v1"
 	settings.Tools = testTools("workspace", "memory_vault")
-	if err := saveSpace(dir, settings); err != nil {
+	if err := saveSpace(t, dir, settings); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "secrets.prod.env"), []byte("OPENAI_API_KEY=model\n"), 0600); err != nil {
@@ -253,19 +262,23 @@ func TestRenderCreatesVaultTree(t *testing.T) {
 	if err := Init(dir, "alice"); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, dir, "alice", "r-0000000000000001")
 	// native:memory_vault is a deny-default section like every pseudo entry:
 	// the tools wish alone is not enough — an operator grant admits it.
 	seedGovernance(t, dir, func(doc *api.Governance) {
 		activeToolGrant(t, doc, "alice", "native:memory_vault", time.Hour)
 	})
-	settings, err := Read(dir)
+	settings, err := ReadEffective(dir, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
 	settings.Model = "test"
 	settings.ModelURL = "http://model.invalid/v1"
+	// config.memory.enabled is the authoritative gate under passports: the
+	// tools wish selects the surface but the enabled flag admits the vault.
+	settings.Memory = true
 	settings.Tools = testTools("workspace", "memory_vault")
-	if err := saveSpace(dir, settings); err != nil {
+	if err := saveSpace(t, dir, settings); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "secrets.prod.env"), []byte("OPENAI_API_KEY=model\n"), 0600); err != nil {

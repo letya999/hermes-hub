@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,6 +18,7 @@ func TestInitNeverOverwrites(t *testing.T) {
 	if err := Init(d, "artem"); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, d, "artem", "r-0000000000000001")
 	p := filepath.Join(d, "secrets.prod.env")
 	before, _ := os.ReadFile(p)
 	if err := Init(d, "artem"); err == nil {
@@ -30,12 +32,14 @@ func TestInitNeverOverwrites(t *testing.T) {
 	if err != nil || secrets["OPENAI_API_KEY"] != "" {
 		t.Fatal(err)
 	}
-	s, err := Read(d)
+	s, err := ReadEffective(d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(Doctor(s, secrets)) != 3 {
-		t.Fatal("missing model credentials not reported")
+	// Under the published-revision model the only missing piece is the
+	// provider key: model/route come from the models doc.
+	if issues := Doctor(s, secrets); len(issues) != 1 || !strings.Contains(issues[0], "OPENAI_API_KEY") {
+		t.Fatalf("missing model credentials not reported: %v", issues)
 	}
 }
 func TestValidation(t *testing.T) {
@@ -83,9 +87,10 @@ func TestRenderAllFeatures(t *testing.T) {
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, d, "me", "r-0000000000000001")
 	writeSSHConfig(t, d)      // the all-features render includes ssh; it fails closed without a config
 	writeExposureConfig(t, d) // same contract for the exposure family
-	s, _ := Read(d)
+	s, _ := ReadEffective(d, "prod")
 	s.Model = "test"
 	s.ModelURL = "http://host.docker.internal:8317/v1"
 	s.GoogleEmail = "me@example.org"
@@ -93,8 +98,16 @@ func TestRenderAllFeatures(t *testing.T) {
 	s.DraftsURL = "http://host.docker.internal:8766/mcp"
 	s.MemoryProvider = "hindsight"
 	s.MemoryProviderURL = "http://hindsight.invalid:8888"
+	// Under the passport model the vault flag is config.memory.enabled —
+	// memory_vault/knowledge_ui/memory_provider wishes gate on it.
+	s.Memory = true
 	var featureNames []string
 	for _, f := range Features {
+		if f.Name == "meet" {
+			// meet needs plugin support sealed under managed mode — it is
+			// denied by construction, not merely unselected.
+			continue
+		}
 		featureNames = append(featureNames, f.Name)
 	}
 	s.Tools, s.Ingress = testTools(featureNames...), testIngress(featureNames...)
@@ -107,15 +120,23 @@ func TestRenderAllFeatures(t *testing.T) {
 	if err := os.WriteFile(exposurePath, []byte(strings.ReplaceAll(string(exposureBody), "zone: alice", "zone: me")), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := saveSpace(d, s); err != nil {
+	if err := saveSpace(t, d, s); err != nil {
 		t.Fatal(err)
 	}
-	// All-features render: grant every native section the fixture selects —
+	// All-features render: grant every section the fixture selects —
 	// native Hermes toolsets are default-deny (SPEC-0083 R3.1).
 	seedGovernance(t, d, func(doc *api.Governance) {
+		granted := map[string]bool{}
 		for name, entry := range s.Tools {
-			if entry.Via == ToolViaNative {
-				activeToolGrant(t, doc, "me", "native:"+name, time.Hour)
+			if section := s.sectionForEntry(name, entry); section != "" && !granted[section] {
+				granted[section] = true
+				activeToolGrant(t, doc, "me", section, time.Hour)
+			}
+		}
+		// Implicit hub-owned emissions carry their own sections.
+		for _, section := range []string{api.SectionHubTools, api.SectionHubBrowser, "hub:browser_guest"} {
+			if !granted[section] {
+				activeToolGrant(t, doc, "me", section, time.Hour)
 			}
 		}
 	})
@@ -126,9 +147,21 @@ func TestRenderAllFeatures(t *testing.T) {
 	if err != nil || strings.Contains(string(generatedConfig), "/opt/hub/skills") {
 		t.Fatalf("legacy skills loader path still rendered: %v %s", err, generatedConfig)
 	}
-	generatedCompose, err := os.ReadFile(filepath.Join(d, "generated", "compose.prod.yaml"))
-	if err != nil || !strings.Contains(string(generatedCompose), filepath.ToSlash(filepath.Join(d, "generated", "skills-effective"))) {
-		t.Fatalf("effective skills view mount missing: %v %s", err, generatedCompose)
+	// Under managed mode the runtime is supervisor-spawned: its mounts live
+	// in the RuntimeService spawn contract, not the compose file.
+	spawned, err := ReadEffective(d, "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, v := range RuntimeService(spawned, root, d)["volumes"].([]any) {
+		mount, _ := v.(M)
+		if mount["source"] == filepath.ToSlash(filepath.Join(d, "generated", "skills-effective")) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("effective skills view mount missing from RuntimeService: %v", RuntimeService(spawned, root, d)["volumes"])
 	}
 	if _, err := os.Stat(filepath.Join(d, "generated", "skills-effective", "deep-research-embedded", "SKILL.md")); err != nil {
 		t.Fatalf("bundled deep-research skill not materialized into the view: %v", err)
@@ -138,20 +171,18 @@ func TestRenderAllFeatures(t *testing.T) {
 	if !ok || display["busy_input_mode"] != "queue" || display["long_running_notifications"] != true {
 		t.Fatalf("long-running Telegram defaults missing: %#v", cfg["display"])
 	}
-	timeouts := cfg["timeouts"].(M)["tools"].(M)
-	if timeouts["sequential_call"] != 1800 || timeouts["concurrent_batch"] != 1800 {
-		t.Fatalf("long-running tool timeouts missing: %#v", timeouts)
-	}
 	servers := cfg["mcp_servers"].(M)
-	// Every catalog feature enabled still yields no direct upstream MCP server:
-	// connectors are served through ToolHub, never embedded in Hermes config.
+	// Under managed mode connector features never embed direct upstream MCP
+	// servers — ToolHub projects them through its own governed endpoint.
 	for _, name := range []string{"google", "github", "slack", "atlassian", "telegram_user", "desktop", "drafts"} {
 		if _, ok := servers[name]; ok {
 			t.Fatalf("direct MCP server leaked into Hermes config: %s", name)
 		}
 	}
-	if _, ok := servers["hub"]; !ok {
-		t.Fatal("platform hub tool server missing")
+	// Browser and timeout policy must survive on the published managed path.
+	timeouts := cfg["timeouts"].(M)["tools"].(M)
+	if timeouts["sequential_call"] != 1800 || timeouts["concurrent_batch"] != 1800 {
+		t.Fatalf("long-running tool timeouts missing: %#v", timeouts)
 	}
 	for _, name := range []string{"browser", "browser_guest"} {
 		server, ok := servers[name].(M)
@@ -172,25 +203,32 @@ func TestRenderAllFeatures(t *testing.T) {
 	if url := servers["browser_guest"].(M)["url"]; url != "http://browser-me:8932/mcp" {
 		t.Fatalf("guest browser must reach the isolated sidecar instance: %v", url)
 	}
-	s.Tools, s.Ingress = testTools("telegram_user", "google", "google_write"), testIngress("telegram_user", "google", "google_write")
-	if servers := Config(s)["mcp_servers"].(M); len(servers) != 1 || servers["hub"] == nil {
+	unmanaged := s
+	unmanaged.CapabilityMode = ""
+	unmanaged.Tools, unmanaged.Ingress = testTools("telegram_user", "google", "google_write"), testIngress("telegram_user", "google", "google_write")
+	if servers := Config(unmanaged)["mcp_servers"].(M); len(servers) != 1 || servers["hub"] == nil {
 		t.Fatalf("connector features produced direct MCP servers: %v", servers)
 	}
-	s.Tools, s.Ingress = testTools("gitlab"), testIngress("gitlab")
-	s.GitLabHost = "gitlab.example.com"
-	s.Environment = "prod"
-	composeEnv := Compose(s, "/source", "/space")["services"].(M)["hermes-runtime"].(M)["environment"].(M)
+	// The runtime env contract is shared between compose and the supervised
+	// spawn spec; RuntimeService carries it verbatim.
+	spawned.Tools, spawned.Ingress = testTools("gitlab"), testIngress("gitlab")
+	spawned.GitLabHost = "gitlab.example.com"
+	composeEnv := RuntimeService(spawned, root, d)["environment"].(M)
 	if composeEnv["HERMES_AGENT_NOTIFY_INTERVAL"] != "60" {
 		t.Fatalf("heartbeat interval missing: %#v", composeEnv["HERMES_AGENT_NOTIFY_INTERVAL"])
 	}
 	if composeEnv["GITLAB_HOST"] != "gitlab.example.com" {
 		t.Fatal("GitLab host missing")
 	}
-	if composeEnv["HUB_RUNTIME_GENERATION"] != "static-me-prod" {
-		t.Fatalf("static runtime generation missing: %#v", composeEnv["HUB_RUNTIME_GENERATION"])
+	// The static runtime generation is the unmanaged contract: a supervised
+	// runtime gets its dynamic generation from the supervisor at spawn.
+	unmanaged.ExecutionMode = ""
+	staticEnv := RuntimeService(unmanaged, root, d)["environment"].(M)
+	if staticEnv["HUB_RUNTIME_GENERATION"] != "static-me-prod" {
+		t.Fatalf("static runtime generation missing: %#v", staticEnv["HUB_RUNTIME_GENERATION"])
 	}
-	s.Tools, s.Ingress = testTools("atlassian"), testIngress("atlassian")
-	if _, ok := Config(s)["mcp_servers"].(M)["atlassian"]; ok {
+	unmanaged.Tools, unmanaged.Ingress = testTools("atlassian"), testIngress("atlassian")
+	if _, ok := Config(unmanaged)["mcp_servers"].(M)["atlassian"]; ok {
 		t.Fatal("direct Atlassian MCP config leaked")
 	}
 	soul := filepath.Join(d, "SOUL.md")
@@ -203,12 +241,21 @@ func TestRenderAllFeatures(t *testing.T) {
 		t.Fatal("overwrote memory")
 	}
 	compose, _ := os.ReadFile(filepath.Join(d, "compose.prod.yaml"))
-	if !strings.Contains(string(compose), "127.0.0.1:6080:6080") {
+	if !strings.Contains(string(compose), "127.0.0.1:6081:6080") {
 		t.Fatal("network boundary")
 	}
 	// docker.sock is restricted to toolhub/workload-controller; the per-service
-	// boundary is asserted in TestRenderedServiceBoundaries.
-	if !strings.Contains(string(compose), "target: /state/hermes/SOUL.md") || !strings.Contains(string(compose), "read_only: true") {
+	// boundary is asserted in TestRenderedServiceBoundaries. The effective
+	// SOUL bind is a runtime mount — under managed supervision it lives in
+	// the spawn contract.
+	soulRO := false
+	for _, v := range RuntimeService(spawned, root, d)["volumes"].([]any) {
+		mount, _ := v.(M)
+		if mount["target"] == "/state/hermes/SOUL.md" && mount["read_only"] == true {
+			soulRO = true
+		}
+	}
+	if !soulRO {
 		t.Fatal("managed SOUL is not mounted read-only")
 	}
 }
@@ -225,14 +272,15 @@ func TestRenderSplitsGatewaySecretsFromRuntime(t *testing.T) {
 	if err := Init(d, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := Read(d)
+	publishManagedRevision(t, d, "alice", "r-0000000000000001")
+	settings, err := ReadEffective(d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
 	settings.Model = "test"
 	settings.ModelURL = "http://model.invalid/v1"
 	settings.Tools, settings.Ingress = testTools("workspace", "telegram", "atlassian"), testIngress("workspace", "telegram", "atlassian")
-	if err := saveSpace(d, settings); err != nil {
+	if err := saveSpace(t, d, settings); err != nil {
 		t.Fatal(err)
 	}
 	secrets := "OPENAI_API_KEY=model\nTELEGRAM_BOT_TOKEN=bot\nTELEGRAM_ALLOWED_USERS=11\nJIRA_API_TOKEN=provider\n"
@@ -261,22 +309,19 @@ func TestRenderSplitsGatewaySecretsFromRuntime(t *testing.T) {
 	if strings.Contains(string(gatewayEnv), "OPENAI_API_KEY") || strings.Contains(string(gatewayEnv), "JIRA_API_TOKEN") {
 		t.Fatalf("provider secret leaked into gateway env: %q", gatewayEnv)
 	}
+	// A managed per-space compose carries only this space's per-space
+	// services: the supervised runtime is supervisor-spawned and the shared
+	// control plane renders in the infra space's compose, never here.
 	services := Compose(settings, root, d)["services"].(M)
-	for _, name := range []string{"hermes-runtime", "communication-hub", "cliproxy", "toolhub", "workload-controller", "credential-broker"} {
+	for _, name := range []string{"model-relay", "toolhub-relay"} {
 		if _, ok := services[name]; !ok {
-			t.Fatalf("service %s missing: %#v", name, services)
+			t.Fatalf("per-space service %s missing: %#v", name, services)
 		}
 	}
-	if services["communication-hub"].(M)["entrypoint"].([]string)[0] != "communication-hub" {
-		t.Fatalf("split services missing: %#v", services)
-	}
-	for _, raw := range services["communication-hub"].(M)["volumes"].([]any) {
-		if raw.(M)["target"] == "/state" || raw.(M)["target"] == "/workspace" {
-			t.Fatal("gateway received a user mount")
+	for _, name := range []string{"hermes-runtime", "communication-hub", "cliproxy", "toolhub", "workload-controller", "credential-broker"} {
+		if _, ok := services[name]; ok {
+			t.Fatalf("shared/supervised service %s leaked into the per-space compose", name)
 		}
-	}
-	if _, ok := services["hermes-runtime"].(M)["ports"].([]string); !ok {
-		t.Fatal("runtime service missing browser/OAuth port mapping")
 	}
 }
 
@@ -296,14 +341,15 @@ func TestRenderRoutesRelayEnvPairToGateway(t *testing.T) {
 	if err := Init(d, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := Read(d)
+	publishManagedRevision(t, d, "alice", "r-0000000000000001")
+	settings, err := ReadEffective(d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
 	settings.Model = "test"
 	settings.ModelURL = "http://model.invalid/v1"
 	settings.Tools, settings.Ingress = testTools("workspace", "telegram"), testIngress("workspace", "telegram")
-	if err := saveSpace(d, settings); err != nil {
+	if err := saveSpace(t, d, settings); err != nil {
 		t.Fatal(err)
 	}
 	secrets := "TELEGRAM_BOT_TOKEN=bot\nTELEGRAM_ALLOWED_USERS=11\nHUB_MODEL_RELAY_URL=http://relay.invalid:8318\nHUB_MODEL_RELAY_AUTH=caller-bearer\nHUB_MODEL_RELAY_ADMIN=admin-bearer\n"
@@ -341,7 +387,8 @@ func TestRenderRoutesCliproxyManagementToModelRelay(t *testing.T) {
 	if err := Init(d, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := Read(d)
+	publishManagedRevision(t, d, "alice", "r-0000000000000001")
+	settings, err := ReadEffective(d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +398,7 @@ func TestRenderRoutesCliproxyManagementToModelRelay(t *testing.T) {
 	settings.CapabilityProfileID = "p"
 	settings.CapabilityGeneration = 1
 	settings.Tools, settings.Ingress = testTools("workspace", "telegram"), testIngress("workspace", "telegram")
-	if err := saveSpace(d, settings); err != nil {
+	if err := saveSpace(t, d, settings); err != nil {
 		t.Fatal(err)
 	}
 	docs := managedDocs("alice")
@@ -575,9 +622,14 @@ func TestComposeMountsPerPrincipalSkillStores(t *testing.T) {
 	}
 }
 
-// saveSpace keeps the historical test helper name; the canonical pair
-// writer lives next to readSpace.
-func saveSpace(dir string, settings Settings) error { return WriteSpace(dir, settings) }
+// saveSpace keeps the historical test helper name: mutating a space's
+// configuration now means publishing a new revision, the same way space
+// apply does — the helper renders the Settings into the six docs.
+func saveSpace(t *testing.T, dir string, settings Settings) error {
+	t.Helper()
+	publishManagedDocs(t, dir, settings.User, fmt.Sprintf("r-%013x", time.Now().UnixNano()), settingsToDocs(settings))
+	return nil
+}
 
 func TestComposeMountsModelRelayAdminsWhenPresent(t *testing.T) {
 	t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", "http://host.docker.internal:8765")
@@ -918,6 +970,9 @@ func TestSupervisedUnmanagedSpaceWiresAgentExec(t *testing.T) {
 	if len(aliases) != 2 || aliases[0] != "toolhub-control" || aliases[1] != "toolhub-alice" || services["communication-hub"].(M)["environment"].(M)["HUB_TOOLHUB_URL"] != "http://toolhub-control:8090" {
 		t.Fatal("gateway supervisor control URL lacks its matching Docker DNS alias")
 	}
+	if got := services["communication-hub"].(M)["environment"].(M)["HUB_ENVIRONMENT"]; got != "prod" {
+		t.Fatalf("gateway rights requests lost their environment: %v", got)
+	}
 	s2 := s
 	s2.ExecutionMode = ""
 	s2.SupervisorURL = ""
@@ -972,7 +1027,8 @@ func TestSlackEventsPortCustomDevAndCollision(t *testing.T) {
 	if err := Init(dir, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	if err := saveSpace(dir, Settings{Schema: 3, User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("workspace", "slack_app"), Ingress: testIngress("workspace", "slack_app"), Memory: true}); err != nil {
+	publishManagedRevision(t, dir, "alice", "r-0000000000000001")
+	if err := saveSpace(t, dir, Settings{Schema: 3, User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools("workspace", "slack_app"), Ingress: testIngress("workspace", "slack_app"), Memory: true}); err != nil {
 		t.Fatal(err)
 	}
 	dev, err := ReadEnvironment(dir, "dev")
@@ -1051,13 +1107,14 @@ func TestRenderWiresToolHubEndpointAndHealsSoulStub(t *testing.T) {
 	if err := Init(d, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := Read(d)
+	publishManagedRevision(t, d, "alice", "r-0000000000000001")
+	settings, err := ReadEffective(d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
 	settings.Model = "test"
 	settings.ModelURL = "http://model.invalid/v1"
-	if err := saveSpace(d, settings); err != nil {
+	if err := saveSpace(t, d, settings); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte("OPENAI_API_KEY=model\n"), 0600); err != nil {
@@ -1186,13 +1243,14 @@ func TestRenderMountsImmutableEffectiveConfig(t *testing.T) {
 	if err := Init(d, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := Read(d)
+	publishManagedRevision(t, d, "alice", "r-0000000000000001")
+	settings, err := ReadEffective(d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
 	settings.Model = "test"
 	settings.ModelURL = "http://model.invalid/v1"
-	if err := saveSpace(d, settings); err != nil {
+	if err := saveSpace(t, d, settings); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte("OPENAI_API_KEY=model\n"), 0600); err != nil {
@@ -1208,12 +1266,17 @@ func TestRenderMountsImmutableEffectiveConfig(t *testing.T) {
 	if !strings.Contains(string(effective), "http://toolhub:8090/mcp") {
 		t.Fatalf("materialized config missing toolhub server: %q", effective)
 	}
-	compose, err := os.ReadFile(filepath.Join(d, "generated", "compose.prod.yaml"))
-	if err != nil {
-		t.Fatal(err)
+	// The immutable config mount is a runtime mount — under managed
+	// supervision it lives in the spawn contract, not compose.
+	found := false
+	for _, v := range RuntimeService(settings, root, d)["volumes"].([]any) {
+		mount, _ := v.(M)
+		if mount["read_only"] == true && strings.HasSuffix(fmt.Sprint(mount["source"]), "hermes-effective.prod.yaml") && mount["target"] == "/state/hermes/config.yaml" {
+			found = true
+		}
 	}
-	if !strings.Contains(string(compose), "hermes-effective.prod.yaml") || !strings.Contains(string(compose), "/state/hermes/config.yaml") {
-		t.Fatalf("immutable config mount missing from compose: %q", compose)
+	if !found {
+		t.Fatalf("immutable config mount missing from RuntimeService: %v", RuntimeService(settings, root, d)["volumes"])
 	}
 }
 
@@ -1254,16 +1317,10 @@ func TestBrowserCapabilityReadOnlyByDefault(t *testing.T) {
 
 func TestBrowserGuestReservedAndMountsPerUser(t *testing.T) {
 	d := t.TempDir()
-	if err := Init(d, "alice"); err != nil {
-		t.Fatal(err)
-	}
-	workspacePath := filepath.Join(d, "workspace.yaml")
-	body, _ := os.ReadFile(workspacePath)
-	body = append(body, []byte("mcp:\n    browser_guest:\n        url: https://evil.invalid/mcp\n")...)
-	if err := os.WriteFile(workspacePath, body, 0600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Read(d); err == nil {
+	docs := managedDocs("alice")
+	docs["tools"] += "connectors:\n  browser_guest: {url: \"https://evil.invalid/mcp\"}\n"
+	publishManagedDocs(t, d, "alice", "r-0123456789abcdef", docs)
+	if _, err := ReadEffective(d, "prod"); err == nil {
 		t.Fatal("user MCP claimed the reserved browser_guest name")
 	}
 }
@@ -1279,7 +1336,8 @@ func TestManagedRenderProvisionsSkillsStoreDir(t *testing.T) {
 	if err := Init(dir, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := Read(dir)
+	publishManagedRevision(t, dir, "alice", "r-0000000000000001")
+	settings, err := ReadEffective(dir, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1289,7 +1347,7 @@ func TestManagedRenderProvisionsSkillsStoreDir(t *testing.T) {
 	settings.CapabilityProfileID = "p"
 	settings.CapabilityGeneration = 1
 	settings.Tools, settings.Ingress = testTools("workspace"), testIngress("workspace")
-	if err := saveSpace(dir, settings); err != nil {
+	if err := saveSpace(t, dir, settings); err != nil {
 		t.Fatal(err)
 	}
 	publishManagedRevision(t, dir, "alice", "r-0123456789abcdef")
@@ -1321,7 +1379,8 @@ func TestManagedRenderNoProxyCoversBrowserSidecar(t *testing.T) {
 	if err := Init(dir, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := Read(dir)
+	publishManagedRevision(t, dir, "alice", "r-0000000000000001")
+	settings, err := ReadEffective(dir, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1331,7 +1390,7 @@ func TestManagedRenderNoProxyCoversBrowserSidecar(t *testing.T) {
 	settings.CapabilityProfileID = "p"
 	settings.CapabilityGeneration = 1
 	settings.Tools, settings.Ingress = testTools("browser", "media=toolhub"), testIngress("browser")
-	if err := saveSpace(dir, settings); err != nil {
+	if err := saveSpace(t, dir, settings); err != nil {
 		t.Fatal(err)
 	}
 	docs := managedDocs("alice")
@@ -1405,6 +1464,63 @@ func TestComposeMountsPerPrincipalSkillStoresForToolhub(t *testing.T) {
 		if !effMount[want] || !storeMount[want] {
 			t.Fatalf("principal %q missing mounts: eff=%v store=%v", want, effMount, storeMount)
 		}
+	}
+}
+
+func TestComposeMountsPublishedPassportsPerPrincipalForToolhub(t *testing.T) {
+	spacesRoot := filepath.Join(t.TempDir(), "spaces")
+	dir := filepath.Join(spacesRoot, "alice")
+	for _, user := range []string{"alice", "bob"} {
+		member := filepath.Join(spacesRoot, user)
+		docs := managedDocs(user)
+		docs["config"] += "memory: {enabled: true}\n"
+		publishManagedDocs(t, member, user, "r-0123456789abcdef", docs)
+		if err := os.MkdirAll(filepath.Join(spacesRoot, user, "vault"), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	carol := filepath.Join(spacesRoot, "carol")
+	disabled := managedDocs("carol")
+	disabled["config"] += "memory: {enabled: false}\n"
+	publishManagedDocs(t, carol, "carol", "r-0123456789abcdef", disabled)
+	if err := os.MkdirAll(filepath.Join(carol, "vault"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	s := Settings{Schema: 1, Environment: "dev", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
+	toolhub := Compose(s, dir, dir)["services"].(M)["toolhub"].(M)
+	if toolhub["environment"].(M)["HUB_PASSPORTS_BY_PRINCIPAL"] != "/passports-by" {
+		t.Fatal("ToolHub lacks the per-principal passport root")
+	}
+	if toolhub["environment"].(M)["HUB_VAULTS_BY_PRINCIPAL"] != "/vaults-by" {
+		t.Fatal("ToolHub lacks the per-principal vault root")
+	}
+	mounted := map[string]bool{}
+	vaultMounted := map[string]string{}
+	for _, raw := range toolhub["volumes"].([]any) {
+		volume := raw.(M)
+		if target, ok := volume["target"].(string); ok && strings.HasPrefix(target, "/passports-by/") {
+			if volume["read_only"] != true {
+				t.Fatalf("passport mount is writable: %v", volume)
+			}
+			mounted[target] = true
+		}
+		if target, ok := volume["target"].(string); ok && strings.HasPrefix(target, "/vaults-by/") {
+			if volume["read_only"] == true {
+				t.Fatalf("ToolHub vault writer received a read-only mount: %v", volume)
+			}
+			vaultMounted[target] = volume["source"].(string)
+		}
+	}
+	for _, user := range []string{"alice", "bob"} {
+		if !mounted["/passports-by/"+user+"/passports"] {
+			t.Fatalf("missing passport mount for %s: %v", user, mounted)
+		}
+		if got := vaultMounted["/vaults-by/"+user]; got != filepath.ToSlash(filepath.Join(spacesRoot, user, "vault")) {
+			t.Fatalf("vault mount for %s = %q", user, got)
+		}
+	}
+	if vaultMounted["/vaults-by/carol"] != "" {
+		t.Fatal("disabled memory gained a ToolHub vault mount")
 	}
 }
 

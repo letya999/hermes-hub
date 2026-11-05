@@ -118,14 +118,14 @@ var capRights = map[string]string{
 	"browser.read":    "browser.read",
 	"browser.act":     "browser.act",
 	"browser.capture": "browser.capture",
-	// platform — pinned self layer; tool_call keeps the honest tools.select
+	// platform — pinned self layer; tool_call keeps the honest tools.use
 	// right (its admission replays the callee's own requires at the PEP).
 	"platform.guide":     "platform.guide",
 	"platform.status":    "platform.status",
 	"platform.bootstrap": "platform.bootstrap",
 	"platform.usage":     "platform.usage",
 	"platform.search":    "tools.list",
-	"platform.call":      "tools.select",
+	"platform.call":      "tools.use",
 }
 
 // connectorRights maps the curated connectors-family members onto

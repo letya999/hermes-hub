@@ -67,23 +67,6 @@ func writeToolManifest(dir string, s Settings) error {
 	return nil
 }
 
-// readToolManifest loads the manifest written by the previous render; a
-// missing file means the space predates manifests (nothing to migrate).
-func readToolManifest(dir, environment string) (*ToolManifest, error) {
-	body, err := os.ReadFile(filepath.Join(dir, "generated", "tool-manifest."+environment+".json"))
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	var manifest ToolManifest
-	if err := json.Unmarshal(body, &manifest); err != nil {
-		return nil, fmt.Errorf("tool manifest: %w", err)
-	}
-	return &manifest, nil
-}
-
 // migrateToolhubBindings rolls this space's active ToolHub bindings and
 // capability profiles onto the policy version this render computed
 // (SPEC-0053 R1.2): a rights-hash change must not orphan grants the operator

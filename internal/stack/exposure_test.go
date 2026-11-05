@@ -6,8 +6,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-
-	"gopkg.in/yaml.v3"
 )
 
 func writeExposureConfig(t *testing.T, dir string) {
@@ -36,7 +34,7 @@ endpoints:
 }
 
 func TestExposureFeatureWiring(t *testing.T) {
-	tools, ingress, err := LegacyFeatureTools([]string{"exposure"})
+	tools, ingress, err := featureTools([]string{"exposure"})
 	if err != nil {
 		t.Fatalf("legacy mapping: %v", err)
 	}
@@ -73,38 +71,43 @@ func TestExposureRenderMountsConfigAndWiresEnv(t *testing.T) {
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, d, "me", "r-0000000000000001")
 	writeExposureConfig(t, d)
-	s, err := Read(d)
+	s, err := ReadEffective(d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.Model = "test"
 	s.ModelURL = "http://host.docker.internal:8317/v1"
 	s.Tools, s.Ingress = testTools("exposure"), testIngress("exposure")
-	if err = WriteSpace(d, s); err != nil {
+	if err = saveSpace(t, d, s); err != nil {
 		t.Fatal(err)
 	}
 	if err = RenderEnvironment(d, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
-	compose, err := os.ReadFile(filepath.Join(d, "generated", "compose.prod.yaml"))
-	if err != nil {
-		t.Fatal(err)
+	// Managed runtimes are supervisor-spawned: the exposure state dir is a
+	// read-only mount in the RuntimeService spawn contract, not the compose
+	// file.
+	found := false
+	for _, v := range RuntimeService(s, root, d)["volumes"].([]any) {
+		m := v.(M)
+		if m["target"] == "/state/exposure" {
+			if m["read_only"] != true {
+				t.Fatal("exposure config mount must be read-only")
+			}
+			found = true
+		}
 	}
-	text := string(compose)
-	if !strings.Contains(text, "target: /state/exposure") || !strings.Contains(text, "read_only: true") {
-		t.Fatal("exposure config mount missing or writable")
+	if !found {
+		t.Fatal("exposure config mount missing from RuntimeService")
 	}
-	hermes, err := os.ReadFile(filepath.Join(d, "generated", "hermes.prod.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var rendered map[string]any
-	if err = yaml.Unmarshal(hermes, &rendered); err != nil {
-		t.Fatal(err)
-	}
-	hub := rendered["mcp_servers"].(map[string]any)["hub"].(map[string]any)
-	env := hub["env"].(map[string]any)
+	// The HUB_EXPOSURE_CONFIG env lives on the unmanaged `hub` stdio server —
+	// managed execution reaches the exposure config through ToolHub.
+	unmanaged := s
+	unmanaged.CapabilityMode = ""
+	hub := Config(unmanaged)["mcp_servers"].(M)["hub"].(M)
+	env := hub["env"].(M)
 	if env["HUB_EXPOSURE_CONFIG"] != "/state/exposure/config.yaml" {
 		t.Fatalf("exposure env wrong: %v", env)
 	}
@@ -122,7 +125,8 @@ func TestExposureRenderFailsClosedAndDoctor(t *testing.T) {
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
-	s, err := Read(d)
+	publishManagedRevision(t, d, "me", "r-0000000000000001")
+	s, err := ReadEffective(d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +134,7 @@ func TestExposureRenderFailsClosedAndDoctor(t *testing.T) {
 	s.ModelURL = "http://host.docker.internal:8317/v1"
 	s.Tools, s.Ingress = testTools("exposure"), testIngress("exposure")
 	s.SpaceDir = d
-	if err = WriteSpace(d, s); err != nil {
+	if err = saveSpace(t, d, s); err != nil {
 		t.Fatal(err)
 	}
 	if err = RenderEnvironment(d, root, "prod"); err == nil {

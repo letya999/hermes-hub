@@ -9,23 +9,16 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/letya999/hermes-hub/internal/media"
 	passportview "github.com/letya999/hermes-hub/internal/passportview"
 )
 
-// The published passport revision is the imperative authority (SPEC-0092):
-// where it speaks — identity, runtime config, model routes, workspace
-// boundaries, the toolset surface — it overrides the legacy editable files.
-// Fields the six-doc contract does not govern (image_gen, web backends,
-// compression, capability wiring) keep coming from agent.yaml, so a managed
-// space may slim its legacy files to exactly those keys.
-//
-// applyPassport is an overlay, not a replace — but never a silent one:
-// once a current pointer exists the revision must load, or the space is a
-// failed publish and every view refuses rather than downgrading to legacy.
+// The published passport revision is the imperative authority for managed
+// spaces. The legacy overlay below exists only for spaces without a published
+// revision while the six-file cutover is in progress.
 
 // ErrRevisionUnloadable marks the fail-closed class: a published-revision
-// pointer exists but the revision cannot be decoded. Migration catches it
-// to re-derive from the editable files — every other reader refuses.
+// pointer exists but the revision cannot be decoded.
 var ErrRevisionUnloadable = errors.New("published revision does not load")
 
 func (s *Settings) applyPassport(dir string) error {
@@ -51,12 +44,31 @@ func (s *Settings) applyEffective(eff passportview.Effective) error {
 	if org := eff.Stack.Identity.Organization; org != "" {
 		s.Organization = org
 	}
+	if kind := eff.Stack.Identity.Kind; kind != "" {
+		s.ScopeKind = kind
+	}
+	if eff.Stack.Identity.Infra != nil {
+		s.Infra = eff.Stack.Identity.Infra
+	}
 	s.PassportConfig = &eff.Config
 	if tz := eff.Config.Runtime.Timezone; tz != "" {
 		s.Timezone = tz
 	}
 	if engine := eff.Config.Runtime.Context.Compaction; engine != "" {
 		s.Context.Compact.Engine = engine
+	}
+	if len(eff.Config.Runtime.Context.Engines) > 0 {
+		s.Context.Compact.Engines = slices.Clone(eff.Config.Runtime.Context.Engines)
+	}
+	if goals := eff.Config.Runtime.Goals; goals != (passportview.RuntimeGoals{}) {
+		s.Goals = ContextGoals{Engine: goals.Engine, Judge: goals.Judge, MaxTurns: goals.MaxTurns}
+	}
+	if len(eff.Config.Runtime.Compression) > 0 {
+		s.Compression = eff.Config.Runtime.Compression
+	}
+	if aux := eff.Config.Runtime.Auxiliary; aux != (passportview.RuntimeAuxiliary{}) {
+		s.SummaryModel = aux.SummaryModel
+		s.JudgeModel = aux.JudgeModel
 	}
 	if p := eff.Config.Ports["oauth-callback"]; p != 0 {
 		s.OAuthPort = p
@@ -66,6 +78,9 @@ func (s *Settings) applyEffective(eff passportview.Effective) error {
 	}
 	if p := eff.Config.Ports["slack-events"]; p != 0 {
 		s.SlackEventsPort = p
+	}
+	if p := eff.Config.Ports["knowledge-ui"]; p != 0 {
+		s.UIPort = p
 	}
 	// Channels are the ingress transports; a named channel is its own ingress.
 	if len(eff.Config.Channels) > 0 {
@@ -83,15 +98,31 @@ func (s *Settings) applyEffective(eff passportview.Effective) error {
 	if backend := eff.Config.Memory.Backend; backend != "" {
 		s.Honcho = backend == "honcho"
 	}
+	s.MemoryRollupTime = eff.Config.Memory.NightlyRollup
+	s.MemoryLeafRetentionDays = eff.Config.Memory.LeafRetentionDays
+	s.MemoryLeafFoldBytes = eff.Config.Memory.LeafFoldBytes
+	if p := eff.Config.Memory.Provider; p != nil {
+		s.MemoryProvider = p.Adapter
+		s.MemoryProviderURL = p.URL
+		s.MemoryProviderTokenEnv = p.TokenEnv
+	}
+	if h := eff.Config.Hosting; h != nil {
+		s.Hosting = HostingSettings{Slots: h.Slots, Image: h.Image, Runtime: h.Runtime}
+	}
+	if g := eff.Config.ImageGen; g != (media.ImageGen{}) {
+		s.ImageGen = g
+	}
 	if def := eff.Models.Default; def != "" {
 		s.Model = def
 	}
-	if _, ok := eff.Stack.Services["model-relay"]; ok {
-		s.ModelURL = "http://model-relay:8318/v1"
-	}
+	s.ModelURL = "http://model-relay:8318/v1"
 	// The workspace boundary is imperative too: the mount plan and file
 	// admission read the published writable/read_only/mounts verbatim.
 	s.PassportWorkspace = &eff.Workspace
+	// The sandbox bootstrap contract is owner-authored too: the goal text and
+	// the retry counter ride the workspace passport into the runtime env.
+	s.Workspace.Goal = eff.Workspace.Goal
+	s.Workspace.BootstrapRevision = eff.Workspace.BootstrapRevision
 	// Workspace mounts: the imperative mount contract, source and mode intact.
 	if len(eff.Workspace.Mounts) > 0 {
 		mounts := make([]Mount, 0, len(eff.Workspace.Mounts))
@@ -129,6 +160,24 @@ func (s *Settings) applyEffective(eff passportview.Effective) error {
 	if tools := passportTools(eff.Tools); tools != nil {
 		s.Tools = tools
 	}
+	// Declared raw-MCP upstreams: the connectors map is the managed home of
+	// the retired workspace mcp: surface — user_mcp/org_mcp toolset
+	// admission plus the same governance section decide whether it renders.
+	if len(eff.Tools.Connectors) > 0 {
+		s.MCP = make(map[string]MCPServer, len(eff.Tools.Connectors))
+		for name, c := range eff.Tools.Connectors {
+			server := MCPServer{URL: c.URL, Command: c.Command, Args: c.Args, Env: c.Env, Headers: c.Headers, Auth: c.Auth, Timeout: c.Timeout}
+			if c.Tools != nil {
+				server.Tools = &MCPTools{Include: c.Tools.Include, Exclude: c.Tools.Exclude}
+			}
+			s.MCP[name] = server
+		}
+		s.PassportConnectors = true
+	}
+	if eff.Tools.Binding != nil {
+		s.CapabilityProfileID = eff.Tools.Binding.ProfileID
+		s.CapabilityGeneration = eff.Tools.Binding.Generation
+	}
 	return nil
 }
 
@@ -151,6 +200,10 @@ func passportTools(t passportview.Tools) map[string]ToolEntry {
 			entry := ToolEntry{Via: ToolViaToolHub}
 			name = strings.TrimPrefix(strings.TrimPrefix(name, "hub:"), "native:")
 			switch {
+			case ts.Via == "off":
+				// An explicit deny projects as `via: off` — org narrowing
+				// and self-deny consumers read it verbatim.
+				entry.Via = ToolViaOff
 			case ts.Via == "native":
 				entry.Via = ToolViaNative
 			case strings.HasPrefix(ts.Via, "mcp:") && mcpConnectors[name]:
@@ -158,11 +211,18 @@ func passportTools(t passportview.Tools) map[string]ToolEntry {
 				// no s.MCP definition is needed to rebind them.
 				entry.Via = ToolViaMCP
 				entry.Server = strings.TrimPrefix(ts.Via, "mcp:")
-			case ts.Via == "mcp" || ts.Via == "mcp-raw" || strings.HasPrefix(ts.Via, "mcp:"):
-				// Raw-MCP and unreviewed connector entries bind to server
-				// definitions (s.MCP) the passport contract does not carry —
-				// one toolset cannot rebuild per-server entries, so the slim
-				// operator file keeps them as extensions.
+			case ts.Via == "mcp-raw":
+				// Uncurated raw surfaces (user_mcp/org_mcp): the toolset
+				// admits the declared connectors map as its member set —
+				// one mcp-raw selection per declared server so the
+				// selector/governance paths keep naming each.
+				for server := range t.Connectors {
+					out[server] = ToolEntry{Via: ToolViaMCPRaw, Server: server}
+				}
+				continue
+			case ts.Via == "mcp" || strings.HasPrefix(ts.Via, "mcp:"):
+				// Unreviewed connector entries bind to server definitions
+				// the reviewed surface does not carry.
 				continue
 			}
 			if ts.Access == "read" {

@@ -35,6 +35,7 @@ var gatewayOwnedEnv = map[string]bool{
 // Config is the channel-neutral gateway configuration. Telegram is v1's adapter.
 type Config struct {
 	Supervised         bool   `yaml:"-"`
+	Environment        string `yaml:"-"`
 	OrganizationID     string `yaml:"organization_id"`
 	Users              []User `yaml:"users"`
 	Groups             Groups `yaml:"groups,omitempty"`
@@ -499,6 +500,7 @@ func fillChannelSecrets(config *Config) {
 	}
 	config.TTSUploadURL = os.Getenv("HUB_TTS_UPLOAD_URL")
 	config.ToolHubURL = strings.TrimRight(strings.TrimSpace(os.Getenv("HUB_TOOLHUB_URL")), "/")
+	config.Environment = strings.TrimSpace(os.Getenv("HUB_ENVIRONMENT"))
 }
 
 func parseSlackLinks(raw string) []SlackLink {

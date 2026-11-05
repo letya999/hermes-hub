@@ -20,10 +20,7 @@ import (
 func TestMemoryReplayCLI(t *testing.T) {
 	fx, srv := memorytest.NewHindsightFixture(t)
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "settings.yaml"),
-		[]byte("schema: 1\nuser: alice\nmodel: test\noauth_port: 8000\nbrowser_port: 6080\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeManagedSpaceDocs(t, dir, "alice", nil)
 	vaultDir := filepath.Join(dir, "vault")
 	if err := vault.Ensure(vaultDir); err != nil {
 		t.Fatal(err)

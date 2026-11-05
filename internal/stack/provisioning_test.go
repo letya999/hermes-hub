@@ -3,6 +3,7 @@ package stack
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -20,25 +21,25 @@ func writeProfileFile(t *testing.T, dir, name, body string) {
 	}
 }
 
-// R9.1: extends chains resolve leaf→root with org override per level; the
-// platform default falls back to legacy policies/*-default.yaml and then to
-// the embedded fleet templates.
+// R9.1: extends chains resolve leaf→root with org override per level; a
+// level's passports/<name>.yaml overrides the parent level per passport, and
+// the embedded passport templates are the final fallback.
 func TestResolveProfileExtendsChainAndOrgOverride(t *testing.T) {
 	root := t.TempDir()
 	space := filepath.Join(root, "spaces", "alice")
 	orgDir := filepath.Join(root, "acme")
 
 	writeProfileFile(t, filepath.Join(root, "policies", "profiles", "default"), "profile.yaml", "description: base\nversion: 1\n")
-	writeProfileFile(t, filepath.Join(root, "policies", "profiles", "default"), "agent.yaml", "user: x\n# platform-default-agent\n")
-	writeProfileFile(t, filepath.Join(root, "policies", "profiles", "default"), "workspace.yaml", "tools: {}\n# platform-default-workspace\n")
+	writeProfileFile(t, filepath.Join(root, "policies", "profiles", "default", "passports"), "tools.yaml", "kind: tools\n# platform-default-tools\n")
+	writeProfileFile(t, filepath.Join(root, "policies", "profiles", "default", "passports"), "workspace.yaml", "kind: workspace\n# platform-default-workspace\n")
 	writeProfileFile(t, filepath.Join(root, "policies", "profiles", "analyst"), "profile.yaml", "description: analyst\nextends: default\nversion: 2\n")
-	writeProfileFile(t, filepath.Join(root, "policies", "profiles", "analyst"), "workspace.yaml", "tools: {}\n# platform-analyst-workspace\n")
+	writeProfileFile(t, filepath.Join(root, "policies", "profiles", "analyst", "passports"), "workspace.yaml", "kind: workspace\n# platform-analyst-workspace\n")
 	writeProfileFile(t, filepath.Join(root, "policies", "profiles", "analyst"), "SOUL.md", "# analyst persona\n")
 
 	// Org profile of the same name overrides the platform level; its own
 	// extends still chains into the platform default for missing files.
 	writeProfileFile(t, filepath.Join(orgDir, "profiles", "analyst"), "profile.yaml", "description: org analyst\nextends: default\nversion: 3\n")
-	writeProfileFile(t, filepath.Join(orgDir, "profiles", "analyst"), "workspace.yaml", "tools: {}\n# org-analyst-workspace\n")
+	writeProfileFile(t, filepath.Join(orgDir, "profiles", "analyst", "passports"), "workspace.yaml", "kind: workspace\n# org-analyst-workspace\n")
 
 	p, err := resolveProvisioningProfile(space, orgDir, "analyst")
 	if err != nil {
@@ -47,37 +48,25 @@ func TestResolveProfileExtendsChainAndOrgOverride(t *testing.T) {
 	if p.Name != "analyst" || p.Version != 3 {
 		t.Fatalf("meta: %+v", p)
 	}
-	if string(p.Workspace) != "tools: {}\n# org-analyst-workspace\n" {
-		t.Fatalf("workspace: %q", p.Workspace)
+	if string(p.Passports["workspace"]) != "kind: workspace\n# org-analyst-workspace\n" {
+		t.Fatalf("workspace passport: %q", p.Passports["workspace"])
 	}
-	if string(p.Agent) != "user: x\n# platform-default-agent\n" {
-		t.Fatalf("agent: %q", p.Agent)
+	if string(p.Passports["tools"]) != "kind: tools\n# platform-default-tools\n" {
+		t.Fatalf("tools passport: %q", p.Passports["tools"])
 	}
 	if string(p.Soul) != "# analyst persona\n" {
 		t.Fatalf("soul: %q", p.Soul)
 	}
 
-	// Legacy fleet override still wins for the default profile's agent.yaml
-	// when no profiles/default dir provides one.
-	root2 := t.TempDir()
-	space2 := filepath.Join(root2, "spaces", "bob")
-	writeProfileFile(t, filepath.Join(root2, "policies"), "agent-default.yaml", "user: x\n# legacy-agent\n")
-	writeProfileFile(t, filepath.Join(root2, "policies"), "workspace-default.yaml", "tools: {}\n# legacy-workspace\n")
-	p2, err := resolveProvisioningProfile(space2, "", "default")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(p2.Agent) != "user: x\n# legacy-agent\n" || string(p2.Workspace) != "tools: {}\n# legacy-workspace\n" {
-		t.Fatalf("legacy fallback: agent=%q workspace=%q", p2.Agent, p2.Workspace)
-	}
-
-	// Bare root: embedded defaults remain the last fallback.
+	// Bare root: embedded passport templates remain the last fallback.
 	p3, err := resolveProvisioningProfile(filepath.Join(t.TempDir(), "spaces", "c"), "", "default")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(p3.Agent) == 0 || len(p3.Workspace) == 0 {
-		t.Fatal("embedded fallback missing")
+	for _, name := range []string{"stack", "config", "models", "workspace", "tools", "grants"} {
+		if len(p3.Passports[name]) == 0 {
+			t.Fatalf("embedded fallback missing passport %s", name)
+		}
 	}
 }
 
@@ -108,6 +97,12 @@ func TestMembersLegacyScalarAndMapForms(t *testing.T) {
 	if err := InitEnvironmentWithOrganization(space, "alice", "prod", "acme"); err != nil {
 		t.Fatal(err)
 	}
+	orgDocs := func(user string) map[string]string {
+		d := managedDocs(user)
+		d["stack"] = strings.Replace(d["stack"], "identity: {user: "+user, "identity: {user: "+user+", organization: acme", 1)
+		return d
+	}
+	publishManagedDocs(t, space, "alice", "r-0000000000000001", orgDocs("alice"))
 	o, err := ReadOrganization(filepath.Join(orgDir, "settings.yaml"))
 	if err != nil {
 		t.Fatal(err)
@@ -133,6 +128,7 @@ func TestMembersLegacyScalarAndMapForms(t *testing.T) {
 	if err := InitEnvironmentWithOrganization(bobSpace, "bob", "prod", "acme"); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedDocs(t, bobSpace, "bob", "r-0000000000000001", orgDocs("bob"))
 	s2, err := ReadEnvironment(bobSpace, "prod")
 	if err != nil {
 		t.Fatal(err)
@@ -164,7 +160,7 @@ func TestInitUsesOrgDefaultProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeProfileFile(t, filepath.Join(orgDir, "profiles", "analyst"), "profile.yaml", "description: analyst\nversion: 4\n")
-	writeProfileFile(t, filepath.Join(orgDir, "profiles", "analyst"), "workspace.yaml", "tools: {}\n# analyst-wishes\n")
+	writeProfileFile(t, filepath.Join(orgDir, "profiles", "analyst", "passports"), "workspace.yaml", "kind: workspace\nwritable: [/workspace]\n# analyst-wishes\n")
 	o, _ := ReadOrganization(filepath.Join(orgDir, "settings.yaml"))
 	o.DefaultProfile = "analyst"
 	saveYAML(t, filepath.Join(orgDir, "settings.yaml"), o)
@@ -172,8 +168,9 @@ func TestInitUsesOrgDefaultProfile(t *testing.T) {
 	if err := InitEnvironmentWithOrganization(space, "alice", "prod", "acme"); err != nil {
 		t.Fatal(err)
 	}
-	workspace, _ := os.ReadFile(filepath.Join(space, "workspace.yaml"))
-	if string(workspace) != "tools: {}\n# analyst-wishes\n" {
+	publishManagedRevision(t, space, "alice", "r-0000000000000001")
+	workspace, _ := os.ReadFile(filepath.Join(space, "passports", "workspace.yaml"))
+	if string(workspace) != "kind: workspace\nwritable: [/workspace]\n# analyst-wishes\n" {
 		t.Fatalf("profile workspace not stamped: %q", workspace)
 	}
 	lock, err := os.ReadFile(filepath.Join(space, "profile.lock"))
@@ -193,8 +190,8 @@ func TestMemberProfileOverridesDefault(t *testing.T) {
 	if err := InitOrganization(orgDir, "acme", "alice"); err != nil {
 		t.Fatal(err)
 	}
-	writeProfileFile(t, filepath.Join(orgDir, "profiles", "analyst"), "workspace.yaml", "tools: {}\n# analyst-wishes\n")
-	writeProfileFile(t, filepath.Join(orgDir, "profiles", "lead"), "workspace.yaml", "tools: {}\n# lead-wishes\n")
+	writeProfileFile(t, filepath.Join(orgDir, "profiles", "analyst", "passports"), "workspace.yaml", "kind: workspace\nwritable: [/workspace]\n# analyst-wishes\n")
+	writeProfileFile(t, filepath.Join(orgDir, "profiles", "lead", "passports"), "workspace.yaml", "kind: workspace\nwritable: [/workspace]\n# lead-wishes\n")
 	o, _ := ReadOrganization(filepath.Join(orgDir, "settings.yaml"))
 	o.DefaultProfile = "analyst"
 	o.Members["bob"] = OrgMember{Role: "member", Profile: "lead"}
@@ -203,8 +200,9 @@ func TestMemberProfileOverridesDefault(t *testing.T) {
 	if err := InitEnvironmentWithOrganization(space, "bob", "prod", "acme"); err != nil {
 		t.Fatal(err)
 	}
-	workspace, _ := os.ReadFile(filepath.Join(space, "workspace.yaml"))
-	if string(workspace) != "tools: {}\n# lead-wishes\n" {
+	publishManagedRevision(t, space, "bob", "r-0000000000000001")
+	workspace, _ := os.ReadFile(filepath.Join(space, "passports", "workspace.yaml"))
+	if string(workspace) != "kind: workspace\nwritable: [/workspace]\n# lead-wishes\n" {
 		t.Fatalf("member profile not stamped: %q", workspace)
 	}
 	lock, _ := os.ReadFile(filepath.Join(space, "profile.lock"))
@@ -217,12 +215,13 @@ func TestMemberProfileOverridesDefault(t *testing.T) {
 func TestInitExplicitProfile(t *testing.T) {
 	root := t.TempDir()
 	space := filepath.Join(root, "spaces", "carol")
-	writeProfileFile(t, filepath.Join(root, "policies", "profiles", "dev"), "workspace.yaml", "tools: {}\n# dev-wishes\n")
+	writeProfileFile(t, filepath.Join(root, "policies", "profiles", "dev", "passports"), "workspace.yaml", "kind: workspace\nwritable: [/workspace]\n# dev-wishes\n")
 	if err := InitEnvironmentProvision(space, "carol", "prod", "dev"); err != nil {
 		t.Fatal(err)
 	}
-	workspace, _ := os.ReadFile(filepath.Join(space, "workspace.yaml"))
-	if string(workspace) != "tools: {}\n# dev-wishes\n" {
+	publishManagedRevision(t, space, "carol", "r-0000000000000001")
+	workspace, _ := os.ReadFile(filepath.Join(space, "passports", "workspace.yaml"))
+	if string(workspace) != "kind: workspace\nwritable: [/workspace]\n# dev-wishes\n" {
 		t.Fatalf("explicit profile not stamped: %q", workspace)
 	}
 	lock, _ := os.ReadFile(filepath.Join(space, "profile.lock"))
@@ -242,6 +241,7 @@ func TestInitProfileLayoutDirs(t *testing.T) {
 	if err := InitEnvironmentProvision(space, "dave", "prod", "dev"); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, space, "dave", "r-0000000000000001")
 	for _, rel := range []string{"workspace/notes", "workspace/incoming"} {
 		info, err := os.Stat(filepath.Join(space, rel))
 		if err != nil || !info.IsDir() {
@@ -264,10 +264,14 @@ func TestInitMaterializesWorkspaceTree(t *testing.T) {
 	root := t.TempDir()
 	space := filepath.Join(root, "spaces", "alice")
 	dir := filepath.Join(root, "policies", "profiles", "dev")
-	writeProfileFile(t, dir, "workspace.yaml", "tools: {}\n")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
 	if err := InitEnvironmentProvision(space, "alice", "prod", "dev"); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, space, "alice", "r-0000000000000001")
+	publishManagedRevision(t, space, "alice", "r-0123456789abcdef")
 	for _, rel := range []string{
 		"workspace/inbox/people", "workspace/inbox/services",
 		"workspace/work", "workspace/projects",
@@ -364,6 +368,7 @@ func TestEffectiveSoulLayerOrder(t *testing.T) {
 	if err := InitEnvironmentWithOrganization(space, "alice", "prod", "acme"); err != nil {
 		t.Fatal(err)
 	}
+	publishOrgRevision(t, space, "alice", "acme", "r-0000000000000001")
 	if err := os.WriteFile(filepath.Join(space, "SOUL.md"), []byte("# alice notes\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -400,6 +405,7 @@ func TestProfileSoulLayersForPlainSpace(t *testing.T) {
 	if err := InitEnvironmentProvision(space, "alice", "prod", "ops"); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, space, "alice", "r-0000000000000001")
 	s, err := ReadEnvironment(space, "prod")
 	if err != nil {
 		t.Fatal(err)
@@ -501,6 +507,7 @@ func TestProfileSkillsPinAndEligibility(t *testing.T) {
 	if err := InitEnvironmentProvision(space, "alice", "prod", "ops"); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, space, "alice", "r-0000000000000001")
 	s, err := ReadEnvironment(space, "prod")
 	if err != nil {
 		t.Fatal(err)
@@ -524,6 +531,31 @@ func TestProfileSkillsPinAndEligibility(t *testing.T) {
 	writeProfileFile(t, profileDir, "skills.yaml", "skills: [locked]\n")
 	if _, err := MaterializeEffectiveSkills(space, s); err == nil {
 		t.Fatal("ineligible pinned skill rendered silently")
+	}
+}
+
+// SyncOrganizationMembers treats a space with authored passports as
+// existing — the retired scope.yaml marker is gone after the cutover.
+func TestSyncOrganizationMembersDetectsExistingSpace(t *testing.T) {
+	root := t.TempDir()
+	orgDir := filepath.Join(root, "organizations", "acme")
+	spacesRoot := filepath.Join(root, "spaces")
+	if err := InitOrganization(orgDir, "acme", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if err := InitEnvironmentWithOrganization(filepath.Join(spacesRoot, "alice"), "alice", "prod", "acme"); err != nil {
+		t.Fatal(err)
+	}
+	report, err := SyncOrganizationMembers(orgDir, "acme", spacesRoot, "prod", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	existing, _ := report["existing"].([]string)
+	if !slices.Contains(existing, "alice") {
+		t.Fatalf("initialized space not reported as existing: %v", report)
+	}
+	if created, _ := report["created"].([]string); slices.Contains(created, "alice") {
+		t.Fatalf("existing space re-provisioned: %v", report)
 	}
 }
 
@@ -567,6 +599,7 @@ func TestOrgMemberCannotPullUnassignedProfile(t *testing.T) {
 	if err := InitEnvironmentWithOrganization(space, "alice", "prod", "acme"); err != nil {
 		t.Fatal(err)
 	}
+	publishOrgRevision(t, space, "alice", "acme", "r-0000000000000001")
 	// alice rewrites her lock to claim the admin profile.
 	if err := os.WriteFile(filepath.Join(space, "profile.lock"), []byte("profile: admin\nversion: 1\n"), 0600); err != nil {
 		t.Fatal(err)
@@ -602,18 +635,19 @@ func TestProfileApplyUsesOrgOverlay(t *testing.T) {
 	saveYAML(t, filepath.Join(orgDir, "settings.yaml"), o)
 	profileDir := filepath.Join(orgDir, "profiles", "staff")
 	writeProfileFile(t, profileDir, "profile.yaml", "version: 1\n")
-	writeProfileFile(t, profileDir, "workspace.yaml", "tools: {}\n# staff v1\n")
+	writeProfileFile(t, filepath.Join(profileDir, "passports"), "workspace.yaml", "writable: [/workspace]\nread_only: [/config]\n# staff v1\n")
 	if err := InitEnvironmentWithOrganization(space, "alice", "prod", "acme"); err != nil {
 		t.Fatal(err)
 	}
-	writeProfileFile(t, profileDir, "workspace.yaml", "tools: {}\n# staff v2\n")
+	publishOrgRevision(t, space, "alice", "acme", "r-0000000000000001")
+	writeProfileFile(t, filepath.Join(profileDir, "passports"), "workspace.yaml", "writable: [/workspace]\nread_only: [/config]\n# staff v2\n")
 	writeProfileFile(t, profileDir, "profile.yaml", "version: 2\n")
 	report, err := UpdateProvisioningProfile(space, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	workspace, _ := os.ReadFile(filepath.Join(space, "workspace.yaml"))
-	if string(workspace) != "tools: {}\n# staff v2\n" {
+	workspace, _ := os.ReadFile(filepath.Join(space, "passports", "workspace.yaml"))
+	if string(workspace) != "writable: [/workspace]\nread_only: [/config]\n# staff v2\n" {
 		t.Fatalf("org profile update not applied: %q report=%v", workspace, report)
 	}
 }

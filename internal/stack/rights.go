@@ -92,6 +92,11 @@ var settingsFieldRights = map[string]string{
 	"PassportServices":  "",
 	"PassportConfig":    "",
 	"PassportWorkspace": "",
+	// ScopeKind is the immutable identity stamp projected from the published
+	// revision — grants cannot move it, and PassportConnectors is provenance
+	// metadata (which s.MCP entries the passport declared), not a grant.
+	"ScopeKind":          "",
+	"PassportConnectors": "",
 	// The evaluated tool-governance view is itself a grant fence: its decisions
 	// decide which sections may render and which are capped to read-only.
 	"gov": "Governance",

@@ -116,6 +116,48 @@ func TestPlanTargetsConfigOwners(t *testing.T) {
 	}
 }
 
+func TestPlanMemorySwitchStopsExistingWorkers(t *testing.T) {
+	services := map[string]passportview.ServiceSpec{
+		"hermes-runtime": {Mode: "supervised"}, "communication-hub": {Mode: "shared"}, "toolhub": {Mode: "shared"},
+	}
+	actions := Plan([]passport.Change{ch("config.memory.enabled", "toolhub", passport.EffectRecreate)}, services)
+	want := map[string]Kind{"communication-hub": Recreate, "toolhub": Recreate, "hermes-runtime": Respawn}
+	if len(actions) != len(want) {
+		t.Fatalf("memory switch left a worker on old config: %+v", actions)
+	}
+	for _, action := range actions {
+		if want[action.Target] != action.Kind || !slices.Contains(action.Paths, "config.memory.enabled") {
+			t.Fatalf("unexpected memory switch action: %+v", action)
+		}
+	}
+}
+
+func TestPlanHostingChangesReconcileHostingConsumers(t *testing.T) {
+	services := map[string]passportview.ServiceSpec{"hosting": {Mode: "per-space"}, "hermes-runtime": {Mode: "supervised"}}
+	actions := Plan([]passport.Change{
+		ch("config.hosting.slots", "compose", passport.EffectRecreate),
+		ch("config.hosting.image", "compose", passport.EffectRecreate),
+		ch("config.hosting.runtime", "compose", passport.EffectRecreate),
+	}, services)
+	got := map[string]Kind{}
+	for _, action := range actions {
+		got[action.Target] = action.Kind
+	}
+	if len(got) != 2 || got["hosting"] != Recreate || got["hosting-controller"] != Recreate {
+		t.Fatalf("hosting apply targeted wrong consumers: %+v", actions)
+	}
+	removed := ch("config.hosting.image", "compose", passport.EffectRecreate)
+	removed.After = ""
+	actions = Plan([]passport.Change{removed}, services)
+	got = map[string]Kind{}
+	for _, action := range actions {
+		got[action.Target] = action.Kind
+	}
+	if got["hosting"] != Recreate || got["*"] != Remove || got["hosting-controller"] != "" {
+		t.Fatalf("hosting image reset did not remove controller: %+v", actions)
+	}
+}
+
 // A port/channel leaf whose owner the new revision does not declare is
 // dead config — nothing renders the container, so the plan must not
 // schedule a recreate for it (the compose call would fail on a phantom
@@ -146,13 +188,28 @@ func TestPlanSkipsRecreateForUndeclaredOwners(t *testing.T) {
 
 func TestRunRollbackOnFailure(t *testing.T) {
 	var calls []string
+	recreateCalls, failingHookCalls := 0, 0
 	h := Handlers{
-		Rebuild:  func(s string) error { calls = append(calls, "rebuild:"+s); return nil },
-		Recreate: func(s string) error { calls = append(calls, "recreate:"+s); return errors.New("compose exploded") },
-		Respawn:  func() error { calls = append(calls, "respawn"); return nil },
+		Rebuild: func(s string) error { calls = append(calls, "rebuild:"+s); return nil },
+		Recreate: func(s string) error {
+			calls = append(calls, "recreate:"+s)
+			recreateCalls++
+			if recreateCalls == 1 {
+				return errors.New("compose exploded")
+			}
+			return nil
+		},
+		Respawn: func() error { calls = append(calls, "respawn"); return nil },
 		Live: map[string]func() error{
 			"toolhub-projection": func() error { calls = append(calls, "live:toolhub"); return nil },
-			"zz-failing-hook":    func() error { return errors.New("hook exploded") },
+			"zz-failing-hook": func() error {
+				calls = append(calls, "live:failing")
+				failingHookCalls++
+				if failingHookCalls == 1 {
+					return errors.New("hook exploded")
+				}
+				return nil
+			},
 		},
 	}
 	actions := Plan([]passport.Change{
@@ -168,6 +225,9 @@ func TestRunRollbackOnFailure(t *testing.T) {
 	if !slices.Contains(calls, "pointer:prev") {
 		t.Fatalf("current pointer never repointed: %v", calls)
 	}
+	if calls[len(calls)-1] != "recreate:hermes-runtime" {
+		t.Fatalf("failed recreate was not replayed against prior revision: %v", calls)
+	}
 	// Live runs last: an earlier live failure re-runs the hooks that
 	// already applied after the pointer is restored.
 	calls = nil
@@ -179,8 +239,26 @@ func TestRunRollbackOnFailure(t *testing.T) {
 	if !rep.RolledBack || rep.Failed == nil || rep.Failed.Target != "zz-failing-hook" {
 		t.Fatalf("expected live failure + rollback: %+v", rep)
 	}
-	if len(calls) != 3 || calls[0] != "live:toolhub" || calls[1] != "pointer:prev" || calls[2] != "live:toolhub" {
+	if len(calls) != 5 || calls[0] != "live:toolhub" || calls[1] != "live:failing" || calls[2] != "pointer:prev" || calls[3] != "live:failing" || calls[4] != "live:toolhub" {
 		t.Fatalf("applied live hook not re-run after rollback: %v", calls)
+	}
+}
+
+func TestRunPartialServiceRollbackIsNotSuccess(t *testing.T) {
+	var calls []string
+	h := Handlers{
+		Recreate: func(target string) error {
+			calls = append(calls, target)
+			if len(calls) == 2 {
+				return errors.New("restore failed")
+			}
+			return nil
+		},
+		Live: map[string]func() error{"failure": func() error { return errors.New("apply failed") }},
+	}
+	rep := Run([]Action{{Kind: Recreate, Target: "hosting"}, {Kind: Live, Target: "failure"}}, h, func() error { return nil }, "new", "old")
+	if rep.RolledBack || rep.Failed == nil || len(rep.Steps) < 4 || rep.Steps[len(rep.Steps)-1].Status != "failed" {
+		t.Fatalf("partial hosting restore claimed success: %+v", rep)
 	}
 }
 
@@ -208,8 +286,13 @@ func TestRunFailureRollbackErrorReported(t *testing.T) {
 	}
 	actions := Plan([]passport.Change{ch("stack.identity.user", "pending:stack", passport.EffectRebuild)}, allServices)
 	rep := Run(actions, h, func() error { return errors.New("disk full") }, "r-1", "r-0")
-	if !rep.RolledBack || rep.Failed == nil {
+	if rep.Failed == nil {
 		t.Fatalf("expected failure: %+v", rep)
+	}
+	// A failed rollback is not a rollback: RolledBack stays false so callers
+	// never report a clean restore while state diverges.
+	if rep.RolledBack {
+		t.Fatalf("failed rollback reported as rolled back: %+v", rep)
 	}
 	last := rep.Steps[len(rep.Steps)-1]
 	if last.Detail == "" || rep.Steps[len(rep.Steps)-2].Status != "failed" {
