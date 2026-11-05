@@ -134,7 +134,7 @@ func TestRememberSearchableSameDay(t *testing.T) {
 	if _, err := tls.memoryCard(Input{Op: "remember", Text: "vervain tisane before bed"}); err != nil {
 		t.Fatal(err)
 	}
-	out, err := tls.memorySearch(Input{Query: "vervain tisane"})
+	out, err := tls.testSearch(Input{Query: "vervain tisane"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +244,7 @@ func TestForgetExcludedEverywhere(t *testing.T) {
 	writeRunScopeProv(t, root, "private", "owner")
 	tls := &Tools{VaultDir: root}
 	// Sanity: the entry is searchable before the strike.
-	out, err := tls.memorySearch(Input{Query: "earl grey"})
+	out, err := tls.testSearch(Input{Query: "earl grey"})
 	if err != nil || len(out["hits"].([]map[string]any)) == 0 {
 		t.Fatalf("fixture entry not searchable: %v %v", out, err)
 	}
@@ -255,7 +255,7 @@ func TestForgetExcludedEverywhere(t *testing.T) {
 	if out["status"] != "ok" {
 		t.Fatalf("forget status %v", out)
 	}
-	out, err = tls.memorySearch(Input{Query: "earl grey"})
+	out, err = tls.testSearch(Input{Query: "earl grey"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -295,7 +295,7 @@ func TestForgottenVisibleOnlyInHistory(t *testing.T) {
 	if _, err := tls.memoryCard(Input{Op: "forget", ID: "turn-1"}); err != nil {
 		t.Fatal(err)
 	}
-	out, err := tls.memorySearch(Input{Query: "earl grey", History: true})
+	out, err := tls.testSearch(Input{Query: "earl grey", History: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,7 +319,7 @@ func TestReingestionInert(t *testing.T) {
 		ObservedAt: time.Date(2026, 4, 19, 15, 0, 0, 0, time.UTC)}, "telegram"); err != nil {
 		t.Fatal(err)
 	}
-	out, err := tls.memorySearch(Input{Query: "earl grey"})
+	out, err := tls.testSearch(Input{Query: "earl grey"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +337,7 @@ func TestForgetCardStruck(t *testing.T) {
 	if _, err := tls.memoryCard(Input{Op: "remember", Name: "vervain-card", Text: "vervain tisane recipe"}); err != nil {
 		t.Fatal(err)
 	}
-	out, err := tls.memorySearch(Input{Query: "vervain"})
+	out, err := tls.testSearch(Input{Query: "vervain"})
 	if err != nil || len(out["hits"].([]map[string]any)) == 0 {
 		t.Fatalf("card not searchable: %v %v", out, err)
 	}
@@ -352,7 +352,7 @@ func TestForgetCardStruck(t *testing.T) {
 	if !strings.Contains(string(card), "status: superseded") {
 		t.Fatalf("card not struck: %q", card)
 	}
-	out, err = tls.memorySearch(Input{Query: "vervain"})
+	out, err = tls.testSearch(Input{Query: "vervain"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -527,8 +527,8 @@ func TestCommitAttribution(t *testing.T) {
 // the memory.write capability and dispatches through Call like every tool.
 func TestMemoryCardCatalog(t *testing.T) {
 	def := HubToolsDefinition()
-	if def.Version != "12.0.0" {
-		t.Fatalf("catalog version = %s, want 12.0.0", def.Version)
+	if def.Version != "13.0.0" {
+		t.Fatalf("catalog version = %s, want 13.0.0", def.Version)
 	}
 	var spec *struct {
 		found, write bool

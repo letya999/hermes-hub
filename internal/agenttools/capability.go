@@ -58,7 +58,7 @@ func HubToolsDefinition() api.ToolDefinition {
 	def := api.ToolDefinition{
 		Schema:       api.SchemaVersion,
 		DefinitionID: HubToolsDefinitionID,
-		Version:      "12.0.0",
+		Version:      "13.0.0",
 		Transport:    api.AgentTools,
 		Source:       api.DefinitionSource{},
 		Workload: api.WorkloadPolicy{
@@ -99,7 +99,7 @@ func HubToolsDefinition() api.ToolDefinition {
 			// ---- memory (2): the vault's read/write contract (SPEC-0085
 			// R6). The stamped-run gate and zone guard live in the executor,
 			// never in arguments.
-			tool("memory_search", "memory.search", "memory.search", "Search the owner's memory vault when config.memory.enabled and memory.search are active: BM25 over daily leaves, cards and summaries with link-graph expansion. Arguments: query (required), limit, from, to (YYYY-MM-DD bounds on entry date), kinds (entry kinds), history:true includes superseded/forgotten. Every hit carries an evidence ref file:line-end — cite it, never answer from memory alone; status=degraded|unavailable is reported honestly.", api.ReadEffect, use("read", "memory"), str("query"), intArg("limit", false), opt("from"), opt("to"), arrArg("kinds", false), boolArg("history", false)),
+			remote("memory_search", "memory.search", "memory.search", "Search the owner's memory vault when config.memory.enabled and memory.search are active: BM25 over daily leaves, cards and summaries with link-graph expansion. Arguments: query (required), limit, from, to (YYYY-MM-DD bounds on entry date), kinds (entry kinds), history:true includes superseded/forgotten. Every hit carries an evidence ref file:line-end — cite it, never answer from memory alone; status=degraded|unavailable is reported honestly.", api.ReadEffect, "runtime:toolhub", str("query"), intArg("limit", false), opt("from"), opt("to"), arrArg("kinds", false), boolArg("history", false)),
 			tool("memory_card", "memory.write", "memory.remember", "Write the owner's memory only when config.memory.enabled and memory.remember are active. Ops: remember (text[, name]) lands an inbox note searchable the same day; fact (card, text[, evidence]) appends a dated evidence line; truth (card, text) replaces the card's Compiled Truth through a hash-checked write; merge (card, to) folds one card into another; forget (id or card) soft-removes an entry or card from search, recall and promotion while keeping git history. merge/forget run only on a live owner-provenance turn — no argument grants that. Writes need a stamped private run; status=denied|invalid is honest, invalid carries errors and the corrected shape.", api.WriteEffect, use("write", "memory"), str("op"), opt("text"), opt("card"), opt("name"), opt("to"), opt("id"), opt("evidence"), arrArg("tags", false)),
 
 			// ---- documents (5)

@@ -68,6 +68,8 @@ func (g *Gateway) execPlatform(ctx context.Context, auth identity.Envelope, tool
 		return body(g.platformUsage(auth, api.ArgString(arguments, "period")))
 	case "tool_search":
 		return body(g.toolsList(auth, api.ArgString(arguments, "query"), api.ArgString(arguments, "name"), 0))
+	case "memory_search":
+		return body(g.memorySearch(auth, arguments))
 	case "tool_call":
 		name := api.ArgString(arguments, "tool")
 		nested, _ := arguments["arguments"].(map[string]any)

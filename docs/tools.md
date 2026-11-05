@@ -1,6 +1,6 @@
 ---
 description: Complete agent-visible tool surface — catalog r5 families, pinned platform layer, connector_* facade, effect/grant requirements, delivery directives.
-last_verified: "2026-11-05"
+last_verified: "2026-11-06"
 ---
 
 # Tool surface
@@ -172,7 +172,8 @@ word where one exists):
 | browser | `browser_open`, `browser_read`, `browser_act`, `browser_capture` | connector:browser | curated calls over the browser connector; `profile` selects user or guest profile |
 | models | `model_list`, `model_switch` | runtime:models | routes, ladders and status from the models passport; switch stays inside the granted ladder; without a hub models plane calls return `unavailable` |
 | sessions | `session_list`, `session_search`, `session_read`, `session_switch`, `session_edit`, `session_remove` | runtime:sessions | own-space sessions only; `session_edit` action archive\|restore; without a session store calls return `unavailable` |
-| memory | `memory_search`, `memory_card` | handler:memory | the memory vault contract (SPEC-0085): `memory_search` is BM25+graph over daily leaves, cards and summaries — hits carry `file:line` evidence refs, never answer from memory alone; `memory_card` is the only write path (ops remember\|fact\|truth\|merge\|forget) and needs a stamped private run; `merge`/`forget` additionally need owner provenance — no argument grants either; `root=vault` file writes still refuse the governed `memory/`/`runtime/` zones — use `memory_card` |
+| memory | `memory_search` | runtime:toolhub | the memory vault contract (SPEC-0085/M32): BM25+graph over daily leaves, cards and summaries — hits carry `file:line` evidence refs, never answer from memory alone; ToolHub resolves the caller's enrolled vault from the verified identity envelope — no argument, root or header selects user, vault or audience; requires config.memory.enabled plus a live private run stamped by the supervisor |
+| memory | `memory_card` | handler:memory | the only write path (ops remember\|fact\|truth\|merge\|forget) — needs a stamped private run; `merge`/`forget` additionally need owner provenance — no argument grants either; `root=vault` file writes still refuse the governed `memory/`/`runtime/` zones — use `memory_card` |
 
 ## memory — the vault contract
 

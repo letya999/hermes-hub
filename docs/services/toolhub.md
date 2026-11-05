@@ -1,6 +1,6 @@
 ---
 description: toolhub — capability gateway: tool admission, governance evaluation, connector lifecycle, audit ledger.
-last_verified: 2026-11-05
+last_verified: 2026-11-06
 ---
 
 # toolhub
@@ -63,6 +63,16 @@ tool call crosses. Listens `0.0.0.0:8090`, host-bound to `127.0.0.1:8090`.
   unconfigured or erroring authority denies. The gate sits inside
   `AuthorizeProjectedCall` so direct, CLI and nested calls share it and
   every denial lands before the backend.
+- **ToolHub-owned memory search** (`memory_search.go`): `memory_search`
+  executes inside ToolHub (`runtime:toolhub` executor) — the verified
+  envelope's principal/environment resolves the vault through the #513
+  resolver, the #514 gate runs first, and the shared `internal/memory/search`
+  indexer answers with the same hit shape (evidence refs, `status`,
+  `untrusted`). Arguments and headers never select user, vault or audience;
+  an unresolvable vault reports `status=unavailable` with no local fallback.
+  The in-runtime `handler:memory` path no longer serves `memory_search`
+  (`memory_card` still owns vault writes) and the runtime container carries
+  no vault mount.
 - **Multi-tenant auth**: `toolhub-tokens.json` (`HUB_TOOLHUB_TOKENS_FILE`)
   maps sibling-space bearers to full identity envelopes; render/supervisor
   write each sibling's `HUB_RUNTIME_AUTH` in place (same inode → live bind
