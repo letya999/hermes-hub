@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -21,22 +20,27 @@ func newLocaleEngine(t *testing.T, delivered *[]commodel.Delivery) (*Engine, str
 			t.Fatal(err)
 		}
 	}
-	mu := &sync.Mutex{}
-	e := NewEngine(root, mu, Deps{
-		WriteJSONAtomic: func(path string, value any) error {
-			b, err := json.Marshal(value)
-			if err != nil {
-				return err
-			}
-			return os.WriteFile(path, b, 0600)
+	e := NewEngine(root, Deps{
+		Storage: StoragePort{
+			WriteJSONAtomic: func(path string, value any) error {
+				b, err := json.Marshal(value)
+				if err != nil {
+					return err
+				}
+				return os.WriteFile(path, b, 0600)
+			},
 		},
-		ChannelFor:        func(string) OccurrenceChannel { return stubChannel{} },
-		EnqueueJob:        func(j commodel.Job) (bool, error) { return true, nil },
-		EnqueueDelivery:   func(d commodel.Delivery) error { *delivered = append(*delivered, d); return nil },
-		NormalizeDelivery: func(d commodel.Delivery) (commodel.Delivery, error) { return d, nil },
-		Signal:            func() {},
-		ListTasks:         func(string) ([]commodel.Task, error) { return nil, nil },
-		LangOf:            func(string) locale.Lang { return locale.LangES },
+		ChannelFor: func(string) OccurrenceChannel { return stubChannel{} },
+		Dispatch: DispatchPort{
+			EnqueueJob: func(j commodel.Job) (bool, error) { return true, nil },
+			ListTasks:  func(string) ([]commodel.Task, error) { return nil, nil },
+		},
+		Delivery: DeliveryPort{
+			EnqueueDelivery:   func(d commodel.Delivery) error { *delivered = append(*delivered, d); return nil },
+			NormalizeDelivery: func(d commodel.Delivery) (commodel.Delivery, error) { return d, nil },
+		},
+		Signal: func() {},
+		LangOf: func(string) locale.Lang { return locale.LangES },
 	})
 	return e, root
 }
@@ -96,7 +100,7 @@ func TestRoutineNoticesLocalized(t *testing.T) {
 
 	// Blocked-schedule notice.
 	item := commodel.Schedule{ScheduleID: "bad-one", Envelope: env, Channel: "telegram_bot"}
-	if err := e.BlockScheduleLocked(&item, "bad cron", now); err != nil {
+	if err := e.BlockSchedule(&item, "bad cron", now); err != nil {
 		t.Fatal(err)
 	}
 	last := delivered[len(delivered)-1].Text

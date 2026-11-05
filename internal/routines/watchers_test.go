@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -16,7 +15,6 @@ import (
 )
 
 type watcherTestDeps struct {
-	mu         *sync.Mutex
 	jobs       []commodel.Job
 	deliveries []commodel.Delivery
 	mappings   []string
@@ -29,30 +27,36 @@ func newWatcherTest(t *testing.T) (*Engine, *watcherTestDeps, string) {
 			t.Fatal(err)
 		}
 	}
-	d := &watcherTestDeps{mu: &sync.Mutex{}}
-	e := NewEngine(root, d.mu, Deps{
-		WriteJSONAtomic: func(path string, value any) error {
-			b, err := json.Marshal(value)
-			if err != nil {
-				return err
-			}
-			return os.WriteFile(path, b, 0600)
+	d := &watcherTestDeps{}
+	e := NewEngine(root, Deps{
+		Storage: StoragePort{
+			WriteJSONAtomic: func(path string, value any) error {
+				b, err := json.Marshal(value)
+				if err != nil {
+					return err
+				}
+				return os.WriteFile(path, b, 0600)
+			},
 		},
 		ChannelFor: func(string) OccurrenceChannel { return stubChannel{} },
-		LoadMapping: func(id string) (commodel.JobMapping, error) {
-			d.mappings = append(d.mappings, id)
-			return commodel.JobMapping{}, os.ErrNotExist
+		Dispatch: DispatchPort{
+			LoadMapping: func(id string) (commodel.JobMapping, error) {
+				d.mappings = append(d.mappings, id)
+				return commodel.JobMapping{}, os.ErrNotExist
+			},
+			EnqueueJob: func(j commodel.Job) (bool, error) {
+				d.jobs = append(d.jobs, j)
+				return true, nil
+			},
 		},
-		EnqueueJob: func(j commodel.Job) (bool, error) {
-			d.jobs = append(d.jobs, j)
-			return true, nil
+		Delivery: DeliveryPort{
+			EnqueueDelivery: func(dv commodel.Delivery) error {
+				d.deliveries = append(d.deliveries, dv)
+				return nil
+			},
+			NormalizeDelivery: func(dv commodel.Delivery) (commodel.Delivery, error) { return dv, nil },
 		},
-		EnqueueDelivery: func(dv commodel.Delivery) error {
-			d.deliveries = append(d.deliveries, dv)
-			return nil
-		},
-		NormalizeDelivery: func(dv commodel.Delivery) (commodel.Delivery, error) { return dv, nil },
-		Signal:            func() {},
+		Signal: func() {},
 	})
 	return e, d, root
 }
@@ -124,7 +128,7 @@ func TestProbeFailureNotifiesOncePerError(t *testing.T) {
 		t.Fatalf("repeated same error must stay silent, got %d deliveries", len(d.deliveries))
 	}
 	settle("ok", nil, 2)
-	st, err := e.LoadWatchStateLocked("w-fail")
+	st, err := e.LoadWatchState("w-fail")
 	if err != nil || st.LastError != "" {
 		t.Fatalf("success must clear last_error, got %q err=%v", st.LastError, err)
 	}
@@ -147,7 +151,7 @@ func TestProbeEmptyValueFails(t *testing.T) {
 	if got := readOccurrence(t, root, o).State; got != "failed" {
 		t.Fatalf("empty value must fail the occurrence, got %q", got)
 	}
-	st, err := e.LoadWatchStateLocked("w-empty")
+	st, err := e.LoadWatchState("w-empty")
 	if err != nil {
 		t.Fatal(err)
 	}

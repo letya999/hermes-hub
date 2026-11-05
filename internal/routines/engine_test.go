@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 	"time"
 
@@ -30,22 +29,25 @@ func TestEngineDispatchSeam(t *testing.T) {
 		}
 	}
 	var enqueued []commodel.Job
-	var mu sync.Mutex
-	e := NewEngine(root, &mu, Deps{
-		WriteJSONAtomic: func(path string, value any) error {
-			b, err := json.Marshal(value)
-			if err != nil {
-				return err
-			}
-			return os.WriteFile(path, b, 0600)
+	e := NewEngine(root, Deps{
+		Storage: StoragePort{
+			WriteJSONAtomic: func(path string, value any) error {
+				b, err := json.Marshal(value)
+				if err != nil {
+					return err
+				}
+				return os.WriteFile(path, b, 0600)
+			},
 		},
 		ChannelFor: func(string) OccurrenceChannel { return stubChannel{} },
-		LoadMapping: func(string) (commodel.JobMapping, error) {
-			return commodel.JobMapping{}, os.ErrNotExist
-		},
-		EnqueueJob: func(j commodel.Job) (bool, error) {
-			enqueued = append(enqueued, j)
-			return true, nil
+		Dispatch: DispatchPort{
+			LoadMapping: func(string) (commodel.JobMapping, error) {
+				return commodel.JobMapping{}, os.ErrNotExist
+			},
+			EnqueueJob: func(j commodel.Job) (bool, error) {
+				enqueued = append(enqueued, j)
+				return true, nil
+			},
 		},
 	})
 	job := commodel.Job{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), UserID: "alice", ActorID: "alice", ScopeID: "user:alice", OrganizationID: "personal", Channel: "telegram_bot", ChatID: 11, Text: "scheduled work"}

@@ -712,7 +712,7 @@ func TestSpoolDBRoutineRecordsOnRows(t *testing.T) {
 		t.Fatalf("assignment lost: %+v", item)
 	}
 	s2.mu.Lock()
-	watch, err := s2.rt.LoadWatchStateLocked("w-1")
+	watch, err := s2.rt.LoadWatchState("w-1")
 	s2.mu.Unlock()
 	if err != nil {
 		t.Fatal(err)
@@ -721,7 +721,7 @@ func TestSpoolDBRoutineRecordsOnRows(t *testing.T) {
 		t.Fatalf("watch baseline lost: %+v", watch)
 	}
 	s2.mu.Lock()
-	digest, err := s2.rt.LoadDigestCursorLocked("sched-9")
+	digest, err := s2.rt.LoadDigestCursor("sched-9")
 	s2.mu.Unlock()
 	if err != nil {
 		t.Fatal(err)

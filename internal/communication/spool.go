@@ -257,24 +257,47 @@ func openSpool(root string, create bool) (result *Spool, err error) {
 			return nil, err
 		}
 	}
-	s.rt = routines.NewEngine(root, &s.mu, routines.Deps{
-		Hooks:             scheduleDraftHooks,
-		EnqueueJob:        s.enqueueLocked,
-		EnqueueDelivery:   s.enqueueDeliveryLocked,
-		LoadMapping:       s.loadMappingLocked,
-		LoadTask:          s.loadTaskLocked,
-		ListTasks:         s.listTasksLocked,
-		TopicTask:         s.topicTaskLocked,
-		WriteDeliveryBlob: s.WriteDeliveryBlob,
-		NormalizeDelivery: normalizeDelivery,
-		WriteJSONAtomic:   s.writeJSON,
-		WriteBytes:        func(path string, body []byte) error { return s.writeBlob(path, body, false) },
-		MkdirAll:          s.mkdirOwnedClass,
-		Rename:            s.renameOwned,
-		Remove:            s.removeOwned,
-		ReadFile:          s.fsys.ReadFile,
-		ReadDir:           s.fsys.ReadDir,
-		Lstat:             s.fsys.Lstat,
+	// The engine owns its mutex now; the ports below are the owner's
+	// self-serializing callbacks. Queue admission takes s.mu inside the
+	// callback (lock order engine -> spool), while storage and record reads
+	// are already independently safe: storagebudget and the database/sql
+	// pool serialize themselves.
+	s.rt = routines.NewEngine(root, routines.Deps{
+		Hooks: scheduleDraftHooks,
+		Storage: routines.StoragePort{
+			WriteJSONAtomic: s.writeJSON,
+			WriteBytes:      func(path string, body []byte) error { return s.writeBlob(path, body, false) },
+			MkdirAll:        s.mkdirOwnedClass,
+			Rename:          s.renameOwned,
+			Remove:          s.removeOwned,
+			ReadFile:        s.fsys.ReadFile,
+			ReadDir:         s.fsys.ReadDir,
+			Lstat:           s.fsys.Lstat,
+		},
+		Dispatch: routines.DispatchPort{
+			EnqueueJob: func(j Job) (bool, error) {
+				s.mu.Lock()
+				defer s.mu.Unlock()
+				return s.enqueueLocked(j)
+			},
+			LoadMapping: s.loadMappingLocked,
+			LoadTask:    s.loadTaskLocked,
+			ListTasks:   s.listTasksLocked,
+			TopicTask:   s.topicTaskLocked,
+		},
+		Delivery: routines.DeliveryPort{
+			EnqueueDelivery: func(d Delivery) error {
+				s.mu.Lock()
+				defer s.mu.Unlock()
+				return s.enqueueDeliveryLocked(d)
+			},
+			WriteDeliveryBlob: s.WriteDeliveryBlob,
+			NormalizeDelivery: normalizeDelivery,
+		},
+		Events: routines.EventsPort{
+			ResumeEvents: s.resumeOccurrenceBatch,
+			SettleEvents: s.settleEvents,
+		},
 
 		Signal: s.signal,
 		ChannelFor: func(id string) routines.OccurrenceChannel {
@@ -283,9 +306,7 @@ func openSpool(root string, create bool) (result *Spool, err error) {
 			}
 			return channelFor(nil, id)
 		},
-		ProbeScript:  func() routines.ProbeScriptFunc { return s.probeScript },
-		ResumeEvents: s.resumeOccurrenceBatch,
-		SettleEvents: s.settleEvents,
+		ProbeScript: func() routines.ProbeScriptFunc { return s.probeScript },
 		LangOf: func(p string) locale.Lang {
 			if s.langOf != nil {
 				return s.langOf(p)
@@ -1311,7 +1332,7 @@ func (s *Spool) ClaimJob() (*Job, error) {
 		job := entry.job
 		pending := filepath.Join(s.root, "pending", name)
 		if job.AssignmentID != "" && job.AssignmentPlanRevision != 0 {
-			if _, ok := s.rt.AssignmentForWakeLocked(job.AssignmentID, job.AssignmentPlanRevision); !ok {
+			if _, ok := s.rt.AssignmentForWake(job.AssignmentID, job.AssignmentPlanRevision); !ok {
 				if err := s.updateMappingLocked(job.ID, RunOutcome{Status: "cancelled", LastEvent: "assignment.cancelled"}, "cancelled", true); err != nil {
 					return nil, err
 				}

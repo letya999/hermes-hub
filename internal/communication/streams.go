@@ -724,15 +724,16 @@ func (s *Spool) settleStreamResults(schedule Schedule, results []sourceResult, n
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	// The schedule may have been paused or re-probed while the filter ran;
 	// re-validate before admitting anything to the sink.
 	live, err = s.loadScheduleLocked(schedule.ScheduleID)
 	if err != nil || live.Revision != schedule.Revision || !streamActive(&live, now) {
+		s.mu.Unlock()
 		return nil, true
 	}
 	st, err = s.loadEventStateLocked(schedule.ScheduleID)
 	if err != nil {
+		s.mu.Unlock()
 		return nil, true
 	}
 	if len(sourceErrs) > 0 {
@@ -744,11 +745,16 @@ func (s *Spool) settleStreamResults(schedule Schedule, results []sourceResult, n
 	if filterErr != nil {
 		st.LastError = boundedWatchText(filterErr.Error())
 		_ = s.writeEventStateLocked(schedule.ScheduleID, st)
+		s.mu.Unlock()
 		return nil, true
 	}
 	if err := s.startSourceBatchLocked(&st, schedule, job, events, verdicts, seed, cursor, sourceCursors, sourceEvents, sourceErrs, now); err != nil {
+		s.mu.Unlock()
 		return nil, true
 	}
-	overflowed, err := s.applySourceBatchLocked(&st, schedule, now, authorize)
+	s.mu.Unlock()
+	// Admission runs unlocked: the engine mutators inside applySourceBatch
+	// take the engine lock, which must never be reached with s.mu held.
+	overflowed, _, err := s.applySourceBatch(&st, schedule, now, authorize)
 	return overflowed, err != nil || parseFailed+failed == len(results)
 }

@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -338,9 +337,9 @@ func TestAssignmentCommandsLocalized(t *testing.T) {
 	}
 	id := created.AssignmentID
 	g.spool.mu.Lock()
-	allowed, wakeErr := g.spool.rt.ReserveAssignmentWakeLocked(id, "localized-test-wake", time.Now(), created.Plan.Revision)
+	allowed, wakeErr := g.spool.rt.ReserveAssignmentWake(id, "localized-test-wake", time.Now(), created.Plan.Revision)
 	if wakeErr == nil && allowed {
-		wakeErr = g.spool.rt.SettleAssignmentWakeLocked(id, "localized-test-wake", created.Plan.Revision)
+		wakeErr = g.spool.rt.SettleAssignmentWake(id, "localized-test-wake", created.Plan.Revision)
 	}
 	g.spool.mu.Unlock()
 	if wakeErr != nil || !allowed {
@@ -379,7 +378,7 @@ func TestAssignmentCommandsLocalized(t *testing.T) {
 
 	// A store that cannot list — engine rooted at an invalid path — surfaces
 	// the localized unavailable reply rather than a panic.
-	g.spool.rt = routines.NewEngine("bad\x00root", &sync.Mutex{}, routines.Deps{})
+	g.spool.rt = routines.NewEngine("bad\x00root", routines.Deps{})
 	if out = g.assignmentsCommand(user, 11, locale.LangEN); !strings.Contains(out, "unavailable") {
 		t.Errorf("en list-unavailable wrong: %q", out)
 	}

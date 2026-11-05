@@ -197,14 +197,11 @@ func TestBlockNoticeGoesToOwnerHomeNotDestination(t *testing.T) {
 	if _, err := s.CreateSchedule(sched, caller, ""); err != nil {
 		t.Fatal(err)
 	}
-	s.mu.Lock()
-	item, err := s.loadScheduleLocked("home-notice")
+	item, err := s.rt.LoadSchedule("home-notice")
 	if err != nil {
-		s.mu.Unlock()
 		t.Fatal(err)
 	}
-	err = s.blockScheduleLocked(&item, "owner authorization failed", time.Now().UTC())
-	s.mu.Unlock()
+	err = s.rt.BlockSchedule(&item, "owner authorization failed", time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}

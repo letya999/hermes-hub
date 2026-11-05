@@ -16,7 +16,7 @@ import (
 )
 
 var ErrRoutineRevision = routines.ErrRoutineRevision
-var ErrRoutineNotOwned = errors.New("routine not found in this context")
+var ErrRoutineNotOwned = routines.ErrRoutineNotOwned
 var ErrRoutineSnoozeNotLater = routines.ErrRoutineSnoozeNotLater
 
 func effectiveRoutineNextDue(item Schedule) time.Time { return routines.EffectiveNextDue(item) }
@@ -246,164 +246,16 @@ type routineEditContext struct {
 	Baseline *string
 }
 
+// editRoutine delegates the owner edit to the engine: the read-modify-write
+// runs under the engine lock, so callers must not hold s.mu.
 func (s *Spool) editRoutine(id string, caller identity.Envelope, patch map[string]json.RawMessage, resume bool, now time.Time, extra ...routineEditContext) (Schedule, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	item, err := s.loadScheduleLocked(id)
-	if err != nil || item.Envelope.PrincipalID != caller.PrincipalID || item.Envelope.ContextID != caller.ContextID {
-		return Schedule{}, ErrRoutineNotOwned
-	}
-	var expected uint64
-	if _, move := patch["destination_task_id"]; move {
-		if err := json.Unmarshal(patch["expected_revision"], &expected); err != nil || expected == 0 {
-			return Schedule{}, errors.New("destination edit requires positive expected_revision")
-		}
-	}
-	if raw, ok := patch["expected_revision"]; ok {
-		if err := json.Unmarshal(raw, &expected); err != nil {
-			return Schedule{}, err
-		}
-		if expected != item.Revision {
-			return Schedule{}, ErrRoutineRevision
-		}
-	}
-	oldKind := item.JobKind
-	var options routineEditContext
+	var opts routines.EditOptions
 	if len(extra) > 0 {
-		options = extra[0]
+		opts = routines.EditOptions{User: extra[0].User, Baseline: extra[0].Baseline}
 	}
-	rawDestination, move := patch["destination_task_id"]
-	if _, hasOrigin := patch["origin_job_id"]; hasOrigin && !move {
-		return Schedule{}, errors.New("origin_job_id requires destination_task_id")
-	}
-	if move {
-		previousEnvelope := item.Envelope
-		var target, origin string
-		if err := json.Unmarshal(rawDestination, &target); err != nil || target == "" {
-			return Schedule{}, errors.New("destination_task_id must be a nonempty string")
-		}
-		if raw, ok := patch["origin_job_id"]; ok {
-			if err := json.Unmarshal(raw, &origin); err != nil {
-				return Schedule{}, err
-			}
-		}
-		item.DestinationTaskID, item.OriginJobID = target, origin
-		item, err = s.bindRoutineDestinationLocked(item, caller, options.User)
-		if err != nil {
-			return Schedule{}, err
-		}
-		item.DestinationTaskID, item.OriginJobID = "", ""
-		if !previousEnvelope.Equal(item.Envelope) && !slices.ContainsFunc(item.PriorEnvelopes, previousEnvelope.Equal) {
-			item.PriorEnvelopes = append(item.PriorEnvelopes, previousEnvelope)
-		}
-	}
-	timingChanged, err := patchRoutineFields(&item, patch)
-	if err != nil {
-		return Schedule{}, err
-	}
-	if _, changed := patch["probe"]; changed || oldKind != item.JobKind {
-		item.ProbeRevision = item.Revision + 1
-		item.InitialProbeValue = nil
-		item.InitialProbeValue = options.Baseline
-	}
-	if err := validateScheduleDraft(item, item.Envelope); err != nil {
-		return Schedule{}, err
-	}
-	if timingChanged || resume {
-		if timingChanged {
-			item.IntervalAnchor = now
-		}
-		loc, err := time.LoadLocation(item.Timezone)
-		if err != nil {
-			return Schedule{}, err
-		}
-		next, err := nextSchedule(item, loc, now)
-		if err != nil {
-			return Schedule{}, err
-		}
-		item.NextDue = next
-		item.SnoozedUntil = time.Time{}
-	}
-	if resume {
-		item.Enabled, item.Paused = true, false
-	}
-	// A successful owner edit is the documented unblock path: the schedule
-	// rejoins the tick on its next due.
-	item.BlockedReason, item.BlockedAt = "", time.Time{}
-	item.Revision++
-	item.UpdatedAt = now
-	if err := s.writeJSON(s.schedulePath(id), item); err != nil {
-		return Schedule{}, err
-	}
-	return item, nil
+	return s.rt.EditRoutine(id, caller, patch, resume, now, opts)
 }
 
 func patchRoutineFields(item *Schedule, patch map[string]json.RawMessage) (bool, error) {
-	timingChanged := false
-	if raw, ok := patch["job_kind"]; ok {
-		var kind string
-		if err := json.Unmarshal(raw, &kind); err != nil {
-			return false, err
-		}
-		if kind != item.JobKind {
-			item.Probe, item.InitialProbeValue = nil, nil
-			item.Expect, item.NotifyMode = "", ""
-			item.MaxRetries = 0
-			item.Sink, item.Delivery = "", ""
-			item.SourceIDs = nil
-		}
-	}
-	for key, raw := range patch {
-		if (key == "input" || key == "expression" || key == "timezone" || key == "job_kind") && strings.TrimSpace(string(raw)) == "null" {
-			return false, errors.New("required routine field cannot be null: " + key)
-		}
-		var target any
-		switch key {
-		case "destination_task_id", "origin_job_id":
-			continue
-		case "expected_revision":
-			continue
-		case "input":
-			target = &item.Input
-		case "expression":
-			target = &item.Expression
-			timingChanged = true
-		case "timezone":
-			target = &item.Timezone
-			timingChanged = true
-		case "timing":
-			target = &item.Timing
-			timingChanged = true
-		case "job_kind":
-			target = &item.JobKind
-		case "source_ids":
-			target = &item.SourceIDs
-		case "sink":
-			target = &item.Sink
-		case "delivery":
-			target = &item.Delivery
-		case "probe":
-			target = &item.Probe
-		case "expect":
-			target = &item.Expect
-		case "max_retries":
-			target = &item.MaxRetries
-		case "notify_mode":
-			target = &item.NotifyMode
-		case "quiet_from":
-			target = &item.QuietFrom
-		case "quiet_to":
-			target = &item.QuietTo
-		case "daily_limit":
-			target = &item.DailyLimit
-		case "catch_up_window_ns":
-			target = &item.CatchUpWindow
-		default:
-			return false, errors.New("unknown or read-only routine field: " + key)
-		}
-		if err := json.Unmarshal(raw, target); err != nil {
-			return false, err
-		}
-	}
-	return timingChanged, nil
+	return routines.PatchRoutineFields(item, patch)
 }

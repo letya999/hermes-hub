@@ -185,7 +185,7 @@ func (e *Engine) ApplyAssignment(id string, caller identity.Envelope, expected .
 		if rc.ScheduleID != "" && rc.Action != "removed" {
 			draft.ScheduleID = rc.ScheduleID
 		}
-		existing, lerr := e.LoadScheduleLocked(draft.ScheduleID)
+		existing, lerr := e.LoadSchedule(draft.ScheduleID)
 		if lerr != nil && !os.IsNotExist(lerr) {
 			return commodel.Assignment{}, lerr
 		}
@@ -421,9 +421,9 @@ func (e *Engine) RecordAssignmentProgress(id string, caller identity.Envelope, e
 	return item, e.atomicJSON(e.AssignmentPath(id), item)
 }
 
-// AssignmentForWakeLocked returns the active, applied generation while the
-// shared spool/engine mutex is held.
-func (e *Engine) AssignmentForWakeLocked(id string, planRev uint64) (commodel.Assignment, bool) {
+// AssignmentForWake returns the active, applied generation for a wake
+// check. Lock-free durable read — safe under any owner lock.
+func (e *Engine) AssignmentForWake(id string, planRev uint64) (commodel.Assignment, bool) {
 	item, err := e.loadAssignmentLocked(id)
 	return item, err == nil && item.State == "active" && item.AppliedRev == planRev && item.Plan != nil && item.Plan.Revision == planRev
 }
@@ -519,7 +519,7 @@ func (e *Engine) ResumeAssignment(id string, caller identity.Envelope, expected 
 		if rc.Action == "removed" {
 			continue
 		}
-		sched, err := e.LoadScheduleLocked(rc.ScheduleID)
+		sched, err := e.LoadSchedule(rc.ScheduleID)
 		if err != nil {
 			continue
 		}
@@ -644,7 +644,7 @@ func (e *Engine) PauseAssignment(id string, caller identity.Envelope, expected .
 		if rc.Action == "removed" {
 			continue
 		}
-		sched, err := e.LoadScheduleLocked(rc.ScheduleID)
+		sched, err := e.LoadSchedule(rc.ScheduleID)
 		if err != nil || sched.Paused {
 			continue
 		}
@@ -688,7 +688,7 @@ func (e *Engine) ReconcileAssignments(now time.Time) error {
 		}
 		var missing []string
 		for name, rc := range item.Applied {
-			if _, err := e.LoadScheduleLocked(rc.ScheduleID); err != nil {
+			if _, err := e.LoadSchedule(rc.ScheduleID); err != nil {
 				missing = append(missing, name)
 			}
 		}
@@ -750,16 +750,34 @@ func decimalMessageID(s string) bool {
 	return true
 }
 
-// Reserve a particular wake once, including retries after the owner's day changes.
-func (e *Engine) ReserveAssignmentWakeLocked(id, operationID string, now time.Time, planRev uint64) (bool, error) {
+// ReserveAssignmentWake reserves a particular wake once, including retries
+// after the owner's day changes.
+func (e *Engine) ReserveAssignmentWake(id, operationID string, now time.Time, planRev uint64) (bool, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.reserveAssignmentWakeLocked(id, operationID, now, planRev)
+}
+
+// reserveAssignmentWakeLocked is ReserveAssignmentWake's critical section;
+// callers hold e.mu.
+func (e *Engine) reserveAssignmentWakeLocked(id, operationID string, now time.Time, planRev uint64) (bool, error) {
 	if operationID == "" {
 		return false, errors.New("wake operation required")
 	}
 	return e.admitAssignmentOperationLocked(id, operationID, now, planRev)
 }
 
-// A durable job mapping now owns dedup; release only its matching reservation.
-func (e *Engine) SettleAssignmentWakeLocked(id, operationID string, planRev uint64) error {
+// SettleAssignmentWake releases a wake reservation once a durable job
+// mapping owns dedup — only its matching reservation.
+func (e *Engine) SettleAssignmentWake(id, operationID string, planRev uint64) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.settleAssignmentWakeLocked(id, operationID, planRev)
+}
+
+// settleAssignmentWakeLocked is SettleAssignmentWake's critical section;
+// callers hold e.mu.
+func (e *Engine) settleAssignmentWakeLocked(id, operationID string, planRev uint64) error {
 	item, err := e.loadAssignmentLocked(id)
 	if err != nil {
 		return err

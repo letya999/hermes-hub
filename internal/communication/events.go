@@ -243,49 +243,50 @@ func (s *Spool) settleEvents(o RoutineOccurrence, schedule Schedule, body []byte
 	if handled, err := s.resumeOccurrenceBatch(o, schedule, now, authorize); handled || err != nil {
 		return nil, err
 	}
-	s.mu.Lock()
 	path := filepath.Join(s.root, "occurrences", occurrenceID(o)+".json")
 	raw, err := s.fsys.ReadFile(path)
 	if err != nil {
-		s.mu.Unlock()
 		return nil, err
 	}
 	var live RoutineOccurrence
 	if json.Unmarshal(raw, &live) != nil {
-		s.mu.Unlock()
 		return nil, errors.New("invalid source occurrence")
 	}
 	if live.State != "probing" {
-		s.mu.Unlock()
 		return nil, nil
 	}
-	if !s.occurrenceCurrentLocked(live) || (authorize != nil && authorize(live.Job) != nil) {
-		live.State = "cancelled"
-		err = s.writeJSON(path, live)
-		s.mu.Unlock()
+	if !s.rt.OccurrenceCurrent(live) || (authorize != nil && authorize(live.Job) != nil) {
+		_, err = s.rt.MutateProbingOccurrence(o, func(current *RoutineOccurrence) error {
+			current.State = "cancelled"
+			return nil
+		})
 		return nil, err
 	}
 	st, err := s.loadEventStateLocked(live.ScheduleID)
 	if err != nil {
-		s.mu.Unlock()
 		return nil, err
 	}
 	if probeErr != nil {
-		live.State = "failed"
 		st.LastError = boundedWatchText(probeErr.Error())
 		if authError(probeErr) {
 			st.Degraded = true
 		}
-		err = errors.Join(s.writeEventStateLocked(live.ScheduleID, st), s.writeJSON(path, live))
+		s.mu.Lock()
+		stateErr := s.writeEventStateLocked(live.ScheduleID, st)
 		s.mu.Unlock()
-		return nil, err
+		_, occErr := s.rt.MutateProbingOccurrence(o, func(current *RoutineOccurrence) error {
+			current.State = "failed"
+			return nil
+		})
+		return nil, errors.Join(stateErr, occErr)
 	}
 	events, err := extractEvents(schedule.Probe, body)
 	if err != nil {
-		live.State = "failed"
-		err = s.writeJSON(path, live)
-		s.mu.Unlock()
-		return nil, err
+		_, occErr := s.rt.MutateProbingOccurrence(o, func(current *RoutineOccurrence) error {
+			current.State = "failed"
+			return nil
+		})
+		return nil, errors.Join(err, occErr)
 	}
 	var env struct {
 		Cursor string `json:"next_cursor"`
@@ -300,7 +301,6 @@ func (s *Spool) settleEvents(o RoutineOccurrence, schedule Schedule, body []byte
 			fresh = append(fresh, ev)
 		}
 	}
-	s.mu.Unlock()
 
 	// The deterministic per-event gate (SPEC-0081 R4.1) runs outside the
 	// spool lock: the script performs I/O in a disposable runtime and must
@@ -332,8 +332,6 @@ func (s *Spool) settleEvents(o RoutineOccurrence, schedule Schedule, body []byte
 		}
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	// The occurrence and the seen-set may have moved while the filter ran;
 	// re-validate before admitting anything to the sink.
 	raw, err = s.fsys.ReadFile(path)
@@ -346,32 +344,44 @@ func (s *Spool) settleEvents(o RoutineOccurrence, schedule Schedule, body []byte
 	if live.State != "probing" {
 		return nil, nil
 	}
-	if !s.occurrenceCurrentLocked(live) || (authorize != nil && authorize(live.Job) != nil) {
-		live.State = "cancelled"
-		err = s.writeJSON(path, live)
+	if !s.rt.OccurrenceCurrent(live) || (authorize != nil && authorize(live.Job) != nil) {
+		_, err = s.rt.MutateProbingOccurrence(o, func(current *RoutineOccurrence) error {
+			current.State = "cancelled"
+			return nil
+		})
 		return nil, err
 	}
-	if st, err = s.loadEventStateLocked(live.ScheduleID); err != nil {
+	s.mu.Lock()
+	st, err = s.loadEventStateLocked(live.ScheduleID)
+	if err != nil {
+		s.mu.Unlock()
 		return nil, err
 	}
 	if filterErr != nil {
-		live.State = "failed"
 		st.LastError = boundedWatchText(filterErr.Error())
-		err = errors.Join(s.writeEventStateLocked(live.ScheduleID, st), s.writeJSON(path, live))
+		err = s.writeEventStateLocked(live.ScheduleID, st)
+		s.mu.Unlock()
+		_, occErr := s.rt.MutateProbingOccurrence(o, func(current *RoutineOccurrence) error {
+			current.State = "failed"
+			return nil
+		})
+		return nil, errors.Join(err, occErr)
+	}
+	err = s.startSourceBatchLocked(&st, schedule, live.Job, events, verdicts, live.Job.ID, cursor, nil, map[string][]string{"": eventIDs(events)}, nil, now)
+	s.mu.Unlock()
+	if err != nil {
 		return nil, err
 	}
-	if err := s.startSourceBatchLocked(&st, schedule, live.Job, events, verdicts, live.Job.ID, cursor, nil, map[string][]string{"": eventIDs(events)}, nil, now); err != nil {
-		return nil, err
-	}
-	overflowed, err := s.applySourceBatchLocked(&st, schedule, now, authorize)
+	overflowed, drained, err := s.applySourceBatch(&st, schedule, now, authorize)
 	if err != nil {
 		return overflowed, err
 	}
-	if st.PendingBatch == nil {
-		live.State = "dispatched"
-	}
-	if err := s.writeJSON(path, live); err != nil {
+	if drained {
+		_, err = s.rt.MutateProbingOccurrence(o, func(current *RoutineOccurrence) error {
+			current.State = "dispatched"
+			return nil
+		})
 		return overflowed, err
 	}
-	return overflowed, err
+	return overflowed, nil
 }

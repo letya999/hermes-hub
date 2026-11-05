@@ -1184,18 +1184,14 @@ func TestM10CorruptStorageStopsUsageAndProbeHandoff(t *testing.T) {
 		t.Fatal(err)
 	}
 	result := probeResult{Occurrence: o, Watch: WatchState{ScheduleID: o.ScheduleID, Generation: 1}}
-	s.mu.Lock()
-	err := s.applyProbeResultLocked(result)
-	s.mu.Unlock()
+	err := s.rt.ApplyProbeResult(result)
 	if err == nil {
 		t.Fatal("corrupt baseline overwritten by handoff")
 	}
 	if err := s.DeleteSchedule(o.ScheduleID, o.Job.Envelope); err != nil {
 		t.Fatal(err)
 	}
-	s.mu.Lock()
-	err = s.applyProbeResultLocked(result)
-	s.mu.Unlock()
+	err = s.rt.ApplyProbeResult(result)
 	if err != nil {
 		t.Fatal(err)
 	}

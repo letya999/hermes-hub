@@ -2238,7 +2238,7 @@ func TestRoutineBlockedNoticeLangWired(t *testing.T) {
 	}
 	g.api = &fakeAPI{}
 	item := commodel.Schedule{ScheduleID: "r-one", Envelope: c.Users[0].Envelope(11), Channel: "telegram_bot"}
-	if err := g.spool.rt.BlockScheduleLocked(&item, "bad cron", g.now()); err != nil {
+	if err := g.spool.rt.BlockSchedule(&item, "bad cron", g.now()); err != nil {
 		t.Fatal(err)
 	}
 	d, err := g.spool.ClaimDelivery()

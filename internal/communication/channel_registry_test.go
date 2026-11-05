@@ -326,9 +326,7 @@ func TestBlockedNoticeRoutesThroughChannel(t *testing.T) {
 	if err := atomicJSON(filepath.Join(s.root, "schedules", spoolFileID(item.ScheduleID)+".json"), item); err != nil {
 		t.Fatal(err)
 	}
-	s.mu.Lock()
-	err = s.blockScheduleLocked(&item, "owner gone", time.Now().UTC())
-	s.mu.Unlock()
+	err = s.rt.BlockSchedule(&item, "owner gone", time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}

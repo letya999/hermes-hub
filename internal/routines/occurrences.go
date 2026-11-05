@@ -58,6 +58,35 @@ func (e *Engine) PutOccurrence(o commodel.RoutineOccurrence, caller identity.Env
 	return e.atomicJSON(path, o)
 }
 
+// MutateProbingOccurrence applies mutate to the durable occurrence while it
+// is still probing and writes the result atomically. It reports whether the
+// record was probing; a settled or missing record reports false and is left
+// untouched. The callback runs inside the engine critical section and must
+// not call back into the engine.
+func (e *Engine) MutateProbingOccurrence(o commodel.RoutineOccurrence, mutate func(live *commodel.RoutineOccurrence) error) (bool, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	path := filepath.Join(e.root, "occurrences", occurrenceID(o)+".json")
+	body, err := e.readFile(path)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	var live commodel.RoutineOccurrence
+	if json.Unmarshal(body, &live) != nil {
+		return false, errors.New("invalid probing occurrence")
+	}
+	if live.State != "probing" {
+		return false, nil
+	}
+	if err := mutate(&live); err != nil {
+		return true, err
+	}
+	return true, e.atomicJSON(path, live)
+}
+
 // quarantineOccurrenceLocked preserves a bad durable record outside hot scans.
 func (e *Engine) quarantineOccurrenceLocked(path string) error {
 	dir := filepath.Join(e.root, "occurrences", "quarantine")
@@ -128,7 +157,7 @@ func (e *Engine) DispatchDueOccurrences(now time.Time, authorize func(commodel.J
 			// below can only false-positive on it.
 			continue
 		}
-		mapping, err := e.deps.LoadMapping(o.Job.ID)
+		mapping, err := e.deps.Dispatch.LoadMapping(o.Job.ID)
 		if os.IsNotExist(err) {
 			continue
 		}
@@ -177,7 +206,7 @@ func (e *Engine) DispatchDueOccurrences(now time.Time, authorize func(commodel.J
 		if window <= 0 {
 			window = DefaultCatchUp
 		}
-		if !e.OccurrenceCurrentLocked(o) {
+		if !e.OccurrenceCurrent(o) {
 			o.State = "cancelled"
 		} else if now.Sub(o.DueAt) > window {
 			o.State = "missed"
@@ -205,7 +234,7 @@ func (e *Engine) DispatchDueOccurrences(now time.Time, authorize func(commodel.J
 			}
 
 			if o.JobKind == "brief" {
-				if item, err := e.LoadScheduleLocked(o.ScheduleID); err == nil && QuietDefer(item, now).After(now) {
+				if item, err := e.LoadSchedule(o.ScheduleID); err == nil && QuietDefer(item, now).After(now) {
 					// A brief's effect is a model call, which cannot ride a
 					// delivery not_before: the whole slot waits out the quiet
 					// window. Still-due occurrences fire after the window;
@@ -225,7 +254,7 @@ func (e *Engine) DispatchDueOccurrences(now time.Time, authorize func(commodel.J
 			if err != nil {
 				return err
 			}
-			if err = e.deps.EnqueueDelivery(d); err != nil {
+			if err = e.deps.Delivery.EnqueueDelivery(d); err != nil {
 				return err
 			}
 			o.State = "dispatched"
@@ -236,7 +265,7 @@ func (e *Engine) DispatchDueOccurrences(now time.Time, authorize func(commodel.J
 			}
 			admitted := o.Job
 			admitted.Envelope.ConversationID = RoutineConversation(o.ScheduleID)
-			if _, err = e.deps.EnqueueJob(admitted); err != nil {
+			if _, err = e.deps.Dispatch.EnqueueJob(admitted); err != nil {
 				return err
 			}
 			o.State = "dispatched"

@@ -71,22 +71,24 @@ func watchValue(body []byte, re *regexp.Regexp) string { return routines.WatchVa
 
 // Engine delegates: the routines engine (internal/routines) owns schedule,
 // occurrence, watcher and digest orchestration; these wrappers keep existing
-// spool call sites stable. Methods whose names end in Locked run under the
-// shared spool/engine lock.
+// spool call sites stable. The engine serializes itself, so public engine
+// methods must never be reached with s.mu held; *Locked-named wrappers
+// below cover only the engine's lock-free durable reads, which stay safe
+// under any lock because every record is replaced atomically.
 
 type RoutineDestination = routines.RoutineDestination
 type RoutineDestinationPage = routines.RoutineDestinationPage
 
 func (s *Spool) reminderStateLocked(item Schedule) (string, string) {
-	return s.rt.ReminderStateLocked(item)
+	return s.rt.ReminderState(item)
 }
 
 func (s *Spool) routineDestinationLocked(item Schedule) RoutineDestination {
-	return s.rt.RoutineDestinationLocked(item)
+	return s.rt.RoutineDestination(item)
 }
 
 func (s *Spool) bindRoutineDestinationLocked(in Schedule, caller identity.Envelope, user User) (Schedule, error) {
-	return s.rt.BindRoutineDestinationLocked(in, caller, user)
+	return s.rt.BindRoutineDestination(in, caller, user)
 }
 
 func (s *Spool) ListRoutineDestinations(user User, caller identity.Envelope, after string, limit int, query string) (RoutineDestinationPage, error) {
@@ -151,10 +153,10 @@ func (s *Spool) DispatchDueOccurrences(now time.Time, authorize func(Job) error)
 	return s.rt.DispatchDueOccurrences(now, authorize)
 }
 
-func (s *Spool) loadScheduleLocked(id string) (Schedule, error) { return s.rt.LoadScheduleLocked(id) }
+func (s *Spool) loadScheduleLocked(id string) (Schedule, error) { return s.rt.LoadSchedule(id) }
 
 func (s *Spool) creationReplayLocked(in Schedule, caller identity.Envelope) (Schedule, bool, error) {
-	return s.rt.CreationReplayLocked(in, caller)
+	return s.rt.CreationReplay(in, caller)
 }
 
 func (s *Spool) schedulePath(id string) string { return s.rt.SchedulePath(id) }
@@ -162,11 +164,7 @@ func (s *Spool) schedulePath(id string) string { return s.rt.SchedulePath(id) }
 func (s *Spool) cancelPath(id string) string { return s.rt.CancelPath(id) }
 
 func (s *Spool) occurrenceCurrentLocked(o RoutineOccurrence) bool {
-	return s.rt.OccurrenceCurrentLocked(o)
-}
-
-func (s *Spool) blockScheduleLocked(item *Schedule, reason string, now time.Time) error {
-	return s.rt.BlockScheduleLocked(item, reason, now)
+	return s.rt.OccurrenceCurrent(o)
 }
 
 func validateOccurrence(o RoutineOccurrence, caller identity.Envelope) error {
@@ -194,7 +192,7 @@ func (s *Spool) watchPath(id string) string { return s.rt.WatchPath(id) }
 func (s *Spool) digestPath(id string) string { return s.rt.DigestPath(id) }
 
 func (s *Spool) loadWatchStateLocked(id string) (WatchState, error) {
-	return s.rt.LoadWatchStateLocked(id)
+	return s.rt.LoadWatchState(id)
 }
 
 // watchLastError surfaces a watcher's durable probe failure in routine
@@ -210,7 +208,7 @@ func (s *Spool) watchLastError(id string) string {
 }
 
 func (s *Spool) taskProbeValueLocked(principal, taskID string) (string, error) {
-	return s.rt.TaskProbeValueLocked(principal, taskID)
+	return s.rt.TaskProbeValue(principal, taskID)
 }
 
 func (s *Spool) SeedWatchBaseline(id string, value string, now time.Time) error {
@@ -227,10 +225,6 @@ func (s *Spool) ProbeDueOccurrencesContext(ctx context.Context, now time.Time, a
 
 func (s *Spool) processProactive(ctx context.Context, state string, execute func(RoutineOccurrence)) error {
 	return s.rt.ProcessProactive(ctx, state, execute)
-}
-
-func (s *Spool) applyProbeResultLocked(result probeResult) error {
-	return s.rt.ApplyProbeResultLocked(result)
 }
 
 func (s *Spool) RunDueScripts(ctx context.Context, now time.Time, authorize func(Job) error, run func(context.Context, RoutineOccurrence) ([]string, error)) error {

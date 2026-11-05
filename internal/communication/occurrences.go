@@ -179,7 +179,7 @@ func (g *Gateway) occurrenceRefAuthorizedLocked(id string) bool {
 			return false
 		}
 		if o.Job.AssignmentID != "" && o.Job.AssignmentPlanRevision != 0 {
-			_, active := g.spool.rt.AssignmentForWakeLocked(o.Job.AssignmentID, o.Job.AssignmentPlanRevision)
+			_, active := g.spool.rt.AssignmentForWake(o.Job.AssignmentID, o.Job.AssignmentPlanRevision)
 			return active
 		}
 		return true
@@ -193,7 +193,7 @@ func (g *Gateway) occurrenceRefAuthorizedLocked(id string) bool {
 		return false
 	}
 	if schedule.AssignmentID != "" && schedule.AssignmentPlanRevision != 0 {
-		if _, ok := g.spool.rt.AssignmentForWakeLocked(schedule.AssignmentID, schedule.AssignmentPlanRevision); !ok {
+		if _, ok := g.spool.rt.AssignmentForWake(schedule.AssignmentID, schedule.AssignmentPlanRevision); !ok {
 			return false
 		}
 	}

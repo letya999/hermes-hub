@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -79,7 +78,7 @@ func (s *Spool) startSourceBatchLocked(st *EventState, schedule Schedule, job Jo
 		j.AssignmentPlanRevision = schedule.AssignmentPlanRevision
 		j.Envelope.ConversationID = routineConversation(schedule.ScheduleID)
 		if schedule.AssignmentID != "" {
-			a, ok := s.rt.AssignmentForWakeLocked(schedule.AssignmentID, schedule.AssignmentPlanRevision)
+			a, ok := s.rt.AssignmentForWake(schedule.AssignmentID, schedule.AssignmentPlanRevision)
 			if !ok && schedule.AssignmentPlanRevision != 0 {
 				planningErr = errors.New("source assignment unavailable")
 				return
@@ -162,21 +161,28 @@ func (s *Spool) startSourceBatchLocked(st *EventState, schedule Schedule, job Jo
 	return nil
 }
 
-func (s *Spool) applySourceBatchLocked(st *EventState, schedule Schedule, now time.Time, authorize func(Job) error) ([]Event, error) {
+// applySourceBatch drains a durable pending batch in three lock phases:
+// pure validation on the caller's private snapshot, sink admission with no
+// lock held (the engine and the spool each serialize only their own
+// critical section — engine -> spool is the one permitted order), then a
+// commit that re-reads the live event state and merges this run's settled
+// marks so a batch another owner finished is never clobbered. It returns
+// the overflow and whether the live batch is drained.
+func (s *Spool) applySourceBatch(st *EventState, schedule Schedule, now time.Time, authorize func(Job) error) ([]Event, bool, error) {
 	b := st.PendingBatch
 	if b == nil {
-		return nil, nil
+		return nil, false, nil
 	}
 	if b.Settled == nil || b.SinkIDs == nil || b.SourceEvents == nil || !sourceJobMatchesSchedule(b.Job, schedule, false) || b.Version != 1 || b.Binding != sourceBatchBinding(schedule) || len(b.Events) > 1024 || !schedule.Enabled || schedule.Paused || schedule.SnoozedUntil.After(now) || authorize != nil && authorize(b.Job) != nil {
-		return nil, errors.New("source batch scope or lifecycle blocked")
+		return nil, true, errors.New("source batch scope or lifecycle blocked")
 	}
 	ids := map[string]string{}
 	for _, ev := range b.Events {
 		if ev.ID == "" || len(ev.ID) > 1024 {
-			return nil, errors.New("invalid source batch event")
+			return nil, true, errors.New("invalid source batch event")
 		}
 		if _, found := ids[ev.ID]; found {
-			return nil, errors.New("duplicate source batch event")
+			return nil, true, errors.New("duplicate source batch event")
 		}
 		ids[ev.ID] = ev.Source
 	}
@@ -185,33 +191,34 @@ func (s *Spool) applySourceBatchLocked(st *EventState, schedule Schedule, now ti
 		for _, id := range members {
 			declared, ok := ids[id]
 			if !ok || declared != source || referenced[id] {
-				return nil, errors.New("source batch cursor interval mismatch")
+				return nil, true, errors.New("source batch cursor interval mismatch")
 			}
 			referenced[id] = true
 		}
 	}
 	if len(referenced) != len(ids) || b.Seed != b.Job.ID {
-		return nil, errors.New("source batch interval or seed missing")
+		return nil, true, errors.New("source batch interval or seed missing")
 	}
 	for id := range b.Settled {
 		if _, ok := ids[id]; !ok {
-			return nil, errors.New("unknown source batch decision")
+			return nil, true, errors.New("unknown source batch decision")
 		}
 	}
 	if s.holdsSnapshot != nil {
 		for _, hold := range s.holdsSnapshot() {
 			if hold.PrincipalID == b.Job.PrincipalID && hold.ContextID == b.Job.ContextID && (hold.Active || hold.Epoch != b.Job.OperationalEpoch) {
-				return nil, errors.New("source batch epoch blocked")
+				return nil, true, errors.New("source batch epoch blocked")
 			}
 		}
 	}
 	if schedule.AssignmentID != "" && schedule.AssignmentPlanRevision != 0 {
-		if _, ok := s.rt.AssignmentForWakeLocked(schedule.AssignmentID, schedule.AssignmentPlanRevision); !ok {
-			return nil, errors.New("source batch assignment blocked")
+		if _, ok := s.rt.AssignmentForWake(schedule.AssignmentID, schedule.AssignmentPlanRevision); !ok {
+			return nil, true, errors.New("source batch assignment blocked")
 		}
 	}
+	day := ""
 	if schedule.DailyLimit > 0 {
-		day := now.UTC().Format("2006-01-02")
+		day = now.UTC().Format("2006-01-02")
 		if loc, err := time.LoadLocation(schedule.Timezone); err == nil {
 			day = now.In(loc).Format("2006-01-02")
 		}
@@ -223,6 +230,7 @@ func (s *Spool) applySourceBatchLocked(st *EventState, schedule Schedule, now ti
 	var overflow []Event
 	var admissionErr error
 	admitted := 0
+	baseOverflow := st.Overflow
 	visited := map[string]bool{}
 	for _, ev := range b.Events {
 		if b.Settled[ev.ID] {
@@ -235,7 +243,7 @@ func (s *Spool) applySourceBatchLocked(st *EventState, schedule Schedule, now ti
 		}
 		id := b.SinkIDs[ev.ID]
 		if id == "" {
-			return nil, errors.New("source batch sink missing")
+			return nil, true, errors.New("source batch sink missing")
 		}
 		if visited[id] {
 			continue
@@ -257,7 +265,7 @@ func (s *Spool) applySourceBatchLocked(st *EventState, schedule Schedule, now ti
 			continue
 		}
 		if authorize != nil && authorize(b.Job) != nil {
-			return overflow, errors.New("source batch owner unavailable")
+			return overflow, true, errors.New("source batch owner unavailable")
 		}
 		var err error
 		if schedule.Sink == "agent" {
@@ -265,23 +273,33 @@ func (s *Spool) applySourceBatchLocked(st *EventState, schedule Schedule, now ti
 				continue
 			}
 			j, ok := b.Jobs[id]
-			if !ok || j.ID != id || j.IdempotencyKey != id || !s.batchJobCurrentLocked(j) {
-				return overflow, errors.New("source batch job missing")
+			if !ok || j.ID != id || j.IdempotencyKey != id {
+				return overflow, true, errors.New("source batch job missing")
 			}
-			exists, admissionErr := s.jobAdmissionLocked(j)
+			s.mu.Lock()
+			current := s.batchJobCurrentLocked(j)
+			var exists bool
+			if current {
+				exists, admissionErr = s.jobAdmissionLocked(j)
+			}
+			s.mu.Unlock()
+			if !current {
+				return overflow, true, errors.New("source batch job missing")
+			}
 			if admissionErr != nil {
-				return overflow, admissionErr
+				return overflow, true, admissionErr
 			}
 			if !exists {
 				if schedule.AssignmentID != "" {
-					reserved, reserveErr := s.rt.ReserveAssignmentWakeLocked(schedule.AssignmentID, j.ID, now, schedule.AssignmentPlanRevision)
+					reserved, reserveErr := s.rt.ReserveAssignmentWake(schedule.AssignmentID, j.ID, now, schedule.AssignmentPlanRevision)
 					if reserveErr != nil {
-						return overflow, reserveErr
+						return overflow, true, reserveErr
 					}
 					if !reserved {
 						continue
 					}
 				}
+				s.mu.Lock()
 				_, err = s.enqueueLocked(j)
 				if err == nil {
 					var confirmed bool
@@ -290,16 +308,19 @@ func (s *Spool) applySourceBatchLocked(st *EventState, schedule Schedule, now ti
 						err = errors.New("source job admission unconfirmed")
 					}
 				}
+				s.mu.Unlock()
 			}
 			if err == nil && schedule.AssignmentID != "" {
-				err = s.rt.SettleAssignmentWakeLocked(schedule.AssignmentID, j.ID, schedule.AssignmentPlanRevision)
+				err = s.rt.SettleAssignmentWake(schedule.AssignmentID, j.ID, schedule.AssignmentPlanRevision)
 			}
 		} else {
 			d, ok := b.Deliveries[id]
 			if !ok || d.ID != id || d.ChatID != b.Job.ChatID || d.Channel != b.Job.Channel || d.ConversationID != b.Job.ConversationID || d.DeliveryTargetID != b.Job.DeliveryTargetID || d.TaskID != b.Job.TaskID || d.TopicID != b.Job.TopicID || d.SlackChannel != b.Job.SlackChannel || d.SlackThread != b.Job.SlackThread || d.OccurrenceID != b.Seed {
-				return overflow, errors.New("source batch delivery missing")
+				return overflow, true, errors.New("source batch delivery missing")
 			}
+			s.mu.Lock()
 			err = s.enqueueDeliveryLocked(d)
+			s.mu.Unlock()
 		}
 		if err != nil {
 			st.LastError = "source sink admission failed"
@@ -318,63 +339,110 @@ func (s *Spool) applySourceBatchLocked(st *EventState, schedule Schedule, now ti
 		st.NotifyCount++
 		st.LastSuccess = now
 	}
+	// Commit under s.mu: re-read the live record and merge this run's marks.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	live, err := s.loadEventStateLocked(schedule.ScheduleID)
+	if err != nil {
+		return overflow, true, err
+	}
+	if live.PendingBatch == nil || live.PendingBatch.Binding != b.Binding || live.PendingBatch.Seed != b.Seed {
+		// Another owner drained or replaced the batch while admission ran:
+		// only the durable seen marks still merge — every admitted sink was
+		// already idempotent, so nothing else is owed.
+		for _, ev := range b.Events {
+			if b.Settled[ev.ID] && !live.seen(ev.ID) {
+				live.markSeen(ev.ID, now)
+			}
+		}
+		if err := s.writeEventStateLocked(schedule.ScheduleID, live); err != nil {
+			return overflow, true, err
+		}
+		if admitted > 0 {
+			s.signal()
+		}
+		return overflow, live.PendingBatch == nil, admissionErr
+	}
+	lb := live.PendingBatch
+	for _, ev := range b.Events {
+		if b.Settled[ev.ID] {
+			lb.Settled[ev.ID] = true
+			if !live.seen(ev.ID) {
+				live.markSeen(ev.ID, now)
+			}
+		}
+	}
+	if schedule.DailyLimit > 0 {
+		if live.NotifyDay != day {
+			live.NotifyDay = day
+			live.NotifyCount = 0
+		}
+		live.NotifyCount += admitted
+	}
+	live.Overflow += st.Overflow - baseOverflow
+	if admissionErr != nil {
+		live.LastError = "source sink admission failed"
+	}
+	if admitted > 0 {
+		live.LastSuccess = now
+	}
 	allSeen := func(ids []string) bool {
 		for _, id := range ids {
-			if !b.Settled[id] {
+			if !lb.Settled[id] {
 				return false
 			}
 		}
 		return true
 	}
 	if b.CursorAfter != "" && allSeen(b.SourceEvents[""]) {
-		st.Cursor = b.CursorAfter
+		live.Cursor = b.CursorAfter
 	}
 	for source, cursor := range b.SourceAfter {
 		if allSeen(b.SourceEvents[source]) {
-			if st.SourceCursors == nil {
-				st.SourceCursors = map[string]string{}
+			if live.SourceCursors == nil {
+				live.SourceCursors = map[string]string{}
 			}
-			st.SourceCursors[source] = cursor
+			live.SourceCursors[source] = cursor
 		}
 	}
 	complete := true
 	for _, ev := range b.Events {
-		complete = complete && b.Settled[ev.ID]
+		complete = complete && lb.Settled[ev.ID]
 	}
-	st.SourceErrors = b.SourceErrors
+	live.SourceErrors = b.SourceErrors
 	if len(b.SourceErrors) == 0 {
-		st.Degraded = false
+		live.Degraded = false
 	}
 	if complete {
-		st.PendingBatch = nil
-		st.LastSuccess = now
-		st.LastError = ""
+		live.PendingBatch = nil
+		live.LastSuccess = now
+		live.LastError = ""
 	}
-	if err := s.writeEventStateLocked(schedule.ScheduleID, *st); err != nil {
-		return overflow, err
+	if err := s.writeEventStateLocked(schedule.ScheduleID, live); err != nil {
+		return overflow, true, err
 	}
 	if admitted > 0 {
 		s.signal()
 	}
-	return overflow, admissionErr
+	return overflow, complete, admissionErr
 }
 
 // Called before acquisition: a saved batch never depends on the source replaying it.
 func (s *Spool) resumeSourceBatch(schedule Schedule, now time.Time, authorize func(Job) error) (bool, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	live, err := s.loadScheduleLocked(schedule.ScheduleID)
+	live, err := s.rt.LoadSchedule(schedule.ScheduleID)
 	if err != nil || live.Revision != schedule.Revision || !live.Enabled || live.Paused || live.SnoozedUntil.After(now) {
 		return true, true
 	}
+	s.mu.Lock()
 	st, err := s.loadEventStateLocked(schedule.ScheduleID)
+	s.mu.Unlock()
 	if err != nil {
 		return true, true
 	}
 	if st.PendingBatch == nil {
 		return false, false
 	}
-	_, err = s.applySourceBatchLocked(&st, live, now, authorize)
+	_, _, err = s.applySourceBatch(&st, live, now, authorize)
 	return true, err != nil
 }
 
@@ -418,7 +486,7 @@ func (s *Spool) batchScheduleLocked(id string, now time.Time) (Schedule, bool) {
 		return Schedule{}, false
 	}
 	if live.AssignmentID != "" && live.AssignmentPlanRevision != 0 {
-		if _, ok := s.rt.AssignmentForWakeLocked(live.AssignmentID, live.AssignmentPlanRevision); !ok {
+		if _, ok := s.rt.AssignmentForWake(live.AssignmentID, live.AssignmentPlanRevision); !ok {
 			return Schedule{}, false
 		}
 	}
@@ -438,40 +506,37 @@ func (s *Spool) batchJobCurrentLocked(job Job) bool {
 	return ok && sourceJobMatchesSchedule(job, live, true) && job.AssignmentID == live.AssignmentID && job.AssignmentPlanRevision == live.AssignmentPlanRevision
 }
 
+// resumeOccurrenceBatch drains a saved batch for its occurrence. The spool
+// lock guards only the event-state read; admission runs unlocked inside
+// applySourceBatch and the occurrence transition goes through the engine so
+// no path ever holds s.mu while taking the engine lock.
 func (s *Spool) resumeOccurrenceBatch(o RoutineOccurrence, schedule Schedule, now time.Time, authorize func(Job) error) (bool, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	st, err := s.loadEventStateLocked(schedule.ScheduleID)
+	s.mu.Unlock()
 	if err != nil {
 		return true, err
 	}
 	if st.PendingBatch == nil {
 		return false, nil
 	}
-	live, err := s.loadScheduleLocked(schedule.ScheduleID)
+	live, err := s.rt.LoadSchedule(schedule.ScheduleID)
 	if err != nil {
 		return true, err
 	}
-	if !s.occurrenceCurrentLocked(o) || authorize != nil && authorize(o.Job) != nil {
+	if !s.rt.OccurrenceCurrent(o) || authorize != nil && authorize(o.Job) != nil {
 		return true, errors.New("source occurrence no longer authorized")
 	}
-	if _, err := s.applySourceBatchLocked(&st, live, now, authorize); err != nil {
+	_, drained, err := s.applySourceBatch(&st, live, now, authorize)
+	if err != nil {
 		return true, err
 	}
-	if st.PendingBatch == nil {
-		path := filepath.Join(s.root, "occurrences", occurrenceID(o)+".json")
-		body, err := s.fsys.ReadFile(path)
-		if err != nil {
-			return true, err
-		}
-		var current RoutineOccurrence
-		if strictEventJSON(body, &current) != nil || current.ScheduleID != o.ScheduleID {
-			return true, errors.New("invalid source occurrence")
-		}
-		if current.State == "probing" {
+	if drained {
+		_, err = s.rt.MutateProbingOccurrence(o, func(current *RoutineOccurrence) error {
 			current.State = "dispatched"
-			return true, s.writeJSON(path, current)
-		}
+			return nil
+		})
+		return true, err
 	}
 	return true, nil
 }

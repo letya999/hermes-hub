@@ -29,46 +29,80 @@ type OccurrenceChannel interface {
 // runtime.
 type ProbeScriptFunc func(ctx context.Context, o commodel.RoutineOccurrence, src, input string, mountSpace bool, needs []string) (string, error)
 
-// Deps declares every capability the routines engine borrows from its owner.
-// Fields marked "locked" run with the engine lock already held — the owner's
-// spool mutex IS the engine lock, so the exact pre-split serialization
-// (including callers that re-enter under the same lock) is preserved.
-type Deps struct {
-	// Hooks resolve the two checks draft validation cannot own: provider
-	// field rules and the script compiler.
-	Hooks DraftHooks
-	// EnqueueJob admits an occurrence job to the ordinary queue. Locked.
-	EnqueueJob func(commodel.Job) (bool, error)
-	// EnqueueDelivery writes an outbox record idempotently. Locked.
-	EnqueueDelivery func(commodel.Delivery) error
-	// LoadMapping reads one durable job mapping. Locked.
-	LoadMapping func(id string) (commodel.JobMapping, error)
-	// LoadTask reads one durable task under its principal. Locked.
-	LoadTask func(principal, taskID string) (commodel.Task, error)
-	// ListTasks lists the principal's durable tasks. Locked.
-	ListTasks func(principal string) ([]commodel.Task, error)
-	// TopicTask resolves the task bound to a forum topic. Locked.
-	TopicTask func(principal string, chatID, topicID int64) (string, error)
-	// WriteDeliveryBlob stages one artifact body for a delivery. Locked.
-	WriteDeliveryBlob func(deliveryID, name string, data []byte) (string, error)
-	// NormalizeDelivery applies the delivery-plane identity rules. Locked.
-	NormalizeDelivery func(commodel.Delivery) (commodel.Delivery, error)
+// StoragePort is the owner's durable-record surface for the routines tree.
+// Every operation must be safe for concurrent callers on its own: the
+// engine invokes it inside its critical section and from lock-free read
+// paths alike. Nil fields fall back to the os primitive so the owner can
+// keep records in an embedded database instead of the filesystem
+// (ADR-0091); WriteJSONAtomic has no fallback because atomic replace is
+// the engine's only write path.
+type StoragePort struct {
 	// WriteJSONAtomic durably replaces a JSON file — the owner owns the
-	// tmp+fsync+rename primitive. Locked.
+	// tmp+fsync+rename primitive.
 	WriteJSONAtomic func(path string, value any) error
 	// The owner accounts every filesystem mutation, including ingress hook bytes.
 	WriteBytes func(path string, body []byte) error
 	MkdirAll   func(path string, lifecycle bool) error
 	Rename     func(from, to string) error
 	Remove     func(path string) error
-	// ReadFile, ReadDir and Lstat read durable records; nil falls back to
-	// the os primitive so the owner can store records in an embedded
-	// database instead of the filesystem (ADR-0091).
-	ReadFile func(path string) ([]byte, error)
-	ReadDir  func(dir string) ([]string, error)
-	Lstat    func(path string) (os.FileInfo, error)
+	ReadFile   func(path string) ([]byte, error)
+	ReadDir    func(dir string) ([]string, error)
+	Lstat      func(path string) (os.FileInfo, error)
+}
 
-	// Signal nudges the owner's wakeups after an enqueue. Locked.
+// DispatchPort is the owner's job-admission surface. Implementations must
+// serialize their own critical section internally — the engine calls them
+// while holding its internal lock, so a callback must never call back into
+// the engine (the only permitted lock order is engine -> owner).
+type DispatchPort struct {
+	// EnqueueJob admits an occurrence job to the ordinary queue.
+	EnqueueJob func(commodel.Job) (bool, error)
+	// LoadMapping reads one durable job mapping.
+	LoadMapping func(id string) (commodel.JobMapping, error)
+	// LoadTask reads one durable task under its principal.
+	LoadTask func(principal, taskID string) (commodel.Task, error)
+	// ListTasks lists the principal's durable tasks.
+	ListTasks func(principal string) ([]commodel.Task, error)
+	// TopicTask resolves the task bound to a forum topic.
+	TopicTask func(principal string, chatID, topicID int64) (string, error)
+}
+
+// DeliveryPort is the owner's outbox surface — same self-serialization and
+// no-call-back contract as DispatchPort.
+type DeliveryPort struct {
+	// EnqueueDelivery writes an outbox record idempotently.
+	EnqueueDelivery func(commodel.Delivery) error
+	// WriteDeliveryBlob stages one artifact body for a delivery.
+	WriteDeliveryBlob func(deliveryID, name string, data []byte) (string, error)
+	// NormalizeDelivery applies the delivery-plane identity rules.
+	NormalizeDelivery func(commodel.Delivery) (commodel.Delivery, error)
+}
+
+// EventsPort resumes and settles "event"-kind occurrences in the owner's
+// event plane. The engine always invokes these outside its own lock, so
+// implementations may run I/O and take owner-side locks freely.
+type EventsPort struct {
+	ResumeEvents func(o commodel.RoutineOccurrence, schedule commodel.Schedule, now time.Time, authorize func(commodel.Job) error) (bool, error)
+	SettleEvents func(o commodel.RoutineOccurrence, schedule commodel.Schedule, body []byte, now time.Time, probeErr error, authorize func(commodel.Job) error) ([]commodel.Event, error)
+}
+
+// Deps declares every capability the routines engine borrows from its
+// owner. Invocation contexts:
+//   - Hooks, Dispatch, Delivery: inside the engine critical section — the
+//     implementation serializes itself and never calls back into the engine.
+//   - Storage: inside or outside the engine lock — self-synchronized.
+//   - Events, Signal, ChannelFor, ProbeScript, LangOf: outside the engine
+//     lock — may run I/O and take owner locks.
+type Deps struct {
+	// Hooks resolve the two checks draft validation cannot own: provider
+	// field rules and the script compiler.
+	Hooks    DraftHooks
+	Storage  StoragePort
+	Dispatch DispatchPort
+	Delivery DeliveryPort
+	Events   EventsPort
+
+	// Signal nudges the owner's wakeups after an enqueue.
 	Signal func()
 	// ChannelFor resolves a provider adapter for occurrence validation and
 	// blocked notices; nil means the channel id is unknown.
@@ -76,19 +110,18 @@ type Deps struct {
 	// ProbeScript resolves the owner-installed isolated script runner
 	// lazily; a nil result means the runtime is unwired.
 	ProbeScript func() ProbeScriptFunc
-	// SettleEvents settles an "event"-kind occurrence into the owner's event
-	// plane. It runs WITHOUT the engine lock — the owner re-locks internally.
-	ResumeEvents func(o commodel.RoutineOccurrence, schedule commodel.Schedule, now time.Time, authorize func(commodel.Job) error) (bool, error)
-	SettleEvents func(o commodel.RoutineOccurrence, schedule commodel.Schedule, body []byte, now time.Time, probeErr error, authorize func(commodel.Job) error) ([]commodel.Event, error)
 	// LangOf resolves an occurrence owner's workspace language for composed
 	// delivery text; nil falls back to the hub default.
 	LangOf func(principal string) locale.Lang
 }
 
-// Engine runs the routines plane against injected dependencies. It shares
-// the owner spool's mutex and root: the engine owns the schedules/,
-// occurrences/, watchers/ and digests/ subtrees; borrowed deps reach the
-// rest of the spool under the same serialization as before the split.
+// Engine runs the routines plane against injected dependencies. It owns
+// its mutex and root: the engine owns the schedules/, occurrences/,
+// watchers/ and digests/ subtrees and serializes their mutation with e.mu;
+// borrowed ports reach the rest of the owner's state from inside that
+// section and must serialize themselves — the only permitted lock order is
+// engine -> owner. Lock-free readers (LoadSchedule and friends) may run
+// under any lock because every record is written atomically.
 type Engine struct {
 	root string
 	mu   *sync.Mutex
@@ -108,17 +141,18 @@ type Engine struct {
 	acquireInflight map[string]*acquireFlight
 }
 
-// NewEngine builds the engine; the owner fills every Deps field.
-func NewEngine(root string, mu *sync.Mutex, deps Deps) *Engine {
-	return &Engine{root: root, mu: mu, deps: deps}
+// NewEngine builds the engine; the owner fills every Deps field. The engine
+// allocates its own mutex — no caller lock is borrowed or shared.
+func NewEngine(root string, deps Deps) *Engine {
+	return &Engine{root: root, mu: &sync.Mutex{}, deps: deps}
 }
 
 func (e *Engine) atomicJSON(path string, value any) error {
-	return e.deps.WriteJSONAtomic(path, value)
+	return e.deps.Storage.WriteJSONAtomic(path, value)
 }
 
 func (e *Engine) normalizeDelivery(d commodel.Delivery) (commodel.Delivery, error) {
-	return e.deps.NormalizeDelivery(d)
+	return e.deps.Delivery.NormalizeDelivery(d)
 }
 
 func (e *Engine) channelFor(id string) OccurrenceChannel { return e.deps.ChannelFor(id) }
@@ -138,38 +172,38 @@ func (e *Engine) probeScript() ProbeScriptFunc {
 }
 
 func (e *Engine) mkdirOwned(path string, lifecycle bool) error {
-	if e.deps.MkdirAll != nil {
-		return e.deps.MkdirAll(path, lifecycle)
+	if e.deps.Storage.MkdirAll != nil {
+		return e.deps.Storage.MkdirAll(path, lifecycle)
 	}
 	return os.MkdirAll(path, 0700)
 }
 func (e *Engine) renameOwned(from, to string) error {
-	if e.deps.Rename != nil {
-		return e.deps.Rename(from, to)
+	if e.deps.Storage.Rename != nil {
+		return e.deps.Storage.Rename(from, to)
 	}
 	return os.Rename(from, to)
 }
 func (e *Engine) removeOwned(path string) error {
-	if e.deps.Remove != nil {
-		return e.deps.Remove(path)
+	if e.deps.Storage.Remove != nil {
+		return e.deps.Storage.Remove(path)
 	}
 	return os.Remove(path)
 }
 func (e *Engine) writeBytes(path string, body []byte) error {
-	if e.deps.WriteBytes != nil {
-		return e.deps.WriteBytes(path, body)
+	if e.deps.Storage.WriteBytes != nil {
+		return e.deps.Storage.WriteBytes(path, body)
 	}
 	return os.WriteFile(path, body, 0600)
 }
 func (e *Engine) readFile(path string) ([]byte, error) {
-	if e.deps.ReadFile != nil {
-		return e.deps.ReadFile(path)
+	if e.deps.Storage.ReadFile != nil {
+		return e.deps.Storage.ReadFile(path)
 	}
 	return os.ReadFile(path)
 }
 func (e *Engine) readDir(dir string) ([]string, error) {
-	if e.deps.ReadDir != nil {
-		return e.deps.ReadDir(dir)
+	if e.deps.Storage.ReadDir != nil {
+		return e.deps.Storage.ReadDir(dir)
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -185,8 +219,8 @@ func (e *Engine) readDir(dir string) ([]string, error) {
 	return names, nil
 }
 func (e *Engine) lstat(path string) (os.FileInfo, error) {
-	if e.deps.Lstat != nil {
-		return e.deps.Lstat(path)
+	if e.deps.Storage.Lstat != nil {
+		return e.deps.Storage.Lstat(path)
 	}
 	return os.Lstat(path)
 }
