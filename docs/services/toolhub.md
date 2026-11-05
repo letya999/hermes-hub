@@ -1,6 +1,6 @@
 ---
 description: toolhub — capability gateway: tool admission, governance evaluation, connector lifecycle, audit ledger.
-last_verified: 2026-11-04
+last_verified: 2026-11-05
 ---
 
 # toolhub
@@ -77,6 +77,11 @@ tool call crosses. Listens `0.0.0.0:8090`, host-bound to `127.0.0.1:8090`.
   profile and sibling tokens to; credential-bearing bindings still require
   the explicit `--kind` re-issue because their connection/credential
   revisions are operator state.
+  For first-party file tools, `tools.yaml` path scopes narrow the selected
+  member after policy admission and before backend dispatch. The executor
+  receives the intersected prefix as an `os.Root` boundary. Unsupported
+  host/URL scopes, rule fields and tools without enforceable file paths fail
+  passport compilation before publication; selection does not issue rights.
 - **Control-plane reads**: `POST /v1/tool-call` (owner-pinned, read-effect
   tools only, bounded args — powers `mcp_tool` watch probes and
   `delivery=stream` polls) and `GET /v1/connectors` (caller-scoped inventory

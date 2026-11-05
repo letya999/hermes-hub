@@ -186,6 +186,15 @@ func TestSpaceApplyCompilesSixAuthoredPassports(t *testing.T) {
 		t.Fatal(err)
 	}
 	toolsPath := filepath.Join(space, "passports", "tools.yaml")
+	if err := os.WriteFile(toolsPath, []byte("binding: {profile_id: alice-default, generation: 1}\nextended: {files: {via: toolhub, tools: {include: [file_read]}, scope: {hosts: [example.test]}}}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runSpaceApply(context.Background(), []string{"--dir", space, "--env", "dev", "--confirm"}); err == nil || !strings.Contains(err.Error(), "unsupported scope") {
+		t.Fatalf("unsupported scope reached publication: %v", err)
+	}
+	if current, err := passport.Current(space); err != nil || current != rev.ID {
+		t.Fatalf("rejected scope displaced current revision: %q %v", current, err)
+	}
 	if err := os.WriteFile(toolsPath, []byte("binding: {profile_id: alice-default, generation: 1}\nextended: {files: {via: toolhub}}\n"), 0600); err != nil {
 		t.Fatal(err)
 	}

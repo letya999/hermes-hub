@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/agenttools"
 	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/exposure"
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -582,6 +583,29 @@ var platformPinnedMembers = []string{
 // toolset moves whole into extended) and pins the platform layer in core.
 func checkTools(bodies map[string]map[string]any, docs catalog.Docs) error {
 	t := bodies["tools"]
+	toolSpecs := map[string]api.ToolSpec{}
+	for _, tool := range agenttools.HubToolsDefinition().Tools {
+		toolSpecs[tool.Name] = tool
+	}
+	checkScope := func(name string, raw any) error {
+		scope, ok := raw.(map[string]any)
+		if !ok || len(scope) != 1 {
+			return fmt.Errorf("passport compile: toolset %q has unsupported scope", name)
+		}
+		values, ok := scope["paths"].([]any)
+		if !ok || len(values) == 0 {
+			return fmt.Errorf("passport compile: toolset %q has unsupported scope", name)
+		}
+		for _, rawPath := range values {
+			value, ok := rawPath.(string)
+			if !ok || !api.ValidSelectionPath(value) ||
+				value != "/workspace" && value != "/archive" && value != "/organization" &&
+					!strings.HasPrefix(value, "/workspace/") && !strings.HasPrefix(value, "/archive/") && !strings.HasPrefix(value, "/organization/") {
+				return fmt.Errorf("passport compile: toolset %q has invalid path scope", name)
+			}
+		}
+		return nil
+	}
 	if raw, present := t["binding"]; present {
 		binding, ok := raw.(map[string]any)
 		if !ok || len(binding) != 2 {
@@ -676,15 +700,75 @@ func checkTools(bodies map[string]map[string]any, docs catalog.Docs) error {
 			return nil, fmt.Errorf("passport compile: toolset %q access %q is unsupported", name, access)
 		}
 		if scope, set := spec["scope"]; set {
-			for k := range asMap(scope) {
-				if !slices.Contains([]string{"paths", "hosts", "urls"}, k) {
-					return nil, fmt.Errorf("passport compile: toolset %q scope %q is unsupported", name, k)
+			if via != "toolhub" {
+				return nil, fmt.Errorf("passport compile: toolset %q cannot enforce scope on %q", name, via)
+			}
+			if err := checkScope(name, scope); err != nil {
+				return nil, err
+			}
+		}
+		rules, hasRules := spec["rules"]
+		ruleMap, ok := rules.(map[string]any)
+		if hasRules && !ok {
+			return nil, fmt.Errorf("passport compile: toolset %q has unsupported rules", name)
+		}
+		for rname, rawRule := range ruleMap {
+			if !memberSet[rname] {
+				return nil, fmt.Errorf("passport compile: toolset %q rule names unknown member %q", name, rname)
+			}
+			rule, ok := rawRule.(map[string]any)
+			if !ok || len(rule) != 1 {
+				return nil, fmt.Errorf("passport compile: toolset %q rule %q is unsupported", name, rname)
+			}
+			if err := checkScope(name+"."+rname, rule["scope"]); err != nil {
+				return nil, err
+			}
+			tool, ok := toolSpecs[rname]
+			if !ok || tool.Executor != "handler:files" || len(tool.Uses) == 0 {
+				return nil, fmt.Errorf("passport compile: toolset %q tool %q cannot enforce path scope", name, rname)
+			}
+			for _, use := range tool.Uses {
+				if use.PathArgument != "path" && use.PathArgument != "paths" {
+					return nil, fmt.Errorf("passport compile: toolset %q tool %q cannot enforce path scope", name, rname)
 				}
 			}
 		}
-		for rname := range asMap(spec["rules"]) {
-			if !memberSet[rname] {
-				return nil, fmt.Errorf("passport compile: toolset %q rule names unknown member %q", name, rname)
+		if spec["scope"] != nil || len(ruleMap) > 0 {
+			if via != "toolhub" {
+				return nil, fmt.Errorf("passport compile: toolset %q cannot enforce scope on %q", name, via)
+			}
+			for member := range effective {
+				if spec["scope"] == nil && ruleMap[member] == nil {
+					continue
+				}
+				tool, ok := toolSpecs[member]
+				if ok && spec["access"] == "read" && tool.Effect != api.ReadEffect && ruleMap[member] == nil {
+					continue
+				}
+				if spec["scope"] != nil && ruleMap[member] != nil {
+					outer := spec["scope"].(map[string]any)["paths"].([]any)
+					inner := ruleMap[member].(map[string]any)["scope"].(map[string]any)["paths"].([]any)
+					overlaps := false
+					for _, a := range outer {
+						for _, b := range inner {
+							left, right := a.(string), b.(string)
+							if left == right || strings.HasPrefix(left, right+"/") || strings.HasPrefix(right, left+"/") {
+								overlaps = true
+							}
+						}
+					}
+					if !overlaps {
+						return nil, fmt.Errorf("passport compile: toolset %q tool %q has disjoint path scopes", name, member)
+					}
+				}
+				if !ok || tool.Executor != "handler:files" || len(tool.Uses) == 0 {
+					return nil, fmt.Errorf("passport compile: toolset %q tool %q cannot enforce path scope", name, member)
+				}
+				for _, use := range tool.Uses {
+					if use.PathArgument != "path" && use.PathArgument != "paths" {
+						return nil, fmt.Errorf("passport compile: toolset %q tool %q cannot enforce path scope", name, member)
+					}
+				}
 			}
 		}
 		out := make([]string, 0, len(effective))

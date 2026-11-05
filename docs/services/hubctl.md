@@ -1,6 +1,6 @@
 ---
 description: hubctl — host-side control CLI: stack lifecycle, builds, spaces, grants, connector controllers.
-last_verified: 2026-11-04
+last_verified: 2026-11-05
 ---
 
 # hubctl
@@ -15,7 +15,8 @@ a human confirmation link minted through the communication gateway.
 
 - **Stack lifecycle**: `init`, `org-init`, `up`, `down`, `logs`, `doctor`,
   `render`, `space apply` (compile six authored passports, classified diff,
-  publish + reconcile under `--confirm`), `apply`.
+  publish + reconcile under `--confirm`; unsupported tool scopes and rules
+  fail compilation before publication), `apply`.
 - **Models**: `models login` (per-service cliproxy OAuth enrollment +
   `model-grants.json` grant recording).
 - **Images**: `build`, `dev-rebuild` (the only sanctioned local build paths —

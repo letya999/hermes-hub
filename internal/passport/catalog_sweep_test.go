@@ -44,9 +44,8 @@ func TestEveryPlaceableToolsetCompiles(t *testing.T) {
 				t.Fatalf("placeable toolset %s via %s rejected: %v", name, via, err)
 			}
 		}
-		// Enforceable surfaces must also accept the full option vocabulary:
-		// include/exclude over real members, access, scope keys and per-member
-		// rules — a cataloged option compile rejects is not executable.
+		// Every surface accepts member filters; only file handlers can
+		// enforce selected path scopes at the executor.
 		if !slices.Contains(ts.Via, "toolhub") && !slices.Contains(ts.Via, "mcp") {
 			continue
 		}
@@ -58,13 +57,17 @@ func TestEveryPlaceableToolsetCompiles(t *testing.T) {
 		// The fixture's own connectors spec carries exclude — merged with an
 		// include probe it would be a genuine contradiction, not a catalog gap.
 		in.User.Docs["tools"] = map[string]any{}
-		in.PlatformCeiling.Docs["tools"] = map[string]any{"extended": map[string]any{name: map[string]any{
+		entry := map[string]any{
 			"via":    ts.Via[0],
 			"tools":  map[string]any{"include": []any{member}},
 			"access": "read",
-			"scope":  map[string]any{"paths": []any{"/workspace"}},
-			"rules":  map[string]any{member: map[string]any{"confirm": true}},
-		}}}
+		}
+		if name == "files" {
+			entry["tools"] = map[string]any{"include": []any{"file_read"}}
+			entry["scope"] = map[string]any{"paths": []any{"/workspace/docs"}}
+			entry["rules"] = map[string]any{"file_read": map[string]any{"scope": map[string]any{"paths": []any{"/workspace/docs/public"}}}}
+		}
+		in.PlatformCeiling.Docs["tools"] = map[string]any{"extended": map[string]any{name: entry}}
 		if _, err := Compile(in); err != nil {
 			t.Fatalf("toolset %s rejects its own option surface: %v", name, err)
 		}
