@@ -51,6 +51,18 @@ tool call crosses. Listens `0.0.0.0:8090`, host-bound to `127.0.0.1:8090`.
   space/environment with memory enabled — only then is the vault opened,
   under a per-user lock so one user's blocked operation never serializes
   another's. A caller-supplied path is never consulted.
+- **Exact-run memory admission** (`memory_run.go`, `api/run_status.go`):
+  a `memory.*` call is admitted only when the published passport gate passes
+  AND the claimed job/run pair verifies against the supervisor lifecycle
+  record (`Gateway.Runs`, `GET /v1/jobs/<id>` over the existing
+  `HUB_RUNTIME_SUPERVISOR_URL` + `HUB_COMMUNICATION_AUTH` control channel).
+  `X-Hub-Job-ID`/`X-Hub-Run-ID` select the record; the record's own fields
+  must prove a `running` private run bound to the caller's principal,
+  context, runtime, environment and current generation. Group and
+  background/system records are explicit `RunKind`s that never admit; an
+  unconfigured or erroring authority denies. The gate sits inside
+  `AuthorizeProjectedCall` so direct, CLI and nested calls share it and
+  every denial lands before the backend.
 - **Multi-tenant auth**: `toolhub-tokens.json` (`HUB_TOOLHUB_TOKENS_FILE`)
   maps sibling-space bearers to full identity envelopes; render/supervisor
   write each sibling's `HUB_RUNTIME_AUTH` in place (same inode → live bind

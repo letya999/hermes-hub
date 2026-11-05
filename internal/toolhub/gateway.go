@@ -59,6 +59,9 @@ type Gateway struct {
 	// vault through the server-rendered bindings (HUB_VAULTS_BY_PRINCIPAL).
 	// Nil when no bindings root is rendered — memory stays unavailable.
 	Vaults *VaultResolver
+	// Runs is the lifecycle-authority seam (supervisor /v1/jobs) consulted by
+	// the exact-run gate for model-facing memory calls. Nil fails closed.
+	Runs api.RunAuthority
 	// CLIRelease drops bounded-cli cells for the caller's principal; the
 	// /v1/cli-jobs/release route uses it for job-end task-cell teardown.
 	CLIRelease  func(context.Context, api.CliReleaseRequest) error

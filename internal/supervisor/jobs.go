@@ -42,10 +42,28 @@ func (m *Manager) jobStatus(w http.ResponseWriter, r *http.Request, id string) {
 	}
 	m.mu.Lock()
 	record, ok := m.jobs[id]
+	// The binding's live generation is read under the same lock so a run
+	// context consumer can compare it against the job's dispatch generation;
+	// the key derives from the stored request fields bindingFor already bound
+	// (ContextID is enforced equal to the scope-derived context at admission),
+	// never re-derived from caller input. A compacted or unbindable record has
+	// no live generation to report.
+	currentGeneration := ""
+	if ok {
+		key := runtimeKey(Binding{PrincipalID: record.Request.PrincipalID, ContextID: record.Request.ContextID, RuntimeMode: "gateway"})
+		if entry := m.items[key]; entry != nil {
+			currentGeneration = entry.Runtime.Generation
+		}
+	}
 	m.mu.Unlock()
 	if !ok {
 		writeJSON(w, 404, map[string]string{"error": "unknown job"})
 		return
 	}
-	writeJSON(w, 200, map[string]any{"job_id": id, "identity": record.Request.Envelope, "status": record.Status, "outcome": record.Response})
+	writeJSON(w, 200, map[string]any{
+		"job_id": id, "identity": record.Request.Envelope, "status": record.Status, "outcome": record.Response,
+		"run_id": record.Response.RunID, "session_id": record.Response.SessionID,
+		"scope_id": record.Request.ScopeID, "trigger": record.Request.Trigger, "channel": record.Request.Channel,
+		"environment": m.environment(), "runtime_generation": record.Generation, "current_generation": currentGeneration,
+	})
 }

@@ -57,7 +57,7 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 	err := g.Store.AuthorizeProjectedCall(auth, projectedName, arguments, g.admitGoverned(auth, func(projected api.ProjectedTool, effective api.EffectiveBinding) (callbackErr error) {
 		authorized = true
 		if strings.HasPrefix(projected.Tool.CapabilityID, "memory.") {
-			if err := g.requireMemoryEnabled(auth.PrincipalID, auth.Environment); err != nil {
+			if err := g.requireMemoryAdmission(ctx, auth, corr); err != nil {
 				return err
 			}
 		}
@@ -125,7 +125,7 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 			return err
 		}
 		if strings.HasPrefix(projected.Tool.CapabilityID, "memory.") {
-			if err := g.requireMemoryEnabled(auth.PrincipalID, auth.Environment); err != nil {
+			if err := g.requireMemoryAdmission(ctx, auth, corr); err != nil {
 				outcome = "preflight-error"
 				return err
 			}
@@ -242,10 +242,6 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 		return nil, &uncertainCallError{operationID: toolOperationID(auth.PrincipalID, auth.ContextID, auth.Environment, corr.JobID, corr.ToolCallID)}
 	}
 	return out, err
-}
-
-func (g *Gateway) requireMemoryEnabled(principal, environment string) error {
-	return memoryEnrollment(g.PassportRoot, principal, environment)
 }
 
 // CallAuthorized is the protected host CLI path; it uses the identical

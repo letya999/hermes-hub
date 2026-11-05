@@ -309,6 +309,10 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 		}
 		gateway.Vaults = resolver
 	}
+	// The lifecycle authority is the supervisor job record over the same
+	// control channel the restart notifier uses; unconfigured leaves Runs nil
+	// and the memory run gate denies every claim — fail closed by absence.
+	gateway.Runs = api.RunAuthorityFromEnv()
 	var secrets credstore.Backend
 	var injector api.CredentialInjector
 	var err error

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"github.com/letya999/hermes-hub/internal/identity"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
@@ -205,5 +206,70 @@ func TestJobsStatusUsesStoredAuthorityAndHidesPrompt(t *testing.T) {
 				t.Fatal("stored audience lost")
 			}
 		}
+	}
+}
+
+// The run-context projection is the lifecycle authority ToolHub's memory
+// gate consumes (SPEC-0098 M2): it must expose the recorded run binding —
+// run/session ids, scope, trigger, channel, the job's dispatch generation
+// and the binding's live generation — so a verifier can tell a live private
+// run from a finished, group, background or superseded one. Everything is
+// read from the durable record and the manager's own config, never from
+// caller-supplied fields.
+func TestJobStatusServesRunContext(t *testing.T) {
+	m, ctxRoot := testManager(t, func(_ context.Context, args ...string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "inspect" {
+			return nil, os.ErrNotExist
+		}
+		return []byte("running"), nil
+	}, func(context.Context, string, string) error { return nil })
+	runtime, err := m.Ensure(context.Background(), binding(ctxRoot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), JobID: "run-ctx", IdempotencyKey: "run-ctx",
+		OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message"}
+	if _, _, err := m.beginJob(request); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.bindJobGeneration(request, runtime.Generation); err != nil {
+		t.Fatal(err)
+	}
+	running := hubruntime.ExecuteResponse{JobID: request.JobID, RunID: "run-1", SessionID: "session-1", RuntimeGeneration: runtime.Generation, Status: "running"}
+	if err := m.finishJobGeneration(request, running, "running", runtime.Generation); err != nil {
+		t.Fatal(err)
+	}
+	get := func() map[string]any {
+		req := httptest.NewRequest(http.MethodGet, "/v1/jobs/run-ctx", nil)
+		req.Header.Set("Authorization", "Bearer secret")
+		response := httptest.NewRecorder()
+		m.Handler().ServeHTTP(response, req)
+		if response.Code != http.StatusOK {
+			t.Fatalf("job status %d: %s", response.Code, response.Body.String())
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		return payload
+	}
+	payload := get()
+	for field, want := range map[string]string{
+		"job_id": request.JobID, "run_id": "run-1", "session_id": "session-1",
+		"status": "running", "environment": m.environment(),
+		"runtime_generation": runtime.Generation, "current_generation": runtime.Generation,
+		"scope_id": "user:alice", "trigger": "message", "channel": "telegram_bot",
+	} {
+		if payload[field] != want {
+			t.Fatalf("%s=%v, want %q", field, payload[field], want)
+		}
+	}
+	// A replaced runtime leaves the job's dispatch generation behind: the
+	// live generation moves, the recorded one does not.
+	m.mu.Lock()
+	m.items[runtimeKey(binding(ctxRoot))].Generation = "replacement-generation"
+	m.mu.Unlock()
+	if got := get(); got["current_generation"] != "replacement-generation" || got["runtime_generation"] != runtime.Generation {
+		t.Fatalf("stale generation not exposed: %v", got)
 	}
 }

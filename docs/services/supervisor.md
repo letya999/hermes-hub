@@ -1,6 +1,6 @@
 ---
 description: supervisor — per-space runtime spawner/manager; owns warm pools, docker exec agent-tools path, control channel.
-last_verified: 2026-11-04
+last_verified: 2026-11-05
 ---
 
 # supervisor
@@ -56,6 +56,15 @@ spaces dir at `/spaces`, project `config/` read-only, and the host
   Skill ref leases require the exact principal, context, runtime and policy
   of a running generation. Spawn failures return an allowlisted `class`:
   `hold`, `backoff`, `policy_rotation`, `spawn` or `unavailable`.
+- `GET /v1/jobs/<id>` serves the durable job record as a run-context
+  projection for lifecycle consumers (SPEC-0098 M2): beside `job_id`,
+  `identity` and `status`/`outcome` it reports `run_id`, `session_id`,
+  `scope_id`, `trigger`, `channel`, the supervisor's own `environment`, the
+  job's dispatch `runtime_generation` and the binding's live
+  `current_generation` read under the manager lock. Every field is durable
+  state or manager config — the caller's job id selects the record and fills
+  nothing in it, so a superseded generation or a compacted record reports
+  itself rather than answering as live.
 - `/v1/runtimes` entries expose a read-only `consumers` projection (lease
   kind, owner class, expiry) and `wait_reason` for expected waits — parked
   approvals/streams are reported, not remediated. Genuine anomalies append
