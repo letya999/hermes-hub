@@ -17,13 +17,14 @@ design_status: accepted
 implementation_status: in_progress
 slices:
   A1-521: done
+  A2-522: blocked
 historical_slices:
   S3.1-state: not_started
   S3.2-api: not_started
   S3.3-dispatch: not_started
 validation:
   documents: passed_2026-11-05
-  just_check: not_run
+  just_check: passed_2026-11-05_exit0_coverage86
   docker_check: not_run
   red_team: not_started
   live_acceptance: not_started
@@ -32,6 +33,9 @@ evidence:
   - "2026-11-05 decomposition update: ADR-0097 and SPEC-0096/0097/0098/0099 define current small assignments; foundation packages/verifies only. First wave is #509/#513/#521. #508 requires #511/#512; #522 requires #521/#514; #523 performs the sole automation owner switch. No new implementation or gate pass claimed; historical evidence below retains its original snapshot."
   - "2026-11-05 GitHub planning: milestone 43 and issues 521, 522, 523 created. GitHub owns current issue status; parallel-work.md defines foundation/worktree assignments. Foundation and implementation worktrees are not created by this planning session."
   - "2026-11-05 #521 (row A1) implemented as commit 553220f3 on branch refactor/m32-track-3-engine-lock (worktree m32-track-3; renamed from codex/m32-track-3 per branch-naming hook): routines.Engine owns its mutex (NewEngine(root, deps) — no borrowed *sync.Mutex); Deps grouped into Storage/Dispatch/Delivery/Events ports plus Signal/ChannelFor/ProbeScript/LangOf; engine->owner is the only lock order (queue-admission callbacks take s.mu inside; event settlement callbacks run outside the engine lock). editRoutine RMW and PatchRoutineFields moved into the engine (EditRoutine/EditOptions); MutateProbingOccurrence added for probing-state transitions. Communication callers migrated: applySourceBatch/resumeOccurrenceBatch/settleEvents/settleStreamResults restructured into short s.mu phases with unlocked engine admission; remaining s.mu-held paths touch only lock-free engine reads (AssignmentForWake, OccurrenceCurrent, LoadSchedule, LoadWatchState, CreationReplay, ReminderState, RoutineDestination, BindRoutineDestination, TaskProbeValue). Regressions: internal/routines/concurrency_test.go (independent lock, concurrent completion/tick, concurrent assignment-wake and schedule mutation), internal/communication/routine_lock_test.go (settle-vs-dispatch deadlock regression). Gates: go test ./internal/routines PASS, go test -race ./internal/routines PASS, go test -race ./internal/communication PASS (200s), go test ./internal/communication PASS (208s), gofmt/vet clean, go build ./... PASS. Durable record formats and user data unchanged; no ToolHub startup wiring, no second clock."
+  - "2026-11-05 #521 gate verification on the committed tree: full just check completed earlier this session on identical code — exit 0, Go statement coverage 86.00% (>=85%); re-verified legs separately post-commit: just lint exit 0, just docs-check exit 0, just config-check exit 0. A duplicate covergo re-run was operator-interrupted mid-suite with no failure observed; the recorded figure is the completed run's measurement."
+  - "2026-11-05 #522 (row A2) BLOCKED — dependency #514 not integrated: GitHub issue #514 OPEN (closedAt null); CHG-0285 (lane 513/514/516/517) implementation_status=in_progress, just_check=not_run, live_acceptance=not_started; TestMemoryRunCannotBorrowOwnerAuthority absent from tree; no exact-run admission code in internal/toolhub/gateway_call.go or supervisor; local dev==6eae50d4 (0 commits ahead of branch base, nothing to merge); sibling worktrees hold only #513 vault resolver (205062ce) and CHG-0283 passport work (15c7978d). Per SPEC-0099 delivery gates (A2 requires #521/#514) and task instruction, dependent implementation stopped; no files copied from unfinished memory worktree, no temporary exact-run substitute invented."
 remaining: [implementation, quality_gates, live_acceptance]
-limitations: []
+limitations:
+  - "#522 A2 cannot start until #514 (exact-run contract, CHG-0285/SPEC-0098 M2) is verified and merged into dev; the host's run-authority check must reuse that contract, not a substitute."
 
