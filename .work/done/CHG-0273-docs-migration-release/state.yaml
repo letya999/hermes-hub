@@ -1,0 +1,25 @@
+schema: 1
+change: CHG-0273
+title: M31.10 Documentation, tools.yaml migration and catalog r5 release
+status: done
+branch: feat/m31-model-tool-surface
+updated: 2026-11-03
+phase: done
+adr: ADR-0094
+spec: SPEC-0093
+requirements: [R5.1, R5.2]
+depends_on: []
+github_milestone: "M31 — Consolidated Model Tool Surface (catalog r5)"
+github_issue: "447"
+design_status: accepted
+implementation_status: done
+slices: {}
+validation:
+  documents: done
+  just_check: pass
+  docker_check: not_applicable
+  red_team: done
+  live_acceptance: not_applicable
+evidence: []
+remaining: []
+limitations: []

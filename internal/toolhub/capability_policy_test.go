@@ -48,10 +48,17 @@ func putGrant(t *testing.T, s *Store, g api.Grant) error {
 }
 
 func managedStore(t *testing.T) (*Store, identity.Envelope, api.CapabilityPolicy, api.CapabilityProfile) {
+	return managedStoreWithExecutor(t, "")
+}
+
+func managedStoreWithExecutor(t *testing.T, executor api.Executor) (*Store, identity.Envelope, api.CapabilityPolicy, api.CapabilityProfile) {
 	t.Helper()
 	s, auth, binding := seededStore(t)
 	definition := remoteDefinition()
 	definition.Version = "2.0.0"
+	if executor != "" {
+		definition.Tools[0].Executor = executor
+	}
 	definition.Tools[0].CapabilityID = "files.read"
 	definition.Tools[0].Uses = []api.CapabilityUse{{Action: "read", Resource: "workspace", PathArgument: "path"}}
 	definition.Tools[0].ArgumentEquals = map[string]string{"scope": "workspace"}
@@ -64,6 +71,7 @@ func managedStore(t *testing.T) (*Store, identity.Envelope, api.CapabilityPolicy
 		t.Fatal(err)
 	}
 	auth.CapabilityProfile, auth.Environment, auth.Generation = "alice-default", "dev", 1
+	auth.Organization = "example"
 	rule := api.CapabilityRule{CapabilityID: "files.read", ImplementationDigest: api.DefinitionDigest(definition), Action: "read", Resource: "workspace", ConnectionID: binding.ConnectionID,
 		PathPrefix: "docs", Limits: api.CapabilityLimits{OutputBytes: 8192, TimeoutSeconds: 10}}
 	policy := api.CapabilityPolicy{Schema: api.SchemaVersion, PolicyID: "org-default", Organization: "example", Members: []string{"alice", "bob"}, Revision: 1,
@@ -71,15 +79,71 @@ func managedStore(t *testing.T) (*Store, identity.Envelope, api.CapabilityPolicy
 	profile := api.CapabilityProfile{Schema: api.SchemaVersion, ProfileID: auth.CapabilityProfile, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID,
 		Environment: auth.Environment, Generation: auth.Generation, PolicyVersion: auth.PolicyVersion, PolicyID: policy.PolicyID, PolicyRevision: policy.Revision,
 		Revision: 1, IssuedBy: "operator", IssuedAt: policy.IssuedAt, Reason: "Reviewed synthetic fixture", Status: api.ActiveStatus,
+		Rights: []api.RightRule{{Capability: "tools", Operation: "use"}},
 		Selections: []api.CapabilitySelection{{CapabilityID: rule.CapabilityID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ImplementationDigest: rule.ImplementationDigest,
 			ToolName: "search", Name: "workspace_read", ConnectionID: binding.ConnectionID}}}
+	policy.RightCeiling = []api.RightRule{
+		{Capability: "tools", Operation: "use"}, {Capability: "tools", Operation: "list"},
+		{Capability: "workspace", Operation: "read"}, {Capability: "workspace", Operation: "write"},
+		{Capability: "models", Operation: "switch"}, {Capability: "observability", Operation: "read_own_logs"},
+		{Capability: "memory", Operation: "search"}, {Capability: "connectors", Operation: "discover"},
+		{Capability: "platform", Operation: "status"}, {Capability: "platform", Operation: "guide"},
+		{Capability: "platform", Operation: "bootstrap"}, {Capability: "platform", Operation: "usage"},
+		{Capability: "research", Operation: "create"}, {Capability: "browser", Operation: "act"},
+		{Capability: "sessions", Operation: "read"}, {Capability: "sessions", Operation: "manage"},
+	}
 	if err := putPolicy(t, s, policy); err != nil {
 		t.Fatal(err)
 	}
 	if err := putProfile(t, s, profile); err != nil {
 		t.Fatal(err)
 	}
+	s.RightsDoc = rightsVocabulary()
+	gov := NewGovernanceStore(filepath.Join(t.TempDir(), "governance.json"))
+	s.RightsLedger = gov.Load
+	mintRight(t, gov, s.RightsDoc, api.NewRightGrant("rightgrant-alice-use", auth.PrincipalID, "tools", "use", "", "fixture", "operator", time.Now().Add(time.Hour)))
 	return s, auth, policy, profile
+}
+
+func TestPublishedToolScopeConstrainsCall(t *testing.T) {
+	s, auth, _, profile := managedStoreWithExecutor(t, "handler:files")
+	profile.Revision++
+	profile.Selections[0].PathScopes = []string{"/workspace/docs/public"}
+	if err := putProfile(t, s, profile); err != nil {
+		t.Fatal(err)
+	}
+	if tools, err := s.ListProjectedTools(auth); err != nil || len(tools) != 1 {
+		t.Fatalf("scoped tool disappeared: %v %v", tools, err)
+	}
+	called := false
+	admit := func(_ api.ProjectedTool, binding api.EffectiveBinding) error {
+		called = true
+		if len(binding.CapabilityScopes) != 1 || binding.CapabilityScopes[0].PathPrefix != "docs/public" {
+			t.Fatalf("scope did not reach executor: %+v", binding.CapabilityScopes)
+		}
+		return nil
+	}
+	if err := s.AuthorizeProjectedCall(auth, "workspace_read", map[string]any{"path": "docs/public/a", "scope": "workspace"}, admit); err != nil || !called {
+		t.Fatalf("allowed call denied: %v", err)
+	}
+	for _, args := range []map[string]any{
+		{"path": "docs/private/a", "scope": "workspace"},
+		{"path": "docs/public/a", "root": "archive", "scope": "workspace"},
+	} {
+		called = false
+		if err := s.AuthorizeProjectedCall(auth, "workspace_read", args, admit); err == nil || called {
+			t.Fatalf("out-of-scope call reached executor: %v %v", args, err)
+		}
+	}
+	profile.Revision++
+	profile.Selections[0].PathScopes = []string{"/workspace/docs/private"}
+	if err := putProfile(t, s, profile); err != nil {
+		t.Fatal(err)
+	}
+	called = false
+	if err := s.AuthorizeProjectedCall(auth, "workspace_read", map[string]any{"path": "docs/public/a", "scope": "workspace"}, admit); err == nil || called {
+		t.Fatalf("old scope survived profile revision: %v", err)
+	}
 }
 
 func TestManagedGroupSnapshotsRequireReviewedRevisions(t *testing.T) {
@@ -149,6 +213,7 @@ func TestManagedGroupSnapshotsRequireReviewedRevisions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	reloaded.RightsDoc, reloaded.RightsLedger = s.RightsDoc, s.RightsLedger
 	if tools, err := reloaded.ListProjectedTools(auth); err != nil || len(tools) != 1 {
 		t.Fatalf("group snapshot lost on restart: %v %v", tools, err)
 	}
@@ -233,7 +298,7 @@ func TestManagedCapabilityDispatchAndNoLegacyFallback(t *testing.T) {
 	if err := s.RequireSelfInstall(auth); err == nil {
 		t.Fatal("legacy install grant leaked into managed profile")
 	}
-	if controls, err := s.AllowedControlOperations(auth); err != nil || len(controls) != 0 {
+	if controls, err := s.AllowedControlOperations(auth); err != nil || len(controls) != 1 || !controls["invoke"] {
 		t.Fatalf("legacy controls leaked: %v %v", controls, err)
 	}
 	profile.Revision++
@@ -552,6 +617,7 @@ func TestManagedAdmissionFencesOtherStoreInstances(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	reader.RightsDoc, reader.RightsLedger = s.RightsDoc, s.RightsLedger
 	writer, err := Load(file)
 	if err != nil {
 		t.Fatal(err)
@@ -623,6 +689,7 @@ func TestManagedAdmissionFenceOnDBStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	reader.RightsDoc, reader.RightsLedger = s.RightsDoc, s.RightsLedger
 	defer reader.CloseDB()
 	writer, err := Load(path)
 	if err != nil {
@@ -745,7 +812,7 @@ func TestManagedRevocationOnOpenMCPSession(t *testing.T) {
 	t.Cleanup(server.Close)
 	client := mcpConnect(t, server.URL, aliceToken)
 	id := client.ID()
-	if listed, err := client.ListTools(t.Context(), nil); err != nil || len(listed.Tools) != 3 || !toolListed(listed, "workspace_read") || !toolListed(listed, "system_guide") || !toolListed(listed, "tools_list") {
+	if listed, err := client.ListTools(t.Context(), nil); err != nil || len(listed.Tools) != 6 || !toolListed(listed, "workspace_read") || !toolListed(listed, "platform_guide") || !toolListed(listed, "tool_search") {
 		t.Fatalf("list: %+v %v", listed, err)
 	}
 	args := &mcp.CallToolParams{Name: "workspace_read", Arguments: map[string]any{"path": "docs/a", "scope": "workspace"}}
@@ -760,7 +827,7 @@ func TestManagedRevocationOnOpenMCPSession(t *testing.T) {
 	if _, err := client.CallTool(t.Context(), args); err == nil {
 		t.Fatal("open session retained revoked capability")
 	}
-	if listed, err := client.ListTools(t.Context(), nil); err != nil || len(listed.Tools) != 2 || !toolListed(listed, "system_guide") || !toolListed(listed, "tools_list") || client.ID() != id {
+	if listed, err := client.ListTools(t.Context(), nil); err != nil || len(listed.Tools) != 5 || !toolListed(listed, "platform_guide") || !toolListed(listed, "tool_search") || client.ID() != id {
 		t.Fatalf("revoke projection/session: %+v %v", listed, err)
 	}
 	if calls.Load() != 1 {
@@ -1313,7 +1380,7 @@ func testManagedSelfInstallAndControlOperations(t *testing.T, mode string) {
 			t.Fatalf("profile-granted op %s denied: %v", op, err)
 		}
 	}
-	for _, op := range []string{"rotate", "revoke", "remove", "invoke", "grant"} {
+	for _, op := range []string{"rotate", "revoke", "remove", "grant"} {
 		if err := s.RequireControlOperation(auth, op); err == nil {
 			t.Fatalf("unlisted control op %s admitted", op)
 		}

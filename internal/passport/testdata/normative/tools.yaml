@@ -18,15 +18,15 @@ core:
 extended:
   ssh:
     via: toolhub
-    tools: {include: [ssh_hosts, ssh_read]}
+    tools: {include: [ssh_list, ssh_read]}
     scope: {hosts: [staging], paths: [/var/log/app]}
   connectors:
     via: toolhub
-    tools: {exclude: [connector_remove]}
+    tools: {exclude: [connector_install]}
     access: read
-  watchers:
+  watches:
     via: toolhub
   browser:
-    via: mcp:playwright
+    via: toolhub
     access: read
     scope: {urls: [https://docs.acme.example]}

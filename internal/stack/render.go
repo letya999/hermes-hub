@@ -17,7 +17,7 @@ func Config(s Settings) M {
 	servers := M{}
 	// The hub executor server is the hub:tools section: governance can cut it
 	// without touching the filesystem contract (the snapshot denies calls too).
-	if s.govAllows(api.SectionHubTools) && (s.Has("workspace") || s.Has("hh") || s.Has("ssh")) {
+	if s.govAllows(api.SectionHubTools) && (s.Has("workspace") || s.Has("ssh")) {
 		e := env("HH_TOKEN", "HH_USER_AGENT")
 		e["HUB_HH_ENABLED"] = fmt.Sprint(s.Has("hh"))
 		e["HUB_ORG_ACTIONS"] = "${HUB_ORG_ACTIONS}"
@@ -32,6 +32,11 @@ func Config(s Settings) M {
 			// bearer only; provider keys stay inside the media service.
 			e["HUB_MEDIA_URL"] = "${HUB_MEDIA_URL}"
 			e["HUB_MEDIA_AUTH"] = "${HUB_MEDIA_AUTH}"
+		}
+		if s.Has("memory_vault") {
+			// The memory tools resolve the vault root off the process env —
+			// the stdio child's env list is the only channel it can inherit.
+			e["HUB_VAULT"] = "${HUB_VAULT}"
 		}
 		if s.Has("ssh") {
 			e["HUB_SSH_CONFIG"] = "/state/ssh/config.yaml"
@@ -84,6 +89,12 @@ func Config(s Settings) M {
 			servers["browser_guest"] = browserServer(s.User, true, s.Has("browser_act"))
 		}
 	}
+	// SPEC-0085 R9: the OpenKnowledge grant is the hub-owned read surface over
+	// the vault — the verified include list renders here so mutation verbs are
+	// never registered with the runtime at all.
+	if s.Has("knowledge_ui") && s.govAllows("native:knowledge_ui") {
+		servers["open_knowledge"] = okServer(s)
+	}
 	// Connectors run behind the ToolHub admission boundary; only via: mcp-raw
 	// selections render raw mcp: definitions directly into mcp_servers.
 	for name, cfg := range rawMCPServers(s) {
@@ -103,7 +114,14 @@ func Config(s Settings) M {
 		case ToolViaNative:
 			// SPEC-0083 R3.3: the native skills loader is always off — the
 			// hub-built read-only view at /skills is the only skill path.
-			if name == "skills" {
+			// memory_vault is likewise a hub-side flag: the vault mounts and
+			// CORE wiring are render-time behavior, never an agent toolset.
+			if name == "skills" || name == "memory_vault" || name == "knowledge_ui" {
+				continue
+			}
+			// SPEC-0085 R1.6: with the vault on the native memory toolset
+			// leaves the surface — its name falls back onto the denylist.
+			if name == "memory" && s.Has("memory_vault") {
 				continue
 			}
 			if !slices.Contains(toolsets, mapped) {
@@ -138,7 +156,10 @@ func Config(s Settings) M {
 	// read-only /skills mount; the upstream loader gets nothing to scan and
 	// the sealed /state/hermes/skills stays empty.
 	skills := M{}
-	memory := M{"memory_enabled": s.Memory || s.toolEntry("memory").enabled(), "user_profile_enabled": s.Memory || s.toolEntry("memory").enabled()}
+	// SPEC-0085 R1.6: memory_vault replaces the native memory toolset — the
+	// subsystem flag renders false however the space asked for it.
+	nativeMemory := (s.Memory || s.toolEntry("memory").enabled()) && !s.Has("memory_vault")
+	memory := M{"memory_enabled": nativeMemory, "user_profile_enabled": nativeMemory}
 	// Keep long-running connector work alive when a user sends a follow-up. Hermes'
 	// default interrupt mode cancels the active MCP call; queue mode preserves FIFO
 	// turns and lets the existing heartbeat notify the user while a build runs.

@@ -12,14 +12,15 @@ import (
 
 // The rights PDP (SPEC-0092 R2.2): every protected action asks
 // Store.Decide(envelope, capability, operation, scope) before acting. The
-// decision intersects three authorities:
+// decision intersects four authorities:
 //
 //  1. vocabulary — RightsDoc from the immutable platform catalog release the
 //     image ships; unknown capability.operation never allows;
 //  2. ceiling — the managed capability profile's Rights rows, the flattened
 //     grants.yaml allow the published revision carried (unmanaged callers
 //     skip this layer: the live ledger alone bounds them);
-//  3. ledger — Governance.Rights grants: active, unexpired, scope-covering.
+//  3. organization right ceiling — the active policy's protected maximum;
+//  4. ledger — Governance.Rights grants: active, unexpired, scope-covering.
 //
 // A revoke flips the ledger record, so the next Decide denies without a
 // republish; Epoch reports the governance revision the verdict was taken at.
@@ -36,7 +37,7 @@ func (s *Store) decideLocked(auth identity.Envelope, capability, operation, scop
 		if err != nil {
 			return api.RightDecision{Reason: "capability profile unavailable"}, err
 		}
-		ceiling = profile.Rights
+		ceiling = s.managedRightCeilingLocked(profile)
 	}
 	return s.decideCoreLocked(auth.PrincipalID, ceiling, enforce, capability, operation, scope, now)
 }
@@ -71,10 +72,8 @@ func (s *Store) decideCoreLocked(principal string, ceiling []api.RightRule, enfo
 }
 
 // DecideAsserted serves trusted in-space services: they hold the
-// control-plane bearer and assert this space's principal. The ceiling
-// resolves from that principal's active capability profile — a profile
-// carrying no Rights rows enforces nothing (legacy posture), exactly like
-// the envelope path.
+// control-plane bearer and assert this space's principal and environment.
+// Missing or mismatched profiles enforce an empty ceiling.
 func (s *Store) DecideAsserted(principal, environment, capability, operation, scope string, now time.Time) (api.RightDecision, error) {
 	if !identity.ValidID(principal) {
 		return api.RightDecision{Reason: "principal invalid"}, fmt.Errorf("%w: asserted principal", api.ErrInvalid)
@@ -84,8 +83,7 @@ func (s *Store) DecideAsserted(principal, environment, capability, operation, sc
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	ceiling, found := s.profileCeilingLocked(principal, environment)
-	return s.decideCoreLocked(principal, ceiling, found, capability, operation, scope, now.UTC())
+	return s.decideCoreLocked(principal, s.profileCeilingLocked(principal, environment), true, capability, operation, scope, now.UTC())
 }
 
 // HasActiveProfile reports whether the principal owns any active capability
@@ -102,26 +100,45 @@ func (s *Store) HasActiveProfile(principal string) bool {
 	return false
 }
 
-// profileCeilingLocked resolves the active profile bound to principal; an
-// environment argument narrows the match when several profiles exist.
-func (s *Store) profileCeilingLocked(principal, environment string) ([]api.RightRule, bool) {
-	var fallback *api.CapabilityProfile
+// profileCeilingLocked resolves the exact active principal/environment pair.
+func (s *Store) profileCeilingLocked(principal, environment string) []api.RightRule {
+	if environment != "dev" && environment != "prod" {
+		return nil
+	}
+	var ceiling []api.RightRule
+	found := false
 	for _, profile := range s.capabilityProfiles {
-		if profile.PrincipalID != principal || profile.Status != api.ActiveStatus {
+		if profile.PrincipalID != principal || profile.Status != api.ActiveStatus || profile.Environment != environment {
 			continue
 		}
-		if environment != "" && profile.Environment == environment {
-			return profile.Rights, true
+		if policy, ok := s.capabilityPolicies[profile.PolicyID]; !ok || policy.Status != api.ActiveStatus || policy.Revision != profile.PolicyRevision {
+			continue
 		}
-		if fallback == nil {
-			copy := profile
-			fallback = &copy
+		if found {
+			return nil // asserted calls cannot choose between live generations
+		}
+		ceiling, found = s.managedRightCeilingLocked(profile), true
+	}
+	return ceiling
+}
+
+// An organization policy is an independent, live upper bound on the
+// published grants ceiling. A missing or rotated policy grants nothing.
+func (s *Store) managedRightCeilingLocked(profile api.CapabilityProfile) []api.RightRule {
+	policy, ok := s.policyAtRevisionLocked(profile.PolicyID, profile.PolicyRevision)
+	if !ok || !slices.Contains(policy.Members, profile.PrincipalID) {
+		return nil
+	}
+	if policy.Organization == "" {
+		return profile.Rights
+	}
+	var ceiling []api.RightRule
+	for _, right := range profile.Rights {
+		if slices.Contains(policy.RightCeiling, right) {
+			ceiling = append(ceiling, right)
 		}
 	}
-	if fallback != nil {
-		return fallback.Rights, true
-	}
-	return nil, false
+	return ceiling
 }
 
 // Decide is the single policy decision point every PEP calls.
@@ -205,9 +222,9 @@ func (s *Store) RightsGated(auth identity.Envelope, capability, operation string
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	profile, _, err := s.capabilityProfileLocked(auth)
-	if err != nil || len(profile.Rights) == 0 {
-		return false, nil
+	_, _, err := s.capabilityProfileLocked(auth)
+	if err != nil {
+		return true, err
 	}
 	decision, err := s.decideLocked(auth, capability, operation, "", now.UTC())
 	if err != nil {
@@ -217,20 +234,21 @@ func (s *Store) RightsGated(auth identity.Envelope, capability, operation string
 }
 
 // rightsMissingLocked returns the declared rights the PDP denies for this
-// caller — nil when the profile carries no ceiling (unmanaged or legacy
-// profile: the requires gate does not apply there).
+// managed caller. An empty published ceiling denies every required right.
 func (s *Store) rightsMissingLocked(auth identity.Envelope, profile api.CapabilityProfile, tool api.ToolSpec, now time.Time) []string {
-	if len(profile.Rights) == 0 || len(tool.Requires) == 0 {
-		return nil
-	}
 	var missing []string
-	for _, right := range tool.Requires {
+	seen := map[string]bool{}
+	for _, right := range append([]string{"tools.use"}, tool.Requires...) {
+		if seen[right] {
+			continue
+		}
+		seen[right] = true
 		capability, operation, ok := strings.Cut(right, ".")
 		if !ok {
 			missing = append(missing, right)
 			continue
 		}
-		decision, err := s.decideLocked(auth, capability, operation, "", now)
+		decision, err := s.decideCoreLocked(auth.PrincipalID, s.managedRightCeilingLocked(profile), true, capability, operation, "", now)
 		if err != nil || !decision.Allow {
 			missing = append(missing, right)
 		}
@@ -261,9 +279,6 @@ func (s *Store) RightsDenials(auth identity.Envelope) ([]RightsDenial, error) {
 	profile, _, err := s.capabilityProfileLocked(auth)
 	if err != nil {
 		return nil, nil // no usable profile → nothing to attribute
-	}
-	if len(profile.Rights) == 0 {
-		return nil, nil
 	}
 	now := time.Now().UTC()
 	var out []RightsDenial

@@ -47,6 +47,22 @@ func TestSelectExecutionApplyRefusesActiveComputeAndPreservesPartialRender(t *te
 			if err := stack.Init(dir, "alice"); err != nil {
 				t.Fatal(err)
 			}
+			if err := os.WriteFile(filepath.Join(dir, "passports", "models.yaml"),
+				[]byte("default: m\nroutes:\n  m: {ladder: [upstream]}\nservices:\n  upstream: {via: openai-compatible, endpoint: http://model-relay:8318/v1, models: [{id: m}]}\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			// An external-supervisor selection renders no in-project
+			// control plane: infra: false keeps the declared shared
+			// services out of the local render's plan check.
+			if err := os.WriteFile(filepath.Join(dir, "passports", "stack.yaml"),
+				[]byte("identity: {user: alice, infra: false}\nservices:\n  hermes-runtime: {mode: supervised}\n  toolhub: {mode: shared}\n  model-relay: {mode: shared}\n  cliproxy: {mode: shared}\n  communication-hub: {mode: shared}\n  credential-broker: {mode: shared}\n  supervisor: {mode: shared}\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "passports", "config.yaml"),
+				[]byte("runtime: {timezone: UTC}\nmemory: {enabled: false}\nchannels:\n  telegram: {bot: {ref: telegram-bot-alice}}\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			publishAuthored(t, dir, "prod")
 			if _, err := communication.NewSpool(spoolDir); err != nil {
 				t.Fatal(err)
 			}
@@ -120,6 +136,11 @@ func TestExecutionCommandsDryRunAndAudit(t *testing.T) {
 	if err := stack.Init(dir, "alice"); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, "passports", "models.yaml"),
+		[]byte("default: m\nroutes:\n  m: {ladder: [upstream]}\nservices:\n  upstream: {via: openai-compatible, endpoint: http://model-relay:8318/v1, models: [{id: m}]}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	publishAuthored(t, dir, "prod")
 	if _, err := communication.NewSpool(spool); err != nil {
 		t.Fatal(err)
 	}

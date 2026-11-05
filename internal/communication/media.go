@@ -70,17 +70,6 @@ func serviceSynthesizer(base, auth, voice string, voices map[locale.Lang]string)
 	return nil
 }
 
-// commandAvailable reports whether the configured worker binary can actually
-// run: an empty command or an unresolvable path both mean "not available".
-func commandAvailable(command string) bool {
-	command = strings.TrimSpace(command)
-	if command == "" {
-		return false
-	}
-	_, err := exec.LookPath(command)
-	return err == nil
-}
-
 type CommandTranscriber struct {
 	Command string
 	Timeout time.Duration
@@ -256,7 +245,7 @@ func (g *Gateway) enqueueMediaJob(ctx context.Context, update Update, user User,
 	if err != nil {
 		return g.queueDelivery(ctx, "telegram-"+strconv.Itoa(update.UpdateID)+"-reply", message.Chat.ID, topic, locale.T(locale.LangOf(user.WorkspaceDir), "media.task-failed"))
 	}
-	return g.enqueueChannelJob(ctx, user, task, "telegram_bot", "telegram-"+strconv.Itoa(update.UpdateID), "telegram:"+strconv.Itoa(update.UpdateID), message.Chat.ID, message.MessageID, text, message.From.ID, inboundID)
+	return g.enqueueChannelJob(ctx, user, task, "telegram_bot", "telegram-"+strconv.Itoa(update.UpdateID), "telegram:"+strconv.Itoa(update.UpdateID), message.Chat.ID, message.MessageID, text, message.From.ID, inboundID, message.ForwardOrigin != nil)
 }
 
 func rejectMedia(e MediaEnvelope, maxDuration int) error {

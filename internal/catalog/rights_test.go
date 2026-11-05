@@ -9,10 +9,21 @@ import (
 // specRightsTable is the normative SPEC-0092 capability table: every domain
 // and operation an agent may ever be granted, with the expected subject.
 var specRightsTable = map[string]map[string]string{
-	"workspace":     {"read": "self", "write": "self", "create_project": "self", "read_other": "cross"},
-	"memory":        {"read": "self", "search": "self", "remember": "self"},
-	"models":        {"list": "self", "use": "self", "switch": "self"},
-	"tools":         {"list": "self", "select": "self"},
+	"workspace":     {"read": "self", "write": "self", "create_project": "self", "read_other": "cross", "configure": "self"},
+	"memory":        {"read": "self", "search": "self", "remember": "self", "edit": "self", "dreaming": "self"},
+	"models":        {"list": "self", "use": "self", "switch": "self", "configure": "self"},
+	"sessions":      {"list": "self", "read": "self", "search": "self", "switch": "self", "manage": "self"},
+	"tasks":         {"schedule": "self", "observe": "self", "delegate": "self"},
+	"ssh":           {"list": "self", "read": "self", "write": "self", "exec": "self", "shell": "self", "tunnel": "self"},
+	"exposure":      {"list": "self", "create": "self", "remove": "self"},
+	"research":      {"create": "self", "read": "self"},
+	"browser":       {"open": "self", "read": "self", "act": "self", "capture": "self"},
+	"platform":      {"guide": "self", "status": "self", "usage": "self", "bootstrap": "self"},
+	"exec":          {"run": "self"},
+	"web":           {"search": "self", "read": "self"},
+	"context":       {"read": "self", "edit": "self"},
+	"goals":         {"read": "self", "edit": "self", "remove": "self"},
+	"tools":         {"list": "self", "use": "self", "configure": "self"},
 	"skills":        {"list": "self", "invoke": "self", "draft": "self", "publish": "self"},
 	"connectors":    {"discover": "self", "prepare": "self", "enable": "self", "disable": "self", "remove": "self", "share": "cross"},
 	"agents":        {"inspect_self": "self", "restart_self": "self", "monitor_self": "self", "inspect_other": "cross"},
@@ -21,6 +32,7 @@ var specRightsTable = map[string]map[string]string{
 	"config":        {"read": "self", "edit_own": "self"},
 	"channels":      {"send": "self", "send_voice": "self"},
 	"observability": {"read_own_logs": "self", "read_logs": "cross"},
+	"grants":        {"configure": "self"},
 }
 
 func TestRightsCatalogMatchesSpecTable(t *testing.T) {

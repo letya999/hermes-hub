@@ -299,6 +299,11 @@ func TestSkillApproveRebuildsEffectiveView(t *testing.T) {
 	if err := run(ctx, []string{"init", "--dir", dir, "--user", "me"}); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, "passports", "models.yaml"),
+		[]byte("default: m\nroutes:\n  m: {ladder: [upstream]}\nservices:\n  upstream: {via: openai-compatible, endpoint: http://model-relay:8318/v1, models: [{id: m}]}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	publishAuthored(t, dir, "prod")
 	st, err := skillstore.Open(filepath.Join(dir, "skills"), skillstore.ScopeUser)
 	if err != nil {
 		t.Fatal(err)
@@ -325,6 +330,11 @@ func TestSkillOpsRefreshEffectiveView(t *testing.T) {
 	if err := run(ctx, []string{"init", "--dir", dir, "--user", "me"}); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, "passports", "models.yaml"),
+		[]byte("default: m\nroutes:\n  m: {ladder: [upstream]}\nservices:\n  upstream: {via: openai-compatible, endpoint: http://model-relay:8318/v1, models: [{id: m}]}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	publishAuthored(t, dir, "prod")
 	md := filepath.Join(t.TempDir(), "SKILL.md")
 	write := func(body string) {
 		t.Helper()
@@ -387,7 +397,7 @@ func TestSkillOpsRefreshEffectiveView(t *testing.T) {
 func TestSkillPromotePublishesOrgDraft(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
-	dir := filepath.Join(root, "spaces", "me")
+	dir := filepath.Join(root, "spaces", "owner")
 	orgDir := filepath.Join(root, "spaces", "acme")
 	if err := run(ctx, []string{"org-init", "--org", "acme", "--org-dir", orgDir, "--user", "owner"}); err != nil {
 		t.Fatal(err)
@@ -395,6 +405,11 @@ func TestSkillPromotePublishesOrgDraft(t *testing.T) {
 	if err := run(ctx, []string{"init", "--dir", dir, "--user", "owner", "--org", "acme"}); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, "passports", "models.yaml"),
+		[]byte("default: m\nroutes:\n  m: {ladder: [upstream]}\nservices:\n  upstream: {via: openai-compatible, endpoint: http://model-relay:8318/v1, models: [{id: m}]}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	publishAuthored(t, dir, "prod")
 	orgStore, err := skillstore.Open(filepath.Join(orgDir, "skills"), skillstore.ScopeOrg)
 	if err != nil {
 		t.Fatal(err)

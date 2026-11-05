@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"golang.org/x/crypto/ssh"
-	"gopkg.in/yaml.v3"
 )
 
 // writeSSHConfig gives Render a valid per-owner SSH capability config.
@@ -78,38 +77,43 @@ func TestSSHRenderMountsConfigAndWiresEnv(t *testing.T) {
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
+	publishManagedRevision(t, d, "me", "r-0000000000000001")
 	writeSSHConfig(t, d)
-	s, err := Read(d)
+	s, err := ReadEffective(d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.Model = "test"
 	s.ModelURL = "http://host.docker.internal:8317/v1"
 	s.Tools, s.Ingress = testTools("ssh", "ssh_write", "ssh_tunnel"), testIngress("ssh", "ssh_write", "ssh_tunnel")
-	if err = WriteSpace(d, s); err != nil {
+	if err = saveSpace(t, d, s); err != nil {
 		t.Fatal(err)
 	}
 	if err = RenderEnvironment(d, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
-	compose, err := os.ReadFile(filepath.Join(d, "generated", "compose.prod.yaml"))
-	if err != nil {
-		t.Fatal(err)
+	// Managed runtimes are supervisor-spawned: the ssh state dir is a
+	// read-only mount in the RuntimeService spawn contract, not the compose
+	// file.
+	found := false
+	for _, v := range RuntimeService(s, root, d)["volumes"].([]any) {
+		m := v.(M)
+		if m["target"] == "/state/ssh" {
+			if m["read_only"] != true {
+				t.Fatal("ssh config mount must be read-only")
+			}
+			found = true
+		}
 	}
-	text := string(compose)
-	if !strings.Contains(text, "target: /state/ssh") || !strings.Contains(text, "read_only: true") {
-		t.Fatal("ssh config mount missing or writable")
+	if !found {
+		t.Fatal("ssh config mount missing from RuntimeService")
 	}
-	hermes, err := os.ReadFile(filepath.Join(d, "generated", "hermes.prod.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var rendered map[string]any
-	if err = yaml.Unmarshal(hermes, &rendered); err != nil {
-		t.Fatal(err)
-	}
-	hub := rendered["mcp_servers"].(map[string]any)["hub"].(map[string]any)
-	env := hub["env"].(map[string]any)
+	// The HUB_SSH_* env lives on the unmanaged `hub` stdio server — managed
+	// execution reaches the ssh config through ToolHub.
+	unmanaged := s
+	unmanaged.CapabilityMode = ""
+	hub := Config(unmanaged)["mcp_servers"].(M)["hub"].(M)
+	env := hub["env"].(M)
 	if env["HUB_SSH_CONFIG"] != "/state/ssh/config.yaml" || env["HUB_SSH_WRITE"] != "true" || env["HUB_SSH_TUNNEL"] != "true" || env["HUB_SSH_SHELL"] != "false" {
 		t.Fatalf("ssh env wrong: %v", env)
 	}
@@ -124,12 +128,13 @@ func TestSSHRenderFailsClosedOnBrokenConfig(t *testing.T) {
 	if err := Init(d, "me"); err != nil {
 		t.Fatal(err)
 	}
-	s, err := Read(d)
+	publishManagedRevision(t, d, "me", "r-0000000000000001")
+	s, err := ReadEffective(d, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.Tools, s.Ingress = testTools("ssh"), testIngress("ssh")
-	if err = WriteSpace(d, s); err != nil {
+	if err = saveSpace(t, d, s); err != nil {
 		t.Fatal(err)
 	}
 	if err = RenderEnvironment(d, root, "prod"); err == nil {

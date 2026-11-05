@@ -21,10 +21,18 @@ func TestSiblingCliproxyInitReadsInfraMaterializedVolume(t *testing.T) {
 	if err := os.MkdirAll(infraSpace, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(infraSpace, "agent.yaml"), []byte("infra: true\n"), 0600); err != nil {
+	// The infra claim lives in the authored stack passport — identity.user
+	// must match the space directory or the claim does not count.
+	if err := os.MkdirAll(filepath.Join(infraSpace, "passports"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(alice, "agent.yaml"), []byte("infra: false\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(infraSpace, "passports", "stack.yaml"), []byte("identity: {user: infraowner, infra: true}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(alice, "passports"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(alice, "passports", "stack.yaml"), []byte("identity: {user: alice, infra: false}\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	s := managedPassportSibling()

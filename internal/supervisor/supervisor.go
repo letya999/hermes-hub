@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/letya999/hermes-hub/internal/diagnostics"
+	"github.com/letya999/hermes-hub/internal/passportview"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"net"
@@ -653,8 +654,8 @@ func (m *Manager) bindingFor(request hubruntime.ExecuteRequest) (Binding, error)
 		return Binding{}, errors.New("invalid runtime binding")
 	}
 	if strings.HasPrefix(request.ScopeID, "group:") {
-		scope, err := stack.ReadScope(filepath.Join(m.cfg.SpacesRoot, contextID))
-		if err != nil || scope.Kind != stack.GroupScope || scope.ID != contextID {
+		eff, err := passportview.LoadEffective(filepath.Join(m.cfg.SpacesRoot, contextID))
+		if err != nil || eff.Stack.Identity.Kind != string(stack.GroupScope) || eff.Stack.Identity.User != contextID {
 			return Binding{}, errors.New("group requires a dedicated group home")
 		}
 	}

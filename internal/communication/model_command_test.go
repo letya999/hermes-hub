@@ -135,6 +135,38 @@ func TestModelCommandWithoutRelay(t *testing.T) {
 	}
 }
 
+// On a shared gateway the env pair is the space owner's contract
+// (HUB_USER_ID): a sibling principal carrying the same env must still
+// resolve its own relay through the enrolled admins file — the env pair
+// can never shadow a sibling's routing.
+func TestModelRelayEnvPairScopesToGatewayOwner(t *testing.T) {
+	var bobHit bool
+	bobRelay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bobHit = true
+		_, _ = io.WriteString(w, `{"data":[{"id":"default"}]}`)
+	}))
+	defer bobRelay.Close()
+	t.Setenv("HUB_USER_ID", "local")
+	t.Setenv("HUB_MODEL_RELAY_URL", "http://env-relay.invalid:8318")
+	t.Setenv("HUB_MODEL_RELAY_ADMIN", "env-admin")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "model-relay-admins.json")
+	if err := os.WriteFile(path, []byte(fmt.Sprintf(`{"bob":{"url":%q,"admin":"bob-admin"}}`, bobRelay.URL)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_MODEL_RELAY_ADMINS_FILE", path)
+
+	base, admin := modelRelayFor("bob")
+	if base != bobRelay.URL || admin != "bob-admin" {
+		t.Fatalf("sibling resolved the env pair instead of its own relay: %q %q", base, admin)
+	}
+	base, admin = modelRelayFor("local")
+	if base != "http://env-relay.invalid:8318" || admin != "env-admin" {
+		t.Fatalf("owner lost the env pair: %q %q", base, admin)
+	}
+	_ = bobHit
+}
+
 // A relay without /v1/registry (env-mode or older build) still lists models —
 // the account view degrades to the plain catalog, never an error.
 func TestModelCommandListsWithoutRegistryEndpoint(t *testing.T) {

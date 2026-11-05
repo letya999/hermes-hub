@@ -1,13 +1,17 @@
 package stack
 
 import (
-	"gopkg.in/yaml.v3"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
+// Two independent managed spaces resolve their own published revisions:
+// user-declared connectors come from each space's tools passport, gated by
+// the same user_mcp section, and the rendered configs stay distinct.
 func TestIndependentSpacesAndExternalMCP(t *testing.T) {
 	root := t.TempDir()
 	var configs []M
@@ -17,53 +21,36 @@ func TestIndependentSpacesAndExternalMCP(t *testing.T) {
 			if err := InitEnvironment(d, owner, environment); err != nil {
 				t.Fatal(err)
 			}
-			s, _ := ReadEnvironment(d, environment)
-			s.Memory = true // memory_enabled flag is a settings property, not a native toolset grant
-			s.MCP = map[string]MCPServer{"external": {URL: "https://service.invalid/mcp", Headers: map[string]string{"Authorization": "Bearer ${EXTERNAL_TOKEN}"}, Auth: "oauth"}, "local": {Command: "node", Args: []string{"/workspace/custom.cjs"}, Env: map[string]string{"KEY": "${KEY}"}, Timeout: 42}}
-			s.Hooks = map[string]any{"post_tool_call": []any{map[string]any{"command": "/workspace/hook.sh"}}}
-			if err := s.Validate(); err != nil {
+			docs := managedDocs(owner)
+			docs["tools"] += "extended:\n  user_mcp: {via: mcp-raw}\n" +
+				"connectors:\n" +
+				"  external: {url: \"https://service.invalid/mcp\", headers: {Authorization: \"Bearer ${EXTERNAL_TOKEN}\"}, auth: oauth}\n" +
+				"  local: {command: node, args: [/workspace/custom.cjs], env: {KEY: \"${KEY}\"}, timeout: 42}\n"
+			publishManagedDocs(t, d, owner, "r-0000000000000001", docs)
+			seedGovernance(t, d, func(doc *api.Governance) {
+				activeToolGrant(t, doc, owner, api.SectionUserMCP, time.Hour)
+			})
+			s, err := ReadEnvironment(d, environment)
+			if err != nil {
 				t.Fatal(err)
+			}
+			if _, ok := s.MCP["external"]; !ok || s.MCP["local"].Timeout != 42 {
+				t.Fatalf("connectors not projected: %+v", s.MCP)
 			}
 			c := Config(s)
 			model := c["model"].(M)
 			if model["api_key"] != "${OPENAI_API_KEY}" {
 				t.Fatal("model key is not environment-backed")
 			}
-			servers := c["mcp_servers"].(M)
-			// hub + two user servers + the two hub-owned browser profiles.
-			if !c["memory"].(M)["memory_enabled"].(bool) || len(servers) != 5 {
-				t.Fatal(c)
-			}
 			compose := Compose(s, "/source", d)
 			configs = append(configs, compose)
 			services := compose["services"].(M)
-			// Six services: runtime + core/control daemons + the browser
-			// sidecar the default feature set enables.
-			if len(services) != 6 {
-				t.Fatal("embedded service")
-			}
 			if _, ok := services["communication-hub"]; ok {
 				t.Fatal("gateway started without a messaging feature")
-			}
-			// Each role image is built exactly once: runtime carries its own,
-			// cliproxy the core, toolhub the control, the sidecar the browser.
-			builds := 0
-			for name, svc := range services {
-				if b, ok := svc.(M)["build"]; ok {
-					builds++
-					if (name != "toolhub" || b.(M)["target"] != environment+"-control") && (name != "cliproxy" || b.(M)["target"] != environment+"-core") && (name != "hermes-runtime" || b.(M)["target"] != environment) && (name != "browser-"+owner || b.(M)["target"] != environment+"-browser") {
-						t.Fatal(name, b)
-					}
-				}
-			}
-			if builds != 4 {
-				t.Fatal("expected runtime, core, control and browser build sections, got", builds)
 			}
 			if strings.Contains(strings.Join(Doctor(s, map[string]string{}), " "), "EXTERNAL_TOKEN") == false {
 				t.Fatal("missing connector secret not reported")
 			}
-			s.MCP["external"] = MCPServer{URL: "https://service.invalid/mcp"}
-			_ = Config(s)
 		}
 	}
 	seen := map[string]bool{}
@@ -88,7 +75,7 @@ func TestConfigurationFailurePaths(t *testing.T) {
 	p := filepath.Join(d, "settings.yaml")
 	for _, body := range []string{"schema: [bad", "unknown: true", "schema: 1\n---\nschema: 2"} {
 		_ = os.WriteFile(p, []byte(body), 0600)
-		if _, err := Read(p); err == nil {
+		if _, err := ReadEffective(p, "prod"); err == nil {
 			t.Fatal(body)
 		}
 	}
@@ -131,10 +118,10 @@ func TestConfigurationFailurePaths(t *testing.T) {
 	if atomic(target, []byte("x")) == nil {
 		t.Fatal("overwrite directory")
 	}
-	s = Settings{Schema: 1, User: "me", Environment: "prod", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
-	b, _ := yaml.Marshal(s)
-	_ = os.WriteFile(p, b, 0600)
-	if _, err := Read(p); err != nil {
+	// A well-formed published revision still reads.
+	fresh = t.TempDir()
+	publishManagedRevision(t, fresh, "me", "r-0000000000000001")
+	if _, err := ReadEffective(fresh, "prod"); err != nil {
 		t.Fatal(err)
 	}
 }

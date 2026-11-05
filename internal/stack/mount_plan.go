@@ -20,10 +20,9 @@ type PlanMount struct {
 
 // MountPlan projects the workspace passport into container binds: the
 // published /config view, the /workspace base with read-only sub-binds for
-// every read_only subtree inside it, the /vault skeleton split by mode,
-// the effective skills view and every declared /shared/* mount resolved
+// every read_only subtree inside it, the effective skills view and every declared /shared/* mount resolved
 // through the same scope and credential checks legacy mounts used. wsBase
-// is the workspace/vault parent — the space dir for unmanaged runtimes,
+// is the workspace parent — the space dir for unmanaged runtimes,
 // managed/<env> for managed ones.
 func MountPlan(dir, env, wsBase string, s Settings, ws passportview.Workspace) []PlanMount {
 	plan := []PlanMount{
@@ -40,12 +39,7 @@ func MountPlan(dir, env, wsBase string, s Settings, ws passportview.Workspace) [
 			plan = append(plan, PlanMount{Source: filepath.Join(wsBase, filepath.FromSlash(p)), Target: p, ReadOnly: true})
 		}
 	}
-	plan = append(plan,
-		PlanMount{Source: filepath.Join(wsBase, "vault", "memory"), Target: "/vault/memory", ReadOnly: true},
-		PlanMount{Source: filepath.Join(wsBase, "vault", "library"), Target: "/vault/library"},
-		PlanMount{Source: filepath.Join(wsBase, "vault", "attachments"), Target: "/vault/attachments"},
-		PlanMount{Source: GeneratedEffectiveSkillsDir(dir), Target: "/skills", ReadOnly: true},
-	)
+	plan = append(plan, PlanMount{Source: GeneratedEffectiveSkillsDir(dir), Target: "/skills", ReadOnly: true})
 	targets := make([]string, 0, len(ws.Mounts))
 	for t := range ws.Mounts {
 		targets = append(targets, t)
@@ -63,13 +57,13 @@ func MountPlan(dir, env, wsBase string, s Settings, ws passportview.Workspace) [
 }
 
 // MaterializeWorkspaceLayout creates every host directory the workspace
-// passport's boundary and the MountPlan's fixed skeleton need under wsBase.
+// passport's boundary and the MountPlan's fixed workspace need under wsBase.
 // It creates directories only — never memory content — and never descends
 // into existing trees such as workspace/projects (SPEC-0092 R5.2).
 func MaterializeWorkspaceLayout(wsBase string, ws passportview.Workspace) error {
-	names := []string{"workspace", "vault/memory", "vault/library", "vault/attachments"}
+	names := []string{"workspace"}
 	for _, p := range slices.Concat(ws.Writable, ws.ReadOnly) {
-		if strings.HasPrefix(p, "/workspace/") || strings.HasPrefix(p, "/vault/") {
+		if strings.HasPrefix(p, "/workspace/") {
 			names = append(names, strings.TrimPrefix(p, "/"))
 		}
 	}

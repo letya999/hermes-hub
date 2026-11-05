@@ -1,0 +1,2 @@
+runtime: {timezone: UTC}
+memory: {enabled: false, nightly_rollup: "04:00"}

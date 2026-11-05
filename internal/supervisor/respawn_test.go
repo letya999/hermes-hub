@@ -27,7 +27,9 @@ func TestRespawnReplacesIdleRuntime(t *testing.T) {
 		case "inspect":
 			return nil, os.ErrNotExist
 		case "run":
-			runs++
+			if isRuntimeSpawn(args) {
+				runs++
+			}
 		case "rm":
 			removes++
 		}

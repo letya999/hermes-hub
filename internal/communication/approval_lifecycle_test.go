@@ -168,7 +168,7 @@ func TestQueuedApprovalIsCurrentAndActionable(t *testing.T) {
 // channel contract in the effective SOUL; per-run requests keep carrying the
 // user's text unchanged.
 func TestListingRequestCarriesCurrentRequestAndReadOnlyGuidance(t *testing.T) {
-	for _, guidance := range []string{"current user request", "read-only file_list or search_files", "fenced code block"} {
+	for _, guidance := range []string{"current user request", "read-only file_list or file_search", "fenced code block"} {
 		if !strings.Contains(stack.ChannelContract, guidance) {
 			t.Errorf("channel contract missing guidance %q", guidance)
 		}

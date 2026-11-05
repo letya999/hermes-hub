@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
@@ -315,8 +314,7 @@ func TestToolHiveShmSizeGate(t *testing.T) {
 // read tools alone by default, interaction tools only after the toolset is on
 // and writes are confirmed, eval only after its own set.
 func TestManagedSelfInstallHonorsToolsetProjection(t *testing.T) {
-	store := NewStore()
-	auth := identity.Envelope{Schema: identity.Schema, PrincipalID: "alice", ExternalIdentityID: "alice", ContextID: "alice", RuntimeID: "runtime", ConversationID: "c", DeliveryTargetID: "c", PolicyVersion: "policy-1", CapabilityProfile: "alice-default", Environment: "dev", Generation: 1}
+	store, auth, _, profile := managedStore(t)
 	definition := api.ToolDefinition{
 		Schema: api.SchemaVersion, DefinitionID: "playwright-mcp", Version: "0.0.83",
 		Transport: api.AgentTools,
@@ -348,7 +346,7 @@ func TestManagedSelfInstallHonorsToolsetProjection(t *testing.T) {
 	if err := store.PutOnboarding(onboarding); err != nil {
 		t.Fatal(err)
 	}
-	profile := api.CapabilityProfile{SelfInstall: true}
+	profile.SelfInstall = true
 	names := func() []string {
 		out := []string{}
 		for _, tool := range store.managedSelfInstallToolsLocked(auth, profile) {

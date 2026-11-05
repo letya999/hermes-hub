@@ -1,0 +1,28 @@
+schema: 1
+change: CHG-0279
+title: "M31+M20 merge live acceptance: docker delivery, real model, consolidated tool surface"
+status: done
+branch: chore/merge-m31-m20-into-dev
+updated: 2026-11-04
+phase: complete
+adr: ADR-0094
+spec: SPEC-0093
+requirements: []
+depends_on: [CHG-0263, CHG-0264, CHG-0265, CHG-0266, CHG-0267, CHG-0268, CHG-0269, CHG-0270, CHG-0271, CHG-0272, CHG-0273, CHG-0274]
+github_milestone: "M31 — Consolidated Model Tool Surface (catalog r5)"
+github_issue: "448"
+design_status: accepted
+implementation_status: done
+slices: {}
+validation:
+  documents: done — docs/tools.md + docs/spaces.md updated, devcheck docs/format clean, .work index synced
+  just_check: "green — post-fix full race suite all packages, covergo 86.12% (85 floor), vet/staticcheck/gosec/docs/format/catalog-emit clean"
+  docker_check: partial — dev/control/space images rebuilt through hubctl build/dev-rebuild/up and running healthy (incl. knowledge image with the git fix); heavy image-budget matrix stays in CI per AGENTS.md
+  live_acceptance: "done on spaces/m29-acc-03 — catalog 10.0.0 (92 tools/23 families) registered, policy rev 4 (212-rule ceiling), profile rev 8 (45 selections/66 allows/13 core tools); tools/list = 13 core + platform + tool_search/tool_call; real /v1/execute turn -> gemini-3-flash 'pong' + model invoked memory_card in-turn and reported the honest run-scope denial; file_write/file_read round-trip through docker-exec agent executor; project_create created projects/acc-proj-1; settings_read/context_status/skill_search real results; routine_list/watch_list executed via shared comm-hub after user enrollment; memory_search real index hit path (degraded-then-ok); denials verified: ../escape rejected, absolute paths rejected, unselected tools not found, runtime:* families fail closed with honest unavailable"
+evidence:
+  - "catalog 10 digest sha256:3378f7d1..., binding bind-1838392e8f193d3c7ce1e86b, projection_rev 4"
+  - "managed runtime hermes-context-592ffe2c32185957 spawned via supervisor /v1/wake; egress-relay, open-knowledge, model-relay, toolhub-relay all healthy"
+  - "real turn run_fd60dda9726449178fa99b9d0c206236: model called memory_card, run-scope deny reported verbatim"
+  - "uncertain op tool-bf80e852986f966a... reconciled via audit ledger (backend-error, read-only op, no partial effect); retry returned degraded then ok"
+  - "merge gaps fixed live: hub:memory governance family, MountPlan /vault bind for managed+memory_vault, tools.select invoke admission, egress-relay stack service, open-knowledge git/tmpfs/host-allowlist, broker grant minting + space-unique cliproxy workload name"
+  - "space enrollment: m29-acc-03 added to spaces/local/communication.users.yaml (routines/watch dispatch auth)"

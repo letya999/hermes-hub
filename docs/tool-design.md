@@ -28,7 +28,7 @@ see [tools](tools.md); for placement and budgets see ADR-0092 D6 and
 | `member` | A tool that belongs to a toolset. `tools.include`/`tools.exclude` in `tools.yaml` operate on members only. |
 | `audience` | Who a tool is for: `model` | `internal` | `operator`. Internal operations (e.g. `inbox_fetch`, legacy control ops) execute through ToolHub but never appear on the model surface or in placeable toolsets. |
 | `right` | A `domain.operation` from `rights.yaml` (`workspace.write`, `connectors.enable`). A right is not a tool: each member declares `requires:` rights; a grant satisfies them. |
-| `surface` | A delivery channel: `mcp__toolhub__*` (managed), `mcp__hub__*` (unmanaged), `tools_list`/`invoke` (extended). A surface is a projection of the catalog, never a second authoring site. |
+| `surface` | A delivery channel: `mcp__toolhub__*` (managed), `mcp__hub__*` (unmanaged), `tool_search`/`tool_call` (extended). A surface is a projection of the catalog, never a second authoring site. |
 | `effect` | `read` or `write` declared on the tool spec; drives MCP annotations, access narrowing and evidence requirements. |
 
 ## 1. Inventory — one catalog, one author
@@ -36,7 +36,7 @@ see [tools](tools.md); for placement and budgets see ADR-0092 D6 and
 **1.1 One ToolSpec is the only source.** Every model-visible tool exists exactly
 once in `HubToolsDefinition()`. All surfaces — the managed `mcp__toolhub__*`
 projection, the unmanaged `mcp__hub__*` stdio server, and the extended
-`tools_list`/`invoke` path — are generated from that spec. Hand-written schemas
+`tool_search`/`tool_call` path — are generated from that spec. Hand-written schemas
 or descriptions inside `Server()` or a facade are forbidden: they are the root
 of every documented drift (80-field reflection schemas, divergent descriptions,
 stub connector contracts).
@@ -73,29 +73,35 @@ Check: `Emit` refuses drifted files; `catalog.Release` bump required.
 names; `tools.include`/`tools.exclude` (mutually exclusive) perform point
 surgery on real members only. Enforced by `checkTools` at passport compile.
 
-**2.2 Family = plural domain noun.** The closed family list is
-`files`, `exec`, `documents`, `media`, `skills`, `tasks`, `goals`,
-`context`, `settings`, `remote`, `sites`, `connectors`, `system`. Two families
-never own the same resource; each family maps to one rights domain
-(`files → workspace.*`, `remote → remote.*`, `tasks → tasks.*`).
+**2.2 Family = plural domain noun.** The catalog r5 closed family list is
+`files`, `terminal`, `documents`, `media`, `skills`, `routines`, `watches`,
+`assignments`, `goals`, `context`, `settings`, `ssh`, `exposure`, `sites`,
+`web`, `browser`, `research`, `connectors`, `models`, `sessions` — twenty
+placeable families plus the pinned `platform` layer. Two families never own
+the same resource; each family maps to one rights domain (`files →
+workspace.*`, `ssh → remote.*`, `assignments`/`watches`/`routines →
+tasks.*`).
 
 **2.3 Indivisible placement and budget.** `core` holds at most 20 members;
 overflow moves a *whole* toolset to `extended` in stable catalog order.
-`discovery` (system_guide, tools_list, invoke) is always pinned in core.
+`platform` (`platform_guide`, `platform_status`, `platform_bootstrap`,
+`platform_usage`, `tool_search`, `tool_call`) is always pinned in core —
+never operator-selectable or removable.
 
 Check: `checkTools` + `TestToolsetCoreLimitAndExtendedInvokeRevoke`.
 
-**2.4 Extended is live.** `tools_list(query)` + `invoke` expose extended
-toolsets with per-call admission identical to direct calls. `tools_list`
+**2.4 Extended is live.** `tool_search(query)` + `tool_call` expose extended
+toolsets with per-call admission identical to direct calls. `tool_search`
 searches name, description, parameter names and `definition_id` — never a
 substring match on the tool name alone.
 
 ## 3. Naming
 
 **3.1 Format.** `<noun>_<verb>` snake_case, ≤ 40 characters. The noun is the
-family's singular (`site_*` inside `sites`, `task_*` inside `tasks`,
-`remote_*` inside `remote`). Documented exceptions are the meta tools:
-`tools_list`, `invoke`, `system_guide`, `system_status`.
+family's singular (`site_*` inside `sites`, `routine_*` inside `routines`,
+`ssh_*` inside `ssh`). Documented exceptions are the pinned platform tools:
+`tool_search`, `tool_call`, `platform_guide`, `platform_status`,
+`platform_bootstrap`, `platform_usage`.
 
 **3.2 Closed verb dictionary.** One verb per effect; synonyms are forbidden:
 
@@ -163,12 +169,13 @@ forbidden (the 11-tool `assignment_*` family is the canonical anti-pattern).
 
 **5.2 No competing tools.** If two tools answer the same intent, the design is
 wrong. Test: for every intent in the eval set there is exactly one obvious
-tool. Known violations being consolidated: `watch_*`/`routine_*`/`assignment_*`
-→ `tasks`, `image_inspect`/`images_inspect` → one tool, `service_*`/`connector_*`
-→ `connectors`.
+tool. Catalog r5 resolved the documented collisions: `watch_*`/`routine_*`/
+`assignment_*` are separate families, `image_inspect`/`images_inspect` merged
+into `media_inspect`, and `service_*`/`connector_*` unified under
+`connectors`.
 
 **5.3 One dispatch, identical semantics.** `ExecCall` is the only execution
-path; direct projection and `invoke` route through it with identical
+path; direct projection and `tool_call` route through it with identical
 admission and behavior.
 
 Check: parity test — the same `(tool, args)` pair returns the same result via
@@ -191,7 +198,7 @@ before their tools ship.
 **6.2 Per-call admission at the PEP.** A call is admitted only when the
 toolset is selected, the member's `requires` are granted, and its `scope`
 (`paths`/`hosts`/`urls`) checks pass — evaluated against the fresh grant
-epoch, not the published snapshot. `invoke` and direct calls are identical
+epoch, not the published snapshot. `tool_call` and direct calls are identical
 (`TestToolsetCoreLimitAndExtendedInvokeRevoke`).
 
 **6.3 Declare only what is enforceable.** `access`, `scope`, `rules` are legal
@@ -226,8 +233,8 @@ appear in error output; diagnostics emit allowlisted fields only.
 ## 8. Context economy
 
 **8.1 Small core.** `core` targets ~15–20 hot tools; everything else lives in
-`extended` behind discovery. Connectors and rare families are not core
-residents.
+`extended` behind the pinned platform layer. Connectors and rare families are
+not core residents.
 
 **8.2 Description is the contract: ≤ 2–3 sentences.** What it does; when *not*
 to use it (with the alternative named); what it returns or which side effects
@@ -237,12 +244,18 @@ everything"), marketing, prose that repeats the schema.
 
 **8.3 Modular prompt contract.** Tool guidance in the system prompt is
 assembled from the space's active families only — a denied family is never
-mentioned (no hallucinated references, no wasted tokens).
+mentioned (no hallucinated references, no wasted tokens). Under a published
+passport the tools projection is the admission authority: a family absent
+from it emits no section, and a clause inside another family's section that
+names the family's tools drops with it. Without a published revision a
+section drops only on an explicit `via: off`, so a legacy space renders the
+complete contract.
 
 **8.4 One disclosure mechanism.** The long tail is reachable through one path
-(`tools_list`+`invoke`, or native `tool_search` where upstream provides it);
-the model never sees two competing discovery APIs. Programmatic tool calling
-is an optional optimization on top, not a requirement.
+(`tool_search`+`tool_call` on the ToolHub surface, or the native tool-search
+API where upstream provides it); the model never sees two competing discovery
+APIs. Programmatic tool calling is an optional optimization on top, not a
+requirement.
 
 ## 9. Verification and change control
 
@@ -259,21 +272,114 @@ tool-selection F1, argument-fill accuracy, retry rate, surface token cost.
 prompt-contract guidance + `docs/tools.md` + immutable catalog version bump +
 rebind/respawn of managed spaces — atomically.
 
-## Appendix A. Current-state conformance
+## Appendix A. Catalog r5 conformance
 
-| Rule | Violation today | Target |
+The catalog r5 release (ADR-0094) closed the violations this charter recorded
+for r4. Current state:
+
+| Rule | r4 violation | r5 state |
 |---|---|---|
-| 3.2 | `delete`/`remove`/`clear`/`cancel`/`unpublish`/`disable` — six removal verbs | `remove` + `action` on `edit` |
-| 3.2 | `get`/`read`/`view`/`list`/`status`/`catalog`/`hosts`/`resumes`/`sample` | `read`, `list`, `status`, `search` |
-| 3.1 | family `hosting` ↔ tools `site_*`; `terminal` ↔ `code_exec` | families `sites`, `exec` |
-| 4.1 | `plan`, `args`, `sources`, `steps` are JSON strings | `object`/`array` |
-| 4.4 | `image_inspect`/`images_inspect` duplicate | one tool, `paths: [1..8]` |
-| 5.2 | `watches` ⊂ `routines`; 11 `assignment_*` tools | `tasks` ×5 |
-| 6.1 | `ssh`/`exec`/`tasks` fall back to `tools.select` | `remote`/`tasks`/`exec` domains in rights |
-| 6.4 | no `readOnlyHint`/`destructiveHint` emitted | derived from `Effect` |
-| 7.2 | `file_read` lacks offset/limit; `file_search` returns paths only | `next_offset`, match snippets |
-| 8.2 | stub descriptions on `connector_*`, shared text on `site_*` | contract-grade descriptions |
-| 8.3 | static prompt contract mentions every family | sections per active family |
+| 3.2 | `delete`/`remove`/`clear`/`cancel`/`unpublish`/`disable` — six removal verbs | `remove` + `action` on `edit` — enforced |
+| 3.2 | `get`/`read`/`view`/`list`/`status`/`catalog`/`hosts`/`resumes`/`sample` | `read`, `list`, `status`, `search` — enforced |
+| 3.1 | family `hosting` ↔ tools `site_*`; `terminal` ↔ `code_exec` | families `sites`, `terminal` — enforced |
+| 4.1 | `plan`, `args`, `sources`, `steps` are JSON strings | typed `object`/`array` — enforced |
+| 4.4 | `image_inspect`/`images_inspect` duplicate | `media_inspect`, `paths: [1..8]` — enforced |
+| 5.2 | `watches` ⊂ `routines`; 11 `assignment_*` tools | `watches`/`routines`/`assignments` families — enforced |
+| 6.1 | `ssh`/`exec`/`tasks` fall back to `tools.select` | `remote`/`tasks`/`exec` rights domains — enforced |
+| 6.4 | no `readOnlyHint`/`destructiveHint` emitted | derived from `Effect` — enforced |
+| 7.2 | `file_read` lacks offset/limit; `file_search` returns paths only | `next_offset`, match snippets — enforced |
+| 8.2 | stub descriptions on `connector_*`, shared text on `site_*` | contract-grade descriptions — enforced |
+| 8.3 | static prompt contract mentions every family | sections per active family — enforced |
+
+## Appendix B. r4 → r5 rename map
+
+Every retired name below is gone from the catalog and the projected surface.
+The in-runtime dispatch still understands the r4 names as a compatibility
+shim for pre-r5 state, but nothing catalogs, advertises or admits them under
+the new selection model — they cannot be selected, searched or granted.
+
+| Retired (r4) | Replacement (r5) |
+|---|---|
+| `system_guide`, `diagnostics` | `platform_guide`, `platform_status` (+ `platform_bootstrap`, `platform_usage`) |
+| `tools_list`, `invoke` | `tool_search`, `tool_call` |
+| `service_catalog`, `service_enable`, `service_disable` | `connector_search`, `connector_edit` actions |
+| `connector_enable`, `connector_disable`, `connector_remove`, `connector_reauth`, `connector_allow_writes` | `connector_edit` actions (`name` arg maps the selector) |
+| `code_exec`, `code_job_*` | `terminal_exec`, `terminal_job` |
+| `image_inspect`, `images_inspect`, `image_convert`, `image_generate`, `image_edit`, `video_generate`, `stt`, `tts` | `media_inspect`, `media_convert`, `media_generate`, `media_edit`, `media_transcribe`, `media_speak`, `media_fetch` |
+| `archive_*`, `artifact_remove`, `knowledge_*` | `file_*` roots (`root=archive|knowledge`) |
+| `ssh_shell_*`, `ssh_tunnel_*` | `ssh_shell`, `ssh_tunnel` actions |
+| `exposure_open`, `exposure_close`, `exposure_status` | `exposure_create`, `exposure_remove`, `exposure_list` |
+| `context_compact` | `context_edit` action |
+| `goal_set`/`goal_pause`/`goal_resume`/`goal_clear` | `goal_edit` actions |
+| `skills_list`, `skills_search`, `skill_view`, `skill_manage` | `skill_search`, `skill`, `skill_edit` |
+| `settings_get`, `settings_set` | `settings_read`, `settings_edit` |
+| `site_status`, `site_unpublish`, `hosting` | `site_list`, `site_remove`, family `sites` |
+| `watch_subscribe`, `watch_pause`, `watch_resume`, `watch_delete` | `watch_create`, `watch_edit`, `watch_remove` |
+| `routine_get`, `routine_update`, `routine_pause`, `routine_resume`, `routine_snooze`, `routine_delete`, `routine_history`, `routine_preview` | `routine_read`, `routine_edit`, `routine_remove` |
+| `assignment_update`, `assignment_apply`, `assignment_pause`, `assignment_resume`, `assignment_progress`, `assignment_cancel`, `assignment_complete`, `assignment_get`, `assignment_status` | `assignment_edit` actions, `assignment_read`, `assignment_list` |
+| `hh_*` (job board) | connector recipe `hh` — not a family |
+| `ssh_hosts` | `ssh_list` |
+
+## Appendix C. Denied by design
+
+Names in this list are refused at the boundary, not merely missing: they can
+never mint a toolset section or project a tool.
+
+- `inbox_fetch` — `audience: internal`; the channel materializes files through
+  it. Never projected, placeable or searchable by the model.
+- Legacy control operations (`discover`, `prepare_source`, `status`,
+  `required_credentials`, `confirm`, `enable`, `disable`, `revoke`, `remove`,
+  `rotate`, `diagnostics`, `grant_request`, `install_shared`) — `audience:
+  operator` on the ToolHub control surface only.
+- `mcp-raw:<server>` — an ad-hoc raw MCP name is never a toolset; curation
+  happens in `user_mcp`/`org_mcp`.
+- Vendor/product verbs (`hh_apply`, `hh_resumes`, `ssh_hosts`) — banned by
+  §3.4; the job board lives behind the `hh` connector recipe.
+- Tool-level selection for `platform` — the pinned layer cannot be selected,
+  excluded or capped to read-only; it is metadata, not a toolset.
+
+## Appendix D. Rule → check conformance
+
+Every normative rule above has a named, automated check. The lints live in
+`internal/agenttools` (catalog-as-authored), the parity tests in
+`internal/catalog` (generated == committed bytes), `internal/passport`
+(selection boundary) and `internal/toolhub` (live projection/admission).
+
+| § | Rule | Named check |
+|---|---|---|
+| 1.1 | one catalog, one author | `catalog.TestPlatformCatalogParityAndPinnedToolset` |
+| 1.2 | three audiences; internal/operator unreachable | `catalog.TestR5Vocabulary` (`inbox_fetch` is `internal`, catalog members are `model`), `agenttools.TestEveryCatalogedHandlerToolDispatches` |
+| 1.3 | footprint ladder (`handler:`/`runtime:`/`flow:`) | `agenttools.TestExecutorRoutingContract`, `toolhub.TestRemoteExecutorDispatch` |
+| 1.4 | immutable vocabulary | `catalog.TestPlatformCatalogParityAndPinnedToolset`, `agenttools.TestCatalogDeniesRetiredNames` |
+| 2.1 | toolsets, not tools | `passport.TestPassportCatalogBoundaryRejected` |
+| 2.2 | family = plural noun, closed list | `catalog.TestR5Vocabulary`, `stack.TestEveryR5FamilyAcceptsToolhubVia` |
+| 2.3 | indivisible placement; core ≤ 20; include ⊥ exclude | `passport.TestToolsetCoreLimitAndExtendedInvokeRevoke`, `toolhub.TestToolsetCoreLimitAndExtendedInvokeRevoke`, `passport.TestUncuratedToolsetNeverInCore` |
+| 2.4 | extended lives through `tool_search`/`tool_call` | `toolhub.TestDirectAndToolCallAdmissionParity` |
+| 3.1 | `<noun>_<verb>` ≤ 40 chars | `agenttools.TestCatalogVocabularyLint` |
+| 3.2 | closed verb dictionary | `agenttools.TestCatalogVocabularyLint` |
+| 3.3 | unknown/colliding names fail closed | `passport.TestPassportCatalogBoundaryRejected`, `passport.TestAmbiguousToolsetNameFailsClosed` |
+| 3.4 | no vendor or endpoint names | `agenttools.TestCatalogVocabularyLint`, `agenttools.TestCatalogDeniesRetiredNames` |
+| 4.x | typed schemas, stable per release | `catalog.TestPlatformCatalogParityAndPinnedToolset` (schema drift breaks byte parity), `agenttools.TestCharterSchemaContract`, `agenttools.TestWatchCreateStructuredArgsReachBackend`, `api.TestCliInputSchemaZeroArgsClosesBoundary`, `api.TestCliInputSchemaCarriesContractMetadata` |
+| 5.2 | no competing tools | `agenttools.TestIntentSelectionEval` (a score tie fails the intent) |
+| 5.3 | one dispatch, identical semantics | `agenttools.TestEveryCatalogedHandlerToolDispatches`, `toolhub.TestDirectAndToolCallAdmissionParity`, `agenttools.TestKnowledgeMCPTransportParity` |
+| 6.1 | real `requires`; `tools.select` only on `tool_call`; unmapped fails closed | `agenttools.TestEveryModelToolRequiresRight`, `catalog.TestEveryToolDeclaresRequires`, `catalog.TestHubToolsRequiresAreCatalogRights`, `catalog.TestUnmappedRequiresFailClosed` |
+| 6.2 | per-call admission; epoch revocation bites next call; PEP bounds | `toolhub.TestDirectAndToolCallAdmissionParity`, `toolhub.TestConcurrentRevocationCannotPassAdmission`, `agenttools.TestExecCallReadOnlyGate`, `agenttools.TestExecCallScopeBoundaries`, `agenttools.TestToolPolicyDispatchDeny` |
+| 6.4 | MCP annotations derive from `Effect` | `toolhub.TestProjectedToolAnnotationsMatchEffect` |
+| 7.1, 7.4 | result envelope; errors teach r5 names | `agenttools.TestRoutineErrorsTeachR5Names`, `toolhub.TestAgentExecErrorSurvivesGateway` |
+| 7.4 | secrets never travel in tool arguments; diagnostics stay closed | `agenttools.TestConnectorToolsNeverTakeCredentials`, `toolhub.TestPlatformStatusAllowlist` |
+| 7.2 | bounded output | `agenttools.TestContextStatusToolReportsBoundedView`, `agenttools.TestRoutineListRequestsBoundedDefaultPage`, `agenttools.TestRoutineGetIncludesBoundedHistoryAndPreview` |
+| 7.3 | evidence for side effects | `agenttools.TestRoutineMutationRequiresObservedRevision`, `agenttools.TestAssignmentToolRequiresRevision` |
+| 8.2 | description budget; stuffing penalized | `agenttools.TestDescriptionBudgetLint`, `agenttools.TestIntentSelectionEval` (density-normalized scoring) |
+| 8.3 | modular prompt contract | `passport.TestPromptPointerNamesR5PlatformPair`, `stack.TestChannelContractIsModular`, `stack.TestChannelContractDropsAbsentFamilies`, `stack.TestChannelContractHonorsAliases`, `stack.TestChannelContractDropsCrossFamilyClauses`, `stack.TestSoulEffectiveHonorsFamilyOff`, `stack.TestSoulEffectiveGovernedDropsAbsentFamilies` |
+| 8.4 | one disclosure mechanism | `catalog.TestR5Vocabulary` (pinned `platform` member list), `toolhub.TestConnectorSurfaceR5Names` |
+| 9.2 | eval-driven iteration | `agenttools.TestIntentSelectionEval` |
+
+**r5 baseline** — deterministic local report from
+`agenttools.TestIntentSelectionEval`:
+`catalog=r5 intents=40 selection_accuracy=1.000 ambiguous=0 arg_fill=n/a
+retry_rate=n/a token_cost=n/a`.
+The scorer is keyword/IDF-based with a fixed intent suite; arg-fill accuracy,
+retry rate and token cost require a live model and are honestly `n/a` here.
 
 ## Sources
 

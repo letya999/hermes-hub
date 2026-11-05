@@ -11,7 +11,7 @@ import (
 )
 
 func TestRoutinePublicSurfaceHasFiveTools(t *testing.T) {
-	want := []string{"routine_create", "routine_delete", "routine_edit", "routine_get", "routine_list"}
+	want := []string{"routine_create", "routine_edit", "routine_list", "routine_read", "routine_remove"}
 	v := fixture(t)
 	client, closeAll := connectHub(t, v)
 	defer closeAll()
@@ -26,10 +26,10 @@ func TestRoutinePublicSurfaceHasFiveTools(t *testing.T) {
 		}
 	}
 	definition := HubToolsDefinition()
-	if definition.Version != "5.13.0" {
+	if definition.Version != "12.0.0" {
 		t.Errorf("new immutable contract version=%s", definition.Version)
 	}
-	arguments := map[string][]string{"routine_create": {"origin_job_id", "destination_task_id"}, "routine_list": {"query", "view"}, "routine_get": {"include", "history_limit", "history_cursor", "preview_limit"}, "routine_edit": {"action", "expected_revision", "patch", "until", "origin_job_id"}}
+	arguments := map[string][]string{"routine_create": {"origin_job_id", "destination_task_id"}, "routine_list": {"query", "view"}, "routine_read": {"include", "history_limit", "history_cursor", "preview_limit"}, "routine_edit": {"action", "expected_revision", "patch", "until", "origin_job_id"}}
 	for _, tool := range definition.Tools {
 		if strings.HasPrefix(tool.Name, "routine_") {
 			catalogNames = append(catalogNames, tool.Name)
@@ -185,6 +185,10 @@ func TestRoutineGetRejectsInvalidReadOptionsBeforeHTTP(t *testing.T) {
 		_, err := v.Routine(context.Background(), "routine_get", in)
 		if err == nil || calls != 0 {
 			t.Errorf("invalid read %s err=%v calls=%d", fields, err, calls)
+			continue
+		}
+		if strings.Contains(err.Error(), "routine_get") {
+			t.Errorf("model-facing error %q uses the retired name — say routine_read", err)
 		}
 	}
 }
@@ -214,6 +218,9 @@ func TestRoutineGetDoesNotHideFailedComponents(t *testing.T) {
 			if err == nil || out != nil {
 				t.Fatalf("incomplete get reported success: %v %v", out, err)
 			}
+			if strings.Contains(err.Error(), "routine_get") {
+				t.Errorf("model-facing error %q uses the retired name — say routine_read", err)
+			}
 		})
 	}
 }
@@ -238,7 +245,7 @@ func TestRoutineListTransportsSearchQuery(t *testing.T) {
 // admit the new selection set (SPEC-0080 R2.3).
 func TestAssignmentCatalogVersion(t *testing.T) {
 	definition := HubToolsDefinition()
-	if definition.Version != "5.13.0" {
-		t.Fatalf("catalog version = %s, want 5.13.0 with the project_create contract", definition.Version)
+	if definition.Version != "12.0.0" {
+		t.Fatalf("catalog version = %s, want 12.0.0 with the merged project_create + memory contract", definition.Version)
 	}
 }

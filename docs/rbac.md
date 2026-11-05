@@ -29,6 +29,8 @@ or a section the governance document denies, cannot execute.
 
 Every call carries an `identity.Envelope`: `principal_id`, `context_id`,
 `runtime_id`, `organization`, `policy_version` (internal/identity/identity.go).
+Managed calls require its authenticated `organization` to equal the active
+capability policy's organization.
 Adapters mint envelopes from authenticated transport identity — a Telegram
 sender id or Slack user/team id maps to a principal; the model can never set
 `principal_id` itself. `runtime_id` plus policy version fence replay across
@@ -96,12 +98,14 @@ Every operation names its enforcement point; the vocabulary is verified by
 manifest digest and cannot be edited at runtime.
 
 ToolHub's `Store.Decide(envelope, capability, operation, scope)` is the
-single policy decision point. Each verdict intersects three authorities:
+single policy decision point. Each verdict intersects four authorities:
 
 1. the vocabulary — an unknown `capability.operation` never allows;
 2. the published ceiling — a managed principal holds only the flattened
    `grants.yaml` allow its active `CapabilityProfile.Rights` carries;
-3. the live ledger — `Governance.Rights` grants that are active, unexpired
+3. for an organization policy, its protected `right_ceiling` — every profile
+   right and authored grant must fit; a missing ceiling admits no rights;
+4. the live ledger — `Governance.Rights` grants that are active, unexpired
    and scope-covering. Cross-subject operations additionally require a
    scope naming the target and are never operator-minted.
 
@@ -116,27 +120,30 @@ space's principal for their own PEP sites: supervisor gates
 `agents.restart_self`/`inspect_self`/`monitor_self` on runtime-facing
 routes, model-relay gates `models.list`/`switch`/`use`, communication-hub
 gates `channels.send`/`send_voice` (a denied voice leg degrades to text).
-The asserted principal must equal the toolhub's `HUB_PRINCIPAL_ID` pin —
-cross-space assertions refuse. Hub tools enforce their declared `requires`
+The asserted principal and environment must match an active profile in the
+shared ToolHub store; a missing or mismatched environment denies even with a
+live ledger grant. Multiple active profiles in the same environment deny an
+asserted call because it cannot select a runtime generation. Hub tools enforce
+their declared `requires`
 inside admission itself, so a missing right hides the tool and `tools_list`
 reports it `unavailable` with the missing `capability.operation`.
 
-Managed rights state is always derived, never authored: publishing a
-revision (`space apply`, `space-migrate`) calls `DeriveRights`, which stamps
-`profile.Rights` from the allow and reconciles platform-issued ledger
-grants — rows a later revision drops are revoked in place.
+The protected rights ledger is issued independently of authored passports.
+`space apply` accepts only active self grants already issued to that principal;
+`DeriveRights` stamps `profile.Rights` from the published allow without issuing
+or revoking ledger grants. Revocation takes effect at the next decision even
+when a published passport still names the operation.
 
 ## Grants passport (effective view)
 
 Each managed space's `generated/passports/<rev>/grants.yaml` is the
 published imperative for agent rights: `allow: {capability: [operations]}`
-is the ceiling every per-call decision enforces. It compiles from the
-trusted grant ledger intersected with the merged platform/org ceilings —
-a ledger entry outside the ceiling fails compilation, and an empty allow
-fails outright because an admitted space holds no rights (SPEC-0092 R5.2).
-Editing the file changes nothing: the next publish rewrites it, and live
-decisions read the derived profile ceiling plus the live ledger, not the
-snapshot itself.
+is the ceiling every per-call decision enforces. An empty allow denies all
+operations. Editing the authored file alone changes nothing: only a valid
+whole-set publish updates the profile ceiling, and live decisions also check
+the independently issued ledger grant. An issued `tools.configure` grant must
+also be present in the current published allow before a later `tools.yaml`
+selection change can be applied.
 
 Revocation is immediate on both agent-facing paths. The toolhub gateway
 re-verifies the binding on every admitted call (`ReverifyEffective`), and
@@ -146,10 +153,13 @@ even when the prompt text or the passport snapshot is stale.
 
 ## Capability policy (org ceiling)
 
-`CapabilityPolicy` binds an organization: `ceiling` (the hard maximum),
-`defaults`, `default_groups`, `denies`, member list, revision and
-confirmation. Denies here cap everything below; a profile cannot grant past
-the ceiling.
+`CapabilityPolicy` binds an organization: `ceiling` (the tool tuple maximum),
+`right_ceiling` (the independent rights maximum), `defaults`,
+`default_groups`, `denies`, member list, revision and confirmation. A profile
+cannot publish rights outside `right_ceiling`; `space apply` checks the exact
+active profile, environment and organization before publishing authored grants.
+Per-call decisions intersect the policy ceiling again, so a legacy profile
+with wider rights cannot bypass it.
 
 ## Capability profile (per runtime generation)
 

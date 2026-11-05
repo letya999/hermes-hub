@@ -95,6 +95,7 @@ func TestApplyExportsFenceAndWrites(t *testing.T) {
 func TestReverifyEffective(t *testing.T) {
 	s := NewStore()
 	definition := agentDefinition()
+	definition.Tools[0].Requires = []string{"workspace.read"}
 	if err := s.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
 	}
@@ -105,26 +106,43 @@ func TestReverifyEffective(t *testing.T) {
 		t.Fatal(err)
 	}
 	auth.CapabilityProfile, auth.Environment, auth.Generation = "alice-default", "dev", 1
+	auth.Organization = "example"
 	rule := api.CapabilityRule{CapabilityID: "files", ImplementationDigest: api.DefinitionDigest(definition), Action: "read", Resource: "files", PathPrefix: "docs", Limits: api.CapabilityLimits{OutputBytes: 8192, TimeoutSeconds: 30}}
 	policy := api.CapabilityPolicy{Schema: api.SchemaVersion, PolicyID: "org-default", Organization: "example", Members: []string{"alice"}, Revision: 1,
 		IssuedBy: "operator", IssuedAt: time.Now().UTC(), Reason: "test", Status: api.ActiveStatus, Ceiling: []api.CapabilityRule{rule}, Defaults: []api.CapabilityRule{rule}}
 	profile := api.CapabilityProfile{Schema: api.SchemaVersion, ProfileID: auth.CapabilityProfile, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID,
 		Environment: auth.Environment, Generation: auth.Generation, PolicyVersion: auth.PolicyVersion, PolicyID: policy.PolicyID, PolicyRevision: policy.Revision,
 		Revision: 1, IssuedBy: "operator", IssuedAt: policy.IssuedAt, Reason: "test", Status: api.ActiveStatus,
+		Rights: []api.RightRule{{Capability: "tools", Operation: "use"}, {Capability: "workspace", Operation: "read"}},
 		Selections: []api.CapabilitySelection{{CapabilityID: "files", DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ImplementationDigest: api.DefinitionDigest(definition),
 			ToolName: "file_read", Name: "workspace_read"}}}
+	policy.RightCeiling = profile.Rights
 	if err := putPolicy(t, s, policy); err != nil {
 		t.Fatal(err)
 	}
 	if err := putProfile(t, s, profile); err != nil {
 		t.Fatal(err)
 	}
+	gov := grantToolUse(t, s, auth)
+	mintRight(t, gov, s.RightsDoc, api.NewRightGrant("rightgrant-alice-workspace-read", auth.PrincipalID, "workspace", "read", "", "fixture", "operator", time.Now().Add(time.Hour)))
 	_, effective, err := s.managedSelectionLocked(auth, profile, policy, profile.Selections[0], map[string]any{"path": "docs/a.txt"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := s.ReverifyEffective(effective); err != nil {
 		t.Fatalf("fresh authority must verify: %v", err)
+	}
+	if err := gov.RevokeRight("rightgrant-alice-workspace-read", "operator", "test revoke", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ReverifyEffective(effective); err == nil {
+		t.Fatal("revoked domain right passed the export fence")
+	}
+	if err := gov.RevokeRight("rightgrant-alice-use", "operator", "test revoke", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ReverifyEffective(effective); err == nil {
+		t.Fatal("revoked tools.use passed the export fence")
 	}
 	// Policy revision bump — authority the call was admitted under is stale.
 	policy.Revision++

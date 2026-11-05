@@ -1,0 +1,51 @@
+schema: 1
+change: CHG-0211
+title: Knowledge-UI edge — loopback + SSH tunnel + M18 hook
+status: done
+branch: feat/m20-memory-vault
+updated: 2026-11-01
+phase: complete
+adr: ADR-0086
+spec: SPEC-0085
+requirements: [R10.1, R10.2, R10.3]
+depends_on: [CHG-0209]
+github_milestone: M20 — Memory Vault and Knowledge Surface
+github_issue: 306
+design_status: accepted
+implementation_status: done
+slices:
+  S10.1-loopback-port: done
+  S10.2-tunnel-runbook: done
+  S10.3-m18-hook: done
+  S10.4-diagnostics: done
+validation:
+  documents: done
+  just_check: 'legs green — format/vet/staticcheck/gosec/docs/actionlint/tidy/config-contract all pass; covergo suite red only on the known env flake family (compile.exe fork/exec AV block, hub-stt fork, runtime run-budget timing) — every named package verified green isolated; stack coverage 88.5%'
+  docker_check: 'pending: no Docker in this environment'
+  red_team: done
+  live_acceptance: 'pending: requires live stack (deferred - no-docker scope)'
+evidence:
+  - internal/stack/config.go — UIPort/UIBind/UIExpose fields; Validate: loopback-only bind, ui_port requires knowledge_ui, 1024-65535 + browser/oauth/slack collision, ui_expose reserved-M18 error
+  - internal/stack/compose.go — single publish <bind>:<ui_port>:8080 (empty bind defaults 127.0.0.1, ::1 renders [::1]) + OK_EXTERNAL_URL=http://localhost:<ui_port>
+  - internal/stack/knowledge_doctor.go — KnowledgeDoctor: feature-off silent, network-only report, non-loopback refuse, edge line + real TCP reachability probe
+  - cmd/hubctl/main.go — doctor prints KnowledgeDoctor lines (R10.2 status surface; no separate status command exists)
+  - internal/toolhub/api/governance_io.go — carry fix: native:knowledge_ui seeded deny-default (was missing → real-space wish denied "section not in the tool inventory")
+  - internal/stack/rights.go — UIPort/UIBind/UIExpose classified "" (deployment knobs, no hash move)
+  - tests: TestUIPortLoopbackOnly, TestUIPortRejectsNonLoopback, TestUIPortCollisionDiagnostic, TestUIExposeReservedForM18, TestKnowledgeUIInventoried, TestDoctorUIPortChecks, TestDoctorUIPortReachable, TestStatusShowsUIPort, TestM18HookDocumented
+  - docs/operations.md — ui_port loopback edge, ssh -L tunnel runbook, ui_bind, ui_expose/M18 ?t= design note, no-public-exposure default
+  - docs/spaces.md — ui_port host edge documented under the vault bullet
+  - docs/adr/ADR-0086-memory-vault-openknowledge.md — M20.10 amendment + SeedInventory carry-fix note
+remaining: []
+limitations:
+  - 'live tunnel verification (ssh -L <ui_port>:localhost:<ui_port>) and compose publish acceptance: pending — no Docker in this environment; contract/render/validation/doctor coverage only'
+  - 'doctor reachability is TCP-level honest: an occupied port reports listening without distinguishing the editor from a squatter; a real conflict fails loudly at compose publish time'
+  - 'ui_expose is inert: any value fails Validate; the one-time ?t= link auth/expiry contract belongs to M18'
+red_team:
+  - '0.0.0.0 / 192.168.x / public ui_bind → hard Validate error AND doctor refuse line (defense in depth past Validate)'
+  - 'ui_port colliding with browser_port/oauth_port/slack_events_port or out of range → "invalid or colliding host ports"; ui_port without knowledge_ui → refused (nothing would publish it)'
+  - 'OK paths stay confined to the vault mount (TestOKPathConfined); the publish is a raw port map, no path proxying exists'
+  - 'ui_expose is a validated real field — strict decode cannot typo-squat it, and setting it errors honestly rather than half-working'
+notes:
+  - 'R10.2 "hubctl status" implemented on the existing `hubctl doctor` surface — the CLI has no status command; ADR records the wording'
+  - 'distinct ports per space (A10.2) follow from per-space agent.yaml + collision validation; no cross-space allocator exists or is needed (ports are operator-chosen)'
+  - 'carried fix exposed by TestStatusShowsUIPort: SeedInventory lacked native:knowledge_ui, so the feature was ungrantable on a real space (M20.9 gap, now seeded deny-default)'

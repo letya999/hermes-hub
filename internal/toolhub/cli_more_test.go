@@ -258,6 +258,7 @@ func TestManagedSelectionProjectsCLICatalogTool(t *testing.T) {
 		t.Fatal(err)
 	}
 	auth.CapabilityProfile, auth.Environment, auth.Generation = "alice-default", "dev", 1
+	auth.Organization = "example"
 	digest := api.DefinitionDigest(definition)
 	rule := api.CapabilityRule{CapabilityID: "cli.search", ImplementationDigest: digest, Action: "search", Resource: "files",
 		Limits: api.CapabilityLimits{OutputBytes: definition.Execution.OutputBytes, TimeoutSeconds: definition.Execution.TimeoutSeconds}}
@@ -267,14 +268,17 @@ func TestManagedSelectionProjectsCLICatalogTool(t *testing.T) {
 	profile := api.CapabilityProfile{Schema: api.SchemaVersion, ProfileID: auth.CapabilityProfile, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID,
 		Environment: auth.Environment, Generation: auth.Generation, PolicyVersion: auth.PolicyVersion, PolicyID: policy.PolicyID, PolicyRevision: policy.Revision,
 		Revision: 1, IssuedBy: "operator", IssuedAt: policy.IssuedAt, Reason: "Reviewed synthetic fixture", Status: api.ActiveStatus,
+		Rights: []api.RightRule{{Capability: "tools", Operation: "use"}},
 		Selections: []api.CapabilitySelection{{CapabilityID: "cli.search", DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
 			ImplementationDigest: digest, ToolName: "search", Name: "rg_search"}}}
+	policy.RightCeiling = profile.Rights
 	if err := putPolicy(t, s, policy); err != nil {
 		t.Fatal(err)
 	}
 	if err := putProfile(t, s, profile); err != nil {
 		t.Fatal(err)
 	}
+	grantToolUse(t, s, auth)
 	tools, err := s.ListProjectedTools(auth)
 	if err != nil {
 		t.Fatal(err)

@@ -4,8 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"io"
 	"os"
@@ -55,24 +55,21 @@ func runTrace(ctx context.Context, out io.Writer, jobID, user, spacesRoot string
 		JobID:       jobID,
 		Environment: environment,
 		Home: func(contextID, environment string) (string, error) {
+			if !identity.ValidID(contextID) {
+				return "", os.ErrInvalid
+			}
 			dir := filepath.Join(spacesRoot, contextID)
 			settings, err := stack.ReadEffective(dir, environment)
-			if errors.Is(err, os.ErrNotExist) {
-				root, openErr := os.OpenRoot(dir)
-				if os.IsNotExist(openErr) {
-					return dir, nil
-				}
-				if openErr != nil {
-					return "", openErr
-				}
-				_, configErr := root.Stat("agent.yaml")
-				_ = root.Close()
-				if os.IsNotExist(configErr) {
-					return dir, nil
-				}
-			}
 			if err != nil {
-				return "", err
+				// Trace is diagnostics: a space that was never applied (or
+				// whose published revision is broken) must still be
+				// inspectable — the logs under the space dir exist
+				// regardless of whether an effective view resolves.
+				if _, statErr := os.Stat(dir); statErr == nil || os.IsNotExist(statErr) { // #nosec G703 -- contextID is validated and Trace checks the owned path.
+					return dir, nil
+				} else {
+					return "", statErr
+				}
 			}
 			return stack.RuntimeHermesHome(dir, settings), nil
 		},

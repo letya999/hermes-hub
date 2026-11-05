@@ -151,6 +151,11 @@ func TestBatchAgentRemainderKeepsExactPayloadAndRevision(t *testing.T) {
 		t.Fatal("agent batch did not persist exact groups", err)
 	}
 	planned := st.PendingBatch.Jobs
+	for _, j := range planned {
+		if !j.Untrusted {
+			t.Fatal("event-evidence batch job escaped the untrusted stamp")
+		}
+	}
 	reopened, err := NewSpool(s.root)
 	if err != nil {
 		t.Fatal(err)

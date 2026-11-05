@@ -70,7 +70,7 @@ func (g *Gateway) opsDeps() commops.Deps {
 			if !ok {
 				return errors.New("task handle mismatch")
 			}
-			return g.enqueueChannelJob(ctx, user, bound, "mock", jobID, idempotency, chatID, 0, text, chatID, "")
+			return g.enqueueChannelJob(ctx, user, bound, "mock", jobID, idempotency, chatID, 0, text, chatID, "", false)
 		},
 		MappingStatus: func(jobID string) (string, bool, error) {
 			m, found, err := g.spool.Mapping(jobID)
@@ -147,18 +147,6 @@ func (g *Gateway) opsDeps() commops.Deps {
 // New code should use g.opsEngine() directly.
 
 func canaryInterval() time.Duration { return commops.Interval() }
-
-func (g *Gateway) runCanary(ctx context.Context, now time.Time) string {
-	return g.opsEngine().Run(ctx, now)
-}
-
-func (g *Gateway) canaryToolCheck(jobID string) string {
-	return g.opsEngine().ToolCheck(jobID)
-}
-
-func (g *Gateway) recordCanary(ctx context.Context, now time.Time, class string) {
-	g.opsEngine().Record(ctx, now, class)
-}
 
 func (g *Gateway) canaryLoop(ctx context.Context, interval time.Duration) {
 	g.opsEngine().Loop(ctx, interval)

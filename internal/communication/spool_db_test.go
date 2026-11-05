@@ -113,6 +113,22 @@ func TestSpoolSelectsActivatedBackend(t *testing.T) {
 	if err := s.fsys.Close(); err != nil {
 		t.Fatal(err)
 	}
+	// Activation moves the event-layout manifest into the record backend too.
+	manifest := filepath.Join(root, "event-layout.json")
+	layout, err := os.ReadFile(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbBack, err = openSpoolDB(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dbBack.WriteFile(manifest, layout); err != nil {
+		t.Fatal(err)
+	}
+	if err := dbBack.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	marker := filepath.Join(root, "records.activated")
 	if err := os.WriteFile(marker, []byte("{}\n"), 0600); err != nil {

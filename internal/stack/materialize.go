@@ -31,7 +31,7 @@ func MaterializeSoulEffective(dir string, s Settings) error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	body := ChannelContract + promptPointer(dir)
+	body := s.channelContract(passportRevision(dir)) + promptPointer(dir)
 	if org := orgSoulLayer(s); org != "" {
 		body += "\n\n" + org
 	}
@@ -158,6 +158,8 @@ func materializeHermesConfig(dir string, s Settings) error {
 		ImageGen:           s.managedImageGenGrant(),
 		SelfSettingsPath:   selfSettingsPath,
 		Browser:            s.managedBrowserGrant(),
+		KnowledgeUI:        s.managedKnowledgeUIGrant(),
+		MemoryVault:        s.managedMemoryVaultFlag(),
 		User:               s.User,
 	})
 }

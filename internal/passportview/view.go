@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/letya999/hermes-hub/internal/media"
 )
 
 // Names is the fixed six-passport order.
@@ -69,7 +71,7 @@ func LoadEffectiveGenerated(genDir string) (Effective, error) {
 		return eff, fmt.Errorf("load effective: %w", err)
 	}
 	revDir := filepath.Join(genDir, "passports", rev)
-	catalogs := ""
+	catalogs, space, environment := "", "", ""
 	for _, name := range Names {
 		b, err := os.ReadFile(filepath.Join(revDir, name+".yaml")) // #nosec G304 -- revision dir is published authority
 		if err != nil {
@@ -82,6 +84,11 @@ func LoadEffectiveGenerated(genDir string) (Effective, error) {
 		h := docHeader(doc)
 		if h.Metadata.Revision != rev {
 			return eff, fmt.Errorf("load effective: %s carries %s, current is %s", name, h.Metadata.Revision, rev)
+		}
+		if name == Names[0] {
+			space, environment = h.Metadata.Space, h.Metadata.Environment
+		} else if h.Metadata.Space != space || h.Metadata.Environment != environment {
+			return eff, fmt.Errorf("load effective: %s belongs to a different space or environment", name)
 		}
 		if catalogs == "" {
 			catalogs = h.Metadata.Catalogs
@@ -141,6 +148,11 @@ type Stack struct {
 type Identity struct {
 	User         string `yaml:"user"`
 	Organization string `yaml:"organization,omitempty"`
+	// Kind is the provisioning-stamped scope kind ("user" or "group"); an
+	// absent kind is a personal user space. It is immutable after the first
+	// publication — a scope's kind cannot be renegotiated by editing files.
+	Kind  string `yaml:"kind,omitempty"`
+	Infra *bool  `yaml:"infra,omitempty"`
 }
 
 type ServiceSpec struct {
@@ -154,17 +166,48 @@ type Config struct {
 	Ports       map[string]int     `yaml:"ports,omitempty"`
 	Channels    map[string]Channel `yaml:"channels,omitempty"`
 	Memory      Memory             `yaml:"memory"`
+	Hosting     *Hosting           `yaml:"hosting,omitempty"`
+	// ImageGen is the image-generation provider grant the retired
+	// settings.yaml image_gen section carried (provider/model/delivery).
+	ImageGen media.ImageGen `yaml:"image_gen,omitempty"`
+}
+
+// Hosting is the site-hosting contract: unique safe slots and an optional
+// digest-pinned sandbox image with its explicit runtime.
+type Hosting struct {
+	Slots   []string `yaml:"slots,omitempty"`
+	Image   string   `yaml:"image,omitempty"`
+	Runtime string   `yaml:"runtime,omitempty"`
 }
 
 type Runtime struct {
-	Timezone string         `yaml:"timezone,omitempty"`
-	Locale   string         `yaml:"locale,omitempty"`
-	Context  RuntimeContext `yaml:"context,omitempty"`
+	Timezone    string           `yaml:"timezone,omitempty"`
+	Locale      string           `yaml:"locale,omitempty"`
+	Context     RuntimeContext   `yaml:"context,omitempty"`
+	Goals       RuntimeGoals     `yaml:"goals,omitempty"`
+	Compression map[string]any   `yaml:"compression,omitempty"`
+	Auxiliary   RuntimeAuxiliary `yaml:"auxiliary,omitempty"`
 }
 
 type RuntimeContext struct {
-	Compaction    string `yaml:"compaction,omitempty"`
-	ParallelLanes int    `yaml:"parallel_lanes,omitempty"`
+	Compaction    string   `yaml:"compaction,omitempty"`
+	Engines       []string `yaml:"engines,omitempty"`
+	ParallelLanes int      `yaml:"parallel_lanes,omitempty"`
+}
+
+// RuntimeGoals mirrors the retired settings.yaml goals: block — engine,
+// judge and turn bound for the managed goals surface.
+type RuntimeGoals struct {
+	Engine   string `yaml:"engine,omitempty"`
+	Judge    string `yaml:"judge,omitempty"`
+	MaxTurns int    `yaml:"max_turns,omitempty"`
+}
+
+// RuntimeAuxiliary names the logical models side paths (summary, judge)
+// resolve through the owner's model relay.
+type RuntimeAuxiliary struct {
+	SummaryModel string `yaml:"summary_model,omitempty"`
+	JudgeModel   string `yaml:"judge_model,omitempty"`
 }
 
 type Supervision struct {
@@ -195,8 +238,21 @@ type Voice struct {
 }
 
 type Memory struct {
-	Backend       string `yaml:"backend,omitempty"`
-	NightlyRollup string `yaml:"nightly_rollup,omitempty"`
+	Enabled           *bool           `yaml:"enabled,omitempty"`
+	Backend           string          `yaml:"backend,omitempty"`
+	NightlyRollup     string          `yaml:"nightly_rollup,omitempty"`
+	LeafRetentionDays int             `yaml:"leaf_retention_days,omitempty"`
+	LeafFoldBytes     int             `yaml:"leaf_fold_bytes,omitempty"`
+	Provider          *MemoryProvider `yaml:"provider,omitempty"`
+}
+
+// MemoryProvider is the external memory-backend endpoint record the retired
+// settings memory_provider* fields carried — adapter kind, absolute URL and
+// the secrets variable holding its token.
+type MemoryProvider struct {
+	Adapter  string `yaml:"adapter"`
+	URL      string `yaml:"url"`
+	TokenEnv string `yaml:"token_env,omitempty"`
 }
 
 // models.yaml — routes, ladders and per-service auth contracts.
@@ -245,10 +301,12 @@ type ModelRef struct {
 
 // workspace.yaml — one ASCII tree, boundary lists and external mounts.
 type Workspace struct {
-	Tree     string           `yaml:"tree,omitempty"`
-	Writable []string         `yaml:"writable,omitempty"`
-	ReadOnly []string         `yaml:"read_only,omitempty"`
-	Mounts   map[string]Mount `yaml:"mounts,omitempty"`
+	Tree              string           `yaml:"tree,omitempty"`
+	Writable          []string         `yaml:"writable,omitempty"`
+	ReadOnly          []string         `yaml:"read_only,omitempty"`
+	Mounts            map[string]Mount `yaml:"mounts,omitempty"`
+	Goal              string           `yaml:"goal,omitempty"`
+	BootstrapRevision uint64           `yaml:"bootstrap_revision,omitempty"`
 }
 
 type Mount struct {
@@ -260,6 +318,38 @@ type Mount struct {
 type Tools struct {
 	Core     map[string]Toolset `yaml:"core,omitempty"`
 	Extended map[string]Toolset `yaml:"extended,omitempty"`
+	Binding  *ToolBinding       `yaml:"binding,omitempty"`
+	// Connectors declares raw MCP upstreams (the retired workspace mcp:
+	// surface): the user_mcp/org_mcp uncurated toolsets admit this map as
+	// their member set — it is not reachable unless such a toolset is
+	// selected and its section right is granted.
+	Connectors map[string]Connector `yaml:"connectors,omitempty"`
+}
+
+// Connector is one owner-declared raw MCP upstream — an external
+// connection, not an embedded service. Fields mirror the retired
+// workspace.yaml server definition one to one.
+type Connector struct {
+	URL     string            `yaml:"url,omitempty"`
+	Command string            `yaml:"command,omitempty"`
+	Args    []string          `yaml:"args,omitempty"`
+	Env     map[string]string `yaml:"env,omitempty"`
+	Headers map[string]string `yaml:"headers,omitempty"`
+	Tools   *ConnectorTools   `yaml:"tools,omitempty"`
+	Auth    string            `yaml:"auth,omitempty"`
+	Timeout int               `yaml:"timeout,omitempty"`
+}
+
+// ConnectorTools is the per-server tool filter the runtime merges with
+// governance-driven exclusions.
+type ConnectorTools struct {
+	Include []string `yaml:"include,omitempty"`
+	Exclude []string `yaml:"exclude,omitempty"`
+}
+
+type ToolBinding struct {
+	ProfileID  string `yaml:"profile_id"`
+	Generation uint64 `yaml:"generation"`
 }
 
 type Toolset struct {

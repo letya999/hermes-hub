@@ -5,6 +5,7 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/internal/memory"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
@@ -39,10 +40,36 @@ type Job struct {
 	// GoalEpoch pins a goal-mode turn to the record epoch it was queued under;
 	// a claim whose epoch no longer matches the active goal no-ops (SPEC-0074).
 	GoalEpoch int64 `json:"goal_epoch,omitempty"`
+	// Untrusted/Probe are hub-stamped transport metadata for memory capture
+	// (SPEC-0085 R2.3): Untrusted marks forwarded/external content the channel
+	// reported at ingest; Probe marks schedule work with a probe attached.
+	// Body text can never set them — they are written by the hub at enqueue.
+	Untrusted bool `json:"untrusted,omitempty"`
+	Probe     bool `json:"probe,omitempty"`
 	// TokenEstimate prices the admission reservation when the caller knows
 	// the expected spend; zero takes the spool default, negative is rejected.
 	TokenEstimate int64     `json:"token_estimate,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
+}
+
+// MemoryKind classifies the job for vault capture (SPEC-0085 R2.4): the
+// trigger names interactive turns; assignment/probe marks ride the job's
+// hub-stamped fields, never the body.
+func (job Job) MemoryKind() memory.Kind {
+	return memory.KindForTrigger(job.Trigger, job.AssignmentID != "", job.Probe)
+}
+
+// MemoryTurnProvenance stamps the turn's provenance at capture: forwarded/
+// external content the transport flagged is untrusted, owner-authored
+// instructions are owner, hub-fired background work is system.
+func (job Job) MemoryTurnProvenance() memory.Provenance {
+	return memory.ProvenanceForTurn(job.Untrusted, job.Trigger)
+}
+
+// MemoryAudience scopes the entry to the audience of the job's route —
+// private turns and group turns stay in separate capture slices.
+func (job Job) MemoryAudience() memory.Audience {
+	return memory.AudienceOf(job.ScopeID)
 }
 
 type Delivery struct {

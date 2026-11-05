@@ -1,8 +1,7 @@
 package stack
 
 import (
-	"os"
-	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -10,14 +9,11 @@ func TestGroupSpaceCarriesScopeKindToRuntime(t *testing.T) {
 	if err := (Scope{Kind: "group", ID: "team"}).Validate(); err != nil {
 		t.Fatalf("explicit group namespace must be valid: %v", err)
 	}
-	dir := filepath.Join(t.TempDir(), "spaces", "team")
-	if err := InitEnvironment(dir, "team", "prod"); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "scope.yaml"), []byte("kind: group\nid: team\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	s, err := ReadEnvironment(dir, "prod")
+	dir := t.TempDir()
+	docs := managedDocs("team")
+	docs["stack"] = strings.Replace(docs["stack"], "identity: {user: team", "identity: {user: team, kind: group", 1)
+	publishManagedDocs(t, dir, "team", "r-0123456789abcdef", docs)
+	s, err := ReadEffective(dir, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -5,7 +5,7 @@ allow:
   workspace:     [read, write, create_project]
   memory:        [read, search, remember]
   models:        [list, use, switch]
-  tools:         [list, select]
+  tools:         [list, use]
   skills:        [list, invoke, draft]
   connectors:    [discover, prepare, enable]
   agents:        [inspect_self, restart_self, monitor_self]

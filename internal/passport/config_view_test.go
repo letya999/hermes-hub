@@ -88,3 +88,24 @@ func TestPublishPreservesExecutorContractsInConfigView(t *testing.T) {
 		}
 	}
 }
+
+func TestPublishViewFailureDoesNotActivateRevision(t *testing.T) {
+	dir := t.TempDir()
+	rev := Revision{ID: "r-0003", Provenance: Provenance{Environment: "dev"}, Docs: map[string][]byte{}}
+	for _, name := range Names {
+		rev.Docs[name] = []byte("apiVersion: six-passport/v2\nkind: " + name + "\n")
+	}
+	viewRoot := filepath.Join(dir, "generated", "config-view")
+	if err := os.MkdirAll(viewRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(viewRoot, "dev"), []byte("blocked"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := rev.Publish(dir); err == nil {
+		t.Fatal("view refresh failure was ignored")
+	}
+	if active, err := Current(dir); err == nil || active != "" {
+		t.Fatalf("failed publish activated %q: %v", active, err)
+	}
+}

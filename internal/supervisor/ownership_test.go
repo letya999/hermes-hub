@@ -253,6 +253,9 @@ func TestReapDeletesVerifiedImmutableID(t *testing.T) {
 					return nil, nil
 				}
 				if args[2] == "{{.Id}}" {
+					if strings.HasSuffix(args[3], "-ctl") {
+						return nil, os.ErrNotExist
+					}
 					if !valid {
 						return []byte("invalid"), nil
 					}
@@ -307,6 +310,9 @@ func TestReapAcceptsOnlyConfirmedExitedContainerAfterStopRace(t *testing.T) {
 					}
 					return nil, nil
 				case args[2] == "{{.Id}}":
+					if strings.HasSuffix(args[3], "-ctl") {
+						return nil, os.ErrNotExist
+					}
 					return []byte(id), nil
 				case args[2] == "{{.State.Running}}":
 					if args[3] != id {
@@ -370,7 +376,9 @@ func TestFailedReadinessCleanupVerifiesIDAndPreservesUnknownSlot(t *testing.T) {
 			if foreign && (removed != 0 || len(m.sem) != 1) {
 				t.Fatalf("replacement removed or unknown slot released: %d %d", removed, len(m.sem))
 			}
-			if !foreign && (removed != 1 || len(m.sem) != 0) {
+			// The owned cleanup removes the runtime and its same-generation
+			// control relay — two verified deletions, never by mutable name.
+			if !foreign && (removed != 2 || len(m.sem) != 0) {
 				t.Fatalf("owned cleanup failed: %d %d", removed, len(m.sem))
 			}
 		})
@@ -424,14 +432,25 @@ func TestLostDockerStartAcknowledgementRetainsUnknownCapacity(t *testing.T) {
 			started, removals := false, 0
 			m.cfg.Command = func(_ context.Context, args ...string) ([]byte, error) {
 				switch args[0] {
+				case "network":
+					if len(args) > 3 && args[1] == "inspect" && args[3] == "{{.Internal}}" {
+						return []byte("true"), nil
+					}
+					return nil, nil
 				case "run":
-					started = true
-					return nil, errors.New("lost Docker ACK")
+					if isRuntimeSpawn(args) {
+						started = true
+						return nil, errors.New("lost Docker ACK")
+					}
+					return []byte("ok"), nil
 				case "inspect":
 					if !started {
 						return nil, os.ErrNotExist
 					}
 					if args[2] == "{{.Id}}" {
+						if strings.HasSuffix(args[3], "-ctl") {
+							return nil, os.ErrNotExist
+						}
 						return []byte(strings.Repeat("a", 64)), nil
 					}
 					if args[2] == "{{json .Mounts}}" {
@@ -603,6 +622,12 @@ func TestOwnerLabelsCannotAuthorizeAnotherContextMount(t *testing.T) {
 			if err := m.ReleaseBinding(b); err != nil {
 				t.Fatal(err)
 			}
+			// The scope-mount check guards legacy unmanaged records only —
+			// managed runtimes never mount /scope. Model the pre-cutover
+			// record this verification still protects on teardown.
+			m.mu.Lock()
+			m.items[runtimeKey(b)].Runtime.Managed = false
+			m.mu.Unlock()
 			command := m.cfg.Command
 			m.cfg.Command = func(ctx context.Context, args ...string) ([]byte, error) {
 				if args[0] != "inspect" || args[2] != "{{json .Mounts}}" {

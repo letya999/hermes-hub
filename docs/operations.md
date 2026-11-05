@@ -93,8 +93,8 @@ Skip the ceremony and the user gets an agent with an empty tool surface.
    A *managed* space additionally needs, before `up`: an execution selection
    (`execution.<env>.json` — `mode: supervisor`,
    `supervisor_url: http://supervisor:8876`, `native_cron: disabled`),
-   a migrated passport (`hubctl space-migrate --dir spaces/<id> --env <env>
-   --apply`), and reachable model credentials — either `cliproxy: shared`
+   six authored passports published with `hubctl space apply --dir
+   spaces/<id> --env <env> --confirm`, and reachable model credentials — either `cliproxy: shared`
    against the infra instance or `cliproxy: dedicated` with the space's own
    `cliproxy/` directory (`config.yaml`). Dedicated instances are enrolled
    with `hubctl models login --dir spaces/<id> --service <name>`: submit each
@@ -227,8 +227,7 @@ hubctl org sync-members --org acme --org-dir spaces/acme \
     --spaces spaces --dry-run                                          # report, then drop --dry-run to provision
 hubctl capability --kind group --file g.json --toolhub-store <path>   # validate+print digest only
 hubctl capability --kind preview --file draft.json --toolhub-store <path>  # old→new diff, never writes
-hubctl capability --kind tools --settings <space> \
-    --set terminal=native,browser=mcp:playwright+ro --confirm          # surgical workspace.yaml write
+hubctl space apply --dir spaces/<user> --env dev --confirm             # publish passports/tools.yaml with separate grants.yaml
 hubctl governance --kind rule --scope user --user alice \
     --section native:terminal --effect allow --reason "reviewed" --confirm
 hubctl governance --kind grant --user alice --section user_mcp --expires 72h --confirm
@@ -510,28 +509,19 @@ service in docs/services/credential-broker.md. Ops-critical facts:
   proxy environment parameter` — move offending names to `environment` and
   restart toolhub.
 
-## Migrations
+## Space publication and data maintenance
 
-All explicit, dry-run first, never overwrite:
+Space publication is an explicit dry-run followed by `--confirm`:
 
 ```text
-hubctl migrate-spaces --user artem --org acme [--apply]
-hubctl space-migrate --dir spaces/artem --env dev [--apply]   # legacy authority -> six-passport sources
-hubctl space apply --dir spaces/artem --env dev [--confirm]   # compile passport-src, classified diff, publish + reconcile
-hubctl space-audit --dir spaces/artem                         # revision-only effective inventory
+hubctl space apply --dir spaces/artem --env dev [--confirm]   # compile six authored passports, publish + reconcile
 hubctl spool migrate --spool <dir> --state <dir> [--apply]   # legacy knowledge tree
 hubctl context backup|restore|export|purge [--spool <dir>] [--confirm]
 ```
 
-`migrate-spaces` rejects symlinks, ID collisions, unrelated data and active
-runtimes; reports JSON paths/counts/checksums, no secret values. `space-migrate`
-compiles the space's editable authority into the layered six-passport sources,
-publishes the revision atomically and keeps a sha256-verified backup plus a
-rollback fence under `generated/migration-backup/<revision>/` — nothing is
-deleted, conflicts are reported, never silently retyped. `space-audit` reads
-only the published revision: services, routes, workspace tree, core/extended
-toolsets, grants, deny reasons and layer provenance. `spool
-migrate` copies (never moves) knowledge into `<state>/knowledge/<principal>`;
+The publisher checks all six authored files, current issued rights and the
+organization ceiling before switching the revision. `spool migrate` copies
+(never moves) knowledge into `<state>/knowledge/<principal>`;
 other spool dirs (`schedules`, `occurrences`, `watchers`, `digests`, `tasks`,
 `events`, `outbox`, `mappings`, `conversations`, `inbound`, `callbacks`) keep
 their paths. `context restore` refuses another user and never reactivates
@@ -555,7 +545,86 @@ supervisor is in-network-only — set `HUB_RUNTIME_SUPERVISOR_URL` to a
 reachable endpoint or the respawn cannot be signaled.
 
 Memory: native files under `spaces/<id>/hermes/memories` (`MEMORY.md`,
-`USER.md`) — `hubctl memory list` / `hubctl memory delete --name`. Honcho is
+`USER.md`) — `hubctl memory list` / `hubctl memory delete --name`. The vault
+(`spaces/<id>/vault`) adds three verbs: `hubctl memory import` parses the
+native files into reviewable draft cards staged under
+`vault/runtime/memory/import` (directive candidates are review-only — nothing
+reaches `memory/CORE.md` automatically); only `import --apply` commits them
+through the governed writer, and re-import never clobbers an existing card.
+`hubctl memory eval --questions <set.json> [--out-dir .work/tmp]` runs the
+live question set through the model relay (`HUB_MODEL_RELAY_URL`/
+`HUB_MODEL_RELAY_AUTH`) with top-4 vault evidence as context and writes a
+timestamped judged report — relay failures are recorded per question, mocks
+never count as live. `hubctl memory vacuum` dry-runs the superseded purge
+set; only `vacuum --apply` deletes, and git history keeps everything
+recoverable. `hubctl memory prune` dry-runs the leaf lifecycle report
+(fold/expire/keep predictions); only `prune --apply` executes, and every
+action journals to `memory/REVIEW.md` plus the localized morning digest.
+
+Daily leaves are bounded by two opt-in agent settings, both off by
+default: `memory_leaf_fold_bytes` (>0) folds a *completed* oversized
+leaf at the next night tick — audit-kind block bodies (routine, system,
+probe, compaction, untrusted, background replies) collapse to stub
+lines while mem:id headers and interactive owner/agent blocks stay
+byte-identical; oversized eligible days first get a `long_summary` from
+the same rollup call so detail lands in `summaries/daily/`. 
+`memory_leaf_retention_days` (≥2) expires a leaf older than the window —
+`git rm` + commit + prov.db row drop — but only after the day's rollup
+state is complete and its daily summary exists; unverified days are
+kept and reported, never deleted. Expired bytes still live in the
+vault's git history — true erasure needs a history rewrite, not this
+knob.
+
+An external memory backend rides the hub-owned provider seam, never the
+upstream plugin path: `tools: {memory_provider: {via: native}}` in
+`workspace.yaml` behind a `native:memory_provider` governance grant, with
+`memory_provider` (adapter kind — `hindsight` today), `memory_provider_url`
+(absolute http(s)) and optional `memory_provider_token_env` (the *name* of
+a secrets-env variable — a literal credential is rejected at validation) in
+`agent.yaml`. The render writes `vault/runtime/memory/provider.json`; in
+managed capability mode the endpoint host joins the egress allowlist, and
+disabling the capability removes both. `hubctl memory replay` streams the
+`prov.db` audit spine into the provider — each entry's bank id minted from
+`runtime/memory/scope.key` (hub-generated, never in the space) over
+env×principal×audience — checkpointed per entry at `runtime/memory/
+replay.cursor` so an interrupted migration resumes and a re-run captures
+nothing twice. `hubctl memory export-honcho --file <export.json>` converts
+a Honcho conclusions export (the list Page or the piped array) into
+`source: migrated` draft cards in the import staging lane — review, then
+`--apply` commits. If the provider is down the vault is unaffected; the
+adapter reports degradation honestly (capture/search/export and health are
+the only lanes — recall and governed write are `unsupported`).
+
+With `knowledge_ui` on (requires `memory_vault`), one pinned `open-knowledge`
+container serves the OpenKnowledge editor over the vault — private space
+network only by default, no host reachability at all. Setting `ui_port` in
+`agent.yaml` opts into exactly one host publish, `127.0.0.1:<ui_port>` → the
+container's 8080 (the editor is unauthenticated, so loopback is the only
+safe edge). Reach it from another machine by tunneling in:
+`ssh -L <ui_port>:localhost:<ui_port> <host>`. `ui_bind` pins the publish
+address and is loopback-only (`127.0.0.1` or `::1`); a wider bind is a hard
+validation error, never a warning — there is no public exposure path.
+`ui_port` joins the other host ports in validation (1024–65535, no collision
+with browser/oauth/slack events ports) and requires `knowledge_ui`;
+`hubctl doctor` reports the edge, the tunnel hint and whether something is
+already listening. `ui_expose` is the reserved M18 hook: setting it fails
+honestly until the M18 edge service lands, which is where a shareable
+one-time `?t=` UI link (auth + expiry decided there) would hang off — never
+a silent partial exposure.
+Coexistence contract with hub writes: when the governed writer or rollup
+lands a commit while a document is open in the editor, OpenKnowledge keeps
+both versions — a stale save is *rejected* and retained under
+`.ok/local/stale-external-writes.json`, and the conflict surfaces via
+`.ok/local/conflicts.json` (shadow versions live under `.git/ok/`). There is
+never a silent overwrite in either direction; owner UI edits carry owner
+provenance and win the next rollup. OpenKnowledge's own state (`.ok/`,
+`.graph/`, `.git/ok/`) and every `runtime/` sidecar are `.okignore`d, so the
+editor indexes knowledge only. If the container is down, vault capture,
+recall and search are unaffected — nothing else depends on it.
+The same container serves the runtime a read-only MCP surface at
+`http://open-knowledge:8080/mcp` (`mcp__open_knowledge__*`): the eight
+verified read verbs via `tools.include`, mutation verbs never registered,
+`knowledge_ui_write` deferred until upstream per-path scoping (#422). Honcho is
 optional (`honcho` + `honcho_url`); its failure must not break ordinary
 Hermes memory. Skills live in the owner store `spaces/<id>/skills` —
 publication, archive, restore, rollback and promote rebuild the read-only
@@ -791,7 +860,7 @@ rejected — dead links out of `SKILL.md` itself stay hard errors. Zip
 extraction is bounded (entry count/bytes, path traversal and special
 files refused); binary payloads like images in `assets/` survive intact.
 Inside a runtime the agent reaches the same path with
-`skill_manage action=install_local` and a workspace-relative `path` —
+`skill_edit action=install_local` and a workspace-relative `path` —
 inbox downloads staged by `inbox_fetch`, unpacked archives, checkouts.
 
 ## Skill quality: lint, stats, evals

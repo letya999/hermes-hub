@@ -102,7 +102,7 @@ func TestNormativeExamplesParseStrict(t *testing.T) {
 	if len(rule) != 5 || rule[0] != "/workspace/work" {
 		t.Fatalf("per-tool rule scope lost: %v", rule)
 	}
-	if tools.Extended["browser"].Via != "mcp:playwright" || tools.Extended["ssh"].Tools.Include[0] != "ssh_hosts" {
+	if tools.Extended["browser"].Via != "toolhub" || tools.Extended["ssh"].Tools.Include[0] != "ssh_list" {
 		t.Fatalf("extended toolsets lost: %+v", tools.Extended)
 	}
 	if tools.Extended["browser"].Scope.URLs[0] != "https://docs.acme.example" {

@@ -37,7 +37,7 @@ func (g *Gateway) serveHumanConfirmation(w http.ResponseWriter, r *http.Request)
 	enrolled := false
 	for _, auth := range g.Tokens {
 		if proof.Actor.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion) == nil {
-			proof.Actor.CapabilityProfile, proof.Actor.Environment, proof.Actor.Generation = auth.CapabilityProfile, auth.Environment, auth.Generation
+			proof.Actor.CapabilityProfile, proof.Actor.Environment, proof.Actor.Generation, proof.Actor.Organization = auth.CapabilityProfile, auth.Environment, auth.Generation, auth.Organization
 			enrolled = true
 			break
 		}

@@ -182,6 +182,12 @@ func Project(root string) error {
 			if err != nil {
 				return err
 			}
+			// .work/tmp is the ignored local-diagnostic area: vendored or
+			// captured third-party docs there carry their own broken links
+			// and are not project documentation to enforce.
+			if entry.IsDir() && name == filepath.Join(root, ".work", "tmp") {
+				return fs.SkipDir
+			}
 			if entry.IsDir() || filepath.Ext(name) != ".md" {
 				return nil
 			}

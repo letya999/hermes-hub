@@ -7,9 +7,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
 func boolPtr(v bool) *bool { return &v }
@@ -344,41 +341,6 @@ func TestWebDoctorWarnsOnlyKeyedProviders(t *testing.T) {
 		if strings.Contains(issue, "EXA_API_KEY") {
 			t.Fatalf("keyless-ring provider must not produce a doctor warning: %v", issues)
 		}
-	}
-}
-
-func TestWebSettingsRoundTripThroughSpaceFiles(t *testing.T) {
-	d := t.TempDir()
-	if err := Init(d, "me"); err != nil {
-		t.Fatal(err)
-	}
-	// R3.1: the native web toolset is a wish plus a grant now.
-	wsPath := filepath.Join(d, "workspace.yaml")
-	ws, err := os.ReadFile(wsPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ws = []byte(strings.Replace(string(ws), "  # web: native", "  web: {via: native}", 1))
-	if err := os.WriteFile(wsPath, ws, 0600); err != nil {
-		t.Fatal(err)
-	}
-	seedGovernance(t, d, func(doc *api.Governance) {
-		activeToolGrant(t, doc, "me", "native:web", time.Hour)
-	})
-	s, err := Read(d)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.Web = WebSettings{Backend: "tavily", Research: WebResearchBounds{MaxRounds: 2}}
-	if err := WriteSpace(d, s); err != nil {
-		t.Fatal(err)
-	}
-	reloaded, err := Read(d)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if reloaded.Web.Backend != "tavily" || reloaded.Web.Research.MaxRounds != 2 {
-		t.Fatalf("web settings did not round-trip: %#v", reloaded.Web)
 	}
 }
 

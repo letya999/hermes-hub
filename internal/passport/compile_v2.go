@@ -8,11 +8,18 @@ import (
 	"fmt"
 	"net/url"
 	"path"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/catalog"
+	"github.com/letya999/hermes-hub/internal/exposure"
+	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/media"
+	"github.com/letya999/hermes-hub/internal/selfsettings"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
 // classKeysetNarrow marks map-subtree leaves (registry key "map.*"): any
@@ -233,6 +240,16 @@ func checkWorkspace(bodies map[string]map[string]any) error {
 			return fmt.Errorf("passport compile: workspace.mounts.%s mounts organization scope — mode must be read-only", name)
 		}
 	}
+	if raw, ok := ws["goal"]; ok {
+		if _, ok := raw.(string); !ok {
+			return fmt.Errorf("passport compile: workspace.goal must be a string")
+		}
+	}
+	if raw, ok := ws["bootstrap_revision"]; ok {
+		if v, ok := raw.(int); !ok || v < 0 {
+			return fmt.Errorf("passport compile: workspace.bootstrap_revision must be a non-negative integer")
+		}
+	}
 	return nil
 }
 
@@ -247,6 +264,10 @@ var PortOwners = map[string]string{
 	"oauth-callback": "hermes-runtime",
 	"browser-vnc":    "browser",
 	"slack-events":   "communication-hub",
+	// knowledge-ui is the loopback Knowledge editor edge (SPEC-0085 R10.1):
+	// open-knowledge is feature-rendered, so its "instance" is the tools
+	// doc's knowledge_ui marker rather than a declared stack service.
+	"knowledge-ui": "open-knowledge",
 }
 
 // channelVocabulary is the set of ingress transports config.channels may
@@ -254,8 +275,140 @@ var PortOwners = map[string]string{
 // the stack ingress adapters until the catalog grows a channel class.
 var channelVocabulary = map[string]bool{"telegram": true, "slack_app": true}
 
+// envRefPattern names a secrets variable — the provider token_ref vocabulary
+// never carries literal credentials.
+var envRefPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
+
 func checkConfig(bodies map[string]map[string]any, instances map[string]instInfo, in Inputs) error {
 	cfg := bodies["config"]
+	memory := asMap(cfg["memory"])
+	if enabled, set := memory["enabled"]; set {
+		if _, ok := enabled.(bool); !ok {
+			return fmt.Errorf("passport compile: config.memory.enabled must be a boolean")
+		}
+	}
+	if raw, set := memory["nightly_rollup"]; set {
+		value, ok := raw.(string)
+		parsed, err := time.Parse("15:04", value)
+		if !ok || err != nil || parsed.Format("15:04") != value {
+			return fmt.Errorf("passport compile: config.memory.nightly_rollup must be HH:MM")
+		}
+	}
+	if raw, set := memory["leaf_retention_days"]; set {
+		value, ok := raw.(int)
+		if !ok || value < 0 || value == 1 {
+			return fmt.Errorf("passport compile: config.memory.leaf_retention_days must be 0 or >=2")
+		}
+	}
+	if raw, set := memory["leaf_fold_bytes"]; set {
+		value, ok := raw.(int)
+		if !ok || value < 0 {
+			return fmt.Errorf("passport compile: config.memory.leaf_fold_bytes must be >=0")
+		}
+	}
+	if raw, set := memory["provider"]; set {
+		provider, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("passport compile: config.memory.provider must be a map")
+		}
+		adapter, _ := provider["adapter"].(string)
+		if adapter != "hindsight" {
+			return fmt.Errorf("passport compile: config.memory.provider.adapter %q is not a supported adapter (supported: hindsight)", adapter)
+		}
+		rawURL, _ := provider["url"].(string)
+		u, err := url.Parse(rawURL)
+		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			return fmt.Errorf("passport compile: config.memory.provider.url %q is not an absolute http(s) endpoint", rawURL)
+		}
+		if env, set := provider["token_env"]; set {
+			if name, ok := env.(string); !ok || !envRefPattern.MatchString(name) {
+				return fmt.Errorf("passport compile: config.memory.provider.token_env must name a secrets variable")
+			}
+		}
+	}
+	if raw, set := cfg["hosting"]; set {
+		hosting, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("passport compile: config.hosting must be a map")
+		}
+		slots := asList(hosting["slots"])
+		if len(slots) > 4 {
+			return fmt.Errorf("passport compile: config.hosting.slots must fit the shared exposure cap of 4")
+		}
+		seen := map[string]bool{}
+		for i, raw := range slots {
+			slot, ok := raw.(string)
+			if !ok || !exposure.ValidSiteSlot(slot) || seen[slot] {
+				return fmt.Errorf("passport compile: config.hosting.slots[%d] must be a unique safe site label", i)
+			}
+			seen[slot] = true
+		}
+		image, _ := hosting["image"].(string)
+		if image != "" {
+			if err := api.ValidPinnedImageRef(image); err != nil {
+				return fmt.Errorf("passport compile: config.hosting.image: %w", err)
+			}
+			if runtime, _ := hosting["runtime"].(string); runtime != "runsc" && runtime != "kata" {
+				return fmt.Errorf("passport compile: config.hosting.runtime must be runsc or kata")
+			}
+		}
+	}
+	if raw, set := cfg["image_gen"]; set {
+		doc, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("passport compile: config.image_gen must be a map")
+		}
+		str := func(key string) string {
+			v, _ := doc[key].(string)
+			return v
+		}
+		gen := media.ImageGen{Provider: str("provider"), Model: str("model"), Delivery: str("delivery")}
+		if _, err := gen.Normalize(); err != nil {
+			return fmt.Errorf("passport compile: config.image_gen: %w", err)
+		}
+	}
+	context := asMap(asMap(cfg["runtime"])["context"])
+	engines := map[string]bool{}
+	for i, raw := range asList(context["engines"]) {
+		engine, ok := raw.(string)
+		if !ok || (engine != "hub" && engine != "native") {
+			return fmt.Errorf("passport compile: config.runtime.context.engines[%d] must be hub or native", i)
+		}
+		engines[engine] = true
+	}
+	if compaction, _ := context["compaction"].(string); compaction != "" && compaction != "auto" && len(engines) > 0 && !engines[compaction] {
+		return fmt.Errorf("passport compile: config.runtime.context.compaction %q is outside the granted engines", compaction)
+	}
+	goals := asMap(asMap(cfg["runtime"])["goals"])
+	if engine, set := goals["engine"]; set {
+		v, _ := engine.(string)
+		if v != "auto" && v != "hub" && v != "native" {
+			return fmt.Errorf("passport compile: config.runtime.goals.engine must be auto, hub or native")
+		}
+	}
+	if judge, set := goals["judge"]; set {
+		v, _ := judge.(string)
+		if v != "auto" && v != "aux" && v != "main" && v != "self" {
+			return fmt.Errorf("passport compile: config.runtime.goals.judge must be auto, aux, main or self")
+		}
+	}
+	if raw, set := goals["max_turns"]; set {
+		v, ok := raw.(int)
+		if !ok || v < 0 || v > 50 {
+			return fmt.Errorf("passport compile: config.runtime.goals.max_turns must be 1..50")
+		}
+	}
+	if err := checkCompressionLeaves(asMap(asMap(cfg["runtime"])["compression"]), "compression"); err != nil {
+		return err
+	}
+	for _, key := range []string{"summary_model", "judge_model"} {
+		if raw, set := asMap(asMap(cfg["runtime"])["auxiliary"])[key]; set {
+			v, _ := raw.(string)
+			if !identity.ValidID(v) {
+				return fmt.Errorf("passport compile: config.runtime.auxiliary.%s must be a logical model identifier", key)
+			}
+		}
+	}
 	claimed := map[string]string{}
 	for name, p := range asMap(cfg["ports"]) {
 		owner, known := PortOwners[name]
@@ -264,9 +417,13 @@ func checkConfig(bodies map[string]map[string]any, instances map[string]instInfo
 		}
 		inst, ok := instances[owner]
 		if !ok {
-			return fmt.Errorf("passport compile: config.ports.%s declares a port for %s, which is not in the stack", name, owner)
-		}
-		if inst.mode == "shared" && !in.RendersInfra {
+			// open-knowledge renders from the tools doc's knowledge_ui
+			// marker, not a declared stack service — the feature marker is
+			// its instance evidence.
+			if owner != "open-knowledge" || !nativeToolsetEnabled(bodies["tools"], "knowledge_ui") {
+				return fmt.Errorf("passport compile: config.ports.%s declares a port for %s, which is not in the stack", name, owner)
+			}
+		} else if inst.mode == "shared" && !in.RendersInfra {
 			return fmt.Errorf("passport compile: config.ports.%s is published by shared %s — only the infra space declares it", name, owner)
 		}
 		port := intPort(p)
@@ -304,6 +461,28 @@ func checkConfig(bodies map[string]map[string]any, instances map[string]instInfo
 					return fmt.Errorf("passport compile: config.channels.%s voice requires %s running", name, need)
 				}
 			}
+		}
+	}
+	return nil
+}
+
+// checkCompressionLeaves walks the declared compression map and validates
+// every leaf against the selfsettings allowlist — unknown paths or
+// out-of-range values fail the whole compile with a named error.
+func checkCompressionLeaves(section map[string]any, prefix string) error {
+	for key, value := range section {
+		if strings.ContainsAny(key, ".\x00\r\n") {
+			return fmt.Errorf("passport compile: config.runtime.%s: invalid key %q", prefix, key)
+		}
+		leaf := prefix + "." + key
+		if nested, ok := value.(map[string]any); ok {
+			if err := checkCompressionLeaves(nested, leaf); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, err := selfsettings.ValidatePath(leaf, value); err != nil {
+			return fmt.Errorf("passport compile: config.runtime.%s: %w", leaf, err)
 		}
 	}
 	return nil
@@ -391,17 +570,51 @@ func checkModels(bodies map[string]map[string]any, instances map[string]instInfo
 
 const coreBudget = 20
 
+// platformPinnedMembers is the frozen platform layer (ADR-0094 D1): six
+// model tools pinned into every space's core, never operator-selectable.
+var platformPinnedMembers = []string{
+	"platform_bootstrap", "platform_guide", "platform_status", "platform_usage",
+	"tool_call", "tool_search",
+}
+
 // checkTools validates the core/extended toolset maps against the catalog
 // executor contracts, applies the core member budget (an overflowing
-// toolset moves whole into extended) and pins discovery in core.
+// toolset moves whole into extended) and pins the platform layer in core.
 func checkTools(bodies map[string]map[string]any, docs catalog.Docs) error {
 	t := bodies["tools"]
+	if raw, present := t["binding"]; present {
+		binding, ok := raw.(map[string]any)
+		if !ok || len(binding) != 2 {
+			return fmt.Errorf("passport compile: tools.binding requires profile_id and generation")
+		}
+		profileID, ok := binding["profile_id"].(string)
+		if !ok || !identity.ValidID(profileID) {
+			return fmt.Errorf("passport compile: tools.binding.profile_id is invalid")
+		}
+		generation, ok := binding["generation"].(int)
+		if !ok || generation < 1 {
+			return fmt.Errorf("passport compile: tools.binding.generation must be positive")
+		}
+	}
 	core := asMap(t["core"])
 	extended := asMap(t["extended"])
 	if dup := intersectKeys(core, extended); len(dup) > 0 {
 		return fmt.Errorf("passport compile: toolset %s listed in both core and extended", strings.Join(dup, ", "))
 	}
 	validate := func(name string, raw any) ([]string, error) {
+		spec, _ := raw.(map[string]any)
+		via := fmt.Sprint(spec["via"])
+		if via == "off" {
+			// A deny needs no catalog surface: it may name a connector or an
+			// organization catalog server the member narrows out, and an off
+			// entry takes no selector fields at all.
+			for _, k := range []string{"tools", "access", "scope", "rules", "server", "except", "only"} {
+				if _, set := spec[k]; set {
+					return nil, fmt.Errorf("passport compile: toolset %q via off takes no %q", name, k)
+				}
+			}
+			return nil, nil
+		}
 		ts, err := ResolveToolset(docs, name)
 		if err != nil {
 			return nil, err
@@ -409,8 +622,6 @@ func checkTools(bodies map[string]map[string]any, docs catalog.Docs) error {
 		if ts.Section == "" {
 			return nil, fmt.Errorf("passport compile: toolset %q is denied by construction", name)
 		}
-		spec, _ := raw.(map[string]any)
-		via := fmt.Sprint(spec["via"])
 		okVia := slices.Contains(ts.Via, via) ||
 			(strings.HasPrefix(via, "mcp:") && slices.Contains(ts.Via, "mcp"))
 		if !okVia {
@@ -487,11 +698,26 @@ func checkTools(bodies map[string]map[string]any, docs catalog.Docs) error {
 		name    string
 		members []string
 	}
+	if extended == nil {
+		extended = map[string]any{}
+	}
+	if core == nil {
+		core = map[string]any{}
+	}
 	var coreEntries []entry
 	for name, raw := range core {
 		members, err := validate(name, raw)
 		if err != nil {
 			return err
+		}
+		// Uncurated surfaces (raw MCP catalogs) never enter core (ADR-0094
+		// R6): an operator writing one into core gets the honest demotion,
+		// not a compile error — the projection must exist for the runtime
+		// to enumerate its declared servers at all.
+		if ts, rerr := ResolveToolset(docs, name); rerr == nil && ts.Uncurated {
+			extended[name] = core[name]
+			delete(core, name)
+			continue
 		}
 		coreEntries = append(coreEntries, entry{name, members})
 	}
@@ -500,14 +726,11 @@ func checkTools(bodies map[string]map[string]any, docs catalog.Docs) error {
 			return err
 		}
 	}
-	if extended == nil {
-		extended = map[string]any{}
-	}
-	if core == nil {
-		core = map[string]any{}
-	}
 	slices.SortFunc(coreEntries, func(a, b entry) int { return strings.Compare(a.name, b.name) })
-	count := 0
+	// The pinned platform family (ADR-0094): always in core, never
+	// operator-selectable, and its six members count inside the same
+	// budget — the model surface never exceeds coreBudget tools.
+	count := len(platformPinnedMembers)
 	for _, e := range coreEntries {
 		if count+len(e.members) > coreBudget {
 			extended[e.name] = core[e.name]
@@ -516,8 +739,63 @@ func checkTools(bodies map[string]map[string]any, docs catalog.Docs) error {
 		}
 		count += len(e.members)
 	}
-	core["discovery"] = map[string]any{"via": "toolhub"}
+	core["platform"] = map[string]any{"via": "toolhub"}
 	bodies["tools"] = map[string]any{"core": core, "extended": extended}
+	if binding, present := t["binding"]; present {
+		bodies["tools"]["binding"] = binding
+	}
+	if connectors, present := t["connectors"]; present {
+		if err := checkConnectors(asMap(connectors), docs); err != nil {
+			return err
+		}
+		bodies["tools"]["connectors"] = connectors
+	}
+	return nil
+}
+
+// checkConnectors applies the raw-MCP definition contract before
+// publication: exactly one of url/command, transport-consistent fields
+// and names that cannot shadow a catalog toolset or reviewed connector.
+func checkConnectors(servers map[string]any, docs catalog.Docs) error {
+	// Namespaced toolsets never resolve bare through docs.Toolset; the
+	// reserved set covers them so a connector cannot mint a shadow surface.
+	reserved := map[string]bool{"hub": true, "toolhub": true, "file": true, "todo": true,
+		"cronjob": true, "messaging": true, "session_search": true, "google_meet": true,
+		"vision": true, "image_gen": true}
+	for name, raw := range servers {
+		if _, err := docs.Toolset(name); err == nil || !identity.ValidID(name) || reserved[name] {
+			return fmt.Errorf("passport compile: connector %q is reserved or invalid", name)
+		}
+		spec, _ := raw.(map[string]any)
+		for k := range spec {
+			if !slices.Contains([]string{"url", "command", "args", "env", "headers", "tools", "auth", "timeout"}, k) {
+				return fmt.Errorf("passport compile: connector %q has unknown field %q", name, k)
+			}
+		}
+		u, _ := spec["url"].(string)
+		command, _ := spec["command"].(string)
+		if (u == "") == (command == "") {
+			return fmt.Errorf("passport compile: connector %s requires exactly one of url/command", name)
+		}
+		if timeout, ok := spec["timeout"].(int); ok && (timeout < 0 || timeout > 600) {
+			return fmt.Errorf("passport compile: connector %s timeout must be 0..600", name)
+		}
+		auth, _ := spec["auth"].(string)
+		if auth != "" && auth != "oauth" {
+			return fmt.Errorf("passport compile: connector %s auth must be oauth or empty", name)
+		}
+		if u != "" {
+			parsed, e := url.Parse(u)
+			if e != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+				return fmt.Errorf("passport compile: connector %s has an invalid URL", name)
+			}
+			if len(asList(spec["args"])) > 0 || len(asMap(spec["env"])) > 0 {
+				return fmt.Errorf("passport compile: remote connector %s cannot have stdio args/env", name)
+			}
+		} else if len(asMap(spec["headers"])) > 0 || auth != "" {
+			return fmt.Errorf("passport compile: stdio connector %s cannot have HTTP headers/auth", name)
+		}
+	}
 	return nil
 }
 
@@ -574,16 +852,16 @@ func checkComplete(bodies map[string]map[string]any, instances map[string]instIn
 		}
 	}
 	tools := bodies["tools"]
-	nonDiscovery := 0
+	nonPlatform := 0
 	for _, area := range []string{"core", "extended"} {
 		for name := range asMap(tools[area]) {
-			if name != "discovery" {
-				nonDiscovery++
+			if name != "platform" {
+				nonPlatform++
 			}
 		}
 	}
-	if nonDiscovery == 0 {
-		return fmt.Errorf("passport compile: managed revision admits no toolsets beyond discovery")
+	if nonPlatform == 0 {
+		return fmt.Errorf("passport compile: managed revision admits no toolsets beyond the pinned platform layer")
 	}
 	return nil
 }
@@ -593,6 +871,19 @@ func checkComplete(bodies map[string]map[string]any, instances map[string]instIn
 func asMap(v any) map[string]any {
 	m, _ := v.(map[string]any)
 	return m
+}
+
+// nativeToolsetEnabled reports whether the tools doc carries a `via:
+// native` marker for the named toolset in core or extended — the only
+// shape feature-rendered services (open-knowledge, memory vault) take in
+// the authored vocabulary.
+func nativeToolsetEnabled(tools map[string]any, name string) bool {
+	for _, section := range []string{"core", "extended"} {
+		if spec := asMap(asMap(tools[section])[name]); spec != nil && spec["via"] == "native" {
+			return true
+		}
+	}
+	return false
 }
 
 func asList(v any) []any {

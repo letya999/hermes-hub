@@ -173,6 +173,7 @@ func TestAgentConvertNeedsCreateAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	auth.CapabilityProfile, auth.Environment, auth.Generation = "alice-default", "dev", 1
+	auth.Organization = "example"
 	digest := api.DefinitionDigest(definition)
 	convert := api.CapabilityRule{CapabilityID: "documents", ImplementationDigest: digest, Action: "convert", Resource: "documents", PathPrefix: "docs", Limits: api.CapabilityLimits{OutputBytes: 8192, TimeoutSeconds: 30}}
 	create := api.CapabilityRule{CapabilityID: "documents", ImplementationDigest: digest, Action: "create", Resource: "artifacts", Limits: api.CapabilityLimits{OutputBytes: 8192, TimeoutSeconds: 30}}
@@ -181,14 +182,17 @@ func TestAgentConvertNeedsCreateAuthority(t *testing.T) {
 	profile := api.CapabilityProfile{Schema: api.SchemaVersion, ProfileID: auth.CapabilityProfile, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID,
 		Environment: auth.Environment, Generation: auth.Generation, PolicyVersion: auth.PolicyVersion, PolicyID: policy.PolicyID, PolicyRevision: policy.Revision,
 		Revision: 1, IssuedBy: "operator", IssuedAt: policy.IssuedAt, Reason: "test", Status: api.ActiveStatus,
+		Rights: []api.RightRule{{Capability: "tools", Operation: "use"}},
 		Selections: []api.CapabilitySelection{{CapabilityID: "documents", DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ImplementationDigest: digest,
 			ToolName: "document_convert", Name: "doc_convert"}}}
+	policy.RightCeiling = profile.Rights
 	if err := putPolicy(t, s, policy); err != nil {
 		t.Fatal(err)
 	}
 	if err := putProfile(t, s, profile); err != nil {
 		t.Fatal(err)
 	}
+	grantToolUse(t, s, auth)
 	calls := 0
 	g := &Gateway{Store: s, AuditWrite: func(string, map[string]string) error { return nil },
 		Injector: func(context.Context, api.EffectiveBinding) (api.CredentialInjection, error) {
@@ -234,6 +238,7 @@ func TestAgentToolsEndToEndScopes(t *testing.T) {
 		t.Fatal(err)
 	}
 	auth.CapabilityProfile, auth.Environment, auth.Generation = "alice-default", "dev", 1
+	auth.Organization = "example"
 	digest := api.DefinitionDigest(definition)
 	rule := api.CapabilityRule{CapabilityID: "files", ImplementationDigest: digest, Action: "read", Resource: "files", PathPrefix: "docs", Limits: api.CapabilityLimits{OutputBytes: 8192, TimeoutSeconds: 30}}
 	policy := api.CapabilityPolicy{Schema: api.SchemaVersion, PolicyID: "org-default", Organization: "example", Members: []string{"alice"}, Revision: 1,
@@ -241,14 +246,17 @@ func TestAgentToolsEndToEndScopes(t *testing.T) {
 	profile := api.CapabilityProfile{Schema: api.SchemaVersion, ProfileID: auth.CapabilityProfile, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID,
 		Environment: auth.Environment, Generation: auth.Generation, PolicyVersion: auth.PolicyVersion, PolicyID: policy.PolicyID, PolicyRevision: policy.Revision,
 		Revision: 1, IssuedBy: "operator", IssuedAt: policy.IssuedAt, Reason: "test", Status: api.ActiveStatus,
+		Rights: []api.RightRule{{Capability: "tools", Operation: "use"}},
 		Selections: []api.CapabilitySelection{{CapabilityID: "files", DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ImplementationDigest: digest,
 			ToolName: "file_read", Name: "workspace_read"}}}
+	policy.RightCeiling = profile.Rights
 	if err := putPolicy(t, s, policy); err != nil {
 		t.Fatal(err)
 	}
 	if err := putProfile(t, s, profile); err != nil {
 		t.Fatal(err)
 	}
+	grantToolUse(t, s, auth)
 	var exec api.AgentExecRequest
 	g := &Gateway{Store: s, AuditWrite: func(string, map[string]string) error { return nil },
 		Injector: func(context.Context, api.EffectiveBinding) (api.CredentialInjection, error) {

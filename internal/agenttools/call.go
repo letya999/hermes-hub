@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/letya999/hermes-hub/internal/media"
+	"github.com/letya999/hermes-hub/internal/skillstore"
 )
 
 // Call runs one tool through the same dispatch the ToolHub executor uses.
@@ -48,7 +49,12 @@ func (t *Tools) ExecCall(ctx context.Context, name string, arguments map[string]
 	if name == "image_inspect" && len(r.Paths) > 0 {
 		return nil, errors.New("use images_inspect for capability-admitted image sets")
 	}
-	if name == "skill_manage" {
+	if name == "skill_search" {
+		if _, present := arguments["query"]; present && strings.TrimSpace(r.Query) == "" {
+			return nil, fmt.Errorf("%w: query must be 1-1000 chars", skillstore.ErrInvalid)
+		}
+	}
+	if name == "skill_manage" || name == "skill_edit" {
 		if reason := t.toolPolicyDeny(name); reason != "" {
 			return nil, errors.New(reason)
 		}
@@ -91,6 +97,23 @@ func (t *Tools) call(ctx context.Context, name string, r Input, ws, ar, org *os.
 		return t.fileScoped("search", r, ws, ar, org)
 	case "project_create":
 		return t.projectCreate(ws, r)
+	case "file_mkdir":
+		return t.fileScoped("mkdir", r, ws, ar, org)
+	case "file_edit":
+		return t.fileScoped("edit", r, ws, ar, org)
+	case "file_remove":
+		return t.fileScoped("remove", r, ws, ar, org)
+	case "file_archive":
+		if r.Root != "" && r.Root != "workspace" {
+			return nil, fmt.Errorf("%s is read-only", r.Root)
+		}
+		switch r.Action {
+		case "create":
+			return t.archiveCreate(ws, r)
+		case "unpack":
+			return t.archiveUnpack(ws, r)
+		}
+		return nil, errors.New("file_archive action must be create or unpack")
 	case "service_catalog":
 		return t.ServiceCatalog()
 	case "service_enable":
@@ -99,22 +122,48 @@ func (t *Tools) call(ctx context.Context, name string, r Input, ws, ar, org *os.
 		return t.ServiceDisable(r)
 	case "context_status":
 		return t.ContextStatus(ctx, r)
-	case "context_compact":
+	case "context_compact", "context_edit":
 		return t.ContextCompact(ctx, r)
 	case "goal_set", "goal_status", "goal_pause", "goal_resume", "goal_clear":
 		return t.Goal(ctx, name, r)
+	case "goal_edit":
+		return t.Goal(ctx, "goal_"+r.Action, r)
+	case "goal_remove":
+		return t.Goal(ctx, "goal_clear", r)
 	case "settings_get":
 		return t.SettingsGet(r)
 	case "settings_set":
+		return t.SettingsSet(r)
+	case "settings_read":
+		return t.SettingsGet(r)
+	case "settings_edit":
 		return t.SettingsSet(r)
 	case "routine_create", "routine_list", "routine_edit", "routine_update", "routine_pause", "routine_snooze", "routine_delete",
 		"routine_get", "routine_resume", "routine_history", "routine_preview",
 		"watch_subscribe", "watch_list", "watch_pause", "watch_resume", "watch_delete", "watch_sample":
 		return t.Routine(ctx, name, r)
-	case "assignment_plan", "assignment_create", "assignment_list", "assignment_get",
-		"assignment_update", "assignment_apply", "assignment_pause", "assignment_resume",
-		"assignment_cancel", "assignment_complete", "assignment_progress":
+	case "routine_read":
+		return t.Routine(ctx, "routine_get", r)
+	case "routine_remove":
+		return t.Routine(ctx, "routine_delete", r)
+	case "watch_create":
+		return t.Routine(ctx, "watch_subscribe", r)
+	case "watch_edit":
+		return t.Routine(ctx, "watch_"+r.Action, r)
+	case "watch_remove":
+		return t.Routine(ctx, "watch_delete", r)
+	case "assignment_plan", "assignment_create", "assignment_list":
 		return t.Assignment(ctx, name, r)
+	case "assignment_read":
+		return t.Assignment(ctx, "assignment_get", r)
+	case "assignment_edit":
+		switch r.Action {
+		case "update", "apply", "pause", "resume", "progress", "cancel", "complete":
+			return t.Assignment(ctx, "assignment_"+r.Action, r)
+		}
+		return nil, errors.New("assignment_edit action must be update, apply, pause, resume, progress, cancel or complete")
+	case "assignment_remove":
+		return t.Assignment(ctx, "assignment_remove", r)
 	case "document_extract":
 		if rel, ok := strings.CutPrefix(r.Path, "skills:"); ok {
 			// R7.3: skills: is a read-only logical root over the effective
@@ -131,6 +180,8 @@ func (t *Tools) call(ctx context.Context, name string, r Input, ws, ar, org *os.
 		return session().EditDocument(ctx, r.Path, r.Text)
 	case "document_convert":
 		return session().ConvertDocument(ctx, r.Path, r.Name, r.Format)
+	case "document_remove":
+		return session().Remove(r.Path)
 	case "archive_create":
 		return t.archiveCreate(ws, r)
 	case "archive_unpack":
@@ -143,7 +194,11 @@ func (t *Tools) call(ctx context.Context, name string, r Input, ws, ar, org *os.
 		return t.knowledgeSearch(ctx, r.Query)
 	case "knowledge_read":
 		return t.knowledgeRead(ctx, r)
-	case "image_inspect", "images_inspect":
+	case "memory_search":
+		return t.memorySearch(r)
+	case "memory_card":
+		return t.memoryCard(r)
+	case "image_inspect", "images_inspect", "media_inspect":
 		if rel, ok := strings.CutPrefix(r.Path, "skills:"); ok {
 			return media.New(t.Skills).Inspect(ctx, rel)
 		}
@@ -151,16 +206,19 @@ func (t *Tools) call(ctx context.Context, name string, r Input, ws, ar, org *os.
 			return session().InspectMany(ctx, r.Paths)
 		}
 		return session().Inspect(ctx, r.Path)
-	case "image_convert":
+	case "image_convert", "media_convert":
 		return session().ConvertImage(ctx, r.Name, r.Path, r.Format)
 	case "artifact_remove":
 		return session().Remove(r.Path)
-	case "image_generate":
+	case "image_generate", "media_generate":
 		if !session().ImageGranted() {
 			return nil, errors.New("image generation is not granted on this runtime")
 		}
+		if r.Kind == "video" {
+			return session().VideoGenerate(ctx, r.Prompt)
+		}
 		return session().Generate(ctx, r.Name, r.Prompt)
-	case "image_edit":
+	case "image_edit", "media_edit":
 		if !session().ImageGranted() {
 			return nil, errors.New("image editing is not granted on this runtime")
 		}
@@ -175,15 +233,31 @@ func (t *Tools) call(ctx context.Context, name string, r Input, ws, ar, org *os.
 			return nil, errors.New("media fetch is not granted on this runtime")
 		}
 		return session().MediaFetch(ctx, r.ID, r.Name)
+	case "media_transcribe", "media_speak":
+		return nil, fmt.Errorf("%s is unavailable on this runtime: no speech backend is configured", name)
+	case "terminal_exec", "terminal_job":
+		return nil, fmt.Errorf("%s is unavailable on this runtime: no terminal executor is configured", name)
 	case "hh_search", "hh_vacancy", "hh_resumes", "hh_apply":
 		return t.API(ctx, name, r)
 	case "ssh_hosts", "ssh_exec", "ssh_read", "ssh_write", "ssh_shell_open", "ssh_shell_send", "ssh_shell_read", "ssh_shell_close", "ssh_tunnel_open", "ssh_tunnel_list", "ssh_tunnel_close":
 		return t.sshDispatch(ctx, name, r)
+	case "ssh_list":
+		return t.sshDispatch(ctx, "ssh_hosts", r)
+	case "ssh_shell":
+		return t.sshDispatch(ctx, "ssh_shell_"+r.Action, r)
+	case "ssh_tunnel":
+		return t.sshDispatch(ctx, "ssh_tunnel_"+r.Action, r)
 	case "site_publish", "site_unpublish", "site_list", "site_status":
 		return t.hostingCall(ctx, name, r, ws)
+	case "site_remove":
+		return t.hostingCall(ctx, "site_unpublish", r, ws)
 	case "exposure_list", "exposure_status", "exposure_open", "exposure_close":
 		return t.exposureDispatch(ctx, name, r)
-	case "skill", "skills_search", "skills_list", "skill_view", "skill_manage":
+	case "exposure_create":
+		return t.exposureDispatch(ctx, "exposure_open", r)
+	case "exposure_remove":
+		return t.exposureDispatch(ctx, "exposure_close", r)
+	case "skill", "skills_search", "skills_list", "skill_view", "skill_manage", "skill_search", "skill_edit":
 		return t.skillCall(ctx, name, r)
 	default:
 		return nil, fmt.Errorf("unknown tool %q", name)

@@ -206,6 +206,12 @@ func runConnector(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if auth.CapabilityProfile != "" {
+		auth.Organization, err = registry.ProfileOrganization(auth)
+		if err != nil {
+			return err
+		}
+	}
 	if args[0] == "status" && *target == "" && *operationID == "" {
 		catalog, err := registry.Catalog(auth)
 		if err != nil {

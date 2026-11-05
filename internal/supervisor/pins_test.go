@@ -24,7 +24,9 @@ func TestOperatorPinSurvivesRestartWakesOnceAndPreventsIdleReap(t *testing.T) {
 		case "inspect":
 			return nil, os.ErrNotExist
 		case "run":
-			starts++
+			if isRuntimeSpawn(args) {
+				starts++
+			}
 		case "rm":
 			removes++
 		}
@@ -63,13 +65,16 @@ func TestOperatorPinSurvivesRestartWakesOnceAndPreventsIdleReap(t *testing.T) {
 	if err := m.SetPin(other, false); err == nil {
 		t.Fatal("wrong conversation removed pin")
 	}
+	m.mu.Lock()
+	request.Envelope = m.pins[pinKey(request)].Envelope
+	m.mu.Unlock()
 	if err := m.SetPin(request, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.Reap(context.Background(), time.Unix(100, 0).Add(10*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if removes != 1 {
+	if removes != 2 {
 		t.Fatalf("unpinned idle runtime not reaped: %d", removes)
 	}
 	m.ReconcilePins(context.Background())

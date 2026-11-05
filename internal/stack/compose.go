@@ -3,12 +3,15 @@ package stack
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/media"
+	"github.com/letya999/hermes-hub/internal/passportview"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"maps"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -127,6 +130,15 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// file: key — is operator-owned and read-only inside the runtime.
 		stateVolumes = append(stateVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "connections", "exposure")), "target": "/state/exposure", "read_only": true})
 	}
+	if s.CapabilityMode == "managed" {
+		// M31.8 S4: platform_usage reads the merged models.yaml limits and
+		// the relay's reserved-usage meter — both mounted read-only so the
+		// agent can report consumption but never rewrite its own counters.
+		stateVolumes = append(stateVolumes,
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "generated", "model-registry", s.Environment, "models.yaml")), "target": "/run/model-config/models.yaml", "read_only": true},
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "managed", s.Environment, "model-relay")), "target": "/run/model-state", "read_only": true},
+		)
+	}
 	// Declared mounts are part of the MountPlan when a workspace passport is
 	// published; the legacy loop runs only for spaces without a revision.
 	if s.PassportWorkspace == nil {
@@ -170,7 +182,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	if hostStoreDir := filepath.Join(dir, "runtime", "toolhub"); regularFile(filepath.Join(hostStoreDir, "store.db")) && !regularFile(filepath.Join(hostStoreDir, "store.json")) {
 		toolhubStoreEnv = "/state/toolhub/store.db"
 	}
-	runtimeEnv := M{"HUB_SHARED_GID": fmt.Sprint(max(0, os.Getgid())), "HUB_ORG_SCOPED": fmt.Sprint(s.OrgScoped()), "HUB_ORG_ACTIONS": strings.Join(s.effectiveOrgActions(), ","), "HUB_TOOLS_RO": strings.Join(s.readOnlyCapabilities(), ","), "HUB_WORKSPACE_RO": strings.Join(s.workspaceReadOnlyPaths(), ","), "HUB_SELF_ENV_KEYS": strings.Join(runtimeSelfEnvKeys(s), ","), "HUB_PROTECTED_ENV_KEYS": strings.Join(runtimeProtectedEnvKeys(s), ","), "HERMES_HOME": "/state/hermes", "HOME": "/state/home", "HUB_STATE": "/state", "HUB_WORKSPACE": "/workspace", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": toolhubStoreEnv, "HUB_FEATURES": strings.Join(s.featureList(), ","), "HUB_RUNTIME_LISTEN": "0.0.0.0:8080", "TZ": s.Timezone, "HUB_BROWSER": fmt.Sprint(s.Has("browser")), "HUB_MEET": fmt.Sprint(s.Has("meet")), "GITLAB_HOST": host, "GOOGLE_EMAIL": s.GoogleEmail, "GOOGLE_OAUTH_REDIRECT_URI": fmt.Sprintf("http://localhost:%d/oauth2callback", s.OAuthPort), "PYTHONDONTWRITEBYTECODE": "1", "XDG_CACHE_HOME": "/state/cache", "HERMES_AGENT_NOTIFY_INTERVAL": "60", "HUB_TOOL_POLICY": "/config/tool-policy.json", "HUB_TOOL_MANIFEST": "/config/tool-manifest.json"}
+	runtimeEnv := M{"HUB_SHARED_GID": fmt.Sprint(max(0, os.Getgid())), "HUB_ORG_SCOPED": fmt.Sprint(s.OrgScoped()), "HUB_ORG_ACTIONS": strings.Join(s.effectiveOrgActions(), ","), "HUB_TOOLS_RO": strings.Join(s.readOnlyCapabilities(), ","), "HUB_WORKSPACE_RO": strings.Join(s.workspaceReadOnlyPaths(), ","), "HUB_SELF_ENV_KEYS": strings.Join(runtimeSelfEnvKeys(s), ","), "HUB_PROTECTED_ENV_KEYS": strings.Join(runtimeProtectedEnvKeys(s), ","), "HERMES_HOME": "/state/hermes", "HOME": "/state/home", "HUB_STATE": "/state", "HUB_WORKSPACE": "/workspace", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": toolhubStoreEnv, "HUB_FEATURES": strings.Join(s.featureList(), ","), "HUB_RUNTIME_LISTEN": "0.0.0.0:8080", "TZ": s.Timezone, "HUB_BROWSER": fmt.Sprint(s.Has("browser")), "HUB_MEET": fmt.Sprint(s.Has("meet")), "GITLAB_HOST": host, "GOOGLE_EMAIL": s.GoogleEmail, "GOOGLE_OAUTH_REDIRECT_URI": fmt.Sprintf("http://localhost:%d/oauth2callback", s.OAuthPort), "PYTHONDONTWRITEBYTECODE": "1", "XDG_CACHE_HOME": "/state/cache", "HERMES_AGENT_NOTIFY_INTERVAL": "60", "HUB_TOOL_POLICY": "/config/tool-policy.json", "HUB_TOOL_MANIFEST": "/config/tool-manifest.json", "HUB_MODEL_USAGE_FILE": "/run/model-state/model-select.json.usage.json", "HUB_MODEL_REGISTRY_FILE": "/run/model-config/models.yaml"}
 	if s.Workspace.Goal != "" {
 		runtimeEnv["HUB_BOOTSTRAP_GOAL"] = s.Workspace.Goal
 		runtimeEnv["HUB_BOOTSTRAP_REVISION"] = fmt.Sprint(s.Workspace.BootstrapRevision)
@@ -184,7 +196,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// browser_cdp tool and health probe attach over the internal alias.
 		runtimeEnv["BROWSER_CDP_URL"] = "http://browser-" + s.User + ":9222"
 	}
-	if scope, err := ReadScope(dir); err == nil && scope.Kind == GroupScope {
+	if s.ScopeKind == string(GroupScope) {
 		runtimeEnv["HUB_SCOPE_KIND"] = string(GroupScope)
 	}
 	if s.ExecutionMode != "supervisor" {
@@ -232,6 +244,16 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			if grantJSON, err := json.Marshal(grant); err == nil {
 				runtimeEnv["HUB_MANAGED_BROWSER"] = string(grantJSON)
 			}
+		}
+		// Same contract for the hub-side subsystem flags: pseudo-toolset
+		// wishes (knowledge_ui, memory_vault) are `via: native` markers that
+		// never join the carve-out list, so their reviewed admission rides
+		// its own env bits for the in-container replay.
+		if s.managedKnowledgeUIGrant() {
+			runtimeEnv["HUB_MANAGED_KNOWLEDGE_UI"] = "1"
+		}
+		if s.managedMemoryVaultFlag() {
+			runtimeEnv["HUB_MANAGED_MEMORY_VAULT"] = "1"
 		}
 	}
 	// The declared context-control section rides env so the materialized
@@ -427,6 +449,63 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		}
 		services["browser-"+s.User] = browserService
 	}
+	// SPEC-0085 R8: knowledge_ui renders one pinned OpenKnowledge replica per
+	// space over the vault — private network only, no published ports (the
+	// loopback edge is CHG-0211). First boot inits the project; later boots
+	// find .ok/ and start directly.
+	if s.Has("knowledge_ui") {
+		okService := cloneMap(common)
+		okService["image"] = "hermes-hub:0.5.0-" + s.Environment + "-knowledge"
+		okService["build"] = imageBuild(s.Environment + "-knowledge")
+		okService["deploy"] = M{"replicas": 1}
+		okService["command"] = "sh -c '[ -d .ok ] || ok init --no-mcp --no-skills; exec ok start'"
+		// R8.2: the vault is the OpenKnowledge project root; OK state (.ok/,
+		// .git/ok/, .graph/) lands inside it on .okignore'd paths.
+		okService["volumes"] = []any{
+			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "vault")), "target": "/data"},
+		}
+		// OK binds its container interface only so space-net peers can reach
+		// it: a non-loopback bind needs the allowExternal consent interlock
+		// (upstream boot refuses it otherwise), and PORT pins the listener the
+		// mcp_servers URL points at — unset, OK picks a dynamic port.
+		// HOME lands on tmpfs: the image's /state/home sits on the read-only
+		// rootfs, while every durable OK path is project-local .ok/ under /data.
+		okService["environment"] = M{"OK_ALLOW_EXTERNAL": "1", "OK_BIND": "0.0.0.0", "PORT": "8080", "HOME": "/tmp", "OK_EXTERNAL_URL": "http://" + okServiceHost(s) + ":8080"}
+		// ok resolves its server-authority registry through the passwd home
+		// (/state/home), not $HOME — a read-only-rootfs mkdir fails closed, so
+		// the disposable home gets its own tmpfs alongside /tmp.
+		okService["tmpfs"] = append(okService["tmpfs"].([]string), "/state/home:uid=10001,gid=10001,mode=0700")
+		// OK's Host/Origin allowlist admits only the external URL's host: the
+		// space-net alias is what the mcp_servers URL dials, so it must be the
+		// canonical origin whenever no loopback UI edge overrides it.
+		// R10.1: ui_port opts into one loopback publish — the only host
+		// reachability the unauthenticated editor ever gets; the owner
+		// tunnels in over ssh -L. Unset keeps the network-only stance.
+		if s.UIPort > 0 {
+			bind := s.UIBind
+			if bind == "" {
+				bind = "127.0.0.1"
+			}
+			if strings.Contains(bind, ":") {
+				bind = "[" + bind + "]"
+			}
+			okService["ports"] = []string{fmt.Sprintf("%s:%d:8080", bind, s.UIPort)}
+			// OK admits loopback hosts unconditionally — the allowlist URL
+			// must stay the peer alias or the runtime's own MCP calls 403.
+		}
+		if s.CapabilityMode == "managed" {
+			okService["networks"] = M{managedAgentNetwork(s): M{}}
+		} else if s.ExecutionMode == "supervisor" {
+			// Supervisor-mode runtimes spawn onto the shared hub net, not the
+			// project default — the space-scoped alias keeps several
+			// unmanaged spaces collision-free while their mcp_servers URL
+			// dials the same name.
+			okService["networks"] = M{"default": M{}, sharedNetworkName: M{"aliases": []string{"open-knowledge-" + s.User}}}
+		} else {
+			okService["networks"] = M{"default": M{}}
+		}
+		services["open-knowledge"] = okService
+	}
 	hostRuntimeDir := filepath.ToSlash(filepath.Join(dir, "runtime"))
 	hostCliproxyDir := filepath.ToSlash(filepath.Join(dir, "cliproxy"))
 	stateBind := M{"type": "bind", "source": hostRuntimeDir, "target": "/state"}
@@ -613,10 +692,22 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		if parent := filepath.Dir(dir); filepath.Base(parent) == "spaces" {
 			toolhubEnv["HUB_SKILLS_BY_PRINCIPAL"] = "/skills-effective-by"
 			toolhubEnv["HUB_SKILLS_STORE_BY"] = "/skills-store-by"
+			toolhubEnv["HUB_PASSPORTS_BY_PRINCIPAL"] = "/passports-by"
+			toolhubEnv["HUB_VAULTS_BY_PRINCIPAL"] = "/vaults-by"
 			if siblings, err := os.ReadDir(parent); err == nil {
 				for _, sibling := range siblings {
-					if !sibling.IsDir() {
+					if !sibling.IsDir() || !identity.ValidID(sibling.Name()) {
 						continue
+					}
+					published := filepath.Join(parent, sibling.Name(), "generated", "passports")
+					if info, err := os.Lstat(published); err == nil && info.IsDir() {
+						toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(published), "target": "/passports-by/" + sibling.Name() + "/passports", "read_only": true})
+					}
+					vaultRoot := filepath.Join(parent, sibling.Name(), "vault")
+					if info, err := os.Lstat(vaultRoot); err == nil && info.IsDir() {
+						if effective, err := passportview.LoadEffective(filepath.Join(parent, sibling.Name())); err == nil && effective.Config.Memory.Enabled != nil && *effective.Config.Memory.Enabled && effective.Header.Metadata.Environment == s.Environment {
+							toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(vaultRoot), "target": "/vaults-by/" + sibling.Name()})
+						}
 					}
 					view := filepath.Join(parent, sibling.Name(), "generated", "skills-effective")
 					if info, err := os.Stat(view); err == nil && info.IsDir() {
@@ -790,7 +881,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		if supervisorURL != "" {
 			gatewayRuntimeURL = supervisorURL
 		}
-		gatewayEnvironment := M{"HUB_USER_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_FEATURES": strings.Join(s.featureList(), ","), "HUB_RUNTIME_URL": gatewayRuntimeURL, "HUB_RUNTIME_SUPERVISOR_URL": "${HUB_RUNTIME_SUPERVISOR_URL}", "HUB_COMMUNICATION_SPOOL": "/data", "HUB_CONFIGURED_ENV": strings.Join(configuredEnvKeys(s, dir), ","), "HUB_NATIVE_CRON": s.NativeCron, "HUB_DIAGNOSTICS_ENABLED": fmt.Sprint(s.DiagnosticsEnabled())}
+		gatewayEnvironment := M{"HUB_USER_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_ENVIRONMENT": s.Environment, "HUB_RUNTIME_ID": s.User, "HUB_POLICY_VERSION": policy, "HUB_FEATURES": strings.Join(s.featureList(), ","), "HUB_RUNTIME_URL": gatewayRuntimeURL, "HUB_RUNTIME_SUPERVISOR_URL": "${HUB_RUNTIME_SUPERVISOR_URL}", "HUB_COMMUNICATION_SPOOL": "/data", "HUB_CONFIGURED_ENV": strings.Join(configuredEnvKeys(s, dir), ","), "HUB_NATIVE_CRON": s.NativeCron, "HUB_DIAGNOSTICS_ENABLED": fmt.Sprint(s.DiagnosticsEnabled())}
 		if cfg := s.PassportConfig; cfg != nil {
 			if cfg.Runtime.Locale != "" {
 				gatewayEnvironment["HUB_DEFAULT_LANG"] = cfg.Runtime.Locale
@@ -868,6 +959,26 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			M{"type": "bind", "source": filepath.ToSlash(GeneratedEffectiveSkillsDir(dir)), "target": "/skills-effective", "read_only": true},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "skills")), "target": "/skills-store"},
 			brokerSecrets("communication"),
+		}
+		if s.Has("memory_vault") {
+			// The gateway reads CORE for private-run injection and writes the
+			// daily leaf capture (SPEC-0085 R2.1) — read-write; confinement
+			// lives in the governed Writer, not the mount.
+			gatewayEnvironment["HUB_VAULT"] = "/vault"
+			rollupAt := s.MemoryRollupTime
+			if rollupAt == "" {
+				rollupAt = "04:00"
+			}
+			gatewayEnvironment["HUB_MEMORY_ROLLUP_TIME"] = rollupAt
+			// R7.5 leaf prune knobs render only when configured — zero means
+			// the lane is off and nothing reaches the gateway env.
+			if s.MemoryLeafRetentionDays > 0 {
+				gatewayEnvironment["HUB_MEMORY_LEAF_RETENTION_DAYS"] = strconv.Itoa(s.MemoryLeafRetentionDays)
+			}
+			if s.MemoryLeafFoldBytes > 0 {
+				gatewayEnvironment["HUB_MEMORY_LEAF_FOLD_BYTES"] = strconv.Itoa(s.MemoryLeafFoldBytes)
+			}
+			gateway["volumes"] = append(gateway["volumes"].([]any), M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "vault")), "target": "/vault"})
 		}
 		// Sibling Telegram identities live in this file. TELEGRAM_ALLOWED_USERS
 		// stays the single infra-owner fallback when the file is absent.

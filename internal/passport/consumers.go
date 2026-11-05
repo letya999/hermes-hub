@@ -37,6 +37,8 @@ var Consumers = map[string]Consumer{
 	// stack -> compose project, build set, supervisor spawn (CHG-0257)
 	"stack.identity.user":         {"compose", EffectRebuild},
 	"stack.identity.organization": {"compose", EffectRebuild},
+	"stack.identity.kind":         {"compose", EffectRebuild},
+	"stack.identity.infra":        {"compose", EffectRebuild},
 	"stack.services":              {"compose", EffectRebuild},
 	"stack.services.*.mode":       {"compose", EffectRebuild},
 
@@ -44,7 +46,17 @@ var Consumers = map[string]Consumer{
 	"config.runtime.timezone":                 {"hermes-config", EffectRespawn},
 	"config.runtime.locale":                   {"hermes-config", EffectRespawn},
 	"config.runtime.context.compaction":       {"hermes-config", EffectRespawn},
+	"config.runtime.context.engines":          {"hermes-config", EffectRespawn},
 	"config.runtime.context.parallel_lanes":   {"hermes-config", EffectRespawn},
+	"config.runtime.goals.engine":             {"hermes-config", EffectRespawn},
+	"config.runtime.goals.judge":              {"hermes-config", EffectRespawn},
+	"config.runtime.goals.max_turns":          {"hermes-config", EffectRespawn},
+	"config.runtime.compression":              {"hermes-config", EffectRespawn},
+	"config.runtime.auxiliary.summary_model":  {"hermes-config", EffectRespawn},
+	"config.runtime.auxiliary.judge_model":    {"hermes-config", EffectRespawn},
+	"config.image_gen.provider":               {"hermes-config", EffectRespawn},
+	"config.image_gen.model":                  {"hermes-config", EffectRespawn},
+	"config.image_gen.delivery":               {"hermes-config", EffectRespawn},
 	"config.supervision.idle_stop":            {"supervisor-policy", EffectLive},
 	"config.supervision.restart":              {"supervisor-policy", EffectLive},
 	"config.supervision.watchers":             {"supervisor-policy", EffectLive},
@@ -57,11 +69,20 @@ var Consumers = map[string]Consumer{
 	"config.channels.*.voice.in":              {"communication", EffectRecreate},
 	"config.channels.*.voice.out":             {"communication", EffectRecreate},
 	"config.memory.backend":                   {"hermes-config", EffectRespawn},
-	// The nightly rollup schedule rides the published config doc the
-	// supervisor reads for each space (CHG-0206 anchors the per-space
-	// scheduler in internal/supervisor; the rendered policy file is its
-	// live input channel, the doc is the schedule's authority).
-	"config.memory.nightly_rollup": {"supervisor", EffectRespawn},
+	"config.memory.enabled":                   {"toolhub", EffectRecreate},
+	// Current memory worker consumes these at service start; CHG-0284/0287
+	// move the worker and its clock to ToolHub.
+	"config.memory.nightly_rollup":      {"communication-hub", EffectRecreate},
+	"config.memory.leaf_retention_days": {"communication-hub", EffectRecreate},
+	"config.memory.leaf_fold_bytes":     {"communication-hub", EffectRecreate},
+	"config.memory.provider.adapter":    {"hermes-config", EffectRespawn},
+	"config.memory.provider.url":        {"hermes-config", EffectRespawn},
+	"config.memory.provider.token_env":  {"hermes-config", EffectRespawn},
+	// hosting slots/image/runtime drive the per-space hosting compose
+	// service and the ToolHub hosting controller profile.
+	"config.hosting.slots":   {"compose", EffectRecreate},
+	"config.hosting.image":   {"compose", EffectRecreate},
+	"config.hosting.runtime": {"compose", EffectRecreate},
 
 	// models -> relay registry (hot-reloaded live) / service set (recreate)
 	"models.default":                           {"model-relay", EffectLive},
@@ -85,8 +106,13 @@ var Consumers = map[string]Consumer{
 	"workspace.mounts":          {"mount-plan", EffectRespawn},
 	"workspace.mounts.*.source": {"mount-plan", EffectRespawn},
 	"workspace.mounts.*.mode":   {"mount-plan", EffectRespawn},
+	// Bootstrap goal/retry revision land in the runtime env — respawn.
+	"workspace.goal":               {"compose", EffectRespawn},
+	"workspace.bootstrap_revision": {"compose", EffectRespawn},
 
 	// tools -> ToolHub admission policy (publish-derived) + runtime env (via)
+	"tools.binding.profile_id":             {"runtime-env", EffectRespawn},
+	"tools.binding.generation":             {"runtime-env", EffectRespawn},
 	"tools.core":                           {"tool-policy", EffectLive},
 	"tools.core.*.via":                     {"runtime-env", EffectRespawn},
 	"tools.core.*.tools.include":           {"tool-policy", EffectLive},
@@ -111,6 +137,19 @@ var Consumers = map[string]Consumer{
 	"tools.extended.*.rules.*.scope.paths": {"tool-policy", EffectLive},
 	"tools.extended.*.rules.*.scope.hosts": {"tool-policy", EffectLive},
 	"tools.extended.*.rules.*.scope.urls":  {"tool-policy", EffectLive},
+
+	// connectors -> rendered hermes MCP server surface (gated by the
+	// user_mcp/org_mcp section grant at read time)
+	"tools.connectors":                 {"hermes-config", EffectRespawn},
+	"tools.connectors.*.url":           {"hermes-config", EffectRespawn},
+	"tools.connectors.*.command":       {"hermes-config", EffectRespawn},
+	"tools.connectors.*.args":          {"hermes-config", EffectRespawn},
+	"tools.connectors.*.env":           {"hermes-config", EffectRespawn},
+	"tools.connectors.*.headers":       {"hermes-config", EffectRespawn},
+	"tools.connectors.*.tools.include": {"hermes-config", EffectRespawn},
+	"tools.connectors.*.tools.exclude": {"hermes-config", EffectRespawn},
+	"tools.connectors.*.auth":          {"hermes-config", EffectRespawn},
+	"tools.connectors.*.timeout":       {"hermes-config", EffectRespawn},
 
 	// grants -> PDP ledger snapshot (DeriveSpaceRights at publish)
 	"grants.allow": {"rights-ledger", EffectLive},

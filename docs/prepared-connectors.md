@@ -329,7 +329,7 @@ Messages send (`chat_id:"me"`, unique `operation_id`). Event tools:
 `wait_for_new_message`/`wait_for_settled_message` bounded polls;
 `watch_chat_messages` is a non-consuming, paged read of chat text with
 `next_cursor` for deterministic source filters,
-`requeue_event` (id only), `incoming_feed_status` вЂ” `watch_subscribe`
+`requeue_event` (id only), `incoming_feed_status` вЂ” `watch_create`
 polls them; `delivery=stream` holds one outstanding bounded wait per
 subscription (seconds, no persistent workload); dedup via durable seen-set;
 no always-on push. Never copy `.session`/OTP/API hash into repo or chat.

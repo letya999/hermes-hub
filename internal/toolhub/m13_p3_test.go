@@ -283,7 +283,7 @@ func TestConnectorToolsProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]bool{}
-	for _, name := range api.ConnectorTools {
+	for _, name := range connectorSurfaceTools {
 		want[name] = true
 	}
 	want["workspace_read"] = true // capability selection still projects
@@ -304,10 +304,10 @@ func TestConnectorToolsProjection(t *testing.T) {
 			t.Fatalf("legacy control op %q leaked into connector projection", legacy)
 		}
 	}
-	// invoke is the dispatch fallback for connector names absent from the
+	// tool_call is the dispatch fallback for connector names absent from the
 	// client's cached tools/list — the connectors bundle carries it (ADR-0089).
-	if !got["invoke"] {
-		t.Fatal("connector projection missing invoke")
+	if !got["tool_call"] {
+		t.Fatal("connector projection missing tool_call")
 	}
 }
 

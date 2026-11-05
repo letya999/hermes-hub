@@ -33,6 +33,8 @@ func captureCommands(t *testing.T) (spawned *[]spawnedCmd, restore func()) {
 	t.Setenv("HUB_TEST_HELPER", "1")
 	oldState, oldCommand := state, command
 	oldNotify, oldStop, oldProbe := signalNotify, signalStop, displayProbe
+	oldLocks := displayLockPaths
+	displayLockPaths = []string{filepath.Join(t.TempDir(), "X99-lock"), filepath.Join(t.TempDir(), "X99")}
 	state = t.TempDir()
 	var mu sync.Mutex
 	var list []spawnedCmd
@@ -52,6 +54,7 @@ func captureCommands(t *testing.T) (spawned *[]spawnedCmd, restore func()) {
 		defer mu.Unlock()
 		state, command = oldState, oldCommand
 		signalNotify, signalStop, displayProbe = oldNotify, oldStop, oldProbe
+		displayLockPaths = oldLocks
 	}
 }
 

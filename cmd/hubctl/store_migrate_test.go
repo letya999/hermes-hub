@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/letya999/hermes-hub/internal/stack"
 	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
@@ -105,16 +104,13 @@ func TestStoreMigrateCLIForSpool(t *testing.T) {
 // the broker binary's own store-migrate/store-activate does the work.
 func TestStoreMigrateCLIForBroker(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "space")
-	if err := stack.InitEnvironment(dir, "owner", "dev"); err != nil {
+	// Infra owner: the credential-broker is a declared shared service whose
+	// Docker volumes the broker store migration orchestrates.
+	writeManagedSpaceDocs(t, dir, "owner", managedInfraDocs("owner", false))
+	if err := os.WriteFile(filepath.Join(dir, "secrets.dev.env"), []byte("OPENAI_API_KEY=synthetic-only\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := stack.Read(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.Model, s.ModelURL = "test", "http://model.invalid/v1"
-	s.Ingress = append(s.Ingress, "telegram")
-	if err := stack.WriteSpace(dir, s); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "secrets.dev.env"), []byte("OPENAI_API_KEY=synthetic-only\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	bin := t.TempDir()

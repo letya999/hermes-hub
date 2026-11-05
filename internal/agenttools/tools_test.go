@@ -601,10 +601,10 @@ func TestMCPWire(t *testing.T) {
 	}
 	defer client.Close()
 	list, err := client.ListTools(ctx, nil)
-	if err != nil || len(list.Tools) != 58 {
+	if err != nil || len(list.Tools) != 60 {
 		t.Fatal(len(list.Tools), err)
 	}
-	for _, name := range []string{"document_extract", "document_create", "image_inspect", "artifact_remove", "settings_get", "settings_set", "archive_create", "archive_unpack", "inbox_fetch"} {
+	for _, name := range []string{"document_extract", "document_create", "media_inspect", "document_remove", "settings_read", "settings_edit", "file_archive", "file_remove"} {
 		found := false
 		for _, tool := range list.Tools {
 			if tool.Name == name {
@@ -651,8 +651,8 @@ func TestMCPWireExpectedFailures(t *testing.T) {
 	}{
 		{"file_read", map[string]any{"path": "../outside.txt"}},
 		{"routine_list", map[string]any{}},
-		{"image_inspect", map[string]any{"paths": []string{"clip.gif"}}},
-		{"settings_set", map[string]any{"key": "model"}},
+		{"media_inspect", map[string]any{"paths": []string{"clip.gif"}}},
+		{"settings_edit", map[string]any{"key": "model"}},
 	} {
 		result, err := client.CallTool(ctx, &mcp.CallToolParams{Name: tc.name, Arguments: tc.args})
 		if err != nil {
@@ -730,18 +730,18 @@ func TestMediaThroughHubMCP(t *testing.T) {
 	client, cleanup := connectHub(t, v)
 	defer cleanup()
 	list, err := client.ListTools(ctx, nil)
-	if err != nil || len(list.Tools) != 58 {
+	if err != nil || len(list.Tools) != 60 {
 		t.Fatal(len(list.Tools), err)
 	}
 	for _, tool := range list.Tools {
-		if tool.Name == "image_generate" || tool.Name == "image_edit" {
+		if tool.Name == "media_generate" || tool.Name == "media_edit" {
 			t.Fatal("image generation published without a grant")
 		}
 		if tool.Name == "document_extract" && !strings.Contains(tool.Description, "docx") {
 			t.Fatal(tool.Description)
 		}
 	}
-	missing, err := client.CallTool(ctx, &mcp.CallToolParams{Name: "image_generate", Arguments: map[string]any{"name": "pic", "prompt": "cat"}})
+	missing, err := client.CallTool(ctx, &mcp.CallToolParams{Name: "media_generate", Arguments: map[string]any{"name": "pic", "prompt": "cat", "kind": "image"}})
 	if err == nil && (missing == nil || !missing.IsError) {
 		t.Fatal("generated without a grant", err, missing)
 	}
@@ -770,15 +770,20 @@ func TestMediaThroughHubMCP(t *testing.T) {
 	if converted.IsError || body["path"] != "artifacts/documents/notes.html" {
 		t.Fatal(converted, body)
 	}
-	shot, body := callHub(t, client, "image_convert", map[string]any{"path": "dot.png", "name": "shot", "format": "jpeg"})
+	shot, body := callHub(t, client, "media_convert", map[string]any{"path": "dot.png", "name": "shot", "format": "jpeg"})
 	if shot.IsError || body["path"] != "artifacts/images/shot.jpg" {
 		t.Fatal(shot, body)
 	}
-	seen, body := callHub(t, client, "image_inspect", map[string]any{"path": "dot.png"})
-	if seen.IsError || body["text"] != "a red pixel" || jsonNumber(body["width"]) != 2 || jsonNumber(body["height"]) != 3 || !sawInspect.Load() {
+	seen, body := callHub(t, client, "media_inspect", map[string]any{"paths": []string{"dot.png"}})
+	seenResults, _ := body["results"].([]any)
+	var seenFirst map[string]any
+	if len(seenResults) > 0 {
+		seenFirst, _ = seenResults[0].(map[string]any)
+	}
+	if seen.IsError || body["text"] != "a red pixel" || jsonNumber(seenFirst["width"]) != 2 || jsonNumber(seenFirst["height"]) != 3 || !sawInspect.Load() {
 		t.Fatal(seen, body)
 	}
-	set, body := callHub(t, client, "image_inspect", map[string]any{"paths": []string{"dot.png", "dot.png"}})
+	set, body := callHub(t, client, "media_inspect", map[string]any{"paths": []string{"dot.png", "dot.png"}})
 	if set.IsError {
 		t.Fatal(set, body)
 	}
@@ -790,11 +795,11 @@ func TestMediaThroughHubMCP(t *testing.T) {
 	if body["text"] != "a red pixel" || first["path"] != "dot.png" {
 		t.Fatal(results[0])
 	}
-	badSet, _ := callHub(t, client, "image_inspect", map[string]any{"paths": []string{"dot.png", "missing.png"}})
+	badSet, _ := callHub(t, client, "media_inspect", map[string]any{"paths": []string{"dot.png", "missing.png"}})
 	if !badSet.IsError {
 		t.Fatal("accepted an unreadable image set")
 	}
-	tooMany, _ := callHub(t, client, "image_inspect", map[string]any{"paths": []string{"a", "b", "c", "d", "e", "f", "g", "h", "i"}})
+	tooMany, _ := callHub(t, client, "media_inspect", map[string]any{"paths": []string{"a", "b", "c", "d", "e", "f", "g", "h", "i"}})
 	if !tooMany.IsError {
 		t.Fatal("accepted an unbounded image set")
 	}
@@ -804,7 +809,7 @@ func TestMediaThroughHubMCP(t *testing.T) {
 			t.Fatal("accepted", path)
 		}
 	}
-	removed, body := callHub(t, client, "artifact_remove", map[string]any{"path": "artifacts/documents/report.txt"})
+	removed, body := callHub(t, client, "document_remove", map[string]any{"path": "artifacts/documents/report.txt"})
 	if removed.IsError || body["removed"] != true {
 		t.Fatal(removed, body)
 	}
@@ -821,10 +826,10 @@ func TestMediaThroughHubMCP(t *testing.T) {
 	granted, cleanupGranted := connectHub(t, v)
 	defer cleanupGranted()
 	listed, err := granted.ListTools(ctx, nil)
-	if err != nil || len(listed.Tools) != 62 {
+	if err != nil || len(listed.Tools) != 63 {
 		t.Fatal(len(listed.Tools), err)
 	}
-	made, body := callHub(t, granted, "image_generate", map[string]any{"name": "pic", "prompt": "a red square"})
+	made, body := callHub(t, granted, "media_generate", map[string]any{"name": "pic", "prompt": "a red square", "kind": "image"})
 	if made.IsError || body["path"] != "artifacts/images/pic.png" || body["model"] != media.ImageModel || !sawGenerate.Load() {
 		t.Fatal(made, body)
 	}
@@ -838,7 +843,7 @@ func TestMediaThroughHubMCP(t *testing.T) {
 	}
 	// Async media tools are registered under the same grant; without a
 	// configured media service they surface a clean error, not a panic.
-	submitted, _ := callHub(t, granted, "video_generate", map[string]any{"prompt": "a rocket"})
+	submitted, _ := callHub(t, granted, "media_generate", map[string]any{"name": "rocket", "prompt": "a rocket", "kind": "video"})
 	if !submitted.IsError {
 		t.Fatal("video submit without service")
 	}
@@ -847,7 +852,7 @@ func TestMediaThroughHubMCP(t *testing.T) {
 		t.Fatal("media fetch without service")
 	}
 	writeGrant(false)
-	revoked, _ := callHub(t, granted, "image_generate", map[string]any{"name": "later", "prompt": "cat"})
+	revoked, _ := callHub(t, granted, "media_generate", map[string]any{"name": "later", "prompt": "cat", "kind": "image"})
 	if !revoked.IsError || !strings.Contains(toolPlain(revoked), "grant") {
 		t.Fatal(toolPlain(revoked))
 	}
@@ -1092,6 +1097,44 @@ func TestWorkspaceReadOnlyPathsFromEnv(t *testing.T) {
 	for i := range want {
 		if v.ReadOnlyPaths[i] != want[i] {
 			t.Fatalf("ReadOnlyPaths = %v, want %v", v.ReadOnlyPaths, want)
+		}
+	}
+}
+
+// The strict pydantic MCP client upstream Hermes ships requires every
+// inputSchema property to be an object — a bare `true` (the JSON-Schema
+// encoding of an `any`-typed struct field) parks the whole hub server on
+// connect and the model loses the entire native surface (SPEC-0085 R1.6).
+func TestMCPSurfaceSchemasArePydanticClean(t *testing.T) {
+	client, closeConn := connectHub(t, fixture(t))
+	defer closeConn()
+	list, err := client.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Tools) == 0 {
+		t.Fatal("hub MCP surface is empty")
+	}
+	for _, tool := range list.Tools {
+		var schema struct {
+			Type       string                     `json:"type"`
+			Properties map[string]json.RawMessage `json:"properties"`
+		}
+		raw, err := json.Marshal(tool.InputSchema)
+		if err != nil || len(raw) == 0 || string(raw) == "null" {
+			t.Fatalf("tool %s carries no inputSchema", tool.Name)
+		}
+		if err := json.Unmarshal(raw, &schema); err != nil {
+			t.Fatalf("tool %s inputSchema not JSON: %v", tool.Name, err)
+		}
+		if schema.Type != "object" {
+			t.Fatalf("tool %s inputSchema type = %q, want object", tool.Name, schema.Type)
+		}
+		for name, prop := range schema.Properties {
+			var asObject map[string]any
+			if err := json.Unmarshal(prop, &asObject); err != nil || asObject == nil {
+				t.Fatalf("tool %s property %q is not a schema object: %s", tool.Name, name, string(prop))
+			}
 		}
 	}
 }

@@ -49,11 +49,13 @@ func TestCatalogEnableManagedAtomicAuthorityAndIsolation(t *testing.T) {
 	if err := s.Save(p); err != nil {
 		t.Fatal(err)
 	}
+	rightsDoc, rightsLedger := s.RightsDoc, s.RightsLedger
 	var loadErr error
 	s, loadErr = Load(p)
 	if loadErr != nil {
 		t.Fatal(loadErr)
 	}
+	s.RightsDoc, s.RightsLedger = rightsDoc, rightsLedger
 	before, _ := os.ReadFile(p)
 	if _, err := s.EnableCatalog(auth, d.DefinitionID, d.Version, "operator", false); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("implicit ceiling widening: %v", err)
@@ -75,6 +77,7 @@ func TestCatalogEnableManagedAtomicAuthorityAndIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	loaded.RightsDoc, loaded.RightsLedger = rightsDoc, rightsLedger
 	tools, err := loaded.ListProjectedTools(auth)
 	if err != nil {
 		t.Fatal(err)

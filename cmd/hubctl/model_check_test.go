@@ -9,28 +9,22 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/letya999/hermes-hub/internal/stack"
 )
 
 func TestDoctorReportsEffectiveModelScopeAndRestartBoundary(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "spaces", "alice")
-	if err := stack.InitEnvironment(dir, "alice", "prod"); err != nil {
-		t.Fatal(err)
-	}
-	settings, err := stack.ReadEnvironment(dir, "prod")
-	if err != nil {
-		t.Fatal(err)
-	}
-	noInfra := false
-	settings.Infra = &noInfra
-	settings.Model = "fixture-model"
-	settings.ModelURL = "https://provider.invalid/v1"
-	settings.Cliproxy = "dedicated"
-	settings.CliproxyCredentials = "private"
-	if err := stack.WriteSpace(dir, settings); err != nil {
-		t.Fatal(err)
-	}
+	// Non-infra space with a per-space cliproxy: the effective scope must
+	// report the dedicated placement and the relay-mediated model endpoint.
+	docs := managedInfraDocs("alice", false)
+	docs["stack"] = "kind: stack\nidentity: {user: alice, infra: false}\nservices:\n" +
+		"  hermes-runtime: {mode: supervised}\n" +
+		"  model-relay: {mode: per-space}\n" +
+		"  toolhub-relay: {mode: per-space}\n" +
+		"  toolhub: {mode: shared}\n" +
+		"  credential-broker: {mode: shared}\n" +
+		"  cliproxy: {mode: per-space}\n"
+	docs["models"] = "kind: models\ndefault: fixture-model\nroutes:\n  fixture-model: {ladder: [cliproxy-alice]}\nservices:\n  cliproxy-alice: {via: cliproxy, endpoint: http://cliproxy-alice:8317/v1, models: [{id: fixture-model}]}\n"
+	writeManagedSpaceDocs(t, dir, "alice", docs)
 	if err := os.WriteFile(filepath.Join(dir, "secrets.prod.env"), []byte("OPENAI_API_KEY=private-fixture-value\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +32,7 @@ func TestDoctorReportsEffectiveModelScopeAndRestartBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"fixture-model", "https://provider.invalid/v1", "dedicated", "private", "alice", "restart"} {
+	for _, expected := range []string{"fixture-model", "http://model-relay:8318/v1", "dedicated", "alice", "restart"} {
 		if !strings.Contains(output, expected) {
 			t.Errorf("doctor omitted effective scope %q: %s", expected, output)
 		}
@@ -87,22 +81,10 @@ func TestDoctorLiveRejectsConfiguredModelMissingFromCatalog(t *testing.T) {
 		_, _ = fmt.Fprint(w, `{"data":[{"id":"available-model"}]}`)
 	}))
 	defer server.Close()
-	dir := t.TempDir()
-	if err := stack.InitEnvironment(dir, "alice", "dev"); err != nil {
-		t.Fatal(err)
-	}
-	s, err := stack.Read(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.Model, s.ModelURL = "missing-model", server.URL+"/v1"
-	if err := stack.WriteSpace(dir, s); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "secrets.dev.env"), []byte("OPENAI_API_KEY=synthetic-only\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	err = run(context.Background(), []string{"doctor", "--dir", dir, "--env", "dev", "--live"})
+	// The live check fails closed naming the configured model: a catalog
+	// that does not carry it is a configuration error, never a pass.
+	lookup := func(context.Context, ...string) ([]byte, error) { return nil, fmt.Errorf("no port") }
+	err := doctorLiveModel(context.Background(), server.URL+"/v1", "synthetic", "missing-model", "compose.yaml", lookup, server.Client())
 	if err == nil || !strings.Contains(err.Error(), "missing-model") {
 		t.Fatalf("doctor ignored absent selected model: %v", err)
 	}

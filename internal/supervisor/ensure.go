@@ -44,7 +44,11 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 		return Runtime{}, fmt.Errorf("context settings unavailable: %w", managedErr)
 	}
 	managed := managedErr == nil && managedSettings.CapabilityMode == "managed"
-	if managed && (!selected || selection.Mode != "supervisor") {
+	// The stack passport is the spawn contract (SPEC-0092 R3.2): a declared
+	// supervised hermes-runtime selects the supervisor even when the rollout
+	// execution file was never written. A file that picks another executor
+	// was already rejected above.
+	if managed && selection.Mode != "supervisor" && managedSettings.PassportServices["hermes-runtime"] != "supervised" {
 		return Runtime{}, errors.New("managed capability mode requires supervisor execution selection")
 	}
 	m.mu.Lock()
@@ -519,7 +523,7 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	}
 	// The workspace passport owns the container filesystem once a revision is
 	// published (SPEC-0092 R5.2): /config, /workspace with read-only
-	// sub-binds, /vault, /skills and /shared/* come from the MountPlan —
+	// sub-binds, /skills and /shared/* come from the MountPlan —
 	// identical to the rendered Compose service. Without a revision the
 	// space keeps the legacy workspace bind and raw /config mounts.
 	if spawnSettings.PassportWorkspace != nil {
@@ -677,6 +681,7 @@ var managedExtensionRootTmpfs = []string{"skills", "hooks", "plugins", "skill-bu
 // broker secrets, no shared mounts, no host gateway.
 func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, container string, generation string) ([]string, error) {
 	env := m.environment()
+	m.prepareSpawnFiles(binding, env)
 	managedDir := filepath.Join(binding.ContextRoot, "managed", env)
 	args := []string{"run", "-d", "--name", container, "--network", managedAgentNetworkName(settings.User, env), "--network-alias", container, "--restart=no", "--log-driver", "local", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--read-only", "--init", "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", strconv.Itoa(m.cfg.PIDs), "--memory", m.cfg.Memory, "--cpus", m.cfg.CPU}
 	args = append(args, "--env-file", filepath.Join(binding.ContextRoot, "managed-runtime."+env+".env"), "--env-file", binding.EnvFile)
@@ -697,7 +702,7 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 	}
 	// The workspace passport owns the container filesystem once a revision is
 	// published (SPEC-0092 R5.2): /config, /workspace with read-only
-	// sub-binds, /vault, /skills and /shared/* come from the MountPlan —
+	// sub-binds, /skills and /shared/* come from the MountPlan —
 	// identical to the rendered Compose service. Without a revision the
 	// space keeps the legacy workspace bind.
 	if settings.PassportWorkspace != nil {
@@ -739,6 +744,21 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 	args = append(args, "-e", "HUB_SKILLS_STORE=/skills-store", "-e", "HUB_SKILLS_EFFECTIVE=/skills")
 	if settings.OrgScoped() && settings.OrganizationSkillsDir != "" {
 		args = append(args, "--mount", "type=bind,src="+settings.OrganizationSkillsDir+",dst=/skills-store-org")
+	}
+	// Same contract for hub plugins as unmanaged and Compose renders: a
+	// feature-filtered copy materialized at spawn mounts read-only into
+	// upstream's bundled plugins dir.
+	if err := stack.MaterializeHubPlugins(binding.ContextRoot, filepath.Dir(filepath.Dir(binding.ContextRoot)), settings); err != nil {
+		log.Printf("supervisor plugins materialization skipped: %v", err)
+	}
+	if entries, err := os.ReadDir(stack.GeneratedPluginsDir(binding.ContextRoot)); err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			src := filepath.Join(stack.GeneratedPluginsDir(binding.ContextRoot), entry.Name())
+			args = append(args, "--mount", "type=bind,src="+src+",dst=/opt/hermes/plugins/"+entry.Name()+",readonly")
+		}
 	}
 	effectiveConfig, err := m.materializeHermesConfig(binding, env)
 	if err != nil {

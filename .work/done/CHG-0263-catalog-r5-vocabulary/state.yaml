@@ -1,0 +1,25 @@
+schema: 1
+change: CHG-0263
+title: M31.0 Freeze the catalog r5 toolset vocabulary, via/executor model and tool audiences
+status: done
+branch: feat/m31-model-tool-surface
+updated: 2026-11-03
+phase: done
+adr: ADR-0094
+spec: SPEC-0093
+requirements: [R1.1, R1.2, R1.3, R1.4]
+depends_on: []
+github_milestone: "M31 — Consolidated Model Tool Surface (catalog r5)"
+github_issue: "437"
+design_status: accepted
+implementation_status: done
+slices: {}
+validation:
+  documents: done
+  just_check: pass
+  docker_check: not_applicable
+  red_team: done
+  live_acceptance: not_applicable
+evidence: []
+remaining: []
+limitations: []

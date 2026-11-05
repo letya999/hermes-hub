@@ -13,8 +13,12 @@ import (
 	"log/slog"
 	"maps"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/passportview"
 )
 
 // chargeRunCall counts a call against its run (job) correlation;
@@ -55,6 +59,11 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 	authorized := false
 	err := g.Store.AuthorizeProjectedCall(auth, projectedName, arguments, g.admitGoverned(auth, func(projected api.ProjectedTool, effective api.EffectiveBinding) (callbackErr error) {
 		authorized = true
+		if strings.HasPrefix(projected.Tool.CapabilityID, "memory.") {
+			if err := g.requireMemoryEnabled(auth.PrincipalID, auth.Environment); err != nil {
+				return err
+			}
+		}
 		if g.AuditWrite == nil {
 			return fmt.Errorf("%w: durable tool-call audit required", audit.ErrWrite)
 		}
@@ -118,10 +127,18 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 			outcome = "cancelled"
 			return err
 		}
+		if strings.HasPrefix(projected.Tool.CapabilityID, "memory.") {
+			if err := g.requireMemoryEnabled(auth.PrincipalID, auth.Environment); err != nil {
+				outcome = "preflight-error"
+				return err
+			}
+		}
 		effectStarted = true
 		outcome = "backend-error"
 		caller, envOK := g.Backend.(api.EnvBackend)
-		if envOK {
+		if api.RemoteExecutor(projected.Tool.Executor) {
+			result, callErr = g.execRemote(callCtx, auth, projected.Tool, arguments)
+		} else if envOK {
 			result, callErr = caller.CallEnv(callCtx, effective, projected.Tool, arguments, injection.Environment)
 		} else {
 			result, callErr = g.Backend.Call(callCtx, effective, projected.Tool, arguments)
@@ -228,6 +245,17 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 		return nil, &uncertainCallError{operationID: toolOperationID(auth.PrincipalID, auth.ContextID, auth.Environment, corr.JobID, corr.ToolCallID)}
 	}
 	return out, err
+}
+
+func (g *Gateway) requireMemoryEnabled(principal, environment string) error {
+	if g.PassportRoot == "" || !identity.ValidID(principal) || environment == "" {
+		return fmt.Errorf("%w: memory passport unavailable", api.ErrUnauthorized)
+	}
+	eff, err := passportview.LoadEffectiveGenerated(filepath.Join(g.PassportRoot, principal))
+	if err != nil || eff.Header.Metadata.Space != principal || eff.Header.Metadata.Environment != environment || eff.Config.Memory.Enabled == nil || !*eff.Config.Memory.Enabled {
+		return fmt.Errorf("%w: memory disabled", api.ErrUnauthorized)
+	}
+	return nil
 }
 
 // CallAuthorized is the protected host CLI path; it uses the identical

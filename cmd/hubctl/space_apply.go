@@ -4,21 +4,38 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/gofrs/flock"
 	"github.com/letya999/hermes-hub/internal/catalog"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/migration"
 	"github.com/letya999/hermes-hub/internal/passport"
 	"github.com/letya999/hermes-hub/internal/reconcile"
 	"github.com/letya999/hermes-hub/internal/stack"
+	"github.com/letya999/hermes-hub/internal/toolhub"
 )
+
+// passportEditRight maps each of the six passports to the distinct current
+// right its edits require (SPEC-0095 R1.4, ADR-0096 D3): the right must be
+// both issued to the principal and carried by the active published allow.
+var passportEditRight = map[string][2]string{
+	"stack":     {"stack", "change"},
+	"config":    {"config", "edit_own"},
+	"models":    {"models", "configure"},
+	"workspace": {"workspace", "configure"},
+	"tools":     {"tools", "configure"},
+	"grants":    {"grants", "configure"},
+}
 
 // applyReceipt is the space apply JSON: the classified diff plus the
 // reconcile report once --confirm publishes.
@@ -52,7 +69,31 @@ func runSpaceApply(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	rev, err := migration.CompileSources(abs, *env, time.Now().UTC())
+	// Applies on one space serialize on a file lock: a second apply refuses
+	// rather than interleaving compile, publish, render, rights derivation
+	// and reconcile into a mixed revision (SPEC-0095).
+	if err := os.MkdirAll(filepath.Join(abs, "generated"), 0700); err != nil {
+		return err
+	}
+	lock := flock.New(filepath.Join(abs, "generated", "apply.lock"))
+	locked, err := lock.TryLock()
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if !locked {
+		return errors.New("space apply: another apply is in progress for this space")
+	}
+	docs, err := catalog.Generate()
+	if err != nil {
+		return err
+	}
+	gov := toolhub.NewGovernanceStore(filepath.Join(stack.InfraSpaceDir(abs), "runtime", "toolhub", "governance.json"))
+	issued, err := toolhub.IssuedRightCeiling(gov, docs.Rights, filepath.Base(abs), time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("space apply: issued rights: %w", err)
+	}
+	rev, err := passport.CompileAuthored(abs, *env, time.Now().UTC(), docs, stack.ReservedSiblingPorts(abs), issued)
 	if err != nil {
 		return err
 	}
@@ -72,7 +113,48 @@ func runSpaceApply(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("space apply: %w", err)
 	}
+	if next.Stack.Identity.Organization != "" {
+		lang := locale.LangOf(filepath.Join(abs, "workspace"))
+		if next.Tools.Binding == nil {
+			return errors.New(locale.T(lang, "hubctl.space-apply-organization-binding"))
+		}
+		storePath := filepath.Join(stack.InfraSpaceDir(abs), "runtime", "toolhub", "store.json")
+		if _, err := os.Stat(filepath.Join(filepath.Dir(storePath), "store.db")); err == nil {
+			if _, err := os.Stat(storePath); errors.Is(err, os.ErrNotExist) {
+				storePath = filepath.Join(filepath.Dir(storePath), "store.db")
+			}
+		}
+		store, err := toolhub.Load(storePath)
+		if err != nil {
+			return errors.New(locale.T(lang, "hubctl.space-apply-organization-policy"))
+		}
+		if err := store.CheckOrganizationRights(filepath.Base(abs), *env, next.Stack.Identity.Organization, next.Tools.Binding.ProfileID, next.Tools.Binding.Generation, next.Grants.Allow); err != nil {
+			return errors.New(locale.T(lang, "hubctl.space-apply-organization-policy"))
+		}
+	}
 	changes := passport.Diff(prev, next)
+	if prevID != "" {
+		for _, change := range changes {
+			if change.Path == "stack.identity.kind" {
+				return errors.New(locale.T(locale.LangOf(filepath.Join(abs, "workspace")), "hubctl.space-apply-scope-kind"))
+			}
+		}
+		// R1.4: each passport's edits require its own current right — held
+		// both in the issued ledger ceiling and the active published allow —
+		// before a new revision carrying that doc's changes may publish.
+		needed := map[[2]string]bool{}
+		for _, change := range changes {
+			doc, _, _ := strings.Cut(change.Path, ".")
+			if right, ok := passportEditRight[doc]; ok {
+				needed[right] = true
+			}
+		}
+		for right := range needed {
+			if !slices.Contains(issued[right[0]], right[1]) || !slices.Contains(prev.Grants.Allow[right[0]], right[1]) {
+				return errors.New(locale.T(locale.LangOf(filepath.Join(abs, "workspace")), "hubctl.space-apply-passport-right", right[0]+"."+right[1]))
+			}
+		}
+	}
 	actions := reconcile.Plan(changes, next.Stack.Services)
 	receipt := applyReceipt{
 		Revision:         rev.ID,
@@ -101,13 +183,38 @@ func runSpaceApply(ctx context.Context, args []string) error {
 // runs the action plan.
 func applyConfirm(ctx context.Context, abs, rootAbs, env string, rev passport.Revision, prevID string, actions []reconcile.Action, handlers reconcile.Handlers) (reconcile.Report, error) {
 	var report reconcile.Report
+	bound, _ := rev.Value("tools", "binding.profile_id")
+	profileID, _ := bound.(string)
+	if profileID == "" {
+		return report, fmt.Errorf("space apply: revision has no bound tools profile")
+	}
+	// The compiled diff, plan and derivation all assume prevID is still the
+	// active revision; a pointer that moved since means this apply is stale.
+	current, err := passport.Current(abs)
+	switch {
+	case err != nil && !errors.Is(err, os.ErrNotExist):
+		return report, fmt.Errorf("space apply: current revision: %w", err)
+	case errors.Is(err, os.ErrNotExist) && prevID != "":
+		return report, fmt.Errorf("space apply: stale base %s: no active revision", prevID)
+	case err == nil && current != prevID:
+		return report, fmt.Errorf("space apply: stale base %s: revision %s is active", prevID, current)
+	}
 	if err := rev.Publish(abs); err != nil {
 		return report, fmt.Errorf("space apply: %w", err)
+	}
+	rollback := func() error {
+		if err := passport.RestoreCurrent(abs, prevID, env); err != nil {
+			return err
+		}
+		if prevID != "" {
+			return stack.RenderEnvironment(abs, rootAbs, env)
+		}
+		return nil
 	}
 	// Reconcile acts on generated compose files — they must describe the
 	// revision just published, or rebuild/recreate hit "no such service".
 	if err := stack.RenderEnvironment(abs, rootAbs, env); err != nil {
-		return report, fmt.Errorf("space apply: render: %w", err)
+		return report, fmt.Errorf("space apply: render: %w", errors.Join(err, rollback()))
 	}
 	// The published grants revision is the managed-rights authority: stamp
 	// the space's ToolHub profiles + ledger from it before reconcile acts —
@@ -121,19 +228,52 @@ func applyConfirm(ctx context.Context, abs, rootAbs, env string, rev passport.Re
 		return migration.DeriveSpaceRights(abs, filepath.Base(abs), env, revision, docs, time.Now().UTC())
 	}
 	if err := derive(rev); err != nil {
-		return report, fmt.Errorf("space apply: rights derivation: %w", err)
-	}
-	rollback := func() error {
-		if prevID == "" {
-			return passport.PointCurrent(abs, "")
-		}
-		return passport.PointCurrent(abs, prevID)
+		return report, fmt.Errorf("space apply: rights derivation: %w", errors.Join(err, rollback()))
 	}
 	report = reconcile.Run(actions, handlers, rollback, rev.ID, prevID)
 	if report.Failed != nil {
-		if prevID != "" {
-			if b, err := os.ReadFile(filepath.Join(abs, "generated", "passports", prevID, "grants.yaml")); err == nil {
-				_ = derive(passport.Revision{Docs: map[string][]byte{"grants": b}}) // best-effort: ledger returns to the rolled-back allow
+		if !report.RolledBack {
+			return report, fmt.Errorf("space apply: %s %s failed and rollback diverged — pointer/ledger state is uncertain", report.Failed.Kind, report.Failed.Target)
+		}
+		// The pointer is back on prevID; return the ledger to the same
+		// revision's allow intersected with live issued grants — or to the
+		// empty ceiling when a first apply leaves no active revision.
+		if prevID == "" {
+			docs, err := catalog.LoadPinned()
+			if err != nil {
+				report.RolledBack = false
+				return report, fmt.Errorf("space apply: %s %s failed; pointer restored, but rollback diverged at rights-ledger restore: %w", report.Failed.Kind, report.Failed.Target, err)
+			}
+			if err := migration.RestoreSpaceRights(abs, filepath.Base(abs), env, profileID, map[string][]string{}, nil, docs, time.Now().UTC()); err != nil {
+				report.RolledBack = false
+				return report, fmt.Errorf("space apply: %s %s failed; pointer restored, but rollback diverged at rights-ledger restore: %w", report.Failed.Kind, report.Failed.Target, err)
+			}
+		} else {
+			b, err := os.ReadFile(filepath.Join(abs, "generated", "passports", prevID, "grants.yaml"))
+			if err != nil {
+				report.RolledBack = false
+				return report, fmt.Errorf("space apply: %s %s failed; pointer restored to %s, but rollback diverged at rights-ledger restore: %w", report.Failed.Kind, report.Failed.Target, prevID, err)
+			}
+			toolsBody, err := os.ReadFile(filepath.Join(abs, "generated", "passports", prevID, "tools.yaml"))
+			if err != nil {
+				report.RolledBack = false
+				return report, fmt.Errorf("space apply: %s %s failed; pointer restored to %s, but rollback diverged at rights-ledger restore: %w", report.Failed.Kind, report.Failed.Target, prevID, err)
+			}
+			allow, err := (passport.Revision{Docs: map[string][]byte{"grants": b}}).GrantAllow()
+			if err != nil {
+				report.RolledBack = false
+				return report, fmt.Errorf("space apply: %s %s failed; pointer restored to %s, but rollback diverged at rights-ledger restore: %w", report.Failed.Kind, report.Failed.Target, prevID, err)
+			}
+			bound, _ := (passport.Revision{Docs: map[string][]byte{"tools": toolsBody}}).Value("tools", "binding.profile_id")
+			previousProfileID, _ := bound.(string)
+			docs, err := catalog.LoadPinned()
+			if err != nil {
+				report.RolledBack = false
+				return report, fmt.Errorf("space apply: %s %s failed; pointer restored to %s, but rollback diverged at rights-ledger restore: %w", report.Failed.Kind, report.Failed.Target, prevID, err)
+			}
+			if err := migration.RestoreSpaceRights(abs, filepath.Base(abs), env, previousProfileID, allow, toolsBody, docs, time.Now().UTC()); err != nil {
+				report.RolledBack = false
+				return report, fmt.Errorf("space apply: %s %s failed; pointer restored to %s, but rollback diverged at rights-ledger restore: %w", report.Failed.Kind, report.Failed.Target, prevID, err)
 			}
 		}
 		return report, fmt.Errorf("space apply: %s %s failed, rolled back to %s", report.Failed.Kind, report.Failed.Target, prevID)
@@ -198,6 +338,11 @@ func applyHandlers(ctx context.Context, dir, env string) reconcile.Handlers {
 			if err != nil {
 				return err
 			}
+			if (service == "hosting-controller" && settings.Hosting.Image == "") || (service != "hosting-controller" && settings.PassportServices[service] == "") {
+				// A rollback can remove a newly created service. Converge the
+				// restored project so its orphaned container is removed.
+				return docker("compose", "-f", composeFile, "up", "-d", "--remove-orphans", "--wait", "--wait-timeout", "180")
+			}
 			name := stack.ComposeServiceName(settings, service)
 			if name == "" {
 				if service == "hermes-runtime" {
@@ -206,7 +351,13 @@ func applyHandlers(ctx context.Context, dir, env string) reconcile.Handlers {
 					return respawnRuntime(ctx, dir, env)
 				}
 				// Shared services render in the infra space's project.
-				infraCompose := filepath.Join(stack.InfraSpaceDir(dir), "generated", "compose."+env+".yaml")
+				infraDir := stack.InfraSpaceDir(dir)
+				if service == "toolhub" && infraDir != dir {
+					if err := stack.RenderEnvironment(infraDir, filepath.Dir(filepath.Dir(dir)), env); err != nil {
+						return err
+					}
+				}
+				infraCompose := filepath.Join(infraDir, "generated", "compose."+env+".yaml")
 				return docker("compose", "-f", infraCompose, "up", "-d", "--wait", "--wait-timeout", "180", "--force-recreate", "--no-deps", service)
 			}
 			return docker("compose", "-f", composeFile, "up", "-d", "--wait", "--wait-timeout", "180", "--force-recreate", "--no-deps", name)

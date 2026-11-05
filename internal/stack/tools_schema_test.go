@@ -141,60 +141,6 @@ func TestResolveMountAndComposeVolumes(t *testing.T) {
 	}
 }
 
-// Schema-1 capability fields migrate into tools:/ingress:; mixing old and
-// new keys in one file is rejected instead of silently merged.
-func TestLegacySettingsMigration(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "settings.yaml")
-	body := "schema: 1\nuser: alice\ntimezone: UTC\nbrowser_port: 6080\noauth_port: 8000\nfeatures: [workspace, browser, browser_act, telegram, ssh_write, hh]\nnative_toolsets: [terminal]\ndisabled_mcp: [clickhouse]\n"
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	s, err := Read(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if s.Tools["browser"].Via != "mcp" || !s.Tools["browser"].Tools["act"] {
-		t.Fatalf("browser+act migration lost: %+v", s.Tools["browser"])
-	}
-	if !s.Tools["ssh"].Tools["write"] {
-		t.Fatalf("ssh_write migration lost: %+v", s.Tools["ssh"])
-	}
-	if s.Tools["terminal"].Via != "native" || s.Tools["hh"].Via != "toolhub" || s.Tools["clickhouse"].Via != "off" {
-		t.Fatalf("legacy fields not migrated: %+v", s.Tools)
-	}
-	if !slices.Equal(s.Ingress, []string{"telegram"}) {
-		t.Fatalf("ingress migration lost: %v", s.Ingress)
-	}
-	if !s.Has("browser_act") || !s.Has("ssh_write") || !s.Has("browser") || s.Has("clickhouse") {
-		t.Fatal("Has() lost migrated state")
-	}
-	// Mixing legacy fields with the new surface is an operator error.
-	mixed := "schema: 1\nuser: alice\ntimezone: UTC\nbrowser_port: 6080\noauth_port: 8000\nfeatures: [browser]\ntools: {file: toolhub}\n"
-	if err := os.WriteFile(path, []byte(mixed), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Read(path); err == nil {
-		t.Fatal("mixed legacy and tools accepted")
-	}
-	// A feature colliding with an explicit native grant is an operator error.
-	conflict := "schema: 1\nuser: alice\ntimezone: UTC\nbrowser_port: 6080\noauth_port: 8000\nfeatures: [terminal]\nnative_toolsets: [terminal]\n"
-	if err := os.WriteFile(path, []byte(conflict), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Read(path); err == nil {
-		t.Fatal("conflicting native grant accepted")
-	}
-	// Unknown legacy feature names surface a migration error, not silence.
-	unknown := "schema: 1\nuser: alice\ntimezone: UTC\nbrowser_port: 6080\noauth_port: 8000\nfeatures: [bogus_feature]\n"
-	if err := os.WriteFile(path, []byte(unknown), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Read(path); err == nil {
-		t.Fatal("unknown legacy feature accepted")
-	}
-}
-
 // ToolPlan groups entries per backend and defaults the MCP server name to
 // the entry name — the compiled view the CLI prints.
 func TestToolPlanGrouping(t *testing.T) {
@@ -231,23 +177,33 @@ func TestInitSeedsDefaultTemplate(t *testing.T) {
 	if err := InitEnvironmentWithOrganization(dir, "alice", "prod", "acme"); err != nil {
 		t.Fatal(err)
 	}
-	agent, err := os.ReadFile(filepath.Join(dir, "agent.yaml"))
+	stackDoc, err := os.ReadFile(filepath.Join(dir, "passports", "stack.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	workspace, err := os.ReadFile(filepath.Join(dir, "workspace.yaml"))
+	toolsDoc, err := os.ReadFile(filepath.Join(dir, "passports", "tools.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(agent), "user: alice") || !strings.Contains(string(agent), "organization: acme") || !strings.Contains(string(workspace), "tools:") {
-		t.Fatalf("seeded template missing substitutions:\n%s\n%s", agent, workspace)
+	if !strings.Contains(string(stackDoc), "user: alice") || !strings.Contains(string(stackDoc), "organization: acme") {
+		t.Fatalf("seeded stack passport missing identity substitutions:\n%s", stackDoc)
 	}
+	if !strings.Contains(string(toolsDoc), "via:") {
+		t.Fatalf("seeded tools passport missing tool wishes:\n%s", toolsDoc)
+	}
+	// The seeded authored set is the first revision's input; the operator's
+	// model pick is the only required fill before apply.
+	modelsDoc := "kind: models\ndefault: m\nroutes:\n  m: {ladder: [cliproxy]}\nservices:\n  cliproxy: {via: cliproxy, endpoint: http://cliproxy:8317/v1, models: [{id: m}]}\n"
+	if err := os.WriteFile(filepath.Join(dir, "passports", "models.yaml"), []byte(modelsDoc), 0600); err != nil {
+		t.Fatal(err)
+	}
+	publishAuthoredRevision(t, dir, "alice", "r-0000000000000001")
 	s, err := ReadEnvironment(dir, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Tools["browser"].Via != "mcp" || s.Tools["hh"].Via != "toolhub" {
-		t.Fatalf("seeded tools wrong: %+v", s.Tools)
+	if s.Tools["files"].Via != "toolhub" {
+		t.Fatalf("seeded files wish wrong: %+v", s.Tools)
 	}
 	if _, ok := s.Tools["memory"]; ok {
 		t.Fatalf("native memory must not be seeded by default (R3.1): %+v", s.Tools)
@@ -255,85 +211,6 @@ func TestInitSeedsDefaultTemplate(t *testing.T) {
 	// A second init never overwrites an existing space.
 	if err := Init(dir, "alice"); err == nil {
 		t.Fatal("init overwrote an existing space")
-	}
-}
-
-// WriteSpace splits operator fields into agent.yaml and capability intent
-// into workspace.yaml; Read on the directory reassembles the same Settings.
-func TestWriteSpaceRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	s := Settings{
-		Schema: 3, User: "alice", Organization: "acme", Environment: "prod",
-		Model: "gemini-3-pro", ModelURL: "http://relay:8318/v1", Timezone: "UTC",
-		BrowserPort: 6080, OAuthPort: 8000, SpaceDir: dir,
-		Tools: map[string]ToolEntry{
-			"terminal": {Via: "native"},
-			"file":     {Via: "toolhub"},
-			"browser":  {Via: "mcp", Server: "playwright", Access: "ro"},
-			"gitea":    {Via: "mcp-raw", Server: "gitea"},
-			"ssh":      {Via: "toolhub", Access: "ro"},
-		},
-		Ingress:   []string{"telegram"},
-		Workspace: Workspace{Mounts: []Mount{{From: "docs", To: "/docs", Mode: "ro"}}},
-		MCP:       map[string]MCPServer{"gitea": {URL: "http://gitea:3000/mcp"}},
-	}
-	if err := WriteSpace(dir, s); err != nil {
-		t.Fatal(err)
-	}
-	// The pair keeps its separation: no capability keys leak into agent.yaml.
-	agent, err := os.ReadFile(filepath.Join(dir, "agent.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, key := range []string{"tools:", "ingress:", "mounts:", "mcp:"} {
-		if strings.Contains(string(agent), key) {
-			t.Fatalf("agent.yaml leaked capability key %s:\n%s", key, agent)
-		}
-	}
-	workspace, err := os.ReadFile(filepath.Join(dir, "workspace.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, key := range []string{"model:", "timezone:", "oauth_port:", "browser_port:", "model_url:"} {
-		if strings.Contains(string(workspace), key) {
-			t.Fatalf("workspace.yaml leaked runtime key %s:\n%s", key, workspace)
-		}
-	}
-	back, err := Read(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if back.Tools["browser"].Access != "ro" || back.Tools["gitea"].Via != "mcp-raw" ||
-		back.Model != s.Model || back.OAuthPort != s.OAuthPort {
-		t.Fatalf("round-trip lost fields: %+v", back)
-	}
-}
-
-// Cross-file placement is rejected: capability keys in agent.yaml and runtime
-// keys in workspace.yaml are operator errors, not silent merges.
-func TestSplitRejectsMisplacedKeys(t *testing.T) {
-	dir := t.TempDir()
-	agent := "schema: 3\nuser: alice\ntimezone: UTC\noauth_port: 8000\nbrowser_port: 6080\n"
-	workspace := "tools: {terminal: native}\n"
-	write := func(a, w string) {
-		if err := os.WriteFile(filepath.Join(dir, "agent.yaml"), []byte(a), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, "workspace.yaml"), []byte(w), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	write(agent, workspace)
-	if _, err := Read(dir); err != nil {
-		t.Fatalf("valid pair rejected: %v", err)
-	}
-	write(agent+"tools: {file: toolhub}\n", workspace)
-	if _, err := Read(dir); err == nil {
-		t.Fatal("tools in agent.yaml accepted")
-	}
-	write(agent, workspace+"model: bogus\n")
-	if _, err := Read(dir); err == nil {
-		t.Fatal("model in workspace.yaml accepted")
 	}
 }
 
@@ -426,6 +303,7 @@ func TestMountBlocklist(t *testing.T) {
 		".ssh", ".ssh/id_rsa", "keys/id_rsa_backup", ".aws", ".kube", ".docker",
 		"app/.env", ".env.local", "svc/credentials.json", "creds.pem",
 		".state", "runtime/managed", "settings.yaml", "workspace.yaml", "agent.yaml",
+		"passports", "profile.lock",
 	} {
 		s.Workspace = Workspace{Mounts: []Mount{{From: from, To: "/mnt/x"}}}
 		if err := s.Validate(); err == nil {

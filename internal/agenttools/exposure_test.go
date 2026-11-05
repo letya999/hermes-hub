@@ -96,7 +96,7 @@ func exposureFixture(t *testing.T) (*Tools, *fakeProvider) {
 
 func TestExposureOpenViaToolCall(t *testing.T) {
 	v, provider := exposureFixture(t)
-	out, err := v.Call(context.Background(), "exposure_open", Input{Name: "demo"})
+	out, err := v.Call(context.Background(), "exposure_create", Input{Name: "demo"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestExposureListStatusCloseViaToolCall(t *testing.T) {
 	if _, err = v.Call(ctx, "exposure_status", Input{Name: "onboarding"}); err == nil {
 		t.Fatal("status of a closed endpoint must fail")
 	}
-	if _, err = v.Call(ctx, "exposure_close", Input{Name: "demo"}); err != nil {
+	if _, err = v.Call(ctx, "exposure_remove", Input{Name: "demo"}); err != nil {
 		t.Fatal(err)
 	}
 	if provider.live() != 0 {
@@ -156,10 +156,10 @@ func TestExposureBrokenConfigFailsClosed(t *testing.T) {
 	t.Setenv("HUB_EXPOSURE_CONFIG", broken)
 	t.Setenv("HUB_STATE", t.TempDir())
 	v := fixture(t)
-	if !toolNames(t, v)["exposure_open"] {
+	if !toolNames(t, v)["exposure_list"] {
 		t.Fatal("broken config must keep tools visible")
 	}
-	if _, err := v.Call(context.Background(), "exposure_open", Input{Name: "demo"}); err == nil {
+	if _, err := v.Call(context.Background(), "exposure_create", Input{Name: "demo"}); err == nil {
 		t.Fatal("broken config must fail closed, not panic")
 	}
 }
@@ -172,13 +172,13 @@ func TestExposureReadOnlyDeniesWrites(t *testing.T) {
 	v := fixture(t)
 	v.setExposureProvider(newFakeProvider())
 	v.openExposure()
-	if _, err := v.Call(context.Background(), "exposure_open", Input{Name: "demo"}); err == nil ||
+	if _, err := v.Call(context.Background(), "exposure_create", Input{Name: "demo"}); err == nil ||
 		!strings.Contains(err.Error(), "read-only") {
 		t.Fatal("write-effect tool under a read-only capability must refuse:", err)
 	}
-	if _, err := v.Call(context.Background(), "exposure_close", Input{Name: "demo"}); err == nil ||
+	if _, err := v.Call(context.Background(), "exposure_remove", Input{Name: "demo"}); err == nil ||
 		!strings.Contains(err.Error(), "read-only") {
-		t.Fatal("exposure_close under a read-only capability must refuse:", err)
+		t.Fatal("exposure_remove under a read-only capability must refuse:", err)
 	}
 	if _, err := v.Call(context.Background(), "exposure_list", Input{}); err != nil {
 		t.Fatal("read-effect tool must stay usable:", err)
@@ -187,7 +187,7 @@ func TestExposureReadOnlyDeniesWrites(t *testing.T) {
 
 func TestExposureOpenWritesAuditReceipt(t *testing.T) {
 	v, _ := exposureFixture(t)
-	if _, err := v.Call(context.Background(), "exposure_open", Input{Name: "demo"}); err != nil {
+	if _, err := v.Call(context.Background(), "exposure_create", Input{Name: "demo"}); err != nil {
 		t.Fatal(err)
 	}
 	body, err := os.ReadFile(filepath.Join(v.StateDir, "audit", "exposure.jsonl"))
@@ -226,7 +226,7 @@ func TestExposureDefaultProviderBuildsManager(t *testing.T) {
 	if v.exposureProvider == nil {
 		t.Fatal("openExposure must construct the real sish provider when none is injected")
 	}
-	if _, err := v.Call(context.Background(), "exposure_open", Input{Name: "demo"}); err == nil {
+	if _, err := v.Call(context.Background(), "exposure_create", Input{Name: "demo"}); err == nil {
 		t.Fatal("unreachable relay must fail the open, not panic")
 	}
 	v.Close()
@@ -235,18 +235,16 @@ func TestExposureDefaultProviderBuildsManager(t *testing.T) {
 	}
 }
 
+// Catalog r5 publishes the exposure family unconditionally; the capability
+// itself stays opt-in at call time — an unconfigured runtime fails closed.
 func TestExposureToolsAreOptIn(t *testing.T) {
 	base := fixture(t)
-	for name := range toolNames(t, base) {
-		if strings.HasPrefix(name, "exposure_") {
-			t.Fatal("exposure tool registered without the feature:", name)
+	for _, want := range []string{"exposure_list", "exposure_create", "exposure_remove"} {
+		if !toolNames(t, base)[want] {
+			t.Fatal("catalog exposure tool missing from surface:", want)
 		}
-	}
-	v, _ := exposureFixture(t)
-	names := toolNames(t, v)
-	for _, want := range []string{"exposure_list", "exposure_status", "exposure_open", "exposure_close"} {
-		if !names[want] {
-			t.Fatal("exposure tool missing:", want)
+		if _, err := base.Call(context.Background(), want, Input{Name: "demo"}); err == nil {
+			t.Fatalf("%s without config must fail closed", want)
 		}
 	}
 }

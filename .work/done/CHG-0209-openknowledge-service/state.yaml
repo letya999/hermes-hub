@@ -1,0 +1,86 @@
+schema: 1
+change: CHG-0209
+title: OpenKnowledge service render — pinned single replica
+status: done
+branch: feat/m20-memory-vault
+updated: 2026-11-01
+phase: complete
+adr: ADR-0086
+spec: SPEC-0085
+requirements: [R8.1, R8.2, R8.3, R8.4, R8.5]
+depends_on: [CHG-0204]
+github_milestone: M20 — Memory Vault and Knowledge Surface
+github_issue: 304
+design_status: accepted
+implementation_status: complete
+slices:
+  S8.1-service-render: done
+  S8.2-okignore-mount: done
+  S8.3-private-net: done
+  S8.4-external-write-coexist: done
+  S8.5-owner-provenance: done
+validation:
+  documents: pass
+  just_check: see notes
+  docker_check: 'not run: no-docker scope — image render/pin verified by contract tests only'
+  red_team: pass
+  live_acceptance: 'pending: requires live stack (deferred - no-docker scope)'
+evidence:
+  - internal/stack/knowledge_test.go — TestKnowledgeUIFeature (registry + requires memory_vault),
+    TestOKRenderSingleReplica (image tag, Dockerfile target, replicas=1, init+start command),
+    TestOKDisabledRendersNothing (zero render effects, never an agent toolset),
+    TestOKMountVaultRoot (vault bind → /data rw), TestOKNoPublishedPorts
+    (no ports + OK_ALLOW_EXTERNAL=1), TestOKPrivateNetOnly (project net
+    static / agent net managed, exactly one attachment),
+    TestExternalWritePolicyDocumented (ops contract present)
+  - internal/devcheck/ci_contract_test.go — TestKnowledgeRolePinned
+    (Dockerfile knowledge stage with @inkeep/open-knowledge@0.88.2 pin,
+    prod/dev targets, justfile+CI build/pull/budget lines, role budgeted)
+  - internal/vault/external_test.go — TestUIWriteOwnerProvenance
+    (uncommitted edits → hermes-owner commit; sidecars never swept)
+  - internal/memory/night/night_test.go — TestUIEditWinsRollup (owner edit
+    commits as hermes-owner before the rollup write; content preserved)
+  - coverage: internal/vault 87.7%, internal/stack 88.3%
+remaining: []
+limitations:
+  - 'Docker build of the knowledge stage and live-stack acceptance (single
+    replica up, UI edit landing an owner commit) are pending: no Docker on
+    this host; render/compose/pin are contract-tested only'
+  - 'git status porcelain rename entries (R  old -> new) stage as two
+    separate path entries via the sweep — same bytes land, history shows
+    delete+add rather than rename; vault paths are text so this is cosmetic'
+  - 'uid 10001 container vs host vault permissions on Linux binds is a
+    live-stack verification item (Docker Desktop maps this transparently)'
+  - 'HOME=/state/home in the image has no mount on the service — OK state
+    lives in /data/.ok; if a live stack shows ok needing persistent $HOME,
+    mount <vault>/runtime/ok → /state/home'
+red_team:
+  - 'Container cannot reach outside the space network: only attachment is
+    the space-private net (default static / internal agent net managed);
+    no ports key; shared hub net never joined — TestOKPrivateNetOnly'
+  - 'Symlink inside vault pointing outside: unchanged from M20.6 — the
+    governed writer and vault root already refuse symlink components; OK
+    itself follows upstream resolveWithinRoot (containment to /data)'
+  - 'Service down → vault/capture/recall unaffected: open-knowledge is a
+    leaf service nothing depends on; rollup/sweep/capture all run hub-side'
+  - 'Rollup absorbing owner bytes under system author: closed — sweep runs
+    before the first governed write (TestUIEditWinsRollup)'
+  - 'Sidecars swept into history: closed — sweep filters .git/.graph/.ok/
+    runtime (TestUIWriteOwnerProvenance)'
+notes:
+  - 'knowledge_ui is a hub-side pseudo feature (pseudoToolsets) requiring
+    memory_vault; it never renders as an agent native toolset'
+  - 'OK pin = @inkeep/open-knowledge@0.88.2 — newest stable ≥7 days old at
+    selection; --ignore-scripts on install'
+  - 'DryRun rollup commits nothing: the sweep sits after the dry-run return'
+  - 'just check legs verified: format/docs/config/vet/staticcheck/gosec
+    green; go suite green on all touched packages. Carried fixes found by
+    the gate: 5 gosec findings on M20.7 vacuum code (G122 card walk now
+    root-scoped via os.Root.FS + TestVacuumSkipsSymlinkedCards; 4 G104
+    Close handling) and a latent M20.2 test bug (memory_capture_test
+    asserted UTC leaf names while the gateway writes time.Local — fails
+    21:00-24:00 UTC on UTC+ hosts; assertions aligned to local)'
+  - 'Remaining go-check red is the rotating Windows env flake family
+    (AV fork/exec, lld -T link, docker.exe denied) — every named package
+    verified green isolated: channel, hosting, media, diagnostics,
+    mediasvc, toolhub(+api), hubctl, communication'

@@ -44,7 +44,7 @@ func warmTTLFlag(f *flag.FlagSet) *time.Duration {
 
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		fmt.Println("hubctl 0.5.0: init | org-init | migrate-spaces | space-migrate | space-audit | space apply | migrate-toolhub | execution-audit | select-execution | render | doctor | catalog | artifact | build | dev-rebuild | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | grant | governance | capability | context | memory | skill | routine | apply | usage | watch | image | replay\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nConnector controllers: local-controller (fixed Telegram) or generic-controller (trusted artifact)\nSee README.md for account setup and private VPS access.")
+		fmt.Println("hubctl 0.5.0: init | org-init | space apply | execution-audit | select-execution | render | doctor | catalog | artifact | build | dev-rebuild | up | down | logs | chat | telegram-login | meet-auth | tools | companion | supervisor | secret | grant | governance | capability | context | memory | skill | routine | apply | usage | watch | image | replay\nFlags: --dir spaces/me --root . --user me --org acme --env prod\nConnector controllers: local-controller (fixed Telegram) or generic-controller (trusted artifact)\nSee README.md for account setup and private VPS access.")
 		return nil
 	}
 	op := args[0]
@@ -179,25 +179,6 @@ func run(ctx context.Context, args []string) error {
 	}
 	if op == "routine" {
 		return runRoutine(ctx, args[1:])
-	}
-	if op == "apply" {
-		f := flag.NewFlagSet("apply", flag.ContinueOnError)
-		file := f.String("f", "", "desired-state file (yaml)")
-		profile := f.String("user", "me", "person identifier")
-		spoolDir := f.String("spool", "", "communication spool")
-		stateDir := f.String("state", "", "runtime state dir (knowledge target)")
-		spaceDir := f.String("dir", "", "space directory (required by the space: section)")
-		if err := f.Parse(args[1:]); err != nil {
-			return err
-		}
-		if *file == "" || *spoolDir == "" {
-			return fmt.Errorf("apply requires -f <file> and --spool <dir>")
-		}
-		rep, err := applyFile(*spoolDir, *stateDir, *profile, *file, *spaceDir)
-		if err != nil {
-			return err
-		}
-		return json.NewEncoder(os.Stdout).Encode(rep)
 	}
 	if op == "usage" {
 		f := flag.NewFlagSet("usage", flag.ContinueOnError)
@@ -414,26 +395,6 @@ func run(ctx context.Context, args []string) error {
 		}
 		return json.NewEncoder(os.Stdout).Encode(plan)
 	}
-	if op == "spool" {
-		f := flag.NewFlagSet("spool", flag.ContinueOnError)
-		spoolDir := f.String("spool", "", "communication spool dir")
-		stateDir := f.String("state", "", "runtime state dir (knowledge target)")
-		apply := f.Bool("apply", false, "apply migration; default is dry-run")
-		if len(args) < 2 || args[1] != "migrate" {
-			return fmt.Errorf("usage: hubctl spool migrate --spool <dir> --state <dir> [--apply]")
-		}
-		if err := f.Parse(args[2:]); err != nil {
-			return err
-		}
-		if f.NArg() != 0 || *spoolDir == "" || *stateDir == "" {
-			return fmt.Errorf("usage: hubctl spool migrate --spool <dir> --state <dir> [--apply]")
-		}
-		rep, err := spoolMigrate(*spoolDir, *stateDir, *apply)
-		if err != nil {
-			return err
-		}
-		return json.NewEncoder(os.Stdout).Encode(rep)
-	}
 	if op == "space" {
 		if len(args) < 2 || args[1] != "apply" {
 			return fmt.Errorf("usage: hubctl space apply --dir spaces/<user> --env <dev|prod> [--confirm] [--json]")
@@ -455,13 +416,9 @@ func run(ctx context.Context, args []string) error {
 	apply := f.Bool("apply", false, "apply migration; default is dry-run")
 	noBuild := f.Bool("no-build", false, "start existing images without rebuilding (up only)")
 	live := f.Bool("live", false, "doctor: verify the selected model against the live provider catalog")
-	stateSource := f.String("state-volume", "", "legacy runtime state directory")
 	toolHubStore := f.String("toolhub-store", "", "absolute ToolHub registry path")
 	brokerStore := f.Bool("broker", false, "store-migrate/store-activate: migrate the credential-broker Docker volumes via its service image")
 	storeTo := f.String("to", "", "destination store path for store-migrate (default: store.db beside the source)")
-	workspaceSource := f.String("workspace-volume", "", "legacy workspace directory")
-	userSource := f.String("user-source", "", "legacy user directory")
-	orgSource := f.String("organization-source", "", "legacy organization directory")
 	spacesRoot := f.String("spaces", "spaces", "root containing context homes for the host supervisor")
 	supervisorImage := f.String("runtime-image", "hermes-hub:0.5.0-prod", "pinned runtime image for the host supervisor")
 	supervisorListen := f.String("supervisor-listen", "127.0.0.1:8876", "private host supervisor address")
@@ -553,54 +510,6 @@ func run(ctx context.Context, args []string) error {
 			*organizationDir = filepath.Join("spaces", *organization)
 		}
 		return stack.InitOrganization(*organizationDir, *organization, *profile)
-	case "migrate-spaces":
-		report, err := migration.Run(migration.Options{Root: *root, User: *profile, Organization: *organization, Environment: *environment, Apply: *apply, UserSource: *userSource, OrganizationSource: *orgSource, StateSource: *stateSource, WorkspaceSource: *workspaceSource})
-		if err != nil {
-			return err
-		}
-		return json.NewEncoder(os.Stdout).Encode(report)
-	case "space-migrate":
-		absoluteDir, err := filepath.Abs(*dir)
-		if err != nil {
-			return err
-		}
-		report, err := migration.MigratePassport(migration.PassportOptions{Dir: absoluteDir, Environment: *environment, Apply: *apply})
-		if err != nil {
-			return err
-		}
-		return json.NewEncoder(os.Stdout).Encode(report)
-	case "space-audit":
-		absoluteDir, err := filepath.Abs(*dir)
-		if err != nil {
-			return err
-		}
-		audit, err := migration.AuditPassport(absoluteDir)
-		if err != nil {
-			return err
-		}
-		return json.NewEncoder(os.Stdout).Encode(audit)
-	case "migrate-toolhub":
-		absoluteDir, err := filepath.Abs(*dir)
-		if err != nil {
-			return err
-		}
-		stateDir := *stateSource
-		if stateDir == "" {
-			stateDir = filepath.Join(absoluteDir, "runtime")
-		}
-		storePath := *toolHubStore
-		if storePath == "" {
-			storePath = filepath.Join(stateDir, "toolhub", "store.json")
-		}
-		storePath, err = filepath.Abs(storePath)
-		if err != nil {
-			return err
-		}
-		report, err := migration.MigrateToolHub(migration.ToolHubMigrationOptions{Directory: absoluteDir, StateDir: stateDir, StorePath: storePath, User: *profile, Apply: *apply})
-		if err != nil {
-			return err
-		}
-		return json.NewEncoder(os.Stdout).Encode(report)
 	case "store-migrate":
 		if !*apply {
 			return fmt.Errorf("store-migrate requires --apply")
@@ -768,6 +677,16 @@ func run(ctx context.Context, args []string) error {
 				return err
 			}
 			for _, line := range skillLines {
+				fmt.Println(line)
+			}
+			memoryLines, err := stack.MemoryDoctor(*dir)
+			if err != nil {
+				return err
+			}
+			for _, line := range memoryLines {
+				fmt.Println(line)
+			}
+			for _, line := range stack.KnowledgeDoctor(s) {
 				fmt.Println(line)
 			}
 			fmt.Println("Configuration valid. OAuth sessions, provider permissions and Docker runtime require live verification.")

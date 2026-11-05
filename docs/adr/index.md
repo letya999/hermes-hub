@@ -1,11 +1,15 @@
 ---
 description: Architectural decisions and clearly marked proposals; append new records when changing direction.
-last_verified: 2026-11-02
+last_verified: 2026-11-05
 ---
 # Decisions
 
 | Record | Decision |
 |---|---|
+| [ADR-0097](ADR-0097-m32-bounded-delivery.md) | M32 bounded delivery; 2026-11-05 amendment replaces foundation stage with verified direct merge to dev; one automation ownership switch |
+| [ADR-0096](ADR-0096-authored-passport-authority.md) | Accepted direction: six authored passports as sole space configuration; independent tool selection and grants; no legacy config readers |
+| [ADR-0095](ADR-0095-toolhub-owned-memory-automation.md) | Accepted direction: ToolHub owns per-user memory, routines, assignments and dreaming; communication-hub retains channel transport and delivery |
+| [ADR-0094](ADR-0094-consolidated-model-tool-surface.md) | Accepted direction: catalog r5 — 20 first-party families + pinned platform under logical names, via/executor two-level routing, model\|internal\|operator audiences, fail-closed requires (M31) |
 | [ADR-0093](ADR-0093-imperative-passports-capability-grants.md) | Accepted direction: passports are the imperative sole input to build/spawn/admission; agent capability grants (PDP/PEP) instead of tool ids; effect classes live/respawn/recreate/rebuild; amends ADR-0092 D1–D3, D6 (M30) |
 | [ADR-0092](ADR-0092-six-passport-space-contract.md) | Accepted direction: six effective per-space passports, versioned platform catalogs/templates, grant ceilings and verified migration (M29) |
 | [ADR-0091](ADR-0091-root-services-sqlite-storage.md) | Accepted direction: SQLite substrate for ToolHub/Communication (pure-Go driver, per-space DBs, shared migration contract); amends ADR-0087 alternatives + ADR-0088 D1 exclusion (CHG-0215-0226) |

@@ -39,6 +39,17 @@ func TestLoadEffectiveGeneratedReadsMountedView(t *testing.T) {
 	if eff.Stack.Identity.User != "alice" || eff.Models.Services["google-pro-1"].Via != "cliproxy" {
 		t.Fatalf("generated-rooted load lost content: %+v", eff.Models)
 	}
+	for _, mixed := range []string{
+		"apiVersion: six-passport/v2\nmetadata: {space: bob, environment: dev, revision: r-x}\nkind: config\n",
+		"apiVersion: six-passport/v2\nmetadata: {space: alice, environment: prod, revision: r-x}\nkind: config\n",
+	} {
+		if err := os.WriteFile(filepath.Join(revDir, "config.yaml"), []byte(mixed), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadEffectiveGenerated(gen); err == nil {
+			t.Fatal("mixed space or environment loaded as one revision")
+		}
+	}
 }
 
 // A current pointer whose id escapes the passports tree is a poisoned

@@ -44,18 +44,9 @@ func TestPruneDanglingImagesKeepsForeignContainersAndBoundsCache(t *testing.T) {
 
 func TestLifecycleAndFailurePropagation(t *testing.T) {
 	d := filepath.Join(t.TempDir(), "space with spaces")
-	if err := stack.InitEnvironment(d, "owner", "dev"); err != nil {
-		t.Fatal(err)
-	}
-	s, _ := stack.Read(d)
-	s.Model = "test"
-	s.ModelURL = "http://model.invalid/v1"
-	save := func() {
-		if err := stack.WriteSpace(d, s); err != nil {
-			t.Fatal(err)
-		}
-	}
-	save()
+	// Infra owner without a channel: the gateway stays undeployed so `chat`
+	// is legal, and the revision alone carries every consumer.
+	writeManagedSpaceDocs(t, d, "owner", managedInfraDocs("owner", false))
 	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte("OPENAI_API_KEY=fake-for-test\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -133,8 +124,11 @@ func TestLifecycleAndFailurePropagation(t *testing.T) {
 		}
 	}
 	t.Setenv("HUB_FAIL_MATCH", "")
-	s.Ingress = append(s.Ingress, "telegram")
-	save()
+	// Publishing the gateway revision is the passport-path equivalent of
+	// adding telegram to the old feature list.
+	ownerDocs := managedInfraDocs("owner", true)
+	ownerDocs["stack"] = strings.Replace(ownerDocs["stack"], "  supervisor: {mode: shared}\n", "", 1)
+	writeManagedSpaceDocs(t, d, "owner", ownerDocs)
 	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte("OPENAI_API_KEY=fake-for-test\nTELEGRAM_BOT_TOKEN=synthetic-bot\nTELEGRAM_ALLOWED_USERS=11\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -170,15 +164,11 @@ func TestBuildCoversRuntimeTagWhenRuntimeNotRendered(t *testing.T) {
 	// compose build section produces the spawned-runtime tag. hubctl must
 	// build it explicitly, the same way it builds the cell images.
 	d := filepath.Join(t.TempDir(), "space")
-	if err := stack.InitEnvironment(d, "owner", "prod"); err != nil {
-		t.Fatal(err)
-	}
-	s, _ := stack.Read(d)
-	s.Model, s.ModelURL = "test", "http://model.invalid/v1"
-	s.Ingress = append(s.Ingress, "telegram")
-	if err := stack.WriteSpace(d, s); err != nil {
-		t.Fatal(err)
-	}
+	// The managed stack declares a supervised runtime: no compose service
+	// renders hermes-runtime, yet its image tag must still be built.
+	ownerDocs := managedInfraDocs("owner", true)
+	ownerDocs["stack"] = strings.Replace(ownerDocs["stack"], "  supervisor: {mode: shared}\n", "", 1)
+	writeManagedSpaceDocs(t, d, "owner", ownerDocs)
 	if err := os.WriteFile(filepath.Join(d, "secrets.prod.env"), []byte("OPENAI_API_KEY=fake-for-test\nTELEGRAM_BOT_TOKEN=synthetic-bot\nTELEGRAM_ALLOWED_USERS=11\n"), 0600); err != nil {
 		t.Fatal(err)
 	}

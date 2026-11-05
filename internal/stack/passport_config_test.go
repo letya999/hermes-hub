@@ -12,18 +12,41 @@ import (
 // writeSixPassports publishes a minimal revision under dir/generated/passports
 // so Read picks up the imperative overlay; docs overrides the per-file bodies.
 func writeSixPassports(t *testing.T, dir, space, rev string, docs map[string]string) {
+	writeSixPassportsInEnvironment(t, dir, space, "dev", rev, docs)
+}
+
+func writeSixPassportsInEnvironment(t *testing.T, dir, space, environment, rev string, docs map[string]string) {
 	t.Helper()
 	revDir := filepath.Join(dir, "generated", "passports", rev)
 	if err := os.MkdirAll(revDir, 0700); err != nil {
 		t.Fatal(err)
 	}
 	header := func(kind string) string {
-		return "apiVersion: six-passport/v2\nkind: " + kind + "\nmetadata: {space: " + space + ", environment: dev, revision: " + rev + "}\n"
+		return "apiVersion: six-passport/v2\nkind: " + kind + "\nmetadata: {space: " + space + ", environment: " + environment + ", revision: " + rev + "}\n"
 	}
 	for _, name := range []string{"stack", "config", "models", "workspace", "tools", "grants"} {
 		body, ok := docs[name+".yaml"]
 		if !ok {
 			body = header(name)
+			switch name {
+			case "stack":
+				infra := "false"
+				if space == "infra" {
+					infra = "true"
+				}
+				body += "identity: {user: " + space + ", infra: " + infra + "}\nservices:\n  hermes-runtime: {mode: per-space}\n  model-relay: {mode: per-space}\n  toolhub-relay: {mode: per-space}\n  toolhub: {mode: shared}\n  credential-broker: {mode: shared}\n"
+			case "config":
+				body += "runtime: {timezone: UTC}\n"
+			case "models":
+				body += "default: m\nroutes: {m: {ladder: [cliproxy]}}\nservices: {cliproxy: {via: cliproxy, endpoint: 'http://cliproxy:8317/v1', models: [{id: m}]}}\n"
+			case "workspace":
+				body += "writable: [/workspace]\nread_only: [/config]\n"
+			case "tools":
+				body += "binding: {profile_id: " + space + "-default, generation: 1}\n"
+			}
+		}
+		if name == "tools" && !strings.Contains(body, "binding:") {
+			body += "binding: {profile_id: " + space + "-default, generation: 1}\n"
 		}
 		if err := os.WriteFile(filepath.Join(revDir, name+".yaml"), []byte(body), 0600); err != nil {
 			t.Fatal(err)
@@ -56,7 +79,7 @@ func TestComposePortsFromConfigPassport(t *testing.T) {
 			"    telegram: {bot: {ref: telegram-bot-infra}}\n" +
 			"    slack_app: {bot: {ref: slack-bot-infra}}\n",
 		"tools.yaml": "apiVersion: six-passport/v2\nkind: tools\nmetadata: {space: infra, environment: dev, revision: " + rev + "}\n" +
-			"extended:\n    browser: {via: mcp:playwright}\n",
+			"binding: {profile_id: infra-default, generation: 1}\nextended:\n    browser: {via: mcp:playwright}\n",
 	})
 	if err := os.WriteFile(filepath.Join(dir, "agent.yaml"), []byte("schema: 3\ninfra: true\n"), 0600); err != nil {
 		t.Fatal(err)
@@ -64,17 +87,17 @@ func TestComposePortsFromConfigPassport(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "scope.yaml"), []byte("kind: user\nid: infra\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := Read(dir)
+	s, err := ReadEffective(dir, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
 	services := Compose(s, root, dir)["services"].(M)
+	services["hermes-runtime"] = RuntimeService(s, root, dir)
 	ports := func(service string) []string {
 		list, _ := services[service].(M)["ports"].([]string)
 		return list
 	}
 	want := map[string]string{
-		"hermes-runtime":    "127.0.0.1:8008:8000",
 		"browser-infra":     "127.0.0.1:6081:6080",
 		"communication-hub": "127.0.0.1:9090:8081",
 	}
@@ -120,12 +143,12 @@ func TestEffectiveHermesConfigFromConfigPassport(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "scope.yaml"), []byte("kind: user\nid: infra\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := Read(dir)
+	s, err := ReadEffective(dir, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
 	services := Compose(s, root, dir)["services"].(M)
-	runtimeEnv := services["hermes-runtime"].(M)["environment"].(M)
+	runtimeEnv := RuntimeService(s, root, dir)["environment"].(M)
 	if got := runtimeEnv["TZ"]; got != "Europe/Moscow" {
 		t.Fatalf("runtime.timezone must render TZ, got %v", got)
 	}
@@ -177,7 +200,7 @@ func TestGatewayChannelsFromConfigPassport(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "scope.yaml"), []byte("kind: user\nid: infra\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := Read(dir)
+	s, err := ReadEffective(dir, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,10 +249,8 @@ func TestSupervisorPolicyFileFromConfigPassport(t *testing.T) {
 	}
 }
 
-// config.memory.backend is the imperative memory switch: honcho enables the
-// Honcho contract (its URL stays a host-level extension), local disables it
-// (SPEC-0092 R4.1/R4.2).
-func TestMemoryBackendFromConfigPassport(t *testing.T) {
+// Managed memory cannot bypass ToolHub through a legacy backend extension.
+func TestManagedMemoryRejectsLegacyBackend(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "spaces", "infra")
 	rev := "r-0123456789abcdef"
@@ -244,11 +265,7 @@ func TestMemoryBackendFromConfigPassport(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "scope.yaml"), []byte("kind: user\nid: infra\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := Read(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !s.Honcho {
-		t.Fatal("memory.backend: honcho must enable the Honcho contract")
+	if _, err := ReadEffective(dir, "prod"); err == nil {
+		t.Fatal("managed memory admitted the legacy Honcho backend")
 	}
 }

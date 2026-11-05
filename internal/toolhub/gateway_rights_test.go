@@ -35,6 +35,7 @@ func TestRightsRevokeHidesToolFromOpenSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	auth.CapabilityProfile, auth.Environment, auth.Generation = "alice-default", "dev", 1
+	auth.Organization = "example"
 	store.RightsDoc = rightsVocabulary()
 	gov := NewGovernanceStore(filepath.Join(t.TempDir(), "governance.json"))
 	store.RightsLedger = gov.Load
@@ -47,9 +48,10 @@ func TestRightsRevokeHidesToolFromOpenSession(t *testing.T) {
 		Environment: auth.Environment, Generation: auth.Generation, PolicyVersion: auth.PolicyVersion, PolicyID: policy.PolicyID, PolicyRevision: policy.Revision,
 		Revision: 1, IssuedBy: "operator", IssuedAt: policy.IssuedAt, Reason: "Reviewed synthetic fixture", Status: api.ActiveStatus,
 		// The published ceiling: this principal holds workspace.read.
-		Rights: []api.RightRule{{Capability: "workspace", Operation: "read"}},
+		Rights: []api.RightRule{{Capability: "workspace", Operation: "read"}, {Capability: "tools", Operation: "use"}},
 		Selections: []api.CapabilitySelection{{CapabilityID: rule.CapabilityID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, ImplementationDigest: rule.ImplementationDigest,
 			ToolName: "search", Name: api.ProjectedToolName(definition.DefinitionID, definition.Version, "search"), ConnectionID: binding.ConnectionID}}}
+	policy.RightCeiling = profile.Rights
 	if err := putPolicy(t, store, policy); err != nil {
 		t.Fatal(err)
 	}
@@ -57,6 +59,7 @@ func TestRightsRevokeHidesToolFromOpenSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	mintRight(t, gov, store.RightsDoc, api.NewRightGrant("rightgrant-alice-ws", auth.PrincipalID, "workspace", "read", "", "fixture", "operator", time.Now().Add(time.Hour)))
+	mintRight(t, gov, store.RightsDoc, api.NewRightGrant("rightgrant-alice-use", auth.PrincipalID, "tools", "use", "", "fixture", "operator", time.Now().Add(time.Hour)))
 
 	gateway := &Gateway{
 		Store: store, Tokens: map[string]identity.Envelope{aliceToken: auth},

@@ -22,7 +22,7 @@ func TestSecondaryMediaUsesUniqueSharedOwnerAuth(t *testing.T) {
 		}
 	}
 	s := Settings{Schema: 1, User: "infra", Timezone: "UTC", Model: "m", ModelURL: "http://model.invalid/v1", Tools: testTools("workspace", "image_gen"), Ingress: testIngress("workspace", "image_gen"), BrowserPort: 6080, OAuthPort: 8000}
-	if err := WriteSpace(owner, s); err != nil {
+	if err := saveSpace(t, owner, s); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(owner, "media.auth"), []byte("HUB_MEDIA_AUTH=shared-synthetic\n"), 0600); err != nil {
@@ -30,7 +30,7 @@ func TestSecondaryMediaUsesUniqueSharedOwnerAuth(t *testing.T) {
 	}
 	no := false
 	s.User, s.Infra, s.Environment = "alice", &no, "dev"
-	if err := WriteSpace(secondary, s); err != nil {
+	if err := saveSpace(t, secondary, s); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(secondary, "media.auth"), []byte("HUB_MEDIA_AUTH=unused-local\n"), 0600); err != nil {
@@ -58,7 +58,11 @@ func TestSecondaryMediaUsesUniqueSharedOwnerAuth(t *testing.T) {
 	}
 	other := s
 	other.User, other.Infra = "other", nil
-	if err := WriteSpace(filepath.Join(root, "other"), other); err != nil {
+	otherDir := filepath.Join(root, "other")
+	if err := os.MkdirAll(otherDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveSpace(t, otherDir, other); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := runtimeMediaAuth(secondary, s); err == nil {
@@ -105,7 +109,7 @@ func TestSharedMediaAuthReadsManagedOwnerRevision(t *testing.T) {
 	}
 	no := false
 	s := Settings{Schema: 1, User: "alice", Infra: &no, Timezone: "UTC", Model: "m", ModelURL: "http://model.invalid/v1", Tools: testTools("workspace", "image_gen"), Ingress: testIngress("workspace", "image_gen"), BrowserPort: 6080, OAuthPort: 8000, Environment: "dev"}
-	if err := WriteSpace(secondary, s); err != nil {
+	if err := saveSpace(t, secondary, s); err != nil {
 		t.Fatal(err)
 	}
 	auth, err := runtimeMediaAuth(secondary, s)
@@ -255,14 +259,19 @@ func TestDocumentImageProfile(t *testing.T) {
 	if err := Init(space, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := Read(space)
+	publishManagedRevision(t, space, "alice", "r-0000000000000001")
+	settings, err := ReadEffective(space, "prod")
 	if err != nil {
 		t.Fatal(err)
 	}
 	settings.Model = "m"
 	settings.ModelURL = "http://model.invalid/v1"
+	// hub-media is an infra-plane sidecar: the space must carry infra shape
+	// for the composed service to exist, so the fixture pins infra: true.
+	infra := true
+	settings.Infra = &infra
 	settings.Tools, settings.Ingress = testTools("workspace"), testIngress("workspace")
-	if err := WriteSpace(space, settings); err != nil {
+	if err := saveSpace(t, space, settings); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(space, "secrets.prod.env"), []byte("OPENAI_API_KEY=openai-sample\nFAL_KEY=fal-sample-value\n"), 0o600); err != nil {
@@ -289,7 +298,7 @@ func TestDocumentImageProfile(t *testing.T) {
 		t.Fatalf("rendered runtime leaked generation credential: %v %s", err, runtimeEnv)
 	}
 	settings.Tools, settings.Ingress = testTools("workspace", "image_gen"), testIngress("workspace", "image_gen")
-	if err := WriteSpace(space, settings); err != nil {
+	if err := saveSpace(t, space, settings); err != nil {
 		t.Fatal(err)
 	}
 	if err := Render(space, repo); err != nil {
@@ -304,7 +313,13 @@ func TestDocumentImageProfile(t *testing.T) {
 		t.Fatalf("cliproxy runtime included FAL_KEY: %v %s", err, runtimeEnv)
 	}
 	settings.ImageGen = media.ImageGen{Provider: media.FalProvider, Model: media.ModelFromChat, Delivery: media.DeliveryURL}
-	if err := WriteSpace(space, settings); err != nil {
+	if err := saveSpace(t, space, settings); err != nil {
+		t.Fatal(err)
+	}
+	// The compose probes below must read the just-published revision: the
+	// stack passport now declares hub-media and config carries the fal grant.
+	settings, err = ReadEffective(space, "prod")
+	if err != nil {
 		t.Fatal(err)
 	}
 	if err := Render(space, repo); err != nil {
@@ -326,7 +341,7 @@ func TestDocumentImageProfile(t *testing.T) {
 		t.Fatalf("media provider env file must not be rendered: %v", err)
 	}
 	composeDoc, err := os.ReadFile(filepath.Join(space, "generated", "compose.prod.yaml"))
-	if err != nil || !strings.Contains(string(composeDoc), "hub-media") || !strings.Contains(string(composeDoc), "HUB_MEDIA_URL") || strings.Contains(string(composeDoc), "fal-sample-value") {
+	if err != nil || !strings.Contains(string(composeDoc), "hub-media") || strings.Contains(string(composeDoc), "fal-sample-value") {
 		t.Fatalf("compose missing hub-media sidecar: %v %s", err, composeDoc)
 	}
 	mediaSvc := Compose(settings, repo, space)["services"].(M)["hub-media"].(M)
@@ -364,16 +379,16 @@ func TestDocumentImageProfile(t *testing.T) {
 			t.Fatalf("hub-media missing %s passthrough: %#v", want, mediaEnv[want])
 		}
 	}
-	// The runtime's env_file list must include media.auth, otherwise
-	// HUB_MEDIA_AUTH never materializes inside the container.
-	foundMediaAuth := false
-	for _, raw := range Compose(settings, repo, space)["services"].(M)["hermes-runtime"].(M)["env_file"].([]any) {
-		if raw.(M)["path"] == filepath.ToSlash(filepath.Join(space, "media.auth")) {
-			foundMediaAuth = true
-		}
+	// A managed space has no resident hermes-runtime service: the spawned
+	// runtime's service contract lives in managed-runtime.<env>.env, which
+	// must carry the media endpoint and bearer or the runtime can never
+	// authenticate to the sidecar. The auth file itself is rendered beside it.
+	managedEnv, err := os.ReadFile(filepath.Join(space, "managed-runtime.prod.env"))
+	if err != nil || !strings.Contains(string(managedEnv), "HUB_MEDIA_URL=http://hub-media:8090") || !strings.Contains(string(managedEnv), "HUB_MEDIA_AUTH=") || strings.Contains(string(managedEnv), "fal-sample-value") {
+		t.Fatalf("spawned runtime lost the media service contract: %v %s", err, managedEnv)
 	}
-	if !foundMediaAuth {
-		t.Fatal("runtime env_file missing media.auth")
+	if _, err := os.Stat(filepath.Join(space, "media.auth")); err != nil {
+		t.Fatalf("media.auth not rendered for the spawned runtime: %v", err)
 	}
 
 	_, caller, _, ok := runtime.Caller(0)
@@ -393,5 +408,14 @@ func TestDocumentImageProfile(t *testing.T) {
 	spec, err := os.ReadFile(filepath.Join(root, "specs", "active", "SPEC-0033-document-image-profile.md"))
 	if err != nil || !strings.Contains(string(spec), media.ImageModel) || !strings.Contains(string(spec), "artifacts/documents") {
 		t.Fatal(err)
+	}
+}
+
+// The r5 `media` toolset is the canonical admission for an image_gen operator
+// grant; the managed check must not demand the retired legacy entry name.
+func TestManagedImageGenAcceptsMediaToolset(t *testing.T) {
+	s := Settings{Schema: 1, Environment: "prod", User: "alice", Timezone: "UTC", Model: "m", ModelURL: "http://model-relay:8318/v1", BrowserPort: 6080, OAuthPort: 8000, CapabilityMode: "managed", CapabilityProfileID: "p", CapabilityGeneration: 1, Tools: testTools("media=toolhub"), ImageGen: media.ImageGen{Provider: media.ProviderCLIProxy}}
+	if err := s.Validate(); err != nil {
+		t.Fatalf("r5 media toolset rejected for image_gen grant: %v", err)
 	}
 }

@@ -54,6 +54,20 @@ var nativeCarveoutToolsets = map[string]bool{
 	"debugging": true, "project": true, "safe": true, "code_execution": true,
 }
 
+// Pinned Hermes removes an entire selected toolset when a disabled composite
+// contains one of its tools. These overlapping names must leave the denylist
+// for the explicitly selected native toolset to work on api_server.
+var nativeCompositeUnblock = map[string][]string{
+	"file":         {"debugging"},
+	"terminal":     {"debugging"},
+	"web":          {"debugging", "safe"},
+	"search":       {"debugging", "safe", "web"},
+	"image_gen":    {"safe"},
+	"vision":       {"safe"},
+	"feishu_doc":   {"hermes-feishu", "hermes-gateway"},
+	"feishu_drive": {"hermes-feishu", "hermes-gateway"},
+}
+
 var nativeToolsetName = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 
 // NativeCarveoutToolsets returns the sorted set of upstream toolsets a managed
@@ -95,18 +109,26 @@ func disabledToolsets(s Settings) []string {
 		panic(err) // Corrupt compiled inventory must never render a permissive config.
 	}
 	carveouts := s.nativeCarveouts()
+	unblock := map[string]bool{}
+	for _, name := range carveouts {
+		if !s.govAllows("native:" + name) {
+			continue
+		}
+		unblock[name] = true
+		for _, composite := range nativeCompositeUnblock[name] {
+			unblock[composite] = true
+		}
+	}
 	disabled := make([]string, 0, len(inventory.DisabledToolsets))
 	for _, name := range inventory.DisabledToolsets {
-		if !slices.Contains(carveouts, name) {
+		if !unblock[name] {
 			disabled = append(disabled, name)
 		}
 	}
-	// Tool governance is a second, independent fence: a carve-out whose
-	// native:<name> section is denied goes back onto the emitted denylist.
-	for _, name := range carveouts {
-		if !s.govAllows("native:"+name) && !slices.Contains(disabled, name) {
-			disabled = append(disabled, name)
-		}
+	// SPEC-0085 R1.6: memory_vault evicts the native memory toolset even
+	// when the space carved it out — it goes back onto the denylist.
+	if s.Has("memory_vault") && !slices.Contains(disabled, "memory") {
+		disabled = append(disabled, "memory")
 	}
 	slices.Sort(disabled)
 	return disabled
@@ -133,6 +155,11 @@ func managedHermesConfig(s Settings) M {
 	for _, platform := range inventory.Platforms {
 		platforms[platform] = []string{}
 	}
+	for _, name := range s.nativeCarveouts() {
+		if s.govAllows("native:" + name) {
+			platforms["api_server"] = append(platforms["api_server"].([]string), name)
+		}
+	}
 	out := M{
 		"model":             M{"default": s.Model, "provider": "custom", "base_url": s.ModelURL, "api_key": "${OPENAI_API_KEY}"},
 		"platform_toolsets": platforms,
@@ -150,12 +177,15 @@ func managedHermesConfig(s Settings) M {
 		// join them; every connector still goes through the ToolHub
 		// projection.
 		"mcp_servers": managedMCPServers(s),
+		"timeouts":    M{"tools": M{"sequential_call": 1800, "concurrent_batch": 1800}},
 		"plugins":     M{"enabled": []string{}},
 		"skills":      M{},
 		"hooks":       M{},
 		// A carved-out `memory` toolset still needs its subsystem flag; without
 		// it the tool loads against a disabled backend and silently no-ops.
-		"memory": M{"memory_enabled": slices.Contains(s.nativeCarveouts(), "memory"), "user_profile_enabled": false},
+		// SPEC-0085 R1.6: memory_vault replaces the native store — the flag
+		// renders false and the toolset returns to the denylist below.
+		"memory": M{"memory_enabled": slices.Contains(s.nativeCarveouts(), "memory") && !s.Has("memory_vault"), "user_profile_enabled": false},
 		// Voice lives on the gateway side: communication-hub transcribes and
 		// synthesizes through the hub-stt/hub-tts sidecars. The in-runtime
 		// upstream STT toolset stays sealed — the managed runtime never sees
@@ -247,6 +277,11 @@ func managedMCPServers(s Settings) M {
 			servers["browser_guest"] = browserServer(s.User, true, s.Has("browser_act"))
 		}
 	}
+	// SPEC-0085 R9: same hub-owned read surface as the unmanaged render —
+	// the native:knowledge_ui section decides whether the endpoint exists.
+	if s.Has("knowledge_ui") && s.govAllows("native:knowledge_ui") {
+		servers["open_knowledge"] = okServer(s)
+	}
 	return servers
 }
 
@@ -269,6 +304,26 @@ func (s Settings) managedBrowserGrant() BrowserGrant {
 // this render's MaterializeOptions when it materializes the effective config
 // for a spawned managed runtime.
 func (s Settings) ManagedBrowserGrant() BrowserGrant { return s.managedBrowserGrant() }
+
+// managedKnowledgeUIGrant resolves the render-time open_knowledge admission:
+// the workspace wish plus the same native:knowledge_ui section decision the
+// unmanaged render consults (SPEC-0085 R9/R10).
+func (s Settings) managedKnowledgeUIGrant() bool {
+	return s.Has("knowledge_ui") && s.govAllows("native:knowledge_ui")
+}
+
+// ManagedKnowledgeUIGrant exposes the grant to the supervisor, which
+// reproduces this render's MaterializeOptions for a spawned managed runtime.
+func (s Settings) ManagedKnowledgeUIGrant() bool { return s.managedKnowledgeUIGrant() }
+
+// managedMemoryVaultFlag reports whether the reviewed render carried
+// memory_vault: a denied wish never reaches render — applyGovernance fails
+// the read on an explicit denial — so the flag is the Has() check itself.
+func (s Settings) managedMemoryVaultFlag() bool { return s.Has("memory_vault") }
+
+// ManagedMemoryVaultFlag exposes the flag to the supervisor, which
+// reproduces this render's MaterializeOptions for a spawned managed runtime.
+func (s Settings) ManagedMemoryVaultFlag() bool { return s.managedMemoryVaultFlag() }
 
 // ManagedImageGenGrant exposes the normalized grant to the supervisor, which
 // reproduces this render's MaterializeOptions when it materializes the

@@ -39,6 +39,9 @@ func smokeWebPluginIsolation(ctx context.Context, m *supervisor.Manager, runtime
 	}
 	wantPlugin := filepath.ToSlash(filepath.Join(contextRoot, "generated", "plugins", "hub-web"))
 	wantHermes := filepath.ToSlash(filepath.Join(contextRoot, "hermes"))
+	if runtime.Managed {
+		wantHermes = filepath.ToSlash(filepath.Join(contextRoot, "managed", "prod", "hermes"))
+	}
 	pluginOK, hermesOK := false, false
 	for _, mt := range mounts {
 		src := smokeBindSource(mt.Source)
@@ -67,7 +70,8 @@ func smokeWebPluginIsolation(ctx context.Context, m *supervisor.Manager, runtime
 // supervisorApprovalSmoke uses the production HTTP runner and durable audience,
 // with a real upstream dangerous-command approval and native continuation.
 func supervisorApprovalSmoke(ctx context.Context, m *supervisor.Manager, binding supervisor.Binding, runner communication.HTTPRunner, spool *communication.Spool, template communication.Job, runtimeAuth string) error {
-	policyBefore, err := os.ReadFile(filepath.Join(binding.ContextRoot, "settings.yaml"))
+	policyPath := filepath.Join(binding.ContextRoot, "generated", "passports", "current")
+	policyBefore, err := os.ReadFile(policyPath)
 	if err != nil {
 		return err
 	}
@@ -219,7 +223,7 @@ func supervisorApprovalSmoke(ctx context.Context, m *supervisor.Manager, binding
 		}
 	}
 	fmt.Println("Real native approval passed: original audience, once/duplicate, generation fence, idle hold, expiry and late rejection")
-	policyAfter, err := os.ReadFile(filepath.Join(binding.ContextRoot, "settings.yaml"))
+	policyAfter, err := os.ReadFile(policyPath)
 	if err != nil || !bytes.Equal(policyBefore, policyAfter) {
 		return fmt.Errorf("native approval changed host authorization policy")
 	}

@@ -278,19 +278,3 @@ func (s *Spool) reconcileBudgetLocked() error {
 	}
 	return nil
 }
-
-// budgetScope returns the scope bucket for tests and inspection surfaces.
-func (s *Spool) budgetScope(scopeID string) scopeBudget {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if bucket, ok := s.budget.Scopes[scopeID]; ok {
-		return *bucket
-	}
-	return scopeBudget{}
-}
-
-func (s *Spool) reservationState(jobID string) string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.budget.Reservations[jobID].State
-}

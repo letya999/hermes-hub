@@ -64,8 +64,10 @@ RUN set -e; git init; git remote add origin https://github.com/nousresearch/herm
 # image-budget probe fails the image if any appear.
 FROM debian:13.6-slim AS core
 # debian-slim has no CA bundle: ca-certificates is the one install that cannot
-# ride https sources, and apt signature checks do not need TLS anyway.
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+# ride https sources, and apt signature checks do not need TLS anyway. git is
+# the vault writer's commit backend (SPEC-0085 R1): the communication gateway
+# mounts the memory vault and lands governed writes as git commits.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git && rm -rf /var/lib/apt/lists/*
 COPY --from=go_build /hubctl /hub-runtime /toolhub /communication-hub /credential-broker /hub-media /cellinit /usr/local/bin/
 COPY --from=cliproxy_build /cli-proxy-api /usr/local/bin/cli-proxy-api
 COPY docker/seccomp-buildkit-rootless.json docker/seccomp-mcp-runtime.json /opt/hub/seccomp/
@@ -153,6 +155,23 @@ USER 10001:10001
 ENTRYPOINT ["hub-runtime"]
 CMD ["browser"]
 
+# OpenKnowledge knowledge surface (SPEC-0085 R8, ADR-0086 D8): the per-space
+# markdown editor/MCP over the space memory vault. One pinned replica on the
+# space-private network, vault bind-mounted at /data; the container never
+# publishes to the host in this stage. The upstream package is pinned exactly
+# — no floating tag may resurrect an unreviewed release.
+FROM node AS knowledge
+# ok needs git: the vault mount at /data is a git-backed project and upstream
+# refuses to boot without the binary (git_preflight_fail).
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN set -e; for i in 1 2 3 4; do if npm i -g --ignore-scripts @inkeep/open-knowledge@0.88.2; then break; fi; if [ "$i" = 4 ]; then exit 1; fi; sleep 10; done; npm cache clean --force
+RUN groupadd -g 10001 agent && useradd -u 10001 -g agent -d /state/home -s /bin/bash agent && mkdir -p /state/home /data && chown 10001:10001 /state/home /data
+RUN find / -xdev -type f -perm -4000 -exec chmod u-s {} +
+ENV HOME=/state/home
+WORKDIR /data
+USER 10001:10001
+CMD ["ok", "start"]
+
 # Bounded-CLI cells run on this dedicated image: catalog commands (git, rg)
 # plus the static cellinit helper, and nothing else — no /state, no socket,
 # no interpreters that could execute mutable workspace code.
@@ -227,6 +246,18 @@ ARG GIT_SHA=unknown
 LABEL org.opencontainers.image.revision="${GIT_SHA}"
 
 FROM browser AS dev-browser
+USER 0:0
+RUN mkdir /src && chown 10001:10001 /src
+USER 10001:10001
+ARG GIT_SHA=unknown
+LABEL org.opencontainers.image.revision="${GIT_SHA}"
+
+FROM knowledge AS prod-knowledge
+LABEL org.opencontainers.image.licenses="AGPL-3.0-only"
+ARG GIT_SHA=unknown
+LABEL org.opencontainers.image.revision="${GIT_SHA}"
+
+FROM knowledge AS dev-knowledge
 USER 0:0
 RUN mkdir /src && chown 10001:10001 /src
 USER 10001:10001

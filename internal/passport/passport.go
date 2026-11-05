@@ -8,7 +8,6 @@ package passport
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -105,20 +104,41 @@ var classes = map[string]map[string]fieldClass{
 	"stack": {
 		"identity.user":         classInvariant,
 		"identity.organization": classInvariant,
+		"identity.kind":         classInvariant,
+		"identity.infra":        classInvariant,
 		"services.*":            classKeysetNarrow,
 	},
 	"config": {
-		"runtime.timezone":               classUserData,
-		"runtime.locale":                 classUserData,
-		"runtime.context.compaction":     classChoice,
-		"runtime.context.parallel_lanes": classUserData,
-		"supervision.idle_stop":          classChoice,
-		"supervision.restart":            classChoice,
-		"supervision.watchers.*":         classKeysetNarrow,
-		"ports.*":                        classUserData,
-		"channels.*":                     classKeysetNarrow,
-		"memory.backend":                 classChoice,
-		"memory.nightly_rollup":          classChoice,
+		"runtime.timezone":                classUserData,
+		"runtime.locale":                  classUserData,
+		"runtime.context.compaction":      classChoice,
+		"runtime.context.engines":         classChoice,
+		"runtime.context.parallel_lanes":  classUserData,
+		"runtime.goals.engine":            classChoice,
+		"runtime.goals.judge":             classChoice,
+		"runtime.goals.max_turns":         classUserData,
+		"runtime.compression.*":           classUserData,
+		"runtime.auxiliary.summary_model": classUserData,
+		"runtime.auxiliary.judge_model":   classUserData,
+		"supervision.idle_stop":           classChoice,
+		"supervision.restart":             classChoice,
+		"supervision.watchers.*":          classKeysetNarrow,
+		"ports.*":                         classUserData,
+		"channels.*":                      classKeysetNarrow,
+		"memory.backend":                  classChoice,
+		"memory.enabled":                  classChoice,
+		"memory.nightly_rollup":           classChoice,
+		"memory.leaf_retention_days":      classChoice,
+		"memory.leaf_fold_bytes":          classChoice,
+		"memory.provider.adapter":         classChoice,
+		"memory.provider.url":             classUserData,
+		"memory.provider.token_env":       classUserData,
+		"hosting.slots":                   classUserData,
+		"hosting.image":                   classUserData,
+		"hosting.runtime":                 classChoice,
+		"image_gen.provider":              classChoice,
+		"image_gen.model":                 classChoice,
+		"image_gen.delivery":              classChoice,
 	},
 	"models": {
 		"default":    classUserData,
@@ -126,14 +146,19 @@ var classes = map[string]map[string]fieldClass{
 		"services.*": classKeysetNarrow,
 	},
 	"workspace": {
-		"writable":  classNarrow,
-		"read_only": classNarrow,
-		"layout":    classNarrow,
-		"mounts.*":  classKeysetNarrow,
+		"writable":           classNarrow,
+		"read_only":          classNarrow,
+		"layout":             classNarrow,
+		"mounts.*":           classKeysetNarrow,
+		"goal":               classUserData,
+		"bootstrap_revision": classUserData,
 	},
 	"tools": {
-		"core.*":     classKeysetNarrow,
-		"extended.*": classKeysetNarrow,
+		"core.*":             classKeysetNarrow,
+		"extended.*":         classKeysetNarrow,
+		"connectors.*":       classKeysetNarrow,
+		"binding.profile_id": classInvariant,
+		"binding.generation": classInvariant,
 	},
 	"grants": {
 		"allow": classNarrow,
@@ -443,9 +468,6 @@ func projectGrants(ledger map[string][]string, docs catalog.Docs, ceiling any) (
 			row = append(row, op)
 		}
 		out[cap] = row
-	}
-	if len(out) == 0 {
-		return nil, errors.New("passport compile: grants allow is empty — an admitted space holds no rights")
 	}
 	return map[string]any{"allow": out}, nil
 }

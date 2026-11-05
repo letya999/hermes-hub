@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/passportview"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/stack"
 )
@@ -441,21 +442,12 @@ func (m *Manager) authorizeApproval(request hubruntime.RunControl) error {
 	return m.authorizeCurrentPolicy(request.ExecuteRequest)
 }
 
-// loadSelected reads the space's own settings file for userID without the
+// loadSelected reads the space's published revision for userID without the
 // organization merge: callers compare identity fields before merging policy.
+// The six published passports are the sole authority — a missing or
+// unreadable revision fails closed rather than consulting retired files.
 func (m *Manager) loadSelected(userID string) (stack.Settings, error) {
 	root := filepath.Join(m.cfg.SpacesRoot, userID)
-	found := false
-	for _, name := range []string{"settings.yaml", "agent.yaml"} {
-		info, err := os.Lstat(filepath.Join(root, name))
-		if err == nil && info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 && info.Size() <= 1024*1024 {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return stack.Settings{}, errors.New("current settings unavailable")
-	}
 	return stack.ReadEffectiveSpace(root)
 }
 
@@ -522,8 +514,8 @@ func (m *Manager) currentPolicyVersion(userID string) string {
 func (m *Manager) authorizeCurrentPolicy(request hubruntime.ExecuteRequest) error {
 	allowedScope := request.ScopeID == "user:"+request.UserID
 	if request.ScopeID == "group:"+request.UserID {
-		scope, err := stack.ReadScope(filepath.Join(m.cfg.SpacesRoot, request.UserID))
-		allowedScope = err == nil && scope.Kind == stack.GroupScope && scope.ID == request.UserID
+		eff, err := passportview.LoadEffective(filepath.Join(m.cfg.SpacesRoot, request.UserID))
+		allowedScope = err == nil && eff.Stack.Identity.Kind == string(stack.GroupScope) && eff.Stack.Identity.User == request.UserID
 	}
 	if request.ActorID != request.PrincipalID || !allowedScope {
 		return errors.New("approval actor/scope mismatch")

@@ -1,0 +1,2 @@
+writable: [/workspace]
+read_only: [/config, /skills]

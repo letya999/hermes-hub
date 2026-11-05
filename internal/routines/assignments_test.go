@@ -283,6 +283,40 @@ func TestAssignmentLifecyclePropagates(t *testing.T) {
 	}
 }
 
+// TestAssignmentDeleteTerminal (ADR-0094 assignment_remove): removal retires
+// the applied artifacts like cancel, then deletes the record itself — a later
+// read reports not-found, a stale revision conflicts, and a foreign caller
+// cannot even probe existence.
+func TestAssignmentDeleteTerminal(t *testing.T) {
+	e := testEngine(t)
+	if _, _, err := e.CreateAssignment(newTestAssignment("asg-test025"), assignmentCaller()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.ApplyAssignment("asg-test025", assignmentCaller()); err != nil {
+		t.Fatal(err)
+	}
+	item, err := e.LoadAssignment("asg-test025", assignmentCaller())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.DeleteAssignment("asg-test025", assignmentCaller(), item.Revision+9); !errors.Is(err, ErrRoutineRevision) {
+		t.Fatalf("stale revision must conflict: %v", err)
+	}
+	sid := commodel.AssignmentScheduleID("asg-test025", "page")
+	if err := e.DeleteAssignment("asg-test025", assignmentCaller(), item.Revision); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.LoadAssignment("asg-test025", assignmentCaller()); !errors.Is(err, ErrAssignmentNotFound) {
+		t.Fatalf("removed record must read as not-found: %v", err)
+	}
+	if _, err := e.LoadScheduleLocked(sid); err == nil {
+		t.Fatal("remove must retire the applied artifact")
+	}
+	if err := e.DeleteAssignment("asg-test025", identity.Envelope{PrincipalID: "mallory", ContextID: "mallory"}, 1); !errors.Is(err, ErrAssignmentNotFound) {
+		t.Fatalf("foreign remove must not probe existence: %v", err)
+	}
+}
+
 // TestAssignmentDriftWaiting (SPEC-0080 R1.8): an artifact deleted outside
 // the assignment control path flips the record to waiting with a blocked
 // reason on the next reconcile sweep; re-applying recreates it.

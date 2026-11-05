@@ -91,11 +91,41 @@ func TestHostingReviewedConfigAndPrivateController(t *testing.T) {
 	if json.Unmarshal(data, &controller) != nil || !controller.HostingOnly || len(controller.Hosting) != 1 || controller.CLI != nil {
 		t.Fatal("hosting controller exposes generic workload policy")
 	}
+	s.Hosting.Image = "golang@sha256:" + strings.Repeat("b", 64)
+	s.Hosting.Runtime = "kata"
+	s.Hosting.Slots = []string{"next-page"}
+	if err := writeHostingFiles(dir, s); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = hosting.LoadDeployment(filepath.Join(dir, "generated", "hosting.prod.json"))
+	if err != nil || len(cfg.Slots) != 1 || cfg.Slots[0] != "next-page" || cfg.AdmissionDigest != hostingAdmissionDigest(s) {
+		t.Fatalf("hosting did not load changed passport values: %+v %v", cfg, err)
+	}
+	data, err = os.ReadFile(filepath.Join(dir, "generated", "hosting-controller.prod.json"))
+	if err != nil || json.Unmarshal(data, &controller) != nil {
+		t.Fatal(err)
+	}
+	profile := controller.Hosting["alice/prod"]
+	if profile.Image != s.Hosting.Image || profile.Runtime != "kata" || profile.AdmissionDigest != cfg.AdmissionDigest {
+		t.Fatalf("controller kept stale hosting policy: %+v", profile)
+	}
+	s.Hosting.Image, s.Hosting.Runtime = "", ""
+	if err := writeHostingFiles(dir, s); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = hosting.LoadDeployment(filepath.Join(dir, "generated", "hosting.prod.json"))
+	if err != nil || cfg.ControllerURL != "" || cfg.AdmissionDigest != "" {
+		t.Fatalf("hosting image reset kept controller binding: %+v %v", cfg, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "generated", "hosting-controller.prod.json")); !os.IsNotExist(err) {
+		t.Fatalf("hosting image reset kept controller config: %v", err)
+	}
 	s.Hosting.Slots = []string{"onboarding"}
 	if len(hostingIssues(s)) == 0 {
 		t.Fatal("manual endpoint collision accepted")
 	}
 	s.Hosting.Slots = []string{"page"}
+	s.Hosting.Image = "golang@sha256:" + strings.Repeat("a", 64)
 	s.Hosting.Runtime = "runc"
 	if len(hostingIssues(s)) == 0 {
 		t.Fatal("weak dynamic runtime accepted")

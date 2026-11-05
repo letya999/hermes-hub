@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/compaction"
+	"github.com/letya999/hermes-hub/internal/vault"
 )
 
 // ContextStatus is the agent-facing bounded context view (SPEC-0072 R7):
@@ -111,6 +112,7 @@ func (t *Tools) ContextCompact(ctx context.Context, r Input) (any, error) {
 		Now:       time.Now().UTC,
 		Summarize: contextCompactSummarize,
 		Threshold: mc.SweepGate().Threshold, TailCount: 8,
+		Flush: contextCompactFlush(sessionID),
 	})
 	if err != nil {
 		return nil, err
@@ -132,4 +134,14 @@ func (t *Tools) ContextCompact(ctx context.Context, r Input) (any, error) {
 		"messages_before": result.MessagesBefore,
 		"messages_after":  result.MessagesAfter,
 	}, nil
+}
+
+// contextCompactFlush binds the memory-vault capture to an in-loop hygiene
+// compaction when the stack mounts /vault — the dropped transcript head is
+// written to the daily leaf before apply removes it (SPEC-0085 R2.6).
+func contextCompactFlush(sessionID string) func([]map[string]any) {
+	if v := os.Getenv("HUB_VAULT"); v != "" {
+		return vault.OpenFlush(v, time.Local, sessionID)
+	}
+	return nil
 }

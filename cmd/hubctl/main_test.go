@@ -38,6 +38,20 @@ func TestCLIWorkflow(t *testing.T) {
 	if err := run(ctx, []string{"doctor", "--dir", dir}); err == nil {
 		t.Fatal("doctor accepted missing model")
 	}
+	if err := os.WriteFile(filepath.Join(dir, "passports", "models.yaml"),
+		[]byte("default: m1\nroutes:\n  m1: {ladder: [upstream]}\nservices:\n  upstream: {via: openai-compatible, endpoint: http://model-relay:8318/v1, models: [{id: m1}]}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// A declared shared gateway needs ingress to render: one channel keeps
+	// communication-hub inside the "declared services render" plan check.
+	if err := os.WriteFile(filepath.Join(dir, "passports", "config.yaml"),
+		[]byte("runtime: {timezone: UTC}\nmemory: {enabled: false}\nchannels:\n  telegram: {bot: {ref: telegram-bot-owner}}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	publishAuthored(t, dir, "prod")
+	if err := os.WriteFile(filepath.Join(dir, "secrets.prod.env"), []byte("OPENAI_API_KEY=fake\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	if err := run(ctx, []string{"render", "--dir", dir, "--root", "../.."}); err != nil {
 		t.Fatal(err)
 	}
@@ -59,16 +73,11 @@ func TestDoctorPrintsSkillsSection(t *testing.T) {
 	if err := run(ctx, []string{"init", "--dir", dir, "--user", "owner"}); err != nil {
 		t.Fatal(err)
 	}
-	agentPath := filepath.Join(dir, "agent.yaml")
-	raw, err := os.ReadFile(agentPath)
-	if err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "passports", "models.yaml"),
+		[]byte("default: m1\nroutes:\n  m1: {ladder: [upstream]}\nservices:\n  upstream: {via: openai-compatible, endpoint: http://model-relay:8318/v1, models: [{id: m1}]}\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := strings.Replace(string(raw), `model: ""`, `model: "m1"`, 1)
-	cfg = strings.Replace(cfg, `model_url: ""`, `model_url: "http://model-relay:8318/v1"`, 1)
-	if err := os.WriteFile(agentPath, []byte(cfg), 0600); err != nil {
-		t.Fatal(err)
-	}
+	publishAuthored(t, dir, "prod")
 	if err := os.WriteFile(filepath.Join(dir, "secrets.prod.env"), []byte("OPENAI_API_KEY=fake\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -85,6 +94,38 @@ func TestDoctorPrintsSkillsSection(t *testing.T) {
 	})
 	if !strings.Contains(out, "Skills: 1 effective") || !strings.Contains(out, `stuck [user] INELIGIBLE, missing: connector:gitlab`) {
 		t.Fatalf("doctor missing skills report:\n%s", out)
+	}
+}
+
+// SPEC-0085 R10.2: `hubctl doctor` is the status surface — a space that
+// publishes the Knowledge UI edge sees the loopback URL named by ui_port.
+func TestStatusShowsUIPort(t *testing.T) {
+	ctx := context.Background()
+	dir := filepath.Join(t.TempDir(), "owner")
+	if err := run(ctx, []string{"init", "--dir", dir, "--user", "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "passports", "models.yaml"),
+		[]byte("default: m1\nroutes:\n  m1: {ladder: [upstream]}\nservices:\n  upstream: {via: openai-compatible, endpoint: http://model-relay:8318/v1, models: [{id: m1}]}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "passports", "config.yaml"),
+		[]byte("runtime: {timezone: UTC}\nmemory: {enabled: true}\nports: {knowledge-ui: 8443}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "passports", "tools.yaml"),
+		[]byte("binding: {profile_id: owner-default, generation: 1}\ncore:\n  files: {via: toolhub}\nextended:\n  memory_vault: {via: native}\n  knowledge_ui: {via: native}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	publishAuthored(t, dir, "prod")
+	if err := os.WriteFile(filepath.Join(dir, "secrets.prod.env"), []byte("OPENAI_API_KEY=fake\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out := captureOutput(t, func() error {
+		return run(ctx, []string{"doctor", "--dir", dir})
+	})
+	if !strings.Contains(out, "Knowledge UI: http://localhost:8443") {
+		t.Fatalf("doctor missing the ui_port edge:\n%s", out)
 	}
 }
 
@@ -114,14 +155,17 @@ func TestCLIInitProfile(t *testing.T) {
 	if err := os.MkdirAll(profileDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(profileDir, "workspace.yaml"), []byte("tools: {}\n# dev-wishes\n"), 0600); err != nil {
+	if err := os.MkdirAll(filepath.Join(profileDir, "passports"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profileDir, "passports", "workspace.yaml"), []byte("tools: {}\n# dev-wishes\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	space := filepath.Join(root, "spaces", "carol")
 	if err := run(ctx, []string{"init", "--dir", space, "--user", "carol", "--profile", "dev"}); err != nil {
 		t.Fatal(err)
 	}
-	workspace, err := os.ReadFile(filepath.Join(space, "workspace.yaml"))
+	workspace, err := os.ReadFile(filepath.Join(space, "passports", "workspace.yaml"))
 	if err != nil || string(workspace) != "tools: {}\n# dev-wishes\n" {
 		t.Fatalf("profile workspace not stamped: %q %v", workspace, err)
 	}
@@ -144,10 +188,10 @@ func TestCLIOrgSyncMembers(t *testing.T) {
 		t.Fatal(err)
 	}
 	orgSettings.Members["bob"] = stack.OrgMember{Role: "member", Profile: "lead"}
-	if err := os.MkdirAll(filepath.Join(orgDir, "profiles", "lead"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(orgDir, "profiles", "lead", "passports"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(orgDir, "profiles", "lead", "workspace.yaml"), []byte("tools: {}\n# lead\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(orgDir, "profiles", "lead", "passports", "workspace.yaml"), []byte("tools: {}\n# lead\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := yaml.Marshal(orgSettings)
@@ -176,7 +220,7 @@ func TestCLIOrgSyncMembers(t *testing.T) {
 	if err := run(ctx, []string{"org", "sync-members", "--org", "acme", "--org-dir", orgDir, "--spaces", spacesRoot}); err != nil {
 		t.Fatal(err)
 	}
-	workspace, _ := os.ReadFile(filepath.Join(spacesRoot, "bob", "workspace.yaml"))
+	workspace, _ := os.ReadFile(filepath.Join(spacesRoot, "bob", "passports", "workspace.yaml"))
 	if string(workspace) != "tools: {}\n# lead\n" {
 		t.Fatalf("member profile not stamped: %q", workspace)
 	}
@@ -265,22 +309,18 @@ func TestProfileApplyKeepsCustomizedFiles(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	profileDir := filepath.Join(root, "policies", "profiles", "ops")
-	for name, body := range map[string]string{
-		"profile.yaml":   "version: 1\n",
-		"workspace.yaml": "tools: {}\n# ops v1\n",
-		"agent.yaml":     "model: base\n# ops v1\n",
-	} {
-		writeProfileFixture(t, profileDir, name, body)
-	}
+	writeProfileFixture(t, profileDir, "profile.yaml", "version: 1\n")
+	writeProfileFixture(t, filepath.Join(profileDir, "passports"), "workspace.yaml", "writable: [/workspace]\nread_only: [/config]\n# ops v1\n")
+	writeProfileFixture(t, filepath.Join(profileDir, "passports"), "config.yaml", "runtime: {timezone: UTC}\nmemory: {enabled: false}\n# ops v1\n")
 	space := filepath.Join(root, "spaces", "alice")
 	if err := run(ctx, []string{"init", "--dir", space, "--user", "alice", "--profile", "ops"}); err != nil {
 		t.Fatal(err)
 	}
 
-	// The owner edits agent.yaml; the profile then moves workspace to v2.
-	writeProfileFixture(t, space, "agent.yaml", "model: custom\n# alice edits\n")
-	writeProfileFixture(t, profileDir, "workspace.yaml", "tools: {}\n# ops v2\n")
-	writeProfileFixture(t, profileDir, "agent.yaml", "model: base\n# ops v2\n")
+	// The owner edits config.yaml; the profile then moves workspace to v2.
+	writeProfileFixture(t, filepath.Join(space, "passports"), "config.yaml", "runtime: {timezone: Europe/Moscow}\nmemory: {enabled: false}\n# alice edits\n")
+	writeProfileFixture(t, filepath.Join(profileDir, "passports"), "workspace.yaml", "writable: [/workspace]\nread_only: [/config]\n# ops v2\n")
+	writeProfileFixture(t, filepath.Join(profileDir, "passports"), "config.yaml", "runtime: {timezone: UTC}\nmemory: {enabled: false}\n# ops v2\n")
 	writeProfileFixture(t, profileDir, "profile.yaml", "version: 2\n")
 
 	out, err := captureStdout(t, func() error {
@@ -293,21 +333,21 @@ func TestProfileApplyKeepsCustomizedFiles(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &report); err != nil {
 		t.Fatalf("diff report: %v %q", err, out)
 	}
-	if !slices.Contains(report["updates"].([]any), "workspace.yaml") ||
-		!slices.Contains(report["customized"].([]any), "agent.yaml") {
+	if !slices.Contains(report["updates"].([]any), "passports/workspace.yaml") ||
+		!slices.Contains(report["customized"].([]any), "passports/config.yaml") {
 		t.Fatalf("3-way report wrong: %s", out)
 	}
 
 	if err := run(ctx, []string{"profile", "apply", "--dir", space}); err != nil {
 		t.Fatal(err)
 	}
-	workspace, _ := os.ReadFile(filepath.Join(space, "workspace.yaml"))
-	if string(workspace) != "tools: {}\n# ops v2\n" {
+	workspace, _ := os.ReadFile(filepath.Join(space, "passports", "workspace.yaml"))
+	if string(workspace) != "writable: [/workspace]\nread_only: [/config]\n# ops v2\n" {
 		t.Fatalf("untouched file not updated: %q", workspace)
 	}
-	agent, _ := os.ReadFile(filepath.Join(space, "agent.yaml"))
-	if string(agent) != "model: custom\n# alice edits\n" {
-		t.Fatalf("customized file overwritten: %q", agent)
+	config, _ := os.ReadFile(filepath.Join(space, "passports", "config.yaml"))
+	if string(config) != "runtime: {timezone: Europe/Moscow}\nmemory: {enabled: false}\n# alice edits\n" {
+		t.Fatalf("customized file overwritten: %q", config)
 	}
 	lock, _ := os.ReadFile(filepath.Join(space, "profile.lock"))
 	if !strings.Contains(string(lock), "version: 2") {

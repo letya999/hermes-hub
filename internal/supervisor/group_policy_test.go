@@ -2,11 +2,12 @@ package supervisor
 
 import (
 	"context"
-	"github.com/letya999/hermes-hub/internal/identity"
-	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
-	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/letya999/hermes-hub/internal/identity"
+	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
+	"github.com/letya999/hermes-hub/internal/stack"
 )
 
 func TestGroupApprovalRequiresCurrentGroupScopeAndPolicy(t *testing.T) {
@@ -14,11 +15,13 @@ func TestGroupApprovalRequiresCurrentGroupScopeAndPolicy(t *testing.T) {
 		t.Fatal("policy check reached Docker")
 		return nil, nil
 	}, nil)
-	policy := controlTestPolicy(t, root)
-	name := filepath.Join(root, "scope.yaml")
-	if err := os.WriteFile(name, []byte("kind: group\nid: alice\n"), 0600); err != nil {
+	publishScopeKind(t, root, "group")
+	settings, err := stack.ReadEnvironment(root, "prod")
+	if err != nil {
 		t.Fatal(err)
 	}
+	settings.DefaultGlobalSkillsDir(filepath.Join(filepath.Dir(filepath.Dir(root)), "config", "skills"))
+	policy := stack.PolicyVersion(settings)
 	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", policy), UserID: "alice", ActorID: "alice", ScopeID: "group:alice", OrganizationID: "personal"}
 	if err := m.authorizeCurrentPolicy(request); err != nil {
 		t.Error("current group policy rejected", err)
@@ -28,7 +31,7 @@ func TestGroupApprovalRequiresCurrentGroupScopeAndPolicy(t *testing.T) {
 		t.Error("foreign group policy accepted")
 	}
 	request.PolicyVersion = policy
-	os.WriteFile(name, []byte("kind: user\nid: alice\n"), 0600)
+	publishScopeKind(t, root, "user")
 	if m.authorizeCurrentPolicy(request) == nil {
 		t.Error("group approval switched to personal home")
 	}

@@ -63,6 +63,15 @@ func TestCapabilityPolicyValidate(t *testing.T) {
 	if err := solo.Validate(); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("personal policy with two members: %v", err)
 	}
+	duplicateRight := testCapPolicy()
+	duplicateRight.Organization = "example"
+	duplicateRight.RightCeiling = []RightRule{{Capability: "tools", Operation: "use"}, {Capability: "tools", Operation: "use"}}
+	if err := Confirm(&duplicateRight, "operator", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := duplicateRight.Validate(); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("duplicate organization right: %v", err)
+	}
 }
 
 func testCapProfile() CapabilityProfile {

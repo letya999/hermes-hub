@@ -16,10 +16,6 @@ import (
 	"github.com/letya999/hermes-hub/internal/identity"
 )
 
-// tickProactive is the proactive pass of the control loop: schedule -> due
-// occurrence -> dispatch -> deterministic probing for watcher/check kinds.
-func (g *Gateway) tickProactive(now time.Time) { g.tickProactiveContext(context.Background(), now) }
-
 func (g *Gateway) tickProactiveContext(ctx context.Context, now time.Time) {
 	steps := []func() error{
 		func() error { return g.spool.TickSchedules(now, g.config.NativeCron, g.authorizeOccurrence) },
@@ -201,6 +197,6 @@ func (g *Gateway) occurrenceRefAuthorizedLocked(id string) bool {
 			return false
 		}
 	}
-	job := Job{Envelope: schedule.Envelope, OrganizationID: schedule.OrganizationID, UserID: schedule.UserID, ActorID: schedule.ActorID, ScopeID: schedule.ScopeID, Channel: schedule.Channel, ChatID: schedule.ChatID, TaskID: schedule.TaskID, TopicID: schedule.TopicID, SlackChannel: schedule.SlackChannel, SlackThread: schedule.SlackThread, Trigger: "cron"}
+	job := Job{Envelope: schedule.Envelope, OrganizationID: schedule.OrganizationID, UserID: schedule.UserID, ActorID: schedule.ActorID, ScopeID: schedule.ScopeID, Channel: schedule.Channel, ChatID: schedule.ChatID, TaskID: schedule.TaskID, TopicID: schedule.TopicID, SlackChannel: schedule.SlackChannel, SlackThread: schedule.SlackThread, Trigger: "cron", Probe: schedule.Probe != nil}
 	return g.authorizeOccurrence(job) == nil
 }

@@ -99,6 +99,14 @@ func (g *Gateway) worker(ctx context.Context) {
 				continue
 			}
 			g.busy.Add(1)
+			// SPEC-0085 R3.4: stamp the run's audience into the
+			// agent-read-only vault sidecar so memory_search confines the
+			// run; cleared on return, expired with the run budget. The
+			// stamp is the owner's lane only — a sibling job on a shared
+			// gateway never mints scope in this vault.
+			if g.config.VaultDir != "" && job.UserID == g.nightOwner().ID {
+				stampRunScope(g.config.VaultDir, job.ID, job.MemoryAudience(), job.MemoryTurnProvenance())
+			}
 			var response string
 			var outcome RunOutcome
 			var runErr error
@@ -111,6 +119,9 @@ func (g *Gateway) worker(ctx context.Context) {
 				if runErr != nil {
 					outcome.Status = "failed"
 				}
+			}
+			if g.config.VaultDir != "" {
+				clearRunScope(g.config.VaultDir, job.ID)
 			}
 			g.busy.Add(-1)
 			if runErr == nil && outcome.Status != "" && outcome.Status != "completed" {
@@ -211,6 +222,11 @@ func (g *Gateway) worker(ctx context.Context) {
 				if err := g.spool.RecordTerminalOutcome(*job, outcome, delivery); err != nil {
 					log.Printf("gateway job_id=%q status=uncertain reason=terminal_handoff", job.ID)
 					continue
+				}
+				if cerr := g.captureReply(*job, response); cerr != nil {
+					// The reply still reaches the owner — capture is audit;
+					// a vault hiccup must not eat deliveries (SPEC-0085 R2.1).
+					log.Printf("memory capture failed for job %s: %v", job.ID, cerr)
 				}
 				if job.Trigger == "cron" {
 					if o, ok := g.occurrenceFor(job.ID); ok {
@@ -519,7 +535,7 @@ func (g *Gateway) sendRight(delivery Delivery, principal string) bool {
 	if token == "" || url == "" || principal == "" {
 		return true
 	}
-	allow, err := api.DecideClient{URL: url, Token: token, Principal: principal}.GrantsRight(context.Background(), "channels", "send", delivery.Channel)
+	allow, err := api.DecideClient{URL: url, Token: token, Principal: principal, Environment: g.config.Environment}.GrantsRight(context.Background(), "channels", "send", delivery.Channel)
 	if err != nil {
 		log.Printf("gateway send rights decide principal=%s err=%v", principal, err)
 	}
@@ -544,7 +560,7 @@ func (g *Gateway) voiceRight(delivery Delivery) bool {
 	if principal == "" {
 		return false
 	}
-	allow, err := api.DecideClient{URL: url, Token: token, Principal: principal}.GrantsRight(context.Background(), "channels", "send_voice", delivery.Channel)
+	allow, err := api.DecideClient{URL: url, Token: token, Principal: principal, Environment: g.config.Environment}.GrantsRight(context.Background(), "channels", "send_voice", delivery.Channel)
 	if err != nil {
 		log.Printf("gateway voice rights decide principal=%s err=%v", principal, err)
 	}

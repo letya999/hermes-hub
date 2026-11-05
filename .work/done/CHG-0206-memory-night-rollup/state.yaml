@@ -1,0 +1,53 @@
+schema: 1
+change: CHG-0206
+title: Night rollup: gated consolidation, directives, review journal
+status: done
+branch: feat/m20-memory-vault
+updated: 2026-10-31
+phase: implementation
+adr: ADR-0086
+spec: SPEC-0085
+requirements: [R5.1, R5.2, R5.3, R5.4, R5.5, R5.6, R5.7, R5.8, R5.9]
+depends_on: [CHG-0204, CHG-0205]
+github_milestone: M20 — Memory Vault and Knowledge Surface
+github_issue: 301
+design_status: accepted
+implementation_status: implemented
+slices:
+  S5.1-gated-steps: done
+  S5.2-directives: done
+  S5.3-bounded-loss: done
+  S5.4-review-digest: done
+  S5.5-intent-proposals: done
+  S5.6-cache-resume-budget: done
+validation:
+  documents: updated
+  just_check: 'legs green: lint/format/docs-check/config-check + covergo; go-check full-suite red only on rotating pre-existing Windows env flakes (AV fork/exec denials, docker.exe exec-denied, file locks, commops lld toolchain) — every failing package verified green isolated; own packages night 86.5% / communication 86.7%'
+  docker_check: not_run
+  red_team: done
+  live_acceptance: 'pending: requires live stack (deferred - no-docker scope)'
+evidence:
+  - 'internal/memory/night: full pipeline behind RelayFunc JSON oracle — summary+facts+links+truths+intents+core+journal, per-step checkpointed dayState under runtime/memory/night/, 30 tests green (coverage 86.5%)'
+  - 'R5.3 promotion gate: eligibleText filters prov.db owner/agent + Kind=interactive before prompt build; quotes verified verbatim against eligible text only (TestPromotionGateExcludesUntrusted/Kinds, TestMutatedQuoteRejected)'
+  - 'R5.4 bounded loss: rewrites dropping >MaxLossPct keep prior body + append-only fallback, journaled; in-bound rewrites preserve old body under ## History (TestBoundedLossRejects/Applies, TestTruthLossJournaled)'
+  - 'R5.5 directives: supersede-in-place by key, never-evict classes pinned, owner-quote-only CORE edits (TestDirectiveSupersedeInPlace/NeverEvict, TestCoreFactNeedsOwnerQuote)'
+  - 'R5.6 REVIEW.md dated sections — promotions, skips, conflicts, rejections incl. loss fallback + forged intent + missing truth target + failed intent delivery; digest rides owner-brief outbox via memory.night-digest key in all four catalogs (TestReviewJournalEntries, TestDigestQueued, journal-dedup on resume)'
+  - 'R5.7 intents → owner-approval draft assignments in owner envelope, deterministic sha256 id = retry-safe, never facts/never activated (TestIntentBecomesProposal, TestIntentNeverFact, TestNightJobRunsRollup e2e)'
+  - 'R5.8 idempotent resume: cached proposal replayed without relay call, changed already-processed entry halts day, cumulative call spend persisted (incl. failed calls), MaxCalls/token caps stop pre-relay pre-write, dry-run writes nothing (TestResumeFromStep, TestChangedEntryHalts, TestMaxCallsStopsBeforeRelay, TestFailedRelayStillCountsSpend, TestDryRunWritesNothing, TestDryRunFailedRelayWritesNoCache, TestSecondRunNoop)'
+  - 'R5.9 folds: weekly needs all 7 terminal day states incl. no-data; monthly = full in-month ISO weeks + edge dailies; yearly = 12 monthly files; written summaries immutable (skip-if-exists, owner edits kept); gateway sweep closes last finished week/month/year after a successful run, cascades year-end, shares night cap (TestWeeklyNeedsSeven/FoldsAllSeven, TestMonthlyNeedsCompleteMonth/ComposesWeeksPlusEdges, TestYearlyNeedsTwelveMonths, TestFoldKeepsExistingSummary, TestNightTickFoldsClosedWeek, TestNightTickFoldsClosedMonthAndYear)'
+  - 'wiring: gateway 60s night goroutine + nightDue gate (memory.rollup_time HH:MM space-local, empty disables), last-run marker pins run day and is NOT written on error (resume-safe), digest→owner Telegram DM outbox, intents→assignments draft seam, production relay = POST /v1/chat/completions on HUB_MODEL_RELAY_URL + HUB_MODEL_RELAY_AUTH, settings memory_rollup_time → HUB_MEMORY_ROLLUP_TIME on both config paths + compose render (TestNightDueGate, TestNightErrorLeavesMarkerUnset, TestNightProductionRelay, TestConfigFromEnvVaultAndRollup, TestGatewayRunSchedulesNightRollup, TestMemoryRollupTimeRendered)'
+  - 'communication package green, coverage 86.7%'
+red_team:
+  - 'untrusted/system + background-kind content never reaches the prompt (structural filter, not instruction) — TestPromotionGateExcludesUntrusted/Kinds'
+  - 'mutated/forged evidence quotes reject the fact and journal the rejection — TestMutatedQuoteRejected, TestRejectedIntentJournaled'
+  - 'owner card edit mid-pipeline wins via governed writer WantSHA + truth_pending sidecar flag (vault/writer_test.go TestConflictFlagsTruthPending; night-layer stale-hash leg counted rejected — deterministic mid-write race not simulable in a unit test)'
+  - 'governed zones: all rollup writes through vault.Writer whitelist incl. memory/REVIEW.md + summaries/{daily,weekly,monthly,yearly} — out-of-zone denied by writer (vault package tests)'
+  - 'DST/space-local clock: leaf day boundary in owner tz, rollup_time space-local, day assignment In(tz) — TestDSTEdge'
+  - 'day-assignment edge: a 04:00 tick on D rolls up leaf D-1 (last closed day) — today-only entries are never stranded — TestNightJobRunsRollup'
+  - 'no-data day costs zero model calls and no files beyond the terminal day state — TestNightSkipsEmptyDay'
+remaining: []
+limitations:
+  - 'the run processes only the last closed day — a multi-day outage leaves older leaves unprocessed and their periods blocked from folding (conservative; no catch-up replay in this slice)'
+  - 'a fold blocked by a permanently-missing day state stays unwritten until the state arrives (by design: no fold over non-terminal inputs)'
+  - 'relay model is the spaces current selection via empty model field — no dedicated rollup model setting yet'
+  - 'live acceptance A5.1–A5.9 deferred — requires the dev stack (no-docker scope); all gates above are unit/integration verified'

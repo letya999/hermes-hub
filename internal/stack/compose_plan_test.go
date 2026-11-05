@@ -33,6 +33,14 @@ func serviceKeys(services any) []string {
 	return keys
 }
 
+func TestHostingControllerRecreateNamesRenderedCompanion(t *testing.T) {
+	s := managedPassportSibling()
+	s.PassportServices = map[string]string{"hosting": "per-space"}
+	if got, want := ComposeServiceName(s, "hosting-controller"), hostingName(s)+"-ctl"; got != want {
+		t.Fatalf("hosting controller target %q, want %q", got, want)
+	}
+}
+
 // R3.2: the stack passport bounds the compose topology. A service the
 // settings features would render but the services map never declared is
 // dropped — the published revision, not feature flags, decides the set.
@@ -205,7 +213,7 @@ func TestRenderEnvironmentFailsClosedOnTopologyDrift(t *testing.T) {
 	// a settings-less passport-only space emits none of them. config/tools
 	// docs are trimmed: no channel secrets, no mcp/raw toolset projections.
 	envelope := "apiVersion: six-passport/v2\nmetadata: {space: alice, environment: dev, revision: r-0123456789abcdef, generated_at: 2026-11-02T00:00:00Z, template: platform/personal@3, catalogs: \"4\"}\n"
-	minimal := envelope + "kind: tools\ncore:\n  discovery: {via: toolhub}\n  files: {via: toolhub}\n"
+	minimal := envelope + "kind: tools\nbinding: {profile_id: alice-default, generation: 1}\ncore:\n  discovery: {via: toolhub}\n  files: {via: toolhub}\n"
 	if err := os.WriteFile(filepath.Join(rev, "tools.yaml"), []byte(minimal), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -321,11 +329,11 @@ func TestSupervisedRuntimeSelectionFromStack(t *testing.T) {
 	}
 	head := "apiVersion: six-passport/v2\nmetadata: {space: dana, environment: dev, revision: r-0123456789abcdef}\n"
 	for doc, body := range map[string]string{
-		"stack.yaml":     head + "kind: stack\nidentity: {user: dana}\nservices:\n    hermes-runtime: {mode: supervised}\n    model-relay: {mode: per-space}\n    toolhub: {mode: shared}\n",
+		"stack.yaml":     head + "kind: stack\nidentity: {user: dana, infra: false}\nservices:\n    hermes-runtime: {mode: supervised}\n    model-relay: {mode: per-space}\n    toolhub: {mode: shared}\n",
 		"config.yaml":    head + "kind: config\nruntime: {timezone: UTC}\nports: {oauth-callback: 8002, browser-vnc: 6081}\n",
 		"models.yaml":    head + "kind: models\ndefault: default\nroutes: {default: {ladder: [upstream]}}\nservices:\n    upstream: {via: openai-compatible, endpoint: http://model-relay:8318/v1}\n",
 		"workspace.yaml": head + "kind: workspace\nwritable: [/workspace]\nread_only: [/config]\n",
-		"tools.yaml":     head + "kind: tools\ncore:\n    files: {via: toolhub}\n",
+		"tools.yaml":     head + "kind: tools\nbinding: {profile_id: dana-default, generation: 1}\ncore:\n    files: {via: toolhub}\n",
 		"grants.yaml":    head + "kind: grants\nallow:\n    workspace: [read]\n",
 	} {
 		if err := os.WriteFile(filepath.Join(rev, doc), []byte(body), 0600); err != nil {

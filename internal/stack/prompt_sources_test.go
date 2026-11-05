@@ -146,7 +146,7 @@ func TestManagedTurnHasSinglePinnedPromptAcrossEntrypoints(t *testing.T) {
 	if err := os.MkdirAll(rev, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(rev, "prompt-pointer.txt"), []byte("revision=r-0007 core=terminal,files extended=+12 discovery=tools_list+invoke\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(rev, "prompt-pointer.txt"), []byte("revision=r-0007 core=terminal,files extended=+12 platform=tool_search+tool_call\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "generated", "passports", "current"), []byte("r-0007\n"), 0600); err != nil {
@@ -174,4 +174,64 @@ func readFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// TestSoulEffectiveHonorsFamilyOff (M31.9): the rendered soul-effective
+// composes the modular contract — a family switched off contributes no
+// section to the materialized prompt.
+func TestSoulEffectiveHonorsFamilyOff(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "generated"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	s := Settings{Environment: "dev", Tools: map[string]ToolEntry{
+		"watches": {Via: ToolViaOff},
+	}}
+	if err := MaterializeSoulEffective(dir, s); err != nil {
+		t.Fatal(err)
+	}
+	effective, err := os.ReadFile(filepath.Join(dir, "generated", "soul-effective.dev.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(effective), "For a standalone watch") {
+		t.Fatal("soul-effective renders watch guidance for a space with watches off")
+	}
+	if !strings.Contains(string(effective), "routine_create") {
+		t.Fatal("soul-effective lost routine guidance")
+	}
+}
+
+// TestSoulEffectiveGovernedDropsAbsentFamilies (M31.9 S4): once a space has a
+// published passport revision, its tools projection is the admission
+// authority — a family that projection does not declare contributes no
+// guidance even without an explicit `via: off`.
+func TestSoulEffectiveGovernedDropsAbsentFamilies(t *testing.T) {
+	dir := t.TempDir()
+	passports := filepath.Join(dir, "generated", "passports")
+	if err := os.MkdirAll(passports, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(passports, "current"), []byte("rev-test"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := Settings{Environment: "dev", Tools: map[string]ToolEntry{
+		"routines": {Via: ToolViaToolHub},
+	}}
+	if err := MaterializeSoulEffective(dir, s); err != nil {
+		t.Fatal(err)
+	}
+	effective, err := os.ReadFile(filepath.Join(dir, "generated", "soul-effective.dev.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(effective)
+	for _, gone := range []string{"watch_create", "skill_search", "file_search", "exposure_create", "await_user_confirmation"} {
+		if strings.Contains(text, gone) {
+			t.Fatalf("governed soul-effective leaked %q for an undeclared family", gone)
+		}
+	}
+	if !strings.Contains(text, "routine_create") {
+		t.Fatal("governed soul-effective lost the declared family's guidance")
+	}
 }

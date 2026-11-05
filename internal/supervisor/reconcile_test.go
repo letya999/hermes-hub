@@ -132,6 +132,9 @@ func TestCrashBudgetAndBackoffSurviveSupervisorRestart(t *testing.T) {
 			return nil, os.ErrNotExist
 		}
 		if args[0] == "run" {
+			if !isRuntimeSpawn(args) {
+				return []byte("ok"), nil
+			}
 			runs++
 			return nil, errors.New("start failed")
 		}
@@ -201,7 +204,9 @@ func TestMissingRuntimeRecoveryUsesCurrentWorkWithoutResubmission(t *testing.T) 
 				case "ps":
 					return nil, nil
 				case "run":
-					runs++
+					if isRuntimeSpawn(args) {
+						runs++
+					}
 					present = true
 					return []byte("container"), nil
 				}
@@ -314,7 +319,9 @@ func TestExitedRuntimeRecoveryRequiresWorkAndOwnership(t *testing.T) {
 					}
 					return []byte(state), nil
 				case "run":
-					runs++
+					if isRuntimeSpawn(args) {
+						runs++
+					}
 					state = "running"
 				case "rm":
 					removed++
@@ -361,7 +368,7 @@ func TestExitedRuntimeRecoveryRequiresWorkAndOwnership(t *testing.T) {
 			m.RecoverMissingWork(context.Background())
 			m.RecoverMissingWork(context.Background())
 			if scenario.active && !scenario.foreign {
-				if runs != 2 || removed != 1 {
+				if runs != 2 || removed != 2 {
 					t.Fatalf("replacement runs=%d removed=%d", runs, removed)
 				}
 				m.mu.Lock()
@@ -602,7 +609,7 @@ func TestLifecycleLeaseRecoversOnceAndRetainsOpaqueReleaseAcrossRestart(t *testi
 		if args[0] == "inspect" {
 			return nil, os.ErrNotExist
 		}
-		if args[0] == "run" {
+		if isRuntimeSpawn(args) {
 			starts++
 		}
 		return nil, nil

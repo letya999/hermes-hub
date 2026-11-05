@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -21,6 +22,33 @@ func saveYAML(t *testing.T, path string, value any) {
 	}
 }
 
+func TestOrganizationPolicyIgnoresScopeAlias(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "acme")
+	if err := InitOrganization(dir, "acme", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	scopePath := filepath.Join(dir, "scope.yaml")
+	body, err := os.ReadFile(scopePath)
+	if err != nil || strings.Contains(string(body), "members:") || strings.Contains(string(body), "features:") {
+		t.Fatalf("scope marker contains a policy copy: %v", err)
+	}
+	saveYAML(t, scopePath, OrganizationSettings{Kind: OrganizationScope, ID: "acme", Schema: 1, Organization: "acme", Members: map[string]OrgMember{"bob": {Role: "owner"}}})
+	newer := time.Now().Add(time.Minute)
+	if err := os.Chtimes(scopePath, newer, newer); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := ReadOrganization(dir)
+	if err != nil || policy.Members["alice"].Role != "owner" || len(policy.Members) != 1 {
+		t.Fatalf("scope alias changed the canonical policy: %+v %v", policy.Members, err)
+	}
+	if err := os.WriteFile(scopePath, []byte("invalid: ["), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadOrganization(dir); err != nil {
+		t.Fatalf("scope draft vetoed the canonical policy: %v", err)
+	}
+}
+
 func TestOrganizationOverlayAndMembership(t *testing.T) {
 	root := t.TempDir()
 	orgDir := filepath.Join(root, "organizations", "acme")
@@ -31,6 +59,7 @@ func TestOrganizationOverlayAndMembership(t *testing.T) {
 	if err := InitEnvironmentWithOrganization(space, "alice", "prod", "acme"); err != nil {
 		t.Fatal(err)
 	}
+	publishOrgRevision(t, space, "alice", "acme", "r-0000000000000001")
 	o, err := ReadOrganization(filepath.Join(orgDir, "settings.yaml"))
 	if err != nil {
 		t.Fatal(err)
@@ -56,7 +85,7 @@ func TestOrganizationOverlayAndMembership(t *testing.T) {
 
 	s.Tools = testTools("clickhouse=off")
 	s.MCP = nil
-	if err := WriteSpace(space, s); err != nil {
+	if err := saveSpace(t, space, s); err != nil {
 		t.Fatal(err)
 	}
 	s, err = ReadEnvironment(space, "prod")
@@ -87,18 +116,19 @@ func TestOrganizationRejectsEscalationAndNonMember(t *testing.T) {
 		if err := InitEnvironmentWithOrganization(space, user, "prod", "acme"); err != nil {
 			t.Fatal(err)
 		}
-		s, err := Read(space)
-		if err != nil {
-			t.Fatal(err)
-		}
+		publishOrgRevision(t, space, user, "acme", "r-0000000000000001")
 		if user == "bob" {
-			if _, err = ReadEnvironment(space, "prod"); err == nil || !strings.Contains(err.Error(), "not a member") {
+			if _, err := ReadEnvironment(space, "prod"); err == nil || !strings.Contains(err.Error(), "not a member") {
 				t.Fatalf("non-member accepted: %v", err)
 			}
 			continue
 		}
+		s, err := ReadEffective(space, "prod")
+		if err != nil {
+			t.Fatal(err)
+		}
 		s.MCP = map[string]MCPServer{"unapproved": {URL: "https://unapproved.invalid/mcp"}}
-		if err := WriteSpace(space, s); err != nil {
+		if err := saveSpace(t, space, s); err != nil {
 			t.Fatal(err)
 		}
 		if _, err = ReadEnvironment(space, "prod"); err == nil || !strings.Contains(err.Error(), "user MCP definitions") {

@@ -310,7 +310,7 @@ func TestM10IdleDeadlineStartsAfterActivityFinishes(t *testing.T) {
 	if err = m.Reap(context.Background(), now.Add(m.cfg.WarmTTL)); err != nil {
 		t.Fatal(err)
 	}
-	if removes != 1 {
+	if removes != 2 {
 		t.Fatalf("idle runtime not reaped: %d", removes)
 	}
 }

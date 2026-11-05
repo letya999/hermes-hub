@@ -52,6 +52,9 @@ type Gateway struct {
 	// /v1/rights/decide calls may only assert it — cross-space assertions
 	// refuse (SPEC-0092 R2.2). Empty disables asserted decisions.
 	SpacePrincipal string
+	// PassportRoot contains one read-only published revision per principal.
+	// Memory admission resolves it from the authenticated envelope only.
+	PassportRoot string
 	// CLIRelease drops bounded-cli cells for the caller's principal; the
 	// /v1/cli-jobs/release route uses it for job-end task-cell teardown.
 	CLIRelease  func(context.Context, api.CliReleaseRequest) error

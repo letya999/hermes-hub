@@ -94,7 +94,11 @@ func TestPlatformCatalogParityAndPinnedToolset(t *testing.T) {
 		}
 	}
 
-	// --- parity: every governance section resolves to a catalog surface
+	// --- parity: every governance section resolves to a catalog surface.
+	// r5 names toolsets logically: hub:<name> sections admit the family or
+	// connector toolset <name>; hub:tools is the executor-governance
+	// section — it admits the runtime executor itself and owns no
+	// placeable surface (the pinned platform family is its model face).
 	for _, section := range api.SeedInventory() {
 		if _, ok := docs.Capabilities.Sections[section.ID]; !ok {
 			t.Errorf("section %s missing from capabilities catalog", section.ID)
@@ -105,10 +109,30 @@ func TestPlatformCatalogParityAndPinnedToolset(t *testing.T) {
 			if err != nil || (ts.Kind != "native" && ts.Kind != "pseudo") {
 				t.Errorf("native section %s has no native/pseudo toolset: %v", section.ID, err)
 			}
+		case section.ID == api.SectionHubTools:
 		case strings.HasPrefix(section.ID, "hub:"):
-			if _, err := docs.Toolset(section.ID); err != nil {
+			if _, err := docs.Toolset(strings.TrimPrefix(section.ID, "hub:")); err != nil {
 				t.Errorf("hub section %s has no toolset: %v", section.ID, err)
 			}
+		}
+	}
+	// --- parity in the other direction: every placeable toolhub family
+	// owns a hub:<name> governance section in the inventory — a family
+	// falling back to hub:tools cannot be admitted or denied separately.
+	inventoried := map[string]bool{}
+	for _, section := range api.SeedInventory() {
+		inventoried[section.ID] = true
+	}
+	for name, ts := range docs.Toolsets.Toolsets {
+		if ts.Kind != "family" || !slices.Contains(ts.Via, "toolhub") || ts.Pinned {
+			continue
+		}
+		section := "hub:" + name
+		if ts.Section != section {
+			t.Errorf("family %s governs under %q, want own section %q", name, ts.Section, section)
+		}
+		if !inventoried[section] {
+			t.Errorf("family %s section %s missing from governance inventory", name, section)
 		}
 	}
 
@@ -136,19 +160,19 @@ func TestPlatformCatalogParityAndPinnedToolset(t *testing.T) {
 	if ts, err := docs.Toolset("native:deep_research"); err != nil || ts.Kind != "pseudo" {
 		t.Errorf("deep_research: kind %q err %v, want pseudo", ts.Kind, err)
 	}
-	if ts, err := docs.Toolset("hub:files"); err != nil || !slices.Contains(ts.Aliases, "file") {
+	if ts, err := docs.Toolset("files"); err != nil || !slices.Contains(ts.Aliases, "file") {
 		t.Errorf("files toolset aliases %v miss \"file\"", ts.Aliases)
 	}
-	if ts, err := docs.Toolset("hub:terminal"); err != nil || !slices.Contains(ts.Aliases, "code_exec") {
+	if ts, err := docs.Toolset("terminal"); err != nil || !slices.Contains(ts.Aliases, "code_exec") {
 		t.Errorf("terminal toolset aliases %v miss \"code_exec\"", ts.Aliases)
 	}
-	if ts, err := docs.Toolset("connectors"); err != nil || !slices.Equal(ts.Members, sortedConnectorTools()) {
-		t.Errorf("connectors pack members drifted from api.ConnectorTools: %v", ts.Members)
+	if ts, err := docs.Toolset("connectors"); err != nil || ts.Kind != "family" || len(ts.Members) == 0 {
+		t.Errorf("connectors family drifted: %+v err %v", ts, err)
 	}
 	// Same name, different executor: native:terminal (upstream toolset) and
-	// hub:terminal (executor family) are distinct entries — never merged.
-	if native, hub := docs.Toolsets.Toolsets["native:terminal"], docs.Toolsets.Toolsets["hub:terminal"]; native.Kind != "native" || hub.Kind != "hub" {
-		t.Errorf("terminal collision merged: native=%q hub=%q", native.Kind, hub.Kind)
+	// terminal (executor family) are distinct entries — never merged.
+	if native, fam := docs.Toolsets.Toolsets["native:terminal"], docs.Toolsets.Toolsets["terminal"]; native.Kind != "native" || fam.Kind != "family" {
+		t.Errorf("terminal collision merged: native=%q family=%q", native.Kind, fam.Kind)
 	}
 	// Inventory names the hub never exposes as sections are recorded as
 	// denied-by-construction: cataloged, but with no section and no executor.
@@ -295,7 +319,7 @@ func TestPlatformCatalogParityAndPinnedToolset(t *testing.T) {
 		return d
 	}
 	badVia := fresh()
-	badVia.Toolsets.Toolsets["hub:files"] = Toolset{Kind: "hub", Via: []string{"teleport"}}
+	badVia.Toolsets.Toolsets["files"] = Toolset{Kind: "family", Via: []string{"teleport"}}
 	if err := badVia.Validate(); err == nil {
 		t.Error("unsupported executor admitted")
 	}
@@ -307,7 +331,7 @@ func TestPlatformCatalogParityAndPinnedToolset(t *testing.T) {
 		t.Error("unsupported capability executor admitted")
 	}
 	badKind := fresh()
-	badKind.Toolsets.Toolsets["hub:files"] = Toolset{Kind: "weird"}
+	badKind.Toolsets.Toolsets["files"] = Toolset{Kind: "weird"}
 	if err := badKind.Validate(); err == nil {
 		t.Error("unknown toolset kind admitted")
 	}
@@ -326,16 +350,16 @@ func TestPlatformCatalogParityAndPinnedToolset(t *testing.T) {
 	}
 
 	// --- admitted view: a space sees only the surfaces its governance
-	// admitted — never the full platform catalog
+	// admitted plus the pinned platform family — never the full catalog
 	admitted := docs.Project(map[string]bool{"native:file": true, "hub:files": true})
-	if len(admitted.Toolsets.Toolsets) != 2 {
-		t.Errorf("admitted view carried %d toolsets, want 2", len(admitted.Toolsets.Toolsets))
+	if len(admitted.Toolsets.Toolsets) != 3 {
+		t.Errorf("admitted view carried %d toolsets, want 3", len(admitted.Toolsets.Toolsets))
 	}
 	if _, err := admitted.Toolset("native:file"); err != nil {
 		t.Errorf("admitted native:file missing: %v", err)
 	}
 	for name := range admitted.Toolsets.Toolsets {
-		if name != "native:file" && name != "hub:files" {
+		if name != "native:file" && name != "files" && name != "platform" {
 			t.Errorf("unadmitted toolset %s leaked into the space view", name)
 		}
 	}
@@ -346,7 +370,8 @@ func TestPlatformCatalogParityAndPinnedToolset(t *testing.T) {
 		t.Error("admitted section hub:files missing")
 	}
 	for id := range admitted.Capabilities.Capabilities {
-		if strings.SplitN(id, ".", 2)[0] != "files" {
+		family := strings.SplitN(id, ".", 2)[0]
+		if family != "files" && family != "platform" {
 			t.Errorf("unadmitted capability %s leaked into the space view", id)
 		}
 	}
@@ -358,11 +383,20 @@ func TestPlatformCatalogParityAndPinnedToolset(t *testing.T) {
 	if admitted.Capabilities.Release != docs.Capabilities.Release || admitted.Capabilities.DefinitionVersion != docs.Capabilities.DefinitionVersion {
 		t.Error("admitted view lost its release pins")
 	}
-	// Projecting nothing at all must still yield a valid, empty view — a
-	// space with no grants never silently widens.
+	// Projecting nothing at all must still yield a valid view holding only
+	// the pinned platform family — a space with no grants never widens,
+	// and never loses its discovery surface.
 	empty := docs.Project(map[string]bool{})
-	if len(empty.Toolsets.Toolsets) != 0 || len(empty.Capabilities.Capabilities) != 0 || len(empty.Capabilities.Sections) != 0 {
-		t.Error("empty admission produced a non-empty view")
+	if len(empty.Toolsets.Toolsets) != 1 {
+		t.Errorf("empty admission carried %d toolsets, want pinned platform only", len(empty.Toolsets.Toolsets))
+	}
+	for id := range empty.Capabilities.Capabilities {
+		if strings.SplitN(id, ".", 2)[0] != "platform" {
+			t.Errorf("unadmitted capability %s leaked into the empty view", id)
+		}
+	}
+	if len(empty.Capabilities.Sections) != 0 {
+		t.Error("empty admission produced sections")
 	}
 	if err := empty.Validate(); err != nil {
 		t.Errorf("empty view invalid: %v", err)
@@ -377,12 +411,6 @@ func TestPlatformCatalogParityAndPinnedToolset(t *testing.T) {
 	if err := Emit(tmp); err == nil || !strings.Contains(err.Error(), "drift") {
 		t.Errorf("Emit silently rewrote a pinned release: %v", err)
 	}
-}
-
-func sortedConnectorTools() []string {
-	out := append([]string(nil), api.ConnectorTools...)
-	slices.Sort(out)
-	return out
 }
 
 // normalizeServiceName derives the infra kind from an emitted compose

@@ -77,6 +77,30 @@ var usageKinds = map[string]bool{
 	"failed": true, "missed": true, "corrected": true,
 }
 
+// CountUse bumps the activation counters without journaling an event row:
+// skill() invoke is counted, not logged — only resource reads produce a
+// "view" event in the journal (R12.5).
+func CountUse(storeDir, skill string) error {
+	rec, err := Usage(storeDir, skill)
+	if err != nil {
+		return err
+	}
+	rec.Stats.Uses++
+	rec.Stats.LastUsed = time.Now().UTC().Format(time.RFC3339)
+	path, err := usageFile(storeDir, skill)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	body, err := json.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, body, 0600)
+}
+
 // RecordUsage appends one event and updates the counters. The store dir is
 // hub-owned — callers are the hub itself (toolhub handlers), never the
 // agent directly.
