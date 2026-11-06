@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -21,17 +22,23 @@ import (
 	"github.com/letya999/hermes-hub/internal/stack"
 )
 
-// The journal contains identifiers and affected service names, never passport
-// bodies, grants or credentials. Its presence means an apply has not succeeded.
+// Its presence means an apply has not succeeded. Settings edits also retain
+// the bounded authored config before/after so crash recovery can restore it.
 type applyJournal struct {
-	Environment     string             `json:"environment"`
-	Previous        string             `json:"previous"`
-	Revision        string             `json:"revision"`
-	PreviousProfile string             `json:"previous_profile"`
-	NextProfile     string             `json:"next_profile"`
-	Phase           string             `json:"phase"`
-	Actions         []reconcile.Action `json:"actions"`
+	Environment          string             `json:"environment"`
+	Previous             string             `json:"previous"`
+	Revision             string             `json:"revision"`
+	PreviousProfile      string             `json:"previous_profile"`
+	NextProfile          string             `json:"next_profile"`
+	Phase                string             `json:"phase"`
+	Actions              []reconcile.Action `json:"actions"`
+	AuthoredConfigBefore []byte             `json:"authored_config_before,omitempty"`
+	AuthoredConfigAfter  []byte             `json:"authored_config_after,omitempty"`
 }
+
+type authoredConfigUpdate struct{ Before, After []byte }
+
+const maxApplyJournalBytes = 3 << 20
 
 func applyJournalPath(dir string) string {
 	return filepath.Join(dir, "generated", "passports", passportview.ApplyJournalFile)
@@ -45,6 +52,9 @@ func writeApplyJournal(dir string, record applyJournal) error {
 	body, err := json.Marshal(record)
 	if err != nil {
 		return err
+	}
+	if len(body) > maxApplyJournalBytes {
+		return errors.New("apply journal exceeds size limit")
 	}
 	file, err := os.CreateTemp(filepath.Dir(path), ".apply-journal-*")
 	if err != nil {
@@ -73,10 +83,10 @@ func readApplyJournal(dir string) (applyJournal, error) {
 	}
 	defer file.Close()
 	info, err := file.Stat()
-	if err != nil || info.Size() > 64<<10 {
+	if err != nil || info.Size() > maxApplyJournalBytes {
 		return record, errors.New("invalid apply journal size")
 	}
-	dec := json.NewDecoder(io.LimitReader(file, 64<<10))
+	dec := json.NewDecoder(io.LimitReader(file, maxApplyJournalBytes))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&record); err != nil {
 		return record, err
@@ -87,7 +97,9 @@ func readApplyJournal(dir string) (applyJournal, error) {
 		!identity.ValidID(record.NextProfile) ||
 		(record.Previous != "" && !identity.ValidID(record.PreviousProfile)) ||
 		!slices.Contains([]string{"preparing", "prepared", "rendered", "rights", "activated", "binding", "effects"}, record.Phase) ||
-		len(record.Actions) > 256 {
+		len(record.Actions) > 256 ||
+		(len(record.AuthoredConfigBefore) == 0) != (len(record.AuthoredConfigAfter) == 0) ||
+		len(record.AuthoredConfigBefore) > 1<<20 || len(record.AuthoredConfigAfter) > 1<<20 {
 		return applyJournal{}, errors.New("invalid apply journal")
 	}
 	for _, action := range record.Actions {
@@ -108,11 +120,11 @@ func previousApplyAuthority(dir, revisionID string) (string, map[string][]string
 		return "", map[string][]string{}, nil, nil
 	}
 	root := filepath.Join(dir, "generated", "passports", revisionID)
-	grants, err := os.ReadFile(filepath.Join(root, "grants.yaml"))
+	grants, err := os.ReadFile(filepath.Join(root, "grants.yaml")) // #nosec G703 -- fixed file under a validated immutable revision ID
 	if err != nil {
 		return "", nil, nil, err
 	}
-	tools, err := os.ReadFile(filepath.Join(root, "tools.yaml"))
+	tools, err := os.ReadFile(filepath.Join(root, "tools.yaml")) // #nosec G703 -- fixed file under a validated immutable revision ID
 	if err != nil {
 		return "", nil, nil, err
 	}
@@ -132,6 +144,11 @@ func previousApplyAuthority(dir, revisionID string) (string, map[string][]string
 }
 
 func restoreApplyState(dir, root string, record applyJournal) error {
+	if len(record.AuthoredConfigBefore) != 0 {
+		if err := writeAuthoredConfig(dir, record.AuthoredConfigAfter, record.AuthoredConfigBefore); err != nil {
+			return err
+		}
+	}
 	if err := passport.RestoreCurrent(dir, record.Previous, record.Environment); err != nil {
 		return err
 	}
@@ -171,6 +188,45 @@ func restoreApplyState(dir, root string, record applyJournal) error {
 		}
 	}
 	return nil
+}
+
+func writeAuthoredConfig(dir string, expected, next []byte) error {
+	path := filepath.Join(dir, "passports", "config.yaml")
+	info, err := os.Lstat(path) // #nosec G703 -- fixed authored config path in an operator-owned space
+	if err != nil || !info.Mode().IsRegular() {
+		return errors.New("authored config is unavailable or not a regular file")
+	}
+	current, err := os.ReadFile(path) // #nosec G304 G703 -- fixed authored passport path
+	if err != nil {
+		return err
+	}
+	if bytes.Equal(current, next) {
+		return nil
+	}
+	if !bytes.Equal(current, expected) {
+		return errors.New("authored config diverged during apply")
+	}
+	file, err := os.CreateTemp(filepath.Dir(path), ".config-publish-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	if err := file.Chmod(info.Mode().Perm()); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if _, err := file.Write(next); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	return os.Rename(file.Name(), path) // #nosec G703 -- temp and destination are in the same validated passport directory
 }
 
 // recoverApply runs under the same per-space lock as apply. Readers refuse a

@@ -1,19 +1,19 @@
 ---
 description: Routine business tools, interval windows, lifecycle, authorization and delivery evidence.
-last_verified: "2026-11-04"
+last_verified: "2026-11-06"
 ---
 # Routines
 
-The communication hub owns the durable clock, occurrence queue and outbox.
-Hermes interprets requests and calls business tools through ToolHub. A reminder
-delivers its exact text without waking a model. Agent tasks use current runtime
-authorization; deterministic probes/scripts use existing bounded paths. The hub
-must be running to fire a routine.
+The communication hub owns the durable clock, occurrence queue and outbox. Hermes
+interprets requests through ToolHub. A reminder delivers its exact text without
+waking a model. Agent tasks use current authorization; probes/scripts use bounded paths; the hub must be running.
 
 M32 moves the clock, assignments, watches and dreaming to ToolHub (ADR-0095,
 SPEC-0094). Until cutover, communication-hub runs them with published memory
 settings. Memory disablement overrides tool selection. Calls require `tools.use`
 and their own `tasks.schedule`, `tasks.observe` or `tasks.delegate` right.
+Settings changes use `settings_read`'s revision as `settings_edit.base_revision`
+and require current `config.edit_own`; stale or unpublished drafts are refused.
 
 Decision: [ADR-0042](adr/ADR-0042-routine-lifecycle.md). Requirements:
 [SPEC-0056](../specs/active/SPEC-0056-routine-lifecycle.md). Acceptance:

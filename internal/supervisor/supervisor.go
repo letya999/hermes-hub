@@ -93,11 +93,14 @@ type Config struct {
 	Network        string
 	SpacesRoot     string
 	HostSpacesRoot string
-	StateDir       string
-	RuntimeAuth    string
-	AdminAuth      string
-	Environment    string
-	WarmTTL        time.Duration
+	// SettingsEdit publishes one config passport change after the HTTP control
+	// request is authenticated. Nil denies settings edits.
+	SettingsEdit func(context.Context, string, string, string, *string, string) (map[string]any, error)
+	StateDir     string
+	RuntimeAuth  string
+	AdminAuth    string
+	Environment  string
+	WarmTTL      time.Duration
 	// BrowserIdleTTL is the grace a per-space browser sidecar stays up after
 	// its last runtime is gone; the sweep stops it once the deadline passes.
 	BrowserIdleTTL time.Duration

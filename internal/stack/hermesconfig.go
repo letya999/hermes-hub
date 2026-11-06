@@ -12,7 +12,6 @@ import (
 	"slices"
 
 	"github.com/letya999/hermes-hub/internal/media"
-	"github.com/letya999/hermes-hub/internal/selfsettings"
 	"gopkg.in/yaml.v3"
 )
 
@@ -45,11 +44,6 @@ type MaterializeOptions struct {
 	// config: an empty struct renders no image_gen block and the runtime
 	// grant stays inactive even when the capability profile selects it.
 	ImageGen media.ImageGen
-	// SelfSettingsPath is the runtime-owned settings overlay merged onto the
-	// managed effective config at materialize time and re-merged onto the
-	// expected config at attestation, so both sides compute identical bytes.
-	// Empty disables the overlay.
-	SelfSettingsPath string
 	// Context is the normalized context-control declaration (SPEC-0072):
 	// merged onto the materialized config and re-merged onto the expected
 	// config at attestation. Nil means the reviewed zero template.
@@ -100,11 +94,6 @@ func MaterializeHermesConfig(sourcePath, destPath string, opts MaterializeOption
 	}
 	if err := ApplyHermesConfig(name, opts); err != nil {
 		return err
-	}
-	if opts.Managed {
-		if err := applySelfSettings(name, opts); err != nil {
-			return err
-		}
 	}
 	// The rendered file is bind-mounted into the runtime container: on Linux
 	// hosts the file keeps the host uid, so it must be world-readable for the
@@ -304,37 +293,6 @@ func applyContextConfig(configPath string, ctx *ContextConfig) error {
 	return os.WriteFile(configPath, updated, 0660) // #nosec G703 -- operator config path
 }
 
-// applySelfSettings merges the runtime-owned settings overlay onto the
-// materialized effective config, still inside the caller's atomic window.
-// Re-validation on load means a hand-edited overlay fails materialization
-// rather than sneaking past the reviewed allowlist.
-func applySelfSettings(configPath string, opts MaterializeOptions) error {
-	if opts.SelfSettingsPath == "" {
-		return nil
-	}
-	values, err := selfsettings.Load(opts.SelfSettingsPath)
-	if err != nil {
-		return fmt.Errorf("self-settings overlay: %w", err)
-	}
-	if len(values) == 0 {
-		return nil
-	}
-	body, err := os.ReadFile(configPath) // #nosec G304 -- materialized path
-	if err != nil {
-		return err
-	}
-	var config map[string]any
-	if err := yaml.Unmarshal(body, &config); err != nil {
-		return fmt.Errorf("read materialized config: %w", err)
-	}
-	selfsettings.Merge(config, values)
-	updated, err := yaml.Marshal(config)
-	if err != nil {
-		return fmt.Errorf("write materialized config: %w", err)
-	}
-	return os.WriteFile(configPath, updated, 0660)
-}
-
 // ValidateManagedEffectiveConfig prevents Hermes from falling back to its
 // defaults when a mounted managed config is missing, malformed or changed.
 func ValidateManagedEffectiveConfig(configPath string, s Settings, opts MaterializeOptions) error {
@@ -382,17 +340,7 @@ func ValidateManagedEffectiveConfig(configPath string, s Settings, opts Material
 	if opts.ToolHubReconnect {
 		expected["approvals"] = M{"mcp_reload_confirm": false}
 	}
-	// The declared context merges before the runtime-owned overlay: a
-	// settings_set override must win over the provisioned value on both
-	// sides of the attestation.
 	mergeContextConfig(expected, opts.Context)
-	if opts.SelfSettingsPath != "" {
-		values, err := selfsettings.Load(opts.SelfSettingsPath)
-		if err != nil {
-			return fmt.Errorf("self-settings overlay: %w", err)
-		}
-		selfsettings.Merge(expected, values)
-	}
 	wantBody, err := yaml.Marshal(expected)
 	if err != nil {
 		return err

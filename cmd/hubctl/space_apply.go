@@ -189,7 +189,7 @@ func runSpaceApply(ctx context.Context, args []string) error {
 // runs the action plan.
 var applyStep = func(string) {}
 
-func applyConfirm(ctx context.Context, abs, rootAbs, env string, rev passport.Revision, prevID string, actions []reconcile.Action, handlers reconcile.Handlers) (reconcile.Report, error) {
+func applyConfirm(ctx context.Context, abs, rootAbs, env string, rev passport.Revision, prevID string, actions []reconcile.Action, handlers reconcile.Handlers, authored ...authoredConfigUpdate) (reconcile.Report, error) {
 	var report reconcile.Report
 	bound, _ := rev.Value("tools", "binding.profile_id")
 	profileID, _ := bound.(string)
@@ -213,6 +213,10 @@ func applyConfirm(ctx context.Context, abs, rootAbs, env string, rev passport.Re
 	}
 	record := applyJournal{Environment: env, Previous: prevID, Revision: rev.ID, PreviousProfile: previousProfile,
 		NextProfile: profileID, Phase: "preparing", Actions: actions}
+	if len(authored) != 0 {
+		record.AuthoredConfigBefore = authored[0].Before
+		record.AuthoredConfigAfter = authored[0].After
+	}
 	if _, err := os.Stat(applyJournalPath(abs)); err == nil {
 		return report, errors.New("space apply: interrupted apply needs recovery")
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -305,6 +309,22 @@ func applyConfirm(ctx context.Context, abs, rootAbs, env string, rev passport.Re
 			return report, fmt.Errorf("space apply: rollback journal: %w", err)
 		}
 		return report, fmt.Errorf("space apply: %s %s failed, rolled back to %s", report.Failed.Kind, report.Failed.Target, prevID)
+	}
+	if len(authored) != 0 {
+		if err := writeAuthoredConfig(abs, record.AuthoredConfigBefore, record.AuthoredConfigAfter); err != nil {
+			restored := rollback()
+			if restored == nil {
+				restored = reconcile.Replay(actions, handlers)
+			}
+			if restored == nil {
+				restored = removeApplyJournal(abs)
+			}
+			if restored != nil {
+				_ = passport.PointCurrent(abs, "pending")
+			}
+			return report, fmt.Errorf("space apply: authored config: %w", errors.Join(err, restored))
+		}
+		applyStep("authored")
 	}
 	if err := removeApplyJournal(abs); err != nil {
 		_ = passport.PointCurrent(abs, "pending")

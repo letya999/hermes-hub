@@ -66,7 +66,7 @@ func contextEngineChoice(value string) bool {
 
 // validateContext enforces the declared context sections. Every leaf under
 // compression: must be a reviewed selfsettings path — the declared block is
-// the same authority as the runtime overlay, only provisioned at render.
+// the same reviewed paths as settings_edit, provisioned from the passport.
 func (s Settings) validateContext() error {
 	if err := flattenCompressionLeaves(s.Compression, "compression"); err != nil {
 		return err

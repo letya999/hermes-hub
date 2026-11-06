@@ -356,6 +356,35 @@ may have touched services, an image build was interrupted, or replay fails,
 the journal stays in place and `current` is pending until operator repair;
 ToolHub admission remains closed. A dev apply does not alter the prod sibling.
 
+`settings_read` reads the active config passport revision and reviewed values
+through ToolHub. `settings_edit` sends one setting with that revision as
+`base_revision` through ToolHub to the authenticated supervisor publisher.
+It requires current `config.edit_own` in both issued and published grants,
+refuses an unpublished authored draft or stale base, and writes a new
+six-passport revision plus the authored `passports/config.yaml` leaf. An
+omitted/empty value removes the leaf. Successful publication finishes its
+service effects before returning; the changed setting survives a runtime
+respawn and re-render. `self-settings.json` and retired `agent.yaml` fields
+cannot override the published config.
+
+Config authority inventory: `passports/*.yaml` are the six editable sources;
+`generated/passports/<revision>`, `generated/config-view/<env>` and rendered
+Hermes/Compose files are derived consumers; `generated/passports/current` and
+the apply journal are protected publication state; ToolHub profiles and the
+issued-right ledger are protected admission state. The runtime settings
+executor and self-settings overlay reader/writer are removed. Legacy
+`agent.yaml`, `settings.yaml`, `workspace.yaml` and `models.yaml` remain inert
+for managed effective reads; unconfigured spaces still use their documented
+legacy provisioning paths until migration.
+
+| Config authority | Writers | Readers and effect |
+|---|---|---|
+| Six authored `passports/*.yaml` | init/profile apply; `cmd/hubctl/space_settings.go` writes one `config.yaml` leaf after governed publication | `passport.ReadAuthored` and `CompileAuthoredDocs` validate the complete candidate |
+| Immutable revision, `current`, config view, apply journal | `passport.Revision.Prepare/Activate`, `cmd/hubctl/space_apply.go` and recovery | `passportview.LoadEffective`/`LoadRevision`, `stack.ReadEffective`/`ReadEffectiveRevision`; journal fences ToolHub |
+| Rendered Hermes, Compose and runtime policy | `stack.RenderRevisionEnvironment` and `MaterializeHermesConfig` | `supervisor.materializeHermesConfig` and runtime attestation read the published render |
+| Bound ToolHub profile and issued grants | `migration.DeriveSpaceRights`, protected governance operations | ToolHub MCP/rights admission evaluates the bound profile plus live issued ledger |
+| Retired overlay and legacy managed config | no effective writer or reader; direct runtime settings tools deny | old `self-settings.json`, `agent.yaml`, `settings.yaml`, `workspace.yaml`, `models.yaml` cannot change managed effective config |
+
 The rendered compose set is commanded by `stack.services`: `per-space`
 instances become local containers, `shared` instances render only on the
 infra space, `supervised` keeps `hermes-runtime` as a spawn contract. A

@@ -349,11 +349,12 @@ var argDocs = map[string]map[string]argDoc{
 
 	// ---- settings
 	"settings_read": {
-		"key": {Desc: "Show one manageable key; empty lists the allowlist."},
+		"key": {Desc: "Show one published config setting; omit to list reviewed keys and published values."},
 	},
 	"settings_edit": {
-		"key":   {Desc: "Manageable setting key from the allowlist."},
-		"value": {Desc: "New value; empty resets to the rendered default."},
+		"key":           {Desc: "Reviewed config passport setting key."},
+		"value":         {Desc: "New value; omit or leave empty to remove this authored leaf."},
+		"base_revision": {Desc: "Published config passport revision read immediately before this edit; stale revisions are rejected."},
 	},
 
 	// ---- sessions

@@ -26,7 +26,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
-const Release = "13"
+const Release = "14"
 
 const (
 	CapabilitiesFile = "capabilities.yaml"

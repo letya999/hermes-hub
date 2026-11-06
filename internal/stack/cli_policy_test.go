@@ -2,6 +2,7 @@ package stack
 
 import (
 	"encoding/json"
+	"gopkg.in/yaml.v3"
 	"os"
 	"path/filepath"
 	"slices"
@@ -39,41 +40,34 @@ func TestMaterializedTerminalPolicyAndOperatorVocabulary(t *testing.T) {
 	}
 }
 
-func TestSelfSettingsCannotRestoreNativeTerminal(t *testing.T) {
+func TestRetiredSelfSettingsCannotChangeMaterializedConfig(t *testing.T) {
 	dir := t.TempDir()
-	config := filepath.Join(dir, "config.yaml")
+	source := filepath.Join(dir, "config.yaml")
 	overlay := filepath.Join(dir, "self-settings.json")
-	baseline := []byte("platform_toolsets:\n  telegram: [memory]\ncompression:\n  enabled: false\n")
-	if err := os.WriteFile(config, baseline, 0600); err != nil {
+	s := Settings{Schema: 1, Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, User: "alice", Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
+	body, err := yaml.Marshal(Config(s))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(overlay, []byte(`{"compression.enabled":true}`), 0600); err != nil {
+	if err := os.WriteFile(source, body, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := applySelfSettings(config, MaterializeOptions{SelfSettingsPath: overlay}); err != nil {
+	opts := MaterializeOptions{Managed: true, ToolHubEndpoint: "http://toolhub:8090/mcp", RuntimeAuthPresent: true}
+	first := filepath.Join(dir, "first.yaml")
+	if err := MaterializeHermesConfig(source, first, opts); err != nil {
 		t.Fatal(err)
 	}
-	b, _ := os.ReadFile(config)
-	if strings.Contains(string(b), "terminal") || !strings.Contains(string(b), "enabled: true") {
-		t.Fatalf("safe overlay changed authority: %s", b)
+	if err := os.WriteFile(overlay, []byte(`{"compression.enabled":true,"platform_toolsets.telegram":"terminal"}`), 0600); err != nil {
+		t.Fatal(err)
 	}
-	for _, bad := range []string{`{"platform_toolsets.telegram":"terminal"}`, `{"cli_registries":"pypi"}`, "{"} {
-		_ = os.WriteFile(overlay, []byte(bad), 0600)
-		if err := applySelfSettings(config, MaterializeOptions{SelfSettingsPath: overlay}); err == nil {
-			t.Fatal("authority overlay accepted")
-		}
-		after, _ := os.ReadFile(config)
-		if string(after) != string(b) {
-			t.Fatal("rejected overlay changed config")
-		}
+	second := filepath.Join(dir, "second.yaml")
+	if err := MaterializeHermesConfig(source, second, opts); err != nil {
+		t.Fatal(err)
 	}
-	_ = os.WriteFile(overlay, []byte(`{"compression.enabled":true}`), 0600)
-	if err := applySelfSettings(filepath.Join(dir, "missing"), MaterializeOptions{SelfSettingsPath: overlay}); err == nil {
-		t.Fatal("missing config accepted")
-	}
-	_ = os.WriteFile(config, []byte("["), 0600)
-	if err := applySelfSettings(config, MaterializeOptions{SelfSettingsPath: overlay}); err == nil {
-		t.Fatal("corrupt config overwritten")
+	a, _ := os.ReadFile(first)
+	b, _ := os.ReadFile(second)
+	if string(a) != string(b) {
+		t.Fatal("retired overlay changed materialized config")
 	}
 }
 

@@ -2,6 +2,8 @@ package locale
 
 func init() {
 	register(LangRU, map[string]string{
+		"supervisor.settings-invalid":             "Некорректный запрос на изменение настроек.",
+		"supervisor.settings-denied":              "Изменение настроек отклонено или не удалось опубликовать.",
 		"hubctl.space-apply-passport-right":       "Для этого изменения паспорта требуется право %s.",
 		"hubctl.space-apply-scope-kind":           "Тип области прошивается при инициализации и не может меняться между ревизиями.",
 		"hubctl.space-apply-organization-binding": "Для применения пространства организации нужна привязка управляемого профиля.",

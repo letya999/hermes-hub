@@ -273,6 +273,11 @@ agent network), `HUB_CAPABILITY_MODE`/`_PROFILE_ID`/`_GENERATION`/`_ENVIRONMENT`
 - Agent-tools executor runs inside the owning runtime container via
   supervisor docker exec — the one control path that never crosses the agent
   network.
+- `settings_read` reads the mounted active config passport in ToolHub;
+  `settings_edit` calls the authenticated supervisor publisher with an
+  expected base revision. Neither tool enters the runtime executor or reads
+  `self-settings.json`. ToolHub checks current admission, then the publisher
+  independently checks the published and issued `config.edit_own` right.
 - Model cannot issue grants; every authority record needs a matching human
   `Confirmation` digest (docs/rbac.md).
 

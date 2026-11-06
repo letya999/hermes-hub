@@ -2,6 +2,8 @@ package locale
 
 func init() {
 	register(LangES, map[string]string{
+		"supervisor.settings-invalid":             "Solicitud de edición de ajustes no válida.",
+		"supervisor.settings-denied":              "La edición de ajustes fue denegada o no se pudo publicar.",
 		"hubctl.space-apply-passport-right":       "Este cambio de pasaporte requiere el permiso %s.",
 		"hubctl.space-apply-scope-kind":           "El tipo de ámbito queda fijado en el aprovisionamiento y no puede cambiar entre revisiones.",
 		"hubctl.space-apply-organization-binding": "Aplicar un espacio de organización requiere un perfil administrado vinculado.",

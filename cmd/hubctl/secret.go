@@ -237,7 +237,7 @@ func ensureCredentialKey(path string) error {
 
 func readSecretInput(fromFile string) (string, error) {
 	if fromFile != "" {
-		body, err := os.ReadFile(fromFile) // #nosec G304 -- operator-selected secret file.
+		body, err := os.ReadFile(fromFile) // #nosec G304 G703 -- operator-selected secret file.
 		if err != nil {
 			return "", err
 		}

@@ -11,6 +11,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/vault"
 	"gopkg.in/yaml.v3"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -215,7 +216,7 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 		return err
 	}
 	if s.RendersInfra() {
-		if err = EnrollSiblingRuntimeTokens(dir, environment); err != nil {
+		if err = enrollSiblingRuntimeTokens(dir, environment, s); err != nil {
 			return err
 		}
 		if err = EnrollSiblingModelRelayAdmins(dir, environment); err != nil {
@@ -302,7 +303,8 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 	if err = writeBrowserFiles(dir, s); err != nil {
 		return err
 	}
-	compose, err := ComposeChecked(s, root, dir)
+	composeRoot, composeDir := composeHostPaths(root, dir, os.Getenv("HUB_SUPERVISOR_HOST_SPACES"))
+	compose, err := ComposeChecked(s, composeRoot, composeDir)
 	if err != nil {
 		return err
 	}
@@ -358,6 +360,14 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 		return err
 	}
 	return nil
+}
+
+func composeHostPaths(root, dir, hostSpaces string) (string, string) {
+	if filepath.ToSlash(root) != "/" || path.Dir(filepath.ToSlash(dir)) != "/spaces" || hostSpaces == "" {
+		return root, dir
+	}
+	hostSpaces = strings.TrimRight(strings.ReplaceAll(hostSpaces, `\`, "/"), "/")
+	return path.Dir(hostSpaces), hostSpaces + "/" + path.Base(filepath.ToSlash(dir))
 }
 
 // writeBrowserFiles provisions the per-space browser secrets the sidecar

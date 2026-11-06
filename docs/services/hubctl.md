@@ -55,6 +55,12 @@ Recovery restores the old view and rights, intersects grants with live issued
 rights, and replays possibly affected service actions. If service convergence
 cannot be proved, the journal remains and `current` is pending for operator
 repair. ToolHub refuses admission while the journal exists.
+The supervisor's authenticated `/v1/settings` control route calls this same
+publisher for one reviewed `config.yaml` leaf. It requires an expected base
+revision and current `config.edit_own` in the issued and published grants;
+other authored drafts must be applied separately. A settings publication
+also journals the previous and candidate authored `config.yaml` bytes so a
+crash restores the exact source file alongside the effective revision.
 
 `render`/`init`/`up` generate the space compose (`compose.dev.yaml`), config,
 and materialized dirs under `spaces/<user>/` — see docs/spaces.md. Nothing in

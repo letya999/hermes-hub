@@ -98,7 +98,7 @@
     "action": "Покажи настройки агента.",
     "expected": "Только разрешённые ключи; секретов нет.",
     "package": "agenttools",
-    "test": "TestSettingsGetListsAllowlistWithoutSecrets",
+    "test": "TestRuntimeSettingsGetDenied",
     "prerequisites": "Тестовый managed-профиль; отдельные fixtures, без рабочих данных",
     "level": "contract",
     "cleanup": "Удалить только созданные тестом ресурсы; восстановить исходную настройку"
@@ -111,7 +111,7 @@
     "action": "Установи тестовое значение разрешённого compression-ключа, дождись применения, затем верни исходное.",
     "expected": "Настройка сохранена для своего пользователя и действует после перезапуска.",
     "package": "agenttools",
-    "test": "TestSettingsSetValidatesPersistsAndRestarts",
+    "test": "TestRuntimeSettingsSetDenied",
     "prerequisites": "Тестовый managed-профиль; отдельные fixtures, без рабочих данных",
     "level": "contract",
     "cleanup": "Удалить только созданные тестом ресурсы; восстановить исходную настройку"
@@ -2750,7 +2750,7 @@
     "action": "Покажи настройки агента.",
     "expected": "Только разрешённые ключи; секретов нет.",
     "package": "agenttools",
-    "test": "TestSettingsGetListsAllowlistWithoutSecrets",
+    "test": "TestRuntimeSettingsGetDenied",
     "prerequisites": "Тестовый managed-профиль; отдельные fixtures, без рабочих данных",
     "level": "contract",
     "cleanup": "Удалить только созданные тестом ресурсы; восстановить исходную настройку"
@@ -2763,7 +2763,7 @@
     "action": "Установи тестовое значение разрешённого ключа и верни исходное.",
     "expected": "Настройка сохранена для своего пользователя и действует после перезапуска.",
     "package": "agenttools",
-    "test": "TestSettingsSetValidatesPersistsAndRestarts",
+    "test": "TestRuntimeSettingsSetDenied",
     "prerequisites": "Тестовый managed-профиль; отдельные fixtures, без рабочих данных",
     "level": "contract",
     "cleanup": "Удалить только созданные тестом ресурсы; восстановить исходную настройку"

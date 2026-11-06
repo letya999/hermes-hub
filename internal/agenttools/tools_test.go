@@ -601,10 +601,10 @@ func TestMCPWire(t *testing.T) {
 	}
 	defer client.Close()
 	list, err := client.ListTools(ctx, nil)
-	if err != nil || len(list.Tools) != 60 {
+	if err != nil || len(list.Tools) != 58 {
 		t.Fatal(len(list.Tools), err)
 	}
-	for _, name := range []string{"document_extract", "document_create", "media_inspect", "document_remove", "settings_read", "settings_edit", "file_archive", "file_remove"} {
+	for _, name := range []string{"document_extract", "document_create", "media_inspect", "document_remove", "file_archive", "file_remove"} {
 		found := false
 		for _, tool := range list.Tools {
 			if tool.Name == name {
@@ -616,6 +616,9 @@ func TestMCPWire(t *testing.T) {
 		}
 	}
 	for _, tool := range list.Tools {
+		if tool.Name == "settings_read" || tool.Name == "settings_edit" {
+			t.Fatal("settings advertised by the runtime instead of ToolHub")
+		}
 		if tool.Name == "image_generate" || tool.Name == "image_edit" {
 			t.Fatal("image generation published without a grant")
 		}
@@ -652,7 +655,6 @@ func TestMCPWireExpectedFailures(t *testing.T) {
 		{"file_read", map[string]any{"path": "../outside.txt"}},
 		{"routine_list", map[string]any{}},
 		{"media_inspect", map[string]any{"paths": []string{"clip.gif"}}},
-		{"settings_edit", map[string]any{"key": "model"}},
 	} {
 		result, err := client.CallTool(ctx, &mcp.CallToolParams{Name: tc.name, Arguments: tc.args})
 		if err != nil {
@@ -730,7 +732,7 @@ func TestMediaThroughHubMCP(t *testing.T) {
 	client, cleanup := connectHub(t, v)
 	defer cleanup()
 	list, err := client.ListTools(ctx, nil)
-	if err != nil || len(list.Tools) != 60 {
+	if err != nil || len(list.Tools) != 58 {
 		t.Fatal(len(list.Tools), err)
 	}
 	for _, tool := range list.Tools {
@@ -826,7 +828,7 @@ func TestMediaThroughHubMCP(t *testing.T) {
 	granted, cleanupGranted := connectHub(t, v)
 	defer cleanupGranted()
 	listed, err := granted.ListTools(ctx, nil)
-	if err != nil || len(listed.Tools) != 63 {
+	if err != nil || len(listed.Tools) != 61 {
 		t.Fatal(len(listed.Tools), err)
 	}
 	made, body := callHub(t, granted, "media_generate", map[string]any{"name": "pic", "prompt": "a red square", "kind": "image"})

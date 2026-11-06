@@ -2,6 +2,8 @@ package locale
 
 func init() {
 	register(LangKK, map[string]string{
+		"supervisor.settings-invalid":             "Параметрлерді өзгерту сұрауы жарамсыз.",
+		"supervisor.settings-denied":              "Параметрлерді өзгерту қабылданбады немесе жарияланбады.",
 		"hubctl.space-apply-passport-right":       "Бұл паспорт өзгерісі үшін %s құқығы қажет.",
 		"hubctl.space-apply-scope-kind":           "Әдіс түрі инициализация кезінде бекітіледі және ревизиялар арасында өзгермейді.",
 		"hubctl.space-apply-organization-binding": "Ұйым кеңістігін қолдану үшін басқарылатын профиль байланысы қажет.",

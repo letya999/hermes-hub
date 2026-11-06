@@ -60,6 +60,8 @@ func (m *Manager) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		m.wake(w, r)
 	case "/v1/self-env":
 		m.selfEnv(w, r)
+	case "/v1/settings":
+		m.settingsEditHTTP(w, r)
 	case "/v1/skill-apply":
 		m.skillApply(w, r)
 	case "/v1/skill-creds":

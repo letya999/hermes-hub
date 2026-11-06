@@ -6,7 +6,6 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/envstore"
 
-	"github.com/letya999/hermes-hub/internal/selfsettings"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -159,10 +158,6 @@ func materializeHermesConfig(dir string, s Settings) error {
 	if tokenEnv == "" {
 		tokenEnv = "HUB_RUNTIME_AUTH"
 	}
-	selfSettingsPath := ""
-	if s.CapabilityMode == "managed" {
-		selfSettingsPath = filepath.Join(dir, "managed", s.Environment, "runtime", selfsettings.FileName)
-	}
 	return MaterializeHermesConfig(source, dest, MaterializeOptions{
 		Managed:            s.CapabilityMode == "managed",
 		ToolHubEndpoint:    strings.TrimSpace(runtimeEnv["HUB_TOOLHUB_ENDPOINT"]),
@@ -173,7 +168,6 @@ func materializeHermesConfig(dir string, s Settings) error {
 		NativeToolsets:     s.nativeCarveouts(),
 		Web:                s.Web,
 		ImageGen:           s.managedImageGenGrant(),
-		SelfSettingsPath:   selfSettingsPath,
 		Browser:            s.managedBrowserGrant(),
 		KnowledgeUI:        s.managedKnowledgeUIGrant(),
 		MemoryVault:        s.managedMemoryVaultFlag(),

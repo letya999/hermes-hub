@@ -1,40 +1,21 @@
-// Package selfsettings persists the runtime-owned settings overlay: a bounded
-// set of reviewed Hermes config knobs the owning user may tune through the
-// audited settings tool family. The supervisor merges the file into the
-// effective Hermes config at spawn-time materialization and the runtime
-// attestation merges the identical view, so an overlay value cannot widen the
-// reviewed capability surface and a rejected write never lands half-applied.
+// Package selfsettings validates the reviewed config passport leaves exposed
+// by the settings tool family.
 package selfsettings
 
 import (
-	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
-	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 )
 
-const (
-	// FileName is the overlay file inside the runtime state dir.
-	FileName  = "self-settings.json"
-	maxBytes  = 64 * 1024
-	maxValues = 32
-)
-
-// Value is one validated scalar override for a reviewed config path.
-type Value = any
-
 // validator parses a tool-supplied string into the canonical type the
-// effective config carries, or re-validates an already-typed overlay value.
+// effective config carries.
 type validator func(raw any) (any, error)
 
-// keys is the reviewed allowlist. Every entry is a non-authority knob: tuning
-// the compressor cannot widen toolsets, egress, credentials or identity, so
-// the set can only grow through code review, never through the overlay.
+// keys is the reviewed allowlist. Every entry maps to one config passport
+// leaf and cannot widen toolsets, egress, credentials or identity.
 var keys = map[string]validator{
 	"compression.enabled":                               boolValue,
 	"compression.threshold":                             floatRange(0.10, 0.95),
@@ -64,8 +45,6 @@ var keys = map[string]validator{
 	"compression.hub_sweep.threshold_tokens": intRange(32_768, 2_097_152),
 	"compression.hub_sweep.cooldown_seconds": intRange(0, 86_400),
 	"compression.hub_sweep.precompute":       boolValue,
-	"display.busy_input_mode":                choice("queue", "interrupt"),
-	"display.long_running_notifications":     boolValue,
 	"image_gen.model":                        choice(imageModels...),
 	"image_gen.delivery":                     choice("workspace", "url"),
 }
@@ -186,120 +165,19 @@ func ValidatePath(path string, raw any) (any, error) {
 	return check(raw)
 }
 
-// Load reads and re-validates the overlay. A hand-edited or corrupt file
-// fails closed the same way a rejected tool write does.
-func Load(path string) (map[string]any, error) {
-	info, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+// PublishedPath maps a reviewed tool setting to its config passport leaf.
+// Display knobs are absent because the config passport has no such fields.
+func PublishedPath(key string) (string, bool) {
+	if _, ok := keys[key]; !ok {
+		return "", false
 	}
-	if err != nil {
-		return nil, err
+	switch {
+	case strings.HasPrefix(key, "compression."), strings.HasPrefix(key, "goals."):
+		return "runtime." + key, true
+	case key == "features.compact.engine":
+		return "runtime.context.compaction", true
+	case strings.HasPrefix(key, "image_gen."):
+		return key, true
 	}
-	if !info.Mode().IsRegular() {
-		return nil, errors.New("self-settings must be a regular file")
-	}
-	body, err := os.ReadFile(path) // #nosec G304 -- overlay path is operator-controlled
-	if err != nil {
-		return nil, err
-	}
-	if len(body) > maxBytes {
-		return nil, errors.New("self-settings file is too large")
-	}
-	var raw map[string]any
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return nil, fmt.Errorf("invalid self-settings file: %w", err)
-	}
-	if len(raw) > maxValues {
-		return nil, errors.New("too many self-settings keys")
-	}
-	values := make(map[string]any, len(raw))
-	for key, value := range raw {
-		check, ok := keys[key]
-		if !ok {
-			return nil, fmt.Errorf("setting %q is not manageable", key)
-		}
-		canonical, err := check(value)
-		if err != nil {
-			return nil, fmt.Errorf("setting %s: %w", key, err)
-		}
-		values[key] = canonical
-	}
-	return values, nil
-}
-
-// Set validates and atomically writes one overlay entry. A nil value removes
-// the key, restoring the rendered default.
-func Set(path, key string, raw any) (map[string]any, error) {
-	check, ok := keys[key]
-	if !ok {
-		return nil, fmt.Errorf("setting %q is not manageable (allowed: %s)", key, strings.Join(AllowedKeys(), ", "))
-	}
-	current, err := Load(path)
-	if err != nil {
-		return nil, err
-	}
-	if current == nil {
-		current = map[string]any{}
-	}
-	if raw == nil {
-		delete(current, key)
-	} else {
-		canonical, err := check(raw)
-		if err != nil {
-			return nil, fmt.Errorf("setting %s: %w", key, err)
-		}
-		current[key] = canonical
-	}
-	if err := writeAtomic(path, current); err != nil {
-		return nil, err
-	}
-	return current, nil
-}
-
-// Merge applies overlay values onto a decoded config map in place. Only the
-// allowlisted paths exist in values; each maps to a scalar config field.
-func Merge(config map[string]any, values map[string]any) {
-	for key, value := range values {
-		parts := strings.Split(key, ".")
-		node := config
-		for _, part := range parts[:len(parts)-1] {
-			next, ok := node[part].(map[string]any)
-			if !ok {
-				next = map[string]any{}
-				node[part] = next
-			}
-			node = next
-		}
-		node[parts[len(parts)-1]] = value
-	}
-}
-
-func writeAtomic(path string, values map[string]any) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return err
-	}
-	body, err := json.Marshal(values)
-	if err != nil {
-		return err
-	}
-	f, err := os.CreateTemp(filepath.Dir(path), ".self-settings-*")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	defer os.Remove(tmp)
-	if err = f.Chmod(0600); err == nil {
-		_, err = f.Write(body)
-	}
-	if err == nil {
-		err = f.Sync()
-	}
-	if closeErr := f.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return "", false
 }
