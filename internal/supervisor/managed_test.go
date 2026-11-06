@@ -608,8 +608,9 @@ features: [workspace]
 // review surface (governance decisions, browser_act) is evaluated on the
 // fully loaded Settings here, never re-derived in the container.
 // A memory-vault + knowledge managed spawn replays the reviewed subsystem
-// flags: the materialized effective config keeps the open_knowledge endpoint
-// and the evicted native memory backend instead of attesting them as drift.
+// flags: the materialized effective config keeps the evicted native memory
+// backend while open_knowledge can never appear — the retired endpoint is
+// drift no replay produces (M32/#520).
 func TestManagedMaterializeCarriesFeatureFlags(t *testing.T) {
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("ok"), nil }, nil)
 	writeManagedFixtures(t, root)
@@ -652,10 +653,13 @@ func TestManagedMaterializeCarriesFeatureFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(body)
-	for _, want := range []string{"open_knowledge", "open-knowledge:8080/mcp", "memory_enabled: false", "toolhub"} {
+	for _, want := range []string{"memory_enabled: false", "toolhub"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("materialized config missing %q:\n%s", want, text)
 		}
+	}
+	if strings.Contains(text, "open_knowledge") {
+		t.Fatalf("retired open_knowledge endpoint must never materialize:\n%s", text)
 	}
 }
 

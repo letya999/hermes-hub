@@ -204,18 +204,14 @@ docs/tools.md; they are not shared personal-memory stores.
   `memory_leaf_retention_days` (≥2) expires leaves past the window once
   their rollup + daily summary provably exist — kept days and actions
   journal to `REVIEW.md` and the morning digest (SPEC-0085 R7.5). With
-  `knowledge_ui` on, one pinned `open-knowledge` container mounts the
-  vault at `/data` on the space-private network; `ui_port` in
-  `agent.yaml` is the only host edge — a single loopback publish
-  `127.0.0.1:<ui_port>` → 8080 (loopback-only `ui_bind`, no public
-  path), for the owner reaching the unauthenticated editor over
-  `ssh -L` (SPEC-0085 R10). The runtime reaches it as the
-  `mcp__open_knowledge__*` read-only MCP surface — eight verified read
-  verbs via `tools.include`, write verbs never registered (SPEC-0085
-  R9). Edits landing outside the governed writer — the editor or
-  direct file changes — are swept into history as `hermes-owner` by
-  `CommitExternalEdits` at the head of every rollup, so owner
-  provenance survives and wins (SPEC-0085 R8).
+  `knowledge_ui` on renders no `open-knowledge` container (M32/#520):
+  ToolHub owns the vault, the upstream editor cannot act as a
+  governed-API client, so the feature is explicitly unavailable —
+  `ui_port`/`ui_bind` stay valid but publish nothing. There is no
+  `mcp__open_knowledge__*` surface; edits outside the governed writer
+  are impossible, and `memory_card op=propose` plus owner confirmation
+  is the only edit path (SPEC-0098). Vault content and `.ok/` state
+  are never deleted — the surface is suspended, not removed.
 - `broker/` — broker materialization output; `cache/`, `cliproxy/` —
   service-local state; `managed/<env>/model-relay` — relay selection state.
 - `diagnostics/` — bounded log surface backing `mcp__toolhub__diagnostics`

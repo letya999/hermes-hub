@@ -3228,13 +3228,13 @@
     "surface": "native",
     "name": "knowledge_ui",
     "title": "Hermes capability: knowledge_ui",
-    "action": "Включи memory_vault + knowledge_ui в тестовом space; выдай грант native:knowledge_ui; открой редактор по ssh -L туннелю и прочитай карточку памяти.",
-    "expected": "Один pinned open-knowledge контейнер в приватной сети без публикаций, кроме loopback ui_port; MCP-поверхность отдаёт ровно 8 read-вербов (mutation-вербов нет); без гранта поверхность не рендерится; редактор down — вольт работает.",
+    "action": "Включи memory_vault + knowledge_ui в тестовом space; выдай грант native:knowledge_ui; проверь рендер и статус feature.",
+    "expected": "open-knowledge контейнер и mcp_servers.open_knowledge не рендерятся ни в unmanaged, ни в managed render — прямого mount и bypass-роута нет; doctor честно сообщает unavailable; данные vault не удаляются; governed-правки идут только через memory_card propose + подтверждение владельца.",
     "package": "stack",
-    "test": "TestReadGrantSurfaceExact",
+    "test": "TestKnowledgeUIRendersNoDataPlane",
     "prerequisites": "Тестовый managed-профиль с memory_vault + knowledge_ui; Docker-стек; без рабочих данных.",
     "level": "agent-e2e",
-    "cleanup": "Снять контейнер и грант; вернуть исходную настройку."
+    "cleanup": "Снять грант; вернуть исходную настройку."
   },
   {
     "id": "E2E-250",

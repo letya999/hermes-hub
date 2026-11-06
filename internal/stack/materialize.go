@@ -158,7 +158,6 @@ func materializeHermesConfig(dir string, s Settings) error {
 		ImageGen:           s.managedImageGenGrant(),
 		SelfSettingsPath:   selfSettingsPath,
 		Browser:            s.managedBrowserGrant(),
-		KnowledgeUI:        s.managedKnowledgeUIGrant(),
 		MemoryVault:        s.managedMemoryVaultFlag(),
 		User:               s.User,
 	})

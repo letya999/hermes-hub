@@ -140,6 +140,74 @@ func TestMemoryCardProposalRoundTrip(t *testing.T) {
 	}
 }
 
+// TestKnowledgeMutationUsesConfirmedWriter is the #520 acceptance: a
+// synthetic card in the user's vault changes only through the confirmed
+// writer for the exact user — a direct write (the path a vault-mounted
+// editor or an unadmitted call would take) is impossible.
+func TestKnowledgeMutationUsesConfirmedWriter(t *testing.T) {
+	store, _, _, auths, _ := memoryCardStore(t, "alice", "bob")
+	passports, vaults := t.TempDir(), t.TempDir()
+	writeMemoryPassportEnv(t, passports, "alice", "dev", true)
+	writeMemoryPassportEnv(t, passports, "bob", "dev", true)
+	for _, user := range []string{"alice", "bob"} {
+		if err := vault.Ensure(filepath.Join(vaults, user)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g, _ := memoryCardEnv(t, store, passports, vaults, auths, nil)
+	proposalEnv(t, g, auths)
+	alice, bob := auths["alice"], auths["bob"]
+
+	if _, err := memoryCardCall(t, g, alice, "job-alice", "run-alice-1",
+		map[string]any{"op": "fact", "card": "suppliers", "text": "earl grey from twinings"}); err != nil {
+		t.Fatal(err)
+	}
+	cardPath := filepath.Join(vaults, "alice", "memory", "cards", "notes", "suppliers.md")
+	before, err := os.ReadFile(cardPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A direct write is impossible: every existing-memory verb refuses
+	// before storage access, no matter how it is spelled.
+	for _, op := range []string{"truth", "merge", "forget"} {
+		out, err := memoryCardCall(t, g, alice, "job-alice", "run-alice-1",
+			map[string]any{"op": op, "card": "suppliers", "text": "bypass", "dest": "suppliers", "id": "x"})
+		if err != nil || out["status"] != "invalid" {
+			t.Fatalf("direct %s must be impossible: %v %v", op, out, err)
+		}
+	}
+	// Nor may the model write card paths through an unproposed call.
+	out, err := memoryCardCall(t, g, alice, "job-alice", "run-alice-1",
+		map[string]any{"op": "apply", "id": "memprop-forged"})
+	if err != nil || out["status"] != "invalid" {
+		t.Fatalf("forged apply must be invalid: %v %v", out, err)
+	}
+	after, _ := os.ReadFile(cardPath)
+	if string(after) != string(before) {
+		t.Fatal("a direct write path touched the card")
+	}
+
+	// The same card changes through the confirmed writer for the owner.
+	out, err = memoryCardCall(t, g, alice, "job-alice", "run-alice-1",
+		map[string]any{"op": "propose", "inner": "truth", "card": "suppliers", "text": "Twinings supplies the earl grey."})
+	if err != nil || out["status"] != "proposal" {
+		t.Fatalf("propose: %v %v", out, err)
+	}
+	prop := proposalFile(t, vaults, "alice", out["id"].(string))
+	// A foreign user cannot consume it — only the exact owner confirms.
+	if code := confirmProposal(t, g, "ctl-secret", ownerProof(prop, bob)); code != http.StatusForbidden {
+		t.Fatalf("foreign confirm must deny: %d", code)
+	}
+	if code := confirmProposal(t, g, "ctl-secret", ownerProof(prop, alice)); code != http.StatusOK {
+		t.Fatalf("owner confirmation: %d", code)
+	}
+	after, _ = os.ReadFile(cardPath)
+	if !strings.Contains(string(after), "Twinings supplies the earl grey.") {
+		t.Fatalf("confirmed write missing: %s", after)
+	}
+}
+
 // TestMemoryCardProposalDenials is the #519 deny matrix: a foreign user's
 // proof, a copied id, a forged digest, an expired proposal and a stale base
 // each deny the confirmation without touching memory.

@@ -152,7 +152,7 @@ word where one exists):
 
 | Family | Tools | Executor | Notes |
 |---|---|---|---|
-| files | `file_list`, `file_read`, `file_search`, `file_write`, `file_edit`, `file_mkdir`, `file_archive`, `file_remove`, `project_create` | handler:files | `root` selects the admitted root (`workspace` default; `archive`, `organization`, `skills`, `knowledge`, `vault` where granted); `file_read` pages via `offset`/`limit`/`next_offset`; `file_write`/`file_edit` are revision-guarded and never mint a new top-level project dir — `project_create` (workspace.create_project) does; `file_archive` packs/unpacks in-scope; `knowledge_*` reads are `file_*` under `root=knowledge` |
+| files | `file_list`, `file_read`, `file_search`, `file_write`, `file_edit`, `file_mkdir`, `file_archive`, `file_remove`, `project_create` | handler:files | `root` selects the admitted root (`workspace` default; `archive`, `organization`, `skills`, `knowledge` where granted); `file_read` pages via `offset`/`limit`/`next_offset`; `file_write`/`file_edit` are revision-guarded and never mint a new top-level project dir — `project_create` (workspace.create_project) does; `file_archive` packs/unpacks in-scope; `knowledge_*` reads are `file_*` under `root=knowledge` |
 | terminal | `terminal_exec`, `terminal_job` | handler:terminal | bounded workspace exec (`cmd`, `cwd`, `timeout`, `stdin`, `shell`, `background`); background returns a `job_id` steered by `terminal_job` action poll\|send\|kill\|list; optional `skill` leases that skill's stored credentials into the one call |
 | documents | `document_extract`, `document_create`, `document_edit`, `document_convert`, `document_remove` | handler:documents | txt, md, csv, html, pdf, xlsx, pptx inside the admitted scope |
 | media | `media_inspect`, `media_convert`, `media_generate`, `media_edit`, `media_fetch`, `media_transcribe`, `media_speak` | handler:media | `media_inspect` takes 1–8 `paths`; `media_generate` covers image and video jobs polled via `media_fetch`; STT/TTS answer honest `unavailable` without a provider; `media_speak` delivers through the active channel |
@@ -237,17 +237,16 @@ housekeeping is never silent. `hubctl memory prune` dry-runs the same
 report; `--apply` executes. Expired bytes remain in vault git history;
 true erasure is a separate history-rewrite decision.
 
-With `knowledge_ui` on, the space's `open-knowledge` container also serves
-the runtime an `mcp__open_knowledge__*` read surface (SPEC-0085 R9): exactly
-the eight verified read verbs of the pinned release — `audit`, `config`,
-`exec` (upstream read-only shell allowlist), `history`, `links`, `palette`,
-`search`, `skills` — rendered as `tools.include`, so mutation verbs
-(`write`, `edit`, `delete`, `move`, `checkpoint`, `restore_version`,
-`import`, `install`, `preview_url`, `share_link`, and `lint` whose `fix`
-argument mutates) are never registered at all; a guessed call dies as an
-unregistered tool. `knowledge_ui_write` stays deferred and refused at
-validation until upstream gains per-path write scoping — `memory_card`
-remains the only agent write path. A down OK degrades honestly
+With `knowledge_ui` on, no `open-knowledge` container or
+`mcp__open_knowledge__*` surface renders (M32/#520): ToolHub owns the
+vault, so no service may mount it and upstream OpenKnowledge cannot act as
+a governed-API client — the flag stays valid but explicitly unavailable,
+and `hubctl doctor` reports it as such. Knowledge reads and edits go
+through the governed ToolHub tools instead: `memory_search` for memory
+content and `memory_card op=propose` plus owner confirmation for edits.
+`knowledge_ui_write` stays deferred and refused at validation until a
+governed knowledge surface exists — `memory_card` remains the only agent
+write path.
 
 ## connectors — the control surface
 

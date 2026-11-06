@@ -269,6 +269,25 @@ a provider seam with conformance, and soft forget.
   interlock requires it for non-loopback) and `HOME=/tmp` (the image
   HOME sits on the read-only rootfs).
 
+  2026-11-06 amendment (M32, issue #520): D8's service render and the
+  M20.9 read surface are superseded — ADR-0095 D2 makes ToolHub the
+  vault's sole owner, and no container but ToolHub may mount it. The
+  `open-knowledge` compose service, its `vault → /data` bind and the
+  `mcp_servers.open_knowledge` runtime route are all retired on both
+  renders; `HUB_MANAGED_KNOWLEDGE_UI`/`MaterializeOptions.KnowledgeUI`
+  leave the attestation vocabulary. Upstream OK cannot act as a
+  governed-API client, so `knowledge_ui` stays a valid feature that
+  renders nothing — explicitly unavailable in `hubctl doctor` and
+  docs rather than partially open; a stale `stack.yaml` declaration
+  fails the designed declared-but-unrendered check until republished.
+  Vault content, `.ok/` state and git history are never deleted.
+  Knowledge edits for the model ride the ordinary confirmed writer
+  (`memory_card op=propose` + the owner's verified confirmation);
+  `knowledge_ui_write` stays deferred under #422 until an adapted
+  governed knowledge surface exists. The `native:knowledge_ui`
+  inventory entry and the `knowledge-ui`/`ui_port`/`ui_bind`/
+  `ui_expose` config vocabulary stay accepted — inert, not removed.
+
 - **D9. Human access is a loopback port, like browser/oauth today.**
   The compose service publishes `127.0.0.1:<ui_port>` per space
   (`OK_BIND=0.0.0.0`, `OK_ALLOW_EXTERNAL=1`, `OK_EXTERNAL_URL=http://

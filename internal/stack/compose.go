@@ -246,12 +246,9 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			}
 		}
 		// Same contract for the hub-side subsystem flags: pseudo-toolset
-		// wishes (knowledge_ui, memory_vault) are `via: native` markers that
+		// wishes (memory_vault) are `via: native` markers that
 		// never join the carve-out list, so their reviewed admission rides
 		// its own env bits for the in-container replay.
-		if s.managedKnowledgeUIGrant() {
-			runtimeEnv["HUB_MANAGED_KNOWLEDGE_UI"] = "1"
-		}
 		if s.managedMemoryVaultFlag() {
 			runtimeEnv["HUB_MANAGED_MEMORY_VAULT"] = "1"
 		}
@@ -449,63 +446,10 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		}
 		services["browser-"+s.User] = browserService
 	}
-	// SPEC-0085 R8: knowledge_ui renders one pinned OpenKnowledge replica per
-	// space over the vault — private network only, no published ports (the
-	// loopback edge is CHG-0211). First boot inits the project; later boots
-	// find .ok/ and start directly.
-	if s.Has("knowledge_ui") {
-		okService := cloneMap(common)
-		okService["image"] = "hermes-hub:0.5.0-" + s.Environment + "-knowledge"
-		okService["build"] = imageBuild(s.Environment + "-knowledge")
-		okService["deploy"] = M{"replicas": 1}
-		okService["command"] = "sh -c '[ -d .ok ] || ok init --no-mcp --no-skills; exec ok start'"
-		// R8.2: the vault is the OpenKnowledge project root; OK state (.ok/,
-		// .git/ok/, .graph/) lands inside it on .okignore'd paths.
-		okService["volumes"] = []any{
-			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "vault")), "target": "/data"},
-		}
-		// OK binds its container interface only so space-net peers can reach
-		// it: a non-loopback bind needs the allowExternal consent interlock
-		// (upstream boot refuses it otherwise), and PORT pins the listener the
-		// mcp_servers URL points at — unset, OK picks a dynamic port.
-		// HOME lands on tmpfs: the image's /state/home sits on the read-only
-		// rootfs, while every durable OK path is project-local .ok/ under /data.
-		okService["environment"] = M{"OK_ALLOW_EXTERNAL": "1", "OK_BIND": "0.0.0.0", "PORT": "8080", "HOME": "/tmp", "OK_EXTERNAL_URL": "http://" + okServiceHost(s) + ":8080"}
-		// ok resolves its server-authority registry through the passwd home
-		// (/state/home), not $HOME — a read-only-rootfs mkdir fails closed, so
-		// the disposable home gets its own tmpfs alongside /tmp.
-		okService["tmpfs"] = append(okService["tmpfs"].([]string), "/state/home:uid=10001,gid=10001,mode=0700")
-		// OK's Host/Origin allowlist admits only the external URL's host: the
-		// space-net alias is what the mcp_servers URL dials, so it must be the
-		// canonical origin whenever no loopback UI edge overrides it.
-		// R10.1: ui_port opts into one loopback publish — the only host
-		// reachability the unauthenticated editor ever gets; the owner
-		// tunnels in over ssh -L. Unset keeps the network-only stance.
-		if s.UIPort > 0 {
-			bind := s.UIBind
-			if bind == "" {
-				bind = "127.0.0.1"
-			}
-			if strings.Contains(bind, ":") {
-				bind = "[" + bind + "]"
-			}
-			okService["ports"] = []string{fmt.Sprintf("%s:%d:8080", bind, s.UIPort)}
-			// OK admits loopback hosts unconditionally — the allowlist URL
-			// must stay the peer alias or the runtime's own MCP calls 403.
-		}
-		if s.CapabilityMode == "managed" {
-			okService["networks"] = M{managedAgentNetwork(s): M{}}
-		} else if s.ExecutionMode == "supervisor" {
-			// Supervisor-mode runtimes spawn onto the shared hub net, not the
-			// project default — the space-scoped alias keeps several
-			// unmanaged spaces collision-free while their mcp_servers URL
-			// dials the same name.
-			okService["networks"] = M{"default": M{}, sharedNetworkName: M{"aliases": []string{"open-knowledge-" + s.User}}}
-		} else {
-			okService["networks"] = M{"default": M{}}
-		}
-		services["open-knowledge"] = okService
-	}
+	// M32/#520: the open-knowledge data plane is retired — ToolHub owns the
+	// vault, so no service may mount it and upstream OK cannot act as a
+	// governed client. knowledge_ui stays a valid feature but renders
+	// nothing until an adapted governed-API surface exists (ADR-0095 D2).
 	hostRuntimeDir := filepath.ToSlash(filepath.Join(dir, "runtime"))
 	hostCliproxyDir := filepath.ToSlash(filepath.Join(dir, "cliproxy"))
 	stateBind := M{"type": "bind", "source": hostRuntimeDir, "target": "/state"}

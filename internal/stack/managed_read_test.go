@@ -184,9 +184,9 @@ func settingsToDocs(s Settings) map[string]string {
 	if s.Has("browser") || s.Has("meet") {
 		stack.WriteString("  browser: {mode: per-space}\n")
 	}
-	if s.Has("knowledge_ui") {
-		stack.WriteString("  open-knowledge: {mode: per-space}\n")
-	}
+	// M32/#520: knowledge_ui no longer authors an open-knowledge service —
+	// the wish stays valid but declares no container (a stale authored
+	// declaration still fails the declared-but-unrendered check).
 	if s.Has("hosting") {
 		stack.WriteString("  hosting: {mode: per-space}\n  workload-controller: {mode: shared}\n")
 	}

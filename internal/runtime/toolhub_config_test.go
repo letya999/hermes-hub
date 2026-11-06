@@ -159,15 +159,16 @@ func TestMaterializeOptionsFromEnvCarriesBrowserGrant(t *testing.T) {
 	}
 }
 
-// HUB_MANAGED_KNOWLEDGE_UI / HUB_MANAGED_MEMORY_VAULT carry the
-// render-admitted subsystem flags into the container; the in-container
-// preflight replays them so the emitted bytes match the host render.
+// HUB_MANAGED_MEMORY_VAULT carries the render-admitted subsystem flag into
+// the container; the in-container preflight replays it so the emitted bytes
+// match the host render. The retired HUB_MANAGED_KNOWLEDGE_UI is ignored —
+// no render may reproduce open_knowledge under ToolHub vault ownership.
 func TestMaterializeOptionsFromEnvCarriesFeatureFlags(t *testing.T) {
 	opts, err := materializeOptionsFromEnv()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opts.KnowledgeUI || opts.MemoryVault {
+	if opts.MemoryVault {
 		t.Fatalf("absent env produced feature flags: %+v", opts)
 	}
 	t.Setenv("HUB_MANAGED_KNOWLEDGE_UI", "1")
@@ -176,7 +177,7 @@ func TestMaterializeOptionsFromEnvCarriesFeatureFlags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !opts.KnowledgeUI || !opts.MemoryVault {
+	if !opts.MemoryVault {
 		t.Fatalf("feature flags lost in env transit: %+v", opts)
 	}
 }

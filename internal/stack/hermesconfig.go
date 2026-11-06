@@ -62,10 +62,6 @@ type MaterializeOptions struct {
 	// (browser-<user>), so the reconstruction cannot derive it from the file
 	// under review and takes it from HUB_USER_ID instead.
 	User string
-	// KnowledgeUI is the render-time open_knowledge admission (SPEC-0085
-	// R9/R10): the reviewed settings emitted the read-only vault endpoint,
-	// so the attestation replays it. False means no knowledge server.
-	KnowledgeUI bool
 	// MemoryVault is the render-time memory_vault flag (SPEC-0085 R1.6):
 	// it evicts the native memory backend and re-denies a carved memory
 	// toolset, so the attestation must replay it to reproduce those bytes.
@@ -262,7 +258,7 @@ func applyBrowserGrant(s *Settings, grant BrowserGrant) {
 // NativeToolsets. The Tools entries reproduce Has() while the decisions map
 // reproduces the render-time govAllows checks.
 func applyManagedFeatureFlags(s *Settings, opts MaterializeOptions) {
-	if !opts.KnowledgeUI && !opts.MemoryVault {
+	if !opts.MemoryVault {
 		return
 	}
 	if s.Tools == nil {
@@ -270,10 +266,6 @@ func applyManagedFeatureFlags(s *Settings, opts MaterializeOptions) {
 	}
 	if s.gov == nil {
 		s.gov = &toolGovernance{decisions: map[string]api.PolicyDecision{}}
-	}
-	if opts.KnowledgeUI {
-		s.Tools["knowledge_ui"] = ToolEntry{Via: ToolViaNative}
-		s.gov.decisions["native:knowledge_ui"] = api.PolicyDecision{Effect: api.RuleAllow}
 	}
 	if opts.MemoryVault {
 		s.Tools["memory_vault"] = ToolEntry{Via: ToolViaNative}
