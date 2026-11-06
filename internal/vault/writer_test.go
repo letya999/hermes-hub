@@ -48,6 +48,18 @@ func writerFixture(t *testing.T) (*Writer, string) {
 	return NewWriter(root), root
 }
 
+func TestWriterReadConfined(t *testing.T) {
+	w, _ := writerFixture(t)
+	for _, path := range []string{"../outside", "runtime/memory/requests/x.json"} {
+		if _, _, err := w.Read(path); err == nil {
+			t.Fatalf("read escaped governed zones: %q", path)
+		}
+	}
+	if _, digest, err := w.Read("memory/cards/notes/new.md"); err != nil || digest != "" {
+		t.Fatalf("missing governed card: digest=%q err=%v", digest, err)
+	}
+}
+
 // A stale WantSHA rejects the write and leaves the on-disk (owner) version
 // untouched — the owner always wins (SPEC-0085 R1.4).
 func TestWriterStaleHashRejected(t *testing.T) {

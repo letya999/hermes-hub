@@ -219,7 +219,9 @@ exact diff, base revision, expiry and a single-use nonce — and the owner's
 verified confirmation tap on the channel is the only thing that applies it;
 the model cannot confirm its own proposal, and a replayed, expired,
 foreign or stale-base confirmation is denied without touching memory.
-Every mutation and denial is journaled to `runtime/memory/writes.jsonl`.
+Every mutation and denial is journaled to `runtime/memory/writes.jsonl`;
+`remember`/`fact` persist an owner-bound write intent first, and a failed
+journal write returns an error while a retry finishes the original request.
 Soft forget is a hub-owned strike:
 `runtime/memory/forget.jsonl` for daily-leaf entries,
 `status: superseded` frontmatter for cards — excluded from search, lane-1

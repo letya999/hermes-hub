@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/memory"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"github.com/letya999/hermes-hub/internal/vault"
 )
@@ -36,16 +35,18 @@ func (g *Gateway) memoryCard(ctx context.Context, auth identity.Envelope, corr a
 		// still prevents the mutation.
 		if err := memoryEnrollment(g.PassportRoot, auth.PrincipalID, auth.Environment); err != nil {
 			out = map[string]any{"status": "denied", "op": op}
-			cardJournalAppend(root, op, "", cardSourceRef(corr), requestID, "denied", nil)
-			return nil
+			return cardJournalAppend(root, op, "", cardSourceRef(corr), requestID, "denied", nil)
 		}
 		// The admitted authority is re-verified at the commit point too —
 		// a right or binding revoked between admission and this lock still
 		// prevents the mutation.
 		if err := g.Store.ReverifyEffective(effective); err != nil {
 			out = map[string]any{"status": "denied", "op": op}
-			cardJournalAppend(root, op, "", cardSourceRef(corr), requestID, "denied", nil)
-			return nil
+			return cardJournalAppend(root, op, "", cardSourceRef(corr), requestID, "denied", nil)
+		}
+		if op == "remember" || op == "fact" {
+			out, err = applyCardRequest(root, auth, corr, op, requestID, arguments)
+			return err
 		}
 		if prior, ok := cardJournalResult(root, requestID); ok {
 			out = prior
@@ -53,7 +54,7 @@ func (g *Gateway) memoryCard(ctx context.Context, auth identity.Envelope, corr a
 		}
 		var opErr error
 		if op == "propose" {
-			out, opErr = g.cardPropose(ctx, root, auth, corr, effective, arguments)
+			out, opErr = g.cardPropose(ctx, root, auth, corr, effective, requestID, arguments)
 		} else {
 			out, opErr = cardApply(root, op, arguments)
 		}
@@ -67,8 +68,7 @@ func (g *Gateway) memoryCard(ctx context.Context, auth identity.Envelope, corr a
 		if status == "proposal" {
 			status = "ok"
 		}
-		cardJournalAppend(root, op, cardResultTarget(out), cardSourceRef(corr), requestID, status, out)
-		return nil
+		return cardJournalAppend(root, op, cardResultTarget(out), cardSourceRef(corr), requestID, status, out)
 	}); err != nil {
 		return nil, err
 	}
@@ -136,9 +136,9 @@ func cardRequestID(jobID, op string, arguments map[string]any) string {
 
 // cardJournalAppend records one row in the per-vault write journal — the
 // R6.5 audit of every mutation and denial, also the retry-safe request
-// ledger. A journal failure never rewrites the honest answer of an applied
-// write; it only loses that write's audit row.
-func cardJournalAppend(root, op, target, sourceRef, requestID, status string, result map[string]any) {
+// ledger. A journal failure is returned so callers cannot report an
+// unrecorded mutation as a success.
+func cardJournalAppend(root, op, target, sourceRef, requestID, status string, result map[string]any) error {
 	entry := map[string]any{
 		"ts": time.Now().UTC().Format(time.RFC3339), "op": op,
 		"target": target, "source_ref": sourceRef, "request_id": requestID,
@@ -149,18 +149,25 @@ func cardJournalAppend(root, op, target, sourceRef, requestID, status string, re
 	}
 	row, err := json.Marshal(entry)
 	if err != nil {
-		return
+		return err
 	}
 	path := filepath.Join(root, "runtime", "memory", "writes.jsonl")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return
+		return err
 	}
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
-		return
+		return err
 	}
-	defer f.Close()
-	_, _ = f.Write(append(row, '\n'))
+	if _, err := f.Write(append(row, '\n')); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // cardResultTarget picks the audited resource for a journal row from an
@@ -178,10 +185,6 @@ func cardResultTarget(out map[string]any) string {
 // zone whitelist and hash check apply inside, never delegated to callers.
 func cardApply(root, op string, arguments map[string]any) (map[string]any, error) {
 	switch op {
-	case "remember":
-		return cardRemember(root, arguments)
-	case "fact":
-		return cardFact(root, arguments)
 	case "truth", "merge", "forget":
 		// ADR-0095 D6: edits to existing memory mutate only through a
 		// durable proposal consumed by a verified owner action — the model
@@ -230,9 +233,9 @@ func cardRel(name string) string {
 	return "memory/cards/notes/" + strings.TrimSuffix(path.Base(path.Clean(strings.ReplaceAll(name, "\\", "/"))), ".md") + ".md"
 }
 
-// cardFact appends a dated, evidence-linked line to a named card — created
-// under notes/ when absent.
-func cardFact(root string, arguments map[string]any) (map[string]any, error) {
+// cardFactPlan renders a dated, evidence-linked line without mutating the
+// card. The request intent is persisted before this content reaches Writer.
+func cardFactPlan(root string, arguments map[string]any) (cardPlannedWrite, map[string]any, error) {
 	card := strings.TrimSpace(api.ArgString(arguments, "card"))
 	text := strings.TrimSpace(api.ArgString(arguments, "text"))
 	var errs []cardFieldError
@@ -243,7 +246,7 @@ func cardFact(root string, arguments map[string]any) (map[string]any, error) {
 		errs = append(errs, cardFieldError{Field: "text", Rule: "required"})
 	}
 	if len(errs) > 0 {
-		return cardInvalid("fact", errs), nil
+		return cardPlannedWrite{}, cardInvalid("fact", errs), nil
 	}
 	rel := cardRel(card)
 	day := time.Now().Format("2006-01-02")
@@ -252,9 +255,9 @@ func cardFact(root string, arguments map[string]any) (map[string]any, error) {
 		line += " · [evidence: " + ev + "]"
 	}
 	line += "\n"
-	cur, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
-	if err != nil && !os.IsNotExist(err) {
-		return nil, err
+	cur, baseSHA, err := vault.NewWriter(root).Read(rel)
+	if err != nil {
+		return cardPlannedWrite{}, nil, err
 	}
 	var content []byte
 	if len(cur) == 0 {
@@ -262,10 +265,7 @@ func cardFact(root string, arguments map[string]any) (map[string]any, error) {
 	} else {
 		content = append(append([]byte{}, cur...), []byte(line)...)
 	}
-	if err := cardWrite(root, rel, content); err != nil {
-		return nil, err
-	}
-	return map[string]any{"status": "ok", "op": "fact", "path": rel}, nil
+	return cardPlannedWrite{Path: rel, BaseSHA: baseSHA, Content: content}, map[string]any{"status": "ok", "op": "fact", "path": rel}, nil
 }
 
 // replaceSection swaps the body under one ## heading (up to the next ##
@@ -333,30 +333,18 @@ func cardFrontmatter(dayKey string, tags []string) string {
 	return "---\ntype: note\nstatus: active\ntags: " + list + "\ncreated: " + dayKey + "\nupdated: " + dayKey + "\n---\n"
 }
 
-// cardWrite runs one governed write of full new content for rel — the zone
-// whitelist and hash check are the writer's, never this file's.
-func cardWrite(root, rel string, content []byte) error {
-	_, err := vault.NewWriter(root).Apply(memory.WriteOp{
-		Path:    rel,
-		Content: content,
-		WantSHA: shaOf(root, rel),
-		Actor:   memory.ActorAgent,
-	})
-	return err
-}
-
 // cardRemember lands an inbox note card — the "запомни" lane.
-func cardRemember(root string, arguments map[string]any) (map[string]any, error) {
+func cardRememberPlan(root string, arguments map[string]any) (cardPlannedWrite, map[string]any, error) {
 	text := strings.TrimSpace(api.ArgString(arguments, "text"))
 	if text == "" {
-		return cardInvalid("remember", []cardFieldError{{Field: "text", Rule: "required"}}), nil
+		return cardPlannedWrite{}, cardInvalid("remember", []cardFieldError{{Field: "text", Rule: "required"}}), nil
 	}
 	day := time.Now().Format("2006-01-02")
 	rel := "memory/cards/notes/inbox/" + slugOf(api.ArgString(arguments, "name"), text) + ".md"
 	line := "- " + day + ": " + oneLineText(text) + "\n"
-	cur, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
-	if err != nil && !os.IsNotExist(err) {
-		return nil, err
+	cur, baseSHA, err := vault.NewWriter(root).Read(rel)
+	if err != nil {
+		return cardPlannedWrite{}, nil, err
 	}
 	var content []byte
 	if len(cur) == 0 {
@@ -364,10 +352,7 @@ func cardRemember(root string, arguments map[string]any) (map[string]any, error)
 	} else {
 		content = append(append([]byte{}, cur...), []byte(line)...)
 	}
-	if err := cardWrite(root, rel, content); err != nil {
-		return nil, err
-	}
-	return map[string]any{"status": "ok", "op": "remember", "path": rel}, nil
+	return cardPlannedWrite{Path: rel, BaseSHA: baseSHA, Content: content}, map[string]any{"status": "ok", "op": "remember", "path": rel}, nil
 }
 
 func oneLineText(s string) string {

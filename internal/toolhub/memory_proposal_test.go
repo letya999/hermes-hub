@@ -574,3 +574,43 @@ func TestMemoryCardProposalRetryConverges(t *testing.T) {
 		t.Fatalf("expected exactly one proposal record: %v %d", err, len(entries))
 	}
 }
+
+func TestMemoryProposalRetryAfterJournalFailure(t *testing.T) {
+	store, _, _, auths, _ := memoryCardStore(t, "alice")
+	passports, vaults := t.TempDir(), t.TempDir()
+	writeMemoryPassportEnv(t, passports, "alice", "dev", true)
+	root := filepath.Join(vaults, "alice")
+	if err := vault.Ensure(root); err != nil {
+		t.Fatal(err)
+	}
+	g, _ := memoryCardEnv(t, store, passports, vaults, auths, nil)
+	proposalEnv(t, g, auths)
+	if _, err := memoryCardCall(t, g, auths["alice"], "job-alice", "run-alice-1", map[string]any{"op": "fact", "card": "suppliers", "text": "seed"}); err != nil {
+		t.Fatal(err)
+	}
+	journal := filepath.Join(root, "runtime", "memory", "writes.jsonl")
+	if err := os.Remove(journal); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(journal, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	args := map[string]any{"op": "propose", "inner": "truth", "card": "suppliers", "text": "new truth"}
+	for i := 0; i < 2; i++ {
+		if _, err := memoryCardCall(t, g, auths["alice"], "job-alice", "run-alice-1", args); err == nil {
+			t.Fatal("proposal journal failure reported success")
+		}
+	}
+	entries, err := os.ReadDir(filepath.Join(root, "runtime", "memory", "proposals"))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("retry minted duplicate proposals: %v %d", err, len(entries))
+	}
+	if err := os.Remove(journal); err != nil {
+		t.Fatal(err)
+	}
+	restarted, _ := memoryCardEnv(t, store, passports, vaults, auths, nil)
+	proposalEnv(t, restarted, auths)
+	if out, err := memoryCardCall(t, restarted, auths["alice"], "job-alice", "run-alice-1", args); err != nil || out["id"] != strings.TrimSuffix(entries[0].Name(), ".json") {
+		t.Fatalf("restart did not recover original proposal: %v %v", out, err)
+	}
+}

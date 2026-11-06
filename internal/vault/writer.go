@@ -1,12 +1,14 @@
 package vault
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -22,6 +24,47 @@ type Writer struct {
 
 // NewWriter returns the governed writer for the vault at root.
 func NewWriter(root string) *Writer { return &Writer{root: root} }
+
+// Read returns the current governed content and hash without following a
+// symlink or leaving the writer's allowed zones.
+func (w *Writer) Read(rel string) ([]byte, string, error) {
+	target, err := w.confine(rel)
+	if err != nil {
+		return nil, "", err
+	}
+	if !w.zoneAllowed(rel) {
+		return nil, "", fmt.Errorf("vault: path %q is outside the governed zones", rel)
+	}
+	body, err := os.ReadFile(target)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, "", nil
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	return body, sha256Hex(body), nil
+}
+
+// RecoverApplied completes a write whose content landed before its git
+// commit or result receipt. It never rewrites the content or accepts drift.
+func (w *Writer) RecoverApplied(op memory.WriteOp) error {
+	body, digest, err := w.Read(op.Path)
+	if err != nil {
+		return err
+	}
+	if digest != sha256Hex(op.Content) || !bytes.Equal(body, op.Content) {
+		return memory.ErrStaleHash
+	}
+	if out, err := gitCmd(w.root, "add", "--", op.Path).CombinedOutput(); err != nil {
+		return fmt.Errorf("vault git add: %w (%s)", err, out)
+	}
+	if err := gitCmd(w.root, "diff", "--cached", "--quiet", "--", op.Path).Run(); err == nil {
+		return nil
+	} else if varExit, ok := err.(*exec.ExitError); !ok || varExit.ExitCode() != 1 {
+		return err
+	}
+	return w.commitPath(op)
+}
 
 // writeZones is the whitelist of subtrees the writer may mutate. Anything
 // else — schema.json, history, sidecars, indexes, attachments — is refused.
@@ -111,6 +154,16 @@ func (w *Writer) commit(op memory.WriteOp) error {
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("vault git %s: %w (%s)", args[0], err, out)
 		}
+	}
+	return nil
+}
+
+func (w *Writer) commitPath(op memory.WriteOp) error {
+	actor := "hermes-" + string(op.Actor)
+	message := "vault: " + string(op.Actor) + " write " + op.Path
+	cmd := gitCmd(w.root, "-c", "user.name="+actor, "-c", "user.email="+string(op.Actor)+"@vault.local", "commit", "--quiet", "-m", message, "--", op.Path)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("vault git commit: %w (%s)", err, out)
 	}
 	return nil
 }

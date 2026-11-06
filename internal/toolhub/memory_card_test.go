@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -360,6 +361,98 @@ func TestMemoryCardRetryConverges(t *testing.T) {
 	body, _ = os.ReadFile(filepath.Join(vaults, "alice", filepath.FromSlash(rel)))
 	if got := strings.Count(string(body), "\n- "); got != 2 {
 		t.Fatalf("distinct call lost: %d lines in %s", got, body)
+	}
+}
+
+func TestAuditRetryAfterJournalFailureDoesNotDuplicate(t *testing.T) {
+	store, _, _, auths, _ := memoryCardStore(t, "alice")
+	passports, vaults := t.TempDir(), t.TempDir()
+	writeMemoryPassportEnv(t, passports, "alice", "dev", true)
+	root := filepath.Join(vaults, "alice")
+	if err := vault.Ensure(root); err != nil {
+		t.Fatal(err)
+	}
+	g, _ := memoryCardEnv(t, store, passports, vaults, auths, nil)
+	args := map[string]any{"op": "fact", "card": "suppliers", "text": "earl grey supplier chosen"}
+	journal := filepath.Join(root, "runtime", "memory", "writes.jsonl")
+	if err := os.MkdirAll(journal, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := memoryCardCall(t, g, auths["alice"], "job-alice", "run-alice-1", args); err == nil {
+			t.Fatal("unavailable result journal reported success")
+		}
+	}
+	card := filepath.Join(root, "memory", "cards", "notes", "suppliers.md")
+	body, err := os.ReadFile(card)
+	if err != nil || strings.Count(string(body), "earl grey supplier chosen") != 1 {
+		t.Fatalf("journal retry changed card twice: %v %q", err, body)
+	}
+	if err := os.Remove(journal); err != nil {
+		t.Fatal(err)
+	}
+	restarted, _ := memoryCardEnv(t, store, passports, vaults, auths, nil)
+	if out, err := memoryCardCall(t, restarted, auths["alice"], "job-alice", "run-alice-1", args); err != nil || out["status"] != "ok" {
+		t.Fatalf("restart did not finish journal: %v %v", out, err)
+	}
+	body, err = os.ReadFile(card)
+	if err != nil || strings.Count(string(body), "earl grey supplier chosen") != 1 {
+		t.Fatalf("restart repeated effect: %v %q", err, body)
+	}
+}
+
+func TestMemoryCardIntentAndCommitRecovery(t *testing.T) {
+	store, _, _, auths, _ := memoryCardStore(t, "alice")
+	passports, vaults := t.TempDir(), t.TempDir()
+	writeMemoryPassportEnv(t, passports, "alice", "dev", true)
+	root := filepath.Join(vaults, "alice")
+	if err := vault.Ensure(root); err != nil {
+		t.Fatal(err)
+	}
+	g, _ := memoryCardEnv(t, store, passports, vaults, auths, nil)
+	args := map[string]any{"op": "fact", "card": "suppliers", "text": "durable intent fact"}
+	card := filepath.Join(root, "memory", "cards", "notes", "suppliers.md")
+	requests := filepath.Join(root, "runtime", "memory", "requests")
+	if err := os.MkdirAll(filepath.Dir(requests), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(requests, []byte("blocked"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := memoryCardCall(t, g, auths["alice"], "job-alice", "run-alice-1", args); err == nil {
+		t.Fatal("intent persistence failure reported success")
+	}
+	if _, err := os.Stat(card); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("intent failure mutated card: %v", err)
+	}
+	if err := os.Remove(requests); err != nil {
+		t.Fatal(err)
+	}
+	lock := filepath.Join(root, ".git", "index.lock")
+	if err := os.WriteFile(lock, []byte("blocked"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := memoryCardCall(t, g, auths["alice"], "job-alice", "run-alice-1", args); err == nil {
+		t.Fatal("git commit failure reported success")
+	}
+	body, err := os.ReadFile(card)
+	if err != nil || strings.Count(string(body), "durable intent fact") != 1 {
+		t.Fatalf("write-before-commit result: %v %q", err, body)
+	}
+	if err := os.Remove(lock); err != nil {
+		t.Fatal(err)
+	}
+	restarted, _ := memoryCardEnv(t, store, passports, vaults, auths, nil)
+	if out, err := memoryCardCall(t, restarted, auths["alice"], "job-alice", "run-alice-1", args); err != nil || out["status"] != "ok" {
+		t.Fatalf("restart did not finish write: %v %v", out, err)
+	}
+	body, err = os.ReadFile(card)
+	if err != nil || strings.Count(string(body), "durable intent fact") != 1 {
+		t.Fatalf("restart repeated effect: %v %q", err, body)
+	}
+	status, err := exec.Command("git", "-C", root, "status", "--porcelain", "--", "memory/cards/notes/suppliers.md").CombinedOutput()
+	if err != nil || len(status) != 0 {
+		t.Fatalf("recovered write lacks clean git commit: %v %q", err, status)
 	}
 }
 

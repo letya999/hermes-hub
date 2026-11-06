@@ -23,6 +23,7 @@ import (
 // expiry, and only a verified human confirmation consumes it.
 type cardProposal struct {
 	ID          string             `json:"id"`
+	RequestID   string             `json:"request_id,omitempty"`
 	PrincipalID string             `json:"principal_id"`
 	Environment string             `json:"environment"`
 	Revision    uint64             `json:"revision"`
@@ -191,7 +192,18 @@ func planForgetCard(root, card string) ([]cardPlannedWrite, error) {
 // cardPropose persists an edit proposal for one existing-memory inner op and
 // returns its id. Nothing mutates: only the owner confirmation path consumes
 // the proposal.
-func (g *Gateway) cardPropose(ctx context.Context, root string, auth identity.Envelope, corr api.CallCorrelation, effective api.EffectiveBinding, arguments map[string]any) (map[string]any, error) {
+func (g *Gateway) cardPropose(ctx context.Context, root string, auth identity.Envelope, corr api.CallCorrelation, effective api.EffectiveBinding, requestID string, arguments map[string]any) (map[string]any, error) {
+	id := "memprop-" + requestID[:16]
+	if _, err := os.Stat(proposalPath(root, id)); err == nil {
+		prior, err := loadProposal(root, id)
+		if err != nil || prior.RequestID != requestID || prior.PrincipalID != auth.PrincipalID || prior.Environment != auth.Environment {
+			return nil, api.ErrUnauthorized
+		}
+		deliverMemoryProposal(ctx, auth, prior)
+		return map[string]any{"status": "proposal", "op": "propose", "id": id}, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
 	inner := strings.TrimSpace(api.ArgString(arguments, "inner"))
 	var writes []cardPlannedWrite
 	var strikeID string
@@ -217,7 +229,7 @@ func (g *Gateway) cardPropose(ctx context.Context, root string, auth identity.En
 		return cardInvalid("propose", []cardFieldError{{Field: "id", Rule: "id or card required"}}), nil
 	}
 	prop := cardProposal{
-		ID: "memprop-" + api.RandomNonce()[:16], PrincipalID: auth.PrincipalID,
+		ID: id, RequestID: requestID, PrincipalID: auth.PrincipalID,
 		Environment: auth.Environment, Revision: 1, Nonce: api.RandomNonce(),
 		ExpiresAt: g.Control.now().Add(g.Control.ttl()), SourceRef: cardSourceRef(corr),
 		InnerOp: inner, Writes: writes, StrikeID: strikeID,
@@ -230,19 +242,22 @@ func (g *Gateway) cardPropose(ctx context.Context, root string, auth identity.En
 	if err := saveProposal(root, prop); err != nil {
 		return nil, err
 	}
-	// The owner confirmation rides the existing verified human-action lane —
-	// the same proof/button/callback machinery onboarding uses. Delivery is
-	// best-effort: an unconfigured channel leaves a durable proposal.
-	target := strikeID
-	if len(writes) > 0 {
-		target = writes[0].Path
+	deliverMemoryProposal(ctx, auth, prop)
+	return map[string]any{"status": "proposal", "op": "propose", "id": prop.ID}, nil
+}
+
+// Delivery can be retried after a saved proposal loses its response; the
+// proposal id and proof stay stable, so a duplicate button cannot re-arm it.
+func deliverMemoryProposal(ctx context.Context, auth identity.Envelope, prop cardProposal) {
+	target := prop.StrikeID
+	if len(prop.Writes) > 0 {
+		target = prop.Writes[0].Path
 	}
-	label := inner + " " + target
+	label := prop.InnerOp + " " + target
 	api.DeliverMemoryConfirmation(ctx, auth, api.HumanConfirmation{
 		OnboardingID: prop.ID, Actor: auth, Nonce: prop.Nonce, Revision: prop.Revision,
 		ActionDigest: proposalDigest(prop), ExpiresAt: prop.ExpiresAt,
 	}, label)
-	return map[string]any{"status": "proposal", "op": "propose", "id": prop.ID}, nil
 }
 
 // consumeMemoryProposal applies a proposal on its verified human

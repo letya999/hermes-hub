@@ -95,10 +95,14 @@ and before service effects complete.
   commit point the published `memory.enabled` enrollment and the admitted
   authority are re-checked, so a disable or revocation that lands between
   admission — or between propose and the owner tap — still prevents the
-  write and reports `status=denied`. A deterministic request id (job, op,
-  canonical arguments — never the per-call `ToolCallID`) makes a retried
-  identical call converge on the journaled result instead of writing
-  twice. Every mutation and denial is journaled to
+  write and reports `status=denied`. For `remember` and `fact`, a durable
+  request intent under `runtime/memory/requests/` records the owner,
+  environment, exact target bytes and base hash before the governed write.
+  A deterministic request id (job, op, canonical arguments — never the
+  per-call `ToolCallID`) lets retries and a restarted handler finish an
+  interrupted write or journal entry without repeating the effect. Journal
+  persistence errors are returned, not reported as success. Every mutation
+  and denial is journaled to
   `runtime/memory/writes.jsonl` under the authorizing `(job, run)`
   `source_ref`; malformed calls answer `status=invalid` with field-level
   errors.
