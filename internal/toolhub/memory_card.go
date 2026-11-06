@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"os"
 	"path"
 	"path/filepath"
@@ -53,11 +52,21 @@ func (g *Gateway) memoryCard(ctx context.Context, auth identity.Envelope, corr a
 			return nil
 		}
 		var opErr error
-		out, opErr = cardApply(root, op, arguments)
+		if op == "propose" {
+			out, opErr = g.cardPropose(ctx, root, auth, corr, effective, arguments)
+		} else {
+			out, opErr = cardApply(root, op, arguments)
+		}
 		if opErr != nil {
 			return opErr
 		}
 		status, _ := out["status"].(string)
+		// A propose call succeeded when the proposal persisted — journal it
+		// "ok" so a transport retry replays the same proposal id instead of
+		// minting a second one.
+		if status == "proposal" {
+			status = "ok"
+		}
 		cardJournalAppend(root, op, cardResultTarget(out), cardSourceRef(corr), requestID, status, out)
 		return nil
 	}); err != nil {
@@ -173,48 +182,13 @@ func cardApply(root, op string, arguments map[string]any) (map[string]any, error
 		return cardRemember(root, arguments)
 	case "fact":
 		return cardFact(root, arguments)
-	case "truth":
-		return cardTruth(root, arguments)
-	case "merge":
-		return cardMerge(root, arguments)
-	case "forget":
-		return cardForget(root, arguments)
+	case "truth", "merge", "forget":
+		// ADR-0095 D6: edits to existing memory mutate only through a
+		// durable proposal consumed by a verified owner action — the model
+		// cannot confirm its own change, so direct execution is invalid.
+		return cardInvalid(op, []cardFieldError{{Field: "op", Rule: "existing-memory edits go through op=propose with inner=truth|merge|forget"}}), nil
 	}
-	return cardInvalid(op, []cardFieldError{{Field: "op", Rule: "one of remember|fact|truth|merge|forget"}}), nil
-}
-
-// cardForget is the soft-forget op (R6.3/D16): an entry id is struck in the
-// hub-owned sidecar; a card's frontmatter flips to status: superseded
-// through the governed writer. Both are excluded everywhere except
-// history:true and git.
-func cardForget(root string, arguments map[string]any) (map[string]any, error) {
-	id := strings.TrimSpace(api.ArgString(arguments, "id"))
-	card := strings.TrimSpace(api.ArgString(arguments, "card"))
-	if id == "" && card == "" {
-		return nil, errors.New("id or card required")
-	}
-	if id != "" {
-		if err := memory.OpenForgetSet(filepath.Join(root, "runtime", "memory")).Strike(id); err != nil {
-			return nil, err
-		}
-		return map[string]any{"status": "ok", "op": "forget", "id": id}, nil
-	}
-	rel := cardFind(root, card)
-	if rel == "" {
-		return nil, errors.New("unknown card")
-	}
-	cur, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
-	if err != nil {
-		return nil, errors.New("unknown card")
-	}
-	content := strings.Replace(string(cur), "status: active", "status: superseded", 1)
-	if content == string(cur) {
-		return nil, errors.New("card carries no active status to strike")
-	}
-	if err := cardWrite(root, rel, []byte(content)); err != nil {
-		return nil, err
-	}
-	return map[string]any{"status": "ok", "op": "forget", "path": rel}, nil
+	return cardInvalid(op, []cardFieldError{{Field: "op", Rule: "one of remember|fact|propose"}}), nil
 }
 
 // cardFind resolves a bare or group-qualified card name to its real path
@@ -248,36 +222,6 @@ func cardBody(doc string) string {
 		return strings.TrimLeft(doc[4+i+4:], "\n")
 	}
 	return doc
-}
-
-// cardMerge folds the source card's body into the target and strikes the
-// source superseded — both writes go through the governed writer.
-func cardMerge(root string, arguments map[string]any) (map[string]any, error) {
-	src, dst := cardFind(root, api.ArgString(arguments, "card")), cardFind(root, api.ArgString(arguments, "to"))
-	if src == "" || dst == "" || src == dst {
-		return nil, errors.New("card and to must resolve to two different cards")
-	}
-	srcBytes, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(src)))
-	if err != nil {
-		return nil, err
-	}
-	dstBytes, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(dst)))
-	if err != nil {
-		return nil, err
-	}
-	body := cardBody(string(srcBytes))
-	if body == "" {
-		return nil, errors.New("source card carries no body to merge")
-	}
-	merged := strings.TrimRight(string(dstBytes), "\n") + "\n\n" + body
-	if err := cardWrite(root, dst, []byte(merged)); err != nil {
-		return nil, err
-	}
-	struck := strings.Replace(string(srcBytes), "status: active", "status: superseded", 1)
-	if err := cardWrite(root, src, []byte(struck)); err != nil {
-		return nil, err
-	}
-	return map[string]any{"status": "ok", "op": "merge", "into": dst, "from": src}, nil
 }
 
 // cardRel pins a named card under notes/ — the name stays inside the
@@ -322,26 +266,6 @@ func cardFact(root string, arguments map[string]any) (map[string]any, error) {
 		return nil, err
 	}
 	return map[string]any{"status": "ok", "op": "fact", "path": rel}, nil
-}
-
-// cardTruth replaces a card's ## Compiled Truth body through the governed
-// writer — the D5 hash-check makes a concurrent owner edit win.
-func cardTruth(root string, arguments map[string]any) (map[string]any, error) {
-	card := strings.TrimSpace(api.ArgString(arguments, "card"))
-	text := strings.TrimSpace(api.ArgString(arguments, "text"))
-	if card == "" || text == "" {
-		return nil, errors.New("card and text required")
-	}
-	rel := cardRel(card)
-	cur, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
-	if err != nil {
-		return nil, errors.New("unknown card")
-	}
-	content := replaceSection(string(cur), "## Compiled Truth", text+"\n")
-	if err := cardWrite(root, rel, []byte(content)); err != nil {
-		return nil, err
-	}
-	return map[string]any{"status": "ok", "op": "truth", "path": rel}, nil
 }
 
 // replaceSection swaps the body under one ## heading (up to the next ##

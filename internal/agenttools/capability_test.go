@@ -154,6 +154,32 @@ func TestMemoryCardDeclaresToolHubExecutor(t *testing.T) {
 		if !strings.Contains(tool.Description, "ToolHub") || strings.Contains(tool.Description, "stamped private run") {
 			t.Fatalf("memory_card description drifted: %q", tool.Description)
 		}
+		// M32/#519: edits to existing memory are proposal-gated — the
+		// contract must name propose, the inner op and the owner's verified
+		// confirmation, and the schema must carry the inner argument.
+		for _, want := range []string{"propose", "inner", "owner"} {
+			if !strings.Contains(tool.Description, want) {
+				t.Fatalf("memory_card description missing %q: %q", want, tool.Description)
+			}
+		}
+		var inner bool
+		for _, a := range tool.Arguments {
+			switch a.Name {
+			case "inner":
+				inner = true
+			case "op":
+				// The op enum must not advertise edits the model cannot
+				// execute — truth/merge/forget are proposal inner ops now.
+				for _, e := range a.Enum {
+					if e == "truth" || e == "merge" || e == "forget" {
+						t.Fatalf("memory_card op enum advertises a non-executable edit: %+v", a.Enum)
+					}
+				}
+			}
+		}
+		if !inner {
+			t.Fatalf("memory_card schema lacks the inner argument: %+v", tool.Arguments)
+		}
 		return
 	}
 	t.Fatal("memory_card missing from the hub catalog")

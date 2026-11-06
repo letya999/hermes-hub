@@ -242,10 +242,10 @@ func TestChannelContractDropsCrossFamilyClauses(t *testing.T) {
 }
 
 // R6 contract guidance: the stable prompt names the memory write path and
-// its denial semantics — remember/fact/truth lanes plus the owner-turn rule
-// for merge/forget and the invalid-shape retry discipline.
+// its denial semantics — remember/fact lanes, the propose/owner-confirmation
+// gate for existing-memory edits and the invalid-shape retry discipline.
 func TestChannelContractGuidesMemoryCard(t *testing.T) {
-	for _, want := range []string{"memory_card", "remember", "status=denied", "status=invalid"} {
+	for _, want := range []string{"memory_card", "remember", "status=denied", "status=invalid", "propose", "owner"} {
 		if !strings.Contains(contractMemory, want) {
 			t.Fatalf("contract missing %q", want)
 		}

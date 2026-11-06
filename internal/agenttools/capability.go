@@ -58,7 +58,7 @@ func HubToolsDefinition() api.ToolDefinition {
 	def := api.ToolDefinition{
 		Schema:       api.SchemaVersion,
 		DefinitionID: HubToolsDefinitionID,
-		Version:      "14.0.0",
+		Version:      "15.0.0",
 		Transport:    api.AgentTools,
 		Source:       api.DefinitionSource{},
 		Workload: api.WorkloadPolicy{
@@ -100,7 +100,7 @@ func HubToolsDefinition() api.ToolDefinition {
 			// R6). The exact-run gate and zone guard live in ToolHub's
 			// executor, never in arguments.
 			remote("memory_search", "memory.search", "memory.search", "Search the owner's memory vault when config.memory.enabled and memory.search are active: BM25 over daily leaves, cards and summaries with link-graph expansion. Arguments: query (required), limit, from, to (YYYY-MM-DD bounds on entry date), kinds (entry kinds), history:true includes superseded/forgotten. Every hit carries an evidence ref file:line-end — cite it, never answer from memory alone; status=degraded|unavailable is reported honestly.", api.ReadEffect, "runtime:toolhub", str("query"), intArg("limit", false), opt("from"), opt("to"), arrArg("kinds", false), boolArg("history", false)),
-			remote("memory_card", "memory.write", "memory.remember", "Write the owner's memory only when config.memory.enabled and memory.remember are active. Ops: remember (text[, name]) lands an inbox note searchable the same day; fact (card, text[, evidence]) appends a dated evidence line; truth (card, text) replaces the card's Compiled Truth through a hash-checked write; merge (card, to) folds one card into another; forget (id or card) soft-removes an entry or card from search, recall and promotion while keeping git history. merge/forget run only on a live owner-provenance turn — no argument grants that. ToolHub executes the write against the verified caller's own vault under an exact live private run; status=denied|invalid is honest, invalid carries errors and the corrected shape.", api.WriteEffect, "runtime:toolhub", str("op"), opt("text"), opt("card"), opt("name"), opt("to"), opt("id"), opt("evidence"), arrArg("tags", false)),
+			remote("memory_card", "memory.write", "memory.remember", "Write the owner's memory only when config.memory.enabled and memory.remember are active. Ops: remember (text[, name]) lands an inbox note searchable the same day; fact (card, text[, evidence]) appends a dated evidence line; propose (inner=truth|merge|forget with that op's args) drafts an edit to existing memory — truth replaces a card's Compiled Truth, merge (card, to) folds one card into another, forget (id or card) soft-removes it from search, recall and promotion while keeping git history — and answers status=proposal with an id; the change lands only after the owner taps the delivered confirmation, never from a tool call. Direct truth/merge/forget are invalid: the model cannot confirm its own edit. ToolHub executes the write against the verified caller's own vault under an exact live private run; status=denied|invalid|proposal is honest, invalid carries errors and the corrected shape.", api.WriteEffect, "runtime:toolhub", str("op"), opt("inner"), opt("text"), opt("card"), opt("name"), opt("to"), opt("id"), opt("evidence"), arrArg("tags", false)),
 
 			// ---- documents (5)
 			tool("document_extract", "documents.read", "workspace.read", "Extract text from a document inside the admitted scope. Supported: txt, md, csv, html, pdf, xlsx, pptx; doc and docx stay unsupported.", api.ReadEffect, use("read", "documents", "path"), path),

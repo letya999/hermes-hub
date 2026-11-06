@@ -74,16 +74,24 @@ tool call crosses. Listens `0.0.0.0:8090`, host-bound to `127.0.0.1:8090`.
   container carries no vault mount.
 - **ToolHub-owned memory writer** (`memory_card.go`): `memory_card`
   executes inside ToolHub (`runtime:toolhub` executor) — the sole governed
-  writer for model-driven memory mutations. Ops `remember`, `fact`,
-  `truth`, `merge` and `forget` run under the per-user vault lock against
-  the verified envelope's own vault: at the commit point the published
-  `memory.enabled` enrollment and the admitted authority are re-checked,
-  so a disable or revocation that lands between admission and the mutation
-  still prevents the write and reports `status=denied`. A deterministic
-  request id (job, op, canonical arguments — never the per-call
-  `ToolCallID`) makes a retried identical call converge on the journaled
-  result instead of writing twice. Every mutation and denial is journaled
-  to `runtime/memory/writes.jsonl` under the authorizing `(job, run)`
+  writer for model-driven memory mutations. Additive ops `remember` and
+  `fact` run under the per-user vault lock against the verified envelope's
+  own vault; edits to existing memory are proposal-gated (`op=propose`
+  with `inner=truth|merge|forget`, `memory_proposal.go`): the durable
+  proposal binds owner, exact writes, base revisions, expiry and a
+  single-use nonce inside the user's own vault, and only the owner's
+  verified confirmation — the same `/v1/confirmations` human-action lane
+  connector onboarding uses — consumes it and applies the fenced writes.
+  Self-confirmation, a copied or foreign proposal, a stale base, an
+  expired or replayed proof all deny without touching memory. At the
+  commit point the published `memory.enabled` enrollment and the admitted
+  authority are re-checked, so a disable or revocation that lands between
+  admission — or between propose and the owner tap — still prevents the
+  write and reports `status=denied`. A deterministic request id (job, op,
+  canonical arguments — never the per-call `ToolCallID`) makes a retried
+  identical call converge on the journaled result instead of writing
+  twice. Every mutation and denial is journaled to
+  `runtime/memory/writes.jsonl` under the authorizing `(job, run)`
   `source_ref`; malformed calls answer `status=invalid` with field-level
   errors.
 - **Pre-turn memory context** (`memory_context.go`): `POST /v1/memory-context`

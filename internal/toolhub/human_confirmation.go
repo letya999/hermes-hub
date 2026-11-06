@@ -60,6 +60,14 @@ func (g *Gateway) serveHumanConfirmation(w http.ResponseWriter, r *http.Request)
 		}
 	} else if err == nil {
 		err = g.Control.finishAuthorization(ctx, proof.OnboardingID)
+	} else if strings.HasPrefix(proof.OnboardingID, "memprop-") {
+		// Memory edit proposals are not onboardings — the vault holds the
+		// durable record and the same verified human action consumes it.
+		err = g.consumeMemoryProposal(proof)
+		if err != nil && !errors.Is(err, api.ErrUnauthorized) {
+			http.Error(w, "confirmation unavailable", http.StatusServiceUnavailable)
+			return
+		}
 	}
 	if err != nil {
 		http.Error(w, "confirmation failed", http.StatusForbidden)

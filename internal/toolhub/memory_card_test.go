@@ -268,11 +268,11 @@ func TestMemoryCardWriterRoundTrip(t *testing.T) {
 	}
 }
 
-// TestMemoryCardFactTruthMergeForget drives the remaining ops through the
-// same ToolHub boundary: fact appends dated evidence lines, truth replaces
-// the Compiled Truth section through the hash-checked write, merge folds
-// cards and forget strikes ids and supersedes cards.
-func TestMemoryCardFactTruthMergeForget(t *testing.T) {
+// TestMemoryCardFactAndProposeGate drives the additive op and the D6 gate:
+// fact appends dated evidence lines directly, while truth/merge/forget —
+// edits to existing memory — answer invalid and point at propose, which is
+// the only mutation path a verified owner confirmation opens.
+func TestMemoryCardFactAndProposeGate(t *testing.T) {
 	store, _, _, auths, _ := memoryCardStore(t, "alice")
 	passports, vaults := t.TempDir(), t.TempDir()
 	writeMemoryPassportEnv(t, passports, "alice", "dev", true)
@@ -293,50 +293,25 @@ func TestMemoryCardFactTruthMergeForget(t *testing.T) {
 	if err != nil || !strings.Contains(string(cardBody), "twinings") || !strings.Contains(string(cardBody), "turn-9") {
 		t.Fatalf("fact card: %v %s", err, cardBody)
 	}
-	// truth replaces the Compiled Truth section.
-	out, err = memoryCardCall(t, g, alice, "job-alice", "run-alice-1",
-		map[string]any{"op": "truth", "card": "suppliers", "text": "Twinings is the earl grey supplier."})
-	if err != nil || out["status"] != "ok" {
-		t.Fatalf("truth: %v %v", out, err)
+	// Edits to existing memory are proposal-gated (ADR-0095 D6): direct
+	// truth/merge/forget return the corrected call shape and write nothing.
+	for _, args := range []map[string]any{
+		{"op": "truth", "card": "suppliers", "text": "Twinings is the earl grey supplier."},
+		{"op": "merge", "card": "suppliers", "to": "vendors"},
+		{"op": "forget", "id": "turn-9"},
+		{"op": "forget", "card": "suppliers"},
+	} {
+		out, err = memoryCardCall(t, g, alice, "job-alice", "run-alice-1", args)
+		if err != nil || out["status"] != "invalid" {
+			t.Fatalf("direct %v must be invalid: %v %v", args["op"], out, err)
+		}
 	}
 	cardBody, _ = os.ReadFile(card)
-	if !strings.Contains(string(cardBody), "## Compiled Truth") || !strings.Contains(string(cardBody), "Twinings is the earl grey") {
-		t.Fatalf("truth section missing: %s", cardBody)
+	if strings.Contains(string(cardBody), "Twinings is the earl grey supplier.") || strings.Contains(string(cardBody), "status: superseded") {
+		t.Fatalf("direct edit mutated the card: %s", cardBody)
 	}
-	// merge folds the source card into the target and strikes it superseded.
-	if _, err := memoryCardCall(t, g, alice, "job-alice", "run-alice-1",
-		map[string]any{"op": "fact", "card": "vendors", "text": "lapsang from jing"}); err != nil {
-		t.Fatal(err)
-	}
-	out, err = memoryCardCall(t, g, alice, "job-alice", "run-alice-1",
-		map[string]any{"op": "merge", "card": "vendors", "to": "suppliers"})
-	if err != nil || out["status"] != "ok" {
-		t.Fatalf("merge: %v %v", out, err)
-	}
-	cardBody, _ = os.ReadFile(card)
-	if !strings.Contains(string(cardBody), "lapsang") {
-		t.Fatalf("merge dropped the folded body: %s", cardBody)
-	}
-	struck, _ := os.ReadFile(filepath.Join(vaults, "alice", "memory", "cards", "notes", "vendors.md"))
-	if !strings.Contains(string(struck), "status: superseded") {
-		t.Fatalf("merge left source active: %s", struck)
-	}
-	// forget strikes an entry id in the sidecar and supersedes a card.
-	out, err = memoryCardCall(t, g, alice, "job-alice", "run-alice-1", map[string]any{"op": "forget", "id": "turn-9"})
-	if err != nil || out["status"] != "ok" {
-		t.Fatalf("forget id: %v %v", out, err)
-	}
-	sidecar, err := os.ReadFile(filepath.Join(vaults, "alice", "runtime", "memory", "forget.jsonl"))
-	if err != nil || !strings.Contains(string(sidecar), `"turn-9"`) {
-		t.Fatalf("forget sidecar missing strike: %v %s", err, sidecar)
-	}
-	out, err = memoryCardCall(t, g, alice, "job-alice", "run-alice-1", map[string]any{"op": "forget", "card": "suppliers"})
-	if err != nil || out["status"] != "ok" {
-		t.Fatalf("forget card: %v %v", out, err)
-	}
-	cardBody, _ = os.ReadFile(card)
-	if !strings.Contains(string(cardBody), "status: superseded") {
-		t.Fatalf("forget left card active: %s", cardBody)
+	if _, err := os.Stat(filepath.Join(vaults, "alice", "runtime", "memory", "forget.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("direct forget wrote the strike sidecar: %v", err)
 	}
 }
 

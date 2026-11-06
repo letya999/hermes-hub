@@ -173,7 +173,7 @@ word where one exists):
 | models | `model_list`, `model_switch` | runtime:models | routes, ladders and status from the models passport; switch stays inside the granted ladder; without a hub models plane calls return `unavailable` |
 | sessions | `session_list`, `session_search`, `session_read`, `session_switch`, `session_edit`, `session_remove` | runtime:sessions | own-space sessions only; `session_edit` action archive\|restore; without a session store calls return `unavailable` |
 | memory | `memory_search` | runtime:toolhub | the memory vault contract (SPEC-0085/M32): BM25+graph over daily leaves, cards and summaries — hits carry `file:line` evidence refs, never answer from memory alone; ToolHub resolves the caller's enrolled vault from the verified identity envelope — no argument, root or header selects user, vault or audience; requires config.memory.enabled plus an exact live private run verified against the supervisor job record |
-| memory | `memory_card` | runtime:toolhub | the governed write path (ops remember\|fact\|truth\|merge\|forget), executed inside ToolHub as the sole writer — there is no `root=vault` file root and no local vault fallback |
+| memory | `memory_card` | runtime:toolhub | the governed write path (ops remember\|fact\|propose), executed inside ToolHub as the sole writer — edits to existing memory (`propose` with inner=truth\|merge\|forget) land only on the owner's verified confirmation; there is no `root=vault` file root and no local vault fallback |
 
 ## memory — the vault contract
 
@@ -206,10 +206,14 @@ Writes into the vault run through one contract surface: `memory_card`
 vault. `memory/daily`, `memory/cards`, `memory/summaries`,
 `memory/CORE.md`, `memory/REVIEW.md` and `runtime/` are governed zones the
 file tools can no longer reach at all — the runtime has no `vault:` root
-(M32/#517). `merge`/`forget` run only on a live owner-provenance turn bound
-to that turn's `SourceRef` — a replayed or argument-claimed authorization
-is denied, and every mutation and denial is journaled to
-`runtime/memory/writes.jsonl`. Soft forget is a hub-owned strike:
+(M32/#517). Edits to existing memory are proposal-gated (ADR-0095 D6,
+M32/#519): `op=propose` persists a durable proposal in the vault — owner,
+exact diff, base revision, expiry and a single-use nonce — and the owner's
+verified confirmation tap on the channel is the only thing that applies it;
+the model cannot confirm its own proposal, and a replayed, expired,
+foreign or stale-base confirmation is denied without touching memory.
+Every mutation and denial is journaled to `runtime/memory/writes.jsonl`.
+Soft forget is a hub-owned strike:
 `runtime/memory/forget.jsonl` for daily-leaf entries,
 `status: superseded` frontmatter for cards — excluded from search, lane-1
 recall and nightly promotion across restarts, visible only via

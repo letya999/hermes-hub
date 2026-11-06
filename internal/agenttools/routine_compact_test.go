@@ -26,7 +26,7 @@ func TestRoutinePublicSurfaceHasFiveTools(t *testing.T) {
 		}
 	}
 	definition := HubToolsDefinition()
-	if definition.Version != "14.0.0" {
+	if definition.Version != "15.0.0" {
 		t.Errorf("new immutable contract version=%s", definition.Version)
 	}
 	arguments := map[string][]string{"routine_create": {"origin_job_id", "destination_task_id"}, "routine_list": {"query", "view"}, "routine_read": {"include", "history_limit", "history_cursor", "preview_limit"}, "routine_edit": {"action", "expected_revision", "patch", "until", "origin_job_id"}}
@@ -245,7 +245,7 @@ func TestRoutineListTransportsSearchQuery(t *testing.T) {
 // admit the new selection set (SPEC-0080 R2.3).
 func TestAssignmentCatalogVersion(t *testing.T) {
 	definition := HubToolsDefinition()
-	if definition.Version != "14.0.0" {
-		t.Fatalf("catalog version = %s, want 14.0.0 with the ToolHub memory_card writer", definition.Version)
+	if definition.Version != "15.0.0" {
+		t.Fatalf("catalog version = %s, want 15.0.0 with the proposal-gated memory_card writer", definition.Version)
 	}
 }

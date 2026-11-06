@@ -133,7 +133,8 @@ var argDocs = map[string]map[string]argDoc{
 		"history": {Desc: "Include superseded/forgotten entries."},
 	},
 	"memory_card": {
-		"op":       {Desc: "Write operation.", Enum: []string{"remember", "fact", "truth", "merge", "forget"}},
+		"op":       {Desc: "Write operation.", Enum: []string{"remember", "fact", "propose"}},
+		"inner":    {Desc: "Existing-memory edit drafted by propose.", Enum: []string{"truth", "merge", "forget"}},
 		"text":     {Desc: "Note text (remember) or evidence line (fact/truth)."},
 		"card":     {Desc: "Target card id or path for fact/truth/merge."},
 		"name":     {Desc: "Optional note title for remember."},
