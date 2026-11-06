@@ -1,6 +1,6 @@
 ---
 description: Routine business tools, interval windows, lifecycle, authorization and delivery evidence.
-last_verified: "2026-11-06"
+last_verified: "2026-11-07"
 ---
 # Routines
 
@@ -428,15 +428,13 @@ outcome evidence are untrusted; streams have no clock occurrences (see event_sta
 
 ## Deployment and manual acceptance
 
-The catalog is hub-agent-tools@5.12.0. Old definitions remain immutable. Register
-the new version and, for managed spaces, deliberately repin selected tools in the protected profile,
-preserving scopes, denies and limits. routine_edit requires routines.update and
-the update:routines tuple for all four actions. Do not translate a former
-pause-only or snooze-only selection into this broader edit grant automatically.
-Delete remains a separate capability. Old private operations still serve already
-pinned definitions; current MCP discovery shows the five routine tools plus the
-watch and assignment families. No provider connection or
-external write grant is created by a catalog upgrade.
+The current catalog is hub-agent-tools@16.0.0 (Release 17). Old definitions
+remain immutable. For managed spaces, publish the selected tools and grants
+passports, then rebind and respawn the runtime to project that revision.
+Routine calls require the current `tasks.schedule` right as well as independent
+tool admission; selection does not grant the right. Current MCP discovery shows
+the five routine tools plus the watch and assignment families. A catalog
+upgrade creates no provider connection or external write grant.
 
 For ToolHub onboarding, `next_action=await_user_confirmation` requires the
 user's verified Telegram callback in the original chat; other channels cannot

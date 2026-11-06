@@ -435,12 +435,17 @@ func TestGovernanceDocPathInfraSibling(t *testing.T) {
 	if got := governanceDocPath(filepath.Join(spaces, "local")); got != want {
 		t.Fatalf("infra space seed target must be its own dir: %q", got)
 	}
-	// With no infra sibling at all, a secondary falls back to any documented
-	// sibling, then its own dir.
+	// A missing infra document stays missing; a stale sibling document is
+	// never promoted into shared authority.
 	other := filepath.Join(spaces, "artem_two")
 	os.Remove(filepath.Join(spaces, "artem_two", doc))
-	if got := governanceDocPath(other); got != filepath.Join(spaces, "artem_main", doc) {
-		t.Fatalf("no infra sibling: fallback should be a documented sibling: %q", got)
+	if got := governanceDocPath(other); got != want {
+		t.Fatalf("missing infra document selected a sibling: %q", got)
+	}
+	write("remote", filepath.Join("passports", "stack.yaml"), "kind: stack\nidentity: {user: remote, infra: true}\n")
+	write("remote", doc, "{}")
+	if got := governanceDocPath(other); got != filepath.Join(other, doc) {
+		t.Fatalf("ambiguous infra owners selected a foreign document: %q", got)
 	}
 }
 
@@ -548,6 +553,14 @@ func TestInfraSpaceDir(t *testing.T) {
 	}
 	if got := InfraSpaceDir(local); got != local {
 		t.Fatalf("infra space resolves itself, got %s", got)
+	}
+	otherInfra := filepath.Join(spaces, "other")
+	if err := os.MkdirAll(otherInfra, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeAuthoredStack(otherInfra, "other", true)
+	if got := InfraSpaceDir(member); got != member {
+		t.Fatalf("ambiguous infra owners selected another space: %s", got)
 	}
 	// Outside a spaces/ layout the space answers for itself.
 	lone := filepath.Join(root, "lone")

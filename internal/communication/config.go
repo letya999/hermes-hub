@@ -236,6 +236,14 @@ func pathsOverlap(a, b string) bool {
 
 // LoadYAML reads a host-owned mapping. Secret values belong in env files.
 func LoadYAML(path string) (Config, error) {
+	c, err := parseYAML(path)
+	if err != nil {
+		return c, err
+	}
+	return c, c.Validate()
+}
+
+func parseYAML(path string) (Config, error) {
 	var c Config
 	b, err := os.ReadFile(path) // #nosec G703 -- operator config path
 	if err != nil {
@@ -250,14 +258,14 @@ func LoadYAML(path string) (Config, error) {
 	if err := d.Decode(&extra); err != io.EOF {
 		return c, errors.New("one YAML document expected")
 	}
-	return c, c.Validate()
+	return c, nil
 }
 
 // ConfigFromEnv is the initial single-space deployment path. It uses the
 // existing user's runtime roots and maps TELEGRAM_ALLOWED_USERS to that user.
 func ConfigFromEnv() (Config, error) {
 	if path := os.Getenv("HUB_COMMUNICATION_CONFIG"); path != "" {
-		config, err := LoadYAML(path)
+		config, err := parseYAML(path)
 		if err != nil {
 			return Config{}, err
 		}
@@ -297,7 +305,7 @@ func ConfigFromEnv() (Config, error) {
 		config.SkillsStoreByDir = os.Getenv("HUB_SKILLS_STORE_BY")
 		config.SkillsStore = os.Getenv("HUB_SKILLS_STORE")
 		fillChannelSecrets(&config)
-		return config, nil
+		return config, config.Validate()
 	}
 	userID := os.Getenv("HUB_USER_ID")
 	if userID == "" {

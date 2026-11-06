@@ -90,8 +90,17 @@ func TestLifecycleAndFailurePropagation(t *testing.T) {
 		t.Fatal(err)
 	}
 	afterNoBuild, _ := os.ReadFile(log)
-	if strings.Count(string(afterNoBuild), " build communication-hub toolhub") != strings.Count(string(beforeNoBuild), " build communication-hub toolhub") || !strings.Contains(string(afterNoBuild), "--no-build --no-deps communication-hub toolhub") {
-		t.Fatal("no-build up rebuilt images or followed dependencies")
+	scopedUp := strings.TrimPrefix(string(afterNoBuild), string(beforeNoBuild))
+	if strings.Count(string(afterNoBuild), " build communication-hub toolhub") != strings.Count(string(beforeNoBuild), " build communication-hub toolhub") || !strings.Contains(scopedUp, "--force-recreate --no-build --no-deps communication-hub toolhub") || strings.Contains(scopedUp, "--remove-orphans") {
+		t.Fatal("scoped no-build up touched unrelated services")
+	}
+	if err := run(context.Background(), []string{"up", "--dir", d, "--root", "../..", "--no-build"}); err != nil {
+		t.Fatal(err)
+	}
+	afterFullNoBuild, _ := os.ReadFile(log)
+	fullUp := strings.TrimPrefix(string(afterFullNoBuild), string(afterNoBuild))
+	if !strings.Contains(fullUp, "--remove-orphans --no-build") || strings.Contains(fullUp, "--force-recreate") {
+		t.Fatal("full no-build up forced unrelated service restarts")
 	}
 	if err := run(context.Background(), []string{"build", "--dir", d, "--root", "../..", "--", "--no-cache"}); err == nil {
 		t.Fatal("compose option accepted as a service")
@@ -109,7 +118,7 @@ func TestLifecycleAndFailurePropagation(t *testing.T) {
 	if !strings.Contains(string(b), "ps --filter label=com.docker.compose.service=cliproxy") {
 		t.Fatal("up skipped the shared model proxy alias check")
 	}
-	if !strings.Contains(string(b), filepath.Join(d, "generated", "compose.prod.yaml")) || !strings.Contains(string(b), "ENV DOCKER_BUILDKIT=1 COMPOSE_BAKE=true COMPOSE_DOCKER_CLI_BUILD=1") || !strings.Contains(string(b), "image prune -f") || !strings.Contains(string(b), "--force-recreate") || !strings.Contains(string(b), " build communication-hub toolhub") || !strings.Contains(string(b), "--remove-orphans --no-deps communication-hub toolhub") || !strings.Contains(string(b), "telegram-account.Dockerfile") || strings.Contains(string(b), "prepare") || strings.Contains(string(b), "FOWNER") || strings.Contains(string(b), "career") {
+	if !strings.Contains(string(b), filepath.Join(d, "generated", "compose.prod.yaml")) || !strings.Contains(string(b), "ENV DOCKER_BUILDKIT=1 COMPOSE_BAKE=true COMPOSE_DOCKER_CLI_BUILD=1") || !strings.Contains(string(b), "image prune -f") || !strings.Contains(string(b), "--force-recreate") || !strings.Contains(string(b), " build communication-hub toolhub") || !strings.Contains(string(b), "--no-deps communication-hub toolhub") || !strings.Contains(string(b), "telegram-account.Dockerfile") || strings.Contains(string(b), "prepare") || strings.Contains(string(b), "FOWNER") || strings.Contains(string(b), "career") {
 		t.Fatal(string(b))
 	}
 	for _, fail := range []string{"build", "up"} {
@@ -194,5 +203,28 @@ func TestBuildCoversRuntimeTagWhenRuntimeNotRendered(t *testing.T) {
 	calls, _ := os.ReadFile(log)
 	if !strings.Contains(string(calls), "build --target prod -t hermes-hub:0.5.0-prod") {
 		t.Fatalf("supervisor render left the spawned-runtime tag unbuilt: %s", calls)
+	}
+	if err := os.WriteFile(log, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(context.Background(), []string{"build", "--dir", d, "--root", "../..", "communication-hub"}); err != nil {
+		t.Fatal(err)
+	}
+	calls, _ = os.ReadFile(log)
+	if !strings.Contains(string(calls), " build communication-hub") || strings.Contains(string(calls), "build --target") || strings.Contains(string(calls), "prune") {
+		t.Fatalf("service build also built unrelated images: %s", calls)
+	}
+	if err := os.WriteFile(log, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(context.Background(), []string{"build", "--dir", d, "--root", "../..", "--image", "runtime"}); err != nil {
+		t.Fatal(err)
+	}
+	calls, _ = os.ReadFile(log)
+	if !strings.Contains(string(calls), "build --target prod -t hermes-hub:0.5.0-prod") || strings.Contains(string(calls), " build communication-hub") || strings.Contains(string(calls), "build --target cli-tools") || strings.Contains(string(calls), "prune") {
+		t.Fatalf("runtime-only build selected wrong images: %s", calls)
+	}
+	if run(context.Background(), []string{"build", "--dir", d, "--image", "runtime", "communication-hub"}) == nil {
+		t.Fatal("image-only build accepted a Compose service")
 	}
 }

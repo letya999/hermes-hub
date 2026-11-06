@@ -154,12 +154,12 @@ func TestDevRebuildCompilesAndStartsOnlySelectedService(t *testing.T) {
 		t.Fatal(err)
 	}
 	calls := string(data)
-	for _, want := range []string{"config --quiet", "go build", "GOOS=linux GOARCH=amd64 CGO_ENABLED=0", "Dockerfile.dev-overlay", "hermes-hub-dev-owner-communication-hub:local", "--no-build --no-deps communication-hub", "buildx prune --max-used-space 8gb -f"} {
+	for _, want := range []string{"config --quiet", "go build", "GOOS=linux GOARCH=amd64 CGO_ENABLED=0", "Dockerfile.dev-overlay", "hermes-hub-dev-owner-communication-hub:local", "--no-build --no-deps communication-hub"} {
 		if !strings.Contains(calls, want) {
 			t.Fatalf("missing %s in %s", want, calls)
 		}
 	}
-	if strings.Contains(calls, "cli-tools") || strings.Contains(calls, "cell-proxy") {
+	if strings.Contains(calls, "cli-tools") || strings.Contains(calls, "cell-proxy") || strings.Contains(calls, "image prune") || strings.Contains(calls, "buildx prune") {
 		t.Fatalf("unrelated images rebuilt: %s", calls)
 	}
 	for _, tc := range []struct{ service, source, base string }{
@@ -249,8 +249,8 @@ func TestDevRebuildCompilesAndStartsOnlySelectedService(t *testing.T) {
 		t.Fatal("accepted failed Docker build")
 	}
 	afterDocker, _ := os.ReadFile(log)
-	if strings.Count(string(afterDocker), "buildx prune --max-used-space 8gb -f") <= strings.Count(string(after), "buildx prune --max-used-space 8gb -f") {
-		t.Fatal("failed Docker build skipped cleanup")
+	if strings.Contains(string(afterDocker[len(after):]), "prune") {
+		t.Fatal("failed scoped Docker build pruned the shared cache")
 	}
 	t.Setenv("HUB_FAIL_DOCKER", "")
 	t.Setenv("HUB_FAIL_UP", "1")

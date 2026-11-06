@@ -1,6 +1,6 @@
 ---
 description: Operator runbook — stack lifecycle, user onboarding, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
-last_verified: 2026-11-06
+last_verified: 2026-11-07
 ---
 
 # Operations
@@ -17,7 +17,25 @@ generated/`; `up` builds and starts; `down` stops without deleting data;
 `logs` tails the Compose project. Pass service names to scope:
 `hubctl up --dir spaces/alice --env dev communication-hub toolhub` — scoped
 `up` skips dependencies, list them explicitly. `hubctl build` then
-`hubctl up --no-build` restarts on existing images.
+`hubctl up --no-build` converges the stack on existing images without forcing
+healthy containers to restart. For a single Compose
+service, use `hubctl build --dir spaces/alice communication-hub` followed by
+`hubctl up --dir spaces/alice --no-build communication-hub`; this does not
+rebuild runtime or cell images. Build a spawned runtime alone with `hubctl
+build --dir spaces/alice --image runtime`; `cli-tools` and `cell-proxy` are
+the other standalone image choices. Unscoped `build` still builds the full
+stack for first setup.
+`space apply` publishes authored passport changes; editing Go code alone does
+not require it. After a ToolHub binary edit in a running dev stack, use
+`hubctl dev-rebuild --dir spaces/alice --env dev toolhub`. For a base-image
+build, select `hubctl build --dir spaces/alice toolhub`, then `hubctl up --dir
+spaces/alice --no-build toolhub`. Neither path should recreate unrelated
+services. Agent-tool contract changes additionally require catalog rebind
+and managed runtime respawn.
+The base-image Dockerfile still shares a Go build stage and a `cliproxy` binary
+across control services. A cold `build toolhub` can therefore rebuild those
+stages even though Compose selects only ToolHub; use `dev-rebuild` for Go-only
+iterations while the dev base image exists.
 
 `hubctl build`/`up` run `docker compose config --quiet` first; supervisor
 mode also needs `HUB_SUPERVISOR_AUTH` or a provisioned `supervisor.auth`.
@@ -679,8 +697,10 @@ or catalog round-trip); `HUB_MANAGED_BROWSER` carries the grant to
 in-container materialization so the attested config matches.
 
 Entry points (`just`, `hubctl build`/`up`) force `DOCKER_BUILDKIT=1`,
-`COMPOSE_DOCKER_CLI_BUILD=1`, `COMPOSE_BAKE=true`; `hubctl` prunes
-retag-orphans before/after and caps builder cache at 8 GB.
+`COMPOSE_DOCKER_CLI_BUILD=1`, `COMPOSE_BAKE=true`; full `hubctl` builds prune
+retag-orphans before/after and cap builder cache at 8 GB. Scoped builds and
+`dev-rebuild` retain the shared cache; run `just docker-clean` deliberately
+when disk use needs reclaiming.
 `HUB_DOCKER_CACHE_FROM`/`_TO` forward `--cache-from/--cache-to` (CI uses
 `type=gha`); builds always `--load`.
 

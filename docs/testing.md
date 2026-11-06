@@ -1,6 +1,6 @@
 ---
 description: Test pyramid and evidence rules — unit/race, contract probes, Docker gates, mock channels, live acceptance.
-last_verified: 2026-11-06
+last_verified: 2026-11-07
 ---
 
 # Testing
@@ -10,8 +10,13 @@ last_verified: 2026-11-06
 1. **Unit** — `go test ./internal/...`; table tests over real handlers, not
    interfaces-under-themselves. Race (`-race`) and shuffle are part of
    required CI, not optional acceptance extras. `just check` is format/docs/vet;
-   `just test <packages>` runs affected local tests. `just check-full` runs the
+   `just test <packages>` runs affected local tests. Vet only touched packages
+   during edits (`go vet -p=2 <packages>`); `just check` is the final local
+   gate. `just check-full` runs the
    exhaustive local fallback. Preserve result caching during local iteration.
+   During an edit, use `go test -short -run '^TestName$' ./affected/package`
+   for the named regression. Run `just test ./affected/package` once after the
+   last edit; do not rerun a whole large package for every diagnosis.
 2. **Contract probes** — `go run -tags integration ./cmd/devcheck
    <probe>`: `hermes-contract` (pinned image `/v1/*` + sessions),
    `toolhub-contract`, `toolhub-hermes-contract`, `forward_live_test`
@@ -51,6 +56,13 @@ unsafe names, implicit routing rejected); routine mutations require the
 explicit `--chat-id/--organization/--runtime/--policy/--user` quintuple.
 
 ## Local Docker acceptance
+
+For ordinary service smoke, reuse existing dev spaces when they are
+running and verify only the changed service. Do not start a duplicate Compose
+stack to diagnose an error already visible in an existing container. Fault and
+authorization tests that alter grants, stop services or write memory need
+isolated fixtures or a dedicated CI canary; never use personal data as a test
+fixture. Build only the changed image during local iteration.
 
 Use dedicated verification tags and temporary contexts. The managed
 supervisor canary namespaces its runtime and control bridges; fixture

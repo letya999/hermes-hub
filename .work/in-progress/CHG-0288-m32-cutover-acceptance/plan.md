@@ -20,6 +20,11 @@ not hand-built profile fixtures alone. Use two synthetic users and real containe
 Record source/image identity, commands, effects and boundaries. External provider
 delivery exactly once is not inferred from hub idempotency. Failed criteria remain
 open under their implementation issues. No provider login/sends without authority.
+For local edits, reuse the existing dev spaces for non-destructive smoke and
+`dev-rebuild` only the changed service. Do not create another Compose project
+for routine diagnosis. Run disruptive fault/isolation cases in a dedicated CI
+canary or one deliberately scheduled isolated acceptance run; never use
+personal memory or credentials as fixtures.
 
 ## #527 — final cutover and projection
 

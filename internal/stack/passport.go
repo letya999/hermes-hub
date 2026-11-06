@@ -14,26 +14,14 @@ import (
 )
 
 // The published passport revision is the imperative authority for managed
-// spaces. The legacy overlay below exists only for spaces without a published
-// revision while the six-file cutover is in progress.
+// spaces.
 
 // ErrRevisionUnloadable marks the fail-closed class: a published-revision
 // pointer exists but the revision cannot be decoded.
 var ErrRevisionUnloadable = errors.New("published revision does not load")
 
-func (s *Settings) applyPassport(dir string) error {
-	eff, err := passportview.LoadEffective(dir)
-	if err != nil {
-		if passportRevision(dir) {
-			return fmt.Errorf("%w: %w", ErrRevisionUnloadable, err)
-		}
-		return nil // no published revision — legacy files remain the authority
-	}
-	return s.applyEffective(eff)
-}
-
 // applyEffective carries one loaded revision's fields onto the settings the
-// extension files supplied.
+// validated managed settings.
 func (s *Settings) applyEffective(eff passportview.Effective) error {
 	s.PassportRevision = eff.Header.Metadata.Revision
 	if s.Schema == 0 {

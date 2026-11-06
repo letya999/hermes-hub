@@ -18,6 +18,7 @@ immutable decisions in docs/adr/, frozen requirements in specs/, task state in .
   actually projected. A cataloged tool missing from docs/tools.md fails the suite.
   Tool shape (names, verbs, schemas, effects, results) follows docs/tool-design.md.
 - Run `just check` (format, docs, vet) and `just test <affected-package> ...` before delivery.
+  During edits, vet touched packages with `go vet -p=2 <packages>` and run only the named regression with `go test -short -run '<TestName>' <package>`; run `just check` and the affected package once after the final edit. Do not repeat full package or Docker gates after each diagnostic change.
   Run one repo-wide verification at a time across local worktrees. Keep Probity enabled.
   CI owns the full race/shuffle suite, own Go coverage >=85% (internal packages >=75%),
   static/security analysis, deployment contracts and Docker acceptance. Local green is not CI acceptance.
@@ -29,14 +30,17 @@ immutable decisions in docs/adr/, frozen requirements in specs/, task state in .
   `just ci-status <sha>` and `just ci-watch <run-id>` inspect its result. Remote writes need owner authorization.
   Run `just security` for dependency changes; report unavailable gates honestly.
 - Build hub images through `hubctl build`/`up` or `just docker-check-build`, not raw `docker compose build`:
-  these paths force BuildKit. `hubctl` prunes superseded hub images before/after attempts and caps the build cache at 8 GB;
+  these paths force BuildKit. Full `hubctl build`/`up` prunes superseded hub images before/after attempts and caps the build cache at 8 GB; scoped builds and `dev-rebuild` preserve the shared cache for fast iteration;
   `just docker-check-build` cleans on success.
+  After the first full build, inspect container state before rebuilding. Use `hubctl build <service>` for one Compose service or `hubctl build --image runtime` for the spawned runtime; `cli-tools` and `cell-proxy` are the other standalone image choices.
   After any other local Docker build, run `just docker-clean`; use `--deep` only for an intentional cold-cache reset.
   Never use broad system/volume prunes that could delete another project's data. Keep optional integrations out of the base image.
 - For local Go edits in a running dev stack, use `go run ./cmd/hubctl dev-rebuild --dir spaces/<user> --env dev <service>`
   (see docs/operations.md). Verify the selected container runs the new `hermes-hub-dev-<user>-<service>:local`
   image and check its service endpoint. Supervised `hermes-runtime` uses its dev image on the next spawn;
   a full `hubctl up` returns Compose services to their base images.
+  Reuse an existing dev space for non-destructive service smoke; do not create another full Compose stack for routine iteration. Keep fault and authorization acceptance isolated from personal data.
+  `space apply` publishes authored passport changes; a Go-only edit does not need it. For a ToolHub-only binary change, rebuild/recreate ToolHub only; agent-tool contract changes still require the catalog rebind and managed respawn above.
 - Significant changes use .work/in-progress/CHG-NNNN-name/{plan.md,state.yaml}; plan new milestones with .work/milestone-playbook.md.
   Update docs/specs affected by behavior. Accepted ADRs are appended, not rewritten.
 - `devcheck docs` (part of `just check`) enforces unique ADR/SPEC/CHG numbering, index↔file

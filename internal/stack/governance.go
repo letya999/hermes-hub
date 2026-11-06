@@ -43,10 +43,8 @@ type toolGovernance struct {
 // governanceDocPath resolves the shared governance document: the
 // HUB_TOOL_GOVERNANCE pin wins; the infra space always resolves its own
 // runtime dir (the seed target and document authority); a secondary space
-// reaches the infra sibling's copy first, then its own leftover doc, then
-// any documented sibling, falling back to the space-local path as the seed
-// target. Alphabetical sibling order never outranks the infra marker — a
-// stale doc on a secondary space must not shadow the shared policy.
+// reaches the unique infra sibling's copy, falling back to its own path.
+// An unrelated sibling's document is never authority for this space.
 func governanceDocPath(spaceDir string) string {
 	if pinned := os.Getenv("HUB_TOOL_GOVERNANCE"); pinned != "" {
 		return pinned
@@ -55,48 +53,16 @@ func governanceDocPath(spaceDir string) string {
 	if spaceRendersInfra(spaceDir) {
 		return own
 	}
-	parent := filepath.Dir(spaceDir)
-	if filepath.Base(parent) == "spaces" {
-		if siblings, err := os.ReadDir(parent); err == nil {
-			names := []string{}
-			for _, sibling := range siblings {
-				if sibling.IsDir() {
-					names = append(names, sibling.Name())
-				}
-			}
-			slices.Sort(names)
-			fallback := ""
-			for _, name := range names {
-				if name == filepath.Base(spaceDir) {
-					continue
-				}
-				dir := filepath.Join(parent, name)
-				candidate := filepath.Join(dir, "runtime", "toolhub", "governance.json")
-				if _, err := os.Stat(candidate); err != nil {
-					continue
-				}
-				if spaceRendersInfra(dir) {
-					return candidate
-				}
-				if fallback == "" {
-					fallback = candidate
-				}
-			}
-			if _, err := os.Stat(own); err == nil {
-				return own
-			}
-			if fallback != "" {
-				return fallback
-			}
-		}
+	if infra := InfraSpaceDir(spaceDir); infra != spaceDir {
+		return filepath.Join(infra, "runtime", "toolhub", "governance.json")
 	}
 	return own
 }
 
 // InfraSpaceDir resolves which space owns the shared control plane for a
-// spaces/ layout: the caller itself when it renders infra, else the first
-// sibling that does, else the caller. Host-side callers (hubctl skill git)
-// must present the infra-owner's credentials to the shared controller.
+// spaces/ layout: the caller itself when it renders infra, else the unique
+// infra sibling. Ambiguous or absent ownership resolves to the caller so
+// host-side callers cannot present another space's credentials by accident.
 func InfraSpaceDir(dir string) string {
 	if spaceRendersInfra(dir) {
 		return dir
@@ -109,17 +75,17 @@ func InfraSpaceDir(dir string) string {
 	if err != nil {
 		return dir
 	}
-	names := []string{}
+	owner := ""
 	for _, sibling := range siblings {
-		if sibling.IsDir() {
-			names = append(names, sibling.Name())
+		if sibling.IsDir() && sibling.Name() != filepath.Base(dir) && spaceRendersInfra(filepath.Join(parent, sibling.Name())) {
+			if owner != "" {
+				return dir
+			}
+			owner = sibling.Name()
 		}
 	}
-	slices.Sort(names)
-	for _, name := range names {
-		if name != filepath.Base(dir) && spaceRendersInfra(filepath.Join(parent, name)) {
-			return filepath.Join(parent, name)
-		}
+	if owner != "" {
+		return filepath.Join(parent, owner)
 	}
 	return dir
 }

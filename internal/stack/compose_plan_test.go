@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/letya999/hermes-hub/internal/passportview"
 )
 
 // managedPassportSibling is the settings shape a managed, non-infra space
@@ -161,7 +163,11 @@ func TestApplyPassportCarriesServiceTopology(t *testing.T) {
 	}
 	infra := false
 	s := Settings{Infra: &infra}
-	if err := s.applyPassport(dir); err != nil {
+	effective, err := passportview.LoadEffective(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.applyEffective(effective); err != nil {
 		t.Fatal(err)
 	}
 	if s.PassportServices["cliproxy-google-1"] != "per-space" || s.PassportServices["toolhub"] != "shared" {

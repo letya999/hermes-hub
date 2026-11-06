@@ -1,6 +1,6 @@
 ---
 description: model-relay — per-space model selection endpoint for managed spaces; layered models.yaml, owner switch bearer, cliproxy upstream.
-last_verified: 2026-11-04
+last_verified: 2026-11-07
 ---
 
 # model-relay
@@ -225,7 +225,9 @@ tmpfs delivery is the only place session material may exist.
 For sibling spaces the external `broker-materialized` reference resolves to
 the infra project's volume (`hermes-hub-<infra-owner>-<env>-broker-materialized`),
 located through `InfraSpaceDir`; a space rendering its own infra declares the
-tmpfs locally instead.
+tmpfs locally instead. If more than one sibling claims infra ownership, the
+resolver does not choose one by directory order; the shared reference stays
+local until the deployment has one unambiguous owner.
 
 Every space rendering cliproxy instances also declares `broker-secrets-cliproxy`
 (project-local, mounted read-only only in the init companion). Provision its

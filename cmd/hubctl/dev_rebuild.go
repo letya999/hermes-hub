@@ -39,7 +39,7 @@ func devService(name string) (devServiceSpec, bool) {
 	return devServiceSpec{}, false
 }
 
-func runDevRebuild(ctx context.Context, args []string) (retErr error) {
+func runDevRebuild(ctx context.Context, args []string) error {
 	f := flag.NewFlagSet("dev-rebuild", flag.ContinueOnError)
 	dir := f.String("dir", "", "dev space directory")
 	root := f.String("root", ".", "source root")
@@ -138,17 +138,6 @@ func runDevRebuild(ctx context.Context, args []string) (retErr error) {
 	if err := stageDevCompanions(service, rootAbs, companions); err != nil {
 		return err
 	}
-	defer func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		if err := pruneDanglingImages(cleanupCtx, dockerOutput); err != nil {
-			if retErr == nil {
-				retErr = fmt.Errorf("dev image cleanup: %w", err)
-			} else {
-				fmt.Fprintln(os.Stderr, "hubctl: dev image cleanup:", err)
-			}
-		}
-	}()
 	image := "hermes-hub-dev-" + settings.User + "-" + service + ":local"
 	previous := exec.CommandContext(ctx, "docker", "image", "inspect", "--format", "{{.Id}}", image)
 	previous.Env = supervisorComposeEnv(dirAbs)

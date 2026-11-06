@@ -1,6 +1,6 @@
 ---
 description: hubctl — host-side control CLI: stack lifecycle, builds, spaces, grants, connector controllers.
-last_verified: 2026-11-06
+last_verified: 2026-11-07
 ---
 
 # hubctl
@@ -20,7 +20,12 @@ a human confirmation link minted through the communication gateway.
 - **Models**: `models login` (per-service cliproxy OAuth enrollment +
   `model-grants.json` grant recording).
 - **Images**: `build`, `dev-rebuild` (the only sanctioned local build paths —
-  they force BuildKit, prune superseded hub images, cap build cache at 8 GB).
+  they force BuildKit; full builds prune superseded hub images and cap build
+  cache at 8 GB, while scoped builds preserve it).
+  `build <service>` builds only the selected Compose service; `build --image
+  runtime` builds only the spawned runtime (`cli-tools` and `cell-proxy` are
+  also valid image names). Unscoped `build`
+  builds all required images.
 - **Spaces/selection**: `execution-audit`, `select-execution`.
 - **Control plane**: `supervisor` (also the container entrypoint),
   `connector generic-controller` (workload admission endpoint, :8545),

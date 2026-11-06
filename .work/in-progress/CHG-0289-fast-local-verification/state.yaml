@@ -2,12 +2,15 @@ schema: 1
 change: CHG-0289
 title: Fast local verification and CI handoff
 status: in_progress
-updated: 2026-11-06
+updated: 2026-11-07
 branch: ci/fast-local-checks
 implementation_status: locally_verified_pending_ci_and_host_diagnosis
 validation:
   just_check: passed_2026-11-06_57.75_seconds
   affected_tests: passed_2026-11-06_31_seconds
+  integration_branch_just_check: passed_2026-11-07
+  integration_branch_hubctl_tests: passed_2026-11-07_85.568_seconds
+  integration_branch_communication_tests: timed_out_2026-11-07_120_seconds
   ci_workflow: actionlint_passed_remote_not_run
   docker: not_run
   windows_root_cause: not_proven
@@ -20,6 +23,8 @@ evidence:
   - "Diagnostic short full suite exceeded ten minutes; 46 packages completed before explicit stop. Slow packages: memory/eval 130s, agenttools 128s, hubctl 105s. Baseline docs failure repaired by re-verifying the changed RBAC/hubctl sections."
   - "Updated stale M32 plan and all three entry prompts: existing worktrees, Devin stages, actual dependencies and separate local/CI evidence."
   - "Windows Access is denied also occurred once when starting the tool shell, outside Go tests; a retry launched normally. Host cause remains unproven."
+  - "On feat/m32-integration, the #526 session used two unscoped hubctl builds (329s and 367s); space apply itself took 1-2s. Scoped build and dev-rebuild now keep the shared cache; selected-image fake-Docker regressions passed locally. No current-tree Docker image or remote CI acceptance is claimed."
+  - "2026-11-07 integration continuation: unscoped hubctl up --no-build no longer forces recreation of every healthy service; scoped up still forces only the named services and skips orphan removal. Fake-Docker lifecycle regression, just check (about 32s), and just test ./cmd/hubctl passed. Docker was not touched during owner disk cleanup."
   - "Last visible CI run was 2026-10-31; current M32 work is unpublished."
   - "75752068 adds Windows -p=1 to full race/shuffle/count=1/coverpkg suite; all package binaries serialize."
   - "Found CI role cache read/write scope mismatch and shared overwrite between core/browser/knowledge; corrected."

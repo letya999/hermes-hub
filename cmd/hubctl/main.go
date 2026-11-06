@@ -415,6 +415,7 @@ func run(ctx context.Context, args []string) error {
 	config := f.String("config", "companion.yaml", "native bridge config")
 	apply := f.Bool("apply", false, "apply migration; default is dry-run")
 	noBuild := f.Bool("no-build", false, "start existing images without rebuilding (up only)")
+	imageTarget := f.String("image", "", "build only runtime, cli-tools, or cell-proxy image (build only)")
 	live := f.Bool("live", false, "doctor: verify the selected model against the live provider catalog")
 	toolHubStore := f.String("toolhub-store", "", "absolute ToolHub registry path")
 	brokerStore := f.Bool("broker", false, "store-migrate/store-activate: migrate the credential-broker Docker volumes via its service image")
@@ -449,6 +450,11 @@ func run(ctx context.Context, args []string) error {
 	}
 	if *noBuild && op != "up" {
 		return fmt.Errorf("--no-build is only valid with up")
+	}
+	if *imageTarget != "" {
+		if op != "build" || f.NArg() != 0 || !slices.Contains([]string{"runtime", "cli-tools", "cell-proxy"}, *imageTarget) {
+			return fmt.Errorf("--image requires build and exactly one of runtime, cli-tools, cell-proxy without services")
+		}
 	}
 	if *live && op != "doctor" {
 		return fmt.Errorf("--live is only valid with doctor")
@@ -753,21 +759,24 @@ func run(ctx context.Context, args []string) error {
 			if os.Getenv("DOCKER_BUILDKIT") == "0" {
 				fmt.Fprintln(os.Stderr, "hubctl: ignoring DOCKER_BUILDKIT=0 (classic builder duplicates the hub image on disk)")
 			}
-			// A previous build may have been killed before its cleanup ran.
-			if err := pruneDanglingImages(ctx, dockerOutput); err != nil {
-				return err
-			}
-			defer func() {
-				// A failed build can also leave dangling layers and stopped containers.
-				// Cleanup must not hide the original build/up error.
-				cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-				defer cancel()
-				if cleanupErr := pruneDanglingImages(cleanupCtx, dockerOutput); cleanupErr != nil {
-					fmt.Fprintln(os.Stderr, "hubctl: Docker cleanup:", cleanupErr)
+			// Scoped builds preserve the shared BuildKit cache for the next edit.
+			// The full build still bounds disk use before and after the attempt.
+			if len(f.Args()) == 0 && *imageTarget == "" {
+				if err := pruneDanglingImages(ctx, dockerOutput); err != nil {
+					return err
 				}
-			}()
-			if err = docker(append([]string{"build"}, f.Args()...)...); err != nil {
-				return err
+				defer func() {
+					cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+					defer cancel()
+					if cleanupErr := pruneDanglingImages(cleanupCtx, dockerOutput); cleanupErr != nil {
+						fmt.Fprintln(os.Stderr, "hubctl: Docker cleanup:", cleanupErr)
+					}
+				}()
+			}
+			if *imageTarget == "" {
+				if err = docker(append([]string{"build"}, f.Args()...)...); err != nil {
+					return err
+				}
 			}
 			// CLI sandbox cells run on dedicated images the controller
 			// resolves by tag at start; compose services never build them.
@@ -777,6 +786,9 @@ func run(ctx context.Context, args []string) error {
 			}
 			dockerfile := filepath.Join(rootAbs, "docker", "Dockerfile")
 			for _, stage := range []string{"cli-tools", "cell-proxy"} {
+				if len(f.Args()) > 0 || (*imageTarget != "" && *imageTarget != stage) {
+					continue
+				}
 				image := "hermes-hub-" + stage + ":0.5.0-" + *environment
 				if err := dockerCmd("build", "--target", stage, "-t", image, "-f", dockerfile, rootAbs).Run(); err != nil {
 					return fmt.Errorf("build %s: %w", image, err)
@@ -790,13 +802,13 @@ func run(ctx context.Context, args []string) error {
 			if readErr != nil {
 				return readErr
 			}
-			if services, ok := stack.Compose(envSettings, rootAbs, abs)["services"].(stack.M); ok && stack.AgentImageRequired(envSettings, services) {
+			if services, ok := stack.Compose(envSettings, rootAbs, abs)["services"].(stack.M); ok && (len(f.Args()) == 0 && *imageTarget == "" && stack.AgentImageRequired(envSettings, services) || *imageTarget == "runtime") {
 				image := "hermes-hub:0.5.0-" + *environment
 				if err := dockerCmd("build", "--target", *environment, "-t", image, "-f", dockerfile, rootAbs).Run(); err != nil {
 					return fmt.Errorf("build %s: %w", image, err)
 				}
 			}
-			if *environment == "dev" && (len(f.Args()) == 0 || slices.Contains(f.Args(), "cliproxy")) {
+			if *environment == "dev" && (len(f.Args()) == 0 && *imageTarget == "" || slices.Contains(f.Args(), "cliproxy") || *imageTarget == "runtime") {
 				for _, pin := range []string{"dev-runtime-image", "dev-script-image"} {
 					if err := os.Remove(filepath.Join(abs, "generated", pin)); err != nil && !os.IsNotExist(err) { // #nosec G703 -- operator-supplied project dir
 						return err
@@ -818,7 +830,12 @@ func run(ctx context.Context, args []string) error {
 				}
 			}
 		}
-		upArgs := []string{"up", "-d", "--wait", "--wait-timeout", "180", "--force-recreate", "--remove-orphans"}
+		upArgs := []string{"up", "-d", "--wait", "--wait-timeout", "180"}
+		if len(f.Args()) == 0 {
+			upArgs = append(upArgs, "--remove-orphans")
+		} else {
+			upArgs = append(upArgs, "--force-recreate")
+		}
 		if *noBuild {
 			upArgs = append(upArgs, "--no-build")
 		}

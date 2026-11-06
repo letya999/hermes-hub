@@ -7,12 +7,9 @@ import (
 	"testing"
 )
 
-// SPEC-0092 R8.1 / CHG-0262 S8.2: ReadEnvironment is the legacy-file reader —
-// only internal/migration (the compiler) and the stack package itself (the
-// implementation) may call it. Every runtime path resolves through
-// ReadEffective/ReadEffectiveSpace, which honor the published revision as the
-// sole authority. This source scan is the package-level guard the plan
-// requires; a new runtime caller fails it.
+// SPEC-0092 R8.1 / CHG-0262 S8.2: runtime callers use the explicit
+// ReadEffective/ReadEffectiveSpace APIs. ReadEnvironment remains a compatibility
+// alias for stack and migration callers and must not regain runtime callers.
 func TestReadEnvironmentMigrationOnly(t *testing.T) {
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {

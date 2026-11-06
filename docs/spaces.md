@@ -1,6 +1,6 @@
 ---
 description: spaces/<id>/ layout — six authored passports, generated configs, secrets/env files, and state dirs.
-last_verified: "2026-11-06"
+last_verified: "2026-11-07"
 ---
 
 # Spaces
@@ -388,6 +388,9 @@ infra space, `supervised` keeps `hermes-runtime` as a spawn contract. A
 declared per-space instance with no rendered container — or an instance
 name that resolves to no catalog service — fails the render; the compose
 file never silently shrinks.
+The shared infra owner must be unique among sibling spaces. Ambiguous owner
+claims do not select a sibling by name, so a member cannot read another
+space's governance or credentials by accident.
 
 Publishing also refreshes the runtime's `/config`: a stable read-only
 directory bind at `generated/config-view/<env>/` whose individual files are
