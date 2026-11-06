@@ -309,6 +309,9 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 			return nil, err
 		}
 		gateway.Vaults = resolver
+		if err := gateway.recoverMemoryProposals(); err != nil {
+			return nil, errors.New("memory proposal recovery unavailable")
+		}
 	}
 	// The lifecycle authority is the supervisor job record over the same
 	// control channel the restart notifier uses; unconfigured leaves Runs nil

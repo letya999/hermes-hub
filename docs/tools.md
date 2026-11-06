@@ -217,8 +217,10 @@ file tools can no longer reach at all — the runtime has no `vault:` root
 M32/#519): `op=propose` persists a durable proposal in the vault — owner,
 exact diff, base revision, expiry and a single-use nonce — and the owner's
 verified confirmation tap on the channel is the only thing that applies it;
-the model cannot confirm its own proposal, and a replayed, expired,
-foreign or stale-base confirmation is denied without touching memory.
+the model cannot confirm its own proposal. All planned base hashes are
+checked before the first write; a verified confirmation persists recoverable
+`applying` state and startup finishes interrupted writes. A completed,
+expired pending, foreign or stale-base confirmation is denied without touching memory.
 Every mutation and denial is journaled to `runtime/memory/writes.jsonl`;
 `remember`/`fact` persist an owner-bound write intent first, and a failed
 journal write returns an error while a retry finishes the original request.

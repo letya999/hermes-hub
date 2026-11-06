@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,6 +31,7 @@ type cardProposal struct {
 	Nonce       string             `json:"nonce"`
 	ExpiresAt   time.Time          `json:"expires_at"`
 	Used        bool               `json:"used"`
+	State       string             `json:"state,omitempty"`
 	SourceRef   string             `json:"source_ref"`
 	InnerOp     string             `json:"inner"`
 	Writes      []cardPlannedWrite `json:"writes"`
@@ -106,10 +108,25 @@ func saveProposal(root string, p cardProposal) error {
 		return err
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, body, 0o600); err != nil {
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if _, err = f.Write(body); err == nil {
+		err = f.Sync()
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func loadProposal(root, id string) (cardProposal, error) {
@@ -137,12 +154,12 @@ func planTruth(root string, arguments map[string]any) ([]cardPlannedWrite, error
 		return nil, errors.New("card and text required")
 	}
 	rel := cardRel(card)
-	cur, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
-	if err != nil {
+	cur, baseSHA, err := vault.NewWriter(root).Read(rel)
+	if err != nil || baseSHA == "" {
 		return nil, errors.New("unknown card")
 	}
 	content := replaceSection(string(cur), "## Compiled Truth", text+"\n")
-	return []cardPlannedWrite{{Path: rel, Content: []byte(content), BaseSHA: shaOf(root, rel)}}, nil
+	return []cardPlannedWrite{{Path: rel, Content: []byte(content), BaseSHA: baseSHA}}, nil
 }
 
 // planMerge renders the merge op's two writes — the folded target first,
@@ -152,11 +169,11 @@ func planMerge(root string, arguments map[string]any) ([]cardPlannedWrite, error
 	if src == "" || dst == "" || src == dst {
 		return nil, errors.New("card and to must resolve to two different cards")
 	}
-	srcBytes, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(src)))
+	srcBytes, srcSHA, err := vault.NewWriter(root).Read(src)
 	if err != nil {
 		return nil, err
 	}
-	dstBytes, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(dst)))
+	dstBytes, dstSHA, err := vault.NewWriter(root).Read(dst)
 	if err != nil {
 		return nil, err
 	}
@@ -167,8 +184,8 @@ func planMerge(root string, arguments map[string]any) ([]cardPlannedWrite, error
 	merged := strings.TrimRight(string(dstBytes), "\n") + "\n\n" + body
 	struck := strings.Replace(string(srcBytes), "status: active", "status: superseded", 1)
 	return []cardPlannedWrite{
-		{Path: dst, Content: []byte(merged), BaseSHA: shaOf(root, dst)},
-		{Path: src, Content: []byte(struck), BaseSHA: shaOf(root, src)},
+		{Path: dst, Content: []byte(merged), BaseSHA: dstSHA},
+		{Path: src, Content: []byte(struck), BaseSHA: srcSHA},
 	}, nil
 }
 
@@ -178,15 +195,15 @@ func planForgetCard(root, card string) ([]cardPlannedWrite, error) {
 	if rel == "" {
 		return nil, errors.New("unknown card")
 	}
-	cur, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
-	if err != nil {
+	cur, baseSHA, err := vault.NewWriter(root).Read(rel)
+	if err != nil || baseSHA == "" {
 		return nil, errors.New("unknown card")
 	}
 	content := strings.Replace(string(cur), "status: active", "status: superseded", 1)
 	if content == string(cur) {
 		return nil, errors.New("card carries no active status to strike")
 	}
-	return []cardPlannedWrite{{Path: rel, Content: []byte(content), BaseSHA: shaOf(root, rel)}}, nil
+	return []cardPlannedWrite{{Path: rel, Content: []byte(content), BaseSHA: baseSHA}}, nil
 }
 
 // cardPropose persists an edit proposal for one existing-memory inner op and
@@ -264,7 +281,7 @@ func deliverMemoryProposal(ctx context.Context, auth identity.Envelope, prop car
 // confirmation — the /v1/confirmations endpoint routes the proposal id
 // namespace here. Denials are uniform.
 func (g *Gateway) consumeMemoryProposal(proof api.HumanConfirmation) error {
-	u, err := g.Vaults.Resolve(proof.Actor.PrincipalID, proof.Actor.Environment)
+	u, err := g.Vaults.resolveForProposal(proof.Actor.PrincipalID, proof.Actor.Environment)
 	if err != nil {
 		return api.ErrUnauthorized
 	}
@@ -274,44 +291,143 @@ func (g *Gateway) consumeMemoryProposal(proof api.HumanConfirmation) error {
 			return api.ErrUnauthorized
 		}
 		now := g.Control.now()
-		if prop.Used || prop.Nonce == "" || prop.Nonce != proof.Nonce || prop.PrincipalID != proof.Actor.PrincipalID ||
-			proof.Revision != prop.Revision || !now.Before(prop.ExpiresAt) || !proof.ExpiresAt.Equal(prop.ExpiresAt) ||
+		if prop.State == "complete" || (prop.State != "" && prop.State != "applying") || (prop.State == "applying" && !prop.Used) ||
+			prop.Nonce == "" || prop.Nonce != proof.Nonce || prop.PrincipalID != proof.Actor.PrincipalID ||
+			prop.Environment != proof.Actor.Environment || prop.Authority.Binding.ContextID != proof.Actor.ContextID ||
+			prop.Authority.Binding.RuntimeID != proof.Actor.RuntimeID || prop.Authority.Binding.PolicyVersion != proof.Actor.PolicyVersion ||
+			proof.Revision != prop.Revision || !proof.ExpiresAt.Equal(prop.ExpiresAt) ||
 			proof.ActionDigest == "" || proof.ActionDigest != proposalDigest(prop) {
 			return api.ErrUnauthorized
 		}
-		// Commit rechecks the live enrollment — the resolver's earlier check
-		// predates this lock, so a disable landed while waiting still stops
-		// the mutation.
-		if err := memoryEnrollment(g.PassportRoot, prop.PrincipalID, prop.Environment); err != nil {
-			cardJournalAppend(root, "apply", prop.ID, prop.SourceRef, prop.ID, "denied", nil)
-			return api.ErrUnauthorized
-		}
-		// Commit rechecks the authority that admitted the proposal — a
-		// revocation landed between propose and the owner tap still denies
-		// the mutation, before the nonce is spent.
-		if err := g.Store.ReverifyEffective(prop.Authority.effective()); err != nil {
-			cardJournalAppend(root, "apply", prop.ID, prop.SourceRef, prop.ID, "denied", nil)
-			return api.ErrUnauthorized
-		}
-		// Consume first: a crash after the mark can never replay the proof;
-		// a failed write leaves the honest denial, not a re-armed proposal.
-		prop.Used = true
-		if err := saveProposal(root, prop); err != nil {
-			return errors.New("proposal consume persist failed")
-		}
-		if prop.StrikeID != "" {
-			if err := memory.OpenForgetSet(filepath.Join(root, "runtime", "memory")).Strike(prop.StrikeID); err != nil {
-				cardJournalAppend(root, "apply", prop.ID, prop.SourceRef, prop.ID, "denied", nil)
-				return api.ErrUnauthorized
+		if prop.State == "" && !prop.Used {
+			if !now.Before(prop.ExpiresAt) || memoryEnrollment(g.PassportRoot, prop.PrincipalID, prop.Environment) != nil {
+				return proposalDenied(root, prop)
+			}
+			if err := g.Store.Reload(); err != nil {
+				return err
+			}
+			if err := g.Store.ReverifyEffective(prop.Authority.effective()); err != nil {
+				return proposalDenied(root, prop)
+			}
+			writer := vault.NewWriter(root)
+			for _, write := range prop.Writes {
+				_, digest, err := writer.Read(write.Path)
+				if err != nil || digest != write.BaseSHA {
+					return proposalDenied(root, prop)
+				}
+			}
+			// The durable applying state is the transaction's commit point.
+			// Recovery finishes this already-authorized action after a crash.
+			prop.Used, prop.State = true, "applying"
+			if err := saveProposal(root, prop); err != nil {
+				return err
 			}
 		}
-		for _, w := range prop.Writes {
-			if _, err := vault.NewWriter(root).Apply(memory.WriteOp{Path: w.Path, Content: w.Content, WantSHA: w.BaseSHA, Actor: memory.ActorAgent}); err != nil {
-				cardJournalAppend(root, "apply", prop.ID, prop.SourceRef, prop.ID, "denied", nil)
-				return api.ErrUnauthorized
+		if prop.State == "" && prop.Used { // interrupted record from the prior format
+			prop.State = "applying"
+			if err := saveProposal(root, prop); err != nil {
+				return err
 			}
 		}
-		cardJournalAppend(root, "apply", prop.ID, prop.SourceRef, prop.ID, "ok", map[string]any{"status": "ok", "op": "apply", "id": prop.ID})
-		return nil
+		return finishMemoryProposal(root, &prop, g.proposalAfterWrite)
 	})
+}
+
+func proposalDenied(root string, prop cardProposal) error {
+	if err := cardJournalAppend(root, "apply", prop.ID, prop.SourceRef, prop.ID, "denied", nil); err != nil {
+		return err
+	}
+	return api.ErrUnauthorized
+}
+
+func finishMemoryProposal(root string, prop *cardProposal, afterWrite func(int) error) error {
+	writer := vault.NewWriter(root)
+	for i, write := range prop.Writes {
+		_, currentSHA, err := writer.Read(write.Path)
+		if err != nil {
+			return err
+		}
+		newSHA := sha256.Sum256(write.Content)
+		afterSHA := hex.EncodeToString(newSHA[:])
+		op := memory.WriteOp{Path: write.Path, Content: write.Content, WantSHA: write.BaseSHA, Actor: memory.ActorAgent}
+		switch currentSHA {
+		case afterSHA:
+			if err := writer.RecoverApplied(op); err != nil {
+				return err
+			}
+		case write.BaseSHA:
+			if _, err := writer.Apply(op); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("pending proposal target changed: %w", memory.ErrStaleHash)
+		}
+		if afterWrite != nil {
+			if err := afterWrite(i); err != nil {
+				return err
+			}
+		}
+	}
+	if prop.StrikeID != "" {
+		forget := memory.OpenForgetSet(filepath.Join(root, "runtime", "memory"))
+		if !forget.Set()[prop.StrikeID] {
+			if err := forget.Strike(prop.StrikeID); err != nil {
+				return err
+			}
+		}
+	}
+	if _, ok := cardJournalResult(root, prop.ID); !ok {
+		if err := cardJournalAppend(root, "apply", prop.ID, prop.SourceRef, prop.ID, "ok", map[string]any{"status": "ok", "op": "apply", "id": prop.ID}); err != nil {
+			return err
+		}
+	}
+	prop.State = "complete"
+	return saveProposal(root, *prop)
+}
+
+// recoverMemoryProposals completes confirmed operations before ToolHub serves
+// requests. Pending proposals have no verified human action and stay inert.
+func (g *Gateway) recoverMemoryProposals() error {
+	if g.Vaults == nil {
+		return nil
+	}
+	for principal, root := range g.Vaults.bindings {
+		entries, err := os.ReadDir(filepath.Join(root, "runtime", "memory", "proposals"))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if !strings.HasPrefix(entry.Name(), "memprop-") || !strings.HasSuffix(entry.Name(), ".json") {
+				continue
+			}
+			id := strings.TrimSuffix(entry.Name(), ".json")
+			prop, err := loadProposal(root, id)
+			if err != nil {
+				return err
+			}
+			if prop.State == "complete" || !prop.Used && prop.State == "" {
+				continue
+			}
+			if prop.ID != id || prop.PrincipalID != principal || !prop.Used || prop.State != "applying" && prop.State != "" {
+				return fmt.Errorf("invalid consumed memory proposal %s", id)
+			}
+			u, err := g.Vaults.resolveForProposal(principal, prop.Environment)
+			if err != nil {
+				return err
+			}
+			if err := u.Locked(func(root string) error {
+				current, err := loadProposal(root, id)
+				if err != nil || current.ID != id || current.PrincipalID != principal || !current.Used {
+					return fmt.Errorf("memory proposal changed during recovery: %s", id)
+				}
+				return finishMemoryProposal(root, &current, nil)
+			}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

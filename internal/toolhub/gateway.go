@@ -58,7 +58,8 @@ type Gateway struct {
 	// Vaults resolves a verified principal/environment to that principal's
 	// vault through the server-rendered bindings (HUB_VAULTS_BY_PRINCIPAL).
 	// Nil when no bindings root is rendered — memory stays unavailable.
-	Vaults *VaultResolver
+	Vaults             *VaultResolver
+	proposalAfterWrite func(int) error // fault seam for interrupted multi-file commits
 	// Runs is the lifecycle-authority seam (supervisor /v1/jobs) consulted by
 	// the exact-run gate for model-facing memory calls. Nil fails closed.
 	Runs api.RunAuthority

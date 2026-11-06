@@ -90,8 +90,13 @@ and before service effects complete.
   single-use nonce inside the user's own vault, and only the owner's
   verified confirmation — the same `/v1/confirmations` human-action lane
   connector onboarding uses — consumes it and applies the fenced writes.
-  Self-confirmation, a copied or foreign proposal, a stale base, an
-  expired or replayed proof all deny without touching memory. At the
+  Every planned base hash is checked before the first mutation. Consumption
+  persists an `applying` state; a crash or persistence failure resumes the
+  remaining writes from their exact base/result hashes, including on ToolHub
+  startup, and `complete` is saved after the result journal. A pending
+  proposal never enters startup recovery. Self-confirmation, a copied or
+  foreign proposal, a stale base, an expired pending proof, or a completed
+  proof all deny without touching memory. At the
   commit point the published `memory.enabled` enrollment and the admitted
   authority are re-checked, so a disable or revocation that lands between
   admission — or between propose and the owner tap — still prevents the

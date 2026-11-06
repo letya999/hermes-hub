@@ -66,12 +66,30 @@ func (v *VaultResolver) Resolve(principal, environment string) (*UserVault, erro
 	if !identity.ValidID(principal) {
 		return nil, fmt.Errorf("%w: vault principal", api.ErrUnauthorized)
 	}
+	if err := memoryEnrollment(v.passports, principal, environment); err != nil {
+		return nil, err
+	}
+	return v.openBound(principal)
+}
+
+// An already-consumed proposal may need to finish after memory is disabled.
+// This route still requires the server binding and published user/environment;
+// pending proposals are denied at the confirmation commit gate.
+func (v *VaultResolver) resolveForProposal(principal, environment string) (*UserVault, error) {
+	if !identity.ValidID(principal) {
+		return nil, fmt.Errorf("%w: vault principal", api.ErrUnauthorized)
+	}
+	eff, err := passportview.LoadEffectiveGenerated(filepath.Join(v.passports, principal))
+	if err != nil || eff.Header.Metadata.Space != principal || eff.Header.Metadata.Environment != environment {
+		return nil, fmt.Errorf("%w: vault enrollment", api.ErrUnauthorized)
+	}
+	return v.openBound(principal)
+}
+
+func (v *VaultResolver) openBound(principal string) (*UserVault, error) {
 	dir, ok := v.bindings[principal]
 	if !ok {
 		return nil, fmt.Errorf("%w: vault binding", api.ErrUnauthorized)
-	}
-	if err := memoryEnrollment(v.passports, principal, environment); err != nil {
-		return nil, err
 	}
 	v.mu.Lock()
 	u := v.users[principal]

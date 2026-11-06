@@ -2,7 +2,9 @@ package toolhub
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -536,6 +538,162 @@ func TestMemoryCardProposalMergeForget(t *testing.T) {
 	sidecar, err := os.ReadFile(filepath.Join(vaults, "alice", "runtime", "memory", "forget.jsonl"))
 	if err != nil || !strings.Contains(string(sidecar), `"turn-9"`) {
 		t.Fatalf("confirmed forget-id missed the strike: %v %s", err, sidecar)
+	}
+}
+
+func mergeProposalFixture(t *testing.T) (*Gateway, *Store, map[string]identity.Envelope, string, string, cardProposal) {
+	t.Helper()
+	store, _, _, auths, _ := memoryCardStore(t, "alice")
+	passports, vaults := t.TempDir(), t.TempDir()
+	writeMemoryPassportEnv(t, passports, "alice", "dev", true)
+	if err := vault.Ensure(filepath.Join(vaults, "alice")); err != nil {
+		t.Fatal(err)
+	}
+	g, _ := memoryCardEnv(t, store, passports, vaults, auths, nil)
+	proposalEnv(t, g, auths)
+	for _, card := range []string{"vendors", "suppliers"} {
+		if out, err := memoryCardCall(t, g, auths["alice"], "job-alice", "run-alice-1", map[string]any{"op": "fact", "card": card, "text": "original " + card}); err != nil || out["status"] != "ok" {
+			t.Fatalf("setup fact: %v %v", out, err)
+		}
+	}
+	out, err := memoryCardCall(t, g, auths["alice"], "job-alice", "run-alice-1", map[string]any{"op": "propose", "inner": "merge", "card": "vendors", "to": "suppliers"})
+	if err != nil || out["status"] != "proposal" {
+		t.Fatalf("setup proposal: %v %v", out, err)
+	}
+	return g, store, auths, passports, vaults, proposalFile(t, vaults, "alice", out["id"].(string))
+}
+
+func TestAuditMergeStaleSourceDoesNotMutateTarget(t *testing.T) {
+	g, _, auths, _, vaults, prop := mergeProposalFixture(t)
+	root := filepath.Join(vaults, "alice")
+	dst := filepath.Join(root, "memory", "cards", "notes", "suppliers.md")
+	src := filepath.Join(root, "memory", "cards", "notes", "vendors.md")
+	before, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src, append(source, []byte("\nowner changed source\n")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := confirmProposal(t, g, "ctl-secret", ownerProof(prop, auths["alice"])); code != http.StatusForbidden {
+		t.Fatalf("stale second file admitted: %d", code)
+	}
+	after, err := os.ReadFile(dst)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("denied merge changed destination: %v", err)
+	}
+	if updated := proposalFile(t, vaults, "alice", prop.ID); updated.Used {
+		t.Fatal("stale proposal consumed confirmation")
+	}
+}
+
+func TestMemoryProposalInterruptedMergeRecoversAfterRestart(t *testing.T) {
+	g, store, auths, passports, vaults, prop := mergeProposalFixture(t)
+	g.proposalAfterWrite = func(i int) error {
+		if i == 0 {
+			return errors.New("synthetic interruption between writes")
+		}
+		return nil
+	}
+	proof := ownerProof(prop, auths["alice"])
+	if code := confirmProposal(t, g, "ctl-secret", proof); code != http.StatusServiceUnavailable {
+		t.Fatalf("interrupted merge status=%d", code)
+	}
+	if pending := proposalFile(t, vaults, "alice", prop.ID); !pending.Used || pending.State != "applying" {
+		t.Fatalf("confirmation has no recoverable state: %+v", pending)
+	}
+	root := filepath.Join(vaults, "alice")
+	dstPath := filepath.Join(root, "memory", "cards", "notes", "suppliers.md")
+	srcPath := filepath.Join(root, "memory", "cards", "notes", "vendors.md")
+	if dst, _ := os.ReadFile(dstPath); !strings.Contains(string(dst), "original vendors") {
+		t.Fatal("first write did not land before interruption")
+	}
+	if src, _ := os.ReadFile(srcPath); strings.Contains(string(src), "status: superseded") {
+		t.Fatal("second write landed before interruption")
+	}
+	restarted, _ := memoryCardEnv(t, store, passports, vaults, auths, nil)
+	proposalEnv(t, restarted, auths)
+	if code := confirmProposal(t, restarted, "ctl-secret", proof); code != http.StatusOK {
+		t.Fatalf("restart did not finish merge: %d", code)
+	}
+	dst, _ := os.ReadFile(dstPath)
+	src, _ := os.ReadFile(srcPath)
+	if strings.Count(string(dst), "original vendors") != 1 || !strings.Contains(string(src), "status: superseded") {
+		t.Fatalf("restart duplicated or lost merge: dst=%q src=%q", dst, src)
+	}
+	if code := confirmProposal(t, restarted, "ctl-secret", proof); code != http.StatusForbidden {
+		t.Fatalf("completed proposal replay status=%d", code)
+	}
+}
+
+func TestMemoryProposalStartupRecoveryWithoutCallbackReplay(t *testing.T) {
+	g, store, auths, passports, vaults, prop := mergeProposalFixture(t)
+	g.proposalAfterWrite = func(i int) error {
+		if i == 0 {
+			return errors.New("synthetic interruption between writes")
+		}
+		return nil
+	}
+	proof := ownerProof(prop, auths["alice"])
+	if code := confirmProposal(t, g, "ctl-secret", proof); code != http.StatusServiceUnavailable {
+		t.Fatalf("interrupted merge status=%d", code)
+	}
+	writeMemoryPassportEnv(t, passports, "alice", "dev", false)
+	t.Setenv("HUB_PASSPORTS_BY_PRINCIPAL", passports)
+	t.Setenv("HUB_VAULTS_BY_PRINCIPAL", vaults)
+	config := EndpointConfig{Token: strings.Repeat("t", 32), Auth: auths["alice"],
+		Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
+			return api.BackendResult{Text: "ok"}, nil
+		})}
+	if _, err := NewEndpointHandler(config, store); err != nil {
+		t.Fatalf("startup did not finish confirmed action: %v", err)
+	}
+	root := filepath.Join(vaults, "alice")
+	dst, _ := os.ReadFile(filepath.Join(root, "memory", "cards", "notes", "suppliers.md"))
+	src, _ := os.ReadFile(filepath.Join(root, "memory", "cards", "notes", "vendors.md"))
+	if strings.Count(string(dst), "original vendors") != 1 || !strings.Contains(string(src), "status: superseded") {
+		t.Fatalf("startup lost or repeated confirmed merge: dst=%q src=%q", dst, src)
+	}
+	if done := proposalFile(t, vaults, "alice", prop.ID); done.State != "complete" {
+		t.Fatalf("startup left proposal pending: %+v", done)
+	}
+}
+
+func TestMemoryProposalJournalFailureAfterConsumptionRecovers(t *testing.T) {
+	g, store, auths, passports, vaults, prop := mergeProposalFixture(t)
+	root := filepath.Join(vaults, "alice")
+	journal := filepath.Join(root, "runtime", "memory", "writes.jsonl")
+	if err := os.Remove(journal); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(journal, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	proof := ownerProof(prop, auths["alice"])
+	if code := confirmProposal(t, g, "ctl-secret", proof); code != http.StatusServiceUnavailable {
+		t.Fatalf("journal failure reported %d", code)
+	}
+	if pending := proposalFile(t, vaults, "alice", prop.ID); !pending.Used || pending.State != "applying" {
+		t.Fatalf("consumed confirmation not recoverable: %+v", pending)
+	}
+	if err := os.Remove(journal); err != nil {
+		t.Fatal(err)
+	}
+	restarted, _ := memoryCardEnv(t, store, passports, vaults, auths, nil)
+	proposalEnv(t, restarted, auths)
+	if code := confirmProposal(t, restarted, "ctl-secret", proof); code != http.StatusOK {
+		t.Fatalf("journal recovery status=%d", code)
+	}
+	if done := proposalFile(t, vaults, "alice", prop.ID); done.State != "complete" {
+		t.Fatalf("proposal not completed: %+v", done)
+	}
+	dst, _ := os.ReadFile(filepath.Join(root, "memory", "cards", "notes", "suppliers.md"))
+	if strings.Count(string(dst), "original vendors") != 1 {
+		t.Fatalf("replay duplicated merge: %q", dst)
 	}
 }
 
