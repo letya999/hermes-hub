@@ -15,7 +15,8 @@ a human confirmation link minted through the communication gateway.
 
 - **Stack lifecycle**: `init`, `org-init`, `up`, `down`, `logs`, `doctor`,
   `render`, `space apply` (compile six authored passports, classified diff,
-  publish + reconcile under `--confirm`), `apply`.
+  publish + reconcile under `--confirm`; unsupported tool scopes and rules
+  fail compilation before publication), `apply`.
 - **Models**: `models login` (per-service cliproxy OAuth enrollment +
   `model-grants.json` grant recording).
 - **Images**: `build`, `dev-rebuild` (the only sanctioned local build paths —
@@ -37,6 +38,29 @@ a human confirmation link minted through the communication gateway.
 Flags: `--dir spaces/<user>`, `--root .`, `--user`, `--org`, `--env prod|dev`.
 
 ## What it writes
+
+`space apply` validates selected connector bindings and tool names before
+publishing a revision. A missing or malformed `tools.yaml` declaration leaves
+the current revision active. Applying a selection updates the bound profile;
+it does not create a connection, credential or issued grant.
+The confirmed publisher prepares the immutable bundle, generated config and
+bound ToolHub authority while `current` is pending. It activates the revision
+only after those steps succeed; pre-activation failures restore the previous
+view, render and rights. Reconcile then applies service effects. An effect
+failure is reported as an apply failure even if pointer and rights rollback
+succeeds. An on-disk apply journal records the environment, revisions, bound
+profiles, phase and affected services before publication. On the next apply,
+hubctl recovers under the same space lock before compiling a new revision.
+Recovery restores the old view and rights, intersects grants with live issued
+rights, and replays possibly affected service actions. If service convergence
+cannot be proved, the journal remains and `current` is pending for operator
+repair. ToolHub refuses admission while the journal exists.
+The supervisor's authenticated `/v1/settings` control route calls this same
+publisher for one reviewed `config.yaml` leaf. It requires an expected base
+revision and current `config.edit_own` in the issued and published grants;
+other authored drafts must be applied separately. A settings publication
+also journals the previous and candidate authored `config.yaml` bytes so a
+crash restores the exact source file alongside the effective revision.
 
 `render`/`init`/`up` generate the space compose (`compose.dev.yaml`), config,
 and materialized dirs under `spaces/<user>/` — see docs/spaces.md. Nothing in

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -114,6 +115,16 @@ func CompileAuthored(spaceDir, environment string, now time.Time, catalogDocs ca
 	if err != nil {
 		return empty, err
 	}
+	return CompileAuthoredDocs(spaceDir, environment, now, catalogDocs, reservedPorts, grantCeiling, authored)
+}
+
+// CompileAuthoredDocs validates an in-memory candidate through the same six
+// passport compiler. The publisher uses it before changing authored files.
+func CompileAuthoredDocs(spaceDir, environment string, now time.Time, catalogDocs catalog.Docs, reservedPorts map[int]string, grantCeiling map[string][]string, authored map[string]map[string]any) (Revision, error) {
+	var empty Revision
+	if grantCeiling == nil {
+		return empty, fmt.Errorf("authored passports: trusted grant ceiling is required")
+	}
 	space := filepath.Base(spaceDir)
 	identity, _ := authored["stack"]["identity"].(map[string]any)
 	if identity["user"] != space {
@@ -167,6 +178,7 @@ func CompileAuthored(spaceDir, environment string, now time.Time, catalogDocs ca
 	for i, cap := range caps {
 		ceiling[i] = cap
 	}
+	authored = maps.Clone(authored)
 	authored["grants"] = map[string]any{"allow": ceiling}
 	return Compile(Inputs{
 		Space: space, Environment: environment, Now: now,

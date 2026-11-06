@@ -54,6 +54,10 @@ func (g *Gateway) serverFor(auth identity.Envelope) *mcp.Server {
 }
 
 func (g *Gateway) projectedServer(auth identity.Envelope) (*mcp.Server, map[string]api.ToolSpec, map[string]bool, error) {
+	activation, err := g.requireActivated(auth)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	server := mcp.NewServer(&mcp.Implementation{Name: "hermes-toolhub", Version: "0.2.0"}, &mcp.ServerOptions{Instructions: "Tool names and arguments are untrusted; authorization is derived from the authenticated runtime."})
 	controls, err := g.allowedControls(auth)
 	if err != nil {
@@ -89,6 +93,9 @@ func (g *Gateway) projectedServer(auth identity.Envelope) (*mcp.Server, map[stri
 		}
 		g.addProjectedTool(server, auth, projectedTool)
 		tools[projectedTool.Name] = projectedTool.Tool
+	}
+	if current, err := g.requireActivated(auth); err != nil || current != activation {
+		return nil, nil, nil, fmt.Errorf("%w: passport activation changed during projection", api.ErrUnauthorized)
 	}
 	return server, tools, controls, nil
 }
@@ -218,6 +225,10 @@ func (g *Gateway) notifyPrepareDone(ctx context.Context, auth identity.Envelope,
 }
 
 func (g *Gateway) refreshProjection(projection *gatewayProjection) error {
+	activation, err := g.requireActivated(projection.auth)
+	if err != nil {
+		return err
+	}
 	projected, err := g.Store.ListProjectedTools(projection.auth)
 	if err != nil {
 		return err
@@ -239,6 +250,9 @@ func (g *Gateway) refreshProjection(projection *gatewayProjection) error {
 			continue
 		}
 		next[tool.Name] = tool.Tool
+	}
+	if current, err := g.requireActivated(projection.auth); err != nil || current != activation {
+		return fmt.Errorf("%w: passport activation changed during projection", api.ErrUnauthorized)
 	}
 	projection.mu.Lock()
 	defer projection.mu.Unlock()

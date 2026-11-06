@@ -76,7 +76,7 @@ func runDevRebuild(ctx context.Context, args []string) (retErr error) {
 	}
 	compose := filepath.Join(dirAbs, "generated", "compose.dev.yaml")
 	run := func(name string, env []string, workdir string, a ...string) error {
-		cmd := exec.CommandContext(ctx, name, a...) // #nosec G204 -- fixed executable and service.
+		cmd := exec.CommandContext(ctx, name, a...) // #nosec G204 G702 -- fixed executable and validated service.
 		cmd.Dir, cmd.Env = workdir, env
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 		return cmd.Run()
@@ -178,7 +178,7 @@ func runDevRebuild(ctx context.Context, args []string) (retErr error) {
 		rollbackCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
 		rollback := func(a ...string) error {
-			cmd := exec.CommandContext(rollbackCtx, "docker", a...) // #nosec G204 -- fixed executable and service.
+			cmd := exec.CommandContext(rollbackCtx, "docker", a...) // #nosec G204 G702 -- fixed executable and validated service.
 			cmd.Dir, cmd.Env, cmd.Stdout, cmd.Stderr = rootAbs, supervisorComposeEnv(dirAbs), os.Stdout, os.Stderr
 			return cmd.Run()
 		}

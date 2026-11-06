@@ -802,6 +802,10 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 	if err != nil {
 		return nil, err
 	}
+	current, err := stack.ReadEffective(binding.ContextRoot, env)
+	if err != nil || current.PassportRevision != settings.PassportRevision {
+		return nil, fmt.Errorf("managed runtime passport activation changed during spawn")
+	}
 	args = append(args, image, "serve")
 	return args, nil
 }

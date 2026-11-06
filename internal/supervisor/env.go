@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
-	"github.com/letya999/hermes-hub/internal/selfsettings"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"io"
 	"log"
@@ -312,9 +311,6 @@ func (m *Manager) materializeHermesConfig(binding Binding, env string) (string, 
 		// admission the same way the browser grant does.
 		MemoryVault: settings.ManagedMemoryVaultFlag(),
 		User:        settings.User,
-	}
-	if settings.CapabilityMode == "managed" {
-		opts.SelfSettingsPath = filepath.Join(binding.ContextRoot, "managed", env, "runtime", selfsettings.FileName)
 	}
 	if _, present := secrets["HUB_TOOLHUB_ENDPOINT"]; !present {
 		opts.ToolHubEndpoint = "http://toolhub:8090/mcp"

@@ -22,6 +22,17 @@ import (
 // The file is updated in place. A Docker bind mount follows the inode, so a
 // rename would hide the new contents from a running ToolHub.
 func EnrollSiblingRuntimeTokens(spaceDir, environment string) error {
+	if filepath.Base(filepath.Dir(filepath.Clean(spaceDir))) != "spaces" {
+		return nil
+	}
+	owner, err := ReadEffective(spaceDir, environment)
+	if err != nil {
+		return err
+	}
+	return enrollSiblingRuntimeTokens(spaceDir, environment, owner)
+}
+
+func enrollSiblingRuntimeTokens(spaceDir, environment string, owner Settings) error {
 	spaceDir, err := filepath.Abs(spaceDir)
 	if err != nil {
 		return err
@@ -29,10 +40,6 @@ func EnrollSiblingRuntimeTokens(spaceDir, environment string) error {
 	parent := filepath.Dir(spaceDir)
 	if filepath.Base(parent) != "spaces" {
 		return nil
-	}
-	owner, err := ReadEffective(spaceDir, environment)
-	if err != nil {
-		return err
 	}
 	ownerToken := runtimeAuthToken(filepath.Join(spaceDir, "runtime.auth"))
 	path := filepath.Join(spaceDir, "toolhub-tokens.json")

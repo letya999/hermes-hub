@@ -53,6 +53,9 @@ func publishWorkspace(t *testing.T, ctxRoot, env string) {
 	if err := os.MkdirAll(filepath.Join(ctxRoot, "generated", "config-view", env), 0700); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(ctxRoot, "generated", "config-view", env, "revision"), []byte(rev+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	// A published revision retires settings.yaml: the slim agent.yaml keeps
 	// the operator extensions the passport does not govern.
 	if err := os.WriteFile(filepath.Join(ctxRoot, "agent.yaml"), []byte(

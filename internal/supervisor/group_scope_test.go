@@ -41,6 +41,13 @@ func publishScopeKind(t *testing.T, ctxRoot, kind string) {
 	if err := os.WriteFile(filepath.Join(ctxRoot, "generated", "passports", "current"), []byte("r-scope-"+kind+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	view := filepath.Join(ctxRoot, "generated", "config-view", "prod")
+	if err := os.MkdirAll(view, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(view, "revision"), []byte("r-scope-"+kind+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestSupervisorGroupBindingRequiresDedicatedGroupHome(t *testing.T) {

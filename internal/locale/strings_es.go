@@ -2,10 +2,13 @@ package locale
 
 func init() {
 	register(LangES, map[string]string{
+		"supervisor.settings-invalid":             "Solicitud de edición de ajustes no válida.",
+		"supervisor.settings-denied":              "La edición de ajustes fue denegada o no se pudo publicar.",
 		"hubctl.space-apply-passport-right":       "Este cambio de pasaporte requiere el permiso %s.",
 		"hubctl.space-apply-scope-kind":           "El tipo de ámbito queda fijado en el aprovisionamiento y no puede cambiar entre revisiones.",
 		"hubctl.space-apply-organization-binding": "Aplicar un espacio de organización requiere un perfil administrado vinculado.",
 		"hubctl.space-apply-organization-policy":  "La política de organización no está disponible o los permisos solicitados superan su límite.",
+		"hubctl.space-apply-recovery":             "No se pudo recuperar la aplicación interrumpida del espacio; el espacio sigue sin estar disponible.",
 		"hubctl.audit-rollover-usage":             "Uso: hubctl audit rollover --ledger <ruta absoluta> [--apply --digest <sha256:...>]",
 		"hubctl.audit-rollover-ledger":            "Ruta del audit antiguo con ToolHub detenido",
 		"hubctl.audit-rollover-apply":             "Aplicar la migración verificada; por defecto solo planifica",

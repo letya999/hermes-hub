@@ -466,6 +466,7 @@ func nonLoopbackListen(address string) bool {
 // fails closed.
 func agentBackendFromEnv() api.ToolBackend {
 	docker := api.EnvOr("HUB_DOCKER_BIN", "docker")
+	settings := settingsBackend(os.Getenv("HUB_PASSPORTS_BY_PRINCIPAL"), os.Getenv("HUB_CAPABILITY_ENVIRONMENT"), os.Getenv("HUB_RUNTIME_SUPERVISOR_URL"), os.Getenv("HUB_COMMUNICATION_AUTH"))
 	// The docker socket sees every host container; scope checks keep exec,
 	// inspect and lifecycle ops inside this stack's own project.
 	api.SetDockerScope(os.Getenv("HUB_DOCKER_SCOPE"), os.Getenv("HUB_DOCKER_AGENT_NET"))
@@ -478,10 +479,10 @@ func agentBackendFromEnv() api.ToolBackend {
 	}
 	if container := os.Getenv("HUB_AGENT_EXEC_CONTAINER"); container != "" {
 		resolve := api.FixedAgentContainer(container)
-		return api.AgentExecBackend{Exec: api.DaemonAgentExec([]string{docker}, resolve), Scratch: api.DockerScratchExec([]string{docker}, resolve, api.DockerAgentExec([]string{docker}, resolve))}
+		return api.AgentExecBackend{Exec: api.DaemonAgentExec([]string{docker}, resolve), Scratch: api.DockerScratchExec([]string{docker}, resolve, api.DockerAgentExec([]string{docker}, resolve)), Settings: settings}
 	}
 	if os.Getenv("HUB_AGENT_EXEC_MODE") == "supervisor" {
-		return api.AgentExecBackend{Exec: api.DaemonAgentExec([]string{docker}, api.ManagedAgentContainer), Scratch: api.DockerScratchExec([]string{docker}, api.ManagedAgentContainer, api.DockerAgentExec([]string{docker}, api.ManagedAgentContainer))}
+		return api.AgentExecBackend{Exec: api.DaemonAgentExec([]string{docker}, api.ManagedAgentContainer), Scratch: api.DockerScratchExec([]string{docker}, api.ManagedAgentContainer, api.DockerAgentExec([]string{docker}, api.ManagedAgentContainer)), Settings: settings}
 	}
 	return nil
 }

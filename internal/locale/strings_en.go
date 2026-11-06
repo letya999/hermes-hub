@@ -2,10 +2,13 @@ package locale
 
 func init() {
 	register(LangEN, map[string]string{
+		"supervisor.settings-invalid":             "Invalid settings edit request.",
+		"supervisor.settings-denied":              "Settings edit was denied or could not be published.",
 		"hubctl.space-apply-passport-right":       "This passport change requires %s.",
 		"hubctl.space-apply-scope-kind":           "The scope kind is provisioning-stamped and cannot change across revisions.",
 		"hubctl.space-apply-organization-binding": "Organization space apply requires a managed profile binding.",
 		"hubctl.space-apply-organization-policy":  "Organization policy unavailable or requested rights exceed its ceiling.",
+		"hubctl.space-apply-recovery":             "Interrupted space apply could not be recovered; the space remains unavailable.",
 		"hubctl.audit-rollover-usage":             "Usage: hubctl audit rollover --ledger <absolute path> [--apply --digest <sha256:...>]",
 		"hubctl.audit-rollover-ledger":            "Path to the stopped ToolHub legacy audit",
 		"hubctl.audit-rollover-apply":             "Apply the verified rollover; default is dry-run",

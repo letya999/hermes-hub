@@ -221,6 +221,13 @@ func TestRenderEnvironmentFailsClosedOnTopologyDrift(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(rev, "config.yaml"), []byte(minimal), 0600); err != nil {
 		t.Fatal(err)
 	}
+	view := filepath.Join(dir, "generated", "config-view", "dev")
+	if err := os.MkdirAll(view, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(view, "revision"), []byte("r-0123456789abcdef\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	err := RenderEnvironment(dir, dir, "dev")
 	if err == nil || !strings.Contains(err.Error(), "no rendered container") {
 		t.Fatalf("expected topology drift error, got %v", err)
@@ -341,6 +348,13 @@ func TestSupervisedRuntimeSelectionFromStack(t *testing.T) {
 		}
 	}
 	if err := os.WriteFile(filepath.Join(dir, "generated", "passports", "current"), []byte("r-0123456789abcdef\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	view := filepath.Join(dir, "generated", "config-view", "dev")
+	if err := os.MkdirAll(view, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(view, "revision"), []byte("r-0123456789abcdef\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	agent := "schema: 3\ninfra: false\ncapability_mode: managed\ncapability_profile_id: dana-default\ncapability_generation: 1\n"

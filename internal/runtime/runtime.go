@@ -249,8 +249,13 @@ func supervise(mode string) error {
 
 // managedPreflight attests the mounted effective config and the container's
 // actual isolation before any managed Hermes process may start.
+var mountedPassportRevisionPath = "/config/revision"
+
 func managedPreflight() error {
 	hermesHome := env("HERMES_HOME", filepath.Join(state, "hermes"))
+	if err := checkMountedPassportRevision(mountedPassportRevisionPath, os.Getenv("HUB_PASSPORT_REVISION")); err != nil {
+		return err
+	}
 	if os.Getenv("HERMES_BUNDLES_DIR") != filepath.Join(hermesHome, "skill-bundles") ||
 		os.Getenv("HERMES_ENABLE_PROJECT_PLUGINS") != "0" {
 		return fmt.Errorf("managed runtime forbids redirected extension discovery")
@@ -266,6 +271,20 @@ func managedPreflight() error {
 	}
 	if err := verifyManagedIsolation(hermesHome); err != nil {
 		return fmt.Errorf("managed runtime isolation unverified: %w", err)
+	}
+	if err := checkMountedPassportRevision(mountedPassportRevisionPath, os.Getenv("HUB_PASSPORT_REVISION")); err != nil {
+		return err
+	}
+	return nil
+}
+
+func checkMountedPassportRevision(path, expected string) error {
+	if expected == "" {
+		return fmt.Errorf("managed runtime passport revision unavailable")
+	}
+	body, err := os.ReadFile(path)
+	if err != nil || strings.TrimSpace(string(body)) != expected {
+		return fmt.Errorf("managed runtime passport activation mismatch")
 	}
 	return nil
 }

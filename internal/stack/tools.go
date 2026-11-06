@@ -3,6 +3,7 @@ package stack
 import (
 	_ "embed"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"path/filepath"
 	"regexp"
@@ -625,7 +626,7 @@ func (s Settings) validateTools() error {
 			if !mcpConnectors[name] {
 				return fmt.Errorf("tools.%s: %q is not a ToolHub connector — a raw mcp: server uses via: mcp-raw", name, name)
 			}
-			if e.Server != "" && e.Server != "playwright" {
+			if e.Server != "" && e.Server != "playwright" && (s.CapabilityMode != "managed" || !identity.ValidID(e.Server)) {
 				return fmt.Errorf("tools.%s: unknown connector server %q", name, e.Server)
 			}
 		case ToolViaMCPRaw:

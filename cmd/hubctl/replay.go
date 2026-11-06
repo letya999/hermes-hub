@@ -333,7 +333,7 @@ func replayExecute(ctx context.Context, job commodel.Job, runtimeURL, auth strin
 func replaySpaceDigest(spaceDir string) (string, error) {
 	h := sha256.New()
 	for _, name := range replaySpaceDocs {
-		body, err := os.ReadFile(filepath.Join(spaceDir, name))
+		body, err := os.ReadFile(filepath.Join(spaceDir, name)) // #nosec G703 -- name comes from the fixed replay document list
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}

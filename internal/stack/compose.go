@@ -44,7 +44,7 @@ const sharedNetworkName = "hermes-hub-runtime"
 // regularFile reports a present, non-symlinked regular file; render only
 // ever keys substrate switches on real files the migration wrote.
 func regularFile(path string) bool {
-	info, err := os.Lstat(path)
+	info, err := os.Lstat(path) // #nosec G703 -- operator-owned compose input path
 	return err == nil && info.Mode().IsRegular()
 }
 
@@ -210,6 +210,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	}
 	if s.CapabilityMode == "managed" {
 		delete(runtimeEnv, "HUB_TOOLHUB_STORE")
+		runtimeEnv["HUB_PASSPORT_REVISION"] = s.PassportRevision
 		runtimeEnv["HUB_CAPABILITY_PROFILE_ID"] = s.CapabilityProfileID
 		runtimeEnv["HUB_CAPABILITY_GENERATION"] = fmt.Sprint(s.CapabilityGeneration)
 		runtimeEnv["HUB_CAPABILITY_ENVIRONMENT"] = s.Environment
@@ -644,21 +645,26 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 						continue
 					}
 					published := filepath.Join(parent, sibling.Name(), "generated", "passports")
-					if info, err := os.Lstat(published); err == nil && info.IsDir() {
+					if info, err := os.Lstat(published); err == nil && info.IsDir() { // #nosec G703 -- sibling is an entry under the operator-owned spaces root
 						toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(published), "target": "/passports-by/" + sibling.Name() + "/passports", "read_only": true})
 					}
 					vaultRoot := filepath.Join(parent, sibling.Name(), "vault")
-					if info, err := os.Lstat(vaultRoot); err == nil && info.IsDir() {
-						if effective, err := passportview.LoadEffective(filepath.Join(parent, sibling.Name())); err == nil && effective.Config.Memory.Enabled != nil && *effective.Config.Memory.Enabled && effective.Header.Metadata.Environment == s.Environment {
+					if info, err := os.Lstat(vaultRoot); err == nil && info.IsDir() { // #nosec G703 -- sibling is an entry under the operator-owned spaces root
+						enabled := sibling.Name() == s.User && s.PassportRevision != "" && s.PassportConfig != nil && s.PassportConfig.Memory.Enabled != nil && *s.PassportConfig.Memory.Enabled
+						if !enabled && (sibling.Name() != s.User || s.PassportRevision == "") {
+							effective, err := passportview.LoadEffective(filepath.Join(parent, sibling.Name()))
+							enabled = err == nil && effective.Config.Memory.Enabled != nil && *effective.Config.Memory.Enabled && effective.Header.Metadata.Environment == s.Environment
+						}
+						if enabled {
 							toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(vaultRoot), "target": "/vaults-by/" + sibling.Name()})
 						}
 					}
 					view := filepath.Join(parent, sibling.Name(), "generated", "skills-effective")
-					if info, err := os.Stat(view); err == nil && info.IsDir() {
+					if info, err := os.Stat(view); err == nil && info.IsDir() { // #nosec G703 -- fixed generated view beneath the sibling space
 						toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(view), "target": "/skills-effective-by/" + sibling.Name(), "read_only": true})
 					}
 					store := filepath.Join(parent, sibling.Name(), "skills")
-					if info, err := os.Stat(store); err == nil && info.IsDir() {
+					if info, err := os.Stat(store); err == nil && info.IsDir() { // #nosec G703 -- fixed generated store beneath the sibling space
 						toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(store), "target": "/skills-store-by/" + sibling.Name(), "read_only": true})
 					}
 				}
@@ -682,7 +688,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		}
 		// Extra principal tokens for secondary spaces: one JSON map per deploy,
 		// mounted read-only. Rendered only when the operator wrote the file.
-		if _, err := os.Stat(filepath.Join(dir, "toolhub-tokens.json")); err == nil {
+		if _, err := os.Stat(filepath.Join(dir, "toolhub-tokens.json")); err == nil { // #nosec G703 -- fixed operator-owned token file
 			toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "toolhub-tokens.json")), "target": "/run/toolhub-tokens.json", "read_only": true})
 			toolhubEnv["HUB_TOOLHUB_TOKENS_FILE"] = "/run/toolhub-tokens.json"
 		}
@@ -814,7 +820,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		gatewayEnvFiles := []any{M{"path": filepath.ToSlash(filepath.Join(dir, "communication."+s.Environment+".env")), "format": "raw"}}
 		if s.Has("telegram_auth") {
 			authEnv := filepath.Join(dir, "telegram-auth."+s.Environment+".env")
-			if info, err := os.Stat(authEnv); err == nil && info.Mode().IsRegular() {
+			if info, err := os.Stat(authEnv); err == nil && info.Mode().IsRegular() { // #nosec G703 -- operator-owned auth envelope path
 				gatewayEnvFiles = append(gatewayEnvFiles, M{"path": filepath.ToSlash(authEnv), "format": "raw"})
 			}
 		}
@@ -927,19 +933,19 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		// Sibling Telegram identities live in this file. TELEGRAM_ALLOWED_USERS
 		// stays the single infra-owner fallback when the file is absent.
 		usersFile := filepath.Join(dir, "communication.users.yaml")
-		if info, err := os.Stat(usersFile); err == nil && info.Mode().IsRegular() {
+		if info, err := os.Stat(usersFile); err == nil && info.Mode().IsRegular() { // #nosec G703 -- fixed operator-owned users file
 			gatewayEnvironment["HUB_COMMUNICATION_CONFIG"] = "/config/communication.users.yaml"
 			gateway["volumes"] = append(gateway["volumes"].([]any), M{"type": "bind", "source": filepath.ToSlash(usersFile), "target": "/config/communication.users.yaml", "read_only": true})
 		}
 		// Sibling runtimes authenticate control calls (credential forms,
 		// prepare-outcome, routines) with their own enrolled tokens.
-		if info, err := os.Stat(filepath.Join(dir, "toolhub-tokens.json")); err == nil && info.Mode().IsRegular() {
+		if info, err := os.Stat(filepath.Join(dir, "toolhub-tokens.json")); err == nil && info.Mode().IsRegular() { // #nosec G703 -- fixed operator-owned token file
 			gatewayEnvironment["HUB_COMMUNICATION_TOKENS_FILE"] = "/config/toolhub-tokens.json"
 			gateway["volumes"] = append(gateway["volumes"].([]any), M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "toolhub-tokens.json")), "target": "/config/toolhub-tokens.json", "read_only": true})
 		}
 		// Per-principal relay routing for /model: the shared gateway resolves
 		// the caller's own relay URL + admin bearer from this enrolled file.
-		if info, err := os.Stat(filepath.Join(dir, "model-relay-admins.json")); err == nil && info.Mode().IsRegular() {
+		if info, err := os.Stat(filepath.Join(dir, "model-relay-admins.json")); err == nil && info.Mode().IsRegular() { // #nosec G703 -- fixed operator-owned admin file
 			gatewayEnvironment["HUB_MODEL_RELAY_ADMINS_FILE"] = "/config/model-relay-admins.json"
 			gateway["volumes"] = append(gateway["volumes"].([]any), M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "model-relay-admins.json")), "target": "/config/model-relay-admins.json", "read_only": true})
 		}
@@ -957,7 +963,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 						continue
 					}
 					view := filepath.Join(parent, sibling.Name(), "generated", "skills-effective")
-					if info, err := os.Stat(view); err == nil && info.IsDir() {
+					if info, err := os.Stat(view); err == nil && info.IsDir() { // #nosec G703 -- fixed generated view beneath the sibling space
 						gateway["volumes"] = append(gateway["volumes"].([]any), M{"type": "bind", "source": filepath.ToSlash(view), "target": "/skills-effective-by/" + sibling.Name(), "read_only": true})
 					}
 					// /v1/skill-git resolves the caller's store here; publish
@@ -965,7 +971,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 					// mount stays writable — drafts and .sources mirrors are
 					// created in place so the runtime sees them instantly.
 					store := filepath.Join(parent, sibling.Name(), "skills")
-					if info, err := os.Stat(store); err == nil && info.IsDir() {
+					if info, err := os.Stat(store); err == nil && info.IsDir() { // #nosec G703 -- fixed generated store beneath the sibling space
 						gateway["volumes"] = append(gateway["volumes"].([]any), M{"type": "bind", "source": filepath.ToSlash(store), "target": "/skills-store-by/" + sibling.Name()})
 					}
 				}
@@ -1250,7 +1256,7 @@ var cliRegistryHosts = map[string][]string{
 // binds are not a refresh mechanism, but unpublished spaces still boot).
 func configMounts(dir, env string) []any {
 	view := filepath.Join(dir, "generated", "config-view", env)
-	if info, err := os.Stat(view); err == nil && info.IsDir() {
+	if info, err := os.Stat(view); err == nil && info.IsDir() { // #nosec G703 -- fixed generated view beneath the selected space
 		return []any{M{"type": "bind", "source": filepath.ToSlash(view), "target": "/config", "read_only": true}}
 	}
 	return []any{

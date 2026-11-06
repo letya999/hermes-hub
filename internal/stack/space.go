@@ -52,6 +52,20 @@ func ReadEffective(dir, environment string) (Settings, error) {
 	return environmentTail(s, dir, environment)
 }
 
+// ReadEffectiveRevision is for the publisher preparing an immutable candidate
+// while current is gated. Runtime readers must use ReadEffective.
+func ReadEffectiveRevision(dir, environment, revisionID string) (Settings, error) {
+	eff, err := passportview.LoadRevision(dir, revisionID)
+	if err != nil {
+		return Settings{}, err
+	}
+	s, err := finishManagedRead(Settings{}, dir, eff)
+	if err != nil {
+		return s, err
+	}
+	return environmentTail(s, dir, environment)
+}
+
 // ReadEffectiveSpace is the prod-semantics managed read without the
 // environment tail — for callers (the supervisor's policy resolution) that
 // apply the environment adjustments themselves.
@@ -62,6 +76,11 @@ func ReadEffectiveSpace(dir string) (Settings, error) {
 	eff, err := passportview.LoadEffective(dir)
 	if err != nil {
 		return Settings{}, fmt.Errorf("managed space has no loadable published revision: %w", err)
+	}
+	viewDir := filepath.Join(dir, "generated", "config-view", eff.Header.Metadata.Environment)
+	body, err := os.ReadFile(filepath.Join(viewDir, "revision"))
+	if err != nil || strings.TrimSpace(string(body)) != eff.Header.Metadata.Revision {
+		return Settings{}, fmt.Errorf("managed config view activation does not match published revision")
 	}
 	if filepath.Base(filepath.Dir(dir)) == "spaces" && (eff.Header.Metadata.Space != filepath.Base(dir) || eff.Stack.Identity.User != filepath.Base(dir)) {
 		return Settings{}, fmt.Errorf("managed space passport identity does not match its directory")

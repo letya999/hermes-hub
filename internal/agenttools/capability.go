@@ -178,8 +178,8 @@ func HubToolsDefinition() api.ToolDefinition {
 			tool("context_edit", "context.edit", "context.edit", "Compact this session's transcript at a turn boundary (action=compact): prune tool outputs, summarize the head, keep a verbatim tail.", api.WriteEffect, use("update", "context"), str("action"), opt("id"), opt("context"), opt("focus"), opt("engine"), intArg("here", false), boolArg("prune", false), boolArg("preview", false), boolArg("queue", false)),
 
 			// ---- settings (2)
-			tool("settings_read", "settings.read", "config.read", "Show runtime self-setting overrides: the manageable key allowlist, current overrides and their effective values. Secret values are never shown.", api.ReadEffect, use("read", "settings"), opt("key")),
-			tool("settings_edit", "settings.edit", "config.edit_own", "Set one manageable runtime setting or reset it to the rendered default. Applies after the scheduled runtime restart.", api.WriteEffect, use("update", "settings"), str("key"), opt("value")),
+			tool("settings_read", "settings.read", "config.read", "Read the active config passport revision, reviewed key allowlist and published setting values. Secret values are never shown.", api.ReadEffect, use("read", "settings"), opt("key")),
+			tool("settings_edit", "settings.edit", "config.edit_own", "Publish one reviewed config passport setting against the required base_revision. Empty value removes that authored leaf. Publication reconciles the runtime before success.", api.WriteEffect, use("update", "settings"), str("key"), opt("value"), str("base_revision")),
 
 			// ---- sessions (6): hub-runtime SessionStore; unavailable without it
 			remote("session_list", "sessions.list", "sessions.list", "List sessions of this space: id, channel, created/last_active, status, size.", api.ReadEffect, "runtime:sessions", intArg("limit", false), opt("cursor")),

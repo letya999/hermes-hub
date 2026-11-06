@@ -90,25 +90,26 @@ type CapabilitySelection struct {
 // A profile is published by the host control path for an exact runtime
 // generation. An absent profile or policy never enables legacy grants.
 type CapabilityProfile struct {
-	Schema         int                   `json:"schema"`
-	ProfileID      string                `json:"profile_id"`
-	PrincipalID    string                `json:"principal_id"`
-	ContextID      string                `json:"context_id"`
-	RuntimeID      string                `json:"runtime_id"`
-	Environment    string                `json:"environment"`
-	Generation     uint64                `json:"generation"`
-	PolicyVersion  string                `json:"policy_version"`
-	PolicyID       string                `json:"policy_id"`
-	PolicyRevision uint64                `json:"policy_revision"`
-	Revision       uint64                `json:"revision"`
-	IssuedBy       string                `json:"issued_by"`
-	IssuedAt       time.Time             `json:"issued_at"`
-	Reason         string                `json:"reason"`
-	Status         Status                `json:"status"`
-	Selections     []CapabilitySelection `json:"selections"`
-	Allows         []CapabilityRule      `json:"allows,omitempty"`
-	AllowGroups    []CapabilityGroup     `json:"allow_groups,omitempty"`
-	Denies         []CapabilityRule      `json:"denies,omitempty"`
+	Schema           int                   `json:"schema"`
+	ProfileID        string                `json:"profile_id"`
+	PrincipalID      string                `json:"principal_id"`
+	ContextID        string                `json:"context_id"`
+	RuntimeID        string                `json:"runtime_id"`
+	Environment      string                `json:"environment"`
+	Generation       uint64                `json:"generation"`
+	PolicyVersion    string                `json:"policy_version"`
+	PassportRevision string                `json:"passport_revision,omitempty"`
+	PolicyID         string                `json:"policy_id"`
+	PolicyRevision   uint64                `json:"policy_revision"`
+	Revision         uint64                `json:"revision"`
+	IssuedBy         string                `json:"issued_by"`
+	IssuedAt         time.Time             `json:"issued_at"`
+	Reason           string                `json:"reason"`
+	Status           Status                `json:"status"`
+	Selections       []CapabilitySelection `json:"selections"`
+	Allows           []CapabilityRule      `json:"allows,omitempty"`
+	AllowGroups      []CapabilityGroup     `json:"allow_groups,omitempty"`
+	Denies           []CapabilityRule      `json:"denies,omitempty"`
 	// ControlOperations is the reviewed allowlist of control-plane operations
 	// the managed principal's runtime token may invoke. Names must come from
 	// ControlOperations; absent means none, and legacy grants never leak in.
@@ -332,6 +333,9 @@ func (p CapabilityProfile) ValidateStructure() error {
 		!identity.ValidID(p.RuntimeID) || !identity.ValidID(p.PolicyVersion) || p.PolicyRevision == 0 || p.Generation == 0 ||
 		(p.Environment != "dev" && p.Environment != "prod") || len(p.Selections) > 1024 {
 		return fmt.Errorf("%w: capability profile identity", ErrInvalid)
+	}
+	if p.PassportRevision != "" && !identity.ValidID(p.PassportRevision) {
+		return fmt.Errorf("%w: capability passport revision", ErrInvalid)
 	}
 	if err := validateCapabilityRules(p.Allows, false); err != nil {
 		return err

@@ -53,24 +53,32 @@ func DeriveSpaceRights(dir, user, environment string, rev passport.Revision, doc
 	if err != nil {
 		return fmt.Errorf("rights derivation: %w", err)
 	}
-	settings, err := stack.ReadEffective(dir, environment)
+	settings, err := stack.ReadEffectiveRevision(dir, environment, rev.ID)
 	if err != nil {
 		return fmt.Errorf("rights derivation: %w", err)
 	}
 	bound, _ := rev.Value("tools", "binding.profile_id")
 	profileID, _ := bound.(string)
+	if err := store.RequireActiveBoundProfile(user, environment, profileID, settings.CapabilityGeneration); err != nil {
+		return fmt.Errorf("rights derivation: %w", err)
+	}
 	gov := toolhub.NewGovernanceStore(toolhub.GovernanceStorePath(storePath))
 	selections, core, err := selectedHubTools(store, rev.Docs["tools"], docs)
 	if err != nil {
 		return fmt.Errorf("tools derivation: %w", err)
 	}
-	return toolhub.DeriveRightsAndSelections(store, gov, docs.Rights, user, allow, environment, profileID, stack.PolicyVersion(settings), agenttools.HubToolsDefinitionID, selections, core, now)
+	connectorSelections, connectorCore, err := selectedConnectorTools(store, rev.Docs["tools"], docs, profileID)
+	if err != nil {
+		return fmt.Errorf("tools derivation: %w", err)
+	}
+	selections, core = append(selections, connectorSelections...), append(core, connectorCore...)
+	return toolhub.DerivePublishedRightsAndSelections(store, gov, docs.Rights, user, allow, environment, profileID, stack.PolicyVersion(settings), rev.ID, agenttools.HubToolsDefinitionID, selections, core, now)
 }
 
 // RestoreSpaceRights restores the bound profile after a failed apply. It
 // intersects the previous passport allow with live grants so a concurrent
 // revocation stays revoked. It leaves policy versions and bindings untouched.
-func RestoreSpaceRights(dir, user, environment, profileID string, allow map[string][]string, toolsBody []byte, docs catalog.Docs, now time.Time) error {
+func RestoreSpaceRights(dir, user, environment, profileID, revisionID string, allow map[string][]string, toolsBody []byte, docs catalog.Docs, now time.Time) error {
 	if profileID == "" {
 		return fmt.Errorf("rights restore: bound profile is required")
 	}
@@ -105,7 +113,160 @@ func RestoreSpaceRights(dir, user, environment, profileID string, allow map[stri
 	if err != nil {
 		return fmt.Errorf("rights restore: tools derivation: %w", err)
 	}
-	return toolhub.DeriveRightsAndSelections(store, gov, docs.Rights, user, restored, environment, profileID, "", agenttools.HubToolsDefinitionID, selections, core, now)
+	connectorSelections, connectorCore, err := selectedConnectorTools(store, toolsBody, docs, profileID)
+	if err != nil {
+		return fmt.Errorf("rights restore: tools derivation: %w", err)
+	}
+	selections, core = append(selections, connectorSelections...), append(core, connectorCore...)
+	return toolhub.DerivePublishedRightsAndSelections(store, gov, docs.Rights, user, restored, environment, profileID, "", revisionID, agenttools.HubToolsDefinitionID, selections, core, now)
+}
+
+// SetSpaceProfileActive gates a rejected or superseded binding without
+// changing any issued grant or another principal/environment's profile.
+func SetSpaceProfileActive(dir, user, environment, profileID string, active bool, now time.Time) error {
+	root := filepath.Join(stack.InfraSpaceDir(dir), "runtime", "toolhub")
+	storePath := filepath.Join(root, "store.json")
+	if _, err := os.Stat(filepath.Join(root, "store.db")); err == nil {
+		if _, err := os.Stat(storePath); errors.Is(err, os.ErrNotExist) {
+			storePath = filepath.Join(root, "store.db")
+		}
+	}
+	store, err := toolhub.Load(storePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return store.SetBoundProfileActive(user, environment, profileID, active, now)
+}
+
+// ValidateSelectedConnectors resolves declared connector tools before the
+// publisher moves the active pointer. A missing binding or tool is an error,
+// never a reason to retain an old profile selection.
+func ValidateSelectedConnectors(dir string, toolsBody []byte, docs catalog.Docs) error {
+	var authored passportview.Tools
+	if err := yaml.Unmarshal(toolsBody, &authored); err != nil {
+		return err
+	}
+	selected := false
+	for _, entries := range []map[string]passportview.Toolset{authored.Core, authored.Extended} {
+		for _, entry := range entries {
+			selected = selected || entry.Via == "mcp" || strings.HasPrefix(entry.Via, "mcp:")
+		}
+	}
+	if !selected {
+		return nil
+	}
+	root := filepath.Join(stack.InfraSpaceDir(dir), "runtime", "toolhub")
+	storePath := filepath.Join(root, "store.json")
+	if _, err := os.Stat(filepath.Join(root, "store.db")); err == nil {
+		if _, err := os.Stat(storePath); errors.Is(err, os.ErrNotExist) {
+			storePath = filepath.Join(root, "store.db")
+		}
+	}
+	store, err := toolhub.Load(storePath)
+	if err != nil {
+		return fmt.Errorf("connector selection store: %w", err)
+	}
+	if authored.Binding == nil {
+		return fmt.Errorf("connector selection requires tools.binding")
+	}
+	_, _, err = selectedConnectorTools(store, toolsBody, docs, authored.Binding.ProfileID)
+	return err
+}
+
+func selectedConnectorTools(store *toolhub.Store, body []byte, docs catalog.Docs, profileID string) ([]api.CapabilitySelection, []string, error) {
+	var authored passportview.Tools
+	if err := yaml.Unmarshal(body, &authored); err != nil {
+		return nil, nil, err
+	}
+	var selections []api.CapabilitySelection
+	var core []string
+	var bindings []api.ToolBinding
+	for layer, entries := range []map[string]passportview.Toolset{authored.Core, authored.Extended} {
+		names := make([]string, 0, len(entries))
+		for name := range entries {
+			names = append(names, name)
+		}
+		slices.Sort(names)
+		for _, name := range names {
+			entry := entries[name]
+			if entry.Via != "mcp" && !strings.HasPrefix(entry.Via, "mcp:") {
+				continue
+			}
+			toolset, err := passport.ResolveToolset(docs, name)
+			if err != nil || toolset.Kind != "connector" {
+				return nil, nil, fmt.Errorf("connector toolset %q is unavailable", name)
+			}
+			if bindings == nil {
+				bindings, err = store.BindingsForProfile(profileID)
+				if err != nil {
+					return nil, nil, err
+				}
+			}
+			definitionID := name
+			if strings.HasPrefix(entry.Via, "mcp:") {
+				definitionID = strings.TrimPrefix(entry.Via, "mcp:")
+			}
+			var chosen *api.ToolBinding
+			for i := range bindings {
+				binding := &bindings[i]
+				if binding.DefinitionID != definitionID {
+					continue
+				}
+				if chosen != nil && chosen.ConnectionID != binding.ConnectionID {
+					return nil, nil, fmt.Errorf("connector %q has ambiguous bindings", name)
+				}
+				if chosen == nil || binding.ProjectionRevision > chosen.ProjectionRevision {
+					chosen = binding
+				}
+			}
+			if chosen == nil {
+				return nil, nil, fmt.Errorf("connector %q has no active binding", name)
+			}
+			definition, err := store.Definition(chosen.DefinitionID, chosen.DefinitionVersion)
+			if err != nil {
+				return nil, nil, err
+			}
+			if definition.Transport != api.RemoteMCP && definition.Transport != api.ContainerMCP {
+				return nil, nil, fmt.Errorf("connector %q has unsupported transport", name)
+			}
+			available := map[string]api.ToolSpec{}
+			for _, tool := range definition.ProjectedToolSpecs(*chosen) {
+				available[tool.Name] = tool
+			}
+			if entry.Tools != nil {
+				for _, member := range append(slices.Clone(entry.Tools.Include), entry.Tools.Exclude...) {
+					if _, ok := available[member]; !ok {
+						return nil, nil, fmt.Errorf("connector %q selects unknown tool %q", name, member)
+					}
+				}
+			}
+			names := make([]string, 0, len(available))
+			for member := range available {
+				names = append(names, member)
+			}
+			slices.Sort(names)
+			for _, member := range names {
+				tool := available[member]
+				if tool.Audience != "" && tool.Audience != api.AudienceModel || entry.Access == "read" && tool.Effect != api.ReadEffect ||
+					entry.Tools != nil && (entry.Tools.Include != nil && !slices.Contains(entry.Tools.Include, member) || slices.Contains(entry.Tools.Exclude, member)) {
+					continue
+				}
+				if tool.CapabilityID == "" || len(tool.Uses) == 0 {
+					return nil, nil, fmt.Errorf("connector %q tool %q has no capability contract", name, member)
+				}
+				projected := api.ProjectedToolName(definition.DefinitionID, definition.Version, member)
+				selections = append(selections, api.CapabilitySelection{CapabilityID: tool.CapabilityID, DefinitionID: definition.DefinitionID,
+					DefinitionVersion: definition.Version, ImplementationDigest: api.DefinitionDigest(definition), ToolName: member, Name: projected, ConnectionID: chosen.ConnectionID})
+				if layer == 0 {
+					core = append(core, projected)
+				}
+			}
+		}
+	}
+	return selections, core, nil
 }
 
 // selectedHubTools resolves the compiler-validated first-party families from

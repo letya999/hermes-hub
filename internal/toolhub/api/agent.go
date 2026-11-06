@@ -45,6 +45,9 @@ type AgentExecFunc func(ctx context.Context, effective EffectiveBinding, request
 // that run inside the owning runtime's workspace island.
 type AgentExecBackend struct {
 	Exec AgentExecFunc
+	// Settings stays in the authenticated control plane; the runtime executor
+	// cannot publish passports or read an overlay.
+	Settings func(context.Context, EffectiveBinding, ToolSpec, map[string]any) (BackendResult, error)
 	// Scratch serves Sandboxed tools through the disposable-workload channel;
 	// nil fails closed like a missing Exec.
 	Scratch ScratchExecFunc
@@ -60,6 +63,12 @@ func (b AgentExecBackend) Call(ctx context.Context, effective EffectiveBinding, 
 func (b AgentExecBackend) CallEnv(ctx context.Context, effective EffectiveBinding, tool ToolSpec, arguments map[string]any, _ map[string]string) (BackendResult, error) {
 	if effective.Definition.Transport != AgentTools {
 		return BackendResult{}, fmt.Errorf("%w: agent executor received %s transport", ErrInvalid, effective.Definition.Transport)
+	}
+	if tool.Executor == "handler:settings" {
+		if b.Settings == nil {
+			return BackendResult{}, ErrIsolation
+		}
+		return b.Settings(ctx, effective, tool, arguments)
 	}
 	if !tool.Sandboxed && b.Exec == nil || tool.Sandboxed && b.Scratch == nil {
 		return BackendResult{}, ErrIsolation

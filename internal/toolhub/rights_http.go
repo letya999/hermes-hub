@@ -3,9 +3,13 @@ package toolhub
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
 // serveRightsDecide is the out-of-process PDP door (SPEC-0092 R2.2): PEPs
@@ -46,9 +50,17 @@ func (g *Gateway) serveRightsDecide(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"allow":false,"reason":"principal outside this space"}`, http.StatusForbidden)
 			return
 		}
+		if err := g.requireAssertedActivation(request.PrincipalID, request.Environment); err != nil {
+			http.Error(w, "activation unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		out, err := g.Store.DecideAsserted(request.PrincipalID, request.Environment, request.Capability, request.Operation, request.Scope, time.Now())
 		if err != nil {
 			http.Error(w, "decision unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if err := g.requireAssertedActivation(request.PrincipalID, request.Environment); err != nil {
+			http.Error(w, "activation unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		decision = out
@@ -63,9 +75,17 @@ func (g *Gateway) serveRightsDecide(w http.ResponseWriter, r *http.Request) {
 		if request.PrincipalID != "" && request.PrincipalID != auth.PrincipalID {
 			decision = map[string]any{"allow": false, "reason": "foreign principal"}
 		} else {
+			if _, err := g.requireActivated(auth); err != nil {
+				http.Error(w, "activation unavailable", http.StatusServiceUnavailable)
+				return
+			}
 			out, err := g.Store.Decide(auth, request.Capability, request.Operation, request.Scope, time.Now())
 			if err != nil {
 				http.Error(w, "decision unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			if _, err := g.requireActivated(auth); err != nil {
+				http.Error(w, "activation unavailable", http.StatusServiceUnavailable)
 				return
 			}
 			decision = out
@@ -75,4 +95,27 @@ func (g *Gateway) serveRightsDecide(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(decision); err != nil {
 		return
 	}
+}
+
+func (g *Gateway) requireAssertedActivation(principal, environment string) error {
+	if g.PassportRoot == "" {
+		return nil
+	}
+	if err := g.Store.Reload(); err != nil {
+		return err
+	}
+	var revision string
+	for _, profile := range g.Store.profilesForPrincipal(principal) {
+		if profile.Environment != environment {
+			continue
+		}
+		if profile.PassportRevision == "" || (revision != "" && revision != profile.PassportRevision) {
+			return fmt.Errorf("%w: ambiguous passport activation", api.ErrUnauthorized)
+		}
+		revision = profile.PassportRevision
+	}
+	if revision == "" {
+		return fmt.Errorf("%w: passport activation unavailable", api.ErrUnauthorized)
+	}
+	return g.checkActivePassport(identity.Envelope{PrincipalID: principal, Environment: environment}, revision)
 }

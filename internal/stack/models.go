@@ -118,7 +118,7 @@ func LoadModelRegistry(dir string, s Settings) (*ModelRegistry, error) {
 		// Managed space: the published models doc is the sole registry
 		// authority — retired spaces/models.yaml layers never merge.
 		reg := &ModelRegistry{Providers: map[string]ModelProvider{}, Models: map[string]ModelEntry{}}
-		layer, err := passportRegistryLayer(dir)
+		layer, err := passportRegistryLayer(dir, "")
 		if err != nil {
 			return nil, err
 		}

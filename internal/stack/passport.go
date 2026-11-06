@@ -35,6 +35,7 @@ func (s *Settings) applyPassport(dir string) error {
 // applyEffective carries one loaded revision's fields onto the settings the
 // extension files supplied.
 func (s *Settings) applyEffective(eff passportview.Effective) error {
+	s.PassportRevision = eff.Header.Metadata.Revision
 	if s.Schema == 0 {
 		s.Schema = 3 // a published revision implies the v3 vocabulary
 	}
@@ -189,6 +190,14 @@ func passportTools(t passportview.Tools) map[string]ToolEntry {
 		return nil
 	}
 	out := map[string]ToolEntry{}
+	denied := map[string]bool{}
+	for _, area := range []map[string]passportview.Toolset{t.Core, t.Extended} {
+		for name, entry := range area {
+			if entry.Via == "off" {
+				denied[name] = true
+			}
+		}
+	}
 	for _, area := range []map[string]passportview.Toolset{t.Core, t.Extended} {
 		for name, ts := range area {
 			// The pinned platform family is not an operator toolset; the
@@ -217,7 +226,9 @@ func passportTools(t passportview.Tools) map[string]ToolEntry {
 				// one mcp-raw selection per declared server so the
 				// selector/governance paths keep naming each.
 				for server := range t.Connectors {
-					out[server] = ToolEntry{Via: ToolViaMCPRaw, Server: server}
+					if !denied[server] {
+						out[server] = ToolEntry{Via: ToolViaMCPRaw, Server: server}
+					}
 				}
 				continue
 			case ts.Via == "mcp" || strings.HasPrefix(ts.Via, "mcp:"):
@@ -257,9 +268,15 @@ func passportTools(t passportview.Tools) map[string]ToolEntry {
 // inside the cliproxy instance and never reaches the relay. Switching is
 // governed by the models.switch right at the relay PEP — the file carries
 // no switch map.
-func passportRegistryLayer(dir string) (modelRegistryYAML, error) {
+func passportRegistryLayer(dir, revisionID string) (modelRegistryYAML, error) {
 	var layer modelRegistryYAML
-	eff, err := passportview.LoadEffective(dir)
+	var eff passportview.Effective
+	var err error
+	if revisionID == "" {
+		eff, err = passportview.LoadEffective(dir)
+	} else {
+		eff, err = passportview.LoadRevision(dir, revisionID)
+	}
 	if err != nil {
 		return layer, fmt.Errorf("%w: %w", ErrRevisionUnloadable, err)
 	}

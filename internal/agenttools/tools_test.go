@@ -604,7 +604,7 @@ func TestMCPWire(t *testing.T) {
 	if err != nil || len(list.Tools) != 58 {
 		t.Fatal(len(list.Tools), err)
 	}
-	for _, name := range []string{"document_extract", "document_create", "media_inspect", "document_remove", "settings_read", "settings_edit", "file_archive", "file_remove"} {
+	for _, name := range []string{"document_extract", "document_create", "media_inspect", "document_remove", "file_archive", "file_remove"} {
 		found := false
 		for _, tool := range list.Tools {
 			if tool.Name == name {
@@ -616,6 +616,9 @@ func TestMCPWire(t *testing.T) {
 		}
 	}
 	for _, tool := range list.Tools {
+		if tool.Name == "settings_read" || tool.Name == "settings_edit" {
+			t.Fatal("settings advertised by the runtime instead of ToolHub")
+		}
 		if tool.Name == "image_generate" || tool.Name == "image_edit" {
 			t.Fatal("image generation published without a grant")
 		}
@@ -652,7 +655,6 @@ func TestMCPWireExpectedFailures(t *testing.T) {
 		{"file_read", map[string]any{"path": "../outside.txt"}},
 		{"routine_list", map[string]any{}},
 		{"media_inspect", map[string]any{"paths": []string{"clip.gif"}}},
-		{"settings_edit", map[string]any{"key": "model"}},
 	} {
 		result, err := client.CallTool(ctx, &mcp.CallToolParams{Name: tc.name, Arguments: tc.args})
 		if err != nil {

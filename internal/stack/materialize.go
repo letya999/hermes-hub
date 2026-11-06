@@ -6,7 +6,6 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/envstore"
 
-	"github.com/letya999/hermes-hub/internal/selfsettings"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -31,7 +30,7 @@ func MaterializeSoulEffective(dir string, s Settings) error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	body := s.channelContract(passportRevision(dir)) + promptPointer(dir)
+	body := s.channelContract(passportRevision(dir)) + promptPointer(dir, s.PassportRevision)
 	if org := orgSoulLayer(s); org != "" {
 		body += "\n\n" + org
 	}
@@ -60,12 +59,14 @@ var revisionID = regexp.MustCompile(`^r-[0-9a-zA-Z_-]{1,32}$`)
 // passport (catalog -> stack is already an edge), so it reads the rendered
 // file directly. No published revision, no pointer: unmanaged spaces keep
 // their existing prompt.
-func promptPointer(dir string) string {
-	current, err := os.ReadFile(filepath.Join(dir, "generated", "passports", "current"))
-	if err != nil {
-		return ""
+func promptPointer(dir, id string) string {
+	if id == "" {
+		current, err := os.ReadFile(filepath.Join(dir, "generated", "passports", "current"))
+		if err != nil {
+			return ""
+		}
+		id = strings.TrimSpace(string(current))
 	}
-	id := strings.TrimSpace(string(current))
 	if !revisionID.MatchString(id) {
 		return ""
 	}
@@ -103,7 +104,22 @@ func profileSoulLayer(dir string, s Settings) string {
 // generated/ so the managed model-relay mounts it read-only. A space with no
 // declared models still gets its cliproxy ladder so managed chat keeps working.
 func writeModelRegistry(dir string, s Settings) error {
-	reg, err := LoadModelRegistry(dir, s)
+	return writeModelRegistryRevision(dir, s, "")
+}
+
+func writeModelRegistryRevision(dir string, s Settings, revisionID string) error {
+	var reg *ModelRegistry
+	var err error
+	if revisionID == "" {
+		reg, err = LoadModelRegistry(dir, s)
+	} else {
+		layer, loadErr := passportRegistryLayer(dir, revisionID)
+		if loadErr != nil {
+			return loadErr
+		}
+		reg = &ModelRegistry{Providers: layer.Providers, Models: layer.Models, Switch: layer.Switch}
+		err = reg.Validate()
+	}
 	if err != nil {
 		return err
 	}
@@ -142,10 +158,6 @@ func materializeHermesConfig(dir string, s Settings) error {
 	if tokenEnv == "" {
 		tokenEnv = "HUB_RUNTIME_AUTH"
 	}
-	selfSettingsPath := ""
-	if s.CapabilityMode == "managed" {
-		selfSettingsPath = filepath.Join(dir, "managed", s.Environment, "runtime", selfsettings.FileName)
-	}
 	return MaterializeHermesConfig(source, dest, MaterializeOptions{
 		Managed:            s.CapabilityMode == "managed",
 		ToolHubEndpoint:    strings.TrimSpace(runtimeEnv["HUB_TOOLHUB_ENDPOINT"]),
@@ -156,7 +168,6 @@ func materializeHermesConfig(dir string, s Settings) error {
 		NativeToolsets:     s.nativeCarveouts(),
 		Web:                s.Web,
 		ImageGen:           s.managedImageGenGrant(),
-		SelfSettingsPath:   selfSettingsPath,
 		Browser:            s.managedBrowserGrant(),
 		MemoryVault:        s.managedMemoryVaultFlag(),
 		User:               s.User,

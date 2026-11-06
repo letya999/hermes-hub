@@ -5,6 +5,14 @@ last_verified: "2026-11-06"
 
 # Spaces
 
+In a managed space, `passports/tools.yaml` selects reviewed connector tools
+through cataloged `via: mcp` toolsets. Removing a toolset removes its model
+projection after apply while its operational connection and credentials stay.
+Raw MCP declarations stay under `tools.connectors`; a `via: off` entry for
+one server deselects that server without removing its declaration. The
+published revision drives runtime rendering, and a raw MCP selection change
+respawns the managed runtime.
+
 One `spaces/<id>/` directory is one principal's deployment unit: its config,
 secrets, generated artifacts and state. `hubctl init`/`render`/`up` work on a
 `--dir spaces/<id>` target. `hubctl init` creates a user scope;
@@ -315,9 +323,14 @@ another user, even if no `scope.yaml` exists.
 The default dry-run prints a JSON receipt: every changed leaf with its
 before/after (credential refs render as `<ref:name>`, never material), the
 effect class (live/respawn/recreate/rebuild) and owning consumer, plus the
-ordered minimum action plan — nothing is written. `--confirm` atomically moves
-the revision pointer, re-renders `generated/compose.<env>.yaml` from that
-revision, then reconciles in order: rebuild only the service images that
+ordered minimum action plan — nothing is written. `--confirm` writes the
+immutable six-passport bundle, gates `current` as pending while refreshing
+the mounted config view, renders generated files and derives the bound
+ToolHub profile and rights from that candidate. Only then does it atomically
+move `current` to the new revision. Managed config readers reject pending or
+mismatched revisions; ToolHub list/call/rights endpoints also reject an
+unfinished apply journal until reconciliation completes.
+After activation, reconcile rebuilds only the service images that
 changed, recreate only the affected containers, run one compose
 `--remove-orphans` sweep when instances were dropped (a removed
 `stack.services` entry removes exactly that container), mark the runtime
@@ -329,8 +342,43 @@ restores the previous `current` pointer and mounted passport view. When a
 previous revision exists, rollback also re-renders its generated service
 files. The restored profile ceiling includes only previous passport rights
 that still have an active issued grant; a concurrent grant revocation stays
-revoked. A failed rights restore reports rollback divergence. Transactional
-recovery of every partially updated consumer remains part of CHG-0283.
+revoked. A failed rights restore reports rollback divergence. The durable
+`generated/passports/apply-journal.json` records the environment, previous and
+candidate revision, profile IDs, phase and affected service names. A later
+`space apply` first restores the previous view and rights, then replays possibly
+affected service actions. Repeated recovery is idempotent. If a first apply
+may have touched services, an image build was interrupted, or replay fails,
+the journal stays in place and `current` is pending until operator repair;
+ToolHub admission remains closed. A dev apply does not alter the prod sibling.
+
+`settings_read` reads the active config passport revision and reviewed values
+through ToolHub. `settings_edit` sends one setting with that revision as
+`base_revision` through ToolHub to the authenticated supervisor publisher.
+It requires current `config.edit_own` in both issued and published grants,
+refuses an unpublished authored draft or stale base, and writes a new
+six-passport revision plus the authored `passports/config.yaml` leaf. An
+omitted/empty value removes the leaf. Successful publication finishes its
+service effects before returning; the changed setting survives a runtime
+respawn and re-render. `self-settings.json` and retired `agent.yaml` fields
+cannot override the published config.
+
+Config authority inventory: `passports/*.yaml` are the six editable sources;
+`generated/passports/<revision>`, `generated/config-view/<env>` and rendered
+Hermes/Compose files are derived consumers; `generated/passports/current` and
+the apply journal are protected publication state; ToolHub profiles and the
+issued-right ledger are protected admission state. The runtime settings
+executor and self-settings overlay reader/writer are removed. Legacy
+`agent.yaml`, `settings.yaml`, `workspace.yaml` and `models.yaml` remain inert
+for managed effective reads; unconfigured spaces still use their documented
+legacy provisioning paths until migration.
+
+| Config authority | Writers | Readers and effect |
+|---|---|---|
+| Six authored `passports/*.yaml` | init/profile apply; `cmd/hubctl/space_settings.go` writes one `config.yaml` leaf after governed publication | `passport.ReadAuthored` and `CompileAuthoredDocs` validate the complete candidate |
+| Immutable revision, `current`, config view, apply journal | `passport.Revision.Prepare/Activate`, `cmd/hubctl/space_apply.go` and recovery | `passportview.LoadEffective`/`LoadRevision`, `stack.ReadEffective`/`ReadEffectiveRevision`; journal fences ToolHub |
+| Rendered Hermes, Compose and runtime policy | `stack.RenderRevisionEnvironment` and `MaterializeHermesConfig` | `supervisor.materializeHermesConfig` and runtime attestation read the published render |
+| Bound ToolHub profile and issued grants | `migration.DeriveSpaceRights`, protected governance operations | ToolHub MCP/rights admission evaluates the bound profile plus live issued ledger |
+| Retired overlay and legacy managed config | no effective writer or reader; direct runtime settings tools deny | old `self-settings.json`, `agent.yaml`, `settings.yaml`, `workspace.yaml`, `models.yaml` cannot change managed effective config |
 
 The rendered compose set is commanded by `stack.services`: `per-space`
 instances become local containers, `shared` instances render only on the
@@ -343,7 +391,10 @@ Publishing also refreshes the runtime's `/config`: a stable read-only
 directory bind at `generated/config-view/<env>/` whose individual files are
 replaced atomically per revision — the six passports, `prompt-pointer.txt`
 and the space's `SOUL.md` — instead of Docker single-file binds that never
-see updates.
+see updates. The view's `revision` marker must match `current` for managed
+host reads. Already running external services can observe their existing
+binds until reconciliation; service effects finish before ToolHub admission
+reopens.
 
 `config.yaml` commands the runtime contract: `runtime.timezone`/`locale`
 and `context.{compaction,parallel_lanes}` land in the rendered environment

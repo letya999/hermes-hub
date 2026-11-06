@@ -317,6 +317,10 @@ func (g *Gateway) serveToolCall(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+	if _, err := g.requireActivated(auth); err != nil {
+		http.Error(w, "activation unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	var body struct {
 		Tool      string         `json:"tool"`
 		Arguments map[string]any `json:"arguments"`

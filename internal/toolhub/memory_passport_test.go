@@ -18,8 +18,14 @@ func writeMemoryPassport(t *testing.T, root, user string, enabled bool) {
 
 func TestMemoryCallChecksPublishedSwitchBeforeBackend(t *testing.T) {
 	store, auth := memoryToolFixture(t)
+	profile := store.capabilityProfiles[auth.CapabilityProfile]
 	root := t.TempDir()
 	writeMemoryPassport(t, root, "alice", false)
+	profile.Revision++
+	profile.PassportRevision = "r-0123456789abcdef"
+	if err := putProfile(t, store, profile); err != nil {
+		t.Fatal(err)
+	}
 	calls := 0
 	g := &Gateway{Store: store, PassportRoot: root, AuditWrite: func(string, map[string]string) error { return nil },
 		Runs: runAuthorityFunc(func(_ context.Context, jobID string) (api.RunContext, error) {
@@ -36,6 +42,11 @@ func TestMemoryCallChecksPublishedSwitchBeforeBackend(t *testing.T) {
 		t.Fatalf("disabled memory reached backend: calls=%d err=%v", calls, err)
 	}
 	writeMemoryPassport(t, root, "alice", true)
+	profile.Revision++
+	profile.PassportRevision = "r-0123456789abcdee"
+	if err := putProfile(t, store, profile); err != nil {
+		t.Fatal(err)
+	}
 	// Enabled and granted is still not enough: only the exact-run claim the
 	// authority verifies as a live private run of this caller admits.
 	if _, err := g.CallAuthorized(t.Context(), auth, "memory_search", nil); err == nil || calls != 0 {

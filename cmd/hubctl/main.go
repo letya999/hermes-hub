@@ -487,7 +487,11 @@ func run(ctx context.Context, args []string) error {
 			return err
 		}
 		defer stopLog()
-		manager, err := supervisor.New(supervisor.Config{SpacesRoot: *spacesRoot, Image: *supervisorImage, RuntimeAuth: *supervisorAuth, Environment: supervisorEnv, WarmTTL: *warmTTL, MaxConcurrent: *maxRuntimes, AllowWildcardListen: *supervisorWildcard})
+		manager, err := supervisor.New(supervisor.Config{SpacesRoot: *spacesRoot, Image: *supervisorImage, RuntimeAuth: *supervisorAuth, Environment: supervisorEnv, WarmTTL: *warmTTL, MaxConcurrent: *maxRuntimes, AllowWildcardListen: *supervisorWildcard,
+			SettingsEdit: func(ctx context.Context, principal, environment, key string, value *string, base string) (map[string]any, error) {
+				return runSettingsEdit(ctx, filepath.Join(*spacesRoot, principal), filepath.Dir(*spacesRoot), environment, key, value, base)
+			},
+		})
 		if err != nil {
 			return err
 		}

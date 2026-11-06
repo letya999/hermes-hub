@@ -7,6 +7,14 @@ last_verified: 2026-11-06
 
 `cmd/toolhub` → `internal/toolhub`. The capability gateway every projected
 tool call crosses. Listens `0.0.0.0:8090`, host-bound to `127.0.0.1:8090`.
+For managed profiles, the published passport revision is stamped on the
+profile. MCP projection, tool admission before backend dispatch and the
+out-of-process rights decision route require that stamp to match the active
+six-passport bundle for the same principal and environment. A pending pointer
+or mismatch denies; an unstamped managed profile must be rebound by apply.
+The mounted `passports/apply-journal.json` blocks MCP list/call and rights
+decisions throughout an unfinished apply, including after pointer activation
+and before service effects complete.
 
 ## Responsibilities
 
@@ -143,12 +151,16 @@ tool call crosses. Listens `0.0.0.0:8090`, host-bound to `127.0.0.1:8090`.
   `policy_revision` pin diverges from the runtime envelope resolve to an
   unauthorized projection: the session degrades to meta tools, never to a
   widened surface. On `policy_version` rotation the passport-derived
-  `DeriveRights` pass repins each active credential-free binding covered by
-  the profile's selections onto the new pv through the same `Enable`
-  admission — the binding follows the pv the platform already moved the
-  profile and sibling tokens to; credential-bearing bindings still require
-  the explicit `--kind` re-issue because their connection/credential
-  revisions are operator state.
+  `DeriveRights` pass repins active bindings covered by the published
+  selections through the same `Enable` admission. Credential-bearing
+  bindings retain their connection and credential references. Deselecting a
+  tool removes its open-session projection without disabling its binding or
+  revoking credentials or grants. Re-selection still needs live rights.
+  For first-party file tools, `tools.yaml` path scopes narrow the selected
+  member after policy admission and before backend dispatch. The executor
+  receives the intersected prefix as an `os.Root` boundary. Unsupported
+  host/URL scopes, rule fields and tools without enforceable file paths fail
+  passport compilation before publication; selection does not issue rights.
 - **Control-plane reads**: `POST /v1/tool-call` (owner-pinned, read-effect
   tools only, bounded args — powers `mcp_tool` watch probes and
   `delivery=stream` polls) and `GET /v1/connectors` (caller-scoped inventory
@@ -335,6 +347,11 @@ passport/vault mount roots).
 - Agent-tools executor runs inside the owning runtime container via
   supervisor docker exec — the one control path that never crosses the agent
   network.
+- `settings_read` reads the mounted active config passport in ToolHub;
+  `settings_edit` calls the authenticated supervisor publisher with an
+  expected base revision. Neither tool enters the runtime executor or reads
+  `self-settings.json`. ToolHub checks current admission, then the publisher
+  independently checks the published and issued `config.edit_own` right.
 - Model cannot issue grants; every authority record needs a matching human
   `Confirmation` digest (docs/rbac.md).
 

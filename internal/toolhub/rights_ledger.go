@@ -61,6 +61,53 @@ func (s *Store) profilesForPrincipal(principal string) []api.CapabilityProfile {
 	return out
 }
 
+// SetBoundProfileActive changes only the named managed generation. Recovery
+// never revives an independently revoked profile or touches a sibling env.
+func (s *Store) SetBoundProfileActive(principal, environment, profileID string, active bool, now time.Time) error {
+	if err := s.Reload(); err != nil {
+		return err
+	}
+	s.mu.RLock()
+	profile, ok := s.capabilityProfiles[profileID]
+	s.mu.RUnlock()
+	if !ok || profile.PrincipalID != principal || profile.Environment != environment ||
+		(profile.Status != api.ActiveStatus && profile.Status != api.DisabledStatus) {
+		return fmt.Errorf("%w: bound profile unavailable", api.ErrUnauthorized)
+	}
+	want := api.DisabledStatus
+	if active {
+		want = api.ActiveStatus
+	}
+	if profile.Status == want {
+		return nil
+	}
+	profile.Status = want
+	profile.Revision++
+	profile.IssuedBy = "platform"
+	profile.IssuedAt = now.UTC()
+	profile.Confirmation = nil
+	if err := api.Confirm(&profile, "platform", now); err != nil {
+		return err
+	}
+	return s.PutCapabilityProfile(profile)
+}
+
+// RequireActiveBoundProfile prevents a publish from silently succeeding when
+// its named generation is absent or was disabled by an earlier rollback.
+func (s *Store) RequireActiveBoundProfile(principal, environment, profileID string, generation uint64) error {
+	if err := s.Reload(); err != nil {
+		return err
+	}
+	s.mu.RLock()
+	profile, ok := s.capabilityProfiles[profileID]
+	s.mu.RUnlock()
+	if !ok || profile.PrincipalID != principal || profile.Environment != environment ||
+		profile.Generation != generation || profile.Status != api.ActiveStatus {
+		return fmt.Errorf("%w: bound profile unavailable", api.ErrUnauthorized)
+	}
+	return nil
+}
+
 // DeriveRights binds a published grants ceiling to active profiles. Every
 // requested row must already have an independently issued live ledger grant;
 // publishing a passport never issues or revokes a grant.
@@ -108,17 +155,22 @@ func (s *Store) CheckOrganizationRights(principal, environment, organization, pr
 // apply must never rewrite the prod profile's rights, and a bound revision
 // must never touch a sibling generation.
 func DeriveRights(store *Store, gov *GovernanceStore, doc api.RightsDoc, principal string, allow map[string][]string, environment, profileID, policyVersion string, now time.Time) error {
-	return deriveRights(store, gov, doc, principal, allow, environment, profileID, policyVersion, "", nil, nil, now)
+	return deriveRights(store, gov, doc, principal, allow, environment, profileID, policyVersion, "", "", nil, nil, now)
 }
 
-// DeriveRightsAndSelections applies the published rights and first-party tool
-// selection to the same bound profile revision. Other registered definitions
-// retain their independent connection lifecycle.
+// DeriveRightsAndSelections replaces the bound profile's selections with the
+// published tools passport. Bindings and connections keep their own lifecycle.
 func DeriveRightsAndSelections(store *Store, gov *GovernanceStore, doc api.RightsDoc, principal string, allow map[string][]string, environment, profileID, policyVersion, definitionID string, selections []api.CapabilitySelection, core []string, now time.Time) error {
-	return deriveRights(store, gov, doc, principal, allow, environment, profileID, policyVersion, definitionID, selections, core, now)
+	return deriveRights(store, gov, doc, principal, allow, environment, profileID, policyVersion, "", definitionID, selections, core, now)
 }
 
-func deriveRights(store *Store, gov *GovernanceStore, doc api.RightsDoc, principal string, allow map[string][]string, environment, profileID, policyVersion, definitionID string, selections []api.CapabilitySelection, core []string, now time.Time) error {
+// DerivePublishedRightsAndSelections stamps the immutable passport identity
+// with the profile update. The gateway compares it to current on each call.
+func DerivePublishedRightsAndSelections(store *Store, gov *GovernanceStore, doc api.RightsDoc, principal string, allow map[string][]string, environment, profileID, policyVersion, passportRevision, definitionID string, selections []api.CapabilitySelection, core []string, now time.Time) error {
+	return deriveRights(store, gov, doc, principal, allow, environment, profileID, policyVersion, passportRevision, definitionID, selections, core, now)
+}
+
+func deriveRights(store *Store, gov *GovernanceStore, doc api.RightsDoc, principal string, allow map[string][]string, environment, profileID, policyVersion, passportRevision, definitionID string, selections []api.CapabilitySelection, core []string, now time.Time) error {
 	issued, err := IssuedRightCeiling(gov, doc, principal, now)
 	if err != nil {
 		return err
@@ -150,22 +202,14 @@ func deriveRights(store *Store, gov *GovernanceStore, doc api.RightsDoc, princip
 	}
 	for _, profile := range bound {
 		repin := policyVersion != "" && profile.PolicyVersion != policyVersion
-		var selected []api.CapabilitySelection
-		if definitionID != "" {
-			for _, current := range profile.Selections {
-				if current.DefinitionID != definitionID {
-					selected = append(selected, current)
-				}
-			}
-			selected = append(selected, selections...)
-		}
-		selectionChanged := definitionID != "" && (!reflect.DeepEqual(profile.Selections, selected) || !slices.Equal(profile.CoreTools, core) || !profile.CoreBound)
+		selectionChanged := definitionID != "" && (!reflect.DeepEqual(profile.Selections, selections) || !slices.Equal(profile.CoreTools, core) || !profile.CoreBound || profile.PassportRevision != passportRevision)
 		if equalRightRules(profile.Rights, rules) && !repin && !selectionChanged {
 			continue
 		}
 		profile.Rights = rules
 		if definitionID != "" {
-			profile.Selections = selected
+			profile.PassportRevision = passportRevision
+			profile.Selections = slices.Clone(selections)
 			profile.CoreBound = true
 			profile.CoreTools = slices.Clone(core)
 		}
@@ -246,8 +290,8 @@ func (s *Store) repinManagedBindings(profile api.CapabilityProfile, environment,
 		if !selected[binding.DefinitionID+"\x00"+binding.DefinitionVersion] {
 			continue
 		}
-		definition, ok := s.definitions[definitionKey(binding.DefinitionID, binding.DefinitionVersion)]
-		if !ok || len(definition.Credentials) > 0 {
+		_, ok := s.definitions[definitionKey(binding.DefinitionID, binding.DefinitionVersion)]
+		if !ok {
 			continue
 		}
 		stale = append(stale, binding)

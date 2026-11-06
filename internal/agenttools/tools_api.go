@@ -154,6 +154,9 @@ func (t *Tools) Server() *mcp.Server {
 		if spec.Audience != api.AudienceModel || !strings.HasPrefix(spec.Executor, "handler:") {
 			continue
 		}
+		if spec.Executor == "handler:settings" {
+			continue // published only through ToolHub's authenticated control plane
+		}
 		switch spec.Name {
 		case "media_generate", "media_edit", "media_fetch":
 			if !granted {

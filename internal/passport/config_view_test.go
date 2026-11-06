@@ -109,3 +109,21 @@ func TestPublishViewFailureDoesNotActivateRevision(t *testing.T) {
 		t.Fatalf("failed publish activated %q: %v", active, err)
 	}
 }
+
+func TestPublishRejectsImmutableRevisionCollision(t *testing.T) {
+	dir := t.TempDir()
+	rev := Revision{ID: "r-0004", Provenance: Provenance{Environment: "dev"}, Docs: map[string][]byte{}}
+	for _, name := range Names {
+		rev.Docs[name] = []byte("apiVersion: six-passport/v2\nkind: " + name + "\n")
+	}
+	if err := rev.Publish(dir); err != nil {
+		t.Fatal(err)
+	}
+	rev.Docs["tools"] = []byte("apiVersion: six-passport/v2\nkind: tools\n# collision\n")
+	if err := rev.Publish(dir); err == nil {
+		t.Fatal("same revision ID accepted different tools")
+	}
+	if current, err := Current(dir); err != nil || current != rev.ID {
+		t.Fatalf("collision displaced active revision: %q %v", current, err)
+	}
+}

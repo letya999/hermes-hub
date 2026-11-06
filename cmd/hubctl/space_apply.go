@@ -84,6 +84,13 @@ func runSpaceApply(ctx context.Context, args []string) error {
 	if !locked {
 		return errors.New("space apply: another apply is in progress for this space")
 	}
+	rootAbs, err := filepath.Abs(*root)
+	if err != nil {
+		return err
+	}
+	if err := recoverApply(ctx, abs, rootAbs, *env, applyHandlers(ctx, abs, *env)); err != nil {
+		return errors.New(locale.T(locale.LangOf(filepath.Join(abs, "workspace")), "hubctl.space-apply-recovery"))
+	}
 	docs, err := catalog.Generate()
 	if err != nil {
 		return err
@@ -112,6 +119,9 @@ func runSpaceApply(ctx context.Context, args []string) error {
 	next, err := rev.Effective()
 	if err != nil {
 		return fmt.Errorf("space apply: %w", err)
+	}
+	if err := migration.ValidateSelectedConnectors(abs, rev.Docs["tools"], docs); err != nil {
+		return fmt.Errorf("space apply: connector selection: %w", err)
 	}
 	if next.Stack.Identity.Organization != "" {
 		lang := locale.LangOf(filepath.Join(abs, "workspace"))
@@ -167,10 +177,6 @@ func runSpaceApply(ctx context.Context, args []string) error {
 	if !*confirm {
 		return printApply(receipt)
 	}
-	rootAbs, err := filepath.Abs(*root)
-	if err != nil {
-		return err
-	}
 	report, err := applyConfirm(ctx, abs, rootAbs, *env, rev, prevID, actions, applyHandlers(ctx, abs, *env))
 	if err != nil {
 		return err
@@ -181,7 +187,9 @@ func runSpaceApply(ctx context.Context, args []string) error {
 
 // applyConfirm publishes the revision, stamps the managed-rights ledger and
 // runs the action plan.
-func applyConfirm(ctx context.Context, abs, rootAbs, env string, rev passport.Revision, prevID string, actions []reconcile.Action, handlers reconcile.Handlers) (reconcile.Report, error) {
+var applyStep = func(string) {}
+
+func applyConfirm(ctx context.Context, abs, rootAbs, env string, rev passport.Revision, prevID string, actions []reconcile.Action, handlers reconcile.Handlers, authored ...authoredConfigUpdate) (reconcile.Report, error) {
 	var report reconcile.Report
 	bound, _ := rev.Value("tools", "binding.profile_id")
 	profileID, _ := bound.(string)
@@ -199,23 +207,57 @@ func applyConfirm(ctx context.Context, abs, rootAbs, env string, rev passport.Re
 	case err == nil && current != prevID:
 		return report, fmt.Errorf("space apply: stale base %s: revision %s is active", prevID, current)
 	}
-	if err := rev.Publish(abs); err != nil {
-		return report, fmt.Errorf("space apply: %w", err)
+	previousProfile, _, _, err := previousApplyAuthority(abs, prevID)
+	if err != nil {
+		return report, fmt.Errorf("space apply: rollback source: %w", err)
+	}
+	record := applyJournal{Environment: env, Previous: prevID, Revision: rev.ID, PreviousProfile: previousProfile,
+		NextProfile: profileID, Phase: "preparing", Actions: actions}
+	if len(authored) != 0 {
+		record.AuthoredConfigBefore = authored[0].Before
+		record.AuthoredConfigAfter = authored[0].After
+	}
+	if _, err := os.Stat(applyJournalPath(abs)); err == nil {
+		return report, errors.New("space apply: interrupted apply needs recovery")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return report, err
+	}
+	if err := writeApplyJournal(abs, record); err != nil {
+		return report, fmt.Errorf("space apply: recovery journal: %w", err)
+	}
+	advance := func(phase string) error {
+		record.Phase = phase
+		return writeApplyJournal(abs, record)
 	}
 	rollback := func() error {
-		if err := passport.RestoreCurrent(abs, prevID, env); err != nil {
-			return err
-		}
-		if prevID != "" {
-			return stack.RenderEnvironment(abs, rootAbs, env)
-		}
-		return nil
+		return restoreApplyState(abs, rootAbs, record)
 	}
+	fail := func(stage string, cause error) (reconcile.Report, error) {
+		restored := rollback()
+		if restored == nil {
+			restored = removeApplyJournal(abs)
+		}
+		if restored != nil {
+			_ = passport.PointCurrent(abs, "pending")
+		}
+		return report, fmt.Errorf("space apply: %s: %w", stage, errors.Join(cause, restored))
+	}
+	if err := rev.Prepare(abs, applyStep); err != nil {
+		return fail("prepare", err)
+	}
+	if err := advance("prepared"); err != nil {
+		return fail("journal", err)
+	}
+	applyStep("prepare")
 	// Reconcile acts on generated compose files — they must describe the
 	// revision just published, or rebuild/recreate hit "no such service".
-	if err := stack.RenderEnvironment(abs, rootAbs, env); err != nil {
-		return report, fmt.Errorf("space apply: render: %w", errors.Join(err, rollback()))
+	if err := stack.RenderRevisionEnvironment(abs, rootAbs, env, rev.ID); err != nil {
+		return fail("render", err)
 	}
+	if err := advance("rendered"); err != nil {
+		return fail("journal", err)
+	}
+	applyStep("render")
 	// The published grants revision is the managed-rights authority: stamp
 	// the space's ToolHub profiles + ledger from it before reconcile acts —
 	// a reconcile failure re-derives the previous revision's allow so the
@@ -228,55 +270,65 @@ func applyConfirm(ctx context.Context, abs, rootAbs, env string, rev passport.Re
 		return migration.DeriveSpaceRights(abs, filepath.Base(abs), env, revision, docs, time.Now().UTC())
 	}
 	if err := derive(rev); err != nil {
-		return report, fmt.Errorf("space apply: rights derivation: %w", errors.Join(err, rollback()))
+		return fail("rights derivation", err)
+	}
+	if err := advance("rights"); err != nil {
+		return fail("journal", err)
+	}
+	applyStep("rights")
+	if err := rev.Activate(abs); err != nil {
+		return fail("activation", err)
+	}
+	if err := advance("activated"); err != nil {
+		return fail("journal", err)
+	}
+	applyStep("activate")
+	if previousProfile != "" && previousProfile != profileID {
+		if err := migration.SetSpaceProfileActive(abs, filepath.Base(abs), env, previousProfile, false, time.Now().UTC()); err != nil {
+			return fail("binding", err)
+		}
+	}
+	if err := advance("binding"); err != nil {
+		return fail("journal", err)
+	}
+	if previousProfile != "" && previousProfile != profileID {
+		applyStep("binding")
+	}
+	if err := advance("effects"); err != nil {
+		return fail("journal", err)
 	}
 	report = reconcile.Run(actions, handlers, rollback, rev.ID, prevID)
 	if report.Failed != nil {
 		if !report.RolledBack {
+			_ = passport.PointCurrent(abs, "pending")
 			return report, fmt.Errorf("space apply: %s %s failed and rollback diverged — pointer/ledger state is uncertain", report.Failed.Kind, report.Failed.Target)
 		}
-		// The pointer is back on prevID; return the ledger to the same
-		// revision's allow intersected with live issued grants — or to the
-		// empty ceiling when a first apply leaves no active revision.
-		if prevID == "" {
-			docs, err := catalog.LoadPinned()
-			if err != nil {
-				report.RolledBack = false
-				return report, fmt.Errorf("space apply: %s %s failed; pointer restored, but rollback diverged at rights-ledger restore: %w", report.Failed.Kind, report.Failed.Target, err)
-			}
-			if err := migration.RestoreSpaceRights(abs, filepath.Base(abs), env, profileID, map[string][]string{}, nil, docs, time.Now().UTC()); err != nil {
-				report.RolledBack = false
-				return report, fmt.Errorf("space apply: %s %s failed; pointer restored, but rollback diverged at rights-ledger restore: %w", report.Failed.Kind, report.Failed.Target, err)
-			}
-		} else {
-			b, err := os.ReadFile(filepath.Join(abs, "generated", "passports", prevID, "grants.yaml"))
-			if err != nil {
-				report.RolledBack = false
-				return report, fmt.Errorf("space apply: %s %s failed; pointer restored to %s, but rollback diverged at rights-ledger restore: %w", report.Failed.Kind, report.Failed.Target, prevID, err)
-			}
-			toolsBody, err := os.ReadFile(filepath.Join(abs, "generated", "passports", prevID, "tools.yaml"))
-			if err != nil {
-				report.RolledBack = false
-				return report, fmt.Errorf("space apply: %s %s failed; pointer restored to %s, but rollback diverged at rights-ledger restore: %w", report.Failed.Kind, report.Failed.Target, prevID, err)
-			}
-			allow, err := (passport.Revision{Docs: map[string][]byte{"grants": b}}).GrantAllow()
-			if err != nil {
-				report.RolledBack = false
-				return report, fmt.Errorf("space apply: %s %s failed; pointer restored to %s, but rollback diverged at rights-ledger restore: %w", report.Failed.Kind, report.Failed.Target, prevID, err)
-			}
-			bound, _ := (passport.Revision{Docs: map[string][]byte{"tools": toolsBody}}).Value("tools", "binding.profile_id")
-			previousProfileID, _ := bound.(string)
-			docs, err := catalog.LoadPinned()
-			if err != nil {
-				report.RolledBack = false
-				return report, fmt.Errorf("space apply: %s %s failed; pointer restored to %s, but rollback diverged at rights-ledger restore: %w", report.Failed.Kind, report.Failed.Target, prevID, err)
-			}
-			if err := migration.RestoreSpaceRights(abs, filepath.Base(abs), env, previousProfileID, allow, toolsBody, docs, time.Now().UTC()); err != nil {
-				report.RolledBack = false
-				return report, fmt.Errorf("space apply: %s %s failed; pointer restored to %s, but rollback diverged at rights-ledger restore: %w", report.Failed.Kind, report.Failed.Target, prevID, err)
-			}
+		if err := removeApplyJournal(abs); err != nil {
+			report.RolledBack = false
+			_ = passport.PointCurrent(abs, "pending")
+			return report, fmt.Errorf("space apply: rollback journal: %w", err)
 		}
 		return report, fmt.Errorf("space apply: %s %s failed, rolled back to %s", report.Failed.Kind, report.Failed.Target, prevID)
+	}
+	if len(authored) != 0 {
+		if err := writeAuthoredConfig(abs, record.AuthoredConfigBefore, record.AuthoredConfigAfter); err != nil {
+			restored := rollback()
+			if restored == nil {
+				restored = reconcile.Replay(actions, handlers)
+			}
+			if restored == nil {
+				restored = removeApplyJournal(abs)
+			}
+			if restored != nil {
+				_ = passport.PointCurrent(abs, "pending")
+			}
+			return report, fmt.Errorf("space apply: authored config: %w", errors.Join(err, restored))
+		}
+		applyStep("authored")
+	}
+	if err := removeApplyJournal(abs); err != nil {
+		_ = passport.PointCurrent(abs, "pending")
+		return report, fmt.Errorf("space apply: completion journal: %w", err)
 	}
 	return report, nil
 }

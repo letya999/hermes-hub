@@ -48,6 +48,17 @@ func TestBrokenPublishedRevisionFailsClosed(t *testing.T) {
 	}
 }
 
+func TestManagedReadRejectsViewRevisionMismatch(t *testing.T) {
+	dir := t.TempDir()
+	publishManagedRevision(t, dir, "alice", "r-0123456789abcdef")
+	if err := os.WriteFile(filepath.Join(dir, "generated", "config-view", "dev", "revision"), []byte("r-0123456789abcdee\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadEffective(dir, "dev"); err == nil {
+		t.Fatal("managed read accepted a config view from another revision")
+	}
+}
+
 // managedDocs returns the smallest complete v2 doc set a managed render can
 // drive end to end: identity, the supervised runtime plus the relays it
 // asserts on, a cliproxy default route, one toolset and an empty grant map.
@@ -101,6 +112,9 @@ func publishManagedDocs(t *testing.T, dir, user, revision string, docs map[strin
 	for _, envName := range []string{"dev", "prod"} {
 		viewDir := filepath.Join(dir, "generated", "config-view", envName)
 		if err := os.MkdirAll(viewDir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(viewDir, "revision"), []byte(revision+"\n"), 0600); err != nil {
 			t.Fatal(err)
 		}
 		for name, body := range bodies {
@@ -613,6 +627,36 @@ func TestManagedConnectorsProjectRawMCP(t *testing.T) {
 	if m, _ := cfg.(M); m["url"] != "https://mcp.example.com/gitea" {
 		t.Fatalf("rendered connector lost its url: %+v", cfg)
 	}
+}
+
+func TestPassportRemovalRevokesRawMCPSelection(t *testing.T) {
+	dir := t.TempDir()
+	docs := managedDocs("alice")
+	base := "kind: tools\nbinding: {profile_id: alice-default, generation: 1}\nextended:\n  user_mcp: {via: mcp-raw}\n"
+	declarations := "connectors:\n  gitea: {url: 'https://mcp.example.com/gitea'}\n  notes: {url: 'https://mcp.example.com/notes'}\n"
+	docs["tools"] = base + declarations
+	publishManagedDocs(t, dir, "alice", "r-1111111111111111", docs)
+	seedGovernance(t, dir, func(doc *api.Governance) { activeToolGrant(t, doc, "alice", api.SectionUserMCP, time.Hour) })
+	check := func(wantGitea bool) {
+		t.Helper()
+		s, err := ReadEffectiveSpace(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(s.MCP) != 2 {
+			t.Fatal("deselection deleted a raw MCP declaration")
+		}
+		servers := rawMCPServers(s)
+		_, got := servers["gitea"]
+		if got != wantGitea || servers["notes"] == nil {
+			t.Fatalf("raw MCP projection: gitea=%v notes=%v", got, servers["notes"] != nil)
+		}
+	}
+	check(true)
+	docs["tools"] = base + "  gitea: {via: off}\n" + declarations
+	publishManagedDocs(t, dir, "alice", "r-2222222222222222", docs)
+	check(false)
+	check(false)
 }
 
 // A `via: off` tools entry is the documented self-deny surface — it must

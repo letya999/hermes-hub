@@ -158,7 +158,7 @@ func authoredStackIdentity(dir string) (stackIdentity, error) {
 	var probe struct {
 		Identity stackIdentity `yaml:"identity"`
 	}
-	body, err := os.ReadFile(filepath.Join(dir, "passports", "stack.yaml")) // #nosec G304 -- operator-owned space dir
+	body, err := os.ReadFile(filepath.Join(dir, "passports", "stack.yaml")) // #nosec G304 G703 -- fixed passport in an operator-owned space
 	if err != nil {
 		return probe.Identity, err
 	}
