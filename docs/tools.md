@@ -173,7 +173,7 @@ word where one exists):
 | models | `model_list`, `model_switch` | runtime:models | routes, ladders and status from the models passport; switch stays inside the granted ladder; without a hub models plane calls return `unavailable` |
 | sessions | `session_list`, `session_search`, `session_read`, `session_switch`, `session_edit`, `session_remove` | runtime:sessions | own-space sessions only; `session_edit` action archive\|restore; without a session store calls return `unavailable` |
 | memory | `memory_search` | runtime:toolhub | the memory vault contract (SPEC-0085/M32): BM25+graph over daily leaves, cards and summaries — hits carry `file:line` evidence refs, never answer from memory alone; ToolHub resolves the caller's enrolled vault from the verified identity envelope — no argument, root or header selects user, vault or audience; requires config.memory.enabled plus an exact live private run verified against the supervisor job record |
-| memory | `memory_card` | handler:memory | the governed write path (ops remember\|fact\|truth\|merge\|forget); while the writer moves to ToolHub (#518) the in-runtime executor reports explicit unavailable — there is no `root=vault` file root and no local vault fallback |
+| memory | `memory_card` | runtime:toolhub | the governed write path (ops remember\|fact\|truth\|merge\|forget), executed inside ToolHub as the sole writer — there is no `root=vault` file root and no local vault fallback |
 
 ## memory — the vault contract
 

@@ -138,3 +138,23 @@ func TestSkillManageDeclaresGitArguments(t *testing.T) {
 	}
 	t.Fatal("skill_edit missing from the hub catalog")
 }
+
+// M32/#518: memory_card executes inside ToolHub against the verified
+// caller's own vault — the description must say ToolHub, never the retired
+// stamped-run wording, and the executor stays runtime:toolhub.
+func TestMemoryCardDeclaresToolHubExecutor(t *testing.T) {
+	d := HubToolsDefinition()
+	for _, tool := range d.Tools {
+		if tool.Name != "memory_card" {
+			continue
+		}
+		if tool.Executor != "runtime:toolhub" {
+			t.Fatalf("memory_card executor = %q", tool.Executor)
+		}
+		if !strings.Contains(tool.Description, "ToolHub") || strings.Contains(tool.Description, "stamped private run") {
+			t.Fatalf("memory_card description drifted: %q", tool.Description)
+		}
+		return
+	}
+	t.Fatal("memory_card missing from the hub catalog")
+}

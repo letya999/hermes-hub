@@ -70,10 +70,22 @@ tool call crosses. Listens `0.0.0.0:8090`, host-bound to `127.0.0.1:8090`.
   indexer answers with the same hit shape (evidence refs, `status`,
   `untrusted`). Arguments and headers never select user, vault or audience;
   an unresolvable vault reports `status=unavailable` with no local fallback.
-  The in-runtime `handler:memory` path serves no memory tool — both
-  `memory_search` and `memory_card` report explicit unavailable there until
-  the card writer lands in ToolHub (#518) — and the runtime container
-  carries no vault mount.
+  The in-runtime `handler:memory` path serves no memory tool — the runtime
+  container carries no vault mount.
+- **ToolHub-owned memory writer** (`memory_card.go`): `memory_card`
+  executes inside ToolHub (`runtime:toolhub` executor) — the sole governed
+  writer for model-driven memory mutations. Ops `remember`, `fact`,
+  `truth`, `merge` and `forget` run under the per-user vault lock against
+  the verified envelope's own vault: at the commit point the published
+  `memory.enabled` enrollment and the admitted authority are re-checked,
+  so a disable or revocation that lands between admission and the mutation
+  still prevents the write and reports `status=denied`. A deterministic
+  request id (job, op, canonical arguments — never the per-call
+  `ToolCallID`) makes a retried identical call converge on the journaled
+  result instead of writing twice. Every mutation and denial is journaled
+  to `runtime/memory/writes.jsonl` under the authorizing `(job, run)`
+  `source_ref`; malformed calls answer `status=invalid` with field-level
+  errors.
 - **Pre-turn memory context** (`memory_context.go`): `POST /v1/memory-context`
   is the supervisor's private-run context lane (SPEC-0098 M5). The
   control-plane bearer plus `X-Hub-Principal` resolve the enrolled identity;

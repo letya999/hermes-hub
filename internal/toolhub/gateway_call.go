@@ -134,7 +134,7 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 		outcome = "backend-error"
 		caller, envOK := g.Backend.(api.EnvBackend)
 		if api.RemoteExecutor(projected.Tool.Executor) {
-			result, callErr = g.execRemote(callCtx, auth, projected.Tool, arguments)
+			result, callErr = g.execRemote(callCtx, auth, effective, projected.Tool, arguments)
 		} else if envOK {
 			result, callErr = caller.CallEnv(callCtx, effective, projected.Tool, arguments, injection.Environment)
 		} else {
