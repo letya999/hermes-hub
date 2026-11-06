@@ -109,6 +109,13 @@ func writeManagedSpaceDocs(t *testing.T, dir, user string, overrides map[string]
 	if err := os.WriteFile(filepath.Join(dir, "generated", "passports", "current"), []byte(rev+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	view := filepath.Join(dir, "generated", "config-view", "dev")
+	if err := os.MkdirAll(view, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(view, "revision"), []byte(rev+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // TestUpReadsManagedRevision: `hubctl up` resolves the space through the

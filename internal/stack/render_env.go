@@ -51,6 +51,16 @@ func configuredEnvKeys(s Settings, dir string) []string {
 	return keys
 }
 func RenderEnvironment(dir, root, environment string) error {
+	return renderEnvironment(dir, root, environment, "")
+}
+
+// RenderRevisionEnvironment prepares generated outputs from a staged bundle.
+// The active read path remains gated until the publisher commits current.
+func RenderRevisionEnvironment(dir, root, environment, revisionID string) error {
+	return renderEnvironment(dir, root, environment, revisionID)
+}
+
+func renderEnvironment(dir, root, environment, revisionID string) error {
 	dir, err := filepath.Abs(dir)
 	if err != nil {
 		return err
@@ -59,7 +69,12 @@ func RenderEnvironment(dir, root, environment string) error {
 	if err != nil {
 		return err
 	}
-	s, err := ReadEffective(dir, environment)
+	var s Settings
+	if revisionID == "" {
+		s, err = ReadEffective(dir, environment)
+	} else {
+		s, err = ReadEffectiveRevision(dir, environment, revisionID)
+	}
 	if err != nil {
 		return err
 	}
@@ -182,7 +197,7 @@ func RenderEnvironment(dir, root, environment string) error {
 		return err
 	}
 	if s.CapabilityMode == "managed" {
-		if err = writeModelRegistry(dir, s); err != nil {
+		if err = writeModelRegistryRevision(dir, s, revisionID); err != nil {
 			return err
 		}
 		if err = ensureModelRelayAuth(filepath.Join(dir, "model-relay.auth")); err != nil {

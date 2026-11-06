@@ -158,6 +158,7 @@ type Settings struct {
 	// (instance → mode) into the compose plan; render state only, never
 	// serialized back to agent.yaml.
 	PassportServices map[string]string `yaml:"-"`
+	PassportRevision string            `yaml:"-"`
 	// PassportConfig carries the published config.yaml section so consumers
 	// without a Settings leaf (locale, parallel lanes, supervision, channel
 	// refs, memory) still read the imperative value. Render state only.

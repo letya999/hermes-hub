@@ -23,6 +23,24 @@ type prepareFileInfo struct {
 	mode fs.FileMode
 }
 
+func TestManagedStartupRejectsMismatchedConfigView(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "revision")
+	if err := os.WriteFile(path, []byte("r-old\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkMountedPassportRevision(path, "r-old"); err != nil {
+		t.Fatal(err)
+	}
+	for _, revision := range []string{"", "r-new"} {
+		if err := checkMountedPassportRevision(path, revision); err == nil {
+			t.Fatalf("accepted revision %q with old mounted view", revision)
+		}
+	}
+	if err := checkMountedPassportRevision(filepath.Join(t.TempDir(), "missing"), "r-old"); err == nil {
+		t.Fatal("accepted missing config view revision")
+	}
+}
+
 func (i prepareFileInfo) Name() string       { return i.name }
 func (i prepareFileInfo) Size() int64        { return 0 }
 func (i prepareFileInfo) Mode() fs.FileMode  { return i.mode }
@@ -132,6 +150,14 @@ func TestHealthAndRunValidation(t *testing.T) {
 func managedRuntimeConfig(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
+	previousPath := mountedPassportRevisionPath
+	mountedPassportRevisionPath = filepath.Join(dir, "revision")
+	t.Cleanup(func() { mountedPassportRevisionPath = previousPath })
+	const revision = "r-0123456789abcdef"
+	if err := os.WriteFile(mountedPassportRevisionPath, []byte(revision+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUB_PASSPORT_REVISION", revision)
 	s := stack.Settings{Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", CapabilityMode: "managed"}
 	content, err := yaml.Marshal(stack.Config(s))
 	if err != nil {

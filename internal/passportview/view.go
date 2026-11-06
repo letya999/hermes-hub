@@ -35,6 +35,9 @@ func currentGenerated(genDir string) (string, error) {
 		return "", err
 	}
 	rev := strings.TrimSpace(string(b))
+	if rev == "pending" {
+		return "", fmt.Errorf("current revision is pending activation")
+	}
 	if !filepath.IsLocal(rev) {
 		return "", fmt.Errorf("current names a non-local revision %q", rev)
 	}
@@ -65,11 +68,24 @@ func LoadEffective(spaceDir string) (Effective, error) {
 // itself — mount views like the cliproxy init companion's /run/model-gen
 // carry no enclosing space dir.
 func LoadEffectiveGenerated(genDir string) (Effective, error) {
-	var eff Effective
 	rev, err := currentGenerated(genDir)
 	if err != nil {
-		return eff, fmt.Errorf("load effective: %w", err)
+		return Effective{}, fmt.Errorf("load effective: %w", err)
 	}
+	return loadRevisionGenerated(genDir, rev)
+}
+
+// LoadRevision reads a staged immutable bundle before its activation. Only
+// the publisher may use it; ordinary consumers use LoadEffective.
+func LoadRevision(spaceDir, revisionID string) (Effective, error) {
+	if !filepath.IsLocal(revisionID) || revisionID == "pending" {
+		return Effective{}, fmt.Errorf("load revision: invalid id")
+	}
+	return loadRevisionGenerated(filepath.Join(spaceDir, "generated"), revisionID)
+}
+
+func loadRevisionGenerated(genDir, rev string) (Effective, error) {
+	var eff Effective
 	revDir := filepath.Join(genDir, "passports", rev)
 	catalogs, space, environment := "", "", ""
 	for _, name := range Names {

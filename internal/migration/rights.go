@@ -53,7 +53,7 @@ func DeriveSpaceRights(dir, user, environment string, rev passport.Revision, doc
 	if err != nil {
 		return fmt.Errorf("rights derivation: %w", err)
 	}
-	settings, err := stack.ReadEffective(dir, environment)
+	settings, err := stack.ReadEffectiveRevision(dir, environment, rev.ID)
 	if err != nil {
 		return fmt.Errorf("rights derivation: %w", err)
 	}
@@ -69,13 +69,13 @@ func DeriveSpaceRights(dir, user, environment string, rev passport.Revision, doc
 		return fmt.Errorf("tools derivation: %w", err)
 	}
 	selections, core = append(selections, connectorSelections...), append(core, connectorCore...)
-	return toolhub.DeriveRightsAndSelections(store, gov, docs.Rights, user, allow, environment, profileID, stack.PolicyVersion(settings), agenttools.HubToolsDefinitionID, selections, core, now)
+	return toolhub.DerivePublishedRightsAndSelections(store, gov, docs.Rights, user, allow, environment, profileID, stack.PolicyVersion(settings), rev.ID, agenttools.HubToolsDefinitionID, selections, core, now)
 }
 
 // RestoreSpaceRights restores the bound profile after a failed apply. It
 // intersects the previous passport allow with live grants so a concurrent
 // revocation stays revoked. It leaves policy versions and bindings untouched.
-func RestoreSpaceRights(dir, user, environment, profileID string, allow map[string][]string, toolsBody []byte, docs catalog.Docs, now time.Time) error {
+func RestoreSpaceRights(dir, user, environment, profileID, revisionID string, allow map[string][]string, toolsBody []byte, docs catalog.Docs, now time.Time) error {
 	if profileID == "" {
 		return fmt.Errorf("rights restore: bound profile is required")
 	}
@@ -115,7 +115,7 @@ func RestoreSpaceRights(dir, user, environment, profileID string, allow map[stri
 		return fmt.Errorf("rights restore: tools derivation: %w", err)
 	}
 	selections, core = append(selections, connectorSelections...), append(core, connectorCore...)
-	return toolhub.DeriveRightsAndSelections(store, gov, docs.Rights, user, restored, environment, profileID, "", agenttools.HubToolsDefinitionID, selections, core, now)
+	return toolhub.DerivePublishedRightsAndSelections(store, gov, docs.Rights, user, restored, environment, profileID, "", revisionID, agenttools.HubToolsDefinitionID, selections, core, now)
 }
 
 // ValidateSelectedConnectors resolves declared connector tools before the

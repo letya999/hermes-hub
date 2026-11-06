@@ -46,6 +46,10 @@ func (g *Gateway) chargeRunCall(corr api.CallCorrelation) error {
 }
 
 func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedName string, arguments map[string]any) (*mcp.CallToolResult, error) {
+	activation, err := g.requireActivated(auth)
+	if err != nil {
+		return nil, err
+	}
 	corr := api.CallCorrelationFrom(ctx)
 	if corr.ToolCallID == "" {
 		corr.ToolCallID = api.NewToolCallID()
@@ -57,7 +61,13 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 	var out *mcp.CallToolResult
 	admitted := false
 	authorized := false
-	err := g.Store.AuthorizeProjectedCall(auth, projectedName, arguments, g.admitGoverned(auth, func(projected api.ProjectedTool, effective api.EffectiveBinding) (callbackErr error) {
+	err = g.Store.AuthorizeProjectedCall(auth, projectedName, arguments, g.admitGoverned(auth, func(projected api.ProjectedTool, effective api.EffectiveBinding) (callbackErr error) {
+		if activation.revision != "" && effective.CapabilityProfileRevision != activation.profileRevision {
+			return fmt.Errorf("%w: passport activation mismatch", api.ErrUnauthorized)
+		}
+		if err := g.checkActivePassport(auth, activation.revision); err != nil {
+			return err
+		}
 		authorized = true
 		if strings.HasPrefix(projected.Tool.CapabilityID, "memory.") {
 			if err := g.requireMemoryEnabled(auth.PrincipalID, auth.Environment); err != nil {
@@ -132,6 +142,10 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 				outcome = "preflight-error"
 				return err
 			}
+		}
+		if err := g.checkActivePassport(auth, activation.revision); err != nil {
+			outcome = "preflight-error"
+			return err
 		}
 		effectStarted = true
 		outcome = "backend-error"
@@ -245,6 +259,44 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 		return nil, &uncertainCallError{operationID: toolOperationID(auth.PrincipalID, auth.ContextID, auth.Environment, corr.JobID, corr.ToolCallID)}
 	}
 	return out, err
+}
+
+// requireActivated binds a managed profile to the one immutable passport
+// bundle visible through current. A prepared or mismatched generation denies
+// before credential injection or backend dispatch.
+type activationPin struct {
+	revision        string
+	profileRevision uint64
+}
+
+func (g *Gateway) requireActivated(auth identity.Envelope) (activationPin, error) {
+	if g.PassportRoot == "" {
+		return activationPin{}, nil
+	}
+	if auth.CapabilityProfile == "" {
+		return activationPin{}, fmt.Errorf("%w: passport activation unavailable", api.ErrUnauthorized)
+	}
+	if err := g.Store.Reload(); err != nil {
+		return activationPin{}, err
+	}
+	g.Store.mu.RLock()
+	profile, _, err := g.Store.capabilityProfileLocked(auth)
+	g.Store.mu.RUnlock()
+	if err != nil || profile.PassportRevision == "" {
+		return activationPin{}, fmt.Errorf("%w: passport activation unavailable", api.ErrUnauthorized)
+	}
+	return activationPin{revision: profile.PassportRevision, profileRevision: profile.Revision}, g.checkActivePassport(auth, profile.PassportRevision)
+}
+
+func (g *Gateway) checkActivePassport(auth identity.Envelope, revision string) error {
+	if revision == "" {
+		return nil
+	}
+	eff, err := passportview.LoadEffectiveGenerated(filepath.Join(g.PassportRoot, auth.PrincipalID))
+	if err != nil || eff.Header.Metadata.Revision != revision || eff.Header.Metadata.Space != auth.PrincipalID || eff.Header.Metadata.Environment != auth.Environment {
+		return fmt.Errorf("%w: passport activation mismatch", api.ErrUnauthorized)
+	}
+	return nil
 }
 
 func (g *Gateway) requireMemoryEnabled(principal, environment string) error {

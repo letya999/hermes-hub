@@ -1,6 +1,6 @@
 ---
 description: supervisor — per-space runtime spawner/manager; owns warm pools, docker exec agent-tools path, control channel.
-last_verified: 2026-11-04
+last_verified: 2026-11-06
 ---
 
 # supervisor
@@ -31,6 +31,8 @@ spaces dir at `/spaces`, project `config/` read-only, and the host
 
 - Spawn/stop `hermes-hub-agent-<user>-<env>` runtime containers from the
   runtime image; warm pool keyed by runtime identity + policy version.
+  Managed spawn verifies the published revision again after materializing
+  its files and passes that revision to the runtime preflight.
 - Own the agent-tools executor naming contract: `HUB_AGENT_EXEC_MODE=
   supervisor` makes toolhub run agent-tools via `docker exec` into the owning
   runtime — the only control-plane path that never crosses the agent network.

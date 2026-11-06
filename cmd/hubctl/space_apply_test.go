@@ -879,6 +879,13 @@ func TestApplyRecreateResolvesComposeNames(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "generated", "passports", "current"), []byte(rev+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	view := filepath.Join(dir, "generated", "config-view", "dev")
+	if err := os.MkdirAll(view, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(view, "revision"), []byte(rev+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	// A migrated space: agent.yaml keeps the operator extensions — profile
 	// identity without the capability_mode authority key — and no legacy
 	// authority files remain (SPEC-0092 R8.1).
@@ -994,6 +1001,13 @@ func TestRespawnRuntimePrefersEnvEndpoint(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "generated", "passports", "current"), []byte(rev+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	view := filepath.Join(dir, "generated", "config-view", "dev")
+	if err := os.MkdirAll(view, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(view, "revision"), []byte(rev+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	hit := false
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/respawn" {
@@ -1061,6 +1075,13 @@ func TestRespawnRuntimeFallsBackToRestartRequest(t *testing.T) {
 		}
 	}
 	if err := os.WriteFile(filepath.Join(dir, "generated", "passports", "current"), []byte(rev+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	view := filepath.Join(dir, "generated", "config-view", "dev")
+	if err := os.MkdirAll(view, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(view, "revision"), []byte(rev+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	marked := false

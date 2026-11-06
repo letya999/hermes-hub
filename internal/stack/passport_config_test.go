@@ -55,6 +55,13 @@ func writeSixPassportsInEnvironment(t *testing.T, dir, space, environment, rev s
 	if err := os.WriteFile(filepath.Join(dir, "generated", "passports", "current"), []byte(rev+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	viewDir := filepath.Join(dir, "generated", "config-view", environment)
+	if err := os.MkdirAll(viewDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(viewDir, "revision"), []byte(rev+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // config.ports is the imperative host-port contract: each declared name lands

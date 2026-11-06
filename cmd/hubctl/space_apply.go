@@ -184,6 +184,8 @@ func runSpaceApply(ctx context.Context, args []string) error {
 
 // applyConfirm publishes the revision, stamps the managed-rights ledger and
 // runs the action plan.
+var applyStep = func(string) {}
+
 func applyConfirm(ctx context.Context, abs, rootAbs, env string, rev passport.Revision, prevID string, actions []reconcile.Action, handlers reconcile.Handlers) (reconcile.Report, error) {
 	var report reconcile.Report
 	bound, _ := rev.Value("tools", "binding.profile_id")
@@ -202,23 +204,52 @@ func applyConfirm(ctx context.Context, abs, rootAbs, env string, rev passport.Re
 	case err == nil && current != prevID:
 		return report, fmt.Errorf("space apply: stale base %s: revision %s is active", prevID, current)
 	}
-	if err := rev.Publish(abs); err != nil {
+	if err := rev.Prepare(abs, applyStep); err != nil {
 		return report, fmt.Errorf("space apply: %w", err)
+	}
+	applyStep("prepare")
+	restoreRights := func() error {
+		docs, err := catalog.LoadPinned()
+		if err != nil {
+			return err
+		}
+		if prevID == "" {
+			return migration.RestoreSpaceRights(abs, filepath.Base(abs), env, profileID, "", map[string][]string{}, nil, docs, time.Now().UTC())
+		}
+		previous := filepath.Join(abs, "generated", "passports", prevID)
+		grantsBody, err := os.ReadFile(filepath.Join(previous, "grants.yaml"))
+		if err != nil {
+			return err
+		}
+		toolsBody, err := os.ReadFile(filepath.Join(previous, "tools.yaml"))
+		if err != nil {
+			return err
+		}
+		allow, err := (passport.Revision{Docs: map[string][]byte{"grants": grantsBody}}).GrantAllow()
+		if err != nil {
+			return err
+		}
+		bound, _ := (passport.Revision{Docs: map[string][]byte{"tools": toolsBody}}).Value("tools", "binding.profile_id")
+		previousProfileID, _ := bound.(string)
+		return migration.RestoreSpaceRights(abs, filepath.Base(abs), env, previousProfileID, prevID, allow, toolsBody, docs, time.Now().UTC())
 	}
 	rollback := func() error {
 		if err := passport.RestoreCurrent(abs, prevID, env); err != nil {
 			return err
 		}
 		if prevID != "" {
-			return stack.RenderEnvironment(abs, rootAbs, env)
+			if err := stack.RenderEnvironment(abs, rootAbs, env); err != nil {
+				return errors.Join(err, restoreRights())
+			}
 		}
-		return nil
+		return restoreRights()
 	}
 	// Reconcile acts on generated compose files — they must describe the
 	// revision just published, or rebuild/recreate hit "no such service".
-	if err := stack.RenderEnvironment(abs, rootAbs, env); err != nil {
+	if err := stack.RenderRevisionEnvironment(abs, rootAbs, env, rev.ID); err != nil {
 		return report, fmt.Errorf("space apply: render: %w", errors.Join(err, rollback()))
 	}
+	applyStep("render")
 	// The published grants revision is the managed-rights authority: stamp
 	// the space's ToolHub profiles + ledger from it before reconcile acts —
 	// a reconcile failure re-derives the previous revision's allow so the
@@ -233,51 +264,15 @@ func applyConfirm(ctx context.Context, abs, rootAbs, env string, rev passport.Re
 	if err := derive(rev); err != nil {
 		return report, fmt.Errorf("space apply: rights derivation: %w", errors.Join(err, rollback()))
 	}
+	applyStep("rights")
+	if err := rev.Activate(abs); err != nil {
+		return report, fmt.Errorf("space apply: activation: %w", errors.Join(err, rollback()))
+	}
+	applyStep("activate")
 	report = reconcile.Run(actions, handlers, rollback, rev.ID, prevID)
 	if report.Failed != nil {
 		if !report.RolledBack {
 			return report, fmt.Errorf("space apply: %s %s failed and rollback diverged — pointer/ledger state is uncertain", report.Failed.Kind, report.Failed.Target)
-		}
-		// The pointer is back on prevID; return the ledger to the same
-		// revision's allow intersected with live issued grants — or to the
-		// empty ceiling when a first apply leaves no active revision.
-		if prevID == "" {
-			docs, err := catalog.LoadPinned()
-			if err != nil {
-				report.RolledBack = false
-				return report, fmt.Errorf("space apply: %s %s failed; pointer restored, but rollback diverged at rights-ledger restore: %w", report.Failed.Kind, report.Failed.Target, err)
-			}
-			if err := migration.RestoreSpaceRights(abs, filepath.Base(abs), env, profileID, map[string][]string{}, nil, docs, time.Now().UTC()); err != nil {
-				report.RolledBack = false
-				return report, fmt.Errorf("space apply: %s %s failed; pointer restored, but rollback diverged at rights-ledger restore: %w", report.Failed.Kind, report.Failed.Target, err)
-			}
-		} else {
-			b, err := os.ReadFile(filepath.Join(abs, "generated", "passports", prevID, "grants.yaml"))
-			if err != nil {
-				report.RolledBack = false
-				return report, fmt.Errorf("space apply: %s %s failed; pointer restored to %s, but rollback diverged at rights-ledger restore: %w", report.Failed.Kind, report.Failed.Target, prevID, err)
-			}
-			toolsBody, err := os.ReadFile(filepath.Join(abs, "generated", "passports", prevID, "tools.yaml"))
-			if err != nil {
-				report.RolledBack = false
-				return report, fmt.Errorf("space apply: %s %s failed; pointer restored to %s, but rollback diverged at rights-ledger restore: %w", report.Failed.Kind, report.Failed.Target, prevID, err)
-			}
-			allow, err := (passport.Revision{Docs: map[string][]byte{"grants": b}}).GrantAllow()
-			if err != nil {
-				report.RolledBack = false
-				return report, fmt.Errorf("space apply: %s %s failed; pointer restored to %s, but rollback diverged at rights-ledger restore: %w", report.Failed.Kind, report.Failed.Target, prevID, err)
-			}
-			bound, _ := (passport.Revision{Docs: map[string][]byte{"tools": toolsBody}}).Value("tools", "binding.profile_id")
-			previousProfileID, _ := bound.(string)
-			docs, err := catalog.LoadPinned()
-			if err != nil {
-				report.RolledBack = false
-				return report, fmt.Errorf("space apply: %s %s failed; pointer restored to %s, but rollback diverged at rights-ledger restore: %w", report.Failed.Kind, report.Failed.Target, prevID, err)
-			}
-			if err := migration.RestoreSpaceRights(abs, filepath.Base(abs), env, previousProfileID, allow, toolsBody, docs, time.Now().UTC()); err != nil {
-				report.RolledBack = false
-				return report, fmt.Errorf("space apply: %s %s failed; pointer restored to %s, but rollback diverged at rights-ledger restore: %w", report.Failed.Kind, report.Failed.Target, prevID, err)
-			}
 		}
 		return report, fmt.Errorf("space apply: %s %s failed, rolled back to %s", report.Failed.Kind, report.Failed.Target, prevID)
 	}

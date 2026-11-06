@@ -70,8 +70,14 @@ func TestMemoryCallChecksPublishedSwitchBeforeBackend(t *testing.T) {
 		t.Fatal(err)
 	}
 	grantDefinitionRights(t, store, auth, definition)
+	profile = store.capabilityProfiles[profile.ProfileID]
 	root := t.TempDir()
 	writeMemoryPassport(t, root, "alice", false)
+	profile.Revision++
+	profile.PassportRevision = "r-0123456789abcdef"
+	if err := putProfile(t, store, profile); err != nil {
+		t.Fatal(err)
+	}
 	calls := 0
 	g := &Gateway{Store: store, PassportRoot: root, AuditWrite: func(string, map[string]string) error { return nil },
 		Backend: backendFunc(func(context.Context, api.EffectiveBinding, api.ToolSpec, map[string]any) (api.BackendResult, error) {
@@ -82,6 +88,11 @@ func TestMemoryCallChecksPublishedSwitchBeforeBackend(t *testing.T) {
 		t.Fatalf("disabled memory reached backend: calls=%d err=%v", calls, err)
 	}
 	writeMemoryPassport(t, root, "alice", true)
+	profile.Revision++
+	profile.PassportRevision = "r-0123456789abcdee"
+	if err := putProfile(t, store, profile); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := g.CallAuthorized(t.Context(), auth, "memory_search", nil); err != nil || calls != 1 {
 		t.Fatalf("enabled memory with grant denied: calls=%d err=%v", calls, err)
 	}

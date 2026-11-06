@@ -210,6 +210,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	}
 	if s.CapabilityMode == "managed" {
 		delete(runtimeEnv, "HUB_TOOLHUB_STORE")
+		runtimeEnv["HUB_PASSPORT_REVISION"] = s.PassportRevision
 		runtimeEnv["HUB_CAPABILITY_PROFILE_ID"] = s.CapabilityProfileID
 		runtimeEnv["HUB_CAPABILITY_GENERATION"] = fmt.Sprint(s.CapabilityGeneration)
 		runtimeEnv["HUB_CAPABILITY_ENVIRONMENT"] = s.Environment
@@ -705,7 +706,12 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 					}
 					vaultRoot := filepath.Join(parent, sibling.Name(), "vault")
 					if info, err := os.Lstat(vaultRoot); err == nil && info.IsDir() {
-						if effective, err := passportview.LoadEffective(filepath.Join(parent, sibling.Name())); err == nil && effective.Config.Memory.Enabled != nil && *effective.Config.Memory.Enabled && effective.Header.Metadata.Environment == s.Environment {
+						enabled := sibling.Name() == s.User && s.PassportRevision != "" && s.PassportConfig != nil && s.PassportConfig.Memory.Enabled != nil && *s.PassportConfig.Memory.Enabled
+						if !enabled && (sibling.Name() != s.User || s.PassportRevision == "") {
+							effective, err := passportview.LoadEffective(filepath.Join(parent, sibling.Name()))
+							enabled = err == nil && effective.Config.Memory.Enabled != nil && *effective.Config.Memory.Enabled && effective.Header.Metadata.Environment == s.Environment
+						}
+						if enabled {
 							toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(vaultRoot), "target": "/vaults-by/" + sibling.Name()})
 						}
 					}

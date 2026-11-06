@@ -1,12 +1,17 @@
 ---
 description: toolhub — capability gateway: tool admission, governance evaluation, connector lifecycle, audit ledger.
-last_verified: 2026-11-05
+last_verified: 2026-11-06
 ---
 
 # toolhub
 
 `cmd/toolhub` → `internal/toolhub`. The capability gateway every projected
 tool call crosses. Listens `0.0.0.0:8090`, host-bound to `127.0.0.1:8090`.
+For managed profiles, the published passport revision is stamped on the
+profile. MCP projection, tool admission before backend dispatch and the
+out-of-process rights decision route require that stamp to match the active
+six-passport bundle for the same principal and environment. A pending pointer
+or mismatch denies; an unstamped managed profile must be rebound by apply.
 
 ## Responsibilities
 

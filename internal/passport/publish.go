@@ -1,6 +1,7 @@
 package passport
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -11,11 +12,28 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Publish stages one revision under generated/passports/<id>/ and flips the
-// single `current` pointer atomically. Every file lands read-only — the
-// passports are generated authority, not editable config. Any failure before
-// the pointer write leaves the previously published revision active.
+// Publish stages one immutable revision and activates it in a single pointer
+// write. Apply uses Prepare and Activate separately to prepare other readers.
 func (r Revision) Publish(spaceDir string) error {
+	previous, err := Current(spaceDir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := r.Prepare(spaceDir, nil); err != nil {
+		return err
+	}
+	if err := r.Activate(spaceDir); err != nil {
+		return errors.Join(err, RestoreCurrent(spaceDir, previous, r.Provenance.Environment))
+	}
+	return nil
+}
+
+// Prepare writes immutable revision files and refreshes the mounted view.
+// While mutable view files are replaced, current is deliberately unreadable.
+func (r Revision) Prepare(spaceDir string, after func(string)) error {
+	if !filepath.IsLocal(r.ID) || r.ID == "pending" {
+		return fmt.Errorf("passport publish: invalid revision id")
+	}
 	if len(r.Docs) != len(Names) {
 		return fmt.Errorf("passport publish: revision carries %d passports, want %d", len(r.Docs), len(Names))
 	}
@@ -62,16 +80,50 @@ func (r Revision) Publish(spaceDir string) error {
 		}
 	} else if err != nil {
 		return err
+	} else {
+		for _, name := range append(append([]string{}, Names...), "prompt-pointer", "provenance") {
+			filename := name + ".yaml"
+			if name == "prompt-pointer" {
+				filename = "prompt-pointer.txt"
+			}
+			staged, err := os.ReadFile(filepath.Join(staging, filename))
+			if err != nil {
+				return err
+			}
+			published, err := os.ReadFile(filepath.Join(dest, filename))
+			if err != nil || !bytes.Equal(staged, published) {
+				return fmt.Errorf("passport publish: immutable revision %s differs at %s", r.ID, filename)
+			}
+		}
 	}
-	// The pointer flip is the commit point: the previous revision stays
-	// active until this write lands.
-	if err := atomic(filepath.Join(root, "current"), []byte(r.ID+"\n")); err != nil {
+	if after != nil {
+		after("bundle")
+	}
+	if err := atomic(filepath.Join(root, "current"), []byte("pending\n")); err != nil {
 		return err
 	}
-	if err := r.refreshConfigView(spaceDir); err != nil {
+	if after != nil {
+		after("pending")
+	}
+	if err := r.refreshConfigView(spaceDir, after); err != nil {
 		return errors.Join(err, RestoreCurrent(spaceDir, previous, r.Provenance.Environment))
 	}
 	return nil
+}
+
+// Activate is the only commit point. The view and all other in-process
+// authority must already be prepared for this exact revision.
+func (r Revision) Activate(spaceDir string) error {
+	root := filepath.Join(spaceDir, "generated", "passports")
+	b, err := os.ReadFile(filepath.Join(root, "current"))
+	if err != nil || strings.TrimSpace(string(b)) != "pending" {
+		return fmt.Errorf("passport activate: revision is not prepared")
+	}
+	b, err = os.ReadFile(filepath.Join(spaceDir, "generated", "config-view", r.Provenance.Environment, "revision"))
+	if err != nil || strings.TrimSpace(string(b)) != r.ID {
+		return fmt.Errorf("passport activate: config view is not prepared")
+	}
+	return PointCurrent(spaceDir, r.ID)
 }
 
 // atomic writes body to path via a same-directory temp file + rename.
@@ -133,20 +185,22 @@ func PointCurrent(spaceDir, revisionID string) error {
 // immutable, so the old view can be reconstructed without editable inputs.
 func RestoreCurrent(spaceDir, revisionID, environment string) error {
 	viewDir := filepath.Join(spaceDir, "generated", "config-view", environment)
+	if err := atomic(filepath.Join(spaceDir, "generated", "passports", "current"), []byte("pending\n")); err != nil {
+		return err
+	}
 	if revisionID == "" {
-		if err := PointCurrent(spaceDir, ""); err != nil {
-			return err
-		}
-		for _, name := range append(append([]string{}, Names...), "prompt-pointer") {
+		for _, name := range append(append([]string{}, Names...), "prompt-pointer", "revision") {
 			filename := name + ".yaml"
 			if name == "prompt-pointer" {
 				filename = "prompt-pointer.txt"
+			} else if name == "revision" {
+				filename = "revision"
 			}
 			if err := os.Remove(filepath.Join(viewDir, filename)); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return err
 			}
 		}
-		return nil
+		return PointCurrent(spaceDir, "")
 	}
 	if !filepath.IsLocal(revisionID) {
 		return fmt.Errorf("passport restore: invalid revision id")
@@ -159,10 +213,10 @@ func RestoreCurrent(spaceDir, revisionID, environment string) error {
 		}
 		rev.Docs[name] = body
 	}
-	if err := PointCurrent(spaceDir, revisionID); err != nil {
+	if err := rev.refreshConfigView(spaceDir, nil); err != nil {
 		return err
 	}
-	return rev.refreshConfigView(spaceDir)
+	return PointCurrent(spaceDir, revisionID)
 }
 
 // refreshConfigView republishes the runtime /config directory: the six
@@ -170,7 +224,7 @@ func RestoreCurrent(spaceDir, revisionID, environment string) error {
 // stable directory inode (S1.4 - Docker Desktop single-file binds are not a
 // refresh mechanism, and the directory bind must never see a half-swapped
 // file). Files absent from the new revision are removed individually.
-func (r Revision) refreshConfigView(spaceDir string) error {
+func (r Revision) refreshConfigView(spaceDir string, after func(string)) error {
 	viewDir := filepath.Join(spaceDir, "generated", "config-view", r.Provenance.Environment)
 	if err := os.MkdirAll(viewDir, 0755); err != nil {
 		return err
@@ -181,10 +235,20 @@ func (r Revision) refreshConfigView(spaceDir string) error {
 		if err := atomic(filepath.Join(viewDir, name+".yaml"), r.Docs[name]); err != nil {
 			return err
 		}
+		if after != nil {
+			after("view:" + name)
+		}
 	}
 	want["prompt-pointer.txt"] = true
 	if err := atomic(filepath.Join(viewDir, "prompt-pointer.txt"), []byte(r.PromptPointer())); err != nil {
 		return err
+	}
+	want["revision"] = true
+	if err := atomic(filepath.Join(viewDir, "revision"), []byte(r.ID+"\n")); err != nil {
+		return err
+	}
+	if after != nil {
+		after("view:revision")
 	}
 	// The persona file is authored per space, not generated per revision -
 	// the view copies the current one so /config shows what the agent sees.

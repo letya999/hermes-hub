@@ -35,6 +35,7 @@ func (s *Settings) applyPassport(dir string) error {
 // applyEffective carries one loaded revision's fields onto the settings the
 // extension files supplied.
 func (s *Settings) applyEffective(eff passportview.Effective) error {
+	s.PassportRevision = eff.Header.Metadata.Revision
 	if s.Schema == 0 {
 		s.Schema = 3 // a published revision implies the v3 vocabulary
 	}
@@ -267,9 +268,15 @@ func passportTools(t passportview.Tools) map[string]ToolEntry {
 // inside the cliproxy instance and never reaches the relay. Switching is
 // governed by the models.switch right at the relay PEP — the file carries
 // no switch map.
-func passportRegistryLayer(dir string) (modelRegistryYAML, error) {
+func passportRegistryLayer(dir, revisionID string) (modelRegistryYAML, error) {
 	var layer modelRegistryYAML
-	eff, err := passportview.LoadEffective(dir)
+	var eff passportview.Effective
+	var err error
+	if revisionID == "" {
+		eff, err = passportview.LoadEffective(dir)
+	} else {
+		eff, err = passportview.LoadRevision(dir, revisionID)
+	}
 	if err != nil {
 		return layer, fmt.Errorf("%w: %w", ErrRevisionUnloadable, err)
 	}

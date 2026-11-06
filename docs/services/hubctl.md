@@ -1,6 +1,6 @@
 ---
 description: hubctl — host-side control CLI: stack lifecycle, builds, spaces, grants, connector controllers.
-last_verified: 2026-11-05
+last_verified: 2026-11-06
 ---
 
 # hubctl
@@ -43,6 +43,12 @@ Flags: `--dir spaces/<user>`, `--root .`, `--user`, `--org`, `--env prod|dev`.
 publishing a revision. A missing or malformed `tools.yaml` declaration leaves
 the current revision active. Applying a selection updates the bound profile;
 it does not create a connection, credential or issued grant.
+The confirmed publisher prepares the immutable bundle, generated config and
+bound ToolHub authority while `current` is pending. It activates the revision
+only after those steps succeed; pre-activation failures restore the previous
+view, render and rights. Reconcile then applies service effects. An effect
+failure is reported as an apply failure even if pointer and rights rollback
+succeeds; complete recovery after process failure is tracked separately.
 
 `render`/`init`/`up` generate the space compose (`compose.dev.yaml`), config,
 and materialized dirs under `spaces/<user>/` — see docs/spaces.md. Nothing in

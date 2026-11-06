@@ -42,6 +42,7 @@ var settingsFieldRights = map[string]string{
 	"Infra":                  "",
 	"Diagnostics":            "",
 	"SpaceDir":               "",
+	"PassportRevision":       "",
 
 	"CapabilityMode":        "CapabilityMode",
 	"CapabilityProfileID":   "CapabilityProfileID",

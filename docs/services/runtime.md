@@ -1,6 +1,6 @@
 ---
 description: hub-runtime — the agent container process and its relay modes (serve/idle/health, model/toolhub/egress/control relays).
-last_verified: 2026-10-31
+last_verified: 2026-11-06
 ---
 
 # hub-runtime
@@ -33,6 +33,9 @@ In `managed` capability mode the runtime additionally gets read-only tmpfs
 over `/state/hermes/{skills,hooks,plugins,skill-bundles,scripts,bin,node,lsp}`
 — the agent cannot tamper with mounted capability code — and moves onto the
 per-space `managedAgentNetwork` with no default route.
+Before starting Hermes, runtime preflight compares the host-pinned
+`HUB_PASSPORT_REVISION` with `/config/revision` before and after config
+attestation. A mismatched or absent view refuses startup during apply.
 
 The effective Hermes config is materialized on the host
 (`generated/hermes-effective.<env>.yaml` — source config plus self-service

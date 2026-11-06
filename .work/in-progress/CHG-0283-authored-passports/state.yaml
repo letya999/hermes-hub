@@ -3,7 +3,7 @@ change: CHG-0283
 title: "Six authored passports and independent grants"
 status: in_progress
 branch: chore/merge-m31-m20-into-dev
-updated: 2026-11-05
+updated: 2026-11-06
 phase: implementation
 adr: [ADR-0096, ADR-0097]
 spec: SPEC-0097
@@ -24,18 +24,23 @@ slices:
     issue: 510
     branch: codex/m32-track-1
     status: implemented_pending_live_acceptance
+  C3:
+    issue: 511
+    branch: codex/m32-track-1
+    status: implemented_pending_live_acceptance
 historical_slices:
   S2.1-authoring: in_progress
   S2.2-rights: in_progress
   S2.3-legacy-removal: in_progress
 validation:
   documents: passed_2026-11-05
-  just_check: passed_2026-11-05_85_99pct
-  go_check: passed_2026-11-05_85_99pct
-  docker_check: passed_C2_2026-11-05
-  red_team: C2_scoped_regressions_passed_2026-11-05
+  just_check: passed_C3_2026-11-06_85_99pct
+  go_check: passed_C3_2026-11-06_85_99pct
+  docker_check: C3_full_exit_1_hermes_contract_targeted_and_tail_passed_2026-11-06
+  red_team: C3_scoped_regressions_passed_2026-11-06
   live_acceptance: not_started
 evidence:
+  - "2026-11-06 #511 C3: immutable six-passport bundle, mounted view, generated files and bound ToolHub authority prepare while current is pending; one pointer update activates them. Managed stack/supervisor/runtime reads and ToolHub MCP list/call plus rights HTTP deny pending or mismatched revision. TestConcurrentReadersNeverMixRevisions pauses at bundle, pending, every view file, render, rights and activation through real stack/passport and HTTP/MCP boundaries. Scoped hubctl/passport/passportview/stack/migration/toolhub/runtime/supervisor tests and go test -race -shuffle=on -count=1 -timeout=10m ./cmd/hubctl passed, exit 0. Just check on the final source tree passed, exit 0, own Go statement coverage 85.99%; sequential race/shuffle, format/vet/tidy/staticcheck/gosec/docs/actionlint and deployment contract passed. Initial just check failures were Windows temporary-executable Access is denied and an unrelated UTC/local-midnight memory/prune test; the isolated memory test passed after UTC midnight, exit 0. Full just docker-check built seven images, passed budgets, runtime smoke and pinned Hermes API, but exited 1 at hermes-contract; isolated hermes-contract then passed, exit 0, including supervisor smoke and two-user real-container five-minute idle/cold restoration. Stdio, capability, managed-supervisor, managed-network, scratch-workload and paused-quarantine checks each passed separately, exit 0, after fixing the canary's revision fixture; just docker-clean passed, exit 0. The full Docker gate is not claimed successful. No live provider/account acceptance; crash recovery belongs to #512."
   - "2026-11-05 #510 C2 on codex/m32-track-1 after #509 15c7978d: tools.yaml now replaces all managed profile selections, including connector definitions; managed MCP list/call cannot recover a removed self-installed selection. Connector selections resolve from declared toolsets and active bindings before publish. A published removal in TestPassportRemovalRevokesConnectorSelection removes one of two synthetic credential-bearing connectors from list and rejects its call in the same live MCP session before backend while the sibling remains callable. Connections, credential references and issued grants are unchanged; repeated derivation with both connectors and after removal is byte-identical; re-selection without a live grant is denied. Raw MCP via off suppresses the selected server while preserving its declaration; malformed connector declarations fail compilation. Full scoped toolhub/stack/migration/passport/hubctl tests passed; focused connector test passed ten repeats and under race. just check exit 0, own Go statement coverage 85.99%; format/vet/tidy/staticcheck/gosec/docs/actionlint/config passed. just docker-check exit 0: seven images, budgets, smoke, pinned Hermes API/capability, two-user gateway cold restore, managed network/supervisor, scratch/quarantine, project docker-clean. No live provider/account acceptance claimed."
   - "2026-11-05 #509 C1 on codex/m32-track-1 from dev 6eae50d4: unsupported host/URL, unknown rule and non-file executor scopes now fail passport compilation before publication. Authored tools scope reaches Gateway admission and agenttools executor in TestAuthoredToolScopeReachesExecutor; allowed path succeeds, sibling/traversal/wrong-root/malformed/unselected/stale calls refuse before backend, symlink escape refuses at executor. Scoped full packages passport/migration/toolhub/agenttools/hubctl passed; focused rerun, just lint, just docs-check, just config-check and staged gitleaks passed. just check reached final vault package but Windows refused to launch vault.test.exe; isolated vault race test passed, total own statement coverage remains unverified. just docker-check built current images and passed image budgets, smoke, Hermes API/capability, two-user synthetic gateway cold restore, managed network/supervisor, scratch/quarantine; project docker-clean completed. No live provider or authored-scope container call claimed; #510–#512 untouched."
   - "2026-11-05 bounded-plan verification: devcheck docs passed (exit 0); 17 current planning files passed relative-link/whitespace checks and the 20-issue dependency graph is acyclic. Milestone 43 and all 20 English issue contracts were synchronized. just check was invoked but intentionally interrupted during the test leg (exit 1); no full-suite or coverage pass claimed. No production code, worktree, commit or deployment created by this planning update."
@@ -109,5 +114,5 @@ remaining: [real_authored_lifecycle_acceptance, sole_config_authority, tool_proj
 limitations:
   - "C2 raw MCP projection is verified at effective-config rendering; an already running raw Hermes MCP session requires the existing respawn consumer and has not been live-tested. Connector admission is verified through a real local MCP session with a synthetic backend, not a provider service."
   - "C2 just check and just docker-check passed on this source revision. Live provider/user integration is not verified."
-  - "Apply lock and stale-base guard do not provide atomic current/view/profile/service activation or complete rollback."
+  - "C3 gates current while config view, generated files and bound ToolHub profile/rights are prepared, then activates one pointer. Existing external service effects and crash recovery are not atomic with that pointer; #512 owns recovery and replay."
   - "ToolHub memory gate is wired for projected model tools, while capture/recall/dreaming and vault writes remain communication/runtime-owned; moving those workers is required before memory disablement is complete."

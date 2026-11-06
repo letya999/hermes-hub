@@ -1,6 +1,6 @@
 ---
 description: spaces/<id>/ layout — six authored passports, generated configs, secrets/env files, and state dirs.
-last_verified: "2026-11-05"
+last_verified: "2026-11-06"
 ---
 
 # Spaces
@@ -328,9 +328,13 @@ another user, even if no `scope.yaml` exists.
 The default dry-run prints a JSON receipt: every changed leaf with its
 before/after (credential refs render as `<ref:name>`, never material), the
 effect class (live/respawn/recreate/rebuild) and owning consumer, plus the
-ordered minimum action plan — nothing is written. `--confirm` atomically moves
-the revision pointer, re-renders `generated/compose.<env>.yaml` from that
-revision, then reconciles in order: rebuild only the service images that
+ordered minimum action plan — nothing is written. `--confirm` writes the
+immutable six-passport bundle, gates `current` as pending while refreshing
+the mounted config view, renders generated files and derives the bound
+ToolHub profile and rights from that candidate. Only then does it atomically
+move `current` to the new revision. Managed config readers and ToolHub
+list/call/rights endpoints reject pending or mismatched activation identities.
+After activation, reconcile rebuilds only the service images that
 changed, recreate only the affected containers, run one compose
 `--remove-orphans` sweep when instances were dropped (a removed
 `stack.services` entry removes exactly that container), mark the runtime
@@ -356,7 +360,10 @@ Publishing also refreshes the runtime's `/config`: a stable read-only
 directory bind at `generated/config-view/<env>/` whose individual files are
 replaced atomically per revision — the six passports, `prompt-pointer.txt`
 and the space's `SOUL.md` — instead of Docker single-file binds that never
-see updates.
+see updates. The view's `revision` marker must match `current` for managed
+host reads. Already running external services can observe their existing
+binds until reconciliation; service effects and crash recovery remain a
+separate readiness boundary.
 
 `config.yaml` commands the runtime contract: `runtime.timezone`/`locale`
 and `context.{compaction,parallel_lanes}` land in the rendered environment

@@ -48,6 +48,17 @@ func TestBrokenPublishedRevisionFailsClosed(t *testing.T) {
 	}
 }
 
+func TestManagedReadRejectsViewRevisionMismatch(t *testing.T) {
+	dir := t.TempDir()
+	publishManagedRevision(t, dir, "alice", "r-0123456789abcdef")
+	if err := os.WriteFile(filepath.Join(dir, "generated", "config-view", "dev", "revision"), []byte("r-0123456789abcdee\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadEffective(dir, "dev"); err == nil {
+		t.Fatal("managed read accepted a config view from another revision")
+	}
+}
+
 // managedDocs returns the smallest complete v2 doc set a managed render can
 // drive end to end: identity, the supervised runtime plus the relays it
 // asserts on, a cliproxy default route, one toolset and an empty grant map.
@@ -101,6 +112,9 @@ func publishManagedDocs(t *testing.T, dir, user, revision string, docs map[strin
 	for _, envName := range []string{"dev", "prod"} {
 		viewDir := filepath.Join(dir, "generated", "config-view", envName)
 		if err := os.MkdirAll(viewDir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(viewDir, "revision"), []byte(revision+"\n"), 0600); err != nil {
 			t.Fatal(err)
 		}
 		for name, body := range bodies {

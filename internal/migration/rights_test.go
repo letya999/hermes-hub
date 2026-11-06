@@ -136,7 +136,7 @@ func TestDeriveSpaceRightsScopesToBoundProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rev := passport.Revision{Docs: map[string][]byte{
+	rev := passport.Revision{ID: "r-fixture0000001", Docs: map[string][]byte{
 		"tools":  []byte("binding: {profile_id: alice-default, generation: 1}\n"),
 		"grants": []byte("allow:\n  workspace: [read]\n"),
 	}}
@@ -184,7 +184,7 @@ func TestDeriveSpaceRightsScopesToBoundProfile(t *testing.T) {
 	if err := gov.RevokeRight("rightgrant-alice-read", "operator", "concurrent revoke", now); err != nil {
 		t.Fatal(err)
 	}
-	if err := RestoreSpaceRights(dir, "alice", "dev", "alice-default", map[string][]string{"workspace": {"read"}}, nil, catalog.Docs{Rights: rights}, now); err != nil {
+	if err := RestoreSpaceRights(dir, "alice", "dev", "alice-default", "r-fixture0000001", map[string][]string{"workspace": {"read"}}, nil, catalog.Docs{Rights: rights}, now); err != nil {
 		t.Fatal(err)
 	}
 	grants, err := gov.RightGrants()

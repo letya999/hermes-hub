@@ -1,6 +1,6 @@
 ---
 description: System overview — roles, component map, networks, lifecycle; details live in services/, rbac.md, spaces.md and the ADRs.
-last_verified: 2026-10-28
+last_verified: 2026-11-06
 ---
 
 # Architecture
@@ -115,6 +115,11 @@ revision fails closed rather than downgrading (SPEC-0092 R8.1). The
 compose file renders exactly the declared set — a declared per-space
 instance with no container fails the render, and dropping an entry removes
 the container on apply (SPEC-0092 A3).
+During apply, `current` is temporarily pending while the new immutable
+bundle, mounted config view, generated files and bound ToolHub authority are
+prepared. A single pointer update activates them; managed config reads and
+ToolHub admission reject a pending or mismatched revision. Reconciliation of
+external service effects follows that activation and can still fail.
 
 Execution selection `http://supervisor:8876` runs the supervisor in the
 main stack (ADR-0040): it receives the trusted envelope, dedupes by
