@@ -82,8 +82,9 @@ type DeliveryPort struct {
 // event plane. The engine always invokes these outside its own lock, so
 // implementations may run I/O and take owner-side locks freely.
 type EventsPort struct {
-	ResumeEvents func(o commodel.RoutineOccurrence, schedule commodel.Schedule, now time.Time, authorize func(commodel.Job) error) (bool, error)
-	SettleEvents func(o commodel.RoutineOccurrence, schedule commodel.Schedule, body []byte, now time.Time, probeErr error, authorize func(commodel.Job) error) ([]commodel.Event, error)
+	AcquireEvents func(context.Context, commodel.RoutineOccurrence, commodel.Schedule, func(context.Context, string, *commodel.WatchProbe) ([]byte, error)) ([]byte, error)
+	ResumeEvents  func(o commodel.RoutineOccurrence, schedule commodel.Schedule, now time.Time, authorize func(commodel.Job) error) (bool, error)
+	SettleEvents  func(o commodel.RoutineOccurrence, schedule commodel.Schedule, body []byte, now time.Time, probeErr error, authorize func(commodel.Job) error) ([]commodel.Event, error)
 }
 
 // Deps declares every capability the routines engine borrows from its

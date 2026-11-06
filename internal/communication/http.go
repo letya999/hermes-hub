@@ -33,6 +33,7 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("/v1/skill-drafts", g.handleSkillDraftRequest)
 	mux.HandleFunc("/v1/skill-git", g.handleSkillGit)
 	mux.HandleFunc("/v1/prepare-outcome", g.handlePrepareOutcome)
+	mux.HandleFunc("/v1/automation/deliveries", g.handleAutomationDelivery)
 	mux.HandleFunc("/credentials/", g.serveCredentialForm)
 	mux.HandleFunc("/skill-drafts/", g.serveSkillDraft)
 	g.registerTelegramAuth(mux)

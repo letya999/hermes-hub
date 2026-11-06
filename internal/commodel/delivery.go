@@ -74,6 +74,7 @@ func (job Job) MemoryAudience() memory.Audience {
 
 type Delivery struct {
 	BlockedBy        string `json:"blocked_by,omitempty"`
+	OwnerPrincipalID string `json:"owner_principal_id,omitempty"`
 	ID               string `json:"id"`
 	OccurrenceID     string `json:"occurrence_id,omitempty"`
 	JobID            string `json:"job_id"`

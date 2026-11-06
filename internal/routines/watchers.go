@@ -212,6 +212,8 @@ func (e *Engine) probeOne(ctx context.Context, o commodel.RoutineOccurrence, now
 		// the hub only sees the flattened tool text (SPEC-0054 R3.2).
 		if toolCall == nil {
 			fetchErr = errors.New("tool-call probe path unavailable")
+		} else if o.JobKind == "event" && e.deps.Events.AcquireEvents != nil {
+			body, fetchErr = e.deps.Events.AcquireEvents(ctx, o, schedule, toolCall)
 		} else {
 			body, fetchErr = toolCall(ctx, o.Job.PrincipalID, schedule.Probe)
 		}

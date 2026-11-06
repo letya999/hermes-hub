@@ -1,6 +1,6 @@
 ---
 description: communication-hub — channel gateway: Telegram/Slack adapters, inbound routing, credential forms, spool, control API.
-last_verified: 2026-11-04
+last_verified: 2026-11-06
 ---
 
 # communication-hub
@@ -26,6 +26,13 @@ everything entering or leaving the human conversation. Listens
 - **Control API** on the same listener: `prepare-outcome` callbacks, routines
   control, sibling-runtime calls authenticated by `toolhub-tokens.json`
   (`HUB_COMMUNICATION_TOKENS_FILE`).
+- **Automation delivery intake (A2 preparation)**: `POST /v1/automation/deliveries`
+  accepts only the primary service control bearer plus `X-Hub-Principal`.
+  The handler pins the owner to a current enabled user and verifies the
+  Telegram/mock chat or Slack identity against the channel target,
+  then writes the stable delivery ID to the existing outbox. The send worker
+  rechecks owner and the live `channels.send` right. This route is inactive
+  until the ToolHub owner switch in #523.
 - **Master hold notices**: the control loop syncs supervisor `/v1/holds` on
   boot and every second while a notice is pending; a clean hold set backs off
   to a ~10 s poll. A routable notice is durably enqueued (Telegram) then

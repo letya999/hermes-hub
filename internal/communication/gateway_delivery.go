@@ -31,8 +31,8 @@ func (g *Gateway) queueDelivery(ctx context.Context, key string, chatID, topicID
 // Direct sends map the channel transport address back to the owner;
 // unresolvable targets fall back to the operator default.
 func (g *Gateway) deliveryLang(d *Delivery) locale.Lang {
-	principal := ""
-	if d.JobID != "" {
+	principal := d.OwnerPrincipalID
+	if principal == "" && d.JobID != "" {
 		if m, ok, err := g.spool.Mapping(d.JobID); err == nil && ok {
 			principal = m.PrincipalID
 		}
@@ -302,6 +302,12 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 	}
 	delivery.Lang = g.deliveryLang(delivery)
 	_ = g.spool.UpdateSending(*delivery)
+	if delivery.OwnerPrincipalID != "" {
+		if !g.automationDeliveryTarget(delivery.OwnerPrincipalID, *delivery) || g.config.ToolHubURL == "" || os.Getenv("HUB_SUPERVISOR_AUTH") == "" || !g.sendRight(*delivery, delivery.OwnerPrincipalID) {
+			g.uncertainDelivery(*delivery)
+			return
+		}
+	}
 	if delivery.ApprovalJobID != "" || (len(delivery.Buttons) > 0 && delivery.Kind == "") {
 		mapping, found, mapErr := g.spool.Mapping(delivery.ApprovalJobID)
 		if mapErr != nil || !found {
@@ -319,7 +325,7 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 			return
 		}
 	}
-	if delivery.JobID != "" {
+	if delivery.JobID != "" && delivery.OwnerPrincipalID == "" {
 		mapping, found, err := g.spool.Mapping(delivery.JobID)
 		if err != nil {
 			g.uncertainDelivery(*delivery)
@@ -376,7 +382,7 @@ func (g *Gateway) deliverOne(ctx context.Context) {
 			}
 		}
 	}
-	if delivery.OccurrenceID != "" {
+	if delivery.OccurrenceID != "" && delivery.OwnerPrincipalID == "" {
 		g.spool.mu.Lock()
 		valid := g.occurrenceRefAuthorizedLocked(delivery.OccurrenceID)
 		g.spool.mu.Unlock()
@@ -551,8 +557,8 @@ func (g *Gateway) voiceRight(delivery Delivery) bool {
 	if token == "" || url == "" {
 		return true
 	}
-	principal := ""
-	if delivery.JobID != "" {
+	principal := delivery.OwnerPrincipalID
+	if principal == "" && delivery.JobID != "" {
 		if mapping, found, err := g.spool.Mapping(delivery.JobID); err == nil && found {
 			principal = mapping.PrincipalID
 		}

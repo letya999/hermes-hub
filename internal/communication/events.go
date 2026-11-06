@@ -1,17 +1,16 @@
 package communication
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/commodel"
+	"github.com/letya999/hermes-hub/internal/routines"
 )
 
 // Event is one discrete item extracted from a probe result.
@@ -133,96 +132,7 @@ func authError(err error) bool {
 // shape, including a plain http/github value, is exactly one event keyed by
 // the new value hash.
 func extractEvents(probe *WatchProbe, body []byte) ([]Event, error) {
-	if probe == nil {
-		return nil, errors.New("probe required")
-	}
-	if probe.Kind != "mcp_tool" {
-		return []Event{{ID: watchHash(string(body)), Text: boundedWatchText(string(body))}}, nil
-	}
-	var envelope struct {
-		Events   []json.RawMessage `json:"events"`
-		Results  []json.RawMessage `json:"results"`
-		Messages []json.RawMessage `json:"messages"`
-		Event    *bool             `json:"event"`
-	}
-	var items []json.RawMessage
-	if err := json.Unmarshal(body, &envelope); err == nil && envelope.Event != nil && !*envelope.Event {
-		return nil, nil // wait-tool timeout sentinel: not an event
-	} else if err == nil && envelope.Events != nil {
-		items = envelope.Events
-	} else if err == nil && envelope.Results != nil {
-		items = envelope.Results
-	} else if err == nil && envelope.Messages != nil {
-		items = envelope.Messages
-	} else {
-		var array []json.RawMessage
-		if err := json.Unmarshal(body, &array); err == nil {
-			items = array
-		} else {
-			items = []json.RawMessage{json.RawMessage(body)}
-		}
-	}
-	events := make([]Event, 0, len(items))
-	for _, raw := range items {
-		if len(raw) > 64*1024 {
-			return nil, errors.New("event exceeds filter input limit")
-		}
-		var item map[string]any
-		var id, text string
-		var requeue map[string]any
-		if json.Unmarshal(raw, &item) == nil {
-			for _, key := range []string{"id", "event_id", "message_id"} {
-				switch v := item[key].(type) {
-				case string:
-					if v != "" {
-						id = v
-					}
-				case float64:
-					// Connector-native ids are often numeric (telegram
-					// message ids); coerce them into the durable dedup id.
-					id = strconv.FormatFloat(v, 'f', -1, 64)
-				}
-				if id != "" {
-					break
-				}
-			}
-			for _, key := range []string{"text", "title", "message"} {
-				if v, ok := item[key].(string); ok && v != "" {
-					text = v
-					break
-				}
-			}
-			if text == "" {
-				// Handle-style events (settled bursts) carry routing fields
-				// rather than prose — the compact record keeps chat_id for
-				// the sink while boundedWatchText still bounds it.
-				var compact bytes.Buffer
-				if json.Compact(&compact, raw) == nil {
-					text = compact.String()
-				}
-			}
-			if chatID, ok := item["chat_id"]; ok && chatID != nil {
-				requeue = map[string]any{"chat_id": chatID}
-			}
-		} else {
-			var scalar string
-			if json.Unmarshal(raw, &scalar) == nil {
-				text = scalar
-			}
-		}
-		if id == "" {
-			id = watchHash(string(raw))
-		}
-		rawText := ""
-		if item != nil {
-			var compact bytes.Buffer
-			if json.Compact(&compact, raw) == nil {
-				rawText = compact.String()
-			}
-		}
-		events = append(events, Event{ID: id, Text: boundedWatchText(text), Raw: rawText, Requeue: requeue})
-	}
-	return events, nil
+	return routines.ExtractEvents(probe, body)
 }
 
 // filterInput is what the keep|drop|urgent script reads via input(): the

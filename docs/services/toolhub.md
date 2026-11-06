@@ -1,6 +1,6 @@
 ---
 description: toolhub — capability gateway: tool admission, governance evaluation, connector lifecycle, audit ledger.
-last_verified: 2026-11-04
+last_verified: 2026-11-06
 ---
 
 # toolhub
@@ -336,3 +336,35 @@ isolation/cell/runtime receipt format. Unknown controller labels are not seriali
 verified cleanup remains visible and fenced; no automatic provider inspection,
 cleanup or destructive retention is inferred. CHG-0221 acceptance remains pending.
 No rollout or live acceptance is implied.
+
+## Automation host preparation (SPEC-0099 A2, #522)
+
+`internal/toolhub/automation` owns the automation plane on top of
+`internal/routines.Engine`: one engine per principal rooted at
+`<root>/users/<principal>` (filesystem isolation), durable dispatch intents
+under `root/dispatch/` written before any supervisor call, a durable delivery
+outbox under `root/outbox/` written before any communication call, and a
+per-principal event seen-set under `root/events/`. Background execution runs
+under explicit service authority from the persisted occurrence job — never
+from tool-call arguments and never through the `memory.*` private-run gate.
+User-facing operations (schedule/assignment/watch CRUD, pause/snooze) go
+through `Store.Decide("automation", op)` on the verified envelope, with the
+host environment pinned onto managed envelopes that carry one.
+`Host.Recover` reloads every principal engine, retries unresolved jobs through
+the supervisor's existing `/v1/jobs` handler, and flushes pending deliveries
+through communication's service-only `/v1/automation/deliveries` handler. A
+lost response reuses the same supervisor job identity; a communication outage
+leaves its delivery intent pending. Per-principal workers let another user's
+due job proceed while one runtime or probe is slow. Real handlers have Go/HTTP
+contract tests. The event port shares communication's event parser, saves each
+source batch before sink handoff, runs isolated per-event filters through the
+supervisor, and uses durable per-source cursors. The Host clock runs bounded
+multi-source streams; notify and agent sinks observe daily caps, quiet windows,
+stable event IDs and restart replay. A capped batch remains durable, and its
+source cursor advances only after every event is admitted or dropped.
+Existing communication spool records have not yet been bound to the new
+owner; compatibility and production startup are
+the #523 switch.
+Terminal failure, cancellation and interruption notices use the owner's
+workspace language; a replay keeps the first recorded text even if the
+language preference changes later.
