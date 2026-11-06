@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/commodel"
+	"github.com/letya999/hermes-hub/internal/diagnostics"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/routines"
@@ -110,6 +112,7 @@ func NewHost(cfg Config) (*Host, error) {
 	}
 	h.events.admit = h.admitEventJob
 	h.events.filter = cfg.Supervisor.ProbeScript
+	h.events.langOf = h.langOf
 	return h, nil
 }
 
@@ -332,6 +335,74 @@ func (h *Host) authorizeDueJob(ctx context.Context, job commodel.Job) error {
 	return h.cfg.AuthorizeChannel(ctx, occurrence.ScheduleID, job)
 }
 
+// authorizeScheduleJob fences a materializing occurrence: the envelope rights
+// check plus the live channel binding — a stale task/topic pointer must block
+// the schedule before its reminder or agent job is ever admitted.
+func (h *Host) authorizeScheduleJob(ctx context.Context, scheduleID string, job commodel.Job) error {
+	if err := h.authorizeJob(job); err != nil {
+		return err
+	}
+	return h.cfg.AuthorizeChannel(ctx, scheduleID, job)
+}
+
+// AuthorizeOccurrence re-authorizes a routine-produced delivery at send time:
+// the occurrence must still exist under the caller's owner root, stay
+// dispatched on a current schedule, and pass the live right and channel
+// binding — a schedule deleted or a grant revoked between dispatch and send
+// retires the pending delivery instead of sending it.
+func (h *Host) AuthorizeOccurrence(ctx context.Context, auth identity.Envelope, occurrenceID, kind string) error {
+	if auth.PrincipalID == "" || (auth.Environment != "" && auth.Environment != h.cfg.Environment) || !commodel.IDPattern.MatchString(occurrenceID) {
+		return errUnauthorized
+	}
+	var occurrence commodel.RoutineOccurrence
+	if err := loadJSON(filepath.Join(h.ownerRoot(auth.PrincipalID), "occurrences", commodel.FileID(occurrenceID)+".json"), &occurrence); err != nil {
+		return errUnauthorized
+	}
+	if occurrence.Job.ID != occurrenceID || occurrence.Job.PrincipalID != auth.PrincipalID {
+		return errUnauthorized
+	}
+	if err := h.authorizeDueJob(ctx, occurrence.Job); err != nil {
+		return err
+	}
+	eng, err := h.engineFor(auth.PrincipalID)
+	// A routine-failure notice legitimately references its settled
+	// occurrence (a dead probe settles "failed"), and a job claimed after
+	// dispatch may find the occurrence still "pending" after a crash
+	// replay — both fences require the record to stay current, not a
+	// live dispatch. Ordinary routine payloads still require "dispatched".
+	if err != nil || !eng.OccurrenceCurrent(occurrence) ||
+		(kind != "routine-failure" && kind != "job" && occurrence.State != "dispatched") {
+		return errUnauthorized
+	}
+	return nil
+}
+
+// RecordDeliveryOutcome settles a routine-failure notice's dedupe digest: a
+// delivered notice promotes the pending marker to LastFailureSHA256, an
+// unconfirmed one releases it so the next identical failure notifies again.
+func (h *Host) RecordDeliveryOutcome(ctx context.Context, auth identity.Envelope, occurrenceID, status, text string) error {
+	if status != "delivered" && status != "uncertain" {
+		return errors.New("automation: invalid delivery outcome")
+	}
+	eng, err := h.authorize(auth, "write")
+	if err != nil {
+		return err
+	}
+	var occurrence commodel.RoutineOccurrence
+	if err := loadJSON(filepath.Join(h.ownerRoot(auth.PrincipalID), "occurrences", commodel.FileID(occurrenceID)+".json"), &occurrence); err != nil {
+		return errUnauthorized
+	}
+	if occurrence.Job.ID != occurrenceID || occurrence.Job.PrincipalID != auth.PrincipalID {
+		return errUnauthorized
+	}
+	digest := routines.RoutineFailureDigest(occurrenceID, text)
+	if status == "uncertain" {
+		return eng.ReleaseRoutineFailurePending(occurrence.ScheduleID, digest)
+	}
+	_, err = eng.RecordRoutineFailure(occurrence.ScheduleID, digest)
+	return err
+}
+
 func (h *Host) policyAuth(principal string) (identity.Envelope, error) {
 	auth, err := h.cfg.AuthForPrincipal(principal)
 	if err != nil || auth.PrincipalID != principal || auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion) != nil || auth.Environment != "" && auth.Environment != h.cfg.Environment {
@@ -485,16 +556,26 @@ func (h *Host) Tick(ctx context.Context, now time.Time) error {
 			for owner := range jobs {
 				e := owner.engine
 				dueAuth := func(job commodel.Job) error { return h.authorizeDueJob(ctx, job) }
-				for _, step := range []func() error{
-					func() error { return e.TickSchedules(now, "", h.authorizeJob) },
+				for i, step := range []func() error{
+					func() error {
+						return e.TickSchedules(now, "", func(scheduleID string, job commodel.Job) error { return h.authorizeScheduleJob(ctx, scheduleID, job) })
+					},
 					func() error { return h.tickStreams(ctx, e, owner.principal, now) },
-					func() error { return e.DispatchDueOccurrences(now, h.authorizeJob) },
+					func() error { return e.DispatchDueOccurrences(now, dueAuth) },
 					func() error { return e.RunDueScripts(ctx, now, dueAuth, h.cfg.Supervisor.RunScript) },
 					func() error {
 						return e.ProbeDueOccurrencesContext(ctx, now, dueAuth, h.cfg.Fetch, h.cfg.ToolCall, nil)
 					},
 				} {
+					// A failed stage never cancels the others and never swallows
+					// its cause — the redacted one-line record is the operator's
+					// only durable trace before the next tick retries.
 					if err := step(); err != nil {
+						cause := strings.Join(strings.Fields(diagnostics.Redact(err.Error())), " ")
+						if len(cause) > 256 {
+							cause = cause[:256]
+						}
+						log.Printf("routine tick failed stage=%d: %s; work remains pending", i, cause)
 						errs <- err
 					}
 				}
@@ -1012,7 +1093,40 @@ func (h *Host) enqueueResult(in dispatchIntent) error {
 	if err != nil {
 		return err
 	}
-	_, err = h.outbox.enqueue(in.Job.PrincipalID, commodel.Delivery{
+	var occurrenceID, failureSchedule string
+	if in.Job.Trigger == "cron" {
+		sourceID := in.Job.ID
+		if in.SourceOccurrenceID != "" {
+			sourceID = in.SourceOccurrenceID
+		}
+		var occurrence commodel.RoutineOccurrence
+		if loadErr := loadJSON(filepath.Join(h.ownerRoot(in.Job.PrincipalID), "occurrences", commodel.FileID(sourceID)+".json"), &occurrence); loadErr == nil && occurrence.Job.ID == sourceID && occurrence.Job.PrincipalID == in.Job.PrincipalID {
+			occurrenceID, failureSchedule = sourceID, occurrence.ScheduleID
+		}
+	}
+	if failureSchedule != "" {
+		eng, err := h.engineFor(in.Job.PrincipalID)
+		if err != nil {
+			return err
+		}
+		if in.Mapping.Status == "completed" {
+			if err := eng.ClearRoutineFailure(failureSchedule); err != nil {
+				return err
+			}
+		} else {
+			// Routine failures ride the schedule's dedupe digest: identical
+			// failures notify once while a notice is delivered or in flight.
+			digest := routines.RoutineFailureDigest(in.Job.ID, in.Mapping.Result)
+			fresh, err := eng.MarkRoutineFailurePending(failureSchedule, digest)
+			if err != nil {
+				return err
+			}
+			if !fresh {
+				return nil
+			}
+		}
+	}
+	delivery := commodel.Delivery{
 		ID:               "result-" + in.Job.ID,
 		JobID:            in.Job.ID,
 		IdempotencyKey:   "result-" + in.Job.ID,
@@ -1026,7 +1140,13 @@ func (h *Host) enqueueResult(in dispatchIntent) error {
 		SlackThread:      in.Job.SlackThread,
 		Text:             in.Mapping.Result,
 		CreatedAt:        in.Mapping.TerminalAt.UTC(),
-	}, h.now())
+	}
+	if failureSchedule != "" && in.Mapping.Status != "completed" {
+		// Marks the notice for the delivery-outcome callback: delivered
+		// promotes the pending digest, uncertain releases it.
+		delivery.Kind, delivery.OccurrenceID = "routine-failure", occurrenceID
+	}
+	_, err = h.outbox.enqueue(in.Job.PrincipalID, delivery, h.now())
 	return err
 }
 

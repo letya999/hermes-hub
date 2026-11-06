@@ -62,7 +62,7 @@ func TestHTTPRunnerContract(t *testing.T) {
 }
 
 func TestHTTPRunnerPinsRoutineOriginPerNewMappingAndPreservesLegacyReplay(t *testing.T) {
-	g, env, a, b := destinationFixture(t)
+	g, _, _, env, a, b := destinationFixture(t)
 	for _, tc := range []struct {
 		id     string
 		task   Task

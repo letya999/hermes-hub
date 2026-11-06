@@ -53,7 +53,7 @@ func (h *Host) RoutineHistory(ctx context.Context, auth identity.Envelope, id st
 		return nil, err
 	}
 	h.queue.mu.Lock()
-	intents, err := h.queue.scan(auth.PrincipalID)
+	intents, err := h.queue.scanLenient(auth.PrincipalID)
 	h.queue.mu.Unlock()
 	if err != nil {
 		return nil, err

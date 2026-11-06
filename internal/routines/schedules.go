@@ -223,10 +223,13 @@ func (e *Engine) UpdateSchedule(id string, caller identity.Envelope, expression,
 	defer e.mu.Unlock()
 	item, err := e.LoadSchedule(id)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return commodel.Schedule{}, ErrRoutineNotOwned
+		}
 		return commodel.Schedule{}, err
 	}
 	if item.Envelope.PrincipalID != caller.PrincipalID || item.Envelope.ContextID != caller.ContextID {
-		return commodel.Schedule{}, errors.New("schedule not owned")
+		return commodel.Schedule{}, ErrRoutineNotOwned
 	}
 	if expression != "" {
 		item.Expression = expression
@@ -447,10 +450,13 @@ func (e *Engine) PauseSchedule(id string, caller identity.Envelope, expected ...
 	defer e.mu.Unlock()
 	item, err := e.LoadSchedule(id)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return ErrRoutineNotOwned
+		}
 		return err
 	}
 	if item.Envelope.PrincipalID != caller.PrincipalID || item.Envelope.ContextID != caller.ContextID {
-		return errors.New("schedule not owned")
+		return ErrRoutineNotOwned
 	}
 	item.Paused = true
 	if len(expected) > 0 && expected[0] != item.Revision {
@@ -472,10 +478,13 @@ func (e *Engine) DeleteSchedule(id string, caller identity.Envelope, expected ..
 func (e *Engine) deleteScheduleLocked(id string, caller identity.Envelope, expected ...uint64) error {
 	item, err := e.LoadSchedule(id)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return ErrRoutineNotOwned
+		}
 		return err
 	}
 	if item.Envelope.PrincipalID != caller.PrincipalID || item.Envelope.ContextID != caller.ContextID {
-		return errors.New("schedule not owned")
+		return ErrRoutineNotOwned
 	}
 	item.Enabled, item.Paused = false, true
 	if len(expected) > 0 && expected[0] != item.Revision {
@@ -495,10 +504,13 @@ func (e *Engine) SnoozeSchedule(id string, caller identity.Envelope, until time.
 	defer e.mu.Unlock()
 	item, err := e.LoadSchedule(id)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return ErrRoutineNotOwned
+		}
 		return err
 	}
 	if item.Envelope.PrincipalID != caller.PrincipalID || item.Envelope.ContextID != caller.ContextID {
-		return errors.New("schedule not owned")
+		return ErrRoutineNotOwned
 	}
 	if !until.After(time.Now().UTC()) {
 		return errors.New("snooze must be in the future")
@@ -621,7 +633,7 @@ func (e *Engine) OccurrenceCurrent(o commodel.RoutineOccurrence) bool {
 	return err == nil && schedule.Revision == o.Revision && schedule.Envelope.Equal(o.Job.Envelope)
 }
 
-func (e *Engine) TickSchedules(now time.Time, nativeCron string, authorize func(commodel.Job) error) error {
+func (e *Engine) TickSchedules(now time.Time, nativeCron string, authorize func(scheduleID string, job commodel.Job) error) error {
 	if nativeCron == "unmigrated" {
 		return nil
 	}
@@ -723,7 +735,7 @@ func (e *Engine) TickSchedules(now time.Time, nativeCron string, authorize func(
 		if err := ValidateOccurrence(occ, item.Envelope, e.deps.ChannelFor); err != nil {
 			continue
 		}
-		if authorize != nil && authorize(occ.Job) != nil {
+		if authorize != nil && authorize(item.ScheduleID, occ.Job) != nil {
 			if err := e.blockScheduleLocked(&item, "owner authorization failed", now); err != nil {
 				return err
 			}

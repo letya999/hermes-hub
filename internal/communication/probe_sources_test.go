@@ -19,7 +19,7 @@ import (
 )
 
 func TestScriptProbePrefetchsNeeds(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	caller := o.Job.Envelope
 	if _, err := s.CreateSchedule(Schedule{ScheduleID: "wn-exec", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID,
 		Channel: o.Job.Channel, ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "w", JobKind: "watcher",
@@ -44,11 +44,11 @@ func TestScriptProbePrefetchsNeeds(t *testing.T) {
 	if err := s.PutOccurrence(o, caller); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	fetch := func(context.Context, string) ([]byte, error) { return nil, errors.New("unused") }
-	if err := s.ProbeDueOccurrencesContext(context.Background(), o.DueAt, g.authorizeOccurrence, fetch, toolCall, nil); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), o.DueAt, s.authorizeOccurrence, fetch, toolCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(called) != 2 || called[0] != "web_search" || called[1] != "knowledge_search" {
@@ -64,7 +64,7 @@ func TestScriptProbePrefetchsNeeds(t *testing.T) {
 }
 
 func TestScriptProbeNeedResultTruncated(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	caller := o.Job.Envelope
 	if _, err := s.CreateSchedule(Schedule{ScheduleID: "wn-trunc", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID,
 		Channel: o.Job.Channel, ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "w", JobKind: "watcher",
@@ -84,11 +84,11 @@ func TestScriptProbeNeedResultTruncated(t *testing.T) {
 	if err := s.PutOccurrence(o, caller); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	fetch := func(context.Context, string) ([]byte, error) { return nil, errors.New("unused") }
-	if err := s.ProbeDueOccurrencesContext(context.Background(), o.DueAt, g.authorizeOccurrence, fetch, toolCall, nil); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), o.DueAt, s.authorizeOccurrence, fetch, toolCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(gotNeeds) != 1 || len(gotNeeds[0]) != 64*1024 {
@@ -97,7 +97,7 @@ func TestScriptProbeNeedResultTruncated(t *testing.T) {
 }
 
 func TestScriptProbeNeedFailureSettlesAsError(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	caller := o.Job.Envelope
 	if _, err := s.CreateSchedule(Schedule{ScheduleID: "wn-fail", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID,
 		Channel: o.Job.Channel, ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "w", JobKind: "watcher",
@@ -117,11 +117,11 @@ func TestScriptProbeNeedFailureSettlesAsError(t *testing.T) {
 	if err := s.PutOccurrence(o, caller); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	fetch := func(context.Context, string) ([]byte, error) { return nil, errors.New("unused") }
-	if err := s.ProbeDueOccurrencesContext(context.Background(), o.DueAt, g.authorizeOccurrence, fetch, toolCall, nil); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), o.DueAt, s.authorizeOccurrence, fetch, toolCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	if ran {
@@ -204,7 +204,7 @@ func TestDeliverModeValidation(t *testing.T) {
 }
 
 func TestDeliverContentAndArtifactTickEverySuccess(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	caller := o.Job.Envelope
 	if _, err := s.CreateSchedule(Schedule{ScheduleID: "dc-1", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID,
 		Channel: o.Job.Channel, ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "w", JobKind: "watcher",
@@ -219,7 +219,7 @@ func TestDeliverContentAndArtifactTickEverySuccess(t *testing.T) {
 		if err := s.PutOccurrence(oc, caller); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.DispatchDueOccurrences(oc.DueAt, g.authorizeOccurrence); err != nil {
+		if err := s.DispatchDueOccurrences(oc.DueAt, s.authorizeOccurrence); err != nil {
 			t.Fatal(err)
 		}
 		if err := s.ProbeDueOccurrences(o.DueAt.Add(due+time.Second), func(context.Context, string) ([]byte, error) { return []byte(body), nil }); err != nil {
@@ -256,7 +256,7 @@ func TestDeliverContentAndArtifactTickEverySuccess(t *testing.T) {
 	if err := s.PutOccurrence(oa, caller); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(oa.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(oa.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.ProbeDueOccurrences(oa.DueAt, func(context.Context, string) ([]byte, error) { return []byte("file-body"), nil }); err != nil {
@@ -347,7 +347,7 @@ func TestRenderAndServiceProbeValidation(t *testing.T) {
 }
 
 func TestRenderAndServiceProbesUseServiceCall(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	caller := o.Job.Envelope
 	if _, err := s.CreateSchedule(Schedule{ScheduleID: "rts-1", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID,
 		Channel: o.Job.Channel, ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "w", JobKind: "watcher",
@@ -359,7 +359,7 @@ func TestRenderAndServiceProbesUseServiceCall(t *testing.T) {
 	if err := s.PutOccurrence(o, caller); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	var gotProbe *WatchProbe
@@ -370,7 +370,7 @@ func TestRenderAndServiceProbesUseServiceCall(t *testing.T) {
 	fetch := func(context.Context, string) ([]byte, error) {
 		return nil, errors.New("render must not fetch directly")
 	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), o.DueAt, g.authorizeOccurrence, fetch, nil, serviceCall); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), o.DueAt, s.authorizeOccurrence, fetch, nil, serviceCall); err != nil {
 		t.Fatal(err)
 	}
 	if gotProbe == nil || gotProbe.Service != "browserless" {
@@ -438,17 +438,16 @@ func TestServiceProbePostsToRegisteredEndpoint(t *testing.T) {
 // Check-kind creation probes once to seed the baseline; render/service probes
 // must reach the registered service there too, not the raw HTTP fetch.
 func TestCheckCreateSeedsBaselineThroughServiceProbe(t *testing.T) {
-	s, _, g := occurrenceFixture(t)
-	g.spool = s
-	g.config.ControlAuth = "tok"
-	g.config.Users = []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}
+	c := testConfig(t)
+	c.ControlAuth = "tok"
 	var seeded string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seeded = "rendered-7"
 		_, _ = w.Write([]byte(seeded))
 	}))
 	defer srv.Close()
-	g.config.ServiceEndpoints = map[string]ServiceEndpoint{"browserless": {URL: srv.URL}}
+	c.ServiceEndpoints = map[string]ServiceEndpoint{"browserless": {URL: srv.URL}}
+	g, host, _ := automationGatewayFixture(t, c)
 	body := strings.NewReader(`{"schedule_id":"ck-render","timezone":"UTC","expression":"0 * * * *","input":"watch spa","job_kind":"check","expect":"changed","probe":{"kind":"render","url":"https://spa.example.com","service":"browserless"}}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/routines", body)
 	req.Header.Set("Authorization", "Bearer tok")
@@ -458,7 +457,7 @@ func TestCheckCreateSeedsBaselineThroughServiceProbe(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("render check create rejected: %d %s", rec.Code, rec.Body.String())
 	}
-	st, err := s.loadWatchStateLocked("ck-render")
+	st, err := host.LoadWatchState(context.Background(), g.user("alice").Envelope(11), "ck-render")
 	if err != nil || st.Value != seeded {
 		t.Fatalf("baseline not seeded from render service: %q %v", st.Value, err)
 	}

@@ -592,7 +592,7 @@ func (e *Engine) DeleteAssignment(id string, caller identity.Envelope, expected 
 		if rc.Action == "removed" {
 			continue
 		}
-		if err := e.deleteScheduleLocked(rc.ScheduleID, item.Envelope); err != nil && !os.IsNotExist(err) {
+		if err := e.deleteScheduleLocked(rc.ScheduleID, item.Envelope); err != nil && !os.IsNotExist(err) && !errors.Is(err, ErrRoutineNotOwned) {
 			return err
 		}
 	}

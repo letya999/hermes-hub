@@ -654,7 +654,7 @@ func (e *Engine) notifyProbeFailureLocked(o commodel.RoutineOccurrence, reason s
 	// never silences the next identical failure.
 	item.PendingFailureSHA256 = digest
 	item.UpdatedAt = now.UTC()
-	d := commodel.Delivery{ID: "watch-fail-" + o.Job.ID, OccurrenceID: o.Job.ID, Channel: o.Job.Channel, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, ChatID: o.Job.ChatID, TaskID: o.Job.TaskID, TopicID: o.Job.TopicID, SlackChannel: o.Job.SlackChannel, SlackThread: o.Job.SlackThread, Text: text, NotBefore: QuietDefer(item, now), CreatedAt: now.UTC()}
+	d := commodel.Delivery{ID: "watch-fail-" + o.Job.ID, Kind: "routine-failure", OccurrenceID: o.Job.ID, Channel: o.Job.Channel, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, ChatID: o.Job.ChatID, TaskID: o.Job.TaskID, TopicID: o.Job.TopicID, SlackChannel: o.Job.SlackChannel, SlackThread: o.Job.SlackThread, Text: text, NotBefore: QuietDefer(item, now), CreatedAt: now.UTC()}
 	if nd, err := e.normalizeDelivery(d); err == nil {
 		_ = e.deps.Delivery.EnqueueDelivery(nd)
 	}

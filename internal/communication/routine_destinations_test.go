@@ -1,8 +1,10 @@
 package communication
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,16 +15,22 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/routines"
+	"github.com/letya999/hermes-hub/internal/toolhub/automation"
 )
 
-func destinationFixture(t *testing.T) (*Gateway, identity.Envelope, Task, Task) {
+func destinationFixture(t *testing.T) (*Gateway, *automation.Host, string, identity.Envelope, Task, Task) {
+	t.Helper()
+	return destinationFixtureIO(t, nil, nil)
+}
+
+// destinationFixtureIO wires the same fixture through automationGatewayFixtureIO
+// when a test needs the host's Fetch or supervisor seams.
+func destinationFixtureIO(t *testing.T, supervisor automation.SupervisorClient, fetch func(context.Context, string) ([]byte, error)) (*Gateway, *automation.Host, string, identity.Envelope, Task, Task) {
 	t.Helper()
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
+	g, host, root := automationGatewayFixtureIO(t, c, nil, supervisor, nil, fetch)
 	user := c.Users[0]
 	env := user.Envelope(11)
 	a, _, err := g.spool.CreateTask(user, 11, 5, "alpha", false)
@@ -43,11 +51,11 @@ func destinationFixture(t *testing.T) (*Gateway, identity.Envelope, Task, Task) 
 			t.Fatal(err)
 		}
 	}
-	return g, env, a, b
+	return g, host, root, env, a, b
 }
 
 func TestRoutineDestinationDiscoveryIsScopedAndPaged(t *testing.T) {
-	g, _, a, b := destinationFixture(t)
+	g, _, _, _, a, b := destinationFixture(t)
 	other, _, err := g.spool.CreateTask(User{ID: "bob", Enabled: true, TelegramIDs: []int64{22}}, 22, 7, "private", false)
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +112,7 @@ func TestRoutineDestinationDiscoveryIsScopedAndPaged(t *testing.T) {
 func TestRoutineDestinationRejectsUnownedOrStaleBindings(t *testing.T) {
 	for _, name := range []string{"missing-origin", "foreign-origin", "context-origin", "policy-origin", "topic-origin", "missing-task", "archived-task", "context-task", "chat-task", "unbound-topic"} {
 		t.Run(name, func(t *testing.T) {
-			g, env, a, b := destinationFixture(t)
+			g, host, _, env, a, b := destinationFixture(t)
 			origin, target := "", a.TaskID
 			if strings.HasSuffix(name, "origin") {
 				origin, target = "origin-a", ""
@@ -155,8 +163,8 @@ func TestRoutineDestinationRejectsUnownedOrStaleBindings(t *testing.T) {
 			if w.Code != 400 && w.Code != 403 {
 				t.Errorf("unsafe route accepted: %d %s", w.Code, w.Body.String())
 			}
-			if _, err := g.spool.loadScheduleLocked("denied"); !os.IsNotExist(err) {
-				t.Errorf("denied route persisted: %v", err)
+			if _, err := host.LoadSchedule(context.Background(), env, "denied"); err == nil {
+				t.Error("denied route persisted")
 			}
 			_ = env
 		})
@@ -173,7 +181,7 @@ func destinationRequest(g *Gateway, method, path, body string) *httptest.Respons
 }
 
 func TestRoutineOriginPinsExactTaskInsteadOfCurrentPointer(t *testing.T) {
-	g, _, a, b := destinationFixture(t)
+	g, _, _, _, a, b := destinationFixture(t)
 	if _, err := g.spool.UseTask(g.user("alice"), 11, b.TaskID); err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +202,7 @@ func TestRoutineOriginPinsExactTaskInsteadOfCurrentPointer(t *testing.T) {
 }
 
 func TestRoutineDestinationCurrentAndDefaultAreExplicit(t *testing.T) {
-	g, env, a, _ := destinationFixture(t)
+	g, _, _, env, a, _ := destinationFixture(t)
 	root := Job{ID: "origin-root", Envelope: env, OrganizationID: g.config.OrganizationID, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Trigger: "message", Text: "fixture", IdempotencyKey: "origin-root"}
 	if err := atomicJSON(g.spool.mappingPath(root.ID), mappingFromJob(root, time.Now().UTC())); err != nil {
 		t.Fatal(err)
@@ -228,7 +236,7 @@ func TestRoutineDestinationCurrentAndDefaultAreExplicit(t *testing.T) {
 }
 
 func TestRoutineCardShowsSavedDestinationWithoutFallback(t *testing.T) {
-	g, _, a, _ := destinationFixture(t)
+	g, _, _, _, a, _ := destinationFixture(t)
 	w := destinationRequest(g, http.MethodPost, "/v1/routines", fmt.Sprintf(`{"schedule_id":"card-route","destination_task_id":%q,"timezone":"UTC","expression":"once:2099-01-01T10:00:00Z","job_kind":"reminder","input":"fixture"}`, a.TaskID))
 	if w.Code != 200 {
 		t.Fatal(w.Body.String())
@@ -280,7 +288,7 @@ func TestRoutineCardShowsSavedDestinationWithoutFallback(t *testing.T) {
 func TestRoutineCardDoesNotReportBrokenBindingsHealthy(t *testing.T) {
 	for _, field := range []string{"context", "chat", "topic", "pointer"} {
 		t.Run(field, func(t *testing.T) {
-			g, _, a, _ := destinationFixture(t)
+			g, host, _, _, a, _ := destinationFixture(t)
 			w := destinationRequest(g, http.MethodPost, "/v1/routines", fmt.Sprintf(`{"schedule_id":"broken","destination_task_id":%q,"timezone":"UTC","expression":"once:2099-01-01T10:00:00Z","job_kind":"reminder","input":"fixture"}`, a.TaskID))
 			if w.Code != 200 {
 				t.Fatal(w.Body.String())
@@ -311,7 +319,9 @@ func TestRoutineCardDoesNotReportBrokenBindingsHealthy(t *testing.T) {
 				t.Errorf("broken route looks healthy or substituted: %s", w.Body.String())
 			}
 			if field == "pointer" {
-				g.tickProactive(time.Date(2099, 1, 1, 10, 0, 0, 0, time.UTC))
+				if err := host.Tick(context.Background(), time.Date(2099, 1, 1, 10, 0, 0, 0, time.UTC)); err != nil {
+					t.Fatal(err)
+				}
 				// The routine blocks on the stale binding and the owner gets
 				// one notice — at their home, never through the stale topic.
 				d, err := g.spool.ClaimDelivery()
@@ -321,7 +331,7 @@ func TestRoutineCardDoesNotReportBrokenBindingsHealthy(t *testing.T) {
 			}
 		})
 	}
-	g, _, _, _ := destinationFixture(t)
+	g, _, _, _, _, _ := destinationFixture(t)
 	w := destinationRequest(g, http.MethodPost, "/v1/routines", `{"schedule_id":"legacy-topic","topic_id":77,"timezone":"UTC","expression":"once:2099-01-01T10:00:00Z","job_kind":"reminder","input":"fixture"}`)
 	if w.Code != 200 {
 		t.Fatal(w.Body.String())
@@ -339,19 +349,19 @@ func TestRoutineCardDoesNotReportBrokenBindingsHealthy(t *testing.T) {
 }
 
 func TestRoutineDestinationEditPreservesScheduleAndFencesRevision(t *testing.T) {
-	g, env, a, b := destinationFixture(t)
+	g, host, _, env, a, b := destinationFixture(t)
 	w := destinationRequest(g, http.MethodPost, "/v1/routines", fmt.Sprintf(`{"schedule_id":"move","destination_task_id":%q,"timezone":"UTC","expression":"0 10 * * 5","job_kind":"reminder","input":"fixture"}`, a.TaskID))
 	if w.Code != 200 {
 		t.Fatal(w.Body.String())
 	}
-	if err := g.spool.PauseSchedule("move", env, 1); err != nil {
+	if err := host.PauseSchedule(context.Background(), env, "move", 1); err != nil {
 		t.Fatal(err)
 	}
 	until := time.Date(2099, 1, 2, 12, 0, 0, 0, time.UTC)
-	if err := g.spool.SnoozeSchedule("move", env, until, 2); err != nil {
+	if err := host.SnoozeSchedule(context.Background(), env, "move", until, 2); err != nil {
 		t.Fatal(err)
 	}
-	before, err := g.spool.GetRoutine("move", env)
+	before, err := host.RoutineCard(context.Background(), env, "move")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -359,7 +369,7 @@ func TestRoutineDestinationEditPreservesScheduleAndFencesRevision(t *testing.T) 
 	if w.Code != 200 {
 		t.Fatalf("move failed: %d %s", w.Code, w.Body.String())
 	}
-	card, err := g.spool.GetRoutine("move", env)
+	card, err := host.RoutineCard(context.Background(), env, "move")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,14 +384,14 @@ func TestRoutineDestinationEditPreservesScheduleAndFencesRevision(t *testing.T) 
 	if w.Code != 200 {
 		t.Fatal(w.Body.String())
 	}
-	card, err = g.spool.GetRoutine("move", env)
+	card, err = host.RoutineCard(context.Background(), env, "move")
 	if err != nil || card.Schedule.TaskID != a.TaskID || card.Schedule.Revision != 5 || card.Schedule.TopicID != 5 {
 		t.Fatalf("current route not restored: %+v %v", card, err)
 	}
 }
 
 func TestRoutineDestinationEditRejectsInvalidTargetWithoutMutation(t *testing.T) {
-	g, env, a, b := destinationFixture(t)
+	g, host, _, env, a, b := destinationFixture(t)
 	w := destinationRequest(g, http.MethodPost, "/v1/routines", fmt.Sprintf(`{"schedule_id":"reject-move","destination_task_id":%q,"timezone":"UTC","expression":"0 10 * * 5","job_kind":"reminder","input":"fixture"}`, a.TaskID))
 	if w.Code != 200 {
 		t.Fatal(w.Body.String())
@@ -395,7 +405,7 @@ func TestRoutineDestinationEditRejectsInvalidTargetWithoutMutation(t *testing.T)
 		if w.Code != 400 {
 			t.Errorf("invalid target accepted: %d %s", w.Code, w.Body.String())
 		}
-		card, err := g.spool.GetRoutine("reject-move", env)
+		card, err := host.RoutineCard(context.Background(), env, "reject-move")
 		if err != nil || card.Schedule.Revision != 1 || card.Schedule.TaskID != a.TaskID {
 			t.Fatalf("invalid target mutated: %+v %v", card, err)
 		}
@@ -403,7 +413,7 @@ func TestRoutineDestinationEditRejectsInvalidTargetWithoutMutation(t *testing.T)
 }
 
 func TestRoutineDestinationEditRequiresRevisionEvenOnPrivateHTTP(t *testing.T) {
-	g, env, a, b := destinationFixture(t)
+	g, host, _, env, a, b := destinationFixture(t)
 	w := destinationRequest(g, http.MethodPost, "/v1/routines", fmt.Sprintf(`{"schedule_id":"fenced-route","destination_task_id":%q,"timezone":"UTC","expression":"0 10 * * 5","job_kind":"reminder","input":"fixture"}`, a.TaskID))
 	if w.Code != 200 {
 		t.Fatal(w.Body.String())
@@ -413,7 +423,7 @@ func TestRoutineDestinationEditRequiresRevisionEvenOnPrivateHTTP(t *testing.T) {
 		if w.Code != 400 {
 			t.Errorf("unfenced destination accepted: %d %s", w.Code, w.Body.String())
 		}
-		card, err := g.spool.GetRoutine("fenced-route", env)
+		card, err := host.RoutineCard(context.Background(), env, "fenced-route")
 		if err != nil || card.Schedule.Revision != 1 || card.Schedule.TaskID != a.TaskID {
 			t.Errorf("unfenced route mutated: %+v %v", card, err)
 		}
@@ -421,7 +431,7 @@ func TestRoutineDestinationEditRequiresRevisionEvenOnPrivateHTTP(t *testing.T) {
 }
 
 func TestRoutineDestinationMoveRetainsPriorAudienceHistory(t *testing.T) {
-	g, env, a, b := destinationFixture(t)
+	g, host, root, env, a, b := destinationFixture(t)
 	user := g.user("alice")
 	user.TelegramIDs = append(user.TelegramIDs, 12)
 	g.users[11] = user
@@ -436,12 +446,17 @@ func TestRoutineDestinationMoveRetainsPriorAudienceHistory(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatal(w.Body.String())
 	}
-	card, err := g.spool.GetRoutine("history-move", env)
+	card, err := host.RoutineCard(context.Background(), env, "history-move")
 	if err != nil {
 		t.Fatal(err)
 	}
-	receipt := routineHistoryReceipt{ID: "history-fixture", ScheduleID: "history-move", Envelope: card.Schedule.Envelope, Run: RoutineRun{ID: "history-fixture", State: "completed", DeliveryState: "delivered"}}
-	path := filepath.Join(g.spool.root, "occurrences", "receipts", "history-fixture.json")
+	receipt := struct {
+		ID         string            `json:"id"`
+		ScheduleID string            `json:"schedule_id"`
+		Envelope   identity.Envelope `json:"envelope"`
+		Run        RoutineRun        `json:"run"`
+	}{ID: "history-fixture", ScheduleID: "history-move", Envelope: card.Schedule.Envelope, Run: RoutineRun{ID: "history-fixture", State: "completed", DeliveryState: "delivered"}}
+	path := filepath.Join(root, "users", "alice", "occurrences", "receipts", "history-fixture.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -452,7 +467,7 @@ func TestRoutineDestinationMoveRetainsPriorAudienceHistory(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatal(w.Body.String())
 	}
-	history, err := g.spool.RoutineHistory("history-move", env)
+	history, err := g.routineHistory(context.Background(), "history-move", env)
 	if err != nil || len(history) != 1 || history[0].DeliveryState != "delivered" {
 		t.Fatalf("history lost after cross-chat move: %+v %v", history, err)
 	}
@@ -460,14 +475,14 @@ func TestRoutineDestinationMoveRetainsPriorAudienceHistory(t *testing.T) {
 	if err := atomicJSON(path, receipt); err != nil {
 		t.Fatal(err)
 	}
-	history, err = g.spool.RoutineHistory("history-move", env)
+	history, err = g.routineHistory(context.Background(), "history-move", env)
 	if err != nil || len(history) != 0 {
 		t.Fatalf("foreign history visible: %+v %v", history, err)
 	}
 }
 
 func TestRoutineDestinationPriorAudienceIsServerOwned(t *testing.T) {
-	g, env, _, _ := destinationFixture(t)
+	g, host, _, env, _, _ := destinationFixture(t)
 	forged := env
 	forged.DeliveryTargetID = "forged"
 	draft := Schedule{PriorEnvelopes: []identity.Envelope{forged}}
@@ -476,14 +491,14 @@ func TestRoutineDestinationPriorAudienceIsServerOwned(t *testing.T) {
 		t.Error("creation accepts injected prior audience")
 	}
 	clean.PriorEnvelopes = nil
-	if scheduleIntent(draft) != scheduleIntent(clean) {
+	if routines.ScheduleIntent(draft) != routines.ScheduleIntent(clean) {
 		t.Error("server history changes creation intent")
 	}
 	w := destinationRequest(g, http.MethodPost, "/v1/routines", `{"schedule_id":"server-history","destination_task_id":"default","timezone":"UTC","expression":"0 10 * * 5","job_kind":"reminder","input":"fixture","prior_envelopes":[{"principal_id":"mallory"}]}`)
 	if w.Code != 200 {
 		t.Fatal(w.Body.String())
 	}
-	card, err := g.spool.GetRoutine("server-history", env)
+	card, err := host.RoutineCard(context.Background(), env, "server-history")
 	if err != nil || len(card.Schedule.PriorEnvelopes) != 0 {
 		t.Errorf("injected prior history persisted: %+v %v", card.Schedule.PriorEnvelopes, err)
 	}
@@ -494,7 +509,7 @@ func TestRoutineDestinationPriorAudienceIsServerOwned(t *testing.T) {
 }
 
 func TestRoutineDestinationCardRetainsLastOccurrenceAfterOwnedChatMove(t *testing.T) {
-	g, env, a, b := destinationFixture(t)
+	g, host, root, env, a, b := destinationFixture(t)
 	user := g.user("alice")
 	user.TelegramIDs = append(user.TelegramIDs, 12)
 	g.users[11], g.users[12], g.config.Users[0] = user, user, user
@@ -506,31 +521,36 @@ func TestRoutineDestinationCardRetainsLastOccurrenceAfterOwnedChatMove(t *testin
 	if w.Code != 200 {
 		t.Fatal(w.Body.String())
 	}
-	card, err := g.spool.GetRoutine("last-move", env)
+	card, err := host.RoutineCard(context.Background(), env, "last-move")
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := card.Schedule
-	o := RoutineOccurrence{ScheduleID: s.ScheduleID, Revision: s.Revision, DueAt: s.NextDue, JobKind: "reminder", Job: Job{Envelope: s.Envelope, OrganizationID: s.OrganizationID, UserID: s.UserID, ActorID: s.ActorID, ScopeID: s.ScopeID, Channel: s.Channel, ChatID: s.ChatID, TaskID: s.TaskID, TopicID: s.TopicID, Text: s.Input, Trigger: "cron"}}
-	if err := g.spool.PutOccurrence(o, s.Envelope); err != nil {
+	o := RoutineOccurrence{ScheduleID: s.ScheduleID, Revision: s.Revision, DueAt: s.NextDue, JobKind: "reminder", State: "pending", Job: Job{Envelope: s.Envelope, OrganizationID: s.OrganizationID, UserID: s.UserID, ActorID: s.ActorID, ScopeID: s.ScopeID, Channel: s.Channel, ChatID: s.ChatID, TaskID: s.TaskID, TopicID: s.TopicID, Text: s.Input, Trigger: "cron"}}
+	o.Job.ID = routines.OccurrenceID(o)
+	s.LastOccurrenceID = o.Job.ID
+	owner := filepath.Join(root, "users", "alice")
+	if err := os.MkdirAll(filepath.Join(owner, "occurrences"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	s.LastOccurrenceID = occurrenceID(o)
-	if err := atomicJSON(g.spool.schedulePath(s.ScheduleID), s); err != nil {
+	if err := atomicJSON(filepath.Join(owner, "occurrences", o.Job.ID+".json"), o); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicJSON(filepath.Join(owner, "schedules", s.ScheduleID+".json"), s); err != nil {
 		t.Fatal(err)
 	}
 	w = destinationRequest(g, http.MethodPost, "/v1/routines/last-move", fmt.Sprintf(`{"expected_revision":1,"destination_task_id":%q}`, b.TaskID))
 	if w.Code != 200 {
 		t.Fatal(w.Body.String())
 	}
-	card, err = g.spool.GetRoutine("last-move", env)
+	card, err = host.RoutineCard(context.Background(), env, "last-move")
 	if err != nil || card.Schedule.LastOccurrenceState != "pending" {
 		t.Fatalf("prior last occurrence hidden: %+v %v", card.Schedule, err)
 	}
 }
 
 func TestRoutineDestinationMoveSendsNextReminderToBoundTopic(t *testing.T) {
-	g, env, a, b := destinationFixture(t)
+	g, host, _, env, a, b := destinationFixture(t)
 	w := destinationRequest(g, http.MethodPost, "/v1/routines", fmt.Sprintf(`{"schedule_id":"future-topic","destination_task_id":%q,"timezone":"UTC","expression":"0 10 * * 5","job_kind":"reminder","input":"topic fixture"}`, a.TaskID))
 	if w.Code != 200 {
 		t.Fatal(w.Body.String())
@@ -539,11 +559,13 @@ func TestRoutineDestinationMoveSendsNextReminderToBoundTopic(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatal(w.Body.String())
 	}
-	card, err := g.spool.GetRoutine("future-topic", env)
+	card, err := host.RoutineCard(context.Background(), env, "future-topic")
 	if err != nil {
 		t.Fatal(err)
 	}
-	g.tickProactive(card.Schedule.NextDue)
+	if err := host.Tick(context.Background(), card.Schedule.NextDue); err != nil {
+		t.Fatal(err)
+	}
 	d, err := g.spool.ClaimDelivery()
 	if err != nil || d == nil || d.TaskID != b.TaskID || d.TopicID != 6 || d.ChatID != 11 || d.Text != "topic fixture" {
 		t.Fatalf("future delivery escaped new topic: %+v %v", d, err)
@@ -551,7 +573,7 @@ func TestRoutineDestinationMoveSendsNextReminderToBoundTopic(t *testing.T) {
 }
 
 func TestRoutineDestinationMovePinsNextAgentJobAudience(t *testing.T) {
-	g, env, a, b := destinationFixture(t)
+	g, host, root, env, a, b := destinationFixture(t)
 	w := destinationRequest(g, http.MethodPost, "/v1/routines", fmt.Sprintf(`{"schedule_id":"future-agent-topic","destination_task_id":%q,"timezone":"UTC","expression":"0 10 * * 5","job_kind":"agent","input":"agent fixture"}`, a.TaskID))
 	if w.Code != 200 {
 		t.Fatal(w.Body.String())
@@ -560,19 +582,34 @@ func TestRoutineDestinationMovePinsNextAgentJobAudience(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatal(w.Body.String())
 	}
-	card, err := g.spool.GetRoutine("future-agent-topic", env)
+	card, err := host.RoutineCard(context.Background(), env, "future-agent-topic")
 	if err != nil {
 		t.Fatal(err)
 	}
-	g.tickProactive(card.Schedule.NextDue)
-	job, err := g.spool.ClaimJob()
-	if err != nil || job == nil || job.TaskID != b.TaskID || job.TopicID != 6 || job.ChatID != 11 || job.ConversationID != routineConversation("future-agent-topic") {
-		t.Fatalf("future agent job audience escaped destination: %+v %v", job, err)
+	if err := host.Tick(context.Background(), card.Schedule.NextDue); err != nil {
+		t.Fatal(err)
+	}
+	// The admitted agent job keeps the moved audience in its durable intent —
+	// the supervisor only ever sees the bound conversation.
+	intents, err := filepath.Glob(filepath.Join(root, "dispatch", principalHash("alice"), "*.json"))
+	if err != nil || len(intents) != 1 {
+		t.Fatalf("dispatch intents=%v err=%v", intents, err)
+	}
+	var intent struct {
+		Job Job `json:"job"`
+	}
+	body, err := os.ReadFile(intents[0])
+	if err != nil || json.Unmarshal(body, &intent) != nil {
+		t.Fatalf("read intent: %v", err)
+	}
+	job := intent.Job
+	if job.TaskID != b.TaskID || job.TopicID != 6 || job.ChatID != 11 || job.ConversationID != routines.RoutineConversation("future-agent-topic") {
+		t.Fatalf("future agent job audience escaped destination: %+v", job)
 	}
 }
 
 func TestRoutineExplicitDefaultMatchesDiscoveredRootAcrossChats(t *testing.T) {
-	g, env, _, b := destinationFixture(t)
+	g, host, _, env, _, b := destinationFixture(t)
 	user := g.user("alice")
 	user.TelegramIDs = append(user.TelegramIDs, 12)
 	g.users[11], g.users[12], g.config.Users[0] = user, user, user
@@ -588,14 +625,14 @@ func TestRoutineExplicitDefaultMatchesDiscoveredRootAcrossChats(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatal(w.Body.String())
 	}
-	card, err := g.spool.GetRoutine("root-move", env)
+	card, err := host.RoutineCard(context.Background(), env, "root-move")
 	if err != nil || card.Schedule.TaskID != "default" || card.Schedule.ChatID != 11 || card.Schedule.TopicID != 0 {
 		t.Fatalf("explicit default differs from discovered root: %+v %v", card.Schedule, err)
 	}
 }
 
 func TestRoutineDestinationCardMarksRevokedChatUnavailable(t *testing.T) {
-	g, _, a, _ := destinationFixture(t)
+	g, _, _, _, a, _ := destinationFixture(t)
 	w := destinationRequest(g, http.MethodPost, "/v1/routines", fmt.Sprintf(`{"schedule_id":"revoked-chat","destination_task_id":%q,"timezone":"UTC","expression":"0 10 * * 5","job_kind":"reminder","input":"fixture"}`, a.TaskID))
 	if w.Code != 200 {
 		t.Fatal(w.Body.String())
@@ -614,8 +651,17 @@ func TestRoutineDestinationCardMarksRevokedChatUnavailable(t *testing.T) {
 }
 
 func TestRoutineDestinationCreateRevalidatesAfterProbe(t *testing.T) {
-	g, env, a, _ := destinationFixture(t)
-	probe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	var probe *httptest.Server
+	fetch := func(ctx context.Context, url string) ([]byte, error) {
+		resp, err := probe.Client().Get(url)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		return io.ReadAll(resp.Body)
+	}
+	g, host, _, env, a, _ := destinationFixtureIO(t, nil, fetch)
+	probe = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		a.Archived = true
 		if err := atomicJSON(g.spool.taskPath("alice", a.TaskID), a); err != nil {
 			t.Error(err)
@@ -623,12 +669,11 @@ func TestRoutineDestinationCreateRevalidatesAfterProbe(t *testing.T) {
 		_, _ = w.Write([]byte("ready"))
 	}))
 	defer probe.Close()
-	g.watchHTTP = probe.Client()
 	w := destinationRequest(g, http.MethodPost, "/v1/routines", fmt.Sprintf(`{"schedule_id":"probe-race","destination_task_id":%q,"timezone":"UTC","expression":"0 10 * * 5","job_kind":"check","input":"fixture","expect":"changed","probe":{"kind":"http","url":%q}}`, a.TaskID, probe.URL))
 	if w.Code != 400 {
 		t.Fatalf("archived during baseline was created: %d %s", w.Code, w.Body.String())
 	}
-	if _, err := g.spool.GetRoutine("probe-race", env); err == nil {
+	if _, err := host.RoutineCard(context.Background(), env, "probe-race"); err == nil {
 		t.Fatal("archived target persisted")
 	}
 }

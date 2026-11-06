@@ -1431,6 +1431,11 @@ func TestRecoverStreamEventsIgnoresForeignEventFiles(t *testing.T) {
 	if err := s.RecordStreamEvent(job, streamEvent(job)); err != nil {
 		t.Fatal(err)
 	}
+	// The owner retired communication-owned event-state, but a leftover dir
+	// from a legacy layout must still be ignored at open.
+	if err := os.MkdirAll(filepath.Join(s.root, "event-state"), 0700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(s.root, "event-state", "lv-evt.json"), []byte(`{"schedule_id":"lv-evt","seen":["a1"],"notify_count":1}`), 0600); err != nil {
 		t.Fatal(err)
 	}

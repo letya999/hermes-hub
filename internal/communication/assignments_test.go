@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/locale"
@@ -123,7 +123,7 @@ func TestAssignmentPlanDryRun(t *testing.T) {
 	if verdicts["page"] != "ok" || verdicts["bad"] == "ok" || verdicts["bad"] == "" {
 		t.Fatalf("per-source verdicts wrong: %v", verdicts)
 	}
-	if items, _ := g.spool.rt.ListAssignments(g.users[11].Envelope(11)); len(items) != 0 {
+	if entries, _ := os.ReadDir(filepath.Join(c.SpoolDir, "assignments")); len(entries) != 0 {
 		t.Fatal("dry-run must not persist")
 	}
 }
@@ -266,30 +266,11 @@ func TestAssignmentCommands(t *testing.T) {
 	}
 }
 
-// The assignment wake bundle is model-facing: it pins the owner's stored
-// language like the per-run instructions do (ADR-0084 D5).
-func TestAssignmentWakeBundleLangHint(t *testing.T) {
-	s, o, _ := occurrenceFixture(t)
-	caller := o.Job.Envelope
-	asg := commodel.Assignment{AssignmentID: "asg1", Title: "prices", Intent: "watch prices", State: "active", AppliedRev: 1, Envelope: caller, Plan: &commodel.AssignmentPlan{Revision: 1}}
-	if _, _, err := s.rt.CreateAssignment(asg, caller); err != nil {
-		t.Fatal(err)
-	}
-	s.langOf = func(string) locale.Lang { return locale.LangES }
-	st := &EventState{}
-	schedule := Schedule{ScheduleID: "ev-asg", AssignmentID: "asg1", AssignmentPlanRevision: 1, Sink: "agent", Timezone: "UTC"}
-	s.mu.Lock()
-	err := s.startSourceBatchLocked(st, schedule, o.Job, []Event{{ID: "e1", Text: "one"}}, nil, "seed-1", "", nil, map[string][]string{"": {"e1"}}, nil, time.Now().UTC())
-	s.mu.Unlock()
-	if err != nil || st.PendingBatch == nil || len(st.PendingBatch.Jobs) != 1 {
-		t.Fatalf("assignment wake planned no bundle job: %v", err)
-	}
-	for _, job := range st.PendingBatch.Jobs {
-		if !strings.Contains(job.Text, "language is Español (es)") {
-			t.Fatalf("bundle missing owner language hint: %q", job.Text)
-		}
-	}
-}
+// The assignment wake bundle — owner intent, specialist instructions, the
+// assignment_progress verb contract and the owner's stored language
+// (ADR-0084 D5) — is planned inside the ToolHub owner now. The assertion
+// moved with it: TestAssignmentWakeBundleCarriesOwnerContractAndLanguage in
+// internal/toolhub/automation drives the real settle path end to end.
 
 // TestAssignmentCommandsLocalized: the same replies render in the caller's
 // workspace locale — the catalog supplies every fixed string, the record

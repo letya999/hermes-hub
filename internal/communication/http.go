@@ -126,8 +126,7 @@ func (g *Gateway) handleRoutines(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, page)
 			return
 		}
-		var items []Schedule
-		err := g.automationCall(r.Context(), caller, "schedule.list", nil, &items)
+		items, err := g.listSchedules(r.Context(), caller)
 		if err != nil {
 			http.Error(w, "list failed", automationStatus(err))
 			return
@@ -135,7 +134,9 @@ func (g *Gateway) handleRoutines(w http.ResponseWriter, r *http.Request) {
 		if r.URL.RawQuery != "" {
 			page := routinePage(items, r.URL.Query().Get("after"), limit, r.URL.Query().Get("kind"), r.URL.Query().Get("state"), r.URL.Query().Get("query"), nil)
 			for i := range page.Items {
-				if page.Items[i].Kind != "check" && page.Items[i].Kind != "event" {
+				// The durable probe outcome lives on the owner card now; join
+				// it for every kind that carries watch or event state.
+				if page.Items[i].Kind != "check" && page.Items[i].Kind != "event" && page.Items[i].Kind != "watcher" {
 					continue
 				}
 				card, err := g.getRoutineCard(r.Context(), page.Items[i].ID, caller)
@@ -298,6 +299,21 @@ func (g *Gateway) handleRoutineItem(w http.ResponseWriter, r *http.Request) {
 		var expected []uint64
 		if patch.ExpectedRevision != nil {
 			expected = append(expected, *patch.ExpectedRevision)
+		}
+		// The owner's typed cause is not exposed on the control wire; the card
+		// carries the effective deadline so the contract message survives.
+		card, err := g.getRoutineCard(r.Context(), id, caller)
+		if err != nil {
+			status := automationStatus(err)
+			if errors.Is(err, ErrRoutineNotOwned) {
+				status = http.StatusNotFound
+			}
+			http.Error(w, "schedule not owned", status)
+			return
+		}
+		if !card.Schedule.NextDue.IsZero() && !patch.Until.After(card.Schedule.NextDue) {
+			http.Error(w, ErrRoutineSnoozeNotLater.Error(), http.StatusBadRequest)
+			return
 		}
 		args := scheduleRevisionPayload(id, expected)
 		args["until"] = patch.Until

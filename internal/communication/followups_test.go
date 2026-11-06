@@ -10,13 +10,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/letya999/hermes-hub/internal/routines"
 	"time"
 )
 
 // S1.1 — a check occurrence whose probe errors re-dues for a bounded retry
 // instead of settling failed; exhaustion still fails visibly (SPEC-0054 R1.1).
 func TestCheckProbeErrorRetriesThenFails(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	caller := o.Job.Envelope
 	if _, err := s.CreateSchedule(Schedule{ScheduleID: "c-retry", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "is it up", JobKind: "check", Expect: "changed", Probe: &WatchProbe{URL: "https://example.com/x"}}, caller, ""); err != nil {
 		t.Fatal(err)
@@ -25,7 +27,7 @@ func TestCheckProbeErrorRetriesThenFails(t *testing.T) {
 	if err := s.PutOccurrence(o, caller); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	fail := func(context.Context, string) ([]byte, error) { return nil, errors.New("source down") }
@@ -33,7 +35,7 @@ func TestCheckProbeErrorRetriesThenFails(t *testing.T) {
 	if err := s.ProbeDueOccurrences(now, fail); err != nil {
 		t.Fatal(err)
 	}
-	b, err := os.ReadFile(filepath.Join(s.root, "occurrences", occurrenceID(o)+".json"))
+	b, err := os.ReadFile(filepath.Join(s.root, "occurrences", routines.OccurrenceID(o)+".json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +47,7 @@ func TestCheckProbeErrorRetriesThenFails(t *testing.T) {
 	if err := s.ProbeDueOccurrences(now, fail); err != nil {
 		t.Fatal(err)
 	}
-	b, _ = os.ReadFile(filepath.Join(s.root, "occurrences", occurrenceID(o)+".json"))
+	b, _ = os.ReadFile(filepath.Join(s.root, "occurrences", routines.OccurrenceID(o)+".json"))
 	if json.Unmarshal(b, &live) != nil || live.State != "probing" || live.RetryCount != 1 {
 		t.Fatalf("pre-deadline pass must not retry: %+v", live)
 	}
@@ -56,7 +58,7 @@ func TestCheckProbeErrorRetriesThenFails(t *testing.T) {
 		if err := s.ProbeDueOccurrences(now, fail); err != nil {
 			t.Fatal(err)
 		}
-		b, _ = os.ReadFile(filepath.Join(s.root, "occurrences", occurrenceID(o)+".json"))
+		b, _ = os.ReadFile(filepath.Join(s.root, "occurrences", routines.OccurrenceID(o)+".json"))
 		if json.Unmarshal(b, &live) != nil {
 			t.Fatal("occurrence unreadable")
 		}
@@ -67,7 +69,7 @@ func TestCheckProbeErrorRetriesThenFails(t *testing.T) {
 			now = live.RetryAfter
 		}
 	}
-	b, _ = os.ReadFile(filepath.Join(s.root, "occurrences", occurrenceID(o)+".json"))
+	b, _ = os.ReadFile(filepath.Join(s.root, "occurrences", routines.OccurrenceID(o)+".json"))
 	if json.Unmarshal(b, &live) != nil || live.State != "failed" {
 		t.Fatalf("exhausted retries must settle failed: %+v", live)
 	}
@@ -85,7 +87,7 @@ func TestCheckProbeErrorRetriesThenFails(t *testing.T) {
 // S1.1 — retry is a check-only contract: a watcher probe error still settles
 // failed immediately.
 func TestCheckRetryNotForeignKind(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	caller := o.Job.Envelope
 	if _, err := s.CreateSchedule(Schedule{ScheduleID: "w-noretry", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "0 * * * *", Input: "watch", JobKind: "watcher", Probe: &WatchProbe{URL: "https://example.com/x"}}, caller, ""); err != nil {
 		t.Fatal(err)
@@ -94,13 +96,13 @@ func TestCheckRetryNotForeignKind(t *testing.T) {
 	if err := s.PutOccurrence(o, caller); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.ProbeDueOccurrences(o.DueAt, func(context.Context, string) ([]byte, error) { return nil, errors.New("down") }); err != nil {
 		t.Fatal(err)
 	}
-	b, _ := os.ReadFile(filepath.Join(s.root, "occurrences", occurrenceID(o)+".json"))
+	b, _ := os.ReadFile(filepath.Join(s.root, "occurrences", routines.OccurrenceID(o)+".json"))
 	var live RoutineOccurrence
 	if json.Unmarshal(b, &live) != nil || live.State != "failed" || live.RetryCount != 0 {
 		t.Fatalf("watcher must not retry: %+v", live)
@@ -133,7 +135,7 @@ func TestMaxRetriesValidation(t *testing.T) {
 // S1.2 — a fired check tells the owner which predicate evaluated and what
 // the values were, not just the stored prompt (SPEC-0054 R1.2).
 func TestCheckDeliveryNamesVerdict(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	caller := o.Job.Envelope
 	if err := s.SeedWatchBaseline("c-verdict", "state: open", time.Now().UTC()); err != nil {
 		t.Fatal(err)
@@ -145,7 +147,7 @@ func TestCheckDeliveryNamesVerdict(t *testing.T) {
 	if err := s.PutOccurrence(o, caller); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.ProbeDueOccurrences(o.DueAt, func(context.Context, string) ([]byte, error) { return []byte("state: closed"), nil }); err != nil {
@@ -165,7 +167,7 @@ func TestCheckDeliveryNamesVerdict(t *testing.T) {
 // S1.3 — a task: probe reads the owner's task state without any fetch: an
 // open task keeps the check skipped, archiving it fires once (SPEC-0054 R1.3).
 func TestCheckTaskProbeFiresOnClose(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	caller := o.Job.Envelope
 	user := User{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}
 	task, _, err := s.CreateTask(user, 11, 0, "watch me", false)
@@ -182,7 +184,7 @@ func TestCheckTaskProbeFiresOnClose(t *testing.T) {
 		if err := s.PutOccurrence(oc, caller); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.DispatchDueOccurrences(due, g.authorizeOccurrence); err != nil {
+		if err := s.DispatchDueOccurrences(due, s.authorizeOccurrence); err != nil {
 			t.Fatal(err)
 		}
 		if err := s.ProbeDueOccurrences(due, func(context.Context, string) ([]byte, error) {
@@ -191,7 +193,7 @@ func TestCheckTaskProbeFiresOnClose(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		b, _ := os.ReadFile(filepath.Join(s.root, "occurrences", occurrenceID(oc)+".json"))
+		b, _ := os.ReadFile(filepath.Join(s.root, "occurrences", routines.OccurrenceID(oc)+".json"))
 		var live RoutineOccurrence
 		if json.Unmarshal(b, &live) != nil {
 			t.Fatal("occurrence unreadable")
@@ -205,11 +207,9 @@ func TestCheckTaskProbeFiresOnClose(t *testing.T) {
 		t.Fatalf("skipped check delivered: %+v", d)
 	}
 	task.Archived = true
-	s.mu.Lock()
 	if err := s.writeTaskLocked(task); err != nil {
 		t.Fatal(err)
 	}
-	s.mu.Unlock()
 	if state := fire(o.DueAt.Add(time.Hour)); state != "dispatched" {
 		t.Fatalf("closed task must fire: %s", state)
 	}
@@ -222,7 +222,7 @@ func TestCheckTaskProbeFiresOnClose(t *testing.T) {
 // S1.3 — a foreign task id resolves under the schedule owner's principal and
 // fails as a probe error (retry then failed) — never as a synthetic state.
 func TestCheckTaskProbeForeignTaskFails(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	caller := o.Job.Envelope
 	bob := User{ID: "bob", Enabled: true, TelegramIDs: []int64{22}}
 	foreign, _, err := s.CreateTask(bob, 22, 0, "not yours", false)
@@ -236,13 +236,13 @@ func TestCheckTaskProbeForeignTaskFails(t *testing.T) {
 	if err := s.PutOccurrence(o, caller); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.ProbeDueOccurrences(o.DueAt, nil); err != nil {
 		t.Fatal(err)
 	}
-	b, _ := os.ReadFile(filepath.Join(s.root, "occurrences", occurrenceID(o)+".json"))
+	b, _ := os.ReadFile(filepath.Join(s.root, "occurrences", routines.OccurrenceID(o)+".json"))
 	var live RoutineOccurrence
 	if json.Unmarshal(b, &live) != nil || live.State != "probing" || live.RetryCount != 1 {
 		t.Fatalf("foreign task must be a probe error that retries: %+v", live)
@@ -250,7 +250,7 @@ func TestCheckTaskProbeForeignTaskFails(t *testing.T) {
 	if err := s.ProbeDueOccurrences(live.RetryAfter, nil); err != nil {
 		t.Fatal(err)
 	}
-	b, _ = os.ReadFile(filepath.Join(s.root, "occurrences", occurrenceID(o)+".json"))
+	b, _ = os.ReadFile(filepath.Join(s.root, "occurrences", routines.OccurrenceID(o)+".json"))
 	if json.Unmarshal(b, &live) != nil || live.State != "failed" {
 		t.Fatalf("foreign task must fail closed: %+v", live)
 	}
@@ -281,17 +281,17 @@ func TestTaskProbeValidation(t *testing.T) {
 // S1.4 — a reminder due during downtime settles `missed` past the catch-up
 // window instead of delivering late: the documented overdue policy (#247).
 func TestReminderOverdueSettlesMissed(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	caller := o.Job.Envelope
 	o.JobKind, o.ScheduleID = "reminder", "remind-late"
 	if err := s.PutOccurrence(o, caller); err != nil {
 		t.Fatal(err)
 	}
 	// Two hours past due exceeds the default one-hour catch-up window.
-	if err := s.DispatchDueOccurrences(o.DueAt.Add(2*time.Hour), g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o.DueAt.Add(2*time.Hour), s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
-	b, _ := os.ReadFile(filepath.Join(s.root, "occurrences", occurrenceID(o)+".json"))
+	b, _ := os.ReadFile(filepath.Join(s.root, "occurrences", routines.OccurrenceID(o)+".json"))
 	var live RoutineOccurrence
 	if json.Unmarshal(b, &live) != nil || live.State != "missed" {
 		t.Fatalf("out-of-window occurrence must settle missed: %+v", live)
@@ -304,11 +304,10 @@ func TestReminderOverdueSettlesMissed(t *testing.T) {
 // S1.3 — creating a check on task: through the control API seeds the
 // baseline from the task state, not from a URL fetch (SPEC-0054 R1.3).
 func TestCheckTaskProbeSeedsBaselineOverHTTP(t *testing.T) {
-	s, _, g := occurrenceFixture(t)
-	g.spool = s
-	g.config.ControlAuth = "tok"
-	g.config.Users = []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}
-	task, _, err := s.CreateTask(User{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}, 11, 0, "seed me", false)
+	c := testConfig(t)
+	c.ControlAuth = "tok"
+	g, host, _ := automationGatewayFixture(t, c)
+	task, _, err := g.spool.CreateTask(c.Users[0], 11, 0, "seed me", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,10 +320,38 @@ func TestCheckTaskProbeSeedsBaselineOverHTTP(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("task: check rejected: %d %s", w.Code, w.Body.String())
 	}
-	s.mu.Lock()
-	st, err := s.loadWatchStateLocked("c-http-task")
-	s.mu.Unlock()
+	caller := c.Users[0].Envelope(11)
+	st, err := host.LoadWatchState(context.Background(), caller, "c-http-task")
 	if err != nil || st.Value != "open" {
 		t.Fatalf("baseline not seeded from task state: %+v %v", st, err)
+	}
+}
+
+// An archived task seeds a "closed" baseline — the restored owner-engine
+// task-probe contract (closed := task.Archived).
+func TestCheckTaskProbeSeedsClosedBaselineOverHTTP(t *testing.T) {
+	c := testConfig(t)
+	c.ControlAuth = "tok"
+	g, host, _ := automationGatewayFixture(t, c)
+	task, _, err := g.spool.CreateTask(c.Users[0], 11, 0, "seed me", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.spool.ArchiveTask(c.Users[0], 11, task.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf(`{"schedule_id":"c-http-task2","timezone":"UTC","expression":"0 * * * *","input":"ping me when closed","job_kind":"check","expect":"equals:closed","probe":{"url":"task:%s"}}`, task.TaskID)
+	req := httptest.NewRequest("POST", "/v1/routines", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("X-Hub-Principal", "alice")
+	w := httptest.NewRecorder()
+	g.Handler().ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("task: check rejected: %d %s", w.Code, w.Body.String())
+	}
+	caller := c.Users[0].Envelope(11)
+	st, err := host.LoadWatchState(context.Background(), caller, "c-http-task2")
+	if err != nil || st.Value != "closed" {
+		t.Fatalf("baseline not seeded from archived task: %+v %v", st, err)
 	}
 }

@@ -88,6 +88,28 @@ func (h *Host) ControlHandler(token string) http.Handler {
 				return
 			}
 			result, err = h.LoadSchedule(r.Context(), body.Caller, args.ID)
+		case "occurrence.authorize":
+			var args struct {
+				ID   string `json:"id"`
+				Kind string `json:"kind"`
+			}
+			if json.Unmarshal(body.Payload, &args) != nil || args.ID == "" {
+				http.Error(w, "invalid automation request", http.StatusBadRequest)
+				return
+			}
+			err = h.AuthorizeOccurrence(r.Context(), body.Caller, args.ID, args.Kind)
+			result = map[string]bool{"allow": err == nil}
+		case "delivery.outcome":
+			var args struct {
+				ID     string `json:"id"`
+				Status string `json:"status"`
+				Text   string `json:"text"`
+			}
+			if json.Unmarshal(body.Payload, &args) != nil || args.ID == "" {
+				http.Error(w, "invalid automation request", http.StatusBadRequest)
+				return
+			}
+			err = h.RecordDeliveryOutcome(r.Context(), body.Caller, args.ID, args.Status, args.Text)
 		case "schedule.card":
 			var args struct {
 				ID string `json:"id"`
@@ -283,6 +305,11 @@ func (h *Host) ControlHandler(token string) http.Handler {
 		}
 		if err != nil {
 			status := http.StatusBadRequest
+			// schedule.list carries no client-controlled input; an error is
+			// owner-side state (e.g. a corrupt record), not a bad request.
+			if body.Operation == "schedule.list" {
+				status = http.StatusInternalServerError
+			}
 			if errors.Is(err, errUnauthorized) || errors.Is(err, routines.ErrAssignmentGrantWidening) {
 				status = http.StatusForbidden
 			} else if errors.Is(err, routines.ErrRoutineRevision) || errors.Is(err, routines.ErrScheduleConflict) {

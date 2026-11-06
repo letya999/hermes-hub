@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/communication"
+	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/contextlife"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/memory"
@@ -26,6 +26,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/skillstore/gitsource"
 	"github.com/letya999/hermes-hub/internal/skillstore/scan"
 	"github.com/letya999/hermes-hub/internal/stack"
+	"github.com/letya999/hermes-hub/internal/toolhub/automation"
 	"github.com/letya999/hermes-hub/internal/vault"
 )
 
@@ -709,70 +710,70 @@ func runSkill(ctx context.Context, args []string) error {
 	}
 }
 
-func runRoutine(_ context.Context, args []string) error {
+type routineOpts struct {
+	toolhubURL, token, profile, id, tz, expr, organization, runtimeID, policy, input string
+	chatID                                                                           int64
+}
+
+func runRoutine(ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("routine requires list, create, pause or delete")
 	}
 	sub := args[0]
+	var opts routineOpts
 	f := flag.NewFlagSet("routine", flag.ContinueOnError)
-	spoolDir := f.String("spool", "", "communication spool")
-	profile := f.String("user", "me", "person identifier")
-	id := f.String("id", "", "schedule id")
-	tz := f.String("tz", "UTC", "timezone")
-	expr := f.String("expr", "", "once:RFC3339 or 5-field cron")
-	chatID := f.Int64("chat-id", 0, "explicit Telegram chat id")
-	organization := f.String("organization", "", "explicit organization id")
-	runtimeID := f.String("runtime", "", "explicit runtime id")
-	policy := f.String("policy", "", "explicit policy version")
-	input := f.String("input", "", "bounded task text")
+	f.StringVar(&opts.toolhubURL, "toolhub-url", os.Getenv("HUB_TOOLHUB_URL"), "ToolHub control URL")
+	f.StringVar(&opts.token, "token", os.Getenv("HUB_COMMUNICATION_AUTH"), "enrolled service bearer")
+	f.StringVar(&opts.profile, "user", "me", "person identifier")
+	f.StringVar(&opts.id, "id", "", "schedule id")
+	f.StringVar(&opts.tz, "tz", "UTC", "timezone")
+	f.StringVar(&opts.expr, "expr", "", "once:RFC3339 or 5-field cron")
+	f.Int64Var(&opts.chatID, "chat-id", 0, "explicit Telegram chat id")
+	f.StringVar(&opts.organization, "organization", "", "explicit organization id")
+	f.StringVar(&opts.runtimeID, "runtime", "", "explicit runtime id")
+	f.StringVar(&opts.policy, "policy", "", "explicit policy version")
+	f.StringVar(&opts.input, "input", "", "bounded task text")
 	if err := f.Parse(args[1:]); err != nil {
 		return err
 	}
-	if *spoolDir == "" {
-		return fmt.Errorf("routine requires --spool")
+	if opts.toolhubURL == "" || opts.token == "" {
+		return fmt.Errorf("routine requires --toolhub-url and --token (or HUB_TOOLHUB_URL/HUB_COMMUNICATION_AUTH)")
 	}
-	unlock, err := communication.LockSpool(*spoolDir)
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	spool, err := communication.OpenSpool(*spoolDir)
-	if err != nil {
-		return err
-	}
-	if sub != "list" && (*chatID <= 0 || !identity.ValidID(*organization) || !identity.ValidID(*runtimeID) || !identity.ValidID(*policy)) {
+	if sub != "list" && (opts.chatID <= 0 || !identity.ValidID(opts.organization) || !identity.ValidID(opts.runtimeID) || !identity.ValidID(opts.policy)) {
 		return fmt.Errorf("routine mutation requires --chat-id --organization --runtime --policy")
 	}
-	caller := identity.TelegramEnvelope(*profile, *chatID, *runtimeID, *policy)
-	if sub == "list" {
-		caller.PrincipalID = *profile
-	}
+	// Schedules live with the ToolHub automation owner — never the shared
+	// spool: the operator route is the same service-only control surface the
+	// gateway uses.
+	caller := identity.TelegramEnvelope(opts.profile, opts.chatID, opts.runtimeID, opts.policy)
+	client := automation.ControlClient{URL: opts.toolhubURL, Token: opts.token}
 	switch sub {
 	case "list":
-		items, err := spool.ListSchedules(caller)
-		if err != nil {
+		var items []commodel.Schedule
+		if err := client.Call(ctx, caller, "schedule.list", nil, &items); err != nil {
 			return err
 		}
 		return json.NewEncoder(os.Stdout).Encode(items)
 	case "create":
-		if *id == "" || *expr == "" || strings.TrimSpace(*input) == "" {
+		if opts.id == "" || opts.expr == "" || strings.TrimSpace(opts.input) == "" {
 			return fmt.Errorf("routine create requires --id --expr --input")
 		}
-		item, err := spool.CreateSchedule(communication.Schedule{ScheduleID: *id, Envelope: caller, OrganizationID: *organization, UserID: *profile, ActorID: *profile, ScopeID: "user:" + *profile, Channel: "telegram_bot", ChatID: *chatID, Timezone: *tz, Expression: *expr, Input: *input}, caller, "")
+		var item commodel.Schedule
+		err := client.Call(ctx, caller, "schedule.create", map[string]any{"schedule": commodel.Schedule{ScheduleID: opts.id, Envelope: caller, OrganizationID: opts.organization, UserID: opts.profile, ActorID: opts.profile, ScopeID: "user:" + opts.profile, Channel: "telegram_bot", ChatID: opts.chatID, Timezone: opts.tz, Expression: opts.expr, Input: opts.input}}, &item)
 		if err != nil {
 			return err
 		}
 		return json.NewEncoder(os.Stdout).Encode(item)
 	case "pause":
-		if *id == "" {
+		if opts.id == "" {
 			return fmt.Errorf("routine pause requires --id")
 		}
-		return spool.PauseSchedule(*id, caller)
+		return client.Call(ctx, caller, "schedule.pause", map[string]any{"id": opts.id}, nil)
 	case "delete":
-		if *id == "" {
+		if opts.id == "" {
 			return fmt.Errorf("routine delete requires --id")
 		}
-		return spool.DeleteSchedule(*id, caller)
+		return client.Call(ctx, caller, "schedule.delete", map[string]any{"id": opts.id}, nil)
 	default:
 		return fmt.Errorf("unknown routine command %q", sub)
 	}

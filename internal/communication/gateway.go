@@ -25,7 +25,6 @@ import (
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/memory/night"
-	"github.com/letya999/hermes-hub/internal/routines"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/toolhub/automation"
 	"github.com/letya999/hermes-hub/internal/vault"
@@ -78,8 +77,6 @@ type Gateway struct {
 	// spool's under-lock admission check never performs I/O.
 	holdsMu       sync.Mutex
 	holdsLast     []masterHold
-	streamMu      sync.Mutex
-	streamCalls   map[string]*streamSharedCall
 	maintenanceMu sync.Mutex
 	maintenance   storageMaintenanceStatus
 }
@@ -179,8 +176,7 @@ func New(config Config) (*Gateway, error) {
 	// murder pending links (nonce hashes only — the link stays the secret).
 	g.drafts.load(filepath.Join(config.SpoolDir, "skill-drafts.json"), g.now)
 	spool.JobDone = g.toolHubJobDone
-	spool.probeScript = g.runProbeScript
-	spool.resolveChannel = func(id string) routines.OccurrenceChannel { return g.channel(id) }
+	spool.jobFence = g.routineJobLive
 	spool.langOf = func(principalID string) locale.Lang {
 		if u := g.user(principalID); u.ID != "" && u.WorkspaceDir != "" {
 			return locale.LangOf(u.WorkspaceDir)
@@ -649,8 +645,7 @@ func (g *Gateway) dispatchChannelCommand(ctx context.Context, user User, task Ta
 			}
 			return reply(answer)
 		case "routines":
-			var items []Schedule
-			err := g.automationCall(ctx, user.Envelope(sender), "schedule.list", nil, &items)
+			items, err := g.listSchedules(ctx, user.Envelope(sender))
 			if err != nil {
 				return reply(locale.T(lang, "chat.routines-unavail"))
 			}

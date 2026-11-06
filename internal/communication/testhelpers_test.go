@@ -29,10 +29,6 @@ func (s *Spool) reservationState(jobID string) string {
 	return s.budget.Reservations[jobID].State
 }
 
-// tickProactive is the proactive pass of the control loop: schedule -> due
-// occurrence -> dispatch -> deterministic probing for watcher/check kinds.
-func (g *Gateway) tickProactive(now time.Time) { g.tickProactiveContext(context.Background(), now) }
-
 func (g *Gateway) runCanary(ctx context.Context, now time.Time) string {
 	return g.opsEngine().Run(ctx, now)
 }

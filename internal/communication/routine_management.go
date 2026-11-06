@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"os"
 	"slices"
 	"sort"
 	"strings"
@@ -19,8 +18,6 @@ import (
 var ErrRoutineRevision = routines.ErrRoutineRevision
 var ErrRoutineNotOwned = routines.ErrRoutineNotOwned
 var ErrRoutineSnoozeNotLater = routines.ErrRoutineSnoozeNotLater
-
-func effectiveRoutineNextDue(item Schedule) time.Time { return routines.EffectiveNextDue(item) }
 
 func (g *Gateway) routineEditBaseline(ctx context.Context, id string, caller identity.Envelope, patch map[string]json.RawMessage) (*string, error) {
 	if _, changed := patch["probe"]; !changed {
@@ -62,12 +59,21 @@ func (g *Gateway) routineEditBaseline(ctx context.Context, id string, caller ide
 
 type RoutinePreview = routines.RoutinePreview
 
-func (s *Spool) PreviewRoutine(id string, caller identity.Envelope, count int, now time.Time) (RoutinePreview, error) {
-	card, err := s.GetRoutine(id, caller)
-	if err != nil {
-		return RoutinePreview{}, err
-	}
-	return routines.PreviewSchedule(card.Schedule, card.State, count, now)
+// watchSample mirrors the owner's schedule.sample wire shape for decode only.
+type sampleEvent struct {
+	ID   string `json:"id"`
+	Text string `json:"text,omitempty"`
+	Raw  string `json:"raw,omitempty"`
+}
+type sampleSource struct {
+	Source   string            `json:"source"`
+	Events   []sampleEvent     `json:"events,omitempty"`
+	Error    string            `json:"error,omitempty"`
+	Verdicts map[string]string `json:"verdicts,omitempty"`
+}
+type watchSample struct {
+	ScheduleID string         `json:"schedule_id"`
+	Sources    []sampleSource `json:"sources"`
 }
 
 type RoutineSummary struct {
@@ -158,48 +164,6 @@ func (g *Gateway) getRoutineCard(ctx context.Context, id string, caller identity
 	return card, err
 }
 
-func (s *Spool) GetRoutine(id string, caller identity.Envelope) (RoutineCard, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	item, err := s.loadScheduleLocked(id)
-	state := routineState(item)
-	if os.IsNotExist(err) {
-		var body []byte
-		body, err = s.fsys.ReadFile(s.cancelPath(id)) // #nosec G703 -- id is sanitized by commodel.FileID
-		if err == nil {
-			err = json.Unmarshal(body, &item)
-			state = "deleted"
-		}
-	}
-	if err != nil && !os.IsNotExist(err) {
-		return RoutineCard{}, err
-	}
-	if err != nil || item.Envelope.PrincipalID != caller.PrincipalID || item.Envelope.ContextID != caller.ContextID {
-		return RoutineCard{}, ErrRoutineNotOwned
-	}
-	watch, err := s.loadWatchStateLocked(id)
-	if err != nil {
-		return RoutineCard{}, err
-	}
-	if item.JobKind == "reminder" && item.LastOccurrenceID != "" {
-		item.LastOccurrenceState, item.LastDeliveryState = s.reminderStateLocked(item)
-	}
-	card := RoutineCard{Schedule: item, State: state, WatchState: watch}
-	if ch := channelFor(nil, item.Channel); ch != nil && ch.Caps().Destinations {
-		destination := s.routineDestinationLocked(item)
-		card.Destination = &destination
-	}
-	card.Schedule.NextDue = effectiveRoutineNextDue(item)
-	if item.JobKind == "event" {
-		event, err := s.loadEventStateLocked(id)
-		if err != nil {
-			return RoutineCard{}, err
-		}
-		card.EventState = &event
-	}
-	return card, nil
-}
-
 func routineRevisionRequest(r *http.Request) ([]uint64, error) {
 	if r.ContentLength == 0 {
 		return nil, nil
@@ -222,21 +186,6 @@ func scheduleRevisionPayload(id string, expected []uint64) map[string]any {
 		args["expected_revision"] = expected[0]
 	}
 	return args
-}
-
-type routineEditContext struct {
-	User     User
-	Baseline *string
-}
-
-// editRoutine delegates the owner edit to the engine: the read-modify-write
-// runs under the engine lock, so callers must not hold s.mu.
-func (s *Spool) editRoutine(id string, caller identity.Envelope, patch map[string]json.RawMessage, resume bool, now time.Time, extra ...routineEditContext) (Schedule, error) {
-	var opts routines.EditOptions
-	if len(extra) > 0 {
-		opts = routines.EditOptions{User: extra[0].User, Baseline: extra[0].Baseline}
-	}
-	return s.rt.EditRoutine(id, caller, patch, resume, now, opts)
 }
 
 func patchRoutineFields(item *Schedule, patch map[string]json.RawMessage) (bool, error) {

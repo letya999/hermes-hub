@@ -8,16 +8,17 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/commodel"
+	"github.com/letya999/hermes-hub/internal/routines"
 )
 
 // The lock split gives the engine its own mutex while queue admission keeps
 // taking the spool mutex inside the dispatch port (engine -> spool order).
-// An event settle or batch resume holding s.mu must therefore never call an
-// engine mutator: that would be the opposite edge and deadlocks against a
-// concurrent dispatch holding e.mu and waiting on s.mu. This regression pins
-// the sequential-acquisition contract — both sides must complete.
+// The retired reverse edge (a spool-held settle calling back into the
+// engine) is gone with the old owner; this regression pins what remains:
+// a probe settle and a concurrent due dispatch, both holding e.mu before
+// reaching the spool-backed ports, must complete without deadlock.
 func TestEventSettleDoesNotDeadlockAgainstEngineDispatch(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	caller := o.Job.Envelope
 	sched, err := s.CreateSchedule(Schedule{ScheduleID: "ev-lock", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "mail events", JobKind: "event", Sink: "agent", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-mail-events-abc"}}, caller, "")
 	if err != nil {
@@ -45,7 +46,9 @@ func TestEventSettleDoesNotDeadlockAgainstEngineDispatch(t *testing.T) {
 	o.Job.Trigger = "cron"
 	o.Job.Envelope = sched.Envelope
 	o.State = "probing"
-	if err := atomicJSON(filepath.Join(s.root, "occurrences", occurrenceID(o)+".json"), o); err != nil {
+	o.Job.ID = routines.OccurrenceID(o)
+	o.Job.IdempotencyKey = o.Job.ID
+	if err := atomicJSON(filepath.Join(s.root, "occurrences", routines.OccurrenceID(o)+".json"), o); err != nil {
 		t.Fatal(err)
 	}
 
@@ -66,16 +69,15 @@ func TestEventSettleDoesNotDeadlockAgainstEngineDispatch(t *testing.T) {
 
 	settleDone := make(chan error, 1)
 	go func() {
-		_, err := s.settleEvents(o, sched, body, now, nil, g.authorizeOccurrence)
-		settleDone <- err
+		settleDone <- s.SettleProbe(o, sched, string(body), routines.WatchHash(string(body)), now, nil, s.authorizeOccurrence)
 	}()
-	// Let the settle reach its spool critical section before the engine
-	// starts dispatching — the interleaving being pinned is s.mu held while
-	// an engine mutator is attempted.
+	// Let the settle reach the engine critical section before the dispatch
+	// starts — the interleaving being pinned is e.mu held while the
+	// spool-backed enqueue port runs.
 	time.Sleep(20 * time.Millisecond)
 	dispatchDone := make(chan error, 1)
 	go func() {
-		dispatchDone <- s.rt.DispatchDueOccurrences(now.Add(time.Second), g.authorizeOccurrence)
+		dispatchDone <- s.rt.DispatchDueOccurrences(now.Add(time.Second), s.authorizeOccurrence)
 	}()
 
 	timeout := time.After(20 * time.Second)

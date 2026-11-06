@@ -86,18 +86,24 @@ func TestContextMemorySkillRoutineCLI(t *testing.T) {
 	if err := run(ctx, []string{"context", "purge", "--dir", dest, "--user", "owner", "--confirm", "owner"}); err != nil {
 		t.Fatal(err)
 	}
-	routineSpool := filepath.Join(t.TempDir(), "routine-spool")
+	// Routines live with the ToolHub automation owner: the CLI talks to the
+	// same service-only control surface the gateway uses, never the spool.
+	hostURL, hostCleanup := routineHostFixture(t, "owner")
+	defer hostCleanup()
 	due := "once:2099-01-01T00:00:00Z"
-	if err := run(ctx, []string{"routine", "create", "--spool", routineSpool, "--user", "owner", "--chat-id", "1", "--organization", "personal", "--runtime", "owner", "--policy", "policy-1", "--id", "morning", "--tz", "UTC", "--expr", due, "--input", "brief"}); err != nil {
+	if err := run(ctx, []string{"routine", "create", "--toolhub-url", hostURL, "--token", "hubctl-test", "--user", "owner", "--chat-id", "1", "--organization", "personal", "--runtime", "owner", "--policy", "policy-1", "--id", "morning", "--tz", "UTC", "--expr", due, "--input", "brief"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := run(ctx, []string{"routine", "list", "--spool", routineSpool, "--user", "owner"}); err != nil {
+	routineListed := captureOutput(t, func() error {
+		return run(ctx, []string{"routine", "list", "--toolhub-url", hostURL, "--token", "hubctl-test", "--user", "owner", "--chat-id", "1", "--organization", "personal", "--runtime", "owner", "--policy", "policy-1"})
+	})
+	if !strings.Contains(routineListed, `"morning"`) {
+		t.Fatalf("routine list lost the created schedule: %s", routineListed)
+	}
+	if err := run(ctx, []string{"routine", "pause", "--toolhub-url", hostURL, "--token", "hubctl-test", "--user", "owner", "--chat-id", "1", "--organization", "personal", "--runtime", "owner", "--policy", "policy-1", "--id", "morning"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := run(ctx, []string{"routine", "pause", "--spool", routineSpool, "--user", "owner", "--chat-id", "1", "--organization", "personal", "--runtime", "owner", "--policy", "policy-1", "--id", "morning"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := run(ctx, []string{"routine", "delete", "--spool", routineSpool, "--user", "owner", "--chat-id", "1", "--organization", "personal", "--runtime", "owner", "--policy", "policy-1", "--id", "morning"}); err != nil {
+	if err := run(ctx, []string{"routine", "delete", "--toolhub-url", hostURL, "--token", "hubctl-test", "--user", "owner", "--chat-id", "1", "--organization", "personal", "--runtime", "owner", "--policy", "policy-1", "--id", "morning"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := run(ctx, []string{"context"}); err == nil {
@@ -167,7 +173,7 @@ func TestContextMemorySkillRoutineCLI(t *testing.T) {
 		t.Fatalf("rollback to a missing revision must reach the store: %v", err)
 	}
 	if err := run(ctx, []string{"routine", "list"}); err == nil {
-		t.Fatal("routine without spool")
+		t.Fatal("routine without control endpoint")
 	}
 	if err := run(ctx, []string{"context", "stop-runtime", "--user", "owner"}); err != nil {
 		t.Fatal(err)
@@ -181,7 +187,7 @@ func TestContextMemorySkillRoutineCLI(t *testing.T) {
 	if err := run(ctx, []string{"skill", "unknown", "--dir", dir, "--user", "owner"}); err == nil {
 		t.Fatal("unknown skill command")
 	}
-	if err := run(ctx, []string{"routine", "unknown", "--spool", routineSpool, "--user", "owner"}); err == nil {
+	if err := run(ctx, []string{"routine", "unknown", "--toolhub-url", hostURL, "--token", "hubctl-test", "--user", "owner"}); err == nil {
 		t.Fatal("unknown routine command")
 	}
 	if err := run(ctx, []string{"context", "restore", "--dir", dest, "--user", "owner"}); err == nil {

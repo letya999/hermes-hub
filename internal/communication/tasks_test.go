@@ -14,6 +14,7 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/compaction"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/routines"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
@@ -773,40 +774,36 @@ func TestTaskMappingSurvivesSpoolReopen(t *testing.T) {
 }
 
 func TestScheduleKeepsTaskBinding(t *testing.T) {
-	c := testConfig(t)
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	user := g.user("alice")
-	task, _, err := g.spool.CreateTask(user, 11, 5, "cron-task", false)
+	s, _, _ := occurrenceFixture(t)
+	user := User{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}
+	task, _, err := s.CreateTask(user, 11, 5, "cron-task", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	caller := user.Envelope(11)
-	schedule := Schedule{ScheduleID: "cron-1", Envelope: caller, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, TaskID: task.TaskID, TopicID: 5, Timezone: "UTC", Expression: "* * * * *", Input: "tick", CreatedAt: g.now().UTC()}
-	if _, err := g.spool.CreateSchedule(schedule, caller, ""); err != nil {
+	schedule := Schedule{ScheduleID: "cron-1", Envelope: caller, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, TaskID: task.TaskID, TopicID: 5, Timezone: "UTC", Expression: "* * * * *", Input: "tick", CreatedAt: time.Now().UTC()}
+	if _, err := s.CreateSchedule(schedule, caller, ""); err != nil {
 		t.Fatal(err)
 	}
 	// Materialize the occurrence exactly as TickSchedules does.
 	job := Job{Envelope: schedule.Envelope, OrganizationID: schedule.OrganizationID, UserID: schedule.UserID, ActorID: schedule.ActorID, ScopeID: schedule.ScopeID, Channel: schedule.Channel, ChatID: schedule.ChatID, TaskID: schedule.TaskID, TopicID: schedule.TopicID, Text: schedule.Input, Trigger: "cron"}
 	occ := RoutineOccurrence{ScheduleID: schedule.ScheduleID, Revision: 1, DueAt: time.Now().UTC(), Job: job}
-	if err := validateOccurrence(occ, caller); err != nil {
+	if err := routines.ValidateOccurrence(occ, caller, s.channelResolver()); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.spool.PutOccurrence(occ, caller); err != nil {
+	if err := s.PutOccurrence(occ, caller); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.spool.DispatchDueOccurrences(occ.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(occ.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
-	claimed, err := g.spool.ClaimJob()
+	claimed, err := s.ClaimJob()
 	if err != nil || claimed == nil {
 		t.Fatal("cron job missing")
 	}
 	// Routines isolate their session per schedule; the task binding survives
 	// for delivery routing only.
-	if claimed.ConversationID != routineConversation(schedule.ScheduleID) || claimed.TaskID != task.TaskID || claimed.TopicID != 5 {
+	if claimed.ConversationID != routines.RoutineConversation(schedule.ScheduleID) || claimed.TaskID != task.TaskID || claimed.TopicID != 5 {
 		t.Fatalf("cron job lost task binding: %+v", claimed)
 	}
 }

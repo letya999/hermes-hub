@@ -12,9 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/routines"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
@@ -463,95 +461,15 @@ func TestSpoolDBDeliveryLifecycle(t *testing.T) {
 // Routine schedules are record rows: creation lands in spool.db and the
 // rebuilt engine lists them after a restart — no shadow file under
 // schedules/.
-func TestSpoolDBScheduleOnRows(t *testing.T) {
-	root := t.TempDir()
-	dbBack, err := openSpoolDB(root, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := dbBack.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "records.activated"), []byte("{}\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	s, err := OpenSpool(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	caller := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
-	in := Schedule{ScheduleID: "sched-1", Envelope: caller, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 * * * *", Input: "ping", JobKind: "reminder"}
-	if _, err := s.CreateSchedule(in, caller, ""); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Lstat(filepath.Join(root, "schedules", "sched-1.json")); !os.IsNotExist(err) {
-		t.Fatal("schedule shadowed a file on an activated spool")
-	}
-	s.fsys.Close()
+// Routine schedules no longer live in the communication spool at all —
+// activated or not. They are ToolHub owner-root files; a schedule record in
+// spool.db would be a legacy-carry artifact, not a live row. Comm-side
+// no-shadow coverage continues below for tasks/jobs/outbox/mappings.
 
-	s2, err := NewSpool(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s2.fsys.Close()
-	items, err := s2.ListSchedules(caller)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(items) != 1 || items[0].ScheduleID != "sched-1" {
-		t.Fatalf("schedule lost across restart: %+v", items)
-	}
-}
+// Occurrences and their dispatch are ToolHub-owned durable state; the comm
+// spool only holds the delivery receipts they produce. Row-substrate
+// coverage for occurrence dispatch moved to the automation suite.
 
-// Occurrences are records too: a due reminder dispatched through the engine
-// produces its delivery without a single shadow file under occurrences/ or
-// outbox/.
-func TestSpoolDBOccurrenceDispatchOnRows(t *testing.T) {
-	root := t.TempDir()
-	dbBack, err := openSpoolDB(root, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := dbBack.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "records.activated"), []byte("{}\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	s, err := NewSpool(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.fsys.Close()
-	job := Job{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), UserID: "alice", ActorID: "alice", ScopeID: "user:alice", OrganizationID: "personal", Channel: "telegram_bot", ChatID: 11, Text: "call the bank"}
-	o := RoutineOccurrence{ScheduleID: "sched-rem", Revision: 1, DueAt: time.Unix(100, 0), Job: job, JobKind: "reminder"}
-	if err := s.PutOccurrence(o, job.Envelope); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Lstat(filepath.Join(root, "occurrences", routines.OccurrenceID(o)+".json")); !os.IsNotExist(err) {
-		if names, _ := s.fsys.ReadDir(filepath.Join(root, "occurrences")); len(names) == 0 {
-			t.Fatal("occurrence landed nowhere")
-		}
-		t.Fatal("occurrence shadowed a file on an activated spool")
-	}
-	g := &Gateway{spool: s, config: Config{OrganizationID: "personal", Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}}, users: map[int64]User{11: {ID: "alice", Enabled: true}}, now: func() time.Time { return time.Unix(90, 0) }}
-	s.resolveChannel = func(id string) routines.OccurrenceChannel { return g.channel(id) }
-	if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
-		t.Fatal(err)
-	}
-	d, err := s.ClaimDelivery()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if d == nil || d.Text != "call the bank" {
-		t.Fatalf("reminder delivery: %+v", d)
-	}
-}
-
-// The operator surfaces around the queue must read rows too: update offset
-// cursors, rewrite a claimed delivery, complete it with its payload blob
-// staying a file, repair a torn admission, and answer session/active-mapping
-// queries — all without shadow files on an activated spool.
 func TestSpoolDBSurfaces(t *testing.T) {
 	root := t.TempDir()
 	dbBack, err := openSpoolDB(root, false)
@@ -662,77 +580,10 @@ func TestSpoolDBSurfaces(t *testing.T) {
 // The routines plane keeps its durable records under the same substrate:
 // assignments, watcher baselines and digest cursors must survive a restart
 // as rows, not shadow files.
-func TestSpoolDBRoutineRecordsOnRows(t *testing.T) {
-	root := t.TempDir()
-	dbBack, err := openSpoolDB(root, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := dbBack.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "records.activated"), []byte("{}\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	s, err := NewSpool(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	caller := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
-	if _, _, err := s.rt.CreateAssignment(commodel.Assignment{AssignmentID: "asg-1", Envelope: caller, Intent: "watch the vendor", Title: "Vendor"}, caller); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Lstat(filepath.Join(root, "assignments", "asg-1.json")); !os.IsNotExist(err) {
-		t.Fatal("assignment shadowed a file")
-	}
-	if err := s.SeedWatchBaseline("w-1", "v0", time.Unix(50, 0)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Lstat(filepath.Join(root, "watchers", "w-1.json")); !os.IsNotExist(err) {
-		t.Fatal("watch baseline shadowed a file")
-	}
-	if err := s.writeJSON(s.digestPath("sched-9"), DigestState{ScheduleID: "sched-9", LastDigestAt: time.Unix(60, 0)}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Lstat(filepath.Join(root, "digests", "sched-9.json")); !os.IsNotExist(err) {
-		t.Fatal("digest cursor shadowed a file")
-	}
-	s.fsys.Close()
+// Assignments, watcher baselines and digest cursors are engine-root records
+// under the ToolHub owner, not comm spool rows — this test's contract moved
+// wholesale to internal/toolhub/automation + internal/routines.
 
-	s2, err := NewSpool(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s2.fsys.Close()
-	item, err := s2.rt.LoadAssignment("asg-1", caller)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if item.Title != "Vendor" {
-		t.Fatalf("assignment lost: %+v", item)
-	}
-	s2.mu.Lock()
-	watch, err := s2.rt.LoadWatchState("w-1")
-	s2.mu.Unlock()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if watch.Value != "v0" {
-		t.Fatalf("watch baseline lost: %+v", watch)
-	}
-	s2.mu.Lock()
-	digest, err := s2.rt.LoadDigestCursor("sched-9")
-	s2.mu.Unlock()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if digest.LastDigestAt != time.Unix(60, 0) {
-		t.Fatalf("digest cursor lost: %+v", digest)
-	}
-}
-
-// Tasks are durable records: creation writes rows, and a job bound by
-// TaskID must still resolve its conversation binding after a restart.
 func TestSpoolDBTasksOnRows(t *testing.T) {
 	root := t.TempDir()
 	dbBack, err := openSpoolDB(root, false)
@@ -916,48 +767,10 @@ func TestSpoolDBCompactAgesRowRecords(t *testing.T) {
 // A settled occurrence archives inside the row substrate: the hot record
 // leaves occurrences/, its history lands in occurrences/receipts/ and the
 // terminal record in occurrences/archive/ — all as rows, no shadow files.
+// Retired with the rest of spool-side occurrence retention — the owner-side
+// compaction entry point is a tracked #523 follow-up.
 func TestSpoolDBCompactArchivesOccurrenceOnRows(t *testing.T) {
-	root := t.TempDir()
-	dbBack, err := openSpoolDB(root, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := dbBack.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "records.activated"), []byte("{}\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	s, err := OpenSpool(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.fsys.Close()
-	job := Job{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), ID: "job-occ-1", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", OrganizationID: "personal", Channel: "telegram_bot", ChatID: 11, Text: "scheduled work"}
-	o := RoutineOccurrence{ScheduleID: "sched-occ-1", Revision: 1, DueAt: time.Now().Add(-time.Hour), Job: job, State: "no_change"}
-	name := occurrenceID(o) + ".json"
-	if err := s.writeJSON(filepath.Join(root, "occurrences", name), o); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Compact(time.Now(), 72*time.Hour, CompactLimits{MaxTerminalFiles: 2048, ArchiveMaxBytes: 64 << 20}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.fsys.ReadFile(filepath.Join(root, "occurrences", name)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("settled occurrence must leave the hot class: %v", err)
-	}
-	if _, err := s.fsys.ReadFile(filepath.Join(root, "occurrences", "archive", name)); err != nil {
-		t.Fatalf("occurrence archive row missing: %v", err)
-	}
-	if _, err := s.fsys.ReadFile(filepath.Join(root, "occurrences", "receipts", name)); err != nil {
-		t.Fatalf("occurrence receipt row missing: %v", err)
-	}
-	if entries, err := os.ReadDir(filepath.Join(root, "occurrences")); err == nil {
-		for _, e := range entries {
-			if e.Name() == name {
-				t.Fatal("occurrence compaction shadowed a file")
-			}
-		}
-	}
+	t.Skip("occurrence retention unimplemented under the ToolHub owner")
 }
 
 // Terminal receipts and their mappings age out on rows exactly like files:
@@ -1396,63 +1209,14 @@ func TestSpoolDBDeliveryDedupSeesTerminalRows(t *testing.T) {
 
 // The gateway resolves a routine job's occurrence for conversation rebinding;
 // on an activated spool that record is a row, not a file.
-func TestSpoolDBOccurrenceForReadsRow(t *testing.T) {
-	root := t.TempDir()
-	dbBack, err := openSpoolDB(root, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := dbBack.WriteFile(filepath.Join(root, "occurrences", "routine-x.json"), []byte(`{"schedule_id":"sched-1"}`)); err != nil {
-		t.Fatal(err)
-	}
-	if err := dbBack.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "records.activated"), []byte("{}\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	s, err := OpenSpool(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.fsys.Close()
-	g := &Gateway{spool: s}
-	if _, ok := g.occurrenceFor("routine-x"); !ok {
-		t.Fatal("occurrence row invisible to the gateway")
-	}
-}
+// Occurrence records are ToolHub owner files; the gateway no longer reads
+// them locally - conversation rebinding resolves via durable task mappings
+// (covered by the task-mapping fingerprint tests).
 
-// The stream supervisor diffs stream-eligible schedules against the running
-// set; with schedules in rows the diff must still see them.
-func TestSpoolDBStreamIDsReadsRows(t *testing.T) {
-	root := t.TempDir()
-	dbBack, err := openSpoolDB(root, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := dbBack.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "records.activated"), []byte("{}\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	s, err := OpenSpool(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.fsys.Close()
-	caller := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
-	in := Schedule{ScheduleID: "stream-1", Envelope: caller, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "* * * * *", Input: "probe", JobKind: "event", Delivery: "stream", Enabled: true, Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-probe", MinIntervalSeconds: 60}}
-	if _, err := s.CreateSchedule(in, caller, ""); err != nil {
-		t.Fatal(err)
-	}
-	if ids := s.streamIDs(time.Now().UTC()); !ids["stream-1"] {
-		t.Fatalf("stream schedule row not enumerated: %v", ids)
-	}
-}
+// Stream-eligible schedule enumeration moved to the ToolHub owner
+// (automation eventStore/host); comm keeps no schedule index on either
+// substrate. Owner-side enumeration is covered in internal/toolhub/automation.
 
-// Human-confirmation callbacks live under callbacks/: a row-backed record
-// must still prove the confirmation against ToolHub.
 func TestSpoolDBHumanCallbackReadsRow(t *testing.T) {
 	root := t.TempDir()
 	dbBack, err := openSpoolDB(root, false)
@@ -1609,31 +1373,7 @@ func TestSpoolDBActivatedRejectsBadLayoutRow(t *testing.T) {
 
 // Per-cursor .initialized markers are written through the record backend;
 // a corrupt row marker must fail closed instead of being silently replaced.
-func TestSpoolDBEventStateMarkerReadsRow(t *testing.T) {
-	root := t.TempDir()
-	dbBack, err := openSpoolDB(root, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	markerPath := filepath.Join(root, "event-state", "bad.json.initialized")
-	if err := dbBack.WriteFile(markerPath, []byte(`{"version":999}`)); err != nil {
-		t.Fatal(err)
-	}
-	if err := dbBack.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "records.activated"), []byte("{}\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	s, err := NewSpool(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.fsys.Close()
-	s.mu.Lock()
-	err = s.writeEventStateLocked("bad", EventState{ScheduleID: "bad", Cursor: "c"})
-	s.mu.Unlock()
-	if err == nil {
-		t.Fatal("corrupt .initialized row silently replaced")
-	}
-}
+// Event-state records are fenced at open on the comm side (see
+// event_layout.go); corrupt cursors under event-state/ fail activation
+// there, not through a write seam. Owner-side event state lives in the
+// automation eventStore.

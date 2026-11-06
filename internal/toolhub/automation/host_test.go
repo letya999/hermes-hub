@@ -58,6 +58,7 @@ type supervisorServer struct {
 	scriptCalls atomic.Int32
 	fail        atomic.Bool
 	dropAck     atomic.Bool
+	failRuns    atomic.Bool
 	blockAlice  <-chan struct{}
 	srv         *httptest.Server
 }
@@ -106,9 +107,13 @@ func newSupervisorServer(t *testing.T) *supervisorServer {
 			_ = json.NewEncoder(w).Encode(hubruntime.ExecuteResponse{JobID: in.JobID, Status: "completed", Text: "done"})
 			return
 		}
-		s.logical[in.IdempotencyKey] = commodel.Job{Envelope: in.Envelope, ID: in.JobID, IdempotencyKey: in.IdempotencyKey, UserID: in.UserID}
+		s.logical[in.IdempotencyKey] = commodel.Job{Envelope: in.Envelope, ID: in.JobID, IdempotencyKey: in.IdempotencyKey, UserID: in.UserID, Text: in.Text}
 		if s.dropAck.Load() {
 			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		if s.failRuns.Load() {
+			_ = json.NewEncoder(w).Encode(hubruntime.ExecuteResponse{JobID: in.JobID, Status: "failed", Text: "boom"})
 			return
 		}
 		_ = json.NewEncoder(w).Encode(hubruntime.ExecuteResponse{JobID: in.JobID, Status: "completed", Text: "done"})
@@ -557,6 +562,7 @@ func TestChannelRebindBlocksSupervisorDispatch(t *testing.T) {
 	h := newHarness(t)
 	alice := h.envelope(t, "alice")
 	h.grant(t, "alice", "write")
+	h.grant(t, "alice", "read")
 	host := h.host(t)
 	item, err := host.CreateSchedule(context.Background(), alice, draft("rt-channel-fence", alice), "")
 	if err != nil {
@@ -579,15 +585,26 @@ func TestChannelRebindBlocksSupervisorDispatch(t *testing.T) {
 	if _, logical := h.sup.counts(); logical != 0 {
 		t.Fatal("re-bound channel dispatched a job")
 	}
-	if pendingDispatches(t, host, "alice") != 1 {
-		t.Fatal("channel denial lost the durable dispatch intent")
+	// Materialize-time authorization fences before staging: the durable
+	// record of the denial is the blocked schedule, not a pending intent.
+	if pendingDispatches(t, host, "alice") != 0 {
+		t.Fatal("channel denial staged a dispatch intent for unauthorized work")
+	}
+	blocked, err := host.LoadSchedule(context.Background(), alice, item.ScheduleID)
+	if err != nil || blocked.BlockedReason == "" {
+		t.Fatalf("channel denial did not durably block the schedule: %+v %v", blocked, err)
 	}
 	allowed = true
-	if err := host.Recover(context.Background()); err != nil {
+	resumed, err := host.EditRoutine(context.Background(), alice, item.ScheduleID, map[string]json.RawMessage{}, true, nil)
+	if err != nil {
+		t.Fatalf("owner unblock: %v", err)
+	}
+	h.now = resumed.NextDue.Add(time.Second)
+	if err := host.Tick(context.Background(), h.now); err != nil {
 		t.Fatal(err)
 	}
 	if _, logical := h.sup.counts(); logical != 1 {
-		t.Fatal("restored channel binding did not reconcile the pending intent")
+		t.Fatal("restored channel binding did not dispatch after owner unblock")
 	}
 }
 
@@ -1194,6 +1211,51 @@ func TestAgentEventBatchAdmitsOneUntrustedJob(t *testing.T) {
 	}
 }
 
+// The assignment wake bundle is model-facing: it pins the assignment contract
+// (intent, specialist instructions, progress verb) and the owner's stored
+// language like the per-run instructions do (ADR-0084 D5).
+func TestAssignmentWakeBundleCarriesOwnerContractAndLanguage(t *testing.T) {
+	h := newHarness(t)
+	alice := h.envelope(t, "alice")
+	h.grant(t, "alice", "write")
+	host := h.host(t)
+	host.cfg.LangOf = func(string) locale.Lang { return locale.LangES }
+	host.cfg.ToolCall = func(context.Context, string, *commodel.WatchProbe) ([]byte, error) {
+		return []byte(`{"events":[{"id":"e1","text":"one"}]}`), nil
+	}
+	ctx := context.Background()
+	if _, _, err := host.CreateAssignment(ctx, alice, commodel.Assignment{
+		AssignmentID: "asg-1", Envelope: alice, Intent: "watch prices", Title: "prices",
+		State: "active", AppliedRev: 1, Plan: &commodel.AssignmentPlan{Revision: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sc := draft("rt-asg-wake", alice)
+	sc.JobKind, sc.Delivery, sc.Sink = "event", "stream", "agent"
+	sc.Expression = "0 10 * * *"
+	sc.AssignmentID, sc.AssignmentPlanRevision, sc.WakePrompt = "asg-1", 1, "report changes"
+	sc.Probe = &commodel.WatchProbe{Kind: "mcp_tool", Tool: "events.wait"}
+	if _, err := host.CreateSchedule(ctx, alice, sc, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.Tick(ctx, h.now); err != nil {
+		t.Fatal(err)
+	}
+	job := h.sup.onlyJob()
+	for _, want := range []string{
+		"Standing assignment asg-1 (revision 1)",
+		"Owner intent: watch prices",
+		"Specialist instructions: report changes",
+		"call assignment_progress with this job ID",
+		"language is Español (es)",
+		"untrusted event evidence",
+	} {
+		if !strings.Contains(job.Text, want) {
+			t.Fatalf("wake bundle missing %q: %q", want, job.Text)
+		}
+	}
+}
+
 func TestAgentEventBatchReplaysPlannedJobsAfterAdmissionFailure(t *testing.T) {
 	h := newHarness(t)
 	alice := h.envelope(t, "alice")
@@ -1550,7 +1612,7 @@ func TestTaskBindingPrecedesDispatchIntent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := engine.TickSchedules(at, "", host.authorizeJob); err != nil {
+	if err := engine.TickSchedules(at, "", func(_ string, job commodel.Job) error { return host.authorizeJob(job) }); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := os.ReadDir(filepath.Join(h.root, "users", "alice", "occurrences"))
@@ -1957,5 +2019,177 @@ func TestCutoverRejectsLegacyEventStateBeforeCreatingOwnerClasses(t *testing.T) 
 	}
 	if _, err := os.Stat(filepath.Join(alice, "schedules")); !os.IsNotExist(err) {
 		t.Fatalf("first owner's classes were created before all owners validated: %v", err)
+	}
+}
+
+// Send-time re-authorization keeps the old communication-side
+// occurrenceRefAuthorizedLocked contract under the new owner: a delivery may
+// only send while its occurrence is still dispatched, current and authorized.
+func TestAuthorizeOccurrenceReauthorizesAtSendTime(t *testing.T) {
+	h := newHarness(t)
+	alice := h.envelope(t, "alice")
+	bob := h.envelope(t, "bob")
+	for _, op := range []string{"read", "write"} {
+		h.grant(t, "alice", op)
+	}
+	host := h.host(t)
+	server := httptest.NewServer(host.ControlHandler("control"))
+	defer server.Close()
+	client := ControlClient{URL: server.URL, Token: "control"}
+	item := draft("rem-fence", alice)
+	item.JobKind = "reminder"
+	item.Expression = "once:" + h.now.Add(time.Minute).Format(time.RFC3339)
+	created, err := host.CreateSchedule(context.Background(), alice, item, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := host.Tick(context.Background(), created.NextDue); err != nil {
+		t.Fatal(err)
+	}
+	if h.comm.count() != 1 {
+		t.Fatalf("reminder did not reach intake: %d", h.comm.count())
+	}
+	h.comm.mu.Lock()
+	occurrenceID := h.comm.deliveries[0].OccurrenceID
+	h.comm.mu.Unlock()
+	if occurrenceID == "" {
+		t.Fatal("intake delivery lost its occurrence id")
+	}
+	// A live dispatched occurrence authorizes its delivery.
+	if err := client.Call(context.Background(), alice, "occurrence.authorize", map[string]any{"id": occurrenceID}, nil); err != nil {
+		t.Fatalf("live occurrence denied: %v", err)
+	}
+	// A foreign principal cannot authorize another owner's occurrence.
+	if err := client.Call(context.Background(), bob, "occurrence.authorize", map[string]any{"id": occurrenceID}, nil); err == nil {
+		t.Fatal("foreign principal authorized alice's occurrence")
+	}
+	// Losing the automation right between dispatch and send blocks the delivery.
+	h.revoke(t, "alice", "write")
+	if err := client.Call(context.Background(), alice, "occurrence.authorize", map[string]any{"id": occurrenceID}, nil); err == nil {
+		t.Fatal("revoked owner authorized at send time")
+	}
+	h.grant(t, "alice", "write")
+	// Deleting the schedule retires the pending delivery with it.
+	if err := host.DeleteSchedule(context.Background(), alice, created.ScheduleID, created.Revision); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Call(context.Background(), alice, "occurrence.authorize", map[string]any{"id": occurrenceID}, nil); err == nil {
+		t.Fatal("deleted schedule's occurrence still authorized")
+	}
+	// Unknown ids fail closed rather than letting stray refs send.
+	if err := client.Call(context.Background(), alice, "occurrence.authorize", map[string]any{"id": "occ-missing"}, nil); err == nil {
+		t.Fatal("missing occurrence authorized")
+	}
+}
+
+// A routine-failure notice references its occurrence after it settled — a
+// dead probe marks it "failed", not "dispatched". The send-time fence must
+// still authorize the notice while its schedule stands at the recorded
+// revision, or no watch-failure notice could ever reach the owner.
+func TestAuthorizeOccurrenceAuthorizesSettledFailureNotice(t *testing.T) {
+	h := newHarness(t)
+	alice := h.envelope(t, "alice")
+	h.grant(t, "alice", "read")
+	h.grant(t, "alice", "write")
+	host := h.host(t)
+	server := httptest.NewServer(host.ControlHandler("control"))
+	defer server.Close()
+	client := ControlClient{URL: server.URL, Token: "control"}
+	host.cfg.Fetch = func(context.Context, string) ([]byte, error) {
+		return nil, errors.New("source exploded")
+	}
+	item := draft("failing-watch-source", alice)
+	item.JobKind = "watcher"
+	item.Probe = &commodel.WatchProbe{Kind: "http", URL: "https://example.test/feed"}
+	created, err := host.CreateSchedule(context.Background(), alice, item, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := host.Tick(context.Background(), created.NextDue); err != nil {
+		t.Fatal(err)
+	}
+	h.comm.mu.Lock()
+	var notice commodel.Delivery
+	for _, d := range h.comm.deliveries {
+		if d.Kind == "routine-failure" {
+			notice = d
+		}
+	}
+	h.comm.mu.Unlock()
+	if notice.OccurrenceID == "" {
+		t.Fatal("failing probe produced no routine-failure notice")
+	}
+	// The failed occurrence authorizes its routine-failure notice...
+	if err := client.Call(context.Background(), alice, "occurrence.authorize", map[string]any{"id": notice.OccurrenceID, "kind": "routine-failure"}, nil); err != nil {
+		t.Fatalf("settled failure occurrence denied its notice: %v", err)
+	}
+	// ...but not as an ordinary routine payload: the dispatched check still
+	// fences a settled occurrence out of the reminder/agent send path.
+	if err := client.Call(context.Background(), alice, "occurrence.authorize", map[string]any{"id": notice.OccurrenceID}, nil); err == nil {
+		t.Fatal("settled occurrence authorized as a live dispatch")
+	}
+	// Once the schedule is gone the notice is stale and must not send.
+	if err := host.DeleteSchedule(context.Background(), alice, created.ScheduleID, created.Revision); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Call(context.Background(), alice, "occurrence.authorize", map[string]any{"id": notice.OccurrenceID, "kind": "routine-failure"}, nil); err == nil {
+		t.Fatal("deleted schedule's failure notice still authorized")
+	}
+}
+
+// A routine that keeps failing must not spam the owner: identical failures
+// dedupe to one notice; a success resets the digest so a later failure
+// notifies again.
+func TestRoutineRepeatedFailureNotifiesOnce(t *testing.T) {
+	h := newHarness(t)
+	alice := h.envelope(t, "alice")
+	h.grant(t, "alice", "read")
+	h.grant(t, "alice", "write")
+	host := h.host(t)
+	item := draft("failing-routine", alice)
+	item.Expression = "every:1m"
+	if _, err := host.CreateSchedule(context.Background(), alice, item, ""); err != nil {
+		t.Fatal(err)
+	}
+	h.sup.failRuns.Store(true)
+	for i := 0; i < 10; i++ {
+		h.now = h.now.Add(time.Minute)
+		if err := host.Tick(context.Background(), h.now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.comm.mu.Lock()
+	delivered := len(h.comm.deliveries)
+	h.comm.mu.Unlock()
+	if delivered != 1 {
+		t.Fatalf("10 identical failures produced %d deliveries", delivered)
+	}
+	// A delivered notice promotes its digest; the next identical failure is
+	// suppressed until a success clears it.
+	h.comm.mu.Lock()
+	first := h.comm.deliveries[0]
+	h.comm.mu.Unlock()
+	if first.Kind != "routine-failure" || first.OccurrenceID == "" {
+		t.Fatalf("failure notice lost its dedupe marker: %+v", first)
+	}
+	if err := host.RecordDeliveryOutcome(context.Background(), alice, first.OccurrenceID, "delivered", first.Text); err != nil {
+		t.Fatal(err)
+	}
+	// A success resets the digest: the next identical failure notifies again.
+	h.sup.failRuns.Store(false)
+	h.now = h.now.Add(time.Minute)
+	if err := host.Tick(context.Background(), h.now); err != nil {
+		t.Fatal(err)
+	}
+	h.sup.failRuns.Store(true)
+	h.now = h.now.Add(time.Minute)
+	if err := host.Tick(context.Background(), h.now); err != nil {
+		t.Fatal(err)
+	}
+	h.comm.mu.Lock()
+	delivered = len(h.comm.deliveries)
+	h.comm.mu.Unlock()
+	if delivered != 3 {
+		t.Fatalf("failure after success produced %d deliveries, want result+failure", delivered)
 	}
 }

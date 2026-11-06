@@ -90,6 +90,124 @@ func TestAutomationDeliveryUsesLiveSendRight(t *testing.T) {
 	}
 }
 
+func TestDeliveryWithBareOccurrenceRefFailsClosed(t *testing.T) {
+	root := t.TempDir()
+	spool, err := NewSpool(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alice := User{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}
+	api := &fakeAPI{}
+	g := &Gateway{config: Config{Users: []User{alice}}, spool: spool, users: map[int64]User{11: alice}, api: api, now: time.Now}
+	// A delivery that references an occurrence without an owner principal is a
+	// legacy communication-owner record: post-cutover nothing may send it.
+	if err := spool.EnqueueDelivery(Delivery{ID: "legacy-watch", OccurrenceID: "occ-1", Channel: "telegram_bot", ChatID: 11, Text: "stale"}); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(context.Background())
+	api.mu.Lock()
+	sent := len(api.sent)
+	api.mu.Unlock()
+	if sent != 0 {
+		t.Fatal("bare occurrence delivery was sent")
+	}
+	if _, err := os.Stat(filepath.Join(root, "outbox", "failed", spoolFileID("legacy-watch")+".json")); err != nil {
+		t.Fatalf("bare occurrence delivery was not settled unconfirmed: %v", err)
+	}
+}
+
+// An owner-bound occurrence delivery re-checks the occurrence with ToolHub
+// before the channel send: allow sends, a denial retires the record
+// unconfirmed, and an unreachable owner keeps it retryable.
+func TestOccurrenceDeliveryFenceRechecksOwner(t *testing.T) {
+	t.Setenv("HUB_SUPERVISOR_AUTH", "service")
+	root := t.TempDir()
+	spool, err := NewSpool(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alice := User{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}
+	api := &fakeAPI{}
+	allow := false
+	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/rights/decide" {
+			_, _ = w.Write([]byte(`{"allow":true}`))
+			return
+		}
+		var req struct {
+			Operation string `json:"operation"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.Operation != "occurrence.authorize" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if !allow {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		_, _ = w.Write([]byte(`{"result":{"allow":true}}`))
+	}))
+	defer control.Close()
+	g := &Gateway{config: Config{ControlAuth: "service", ToolHubURL: control.URL, AutomationAuth: "automation-test", Users: []User{alice}}, spool: spool, users: map[int64]User{11: alice}, api: api, now: time.Now}
+	put := func(id, occ string) {
+		if err := spool.EnqueueDelivery(Delivery{ID: id, OccurrenceID: occ, OwnerPrincipalID: "alice", Channel: "telegram_bot", ChatID: 11, DeliveryTargetID: "telegram-11", Text: "note"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put("occ-denied", "occ-1")
+	g.deliverOne(context.Background())
+	api.mu.Lock()
+	if len(api.sent) != 0 {
+		t.Fatal("denied occurrence delivery was sent")
+	}
+	api.mu.Unlock()
+	if _, err := os.Stat(filepath.Join(root, "outbox", "failed", spoolFileID("occ-denied")+".json")); err != nil {
+		t.Fatalf("denied occurrence delivery not settled unconfirmed: %v", err)
+	}
+	allow = true
+	put("occ-allowed", "occ-2")
+	g.deliverOne(context.Background())
+	api.mu.Lock()
+	if len(api.sent) != 1 {
+		t.Fatal("authorized occurrence delivery was not sent")
+	}
+	api.mu.Unlock()
+	// An unreachable owner pauses the delivery instead of settling it
+	// unconfirmed: the outage must not silently drop a live notice.
+	g.config.ToolHubURL = "http://127.0.0.1:1"
+	put("occ-outage", "occ-3")
+	g.deliverOne(context.Background())
+	api.mu.Lock()
+	if len(api.sent) != 1 {
+		t.Fatal("outage delivered to the channel")
+	}
+	api.mu.Unlock()
+	if _, err := os.Stat(filepath.Join(root, "outbox", "failed", spoolFileID("occ-outage")+".json")); err == nil {
+		t.Fatal("outage settled the delivery unconfirmed")
+	}
+	g.config.ToolHubURL = control.URL
+	path := filepath.Join(root, "outbox", "pending", spoolFileID("occ-outage")+".json")
+	body, err := spool.fsys.ReadFile(path)
+	if err != nil {
+		t.Fatalf("outage delivery not durable in pending: %v", err)
+	}
+	var recovered Delivery
+	if err := json.Unmarshal(body, &recovered); err != nil || recovered.ID != "occ-outage" {
+		t.Fatalf("outage delivery record unreadable: %v", err)
+	}
+	recovered.NotBefore = time.Time{}
+	if err := spool.writeJSON(path, recovered); err != nil {
+		t.Fatal(err)
+	}
+	g.deliverOne(context.Background())
+	api.mu.Lock()
+	if len(api.sent) != 2 {
+		t.Fatal("recovered outage delivery was not sent")
+	}
+	api.mu.Unlock()
+}
+
 func TestAutomationDeliveryRechecksOwnerBeforeSend(t *testing.T) {
 	root := t.TempDir()
 	spool, err := NewSpool(root)

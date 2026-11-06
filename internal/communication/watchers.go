@@ -70,14 +70,19 @@ func (g *Gateway) checkBaseline(ctx context.Context, principal string, probe *Wa
 	} else if probe.Kind == "render" || probe.Kind == "service" {
 		body, err = g.serviceProbe(ctx, principal, probe)
 	} else if strings.HasPrefix(probe.URL, "task:") {
+		// Task records are communication-owned: the baseline reads the caller's
+		// own task directly; a foreign or missing id is an error, never a
+		// synthetic state (restored owner-engine task-probe contract).
 		g.spool.mu.Lock()
-		var value string
-		value, err = g.spool.taskProbeValueLocked(principal, strings.TrimPrefix(probe.URL, "task:"))
+		task, taskErr := g.spool.loadTaskLocked(principal, strings.TrimPrefix(probe.URL, "task:"))
 		g.spool.mu.Unlock()
-		if err != nil {
+		if taskErr != nil {
 			return "", errors.New("check task unreadable")
 		}
-		body = []byte(value)
+		body = []byte("open")
+		if task.Archived {
+			body = []byte("closed")
+		}
 	} else {
 		body, err = g.fetchWatch(ctx, probe.URL)
 	}

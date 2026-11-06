@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/routines"
 )
 
 func TestRoutineConcurrentEditsCommitOneRevision(t *testing.T) {
@@ -53,18 +55,21 @@ func TestRoutineSourceEditSeedsANewCheckBaseline(t *testing.T) {
 	defer source.Close()
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	g.watchHTTP = source.Client()
+	g, host, _ := automationGatewayFixtureIO(t, c, nil, nil, nil, func(ctx context.Context, url string) ([]byte, error) {
+		resp, err := source.Client().Get(url)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		return io.ReadAll(resp.Body)
+	})
 	env := c.Users[0].Envelope(11)
 	in := Schedule{ScheduleID: "change-source", Envelope: env, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 10 * * 5", Input: "fixture", JobKind: "check", Probe: &WatchProbe{URL: source.URL + "/old"}, Expect: "changed"}
-	in, err = g.spool.CreateSchedule(in, env, "")
+	in, err := host.CreateSchedule(context.Background(), env, in, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := g.spool.SeedWatchBaseline(in.ScheduleID, "old-source-value", time.Now()); err != nil {
+	if err := host.SeedWatchBaseline(context.Background(), env, in.ScheduleID, "old-source-value", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	body := fmt.Sprintf(`{"expected_revision":1,"probe":{"url":%q}}`, source.URL+"/new")
@@ -76,9 +81,9 @@ func TestRoutineSourceEditSeedsANewCheckBaseline(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("source edit: %d %s", w.Code, w.Body.String())
 	}
-	got, err := g.spool.GetRoutine(in.ScheduleID, env)
-	if err != nil || got.Schedule.InitialProbeValue == nil || *got.Schedule.InitialProbeValue != "new-source-value" || got.WatchState.Value != "new-source-value" || got.WatchState.Baseline != watchHash("new-source-value") {
-		t.Fatalf("stale source baseline: %+v %v", got, err)
+	card, err := g.getRoutineCard(r.Context(), in.ScheduleID, env)
+	if err != nil || card.Schedule.InitialProbeValue == nil || *card.Schedule.InitialProbeValue != "new-source-value" || card.WatchState.Value != "new-source-value" || card.WatchState.Baseline != routines.WatchHash("new-source-value") {
+		t.Fatalf("stale source baseline: %+v %v", card, err)
 	}
 }
 
@@ -118,89 +123,34 @@ func TestRoutineDSTWindowsStayInsideLocalBounds(t *testing.T) {
 		{"2026-11-01T05:40:00Z", "01:15", "01:45", "2026-11-01T06:15:00Z"},
 	} {
 		from, _ := time.Parse(time.RFC3339, tc.from)
-		got, err := nextSchedule(Schedule{Expression: "every:15m", Timing: &RoutineTiming{Windows: []RoutineWindow{{From: tc.open, To: tc.close}}}}, loc, from)
+		got, err := routines.NextSchedule(Schedule{Expression: "every:15m", Timing: &RoutineTiming{Windows: []RoutineWindow{{From: tc.open, To: tc.close}}}}, loc, from)
 		if err != nil || got.Format(time.RFC3339) != tc.want {
 			t.Errorf("window %s..%s from %s: %s %v, want %s", tc.open, tc.close, tc.from, got, err, tc.want)
 		}
 	}
 }
 
-func TestRoutineStreamPauseFencesInFlightBatch(t *testing.T) {
-	s, o, _ := occurrenceFixture(t)
-	in := Schedule{ScheduleID: "stream-fence", Envelope: o.Job.Envelope, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 10 * * 5", Input: "fixture", JobKind: "event", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "read_events", MinIntervalSeconds: 60}, Delivery: "stream"}
-	in, err := s.CreateSchedule(in, in.Envelope, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.PauseSchedule(in.ScheduleID, in.Envelope); err != nil {
-		t.Fatal(err)
-	}
-	_, blocked := s.settleStreamEvents(in, []byte(`{"events":[{"id":"one","text":"stale batch"}]}`), time.Now().UTC(), nil, func(Job) error { return nil })
-	d, err := s.ClaimDelivery()
-	if err != nil || !blocked || d != nil {
-		t.Fatalf("paused stream admitted stale batch: blocked=%v delivery=%+v err=%v", blocked, d, err)
-	}
-}
-
-func TestRoutineStreamEditFencesInFlightBatch(t *testing.T) {
-	s, o, _ := occurrenceFixture(t)
-	in := Schedule{ScheduleID: "stream-edit-fence", Envelope: o.Job.Envelope, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 10 * * 5", Input: "fixture", JobKind: "event", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "read_events", MinIntervalSeconds: 60}, Delivery: "stream"}
-	in, err := s.CreateSchedule(in, in.Envelope, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.editRoutine(in.ScheduleID, in.Envelope, map[string]json.RawMessage{"input": json.RawMessage(`"new text"`)}, false, time.Now().UTC()); err != nil {
-		t.Fatal(err)
-	}
-	_, blocked := s.settleStreamEvents(in, []byte(`{"events":[{"id":"one","text":"stale batch"}]}`), time.Now().UTC(), nil, func(Job) error { return nil })
-	d, err := s.ClaimDelivery()
-	if err != nil || !blocked || d != nil {
-		t.Fatalf("old revision admitted stale batch: blocked=%v delivery=%+v err=%v", blocked, d, err)
-	}
-}
-
-func TestRoutineEventSourceEditHasIndependentDeduplication(t *testing.T) {
-	s, o, _ := occurrenceFixture(t)
-	in := Schedule{ScheduleID: "stream-source-edit", Envelope: o.Job.Envelope, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 10 * * 5", Input: "fixture", JobKind: "event", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "read_events", MinIntervalSeconds: 60}, Delivery: "stream"}
-	in, err := s.CreateSchedule(in, in.Envelope, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	body := []byte(`{"events":[{"id":"one","text":"source event"}]}`)
-	if _, blocked := s.settleStreamEvents(in, body, time.Now().UTC(), nil, func(Job) error { return nil }); blocked {
-		t.Fatal("first source blocked")
-	}
-	first, err := s.ClaimDelivery()
-	if err != nil || first == nil {
-		t.Fatalf("first delivery: %+v %v", first, err)
-	}
-	if err := s.CompleteDelivery(first.ID); err != nil {
-		t.Fatal(err)
-	}
-	in, err = s.editRoutine(in.ScheduleID, in.Envelope, map[string]json.RawMessage{"probe": json.RawMessage(`{"kind":"mcp_tool","tool":"other_events"}`)}, false, time.Now().UTC())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, blocked := s.settleStreamEvents(in, body, time.Now().UTC(), nil, func(Job) error { return nil }); blocked {
-		t.Fatal("new source blocked")
-	}
-	next, err := s.ClaimDelivery()
-	if err != nil || next == nil || next.ID == first.ID {
-		t.Fatalf("different source lost same native event id: %+v %v", next, err)
-	}
-}
+// The in-flight stream fences moved to the ToolHub event plane and are
+// asserted in internal/toolhub/automation/streams_ported_test.go against the
+// real owner seams:
+//   - TestRoutineStreamPauseFencesInFlightBatch ->
+//     TestStreamPauseFencesPendingBatch (paused schedule never touches its
+//     durable pending batch)
+//   - TestRoutineStreamEditFencesInFlightBatch ->
+//     TestStreamEditFencesPendingBatch (a stale revision refuses resume and
+//     fails the tick instead of silently dropping the batch)
+//   - TestRoutineEventSourceEditHasIndependentDeduplication ->
+//     TestStreamSourceEditDedupesIndependently (the delivery intent id pins
+//     the probe binding, so a new source's colliding event id is fresh)
 
 func TestRoutineVersionedActionReturnsDurableCard(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
+	g, host, _ := automationGatewayFixture(t, c)
 	env := c.Users[0].Envelope(11)
 	for _, action := range []string{"pause", "snooze", "delete"} {
 		in := Schedule{ScheduleID: "receipt-" + action, Envelope: env, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 10 * * 5", Input: "fixture", JobKind: "reminder"}
-		if _, err := g.spool.CreateSchedule(in, env, ""); err != nil {
+		if _, err := host.CreateSchedule(context.Background(), env, in, ""); err != nil {
 			t.Fatal(err)
 		}
 		method, path := http.MethodPost, "/v1/routines/"+in.ScheduleID+"/"+action
@@ -251,49 +201,54 @@ func TestRoutinePreviewRetiredHasNoFutureSlots(t *testing.T) {
 }
 
 func TestRoutineHistoryAggregatesOwnedMultiMessageDelivery(t *testing.T) {
-	s, o, _ := occurrenceFixture(t)
-	in := reminderSchedule(t, s, o, "0 10 * * 5", 0)
-	o.ScheduleID = in.ScheduleID
-	o.Revision = in.Revision
-	o.JobKind = "script"
-	o.DueAt = in.NextDue
-	if err := s.PutOccurrence(o, o.Job.Envelope); err != nil {
+	c := testConfig(t)
+	c.ControlAuth = "control-token"
+	g, host, root := automationGatewayFixture(t, c)
+	env := c.Users[0].Envelope(11)
+	in := Schedule{ScheduleID: "hist-multi", Envelope: env, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 10 * * 5", Input: "fixture", JobKind: "script"}
+	in, err := host.CreateSchedule(context.Background(), env, in, "")
+	if err != nil {
 		t.Fatal(err)
 	}
-	id := occurrenceID(o)
+	o := RoutineOccurrence{ScheduleID: in.ScheduleID, Revision: in.Revision, JobKind: "script", DueAt: in.NextDue, Job: Job{Envelope: env, Channel: "telegram_bot", ChatID: 11}}
+	o.Job.ID = routines.OccurrenceID(o)
+	if err := atomicJSON(filepath.Join(root, "users", "alice", "occurrences", o.Job.ID+".json"), o); err != nil {
+		t.Fatal(err)
+	}
+	id := o.Job.ID
 	for _, suffix := range []string{"a", "b"} {
-		if err := s.EnqueueDelivery(Delivery{ID: "script-" + id + suffix, OccurrenceID: id, Channel: "telegram_bot", ChatID: 11, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, Text: "fixture"}); err != nil {
+		if err := g.spool.EnqueueDelivery(Delivery{ID: "script-" + id + suffix, OccurrenceID: id, Channel: "telegram_bot", ChatID: 11, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, Text: "fixture"}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := s.EnqueueDelivery(Delivery{ID: "foreign-evidence", OccurrenceID: id, Channel: "telegram_bot", ChatID: 22, ConversationID: "telegram-22", DeliveryTargetID: "telegram-22", Text: "foreign"}); err != nil {
+	if err := g.spool.EnqueueDelivery(Delivery{ID: "foreign-evidence", OccurrenceID: id, Channel: "telegram_bot", ChatID: 22, ConversationID: "telegram-22", DeliveryTargetID: "telegram-22", Text: "foreign"}); err != nil {
 		t.Fatal(err)
 	}
 	for step, want := range []string{"queued", "partial", "uncertain"} {
 		if step > 0 {
-			d, err := s.ClaimDelivery()
+			d, err := g.spool.ClaimDelivery()
 			if err != nil || d == nil {
 				t.Fatalf("claim: %+v %v", d, err)
 			}
 			if d.ID == "foreign-evidence" {
-				if err := s.CompleteDelivery(d.ID); err != nil {
+				if err := g.spool.CompleteDelivery(d.ID); err != nil {
 					t.Fatal(err)
 				}
-				d, err = s.ClaimDelivery()
+				d, err = g.spool.ClaimDelivery()
 				if err != nil || d == nil {
 					t.Fatal(err)
 				}
 			}
 			if step == 1 {
-				err = s.CompleteDelivery(d.ID)
+				err = g.spool.CompleteDelivery(d.ID)
 			} else {
-				err = s.UncertainDelivery(d.ID)
+				err = g.spool.UncertainDelivery(d.ID)
 			}
 			if err != nil {
 				t.Fatal(err)
 			}
 		}
-		runs, err := s.RoutineHistory(in.ScheduleID, in.Envelope)
+		runs, err := g.routineHistory(context.Background(), in.ScheduleID, in.Envelope)
 		if err != nil || len(runs) != 1 {
 			t.Fatalf("runs: %+v %v", runs, err)
 		}
@@ -307,29 +262,34 @@ func TestRoutineHistoryAggregatesOwnedMultiMessageDelivery(t *testing.T) {
 }
 
 func TestRoutineHistoryConfirmsAllMessagesDelivered(t *testing.T) {
-	s, o, _ := occurrenceFixture(t)
-	in := reminderSchedule(t, s, o, "0 10 * * 5", 0)
-	o.ScheduleID = in.ScheduleID
-	o.Revision = in.Revision
-	o.JobKind = "script"
-	o.DueAt = in.NextDue
-	if err := s.PutOccurrence(o, o.Job.Envelope); err != nil {
+	c := testConfig(t)
+	c.ControlAuth = "control-token"
+	g, host, root := automationGatewayFixture(t, c)
+	env := c.Users[0].Envelope(11)
+	in := Schedule{ScheduleID: "hist-done", Envelope: env, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 10 * * 5", Input: "fixture", JobKind: "script"}
+	in, err := host.CreateSchedule(context.Background(), env, in, "")
+	if err != nil {
 		t.Fatal(err)
 	}
-	id := occurrenceID(o)
+	o := RoutineOccurrence{ScheduleID: in.ScheduleID, Revision: in.Revision, JobKind: "script", DueAt: in.NextDue, Job: Job{Envelope: env, Channel: "telegram_bot", ChatID: 11}}
+	o.Job.ID = routines.OccurrenceID(o)
+	if err := atomicJSON(filepath.Join(root, "users", "alice", "occurrences", o.Job.ID+".json"), o); err != nil {
+		t.Fatal(err)
+	}
+	id := o.Job.ID
 	for _, suffix := range []string{"a", "b"} {
-		if err := s.EnqueueDelivery(Delivery{ID: "script-" + id + suffix, OccurrenceID: id, Channel: "telegram_bot", ChatID: 11, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, Text: "fixture"}); err != nil {
+		if err := g.spool.EnqueueDelivery(Delivery{ID: "script-" + id + suffix, OccurrenceID: id, Channel: "telegram_bot", ChatID: 11, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, Text: "fixture"}); err != nil {
 			t.Fatal(err)
 		}
-		d, err := s.ClaimDelivery()
+		d, err := g.spool.ClaimDelivery()
 		if err != nil || d == nil {
 			t.Fatal(err)
 		}
-		if err := s.CompleteDelivery(d.ID); err != nil {
+		if err := g.spool.CompleteDelivery(d.ID); err != nil {
 			t.Fatal(err)
 		}
 	}
-	runs, err := s.RoutineHistory(in.ScheduleID, in.Envelope)
+	runs, err := g.routineHistory(context.Background(), in.ScheduleID, in.Envelope)
 	if err != nil || len(runs) != 1 {
 		t.Fatalf("runs: %+v %v", runs, err)
 	}
@@ -342,44 +302,47 @@ func TestRoutineHistoryConfirmsAllMessagesDelivered(t *testing.T) {
 }
 
 func TestRoutineHistoryReadsOnlyMatchingAgentExecution(t *testing.T) {
-	s, o, _ := occurrenceFixture(t)
-	in := reminderSchedule(t, s, o, "0 10 * * 5", 0)
-	o.ScheduleID = in.ScheduleID
-	o.Revision = in.Revision
-	o.JobKind = "agent"
-	o.DueAt = in.NextDue
-	if err := s.PutOccurrence(o, o.Job.Envelope); err != nil {
-		t.Fatal(err)
-	}
-	raw, err := os.ReadFile(filepath.Join(s.root, "occurrences", occurrenceID(o)+".json"))
+	c := testConfig(t)
+	c.ControlAuth = "control-token"
+	g, host, root := automationGatewayFixture(t, c)
+	env := c.Users[0].Envelope(11)
+	in := Schedule{ScheduleID: "hist-exec", Envelope: env, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 10 * * 5", Input: "fixture", JobKind: "agent"}
+	in, err := host.CreateSchedule(context.Background(), env, in, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := json.Unmarshal(raw, &o); err != nil {
+	o := RoutineOccurrence{ScheduleID: in.ScheduleID, Revision: in.Revision, JobKind: "agent", DueAt: in.NextDue, Job: Job{Envelope: env, Channel: "telegram_bot", ChatID: 11}}
+	o.Job.ID = routines.OccurrenceID(o)
+	if err := atomicJSON(filepath.Join(root, "users", "alice", "occurrences", o.Job.ID+".json"), o); err != nil {
 		t.Fatal(err)
 	}
 	job := o.Job
-	job.ConversationID = routineConversation(in.ScheduleID)
+	job.ConversationID = routines.RoutineConversation(in.ScheduleID)
 	mapping := mappingFromJob(job, time.Now().UTC())
 	mapping.Status = "completed"
-	if err := s.EnqueueDelivery(Delivery{ID: "job-" + job.ID + "-response", JobID: job.ID, Channel: job.Channel, ChatID: job.ChatID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, Text: "fixture"}); err != nil {
+	if err := g.spool.EnqueueDelivery(Delivery{ID: "job-" + job.ID + "-response", JobID: job.ID, OccurrenceID: job.ID, Channel: job.Channel, ChatID: job.ChatID, ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, Text: "fixture"}); err != nil {
 		t.Fatal(err)
 	}
-	d, err := s.ClaimDelivery()
+	d, err := g.spool.ClaimDelivery()
 	if err != nil || d == nil {
 		t.Fatal(err)
 	}
-	if err := s.CompleteDelivery(d.ID); err != nil {
+	if err := g.spool.CompleteDelivery(d.ID); err != nil {
 		t.Fatal(err)
 	}
 	for step, want := range []string{"completed", "unavailable"} {
 		if step == 1 {
 			mapping.PrincipalID = "bob"
 		}
-		if err := atomicJSON(s.mappingPath(job.ID), mapping); err != nil {
+		intent := map[string]any{"key": job.ID, "job": job, "mapping": mapping, "acked": true}
+		intentPath := filepath.Join(root, "dispatch", principalHash("alice"), principalHash(job.ID)+".json")
+		if err := os.MkdirAll(filepath.Dir(intentPath), 0700); err != nil {
 			t.Fatal(err)
 		}
-		runs, err := s.RoutineHistory(in.ScheduleID, in.Envelope)
+		if err := atomicJSON(intentPath, intent); err != nil {
+			t.Fatal(err)
+		}
+		runs, err := g.routineHistory(context.Background(), in.ScheduleID, in.Envelope)
 		if err != nil || len(runs) != 1 {
 			t.Fatalf("runs: %+v %v", runs, err)
 		}
@@ -393,16 +356,24 @@ func TestRoutineHistoryReadsOnlyMatchingAgentExecution(t *testing.T) {
 }
 
 func TestRoutineCardExposesEventSubscriptionHealth(t *testing.T) {
-	s, o, _ := occurrenceFixture(t)
-	in := Schedule{ScheduleID: "event-health", Envelope: o.Job.Envelope, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 10 * * 5", Input: "fixture", JobKind: "event", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "read_events"}}
-	in, err := s.CreateSchedule(in, in.Envelope, "")
+	c := testConfig(t)
+	c.ControlAuth = "control-token"
+	g, host, root := automationGatewayFixture(t, c)
+	env := c.Users[0].Envelope(11)
+	in := Schedule{ScheduleID: "event-health", Envelope: env, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 10 * * 5", Input: "fixture", JobKind: "event", Delivery: "stream", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "read_events", MinIntervalSeconds: 60}}
+	in, err := host.CreateSchedule(context.Background(), env, in, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := atomicJSON(s.eventPath(in.ScheduleID), EventState{ScheduleID: in.ScheduleID, Degraded: true, LastError: "connector unauthorized"}); err != nil {
+	st := map[string]any{"schedule_id": in.ScheduleID, "probe_revision": in.ProbeRevision, "source_errors": map[string]string{"read_events": "connector unauthorized"}}
+	stPath := filepath.Join(root, "events", principalHash("alice"), principalHash(in.ScheduleID)+".json")
+	if err := os.MkdirAll(filepath.Dir(stPath), 0700); err != nil {
 		t.Fatal(err)
 	}
-	card, err := s.GetRoutine(in.ScheduleID, in.Envelope)
+	if err := atomicJSON(stPath, st); err != nil {
+		t.Fatal(err)
+	}
+	card, err := g.getRoutineCard(context.Background(), in.ScheduleID, in.Envelope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -453,22 +424,32 @@ func TestRoutineLifecycleKeepsPrincipalAndContextIsolation(t *testing.T) {
 
 func TestRoutineCommandDistinguishesCompletedSchedule(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
+	g, host, _ := automationGatewayFixture(t, c)
+	g.api = &fakeAPI{}
+	env := c.Users[0].Envelope(11)
+	in := Schedule{ScheduleID: "once-cmd", Envelope: env, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "once:2100-01-01T10:00:00Z", Input: "fixture", JobKind: "reminder"}
+	in, err := host.CreateSchedule(context.Background(), env, in, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	g.api = &fakeAPI{}
-	in := reminderSchedule(t, g.spool, RoutineOccurrence{Job: Job{Envelope: c.Users[0].Envelope(11)}}, "once:2100-01-01T10:00:00+03:00", 0)
-	g.now = func() time.Time { return in.NextDue }
-	if err := g.spool.TickSchedules(in.NextDue, "", nil); err != nil {
+	if err := host.Tick(context.Background(), in.NextDue); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.handleUpdate(context.Background(), taskUpdate(1, 1, "/routines", 11, 0)); err != nil {
 		t.Fatal(err)
 	}
-	reply, err := g.spool.ClaimDelivery()
-	if err != nil || reply == nil || !strings.Contains(reply.Text, "завершено") || strings.Contains(reply.Text, "0001-") || strings.Contains(reply.Text, ", пауза") {
-		t.Fatalf("completed routine misrepresented: %+v %v", reply, err)
+	var reply *Delivery
+	for i := 0; i < 4 && reply == nil; i++ {
+		d, err := g.spool.ClaimDelivery()
+		if err != nil || d == nil {
+			break
+		}
+		if !strings.HasPrefix(d.ID, "reminder-") {
+			reply = d
+		}
+	}
+	if reply == nil || !strings.Contains(reply.Text, "завершено") || strings.Contains(reply.Text, "0001-") || strings.Contains(reply.Text, ", пауза") {
+		t.Fatalf("completed routine misrepresented: %+v", reply)
 	}
 }
 
@@ -503,33 +484,36 @@ func TestRoutineReadsShowEffectiveLegacySnoozeDeadline(t *testing.T) {
 	}
 }
 
+// The run row is ToolHub-owned evidence: communication-side receipt
+// compaction can never take the occurrence detail with it.
 func TestRoutineHistorySurvivesDetailCompaction(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
-	g.config.ControlAuth = "control-token"
-	g.config.Users = []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}, RuntimeID: "alice", PolicyVersion: "policy-1"}}
-	in := reminderSchedule(t, s, o, "once:2100-01-01T10:00:00+03:00", 0)
-	g.tickProactive(in.NextDue)
-	d, err := s.ClaimDelivery()
+	c := testConfig(t)
+	c.ControlAuth = "control-token"
+	g, host, _ := automationGatewayFixture(t, c)
+	env := c.Users[0].Envelope(11)
+	in := Schedule{ScheduleID: "hist-compact", Envelope: env, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "once:2100-01-01T10:00:00Z", Input: "fixture", JobKind: "reminder"}
+	in, err := host.CreateSchedule(context.Background(), env, in, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := host.Tick(context.Background(), in.NextDue); err != nil {
+		t.Fatal(err)
+	}
+	d, err := g.spool.ClaimDelivery()
 	if err != nil || d == nil {
 		t.Fatalf("delivery: %+v %v", d, err)
 	}
-	if err := s.CompleteDelivery(d.ID); err != nil {
+	if err := g.spool.CompleteDelivery(d.ID); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{filepath.Join(s.root, "occurrences", d.OccurrenceID+".json"), filepath.Join(s.root, "outbox", "done", d.ID+".json")} {
-		if err := os.Chtimes(path, in.NextDue, in.NextDue); err != nil {
-			t.Fatal(err)
-		}
+	done := filepath.Join(g.spool.root, "outbox", "done", d.ID+".json")
+	if err := os.Chtimes(done, in.NextDue, in.NextDue); err != nil {
+		t.Fatal(err)
 	}
 	for _, age := range []time.Duration{0, time.Hour, 49 * time.Hour} {
 		if age > 0 {
-			if err := s.Compact(in.NextDue.Add(age), 14*24*time.Hour, CompactLimits{}); err != nil {
+			if err := g.spool.Compact(in.NextDue.Add(age), time.Hour, CompactLimits{}); err != nil {
 				t.Fatal(err)
-			}
-		}
-		if age == 49*time.Hour {
-			if _, err := os.Stat(filepath.Join(s.root, "occurrences", "archive", d.OccurrenceID+".json")); !os.IsNotExist(err) {
-				t.Fatal("detail compaction fixture did not expire")
 			}
 		}
 		r := httptest.NewRequest(http.MethodGet, "/v1/routines/"+in.ScheduleID+"/history?limit=20", nil)
@@ -558,24 +542,32 @@ func TestRoutineHistorySurvivesDetailCompaction(t *testing.T) {
 			t.Fatalf("history lost: %s", w.Body.String())
 		}
 		run := got.Items[0]
-		if run.ID != d.OccurrenceID || run.Revision != in.Revision || !run.Due.Equal(in.NextDue) || run.Kind != "reminder" || run.State != "dispatched" || run.Delivery != "delivered" {
-			t.Fatalf("history lost receipt detail: %+v", run)
+		if run.ID != d.OccurrenceID || run.Revision != in.Revision || !run.Due.Equal(in.NextDue) || run.Kind != "reminder" || run.State != "dispatched" {
+			t.Fatalf("history lost occurrence detail: %+v", run)
+		}
+		if age < 49*time.Hour && run.Delivery != "delivered" {
+			t.Fatalf("live receipt not joined: %+v", run)
+		}
+		if age == 49*time.Hour && run.Delivery == "delivered" {
+			t.Fatalf("compacted receipt still reports delivered: %+v", run)
 		}
 	}
 }
 
 func TestRoutineHistoryPagesNewestFirst(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
-	g.config.ControlAuth = "control-token"
-	g.config.Users = []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}, RuntimeID: "alice", PolicyVersion: "policy-1"}}
-	in := reminderSchedule(t, s, o, "0 10 * * 5", 0)
+	c := testConfig(t)
+	c.ControlAuth = "control-token"
+	g, host, root := automationGatewayFixture(t, c)
+	env := c.Users[0].Envelope(11)
+	in := Schedule{ScheduleID: "hist-pages", Envelope: env, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 10 * * 5", Input: "fixture", JobKind: "reminder"}
+	in, err := host.CreateSchedule(context.Background(), env, in, "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < 5; i++ {
-		copy := o
-		copy.ScheduleID = in.ScheduleID
-		copy.Revision = in.Revision
-		copy.DueAt = in.NextDue.Add(time.Duration(i) * time.Minute)
-		copy.JobKind = "reminder"
-		if err := s.PutOccurrence(copy, copy.Job.Envelope); err != nil {
+		copy := RoutineOccurrence{ScheduleID: in.ScheduleID, Revision: in.Revision, DueAt: in.NextDue.Add(time.Duration(i) * time.Minute), JobKind: "reminder", State: "dispatched", Job: Job{Envelope: env, Channel: "telegram_bot", ChatID: 11}}
+		copy.Job.ID = routines.OccurrenceID(copy)
+		if err := atomicJSON(filepath.Join(root, "users", "alice", "occurrences", copy.Job.ID+".json"), copy); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -606,12 +598,14 @@ func TestRoutineHistoryPagesNewestFirst(t *testing.T) {
 }
 
 func TestRoutineHistoryRejectsInvalidPageSize(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
-	g.config.ControlAuth = "control-token"
-	g.config.Users = []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}, RuntimeID: "alice", PolicyVersion: "policy-1"}}
-	in := reminderSchedule(t, s, o, "0 10 * * 5", 0)
+	c := testConfig(t)
+	c.ControlAuth = "control-token"
+	g, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, limit := range []string{"0", "-1", "101", "bad"} {
-		r := httptest.NewRequest(http.MethodGet, "/v1/routines/"+in.ScheduleID+"/history?limit="+limit, nil)
+		r := httptest.NewRequest(http.MethodGet, "/v1/routines/fixture/history?limit="+limit, nil)
 		r.Header.Set("Authorization", "Bearer control-token")
 		r.Header.Set("X-Hub-Principal", "alice")
 		w := httptest.NewRecorder()
@@ -726,13 +720,10 @@ func TestRoutineLifecycleActionsRejectStaleRevision(t *testing.T) {
 		t.Run(action, func(t *testing.T) {
 			c := testConfig(t)
 			c.ControlAuth = "control-token"
-			g, err := New(c)
-			if err != nil {
-				t.Fatal(err)
-			}
+			g, host, _ := automationGatewayFixture(t, c)
 			env := c.Users[0].Envelope(11)
 			in := Schedule{ScheduleID: "revision-action", Envelope: env, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 10 * * 5", Input: "fixture", JobKind: "reminder"}
-			in, err = g.spool.CreateSchedule(in, env, "")
+			in, err := host.CreateSchedule(context.Background(), env, in, "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -748,7 +739,7 @@ func TestRoutineLifecycleActionsRejectStaleRevision(t *testing.T) {
 			if w.Code != 409 {
 				t.Errorf("stale %s: %d %s", action, w.Code, w.Body.String())
 			}
-			items, err := g.spool.ListSchedules(env)
+			items, err := host.ListSchedules(context.Background(), env)
 			if err != nil || len(items) != 1 || items[0].Revision != in.Revision || items[0].Paused || !items[0].SnoozedUntil.IsZero() {
 				t.Fatalf("stale action mutated: %+v %v", items, err)
 			}
@@ -759,17 +750,14 @@ func TestRoutineLifecycleActionsRejectStaleRevision(t *testing.T) {
 func TestRoutineGetRetiredOwnerCard(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
+	g, host, _ := automationGatewayFixture(t, c)
 	env := c.Users[0].Envelope(11)
 	in := Schedule{ScheduleID: "retired-read", Envelope: env, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 10 * * 5", Input: "fixture", JobKind: "reminder"}
-	in, err = g.spool.CreateSchedule(in, env, "")
+	in, err := host.CreateSchedule(context.Background(), env, in, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := g.spool.DeleteSchedule(in.ScheduleID, env); err != nil {
+	if err := host.DeleteSchedule(context.Background(), env, in.ScheduleID); err != nil {
 		t.Fatal(err)
 	}
 	r := httptest.NewRequest(http.MethodGet, "/v1/routines/"+in.ScheduleID, nil)
@@ -795,14 +783,11 @@ func TestRoutineGetRetiredOwnerCard(t *testing.T) {
 func TestRoutineSummaryPaginationDoesNotLoseLargeInputs(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
+	g, host, _ := automationGatewayFixture(t, c)
 	env := c.Users[0].Envelope(11)
 	for i := 0; i < 71; i++ {
 		in := Schedule{ScheduleID: fmt.Sprintf("page-%03d", i), Envelope: env, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 10 * * 5", Input: strings.Repeat("x", 2048), JobKind: "reminder"}
-		if _, err := g.spool.CreateSchedule(in, env, ""); err != nil {
+		if _, err := host.CreateSchedule(context.Background(), env, in, ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -867,18 +852,15 @@ func TestRoutinePageRejectsInvalidLimit(t *testing.T) {
 func TestRoutineSummaryFiltersLifecycleState(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
+	g, host, _ := automationGatewayFixture(t, c)
 	env := c.Users[0].Envelope(11)
 	for i, kind := range []string{"reminder", "agent", "reminder"} {
 		in := Schedule{ScheduleID: fmt.Sprintf("filter-%d", i), Envelope: env, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "Europe/Moscow", Expression: "0 10 * * 5", Input: "fixture", JobKind: kind}
-		if _, err := g.spool.CreateSchedule(in, env, ""); err != nil {
+		if _, err := host.CreateSchedule(context.Background(), env, in, ""); err != nil {
 			t.Fatal(err)
 		}
 		if i < 2 {
-			if err := g.spool.PauseSchedule(in.ScheduleID, env); err != nil {
+			if err := host.PauseSchedule(context.Background(), env, in.ScheduleID); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -902,7 +884,7 @@ func TestRoutineSummaryFiltersLifecycleState(t *testing.T) {
 	if len(got.Items) != 1 || got.Items[0].ID != "filter-0" || got.Items[0].State != "paused" || got.Items[0].Kind != "reminder" || got.Items[0].Timezone != "Europe/Moscow" {
 		t.Fatalf("wrong filtered summary: %s", w.Body.String())
 	}
-	card, err := g.spool.GetRoutine("filter-0", env)
+	card, err := g.getRoutineCard(context.Background(), "filter-0", env)
 	if err != nil || card.State != "paused" {
 		t.Fatalf("card disagrees: %+v %v", card, err)
 	}
@@ -913,24 +895,18 @@ func TestRoutineSummaryFiltersLifecycleState(t *testing.T) {
 func TestRoutineSummarySurfacesWatchError(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
+	g, host, root := automationGatewayFixture(t, c)
 	env := c.Users[0].Envelope(11)
 	in := Schedule{ScheduleID: "w-dead", Envelope: env, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "every:5m", Input: "watch dzen", JobKind: "watcher", Probe: &WatchProbe{URL: "https://example.com"}}
-	if _, err := g.spool.CreateSchedule(in, env, ""); err != nil {
+	if _, err := host.CreateSchedule(context.Background(), env, in, ""); err != nil {
 		t.Fatal(err)
 	}
 	st := WatchState{ScheduleID: "w-dead", LastError: "probe status 302"}
-	body, err := json.Marshal(st)
-	if err != nil {
+	stPath := filepath.Join(root, "users", "alice", "watchers", "w-dead.json")
+	if err := os.MkdirAll(filepath.Dir(stPath), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(g.spool.root, "watchers"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(g.spool.root, "watchers", "w-dead.json"), body, 0600); err != nil {
+	if err := atomicJSON(stPath, st); err != nil {
 		t.Fatal(err)
 	}
 	r := httptest.NewRequest(http.MethodGet, "/v1/routines?limit=20&kind=watcher", nil)
@@ -955,22 +931,19 @@ func TestRoutineSummarySurfacesWatchError(t *testing.T) {
 func TestRoutinePreviewUsesActualSnoozedDueWithoutWriting(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
+	g, host, root := automationGatewayFixture(t, c)
 	env := c.Users[0].Envelope(11)
-	now := time.Date(2100, 1, 1, 10, 0, 0, 0, time.UTC)
-	g.now = func() time.Time { return now }
 	in := Schedule{ScheduleID: "preview", Envelope: env, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "every:15m", Input: "fixture", JobKind: "reminder"}
-	in, err = g.spool.createScheduleAt(in, env, "", nil, now)
+	in, err := host.CreateSchedule(context.Background(), env, in, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := g.spool.SnoozeSchedule(in.ScheduleID, env, now.Add(35*time.Minute)); err != nil {
+	anchor := in.IntervalAnchor
+	until := anchor.Add(35 * time.Minute)
+	if err := host.SnoozeSchedule(context.Background(), env, in.ScheduleID, until); err != nil {
 		t.Fatal(err)
 	}
-	before, err := os.ReadFile(g.spool.schedulePath(in.ScheduleID))
+	before, err := os.ReadFile(filepath.Join(root, "users", "alice", "schedules", in.ScheduleID+".json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -989,11 +962,16 @@ func TestRoutinePreviewUsesActualSnoozedDueWithoutWriting(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	want := []time.Time{now.Add(35 * time.Minute), now.Add(45 * time.Minute), now.Add(time.Hour)}
-	if !reflect.DeepEqual(got.Times, want) || got.Timezone != "UTC" {
+	want := []time.Time{until, anchor.Add(45 * time.Minute), anchor.Add(time.Hour)}
+	if len(got.Times) != len(want) || got.Timezone != "UTC" {
 		t.Fatalf("preview=%+v want %v", got, want)
 	}
-	after, err := os.ReadFile(g.spool.schedulePath(in.ScheduleID))
+	for i := range want {
+		if !got.Times[i].Equal(want[i]) {
+			t.Fatalf("preview=%+v want %v", got, want)
+		}
+	}
+	after, err := os.ReadFile(filepath.Join(root, "users", "alice", "schedules", in.ScheduleID+".json"))
 	if err != nil || string(after) != string(before) {
 		t.Fatal("preview changed durable state")
 	}
@@ -1002,19 +980,15 @@ func TestRoutinePreviewUsesActualSnoozedDueWithoutWriting(t *testing.T) {
 func TestRoutineSnoozeRejectsDeadlineBeforeNextRun(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
+	g, host, _ := automationGatewayFixture(t, c)
 	env := c.Users[0].Envelope(11)
-	now := time.Date(2100, 1, 1, 10, 0, 0, 0, time.UTC)
-	g.now = func() time.Time { return now }
 	in := Schedule{ScheduleID: "snooze-early", Envelope: env, UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "every:15m", Input: "fixture", JobKind: "reminder"}
-	in, err = g.spool.createScheduleAt(in, env, "", nil, now)
+	in, err := host.CreateSchedule(context.Background(), env, in, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodPost, "/v1/routines/snooze-early/snooze", strings.NewReader(`{"until":"2100-01-01T10:10:00Z","expected_revision":1}`))
+	body := fmt.Sprintf(`{"until":%q,"expected_revision":1}`, in.NextDue.Add(-5*time.Minute).Format(time.RFC3339))
+	request := httptest.NewRequest(http.MethodPost, "/v1/routines/snooze-early/snooze", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer control-token")
 	request.Header.Set("X-Hub-Principal", "alice")
 	response := httptest.NewRecorder()
@@ -1022,7 +996,7 @@ func TestRoutineSnoozeRejectsDeadlineBeforeNextRun(t *testing.T) {
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "later than the next run") {
 		t.Fatalf("snooze before next run: %d %s", response.Code, response.Body.String())
 	}
-	card, err := g.spool.GetRoutine(in.ScheduleID, env)
+	card, err := g.getRoutineCard(context.Background(), in.ScheduleID, env)
 	if err != nil || card.Schedule.Revision != in.Revision || !card.Schedule.NextDue.Equal(in.NextDue) || !card.Schedule.SnoozedUntil.IsZero() {
 		t.Fatalf("rejected snooze changed schedule: %+v %v", card, err)
 	}
@@ -1072,10 +1046,7 @@ func TestRoutineVersionedEditsPreserveLifecycle(t *testing.T) {
 		t.Run(scenario, func(t *testing.T) {
 			c := testConfig(t)
 			c.ControlAuth = "control-token"
-			g, err := New(c)
-			if err != nil {
-				t.Fatal(err)
-			}
+			g, host, _ := automationGatewayFixture(t, c)
 			call := func(path, body string) *httptest.ResponseRecorder {
 				r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
 				r.Header.Set("Authorization", "Bearer control-token")
@@ -1102,12 +1073,12 @@ func TestRoutineVersionedEditsPreserveLifecycle(t *testing.T) {
 				patch = `"chat_id":999`
 			case "snooze-edit", "paused-text":
 				until := time.Now().UTC().Add(30 * 24 * time.Hour)
-				if err := g.spool.SnoozeSchedule(original.ScheduleID, original.Envelope, until); err != nil {
+				if err := host.SnoozeSchedule(context.Background(), original.Envelope, original.ScheduleID, until); err != nil {
 					t.Fatal(err)
 				}
 				rev++
 				if scenario == "paused-text" {
-					if err := g.spool.PauseSchedule(original.ScheduleID, original.Envelope); err != nil {
+					if err := host.PauseSchedule(context.Background(), original.Envelope, original.ScheduleID); err != nil {
 						t.Fatal(err)
 					}
 					rev++
@@ -1121,7 +1092,7 @@ func TestRoutineVersionedEditsPreserveLifecycle(t *testing.T) {
 			case "timezone":
 				patch = `"timezone":"Europe/Moscow"`
 			case "resume":
-				if err := g.spool.PauseSchedule(original.ScheduleID, original.Envelope); err != nil {
+				if err := host.PauseSchedule(context.Background(), original.Envelope, original.ScheduleID); err != nil {
 					t.Fatal(err)
 				}
 				rev++
@@ -1143,7 +1114,7 @@ func TestRoutineVersionedEditsPreserveLifecycle(t *testing.T) {
 			if w.Code != 200 {
 				t.Fatalf("edit: %d %s", w.Code, w.Body.String())
 			}
-			items, err := g.spool.ListSchedules(original.Envelope)
+			items, err := host.ListSchedules(context.Background(), original.Envelope)
 			if err != nil || len(items) != 1 {
 				t.Fatalf("read: %+v %v", items, err)
 			}
@@ -1198,10 +1169,7 @@ func TestRoutineIntervalPersistsAnchorAndCompletesAtEnd(t *testing.T) {
 			if !got.IntervalAnchor.Equal(now) {
 				t.Errorf("anchor not persisted: %s", got.IntervalAnchor)
 			}
-			restart, err := NewSpool(s.root)
-			if err != nil {
-				t.Fatal(err)
-			}
+			restart := s.reopen()
 			if err := restart.TickSchedules(now.Add(15*time.Minute), "", nil); err != nil {
 				t.Fatalf("last slot must settle: %v", err)
 			}
@@ -1215,12 +1183,12 @@ func TestRoutineIntervalPersistsAnchorAndCompletesAtEnd(t *testing.T) {
 				}
 				return
 			}
-			next, err := nextSchedule(items[0], time.UTC, now.Add(22*time.Minute))
+			next, err := routines.NextSchedule(items[0], time.UTC, now.Add(22*time.Minute))
 			if err != nil || !next.Equal(now.Add(30*time.Minute)) {
 				t.Fatalf("restart cadence drift: %s %v", next, err)
 			}
-			_, err = nextSchedule(Schedule{Expression: "every:15m", Timing: &RoutineTiming{EndAt: now}}, time.UTC, now)
-			if !errors.Is(err, errRoutineExhausted) {
+			_, err = routines.NextSchedule(Schedule{Expression: "every:15m", Timing: &RoutineTiming{EndAt: now}}, time.UTC, now)
+			if !errors.Is(err, routines.ErrExhausted) {
 				t.Fatal("exhaustion must be explicit")
 			}
 		})
@@ -1257,7 +1225,7 @@ func TestRoutineTimingRejectsUnsafeConfiguration(t *testing.T) {
 					t.Errorf("unsafe timing panicked: %v", r)
 				}
 			}()
-			_, err := nextSchedule(Schedule{Expression: tc.expression, Timing: tc.timing, Delivery: tc.delivery}, time.UTC, now)
+			_, err := routines.NextSchedule(Schedule{Expression: tc.expression, Timing: tc.timing, Delivery: tc.delivery}, time.UTC, now)
 			if err == nil {
 				t.Fatal("unsafe timing accepted")
 			}
@@ -1296,7 +1264,7 @@ func TestRoutineIntervalCalendarSlots(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got, err := nextSchedule(in, loc, from)
+			got, err := routines.NextSchedule(in, loc, from)
 			if tc.want == "" {
 				if err == nil {
 					t.Fatalf("invalid/exhausted calendar returned %s", got)
@@ -1311,19 +1279,15 @@ func TestRoutineIntervalCalendarSlots(t *testing.T) {
 }
 
 func TestRoutineIntervalWindowCadence(t *testing.T) {
-	c := testConfig(t)
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s, o, _ := occurrenceFixture(t)
 	now := time.Date(2100, 1, 1, 10, 0, 0, 0, time.UTC)
 	var in Schedule
 	if err := json.Unmarshal([]byte(`{"schedule_id":"window-test","timezone":"Europe/Moscow","expression":"every:15m","input":"fixture","job_kind":"reminder","channel":"telegram_bot","chat_id":11,"timing":{"windows":[{"from":"14:00","to":"16:00"}],"at":["17:00"]}}`), &in); err != nil {
 		t.Fatal(err)
 	}
-	in.Envelope = c.Users[0].Envelope(11)
+	in.Envelope = o.Job.Envelope
 	in.UserID, in.ActorID, in.ScopeID = "alice", "alice", "user:alice"
-	got, err := g.spool.createScheduleAt(in, in.Envelope, "", nil, now)
+	got, err := s.createScheduleAt(in, in.Envelope, "", nil, now)
 	if err != nil {
 		t.Fatalf("interval window creation: %v", err)
 	}
@@ -1336,14 +1300,14 @@ func TestRoutineIntervalWindowCadence(t *testing.T) {
 		if i == 8 {
 			due = want.Add(3 * time.Hour)
 		}
-		items, err := g.spool.ListSchedules(in.Envelope)
+		items, err := s.ListSchedules(in.Envelope)
 		if err != nil || len(items) != 1 || !items[0].NextDue.Equal(due) {
 			t.Fatalf("slot %d: %+v %v; want %s", i, items, err, due)
 		}
-		if err := g.spool.TickSchedules(due, "", nil); err != nil {
+		if err := s.TickSchedules(due, "", nil); err != nil {
 			t.Fatal(err)
 		}
-		if err := g.spool.DispatchDueOccurrences(due, func(Job) error { return nil }); err != nil {
+		if err := s.DispatchDueOccurrences(due, func(Job) error { return nil }); err != nil {
 			t.Fatal(err)
 		}
 	}

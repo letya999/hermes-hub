@@ -56,8 +56,8 @@ func TestAssignmentGatewayWritesOnlyToolHubOwner(t *testing.T) {
 	if _, err := host.LoadAssignment(context.Background(), user.Envelope(11), created.AssignmentID); err != nil {
 		t.Fatalf("ToolHub owner missing assignment: %v", err)
 	}
-	if local, err := g.spool.rt.ListAssignments(user.Envelope(11)); err != nil || len(local) != 0 {
-		t.Fatalf("gateway spool retained an assignment writer: %+v, %v", local, err)
+	if entries, _ := os.ReadDir(filepath.Join(cfg.SpoolDir, "assignments")); len(entries) != 0 {
+		t.Fatalf("gateway spool retained an assignment writer: %d records", len(entries))
 	}
 	w = destinationRequest(g, http.MethodGet, "/v1/assignments", "")
 	var listed []commodel.Assignment
@@ -99,8 +99,8 @@ func TestRoutineGatewayWritesOnlyToolHubOwner(t *testing.T) {
 	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &created) != nil || created.ScheduleID != "rt-bridge" {
 		t.Fatalf("gateway create: %d %s", w.Code, w.Body.String())
 	}
-	if local, err := g.spool.ListSchedules(user.Envelope(11)); err != nil || len(local) != 0 {
-		t.Fatalf("gateway spool retained a schedule writer: %+v, %v", local, err)
+	if entries, _ := os.ReadDir(filepath.Join(cfg.SpoolDir, "schedules")); len(entries) != 0 {
+		t.Fatalf("gateway spool retained a schedule writer: %d records", len(entries))
 	}
 	w = destinationRequest(g, http.MethodGet, "/v1/routines", "")
 	var listed []commodel.Schedule
@@ -163,8 +163,8 @@ func TestRoutineGatewayWritesOnlyToolHubOwner(t *testing.T) {
 	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &sampled) != nil || sampled.ScheduleID != "watch-bridge" || len(sampled.Sources) != 1 || len(sampled.Sources[0].Events) != 1 {
 		t.Fatalf("watch sample bridge: %d %s", w.Code, w.Body.String())
 	}
-	if local, err := g.spool.ListSchedules(user.Envelope(11)); err != nil || len(local) != 0 {
-		t.Fatalf("sample used old automation state: %+v, %v", local, err)
+	if entries, _ := os.ReadDir(filepath.Join(cfg.SpoolDir, "schedules")); len(entries) != 0 {
+		t.Fatalf("sample used old automation state: %d records", len(entries))
 	}
 }
 

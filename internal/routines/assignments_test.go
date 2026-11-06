@@ -526,7 +526,7 @@ func TestAssignmentAppliedScheduleTicks(t *testing.T) {
 		t.Fatalf("applied schedule missing: %v %v", err, items)
 	}
 	authorized := false
-	authorize := func(j commodel.Job) error {
+	authorize := func(_ string, j commodel.Job) error {
 		if j.OrganizationID != "org-1" || j.ActorID != "alice" || j.ScopeID != "user:alice" {
 			return errors.New("occurrence job missing owner stamps")
 		}
