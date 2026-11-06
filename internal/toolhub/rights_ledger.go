@@ -61,6 +61,53 @@ func (s *Store) profilesForPrincipal(principal string) []api.CapabilityProfile {
 	return out
 }
 
+// SetBoundProfileActive changes only the named managed generation. Recovery
+// never revives an independently revoked profile or touches a sibling env.
+func (s *Store) SetBoundProfileActive(principal, environment, profileID string, active bool, now time.Time) error {
+	if err := s.Reload(); err != nil {
+		return err
+	}
+	s.mu.RLock()
+	profile, ok := s.capabilityProfiles[profileID]
+	s.mu.RUnlock()
+	if !ok || profile.PrincipalID != principal || profile.Environment != environment ||
+		(profile.Status != api.ActiveStatus && profile.Status != api.DisabledStatus) {
+		return fmt.Errorf("%w: bound profile unavailable", api.ErrUnauthorized)
+	}
+	want := api.DisabledStatus
+	if active {
+		want = api.ActiveStatus
+	}
+	if profile.Status == want {
+		return nil
+	}
+	profile.Status = want
+	profile.Revision++
+	profile.IssuedBy = "platform"
+	profile.IssuedAt = now.UTC()
+	profile.Confirmation = nil
+	if err := api.Confirm(&profile, "platform", now); err != nil {
+		return err
+	}
+	return s.PutCapabilityProfile(profile)
+}
+
+// RequireActiveBoundProfile prevents a publish from silently succeeding when
+// its named generation is absent or was disabled by an earlier rollback.
+func (s *Store) RequireActiveBoundProfile(principal, environment, profileID string, generation uint64) error {
+	if err := s.Reload(); err != nil {
+		return err
+	}
+	s.mu.RLock()
+	profile, ok := s.capabilityProfiles[profileID]
+	s.mu.RUnlock()
+	if !ok || profile.PrincipalID != principal || profile.Environment != environment ||
+		profile.Generation != generation || profile.Status != api.ActiveStatus {
+		return fmt.Errorf("%w: bound profile unavailable", api.ErrUnauthorized)
+	}
+	return nil
+}
+
 // DeriveRights binds a published grants ceiling to active profiles. Every
 // requested row must already have an independently issued live ledger grant;
 // publishing a passport never issues or revokes a grant.

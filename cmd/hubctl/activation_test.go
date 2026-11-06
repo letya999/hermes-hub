@@ -237,9 +237,9 @@ func TestConcurrentReadersNeverMixRevisions(t *testing.T) {
 			if activeErr != nil || active != old.ID || settingsErr != nil || effectiveErr != nil || effective.Header.Metadata.Revision != old.ID {
 				t.Fatalf("old snapshot changed during immutable staging: current=%q errors=%v %v %v", active, activeErr, settingsErr, effectiveErr)
 			}
-			call(true)
-			list(true, true)
-			decide(http.StatusOK, true)
+			call(false)
+			list(false, false)
+			decide(http.StatusServiceUnavailable, false)
 		case "activate":
 			if activeErr != nil || active != next.ID || settingsErr != nil || effectiveErr != nil || effective.Header.Metadata.Revision != next.ID || len(effective.Grants.Allow) != 0 {
 				t.Fatalf("new snapshot is incomplete: current=%q errors=%v %v %v", active, activeErr, settingsErr, effectiveErr)
@@ -249,41 +249,7 @@ func TestConcurrentReadersNeverMixRevisions(t *testing.T) {
 			}
 			call(false)
 			list(false, false)
-			freshAuth := auth
-			freshAuth.PolicyVersion = stack.PolicyVersion(settings)
-			freshGateway := &toolhub.Gateway{Store: loaded, PassportRoot: passportRoot, Tokens: map[string]identity.Envelope{"fresh-activation-session-token-12345": freshAuth}, Backend: backend,
-				AuditWrite: func(string, map[string]string) error { return nil }}
-			freshHandler, err := freshGateway.Handler()
-			if err != nil {
-				t.Fatal(err)
-			}
-			freshServer := httptest.NewServer(freshHandler)
-			t.Cleanup(freshServer.Close)
-			freshClient := mcp.NewClient(&mcp.Implementation{Name: "activation-fresh", Version: "1"}, nil)
-			freshSession, err := freshClient.Connect(t.Context(), &mcp.StreamableClientTransport{Endpoint: freshServer.URL + toolhub.DefaultEndpointPath, HTTPClient: &http.Client{Transport: activationBearer("fresh-activation-session-token-12345")}}, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = freshSession.Close() })
-			freshList, err := freshSession.ListTools(t.Context(), nil)
-			if err != nil {
-				t.Fatalf("new revision MCP list: %v", err)
-			}
-			for _, tool := range freshList.Tools {
-				if tool.Name == "file_read" {
-					t.Fatal("new revision MCP list retained removed tool")
-				}
-			}
-			if err := passport.PointCurrent(dir, old.ID); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := freshSession.ListTools(t.Context(), nil); err == nil {
-				t.Fatal("ToolHub accepted a profile bound to a different active revision")
-			}
-			if err := passport.PointCurrent(dir, next.ID); err != nil {
-				t.Fatal(err)
-			}
-			decide(http.StatusOK, false)
+			decide(http.StatusServiceUnavailable, false)
 		default:
 			if activeErr == nil || settingsErr == nil || effectiveErr == nil {
 				t.Fatalf("%s exposed a partially prepared revision: current=%q errors=%v %v %v", step, active, activeErr, settingsErr, effectiveErr)
@@ -301,4 +267,43 @@ func TestConcurrentReadersNeverMixRevisions(t *testing.T) {
 		t.Fatal(err)
 	}
 	call(false)
+	decide(http.StatusOK, false)
+	settings, err := stack.ReadEffective(dir, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	freshAuth := auth
+	freshAuth.PolicyVersion = stack.PolicyVersion(settings)
+	freshGateway := &toolhub.Gateway{Store: loaded, PassportRoot: passportRoot, Tokens: map[string]identity.Envelope{"fresh-activation-session-token-12345": freshAuth}, Backend: backend,
+		AuditWrite: func(string, map[string]string) error { return nil }}
+	freshHandler, err := freshGateway.Handler()
+	if err != nil {
+		t.Fatal(err)
+	}
+	freshServer := httptest.NewServer(freshHandler)
+	t.Cleanup(freshServer.Close)
+	freshClient := mcp.NewClient(&mcp.Implementation{Name: "activation-fresh", Version: "1"}, nil)
+	freshSession, err := freshClient.Connect(t.Context(), &mcp.StreamableClientTransport{Endpoint: freshServer.URL + toolhub.DefaultEndpointPath, HTTPClient: &http.Client{Transport: activationBearer("fresh-activation-session-token-12345")}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = freshSession.Close() })
+	freshList, err := freshSession.ListTools(t.Context(), nil)
+	if err != nil {
+		t.Fatalf("new revision MCP list: %v", err)
+	}
+	for _, tool := range freshList.Tools {
+		if tool.Name == "file_read" {
+			t.Fatal("new revision MCP list retained removed tool")
+		}
+	}
+	if err := passport.PointCurrent(dir, old.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := freshSession.ListTools(t.Context(), nil); err == nil {
+		t.Fatal("ToolHub accepted a profile bound to a different active revision")
+	}
+	if err := passport.PointCurrent(dir, next.ID); err != nil {
+		t.Fatal(err)
+	}
 }

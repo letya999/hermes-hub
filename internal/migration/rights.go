@@ -59,6 +59,9 @@ func DeriveSpaceRights(dir, user, environment string, rev passport.Revision, doc
 	}
 	bound, _ := rev.Value("tools", "binding.profile_id")
 	profileID, _ := bound.(string)
+	if err := store.RequireActiveBoundProfile(user, environment, profileID, settings.CapabilityGeneration); err != nil {
+		return fmt.Errorf("rights derivation: %w", err)
+	}
 	gov := toolhub.NewGovernanceStore(toolhub.GovernanceStorePath(storePath))
 	selections, core, err := selectedHubTools(store, rev.Docs["tools"], docs)
 	if err != nil {
@@ -116,6 +119,26 @@ func RestoreSpaceRights(dir, user, environment, profileID, revisionID string, al
 	}
 	selections, core = append(selections, connectorSelections...), append(core, connectorCore...)
 	return toolhub.DerivePublishedRightsAndSelections(store, gov, docs.Rights, user, restored, environment, profileID, "", revisionID, agenttools.HubToolsDefinitionID, selections, core, now)
+}
+
+// SetSpaceProfileActive gates a rejected or superseded binding without
+// changing any issued grant or another principal/environment's profile.
+func SetSpaceProfileActive(dir, user, environment, profileID string, active bool, now time.Time) error {
+	root := filepath.Join(stack.InfraSpaceDir(dir), "runtime", "toolhub")
+	storePath := filepath.Join(root, "store.json")
+	if _, err := os.Stat(filepath.Join(root, "store.db")); err == nil {
+		if _, err := os.Stat(storePath); errors.Is(err, os.ErrNotExist) {
+			storePath = filepath.Join(root, "store.db")
+		}
+	}
+	store, err := toolhub.Load(storePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return store.SetBoundProfileActive(user, environment, profileID, active, now)
 }
 
 // ValidateSelectedConnectors resolves declared connector tools before the

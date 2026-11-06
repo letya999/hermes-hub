@@ -48,7 +48,13 @@ bound ToolHub authority while `current` is pending. It activates the revision
 only after those steps succeed; pre-activation failures restore the previous
 view, render and rights. Reconcile then applies service effects. An effect
 failure is reported as an apply failure even if pointer and rights rollback
-succeeds; complete recovery after process failure is tracked separately.
+succeeds. An on-disk apply journal records the environment, revisions, bound
+profiles, phase and affected services before publication. On the next apply,
+hubctl recovers under the same space lock before compiling a new revision.
+Recovery restores the old view and rights, intersects grants with live issued
+rights, and replays possibly affected service actions. If service convergence
+cannot be proved, the journal remains and `current` is pending for operator
+repair. ToolHub refuses admission while the journal exists.
 
 `render`/`init`/`up` generate the space compose (`compose.dev.yaml`), config,
 and materialized dirs under `spaces/<user>/` — see docs/spaces.md. Nothing in

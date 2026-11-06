@@ -250,17 +250,7 @@ func Run(actions []Action, h Handlers, publishRollback func() error, revision, p
 				for i := len(applied) - 1; i >= 0; i-- {
 					prior := applied[i]
 					st := StepResult{Kind: prior.Kind, Target: prior.Target, Status: "rolled-back"}
-					var replayErr error
-					switch prior.Kind {
-					case Recreate:
-						replayErr = h.Recreate(prior.Target)
-					case Remove:
-						replayErr = h.Remove()
-					case Respawn:
-						replayErr = h.Respawn()
-					case Live:
-						replayErr = h.Live[prior.Target]()
-					}
+					replayErr := replayAction(prior, h)
 					if replayErr != nil {
 						st.Status, st.Detail = "failed", "rollback: "+replayErr.Error()
 						rep.RolledBack = false
@@ -276,6 +266,41 @@ func Run(actions []Action, h Handlers, publishRollback func() error, revision, p
 		rep.Steps = append(rep.Steps, step)
 	}
 	return rep
+}
+
+func replayAction(action Action, h Handlers) error {
+	switch action.Kind {
+	case Rebuild:
+		return nil // an unused rebuilt image does not change the old service
+	case Recreate:
+		if h.Recreate != nil {
+			return h.Recreate(action.Target)
+		}
+	case Remove:
+		if h.Remove != nil {
+			return h.Remove()
+		}
+	case Respawn:
+		if h.Respawn != nil {
+			return h.Respawn()
+		}
+	case Live:
+		if hook := h.Live[action.Target]; hook != nil {
+			return hook()
+		}
+	}
+	return fmt.Errorf("rollback handler unavailable for %s %s", action.Kind, action.Target)
+}
+
+// Replay conservatively converges every action that might have started before
+// a process stop. Re-running a service effect must be safe on the old render.
+func Replay(actions []Action, h Handlers) error {
+	for i := len(actions) - 1; i >= 0; i-- {
+		if err := replayAction(actions[i], h); err != nil {
+			return fmt.Errorf("%s %s: %w", actions[i].Kind, actions[i].Target, err)
+		}
+	}
+	return nil
 }
 
 // Summarize renders the plan grouped by effect class for the dry-run diff

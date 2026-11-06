@@ -6,6 +6,7 @@ func init() {
 		"hubctl.space-apply-scope-kind":           "Әдіс түрі инициализация кезінде бекітіледі және ревизиялар арасында өзгермейді.",
 		"hubctl.space-apply-organization-binding": "Ұйым кеңістігін қолдану үшін басқарылатын профиль байланысы қажет.",
 		"hubctl.space-apply-organization-policy":  "Ұйым саясаты қолжетімсіз немесе сұралған құқықтар оның шегінен асады.",
+		"hubctl.space-apply-recovery":             "Үзілген кеңістік қолдануын қалпына келтіру мүмкін болмады; кеңістік қолжетімсіз күйде қалады.",
 		"hubctl.audit-rollover-usage":             "Қолдану: hubctl audit rollover --ledger <толық жол> [--apply --digest <sha256:...>]",
 		"hubctl.audit-rollover-ledger":            "Тоқтатылған ToolHub ескі audit файлының жолы",
 		"hubctl.audit-rollover-apply":             "Тексерілген көшіруді қолдану; әдепкіде тек жоспар",

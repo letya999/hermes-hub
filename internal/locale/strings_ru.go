@@ -6,6 +6,7 @@ func init() {
 		"hubctl.space-apply-scope-kind":           "Тип области прошивается при инициализации и не может меняться между ревизиями.",
 		"hubctl.space-apply-organization-binding": "Для применения пространства организации нужна привязка управляемого профиля.",
 		"hubctl.space-apply-organization-policy":  "Политика организации недоступна или запрошенные права превышают её предел.",
+		"hubctl.space-apply-recovery":             "Прерванное применение пространства не удалось восстановить; пространство остаётся недоступным.",
 		"hubctl.audit-rollover-usage":             "Использование: hubctl audit rollover --ledger <абсолютный путь> [--apply --digest <sha256:...>]",
 		"hubctl.audit-rollover-ledger":            "Путь к старому audit остановленного ToolHub",
 		"hubctl.audit-rollover-apply":             "Применить проверенный перенос; по умолчанию только план",

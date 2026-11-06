@@ -549,7 +549,10 @@ func TestSpaceApplyReportsRollbackFailure(t *testing.T) {
 // apply must surface that failure — never leave the ledger advertising the
 // rejected revision's allow while reporting a clean rollback (SPEC-0095).
 func TestSpaceApplySurfacesLedgerRestoreFailure(t *testing.T) {
-	dir := t.TempDir()
+	dir := filepath.Join(t.TempDir(), "dana")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(dir, "secrets.dev.env"), []byte(""), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -563,6 +566,25 @@ func TestSpaceApplySurfacesLedgerRestoreFailure(t *testing.T) {
 	// still surface as a restore failure rather than a clean rollback.
 	store := toolhub.NewStore()
 	if err := store.RegisterDefinition(agenttools.HubToolsDefinition()); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	principal := filepath.Base(dir)
+	policy := api.CapabilityPolicy{Schema: api.SchemaVersion, PolicyID: "rollback-policy", Members: []string{principal}, Revision: 1,
+		IssuedBy: "operator", IssuedAt: now, Reason: "fixture", Status: api.ActiveStatus}
+	if err := api.Confirm(&policy, "operator", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutCapabilityPolicy(policy); err != nil {
+		t.Fatal(err)
+	}
+	profile := api.CapabilityProfile{Schema: api.SchemaVersion, ProfileID: "dana-default", PrincipalID: principal, ContextID: principal, RuntimeID: "runtime",
+		Environment: "dev", Generation: 1, PolicyVersion: "policy-1", PolicyID: policy.PolicyID, PolicyRevision: 1,
+		Revision: 1, IssuedBy: "operator", IssuedAt: now, Reason: "fixture", Status: api.ActiveStatus}
+	if err := api.Confirm(&profile, "operator", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutCapabilityProfile(profile); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Save(filepath.Join(dir, "runtime", "toolhub", "store.json")); err != nil {

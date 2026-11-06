@@ -332,8 +332,9 @@ ordered minimum action plan — nothing is written. `--confirm` writes the
 immutable six-passport bundle, gates `current` as pending while refreshing
 the mounted config view, renders generated files and derives the bound
 ToolHub profile and rights from that candidate. Only then does it atomically
-move `current` to the new revision. Managed config readers and ToolHub
-list/call/rights endpoints reject pending or mismatched activation identities.
+move `current` to the new revision. Managed config readers reject pending or
+mismatched revisions; ToolHub list/call/rights endpoints also reject an
+unfinished apply journal until reconciliation completes.
 After activation, reconcile rebuilds only the service images that
 changed, recreate only the affected containers, run one compose
 `--remove-orphans` sweep when instances were dropped (a removed
@@ -346,8 +347,14 @@ restores the previous `current` pointer and mounted passport view. When a
 previous revision exists, rollback also re-renders its generated service
 files. The restored profile ceiling includes only previous passport rights
 that still have an active issued grant; a concurrent grant revocation stays
-revoked. A failed rights restore reports rollback divergence. Transactional
-recovery of every partially updated consumer remains part of CHG-0283.
+revoked. A failed rights restore reports rollback divergence. The durable
+`generated/passports/apply-journal.json` records the environment, previous and
+candidate revision, profile IDs, phase and affected service names. A later
+`space apply` first restores the previous view and rights, then replays possibly
+affected service actions. Repeated recovery is idempotent. If a first apply
+may have touched services, an image build was interrupted, or replay fails,
+the journal stays in place and `current` is pending until operator repair;
+ToolHub admission remains closed. A dev apply does not alter the prod sibling.
 
 The rendered compose set is commanded by `stack.services`: `per-space`
 instances become local containers, `shared` instances render only on the
@@ -362,8 +369,8 @@ replaced atomically per revision — the six passports, `prompt-pointer.txt`
 and the space's `SOUL.md` — instead of Docker single-file binds that never
 see updates. The view's `revision` marker must match `current` for managed
 host reads. Already running external services can observe their existing
-binds until reconciliation; service effects and crash recovery remain a
-separate readiness boundary.
+binds until reconciliation; service effects finish before ToolHub admission
+reopens.
 
 `config.yaml` commands the runtime contract: `runtime.timezone`/`locale`
 and `context.{compaction,parallel_lanes}` land in the rendered environment
