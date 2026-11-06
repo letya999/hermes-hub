@@ -104,4 +104,3 @@ func appendMemoryInstructions(instructions, core, recall string) string {
 	}
 	return instructions
 }
-

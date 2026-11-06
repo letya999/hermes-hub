@@ -1,6 +1,6 @@
 ---
 description: spaces/<id>/ layout — six authored passports, generated configs, secrets/env files, and state dirs.
-last_verified: "2026-11-05"
+last_verified: "2026-11-06"
 ---
 
 # Spaces
@@ -182,20 +182,19 @@ docs/tools.md; they are not shared personal-memory stores.
   (ADR-0086): `memory/` markdown (`daily/`, `cards/`, `summaries/`,
   `CORE.md`, `REVIEW.md`, `schema.json`) committed by the governed
   writer, runtime sidecars under `runtime/` (`.okignore`d, never
-  committed: `prov.db`, `index/`, `run-scope/` (audience + provenance
-  stamps), `night/` day states + `truth_pending`, `memory/forget.jsonl`
-  soft-forget strikes, `memory/writes.jsonl` the card-write audit
-  journal, `memory/import/` the staged native-import drafts,
-  `memory/scope.key` the hub-generated replay mint material,
+  committed: `prov.db`, `index/`, `night/` day states + `truth_pending`,
+  `memory/forget.jsonl` soft-forget strikes, `memory/writes.jsonl` the
+  card-write audit journal, `memory/import/` the staged native-import
+  drafts, `memory/scope.key` the hub-generated replay mint material,
   `memory/provider.json` the rendered external-provider record and
-  `memory/replay.cursor` the migration checkpoint). Agent write access
-  goes through the `memory_card` contract or the `vault:` file root —
-  both require a stamped private run and deny the governed zones
-  (`memory/`, `runtime/`, dot paths); `library/` stays writable
-  (SPEC-0085 R6). The runtime no longer mounts `/vault`; during the
-  CHG-0285 cutover the communication gateway remains the capture writer,
-  pre-turn recall/CORE pinning plane, and the nightly rollup driver
-  (SPEC-0085 R2/R4/R5): at `memory_rollup_time` (agent settings,
+  `memory/replay.cursor` the migration checkpoint). Under M32 the vault
+  is ToolHub-owned: the runtime has no `/vault` mount, no `vault:` file
+  root and no shared run-scope stamps — reads (`memory_search`, pre-turn
+  CORE/recall) and writes (`memory_card`, capture) pass the ToolHub
+  boundary's verified envelope, published memory switch and exact live
+  private run (SPEC-0098). The nightly rollup driver remains in the
+  communication gateway pending its own ToolHub migration (SPEC-0085
+  R2/R5): at `memory_rollup_time` (agent settings,
   `"HH:MM"` space-local, default 04:00) it folds the just-closed day —
   promotions, directives, REVIEW journal, owner digest, intent→draft
   assignment proposals — then closes any finished week/month/year whose

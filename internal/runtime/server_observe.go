@@ -108,7 +108,6 @@ func (s *runtimeHTTP) sweepAfterJob(ctx context.Context, sessionID string) {
 			Trigger: compaction.TriggerManual, Engine: pending.Engine, ResolvedModel: model,
 			Threshold: gate.Threshold, TailCount: sweepTailCount,
 			Args: pending.Args, Now: time.Now().UTC, Summarize: compactSummarize,
-			Flush: compactFlush(sessionID),
 		})
 		if err == nil && result.Applied {
 			return

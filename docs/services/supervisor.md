@@ -70,6 +70,13 @@ spaces dir at `/spaces`, project `config/` read-only, and the host
   text. Prompt text itself is absent from the durable request record. After
   terminal compaction a minimal historical capture context retains those
   fields and the exact run ID without retaining either text body.
+- Before dispatching an admitted private turn the supervisor asks ToolHub
+  for pre-turn memory (`POST /v1/memory-context` under the supervisor bearer
+  with `X-Hub-Principal`, `memory_context.go`): the durable admission id and
+  the request text hash prove the exact run; a group, sensitive or
+  background run skips the call, and any failure — no ToolHub, a denial, a
+  malformed or oversized answer — injects the explicit
+  "Memory context unavailable" marker, never a local vault read.
 - `/v1/runtimes` entries expose a read-only `consumers` projection (lease
   kind, owner class, expiry) and `wait_reason` for expected waits — parked
   approvals/streams are reported, not remediated. Genuine anomalies append

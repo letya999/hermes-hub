@@ -70,9 +70,21 @@ tool call crosses. Listens `0.0.0.0:8090`, host-bound to `127.0.0.1:8090`.
   indexer answers with the same hit shape (evidence refs, `status`,
   `untrusted`). Arguments and headers never select user, vault or audience;
   an unresolvable vault reports `status=unavailable` with no local fallback.
-  The in-runtime `handler:memory` path no longer serves `memory_search`
-  (`memory_card` still owns vault writes) and the runtime container carries
-  no vault mount.
+  The in-runtime `handler:memory` path serves no memory tool — both
+  `memory_search` and `memory_card` report explicit unavailable there until
+  the card writer lands in ToolHub (#518) — and the runtime container
+  carries no vault mount.
+- **Pre-turn memory context** (`memory_context.go`): `POST /v1/memory-context`
+  is the supervisor's private-run context lane (SPEC-0098 M5). The
+  control-plane bearer plus `X-Hub-Principal` resolve the enrolled identity;
+  the posted job id, admission id and request text are then compared field
+  by field with the supervisor's durable `/v1/jobs` record — job, admission,
+  text hash, `running` status, current runtime generation, private kind,
+  sensitivity, user, environment and the principal/context/runtime envelope
+  must all agree before the per-user vault opens. CORE (`memory/CORE.md`)
+  and a deterministic lane-1 recall block return in one response; an
+  indexer failure reports `degraded`, a lookup/auth error answers 503/403
+  and nothing falls back to a local read.
 - **Trusted capture** (`memory_capture.go`): `/v1/memory-capture` admits only
   the communication service bearer plus an enrolled principal. It compares
   the event's user, scope, trigger, channel, flags, run ID and content hash

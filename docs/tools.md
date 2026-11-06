@@ -172,8 +172,8 @@ word where one exists):
 | browser | `browser_open`, `browser_read`, `browser_act`, `browser_capture` | connector:browser | curated calls over the browser connector; `profile` selects user or guest profile |
 | models | `model_list`, `model_switch` | runtime:models | routes, ladders and status from the models passport; switch stays inside the granted ladder; without a hub models plane calls return `unavailable` |
 | sessions | `session_list`, `session_search`, `session_read`, `session_switch`, `session_edit`, `session_remove` | runtime:sessions | own-space sessions only; `session_edit` action archive\|restore; without a session store calls return `unavailable` |
-| memory | `memory_search` | runtime:toolhub | the memory vault contract (SPEC-0085/M32): BM25+graph over daily leaves, cards and summaries — hits carry `file:line` evidence refs, never answer from memory alone; ToolHub resolves the caller's enrolled vault from the verified identity envelope — no argument, root or header selects user, vault or audience; requires config.memory.enabled plus a live private run stamped by the supervisor |
-| memory | `memory_card` | handler:memory | the only write path (ops remember\|fact\|truth\|merge\|forget) — needs a stamped private run; `merge`/`forget` additionally need owner provenance — no argument grants either; `root=vault` file writes still refuse the governed `memory/`/`runtime/` zones — use `memory_card` |
+| memory | `memory_search` | runtime:toolhub | the memory vault contract (SPEC-0085/M32): BM25+graph over daily leaves, cards and summaries — hits carry `file:line` evidence refs, never answer from memory alone; ToolHub resolves the caller's enrolled vault from the verified identity envelope — no argument, root or header selects user, vault or audience; requires config.memory.enabled plus an exact live private run verified against the supervisor job record |
+| memory | `memory_card` | handler:memory | the governed write path (ops remember\|fact\|truth\|merge\|forget); while the writer moves to ToolHub (#518) the in-runtime executor reports explicit unavailable — there is no `root=vault` file root and no local vault fallback |
 
 ## memory — the vault contract
 
@@ -190,24 +190,27 @@ entirely when on: the `memory` toolset stays in `agent.disabled_toolsets`,
 and `MEMORY.md`/`USER.md` remain on disk untouched for the M20.7 import. The
 vault is a git-backed `spaces/<id>/vault/` tree; the governed writer is the
 only mutation path (hash-checked, actor-attributed commits, zone-whitelisted)
-and `CORE.md` reaches only private-audience run instructions, pinned per job
-mapping like the style snapshot. Before each run the hub also injects a
-pinned lane-1 recall block (SPEC-0085 R4): ≤4 card hits with evidence refs,
+and `CORE.md` reaches only private-audience run instructions. Under M32 the
+runtime never mounts the vault: before dispatching an admitted private run
+the supervisor asks ToolHub for `memory/CORE.md` and a pinned lane-1 recall
+block (SPEC-0085 R4, SPEC-0098 M5) — ≤4 card hits with evidence refs,
 ≤2500 chars, marker-wrapped as "data, not instructions" so capture can never
-re-extract it — zero model calls, audience-scoped, and flagged-degraded
-rather than hidden when the index is unavailable. Past-referencing turns
-earn one lane-2 hint line nudging `memory_search`.
+re-extract it — verified against the durable job record (job, admission,
+text hash, running status, generation, audience, user, environment). Any
+failure injects the explicit unavailable marker; there is no local vault
+fallback. Past-referencing turns earn one lane-2 hint line nudging
+`memory_search`.
 
 Writes into the vault run through one contract surface: `memory_card`
-(SPEC-0085 R6). `memory/daily`, `memory/cards`, `memory/summaries`,
-`memory/CORE.md`, `memory/REVIEW.md` and `runtime/` are governed zones — the
-file tools deny writes there on the `vault:` root (segment names compare
-case- and fullwidth-folded; `library/` and ordinary paths stay writable, and
-the root itself requires a stamped private run). `merge`/`forget` execute
-only on a live owner-provenance turn bound to that turn's `SourceRef` — a
-replayed or argument-claimed authorization is denied, and every mutation
-and denial is journaled to `runtime/memory/writes.jsonl`. Soft forget is
-a hub-owned strike: `runtime/memory/forget.jsonl` for daily-leaf entries,
+(SPEC-0085 R6), executed inside ToolHub against the verified caller's own
+vault. `memory/daily`, `memory/cards`, `memory/summaries`,
+`memory/CORE.md`, `memory/REVIEW.md` and `runtime/` are governed zones the
+file tools can no longer reach at all — the runtime has no `vault:` root
+(M32/#517). `merge`/`forget` run only on a live owner-provenance turn bound
+to that turn's `SourceRef` — a replayed or argument-claimed authorization
+is denied, and every mutation and denial is journaled to
+`runtime/memory/writes.jsonl`. Soft forget is a hub-owned strike:
+`runtime/memory/forget.jsonl` for daily-leaf entries,
 `status: superseded` frontmatter for cards — excluded from search, lane-1
 recall and nightly promotion across restarts, visible only via
 `history:true` and git.

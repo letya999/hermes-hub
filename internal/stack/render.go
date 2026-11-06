@@ -33,11 +33,6 @@ func Config(s Settings) M {
 			e["HUB_MEDIA_URL"] = "${HUB_MEDIA_URL}"
 			e["HUB_MEDIA_AUTH"] = "${HUB_MEDIA_AUTH}"
 		}
-		if s.Has("memory_vault") {
-			// The memory tools resolve the vault root off the process env —
-			// the stdio child's env list is the only channel it can inherit.
-			e["HUB_VAULT"] = "${HUB_VAULT}"
-		}
 		if s.Has("ssh") {
 			e["HUB_SSH_CONFIG"] = "/state/ssh/config.yaml"
 			e["HUB_SSH_WRITE"] = fmt.Sprint(s.Has("ssh_write"))

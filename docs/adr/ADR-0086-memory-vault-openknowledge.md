@@ -1,6 +1,6 @@
 ---
 description: Per-space markdown memory vault (daily leaves, typed cards, folded summaries, audience-scoped CORE.md) with a deterministic gated nightly rollup, zero-LLM pre-turn recall, a provider seam, plus OpenKnowledge as the opt-in human editing surface over the same files.
-last_verified: 2026-11-01
+last_verified: 2026-11-06
 ---
 # ADR-0086: Memory vault and OpenKnowledge knowledge surface
 
@@ -25,6 +25,11 @@ superseded` frontmatter for cards; every mutation and denial journals to
 `runtime/memory/writes.jsonl` with the authorizing turn's `SourceRef`;
 the `vault:` file root gates non-contract paths behind a stamped private
 run with case/fullwidth-folded zone names.
+Amended (M32, ADR-0095): the D7 mechanics this paragraph recorded are
+superseded — ToolHub owns the vault, the shared
+`runtime/run-scope/current` authorization file and the `vault:` file
+root are retired, and private-run admission is verified against the
+supervisor's durable job record instead of a stamped sidecar.
 Amended (M20.7, issue #307): R7 mechanics recorded — native import is a
 parse→stage→explicit-apply pipeline: drafts land under
 `runtime/memory/import/` (never in searchable card paths), directive-like

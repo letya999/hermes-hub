@@ -72,7 +72,7 @@ func (m *Manager) jobStatus(w http.ResponseWriter, r *http.Request, id string) {
 	writeJSON(w, 200, map[string]any{
 		"job_id": id, "identity": capture.Envelope, "status": record.Status, "outcome": record.Response,
 		"admission_id": capture.AdmissionID,
-		"run_id": capture.RunID, "session_id": capture.SessionID,
+		"run_id":       capture.RunID, "session_id": capture.SessionID,
 		"scope_id": capture.ScopeID, "trigger": capture.Trigger, "channel": capture.Channel,
 		"user_id": capture.UserID, "text_sha256": capture.TextSHA256,
 		"response_sha256": capture.ResponseSHA256,
@@ -85,7 +85,7 @@ func (m *Manager) jobStatus(w http.ResponseWriter, r *http.Request, id string) {
 func captureRunContext(id string, record jobRecord, environment string) api.RunContext {
 	responseHash := sha256.Sum256([]byte(record.Response.Text))
 	return api.RunContext{JobID: id, RunID: record.Response.RunID, SessionID: record.Response.SessionID,
-		AdmissionID: record.AdmissionID,
+		AdmissionID:       record.AdmissionID,
 		RuntimeGeneration: record.Generation, Environment: environment, Status: record.Status,
 		ScopeID: record.Request.ScopeID, Trigger: record.Request.Trigger, Channel: record.Request.Channel,
 		UserID: record.Request.UserID, TextSHA256: record.RequestTextSHA256, ResponseSHA256: hex.EncodeToString(responseHash[:]),

@@ -21,10 +21,10 @@ import (
 // correlation headers only select which record to fetch and are then
 // compared against it; they never fill the context.
 type RunContext struct {
-	JobID     string `json:"job_id"`
+	JobID       string `json:"job_id"`
 	AdmissionID string `json:"admission_id,omitempty"`
-	RunID     string `json:"run_id"`
-	SessionID string `json:"session_id"`
+	RunID       string `json:"run_id"`
+	SessionID   string `json:"session_id"`
 	// RuntimeGeneration is the supervisor-bound generation the job was
 	// dispatched to; CurrentGeneration is the binding's live generation —
 	// a run whose generation is superseded is no longer live.
