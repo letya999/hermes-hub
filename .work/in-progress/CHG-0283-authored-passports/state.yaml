@@ -18,19 +18,23 @@ implementation_status: in_progress
 slices:
   C1:
     issue: 509
-    branch: codex/m32-track-1
+    branch: fix/m32-track-1
     status: implemented_pending_live_acceptance
   C2:
     issue: 510
-    branch: codex/m32-track-1
+    branch: fix/m32-track-1
     status: implemented_pending_live_acceptance
   C3:
     issue: 511
-    branch: codex/m32-track-1
+    branch: fix/m32-track-1
     status: implemented_pending_live_acceptance
   C4:
     issue: 512
-    branch: codex/m32-track-1
+    branch: fix/m32-track-1
+    status: implemented_pending_live_acceptance
+  C5:
+    issue: 508
+    branch: fix/m32-track-1
     status: implemented_pending_live_acceptance
 historical_slices:
   S2.1-authoring: in_progress
@@ -42,8 +46,12 @@ validation:
   go_check: passed_C4_2026-11-06_85_95pct
   docker_check: passed_C4_2026-11-06
   red_team: C4_fault_injection_and_recovery_regressions_passed_2026-11-06
+  scoped_tests: passed_C5_2026-11-06
+  targeted_race: passed_C5_2026-11-06
+  just_check_fast: passed_C5_2026-11-06
   live_acceptance: not_started
 evidence:
+  - "2026-11-06 #508 C5 on codex/m32-track-1: CHG-0289 tooling commit cherry-picked as 71dc5d59 (docs/rbac.md last_verified conflict resolved to incoming 2026-11-06). Completion HEAD includes the settings publisher checkpoint 33fb159d plus verification. settings_read/settings_edit now route only through ToolHub's handler:settings executor into the authenticated control plane: the backend reads generated/passports under /passports-by/<principal> (read fails while the apply journal exists) and POSTs key/value/base_revision to the supervisor /v1/settings with the control bearer. The supervisor validates principal/environment/body and calls hubctl runSettingsEdit, the single governed publisher: it takes the per-space apply lock, refuses an unfinished apply journal, requires passport.Current == base_revision, requires config.edit_own in both the live issued ledger and the published grants, validates the value against the selfsettings allowlist, refuses an unpublished authored draft (baseline compile must equal the effective revision), diffs only config.* leaves, then publishes through #511 applyConfirm journalling authored config.yaml before/after bytes so #512 recovery restores the exact source. Direct runtime SettingsGet/SettingsSet deny with ErrUnsupported and are skipped from the runtime MCP server; the self-settings overlay reader/writer and SelfSettingsPath are removed from materialize/supervisor/runtime; catalog Release 14 and hub-agent-tools 13.0.0 carry the new contract with prompt_contract, docs/tools.md, docs/routines.md, docs/spaces.md, docs/services docs, arg_docs, en/ru/kk/es locale keys and e2e registry updated in the same changeset. Legacy agent.yaml/settings.yaml/workspace.yaml/models.yaml remain the unmanaged provisioning path only and are inert for managed reads (poison fixtures cover self-settings.json and agent.yaml). Verification: go test -p=1 on cmd/hubctl and internal/{stack,migration,toolhub,toolhub/api,agenttools,supervisor,selfsettings,passport,passportview,catalog,locale,runtime,reconcile,e2e} all passed, exit 0; scoped race run go test -race -p=1 -run 'Settings|Concurrent|ApplyRecovery|ApplyCrash' on cmd/hubctl/toolhub/supervisor/agenttools passed, exit 0; new fast just check (format, docs, vet) passed, exit 0. First attempts hit the known Windows toolchain Access is denied flake and passed on retry. Full race/shuffle/coverage, image acceptance and live provider checks remain CI/live gates for the published SHA; no live acceptance claimed."
   - "2026-11-06 #512 C4 final gates: scoped crash/restart fault-injection tests passed, exit 0; full just check passed, exit 0, own Go statement coverage 85.95%, including sequential race/shuffle, format, vet, tidy, staticcheck, gosec, docs, actionlint and deployment contract. Full just docker-check passed, exit 0, including seven image builds, budgets, runtime smoke, pinned Hermes 0.21.0 API, two-user/cold-restore container gate, stdio, zero-capability, managed network/supervisor, scratch and paused-quarantine checks; the gate cleaned its own project build artifacts. Earlier just check attempts failed on unrelated Windows linker Access is denied and intermittent communication TestRunnerPassesUserLang; the failing test passed three isolated repeats. A separate Linux root test run failed only the chmod-dependent passport compiler test; rerun with DAC override capabilities dropped passed. None of those attempts is counted as a passing full gate. No live provider/account acceptance is claimed."
   - "2026-11-06 #512 C4: generated/passports/apply-journal.json records environment, revisions, bound profiles, phase and affected actions before publication, then remains until effects complete; the mounted marker denies ToolHub MCP list/call and rights decisions throughout an unfinished apply. The next apply recovers under the per-space lock, restores the old view/profile/rights while intersecting concurrent grant revocations, and replays potentially affected service actions; a failed replay, first-apply effect or interrupted image build keeps current pending and reports an explicit error. Fault-injection tests pause at bundle, pending, each view file, revision marker, prepare, render, rights, activate, binding and first service effect; repeated recovery, sibling dev/prod profile isolation, rejected binding deactivation, malicious journal target and live MCP/HTTP admission checks pass. Scoped go test -p 1 ./cmd/hubctl -run 'TestApplyCrashRecovery|TestApplyRecovery|TestConcurrentReadersNeverMixRevisions' -count=1 -timeout=3m passed, exit 0. Full gates and live acceptance are recorded separately; no live provider/account success is claimed."
   - "2026-11-06 #511 C3: immutable six-passport bundle, mounted view, generated files and bound ToolHub authority prepare while current is pending; one pointer update activates them. Managed stack/supervisor/runtime reads and ToolHub MCP list/call plus rights HTTP deny pending or mismatched revision. TestConcurrentReadersNeverMixRevisions pauses at bundle, pending, every view file, render, rights and activation through real stack/passport and HTTP/MCP boundaries. Scoped hubctl/passport/passportview/stack/migration/toolhub/runtime/supervisor tests and go test -race -shuffle=on -count=1 -timeout=10m ./cmd/hubctl passed, exit 0. Just check on the final source tree passed, exit 0, own Go statement coverage 85.99%; sequential race/shuffle, format/vet/tidy/staticcheck/gosec/docs/actionlint and deployment contract passed. Initial just check failures were Windows temporary-executable Access is denied and an unrelated UTC/local-midnight memory/prune test; the isolated memory test passed after UTC midnight, exit 0. Full just docker-check built seven images, passed budgets, runtime smoke and pinned Hermes API, but exited 1 at hermes-contract; isolated hermes-contract then passed, exit 0, including supervisor smoke and two-user real-container five-minute idle/cold restoration. Stdio, capability, managed-supervisor, managed-network, scratch-workload and paused-quarantine checks each passed separately, exit 0, after fixing the canary's revision fixture; just docker-clean passed, exit 0. The full Docker gate is not claimed successful. No live provider/account acceptance; crash recovery belongs to #512."
