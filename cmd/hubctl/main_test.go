@@ -97,9 +97,9 @@ func TestDoctorPrintsSkillsSection(t *testing.T) {
 	}
 }
 
-// SPEC-0085 R10.2: `hubctl doctor` is the status surface — a space that
-// publishes the Knowledge UI edge sees the loopback URL named by ui_port.
-func TestStatusShowsUIPort(t *testing.T) {
+// Knowledge UI cannot mount ToolHub-owned vault data; doctor reports the
+// unavailable state even if a legacy port remains in authored config.
+func TestStatusReportsKnowledgeUIUnavailable(t *testing.T) {
 	ctx := context.Background()
 	dir := filepath.Join(t.TempDir(), "owner")
 	if err := run(ctx, []string{"init", "--dir", dir, "--user", "owner"}); err != nil {
@@ -124,8 +124,8 @@ func TestStatusShowsUIPort(t *testing.T) {
 	out := captureOutput(t, func() error {
 		return run(ctx, []string{"doctor", "--dir", dir})
 	})
-	if !strings.Contains(out, "Knowledge UI: http://localhost:8443") {
-		t.Fatalf("doctor missing the ui_port edge:\n%s", out)
+	if !strings.Contains(out, "Knowledge UI: unavailable") || strings.Contains(out, "http://localhost:8443") {
+		t.Fatalf("doctor advertised the retired Knowledge UI edge:\n%s", out)
 	}
 }
 

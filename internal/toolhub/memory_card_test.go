@@ -39,7 +39,8 @@ func memoryCardAdmit(t *testing.T, store *Store, gov *GovernanceStore, doc api.R
 	profile := api.CapabilityProfile{Schema: api.SchemaVersion, ProfileID: auth.CapabilityProfile, PrincipalID: auth.PrincipalID,
 		ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, Environment: auth.Environment, Generation: auth.Generation,
 		PolicyVersion: auth.PolicyVersion, PolicyID: "org-default", PolicyRevision: 2,
-		Revision: 1, IssuedBy: "operator", IssuedAt: time.Now().UTC(), Reason: "Reviewed synthetic fixture", Status: api.ActiveStatus,
+		PassportRevision: "r-0123456789abcdef",
+		Revision:         1, IssuedBy: "operator", IssuedAt: time.Now().UTC(), Reason: "Reviewed synthetic fixture", Status: api.ActiveStatus,
 		Selections: []api.CapabilitySelection{selection}}
 	if err := api.Confirm(&profile, "", time.Unix(1700000000, 0).UTC()); err != nil {
 		t.Fatal(err)

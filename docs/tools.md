@@ -65,6 +65,13 @@ catalogs match the real handlers, sections, compose services and this file;
 a space loads only a pinned release (`catalog.Load`) and every unknown
 capability, operation, toolset, service or release fails closed.
 
+M32 integration keeps track 2's immutable releases 14–16. Track 1 independently
+emitted a different release 14 at `8cb598fb` (the governed settings contract);
+its original bytes remain in that commit, not under the same release number here.
+Release 17 is generated from the merged sources and pairs with
+`hub-agent-tools@16.0.0`: revision-guarded `settings_read`/`settings_edit` and
+ToolHub-executed `memory_search`/`memory_card` retain their separate rights.
+
 ## mcp__toolhub__ — control plane
 
 One tool per `ControlOperations` entry (api/grants.go), projected per the

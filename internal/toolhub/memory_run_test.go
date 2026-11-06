@@ -55,6 +55,7 @@ func memoryToolFixture(t *testing.T) (*Store, identity.Envelope) {
 	}
 	profile.Revision++
 	profile.PolicyRevision = policy.Revision
+	profile.PassportRevision = "r-0123456789abcdee"
 	profile.Selections = append(profile.Selections, api.CapabilitySelection{CapabilityID: "memory.search", DefinitionID: definition.DefinitionID,
 		DefinitionVersion: definition.Version, ImplementationDigest: digest, ToolName: "memory_search", Name: "memory_search"})
 	if err := putProfile(t, store, profile); err != nil {
