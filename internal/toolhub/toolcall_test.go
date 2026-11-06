@@ -31,6 +31,9 @@ func TestToolCallReturnsText(t *testing.T) {
 		},
 	}
 	attachGatewayAudit(t, g)
+	if principals := (&projectionEndpoint{gateway: g}).EnrolledPrincipals(); len(principals) != 1 || principals[0] != "alice" {
+		t.Fatalf("enrolled principals: %v", principals)
+	}
 	handler, err := g.Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -64,6 +67,24 @@ func TestToolCallReturnsText(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("control tool call: %d %s", w.Code, w.Body)
 	}
+	value, err := (&projectionEndpoint{gateway: g}).CallReadTool(context.Background(), "alice", tool, map[string]any{"q": "price"})
+	if err != nil || string(value) != "price: 42" {
+		t.Fatalf("automation probe: %q, %v", value, err)
+	}
+	if enrolled, err := (&projectionEndpoint{gateway: g}).EnrolledAuth("alice"); err != nil || !enrolled.Equal(auth) {
+		t.Fatalf("enrolled authority: %+v, %v", enrolled, err)
+	}
+	other := auth
+	other.ExternalIdentityID = "different-binding"
+	g.mu.Lock()
+	g.Tokens["alice-other-token-00000000000000000"] = other
+	g.mu.Unlock()
+	if _, err := (&projectionEndpoint{gateway: g}).CallReadTool(context.Background(), "alice", tool, nil); err == nil {
+		t.Fatal("ambiguous principal enrollment reached probe backend")
+	}
+	if _, err := (&projectionEndpoint{gateway: g}).EnrolledAuth("alice"); err == nil {
+		t.Fatal("ambiguous principal enrollment returned an authority")
+	}
 }
 
 // A write-effect tool name must never reach the backend through this
@@ -93,6 +114,9 @@ func TestToolCallRejectsWriteEffect(t *testing.T) {
 	handler.ServeHTTP(w, req)
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("write tool call: %d %s", w.Code, w.Body)
+	}
+	if _, err := (&projectionEndpoint{gateway: g}).CallReadTool(context.Background(), "alice", write, nil); err == nil {
+		t.Fatal("automation probe reached a write-effect tool")
 	}
 }
 

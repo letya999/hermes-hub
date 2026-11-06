@@ -19,7 +19,6 @@ import (
 
 	"github.com/gofrs/flock"
 	"github.com/letya999/hermes-hub/internal/locale"
-	"github.com/letya999/hermes-hub/internal/routines"
 	"github.com/letya999/hermes-hub/internal/storagebudget"
 )
 
@@ -112,15 +111,12 @@ type Spool struct {
 	// (SPEC-0053).
 	refreshHolds  func(ctx context.Context) error
 	holdsSnapshot func() []masterHold
-	// resolveChannel, when set, binds engine channel lookups to the owning
-	// gateway's user registry: RouteBlockedNotice retargets to the owner's
-	// verified home only when the real binding is resolvable — the nil-
-	// gateway fallback stays for the pure validation methods.
-	resolveChannel func(id string) routines.OccurrenceChannel
-	// rt is the routines engine (internal/routines) sharing this spool's
-	// mutex and root; it owns the schedules/occurrences/watchers/digests
-	// subtrees and borrows the rest of the spool through its Deps seam.
-	rt *routines.Engine
+	// jobFence, when wired by the owning gateway, re-authorizes a cron
+	// routine job against its live owner occurrence before the worker
+	// executes it — a schedule deleted or re-bound between dispatch and
+	// claim retires the pending job instead of running stale work. Nil
+	// (pure-spool use) keeps the legacy posture.
+	jobFence func(job Job) (live bool, err error)
 	// budget is the atomic reservation/settlement ledger (budget.json);
 	// budgetBroken marks an unreadable ledger so admission fails closed.
 	budget       *budgetLedger
@@ -221,6 +217,9 @@ func openSpool(root string, create bool) (result *Spool, err error) {
 			if layout.Complete {
 				for _, dir := range []string{"event-state", "run-events", "provider-dedup"} {
 					info, err := os.Lstat(filepath.Join(root, dir))
+					if errors.Is(err, os.ErrNotExist) {
+						continue
+					}
 					if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 						return nil, errors.New("initialized event directory missing or unsafe")
 					}
@@ -230,7 +229,7 @@ func openSpool(root string, create bool) (result *Spool, err error) {
 			return nil, err
 		}
 	}
-	for _, dir := range []string{"pending", "running", "done", "failed", "outbox/pending", "outbox/sending", "outbox/done", "outbox/failed", "mappings", "mappings/by-key", "conversations", "event-state", "run-events", "provider-dedup", "occurrences", "schedules", "tasks", "tasks/current", "tasks/topic", "callbacks", "inbound", "watchers", "digests", "mock-sent", "mock-links", "tmp", "goals", "capture", "capture-acks"} {
+	for _, dir := range []string{"pending", "running", "done", "failed", "outbox/pending", "outbox/sending", "outbox/done", "outbox/failed", "mappings", "mappings/by-key", "conversations", "event-state", "run-events", "provider-dedup", "tasks", "tasks/current", "tasks/topic", "callbacks", "inbound", "mock-sent", "mock-links", "tmp", "goals", "capture", "capture-acks"} {
 		if !create {
 			continue
 		}
@@ -249,6 +248,9 @@ func openSpool(root string, create bool) (result *Spool, err error) {
 	if create {
 		for _, dir := range []string{"event-state", "run-events", "provider-dedup"} {
 			info, err := os.Lstat(filepath.Join(root, dir))
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
 			if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 				return nil, errors.New("unsafe event directory")
 			}
@@ -257,42 +259,6 @@ func openSpool(root string, create bool) (result *Spool, err error) {
 			return nil, err
 		}
 	}
-	s.rt = routines.NewEngine(root, &s.mu, routines.Deps{
-		Hooks:             scheduleDraftHooks,
-		EnqueueJob:        s.enqueueLocked,
-		EnqueueDelivery:   s.enqueueDeliveryLocked,
-		LoadMapping:       s.loadMappingLocked,
-		LoadTask:          s.loadTaskLocked,
-		ListTasks:         s.listTasksLocked,
-		TopicTask:         s.topicTaskLocked,
-		WriteDeliveryBlob: s.WriteDeliveryBlob,
-		NormalizeDelivery: normalizeDelivery,
-		WriteJSONAtomic:   s.writeJSON,
-		WriteBytes:        func(path string, body []byte) error { return s.writeBlob(path, body, false) },
-		MkdirAll:          s.mkdirOwnedClass,
-		Rename:            s.renameOwned,
-		Remove:            s.removeOwned,
-		ReadFile:          s.fsys.ReadFile,
-		ReadDir:           s.fsys.ReadDir,
-		Lstat:             s.fsys.Lstat,
-
-		Signal: s.signal,
-		ChannelFor: func(id string) routines.OccurrenceChannel {
-			if s.resolveChannel != nil {
-				return s.resolveChannel(id)
-			}
-			return channelFor(nil, id)
-		},
-		ProbeScript:  func() routines.ProbeScriptFunc { return s.probeScript },
-		ResumeEvents: s.resumeOccurrenceBatch,
-		SettleEvents: s.settleEvents,
-		LangOf: func(p string) locale.Lang {
-			if s.langOf != nil {
-				return s.langOf(p)
-			}
-			return locale.Fallback()
-		},
-	})
 	return s, nil
 }
 
@@ -503,9 +469,6 @@ func (s *Spool) Compact(now time.Time, retention time.Duration, limits CompactLi
 	if err := s.compactUsageLocked(now, retention, limits.MaxUsageEntries); err != nil {
 		return err
 	}
-	if err := s.compactOccurrencesLocked(now, retention); err != nil {
-		return err
-	}
 	mappingNames, err := s.fsys.ReadDir(filepath.Join(s.root, "mappings"))
 	if err != nil {
 		return err
@@ -582,181 +545,6 @@ func (s *Spool) purgeArchivesLocked(now time.Time, retention time.Duration, maxB
 			return err
 		}
 		total -= f.size
-	}
-	return nil
-}
-
-// compactOccurrencesLocked moves settled, silent detail out of the hot scan.
-// Detail stays in an archive for 48 hours; a small receipt keeps the normal
-// spool deduplication horizon. Active and dispatched work stays untouched.
-func (s *Spool) compactOccurrencesLocked(now time.Time, retention time.Duration) error {
-	outcomes, err := s.routineDeliveryStatesLocked()
-	if err != nil {
-		return err
-	}
-	dir := filepath.Join(s.root, "occurrences")
-	archiveDir := filepath.Join(dir, "archive")
-	receiptDir := filepath.Join(dir, "receipts")
-	activeDelivery := map[string]bool{}
-	for _, outboxDir := range []string{"pending", "sending"} {
-		items, err := s.fsys.ReadDir(filepath.Join(s.root, "outbox", outboxDir))
-		if err != nil {
-			return err
-		}
-		for _, item := range items {
-			if !strings.HasSuffix(item, ".json") {
-				continue
-			}
-			body, err := s.fsys.ReadFile(filepath.Join(s.root, "outbox", outboxDir, item))
-			if err != nil {
-				return err
-			}
-			var delivery Delivery
-			if json.Unmarshal(body, &delivery) != nil {
-				return errors.New("invalid live delivery")
-			}
-			if delivery.OccurrenceID != "" {
-				activeDelivery[delivery.OccurrenceID] = true
-			}
-		}
-	}
-	names, err := s.fsys.ReadDir(dir)
-	if err != nil {
-		return err
-	}
-	for _, name := range names {
-		if !strings.HasSuffix(name, ".json") {
-			continue
-		}
-		path := filepath.Join(dir, name)
-		info, err := s.fsys.Lstat(path)
-		if err != nil {
-			return err
-		}
-		body, err := s.fsys.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		var o RoutineOccurrence
-		if json.Unmarshal(body, &o) != nil || name != occurrenceID(o)+".json" {
-			continue
-		}
-		switch o.State {
-		case "no_change", "missed", "blocked", "cancelled", "capped", "skipped", "failed":
-		case "dispatched":
-			if activeDelivery[o.Job.ID] {
-				continue
-			}
-			live := false
-			for _, jobDir := range []string{"pending", "running"} {
-				_, statErr := s.fsys.Lstat(filepath.Join(s.root, jobDir, spoolFileID(o.Job.ID)+".json"))
-				if statErr == nil {
-					live = true
-				}
-				if statErr != nil && !os.IsNotExist(statErr) {
-					return statErr
-				}
-			}
-			if live {
-				continue
-			}
-			mapping, mappingErr := s.loadMappingLocked(o.Job.ID)
-			if mappingErr == nil && !terminalStatus(mapping.Status) {
-				continue
-			}
-			if mappingErr != nil && !os.IsNotExist(mappingErr) {
-				continue
-			}
-		default:
-			continue
-		}
-		if err := s.mkdirOwned(receiptDir); err != nil {
-			return err
-		}
-		if err := s.mkdirOwned(archiveDir); err != nil {
-			return err
-		}
-		receiptPath := filepath.Join(receiptDir, name)
-		if err := s.writeJSON(receiptPath, routineHistoryReceipt{ID: o.Job.ID, ScheduleID: o.ScheduleID, Envelope: o.Job.Envelope, Run: s.routineRunLocked(o, outcomes)}); err != nil {
-			return err
-		}
-		if err := s.fsys.Chtimes(receiptPath, info.ModTime(), info.ModTime()); err != nil {
-			return err
-		}
-		if err := s.renameOwned(path, filepath.Join(archiveDir, name)); err != nil {
-			return err
-		}
-	}
-	archives, err := s.fsys.ReadDir(archiveDir)
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	for _, name := range archives {
-		if !strings.HasSuffix(name, ".json") {
-			continue
-		}
-		path := filepath.Join(archiveDir, name)
-		info, err := s.fsys.Lstat(path)
-		if err != nil {
-			return err
-		}
-		if info.ModTime().Before(now.Add(-48 * time.Hour)) {
-			if err := s.removeOwned(path); err != nil {
-				return err
-			}
-		}
-	}
-	receipts, err := s.fsys.ReadDir(receiptDir)
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	for _, name := range receipts {
-		if !strings.HasSuffix(name, ".json") {
-			continue
-		}
-		path := filepath.Join(receiptDir, name)
-		info, err := s.fsys.Lstat(path)
-		if err != nil {
-			return err
-		}
-		if info.ModTime().Before(now.Add(-retention)) {
-			if err := s.removeOwned(path); err != nil {
-				return err
-			}
-		}
-	}
-	// A settled occurrence no longer reads its crash-replay sidecars.
-	for _, name := range names {
-		for _, suffix := range []string{".probe-result", ".digest-result", ".script-output"} {
-			if !strings.HasSuffix(name, suffix) {
-				continue
-			}
-			path := filepath.Join(dir, name)
-			info, err := s.fsys.Lstat(path)
-			if err != nil || !info.Mode().IsRegular() {
-				break
-			}
-			if !info.ModTime().Before(now.Add(-retention)) {
-				break
-			}
-			base := strings.TrimSuffix(name, suffix) + ".json"
-			_, err = s.fsys.Lstat(filepath.Join(dir, base))
-			if err == nil {
-				break
-			}
-			if err != nil && !os.IsNotExist(err) {
-				return err
-			}
-			if _, err := s.fsys.Lstat(filepath.Join(dir, "quarantine", base)); err == nil {
-				break
-			} else if !os.IsNotExist(err) {
-				return err
-			}
-			if err := s.removeOwned(path); err != nil {
-				return err
-			}
-			break
-		}
 	}
 	return nil
 }
@@ -1329,30 +1117,14 @@ func (s *Spool) ClaimJob() (*Job, error) {
 		name := entry.name
 		job := entry.job
 		pending := filepath.Join(s.root, "pending", name)
-		if job.AssignmentID != "" && job.AssignmentPlanRevision != 0 {
-			if _, ok := s.rt.AssignmentForWakeLocked(job.AssignmentID, job.AssignmentPlanRevision); !ok {
-				if err := s.updateMappingLocked(job.ID, RunOutcome{Status: "cancelled", LastEvent: "assignment.cancelled"}, "cancelled", true); err != nil {
-					return nil, err
-				}
-				if err := s.renameOwned(pending, filepath.Join(s.root, "failed", name)); err != nil {
-					return nil, err
-				}
+		if job.Trigger == "cron" && strings.HasPrefix(job.ID, "routine-") && s.jobFence != nil {
+			live, fenceErr := s.jobFence(job)
+			if fenceErr != nil {
+				// Owner unreachable: keep the job pending and retry on the
+				// next claim rather than retiring possibly-live work.
 				continue
 			}
-		}
-		if job.Trigger == "cron" && strings.HasPrefix(job.ID, "batch2-") && !s.batchJobCurrentLocked(job) {
-			if err := s.updateMappingLocked(job.ID, RunOutcome{Status: "cancelled", LastEvent: "routine.cancelled"}, "cancelled", true); err != nil {
-				return nil, err
-			}
-			if err := s.renameOwned(pending, filepath.Join(s.root, "failed", name)); err != nil {
-				return nil, err
-			}
-			continue
-		}
-		if job.Trigger == "cron" && strings.HasPrefix(job.ID, "routine-") {
-			body, err := s.fsys.ReadFile(filepath.Join(s.root, "occurrences", spoolFileID(job.ID)+".json"))
-			var o RoutineOccurrence
-			if err != nil || json.Unmarshal(body, &o) != nil || !s.occurrenceCurrentLocked(o) {
+			if !live {
 				if err := s.updateMappingLocked(job.ID, RunOutcome{Status: "cancelled", LastEvent: "routine.cancelled"}, "cancelled", true); err != nil {
 					return nil, err
 				}

@@ -1,19 +1,21 @@
 package communication
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/letya999/hermes-hub/internal/commodel"
 )
 
 func TestRoutineSearchFiltersBeforePagingInsideOwnerScope(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
+	g, host, automationRoot := automationGatewayFixture(t, c)
 	env := c.Users[0].Envelope(11)
 	for _, row := range []struct{ id, text, owner string }{
 		{"a-no-match", "other", "alice"}, {"b-friday", "FRIDAY report", "alice"},
@@ -23,7 +25,20 @@ func TestRoutineSearchFiltersBeforePagingInsideOwnerScope(t *testing.T) {
 		owner.PrincipalID = row.owner
 		owner.ContextID = row.owner
 		in := Schedule{ScheduleID: row.id, Envelope: owner, UserID: row.owner, ActorID: row.owner, ScopeID: "user:" + row.owner, Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 10 * * 5", Input: row.text, JobKind: "reminder"}
-		if _, err := g.spool.CreateSchedule(in, owner, ""); err != nil {
+		if row.owner == "alice" {
+			if _, err := host.CreateSchedule(context.Background(), owner, in, ""); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		// A foreign principal's record lives only under its own owner tree —
+		// seeded on disk like an operator migration, never through alice.
+		dir := filepath.Join(automationRoot, "owners", row.owner, "schedules")
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		body, _ := json.Marshal(in)
+		if err := os.WriteFile(filepath.Join(dir, commodel.FileID(row.id)+".json"), body, 0600); err != nil {
 			t.Fatal(err)
 		}
 	}

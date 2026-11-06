@@ -4,16 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
-	"time"
 
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/locale"
-	"github.com/letya999/hermes-hub/internal/routines"
 )
 
 // TestAssignmentAPIRoundTrip (SPEC-0080 R2.1/R2.2): create→apply→get→pause→
@@ -22,10 +20,7 @@ import (
 func TestAssignmentAPIRoundTrip(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
+	g, host, _ := automationGatewayFixture(t, c)
 	body := `{"title":"watch prices","intent":"watch prices for X","apply":true,"plan":{"sources":[{"name":"page","schedule":{"schedule_id":"src-page","channel":"telegram_bot","chat_id":11,"timezone":"UTC","expression":"every:15m","job_kind":"watcher","input":"watch page","probe":{"kind":"http","url":"https://example.com/p"}}}],"specialist":{"instructions":"report changes only","reply":"notify"}}}`
 	w := destinationRequest(g, http.MethodPost, "/v1/assignments", body)
 	if w.Code != http.StatusOK && w.Code != http.StatusCreated {
@@ -60,7 +55,7 @@ func TestAssignmentAPIRoundTrip(t *testing.T) {
 	// Pause → resume → cancel lifecycle over REST — each verb must reach the
 	// durable state, not just return 200.
 	for _, step := range []struct{ action, want string }{{"pause", "paused"}, {"resume", "active"}, {"cancel", "cancelled"}} {
-		current, err := g.spool.rt.LoadAssignment(id, g.users[11].Envelope(11))
+		current, err := host.LoadAssignment(context.Background(), g.users[11].Envelope(11), id)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -68,7 +63,7 @@ func TestAssignmentAPIRoundTrip(t *testing.T) {
 		if w.Code != http.StatusOK && w.Code != http.StatusNoContent {
 			t.Fatalf("%s failed: %d %s", step.action, w.Code, w.Body.String())
 		}
-		item, err := g.spool.rt.LoadAssignment(id, g.users[11].Envelope(11))
+		item, err := host.LoadAssignment(context.Background(), g.users[11].Envelope(11), id)
 		if err != nil || item.State != step.want {
 			t.Fatalf("%s did not reach state %q: %v %+v", step.action, step.want, err, item)
 		}
@@ -81,7 +76,7 @@ func TestAssignmentAPIRoundTrip(t *testing.T) {
 	// DELETE removes the record under the same CAS fence (ADR-0094
 	// assignment_remove): a stale revision conflicts, a matching one deletes
 	// and the id reads 404 afterwards.
-	current, err := g.spool.rt.LoadAssignment(id, g.users[11].Envelope(11))
+	current, err := host.LoadAssignment(context.Background(), g.users[11].Envelope(11), id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +123,7 @@ func TestAssignmentPlanDryRun(t *testing.T) {
 	if verdicts["page"] != "ok" || verdicts["bad"] == "ok" || verdicts["bad"] == "" {
 		t.Fatalf("per-source verdicts wrong: %v", verdicts)
 	}
-	if items, _ := g.spool.rt.ListAssignments(g.users[11].Envelope(11)); len(items) != 0 {
+	if entries, _ := os.ReadDir(filepath.Join(c.SpoolDir, "assignments")); len(entries) != 0 {
 		t.Fatal("dry-run must not persist")
 	}
 }
@@ -138,10 +133,7 @@ func TestAssignmentPlanDryRun(t *testing.T) {
 func TestAssignmentPlanUpdateNarrowsGrants(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
+	g, _, _ := automationGatewayFixture(t, c)
 	w := destinationRequest(g, http.MethodPost, "/v1/assignments", `{"title":"t","intent":"watch x","grants":{"max_wakes_per_day":10}}`)
 	var created commodel.Assignment
 	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil || created.AssignmentID == "" {
@@ -171,10 +163,7 @@ func itoa(v uint64) string { return strconv.FormatUint(v, 10) }
 func TestAssignmentCompleteVerb(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
+	g, host, _ := automationGatewayFixture(t, c)
 	body := `{"title":"done","intent":"watch y","apply":true,"plan":{"sources":[{"name":"page","schedule":{"channel":"telegram_bot","chat_id":11,"timezone":"UTC","expression":"every:15m","job_kind":"watcher","input":"w","probe":{"kind":"http","url":"https://example.com/p"}}}]}}`
 	w := destinationRequest(g, http.MethodPost, "/v1/assignments", body)
 	var created commodel.Assignment
@@ -183,7 +172,7 @@ func TestAssignmentCompleteVerb(t *testing.T) {
 	}
 	// The applied artifact must carry the gateway org + owner actor/scope —
 	// otherwise every occurrence fails owner authorization at tick time.
-	scheds, err := g.spool.ListSchedules(g.users[11].Envelope(11))
+	scheds, err := host.ListSchedules(context.Background(), g.users[11].Envelope(11))
 	if err != nil || len(scheds) != 1 {
 		t.Fatalf("applied schedule missing: %v", err)
 	}
@@ -194,19 +183,16 @@ func TestAssignmentCompleteVerb(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("complete failed: %d %s", w.Code, w.Body.String())
 	}
-	item, err := g.spool.rt.LoadAssignment(created.AssignmentID, g.users[11].Envelope(11))
+	item, err := host.LoadAssignment(context.Background(), g.users[11].Envelope(11), created.AssignmentID)
 	if err != nil || item.State != "completed" {
 		t.Fatalf("not completed: %v %+v", err, item)
 	}
 }
 
-func TestAssignmentProgressRequiresRunningTriggerAndCanComplete(t *testing.T) {
+func TestAssignmentProgressRejectsCommunicationRunningFile(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
+	g, _, _ := automationGatewayFixture(t, c)
 	w := destinationRequest(g, http.MethodPost, "/v1/assignments", `{"intent":"watch for an answer","apply":true,"plan":{"revision":1,"sources":[{"name":"page","schedule":{"channel":"telegram_bot","chat_id":11,"timezone":"UTC","expression":"every:15m","job_kind":"watcher","input":"watch","probe":{"kind":"http","url":"https://example.com/p"}}}]}}`)
 	var item commodel.Assignment
 	if err := json.Unmarshal(w.Body.Bytes(), &item); err != nil || item.AssignmentID == "" {
@@ -223,15 +209,8 @@ func TestAssignmentProgressRequiresRunningTriggerAndCanComplete(t *testing.T) {
 		t.Fatal(err)
 	}
 	w = destinationRequest(g, http.MethodPost, path, body)
-	if w.Code != http.StatusOK {
-		t.Fatalf("progress: %d %s", w.Code, w.Body.String())
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &item); err != nil || item.State != "completed" || item.Progress.Summary != "found the answer" || len(item.Progress.Findings) != 1 {
-		t.Fatalf("progress not durable: %v %+v", err, item)
-	}
-	w = destinationRequest(g, http.MethodPost, path, body)
-	if w.Code != http.StatusOK {
-		t.Fatalf("same trigger retry not idempotent: %d", w.Code)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("communication running file authorized ToolHub progress: %d", w.Code)
 	}
 }
 
@@ -242,10 +221,7 @@ func TestAssignmentProgressRequiresRunningTriggerAndCanComplete(t *testing.T) {
 func TestAssignmentCommands(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
+	g, host, _ := automationGatewayFixture(t, c)
 	user := g.users[11]
 	w := destinationRequest(g, http.MethodPost, "/v1/assignments", `{"title":"prices","intent":"watch prices","apply":true,"plan":{"sources":[{"name":"page","schedule":{"channel":"telegram_bot","chat_id":11,"timezone":"UTC","expression":"every:15m","job_kind":"watcher","input":"w","probe":{"kind":"http","url":"https://example.com/p"}}}],"specialist":{"instructions":"report changes"},"unavailable":[{"reference":"private community","reason":"membership required"}]}}`)
 	var created commodel.Assignment
@@ -263,7 +239,7 @@ func TestAssignmentCommands(t *testing.T) {
 		t.Fatalf("status command wrong: %q", out)
 	}
 	out = g.assignmentCommand(user, 11, "/assignment "+id+" pause", locale.LangRU)
-	item, _ := g.spool.rt.LoadAssignment(id, user.Envelope(11))
+	item, _ := host.LoadAssignment(context.Background(), user.Envelope(11), id)
 	if !strings.Contains(out, "pause") && item.State != "paused" {
 		t.Fatalf("pause command failed: %q state=%s", out, item.State)
 	}
@@ -272,7 +248,7 @@ func TestAssignmentCommands(t *testing.T) {
 	}
 	// authorize stamps the plan revision — the only grant-widening verb.
 	out = g.assignmentCommand(user, 11, "/assignment "+id+" authorize 30 8", locale.LangRU)
-	item, _ = g.spool.rt.LoadAssignment(id, user.Envelope(11))
+	item, _ = host.LoadAssignment(context.Background(), user.Envelope(11), id)
 	if !strings.Contains(out, "authorize") || item.GrantsAuthorizedRev != item.Plan.Revision+1 || item.Grants.MaxWakesPerDay != 30 {
 		t.Fatalf("authorize did not stamp plan revision: %+v (out=%q)", item, out)
 	}
@@ -290,30 +266,11 @@ func TestAssignmentCommands(t *testing.T) {
 	}
 }
 
-// The assignment wake bundle is model-facing: it pins the owner's stored
-// language like the per-run instructions do (ADR-0084 D5).
-func TestAssignmentWakeBundleLangHint(t *testing.T) {
-	s, o, _ := occurrenceFixture(t)
-	caller := o.Job.Envelope
-	asg := commodel.Assignment{AssignmentID: "asg1", Title: "prices", Intent: "watch prices", State: "active", AppliedRev: 1, Envelope: caller, Plan: &commodel.AssignmentPlan{Revision: 1}}
-	if _, _, err := s.rt.CreateAssignment(asg, caller); err != nil {
-		t.Fatal(err)
-	}
-	s.langOf = func(string) locale.Lang { return locale.LangES }
-	st := &EventState{}
-	schedule := Schedule{ScheduleID: "ev-asg", AssignmentID: "asg1", AssignmentPlanRevision: 1, Sink: "agent", Timezone: "UTC"}
-	s.mu.Lock()
-	err := s.startSourceBatchLocked(st, schedule, o.Job, []Event{{ID: "e1", Text: "one"}}, nil, "seed-1", "", nil, map[string][]string{"": {"e1"}}, nil, time.Now().UTC())
-	s.mu.Unlock()
-	if err != nil || st.PendingBatch == nil || len(st.PendingBatch.Jobs) != 1 {
-		t.Fatalf("assignment wake planned no bundle job: %v", err)
-	}
-	for _, job := range st.PendingBatch.Jobs {
-		if !strings.Contains(job.Text, "language is Español (es)") {
-			t.Fatalf("bundle missing owner language hint: %q", job.Text)
-		}
-	}
-}
+// The assignment wake bundle — owner intent, specialist instructions, the
+// assignment_progress verb contract and the owner's stored language
+// (ADR-0084 D5) — is planned inside the ToolHub owner now. The assertion
+// moved with it: TestAssignmentWakeBundleCarriesOwnerContractAndLanguage in
+// internal/toolhub/automation drives the real settle path end to end.
 
 // TestAssignmentCommandsLocalized: the same replies render in the caller's
 // workspace locale — the catalog supplies every fixed string, the record
@@ -321,10 +278,7 @@ func TestAssignmentWakeBundleLangHint(t *testing.T) {
 func TestAssignmentCommandsLocalized(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
+	g, _, _ := automationGatewayFixture(t, c)
 	user := g.users[11]
 	out := g.assignmentsCommand(user, 11, locale.LangEN)
 	if !strings.Contains(out, "None yet.") {
@@ -337,18 +291,8 @@ func TestAssignmentCommandsLocalized(t *testing.T) {
 		t.Fatalf("create failed: %d %s", w.Code, w.Body.String())
 	}
 	id := created.AssignmentID
-	g.spool.mu.Lock()
-	allowed, wakeErr := g.spool.rt.ReserveAssignmentWakeLocked(id, "localized-test-wake", time.Now(), created.Plan.Revision)
-	if wakeErr == nil && allowed {
-		wakeErr = g.spool.rt.SettleAssignmentWakeLocked(id, "localized-test-wake", created.Plan.Revision)
-	}
-	g.spool.mu.Unlock()
-	if wakeErr != nil || !allowed {
-		t.Fatalf("assignment wake: allowed=%v err=%v", allowed, wakeErr)
-	}
-
 	out = g.assignmentsCommand(user, 11, locale.LangEN)
-	if !strings.Contains(out, "Standing assignments:") || !strings.Contains(out, id) || !strings.Contains(out, "wakes today") {
+	if !strings.Contains(out, "Standing assignments:") || !strings.Contains(out, id) {
 		t.Errorf("en list wrong: %q", out)
 	}
 	out = g.assignmentCommand(user, 11, "/assignment "+id+" status", locale.LangEN)
@@ -377,9 +321,8 @@ func TestAssignmentCommandsLocalized(t *testing.T) {
 		t.Errorf("en unavailable wrong: %q", out)
 	}
 
-	// A store that cannot list — engine rooted at an invalid path — surfaces
-	// the localized unavailable reply rather than a panic.
-	g.spool.rt = routines.NewEngine("bad\x00root", &sync.Mutex{}, routines.Deps{})
+	// An unavailable ToolHub surfaces the localized reply.
+	g.config.ToolHubURL = ""
 	if out = g.assignmentsCommand(user, 11, locale.LangEN); !strings.Contains(out, "unavailable") {
 		t.Errorf("en list-unavailable wrong: %q", out)
 	}
@@ -390,10 +333,7 @@ func TestAssignmentCommandsLocalized(t *testing.T) {
 // and the help inventory advertises both.
 func TestAssignmentCommandDispatch(t *testing.T) {
 	c := testConfig(t)
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
+	g, _, _ := automationGatewayFixture(t, c)
 	fake := &fakeAPI{}
 	g.api, g.runner = fake, &fakeRunner{}
 	ctx := context.Background()

@@ -290,6 +290,13 @@ func TestRenderSplitsGatewaySecretsFromRuntime(t *testing.T) {
 	if err := RenderEnvironment(d, root, "prod"); err != nil {
 		t.Fatal(err)
 	}
+	automationRoot := filepath.Join(d, "automation", "prod")
+	if info, err := os.Stat(automationRoot); err != nil || !info.IsDir() {
+		t.Fatalf("prod automation root missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(d, "automation", "dev")); !os.IsNotExist(err) {
+		t.Fatalf("prod render created dev automation state: %v", err)
+	}
 	runtimeEnv, err := os.ReadFile(filepath.Join(d, "runtime.prod.env"))
 	if err != nil {
 		t.Fatal(err)
@@ -1536,6 +1543,75 @@ func TestComposeMountsPublishedPassportsPerPrincipalForToolhub(t *testing.T) {
 		if strings.Contains(target, "vault") || strings.Contains(source, "vault") {
 			t.Fatalf("runtime must not mount the vault: %#v", volume)
 		}
+	}
+}
+
+func TestComposeMountsAutomationOwnersAndLegacyPreflight(t *testing.T) {
+	spacesRoot := filepath.Join(t.TempDir(), "spaces")
+	dir := filepath.Join(spacesRoot, "alice")
+	for _, user := range []string{"alice", "bob"} {
+		if err := os.MkdirAll(filepath.Join(spacesRoot, user, "automation", "dev"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(spacesRoot, "carol", "automation", "prod"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "automation-routing"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s := Settings{Schema: 1, Environment: "dev", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
+	toolhub := Compose(s, dir, dir)["services"].(M)["toolhub"].(M)
+	env := toolhub["environment"].(M)
+	if env["HUB_AUTOMATION_OWNERS"] != "/automation-owners" || env["HUB_AUTOMATION_LEGACY_SPOOL"] != "/legacy-communication" || env["HUB_AUTOMATION_ROUTING"] != "/automation-routing/dev.json" || env["HUB_AUTOMATION_ENVIRONMENT"] != "dev" {
+		t.Fatal("automation owner paths or environment missing")
+	}
+	if env["HUB_AUTOMATION_JOB_URL"] != "http://hermes-runtime:8080" || env["HUB_AUTOMATION_JOB_PATH"] != "/v1/execute" {
+		t.Fatal("static automation route does not match the runtime HTTP contract")
+	}
+	mounted := map[string]M{}
+	for _, raw := range toolhub["volumes"].([]any) {
+		mount := raw.(M)
+		if target, ok := mount["target"].(string); ok {
+			mounted[target] = mount
+		}
+	}
+	for _, user := range []string{"alice", "bob"} {
+		mount := mounted["/automation-owners/"+user]
+		if mount == nil || mount["source"] != filepath.ToSlash(filepath.Join(spacesRoot, user, "automation", "dev")) || mount["read_only"] == true {
+			t.Fatalf("missing writable dev automation owner %s: %v", user, mount)
+		}
+	}
+	if mounted["/automation-owners/carol"] != nil {
+		t.Fatal("prod automation state leaked into dev ToolHub")
+	}
+	if mount := mounted["/legacy-communication"]; mount == nil || mount["source"] != "communication-hub-data" || mount["read_only"] != true {
+		t.Fatalf("legacy preflight mount: %v", mount)
+	}
+	if mount := mounted["/automation-routing"]; mount == nil || mount["read_only"] != true {
+		t.Fatal("routing view is not mounted read-only")
+	}
+}
+
+func TestRenderAutomationRoutingContainsOnlyChannelIdentities(t *testing.T) {
+	dir := t.TempDir()
+	s := Settings{Environment: "dev", User: "alice"}
+	if err := renderAutomationRouting(dir, s, map[string]string{"TELEGRAM_ALLOWED_USERS": "11", "SLACK_ALLOWED_USERS": "TEAM/USER", "TELEGRAM_BOT_TOKEN": "secret-marker"}); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "automation-routing", "dev.json"))
+	if err != nil || !strings.Contains(string(body), `"telegram_ids":[11]`) || !strings.Contains(string(body), `"team_id":"TEAM"`) || strings.Contains(string(body), "secret-marker") {
+		t.Fatal("fallback routing projection is invalid or contains a credential")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "communication.users.yaml"), []byte("organization_id: personal\nusers:\n  - id: bob\n    enabled: true\n    runtime_id: bob\n    telegram_ids: [22]\n    state_dir: /private-state\n    workspace_dir: /private-workspace\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := renderAutomationRouting(dir, s, nil); err != nil {
+		t.Fatal(err)
+	}
+	body, err = os.ReadFile(filepath.Join(dir, "automation-routing", "dev.json"))
+	if err != nil || !strings.Contains(string(body), `"id":"bob"`) || strings.Contains(string(body), "private-") || strings.Contains(string(body), `"id":"alice"`) {
+		t.Fatal("multi-user routing projection retained unrelated fields")
 	}
 }
 

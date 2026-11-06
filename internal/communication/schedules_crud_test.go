@@ -10,16 +10,16 @@ import (
 )
 
 func TestScheduleDoesNotAccumulateOccurrencesWhilePreviousPending(t *testing.T) {
-	s, _, g := occurrenceFixture(t)
+	s, _, _ := occurrenceFixture(t)
 	caller := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
 	created, err := s.CreateSchedule(Schedule{ScheduleID: "bounded", Envelope: caller, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "* * * * *", Input: "work", JobKind: "agent"}, caller, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.TickSchedules(created.NextDue, "", g.authorizeOccurrence); err != nil {
+	if err := s.TickSchedules(created.NextDue, "", s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.TickSchedules(created.NextDue.Add(2*time.Minute), "", g.authorizeOccurrence); err != nil {
+	if err := s.TickSchedules(created.NextDue.Add(2*time.Minute), "", s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := os.ReadDir(filepath.Join(s.root, "occurrences"))
@@ -31,7 +31,7 @@ func TestScheduleDoesNotAccumulateOccurrencesWhilePreviousPending(t *testing.T) 
 // Schedule CRUD round-trip at the spool layer: create/list/update/pause/
 // snooze/delete plus routine-failure dedup, replay and the native-cron guard.
 func TestScheduleCRUDRoundTrip(t *testing.T) {
-	s, _, g := occurrenceFixture(t)
+	s, _, _ := occurrenceFixture(t)
 	caller := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
 	foreign := identity.TelegramEnvelope("bob", 22, "bob", "policy-1")
 
@@ -117,7 +117,7 @@ func TestScheduleCRUDRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Add(2 * time.Minute)
-	if err := s.TickSchedules(now, "", g.authorizeOccurrence); err != nil {
+	if err := s.TickSchedules(now, "", s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	// A fresh schedule on an unmigrated native-cron context is refused.

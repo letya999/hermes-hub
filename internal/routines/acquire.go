@@ -58,9 +58,10 @@ func (e *Engine) writeAcquireLocked(st AcquireState) error {
 	return e.atomicJSON(e.acquirePath(st.Key), st)
 }
 
-// AcquireSubscribeLocked registers a schedule's interest in the shared
+// acquireSubscribeLocked registers a schedule's interest in the shared
 // source; the pool's freshness window is the shortest subscriber interval.
-func (e *Engine) AcquireSubscribeLocked(principal, url, scheduleID string, interval time.Duration, now time.Time) {
+// The engine lock must be held.
+func (e *Engine) acquireSubscribeLocked(principal, url, scheduleID string, interval time.Duration, now time.Time) {
 	key := acquireKey(principal, url)
 	st, err := e.loadAcquireLocked(principal, url)
 	if err != nil {
@@ -73,10 +74,11 @@ func (e *Engine) AcquireSubscribeLocked(principal, url, scheduleID string, inter
 	_ = e.writeAcquireLocked(st)
 }
 
-// AcquirePeekLocked returns the body fetched earlier in this probe sweep —
+// acquirePeekLocked returns the body fetched earlier in this probe sweep —
 // coalescing never serves a body fetched by a previous sweep (SPEC-0081
 // R2.1). Durable retry-after backoff still fences peeks across sweeps.
-func (e *Engine) AcquirePeekLocked(principal, url string, now time.Time) ([]byte, bool) {
+// The engine lock must be held.
+func (e *Engine) acquirePeekLocked(principal, url string, now time.Time) ([]byte, bool) {
 	if st, err := e.loadAcquireLocked(principal, url); err == nil && st.NextPollAt.After(now) {
 		return nil, false
 	}
@@ -84,9 +86,9 @@ func (e *Engine) AcquirePeekLocked(principal, url string, now time.Time) ([]byte
 	return body, ok
 }
 
-// AcquireRecordLocked caches the body for the rest of this sweep and stamps
-// the durable fetch timestamp.
-func (e *Engine) AcquireRecordLocked(principal, url string, body []byte, now time.Time) error {
+// acquireRecordLocked caches the body for the rest of this sweep and stamps
+// the durable fetch timestamp. The engine lock must be held.
+func (e *Engine) acquireRecordLocked(principal, url string, body []byte, now time.Time) error {
 	key := acquireKey(principal, url)
 	if e.acquireBurst == nil {
 		e.acquireBurst = map[string][]byte{}
@@ -150,9 +152,9 @@ func (e *Engine) popHookLocked(scheduleID string) []byte {
 	return body
 }
 
-// AcquireBackoffLocked records a Retry-After/backoff deadline; peeks return
-// miss until it elapses (SPEC-0081 R2.2).
-func (e *Engine) AcquireBackoffLocked(principal, url string, until, now time.Time) {
+// acquireBackoffLocked records a Retry-After/backoff deadline; peeks return
+// miss until it elapses (SPEC-0081 R2.2). The engine lock must be held.
+func (e *Engine) acquireBackoffLocked(principal, url string, until, now time.Time) {
 	key := acquireKey(principal, url)
 	st, err := e.loadAcquireLocked(principal, url)
 	if err != nil {

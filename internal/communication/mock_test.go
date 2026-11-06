@@ -27,10 +27,7 @@ func TestMockChannelEndToEnd(t *testing.T) {
 		}
 	}
 	c.Users = append(c.Users, bob)
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
+	g, host, _ := automationGatewayFixture(t, c)
 	g.api = &fakeAPI{}
 	srv := httptest.NewServer(g.Handler())
 	defer srv.Close()
@@ -130,7 +127,9 @@ func TestMockChannelEndToEnd(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("mock routine create: %d", code)
 	}
-	g.tickProactive(due.Add(2 * time.Minute))
+	if err := host.Tick(t.Context(), due.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
 	g.deliverOne(t.Context())
 	if code, body := call(http.MethodGet, "/v1/mock/outbox", nil); code != http.StatusOK || !strings.Contains(body, "разбудить") {
 		t.Fatalf("mock routine delivery: %d %s", code, body)

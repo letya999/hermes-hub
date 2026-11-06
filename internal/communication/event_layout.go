@@ -180,7 +180,7 @@ func (s *Spool) migrateEventLayout() error {
 	}
 	// Validate the entire source/destination set before the first mutation, also on resume.
 	for _, m := range plan.Files {
-		if filepath.Base(m.Name) != m.Name || m.Directory != "event-state" && m.Directory != "run-events" && m.Directory != "provider-dedup" {
+		if filepath.Base(m.Name) != m.Name || m.Directory != "run-events" && m.Directory != "provider-dedup" {
 			return errors.New("invalid event migration manifest")
 		}
 		found := false
@@ -216,11 +216,6 @@ func (s *Spool) migrateEventLayout() error {
 	for _, m := range plan.Files {
 		src := filepath.Join(legacy, m.Name)
 		dst := filepath.Join(s.root, m.Directory, m.Name)
-		if m.Directory == "event-state" {
-			if err := s.markEventStateInitializedPath(dst); err != nil {
-				return err
-			}
-		}
 		if !hasLegacyDir {
 			continue
 		}
@@ -281,36 +276,4 @@ func (s *Spool) migrateEventLayout() error {
 
 	// Retain only the layout version after completion; no lifetime list of cursor IDs.
 	return s.writeJSON(manifestPath, eventLayout{Version: eventLayoutVersion, Complete: true})
-}
-
-func (s *Spool) markEventStateInitializedPath(path string) error {
-	if data, err := s.readEventRecordLocked(path + ".initialized"); err == nil {
-		var marker struct {
-			Version int `json:"version"`
-		}
-		if strictEventJSON(data, &marker) != nil || marker.Version != eventLayoutVersion {
-			return errors.New("invalid cursor initialization evidence")
-		}
-		return nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	return s.writeJSON(path+".initialized", struct {
-		Version int `json:"version"`
-	}{eventLayoutVersion})
-}
-
-func (s *Spool) writeEventStateLocked(id string, st EventState) error {
-	body, err := json.Marshal(st)
-	if err != nil {
-		return err
-	}
-	if len(body) > 4<<20 {
-		return errors.New("source state exceeds record limit")
-	}
-	path := s.eventPath(id)
-	if err := s.markEventStateInitializedPath(path); err != nil {
-		return err
-	}
-	return s.writeJSON(path, st)
 }

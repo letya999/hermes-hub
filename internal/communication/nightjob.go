@@ -218,7 +218,8 @@ func (g *Gateway) draftNightIntent(caller identity.Envelope, p night.IntentPropo
 		title = title[:80]
 	}
 	now := g.now().UTC()
-	_, _, err := g.spool.rt.CreateAssignment(commodel.Assignment{
+	var created commodel.Assignment
+	err := g.automationCall(context.Background(), caller, "assignment.create", map[string]any{"assignment": commodel.Assignment{
 		AssignmentID:   "asg-night-" + hex.EncodeToString(sum[:])[:16],
 		Revision:       1,
 		Envelope:       caller,
@@ -229,7 +230,7 @@ func (g *Gateway) draftNightIntent(caller identity.Envelope, p night.IntentPropo
 		State:          "draft",
 		CreatedAt:      now,
 		UpdatedAt:      now,
-	}, caller)
+	}}, &created)
 	return err
 }
 

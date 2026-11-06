@@ -25,8 +25,8 @@ import (
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/memory/night"
-	"github.com/letya999/hermes-hub/internal/routines"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
+	"github.com/letya999/hermes-hub/internal/toolhub/automation"
 )
 
 type Gateway struct {
@@ -77,10 +77,20 @@ type Gateway struct {
 	// spool's under-lock admission check never performs I/O.
 	holdsMu       sync.Mutex
 	holdsLast     []masterHold
-	streamMu      sync.Mutex
-	streamCalls   map[string]*streamSharedCall
 	maintenanceMu sync.Mutex
 	maintenance   storageMaintenanceStatus
+}
+
+func (g *Gateway) automationCall(ctx context.Context, caller identity.Envelope, operation string, payload, out any) error {
+	return (automation.ControlClient{URL: g.config.ToolHubURL, Token: g.config.AutomationAuth}).Call(ctx, caller, operation, payload, out)
+}
+
+func automationStatus(err error) int {
+	var control automation.ControlError
+	if errors.As(err, &control) {
+		return control.StatusCode
+	}
+	return http.StatusBadGateway
 }
 
 func New(config Config) (*Gateway, error) {
@@ -109,6 +119,13 @@ func New(config Config) (*Gateway, error) {
 				return nil, fmt.Errorf("user %q runtime root is unavailable", user.ID)
 			}
 		}
+	}
+	if _, err := os.Lstat(config.SpoolDir); err == nil {
+		if err := automation.ValidateLegacySpool(config.SpoolDir); err != nil {
+			return nil, err
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, err
 	}
 	spool, err := NewSpool(config.SpoolDir)
 	if err != nil {
@@ -152,8 +169,7 @@ func New(config Config) (*Gateway, error) {
 	// murder pending links (nonce hashes only — the link stays the secret).
 	g.drafts.load(filepath.Join(config.SpoolDir, "skill-drafts.json"), g.now)
 	spool.JobDone = g.toolHubJobDone
-	spool.probeScript = g.runProbeScript
-	spool.resolveChannel = func(id string) routines.OccurrenceChannel { return g.channel(id) }
+	spool.jobFence = g.routineJobLive
 	spool.langOf = func(principalID string) locale.Lang {
 		if u := g.user(principalID); u.ID != "" && u.WorkspaceDir != "" {
 			return locale.LangOf(u.WorkspaceDir)
@@ -244,27 +260,12 @@ func (g *Gateway) Run(ctx context.Context) error {
 	}
 	deliveryDone := make(chan struct{})
 	controlDone := make(chan struct{})
-	proactiveDone := make(chan struct{})
 	progressDone := make(chan struct{})
 	nightDone := make(chan struct{})
-	streamDone := g.startStreamLoops(workerCtx)
 	canaryDone := make(chan struct{})
 	go func() {
 		defer close(canaryDone)
 		g.canaryLoop(workerCtx, canaryInterval())
-	}()
-	go func() {
-		defer close(proactiveDone)
-		ticker := time.NewTicker(5 * time.Second)
-		defer ticker.Stop()
-		for {
-			g.tickProactiveContext(workerCtx, g.now().UTC())
-			select {
-			case <-workerCtx.Done():
-				return
-			case <-ticker.C:
-			}
-		}
 	}()
 	go func() {
 		defer close(controlDone)
@@ -285,8 +286,6 @@ func (g *Gateway) Run(ctx context.Context) error {
 	}()
 	go func() {
 		defer close(nightDone)
-		// The rollup clock is HH:MM-granular — a minute tick is precise
-		// enough and keeps one rollup from ever overlapping the next.
 		ticker := time.NewTicker(60 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -319,10 +318,8 @@ func (g *Gateway) Run(ctx context.Context) error {
 		<-deliveryDone
 		<-captureDone
 		<-controlDone
-		<-proactiveDone
 		<-progressDone
 		<-nightDone
-		<-streamDone
 		<-canaryDone
 		g.usageWG.Wait()
 	}()
@@ -658,7 +655,7 @@ func (g *Gateway) dispatchChannelCommand(ctx context.Context, user User, task Ta
 			}
 			return reply(answer)
 		case "routines":
-			items, err := g.spool.ListSchedules(user.Envelope(sender))
+			items, err := g.listSchedules(ctx, user.Envelope(sender))
 			if err != nil {
 				return reply(locale.T(lang, "chat.routines-unavail"))
 			}

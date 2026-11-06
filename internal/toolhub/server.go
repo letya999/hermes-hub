@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -426,6 +427,64 @@ func (e *projectionEndpoint) PublicHandler() http.Handler {
 }
 
 func (h *projectionEndpoint) RefreshProjection() error { return h.gateway.RefreshProjection() }
+
+func (e *projectionEndpoint) EnrolledPrincipals() []string {
+	g := e.gateway
+	g.mu.Lock()
+	seen := make(map[string]bool, len(g.Tokens))
+	for _, auth := range g.Tokens {
+		seen[auth.PrincipalID] = true
+	}
+	g.mu.Unlock()
+	principals := make([]string, 0, len(seen))
+	for principal := range seen {
+		principals = append(principals, principal)
+	}
+	slices.Sort(principals)
+	return principals
+}
+
+// CallReadTool is the in-process automation probe path. The principal must
+// resolve to one enrolled envelope; the shared read projection is checked
+// again at the call boundary.
+func (e *projectionEndpoint) CallReadTool(ctx context.Context, principal, name string, arguments map[string]any) ([]byte, error) {
+	auth, err := e.EnrolledAuth(principal)
+	if err != nil {
+		return nil, err
+	}
+	result, err := e.gateway.callReadTool(ctx, auth, name, arguments)
+	if err != nil {
+		return nil, err
+	}
+	if result.IsError {
+		return nil, errors.New("tool probe failed")
+	}
+	return flattenToolText(result), nil
+}
+
+func (e *projectionEndpoint) EnrolledAuth(principal string) (identity.Envelope, error) {
+	if !identity.ValidID(principal) {
+		return identity.Envelope{}, api.ErrUnauthorized
+	}
+	g := e.gateway
+	g.mu.Lock()
+	var auth identity.Envelope
+	for _, candidate := range g.Tokens {
+		if candidate.PrincipalID != principal {
+			continue
+		}
+		if auth.PrincipalID != "" && !auth.Equal(candidate) {
+			g.mu.Unlock()
+			return identity.Envelope{}, api.ErrUnauthorized
+		}
+		auth = candidate
+	}
+	g.mu.Unlock()
+	if auth.PrincipalID == "" {
+		return identity.Envelope{}, api.ErrUnauthorized
+	}
+	return auth, nil
+}
 
 type workloadReadiness func(context.Context, api.EffectiveBinding, map[string]string) error
 

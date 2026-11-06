@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/communication"
+	"github.com/letya999/hermes-hub/internal/routines"
 )
 
 // Server runs inside the gateway container. Credentials and routing come from
@@ -263,7 +264,7 @@ func serverPromptModeJobCase(ctx context.Context, client *http.Client, config co
 			if _, err := waitAcceptanceWatch(ctx, config.SpoolDir, source.ScheduleID, true); err != nil {
 				return "FAIL", err.Error()
 			}
-			sourceJob := communication.OccurrenceID(communication.RoutineOccurrence{ScheduleID: source.ScheduleID, Revision: createdSource.Revision, DueAt: createdSource.NextDue.Add(time.Minute)})
+			sourceJob := routines.OccurrenceID(communication.RoutineOccurrence{ScheduleID: source.ScheduleID, Revision: createdSource.Revision, DueAt: createdSource.NextDue.Add(time.Minute)})
 			if _, err := os.Stat(filepath.Join(config.SpoolDir, "mappings", sourceJob+".json")); !os.IsNotExist(err) {
 				return "FAIL", "digest source entered agent queue or queue lookup failed"
 			}
@@ -289,7 +290,7 @@ func serverPromptModeJobCase(ctx context.Context, client *http.Client, config co
 		}
 		// Initial observation establishes a quiet baseline; the next minute
 		// observes a new public UUID without changing the probe or its state.
-		first := communication.OccurrenceID(communication.RoutineOccurrence{ScheduleID: id, Revision: created.Revision, DueAt: created.NextDue})
+		first := routines.OccurrenceID(communication.RoutineOccurrence{ScheduleID: id, Revision: created.Revision, DueAt: created.NextDue})
 		quiet := filepath.Join(config.SpoolDir, "outbox", "done", "watch-"+first+".json")
 		if mode == "mock-server" {
 			quiet = filepath.Join(config.SpoolDir, "mock-sent", "watch-"+first+".json")
@@ -299,7 +300,7 @@ func serverPromptModeJobCase(ctx context.Context, client *http.Client, config co
 		}
 		created.NextDue = created.NextDue.Add(time.Minute)
 	}
-	jobID := communication.OccurrenceID(communication.RoutineOccurrence{ScheduleID: id, Revision: created.Revision, DueAt: created.NextDue})
+	jobID := routines.OccurrenceID(communication.RoutineOccurrence{ScheduleID: id, Revision: created.Revision, DueAt: created.NextDue})
 	if admittedJob != nil {
 		*admittedJob = jobID
 	}

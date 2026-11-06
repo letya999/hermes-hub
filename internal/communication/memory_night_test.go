@@ -48,10 +48,8 @@ func TestNightJobRunsRollup(t *testing.T) {
 	}
 	c.VaultDir = root
 	c.MemoryRollupTime = "00:00"
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
+	c.ControlAuth = "control-token"
+	g, host, _ := automationGatewayFixture(t, c)
 	now := time.Now()
 	// The rollup folds the last closed local day — an entry captured
 	// yesterday is what the run tonight promotes.
@@ -86,10 +84,11 @@ func TestNightJobRunsRollup(t *testing.T) {
 		t.Fatalf("REVIEW.md missing: %v", err)
 	}
 	// The intent became a draft assignment in the owner's envelope —
-	// never a stored fact, never activated (R5.7).
-	items, err := g.spool.rt.ListAssignments(g.user("alice").Envelope(11))
+	// never a stored fact, never activated (R5.7). ToolHub is the sole
+	// assignment writer, so the draft lands on the automation host.
+	items, err := host.ListAssignments(context.Background(), g.user("alice").Envelope(11))
 	if err != nil || len(items) != 1 || items[0].State != "draft" || items[0].Intent != "call the bank Friday" {
-		t.Fatalf("intent did not land as a draft assignment: %+v %v", items, err)
+		t.Fatalf("intent did not land as a draft assignment on the ToolHub owner: %+v %v", items, err)
 	}
 }
 

@@ -118,6 +118,21 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 			return err
 		}
 	}
+	ownerAutomation := filepath.Join(dir, "automation", s.Environment)
+	if err := os.MkdirAll(ownerAutomation, 0770); err != nil {
+		return err
+	}
+	if info, err := os.Lstat(ownerAutomation); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("unsafe automation owner directory")
+	}
+	if err := os.Chmod(ownerAutomation, 0770); err != nil {
+		return err
+	}
+	if s.RendersInfra() {
+		if err := renderAutomationRouting(dir, s, secrets); err != nil {
+			return err
+		}
+	}
 	if s.Has("memory_vault") {
 		// The git-backed vault is materialized with the rest of the space
 		// tree; Ensure is idempotent so re-renders never disturb content.

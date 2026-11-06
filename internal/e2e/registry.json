@@ -2359,8 +2359,8 @@
     "title": "assignment_progress",
     "action": "Persist a specialist result from a running assignment trigger and reject an unbound job id.",
     "expected": "Only the matching running trigger can update progress; completion is durable and a retry is idempotent.",
-    "package": "communication",
-    "test": "TestAssignmentProgressRequiresRunningTriggerAndCanComplete",
+    "package": "toolhub/automation",
+    "test": "TestAutomationProgressRequiresLiveBoundSupervisorCall",
     "prerequisites": "Synthetic running job and owner envelope; no external send",
     "level": "contract",
     "cleanup": "Remove synthetic spool with the fixture"

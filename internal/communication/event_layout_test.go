@@ -4,19 +4,57 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 )
 
-func TestEventLayoutMigratesCursorAndFencesOldWriter(t *testing.T) {
+// runEventsRecord builds one valid legacy run-receipt: the migration
+// classifier pins filename and schema, so the record has to match production.
+func runEventsRecord(jobID, eventID string) (string, []byte) {
+	sum := sha256.Sum256([]byte(jobID + "\x00" + eventID))
+	name := hex.EncodeToString(sum[:]) + ".json"
+	body := []byte(fmt.Sprintf(`{"job_id":%q,"position":1,"event":{"job_id":%q,"event_id":%q,"status":"completed","last_event":"run.completed","text":"done"}}`, jobID, jobID, eventID))
+	return name, body
+}
+
+// Legacy schedule cursors belonged to the retired automation owner: they must
+// be fenced at open, never migrated into a store communication no longer owns.
+// Communication-owned records in the same legacy directory still migrate.
+func TestEventLayoutFencesLegacyCursorRecord(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "spool")
 	if err := os.MkdirAll(filepath.Join(root, "events"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	name := spoolFileID("paused-source") + ".json"
-	original := []byte(`{"schedule_id":"paused-source","cursor":"resume-42","seen":["one"]}`)
+	cursor := []byte(`{"schedule_id":"paused-source","cursor":"resume-42","seen":["one"]}`)
+	cursorName := spoolFileID("paused-source") + ".json"
+	if err := os.WriteFile(filepath.Join(root, "events", cursorName), cursor, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewSpool(root); err == nil {
+		t.Fatal("legacy schedule cursor silently migrated to the old owner")
+	}
+	if got, err := os.ReadFile(filepath.Join(root, "events", cursorName)); err != nil || !bytes.Equal(got, cursor) {
+		t.Fatal("refused cursor record was modified")
+	}
+}
+
+func TestEventLayoutMigratesReceiptAndFencesOldWriter(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "spool")
+	if err := os.MkdirAll(filepath.Join(root, "events"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	name, original := runEventsRecord("job-9", "evt-42")
 	if err := os.WriteFile(filepath.Join(root, "events", name), original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	// A run receipt always accompanies its admission mapping in production —
+	// recovery cross-checks it.
+	if err := os.MkdirAll(filepath.Join(root, "mappings"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "mappings", "job-9.json"), []byte(`{"job_id":"job-9"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	for range 2 {
@@ -24,13 +62,9 @@ func TestEventLayoutMigratesCursorAndFencesOldWriter(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		st, err := s.EventStateOf("paused-source")
-		if err != nil || st.Cursor != "resume-42" || len(st.Seen) != 1 {
-			t.Fatalf("cursor lost: %+v %v", st, err)
-		}
-		b, err := os.ReadFile(filepath.Join(root, "event-state", name))
+		b, err := s.fsys.ReadFile(filepath.Join(root, "run-events", name))
 		if err != nil || !bytes.Equal(b, original) {
-			t.Fatal("migration changed cursor bytes")
+			t.Fatalf("receipt lost in migration: %v", err)
 		}
 	}
 	if err := os.MkdirAll(filepath.Join(root, "events"), 0700); err == nil {
@@ -45,15 +79,16 @@ func TestEventLayoutRefusesUnknownAndForeignCollision(t *testing.T) {
 			if err := os.MkdirAll(filepath.Join(root, "events"), 0700); err != nil {
 				t.Fatal(err)
 			}
-			name := spoolFileID("source-alpha") + ".json"
-			original := []byte(`{"schedule_id":"source-alpha","cursor":"alpha-42"}`)
+			name, receipt := runEventsRecord("source-alpha", "evt-1")
+			original := receipt
 			if kind == "unknown" {
 				original = []byte(`{"future_schema":1}`)
 			} else {
-				if err := os.MkdirAll(filepath.Join(root, "event-state"), 0700); err != nil {
+				if err := os.MkdirAll(filepath.Join(root, "run-events"), 0700); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(filepath.Join(root, "event-state", name), []byte(`{"schedule_id":"source-beta","cursor":"beta-99"}`), 0600); err != nil {
+				_, other := runEventsRecord("source-beta", "evt-2")
+				if err := os.WriteFile(filepath.Join(root, "run-events", name), other, 0600); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -77,16 +112,21 @@ func TestEventLayoutMigrationCrashResume(t *testing.T) {
 		t.Run(step, func(t *testing.T) {
 			root := filepath.Join(t.TempDir(), "spool")
 			legacy := filepath.Join(root, "events")
-			target := filepath.Join(root, "event-state")
+			target := filepath.Join(root, "run-events")
 			for _, dir := range []string{legacy, target} {
 				if err := os.MkdirAll(dir, 0700); err != nil {
 					t.Fatal(err)
 				}
 			}
-			name := spoolFileID("source-alpha") + ".json"
-			data := []byte(`{"schedule_id":"source-alpha","cursor":"resume-42"}`)
+			name, data := runEventsRecord("job-1", "evt-1")
 			sum := sha256.Sum256(data)
-			if err := atomicJSON(filepath.Join(root, "event-layout.json"), eventLayout{Version: 2, Files: []eventMove{{Name: name, Directory: "event-state", Digest: hex.EncodeToString(sum[:])}}}); err != nil {
+			if err := atomicJSON(filepath.Join(root, "event-layout.json"), eventLayout{Version: 2, Files: []eventMove{{Name: name, Directory: "run-events", Digest: hex.EncodeToString(sum[:])}}}); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Join(root, "mappings"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "mappings", "job-1.json"), []byte(`{"job_id":"job-1"}`), 0600); err != nil {
 				t.Fatal(err)
 			}
 			if step == "planned" || step == "copied" {
@@ -113,36 +153,13 @@ func TestEventLayoutMigrationCrashResume(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			st, err := s.EventStateOf("source-alpha")
-			if err != nil || st.Cursor != "resume-42" {
-				t.Fatalf("resume lost state: %+v %v", st, err)
+			b, err := s.fsys.ReadFile(filepath.Join(root, "run-events", name))
+			if err != nil || !bytes.Equal(b, data) {
+				t.Fatalf("resume lost receipt: %v", err)
 			}
 			if _, err = NewSpool(root); err != nil {
 				t.Fatal(err)
 			}
 		})
-	}
-}
-
-func TestMissingInitializedCursorShowsGap(t *testing.T) {
-	s, err := NewSpool(filepath.Join(t.TempDir(), "spool"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = s.writeEventStateLocked("alpha", EventState{ScheduleID: "alpha", Cursor: "cursor-42"}); err != nil {
-		t.Fatal(err)
-	}
-	if err = os.Remove(s.eventPath("alpha")); err != nil {
-		t.Fatal(err)
-	}
-	st, err := s.EventStateOf("alpha")
-	if err == nil || !st.Degraded || st.GapCount < 1 {
-		t.Fatalf("lost cursor silently reset: %+v %v", st, err)
-	}
-	if err = os.RemoveAll(filepath.Join(s.root, "event-state")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = NewSpool(s.root); err == nil {
-		t.Fatal("lost initialized event directory silently recreated")
 	}
 }

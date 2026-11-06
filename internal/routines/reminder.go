@@ -16,10 +16,10 @@ func OwnsHistoryEnvelope(item commodel.Schedule, envelope identity.Envelope) boo
 	return envelope.PrincipalID == item.Envelope.PrincipalID && envelope.ContextID == item.Envelope.ContextID && (envelope.Equal(item.Envelope) || slices.ContainsFunc(item.PriorEnvelopes, envelope.Equal))
 }
 
-// ReminderStateLocked derives a reminder occurrence's outcome on owner reads;
-// transport failures must never look like successful sends. The engine lock
-// must be held.
-func (e *Engine) ReminderStateLocked(item commodel.Schedule) (string, string) {
+// ReminderState derives a reminder occurrence's outcome on owner reads;
+// transport failures must never look like successful sends. Lock-free
+// durable read — safe under any owner lock.
+func (e *Engine) ReminderState(item commodel.Schedule) (string, string) {
 	id := item.LastOccurrenceID
 	if !commodel.IDPattern.MatchString(id) || len(id) > 160 {
 		return "unavailable", ""

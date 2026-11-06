@@ -102,7 +102,7 @@ func (e *Engine) RunDueScripts(ctx context.Context, now time.Time, authorize fun
 		receipt := filepath.Join(e.root, "occurrences", occurrenceID(o)+".script-output")
 		var texts []string
 		e.mu.Lock()
-		current := e.OccurrenceCurrentLocked(o) && authorize != nil && authorize(o.Job) == nil
+		current := e.OccurrenceCurrent(o) && authorize != nil && authorize(o.Job) == nil
 		e.mu.Unlock()
 		if !current {
 			o.State = "cancelled"
@@ -129,14 +129,14 @@ func (e *Engine) RunDueScripts(ctx context.Context, now time.Time, authorize fun
 		}
 		e.mu.Lock()
 		defer e.mu.Unlock()
-		if !e.OccurrenceCurrentLocked(o) || authorize(o.Job) != nil {
+		if !e.OccurrenceCurrent(o) || authorize(o.Job) != nil {
 			o.State = "cancelled"
 			_ = e.atomicJSON(path, o)
 			return
 		}
 		for i, text := range texts {
 			d, err := e.normalizeDelivery(commodel.Delivery{ID: "script-" + o.Job.ID + "-" + strconv.Itoa(i), OccurrenceID: o.Job.ID, Channel: o.Job.Channel, ConversationID: o.Job.ConversationID, DeliveryTargetID: o.Job.DeliveryTargetID, ChatID: o.Job.ChatID, TaskID: o.Job.TaskID, TopicID: o.Job.TopicID, SlackChannel: o.Job.SlackChannel, SlackThread: o.Job.SlackThread, Text: text, CreatedAt: now.UTC()})
-			if err != nil || e.deps.EnqueueDelivery(d) != nil {
+			if err != nil || e.deps.Delivery.EnqueueDelivery(d) != nil {
 				return
 			}
 		}

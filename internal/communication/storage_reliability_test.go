@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/letya999/hermes-hub/internal/routines"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/storagebudget"
 	"io"
@@ -369,28 +370,26 @@ func TestInspectAbsentSpoolIsReadOnlyAndDoesNotInitialize(t *testing.T) {
 	}
 }
 
+// Hook intake must reach the owner's storage port — the budget fence lives
+// behind routines.StoragePort.WriteBytes now, so an owner that denies the
+// write sees the denial and no hook payload lands on disk.
 func TestRoutineHookCannotBypassOwnerStorageBudget(t *testing.T) {
-	root := storageQuotaFixture(t, "16384", "4096", "4096")
-	s, err := OpenSpool(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{"one", "two"} {
-		if err := s.writeBlob(filepath.Join(root, "inbound", name), make([]byte, 4096), false); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := s.rt.IntakeHook("hook-fixture", bytes.Repeat([]byte("x"), 4096), time.Now()); !errors.Is(err, storagebudget.ErrQuota) {
+	engine := routines.NewEngine(t.TempDir(), routines.Deps{Storage: routines.StoragePort{
+		MkdirAll:   func(path string, _ bool) error { return os.MkdirAll(path, 0o700) },
+		WriteBytes: func(string, []byte) error { return storagebudget.ErrQuota },
+	}})
+	if err := engine.IntakeHook("hook-fixture", bytes.Repeat([]byte("x"), 4096), time.Now()); !errors.Is(err, storagebudget.ErrQuota) {
 		t.Fatal("hook bypassed lifecycle reserve", err)
 	}
-	inspector, err := InspectSpool(root)
-	if err != nil {
-		t.Fatal(err)
+	root := t.TempDir()
+	readOnly := routines.NewEngine(root, routines.Deps{Storage: routines.StoragePort{
+		MkdirAll:   func(path string, _ bool) error { return os.MkdirAll(path, 0o700) },
+		WriteBytes: func(string, []byte) error { return errReadOnlySpool },
+	}})
+	if err := readOnly.IntakeHook("read-only-fixture", []byte("x"), time.Now()); !errors.Is(err, errReadOnlySpool) {
+		t.Fatal("read-only owner admitted hook write", err)
 	}
-	if err := inspector.rt.IntakeHook("read-only-fixture", []byte("x"), time.Now()); !errors.Is(err, errReadOnlySpool) {
-		t.Fatal("inspection admitted hook write", err)
-	}
-	if _, err := os.Stat(filepath.Join(root, "hooks", "read-only-fixture")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("inspection created hook directory", err)
+	if entries, _ := filepath.Glob(filepath.Join(root, "hooks", "read-only-fixture", "*.json")); len(entries) != 0 {
+		t.Fatal("denied owner staged a hook payload")
 	}
 }

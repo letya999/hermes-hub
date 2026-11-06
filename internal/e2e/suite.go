@@ -73,12 +73,18 @@ func Registry() ([]Case, error) {
 		if !regexp.MustCompile(`^E2E-[0-9]{3}$`).MatchString(c.ID) || seen[c.ID] || c.Action == "" || c.Expected == "" || c.Prerequisites == "" || c.Cleanup == "" {
 			return nil, fmt.Errorf("incomplete or duplicate acceptance case %q", c.ID)
 		}
-		if (c.Package == "") != (c.Test == "") || (c.Package != "" && !regexp.MustCompile(`^[a-z]+$`).MatchString(c.Package)) || (c.Test != "" && !regexp.MustCompile(`^Test[A-Za-z0-9]+$`).MatchString(c.Test)) {
+		if (c.Package == "") != (c.Test == "") || (c.Package != "" && !regexp.MustCompile(`^[a-z]+(/[a-z]+)*$`).MatchString(c.Package)) || (c.Test != "" && !regexp.MustCompile(`^Test[A-Za-z0-9]+$`).MatchString(c.Test)) {
 			return nil, fmt.Errorf("unsafe test selector in %s", c.ID)
 		}
 		seen[c.ID] = true
 	}
 	return cases, nil
+}
+
+// testBinaryName flattens a package selector into a sibling-free filename so
+// a subpackage selector (toolhub/automation) cannot escape the temp dir.
+func testBinaryName(pkg string) string {
+	return strings.ReplaceAll(pkg, "/", "-") + ".test.exe"
 }
 
 // TestVerdict refuses false green from an unmatched selector or a skipped test.
@@ -140,7 +146,7 @@ func Mock(ctx context.Context, cases []Case, execute Execute, progress io.Writer
 		if c.Test != "" {
 			binary := binaries[c.Package]
 			if binary == "" {
-				binary = filepath.Join(dir, c.Package+".test.exe")
+				binary = filepath.Join(dir, testBinaryName(c.Package))
 				_, err := execute(ctx, "go", "test", "-c", "-race", "-o", binary, "./internal/"+c.Package)
 				if err != nil {
 					return report, fmt.Errorf("compile %s test fixture: %w", c.Package, err)

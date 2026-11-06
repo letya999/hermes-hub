@@ -392,7 +392,7 @@ func TestScanPredictsKeptAndFold(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rep, err := Scan(root, Options{RetentionDays: 7, FoldBytes: 512})
+	rep, err := Scan(root, Options{RetentionDays: 7, FoldBytes: 512, TZ: time.Local})
 	if err != nil {
 		t.Fatal(err)
 	}

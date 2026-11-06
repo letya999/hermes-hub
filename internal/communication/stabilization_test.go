@@ -15,16 +15,18 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/routines"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
+	"github.com/letya999/hermes-hub/internal/toolhub/automation"
 )
 
 func TestM10CronDaysAndMinutes(t *testing.T) {
 	from := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
-	next, err := nextCron("0 12 12 * 2", time.UTC, from)
+	next, err := routines.NextCron("0 12 12 * 2", time.UTC, from)
 	if err != nil || next != from.Add(24*time.Hour) {
 		t.Fatalf("Monday 12th must match day of month: %v %v", next, err)
 	}
-	next, err = nextCron("* * * * *", time.UTC, from)
+	next, err = routines.NextCron("* * * * *", time.UTC, from)
 	if err != nil || next != from.Add(time.Minute) {
 		t.Fatalf("minute skipped: %v %v", next, err)
 	}
@@ -82,7 +84,7 @@ func TestM10UsageTornTailAndUnknown(t *testing.T) {
 	}
 }
 
-func m10Watch(t *testing.T, s *Spool, o RoutineOccurrence) Schedule {
+func m10Watch(t *testing.T, s *testOwner, o RoutineOccurrence) Schedule {
 	t.Helper()
 	in := Schedule{ScheduleID: o.ScheduleID, Envelope: o.Job.Envelope, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "* * * * *", Input: "watch", JobKind: "watcher", Probe: &WatchProbe{URL: "https://example.com"}}
 	schedule, err := s.CreateSchedule(in, o.Job.Envelope, "")
@@ -96,13 +98,13 @@ func m10Watch(t *testing.T, s *Spool, o RoutineOccurrence) Schedule {
 }
 
 func TestM10ProbeReceiptRecoversFailedOutboxWithoutRefetch(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	m10Watch(t, s, o)
 	o.JobKind = "watcher"
 	if err := s.PutOccurrence(o, o.Job.Envelope); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	pending := filepath.Join(s.root, "outbox", "pending")
@@ -115,7 +117,7 @@ func TestM10ProbeReceiptRecoversFailedOutboxWithoutRefetch(t *testing.T) {
 	}
 	calls := 0
 	fetch := func(context.Context, string) ([]byte, error) { calls++; return []byte("new"), nil }
-	if err := s.ProbeDueOccurrencesContext(context.Background(), o.DueAt, g.authorizeOccurrence, fetch, nil, nil); err == nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), o.DueAt, s.authorizeOccurrence, fetch, nil, nil); err == nil {
 		t.Fatal("failed outbox admission reported success")
 	}
 	if err := os.Remove(pending); err != nil {
@@ -124,7 +126,7 @@ func TestM10ProbeReceiptRecoversFailedOutboxWithoutRefetch(t *testing.T) {
 	if err := os.Rename(saved, pending); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), o.DueAt, g.authorizeOccurrence, fetch, nil, nil); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), o.DueAt, s.authorizeOccurrence, fetch, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	d, err := s.ClaimDelivery()
@@ -138,19 +140,19 @@ func TestM10ProbeReceiptRecoversFailedOutboxWithoutRefetch(t *testing.T) {
 }
 
 func TestM10DeleteDuringProbeDiscardsResult(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	m10Watch(t, s, o)
 	o.JobKind = "watcher"
 	if err := s.PutOccurrence(o, o.Job.Envelope); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	started, release := make(chan struct{}), make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
-		done <- s.ProbeDueOccurrencesContext(context.Background(), o.DueAt, g.authorizeOccurrence, func(context.Context, string) ([]byte, error) { close(started); <-release; return []byte("new"), nil }, nil, nil)
+		done <- s.ProbeDueOccurrencesContext(context.Background(), o.DueAt, s.authorizeOccurrence, func(context.Context, string) ([]byte, error) { close(started); <-release; return []byte("new"), nil }, nil, nil)
 	}()
 	select {
 	case <-started:
@@ -184,7 +186,7 @@ func TestM10ProactiveCapacityAndCancellation(t *testing.T) {
 			t.Fatal(err)
 		}
 		o.State = "probing"
-		if err := atomicJSON(filepath.Join(s.root, "occurrences", occurrenceID(o)+".json"), o); err != nil {
+		if err := atomicJSON(filepath.Join(s.root, "occurrences", routines.OccurrenceID(o)+".json"), o); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -224,8 +226,14 @@ func TestM10ProactiveCapacityAndCancellation(t *testing.T) {
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancel=%v", err)
 	}
-	if peak.Load() > 2 || active.Load() != 0 || len(s.proactiveFlight) != 0 {
-		t.Fatalf("worker leak peak=%d active=%d flights=%v", peak.Load(), active.Load(), s.proactiveFlight)
+	if peak.Load() > 2 || active.Load() != 0 {
+		t.Fatalf("worker leak peak=%d active=%d", peak.Load(), active.Load())
+	}
+	// A leaked flight marker would silently skip its schedule forever; a
+	// clean pass must re-admit every pending occurrence.
+	var reran atomic.Int32
+	if err := s.processProactive(context.Background(), "probing", func(RoutineOccurrence) { reran.Add(1) }); err != nil || reran.Load() != 4 {
+		t.Fatalf("flight leak after cancel: reran=%d err=%v", reran.Load(), err)
 	}
 }
 
@@ -254,22 +262,22 @@ func TestM10ProbeKindsAndFailure(t *testing.T) {
 }
 
 func TestM10ScriptResultReceiptAndFailure(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	o.JobKind = "script"
 	o.Job.Text = `emit("hello")`
 	if err := s.PutOccurrence(o, o.Job.Envelope); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	calls := 0
 	run := func(context.Context, RoutineOccurrence) ([]string, error) { calls++; return []string{"hello"}, nil }
-	if err := s.RunDueScripts(context.Background(), o.DueAt, g.authorizeOccurrence, run); err != nil {
+	if err := s.RunDueScripts(context.Background(), o.DueAt, s.authorizeOccurrence, run); err != nil {
 		t.Fatal(err)
 	}
 	// Simulate restart after output handoff, before occurrence settlement.
-	file := filepath.Join(s.root, "occurrences", occurrenceID(o)+".json")
+	file := filepath.Join(s.root, "occurrences", routines.OccurrenceID(o)+".json")
 	body, err := os.ReadFile(file)
 	if err != nil {
 		t.Fatal(err)
@@ -282,7 +290,7 @@ func TestM10ScriptResultReceiptAndFailure(t *testing.T) {
 	if err = atomicJSON(file, saved); err != nil {
 		t.Fatal(err)
 	}
-	if err = s.RunDueScripts(context.Background(), o.DueAt, g.authorizeOccurrence, run); err != nil {
+	if err = s.RunDueScripts(context.Background(), o.DueAt, s.authorizeOccurrence, run); err != nil {
 		t.Fatal(err)
 	}
 	d, err := s.ClaimDelivery()
@@ -299,23 +307,23 @@ func TestM10ScriptResultReceiptAndFailure(t *testing.T) {
 	if err = s.PutOccurrence(o, o.Job.Envelope); err != nil {
 		t.Fatal(err)
 	}
-	if err = s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
+	if err = s.DispatchDueOccurrences(o.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
-	if err = s.RunDueScripts(context.Background(), o.DueAt, g.authorizeOccurrence, func(context.Context, RoutineOccurrence) ([]string, error) { return nil, errors.New("OOM") }); err != nil {
+	if err = s.RunDueScripts(context.Background(), o.DueAt, s.authorizeOccurrence, func(context.Context, RoutineOccurrence) ([]string, error) { return nil, errors.New("OOM") }); err != nil {
 		t.Fatal(err)
 	}
-	body, err = os.ReadFile(filepath.Join(s.root, "occurrences", occurrenceID(o)+".json"))
+	body, err = os.ReadFile(filepath.Join(s.root, "occurrences", routines.OccurrenceID(o)+".json"))
 	if err != nil || json.Unmarshal(body, &saved) != nil || saved.State != "failed" {
 		t.Fatalf("script failure not durable: %s %v", body, err)
 	}
-	if _, err = g.runIsolatedScript(context.Background(), o); err == nil {
+	if _, err = (&automation.HTTPSupervisorClient{}).RunScript(context.Background(), o); err == nil {
 		t.Fatal("unsupervised script executed")
 	}
 }
 
 func TestM10DigestQuietSelectionAndRecovery(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	schedule := m10Watch(t, s, o)
 	schedule.NotifyMode = "digest"
 	if err := atomicJSON(s.schedulePath(schedule.ScheduleID), schedule); err != nil {
@@ -325,10 +333,10 @@ func TestM10DigestQuietSelectionAndRecovery(t *testing.T) {
 	if err := s.PutOccurrence(o, o.Job.Envelope); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), o.DueAt, g.authorizeOccurrence, func(context.Context, string) ([]byte, error) { return []byte("new"), nil }, nil, nil); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), o.DueAt, s.authorizeOccurrence, func(context.Context, string) ([]byte, error) { return []byte("new"), nil }, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if d, err := s.ClaimDelivery(); err != nil || d != nil {
@@ -360,7 +368,7 @@ func TestM10DigestQuietSelectionAndRecovery(t *testing.T) {
 	if err := s.PutOccurrence(d, d.Job.Envelope); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(d.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(d.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	delivery, err := s.ClaimDelivery()
@@ -371,13 +379,13 @@ func TestM10DigestQuietSelectionAndRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A stale occurrence state replays its canonical receipt without another send.
-	d.Job.ID = occurrenceID(d)
+	d.Job.ID = routines.OccurrenceID(d)
 	d.Job.IdempotencyKey = d.Job.ID
 	d.State = "pending"
-	if err = atomicJSON(filepath.Join(s.root, "occurrences", occurrenceID(d)+".json"), d); err != nil {
+	if err = atomicJSON(filepath.Join(s.root, "occurrences", routines.OccurrenceID(d)+".json"), d); err != nil {
 		t.Fatal(err)
 	}
-	if err = s.DispatchDueOccurrences(d.DueAt, g.authorizeOccurrence); err != nil {
+	if err = s.DispatchDueOccurrences(d.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	if extra, err := s.ClaimDelivery(); err != nil || extra != nil {
@@ -387,7 +395,7 @@ func TestM10DigestQuietSelectionAndRecovery(t *testing.T) {
 	if err = s.PutOccurrence(d, d.Job.Envelope); err != nil {
 		t.Fatal(err)
 	}
-	if err = s.DispatchDueOccurrences(d.DueAt, g.authorizeOccurrence); err != nil {
+	if err = s.DispatchDueOccurrences(d.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	delivery, err = s.ClaimDelivery()
@@ -397,11 +405,15 @@ func TestM10DigestQuietSelectionAndRecovery(t *testing.T) {
 }
 
 func TestM10RoutineStateSnoozeAndValidation(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
-	schedule := m10Watch(t, s, o)
-	g.spool = s
-	g.config.ControlAuth = "token"
-	g.config.Users = []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}
+	g, host, root := automationGatewayFixture(t, Config{SpoolDir: t.TempDir(), OrganizationID: "personal", TelegramToken: "token", ControlAuth: "token", Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}, StateDir: t.TempDir(), WorkspaceDir: t.TempDir()}}})
+	caller := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
+	schedule, err := host.CreateSchedule(context.Background(), caller, Schedule{ScheduleID: "sched-m10", Envelope: caller, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "* * * * *", Input: "watch", JobKind: "watcher", Probe: &WatchProbe{URL: "https://example.com"}}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = host.SeedWatchBaseline(context.Background(), caller, schedule.ScheduleID, "old", time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	call := func(method, target, body string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(method, target, strings.NewReader(body))
 		r.Header.Set("Authorization", "Bearer token")
@@ -417,14 +429,14 @@ func TestM10RoutineStateSnoozeAndValidation(t *testing.T) {
 	if w := call("POST", "/v1/routines/"+schedule.ScheduleID+"/snooze", `{"until":"`+until.Format(time.RFC3339)+`"}`); w.Code != 200 {
 		t.Fatalf("snooze=%d %s", w.Code, w.Body.String())
 	}
-	saved, err := s.loadScheduleLocked(schedule.ScheduleID)
+	saved, err := host.LoadSchedule(context.Background(), caller, schedule.ScheduleID)
 	if err != nil || saved.Revision != 2 || saved.SnoozedUntil.IsZero() {
 		t.Fatalf("snooze state=%+v %v", saved, err)
 	}
-	if err = s.TickSchedules(time.Now().Add(time.Minute), "", g.authorizeOccurrence); err != nil {
+	if err = host.Tick(context.Background(), time.Now().Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	entries, err := os.ReadDir(filepath.Join(s.root, "occurrences"))
+	entries, err := os.ReadDir(filepath.Join(root, "users", "alice", "occurrences"))
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("snoozed work enqueued: %v %v", entries, err)
 	}
@@ -479,7 +491,7 @@ func TestM10WriterLockAndLocalUsage(t *testing.T) {
 }
 
 func TestM10SupervisorScriptClientHTTPBoundaries(t *testing.T) {
-	_, o, g := occurrenceFixture(t)
+	_, o, _ := occurrenceFixture(t)
 	o.JobKind = "script"
 	o.Job.ID = "owned"
 	o.Job.Trigger = "cron"
@@ -494,42 +506,40 @@ func TestM10SupervisorScriptClientHTTPBoundaries(t *testing.T) {
 		_, _ = w.Write([]byte(response))
 	}))
 	defer srv.Close()
-	g.config.Supervised = true
-	g.config.RuntimeURL = srv.URL
-	g.config.RuntimeAuth = "token"
-	texts, err := g.runIsolatedScript(context.Background(), o)
+	sup := &automation.HTTPSupervisorClient{URL: srv.URL, Token: "token"}
+	texts, err := sup.RunScript(context.Background(), o)
 	if err != nil || len(texts) != 1 || texts[0] != "ok" {
 		t.Fatalf("script client=%v %v", texts, err)
 	}
 	for _, bad := range []string{`invalid`, `["a","b","c","d","e"]`, `["` + strings.Repeat("x", 4097) + `"]`, strings.Repeat("x", 128*1024+1)} {
 		response = bad
-		if _, err = g.runIsolatedScript(context.Background(), o); err == nil {
+		if _, err = sup.RunScript(context.Background(), o); err == nil {
 			t.Fatal("invalid script response accepted")
 		}
 	}
 	status = 502
-	if _, err = g.runIsolatedScript(context.Background(), o); err == nil {
+	if _, err = sup.RunScript(context.Background(), o); err == nil {
 		t.Fatal("failed helper accepted")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err = g.runIsolatedScript(ctx, o); err == nil {
+	if _, err = sup.RunScript(ctx, o); err == nil {
 		t.Fatal("cancelled script request started")
 	}
-	g.config.RuntimeURL = ":invalid"
-	if _, err = g.runIsolatedScript(context.Background(), o); err == nil {
+	sup.URL = ":invalid"
+	if _, err = sup.RunScript(context.Background(), o); err == nil {
 		t.Fatal("invalid supervisor URL accepted")
 	}
 }
 
 func TestM10RevokedProbeCannotUpdateOrDeliver(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	m10Watch(t, s, o)
 	o.JobKind = "watcher"
 	if err := s.PutOccurrence(o, o.Job.Envelope); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	revoked := false
@@ -560,10 +570,10 @@ func TestM10DeleteAfterDispatchFencesDeliveryAndAgent(t *testing.T) {
 			if _, err := s.CreateSchedule(schedule, o.Job.Envelope, ""); err != nil {
 				t.Fatal(err)
 			}
-			if err := s.TickSchedules(due.Add(time.Second), "", g.authorizeOccurrence); err != nil {
+			if err := s.TickSchedules(due.Add(time.Second), "", s.authorizeOccurrence); err != nil {
 				t.Fatal(err)
 			}
-			if err := s.DispatchDueOccurrences(due.Add(time.Second), g.authorizeOccurrence); err != nil {
+			if err := s.DispatchDueOccurrences(due.Add(time.Second), s.authorizeOccurrence); err != nil {
 				t.Fatal(err)
 			}
 			if err := s.DeleteSchedule(schedule.ScheduleID, o.Job.Envelope); err != nil {
@@ -730,7 +740,7 @@ func TestM10StatusRoutinesConnectorsStayDeterministic(t *testing.T) {
 }
 
 func TestM10DigestLimitsAndReportsSourceErrorsOnce(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	template := m10Watch(t, s, o)
 	for i := 0; i < 18; i++ {
 		source := template
@@ -759,7 +769,7 @@ func TestM10DigestLimitsAndReportsSourceErrorsOnce(t *testing.T) {
 		if err := s.PutOccurrence(d, d.Job.Envelope); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.DispatchDueOccurrences(d.DueAt, g.authorizeOccurrence); err != nil {
+		if err := s.DispatchDueOccurrences(d.DueAt, s.authorizeOccurrence); err != nil {
 			t.Fatal(err)
 		}
 		delivery, err := s.ClaimDelivery()
@@ -781,7 +791,7 @@ func TestM10DigestLimitsAndReportsSourceErrorsOnce(t *testing.T) {
 func TestM10DigestCorruptionCannotAdvanceCursor(t *testing.T) {
 	for _, kind := range []string{"receipt", "cursor", "watch"} {
 		t.Run(kind, func(t *testing.T) {
-			s, o, g := occurrenceFixture(t)
+			s, o, _ := occurrenceFixture(t)
 			digest := m10Watch(t, s, o)
 			digest.JobKind = "digest"
 			digest.Probe = nil
@@ -792,7 +802,7 @@ func TestM10DigestCorruptionCannotAdvanceCursor(t *testing.T) {
 			if err := s.PutOccurrence(o, o.Job.Envelope); err != nil {
 				t.Fatal(err)
 			}
-			name := filepath.Join(s.root, "occurrences", occurrenceID(o)+".digest-result")
+			name := filepath.Join(s.root, "occurrences", routines.OccurrenceID(o)+".digest-result")
 			if kind == "cursor" {
 				name = s.digestPath(o.ScheduleID)
 			}
@@ -802,7 +812,7 @@ func TestM10DigestCorruptionCannotAdvanceCursor(t *testing.T) {
 			if err := os.WriteFile(name, []byte("corrupt"), 0600); err != nil {
 				t.Fatal(err)
 			}
-			if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err == nil {
+			if err := s.DispatchDueOccurrences(o.DueAt, s.authorizeOccurrence); err == nil {
 				t.Fatal("corruption treated as successful digest")
 			}
 			if delivery, err := s.ClaimDelivery(); err != nil || delivery != nil {
@@ -880,13 +890,13 @@ func TestM10UsageLegacyAndCompleteUnterminatedRecord(t *testing.T) {
 }
 
 func TestM10ProactiveCorruptionAndRevokedScript(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	o.JobKind = "script"
 	o.Job.Text = `emit("ok")`
 	if err := s.PutOccurrence(o, o.Job.Envelope); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	revoked := false
@@ -911,7 +921,7 @@ func TestM10ProactiveCorruptionAndRevokedScript(t *testing.T) {
 	if err := s.PutOccurrence(o, o.Job.Envelope); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.RunDueScripts(context.Background(), o.DueAt, authorize, func(context.Context, RoutineOccurrence) ([]string, error) {
@@ -935,12 +945,12 @@ func TestM10ProactiveCorruptionAndRevokedScript(t *testing.T) {
 }
 
 func TestM10ScriptReceiptSurvivesFailedHandoff(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	o.JobKind = "script"
 	if err := s.PutOccurrence(o, o.Job.Envelope); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	pending := filepath.Join(s.root, "outbox", "pending")
@@ -956,7 +966,7 @@ func TestM10ScriptReceiptSurvivesFailedHandoff(t *testing.T) {
 		calls++
 		return []string{"saved output"}, nil
 	}
-	if err := s.RunDueScripts(context.Background(), o.DueAt, g.authorizeOccurrence, run); err != nil {
+	if err := s.RunDueScripts(context.Background(), o.DueAt, s.authorizeOccurrence, run); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Remove(pending); err != nil {
@@ -965,7 +975,7 @@ func TestM10ScriptReceiptSurvivesFailedHandoff(t *testing.T) {
 	if err := os.Rename(saved, pending); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RunDueScripts(context.Background(), o.DueAt, g.authorizeOccurrence, run); err != nil {
+	if err := s.RunDueScripts(context.Background(), o.DueAt, s.authorizeOccurrence, run); err != nil {
 		t.Fatal(err)
 	}
 	d, err := s.ClaimDelivery()
@@ -975,19 +985,19 @@ func TestM10ScriptReceiptSurvivesFailedHandoff(t *testing.T) {
 }
 
 func TestM10ScriptCorruptReceiptNeverReexecutes(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	o.JobKind = "script"
 	if err := s.PutOccurrence(o, o.Job.Envelope); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(s.root, "occurrences", occurrenceID(o)+".script-output"), []byte("corrupt"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(s.root, "occurrences", routines.OccurrenceID(o)+".script-output"), []byte("corrupt"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	calls := 0
-	if err := s.RunDueScripts(context.Background(), o.DueAt, g.authorizeOccurrence, func(context.Context, RoutineOccurrence) ([]string, error) { calls++; return nil, nil }); err != nil {
+	if err := s.RunDueScripts(context.Background(), o.DueAt, s.authorizeOccurrence, func(context.Context, RoutineOccurrence) ([]string, error) { calls++; return nil, nil }); err != nil {
 		t.Fatal(err)
 	}
 	d, err := s.ClaimDelivery()
@@ -1046,11 +1056,15 @@ func TestM10ScriptSyntaxAdmissionRejectsEmptyAndOversized(t *testing.T) {
 }
 
 func TestM10RoutineHTTPRejectsForeignSnoozeAndCorruptState(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
-	schedule := m10Watch(t, s, o)
-	g.spool = s
-	g.config.ControlAuth = "token"
-	g.config.Users = []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}
+	g, host, root := automationGatewayFixture(t, Config{SpoolDir: t.TempDir(), OrganizationID: "personal", TelegramToken: "token", ControlAuth: "token", Users: []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}, StateDir: t.TempDir(), WorkspaceDir: t.TempDir()}}})
+	caller := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
+	schedule, err := host.CreateSchedule(context.Background(), caller, Schedule{ScheduleID: "sched-m10-fence", Envelope: caller, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "* * * * *", Input: "watch", JobKind: "watcher", Probe: &WatchProbe{URL: "https://example.com"}}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = host.SeedWatchBaseline(context.Background(), caller, schedule.ScheduleID, "old", time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	call := func(method, target, body, auth string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(method, target, strings.NewReader(body))
 		r.Header.Set("Authorization", "Bearer "+auth)
@@ -1066,21 +1080,21 @@ func TestM10RoutineHTTPRejectsForeignSnoozeAndCorruptState(t *testing.T) {
 		{"GET", "/v1/routines/absent", "", "wrong", 401},
 		{"POST", "/v1/routines/" + schedule.ScheduleID + "/snooze", "{", "token", 400},
 		{"POST", "/v1/routines/" + schedule.ScheduleID + "/snooze", `{"until":"` + g.now().Add(-time.Hour).UTC().Format(time.RFC3339) + `"}`, "token", 400},
-		{"POST", "/v1/routines/absent/snooze", `{"until":"2099-01-01T00:00:00Z"}`, "token", 403},
-		{"DELETE", "/v1/routines/absent", "", "token", 403},
+		{"POST", "/v1/routines/absent/snooze", `{"until":"2099-01-01T00:00:00Z"}`, "token", 404},
+		{"DELETE", "/v1/routines/absent", "", "token", 404},
 		{"PATCH", "/v1/routines/" + schedule.ScheduleID, "", "token", 405},
 	} {
 		if got := call(bad.method, bad.target, bad.body, bad.auth); got.Code != bad.status {
 			t.Fatalf("%s %s =%d %s want=%d", bad.method, bad.target, got.Code, got.Body.String(), bad.status)
 		}
 	}
-	if err := os.WriteFile(s.watchPath(schedule.ScheduleID), []byte("corrupt"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "users", "alice", "watchers", schedule.ScheduleID+".json"), []byte("corrupt"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if got := call("GET", "/v1/routines/"+schedule.ScheduleID, "", "token"); got.Code != 500 {
 		t.Fatalf("corrupt baseline exposed=%d", got.Code)
 	}
-	if err := os.WriteFile(s.schedulePath(schedule.ScheduleID), []byte("corrupt"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "users", "alice", "schedules", schedule.ScheduleID+".json"), []byte("corrupt"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if got := call("GET", "/v1/routines/"+schedule.ScheduleID, "", "token"); got.Code != 500 {
@@ -1092,7 +1106,7 @@ func TestM10RoutineHTTPRejectsForeignSnoozeAndCorruptState(t *testing.T) {
 }
 
 func TestM10ProbeMissingCapturePreservesBaseline(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	schedule := m10Watch(t, s, o)
 	schedule.Probe.Regex = `state=(open|closed)`
 	if err := atomicJSON(s.schedulePath(schedule.ScheduleID), schedule); err != nil {
@@ -1102,10 +1116,10 @@ func TestM10ProbeMissingCapturePreservesBaseline(t *testing.T) {
 	if err := s.PutOccurrence(o, o.Job.Envelope); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(o.DueAt, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(o.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ProbeDueOccurrencesContext(context.Background(), o.DueAt, g.authorizeOccurrence, func(context.Context, string) ([]byte, error) { return []byte("login required"), nil }, nil, nil); err != nil {
+	if err := s.ProbeDueOccurrencesContext(context.Background(), o.DueAt, s.authorizeOccurrence, func(context.Context, string) ([]byte, error) { return []byte("login required"), nil }, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	st, err := s.loadWatchStateLocked(o.ScheduleID)
@@ -1120,7 +1134,7 @@ func TestM10ProbeMissingCapturePreservesBaseline(t *testing.T) {
 	if _, err := probeValue(nil, nil); err == nil {
 		t.Fatal("nil probe accepted")
 	}
-	if len([]rune(boundedWatchText(strings.Repeat("я", 1500)))) != 1025 {
+	if len([]rune(routines.BoundedWatchText(strings.Repeat("я", 1500)))) != 1025 {
 		t.Fatal("long notification was not bounded")
 	}
 }
@@ -1183,23 +1197,19 @@ func TestM10CorruptStorageStopsUsageAndProbeHandoff(t *testing.T) {
 	if err := s.PutOccurrence(o, o.Job.Envelope); err != nil {
 		t.Fatal(err)
 	}
-	result := probeResult{Occurrence: o, Watch: WatchState{ScheduleID: o.ScheduleID, Generation: 1}}
-	s.mu.Lock()
-	err := s.applyProbeResultLocked(result)
-	s.mu.Unlock()
+	result := routines.ProbeResult{Occurrence: o, Watch: WatchState{ScheduleID: o.ScheduleID, Generation: 1}}
+	err := s.rt.ApplyProbeResult(result)
 	if err == nil {
 		t.Fatal("corrupt baseline overwritten by handoff")
 	}
 	if err := s.DeleteSchedule(o.ScheduleID, o.Job.Envelope); err != nil {
 		t.Fatal(err)
 	}
-	s.mu.Lock()
-	err = s.applyProbeResultLocked(result)
-	s.mu.Unlock()
+	err = s.rt.ApplyProbeResult(result)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := os.ReadFile(filepath.Join(s.root, "occurrences", occurrenceID(o)+".json"))
+	b, err := os.ReadFile(filepath.Join(s.root, "occurrences", routines.OccurrenceID(o)+".json"))
 	if err != nil {
 		t.Fatal(err)
 	}

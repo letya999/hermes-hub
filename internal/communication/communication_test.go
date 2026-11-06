@@ -2018,10 +2018,7 @@ func TestControlAuthAcceptsEnrolledSiblingToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.ControlTokensFile = tokensFile
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
+	g, _, _ := automationGatewayFixture(t, c)
 	call := func(token, principal string) int {
 		r := httptest.NewRequest(http.MethodGet, "/v1/routines", nil)
 		if token != "" {

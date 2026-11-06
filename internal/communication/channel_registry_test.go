@@ -12,7 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/routines"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
@@ -197,16 +199,15 @@ func TestArtifactsFollowChannelCaps(t *testing.T) {
 func TestRoutineCardDestinationFollowsChannelCaps(t *testing.T) {
 	fake := &recordingChannel{caps: ChannelCaps{Destinations: true}}
 	registerTestChannel(t, fake)
-	s, err := NewSpool(filepath.Join(t.TempDir(), "spool"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	c := testConfig(t)
+	c.ControlAuth = "control-token"
+	_, host, _ := automationGatewayFixtureChannels(t, c, map[string]routines.OccurrenceChannel{"rec_test": fake})
 	caller := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
-	item := Schedule{ScheduleID: "rec-routine", Channel: "rec_test", ChatID: 11, Envelope: caller, Timezone: "UTC", Expression: "*/5 * * * *"}
-	if err := atomicJSON(filepath.Join(s.root, "schedules", spoolFileID(item.ScheduleID)+".json"), item); err != nil {
+	item := Schedule{ScheduleID: "rec-routine", Channel: "rec_test", ChatID: 11, Envelope: caller, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Timezone: "UTC", Expression: "*/5 * * * *", JobKind: "reminder", Input: "fixture"}
+	if _, err := host.CreateSchedule(context.Background(), caller, item, ""); err != nil {
 		t.Fatal(err)
 	}
-	card, err := s.GetRoutine("rec-routine", caller)
+	card, err := host.RoutineCard(context.Background(), caller, "rec-routine")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,21 +284,18 @@ func TestDeliveryTargetVerifierMarksUncertain(t *testing.T) {
 func TestRoutineAdmissionUsesChannelPrepare(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
 	fake := &recordingChannel{prepare: func(in *Schedule, caller identity.Envelope) (identity.Envelope, error) {
 		in.ChatID = 42
 		return caller, nil
 	}}
 	registerTestChannel(t, fake)
+	g, host, _ := automationGatewayFixtureChannels(t, c, map[string]routines.OccurrenceChannel{"rec_test": fake})
 	w := destinationRequest(g, http.MethodPost, "/v1/routines", `{"schedule_id":"rec-prepared","channel":"rec_test","chat_id":0,"timezone":"UTC","expression":"0 * * * *","job_kind":"reminder","input":"fixture"}`)
 	if w.Code != http.StatusOK && w.Code != http.StatusCreated {
 		t.Fatalf("routine create failed: %d %s", w.Code, w.Body.String())
 	}
 	caller := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
-	card, err := g.spool.GetRoutine("rec-prepared", caller)
+	card, err := host.RoutineCard(context.Background(), caller, "rec-prepared")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,37 +315,44 @@ func TestBlockedNoticeRoutesThroughChannel(t *testing.T) {
 		d.ChatID = 7
 	}}
 	registerTestChannel(t, fake)
-	s, err := NewSpool(filepath.Join(t.TempDir(), "spool"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	// The notice path now runs inside the ToolHub-owned routines engine:
+	// drive it on a real engine with the channel and a captured outbox.
+	var sent []commodel.Delivery
+	engine := routines.NewEngine(filepath.Join(t.TempDir(), "owner"), routines.Deps{
+		Storage: routines.StoragePort{WriteJSONAtomic: func(path string, value any) error {
+			return atomicJSON(path, value)
+		}},
+		Delivery: routines.DeliveryPort{
+			EnqueueDelivery:   func(d commodel.Delivery) error { sent = append(sent, d); return nil },
+			NormalizeDelivery: func(d commodel.Delivery) (commodel.Delivery, error) { return d, nil },
+		},
+		ChannelFor: func(id string) routines.OccurrenceChannel {
+			if id == "rec_test" {
+				return fake
+			}
+			return nil
+		},
+		Signal: func() {},
+	})
 	caller := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
 	item := Schedule{ScheduleID: "rec-blocked", Channel: "rec_test", ChatID: 11, Envelope: caller, Timezone: "UTC"}
-	if err := atomicJSON(filepath.Join(s.root, "schedules", spoolFileID(item.ScheduleID)+".json"), item); err != nil {
+	if err := os.MkdirAll(filepath.Dir(engine.SchedulePath(item.ScheduleID)), 0700); err != nil {
 		t.Fatal(err)
 	}
-	s.mu.Lock()
-	err = s.blockScheduleLocked(&item, "owner gone", time.Now().UTC())
-	s.mu.Unlock()
+	if err := atomicJSON(engine.SchedulePath(item.ScheduleID), item); err != nil {
+		t.Fatal(err)
+	}
+	err := engine.BlockSchedule(&item, "owner gone", time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !routed {
 		t.Fatal("blocked notice never reached the channel hook")
 	}
-	files, _ := filepath.Glob(filepath.Join(s.root, "outbox", "pending", "routine-blocked-*.json"))
-	if len(files) != 1 {
-		t.Fatalf("expected one blocked notice, got %v", files)
+	if len(sent) != 1 {
+		t.Fatalf("expected one blocked notice, got %v", sent)
 	}
-	body, err := os.ReadFile(files[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	var d Delivery
-	if err := json.Unmarshal(body, &d); err != nil {
-		t.Fatal(err)
-	}
-	if d.DeliveryTargetID != "rec-home" || d.ChatID != 7 {
+	if d := sent[0]; d.DeliveryTargetID != "rec-home" || d.ChatID != 7 {
 		t.Fatalf("channel did not retarget the notice: %+v", d)
 	}
 }

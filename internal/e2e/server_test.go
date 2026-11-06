@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/communication"
+	"github.com/letya999/hermes-hub/internal/routines"
 )
 
 type transportFunc func(*http.Request) (*http.Response, error)
@@ -72,7 +73,7 @@ func TestServerReminderChecksReceiptBindingAndCleanup(t *testing.T) {
 							t.Fatal("unisolated draft", s)
 						}
 						s.Revision = 1
-						id := communication.OccurrenceID(communication.RoutineOccurrence{ScheduleID: s.ScheduleID, Revision: 1, DueAt: s.NextDue})
+						id := routines.OccurrenceID(communication.RoutineOccurrence{ScheduleID: s.ScheduleID, Revision: 1, DueAt: s.NextDue})
 						marker := regexp.MustCompile(`E2E [a-f0-9]{16}`).FindString(s.Input)
 						if s.JobKind == "watcher" || s.JobKind == "check" {
 							if s.Probe == nil || !strings.HasPrefix(s.Probe.URL, "https://httpbin.org/uuid?e2e=") || s.Probe.Regex != `"uuid"\s*:\s*"([a-f0-9-]{36})"` || s.InitialProbeValue != nil {
@@ -80,7 +81,11 @@ func TestServerReminderChecksReceiptBindingAndCleanup(t *testing.T) {
 							}
 							state := communication.WatchState{ScheduleID: s.ScheduleID, Value: "22222222-2222-4222-8222-222222222222", Generation: 1, LastSuccess: time.Now()}
 							b, _ := json.Marshal(state)
-							if err := os.WriteFile(filepath.Join(config.SpoolDir, "watchers", s.ScheduleID+".json"), b, 0600); err != nil {
+							watchPath := filepath.Join(config.SpoolDir, "watchers", s.ScheduleID+".json")
+							if err := os.MkdirAll(filepath.Dir(watchPath), 0700); err != nil {
+								t.Fatal(err)
+							}
+							if err := os.WriteFile(watchPath, b, 0600); err != nil {
 								t.Fatal(err)
 							}
 							if s.NotifyMode == "digest" {
@@ -93,7 +98,7 @@ func TestServerReminderChecksReceiptBindingAndCleanup(t *testing.T) {
 							d.ID = "script-" + id + "-0"
 						}
 						if s.JobKind == "watcher" {
-							id = communication.OccurrenceID(communication.RoutineOccurrence{ScheduleID: s.ScheduleID, Revision: s.Revision, DueAt: s.NextDue.Add(time.Minute)})
+							id = routines.OccurrenceID(communication.RoutineOccurrence{ScheduleID: s.ScheduleID, Revision: s.Revision, DueAt: s.NextDue.Add(time.Minute)})
 							d.OccurrenceID = id
 							d.ID, d.Text = "watch-"+id, marker+" now: 22222222-2222-4222-8222-222222222222"
 						}
@@ -109,7 +114,11 @@ func TestServerReminderChecksReceiptBindingAndCleanup(t *testing.T) {
 							}
 							d.ID, d.Text = "digest-"+id, marker+" 22222222-2222-4222-8222-222222222222"
 							b, _ := json.Marshal(communication.DigestState{ScheduleID: s.ScheduleID, Generations: map[string]uint64{s.SourceIDs[0]: 1}, LastDigestAt: time.Now()})
-							if err := os.WriteFile(filepath.Join(config.SpoolDir, "digests", s.ScheduleID+".json"), b, 0600); err != nil {
+							digestPath := filepath.Join(config.SpoolDir, "digests", s.ScheduleID+".json")
+							if err := os.MkdirAll(filepath.Dir(digestPath), 0700); err != nil {
+								t.Fatal(err)
+							}
+							if err := os.WriteFile(digestPath, b, 0600); err != nil {
 								t.Fatal(err)
 							}
 						}

@@ -279,7 +279,7 @@ func prepareContinuation(request prepareOutcomeRequest, lang locale.Lang) string
 // English stays the instruction scaffold while the visible reply is pinned to
 // the user's own language.
 func modelLangHint(lang locale.Lang) string {
-	return " The user's language is " + locale.Names[lang] + " (" + string(lang) + "); answer the user in that language."
+	return locale.ModelLangHint(lang)
 }
 
 // actionLink returns the validated human-action URL when its path carries the

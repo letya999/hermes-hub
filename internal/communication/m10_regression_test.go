@@ -39,17 +39,18 @@ func TestM10RegressionMockAttachmentNeverCallsTelegram(t *testing.T) {
 	}
 }
 func TestM10RegressionRejectedForeignCheckLeavesBaselineUnchanged(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
-	g.spool = s
-	g.config.ControlAuth = "tok"
-	g.config.Users = []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}, {ID: "bob", Enabled: true, TelegramIDs: []int64{22}}}
+	c := testConfig(t)
+	c.ControlAuth = "tok"
+	c.Users = append(c.Users, User{ID: "bob", Enabled: true, TelegramIDs: []int64{22}, StateDir: t.TempDir(), WorkspaceDir: t.TempDir()})
+	g, host, _ := automationGatewayFixture(t, c)
+	alice := c.Users[0].Envelope(11)
 	src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("replacement")) }))
 	defer src.Close()
-	_, err := s.CreateSchedule(Schedule{ScheduleID: "alice-watch", Envelope: o.Job.Envelope, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 * * * *", Input: "private watch", JobKind: "watcher", Probe: &WatchProbe{URL: src.URL}}, o.Job.Envelope, "")
+	_, err := host.CreateSchedule(context.Background(), alice, Schedule{ScheduleID: "alice-watch", Envelope: alice, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 * * * *", Input: "private watch", JobKind: "watcher", Probe: &WatchProbe{URL: src.URL}}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SeedWatchBaseline("alice-watch", "original", time.Now()); err != nil {
+	if err := host.SeedWatchBaseline(context.Background(), alice, "alice-watch", "original", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	body := fmt.Sprintf(`{"schedule_id":"alice-watch","timezone":"UTC","expression":"0 * * * *","input":"bob check","job_kind":"check","expect":"changed","probe":{"url":%q}}`, src.URL)
@@ -58,10 +59,13 @@ func TestM10RegressionRejectedForeignCheckLeavesBaselineUnchanged(t *testing.T) 
 	req.Header.Set("X-Hub-Principal", "bob")
 	w := httptest.NewRecorder()
 	g.Handler().ServeHTTP(w, req)
-	if w.Code != 400 {
-		t.Fatalf("expected rejected duplicate, got %d: %s", w.Code, w.Body.String())
+	// Schedule ids are owner-scoped under ToolHub: bob's identically-named
+	// create is his own schedule, not a foreign write — the regression fence
+	// is that alice's durable baseline is never touched.
+	if w.Code != 200 {
+		t.Fatalf("owner-scoped create rejected: %d: %s", w.Code, w.Body.String())
 	}
-	st, err := s.loadWatchStateLocked("alice-watch")
+	st, err := host.LoadWatchState(context.Background(), alice, "alice-watch")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,9 +74,9 @@ func TestM10RegressionRejectedForeignCheckLeavesBaselineUnchanged(t *testing.T) 
 	}
 }
 func TestM10RegressionCheckMissingProbeDoesNotPanic(t *testing.T) {
-	_, _, g := occurrenceFixture(t)
-	g.config.ControlAuth = "tok"
-	g.config.Users = []User{{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}}
+	c := testConfig(t)
+	c.ControlAuth = "tok"
+	g, _, _ := automationGatewayFixture(t, c)
 	req := httptest.NewRequest("POST", "/v1/routines", strings.NewReader(`{"job_kind":"check"}`))
 	req.Header.Set("Authorization", "Bearer tok")
 	req.Header.Set("X-Hub-Principal", "alice")
@@ -84,19 +88,19 @@ func TestM10RegressionCheckMissingProbeDoesNotPanic(t *testing.T) {
 	g.Handler().ServeHTTP(httptest.NewRecorder(), req)
 }
 func TestM10RegressionDeletedReminderDoesNotDispatch(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	due := time.Now().UTC().Add(time.Minute)
 	_, err := s.CreateSchedule(Schedule{ScheduleID: "cancel-me", Envelope: o.Job.Envelope, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "once:" + due.Format(time.RFC3339), Input: "do not deliver", JobKind: "reminder"}, o.Job.Envelope, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.TickSchedules(due.Add(time.Second), "", g.authorizeOccurrence); err != nil {
+	if err := s.TickSchedules(due.Add(time.Second), "", s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.DeleteSchedule("cancel-me", o.Job.Envelope); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(due.Add(time.Second), g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(due.Add(time.Second), s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	d, err := s.ClaimDelivery()
@@ -114,14 +118,14 @@ func TestM10RegressionUsageCountsSessionDelta(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(hubruntime.SessionUsage{SessionFound: true, SessionID: "same-session", InputTokens: &counter})
 	}))
 	defer srv.Close()
-	runner := HTTPRunner{URL: srv.URL, Spool: s}
+	runner := HTTPRunner{URL: srv.URL, Spool: s.Spool}
 	job := o.Job
 	job.ID = "job-one"
 	runner.meterUsage(context.Background(), job, "run-one", 0)
 	counter = 25
 	job.ID = "job-two"
 	runner.meterUsage(context.Background(), job, "run-two", 0)
-	totals, err := s.UsageTotals("user:alice")
+	totals, err := s.Spool.UsageTotals("user:alice")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +134,7 @@ func TestM10RegressionUsageCountsSessionDelta(t *testing.T) {
 	}
 }
 func TestM10RegressionDigestIncludesSameTickChange(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
+	s, o, _ := occurrenceFixture(t)
 	due := time.Now().UTC()
 	caller := o.Job.Envelope
 	_, err := s.CreateSchedule(Schedule{ScheduleID: "watch", Envelope: caller, OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", ChatID: 11, Timezone: "UTC", Expression: "0 * * * *", Input: "watch title", JobKind: "watcher", Probe: &WatchProbe{URL: "https://example.invalid"}}, caller, "")
@@ -154,7 +158,7 @@ func TestM10RegressionDigestIncludesSameTickChange(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := s.DispatchDueOccurrences(due, g.authorizeOccurrence); err != nil {
+	if err := s.DispatchDueOccurrences(due, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.ProbeDueOccurrences(due, func(context.Context, string) ([]byte, error) { return []byte("new-value"), nil }); err != nil {
@@ -164,23 +168,11 @@ func TestM10RegressionDigestIncludesSameTickChange(t *testing.T) {
 	if err := s.PutOccurrence(d, caller); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DispatchDueOccurrences(d.DueAt, g.authorizeOccurrence); err != nil {
-		t.Fatal(err)
-	}
-	entries, err := os.ReadDir(filepath.Join(s.root, "outbox", "pending"))
-	if err != nil {
+	if err := s.DispatchDueOccurrences(d.DueAt, s.authorizeOccurrence); err != nil {
 		t.Fatal(err)
 	}
 	found := false
-	for _, e := range entries {
-		b, err := os.ReadFile(filepath.Join(s.root, "outbox", "pending", e.Name()))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var delivery Delivery
-		if err := json.Unmarshal(b, &delivery); err != nil {
-			t.Fatal(err)
-		}
+	for _, delivery := range s.pendingDeliveries() {
 		if strings.HasPrefix(delivery.ID, "digest-") && strings.Contains(delivery.Text, "new-value") {
 			found = true
 		}

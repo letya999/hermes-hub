@@ -1,16 +1,15 @@
 package communication
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
-	"github.com/letya999/hermes-hub/internal/routines"
 )
 
 type RoutineRun struct {
@@ -23,20 +22,15 @@ type RoutineRun struct {
 	State          string    `json:"state"`
 	DeliveryState  string    `json:"delivery_state,omitempty"`
 }
-type routineHistoryReceipt struct {
-	ID         string            `json:"id"`
-	ScheduleID string            `json:"schedule_id"`
-	Envelope   identity.Envelope `json:"envelope"`
-	Run        RoutineRun        `json:"run"`
-}
-
-func routineOwnsHistoryEnvelope(item Schedule, envelope identity.Envelope) bool {
-	return routines.OwnsHistoryEnvelope(item, envelope)
-}
-
 type routineDeliveryKey struct {
-	OccurrenceID, Channel, Target, TaskID, SlackChannel, SlackThread string
-	ChatID, TopicID                                                  int64
+	OccurrenceID string `json:"occurrence_id"`
+	Channel      string `json:"channel"`
+	Target       string `json:"target"`
+	TaskID       string `json:"task_id"`
+	SlackChannel string `json:"slack_channel"`
+	SlackThread  string `json:"slack_thread"`
+	ChatID       int64  `json:"chat_id"`
+	TopicID      int64  `json:"topic_id"`
 }
 type routineDeliveryOutcome struct{ Total, Done, Uncertain int }
 
@@ -77,94 +71,84 @@ func (s *Spool) routineDeliveryStatesLocked() (map[routineDeliveryKey]routineDel
 	return out, nil
 }
 
-func (s *Spool) routineRunLocked(o RoutineOccurrence, outcomes map[routineDeliveryKey]routineDeliveryOutcome) RoutineRun {
-	run := RoutineRun{ID: o.Job.ID, Revision: o.Revision, DueAt: o.DueAt, Kind: o.JobKind, State: o.State}
-	if mapping, err := s.loadMappingLocked(o.Job.ID); err == nil {
-		admitted := o.Job
-		admitted.ConversationID = routineConversation(o.ScheduleID)
-		run.ExecutionState = "unavailable"
-		if mapping.MatchesJob(admitted) && mapping.TaskID == o.Job.TaskID && mapping.TopicID == o.Job.TopicID {
-			run.ExecutionState = mapping.Status
+// reminderDeliveryStateLocked mirrors the owner-side receipt read: the
+// durable receipt dirs live here now, so the state word comes from the
+// communication outbox, not the engine root. s.mu must be held.
+func (s *Spool) reminderDeliveryStateLocked(occurrenceID string) string {
+	for _, delivery := range []struct{ dir, state string }{{"failed", "uncertain"}, {"done", "delivered"}} {
+		_, err := s.fsys.Lstat(filepath.Join(s.root, "outbox", delivery.dir, "reminder-"+occurrenceID+".json"))
+		if err == nil {
+			return delivery.state
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "unavailable"
 		}
 	}
-	key := routineDeliveryKey{OccurrenceID: o.Job.ID, Channel: o.Job.Channel, Target: o.Job.DeliveryTargetID, TaskID: o.Job.TaskID, SlackChannel: o.Job.SlackChannel, SlackThread: o.Job.SlackThread, ChatID: o.Job.ChatID, TopicID: o.Job.TopicID}
-	state := outcomes[key]
-	run.DeliveryCount = state.Total
-	if state.Total > 0 {
-		switch {
-		case state.Uncertain > 0:
-			run.DeliveryState = "uncertain"
-		case state.Done == state.Total:
-			run.DeliveryState = "delivered"
-		case state.Done > 0:
-			run.DeliveryState = "partial"
-		default:
-			run.DeliveryState = "queued"
-		}
-	}
-	return run
+	return ""
 }
-func (s *Spool) RoutineHistory(id string, caller identity.Envelope) ([]RoutineRun, error) {
-	card, err := s.GetRoutine(id, caller)
-	if err != nil {
+
+// listSchedules is the owner-scoped schedule list with communication-owned
+// receipt state joined in: the owner records occurrence truth, only this
+// outbox knows whether the reminder actually reached the channel.
+func (g *Gateway) listSchedules(ctx context.Context, caller identity.Envelope) ([]Schedule, error) {
+	var items []Schedule
+	if err := g.automationCall(ctx, caller, "schedule.list", nil, &items); err != nil {
 		return nil, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	outcomes, err := s.routineDeliveryStatesLocked()
-	if err != nil {
-		return nil, err
-	}
-	found := map[string]RoutineRun{}
-	for _, dir := range []string{"", "archive", "receipts"} {
-		entries, err := s.fsys.ReadDir(filepath.Join(s.root, "occurrences", dir))
-		if os.IsNotExist(err) {
+	g.spool.mu.Lock()
+	defer g.spool.mu.Unlock()
+	for i := range items {
+		if items[i].JobKind != "reminder" || items[i].LastOccurrenceID == "" {
 			continue
 		}
-		if err != nil {
-			return nil, err
-		}
-		for _, name := range entries {
-			if !strings.HasSuffix(name, ".json") {
-				continue
-			}
-			body, err := s.fsys.ReadFile(filepath.Join(s.root, "occurrences", dir, name))
-			if err != nil {
-				return nil, err
-			}
-			var run RoutineRun
-			if dir == "receipts" {
-				var receipt routineHistoryReceipt
-				if json.Unmarshal(body, &receipt) != nil || receipt.ScheduleID != id || !routineOwnsHistoryEnvelope(card.Schedule, receipt.Envelope) || receipt.ID != receipt.Run.ID {
-					continue
-				}
-				run = receipt.Run
-			} else {
-				var o RoutineOccurrence
-				if json.Unmarshal(body, &o) != nil || o.ScheduleID != id || !routineOwnsHistoryEnvelope(card.Schedule, o.Job.Envelope) || o.Job.ID != occurrenceID(o) {
-					continue
-				}
-				run = s.routineRunLocked(o, outcomes)
-			}
-			if name != run.ID+".json" {
-				continue
-			}
-			if _, ok := found[run.ID]; !ok {
-				found[run.ID] = run
-			}
-		}
+		items[i].LastDeliveryState = g.spool.reminderDeliveryStateLocked(items[i].LastOccurrenceID)
 	}
-	out := make([]RoutineRun, 0, len(found))
-	for _, run := range found {
-		out = append(out, run)
+	return items, nil
+}
+
+func (g *Gateway) routineHistory(ctx context.Context, id string, caller identity.Envelope) ([]RoutineRun, error) {
+	var entries []struct {
+		Run RoutineRun         `json:"run"`
+		Key routineDeliveryKey `json:"key"`
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].DueAt.Equal(out[j].DueAt) {
-			return out[i].ID < out[j].ID
+	if err := g.automationCall(ctx, caller, "schedule.history", map[string]any{"id": id}, &entries); err != nil {
+		return nil, err
+	}
+	g.spool.mu.Lock()
+	outcomes, err := g.spool.routineDeliveryStatesLocked()
+	g.spool.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	items := make([]RoutineRun, 0, len(entries))
+	for _, entry := range entries {
+		run := entry.Run
+		// The owner records the schedule-bound identity; the intake stamps
+		// the channel-derived target on the durable delivery. Join on the
+		// same normalized identity or owner cards lose every receipt.
+		if entry.Key.Target == "" {
+			d := Delivery{Channel: entry.Key.Channel, ChatID: entry.Key.ChatID, TaskID: entry.Key.TaskID, TopicID: entry.Key.TopicID, SlackChannel: entry.Key.SlackChannel, SlackThread: entry.Key.SlackThread}
+			if ch := channelFor(nil, d.Channel); ch != nil && ch.NormalizeDelivery(&d) == nil {
+				entry.Key.Target = d.DeliveryTargetID
+			}
 		}
-		return out[i].DueAt.After(out[j].DueAt)
-	})
-	return out, nil
+		state := outcomes[entry.Key]
+		if state.Total > 0 {
+			run.DeliveryCount = state.Total
+			switch {
+			case state.Uncertain > 0:
+				run.DeliveryState = "uncertain"
+			case state.Done == state.Total:
+				run.DeliveryState = "delivered"
+			case state.Done > 0:
+				run.DeliveryState = "partial"
+			default:
+				run.DeliveryState = "queued"
+			}
+		}
+		items = append(items, run)
+	}
+	return items, nil
 }
 
 type RoutineHistoryPage struct {
