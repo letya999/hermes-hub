@@ -36,7 +36,10 @@ type Job struct {
 	Text         string `json:"text,omitempty"`
 	InboundID    string `json:"inbound_id,omitempty"`
 	Sensitive    bool   `json:"sensitive"`
-	TextSHA256   string `json:"text_sha256,omitempty"`
+	// CaptureExpected marks jobs admitted after the ToolHub outbox was enabled;
+	// recovery never backfills pre-cutover history without this durable mark.
+	CaptureExpected bool   `json:"capture_expected,omitempty"`
+	TextSHA256      string `json:"text_sha256,omitempty"`
 	// GoalEpoch pins a goal-mode turn to the record epoch it was queued under;
 	// a claim whose epoch no longer matches the active goal no-ops (SPEC-0074).
 	GoalEpoch int64 `json:"goal_epoch,omitempty"`

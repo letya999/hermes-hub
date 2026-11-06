@@ -1,6 +1,6 @@
 ---
 description: toolhub — capability gateway: tool admission, governance evaluation, connector lifecycle, audit ledger.
-last_verified: 2026-11-04
+last_verified: 2026-11-06
 ---
 
 # toolhub
@@ -42,6 +42,78 @@ tool call crosses. Listens `0.0.0.0:8090`, host-bound to `127.0.0.1:8090`.
   server still needs its runtime restarted before retry). Backend hop pins
   `MCP-Protocol-Version: 2025-11-25` for legacy-wire servers (Serena 1.5.x);
   standalone SSE off — calls are request/response.
+- **Per-user vault resolver** (`vault_resolver.go`): `HUB_VAULTS_BY_PRINCIPAL`
+  names the stack-rendered bindings root — one mount per enrolled,
+  memory-enabled, environment-matching principal. Startup scans it into a
+  binding table; `Resolve(principal, environment)` then requires an
+  identity-valid principal present in the table plus the live published
+  passport record (`HUB_PASSPORTS_BY_PRINCIPAL`) declaring the same
+  space/environment with memory enabled — only then is the vault opened,
+  under a per-user lock so one user's blocked operation never serializes
+  another's. A caller-supplied path is never consulted.
+- **Exact-run memory admission** (`memory_run.go`, `api/run_status.go`):
+  a `memory.*` call is admitted only when the published passport gate passes
+  AND the claimed job/run pair verifies against the supervisor lifecycle
+  record (`Gateway.Runs`, `GET /v1/jobs/<id>` over the existing
+  `HUB_RUNTIME_SUPERVISOR_URL` + `HUB_COMMUNICATION_AUTH` control channel).
+  `X-Hub-Job-ID`/`X-Hub-Run-ID` select the record; the record's own fields
+  must prove a `running` private run bound to the caller's principal,
+  context, runtime, environment and current generation. Group and
+  background/system records are explicit `RunKind`s that never admit; an
+  unconfigured or erroring authority denies. The gate sits inside
+  `AuthorizeProjectedCall` so direct, CLI and nested calls share it and
+  every denial lands before the backend.
+- **ToolHub-owned memory search** (`memory_search.go`): `memory_search`
+  executes inside ToolHub (`runtime:toolhub` executor) — the verified
+  envelope's principal/environment resolves the vault through the #513
+  resolver, the #514 gate runs first, and the shared `internal/memory/search`
+  indexer answers with the same hit shape (evidence refs, `status`,
+  `untrusted`). Arguments and headers never select user, vault or audience;
+  an unresolvable vault reports `status=unavailable` with no local fallback.
+  The in-runtime `handler:memory` path serves no memory tool — the runtime
+  container carries no vault mount.
+- **ToolHub-owned memory writer** (`memory_card.go`): `memory_card`
+  executes inside ToolHub (`runtime:toolhub` executor) — the sole governed
+  writer for model-driven memory mutations. Additive ops `remember` and
+  `fact` run under the per-user vault lock against the verified envelope's
+  own vault; edits to existing memory are proposal-gated (`op=propose`
+  with `inner=truth|merge|forget`, `memory_proposal.go`): the durable
+  proposal binds owner, exact writes, base revisions, expiry and a
+  single-use nonce inside the user's own vault, and only the owner's
+  verified confirmation — the same `/v1/confirmations` human-action lane
+  connector onboarding uses — consumes it and applies the fenced writes.
+  Self-confirmation, a copied or foreign proposal, a stale base, an
+  expired or replayed proof all deny without touching memory. At the
+  commit point the published `memory.enabled` enrollment and the admitted
+  authority are re-checked, so a disable or revocation that lands between
+  admission — or between propose and the owner tap — still prevents the
+  write and reports `status=denied`. A deterministic request id (job, op,
+  canonical arguments — never the per-call `ToolCallID`) makes a retried
+  identical call converge on the journaled result instead of writing
+  twice. Every mutation and denial is journaled to
+  `runtime/memory/writes.jsonl` under the authorizing `(job, run)`
+  `source_ref`; malformed calls answer `status=invalid` with field-level
+  errors.
+- **Pre-turn memory context** (`memory_context.go`): `POST /v1/memory-context`
+  is the supervisor's private-run context lane (SPEC-0098 M5). The
+  control-plane bearer plus `X-Hub-Principal` resolve the enrolled identity;
+  the posted job id, admission id and request text are then compared field
+  by field with the supervisor's durable `/v1/jobs` record — job, admission,
+  text hash, `running` status, current runtime generation, private kind,
+  sensitivity, user, environment and the principal/context/runtime envelope
+  must all agree before the per-user vault opens. CORE (`memory/CORE.md`)
+  and a deterministic lane-1 recall block return in one response; an
+  indexer failure reports `degraded`, a lookup/auth error answers 503/403
+  and nothing falls back to a local read.
+- **Trusted capture** (`memory_capture.go`): `/v1/memory-capture` admits only
+  the communication service bearer plus an enrolled principal. It compares
+  the event's user, scope, trigger, channel, flags, run ID and content hash
+  with supervisor's durable job fact; completed replies use the historical
+  `completed` record, while model memory calls still need a live private run.
+  The vault write is confined to the authenticated user's binding and
+  rechecks published `memory.enabled` and the `memory.remember` grant under
+  that user's lock. Producer/event ID is the durable dedup key. Denied and
+  sensitive events never write a leaf.
 - **Multi-tenant auth**: `toolhub-tokens.json` (`HUB_TOOLHUB_TOKENS_FILE`)
   maps sibling-space bearers to full identity envelopes; render/supervisor
   write each sibling's `HUB_RUNTIME_AUTH` in place (same inode → live bind
@@ -246,7 +318,9 @@ owner-registered bounded CLI commands), `HUB_RECIPE_CATALOGS`,
 `HUB_AGENT_EXEC_MODE=supervisor` (agent-tools exec via docker exec, never the
 agent network), `HUB_CAPABILITY_MODE`/`_PROFILE_ID`/`_GENERATION`/`_ENVIRONMENT`
 (managed mode), `HUB_CREDENTIAL_BROKER_*` client env, `HUB_BUILD_SECCOMP`
-(rootless buildkit profile), `HUB_COMMUNICATION_CONTROL_URL`.
+(rootless buildkit profile), `HUB_COMMUNICATION_CONTROL_URL`,
+`HUB_PASSPORTS_BY_PRINCIPAL` + `HUB_VAULTS_BY_PRINCIPAL` (per-principal
+passport/vault mount roots).
 
 ## Boundaries
 

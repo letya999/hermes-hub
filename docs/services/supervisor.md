@@ -1,6 +1,6 @@
 ---
 description: supervisor — per-space runtime spawner/manager; owns warm pools, docker exec agent-tools path, control channel.
-last_verified: 2026-11-04
+last_verified: 2026-11-06
 ---
 
 # supervisor
@@ -56,6 +56,27 @@ spaces dir at `/spaces`, project `config/` read-only, and the host
   Skill ref leases require the exact principal, context, runtime and policy
   of a running generation. Spawn failures return an allowlisted `class`:
   `hold`, `backoff`, `policy_rotation`, `spawn` or `unavailable`.
+- `GET /v1/jobs/<id>` serves the durable job record as a run-context
+  projection for lifecycle consumers (SPEC-0098 M2): beside `job_id`,
+  `identity` and `status`/`outcome` it reports `run_id`, `session_id`,
+  `scope_id`, `trigger`, `channel`, the supervisor's own `environment`, the
+  job's dispatch `runtime_generation` and the binding's live
+  `current_generation` read under the manager lock. Every field is durable
+  state or manager config — the caller's job id selects the record and fills
+  nothing in it, so a superseded generation or a compacted record reports
+  itself rather than answering as live.
+  The same status projection supplies the capture verifier with the stored
+  user, sensitivity/provenance flags and SHA-256 hashes of request and reply
+  text. Prompt text itself is absent from the durable request record. After
+  terminal compaction a minimal historical capture context retains those
+  fields and the exact run ID without retaining either text body.
+- Before dispatching an admitted private turn the supervisor asks ToolHub
+  for pre-turn memory (`POST /v1/memory-context` under the supervisor bearer
+  with `X-Hub-Principal`, `memory_context.go`): the durable admission id and
+  the request text hash prove the exact run; a group, sensitive or
+  background run skips the call, and any failure — no ToolHub, a denial, a
+  malformed or oversized answer — injects the explicit
+  "Memory context unavailable" marker, never a local vault read.
 - `/v1/runtimes` entries expose a read-only `consumers` projection (lease
   kind, owner class, expiry) and `wait_reason` for expected waits — parked
   approvals/streams are reported, not remediated. Genuine anomalies append

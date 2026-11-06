@@ -55,6 +55,13 @@ type Gateway struct {
 	// PassportRoot contains one read-only published revision per principal.
 	// Memory admission resolves it from the authenticated envelope only.
 	PassportRoot string
+	// Vaults resolves a verified principal/environment to that principal's
+	// vault through the server-rendered bindings (HUB_VAULTS_BY_PRINCIPAL).
+	// Nil when no bindings root is rendered — memory stays unavailable.
+	Vaults *VaultResolver
+	// Runs is the lifecycle-authority seam (supervisor /v1/jobs) consulted by
+	// the exact-run gate for model-facing memory calls. Nil fails closed.
+	Runs api.RunAuthority
 	// CLIRelease drops bounded-cli cells for the caller's principal; the
 	// /v1/cli-jobs/release route uses it for job-end task-cell teardown.
 	CLIRelease  func(context.Context, api.CliReleaseRequest) error
@@ -118,6 +125,8 @@ func (g *Gateway) Handler() (http.Handler, error) {
 	mux.Handle("/v1/confirmations", http.HandlerFunc(g.serveHumanConfirmation))
 	mux.Handle("/v1/tool-call", http.HandlerFunc(g.serveToolCall))
 	mux.Handle("/v1/cli-jobs/release", http.HandlerFunc(g.serveCLIJobRelease))
+	mux.Handle("/v1/memory-capture", http.HandlerFunc(g.serveMemoryCapture))
+	mux.Handle("/v1/memory-context", http.HandlerFunc(g.serveMemoryContext))
 	mux.Handle("/v1/rights/decide", http.HandlerFunc(g.serveRightsDecide))
 	mux.Handle("/v1/admin/onboardings", http.HandlerFunc(g.serveAdminOnboardings))
 	mux.Handle("/v1/admin/diagnose/", http.HandlerFunc(g.serveAdminDiagnose))

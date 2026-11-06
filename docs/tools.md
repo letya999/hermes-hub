@@ -1,6 +1,6 @@
 ---
 description: Complete agent-visible tool surface — catalog r5 families, pinned platform layer, connector_* facade, effect/grant requirements, delivery directives.
-last_verified: "2026-11-05"
+last_verified: "2026-11-06"
 ---
 
 # Tool surface
@@ -152,7 +152,7 @@ word where one exists):
 
 | Family | Tools | Executor | Notes |
 |---|---|---|---|
-| files | `file_list`, `file_read`, `file_search`, `file_write`, `file_edit`, `file_mkdir`, `file_archive`, `file_remove`, `project_create` | handler:files | `root` selects the admitted root (`workspace` default; `archive`, `organization`, `skills`, `knowledge`, `vault` where granted); `file_read` pages via `offset`/`limit`/`next_offset`; `file_write`/`file_edit` are revision-guarded and never mint a new top-level project dir — `project_create` (workspace.create_project) does; `file_archive` packs/unpacks in-scope; `knowledge_*` reads are `file_*` under `root=knowledge` |
+| files | `file_list`, `file_read`, `file_search`, `file_write`, `file_edit`, `file_mkdir`, `file_archive`, `file_remove`, `project_create` | handler:files | `root` selects the admitted root (`workspace` default; `archive`, `organization`, `skills`, `knowledge` where granted); `file_read` pages via `offset`/`limit`/`next_offset`; `file_write`/`file_edit` are revision-guarded and never mint a new top-level project dir — `project_create` (workspace.create_project) does; `file_archive` packs/unpacks in-scope; `knowledge_*` reads are `file_*` under `root=knowledge` |
 | terminal | `terminal_exec`, `terminal_job` | handler:terminal | bounded workspace exec (`cmd`, `cwd`, `timeout`, `stdin`, `shell`, `background`); background returns a `job_id` steered by `terminal_job` action poll\|send\|kill\|list; optional `skill` leases that skill's stored credentials into the one call |
 | documents | `document_extract`, `document_create`, `document_edit`, `document_convert`, `document_remove` | handler:documents | txt, md, csv, html, pdf, xlsx, pptx inside the admitted scope |
 | media | `media_inspect`, `media_convert`, `media_generate`, `media_edit`, `media_fetch`, `media_transcribe`, `media_speak` | handler:media | `media_inspect` takes 1–8 `paths`; `media_generate` covers image and video jobs polled via `media_fetch`; STT/TTS answer honest `unavailable` without a provider; `media_speak` delivers through the active channel |
@@ -172,7 +172,8 @@ word where one exists):
 | browser | `browser_open`, `browser_read`, `browser_act`, `browser_capture` | connector:browser | curated calls over the browser connector; `profile` selects user or guest profile |
 | models | `model_list`, `model_switch` | runtime:models | routes, ladders and status from the models passport; switch stays inside the granted ladder; without a hub models plane calls return `unavailable` |
 | sessions | `session_list`, `session_search`, `session_read`, `session_switch`, `session_edit`, `session_remove` | runtime:sessions | own-space sessions only; `session_edit` action archive\|restore; without a session store calls return `unavailable` |
-| memory | `memory_search`, `memory_card` | handler:memory | the memory vault contract (SPEC-0085): `memory_search` is BM25+graph over daily leaves, cards and summaries — hits carry `file:line` evidence refs, never answer from memory alone; `memory_card` is the only write path (ops remember\|fact\|truth\|merge\|forget) and needs a stamped private run; `merge`/`forget` additionally need owner provenance — no argument grants either; `root=vault` file writes still refuse the governed `memory/`/`runtime/` zones — use `memory_card` |
+| memory | `memory_search` | runtime:toolhub | the memory vault contract (SPEC-0085/M32): BM25+graph over daily leaves, cards and summaries — hits carry `file:line` evidence refs, never answer from memory alone; ToolHub resolves the caller's enrolled vault from the verified identity envelope — no argument, root or header selects user, vault or audience; requires config.memory.enabled plus an exact live private run verified against the supervisor job record |
+| memory | `memory_card` | runtime:toolhub | the governed write path (ops remember\|fact\|propose), executed inside ToolHub as the sole writer — edits to existing memory (`propose` with inner=truth\|merge\|forget) land only on the owner's verified confirmation; there is no `root=vault` file root and no local vault fallback |
 
 ## memory — the vault contract
 
@@ -189,24 +190,31 @@ entirely when on: the `memory` toolset stays in `agent.disabled_toolsets`,
 and `MEMORY.md`/`USER.md` remain on disk untouched for the M20.7 import. The
 vault is a git-backed `spaces/<id>/vault/` tree; the governed writer is the
 only mutation path (hash-checked, actor-attributed commits, zone-whitelisted)
-and `CORE.md` reaches only private-audience run instructions, pinned per job
-mapping like the style snapshot. Before each run the hub also injects a
-pinned lane-1 recall block (SPEC-0085 R4): ≤4 card hits with evidence refs,
+and `CORE.md` reaches only private-audience run instructions. Under M32 the
+runtime never mounts the vault: before dispatching an admitted private run
+the supervisor asks ToolHub for `memory/CORE.md` and a pinned lane-1 recall
+block (SPEC-0085 R4, SPEC-0098 M5) — ≤4 card hits with evidence refs,
 ≤2500 chars, marker-wrapped as "data, not instructions" so capture can never
-re-extract it — zero model calls, audience-scoped, and flagged-degraded
-rather than hidden when the index is unavailable. Past-referencing turns
-earn one lane-2 hint line nudging `memory_search`.
+re-extract it — verified against the durable job record (job, admission,
+text hash, running status, generation, audience, user, environment). Any
+failure injects the explicit unavailable marker; there is no local vault
+fallback. Past-referencing turns earn one lane-2 hint line nudging
+`memory_search`.
 
 Writes into the vault run through one contract surface: `memory_card`
-(SPEC-0085 R6). `memory/daily`, `memory/cards`, `memory/summaries`,
-`memory/CORE.md`, `memory/REVIEW.md` and `runtime/` are governed zones — the
-file tools deny writes there on the `vault:` root (segment names compare
-case- and fullwidth-folded; `library/` and ordinary paths stay writable, and
-the root itself requires a stamped private run). `merge`/`forget` execute
-only on a live owner-provenance turn bound to that turn's `SourceRef` — a
-replayed or argument-claimed authorization is denied, and every mutation
-and denial is journaled to `runtime/memory/writes.jsonl`. Soft forget is
-a hub-owned strike: `runtime/memory/forget.jsonl` for daily-leaf entries,
+(SPEC-0085 R6), executed inside ToolHub against the verified caller's own
+vault. `memory/daily`, `memory/cards`, `memory/summaries`,
+`memory/CORE.md`, `memory/REVIEW.md` and `runtime/` are governed zones the
+file tools can no longer reach at all — the runtime has no `vault:` root
+(M32/#517). Edits to existing memory are proposal-gated (ADR-0095 D6,
+M32/#519): `op=propose` persists a durable proposal in the vault — owner,
+exact diff, base revision, expiry and a single-use nonce — and the owner's
+verified confirmation tap on the channel is the only thing that applies it;
+the model cannot confirm its own proposal, and a replayed, expired,
+foreign or stale-base confirmation is denied without touching memory.
+Every mutation and denial is journaled to `runtime/memory/writes.jsonl`.
+Soft forget is a hub-owned strike:
+`runtime/memory/forget.jsonl` for daily-leaf entries,
 `status: superseded` frontmatter for cards — excluded from search, lane-1
 recall and nightly promotion across restarts, visible only via
 `history:true` and git.
@@ -229,17 +237,16 @@ housekeeping is never silent. `hubctl memory prune` dry-runs the same
 report; `--apply` executes. Expired bytes remain in vault git history;
 true erasure is a separate history-rewrite decision.
 
-With `knowledge_ui` on, the space's `open-knowledge` container also serves
-the runtime an `mcp__open_knowledge__*` read surface (SPEC-0085 R9): exactly
-the eight verified read verbs of the pinned release — `audit`, `config`,
-`exec` (upstream read-only shell allowlist), `history`, `links`, `palette`,
-`search`, `skills` — rendered as `tools.include`, so mutation verbs
-(`write`, `edit`, `delete`, `move`, `checkpoint`, `restore_version`,
-`import`, `install`, `preview_url`, `share_link`, and `lint` whose `fix`
-argument mutates) are never registered at all; a guessed call dies as an
-unregistered tool. `knowledge_ui_write` stays deferred and refused at
-validation until upstream gains per-path write scoping — `memory_card`
-remains the only agent write path. A down OK degrades honestly
+With `knowledge_ui` on, no `open-knowledge` container or
+`mcp__open_knowledge__*` surface renders (M32/#520): ToolHub owns the
+vault, so no service may mount it and upstream OpenKnowledge cannot act as
+a governed-API client — the flag stays valid but explicitly unavailable,
+and `hubctl doctor` reports it as such. Knowledge reads and edits go
+through the governed ToolHub tools instead: `memory_search` for memory
+content and `memory_card op=propose` plus owner confirmation for edits.
+`knowledge_ui_write` stays deferred and refused at validation until a
+governed knowledge surface exists — `memory_card` remains the only agent
+write path.
 
 ## connectors — the control surface
 

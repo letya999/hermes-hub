@@ -310,7 +310,6 @@ func (m *Manager) materializeHermesConfig(binding Binding, env string) (string, 
 		Browser: settings.ManagedBrowserGrant(),
 		// The hub-side subsystem flags replay the reviewed render's
 		// admission the same way the browser grant does.
-		KnowledgeUI: settings.ManagedKnowledgeUIGrant(),
 		MemoryVault: settings.ManagedMemoryVaultFlag(),
 		User:        settings.User,
 	}

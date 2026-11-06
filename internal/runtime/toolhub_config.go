@@ -74,7 +74,6 @@ func materializeOptionsFromEnv() (stack.MaterializeOptions, error) {
 		SelfSettingsPath:   selfSettingsPath,
 		Browser:            browserGrant,
 		User:               os.Getenv("HUB_USER_ID"),
-		KnowledgeUI:        os.Getenv("HUB_MANAGED_KNOWLEDGE_UI") == "1",
 		MemoryVault:        os.Getenv("HUB_MANAGED_MEMORY_VAULT") == "1",
 	}, nil
 }

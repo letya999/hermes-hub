@@ -1,6 +1,6 @@
 ---
 description: Operator runbook — stack lifecycle, user onboarding, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
-last_verified: 2026-11-04
+last_verified: 2026-11-06
 ---
 
 # Operations
@@ -595,36 +595,23 @@ a Honcho conclusions export (the list Page or the piped array) into
 adapter reports degradation honestly (capture/search/export and health are
 the only lanes — recall and governed write are `unsupported`).
 
-With `knowledge_ui` on (requires `memory_vault`), one pinned `open-knowledge`
-container serves the OpenKnowledge editor over the vault — private space
-network only by default, no host reachability at all. Setting `ui_port` in
-`agent.yaml` opts into exactly one host publish, `127.0.0.1:<ui_port>` → the
-container's 8080 (the editor is unauthenticated, so loopback is the only
-safe edge). Reach it from another machine by tunneling in:
-`ssh -L <ui_port>:localhost:<ui_port> <host>`. `ui_bind` pins the publish
-address and is loopback-only (`127.0.0.1` or `::1`); a wider bind is a hard
-validation error, never a warning — there is no public exposure path.
-`ui_port` joins the other host ports in validation (1024–65535, no collision
-with browser/oauth/slack events ports) and requires `knowledge_ui`;
-`hubctl doctor` reports the edge, the tunnel hint and whether something is
-already listening. `ui_expose` is the reserved M18 hook: setting it fails
-honestly until the M18 edge service lands, which is where a shareable
-one-time `?t=` UI link (auth + expiry decided there) would hang off — never
-a silent partial exposure.
-Coexistence contract with hub writes: when the governed writer or rollup
-lands a commit while a document is open in the editor, OpenKnowledge keeps
-both versions — a stale save is *rejected* and retained under
-`.ok/local/stale-external-writes.json`, and the conflict surfaces via
-`.ok/local/conflicts.json` (shadow versions live under `.git/ok/`). There is
-never a silent overwrite in either direction; owner UI edits carry owner
-provenance and win the next rollup. OpenKnowledge's own state (`.ok/`,
-`.graph/`, `.git/ok/`) and every `runtime/` sidecar are `.okignore`d, so the
-editor indexes knowledge only. If the container is down, vault capture,
-recall and search are unaffected — nothing else depends on it.
-The same container serves the runtime a read-only MCP surface at
-`http://open-knowledge:8080/mcp` (`mcp__open_knowledge__*`): the eight
-verified read verbs via `tools.include`, mutation verbs never registered,
-`knowledge_ui_write` deferred until upstream per-path scoping (#422). Honcho is
+With `knowledge_ui` on (requires `memory_vault`) no `open-knowledge`
+container renders (M32/#520): ToolHub owns the vault, so the feature can
+mount nothing — the upstream editor cannot act as a governed-API client,
+and its surface stays explicitly unavailable rather than partially open.
+`hubctl doctor` reports `Knowledge UI: unavailable`; a space whose
+published `stack.yaml` still declares `open-knowledge` fails the
+declared-but-unrendered check until republished without it (the vault
+itself, `.ok/` state and history are untouched — nothing is deleted).
+`ui_port`/`ui_bind` validation is unchanged (loopback-only, port range,
+no collisions, requires `knowledge_ui`) but publishes nothing while no
+service renders; `ui_expose` stays the reserved M18 hook and setting it
+still fails honestly. Knowledge reads and edits go through the governed
+ToolHub tools: `memory_search` reads memory content and `memory_card
+op=propose` plus the owner's verified confirmation is the only edit path —
+an editor write that bypassed ToolHub admission is impossible by
+construction. `knowledge_ui_write` stays deferred (#422) until a
+governed-API knowledge surface exists. Honcho is
 optional (`honcho` + `honcho_url`); its failure must not break ordinary
 Hermes memory. Skills live in the owner store `spaces/<id>/skills` —
 publication, archive, restore, rollback and promote rebuild the read-only
@@ -705,8 +692,9 @@ Desktop/WSL, Optimize-VHD).
 
 CI: `image` job runs `devcheck docker-publish <target>` → immutable
 `ghcr.io/<owner>/<repo>/hermes-hub:<sha>-<target>` + moving `edge-<target>`;
-`containers` job runs `just docker-check-prebuilt` (`docker-pull` resolves
-sha tag, `edge-*` fallback, warns when pulled revision ≠ local HEAD). Local
+`container-gates` runs independent contract scenarios; `containers` aggregates
+them. Local `just docker-check` uses prebuilt images: `docker-pull` requires an
+exact HEAD tag and matching revision label, failing before retag on mismatch. Local
 pull needs one-time `docker login ghcr.io`. Weekly `prune-images` keeps
 newest 8 versions + `edge-*`. `HUB_REGISTRY_REPO` overrides for mirrors.
 
@@ -1096,7 +1084,7 @@ provider identity evidence; do not invent a universal identity endpoint.
   cliproxy it uses the loopback-published port. Offline `doctor` never
   claims live provider reachability.
 - `just config-check` renders synthetic dev/prod static+supervised profiles
-  through `compose config`; part of `just check`/`just build`/image CI.
+  through `compose config`; part of `just check-full`/`just build`/image CI.
 - The native container gate starts a real MCP stdio child against a local
   fixture — no Telegram contact. CI publishes `cli-tools`/`cell-proxy`
   stages; `just docker-check-prebuilt` pulls them.

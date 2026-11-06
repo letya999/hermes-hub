@@ -137,6 +137,11 @@ func (s *Spool) RecordTerminalOutcome(job Job, outcome RunOutcome, delivery *Del
 			return err
 		}
 	}
+	if outcome.Status == "completed" && s.onCompleted != nil {
+		if err := s.onCompleted(job, outcome); err != nil {
+			return err
+		}
+	}
 	if err := s.applyStreamReceiptLocked(receipt); err != nil {
 		return err
 	}

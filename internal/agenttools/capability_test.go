@@ -138,3 +138,49 @@ func TestSkillManageDeclaresGitArguments(t *testing.T) {
 	}
 	t.Fatal("skill_edit missing from the hub catalog")
 }
+
+// M32/#518: memory_card executes inside ToolHub against the verified
+// caller's own vault — the description must say ToolHub, never the retired
+// stamped-run wording, and the executor stays runtime:toolhub.
+func TestMemoryCardDeclaresToolHubExecutor(t *testing.T) {
+	d := HubToolsDefinition()
+	for _, tool := range d.Tools {
+		if tool.Name != "memory_card" {
+			continue
+		}
+		if tool.Executor != "runtime:toolhub" {
+			t.Fatalf("memory_card executor = %q", tool.Executor)
+		}
+		if !strings.Contains(tool.Description, "ToolHub") || strings.Contains(tool.Description, "stamped private run") {
+			t.Fatalf("memory_card description drifted: %q", tool.Description)
+		}
+		// M32/#519: edits to existing memory are proposal-gated — the
+		// contract must name propose, the inner op and the owner's verified
+		// confirmation, and the schema must carry the inner argument.
+		for _, want := range []string{"propose", "inner", "owner"} {
+			if !strings.Contains(tool.Description, want) {
+				t.Fatalf("memory_card description missing %q: %q", want, tool.Description)
+			}
+		}
+		var inner bool
+		for _, a := range tool.Arguments {
+			switch a.Name {
+			case "inner":
+				inner = true
+			case "op":
+				// The op enum must not advertise edits the model cannot
+				// execute — truth/merge/forget are proposal inner ops now.
+				for _, e := range a.Enum {
+					if e == "truth" || e == "merge" || e == "forget" {
+						t.Fatalf("memory_card op enum advertises a non-executable edit: %+v", a.Enum)
+					}
+				}
+			}
+		}
+		if !inner {
+			t.Fatalf("memory_card schema lacks the inner argument: %+v", tool.Arguments)
+		}
+		return
+	}
+	t.Fatal("memory_card missing from the hub catalog")
+}

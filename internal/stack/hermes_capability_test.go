@@ -563,16 +563,34 @@ func TestNativeCarveoutMaterializeAndAttest(t *testing.T) {
 	}
 }
 
-// The open_knowledge endpoint renders inside managedMCPServers; the source
-// attestation must replay the same admission or every knowledge-carrying
-// managed config reads as unreviewed drift (SPEC-0085 R9/R10).
+// M32/#520: the render never emits mcp_servers.open_knowledge, so a managed
+// source carrying it is always unreviewed drift — no grant replay may attest
+// it. memory_vault still evicts the native memory backend on the same source.
 func TestManagedKnowledgeUISourceAttestation(t *testing.T) {
 	s := Settings{Schema: 1, Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, User: "alice", Model: "synthetic", ModelURL: "http://model-relay:8318/v1", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000,
 		Tools: map[string]ToolEntry{"knowledge_ui": {Via: ToolViaNative}, "memory_vault": {Via: ToolViaNative}, "memory": {Via: ToolViaNative}}}
 	zero := Config(s)
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source.yaml")
-	body, err := yaml.Marshal(zero)
+	if servers, ok := zero["mcp_servers"].(M); ok {
+		if _, present := servers["open_knowledge"]; present {
+			t.Fatal("managed render emitted open_knowledge under the retired data plane")
+		}
+	}
+	// A source hand-edited to carry the retired endpoint must reject: no
+	// MaterializeOptions combination can honestly reproduce those bytes.
+	var cfg M
+	raw, _ := yaml.Marshal(zero)
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	servers, _ := cfg["mcp_servers"].(map[string]any)
+	if servers == nil {
+		servers = map[string]any{}
+		cfg["mcp_servers"] = servers
+	}
+	servers["open_knowledge"] = map[string]any{"url": "http://open-knowledge:8080/mcp", "timeout": 120}
+	body, err := yaml.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -581,31 +599,32 @@ func TestManagedKnowledgeUISourceAttestation(t *testing.T) {
 	}
 	dest := filepath.Join(dir, "effective.yaml")
 	opts := MaterializeOptions{Managed: true, ToolHubEndpoint: "http://toolhub:8090/mcp", ToolHubTokenEnv: "HUB_RUNTIME_AUTH", RuntimeAuthPresent: true,
-		NativeToolsets: []string{"memory"}, KnowledgeUI: true, MemoryVault: true}
+		NativeToolsets: []string{"memory"}, MemoryVault: true}
+	if err := MaterializeHermesConfig(source, dest, opts); err == nil {
+		t.Fatal("a source carrying open_knowledge attested under the retired data plane")
+	}
+	// The same space's honest render still attests cleanly with the vault
+	// eviction replayed.
+	body, err = yaml.Marshal(zero)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, body, 0600); err != nil {
+		t.Fatal(err)
+	}
 	if err := MaterializeHermesConfig(source, dest, opts); err != nil {
-		t.Fatalf("knowledge-carrying source rejected: %v", err)
+		t.Fatalf("honest managed source rejected: %v", err)
 	}
 	if err := ValidateManagedEffectiveConfig(dest, s, opts); err != nil {
-		t.Fatalf("knowledge-carrying effective config rejected: %v", err)
+		t.Fatalf("honest effective config rejected: %v", err)
 	}
 	var effective M
-	raw, _ := os.ReadFile(dest)
+	raw, _ = os.ReadFile(dest)
 	if err := yaml.Unmarshal(raw, &effective); err != nil {
 		t.Fatal(err)
 	}
-	servers, _ := effective["mcp_servers"].(map[string]any)
-	if _, ok := servers["open_knowledge"]; !ok {
-		t.Fatal("attested effective config lost the open_knowledge endpoint")
-	}
 	if effective["memory"].(map[string]any)["memory_enabled"] != false {
 		t.Fatal("memory_vault must evict the native memory backend")
-	}
-	// Without the carried grant the same source is unreviewed drift.
-	omitted := opts
-	omitted.KnowledgeUI = false
-	omitted.MemoryVault = false
-	if err := MaterializeHermesConfig(source, dest, omitted); err == nil {
-		t.Fatal("knowledge-carrying source attested without its grant replay")
 	}
 }
 
@@ -1016,16 +1035,17 @@ func TestManagedRuntimeEnvCarriesBrowserGrant(t *testing.T) {
 	}
 }
 
-// The spawned managed runtime replays the knowledge/memory subsystem flags
-// inside the container; they ride RuntimeService env like HUB_MANAGED_BROWSER
+// The spawned managed runtime replays the memory_vault subsystem flag
+// inside the container; it rides RuntimeService env like HUB_MANAGED_BROWSER
 // so the in-container preflight emits the identical bytes without consulting
-// agent-editable state.
+// agent-editable state. HUB_MANAGED_KNOWLEDGE_UI never renders — the retired
+// surface has nothing to replay (M32/#520).
 func TestManagedRuntimeEnvCarriesFeatureFlags(t *testing.T) {
 	s := Settings{Schema: 1, User: "alice", Environment: "dev", CapabilityMode: "managed", CapabilityProfileID: "alice-default", CapabilityGeneration: 1, Timezone: "UTC", OAuthPort: 8000, BrowserPort: 6080,
 		Tools: map[string]ToolEntry{"knowledge_ui": {Via: ToolViaNative}, "memory_vault": {Via: ToolViaNative}}}
 	env := RuntimeService(s, t.TempDir(), t.TempDir())["environment"].(M)
-	if env["HUB_MANAGED_KNOWLEDGE_UI"] != "1" {
-		t.Fatalf("HUB_MANAGED_KNOWLEDGE_UI absent under a knowledge_ui wish: %v", env)
+	if env["HUB_MANAGED_KNOWLEDGE_UI"] != nil {
+		t.Fatalf("retired HUB_MANAGED_KNOWLEDGE_UI rendered: %v", env)
 	}
 	if env["HUB_MANAGED_MEMORY_VAULT"] != "1" {
 		t.Fatalf("HUB_MANAGED_MEMORY_VAULT absent under a memory_vault wish: %v", env)
@@ -1039,9 +1059,9 @@ func TestManagedRuntimeEnvCarriesFeatureFlags(t *testing.T) {
 }
 
 // RenderEnvironment on a memory-vault + knowledge space must materialize and
-// attest: the managed source carries open_knowledge and the evicted memory
-// backend, so the host materialization has to replay both flags or the
-// reviewed render reads as unreviewed drift.
+// attest: the managed source carries the evicted memory backend and no
+// open_knowledge, so the host materialization replays memory_vault and the
+// retired endpoint stays absent (M32/#520).
 func TestManagedRenderEnvironmentCarriesFeatureFlags(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "spaces", "alice")
@@ -1090,8 +1110,8 @@ func TestManagedRenderEnvironmentCarriesFeatureFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(body)
-	if !strings.Contains(text, "open_knowledge") {
-		t.Fatalf("effective render lost the open_knowledge endpoint:\n%s", text)
+	if strings.Contains(text, "open_knowledge") {
+		t.Fatalf("retired open_knowledge endpoint must not render:\n%s", text)
 	}
 	if !strings.Contains(text, "memory_enabled: false") {
 		t.Fatalf("memory_vault must evict the native backend:\n%s", text)

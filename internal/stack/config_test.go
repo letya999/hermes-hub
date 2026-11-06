@@ -1487,7 +1487,8 @@ func TestComposeMountsPublishedPassportsPerPrincipalForToolhub(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := Settings{Schema: 1, Environment: "dev", User: "alice", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000}
-	toolhub := Compose(s, dir, dir)["services"].(M)["toolhub"].(M)
+	services := Compose(s, dir, dir)["services"].(M)
+	toolhub := services["toolhub"].(M)
 	if toolhub["environment"].(M)["HUB_PASSPORTS_BY_PRINCIPAL"] != "/passports-by" {
 		t.Fatal("ToolHub lacks the per-principal passport root")
 	}
@@ -1521,6 +1522,20 @@ func TestComposeMountsPublishedPassportsPerPrincipalForToolhub(t *testing.T) {
 	}
 	if vaultMounted["/vaults-by/carol"] != "" {
 		t.Fatal("disabled memory gained a ToolHub vault mount")
+	}
+	// M32/#515: vault access is ToolHub-owned — the runtime container itself
+	// never mounts any vault path, as source or target.
+	runtime, ok := services["hermes-runtime"].(M)
+	if !ok {
+		t.Fatalf("hermes-runtime service missing: %#v", services)
+	}
+	for _, raw := range runtime["volumes"].([]any) {
+		volume := raw.(M)
+		target, _ := volume["target"].(string)
+		source, _ := volume["source"].(string)
+		if strings.Contains(target, "vault") || strings.Contains(source, "vault") {
+			t.Fatalf("runtime must not mount the vault: %#v", volume)
+		}
 	}
 }
 

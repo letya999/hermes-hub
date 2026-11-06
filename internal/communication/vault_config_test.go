@@ -2,8 +2,9 @@ package communication
 
 import "testing"
 
-// SPEC-0085 R1.6: the gateway learns the mounted vault from HUB_VAULT and the
-// run runner carries it — without the env, no CORE is injected.
+// The gateway learns the mounted vault from HUB_VAULT for the nightly memory
+// worker — the only remaining communication-side vault consumer pending its
+// own ToolHub migration (M32 leaves the run path entirely vault-free).
 func TestConfigFromEnvVaultDir(t *testing.T) {
 	t.Setenv("TELEGRAM_BOT_TOKEN", "token")
 	t.Setenv("TELEGRAM_ALLOWED_USERS", "11")
@@ -19,12 +20,5 @@ func TestConfigFromEnvVaultDir(t *testing.T) {
 	}
 	if config.VaultDir != vaultDir {
 		t.Fatalf("HUB_VAULT not mapped: %q", config.VaultDir)
-	}
-	g, err := New(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if runner, ok := g.runner.(HTTPRunner); !ok || runner.VaultDir != vaultDir {
-		t.Fatalf("runner vault not wired: %#v", g.runner)
 	}
 }

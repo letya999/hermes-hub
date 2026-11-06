@@ -277,11 +277,8 @@ func managedMCPServers(s Settings) M {
 			servers["browser_guest"] = browserServer(s.User, true, s.Has("browser_act"))
 		}
 	}
-	// SPEC-0085 R9: same hub-owned read surface as the unmanaged render —
-	// the native:knowledge_ui section decides whether the endpoint exists.
-	if s.Has("knowledge_ui") && s.govAllows("native:knowledge_ui") {
-		servers["open_knowledge"] = okServer(s)
-	}
+	// M32/#520: no open_knowledge entry — same retirement as the unmanaged
+	// render; a managed runtime may not dial the vault directly either.
 	return servers
 }
 
@@ -304,17 +301,6 @@ func (s Settings) managedBrowserGrant() BrowserGrant {
 // this render's MaterializeOptions when it materializes the effective config
 // for a spawned managed runtime.
 func (s Settings) ManagedBrowserGrant() BrowserGrant { return s.managedBrowserGrant() }
-
-// managedKnowledgeUIGrant resolves the render-time open_knowledge admission:
-// the workspace wish plus the same native:knowledge_ui section decision the
-// unmanaged render consults (SPEC-0085 R9/R10).
-func (s Settings) managedKnowledgeUIGrant() bool {
-	return s.Has("knowledge_ui") && s.govAllows("native:knowledge_ui")
-}
-
-// ManagedKnowledgeUIGrant exposes the grant to the supervisor, which
-// reproduces this render's MaterializeOptions for a spawned managed runtime.
-func (s Settings) ManagedKnowledgeUIGrant() bool { return s.managedKnowledgeUIGrant() }
 
 // managedMemoryVaultFlag reports whether the reviewed render carried
 // memory_vault: a denied wish never reaches render — applyGovernance fails

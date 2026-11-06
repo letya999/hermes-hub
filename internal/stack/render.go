@@ -33,11 +33,6 @@ func Config(s Settings) M {
 			e["HUB_MEDIA_URL"] = "${HUB_MEDIA_URL}"
 			e["HUB_MEDIA_AUTH"] = "${HUB_MEDIA_AUTH}"
 		}
-		if s.Has("memory_vault") {
-			// The memory tools resolve the vault root off the process env —
-			// the stdio child's env list is the only channel it can inherit.
-			e["HUB_VAULT"] = "${HUB_VAULT}"
-		}
 		if s.Has("ssh") {
 			e["HUB_SSH_CONFIG"] = "/state/ssh/config.yaml"
 			e["HUB_SSH_WRITE"] = fmt.Sprint(s.Has("ssh_write"))
@@ -89,12 +84,9 @@ func Config(s Settings) M {
 			servers["browser_guest"] = browserServer(s.User, true, s.Has("browser_act"))
 		}
 	}
-	// SPEC-0085 R9: the OpenKnowledge grant is the hub-owned read surface over
-	// the vault — the verified include list renders here so mutation verbs are
-	// never registered with the runtime at all.
-	if s.Has("knowledge_ui") && s.govAllows("native:knowledge_ui") {
-		servers["open_knowledge"] = okServer(s)
-	}
+	// M32/#520: no open_knowledge entry — the runtime may never dial a vault
+	// surface ToolHub did not admit; upstream OK cannot act as a governed
+	// client, so the surface stays unrendered rather than partially open.
 	// Connectors run behind the ToolHub admission boundary; only via: mcp-raw
 	// selections render raw mcp: definitions directly into mcp_servers.
 	for name, cfg := range rawMCPServers(s) {

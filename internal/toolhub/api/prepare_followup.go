@@ -30,10 +30,12 @@ func DeliverPrepareEvent(ctx context.Context, auth identity.Envelope, onboarding
 	PostPrepareNotice(ctx, auth, onboarding, event, 0)
 }
 
-func PostPrepareNotice(ctx context.Context, auth identity.Envelope, onboarding Onboarding, event string, tools int) string {
+// prepareRoute resolves the channel's prepare-outcome endpoint and its
+// shared control credential from the environment; "" when unconfigured.
+func prepareRoute() (string, string) {
 	base := strings.TrimRight(strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_CONTROL_URL")), "/")
-	if base == "" || auth.PrincipalID == "" || onboarding.OnboardingID == "" {
-		return ""
+	if base == "" {
+		return "", ""
 	}
 	token := strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_AUTH"))
 	if token == "" {
@@ -44,6 +46,14 @@ func PostPrepareNotice(ctx context.Context, auth identity.Envelope, onboarding O
 		}
 	}
 	if token == "" {
+		return "", ""
+	}
+	return base, token
+}
+
+func PostPrepareNotice(ctx context.Context, auth identity.Envelope, onboarding Onboarding, event string, tools int) string {
+	base, token := prepareRoute()
+	if base == "" || auth.PrincipalID == "" || onboarding.OnboardingID == "" {
 		return ""
 	}
 	payload := map[string]any{
@@ -75,6 +85,14 @@ func PostPrepareNotice(ctx context.Context, auth identity.Envelope, onboarding O
 	if tools > 0 {
 		payload["tools"] = tools
 	}
+	return preparePost(ctx, auth, base, token, payload)
+}
+
+// preparePost ships one prepared payload to the channel's prepare-outcome
+// endpoint and returns the channel-minted login URL when the notice carries
+// one. A missing route or a failed post is silent — callers stay honest in
+// their own result instead.
+func preparePost(ctx context.Context, auth identity.Envelope, base, token string, payload map[string]any) string {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return ""
@@ -90,12 +108,12 @@ func PostPrepareNotice(ctx context.Context, auth identity.Envelope, onboarding O
 	req.Header.Set("X-Hub-Principal", auth.PrincipalID)
 	response, err := http.DefaultClient.Do(req) // #nosec G704 -- internal control endpoint
 	if err != nil {
-		log.Printf("toolhub prepare outcome delivery failed onboarding=%s: %v", onboarding.OnboardingID, err)
+		log.Printf("toolhub prepare outcome delivery failed onboarding=%v: %v", payload["onboarding_id"], err)
 		return ""
 	}
 	defer response.Body.Close()
 	if response.StatusCode/100 != 2 {
-		log.Printf("toolhub prepare outcome delivery onboarding=%s status=%d", onboarding.OnboardingID, response.StatusCode) // #nosec G706 -- ids are store-generated IDPattern strings
+		log.Printf("toolhub prepare outcome delivery onboarding=%v status=%d", payload["onboarding_id"], response.StatusCode) // #nosec G706 -- ids are store-generated IDPattern strings
 		return ""
 	}
 	// The channel returns the sign-in link it minted for this request (QR
@@ -221,3 +239,23 @@ func ErrString(text string) error {
 type plainError struct{ text string }
 
 func (e *plainError) Error() string { return e.text }
+
+// DeliverMemoryConfirmation sends a memory edit proposal's confirmation
+// proof to the owner's channel through the same prepare-outcome lane the
+// connector confirmations use — the channel renders the verified button and
+// posts the tap back to /v1/confirmations. The label gives the notice text
+// its subject; delivery itself is best-effort like every prepare notice.
+func DeliverMemoryConfirmation(ctx context.Context, auth identity.Envelope, proof HumanConfirmation, label string) {
+	base, token := prepareRoute()
+	if base == "" || auth.PrincipalID == "" || proof.OnboardingID == "" {
+		return
+	}
+	payload := map[string]any{
+		"onboarding_id": proof.OnboardingID,
+		"phase":         "awaiting-confirm",
+		"repository":    label,
+		"created_at":    time.Now().UTC().Format(time.RFC3339Nano),
+		"confirmation":  proof,
+	}
+	preparePost(ctx, auth, base, token, payload)
+}

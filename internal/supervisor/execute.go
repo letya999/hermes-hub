@@ -3,6 +3,7 @@ package supervisor
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -55,7 +56,12 @@ func (m *Manager) beginJob(request hubruntime.ExecuteRequest) (hubruntime.Execut
 	}
 	metadata := request
 	metadata.Text = ""
-	m.jobs[key] = jobRecord{OperationalEpoch: hold.Epoch, Request: metadata, Fingerprint: fingerprint, Status: "running", Phase: phaseAccepted, UpdatedAt: time.Now().UTC()}
+	textHash := sha256.Sum256([]byte(request.Text))
+	var admission [16]byte
+	if _, err := rand.Read(admission[:]); err != nil {
+		return hubruntime.ExecuteResponse{}, false, err
+	}
+	m.jobs[key] = jobRecord{OperationalEpoch: hold.Epoch, AdmissionID: hex.EncodeToString(admission[:]), Request: metadata, RequestTextSHA256: hex.EncodeToString(textHash[:]), Fingerprint: fingerprint, Status: "running", Phase: phaseAccepted, UpdatedAt: time.Now().UTC()}
 	if err := m.persistLocked(); err != nil {
 		delete(m.jobs, key)
 		return hubruntime.ExecuteResponse{}, false, err
@@ -333,6 +339,12 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 	m.mu.Unlock()
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": "dispatch state unavailable"})
+		return
+	}
+	request.Instructions = m.memoryInstructions(r.Context(), request)
+	body, err = json.Marshal(request)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": "dispatch request unavailable"})
 		return
 	}
 	callCtx := r.Context()

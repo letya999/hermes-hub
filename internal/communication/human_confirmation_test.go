@@ -265,3 +265,31 @@ func TestHumanConfirmationNoticeRequiresServiceAndExactScope(t *testing.T) {
 		})
 	}
 }
+
+// TestHumanConfirmationMemoryProposalNotice carries the #519 contract on the
+// channel side: a ToolHub memory edit proposal posts its confirmation
+// through the same prepare-outcome lane — the memprop- id is a valid target,
+// the verified button is what the owner taps.
+func TestHumanConfirmationMemoryProposalNotice(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.ControlAuth = "synthetic-service-confirmation-bearer"
+	actor := cfg.Users[0].Envelope(11)
+	g, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof := api.HumanConfirmation{OnboardingID: "memprop-9f2c1ab07d3e4e55", Actor: actor, Nonce: "nonce-mem", Revision: 1, ActionDigest: "sha256:" + strings.Repeat("c", 64), ExpiresAt: time.Now().Add(time.Minute)}
+	body, _ := json.Marshal(map[string]any{"onboarding_id": proof.OnboardingID, "phase": "awaiting-confirm", "repository": "truth memory/cards/notes/suppliers.md", "confirmation": proof})
+	req := httptest.NewRequest(http.MethodPost, "/v1/prepare-outcome", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+cfg.ControlAuth)
+	req.Header.Set("X-Hub-Principal", "alice")
+	rec := httptest.NewRecorder()
+	g.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("memory proposal notice status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	notice, err := g.spool.ClaimDelivery()
+	if err != nil || notice == nil || len(notice.Buttons) != 1 {
+		t.Fatalf("memory proposal confirmation button missing: %+v %v", notice, err)
+	}
+}

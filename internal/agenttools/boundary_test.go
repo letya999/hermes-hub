@@ -86,16 +86,10 @@ func TestInboxAndServiceArtifactsNeverWritable(t *testing.T) {
 	}
 }
 
-// /vault/memory is the runtime's read-mostly long-term store: file tools
-// never write it — the declared writable vault subtrees stay the only
-// writable vault surface (SPEC-0092 R5.3).
-func TestVaultMemoryNotWritableByFileTools(t *testing.T) {
-	vaultDir := t.TempDir()
-	vault, err := os.OpenRoot(vaultDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer vault.Close()
+// M32/#517: the vault root no longer exists on the runtime — file tools
+// refuse root=vault outright for reads and writes alike; memory access is
+// ToolHub-owned and never a filesystem surface.
+func TestVaultRootRefusedByFileTools(t *testing.T) {
 	ws, err := os.OpenRoot(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -103,15 +97,12 @@ func TestVaultMemoryNotWritableByFileTools(t *testing.T) {
 	defer ws.Close()
 	boundary := filepath.Join(t.TempDir(), "config", "workspace.yaml")
 	writeBoundaryFile(t, boundary, "/workspace, /vault/library, /vault/attachments")
-	tools := &Tools{Workspace: ws, Vault: vault, BoundaryPath: boundary}
+	tools := &Tools{Workspace: ws, BoundaryPath: boundary}
 
-	for _, p := range []string{"memory/CORE.md", "memory/daily/2026-11-03.md"} {
-		if _, err := tools.File("write", Input{Root: "vault", Path: p, Text: "tamper"}); err == nil {
-			t.Errorf("file_write into vault/%s succeeded", p)
+	for _, op := range []string{"list", "read", "search", "write", "edit", "mkdir", "remove"} {
+		if _, err := tools.File(op, Input{Root: "vault", Path: "library/note.md", Text: "x", Query: "x", OldString: "x"}); err == nil {
+			t.Errorf("file op %s reached a vault root that must not exist", op)
 		}
-	}
-	if _, err := tools.File("write", Input{Root: "vault", Path: "library/note.md", Text: "ok"}); err != nil {
-		t.Fatalf("writable vault subtree denied: %v", err)
 	}
 }
 
@@ -260,16 +251,15 @@ func TestProjectCreateMintsMissingParent(t *testing.T) {
 }
 
 // OpenRoots inside a passport-mounted runtime picks the live boundary up
-// from HUB_WORKSPACE_BOUNDARY and opens the vault root from HUB_VAULT —
-// file_write follows the published file, not a render-time env list
-// (SPEC-0092 R5.3).
+// from HUB_WORKSPACE_BOUNDARY — file_write follows the published file, not
+// a render-time env list (SPEC-0092 R5.3). A stray HUB_VAULT pin is ignored:
+// the runtime never opens a vault root (M32/#517).
 func TestOpenRootsPicksPassportBoundary(t *testing.T) {
 	dir := t.TempDir()
 	config := t.TempDir()
-	vaultDir := t.TempDir()
 	writeBoundaryFile(t, filepath.Join(config, "workspace.yaml"), "/workspace/work")
 	t.Setenv("HUB_WORKSPACE_BOUNDARY", filepath.Join(config, "workspace.yaml"))
-	t.Setenv("HUB_VAULT", vaultDir)
+	t.Setenv("HUB_VAULT", t.TempDir())
 	t.Setenv("HUB_STATE", t.TempDir())
 
 	tools, err := OpenRoots(dir, "", "")
@@ -277,13 +267,8 @@ func TestOpenRootsPicksPassportBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tools.Workspace.Close()
-	if tools.Vault == nil {
-		t.Error("vault root not opened from HUB_VAULT")
-	} else {
-		defer tools.Vault.Close()
-	}
-	if tools.VaultDir != vaultDir {
-		t.Errorf("vault dir not mapped from HUB_VAULT: %q", tools.VaultDir)
+	if _, err := tools.File("write", Input{Root: "vault", Path: "library/x.md", Text: "tamper"}); err == nil {
+		t.Error("file op reached a vault root that must not exist")
 	}
 	if _, err := tools.File("write", Input{Path: "inbox/x.md", Text: "tamper"}); err == nil {
 		t.Error("write outside the published writable list succeeded")

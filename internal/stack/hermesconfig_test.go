@@ -187,16 +187,17 @@ func TestHubImageEnvironmentUsesEffectiveConfigWithoutParentLeak(t *testing.T) {
 	}
 }
 
-func TestHubChildCarriesVaultWhenMemoryVaultEnabled(t *testing.T) {
-	cfg := Config(Settings{User: "alice", Model: "synthetic", ModelURL: "http://model:8000/v1", Tools: map[string]ToolEntry{"workspace": {Via: ToolViaNative}, "memory_vault": {Via: ToolViaNative}}})
-	e := cfg["mcp_servers"].(M)["hub"].(M)["env"].(M)
-	if e["HUB_VAULT"] != "${HUB_VAULT}" {
-		t.Fatalf("hub child lost the vault pin the memory tools resolve: %v", e["HUB_VAULT"])
-	}
-	cfg = Config(Settings{User: "alice", Model: "synthetic", ModelURL: "http://model:8000/v1", Tools: map[string]ToolEntry{"workspace": {Via: ToolViaNative}}})
-	e = cfg["mcp_servers"].(M)["hub"].(M)["env"].(M)
-	if _, ok := e["HUB_VAULT"]; ok {
-		t.Fatalf("vault pin rendered without memory_vault: %v", e["HUB_VAULT"])
+// M32/#517: the runtime never sees the vault — memory is ToolHub-owned, so
+// the hub child env must carry no HUB_VAULT pin regardless of memory_vault.
+func TestHubChildNeverCarriesVault(t *testing.T) {
+	for _, tools := range []map[string]ToolEntry{
+		{"workspace": {Via: ToolViaNative}, "memory_vault": {Via: ToolViaNative}},
+		{"workspace": {Via: ToolViaNative}},
+	} {
+		e := Config(Settings{User: "alice", Model: "synthetic", ModelURL: "http://model:8000/v1", Tools: tools})["mcp_servers"].(M)["hub"].(M)["env"].(M)
+		if _, ok := e["HUB_VAULT"]; ok {
+			t.Fatalf("hub child env leaked a vault pin: %v", e["HUB_VAULT"])
+		}
 	}
 }
 

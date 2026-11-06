@@ -299,6 +299,20 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 		// control path mutates — grants and revokes reach Decide on reload.
 		store.RightsLedger = gateway.Governance.Load
 	}
+	if root := strings.TrimSpace(os.Getenv("HUB_VAULTS_BY_PRINCIPAL")); root != "" {
+		// Server-owned enrollment: the rendered mount view plus the published
+		// passport root are the only authority that may open a vault. A
+		// malformed bindings root fails the endpoint before it serves.
+		resolver, err := NewVaultResolver(root, gateway.PassportRoot)
+		if err != nil {
+			return nil, err
+		}
+		gateway.Vaults = resolver
+	}
+	// The lifecycle authority is the supervisor job record over the same
+	// control channel the restart notifier uses; unconfigured leaves Runs nil
+	// and the memory run gate denies every claim — fail closed by absence.
+	gateway.Runs = api.RunAuthorityFromEnv()
 	var secrets credstore.Backend
 	var injector api.CredentialInjector
 	var err error

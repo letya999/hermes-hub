@@ -16,7 +16,7 @@ import (
 // delegates to the connector facade; executor families without a hub
 // backend report unavailable honestly instead of falling through to a
 // generic unknown-tool error.
-func (g *Gateway) execRemote(ctx context.Context, auth identity.Envelope, tool api.ToolSpec, arguments map[string]any) (api.BackendResult, error) {
+func (g *Gateway) execRemote(ctx context.Context, auth identity.Envelope, effective api.EffectiveBinding, tool api.ToolSpec, arguments map[string]any) (api.BackendResult, error) {
 	if tool.Executor == "runtime:connectors" {
 		if g.Control == nil {
 			return api.BackendResult{IsError: true, Text: tool.Name + " is unavailable: connector control is not configured"}, nil
@@ -31,7 +31,7 @@ func (g *Gateway) execRemote(ctx context.Context, auth identity.Envelope, tool a
 		return api.BackendResult{Structured: body, Text: result.Summary, IsError: result.State == api.OpStateFailed}, nil
 	}
 	if tool.Executor == "runtime:toolhub" {
-		return g.execPlatform(ctx, auth, tool, arguments)
+		return g.execPlatform(ctx, auth, effective, tool, arguments)
 	}
 	return api.BackendResult{IsError: true, Text: fmt.Sprintf("%s is unavailable: %s", tool.Name, remoteBackendHint(tool.Executor))}, nil
 }
@@ -49,7 +49,7 @@ func remoteBackendHint(executor string) string {
 // execPlatform routes pinned platform members to the same handlers the
 // direct MCP surface registers — a projected call is admission- and
 // result-identical to the direct wire (ADR-0094 D6).
-func (g *Gateway) execPlatform(ctx context.Context, auth identity.Envelope, tool api.ToolSpec, arguments map[string]any) (api.BackendResult, error) {
+func (g *Gateway) execPlatform(ctx context.Context, auth identity.Envelope, effective api.EffectiveBinding, tool api.ToolSpec, arguments map[string]any) (api.BackendResult, error) {
 	body := func(out map[string]any, err error) (api.BackendResult, error) {
 		if err != nil {
 			return api.BackendResult{IsError: true, Text: err.Error()}, nil
@@ -68,6 +68,10 @@ func (g *Gateway) execPlatform(ctx context.Context, auth identity.Envelope, tool
 		return body(g.platformUsage(auth, api.ArgString(arguments, "period")))
 	case "tool_search":
 		return body(g.toolsList(auth, api.ArgString(arguments, "query"), api.ArgString(arguments, "name"), 0))
+	case "memory_search":
+		return body(g.memorySearch(auth, arguments))
+	case "memory_card":
+		return body(g.memoryCard(ctx, auth, api.CallCorrelationFrom(ctx), effective, arguments))
 	case "tool_call":
 		name := api.ArgString(arguments, "tool")
 		nested, _ := arguments["arguments"].(map[string]any)

@@ -1,6 +1,6 @@
 ---
 description: Per-space markdown memory vault (daily leaves, typed cards, folded summaries, audience-scoped CORE.md) with a deterministic gated nightly rollup, zero-LLM pre-turn recall, a provider seam, plus OpenKnowledge as the opt-in human editing surface over the same files.
-last_verified: 2026-11-01
+last_verified: 2026-11-06
 ---
 # ADR-0086: Memory vault and OpenKnowledge knowledge surface
 
@@ -25,6 +25,11 @@ superseded` frontmatter for cards; every mutation and denial journals to
 `runtime/memory/writes.jsonl` with the authorizing turn's `SourceRef`;
 the `vault:` file root gates non-contract paths behind a stamped private
 run with case/fullwidth-folded zone names.
+Amended (M32, ADR-0095): the D7 mechanics this paragraph recorded are
+superseded — ToolHub owns the vault, the shared
+`runtime/run-scope/current` authorization file and the `vault:` file
+root are retired, and private-run admission is verified against the
+supervisor's durable job record instead of a stamped sidecar.
 Amended (M20.7, issue #307): R7 mechanics recorded — native import is a
 parse→stage→explicit-apply pipeline: drafts land under
 `runtime/memory/import/` (never in searchable card paths), directive-like
@@ -263,6 +268,25 @@ a provider seam with conformance, and soft forget.
   `PORT=8080` (dynamic otherwise), `OK_BIND=0.0.0.0` (the allowExternal
   interlock requires it for non-loopback) and `HOME=/tmp` (the image
   HOME sits on the read-only rootfs).
+
+  2026-11-06 amendment (M32, issue #520): D8's service render and the
+  M20.9 read surface are superseded — ADR-0095 D2 makes ToolHub the
+  vault's sole owner, and no container but ToolHub may mount it. The
+  `open-knowledge` compose service, its `vault → /data` bind and the
+  `mcp_servers.open_knowledge` runtime route are all retired on both
+  renders; `HUB_MANAGED_KNOWLEDGE_UI`/`MaterializeOptions.KnowledgeUI`
+  leave the attestation vocabulary. Upstream OK cannot act as a
+  governed-API client, so `knowledge_ui` stays a valid feature that
+  renders nothing — explicitly unavailable in `hubctl doctor` and
+  docs rather than partially open; a stale `stack.yaml` declaration
+  fails the designed declared-but-unrendered check until republished.
+  Vault content, `.ok/` state and git history are never deleted.
+  Knowledge edits for the model ride the ordinary confirmed writer
+  (`memory_card op=propose` + the owner's verified confirmation);
+  `knowledge_ui_write` stays deferred under #422 until an adapted
+  governed knowledge surface exists. The `native:knowledge_ui`
+  inventory entry and the `knowledge-ui`/`ui_port`/`ui_bind`/
+  `ui_expose` config vocabulary stay accepted — inert, not removed.
 
 - **D9. Human access is a loopback port, like browser/oauth today.**
   The compose service publishes `127.0.0.1:<ui_port>` per space
