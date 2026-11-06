@@ -54,9 +54,8 @@ everything entering or leaving the human conversation. Listens
   the event pending. Settlement is recorded under `capture-acks/` before the
   outbox copy is removed; settled markers age out only after their jobs.
   Startup rebuilds missing events from jobs and
-  terminal receipts created with capture enabled. Communication no longer
-  writes captured turns or replies into the vault; the separate nightly
-  memory worker remains pending its own ToolHub migration.
+  terminal receipts created with capture enabled. Communication has no vault
+  mount or nightly memory clock; ToolHub owns capture and nightly writes.
 
 ## Key env
 
@@ -68,8 +67,7 @@ everything entering or leaving the human conversation. Listens
 `HUB_COMMUNICATION_CONFIG` (`communication.users.yaml` — sibling Telegram
 identities; `TELEGRAM_ALLOWED_USERS` is the bot-level allowlist and must
 contain every owner's numeric id),
-`HUB_MODEL_RELAY_URL` + `model-relay.auth` for a gateway rendered inside its
-own managed space, or `HUB_MODEL_RELAY_ADMINS_FILE` (enrolled
+`HUB_MODEL_RELAY_ADMINS_FILE` (enrolled
 `model-relay-admins.json`, principal → relay URL + admin bearer) for the
 shared gateway serving several managed principals — `/model` resolves the
 caller's relay from the authenticated identity. Slash commands share one

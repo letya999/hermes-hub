@@ -70,14 +70,12 @@ var Consumers = map[string]Consumer{
 	"config.channels.*.voice.out":             {"communication", EffectRecreate},
 	"config.memory.backend":                   {"hermes-config", EffectRespawn},
 	"config.memory.enabled":                   {"toolhub", EffectRecreate},
-	// Current memory worker consumes these at service start; CHG-0284/0287
-	// move the worker and its clock to ToolHub.
-	"config.memory.nightly_rollup":      {"communication-hub", EffectRecreate},
-	"config.memory.leaf_retention_days": {"communication-hub", EffectRecreate},
-	"config.memory.leaf_fold_bytes":     {"communication-hub", EffectRecreate},
-	"config.memory.provider.adapter":    {"hermes-config", EffectRespawn},
-	"config.memory.provider.url":        {"hermes-config", EffectRespawn},
-	"config.memory.provider.token_env":  {"hermes-config", EffectRespawn},
+	"config.memory.nightly_rollup":            {"toolhub", EffectRecreate},
+	"config.memory.leaf_retention_days":       {"toolhub", EffectRecreate},
+	"config.memory.leaf_fold_bytes":           {"toolhub", EffectRecreate},
+	"config.memory.provider.adapter":          {"hermes-config", EffectRespawn},
+	"config.memory.provider.url":              {"hermes-config", EffectRespawn},
+	"config.memory.provider.token_env":        {"hermes-config", EffectRespawn},
 	// hosting slots/image/runtime drive the per-space hosting compose
 	// service and the ToolHub hosting controller profile.
 	"config.hosting.slots":   {"compose", EffectRecreate},

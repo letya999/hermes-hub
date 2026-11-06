@@ -219,6 +219,9 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 		if err = ensureModelRelayAuth(filepath.Join(dir, "model-relay.auth")); err != nil {
 			return err
 		}
+		if err = writeModelRelayCallerAuth(dir); err != nil {
+			return err
+		}
 	}
 	if s.Has("transcription") || s.Has("image_gen") {
 		if err = ensureMediaAuth(filepath.Join(dir, "media.auth")); err != nil {

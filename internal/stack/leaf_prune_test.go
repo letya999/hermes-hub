@@ -43,9 +43,8 @@ func TestLeafRetentionValidation(t *testing.T) {
 	}
 }
 
-// SPEC-0085 R7.5: the knobs render as gateway env only while memory_vault is
-// enabled — zero/unset renders nothing (off is the default).
-func TestLeafKnobsRenderEnv(t *testing.T) {
+// Night policy comes from the published passport in ToolHub, not gateway env.
+func TestLeafKnobsDoNotRenderGatewayEnv(t *testing.T) {
 	dir := t.TempDir()
 	envOf := func(s Settings) M {
 		gateway, ok := Compose(s, "", dir)["services"].(M)["communication-hub"].(M)
@@ -64,11 +63,11 @@ func TestLeafKnobsRenderEnv(t *testing.T) {
 	s.MemoryLeafRetentionDays = 7
 	s.MemoryLeafFoldBytes = 65536
 	env := envOf(s)
-	if got := env["HUB_MEMORY_LEAF_RETENTION_DAYS"]; got != "7" {
-		t.Fatalf("retention env = %v, want 7", got)
+	if got := env["HUB_MEMORY_LEAF_RETENTION_DAYS"]; got != nil {
+		t.Fatalf("gateway received retention env: %v", got)
 	}
-	if got := env["HUB_MEMORY_LEAF_FOLD_BYTES"]; got != "65536" {
-		t.Fatalf("fold env = %v, want 65536", got)
+	if got := env["HUB_MEMORY_LEAF_FOLD_BYTES"]; got != nil {
+		t.Fatalf("gateway received fold env: %v", got)
 	}
 	s.Tools = map[string]ToolEntry{"memory_vault": {Via: ToolViaOff}}
 	if got := envOf(s)["HUB_MEMORY_LEAF_RETENTION_DAYS"]; got != nil {

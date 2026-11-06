@@ -68,8 +68,7 @@ func ensureMediaAuth(path string) error {
 	return os.WriteFile(path, content, 0600) // #nosec G703 -- path under the stack render dir
 }
 
-// ensureModelRelayAuth provisions the bearer the communication gateway
-// presents to its own space's model-relay for owner model switching.
+// ensureModelRelayAuth provisions the model relay caller and admin bearers.
 func ensureModelRelayAuth(path string) error {
 	info, err := os.Lstat(path) // #nosec G703 -- path under the stack render dir
 	values := map[string]string{}
@@ -100,6 +99,15 @@ func ensureModelRelayAuth(path string) error {
 		return nil
 	}
 	return writeEnvFile(path, values)
+}
+
+// The shared ToolHub gets only the caller bearer, never relay admin authority.
+func writeModelRelayCallerAuth(dir string) error {
+	values, err := ReadSecrets(filepath.Join(dir, "model-relay.auth"))
+	if err != nil || values["HUB_MODEL_RELAY_AUTH"] == "" {
+		return fmt.Errorf("model-relay caller auth unavailable")
+	}
+	return writeEnvFile(filepath.Join(dir, "model-relay-caller.auth"), map[string]string{"HUB_MODEL_RELAY_AUTH": values["HUB_MODEL_RELAY_AUTH"]})
 }
 
 // Secondary spaces use the shared sidecar's bearer, not an unused local token.

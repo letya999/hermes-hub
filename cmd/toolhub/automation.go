@@ -9,6 +9,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/internal/memory/night"
 	"github.com/letya999/hermes-hub/internal/routines"
 	"github.com/letya999/hermes-hub/internal/toolhub"
 	"github.com/letya999/hermes-hub/internal/toolhub/automation"
@@ -58,6 +59,15 @@ func newAutomationHost(ctx context.Context, projection automationProjection, sto
 		"slack_app":    channel.NewSlack(channel.SlackDeps{}),
 		"mock":         channel.NewMock(channel.MockDeps{}),
 	}
+	var dreamingPlan func(identity.Envelope) (night.Schedule, error)
+	var dreamingRun func(context.Context, identity.Envelope, string, night.Schedule, locale.Lang, func(context.Context, night.IntentProposal) error) (string, error)
+	if nightProjection, ok := projection.(interface {
+		NightSchedule(identity.Envelope) (night.Schedule, error)
+		NightRun(context.Context, identity.Envelope, string, night.Schedule, locale.Lang, func(context.Context, night.IntentProposal) error) (string, error)
+	}); ok {
+		dreamingPlan = nightProjection.NightSchedule
+		dreamingRun = nightProjection.NightRun
+	}
 	host, err := automation.NewHost(automation.Config{
 		Root:               os.Getenv("HUB_AUTOMATION_ROOT"),
 		OwnersDir:          os.Getenv("HUB_AUTOMATION_OWNERS"),
@@ -84,6 +94,8 @@ func newAutomationHost(ctx context.Context, projection automationProjection, sto
 			}
 			return projection.CallReadTool(ctx, principal, probe.Tool, probe.Args)
 		},
+		DreamingPlan: dreamingPlan,
+		DreamingRun:  dreamingRun,
 	})
 	if err != nil {
 		return nil, err

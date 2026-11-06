@@ -563,7 +563,7 @@ action journals to `memory/REVIEW.md` plus the localized morning digest.
 
 Daily leaves are bounded by two opt-in agent settings, both off by
 default: `memory_leaf_fold_bytes` (>0) folds a *completed* oversized
-leaf at the next night tick — audit-kind block bodies (routine, system,
+leaf at the next ToolHub night tick — audit-kind block bodies (routine, system,
 probe, compaction, untrusted, background replies) collapse to stub
 lines while mem:id headers and interactive owner/agent blocks stay
 byte-identical; oversized eligible days first get a `long_summary` from
@@ -574,6 +574,16 @@ state is complete and its daily summary exists; unverified days are
 kept and reported, never deleted. Expired bytes still live in the
 vault's git history — true erasure needs a history rewrite, not this
 knob.
+
+The ToolHub night clock reads each owner's published `memory.nightly_rollup`
+and `runtime.timezone` (default 04:00 UTC). Its protected occurrence and
+day receipt live under that owner's automation `system/dreaming/` subtree;
+vault checkpoints live under `vault/runtime/memory/night/`. A disabled memory
+passport or missing `memory.dreaming` right prevents a model call and vault
+commit. Failed work stays pending; a communication outage leaves the digest
+in ToolHub's delivery outbox. `model-relay-caller.auth` is a rendered,
+caller-only file mounted read-only for the matching owner; never inspect or
+copy its contents into diagnostics.
 
 An external memory backend rides the hub-owned provider seam, never the
 upstream plugin path: `tools: {memory_provider: {via: native}}` in

@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 )
 
@@ -650,6 +649,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			toolhubEnv["HUB_SKILLS_STORE_BY"] = "/skills-store-by"
 			toolhubEnv["HUB_PASSPORTS_BY_PRINCIPAL"] = "/passports-by"
 			toolhubEnv["HUB_VAULTS_BY_PRINCIPAL"] = "/vaults-by"
+			toolhubEnv["HUB_NIGHT_RELAY_CALLERS"] = "/model-relay-callers"
 			if siblings, err := os.ReadDir(parent); err == nil {
 				for _, sibling := range siblings {
 					if !sibling.IsDir() || !identity.ValidID(sibling.Name()) {
@@ -675,6 +675,10 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 						if enabled {
 							toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(vaultRoot), "target": "/vaults-by/" + sibling.Name()})
 						}
+					}
+					callerAuth := filepath.Join(parent, sibling.Name(), "model-relay-caller.auth")
+					if info, err := os.Lstat(callerAuth); err == nil && info.Mode().IsRegular() {
+						toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(callerAuth), "target": "/model-relay-callers/" + sibling.Name() + "/model-relay-caller.auth", "read_only": true})
 					}
 					view := filepath.Join(parent, sibling.Name(), "generated", "skills-effective")
 					if info, err := os.Stat(view); err == nil && info.IsDir() { // #nosec G703 -- fixed generated view beneath the sibling space
@@ -871,10 +875,6 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		}
 		gatewayEnvironment["HUB_COMMUNICATION_FORM_ORIGIN"] = fmt.Sprintf("http://localhost:%d", communicationHostPort)
 		gateway["ports"] = []string{fmt.Sprintf("127.0.0.1:%d:8081", communicationHostPort)}
-		if s.CapabilityMode == "managed" {
-			gatewayEnvironment["HUB_MODEL_RELAY_URL"] = "http://model-relay-" + s.User + ":8318"
-			gatewayEnvFiles = append(gatewayEnvFiles, M{"path": filepath.ToSlash(filepath.Join(dir, "model-relay.auth")), "format": "raw"})
-		}
 		// config.channels.*.voice is the imperative voice contract: any
 		// channel carrying an in/out block wires the same service endpoints
 		// the legacy transcription feature does (SPEC-0092 R4.2).
@@ -927,26 +927,6 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			M{"type": "bind", "source": filepath.ToSlash(GeneratedEffectiveSkillsDir(dir)), "target": "/skills-effective", "read_only": true},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "skills")), "target": "/skills-store"},
 			brokerSecrets("communication"),
-		}
-		if s.Has("memory_vault") {
-			// The gateway reads CORE for private-run injection and writes the
-			// daily leaf capture (SPEC-0085 R2.1) — read-write; confinement
-			// lives in the governed Writer, not the mount.
-			gatewayEnvironment["HUB_VAULT"] = "/vault"
-			rollupAt := s.MemoryRollupTime
-			if rollupAt == "" {
-				rollupAt = "04:00"
-			}
-			gatewayEnvironment["HUB_MEMORY_ROLLUP_TIME"] = rollupAt
-			// R7.5 leaf prune knobs render only when configured — zero means
-			// the lane is off and nothing reaches the gateway env.
-			if s.MemoryLeafRetentionDays > 0 {
-				gatewayEnvironment["HUB_MEMORY_LEAF_RETENTION_DAYS"] = strconv.Itoa(s.MemoryLeafRetentionDays)
-			}
-			if s.MemoryLeafFoldBytes > 0 {
-				gatewayEnvironment["HUB_MEMORY_LEAF_FOLD_BYTES"] = strconv.Itoa(s.MemoryLeafFoldBytes)
-			}
-			gateway["volumes"] = append(gateway["volumes"].([]any), M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "vault")), "target": "/vault"})
 		}
 		// Sibling Telegram identities live in this file. TELEGRAM_ALLOWED_USERS
 		// stays the single infra-owner fallback when the file is absent.

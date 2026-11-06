@@ -1580,30 +1580,70 @@ func TestMissingTruthTargetJournaled(t *testing.T) {
 	}
 }
 
-// R5.6: a failed intent-sink delivery is journaled — the owner-approval
-// draft not landing is a conflict the journal must record.
-func TestIntentSinkErrorJournaled(t *testing.T) {
+// A failed draft persist leaves the cached proposal pending for retry.
+func TestIntentSinkErrorRetriesWithoutModelCall(t *testing.T) {
 	root := fixture(t, []memory.Entry{
 		eligibleEntry("turn-1", "remind me to call the bank Friday"),
 	})
-	_, err := Run(context.Background(), root, dayNoon, Options{
+	calls := 0
+	o := Options{
 		Relay: func(ctx context.Context, system, user string) (string, error) {
+			calls++
 			return `{"summary":"s","facts":[],"intents":[{"text":"call the bank Friday","quote":"remind me to call the bank Friday"}]}`, nil
 		},
 		Now: dayNoon,
 		IntentSink: func(ctx context.Context, p IntentProposal) error {
 			return errors.New("assignments down")
 		},
+	}
+	if _, err := Run(context.Background(), root, dayNoon, o); err == nil {
+		t.Fatal("failed draft was marked complete")
+	}
+	if DayComplete(root, dayNoon.Format("2006-01-02")) {
+		t.Fatal("failed draft completed night")
+	}
+	landed := 0
+	o.IntentSink = func(context.Context, IntentProposal) error { landed++; return nil }
+	if _, err := Run(context.Background(), root, dayNoon, o); err != nil || calls != 1 || landed != 1 {
+		t.Fatalf("retry: model calls=%d drafts=%d err=%v", calls, landed, err)
+	}
+}
+
+func TestBeforeCommitDenialLeavesVaultUntouched(t *testing.T) {
+	root := fixture(t, []memory.Entry{eligibleEntry("turn-1", "the cedar contract ends Friday")})
+	day := dayNoon.Format("2006-01-02")
+	_, err := Run(context.Background(), root, dayNoon, Options{
+		Relay: func(context.Context, string, string) (string, error) {
+			return `{"summary":"s","facts":[{"card":"notes/cedar","fact":"contract ends Friday","quote":"the cedar contract ends Friday"}]}`, nil
+		},
+		BeforeCommit: func() error { return errors.New("revoked") },
 	})
-	if err != nil {
+	if err == nil {
+		t.Fatal("revoked run committed")
+	}
+	if _, err := os.Stat(dayCachePath(root, day)); !os.IsNotExist(err) {
+		t.Fatalf("checkpoint written after revoke: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "memory", "cards", "notes", "cedar.md")); !os.IsNotExist(err) {
+		t.Fatalf("fact written after revoke: %v", err)
+	}
+}
+
+func TestCorruptNightCheckpointFailsClosed(t *testing.T) {
+	root := fixture(t, nil)
+	day := dayNoon.Format("2006-01-02")
+	path := dayCachePath(root, day)
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		t.Fatal(err)
 	}
-	body, err := os.ReadFile(filepath.Join(root, "memory", "REVIEW.md"))
-	if err != nil {
-		t.Fatalf("REVIEW.md missing: %v", err)
+	if err := os.WriteFile(path, []byte("{"), 0600); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(string(body), "bank") || !strings.Contains(string(body), "assignments down") {
-		t.Fatalf("failed intent delivery not journaled: %q", body)
+	if DayComplete(root, day) {
+		t.Fatal("corrupt checkpoint completed")
+	}
+	if _, err := Run(context.Background(), root, dayNoon, Options{}); err == nil {
+		t.Fatal("corrupt checkpoint restarted from empty")
 	}
 }
 

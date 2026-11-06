@@ -43,6 +43,9 @@ type Options struct {
 	// so the detailed digest lands in summaries/daily before the leaf's
 	// audit bytes may be folded.
 	FoldBytes int64
+	// BeforeCommit rechecks the current owner's enrollment and right after
+	// proposal generation and before any durable vault mutation.
+	BeforeCommit func() error
 }
 
 // IntentProposal is one "remind me"-style line promoted to an owner
@@ -124,6 +127,7 @@ func Run(ctx context.Context, root string, day time.Time, o Options) (Result, er
 		return res, err
 	}
 	if st.complete() {
+		res.Calls, res.Digest = st.Calls, st.Digest
 		return res, nil
 	}
 	res.Calls = st.Calls
@@ -141,6 +145,11 @@ func Run(ctx context.Context, root string, day time.Time, o Options) (Result, er
 	if strings.TrimSpace(eligible) == "" {
 		if o.DryRun {
 			return res, nil
+		}
+		if o.BeforeCommit != nil {
+			if err := o.BeforeCommit(); err != nil {
+				return res, err
+			}
 		}
 		for _, s := range allSteps {
 			st.Steps[s] = true
@@ -182,7 +191,9 @@ func Run(ctx context.Context, root string, day time.Time, o Options) (Result, er
 			// retry-resume counts it against the night's cap (R5.8).
 			st.Calls = res.Calls
 			if !o.DryRun {
-				_ = st.save(root, dayKey)
+				if o.BeforeCommit == nil || o.BeforeCommit() == nil {
+					_ = st.save(root, dayKey)
+				}
 			}
 			return res, fmt.Errorf("night proposal: %w", err)
 		}
@@ -207,6 +218,11 @@ func Run(ctx context.Context, root string, day time.Time, o Options) (Result, er
 	if o.DryRun {
 		return res, nil
 	}
+	if o.BeforeCommit != nil {
+		if err := o.BeforeCommit(); err != nil {
+			return res, err
+		}
+	}
 	if err := st.save(root, dayKey); err != nil {
 		return res, err
 	}
@@ -230,8 +246,17 @@ func Run(ctx context.Context, root string, day time.Time, o Options) (Result, er
 		st.Calls = res.Calls
 		return st.save(root, dayKey)
 	}
+	guard := func() error {
+		if o.BeforeCommit != nil {
+			return o.BeforeCommit()
+		}
+		return nil
+	}
 	if !st.done("facts") {
 		for _, f := range p.Facts {
+			if err := guard(); err != nil {
+				return res, err
+			}
 			// The quote must be verbatim eligible text — untrusted or
 			// background content can neither reach the prompt nor verify.
 			if f.Quote == "" || !strings.Contains(eligible, f.Quote) {
@@ -259,6 +284,9 @@ func Run(ctx context.Context, root string, day time.Time, o Options) (Result, er
 	if !st.done("links") {
 		// R5.2(c): bilateral card links land only when both targets exist.
 		for _, pair := range p.Links {
+			if err := guard(); err != nil {
+				return res, err
+			}
 			a, b := resolveCard(root, pair[0]), resolveCard(root, pair[1])
 			if a == "" || b == "" {
 				res.Rejected++
@@ -282,6 +310,9 @@ func Run(ctx context.Context, root string, day time.Time, o Options) (Result, er
 		maxLoss = 20
 	}
 	if !st.done("truths") {
+		if err := guard(); err != nil {
+			return res, err
+		}
 		res.Rejected += applyTruths(w, root, &j, p.Truths, maxLoss)
 		st.Steps["truths"] = true
 		if err := persist(); err != nil {
@@ -289,6 +320,9 @@ func Run(ctx context.Context, root string, day time.Time, o Options) (Result, er
 		}
 	}
 	if !st.done("intents") {
+		if err := guard(); err != nil {
+			return res, err
+		}
 		// R5.7: intents leave as owner-approval proposals through the
 		// sink — never written to cards or CORE.
 		if o.IntentSink != nil {
@@ -299,7 +333,7 @@ func Run(ctx context.Context, root string, day time.Time, o Options) (Result, er
 					continue
 				}
 				if err := o.IntentSink(ctx, IntentProposal{Text: oneLine(it.Text), Quote: it.Quote}); err != nil {
-					j.add("intent %q proposal delivery failed — %v", oneLine(it.Text), err)
+					return res, err
 				}
 			}
 		}
@@ -309,6 +343,9 @@ func Run(ctx context.Context, root string, day time.Time, o Options) (Result, er
 		}
 	}
 	if !st.done("core") {
+		if err := guard(); err != nil {
+			return res, err
+		}
 		// R5.2(d)/R5.5: bounded CORE edit — owner quotations only,
 		// directives supersede in place, never-evict classes untouchable.
 		rejected, err := applyCoreEdit(w, root, dayKey, p.Core, ownerOnly)
@@ -322,6 +359,9 @@ func Run(ctx context.Context, root string, day time.Time, o Options) (Result, er
 		}
 	}
 	if !st.done("summary") {
+		if err := guard(); err != nil {
+			return res, err
+		}
 		if err := writeDaySummary(w, dayKey, summaryMD, p.CardRefs); err != nil {
 			return res, err
 		}
@@ -331,6 +371,9 @@ func Run(ctx context.Context, root string, day time.Time, o Options) (Result, er
 		}
 	}
 	if !st.done("journal") {
+		if err := guard(); err != nil {
+			return res, err
+		}
 		// R5.6: the journal lands last — one dated, human-readable
 		// section recording every promotion, skip and rejection.
 		if err := j.write(w, root, dayKey); err != nil {
@@ -442,6 +485,9 @@ func appendFact(w *vault.Writer, root, card, dayKey, fact string) error {
 		return err
 	}
 	line := "- " + dayKey + ": " + oneLine(fact) + " · [[daily/" + dayKey + "]]\n"
+	if strings.Contains(string(cur), line) {
+		return nil
+	}
 	var content []byte
 	if len(cur) == 0 {
 		content = []byte("---\ntype: note\nstatus: active\ntags: []\ncreated: " + dayKey + "\nupdated: " + dayKey + "\n---\n\n## Facts\n\n" + line)
@@ -513,6 +559,9 @@ func appendLink(w *vault.Writer, root, rel, target string) error {
 		return nil
 	}
 	content := append(append([]byte{}, cur...), []byte("\n## Links\n\n- [["+stem+"]]\n")...)
+	if strings.Contains(string(cur), "- [["+stem+"]]") {
+		return nil
+	}
 	_, err = w.Apply(memory.WriteOp{Path: rel, Content: content, WantSHA: wantOf(cur, err), Actor: memory.ActorSystem})
 	return err
 }
@@ -640,6 +689,9 @@ func directiveNeverEvict(line string) bool {
 
 // appendCoreFact appends the dated line under ## Facts.
 func appendCoreFact(core, line string) string {
+	if strings.Contains(core, line) {
+		return core
+	}
 	if i := strings.Index(core, "## Facts"); i >= 0 {
 		j := i + len("## Facts")
 		return core[:j] + "\n" + line + core[j:]
@@ -666,6 +718,9 @@ func applyTruths(w *vault.Writer, root string, j *journal, truths []truthProposa
 		if err != nil {
 			rejected++
 			j.add("rejected truth rewrite on %s — %v", t.Card, err)
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(string(cur)), strings.TrimSpace(t.Content)) {
 			continue
 		}
 		oldLines := bulletLines(string(cur))
@@ -787,7 +842,7 @@ func loadDayState(root, dayKey string) (*dayState, error) {
 	}
 	var st dayState
 	if err := json.Unmarshal(b, &st); err != nil {
-		return &dayState{Entries: map[string]string{}, Steps: map[string]bool{}}, nil
+		return nil, fmt.Errorf("night checkpoint unreadable: %w", err)
 	}
 	if st.Steps == nil {
 		st.Steps = map[string]bool{}
@@ -807,7 +862,27 @@ func (st *dayState) save(root, dayKey string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(p, b, 0600)
+	f, err := os.CreateTemp(filepath.Dir(p), ".night-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if err := f.Chmod(0600); err != nil {
+		f.Close()
+		return err
+	}
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), p)
 }
 
 func (st *dayState) done(step string) bool { return st.Steps[step] }
@@ -889,6 +964,11 @@ func FoldWeek(ctx context.Context, root string, day time.Time, o Options) (Resul
 		return res, fmt.Errorf("night weekly proposal JSON: %w", err)
 	}
 	content := "---\ntype: weekly-summary\nstatus: active\ntags: []\ncreated: " + monday.Format("2006-01-02") + "\nupdated: " + monday.Format("2006-01-02") + "\n---\n\n" + strings.TrimSpace(p.Summary) + "\n"
+	if o.BeforeCommit != nil {
+		if err := o.BeforeCommit(); err != nil {
+			return res, err
+		}
+	}
 	w := vault.NewWriter(root)
 	_, err = w.Apply(memory.WriteOp{Path: rel, Content: []byte(content), Actor: memory.ActorSystem})
 	return res, err
@@ -932,6 +1012,11 @@ func FoldYear(ctx context.Context, root string, day time.Time, o Options) (Resul
 	}
 	first := time.Date(year, 1, 1, 0, 0, 0, 0, tz)
 	content := "---\ntype: yearly-summary\nstatus: active\ntags: []\ncreated: " + first.Format("2006-01-02") + "\nupdated: " + first.Format("2006-01-02") + "\n---\n\n" + strings.TrimSpace(p.Summary) + "\n"
+	if o.BeforeCommit != nil {
+		if err := o.BeforeCommit(); err != nil {
+			return res, err
+		}
+	}
 	w := vault.NewWriter(root)
 	_, err = w.Apply(memory.WriteOp{Path: rel, Content: []byte(content), Actor: memory.ActorSystem})
 	return res, err
@@ -1008,6 +1093,11 @@ func FoldMonth(ctx context.Context, root string, day time.Time, o Options) (Resu
 		return res, fmt.Errorf("night monthly proposal JSON: %w", err)
 	}
 	content := "---\ntype: monthly-summary\nstatus: active\ntags: []\ncreated: " + first.Format("2006-01-02") + "\nupdated: " + first.Format("2006-01-02") + "\n---\n\n" + strings.TrimSpace(p.Summary) + "\n"
+	if o.BeforeCommit != nil {
+		if err := o.BeforeCommit(); err != nil {
+			return res, err
+		}
+	}
 	w := vault.NewWriter(root)
 	_, err = w.Apply(memory.WriteOp{Path: rel, Content: []byte(content), Actor: memory.ActorSystem})
 	return res, err

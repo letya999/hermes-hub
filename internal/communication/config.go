@@ -105,18 +105,6 @@ type Config struct {
 	// for harness-side /name and $name expansion (SPEC-0083 R6.5); empty
 	// disables expansion entirely.
 	SkillsDir string `yaml:"-"`
-	// VaultDir is the mounted read-only memory vault (/vault) used for the
-	// private-audience CORE block in per-run instructions; empty means the
-	// memory_vault feature is off and no CORE is injected (SPEC-0085 R1.6).
-	VaultDir string `yaml:"-"`
-	// MemoryRollupTime is the space-local "HH:MM" the hub-owned nightly
-	// rollup fires at (memory.rollup_time, default 04:00); empty disables
-	// the job (SPEC-0085 R5.1).
-	MemoryRollupTime string `yaml:"-"`
-	// MemoryLeafRetentionDays / MemoryLeafFoldBytes drive the R7.5 leaf
-	// prune lanes after the nightly rollup — 0 disables each lane.
-	MemoryLeafRetentionDays int `yaml:"-"`
-	MemoryLeafFoldBytes     int `yaml:"-"`
 	// SkillsStore is the owner's writable skill store; skill-scoped
 	// credential forms persist under its private .state dir (R8.2). Empty
 	// disables the unmanaged persist path — managed relays via RuntimeURL.
@@ -308,10 +296,6 @@ func ConfigFromEnv() (Config, error) {
 		config.SkillsByPrincipalDir = os.Getenv("HUB_SKILLS_BY_PRINCIPAL")
 		config.SkillsStoreByDir = os.Getenv("HUB_SKILLS_STORE_BY")
 		config.SkillsStore = os.Getenv("HUB_SKILLS_STORE")
-		config.VaultDir = os.Getenv("HUB_VAULT")
-		config.MemoryRollupTime = os.Getenv("HUB_MEMORY_ROLLUP_TIME")
-		config.MemoryLeafRetentionDays = intFromEnv("HUB_MEMORY_LEAF_RETENTION_DAYS", 0)
-		config.MemoryLeafFoldBytes = intFromEnv("HUB_MEMORY_LEAF_FOLD_BYTES", 0)
 		fillChannelSecrets(&config)
 		return config, nil
 	}
@@ -357,10 +341,6 @@ func ConfigFromEnv() (Config, error) {
 	config.SpoolMaxFiles, config.SpoolMaxArchiveBytes, config.SpoolMaxUsageEntries = spoolLimitsFromEnv()
 	config.SkillsDir = os.Getenv("HUB_SKILLS_EFFECTIVE")
 	config.SkillsByPrincipalDir = os.Getenv("HUB_SKILLS_BY_PRINCIPAL")
-	config.VaultDir = os.Getenv("HUB_VAULT")
-	config.MemoryRollupTime = os.Getenv("HUB_MEMORY_ROLLUP_TIME")
-	config.MemoryLeafRetentionDays = intFromEnv("HUB_MEMORY_LEAF_RETENTION_DAYS", 0)
-	config.MemoryLeafFoldBytes = intFromEnv("HUB_MEMORY_LEAF_FOLD_BYTES", 0)
 	config.SkillsStoreByDir = os.Getenv("HUB_SKILLS_STORE_BY")
 	config.SkillsStore = os.Getenv("HUB_SKILLS_STORE")
 	config.GitLabHost = os.Getenv("HUB_GITLAB_HOST")

@@ -20,6 +20,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/diagnostics"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/internal/memory/night"
 	"github.com/letya999/hermes-hub/internal/routines"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
@@ -64,21 +65,24 @@ type Config struct {
 	// Fetch performs real probe I/O (URL watches/event sources); defaults
 	// to a plain HTTP GET when nil. ToolCall runs mcp_tool probes through
 	// the connector; nil leaves tool probes failing closed.
-	Fetch    func(context.Context, string) ([]byte, error)
-	ToolCall func(context.Context, string, *commodel.WatchProbe) ([]byte, error)
+	Fetch        func(context.Context, string) ([]byte, error)
+	ToolCall     func(context.Context, string, *commodel.WatchProbe) ([]byte, error)
+	DreamingPlan func(identity.Envelope) (night.Schedule, error)
+	DreamingRun  func(context.Context, identity.Envelope, string, night.Schedule, locale.Lang, func(context.Context, night.IntentProposal) error) (string, error)
 }
 
 // Host owns the automation plane: per-principal engines and durable stores.
 type Host struct {
-	cfg      Config
-	now      func() time.Time
-	mu       sync.Mutex
-	engines  map[string]*routines.Engine
-	queue    *dispatchQueue
-	outbox   *deliveryOutbox
-	events   *eventStore
-	tasks    *taskStore
-	inFlight sync.Map // principal + job ID -> job while its supervisor call is live
+	cfg        Config
+	now        func() time.Time
+	mu         sync.Mutex
+	engines    map[string]*routines.Engine
+	queue      *dispatchQueue
+	outbox     *deliveryOutbox
+	events     *eventStore
+	tasks      *taskStore
+	inFlight   sync.Map // principal + job ID -> job while its supervisor call is live
+	nightLocks sync.Map // principal -> *sync.Mutex; model work never holds h.mu
 }
 
 func NewHost(cfg Config) (*Host, error) {
@@ -139,7 +143,7 @@ func (h *Host) validateOwnerRoot(root string) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	for _, name := range []string{"schedules", "occurrences", "assignments", "watchers", "digests", "event-state"} {
+	for _, name := range []string{"schedules", "occurrences", "assignments", "watchers", "digests", "event-state", "system"} {
 		info, err := os.Lstat(filepath.Join(root, name))
 		if os.IsNotExist(err) {
 			continue
@@ -557,6 +561,7 @@ func (h *Host) Tick(ctx context.Context, now time.Time) error {
 				e := owner.engine
 				dueAuth := func(job commodel.Job) error { return h.authorizeDueJob(ctx, job) }
 				for i, step := range []func() error{
+					func() error { return h.tickDreaming(ctx, owner.principal, now) },
 					func() error {
 						return e.TickSchedules(now, "", func(scheduleID string, job commodel.Job) error { return h.authorizeScheduleJob(ctx, scheduleID, job) })
 					},

@@ -24,7 +24,6 @@ import (
 	"github.com/letya999/hermes-hub/internal/envstore"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/locale"
-	"github.com/letya999/hermes-hub/internal/memory/night"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/toolhub/automation"
 )
@@ -37,7 +36,6 @@ type Gateway struct {
 	users        map[int64]User
 	slackUsers   map[string]User
 	spool        *Spool
-	nightRelay   night.RelayFunc // nil → production model-relay binding
 	api          TelegramAPI
 	slack        SlackAPI
 	runner       Runner
@@ -261,7 +259,6 @@ func (g *Gateway) Run(ctx context.Context) error {
 	deliveryDone := make(chan struct{})
 	controlDone := make(chan struct{})
 	progressDone := make(chan struct{})
-	nightDone := make(chan struct{})
 	canaryDone := make(chan struct{})
 	go func() {
 		defer close(canaryDone)
@@ -277,19 +274,6 @@ func (g *Gateway) Run(ctx context.Context) error {
 		defer ticker.Stop()
 		for {
 			g.progressTick(workerCtx)
-			select {
-			case <-workerCtx.Done():
-				return
-			case <-ticker.C:
-			}
-		}
-	}()
-	go func() {
-		defer close(nightDone)
-		ticker := time.NewTicker(60 * time.Second)
-		defer ticker.Stop()
-		for {
-			g.tickNightRollup(g.now())
 			select {
 			case <-workerCtx.Done():
 				return
@@ -319,7 +303,6 @@ func (g *Gateway) Run(ctx context.Context) error {
 		<-captureDone
 		<-controlDone
 		<-progressDone
-		<-nightDone
 		<-canaryDone
 		g.usageWG.Wait()
 	}()

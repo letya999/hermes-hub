@@ -113,9 +113,8 @@ func TestRuntimeNeverMountsVault(t *testing.T) {
 	}
 }
 
-// SPEC-0085 R1.6: the gateway reads CORE for private-run injection, so it
-// mounts the vault read-only — writes stay in the runtime's governed writer.
-func TestGatewayVaultMountReadWrite(t *testing.T) {
+// Communication never mounts the vault; capture and rollup belong to ToolHub.
+func TestGatewayDoesNotMountVault(t *testing.T) {
 	dir := t.TempDir()
 	s := validSettings()
 	s.Ingress = []string{"telegram"}
@@ -125,24 +124,14 @@ func TestGatewayVaultMountReadWrite(t *testing.T) {
 		t.Fatal("communication-hub service missing")
 	}
 	env, _ := gateway["environment"].(M)
-	if env["HUB_VAULT"] != "/vault" {
-		t.Fatalf("gateway missing HUB_VAULT: %v", env["HUB_VAULT"])
+	if env["HUB_VAULT"] != nil {
+		t.Fatalf("gateway received HUB_VAULT: %v", env["HUB_VAULT"])
 	}
-	found := false
 	for _, volume := range gateway["volumes"].([]any) {
 		m, ok := volume.(M)
 		if ok && m["target"] == "/vault" {
-			found = true
-			if m["read_only"] == true {
-				t.Fatal("gateway vault mount must be read-write — the comm plane writes daily leaves")
-			}
-			if m["source"] != filepath.ToSlash(filepath.Join(dir, "vault")) {
-				t.Fatalf("vault mount must bind spaces/<user>/vault, got %v", m["source"])
-			}
+			t.Fatal("gateway mounted vault")
 		}
-	}
-	if !found {
-		t.Fatal("gateway does not mount the vault")
 	}
 	// Without the feature the gateway sees nothing.
 	s.Tools = map[string]ToolEntry{"memory_vault": {Via: ToolViaOff}}
@@ -295,10 +284,8 @@ func TestRenderCreatesVaultTree(t *testing.T) {
 	}
 }
 
-// SPEC-0085 R5.1: the nightly rollup clock is the space-local
-// memory.rollup_time (default 04:00) — the gateway env carries it only
-// while the feature is on, an explicit setting wins, denied renders nothing.
-func TestMemoryRollupTimeRendered(t *testing.T) {
+// The per-owner night clock is read from published config by ToolHub.
+func TestMemoryRollupTimeNotRenderedToGateway(t *testing.T) {
 	dir := t.TempDir()
 	envOf := func(s Settings) M {
 		gateway, ok := Compose(s, "", dir)["services"].(M)["communication-hub"].(M)
@@ -311,12 +298,12 @@ func TestMemoryRollupTimeRendered(t *testing.T) {
 	s := validSettings()
 	s.Ingress = []string{"telegram"}
 	s.Tools = map[string]ToolEntry{"memory_vault": {Via: ToolViaNative}}
-	if got := envOf(s)["HUB_MEMORY_ROLLUP_TIME"]; got != "04:00" {
-		t.Fatalf("default rollup time = %v, want 04:00", got)
+	if got := envOf(s)["HUB_MEMORY_ROLLUP_TIME"]; got != nil {
+		t.Fatalf("gateway received rollup time: %v", got)
 	}
 	s.MemoryRollupTime = "02:30"
-	if got := envOf(s)["HUB_MEMORY_ROLLUP_TIME"]; got != "02:30" {
-		t.Fatalf("configured rollup time = %v, want 02:30", got)
+	if got := envOf(s)["HUB_MEMORY_ROLLUP_TIME"]; got != nil {
+		t.Fatalf("gateway received configured rollup time: %v", got)
 	}
 	s.Tools = map[string]ToolEntry{"memory_vault": {Via: ToolViaOff}}
 	if got := envOf(s)["HUB_MEMORY_ROLLUP_TIME"]; got != nil {

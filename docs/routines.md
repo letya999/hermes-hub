@@ -7,8 +7,9 @@ last_verified: "2026-11-06"
 ToolHub owns the routine clock, occurrences, dispatch and automation delivery intents.
 Communication owns channel intake, delivery and receipts; reminders avoid model wakes and agents/probes use live rights.
 
-The M32 cutover moves the clock, assignments and watches to ToolHub (ADR-0095,
-SPEC-0094). Communication's night rollup remains until #524/#525 replace it.
+The M32 cutover places the clock, assignments, watches and protected nightly
+dreaming in ToolHub (ADR-0095, SPEC-0094). Dreaming uses the same clock pass,
+one occurrence per owner and local date, and is absent from ordinary routine CRUD.
 Memory disablement overrides tool selection. Calls require `tools.use` and
 their own `tasks.schedule`, `tasks.observe` or `tasks.delegate` right.
 Settings changes use `settings_read`'s revision as `settings_edit.base_revision`
@@ -490,7 +491,6 @@ the original wake charge across enqueue failure or day rollover. Current pause
 and generation checks still apply. A confirmed durable job admission releases
 its reservation; failed confirmation leaves replayable local work. This receipt
 is accounting evidence, not a new authorization or an agent confirmation.
-
 Non-event watcher escalation saves exact job intent in its existing `probe-result`
 receipt before enqueue. Replay keeps source/occurrence identity and current owner
 checks; it does not refetch or charge the same reserved wake twice. Storage

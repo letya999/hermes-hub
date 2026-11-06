@@ -200,10 +200,10 @@ docs/tools.md; they are not shared personal-memory stores.
   root and no shared run-scope stamps — reads (`memory_search`, pre-turn
   CORE/recall) and writes (`memory_card`, capture) pass the ToolHub
   boundary's verified envelope, published memory switch and exact live
-  private run (SPEC-0098). The nightly rollup driver remains in the
-  communication gateway pending its own ToolHub migration (SPEC-0085
-  R2/R5): at `memory_rollup_time` (agent settings,
-  `"HH:MM"` space-local, default 04:00) it folds the just-closed day —
+  private run (SPEC-0098). ToolHub's protected dreaming routine reads
+  `config.memory.nightly_rollup` and `config.runtime.timezone` from the
+  published passport. At the local `"HH:MM"` (default 04:00) it folds
+  the just-closed day —
   promotions, directives, REVIEW journal, owner digest, intent→draft
   assignment proposals — then closes any finished week/month/year whose
   summary is missing. Two opt-in settings bound the leaf tape after

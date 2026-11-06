@@ -140,6 +140,18 @@ and before service effects complete.
   rechecks published `memory.enabled` and the `memory.remember` grant under
   that user's lock. Producer/event ID is the durable dedup key. Denied and
   sensitive events never write a leaf.
+- **System dreaming** (`automation/dreaming.go`, `night_run.go`): the ordinary
+  ToolHub clock materializes one protected occurrence per enabled owner and
+  local day from the published `memory.nightly_rollup` and runtime timezone.
+  A spring gap fires at the first later tick; a repeated fall hour and restart
+  retain the same date key. Before model work and before vault commit, ToolHub
+  checks the current passport and `memory.dreaming` grant. The owner's vault
+  lock and durable night checkpoints resume work without another model call;
+  corrupt checkpoints fail closed. Verified action intents become draft
+  assignments. A completed digest is recorded in the ToolHub delivery outbox
+  with a stable owner/date key; communication sends it under its channel right.
+  The relay caller bearer is mounted separately per owner, without the relay
+  admin credential. Communication has no night clock or vault mount.
 - **Multi-tenant auth**: `toolhub-tokens.json` (`HUB_TOOLHUB_TOKENS_FILE`)
   maps sibling-space bearers to full identity envelopes; render/supervisor
   write each sibling's `HUB_RUNTIME_AUTH` in place (same inode → live bind
