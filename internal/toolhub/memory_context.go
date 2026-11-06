@@ -71,6 +71,9 @@ func (g *Gateway) memoryContext(r *http.Request, auth identity.Envelope, claim a
 	if err := memoryEnrollment(g.PassportRoot, auth.PrincipalID, auth.Environment); err != nil {
 		return api.MemoryContextResponse{}, http.StatusForbidden
 	}
+	if code := g.memoryContextRights(auth); code != http.StatusOK {
+		return api.MemoryContextResponse{}, code
+	}
 	if g.Vaults == nil {
 		return api.MemoryContextResponse{}, http.StatusServiceUnavailable
 	}
@@ -83,6 +86,9 @@ func (g *Gateway) memoryContext(r *http.Request, auth identity.Envelope, claim a
 		if err := memoryEnrollment(g.PassportRoot, auth.PrincipalID, auth.Environment); err != nil {
 			return err
 		}
+		if code := g.memoryContextRights(auth); code != http.StatusOK {
+			return &memoryContextDenied{code: code}
+		}
 		result.Core = vault.CoreBlock(root)
 		idx, _, err := memorysearch.NewIndexer(root).Ensure()
 		if err != nil {
@@ -93,7 +99,36 @@ func (g *Gateway) memoryContext(r *http.Request, auth identity.Envelope, claim a
 		result.Recall = memorysearch.Recall(idx, claim.Text, string(memory.AudiencePrivate), time.Now()).Text
 		return nil
 	}); err != nil {
+		if denied, ok := err.(*memoryContextDenied); ok {
+			return api.MemoryContextResponse{}, denied.code
+		}
 		return api.MemoryContextResponse{}, http.StatusServiceUnavailable
 	}
+	if code := g.memoryContextRights(auth); code != http.StatusOK {
+		return api.MemoryContextResponse{}, code
+	}
 	return result, http.StatusOK
+}
+
+type memoryContextDenied struct{ code int }
+
+func (e *memoryContextDenied) Error() string { return "memory context denied" }
+
+// The endpoint returns CORE and recall together, so both path-scoped grants
+// must cover the data it reads. A narrow search grant cannot expose the full
+// index, and service authority does not substitute for either operation grant.
+func (g *Gateway) memoryContextRights(auth identity.Envelope) int {
+	if g.Store == nil {
+		return http.StatusServiceUnavailable
+	}
+	for _, right := range []struct{ operation, scope string }{{"read", "memory/CORE.md"}, {"search", "memory"}} {
+		decision, err := g.Store.Decide(auth, "memory", right.operation, right.scope, time.Now())
+		if err != nil {
+			return http.StatusServiceUnavailable
+		}
+		if !decision.Allow {
+			return http.StatusForbidden
+		}
+	}
+	return http.StatusOK
 }

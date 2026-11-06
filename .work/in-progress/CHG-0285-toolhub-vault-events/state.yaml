@@ -19,7 +19,7 @@ slices:
   M1: committed_205062ce
   M2: committed_028f0b2a
   M4: committed_fcc6fd89
-  M5: in_progress
+  M5: implemented_pending_container_and_ci_acceptance
 historical_slices:
   S4.1-vault: in_progress
   S4.2-events: not_started
@@ -31,6 +31,7 @@ validation:
   red_team: not_started
   live_acceptance: not_started
 evidence:
+  - "2026-11-06 integration #517: /v1/memory-context now requires current memory.read on memory/CORE.md and memory.search on the full memory tree through Store.Decide, independently of model tool visibility. It fails closed for missing/revoked/scoped grants or unavailable PDP before vault resolution, checks again under the per-user vault lock and before response. TestAuditMemoryContextRequiresReadAuthority and TestMemoryContextRechecksRightsAtVaultRead pass, as do the full internal/toolhub package, targeted memory-context race and just check. Synthetic temporary-vault tests only; container/CI acceptance remains pending."
   - "2026-11-06 #516 implementation in feat/m32-track-2: communication persists accepted-turn and completed-run capture records in its spool, replays after restart and sends over a service-authenticated HTTP boundary to ToolHub; ToolHub verifies supervisor's historical job/run metadata and SHA-256 content hashes, user/environment/audience/provenance/sensitivity, current memory.enabled and memory.remember before per-user vault commit. Supervisor retains minimal hash/identity capture context after terminal compaction without prompt/reply bodies. Lost-ack replay, cross-user/forged fields, revoke/disable and crash-gap recovery have synthetic temporary-vault HTTP tests. No live container/provider acceptance is claimed; Docker gate deferred by track instruction to #526."
   - "2026-11-06 #516 verification: go test -p 1 ./internal/commodel ./internal/communication ./internal/runtime ./internal/supervisor ./internal/toolhub ./internal/toolhub/api — exit 0. After final recovery/sensitivity edits, scoped go test -p 1 ./internal/communication ./internal/supervisor ./internal/toolhub -run 'TestCapture|TestCompletedCapture|TestJobStatusServesRunContext|TestTerminalJobsCompacted|TestJobRecordHasNoPromptText' -count=1 — exit 0; same scope with -race — exit 0. Coverage/just check remains pending for full chain. Synthetic httptest plus temporary vault is not container/provider integration evidence."
   - "2026-11-06 #516 hardening: a rights-ledger read error now propagates from the common Decide path, so capture returns transient unavailable and the spool retries rather than permanently settling an authorization denial. Terminal outbox recovery repeats after spool receipt replay; sensitive turns do not enter the memory outbox. Added regression tests for ledger outage retry, the pre-apply crash window and sensitive exclusion."

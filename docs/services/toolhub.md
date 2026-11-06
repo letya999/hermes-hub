@@ -109,8 +109,11 @@ and before service effects complete.
   by field with the supervisor's durable `/v1/jobs` record — job, admission,
   text hash, `running` status, current runtime generation, private kind,
   sensitivity, user, environment and the principal/context/runtime envelope
-  must all agree before the per-user vault opens. CORE (`memory/CORE.md`)
-  and a deterministic lane-1 recall block return in one response; an
+  must all agree before the per-user vault opens. The live rights PDP must
+  allow `memory.read` for `memory/CORE.md` and `memory.search` for the whole
+  `memory` tree; both grants are checked before resolution, at the vault read
+  and before response. CORE and a deterministic lane-1 recall block return
+  together; an
   indexer failure reports `degraded`, a lookup/auth error answers 503/403
   and nothing falls back to a local read.
 - **Trusted capture** (`memory_capture.go`): `/v1/memory-capture` admits only
