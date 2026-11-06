@@ -5,6 +5,12 @@ last_verified: 2026-11-06
 
 # toolhub
 
+ToolHub owns the M32 automation clock and per-user occurrence history. Hourly
+maintenance archives settled details only after owner dispatch and channel
+delivery are no longer pending; a compact receipt preserves owned history for
+the normal 72-hour retention window. The communication spool is inspected
+read-only for pending deliveries and retains intake, delivery and receipts.
+
 `cmd/toolhub` → `internal/toolhub`. The capability gateway every projected
 tool call crosses. Listens `0.0.0.0:8090`, host-bound to `127.0.0.1:8090`.
 For managed profiles, the published passport revision is stamped on the

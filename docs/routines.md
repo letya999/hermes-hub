@@ -4,14 +4,13 @@ last_verified: "2026-11-06"
 ---
 # Routines
 
-The communication hub owns the durable clock, occurrence queue and outbox. Hermes
-interprets requests through ToolHub. A reminder delivers its exact text without
-waking a model. Agent tasks use current authorization; probes/scripts use bounded paths; the hub must be running.
+ToolHub owns the routine clock, occurrences, dispatch and automation delivery intents.
+Communication owns channel intake, delivery and receipts; reminders avoid model wakes and agents/probes use live rights.
 
-M32 moves the clock, assignments, watches and dreaming to ToolHub (ADR-0095,
-SPEC-0094). Until cutover, communication-hub runs them with published memory
-settings. Memory disablement overrides tool selection. Calls require `tools.use`
-and their own `tasks.schedule`, `tasks.observe` or `tasks.delegate` right.
+The M32 cutover moves the clock, assignments and watches to ToolHub (ADR-0095,
+SPEC-0094). Communication's night rollup remains until #524/#525 replace it.
+Memory disablement overrides tool selection. Calls require `tools.use` and
+their own `tasks.schedule`, `tasks.observe` or `tasks.delegate` right.
 Settings changes use `settings_read`'s revision as `settings_edit.base_revision`
 and require current `config.edit_own`; stale or unpublished drafts are refused.
 
@@ -420,10 +419,11 @@ distinguishes queued, partial, delivered and uncertain; delivery_count includes
 only the bound audience. Uncertain sends may have arrived and are not replayed
 automatically. Delivered does not mean read.
 
-Settled detail remains for at least 48 hours after its last write. Owner-bound
-summaries follow spool retention, normally 14 days. Legacy receipts lacking
-ownership/outcome evidence cannot become trustworthy history. Streams have no
-clock occurrences; inspect event_state for current health/error.
+ToolHub archives settled occurrences after delivery leaves both outboxes and
+agent execution is terminal; live sends retain their authorization record.
+Detail remains at least 48 hours after its last write. Owner-bound summaries
+remain normally 72 hours after compaction. Legacy receipts without ownership or
+outcome evidence are untrusted; streams have no clock occurrences (see event_state).
 
 ## Deployment and manual acceptance
 

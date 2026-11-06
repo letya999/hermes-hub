@@ -36,8 +36,8 @@ The service RPC takes its caller envelope from the trusted communication
 service, while rights are decided on ToolHub's enrolled identity for that
 principal; using the channel envelope for the PDP would bypass a managed
 profile ceiling. Schedule create/replay/list/destinations/card/history/preview,
-edit and lifecycle controls now cross this boundary. Watch sample and complete
-result handoff still need the same owner switch.
+edit and lifecycle controls, watch sample and complete result handoff now cross
+this boundary.
 The RPC now also covers revision-fenced schedule pause/snooze/delete,
 assignment create/list/load/lifecycle/plan/grants/progress, terminal result
 handoff and owned hook intake. Progress accepts the job only during its
@@ -48,15 +48,15 @@ credentials-free channel identity view and the gateway's read-only task/link
 records. ToolHub checks them after the owner occurrence and live schedule,
 immediately before supervisor admission; a rebound channel leaves the durable
 dispatch intent pending. Communication HTTP is not needed for this check, so
-an outage delays delivery rather than due execution. Extend the same local
-fence to probes/scripts before the old communication clock retires.
+an outage delays delivery rather than due execution. The same local fence
+applies to probes/scripts.
 The ToolHub entrypoint now constructs/recover-checks Host before opening its
 control listener when the automation root is configured, mounts its
 service-only operations under `/v1/automation/`, and starts the sole routine
-tick loop. The old communication routine, stream and night loops are removed
-from Run, and its recovery no longer resumes event automation. Public
-assignment and routine CRUD/chat callers use the service RPC; sample and
-some auxiliary watch reads still need owner routing. Communication
+tick loop. The old communication routine and stream loops are removed from
+Run; its independent night rollup stays until #524/#525. Communication's
+interactive run-event receipt recovery remains. Public assignment, routine
+and watch callers use the service RPC. Communication
 exposes a safe owner home chat/language response for notice routing; it is not
 on the due execution authorization path.
 The static runtime exposes `/v1/execute`, not supervisor `/v1/jobs` or
@@ -69,8 +69,9 @@ origin mapping records in place from the read-only legacy mount. Its create
 RPC binds a destination using the operator-rendered current owner and can
 carry the creation-time check baseline; its destinations RPC lists the same
 live bindings. An owner change or topic rebind refuses a new schedule.
-The test-only communication fixtures that still assume an old local writer
-must be updated before the full suite can pass.
+The communication fixtures now exercise a real ToolHub Host through service
+HTTP. ToolHub owns occurrence compaction: it keeps pending channel sends in
+the hot set, archives settled detail and retains compact owner-bound receipts.
 
 The production communication spool is a single Docker volume shared by all
 principals, with automation records at its top level. That is not the A2

@@ -86,6 +86,7 @@ func runWithContext(ctx context.Context) error {
 	}
 	controlHandler := http.Handler(handler)
 	var automationTick func(context.Context, time.Time) error
+	var automationCompact func(time.Time, time.Duration) error
 	if os.Getenv("HUB_AUTOMATION_ROOT") != "" {
 		projection, ok := handler.(automationProjection)
 		if !ok {
@@ -97,6 +98,7 @@ func runWithContext(ctx context.Context) error {
 		}
 		defer host.Close()
 		automationTick = host.Tick
+		automationCompact = host.CompactOccurrences
 		mux := http.NewServeMux()
 		mux.Handle("/v1/automation/", host.ControlHandler(automationServiceToken()))
 		mux.Handle("/", handler)
@@ -113,9 +115,21 @@ func runWithContext(ctx context.Context) error {
 		runBackground(func() {
 			ticker := time.NewTicker(5 * time.Second)
 			defer ticker.Stop()
+			var lastCompact time.Time
+			compactInterval := time.Hour
 			for {
-				if err := automationTick(ctx, time.Now().UTC()); err != nil && ctx.Err() == nil {
+				now := time.Now().UTC()
+				if err := automationTick(ctx, now); err != nil && ctx.Err() == nil {
 					log.Print("ToolHub automation tick pending")
+				}
+				if now.Sub(lastCompact) >= compactInterval {
+					lastCompact = now
+					if err := automationCompact(now, 72*time.Hour); err == nil {
+						compactInterval = time.Hour
+					} else if ctx.Err() == nil {
+						compactInterval = 5 * time.Minute
+						log.Print("ToolHub occurrence compaction pending")
+					}
 				}
 				select {
 				case <-ctx.Done():

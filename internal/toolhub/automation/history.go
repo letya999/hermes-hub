@@ -73,7 +73,7 @@ func (h *Host) RoutineHistory(ctx context.Context, auth identity.Envelope, id st
 		}
 	}
 	found := map[string]routineHistoryEntry{}
-	for _, dir := range []string{"", "archive", "receipts"} {
+	for _, dir := range []string{"", "receipts", "archive"} {
 		root := filepath.Join(h.ownerRoot(auth.PrincipalID), "occurrences", dir)
 		info, err := os.Lstat(root)
 		if os.IsNotExist(err) {
@@ -92,10 +92,16 @@ func (h *Host) RoutineHistory(ctx context.Context, auth identity.Envelope, id st
 			}
 			path := filepath.Join(root, entry.Name())
 			info, err := os.Lstat(path)
+			if os.IsNotExist(err) { // concurrent owner compaction moved the file
+				continue
+			}
 			if err != nil || !info.Mode().IsRegular() || info.Size() > 128*1024 {
 				return nil, errUnauthorized
 			}
 			body, err := os.ReadFile(path) // #nosec G703 -- bounded owner-rooted durable occurrence
+			if os.IsNotExist(err) {
+				continue
+			}
 			if err != nil {
 				return nil, errUnauthorized
 			}

@@ -4,7 +4,7 @@ title: "ToolHub automation owner"
 status: in_progress
 branch: chore/merge-m31-m20-into-dev
 updated: 2026-11-06
-phase: design-complete
+phase: implementation-complete-pending-acceptance
 adr: [ADR-0095, ADR-0097]
 spec: SPEC-0099
 requirements: [A1, A2, A3]
@@ -14,22 +14,23 @@ github_milestone: "M32 MVP — Passports, Memory, and Automation in ToolHub"
 github_milestone_number: 43
 github_issues: [521, 522, 523]
 design_status: accepted
-implementation_status: in_progress
+implementation_status: implemented_pending_acceptance
 slices:
   A1-521: done
   A2-522: done
-  A3-523: in_progress
+  A3-523: implemented_pending_container_and_ci_acceptance
 historical_slices:
   S3.1-state: not_started
   S3.2-api: not_started
   S3.3-dispatch: not_started
 validation:
   documents: passed_2026-11-05
-  just_check: interrupted_after_affected_packages_passed
-  docker_check: not_run
+  just_check: passed_2026-11-06
+  docker_check: not_run_no_exact_sha_images
   red_team: not_started
   live_acceptance: not_started
 evidence:
+  - "2026-11-06 integration #523: ToolHub's hourly owner-side occurrence compaction now archives only settled records after ToolHub dispatch and read-only communication-spool evidence show no pending delivery; it keeps bounded owner history receipts and prunes aged archives/orphan replay sidecars. A completed agent result keeps its existing delivery contract. Tests cover owner outbox pending, channel outbox pending, event child result handoff, per-user isolation, settled delivery/history, terminal agent execution, archive/receipt age and targeted race. The five affected packages passed just test (internal/routines, internal/toolhub/automation, internal/communication, cmd/toolhub, internal/stack); post-fix owner package, routines and cmd/toolhub passed again. Docker images inspected locally: hermes-hub:test and test-core carry revision 10413d77; dev-local toolhub and communication images report unknown, so no exact integration-SHA container acceptance was claimed. No shared stack or real spaces touched."
   - "2026-11-05 bounded-plan verification: devcheck docs passed (exit 0); 17 current planning files passed relative-link/whitespace checks and the 20-issue dependency graph is acyclic. Milestone 43 and all 20 English issue contracts were synchronized. just check was invoked but intentionally interrupted during the test leg (exit 1); no full-suite or coverage pass claimed. No production code, worktree, commit or deployment created by this planning update."
   - "2026-11-05 decomposition update: ADR-0097 and SPEC-0096/0097/0098/0099 define current small assignments; foundation packages/verifies only. First wave is #509/#513/#521. #508 requires #511/#512; #522 requires #521/#514; #523 performs the sole automation owner switch. No new implementation or gate pass claimed; historical evidence below retains its original snapshot."
   - "2026-11-05 GitHub planning: milestone 43 and issues 521, 522, 523 created. GitHub owns current issue status; parallel-work.md defines foundation/worktree assignments. Foundation and implementation worktrees are not created by this planning session."
