@@ -11,15 +11,36 @@ export COMPOSE_BAKE := "true"
 default:
     @just --list
 
-# Complete local CI; no Node/Jest orchestration. Windows runs the legs
-# sequentially because parallel Go compiler/test processes intermittently
-# fail to execute with Access is denied on local hosts.
+# Fast local feedback. Keep Go's result cache; race/coverage/security and
+# deployment contracts are mandatory CI jobs, not repeated after every edit.
+# Run one repo-wide check at a time across worktrees on this host.
+check:
+    go run ./cmd/devcheck format
+    go run ./cmd/devcheck docs
+    go vet -p=2 ./...
+
+# Run the affected packages explicitly; the full suite runs in CI.
+test +packages:
+    go test -short -p=2 -timeout=2m {{packages}}
+
+# Explicit exhaustive local fallback when CI is unavailable.
 [unix]
-check: go-check lint docs-check config-check
+check-full: go-check lint docs-check config-check
 
 [windows]
-check:
+check-full:
     foreach ($leg in @('go-check','lint','docs-check','config-check')) { & just $leg; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
+
+# The branch must already be published. These are explicit remote operations;
+# ci-run starts the complete workflow, including GHCR image publication.
+ci-run branch:
+    gh workflow run ci.yml --ref {{branch}}
+
+ci-status sha:
+    gh run list --workflow ci.yml --commit {{sha}} --json databaseId,headSha,status,conclusion,url
+
+ci-watch run:
+    gh run watch {{run}} --exit-status
 
 # Actual Compose interpolation/schema validation with synthetic credentials;
 # no daemon, containers, provider accounts or user spaces are accessed.
@@ -64,7 +85,11 @@ build: config-check
 release version:
     go run ./cmd/package {{version}}
 
-docker-check target="prod":
+# Local Docker verification consumes CI images; it never rebuilds seven images.
+docker-check target="prod": (docker-check-prebuilt target)
+
+# Explicit offline fallback. Prefer CI image + container jobs for acceptance.
+docker-check-build target="prod":
     go run ./cmd/devcheck docker-build hermes-hub:test {{target}}
     go run ./cmd/devcheck docker-build hermes-hub:test-control {{target}}-control
     go run ./cmd/devcheck docker-build hermes-hub:test-core {{target}}-core
@@ -88,7 +113,7 @@ docker-check target="prod":
     go test -tags integration -run TestDockerScratchExecPausedQuarantine ./internal/toolhub/api
     go run ./cmd/devcheck docker-clean
 
-# Pull the CI-built GHCR image for HEAD (edge-<target> fallback) and retag it
+# Pull the CI-built GHCR image for HEAD (no stale edge fallback) and retag it
 # locally. Requires `docker login ghcr.io` once on this machine.
 docker-pull target="prod":
     go run ./cmd/devcheck docker-pull hermes-hub:test {{target}}

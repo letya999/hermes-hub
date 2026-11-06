@@ -1,6 +1,6 @@
 ---
 description: What counts as evidence, and the standing list of what is not yet proven. Dated per-change evidence lives in .work/done/CHG-*/evidence.md.
-last_verified: 2026-10-26
+last_verified: 2026-11-06
 ---
 
 # Validation policy and acceptance boundary
@@ -14,7 +14,9 @@ last_verified: 2026-10-26
 - **Live evidence** means a real account/workspace/device with a real
   provider call and a recorded artifact (message id, resource id, receipt).
   "Verified locally" without that wording means fixtures only.
-- A `just check` pass is recorded per change in its CHG; historical gate
+- Record `just check`, affected test results and CI separately, with the tested
+  SHA and run URL. Local format/docs/vet does not prove full-suite or coverage
+  acceptance. Unpublished code has no remote gate result. Historical gate
   runs with exact image ids live in `.work/done/CHG-*/evidence.md` — this
   file keeps only the *standing* boundary of what remains unproven.
 

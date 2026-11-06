@@ -44,7 +44,7 @@ func TestCIDeploymentConfigurationGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"check: go-check lint docs-check config-check", "build: config-check", "TestDeploymentConfigurationContract"} {
+	for _, required := range []string{"check-full: go-check lint docs-check config-check", "build: config-check", "TestDeploymentConfigurationContract"} {
 		if !strings.Contains(string(data), required) {
 			t.Errorf("local gate missing %q", required)
 		}
@@ -114,6 +114,40 @@ func TestCIShipsBaseCLICellImages(t *testing.T) {
 	}
 	if !strings.Contains(string(just), "go test -tags integration -run TestHubStdioReminderContract") {
 		t.Fatal("local Docker gate omitted the image MCP stdio reminder contract")
+	}
+}
+
+// A role must read the cache it exports. Sharing one export scope between
+// core/browser/knowledge overwrites the earlier role on every workflow run.
+func TestCIImageRoleCachesAreReusableAndIndependent(t *testing.T) {
+	data, err := os.ReadFile("../../.github/workflows/ci.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Run string
+				Env map[string]string
+			}
+		}
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, step := range workflow.Jobs["image"].Steps {
+		if !strings.Contains(step.Run, "docker-publish") {
+			continue
+		}
+		from, to := step.Env["HUB_DOCKER_CACHE_FROM"], step.Env["HUB_DOCKER_CACHE_TO"]
+		if from == "" || to != from+",mode=max" || seen[from] {
+			t.Fatalf("image cache is missing, mismatched or overwritten: from=%q to=%q", from, to)
+		}
+		seen[from] = true
+	}
+	if len(seen) != 5 {
+		t.Fatalf("missing base/role publish steps: %d", len(seen))
 	}
 }
 

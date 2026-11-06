@@ -1,6 +1,6 @@
 ---
 description: Test pyramid and evidence rules — unit/race, contract probes, Docker gates, mock channels, live acceptance.
-last_verified: 2026-10-31
+last_verified: 2026-11-06
 ---
 
 # Testing
@@ -9,7 +9,9 @@ last_verified: 2026-10-31
 
 1. **Unit** — `go test ./internal/...`; table tests over real handlers, not
    interfaces-under-themselves. Race (`-race`) and shuffle are part of
-   `just check`, not opt-in extras.
+   required CI, not optional acceptance extras. `just check` is format/docs/vet;
+   `just test <packages>` runs affected local tests. `just check-full` runs the
+   exhaustive local fallback. Preserve result caching during local iteration.
 2. **Contract probes** — `go run -tags integration ./cmd/devcheck
    <probe>`: `hermes-contract` (pinned image `/v1/*` + sessions),
    `toolhub-contract`, `toolhub-hermes-contract`, `forward_live_test`
@@ -88,7 +90,7 @@ it is not knowledge isolation/revocation evidence. Runtime cache/admission
 and real local filesystem tests complement the tool contract. None of
 these fixtures prove a live Hermes, Honcho, connector or chat integration.
 
-Own Go statement coverage ≥85% (`just check` enforces; upstream Hermes and
+Own Go statement coverage ≥85% (CI / `just check-full` enforce; upstream Hermes and
 copied broker source excluded from the denominator). Windows zero-statement
 profile rows are accepted by the coverage parser. When a gate is
 unavailable locally (no Docker, no provider account) — report it

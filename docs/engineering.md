@@ -1,6 +1,6 @@
 ---
 description: Engineering rules — Go conventions, gates, pins, change process, boundaries on dependencies.
-last_verified: 2026-10-27
+last_verified: 2026-11-06
 ---
 
 # Engineering rules
@@ -15,11 +15,15 @@ a separate copied Go module (MIT) kept out of the flatten.
 
 ## Gates
 
-- `just check` before delivery: fmt/vet/staticcheck, race+shuffle tests,
-  docs checks (`devcheck docs` — numbering/index/verified/size),
-  actionlint, coverage ≥85% on owned code.
+- `just check` before delivery: format, docs (numbering/index/verified/size), vet.
+  Run affected packages with `just test <packages>`; concurrency changes also need
+  targeted race tests. One repo-wide check at a time across local worktrees.
+- CI owns full race/shuffle tests, actionlint, static/security analysis, deployment
+  contracts and coverage ≥85% on owned code / ≥75% per internal package.
+  `just check-full` is the explicit exhaustive local fallback, not the edit loop.
 - `just security` when dependencies change (govulncheck + npm audit).
-- `just docker-check` / `docker-check-prebuilt` for image-side change.
+- CI image/container jobs provide image-side acceptance. `just docker-check`
+  consumes exact-HEAD images; `docker-check-build` explicitly builds locally.
 - Report an unavailable gate as unavailable — never claim it by proxy.
 
 ## Pins
@@ -56,7 +60,7 @@ a separate copied Go module (MIT) kept out of the flatten.
 - No unsolicited framework/database/queue dependencies; stdlib first.
 - Never commit deployments, tokens, browser profiles, transcripts or real
   personal data; secrets materialize only through the broker/secret store.
-- Docker hygiene: build via `hubctl build`/`up` or `just docker-check`
+- Docker hygiene: build via `hubctl build`/`up` or `just docker-check-build`
   (BuildKit-forced paths); `just docker-clean` after other local builds,
   `--deep` only for an intentional cold reset; no broad system/volume
   prunes.

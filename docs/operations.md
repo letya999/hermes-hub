@@ -1,6 +1,6 @@
 ---
 description: Operator runbook — stack lifecycle, user onboarding, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
-last_verified: 2026-11-04
+last_verified: 2026-11-06
 ---
 
 # Operations
@@ -705,8 +705,9 @@ Desktop/WSL, Optimize-VHD).
 
 CI: `image` job runs `devcheck docker-publish <target>` → immutable
 `ghcr.io/<owner>/<repo>/hermes-hub:<sha>-<target>` + moving `edge-<target>`;
-`containers` job runs `just docker-check-prebuilt` (`docker-pull` resolves
-sha tag, `edge-*` fallback, warns when pulled revision ≠ local HEAD). Local
+`container-gates` runs independent contract scenarios; `containers` aggregates
+them. Local `just docker-check` uses prebuilt images: `docker-pull` requires an
+exact HEAD tag and matching revision label, failing before retag on mismatch. Local
 pull needs one-time `docker login ghcr.io`. Weekly `prune-images` keeps
 newest 8 versions + `edge-*`. `HUB_REGISTRY_REPO` overrides for mirrors.
 
@@ -1096,7 +1097,7 @@ provider identity evidence; do not invent a universal identity endpoint.
   cliproxy it uses the loopback-published port. Offline `doctor` never
   claims live provider reachability.
 - `just config-check` renders synthetic dev/prod static+supervised profiles
-  through `compose config`; part of `just check`/`just build`/image CI.
+  through `compose config`; part of `just check-full`/`just build`/image CI.
 - The native container gate starts a real MCP stdio child against a local
   fixture — no Telegram contact. CI publishes `cli-tools`/`cell-proxy`
   stages; `just docker-check-prebuilt` pulls them.
