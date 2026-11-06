@@ -43,10 +43,12 @@ func enrollSiblingRuntimeTokens(spaceDir, environment string, owner Settings) er
 	}
 	ownerToken := runtimeAuthToken(filepath.Join(spaceDir, "runtime.auth"))
 	path := filepath.Join(spaceDir, "toolhub-tokens.json")
-	entries, err := readTokenFile(path)
+	_, err = readTokenFile(path)
 	if err != nil {
 		return err
 	}
+	// Rebuild from current siblings so removed spaces lose their bearer.
+	entries := map[string]identity.Envelope{}
 	siblings, err := os.ReadDir(parent)
 	if err != nil {
 		return err

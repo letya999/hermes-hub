@@ -142,6 +142,9 @@ func ComposeServiceName(s Settings, instance string) string {
 	if mode == "supervised" || (mode == "shared" && !s.RendersInfra()) {
 		return ""
 	}
+	if mode == "shared" {
+		return instance
+	}
 	return planServiceName(instance, s)
 }
 

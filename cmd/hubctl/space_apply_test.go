@@ -33,7 +33,7 @@ func TestRecreateRemovedHostingControllerSweepsOrphan(t *testing.T) {
 		got = append([]string(nil), args...)
 		return nil
 	}
-	if err := applyHandlers(context.Background(), dir, "dev").Recreate("hosting-controller"); err != nil {
+	if err := applyHandlers(context.Background(), dir, filepath.Dir(filepath.Dir(dir)), "dev").Recreate("hosting-controller"); err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Contains(got, "--remove-orphans") || slices.Contains(got, "hosting-controller") {
@@ -837,7 +837,7 @@ func TestApplyRemoveHandlerSweepsOrphans(t *testing.T) {
 	}
 	defer func() { dockerCompose = old }()
 
-	h := applyHandlers(context.Background(), t.TempDir(), "dev")
+	h := applyHandlers(context.Background(), t.TempDir(), t.TempDir(), "dev")
 	if h.Remove == nil {
 		t.Fatal("remove action has no handler")
 	}
@@ -850,10 +850,66 @@ func TestApplyRemoveHandlerSweepsOrphans(t *testing.T) {
 	}
 }
 
+func TestApplyRebuildsSupervisedRuntimeImage(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "spaces", "alice")
+	writeManagedSpaceFixture(t, dir, "alice")
+	previous := dockerCompose
+	defer func() { dockerCompose = previous }()
+	var got []string
+	dockerCompose = func(_ context.Context, _ string, args ...string) error {
+		got = append([]string(nil), args...)
+		return nil
+	}
+	if err := applyHandlers(context.Background(), dir, root, "dev").Rebuild("hermes-runtime"); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(got, " ")
+	if !strings.Contains(joined, "build --target dev -t hermes-hub:0.5.0-dev") || !strings.Contains(joined, filepath.Join(root, "docker", "Dockerfile")) {
+		t.Fatalf("supervised runtime rebuild did not produce the agent image: %v", got)
+	}
+}
+
+func TestFirstApplyPublishesBeforeStartingServices(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "spaces", "alice")
+	if err := stack.InitEnvironment(dir, "alice", "dev"); err != nil {
+		t.Fatal(err)
+	}
+	models := "default: m\nroutes: {m: {ladder: [upstream]}}\nservices:\n  upstream: {via: openai-compatible, endpoint: https://model.example/v1, models: [{id: m}]}\n"
+	if err := os.WriteFile(filepath.Join(dir, "passports", "models.yaml"), []byte(models), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "passports", "config.yaml"), []byte("runtime: {timezone: UTC}\nmemory: {enabled: false}\nchannels:\n  telegram: {bot: {ref: telegram-bot-fixture}}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "secrets.dev.env"), []byte("OPENAI_API_KEY=synthetic\nTELEGRAM_BOT_TOKEN=synthetic\nTELEGRAM_ALLOWED_USERS=41\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "config"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config", "SOUL.md"), []byte("# fixture\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	previous := dockerCompose
+	defer func() { dockerCompose = previous }()
+	dockerCompose = func(_ context.Context, _ string, _ ...string) error {
+		t.Fatal("first apply started Docker before hubctl up")
+		return nil
+	}
+	if err := runSpaceApply(context.Background(), []string{"--dir", dir, "--root", root, "--env", "dev", "--confirm"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := passport.Current(dir); err != nil {
+		t.Fatalf("first apply did not publish a readable revision: %v", err)
+	}
+}
+
 // Every named live consumer in the registry needs a wired hook — otherwise a
 // leaf declared live defers at apply instead of converging.
 func TestApplyLiveHooksCoverNamedConsumers(t *testing.T) {
-	h := applyHandlers(context.Background(), t.TempDir(), "dev")
+	h := applyHandlers(context.Background(), t.TempDir(), t.TempDir(), "dev")
 	for _, name := range []string{"supervisor-policy", "model-relay", "file-admission", "tool-policy", "rights-ledger"} {
 		hook, ok := h.Live[name]
 		if !ok {
@@ -928,7 +984,7 @@ func TestApplyRecreateResolvesComposeNames(t *testing.T) {
 		return nil
 	}
 	defer func() { dockerCompose = old }()
-	h := applyHandlers(context.Background(), dir, "dev")
+	h := applyHandlers(context.Background(), dir, filepath.Dir(filepath.Dir(dir)), "dev")
 	if err := h.Recreate("browser"); err != nil {
 		t.Fatal(err)
 	}

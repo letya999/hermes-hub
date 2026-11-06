@@ -88,7 +88,7 @@ func runSpaceApply(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := recoverApply(ctx, abs, rootAbs, *env, applyHandlers(ctx, abs, *env)); err != nil {
+	if err := recoverApply(ctx, abs, rootAbs, *env, applyHandlers(ctx, abs, rootAbs, *env)); err != nil {
 		return errors.New(locale.T(locale.LangOf(filepath.Join(abs, "workspace")), "hubctl.space-apply-recovery"))
 	}
 	docs, err := catalog.Generate()
@@ -166,6 +166,11 @@ func runSpaceApply(ctx context.Context, args []string) error {
 		}
 	}
 	actions := reconcile.Plan(changes, next.Stack.Services)
+	// The first publication establishes authority; `hubctl up` starts its
+	// containers after the operator has supplied images and service secrets.
+	if firstApply {
+		actions = nil
+	}
 	receipt := applyReceipt{
 		Revision:         rev.ID,
 		PreviousRevision: prevID,
@@ -177,7 +182,7 @@ func runSpaceApply(ctx context.Context, args []string) error {
 	if !*confirm {
 		return printApply(receipt)
 	}
-	report, err := applyConfirm(ctx, abs, rootAbs, *env, rev, prevID, actions, applyHandlers(ctx, abs, *env))
+	report, err := applyConfirm(ctx, abs, rootAbs, *env, rev, prevID, actions, applyHandlers(ctx, abs, rootAbs, *env))
 	if err != nil {
 		return err
 	}
@@ -361,7 +366,7 @@ var dockerCompose = func(ctx context.Context, dir string, a ...string) error {
 	return cmd.Run()
 }
 
-func applyHandlers(ctx context.Context, dir, env string) reconcile.Handlers {
+func applyHandlers(ctx context.Context, dir, root, env string) reconcile.Handlers {
 	composeFile := filepath.Join(dir, "generated", "compose."+env+".yaml")
 	docker := func(a ...string) error {
 		return dockerCompose(ctx, dir, a...)
@@ -376,6 +381,9 @@ func applyHandlers(ctx context.Context, dir, env string) reconcile.Handlers {
 				}
 				name := stack.ComposeServiceName(settings, service)
 				if name == "" {
+					if service == "hermes-runtime" && settings.PassportServices[service] == "supervised" {
+						return dockerCompose(ctx, dir, "build", "--target", env, "-t", "hermes-hub:0.5.0-"+env, "-f", filepath.Join(root, "docker", "Dockerfile"), root)
+					}
 					// Shared services render in the infra space's project —
 					// the same fallback Recreate uses for them.
 					infraCompose := filepath.Join(stack.InfraSpaceDir(dir), "generated", "compose."+env+".yaml")

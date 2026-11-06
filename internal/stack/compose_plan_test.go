@@ -41,6 +41,20 @@ func TestHostingControllerRecreateNamesRenderedCompanion(t *testing.T) {
 	}
 }
 
+func TestSharedCliproxyRebuildNamesRenderedService(t *testing.T) {
+	s := managedPassportSibling()
+	infra := true
+	s.Infra = &infra
+	s.PassportServices = map[string]string{"cliproxy": "shared"}
+	if got := ComposeServiceName(s, "cliproxy"); got != "cliproxy" {
+		t.Fatalf("shared cliproxy rebuild targets %q, want rendered service cliproxy", got)
+	}
+	infra = false
+	if got := ComposeServiceName(s, "cliproxy"); got != "" {
+		t.Fatalf("sibling must rebuild shared cliproxy in infra project, got %q", got)
+	}
+}
+
 // R3.2: the stack passport bounds the compose topology. A service the
 // settings features would render but the services map never declared is
 // dropped — the published revision, not feature flags, decides the set.

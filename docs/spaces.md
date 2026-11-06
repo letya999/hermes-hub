@@ -330,6 +330,8 @@ ToolHub profile and rights from that candidate. Only then does it atomically
 move `current` to the new revision. Managed config readers reject pending or
 mismatched revisions; ToolHub list/call/rights endpoints also reject an
 unfinished apply journal until reconciliation completes.
+The first apply publishes and activates the revision without starting services;
+`hubctl up` starts them after images and service secrets are provisioned.
 After activation, reconcile rebuilds only the service images that
 changed, recreate only the affected containers, run one compose
 `--remove-orphans` sweep when instances were dropped (a removed

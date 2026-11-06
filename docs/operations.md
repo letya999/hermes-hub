@@ -1007,8 +1007,9 @@ Files and records per owner:
   writes: a running toolhub rewrites `store.json` between the CLI's load
   and save, and the write fails on drift.
 - Infra re-render — re-render the infra space (`spaces/local`) after adding
-  or renaming a principal: `EnrollSiblingRuntimeTokens` rewrites
-  `toolhub-tokens.json`, and comm-hub only accepts enrolled runtime tokens.
+  or removing a principal: `EnrollSiblingRuntimeTokens` rebuilds
+  `toolhub-tokens.json` from the current sibling spaces, revoking stale
+  bearers; comm-hub only accepts enrolled runtime tokens.
 - Broker key volume — a freshly created owner stack gets an empty
   `broker-secrets-*` volume; the relay exits with
   `credential broker CA file is invalid` until `server.crt` and the key

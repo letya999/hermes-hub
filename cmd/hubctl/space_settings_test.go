@@ -222,7 +222,7 @@ func TestSettingsEditCrashRestoresAuthoredAndPublished(t *testing.T) {
 	if !stopped {
 		t.Fatal("settings edit did not stop after authored write")
 	}
-	if err := recoverApply(context.Background(), dir, root, "dev", applyHandlers(context.Background(), dir, "dev")); err != nil {
+	if err := recoverApply(context.Background(), dir, root, "dev", applyHandlers(context.Background(), dir, root, "dev")); err != nil {
 		t.Fatal(err)
 	}
 	current, err := passport.Current(dir)

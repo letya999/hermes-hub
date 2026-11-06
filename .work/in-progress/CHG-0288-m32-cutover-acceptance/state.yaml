@@ -2,9 +2,9 @@ schema: 1
 change: CHG-0288
 title: "M32 cutover and acceptance"
 status: in_progress
-branch: chore/merge-m31-m20-into-dev
-updated: 2026-11-05
-phase: design-complete
+branch: feat/m32-integration
+updated: 2026-11-07
+phase: acceptance-in-progress
 adr: [ADR-0095, ADR-0097]
 spec: [SPEC-0097, SPEC-0098, SPEC-0099]
 requirements: []
@@ -14,7 +14,7 @@ github_milestone: "M32 MVP — Passports, Memory, and Automation in ToolHub"
 github_milestone_number: 43
 github_issues: [526, 527]
 design_status: accepted
-implementation_status: not_started
+implementation_status: in_progress
 slices: {}
 historical_slices:
   S7.1-remove: not_started
@@ -22,12 +22,14 @@ historical_slices:
   S7.3-accept: not_started
 validation:
   documents: passed_2026-11-05
-  just_check: stale_after_unregistered_definition_refusal_2026-11-05
+  just_check: passed_2026-11-07
+  affected_tests: passed_2026-11-07
   go_check: stale_after_unregistered_definition_refusal_2026-11-05
   docker_check: stale_after_unregistered_definition_refusal_2026-11-05
   red_team: not_started
-  live_acceptance: not_started
+  live_acceptance: partial_2026-11-07
 evidence:
+  - "2026-11-07 #526 partial real-container acceptance: two synthetic managed users completed concurrent private runs; ToolHub remember, own recall and foreign-run denial passed while running. First-apply ordering, shared cliproxy service targeting and stale sibling bearer enrollment were fixed with regression tests. Exact image/source identity, fixture override and remaining criteria are in evidence-526.md. This is not full #526 or remote CI acceptance."
   - "2026-11-05 bounded-plan verification: devcheck docs passed (exit 0); 17 current planning files passed relative-link/whitespace checks and the 20-issue dependency graph is acyclic. Milestone 43 and all 20 English issue contracts were synchronized. just check was invoked but intentionally interrupted during the test leg (exit 1); no full-suite or coverage pass claimed. No production code, worktree, commit or deployment created by this planning update."
   - "2026-11-05 decomposition update: ADR-0097 and SPEC-0096/0097/0098/0099 define current small assignments; foundation packages/verifies only. First wave is #509/#513/#521. #508 requires #511/#512; #522 requires #521/#514; #523 performs the sole automation owner switch. No new implementation or gate pass claimed; historical evidence below retains its original snapshot."
   - "2026-11-05 GitHub planning: milestone 43 and issues 526, 527 created. GitHub owns current issue status; parallel-work.md defines foundation/worktree assignments. Foundation and implementation worktrees are not created by this planning session."
@@ -41,7 +43,7 @@ evidence:
   - "2026-11-05 continuation: deployment configuration contract passed in just check, but the full gate exited 1 on parallel Windows process failures (diagnostics.test.exe Access is denied and ToolHub scratch input materialization). Isolated packages and just go-check passed; own Go coverage 85.99%. Docker gate is running. No live acceptance or catalog rebind/respawn is claimed."
   - "2026-11-05 follow-up: unit packages repaired and stack/hubctl/migration/passport/passportview/reconcile pass; just check still fails all eight deployment-contract cases. Follow-up audit supersedes old open statuses; plan/handoff updated, devcheck docs passed. No stage acceptance claimed."
   - "2026-11-05: Cross-stage audit and handoff recorded under CHG-0281. Acceptance plan strengthened for real process exit status, clean passport-only lifecycle, exact-profile rollback and actual ToolHub memory execution. Stage implementation remains not_started."
-remaining: [implementation, quality_gates, live_acceptance]
+remaining: [acceptance_526, implementation_527, quality_gates, live_acceptance]
 limitations:
   - "Unfinished ownership/authority changes prevent acceptance; full just check success, current-tree coverage/Docker gate after the org-policy source edit, catalog rebind and two-user live provider checks remain unverified. The previous tree passed own Go coverage 85.98% and the Docker gate with local fixtures."
 

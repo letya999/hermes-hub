@@ -101,8 +101,8 @@ func TestEnrollSiblingRuntimeTokens(t *testing.T) {
 	if !ok || bob.PrincipalID != "bob" || bob.ContextID != "bob" || bob.RuntimeID != "bob" || bob.ConversationID != "toolhub" || bob.DeliveryTargetID != "toolhub" || bob.Schema != identity.Schema {
 		t.Fatalf("sibling envelope=%+v present=%v", bob, ok)
 	}
-	if _, ok := got[carol]; !ok || got[carol].PrincipalID != "carol" {
-		t.Fatal("unknown principal dropped")
+	if _, ok := got[carol]; ok {
+		t.Fatal("removed sibling token retained")
 	}
 	settings, err := ReadEnvironment(sibling, "prod")
 	if err != nil {
@@ -121,6 +121,15 @@ func TestEnrollSiblingRuntimeTokens(t *testing.T) {
 	}
 	if string(again) != string(kept) {
 		t.Fatal("unchanged enrollment rewrote the file")
+	}
+	if err := os.Rename(sibling, filepath.Join(root, "retired-bob")); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnrollSiblingRuntimeTokens(owner, "prod"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("removed sibling bearer remained enrolled")
 	}
 
 	for _, envelope := range got {
