@@ -144,14 +144,7 @@ func New(config Config) (*Gateway, error) {
 	synthesizer := serviceSynthesizer(config.TTSURL, config.TTSAuth, config.TTSVoice, config.TTSVoices)
 	runner := Runner(HermesRunner{Command: config.HermesCommand})
 	if config.RuntimeURL != "" {
-		owner := ""
-		for _, u := range config.Users {
-			if u.Enabled {
-				owner = u.ID
-				break
-			}
-		}
-		runner = HTTPRunner{URL: config.RuntimeURL, Auth: config.RuntimeAuth, Spool: spool, JobsAPI: config.Supervised, Voice: synthesizer != nil, VaultDir: config.VaultDir, Owner: owner}
+		runner = HTTPRunner{URL: config.RuntimeURL, Auth: config.RuntimeAuth, Spool: spool, JobsAPI: config.Supervised, Voice: synthesizer != nil}
 	}
 	restart := runtimeRestart(config.RuntimeURL, config.RuntimeAuth, config.Supervised)
 	g := &Gateway{config: config, users: users, slackUsers: slackUsers, spool: spool, api: newTelegramAPI(config.APIBaseURL, config.TelegramToken, config.PollTimeout+10*time.Second), runner: runner, restart: restart, now: time.Now, transcriber: serviceTranscriber(config.STTURL, config.STTAuth, config.STTTimeout), synthesizer: synthesizer, forms: formRegistry{m: map[string]credentialForm{}}}

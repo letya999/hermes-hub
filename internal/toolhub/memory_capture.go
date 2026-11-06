@@ -29,38 +29,9 @@ func (g *Gateway) serveMemoryCapture(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "browser origins forbidden", http.StatusForbidden)
 		return
 	}
-	// A model bearer cannot mint a transport fact. Only the communication
-	// service bearer may select an enrolled principal.
-	principal := r.Header.Get("X-Hub-Principal")
-	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	ok := strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") && g.ControlToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(g.ControlToken)) == 1 && identity.ValidID(principal)
+	// A model bearer cannot mint a transport fact.
+	auth, ok := g.controlPrincipal(r)
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	var auth identity.Envelope
-	for attempt := 0; attempt < 2; attempt++ {
-		ambiguous := false
-		g.mu.Lock()
-		for _, candidate := range g.Tokens {
-			if candidate.PrincipalID == principal {
-				if auth.PrincipalID != "" && (auth.Environment != candidate.Environment || auth.ContextID != candidate.ContextID || auth.RuntimeID != candidate.RuntimeID) {
-					ambiguous = true
-					break
-				}
-				auth = candidate
-			}
-		}
-		g.mu.Unlock()
-		if ambiguous {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		if auth.PrincipalID != "" || !g.reloadTokens() {
-			break
-		}
-	}
-	if auth.PrincipalID == "" {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -89,6 +60,39 @@ func (g *Gateway) serveMemoryCapture(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": status})
+}
+
+// controlPrincipal authenticates a trusted in-stack service bearer and
+// resolves its asserted principal through ToolHub's enrolled token table.
+func (g *Gateway) controlPrincipal(r *http.Request) (identity.Envelope, bool) {
+	principal := r.Header.Get("X-Hub-Principal")
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || g.ControlToken == "" ||
+		subtle.ConstantTimeCompare([]byte(token), []byte(g.ControlToken)) != 1 || !identity.ValidID(principal) {
+		return identity.Envelope{}, false
+	}
+	var auth identity.Envelope
+	for attempt := 0; attempt < 2; attempt++ {
+		ambiguous := false
+		g.mu.Lock()
+		for _, candidate := range g.Tokens {
+			if candidate.PrincipalID == principal {
+				if auth.PrincipalID != "" && (auth.Environment != candidate.Environment || auth.ContextID != candidate.ContextID || auth.RuntimeID != candidate.RuntimeID) {
+					ambiguous = true
+					break
+				}
+				auth = candidate
+			}
+		}
+		g.mu.Unlock()
+		if ambiguous {
+			return identity.Envelope{}, false
+		}
+		if auth.PrincipalID != "" || !g.reloadTokens() {
+			break
+		}
+	}
+	return auth, auth.PrincipalID != ""
 }
 
 // memoryCapture resolves the authenticated principal's vault through the

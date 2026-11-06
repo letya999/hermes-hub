@@ -18,8 +18,8 @@ implementation_status: in_progress
 slices:
   M1: committed_205062ce
   M2: committed_028f0b2a
-  M4: implemented_scoped_tests_passed
-  M5: not_started
+  M4: committed_fcc6fd89
+  M5: in_progress
 historical_slices:
   S4.1-vault: in_progress
   S4.2-events: not_started

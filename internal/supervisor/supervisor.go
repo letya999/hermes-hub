@@ -264,6 +264,7 @@ type persistedRuntime struct {
 
 type jobRecord struct {
 	CaptureContext    api.RunContext             `json:"capture_context,omitempty"`
+	AdmissionID       string                     `json:"admission_id,omitempty"`
 	RequestTextSHA256 string                     `json:"request_text_sha256,omitempty"`
 	OperationalEpoch  uint64                     `json:"operational_epoch,omitempty"`
 	Dispatching       bool                       `json:"dispatching,omitempty"`

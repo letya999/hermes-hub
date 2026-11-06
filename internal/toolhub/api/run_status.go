@@ -22,6 +22,7 @@ import (
 // compared against it; they never fill the context.
 type RunContext struct {
 	JobID     string `json:"job_id"`
+	AdmissionID string `json:"admission_id,omitempty"`
 	RunID     string `json:"run_id"`
 	SessionID string `json:"session_id"`
 	// RuntimeGeneration is the supervisor-bound generation the job was
