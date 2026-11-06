@@ -55,7 +55,8 @@ func (m *Manager) beginJob(request hubruntime.ExecuteRequest) (hubruntime.Execut
 	}
 	metadata := request
 	metadata.Text = ""
-	m.jobs[key] = jobRecord{OperationalEpoch: hold.Epoch, Request: metadata, Fingerprint: fingerprint, Status: "running", Phase: phaseAccepted, UpdatedAt: time.Now().UTC()}
+	textHash := sha256.Sum256([]byte(request.Text))
+	m.jobs[key] = jobRecord{OperationalEpoch: hold.Epoch, Request: metadata, RequestTextSHA256: hex.EncodeToString(textHash[:]), Fingerprint: fingerprint, Status: "running", Phase: phaseAccepted, UpdatedAt: time.Now().UTC()}
 	if err := m.persistLocked(); err != nil {
 		delete(m.jobs, key)
 		return hubruntime.ExecuteResponse{}, false, err

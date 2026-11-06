@@ -1,6 +1,6 @@
 ---
 description: communication-hub — channel gateway: Telegram/Slack adapters, inbound routing, credential forms, spool, control API.
-last_verified: 2026-11-04
+last_verified: 2026-11-06
 ---
 
 # communication-hub
@@ -40,6 +40,16 @@ everything entering or leaving the human conversation. Listens
   past the 5-minute aging bound. Control deliveries (approvals, marked
   control sends) claim ahead of ordinary replies and are exempt from the
   ordinary outbox cap.
+- **Memory capture outbox** (`capture_outbox.go`): accepted jobs and completed
+  run receipts mint durable `capture/` records before their transport handoff
+  completes. The pump posts them to ToolHub with the communication service
+  bearer and the enrolled principal; a lost acknowledgement or outage leaves
+  the event pending. Settlement is recorded under `capture-acks/` before the
+  outbox copy is removed; settled markers age out only after their jobs.
+  Startup rebuilds missing events from jobs and
+  terminal receipts created with capture enabled. Communication no longer
+  writes captured turns or replies into the vault; the separate nightly
+  memory worker remains pending its own ToolHub migration.
 
 ## Key env
 

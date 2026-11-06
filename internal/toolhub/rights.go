@@ -49,7 +49,14 @@ func (s *Store) decideCoreLocked(principal string, ceiling []api.RightRule, enfo
 	if !ok {
 		return api.RightDecision{Reason: "unknown capability.operation"}, nil
 	}
-	epoch := s.rightsEpochLocked()
+	ledger, err := s.loadRightsLedgerLocked()
+	if err != nil {
+		return api.RightDecision{Reason: "rights ledger unavailable"}, err
+	}
+	var epoch uint64
+	if ledger != nil {
+		epoch = ledger.Revision
+	}
 	if enforceCeiling {
 		inside := slices.Contains(ceiling, api.RightRule{Capability: capability, Operation: operation})
 		if !inside {
@@ -64,7 +71,7 @@ func (s *Store) decideCoreLocked(principal string, ceiling []api.RightRule, enfo
 	if row.Subject == "self" && scope != "" && row.Scope != "path" && row.Scope != "model" && row.Scope != "toolset" && row.Scope != "skill" && row.Scope != "connector" && row.Scope != "service" && row.Scope != "channel" && row.Scope != "log" {
 		return api.RightDecision{Reason: "right does not accept a scope", Epoch: epoch}, nil
 	}
-	grant := s.rightGrantLocked(principal, capability, operation, scope, row, now)
+	grant := rightGrant(ledger, principal, capability, operation, scope, row, now)
 	if grant == nil {
 		return api.RightDecision{Reason: "no active grant", Epoch: epoch}, nil
 	}
@@ -154,12 +161,11 @@ func (s *Store) Decide(auth identity.Envelope, capability, operation, scope stri
 	return s.decideLocked(auth, capability, operation, scope, now.UTC())
 }
 
-// rightGrantLocked finds the strongest active ledger grant covering the call
+// rightGrant finds the strongest active ledger grant covering the call
 // scope: exact scope wins over an unscoped grant; a cross-subject call needs
 // a grant naming the target scope exactly.
-func (s *Store) rightGrantLocked(principal, capability, operation, scope string, row api.RightOperation, now time.Time) *api.RightGrant {
-	ledger, err := s.loadRightsLedgerLocked()
-	if ledger == nil || err != nil {
+func rightGrant(ledger *api.Governance, principal, capability, operation, scope string, row api.RightOperation, now time.Time) *api.RightGrant {
+	if ledger == nil {
 		return nil
 	}
 	var best *api.RightGrant
@@ -189,16 +195,6 @@ func (s *Store) loadRightsLedgerLocked() (*api.Governance, error) {
 		return nil, nil
 	}
 	return s.RightsLedger()
-}
-
-// rightsEpochLocked is the governance revision the verdict reads: revokes and
-// grants both advance it, so a caller can tell when the rights ground moved.
-func (s *Store) rightsEpochLocked() uint64 {
-	ledger, err := s.loadRightsLedgerLocked()
-	if ledger == nil || err != nil {
-		return 0
-	}
-	return ledger.Revision
 }
 
 // GrantsRight reports whether Decide would allow the call — the bool form

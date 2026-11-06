@@ -73,6 +73,15 @@ tool call crosses. Listens `0.0.0.0:8090`, host-bound to `127.0.0.1:8090`.
   The in-runtime `handler:memory` path no longer serves `memory_search`
   (`memory_card` still owns vault writes) and the runtime container carries
   no vault mount.
+- **Trusted capture** (`memory_capture.go`): `/v1/memory-capture` admits only
+  the communication service bearer plus an enrolled principal. It compares
+  the event's user, scope, trigger, channel, flags, run ID and content hash
+  with supervisor's durable job fact; completed replies use the historical
+  `completed` record, while model memory calls still need a live private run.
+  The vault write is confined to the authenticated user's binding and
+  rechecks published `memory.enabled` and the `memory.remember` grant under
+  that user's lock. Producer/event ID is the durable dedup key. Denied and
+  sensitive events never write a leaf.
 - **Multi-tenant auth**: `toolhub-tokens.json` (`HUB_TOOLHUB_TOKENS_FILE`)
   maps sibling-space bearers to full identity envelopes; render/supervisor
   write each sibling's `HUB_RUNTIME_AUTH` in place (same inode → live bind

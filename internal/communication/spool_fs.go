@@ -11,7 +11,7 @@ var spoolRecordDirs = map[string]bool{
 	"outbox": true, "mappings": true, "conversations": true,
 	"event-state": true, "run-events": true, "provider-dedup": true,
 	"occurrences": true, "schedules": true, "tasks": true,
-	"callbacks": true, "inbound": true, "watchers": true,
+	"callbacks": true, "inbound": true, "watchers": true, "capture": true, "capture-acks": true,
 	"digests": true, "goals": true, "assignments": true,
 	"approval-messages": true,
 }

@@ -125,6 +125,7 @@ func (g *Gateway) Handler() (http.Handler, error) {
 	mux.Handle("/v1/confirmations", http.HandlerFunc(g.serveHumanConfirmation))
 	mux.Handle("/v1/tool-call", http.HandlerFunc(g.serveToolCall))
 	mux.Handle("/v1/cli-jobs/release", http.HandlerFunc(g.serveCLIJobRelease))
+	mux.Handle("/v1/memory-capture", http.HandlerFunc(g.serveMemoryCapture))
 	mux.Handle("/v1/rights/decide", http.HandlerFunc(g.serveRightsDecide))
 	mux.Handle("/v1/admin/onboardings", http.HandlerFunc(g.serveAdminOnboardings))
 	mux.Handle("/v1/admin/diagnose/", http.HandlerFunc(g.serveAdminDiagnose))

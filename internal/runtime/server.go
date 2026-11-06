@@ -40,6 +40,10 @@ type ExecuteRequest struct {
 	IdempotencyKey   string `json:"idempotency_key"`
 	Text             string `json:"text"`
 	InboundID        string `json:"inbound_id,omitempty"`
+	Sensitive        bool   `json:"sensitive,omitempty"`
+	Untrusted        bool   `json:"untrusted,omitempty"`
+	Assignment       bool   `json:"assignment,omitempty"`
+	Probe            bool   `json:"probe,omitempty"`
 	// Instructions is the hub-pinned presentation guidance for this admitted
 	// run (ephemeral system prompt upstream). It is never a synthetic user
 	// message and never carries authorization.

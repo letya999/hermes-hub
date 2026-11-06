@@ -2,6 +2,8 @@ package supervisor
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"github.com/letya999/hermes-hub/internal/identity"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
@@ -228,7 +230,7 @@ func TestJobStatusServesRunContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1"), JobID: "run-ctx", IdempotencyKey: "run-ctx",
-		OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message"}
+		OrganizationID: "personal", UserID: "alice", ActorID: "alice", ScopeID: "user:alice", Channel: "telegram_bot", Trigger: "message", Text: "capture marker", Untrusted: true}
 	if _, _, err := m.beginJob(request); err != nil {
 		t.Fatal(err)
 	}
@@ -272,4 +274,35 @@ func TestJobStatusServesRunContext(t *testing.T) {
 	if got := get(); got["current_generation"] != "replacement-generation" || got["runtime_generation"] != runtime.Generation {
 		t.Fatalf("stale generation not exposed: %v", got)
 	}
+	m.mu.Lock()
+	m.items[runtimeKey(binding(ctxRoot))].Generation = runtime.Generation
+	m.mu.Unlock()
+	completed := hubruntime.ExecuteResponse{JobID: request.JobID, RunID: "run-1", SessionID: "session-1", RuntimeGeneration: runtime.Generation, Status: "completed", Text: "reply marker"}
+	if err := m.finishJobGeneration(request, completed, "completed", runtime.Generation); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	record := m.jobs[request.JobID]
+	record.UpdatedAt = time.Now().Add(-25 * time.Hour)
+	m.jobs[request.JobID] = record
+	m.mu.Unlock()
+	m.CompactJobs(time.Now())
+	old := get()
+	requestHash, responseHash := sha256.Sum256([]byte(request.Text)), sha256.Sum256([]byte(completed.Text))
+	if old["run_id"] != "run-1" || old["status"] != "completed" || old["user_id"] != "alice" || old["untrusted"] != true ||
+		old["text_sha256"] != hex.EncodeToString(requestHash[:]) || old["response_sha256"] != hex.EncodeToString(responseHash[:]) {
+		t.Fatalf("compacted capture fact unavailable")
+	}
+	if strings.Contains(mustJSON(t, old), request.Text) || strings.Contains(mustJSON(t, old), completed.Text) {
+		t.Fatal("compacted status exposed content")
+	}
+}
+
+func mustJSON(t *testing.T, value any) string {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }

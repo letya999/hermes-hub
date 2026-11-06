@@ -223,11 +223,6 @@ func (g *Gateway) worker(ctx context.Context) {
 					log.Printf("gateway job_id=%q status=uncertain reason=terminal_handoff", job.ID)
 					continue
 				}
-				if cerr := g.captureReply(*job, response); cerr != nil {
-					// The reply still reaches the owner — capture is audit;
-					// a vault hiccup must not eat deliveries (SPEC-0085 R2.1).
-					log.Printf("memory capture failed for job %s: %v", job.ID, cerr)
-				}
 				if job.Trigger == "cron" {
 					if o, ok := g.occurrenceFor(job.ID); ok {
 						_ = g.spool.ClearRoutineFailure(o.ScheduleID)

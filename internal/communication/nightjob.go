@@ -49,7 +49,7 @@ func nightDue(now time.Time, rollupAt, lastRunDay string) bool {
 // tickNightRollup fires the gated rollup once the space-local clock
 // crosses memory.rollup_time (SPEC-0085 R5.1).
 func (g *Gateway) tickNightRollup(now time.Time) {
-	if g.memory == nil || g.config.VaultDir == "" {
+	if g.config.VaultDir == "" {
 		return
 	}
 	marker := filepath.Join(g.config.VaultDir, "runtime", "memory", "night", "last-run.txt")

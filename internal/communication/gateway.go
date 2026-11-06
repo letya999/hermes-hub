@@ -27,16 +27,16 @@ import (
 	"github.com/letya999/hermes-hub/internal/memory/night"
 	"github.com/letya999/hermes-hub/internal/routines"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
-	"github.com/letya999/hermes-hub/internal/vault"
 )
 
 type Gateway struct {
 	watchHTTP    *http.Client
+	captureHTTP  *http.Client // capture-post transport; nil → default client
+	captureKick  chan struct{}
 	config       Config
 	users        map[int64]User
 	slackUsers   map[string]User
 	spool        *Spool
-	memory       *vault.Daily    // nil unless memory_vault mounts /vault
 	nightRelay   night.RelayFunc // nil → production model-relay binding
 	api          TelegramAPI
 	slack        SlackAPI
@@ -171,16 +171,16 @@ func New(config Config) (*Gateway, error) {
 		spool.refreshHolds = g.refreshHolds
 		spool.holdsSnapshot = g.holdsSnapshot
 	}
-	if config.VaultDir != "" {
-		// The gateway mounts the vault read-only for CORE injection; capture
-		// writes go through the governed writer which enforces confinement.
-		// Owner timezone comes from the TZ env the stack renders.
-		daily, err := vault.OpenDaily(config.VaultDir, time.Local)
-		if err != nil {
-			return nil, fmt.Errorf("memory vault capture: %w", err)
-		}
-		g.memory = daily
+	if config.ToolHubURL != "" {
+		// Accepted turns and completed runs are durable outbox events —
+		// ToolHub is the only vault writer (SPEC-0098 M4). No ToolHub means
+		// no memory surface at all, so nothing is produced.
+		g.captureKick = make(chan struct{}, 1)
 		spool.onAccepted = g.captureTurn
+		spool.onCompleted = g.captureCompletedLocked
+		if err := g.recoverCaptureOutbox(); err != nil {
+			return nil, fmt.Errorf("memory capture recovery: %w", err)
+		}
 	}
 	if config.TelegramAuthEnabled {
 		// Enabled by default on telegram stacks: missing Broker/form-origin
@@ -233,6 +233,11 @@ func (g *Gateway) Run(ctx context.Context) error {
 	defer unlock()
 	if err := g.spool.recover(); err != nil {
 		return err
+	}
+	if g.captureKick != nil {
+		if err := g.recoverCaptureOutbox(); err != nil {
+			return err
+		}
 	}
 	workerCtx, cancel := context.WithCancel(ctx)
 	g.commandCtx = workerCtx
@@ -304,10 +309,22 @@ func (g *Gateway) Run(ctx context.Context) error {
 		defer close(deliveryDone)
 		g.deliveryLoop(workerCtx)
 	}()
+	captureDone := make(chan struct{})
+	if g.captureKick != nil {
+		// The outbox drain lives with the other loops: it sweeps what a
+		// restart or outage left pending and empties on kick.
+		go func() {
+			defer close(captureDone)
+			g.capturePump(workerCtx)
+		}()
+	} else {
+		close(captureDone)
+	}
 	defer func() {
 		cancel()
 		workerWG.Wait()
 		<-deliveryDone
+		<-captureDone
 		<-controlDone
 		<-proactiveDone
 		<-progressDone

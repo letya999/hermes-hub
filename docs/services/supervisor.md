@@ -1,6 +1,6 @@
 ---
 description: supervisor — per-space runtime spawner/manager; owns warm pools, docker exec agent-tools path, control channel.
-last_verified: 2026-11-05
+last_verified: 2026-11-06
 ---
 
 # supervisor
@@ -65,6 +65,11 @@ spaces dir at `/spaces`, project `config/` read-only, and the host
   state or manager config — the caller's job id selects the record and fills
   nothing in it, so a superseded generation or a compacted record reports
   itself rather than answering as live.
+  The same status projection supplies the capture verifier with the stored
+  user, sensitivity/provenance flags and SHA-256 hashes of request and reply
+  text. Prompt text itself is absent from the durable request record. After
+  terminal compaction a minimal historical capture context retains those
+  fields and the exact run ID without retaining either text body.
 - `/v1/runtimes` entries expose a read-only `consumers` projection (lease
   kind, owner class, expiry) and `wait_reason` for expected waits — parked
   approvals/streams are reported, not remediated. Genuine anomalies append

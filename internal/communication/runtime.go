@@ -209,6 +209,10 @@ func (r HTTPRunner) RunOutcome(ctx context.Context, job Job) (RunOutcome, error)
 		IdempotencyKey:   job.IdempotencyKey,
 		Text:             job.Text,
 		InboundID:        job.InboundID,
+		Sensitive:        job.Sensitive,
+		Untrusted:        job.Untrusted,
+		Assignment:       job.AssignmentID != "",
+		Probe:            job.Probe,
 		Instructions:     instructions,
 	})
 	if err != nil {

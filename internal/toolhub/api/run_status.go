@@ -34,6 +34,13 @@ type RunContext struct {
 	ScopeID           string            `json:"scope_id"`
 	Trigger           string            `json:"trigger"`
 	Channel           string            `json:"channel"`
+	UserID            string            `json:"user_id"`
+	TextSHA256        string            `json:"text_sha256"`
+	ResponseSHA256    string            `json:"response_sha256"`
+	Sensitive         bool              `json:"sensitive"`
+	Untrusted         bool              `json:"untrusted"`
+	Assignment        bool              `json:"assignment"`
+	Probe             bool              `json:"probe"`
 	Envelope          identity.Envelope `json:"identity"`
 }
 

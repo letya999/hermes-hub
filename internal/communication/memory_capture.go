@@ -6,51 +6,59 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/memory"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
-// Memory capture (SPEC-0085 R2): every accepted turn and delivered reply is
-// appended verbatim to the space's daily leaf, with provenance the hub
-// stamps — never the model, never the transport body. Entry ids derive from
-// the job id so a spool retry can never double-capture.
+// Memory capture (SPEC-0098 M4): non-sensitive accepted turns and completed
+// runs enter the durable outbox; ToolHub classifies and commits them.
 
 // captureTurn is the spool's onAccepted hook: it runs after the job file is
-// durable and before Enqueue returns — persist-before-ack. The leaf write is
-// synchronous so a kill after acceptance still finds the turn on disk.
-// The vault belongs to the owning space: on a shared gateway only the
-// owner's jobs feed its lanes — sibling turns stay out of the owner's
-// leaves entirely (SPEC-0085 R2.1).
+// durable and before Enqueue returns — persist-before-ack. The event lands
+// in the durable outbox; ToolHub is the only vault writer (SPEC-0098 M4).
+// Every enrolled principal produces events — the endpoint resolves that
+// principal's own vault, so a sibling's turn feeds the sibling's lane.
 func (g *Gateway) captureTurn(job Job) error {
-	if g.memory == nil || job.UserID != g.nightOwner().ID {
+	if job.Sensitive {
 		return nil
 	}
-	return g.memory.Append(memory.Entry{
-		ID:         "turn-" + job.ID,
-		Kind:       job.MemoryKind(),
-		Provenance: job.MemoryTurnProvenance(),
-		Audience:   job.MemoryAudience(),
-		SourceRef:  job.ID,
-		Body:       job.Text,
-		ObservedAt: job.CreatedAt,
-	}, job.Channel)
+	if err := g.spool.writeCaptureLocked(captureEventForTurn(job)); err != nil {
+		return err
+	}
+	g.kickCapture()
+	return nil
 }
 
-// captureReply records the agent's response under the same job — provenance
-// is always agent; kind follows the turn's trigger for audit pairing.
-func (g *Gateway) captureReply(job Job, response string) error {
-	if g.memory == nil || job.Sensitive || job.UserID != g.nightOwner().ID {
+// captureReply records the completed-run fact: the durable outbox event
+// carries the run id from the terminal outcome, and ToolHub verifies it
+// against the lifecycle record before committing. Sensitive exchanges stay
+// out of durable memory entirely — no event is ever minted for them.
+func (g *Gateway) captureReply(job Job, outcome commodel.RunOutcome) error {
+	if job.Sensitive || outcome.RunID == "" {
 		return nil // sensitive exchanges stay out of durable memory entirely
 	}
-	return g.memory.Append(memory.Entry{
-		ID:         "reply-" + job.ID,
-		Kind:       job.MemoryKind(),
-		Provenance: memory.ProvenanceAgent,
-		Audience:   job.MemoryAudience(),
-		SourceRef:  job.ID,
-		Body:       response,
-		ObservedAt: g.now().UTC(),
-	}, job.Channel)
+	if err := g.spool.EnqueueCapture(captureEventForReply(job, outcome, outcome.Text, g.now())); err != nil {
+		return err
+	}
+	g.kickCapture()
+	return nil
+}
+
+func (g *Gateway) captureCompletedLocked(job Job, outcome commodel.RunOutcome) error {
+	if !job.CaptureExpected || job.Sensitive || outcome.RunID == "" {
+		return nil
+	}
+	if settled, err := g.spool.captureSettled("reply-" + job.ID); err == nil && settled {
+		return nil
+	} else if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := g.spool.writeCaptureLocked(captureEventForReply(job, outcome, outcome.Text, g.now())); err != nil {
+		return err
+	}
+	g.kickCapture()
+	return nil
 }
 
 // runScopeFile is the audience stamp for in-flight runs. The gateway

@@ -12,6 +12,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/passportview"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 	"github.com/letya999/hermes-hub/internal/stack"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"net"
 	"net/http"
 	"os"
@@ -262,20 +263,22 @@ type persistedRuntime struct {
 }
 
 type jobRecord struct {
-	OperationalEpoch uint64                     `json:"operational_epoch,omitempty"`
-	Dispatching      bool                       `json:"dispatching,omitempty"`
-	CancelRequested  bool                       `json:"cancel_requested,omitempty"`
-	Controls         map[string]controlRecord   `json:"controls,omitempty"`
-	ApprovalDeadline time.Time                  `json:"approval_deadline,omitempty"`
-	Request          hubruntime.ExecuteRequest  `json:"request"`
-	Fingerprint      string                     `json:"fingerprint"`
-	Response         hubruntime.ExecuteResponse `json:"response"`
-	Status           string                     `json:"status"`
-	Phase            string                     `json:"phase,omitempty"`
-	Unconfirmed      bool                       `json:"unconfirmed,omitempty"`
-	UnconfirmedSince time.Time                  `json:"unconfirmed_since,omitempty"`
-	Generation       string                     `json:"generation,omitempty"`
-	UpdatedAt        time.Time                  `json:"updated_at"`
+	CaptureContext    api.RunContext             `json:"capture_context,omitempty"`
+	RequestTextSHA256 string                     `json:"request_text_sha256,omitempty"`
+	OperationalEpoch  uint64                     `json:"operational_epoch,omitempty"`
+	Dispatching       bool                       `json:"dispatching,omitempty"`
+	CancelRequested   bool                       `json:"cancel_requested,omitempty"`
+	Controls          map[string]controlRecord   `json:"controls,omitempty"`
+	ApprovalDeadline  time.Time                  `json:"approval_deadline,omitempty"`
+	Request           hubruntime.ExecuteRequest  `json:"request"`
+	Fingerprint       string                     `json:"fingerprint"`
+	Response          hubruntime.ExecuteResponse `json:"response"`
+	Status            string                     `json:"status"`
+	Phase             string                     `json:"phase,omitempty"`
+	Unconfirmed       bool                       `json:"unconfirmed,omitempty"`
+	UnconfirmedSince  time.Time                  `json:"unconfirmed_since,omitempty"`
+	Generation        string                     `json:"generation,omitempty"`
+	UpdatedAt         time.Time                  `json:"updated_at"`
 }
 
 // Serve runs the always-on control-plane endpoint. It never mounts or exposes
