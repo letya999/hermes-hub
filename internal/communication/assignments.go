@@ -1,12 +1,10 @@
 package communication
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
-	"errors"
 	"net/http"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -26,9 +24,10 @@ func (g *Gateway) handleAssignments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodGet {
-		items, err := g.spool.rt.ListAssignments(caller)
+		var items []commodel.Assignment
+		err := g.automationCall(r.Context(), caller, "assignment.list", nil, &items)
 		if err != nil {
-			http.Error(w, "list failed", http.StatusInternalServerError)
+			http.Error(w, "list failed", automationStatus(err))
 			return
 		}
 		writeJSON(w, items)
@@ -65,15 +64,16 @@ func (g *Gateway) handleAssignments(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
-	created, _, err := g.spool.rt.CreateAssignment(item, caller)
+	var created commodel.Assignment
+	err := g.automationCall(r.Context(), caller, "assignment.create", map[string]any{"assignment": item}, &created)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, "assignment create failed", automationStatus(err))
 		return
 	}
 	if req.Apply {
-		created, err = g.spool.rt.ApplyAssignment(created.AssignmentID, caller)
+		err = g.automationCall(r.Context(), caller, "assignment.apply", map[string]any{"id": created.AssignmentID}, &created)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			http.Error(w, "assignment apply failed", automationStatus(err))
 			return
 		}
 	}
@@ -93,7 +93,8 @@ func (g *Gateway) handleAssignmentItem(w http.ResponseWriter, r *http.Request) {
 		g.assignmentPlanDryRun(w, r, caller)
 		return
 	}
-	item, err := g.spool.rt.LoadAssignment(id, caller)
+	var item commodel.Assignment
+	err := g.automationCall(r.Context(), caller, "assignment.load", map[string]any{"id": id}, &item)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -112,12 +113,8 @@ func (g *Gateway) handleAssignmentItem(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "revision conflict", http.StatusConflict)
 			return
 		}
-		if err := g.spool.rt.DeleteAssignment(id, caller, *control.ExpectedRevision); err != nil {
-			status := http.StatusBadRequest
-			if errors.Is(err, routines.ErrRoutineRevision) {
-				status = http.StatusConflict
-			}
-			http.Error(w, err.Error(), status)
+		if err := g.automationCall(r.Context(), caller, "assignment.delete", map[string]any{"id": id, "expected_revision": *control.ExpectedRevision}, nil); err != nil {
+			http.Error(w, "assignment delete failed", automationStatus(err))
 			return
 		}
 		writeJSON(w, map[string]string{"deleted": id})
@@ -152,26 +149,25 @@ func (g *Gateway) handleAssignmentItem(w http.ResponseWriter, r *http.Request) {
 	}
 	switch action {
 	case "apply":
-		item, err = g.spool.rt.ApplyAssignment(id, caller, *control.ExpectedRevision)
+		err = g.automationCall(r.Context(), caller, "assignment.apply", map[string]any{"id": id, "expected_revision": *control.ExpectedRevision}, &item)
 	case "pause":
-		err = g.spool.rt.PauseAssignment(id, caller, *control.ExpectedRevision)
+		err = g.automationCall(r.Context(), caller, "assignment.pause", map[string]any{"id": id, "expected_revision": *control.ExpectedRevision}, nil)
 	case "resume":
-		err = g.spool.rt.ResumeAssignment(id, caller, *control.ExpectedRevision)
+		err = g.automationCall(r.Context(), caller, "assignment.resume", map[string]any{"id": id, "expected_revision": *control.ExpectedRevision}, nil)
 	case "cancel":
-		err = g.spool.rt.CancelAssignment(id, caller, *control.ExpectedRevision)
+		err = g.automationCall(r.Context(), caller, "assignment.cancel", map[string]any{"id": id, "expected_revision": *control.ExpectedRevision}, nil)
 	case "complete":
-		item, err = g.spool.rt.CompleteAssignment(id, caller, *control.ExpectedRevision)
+		err = g.automationCall(r.Context(), caller, "assignment.complete", map[string]any{"id": id, "expected_revision": *control.ExpectedRevision}, &item)
 	}
 	if err != nil {
-		status := http.StatusBadRequest
-		if errors.Is(err, routines.ErrRoutineRevision) {
-			status = http.StatusConflict
-		}
-		http.Error(w, err.Error(), status)
+		http.Error(w, "assignment control failed", automationStatus(err))
 		return
 	}
 	if action != "apply" {
-		item, _ = g.spool.rt.LoadAssignment(id, caller)
+		if err := g.automationCall(r.Context(), caller, "assignment.load", map[string]any{"id": id}, &item); err != nil {
+			http.Error(w, "assignment state unavailable", automationStatus(err))
+			return
+		}
 	}
 	writeJSON(w, item)
 }
@@ -189,26 +185,10 @@ func (g *Gateway) assignmentProgress(w http.ResponseWriter, r *http.Request, id 
 		http.Error(w, "invalid progress", http.StatusBadRequest)
 		return
 	}
-	// A progress tool may update only the assignment that produced this
-	// currently running trigger. The job carries immutable engine-stamped
-	// assignment identity; no agent-supplied id can redirect the write.
-	var job Job
-	jobPath := filepath.Join(g.spool.root, "running", spoolFileID(req.JobID)+".json")
-	if raw, err := g.spool.fsys.ReadFile(jobPath); err != nil || json.Unmarshal(raw, &job) != nil || job.ID != req.JobID || job.AssignmentID != id || job.PrincipalID != caller.PrincipalID || job.ContextID != caller.ContextID {
-		http.Error(w, "trigger job unavailable", http.StatusForbidden)
-		return
-	}
-	if item, err := g.spool.rt.LoadAssignment(id, caller); err != nil || item.AppliedRev != job.AssignmentPlanRevision {
-		http.Error(w, "assignment generation changed", http.StatusConflict)
-		return
-	}
-	item, err := g.spool.rt.RecordAssignmentProgress(id, caller, req.ExpectedRevision, req.JobID, req.Summary, req.Finding, req.NextStep, req.Complete)
+	var item commodel.Assignment
+	err := g.automationCall(r.Context(), caller, "assignment.progress", map[string]any{"id": id, "expected_revision": req.ExpectedRevision, "job_id": req.JobID, "summary": req.Summary, "finding": req.Finding, "next_step": req.NextStep, "complete": req.Complete}, &item)
 	if err != nil {
-		status := http.StatusBadRequest
-		if errors.Is(err, routines.ErrRoutineRevision) {
-			status = http.StatusConflict
-		}
-		http.Error(w, err.Error(), status)
+		http.Error(w, "assignment progress failed", automationStatus(err))
 		return
 	}
 	writeJSON(w, item)
@@ -270,15 +250,10 @@ func (g *Gateway) assignmentPlanUpdate(w http.ResponseWriter, r *http.Request, i
 	if req.Grants != nil {
 		grants = *req.Grants
 	}
-	updated, err := g.spool.rt.UpdateAssignmentPlan(id, req.Plan, grants, caller, *req.ExpectedRevision)
+	var updated commodel.Assignment
+	err := g.automationCall(r.Context(), caller, "assignment.plan", map[string]any{"id": id, "plan": req.Plan, "grants": grants, "expected_revision": *req.ExpectedRevision}, &updated)
 	if err != nil {
-		status := http.StatusBadRequest
-		if strings.Contains(err.Error(), "authorization") {
-			status = http.StatusForbidden
-		} else if errors.Is(err, routines.ErrRoutineRevision) {
-			status = http.StatusConflict
-		}
-		http.Error(w, err.Error(), status)
+		http.Error(w, "assignment plan failed", automationStatus(err))
 		return
 	}
 	writeJSON(w, updated)
@@ -287,7 +262,8 @@ func (g *Gateway) assignmentPlanUpdate(w http.ResponseWriter, r *http.Request, i
 // assignmentsCommand answers /assignments (SPEC-0080 R2.5): the owner's
 // standing assignments with state and blocking reasons.
 func (g *Gateway) assignmentsCommand(user User, sender int64, lang locale.Lang) string {
-	items, err := g.spool.rt.ListAssignments(user.Envelope(sender))
+	var items []commodel.Assignment
+	err := g.automationCall(context.Background(), user.Envelope(sender), "assignment.list", nil, &items)
 	if err != nil {
 		return locale.T(lang, "assignment.list-unavailable")
 	}
@@ -319,7 +295,8 @@ func (g *Gateway) assignmentCommand(user User, sender int64, text string, lang l
 	}
 	caller := user.Envelope(sender)
 	id, verb := fields[1], fields[2]
-	item, err := g.spool.rt.LoadAssignment(id, caller)
+	var item commodel.Assignment
+	err := g.automationCall(context.Background(), caller, "assignment.load", map[string]any{"id": id}, &item)
 	if err != nil {
 		return locale.T(lang, "assignment.unavailable")
 	}
@@ -337,13 +314,13 @@ func (g *Gateway) assignmentCommand(user User, sender int64, text string, lang l
 		}
 		return out
 	case "pause":
-		err = g.spool.rt.PauseAssignment(id, caller)
+		err = g.automationCall(context.Background(), caller, "assignment.pause", map[string]any{"id": id}, nil)
 	case "resume":
-		err = g.spool.rt.ResumeAssignment(id, caller)
+		err = g.automationCall(context.Background(), caller, "assignment.resume", map[string]any{"id": id}, nil)
 	case "cancel":
-		err = g.spool.rt.CancelAssignment(id, caller)
+		err = g.automationCall(context.Background(), caller, "assignment.cancel", map[string]any{"id": id}, nil)
 	case "complete":
-		_, err = g.spool.rt.CompleteAssignment(id, caller)
+		err = g.automationCall(context.Background(), caller, "assignment.complete", map[string]any{"id": id}, nil)
 	case "authorize":
 		if len(fields) != 5 || item.Plan == nil {
 			return locale.T(lang, "assignment.authorize-usage")
@@ -353,7 +330,7 @@ func (g *Gateway) assignmentCommand(user User, sender int64, text string, lang l
 		if e1 != nil || e2 != nil {
 			return locale.T(lang, "assignment.bad-limits")
 		}
-		err = g.spool.rt.AuthorizeAssignmentGrants(id, item.Plan.Revision+1, commodel.AssignmentGrants{MaxWakesPerDay: wakes, MaxSources: sources}, caller)
+		err = g.automationCall(context.Background(), caller, "assignment.grants", map[string]any{"id": id, "plan_revision": item.Plan.Revision + 1, "grants": commodel.AssignmentGrants{MaxWakesPerDay: wakes, MaxSources: sources}}, nil)
 	default:
 		return locale.T(lang, "assignment.unknown-verb", verb)
 	}

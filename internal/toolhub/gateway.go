@@ -318,28 +318,17 @@ func (g *Gateway) serveToolCall(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid tool call", http.StatusBadRequest)
 		return
 	}
-	tools, err := g.Store.ListProjectedTools(auth)
-	if err != nil {
-		http.Error(w, "registry unavailable", http.StatusServiceUnavailable)
-		return
-	}
-	if tools, err = g.filterProjectedTools(auth, tools); err != nil {
-		http.Error(w, "registry unavailable", http.StatusServiceUnavailable)
-		return
-	}
-	allowed := false
-	for _, tool := range tools {
-		if tool.Name == body.Tool && tool.Tool.Effect == api.ReadEffect {
-			allowed = true
-		}
-	}
-	if !allowed {
-		http.Error(w, "tool is not a projected read tool", http.StatusForbidden)
-		return
-	}
 	corr := api.HeaderCorrelation(r.Header.Get(api.HeaderJobID), r.Header.Get(api.HeaderRunID))
-	result, err := g.call(api.WithCallCorrelation(r.Context(), corr), auth, body.Tool, body.Arguments)
+	result, err := g.callReadTool(api.WithCallCorrelation(r.Context(), corr), auth, body.Tool, body.Arguments)
 	if err != nil {
+		if errors.Is(err, errProbeNotProjected) {
+			http.Error(w, "tool is not a projected read tool", http.StatusForbidden)
+			return
+		}
+		if errors.Is(err, errProbeRegistry) {
+			http.Error(w, "registry unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		if data := uncertainCallData(err); data != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusConflict)
@@ -349,17 +338,42 @@ func (g *Gateway) serveToolCall(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "tool call failed", http.StatusBadGateway)
 		return
 	}
-	var text strings.Builder
-	for _, content := range result.Content {
-		if tc, ok := content.(*mcp.TextContent); ok {
-			if text.Len() > 0 {
-				text.WriteByte('\n')
-			}
-			text.WriteString(tc.Text)
+	value := flattenToolText(result)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"text": string(value), "is_error": result.IsError})
+}
+
+var errProbeNotProjected = errors.New("tool is not a projected read tool")
+var errProbeRegistry = errors.New("tool registry unavailable")
+
+func (g *Gateway) callReadTool(ctx context.Context, auth identity.Envelope, name string, arguments map[string]any) (*mcp.CallToolResult, error) {
+	tools, err := g.Store.ListProjectedTools(auth)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errProbeRegistry, err)
+	}
+	tools, err = g.filterProjectedTools(auth, tools)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errProbeRegistry, err)
+	}
+	for _, tool := range tools {
+		if tool.Name == name && tool.Tool.Effect == api.ReadEffect {
+			return g.call(ctx, auth, name, arguments)
 		}
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"text": text.String(), "is_error": result.IsError})
+	return nil, errProbeNotProjected
+}
+
+func flattenToolText(result *mcp.CallToolResult) []byte {
+	var value strings.Builder
+	for _, content := range result.Content {
+		if text, ok := content.(*mcp.TextContent); ok {
+			if value.Len() > 0 {
+				value.WriteByte('\n')
+			}
+			value.WriteString(text.Text)
+		}
+	}
+	return []byte(value.String())
 }
 
 // serveCLIJobRelease is the job-end hook: the communication hub calls it when

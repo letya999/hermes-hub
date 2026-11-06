@@ -13,6 +13,7 @@ import (
 
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/routines"
+	"github.com/letya999/hermes-hub/internal/toolhub/automation"
 )
 
 var ErrRoutineRevision = routines.ErrRoutineRevision
@@ -25,7 +26,7 @@ func (g *Gateway) routineEditBaseline(ctx context.Context, id string, caller ide
 	if _, changed := patch["probe"]; !changed {
 		return nil, nil
 	}
-	card, err := g.spool.GetRoutine(id, caller)
+	card, err := g.getRoutineCard(ctx, id, caller)
 	if err != nil {
 		return nil, err
 	}
@@ -59,48 +60,14 @@ func (g *Gateway) routineEditBaseline(ctx context.Context, id string, caller ide
 	return &value, nil
 }
 
-type RoutinePreview struct {
-	State    string      `json:"state"`
-	Times    []time.Time `json:"times"`
-	Timezone string      `json:"timezone"`
-}
+type RoutinePreview = routines.RoutinePreview
 
 func (s *Spool) PreviewRoutine(id string, caller identity.Envelope, count int, now time.Time) (RoutinePreview, error) {
 	card, err := s.GetRoutine(id, caller)
 	if err != nil {
 		return RoutinePreview{}, err
 	}
-	item := card.Schedule
-	loc, err := time.LoadLocation(item.Timezone)
-	if err != nil {
-		return RoutinePreview{}, err
-	}
-	out := RoutinePreview{Times: []time.Time{}, Timezone: item.Timezone, State: card.State}
-	if card.State == "completed" || card.State == "deleted" {
-		return out, nil
-	}
-	next := item.NextDue
-	if item.SnoozedUntil.After(next) {
-		next = item.SnoozedUntil
-	}
-	for i := 0; i < count; i++ {
-		if !next.After(now) {
-			next, err = nextSchedule(item, loc, now)
-			if errors.Is(err, errRoutineExhausted) {
-				break
-			}
-			if err != nil {
-				return out, err
-			}
-		}
-		out.Times = append(out.Times, next)
-		if strings.HasPrefix(strings.TrimSpace(item.Expression), "once:") {
-			break
-		}
-		now = next
-		next = time.Time{}
-	}
-	return out, nil
+	return routines.PreviewSchedule(card.Schedule, card.State, count, now)
 }
 
 type RoutineSummary struct {
@@ -146,16 +113,7 @@ func routinePage(items []Schedule, after string, limit int, kind, state, query s
 }
 
 func routineState(item Schedule) string {
-	if item.BlockedReason != "" {
-		return "blocked"
-	}
-	if !item.Enabled && item.NextDue.IsZero() {
-		return "completed"
-	}
-	if item.Paused {
-		return "paused"
-	}
-	return "active"
+	return routines.ScheduleState(item)
 }
 
 type RoutineCard struct {
@@ -166,8 +124,8 @@ type RoutineCard struct {
 	WatchState  WatchState          `json:"watch_state"`
 }
 
-func (g *Gateway) writeRoutineCard(w http.ResponseWriter, id string, caller identity.Envelope) {
-	card, err := g.getRoutineCard(id, caller)
+func (g *Gateway) writeRoutineCard(w http.ResponseWriter, ctx context.Context, id string, caller identity.Envelope) {
+	card, err := g.getRoutineCard(ctx, id, caller)
 	if err != nil {
 		http.Error(w, "routine persisted; current card unavailable", http.StatusInternalServerError)
 		return
@@ -175,10 +133,27 @@ func (g *Gateway) writeRoutineCard(w http.ResponseWriter, id string, caller iden
 	writeJSON(w, card)
 }
 
-func (g *Gateway) getRoutineCard(id string, caller identity.Envelope) (RoutineCard, error) {
-	card, err := g.spool.GetRoutine(id, caller)
+func (g *Gateway) getRoutineCard(ctx context.Context, id string, caller identity.Envelope) (RoutineCard, error) {
+	var card RoutineCard
+	err := g.automationCall(ctx, caller, "schedule.card", map[string]any{"id": id}, &card)
+	var control automation.ControlError
+	if errors.As(err, &control) && control.StatusCode == http.StatusNotFound {
+		return RoutineCard{}, ErrRoutineNotOwned
+	}
 	if err == nil && card.Destination != nil && !slices.Contains(g.user(caller.PrincipalID).TelegramIDs, card.Schedule.ChatID) {
 		card.Destination.State = "unavailable"
+	}
+	if err == nil && card.Schedule.JobKind == "reminder" && card.Schedule.LastOccurrenceID != "" {
+		runs, historyErr := g.routineHistory(ctx, id, caller)
+		if historyErr != nil {
+			return RoutineCard{}, historyErr
+		}
+		for _, run := range runs {
+			if run.ID == card.Schedule.LastOccurrenceID {
+				card.Schedule.LastOccurrenceState, card.Schedule.LastDeliveryState = run.State, run.DeliveryState
+				break
+			}
+		}
 	}
 	return card, err
 }
@@ -239,6 +214,14 @@ func routineRevisionRequest(r *http.Request) ([]uint64, error) {
 		return nil, nil
 	}
 	return []uint64{*in.ExpectedRevision}, nil
+}
+
+func scheduleRevisionPayload(id string, expected []uint64) map[string]any {
+	args := map[string]any{"id": id}
+	if len(expected) != 0 {
+		args["expected_revision"] = expected[0]
+	}
+	return args
 }
 
 type routineEditContext struct {

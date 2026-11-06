@@ -19,6 +19,7 @@ import (
 // ErrAssignmentNotFound is the uniform refusal for missing and foreign-owned
 // assignment records — ownership probing must not leak existence.
 var ErrAssignmentNotFound = errors.New("assignment not found")
+var ErrAssignmentGrantWidening = errors.New("grant widening requires owner authorization")
 
 // AssignmentPath resolves the durable record path; the id is filename-safe
 // by validation, anything else maps through the keyed FileID hash.
@@ -43,7 +44,7 @@ func (e *Engine) CreateAssignment(in commodel.Assignment, caller identity.Envelo
 		}
 	}
 	if effectiveWakes(in.Grants) > commodel.AssignmentDefaultWakesPerDay || effectiveSources(in.Grants) > commodel.AssignmentMaxSources {
-		return commodel.Assignment{}, false, errors.New("grant widening requires owner chat authorization")
+		return commodel.Assignment{}, false, ErrAssignmentGrantWidening
 	}
 	path := e.AssignmentPath(in.AssignmentID)
 	if b, err := e.readFile(path); err == nil {
@@ -283,7 +284,7 @@ func (e *Engine) UpdateAssignmentPlan(id string, plan commodel.AssignmentPlan, g
 		return commodel.Assignment{}, err
 	}
 	if (effectiveWakes(grants) > effectiveWakes(item.Grants) || effectiveSources(grants) > effectiveSources(item.Grants)) && (plan.Revision == 0 || item.GrantsAuthorizedRev != plan.Revision) {
-		return commodel.Assignment{}, errors.New("grant widening requires owner authorization at the plan revision")
+		return commodel.Assignment{}, ErrAssignmentGrantWidening
 	}
 	item.Plan = &plan
 	item.Grants = grants

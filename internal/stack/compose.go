@@ -643,7 +643,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		cliproxy["networks"] = sharedNetworks
 		services["cliproxy"] = cliproxy
 
-		toolhubEnv := M{"HUB_STATE": "/state", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_RUNTIME_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": toolhubStoreEnv, "HUB_AUDIT_LEDGER": "/state/toolhub/audit.jsonl", "HUB_CREDENTIAL_STORE": "/state/credentials/store.enc", "HUB_CREDENTIAL_KEY_FILE": "/state/credential.key", "HUB_TOOLHUB_LISTEN": "0.0.0.0:8090", "HUB_TOOLHIVE_ADMISSION_ENDPOINT": "http://workload-controller:8545/admit", "HUB_ARTIFACT_DIR": "/state/artifacts", "HUB_BUILD_SECCOMP": "/opt/hub/seccomp/seccomp-buildkit-rootless.json", "HUB_BUILD_CACHE": "1", "HUB_RECIPE_CATALOGS": "mcp-registry,toolhive,docker-mcp,docker-hub,ghcr,github-search", "HUB_DOCKER_HOST_ROOT": hostRoot, "HUB_BROKER_MATERIALIZED_VOLUME": brokerMaterializedVolume, "HUB_CRED_STAGING": "/run/cred-staging", "HUB_CRED_STAGING_VOLUME": credStagingVolume, "HOME": "/tmp", "TZ": s.Timezone, "HUB_COMMUNICATION_CONTROL_URL": "http://communication-hub:8081", "HUB_TOOL_GOVERNANCE": "/state/toolhub/governance.json"}
+		toolhubEnv := M{"HUB_STATE": "/state", "HUB_USER_ID": s.User, "HUB_PRINCIPAL_ID": s.User, "HUB_CONTEXT_ID": contextID, "HUB_RUNTIME_ID": s.User, "HUB_ORGANIZATION_ID": organizationID, "HUB_POLICY_VERSION": policy, "HUB_TOOLHUB_STORE": toolhubStoreEnv, "HUB_AUDIT_LEDGER": "/state/toolhub/audit.jsonl", "HUB_CREDENTIAL_STORE": "/state/credentials/store.enc", "HUB_CREDENTIAL_KEY_FILE": "/state/credential.key", "HUB_TOOLHUB_LISTEN": "0.0.0.0:8090", "HUB_TOOLHIVE_ADMISSION_ENDPOINT": "http://workload-controller:8545/admit", "HUB_ARTIFACT_DIR": "/state/artifacts", "HUB_BUILD_SECCOMP": "/opt/hub/seccomp/seccomp-buildkit-rootless.json", "HUB_BUILD_CACHE": "1", "HUB_RECIPE_CATALOGS": "mcp-registry,toolhive,docker-mcp,docker-hub,ghcr,github-search", "HUB_DOCKER_HOST_ROOT": hostRoot, "HUB_BROKER_MATERIALIZED_VOLUME": brokerMaterializedVolume, "HUB_CRED_STAGING": "/run/cred-staging", "HUB_CRED_STAGING_VOLUME": credStagingVolume, "HOME": "/tmp", "TZ": s.Timezone, "HUB_COMMUNICATION_CONTROL_URL": "http://communication-hub:8081", "HUB_TOOL_GOVERNANCE": "/state/toolhub/governance.json", "HUB_AUTOMATION_ROOT": "/state/toolhub/automation", "HUB_AUTOMATION_OWNERS": "/automation-owners", "HUB_AUTOMATION_LEGACY_SPOOL": "/legacy-communication", "HUB_AUTOMATION_ROUTING": "/automation-routing/" + s.Environment + ".json", "HUB_AUTOMATION_ENVIRONMENT": s.Environment}
 		if s.CapabilityMode == "managed" {
 			toolhubEnv["HUB_CAPABILITY_MODE"] = s.CapabilityMode
 			toolhubEnv["HUB_CAPABILITY_PROFILE_ID"] = s.CapabilityProfileID
@@ -665,6 +665,10 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		if supervisorURL != "" {
 			toolhubEnv["HUB_RUNTIME_SUPERVISOR_URL"] = supervisorURL
 			toolhubEnv["HUB_COMMUNICATION_AUTH"] = "${HUB_SUPERVISOR_AUTH:?set HUB_SUPERVISOR_AUTH or provision supervisor.auth for this stack}"
+			toolhubEnv["HUB_AUTOMATION_JOB_URL"] = supervisorURL
+		} else {
+			toolhubEnv["HUB_AUTOMATION_JOB_URL"] = "http://hermes-runtime:8080"
+			toolhubEnv["HUB_AUTOMATION_JOB_PATH"] = "/v1/execute"
 		}
 		for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_CONTROL_", "toolhub", "hermes-toolhub") {
 			toolhubEnv[key] = value
@@ -683,8 +687,15 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		toolhubEnv["HUB_SKILLS_EFFECTIVE"] = "/skills-effective"
 		toolhubEnv["HUB_SKILLS_STORE"] = "/skills-store"
 		toolhubVolumes := []any{stateBind, brokerSecrets("toolhub"), brokerMaterializedMount, credStagingMount,
+			M{"type": "volume", "source": "communication-hub-data", "target": "/legacy-communication", "read_only": true},
 			M{"type": "bind", "source": filepath.ToSlash(GeneratedEffectiveSkillsDir(dir)), "target": "/skills-effective", "read_only": true},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "skills")), "target": "/skills-store", "read_only": true}}
+		if info, err := os.Lstat(filepath.Join(dir, "automation-routing")); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+			toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "automation-routing")), "target": "/automation-routing", "read_only": true})
+		}
+		if info, err := os.Lstat(filepath.Join(dir, "automation", s.Environment)); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+			toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "automation", s.Environment)), "target": "/automation-owners/" + s.User})
+		}
 		// Per-principal skill leases (R8.3): a shared toolhub resolves each
 		// caller's index+store under per-principal read-only roots — sibling
 		// credentials never come from the owner's mounts. Spaces without a
@@ -698,6 +709,12 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 				for _, sibling := range siblings {
 					if !sibling.IsDir() || !identity.ValidID(sibling.Name()) {
 						continue
+					}
+					if sibling.Name() != s.User {
+						ownerRoot := filepath.Join(parent, sibling.Name(), "automation", s.Environment)
+						if info, err := os.Lstat(ownerRoot); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+							toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(ownerRoot), "target": "/automation-owners/" + sibling.Name()})
+						}
 					}
 					published := filepath.Join(parent, sibling.Name(), "generated", "passports")
 					if info, err := os.Lstat(published); err == nil && info.IsDir() {
@@ -939,6 +956,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			gatewayEnvironment["HUB_TOOLHUB_URL"] = "http://toolhub:8090"
 		} else {
 			gatewayEnvironment["HUB_SUPERVISOR_AUTH"] = "${HUB_SUPERVISOR_AUTH:?set HUB_SUPERVISOR_AUTH or provision supervisor.auth for this stack}"
+			gatewayEnvironment["HUB_AUTOMATION_AUTH"] = "${HUB_SUPERVISOR_AUTH:?set HUB_SUPERVISOR_AUTH or provision supervisor.auth for this stack}"
 			gatewayEnvironment["HUB_TOOLHUB_URL"] = "http://toolhub-control:8090"
 		}
 		// The skillgit ExecCell posts to the controller /cli-exec derived

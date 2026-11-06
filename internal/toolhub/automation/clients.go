@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/commodel"
+	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/routines"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
@@ -21,6 +22,8 @@ import (
 type HTTPSupervisorClient struct {
 	URL   string
 	Token string
+	// JobPath is /v1/execute only for the single-owner static runtime.
+	JobPath string
 }
 
 func (c *HTTPSupervisorClient) RunJob(ctx context.Context, key string, job commodel.Job) (hubruntime.ExecuteResponse, error) {
@@ -34,7 +37,14 @@ func (c *HTTPSupervisorClient) RunJob(ctx context.Context, key string, job commo
 	if err != nil {
 		return hubruntime.ExecuteResponse{}, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.URL, "/")+"/v1/jobs", bytes.NewReader(body))
+	path := c.JobPath
+	if path == "" {
+		path = "/v1/jobs"
+	}
+	if path != "/v1/jobs" && path != "/v1/execute" {
+		return hubruntime.ExecuteResponse{}, errors.New("automation: unsupported job path")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.URL, "/")+path, bytes.NewReader(body))
 	if err != nil {
 		return hubruntime.ExecuteResponse{}, err
 	}
@@ -45,7 +55,7 @@ func (c *HTTPSupervisorClient) RunJob(ctx context.Context, key string, job commo
 		return hubruntime.ExecuteResponse{}, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && !(path == "/v1/execute" && resp.StatusCode == http.StatusInternalServerError) {
 		return hubruntime.ExecuteResponse{}, fmt.Errorf("automation: supervisor job status %d", resp.StatusCode)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024+1))
@@ -59,7 +69,7 @@ func (c *HTTPSupervisorClient) RunJob(ctx context.Context, key string, job commo
 	if result.Status == "" && strings.TrimSpace(result.Text) != "" {
 		result.Status = "completed"
 	}
-	if !commodel.TerminalStatus(result.Status) || result.Status == "completed" && strings.TrimSpace(result.Text) == "" {
+	if !commodel.TerminalStatus(result.Status) || result.Status == "completed" && strings.TrimSpace(result.Text) == "" || resp.StatusCode == http.StatusInternalServerError && result.Status != "failed" {
 		return hubruntime.ExecuteResponse{}, errors.New("automation: invalid supervisor result")
 	}
 	return result, nil
@@ -93,6 +103,9 @@ func (c *HTTPSupervisorClient) ProbeScript(ctx context.Context, o commodel.Routi
 }
 
 func (c *HTTPSupervisorClient) postScript(ctx context.Context, request hubruntime.ScriptRequest) ([]string, error) {
+	if c.JobPath == "/v1/execute" {
+		return nil, errors.New("automation: isolated script runtime unavailable")
+	}
 	body, err := json.Marshal(request)
 	if err != nil {
 		return nil, err
@@ -132,6 +145,34 @@ func (c *HTTPSupervisorClient) postScript(ctx context.Context, request hubruntim
 type HTTPCommunicationClient struct {
 	URL   string
 	Token string
+}
+
+func (c *HTTPCommunicationClient) OwnerHome(ctx context.Context, principal string) (int64, locale.Lang, error) {
+	if !commodel.IDPattern.MatchString(principal) || c.URL == "" || c.Token == "" {
+		return 0, "", errors.New("automation: invalid owner-home request")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(c.URL, "/")+"/v1/automation/owner-home", nil)
+	if err != nil {
+		return 0, "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("X-Hub-Principal", principal)
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		return 0, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, "", fmt.Errorf("automation: owner-home status %d", resp.StatusCode)
+	}
+	var home struct {
+		ChatID int64       `json:"chat_id"`
+		Lang   locale.Lang `json:"lang"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1024)).Decode(&home); err != nil {
+		return 0, "", err
+	}
+	return home.ChatID, home.Lang, nil
 }
 
 func (c *HTTPCommunicationClient) PostDelivery(ctx context.Context, principal string, d commodel.Delivery) error {

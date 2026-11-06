@@ -29,6 +29,13 @@ import (
 // admission validation plus blocked-notice retargeting, no I/O.
 type testChannel struct{ id string }
 
+func (c testChannel) ValidateSchedule(commodel.Schedule) error {
+	if c.id == "reject" {
+		return errors.New("channel rejected schedule")
+	}
+	return nil
+}
+
 func (c testChannel) ValidateOccurrence(o commodel.RoutineOccurrence, caller identity.Envelope) error {
 	if o.Job.PrincipalID == "" || caller.PrincipalID == "" {
 		return errors.New("occurrence identity missing")
@@ -48,6 +55,7 @@ type supervisorServer struct {
 	mu          sync.Mutex
 	submissions map[string]int
 	logical     map[string]commodel.Job
+	scriptCalls atomic.Int32
 	fail        atomic.Bool
 	dropAck     atomic.Bool
 	blockAlice  <-chan struct{}
@@ -63,6 +71,7 @@ func newSupervisorServer(t *testing.T) *supervisorServer {
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
+			s.scriptCalls.Add(1)
 			if request.Text == `emit("drop")` {
 				_ = json.NewEncoder(w).Encode([]string{"drop"})
 				return
@@ -259,16 +268,25 @@ func (h *harness) revoke(t *testing.T, principal, op string) {
 }
 
 func (h *harness) host(t *testing.T) *Host {
+	return h.hostWithOwners(t, "")
+}
+
+func (h *harness) hostWithOwners(t *testing.T, ownersDir string) *Host {
 	t.Helper()
 	host, err := NewHost(Config{
-		Root:          h.root,
-		Environment:   h.env,
-		Store:         h.store,
-		Now:           func() time.Time { return h.now },
-		Channels:      map[string]routines.OccurrenceChannel{"telegram_bot": testChannel{id: "telegram_bot"}},
-		Supervisor:    &HTTPSupervisorClient{URL: h.sup.srv.URL, Token: "control"},
-		Communication: &HTTPCommunicationClient{URL: h.comm.srv.URL, Token: "control"},
-		WorkspaceDir:  func(principal string) string { return filepath.Join(h.root, "workspace", principal) },
+		Root:        h.root,
+		OwnersDir:   ownersDir,
+		Environment: h.env,
+		Store:       h.store,
+		AuthForPrincipal: func(principal string) (identity.Envelope, error) {
+			return identity.TelegramEnvelope(principal, 11, "rt-"+principal, "policy-1"), nil
+		},
+		Now:              func() time.Time { return h.now },
+		Channels:         map[string]routines.OccurrenceChannel{"telegram_bot": testChannel{id: "telegram_bot"}},
+		Supervisor:       &HTTPSupervisorClient{URL: h.sup.srv.URL, Token: "control"},
+		Communication:    &HTTPCommunicationClient{URL: h.comm.srv.URL, Token: "control"},
+		AuthorizeChannel: func(context.Context, string, commodel.Job) error { return nil },
+		WorkspaceDir:     func(principal string) string { return filepath.Join(h.root, "workspace", principal) },
 	})
 	if err != nil {
 		t.Fatalf("NewHost: %v", err)
@@ -283,6 +301,97 @@ func draft(id string, env identity.Envelope) commodel.Schedule {
 		ScopeID: "user:" + env.PrincipalID, Channel: "telegram_bot", ChatID: 11,
 		Timezone: "UTC", Expression: "every:1m", Input: "work " + id,
 		JobKind: "agent", Enabled: true,
+	}
+}
+
+func TestSampleWatchUsesOwnerHostWithoutAdvancingCursor(t *testing.T) {
+	h := newHarness(t)
+	alice := h.envelope(t, "alice")
+	bob := h.envelope(t, "bob")
+	for _, op := range []string{"read", "write"} {
+		h.grant(t, "alice", op)
+		h.grant(t, "bob", op)
+	}
+	host := h.host(t)
+	var cursor any
+	host.cfg.ToolCall = func(_ context.Context, principal string, probe *commodel.WatchProbe) ([]byte, error) {
+		if principal != "alice" {
+			t.Errorf("source called for %q", principal)
+		}
+		cursor = probe.Args["after"]
+		return []byte(`{"events":[{"id":"m1","text":"hello","chat_id":7}],"next_cursor":"m2"}`), nil
+	}
+	schedule := draft("rt-sample-host", alice)
+	schedule.JobKind, schedule.Delivery, schedule.Sink = "event", "stream", "agent"
+	schedule.Expression = "0 10 * * *"
+	schedule.Probe = &commodel.WatchProbe{Kind: "mcp_tool", Tool: "events.wait", CursorArg: "after"}
+	if _, err := host.CreateSchedule(context.Background(), alice, schedule, ""); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(host.ControlHandler("control"))
+	defer server.Close()
+	client := ControlClient{URL: server.URL, Token: "control"}
+	var result watchSample
+	if err := client.Call(context.Background(), bob, "schedule.sample", map[string]any{"id": schedule.ScheduleID}, &result); err == nil {
+		t.Fatal("foreign owner sampled watch")
+	}
+	if err := client.Call(context.Background(), alice, "schedule.sample", map[string]any{"id": schedule.ScheduleID, "filter": `emit("drop")`}, &result); err != nil {
+		t.Fatal(err)
+	}
+	if cursor != "0" || len(result.Sources) != 1 || len(result.Sources[0].Events) != 1 || result.Sources[0].Verdicts["m1"] != "drop" || !strings.Contains(result.Sources[0].Events[0].Raw, `"chat_id":7`) {
+		t.Fatalf("sample lost shape, cursor, or verdict: %+v cursor=%v", result, cursor)
+	}
+	if h.sup.scriptCalls.Load() != 1 {
+		t.Fatal("candidate filter did not run once")
+	}
+	if _, err := os.Stat(filepath.Join(h.root, "events")); !os.IsNotExist(err) {
+		t.Fatalf("sample wrote event state: %v", err)
+	}
+	if submissions, logical := h.sup.counts(); submissions != 0 || logical != 0 || h.comm.count() != 0 {
+		t.Fatal("sample dispatched or delivered")
+	}
+}
+
+func TestHostUsesChannelScheduleValidation(t *testing.T) {
+	h := newHarness(t)
+	alice := h.envelope(t, "alice")
+	h.grant(t, "alice", "write")
+	host := h.host(t)
+	missing := host.cfg
+	missing.Channels = nil
+	if _, err := NewHost(missing); err == nil {
+		t.Fatal("host accepted no channel validators")
+	}
+	host.cfg.Channels["telegram_bot"] = testChannel{id: "reject"}
+	if _, err := host.CreateSchedule(context.Background(), alice, draft("rt-reject", alice), ""); err == nil {
+		t.Fatal("channel-specific schedule validation was skipped")
+	}
+	if _, err := os.Stat(filepath.Join(h.root, "users", "alice", "schedules", "rt-reject.json")); !os.IsNotExist(err) {
+		t.Fatalf("rejected schedule reached storage: %v", err)
+	}
+}
+
+func TestManagedPolicyIdentityCannotBeBypassedByChannelEnvelope(t *testing.T) {
+	h := newHarness(t)
+	alice := h.envelope(t, "alice")
+	h.grant(t, "alice", "write")
+	host := h.host(t)
+	item, err := host.CreateSchedule(context.Background(), alice, draft("rt-before-policy-change", alice), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	managed := alice
+	managed.CapabilityProfile, managed.Environment, managed.Generation = "missing-profile", "prod", 1
+	host.cfg.AuthForPrincipal = func(string) (identity.Envelope, error) { return managed, nil }
+	if _, err := host.CreateSchedule(context.Background(), alice, draft("rt-denied", alice), ""); err == nil {
+		t.Fatal("channel envelope bypassed the missing managed profile")
+	}
+	h.now = item.NextDue.Add(time.Second)
+	if err := host.Tick(context.Background(), h.now); err != nil {
+		t.Fatal(err)
+	}
+	if _, jobs := h.sup.counts(); jobs != 0 {
+		t.Fatalf("background dispatch bypassed managed profile: %d jobs", jobs)
 	}
 }
 
@@ -408,6 +517,117 @@ func TestAssignmentWatchTransitionsOwnedByToolHub(t *testing.T) {
 	}
 	if list, err := host.ListSchedules(ctx, bob); err != nil || len(list) != 0 {
 		t.Fatalf("cross-user schedule list leaked: %d err=%v", len(list), err)
+	}
+}
+
+func TestHostPreservesRevisionPreconditions(t *testing.T) {
+	h := newHarness(t)
+	alice := h.envelope(t, "alice")
+	h.grant(t, "alice", "write")
+	h.grant(t, "alice", "read")
+	host := h.host(t)
+	ctx := context.Background()
+
+	schedule, err := host.CreateSchedule(ctx, alice, draft("rt-cas", alice), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := host.PauseSchedule(ctx, alice, schedule.ScheduleID, schedule.Revision+1); !errors.Is(err, routines.ErrRoutineRevision) {
+		t.Fatalf("stale schedule revision: %v", err)
+	}
+	if err := host.PauseSchedule(ctx, alice, schedule.ScheduleID, schedule.Revision); err != nil {
+		t.Fatalf("current schedule revision: %v", err)
+	}
+
+	assignment, _, err := host.CreateAssignment(ctx, alice, commodel.Assignment{
+		AssignmentID: "asg-cas", Envelope: alice, Intent: "check revisions", Title: "check revisions", State: "draft",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := host.PauseAssignment(ctx, alice, assignment.AssignmentID, assignment.Revision+1); !errors.Is(err, routines.ErrRoutineRevision) {
+		t.Fatalf("stale assignment revision: %v", err)
+	}
+	if err := host.PauseAssignment(ctx, alice, assignment.AssignmentID, assignment.Revision); err != nil {
+		t.Fatalf("current assignment revision: %v", err)
+	}
+}
+
+func TestChannelRebindBlocksSupervisorDispatch(t *testing.T) {
+	h := newHarness(t)
+	alice := h.envelope(t, "alice")
+	h.grant(t, "alice", "write")
+	host := h.host(t)
+	item, err := host.CreateSchedule(context.Background(), alice, draft("rt-channel-fence", alice), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowed := false
+	host.cfg.AuthorizeChannel = func(_ context.Context, scheduleID string, job commodel.Job) error {
+		if scheduleID != item.ScheduleID || job.PrincipalID != "alice" {
+			return errors.New("unexpected channel request")
+		}
+		if !allowed {
+			return errors.New("channel re-bound")
+		}
+		return nil
+	}
+	h.now = item.NextDue.Add(time.Second)
+	if err := host.Tick(context.Background(), h.now); err != nil {
+		t.Fatal(err)
+	}
+	if _, logical := h.sup.counts(); logical != 0 {
+		t.Fatal("re-bound channel dispatched a job")
+	}
+	if pendingDispatches(t, host, "alice") != 1 {
+		t.Fatal("channel denial lost the durable dispatch intent")
+	}
+	allowed = true
+	if err := host.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, logical := h.sup.counts(); logical != 1 {
+		t.Fatal("restored channel binding did not reconcile the pending intent")
+	}
+}
+
+func TestChannelRebindStopsScriptAndProbeIO(t *testing.T) {
+	h := newHarness(t)
+	alice := h.envelope(t, "alice")
+	h.grant(t, "alice", "write")
+	host := h.host(t)
+	script := draft("rt-script-channel", alice)
+	script.JobKind = "script"
+	script.Input = `emit("done")`
+	watch := draft("rt-probe-channel", alice)
+	watch.JobKind = "event"
+	watch.Probe = &commodel.WatchProbe{Kind: "http", URL: "https://example.test/feed"}
+	var fetched atomic.Int32
+	host.cfg.Fetch = func(context.Context, string) ([]byte, error) {
+		fetched.Add(1)
+		return []byte(`{"events":[]}`), nil
+	}
+	var due time.Time
+	for _, item := range []commodel.Schedule{script, watch} {
+		created, err := host.CreateSchedule(context.Background(), alice, item, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if created.NextDue.After(due) {
+			due = created.NextDue
+		}
+	}
+	var checked atomic.Int32
+	host.cfg.AuthorizeChannel = func(context.Context, string, commodel.Job) error {
+		checked.Add(1)
+		return errors.New("channel re-bound")
+	}
+	h.now = due.Add(time.Second)
+	if err := host.Tick(context.Background(), h.now); err != nil {
+		t.Fatal(err)
+	}
+	if checked.Load() < 2 || h.sup.scriptCalls.Load() != 0 || fetched.Load() != 0 {
+		t.Fatal("re-bound channel performed script or probe I/O")
 	}
 }
 
@@ -1569,5 +1789,173 @@ func TestRecoverReadsEngineLayout(t *testing.T) {
 	list, err := host.ListSchedules(context.Background(), alice)
 	if err != nil || len(list) != 1 || list[0].ScheduleID != "rt-foreign" {
 		t.Fatalf("recovered host lost the engine-written schedule: %+v err=%v", list, err)
+	}
+}
+
+func TestCutoverReadsOwnerRecordsInPlace(t *testing.T) {
+	h := newHarness(t)
+	alice := h.envelope(t, "alice")
+	h.grant(t, "alice", "read")
+	owners := filepath.Join(h.root, "existing-owners")
+	root := filepath.Join(owners, "alice")
+	for _, dir := range []string{"occurrences", "schedules", "assignments", "watchers", "digests"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(owners, "bob"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	item := draft("rt-existing", alice)
+	path := filepath.Join(root, "schedules", item.ScheduleID+".json")
+	if err := writeJSONAtomic(path, item); err != nil {
+		t.Fatal(err)
+	}
+	assignment := commodel.Assignment{AssignmentID: "as-existing", Envelope: alice, State: "paused", Revision: 3}
+	if err := writeJSONAtomic(filepath.Join(root, "assignments", "as-existing.json"), assignment); err != nil {
+		t.Fatal(err)
+	}
+	watch := routines.WatchState{ScheduleID: item.ScheduleID, ProbeRevision: item.ProbeRevision, Baseline: "existing-baseline", Value: "existing-value"}
+	if err := writeJSONAtomic(filepath.Join(root, "watchers", item.ScheduleID+".json"), watch); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := h.hostWithOwners(t, owners)
+	if err := host.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := host.ListSchedules(context.Background(), alice)
+	if err != nil || len(got) != 1 || got[0].ScheduleID != item.ScheduleID {
+		t.Fatalf("existing schedule not visible: %+v, %v", got, err)
+	}
+	if assignments, err := host.ListAssignments(context.Background(), alice); err != nil || len(assignments) != 1 || assignments[0].AssignmentID != assignment.AssignmentID {
+		t.Fatalf("existing assignment not visible: %+v, %v", assignments, err)
+	}
+	if state, err := host.LoadWatchState(context.Background(), alice, item.ScheduleID); err != nil || state.Value != watch.Value {
+		t.Fatalf("existing watch state not visible: %+v, %v", state, err)
+	}
+	bob := h.envelope(t, "bob")
+	h.grant(t, "bob", "read")
+	if got, err := host.ListSchedules(context.Background(), bob); err != nil || len(got) != 0 {
+		t.Fatalf("new owner saw another owner's records: %+v, %v", got, err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || string(before) != string(after) {
+		t.Fatalf("cutover changed existing record: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(h.root, "users")); !os.IsNotExist(err) {
+		t.Fatalf("cutover created a parallel owner root: %v", err)
+	}
+}
+
+func TestCutoverRejectsActivatedLayoutWithoutChangingRecords(t *testing.T) {
+	h := newHarness(t)
+	owners := filepath.Join(h.root, "existing-owners")
+	root := filepath.Join(owners, "alice")
+	for _, dir := range []string{"occurrences", "schedules"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := filepath.Join(root, "records.activated")
+	if err := os.WriteFile(path, []byte("existing marker"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	host := h.hostWithOwners(t, owners)
+	if err := host.Recover(context.Background()); err == nil {
+		t.Fatal("activated layout was silently accepted")
+	}
+	if body, err := os.ReadFile(path); err != nil || string(body) != "existing marker" {
+		t.Fatalf("rejected layout was changed: %v", err)
+	}
+}
+
+func TestCutoverRequiresOwnerMount(t *testing.T) {
+	h := newHarness(t)
+	owners := filepath.Join(h.root, "missing-owners")
+	host := h.hostWithOwners(t, owners)
+	if err := host.Recover(context.Background()); !os.IsNotExist(err) {
+		t.Fatalf("missing owner mount did not fail startup: %v", err)
+	}
+	if _, err := os.Stat(owners); !os.IsNotExist(err) {
+		t.Fatalf("startup created missing owner mount: %v", err)
+	}
+}
+
+func TestCutoverRequiresEveryEnrolledOwnerBeforeWriting(t *testing.T) {
+	h := newHarness(t)
+	owners := filepath.Join(h.root, "existing-owners")
+	alice := filepath.Join(owners, "alice")
+	if err := os.MkdirAll(alice, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	host := h.hostWithOwners(t, owners)
+	host.cfg.RequiredPrincipals = []string{"alice", "bob"}
+	if err := host.ValidateStorage(); err == nil {
+		t.Fatal("missing enrolled owner was accepted")
+	}
+	if err := host.Recover(context.Background()); err == nil {
+		t.Fatal("recovery ignored missing enrolled owner")
+	}
+	if _, err := os.Stat(filepath.Join(alice, "schedules")); !os.IsNotExist(err) {
+		t.Fatalf("recovery wrote before checking every owner: %v", err)
+	}
+}
+
+func TestCutoverRejectsSharedLegacySpoolBeforeWriting(t *testing.T) {
+	h := newHarness(t)
+	owners := filepath.Join(h.root, "existing-owners")
+	alice := filepath.Join(owners, "alice")
+	if err := os.MkdirAll(alice, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacy := filepath.Join(h.root, "legacy-spool")
+	if err := os.MkdirAll(filepath.Join(legacy, "schedules"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(legacy, "schedules", "rt-existing.json")
+	if err := os.WriteFile(path, []byte("existing"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	host := h.hostWithOwners(t, owners)
+	host.cfg.LegacySpoolDir = legacy
+	if err := host.Recover(context.Background()); err == nil {
+		t.Fatal("shared legacy automation records were accepted")
+	}
+	if body, err := os.ReadFile(path); err != nil || string(body) != "existing" {
+		t.Fatalf("legacy record changed: %q, %v", body, err)
+	}
+	if _, err := os.Stat(filepath.Join(alice, "schedules")); !os.IsNotExist(err) {
+		t.Fatalf("recovery wrote before checking legacy spool: %v", err)
+	}
+}
+
+func TestCutoverRejectsLegacyEventStateBeforeCreatingOwnerClasses(t *testing.T) {
+	h := newHarness(t)
+	owners := filepath.Join(h.root, "existing-owners")
+	alice := filepath.Join(owners, "alice")
+	bob := filepath.Join(owners, "bob")
+	if err := os.MkdirAll(alice, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(bob, "event-state"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(bob, "event-state", "source.json")
+	if err := os.WriteFile(path, []byte(`{"cursor":"existing"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	host := h.hostWithOwners(t, owners)
+	if err := host.Recover(context.Background()); err == nil {
+		t.Fatal("unsupported legacy event state was accepted")
+	}
+	if body, err := os.ReadFile(path); err != nil || string(body) != `{"cursor":"existing"}` {
+		t.Fatalf("rejected state changed: %q, %v", body, err)
+	}
+	if _, err := os.Stat(filepath.Join(alice, "schedules")); !os.IsNotExist(err) {
+		t.Fatalf("first owner's classes were created before all owners validated: %v", err)
 	}
 }

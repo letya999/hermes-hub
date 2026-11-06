@@ -1,6 +1,7 @@
 package communication
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -35,8 +36,14 @@ func routineOwnsHistoryEnvelope(item Schedule, envelope identity.Envelope) bool 
 }
 
 type routineDeliveryKey struct {
-	OccurrenceID, Channel, Target, TaskID, SlackChannel, SlackThread string
-	ChatID, TopicID                                                  int64
+	OccurrenceID string `json:"occurrence_id"`
+	Channel      string `json:"channel"`
+	Target       string `json:"target"`
+	TaskID       string `json:"task_id"`
+	SlackChannel string `json:"slack_channel"`
+	SlackThread  string `json:"slack_thread"`
+	ChatID       int64  `json:"chat_id"`
+	TopicID      int64  `json:"topic_id"`
 }
 type routineDeliveryOutcome struct{ Total, Done, Uncertain int }
 
@@ -165,6 +172,42 @@ func (s *Spool) RoutineHistory(id string, caller identity.Envelope) ([]RoutineRu
 		return out[i].DueAt.After(out[j].DueAt)
 	})
 	return out, nil
+}
+
+func (g *Gateway) routineHistory(ctx context.Context, id string, caller identity.Envelope) ([]RoutineRun, error) {
+	var entries []struct {
+		Run RoutineRun         `json:"run"`
+		Key routineDeliveryKey `json:"key"`
+	}
+	if err := g.automationCall(ctx, caller, "schedule.history", map[string]any{"id": id}, &entries); err != nil {
+		return nil, err
+	}
+	g.spool.mu.Lock()
+	outcomes, err := g.spool.routineDeliveryStatesLocked()
+	g.spool.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	items := make([]RoutineRun, 0, len(entries))
+	for _, entry := range entries {
+		run := entry.Run
+		state := outcomes[entry.Key]
+		if state.Total > 0 {
+			run.DeliveryCount = state.Total
+			switch {
+			case state.Uncertain > 0:
+				run.DeliveryState = "uncertain"
+			case state.Done == state.Total:
+				run.DeliveryState = "delivered"
+			case state.Done > 0:
+				run.DeliveryState = "partial"
+			default:
+				run.DeliveryState = "queued"
+			}
+		}
+		items = append(items, run)
+	}
+	return items, nil
 }
 
 type RoutineHistoryPage struct {

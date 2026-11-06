@@ -84,6 +84,24 @@ func runWithContext(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	controlHandler := http.Handler(handler)
+	var automationTick func(context.Context, time.Time) error
+	if os.Getenv("HUB_AUTOMATION_ROOT") != "" {
+		projection, ok := handler.(automationProjection)
+		if !ok {
+			return errors.New("automation: ToolHub projection unavailable")
+		}
+		host, err := newAutomationHost(ctx, projection, store)
+		if err != nil {
+			return err
+		}
+		defer host.Close()
+		automationTick = host.Tick
+		mux := http.NewServeMux()
+		mux.Handle("/v1/automation/", host.ControlHandler(automationServiceToken()))
+		mux.Handle("/", handler)
+		controlHandler = mux
+	}
 	ctx, stop := context.WithCancel(ctx)
 	var background sync.WaitGroup
 	defer func() { stop(); background.Wait() }()
@@ -91,7 +109,23 @@ func runWithContext(ctx context.Context) error {
 		background.Add(1)
 		go func() { defer background.Done(); work() }()
 	}
-	server := &http.Server{Addr: config.Listen, Handler: diagnostics.HTTP("toolhub", handler), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 2 * time.Minute}
+	if automationTick != nil {
+		runBackground(func() {
+			ticker := time.NewTicker(5 * time.Second)
+			defer ticker.Stop()
+			for {
+				if err := automationTick(ctx, time.Now().UTC()); err != nil && ctx.Err() == nil {
+					log.Print("ToolHub automation tick pending")
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+				}
+			}
+		})
+	}
+	server := &http.Server{Addr: config.Listen, Handler: diagnostics.HTTP("toolhub", controlHandler), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 2 * time.Minute}
 	publicServer, publicLn, err := publicServerFor(handler)
 	if err != nil {
 		return err

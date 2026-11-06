@@ -37,6 +37,19 @@ func EffectiveNextDue(item commodel.Schedule) time.Time {
 	return item.NextDue
 }
 
+func ScheduleState(item commodel.Schedule) string {
+	if item.BlockedReason != "" {
+		return "blocked"
+	}
+	if !item.Enabled && item.NextDue.IsZero() {
+		return "completed"
+	}
+	if item.Paused {
+		return "paused"
+	}
+	return "active"
+}
+
 // A replay returns current state, never the enabled state at creation.
 // Retired IDs are never replayed or reactivated; their tombstones conflict.
 // Foreign-owner collisions and unreadable or legacy records fail closed
@@ -63,6 +76,28 @@ func (e *Engine) CreationReplay(in commodel.Schedule, caller identity.Envelope) 
 		return commodel.Schedule{}, true, ErrScheduleConflict
 	}
 	return item, true, nil
+}
+
+// CheckCreationReplay is the side-effect-free half of creation. It uses the
+// same destination binding and intent normalization as CreateScheduleAt, so
+// an existing check can be returned before probing its source again.
+func (e *Engine) CheckCreationReplay(in commodel.Schedule, caller identity.Envelope, routingUser ...commodel.User) (commodel.Schedule, bool, error) {
+	in = NormalizeScheduleDraft(in)
+	if err := ValidateScheduleDraft(in, caller, e.deps.Hooks); err != nil {
+		return commodel.Schedule{}, false, err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(routingUser) > 0 && (in.OriginJobID != "" || in.DestinationTaskID != "") {
+		var err error
+		in, err = e.bindRoutineDestinationLocked(in, caller, routingUser[0])
+		if err != nil {
+			return commodel.Schedule{}, false, err
+		}
+		caller = in.Envelope
+	}
+	in.OriginJobID, in.DestinationTaskID = "", ""
+	return e.CreationReplay(in, caller)
 }
 
 func (e *Engine) CreateSchedule(in commodel.Schedule, caller identity.Envelope, nativeCron string) (commodel.Schedule, error) {

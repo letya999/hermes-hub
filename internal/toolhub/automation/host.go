@@ -6,6 +6,7 @@ package automation
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -43,14 +44,21 @@ type DecisionStore interface {
 }
 
 type Config struct {
-	Root          string
-	Environment   string
-	Store         DecisionStore
-	Now           func() time.Time
-	Channels      map[string]routines.OccurrenceChannel
-	Supervisor    SupervisorClient
-	Communication CommunicationClient
-	WorkspaceDir  func(principal string) string
+	Root               string
+	OwnersDir          string
+	LegacySpoolDir     string
+	RequiredPrincipals []string
+	Environment        string
+	Store              DecisionStore
+	AuthForPrincipal   func(string) (identity.Envelope, error)
+	Now                func() time.Time
+	Channels           map[string]routines.OccurrenceChannel
+	Supervisor         SupervisorClient
+	Communication      CommunicationClient
+	AuthorizeChannel   func(context.Context, string, commodel.Job) error
+	RoutingUser        func(string) (commodel.User, error)
+	WorkspaceDir       func(principal string) string
+	LangOf             func(principal string) locale.Lang
 	// Fetch performs real probe I/O (URL watches/event sources); defaults
 	// to a plain HTTP GET when nil. ToolCall runs mcp_tool probes through
 	// the connector; nil leaves tool probes failing closed.
@@ -60,19 +68,25 @@ type Config struct {
 
 // Host owns the automation plane: per-principal engines and durable stores.
 type Host struct {
-	cfg     Config
-	now     func() time.Time
-	mu      sync.Mutex
-	engines map[string]*routines.Engine
-	queue   *dispatchQueue
-	outbox  *deliveryOutbox
-	events  *eventStore
-	tasks   *taskStore
+	cfg      Config
+	now      func() time.Time
+	mu       sync.Mutex
+	engines  map[string]*routines.Engine
+	queue    *dispatchQueue
+	outbox   *deliveryOutbox
+	events   *eventStore
+	tasks    *taskStore
+	inFlight sync.Map // principal + job ID -> job while its supervisor call is live
 }
 
 func NewHost(cfg Config) (*Host, error) {
-	if !filepath.IsAbs(cfg.Root) || (cfg.Environment != "dev" && cfg.Environment != "prod") || cfg.Store == nil || cfg.Supervisor == nil || cfg.Communication == nil || cfg.WorkspaceDir == nil {
+	if !filepath.IsAbs(cfg.Root) || cfg.OwnersDir != "" && !filepath.IsAbs(cfg.OwnersDir) || cfg.LegacySpoolDir != "" && !filepath.IsAbs(cfg.LegacySpoolDir) || (cfg.Environment != "dev" && cfg.Environment != "prod") || cfg.Store == nil || cfg.AuthForPrincipal == nil || cfg.Supervisor == nil || cfg.Communication == nil || cfg.AuthorizeChannel == nil || cfg.LangOf == nil && cfg.WorkspaceDir == nil || len(cfg.Channels) == 0 {
 		return nil, errors.New("automation: invalid host configuration")
+	}
+	for _, principal := range cfg.RequiredPrincipals {
+		if !identity.ValidID(principal) {
+			return nil, errors.New("automation: invalid required principal")
+		}
 	}
 	if cfg.Fetch == nil {
 		cfg.Fetch = fetchWatch
@@ -99,6 +113,46 @@ func NewHost(cfg Config) (*Host, error) {
 	return h, nil
 }
 
+func (h *Host) ownersDir() string {
+	if h.cfg.OwnersDir != "" {
+		return h.cfg.OwnersDir
+	}
+	return filepath.Join(h.cfg.Root, "users")
+}
+
+func (h *Host) ownerRoot(principal string) string {
+	return filepath.Join(h.ownersDir(), principal)
+}
+
+func (h *Host) validateOwnerRoot(root string) error {
+	for _, dir := range []string{h.ownersDir(), root} {
+		info, err := os.Lstat(dir)
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("automation: unsafe owner storage")
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(root, "records.activated")); err == nil {
+		return errors.New("automation: unsupported activated record layout")
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	for _, name := range []string{"schedules", "occurrences", "assignments", "watchers", "digests", "event-state"} {
+		info, err := os.Lstat(filepath.Join(root, name))
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("automation: unsafe owner storage")
+		}
+	}
+	if entries, err := os.ReadDir(filepath.Join(root, "event-state")); err == nil && len(entries) != 0 {
+		return errors.New("automation: unsupported legacy event state")
+	} else if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 // engineFor returns (creating on first use) the engine rooted at the
 // principal's own subtree — storage isolation is filesystem-real.
 func (h *Host) engineFor(principal string) (*routines.Engine, error) {
@@ -110,24 +164,55 @@ func (h *Host) engineFor(principal string) (*routines.Engine, error) {
 	if e, ok := h.engines[principal]; ok {
 		return e, nil
 	}
-	root := filepath.Join(h.cfg.Root, "users", principal)
-	for _, dir := range []string{filepath.Join(h.cfg.Root, "users"), root, filepath.Join(root, "occurrences"), filepath.Join(root, "schedules")} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return nil, err
+	root := h.ownerRoot(principal)
+	for _, dir := range []string{h.ownersDir(), root} {
+		if h.cfg.OwnersDir == "" {
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				return nil, err
+			}
 		}
+	}
+	if err := h.validateOwnerRoot(root); err != nil {
+		return nil, err
+	}
+	for _, dir := range []string{filepath.Join(root, "occurrences"), filepath.Join(root, "schedules")} {
 		info, err := os.Lstat(dir)
-		if err != nil || !info.IsDir() {
+		if os.IsNotExist(err) {
+			if err = os.MkdirAll(dir, 0o700); err != nil {
+				return nil, err
+			}
+			info, err = os.Lstat(dir)
+		}
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			return nil, errors.New("automation: unsafe owner storage")
+		}
+	}
+	loadMapping := func(id string) (commodel.JobMapping, error) { return h.queue.loadMapping(principal, id) }
+	loadTask, listTasks, topicTask := h.tasks.load, h.tasks.list, h.tasks.topic
+	if h.cfg.LegacySpoolDir != "" {
+		bindings := legacyBindings{root: h.cfg.LegacySpoolDir}
+		loadTask, listTasks, topicTask = bindings.loadTask, bindings.listTasks, bindings.topicTask
+		loadMapping = func(id string) (commodel.JobMapping, error) {
+			mapping, err := h.queue.loadMapping(principal, id)
+			if os.IsNotExist(err) {
+				return bindings.loadMapping(id)
+			}
+			return mapping, err
 		}
 	}
 	var e *routines.Engine
 	e = routines.NewEngine(root, routines.Deps{
 		Hooks: routines.DraftHooks{
 			Channel: func(in commodel.Schedule) error {
-				if _, ok := h.cfg.Channels[in.Channel]; !ok {
+				ch, ok := h.cfg.Channels[in.Channel]
+				if !ok {
 					return fmt.Errorf("unknown schedule channel %q", in.Channel)
 				}
-				return nil
+				validator, ok := ch.(interface{ ValidateSchedule(commodel.Schedule) error })
+				if !ok {
+					return errors.New("automation: channel cannot validate schedules")
+				}
+				return validator.ValidateSchedule(in)
 			},
 			Script: routines.ScriptSyntaxError,
 		},
@@ -143,10 +228,10 @@ func (h *Host) engineFor(principal string) (*routines.Engine, error) {
 		},
 		Dispatch: routines.DispatchPort{
 			EnqueueJob:  h.admitJob,
-			LoadMapping: func(id string) (commodel.JobMapping, error) { return h.queue.loadMapping(principal, id) },
-			LoadTask:    h.tasks.load,
-			ListTasks:   h.tasks.list,
-			TopicTask:   h.tasks.topic,
+			LoadMapping: loadMapping,
+			LoadTask:    loadTask,
+			ListTasks:   listTasks,
+			TopicTask:   topicTask,
 		},
 		Delivery: routines.DeliveryPort{
 			EnqueueDelivery:   func(d commodel.Delivery) error { _, err := h.outbox.enqueue(principal, d, h.now()); return err },
@@ -165,6 +250,7 @@ func (h *Host) engineFor(principal string) (*routines.Engine, error) {
 		Signal:      func() {},
 		ChannelFor:  func(id string) routines.OccurrenceChannel { return h.cfg.Channels[id] },
 		ProbeScript: func() routines.ProbeScriptFunc { return h.cfg.Supervisor.ProbeScript },
+		LangOf:      h.langOf,
 	})
 	h.engines[principal] = e
 	return e, nil
@@ -191,15 +277,18 @@ func (h *Host) admitEventJob(j commodel.Job, sourceOccurrenceID string) (bool, e
 	return h.queue.admit(j, h.now(), sourceOccurrenceID)
 }
 
-// authorize is the single gate for user-facing operations: the verified
-// envelope, the host environment pin (binds managed envelopes that carry
-// one), and the live rights decision — identity is never taken from tool
-// arguments.
+// authorize is the single gate for user-facing operations: the caller's
+// channel envelope selects a principal, but the ToolHub-enrolled envelope
+// supplies the managed profile and environment for the live rights decision.
 func (h *Host) authorize(auth identity.Envelope, op string) (*routines.Engine, error) {
 	if auth.PrincipalID == "" || (auth.Environment != "" && auth.Environment != h.cfg.Environment) {
 		return nil, errUnauthorized
 	}
-	dec, err := h.cfg.Store.Decide(auth, capability, op, "", h.now())
+	policy, err := h.policyAuth(auth.PrincipalID)
+	if err != nil {
+		return nil, err
+	}
+	dec, err := h.cfg.Store.Decide(policy, capability, op, "", h.now())
 	if err != nil || !dec.Allow {
 		return nil, errUnauthorized
 	}
@@ -215,11 +304,47 @@ func (h *Host) authorizeJob(job commodel.Job) error {
 	if !identity.ValidID(env.PrincipalID) || (env.Environment != "" && env.Environment != h.cfg.Environment) {
 		return errUnauthorized
 	}
-	dec, err := h.cfg.Store.Decide(env, capability, "write", "", h.now())
+	policy, err := h.policyAuth(env.PrincipalID)
+	if err != nil {
+		return err
+	}
+	dec, err := h.cfg.Store.Decide(policy, capability, "write", "", h.now())
 	if err != nil || !dec.Allow {
 		return errUnauthorized
 	}
 	return nil
+}
+
+// authorizeDueJob adds the channel binding when the engine has persisted an
+// occurrence. TickSchedules calls authorizeJob before an occurrence has an ID.
+func (h *Host) authorizeDueJob(ctx context.Context, job commodel.Job) error {
+	if err := h.authorizeJob(job); err != nil || job.ID == "" {
+		return err
+	}
+	var occurrence commodel.RoutineOccurrence
+	err := loadJSON(filepath.Join(h.ownerRoot(job.PrincipalID), "occurrences", commodel.FileID(job.ID)+".json"), &occurrence)
+	if os.IsNotExist(err) {
+		return nil // event-derived jobs are checked again against their source at submit
+	}
+	if err != nil || occurrence.Job.ID != job.ID || occurrence.Job.PrincipalID != job.PrincipalID {
+		return errUnauthorized
+	}
+	return h.cfg.AuthorizeChannel(ctx, occurrence.ScheduleID, job)
+}
+
+func (h *Host) policyAuth(principal string) (identity.Envelope, error) {
+	auth, err := h.cfg.AuthForPrincipal(principal)
+	if err != nil || auth.PrincipalID != principal || auth.Validate(auth.PrincipalID, auth.ContextID, auth.RuntimeID, auth.PolicyVersion) != nil || auth.Environment != "" && auth.Environment != h.cfg.Environment {
+		return identity.Envelope{}, errUnauthorized
+	}
+	return auth, nil
+}
+
+func (h *Host) langOf(principal string) locale.Lang {
+	if h.cfg.LangOf != nil {
+		return h.cfg.LangOf(principal)
+	}
+	return locale.LangOf(h.cfg.WorkspaceDir(principal))
 }
 
 // submit posts one intent to the supervisor when un-acked; a failure is
@@ -246,7 +371,7 @@ func (h *Host) submit(ctx context.Context, principal, key string) error {
 	if in.SourceOccurrenceID != "" {
 		sourceID = in.SourceOccurrenceID
 	}
-	if err := loadJSON(filepath.Join(h.cfg.Root, "users", principal, "occurrences", commodel.FileID(sourceID)+".json"), &occurrence); err != nil {
+	if err := loadJSON(filepath.Join(h.ownerRoot(principal), "occurrences", commodel.FileID(sourceID)+".json"), &occurrence); err != nil {
 		return err
 	}
 	if occurrence.Job.ID != sourceID || occurrence.Job.PrincipalID != in.Job.PrincipalID || occurrence.Job.ContextID != in.Job.ContextID || occurrence.Job.DeliveryTargetID != in.Job.DeliveryTargetID || !e.OccurrenceCurrent(occurrence) {
@@ -256,6 +381,14 @@ func (h *Host) submit(ctx context.Context, principal, key string) error {
 	if err != nil || !schedule.Enabled || schedule.Paused || schedule.BlockedReason != "" {
 		return nil
 	}
+	if err := h.cfg.AuthorizeChannel(ctx, occurrence.ScheduleID, in.Job); err != nil {
+		return nil
+	}
+	flightKey := principal + "\x00" + in.Job.ID
+	if _, loaded := h.inFlight.LoadOrStore(flightKey, in.Job); loaded {
+		return nil
+	}
+	defer h.inFlight.Delete(flightKey)
 	result, err := h.cfg.Supervisor.RunJob(ctx, in.Key, in.Job)
 	if err != nil {
 		return nil // durable intent stays pending; reconcile retries
@@ -351,13 +484,14 @@ func (h *Host) Tick(ctx context.Context, now time.Time) error {
 			defer workers.Done()
 			for owner := range jobs {
 				e := owner.engine
+				dueAuth := func(job commodel.Job) error { return h.authorizeDueJob(ctx, job) }
 				for _, step := range []func() error{
 					func() error { return e.TickSchedules(now, "", h.authorizeJob) },
-					func() error { return h.tickStreams(e, owner.principal, now) },
+					func() error { return h.tickStreams(ctx, e, owner.principal, now) },
 					func() error { return e.DispatchDueOccurrences(now, h.authorizeJob) },
-					func() error { return e.RunDueScripts(ctx, now, h.authorizeJob, h.cfg.Supervisor.RunScript) },
+					func() error { return e.RunDueScripts(ctx, now, dueAuth, h.cfg.Supervisor.RunScript) },
 					func() error {
-						return e.ProbeDueOccurrencesContext(ctx, now, h.authorizeJob, h.cfg.Fetch, h.cfg.ToolCall, nil)
+						return e.ProbeDueOccurrencesContext(ctx, now, dueAuth, h.cfg.Fetch, h.cfg.ToolCall, nil)
 					},
 				} {
 					if err := step(); err != nil {
@@ -396,8 +530,8 @@ func streamOccurrence(schedule commodel.Schedule, due time.Time) commodel.Routin
 	return commodel.RoutineOccurrence{ScheduleID: schedule.ScheduleID, Revision: schedule.Revision, DueAt: due, JobKind: "event", Job: job, CatchUpWindow: schedule.CatchUpWindow}
 }
 
-func (h *Host) tickStreams(e *routines.Engine, principal string, now time.Time) error {
-	names, err := os.ReadDir(filepath.Join(h.cfg.Root, "users", principal, "schedules"))
+func (h *Host) tickStreams(ctx context.Context, e *routines.Engine, principal string, now time.Time) error {
+	names, err := os.ReadDir(filepath.Join(h.ownerRoot(principal), "schedules"))
 	if err != nil {
 		return err
 	}
@@ -413,7 +547,7 @@ func (h *Host) tickStreams(e *routines.Engine, principal string, now time.Time) 
 			continue
 		}
 		o := streamOccurrence(schedule, now.UTC())
-		if h.authorizeJob(o.Job) != nil {
+		if h.authorizeJob(o.Job) != nil || h.cfg.AuthorizeChannel(ctx, schedule.ScheduleID, o.Job) != nil {
 			continue
 		}
 		h.events.mu.Lock()
@@ -441,7 +575,7 @@ func (h *Host) tickStreams(e *routines.Engine, principal string, now time.Time) 
 		if !st.StreamAt.IsZero() {
 			o = streamOccurrence(schedule, st.StreamAt)
 			var live commodel.RoutineOccurrence
-			readErr := loadJSON(filepath.Join(h.cfg.Root, "users", principal, "occurrences", routines.OccurrenceID(o)+".json"), &live)
+			readErr := loadJSON(filepath.Join(h.ownerRoot(principal), "occurrences", routines.OccurrenceID(o)+".json"), &live)
 			if readErr == nil && (live.State == "pending" || live.State == "probing") {
 				h.events.mu.Unlock()
 				continue
@@ -501,11 +635,43 @@ func (h *Host) normalizeDelivery(d commodel.Delivery) (commodel.Delivery, error)
 }
 
 func (h *Host) CreateSchedule(ctx context.Context, auth identity.Envelope, in commodel.Schedule, nativeCron string) (commodel.Schedule, error) {
+	return h.CreateScheduleWithBaseline(ctx, auth, in, nativeCron, nil)
+}
+
+func (h *Host) CheckCreationReplay(ctx context.Context, auth identity.Envelope, in commodel.Schedule) (commodel.Schedule, bool, error) {
+	e, err := h.authorize(auth, "write")
+	if err != nil {
+		return commodel.Schedule{}, false, err
+	}
+	if h.cfg.RoutingUser == nil {
+		if in.OriginJobID != "" || in.DestinationTaskID != "" {
+			return commodel.Schedule{}, false, errors.New("automation: routing owner unavailable")
+		}
+		return e.CheckCreationReplay(in, auth)
+	}
+	user, err := h.cfg.RoutingUser(auth.PrincipalID)
+	if err != nil {
+		return commodel.Schedule{}, false, err
+	}
+	return e.CheckCreationReplay(in, auth, user)
+}
+
+func (h *Host) CreateScheduleWithBaseline(ctx context.Context, auth identity.Envelope, in commodel.Schedule, nativeCron string, baseline *string) (commodel.Schedule, error) {
 	e, err := h.authorize(auth, "write")
 	if err != nil {
 		return commodel.Schedule{}, err
 	}
-	return e.CreateSchedule(in, auth, nativeCron)
+	if h.cfg.RoutingUser == nil {
+		if in.OriginJobID != "" || in.DestinationTaskID != "" {
+			return commodel.Schedule{}, errors.New("automation: routing owner unavailable")
+		}
+		return e.CreateScheduleAt(in, auth, nativeCron, baseline, h.now())
+	}
+	user, err := h.cfg.RoutingUser(auth.PrincipalID)
+	if err != nil {
+		return commodel.Schedule{}, err
+	}
+	return e.CreateScheduleAt(in, auth, nativeCron, baseline, h.now(), user)
 }
 
 // Recover reloads durable state and reconciles un-acked intents — the
@@ -518,28 +684,91 @@ func (h *Host) CreateAssignment(ctx context.Context, auth identity.Envelope, in 
 	return e.CreateAssignment(in, auth)
 }
 
-func (h *Host) PauseAssignment(ctx context.Context, auth identity.Envelope, id string) error {
-	e, err := h.authorize(auth, "write")
+func (h *Host) LoadAssignment(ctx context.Context, auth identity.Envelope, id string) (commodel.Assignment, error) {
+	e, err := h.authorize(auth, "read")
 	if err != nil {
-		return err
+		return commodel.Assignment{}, err
 	}
-	return e.PauseAssignment(id, auth)
+	return e.LoadAssignment(id, auth)
 }
 
-func (h *Host) ResumeAssignment(ctx context.Context, auth identity.Envelope, id string) error {
-	e, err := h.authorize(auth, "write")
-	if err != nil {
-		return err
-	}
-	return e.ResumeAssignment(id, auth)
-}
-
-func (h *Host) CompleteAssignment(ctx context.Context, auth identity.Envelope, id string) (commodel.Assignment, error) {
+func (h *Host) RecordAssignmentProgress(ctx context.Context, auth identity.Envelope, id string, expected uint64, jobID, summary, finding, nextStep string, complete bool) (commodel.Assignment, error) {
 	e, err := h.authorize(auth, "write")
 	if err != nil {
 		return commodel.Assignment{}, err
 	}
-	return e.CompleteAssignment(id, auth)
+	item, err := e.LoadAssignment(id, auth)
+	if err != nil {
+		return commodel.Assignment{}, err
+	}
+	if item.Progress.LastJobID == jobID && jobID != "" {
+		return item, nil
+	}
+	value, ok := h.inFlight.Load(auth.PrincipalID + "\x00" + jobID)
+	if !ok {
+		return commodel.Assignment{}, errUnauthorized
+	}
+	job := value.(commodel.Job)
+	if job.ID != jobID || job.AssignmentID != id || job.PrincipalID != auth.PrincipalID || job.ContextID != auth.ContextID || job.RuntimeID != auth.RuntimeID || job.PolicyVersion != auth.PolicyVersion || job.AssignmentPlanRevision != item.AppliedRev {
+		return commodel.Assignment{}, errUnauthorized
+	}
+	return e.RecordAssignmentProgress(id, auth, expected, jobID, summary, finding, nextStep, complete)
+}
+
+func (h *Host) ApplyAssignment(ctx context.Context, auth identity.Envelope, id string, expected ...uint64) (commodel.Assignment, error) {
+	e, err := h.authorize(auth, "write")
+	if err != nil {
+		return commodel.Assignment{}, err
+	}
+	return e.ApplyAssignment(id, auth, expected...)
+}
+
+func (h *Host) UpdateAssignmentPlan(ctx context.Context, auth identity.Envelope, id string, plan commodel.AssignmentPlan, grants commodel.AssignmentGrants, expected ...uint64) (commodel.Assignment, error) {
+	e, err := h.authorize(auth, "write")
+	if err != nil {
+		return commodel.Assignment{}, err
+	}
+	return e.UpdateAssignmentPlan(id, plan, grants, auth, expected...)
+}
+
+func (h *Host) AuthorizeAssignmentGrants(ctx context.Context, auth identity.Envelope, id string, planRev uint64, grants commodel.AssignmentGrants) error {
+	e, err := h.authorize(auth, "write")
+	if err != nil {
+		return err
+	}
+	return e.AuthorizeAssignmentGrants(id, planRev, grants, auth)
+}
+
+func (h *Host) DeleteAssignment(ctx context.Context, auth identity.Envelope, id string, expected ...uint64) error {
+	e, err := h.authorize(auth, "write")
+	if err != nil {
+		return err
+	}
+	return e.DeleteAssignment(id, auth, expected...)
+}
+
+func (h *Host) PauseAssignment(ctx context.Context, auth identity.Envelope, id string, expected ...uint64) error {
+	e, err := h.authorize(auth, "write")
+	if err != nil {
+		return err
+	}
+	return e.PauseAssignment(id, auth, expected...)
+}
+
+func (h *Host) ResumeAssignment(ctx context.Context, auth identity.Envelope, id string, expected ...uint64) error {
+	e, err := h.authorize(auth, "write")
+	if err != nil {
+		return err
+	}
+	return e.ResumeAssignment(id, auth, expected...)
+}
+
+func (h *Host) CompleteAssignment(ctx context.Context, auth identity.Envelope, id string, expected ...uint64) (commodel.Assignment, error) {
+	e, err := h.authorize(auth, "write")
+	if err != nil {
+		return commodel.Assignment{}, err
+	}
+	return e.CompleteAssignment(id, auth, expected...)
 }
 
 func (h *Host) SeedWatchBaseline(ctx context.Context, auth identity.Envelope, id, value string, now time.Time) error {
@@ -558,6 +787,18 @@ func (h *Host) LoadWatchState(ctx context.Context, auth identity.Envelope, id st
 	return e.LoadWatchState(id)
 }
 
+func (h *Host) IntakeHook(ctx context.Context, auth identity.Envelope, id string, body []byte) error {
+	e, err := h.authorize(auth, "write")
+	if err != nil {
+		return err
+	}
+	item, err := e.LoadSchedule(id)
+	if err != nil || item.Envelope.PrincipalID != auth.PrincipalID || item.Envelope.ContextID != auth.ContextID || item.Probe == nil || item.Probe.Kind != "hook" || len(body) == 0 || len(body) > 64*1024 {
+		return routines.ErrRoutineNotOwned
+	}
+	return e.IntakeHook(id, body, h.now())
+}
+
 func (h *Host) ListSchedules(ctx context.Context, auth identity.Envelope) ([]commodel.Schedule, error) {
 	e, err := h.authorize(auth, "read")
 	if err != nil {
@@ -566,12 +807,56 @@ func (h *Host) ListSchedules(ctx context.Context, auth identity.Envelope) ([]com
 	return e.ListSchedules(auth)
 }
 
-func (h *Host) PauseSchedule(ctx context.Context, auth identity.Envelope, id string) error {
+func (h *Host) LoadSchedule(ctx context.Context, auth identity.Envelope, id string) (commodel.Schedule, error) {
+	e, err := h.authorize(auth, "read")
+	if err != nil {
+		return commodel.Schedule{}, err
+	}
+	item, err := e.LoadSchedule(id)
+	if err != nil || item.Envelope.PrincipalID != auth.PrincipalID || item.Envelope.ContextID != auth.ContextID {
+		return commodel.Schedule{}, routines.ErrRoutineNotOwned
+	}
+	return item, nil
+}
+
+func (h *Host) EditRoutine(ctx context.Context, auth identity.Envelope, id string, patch map[string]json.RawMessage, resume bool, baseline *string) (commodel.Schedule, error) {
+	e, err := h.authorize(auth, "write")
+	if err != nil {
+		return commodel.Schedule{}, err
+	}
+	var user commodel.User
+	if h.cfg.RoutingUser != nil {
+		user, err = h.cfg.RoutingUser(auth.PrincipalID)
+		if err != nil {
+			return commodel.Schedule{}, err
+		}
+	} else if _, move := patch["destination_task_id"]; move {
+		return commodel.Schedule{}, errors.New("automation: destination routing unavailable")
+	}
+	return e.EditRoutine(id, auth, patch, resume, h.now(), routines.EditOptions{User: user, Baseline: baseline})
+}
+
+func (h *Host) ListRoutineDestinations(ctx context.Context, auth identity.Envelope, after string, limit int, query string) (routines.RoutineDestinationPage, error) {
+	e, err := h.authorize(auth, "read")
+	if err != nil {
+		return routines.RoutineDestinationPage{}, err
+	}
+	if h.cfg.RoutingUser == nil || limit < 1 || limit > 100 {
+		return routines.RoutineDestinationPage{}, errors.New("automation: destination routing unavailable")
+	}
+	user, err := h.cfg.RoutingUser(auth.PrincipalID)
+	if err != nil {
+		return routines.RoutineDestinationPage{}, err
+	}
+	return e.ListRoutineDestinations(user, auth, after, limit, query)
+}
+
+func (h *Host) PauseSchedule(ctx context.Context, auth identity.Envelope, id string, expected ...uint64) error {
 	e, err := h.authorize(auth, "write")
 	if err != nil {
 		return err
 	}
-	return e.PauseSchedule(id, auth)
+	return e.PauseSchedule(id, auth, expected...)
 }
 
 func (h *Host) UpdateSchedule(ctx context.Context, auth identity.Envelope, id, expression, input string, enabled *bool) (commodel.Schedule, error) {
@@ -582,20 +867,20 @@ func (h *Host) UpdateSchedule(ctx context.Context, auth identity.Envelope, id, e
 	return e.UpdateSchedule(id, auth, expression, input, enabled)
 }
 
-func (h *Host) SnoozeSchedule(ctx context.Context, auth identity.Envelope, id string, until time.Time) error {
+func (h *Host) SnoozeSchedule(ctx context.Context, auth identity.Envelope, id string, until time.Time, expected ...uint64) error {
 	e, err := h.authorize(auth, "write")
 	if err != nil {
 		return err
 	}
-	return e.SnoozeSchedule(id, auth, until)
+	return e.SnoozeSchedule(id, auth, until, expected...)
 }
 
-func (h *Host) DeleteSchedule(ctx context.Context, auth identity.Envelope, id string) error {
+func (h *Host) DeleteSchedule(ctx context.Context, auth identity.Envelope, id string, expected ...uint64) error {
 	e, err := h.authorize(auth, "write")
 	if err != nil {
 		return err
 	}
-	return e.DeleteSchedule(id, auth)
+	return e.DeleteSchedule(id, auth, expected...)
 }
 
 func (h *Host) ListAssignments(ctx context.Context, auth identity.Envelope) ([]commodel.Assignment, error) {
@@ -606,12 +891,12 @@ func (h *Host) ListAssignments(ctx context.Context, auth identity.Envelope) ([]c
 	return e.ListAssignments(auth)
 }
 
-func (h *Host) CancelAssignment(ctx context.Context, auth identity.Envelope, id string) error {
+func (h *Host) CancelAssignment(ctx context.Context, auth identity.Envelope, id string, expected ...uint64) error {
 	e, err := h.authorize(auth, "write")
 	if err != nil {
 		return err
 	}
-	return e.CancelAssignment(id, auth)
+	return e.CancelAssignment(id, auth, expected...)
 }
 
 func (h *Host) Recover(ctx context.Context) error {
@@ -634,21 +919,55 @@ func (h *Host) Recover(ctx context.Context) error {
 }
 
 func (h *Host) loadEngines() error {
-	entries, err := os.ReadDir(filepath.Join(h.cfg.Root, "users"))
-	if os.IsNotExist(err) {
+	if err := h.ValidateStorage(); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(h.ownersDir())
+	if os.IsNotExist(err) && h.cfg.OwnersDir == "" {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
 	for _, en := range entries {
-		if !identity.ValidID(en.Name()) || en.Type()&os.ModeSymlink != 0 {
+		if _, err := h.engineFor(en.Name()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ValidateStorage is a read-only preflight for startup before any listener or
+// clock is enabled. Recover repeats it before writing durable state.
+func (h *Host) ValidateStorage() error {
+	if h.cfg.LegacySpoolDir != "" {
+		if err := ValidateLegacySpool(h.cfg.LegacySpoolDir); err != nil {
+			return err
+		}
+	}
+	entries, err := os.ReadDir(h.ownersDir())
+	if os.IsNotExist(err) && h.cfg.OwnersDir == "" && len(h.cfg.RequiredPrincipals) == 0 {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if h.cfg.OwnersDir != "" && len(entries) == 0 {
+		return errors.New("automation: owner mounts missing")
+	}
+	seen := make(map[string]bool, len(entries))
+	for _, en := range entries {
+		if !identity.ValidID(en.Name()) || en.Type()&os.ModeSymlink != 0 || !en.IsDir() {
 			return errors.New("automation: unsafe owner storage")
 		}
-		if en.IsDir() {
-			if _, err := h.engineFor(en.Name()); err != nil {
-				return err
-			}
+		if err := h.validateOwnerRoot(h.ownerRoot(en.Name())); err != nil {
+			return err
+		}
+		seen[en.Name()] = true
+	}
+	for _, principal := range h.cfg.RequiredPrincipals {
+		if !seen[principal] {
+			return errors.New("automation: required owner mount missing")
 		}
 	}
 	return nil
@@ -665,7 +984,7 @@ func (h *Host) ReportResult(ctx context.Context, principal, jobID, status, text 
 	if commodel.TerminalStatus(mapping.Status) && mapping.Status == status {
 		text = mapping.Result
 	} else if status == "failed" || status == "cancelled" || status == "interrupted" {
-		text = locale.T(locale.LangOf(h.cfg.WorkspaceDir(principal)), "job."+status, jobID)
+		text = locale.T(h.langOf(principal), "job."+status, jobID)
 	}
 	taskID := mapping.TaskID
 	if taskID == "" {

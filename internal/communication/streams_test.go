@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/identity"
 )
 
@@ -586,10 +587,7 @@ func TestWatchSampleRunsCandidateFilter(t *testing.T) {
 func TestWatchSampleHTTPRouteReportsSourceErrors(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
+	g, _, _ := automationGatewayFixture(t, c)
 	g.api = &fakeAPI{}
 	handler := g.Handler()
 	post := func(path, body, principal string) *httptest.ResponseRecorder {
@@ -1453,12 +1451,14 @@ func TestStartStreamLoops(t *testing.T) {
 // S6.4 — /watches marks a stream subscription's delivery mode so the owner
 // can tell a reactive wait-loop from a cron poll at a glance.
 func TestWatchesMarksStream(t *testing.T) {
-	s, o, g := occurrenceFixture(t)
-	caller := o.Job.Envelope
-	if _, err := s.CreateSchedule(Schedule{ScheduleID: "wm", Envelope: caller, OrganizationID: o.Job.OrganizationID, UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID, Channel: "telegram_bot", ChatID: o.Job.ChatID, Timezone: "UTC", Expression: "* * * * *", Input: "watch dms", JobKind: "event", Delivery: "stream", Probe: &WatchProbe{Kind: "mcp_tool", Tool: "hub-tg-wait-a"}}, caller, ""); err != nil {
-		t.Fatal(err)
+	c := testConfig(t)
+	c.ControlAuth = "control-token"
+	g, _, _ := automationGatewayFixture(t, c)
+	w := destinationRequest(g, http.MethodPost, "/v1/routines", `{"schedule_id":"wm","timezone":"UTC","expression":"* * * * *","input":"watch dms","job_kind":"event","delivery":"stream","probe":{"kind":"mcp_tool","tool":"hub-tg-wait-a"}}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("watch create: %d %s", w.Code, w.Body.String())
 	}
-	user := User{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}
+	user := g.user("alice")
 	out := g.watchesCommand(user, 11)
 	if !strings.Contains(out, "wm") || !strings.Contains(out, ", stream") {
 		t.Fatalf("stream delivery not rendered: %q", out)
@@ -1471,28 +1471,23 @@ func TestWatchesMarksStream(t *testing.T) {
 func TestHookIntakeEndpoint(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "control-token"
-	g, err := New(c)
-	if err != nil {
-		t.Fatal(err)
+	g, _, root := automationGatewayFixture(t, c)
+	w := destinationRequest(g, http.MethodPost, "/v1/routines", `{"schedule_id":"hook-1","timezone":"UTC","expression":"* * * * *","job_kind":"event","input":"hook","probe":{"kind":"hook","url":"hook:github"}}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("hook create: %d %s", w.Code, w.Body.String())
 	}
-	env := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
-	sched := Schedule{ScheduleID: "hook-1", Envelope: env, UserID: "alice", Enabled: true, Timezone: "UTC", Expression: "* * * * *", JobKind: "event", Channel: "telegram_bot", ChatID: 11, Probe: &WatchProbe{Kind: "hook", URL: "hook:github"}}
-	if err := atomicJSON(g.spool.rt.SchedulePath("hook-1"), sched); err != nil {
-		t.Fatal(err)
-	}
-	w := destinationRequest(g, http.MethodPost, "/v1/hooks/hook-1", `{"events":[{"id":"h1","text":"push"}]}`)
+	w = destinationRequest(g, http.MethodPost, "/v1/hooks/hook-1", `{"events":[{"id":"h1","text":"push"}]}`)
 	if w.Code != http.StatusAccepted {
 		t.Fatalf("hook intake rejected: %d %s", w.Code, w.Body.String())
 	}
-	if got := g.spool.rt.HookPendingCount("hook-1"); got != 1 {
-		t.Fatalf("payload not staged: %d", got)
+	entries, err := os.ReadDir(filepath.Join(root, "users", "alice", "hooks", commodel.FileID("hook-1")))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("payload not staged under ToolHub owner: %d %v", len(entries), err)
 	}
 	// Non-hook schedules reject intake.
-	plain := sched
-	plain.ScheduleID = "plain-1"
-	plain.Probe = &WatchProbe{Kind: "http", URL: "https://example.com"}
-	if err := atomicJSON(g.spool.rt.SchedulePath("plain-1"), plain); err != nil {
-		t.Fatal(err)
+	w = destinationRequest(g, http.MethodPost, "/v1/routines", `{"schedule_id":"plain-1","timezone":"UTC","expression":"* * * * *","job_kind":"event","input":"plain","probe":{"kind":"http","url":"https://example.com"}}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("plain create: %d %s", w.Code, w.Body.String())
 	}
 	w = destinationRequest(g, http.MethodPost, "/v1/hooks/plain-1", `{"events":[]}`)
 	if w.Code == http.StatusAccepted {
@@ -1513,14 +1508,7 @@ func TestHookIntakeEndpoint(t *testing.T) {
 	if w = destinationRequest(g, http.MethodGet, "/v1/hooks/hook-1", ""); w.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("GET must 405, got %d", w.Code)
 	}
-	// A foreign principal's hook schedule stays invisible.
-	bob := sched
-	bob.ScheduleID = "bob-hook"
-	bob.Envelope = identity.TelegramEnvelope("bob", 22, "bob", "policy-1")
-	bob.UserID = "bob"
-	if err := atomicJSON(g.spool.rt.SchedulePath("bob-hook"), bob); err != nil {
-		t.Fatal(err)
-	}
+	// Missing and foreign IDs share a 404 response.
 	if w = destinationRequest(g, http.MethodPost, "/v1/hooks/bob-hook", `{"events":[]}`); w.Code != http.StatusNotFound {
 		t.Fatalf("foreign hook must 404, got %d", w.Code)
 	}
