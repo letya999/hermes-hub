@@ -1,0 +1,29 @@
+schema: 1
+change: CHG-0289
+title: Fast local verification and CI handoff
+status: in_progress
+updated: 2026-11-06
+branch: ci/fast-local-checks
+implementation_status: locally_verified_pending_ci_and_host_diagnosis
+validation:
+  just_check: passed_2026-11-06_57.75_seconds
+  affected_tests: passed_2026-11-06_31_seconds
+  ci_workflow: actionlint_passed_remote_not_run
+  docker: not_run
+  windows_root_cause: not_proven
+remaining:
+  - Publish and run exact-source CI only with owner authorization.
+  - Host-specific Windows execution denials remain under investigation.
+evidence:
+  - "Final worktree refresh: clean checkpoints 33fb159d (#508 incomplete), 50e6bb0c (#517 incomplete, #516 committed fcc6fd89), 813a37d6 (#523 incomplete). Handoff updated to preserve them."
+  - "Fast just check exit 0 in 57.75s; affected internal/devcheck and cmd/devcheck tests exit 0 in 31s; actionlint exit 0."
+  - "Diagnostic short full suite exceeded ten minutes; 46 packages completed before explicit stop. Slow packages: memory/eval 130s, agenttools 128s, hubctl 105s. Baseline docs failure repaired by re-verifying the changed RBAC/hubctl sections."
+  - "Updated stale M32 plan and all three entry prompts: existing worktrees, Devin stages, actual dependencies and separate local/CI evidence."
+  - "Windows Access is denied also occurred once when starting the tool shell, outside Go tests; a retry launched normally. Host cause remains unproven."
+  - "Last visible CI run was 2026-10-31; current M32 work is unpublished."
+  - "75752068 adds Windows -p=1 to full race/shuffle/count=1/coverpkg suite; all package binaries serialize."
+  - "Found CI role cache read/write scope mismatch and shared overwrite between core/browser/knowledge; corrected."
+  - "Reason Cybersecurity and Windows Defender are registered; RAV OnAccess log has Go test-binary scan errors, but no proven causal block. No protection configuration changed."
+limitations:
+  - "No remote run or container acceptance for this dirty tree."
+  - "Probity remains enabled. Codex vs Devin transcripts are not a controlled quality benchmark."

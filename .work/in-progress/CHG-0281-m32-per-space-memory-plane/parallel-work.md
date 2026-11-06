@@ -1,27 +1,45 @@
-# M32: небольшие назначения от общей базы
+# M32: три постоянных трека, продолжение в Devin
 
+Актуализировано 2026-11-06 по решению владельца. Этот план заменяет старые
+назначения первой волны и требования создавать новую ветку после каждой issue.
 Milestone: [M32 MVP](https://github.com/letya999/hermes-hub/milestone/43).
-GitHub — текущий статус issues; CHG — evidence; github-issues.json — карта ID.
-Текущие изменения ещё не интегрированы в `dev`. Пути ниже — назначения,
-а не уже созданные worktree.
 
-## Что делать сейчас
+## Текущее состояние
 
-1. Отобрать текущие изменения M32 в исходной ветке, исключить локальные
-   артефакты, создать проверенный commit и влить его в `dev`. Записать
-   исходный и итоговый SHA, результаты `just check` и применимых Docker gates.
-   Если проверка не прошла, исправить её конкретную причину до разделения.
-2. От одного итогового `dev` SHA три отдельных агента получают по одной issue:
-   [config #509](prompt-config.md), [memory #513](prompt-memory.md),
-   [automation #521](prompt-automation.md).
-3. Каждый создаёт свой worktree и ветку от этого `dev` SHA. Один PR — одна
-   issue; один физический worktree переиспользуется для следующих issues своей
-   lane после интеграции предыдущего PR. Интегратор последовательно объединяет
-   проверенные изменения в `dev`; следующая ветка начинается от свежего `dev`.
-4. #526/#527 — отдельная интеграционная приёмка после функциональных задач.
-   Ни один промежуточный PR не означает готовность MVP.
+Общая база dev — 6eae50d4. Три worktree уже существуют; сохранить их ветки и dirty diff.
+Все три checkout чистые после checkpoint 06.11 около 10:06 МСК.
+Снимок коммитов ниже не означает закрытие issue или итоговую интеграционную приёмку.
 
-## Первая волна
+| Трек | Worktree | Зафиксировано | Следующее |
+|---|---|---|---|
+| config | C:/Users/User/a_projects/hermes-hub-wt/m32-track-1 | #509–#512, checkpoint #508: 33fb159d | #508 |
+| memory | C:/Users/User/a_projects/hermes-hub-wt/m32-track-2 | #513–#516, checkpoint #517: 50e6bb0c | #517–#520 |
+| automation | C:/Users/User/a_projects/hermes-hub-wt/m32-track-3 | #521–#522, checkpoint #523: 813a37d6 | #523–#527 |
+
+Перед передачей проверить свежие status/HEAD и остановить прежнего писателя в этом
+worktree. Не запускать Devin и Codex одновременно над одним diff.
+Не создавать ветки с префиксом codex/. Существующие ветки не переименовывать.
+
+## Как продолжать
+
+Полные последовательные этапы и результаты:
+[Devin handoff](../CHG-0289-fast-local-verification/devin-handoff.md).
+Короткие входы: [config](prompt-config.md), [memory](prompt-memory.md),
+[automation](prompt-automation.md).
+
+Один worktree и одна ветка на трек; небольшие этапы внутри issue. Коммит issue —
+после завершения её связного контракта. Не объявлять промежуточный owner cutover
+готовым к запуску. Новые сервисы, временные заглушки и legacy fallback не нужны.
+
+Обязательное чтение: AGENTS/README/docs index, текущая issue, инварианты и её строка
+SPEC-0097/0098/0099. Исторические ADR/SPEC — по конкретному противоречию.
+
+## Зависимости
+
+Исправление порядка выполнения, принятое владельцем: #522 не требует memory-only
+admission #514 для реализации automation host. Сам контракт #514 сохраняется для
+memory-вызовов. Старое ожидание всей ветки памяти до #520 отменено: интегрировать
+проверенные коммиты, реально необходимые #524/#525. Незакоммиченные файлы не копировать.
 
 | Issue | Branch | Worktree |
 |---|---|---|
@@ -58,42 +76,26 @@ GitHub — текущий статус issues; CHG — evidence; github-issues.j
 | [#519](https://github.com/letya999/hermes-hub/issues/519) | M7: confirmed edit/CAS/single use | memory | 518 | 0098 |
 | [#520](https://github.com/letya999/hermes-hub/issues/520) | M8: governed OpenKnowledge | memory | 517, 519 | 0098 |
 | [#521](https://github.com/letya999/hermes-hub/issues/521) | A1: отделить engine от spool lock | automation | — | 0099 |
-| [#522](https://github.com/letya999/hermes-hub/issues/522) | A2: полный ToolHub host без production startup | automation | 521, 514 | 0099 |
+| [#522](https://github.com/letya999/hermes-hub/issues/522) | A2: полный ToolHub host без production startup | automation | 521 | 0099 |
 | [#523](https://github.com/letya999/hermes-hub/issues/523) | A3: единый owner cutover | automation | 522 | 0099 |
 | [#524](https://github.com/letya999/hermes-hub/issues/524) | A4: protected daily routine | automation | 523, 516 | 0099 |
 | [#525](https://github.com/letya999/hermes-hub/issues/525) | A5: dreaming execution/commit | automation | 524, 518 | 0099 |
 | [#526](https://github.com/letya999/hermes-hub/issues/526) | два пользователя и сбои в контейнерах | integration | 508–525 | 0097–0099 |
 | [#527](https://github.com/letya999/hermes-hub/issues/527) | финальный cutover и release gates | integration | 526 | 0097–0099 |
 
-Предпочтительный порядок config: #509 → #510 → #511 → #512 → #508.
-Это порядок одной lane; реальные обязательные зависимости указаны в таблице.
-Memory: #513 → #514 → #515/#516 → #517/#518 → #519 → #520.
-Automation: #521 → #522 (ждёт #514) → #523 → #524 → #525.
-Когда lane ждёт зависимость, не расширять её задание автоматически.
 
-## Правила интеграции
+## Проверки и интеграция
 
-- Каждый меняет callers/tests своей issue; shared server.go/Compose/catalog/docs
-  редактируются минимальными hunks. Нет отдельного «foundation интерфейсов».
-  #509 владеет scope admission; #513 — startup vault binding;
-  #521 — routines/communication lock boundary. В первой волне #521 не трогает
-  ToolHub startup, #513 не трогает scope admission.
-- #522 готовит исполнимый host и проверяет его через harness; production startup
-  остаётся прежним до #523. Нет второй state copy, compatibility flag или clock.
-- Shared-file conflict разрешает интегратор; после свежей базы повторить проверки
-  изменившихся гарантий. Не брать helper из незавершённой чужой ветки.
-- Catalog bump и tool docs идут с соответствующим contract change, а не в конце
-  milestone. Финальный #527 проверяет полноту. Versions выбирать на свежей базе.
-- Не выполнять одновременно Docker build/gate/cleanup на общем daemon. Только
-  synthetic users, собственный Compose project; без широкого prune.
-- Реальные команды/exit codes/SHA и границы evidence обязательны. Stub transport
-  не доказывает integration. just check и gates AGENTS.md сохраняются.
-- Push своей ветки и draft PR разрешены; merge, закрытие issue, provider mutation,
-  production deploy и внешняя отправка в назначения workers не входят.
-- Блокер — конкретный недостающий контракт/исправление, не повод брать следующие
-  issues без назначения. Непроверенные acceptance пункты остаются pending.
-
-Предыдущие execution-plan.md, handoff, prompt-foundation.md, SPEC-0096 и аудиты —
-датированная история. Отдельного foundation или integration branch для M32 нет.
-Текущие рабочие контракты — SPEC-0097/0098/0099.
-
+- Применить CHG-0289 после его проверки/коммита. Пока он не попал в worktree,
+  не считать, что локальный justfile автоматически обновился.
+- `just check`: format/docs/vet; `just test <packages>`: затронутые пакеты и callers.
+  Для изменения конкурентности — адресный race. Probity оставить включённым.
+- Полный race/coverage/security и контейнеры — CI с точным SHA и ссылкой на run.
+  Один repo-wide локальный прогон за раз; Docker общего dev stack не трогать.
+- Только трек 3 координирует интеграцию готовых коммитов. Проверять реальные
+  зависимости; не ждать произвольный конец соседнего трека и не делать фиктивные merge.
+- Для запуска CI сначала нужен опубликованный код. Push/PR/GHCR publication —
+  отдельная инструкция владельца; отсутствие такой инструкции фиксировать как
+  незавершённую удалённую приёмку, а не эмулировать весь CI локально.
+- Capacity/429/ошибка запуска процесса — немедленный конкретный blocker с
+  последним завершённым этапом, а не часы видимой «работы» без прогресса.

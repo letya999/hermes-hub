@@ -12,9 +12,8 @@ import (
 // GHCR keeps CI-built hub images so local checks and the containers job pull a
 // ready image instead of rebuilding the heavy base layers. Every CI build
 // pushes an immutable <sha>-<target> tag (exact-run traceability) and moves
-// edge-<target> (latest build). docker-pull resolves the sha tag first and
-// falls back to edge, then compares the embedded revision label with HEAD so
-// a stale image is loudly reported instead of silently tested.
+// edge-<target> (latest build). Verification pulls only the exact SHA: a
+// missing image must not spend time testing an unrelated edge build.
 const registryHost = "ghcr.io"
 
 var gitURLPattern = regexp.MustCompile(`github\.com[:/]([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?\s*$`)
@@ -66,43 +65,37 @@ func validRef(parts ...string) bool {
 	return true
 }
 
-// DockerPull fetches the CI-built image for HEAD and retags it as image. When
-// no <sha>-<target> tag exists yet (unpushed commit) it falls back to the
-// moving edge-<target> tag and the revision check reports the mismatch.
+// DockerPull fetches the CI-built image for HEAD and retags it only after
+// checking the embedded revision. Unpublished commits cannot pass this gate.
 func DockerPull(ctx context.Context, image, target string) error {
 	repo, err := registryRepo(ctx, cliGit)
 	if err != nil {
 		return err
 	}
-	sha, _ := gitSHA(ctx, cliGit)
+	sha, err := gitSHA(ctx, cliGit)
+	if err != nil {
+		return err
+	}
 	return dockerPull(ctx, image, target, repo, sha, streamDocker, cliDocker)
 }
 
 func dockerPull(ctx context.Context, image, target, repo, sha string, run dockerExec, inspect dockerRunner) error {
-	if !validRef(image, target, repo) {
-		return fmt.Errorf("image, target and repo required")
+	if !validRef(image, target, repo, sha) {
+		return fmt.Errorf("image, target, repo and source revision required")
 	}
-	ref := ""
-	if sha != "" {
-		ref = registryRef(repo, sha+"-"+target)
-		if err := run(ctx, "pull", ref); err != nil {
-			ref = ""
-		}
+	ref := registryRef(repo, sha+"-"+target)
+	if err := run(ctx, "pull", ref); err != nil {
+		return fmt.Errorf("CI image for %s unavailable; complete the image workflow for this commit: %w", sha, err)
 	}
-	if ref == "" {
-		ref = registryRef(repo, "edge-"+target)
-		if err := run(ctx, "pull", ref); err != nil {
-			return fmt.Errorf("pull %s failed: %w", ref, err)
-		}
+	out, err := inspect(ctx, "image", "inspect", "-f", `{{index .Config.Labels "org.opencontainers.image.revision"}}`, ref)
+	if err != nil {
+		return fmt.Errorf("inspect source revision: %w", err)
+	}
+	if strings.TrimSpace(string(out)) != sha {
+		return fmt.Errorf("CI image source revision does not match HEAD %s", sha)
 	}
 	if err := run(ctx, "tag", ref, image); err != nil {
 		return fmt.Errorf("tag %s as %s failed: %w", ref, image, err)
-	}
-	out, err := inspect(ctx, "image", "inspect", "-f", `{{index .Config.Labels "org.opencontainers.image.revision"}}`, image)
-	if err == nil {
-		if rev := strings.TrimSpace(string(out)); validRef(rev, sha) && rev != sha {
-			fmt.Printf("warning: pulled image is revision %s but HEAD is %s; image may not include the latest commits\n", rev, sha)
-		}
 	}
 	return nil
 }
