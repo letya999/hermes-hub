@@ -1,6 +1,6 @@
 ---
 description: Authorization model — principals, sections, evaluation order, grants, capability policies, profiles, teams, connector lifecycle.
-last_verified: "2026-11-05"
+last_verified: 2026-11-06
 ---
 
 # RBAC, grants and capability policy

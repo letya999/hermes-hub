@@ -17,13 +17,20 @@ immutable decisions in docs/adr/, frozen requirements in specs/, task state in .
   hub-agent-tools catalog version — then rebind + respawn managed spaces so the new contract is
   actually projected. A cataloged tool missing from docs/tools.md fails the suite.
   Tool shape (names, verbs, schemas, effects, results) follows docs/tool-design.md.
-- Run `just check` before delivery; own Go statement coverage must be >=85%. Run `just security` for dependency changes.
-  The heavy Docker gate runs in CI (`image` builds and publishes GHCR tags; `containers` pulls and tests them).
-  Locally prefer `just docker-pull` + `just docker-check-prebuilt` on the pulled image; `just docker-check`
-  remains the full local build path when image-side code changed before push. Report unavailable gates honestly.
-- Build hub images through `hubctl build`/`up` or `just docker-check`, not raw `docker compose build`:
+- Run `just check` (format, docs, vet) and `just test <affected-package> ...` before delivery.
+  Run one repo-wide verification at a time across local worktrees. Keep Probity enabled.
+  CI owns the full race/shuffle suite, own Go coverage >=85% (internal packages >=75%),
+  static/security analysis, deployment contracts and Docker acceptance. Local green is not CI acceptance.
+  `just check-full` is the explicit exhaustive local fallback; do not repeat it after every edit.
+  `just docker-check` pulls images for exact HEAD and verifies them; it never builds or accepts stale edge images.
+  `just docker-check-build` is the explicit seven-image build fallback. Prefer CI image + containers jobs.
+  Record source SHA and run URL; unpublished/dirty changes have no remote acceptance.
+  `just ci-run <published-branch>` starts the full workflow, including GHCR publication;
+  `just ci-status <sha>` and `just ci-watch <run-id>` inspect its result. Remote writes need owner authorization.
+  Run `just security` for dependency changes; report unavailable gates honestly.
+- Build hub images through `hubctl build`/`up` or `just docker-check-build`, not raw `docker compose build`:
   these paths force BuildKit. `hubctl` prunes superseded hub images before/after attempts and caps the build cache at 8 GB;
-  `just docker-check` cleans on success.
+  `just docker-check-build` cleans on success.
   After any other local Docker build, run `just docker-clean`; use `--deep` only for an intentional cold-cache reset.
   Never use broad system/volume prunes that could delete another project's data. Keep optional integrations out of the base image.
 - For local Go edits in a running dev stack, use `go run ./cmd/hubctl dev-rebuild --dir spaces/<user> --env dev <service>`

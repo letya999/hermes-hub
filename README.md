@@ -120,15 +120,18 @@ skills (deferred post-MVP). The [changelog](CHANGELOG.md) and
 
 ## Engineering
 
-`just check` is the single local CI entrypoint: Go race tests, ≥85% coverage gate
-on original code, static analysis, docs/workflow checks, CLI integration tests.
+`just check` is the fast local gate: formatting, documentation and Go vet.
+Run `just test <affected-package> ...` for each change. GitHub Actions owns the
+full race/shuffle suite, ≥85% own-code coverage, static/security analysis,
+deployment contracts and container acceptance. `just check-full` is the explicit
+local fallback; a local pass is not evidence that CI passed.
 For fast iteration on a running dev stack:
 
 ```bash
 go run ./cmd/hubctl dev-rebuild --dir spaces/<user> --env dev <service>
 ```
 
-GitHub Actions runs the same gate plus Docker builds. Never point CI at a personal
+GitHub Actions runs the exhaustive gates and publishes commit-pinned Docker images. Never point CI at a personal
 agent VPS. See [CONTRIBUTING](CONTRIBUTING.md).
 
 - [SETUP](SETUP.md) — account bootstrap, VPS, native tools

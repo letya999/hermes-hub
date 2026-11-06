@@ -1,21 +1,39 @@
 # Contributing
 
-Toolchain: Go 1.27.2, just 1.57+ and Docker Compose 2.30+. Node/npm exists only inside
-the image build for the pinned upstream Playwright MCP package. Run `just check`; it
-orchestrates Go race and integration tests, >=85% statement coverage for all original
-Go code, formatting, vet/staticcheck, docs and actionlint. Upstream code is excluded.
+Toolchain: Go 1.27.3, just 1.57+ and Docker Compose 2.30+ for container contracts.
 
-`just security` runs Go vuln and npm audits. `just docker-check prod` and
-`just docker-check dev` build and run credentials-free container smoke. Keep package
-locks and source pins together; scan final images for upstream Python/OS vulnerabilities.
+Local feedback:
+
+- `just check`: formatting, docs and `go vet`; no full suite, race instrumentation,
+  coverage, security downloads or Docker builds. Target: under five minutes with
+  a warm Go cache. Record actual timings; cold compilation is not a passing result.
+- `just test ./internal/<changed-package> ...`: affected packages and callers.
+  Go's test cache remains enabled. Run explicit race tests for concurrency changes.
+- Run only one repository-wide check at a time on the shared machine.
+- `just check-full`: exhaustive local fallback when intentionally needed.
+
+CI keeps the four race/shuffle/coverage shards, >=85% own-code / >=75% internal-package
+coverage, lint/security, broker and deployment contracts. `checks` and `containers`
+remain mandatory acceptance results. Do not run all of CI again after a small local edit.
+
+After an authorized push/PR, use `just ci-status <full-sha>` and
+`just ci-watch <run-id>`. A published feature branch without an automatic run can
+use `just ci-run <branch>`; this explicit action starts the full workflow and
+publishes GHCR images. It cannot test uncommitted or unpublished code. Record the
+actual run SHA, including the synthetic merge SHA for a PR, and run URL in the CHG.
+A PR merge image is not automatically an image of the local branch HEAD.
+
+`just docker-check [prod|dev]` consumes images for exact HEAD, with no stale `edge`
+fallback. Container scenarios still take time; run them in CI for routine acceptance.
+`just docker-check-build [prod|dev]` explicitly builds all seven local images first.
+Never build or prune the shared development stack from parallel lanes.
+`just security` runs Go vuln and npm audits for dependency changes. Node/npm is
+needed for that audit but is not required by the fast local gate.
+
 `just release` creates an allowlisted source archive and native CLI binaries.
 Never include spaces, tokens, archives, personal messages or browser profiles in a release.
-
-GitHub CI runs the same Just gate and both Docker targets. It does not publish. The
-manual runner workflow targets labels self-hosted, linux,
-x64, hermes-hub and only main. Register a dedicated runner through repository Settings
--> Actions -> Runners; install the same toolchain. Use a disposable runner for PR jobs;
-this workflow does not run untrusted pull requests on your personal VPS.
+The manual self-hosted workflow is restricted to main and uses `check-full` plus
+`docker-check-build`; do not point it at a personal agent VPS.
 
 Branch flow: `dev` is the default integration branch. Do not commit directly to `dev`;
 create a short-lived typed branch from `dev`, then open a PR back to `dev`.

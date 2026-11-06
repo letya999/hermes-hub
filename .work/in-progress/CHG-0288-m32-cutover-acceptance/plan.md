@@ -28,7 +28,8 @@ shared run-scope, runtime/OpenKnowledge vault access and communication-owned clo
 Verify immutable catalog descriptions, prompt_contract, tools/routines docs, locale
 parity and actual synthetic managed rebind/respawn. Fix omissions; this is not
 permission to postpone per-issue tool contract bundles until the end.
-Run just check, own Go coverage >=85%, applicable image gates and security for
+Run fast just check plus affected tests locally; require CI own Go coverage >=85%,
+applicable image gates and security for
 dependency changes. Report unavailable/live boundaries honestly.
 Update current docs and CHG evidence; move completed CHGs to done with index rows.
 No deploy, data migration, fallback, broad cleanup or automatic dev/main merge.

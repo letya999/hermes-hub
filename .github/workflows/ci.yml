@@ -22,7 +22,7 @@ jobs:
         run: |
           test "$HEAD_REF" = dev
           test "$HEAD_REPOSITORY" = "$REPOSITORY"
-  # The race suite runs as a parallel matrix, not a single `just check`:
+  # The race suite runs as a parallel matrix, not local `just check-full`:
   # one ~50-minute monolith `go test` repeatedly lost the hosted runner
   # mid-step (job concludes failure, no logs uploaded - VM loss, not a
   # test verdict). Short independent shards stay inside each runner's
@@ -56,7 +56,7 @@ jobs:
         run: |
           set +e
           pkgs=$(go list ./... | sort | awk -v s="$SHARD" 'NR % 4 == s')
-          # -coverpkg=./... keeps the shard metric identical to `just check`
+          # -coverpkg=./... keeps the shard metric identical to `just check-full`
           # (covergo instruments all packages per test binary); without it the
           # merged profile counts only each package's own tests and the shared
           # 85% floor rejects cross-package credit the local gate grants.
@@ -275,16 +275,23 @@ jobs:
       - if: matrix.target == 'dev' || matrix.target == 'prod'
         run: go run ./cmd/devcheck docker-publish "${{ matrix.target }}-control"
         env:
-          HUB_DOCKER_CACHE_FROM: type=gha,scope=hermes-hub-${{ matrix.target }}
+          HUB_DOCKER_CACHE_FROM: type=gha,scope=hermes-hub-${{ matrix.target }}-control
           HUB_DOCKER_CACHE_TO: type=gha,scope=hermes-hub-${{ matrix.target }}-control,mode=max
       - if: matrix.target == 'dev' || matrix.target == 'prod'
-        run: |
-          go run ./cmd/devcheck docker-publish "${{ matrix.target }}-core"
-          go run ./cmd/devcheck docker-publish "${{ matrix.target }}-browser"
-          go run ./cmd/devcheck docker-publish "${{ matrix.target }}-knowledge"
+        run: go run ./cmd/devcheck docker-publish "${{ matrix.target }}-core"
         env:
-          HUB_DOCKER_CACHE_FROM: type=gha,scope=hermes-hub-${{ matrix.target }}
-          HUB_DOCKER_CACHE_TO: type=gha,scope=hermes-hub-${{ matrix.target }}-roles,mode=max
+          HUB_DOCKER_CACHE_FROM: type=gha,scope=hermes-hub-${{ matrix.target }}-core
+          HUB_DOCKER_CACHE_TO: type=gha,scope=hermes-hub-${{ matrix.target }}-core,mode=max
+      - if: matrix.target == 'dev' || matrix.target == 'prod'
+        run: go run ./cmd/devcheck docker-publish "${{ matrix.target }}-browser"
+        env:
+          HUB_DOCKER_CACHE_FROM: type=gha,scope=hermes-hub-${{ matrix.target }}-browser
+          HUB_DOCKER_CACHE_TO: type=gha,scope=hermes-hub-${{ matrix.target }}-browser,mode=max
+      - if: matrix.target == 'dev' || matrix.target == 'prod'
+        run: go run ./cmd/devcheck docker-publish "${{ matrix.target }}-knowledge"
+        env:
+          HUB_DOCKER_CACHE_FROM: type=gha,scope=hermes-hub-${{ matrix.target }}-knowledge
+          HUB_DOCKER_CACHE_TO: type=gha,scope=hermes-hub-${{ matrix.target }}-knowledge,mode=max
       # SPEC-0082 R0: every built role image must pass its size budget and the
       # forbidden-artifact probe before the image job is green.
       - name: Role image budget gates
