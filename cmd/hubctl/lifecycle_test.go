@@ -56,7 +56,7 @@ func TestLifecycleAndFailurePropagation(t *testing.T) {
 	script := "#!/bin/sh\nprintf 'ENV DOCKER_BUILDKIT=%s COMPOSE_BAKE=%s COMPOSE_DOCKER_CLI_BUILD=%s\\n' \"$DOCKER_BUILDKIT\" \"$COMPOSE_BAKE\" \"$COMPOSE_DOCKER_CLI_BUILD\" >> \"$HUB_TEST_LOG\"\nprintf '%s\\n' \"$*\" >> \"$HUB_TEST_LOG\"\nif [ -n \"$HUB_FAIL_MATCH\" ]; then for arg do if [ \"$arg\" = \"$HUB_FAIL_MATCH\" ]; then exit 7; fi; done; fi\n"
 	if runtime.GOOS == "windows" {
 		name = "docker.cmd"
-		script = "@echo off\r\n>>\"%HUB_TEST_LOG%\" echo ENV DOCKER_BUILDKIT=%DOCKER_BUILDKIT% COMPOSE_BAKE=%COMPOSE_BAKE% COMPOSE_DOCKER_CLI_BUILD=%COMPOSE_DOCKER_CLI_BUILD%\r\n>>\"%HUB_TEST_LOG%\" echo %*\r\nif not \"%~1\"==\"compose\" exit /b 0\r\nif \"%HUB_FAIL_MATCH%\"==\"config\" (echo %* | findstr /C:\" config --quiet\" >nul && exit /b 7)\r\nif \"%HUB_FAIL_MATCH%\"==\"build\" (echo %* | findstr /C:\" build\" >nul && exit /b 7)\r\nif \"%HUB_FAIL_MATCH%\"==\"up\" (echo %* | findstr /C:\" up -d\" >nul && exit /b 7)\r\n"
+		script = "@echo off\r\n>>\"%HUB_TEST_LOG%\" echo ENV DOCKER_BUILDKIT=%DOCKER_BUILDKIT% COMPOSE_BAKE=%COMPOSE_BAKE% COMPOSE_DOCKER_CLI_BUILD=%COMPOSE_DOCKER_CLI_BUILD%\r\n>>\"%HUB_TEST_LOG%\" echo %*\r\nif \"%~1\"==\"build\" if \"%HUB_FAIL_MATCH%\"==\"build\" exit /b 7\r\nif not \"%~1\"==\"compose\" exit /b 0\r\nif \"%HUB_FAIL_MATCH%\"==\"config\" (echo %* | findstr /C:\" config --quiet\" >nul && exit /b 7)\r\nif \"%HUB_FAIL_MATCH%\"==\"build\" (echo %* | findstr /C:\" build\" >nul && exit /b 7)\r\nif \"%HUB_FAIL_MATCH%\"==\"up\" (echo %* | findstr /C:\" up -d\" >nul && exit /b 7)\r\n"
 	}
 	if runtime.GOOS == "windows" {
 		script += "exit /b 0\r\n"
@@ -118,7 +118,7 @@ func TestLifecycleAndFailurePropagation(t *testing.T) {
 	if !strings.Contains(string(b), "ps --filter label=com.docker.compose.service=cliproxy") {
 		t.Fatal("up skipped the shared model proxy alias check")
 	}
-	if !strings.Contains(string(b), filepath.Join(d, "generated", "compose.prod.yaml")) || !strings.Contains(string(b), "ENV DOCKER_BUILDKIT=1 COMPOSE_BAKE=true COMPOSE_DOCKER_CLI_BUILD=1") || !strings.Contains(string(b), "image prune -f") || !strings.Contains(string(b), "--force-recreate") || !strings.Contains(string(b), " build communication-hub toolhub") || !strings.Contains(string(b), "--no-deps communication-hub toolhub") || !strings.Contains(string(b), "telegram-account.Dockerfile") || strings.Contains(string(b), "prepare") || strings.Contains(string(b), "FOWNER") || strings.Contains(string(b), "career") {
+	if !strings.Contains(string(b), filepath.Join(d, "generated", "compose.prod.yaml")) || !strings.Contains(string(b), "ENV DOCKER_BUILDKIT=1 COMPOSE_BAKE=true COMPOSE_DOCKER_CLI_BUILD=1") || !strings.Contains(string(b), "image prune -f") || !strings.Contains(string(b), "--force-recreate") || !strings.Contains(string(b), "build --target prod-control") || !strings.Contains(string(b), "--no-deps communication-hub toolhub") || !strings.Contains(string(b), "telegram-account.Dockerfile") || strings.Contains(string(b), "prepare") || strings.Contains(string(b), "FOWNER") || strings.Contains(string(b), "career") {
 		t.Fatal(string(b))
 	}
 	for _, fail := range []string{"build", "up"} {
@@ -211,7 +211,7 @@ func TestBuildCoversRuntimeTagWhenRuntimeNotRendered(t *testing.T) {
 		t.Fatal(err)
 	}
 	calls, _ = os.ReadFile(log)
-	if !strings.Contains(string(calls), " build communication-hub") || !strings.Contains(string(calls), "build --target prod-core -t hermes-hub:0.5.0-prod-core") || strings.Contains(string(calls), "build --target prod-control") || strings.Contains(string(calls), "prune") {
+	if strings.Contains(string(calls), " build communication-hub") || !strings.Contains(string(calls), "build --target prod-core -t hermes-hub:0.5.0-prod-core") || strings.Contains(string(calls), "build --target prod-control") || strings.Contains(string(calls), "prune") {
 		t.Fatalf("service build also built unrelated images: %s", calls)
 	}
 	if err := os.WriteFile(log, nil, 0600); err != nil {
@@ -221,7 +221,7 @@ func TestBuildCoversRuntimeTagWhenRuntimeNotRendered(t *testing.T) {
 		t.Fatal(err)
 	}
 	calls, _ = os.ReadFile(log)
-	if strings.Count(string(calls), "build --target prod-core -t hermes-hub:0.5.0-prod-core") != 1 || strings.Count(string(calls), "build --target prod-control -t hermes-hub:0.5.0-prod-control") != 1 || strings.Contains(string(calls), "build --target prod -t hermes-hub:0.5.0-prod") {
+	if strings.Count(string(calls), "build --target prod-core -t hermes-hub:0.5.0-prod-core") != 1 || strings.Count(string(calls), "build --target prod-control -t hermes-hub:0.5.0-prod-control") != 1 || strings.Contains(string(calls), "build --target prod -t hermes-hub:0.5.0-prod") || strings.Contains(string(calls), " build communication-hub") || strings.Contains(string(calls), " build toolhub") {
 		t.Fatalf("multi-service build missed or duplicated a target: %s", calls)
 	}
 	if err := os.WriteFile(log, nil, 0600); err != nil {

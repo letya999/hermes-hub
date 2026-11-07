@@ -773,11 +773,6 @@ func run(ctx context.Context, args []string) error {
 					}
 				}()
 			}
-			if *imageTarget == "" {
-				if err = docker(append([]string{"build"}, f.Args()...)...); err != nil {
-					return err
-				}
-			}
 			// CLI sandbox cells run on dedicated images the controller
 			// resolves by tag at start; compose services never build them.
 			rootAbs, err := filepath.Abs(*root)
@@ -799,13 +794,24 @@ func run(ctx context.Context, args []string) error {
 				}
 			}
 			stages := map[string]bool{}
+			composeSelected := []string{}
 			for _, name := range selected {
 				service, _ := services[name].(stack.M)
 				image, _ := service["image"].(string)
+				stageImage := false
 				for _, stage := range []string{"core", "control", "browser", "knowledge"} {
 					if image == "hermes-hub:0.5.0-"+*environment+"-"+stage {
 						stages[stage] = true
+						stageImage = true
 					}
+				}
+				if !stageImage {
+					composeSelected = append(composeSelected, name)
+				}
+			}
+			if *imageTarget == "" && len(composeSelected) > 0 {
+				if err = docker(append([]string{"build"}, composeSelected...)...); err != nil {
+					return err
 				}
 			}
 			for _, stage := range []string{"core", "control", "browser", "knowledge"} {
