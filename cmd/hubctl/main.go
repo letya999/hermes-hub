@@ -785,6 +785,38 @@ func run(ctx context.Context, args []string) error {
 				return err
 			}
 			dockerfile := filepath.Join(rootAbs, "docker", "Dockerfile")
+			// Managed Compose services carry fixed hub image tags without build sections.
+			// Build the selected tags explicitly; Compose alone reports a no-op.
+			envSettings, readErr := stack.ReadEffective(*dir, *environment)
+			if readErr != nil {
+				return readErr
+			}
+			services, _ := stack.Compose(envSettings, rootAbs, abs)["services"].(stack.M)
+			selected := f.Args()
+			if len(selected) == 0 && *imageTarget == "" {
+				for name := range services {
+					selected = append(selected, name)
+				}
+			}
+			stages := map[string]bool{}
+			for _, name := range selected {
+				service, _ := services[name].(stack.M)
+				image, _ := service["image"].(string)
+				for _, stage := range []string{"core", "control", "browser", "knowledge"} {
+					if image == "hermes-hub:0.5.0-"+*environment+"-"+stage {
+						stages[stage] = true
+					}
+				}
+			}
+			for _, stage := range []string{"core", "control", "browser", "knowledge"} {
+				if !stages[stage] {
+					continue
+				}
+				image := "hermes-hub:0.5.0-" + *environment + "-" + stage
+				if err := dockerCmd("build", "--target", *environment+"-"+stage, "-t", image, "-f", dockerfile, rootAbs).Run(); err != nil {
+					return fmt.Errorf("build %s: %w", image, err)
+				}
+			}
 			for _, stage := range []string{"cli-tools", "cell-proxy"} {
 				if len(f.Args()) > 0 || (*imageTarget != "" && *imageTarget != stage) {
 					continue
@@ -798,11 +830,7 @@ func run(ctx context.Context, args []string) error {
 			// Supervisor and managed renders drop the hermes-runtime service,
 			// so no compose build section produces the tag there — build it
 			// explicitly like the cell images above.
-			envSettings, readErr := stack.ReadEffective(*dir, *environment)
-			if readErr != nil {
-				return readErr
-			}
-			if services, ok := stack.Compose(envSettings, rootAbs, abs)["services"].(stack.M); ok && (len(f.Args()) == 0 && *imageTarget == "" && stack.AgentImageRequired(envSettings, services) || *imageTarget == "runtime") {
+			if len(f.Args()) == 0 && *imageTarget == "" && stack.AgentImageRequired(envSettings, services) || *imageTarget == "runtime" {
 				image := "hermes-hub:0.5.0-" + *environment
 				if err := dockerCmd("build", "--target", *environment, "-t", image, "-f", dockerfile, rootAbs).Run(); err != nil {
 					return fmt.Errorf("build %s: %w", image, err)

@@ -211,8 +211,18 @@ func TestBuildCoversRuntimeTagWhenRuntimeNotRendered(t *testing.T) {
 		t.Fatal(err)
 	}
 	calls, _ = os.ReadFile(log)
-	if !strings.Contains(string(calls), " build communication-hub") || strings.Contains(string(calls), "build --target") || strings.Contains(string(calls), "prune") {
+	if !strings.Contains(string(calls), " build communication-hub") || !strings.Contains(string(calls), "build --target prod-core -t hermes-hub:0.5.0-prod-core") || strings.Contains(string(calls), "build --target prod-control") || strings.Contains(string(calls), "prune") {
 		t.Fatalf("service build also built unrelated images: %s", calls)
+	}
+	if err := os.WriteFile(log, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(context.Background(), []string{"build", "--dir", d, "--root", "../..", "communication-hub", "toolhub"}); err != nil {
+		t.Fatal(err)
+	}
+	calls, _ = os.ReadFile(log)
+	if strings.Count(string(calls), "build --target prod-core -t hermes-hub:0.5.0-prod-core") != 1 || strings.Count(string(calls), "build --target prod-control -t hermes-hub:0.5.0-prod-control") != 1 || strings.Contains(string(calls), "build --target prod -t hermes-hub:0.5.0-prod") {
+		t.Fatalf("multi-service build missed or duplicated a target: %s", calls)
 	}
 	if err := os.WriteFile(log, nil, 0600); err != nil {
 		t.Fatal(err)
