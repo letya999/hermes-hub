@@ -24,11 +24,17 @@ validation:
   documents: passed_2026-11-05
   just_check: passed_2026-11-07
   affected_tests: passed_2026-11-07
-  go_check: race_shuffle_coverage_85_48pct_passed_current_tree_2026-11-07
+  go_check: race_shuffle_coverage_85_48pct_passed_integrated_code_2026-11-07
+  lint: passed_2026-11-07
+  docs_check: passed_2026-11-07
+  config_check: passed_2026-11-07
   docker_check: not_run_scoped_image_smoke_86c7f9c6_2026-11-07
   red_team: not_started
   live_acceptance: partial_2026-11-07
+  issue_audit: all_20_github_issues_open_2026-11-07
 evidence:
+  - "2026-11-07 integrated local quality pass: just go-check exited 0 with race/shuffle and 85.48% own Go coverage; just check, just lint (staticcheck/gosec), just docs-check (actionlint) and just config-check each exited 0. Remote CI requires a published SHA; the full seven-image local Docker gate was not run. Scoped image smoke does not substitute for either."
+  - "2026-11-07 issue-by-issue audit: fetched all GitHub acceptance checklists #508–#527; all 20 remain open. Local tests and scoped live ToolHub/memory smoke do not cover the full six-authored/group/capture/due/dreaming fault matrix. A terminal synthetic run was checked through supervisor; its managed runtime had no /vault mount. The explicit per-issue gap table is in evidence-526.md."
   - "2026-11-07 scoped Docker image smoke from code commit 86c7f9c6: control/core/runtime built once by explicit targets, selected existing containers and a managed context used the resulting image IDs, and live ToolHub CRUD passed during the run. The model run did not complete; seven-image Docker gate, full #526 fault matrix and remote CI remain open. Exact IDs and commands in evidence-526.md."
   - "2026-11-07 continuation: scoped control/core Docker build and existing synthetic stack reuse; live managed ToolHub routine, assignment and watch CRUD passed. Generated model fixture lacks private endpoint admission, so the model run failed and six-authored-only acceptance remains open. Full race/shuffle/coverage passed 85.46%; staticcheck, gosec, docs and config passed after cleanup. Exact-SHA Docker and remote CI remain unverified; see evidence-526.md."
   - "2026-11-07 #526 clean-commit continuation: c079f375 rebuilt by hubctl build to runtime image sha256:337228f880ffb7003aa952d4be7a8e427387823b7b4341bd6dc84524c2800ebe; two Docker-inspected managed contexts used that image. Both users passed live fact, truth proposal, owner confirmation, replay denial, foreign confirmation denial and stale-base denial. Revoked synthetic memory right blocked a current-base proposal. Details and remaining boundaries are in evidence-526.md."
@@ -50,5 +56,5 @@ evidence:
   - "2026-11-05: Cross-stage audit and handoff recorded under CHG-0281. Acceptance plan strengthened for real process exit status, clean passport-only lifecycle, exact-profile rollback and actual ToolHub memory execution. Stage implementation remains not_started."
 remaining: [acceptance_526, implementation_527, quality_gates, live_acceptance]
 limitations:
-  - "Unfinished ownership/authority changes prevent acceptance; full just check success, current-tree coverage/Docker gate after the org-policy source edit, catalog rebind and two-user live provider checks remain unverified. The previous tree passed own Go coverage 85.98% and the Docker gate with local fixtures."
+  - "Local Go quality gates pass at 85.48% own coverage, but the full seven-image Docker gate, published-SHA CI, six-authored-input two-user fault matrix, due work during communication outage and two-user dreaming acceptance remain unverified."
 

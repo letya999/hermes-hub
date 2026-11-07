@@ -56,3 +56,36 @@ Local validation on this diff: `just check` and affected `just test` packages pa
 `hubctl build --dir .work/tmp/m32-real/spaces/zzm32f --env prod toolhub communication-hub supervisor model-relay` exited 0 after the duplicate Compose-stage build fix. `hubctl build --image runtime` exited 0. Core, control and runtime image IDs were respectively `sha256:50a71a84057dd86b92fae3afeab24e460db01fbb90ef42c4498d1a02152eaf49`, `sha256:f933ada23e64a606bad3966ff0204ca4054a52de10eb1f50337cfa1d2240f57e`, and `sha256:60103b1f96845c0c75bf167d7a6bd099a5fc2ab815a7282386fda06274fa6e63`. The source checkout was clean except for the preexisting untracked `hubctl.exe` when built.
 
 Scoped `hubctl up --no-build` recreated the existing synthetic ToolHub, communication, supervisor and model-relay containers; `zzm32g` model-relay was recreated separately. Docker inspect showed the selected control/core containers using those exact image IDs. An existing ignored supervisor port override was reapplied without a build to permit host-side acceptance calls. Public MCP projected memory, routine, assignment and watch tools. A fresh managed context and its control sidecar both used the runtime image ID above; while the run was active, routine/assignment/watch list, create, read where applicable, and remove calls succeeded through ToolHub. The model run did not complete because its old generated registry still rejects the private local fixture. `just docker-clean` exited 0. This is scoped image/tool smoke, not the seven-image Docker gate, CI acceptance, or a pass for the remaining #526 fault cases. This evidence-only update comes after the image build and therefore is not itself inside that code SHA.
+
+## Issue-by-issue acceptance audit, 2026-11-07
+
+The GitHub source of truth was read for all 20 issues; #508–#527 are all open. Earlier CHG test results are implementation evidence, not acceptance of this integrated revision. The following gaps are against each issue's published acceptance checklist.
+
+| Issue | Local evidence on the integration branch | Acceptance still missing |
+| --- | --- | --- |
+| #508 | Governed settings publisher and regression tests | Live six-authored edit/restart and retired-override proof |
+| #509 | Scope enforcement tests | Live open-session narrowing and separate configure/use revocation |
+| #510 | Selection/removal regression tests | Live open-session connector/raw-MCP removal and re-add |
+| #511 | Publication pause/concurrency tests | Integrated live old/new snapshot observation at every step |
+| #512 | Crash/recovery fault tests | Integrated live interrupted apply and concurrent revocation |
+| #513 | Per-user vault resolver tests; two live private memory markers | Live wrong-environment/traversal and independent lock fault cases |
+| #514 | Exact-run denial tests; live foreign-run denial | Concurrent private/group run admission matrix |
+| #515 | ToolHub search tests; two live private own-marker searches | Live disable and revoke matrix on the final integrated revision |
+| #516 | Temporary-vault HTTP lost-ack/restart tests | Real-container capture fault and outage recovery |
+| #517 | ToolHub CORE/recall tests; no runtime vault mount observed | Concurrent live private/group prompt marker check |
+| #518 | Writer/retry/revocation tests; live remember and own marker | Live crash/retry at writer commit barrier |
+| #519 | Proposal/confirmation tests; live owner, foreign, stale, replay and revoke checks | Live crash between write and receipt |
+| #520 | Retired OpenKnowledge code/tests; managed runtime mount inspected | Final image mount/direct-write proof in the complete Docker gate |
+| #521 | Automation host/clock race tests; live CRUD through ToolHub | Integrated competing tick/reentrant recovery test |
+| #522 | Durable host tests; live ToolHub CRUD | Real-container lost dispatch ack, restart and unavailable delivery |
+| #523 | ToolHub owner code/tests; live routine/assignment/watch CRUD | Due work with communication down, claim/restart and deferred delivery |
+| #524 | Protected day routine and local fixture tests | Two live users in different zones, DST and config-change matrix |
+| #525 | Single-user fixture rollup/digest path | Two-user live crash/revoke/outage matrix |
+| #526 | Two private managed runs, memory checks, scoped image/tool smoke | Full six-authored, group, capture, due, dreaming and fault matrix |
+| #527 | Fast `just check`, affected tests, prior local coverage and scoped images | Final seven-image Docker gate, published CI, complete #526 and CHG closure |
+
+The last synthetic managed job reached terminal `failed` after the model fixture rejected its private address. A cancellation through the supervisor returned HTTP 200 for the terminal job; no live run remains in progress. The warm managed context and control sidecar may remain until the configured idle timeout. Inspecting their mount destinations showed no `/vault` mount. The selected synthetic communication-hub, ToolHub, supervisor and model-relay containers were still up when inspected; cliproxy was absent from this scoped up. No personal space or broad Docker cleanup was touched.
+
+## Current local quality gates
+
+On the integrated code with the audit evidence above in the working tree, `just go-check` exited 0 with race/shuffle and **85.48% own Go statement coverage**. `just check` exited 0 after the audit edit; `just lint` (including staticcheck and gosec), `just docs-check` (including actionlint), and `just config-check` each exited 0. These are local source checks. No remote CI run exists for this unpublished branch, and the seven-image Docker acceptance gate was not run after the latest code edits. The scoped exact-code-commit image smoke described above is narrower.
