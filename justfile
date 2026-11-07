@@ -21,7 +21,7 @@ check:
 
 # Run the affected packages explicitly; the full suite runs in CI.
 test +packages:
-    go test -short -p=2 -timeout=2m {{packages}}
+    go run ./cmd/devcheck test {{packages}}
 
 # Explicit exhaustive local fallback when CI is unavailable.
 [unix]

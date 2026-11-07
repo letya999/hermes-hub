@@ -41,7 +41,10 @@ type eventCardState struct {
 }
 
 func (h *Host) RoutineCard(ctx context.Context, auth identity.Envelope, id string) (routineCard, error) {
-	e, err := h.authorize(auth, "read")
+	if auth.PrincipalID == "" || auth.Environment != "" && auth.Environment != h.cfg.Environment {
+		return routineCard{}, errUnauthorized
+	}
+	e, err := h.engineFor(auth.PrincipalID)
 	if err != nil {
 		return routineCard{}, err
 	}
@@ -56,6 +59,9 @@ func (h *Host) RoutineCard(ctx context.Context, auth identity.Envelope, id strin
 	}
 	if err != nil || item.ScheduleID != id || item.Envelope.PrincipalID != auth.PrincipalID || item.Envelope.ContextID != auth.ContextID {
 		return routineCard{}, routines.ErrRoutineNotOwned
+	}
+	if _, err := h.authorize(auth, scheduleOperation(item)); err != nil {
+		return routineCard{}, err
 	}
 	watch, err := e.LoadWatchState(id)
 	if err != nil {

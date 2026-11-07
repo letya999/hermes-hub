@@ -634,10 +634,10 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			M{"type": "volume", "source": "communication-hub-data", "target": "/legacy-communication", "read_only": true},
 			M{"type": "bind", "source": filepath.ToSlash(GeneratedEffectiveSkillsDir(dir)), "target": "/skills-effective", "read_only": true},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "skills")), "target": "/skills-store", "read_only": true}}
-		if info, err := os.Lstat(filepath.Join(dir, "automation-routing")); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+		if info, err := os.Lstat(filepath.Join(dir, "automation-routing")); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 { // #nosec G703 -- dir is the operator-selected space root; Lstat rejects a symlink
 			toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "automation-routing")), "target": "/automation-routing", "read_only": true})
 		}
-		if info, err := os.Lstat(filepath.Join(dir, "automation", s.Environment)); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+		if info, err := os.Lstat(filepath.Join(dir, "automation", s.Environment)); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 { // #nosec G703 -- fixed subpath under the operator-selected space root
 			toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "automation", s.Environment)), "target": "/automation-owners/" + s.User})
 		}
 		// Per-principal skill leases (R8.3): a shared toolhub resolves each
@@ -657,7 +657,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 					}
 					if sibling.Name() != s.User {
 						ownerRoot := filepath.Join(parent, sibling.Name(), "automation", s.Environment)
-						if info, err := os.Lstat(ownerRoot); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+						if info, err := os.Lstat(ownerRoot); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 { // #nosec G703 -- sibling is a validated directory entry under the operator-owned spaces root
 							toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(ownerRoot), "target": "/automation-owners/" + sibling.Name()})
 						}
 					}
@@ -677,7 +677,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 						}
 					}
 					callerAuth := filepath.Join(parent, sibling.Name(), "model-relay-caller.auth")
-					if info, err := os.Lstat(callerAuth); err == nil && info.Mode().IsRegular() {
+					if info, err := os.Lstat(callerAuth); err == nil && info.Mode().IsRegular() { // #nosec G703 -- sibling is a validated directory entry under the operator-owned spaces root
 						toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(callerAuth), "target": "/model-relay-callers/" + sibling.Name() + "/model-relay-caller.auth", "read_only": true})
 					}
 					view := filepath.Join(parent, sibling.Name(), "generated", "skills-effective")

@@ -89,6 +89,7 @@ var Consumers = map[string]Consumer{
 	"models.services":                          {"model-relay", EffectRecreate},
 	"models.services.*.via":                    {"model-relay", EffectRecreate},
 	"models.services.*.endpoint":               {"model-relay", EffectRecreate},
+	"models.services.*.allow_private":          {"model-relay", EffectRecreate},
 	"models.services.*.auth.upstream.kind":     {"model-relay", EffectRecreate},
 	"models.services.*.auth.upstream.ref":      {"model-relay", EffectRecreate},
 	"models.services.*.auth.proxy_access.kind": {"model-relay", EffectRecreate},

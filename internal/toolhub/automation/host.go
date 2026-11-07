@@ -26,7 +26,17 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
 
-const capability = "automation"
+const capability = "tasks"
+
+func scheduleOperation(item commodel.Schedule) string {
+	if item.AssignmentID != "" {
+		return "delegate"
+	}
+	if item.JobKind == "event" {
+		return "observe"
+	}
+	return "schedule"
+}
 
 var errUnauthorized = errors.New("automation: unauthorized")
 
@@ -287,7 +297,10 @@ func (h *Host) admitEventJob(j commodel.Job, sourceOccurrenceID string) (bool, e
 // authorize is the single gate for user-facing operations: the caller's
 // channel envelope selects a principal, but the ToolHub-enrolled envelope
 // supplies the managed profile and environment for the live rights decision.
-func (h *Host) authorize(auth identity.Envelope, op string) (*routines.Engine, error) {
+func (h *Host) authorize(auth identity.Envelope, operation string) (*routines.Engine, error) {
+	if operation == "read" || operation == "write" {
+		operation = "schedule"
+	}
 	if auth.PrincipalID == "" || (auth.Environment != "" && auth.Environment != h.cfg.Environment) {
 		return nil, errUnauthorized
 	}
@@ -295,18 +308,36 @@ func (h *Host) authorize(auth identity.Envelope, op string) (*routines.Engine, e
 	if err != nil {
 		return nil, err
 	}
-	dec, err := h.cfg.Store.Decide(policy, capability, op, "", h.now())
+	dec, err := h.cfg.Store.Decide(policy, capability, operation, "", h.now())
 	if err != nil || !dec.Allow {
 		return nil, errUnauthorized
 	}
 	return h.engineFor(auth.PrincipalID)
 }
 
+func (h *Host) authorizeSchedule(auth identity.Envelope, id string) (*routines.Engine, commodel.Schedule, error) {
+	if auth.PrincipalID == "" || (auth.Environment != "" && auth.Environment != h.cfg.Environment) || !commodel.IDPattern.MatchString(id) {
+		return nil, commodel.Schedule{}, errUnauthorized
+	}
+	e, err := h.engineFor(auth.PrincipalID)
+	if err != nil {
+		return nil, commodel.Schedule{}, err
+	}
+	item, err := e.LoadSchedule(id)
+	if err != nil || item.Envelope.PrincipalID != auth.PrincipalID || item.Envelope.ContextID != auth.ContextID {
+		return nil, commodel.Schedule{}, routines.ErrRoutineNotOwned
+	}
+	if _, err := h.authorize(auth, scheduleOperation(item)); err != nil {
+		return nil, commodel.Schedule{}, err
+	}
+	return e, item, nil
+}
+
 // authorizeJob is the engine's pre-admission gate for background
 // execution: it re-decides the live right on the persisted job envelope —
 // never on tool-call arguments — so a grant revoked between schedule
 // creation and the due tick blocks the occurrence instead of dispatching.
-func (h *Host) authorizeJob(job commodel.Job) error {
+func (h *Host) authorizeJob(job commodel.Job, scheduleID ...string) error {
 	env := job.Envelope
 	if !identity.ValidID(env.PrincipalID) || (env.Environment != "" && env.Environment != h.cfg.Environment) {
 		return errUnauthorized
@@ -315,7 +346,33 @@ func (h *Host) authorizeJob(job commodel.Job) error {
 	if err != nil {
 		return err
 	}
-	dec, err := h.cfg.Store.Decide(policy, capability, "write", "", h.now())
+	operation := "schedule"
+	if job.AssignmentID != "" {
+		operation = "delegate"
+	} else {
+		id := job.ID
+		bound := len(scheduleID) != 0
+		if len(scheduleID) != 0 {
+			id = scheduleID[0]
+		} else if id != "" {
+			var occurrence commodel.RoutineOccurrence
+			if err := loadJSON(filepath.Join(h.ownerRoot(env.PrincipalID), "occurrences", commodel.FileID(id)+".json"), &occurrence); err == nil && occurrence.Job.ID == id && occurrence.Job.PrincipalID == env.PrincipalID {
+				id = occurrence.ScheduleID
+				bound = true
+			}
+		}
+		if id != "" && commodel.IDPattern.MatchString(id) {
+			var item commodel.Schedule
+			if err := loadJSON(filepath.Join(h.ownerRoot(env.PrincipalID), "schedules", commodel.FileID(id)+".json"), &item); err == nil && item.ScheduleID == id && item.Envelope.PrincipalID == env.PrincipalID {
+				operation = scheduleOperation(item)
+			} else if bound {
+				return errUnauthorized
+			}
+		} else if bound {
+			return errUnauthorized
+		}
+	}
+	dec, err := h.cfg.Store.Decide(policy, capability, operation, "", h.now())
 	if err != nil || !dec.Allow {
 		return errUnauthorized
 	}
@@ -343,7 +400,7 @@ func (h *Host) authorizeDueJob(ctx context.Context, job commodel.Job) error {
 // check plus the live channel binding — a stale task/topic pointer must block
 // the schedule before its reminder or agent job is ever admitted.
 func (h *Host) authorizeScheduleJob(ctx context.Context, scheduleID string, job commodel.Job) error {
-	if err := h.authorizeJob(job); err != nil {
+	if err := h.authorizeJob(job, scheduleID); err != nil {
 		return err
 	}
 	return h.cfg.AuthorizeChannel(ctx, scheduleID, job)
@@ -388,16 +445,19 @@ func (h *Host) RecordDeliveryOutcome(ctx context.Context, auth identity.Envelope
 	if status != "delivered" && status != "uncertain" {
 		return errors.New("automation: invalid delivery outcome")
 	}
-	eng, err := h.authorize(auth, "write")
-	if err != nil {
-		return err
-	}
 	var occurrence commodel.RoutineOccurrence
 	if err := loadJSON(filepath.Join(h.ownerRoot(auth.PrincipalID), "occurrences", commodel.FileID(occurrenceID)+".json"), &occurrence); err != nil {
 		return errUnauthorized
 	}
 	if occurrence.Job.ID != occurrenceID || occurrence.Job.PrincipalID != auth.PrincipalID {
 		return errUnauthorized
+	}
+	if err := h.authorizeDueJob(ctx, occurrence.Job); err != nil {
+		return err
+	}
+	eng, err := h.engineFor(auth.PrincipalID)
+	if err != nil {
+		return err
 	}
 	digest := routines.RoutineFailureDigest(occurrenceID, text)
 	if status == "uncertain" {
@@ -450,6 +510,9 @@ func (h *Host) submit(ctx context.Context, principal, key string) error {
 		return err
 	}
 	if occurrence.Job.ID != sourceID || occurrence.Job.PrincipalID != in.Job.PrincipalID || occurrence.Job.ContextID != in.Job.ContextID || occurrence.Job.DeliveryTargetID != in.Job.DeliveryTargetID || !e.OccurrenceCurrent(occurrence) {
+		return nil
+	}
+	if err := h.authorizeJob(in.Job, occurrence.ScheduleID); err != nil {
 		return nil
 	}
 	schedule, err := e.LoadSchedule(occurrence.ScheduleID)
@@ -725,7 +788,7 @@ func (h *Host) CreateSchedule(ctx context.Context, auth identity.Envelope, in co
 }
 
 func (h *Host) CheckCreationReplay(ctx context.Context, auth identity.Envelope, in commodel.Schedule) (commodel.Schedule, bool, error) {
-	e, err := h.authorize(auth, "write")
+	e, err := h.authorize(auth, scheduleOperation(in))
 	if err != nil {
 		return commodel.Schedule{}, false, err
 	}
@@ -743,7 +806,7 @@ func (h *Host) CheckCreationReplay(ctx context.Context, auth identity.Envelope, 
 }
 
 func (h *Host) CreateScheduleWithBaseline(ctx context.Context, auth identity.Envelope, in commodel.Schedule, nativeCron string, baseline *string) (commodel.Schedule, error) {
-	e, err := h.authorize(auth, "write")
+	e, err := h.authorize(auth, scheduleOperation(in))
 	if err != nil {
 		return commodel.Schedule{}, err
 	}
@@ -763,7 +826,7 @@ func (h *Host) CreateScheduleWithBaseline(ctx context.Context, auth identity.Env
 // Recover reloads durable state and reconciles un-acked intents — the
 // restart path after process loss.
 func (h *Host) CreateAssignment(ctx context.Context, auth identity.Envelope, in commodel.Assignment) (commodel.Assignment, bool, error) {
-	e, err := h.authorize(auth, "write")
+	e, err := h.authorize(auth, "delegate")
 	if err != nil {
 		return commodel.Assignment{}, false, err
 	}
@@ -771,7 +834,7 @@ func (h *Host) CreateAssignment(ctx context.Context, auth identity.Envelope, in 
 }
 
 func (h *Host) LoadAssignment(ctx context.Context, auth identity.Envelope, id string) (commodel.Assignment, error) {
-	e, err := h.authorize(auth, "read")
+	e, err := h.authorize(auth, "delegate")
 	if err != nil {
 		return commodel.Assignment{}, err
 	}
@@ -779,7 +842,7 @@ func (h *Host) LoadAssignment(ctx context.Context, auth identity.Envelope, id st
 }
 
 func (h *Host) RecordAssignmentProgress(ctx context.Context, auth identity.Envelope, id string, expected uint64, jobID, summary, finding, nextStep string, complete bool) (commodel.Assignment, error) {
-	e, err := h.authorize(auth, "write")
+	e, err := h.authorize(auth, "delegate")
 	if err != nil {
 		return commodel.Assignment{}, err
 	}
@@ -802,7 +865,7 @@ func (h *Host) RecordAssignmentProgress(ctx context.Context, auth identity.Envel
 }
 
 func (h *Host) ApplyAssignment(ctx context.Context, auth identity.Envelope, id string, expected ...uint64) (commodel.Assignment, error) {
-	e, err := h.authorize(auth, "write")
+	e, err := h.authorize(auth, "delegate")
 	if err != nil {
 		return commodel.Assignment{}, err
 	}
@@ -810,7 +873,7 @@ func (h *Host) ApplyAssignment(ctx context.Context, auth identity.Envelope, id s
 }
 
 func (h *Host) UpdateAssignmentPlan(ctx context.Context, auth identity.Envelope, id string, plan commodel.AssignmentPlan, grants commodel.AssignmentGrants, expected ...uint64) (commodel.Assignment, error) {
-	e, err := h.authorize(auth, "write")
+	e, err := h.authorize(auth, "delegate")
 	if err != nil {
 		return commodel.Assignment{}, err
 	}
@@ -818,7 +881,7 @@ func (h *Host) UpdateAssignmentPlan(ctx context.Context, auth identity.Envelope,
 }
 
 func (h *Host) AuthorizeAssignmentGrants(ctx context.Context, auth identity.Envelope, id string, planRev uint64, grants commodel.AssignmentGrants) error {
-	e, err := h.authorize(auth, "write")
+	e, err := h.authorize(auth, "delegate")
 	if err != nil {
 		return err
 	}
@@ -826,7 +889,7 @@ func (h *Host) AuthorizeAssignmentGrants(ctx context.Context, auth identity.Enve
 }
 
 func (h *Host) DeleteAssignment(ctx context.Context, auth identity.Envelope, id string, expected ...uint64) error {
-	e, err := h.authorize(auth, "write")
+	e, err := h.authorize(auth, "delegate")
 	if err != nil {
 		return err
 	}
@@ -834,7 +897,7 @@ func (h *Host) DeleteAssignment(ctx context.Context, auth identity.Envelope, id 
 }
 
 func (h *Host) PauseAssignment(ctx context.Context, auth identity.Envelope, id string, expected ...uint64) error {
-	e, err := h.authorize(auth, "write")
+	e, err := h.authorize(auth, "delegate")
 	if err != nil {
 		return err
 	}
@@ -842,7 +905,7 @@ func (h *Host) PauseAssignment(ctx context.Context, auth identity.Envelope, id s
 }
 
 func (h *Host) ResumeAssignment(ctx context.Context, auth identity.Envelope, id string, expected ...uint64) error {
-	e, err := h.authorize(auth, "write")
+	e, err := h.authorize(auth, "delegate")
 	if err != nil {
 		return err
 	}
@@ -850,7 +913,7 @@ func (h *Host) ResumeAssignment(ctx context.Context, auth identity.Envelope, id 
 }
 
 func (h *Host) CompleteAssignment(ctx context.Context, auth identity.Envelope, id string, expected ...uint64) (commodel.Assignment, error) {
-	e, err := h.authorize(auth, "write")
+	e, err := h.authorize(auth, "delegate")
 	if err != nil {
 		return commodel.Assignment{}, err
 	}
@@ -858,7 +921,7 @@ func (h *Host) CompleteAssignment(ctx context.Context, auth identity.Envelope, i
 }
 
 func (h *Host) SeedWatchBaseline(ctx context.Context, auth identity.Envelope, id, value string, now time.Time) error {
-	e, err := h.authorize(auth, "write")
+	e, _, err := h.authorizeSchedule(auth, id)
 	if err != nil {
 		return err
 	}
@@ -866,7 +929,7 @@ func (h *Host) SeedWatchBaseline(ctx context.Context, auth identity.Envelope, id
 }
 
 func (h *Host) LoadWatchState(ctx context.Context, auth identity.Envelope, id string) (routines.WatchState, error) {
-	e, err := h.authorize(auth, "read")
+	e, _, err := h.authorizeSchedule(auth, id)
 	if err != nil {
 		return routines.WatchState{}, err
 	}
@@ -874,7 +937,7 @@ func (h *Host) LoadWatchState(ctx context.Context, auth identity.Envelope, id st
 }
 
 func (h *Host) IntakeHook(ctx context.Context, auth identity.Envelope, id string, body []byte) error {
-	e, err := h.authorize(auth, "write")
+	e, _, err := h.authorizeSchedule(auth, id)
 	if err != nil {
 		return err
 	}
@@ -886,29 +949,50 @@ func (h *Host) IntakeHook(ctx context.Context, auth identity.Envelope, id string
 }
 
 func (h *Host) ListSchedules(ctx context.Context, auth identity.Envelope) ([]commodel.Schedule, error) {
-	e, err := h.authorize(auth, "read")
+	e, err := h.engineFor(auth.PrincipalID)
 	if err != nil {
 		return nil, err
 	}
-	return e.ListSchedules(auth)
+	items, err := e.ListSchedules(auth)
+	if err != nil {
+		return nil, err
+	}
+	allowed := map[string]bool{}
+	for _, operation := range []string{"schedule", "observe", "delegate"} {
+		_, err := h.authorize(auth, operation)
+		allowed[operation] = err == nil
+	}
+	if !allowed["schedule"] && !allowed["observe"] && !allowed["delegate"] {
+		return nil, errUnauthorized
+	}
+	filtered := items[:0]
+	for _, item := range items {
+		if allowed[scheduleOperation(item)] {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered, nil
 }
 
 func (h *Host) LoadSchedule(ctx context.Context, auth identity.Envelope, id string) (commodel.Schedule, error) {
-	e, err := h.authorize(auth, "read")
-	if err != nil {
-		return commodel.Schedule{}, err
-	}
-	item, err := e.LoadSchedule(id)
-	if err != nil || item.Envelope.PrincipalID != auth.PrincipalID || item.Envelope.ContextID != auth.ContextID {
-		return commodel.Schedule{}, routines.ErrRoutineNotOwned
-	}
-	return item, nil
+	_, item, err := h.authorizeSchedule(auth, id)
+	return item, err
 }
 
 func (h *Host) EditRoutine(ctx context.Context, auth identity.Envelope, id string, patch map[string]json.RawMessage, resume bool, baseline *string) (commodel.Schedule, error) {
-	e, err := h.authorize(auth, "write")
+	e, item, err := h.authorizeSchedule(auth, id)
 	if err != nil {
 		return commodel.Schedule{}, err
+	}
+	if raw, ok := patch["job_kind"]; ok {
+		var kind string
+		if json.Unmarshal(raw, &kind) != nil {
+			return commodel.Schedule{}, errUnauthorized
+		}
+		item.JobKind = kind
+		if _, err := h.authorize(auth, scheduleOperation(item)); err != nil {
+			return commodel.Schedule{}, err
+		}
 	}
 	var user commodel.User
 	if h.cfg.RoutingUser != nil {
@@ -938,7 +1022,7 @@ func (h *Host) ListRoutineDestinations(ctx context.Context, auth identity.Envelo
 }
 
 func (h *Host) PauseSchedule(ctx context.Context, auth identity.Envelope, id string, expected ...uint64) error {
-	e, err := h.authorize(auth, "write")
+	e, _, err := h.authorizeSchedule(auth, id)
 	if err != nil {
 		return err
 	}
@@ -946,7 +1030,7 @@ func (h *Host) PauseSchedule(ctx context.Context, auth identity.Envelope, id str
 }
 
 func (h *Host) UpdateSchedule(ctx context.Context, auth identity.Envelope, id, expression, input string, enabled *bool) (commodel.Schedule, error) {
-	e, err := h.authorize(auth, "write")
+	e, _, err := h.authorizeSchedule(auth, id)
 	if err != nil {
 		return commodel.Schedule{}, err
 	}
@@ -954,7 +1038,7 @@ func (h *Host) UpdateSchedule(ctx context.Context, auth identity.Envelope, id, e
 }
 
 func (h *Host) SnoozeSchedule(ctx context.Context, auth identity.Envelope, id string, until time.Time, expected ...uint64) error {
-	e, err := h.authorize(auth, "write")
+	e, _, err := h.authorizeSchedule(auth, id)
 	if err != nil {
 		return err
 	}
@@ -962,7 +1046,7 @@ func (h *Host) SnoozeSchedule(ctx context.Context, auth identity.Envelope, id st
 }
 
 func (h *Host) DeleteSchedule(ctx context.Context, auth identity.Envelope, id string, expected ...uint64) error {
-	e, err := h.authorize(auth, "write")
+	e, _, err := h.authorizeSchedule(auth, id)
 	if err != nil {
 		return err
 	}
@@ -970,7 +1054,7 @@ func (h *Host) DeleteSchedule(ctx context.Context, auth identity.Envelope, id st
 }
 
 func (h *Host) ListAssignments(ctx context.Context, auth identity.Envelope) ([]commodel.Assignment, error) {
-	e, err := h.authorize(auth, "read")
+	e, err := h.authorize(auth, "delegate")
 	if err != nil {
 		return nil, err
 	}
@@ -978,7 +1062,7 @@ func (h *Host) ListAssignments(ctx context.Context, auth identity.Envelope) ([]c
 }
 
 func (h *Host) CancelAssignment(ctx context.Context, auth identity.Envelope, id string, expected ...uint64) error {
-	e, err := h.authorize(auth, "write")
+	e, err := h.authorize(auth, "delegate")
 	if err != nil {
 		return err
 	}

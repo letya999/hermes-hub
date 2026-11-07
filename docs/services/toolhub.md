@@ -468,14 +468,17 @@ outbox under `root/outbox/` written before any communication call, and a
 per-principal event seen-set under `root/events/`. Background execution runs
 under explicit service authority from the persisted occurrence job — never
 from tool-call arguments and never through the `memory.*` private-run gate.
-User-facing operations (schedule/assignment/watch CRUD, pause/snooze) go
-through `Store.Decide("automation", op)` on the verified envelope, with the
-host environment pinned onto managed envelopes that carry one.
+User-facing routine, assignment, and event-watch operations use the matching
+`tasks.schedule`, `tasks.delegate`, and `tasks.observe` live decisions on the
+verified envelope. Due work and pending dispatches recheck the right of their
+persisted schedule, so revocation fences execution. The host environment is
+pinned onto managed envelopes that carry one.
 `Host.Recover` reloads every principal engine, retries unresolved jobs through
 the supervisor's existing `/v1/jobs` handler, and flushes pending deliveries
 through communication's service-only `/v1/automation/deliveries` handler. A
 lost response reuses the same supervisor job identity; a communication outage
-leaves its delivery intent pending. Per-principal workers let another user's
+leaves its delivery intent pending. The handoff uses `HUB_AUTOMATION_AUTH`;
+the gateway's ordinary control bearer cannot post a delivery. Per-principal workers let another user's
 due job proceed while one runtime or probe is slow. Real handlers have Go/HTTP
 contract tests. The event port shares communication's event parser, saves each
 source batch before sink handoff, runs isolated per-event filters through the

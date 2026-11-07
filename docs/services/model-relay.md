@@ -113,7 +113,8 @@ Custom URLs are fixed HTTP(S) bases without userinfo, query, fragment or parent
 traversal. The configured registry is the endpoint allowlist. DNS is checked
 and pinned at dial time; redirects and environment HTTP proxies are disabled.
 `allow_private: true` is an explicit operator trust exception for a local/LAN
-provider. It permits private and loopback addresses, but not metadata/link-local,
+provider, authored under `models.services.<name>` in a six-passport space. It
+permits private and loopback addresses, but not metadata/link-local,
 multicast or other reserved ranges. Built-in CLIProxy has this local trust.
 
 Every ladder has 1–8 ordered hops — one credential principal per hop.

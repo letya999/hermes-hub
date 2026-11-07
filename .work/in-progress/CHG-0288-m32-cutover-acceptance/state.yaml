@@ -24,11 +24,12 @@ validation:
   documents: passed_2026-11-05
   just_check: passed_2026-11-07
   affected_tests: passed_2026-11-07
-  go_check: stale_after_unregistered_definition_refusal_2026-11-05
+  go_check: race_shuffle_coverage_85_48pct_passed_current_tree_2026-11-07
   docker_check: stale_after_unregistered_definition_refusal_2026-11-05
   red_team: not_started
   live_acceptance: partial_2026-11-07
 evidence:
+  - "2026-11-07 continuation: scoped control/core Docker build and existing synthetic stack reuse; live managed ToolHub routine, assignment and watch CRUD passed. Generated model fixture lacks private endpoint admission, so the model run failed and six-authored-only acceptance remains open. Full race/shuffle/coverage passed 85.46%; staticcheck, gosec, docs and config passed after cleanup. Exact-SHA Docker and remote CI remain unverified; see evidence-526.md."
   - "2026-11-07 #526 clean-commit continuation: c079f375 rebuilt by hubctl build to runtime image sha256:337228f880ffb7003aa952d4be7a8e427387823b7b4341bd6dc84524c2800ebe; two Docker-inspected managed contexts used that image. Both users passed live fact, truth proposal, owner confirmation, replay denial, foreign confirmation denial and stale-base denial. Revoked synthetic memory right blocked a current-base proposal. Details and remaining boundaries are in evidence-526.md."
   - "2026-11-07 existing-space audit: artem_two and artem_main have no authored six-passport directories; artem_two active revision needs 25 modern leaf changes in a scratch compile, while artem_main active bundle fails the strict v2 decoder. Three sibling infra claims were ambiguous and the resolver selected a synthetic space; source now fails closed on ambiguous claims. No user-space writes or Docker changes were made."
   - "2026-11-07 #527 inventory: removed an unused stack.applyPassport legacy fallback; managed runtime reads remain published-revision-only. Governance path no longer falls back to an arbitrary sibling document. Scoped stack, hubctl and migration tests passed; full current-source CI and Docker acceptance remain open."

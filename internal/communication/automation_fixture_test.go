@@ -112,7 +112,7 @@ func automationGatewayFixtureIO(t *testing.T, cfg Config, extra map[string]routi
 		Supervisor:       supervisor,
 		ToolCall:         toolCall,
 		Fetch:            fetch,
-		Communication:    &automation.HTTPCommunicationClient{URL: commServer.URL, Token: g.config.ControlAuth},
+		Communication:    &automation.HTTPCommunicationClient{URL: commServer.URL, Token: "automation-test"},
 		AuthorizeChannel: policy.Authorize,
 		RoutingUser: func(principal string) (commodel.User, error) {
 			user := g.user(principal)

@@ -56,6 +56,12 @@ services:
       - {of: spend_usd, amount: 10, per: 1d}
     models:
       - {id: google/gemini-3.8-flash, reasoning: high}
+  local-fixture:
+    via: openai-compatible
+    endpoint: http://host.docker.internal:18888/v1
+    allow_private: true
+    models:
+      - {id: m}
 `,
 	}
 	for name, body := range docs {
@@ -108,5 +114,8 @@ services:
 	}
 	if len(reg.Switch) != 0 {
 		t.Fatalf("file switch policy emitted — models.* rights own switching: %+v", reg.Switch)
+	}
+	if !reg.Providers["local-fixture"].AllowPrivate || reg.Providers["openrouter-key"].AllowPrivate {
+		t.Fatal("authored local trust exception was lost or granted by default")
 	}
 }

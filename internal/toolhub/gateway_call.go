@@ -302,17 +302,6 @@ func (g *Gateway) checkActivePassport(auth identity.Envelope, revision string) e
 	return nil
 }
 
-func (g *Gateway) requireMemoryEnabled(principal, environment string) error {
-	if g.PassportRoot == "" || !identity.ValidID(principal) || environment == "" {
-		return fmt.Errorf("%w: memory passport unavailable", api.ErrUnauthorized)
-	}
-	eff, err := passportview.LoadEffectiveGenerated(filepath.Join(g.PassportRoot, principal))
-	if err != nil || eff.Header.Metadata.Space != principal || eff.Header.Metadata.Environment != environment || eff.Config.Memory.Enabled == nil || !*eff.Config.Memory.Enabled {
-		return fmt.Errorf("%w: memory disabled", api.ErrUnauthorized)
-	}
-	return nil
-}
-
 // CallAuthorized is the protected host CLI path; it uses the identical
 // authorization, injection, output and audit fences as the MCP handler.
 func (g *Gateway) CallAuthorized(ctx context.Context, auth identity.Envelope, name string, arguments map[string]any) (*mcp.CallToolResult, error) {

@@ -184,14 +184,14 @@ func (c *HTTPCommunicationClient) PostDelivery(ctx context.Context, principal st
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL+"/v1/automation/deliveries", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL+"/v1/automation/deliveries", bytes.NewReader(body)) // #nosec G704 -- c.URL is the operator-rendered communication service URL
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.Token)
 	req.Header.Set("X-Hub-Principal", principal)
-	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req) // #nosec G704 -- request uses the operator-rendered communication service URL
 	if err != nil {
 		return err
 	}

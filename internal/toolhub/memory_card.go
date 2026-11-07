@@ -314,17 +314,6 @@ func slugOf(name, text string) string {
 	return slug
 }
 
-// shaOf returns the governed writer's expected content hash — "" when the
-// file is absent or unreadable.
-func shaOf(root, rel string) string {
-	cur, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
-	if err != nil {
-		return ""
-	}
-	sum := sha256.Sum256(cur)
-	return hex.EncodeToString(sum[:])
-}
-
 func cardFrontmatter(dayKey string, tags []string) string {
 	list := "[]"
 	if len(tags) > 0 {

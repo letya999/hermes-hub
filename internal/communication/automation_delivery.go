@@ -20,7 +20,11 @@ func (g *Gateway) handleAutomationDelivery(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if g.config.ControlAuth == "" || subtle.ConstantTimeCompare([]byte(token), []byte(g.config.ControlAuth)) != 1 {
+	serviceToken := g.config.AutomationAuth
+	if serviceToken == "" {
+		serviceToken = g.config.ControlAuth
+	}
+	if serviceToken == "" || subtle.ConstantTimeCompare([]byte(token), []byte(serviceToken)) != 1 {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}

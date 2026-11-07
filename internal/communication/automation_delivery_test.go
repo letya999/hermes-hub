@@ -21,10 +21,13 @@ func TestAutomationDeliveryHandoffBindsOwnerAndRequestID(t *testing.T) {
 	}
 	alice := User{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}
 	bob := User{ID: "bob", Enabled: true, TelegramIDs: []int64{22}}
-	g := &Gateway{config: Config{ControlAuth: "service", Users: []User{alice, bob}}, spool: spool, users: map[int64]User{11: alice, 22: bob}, now: time.Now}
+	g := &Gateway{config: Config{ControlAuth: "service", AutomationAuth: "automation-service", Users: []User{alice, bob}}, spool: spool, users: map[int64]User{11: alice, 22: bob}, now: time.Now}
 	srv := httptest.NewServer(g.Handler())
 	defer srv.Close()
-	client := automation.HTTPCommunicationClient{URL: srv.URL, Token: "service"}
+	client := automation.HTTPCommunicationClient{URL: srv.URL, Token: "automation-service"}
+	if err := (&automation.HTTPCommunicationClient{URL: srv.URL, Token: "service"}).PostDelivery(context.Background(), "alice", Delivery{ID: "automation-control-token", Channel: "telegram_bot", ChatID: 11, DeliveryTargetID: "telegram-11", Text: "denied"}); err == nil {
+		t.Fatal("ordinary control token admitted a service-only delivery")
+	}
 	delivery := Delivery{ID: "automation-1", Channel: "telegram_bot", ChatID: 11, DeliveryTargetID: "telegram-11", Text: "result"}
 	for i := 0; i < 2; i++ {
 		if err := client.PostDelivery(context.Background(), "alice", delivery); err != nil {

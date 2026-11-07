@@ -41,7 +41,7 @@ func (m *Manager) memoryInstructions(ctx context.Context, request hubruntime.Exe
 	}
 	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, base+"/v1/memory-context", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, base+"/v1/memory-context", bytes.NewReader(body)) // #nosec G704 -- pattern is operator-rendered and principal ID is validated at admission
 	if err != nil {
 		return appendMemoryInstructions(request.Instructions, "", memoryUnavailable)
 	}
@@ -52,7 +52,7 @@ func (m *Manager) memoryInstructions(ctx context.Context, request hubruntime.Exe
 	if client == nil {
 		client = http.DefaultClient
 	}
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) // #nosec G704 -- request target comes from the operator-rendered ToolHub pattern
 	if err != nil {
 		return appendMemoryInstructions(request.Instructions, "", memoryUnavailable)
 	}

@@ -97,11 +97,6 @@ type Spool struct {
 	// onAccepted persists the accepted-turn outbox event before enqueue ack.
 	onAccepted  func(job Job) error
 	onCompleted func(job Job, outcome RunOutcome) error
-	// probeScript, when set, runs a watcher script probe inside the isolated
-	// script runtime: (occurrence, source, fetched input, mount-space flag,
-	// prefetched need results). Nil fails the probe — a script probe without
-	// the supervisor never runs in-process.
-	probeScript func(ctx context.Context, o RoutineOccurrence, src, input string, mountSpace bool, needs []string) (string, error)
 	// refreshHolds, when set (supervised mode), fetches the supervisor's
 	// hold projection at the public enqueue boundary — outside the spool
 	// lock. holdsSnapshot reads the last projection under the lock: an

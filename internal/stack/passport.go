@@ -276,7 +276,7 @@ func passportRegistryLayer(dir, revisionID string) (modelRegistryYAML, error) {
 	layer.Providers = map[string]ModelProvider{}
 	layer.Models = map[string]ModelEntry{}
 	for name, svc := range eff.Models.Services {
-		p := ModelProvider{URL: svc.Endpoint, Via: svc.Via}
+		p := ModelProvider{URL: svc.Endpoint, Via: svc.Via, AllowPrivate: svc.AllowPrivate}
 		if svc.Auth.Upstream != nil {
 			p.UpstreamKind = svc.Auth.Upstream.Kind
 		}

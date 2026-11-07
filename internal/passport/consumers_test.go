@@ -76,6 +76,7 @@ var specEffects = map[string]Effect{
 	"models.services":                          EffectRecreate,
 	"models.services.*.via":                    EffectRecreate,
 	"models.services.*.endpoint":               EffectRecreate,
+	"models.services.*.allow_private":          EffectRecreate,
 	"models.services.*.auth.upstream.kind":     EffectRecreate,
 	"models.services.*.auth.upstream.ref":      EffectRecreate,
 	"models.services.*.auth.proxy_access.kind": EffectRecreate,

@@ -868,15 +868,15 @@ func (st *dayState) save(root, dayKey string) error {
 	}
 	defer os.Remove(f.Name())
 	if err := f.Chmod(0600); err != nil {
-		f.Close()
+		_ = f.Close()
 		return err
 	}
 	if _, err := f.Write(b); err != nil {
-		f.Close()
+		_ = f.Close()
 		return err
 	}
 	if err := f.Sync(); err != nil {
-		f.Close()
+		_ = f.Close()
 		return err
 	}
 	if err := f.Close(); err != nil {

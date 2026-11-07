@@ -35,11 +35,6 @@ type HTTPRunner struct {
 	Voice bool
 }
 
-// instructionCeiling is the runtime admission bound on ExecuteRequest
-// instructions (internal/runtime validateRunRequest): the gateway never
-// submits a field the admission would refuse.
-const instructionCeiling = 4096
-
 // submitRetryBase backs off verified pre-dispatch refusals; identity stays fixed.
 var submitRetryBase = time.Second
 

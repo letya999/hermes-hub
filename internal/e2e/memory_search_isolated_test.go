@@ -44,7 +44,7 @@ func memorySearchAdmit(t *testing.T, store *toolhub.Store, gov *toolhub.Governan
 	}
 	profile := api.CapabilityProfile{Schema: api.SchemaVersion, ProfileID: auth.CapabilityProfile, PrincipalID: auth.PrincipalID,
 		ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, Environment: auth.Environment, Generation: auth.Generation,
-		PolicyVersion: auth.PolicyVersion, PolicyID: "org-default", PolicyRevision: 2,
+		PolicyVersion: auth.PolicyVersion, PolicyID: "org-default", PolicyRevision: 2, PassportRevision: "r-0123456789abcdef",
 		Revision: 1, IssuedBy: "operator", IssuedAt: time.Now().UTC(), Reason: "Reviewed synthetic fixture", Status: api.ActiveStatus,
 		Selections: selections}
 	if err := api.Confirm(&profile, "", time.Unix(1700000000, 0).UTC()); err != nil {
@@ -307,13 +307,13 @@ func TestMemorySearchRoundTripIsolated(t *testing.T) {
 	}
 
 	// Rebind check: the projected surface a managed space binds after the
-	// catalog bump carries the new contract — version 15.0.0 and the
+	// catalog bump carries the new contract — version 16.0.0 and the
 	// runtime:toolhub executor that keeps memory tools out of the runtime.
 	projected, _, err := store.ResolveProjectedTool(users["alice"], "memory_search")
 	if err != nil {
 		t.Fatalf("memory_search not projected for alice: %v", err)
 	}
-	if projected.Version != "15.0.0" || projected.Tool.Executor != "runtime:toolhub" {
+	if projected.Version != "16.0.0" || projected.Tool.Executor != "runtime:toolhub" {
 		t.Fatalf("stale contract projected: version=%s executor=%s", projected.Version, projected.Tool.Executor)
 	}
 

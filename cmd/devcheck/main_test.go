@@ -62,7 +62,7 @@ func TestRunCoverageAndValidation(t *testing.T) {
 	}
 	called := false
 	old := coverTest
-	coverTest = func(name string) *exec.Cmd {
+	coverTest = func(name, _ string) *exec.Cmd {
 		called = true
 		if name != profile && name != lowProfile {
 			t.Fatalf("coverTest(%q)", name)
@@ -122,7 +122,7 @@ func TestRunCoverageAndValidation(t *testing.T) {
 // invocation over ./... so profiles merge natively. A per-package loop re-links the same
 // -coverpkg=./... binary per package (49 serial instrumented runs locally).
 func TestCoverTestBatchesWholeSuite(t *testing.T) {
-	var cmd *exec.Cmd = coverTest("profile.out")
+	var cmd *exec.Cmd = coverTest("profile.out", "testexec")
 	joined := strings.Join(cmd.Args, " ")
 	for _, want := range []string{"-race", "-shuffle=on", "-count=1", "-timeout=10m", "-coverpkg=./...", "-coverprofile=profile.out"} {
 		if !strings.Contains(joined, want) {
@@ -132,8 +132,14 @@ func TestCoverTestBatchesWholeSuite(t *testing.T) {
 	if cmd.Args[len(cmd.Args)-1] != "./..." {
 		t.Fatalf("coverTest must run the whole suite in one invocation, got %v", cmd.Args)
 	}
-	if runtime.GOOS == "windows" && !strings.Contains(joined, "-p=1") {
-		t.Fatalf("coverTest must serialize Windows package binaries: %v", cmd.Args)
+	if runtime.GOOS == "windows" && !strings.Contains(joined, "-p=2") {
+		t.Fatalf("coverTest must bound Windows package concurrency: %v", cmd.Args)
+	}
+	if runtime.GOOS == "windows" && !strings.Contains(joined, "-exec=testexec") {
+		t.Fatalf("coverTest must retry transient Windows executable launch failures: %v", cmd.Args)
+	}
+	if runtime.GOOS == "windows" && !strings.Contains(joined, "-toolexec=testexec") {
+		t.Fatalf("coverTest must retry transient Windows toolchain launch failures: %v", cmd.Args)
 	}
 }
 

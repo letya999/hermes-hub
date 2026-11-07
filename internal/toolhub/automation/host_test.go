@@ -223,9 +223,10 @@ func newHarness(t *testing.T) *harness {
 	store.RightsDoc = api.RightsDoc{
 		Release: "test", DefinitionID: "hub-agent-rights",
 		Capabilities: map[string]api.RightCapability{
-			"automation": {Description: "fixture", Operations: map[string]api.RightOperation{
-				"read":  {Subject: "self", Scope: "none", Issuers: []string{"platform", "operator"}, Effect: "read"},
-				"write": {Subject: "self", Scope: "none", Issuers: []string{"platform", "operator"}, Effect: "write"},
+			"tasks": {Description: "fixture", Operations: map[string]api.RightOperation{
+				"schedule": {Subject: "self", Scope: "none", Issuers: []string{"platform", "operator"}, Effect: "control"},
+				"observe":  {Subject: "self", Scope: "none", Issuers: []string{"platform", "operator"}, Effect: "control"},
+				"delegate": {Subject: "self", Scope: "none", Issuers: []string{"platform", "operator"}, Effect: "control"},
 			}},
 		},
 	}
@@ -245,10 +246,17 @@ func (h *harness) envelope(t *testing.T, principal string) identity.Envelope {
 	return identity.TelegramEnvelope(principal, 11, "rt-"+principal, "policy-1")
 }
 
-func (h *harness) grant(t *testing.T, principal, op string) {
+func (h *harness) grant(t *testing.T, principal, _ string) {
+	t.Helper()
+	for _, operation := range []string{"schedule", "observe", "delegate"} {
+		h.grantRight(t, principal, operation)
+	}
+}
+
+func (h *harness) grantRight(t *testing.T, principal, op string) {
 	t.Helper()
 	h.seq++
-	grant := api.NewRightGrant(fmt.Sprintf("rg-%s-%s-%d", principal, op, h.seq), principal, "automation", op, "", "fixture", "operator", h.now.Add(time.Hour))
+	grant := api.NewRightGrant(fmt.Sprintf("rg-%s-%s-%d", principal, op, h.seq), principal, "tasks", op, "", "fixture", "operator", h.now.Add(time.Hour))
 	if err := api.Confirm(&grant, "operator", h.now); err != nil {
 		t.Fatal(err)
 	}
@@ -257,18 +265,66 @@ func (h *harness) grant(t *testing.T, principal, op string) {
 	}
 }
 
-func (h *harness) revoke(t *testing.T, principal, op string) {
+func (h *harness) revoke(t *testing.T, principal, _ string) {
 	t.Helper()
 	grants, err := h.gov.RightGrants()
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, g := range grants {
-		if g.PrincipalID == principal && g.Operation == op {
+		if g.PrincipalID == principal {
 			if err := h.gov.RevokeRight(g.GrantID, "operator", "revoked", h.now.Add(time.Minute)); err != nil {
 				t.Fatal(err)
 			}
 		}
+	}
+}
+
+func (h *harness) revokeRight(t *testing.T, principal, operation string) {
+	t.Helper()
+	grants, err := h.gov.RightGrants()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range grants {
+		if g.PrincipalID == principal && g.Operation == operation {
+			if err := h.gov.RevokeRight(g.GrantID, "operator", "revoked", h.now.Add(time.Minute)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
+func TestHostUsesCatalogRightsAndFencesRevokedWatch(t *testing.T) {
+	h := newHarness(t)
+	alice := h.envelope(t, "alice")
+	h.grantRight(t, "alice", "observe")
+	host := h.host(t)
+	watch := draft("watch-right", alice)
+	watch.JobKind, watch.Delivery, watch.Sink = "event", "stream", "agent"
+	watch.Expression = "0 10 * * *"
+	watch.Probe = &commodel.WatchProbe{Kind: "mcp_tool", Tool: "events.wait", CursorArg: "after"}
+	created, err := host.CreateSchedule(context.Background(), alice, watch, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.LoadSchedule(context.Background(), alice, created.ScheduleID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.CreateSchedule(context.Background(), alice, draft("routine-denied", alice), ""); err == nil {
+		t.Fatal("observe right admitted a scheduled routine")
+	}
+	if _, _, err := host.CreateAssignment(context.Background(), alice, commodel.Assignment{AssignmentID: "assignment-denied", Envelope: alice, Intent: "watch", Title: "watch"}); err == nil {
+		t.Fatal("observe right admitted an assignment")
+	}
+	h.grantRight(t, "alice", "schedule")
+	job := commodel.Job{Envelope: alice, Trigger: "cron"}
+	if err := host.authorizeJob(job, created.ScheduleID); err != nil {
+		t.Fatal(err)
+	}
+	h.revokeRight(t, "alice", "observe")
+	if err := host.authorizeJob(job, created.ScheduleID); err == nil {
+		t.Fatal("revoked observe right admitted a due watch despite schedule right")
 	}
 }
 

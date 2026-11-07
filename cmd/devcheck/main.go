@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 
@@ -20,16 +21,57 @@ func main() {
 	}
 }
 
+func testExecPath() (string, error) {
+	root, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(root, "go.mod")); err == nil {
+			break
+		}
+		parent := filepath.Dir(root)
+		if parent == root {
+			return "", fmt.Errorf("devcheck: Go module root unavailable")
+		}
+		root = parent
+	}
+	return filepath.Join(root, ".work", "tmp", "devcheck-testexec.exe"), nil
+}
+
+func prepareTestExec() (string, error) {
+	if runtime.GOOS != "windows" {
+		return "", nil
+	}
+	path, err := testExecPath()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", err
+	}
+	build := exec.Command("go", "build", "-o", path, "./cmd/devcheck/testexec")
+	build.Dir = filepath.Dir(filepath.Dir(filepath.Dir(path)))
+	build.Stdout, build.Stderr = os.Stdout, os.Stderr
+	if err := build.Run(); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
 // coverTest runs the whole suite in one invocation like a CI shard
 // (.github/workflows/ci.yml): Go merges the -coverpkg=./... profiles natively.
-// Windows serializes package binaries to avoid intermittent Access is denied
-// when several instrumented tests launch child processes. The old
+// Windows limits package concurrency and retries transient executable launch
+// refusals. The old
 // per-package loop re-linked and ran the same instrumented binary 49 times
 // serially (15-20 min locally).
-var coverTest = func(profile string) *exec.Cmd {
+var coverTest = func(profile, testExec string) *exec.Cmd {
 	args := []string{"test", "-race", "-shuffle=on", "-count=1", "-timeout=10m", "-coverpkg=./...", "-coverprofile=" + profile}
 	if runtime.GOOS == "windows" {
-		args = append(args, "-p=1")
+		args = append(args, "-p=2")
+		if testExec != "" {
+			args = append(args, "-exec="+testExec, "-toolexec="+testExec)
+		}
 	}
 	return exec.Command("go", append(args, "./...")...)
 }
@@ -70,7 +112,11 @@ func run(args []string) error {
 		if parseErr != nil {
 			err = parseErr
 		} else {
-			test := coverTest(args[1])
+			testExec, pathErr := prepareTestExec()
+			if pathErr != nil {
+				return pathErr
+			}
+			test := coverTest(args[1], testExec)
 			test.Stdout, test.Stderr = os.Stdout, os.Stderr
 			if testErr := test.Run(); testErr != nil {
 				err = testErr
@@ -83,6 +129,18 @@ func run(args []string) error {
 				}
 			}
 		}
+	case len(args) > 1 && args[0] == "test":
+		testExec, pathErr := prepareTestExec()
+		if pathErr != nil {
+			return pathErr
+		}
+		flags := []string{"test", "-short", "-p=2", "-timeout=5m"}
+		if testExec != "" {
+			flags = append(flags, "-exec="+testExec, "-toolexec="+testExec)
+		}
+		test := exec.Command("go", append(flags, args[1:]...)...) // #nosec G702 -- local developer package arguments go directly to the fixed go executable, without a shell
+		test.Stdout, test.Stderr = os.Stdout, os.Stderr
+		err = test.Run()
 	case len(args) == 2 && args[0] == "docker-smoke":
 		err = devcheck.DockerSmoke(context.Background(), args[1])
 	case len(args) == 3 && args[0] == "image-budget":

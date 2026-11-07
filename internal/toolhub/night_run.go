@@ -156,11 +156,11 @@ func nightPruneLine(digest string, pr prune.Report, lang locale.Lang) string {
 }
 
 func relayCallerToken(path string) (string, error) {
-	info, err := os.Lstat(path)
+	info, err := os.Lstat(path) // #nosec G703 -- path joins an operator-owned root with a validated principal ID and fixed filename
 	if err != nil || !info.Mode().IsRegular() || info.Size() > 4096 {
 		return "", errors.New("night relay authority unavailable")
 	}
-	body, err := os.ReadFile(path)
+	body, err := os.ReadFile(path) // #nosec G703 -- regular file and size are checked above; parent bind is operator-owned
 	if err != nil {
 		return "", errors.New("night relay authority unavailable")
 	}

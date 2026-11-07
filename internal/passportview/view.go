@@ -286,12 +286,13 @@ type Route struct {
 }
 
 type ModelService struct {
-	Via      string     `yaml:"via"`
-	Endpoint string     `yaml:"endpoint,omitempty"`
-	Auth     Auth       `yaml:"auth,omitempty"`
-	Sharing  string     `yaml:"sharing,omitempty"`
-	Limits   []Limit    `yaml:"limits,omitempty"`
-	Models   []ModelRef `yaml:"models,omitempty"`
+	Via          string     `yaml:"via"`
+	Endpoint     string     `yaml:"endpoint,omitempty"`
+	AllowPrivate bool       `yaml:"allow_private,omitempty"`
+	Auth         Auth       `yaml:"auth,omitempty"`
+	Sharing      string     `yaml:"sharing,omitempty"`
+	Limits       []Limit    `yaml:"limits,omitempty"`
+	Models       []ModelRef `yaml:"models,omitempty"`
 }
 
 // Auth names broker contract refs; secret bytes never enter the passport.
