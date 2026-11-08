@@ -75,7 +75,7 @@ func Run(ctx context.Context, cfg Deployment) error {
 		return err
 	}
 	ec, err := exposure.Load(cfg.ExposureConfig)
-	if err != nil || ec.Provider != "sish" || ec.Zone != cfg.Owner || ec.Relay.Domain != cfg.Domain || len(ec.Endpoints)+len(cfg.Slots) > ec.Max() {
+	if err != nil || !matchingExposure(cfg, ec) {
 		return ErrDenied
 	}
 	allowed := map[string]bool{}
@@ -85,7 +85,7 @@ func Run(ctx context.Context, cfg Deployment) error {
 		}
 		allowed[n] = true
 	}
-	broker, err := credentialbroker.FromEnv("HUB_CREDENTIAL_BROKER_RUNTIME_")
+	broker, err := brokerForExposure(ec)
 	if err != nil {
 		return ErrUnavailable
 	}
@@ -122,6 +122,17 @@ func Run(ctx context.Context, cfg Deployment) error {
 	}
 	defer control.Close()
 	return serveListeners(ctx, service, token, data, control)
+}
+
+func matchingExposure(cfg Deployment, ec *exposure.Config) bool {
+	return ec != nil && ec.Provider == "sish" && ec.Zone == cfg.Zone && ec.Relay != nil && ec.Relay.Domain == cfg.Domain && len(ec.Endpoints)+len(cfg.Slots) <= ec.Max()
+}
+
+func brokerForExposure(ec *exposure.Config) (credentialbroker.Config, error) {
+	if strings.HasPrefix(ec.KeyRef, "file:") {
+		return credentialbroker.Config{}, nil
+	}
+	return credentialbroker.FromEnv("HUB_CREDENTIAL_BROKER_RUNTIME_")
 }
 
 func serveListeners(ctx context.Context, service *Service, token string, data, control net.Listener) error {

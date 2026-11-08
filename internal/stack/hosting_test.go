@@ -33,6 +33,10 @@ func TestHostingReviewedZoneForUnderscoreOwner(t *testing.T) {
 
 func TestSitesSelectionEnablesHosting(t *testing.T) {
 	s := profileSettings("sites=toolhub", "exposure")
+	if s.Has("hosting") {
+		t.Fatal("sites without hosting slots must not start a service")
+	}
+	s.Hosting.Slots = []string{"m32test"}
 	if !s.Has("hosting") {
 		t.Fatal("sites selection must enable hosting service")
 	}

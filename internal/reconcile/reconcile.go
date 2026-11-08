@@ -70,7 +70,14 @@ func Plan(changes []passport.Change, services map[string]passportview.ServiceSpe
 		return a
 	}
 	for _, c := range changes {
+		if c.Path == "config.hosting" {
+			// The typed hosting leaves below own all deployment effects.
+			continue
+		}
 		if strings.HasPrefix(c.Path, "config.hosting.") {
+			if c.Before == c.After {
+				continue
+			}
 			if _, rendered := services["hosting"]; !rendered {
 				continue
 			}

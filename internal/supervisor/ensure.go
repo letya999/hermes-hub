@@ -537,6 +537,7 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	} else {
 		args = append(args, "--mount", "type=bind,src="+filepath.Join(binding.ContextRoot, "workspace")+",dst=/workspace")
 	}
+	args = appendHostingRuntimeMount(args, binding.ContextRoot, env, spawnSettings)
 	if strings.TrimSpace(spawnSettings.GlobalSkillsDir) == "" {
 		spawnSettings.DefaultGlobalSkillsDir(filepath.Join(filepath.Dir(filepath.Dir(binding.ContextRoot)), "config", "skills"))
 		// Same contract as RenderEnvironment: a defaulted platform catalog is
@@ -675,6 +676,13 @@ const controlNetworkName = "hermes-hub-control"
 // executable import path under HERMES_HOME.
 var managedExtensionRootTmpfs = []string{"skills", "hooks", "plugins", "skill-bundles", "scripts", "bin", "node", "lsp"}
 
+func appendHostingRuntimeMount(args []string, root, env string, settings stack.Settings) []string {
+	if !settings.Has("hosting") {
+		return args
+	}
+	return append(args, "--mount", "type=bind,src="+filepath.Join(root, "runtime", "hosting."+env+".key")+",dst=/run/hosting.key,readonly")
+}
+
 // managedRunArgs mirrors the managed Compose service: private managed state
 // layout, read-only effective config, scratch workspace, sealed extension
 // roots and the agent network only. No published port (internal network), no
@@ -716,6 +724,7 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 	} else {
 		args = append(args, "--mount", "type=bind,src="+filepath.Join(managedDir, "workspace")+",dst=/workspace")
 	}
+	args = appendHostingRuntimeMount(args, binding.ContextRoot, env, settings)
 	// Same skill contract as unmanaged spawns: the hub-built effective view
 	// mounts read-only at /skills and a failed build refuses the spawn.
 	if strings.TrimSpace(settings.GlobalSkillsDir) == "" {

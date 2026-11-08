@@ -135,6 +135,7 @@ func TestPlanMemorySwitchStopsExistingWorkers(t *testing.T) {
 func TestPlanHostingChangesReconcileHostingConsumers(t *testing.T) {
 	services := map[string]passportview.ServiceSpec{"hosting": {Mode: "per-space"}, "hermes-runtime": {Mode: "supervised"}}
 	actions := Plan([]passport.Change{
+		ch("config.hosting", "compose", passport.EffectRebuild),
 		ch("config.hosting.slots", "compose", passport.EffectRecreate),
 		ch("config.hosting.image", "compose", passport.EffectRecreate),
 		ch("config.hosting.runtime", "compose", passport.EffectRecreate),
@@ -155,6 +156,19 @@ func TestPlanHostingChangesReconcileHostingConsumers(t *testing.T) {
 	}
 	if got["hosting"] != Recreate || got["*"] != Remove || got["hosting-controller"] != "" {
 		t.Fatalf("hosting image reset did not remove controller: %+v", actions)
+	}
+}
+
+func TestPlanStaticHostingAdditionSkipsEmptyImage(t *testing.T) {
+	services := map[string]passportview.ServiceSpec{"hosting": {Mode: "per-space"}, "hermes-runtime": {Mode: "supervised"}}
+	actions := Plan([]passport.Change{
+		{Path: "config.hosting", Before: "<none>", After: "", Effect: passport.EffectRebuild},
+		{Path: "config.hosting.image", Before: "", After: "", Effect: passport.EffectRecreate},
+		{Path: "config.hosting.runtime", Before: "", After: "", Effect: passport.EffectRecreate},
+		{Path: "config.hosting.slots", Before: "", After: "[m32test]", Effect: passport.EffectRecreate},
+	}, services)
+	if len(actions) != 1 || actions[0].Kind != Recreate || actions[0].Target != "hosting" {
+		t.Fatalf("static hosting addition planned unrelated effects: %+v", actions)
 	}
 }
 
