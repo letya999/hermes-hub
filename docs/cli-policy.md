@@ -1,10 +1,17 @@
 ---
 description: CLI catalog operations, isolated terminal and opt-in package registries.
-last_verified: 2026-10-12
+last_verified: 2026-11-07
 ---
 # CLI policy and operator catalog
 
-`tools.terminal: toolhub` selects the `terminal_exec` scratch executor.
+`tools.terminal: toolhub` selects `terminal_exec` and `terminal_job`. ToolHub
+copies only an admitted workspace subtree into an isolated agent-image
+container and streams bounded output. Commands run with `sh` or `bash`, an
+optional relative `cwd`, stdin and timeout; background commands return a
+job id for poll, send, kill and list. Jobs are bound to the owner, context,
+runtime and tool binding. Revocation cancels the process; ToolHub and Docker
+cleanup verify the container has stopped. Scratch writes are ephemeral and
+are not copied back to the workspace. The current terminal has no network.
 It removes native `terminal` and native `code_execution` on every channel,
 including Telegram and unmanaged supervisor spaces. Scratch execution has
 network none, a read-only root and no Hermes home or control state. It may
@@ -31,10 +38,11 @@ and redacted output. Transport and isolation failures remain distinct errors.
 
 ## Registry permission
 
-Set `cli_registries: [pypi, npm]` in operator-owned `agent.yaml` (or legacy
-`settings.yaml`) and re-render/restart the workload controller. Supported
-values are `pypi`, `npm`, `cargo`, `go`; unknown names and duplicates fail
-validation. Workspace wishes and MCP arguments cannot change this ceiling.
+The current six-passport schema does not expose `cli_registries`; managed
+rendering therefore keeps package registries disabled. Root `agent.yaml`
+and `settings.yaml` are inert and cannot configure this ceiling. The controller
+implementation recognizes `pypi`, `npm`, `cargo`, `go`; unknown or duplicate
+values fail validation. Workspace wishes and MCP arguments cannot widen it.
 Each definition must still list its own exact `egress` hosts; selecting a
 registry does not grant network to other CLI definitions or to the terminal.
 
@@ -54,13 +62,14 @@ separate reviewed egress; a denied host must not be replaced with `*`.
 
 ## Runtime tier and per-principal uid
 
-`cli_runtime` selects the OCI runtime for bounded-cli cells: `runc`
+The controller's `cli_runtime` selects the OCI runtime for bounded-cli cells: `runc`
 (default), `runsc` or `kata`. The Docker daemon must list the runtime; an
 unavailable one fails closed at admission — a cell never silently falls back
 to a weaker tier. `cli_per_principal_uid: true` maps each principal to a
 stable uid in the 20000+ range so files a read-write cell leaves in a
 workspace carry a per-principal owner instead of the shared cli uid. Both
-are operator-owned `agent.yaml` settings; self-service overlays reject them.
+are not exposed by the current six-passport schema. Managed rendering uses
+the default runtime and shared cell UID; retired root settings cannot override them.
 
 ## Lifecycle ladder and pool bounds
 

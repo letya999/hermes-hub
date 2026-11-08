@@ -328,7 +328,7 @@ jobs:
       fail-fast: false
       matrix:
         target: [dev, prod]
-        gate: [smoke, native, supervisor, gateway, capabilities, network, managed, scratch, bench]
+        gate: [smoke, native, supervisor, gateway, capabilities, network, managed, m32, scratch, bench]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -373,6 +373,10 @@ jobs:
             capabilities) go run -tags integration ./cmd/devcheck hermes-capability-contract hermes-hub:test ;;
             network) go run -tags integration ./cmd/devcheck managed-network-canary hermes-hub:test ;;
             managed) go run -tags integration ./cmd/devcheck managed-supervisor-canary hermes-hub:test ;;
+            m32)
+              go run ./cmd/devcheck docker-pull hermes-hub:test-core "$TARGET-core"
+              go run ./cmd/devcheck m32-lifecycle hermes-hub:test "$TARGET"
+              ;;
             scratch)
               go run ./cmd/devcheck docker-pull hermes-hub-cli-tools:test cli-tools
               go run ./cmd/devcheck docker-pull hermes-hub-cell-proxy:test cell-proxy

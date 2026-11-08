@@ -407,13 +407,32 @@ func (m *Manager) respawnHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid respawn request"})
 		return
 	}
-	if !m.rightsGate(w, r, request.PrincipalID, "agents", "restart_self", "runtime") {
+	if !m.applyRespawnAuthorized(r, request.PrincipalID, request.ContextID, request.RuntimeID) &&
+		!m.rightsGate(w, r, request.PrincipalID, "agents", "restart_self", "runtime") {
 		return
 	}
+	applied, err := m.respawnRuntime(request.PrincipalID, request.ContextID, request.RuntimeID)
+	if err != nil {
+		writeRuntimeFailure(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"scheduled": applied, "applied": applied})
+}
+
+// ReconcileSettingsRuntime applies the authenticated local publisher's self-owned
+// runtime effect while its publication journal still blocks external admission.
+func (m *Manager) ReconcileSettingsRuntime(principal string) (bool, error) {
+	if !validID(principal) {
+		return false, errors.New("invalid publication principal")
+	}
+	return m.respawnRuntime(principal, principal, "")
+}
+
+func (m *Manager) respawnRuntime(principal, contextID, runtimeID string) (bool, error) {
 	m.mu.Lock()
 	var entry *runtimeEntry
 	for _, candidate := range m.items {
-		if candidate.Runtime.PrincipalID == request.PrincipalID && candidate.Runtime.ContextID == request.ContextID && (request.RuntimeID == "" || candidate.Runtime.RuntimeID == request.RuntimeID) {
+		if candidate.Runtime.PrincipalID == principal && candidate.Runtime.ContextID == contextID && (runtimeID == "" || candidate.Runtime.RuntimeID == runtimeID) {
 			entry = candidate
 			break
 		}
@@ -423,8 +442,7 @@ func (m *Manager) respawnHTTP(w http.ResponseWriter, r *http.Request) {
 	// new revision anyway.
 	if entry == nil || entry.Container == "" || (entry.State != Ready && entry.State != Idle) || entry.Leases != 0 {
 		m.mu.Unlock()
-		writeJSON(w, http.StatusOK, map[string]bool{"scheduled": false})
-		return
+		return false, nil
 	}
 	snapshot := entry.Runtime
 	key := runtimeKey(Binding{PrincipalID: snapshot.PrincipalID, ContextID: snapshot.ContextID, RuntimeMode: snapshot.RuntimeMode})
@@ -443,8 +461,7 @@ func (m *Manager) respawnHTTP(w http.ResponseWriter, r *http.Request) {
 	m.mu.Unlock()
 	if !valid {
 		lock.Unlock()
-		writeJSON(w, http.StatusOK, map[string]bool{"scheduled": false})
-		return
+		return false, nil
 	}
 	// The respawn outlives the client's deadline like an accepted restart.
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
@@ -452,8 +469,7 @@ func (m *Manager) respawnHTTP(w http.ResponseWriter, r *http.Request) {
 	_, _ = m.command(ctx, "stop", "--time", "30", snapshot.Container) // a dead container makes rm authoritative anyway
 	if err := m.removeOwnedRuntime(ctx, snapshot); err != nil && !errors.Is(err, ErrRuntimeMissing) {
 		lock.Unlock()
-		writeRuntimeFailure(w, http.StatusBadGateway, err)
-		return
+		return false, err
 	}
 	m.mu.Lock()
 	current.State, current.IdleDeadline = Stopped, time.Time{}
@@ -462,13 +478,12 @@ func (m *Manager) respawnHTTP(w http.ResponseWriter, r *http.Request) {
 	lock.Unlock()
 	respawned, err := m.Ensure(ctx, binding)
 	if err != nil {
-		writeRuntimeFailure(w, http.StatusBadGateway, err)
-		return
+		return false, err
 	}
 	// Like wake: the respawn is a warm-up peek, not a hold — the Ensure
 	// reference returns so the fresh runtime settles to idle.
 	_ = m.ReleaseBinding(binding)
-	writeJSON(w, http.StatusOK, map[string]bool{"scheduled": true, "applied": respawned.Container != ""})
+	return respawned.Container != "", nil
 }
 
 // artifactHTTP forwards one bounded artifact fetch to the runtime bound to the

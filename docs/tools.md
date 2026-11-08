@@ -1,6 +1,6 @@
 ---
 description: Complete agent-visible tool surface — catalog r5 families, pinned platform layer, connector_* facade, effect/grant requirements, delivery directives.
-last_verified: "2026-11-06"
+last_verified: "2026-11-08"
 ---
 
 # Tool surface
@@ -68,9 +68,12 @@ capability, operation, toolset, service or release fails closed.
 M32 integration keeps track 2's immutable releases 14–16. Track 1 independently
 emitted a different release 14 at `8cb598fb` (the governed settings contract);
 its original bytes remain in that commit, not under the same release number here.
-Release 17 is generated from the merged sources and pairs with
-`hub-agent-tools@16.0.0`: revision-guarded `settings_read`/`settings_edit` and
-ToolHub-executed `memory_search`/`memory_card` retain their separate rights.
+Release 20 adds `memory_open` and pairs with `hub-agent-tools@18.0.2`.
+Release 19 remains immutable. Revision-guarded `settings_read`/`settings_edit` and
+ToolHub-executed `memory_search`/`memory_read`/`memory_card` retain current rights.
+The new contract admits memory in a verified, active owner assignment under
+the same current selection, grants and `memory.enabled` switch; existing
+memory edits still require the owner's verified confirmation.
 
 ## mcp__toolhub__ — control plane
 
@@ -150,6 +153,10 @@ require a live `tools.use` grant plus the selected tool's own operation right.
 `tools.configure` authorizes changing the selection and grants no invocation.
 The authored grants passport may only publish rights already issued in
 ToolHub's protected ledger; editing the passport cannot issue a right.
+Prepared MCP connectors publish their discovered members as immutable
+`connector.tool.<digest>` capabilities. Enabling a connector updates the
+owner's bound profile; calls use the current profile and rights and dispatch
+to that connector's MCP server.
 
 ## First-party families
 
@@ -160,7 +167,7 @@ word where one exists):
 | Family | Tools | Executor | Notes |
 |---|---|---|---|
 | files | `file_list`, `file_read`, `file_search`, `file_write`, `file_edit`, `file_mkdir`, `file_archive`, `file_remove`, `project_create` | handler:files | `root` selects the admitted root (`workspace` default; `archive`, `organization`, `skills`, `knowledge` where granted); `file_read` pages via `offset`/`limit`/`next_offset`; `file_write`/`file_edit` are revision-guarded and never mint a new top-level project dir — `project_create` (workspace.create_project) does; `file_archive` packs/unpacks in-scope; `knowledge_*` reads are `file_*` under `root=knowledge` |
-| terminal | `terminal_exec`, `terminal_job` | handler:terminal | bounded workspace exec (`cmd`, `cwd`, `timeout`, `stdin`, `shell`, `background`); background returns a `job_id` steered by `terminal_job` action poll\|send\|kill\|list; optional `skill` leases that skill's stored credentials into the one call |
+| terminal | `terminal_exec`, `terminal_job` | handler:terminal | bounded agent-image command over an admitted workspace snapshot (`cmd`, `cwd`, `timeout`, `stdin`, `shell`, `background`); scratch writes are ephemeral and network is disabled; background returns a `job_id` steered by `terminal_job` action poll\|send\|kill\|list; optional `skill` leases that skill's stored credentials into the one call |
 | documents | `document_extract`, `document_create`, `document_edit`, `document_convert`, `document_remove` | handler:documents | txt, md, csv, html, pdf, xlsx, pptx inside the admitted scope |
 | media | `media_inspect`, `media_convert`, `media_generate`, `media_edit`, `media_fetch`, `media_transcribe`, `media_speak` | handler:media | `media_inspect` takes 1–8 `paths`; `media_generate` covers image and video jobs polled via `media_fetch`; STT/TTS answer honest `unavailable` without a provider; `media_speak` delivers through the active channel |
 | skills | `skill`, `skill_search`, `skill_edit` | handler:skills | `skill` activates by `name` plus optional inner `path` (Agent Skills convention); `skill_search` with empty query lists all (honest `eligible`/`missing`/`stats` inventory); `skill_edit` writes drafts only — publication is the owner's approval card |
@@ -179,15 +186,17 @@ word where one exists):
 | browser | `browser_open`, `browser_read`, `browser_act`, `browser_capture` | connector:browser | curated calls over the browser connector; `profile` selects user or guest profile |
 | models | `model_list`, `model_switch` | runtime:models | routes, ladders and status from the models passport; switch stays inside the granted ladder; without a hub models plane calls return `unavailable` |
 | sessions | `session_list`, `session_search`, `session_read`, `session_switch`, `session_edit`, `session_remove` | runtime:sessions | own-space sessions only; `session_edit` action archive\|restore; without a session store calls return `unavailable` |
-| memory | `memory_search` | runtime:toolhub | the memory vault contract (SPEC-0085/M32): BM25+graph over daily leaves, cards and summaries — hits carry `file:line` evidence refs, never answer from memory alone; ToolHub resolves the caller's enrolled vault from the verified identity envelope — no argument, root or header selects user, vault or audience; requires config.memory.enabled plus an exact live private run verified against the supervisor job record |
+| memory | `memory_search` | runtime:toolhub | the memory vault contract (SPEC-0085/M32): BM25+graph over daily leaves, cards and summaries — hits carry `file:line` evidence refs, never answer from memory alone; ToolHub resolves the caller's enrolled vault from the verified identity envelope — no argument, root or header selects user, vault or audience; requires config.memory.enabled plus an exact live private or owner assignment run verified against the supervisor job record |
+| memory | `memory_read` | runtime:toolhub | exact-id full text for an own `memory_search` hit, with its evidence and untrusted flag; same current `memory.search` right, memory switch and live private or owner assignment run; unknown, foreign and forgotten IDs are opaque `not_found` unless `history:true` permits an own forgotten entry |
 | memory | `memory_card` | runtime:toolhub | the governed write path (ops remember\|fact\|propose), executed inside ToolHub as the sole writer — edits to existing memory (`propose` with inner=truth\|merge\|forget) land only on the owner's verified confirmation; there is no `root=vault` file root and no local vault fallback |
+| memory | `memory_open` | runtime:toolhub | from a live private owner run, mint a one-hour bearer link to ToolHub's read-only private-memory view; each page request rechecks published `memory.enabled`, the selected tool and current `memory.search` right; no upstream OpenKnowledge vault mount or UI write path |
 
 ## memory — the vault contract
 
 In managed spaces, ToolHub checks the caller's published
 `config.memory.enabled` before and immediately before executing a memory
 tool. The caller's principal selects the read-only passport mount; tool
-arguments cannot choose another space. A selected `memory_search` or
+arguments cannot choose another space. A selected `memory_search`, `memory_read` or
 `memory_card` remains inert while this switch is false, even if the tool is
 still visible in a session. The operation right is checked separately.
 
@@ -206,7 +215,7 @@ re-extract it — verified against the durable job record (job, admission,
 text hash, running status, generation, audience, user, environment). Any
 failure injects the explicit unavailable marker; there is no local vault
 fallback. Past-referencing turns earn one lane-2 hint line nudging
-`memory_search`.
+`memory_search`, then `memory_read` for an exact hit ID when its excerpt is insufficient.
 
 Writes into the vault run through one contract surface: `memory_card`
 (SPEC-0085 R6), executed inside ToolHub against the verified caller's own
@@ -221,7 +230,9 @@ the model cannot confirm its own proposal. All planned base hashes are
 checked before the first write; a verified confirmation persists recoverable
 `applying` state and startup finishes interrupted writes. A completed,
 expired pending, foreign or stale-base confirmation is denied without touching memory.
-Every mutation and denial is journaled to `runtime/memory/writes.jsonl`;
+Backend mutations and denials are journaled to `runtime/memory/writes.jsonl`;
+admission failures before dispatch use ToolHub's job/run audit and leave the
+vault unchanged. Calls waiting for the owner vault repeat admission afterward.
 `remember`/`fact` persist an owner-bound write intent first, and a failed
 journal write returns an error while a retry finishes the original request.
 Soft forget is a hub-owned strike:
@@ -251,9 +262,13 @@ true erasure is a separate history-rewrite decision.
 With `knowledge_ui` on, no `open-knowledge` container or
 `mcp__open_knowledge__*` surface renders (M32/#520): ToolHub owns the
 vault, so no service may mount it and upstream OpenKnowledge cannot act as
-a governed-API client — the flag stays valid but explicitly unavailable,
-and `hubctl doctor` reports it as such. Knowledge reads and edits go
-through the governed ToolHub tools instead: `memory_search` for memory
+a governed-API client — the flag stays valid but does not launch the
+upstream editor, and `hubctl doctor` reports that limitation. The agent can
+call `memory_open` in a private run to return a one-hour ToolHub link for
+search/read. The link is a bearer capability: anyone holding it can view that
+owner's private memory until expiry or revocation, so send it only in the
+owner's private channel. Knowledge reads and edits otherwise go
+through the governed ToolHub tools instead: `memory_search`/`memory_read` for memory
 content and `memory_card op=propose` plus owner confirmation for edits.
 `knowledge_ui_write` stays deferred and refused at validation until a
 governed knowledge surface exists — `memory_card` remains the only agent
@@ -271,8 +286,12 @@ credential values never appear in tool arguments or results.
 
 ## Internal and removed surfaces
 
-`inbox_fetch` is `audience: internal` — the channel materializes user-sent
-files through it; it is never projected, placeable or searchable.
+`inbox_fetch` is `audience: internal` — the runtime asks ToolHub's authenticated
+`POST /v1/inbound-fetch` route to materialize a staged owner file before
+Hermes admission. The route rechecks the current owner binding and
+`workspace.read` right, then writes through ToolHub's owner-specific inbox
+mount. The agent's inbox mount stays read-only. The tool is never projected,
+placeable or searchable.
 Removed r4 surfaces: `service_*` (absorbed by `connector_*`), `hh_*`
 (job-board connector retired), `archive_*`/`artifact_remove`/`knowledge_*`
 (absorbed by `file_*` roots), `ssh_shell_*`/`ssh_tunnel_*` split tools
@@ -375,14 +394,17 @@ by `goal_*` trio), `skills_list`/`skills_search`/`skill_view`/`skill_manage`
   authorized roots; partial cleanup removes only what that attempt created.
   Delivery copies — it never deletes the workspace original; legacy
   `consume` requests are accepted but no longer remove originals. The
-  runtime resolves a channel file through the owner's `inbox_fetch` grant
-  *before* admitting the run; failed saves never start fileless runs.
+  runtime resolves a channel file through the owner's internal `inbox_fetch`
+  route *before* admitting the run; ToolHub writes the original into that
+  owner's inbox, while the runtime reads it through a read-only mount. Failed
+  saves never start fileless runs.
   PDF extraction falls back to Poppler for PDFs the built-in reader
   cannot parse (same size/time limits).
 - **media_inspect**: compares 1–8 images in one model request under a
   shared byte limit. Every array element is admitted — a call spanning
   different narrow directory grants fails closed; split into separately
-  authorized calls.
+  authorized calls. A published `vision` model route selects the managed
+  media vision model; without that route, media uses the owner's default.
 - **knowledge root**: operator-staged snapshots under
   `<state>/knowledge/<user>/` (`<context>` subdir narrows non-personal
   contexts) are reachable through `file_*` with `root=knowledge`; read

@@ -42,6 +42,7 @@ var errUnauthorized = errors.New("automation: unauthorized")
 
 // SupervisorClient admits a durably queued job to the supervisor.
 type SupervisorClient interface {
+	AdmissionEpoch(context.Context, identity.Envelope) (uint64, error)
 	RunJob(ctx context.Context, key string, job commodel.Job) (hubruntime.ExecuteResponse, error)
 	RunScript(ctx context.Context, occurrence commodel.RoutineOccurrence) ([]string, error)
 	ProbeScript(ctx context.Context, occurrence commodel.RoutineOccurrence, src, input string, mountSpace bool, needs []string) (string, error)
@@ -125,6 +126,7 @@ func NewHost(cfg Config) (*Host, error) {
 		return err
 	}
 	h.events.admit = h.admitEventJob
+	h.events.lookup = h.queue.loadMapping
 	h.events.filter = cfg.Supervisor.ProbeScript
 	h.events.langOf = h.langOf
 	return h, nil
@@ -244,6 +246,7 @@ func (h *Host) engineFor(principal string) (*routines.Engine, error) {
 			Lstat:           os.Lstat,
 		},
 		Dispatch: routines.DispatchPort{
+			PrepareJob:  h.prepareJob,
 			EnqueueJob:  h.admitJob,
 			LoadMapping: loadMapping,
 			LoadTask:    loadTask,
@@ -275,6 +278,17 @@ func (h *Host) engineFor(principal string) (*routines.Engine, error) {
 
 func (h *Host) admitJob(j commodel.Job) (bool, error) {
 	return h.admitEventJob(j, "")
+}
+
+func (h *Host) prepareJob(job *commodel.Job) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	epoch, err := h.cfg.Supervisor.AdmissionEpoch(ctx, job.Envelope)
+	if err != nil {
+		return err
+	}
+	job.OperationalEpoch = epoch
+	return nil
 }
 
 func (h *Host) admitEventJob(j commodel.Job, sourceOccurrenceID string) (bool, error) {
@@ -316,7 +330,7 @@ func (h *Host) authorize(auth identity.Envelope, operation string) (*routines.En
 }
 
 func (h *Host) authorizeSchedule(auth identity.Envelope, id string) (*routines.Engine, commodel.Schedule, error) {
-	if auth.PrincipalID == "" || (auth.Environment != "" && auth.Environment != h.cfg.Environment) || !commodel.IDPattern.MatchString(id) {
+	if auth.PrincipalID == "" || id == routines.SystemDreamingID || (auth.Environment != "" && auth.Environment != h.cfg.Environment) || !commodel.IDPattern.MatchString(id) {
 		return nil, commodel.Schedule{}, errUnauthorized
 	}
 	e, err := h.engineFor(auth.PrincipalID)
@@ -382,6 +396,9 @@ func (h *Host) authorizeJob(job commodel.Job, scheduleID ...string) error {
 // authorizeDueJob adds the channel binding when the engine has persisted an
 // occurrence. TickSchedules calls authorizeJob before an occurrence has an ID.
 func (h *Host) authorizeDueJob(ctx context.Context, job commodel.Job) error {
+	if job.Channel == "system" {
+		return h.authorizeDreaming(job)
+	}
 	if err := h.authorizeJob(job); err != nil || job.ID == "" {
 		return err
 	}
@@ -400,6 +417,9 @@ func (h *Host) authorizeDueJob(ctx context.Context, job commodel.Job) error {
 // check plus the live channel binding — a stale task/topic pointer must block
 // the schedule before its reminder or agent job is ever admitted.
 func (h *Host) authorizeScheduleJob(ctx context.Context, scheduleID string, job commodel.Job) error {
+	if scheduleID == routines.SystemDreamingID {
+		return h.authorizeDreaming(job)
+	}
 	if err := h.authorizeJob(job, scheduleID); err != nil {
 		return err
 	}
@@ -489,13 +509,8 @@ func (h *Host) submit(ctx context.Context, principal, key string) error {
 		return nil
 	}
 	in, err := h.queue.intent(principal, key)
-	if err != nil || in.Acked {
+	if err != nil || in.Acked || in.RetryStopped {
 		return err
-	}
-	// An intent can outlive a grant or schedule revision while the
-	// supervisor is unavailable. Recheck both at the actual I/O boundary.
-	if err := h.authorizeJob(in.Job); err != nil {
-		return nil
 	}
 	e, err := h.engineFor(principal)
 	if err != nil {
@@ -509,14 +524,23 @@ func (h *Host) submit(ctx context.Context, principal, key string) error {
 	if err := loadJSON(filepath.Join(h.ownerRoot(principal), "occurrences", commodel.FileID(sourceID)+".json"), &occurrence); err != nil {
 		return err
 	}
-	if occurrence.Job.ID != sourceID || occurrence.Job.PrincipalID != in.Job.PrincipalID || occurrence.Job.ContextID != in.Job.ContextID || occurrence.Job.DeliveryTargetID != in.Job.DeliveryTargetID || !e.OccurrenceCurrent(occurrence) {
+	if occurrence.Job.ID != sourceID || occurrence.Job.PrincipalID != in.Job.PrincipalID || occurrence.Job.ContextID != in.Job.ContextID || occurrence.Job.DeliveryTargetID != in.Job.DeliveryTargetID {
+		return nil
+	}
+	if e.OccurrenceRetired(occurrence) {
+		return h.queue.stopRetry(principal, key)
+	}
+	// An intent can outlive a grant or schedule revision while the
+	// supervisor is unavailable. Recheck both at the actual I/O boundary.
+	if h.authorizeJob(in.Job) != nil || !e.OccurrenceCurrent(occurrence) {
 		return nil
 	}
 	if err := h.authorizeJob(in.Job, occurrence.ScheduleID); err != nil {
 		return nil
 	}
 	schedule, err := e.LoadSchedule(occurrence.ScheduleID)
-	if err != nil || !schedule.Enabled || schedule.Paused || schedule.BlockedReason != "" {
+	settledFinalSlot := err == nil && !schedule.Enabled && schedule.Paused && schedule.LastOccurrenceID == occurrence.Job.ID
+	if err != nil || (!schedule.Enabled || schedule.Paused) && !settledFinalSlot || schedule.BlockedReason != "" {
 		return nil
 	}
 	if err := h.cfg.AuthorizeChannel(ctx, occurrence.ScheduleID, in.Job); err != nil {
@@ -614,7 +638,7 @@ func (h *Host) Tick(ctx context.Context, now time.Time) error {
 	}
 	h.mu.Unlock()
 	jobs := make(chan ownerEngine)
-	errs := make(chan error, len(engines)*6)
+	errs := make(chan error, len(engines)*8)
 	var workers sync.WaitGroup
 	for i := 0; i < len(engines) && i < 8; i++ {
 		workers.Add(1)
@@ -624,12 +648,13 @@ func (h *Host) Tick(ctx context.Context, now time.Time) error {
 				e := owner.engine
 				dueAuth := func(job commodel.Job) error { return h.authorizeDueJob(ctx, job) }
 				for i, step := range []func() error{
-					func() error { return h.tickDreaming(ctx, owner.principal, now) },
+					func() error { return h.syncDreaming(owner.engine, owner.principal, now) },
 					func() error {
 						return e.TickSchedules(now, "", func(scheduleID string, job commodel.Job) error { return h.authorizeScheduleJob(ctx, scheduleID, job) })
 					},
 					func() error { return h.tickStreams(ctx, e, owner.principal, now) },
 					func() error { return e.DispatchDueOccurrences(now, dueAuth) },
+					func() error { return e.RunDueDreaming(ctx, dueAuth, h.runDreamingOccurrence) },
 					func() error { return e.RunDueScripts(ctx, now, dueAuth, h.cfg.Supervisor.RunScript) },
 					func() error {
 						return e.ProbeDueOccurrencesContext(ctx, now, dueAuth, h.cfg.Fetch, h.cfg.ToolCall, nil)
@@ -696,6 +721,10 @@ func (h *Host) tickStreams(ctx context.Context, e *routines.Engine, principal st
 			continue
 		}
 		o := streamOccurrence(schedule, now.UTC())
+		if err := h.prepareJob(&o.Job); err != nil {
+			return err
+		}
+		epoch := o.Job.OperationalEpoch
 		if h.authorizeJob(o.Job) != nil || h.cfg.AuthorizeChannel(ctx, schedule.ScheduleID, o.Job) != nil {
 			continue
 		}
@@ -755,6 +784,7 @@ func (h *Host) tickStreams(ctx context.Context, e *routines.Engine, principal st
 			}
 		}
 		h.events.mu.Unlock()
+		o.Job.OperationalEpoch = epoch
 		if err := e.PutOccurrence(o, schedule.Envelope); err != nil {
 			return err
 		}
@@ -788,6 +818,9 @@ func (h *Host) CreateSchedule(ctx context.Context, auth identity.Envelope, in co
 }
 
 func (h *Host) CheckCreationReplay(ctx context.Context, auth identity.Envelope, in commodel.Schedule) (commodel.Schedule, bool, error) {
+	if in.ScheduleID == routines.SystemDreamingID || in.JobKind == "dreaming" {
+		return commodel.Schedule{}, false, errUnauthorized
+	}
 	e, err := h.authorize(auth, scheduleOperation(in))
 	if err != nil {
 		return commodel.Schedule{}, false, err
@@ -806,6 +839,9 @@ func (h *Host) CheckCreationReplay(ctx context.Context, auth identity.Envelope, 
 }
 
 func (h *Host) CreateScheduleWithBaseline(ctx context.Context, auth identity.Envelope, in commodel.Schedule, nativeCron string, baseline *string) (commodel.Schedule, error) {
+	if in.ScheduleID == routines.SystemDreamingID || in.JobKind == "dreaming" {
+		return commodel.Schedule{}, errUnauthorized
+	}
 	e, err := h.authorize(auth, scheduleOperation(in))
 	if err != nil {
 		return commodel.Schedule{}, err

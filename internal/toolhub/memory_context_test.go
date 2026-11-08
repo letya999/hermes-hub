@@ -141,6 +141,28 @@ func TestMemoryContextEndpointAdmitsExactPrivateRun(t *testing.T) {
 	}
 }
 
+func TestMemoryContextAdmitsOwnerAssignmentOnlyWhileActive(t *testing.T) {
+	g, auth, records := memoryContextFixture(t)
+	assignment := memoryContextRecord(auth, "job-assignment", "adm-assignment", "earl grey supplier")
+	assignment.Trigger, assignment.Assignment = "cron", true
+	records[assignment.JobID] = assignment
+	claim := `{"job_id":"job-assignment","admission_id":"adm-assignment","text":"earl grey supplier"}`
+	call := func(want int) {
+		t.Helper()
+		rec := memoryContextCall(t, g, "alice", claim, nil)
+		if rec.Code != want || want != http.StatusOK && strings.Contains(rec.Body.String(), "alice curated core") {
+			t.Fatalf("assignment memory context status=%d, want=%d", rec.Code, want)
+		}
+	}
+	call(http.StatusOK)
+	assignment.Status = "completed"
+	records[assignment.JobID] = assignment
+	call(http.StatusForbidden)
+	assignment.Status, assignment.UserID = "running", "bob"
+	records[assignment.JobID] = assignment
+	call(http.StatusForbidden)
+}
+
 func TestAuditMemoryContextRequiresReadAuthority(t *testing.T) {
 	const claim = `{"job_id":"job-1","admission_id":"adm-1","text":"earl grey supplier"}`
 	check := func(t *testing.T, g *Gateway, want int) {

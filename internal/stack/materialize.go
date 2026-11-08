@@ -132,10 +132,18 @@ func writeModelRegistryRevision(dir string, s Settings, revisionID string) error
 		return err
 	}
 	directory := filepath.Join(dir, "generated", "model-registry", s.Environment)
-	if err := os.MkdirAll(directory, 0700); err != nil {
+	if err := os.MkdirAll(directory, 0770); err != nil {
 		return err
 	}
-	return atomic(filepath.Join(directory, "models.yaml"), body)
+	if err := os.Chmod(directory, 0770); err != nil {
+		return err
+	}
+	path := filepath.Join(directory, "models.yaml")
+	if err := atomic(path, body); err != nil {
+		return err
+	}
+	// The relay runs as uid10001 with the host group; credentials stay in separate auth/env files.
+	return os.Chmod(path, 0640)
 }
 
 // materializeHermesConfig renders the effective Hermes config host-side so the

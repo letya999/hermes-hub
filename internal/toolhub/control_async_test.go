@@ -27,6 +27,18 @@ func asyncFixture(t *testing.T, reviewer api.SourceReviewer) *ControlPlane {
 		ConfirmationTTL: 10 * time.Minute, PrepareSyncWindow: 50 * time.Millisecond}
 }
 
+func TestPreparedGitHubPrepareUsesReviewedDefinitionVersion(t *testing.T) {
+	entry, ok, err := api.PreparedForRepository("https://github.com/github/github-mcp-server", "")
+	if err != nil || !ok {
+		t.Fatal("GitHub prepared entry unavailable")
+	}
+	control := asyncFixture(t, nil)
+	_, config, err := control.resolveSelfInstallSource(t.Context(), aliceAuth(), entry.Source.Repository+"/commit/"+entry.Source.CommitSHA)
+	if err != nil || config.Version != entry.DefinitionVersion {
+		t.Fatalf("prepare version = %s, err = %v", config.Version, err)
+	}
+}
+
 func TestPrepareSourceCarriesConnectionRecipe(t *testing.T) {
 	seen := false
 	control := asyncFixture(t, func(ctx context.Context, _ api.ArtifactSource, _ *api.RecipeCandidate) (api.SourceReview, error) {

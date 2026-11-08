@@ -19,7 +19,10 @@ import (
 	"github.com/letya999/hermes-hub/internal/commodel"
 	"github.com/letya999/hermes-hub/internal/communication"
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/internal/passportview"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
+	"gopkg.in/yaml.v3"
 )
 
 type replayExportOpts struct {
@@ -59,11 +62,6 @@ type replayOutcome struct {
 	RunID     string `json:"run_id,omitempty"`
 	SessionID string `json:"session_id,omitempty"`
 }
-
-// replaySpaceDocs is the allowlist of non-secret space documents folded into
-// the config digest. Files like secrets.env are never opened (allowlist, not
-// denylist — issue 206).
-var replaySpaceDocs = []string{"agent.yaml", "workspace.yaml", "scope.yaml"}
 
 // runReplayExport writes a sanitized incident bundle for one admitted job
 // (issue 206). Reads only the spool's job/mapping records and the space's
@@ -329,21 +327,91 @@ func replayExecute(ctx context.Context, job commodel.Job, runtimeURL, auth strin
 	}, nil
 }
 
-// replaySpaceDigest hashes only the allowlisted documents: names + contents.
+// replaySpaceDigest hashes one complete published bundle, never drafts or retired files.
 func replaySpaceDigest(spaceDir string) (string, error) {
-	h := sha256.New()
-	for _, name := range replaySpaceDocs {
-		body, err := os.ReadFile(filepath.Join(spaceDir, name)) // #nosec G703 -- name comes from the fixed replay document list
-		if errors.Is(err, os.ErrNotExist) {
-			continue
+	denied := errors.New(locale.T(locale.LangOf(filepath.Join(spaceDir, "workspace")), "hubctl.replay-config-invalid"))
+	root, err := os.OpenRoot(spaceDir)
+	if err != nil {
+		return "", denied
+	}
+	defer root.Close()
+	for _, dir := range []string{"generated", "generated/passports"} {
+		info, err := root.Lstat(dir)
+		if err != nil || !info.IsDir() {
+			return "", denied
 		}
+	}
+	if _, err := root.Lstat("generated/passports/" + passportview.ApplyJournalFile); !errors.Is(err, os.ErrNotExist) {
+		return "", denied
+	}
+	current := "generated/passports/current"
+	info, err := root.Lstat(current)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", denied
+	}
+	pointer, err := root.ReadFile(current)
+	if err != nil {
+		return "", denied
+	}
+	revision := strings.TrimSpace(string(pointer))
+	if !filepath.IsLocal(revision) || strings.ContainsAny(revision, "/\\") || revision == "." || revision == "pending" {
+		return "", denied
+	}
+	directory := filepath.Join("generated", "passports", revision)
+	info, err = root.Lstat(directory)
+	if err != nil || !info.IsDir() {
+		return "", denied
+	}
+	h := sha256.New()
+	var first passportview.Metadata
+	for i, name := range passportview.Names {
+		path := filepath.Join(directory, name+".yaml")
+		info, err := root.Lstat(path)
+		if err != nil || !info.Mode().IsRegular() {
+			return "", denied
+		}
+		body, err := root.ReadFile(path)
 		if err != nil {
-			return "", err
+			return "", denied
+		}
+		if _, err := passportview.Decode(name, body); err != nil {
+			return "", denied
+		}
+		var envelope struct {
+			Metadata passportview.Metadata `yaml:"metadata"`
+		}
+		if yaml.Unmarshal(body, &envelope) != nil || envelope.Metadata.Revision != revision {
+			return "", denied
+		}
+		meta := envelope.Metadata
+		if i == 0 {
+			first = meta
+		} else if meta.Space != first.Space || meta.Environment != first.Environment || meta.Catalogs != first.Catalogs {
+			return "", denied
 		}
 		h.Write([]byte(name))
 		h.Write([]byte{0})
 		h.Write(body)
 		h.Write([]byte{0})
+	}
+	latest, err := root.ReadFile(current)
+	if err != nil || strings.TrimSpace(string(latest)) != revision {
+		return "", denied
+	}
+	if first.Environment != "dev" && first.Environment != "prod" {
+		return "", denied
+	}
+	view := filepath.Join("generated", "config-view", first.Environment, "revision")
+	info, err = root.Lstat(view)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", denied
+	}
+	active, err := root.ReadFile(view)
+	if err != nil || strings.TrimSpace(string(active)) != revision {
+		return "", denied
+	}
+	if _, err := root.Lstat("generated/passports/" + passportview.ApplyJournalFile); !errors.Is(err, os.ErrNotExist) {
+		return "", denied
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }

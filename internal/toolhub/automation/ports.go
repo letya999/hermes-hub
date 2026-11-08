@@ -80,6 +80,7 @@ type dispatchIntent struct {
 	Mapping            commodel.JobMapping `json:"mapping"`
 	SourceOccurrenceID string              `json:"source_occurrence_id,omitempty"`
 	Acked              bool                `json:"acked"`
+	RetryStopped       bool                `json:"retry_stopped,omitempty"`
 	path               string
 }
 
@@ -182,6 +183,18 @@ func (q *dispatchQueue) recordResult(principal, jobID, status, result string, no
 	return in, writeJSONAtomic(in.path, &in)
 }
 
+// stopRetry retires dispatch I/O, not an uncertain execution outcome.
+func (q *dispatchQueue) stopRetry(principal, key string) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	in, err := q.intent(principal, key)
+	if err != nil || in.RetryStopped {
+		return err
+	}
+	in.RetryStopped = true
+	return writeJSONAtomic(in.path, &in)
+}
+
 func (q *dispatchQueue) scan(principal string) ([]dispatchIntent, error) {
 	return q.scanIntents(principal, true)
 }
@@ -263,7 +276,7 @@ func (q *dispatchQueue) pending() ([]dispatchIntent, error) {
 	}
 	var out []dispatchIntent
 	for _, in := range intents {
-		if !in.Acked && !commodel.TerminalStatus(in.Mapping.Status) {
+		if !in.Acked && !in.RetryStopped && !commodel.TerminalStatus(in.Mapping.Status) {
 			out = append(out, in)
 		}
 	}
@@ -474,6 +487,7 @@ type eventStore struct {
 	mu      sync.Mutex
 	deliver func(principal string, d commodel.Delivery, now time.Time) error
 	admit   func(commodel.Job, string) (bool, error)
+	lookup  func(string, string) (commodel.JobMapping, error)
 	filter  routines.ProbeScriptFunc
 	langOf  func(principal string) locale.Lang
 }
@@ -633,8 +647,34 @@ func (s *eventStore) resume(e *routines.Engine, o commodel.RoutineOccurrence, sc
 			if authorize != nil && authorize(job) != nil {
 				return true, errUnauthorized
 			}
+			if job.AssignmentID != "" {
+				if s.lookup == nil {
+					return true, errors.New("automation: event assignment mapping unavailable")
+				}
+				mapping, err := s.lookup(job.PrincipalID, job.ID)
+				if err == nil {
+					if !mapping.MatchesJob(job) {
+						return true, errors.New("automation: event assignment mapping mismatch")
+					}
+				} else if !os.IsNotExist(err) {
+					return true, err
+				} else {
+					allowed, err := e.ReserveAssignmentWake(job.AssignmentID, job.ID, now, job.AssignmentPlanRevision)
+					if err != nil {
+						return true, err
+					}
+					if !allowed {
+						continue
+					}
+				}
+			}
 			if _, err := s.admit(job, o.Job.ID); err != nil {
 				return true, err
+			}
+			if job.AssignmentID != "" {
+				if err := e.SettleAssignmentWake(job.AssignmentID, job.ID, job.AssignmentPlanRevision); err != nil {
+					return true, err
+				}
 			}
 			admitted++
 			for _, id := range members {
@@ -744,6 +784,7 @@ func (s *eventStore) planAgentBatch(e *routines.Engine, o commodel.RoutineOccurr
 			lines = append(lines, line)
 		}
 		job := o.Job
+		job.AssignmentID, job.AssignmentPlanRevision = schedule.AssignmentID, schedule.AssignmentPlanRevision
 		job.ID = "event-" + safeName(o.Job.ID+"\x00"+strings.Join(ids, "\x00"))
 		job.IdempotencyKey = job.ID
 		job.CreatedAt = b.CreatedAt
@@ -755,7 +796,7 @@ func (s *eventStore) planAgentBatch(e *routines.Engine, o commodel.RoutineOccurr
 			if !ok {
 				return errors.New("automation: event assignment unavailable")
 			}
-			job.Text = "Standing assignment " + assignment.AssignmentID + " (revision " + strconv.FormatUint(schedule.AssignmentPlanRevision, 10) + "), trigger job " + job.ID + ".\nOwner intent: " + assignment.Intent + "\nSpecialist instructions: " + schedule.WakePrompt + "\nProgress: " + assignment.Progress.Summary + "\nNext step: " + assignment.Progress.NextStep + "\nAfter handling this trigger, call assignment_progress with this job ID, expected_revision, summary, optional finding and next_step; use complete=true only if the owner's completion condition is met."
+			job.Text = "Standing assignment " + assignment.AssignmentID + " (revision " + strconv.FormatUint(schedule.AssignmentPlanRevision, 10) + "), trigger job " + job.ID + ".\nOwner intent: " + assignment.Intent + "\nSpecialist instructions: " + schedule.WakePrompt + "\nProgress: " + assignment.Progress.Summary + "\nNext step: " + assignment.Progress.NextStep + "\nAfter handling this trigger, call assignment_read then assignment_edit action=progress with this job ID, current expected_revision, summary, optional finding and next_step; use complete=true only if the owner's completion condition is met."
 			lang := locale.Fallback()
 			if s.langOf != nil {
 				lang = s.langOf(job.UserID)

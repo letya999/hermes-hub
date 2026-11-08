@@ -101,6 +101,16 @@ func (s *Settings) applyEffective(eff passportview.Effective) error {
 	if g := eff.Config.ImageGen; g != (media.ImageGen{}) {
 		s.ImageGen = g
 	}
+	w := eff.Config.Web
+	s.Web = WebSettings{
+		Backend: w.Backend, SearchBackend: w.SearchBackend, ExtractBackend: w.ExtractBackend,
+		SearchProviders: w.SearchProviders, KeylessFallback: w.KeylessFallback, KeylessRescue: w.KeylessRescue,
+		ExtractCharLimit: w.ExtractCharLimit, ProviderTier: w.ProviderTier, CacheEnabled: w.CacheEnabled,
+		CacheTTLMinutes: w.CacheTTLMinutes, CacheExemptHosts: w.CacheExemptHosts,
+		Research: WebResearchBounds{MaxRounds: w.Research.MaxRounds, QueriesPerRound: w.Research.QueriesPerRound,
+			PagesPerRound: w.Research.PagesPerRound, MaxPages: w.Research.MaxPages,
+			MaxPagesPerHost: w.Research.MaxPagesPerHost, DeadlineMinutes: w.Research.DeadlineMinutes},
+	}
 	if def := eff.Models.Default; def != "" {
 		s.Model = def
 	}
@@ -187,7 +197,13 @@ func passportTools(t passportview.Tools) map[string]ToolEntry {
 		}
 	}
 	for _, area := range []map[string]passportview.Toolset{t.Core, t.Extended} {
-		for name, ts := range area {
+		names := make([]string, 0, len(area))
+		for name := range area {
+			names = append(names, name)
+		}
+		slices.Sort(names)
+		for _, name := range names {
+			ts := area[name]
 			// The pinned platform family is not an operator toolset; the
 			// legacy discovery pin it replaced is skipped the same way for
 			// passports published before r5.

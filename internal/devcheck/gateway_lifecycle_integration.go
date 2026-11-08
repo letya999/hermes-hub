@@ -31,7 +31,8 @@ import (
 
 // gatewayLifecycleSmoke uses the production Telegram adapter, worker, spool,
 // authenticated supervisor HTTP server/reaper and actual pinned Hermes containers.
-// Only Telegram and the model endpoint are local fixtures; no external send occurs.
+// Telegram, the model endpoint and ToolHub are fixtures; no external send occurs.
+// This gate does not prove the integrated memory/automation boundary of M32.
 func GatewayLifecycle(ctx context.Context, image string) error {
 	provider, providerURL, err := nativeContractProvider()
 	if err != nil {

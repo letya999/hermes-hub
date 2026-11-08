@@ -515,6 +515,10 @@ type scriptedSupervisor struct {
 	run func(job Job) hubruntime.ExecuteResponse
 }
 
+func (scriptedSupervisor) AdmissionEpoch(context.Context, identity.Envelope) (uint64, error) {
+	return 0, nil
+}
+
 func (s scriptedSupervisor) RunJob(_ context.Context, _ string, job commodel.Job) (hubruntime.ExecuteResponse, error) {
 	return s.run(job), nil
 }

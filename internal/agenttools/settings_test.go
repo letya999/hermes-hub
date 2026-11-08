@@ -32,7 +32,7 @@ func TestRuntimeSettingsSetDenied(t *testing.T) {
 
 func TestSettingsCatalogPublishesRevisionGuardedControlTools(t *testing.T) {
 	definition := HubToolsDefinition()
-	if definition.Version != "16.0.0" {
+	if definition.Version != "18.0.2" {
 		t.Fatalf("settings catalog version %s", definition.Version)
 	}
 	for _, tool := range definition.Tools {

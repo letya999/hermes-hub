@@ -139,6 +139,7 @@ var classes = map[string]map[string]fieldClass{
 		"image_gen.provider":              classChoice,
 		"image_gen.model":                 classChoice,
 		"image_gen.delivery":              classChoice,
+		"web.*":                           classUserData,
 	},
 	"models": {
 		"default":    classUserData,

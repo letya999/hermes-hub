@@ -1,6 +1,6 @@
 ---
 description: communication-hub — channel gateway: Telegram/Slack adapters, inbound routing, credential forms, spool, control API.
-last_verified: 2026-11-06
+last_verified: 2026-11-07
 ---
 
 # communication-hub
@@ -25,14 +25,26 @@ everything entering or leaving the human conversation. Listens
   fixes the host-facing origin.
 - **Control API** on the same listener: `prepare-outcome` callbacks, routines
   control, sibling-runtime calls authenticated by `toolhub-tokens.json`
-  (`HUB_COMMUNICATION_TOKENS_FILE`).
-- **Automation delivery intake (A2 preparation)**: `POST /v1/automation/deliveries`
-  accepts only the primary service control bearer plus `X-Hub-Principal`.
+  (`HUB_COMMUNICATION_TOKENS_FILE`). In supervised stacks with distinct service
+  authority, the primary runtime bearer is pinned to rendered `HUB_USER_ID`;
+  sibling bearers are pinned to enrollment. Request headers cannot switch them
+  to another principal; an unknown primary owner denies access.
+- **Human confirmations**: service-issued notices and verified owner taps use
+  the automation service bearer, including the return call to ToolHub. Runtime
+  bearers cannot submit confirmation notices. Callback routing comes from the
+  verified channel; profile, environment, generation and organization remain
+  bound to the issued proof and are rechecked by ToolHub before applying it.
+- **Automation delivery intake**: `POST /v1/automation/deliveries` and
+  `GET /v1/automation/owner-home` accept the automation service bearer
+  (`HUB_AUTOMATION_AUTH`, falling back to `HUB_COMMUNICATION_AUTH` only when
+  unset) plus `X-Hub-Principal`. Supervised stacks use the supervisor bearer;
+  owner and sibling runtime bearers cannot read arbitrary owner homes or
+  submit service deliveries.
   The handler pins the owner to a current enabled user and verifies the
   Telegram/mock chat or Slack identity against the channel target,
   then writes the stable delivery ID to the existing outbox. The send worker
-  rechecks owner and the live `channels.send` right. This route is inactive
-  until the ToolHub owner switch in #523.
+  rechecks owner and the live `channels.send` right. ToolHub owns the clock
+  and durable automation state; communication owns the channel handoff.
 - **Master hold notices**: the control loop syncs supervisor `/v1/holds` on
   boot and every second while a notice is pending; a clean hold set backs off
   to a ~10 s poll. A routable notice is durably enqueued (Telegram) then

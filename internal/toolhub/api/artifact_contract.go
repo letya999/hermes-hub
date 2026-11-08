@@ -86,6 +86,12 @@ func ApplyPreflightToolList(imported *ImportedArtifact, tools []ToolSpec) (Confi
 	}
 	AlignImportedEntrypoint(imported)
 	tools = applyCuratedReadTools(imported.Definition.Source, tools)
+	if imported.Definition.Transport == ContainerMCP || imported.Definition.Transport == RemoteMCP {
+		tools = append([]ToolSpec(nil), tools...)
+		for i := range tools {
+			tools[i] = ProjectConnectorTool(imported.Definition.DefinitionID, tools[i])
+		}
+	}
 	contract := ConfirmedToolContract{Source: ToolContractPreflight, Tools: append([]ToolSpec(nil), tools...)}
 	if err := validateConfirmedToolContract(contract); err != nil {
 		return ConfirmedToolContract{}, err
@@ -100,6 +106,14 @@ func ApplyPreflightToolList(imported *ImportedArtifact, tools []ToolSpec) (Confi
 		return ConfirmedToolContract{}, err
 	}
 	return contract, nil
+}
+
+func ProjectConnectorTool(definitionID string, tool ToolSpec) ToolSpec {
+	name := sha256.Sum256([]byte(definitionID + "\x00" + tool.Name))
+	tool.CapabilityID = "connector.tool." + hex.EncodeToString(name[:8])
+	tool.Executor = "connector:" + definitionID
+	tool.Requires = []string{"tools.use"}
+	return tool
 }
 
 // applyCuratedReadTools upgrades a probed tool to read when the prepared

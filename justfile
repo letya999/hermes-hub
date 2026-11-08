@@ -109,6 +109,7 @@ docker-check-build target="prod":
     go run -tags integration ./cmd/devcheck hermes-capability-contract hermes-hub:test
     go run -tags integration ./cmd/devcheck managed-network-canary hermes-hub:test
     go run -tags integration ./cmd/devcheck managed-supervisor-canary hermes-hub:test
+    go run ./cmd/devcheck m32-lifecycle hermes-hub:test {{target}}
     go run -tags integration ./cmd/devcheck scratch-workload-canary hermes-hub:test
     go test -tags integration -run TestDockerScratchExecPausedQuarantine ./internal/toolhub/api
     go run ./cmd/devcheck docker-clean
@@ -138,6 +139,7 @@ docker-check-prebuilt target="prod": (docker-pull target)
     go run -tags integration ./cmd/devcheck hermes-capability-contract hermes-hub:test
     go run -tags integration ./cmd/devcheck managed-network-canary hermes-hub:test
     go run -tags integration ./cmd/devcheck managed-supervisor-canary hermes-hub:test
+    go run ./cmd/devcheck m32-lifecycle hermes-hub:test {{target}}
     go run -tags integration ./cmd/devcheck scratch-workload-canary hermes-hub:test
     go test -tags integration -run TestDockerScratchExecPausedQuarantine ./internal/toolhub/api
     go run ./cmd/devcheck docker-clean

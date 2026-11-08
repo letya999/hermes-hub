@@ -195,6 +195,32 @@ func TestAgentEscalationRespectsQuiet(t *testing.T) {
 	}
 }
 
+func TestAssignmentWatcherWakeUsesCurrentToolNames(t *testing.T) {
+	e, d, root := newWatcherTest(t)
+	env := identity.TelegramEnvelope("alice", 11, "alice", "policy-1")
+	assignment := commodel.Assignment{AssignmentID: "asg-watch", Envelope: env, Intent: "report changes", State: "active", AppliedRev: 1, Plan: &commodel.AssignmentPlan{Revision: 1}}
+	if _, _, err := e.CreateAssignment(assignment, env); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	item := commodel.Schedule{ScheduleID: "w-assignment", Revision: 1, Envelope: env, Channel: "telegram_bot", Timezone: "UTC", Enabled: true, NotifyMode: "agent", AssignmentID: assignment.AssignmentID, AssignmentPlanRevision: 1, Probe: &commodel.WatchProbe{URL: "https://example.com"}}
+	if err := e.atomicJSON(e.SchedulePath(item.ScheduleID), item); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.atomicJSON(e.WatchPath(item.ScheduleID), WatchState{ScheduleID: item.ScheduleID, Baseline: "old", Value: "old"}); err != nil {
+		t.Fatal(err)
+	}
+	o := watchOccurrence(item.ScheduleID, "watcher", 1, env, now)
+	o.Job.AssignmentID, o.Job.AssignmentPlanRevision = assignment.AssignmentID, 1
+	putOccurrenceState(t, e, root, o, "probing")
+	if err := e.SettleProbe(o, item, "new", WatchHash("new"), now, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.jobs) != 1 || !strings.Contains(d.jobs[0].Text, "call assignment_read then assignment_edit action=progress") || strings.Contains(d.jobs[0].Text, "call assignment_get") {
+		t.Fatalf("assignment watcher did not use the current tool contract: jobs=%d", len(d.jobs))
+	}
+}
+
 // The job-binding drift guard exists for occurrences that admit jobs through
 // DispatchDueOccurrences. Probe kinds never do — their only mapping is the
 // escalation product, a deliberately rewritten job that can never match.

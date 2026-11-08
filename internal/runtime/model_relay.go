@@ -925,7 +925,7 @@ func (r *relayRegistry) ladderFor(file *relayRegistryFile, name string, entry re
 		if grant := p.BrokerGrants[r.owner]; grant != "" {
 			target := p.CredentialEnv
 			actor := identity.Envelope{Schema: identity.Schema, PrincipalID: r.owner, ContextID: r.owner, RuntimeID: r.owner, ExternalIdentityID: r.owner, ConversationID: "model-relay", DeliveryTargetID: "model-relay", PolicyVersion: "model-relay"}
-			binding := "model-relay-" + ref.Provider
+			binding := credentialbroker.ModelRelayBinding(r.owner, ref.Provider)
 			hop.keyFor = func(ctx context.Context) (string, error) {
 				// The dedicated grant pins binding and workload to the
 				// relay's per-provider slot; both must be presented.
@@ -1189,9 +1189,9 @@ func requestedModel(body []byte) string {
 	return doc.Model
 }
 
-// modelRelayHandlerFromEnv picks the relay mode: a mounted models.yaml
+// ModelRelayHandlerFromEnv picks the relay mode: a mounted models.yaml
 // registry when HUB_MODEL_RELAY_REGISTRY is set, else the static env ladder.
-func modelRelayHandlerFromEnv() (http.Handler, error) {
+func ModelRelayHandlerFromEnv() (http.Handler, error) {
 	if _, _, err := modelRelayLimits(); err != nil {
 		return nil, err
 	}
@@ -1248,7 +1248,7 @@ func modelRelayLimits() (time.Duration, time.Duration, error) {
 }
 
 func runModelRelay(ctx context.Context) error {
-	handler, err := modelRelayHandlerFromEnv()
+	handler, err := ModelRelayHandlerFromEnv()
 	if err != nil {
 		return err
 	}

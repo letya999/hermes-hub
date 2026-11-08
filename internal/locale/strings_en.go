@@ -2,6 +2,10 @@ package locale
 
 func init() {
 	register(LangEN, map[string]string{
+		"tools.workspace-boundary-invalid":        "The workspace passport is missing, invalid, or not active.",
+		"hubctl.replay-config-invalid":            "Replay configuration requires a complete, valid published six-passport revision.",
+		"doctor.model-default":                    "Set default and routes in passports/models.yaml, then publish with space apply.",
+		"doctor.model-endpoint":                   "Set the selected service endpoint in passports/models.yaml, then publish with space apply.",
 		"supervisor.settings-invalid":             "Invalid settings edit request.",
 		"supervisor.settings-denied":              "Settings edit was denied or could not be published.",
 		"hubctl.space-apply-passport-right":       "This passport change requires %s.",
@@ -470,6 +474,15 @@ func init() {
 		"page.field-optional":           "optional",
 		"page.opt-out":                  "Field not required — run without it",
 		"page.viewer-title":             "Browser viewer",
+		"page.knowledge-title":          "Knowledge",
+		"page.knowledge-intro":          "Search your private memory. This view is read-only and the link expires after one hour.",
+		"page.knowledge-search":         "Search",
+		"page.knowledge-back":           "Back to search",
+		"page.knowledge-empty":          "No matching memories found.",
+		"page.knowledge-forbidden":      "This knowledge link is not available.",
+		"page.knowledge-expired":        "This knowledge link has expired. Ask the agent for a new one.",
+		"page.knowledge-bad":            "Invalid search request.",
+		"page.knowledge-unavailable":    "Knowledge is temporarily unavailable.",
 		"page.viewer-hint":              "Website sign-in happens only here — never send passwords to the chat.",
 		"page.viewer-open":              "Open",
 		"page.viewer-alt":               "Browser frame",

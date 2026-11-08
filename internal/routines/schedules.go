@@ -209,6 +209,9 @@ func (e *Engine) ListSchedules(caller identity.Envelope) ([]commodel.Schedule, e
 		if item.Envelope.PrincipalID != caller.PrincipalID || item.Envelope.ContextID != caller.ContextID {
 			continue
 		}
+		if item.ScheduleID == SystemDreamingID {
+			continue
+		}
 		if item.JobKind == "reminder" && item.LastOccurrenceID != "" {
 			item.LastOccurrenceState, item.LastDeliveryState = e.ReminderState(item)
 		}
@@ -619,6 +622,19 @@ func (e *Engine) ClearRoutineFailure(scheduleID string) error {
 	return e.atomicJSON(e.SchedulePath(scheduleID), item)
 }
 
+// OccurrenceRetired requires an owned deletion record; an unavailable or paused
+// schedule alone must not discard retryable work.
+func (e *Engine) OccurrenceRetired(o commodel.RoutineOccurrence) bool {
+	b, err := e.readFile(e.CancelPath(o.ScheduleID))
+	if err != nil {
+		return false
+	}
+	var item commodel.Schedule
+	return json.Unmarshal(b, &item) == nil && item.ScheduleID == o.ScheduleID &&
+		item.Envelope.PrincipalID == o.Job.PrincipalID && item.Envelope.ContextID == o.Job.ContextID &&
+		!item.Enabled && item.Paused && item.Revision > o.Revision
+}
+
 // OccurrenceCurrent reports whether the occurrence's schedule still exists
 // at its recorded revision and envelope. Lock-free durable read — safe
 // under any owner lock.
@@ -731,6 +747,11 @@ func (e *Engine) TickSchedules(now time.Time, nativeCron string, authorize func(
 			window = DefaultCatchUp
 		}
 		job := commodel.Job{Envelope: item.Envelope, OrganizationID: item.OrganizationID, UserID: item.UserID, ActorID: item.ActorID, ScopeID: item.ScopeID, Channel: item.Channel, ChatID: item.ChatID, TaskID: item.TaskID, TopicID: item.TopicID, SlackChannel: item.SlackChannel, SlackThread: item.SlackThread, Text: item.Input, Trigger: "cron", AssignmentID: item.AssignmentID, AssignmentPlanRevision: item.AssignmentPlanRevision}
+		if e.deps.Dispatch.PrepareJob != nil && item.JobKind != "dreaming" {
+			if err := e.deps.Dispatch.PrepareJob(&job); err != nil {
+				return err
+			}
+		}
 		occ := commodel.RoutineOccurrence{ScheduleID: item.ScheduleID, Revision: item.Revision, DueAt: due, JobKind: item.JobKind, Job: job, CatchUpWindow: window}
 		if err := ValidateOccurrence(occ, item.Envelope, e.deps.ChannelFor); err != nil {
 			continue

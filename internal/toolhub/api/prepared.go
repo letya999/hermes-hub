@@ -65,9 +65,10 @@ type PinnedImage struct {
 }
 
 type PreparedEntry struct {
-	ID      string   `json:"id"`
-	Aliases []string `json:"aliases,omitempty"`
-	Name    string   `json:"name"`
+	ID                string   `json:"id"`
+	DefinitionVersion string   `json:"definition_version,omitempty"`
+	Aliases           []string `json:"aliases,omitempty"`
+	Name              string   `json:"name"`
 	// Tier defaults to t0 for embedded reviewed entries; the catalog may pin
 	// it explicitly, and T0 entries require an image digest.
 	Tier  string       `json:"tier,omitempty"`
@@ -411,6 +412,9 @@ func PreparedForRepository(repository, subfolder string) (PreparedEntry, bool, e
 }
 
 func (entry PreparedEntry) Apply(config ArtifactImportConfig) ArtifactImportConfig {
+	if entry.DefinitionVersion != "" {
+		config.Version = entry.DefinitionVersion
+	}
 	config.Language = entry.Language
 	config.OAuth = entry.OAuth
 	// The generator still infers the binary and upstream argv tail; the

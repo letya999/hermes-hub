@@ -114,7 +114,15 @@ type ExecuteResponse struct {
 	Voice string `json:"voice,omitempty"`
 }
 
-type runtimeHTTP struct{ restartMu sync.Mutex }
+type runtimeHTTP struct {
+	restartMu sync.Mutex
+	runMu     sync.Mutex
+	activeJob string
+	activeRun string
+	proxyOnce sync.Once
+	proxy     http.Handler
+	proxyErr  error
+}
 
 type restartMarker struct {
 	OperationID string `json:"operation_id"`
@@ -167,6 +175,8 @@ func (s *runtimeHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.skillCreds(w, r)
 	case "/v1/skill-ref-lease":
 		s.skillRefLease(w, r)
+	case "/mcp":
+		s.proxyMCP(w, r)
 	default:
 		writeRuntimeError(w, http.StatusNotFound, "not found")
 	}

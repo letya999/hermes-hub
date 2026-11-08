@@ -222,6 +222,12 @@ projection resolves each hop's credential through that map, so rotation is a
 map update, not a passport change. Once both grants exist the command
 removes the plaintext `session.json` under the instance bind `auths/` — the
 tmpfs delivery is the only place session material may exist.
+When a second route names the same credential references and contract,
+`models login` reuses the existing enrollment request and adds grants for the
+new workload. This lets a dedicated vision route share the owner's existing
+provider account without requesting its secrets again. Publish a logical
+route named `vision` to make it available to managed `media_inspect`; image
+support still depends on that provider model and its Relay grant.
 
 For sibling spaces the external `broker-materialized` reference resolves to
 the infra project's volume (`hermes-hub-<infra-owner>-<env>-broker-materialized`),

@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"github.com/letya999/hermes-hub/internal/catalog"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"os"
 	"os/exec"
@@ -31,7 +32,7 @@ func devService(name string) (devServiceSpec, bool) {
 		return devServiceSpec{"hubctl", "./cmd/hubctl", "hermes-hub:0.5.0-dev-control"}, true
 	case "hermes-runtime":
 		return devServiceSpec{"hub-runtime", "./cmd/runtime", "hermes-hub:0.5.0-dev"}, true
-	case "model-relay":
+	case "model-relay", "toolhub-relay":
 		return devServiceSpec{"hub-runtime", "./cmd/runtime", "hermes-hub:0.5.0-dev"}, true
 	case "egress-relay":
 		return devServiceSpec{"hub-runtime", "./cmd/runtime", "hermes-hub:0.5.0-dev-core"}, true
@@ -72,6 +73,9 @@ func runDevRebuild(ctx context.Context, args []string) error {
 		return fmt.Errorf("service %q is not in this dev stack", service)
 	}
 	if err := stack.RenderEnvironment(dirAbs, rootAbs, "dev"); err != nil {
+		return err
+	}
+	if err := refreshDevSiblingTokens(dirAbs); err != nil {
 		return err
 	}
 	compose := filepath.Join(dirAbs, "generated", "compose.dev.yaml")
@@ -138,6 +142,9 @@ func runDevRebuild(ctx context.Context, args []string) error {
 	if err := stageDevCompanions(service, rootAbs, companions); err != nil {
 		return err
 	}
+	if err := stageDevCatalog(rootAbs, buildDir); err != nil {
+		return err
+	}
 	image := "hermes-hub-dev-" + settings.User + "-" + service + ":local"
 	previous := exec.CommandContext(ctx, "docker", "image", "inspect", "--format", "{{.Id}}", image)
 	previous.Env = supervisorComposeEnv(dirAbs)
@@ -188,6 +195,13 @@ func runDevRebuild(ctx context.Context, args []string) error {
 	return nil
 }
 
+func refreshDevSiblingTokens(dir string) error {
+	if infra := stack.InfraSpaceDir(dir); infra != dir {
+		return stack.EnrollSiblingRuntimeTokens(infra, "dev")
+	}
+	return nil
+}
+
 // stageDevCompanions copies non-Go runtime assets the overlay needs onto the
 // service's /usr/local/bin. The base image predates them, so dev-rebuild must
 // stage them just like the full Dockerfile does.
@@ -200,4 +214,29 @@ func stageDevCompanions(service, root, dest string) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dest, "hub-sidecar"), src, 0o755) // #nosec G703 -- dest is the private MkdirTemp build's companions directory; basename is fixed.
+}
+
+// A Go-only overlay must carry its matching immutable vocabulary; otherwise
+// a new binary can run healthy while every rights decision fails closed.
+func stageDevCatalog(root, buildDir string) error {
+	source := filepath.Join(root, "platform", "catalogs", catalog.Release)
+	target := filepath.Join(buildDir, "catalogs", catalog.Release)
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		return err
+	}
+	for _, name := range []string{catalog.ManifestFile, catalog.CapabilitiesFile, catalog.ToolsetsFile, catalog.ServicesFile, catalog.RightsFile} {
+		path := filepath.Join(source, name)
+		info, err := os.Lstat(path)
+		if err != nil || !info.Mode().IsRegular() || info.Size() > 4<<20 {
+			return fmt.Errorf("dev catalog %s unavailable or unsafe", name)
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(target, name), body, 0o444); err != nil {
+			return err
+		}
+	}
+	return nil
 }

@@ -31,7 +31,7 @@ func devImage(root, file, service, user, env, fallback string) (string, error) {
 // devScriptImage resolves the image disposable script containers spawn
 // from. The helper entrypoint is communication-hub, so the pin written by
 // dev-rebuild communication-hub steers script probes to the same code the
-// gateway itself runs; prod always falls back to the core image.
+// gateway itself runs; otherwise the operator-selected script core image runs.
 func devScriptImage(root, user, env, fallback string) (string, error) {
 	return devImage(root, "dev-script-image", "communication-hub", user, env, fallback)
 }

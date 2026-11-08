@@ -1011,7 +1011,7 @@ models:
 	t.Setenv("HUB_MODEL_RELAY_STATE", filepath.Join(dir, "sel.json"))
 	t.Setenv("HUB_MODEL_RELAY_OWNER", "alice")
 	t.Setenv("HUB_MODEL_RELAY_ADMIN", "admintoken")
-	handler, err := modelRelayHandlerFromEnv()
+	handler, err := ModelRelayHandlerFromEnv()
 	if err != nil {
 		t.Fatal(err)
 	}

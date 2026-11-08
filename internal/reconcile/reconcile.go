@@ -116,6 +116,18 @@ func Plan(changes []passport.Change, services map[string]passportview.ServiceSpe
 				a = get(Remove, "*")
 			} else {
 				a = get(Rebuild, stackTarget(c.Path))
+				targets := []string{a.Target}
+				if a.Target == "*" {
+					targets = nil
+					for name := range services {
+						targets = append(targets, name)
+					}
+				}
+				for _, target := range targets {
+					activate := get(Recreate, target)
+					activate.Consumers = appendUnique(activate.Consumers, c.Consumer)
+					activate.Paths = appendUnique(activate.Paths, c.Path)
+				}
 			}
 		case passport.EffectRecreate:
 			target := runtimeTarget(c.Path)

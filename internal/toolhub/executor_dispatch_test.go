@@ -69,7 +69,7 @@ func TestRemoteExecutorDispatch(t *testing.T) {
 	}
 	digest := api.DefinitionDigest(definition)
 	profile.Revision++
-	profile.Connectors = api.ConnectorsPersonal
+	profile.Connectors = api.ConnectorsNone // explicit tool selection grants the facade without the legacy bundle
 	for _, tool := range definition.Tools {
 		profile.Selections = append(profile.Selections, api.CapabilitySelection{
 			CapabilityID: tool.CapabilityID, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version,
@@ -87,6 +87,17 @@ func TestRemoteExecutorDispatch(t *testing.T) {
 			return api.BackendResult{Text: "backend"}, nil
 		})}
 	attachGatewayAudit(t, g)
+	auditWrite := g.AuditWrite
+	g.AuditWrite = func(event string, fields map[string]string) error {
+		if event == "admit" && fields["capability_id"] == "connectors.list" {
+			if !s.mu.TryLock() {
+				t.Error("connector facade was called under the registry admission lock")
+			} else {
+				s.mu.Unlock()
+			}
+		}
+		return auditWrite(event, fields)
+	}
 	handler, err := g.Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -162,6 +173,22 @@ func TestRemoteExecutorDispatch(t *testing.T) {
 
 	for _, name := range backendCalls {
 		t.Fatalf("remote-executor tool %q reached the in-runtime backend", name)
+	}
+	// Exercise the cataloged delegate itself, beyond the MCP control facade.
+	platformAuditWrite := g.AuditWrite
+	g.AuditWrite = func(event string, fields map[string]string) error {
+		if event == "admit" && fields["capability_id"] == "platform.call" {
+			if !s.mu.TryLock() {
+				t.Error("cataloged delegate retains the outer registry fence")
+			} else {
+				s.mu.Unlock()
+			}
+		}
+		return platformAuditWrite(event, fields)
+	}
+	res, err = g.CallAuthorized(t.Context(), auth, "tool_call", map[string]any{"tool": "connector_list", "arguments": map[string]any{}})
+	if err != nil || res == nil || res.IsError || !strings.Contains(text(res), "connector") {
+		t.Fatalf("cataloged delegation failed: %v", err)
 	}
 }
 

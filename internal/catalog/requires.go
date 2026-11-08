@@ -79,7 +79,9 @@ var capRights = map[string]string{
 	"context.edit": "context.edit",
 	// memory — the vault contract: search reads, card writes persist.
 	"memory.search": "memory.search",
+	"memory.read":   "memory.search",
 	"memory.write":  "memory.remember",
+	"memory.open":   "memory.search",
 	"settings.read": "config.read",
 	"settings.edit": "config.edit_own",
 	// sessions

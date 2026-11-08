@@ -1,6 +1,6 @@
 ---
 description: Operator runbook — stack lifecycle, user onboarding, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
-last_verified: 2026-11-07
+last_verified: 2026-11-08
 ---
 
 # Operations
@@ -32,10 +32,19 @@ build, select `hubctl build --dir spaces/alice toolhub`, then `hubctl up --dir
 spaces/alice --no-build toolhub`. Neither path should recreate unrelated
 services. Agent-tool contract changes additionally require catalog rebind
 and managed runtime respawn.
+For a stack service change, `space apply` uses the same scoped image builder
+and then recreates that service. A successful image build alone is not a
+successful service activation; managed Compose files have no build sections.
 The base-image Dockerfile still shares a Go build stage and a `cliproxy` binary
 across control services. A cold `build toolhub` can therefore rebuild those
 stages even though Compose selects only ToolHub; use `dev-rebuild` for Go-only
 iterations while the dev base image exists.
+The common Broker binary is built with SQLCipher so existing activated
+encrypted stores remain readable. Its SQLCipher dependency layer is independent
+of the hub Go source tree, avoiding recompilation after a ToolHub-only edit.
+The generated model registry is group-readable (`0640`, mounted directory
+`0750`) for model-relay's `10001:<host-gid>` identity on Linux. Credential
+auth/env files retain their private modes.
 
 `hubctl build`/`up` run `docker compose config --quiet` first; supervisor
 mode also needs `HUB_SUPERVISOR_AUTH` or a provisioned `supervisor.auth`.
@@ -43,47 +52,73 @@ mode also needs `HUB_SUPERVISOR_AUTH` or a provisioned `supervisor.auth`.
 a second cliproxy on the shared alias — stop the conflicting gateway
 intentionally.
 
+M32 lifecycle acceptance runs separately with `go run ./cmd/devcheck
+m32-lifecycle <HEAD-image> dev|prod`; both exhaustive Docker recipes and CI
+include it. The runtime image and `hermes-hub:test-core` script/relay image
+must both match HEAD; CI pulls the selected environment's core role first.
+The gate also requires clean committed source; modified, staged or untracked
+source files cannot be combined with images labeled as the old HEAD.
+Its group leg uses a dedicated group home, simultaneous private/group runs
+and checks actual model prompts. Private runs also exercise right revocation
+and confirmed regrant through already-open MCP sessions.
+It needs isolated host ports 8090/8081 and creates only disposable
+users, runtimes and relays. Use CI for this fault test; local service iteration
+continues to use existing dev spaces and scoped rebuilds.
+The clock/outage/delivery fence can also run without Docker:
+`go test -tags integration -short -run '^TestM32ReminderClockAndDeferredDelivery$'
+./cmd/toolhub`. It uses real ToolHub/gateway code and temporary storage with a
+local channel fixture; it does not exercise agent execution.
+Assignment source reconcile, pause/resume, CAS and restart recovery can run
+with `go test -tags integration -short -run
+'^TestM32AssignmentReconcileAndRecovery$' ./cmd/toolhub` without Docker.
+Dreaming's real relay/PDP/vault path, two timezones, spring DST gap,
+commit-time revoke, restart deduplication and deferred fixture delivery run with
+`go test -tags integration -short -run
+'^TestM32DreamingRelayIsolationAndRecovery$' ./cmd/toolhub`. This uses temporary
+owners and controlled clock ticks; it does not prove process-crash recovery.
+Managed agent-tools calls acquire their own runtime lease, so direct file
+calls and watch probes do not require a preceding model run to warm the
+executor. ToolHub re-authorizes the tool after startup and releases the lease
+when the call finishes.
+
 ## User onboarding — the capability ceremony
 
-A new space renders and boots, but **renders no tools until capability
-records exist**: `workspace.yaml` wishes admit nothing, the shared ToolHub
-store is the authority, and a managed runtime binds a profile published for
-its exact `{principal, context, runtime, environment, generation}` tuple.
-Skip the ceremony and the user gets an agent with an empty tool surface.
+A new space has exactly six authored configuration inputs under
+`spaces/<id>/passports/`: stack/config/models/workspace/tools/grants.yaml.
+Only a validated published revision is consumed. Issued rights, credentials,
+channel links and generated outputs are separate protected or operational state.
+Tool selection grants no authority; a managed profile binds the exact
+`{principal, context, runtime, environment, generation}` tuple.
 
-1. **Scaffold** — `hubctl init --user <id>` writes `spaces/<id>`:
-   `agent.yaml` (operator-owned), `workspace.yaml` (capability wishes),
-   `scope.yaml`, `secrets.{dev,prod}.env`, `SOUL.md`, state dirs. Init never
-   overwrites; a fleet default lives in `policies/agent-default.yaml` /
-   `policies/workspace-default.yaml` when present.
-2. **agent.yaml** — set `model` and `model_url`. Managed mode requires
-   `capability_mode: managed`, the `capability_profile_id` you will publish
-   below, and `capability_generation` (start at 1); the effective
-   `model_url` resolves through the published `models.yaml` passport
-   (`http://model-relay:8318/v1` on spaces that consume the shared relay).
-   Ports are allocated at init; pick free `oauth_port`/`browser_port` when
-   they collide. Under managed mode only carve-out toolsets may go `via:
-   native`, hooks/memory/native extensions are rejected, and raw MCP on a
-   personal space is forbidden.
-3. **workspace.yaml** — the wish list (`tools:` map). Keep the template:
-   `file/documents/images/hh` via `toolhub`, `todo/memory/web/deep_research`
-   native, `browser: mcp`. Wishes still admit nothing — step 5 does. Under
-   a published revision this file is retired: the `tools.yaml`,
-   `workspace.yaml` and `grants.yaml` passports carry the same intent and
-   are the only files the runtime opens (see docs/spaces.md).
-4. **Secrets** — fill `secrets.<env>.env` (`OPENAI_API_KEY` at minimum —
-   the model relay authenticates upstream with it). Never commit or paste
-   this file.
+1. **Scaffold** — `hubctl init --user <id>` creates the six authored passports,
+   `secrets.{dev,prod}.env`, `SOUL.md`, profile metadata and state directories.
+   Init never overwrites an existing space. Provisioning profiles use those
+   same six passport templates; no retired root configuration is created.
+2. **Stack/config/models** — author identity and service modes in
+   `passports/stack.yaml`; timezone, ports, channels and memory in
+   `passports/config.yaml`; default route, service endpoints, model IDs and
+   credential references in `passports/models.yaml`. Managed model traffic
+   reaches the per-owner model relay. Raw provider names are not logical route
+   IDs. Missing or malformed published configuration refuses startup.
+3. **Workspace/tools/grants** — declare filesystem boundaries in
+   `passports/workspace.yaml`, toolsets and profile/generation binding in
+   `passports/tools.yaml`, and requested operations in `passports/grants.yaml`.
+   Selection stays independent from issued rights; requested grants must fit
+   the operator policy and current issued ledger. These documents do not
+   activate until `space apply` publishes them.
+4. **Secrets** — provision the declared credential references through the
+   Broker/provider enrollment flow and fill required local deployment secrets.
+   Never put credential bytes in passports, commit secret files or paste them.
 5. **Capability records** — publish into the infra space's protected store
-   (`spaces/<infra>/runtime/toolhub/store.json`; the space whose agent.yaml
-   has `infra: true` or unset):
+   (`spaces/<infra>/runtime/toolhub/store.json`, or the activated `store.db`;
+   infra ownership comes from the published stack passport):
    - ceiling policy: `hubctl capability --kind policy --file policy.json
      --toolhub-store <store> --confirm` (the `policy_id` the profile binds)
    - profile: review a draft first with `--kind preview --file profile.json
      --toolhub-store <store>` (read-only old→new diff), then
      `--kind profile --file profile.json --confirm`. The record's
      `principal_id`/`context_id`/`runtime_id`/`environment`/`generation`
-     must equal the agent.yaml binding.
+     must equal the published stack identity and tools profile binding.
    - agent-tools surface: `hubctl capability --kind agent-tools --principal
      <id> --context <id> --runtime <id> --policy-version <v>
      --toolhub-store <store>` — registers the reviewed hub-tools catalog
@@ -150,8 +185,8 @@ allowlist metadata; collection and agent projection exclude bodies/unknown field
 before redaction and search. Source reads stream from oldest unread with timestamp
 and tie ordinal, never last-5000 tail. Data sync precedes atomic cursor replacement;
 replay keeps source_position. Source/cursor/rotation loss emits diagnostic_gap;
-unreadable stopped containers are not marked drained. Opt out: `diagnostics: false` in the infra space's
-`agent.yaml`, then `hubctl up`.
+unreadable stopped containers are not marked drained. Published passports currently expose no collector-disable field. Editing
+retired `agent.yaml` does not change collector configuration.
 
 Rotation requires the dedicated `.local/diagnostics/` directory bind; a single-file
 bind pins the obsolete inode. The directory contains diagnostics only, not host
@@ -195,9 +230,11 @@ pin for one-command revert. `hubctl replay export --job <id> --spool <dir>
 -o <dir>` writes a sanitized incident bundle (digest-verified `--prompt-file`
 for sensitive jobs); `hubctl replay run --bundle <f> --replay-dir <dir>`
 replays it on an isolated spool with the channel forced to mock, printing a
-divergence line. `hubctl apply -f` accepts a declarative `space:` block that
-converges `agent.yaml`/`workspace.yaml` through full stack validation —
-secrets keys are rejected by construction.
+divergence line. Export with `--space` hashes the current complete published
+six-passport bundle; incomplete activation and document symlinks are refused.
+Space configuration is published with `hubctl space apply`
+from the six authored passports. The retired declarative `apply -f space:`
+flow is not an agent configuration authority.
 
 Storage accounting (SPEC-0088): `hubctl storage status --spool <dir>
 --toolhub-store <path>` prints per-owner allowlisted aggregates only —
@@ -346,7 +383,10 @@ only — anything else mints loopback) + `HUB_PUBLIC_LISTEN=<addr>` on
 hub-toolhub; that listener serves only human-action paths (control/gateway
 → 404) and the gateway accepts an https `form_url` only when host equals the
 configured origin exactly. `hubctl connector link --onboarding <id>` prints a
-pending URL; `--confirm` completes an awaiting-confirmation onboarding.
+pending URL and renews an expired confirmation before printing it; `--confirm`
+completes an awaiting-confirmation onboarding through the operator CLI grant.
+The confirmation result prints only phase, status, onboarding, binding and
+connection state; it does not print recipe or credential metadata.
 
 ## Outbound exposure (tunnels)
 
@@ -561,6 +601,13 @@ in the infra space's project; a port leaf whose owner the revision doesn't
 declare is dead config and plans no recreate. From the operator host the
 supervisor is in-network-only — set `HUB_RUNTIME_SUPERVISOR_URL` to a
 reachable endpoint or the respawn cannot be signaled.
+During `space apply`, the operator sends the exact apply revision with the
+respawn request. The supervisor accepts it only while the matching journal is
+in its effects phase and the published pointer names the previous or new
+revision. This lets the apply finish while the journal correctly blocks
+ordinary ToolHub decisions; other runtime restart requests still use the
+`agents.restart_self` decision. Keep the endpoint on the control network or
+expose it only temporarily on local loopback for host-side apply.
 
 Memory: native files under `spaces/<id>/hermes/memories` (`MEMORY.md`,
 `USER.md`) — `hubctl memory list` / `hubctl memory delete --name`. The vault
@@ -598,18 +645,20 @@ and `runtime.timezone` (default 04:00 UTC). Its protected occurrence and
 day receipt live under that owner's automation `system/dreaming/` subtree;
 vault checkpoints live under `vault/runtime/memory/night/`. A disabled memory
 passport or missing `memory.dreaming` right prevents a model call and vault
-commit. Failed work stays pending; a communication outage leaves the digest
+commit. The published revision must match the active capability profile;
+an incomplete apply denies admission and each subsequent commit guard.
+Failed work stays pending; a communication outage leaves the digest
 in ToolHub's delivery outbox. `model-relay-caller.auth` is a rendered,
 caller-only file mounted read-only for the matching owner; never inspect or
 copy its contents into diagnostics.
 
 An external memory backend rides the hub-owned provider seam, never the
-upstream plugin path: `tools: {memory_provider: {via: native}}` in
-`workspace.yaml` behind a `native:memory_provider` governance grant, with
-`memory_provider` (adapter kind — `hindsight` today), `memory_provider_url`
-(absolute http(s)) and optional `memory_provider_token_env` (the *name* of
-a secrets-env variable — a literal credential is rejected at validation) in
-`agent.yaml`. The render writes `vault/runtime/memory/provider.json`; in
+upstream plugin path: select `memory_provider: {via: native}` in the
+core/extended toolsets of `passports/tools.yaml`, behind the separate
+`native:memory_provider` governance grant. Declare
+`memory.provider: {adapter: hindsight, url: <absolute http(s)>, token_env: <name>}`
+in `passports/config.yaml`; token_env names a secret variable, never its value.
+The render writes `vault/runtime/memory/provider.json`; in
 managed capability mode the endpoint host joins the egress allowlist, and
 disabling the capability removes both. `hubctl memory replay` streams the
 `prov.db` audit spine into the provider — each entry's bank id minted from
@@ -626,8 +675,12 @@ the only lanes — recall and governed write are `unsupported`).
 With `knowledge_ui` on (requires `memory_vault`) no `open-knowledge`
 container renders (M32/#520): ToolHub owns the vault, so the feature can
 mount nothing — the upstream editor cannot act as a governed-API client,
-and its surface stays explicitly unavailable rather than partially open.
-`hubctl doctor` reports `Knowledge UI: unavailable`; a space whose
+and its editor stays explicitly unavailable. The separate `memory_open`
+agent tool opens a read-only ToolHub memory view in the owner's private
+channel. Its bearer link lasts one hour and is rechecked against the
+published memory switch, current selection and `memory.search` grant on
+every request; it has no edit endpoint. `hubctl doctor` reports the upstream
+editor limitation; a space whose
 published `stack.yaml` still declares `open-knowledge` fails the
 declared-but-unrendered check until republished without it (the vault
 itself, `.ok/` state and history are untouched — nothing is deleted).
@@ -705,9 +758,14 @@ when disk use needs reclaiming.
 `type=gha`); builds always `--load`.
 
 `dev-rebuild` (dev only, service must already run):
+
+The supervisor starts isolated Starlark helpers from the core image, which
+contains `communication-hub`; the agent runtime image has no daemon helper.
+`HUB_SCRIPT_IMAGE` selects an explicit core image for a pinned deployment.
 `go run ./cmd/hubctl dev-rebuild --dir spaces/alice --env dev <service>` —
 compiles one Linux binary, overlays the dev image, recreates only that
-service; restores prior image on failure. Names: `communication-hub`,
+service, and copies the active immutable platform catalog into the overlay;
+restores the prior image on failure. Names: `communication-hub`,
 `credential-broker`, `hub-media`, `toolhub`, `workload-controller`,
 `supervisor`, `hermes-runtime`, `model-relay` (supervisor mode records it for next spawn;
 a full `hubctl up` returns to base). Verify with `docker ps --filter
@@ -813,7 +871,7 @@ Long Telegram turns queue via `display.busy_input_mode: queue`; heartbeat
 `HERMES_AGENT_NOTIFY_INTERVAL=60s`; `/stop`, `/cancel` are explicit.
 Replies >4096 chars arrive as `response.txt` (≤2 MiB). Lost send
 acknowledgement = uncertain — inspect outbox, never blind-retry.
-`scope.yaml` IDs are immutable; Telegram links are provisioned only in
+Published stack identity/scope-kind bindings are immutable; Telegram links are provisioned only in
 trusted host config after verifying the numeric account ID — never link
 from username/email/message-request.
 
@@ -844,9 +902,10 @@ list` shows mirrors and the skills each feeds; `sources remove --id <id>`
 deletes the mirror — installed skills keep working but lose update
 tracking.
 
-Sources are https GitHub/GitLab only; a self-hosted GitLab needs
-`gitlab_host: <host>` in `workspace.yaml` — render adds its egress and the
-third `skillgit` approval tuple, then `hubctl up`. Registry locators also
+Sources are https GitHub/GitLab only. The current passport schema has no
+self-hosted GitLab host field; retired `workspace.yaml` cannot enable that
+override. Do not patch generated environment files to bypass admission.
+Registry locators also
 work: `https://www.skills.sh/<owner>/<repo>[/<skill>]` maps to the GitHub
 repository and resolves `<skill>` against the discovered candidates — an
 unmatched slug returns the candidate list instead of guessing.
@@ -908,8 +967,9 @@ enforced by tests.
 
 ## SSH capability operations
 
-`ssh` entry in `workspace.yaml` `tools:`; `ssh_write`/`ssh_shell`/`ssh_tunnel`
-stack on it. Config lives in `connections/ssh/config.yaml` mounted read-only
+Select the SSH toolset in `passports/tools.yaml` and grant its requested
+operations in `passports/grants.yaml`; selection alone grants no access.
+Config lives in `connections/ssh/config.yaml` mounted read-only
 at `/state/ssh` — render fails when missing/invalid; rotate by editing +
 `hubctl up`. Host keys are mandatory, pinned per alias (full public key
 preferred — a bare `sha256:` fp needs one pin per offered key type).
@@ -995,14 +1055,17 @@ than loudly.
 
 Files and records per owner:
 
-- `spaces/<owner>/agent.yaml` — `user: <owner>` (this is the principal id
-  rendered everywhere), `model:` must be a **registry id** from models.yaml
-  (e.g. `default`), not an upstream model name. Upstream names with dots
-  (`gemini-3.8-flash-high`) fail `registryNamePattern` validation.
-- `models.yaml` — registry ids are logical names without dots (`default`,
-  `alt`); each ladder hop's `model:` must exist in **that owner's** cliproxy
-  `/v1/models` catalog — dedicated instances may expose different catalogs.
-  Hot reload applies edits without restart.
+- `spaces/<owner>/passports/stack.yaml` — `identity.user: <owner>` fixes the
+  principal rendered everywhere. `passports/tools.yaml` binds its profile and
+  generation; issued policy/rights remain protected records.
+- `passports/models.yaml` — default/routes use logical names (`default`,
+  `alt`); provider IDs belong in each service's models list. Each provider
+  model must exist in **that owner's** catalog. Publish authored edits with
+  `space apply`; the relay reloads the resulting generated registry. A
+  dedicated `vision` route is used by managed media when published. If a
+  models edit recreates `hermes-runtime`, supervisor authorizes that exact
+  target from the apply journal and respawns it; unrelated targets remain
+  denied.
 - `spaces/local/communication.users.yaml` — hand-edited: `id`, `runtime_id`,
   `telegram_ids`, `policy_version`. The policy version must equal the
   rendered stack policy (`policy-<hash>` from the space's generated files);
@@ -1069,11 +1132,12 @@ Known traps from live acceptance:
   before trusting evidence — a pre-change `hermes-hub:0.5.0-dev` supervisor,
   toolhub, relay or hub-media silently shows old behavior. Check
   `docker inspect` shows a `…:local` overlay image under `.Config.Image`.
-- **Default `HUB_MODEL_RELAY_HOP_TIMEOUT` (30 s) is shorter than a
-  multi-image vision call** on a cold cliproxy → honest upstream work reads
-  as a 502. Raise it in `model-relay.<env>.env` for acceptance runs.
-- **ToolHub restart kills live MCP sessions** inside spawned runtimes —
-  after any toolhub recreate, kill and re-wake runtimes rather than reusing.
+- **Model relay timeouts** — defaults are five minutes per hop and six
+  minutes total. Check operator overrides of `HUB_MODEL_RELAY_HOP_TIMEOUT`
+  and `HUB_MODEL_RELAY_TIMEOUT` before attributing a timeout to the provider.
+- **ToolHub restart interrupts MCP sessions** — verify calls after a
+  recreate; respawn an affected runtime if reconnection fails. Catalog/contract
+  changes still require rebind and managed respawn.
 - **Renamed/migrated spaces can carry corrupt SQLite state** — a malformed
   `managed/<env>/hermes/state.db` lets the runtime boot and answer
   readiness while every job stalls `uncertain`. Check

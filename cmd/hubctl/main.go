@@ -168,6 +168,9 @@ func run(ctx context.Context, args []string) error {
 	if op == "exec-scratch" {
 		return runExecScratch(ctx)
 	}
+	if op == "exec-terminal" {
+		return runExecTerminal(ctx)
+	}
 	if op == "context" {
 		return runContext(ctx, args[1:])
 	}
@@ -493,9 +496,14 @@ func run(ctx context.Context, args []string) error {
 			return err
 		}
 		defer stopLog()
-		manager, err := supervisor.New(supervisor.Config{SpacesRoot: *spacesRoot, Image: *supervisorImage, RuntimeAuth: *supervisorAuth, Environment: supervisorEnv, WarmTTL: *warmTTL, MaxConcurrent: *maxRuntimes, AllowWildcardListen: *supervisorWildcard,
+		scriptImage := os.Getenv("HUB_SCRIPT_IMAGE")
+		if scriptImage == "" {
+			scriptImage = "hermes-hub:0.5.0-" + *environment + "-core"
+		}
+		var manager *supervisor.Manager
+		manager, err = supervisor.New(supervisor.Config{SpacesRoot: *spacesRoot, Image: *supervisorImage, ScriptImage: scriptImage, RuntimeAuth: *supervisorAuth, Environment: supervisorEnv, WarmTTL: *warmTTL, MaxConcurrent: *maxRuntimes, AllowWildcardListen: *supervisorWildcard,
 			SettingsEdit: func(ctx context.Context, principal, environment, key string, value *string, base string) (map[string]any, error) {
-				return runSettingsEdit(ctx, filepath.Join(*spacesRoot, principal), filepath.Dir(*spacesRoot), environment, key, value, base)
+				return runSettingsEdit(ctx, filepath.Join(*spacesRoot, principal), filepath.Dir(*spacesRoot), environment, key, value, base, func() error { _, err := manager.ReconcileSettingsRuntime(principal); return err })
 			},
 		})
 		if err != nil {

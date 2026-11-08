@@ -132,6 +132,10 @@ var argDocs = map[string]map[string]argDoc{
 		"kinds":   {Desc: "Entry kinds to include.", Items: "string"},
 		"history": {Desc: "Include superseded/forgotten entries."},
 	},
+	"memory_read": {
+		"id":      {Desc: "Exact id returned by memory_search."},
+		"history": {Desc: "Allow an own superseded or forgotten entry."},
+	},
 	"memory_card": {
 		"op":       {Desc: "Write operation.", Enum: []string{"remember", "fact", "propose"}},
 		"inner":    {Desc: "Existing-memory edit drafted by propose.", Enum: []string{"truth", "merge", "forget"}},
@@ -146,11 +150,11 @@ var argDocs = map[string]map[string]argDoc{
 
 	// ---- terminal
 	"terminal_exec": {
-		"cmd":        {Desc: "Command line to run in the workspace execution environment."},
-		"cwd":        {Desc: "Working directory, relative to the workspace."},
+		"cmd":        {Desc: "Command line to run in an isolated agent-image workspace snapshot."},
+		"cwd":        {Desc: "Working directory, relative to the admitted workspace; copied into private scratch."},
 		"timeout":    {Desc: "Seconds before the run is killed."},
 		"stdin":      {Desc: "Data fed to the process on stdin."},
-		"shell":      {Desc: "Shell override; the default is the runtime's configured shell."},
+		"shell":      {Desc: "Shell override: sh or bash; sh is the default."},
 		"background": {Desc: "Run detached; returns a job id steered by terminal_job."},
 		"path":       {Desc: "Optional file path context for the capability scope."},
 		"skill":      {Desc: "Skill name whose stored credentials lease into this one call."},
@@ -519,6 +523,7 @@ var argDocs = map[string]map[string]argDoc{
 		"tool":      {Desc: "Extended tool name from tool_search."},
 		"arguments": {Desc: "Arguments object for the selected tool."},
 	},
+	"memory_open": {},
 }
 
 // applyArgDocs stamps the argDocs contract onto the definition's argument

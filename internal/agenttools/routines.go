@@ -153,6 +153,7 @@ func (t *Tools) Routine(ctx context.Context, op string, r Input) (map[string]any
 			method, path = http.MethodPost, "/v1/routines/"+r.ID+"/pause"
 		} else if op == "watch_resume" {
 			method, path = http.MethodPost, "/v1/routines/"+r.ID+"/resume"
+			payload = map[string]any{}
 		} else if op == "watch_sample" {
 			method, path = http.MethodPost, "/v1/routines/"+r.ID+"/sample"
 			if r.Filter != "" {

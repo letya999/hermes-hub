@@ -1,9 +1,11 @@
 package supervisor
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -58,8 +60,15 @@ func TestRuntimeFailureClassesAreAllowlisted(t *testing.T) {
 		}
 	}
 	rec := httptest.NewRecorder()
+	var output bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&output)
+	defer log.SetOutput(previous)
 	writeRuntimeFailure(rec, http.StatusServiceUnavailable, errors.New("start runtime: secret=private"))
 	if strings.Contains(rec.Body.String(), "private") || !strings.Contains(rec.Body.String(), `"class":"spawn"`) {
 		t.Fatalf("unsafe failure response: %s", rec.Body.String())
+	}
+	if strings.Contains(output.String(), "private") || !strings.Contains(output.String(), "stage=start_runtime") {
+		t.Fatal("runtime failure log did not allowlist its stage")
 	}
 }

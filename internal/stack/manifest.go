@@ -62,7 +62,7 @@ func writeToolManifest(dir string, s Settings) error {
 	// With a published passport, /config is a single read-only directory
 	// bind — the manifest rides inside the view (SPEC-0092 R5.2).
 	if view := filepath.Join(dir, "generated", "config-view", s.Environment); dirExists(view) {
-		return atomic(filepath.Join(view, "tool-manifest.json"), append(body, '\n'))
+		return atomicMode(filepath.Join(view, "tool-manifest.json"), append(body, '\n'), 0640)
 	}
 	return nil
 }

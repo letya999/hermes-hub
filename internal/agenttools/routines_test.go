@@ -879,6 +879,11 @@ func TestWatchResumeRoutesResume(t *testing.T) {
 			})
 			return
 		}
+		var patch map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&patch); err != nil || patch == nil || len(patch) != 0 {
+			http.Error(w, "resume requires an empty JSON patch", http.StatusBadRequest)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()

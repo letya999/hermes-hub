@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/letya999/hermes-hub/internal/identity"
@@ -78,6 +79,59 @@ func privateRunRecord(auth identity.Envelope, jobID, runID string) api.RunContex
 	}
 }
 
+func TestGoalConversationRequiresMatchingActiveRun(t *testing.T) {
+	_, auth := memoryToolFixture(t)
+	record := privateRunRecord(auth, "job-1", "run-1")
+	record.Envelope.ConversationID = "telegram-42"
+	g := &Gateway{Runs: runAuthorityFunc(func(context.Context, string) (api.RunContext, error) { return record, nil })}
+	if got, err := g.liveRunConversation(t.Context(), auth, api.HeaderCorrelation("job-1", "run-1")); err != nil || got != "telegram-42" {
+		t.Fatalf("active run: %q %v", got, err)
+	}
+	for _, mutate := range []func(*api.RunContext){
+		func(r *api.RunContext) { r.Status = "done" },
+		func(r *api.RunContext) { r.RunID = "other" },
+		func(r *api.RunContext) { r.Envelope.PrincipalID = "other" },
+		func(r *api.RunContext) { r.CurrentGeneration = "other" },
+	} {
+		changed := record
+		mutate(&changed)
+		g.Runs = runAuthorityFunc(func(context.Context, string) (api.RunContext, error) { return changed, nil })
+		if _, err := g.liveRunConversation(t.Context(), auth, api.HeaderCorrelation("job-1", "run-1")); err == nil {
+			t.Fatalf("invalid run accepted: %+v", changed)
+		}
+	}
+}
+
+func TestAssignmentMemoryWaitsForSameLiveRunID(t *testing.T) {
+	_, auth := memoryToolFixture(t)
+	base := privateRunRecord(auth, "job-assignment", "")
+	base.Trigger, base.Assignment, base.UserID = "cron", true, auth.PrincipalID
+	for _, tc := range []struct {
+		name   string
+		change func(*api.RunContext)
+		allow  bool
+	}{
+		{"run id arrives", func(r *api.RunContext) { r.RunID = "run-1" }, true},
+		{"cancelled before run id", func(r *api.RunContext) { r.Status = "cancelled" }, false},
+		{"generation replaced", func(r *api.RunContext) { r.CurrentGeneration = "other" }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var reads atomic.Int32
+			g := &Gateway{Runs: runAuthorityFunc(func(_ context.Context, _ string) (api.RunContext, error) {
+				r := base
+				if reads.Add(1) > 1 {
+					tc.change(&r)
+				}
+				return r, nil
+			})}
+			err := g.requireLiveMemoryRun(t.Context(), auth, api.HeaderCorrelation("job-assignment", "run-1"))
+			if (err == nil) != tc.allow || reads.Load() != 2 {
+				t.Fatalf("allow=%t reads=%d err=%v", tc.allow, reads.Load(), err)
+			}
+		})
+	}
+}
+
 // TestMemoryRunCannotBorrowOwnerAuthority proves the exact-run admission
 // gate (SPEC-0098 M2): a memory.* call must claim a job/run pair whose
 // supervisor record is a live private run bound to the caller's verified
@@ -91,6 +145,12 @@ func TestMemoryRunCannotBorrowOwnerAuthority(t *testing.T) {
 	ownerEnv := identity.Envelope{PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID}
 	records := map[string]api.RunContext{
 		"job-private": privateRunRecord(auth, "job-private", "run-private-1"),
+		"job-assignment": {JobID: "job-assignment", RunID: "run-assignment-1", RuntimeGeneration: "gen-3", CurrentGeneration: "gen-3",
+			Environment: auth.Environment, Status: "running", ScopeID: "user:alice", Trigger: "cron", Assignment: true,
+			UserID: "alice", Envelope: ownerEnv},
+		"job-assignment-other-user": {JobID: "job-assignment-other-user", RunID: "run-assignment-2", RuntimeGeneration: "gen-3", CurrentGeneration: "gen-3",
+			Environment: auth.Environment, Status: "running", ScopeID: "user:alice", Trigger: "cron", Assignment: true,
+			UserID: "bob", Envelope: ownerEnv},
 		// Same owner, concurrent group run — never reaches private memory.
 		"job-group": {JobID: "job-group", RunID: "run-group-1", RuntimeGeneration: "gen-3", CurrentGeneration: "gen-3",
 			Environment: auth.Environment, Status: "running", ScopeID: "group:alice", Trigger: "message", Channel: "telegram_bot", Envelope: ownerEnv},
@@ -124,6 +184,9 @@ func TestMemoryRunCannotBorrowOwnerAuthority(t *testing.T) {
 		"job-norun": {JobID: "job-norun", RuntimeGeneration: "gen-3", CurrentGeneration: "gen-3",
 			Environment: auth.Environment, Status: "running", ScopeID: "user:alice", Trigger: "message", Channel: "telegram_bot", Envelope: ownerEnv},
 	}
+	finishedAssignment := records["job-assignment"]
+	finishedAssignment.JobID, finishedAssignment.Status = "job-assignment-done", "completed"
+	records[finishedAssignment.JobID] = finishedAssignment
 	for _, finished := range []struct{ jobID, runID, status string }{
 		{"job-done", "run-done-1", "completed"},
 		{"job-uncertain", "run-uncertain-1", "uncertain"},
@@ -159,6 +222,9 @@ func TestMemoryRunCannotBorrowOwnerAuthority(t *testing.T) {
 	if err := call(api.HeaderCorrelation("job-private", "run-private-1"), nil); err != nil || calls != 1 {
 		t.Fatalf("live private run denied: calls=%d err=%v", calls, err)
 	}
+	if err := call(api.HeaderCorrelation("job-assignment", "run-assignment-1"), nil); err != nil || calls != 2 {
+		t.Fatalf("live owner assignment denied: calls=%d err=%v", calls, err)
+	}
 
 	// Every denial must land before the backend.
 	for _, denied := range []struct {
@@ -167,6 +233,9 @@ func TestMemoryRunCannotBorrowOwnerAuthority(t *testing.T) {
 		args map[string]any
 	}{
 		{"group run of same owner", api.HeaderCorrelation("job-group", "run-group-1"), nil},
+		{"assignment claims another owner", api.HeaderCorrelation("job-assignment-other-user", "run-assignment-2"), nil},
+		{"forged assignment run", api.HeaderCorrelation("job-assignment", "wrong-run"), nil},
+		{"finished assignment run", api.HeaderCorrelation("job-assignment-done", "run-assignment-1"), nil},
 		{"background goal run", api.HeaderCorrelation("job-goal", "run-goal-1"), nil},
 		{"system credential-form run", api.HeaderCorrelation("job-sys", "run-sys-1"), nil},
 		{"another user's private run", api.HeaderCorrelation("job-other", "run-other-1"), nil},
@@ -195,7 +264,7 @@ func TestMemoryRunCannotBorrowOwnerAuthority(t *testing.T) {
 	// With no authority configured the gate denies even a well-formed claim —
 	// an absent lifecycle record is never an admit.
 	g.Runs = nil
-	if err := call(api.HeaderCorrelation("job-private", "run-private-1"), nil); err == nil || calls != 1 {
+	if err := call(api.HeaderCorrelation("job-private", "run-private-1"), nil); err == nil || calls != 2 {
 		t.Fatalf("unconfigured authority admitted: calls=%d err=%v", calls, err)
 	}
 }

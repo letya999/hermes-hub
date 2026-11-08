@@ -54,6 +54,11 @@ func TestMemoryInstructionsBoundary(t *testing.T) {
 	if calls.Load() != 1 {
 		t.Fatalf("endpoint calls = %d", calls.Load())
 	}
+	assignment := memoryInstructionsRequest()
+	assignment.Trigger, assignment.Assignment, assignment.UserID = "cron", true, "alice"
+	if out := m.memoryInstructions(context.Background(), assignment); !strings.Contains(out, "recall-block") || calls.Load() != 2 {
+		t.Fatalf("owner assignment missed ToolHub memory context: calls=%d", calls.Load())
+	}
 	if gotAuth.Load() != "Bearer control-secret" || gotPrincipal.Load() != "alice" {
 		t.Fatalf("control auth/principal headers wrong: %v %v", gotAuth.Load(), gotPrincipal.Load())
 	}
@@ -64,9 +69,10 @@ func TestMemoryInstructionsBoundary(t *testing.T) {
 
 	// Non-private kinds and sensitive turns never reach the endpoint at all.
 	for name, mutate := range map[string]func(*hubruntime.ExecuteRequest){
-		"group scope":       func(r *hubruntime.ExecuteRequest) { r.ScopeID = "group:alice" },
-		"background kind":   func(r *hubruntime.ExecuteRequest) { r.Trigger = "goal" },
-		"sensitive request": func(r *hubruntime.ExecuteRequest) { r.Sensitive = true },
+		"group scope":        func(r *hubruntime.ExecuteRequest) { r.ScopeID = "group:alice" },
+		"background kind":    func(r *hubruntime.ExecuteRequest) { r.Trigger = "goal" },
+		"foreign assignment": func(r *hubruntime.ExecuteRequest) { r.Trigger, r.Assignment, r.UserID = "cron", true, "bob" },
+		"sensitive request":  func(r *hubruntime.ExecuteRequest) { r.Sensitive = true },
 	} {
 		before := calls.Load()
 		req := memoryInstructionsRequest()

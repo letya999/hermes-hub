@@ -256,7 +256,7 @@ func TestAgentToolsEndToEndScopes(t *testing.T) {
 	if err := putProfile(t, s, profile); err != nil {
 		t.Fatal(err)
 	}
-	grantToolUse(t, s, auth)
+	governance := grantToolUse(t, s, auth)
 	var exec api.AgentExecRequest
 	g := &Gateway{Store: s, AuditWrite: func(string, map[string]string) error { return nil },
 		Injector: func(context.Context, api.EffectiveBinding) (api.CredentialInjection, error) {
@@ -293,5 +293,20 @@ func TestAgentToolsEndToEndScopes(t *testing.T) {
 	// A path outside the admitted prefix is denied before the executor runs.
 	if _, err := g.CallAuthorized(t.Context(), auth, "workspace_read", map[string]any{"path": "private/readme.txt"}); err == nil {
 		t.Fatal("out-of-scope path reached the executor")
+	}
+	exec = api.AgentExecRequest{}
+	released := false
+	g.acquireRuntime = func(context.Context, api.EffectiveBinding) (func(), error) {
+		if !s.mu.TryLock() {
+			t.Fatal("managed cold start still holds the registry fence")
+		}
+		s.mu.Unlock()
+		if err := governance.RevokeRight("rightgrant-alice-use", "operator", "cold-start regression", time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		return func() { released = true }, nil
+	}
+	if _, err := g.CallAuthorized(t.Context(), auth, "workspace_read", map[string]any{"path": "docs/readme.txt"}); err == nil || exec.Tool != "" || !released {
+		t.Fatal("a tools.use revoke during startup did not fence managed dispatch")
 	}
 }

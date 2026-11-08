@@ -4,11 +4,8 @@ import (
 	"testing"
 )
 
-// SPEC-0093 R3.2/R3.3 + issue #441 S1: the terminal family runs on the
-// persistent in-runtime daemon executor — a disposable scratch cell cannot
-// hold a background job across calls — while hub-side backends (models
-// passport, web provider relay) declare runtime: executors instead of
-// in-runtime handlers that do not exist.
+// The terminal family uses ToolHub job control and disposable agent-image
+// workloads; hub-side model and web backends retain their runtime executors.
 func TestExecutorRoutingContract(t *testing.T) {
 	specs := map[string]struct {
 		sandboxed bool
@@ -25,7 +22,7 @@ func TestExecutorRoutingContract(t *testing.T) {
 		t.Fatal("terminal_exec missing from the catalog")
 	}
 	if exec.sandboxed {
-		t.Error("terminal_exec is sandboxed: a disposable cell cannot host persistent jobs")
+		t.Error("terminal_exec must route through ToolHub job control")
 	}
 	if exec.executor != "handler:terminal" {
 		t.Errorf("terminal_exec executor = %q, want handler:terminal", exec.executor)
@@ -35,7 +32,7 @@ func TestExecutorRoutingContract(t *testing.T) {
 		t.Fatal("terminal_job missing from the catalog")
 	}
 	if job.sandboxed || job.executor != "handler:terminal" {
-		t.Errorf("terminal_job = %+v, want non-sandboxed handler:terminal", job)
+		t.Errorf("terminal_job = %+v, want ToolHub handler:terminal", job)
 	}
 	for name, executor := range map[string]string{
 		"model_list":   "runtime:models",

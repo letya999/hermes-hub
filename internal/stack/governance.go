@@ -464,7 +464,7 @@ func writeToolPolicySnapshot(dir string, s Settings) error {
 	// directory bind (SPEC-0092 R5.2): per-file mounts into it cannot create
 	// mountpoints, so the policy snapshot rides inside the view instead.
 	if view := filepath.Join(dir, "generated", "config-view", s.Environment); dirExists(view) {
-		if err := atomic(filepath.Join(view, "tool-policy.json"), body); err != nil {
+		if err := atomicMode(filepath.Join(view, "tool-policy.json"), body, 0640); err != nil {
 			return err
 		}
 	}

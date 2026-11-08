@@ -1,6 +1,6 @@
 ---
 description: Frozen requirements for the M20 memory vault (provenance-aware leaves, provider seam, audience-scoped CORE, pre-turn recall, gated rollup, search, write contract, soft forget) and the opt-in OpenKnowledge UI surface.
-last_verified: 2026-11-01
+last_verified: 2026-11-08
 ---
 # SPEC-0085: Memory vault and OpenKnowledge knowledge surface
 
@@ -252,6 +252,12 @@ reported; A7.9 prune actions journaled + digested; A7.10 dry-run
 mutates nothing.
 
 ## R8 — OpenKnowledge service (CHG-0209)
+
+M32 amendment (SPEC-0098 #520): the direct-vault OpenKnowledge service and
+R8/R9/R10 acceptance paths below are superseded while ToolHub is the sole
+vault owner. `memory_open` now opens a separate read-only ToolHub view with
+a one-hour private link and live read-right checks. The upstream editor and
+write UI remain unavailable until they can use the governed API.
 
 - R8.1 Feature `knowledge_ui` renders one `open-knowledge` compose
   service per space: image built via the hubctl BuildKit path with a

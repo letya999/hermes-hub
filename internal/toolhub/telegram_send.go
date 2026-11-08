@@ -111,7 +111,7 @@ func validateTelegramSendUpgrade(expected, admitted api.ToolDefinition) error {
 	for _, tool := range admitted.Tools {
 		if tool.Name == "send_message" && tool.Effect == api.WriteEffect && len(tool.InputSchema) > 0 && !send {
 			send = true
-		} else if previous, ok := reads[tool.Name]; ok && api.RecordsEqual(previous, tool) {
+		} else if previous, ok := reads[tool.Name]; ok && api.RecordsEqual(api.ProjectConnectorTool(expected.DefinitionID, previous), tool) {
 			delete(reads, tool.Name)
 		} else {
 			return fmt.Errorf("%w: Telegram upgrade may add only send_message", api.ErrUnauthorized)

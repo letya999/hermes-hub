@@ -139,7 +139,7 @@ func TestHTTPRunnerVoiceConventionInstruction(t *testing.T) {
 // SPEC-0053 R1.8/D7: it is advertised via the rendered channel contract in the
 // effective SOUL, not per-run instructions.
 func TestHTTPRunnerArtifactConventionInstruction(t *testing.T) {
-	for _, want := range []string{"artifacts/", "MEDIA: ", "inbox_fetch", "inbox=", "preserved", "artifacts/documents/", "artifacts/images/", "artifacts/videos/", "exact original bytes", "after:", "same schedule ID"} {
+	for _, want := range []string{"artifacts/", "MEDIA: ", "inbox/people/", "saved path", "preserved", "artifacts/documents/", "artifacts/images/", "artifacts/videos/", "exact original bytes", "after:", "same schedule ID"} {
 		if !strings.Contains(stack.ChannelContract, want) {
 			t.Fatalf("file-transfer convention missing %q from channel contract", want)
 		}

@@ -29,6 +29,15 @@ func runtimeFailureClass(err error) string {
 
 func writeRuntimeFailure(w http.ResponseWriter, status int, err error) {
 	class := runtimeFailureClass(err)
-	log.Printf("supervisor runtime unavailable class=%s status=%d", class, status)
+	stage := "other"
+	if err != nil {
+		for _, candidate := range []string{"prepare runtime launch", "managed topology", "start runtime", "runtime readiness"} {
+			if strings.Contains(err.Error(), candidate) {
+				stage = strings.ReplaceAll(candidate, " ", "_")
+				break
+			}
+		}
+	}
+	log.Printf("supervisor runtime unavailable class=%s stage=%s status=%d", class, stage, status)
 	writeJSON(w, status, map[string]string{"error": "runtime unavailable", "class": class})
 }

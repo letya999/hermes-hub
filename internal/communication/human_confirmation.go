@@ -58,6 +58,9 @@ func (g *Gateway) confirmHumanCallback(ctx context.Context, caller identity.Enve
 	if caller.Validate(a.PrincipalID, a.ContextID, a.RuntimeID, a.PolicyVersion) != nil || record.Channel != channel || record.ChatID != chatID {
 		return denied
 	}
+	// Routing is verified by the channel; managed authority stays bound to
+	// the service-issued proof and is rechecked by ToolHub before applying it.
+	caller.CapabilityProfile, caller.Environment, caller.Generation, caller.Organization = a.CapabilityProfile, a.Environment, a.Generation, a.Organization
 	record.Proof.Actor = caller
 	body, _ = json.Marshal(record.Proof)
 	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -67,7 +70,7 @@ func (g *Gateway) confirmHumanCallback(ctx context.Context, caller identity.Enve
 		return denied
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+g.config.ControlAuth)
+	req.Header.Set("Authorization", "Bearer "+g.serviceControlToken())
 	response, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return denied

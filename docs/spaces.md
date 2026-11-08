@@ -31,17 +31,14 @@ publishes a revision, the six passports under `generated/passports/
 sibling enrollment, `hubctl up/chat/doctor/trace` and execution selection
 resolve through `stack.ReadEffective`, which opens the revision without
 `agent.yaml`, `settings.yaml`, or the old `workspace.yaml` and `models.yaml`
-files (SPEC-0095 R1.2). A present `current` pointer without a loadable
-revision fails closed. The unpublished legacy reader remains until the
-CHG-0283 cutover is finished; it is not a managed-space authority.
+files (SPEC-0095 R1.2). A missing or unloadable published revision fails
+closed. New spaces must publish the six authored passports before startup;
+there is no unpublished legacy configuration fallback.
 
 | File | Owner | Contents |
 |---|---|---|
-| `scope.yaml` | operator | Host-owned `kind` (`user`, `group`, `organization`), `id` and optional organization binding; group init refuses existing personal scopes |
-| `agent.yaml` (schema 3) | retired | Legacy unpublished reader only; it cannot extend a published managed revision |
-| `workspace.yaml` (schema 3) | capability intent | unmanaged: the `tools:` map, `ingress:` channels, `workspace:` mounts plus optional `goal`/`bootstrap_revision`, `mcp:` raw server definitions. **Retired under a published revision** — `tools.yaml`/`workspace.yaml`/`grants.yaml` passports replace it |
-| `settings.yaml` (schema 1, legacy) | — | pre-split file; still parses for unmigrated spaces — `features`, `native_toolsets`, `disabled_mcp` migrate into the pair at load — but mixing old keys with the new pair is rejected. **Retired under a published revision.** `internal/stack/defaults/{agent,workspace}.yaml` seed new spaces |
-| `models.yaml` | operator | unmanaged: logical model registry (ids without dots, ladder hops into cliproxy `/v1/models`). **Retired under a published revision** — the `models.yaml` passport (`services`/`routes`/`default`) is the only registry the relay reads |
+| User `scope.yaml` | retired | User/group identity comes from the authored stack passport; init refuses an existing personal scope |
+| Root `agent.yaml`, `workspace.yaml`, `settings.yaml`, `models.yaml` | retired | Inert user configuration; neither startup nor rendering falls back to these files. The six authored passports replace them; embedded defaults live in `internal/stack/defaults/passports/` |
 | `SOUL.md` | owner | The persona/agent-home document — see docs/agent-home.md |
 | `secrets.<env>.env` | operator | Provider keys for this space (`TELEGRAM_BOT_TOKEN`, `GOOGLE_*`, `GITLAB_TOKEN`, …) — named by feature `requires`. Never committed beyond the local operator flow |
 | `runtime.<env>.env`, `communication.<env>.env`, `model-relay.<env>.env` | operator | Per-service env, one file per environment |
@@ -66,8 +63,7 @@ chains resolve leaf→root:
 
 ```
 profile.yaml    # {description, extends, version}
-agent.yaml      # runtime template (fallback: policies/agent-default.yaml)
-workspace.yaml  # tool wishes (fallback: policies/workspace-default.yaml)
+passports/      # per-file overrides for the same six authored YAML inputs
 grants.yaml     # capability-rule template — drafts only
 SOUL.md         # persona layer (never stamped into the user file)
 skills.yaml     # standard skills: [name, name@revision, ...]
@@ -76,10 +72,9 @@ layout.yaml     # extra dirs: {dirs: [a, b/c]}
 
 Assignment resolution: `hubctl init --profile <name>` → the member's
 `{role, profile}` entry → `OrganizationSettings.default_profile` → `default`
-(which resolves to the legacy `*-default.yaml` templates). Members keep the
+(which resolves to the embedded six-passport templates). Members keep the
 legacy scalar form `alice: member` or the map form
-`alice: {role: member, profile: sales}`. Init stamps `agent.yaml` and
-`workspace.yaml` during the ongoing cutover, and creates the six authored
+`alice: {role: member, profile: sales}`. Init creates the six authored
 `passports/*.yaml` from per-file profile overrides or embedded defaults.
 `profile.lock` records the six passport baselines; `hubctl profile diff|apply`
 updates only unchanged authored passports and never publishes them. Init also
@@ -225,9 +220,9 @@ docs/tools.md; they are not shared personal-memory stores.
 - `diagnostics/` — bounded log surface backing `mcp__toolhub__diagnostics`
   when `diagnostics: true`.
 
-## Features (schema-1 vocabulary)
+## Internal feature vocabulary
 
-In legacy `settings.yaml` the opt-in contract is the `features` list from
+The published passports resolve to the internal feature vocabulary in
 `internal/stack/config.go`'s `Features` registry: `workspace`, `web`,
 `deep_research`, `browser`, `browser_act`, `ssh`, `ssh_write`, `ssh_shell`,
 `ssh_tunnel`, `hh`, `telegram`, `slack_app`, `telegram_user`,
@@ -236,8 +231,8 @@ In legacy `settings.yaml` the opt-in contract is the `features` list from
 `drafts`, `memory_vault`, `knowledge_ui`, `memory_provider` —
 each with declared `requires` env keys and a scope note. Write-effect
 features (`*_write`, `browser_act`, `ssh_shell`, `ssh_tunnel`) are separate
-opt-ins on top of their read parent, matching deny-wins. In schema-3 spaces
-the same intent is expressed through the `tools:` map above.
+opt-ins on top of their read parent, matching deny-wins. Authored selection
+belongs to the six passports; root legacy `settings.yaml` is not an input.
 
 ## Secondary spaces
 
@@ -310,13 +305,13 @@ denies requested rights.
 vault feature is active independently of tool selection. The same
 `config.memory` block carries `nightly_rollup` (`HH:MM`),
 `leaf_retention_days` (0 or at least 2) and `leaf_fold_bytes` (nonnegative).
-Published values override the old `agent.yaml` memory schedule and retention
-fields; absent values reset to their defaults.
+The published block supplies memory schedule and retention; absent values use
+their defaults. Root `agent.yaml` is inert.
 Managed spaces also declare `tools.binding.profile_id` and a positive
 `tools.binding.generation`; the published binding supplies the runtime and
 ToolHub identity even when `agent.yaml` disagrees or is absent.
 Missing authored passports fail; `passport-src/` is no longer read by this
-command. The unpublished legacy reader remains pending CHG-0283 removal.
+command. Runtime readers reject unpublished inputs instead of using legacy files.
 For a deployed `spaces/<user>` path, managed reads and infra-owner selection
 reject a published set whose `metadata.space` or `stack.identity.user` names
 another user, even if no `scope.yaml` exists.
@@ -371,8 +366,8 @@ the apply journal are protected publication state; ToolHub profiles and the
 issued-right ledger are protected admission state. The runtime settings
 executor and self-settings overlay reader/writer are removed. Legacy
 `agent.yaml`, `settings.yaml`, `workspace.yaml` and `models.yaml` remain inert
-for managed effective reads; unconfigured spaces still use their documented
-legacy provisioning paths until migration.
+for effective reads. An unconfigured space must publish its authored passports
+before rendering or starting a runtime.
 
 | Config authority | Writers | Readers and effect |
 |---|---|---|
@@ -401,6 +396,14 @@ host reads. Already running external services can observe their existing
 binds until reconciliation; service effects finish before ToolHub admission
 reopens.
 
+Managed file executors require a strictly decoded workspace passport and a
+matching view revision at startup and on each write. Missing, malformed or
+partially activated boundaries deny writes; they never fall back to an env
+path list. Reads do not cache the boundary by file size or modification time,
+so a narrowed publication applies even when those filesystem values match.
+Published `/config` files use `0640` for the runtime's shared host group;
+immutable publication state and credentials retain their private modes.
+
 `config.yaml` commands the runtime contract: `runtime.timezone`/`locale`
 and `context.{compaction,parallel_lanes}` land in the rendered environment
 and the managed context policy; `ports.<name>` publishes exactly its owning
@@ -412,6 +415,8 @@ it per decision, so `idle_stop`, `restart` and `watchers` apply live without
 a respawn; `channels` names become ingress transports, `voice` wires the
 STT/TTS endpoints and credential `{ref:}` names resolve through the existing
 secret path at service start; `memory.backend` flips the Honcho contract.
+`web` preserves the operator's search, extraction, provider and cache policy
+for managed native web tools.
 
 Multi-space live acceptance was exercised against ten disposable managed
 spaces (`m29-acc-01..10`, `infra: false`, dedicated `cliproxy`), each with a

@@ -185,10 +185,36 @@ type Config struct {
 	Ports       map[string]int     `yaml:"ports,omitempty"`
 	Channels    map[string]Channel `yaml:"channels,omitempty"`
 	Memory      Memory             `yaml:"memory"`
+	Web         Web                `yaml:"web,omitempty"`
 	Hosting     *Hosting           `yaml:"hosting,omitempty"`
 	// ImageGen is the image-generation provider grant the retired
 	// settings.yaml image_gen section carried (provider/model/delivery).
 	ImageGen media.ImageGen `yaml:"image_gen,omitempty"`
+}
+
+// Web carries the managed web policy without importing the stack renderer.
+type Web struct {
+	Backend          string            `yaml:"backend,omitempty"`
+	SearchBackend    string            `yaml:"search_backend,omitempty"`
+	ExtractBackend   string            `yaml:"extract_backend,omitempty"`
+	SearchProviders  []string          `yaml:"search_providers,omitempty"`
+	KeylessFallback  *bool             `yaml:"keyless_fallback,omitempty"`
+	KeylessRescue    *bool             `yaml:"keyless_rescue,omitempty"`
+	ExtractCharLimit int               `yaml:"extract_char_limit,omitempty"`
+	ProviderTier     map[string]string `yaml:"provider_tier,omitempty"`
+	CacheEnabled     *bool             `yaml:"cache_enabled,omitempty"`
+	CacheTTLMinutes  int               `yaml:"cache_ttl_minutes,omitempty"`
+	CacheExemptHosts []string          `yaml:"cache_exempt_hosts,omitempty"`
+	Research         WebResearch       `yaml:"research,omitempty"`
+}
+
+type WebResearch struct {
+	MaxRounds       int `yaml:"max_rounds,omitempty"`
+	QueriesPerRound int `yaml:"queries_per_round,omitempty"`
+	PagesPerRound   int `yaml:"pages_per_round,omitempty"`
+	MaxPages        int `yaml:"max_pages,omitempty"`
+	MaxPagesPerHost int `yaml:"max_pages_per_host,omitempty"`
+	DeadlineMinutes int `yaml:"deadline_minutes,omitempty"`
 }
 
 // Hosting is the site-hosting contract: unique safe slots and an optional

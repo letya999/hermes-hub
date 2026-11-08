@@ -298,7 +298,7 @@ func TestModelRelayRejectsUnboundedConfiguration(t *testing.T) {
 			t.Setenv("HUB_MODEL_RELAY_HOP_TIMEOUT", "")
 			t.Setenv("HUB_MODEL_RELAY_TIMEOUT", "")
 			t.Setenv(tc.key, tc.value)
-			if _, err := modelRelayHandlerFromEnv(); err == nil {
+			if _, err := ModelRelayHandlerFromEnv(); err == nil {
 				t.Fatal("unbounded timeout configuration accepted")
 			}
 		})
@@ -308,7 +308,7 @@ func TestModelRelayRejectsUnboundedConfiguration(t *testing.T) {
 		hops = append(hops, fmt.Sprintf("hop%d=http://provider.invalid", i))
 	}
 	t.Setenv("HUB_MODEL_RELAY_UPSTREAMS", strings.Join(hops, ","))
-	if _, err := modelRelayHandlerFromEnv(); err == nil {
+	if _, err := ModelRelayHandlerFromEnv(); err == nil {
 		t.Fatal("more than eight hops accepted")
 	}
 }

@@ -22,14 +22,11 @@ import (
 // and headers never choose a user, root or audience. Admission ran upstream:
 // this handler holds no authority of its own.
 func (g *Gateway) memoryCard(ctx context.Context, auth identity.Envelope, corr api.CallCorrelation, effective api.EffectiveBinding, arguments map[string]any) (map[string]any, error) {
-	u, err := g.Vaults.Resolve(auth.PrincipalID, auth.Environment)
-	if err != nil {
-		return nil, err
-	}
+	var err error
 	op := strings.TrimSpace(api.ArgString(arguments, "op"))
 	requestID := cardRequestID(corr.JobID, op, arguments)
 	var out map[string]any
-	if err := u.Locked(func(root string) error {
+	if err := g.withMemoryVault(ctx, auth, func(root string) error {
 		// The write re-checks the live enrollment at the commit point — a
 		// republished disable that lands between admission and this lock
 		// still prevents the mutation.
@@ -41,6 +38,10 @@ func (g *Gateway) memoryCard(ctx context.Context, auth identity.Envelope, corr a
 		// a right or binding revoked between admission and this lock still
 		// prevents the mutation.
 		if err := g.Store.ReverifyEffective(effective); err != nil {
+			out = map[string]any{"status": "denied", "op": op}
+			return cardJournalAppend(root, op, "", cardSourceRef(corr), requestID, "denied", nil)
+		}
+		if err := g.requireMemoryAdmission(ctx, auth, corr); err != nil {
 			out = map[string]any{"status": "denied", "op": op}
 			return cardJournalAppend(root, op, "", cardSourceRef(corr), requestID, "denied", nil)
 		}

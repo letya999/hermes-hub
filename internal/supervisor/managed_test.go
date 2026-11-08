@@ -124,6 +124,23 @@ func argAfter(args []string, flag string) string {
 	return ""
 }
 
+func TestSpawnedRuntimePreservesComposeUser(t *testing.T) {
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("ok"), nil }, nil)
+	settings := writeManagedFixtures(t, root)
+	bound, err := m.normalize(binding(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, err := m.runArgsWithGeneration(bound, "hub-group-test", 0, "gen-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := stack.RuntimeService(settings, "", root)
+	if got := argAfter(args, "--user"); got != service["user"] {
+		t.Fatalf("spawned runtime user %s differs from rendered user %v; group-readable config views become inaccessible", got, service["user"])
+	}
+}
+
 func TestManagedRunArgsUseIsolatedAgentNetwork(t *testing.T) {
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("ok"), nil }, nil)
 	writeManagedFixtures(t, root)

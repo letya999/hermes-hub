@@ -1,6 +1,6 @@
 ---
 description: Routine business tools, interval windows, lifecycle, authorization and delivery evidence.
-last_verified: "2026-11-07"
+last_verified: "2026-11-08"
 ---
 # Routines
 
@@ -8,12 +8,17 @@ ToolHub owns the routine clock, occurrences, dispatch and automation delivery in
 Communication owns channel intake, delivery and receipts; reminders avoid model wakes and agents/probes use live rights.
 
 The M32 cutover places the clock, assignments, watches and protected nightly
-dreaming in ToolHub (ADR-0095, SPEC-0094). Dreaming uses the same clock pass,
-one occurrence per owner and local date, and is absent from ordinary routine CRUD.
+dreaming in ToolHub (ADR-0095, SPEC-0094). Dreaming is a protected system
+schedule with a normal routine occurrence and due recovery, keyed once per
+owner and local date. Its operation processes memory and queues its digest
+through the normal delivery outbox; ordinary routine CRUD cannot change it.
+The schedule time and timezone come from the current published passport.
 Memory disablement overrides tool selection. Calls require `tools.use` and
 their own `tasks.schedule`, `tasks.observe` or `tasks.delegate` right.
 Settings changes use `settings_read`'s revision as `settings_edit.base_revision`
 and require current `config.edit_own`; stale or unpublished drafts are refused.
+ToolHub reads gateway bindings from files or activated SQLite in place, read-only; cutover refuses legacy automation records/jobs until migration.
+New occurrences persist the current supervisor admission epoch; holds block admission and retries never adopt a later epoch.
 
 Decision: [ADR-0042](adr/ADR-0042-routine-lifecycle.md). Requirements:
 [SPEC-0056](../specs/active/SPEC-0056-routine-lifecycle.md). Acceptance:
@@ -98,13 +103,13 @@ settle into the new revision.
 
 ## Probe and event internals
 
-- One OS file lock fences the gateway lifetime against a second gateway or
-  offline writer; `apply` and offline routine commands require the gateway
-  stopped. Opening a spool offline does not recover running jobs. Schedule
-  revision changes invalidate queued occurrences; delete writes a permanent
-  tombstone and retired IDs are never reused. Admitted Hermes work may
-  continue; queued delivery is re-checked before sending — cancellation
-  cannot recall a message an external service accepted.
+- One OS file lock fences the gateway against other gateways/offline writers;
+  `apply` and offline routines require it stopped; offline opening cannot recover jobs.
+  Schedule revisions invalidate queued occurrences.
+- Delete permanently retires the ID. An owned tombstone durably stops dispatch
+  retries after restart, preserving the unknown outcome of already admitted work
+  and accepting late results. Pause, unreadable state and foreign tombstones do
+  not discard pending work. Delivery rechecks cancellation; accepted messages cannot be recalled.
 - Tick admits ≤16 oldest eligible occurrences per pass, one per source; due
   occurrences inside catch-up take priority over expired backlog so backlog
   recording cannot starve fresh reminders. 16 settlements/pass bound
@@ -279,6 +284,12 @@ and the `/assignments` `/assignment <id> …` chat commands.
   schedules, cancel/complete tombstone them and fence the record
   terminal; wakes are fenced by the applied plan generation at admission
   and claim, so a paused or re-planned assignment cannot run a stale job.
+  An active owner assignment may use the owner's currently selected and
+  granted memory tools under the same `memory.enabled` switch. The exact
+  owner, job, run and generation are checked at call time and before writes;
+  assignment output is not automatically a trusted owner memory fact.
+  ToolHub carries assignment and untrusted provenance to supervisor and uses
+  its run stream so the exact run ID is durable before model tool calls.
 - For judgment-only candidate batches the specialist records progress and
   returns exactly `NO_ACTIONABLE_EVENT` when none merit a notice; the gateway
   suppresses that sentinel and routine status chatter. A useful finding is
@@ -310,9 +321,9 @@ and `gap_count`.
 `kind=hook` schedules carry a `hook:<label>` url and take no fetch: an
 authenticated owner-scoped `POST /v1/hooks/<schedule-id>` writes the body
 into the schedule's durable inbox (`data/hooks/<schedule>/`), and each
-probing occurrence drains the oldest staged payload into normal event
-settlement. An empty inbox is an idle tick (`no_change`), not a probe
-failure. Intake is restart-safe because staged payloads live on disk.
+probing occurrence drains the oldest staged payload into event settlement,
+preserving source IDs. Empty envelopes/inboxes are idle ticks (`no_change`).
+Intake is restart-safe because staged payloads live on disk.
 
 ## Schedules and windows
 
@@ -401,10 +412,10 @@ than catch-up settles `missed`, never silent.
 
 ## Outcomes and retention
 
-Schedule state, execution and delivery are separate. A completed once schedule
-has no future slots while its admitted work may still be pending. `/routines`
-distinguishes completion from pause and omits zero-year deadlines. Read deadlines
-include legacy snooze state.
+A completed once schedule has no future slots; admitted work remains retryable
+under its revision, while edits, deletion and revocation fence it. `/routines`
+separates schedule, execution and delivery state. Starlark probes use two slots
+independent of warm runtimes; read deadlines include legacy snooze state.
 
 A schedule the tick cannot safely advance becomes `blocked`: unreadable
 schedule state and persistent owner-authorization failure stop the retry loop
@@ -428,10 +439,10 @@ outcome evidence are untrusted; streams have no clock occurrences (see event_sta
 
 ## Deployment and manual acceptance
 
-The current catalog is hub-agent-tools@16.0.0 (Release 17). Old definitions
+The current catalog is hub-agent-tools@18.0.2 (Release 20). Old definitions
 remain immutable. For managed spaces, publish the selected tools and grants
 passports, then rebind and respawn the runtime to project that revision.
-Routine calls require the current `tasks.schedule` right as well as independent
+`memory_open` belongs to memory; it grants no routine a viewing link. Routine calls require the current `tasks.schedule` right as well as independent
 tool admission; selection does not grant the right. Current MCP discovery shows
 the five routine tools plus the watch and assignment families. A catalog
 upgrade creates no provider connection or external write grant.
@@ -457,16 +468,7 @@ Three owner prompts for a manual check:
    напоминай размяться. Сначала покажи ближайшие срабатывания».
 3. «Каждую пятницу в 10:00 по Москве напоминай подвести итоги недели».
 
-To check routing manually, create two named tasks/topics. In the first ask:
-«Поставь тестовое напоминание через две минуты именно в эту сессию; покажи
-сохранённый топик». Then ask: «Покажи доступные сессии для рутин и перенеси
-напоминание в `<имя второй сессии>`; покажи новую карточку и прежнюю историю».
-The next message should arrive in the second topic. Test this with a harmless
-fixture and remove it afterwards.
-
-Then ask to show all pages, open the card, pause, change text, resume, snooze,
-show history and delete the fixture. Verify ID, revision, state and dates after
-each change. Record real sends and cleanup as their own acceptance evidence.
+For routing acceptance, move a fixture reminder between two named topics; verify the destination and remove it.
 
 ## Source batch recovery
 
@@ -487,8 +489,8 @@ Assignment wake checkpoints retain bounded unresolved `wake_operations`, keyed b
 logical job ID with its applied generation. Replaying that reservation preserves
 the original wake charge across enqueue failure or day rollover. Current pause
 and generation checks still apply. A confirmed durable job admission releases
-its reservation; failed confirmation leaves replayable local work. This receipt
-is accounting evidence, not a new authorization or an agent confirmation.
+its reservation; failed confirmation leaves replayable local work. Event wakes
+also check the durable mapping before reserving, so lost acknowledgements do not recharge.
 Non-event watcher escalation saves exact job intent in its existing `probe-result`
 receipt before enqueue. Replay keeps source/occurrence identity and current owner
 checks; it does not refetch or charge the same reserved wake twice. Storage

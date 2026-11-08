@@ -105,8 +105,8 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	// The workspace passport owns the container filesystem once a revision
 	// is published (SPEC-0092 R5.2): /config, /workspace with read-only
 	// sub-binds, /vault, /skills and every /shared/* mount come from the
-	// MountPlan. Without a revision the space keeps the legacy workspace
-	// bind and raw /config mounts its heal path still reads.
+	// MountPlan. Component renders without a workspace still select the
+	// published /config directory; startup cannot use raw config files.
 	wsBase := dir
 	if s.CapabilityMode == "managed" {
 		wsBase = filepath.Join(dir, "managed", s.Environment)
@@ -487,8 +487,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	containerSupervisor := infra && includeGateway && s.ExecutionMode == "supervisor" && s.SupervisorURL == "http://supervisor:8876"
 	if containerSupervisor {
 		svc := cloneMap(controlCommon)
+		// Drop to the shared service uid, retaining only host-file mode authority.
+		svc["user"] = fmt.Sprintf("0:%d", max(0, os.Getgid()))
+		svc["cap_add"] = []string{"SETUID", "SETGID", "SETPCAP", "FOWNER"}
 		svc["build"] = imageBuild(s.Environment + "-control")
-		svc["entrypoint"] = []string{"hubctl", "supervisor", "--spaces", "/spaces", "--env", s.Environment, "--runtime-image", "hermes-hub:0.5.0-" + s.Environment, "--supervisor-listen", "0.0.0.0:8876", "--supervisor-allow-wildcard-listen"}
+		svc["entrypoint"] = []string{"/usr/bin/setpriv", "--reuid=10001", fmt.Sprintf("--regid=%d", max(0, os.Getgid())), "--clear-groups", "--inh-caps=+fowner", "--ambient-caps=+fowner", "--bounding-set=-all,+fowner", "hubctl", "supervisor", "--spaces", "/spaces", "--env", s.Environment, "--runtime-image", "hermes-hub:0.5.0-" + s.Environment, "--supervisor-listen", "0.0.0.0:8876", "--supervisor-allow-wildcard-listen"}
 		svc["environment"] = M{"HUB_SUPERVISOR_AUTH": "${HUB_SUPERVISOR_AUTH:?set HUB_SUPERVISOR_AUTH or provision supervisor.auth for this stack}", "HUB_SUPERVISOR_HOST_SPACES": filepath.ToSlash(filepath.Dir(dir)), "HOME": "/tmp", "TZ": s.Timezone,
 			// Opt-in authorities stay disabled unless the operator provisions
 			// them: admin holds need a separate authority token; the personal
@@ -620,6 +623,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		for key, value := range brokerClientEnv("HUB_CREDENTIAL_BROKER_RUNTIME_", "runtime", "hermes-runtime-adapter") {
 			toolhubEnv[key] = value
 		}
+		toolhubEnv["HUB_CREDENTIAL_BROKER_RUNTIME_KEY_FILE"] = "/run/broker-runtime-secrets/runtime.private"
 		dockerScope := "hermes-hub-" + s.User + "-" + s.Environment
 		toolhubEnv["HUB_DOCKER_SCOPE"] = dockerScope
 		// Bounded-cli owner registration: bare command names the owner may
@@ -630,7 +634,9 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		toolhubEnv["HUB_DOCKER_AGENT_NET"] = managedAgentNetwork(s)
 		toolhubEnv["HUB_SKILLS_EFFECTIVE"] = "/skills-effective"
 		toolhubEnv["HUB_SKILLS_STORE"] = "/skills-store"
-		toolhubVolumes := []any{stateBind, brokerSecrets("toolhub"), brokerMaterializedMount, credStagingMount,
+		toolhubVolumes := []any{stateBind, brokerSecrets("toolhub"),
+			M{"type": "volume", "source": "broker-secrets-runtime", "target": "/run/broker-runtime-secrets", "read_only": true},
+			brokerMaterializedMount, credStagingMount,
 			M{"type": "volume", "source": "communication-hub-data", "target": "/legacy-communication", "read_only": true},
 			M{"type": "bind", "source": filepath.ToSlash(GeneratedEffectiveSkillsDir(dir)), "target": "/skills-effective", "read_only": true},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "skills")), "target": "/skills-store", "read_only": true}}
@@ -648,6 +654,7 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			toolhubEnv["HUB_SKILLS_BY_PRINCIPAL"] = "/skills-effective-by"
 			toolhubEnv["HUB_SKILLS_STORE_BY"] = "/skills-store-by"
 			toolhubEnv["HUB_PASSPORTS_BY_PRINCIPAL"] = "/passports-by"
+			toolhubEnv["HUB_INBOX_BY_PRINCIPAL"] = "/inboxes-by"
 			toolhubEnv["HUB_VAULTS_BY_PRINCIPAL"] = "/vaults-by"
 			toolhubEnv["HUB_NIGHT_RELAY_CALLERS"] = "/model-relay-callers"
 			if siblings, err := os.ReadDir(parent); err == nil {
@@ -664,6 +671,10 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 					published := filepath.Join(parent, sibling.Name(), "generated", "passports")
 					if info, err := os.Lstat(published); err == nil && info.IsDir() { // #nosec G703 -- sibling is an entry under the operator-owned spaces root
 						toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(published), "target": "/passports-by/" + sibling.Name() + "/passports", "read_only": true})
+					}
+					inbox := filepath.Join(parent, sibling.Name(), "managed", s.Environment, "workspace", "inbox")
+					if info, err := os.Lstat(inbox); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 { // #nosec G703 -- validated sibling under the operator-owned spaces root
+						toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(inbox), "target": "/inboxes-by/" + sibling.Name()})
 					}
 					vaultRoot := filepath.Join(parent, sibling.Name(), "vault")
 					if info, err := os.Lstat(vaultRoot); err == nil && info.IsDir() { // #nosec G703 -- sibling is an entry under the operator-owned spaces root
@@ -1248,19 +1259,10 @@ var cliRegistryHosts = map[string][]string{
 	"go":    {"proxy.golang.org", "sum.golang.org", "storage.googleapis.com"},
 }
 
-// configMounts renders the /config bind set: the published passport view
-// as one read-only directory once a revision exists, else the legacy raw
-// env config + SOUL the heal path expects (SPEC-0092 S1.4 — single-file
-// binds are not a refresh mechanism, but unpublished spaces still boot).
+// /config is always the published view; missing publication cannot select raw files.
 func configMounts(dir, env string) []any {
 	view := filepath.Join(dir, "generated", "config-view", env)
-	if info, err := os.Stat(view); err == nil && info.IsDir() { // #nosec G703 -- fixed generated view beneath the selected space
-		return []any{M{"type": "bind", "source": filepath.ToSlash(view), "target": "/config", "read_only": true}}
-	}
-	return []any{
-		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "hermes."+env+".yaml")), "target": "/config/config.yaml", "read_only": true},
-		M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "SOUL.md")), "target": "/config/SOUL.md", "read_only": true},
-	}
+	return []any{M{"type": "bind", "source": filepath.ToSlash(view), "target": "/config", "read_only": true}}
 }
 
 // toolhubDecideURL is the rights-PDP address for a space's out-of-process

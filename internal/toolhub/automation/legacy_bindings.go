@@ -3,7 +3,6 @@ package automation
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -20,6 +19,17 @@ import (
 type legacyBindings struct{ root string }
 
 func (b legacyBindings) directory(parts ...string) (string, error) {
+	if info, err := os.Lstat(b.root); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return "", errors.New("automation: binding directory unavailable")
+	}
+	db, err := b.database()
+	if err != nil {
+		return "", err
+	}
+	if db != nil {
+		_ = db.Close()
+		return filepath.Join(append([]string{b.root}, parts...)...), nil
+	}
 	for depth := 0; depth <= len(parts); depth++ {
 		path := filepath.Join(append([]string{b.root}, parts[:depth]...)...)
 		info, err := os.Lstat(path)
@@ -48,7 +58,7 @@ func (b legacyBindings) loadTask(principal, taskID string) (commodel.Task, error
 		return commodel.Task{}, err
 	}
 	var task commodel.Task
-	if err := readRoutingJSON(b.taskPath(principal, taskID), &task); err != nil {
+	if err := b.readJSON(b.taskPath(principal, taskID), &task); err != nil {
 		return commodel.Task{}, err
 	}
 	if task.PrincipalID != principal || task.TaskID != taskID {
@@ -65,23 +75,23 @@ func (b legacyBindings) listTasks(principal string) ([]commodel.Task, error) {
 	if err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(dir)
+	entries, err := b.entries(dir)
 	if err != nil {
 		return nil, err
 	}
 	tasks := []commodel.Task{}
 	for _, entry := range entries {
-		if !strings.HasSuffix(entry.Name(), ".json") {
+		if !strings.HasSuffix(entry, ".json") {
 			continue
 		}
 		var task commodel.Task
-		if err := readRoutingJSON(filepath.Join(dir, entry.Name()), &task); err != nil {
+		if err := b.readJSON(filepath.Join(dir, entry), &task); err != nil {
 			return nil, err
 		}
 		if task.PrincipalID != principal {
 			continue
 		}
-		if task.TaskID == "" || b.taskPath(principal, task.TaskID) != filepath.Join(dir, entry.Name()) {
+		if task.TaskID == "" || b.taskPath(principal, task.TaskID) != filepath.Join(dir, entry) {
 			return nil, errors.New("automation: invalid task binding")
 		}
 		tasks = append(tasks, task)
@@ -100,7 +110,7 @@ func (b legacyBindings) topicTask(principal string, chatID, topicID int64) (stri
 	var pointer struct {
 		TaskID string `json:"task_id"`
 	}
-	if err := readRoutingJSON(b.topicPath(principal, chatID, topicID), &pointer); err != nil {
+	if err := b.readJSON(b.topicPath(principal, chatID, topicID), &pointer); err != nil {
 		return "", err
 	}
 	if pointer.TaskID == "" {
@@ -117,19 +127,11 @@ func (b legacyBindings) loadMapping(id string) (commodel.JobMapping, error) {
 		return commodel.JobMapping{}, err
 	}
 	path := filepath.Join(b.root, "mappings", commodel.FileID(id)+".json")
-	info, err := os.Lstat(path)
-	if err != nil {
-		return commodel.JobMapping{}, err
-	}
-	if !info.Mode().IsRegular() || info.Size() > 1<<20 {
-		return commodel.JobMapping{}, errors.New("automation: invalid origin mapping")
-	}
-	body, err := os.ReadFile(path) // #nosec G703 -- bounded local read-only mapping
-	if err != nil {
-		return commodel.JobMapping{}, err
-	}
 	var mapping commodel.JobMapping
-	if json.Unmarshal(body, &mapping) != nil || mapping.JobID != id {
+	if err := b.readJSON(path, &mapping); err != nil {
+		return commodel.JobMapping{}, err
+	}
+	if mapping.JobID != id {
 		return commodel.JobMapping{}, errors.New("automation: invalid origin mapping")
 	}
 	return mapping, nil

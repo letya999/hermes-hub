@@ -52,20 +52,27 @@ func (c testChannel) RouteBlockedNotice(item commodel.Schedule, d *commodel.Deli
 // by the durable intent key. Submissions and logical jobs are tracked
 // separately so a lost acknowledgment is observable as a re-POST.
 type supervisorServer struct {
-	mu          sync.Mutex
-	submissions map[string]int
-	logical     map[string]commodel.Job
-	scriptCalls atomic.Int32
-	fail        atomic.Bool
-	dropAck     atomic.Bool
-	failRuns    atomic.Bool
-	blockAlice  <-chan struct{}
-	srv         *httptest.Server
+	mu           sync.Mutex
+	submissions  map[string]int
+	logical      map[string]commodel.Job
+	scriptCalls  atomic.Int32
+	fail         atomic.Bool
+	dropAck      atomic.Bool
+	failRuns     atomic.Bool
+	epoch        atomic.Uint64
+	holdActive   atomic.Bool
+	epochRejects atomic.Int32
+	blockAlice   <-chan struct{}
+	srv          *httptest.Server
 }
 
 func newSupervisorServer(t *testing.T) *supervisorServer {
 	s := &supervisorServer{submissions: map[string]int{}, logical: map[string]commodel.Job{}}
 	s.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/holds" && r.Method == http.MethodGet && r.Header.Get("Authorization") == "Bearer control" {
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"principal_id": "alice", "context_id": "alice", "epoch": s.epoch.Load(), "active": s.holdActive.Load()}})
+			return
+		}
 		if r.URL.Path == "/v1/script" {
 			var request hubruntime.ScriptRequest
 			if r.Header.Get("Authorization") != "Bearer control" || json.NewDecoder(r.Body).Decode(&request) != nil || request.JobID == "" {
@@ -93,6 +100,11 @@ func newSupervisorServer(t *testing.T) *supervisorServer {
 			http.Error(w, "bad admit", http.StatusBadRequest)
 			return
 		}
+		if in.PrincipalID == "alice" && (s.holdActive.Load() || in.OperationalEpoch != s.epoch.Load()) {
+			s.epochRejects.Add(1)
+			w.WriteHeader(http.StatusConflict)
+			return
+		}
 		if in.PrincipalID == "alice" && s.blockAlice != nil {
 			<-s.blockAlice
 		}
@@ -107,7 +119,7 @@ func newSupervisorServer(t *testing.T) *supervisorServer {
 			_ = json.NewEncoder(w).Encode(hubruntime.ExecuteResponse{JobID: in.JobID, Status: "completed", Text: "done"})
 			return
 		}
-		s.logical[in.IdempotencyKey] = commodel.Job{Envelope: in.Envelope, ID: in.JobID, IdempotencyKey: in.IdempotencyKey, UserID: in.UserID, Text: in.Text}
+		s.logical[in.IdempotencyKey] = commodel.Job{Envelope: in.Envelope, ID: in.JobID, IdempotencyKey: in.IdempotencyKey, UserID: in.UserID, Text: in.Text, OperationalEpoch: in.OperationalEpoch}
 		if s.dropAck.Load() {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
@@ -707,6 +719,99 @@ func TestChannelRebindStopsScriptAndProbeIO(t *testing.T) {
 // A due occurrence is admitted durably before supervisor I/O. When the
 // first acknowledgment is lost, recovery re-submits the same stable key;
 // the supervisor converges to exactly one logical job.
+func TestRetiredScheduleStopsRetriesWithoutInventingRunOutcome(t *testing.T) {
+	for _, retire := range []bool{false, true} {
+		t.Run(fmt.Sprintf("retired=%t", retire), func(t *testing.T) {
+			h := newHarness(t)
+			env := h.envelope(t, "alice")
+			h.grant(t, "alice", "write")
+			h.grant(t, "alice", "read")
+			host := h.host(t)
+			ctx := context.Background()
+			item, err := host.CreateSchedule(ctx, env, draft("retire-pending", env), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.sup.dropAck.Store(true)
+			h.now = item.NextDue.Add(time.Second)
+			if err := host.Tick(ctx, h.now); err != nil {
+				t.Fatal(err)
+			}
+			if got := pendingDispatches(t, host, "alice"); got != 1 {
+				t.Fatalf("pending before retirement=%d", got)
+			}
+			job := h.sup.onlyJob()
+			if retire {
+				err = host.DeleteSchedule(ctx, env, item.ScheduleID)
+			} else {
+				err = host.PauseSchedule(ctx, env, item.ScheduleID)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if retire {
+				eng, err := host.engineFor("alice")
+				if err != nil {
+					t.Fatal(err)
+				}
+				path := eng.CancelPath(item.ScheduleID)
+				original, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var foreign commodel.Schedule
+				if err := json.Unmarshal(original, &foreign); err != nil {
+					t.Fatal(err)
+				}
+				foreign.Envelope.PrincipalID = "bob"
+				forged, err := json.Marshal(foreign)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, invalid := range [][]byte{[]byte("invalid"), forged} {
+					if err := os.WriteFile(path, invalid, 0o600); err != nil {
+						t.Fatal(err)
+					}
+					if err := host.Recover(ctx); err != nil {
+						t.Fatal(err)
+					}
+					if got := pendingDispatches(t, host, "alice"); got != 1 {
+						t.Fatal("invalid or foreign deletion discarded pending work")
+					}
+				}
+				if err := os.WriteFile(path, original, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			submissions, _ := h.sup.counts()
+			if err := host.Close(); err != nil {
+				t.Fatal(err)
+			}
+			host = h.host(t)
+			if err := host.Recover(ctx); err != nil {
+				t.Fatal(err)
+			}
+			want := 1
+			if retire {
+				want = 0
+			}
+			if got := pendingDispatches(t, host, "alice"); got != want {
+				t.Fatalf("pending after restart=%d, want %d", got, want)
+			}
+			if got, _ := h.sup.counts(); got != submissions {
+				t.Fatalf("inactive source resubmitted: %d -> %d", submissions, got)
+			}
+			mapping, err := host.queue.loadMapping("alice", job.ID)
+			if err != nil || commodel.TerminalStatus(mapping.Status) {
+				t.Fatalf("invented terminal outcome: %s, %v", mapping.Status, err)
+			}
+			if _, err := host.queue.recordResult("alice", job.ID, "completed", "actual late result", h.now); err != nil {
+				t.Fatalf("late outcome lost: %v", err)
+			}
+		})
+	}
+}
+
 func TestDueOccurrenceDispatchRecoversOnce(t *testing.T) {
 	h := newHarness(t)
 	env := h.envelope(t, "alice")
@@ -905,6 +1010,44 @@ func TestAutomationHostIsolation(t *testing.T) {
 		t.Fatalf("paused schedule dispatched")
 	}
 	_ = item
+}
+
+func TestOnceAgentDispatchAfterScheduleSettles(t *testing.T) {
+	h := newHarness(t)
+	alice := h.envelope(t, "alice")
+	h.grant(t, "alice", "schedule")
+	host := h.host(t)
+	item := draft("once-agent", alice)
+	item.Expression = "once:" + h.now.Add(time.Minute).Format(time.RFC3339)
+	created, err := host.CreateSchedule(t.Context(), alice, item, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.now = created.NextDue
+	h.sup.fail.Store(true)
+	if err := host.Tick(t.Context(), h.now); err != nil {
+		t.Fatal(err)
+	}
+	settled, err := host.LoadSchedule(t.Context(), alice, created.ScheduleID)
+	if err != nil || settled.Enabled || !settled.Paused || settled.LastOccurrenceID == "" {
+		t.Fatalf("once schedule did not settle with a pending occurrence: %+v %v", settled, err)
+	}
+	if _, logical := h.sup.counts(); logical != 0 {
+		t.Fatal("unavailable supervisor accepted the job")
+	}
+	h.sup.fail.Store(false)
+	if err := host.Tick(t.Context(), h.now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, logical := h.sup.counts(); logical != 1 || h.comm.count() != 1 {
+		t.Fatalf("settled once occurrence did not finish exactly once: jobs=%d deliveries=%d", logical, h.comm.count())
+	}
+	if err := host.Tick(t.Context(), h.now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, logical := h.sup.counts(); logical != 1 || h.comm.count() != 1 {
+		t.Fatal("settled once occurrence replayed")
+	}
 }
 
 func TestAutomationHostRejectsUnsafeOwnerStorage(t *testing.T) {
@@ -1302,13 +1445,73 @@ func TestAssignmentWakeBundleCarriesOwnerContractAndLanguage(t *testing.T) {
 		"Standing assignment asg-1 (revision 1)",
 		"Owner intent: watch prices",
 		"Specialist instructions: report changes",
-		"call assignment_progress with this job ID",
+		"call assignment_read then assignment_edit action=progress",
 		"language is Español (es)",
 		"untrusted event evidence",
 	} {
 		if !strings.Contains(job.Text, want) {
 			t.Fatalf("wake bundle missing %q: %q", want, job.Text)
 		}
+	}
+	if strings.Contains(job.Text, "call assignment_progress") || strings.Contains(job.Text, "call assignment_get") {
+		t.Fatal("wake bundle instructs retired assignment tools")
+	}
+}
+
+func TestAssignmentEventWakeBudgetSurvivesLostAdmissionAck(t *testing.T) {
+	h := newHarness(t)
+	alice := h.envelope(t, "alice")
+	h.grant(t, "alice", "write")
+	host := h.host(t)
+	body := `{"events":[{"id":"first","text":"one"}]}`
+	host.cfg.ToolCall = func(context.Context, string, *commodel.WatchProbe) ([]byte, error) { return []byte(body), nil }
+	ctx := context.Background()
+	if _, _, err := host.CreateAssignment(ctx, alice, commodel.Assignment{AssignmentID: "asg-budget", Envelope: alice, Intent: "watch", State: "active", AppliedRev: 1, Plan: &commodel.AssignmentPlan{Revision: 1}, Grants: commodel.AssignmentGrants{MaxWakesPerDay: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	sc := draft("rt-assignment-budget", alice)
+	sc.JobKind, sc.Delivery, sc.Sink = "event", "stream", "agent"
+	sc.AssignmentID, sc.AssignmentPlanRevision = "asg-budget", 1
+	sc.Expression = "0 10 * * *"
+	sc.Probe = &commodel.WatchProbe{Kind: "mcp_tool", Tool: "events.wait"}
+	if _, err := host.CreateSchedule(ctx, alice, sc, ""); err != nil {
+		t.Fatal(err)
+	}
+	admit := host.events.admit
+	host.events.admit = func(job commodel.Job, source string) (bool, error) {
+		if job.AssignmentID != "asg-budget" || job.AssignmentPlanRevision != 1 || !job.Untrusted || !job.Probe {
+			t.Errorf("event wake lost assignment provenance: id=%q revision=%d untrusted=%t probe=%t", job.AssignmentID, job.AssignmentPlanRevision, job.Untrusted, job.Probe)
+		}
+		_, err := admit(job, source)
+		if err != nil {
+			return false, err
+		}
+		return false, errors.New("lost admission acknowledgement")
+	}
+	if err := host.Tick(ctx, h.now); err == nil {
+		t.Fatal("lost acknowledgement was not observed")
+	}
+	a, err := host.LoadAssignment(ctx, alice, "asg-budget")
+	if err != nil || a.Checkpoint.WakesToday != 1 || a.Checkpoint.LLMCalls != 1 {
+		t.Fatalf("event wake bypassed assignment budget: wakes=%d calls=%d err=%v", a.Checkpoint.WakesToday, a.Checkpoint.LLMCalls, err)
+	}
+	restarted := h.host(t)
+	restarted.cfg.ToolCall = host.cfg.ToolCall
+	if err := restarted.Recover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.Tick(ctx, h.now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	body = `{"events":[{"id":"second","text":"two"}]}`
+	if err := restarted.Tick(ctx, h.now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	a, err = restarted.LoadAssignment(ctx, alice, "asg-budget")
+	_, logical := h.sup.counts()
+	st, _, stateErr := restarted.events.load(commodel.RoutineOccurrence{ScheduleID: sc.ScheduleID, Job: commodel.Job{Envelope: alice}})
+	if err != nil || stateErr != nil || logical != 1 || a.Checkpoint.WakesToday != 1 || a.Checkpoint.LLMCalls != 1 || st.Pending == nil || len(st.Seen) != 1 {
+		t.Fatalf("retry or next event escaped wake cap: jobs=%d wakes=%d calls=%d pending=%t seen=%d err=%v stateErr=%v", logical, a.Checkpoint.WakesToday, a.Checkpoint.LLMCalls, st.Pending != nil, len(st.Seen), err, stateErr)
 	}
 }
 

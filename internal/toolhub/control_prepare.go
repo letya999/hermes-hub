@@ -236,7 +236,13 @@ func (c *ControlPlane) resolveSelfInstallSource(ctx context.Context, auth identi
 			source = prepared.Source
 		}
 	}
-	return source, api.DefaultSelfInstallConfig(source), nil
+	config := api.DefaultSelfInstallConfig(source)
+	if prepared, ok, err := api.PreparedForRepository(source.Repository, source.Subfolder); err != nil {
+		return api.ArtifactSource{}, api.ArtifactImportConfig{}, err
+	} else if ok {
+		config = prepared.Apply(config)
+	}
+	return source, config, nil
 }
 
 // prepareClaimTTL bounds one in-flight prepare: past it the record belongs to

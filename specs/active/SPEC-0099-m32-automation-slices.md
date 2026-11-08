@@ -1,6 +1,6 @@
 ---
 description: Frozen granular automation preparation, single-owner cutover and dreaming contracts.
-last_verified: 2026-11-05
+last_verified: 2026-11-07
 ---
 # SPEC-0099: M32 automation slices
 
@@ -20,6 +20,12 @@ idempotency key. Persist pending work before I/O; retry/reconcile uncertain outc
 Current rights and pause/revoke fences apply. Completion and delivery are separate.
 Communication outage may delay delivery, not admitted execution. Per-user bounds
 prevent starvation; no network I/O while holding a shared global spool lock.
+An automatically settled final `once:` slot remains dispatchable under its
+original revision; explicit pause/delete/revoke fences still apply. Disposable
+script probes use capacity separate from warm runtime slots.
+Assignment event dispatch preserves assignment and untrusted provenance through
+the supervisor request. Its existing run stream records admission/run identity
+before model tool calls; an aggregate JSON result alone is insufficient.
 
 ## Atomic assignments and observable checkpoints
 
@@ -28,8 +34,8 @@ prevent starvation; no network I/O while holding a shared global spool lock.
 | #521 A1 | Detach internal/routines engine from communication spool mutex and locked callbacks in Deps/NewEngine/spool.go. Engine-owned synchronization and explicit storage/dispatch/delivery/event ports; adapt current callers. | Same public routine/assignment/watch behavior and record format under current sole owner. Reentrant/concurrent tick, CRUD, recovery and completion do not deadlock, lose updates or double-dispatch; race suite. Real storage, no empty ports. | ToolHub startup, moving live state, new scheduler, dreaming. |
 | #522 A2 | After A1 and #514: construct complete ToolHub automation host with existing storage and real supervisor/delivery clients. Include routine CRUD, assignments/watches/events, clock lifecycle, recovery and result/delivery intents. Do not start it from production entrypoint yet. | Isolated host using real temporary storage survives restart; cross-user and revoked operations denied; duplicate/lost-ack dispatch recovers to one accepted job; communication unavailable leaves delivery pending. Integration harness exercises real handlers/clients. | Production owner switch, duplicated state, rollout compatibility flag or claiming live readiness. |
 | #523 A3 | Wire A2 into ToolHub startup and all public callers; stop/delete old communication writer/clock/dispatch startup in the same changeset. Reassign storage ownership without converting records or copying/syncing live state. | Real containers: CRUD + assignment/watch transitions use ToolHub; exactly one owner after restart; due work completes with communication down; delivery retries use stable request ID. Existing supported records retained; unsupported layout refuses without deletion. | New scheduler semantics, data migration, restoring old owner as fallback. |
-| #524 A4 | Protected per-user daily dreaming routine from config.memory time/timezone, using A3 scheduler. | One routine per enabled user; ordinary CRUD cannot mutate it; local-date key stable over restart/timezone/DST handling. No model wake or vault write when disabled/ungranted. | Night computation/commit or a second timer. |
-| #525 A5 | A4 executes internal/memory/night with user's vault/model relay and existing retention; durable checkpoints and atomic guarded commit. | Restart and duplicate attempts apply (user, local_date) once; revoke/disable before commit leaves no mutation. Digest request durable/idempotent and independent of completion. Proposed actions remain drafts until verified owner approval. | New model/provider, automatic approved assignments, external exactly-once promise. |
+| #524 A4 | Protected per-user daily dreaming routine from published config.memory time/timezone, materialized as a normal schedule and occurrence using A3 due calculation and recovery. | One routine per enabled user; ordinary CRUD cannot mutate it; local-date key stable over restart/timezone/DST handling. No model wake or vault write when disabled/ungranted. A separate host tick that computes its own due date does not satisfy this row. | Night computation/commit or a second timer. |
+| #525 A5 | A4's routine operation executes internal/memory/night with user's vault/model relay and existing retention; durable checkpoints and atomic guarded commit. | Restart and duplicate attempts apply (user, local_date) once; revoke/disable before commit leaves no mutation. Digest request durable/idempotent and independent of completion. Proposed actions remain drafts until verified owner approval. Isolated controlled-time data prove three days × at least ten facts for each owner, and each owner receives real-model smoke. | New model/provider, automatic approved assignments, external exactly-once promise. |
 
 A1/A2 are preparation increments, not temporary dual ownership. A3 is the only
 deployment switch. A2 does not introduce a production feature flag or second clock.

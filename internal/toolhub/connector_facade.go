@@ -15,6 +15,7 @@ func (c *ControlPlane) InvokeConnector(ctx context.Context, auth identity.Envelo
 	if err := api.RejectAuthorityArguments(args); err != nil {
 		return api.OperationResult{}, err
 	}
+	selectedTool := tool
 	// r5 argument normalization: the catalog parameter is `name` where the
 	// facade's internal vocabulary is `target`; connector_edit multiplexes
 	// the five lifecycle verbs through its `action` enum.
@@ -39,7 +40,7 @@ func (c *ControlPlane) InvokeConnector(ctx context.Context, auth identity.Envelo
 			return api.OperationResult{State: api.OpStateFailed, Code: api.OpCodeNotPermitted, Summary: "connector_edit action must be enable|disable|allow_writes|reauth|remove"}, nil
 		}
 	}
-	if err := c.Store.RequireConnectorTool(auth, tool); err != nil {
+	if err := c.Store.RequireConnectorTool(auth, selectedTool, tool, args); err != nil {
 		return api.OperationResult{}, err
 	}
 	var result api.OperationResult

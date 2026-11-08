@@ -1,6 +1,7 @@
 package toolhub
 
 import (
+	"context"
 	"strings"
 	"time"
 
@@ -17,15 +18,11 @@ import (
 // run, so the private audience is a consequence of admission, not a file a
 // caller could influence. Vault/index failures report honest unavailable;
 // there is no local fallback to a shared or runtime vault.
-func (g *Gateway) memorySearch(auth identity.Envelope, arguments map[string]any) (map[string]any, error) {
+func (g *Gateway) memorySearch(ctx context.Context, auth identity.Envelope, arguments map[string]any) (map[string]any, error) {
 	unavailable := func() (map[string]any, error) {
 		return map[string]any{"status": "unavailable", "hits": []map[string]any{}}, nil
 	}
 	if g.Vaults == nil {
-		return unavailable()
-	}
-	u, err := g.Vaults.Resolve(auth.PrincipalID, auth.Environment)
-	if err != nil {
 		return unavailable()
 	}
 	limit := api.ArgInt(arguments, "limit")
@@ -34,7 +31,7 @@ func (g *Gateway) memorySearch(auth identity.Envelope, arguments map[string]any)
 	}
 	history, _ := arguments["history"].(bool)
 	var out map[string]any
-	if err := u.Locked(func(root string) error {
+	if err := g.withMemoryVault(ctx, auth, func(root string) error {
 		idx, rebuilt, err := memorysearch.NewIndexer(root).Ensure()
 		if err != nil {
 			out = map[string]any{"status": "unavailable", "hits": []map[string]any{}}
@@ -66,6 +63,45 @@ func (g *Gateway) memorySearch(auth identity.Envelope, arguments map[string]any)
 			status = "degraded"
 		}
 		out = map[string]any{"status": status, "hits": list}
+		return nil
+	}); err != nil {
+		return unavailable()
+	}
+	return out, nil
+}
+
+// memoryRead resolves an exact search hit inside the verified owner's vault.
+// Unknown, foreign and forgotten IDs have the same opaque result.
+func (g *Gateway) memoryRead(ctx context.Context, auth identity.Envelope, arguments map[string]any) (map[string]any, error) {
+	id := strings.TrimSpace(api.ArgString(arguments, "id"))
+	if id == "" || len(id) > 256 || strings.ContainsAny(id, "\x00\r\n") {
+		return map[string]any{"status": "invalid"}, nil
+	}
+	unavailable := func() (map[string]any, error) { return map[string]any{"status": "unavailable"}, nil }
+	if g.Vaults == nil {
+		return unavailable()
+	}
+	history, _ := arguments["history"].(bool)
+	var out map[string]any
+	if err := g.withMemoryVault(ctx, auth, func(root string) error {
+		idx, rebuilt, err := memorysearch.NewIndexer(root).Ensure()
+		if err != nil {
+			out = map[string]any{"status": "unavailable"}
+			return nil
+		}
+		hit, ok := idx.Read(id, string(memory.AudiencePrivate), history)
+		if !ok {
+			out = map[string]any{"status": "not_found"}
+			return nil
+		}
+		status := "ok"
+		if rebuilt {
+			status = "degraded"
+		}
+		out = map[string]any{"status": status, "hit": map[string]any{
+			"id": hit.Doc.ID, "evidence": hit.Evidence, "date": hit.Doc.Date,
+			"kind": hit.Doc.Kind, "untrusted": hit.Untrusted, "text": hit.Doc.Text,
+		}}
 		return nil
 	}); err != nil {
 		return unavailable()

@@ -194,7 +194,7 @@ func (t *Tools) call(ctx context.Context, name string, r Input, ws, ar, org *os.
 		return t.knowledgeSearch(ctx, r.Query)
 	case "knowledge_read":
 		return t.knowledgeRead(ctx, r)
-	case "memory_search":
+	case "memory_search", "memory_read":
 		// #515: memory_search executes inside ToolHub against the resolved
 		// per-user vault — the in-runtime executor must never serve it.
 		return nil, fmt.Errorf("%s is unavailable on this runtime: memory search runs in ToolHub", name)

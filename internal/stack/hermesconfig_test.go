@@ -290,6 +290,23 @@ func TestApplyToolHubConfigRequiresAuthToken(t *testing.T) {
 	}
 }
 
+func TestManagedToolHubConfigUsesRunBindingProxy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("model: {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyToolHubConfigWith(path, MaterializeOptions{Managed: true, ToolHubEndpoint: "http://toolhub:8090/mcp", RuntimeAuthPresent: true}); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), managedToolHubProxyEndpoint) || strings.Contains(string(body), "http://toolhub:8090/mcp") {
+		t.Fatalf("managed ToolHub bypasses runtime run binding: %s", body)
+	}
+}
+
 func TestApplySelfServicesMergesMCPConfig(t *testing.T) {
 	dir := t.TempDir()
 	services := writeSelfServicesState(t, dir, `{"features":["atlassian","gitlab"]}`)

@@ -19,13 +19,16 @@ import (
 
 const (
 	DefaultEndpointPath = "/mcp"
+	RunEndpointPath     = "/mcp-run"
 	maxGatewayBodyBytes = 4 << 20
 	legacyMCPVersion    = "2025-11-25"
 )
 
 type Gateway struct {
-	Store                      *Store
-	Backend                    api.ToolBackend
+	Store   *Store
+	Backend api.ToolBackend
+	// acquireRuntime warms and holds an agent executor outside the registry fence.
+	acquireRuntime             func(context.Context, api.EffectiveBinding) (func(), error)
 	Tokens                     map[string]identity.Envelope
 	primaryToken               string
 	tokensFile                 string
@@ -55,6 +58,9 @@ type Gateway struct {
 	// PassportRoot contains one read-only published revision per principal.
 	// Memory admission resolves it from the authenticated envelope only.
 	PassportRoot string
+	// InboxRoots is the control-only writable inbox mount per principal.
+	InboxRoots       string
+	CommunicationURL string
 	// Vaults resolves a verified principal/environment to that principal's
 	// vault through the server-rendered bindings (HUB_VAULTS_BY_PRINCIPAL).
 	// Nil when no bindings root is rendered — memory stays unavailable.
@@ -77,12 +83,13 @@ type Gateway struct {
 }
 
 type gatewayProjection struct {
-	auth     identity.Envelope
-	server   *mcp.Server
-	handler  http.Handler
-	mu       sync.Mutex
-	tools    map[string]api.ToolSpec
-	controls map[string]bool
+	auth       identity.Envelope
+	server     *mcp.Server
+	handler    http.Handler
+	runHandler http.Handler
+	mu         sync.Mutex
+	tools      map[string]api.ToolSpec
+	controls   map[string]bool
 }
 
 func (g *Gateway) Handler() (http.Handler, error) {
@@ -115,16 +122,22 @@ func (g *Gateway) Handler() (http.Handler, error) {
 				SessionTimeout: time.Hour, MaxRequestBodyBytes: maxGatewayBodyBytes,
 				PropagateRequestCancellation: true, DisableLocalhostProtection: g.DisableLocalhostProtection,
 			}),
+			runHandler: mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
+				Stateless: true, MaxRequestBodyBytes: maxGatewayBodyBytes,
+				PropagateRequestCancellation: true, DisableLocalhostProtection: g.DisableLocalhostProtection,
+			}),
 		}
 	}
 	mux := http.NewServeMux()
-	mux.Handle(DefaultEndpointPath, g.protect())
+	mux.Handle(DefaultEndpointPath, g.protect(DefaultEndpointPath))
+	mux.Handle(RunEndpointPath, g.protect(RunEndpointPath))
 	mux.Handle("/v1/connectors", http.HandlerFunc(g.serveConnectors))
 	mux.Handle("/v1/connectors:install", http.HandlerFunc(g.serveConnectorInstall))
 	mux.Handle("/v1/connectors/", http.HandlerFunc(g.serveConnectorVerb))
 	mux.Handle("/v1/operations/", http.HandlerFunc(g.serveOperation))
 	mux.Handle("/v1/confirmations", http.HandlerFunc(g.serveHumanConfirmation))
 	mux.Handle("/v1/tool-call", http.HandlerFunc(g.serveToolCall))
+	mux.Handle("/v1/inbound-fetch", http.HandlerFunc(g.serveInboundFetch))
 	mux.Handle("/v1/cli-jobs/release", http.HandlerFunc(g.serveCLIJobRelease))
 	mux.Handle("/v1/memory-capture", http.HandlerFunc(g.serveMemoryCapture))
 	mux.Handle("/v1/memory-context", http.HandlerFunc(g.serveMemoryContext))
@@ -132,6 +145,7 @@ func (g *Gateway) Handler() (http.Handler, error) {
 	mux.Handle("/v1/admin/onboardings", http.HandlerFunc(g.serveAdminOnboardings))
 	mux.Handle("/v1/admin/diagnose/", http.HandlerFunc(g.serveAdminDiagnose))
 	mux.Handle("/v1/admin/inspect-source", http.HandlerFunc(g.serveAdminInspectSource))
+	mux.Handle("/knowledge", http.HandlerFunc(g.serveKnowledge))
 	mux.Handle("/credentials/", http.HandlerFunc(g.serveCredentials))
 	mux.Handle("/confirm/", http.HandlerFunc(g.serveConfirm))
 	mux.Handle("/remove/", http.HandlerFunc(g.serveRemove))
@@ -161,6 +175,7 @@ func (g *Gateway) PublicMux() *http.ServeMux {
 	mux.Handle("/viewer/", wrap(g.serveViewer))
 	mux.Handle("/device/", wrap(g.serveDevice))
 	mux.Handle("/oauth/callback", wrap(g.serveOAuthCallback))
+	mux.Handle("/knowledge", wrap(g.serveKnowledge))
 	return mux
 }
 
@@ -461,9 +476,9 @@ func (g *Gateway) connectorAuth(r *http.Request) (identity.Envelope, bool) {
 	return identity.Envelope{}, false
 }
 
-func (g *Gateway) protect() http.Handler {
+func (g *Gateway) protect(path string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != DefaultEndpointPath {
+		if r.URL.Path != path {
 			http.NotFound(w, r)
 			return
 		}
@@ -487,21 +502,22 @@ func (g *Gateway) protect() http.Handler {
 		}
 		corr := api.HeaderCorrelation(r.Header.Get(api.HeaderJobID), r.Header.Get(api.HeaderRunID))
 		r = r.WithContext(api.WithCallCorrelation(r.Context(), corr))
-		projection.handler.ServeHTTP(w, r)
+		if path == RunEndpointPath {
+			projection.runHandler.ServeHTTP(w, r)
+		} else {
+			projection.handler.ServeHTTP(w, r)
+		}
 	})
 }
 
 func (g *Gateway) authenticate(value string) (string, bool) {
-	if token, ok := g.matchToken(value); ok {
-		return token, true
+	// The bearer can stay the same while its policy envelope changes after
+	// a sibling rebuild. Re-read the small enrolled-token file so a cached
+	// projection cannot keep the old authority.
+	if g.tokensFile != "" {
+		g.reloadTokens()
 	}
-	// A sibling space enrolled after process start is invisible until the
-	// tokens file is read again. Reload only on a miss so the steady path
-	// stays the in-memory map.
-	if g.reloadTokens() {
-		return g.matchToken(value)
-	}
-	return "", false
+	return g.matchToken(value)
 }
 
 func (g *Gateway) matchToken(value string) (string, bool) {
@@ -533,6 +549,10 @@ func (g *Gateway) reloadTokens() bool {
 	extra, err := loadTokenEnvelopes(g.tokensFile)
 	if err != nil {
 		log.Printf("toolhub token reload skipped: %v", err)
+		if primaryAuth, ok := g.Tokens[g.primaryToken]; ok {
+			g.Tokens = map[string]identity.Envelope{g.primaryToken: primaryAuth}
+			g.projections = nil
+		}
 		return false
 	}
 	primaryAuth, ok := g.Tokens[g.primaryToken]
@@ -549,6 +569,11 @@ func (g *Gateway) reloadTokens() bool {
 			continue
 		}
 		next[token] = auth
+	}
+	for token, old := range g.Tokens {
+		if current, ok := next[token]; !ok || !envelopeEqual(old, current) {
+			delete(g.projections, token)
+		}
 	}
 	g.Tokens = next
 	return true

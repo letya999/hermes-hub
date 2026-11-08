@@ -1,6 +1,6 @@
 ---
 description: Frozen M32 requirements for ToolHub-owned per-user memory, automation and night processing.
-last_verified: 2026-11-04
+last_verified: 2026-11-07
 ---
 # SPEC-0094: ToolHub memory and automation
 
@@ -24,7 +24,9 @@ memory data model, retention and routine behavior remain unless amended below.
   Runtime has no vault mount. OpenKnowledge mutations use the same governed
   writer. No other service mounts a user vault RW.
 - **R1.4** Every memory call binds to the exact authenticated, live private
-  run. Model arguments cannot supply that identity. A concurrent owner run
+  owner run. A verified assignment run in the same owner's private audience
+  may use the same currently selected and granted memory tools. Model arguments
+  cannot supply that identity. A concurrent owner run
   cannot authorize another run. Expired/completed/mismatched runs fail closed.
   Shared `runtime/run-scope/current` is absent.
 - **R1.5** Group and sensitive events cannot expose private CORE, recall or
@@ -64,9 +66,11 @@ memory data model, retention and routine behavior remain unless amended below.
 ## R4. Dreaming
 
 - **R4.1** Each enabled user has one protected system routine from
-  `config.memory` local time and timezone. Ordinary routine CRUD cannot edit
-  it. A `(user, local_date)` key prevents duplicate application and permits
-  recovery of incomplete work.
+  `config.memory` local time and timezone. It uses the ordinary routine due
+  calculator, durable schedule/occurrence registration and recovery path;
+  memory processing is its operation, not another scheduling tick. Ordinary
+  routine CRUD cannot edit it. A `(user, local_date)` key prevents duplicate
+  application and permits recovery of incomplete work.
 - **R4.2** Dreaming uses that user's vault, model relay,
   `internal/memory/night` and its retention rules. Current memory enablement
   and `memory.dreaming` are required at admission and before commit.
@@ -86,7 +90,10 @@ memory data model, retention and routine behavior remain unless amended below.
   waits and arrives once after restart.
 - **A4:** Two users get their own once-per-local-day night result. Restart
   mid-job and revoke `memory.dreaming` before commit: no duplicate or
-  unauthorized write occurs.
+  unauthorized write occurs. An isolated controlled-time acceptance path
+  prepares three logical days with at least ten facts per day per owner;
+  real-model smoke still runs for both owners without changing system clocks
+  or editing personal vault data by hand.
 - **A5:** Isolation, concurrency, authorization and HTTP contract regression
   tests, `just check`, required Docker gate and live dev evidence pass. Mock
   tests alone do not prove integration.

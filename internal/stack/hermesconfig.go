@@ -21,6 +21,7 @@ var runtimeEnvName = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63}$`)
 // ordinary MCP call timeout. The user gets Hermes' heartbeat while this call
 // is in flight, so do not kill it after the default two minutes.
 const toolHubCallTimeoutSeconds = 1800
+const managedToolHubProxyEndpoint = "http://127.0.0.1:8080/mcp"
 
 // MaterializeOptions carries the host-side inputs the in-container startup
 // normally reads from the environment when it materializes the effective
@@ -326,7 +327,7 @@ func ValidateManagedEffectiveConfig(configPath string, s Settings, opts Material
 	expected := managedHermesConfig(s)
 	servers := expected["mcp_servers"].(M)
 	servers["toolhub"] = M{
-		"url": opts.ToolHubEndpoint, "timeout": toolHubCallTimeoutSeconds,
+		"url": managedToolHubProxyEndpoint, "timeout": toolHubCallTimeoutSeconds,
 		"skip_preflight": true, "headers": M{"Authorization": "Bearer ${" + tokenEnv + "}"},
 	}
 	if opts.ToolHubReconnect {
@@ -450,6 +451,9 @@ func applyToolHubConfigWith(configPath string, opts MaterializeOptions) error {
 	}
 	if err := api.ValidateBackendEndpoint(endpoint); err != nil {
 		return fmt.Errorf("HUB_TOOLHUB_ENDPOINT: %w", err)
+	}
+	if opts.Managed {
+		endpoint = managedToolHubProxyEndpoint
 	}
 	tokenEnv := opts.ToolHubTokenEnv
 	if tokenEnv == "" {

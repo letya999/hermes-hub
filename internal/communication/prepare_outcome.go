@@ -2,7 +2,6 @@ package communication
 
 import (
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -40,7 +39,10 @@ type prepareOutcomeRequest struct {
 // handlePrepareOutcome turns a finished ToolHub prepare into a channel reply
 // and, when no user login is pending, a continuation job.
 func (g *Gateway) handlePrepareOutcome(w http.ResponseWriter, r *http.Request) {
-	caller, ok := g.authorizeControl(r)
+	caller, ok := g.authorizeServiceControl(r)
+	if !ok {
+		caller, ok = g.authorizeControl(r)
+	}
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -56,7 +58,7 @@ func (g *Gateway) handlePrepareOutcome(w http.ResponseWriter, r *http.Request) {
 	}
 	if proof := request.Confirmation; proof != nil {
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if r.Header.Get("Origin") != "" || subtle.ConstantTimeCompare([]byte(token), []byte(g.config.ControlAuth)) != 1 || !g.config.Supervised && g.config.ControlAuth == g.config.RuntimeAuth || proof.Actor.Validate(caller.PrincipalID, caller.ContextID, caller.RuntimeID, caller.PolicyVersion) != nil || request.Phase != "awaiting-confirm" || proof.OnboardingID != request.OnboardingID || proof.Nonce == "" || !g.now().Before(proof.ExpiresAt) {
+		if r.Header.Get("Origin") != "" || !g.serviceControlTokenAccepted(token) || !g.config.Supervised && g.serviceControlToken() == g.config.RuntimeAuth || proof.Actor.Validate(caller.PrincipalID, caller.ContextID, caller.RuntimeID, caller.PolicyVersion) != nil || request.Phase != "awaiting-confirm" || proof.OnboardingID != request.OnboardingID || proof.Nonce == "" || !g.now().Before(proof.ExpiresAt) {
 			http.Error(w, "confirmation denied", http.StatusForbidden)
 			return
 		}

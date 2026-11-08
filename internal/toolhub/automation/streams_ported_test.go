@@ -23,9 +23,8 @@ package automation
 //   - TestStreamToolCallInjectsBound and
 //     TestStreamCursorReadCoalescesWithinOwnerOnly: the gateway HTTP forwarder
 //     is gone; the host calls cfg.ToolCall in-process per owner tick.
-//   - TestStreamPollRefreshesHoldEpochBeforeWake: the operational-epoch hold
-//     refresh was gateway machinery; job epoch propagation is asserted in the
-//     communication suite where holds live.
+// Administrative epochs now bind in the ToolHub owner before occurrence
+// persistence; admission_epoch_test.go covers resumed and pending work.
 
 import (
 	"context"
@@ -599,6 +598,10 @@ func TestWatchSampleReturnsRawEventsAndVerdicts(t *testing.T) {
 	var mu sync.Mutex
 	var filterInputSeen string
 	filterSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/holds" {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
 		var req struct {
 			Text  string `json:"text"`
 			Input string `json:"input"`
@@ -694,6 +697,10 @@ func TestWatchSampleRunsCandidateFilter(t *testing.T) {
 	}
 	var gotSrc string
 	filterSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/holds" {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
 		var req struct {
 			Text string `json:"text"`
 		}

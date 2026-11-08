@@ -19,6 +19,7 @@ import (
 
 	"github.com/gofrs/flock"
 	"github.com/letya999/hermes-hub/internal/audit"
+	"github.com/letya999/hermes-hub/internal/credentialbroker"
 	"github.com/letya999/hermes-hub/internal/credstore"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/oauth"
@@ -249,6 +250,18 @@ func runConnector(ctx context.Context, args []string) error {
 		onboarding, err := registry.OnboardingFor(auth, *onboardingID)
 		if err != nil {
 			return err
+		}
+		if onboarding.Phase == api.PhaseAwaitingConfirm && (onboarding.ConfirmationUsed || !time.Now().Before(onboarding.ConfirmationExpires)) {
+			if _, err := (&toolhub.ControlPlane{Store: registry}).Invoke(ctx, auth, "status", map[string]any{"onboarding_id": *onboardingID}); err != nil {
+				return err
+			}
+			if err := registry.Save(*registryPath); err != nil {
+				return err
+			}
+			onboarding, err = registry.OnboardingFor(auth, *onboardingID)
+			if err != nil {
+				return err
+			}
 		}
 		// The link is the whole payload — scripts read it raw. No pending
 		// action prints the phase instead of a dead URL.
@@ -579,14 +592,32 @@ func connectorActionOrigin(flag string) string {
 // connectorConfirm finishes an awaiting-confirmation onboarding the same way
 // the /confirm page does; the stored nonce stays in the operator-side store.
 func connectorConfirm(ctx context.Context, registry *toolhub.Store, auth identity.Envelope, onboarding api.Onboarding) error {
-	body, err := (&toolhub.ControlPlane{Store: registry}).Invoke(ctx, auth, "confirm", map[string]any{
+	release, err := api.ControllerAdmissionReleaserFromEnv()
+	if err != nil {
+		return err
+	}
+	broker, err := credentialbroker.FromEnv("HUB_CREDENTIAL_BROKER_CONTROL_")
+	if err != nil {
+		return err
+	}
+	control := &toolhub.ControlPlane{Store: registry, Release: release}
+	if broker.Enabled() {
+		control.Broker = &broker
+	}
+	body, err := control.Invoke(ctx, auth, "confirm", map[string]any{
 		"onboarding_id": onboarding.OnboardingID,
 		"nonce":         onboarding.ConfirmationNonce,
 	})
 	if err != nil {
 		return err
 	}
-	return json.NewEncoder(os.Stdout).Encode(body)
+	return json.NewEncoder(os.Stdout).Encode(map[string]any{
+		"onboarding_id":     body["onboarding_id"],
+		"phase":             body["phase"],
+		"status":            body["status"],
+		"binding_id":        body["binding_id"],
+		"connection_status": body["connection_status"],
+	})
 }
 
 func connectTelegram(ctx context.Context, registry *toolhub.Store, backend credstore.Backend, auth identity.Envelope, connection, expected, input, manifest, endpoint, registryPath string, write bool) error {

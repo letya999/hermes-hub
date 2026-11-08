@@ -1,6 +1,6 @@
 ---
 description: Upstream pins and provider contracts — Hermes API, broker env layout, per-provider OAuth/auth contracts, web/doc/image capabilities.
-last_verified: 2026-10-28
+last_verified: 2026-11-07
 ---
 
 # Integration contracts
@@ -16,7 +16,7 @@ reference — what we integrate with, at what revision, under what shape.
 |---|---|---|
 | Hermes | nousresearch/hermes-agent `869228cab4a8276d3b4c78da9d9939670c47bd0f` (0.21.0) | ADR-0012; pin predates upstream tool-`isError`/transport split (PRs 67340/17016 closed unmerged, 68455 open) — hub tools already mark expected failures as `isError`; residual risk CHG-0093 |
 | Local STT | faster-whisper 1.2.1 + PyAV 18.1.0 in the standalone STT image | PyAV 19 removed the decoder arg that release uses; native + STT CI gates decode a synthetic WAV offline so skew cannot pass |
-| CLIProxy | image-pinned `ba7e55836dee959e93ec6d41395865d9ec535086` | model/image relay upstream |
+| CLIProxy | v8.0.59, image-pinned `c5251b57b3fa5dcbc689f514f4aa166daacb4481` | model/image relay upstream; Devin OAuth (`--devin-login`), models from the authenticated catalog |
 | ToolHive | `ghcr.io/stacklok/toolhive:v0.48.0` @ `sha256:f1adc609e11e5f60fd5a27d23e7a63eb14dcfee13f3c0b2f1741680a64fcea5d` | container executor for ToolHub workloads (ADR-0013); cellinit/cred-proxy are built from this repo, not upstream |
 | Telegram account | letya999/telegram-mcp `26f1632b2b07cca16fa8f172fe645477921db9ed` | Python stdio; prepared Broker entry defaults `TELEGRAM_EXPOSED_TOOLS=read-only`; bot token stays separate; the unrelated PyPI `telegram-mcp` is deliberately not used |
 | Telegram bot channel | Telegram Bot API via `hub-communication` | channel adapter; sender allowlist + durable outbox |

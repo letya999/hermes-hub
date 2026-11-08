@@ -10,6 +10,25 @@ import (
 	"github.com/letya999/hermes-hub/internal/locale"
 )
 
+func (g *Gateway) serviceControlToken() string {
+	if g.config.AutomationAuth != "" {
+		return g.config.AutomationAuth
+	}
+	return g.config.ControlAuth
+}
+
+func (g *Gateway) serviceControlTokenAccepted(token string) bool {
+	expected := g.serviceControlToken()
+	return expected != "" && subtle.ConstantTimeCompare([]byte(token), []byte(expected)) == 1
+}
+
+func (g *Gateway) authorizeServiceControl(r *http.Request) (identity.Envelope, bool) {
+	if !g.serviceControlTokenAccepted(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")) {
+		return identity.Envelope{}, false
+	}
+	return g.controlCaller(r.Header.Get("X-Hub-Principal"))
+}
+
 // OwnerHome exposes only the current safe notice address and language.
 // ToolHub never receives the gateway's user config, paths or channel secrets.
 func (g *Gateway) handleAutomationOwnerHome(w http.ResponseWriter, r *http.Request) {
@@ -23,7 +42,7 @@ func (g *Gateway) handleAutomationOwnerHome(w http.ResponseWriter, r *http.Reque
 	}
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	principal := r.Header.Get("X-Hub-Principal")
-	if g.config.ControlAuth == "" || subtle.ConstantTimeCompare([]byte(token), []byte(g.config.ControlAuth)) != 1 || !identity.ValidID(principal) {
+	if !g.serviceControlTokenAccepted(token) || !identity.ValidID(principal) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}

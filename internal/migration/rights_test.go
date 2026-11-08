@@ -31,7 +31,11 @@ func TestSelectedHubToolsUsesPublishedToolsets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(selected) != 2 || selected[0].Name != "file_read" || selected[1].Name != "memory_search" || len(core) != 1 || core[0] != "file_read" {
+	names := make([]string, 0, len(selected))
+	for _, item := range selected {
+		names = append(names, item.Name)
+	}
+	if !slices.Equal(names, []string{"file_read", "memory_open", "memory_read", "memory_search"}) || len(core) != 1 || core[0] != "file_read" {
 		t.Fatalf("published selection/core mismatch: selections=%v core=%v", selected, core)
 	}
 	selected, _, err = selectedHubTools(store, []byte("core:\n  files: {via: toolhub, tools: {include: [file_read]}, scope: {paths: [/workspace/docs]}, rules: {file_read: {scope: {paths: [/workspace/docs/public]}}}}\n"), docs)

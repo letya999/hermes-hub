@@ -71,25 +71,21 @@ func TestComposeConfigViewDirBindOnly(t *testing.T) {
 	}
 }
 
-// Before any revision is published the space keeps the raw env config and
-// SOUL mounts its heal path reads — the view bind appears only then.
-func TestComposeConfigViewFallbackBeforePublish(t *testing.T) {
+// Missing publication never selects retired raw config/SOUL file mounts.
+func TestComposeConfigViewHasNoUnpublishedFallback(t *testing.T) {
 	s := Settings{Schema: 1, User: "alice", Environment: "dev", Timezone: "UTC", OAuthPort: 8000, BrowserPort: 6080}
 	binds := runtimeBinds(t, s, t.TempDir())
-	var cfg, soul bool
+	var view bool
 	for _, m := range binds {
 		target := fmt.Sprint(m["target"])
 		if target == "/config" {
-			t.Fatal("dir bind present without a published view")
+			view = m["read_only"] == true
 		}
-		if target == "/config/config.yaml" {
-			cfg = m["read_only"] == true
-		}
-		if target == "/config/SOUL.md" {
-			soul = m["read_only"] == true
+		if target == "/config/config.yaml" || target == "/config/SOUL.md" {
+			t.Fatal("missing view selected a raw config fallback")
 		}
 	}
-	if !cfg || !soul {
-		t.Fatalf("unpublished space lost its heal-path mounts: cfg=%v soul=%v", cfg, soul)
+	if !view {
+		t.Fatal("published config directory is not the sole config mount")
 	}
 }

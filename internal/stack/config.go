@@ -217,7 +217,7 @@ var Features = []Feature{
 	{"hosting", nil, "Owner-bound immutable static and isolated dynamic sites; requires reviewed hosting config and exposure"},
 	{"exposure", nil, "Named outbound public endpoints over a per-binding tunnel workload (sish/cloudflared); requires a reviewed connections/exposure/config.yaml"},
 	{"memory_vault", nil, "Git-backed per-space memory vault at spaces/<id>/vault; removes the native memory toolset and scopes CORE to private runs"},
-	{"knowledge_ui", nil, "OpenKnowledge editor over the space memory vault — suspended under ToolHub vault ownership (M32/#520): renders no surface until a governed-API client exists; requires memory_vault"},
+	{"knowledge_ui", nil, "OpenKnowledge editor over the space memory vault — suspended under ToolHub vault ownership (M32/#520); ToolHub's read-only memory_open view is separate and requires current memory rights; requires memory_vault"},
 	{"memory_provider", nil, "External memory backend behind the hub-owned provider seam (first adapter: Hindsight); requires memory_vault"},
 }
 var idPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,39}$`)

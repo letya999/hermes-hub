@@ -8,5 +8,5 @@ func KnowledgeDoctor(s Settings) []string {
 	if !s.Has("knowledge_ui") {
 		return nil
 	}
-	return []string{"Knowledge UI: unavailable — OpenKnowledge cannot mount the vault under ToolHub ownership (M32); a governed-API surface is deferred"}
+	return []string{"OpenKnowledge editor: unavailable — ToolHub owns the vault; the separate read-only memory_open view is available when selected and granted"}
 }

@@ -55,6 +55,8 @@ type StoragePort struct {
 // while holding its internal lock, so a callback must never call back into
 // the engine (the only permitted lock order is engine -> owner).
 type DispatchPort struct {
+	// PrepareJob binds current admission authority before an occurrence persists.
+	PrepareJob func(*commodel.Job) error
 	// EnqueueJob admits an occurrence job to the ordinary queue.
 	EnqueueJob func(commodel.Job) (bool, error)
 	// LoadMapping reads one durable job mapping.

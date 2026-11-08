@@ -49,14 +49,12 @@ type RunContext struct {
 type RunKind string
 
 const (
-	// RunKindPrivate is an interactive owner turn in private scope — the
-	// only kind a model-facing memory call may borrow.
+	// RunKindPrivate is an interactive owner turn in private scope.
 	RunKindPrivate RunKind = "private"
 	// RunKindGroup is any shared/group-audience run.
 	RunKindGroup RunKind = "group"
 	// RunKindBackground covers autonomous and system runs (goal, cron,
-	// protected forms) — they carry verified service authority on their own
-	// paths and are never equivalent to a private run.
+	// protected forms) — only verified owner assignments may use owner memory.
 	RunKindBackground RunKind = "background"
 )
 
@@ -72,6 +70,13 @@ func (r RunContext) Kind() RunKind {
 		return RunKindBackground
 	}
 	return RunKindPrivate
+}
+
+// MayUseOwnerMemory classifies the audience and purpose. Lifecycle, identity,
+// selection, grants and enablement are checked separately at every call.
+func (r RunContext) MayUseOwnerMemory() bool {
+	return !r.Sensitive && (r.Kind() == RunKindPrivate ||
+		r.Kind() == RunKindBackground && r.Assignment && r.UserID != "" && r.UserID == r.Envelope.PrincipalID)
 }
 
 // RunAuthority is the lifecycle-authority seam: Lookup returns the durable

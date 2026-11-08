@@ -1,6 +1,6 @@
 ---
 description: ToolHub owns per-user memory, routines, assignments and dreaming; communication-hub retains verified channel intake and delivery.
-last_verified: 2026-11-04
+last_verified: 2026-11-08
 ---
 # ADR-0095: ToolHub owns memory and automation
 
@@ -94,3 +94,12 @@ Hermes remains upstream. Provider mutations still require a concrete user
 instruction. Secrets remain brokered. No logs or diagnostics expose content
 or credential material. Unsupported or unavailable states fail closed with
 bounded, safe status. Dev and prod storage remain separate.
+
+## 2026-11-08 addition: temporary knowledge view
+
+`memory_open` may mint a one-hour bearer link only in a verified private
+owner run. ToolHub serves a read-only search/read view and rechecks the active
+selection, `memory.search` right and published memory switch for every page.
+The upstream OpenKnowledge editor remains unavailable: it has no governed
+ToolHub API client and must not mount or write the vault directly. This is a
+bounded human viewing path, not an exception to D2 or the edit confirmation.

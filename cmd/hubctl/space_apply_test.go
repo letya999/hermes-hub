@@ -16,6 +16,7 @@ import (
 	"github.com/gofrs/flock"
 	"github.com/letya999/hermes-hub/internal/agenttools"
 	"github.com/letya999/hermes-hub/internal/catalog"
+	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/passport"
 	"github.com/letya999/hermes-hub/internal/reconcile"
 	"github.com/letya999/hermes-hub/internal/stack"
@@ -38,6 +39,40 @@ func TestRecreateRemovedHostingControllerSweepsOrphan(t *testing.T) {
 	}
 	if !slices.Contains(got, "--remove-orphans") || slices.Contains(got, "hosting-controller") {
 		t.Fatalf("removed controller was not swept from restored project: %v", got)
+	}
+}
+
+func TestRefreshSharedRuntimeTokensAfterSiblingApply(t *testing.T) {
+	spaces := filepath.Join(t.TempDir(), "spaces")
+	infra, sibling := filepath.Join(spaces, "alice"), filepath.Join(spaces, "bob")
+	writeManagedSpaceDocs(t, infra, "alice", managedInfraDocs("alice", false))
+	writeManagedSpaceFixture(t, sibling, "bob")
+	ownerToken, siblingToken := strings.Repeat("a", 64), strings.Repeat("b", 64)
+	for path, token := range map[string]string{infra: ownerToken, sibling: siblingToken} {
+		if err := os.WriteFile(filepath.Join(path, "runtime.auth"), []byte("HUB_RUNTIME_AUTH="+token+"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := refreshSharedRuntimeTokens(sibling, "dev"); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(infra, "toolhub-tokens.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var enrolled map[string]identity.Envelope
+	if err := json.Unmarshal(body, &enrolled); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := stack.ReadEffective(sibling, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enrolled[siblingToken].PolicyVersion != stack.PolicyVersion(settings) {
+		t.Fatal("sibling token kept a stale policy after apply")
+	}
+	if _, ok := enrolled[ownerToken]; ok {
+		t.Fatal("infra owner's bearer leaked into sibling enrollment")
 	}
 }
 
@@ -854,10 +889,10 @@ func TestApplyRebuildsSupervisedRuntimeImage(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "spaces", "alice")
 	writeManagedSpaceFixture(t, dir, "alice")
-	previous := dockerCompose
-	defer func() { dockerCompose = previous }()
+	previous := applyImageBuild
+	defer func() { applyImageBuild = previous }()
 	var got []string
-	dockerCompose = func(_ context.Context, _ string, args ...string) error {
+	applyImageBuild = func(_ context.Context, args []string) error {
 		got = append([]string(nil), args...)
 		return nil
 	}
@@ -865,7 +900,7 @@ func TestApplyRebuildsSupervisedRuntimeImage(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(got, " ")
-	if !strings.Contains(joined, "build --target dev -t hermes-hub:0.5.0-dev") || !strings.Contains(joined, filepath.Join(root, "docker", "Dockerfile")) {
+	if !strings.HasPrefix(joined, "build --dir "+dir) || !strings.HasSuffix(joined, "--image runtime") {
 		t.Fatalf("supervised runtime rebuild did not produce the agent image: %v", got)
 	}
 }
@@ -1011,7 +1046,13 @@ func TestApplyRecreateResolvesComposeNames(t *testing.T) {
 	if !strings.Contains(joined, filepath.Join("infra", "generated", "compose.dev.yaml")) || !strings.Contains(joined, "communication-hub") {
 		t.Fatalf("shared service must recreate in the infra project: %v", captured)
 	}
-	// Rebuild names instances too: compose build takes the emitted key.
+	// Rebuild delegates the selected image to the same path as hubctl build.
+	oldBuild := applyImageBuild
+	defer func() { applyImageBuild = oldBuild }()
+	applyImageBuild = func(_ context.Context, args []string) error {
+		captured = append([]string(nil), args...)
+		return nil
+	}
 	captured = nil
 	if err := h.Rebuild("browser"); err != nil {
 		t.Fatal(err)
@@ -1027,7 +1068,7 @@ func TestApplyRecreateResolvesComposeNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined = strings.Join(captured, " ")
-	if !strings.Contains(joined, filepath.Join("infra", "generated", "compose.dev.yaml")) || !strings.Contains(joined, "build") || !strings.Contains(joined, "communication-hub") {
+	if !strings.Contains(joined, "--dir "+infra) || !strings.HasPrefix(joined, "build ") || !strings.HasSuffix(joined, "communication-hub") {
 		t.Fatalf("shared service must rebuild in the infra project: %v", captured)
 	}
 	// config.supervision.* is live-class: applyConfirm already rendered the
@@ -1086,10 +1127,11 @@ func TestRespawnRuntimePrefersEnvEndpoint(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(view, "revision"), []byte(rev+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	hit := false
+	hit, applyHeader := false, ""
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/respawn" {
 			hit = true
+			applyHeader = r.Header.Get("X-Hub-Apply-Revision")
 		}
 	}))
 	defer api.Close()
@@ -1104,6 +1146,15 @@ func TestRespawnRuntimePrefersEnvEndpoint(t *testing.T) {
 	}
 	if !hit {
 		t.Fatal("env endpoint was not consulted before the recorded in-network URL")
+	}
+	if applyHeader != "" {
+		t.Fatal("ordinary respawn carried an apply proof")
+	}
+	if err := writeApplyJournal(dir, applyJournal{Environment: "dev", Previous: rev, Revision: "r-next", PreviousProfile: "dana-default", NextProfile: "dana-default", Phase: "effects", Actions: []reconcile.Action{{Kind: reconcile.Respawn, Target: "hermes-runtime"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := respawnRuntime(context.Background(), dir, "dev"); err != nil || applyHeader != "r-next" {
+		t.Fatalf("apply respawn proof=%q err=%v", applyHeader, err)
 	}
 }
 

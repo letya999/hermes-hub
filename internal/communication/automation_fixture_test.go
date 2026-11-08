@@ -76,7 +76,7 @@ func automationGatewayFixtureIO(t *testing.T, cfg Config, extra map[string]routi
 		channels[id] = ch
 	}
 	if supervisor == nil {
-		supervisor = &automation.HTTPSupervisorClient{URL: "http://127.0.0.1", Token: "fixture"}
+		supervisor = &automation.HTTPSupervisorClient{URL: "http://127.0.0.1", Token: "fixture", JobPath: "/v1/execute"}
 	}
 	// Production wires ChannelPolicy over the operator routing file and the
 	// communication task/topic bindings; the fixture authors the same record

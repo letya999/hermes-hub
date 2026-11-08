@@ -11,13 +11,30 @@ import (
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/memory/night"
+	"github.com/letya999/hermes-hub/internal/routines"
+	"github.com/letya999/hermes-hub/internal/toolhub/api"
 )
+
+func grantDreaming(t *testing.T, h *harness, principal string) {
+	t.Helper()
+	h.store.RightsDoc.Capabilities["memory"] = api.RightCapability{Description: "fixture", Operations: map[string]api.RightOperation{
+		"dreaming": {Subject: "self", Scope: "none", Issuers: []string{"operator"}, Effect: "write"},
+	}}
+	h.seq++
+	grant := api.NewRightGrant("dreaming-"+principal, principal, "memory", "dreaming", "", "fixture", "operator", h.now.Add(time.Hour))
+	if err := api.Confirm(&grant, "operator", h.now); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.gov.GrantRight(grant, h.store.RightsDoc, h.now); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestDreamingSystemRoutineUsesEachLocalDayAndIsProtected(t *testing.T) {
 	h := newHarness(t)
 	for _, principal := range []string{"alice", "bob"} {
-		h.grant(t, principal, "read")
-		h.grant(t, principal, "write")
+		h.grant(t, principal, "schedule")
+		grantDreaming(t, h, principal)
 	}
 	host := h.host(t)
 	host.cfg.DreamingPlan = func(auth identity.Envelope) (night.Schedule, error) {
@@ -26,6 +43,9 @@ func TestDreamingSystemRoutineUsesEachLocalDayAndIsProtected(t *testing.T) {
 			plan.Timezone = "America/New_York"
 		}
 		return plan, nil
+	}
+	host.cfg.DreamingRun = func(context.Context, identity.Envelope, string, night.Schedule, locale.Lang, func(context.Context, night.IntentProposal) error) (string, error) {
+		return "", nil
 	}
 	for _, principal := range []string{"alice", "bob"} {
 		if _, err := host.engineFor(principal); err != nil {
@@ -53,7 +73,7 @@ func TestDreamingSystemRoutineUsesEachLocalDayAndIsProtected(t *testing.T) {
 		}
 	}
 	var day dreamingDay
-	if err := loadJSON(filepath.Join(bobRoot, "dreaming", "2026-03-08.json"), &day); err != nil || day.PrincipalID != "bob" || day.LeafDate != "2026-03-07" || day.State != "pending" {
+	if err := loadJSON(filepath.Join(bobRoot, "dreaming", "2026-03-08.json"), &day); err != nil || day.PrincipalID != "bob" || day.LeafDate != "2026-03-07" || day.State != "complete" {
 		t.Fatalf("bad bob date key or leaf: %+v %v", day, err)
 	}
 	entries, err := os.ReadDir(filepath.Join(bobRoot, "dreaming"))
@@ -63,16 +83,24 @@ func TestDreamingSystemRoutineUsesEachLocalDayAndIsProtected(t *testing.T) {
 	if rows, err := host.ListSchedules(context.Background(), h.envelope(t, "bob")); err != nil || len(rows) != 0 {
 		t.Fatalf("system routine leaked into ordinary CRUD: %+v %v", rows, err)
 	}
-	if err := host.PauseSchedule(context.Background(), h.envelope(t, "bob"), dreamingID); err == nil {
+	if err := host.PauseSchedule(context.Background(), h.envelope(t, "bob"), routines.SystemDreamingID); err == nil {
 		t.Fatal("ordinary CRUD paused protected system routine")
 	}
-	var routine dreamingRoutine
-	if err := loadJSON(filepath.Join(bobRoot, "dreaming.json"), &routine); err != nil || routine.ID != dreamingID || routine.PrincipalID != "bob" || routine.Timezone != "America/New_York" {
+	var routine commodel.Schedule
+	if err := loadJSON(filepath.Join(host.ownerRoot("bob"), "schedules", routines.SystemDreamingID+".json"), &routine); err != nil || routine.ScheduleID != routines.SystemDreamingID || routine.Envelope.PrincipalID != "bob" || routine.Timezone != "America/New_York" || routine.JobKind != "dreaming" {
 		t.Fatalf("protected routine changed: %+v %v", routine, err)
+	}
+	if routine.LastOccurrenceID == "" {
+		t.Fatal("shared routine scheduler did not register a dreaming occurrence")
+	}
+	var occurrence commodel.RoutineOccurrence
+	if err := loadJSON(filepath.Join(host.ownerRoot("bob"), "occurrences", routine.LastOccurrenceID+".json"), &occurrence); err != nil || occurrence.JobKind != "dreaming" || occurrence.State != "dispatched" {
+		t.Fatalf("dreaming occurrence not settled through routine engine: %+v %v", occurrence, err)
 	}
 	// A new Host over the same owner files does not mint another occurrence.
 	restarted := h.host(t)
 	restarted.cfg.DreamingPlan = host.cfg.DreamingPlan
+	restarted.cfg.DreamingRun = host.cfg.DreamingRun
 	if _, err := restarted.engineFor("bob"); err != nil {
 		t.Fatal(err)
 	}
@@ -87,6 +115,7 @@ func TestDreamingSystemRoutineUsesEachLocalDayAndIsProtected(t *testing.T) {
 
 func TestDreamingRunRetriesAndQueuesDigestOnce(t *testing.T) {
 	h := newHarness(t)
+	grantDreaming(t, h, "alice")
 	host := h.host(t)
 	auth := h.envelope(t, "alice")
 	if _, err := host.engineFor("alice"); err != nil {
@@ -113,18 +142,18 @@ func TestDreamingRunRetriesAndQueuesDigestOnce(t *testing.T) {
 		return "remembered one thing", nil
 	}
 	now := time.Date(2026, 11, 6, 5, 0, 0, 0, time.UTC)
-	if err := host.tickDreaming(context.Background(), "alice", now); err == nil {
+	if err := host.Tick(context.Background(), now); err == nil {
 		t.Fatal("failed run marked done")
 	}
 	failed = false
-	if err := host.tickDreaming(context.Background(), "alice", now); err != nil {
+	if err := host.Tick(context.Background(), now); err != nil {
 		t.Fatal(err)
 	}
-	if err := host.tickDreaming(context.Background(), "alice", now); err != nil {
+	if err := host.Tick(context.Background(), now); err != nil {
 		t.Fatal(err)
 	}
-	if calls != 2 || pendingDeliveries(t, host, "alice") != 1 {
-		t.Fatalf("calls=%d pending=%d", calls, pendingDeliveries(t, host, "alice"))
+	if calls != 2 || h.comm.count() != 1 {
+		t.Fatalf("calls=%d deliveries=%d", calls, h.comm.count())
 	}
 	dayPath := filepath.Join(host.ownerRoot("alice"), "system", "dreaming", "2026-11-06.json")
 	var day dreamingDay
@@ -140,13 +169,14 @@ func TestDreamingRunRetriesAndQueuesDigestOnce(t *testing.T) {
 	if _, err := restarted.engineFor("alice"); err != nil {
 		t.Fatal(err)
 	}
-	if err := restarted.tickDreaming(context.Background(), "alice", now); err != nil || calls != 2 {
+	if err := restarted.Tick(context.Background(), now); err != nil || calls != 2 {
 		t.Fatalf("restart reran completed night: calls=%d err=%v", calls, err)
 	}
 }
 
 func TestDreamingDisabledRemovesOnlySystemClock(t *testing.T) {
 	h := newHarness(t)
+	grantDreaming(t, h, "alice")
 	host := h.host(t)
 	if _, err := host.engineFor("alice"); err != nil {
 		t.Fatal(err)
@@ -155,11 +185,14 @@ func TestDreamingDisabledRemovesOnlySystemClock(t *testing.T) {
 	host.cfg.DreamingPlan = func(identity.Envelope) (night.Schedule, error) {
 		return night.Schedule{Enabled: enabled, LocalTime: "04:00", Timezone: "UTC", Revision: "rev-1"}, nil
 	}
+	host.cfg.DreamingRun = func(context.Context, identity.Envelope, string, night.Schedule, locale.Lang, func(context.Context, night.IntentProposal) error) (string, error) {
+		return "", nil
+	}
 	now := time.Date(2026, 11, 6, 5, 0, 0, 0, time.UTC)
 	if err := host.Tick(context.Background(), now); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(host.ownerRoot("alice"), "system", "dreaming.json")
+	path := filepath.Join(host.ownerRoot("alice"), "schedules", routines.SystemDreamingID+".json")
 	if _, err := os.Stat(path); err != nil {
 		t.Fatal(err)
 	}
@@ -176,14 +209,29 @@ func TestDreamingDisabledRemovesOnlySystemClock(t *testing.T) {
 }
 
 func TestDreamingRepeatedDSTHourUsesOneLocalDate(t *testing.T) {
-	plan := night.Schedule{Enabled: true, LocalTime: "01:30", Timezone: "America/New_York"}
+	h := newHarness(t)
+	grantDreaming(t, h, "alice")
+	host := h.host(t)
+	host.cfg.DreamingPlan = func(identity.Envelope) (night.Schedule, error) {
+		return night.Schedule{Enabled: true, LocalTime: "01:30", Timezone: "America/New_York", Revision: "r1"}, nil
+	}
+	calls := 0
+	host.cfg.DreamingRun = func(context.Context, identity.Envelope, string, night.Schedule, locale.Lang, func(context.Context, night.IntentProposal) error) (string, error) {
+		calls++
+		return "", nil
+	}
+	if _, err := host.engineFor("alice"); err != nil {
+		t.Fatal(err)
+	}
 	for _, now := range []time.Time{
 		time.Date(2026, 11, 1, 5, 30, 0, 0, time.UTC),
 		time.Date(2026, 11, 1, 6, 30, 0, 0, time.UTC),
 	} {
-		run, leaf, due, err := dreamingDates(now, plan)
-		if err != nil || !due || run != "2026-11-01" || leaf != "2026-10-31" {
-			t.Fatalf("DST repeat: run=%s leaf=%s due=%v err=%v", run, leaf, due, err)
+		if err := host.Tick(context.Background(), now); err != nil {
+			t.Fatal(err)
 		}
+	}
+	if calls != 1 {
+		t.Fatalf("repeated local hour applied %d times", calls)
 	}
 }

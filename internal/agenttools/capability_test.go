@@ -83,7 +83,9 @@ func TestHubToolsDefinitionValidatesSandboxed(t *testing.T) {
 		}
 		if tool.Name == "terminal_exec" {
 			found = true
-			if tool.Sandboxed || len(tool.Uses) != 3 {
+			if tool.Sandboxed || len(tool.Uses) != 2 ||
+				tool.Uses[0].Action != "exec" || tool.Uses[0].Resource != "terminal" ||
+				tool.Uses[1].Action != "read" || tool.Uses[1].Resource != "files" || tool.Uses[1].PathArgument != "path" {
 				t.Fatalf("terminal_exec contract wrong: %+v", tool)
 			}
 		}

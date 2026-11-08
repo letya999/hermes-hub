@@ -18,7 +18,7 @@ func TestMemoryToolsReportUnavailableOnRuntime(t *testing.T) {
 	}
 	defer ws.Close()
 	tools := &Tools{Workspace: ws}
-	for _, name := range []string{"memory_search", "memory_card"} {
+	for _, name := range []string{"memory_search", "memory_read", "memory_card"} {
 		for _, op := range []Input{{Query: "earl grey"}, {Op: "remember", Text: "earl grey supplier"}} {
 			if _, err := tools.Call(context.Background(), name, op); err == nil || !strings.Contains(err.Error(), "unavailable") {
 				t.Fatalf("%s reached a local path: %v", name, err)

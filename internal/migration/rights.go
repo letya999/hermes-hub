@@ -254,7 +254,7 @@ func selectedConnectorTools(store *toolhub.Store, body []byte, docs catalog.Docs
 					entry.Tools != nil && (entry.Tools.Include != nil && !slices.Contains(entry.Tools.Include, member) || slices.Contains(entry.Tools.Exclude, member)) {
 					continue
 				}
-				if tool.CapabilityID == "" || len(tool.Uses) == 0 {
+				if tool.CapabilityID == "" || len(tool.Uses) == 0 && !api.RemoteExecutor(tool.Executor) {
 					return nil, nil, fmt.Errorf("connector %q tool %q has no capability contract", name, member)
 				}
 				projected := api.ProjectedToolName(definition.DefinitionID, definition.Version, member)

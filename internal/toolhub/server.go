@@ -286,9 +286,11 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 		DisableLocalhostProtection: nonLoopbackListen(config.Listen),
 		// Rendered as the supervisor bearer so communication-hub can list a
 		// principal's connectors without holding that principal's token.
-		ControlToken:   strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_AUTH")),
-		SpacePrincipal: strings.TrimSpace(os.Getenv("HUB_PRINCIPAL_ID")),
-		PassportRoot:   strings.TrimSpace(os.Getenv("HUB_PASSPORTS_BY_PRINCIPAL")),
+		ControlToken:     strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_AUTH")),
+		SpacePrincipal:   strings.TrimSpace(os.Getenv("HUB_PRINCIPAL_ID")),
+		PassportRoot:     strings.TrimSpace(os.Getenv("HUB_PASSPORTS_BY_PRINCIPAL")),
+		InboxRoots:       strings.TrimSpace(os.Getenv("HUB_INBOX_BY_PRINCIPAL")),
+		CommunicationURL: strings.TrimSpace(os.Getenv("HUB_COMMUNICATION_CONTROL_URL")),
 		// Tool governance sits beside the registry; the env pin exists for
 		// deployments that keep the policy document elsewhere.
 		Governance: NewGovernanceStore(api.EnvOr("HUB_TOOL_GOVERNANCE", GovernanceStorePath(os.Getenv("HUB_TOOLHUB_STORE")))),
@@ -299,6 +301,9 @@ func NewEndpointHandler(config EndpointConfig, store *Store) (http.Handler, erro
 		// The PDP's live ledger is the same governance document every other
 		// control path mutates — grants and revokes reach Decide on reload.
 		store.RightsLedger = gateway.Governance.Load
+	}
+	if os.Getenv("HUB_AGENT_EXEC_MODE") == "supervisor" {
+		gateway.acquireRuntime = gateway.acquireAgentRuntime
 	}
 	if root := strings.TrimSpace(os.Getenv("HUB_VAULTS_BY_PRINCIPAL")); root != "" {
 		// Server-owned enrollment: the rendered mount view plus the published
@@ -541,10 +546,10 @@ func agentBackendFromEnv() api.ToolBackend {
 	}
 	if container := os.Getenv("HUB_AGENT_EXEC_CONTAINER"); container != "" {
 		resolve := api.FixedAgentContainer(container)
-		return api.AgentExecBackend{Exec: api.DaemonAgentExec([]string{docker}, resolve), Scratch: api.DockerScratchExec([]string{docker}, resolve, api.DockerAgentExec([]string{docker}, resolve)), Settings: settings}
+		return api.AgentExecBackend{Exec: api.DaemonAgentExec([]string{docker}, resolve), Scratch: api.DockerScratchExec([]string{docker}, resolve, api.DockerAgentExec([]string{docker}, resolve)), Terminal: api.DockerTerminalExec([]string{docker}, resolve), Settings: settings}
 	}
 	if os.Getenv("HUB_AGENT_EXEC_MODE") == "supervisor" {
-		return api.AgentExecBackend{Exec: api.DaemonAgentExec([]string{docker}, api.ManagedAgentContainer), Scratch: api.DockerScratchExec([]string{docker}, api.ManagedAgentContainer, api.DockerAgentExec([]string{docker}, api.ManagedAgentContainer)), Settings: settings}
+		return api.AgentExecBackend{Exec: api.DaemonAgentExec([]string{docker}, api.ManagedAgentContainer), Scratch: api.DockerScratchExec([]string{docker}, api.ManagedAgentContainer, api.DockerAgentExec([]string{docker}, api.ManagedAgentContainer)), Terminal: api.DockerTerminalExec([]string{docker}, api.ManagedAgentContainer), Settings: settings}
 	}
 	return nil
 }

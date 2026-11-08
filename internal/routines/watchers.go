@@ -590,7 +590,7 @@ func (e *Engine) SettleProbe(o commodel.RoutineOccurrence, schedule commodel.Sch
 				instruction := schedule.WakePrompt
 				if schedule.AssignmentID != "" && schedule.AssignmentPlanRevision != 0 {
 					assignment, _ := e.AssignmentForWake(schedule.AssignmentID, schedule.AssignmentPlanRevision)
-					instruction = fmt.Sprintf("Standing assignment %s (revision %d), trigger job %s.\nOwner intent: %s\nSpecialist instructions: %s\nProgress: %s\nNext step: %s\nAfter handling this trigger, call assignment_get then assignment_progress with this job ID, current expected_revision, summary, optional finding and next_step; complete only when the owner's completion condition is met.", assignment.AssignmentID, assignment.Revision, admitted.ID, assignment.Intent, instruction, assignment.Progress.Summary, assignment.Progress.NextStep)
+					instruction = fmt.Sprintf("Standing assignment %s (revision %d), trigger job %s.\nOwner intent: %s\nSpecialist instructions: %s\nProgress: %s\nNext step: %s\nAfter handling this trigger, call assignment_read then assignment_edit action=progress with this job ID, current expected_revision, summary, optional finding and next_step; complete only when the owner's completion condition is met.", assignment.AssignmentID, assignment.Revision, admitted.ID, assignment.Intent, instruction, assignment.Progress.Summary, assignment.Progress.NextStep)
 				}
 				admitted.Text = instruction + "\n[untrusted watcher evidence] " + text
 				admitted.AssignmentID = schedule.AssignmentID

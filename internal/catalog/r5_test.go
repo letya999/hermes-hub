@@ -20,10 +20,10 @@ var r5Families = []string{
 	"models", "sessions", "memory",
 }
 
-// r5Members is the frozen model-tool membership per family — 91 tools total.
+// r5Members is the frozen model-tool membership per family — 92 tools total.
 var r5Members = map[string][]string{
 	"files":       {"file_list", "file_read", "file_search", "file_write", "file_edit", "file_mkdir", "file_archive", "file_remove", "project_create"},
-	"memory":      {"memory_search", "memory_card"},
+	"memory":      {"memory_search", "memory_read", "memory_card", "memory_open"},
 	"documents":   {"document_extract", "document_create", "document_edit", "document_convert", "document_remove"},
 	"media":       {"media_inspect", "media_convert", "media_generate", "media_edit", "media_fetch", "media_transcribe", "media_speak"},
 	"terminal":    {"terminal_exec", "terminal_job"},
@@ -63,8 +63,8 @@ func TestR5Vocabulary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	if Release != "17" {
-		t.Fatalf("catalog release = %q, want 17", Release)
+	if Release != "20" {
+		t.Fatalf("catalog release = %q, want 20", Release)
 	}
 	// --- families under logical names with the frozen member list
 	for _, family := range r5Families {
@@ -183,8 +183,8 @@ func TestR5Vocabulary(t *testing.T) {
 	for _, members := range r5Members {
 		total += len(members)
 	}
-	if total != 91 {
-		t.Fatalf("r5 member table holds %d tools, want 91", total)
+	if total != 93 {
+		t.Fatalf("r5 member table holds %d tools, want 93", total)
 	}
 	// --- via/executor consistency: the route must be able to serve the
 	// declared executor.

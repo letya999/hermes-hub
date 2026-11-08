@@ -69,9 +69,13 @@ func (g *Gateway) execPlatform(ctx context.Context, auth identity.Envelope, effe
 	case "tool_search":
 		return body(g.toolsList(auth, api.ArgString(arguments, "query"), api.ArgString(arguments, "name"), 0))
 	case "memory_search":
-		return body(g.memorySearch(auth, arguments))
+		return body(g.memorySearch(ctx, auth, arguments))
+	case "memory_read":
+		return body(g.memoryRead(ctx, auth, arguments))
 	case "memory_card":
 		return body(g.memoryCard(ctx, auth, api.CallCorrelationFrom(ctx), effective, arguments))
+	case "memory_open":
+		return body(g.knowledgeOpen(ctx, auth))
 	case "tool_call":
 		name := api.ArgString(arguments, "tool")
 		nested, _ := arguments["arguments"].(map[string]any)

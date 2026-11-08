@@ -180,17 +180,27 @@ func TestCIContainerFanoutPreservesEveryGate(t *testing.T) {
 	if gates.Needs != "image" || gates.Strategy.FailFast || strings.Join(gates.Strategy.Matrix.Target, ",") != "dev,prod" {
 		t.Fatal("matrix lost target or dependency", gates)
 	}
-	if strings.Join(gates.Strategy.Matrix.Gate, ",") != "smoke,native,supervisor,gateway,capabilities,network,managed,scratch,bench" {
+	if strings.Join(gates.Strategy.Matrix.Gate, ",") != "smoke,native,supervisor,gateway,capabilities,network,managed,m32,scratch,bench" {
 		t.Fatal("container contract omitted", gates.Strategy)
 	}
 	var scripts string
 	for _, step := range gates.Steps {
 		scripts += step.Run + "\n"
 	}
-	for _, required := range []string{"docker-smoke", "hermes-native-contract", "supervisor-contract", "gateway-lifecycle", "hermes-capability-contract", "managed-network-canary", "managed-supervisor-canary", "scratch-workload-canary", "TestDockerScratchExecPausedQuarantine", "connector-bench", "credential-broker-docker-check", "org.opencontainers.image.revision", "git rev-parse HEAD"} {
+	for _, required := range []string{"docker-smoke", "hermes-native-contract", "supervisor-contract", "gateway-lifecycle", "hermes-capability-contract", "managed-network-canary", "managed-supervisor-canary", `m32-lifecycle hermes-hub:test "$TARGET"`, "scratch-workload-canary", "TestDockerScratchExecPausedQuarantine", "connector-bench", "credential-broker-docker-check", "org.opencontainers.image.revision", "git rev-parse HEAD"} {
 		if !strings.Contains(scripts, required) {
 			t.Errorf("gate missing: %s", required)
 		}
+	}
+	if !strings.Contains(scripts, `docker-pull hermes-hub:test-core "$TARGET-core"`) {
+		t.Fatal("M32 script filters require the matching core image")
+	}
+	local, err := os.ReadFile("../../justfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(local), "go run ./cmd/devcheck m32-lifecycle hermes-hub:test {{target}}") != 2 {
+		t.Fatal("local prebuilt/build Docker acceptance omitted the M32 lifecycle leg")
 	}
 	aggregate := workflow.Jobs["containers"]
 	if aggregate.If != "always()" || aggregate.Needs != "container-gates" || len(aggregate.Steps) != 1 || aggregate.Steps[0].Env["RESULT"] != "${{ needs.container-gates.result }}" || aggregate.Steps[0].Run != `test "$RESULT" = success` {

@@ -9,6 +9,7 @@ import (
 	_ "time/tzdata"
 
 	"github.com/letya999/hermes-hub/internal/dns"
+	"github.com/letya999/hermes-hub/internal/locale"
 )
 
 func slackEventsHostPort(s Settings) int {
@@ -35,10 +36,10 @@ func DoctorScope(s Settings, userSecrets, orgSecrets map[string]string) []string
 		secrets[key] = value
 	}
 	if s.Model == "" {
-		issues = append(issues, "set model in agent.yaml")
+		issues = append(issues, locale.T(locale.LangOf(s.SpaceDir), "doctor.model-default"))
 	}
 	if s.ModelURL == "" {
-		issues = append(issues, "set model_url to your OpenAI-compatible /v1 endpoint")
+		issues = append(issues, locale.T(locale.LangOf(s.SpaceDir), "doctor.model-endpoint"))
 	}
 	if secrets["OPENAI_API_KEY"] == "" {
 		issues = append(issues, "set OPENAI_API_KEY (or local provider's documented nonempty value)")

@@ -68,6 +68,12 @@ func TestConnectorLinkAndConfirm(t *testing.T) {
 	if err := registry.PutGrant(grant); err != nil {
 		t.Fatal(err)
 	}
+	statusGrant := grant
+	statusGrant.GrantID, statusGrant.Operation = "grant-status-1", "status"
+	statusGrant.Confirmation = &api.Confirmation{Digest: api.ConfirmationDigest(statusGrant), IssuedBy: "operator", ConfirmedAt: time.Now()}
+	if err := registry.PutGrant(statusGrant); err != nil {
+		t.Fatal(err)
+	}
 	if err := registry.Save(storePath); err != nil {
 		t.Fatal(err)
 	}
@@ -82,15 +88,46 @@ func TestConnectorLinkAndConfirm(t *testing.T) {
 	if out != "http://127.0.0.1:8090/confirm/onb-1?t=nonce-1" {
 		t.Fatalf("link=%q", out)
 	}
+	onboarding, err := registry.OnboardingFor(aliceAuth(), "onb-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	onboarding.ConfirmationUsed = true
+	onboarding.Revision++
+	if err := registry.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Save(storePath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := captureStdout(t, func() error { return runConnector(ctx, append([]string{"link"}, base...)) }); err != nil {
+		t.Fatal(err)
+	}
+	registry, err = toolhub.Load(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	onboarding, err = registry.OnboardingFor(aliceAuth(), "onb-1")
+	if err != nil || onboarding.ConfirmationUsed || onboarding.ConfirmationNonce == "nonce-1" {
+		t.Fatalf("spent confirmation was not renewed: used=%t err=%v", onboarding.ConfirmationUsed, err)
+	}
+	onboarding.ConfirmationExpires = time.Now().Add(-time.Minute)
+	onboarding.Revision++
+	if err := registry.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Save(storePath); err != nil {
+		t.Fatal(err)
+	}
 	// --confirm finishes the flow for scripts: the onboarding is confirmed,
-	// and the link line still leads the output for the same script surface.
+	// and an expired link is renewed before confirmation.
 	out, err = captureStdout(t, func() error {
 		return runConnector(ctx, append([]string{"link"}, append(base, "--origin", "http://127.0.0.1:8090", "--confirm")...))
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(out, "http://127.0.0.1:8090/confirm/onb-1?t=nonce-1") || !strings.Contains(out, api.PhaseConfirmed) {
+	if !strings.HasPrefix(out, "http://127.0.0.1:8090/connect/onb-1?k=") || strings.Contains(out, "?t=nonce-1") || !strings.Contains(out, api.PhaseConfirmed) || strings.Contains(out, "recipe") {
 		t.Fatalf("link --confirm output=%q", out)
 	}
 	reloaded, err := toolhub.Load(storePath)
@@ -98,7 +135,7 @@ func TestConnectorLinkAndConfirm(t *testing.T) {
 		t.Fatal(err)
 	}
 	auth := aliceAuth()
-	onboarding, err := reloaded.OnboardingFor(auth, "onb-1")
+	onboarding, err = reloaded.OnboardingFor(auth, "onb-1")
 	if err != nil {
 		t.Fatal(err)
 	}

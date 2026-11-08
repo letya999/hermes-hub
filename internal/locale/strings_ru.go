@@ -2,6 +2,10 @@ package locale
 
 func init() {
 	register(LangRU, map[string]string{
+		"tools.workspace-boundary-invalid":        "Паспорт workspace отсутствует, некорректен или не активирован.",
+		"hubctl.replay-config-invalid":            "Для конфигурации replay нужна полная корректная опубликованная ревизия шести паспортов.",
+		"doctor.model-default":                    "Задайте default и routes в passports/models.yaml, затем опубликуйте через space apply.",
+		"doctor.model-endpoint":                   "Задайте endpoint выбранного сервиса в passports/models.yaml, затем опубликуйте через space apply.",
 		"supervisor.settings-invalid":             "Некорректный запрос на изменение настроек.",
 		"supervisor.settings-denied":              "Изменение настроек отклонено или не удалось опубликовать.",
 		"hubctl.space-apply-passport-right":       "Для этого изменения паспорта требуется право %s.",
@@ -468,6 +472,15 @@ func init() {
 		"page.field-optional":           "необязательное",
 		"page.opt-out":                  "Поле не требуется — запустить без него",
 		"page.viewer-title":             "Просмотр браузера",
+		"page.knowledge-title":          "Знания",
+		"page.knowledge-intro":          "Поиск по вашей личной памяти. Здесь доступен только просмотр; ссылка действует один час.",
+		"page.knowledge-search":         "Найти",
+		"page.knowledge-back":           "К поиску",
+		"page.knowledge-empty":          "Совпадений в памяти нет.",
+		"page.knowledge-forbidden":      "Эта ссылка на знания недоступна.",
+		"page.knowledge-expired":        "Срок действия ссылки истёк. Попросите агента выдать новую.",
+		"page.knowledge-bad":            "Некорректный поисковый запрос.",
+		"page.knowledge-unavailable":    "Знания временно недоступны.",
 		"page.viewer-hint":              "Вход на сайты выполняется только здесь — никогда не отправляйте пароли в чат.",
 		"page.viewer-open":              "Открыть",
 		"page.viewer-alt":               "Кадр браузера",

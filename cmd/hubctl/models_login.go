@@ -8,8 +8,10 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 
 	brokerv1 "github.com/letya999/credential-broker/api/v1"
+	"github.com/letya999/hermes-hub/internal/credentialbroker"
 	"github.com/letya999/hermes-hub/internal/passportview"
 )
 
@@ -61,12 +63,33 @@ func modelsLogin(ctx context.Context, dir, service string, control, relay models
 	}
 	instance := u.Hostname()
 	owner := eff.Header.Metadata.Space
+	var grantMap map[string]map[string]map[string]string
+	grantPath := filepath.Join(dir, "generated", "model-grants.json")
+	if raw, err := os.ReadFile(grantPath); err == nil {
+		_ = json.Unmarshal(raw, &grantMap)
+	}
+	enrollmentService := func(ref, contractID string) string {
+		var candidates []string
+		for name, refs := range grantMap {
+			other := eff.Models.Services[name]
+			if refs[ref] == nil || (contractID == "cliproxy-session" && (other.Auth.Upstream == nil || other.Auth.Upstream.Ref != ref)) || (contractID == "model-api-key" && (other.Auth.ProxyAccess == nil || other.Auth.ProxyAccess.Ref != ref)) {
+				continue
+			}
+			candidates = append(candidates, name)
+		}
+		sort.Strings(candidates)
+		if len(candidates) > 0 {
+			return candidates[0]
+		}
+		return service
+	}
 	var report modelsLoginReport
 	enroll := func(contractID, ref, kind string, out *modelsLoginGrant) (string, error) {
+		requestService := enrollmentService(ref, contractID)
 		request, err := control.CreateRequest(ctx, brokerv1.CreateRequest{
 			ContractID: contractID, ContractRevision: 1, ConnectionID: ref,
-			OnboardingID:   "models-login-" + service + "-" + kind,
-			IdempotencyKey: "models-login:" + service + ":" + kind, OwnerKind: "user",
+			OnboardingID:   "models-login-" + requestService + "-" + kind,
+			IdempotencyKey: "models-login:" + requestService + ":" + kind, OwnerKind: "user",
 		})
 		if err != nil {
 			return "", fmt.Errorf("models login: %s request: %w", kind, err)
@@ -78,11 +101,16 @@ func modelsLogin(ctx context.Context, dir, service string, control, relay models
 		return request.CredentialID, nil
 	}
 	grant := func(credentialID, contractID, kind, binding string, client modelsBrokerClient, out *modelsLoginGrant) error {
+		idempotencyKey := "models-login:grant:" + service + ":" + kind
+		if kind == "proxy_access_relay" {
+			// A prior unscoped grant must not conflict with the new binding.
+			idempotencyKey += ":" + binding
+		}
 		g, err := client.Grant(ctx, credentialID, brokerv1.GrantRequest{
 			ContractID: contractID, ContractRevision: 1,
 			PrincipalID: owner, ContextID: owner, RuntimeID: owner,
 			BindingID: binding, WorkloadID: binding,
-			Execution: "dedicated", IdempotencyKey: "models-login:grant:" + service + ":" + kind,
+			Execution: "dedicated", IdempotencyKey: idempotencyKey,
 		})
 		if err != nil {
 			return fmt.Errorf("models login: %s grant: %w", kind, err)
@@ -107,17 +135,12 @@ func modelsLogin(ctx context.Context, dir, service string, control, relay models
 		if err := grant(keyCred, "model-api-key", "proxy_access", instance+"-key", control, &report.ProxyAccess.Init); err != nil {
 			return report, err
 		}
-		if err := grant(keyCred, "model-api-key", "proxy_access_relay", "model-relay-"+service, relay, &report.ProxyAccess.Relay); err != nil {
+		if err := grant(keyCred, "model-api-key", "proxy_access_relay", credentialbroker.ModelRelayBinding(owner, service), relay, &report.ProxyAccess.Relay); err != nil {
 			return report, err
 		}
 	}
 	if report.Session.GrantID == "" || report.ProxyAccess.Init.GrantID == "" || report.ProxyAccess.Relay.GrantID == "" {
 		return report, nil
-	}
-	var grantMap map[string]map[string]map[string]string
-	grantPath := filepath.Join(dir, "generated", "model-grants.json")
-	if raw, err := os.ReadFile(grantPath); err == nil {
-		_ = json.Unmarshal(raw, &grantMap)
 	}
 	if grantMap == nil {
 		grantMap = map[string]map[string]map[string]string{}

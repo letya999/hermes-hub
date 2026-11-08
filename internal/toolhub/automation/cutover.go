@@ -1,7 +1,6 @@
 package automation
 
 import (
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -21,10 +20,14 @@ func ValidateLegacySpool(root string) error {
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return errors.New("automation: legacy spool unavailable or unsafe")
 	}
-	if _, err := os.Lstat(filepath.Join(root, "records.activated")); err == nil {
-		return errors.New("automation: unsupported activated legacy spool")
-	} else if !os.IsNotExist(err) {
+	bindings := legacyBindings{root: root}
+	db, err := bindings.database()
+	if err != nil {
 		return err
+	}
+	activated := db != nil
+	if db != nil {
+		_ = db.Close()
 	}
 	if info, err := os.Lstat(filepath.Join(root, "events")); err == nil {
 		if info.IsDir() {
@@ -41,13 +44,13 @@ func ValidateLegacySpool(root string) error {
 	for _, name := range []string{"schedules", "occurrences", "assignments", "watchers", "digests", "event-state"} {
 		path := filepath.Join(root, name)
 		info, err := os.Lstat(path)
-		if os.IsNotExist(err) {
+		if os.IsNotExist(err) && !activated {
 			continue
 		}
-		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		if !activated && (err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0) {
 			return errors.New("automation: unsafe legacy automation records")
 		}
-		entries, err := os.ReadDir(path)
+		entries, err := bindings.entries(path)
 		if err != nil {
 			return err
 		}
@@ -58,28 +61,23 @@ func ValidateLegacySpool(root string) error {
 	for _, name := range []string{"pending", "running"} {
 		path := filepath.Join(root, name)
 		info, err := os.Lstat(path)
-		if os.IsNotExist(err) {
+		if os.IsNotExist(err) && !activated {
 			continue
 		}
-		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		if !activated && (err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0) {
 			return errors.New("automation: unsafe legacy job directory")
 		}
-		entries, err := os.ReadDir(path)
+		entries, err := bindings.entries(path)
 		if err != nil {
 			return err
 		}
 		for _, entry := range entries {
-			if !strings.HasSuffix(entry.Name(), ".json") {
+			if !strings.HasSuffix(entry, ".json") {
 				continue
 			}
-			jobPath := filepath.Join(path, entry.Name())
-			info, err := os.Lstat(jobPath)
-			if err != nil || !info.Mode().IsRegular() || info.Size() > 1<<20 {
-				return errors.New("automation: unsafe legacy job record")
-			}
-			body, err := os.ReadFile(jobPath) // #nosec G703 -- bounded read-only legacy spool preflight
+			jobPath := filepath.Join(path, entry)
 			var job commodel.Job
-			if err != nil || json.Unmarshal(body, &job) != nil {
+			if bindings.readJSON(jobPath, &job) != nil {
 				return errors.New("automation: unsafe legacy job record")
 			}
 			if job.Trigger == "cron" || job.AssignmentID != "" {

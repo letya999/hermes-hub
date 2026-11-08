@@ -124,7 +124,7 @@ func TestStatusReportsKnowledgeUIUnavailable(t *testing.T) {
 	out := captureOutput(t, func() error {
 		return run(ctx, []string{"doctor", "--dir", dir})
 	})
-	if !strings.Contains(out, "Knowledge UI: unavailable") || strings.Contains(out, "http://localhost:8443") {
+	if !strings.Contains(out, "OpenKnowledge editor: unavailable") || !strings.Contains(out, "memory_open") || strings.Contains(out, "http://localhost:8443") {
 		t.Fatalf("doctor advertised the retired Knowledge UI edge:\n%s", out)
 	}
 }

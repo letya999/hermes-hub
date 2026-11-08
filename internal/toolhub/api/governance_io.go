@@ -285,7 +285,7 @@ func SaveGovernanceLocked(path string, g *Governance) error {
 	if err != nil {
 		return err
 	}
-	return os.Rename(name, path)
+	return replaceGovernanceFile(name, path)
 }
 
 // LoadOrSeedGovernance reads the document, or seeds + persists it when the

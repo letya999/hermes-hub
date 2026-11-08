@@ -120,6 +120,11 @@ func TestRunCliproxyMaterializeEndToEnd(t *testing.T) {
 	if err := Run([]string{"cliproxy-materialize"}); err != nil {
 		t.Fatal(err)
 	}
+	// The init companion is recreated by space apply. Its first output is
+	// deliberately read-only, so the next materialization must replace it.
+	if err := Run([]string{"cliproxy-materialize"}); err != nil {
+		t.Fatalf("second materialization: %v", err)
+	}
 	session, err := os.ReadFile(filepath.Join(auths, "session.json"))
 	if err != nil || !strings.Contains(string(session), "SENTINEL") {
 		t.Fatalf("session not delivered: %v", err)
@@ -128,7 +133,7 @@ func TestRunCliproxyMaterializeEndToEnd(t *testing.T) {
 	if err != nil || !strings.Contains(string(rendered), "SENTINEL-KEY") {
 		t.Fatalf("config not rendered: %v %s", err, rendered)
 	}
-	if releases != 2 {
+	if releases != 4 {
 		t.Fatalf("leases released: %d", releases)
 	}
 }

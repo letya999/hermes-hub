@@ -136,7 +136,7 @@ func cliproxyMaterialize(ctx context.Context, plane cliproxyPlane, args cliproxy
 	if err := os.MkdirAll(args.AuthsDir, 0700); err != nil {
 		return fmt.Errorf("cliproxy materialize: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(args.AuthsDir, "session.json"), session, 0400); err != nil {
+	if err := replaceReadOnlyMaterial(filepath.Join(args.AuthsDir, "session.json"), session); err != nil {
 		return fmt.Errorf("cliproxy materialize: %w", err)
 	}
 	key, err := plane.Env(ctx, keyGrant, "MODEL_API_KEY")
@@ -173,8 +173,46 @@ func cliproxyMaterialize(ctx context.Context, plane cliproxyPlane, args cliproxy
 	if err := os.MkdirAll(args.CfgDir, 0700); err != nil {
 		return fmt.Errorf("cliproxy materialize: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(args.CfgDir, "config.yaml"), out, 0400); err != nil {
+	if err := replaceReadOnlyMaterial(filepath.Join(args.CfgDir, "config.yaml"), out); err != nil {
 		return fmt.Errorf("cliproxy materialize: %w", err)
+	}
+	return nil
+}
+
+func replaceReadOnlyMaterial(path string, body []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), ".cliproxy-materialize-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err = f.Write(body); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err = f.Chmod(0400); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err = f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err = f.Close(); err != nil {
+		return err
+	}
+	if old, statErr := os.Lstat(path); statErr == nil {
+		if !old.Mode().IsRegular() {
+			return errors.New("existing materialized file is not regular")
+		}
+		if err := os.Chmod(path, 0600); err != nil {
+			return err
+		}
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return statErr
+	}
+	if err := os.Rename(f.Name(), path); err != nil {
+		_ = os.Chmod(path, 0400)
+		return err
 	}
 	return nil
 }

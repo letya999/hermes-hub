@@ -1,6 +1,6 @@
 ---
 description: "Frozen M30 requirements: six passports as the imperative render/spawn/admission input, normative body schemas, agent capability grants (PDP/PEP), effect classes and live acceptance."
-last_verified: "2026-11-02"
+last_verified: "2026-11-08"
 ---
 
 # SPEC-0092: Imperative passports and agent capability grants
@@ -310,9 +310,17 @@ Tool requirements: every toolset member declares `requires:
 - R2.1: Catalog release 4 ships the capability vocabulary above with
   operation semantics; tool-level ids become toolset `actions`.
 - R2.2: One PDP (`toolhub` grants service) answers `Decide(envelope, cap,
-  op, scope)` from ceilings + ledger + epoch; every PEP in the table calls it.
+  op, scope)` from ceilings + ledger + epoch; every PEP in the table calls it
+  except the bounded operator apply effect in R2.4.
 - R2.3: `grants.yaml` is compiled from ceilings ∩ ledger; templates never
   grant; an empty allow for an admitted space is a compile error.
+- R2.4 (2026-11-08): While an authenticated `space apply` journal is in its
+  effects phase, the supervisor may respawn only the journal's owner runtime
+  when the request carries that exact revision and the published pointer names
+  the old or new revision. The ToolHub PDP denies ordinary calls while the
+  journal exists; this bounded operator effect must not depend on that denied
+  call. A missing or mismatched journal uses the normal `agents.restart_self`
+  decision.
 
 ### R3. Stack
 - R3.1: `stack.yaml` has `identity` and `services: {instance: {mode}}`;

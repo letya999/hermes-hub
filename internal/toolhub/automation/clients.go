@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/commodel"
+	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/routines"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
@@ -26,13 +27,52 @@ type HTTPSupervisorClient struct {
 	JobPath string
 }
 
+func (c *HTTPSupervisorClient) AdmissionEpoch(ctx context.Context, auth identity.Envelope) (uint64, error) {
+	if c.JobPath == "/v1/execute" {
+		return 0, nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(c.URL, "/")+"/v1/holds", nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	response, err := (&http.Client{Timeout: 3 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}).Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer response.Body.Close()
+	var holds []struct {
+		Principal string `json:"principal_id"`
+		Context   string `json:"context_id"`
+		Active    bool   `json:"active"`
+		Epoch     uint64 `json:"epoch"`
+	}
+	decoder := json.NewDecoder(io.LimitReader(response.Body, 4<<20))
+	if response.StatusCode != http.StatusOK || decoder.Decode(&holds) != nil || decoder.Decode(new(any)) != io.EOF {
+		return 0, errors.New("automation: admission authority unavailable")
+	}
+	var epoch uint64
+	found := false
+	for _, hold := range holds {
+		if hold.Principal != auth.PrincipalID || hold.Context != auth.ContextID {
+			continue
+		}
+		if found || hold.Active {
+			return 0, errUnauthorized
+		}
+		found, epoch = true, hold.Epoch
+	}
+	return epoch, nil
+}
+
 func (c *HTTPSupervisorClient) RunJob(ctx context.Context, key string, job commodel.Job) (hubruntime.ExecuteResponse, error) {
 	body, err := json.Marshal(hubruntime.ExecuteRequest{
 		Envelope: job.Envelope, OperationalEpoch: job.OperationalEpoch,
 		JobID: job.ID, OrganizationID: job.OrganizationID, UserID: job.UserID,
 		ActorID: job.ActorID, ScopeID: job.ScopeID, Channel: job.Channel,
 		Trigger: job.Trigger, IdempotencyKey: key, Text: job.Text,
-		InboundID: job.InboundID,
+		InboundID: job.InboundID, Sensitive: job.Sensitive, Untrusted: job.Untrusted,
+		Assignment: job.AssignmentID != "", Probe: job.Probe,
 	})
 	if err != nil {
 		return hubruntime.ExecuteResponse{}, err
@@ -50,6 +90,7 @@ func (c *HTTPSupervisorClient) RunJob(ctx context.Context, key string, job commo
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("Accept", hubruntime.RunStreamContentType)
 	resp, err := (&http.Client{Timeout: hubruntime.RunBudget() + time.Minute}).Do(req)
 	if err != nil {
 		return hubruntime.ExecuteResponse{}, err
@@ -58,12 +99,37 @@ func (c *HTTPSupervisorClient) RunJob(ctx context.Context, key string, job commo
 	if resp.StatusCode != http.StatusOK && !(path == "/v1/execute" && resp.StatusCode == http.StatusInternalServerError) {
 		return hubruntime.ExecuteResponse{}, fmt.Errorf("automation: supervisor job status %d", resp.StatusCode)
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024+1))
-	if err != nil || len(data) > 2*1024*1024 {
-		return hubruntime.ExecuteResponse{}, errors.New("automation: supervisor response exceeds limit")
-	}
 	var result hubruntime.ExecuteResponse
-	if json.Unmarshal(data, &result) != nil || result.JobID != job.ID {
+	if resp.StatusCode == http.StatusOK && resp.Header.Get("Content-Type") == hubruntime.RunStreamContentType {
+		var runID, sessionID string
+		if err := hubruntime.ReadRunStream(resp.Body, func(event hubruntime.ExecuteResponse) error {
+			if event.JobID != job.ID || runID != "" && event.RunID != "" && event.RunID != runID ||
+				sessionID != "" && event.SessionID != "" && event.SessionID != sessionID {
+				return errors.New("automation: invalid supervisor stream")
+			}
+			if event.RunID != "" {
+				runID = event.RunID
+			}
+			if event.SessionID != "" {
+				sessionID = event.SessionID
+			}
+			if commodel.TerminalStatus(event.Status) {
+				result = event
+			}
+			return nil
+		}); err != nil {
+			return hubruntime.ExecuteResponse{}, err
+		}
+	} else {
+		data, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024+1))
+		if err != nil || len(data) > 2*1024*1024 {
+			return hubruntime.ExecuteResponse{}, errors.New("automation: supervisor response exceeds limit")
+		}
+		if json.Unmarshal(data, &result) != nil {
+			return hubruntime.ExecuteResponse{}, errors.New("automation: invalid supervisor result")
+		}
+	}
+	if result.JobID != job.ID {
 		return hubruntime.ExecuteResponse{}, errors.New("automation: invalid supervisor result")
 	}
 	if result.Status == "" && strings.TrimSpace(result.Text) != "" {
@@ -77,7 +143,7 @@ func (c *HTTPSupervisorClient) RunJob(ctx context.Context, key string, job commo
 
 func (c *HTTPSupervisorClient) RunScript(ctx context.Context, o commodel.RoutineOccurrence) ([]string, error) {
 	request := hubruntime.ScriptRequest{ExecuteRequest: hubruntime.ExecuteRequest{
-		Envelope: o.Job.Envelope, JobID: o.Job.ID, OrganizationID: o.Job.OrganizationID,
+		Envelope: o.Job.Envelope, OperationalEpoch: o.Job.OperationalEpoch, JobID: o.Job.ID, OrganizationID: o.Job.OrganizationID,
 		UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID,
 		Channel: o.Job.Channel, Trigger: o.Job.Trigger, IdempotencyKey: o.Job.IdempotencyKey,
 		Text: o.Job.Text,
@@ -87,7 +153,7 @@ func (c *HTTPSupervisorClient) RunScript(ctx context.Context, o commodel.Routine
 
 func (c *HTTPSupervisorClient) ProbeScript(ctx context.Context, o commodel.RoutineOccurrence, src, input string, mountSpace bool, needs []string) (string, error) {
 	request := hubruntime.ScriptRequest{ExecuteRequest: hubruntime.ExecuteRequest{
-		Envelope: o.Job.Envelope, JobID: o.Job.ID, OrganizationID: o.Job.OrganizationID,
+		Envelope: o.Job.Envelope, OperationalEpoch: o.Job.OperationalEpoch, JobID: o.Job.ID, OrganizationID: o.Job.OrganizationID,
 		UserID: o.Job.UserID, ActorID: o.Job.ActorID, ScopeID: o.Job.ScopeID,
 		Channel: o.Job.Channel, Trigger: o.Job.Trigger, IdempotencyKey: o.Job.IdempotencyKey,
 		Text: src,

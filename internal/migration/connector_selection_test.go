@@ -83,7 +83,7 @@ func TestPassportRemovalRevokesConnectorSelection(t *testing.T) {
 	for _, row := range []struct{ id, name string }{{"github", "alpha_read"}, {"gitlab", "beta_read"}} {
 		def := api.ToolDefinition{Schema: api.SchemaVersion, DefinitionID: row.id, Version: "1.0.0", Transport: api.RemoteMCP,
 			Source:      api.DefinitionSource{URL: "https://api.example.com/mcp", TLSMode: "required"},
-			Tools:       []api.ToolSpec{{Name: row.name, Effect: api.ReadEffect, CapabilityID: row.id + ".read", Requires: []string{"tools.use"}, Uses: []api.CapabilityUse{{Action: "read", Resource: "remote"}}}},
+			Tools:       []api.ToolSpec{{Name: row.name, Effect: api.ReadEffect, CapabilityID: row.id + ".read", Executor: "connector:" + row.id, Requires: []string{"tools.use"}}},
 			Credentials: []api.CredentialInput{{Name: "API_TOKEN", Required: true}},
 			Workload:    api.WorkloadPolicy{Class: api.PerUser, Rationale: "fixture"},
 			Execution:   api.ExecutionPolicy{TimeoutSeconds: 30, OutputBytes: 8192, CPUMillis: 500, MemoryMiB: 256, MaxPIDs: 32, Egress: []string{"api.example.com"}},

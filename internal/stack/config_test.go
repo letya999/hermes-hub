@@ -1216,6 +1216,24 @@ func TestInfraRenderOwnsSharedNetwork(t *testing.T) {
 	}
 }
 
+func TestToolHubMountsRuntimeBrokerSigningKeyReadOnly(t *testing.T) {
+	s := Settings{Schema: 1, Environment: "dev", User: "alice", Model: "m", ModelURL: "http://cliproxy:8317/v1", Timezone: "UTC", Tools: testTools("telegram"), Ingress: testIngress("telegram"), BrowserPort: 6080, OAuthPort: 8000}
+	toolhub := Compose(s, "/source", "/space")["services"].(M)["toolhub"].(M)
+	if toolhub["environment"].(M)["HUB_CREDENTIAL_BROKER_RUNTIME_KEY_FILE"] != "/run/broker-runtime-secrets/runtime.private" {
+		t.Fatal("ToolHub runtime broker identity points outside its mounted key")
+	}
+	found := false
+	for _, raw := range toolhub["volumes"].([]any) {
+		mount := raw.(M)
+		if mount["target"] == "/run/broker-runtime-secrets" {
+			found = mount["source"] == "broker-secrets-runtime" && mount["read_only"] == true
+		}
+	}
+	if !found {
+		t.Fatal("ToolHub lost its read-only runtime broker key volume")
+	}
+}
+
 // The broker store is a singleton per environment: a dev render must never
 // silently attach the prod credential volume. Only the explicit
 // HUB_BROKER_STATE_VOLUME override may move it (the pre-split migration path).
@@ -1270,8 +1288,8 @@ func TestRenderMountsImmutableEffectiveConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal("effective config not materialized:", err)
 	}
-	if !strings.Contains(string(effective), "http://toolhub:8090/mcp") {
-		t.Fatalf("materialized config missing toolhub server: %q", effective)
+	if !strings.Contains(string(effective), managedToolHubProxyEndpoint) {
+		t.Fatal("materialized config missing managed ToolHub proxy")
 	}
 	// The immutable config mount is a runtime mount — under managed
 	// supervision it lives in the spawn contract, not compose.

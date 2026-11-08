@@ -5,18 +5,12 @@ import (
 	"fmt"
 	brokeridentity "github.com/letya999/credential-broker/identity"
 	"net/url"
-	"os"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
-
-	"gopkg.in/yaml.v3"
 )
 
-// ModelRegistry is the merged view of the model/provider layer declared in
-// models.yaml files: shared under spaces/, then the organization space, then
-// the owner's own space — later layers win on the same keys.
+// ModelRegistry is the relay projection of one published models passport.
 type ModelRegistry struct {
 	RuntimeModel string                   `yaml:"runtime_model,omitempty"`
 	Providers    map[string]ModelProvider `yaml:"providers"`
@@ -111,71 +105,14 @@ func validateProviderURL(raw string) error {
 	return nil
 }
 
-// LoadModelRegistry merges spaces/models.yaml, spaces/<org>/models.yaml and
-// spaces/<user>/models.yaml for the space rooted at dir.
-func LoadModelRegistry(dir string, s Settings) (*ModelRegistry, error) {
-	if passportRevision(dir) {
-		// Managed space: the published models doc is the sole registry
-		// authority — retired spaces/models.yaml layers never merge.
-		reg := &ModelRegistry{Providers: map[string]ModelProvider{}, Models: map[string]ModelEntry{}}
-		layer, err := passportRegistryLayer(dir, "")
-		if err != nil {
-			return nil, err
-		}
-		reg.Providers, reg.Models, reg.Switch = layer.Providers, layer.Models, layer.Switch
-		return reg, reg.Validate()
+// LoadModelRegistry reads only the validated published models passport.
+func LoadModelRegistry(dir string, _ Settings) (*ModelRegistry, error) {
+	layer, err := passportRegistryLayer(dir, "")
+	if err != nil {
+		return nil, err
 	}
-	return LoadModelRegistryBase(dir, s)
-}
-
-// LoadModelRegistryBase is the layered legacy merge without the published
-// passport — the intent view migration re-derives model layers from.
-func LoadModelRegistryBase(dir string, s Settings) (*ModelRegistry, error) {
-	reg := &ModelRegistry{Providers: map[string]ModelProvider{}, Models: map[string]ModelEntry{}}
-	root := filepath.Dir(filepath.Clean(dir))
-	if filepath.Base(root) != "spaces" {
-		return reg, nil
-	}
-	paths := []string{filepath.Join(root, "models.yaml")}
-	if s.Organization != "" {
-		paths = append(paths, filepath.Join(root, s.Organization, "models.yaml"))
-	}
-	paths = append(paths, filepath.Join(dir, "models.yaml"))
-	for _, path := range paths {
-		layer, err := readModelRegistry(path)
-		if err != nil {
-			return nil, err
-		}
-		for name, p := range layer.Providers {
-			reg.Providers[name] = p
-		}
-		for name, m := range layer.Models {
-			reg.Models[name] = m
-		}
-		if reg.Switch == nil {
-			reg.Switch = map[string]string{}
-		}
-		for name, level := range layer.Switch {
-			reg.Switch[name] = level
-		}
-	}
+	reg := &ModelRegistry{Providers: layer.Providers, Models: layer.Models, Switch: layer.Switch}
 	return reg, reg.Validate()
-}
-
-func readModelRegistry(path string) (modelRegistryYAML, error) {
-	var layer modelRegistryYAML
-	b, err := os.ReadFile(path) // #nosec G304 -- operator-controlled registry path
-	if os.IsNotExist(err) {
-		return layer, nil
-	} else if err != nil {
-		return layer, err
-	}
-	d := yaml.NewDecoder(strings.NewReader(string(b)))
-	d.KnownFields(true)
-	if err := d.Decode(&layer); err != nil {
-		return layer, fmt.Errorf("%s: %w", filepath.Base(path), err)
-	}
-	return layer, nil
 }
 
 // Validate applies the same provider/model contract at render and relay reload.

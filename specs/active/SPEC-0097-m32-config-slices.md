@@ -1,6 +1,6 @@
 ---
 description: Frozen issue-sized contracts for remaining M32 passport configuration work.
-last_verified: 2026-11-05
+last_verified: 2026-11-07
 ---
 # SPEC-0097: M32 configuration slices
 
@@ -44,7 +44,8 @@ External effect failure is visible and governed by C4 before readiness is claime
 
 Caller/fixture/docs updates belong to the same issue. Tool contract changes
 include descriptions, prompt_contract, docs/tools + docs/routines and an immutable
-catalog bump; rebind/respawn synthetic managed spaces when validating projection.
+catalog bump; rebind/respawn the existing `artem_main` and `artem_two`
+managed spaces when validating projection. Fault tests use isolated data.
 User-facing text uses en/ru/kk/es locale keys; diagnostics allowlist safe fields.
 Run scoped regressions, just check and applicable AGENTS.md gates.
 #526 proves two-user live behavior; #527 verifies final absence of retired paths.

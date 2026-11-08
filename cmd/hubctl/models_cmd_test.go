@@ -140,7 +140,7 @@ func TestRunModelsLoginEndToEnd(t *testing.T) {
 	if err := json.NewDecoder(r).Decode(&report); err != nil {
 		t.Fatalf("operator report not emitted: %v", err)
 	}
-	if report.Session.GrantID != "g-cliproxy-google-1" || report.ProxyAccess.Init.GrantID != "g-cliproxy-google-1-key" || report.ProxyAccess.Relay.GrantID != "g-model-relay-google-pro-1" {
+	if report.Session.GrantID != "g-cliproxy-google-1" || report.ProxyAccess.Init.GrantID != "g-cliproxy-google-1-key" || report.ProxyAccess.Relay.GrantID != "g-model-relay-d84bbb323fab1aed32ec71ad" {
 		t.Fatalf("grant report missing: %+v", report)
 	}
 	// Every call presents the space identity; grant calls pin the consumer's
@@ -158,9 +158,9 @@ func TestRunModelsLoginEndToEnd(t *testing.T) {
 		}
 	}
 	want := map[string]string{
-		"cliproxy-google-1":        "cliproxy-materialize",
-		"cliproxy-google-1-key":    "cliproxy-materialize",
-		"model-relay-google-pro-1": "model-relay",
+		"cliproxy-google-1":                    "cliproxy-materialize",
+		"cliproxy-google-1-key":                "cliproxy-materialize",
+		"model-relay-d84bbb323fab1aed32ec71ad": "model-relay",
 	}
 	for binding, policy := range want {
 		if policyByBinding[binding] != policy {
@@ -176,7 +176,7 @@ func TestRunModelsLoginEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	refs := grants["google-pro-1"]
-	if refs["google-one-1"]["init"] != "g-cliproxy-google-1" || refs["cliproxy-google-1"]["init"] != "g-cliproxy-google-1-key" || refs["cliproxy-google-1"]["relay"] != "g-model-relay-google-pro-1" {
+	if refs["google-one-1"]["init"] != "g-cliproxy-google-1" || refs["cliproxy-google-1"]["init"] != "g-cliproxy-google-1-key" || refs["cliproxy-google-1"]["relay"] != "g-model-relay-d84bbb323fab1aed32ec71ad" {
 		t.Fatalf("grant map must carry the per-consumer grant ids by ref: %s", raw)
 	}
 }

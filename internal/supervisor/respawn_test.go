@@ -67,6 +67,19 @@ func TestRespawnReplacesIdleRuntime(t *testing.T) {
 	if leases != 0 || state == Busy {
 		t.Fatalf("respawn left a phantom lease: state=%s leases=%d", state, leases)
 	}
+	mu.Unlock()
+	// Publication owns this effect locally while the journal blocks the PDP.
+	t.Setenv("HUB_TOOLHUB_URL_PATTERN", "http://127.0.0.1:1")
+	if applied, err := m.ReconcileSettingsRuntime("alice"); err != nil || !applied {
+		t.Fatalf("local publication runtime effect: applied=%t err=%v", applied, err)
+	}
+	mu.Lock()
+	if runs != 3 {
+		t.Fatalf("publication did not replace runtime: runs=%d", runs)
+	}
+	if _, err := m.ReconcileSettingsRuntime("../alice"); err == nil {
+		t.Fatal("invalid publication principal accepted")
+	}
 }
 
 // A busy runtime keeps serving its leases: the respawn must not destroy the

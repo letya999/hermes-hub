@@ -49,7 +49,7 @@ func (s *Store) OperationForRequestKey(auth identity.Envelope, intent, target st
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, op := range s.operations {
-		if op.RequestKey != key || op.PrincipalID != auth.PrincipalID || op.SupersededBy != "" {
+		if op.RequestKey != key || op.PrincipalID != auth.PrincipalID || op.ContextID != auth.ContextID || op.RuntimeID != auth.RuntimeID || op.PolicyVersion != auth.PolicyVersion || op.SupersededBy != "" {
 			continue
 		}
 		op.Steps = slices.Clone(op.Steps)
@@ -170,17 +170,28 @@ type ErrAmbiguousTarget struct {
 	Candidates []api.OperationCandidate
 }
 
-// RequireConnectorTool gates one connector_* tool on the caller's admitted
-// set — bundle profiles only; legacy per-op grants cannot mint these names.
-func (s *Store) RequireConnectorTool(auth identity.Envelope, tool string) error {
-	if !slices.Contains(api.ConnectorTools, tool) {
+// RequireConnectorTool admits an exact selected tool or its legacy bundle verb;
+// legacy per-op grants alone cannot mint connector tools.
+func (s *Store) RequireConnectorTool(auth identity.Envelope, tool, legacyTool string, args map[string]any) error {
+	if tool != "connector_edit" && !slices.Contains(api.ConnectorTools, tool) {
 		return fmt.Errorf("%w: unknown connector tool", api.ErrInvalid)
+	}
+	if auth.CapabilityProfile != "" {
+		if err := s.Reload(); err != nil {
+			return err
+		}
+		s.mu.RLock()
+		_, _, err := s.managedToolLocked(auth, tool, args, false)
+		s.mu.RUnlock()
+		if err == nil {
+			return nil
+		}
 	}
 	allowed, err := s.AllowedControlOperations(auth)
 	if err != nil {
 		return err
 	}
-	if !allowed[tool] {
+	if !allowed[legacyTool] {
 		return fmt.Errorf("%w: connector tool", api.ErrUnauthorized)
 	}
 	return nil

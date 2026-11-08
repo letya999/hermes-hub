@@ -42,10 +42,10 @@ func TestSearchToolEvidenceRefs(t *testing.T) {
 	}
 	g := &Gateway{Vaults: resolver}
 	auth := identity.Envelope{PrincipalID: "alice", Environment: "dev"}
-	if _, err := g.memorySearch(auth, map[string]any{"query": "earl grey"}); err != nil {
+	if _, err := g.memorySearch(t.Context(), auth, map[string]any{"query": "earl grey"}); err != nil {
 		t.Fatalf("warm: %v", err)
 	}
-	out, err := g.memorySearch(auth, map[string]any{"query": "earl grey"})
+	out, err := g.memorySearch(t.Context(), auth, map[string]any{"query": "earl grey"})
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -61,5 +61,40 @@ func TestSearchToolEvidenceRefs(t *testing.T) {
 	}
 	if out["status"] != "ok" {
 		t.Fatalf("status %v", out["status"])
+	}
+}
+
+func TestReadToolExactOwnSearchHit(t *testing.T) {
+	vaults, passports := t.TempDir(), t.TempDir()
+	searchVaultFixture(t, vaults, passports, "alice", "dev")
+	writeMemoryPassportEnv(t, passports, "bob", "dev", true)
+	if err := vault.Ensure(filepath.Join(vaults, "bob")); err != nil {
+		t.Fatal(err)
+	}
+	resolver, err := NewVaultResolver(vaults, passports)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := &Gateway{Vaults: resolver}
+	auth := identity.Envelope{PrincipalID: "alice", Environment: "dev"}
+	searched, err := g.memorySearch(t.Context(), auth, map[string]any{"query": "earl grey"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hits, ok := searched["hits"].([]map[string]any)
+	if !ok || len(hits) != 1 {
+		t.Fatalf("search hits=%d", len(hits))
+	}
+	id, _ := hits[0]["id"].(string)
+	read, err := g.memoryRead(t.Context(), auth, map[string]any{"id": id})
+	if err != nil || read["status"] == "unavailable" || read["status"] == "not_found" {
+		t.Fatalf("read status=%v err=%v", read["status"], err)
+	}
+	hit, ok := read["hit"].(map[string]any)
+	if !ok || hit["text"] != "we picked the earl grey supplier" || hit["evidence"] != hits[0]["evidence"] {
+		t.Fatalf("read did not match exact search hit")
+	}
+	if denied, err := g.memoryRead(t.Context(), identity.Envelope{PrincipalID: "bob", Environment: "dev"}, map[string]any{"id": id}); err != nil || denied["status"] != "not_found" {
+		t.Fatalf("foreign ID result=%v err=%v", denied["status"], err)
 	}
 }

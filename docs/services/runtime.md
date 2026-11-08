@@ -1,6 +1,6 @@
 ---
 description: hub-runtime — the agent container process and its relay modes (serve/idle/health, model/toolhub/egress/control relays).
-last_verified: 2026-11-06
+last_verified: 2026-11-07
 ---
 
 # hub-runtime
@@ -45,6 +45,15 @@ the runtime; registration goes through ToolHub onboarding only. Rendered and
 spawned runtimes also mount `global_skills_dir` (default `config/skills`)
 read-only at `/opt/hub/skills` — without it the onboarding skill is
 invisible and installs regress to uncontrolled terminal/git operations.
+
+For managed runs the pinned Hermes MCP URL is the runtime's local `/mcp`
+route. The runtime forwards it to ToolHub's stateless `/mcp-run` route through
+the existing per-space relay, so a connection from an earlier turn cannot
+retain that turn's correlation headers. The runtime stamps the job/run pair
+returned by Hermes admission. ToolHub verifies
+that pair against the supervisor before admitting private memory. A caller's
+job/run headers are discarded, and an unconfirmed run keeps its binding
+until observation reports a terminal state.
 
 Interrupted runs keep artifact attribution via the
 `/state/runstarts/<runID>` marker whose mtime preserves the artifact scan

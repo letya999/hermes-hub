@@ -10,6 +10,31 @@ import (
 
 var testNow = time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC)
 
+func TestReadExactIDKeepsAudienceHistoryAndEvidence(t *testing.T) {
+	var idx Index
+	idx.Add(Doc{ID: "own", Path: "memory/daily/2026-04-20.md", Line: 2, EndLine: 4,
+		Audience: "private", Provenance: "untrusted", Text: strings.Repeat("a", 300)})
+	idx.Add(Doc{ID: "removed", Path: "memory/cards/removed.md", Line: 1, EndLine: 2,
+		Audience: "private", Superseded: true, Text: "old"})
+	if hit, ok := idx.Read("own", "private", false); !ok || len(hit.Doc.Text) != 300 ||
+		hit.Evidence == "" || !hit.Untrusted {
+		t.Fatalf("exact read lost body/evidence/provenance: %+v %t", hit, ok)
+	}
+	for _, tc := range []struct {
+		id, audience string
+		history      bool
+	}{
+		{"own", "group", false}, {"missing", "private", false}, {"removed", "private", false},
+	} {
+		if _, ok := idx.Read(tc.id, tc.audience, tc.history); ok {
+			t.Fatalf("read admitted %q for %q history=%t", tc.id, tc.audience, tc.history)
+		}
+	}
+	if hit, ok := idx.Read("removed", "private", true); !ok || hit.Doc.Text != "old" {
+		t.Fatalf("explicit own history read = %+v, %t", hit, ok)
+	}
+}
+
 // SPEC-0085 R3.1: tokenization is pure-Go unicode word splitting — RU and EN
 // both produce query-comparable lowercase tokens, punctuation and markup
 // break words, digits stay attached.

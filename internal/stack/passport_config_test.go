@@ -64,6 +64,29 @@ func writeSixPassportsInEnvironment(t *testing.T, dir, space, environment, rev s
 	}
 }
 
+func TestManagedWebPolicyFromConfigPassport(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "spaces", "alice")
+	rev := "r-0123456789abcdef"
+	writeSixPassports(t, dir, "alice", rev, map[string]string{
+		"config.yaml": "apiVersion: six-passport/v2\nkind: config\nmetadata: {space: alice, environment: dev, revision: " + rev + "}\n" +
+			"runtime: {timezone: UTC}\nweb: {search_backend: keenable, extract_backend: keenable, search_providers: [keenable, ddgs], cache_enabled: true}\n",
+		"tools.yaml": "apiVersion: six-passport/v2\nkind: tools\nmetadata: {space: alice, environment: dev, revision: " + rev + "}\n" +
+			"binding: {profile_id: alice-default, generation: 1}\ncore: {web: {via: native}}\n",
+	})
+	if err := os.WriteFile(filepath.Join(dir, "agent.yaml"), []byte("schema: 3\nuser: alice\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := ReadEffective(dir, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.managedWebSettings(); got.SearchBackend != "keenable" || got.ExtractBackend != "keenable" ||
+		len(got.SearchProviders) != 2 || got.SearchProviders[1] != "ddgs" || got.CacheEnabled == nil || !*got.CacheEnabled {
+		t.Fatalf("managed web policy lost: %+v", got)
+	}
+}
+
 // config.ports is the imperative host-port contract: each declared name lands
 // on the service that owns it — oauth-callback on the runtime listener,
 // browser-vnc on the browser sidecar, slack-events on the shared gateway —

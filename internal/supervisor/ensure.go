@@ -486,7 +486,7 @@ func (m *Manager) runArgsWithGeneration(binding Binding, container string, port 
 	// Spawned runtimes join the single shared runtime network where the shared
 	// control plane (toolhub, credential-broker, cliproxy, communication-hub)
 	// resolves; per-user isolation lives in mounts and principal-scoped auth.
-	args := []string{"run", "-d", "--name", container, "--network", m.cfg.Network, "--restart=no", "--log-driver", "local", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--read-only", "--init", "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", strconv.Itoa(m.cfg.PIDs), "--memory", m.cfg.Memory, "--cpus", m.cfg.CPU, "-p", fmt.Sprintf("127.0.0.1:%d:%d", port, m.cfg.RuntimePort)}
+	args := []string{"run", "-d", "--name", container, "--network", m.cfg.Network, "--restart=no", "--log-driver", "local", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--read-only", "--init", "--user", fmt.Sprintf("10001:%d", max(0, os.Getgid())), "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", strconv.Itoa(m.cfg.PIDs), "--memory", m.cfg.Memory, "--cpus", m.cfg.CPU, "-p", fmt.Sprintf("127.0.0.1:%d:%d", port, m.cfg.RuntimePort)}
 	if info, err := os.Lstat(filepath.Join(binding.ContextRoot, "runtime."+env+".env")); err == nil && info.Mode().IsRegular() {
 		args = append(args, "--env-file", filepath.Join(binding.ContextRoot, "runtime."+env+".env"))
 	}
@@ -683,7 +683,7 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 	env := m.environment()
 	m.prepareSpawnFiles(binding, env)
 	managedDir := filepath.Join(binding.ContextRoot, "managed", env)
-	args := []string{"run", "-d", "--name", container, "--network", managedAgentNetworkName(settings.User, env), "--network-alias", container, "--restart=no", "--log-driver", "local", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--read-only", "--init", "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", strconv.Itoa(m.cfg.PIDs), "--memory", m.cfg.Memory, "--cpus", m.cfg.CPU}
+	args := []string{"run", "-d", "--name", container, "--network", managedAgentNetworkName(settings.User, env), "--network-alias", container, "--restart=no", "--log-driver", "local", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--read-only", "--init", "--user", fmt.Sprintf("10001:%d", max(0, os.Getgid())), "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", strconv.Itoa(m.cfg.PIDs), "--memory", m.cfg.Memory, "--cpus", m.cfg.CPU}
 	args = append(args, "--env-file", filepath.Join(binding.ContextRoot, "managed-runtime."+env+".env"), "--env-file", binding.EnvFile)
 	if service := stack.RuntimeService(settings, "", binding.ContextRoot); service != nil {
 		if envMap, ok := service["environment"].(stack.M); ok {

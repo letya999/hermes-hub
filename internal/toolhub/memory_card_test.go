@@ -180,6 +180,45 @@ func memoryCardCall(t *testing.T, g *Gateway, auth identity.Envelope, jobID, run
 	return out, nil
 }
 
+func TestAssignmentMemoryCardRememberAndRevoke(t *testing.T) {
+	store, gov, _, auths, _ := memoryCardStore(t, "alice", "bob")
+	passports, vaults := t.TempDir(), t.TempDir()
+	for _, user := range []string{"alice", "bob"} {
+		writeMemoryPassportEnv(t, passports, user, "dev", true)
+		if err := vault.Ensure(filepath.Join(vaults, user)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	auth := auths["alice"]
+	assignment := api.RunContext{JobID: "job-assignment", RunID: "run-assignment-1", SessionID: "session-1",
+		RuntimeGeneration: "gen-3", CurrentGeneration: "gen-3", Environment: "dev", Status: "running",
+		ScopeID: "user:alice", Trigger: "cron", Assignment: true, UserID: "alice",
+		Envelope: identity.Envelope{Schema: auth.Schema, PrincipalID: auth.PrincipalID, ContextID: auth.ContextID,
+			RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion}}
+	g, tripwire := memoryCardEnv(t, store, passports, vaults, auths, map[string]api.RunContext{assignment.JobID: assignment})
+	if out, err := memoryCardCall(t, g, auth, assignment.JobID, assignment.RunID,
+		map[string]any{"op": "remember", "name": "Assignment Fact", "text": "owner confirmed synthetic assignment fact"}); err != nil || out["status"] != "ok" {
+		t.Fatalf("active assignment remember: %v %v", out, err)
+	}
+	card := filepath.Join(vaults, "alice", "memory", "cards", "notes", "inbox", "assignment-fact.md")
+	if body, err := os.ReadFile(card); err != nil || !strings.Contains(string(body), "synthetic assignment fact") {
+		t.Fatalf("assignment fact missing from owner vault: %v", err)
+	}
+	if err := gov.RevokeRight(api.DeterministicID("rightgrant", "alice", "memory", "remember"), "operator", "fixture revoke", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := memoryCardCall(t, g, auth, assignment.JobID, assignment.RunID,
+		map[string]any{"op": "remember", "name": "Revoked Assignment Fact", "text": "must never land"}); err == nil {
+		t.Fatal("revoked assignment still wrote memory")
+	}
+	if _, err := os.Stat(filepath.Join(vaults, "alice", "memory", "cards", "notes", "inbox", "revoked-assignment-fact.md")); !os.IsNotExist(err) {
+		t.Fatalf("revoked assignment changed vault: %v", err)
+	}
+	if tripwire.calls != 0 {
+		t.Fatal("assignment writer escaped to the agent backend")
+	}
+}
+
 // TestMemoryCardWriterRoundTrip is the #518 contract: the cataloged
 // memory_card executes inside ToolHub — exact private-run admission, the
 // verified envelope's vault, the governed writer and the journaled audit —
@@ -267,6 +306,34 @@ func TestMemoryCardWriterRoundTrip(t *testing.T) {
 	rel, _ = out["path"].(string)
 	if !strings.HasPrefix(rel, "memory/cards/notes/inbox/note-") {
 		t.Fatalf("hash-fallback slug: %q", rel)
+	}
+}
+
+func TestAssignmentRememberUsesCurrentRight(t *testing.T) {
+	store, gov, _, auths, _ := memoryCardStore(t, "alice")
+	passports, vaults := t.TempDir(), t.TempDir()
+	writeMemoryPassportEnv(t, passports, "alice", "dev", true)
+	if err := vault.Ensure(filepath.Join(vaults, "alice")); err != nil {
+		t.Fatal(err)
+	}
+	alice := auths["alice"]
+	record := api.RunContext{JobID: "job-assignment", RunID: "run-assignment", RuntimeGeneration: "gen-3", CurrentGeneration: "gen-3",
+		Environment: alice.Environment, Status: "running", ScopeID: "user:alice", Trigger: "cron", Assignment: true, UserID: "alice",
+		Envelope: identity.Envelope{Schema: alice.Schema, PrincipalID: alice.PrincipalID, ContextID: alice.ContextID, RuntimeID: alice.RuntimeID, PolicyVersion: alice.PolicyVersion}}
+	g, _ := memoryCardEnv(t, store, passports, vaults, auths, map[string]api.RunContext{record.JobID: record})
+	args := map[string]any{"op": "remember", "text": "assignment found a blue token", "name": "Assignment Token"}
+	if out, err := memoryCardCall(t, g, alice, record.JobID, record.RunID, args); err != nil || out["status"] != "ok" {
+		t.Fatalf("owner assignment remember: out=%v err=%v", out, err)
+	}
+	if err := gov.RevokeRight(api.DeterministicID("rightgrant", "alice", "memory", "remember"), "operator", "fixture revoke", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := memoryCardCall(t, g, alice, record.JobID, record.RunID,
+		map[string]any{"op": "remember", "text": "must not land", "name": "Revoked Assignment Token"}); err == nil || out != nil {
+		t.Fatalf("revoked assignment wrote memory: out=%v err=%v", out, err)
+	}
+	if _, err := os.Stat(filepath.Join(vaults, "alice", "memory", "cards", "notes", "inbox", "revoked-assignment-token.md")); !os.IsNotExist(err) {
+		t.Fatalf("revoked assignment card exists: %v", err)
 	}
 }
 
@@ -469,12 +536,19 @@ func TestMemoryCardDisableBlocksCommit(t *testing.T) {
 	}
 	g, _ := memoryCardEnv(t, store, passports, vaults, auths, nil)
 	alice := auths["alice"]
+	deniedAudited := false
+	g.AuditWrite = func(event string, fields map[string]string) error {
+		if (event == "reject" || event == "deny") && fields["job_id"] == "job-alice" && fields["hermes_run_id"] == "run-alice-1" {
+			deniedAudited = true
+		}
+		return nil
+	}
 
 	u, err := g.Vaults.Resolve("alice", "dev")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Hold alice's vault lock: the in-flight call passes admission and the
+	// Hold alice's vault lock: the in-flight call passes preflight and the
 	// resolver's enrollment check while memory is still enabled, then blocks
 	// at the per-user serialization point — where the disable lands.
 	held, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
@@ -492,7 +566,7 @@ func TestMemoryCardDisableBlocksCommit(t *testing.T) {
 	go func() {
 		out, err := memoryCardCall(t, g, alice, "job-alice", "run-alice-1",
 			map[string]any{"op": "remember", "text": "must never land", "name": "Revoked Note"})
-		if err != nil || out["status"] != "denied" {
+		if !errors.Is(err, api.ErrUnauthorized) {
 			result <- fmt.Errorf("disabled write: %v %v", out, err)
 			return
 		}
@@ -513,9 +587,8 @@ func TestMemoryCardDisableBlocksCommit(t *testing.T) {
 	if strings.Contains(string(journal), "must never land") {
 		t.Fatalf("journaled a write the disable should have blocked: %s", journal)
 	}
-	// The denial itself is audited under the authorizing run reference.
-	if !strings.Contains(string(journal), `"status":"denied"`) || !strings.Contains(string(journal), `"source_ref":"job-alice/run-alice-1"`) {
-		t.Fatalf("denial not journaled under the run: %s", journal)
+	if len(journal) != 0 || !deniedAudited {
+		t.Fatal("pre-dispatch disable must leave vault journal unchanged and audit the rejected run")
 	}
 }
 
@@ -532,6 +605,13 @@ func TestMemoryCardRevokedRightBlocksCommit(t *testing.T) {
 	}
 	g, _ := memoryCardEnv(t, store, passports, vaults, auths, nil)
 	alice := auths["alice"]
+	deniedAudited := false
+	g.AuditWrite = func(event string, fields map[string]string) error {
+		if (event == "reject" || event == "deny") && fields["job_id"] == "job-alice" && fields["hermes_run_id"] == "run-alice-1" {
+			deniedAudited = true
+		}
+		return nil
+	}
 
 	u, err := g.Vaults.Resolve("alice", "dev")
 	if err != nil {
@@ -555,7 +635,7 @@ func TestMemoryCardRevokedRightBlocksCommit(t *testing.T) {
 	go func() {
 		out, err := memoryCardCall(t, g, alice, "job-alice", "run-alice-1",
 			map[string]any{"op": "remember", "text": "must never land", "name": "Revoked Note"})
-		if err != nil || out["status"] != "denied" {
+		if !errors.Is(err, api.ErrUnauthorized) && !errors.Is(err, api.ErrNotFound) {
 			result <- fmt.Errorf("revoked write: %v %v", out, err)
 			return
 		}
@@ -571,8 +651,8 @@ func TestMemoryCardRevokedRightBlocksCommit(t *testing.T) {
 		t.Fatalf("revoked right still wrote the card: %v", err)
 	}
 	journal, _ := os.ReadFile(filepath.Join(vaults, "alice", "runtime", "memory", "writes.jsonl"))
-	if !strings.Contains(string(journal), `"status":"denied"`) {
-		t.Fatalf("denial not journaled: %s", journal)
+	if len(journal) != 0 || !deniedAudited {
+		t.Fatal("pre-dispatch revoke must leave vault journal unchanged and audit the rejected run")
 	}
 }
 

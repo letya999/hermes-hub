@@ -12,6 +12,14 @@ import (
 	"strings"
 )
 
+type conversationKey struct{}
+
+// WithConversationID carries the verified run's conversation across the
+// private executor frame; model-supplied tool arguments cannot set it.
+func WithConversationID(ctx context.Context, conversationID string) context.Context {
+	return context.WithValue(ctx, conversationKey{}, conversationID)
+}
+
 // Goal is the agent-facing goal-mode surface (SPEC-0074): it forwards one
 // verb to the communication hub's /v1/goals, which mutates the same durable
 // record the channel command uses. Principal and conversation are bound
@@ -24,7 +32,11 @@ func (t *Tools) Goal(ctx context.Context, op string, r Input) (map[string]any, e
 		return nil, errors.New("goal control authorization is unavailable")
 	}
 	principal := os.Getenv("HUB_PRINCIPAL_ID")
-	payload := map[string]any{"op": strings.TrimPrefix(op, "goal_"), "conversation_id": os.Getenv("HUB_CONVERSATION_ID")}
+	conversationID, _ := ctx.Value(conversationKey{}).(string)
+	if conversationID == "" {
+		conversationID = os.Getenv("HUB_CONVERSATION_ID")
+	}
+	payload := map[string]any{"op": strings.TrimPrefix(op, "goal_"), "conversation_id": conversationID}
 	if op == "goal_set" {
 		payload["text"] = strings.TrimSpace(r.Text)
 	}

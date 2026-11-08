@@ -11,6 +11,7 @@ import (
 	"github.com/letya999/hermes-hub/internal/locale"
 	"github.com/letya999/hermes-hub/internal/memory"
 	"github.com/letya999/hermes-hub/internal/memory/night"
+	"github.com/letya999/hermes-hub/internal/passportview"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"github.com/letya999/hermes-hub/internal/vault"
 )
@@ -20,6 +21,7 @@ func TestNightRunChecksRightAgainAfterModel(t *testing.T) {
 	rule := api.RightRule{Capability: "memory", Operation: "dreaming"}
 	policy.RightCeiling = append(policy.RightCeiling, rule)
 	profile.Rights = append(profile.Rights, rule)
+	profile.PassportRevision = "r-0123456789abcdef"
 	store.mu.Lock()
 	store.capabilityPolicies[policy.PolicyID] = policy
 	store.capabilityProfiles[profile.ProfileID] = profile
@@ -83,18 +85,35 @@ func TestNightRunChecksRightAgainAfterModel(t *testing.T) {
 		t.Fatalf("revoked vault mutation: %v", err)
 	}
 	mintRight(t, gov, store.RightsDoc, api.NewRightGrant("rightgrant-alice-dreaming-2", "alice", "memory", "dreaming", "", "fixture", "operator", time.Now().Add(time.Hour)))
+	journal := filepath.Join(passports, "alice", "passports", passportview.ApplyJournalFile)
+	relay = func(context.Context, string, string) (string, error) {
+		calls++
+		if err := os.WriteFile(journal, []byte("{}\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		return `{"summary":"tea","facts":[{"card":"notes/tea","fact":"prefers cedar tea","quote":"I prefer cedar tea"}]}`, nil
+	}
+	if _, err := run(); err == nil || calls != 2 {
+		t.Fatalf("interrupted apply admitted a dreaming commit: calls=%d err=%v", calls, err)
+	}
+	if _, err := os.Stat(filepath.Join(vaultRoot, "runtime", "memory", "night", "2026-11-05.json")); !os.IsNotExist(err) {
+		t.Fatalf("mixed activation mutated the vault: %v", err)
+	}
+	if err := os.Remove(journal); err != nil {
+		t.Fatal(err)
+	}
 	relay = func(context.Context, string, string) (string, error) {
 		calls++
 		return `{"summary":"tea","facts":[{"card":"notes/tea","fact":"prefers cedar tea","quote":"I prefer cedar tea"}]}`, nil
 	}
 	digest, err := run()
-	if err != nil || digest == "" || calls != 2 {
+	if err != nil || digest == "" || calls != 3 {
 		t.Fatalf("authorized run: digest=%q calls=%d err=%v", digest, calls, err)
 	}
 	if !night.DayComplete(vaultRoot, "2026-11-05") {
 		t.Fatal("day did not complete")
 	}
-	if _, err := run(); err != nil || calls != 2 {
+	if _, err := run(); err != nil || calls != 3 {
 		t.Fatalf("completed day repeated model: calls=%d err=%v", calls, err)
 	}
 }

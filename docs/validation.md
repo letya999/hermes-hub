@@ -1,6 +1,6 @@
 ---
 description: What counts as evidence, and the standing list of what is not yet proven. Dated per-change evidence lives in .work/done/CHG-*/evidence.md.
-last_verified: 2026-11-06
+last_verified: 2026-11-07
 ---
 
 # Validation policy and acceptance boundary
@@ -23,6 +23,37 @@ last_verified: 2026-11-06
 ## Standing unproven boundary
 
 Things a reader must NOT assume work until separately proven live:
+
+- **M32 #526/#527** — the existing gateway/managed-supervisor Docker canaries
+  use a ToolHub stub. They do not prove integrated memory capture, automation
+  and dreaming under faults. The M32 gate now has a real ToolHub startup,
+  managed-runtime isolation and capture retry leg, but its container execution
+  is still unverified. It now includes actual private/group prompt checks,
+  a dedicated group home and open-session tools.use/memory.search/memory.remember
+  revocation/regrant fences. These additions compile but have not run in Docker.
+  Startup/recovery, reminder clock during a communication
+  outage, deferred fixture delivery, pending-result pause/revoke fences and
+  assignment source reconcile/CAS/pause/resume/removal recovery passed without
+  Docker. Dreaming also passed the real relay/PDP/vault path for UTC/New York,
+  a spring DST gap, admission/commit-time right revoke, owner independence,
+  host restart, unchanged completed-day Git HEAD, draft-only intents and
+  deferred local channel delivery. Its clock and upstream model are controlled.
+  Regression tests also deny mismatched/missing profile revisions and an
+  incomplete apply, including one started after the model response.
+  Process-crash, memory-disable/config-edit and autumn DST overlap acceptance
+  remain open. Group/memory-revoke/crash, due agent/assignment/watch
+  work and final-source CI remain required. Current scoped
+  live evidence is recorded in CHG-0288.
+  Cold managed file create/read/remove now passed for both existing owners
+  after the runtime-lease fix; supervisor status confirmed idle with zero
+  leases afterward. This does not prove the full watch recovery/fault matrix.
+  Distinct-bearer confirmation notice/callback and managed-binding regressions
+  passed. A real gateway/ToolHub/storage test also passed primary/sibling
+  runtime principal isolation under a forged header. The real MCP/gateway/writer
+  chain also passed owner/foreign/self/stale/replay/revoke confirmation, durable
+  callbacks across gateway restart and ToolHub startup recovery after content
+  landed before Git commit/receipt. Telegram transport and live-run authority
+  are HTTP fixtures there; abrupt process-kill and container execution remain open.
 
 - **#74 full lifecycle** — tool list changes reach an open MCP session via
   `notifications/tools/list_changed` (wire + pinned-Hermes fixture proven);

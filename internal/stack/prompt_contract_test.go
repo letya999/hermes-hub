@@ -122,7 +122,7 @@ func TestAPIServerPlatformHintOverrideRendered(t *testing.T) {
 		if repl != APIServerPlatformHint {
 			t.Fatalf("%s: api_server replace hint is not the reviewed hub text", name)
 		}
-		for _, want := range []string{"MEDIA:", "attachment", "inbox_fetch", "markdown"} {
+		for _, want := range []string{"MEDIA:", "attachment", "inbox/people/", "markdown"} {
 			if !strings.Contains(repl, want) {
 				t.Errorf("%s: replacement hint missing %q", name, want)
 			}
@@ -144,7 +144,7 @@ func TestChannelContractIsModular(t *testing.T) {
 			t.Fatalf("off family leaked guidance %q into contract", gone)
 		}
 	}
-	for _, kept := range []string{"routine_create", "tool_search", "MEDIA:", "inbox_fetch"} {
+	for _, kept := range []string{"routine_create", "tool_search", "MEDIA:", "inbox/people/"} {
 		if !strings.Contains(body, kept) {
 			t.Fatalf("enabled/always family lost guidance %q", kept)
 		}
@@ -181,7 +181,7 @@ func TestChannelContractDropsAbsentFamilies(t *testing.T) {
 			t.Errorf("absent family leaked guidance %q into governed contract", gone)
 		}
 	}
-	for _, kept := range []string{"routine_create", "routine_edit", "file_search", "tool_search", "tool_call", "platform_guide", "MEDIA:", "inbox_fetch"} {
+	for _, kept := range []string{"routine_create", "routine_edit", "file_search", "tool_search", "tool_call", "platform_guide", "MEDIA:", "inbox/people/"} {
 		if !strings.Contains(body, kept) {
 			t.Errorf("enabled/always family lost guidance %q", kept)
 		}

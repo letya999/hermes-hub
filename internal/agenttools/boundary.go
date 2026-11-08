@@ -1,15 +1,19 @@
 package agenttools
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
-	"gopkg.in/yaml.v3"
+	"github.com/letya999/hermes-hub/internal/locale"
+	"github.com/letya999/hermes-hub/internal/passportview"
 )
 
 // workspaceBoundary is the writable/read_only contract published in
-// /config/workspace.yaml. File admission reloads it by mtime: a narrowed
+// /config/workspace.yaml. File admission reloads it on every write: a narrowed
 // revision lands on the next call without a respawn; an absent or
 // undecodable file fails closed (SPEC-0092 R5.3).
 type workspaceBoundary struct {
@@ -17,41 +21,42 @@ type workspaceBoundary struct {
 	readOnly []string
 }
 
-type boundaryDoc struct {
-	Writable []string `yaml:"writable"`
-	ReadOnly []string `yaml:"read_only"`
-}
-
-// boundary returns the live workspace boundary when BoundaryPath is set,
-// cached by file mtime+size so an apply swaps it on the next call. An
-// empty BoundaryPath means this runtime has no published workspace
-// passport — the caller keeps the legacy HUB_WORKSPACE_RO semantics.
+// Managed executors require a strictly decoded, active workspace passport.
+// Component-only callers without a managed identity may omit the boundary.
 func (t *Tools) boundary() (*workspaceBoundary, error) {
 	if t.BoundaryPath == "" {
 		return nil, nil
 	}
-	info, err := os.Stat(t.BoundaryPath)
-	if err != nil {
-		t.boundaryValid = false
-		return nil, fmt.Errorf("workspace boundary: %w", err)
+	invalid := errors.New(locale.T(locale.LangOf(os.Getenv("HUB_WORKSPACE")), "tools.workspace-boundary-invalid"))
+	info, err := os.Lstat(t.BoundaryPath)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 1024*1024 {
+		return nil, invalid
 	}
-	if t.boundaryValid && t.boundaryMod.Equal(info.ModTime()) && t.boundarySize == info.Size() {
-		return t.boundaryVal, t.boundaryErr
+	managed := os.Getenv("HUB_PASSPORT_REVISION") != "" || os.Getenv("HUB_CAPABILITY_MODE") == "managed"
+	marker := filepath.Join(filepath.Dir(t.BoundaryPath), "revision")
+	var revision []byte
+	if managed {
+		revision, err = os.ReadFile(marker)
+		if err != nil || len(revision) == 0 || len(revision) > 128 {
+			return nil, invalid
+		}
 	}
-	t.boundaryMod, t.boundarySize = info.ModTime(), info.Size()
 	body, err := os.ReadFile(t.BoundaryPath)
 	if err != nil {
-		t.boundaryVal, t.boundaryErr, t.boundaryValid = nil, fmt.Errorf("workspace boundary: %w", err), true
-		return nil, t.boundaryErr
+		return nil, invalid
 	}
-	var doc boundaryDoc
-	if err := yaml.Unmarshal(body, &doc); err != nil {
-		t.boundaryVal, t.boundaryErr, t.boundaryValid = nil, fmt.Errorf("workspace boundary: %w", err), true
-		return nil, t.boundaryErr
+	decoded, err := passportview.Decode("workspace", body)
+	if err != nil {
+		return nil, invalid
 	}
-	t.boundaryVal = &workspaceBoundary{writable: doc.Writable, readOnly: doc.ReadOnly}
-	t.boundaryErr, t.boundaryValid = nil, true
-	return t.boundaryVal, nil
+	doc := decoded.(*passportview.WorkspaceDoc)
+	if managed {
+		after, err := os.ReadFile(marker)
+		if err != nil || !bytes.Equal(revision, after) || strings.TrimSpace(string(revision)) != doc.Metadata.Revision {
+			return nil, invalid
+		}
+	}
+	return &workspaceBoundary{writable: doc.Writable, readOnly: doc.ReadOnly}, nil
 }
 
 // denyWrite applies the boundary to one absolute path: the longest

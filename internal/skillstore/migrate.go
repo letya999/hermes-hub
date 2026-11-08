@@ -88,14 +88,7 @@ func migrateLegacy(dir string, apply, consentAll bool, platform *Store) (*Migrat
 	if err != nil {
 		return nil, err
 	}
-	drafts, err := st.Drafts()
-	if err != nil {
-		return nil, err
-	}
-	drafted := map[string]bool{}
-	for _, d := range drafts {
-		drafted[d.Name] = true
-	}
+	var drafted map[string]bool
 
 	migrateOne := func(skillDir, name string) error {
 		if platform != nil {
@@ -104,6 +97,17 @@ func migrateLegacy(dir string, apply, consentAll bool, platform *Store) (*Migrat
 					rep.Skipped = append(rep.Skipped, name) // bundled copy, not user content
 					return nil
 				}
+			}
+		}
+		// A bundled/already migrated skill needs no access to unrelated private drafts.
+		if !revoked[name] && !slices.Contains(existing, name) && drafted == nil {
+			drafts, err := st.Drafts()
+			if err != nil {
+				return err
+			}
+			drafted = map[string]bool{}
+			for _, d := range drafts {
+				drafted[d.Name] = true
 			}
 		}
 		switch {

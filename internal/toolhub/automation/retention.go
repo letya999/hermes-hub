@@ -1,7 +1,6 @@
 package automation
 
 import (
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -125,19 +124,15 @@ func (h *Host) deliveryHistory(principal string) (map[string]deliveryHistory, er
 		return id
 	}
 	if h.cfg.LegacySpoolDir != "" {
-		info, err := os.Lstat(h.cfg.LegacySpoolDir)
-		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			return nil, errors.New("automation: gateway spool unavailable for compaction")
-		}
-		info, err = os.Lstat(filepath.Join(h.cfg.LegacySpoolDir, "outbox"))
-		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		bindings := legacyBindings{root: h.cfg.LegacySpoolDir}
+		if _, err := bindings.directory("outbox"); err != nil {
 			return nil, errors.New("automation: gateway outbox unavailable for compaction")
 		}
 		for _, dir := range []struct {
 			name, status string
 		}{{"pending", "pending"}, {"sending", "pending"}, {"done", "delivered"}, {"failed", "uncertain"}} {
 			root := filepath.Join(h.cfg.LegacySpoolDir, "outbox", dir.name)
-			entries, err := os.ReadDir(root)
+			entries, err := bindings.entries(root)
 			if os.IsNotExist(err) {
 				continue
 			}
@@ -145,16 +140,11 @@ func (h *Host) deliveryHistory(principal string) (map[string]deliveryHistory, er
 				return nil, err
 			}
 			for _, entry := range entries {
-				if !strings.HasSuffix(entry.Name(), ".json") {
+				if !strings.HasSuffix(entry, ".json") {
 					continue
 				}
-				info, err := entry.Info()
-				if err != nil || !info.Mode().IsRegular() || info.Size() > 1<<20 {
-					return nil, errors.New("automation: unsafe delivery history")
-				}
-				body, err := os.ReadFile(filepath.Join(root, entry.Name())) // #nosec G703 -- bounded read-only gateway spool
 				var d commodel.Delivery
-				if err != nil || json.Unmarshal(body, &d) != nil {
+				if bindings.readJSON(filepath.Join(root, entry), &d) != nil {
 					return nil, errors.New("automation: invalid delivery history")
 				}
 				id := ownerID(d)

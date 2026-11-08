@@ -150,7 +150,7 @@ func (e *Engine) DispatchDueOccurrences(now time.Time, authorize func(commodel.J
 	active := map[string]string{}
 	blocked := map[string]bool{}
 	for _, o := range occurrences {
-		if o.JobKind == "watcher" || o.JobKind == "check" || o.JobKind == "event" {
+		if o.JobKind == "watcher" || o.JobKind == "check" || o.JobKind == "event" || o.JobKind == "dreaming" {
 			// Probe kinds never admit jobs through this loop; the only
 			// mapping one can carry is the escalation product — a job
 			// deliberately rewritten at settle time, so the binding check
@@ -214,6 +214,8 @@ func (e *Engine) DispatchDueOccurrences(now time.Time, authorize func(commodel.J
 			o.State = "blocked"
 		} else if o.JobKind == "script" {
 			o.State = "scripting"
+		} else if o.JobKind == "dreaming" {
+			o.State = "dreaming"
 		} else if o.JobKind == "watcher" || o.JobKind == "check" || o.JobKind == "event" {
 			// Probing runs outside the lock in ProbeDueOccurrences.
 			o.State = "probing"
@@ -286,12 +288,18 @@ func ValidateOccurrence(o commodel.RoutineOccurrence, caller identity.Envelope, 
 	if len(o.ScheduleID) > 80 || !commodel.IDPattern.MatchString(o.ScheduleID) || o.Revision == 0 || o.DueAt.IsZero() || !caller.Equal(o.Job.Envelope) || caller.Validate(o.Job.UserID, o.Job.ContextID, o.Job.RuntimeID, o.Job.PolicyVersion) != nil || o.Job.ActorID != caller.PrincipalID || o.Job.ScopeID != "user:"+o.Job.UserID {
 		return errors.New("invalid occurrence ownership")
 	}
-	ch := channelFor(o.Job.Channel)
-	if ch == nil {
-		return errors.New("invalid occurrence ownership")
-	}
-	if err := ch.ValidateOccurrence(o, caller); err != nil {
-		return err
+	if o.JobKind == "dreaming" {
+		if o.ScheduleID != SystemDreamingID || o.Job.Channel != "system" {
+			return errors.New("invalid system occurrence")
+		}
+	} else {
+		ch := channelFor(o.Job.Channel)
+		if ch == nil {
+			return errors.New("invalid occurrence ownership")
+		}
+		if err := ch.ValidateOccurrence(o, caller); err != nil {
+			return err
+		}
 	}
 	if strings.TrimSpace(o.Job.Text) == "" || len(o.Job.Text) > 64*1024 || o.Job.Sensitive || envstore.LooksLikeEnv(o.Job.Text) {
 		return errors.New("invalid routine input")

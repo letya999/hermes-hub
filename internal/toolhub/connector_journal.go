@@ -308,6 +308,20 @@ func (c *ControlPlane) connectorReauth(ctx context.Context, auth identity.Envelo
 		return api.OperationResult{}, err
 	}
 	result := api.OperationResult{OperationID: op.OperationID, Summary: "reauth " + op.Target}
+	if (onboarding.Phase == api.PhaseEnabled || onboarding.Phase == api.PhaseAwaitingConfirm) && onboarding.BrokerCredentialID != "" && (op.State == api.OpStateQueued || op.State == api.OpStateRunning) {
+		if connection, ok := c.Store.connectionFor(onboarding.ConnectionID); ok && connection.Status == api.DegradedStatus && connection.HealthCause == "credential_inactive" {
+			// A confirmed but inactive Broker credential cannot be fixed by
+			// repeating confirmation; reopen the existing protected intake.
+			onboarding.Phase = api.PhaseAwaitingConfirm
+			c.resetSubmittedCredential(&onboarding)
+			if err := c.Store.PutOnboarding(onboarding); err != nil {
+				return api.OperationResult{}, err
+			}
+			if err := c.regenerateBrokerRequest(ctx, auth, &onboarding); err != nil {
+				return api.OperationResult{}, err
+			}
+		}
+	}
 	if onboarding.Phase == api.PhaseEnabled && (op.State == api.OpStateQueued || op.State == api.OpStateRunning) {
 		// Reopen credential collection: the protected form rotates in the
 		// new values; the binding stays until re-confirmation.

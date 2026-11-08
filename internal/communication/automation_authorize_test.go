@@ -33,3 +33,20 @@ func TestAutomationOwnerHomeUsesLiveOwner(t *testing.T) {
 		t.Fatalf("rebound home was still routable: chat=%d err=%v", home, err)
 	}
 }
+
+func TestAutomationOwnerHomeRequiresAutomationServiceBearer(t *testing.T) {
+	owner := User{ID: "alice", Enabled: true, TelegramIDs: []int64{11}}
+	g := &Gateway{config: Config{ControlAuth: "owner-runtime", AutomationAuth: "automation-service", Users: []User{owner}}, users: map[int64]User{11: owner}}
+	server := httptest.NewServer(g.Handler())
+	defer server.Close()
+	client := automation.HTTPCommunicationClient{URL: server.URL, Token: "automation-service"}
+	if home, _, err := client.OwnerHome(t.Context(), "alice"); err != nil || home != 11 {
+		t.Fatalf("supervised service home: chat=%d err=%v", home, err)
+	}
+	for _, token := range []string{"owner-runtime", "wrong", ""} {
+		client.Token = token
+		if _, _, err := client.OwnerHome(t.Context(), "alice"); err == nil {
+			t.Fatal("non-service bearer read owner home")
+		}
+	}
+}

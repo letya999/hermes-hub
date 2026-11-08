@@ -86,6 +86,20 @@ type Index struct {
 	total    int
 }
 
+// Read returns one indexed document only inside its admitted audience. A
+// forgotten document requires the same explicit history choice as Search.
+func (i *Index) Read(id, audience string, history bool) (Hit, bool) {
+	di, ok := i.byID[id]
+	if !ok || di < 0 || di >= len(i.docs) {
+		return Hit{}, false
+	}
+	doc := i.docs[di]
+	if doc.Audience != audience || doc.Superseded && !history {
+		return Hit{}, false
+	}
+	return Hit{Doc: doc, Evidence: evidenceRef(doc), Untrusted: doc.Provenance == "untrusted"}, true
+}
+
 const (
 	bm25K1 = 1.2
 	bm25B  = 0.75

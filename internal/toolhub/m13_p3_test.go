@@ -97,6 +97,11 @@ func TestOperationForRequestKey(t *testing.T) {
 	if !ok || got.OperationID != op.OperationID {
 		t.Fatalf("request key lookup failed: %v %+v", ok, got)
 	}
+	rotated := auth
+	rotated.PolicyVersion = "policy-rotated"
+	if _, ok := store.OperationForRequestKey(rotated, api.OpIntentInstall, target); ok {
+		t.Fatal("rotated policy reused an onboarding owned by the previous policy")
+	}
 	if _, ok := store.OperationForRequestKey(auth, api.OpIntentRemove, target); ok {
 		t.Fatal("different intent matched")
 	}
@@ -755,6 +760,25 @@ func TestConnectorDisableEnableJournal(t *testing.T) {
 	}
 }
 
+func TestConnectorEditLegacyBundle(t *testing.T) {
+	store, auth, _, profile := managedStore(t)
+	enabled := m13P3EnabledOnboarding(t, store, auth)
+	profile.Revision++
+	profile.Connectors = api.ConnectorsPersonal
+	if err := putProfile(t, store, profile); err != nil {
+		t.Fatal(err)
+	}
+	c := &ControlPlane{Store: store, Now: time.Now, ConfirmationTTL: time.Minute}
+	result, err := c.InvokeConnector(t.Context(), auth, "connector_edit", map[string]any{"action": "disable", "name": "google-work"})
+	if err != nil || result.State != api.OpStateDone {
+		t.Fatalf("connector_edit legacy bundle: %+v %v", result, err)
+	}
+	onboarding, err := store.OnboardingFor(auth, enabled.OnboardingID)
+	if err != nil || onboarding.Phase != api.PhaseDisabled {
+		t.Fatalf("onboarding after edit: %+v %v", onboarding, err)
+	}
+}
+
 // S3.6: connector_remove opens one operation, arms the one-time remove
 // link and halts at awaiting_confirm; after the human path purges the
 // connector a repeat call reports done with a zero-resource receipt.
@@ -838,6 +862,33 @@ func TestConnectorReauthJournal(t *testing.T) {
 	}
 	if resumed.OperationID != result.OperationID || resumed.State != api.OpStateDone {
 		t.Fatalf("resumed reauth: %+v", resumed)
+	}
+}
+
+func TestConnectorReauthReopensInactiveCredential(t *testing.T) {
+	store, auth, _, _ := managedStore(t)
+	onboarding := m13P3EnabledOnboarding(t, store, auth)
+	onboarding.Phase = api.PhaseAwaitingConfirm
+	onboarding.BrokerCredentialID = "broker-stale"
+	onboarding.Locator = "broker-stale"
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	connection, ok := store.connectionFor(onboarding.ConnectionID)
+	if !ok {
+		t.Fatal("connection missing")
+	}
+	connection.Status, connection.HealthCause, connection.CredentialVisibility, connection.CredentialCheckedAt = api.DegradedStatus, "credential_inactive", "inactive", time.Now()
+	connection.Revision++
+	store.connections[connection.ConnectionID] = connection
+	c := &ControlPlane{Store: store, Now: time.Now, ConfirmationTTL: time.Minute}
+	result, err := c.connectorReauth(t.Context(), auth, map[string]any{"target": "google-work"})
+	if err != nil || result.State != api.OpStateAwaitingUser {
+		t.Fatalf("reauth: %+v %v", result, err)
+	}
+	got, err := store.OnboardingFor(auth, onboarding.OnboardingID)
+	if err != nil || got.Phase != api.PhaseAwaitingCreds || got.BrokerRotateCredentialID != "broker-stale" || got.BrokerCredentialID != "" || got.Locator != "" || got.FormNonce == "" {
+		t.Fatalf("inactive credential was not reopened: phase=%s rotate=%t credential_present=%t locator_present=%t form_present=%t err=%v", got.Phase, got.BrokerRotateCredentialID != "", got.BrokerCredentialID != "", got.Locator != "", got.FormNonce != "", err)
 	}
 }
 

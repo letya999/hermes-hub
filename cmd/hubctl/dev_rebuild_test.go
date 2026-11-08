@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"github.com/letya999/hermes-hub/internal/catalog"
+	"github.com/letya999/hermes-hub/internal/serviceauth"
 	"github.com/letya999/hermes-hub/internal/stack"
 	"os"
 	"path/filepath"
@@ -10,6 +12,61 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestDevRebuildRefreshesSiblingControlToken(t *testing.T) {
+	spaces := filepath.Join(t.TempDir(), "spaces")
+	owner, member := filepath.Join(spaces, "owner"), filepath.Join(spaces, "member")
+	writeManagedSpaceDocs(t, owner, "owner", managedInfraDocs("owner", false))
+	writeManagedSpaceDocs(t, member, "member", nil)
+	oldToken, newToken := strings.Repeat("a", 32), strings.Repeat("b", 32)
+	for _, token := range []string{oldToken, newToken} {
+		if err := os.WriteFile(filepath.Join(member, "runtime.auth"), []byte("HUB_RUNTIME_AUTH="+token+"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := refreshDevSiblingTokens(member); err != nil {
+			t.Fatal(err)
+		}
+		entries, err := serviceauth.ReadTokenEnvelopes(filepath.Join(owner, "toolhub-tokens.json"))
+		if err != nil || entries[token].PrincipalID != "member" {
+			t.Fatalf("sibling control token not refreshed: %v", err)
+		}
+		if token == newToken {
+			if _, stale := entries[oldToken]; stale {
+				t.Fatal("retired sibling control token survived refresh")
+			}
+		}
+	}
+}
+
+func TestDevCatalogStagesOnlyPinnedRegularFiles(t *testing.T) {
+	root, build := t.TempDir(), t.TempDir()
+	source := filepath.Join(root, "platform", "catalogs", catalog.Release)
+	if err := os.MkdirAll(source, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{catalog.ManifestFile, catalog.CapabilitiesFile, catalog.ToolsetsFile, catalog.ServicesFile, catalog.RightsFile} {
+		if err := os.WriteFile(filepath.Join(source, name), []byte(name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := stageDevCatalog(root, build); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{catalog.ManifestFile, catalog.CapabilitiesFile, catalog.ToolsetsFile, catalog.ServicesFile, catalog.RightsFile} {
+		body, err := os.ReadFile(filepath.Join(build, "catalogs", catalog.Release, name))
+		if err != nil || string(body) != name {
+			t.Fatalf("staged %s: %q %v", name, body, err)
+		}
+	}
+	if err := os.Remove(filepath.Join(source, catalog.RightsFile)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(source, catalog.ManifestFile), filepath.Join(source, catalog.RightsFile)); err == nil {
+		if err := stageDevCatalog(root, t.TempDir()); err == nil {
+			t.Fatal("symlink catalog accepted")
+		}
+	}
+}
 
 func TestDevRebuildServiceBinaryMap(t *testing.T) {
 	for service, binary := range map[string]string{
@@ -21,6 +78,7 @@ func TestDevRebuildServiceBinaryMap(t *testing.T) {
 		"supervisor":          "hubctl",
 		"hermes-runtime":      "hub-runtime",
 		"model-relay":         "hub-runtime",
+		"toolhub-relay":       "hub-runtime",
 		"egress-relay":        "hub-runtime",
 	} {
 		spec, ok := devService(service)
@@ -54,6 +112,8 @@ func TestDevServiceRoleBases(t *testing.T) {
 		"workload-controller": "hermes-hub:0.5.0-dev-control",
 		"supervisor":          "hermes-hub:0.5.0-dev-control",
 		"hermes-runtime":      "hermes-hub:0.5.0-dev",
+		"model-relay":         "hermes-hub:0.5.0-dev",
+		"toolhub-relay":       "hermes-hub:0.5.0-dev",
 		"egress-relay":        "hermes-hub:0.5.0-dev-core",
 	} {
 		spec, ok := devService(name)

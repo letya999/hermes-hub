@@ -50,6 +50,10 @@ func (g *Gateway) authorizeControl(r *http.Request) (identity.Envelope, bool) {
 	if !g.controlTokenAccepted(token, &principal) {
 		return identity.Envelope{}, false
 	}
+	return g.controlCaller(principal)
+}
+
+func (g *Gateway) controlCaller(principal string) (identity.Envelope, bool) {
 	user := g.user(principal)
 	if user.ID == "" || !user.Enabled {
 		return identity.Envelope{}, false
@@ -74,6 +78,12 @@ func (g *Gateway) controlTokenAccepted(token string, principal *string) bool {
 		return false
 	}
 	if g.config.ControlAuth != "" && token == g.config.ControlAuth {
+		if g.config.Supervised && g.config.AutomationAuth != "" && g.config.AutomationAuth != g.config.ControlAuth {
+			if !identity.ValidID(g.config.ControlPrincipal) {
+				return false
+			}
+			*principal = g.config.ControlPrincipal
+		}
 		return true
 	}
 	if slices.Contains(g.config.controlAuthExtra, token) {

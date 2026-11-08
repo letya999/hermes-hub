@@ -273,6 +273,13 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 		managedEnv := map[string]string{
 			"OPENAI_API_KEY": relayAuth["HUB_MODEL_RELAY_AUTH"], "HUB_TOOLHUB_ENDPOINT": "http://toolhub:8090/mcp",
 		}
+		if layer, loadErr := passportRegistryLayer(dir, revisionID); loadErr == nil {
+			if _, ok := layer.Models["vision"]; ok {
+				managedEnv["HUB_MEDIA_VISION_MODEL"] = "vision"
+			}
+		} else {
+			return loadErr
+		}
 		// Spawned runtimes live on a route-less internal network: every
 		// reviewed outbound hop goes through the egress relay by proxy env.
 		// docker exec children inherit the container env, so the agenttools
@@ -674,13 +681,17 @@ func writeEnvFile(path string, values map[string]string) error {
 }
 
 func atomic(path string, b []byte) error {
+	return atomicMode(path, b, 0600)
+}
+
+func atomicMode(path string, b []byte, mode os.FileMode) error {
 	f, err := os.CreateTemp(filepath.Dir(path), ".render-*")
 	if err != nil {
 		return err
 	}
 	name := f.Name()
 	defer os.Remove(name)
-	if err = f.Chmod(0600); err != nil {
+	if err = f.Chmod(mode); err != nil {
 		_ = f.Close()
 		return err
 	}
@@ -695,5 +706,5 @@ func atomic(path string, b []byte) error {
 	if err = f.Close(); err != nil {
 		return err
 	}
-	return os.Rename(name, path) // #nosec G703 -- temp file renamed onto a rendered path under the owned space dir
+	return replaceRenderedFile(name, path)
 }

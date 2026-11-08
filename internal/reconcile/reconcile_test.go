@@ -79,7 +79,7 @@ func TestPlanTargetsOwnServiceAndRuntime(t *testing.T) {
 	}
 	// stack.identity affects every image.
 	actions = Plan([]passport.Change{ch("stack.identity.user", "pending:stack", passport.EffectRebuild)}, allServices)
-	if len(actions) != 1 || actions[0].Target != "*" {
+	if len(actions) != 1+len(allServices) || actions[0].Target != "*" {
 		t.Fatalf("identity rebuild target: %+v", actions)
 	}
 }
@@ -225,7 +225,7 @@ func TestRunRollbackOnFailure(t *testing.T) {
 	if !slices.Contains(calls, "pointer:prev") {
 		t.Fatalf("current pointer never repointed: %v", calls)
 	}
-	if calls[len(calls)-1] != "recreate:hermes-runtime" {
+	if calls[len(calls)-1] != "recreate:cliproxy" {
 		t.Fatalf("failed recreate was not replayed against prior revision: %v", calls)
 	}
 	// Live runs last: an earlier live failure re-runs the hooks that

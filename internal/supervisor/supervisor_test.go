@@ -2173,8 +2173,8 @@ func TestRunArgsMountsExactContextAndLimits(t *testing.T) {
 		t.Fatalf("managed run args publish a host port: %s", joined)
 	}
 	effective, err := os.ReadFile(filepath.Join(root, "generated", "hermes-effective.dev.yaml"))
-	if err != nil || !strings.Contains(string(effective), "http://toolhub:8090/mcp") {
-		t.Fatalf("effective config not materialized: %v %q", err, effective)
+	if err != nil || !strings.Contains(string(effective), "http://127.0.0.1:8080/mcp") {
+		t.Fatalf("effective managed ToolHub proxy config not materialized: %v", err)
 	}
 	bobRoot := filepath.Join(filepath.Dir(root), "bob")
 	if err := os.MkdirAll(bobRoot, 0700); err != nil {

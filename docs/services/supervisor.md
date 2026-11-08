@@ -1,9 +1,34 @@
 ---
 description: supervisor — per-space runtime spawner/manager; owns warm pools, docker exec agent-tools path, control channel.
-last_verified: 2026-11-06
+last_verified: 2026-11-07
 ---
 
 # supervisor
+
+The supervisor starts through `setpriv`, immediately drops to UID 10001 with the
+host group and retains only `FOWNER` in its effective, ambient and bounding sets.
+This maintains host-owned file modes without changing the UID that writes shared
+private registry/state files. Bootstrap UID/GID/capability permissions are dropped
+before `hubctl` starts. Privilege escalation stays disabled and the root filesystem
+stays read-only. Other services retain UID 10001 with no capabilities.
+Spawned runtimes and isolated watch scripts also use the controller's group,
+matching Compose, so group-readable published config/watch binds remain readable.
+No recursive chown or mode relaxation runs.
+
+Published revision directories/documents use 0750/0440 and the current pointer
+0640 for the controller group. The mutable generated model-registry directory
+uses 0770 so a different controller UID can atomically replace its 0640 projection.
+These paths contain configuration; credentials retain their separate private modes.
+An already bundled/published legacy skill does not require opening unrelated
+private draft contents during rendering.
+
+For the built-in `settings_edit`, ToolHub completes registry admission before
+calling this authenticated publisher without holding the registry lock. The
+publisher checks the current edit grant and base revision and derives the new
+rights itself; holding the call lock while deriving those rights deadlocks.
+Runtime reconciliation from this publisher calls the local manager directly,
+because its journal intentionally blocks external PDP admission until completion.
+The external respawn endpoint still requires the caller's restart right.
 
 `cmd/supervisor` → `internal/supervisor`. The per-space runtime manager when
 `ExecutionMode == "supervisor"`; deployed as the `supervisor` compose service
@@ -29,17 +54,23 @@ spaces dir at `/spaces`, project `config/` read-only, and the host
 
 ## Responsibilities
 
-- Spawn/stop `hermes-hub-agent-<user>-<env>` runtime containers from the
-  runtime image; warm pool keyed by runtime identity + policy version.
+- Spawn/stop managed `hermes-context-<hash>` runtime containers from the
+  runtime image; warm pool keyed by principal/context/mode + policy version.
   Managed spawn verifies the published revision again after materializing
   its files and passes that revision to the runtime preflight.
 - Own the agent-tools executor naming contract: `HUB_AGENT_EXEC_MODE=
   supervisor` makes toolhub run agent-tools via `docker exec` into the owning
   runtime — the only control-plane path that never crosses the agent network.
+  ToolHub acquires a lifecycle lease before dispatch, including a cold start,
+  then releases it after the call even when the business context is cancelled.
+  Startup runs outside the admission registry fence; tool authority is checked
+  again before execution. The lease receipt must match the enrolled owner,
+  context, container and runtime generation. Startup failure is reported before
+  effect; a post-dispatch channel failure remains uncertain.
 - Serve `HUB_RUNTIME_SUPERVISOR_URL` for communication-hub and toolhub when
   set; when unset the gateway talks to `hermes-runtime:8080` directly.
-- Every spawned runtime joins the shared network where `toolhub`,
-  `credential-broker` and `cliproxy` resolve to the single instances.
+- Managed runtimes join their private agent network. ToolHub, model and egress
+  relays reach the shared control-plane services through their narrow routes.
 - Route every control-plane call (`/v1/jobs`, `/v1/resume`, `/v1/control`,
   `/v1/self-env`, `/v1/skill-ref-lease`, `/v1/restart`, `/v1/restart-request`,
   `/v1/respawn`) to the correct

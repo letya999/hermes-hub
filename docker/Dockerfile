@@ -17,11 +17,26 @@ RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABL
 RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /e2e ./cmd/e2e
 
 RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /hub-media ./cmd/hub-media
-RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build cd services/credential-broker && CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /credential-broker ./cmd/credential-broker
 RUN --mount=type=cache,id=hermes-go-build,target=/root/.cache/go-build CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /cellinit ./cmd/cellinit
 
+# Broker's activated store requires SQLCipher; a non-CGO binary refuses it.
+FROM golang:1.27.3-bookworm AS broker_build
+RUN apt-get update -qq && apt-get install -y -qq gcc make libssl-dev tcl curl ca-certificates >/dev/null 2>&1
+RUN curl -fsSL --retry 3 -o /tmp/sqlcipher.tar.gz https://github.com/sqlcipher/sqlcipher/archive/refs/tags/v4.6.1.tar.gz \
+    && cd /tmp && tar xzf sqlcipher.tar.gz && cd sqlcipher-4.6.1 \
+    && ./configure --enable-tempstore=yes CFLAGS="-DSQLITE_HAS_CODEC -DSQLCIPHER_CRYPTO_OPENSSL -O2" LDFLAGS="-lcrypto" >/dev/null \
+    && make -j4 >/dev/null && make install >/dev/null \
+    && mkdir -p /opt/sqlcipher-shim && ln -sf /usr/local/lib/libsqlcipher.a /opt/sqlcipher-shim/libsqlite3.a
+WORKDIR /src
+COPY services/credential-broker/go.mod services/credential-broker/go.sum ./
+RUN go mod download
+COPY services/credential-broker ./
+RUN --mount=type=cache,id=hermes-broker-go-build,target=/root/.cache/go-build \
+    CGO_ENABLED=1 CGO_CFLAGS="-I/usr/local/include/sqlcipher" CGO_LDFLAGS="-L/opt/sqlcipher-shim -static -lsqlcipher -lcrypto -lssl -lpthread -lm -ldl" \
+    go build -tags libsqlite3 -buildvcs=false -trimpath -ldflags='-s -w' -o /credential-broker ./cmd/credential-broker
+
 FROM golang:1.27.3-bookworm AS cliproxy_build
-RUN --mount=type=cache,id=cliproxy-go-mod,target=/go/pkg/mod --mount=type=cache,id=cliproxy-go-build,target=/root/.cache/go-build set -e; git init /cliproxy && cd /cliproxy && git remote add origin https://github.com/router-for-me/CLIProxyAPI.git && for i in 1 2 3 4; do if git -c http.version=HTTP/1.1 fetch --depth 1 origin ba7e55836dee959e93ec6d41395865d9ec535086; then break; fi; if [ "$i" = 4 ]; then exit 1; fi; sleep 10; done && git checkout --detach FETCH_HEAD && CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /cli-proxy-api ./cmd/server
+RUN --mount=type=cache,id=cliproxy-go-mod,target=/go/pkg/mod --mount=type=cache,id=cliproxy-go-build,target=/root/.cache/go-build set -e; git init /cliproxy && cd /cliproxy && git remote add origin https://github.com/router-for-me/CLIProxyAPI.git && for i in 1 2 3 4; do if git -c http.version=HTTP/1.1 fetch --depth 1 origin c5251b57b3fa5dcbc689f514f4aa166daacb4481; then break; fi; if [ "$i" = 4 ]; then exit 1; fi; sleep 10; done && git checkout --detach FETCH_HEAD && CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags='-s -w' -o /cli-proxy-api ./cmd/server
 
 FROM debian:13.6 AS sqlite_build
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential ca-certificates curl && rm -rf /var/lib/apt/lists/*
@@ -68,7 +83,8 @@ FROM debian:13.6-slim AS core
 # the vault writer's commit backend (SPEC-0085 R1): the communication gateway
 # mounts the memory vault and lands governed writes as git commits.
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git && rm -rf /var/lib/apt/lists/*
-COPY --from=go_build /hubctl /hub-runtime /toolhub /communication-hub /credential-broker /hub-media /cellinit /usr/local/bin/
+COPY --from=go_build /hubctl /hub-runtime /toolhub /communication-hub /hub-media /cellinit /usr/local/bin/
+COPY --from=broker_build /credential-broker /usr/local/bin/
 COPY --from=cliproxy_build /cli-proxy-api /usr/local/bin/cli-proxy-api
 COPY docker/seccomp-buildkit-rootless.json docker/seccomp-mcp-runtime.json /opt/hub/seccomp/
 # Immutable platform catalogs (rights vocabulary, toolsets, service kinds):

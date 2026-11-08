@@ -23,7 +23,7 @@ func writeBoundaryFile(t *testing.T, path, writable string) {
 }
 
 // A narrowed published boundary applies to the next file_write in the same
-// session: the executor reloads /config/workspace.yaml by mtime, never by
+// session: the executor reloads /config/workspace.yaml on every write, never by
 // restart (SPEC-0092 R5.3).
 func TestFileWriteDeniedOutsideWritableLive(t *testing.T) {
 	dir := t.TempDir()
@@ -275,5 +275,136 @@ func TestOpenRootsPicksPassportBoundary(t *testing.T) {
 	}
 	if _, err := tools.File("write", Input{Path: "work/ok.md", Text: "ok"}); err != nil {
 		t.Errorf("writable path denied: %v", err)
+	}
+}
+
+func TestManagedWorkspaceBoundaryRequiresActivePassport(t *testing.T) {
+	t.Setenv("HUB_PASSPORT_REVISION", "r-1")
+	t.Setenv("HUB_STATE", t.TempDir())
+	workspace, config := t.TempDir(), t.TempDir()
+	boundary := filepath.Join(config, "workspace.yaml")
+	t.Setenv("HUB_WORKSPACE_BOUNDARY", boundary)
+	t.Setenv("HUB_WORKSPACE_RO", "")
+	writeBoundaryFile(t, boundary, "/workspace/work")
+	valid, err := os.ReadFile(boundary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ name, body, marker string }{
+		{"missing", "", "r-1"},
+		{"retired", "writable: [/workspace]\n", "r-1"},
+		{"unknown", string(valid) + "allow_everything: true\n", "r-1"},
+		{"second-document", string(valid) + "---\nwritable: [/workspace]\n", "r-1"},
+		{"unactivated", string(valid), "r-other"},
+		{"no-marker", string(valid), ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(boundary, []byte(tc.body), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if tc.body == "" {
+				if err := os.Remove(boundary); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(config, "revision"), []byte(tc.marker), 0600); err != nil {
+				t.Fatal(err)
+			}
+			tools, err := OpenRoots(workspace, "", "")
+			if err == nil {
+				tools.Close()
+				t.Fatal("managed executor opened without an active workspace passport")
+			}
+		})
+	}
+	if err := os.WriteFile(boundary, valid, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(config, "revision"), []byte("r-1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	tools, err := OpenRoots(workspace, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tools.Close()
+	if _, err := tools.File("write", Input{Path: "work/allowed.txt", Text: "ok"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(boundary); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tools.File("write", Input{Path: "work/denied.txt", Text: "no"}); err == nil {
+		t.Fatal("removed passport widened a running executor")
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "work", "denied.txt")); !os.IsNotExist(err) {
+		t.Fatal("denied write touched the workspace")
+	}
+}
+
+func TestWorkspaceBoundaryReloadIgnoresUnchangedMtimeAndSize(t *testing.T) {
+	t.Setenv("HUB_PASSPORT_REVISION", "r-1")
+	workspace, config := t.TempDir(), t.TempDir()
+	boundary := filepath.Join(config, "workspace.yaml")
+	writeBoundaryFile(t, boundary, "/workspace/work")
+	if err := os.WriteFile(filepath.Join(config, "revision"), []byte("r-1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := os.OpenRoot(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	tools := &Tools{Workspace: ws, BoundaryPath: boundary}
+	if _, err := tools.File("write", Input{Path: "work/before.txt", Text: "ok"}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(boundary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(boundary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	narrowed := strings.ReplaceAll(strings.ReplaceAll(string(body), "r-1", "r-2"), "/workspace/work", "/workspace/next")
+	if len(narrowed) != len(body) {
+		t.Fatal("fixture must preserve file size")
+	}
+	if err := os.WriteFile(boundary, []byte(narrowed), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(boundary, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(config, "revision"), []byte("r-2\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tools.File("write", Input{Path: "work/after.txt", Text: "no"}); err == nil {
+		t.Fatal("cached boundary admitted a removed writable path")
+	}
+	if _, err := tools.File("write", Input{Path: "next/allowed.txt", Text: "ok"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWorkspaceBoundaryRejectsSymlink(t *testing.T) {
+	ws, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	target := filepath.Join(t.TempDir(), "workspace.yaml")
+	writeBoundaryFile(t, target, "/workspace")
+	link := filepath.Join(t.TempDir(), "workspace.yaml")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	tools := &Tools{Workspace: ws, BoundaryPath: link}
+	if _, err := tools.File("write", Input{Path: "escaped.txt", Text: "no"}); err == nil {
+		t.Fatal("symlinked passport admitted a write")
+	}
+	if _, err := ws.Stat("escaped.txt"); !os.IsNotExist(err) {
+		t.Fatal("denied write touched the workspace")
 	}
 }

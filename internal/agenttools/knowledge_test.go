@@ -58,8 +58,8 @@ func TestKnowledgeToolsReadOnly(t *testing.T) {
 			t.Fatalf("%s wrote into the read-only knowledge root", name)
 		}
 	}
-	// Catalog: the knowledge surface lives inside file tools; no
-	// knowledge_* spec remains.
+	// Catalog: the file knowledge root remains inside file tools; no
+	// knowledge_* spec is reintroduced.
 	for _, spec := range HubToolsDefinition().Tools {
 		if len(spec.Name) > 9 && spec.Name[:9] == "knowledge" {
 			t.Fatalf("knowledge tool %s survived the r5 merge", spec.Name)

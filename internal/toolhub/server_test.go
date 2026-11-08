@@ -148,6 +148,39 @@ func TestReloadTokensKeepsPrimaryWhenFileBreaks(t *testing.T) {
 	}
 }
 
+func TestReloadTokensReplacesSameBearerPolicyAndRevokesMissingSibling(t *testing.T) {
+	primary, sibling := strings.Repeat("p", 32), strings.Repeat("s", 32)
+	old := bobAuth()
+	newer := old
+	newer.PolicyVersion = "policy-next"
+	path := filepath.Join(t.TempDir(), "tokens.json")
+	write := func(entries map[string]identity.Envelope) {
+		body, err := json.Marshal(entries)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, body, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(map[string]identity.Envelope{sibling: old})
+	g := &Gateway{primaryToken: primary, tokensFile: path, Tokens: map[string]identity.Envelope{primary: aliceAuth(), sibling: old}, projections: map[string]*gatewayProjection{sibling: {auth: old}}}
+	if token, ok := g.authenticate("Bearer " + sibling); !ok || token != sibling {
+		t.Fatal("original sibling denied")
+	}
+	write(map[string]identity.Envelope{sibling: newer})
+	if token, ok := g.authenticate("Bearer " + sibling); !ok || token != sibling || g.Tokens[sibling].PolicyVersion != "policy-next" || g.projections[sibling] != nil {
+		t.Fatal("same bearer kept stale policy projection")
+	}
+	write(map[string]identity.Envelope{})
+	if _, ok := g.authenticate("Bearer " + sibling); ok {
+		t.Fatal("removed sibling still admitted")
+	}
+	if _, ok := g.authenticate("Bearer " + primary); !ok {
+		t.Fatal("primary lost during sibling removal")
+	}
+}
+
 func TestEndpointHandlerUsesOneAuthenticatedIdentity(t *testing.T) {
 	store, auth, _ := seededStore(t)
 	config := EndpointConfig{Token: strings.Repeat("t", 32), Auth: auth, Backend: backendFunc(func(_ context.Context, _ api.EffectiveBinding, _ api.ToolSpec, _ map[string]any) (api.BackendResult, error) {

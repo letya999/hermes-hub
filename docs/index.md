@@ -1,6 +1,6 @@
 ---
 description: Current documentation index and Memory Bank navigation.
-last_verified: 2026-11-05
+last_verified: 2026-11-07
 ---
 # Documentation
 
@@ -28,7 +28,7 @@ last_verified: 2026-11-05
 | [threat-model.md](threat-model.md) | Trust boundaries, threat table, deny-path requirements |
 | [tools.md](tools.md) | Agent-visible tool catalog with action/resource/effect per tool |
 | [tool-design.md](tool-design.md) | Normative tool-design charter — vocabulary, naming, schemas, rights, results, context budget |
-| [spaces.md](spaces.md) | space layout, `agent.yaml`/`workspace.yaml` fields (unmanaged), six-passport authority (managed), feature registry |
+| [spaces.md](spaces.md) | space layout, six authored passports and their published projections, retired input boundaries, feature registry |
 | [agent-home.md](agent-home.md) | SOUL.md semantics, default skills, hook surface |
 | [system-guide.md](system-guide.md) | Mandatory English reference skill, delivery paths and evidence boundaries |
 

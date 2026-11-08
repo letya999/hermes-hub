@@ -3248,5 +3248,31 @@
     "prerequisites": "\u0422\u0435\u0441\u0442\u043e\u0432\u044b\u0439 managed-\u043f\u0440\u043e\u0444\u0438\u043b\u044c \u0441 memory_vault; \u0436\u0438\u0432\u043e\u0439 Hindsight (local embed \u0438\u043b\u0438 staging); secrets-env \u0441 \u0442\u043e\u043a\u0435\u043d\u043e\u043c.",
     "level": "agent-e2e",
     "cleanup": "\u0423\u0431\u0440\u0430\u0442\u044c \u0433\u0440\u0430\u043d\u0442 \u0438 provider.json; \u0443\u0434\u0430\u043b\u0438\u0442\u044c \u0442\u0435\u0441\u0442\u043e\u0432\u044b\u0435 banks."
+  },
+  {
+    "id": "E2E-251",
+    "surface": "hub",
+    "name": "memory_read",
+    "title": "memory_read",
+    "action": "Search own private memory, then read the full text of one exact hit ID.",
+    "expected": "The active owner's exact indexed hit returns full text with evidence and untrusted flag; foreign, unknown and forgotten IDs remain opaque unless own history is requested; current memory.search and live-run admission apply.",
+    "package": "toolhub",
+    "test": "TestReadToolExactOwnSearchHit",
+    "prerequisites": "Isolated two-owner vaults and admitted live private runs; no personal data.",
+    "level": "contract",
+    "cleanup": "Remove only the isolated test vaults and runs."
+  },
+  {
+    "id": "E2E-252",
+    "surface": "hub",
+    "name": "memory_open",
+    "title": "memory_open",
+    "action": "Ask the private owner agent to open a read-only knowledge view, then search and read through its one-hour ToolHub link.",
+    "expected": "Only a live private owner run mints the link; ToolHub serves own memory without an upstream vault mount; tampered, expired, revoked and group requests fail, and the page has no write method.",
+    "package": "toolhub",
+    "test": "TestKnowledgeOpenLinkChecksRunOwnerExpiryAndCurrentRights",
+    "prerequisites": "Isolated managed profile and vault with a synthetic private memory entry; no personal data or external send.",
+    "level": "contract",
+    "cleanup": "Remove only the isolated test vault and link fixture."
   }
 ]

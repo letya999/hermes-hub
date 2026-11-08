@@ -442,7 +442,7 @@ func (c *ControlPlane) refreshCredentialForm(ctx context.Context, auth identity.
 }
 
 func (c *ControlPlane) refreshConfirmation(ctx context.Context, auth identity.Envelope, onboarding *api.Onboarding) error {
-	if onboarding == nil || onboarding.Phase != api.PhaseAwaitingConfirm || (onboarding.ConfirmationNonce != "" && c.now().Before(onboarding.ConfirmationExpires)) {
+	if onboarding == nil || onboarding.Phase != api.PhaseAwaitingConfirm || (!onboarding.ConfirmationUsed && onboarding.ConfirmationNonce != "" && c.now().Before(onboarding.ConfirmationExpires)) {
 		return nil
 	}
 	onboarding.ConfirmationNonce = api.RandomNonce()

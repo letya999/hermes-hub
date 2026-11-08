@@ -43,3 +43,16 @@ capability; zip archives and multi-file batches are instances, not the limit.
    to receive: the workspace copy is removed on handoff. Nothing is kept
    solely as a delivery intermediate — the durable copy while sending lives
    in `spool/outbox/blobs/` and is removed by `CompleteDelivery`.
+
+## M32 amendment (2026-11-08)
+
+For managed runs, the runtime resolves the staged `inbox=<id>` reference
+before admitting Hermes through ToolHub's authenticated internal
+`POST /v1/inbound-fetch` route. `inbox_fetch` is not an agent-visible MCP tool.
+ToolHub checks the current owner binding and `workspace.read` right and writes
+through only that owner's inbox mount; the agent's inbox remains read-only.
+Materialization uses `inbox/<source>/<id>/files/` and a synced receipt before
+acknowledgement. Retrying the same ID reuses the receipt. A failed save prevents
+the run from starting without its attachment. These rules supersede inbound
+steps 2, 4 and 5 where their former paths, consumption or model-visible fetch
+wording differs.

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/google/jsonschema-go/jsonschema"
+
 	"github.com/letya999/hermes-hub/internal/audit"
 	"github.com/letya999/hermes-hub/internal/identity"
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
@@ -61,7 +62,7 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 	var out *mcp.CallToolResult
 	admitted := false
 	authorized := false
-	err = g.Store.AuthorizeProjectedCall(auth, projectedName, arguments, g.admitGoverned(auth, func(projected api.ProjectedTool, effective api.EffectiveBinding) (callbackErr error) {
+	execute := g.admitGoverned(auth, func(projected api.ProjectedTool, effective api.EffectiveBinding) (callbackErr error) {
 		if activation.revision != "" && effective.CapabilityProfileRevision != activation.profileRevision {
 			return fmt.Errorf("%w: passport activation mismatch", api.ErrUnauthorized)
 		}
@@ -131,6 +132,14 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 		effective.ProxyGrants = append([]api.ProxyGrant(nil), injection.Proxy...)
 		callCtx, cancel := context.WithTimeout(ctx, time.Duration(effective.Definition.Execution.TimeoutSeconds)*time.Second)
 		defer cancel()
+		if strings.HasPrefix(projected.Tool.Name, "goal_") {
+			conversationID, err := g.liveRunConversation(callCtx, auth, corr)
+			if err != nil {
+				outcome = "preflight-error"
+				return err
+			}
+			callCtx = api.WithAgentConversation(callCtx, conversationID)
+		}
 		var result api.BackendResult
 		var callErr error
 		if err := callCtx.Err(); err != nil {
@@ -150,7 +159,7 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 		effectStarted = true
 		outcome = "backend-error"
 		caller, envOK := g.Backend.(api.EnvBackend)
-		if api.RemoteExecutor(projected.Tool.Executor) {
+		if effective.Definition.Transport == api.AgentTools && api.RemoteExecutor(projected.Tool.Executor) {
 			result, callErr = g.execRemote(callCtx, auth, effective, projected.Tool, arguments)
 		} else if envOK {
 			result, callErr = caller.CallEnv(callCtx, effective, projected.Tool, arguments, injection.Environment)
@@ -239,7 +248,98 @@ func (g *Gateway) call(ctx context.Context, auth identity.Envelope, projectedNam
 			fields["receipt"] = receipt
 		}
 		return nil
-	}))
+	})
+	var afterAdmission func() error
+	err = g.Store.AuthorizeProjectedCall(auth, projectedName, arguments, func(projected api.ProjectedTool, effective api.EffectiveBinding) error {
+		if effective.Definition.DefinitionID == "hub-agent-tools" && projected.Tool.Executor == "runtime:toolhub" && projected.Tool.Name == "tool_call" {
+			// The delegate performs a full admission for its target call.
+			afterAdmission = func() error { return execute(projected, effective) }
+			return nil
+		}
+		if projected.Tool.Executor == "runtime:connectors" {
+			// The connector facade reads this registry; do not call it under its admission lock.
+			afterAdmission = func() error {
+				authorized = true
+				if err := g.Store.Reload(); err != nil {
+					return fmt.Errorf("%w: %w", api.ErrBeforeEffect, err)
+				}
+				if err := g.Store.ReverifyEffective(effective); err != nil {
+					return fmt.Errorf("%w: %w", api.ErrBeforeEffect, err)
+				}
+				return execute(projected, effective)
+			}
+			return nil
+		}
+		if g.Vaults != nil && effective.Definition.DefinitionID == "hub-agent-tools" && projected.Tool.Executor == "runtime:toolhub" &&
+			(projected.Tool.Name == "memory_search" || projected.Tool.Name == "memory_read" || projected.Tool.Name == "memory_card") {
+			// Waiting for dreaming must not pin shared registry authority.
+			afterAdmission = func() error {
+				authorized = true
+				if err := g.requireMemoryAdmission(ctx, auth, corr); err != nil {
+					return fmt.Errorf("%w: %w", api.ErrBeforeEffect, err)
+				}
+				u, err := g.Vaults.Resolve(auth.PrincipalID, auth.Environment)
+				if err != nil {
+					if projected.Tool.Name == "memory_search" || projected.Tool.Name == "memory_read" {
+						// Read-only tools report unavailable after admission; the handler cannot fall back to another vault.
+						return g.Store.AuthorizeProjectedCall(auth, projectedName, arguments, execute)
+					}
+					return fmt.Errorf("%w: %w", api.ErrBeforeEffect, err)
+				}
+				return u.Locked(func(root string) error {
+					ctx = context.WithValue(ctx, memoryVaultKey{}, memoryVaultPin{gateway: g, auth: auth, root: root})
+					return g.Store.AuthorizeProjectedCall(auth, projectedName, arguments, execute)
+				})
+			}
+			return nil
+		}
+		if effective.Definition.DefinitionID == "hub-agent-tools" && effective.Definition.Transport == api.AgentTools &&
+			projected.Tool.Name == "settings_edit" && projected.Tool.Executor == "handler:settings" {
+			// The authenticated publisher rechecks edit authority and writes this registry.
+			// Holding its admission fence through that write would deadlock both processes.
+			afterAdmission = func() error { return execute(projected, effective) }
+			return nil
+		}
+		if effective.Definition.DefinitionID == "hub-agent-tools" && projected.Tool.Executor == "handler:terminal" {
+			// A long command must not pin the registry read lock against a revoke.
+			afterAdmission = func() error {
+				authorized = true
+				if projected.Tool.Name == "terminal_exec" && g.acquireRuntime != nil {
+					release, err := g.acquireRuntime(ctx, effective)
+					if err != nil || release == nil {
+						return fmt.Errorf("%w: terminal runtime unavailable", api.ErrBeforeEffect)
+					}
+					defer release()
+				}
+				if err := g.Store.ReverifyEffective(effective); err != nil {
+					return fmt.Errorf("%w: %w", api.ErrBeforeEffect, err)
+				}
+				return execute(projected, effective)
+			}
+			return nil
+		}
+		if g.acquireRuntime != nil && effective.Definition.Transport == api.AgentTools && !api.RemoteExecutor(projected.Tool.Executor) && projected.Tool.Executor != "handler:settings" {
+			// Cold startup may call back into ToolHub or update registry state.
+			// Re-authorize after it completes, before dispatching any business tool.
+			afterAdmission = func() error {
+				authorized = true
+				release, err := g.acquireRuntime(ctx, effective)
+				if err != nil {
+					return fmt.Errorf("%w: %w", api.ErrBeforeEffect, err)
+				}
+				if release == nil {
+					return fmt.Errorf("%w: %w", api.ErrBeforeEffect, api.ErrIsolation)
+				}
+				defer release()
+				return g.Store.AuthorizeProjectedCall(auth, projectedName, arguments, execute)
+			}
+			return nil
+		}
+		return execute(projected, effective)
+	})
+	if err == nil && afterAdmission != nil {
+		err = afterAdmission()
+	}
 	if err != nil && !admitted {
 		fields := map[string]string{
 			"principal_id": auth.PrincipalID, "context_id": auth.ContextID, "runtime_id": auth.RuntimeID,

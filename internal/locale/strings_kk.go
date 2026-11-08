@@ -2,6 +2,10 @@ package locale
 
 func init() {
 	register(LangKK, map[string]string{
+		"tools.workspace-boundary-invalid":        "workspace паспорты жоқ, жарамсыз немесе белсендірілмеген.",
+		"hubctl.replay-config-invalid":            "Replay конфигурациясына алты паспорттың толық әрі жарамды жарияланған ревизиясы қажет.",
+		"doctor.model-default":                    "passports/models.yaml ішінде default пен routes мәндерін орнатып, space apply арқылы жариялаңыз.",
+		"doctor.model-endpoint":                   "passports/models.yaml ішінде таңдалған сервистің endpoint мәнін орнатып, space apply арқылы жариялаңыз.",
 		"supervisor.settings-invalid":             "Параметрлерді өзгерту сұрауы жарамсыз.",
 		"supervisor.settings-denied":              "Параметрлерді өзгерту қабылданбады немесе жарияланбады.",
 		"hubctl.space-apply-passport-right":       "Бұл паспорт өзгерісі үшін %s құқығы қажет.",
@@ -470,6 +474,15 @@ func init() {
 		"page.field-optional":           "міндетті емес",
 		"page.opt-out":                  "Өріс керек емес — оныңсіз іске қосу",
 		"page.viewer-title":             "Браузерді көру",
+		"page.knowledge-title":          "Білім",
+		"page.knowledge-intro":          "Жеке жадыңыздан іздеңіз. Бұл бет тек оқуға арналған, сілтеме бір сағат жарамды.",
+		"page.knowledge-search":         "Іздеу",
+		"page.knowledge-back":           "Іздеуге оралу",
+		"page.knowledge-empty":          "Сәйкес жазбалар табылмады.",
+		"page.knowledge-forbidden":      "Бұл білім сілтемесі қолжетімсіз.",
+		"page.knowledge-expired":        "Сілтеменің мерзімі өтті. Агенттен жаңасын сұраңыз.",
+		"page.knowledge-bad":            "Іздеу сұрауы қате.",
+		"page.knowledge-unavailable":    "Білім уақытша қолжетімсіз.",
 		"page.viewer-hint":              "Сайттарға кіру тек осында жүзеге асырылады — парольдерді ешқашан чатқа жібермеңіз.",
 		"page.viewer-open":              "Ашу",
 		"page.viewer-alt":               "Браузер кадры",

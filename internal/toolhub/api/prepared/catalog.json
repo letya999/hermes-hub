@@ -50,7 +50,7 @@
     "handoff":"Install https://github.com/taylorwilsdon/google_workspace_mcp through the reviewed read-only recipe. Upload the OAuth client JSON and account email only in the protected Broker form, then approve the requested Google scopes in the browser. Verify list_calendars; no provider writes are authorized."
   },
   {
-    "id": "github", "name": "GitHub", "license": "MIT", "tier": "t1",
+    "id": "github", "name": "GitHub", "license": "MIT", "tier": "t1", "definition_version": "0.0.3",
     "source": {"repository": "https://github.com/github/github-mcp-server", "commit_sha": "85598ba6e1256f7ebf4867b95d63b833c4549264"},
     "language": "go", "entrypoint": ["/app/mcp-server", "stdio"],
     "connection": {"fields": [{"name": "GITHUB_PERSONAL_ACCESS_TOKEN", "type": "token", "required": true, "secret": true, "delivery": "env", "target": "GITHUB_PERSONAL_ACCESS_TOKEN"}]},

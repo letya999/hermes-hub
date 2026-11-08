@@ -62,7 +62,7 @@ func (g *Gateway) memoryContext(r *http.Request, auth identity.Envelope, claim a
 	if record.JobID != claim.JobID || record.AdmissionID == "" || record.AdmissionID != claim.AdmissionID ||
 		record.TextSHA256 != captureHash(claim.Text) || record.Status != "running" ||
 		record.RuntimeGeneration == "" || record.RuntimeGeneration != record.CurrentGeneration ||
-		record.Kind() != api.RunKindPrivate || record.Sensitive ||
+		!record.MayUseOwnerMemory() ||
 		record.UserID != auth.PrincipalID || record.Environment != auth.Environment ||
 		record.Envelope.PrincipalID != auth.PrincipalID || record.Envelope.ContextID != auth.ContextID ||
 		record.Envelope.RuntimeID != auth.RuntimeID {

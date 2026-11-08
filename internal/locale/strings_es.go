@@ -2,6 +2,10 @@ package locale
 
 func init() {
 	register(LangES, map[string]string{
+		"tools.workspace-boundary-invalid":        "El pasaporte workspace falta, no es válido o no está activo.",
+		"hubctl.replay-config-invalid":            "La configuración de replay requiere una revisión publicada completa y válida de los seis pasaportes.",
+		"doctor.model-default":                    "Configure default y routes en passports/models.yaml y publique con space apply.",
+		"doctor.model-endpoint":                   "Configure el endpoint del servicio seleccionado en passports/models.yaml y publique con space apply.",
 		"supervisor.settings-invalid":             "Solicitud de edición de ajustes no válida.",
 		"supervisor.settings-denied":              "La edición de ajustes fue denegada o no se pudo publicar.",
 		"hubctl.space-apply-passport-right":       "Este cambio de pasaporte requiere el permiso %s.",
@@ -451,6 +455,15 @@ func init() {
 		"page.device-pending-body":      "El código aún no se introdujo en el otro dispositivo. Vuelve y pulsa «Comprobar» otra vez.",
 		"page.connect-failed-title":     "La conexión falló",
 		"page.viewer-title":             "Visor del navegador",
+		"page.knowledge-title":          "Conocimiento",
+		"page.knowledge-intro":          "Busca en tu memoria privada. Esta vista es de solo lectura y el enlace caduca en una hora.",
+		"page.knowledge-search":         "Buscar",
+		"page.knowledge-back":           "Volver a la búsqueda",
+		"page.knowledge-empty":          "No se encontraron recuerdos coincidentes.",
+		"page.knowledge-forbidden":      "Este enlace de conocimiento no está disponible.",
+		"page.knowledge-expired":        "Este enlace ha caducado. Pide uno nuevo al agente.",
+		"page.knowledge-bad":            "Solicitud de búsqueda no válida.",
+		"page.knowledge-unavailable":    "El conocimiento no está disponible temporalmente.",
 		"page.viewer-hint":              "El inicio de sesión en sitios se hace solo aquí — nunca envíes contraseñas al chat.",
 		"page.viewer-open":              "Abrir",
 		"page.viewer-retry":             "Fotograma no disponible — reintento en 3 s",

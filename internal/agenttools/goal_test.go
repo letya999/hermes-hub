@@ -40,6 +40,9 @@ func TestGoalToolPostsControlRequest(t *testing.T) {
 	if gotBody["op"] != "set" || gotBody["text"] != "ship it" || gotBody["conversation_id"] != "telegram-11" {
 		t.Fatalf("body: %v", gotBody)
 	}
+	if _, err := v.Goal(WithConversationID(context.Background(), "telegram-22"), "goal_status", Input{}); err != nil || gotBody["conversation_id"] != "telegram-22" {
+		t.Fatalf("verified run conversation not used: body=%v err=%v", gotBody, err)
+	}
 	goal, _ := out["goal"].(map[string]any)
 	if goal["status"] != "active" || goal["turns_used"] != float64(3) {
 		t.Fatalf("result: %v", out)

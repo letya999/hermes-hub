@@ -95,9 +95,20 @@ func settingsSpace(t *testing.T, right bool) (string, string, string) {
 func TestSettingsEditPublishesAndSurvivesRender(t *testing.T) {
 	root, dir, previous := settingsSpace(t, true)
 	value := "true"
-	result, err := runSettingsEdit(context.Background(), dir, root, "dev", "compression.enabled", &value, previous)
+	respawns := 0
+	result, err := runSettingsEdit(context.Background(), dir, root, "dev", "compression.enabled", &value, previous, func() error {
+		record, err := readApplyJournal(dir)
+		if err != nil || record.Phase != "effects" {
+			t.Fatal("local runtime effect escaped publication journal", err)
+		}
+		respawns++
+		return nil
+	})
 	if err != nil || result["changed"] != true {
 		t.Fatalf("settings edit: %v %v", result, err)
+	}
+	if respawns != 1 {
+		t.Fatalf("runtime effects=%d want 1", respawns)
 	}
 	current, err := passport.Current(dir)
 	if err != nil || current == previous || result["published_revision"] != current {
@@ -130,7 +141,7 @@ func TestSettingsEditPublishesAndSurvivesRender(t *testing.T) {
 	if err := yaml.Unmarshal(generated, &rendered); err != nil || rendered.Compression["enabled"] != true {
 		t.Fatal("rendered Hermes config lost published setting", err)
 	}
-	if _, err := runSettingsEdit(context.Background(), dir, root, "dev", "compression.enabled", &value, previous); err == nil {
+	if _, err := runSettingsEdit(context.Background(), dir, root, "dev", "compression.enabled", &value, previous, nil); err == nil {
 		t.Fatal("stale base revision accepted")
 	}
 	after, _ := passport.Current(dir)
@@ -143,7 +154,7 @@ func TestSettingsEditDeniedWithoutRightOrWithDraft(t *testing.T) {
 	value := "true"
 	root, dir, current := settingsSpace(t, false)
 	before, _ := os.ReadFile(filepath.Join(dir, "passports", "config.yaml"))
-	if _, err := runSettingsEdit(context.Background(), dir, root, "dev", "compression.enabled", &value, current); err == nil {
+	if _, err := runSettingsEdit(context.Background(), dir, root, "dev", "compression.enabled", &value, current, nil); err == nil {
 		t.Fatal("config edit without current right accepted")
 	}
 	if now, _ := passport.Current(dir); now != current {
@@ -162,7 +173,7 @@ func TestSettingsEditDeniedWithoutRightOrWithDraft(t *testing.T) {
 	if err := os.WriteFile(config, []byte(draft), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runSettingsEdit(context.Background(), dir, root, "dev", "compression.enabled", &value, current); err == nil {
+	if _, err := runSettingsEdit(context.Background(), dir, root, "dev", "compression.enabled", &value, current, nil); err == nil {
 		t.Fatal("unpublished authored draft accepted")
 	}
 	if now, _ := passport.Current(dir); now != current {
@@ -177,7 +188,7 @@ func TestSettingsEditRejectsRevokedIssuedRight(t *testing.T) {
 		t.Fatal(err)
 	}
 	value := "true"
-	if _, err := runSettingsEdit(context.Background(), dir, root, "dev", "compression.enabled", &value, current); err == nil {
+	if _, err := runSettingsEdit(context.Background(), dir, root, "dev", "compression.enabled", &value, current, nil); err == nil {
 		t.Fatal("published right survived issued revocation")
 	}
 	if now, _ := passport.Current(dir); now != current {
@@ -216,7 +227,7 @@ func TestSettingsEditCrashRestoresAuthoredAndPublished(t *testing.T) {
 	t.Cleanup(func() { applyStep = prior })
 	func() {
 		defer func() { stopped = recover() != nil }()
-		_, _ = runSettingsEdit(context.Background(), dir, root, "dev", "compression.enabled", &value, previous)
+		_, _ = runSettingsEdit(context.Background(), dir, root, "dev", "compression.enabled", &value, previous, nil)
 	}()
 	applyStep = prior
 	if !stopped {
@@ -319,7 +330,7 @@ func TestSettingsContractRebindsProfileAndRespawnsRuntime(t *testing.T) {
 	defer server.Close()
 	t.Setenv("HUB_RUNTIME_SUPERVISOR_URL", server.URL)
 	value := "true"
-	if _, err := runSettingsEdit(context.Background(), dir, root, "dev", "compression.enabled", &value, rev.ID); err != nil {
+	if _, err := runSettingsEdit(context.Background(), dir, root, "dev", "compression.enabled", &value, rev.ID, nil); err != nil {
 		t.Fatal(err)
 	}
 	if respawns.Load() != 1 {

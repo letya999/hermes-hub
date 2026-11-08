@@ -1,6 +1,6 @@
 ---
 description: toolhub — capability gateway: tool admission, governance evaluation, connector lifecycle, audit ledger.
-last_verified: 2026-11-07
+last_verified: 2026-11-08
 ---
 
 # toolhub
@@ -73,8 +73,14 @@ and before service effects complete.
   `X-Hub-Job-ID`/`X-Hub-Run-ID` select the record; the record's own fields
   must prove a `running` private run bound to the caller's principal,
   context, runtime, environment and current generation. Group and
-  background/system records are explicit `RunKind`s that never admit; an
-  unconfigured or erroring authority denies. The gate sits inside
+  background/system records are explicit `RunKind`s that never admit; a
+  correlation ID is bounded to 256 bytes so hashed mock-channel job IDs
+  survive the MCP hop. The managed runtime stamps the pair on its local
+  MCP proxy after Hermes admission; caller-supplied headers are discarded.
+  Managed MCP calls use the stateless `/mcp-run` route so an earlier
+  connection cannot retain stale run headers; the ordinary `/mcp` route
+  keeps its session behavior for other clients.
+  An unconfigured or erroring authority denies. The gate sits inside
   `AuthorizeProjectedCall` so direct, CLI and nested calls share it and
   every denial lands before the backend.
 - **ToolHub-owned memory search** (`memory_search.go`): `memory_search`
@@ -86,6 +92,8 @@ and before service effects complete.
   an unresolvable vault reports `status=unavailable` with no local fallback.
   The in-runtime `handler:memory` path serves no memory tool — the runtime
   container carries no vault mount.
+- `memory_open` mints a one-hour private read link; `/knowledge` serves search/read
+  from ToolHub and rechecks the current selection, grant and memory switch.
 - **ToolHub-owned memory writer** (`memory_card.go`): `memory_card`
   executes inside ToolHub (`runtime:toolhub` executor) — the sole governed
   writer for model-driven memory mutations. Additive ops `remember` and
@@ -112,11 +120,17 @@ and before service effects complete.
   A deterministic request id (job, op, canonical arguments — never the
   per-call `ToolCallID`) lets retries and a restarted handler finish an
   interrupted write or journal entry without repeating the effect. Journal
-  persistence errors are returned, not reported as success. Every mutation
-  and denial is journaled to
-  `runtime/memory/writes.jsonl` under the authorizing `(job, run)`
+  persistence errors are returned, not reported as success. After exact-run
+  verification, memory calls wait for their vault outside the registry fence
+  and repeat full admission afterward; other owners and writers keep progressing.
+  The cataloged `tool_call` delegates outside its outer fence. Backend mutations
+  and denials are journaled to `runtime/memory/writes.jsonl` under `(job, run)`
   `source_ref`; malformed calls answer `status=invalid` with field-level
-  errors.
+  errors. Earlier admission refusals use the central ToolHub audit with job/run
+  correlation and leave the vault journal unchanged.
+- Connector calls release the registry admission lock, then reload and recheck
+  the selected tool with actual arguments, including `connector_edit`. Current
+  rights still fence dispatch without the legacy connector bundle flag.
 - **Pre-turn memory context** (`memory_context.go`): `POST /v1/memory-context`
   is the supervisor's private-run context lane (SPEC-0098 M5). The
   control-plane bearer plus `X-Hub-Principal` resolve the enrolled identity;
@@ -145,7 +159,8 @@ and before service effects complete.
   local day from the published `memory.nightly_rollup` and runtime timezone.
   A spring gap fires at the first later tick; a repeated fall hour and restart
   retain the same date key. Before model work and before vault commit, ToolHub
-  checks the current passport and `memory.dreaming` grant. The owner's vault
+  checks the current passport against the active capability profile, denies
+  incomplete apply, and checks the `memory.dreaming` grant. The owner's vault
   lock and durable night checkpoints resume work without another model call;
   corrupt checkpoints fail closed. Verified action intents become draft
   assignments. A completed digest is recorded in the ToolHub delivery outbox
@@ -342,10 +357,10 @@ ToolHub writes `store.json` through a synced temporary file and rename, then
 syncs the parent directory and creates a synced initialization marker. A missing
 snapshot with a retained marker refuses a fresh empty Save; the same Store
 instance also refuses to rewrite a vanished snapshot. The directory sync is
-effective on Unix; the existing Windows sync helper is a no-op, so native
-filesystem durability still needs the isolated acceptance gate. If the entire
-volume and its marker disappear together, this local fence cannot prove that
-the installation was previously initialized.
+effective on Unix; native Windows directory sync remains a no-op and needs
+isolated durability acceptance. Windows governance replacement retries sharing/
+access denials for at most 475 ms, preserving the prior file on failure. If the
+entire volume and marker disappear, this fence cannot prove prior initialization.
 
 ## Key env
 
@@ -460,35 +475,25 @@ No rollout or live acceptance is implied.
 
 ## Automation host preparation (SPEC-0099 A2, #522)
 
-`internal/toolhub/automation` owns the automation plane on top of
-`internal/routines.Engine`: one engine per principal rooted at
-`<root>/users/<principal>` (filesystem isolation), durable dispatch intents
-under `root/dispatch/` written before any supervisor call, a durable delivery
-outbox under `root/outbox/` written before any communication call, and a
-per-principal event seen-set under `root/events/`. Background execution runs
-under explicit service authority from the persisted occurrence job — never
-from tool-call arguments and never through the `memory.*` private-run gate.
-User-facing routine, assignment, and event-watch operations use the matching
-`tasks.schedule`, `tasks.delegate`, and `tasks.observe` live decisions on the
-verified envelope. Due work and pending dispatches recheck the right of their
-persisted schedule, so revocation fences execution. The host environment is
-pinned onto managed envelopes that carry one.
-`Host.Recover` reloads every principal engine, retries unresolved jobs through
-the supervisor's existing `/v1/jobs` handler, and flushes pending deliveries
-through communication's service-only `/v1/automation/deliveries` handler. A
-lost response reuses the same supervisor job identity; a communication outage
-leaves its delivery intent pending. The handoff uses `HUB_AUTOMATION_AUTH`;
-the gateway's ordinary control bearer cannot post a delivery. Per-principal workers let another user's
-due job proceed while one runtime or probe is slow. Real handlers have Go/HTTP
-contract tests. The event port shares communication's event parser, saves each
-source batch before sink handoff, runs isolated per-event filters through the
-supervisor, and uses durable per-source cursors. The Host clock runs bounded
-multi-source streams; notify and agent sinks observe daily caps, quiet windows,
-stable event IDs and restart replay. A capped batch remains durable, and its
-source cursor advances only after every event is admitted or dropped.
-Existing communication spool records have not yet been bound to the new
-owner; compatibility and production startup are
-the #523 switch.
-Terminal failure, cancellation and interruption notices use the owner's
-workspace language; a replay keeps the first recorded text even if the
-language preference changes later.
+`internal/toolhub/automation` owns one `internal/routines.Engine` per principal
+under `<root>/users/<principal>`. It writes dispatch intents under
+`root/dispatch/` before calling supervisor, delivery intents under
+`root/outbox/` before calling communication, and event seen-sets under
+`root/events/`. Background work uses service authority from the persisted
+occurrence job, never tool-call arguments or the `memory.*` private-run gate.
+Routine, assignment and event-watch operations check `tasks.schedule`,
+`tasks.delegate` and `tasks.observe` on the verified envelope. Due work
+rechecks the persisted schedule's right; managed envelopes pin the host
+environment.
+
+`Host.Recover` reloads engines, retries unresolved jobs through supervisor
+`/v1/jobs`, and flushes pending deliveries through communication's service-only
+`/v1/automation/deliveries`. A lost response reuses the job identity; an outage
+leaves delivery pending. Only `HUB_AUTOMATION_AUTH` can post that delivery.
+Per-principal workers keep other owners moving during a slow run or probe.
+
+The event port saves each source batch before sink handoff, filters events in
+isolated supervisor runs, and persists per-source cursors. Bounded streams
+respect daily caps, quiet windows, stable IDs and restart replay. A capped
+batch stays durable until every event is admitted or dropped. Terminal notices
+use the owner's workspace language; replay keeps the first recorded text.

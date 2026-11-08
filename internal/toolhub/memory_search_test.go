@@ -11,7 +11,7 @@ import (
 // hard-errors on the model surface and never falls back to a shared store.
 func TestMemorySearchWithoutVaultResolverReportsUnavailable(t *testing.T) {
 	g := &Gateway{}
-	out, err := g.memorySearch(identity.Envelope{PrincipalID: "alice", Environment: "dev"}, map[string]any{"query": "anything"})
+	out, err := g.memorySearch(t.Context(), identity.Envelope{PrincipalID: "alice", Environment: "dev"}, map[string]any{"query": "anything"})
 	if err != nil {
 		t.Fatalf("memorySearch errored: %v", err)
 	}

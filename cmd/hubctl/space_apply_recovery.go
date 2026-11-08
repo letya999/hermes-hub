@@ -187,7 +187,7 @@ func restoreApplyState(dir, root string, record applyJournal) error {
 			return err
 		}
 	}
-	return nil
+	return refreshSharedRuntimeTokens(dir, record.Environment)
 }
 
 func writeAuthoredConfig(dir string, expected, next []byte) error {

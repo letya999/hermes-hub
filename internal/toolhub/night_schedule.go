@@ -22,8 +22,12 @@ func (e *projectionEndpoint) NightSchedule(auth identity.Envelope) (night.Schedu
 	if g.PassportRoot == "" {
 		return night.Schedule{}, errors.New("night passport unavailable")
 	}
+	activation, err := g.requireActivated(auth)
+	if err != nil || activation.revision == "" {
+		return night.Schedule{}, api.ErrUnauthorized
+	}
 	eff, err := passportview.LoadEffectiveGenerated(filepath.Join(g.PassportRoot, auth.PrincipalID))
-	if err != nil || eff.Header.Metadata.Space != auth.PrincipalID || eff.Header.Metadata.Environment != auth.Environment {
+	if err != nil || eff.Header.Metadata.Revision != activation.revision || eff.Header.Metadata.Space != auth.PrincipalID || eff.Header.Metadata.Environment != auth.Environment {
 		return night.Schedule{}, api.ErrUnauthorized
 	}
 	plan := night.Schedule{
@@ -42,6 +46,9 @@ func (e *projectionEndpoint) NightSchedule(auth identity.Envelope) (night.Schedu
 	}
 	if _, err := time.LoadLocation(plan.Timezone); err != nil {
 		return night.Schedule{}, errors.New("night timezone unavailable")
+	}
+	if err := g.checkActivePassport(auth, activation.revision); err != nil {
+		return night.Schedule{}, err
 	}
 	return plan, nil
 }

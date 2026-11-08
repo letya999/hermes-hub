@@ -1,7 +1,6 @@
 package communication
 
 import (
-	"crypto/subtle"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -20,11 +19,7 @@ func (g *Gateway) handleAutomationDelivery(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	serviceToken := g.config.AutomationAuth
-	if serviceToken == "" {
-		serviceToken = g.config.ControlAuth
-	}
-	if serviceToken == "" || subtle.ConstantTimeCompare([]byte(token), []byte(serviceToken)) != 1 {
+	if !g.serviceControlTokenAccepted(token) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}

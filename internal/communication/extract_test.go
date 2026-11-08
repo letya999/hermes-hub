@@ -344,6 +344,13 @@ func TestProbeScriptValidatedAtCreate(t *testing.T) {
 func TestHostWiresProbeScriptRunner(t *testing.T) {
 	var gotRequest hubruntime.ScriptRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/holds" {
+			if r.Method != http.MethodGet || r.Header.Get("Authorization") != "Bearer fixture" {
+				t.Error("invalid admission epoch request")
+			}
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
 		if r.URL.Path != "/v1/script" {
 			w.WriteHeader(http.StatusNotFound)
 			return

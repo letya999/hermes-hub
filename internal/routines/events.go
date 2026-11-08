@@ -15,7 +15,7 @@ func ExtractEvents(probe *commodel.WatchProbe, body []byte) ([]commodel.Event, e
 	if probe == nil {
 		return nil, errors.New("probe required")
 	}
-	if probe.Kind != "mcp_tool" {
+	if probe.Kind != "mcp_tool" && probe.Kind != "hook" {
 		return []commodel.Event{{ID: WatchHash(string(body)), Text: BoundedWatchText(string(body))}}, nil
 	}
 	var envelope struct {

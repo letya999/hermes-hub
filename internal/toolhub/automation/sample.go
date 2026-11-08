@@ -52,6 +52,9 @@ func (h *Host) SampleWatch(ctx context.Context, auth identity.Envelope, id, over
 	job := commodel.Job{Envelope: schedule.Envelope, OrganizationID: schedule.OrganizationID, UserID: schedule.UserID, ActorID: schedule.ActorID, ScopeID: schedule.ScopeID, Channel: schedule.Channel, ChatID: schedule.ChatID, TaskID: schedule.TaskID, TopicID: schedule.TopicID, SlackChannel: schedule.SlackChannel, SlackThread: schedule.SlackThread, Text: schedule.Input, Trigger: "cron", CreatedAt: h.now().UTC(), Probe: true}
 	job.ID = "sample-" + id
 	job.Envelope.ConversationID = routines.RoutineConversation(id)
+	if err := h.prepareJob(&job); err != nil {
+		return watchSample{}, err
+	}
 	if err := h.cfg.AuthorizeChannel(ctx, id, job); err != nil {
 		return watchSample{}, errUnauthorized
 	}

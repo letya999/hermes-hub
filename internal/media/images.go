@@ -543,6 +543,9 @@ func (s *Session) getLimited(ctx context.Context, raw, allowedBase string, limit
 
 func modelEndpoint(cfg hermesConfig) (string, string, error) {
 	model := strings.TrimSpace(cfg.Model.Default)
+	if vision := strings.TrimSpace(os.Getenv("HUB_MEDIA_VISION_MODEL")); vision != "" {
+		model = vision
+	}
 	if model == "" || strings.Contains(model, "\x00") {
 		return "", "", errors.New("image understanding model is not configured")
 	}

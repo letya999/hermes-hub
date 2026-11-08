@@ -89,7 +89,7 @@ func runSpaceApply(ctx context.Context, args []string) error {
 		return err
 	}
 	if err := recoverApply(ctx, abs, rootAbs, *env, applyHandlers(ctx, abs, rootAbs, *env)); err != nil {
-		return errors.New(locale.T(locale.LangOf(filepath.Join(abs, "workspace")), "hubctl.space-apply-recovery"))
+		return fmt.Errorf("%s: %w", locale.T(locale.LangOf(filepath.Join(abs, "workspace")), "hubctl.space-apply-recovery"), err)
 	}
 	docs, err := catalog.Generate()
 	if err != nil {
@@ -284,6 +284,9 @@ func applyConfirm(ctx context.Context, abs, rootAbs, env string, rev passport.Re
 	if err := rev.Activate(abs); err != nil {
 		return fail("activation", err)
 	}
+	if err := refreshSharedRuntimeTokens(abs, env); err != nil {
+		return fail("runtime token enrollment", err)
+	}
 	if err := advance("activated"); err != nil {
 		return fail("journal", err)
 	}
@@ -366,6 +369,10 @@ var dockerCompose = func(ctx context.Context, dir string, a ...string) error {
 	return cmd.Run()
 }
 
+var applyImageBuild func(context.Context, []string) error
+
+func init() { applyImageBuild = run }
+
 func applyHandlers(ctx context.Context, dir, root, env string) reconcile.Handlers {
 	composeFile := filepath.Join(dir, "generated", "compose."+env+".yaml")
 	docker := func(a ...string) error {
@@ -373,25 +380,26 @@ func applyHandlers(ctx context.Context, dir, root, env string) reconcile.Handler
 	}
 	return reconcile.Handlers{
 		Rebuild: func(service string) error {
-			args := []string{"compose", "-f", composeFile, "build"}
+			buildDir, selected := dir, []string{}
 			if service != "*" {
 				settings, err := stack.ReadEffective(dir, env)
 				if err != nil {
 					return err
 				}
 				name := stack.ComposeServiceName(settings, service)
-				if name == "" {
-					if service == "hermes-runtime" && settings.PassportServices[service] == "supervised" {
-						return dockerCompose(ctx, dir, "build", "--target", env, "-t", "hermes-hub:0.5.0-"+env, "-f", filepath.Join(root, "docker", "Dockerfile"), root)
+				if service == "hermes-runtime" && settings.PassportServices[service] == "supervised" {
+					selected = []string{"--image", "runtime"}
+				} else {
+					if name == "" {
+						buildDir, name = stack.InfraSpaceDir(dir), service
 					}
-					// Shared services render in the infra space's project —
-					// the same fallback Recreate uses for them.
-					infraCompose := filepath.Join(stack.InfraSpaceDir(dir), "generated", "compose."+env+".yaml")
-					return docker("compose", "-f", infraCompose, "build", service)
+					selected = []string{name}
 				}
-				args = append(args, name)
 			}
-			return docker(args...)
+			// Managed renders have no Compose build sections. Reuse the same
+			// image selection and BuildKit path as an operator's scoped build.
+			args := []string{"build", "--dir", buildDir, "--root", root, "--env", env}
+			return applyImageBuild(ctx, append(args, selected...))
 		},
 		Recreate: func(service string) error {
 			settings, err := stack.ReadEffective(dir, env)
@@ -439,7 +447,7 @@ func applyHandlers(ctx context.Context, dir, root, env string) reconcile.Handler
 			// The mounted model registry re-reads on change; the render
 			// already swapped it in place.
 			"model-relay": func() error { return nil },
-			// File admission reloads /config/workspace.yaml by mtime; the
+			// File admission reloads the active /config/workspace.yaml; the
 			// mounted passport file is already the new revision.
 			"file-admission": func() error { return nil },
 			// DeriveSpaceRights rewrote the managed profiles/ledger at
@@ -448,6 +456,13 @@ func applyHandlers(ctx context.Context, dir, root, env string) reconcile.Handler
 			"rights-ledger": func() error { return nil },
 		},
 	}
+}
+
+func refreshSharedRuntimeTokens(dir, environment string) error {
+	if infra := stack.InfraSpaceDir(dir); infra != dir {
+		return stack.EnrollSiblingRuntimeTokens(infra, environment)
+	}
+	return nil
 }
 
 // respawnRuntime asks the supervisor to replace the space's runtime container
@@ -487,6 +502,9 @@ func respawnRuntime(ctx context.Context, dir, env string) error {
 		}
 		if auth != "" {
 			req.Header.Set("Authorization", "Bearer "+auth)
+		}
+		if journal, err := readApplyJournal(dir); err == nil && journal.Phase == "effects" {
+			req.Header.Set("X-Hub-Apply-Revision", journal.Revision)
 		}
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := respawnHTTPClient.Do(req) // #nosec G704 -- operator-configured hub endpoint

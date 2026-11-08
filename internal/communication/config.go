@@ -44,11 +44,12 @@ type Config struct {
 	SlackSigningSecret string `yaml:"-"`
 	SlackBotToken      string `yaml:"-"`
 	ControlAuth        string `yaml:"-"`
+	ControlPrincipal   string `yaml:"-"`
 	AutomationAuth     string `yaml:"-"`
 	// ControlTokensFile optionally points at the infra owner's
 	// toolhub-tokens.json: sibling-space runtime tokens enrolled there are
-	// equally valid control-plane bearers. The principal still comes from
-	// X-Hub-Principal — the token only proves the caller is a hub service.
+	// admitted only as their enrolled principal. ControlPrincipal similarly
+	// binds the supervised infra owner's primary runtime bearer.
 	ControlTokensFile string                 `yaml:"-"`
 	controlAuthExtra  []string               `yaml:"-"`
 	ListenAddr        string                 `yaml:"-"`
@@ -460,6 +461,7 @@ func fillChannelSecrets(config *Config) {
 		config.SlackBotToken = os.Getenv("SLACK_BOT_TOKEN")
 	}
 	config.ControlAuth = envOr("HUB_COMMUNICATION_AUTH", config.RuntimeAuth)
+	config.ControlPrincipal = strings.TrimSpace(os.Getenv("HUB_USER_ID"))
 	config.AutomationAuth = envOr("HUB_AUTOMATION_AUTH", config.ControlAuth)
 	config.ControlTokensFile = os.Getenv("HUB_COMMUNICATION_TOKENS_FILE")
 	// The supervisor's own bearer is a control-plane peer too: ToolHub's

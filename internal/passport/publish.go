@@ -47,21 +47,25 @@ func (r Revision) Prepare(spaceDir string, after func(string)) error {
 		return fmt.Errorf("passport publish: current revision: %w", err)
 	}
 	root := filepath.Join(spaceDir, "generated", "passports")
+	// Publishers and the restricted supervisor share a controller group, not a UID.
+	if err := os.MkdirAll(root, 0750); err != nil {
+		return err
+	}
 	staging := filepath.Join(root, ".staging-"+r.ID)
 	if err := os.RemoveAll(staging); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(staging, 0700); err != nil {
+	if err := os.MkdirAll(staging, 0750); err != nil {
 		return err
 	}
 	defer os.RemoveAll(staging)
 	for _, name := range Names {
 		path := filepath.Join(staging, name+".yaml")
-		if err := os.WriteFile(path, r.Docs[name], 0400); err != nil {
+		if err := os.WriteFile(path, r.Docs[name], 0440); err != nil {
 			return err
 		}
 	}
-	if err := os.WriteFile(filepath.Join(staging, "prompt-pointer.txt"), []byte(r.PromptPointer()), 0400); err != nil {
+	if err := os.WriteFile(filepath.Join(staging, "prompt-pointer.txt"), []byte(r.PromptPointer()), 0440); err != nil {
 		return err
 	}
 	// Provenance (source layers, templates, catalog pins, timestamps) is
@@ -70,7 +74,7 @@ func (r Revision) Prepare(spaceDir string, after func(string)) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(staging, "provenance.yaml"), prov, 0400); err != nil {
+	if err := os.WriteFile(filepath.Join(staging, "provenance.yaml"), prov, 0440); err != nil {
 		return err
 	}
 	dest := filepath.Join(root, r.ID)
@@ -128,12 +132,20 @@ func (r Revision) Activate(spaceDir string) error {
 
 // atomic writes body to path via a same-directory temp file + rename.
 func atomic(path string, body []byte) error {
+	return atomicMode(path, body, 0640)
+}
+
+func atomicMode(path string, body []byte, mode os.FileMode) error {
 	f, err := os.CreateTemp(filepath.Dir(path), ".publish-*")
 	if err != nil {
 		return err
 	}
 	name := f.Name()
 	defer os.Remove(name)
+	if err := f.Chmod(mode); err != nil {
+		_ = f.Close()
+		return err
+	}
 	if _, err = f.Write(body); err != nil {
 		_ = f.Close()
 		return err
@@ -232,7 +244,7 @@ func (r Revision) refreshConfigView(spaceDir string, after func(string)) error {
 	want := map[string]bool{}
 	for _, name := range Names {
 		want[name+".yaml"] = true
-		if err := atomic(filepath.Join(viewDir, name+".yaml"), r.Docs[name]); err != nil {
+		if err := atomicMode(filepath.Join(viewDir, name+".yaml"), r.Docs[name], 0640); err != nil {
 			return err
 		}
 		if after != nil {
@@ -240,11 +252,11 @@ func (r Revision) refreshConfigView(spaceDir string, after func(string)) error {
 		}
 	}
 	want["prompt-pointer.txt"] = true
-	if err := atomic(filepath.Join(viewDir, "prompt-pointer.txt"), []byte(r.PromptPointer())); err != nil {
+	if err := atomicMode(filepath.Join(viewDir, "prompt-pointer.txt"), []byte(r.PromptPointer()), 0640); err != nil {
 		return err
 	}
 	want["revision"] = true
-	if err := atomic(filepath.Join(viewDir, "revision"), []byte(r.ID+"\n")); err != nil {
+	if err := atomicMode(filepath.Join(viewDir, "revision"), []byte(r.ID+"\n"), 0640); err != nil {
 		return err
 	}
 	if after != nil {
@@ -254,7 +266,7 @@ func (r Revision) refreshConfigView(spaceDir string, after func(string)) error {
 	// the view copies the current one so /config shows what the agent sees.
 	if soul, err := os.ReadFile(filepath.Join(spaceDir, "SOUL.md")); err == nil { // #nosec G304 -- operator-owned space file
 		want["SOUL.md"] = true
-		if err := atomic(filepath.Join(viewDir, "SOUL.md"), soul); err != nil {
+		if err := atomicMode(filepath.Join(viewDir, "SOUL.md"), soul, 0640); err != nil {
 			return err
 		}
 	}

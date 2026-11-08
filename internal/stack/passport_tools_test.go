@@ -24,3 +24,16 @@ func TestPassportToolsSkipsPinnedPlatform(t *testing.T) {
 		t.Fatalf("admitted toolset lost: %v", tools)
 	}
 }
+
+func TestPassportToolsNativeWebAndToolHubWebStable(t *testing.T) {
+	declared := passportview.Tools{Extended: map[string]passportview.Toolset{
+		"native:web": {Via: "native"},
+		"web":        {Via: "toolhub"},
+	}}
+	for i := 0; i < 100; i++ {
+		got := passportTools(declared)
+		if got["web"].Via != ToolViaToolHub {
+			t.Fatalf("iteration %d: web backend changed: %+v", i, got["web"])
+		}
+	}
+}

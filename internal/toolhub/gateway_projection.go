@@ -38,6 +38,10 @@ func (g *Gateway) projectionFor(token string) (*gatewayProjection, error) {
 			SessionTimeout: time.Hour, MaxRequestBodyBytes: maxGatewayBodyBytes,
 			PropagateRequestCancellation: true, DisableLocalhostProtection: g.DisableLocalhostProtection,
 		}),
+		runHandler: mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
+			Stateless: true, MaxRequestBodyBytes: maxGatewayBodyBytes,
+			PropagateRequestCancellation: true, DisableLocalhostProtection: g.DisableLocalhostProtection,
+		}),
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()

@@ -23,7 +23,7 @@ import (
 
 // runSettingsEdit is the governed settings publisher. The supervisor calls it
 // after authenticating the control request; no runtime receives a host path.
-func runSettingsEdit(ctx context.Context, dir, root, environment, key string, value *string, baseRevision string) (map[string]any, error) {
+func runSettingsEdit(ctx context.Context, dir, root, environment, key string, value *string, baseRevision string, respawn func() error) (map[string]any, error) {
 	path, ok := selfsettings.PublishedPath(key)
 	if !ok || baseRevision == "" {
 		return nil, errors.New("settings edit requires a reviewed key and base revision")
@@ -126,7 +126,11 @@ func runSettingsEdit(ctx context.Context, dir, root, environment, key string, va
 		return map[string]any{"published_revision": current, "previous_revision": current, "changed": false}, nil
 	}
 	actions := reconcile.Plan(changes, result.Stack.Services)
-	if _, err := applyConfirm(ctx, dir, root, environment, candidate, current, actions, applyHandlers(ctx, dir, root, environment), authoredConfigUpdate{Before: before, After: after}); err != nil {
+	handlers := applyHandlers(ctx, dir, root, environment)
+	if respawn != nil {
+		handlers.Respawn = respawn
+	}
+	if _, err := applyConfirm(ctx, dir, root, environment, candidate, current, actions, handlers, authoredConfigUpdate{Before: before, After: after}); err != nil {
 		return nil, fmt.Errorf("settings edit: %w", err)
 	}
 	return map[string]any{"published_revision": candidate.ID, "previous_revision": current, "changed": true}, nil

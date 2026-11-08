@@ -1197,6 +1197,7 @@ func TestTickProbesMCPToolWatcher(t *testing.T) {
 func TestCheckMCPProbeSeedsBaselineOverHTTP(t *testing.T) {
 	c := testConfig(t)
 	c.ControlAuth = "tok"
+	c.ControlPrincipal = c.Users[0].ID
 	c.Supervised = true
 	c.RuntimeURL = "http://runtime.test"
 	c.RuntimeAuth = "control-token"
