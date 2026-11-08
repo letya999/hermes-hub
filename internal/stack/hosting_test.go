@@ -31,6 +31,13 @@ func TestHostingReviewedZoneForUnderscoreOwner(t *testing.T) {
 	}
 }
 
+func TestSitesSelectionEnablesHosting(t *testing.T) {
+	s := profileSettings("sites=toolhub", "exposure")
+	if !s.Has("hosting") {
+		t.Fatal("sites selection must enable hosting service")
+	}
+}
+
 func TestHostingComposeOptInAndMountIsolation(t *testing.T) {
 	dir := t.TempDir()
 	s := profileSettings("workspace")

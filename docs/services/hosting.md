@@ -15,7 +15,7 @@ rendered Compose or inspect fixtures as proof of isolation.
 
 ## Operator configuration
 
-Select `hosting` and `exposure` in `passports/tools.yaml` and issue their
+Select `sites` and `exposure` in `passports/tools.yaml` and issue their
 rights independently through the protected grant ledger. Configure an
 owner-bound sish exposure connection with the existing per-user DNS/wildcard
 certificate setup. Hosting consumes it; publishing makes no DNS mutations.

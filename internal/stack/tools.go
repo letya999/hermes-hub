@@ -575,6 +575,8 @@ func (s Settings) Has(name string) bool {
 	case "image_gen":
 		// The r5 media family covers the image_gen surface.
 		return s.toolEntry("image_gen").enabled() || s.toolEntry("media").enabled()
+	case "hosting":
+		return s.toolEntry("hosting").enabled() || s.toolEntry("sites").enabled()
 	case "web":
 		return s.toolEntry("web").enabled() || s.toolEntry("web_search").enabled()
 	default:
