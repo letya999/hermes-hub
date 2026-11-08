@@ -1,6 +1,6 @@
 ---
 description: User-scoped immutable static sites and isolated stateless go-http workloads, private publishing and sish serving.
-last_verified: 2026-11-05
+last_verified: 2026-11-08
 ---
 # Site hosting
 
@@ -21,8 +21,11 @@ owner-bound sish exposure connection with the existing per-user DNS/wildcard
 certificate setup. Hosting consumes it; publishing makes no DNS mutations.
 Declare up to four slot names in `passports/config.yaml` under `hosting.slots`. Slots and
 manual exposure endpoints must be distinct and fit the exposure connection cap.
-The resulting origin is `https://<slot>.<user>.<relay-domain>`; for a relay domain
-`hub.example.test` this is `page.alice.hub.example.test`.
+The resulting origin is `https://<slot>.<zone>.<relay-domain>`; for a relay domain
+`hub.example.test` this is `page.alice.hub.example.test`. A user ID that is
+already a DNS label uses that ID as its zone. Other IDs, such as `artem_two`,
+use the deterministic `owner-<hash>` label returned by `hosting.ZoneForOwner`;
+the reviewed exposure config must use that exact label.
 
 ```yaml
 hosting:

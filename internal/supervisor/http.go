@@ -78,6 +78,8 @@ func (m *Manager) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		m.artifactHTTP(w, r)
 	case "/v1/usage":
 		m.usageHTTP(w, r)
+	case "/v1/session-read":
+		m.sessionRead(w, r)
 	case "/v1/compact":
 		m.compactHTTP(w, r)
 	case "/v1/goal":

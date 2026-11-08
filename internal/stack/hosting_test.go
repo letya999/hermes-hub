@@ -11,6 +11,26 @@ import (
 	"github.com/letya999/hermes-hub/internal/toolhub"
 )
 
+func TestHostingReviewedZoneForUnderscoreOwner(t *testing.T) {
+	dir := t.TempDir()
+	writeExposureConfig(t, dir)
+	path := filepath.Join(dir, "connections", "exposure", "config.yaml")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = []byte(strings.Replace(string(body), "zone: alice", "zone: "+hosting.ZoneForOwner("artem_two"), 1))
+	if err := os.WriteFile(path, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := profileSettings("hosting", "exposure")
+	s.User, s.SpaceDir = "artem_two", dir
+	s.Hosting = HostingSettings{Slots: []string{"m32test"}}
+	if issues := hostingIssues(s); len(issues) != 0 || hostingConfig(s).Zone != hosting.ZoneForOwner(s.User) {
+		t.Fatalf("owner zone rejected: %v", issues)
+	}
+}
+
 func TestHostingComposeOptInAndMountIsolation(t *testing.T) {
 	dir := t.TempDir()
 	s := profileSettings("workspace")

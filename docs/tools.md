@@ -15,7 +15,7 @@ declares read or write effect; write effects additionally need the active
 write path (described per group).
 
 Catalog release 5 (ADR-0094) names every model tool `<noun>_<verb>` under one
-of 21 first-party families plus the pinned `platform` family — 96 callable
+of 21 first-party families plus the pinned `platform` family — 97 callable
 tools total. Each family is a placeable toolset under its logical name
 (`tools.yaml` `tools:`/`core:`/`extended:` entries); `via` selects the route
 (`toolhub`, `native`, `mcp`, `mcp-raw`, `off`) and `executor` names the
@@ -72,6 +72,8 @@ Release 20 adds `memory_open` and pairs with `hub-agent-tools@18.0.2`.
 Release 21 pairs with `hub-agent-tools@18.1.0`, renames the ToolHub `web`
 family to `web_search`, adds provider and cache operations, and removes the
 unused `desktop` and `drafts` companion connectors.
+Release 22 pairs with `hub-agent-tools@18.2.0` and wires `runtime:sessions`
+to communication's owner task registry and Hermes transcript.
 Release 19 remains immutable. Revision-guarded `settings_read`/`settings_edit` and
 ToolHub-executed `memory_search`/`memory_read`/`memory_card` retain current rights.
 The new contract admits memory in a verified, active owner assignment under
@@ -163,7 +165,7 @@ to that connector's MCP server.
 
 ## First-party families
 
-All 96 model tools, grouped by family (each family's governance section is
+All 97 model tools, grouped by family (each family's governance section is
 `hub:<family>`; `native:` sections govern the upstream surface of the same
 word where one exists):
 
@@ -185,10 +187,10 @@ word where one exists):
 | sites | `site_list`, `site_publish`, `site_remove` | handler:sites | own hosted sites (was hosting); publish/remove are `request_id` + `expected_revision` fenced |
 | web_search | `web_search`, `web_fetch`, `web_providers`, `web_search_multi`, `web_cache` | handler:web_search | ToolHub admits each call, then the owning runtime invokes the pinned Hermes web provider or hub-web plugin through its private sidecar; configured provider allowlists, URL safety and cache policy stay upstream; `web_cache` requires its separate mutation right |
 | connectors | `connector_search`, `connector_list`, `connector_status`, `connector_install`, `connector_edit` | runtime:connectors | control surface (see below); credentials never travel args/results |
-| research | `research_create`, `research_read`, `research_list` | flow:deep_research | async deep-research jobs; create returns a job id |
+| research | `research_create`, `research_read`, `research_list` | flow:deep_research | backend remains unavailable pending a dedicated long-lived research implementation |
 | browser | `browser_open`, `browser_read`, `browser_act`, `browser_capture` | handler:browser | ToolHub admits each call; the private owning runtime connects to its Playwright sidecar, with owner-bound session IDs and user/guest grants checked on each operation |
 | models | `model_list`, `model_switch` | runtime:models | ToolHub routes each admitted call to that owner's Model Relay; the relay rechecks the current list/switch right and model ladder; no second model state is kept in ToolHub |
-| sessions | `session_list`, `session_search`, `session_read`, `session_switch`, `session_edit`, `session_remove` | runtime:sessions | own-space sessions only; `session_edit` action archive\|restore; without a session store calls return `unavailable` |
+| sessions | `session_list`, `session_search`, `session_read`, `session_create`, `session_switch`, `session_edit`, `session_remove` | runtime:sessions | Telegram task IDs from communication are the session handles; create/reuse activates a named task; search covers titles and retained model replies; read maps an owned task to a bounded Hermes user/assistant transcript via supervisor; archive/restore and switch use the existing task pointer; remove deletes task routing but retains the upstream transcript for audit; foreign IDs are opaque |
 | memory | `memory_search` | runtime:toolhub | the memory vault contract (SPEC-0085/M32): BM25+graph over daily leaves, cards and summaries — hits carry `file:line` evidence refs, never answer from memory alone; ToolHub resolves the caller's enrolled vault from the verified identity envelope — no argument, root or header selects user, vault or audience; requires config.memory.enabled plus an exact live private or owner assignment run verified against the supervisor job record |
 | memory | `memory_read` | runtime:toolhub | exact-id full text for an own `memory_search` hit, with its evidence and untrusted flag; same current `memory.search` right, memory switch and live private or owner assignment run; unknown, foreign and forgotten IDs are opaque `not_found` unless `history:true` permits an own forgotten entry |
 | memory | `memory_card` | runtime:toolhub | the governed write path (ops remember\|fact\|propose), executed inside ToolHub as the sole writer — edits to existing memory (`propose` with inner=truth\|merge\|forget) land only on the owner's verified confirmation; there is no `root=vault` file root and no local vault fallback |

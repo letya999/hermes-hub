@@ -23,6 +23,7 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("/v1/routines/", g.handleRoutineItem)
 	mux.HandleFunc("/v1/tasks", g.handleTasks)
 	mux.HandleFunc("/v1/tasks/", g.handleTasks)
+	mux.HandleFunc("/v1/sessions", g.handleSessions)
 	mux.HandleFunc("/v1/inbound/", g.handleInbound)
 	mux.HandleFunc("/v1/hooks/", g.handleHooks)
 	mux.HandleFunc("/v1/assignments", g.handleAssignments)

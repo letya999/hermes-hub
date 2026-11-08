@@ -368,23 +368,26 @@ var argDocs = map[string]map[string]argDoc{
 		"cursor": {Desc: "Pagination cursor from a previous response."},
 	},
 	"session_search": {
-		"query": {Desc: "Title or content text to match."},
+		"query": {Desc: "Task title or retained model reply text to match."},
 		"limit": {Desc: "Maximum entries to return."},
 	},
 	"session_read": {
-		"id":     {Desc: "Session id to read."},
+		"id":     {Desc: "Task id from session_list to read."},
 		"offset": {Desc: "Transcript entry offset for the next page."},
 		"limit":  {Desc: "Maximum transcript entries to return."},
 	},
+	"session_create": {
+		"title": {Desc: "Name for the new owner task session; an existing name reuses that task."},
+	},
 	"session_switch": {
-		"id": {Desc: "Session id to make active."},
+		"id": {Desc: "Task id from session_list to make active."},
 	},
 	"session_edit": {
-		"id":     {Desc: "Session id."},
+		"id":     {Desc: "Task id from session_list."},
 		"action": {Desc: "Archive keeps the transcript; restore reactivates.", Enum: []string{"archive", "restore"}},
 	},
 	"session_remove": {
-		"id": {Desc: "Session id to delete."},
+		"id": {Desc: "Task id whose routing record is removed; transcript remains for audit."},
 	},
 
 	// ---- models

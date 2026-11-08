@@ -2,6 +2,8 @@
 package hosting
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net"
 	"path"
@@ -49,7 +51,7 @@ type Config struct {
 }
 
 func (c *Config) validate() error {
-	if !id.MatchString(c.Owner) || (c.Environment != "dev" && c.Environment != "prod") || !label.MatchString(c.Zone) || c.Zone != c.Owner || !(filepath.IsAbs(c.Workspace) || path.IsAbs(c.Workspace)) || !(filepath.IsAbs(c.Store) || path.IsAbs(c.Store)) || c.Workspace == c.Store {
+	if !id.MatchString(c.Owner) || (c.Environment != "dev" && c.Environment != "prod") || !label.MatchString(c.Zone) || c.Zone != ZoneForOwner(c.Owner) || !(filepath.IsAbs(c.Workspace) || path.IsAbs(c.Workspace)) || !(filepath.IsAbs(c.Store) || path.IsAbs(c.Store)) || c.Workspace == c.Store {
 		return ErrInvalid
 	}
 	if relative, err := filepath.Rel(c.Workspace, c.Store); err == nil && filepath.IsLocal(relative) {
@@ -94,6 +96,15 @@ func (c *Config) validate() error {
 		return ErrInvalid
 	}
 	return nil
+}
+
+// ZoneForOwner gives non-DNS owner IDs a stable, collision-resistant sish label.
+func ZoneForOwner(owner string) string {
+	if label.MatchString(owner) {
+		return owner
+	}
+	digest := sha256.Sum256([]byte(owner))
+	return "owner-" + hex.EncodeToString(digest[:8])
 }
 func safePath(p string) bool {
 	if p == "." {

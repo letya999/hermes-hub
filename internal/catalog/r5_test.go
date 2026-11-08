@@ -35,7 +35,7 @@ var r5Members = map[string][]string{
 	"goals":       {"goal_status", "goal_edit", "goal_remove"},
 	"context":     {"context_status", "context_edit"},
 	"settings":    {"settings_read", "settings_edit"},
-	"sessions":    {"session_list", "session_search", "session_read", "session_switch", "session_edit", "session_remove"},
+	"sessions":    {"session_list", "session_search", "session_read", "session_create", "session_switch", "session_edit", "session_remove"},
 	"models":      {"model_list", "model_switch"},
 	"skills":      {"skill", "skill_search", "skill_edit"},
 	"connectors":  {"connector_search", "connector_list", "connector_status", "connector_install", "connector_edit"},
@@ -63,8 +63,8 @@ func TestR5Vocabulary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	if Release != "21" {
-		t.Fatalf("catalog release = %q, want 21", Release)
+	if Release != "22" {
+		t.Fatalf("catalog release = %q, want 22", Release)
 	}
 	// --- families under logical names with the frozen member list
 	for _, family := range r5Families {
@@ -183,8 +183,8 @@ func TestR5Vocabulary(t *testing.T) {
 	for _, members := range r5Members {
 		total += len(members)
 	}
-	if total != 96 {
-		t.Fatalf("r5 member table holds %d tools, want 96", total)
+	if total != 97 {
+		t.Fatalf("r5 member table holds %d tools, want 97", total)
 	}
 	// --- via/executor consistency: the route must be able to serve the
 	// declared executor.

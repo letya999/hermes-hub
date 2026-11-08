@@ -680,7 +680,7 @@ func TestManagedMaterializeCarriesFeatureFlags(t *testing.T) {
 	}
 }
 
-func TestManagedMaterializeCarriesBrowserGrant(t *testing.T) {
+func TestManagedMaterializeRoutesBrowserThroughToolHub(t *testing.T) {
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("ok"), nil }, nil)
 	writeManagedFixtures(t, root)
 	// The browser toolset rides the tools passport with its mutation member;
@@ -722,9 +722,7 @@ func TestManagedMaterializeCarriesBrowserGrant(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(body)
-	for _, want := range []string{"browser-alice:8931/mcp", "browser-alice:8932/mcp", "browser_click", "toolhub"} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("materialized config missing %q:\n%s", want, text)
-		}
+	if !strings.Contains(text, "toolhub") || strings.Contains(text, "browser-alice:8931/mcp") || strings.Contains(text, "browser-alice:8932/mcp") || strings.Contains(text, "browser_click") {
+		t.Fatal("managed browser escaped the ToolHub route")
 	}
 }

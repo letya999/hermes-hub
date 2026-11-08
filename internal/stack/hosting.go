@@ -27,7 +27,7 @@ func (s Settings) hostingWorkspace(dir string) string {
 	return filepath.Join(dir, "workspace")
 }
 func hostingConfig(s Settings) hosting.Deployment {
-	cfg := hosting.Deployment{ContextID: s.User, PolicyVersion: PolicyVersion(s), Config: hosting.Config{Owner: s.User, Environment: s.Environment, Zone: s.User, Domain: "invalid.test", Workspace: "/workspace", Store: "/sites", AdmissionDigest: hostingAdmissionDigest(s)}, Slots: s.Hosting.Slots, ExposureConfig: "/exposure/config.yaml", ControlTokenFile: "/run/hosting.key", DataListen: "127.0.0.1:8181", ControlListen: "0.0.0.0:8182"}
+	cfg := hosting.Deployment{ContextID: s.User, PolicyVersion: PolicyVersion(s), Config: hosting.Config{Owner: s.User, Environment: s.Environment, Zone: hosting.ZoneForOwner(s.User), Domain: "invalid.test", Workspace: "/workspace", Store: "/sites", AdmissionDigest: hostingAdmissionDigest(s)}, Slots: s.Hosting.Slots, ExposureConfig: "/exposure/config.yaml", ControlTokenFile: "/run/hosting.key", DataListen: "127.0.0.1:8181", ControlListen: "0.0.0.0:8182"}
 	if s.OrgScoped() {
 		cfg.ContextID = s.Organization
 	}
@@ -90,7 +90,7 @@ func hostingIssues(s Settings) []string {
 		issues = append(issues, "hosting requires the reviewed exposure feature")
 	}
 	ec, err := exposure.Load(filepath.Join(s.SpaceDir, "connections", "exposure", "config.yaml"))
-	if err != nil || ec.Provider != "sish" || ec.Zone != s.User || ec.Relay == nil {
+	if err != nil || ec.Provider != "sish" || ec.Zone != hosting.ZoneForOwner(s.User) || ec.Relay == nil {
 		return append(issues, "hosting requires a valid owner-bound sish exposure config")
 	}
 	if len(s.Hosting.Slots) < 1 || len(s.Hosting.Slots) > 4 || len(s.Hosting.Slots)+len(ec.Endpoints) > ec.Max() {

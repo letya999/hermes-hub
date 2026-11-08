@@ -2362,8 +2362,8 @@ func TestRunArgsMountsHubPlugins(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(ctx, "generated", "plugins", "hub-web")); !os.IsNotExist(err) {
 		t.Fatal("gated plugin materialized without web feature")
 	}
-	grantNativeToolset(t, ctx, "alice", "toolhub:web")
-	publishAliceRevision(t, ctx, func(docs map[string]string) { docs["tools"] += "extended:\n  web: {via: toolhub}\n" })
+	grantNativeToolset(t, ctx, "alice", "hub:web_search")
+	publishAliceRevision(t, ctx, func(docs map[string]string) { docs["tools"] += "extended:\n  web_search: {via: toolhub}\n" })
 	writeHermesSources(t, ctx)
 	rawArgs, err = m.runArgs(binding(ctx), "hermes-context-alice", 19000)
 	if err != nil {

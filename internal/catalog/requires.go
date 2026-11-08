@@ -88,6 +88,7 @@ var capRights = map[string]string{
 	"sessions.list":   "sessions.list",
 	"sessions.search": "sessions.search",
 	"sessions.read":   "sessions.read",
+	"sessions.create": "sessions.manage",
 	"sessions.switch": "sessions.switch",
 	"sessions.edit":   "sessions.manage",
 	"sessions.remove": "sessions.manage",

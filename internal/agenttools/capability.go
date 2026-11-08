@@ -58,7 +58,7 @@ func HubToolsDefinition() api.ToolDefinition {
 	def := api.ToolDefinition{
 		Schema:       api.SchemaVersion,
 		DefinitionID: HubToolsDefinitionID,
-		Version:      "18.1.0",
+		Version:      "18.2.0",
 		Transport:    api.AgentTools,
 		Source:       api.DefinitionSource{},
 		Workload: api.WorkloadPolicy{
@@ -182,12 +182,13 @@ func HubToolsDefinition() api.ToolDefinition {
 			tool("settings_edit", "settings.edit", "config.edit_own", "Publish one reviewed config passport setting against the required base_revision. Empty value removes that authored leaf. Publication reconciles the runtime before success.", api.WriteEffect, use("update", "settings"), str("key"), opt("value"), str("base_revision")),
 
 			// ---- sessions (6): hub-runtime SessionStore; unavailable without it
-			remote("session_list", "sessions.list", "sessions.list", "List sessions of this space: id, channel, created/last_active, status, size.", api.ReadEffect, "runtime:sessions", intArg("limit", false), opt("cursor")),
-			remote("session_search", "sessions.search", "sessions.search", "Search sessions of this space by content or title.", api.ReadEffect, "runtime:sessions", str("query"), intArg("limit", false)),
-			remote("session_read", "sessions.read", "sessions.read", "Read a bounded transcript of one session in this space.", api.ReadEffect, "runtime:sessions", str("id"), intArg("offset", false), intArg("limit", false)),
+			remote("session_list", "sessions.list", "sessions.list", "List this owner's Telegram task sessions with task ids, titles, state and activity times.", api.ReadEffect, "runtime:sessions", intArg("limit", false), opt("cursor")),
+			remote("session_search", "sessions.search", "sessions.search", "Search this owner's task titles and retained model replies; it does not search the full Hermes transcript.", api.ReadEffect, "runtime:sessions", str("query"), intArg("limit", false)),
+			remote("session_read", "sessions.read", "sessions.read", "Read bounded user and assistant messages for an owned task's Hermes session.", api.ReadEffect, "runtime:sessions", str("id"), intArg("offset", false), intArg("limit", false)),
+			remote("session_create", "sessions.create", "sessions.manage", "Create and activate a named owner task session through communication.", api.WriteEffect, "runtime:sessions", str("title")),
 			remote("session_switch", "sessions.switch", "sessions.switch", "Move the active-session pointer; returns switched_to and resumed_from.", api.WriteEffect, "runtime:sessions", str("id")),
 			remote("session_edit", "sessions.edit", "sessions.manage", "Archive or restore one session of this space; archive keeps the transcript.", api.WriteEffect, "runtime:sessions", str("id"), str("action")),
-			remote("session_remove", "sessions.remove", "sessions.manage", "Delete one session of this space terminally.", api.WriteEffect, "runtime:sessions", str("id")),
+			remote("session_remove", "sessions.remove", "sessions.manage", "Remove an owned task's routing record; the upstream transcript remains for audit.", api.WriteEffect, "runtime:sessions", str("id")),
 
 			// ---- models (2): hub-side model-relay serves the passport view
 			remote("model_list", "models.list", "models.list", "List routes, ladders and per-service status from the models passport.", api.ReadEffect, "runtime:models"),
