@@ -5,7 +5,7 @@ import (
 )
 
 // The terminal family uses ToolHub job control and disposable agent-image
-// workloads; hub-side model and web backends retain their runtime executors.
+// workloads; the model relay and private web sidecar retain their owners.
 func TestExecutorRoutingContract(t *testing.T) {
 	specs := map[string]struct {
 		sandboxed bool
@@ -37,8 +37,8 @@ func TestExecutorRoutingContract(t *testing.T) {
 	for name, executor := range map[string]string{
 		"model_list":   "runtime:models",
 		"model_switch": "runtime:models",
-		"web_search":   "runtime:web",
-		"web_fetch":    "runtime:web",
+		"web_search":   "handler:web_search",
+		"web_fetch":    "handler:web_search",
 	} {
 		spec, ok := specs[name]
 		if !ok {

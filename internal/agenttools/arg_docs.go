@@ -450,6 +450,15 @@ var argDocs = map[string]map[string]argDoc{
 	"web_fetch": {
 		"url": {Desc: "URL to fetch as bounded text."},
 	},
+	"web_providers": {},
+	"web_search_multi": {
+		"query":     {Desc: "Search query sent to the configured provider set."},
+		"providers": {Desc: "Provider names from web_providers, or all; omitted uses the default.", Items: "string"},
+		"limit":     {Desc: "Maximum results per provider."},
+	},
+	"web_cache": {
+		"action": {Desc: "Cache operation.", Enum: []string{"status", "prune", "clear"}},
+	},
 
 	// ---- sites
 	"site_list": {

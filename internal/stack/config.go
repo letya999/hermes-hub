@@ -212,8 +212,6 @@ var Features = []Feature{
 	{"github", []string{"GITHUB_TOKEN"}, "Official remote GitHub MCP"},
 	{"slack", []string{"SLACK_MCP_XOXP_TOKEN"}, "OAuth user token, search/read; posting opt-in per channel"},
 	{"atlassian", []string{"JIRA_URL", "JIRA_USERNAME", "JIRA_API_TOKEN"}, "Direct mcp-atlassian Jira MCP; optional Confluence credentials can be added later"},
-	{"desktop", []string{"DESKTOP_TOKEN"}, "Authenticated companion on a native Windows/macOS/Linux desktop"},
-	{"drafts", []string{"DRAFTS_TOKEN"}, "Authenticated companion for the macOS Drafts app"},
 	{"hosting", nil, "Owner-bound immutable static and isolated dynamic sites; requires reviewed hosting config and exposure"},
 	{"exposure", nil, "Named outbound public endpoints over a per-binding tunnel workload (sish/cloudflared); requires a reviewed connections/exposure/config.yaml"},
 	{"memory_vault", nil, "Git-backed per-space memory vault at spaces/<id>/vault; removes the native memory toolset and scopes CORE to private runs"},
@@ -529,11 +527,11 @@ func (s Settings) Validate() error {
 	if s.Has("gitlab") && s.GitLabHost != "" && !regexp.MustCompile(`^[A-Za-z0-9.-]+$`).MatchString(s.GitLabHost) {
 		return fmt.Errorf("gitlab_host must be a hostname")
 	}
-	if s.Has("desktop") && s.DesktopURL == "" {
-		return fmt.Errorf("desktop_url required")
+	if s.Has("desktop") || s.DesktopURL != "" {
+		return fmt.Errorf("desktop companion was removed; remove tools.desktop and desktop_url")
 	}
-	if s.Has("drafts") && s.DraftsURL == "" {
-		return fmt.Errorf("drafts_url required")
+	if s.Has("drafts") || s.DraftsURL != "" {
+		return fmt.Errorf("drafts companion was removed; remove tools.drafts and drafts_url")
 	}
 	if s.Has("image_gen") || s.ImageGen != (media.ImageGen{}) {
 		if _, err := s.ImageGen.Normalize(); err != nil {

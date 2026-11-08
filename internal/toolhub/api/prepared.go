@@ -94,6 +94,7 @@ type PreparedEntry struct {
 	Budgets            *PreparedBudgets           `json:"budgets,omitempty"`
 	Environment        []string                   `json:"environment,omitempty"`
 	RuntimeEnvironment map[string]string          `json:"runtime_environment,omitempty"`
+	UpgradeModes       map[string]PreparedUpgrade `json:"upgrade_modes,omitempty"`
 	ProxyEnvironment   []string                   `json:"proxy_environment,omitempty"`
 	PreflightFiles     map[string]json.RawMessage `json:"preflight_files,omitempty"`
 	// PreflightEnvironment holds reviewed literal envs appended after the
@@ -131,6 +132,13 @@ type PreparedEntry struct {
 	OAuth      *PreparedOAuth   `json:"oauth,omitempty"`
 	Runbook    string           `json:"runbook"`
 	Handoff    string           `json:"handoff"`
+}
+
+// PreparedUpgrade is a reviewed change to one connector's advertised tools.
+// The owner still confirms the new definition and enables its write tools.
+type PreparedUpgrade struct {
+	RuntimeEnvironment map[string]string `json:"runtime_environment"`
+	AddedTools         []string          `json:"added_tools"`
 }
 
 type PreparedBudgets struct {
@@ -238,6 +246,21 @@ func ParsePreparedCatalog(data []byte) ([]PreparedEntry, error) {
 		for _, extra := range entry.PythonExtras {
 			if !identity.ValidID(extra) {
 				return nil, fmt.Errorf("%w: invalid prepared Python extra", ErrInvalid)
+			}
+		}
+		for mode, upgrade := range entry.UpgradeModes {
+			if !identity.ValidID(mode) || len(upgrade.RuntimeEnvironment) == 0 || len(upgrade.AddedTools) == 0 || len(upgrade.AddedTools) > 16 {
+				return nil, fmt.Errorf("%w: invalid prepared upgrade", ErrInvalid)
+			}
+			for key, value := range upgrade.RuntimeEnvironment {
+				if _, ok := entry.RuntimeEnvironment[key]; !ok || value == "" || len(value) > 256 {
+					return nil, fmt.Errorf("%w: invalid prepared upgrade environment", ErrInvalid)
+				}
+			}
+			for _, name := range upgrade.AddedTools {
+				if !identity.ValidID(name) || slices.Contains(entry.ReadTools, name) {
+					return nil, fmt.Errorf("%w: invalid prepared upgrade tool", ErrInvalid)
+				}
 			}
 		}
 		for _, alias := range entry.Aliases {

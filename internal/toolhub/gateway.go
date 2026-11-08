@@ -61,6 +61,7 @@ type Gateway struct {
 	// InboxRoots is the control-only writable inbox mount per principal.
 	InboxRoots       string
 	CommunicationURL string
+	ModelHTTP        *http.Client
 	// Vaults resolves a verified principal/environment to that principal's
 	// vault through the server-rendered bindings (HUB_VAULTS_BY_PRINCIPAL).
 	// Nil when no bindings root is rendered — memory stays unavailable.

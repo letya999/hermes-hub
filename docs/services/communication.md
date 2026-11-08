@@ -1,6 +1,6 @@
 ---
 description: communication-hub — channel gateway: Telegram/Slack adapters, inbound routing, credential forms, spool, control API.
-last_verified: 2026-11-07
+last_verified: 2026-11-08
 ---
 
 # communication-hub
@@ -19,6 +19,8 @@ everything entering or leaving the human conversation. Listens
 - **Inbound**: normalizes transport identity into `identity.Envelope`
   (docs/rbac.md), maps conversations to runtimes, delivers to the runtime
   HTTP surface or supervisor.
+  Telegram document/photo intake accepts up to 20 MiB per file; model vision
+  uses bounded derivatives rather than forwarding full source bytes.
 - **Credential forms**: mints the protected links (`?t=`) used by grant
   confirmations, connector onboarding (`channel_auth_url` outranks the
   broker form), writes-enable and remove nonces. `HUB_COMMUNICATION_FORM_ORIGIN`

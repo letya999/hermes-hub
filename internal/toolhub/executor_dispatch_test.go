@@ -2,6 +2,8 @@ package toolhub
 
 import (
 	"context"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -41,6 +43,8 @@ func r5ExecutorDefinition() api.ToolDefinition {
 			{Name: "research_create", Effect: api.WriteEffect, CapabilityID: "research.create", Executor: "flow:deep_research", Requires: []string{"research.create"}, Audience: api.AudienceModel,
 				Description: "Start an async deep-research job.",
 				Arguments:   []api.CLIArgument{{Name: "topic", Type: "string", Required: true}}},
+			{Name: "model_list", Effect: api.ReadEffect, CapabilityID: "models.list", Executor: "runtime:models", Requires: []string{"models.list"}, Audience: api.AudienceModel,
+				Description: "List granted model routes."},
 			{Name: "browser_act", Effect: api.WriteEffect, CapabilityID: "browser.act", Executor: "connector:browser", Requires: []string{"browser.act"}, Audience: api.AudienceModel,
 				Description: "Drive one browser action.",
 				Arguments:   []api.CLIArgument{{Name: "action", Type: "string", Required: true}}},
@@ -55,7 +59,16 @@ func r5ExecutorDefinition() api.ToolDefinition {
 // honestly — never as "unknown tool" from the exec channel.
 func TestRemoteExecutorDispatch(t *testing.T) {
 	t.Setenv("HUB_STATE", t.TempDir())
-	s, auth, _, profile := managedStore(t)
+	t.Setenv("HUB_USER_ID", "alice")
+	t.Setenv("HUB_MODEL_RELAY_URL", "http://model-relay-alice:8318")
+	t.Setenv("HUB_MODEL_RELAY_ADMIN", "fixture-admin")
+	s, auth, policy, profile := managedStore(t)
+	policy.Revision++
+	policy.RightCeiling = append(policy.RightCeiling, api.RightRule{Capability: "models", Operation: "list"})
+	if err := putPolicy(t, s, policy); err != nil {
+		t.Fatal(err)
+	}
+	profile.PolicyRevision = policy.Revision
 	definition := r5ExecutorDefinition()
 	if err := s.RegisterDefinition(definition); err != nil {
 		t.Fatal(err)
@@ -82,6 +95,16 @@ func TestRemoteExecutorDispatch(t *testing.T) {
 	var backendCalls []string
 	g := &Gateway{Store: s, Tokens: map[string]identity.Envelope{aliceToken: auth},
 		Control: &ControlPlane{Store: s, Now: time.Now},
+		ModelHTTP: &http.Client{Transport: modelTransport(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Host != "model-relay-alice:8318" || r.Header.Get("Authorization") != "Bearer fixture-admin" {
+				t.Errorf("model relay route or credential mismatch")
+			}
+			body := `{"models":[{"name":"fast"}],"accounts":[],"switch":"none"}`
+			if r.URL.Path == "/v1/model" {
+				body = `{"model":"fast"}`
+			}
+			return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+		})},
 		Backend: backendFunc(func(_ context.Context, _ api.EffectiveBinding, tool api.ToolSpec, _ map[string]any) (api.BackendResult, error) {
 			backendCalls = append(backendCalls, tool.Name)
 			return api.BackendResult{Text: "backend"}, nil
@@ -126,6 +149,10 @@ func TestRemoteExecutorDispatch(t *testing.T) {
 	}
 	if body := text(res); !strings.Contains(body, "connector") {
 		t.Fatalf("connector_list did not reach the facade: %s", body)
+	}
+	res, err = call("model_list", map[string]any{})
+	if err != nil || !strings.Contains(text(res), `"fast"`) {
+		t.Fatalf("model_list did not reach the owner relay: %v %v", res, err)
 	}
 
 	// runtime:toolhub members run the same handlers the pinned surface

@@ -129,6 +129,7 @@ func generateRights() RightsDoc {
 			Operations: map[string]RightOperation{
 				"search": rop("self", "none", selfIssuers, []string{"web provider"}, "read", "Search the web through the space's provider."),
 				"read":   rop("self", "url", selfIssuers, []string{"web provider"}, "read", "Fetch a URL's content as bounded text."),
+				"cache":  rop("self", "none", selfIssuers, []string{"web provider"}, "control", "Prune or clear the space's upstream web cache."),
 			},
 		},
 		"context": {

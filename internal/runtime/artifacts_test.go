@@ -265,14 +265,14 @@ func TestScanAndStageVideoArtifacts(t *testing.T) {
 	defer func() { workspace = old }()
 	root := artifactRoot()
 	writeArtifact(t, root, "videos/clip.mp4", "mp4-bytes")
-	// A video under the 48 MiB bound passes where the 8 MiB doc cap would fail.
+	// A video under the 48 MiB bound passes where the 20 MiB doc cap would fail.
 	big := writeArtifact(t, root, "videos/big.mp4", "")
 	if err := os.Truncate(big, 20<<20); err != nil {
 		t.Fatal(err)
 	}
 	// A document the same size is still refused by the tighter bound.
 	bigDoc := writeArtifact(t, root, "documents/big.bin", "")
-	if err := os.Truncate(bigDoc, 20<<20); err != nil {
+	if err := os.Truncate(bigDoc, artifactMaxBytes+1); err != nil {
 		t.Fatal(err)
 	}
 	got := scanArtifacts(time.Now().Add(-time.Minute))

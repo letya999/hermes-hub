@@ -20,7 +20,7 @@ var specRightsTable = map[string]map[string]string{
 	"browser":       {"open": "self", "read": "self", "act": "self", "capture": "self"},
 	"platform":      {"guide": "self", "status": "self", "usage": "self", "bootstrap": "self"},
 	"exec":          {"run": "self"},
-	"web":           {"search": "self", "read": "self"},
+	"web":           {"search": "self", "read": "self", "cache": "self"},
 	"context":       {"read": "self", "edit": "self"},
 	"goals":         {"read": "self", "edit": "self", "remove": "self"},
 	"tools":         {"list": "self", "use": "self", "configure": "self"},

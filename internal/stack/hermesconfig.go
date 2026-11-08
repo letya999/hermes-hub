@@ -197,6 +197,9 @@ func validateManagedSourceConfig(configPath string, opts MaterializeOptions) err
 		// expected source matches the operator-rendered file.
 		tools["image_gen"] = ToolEntry{Via: ToolViaToolHub}
 	}
+	if !opts.Web.empty() {
+		tools["web_search"] = ToolEntry{Via: ToolViaToolHub}
+	}
 	settings := Settings{Model: name, ModelURL: url, Timezone: zone, Tools: tools, Web: opts.Web, ImageGen: opts.ImageGen, User: opts.User}
 	applyBrowserGrant(&settings, opts.Browser)
 	applyManagedFeatureFlags(&settings, opts)
@@ -316,6 +319,9 @@ func ValidateManagedEffectiveConfig(configPath string, s Settings, opts Material
 		// A non-empty grant is the enabled marker for the reconstruction:
 		// render sites only emit it when Has("image_gen") held.
 		s.Tools["image_gen"] = ToolEntry{Via: ToolViaToolHub}
+	}
+	if !opts.Web.empty() {
+		s.Tools["web_search"] = ToolEntry{Via: ToolViaToolHub}
 	}
 	// The operator's web provider selection rides HUB_MANAGED_WEB into the
 	// container; without it a carved-out web block can never be reproduced.

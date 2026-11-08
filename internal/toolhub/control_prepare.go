@@ -17,6 +17,9 @@ import (
 )
 
 func (c *ControlPlane) prepareSource(ctx context.Context, auth identity.Envelope, args map[string]any) (map[string]any, error) {
+	if _, requested := args["upgrade_mode"]; requested {
+		return c.prepareConnectorUpgrade(ctx, auth, args)
+	}
 	if _, supplied := args["credentials"]; supplied && api.ArgString(args, "remote_url") == "" {
 		return nil, fmt.Errorf("%w: credentials is only supported with remote_url; source installs use connection_recipe", api.ErrInvalid)
 	}
@@ -35,9 +38,6 @@ func (c *ControlPlane) prepareSource(ctx context.Context, auth identity.Envelope
 			return nil, err
 		}
 		ctx = context.WithValue(ctx, api.ConnectionRecipeContextKey{}, recipe)
-	}
-	if _, requested := args["telegram_send"]; requested {
-		return c.prepareTelegramSend(ctx, auth, args)
 	}
 	requestKey := api.ArgString(args, "request_key")
 	if requestKey != "" {

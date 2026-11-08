@@ -45,6 +45,9 @@ var charterExceptions = map[string]string{
 	"tool_search":        "pinned platform layer",
 	"tool_call":          "pinned platform layer",
 	"memory_card":        "write-path multiplex via op enum: remember/fact/truth/merge/forget",
+	"web_providers":      "provider inventory name preserved during web_search family migration",
+	"web_search_multi":   "multi-provider search name preserved during web_search family migration",
+	"web_cache":          "cache lifecycle name preserved during web_search family migration",
 }
 
 // charterFamilies maps the noun prefix to the catalog family it must equal
@@ -54,7 +57,7 @@ var charterFamilies = map[string]string{
 	"skill": "skills", "routine": "routines", "watch": "watches",
 	"assignment": "assignments", "goal": "goals", "context": "context",
 	"settings": "settings", "ssh": "ssh", "exposure": "exposure",
-	"site": "sites", "web": "web", "browser": "browser",
+	"site": "sites", "web": "web_search", "browser": "browser",
 	"research": "research", "connector": "connectors", "model": "models",
 	"session": "sessions", "terminal": "terminal", "project": "files",
 	"platform": "platform", "tool": "platform", "memory": "memory",

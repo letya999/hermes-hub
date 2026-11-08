@@ -120,6 +120,10 @@ func (t *Tools) call(ctx context.Context, name string, r Input, ws, ar, org *os.
 		return t.ServiceEnable(r)
 	case "service_disable":
 		return t.ServiceDisable(r)
+	case "web_search", "web_fetch", "web_providers", "web_search_multi", "web_cache":
+		return t.webCall(ctx, name, r)
+	case "browser_open", "browser_read", "browser_act", "browser_capture":
+		return t.browserCall(ctx, name, r)
 	case "context_status":
 		return t.ContextStatus(ctx, r)
 	case "context_compact", "context_edit":

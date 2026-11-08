@@ -140,9 +140,9 @@ func testTelegramSendRetainsOwnerSession(t *testing.T, managed bool) {
 	if err := c.Store.PutOnboarding(original); err != nil {
 		t.Fatal(err)
 	}
-	args := map[string]any{"telegram_send": true, "onboarding_id": original.OnboardingID}
-	for _, invalid := range []map[string]any{{"telegram_send": false}, {"telegram_send": "true"}, {"telegram_send": true}, {"telegram_send": true, "onboarding_id": original.OnboardingID, "source": entry.Source.Repository}} {
-		if _, err := c.Invoke(t.Context(), auth, "prepare_source", invalid); !errors.Is(err, api.ErrInvalid) {
+	args := map[string]any{"upgrade_mode": "send", "onboarding_id": original.OnboardingID}
+	for _, invalid := range []map[string]any{{"upgrade_mode": ""}, {"upgrade_mode": "unknown", "onboarding_id": original.OnboardingID}, {"upgrade_mode": "send"}, {"upgrade_mode": "send", "onboarding_id": original.OnboardingID, "source": entry.Source.Repository}} {
+		if _, err := c.Invoke(t.Context(), auth, "prepare_source", invalid); err == nil {
 			t.Fatalf("invalid selection accepted: %v", err)
 		}
 	}
@@ -178,7 +178,7 @@ func testTelegramSendRetainsOwnerSession(t *testing.T, managed bool) {
 		})
 	}
 	wg.Wait()
-	upgrade, ok := c.Store.FindOnboardingByKey(auth, "telegram-send:"+original.OnboardingID)
+	upgrade, ok := c.Store.FindOnboardingByKey(auth, "upgrade:"+original.OnboardingID+":send")
 	if !ok || probes.Load() != 1 || upgrade.BrokerCredentialID != original.BrokerCredentialID || upgrade.BrokerRequestID != "" || upgrade.DefinitionVersion == original.DefinitionVersion {
 		t.Fatal("upgrade duplicated probe, login or session, or replaced immutable read version")
 	}
@@ -221,7 +221,7 @@ func TestTelegramSendRejectsUnreadyOriginal(t *testing.T) {
 	if err := putGrant(t, c.Store, api.OperatorGrant(api.GrantSelfInstall, "alice", "", "")); err != nil {
 		t.Fatal(err)
 	}
-	args := map[string]any{"telegram_send": true, "onboarding_id": "missing"}
+	args := map[string]any{"upgrade_mode": "send", "onboarding_id": "missing"}
 	if _, err := c.Invoke(t.Context(), auth, "prepare_source", args); err == nil {
 		t.Fatal("missing onboarding accepted")
 	}
@@ -238,7 +238,7 @@ func TestTelegramSendRejectsUnreadyOriginal(t *testing.T) {
 		t.Fatal(err)
 	}
 	upgrade := original
-	upgrade.OnboardingID, upgrade.IdempotencyKey, upgrade.Phase = "telegram-send-upgrade", "telegram-send:"+original.OnboardingID, api.PhaseRemoved
+	upgrade.OnboardingID, upgrade.IdempotencyKey, upgrade.Phase = "telegram-send-upgrade", "upgrade:"+original.OnboardingID+":send", api.PhaseRemoved
 	if err := c.Store.PutOnboarding(upgrade); err != nil {
 		t.Fatal(err)
 	}
@@ -280,9 +280,31 @@ func TestTelegramSendRejectsContractDrift(t *testing.T) {
 			case "unconfirmed":
 				packet.Definition.Source.ToolContractDigest = ""
 			}
-			if err := validateTelegramSendUpgrade(expected, packet.Definition); (err == nil) != (scenario == "valid" || scenario == "whitespace") {
+			if err := validateConnectorUpgrade(expected, packet.Definition, api.PreparedUpgrade{AddedTools: []string{"send_message"}}); (err == nil) != (scenario == "valid" || scenario == "whitespace") {
 				t.Fatalf("unexpected admission: %v", err)
 			}
 		})
+	}
+}
+
+func TestConnectorUpgradeDiffIsProviderNeutral(t *testing.T) {
+	base := statefulContainerDefinition()
+	base.DefinitionID = "fixture"
+	base.Tools = []api.ToolSpec{{Name: "lookup", Effect: api.ReadEffect, InputSchema: json.RawMessage(`{"type":"object"}`)}}
+	packet := api.ImportedArtifact{Definition: base}
+	if _, err := api.ApplyPreflightToolList(&packet, base.Tools); err != nil {
+		t.Fatal(err)
+	}
+	base = packet.Definition
+	packet = api.ImportedArtifact{Definition: base}
+	added := api.ToolSpec{Name: "publish", Effect: api.WriteEffect, InputSchema: json.RawMessage(`{"type":"object"}`)}
+	if _, err := api.ApplyPreflightToolList(&packet, append(append([]api.ToolSpec(nil), base.Tools...), added)); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateConnectorUpgrade(base, packet.Definition, api.PreparedUpgrade{AddedTools: []string{"publish"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateConnectorUpgrade(base, packet.Definition, api.PreparedUpgrade{AddedTools: []string{"send_message"}}); err == nil {
+		t.Fatal("unreviewed added tool accepted")
 	}
 }

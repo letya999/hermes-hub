@@ -1,6 +1,6 @@
 ---
 description: model-relay — per-space model selection endpoint for managed spaces; layered models.yaml, owner switch bearer, cliproxy upstream.
-last_verified: 2026-11-07
+last_verified: 2026-11-08
 ---
 
 # model-relay
@@ -59,6 +59,9 @@ values in compose. Quota accounting lives in `model_relay_quota.go`.
   and grant ids never leave the mounted file.
 - Spawned runtimes reach the relay over the managed agent network. They do not
   mount the registry, provider keys, Broker signing key or switch-admin bearer.
+  ToolHub resolves the authenticated owner's fixed relay alias and admin
+  credential for admitted `model_list` and `model_switch` calls; tool arguments
+  cannot supply a relay URL or bearer.
 
 ## Owner and provider boundaries
 

@@ -18,7 +18,13 @@ import (
 // reaching any executor.
 func TestDirectAndToolCallAdmissionParity(t *testing.T) {
 	t.Setenv("HUB_STATE", t.TempDir())
-	s, auth, _, profile := managedStore(t)
+	s, auth, policy, profile := managedStore(t)
+	policy.Revision++
+	policy.RightCeiling = append(policy.RightCeiling, api.RightRule{Capability: "models", Operation: "list"})
+	if err := putPolicy(t, s, policy); err != nil {
+		t.Fatal(err)
+	}
+	profile.PolicyRevision = policy.Revision
 	definition := r5ExecutorDefinition()
 	// A cataloged member the profile does not select — the extended-only
 	// surface. It must be refused identically whether addressed directly or

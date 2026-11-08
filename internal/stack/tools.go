@@ -88,7 +88,7 @@ var toolhubFamilies = map[string]bool{
 	"files": true, "file": true, "documents": true, "docs": true,
 	"media": true, "images": true, "artifacts": true, "routines": true,
 	"ssh": true, "image_gen": true, "terminal": true,
-	"code_exec": true, "web": true, "settings": true, "exposure": true, "hosting": true,
+	"code_exec": true, "web": true, "web_search": true, "settings": true, "exposure": true, "hosting": true,
 	"assignments": true, "skills": true, "skills_manage": true,
 	"services": true,
 	// Catalog r5 families (ADR-0094).
@@ -108,7 +108,6 @@ var droppedToolhubFamilies = map[string]bool{"hh": true}
 var mcpConnectors = map[string]bool{
 	"browser": true, "github": true, "gitlab": true, "google": true,
 	"slack": true, "atlassian": true, "telegram_user": true,
-	"desktop": true, "drafts": true,
 }
 
 // pseudoToolsets are `via: native` entries that are not upstream toolsets but
@@ -139,7 +138,7 @@ var toolhubCapabilityID = map[string]string{
 	"files": "files", "file": "files", "documents": "documents", "docs": "documents",
 	"media": "media", "images": "media", "artifacts": "files", "routines": "routines",
 	"services": "connectors", "connectors": "connectors", "ssh": "ssh", "image_gen": "media",
-	"terminal": "terminal", "code_exec": "terminal", "web": "web",
+	"terminal": "terminal", "code_exec": "terminal", "web": "web_search", "web_search": "web_search",
 	"settings": "settings", "exposure": "exposure", "hosting": "sites", "sites": "sites",
 	"assignments": "assignments",
 	"skills":      "skills", "skills_manage": "skills",
@@ -576,6 +575,8 @@ func (s Settings) Has(name string) bool {
 	case "image_gen":
 		// The r5 media family covers the image_gen surface.
 		return s.toolEntry("image_gen").enabled() || s.toolEntry("media").enabled()
+	case "web":
+		return s.toolEntry("web").enabled() || s.toolEntry("web_search").enabled()
 	default:
 		return s.toolEntry(name).enabled()
 	}
@@ -589,6 +590,9 @@ func (s Settings) validateTools() error {
 	}
 	managed := s.CapabilityMode == "managed"
 	for name, e := range s.Tools {
+		if name == "desktop" || name == "drafts" {
+			return fmt.Errorf("tools.%s: companion was removed; remove this selection", name)
+		}
 		if !toolNamePattern.MatchString(name) {
 			return fmt.Errorf("invalid tools entry name %q", name)
 		}

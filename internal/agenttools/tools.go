@@ -26,6 +26,8 @@ type Input struct {
 	Mode               string         `json:"mode,omitempty"`
 	Access             string         `json:"access,omitempty"`
 	Profile            string         `json:"profile,omitempty"`
+	Session            string         `json:"session,omitempty"`
+	Target             string         `json:"target,omitempty"`
 	RequestID          string         `json:"request_id,omitempty"`
 	LifetimeSeconds    int            `json:"lifetime_seconds,omitempty"`
 	OriginJobID        string         `json:"origin_job_id,omitempty"`
@@ -39,6 +41,7 @@ type Input struct {
 	Revision           string         `json:"revision,omitempty"`
 	Version            string         `json:"version,omitempty"`
 	Query              string         `json:"query,omitempty"`
+	Providers          []string       `json:"providers,omitempty"`
 	Format             string         `json:"format,omitempty"`
 	Name               string         `json:"name,omitempty"`
 	Prompt             string         `json:"prompt,omitempty"`
@@ -202,6 +205,8 @@ type Tools struct {
 	// the skills: logical root for file/document/image ops (R7.3).
 	Skills        *os.Root
 	Media         *media.Session
+	browserMu     sync.Mutex
+	browserRuns   map[string]*browserRun
 	mu            sync.Mutex
 	lock, envLock *flock.Flock
 }
@@ -385,6 +390,12 @@ func runtimeEnvelope() identity.Envelope {
 	return identity.Envelope{Schema: identity.Schema, PrincipalID: principal, ExternalIdentityID: toolHubEnvOr("HUB_EXTERNAL_ID", principal), ContextID: contextID, RuntimeID: runtimeID, ConversationID: toolHubEnvOr("HUB_CONVERSATION_ID", "toolhub"), DeliveryTargetID: toolHubEnvOr("HUB_DELIVERY_TARGET_ID", "toolhub"), PolicyVersion: toolHubEnvOr("HUB_POLICY_VERSION", "policy-1")}
 }
 func (t *Tools) Close() {
+	t.browserMu.Lock()
+	for id, run := range t.browserRuns {
+		_ = run.session.Close()
+		delete(t.browserRuns, id)
+	}
+	t.browserMu.Unlock()
 	if t.SSH != nil {
 		t.SSH.Close()
 	}

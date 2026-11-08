@@ -1,6 +1,6 @@
 ---
 description: Normative tool-design rules — one catalog, closed verb vocabulary, typed schemas, rights-vs-schema separation, bounded results, context budget, machine-checkable conformance.
-last_verified: "2026-11-04"
+last_verified: "2026-11-08"
 ---
 
 # Tool design charter
@@ -76,7 +76,7 @@ surgery on real members only. Enforced by `checkTools` at passport compile.
 **2.2 Family = plural domain noun.** The catalog r5 closed family list is
 `files`, `terminal`, `documents`, `media`, `skills`, `routines`, `watches`,
 `assignments`, `goals`, `context`, `settings`, `ssh`, `exposure`, `sites`,
-`web`, `browser`, `research`, `connectors`, `models`, `sessions` — twenty
+`web_search`, `browser`, `research`, `connectors`, `models`, `sessions` — twenty
 placeable families plus the pinned `platform` layer. Two families never own
 the same resource; each family maps to one rights domain (`files →
 workspace.*`, `ssh → remote.*`, `assignments`/`watches`/`routines →
@@ -102,6 +102,9 @@ family's singular (`site_*` inside `sites`, `routine_*` inside `routines`,
 `ssh_*` inside `ssh`). Documented exceptions are the pinned platform tools:
 `tool_search`, `tool_call`, `platform_guide`, `platform_status`,
 `platform_bootstrap`, `platform_usage`.
+The renamed `web_search` family keeps its established tool names
+`web_search`, `web_fetch`, `web_providers`, `web_search_multi` and `web_cache`;
+the last three are explicit name-lint exceptions in catalog 21.
 
 **3.2 Closed verb dictionary.** One verb per effect; synonyms are forbidden:
 

@@ -120,3 +120,16 @@ Hermes pin `869228cab4a8276d3b4c78da9d9939670c47bd0f` (`0.21.0`).
    a space boundary: the supervisor contract smoke asserts on the real
    spawned container that the plugin mount is read-only from the space's own
    `generated/plugins` and that `/state/hermes` binds to that space alone.
+
+## 2026-11-08 managed ToolHub amendment
+
+For a managed space, the model-visible family is `web_search` in immutable
+catalog Release 21. `web_search`, `web_fetch`, `web_providers`,
+`web_search_multi` and `web_cache` enter through ToolHub admission and the
+owner's private runtime executor; the pinned Hermes provider and hub-web
+plugin still perform the actual search, extraction and cache work. The native
+Hermes web toolset remains disabled in managed mode. Published `web:` settings,
+provider credentials and the read-only plugin mount are retained for the
+private executor. `web_cache` requires its own current `web.cache` right.
+Provider failures must not expose exception text that may contain credentials.
+Unmanaged spaces retain the original direct upstream behavior above.

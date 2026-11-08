@@ -81,7 +81,7 @@ func TestConfigurationFailurePaths(t *testing.T) {
 	}
 	for _, name := range []string{"google", "desktop", "drafts"} {
 		s := Settings{Schema: 1, User: "me", Environment: "prod", Timezone: "UTC", BrowserPort: 6080, OAuthPort: 8000, Tools: testTools(name), Ingress: testIngress(name)}
-		if s.Validate() == nil {
+		if err := s.Validate(); err == nil || (name == "desktop" || name == "drafts") && !strings.Contains(err.Error(), "companion was removed") {
 			t.Fatal(name)
 		}
 	}

@@ -122,7 +122,7 @@ func TestEveryR5FamilyAcceptsToolhubVia(t *testing.T) {
 		"assignments", "browser", "connectors", "context", "documents",
 		"exposure", "files", "goals", "media", "memory", "models",
 		"research", "routines", "sessions", "settings", "sites", "skills",
-		"ssh", "terminal", "watches", "web",
+		"ssh", "terminal", "watches", "web_search",
 	}
 	for _, family := range families {
 		s := validSettings()

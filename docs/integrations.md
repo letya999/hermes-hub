@@ -1,6 +1,6 @@
 ---
 description: Upstream pins and provider contracts — Hermes API, broker env layout, per-provider OAuth/auth contracts, web/doc/image capabilities.
-last_verified: 2026-11-07
+last_verified: 2026-11-08
 ---
 
 # Integration contracts
@@ -165,8 +165,9 @@ docs/tools.md — bounds here:
   Regular font; xlsx = one worksheet inline CSV; pptx splits slides on
   blank line; conversions copy extracted text (no layout, no formulas).
   webp via `nativewebp` v1.3.0, PDF font `x/image` v0.46.0.
-- Bounds fail closed: doc ≤2 MiB / 20 pages × 3000 runes; image ≤5 MiB /
-  4096 px edge / 4 Mpx; concurrency 2 / 5 s; inspect+convert 30 s;
+- Bounds fail closed: doc ≤2 MiB / 20 pages × 3000 runes; source image ≤20 MiB /
+  4096 px edge / 4 Mpx. Vision input is reduced to ≤16 MiB combined
+  before encoding; concurrency 2 / 5 s; inspect+convert 30 s;
   generate/edit concurrency 1 / 60 s; prompt 1–2000 runes; no queue.
 - Scope: invoking user's workspace only — another user's root, absolute
   paths, `..` fail closed; `document_edit` confined to

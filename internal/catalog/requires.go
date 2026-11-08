@@ -105,8 +105,11 @@ var capRights = map[string]string{
 	"connectors.install": "connectors.prepare",
 	"connectors.edit":    "connectors.enable",
 	// web
-	"web.search": "web.search",
-	"web.fetch":  "web.read",
+	"web_search.search":    "web.search",
+	"web_search.fetch":     "web.read",
+	"web_search.providers": "web.search",
+	"web_search.multi":     "web.search",
+	"web_search.cache":     "web.cache",
 	// sites — publishing is a stack change.
 	"sites.list":    "stack.inspect",
 	"sites.publish": "stack.change",

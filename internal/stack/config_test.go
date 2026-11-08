@@ -94,8 +94,6 @@ func TestRenderAllFeatures(t *testing.T) {
 	s.Model = "test"
 	s.ModelURL = "http://host.docker.internal:8317/v1"
 	s.GoogleEmail = "me@example.org"
-	s.DesktopURL = "http://host.docker.internal:8765/mcp"
-	s.DraftsURL = "http://host.docker.internal:8766/mcp"
 	s.MemoryProvider = "hindsight"
 	s.MemoryProviderURL = "http://hindsight.invalid:8888"
 	// Under the passport model the vault flag is config.memory.enabled —
@@ -185,23 +183,9 @@ func TestRenderAllFeatures(t *testing.T) {
 		t.Fatalf("long-running tool timeouts missing: %#v", timeouts)
 	}
 	for _, name := range []string{"browser", "browser_guest"} {
-		server, ok := servers[name].(M)
-		if !ok {
-			t.Fatalf("hub-owned browser server %s missing", name)
+		if _, exposed := servers[name]; exposed {
+			t.Fatalf("managed browser sidecar exposed directly to the model: %s", name)
 		}
-		tools, ok := server["tools"].(MCPTools)
-		if !ok || len(tools.Include) != len(browserReadTools)+len(browserMutationTools) {
-			t.Fatalf("browser_act must extend the %s allowlist: %#v", name, server["tools"])
-		}
-	}
-	// SPEC-0082 R4.3/R4.4: the persistent browser server reaches the sidecar's
-	// CDP-attached instance; the guest server reaches the isolated instance —
-	// the profile never leaves the browser container either way.
-	if url := servers["browser"].(M)["url"]; url != "http://browser-me:8931/mcp" {
-		t.Fatalf("persistent browser must attach to the sidecar CDP instance: %v", url)
-	}
-	if url := servers["browser_guest"].(M)["url"]; url != "http://browser-me:8932/mcp" {
-		t.Fatalf("guest browser must reach the isolated sidecar instance: %v", url)
 	}
 	unmanaged := s
 	unmanaged.CapabilityMode = ""
@@ -658,6 +642,19 @@ func TestComposeMountsModelRelayAdminsWhenPresent(t *testing.T) {
 	}
 	if !mounted {
 		t.Fatalf("admins file not mounted: %#v", gateway["volumes"])
+	}
+	toolhub := Compose(s, dir, dir)["services"].(M)["toolhub"].(M)
+	if toolhub["environment"].(M)["HUB_MODEL_RELAY_ADMINS_FILE"] != "/config/model-relay-admins.json" || toolhub["environment"].(M)["HUB_MODEL_RELAY_URL"] != "http://model-relay-infra:8318" {
+		t.Fatal("ToolHub model relay routes missing")
+	}
+	adminSource := false
+	for _, raw := range toolhub["env_file"].([]any) {
+		if strings.HasSuffix(raw.(M)["path"].(string), "/model-relay.auth") {
+			adminSource = true
+		}
+	}
+	if !adminSource {
+		t.Fatal("ToolHub owner model relay bearer missing")
 	}
 }
 

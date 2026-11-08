@@ -323,7 +323,7 @@ session stays in memory, goes Broker-only; `telegram_auth: false` disables;
 API pair via `telegram-auth.<env>.env` (`HUB_TELEGRAM_AUTH_API_ID/HASH`).
 Rotation: new device session + `rotate` + form; terminate the old device in
 Telegram yourself. Send upgrade: `prepare_source` `{"onboarding_id":вЂ¦,
-"telegram_send":true}` в†’ `read-only+send_message` re-review on the same pin,
+"upgrade_mode":"send"}` в†’ `read-only+send_message` re-review on the same pin,
 retains session, only `send_message` may be added; verify with a Saved
 Messages send (`chat_id:"me"`, unique `operation_id`). Event tools:
 `wait_for_new_message`/`wait_for_settled_message` bounded polls;

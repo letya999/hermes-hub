@@ -1,6 +1,6 @@
 ---
 description: spaces/<id>/ layout — six authored passports, generated configs, secrets/env files, and state dirs.
-last_verified: "2026-11-07"
+last_verified: "2026-11-08"
 ---
 
 # Spaces
@@ -227,8 +227,8 @@ The published passports resolve to the internal feature vocabulary in
 `deep_research`, `browser`, `browser_act`, `ssh`, `ssh_write`, `ssh_shell`,
 `ssh_tunnel`, `hh`, `telegram`, `slack_app`, `telegram_user`,
 `telegram_write`, `google`, `google_write`, `gitlab`, `meet`,
-`transcription`, `image_gen`, `github`, `slack`, `atlassian`, `desktop`,
-`drafts`, `memory_vault`, `knowledge_ui`, `memory_provider` —
+`transcription`, `image_gen`, `github`, `slack`, `atlassian`,
+`memory_vault`, `knowledge_ui`, `memory_provider` —
 each with declared `requires` env keys and a scope note. Write-effect
 features (`*_write`, `browser_act`, `ssh_shell`, `ssh_tunnel`) are separate
 opt-ins on top of their read parent, matching deny-wins. Authored selection

@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	mediaSizeLimit = 8 << 20
+	mediaSizeLimit = 20 << 20
 	// Videos stay under Telegram's 50 MB bot upload bound with headroom for
 	// multipart framing; documents use the same ceiling since artifacts are
 	// already capped per-bucket at the runtime.

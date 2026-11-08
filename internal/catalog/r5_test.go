@@ -16,11 +16,11 @@ import (
 var r5Families = []string{
 	"files", "terminal", "documents", "media", "skills", "routines",
 	"watches", "assignments", "goals", "context", "settings", "ssh",
-	"exposure", "sites", "web", "browser", "research", "connectors",
+	"exposure", "sites", "web_search", "browser", "research", "connectors",
 	"models", "sessions", "memory",
 }
 
-// r5Members is the frozen model-tool membership per family — 92 tools total.
+// r5Members is the current model-tool membership per family.
 var r5Members = map[string][]string{
 	"files":       {"file_list", "file_read", "file_search", "file_write", "file_edit", "file_mkdir", "file_archive", "file_remove", "project_create"},
 	"memory":      {"memory_search", "memory_read", "memory_card", "memory_open"},
@@ -39,7 +39,7 @@ var r5Members = map[string][]string{
 	"models":      {"model_list", "model_switch"},
 	"skills":      {"skill", "skill_search", "skill_edit"},
 	"connectors":  {"connector_search", "connector_list", "connector_status", "connector_install", "connector_edit"},
-	"web":         {"web_search", "web_fetch"},
+	"web_search":  {"web_search", "web_fetch", "web_providers", "web_search_multi", "web_cache"},
 	"sites":       {"site_list", "site_publish", "site_remove"},
 	"research":    {"research_create", "research_read", "research_list"},
 	"browser":     {"browser_open", "browser_read", "browser_act", "browser_capture"},
@@ -54,7 +54,7 @@ func sortedCopy(in []string) []string {
 
 // r5Connectors are the connector toolsets that materialize on connector
 // enable — curated dynamic surfaces plus the uncurated raw ones.
-var r5Connectors = []string{"github", "gitlab", "google", "slack", "atlassian", "telegram_user", "desktop", "drafts", "user_mcp", "org_mcp"}
+var r5Connectors = []string{"github", "gitlab", "google", "slack", "atlassian", "telegram_user", "user_mcp", "org_mcp"}
 
 // TestR5Vocabulary locks the whole release-5 dictionary in one red test:
 // toolset keys, members, executors, audiences and native coverage.
@@ -63,8 +63,8 @@ func TestR5Vocabulary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	if Release != "20" {
-		t.Fatalf("catalog release = %q, want 20", Release)
+	if Release != "21" {
+		t.Fatalf("catalog release = %q, want 21", Release)
 	}
 	// --- families under logical names with the frozen member list
 	for _, family := range r5Families {
@@ -183,8 +183,8 @@ func TestR5Vocabulary(t *testing.T) {
 	for _, members := range r5Members {
 		total += len(members)
 	}
-	if total != 93 {
-		t.Fatalf("r5 member table holds %d tools, want 93", total)
+	if total != 96 {
+		t.Fatalf("r5 member table holds %d tools, want 96", total)
 	}
 	// --- via/executor consistency: the route must be able to serve the
 	// declared executor.

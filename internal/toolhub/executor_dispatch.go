@@ -33,6 +33,9 @@ func (g *Gateway) execRemote(ctx context.Context, auth identity.Envelope, effect
 	if tool.Executor == "runtime:toolhub" {
 		return g.execPlatform(ctx, auth, effective, tool, arguments)
 	}
+	if tool.Executor == "runtime:models" {
+		return g.execModel(ctx, auth, tool, arguments)
+	}
 	return api.BackendResult{IsError: true, Text: fmt.Sprintf("%s is unavailable: %s", tool.Name, remoteBackendHint(tool.Executor))}, nil
 }
 

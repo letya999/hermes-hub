@@ -1,6 +1,6 @@
 ---
 description: Engineering rules — Go conventions, gates, pins, change process, boundaries on dependencies.
-last_verified: 2026-11-07
+last_verified: 2026-11-08
 ---
 
 # Engineering rules

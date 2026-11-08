@@ -640,6 +640,11 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			M{"type": "volume", "source": "communication-hub-data", "target": "/legacy-communication", "read_only": true},
 			M{"type": "bind", "source": filepath.ToSlash(GeneratedEffectiveSkillsDir(dir)), "target": "/skills-effective", "read_only": true},
 			M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "skills")), "target": "/skills-store", "read_only": true}}
+		if info, err := os.Lstat(filepath.Join(dir, "model-relay-admins.json")); err == nil && info.Mode().IsRegular() {
+			adminFile := filepath.Join(dir, "model-relay-admins.json")
+			toolhubEnv["HUB_MODEL_RELAY_ADMINS_FILE"] = "/config/model-relay-admins.json"
+			toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(adminFile), "target": "/config/model-relay-admins.json", "read_only": true})
+		}
 		if info, err := os.Lstat(filepath.Join(dir, "automation-routing")); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 { // #nosec G703 -- dir is the operator-selected space root; Lstat rejects a symlink
 			toolhubVolumes = append(toolhubVolumes, M{"type": "bind", "source": filepath.ToSlash(filepath.Join(dir, "automation-routing")), "target": "/automation-routing", "read_only": true})
 		}
@@ -727,7 +732,8 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 		toolhub := cloneMap(controlCommon)
 		toolhub["build"] = imageBuild(s.Environment + "-control")
 		toolhub["entrypoint"] = []string{"toolhub"}
-		toolhub["env_file"] = []any{M{"path": filepath.ToSlash(filepath.Join(dir, "runtime.auth")), "format": "raw"}, M{"path": filepath.ToSlash(filepath.Join(dir, "toolhub.auth")), "format": "raw"}}
+		toolhub["env_file"] = []any{M{"path": filepath.ToSlash(filepath.Join(dir, "runtime.auth")), "format": "raw"}, M{"path": filepath.ToSlash(filepath.Join(dir, "toolhub.auth")), "format": "raw"}, M{"path": filepath.ToSlash(filepath.Join(dir, "model-relay.auth")), "format": "raw"}}
+		toolhubEnv["HUB_MODEL_RELAY_URL"] = "http://model-relay-" + s.User + ":8318"
 		toolhub["environment"] = toolhubEnv
 		toolhub["volumes"] = toolhubVolumes
 		toolhub["ports"] = []string{"127.0.0.1:8090:8090"}

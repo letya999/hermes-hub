@@ -209,16 +209,9 @@ func managedHermesConfig(s Settings) M {
 		"display":     M{"busy_input_mode": "queue", "long_running_notifications": true},
 		"timezone":    s.Timezone,
 	}
-	// Carved-out web toolsets keep the operator's provider selection; the
-	// managed egress relay decides which of their endpoints can actually be
-	// reached.
-	for _, name := range []string{"web", "search", "x_search"} {
-		if entry := s.Tools[name]; entry.Via == ToolViaNative {
-			if web := s.Web.config(); len(web) > 0 {
-				out["web"] = web
-			}
-			break
-		}
+	// The ToolHub web executor uses the same pinned upstream provider config.
+	if web := s.managedWebSettings().config(); len(web) > 0 {
+		out["web"] = web
 	}
 	// The image_gen block is the runtime grant media.Session checks before
 	// serving the ToolHub image tools: the capability profile admits the call
@@ -264,19 +257,10 @@ type BrowserGrant struct {
 	Act        bool `json:"act,omitempty"`
 }
 
-// managedMCPServers mirrors the unmanaged render's browser admission onto
-// the managed mcp_servers map: the hub sidecar is emitted only when the
-// workspace wish survives the same hub:browser / hub:browser_guest sections.
+// Managed browser calls enter through ToolHub and the private tools-daemon;
+// exposing the Playwright MCP endpoint here would bypass per-call admission.
 func managedMCPServers(s Settings) M {
 	servers := rawMCPServers(s)
-	if s.Has("browser") {
-		if s.govAllows(api.SectionHubBrowser) {
-			servers["browser"] = browserServer(s.User, false, s.Has("browser_act"))
-		}
-		if s.govAllows("hub:browser_guest") {
-			servers["browser_guest"] = browserServer(s.User, true, s.Has("browser_act"))
-		}
-	}
 	// M32/#520: no open_knowledge entry — same retirement as the unmanaged
 	// render; a managed runtime may not dial the vault directly either.
 	return servers
@@ -316,10 +300,14 @@ func (s Settings) ManagedMemoryVaultFlag() bool { return s.managedMemoryVaultFla
 // effective config for a spawned managed runtime.
 func (s Settings) ManagedImageGenGrant() media.ImageGen { return s.managedImageGenGrant() }
 
-// managedWebSettings returns the operator web selection only when a web
-// family toolset is carved out natively — the same condition under which
-// managedHermesConfig renders the `web:` block.
+// managedWebSettings returns the operator web selection for the selected
+// ToolHub family or an explicitly carved-out native web toolset.
 func (s Settings) managedWebSettings() WebSettings {
+	for _, name := range []string{"web", "web_search"} {
+		if entry := s.Tools[name]; entry.Via == ToolViaToolHub && entry.enabled() {
+			return s.Web
+		}
+	}
 	for _, name := range []string{"web", "search", "x_search"} {
 		if entry := s.Tools[name]; entry.Via == ToolViaNative {
 			return s.Web

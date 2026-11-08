@@ -24,6 +24,20 @@ func oneHop(t *testing.T, raw string) []*modelHop {
 	return hops
 }
 
+func TestModelBudgetChargesImageDataSeparatelyFromText(t *testing.T) {
+	imageData := "data:image/png;base64," + strings.Repeat("A", 3<<20)
+	request := map[string]any{"messages": []any{map[string]any{"role": "user", "content": []any{map[string]any{"type": "image_url", "image_url": map[string]any{"url": imageData}}}}}}
+	body, err := json.Marshal(request)
+	if err != nil || !withinModelBudget(body) {
+		t.Fatalf("valid bounded image rejected: %v", err)
+	}
+	request = map[string]any{"messages": []any{map[string]any{"role": "user", "content": strings.Repeat("A", 3<<20)}}}
+	body, err = json.Marshal(request)
+	if err != nil || withinModelBudget(body) {
+		t.Fatalf("oversized text accepted: %v", err)
+	}
+}
+
 func TestModelRelayOnlyForwardsReviewedChatRoute(t *testing.T) {
 	calls := 0
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -1,6 +1,6 @@
 ---
 description: "M31: consolidated model tool surface — catalog release 5 with 20 first-party families, via/executor two-level routing, model|internal|operator audiences and logical toolset names."
-last_verified: "2026-11-03"
+last_verified: "2026-11-08"
 ---
 
 # ADR-0094: Consolidated model tool surface (catalog r5)
@@ -115,3 +115,15 @@ compile error и catalog test.
 - **Closed diagnostics.** `platform_status` эмитит ровно четыре
   allowlisted поля; коннектор-инструменты не объявляют аргументов
   формы credential — секреты ходят только через защищённую форму.
+
+## Дополнение 2026-11-08: каталог 21
+
+В управляемом режиме семейство `web` переименовано в `web_search` без
+переименования инструмента `web_search`. Выбор провайдера остаётся в
+опубликованной конфигурации, а вызов проходит через ToolHub к приватному
+исполнителю закреплённого Hermes runtime. `browser_*` также выполняются
+через ToolHub и приватный tools-daemon, который обращается к существующему
+Playwright sidecar; прямой model-visible MCP server для browser убран.
+Опциональные companion-пункты `desktop` и macOS `drafts` удалены из нового
+каталога; `native:desktop_ui` и черновики workspace не меняются. Каталог 20
+остаётся неизменным для воспроизведения прежних ревизий.

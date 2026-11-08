@@ -58,7 +58,7 @@ func HubToolsDefinition() api.ToolDefinition {
 	def := api.ToolDefinition{
 		Schema:       api.SchemaVersion,
 		DefinitionID: HubToolsDefinitionID,
-		Version:      "18.0.2",
+		Version:      "18.1.0",
 		Transport:    api.AgentTools,
 		Source:       api.DefinitionSource{},
 		Workload: api.WorkloadPolicy{
@@ -207,10 +207,13 @@ func HubToolsDefinition() api.ToolDefinition {
 			remote("connector_install", "connectors.install", "connectors.prepare", "Install a connector candidate from connector_search; returns a protected credential form when required — never accepts secrets in arguments.", api.WriteEffect, "runtime:connectors", str("name"), opt("version")),
 			remote("connector_edit", "connectors.edit", "connectors.enable", "Change a connector's lifecycle: enable, disable, allow_writes, reauth (returns a protected URL only) or remove.", api.WriteEffect, "runtime:connectors", str("name"), str("action")),
 
-			// ---- web (2): hub-side web provider relay; cataloged names over
+			// ---- web: hub-side web provider relay; cataloged names over
 			// the space's configured search/fetch backends
-			remote("web_search", "web.search", "web.search", "Search the web through the space's configured provider.", api.ReadEffect, "runtime:web", str("query"), intArg("limit", false)),
-			remote("web_fetch", "web.fetch", "web.read", "Fetch one URL's content as bounded text; untrusted data.", api.ReadEffect, "runtime:web", str("url")),
+			tool("web_search", "web_search.search", "web.search", "Search the web through the space's configured provider.", api.ReadEffect, use("search", "web"), str("query"), intArg("limit", false)),
+			tool("web_fetch", "web_search.fetch", "web.read", "Fetch one URL's content as bounded text; untrusted data.", api.ReadEffect, use("read", "web"), str("url")),
+			tool("web_providers", "web_search.providers", "web.search", "List available and configured web providers without revealing credentials.", api.ReadEffect, use("read", "web")),
+			tool("web_search_multi", "web_search.multi", "web.search", "Search through configured providers and merge ranked results.", api.ReadEffect, use("search", "web"), str("query"), arrArg("providers", false), intArg("limit", false)),
+			tool("web_cache", "web_search.cache", "web.cache", "Inspect, prune or clear this space's web extraction cache.", api.WriteEffect, use("write", "web"), str("action")),
 
 			// ---- sites (3): publishing lifecycle; was hosting
 			tool("site_list", "sites.list", "stack.inspect", "List own hosted sites or show one by id, without share tokens.", api.ReadEffect, use("list", "sites"), opt("id")),
@@ -223,10 +226,10 @@ func HubToolsDefinition() api.ToolDefinition {
 			remote("research_list", "research.list", "research.read", "List research jobs of this space.", api.ReadEffect, "flow:deep_research", intArg("limit", false)),
 
 			// ---- browser (4): curated names over the browser connector
-			remote("browser_open", "browser.open", "browser.open", "Open a browser session on a URL under the user or guest profile; returns a session id.", api.WriteEffect, "connector:browser", str("url"), opt("profile")),
-			remote("browser_read", "browser.read", "browser.read", "Read a browser session's page content or snapshot as bounded markdown.", api.ReadEffect, "connector:browser", str("session")),
-			remote("browser_act", "browser.act", "browser.act", "Act in a browser session: click, type, scroll, press, select, wait or close.", api.WriteEffect, "connector:browser", str("session"), str("action"), opt("target"), opt("value")),
-			remote("browser_capture", "browser.capture", "browser.capture", "Capture a browser session as a screenshot or pdf written to the workspace.", api.ReadEffect, "connector:browser", str("session"), str("kind")),
+			tool("browser_open", "browser.open", "browser.open", "Open a browser session on a URL under the user or guest profile; returns a session id.", api.WriteEffect, use("open", "browser"), str("url"), opt("profile")),
+			tool("browser_read", "browser.read", "browser.read", "Read a browser session's page content or snapshot as bounded markdown.", api.ReadEffect, use("read", "browser"), str("session")),
+			tool("browser_act", "browser.act", "browser.act", "Act in a browser session: click, type, scroll, press, select, wait or close.", api.WriteEffect, use("act", "browser"), str("session"), str("action"), opt("target"), opt("value")),
+			tool("browser_capture", "browser.capture", "browser.capture", "Capture a browser session as a screenshot or pdf written to the workspace.", api.ReadEffect, use("read", "browser"), str("session"), str("kind")),
 
 			// ---- platform (6): pinned discovery/self layer
 			remote("platform_guide", "platform.guide", "platform.guide", "Orient in this space: channels, active families, working directory and how to reach the rest.", api.ReadEffect, "runtime:toolhub"),

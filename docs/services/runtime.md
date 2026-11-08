@@ -1,6 +1,6 @@
 ---
 description: hub-runtime — the agent container process and its relay modes (serve/idle/health, model/toolhub/egress/control relays).
-last_verified: 2026-11-07
+last_verified: 2026-11-08
 ---
 
 # hub-runtime
@@ -54,6 +54,11 @@ returned by Hermes admission. ToolHub verifies
 that pair against the supervisor before admitting private memory. A caller's
 job/run headers are discarded, and an unconfirmed run keeps its binding
 until observation reports a terminal state.
+
+The private tools-daemon executes admitted `web_search` calls through the
+pinned Hermes web sidecar and `browser_*` through the owner's Playwright
+sidecar. Managed Hermes does not expose either sidecar as a direct model MCP
+server; ToolHub remains the admission point.
 
 Interrupted runs keep artifact attribution via the
 `/state/runstarts/<runID>` marker whose mtime preserves the artifact scan

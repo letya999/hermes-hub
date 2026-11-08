@@ -439,7 +439,7 @@ outcome evidence are untrusted; streams have no clock occurrences (see event_sta
 
 ## Deployment and manual acceptance
 
-The current catalog is hub-agent-tools@18.0.2 (Release 20). Old definitions
+The current catalog is hub-agent-tools@18.1.0 (Release 21). Old definitions
 remain immutable. For managed spaces, publish the selected tools and grants
 passports, then rebind and respawn the runtime to project that revision.
 `memory_open` belongs to memory; it grants no routine a viewing link. Routine calls require the current `tasks.schedule` right as well as independent

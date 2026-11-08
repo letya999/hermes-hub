@@ -493,6 +493,9 @@ func withinModelBudget(body []byte) bool {
 	var output struct {
 		MaxTokens           int64 `json:"max_tokens"`
 		MaxCompletionTokens int64 `json:"max_completion_tokens"`
+		Messages            []struct {
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
 	}
 	if json.Unmarshal(body, &output) != nil {
 		return false
@@ -501,8 +504,34 @@ func withinModelBudget(body []byte) bool {
 	if reserve > modelTokenCeiling {
 		return false
 	}
-	// Worst case ~6 UTF-8/JSON bytes per token (escapes, CJK); conservative.
-	return int64(len(body))/6+reserve <= modelTokenCeiling
+	// Data URLs are image payloads, not prompt text. Charge a conservative
+	// image allowance while the HTTP byte limit still caps their encoded size.
+	imageBytes, images := 0, 0
+	for _, message := range output.Messages {
+		var parts []struct {
+			Type     string `json:"type"`
+			ImageURL struct {
+				URL string `json:"url"`
+			} `json:"image_url"`
+		}
+		if json.Unmarshal(message.Content, &parts) != nil {
+			continue
+		}
+		for _, part := range parts {
+			if part.Type != "image_url" {
+				continue
+			}
+			url := part.ImageURL.URL
+			comma := strings.IndexByte(url, ',')
+			if comma < 0 || comma > 128 || !strings.HasPrefix(url, "data:image/") || !strings.HasSuffix(url[:comma], ";base64") {
+				continue
+			}
+			imageBytes += len(url)
+			images++
+		}
+	}
+	// Worst case ~6 UTF-8/JSON bytes per text token (escapes, CJK).
+	return int64(len(body)-imageBytes)/6+reserve+int64(images)*16384 <= modelTokenCeiling
 }
 
 // rewriteModelField swaps the top-level "model" value; non-JSON bodies pass through.

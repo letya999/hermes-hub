@@ -21,6 +21,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	xdraw "golang.org/x/image/draw"
 )
 
 // Inspect describes one workspace image through the configured model endpoint.
@@ -89,13 +91,19 @@ func (s *Session) inspectMany(ctx context.Context, paths []string) (map[string]a
 		if err != nil {
 			return nil, err
 		}
-		total += len(body)
-		if total > MaxImageBytes {
-			return nil, errors.New("combined images exceed the byte limit")
-		}
+		sourceFormat := format
 		width, height, err := imageBounds(body)
 		if err != nil {
 			return nil, err
+		}
+		originalBytes := len(body)
+		format, body, err = compactVisionImage(format, body, MaxModelImageBytes/len(paths))
+		if err != nil {
+			return nil, err
+		}
+		total += len(body)
+		if total > MaxModelImageBytes {
+			return nil, errors.New("combined images exceed the byte limit")
 		}
 		mime := "image/png"
 		if format == "jpeg" {
@@ -105,7 +113,7 @@ func (s *Session) inspectMany(ctx context.Context, paths []string) (map[string]a
 			mime = "image/webp"
 		}
 		content = append(content, map[string]any{"type": "image_url", "image_url": map[string]string{"url": "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(body)}})
-		results = append(results, map[string]any{"path": rel, "format": format, "width": width, "height": height, "bytes": len(body)})
+		results = append(results, map[string]any{"path": rel, "format": sourceFormat, "width": width, "height": height, "bytes": originalBytes})
 	}
 	cfg, err := s.readConfig()
 	if err != nil {
@@ -143,6 +151,31 @@ func (s *Session) inspectMany(ctx context.Context, paths []string) (map[string]a
 		"results": results,
 		"text":    text, "truncated": truncated, "secret_values_included": false,
 	}, nil
+}
+
+func compactVisionImage(format string, body []byte, limit int) (string, []byte, error) {
+	if len(body) <= limit {
+		return format, body, nil
+	}
+	img, err := decodeImage(body)
+	if err != nil {
+		return "", nil, err
+	}
+	for range 8 {
+		var out bytes.Buffer
+		if err := jpeg.Encode(&out, img, &jpeg.Options{Quality: 75}); err != nil {
+			return "", nil, err
+		}
+		if out.Len() <= limit {
+			return "jpeg", out.Bytes(), nil
+		}
+		bounds := img.Bounds()
+		width, height := max(1, bounds.Dx()*3/4), max(1, bounds.Dy()*3/4)
+		small := image.NewRGBA(image.Rect(0, 0, width, height))
+		xdraw.CatmullRom.Scale(small, small.Bounds(), img, bounds, xdraw.Over, nil)
+		img = small
+	}
+	return "", nil, errors.New("image cannot fit the model request budget")
 }
 
 func (s *Session) generate(ctx context.Context, name, prompt, source string) (map[string]any, error) {

@@ -79,8 +79,6 @@ func SeedInventory() []ToolSection {
 		hub("hub:slack", EffectMutate),
 		hub("hub:atlassian", EffectMutate),
 		hub("hub:telegram_user", EffectMutate),
-		hub("hub:desktop", EffectMutate),
-		hub("hub:drafts", EffectMutate),
 		// Executor capability families (`tools: <name>: toolhub`) — catalog
 		// r5 ids (ADR-0094): archives/artifacts/knowledge live under files,
 		// images/image_gen under media, hosting under sites, services under
@@ -99,7 +97,7 @@ func SeedInventory() []ToolSection {
 		hub("hub:ssh", EffectExec),
 		hub("hub:exposure", EffectExec), // public endpoints: restrictive default, like ssh
 		hub("hub:sites", EffectExec),    // publishing: restrictive default, like hosting
-		hub("hub:web", EffectMutate),
+		hub("hub:web_search", EffectMutate),
 		hub("hub:research", EffectMutate),
 		hub("hub:connectors", EffectMutate),
 		hub("hub:models", EffectMutate),
