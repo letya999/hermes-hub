@@ -22,8 +22,8 @@ historical_slices:
   S7.3-accept: not_started
 validation:
   documents: passed_2026-11-05
-  just_check: passed_after_final_five_check_edits_2026-11-08
-  affected_tests: broad_affected_packages_and_supervisor_retry_passed_2026-11-08
+  just_check: passed_after_m32_local_sish_fix_2026-11-08
+  affected_tests: stack_reconcile_hosting_supervisor_communication_toolhub_agenttools_runtime_passed_2026-11-08
   five_check_acceptance: passed_5_of_5_local_technical_with_model_http_flake_2026-11-08
   five_check_source: 7c08b9516b65ddf567ce89ef01b0cee8cfcad61a
   go_check: historical_85_48pct_not_rerun_after_latest_acceptance_fixes
@@ -32,7 +32,7 @@ validation:
   config_check: passed_2026-11-07
   docker_check: not_run_for_current_source_2026-11-07
   red_team: not_started
-  live_acceptance: five_local_technical_checks_passed_human_telegram_and_remote_ci_unchecked_2026-11-08
+  live_acceptance: two_owner_memory_and_sish_sites_passed_sessions_browser_models_partial_web_connector_media_2026-11-08
   cold_executor: passed_two_owner_live_file_roundtrip_and_zero_leases_2026-11-07
   native_dreaming: passed_real_relay_pdp_vault_two_timezones_spring_dst_revoke_host_restart_drafts_deferred_fixture_delivery_2026-11-07
   memory_lock_order: passed_waiting_owner_registry_writer_other_owner_progress_and_revoke_recheck_2026-11-07
@@ -50,6 +50,7 @@ validation:
   spawned_runtime_group: compose_parity_and_script_http_red_then_green_supervisor_76_617s_devcheck_11_348s_cmd_1_198s_passed_2026-11-07
   remote_acceptance_authorization: requested_commit_push_feat_m32_integration_full_ci_ghcr_awaiting_owner_2026-11-07
 evidence:
+  - "2026-11-08 M32 local cutover: code commit 80b895a62d16ae131594a1fcd4b8d4e9859f35d2. Existing artem_main/artem_two dev containers were scoped rebuilt and managed runtimes respawned on dev images; catalog 18.2.0 rebound. Local sish exposure served an isolated site through ToolHub; publish/list/status/remove passed and the route returned 404 after removal. Real model mock runs for both owners wrote, searched, read and used separate synthetic memory facts; ToolHub audit confirmed admitted/completed writes and reads. Sessions lifecycle, models list/switch, browser guest read/act/capture plus user-profile open/close, and media inspect at one/five/exact 20 MiB/over-limit were observed. Research is deferred by owner. Web providers had no successful upstream result, GitHub get_me remained absent because its Broker grant policy epoch is stale, and media_generate returned 502 without hub-media. Remote CI was not requested. Final local just check, eight affected package suites and staged gitleaks passed."
   - "2026-11-07 corrected assignment mock acceptance: direct ToolHub service control used each owner's actual mock envelope. One synthetic hook produced one routine occurrence and real model wake per owner; exact-job audit showed memory.search and memory.read admitted/completed/succeeded, both durable summaries/findings used own amber fact, and exact own mock deliveries passed. Both assignments and exact mock deliveries/links were removed. Assignment remember and post-revoke write denial remain live-unproven, so the whole bullet stays FAIL."
   - "2026-11-07 final local source gates: just check passed; the final ToolHub/e2e affected-package rerun passed (131.522s/12.888s) after six other affected packages passed in the preceding batch. Final cached scoped ToolHub dev overlay sha256:fc7d11b30fd61b441655e36c6568966e37b6006a7b379551a3f2bf9f3ca246de became healthy; runtimes remained on their prior scoped images. A new two-owner mock assignment read probe was invalid because service CRUD supplied a Telegram caller envelope while its destination was mock; channel authorization skipped it. Temporary allowlist stage trace confirmed both clocks completed every stage and was removed. Both probe assignments were cancelled/removed and exact mock deliveries/links removed."
   - "2026-11-07 latest acceptance count: 16 PASS, 9 FAIL, 1 BLOCKED of 26 explicit bullets = 62%. Two managed real-model mock-channel jobs each called memory_search then memory_read (exact-job ToolHub audit admitted/completed/succeeded) and delivered their own synthetic amber fact; the main reply landed after the five-minute poll deadline and was verified. A later artem_main real model job selected terminal_exec with exact-job terminal.exec audit completed/succeeded and the synthetic command marker in its reply; artem_two model refused, while its direct managed MCP terminal path had already passed. Exact mock deliveries/links were removed. Initial affected-package run passed six packages but found unbound-vault 502 and missing registry case in internal/e2e; read-only unavailable fallback and E2E-251 repaired both, named e2e tests plus touched vet passed. Final check and toolhub/e2e package rerun passed."
@@ -106,6 +107,7 @@ evidence:
   - "2026-11-05: Cross-stage audit and handoff recorded under CHG-0281. Acceptance plan strengthened for real process exit status, clean passport-only lifecycle, exact-profile rollback and actual ToolHub memory execution. Stage implementation remains not_started."
 remaining: [acceptance_526, implementation_527, quality_gates, live_acceptance]
 limitations:
+  - "The M32 main local acceptance is partial: web_search/fetch returned provider errors; GitHub get_me requires a current Broker grant; hub-media was not provisioned, so generation and channel send were not proven. Research was explicitly deferred. Images have exact Docker IDs but no embedded source-revision label; commit and build provenance are recorded separately."
   - "Automatic approval review rejected deletion of exact ignored .work/tmp synthetic helper/state files (no detailed reason returned), after path containment and ignore verification. They remain under ignored .work/tmp; no user vault or external state was deleted to work around the rejection."
   - "Current-source container acceptance still lacks group isolation, lost-ack capture and process-crash recovery, full live dreaming ToolHub recall, assignment remember/revoke live path, model-selected terminal call, and actual incoming human Telegram message. Positive live HTTP watcher passed. Exact-source image and remote CI gates remain open."
   - "Historical own Go coverage is 85.48%; it was not rerun after the latest fixes. Full seven-image Docker/published-SHA CI, isolated group/capture fault matrix, live agent-driven due work and deferred delivery, and container/process-crash dreaming acceptance remain unverified. Native two-timezone spring-DST/revoke/restart/digest checks passed with real components and local model/channel fixtures. Deterministic no-output due work during a communication outage and live stream/drop settlement passed."
