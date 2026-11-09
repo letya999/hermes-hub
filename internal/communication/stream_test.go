@@ -39,6 +39,25 @@ func streamEvent(job Job) hubruntime.ExecuteResponse {
 	return hubruntime.ExecuteResponse{JobID: job.ID, SessionID: "session-1", RunID: "run-1", RuntimeGeneration: "gen-1", Status: "running", LastEvent: "run.admitted", EventID: "admitted"}
 }
 
+func TestRecoverySkipsInvalidDeliveryIdentity(t *testing.T) {
+	s, job := streamJob(t)
+	bad := Delivery{ID: "wrong-audience", JobID: job.ID, Channel: "telegram_bot", ChatID: 22,
+		ConversationID: job.ConversationID, DeliveryTargetID: job.DeliveryTargetID, Text: "synthetic"}
+	receipt := streamReceipt{JobID: job.ID, Position: 1, Event: streamEvent(job), Delivery: &bad}
+	if err := atomicJSON(filepath.Join(s.root, "run-events", "invalid.json"), receipt); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.recover(); err != nil {
+		t.Fatalf("invalid historical audience blocked startup: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(s.root, "run-events", "invalid.json")); err != nil {
+		t.Fatal("historical receipt was removed")
+	}
+	if _, err := os.Stat(filepath.Join(s.root, "outbox", "pending", "wrong-audience.json")); !os.IsNotExist(err) {
+		t.Fatal("invalid delivery was enqueued")
+	}
+}
+
 // Live progress: while a telegram run is non-terminal the gateway re-arms the
 // typing action and refreshes the single status message with elapsed time;
 // terminal jobs are left alone.

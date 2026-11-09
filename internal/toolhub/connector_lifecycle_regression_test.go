@@ -76,6 +76,43 @@ func TestConnectorReinstallAfterRemoval(t *testing.T) {
 	}
 }
 
+func TestConnectorInstallRetryRefreshesExpiredConfirmation(t *testing.T) {
+	store, auth, _, profile := managedStore(t)
+	profile.Revision++
+	profile.Connectors = api.ConnectorsPersonal
+	if err := putProfile(t, store, profile); err != nil {
+		t.Fatal(err)
+	}
+	c := &ControlPlane{Store: store, Now: time.Now, ConfirmationTTL: time.Minute}
+	args := map[string]any{"target": "google-work", "version": "2.0.0"}
+	first, err := c.InvokeConnector(t.Context(), auth, "connector_install", args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, err := store.OperationFor(auth, first.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	onboarding, err := store.OnboardingFor(auth, op.OnboardingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	onboarding.Phase = api.PhaseAwaitingConfirm
+	onboarding.ConfirmationNonce = "expired"
+	onboarding.ConfirmationExpires = time.Now().Add(-time.Minute)
+	if err := store.PutOnboarding(onboarding); err != nil {
+		t.Fatal(err)
+	}
+	second, err := c.InvokeConnector(t.Context(), auth, "connector_install", args)
+	if err != nil || second.State != api.OpStateAwaitingConfirm || second.OperationID != first.OperationID {
+		t.Fatalf("retry result=%+v err=%v", second, err)
+	}
+	updated, err := store.OnboardingFor(auth, onboarding.OnboardingID)
+	if err != nil || updated.ConfirmationNonce == "expired" || !updated.ConfirmationExpires.After(time.Now()) {
+		t.Fatal("retry did not refresh expired confirmation")
+	}
+}
+
 func TestConnectorRemoveAfterReinstall(t *testing.T) {
 	store, auth, _, profile := managedStore(t)
 	old := m13P3EnabledOnboarding(t, store, auth)

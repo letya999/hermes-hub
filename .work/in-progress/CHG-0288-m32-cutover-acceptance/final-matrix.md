@@ -1,5 +1,19 @@
 # Finite M32 live acceptance matrix
 
+## 2026-11-09: goals, context, and GitHub connector
+
+| Case | Result | Evidence and reason |
+| --- | --- | --- |
+| `goal_status → edit(set) → status → edit(pause) → edit(resume) → remove → status` | PASS | One isolated `artem_two` mock conversation and a confirmed active supervisor run: all seven ToolHub calls succeeded; states were absent, active, active, paused, active, absent, absent. |
+| Foreign and terminal goal run IDs | PASS | The `artem_main` bearer was denied on the live `artem_two` run; after its terminal failure, the same owner/run pair was denied. The test goal was cleared and the two created mock links and deliveries were removed. |
+| `context_status`, preview, compact, status, continuation | PASS | An isolated managed Hermes fixture called ToolHub on an active run. Preview left the journal count unchanged; queued manual compaction produced exactly one manual journal event; the next ToolHub status reported one compaction and the same session completed another run. |
+| GitHub prepared connector update and `get_me` | BLOCKED | The existing Broker grant is for an old policy epoch. The normal `connector_install` update reused the credential and reached `awaiting_confirm`; its first notice missed a restarting communication service. Scoped recovery fixed an invalid historical delivery that crashed startup, and retry now renews expired confirmation. A direct local install lacked a live Telegram origin and its confirmation notice was rejected by the channel (HTTP 400). No owner confirmation or new grant exists, so `get_me` has not been accepted. |
+
+The GitHub connector is not required for the M32 MVP criteria in this local
+matrix. Its provider-account acceptance remains open until a live Telegram
+confirmation creates a current-policy grant. No personal fact or historical
+delivery receipt was changed.
+
 ## 2026-11-09: Web search and fetch through ToolHub
 
 The active `artem_two` dev runtime uses pinned Hermes `869228cab` and synthetic

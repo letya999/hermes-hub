@@ -1,6 +1,6 @@
 ---
 description: Connector pipeline вЂ” review/build/admission contract, lifecycle, recipe ledger, tiers, and per-connector prepared entries.
-last_verified: 2026-10-30
+last_verified: 2026-11-09
 ---
 
 # Prepared connectors
@@ -384,6 +384,8 @@ state slot and hide the freshly checkpointed token from the MCP server.
 Protected form, confirmation and OAuth links arrive as new chat messages when
 issued. If a pending confirmation or OAuth link is lost, call ToolHub `status`
 with the onboarding ID and `resend: true`; the channel posts a fresh link.
+Repeating `connector_install` for the same target also renews an expired
+confirmation nonce on its existing operation and sends the replacement notice.
 
 ### google-workspace
 

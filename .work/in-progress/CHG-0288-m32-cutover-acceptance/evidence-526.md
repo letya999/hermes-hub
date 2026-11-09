@@ -1617,3 +1617,58 @@ nor proxy-tunnel failure. Firecrawl extraction is **BLOCKED** until a valid
 `FIRECRAWL_API_KEY` or authorized managed gateway route is provided. Exa
 extraction is the working published default. The final config has no pending
 apply journal. No test browser session or owned data object was created.
+
+## Goals, context, and GitHub connector follow-up — 2026-11-09
+
+The goal check used only two synthetic `artem_two` mock chats
+(`800000903209217400`, `800000903209265300`). The second confirmed run
+`mock-c7a594696b02689bf74db9ab15c2eda33210e9d754d504501eb5c7b74a7f8e14`
+had an exact running Hermes run and generation. ToolHub returned, in order:
+`goal_status` absent, `goal_edit set` active, `goal_status` active,
+`goal_edit pause` paused, `goal_edit resume` active, `goal_remove` absent,
+`goal_status` absent. A foreign `artem_main` token was refused while the run
+was active; the owning token was refused after it became terminal. The first
+diagnostic goal was cleared, the second removed, and a later exact status
+check found neither goal. The two mock deliveries and links were removed;
+ordinary job and audit history was retained. No personal goal was read.
+The durable ToolHub audit segments for the exact second mock job contain
+eight admits, seven completed `ok` results, one completed preflight error
+for the terminal call, and one authorization denial for the foreign call.
+The current communication goal status reports `found=false` for both exact
+synthetic conversations.
+
+The context check used `TestM32ContextPreviewApplyAndContinue` with disposable
+owners, a local model fixture, real managed Hermes containers, and ToolHub.
+On the same active session, `context_status` established a baseline,
+`context_edit preview=true` returned `applied=false`, and a second status
+reported the same compaction count. `context_edit queue=true` returned
+`failure_class=queued` while the run held the lease. After the run completed,
+the exact session journal contained one successful `manual` event; a new run
+on the same session saw `compactions=1` through ToolHub and completed. The
+fixture cleanup removed its containers and temporary state.
+
+GitHub's active connector binding was on the current policy, but its Broker
+grant reference was on an older policy epoch. `POST /v1/connectors:install`
+for `github` returned HTTP 200, `awaiting_confirm`, `link_sent=true`. The
+ToolHub log showed the first notice failed DNS while communication was
+restarting. Its startup failure was one historical non-test run receipt with
+a Telegram delivery target inconsistent with its chat ID; a read-only scan
+found one invalid delivery among 416 receipts with deliveries. Recovery now
+skips that unsafe replay while retaining its receipt; the scoped communication
+rebuild started healthy with restart count zero. A second install call on the
+same operation renewed the expired confirmation nonce, but the notice reached
+communication with HTTP 400: this local HTTP install had no initiating
+Telegram job and the channel selected an earlier mock origin, where a human
+confirmation is forbidden. The earlier `link_sent` flag described a minted
+link, not successful Telegram delivery. The owner reported receiving no
+message; no confirmation, grant replacement, or `get_me` success is claimed.
+This connector is outside the accepted local M32 MVP denominator.
+
+Verification: `just check` passed; the named communication recovery and
+connector retry regressions passed; the isolated Docker context integration
+passed twice, including unchanged preview tokens and last event. One combined
+`just test` run passed ToolHub, devcheck and cmd/toolhub but failed in
+communication with an overlong, truncated test log; a scoped rerun of
+`just test ./internal/communication` passed. The first failure's test name
+was not recoverable, so this is a local flaky-gate risk, not a clean claim
+for that combined run. Staged diff secret scan and whitespace check passed.

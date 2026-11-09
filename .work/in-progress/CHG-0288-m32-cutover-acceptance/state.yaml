@@ -32,6 +32,11 @@ validation:
   single_process_check: just_check_passed_2026-11-09
   single_process_affected_tests: runtime_supervisor_toolhub_passed_2026-11-09
   browser_acceptance: live_toolhub_user_profile_read_act_capture_wait_foreign_revoke_restore_passed_2026-11-09
+  goals_acceptance: live_mock_toolhub_sequence_foreign_terminal_denial_passed_2026-11-09
+  context_acceptance: isolated_real_hermes_toolhub_preview_journal_continuation_passed_2026-11-09
+  github_get_me_acceptance: blocked_pending_live_telegram_confirmation_current_policy_grant_2026-11-09
+  goals_context_final_check: just_check_and_named_live_context_passed_2026-11-09
+  goals_context_affected_tests: toolhub_devcheck_cmd_toolhub_passed_communication_failed_once_then_scoped_rerun_passed_2026-11-09
   web_acceptance: toolhub_single_multi_fetch_denial_partial_passed_firecrawl_extract_blocked_http403_2026-11-09
   go_check: historical_85_48pct_not_rerun_after_latest_acceptance_fixes
   lint: passed_2026-11-07

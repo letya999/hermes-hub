@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -450,7 +451,10 @@ func (s *Spool) recoverStreamEvents() error {
 		}
 		if receipt.Delivery != nil {
 			var deliveryErr error
-			if receipt.StatusDelivery {
+			if _, validationErr := normalizeDelivery(*receipt.Delivery); validationErr != nil {
+				// Keep the receipt, but never replay a delivery to an invalid audience.
+				log.Printf("communication recovery skipped invalid delivery job_id=%q", receipt.JobID)
+			} else if receipt.StatusDelivery {
 				deliveryErr = s.UpsertStatusDelivery(*receipt.Delivery)
 			} else {
 				deliveryErr = s.EnqueueDelivery(*receipt.Delivery)

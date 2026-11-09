@@ -83,6 +83,9 @@ Managed agent-tools calls acquire their own runtime lease, so direct file
 calls and watch probes do not require a preceding model run to warm the
 executor. ToolHub re-authorizes the tool after startup and releases the lease
 when the call finishes.
+On communication restart, replay keeps historical run receipts but skips a
+delivery whose channel identity is invalid. The rejected audience is never
+queued for sending; the recovery log records its job ID for investigation.
 
 ## User onboarding — the capability ceremony
 

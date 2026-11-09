@@ -111,6 +111,9 @@ func (c *ControlPlane) connectorInstall(ctx context.Context, auth identity.Envel
 	if err != nil {
 		return api.OperationResult{}, err
 	}
+	if err := c.refreshConfirmation(ctx, auth, &onboarding); err != nil {
+		return api.OperationResult{}, err
+	}
 	markStep(&op, api.OpStepCollectCredentials, api.OpStepDone)
 	result := api.OperationResult{OperationID: op.OperationID, Summary: "install " + op.Target}
 	if onboarding.Phase == api.PhaseAwaitingCreds {
