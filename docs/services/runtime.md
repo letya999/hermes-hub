@@ -5,13 +5,12 @@ last_verified: 2026-11-09
 
 # hub-runtime
 
-Managed ToolHub MCP headers are static in upstream Hermes. Each managed owner
-has five runtime lanes (`gateway` through `gateway-5`), each with its own MCP
-proxy and exact admitted job/run binding. The supervisor durably assigns a
-lane before waking its container; a sixth job waits, and one conversation
-remains FIFO. Lanes share Hermes history under `/state/hermes` while their
-runtime markers under `/state` are separate. Spawn preparation serializes
-updates to the shared generated config and skills; model execution does not.
+One managed owner now has one Hermes process and one local MCP proxy for up to
+five concurrent conversations. The pinned Hermes client carries its run ID in
+the `tools/call` `_meta` field; the runtime resolves it to the admitted job and
+ToolHub verifies the pair against supervisor. A sixth job waits, and one
+conversation remains FIFO. Older `gateway-2` through `gateway-5` job records
+remain routable during recovery, but new work uses `gateway`.
 
 `cmd/runtime` → `internal/runtime.Run`. One binary, several modes selected by
 argv[1] (`internal/runtime/runtime.go`): `idle`, `gateway`, `prepare`,
@@ -56,12 +55,14 @@ invisible and installs regress to uncontrolled terminal/git operations.
 
 For managed runs the pinned Hermes MCP URL is the runtime's local `/mcp`
 route. The runtime forwards it to ToolHub's stateless `/mcp-run` route through
-the existing per-space relay, so a connection from an earlier turn cannot
-retain that turn's correlation headers. The runtime stamps the job/run pair
-returned by Hermes admission. ToolHub verifies
-that pair against the supervisor before admitting private memory. A caller's
-job/run headers are discarded, and an unconfirmed run keeps its binding
-until observation reports a terminal state.
+the existing per-space relay. For each `tools/call`, it reads the client run ID
+from `_meta`, looks up the admitted job in its concurrent run map, and stamps
+the corresponding headers. It discards caller-supplied job/run headers;
+missing, foreign and terminal run IDs fail closed. ToolHub verifies the pair
+against supervisor before admitting private memory. An uncertain run retains
+its binding until observation reports a terminal state.
+The relay defaults to `http://toolhub-control:8090`; isolated fixtures may set
+`HUB_TOOLHUB_RELAY_UPSTREAM` to their own fixed HTTP origin.
 
 The private tools-daemon executes admitted `web_search` calls through the
 pinned Hermes web sidecar and `browser_*` through the owner's Playwright
@@ -80,8 +81,11 @@ native cron is migrated.
 Hermes is an upstream dependency pinned by ADR-0012 (commit
 `869228cab4a8276d3b4c78da9d9939670c47bd0f`, version 0.21.0). The adapter
 implements only the pinned surface: `POST /v1/runs` with `Idempotency-Key`,
-`/api/sessions`, `/v1/runs/{run_id}/events` (SSE). Never patch Hermes; a
-contract bump is a new ADR + spec.
+`/api/sessions`, `/v1/runs/{run_id}/events` (SSE). The explicit, pin-checked
+overlay in `docker/patches/hermes-mcp-run-identity.patch` forwards Hermes'
+per-run approval context into ToolHub MCP call metadata and allows concurrent
+calls to its stateless endpoint. ADR-0090 records this narrow exception; any
+other upstream change still needs a reviewed decision and contract check.
 
 ## Dev workflow
 

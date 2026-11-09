@@ -95,8 +95,8 @@ func (m *Manager) abandonJob(request hubruntime.ExecuteRequest) {
 	_ = m.persistLocked()
 }
 
-// claimManagedLane gives each simultaneous conversation its own runtime and
-// static MCP connection. A lane remains reserved until its job is terminal.
+// claimManagedLane admits up to five conversations to one managed Hermes runtime.
+// Each job keeps its own run identity; prior lane modes remain routable on replay.
 func (m *Manager) claimManagedLane(ctx context.Context, request hubruntime.ExecuteRequest, binding Binding) (string, error) {
 	settings, err := stack.ReadEffective(binding.ContextRoot, m.environment())
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -115,7 +115,7 @@ func (m *Manager) claimManagedLane(ctx context.Context, request hubruntime.Execu
 			m.mu.Unlock()
 			return "", errors.New("job is no longer active")
 		}
-		busy := map[string]bool{}
+		active := 0
 		sameConversation := false
 		for otherKey, other := range m.jobs {
 			if otherKey == key || terminalRunStatus(other.Status) || other.Request.PrincipalID != request.PrincipalID || other.Request.ContextID != request.ContextID {
@@ -124,28 +124,21 @@ func (m *Manager) claimManagedLane(ctx context.Context, request hubruntime.Execu
 			if other.Request.ConversationID == request.ConversationID && (other.RuntimeMode != "" || other.UpdatedAt.Before(record.UpdatedAt) || other.UpdatedAt.Equal(record.UpdatedAt) && otherKey < key) {
 				sameConversation = true
 			}
-			if other.RuntimeMode != "" {
-				busy[other.RuntimeMode] = true
-			} else if other.Generation != "" { // legacy in-flight job
-				busy["gateway"] = true
+			if other.RuntimeMode != "" || other.Generation != "" {
+				active++
 			}
 		}
-		if !sameConversation {
-			for _, mode := range [...]string{"gateway", "gateway-2", "gateway-3", "gateway-4", "gateway-5"} {
-				if busy[mode] {
-					continue
-				}
-				previous := record
-				record.RuntimeMode = mode
-				record.UpdatedAt = time.Now().UTC()
-				m.jobs[key] = record
-				err = m.persistLocked()
-				if err != nil {
-					m.jobs[key] = previous
-				}
-				m.mu.Unlock()
-				return mode, err
+		if !sameConversation && active < 5 {
+			previous := record
+			record.RuntimeMode = "gateway"
+			record.UpdatedAt = time.Now().UTC()
+			m.jobs[key] = record
+			err = m.persistLocked()
+			if err != nil {
+				m.jobs[key] = previous
 			}
+			m.mu.Unlock()
+			return "gateway", err
 		}
 		m.mu.Unlock()
 		select {
@@ -546,6 +539,15 @@ func (m *Manager) consumeJobStream(request hubruntime.ExecuteRequest, runtime Ru
 		return forward(event)
 	})
 	if !terminalRunStatus(known.Status) {
+		class := "eof"
+		if err != nil {
+			class = "other"
+			switch err.Error() {
+			case "stream identity mismatch", "stale stream generation", "administrative effect fence", "job already terminal", "stale job generation", "obsolete runtime producer", "job response binding mismatch":
+				class = err.Error()
+			}
+		}
+		log.Printf("supervisor stream lost before terminal class=%s bound=%t", class, known.RunID != "")
 		known.Status, known.LastEvent, known.Text = "uncertain", "run.unknown", ""
 		m.finishJobGeneration(request, known, "uncertain", runtime.Generation) // #nosec G104 -- terminal bookkeeping is best-effort after a terminal event was already recorded.
 	}

@@ -1,6 +1,6 @@
 ---
 description: supervisor — per-space runtime spawner/manager; owns warm pools, docker exec agent-tools path, control channel.
-last_verified: 2026-11-08
+last_verified: 2026-11-09
 ---
 
 # supervisor
@@ -58,6 +58,9 @@ spaces dir at `/spaces`, project `config/` read-only, and the host
   runtime image; warm pool keyed by principal/context/mode + policy version.
   Managed spawn verifies the published revision again after materializing
   its files and passes that revision to the runtime preflight.
+  New managed jobs share one `gateway` runtime per owner, up to five active
+  conversations. The sixth waits; existing job records with legacy lane modes
+  still route to their recorded runtime for recovery.
 - Own the agent-tools executor naming contract: `HUB_AGENT_EXEC_MODE=
   supervisor` makes toolhub run agent-tools via `docker exec` into the owning
   runtime — the only control-plane path that never crosses the agent network.

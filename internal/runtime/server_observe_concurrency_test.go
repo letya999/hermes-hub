@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func TestConcurrentHermesAdmissionsDoNotOverlap(t *testing.T) {
+func TestConcurrentHermesAdmissionsOverlap(t *testing.T) {
 	firstEntered := make(chan struct{}, 1)
 	secondEntered := make(chan struct{}, 1)
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -62,17 +62,12 @@ func TestConcurrentHermesAdmissionsDoNotOverlap(t *testing.T) {
 	}()
 	select {
 	case <-secondEntered:
-		t.Fatal("second admission overlapped the first")
-	case <-time.After(30 * time.Millisecond):
+	case <-time.After(time.Second):
+		t.Fatal("second admission waited for the first")
 	}
 	cancelFirst()
 	if <-firstDone == nil {
 		t.Fatal("cancelled first admission reported success")
-	}
-	select {
-	case <-secondEntered:
-	case <-time.After(time.Second):
-		t.Fatal("second admission did not resume")
 	}
 	cancelSecond()
 	if <-secondDone == nil {

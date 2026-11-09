@@ -117,8 +117,9 @@ type ExecuteResponse struct {
 type runtimeHTTP struct {
 	restartMu sync.Mutex
 	runMu     sync.Mutex
-	activeJob string
-	activeRun string
+	runJobs   map[string]string
+	jobRuns   map[string]string
+	pending   int
 	runChange chan struct{}
 	proxyOnce sync.Once
 	proxy     http.Handler

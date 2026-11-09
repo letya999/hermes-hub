@@ -201,14 +201,10 @@ func (s *runtimeHTTP) observe(w http.ResponseWriter, r *http.Request) {
 		writeRuntimeError(w, http.StatusConflict, "run binding mismatch")
 		return
 	}
-	s.runMu.Lock()
-	if s.activeJob != "" && (s.activeJob != ref.JobID || s.activeRun != ref.RunID) {
-		s.runMu.Unlock()
+	if err := s.bindRun(ref.JobID, ref.RunID); err != nil {
 		writeRuntimeError(w, http.StatusConflict, "another Hermes run is still unconfirmed")
 		return
 	}
-	s.activeJob, s.activeRun = ref.JobID, ref.RunID
-	s.runMu.Unlock()
 	known := ExecuteResponse{JobID: ref.JobID, SessionID: ref.SessionID, RunID: ref.RunID, RuntimeGeneration: ref.RuntimeGeneration, Status: "running", LastEvent: "run.admitted", EventID: "admitted"}
 	s.writeStream(w, ref.ExecuteRequest, func(emit func(ExecuteResponse) error) (ExecuteResponse, error) {
 		response, err := s.observeHermesRun(r.Context(), known, emit)

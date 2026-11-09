@@ -200,6 +200,18 @@ Do not claim live acceptance until all five reach the held provider together
 and finish, the synthetic journal and audit agree, and fixture resources are
 removed.
 
+## 2026-11-09 single-process managed conversations
+
+Measure the existing five-slot container scheme before changing production
+behavior. Use the same isolated five-conversation fixture after the change.
+Apply a visible, pin-checked Hermes MCP client patch that carries each API run
+ID in `tools/call` metadata; map that ID to its admitted job in the Go runtime
+and let ToolHub check the exact pair against supervisor. Route five managed
+conversations through one `gateway` runtime, keep sixth-run waiting and
+per-conversation FIFO, and preserve routing for durable legacy lane records.
+Compare cold-start time, container count and observed memory, including any
+failed probes. Keep personal state, full Compose and remote CI out of the test.
+
 ## 2026-11-09 Browser acceptance follow-up
 
 Use the existing `artem_two` dev Playwright sidecar and ToolHub on a local

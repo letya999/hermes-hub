@@ -1412,6 +1412,56 @@ were up without reading credentials. This is local dirty-source acceptance at
 base SHA `b35a97c2dacd5e65e535d2036646d80088bc827c`; no real Telegram
 five-session run or remote CI is claimed.
 
+## Single-process comparison baseline, 2026-11-09
+
+Before changing production logic, the isolated five-slot fixture was run twice
+against the existing dev runtime image. The first run failed in 189.54 s and
+the second in 97.42 s: supervisor returned 503 while cold-spawning additional
+runtime/control containers, before five distinct model calls could overlap.
+Neither is a successful five-run timing result. The prior successful fixture
+result was 88.90 s for the whole test and ten runtime/control containers.
+
+An ignored `.work/tmp/m32-container-baseline.csv` sampled `docker stats` in
+the first failed run. The largest observed aggregate was 372.83 MiB across
+two runtime and four control containers at one timestamp; an individual
+runtime reached 187.00 MiB, a relay 10.91 MiB. The sampler did not capture a
+simultaneous ten-container peak and was stopped before retrying without it.
+All fixture containers and networks were removed by test cleanup. No personal
+facts, full Compose or remote CI participated.
+
+The original fixture also bound its ToolHub to fixed host port 8090. A live
+ToolHub already owned that port in later attempts: synthetic model relays saw
+HTTP 401 from the other ToolHub and Hermes returned HTTP 403 / permission
+denied before reaching the held model. This was a fixture isolation defect,
+not evidence that the single-process path failed. The fixture now chooses a
+free host port and sends both relays to that port; it never changes the
+existing ToolHub.
+
+## Single-process comparison result, 2026-11-09
+
+The scoped runtime image was built with `hubctl build --image runtime` from
+the edited source. The isolated five-session live test passed four times;
+measured runs took 66.00 s, 66.55 s, 65.15 s and 63.60 s for the full fixture.
+In the final exact-image run all five model requests and their ToolHub writes
+were ready after 24.377 s. All five had the same runtime generation and one
+runtime/control container pair. A sixth session remained queued until a slot
+freed. Each of the five wrote one synthetic memory card with its own exact
+job/run audit attribution. After release, Hermes itself called ToolHub
+`memory_search` once per run; the audit recorded one completed
+`memory.search` for each exact job. The test checked the memory write journal
+and audit, and its cleanup removed only its generated containers and networks.
+
+At the held-five point in the final run, `docker stats --no-stream` reported
+219.2 MiB for the runtime and 8.996 MiB for its control relay, 228.196 MiB
+combined. The old
+failed sample was 372.83 MiB across only two runtimes and four relays, not a
+ten-container peak. The prior successful old whole-test time was 88.90 s,
+but the runs were on different local conditions, so the 63.60 s versus
+88.90 s difference is indicative rather than a controlled benchmark. The
+container count reduction (ten to two per owner for five active sessions),
+exact run attribution and successful overlap are decisive for selecting the
+single-process design. Its shared process remains a larger failure domain.
+
 ## Browser through ToolHub and the existing sidecar, 2026-11-09
 
 The existing `artem_two` dev Playwright sidecar was resumed; no Playwright

@@ -1,6 +1,6 @@
 ---
 description: Current documentation index and Memory Bank navigation.
-last_verified: 2026-11-07
+last_verified: 2026-11-09
 ---
 # Documentation
 

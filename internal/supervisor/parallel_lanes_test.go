@@ -13,7 +13,7 @@ import (
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
-func TestManagedJobsClaimFiveIndependentRuntimeLanes(t *testing.T) {
+func TestManagedJobsShareOneRuntimeWithFiveRunCap(t *testing.T) {
 	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
 	b, err := m.normalize(binding(root))
 	if err != nil {
@@ -34,8 +34,8 @@ func TestManagedJobsClaimFiveIndependentRuntimeLanes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if want := [...]string{"gateway", "gateway-2", "gateway-3", "gateway-4", "gateway-5"}[i]; mode != want {
-			t.Fatalf("lane %d = %s, want %s", i, mode, want)
+		if mode != "gateway" {
+			t.Fatalf("run %d uses runtime mode %s", i, mode)
 		}
 		bound, err := m.bindingFor(jobs[i])
 		if err != nil || bound.RuntimeMode != mode {
@@ -51,7 +51,7 @@ func TestManagedJobsClaimFiveIndependentRuntimeLanes(t *testing.T) {
 		t.Fatal(err)
 	}
 	mode, err := m.claimManagedLane(t.Context(), jobs[5], b)
-	if err != nil || mode != "gateway-2" {
+	if err != nil || mode != "gateway" {
 		t.Fatalf("released lane = %s, err=%v", mode, err)
 	}
 }

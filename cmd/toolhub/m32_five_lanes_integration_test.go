@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -23,9 +24,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// Five real Hermes processes must reach the held model before any is released.
-// Their shared transcript store and ToolHub grants are exercised under five
-// distinct job/run identities belonging to one synthetic owner.
+// Five runs in one Hermes process must reach the held model before any is
+// released. ToolHub still receives five distinct job/run identities.
 func TestM32FiveManagedSessionsExecuteConcurrently(t *testing.T) {
 	image, script := os.Getenv("HUB_M32_IMAGE"), os.Getenv("HUB_M32_SCRIPT_IMAGE")
 	if image == "" || script == "" {
@@ -44,7 +44,7 @@ func TestM32FiveManagedSessionsExecuteConcurrently(t *testing.T) {
 			}
 		}
 		requests <- index
-	})
+	}, m32FiveRunToolReply)
 	defer release()
 	port := provider.Listener.Addr().(*net.TCPAddr).Port
 	f, err := devcheck.NewM32Fixture(t.TempDir(), "dev", fmt.Sprintf("http://host.docker.internal:%d/v1", port), suffix)
@@ -53,6 +53,7 @@ func TestM32FiveManagedSessionsExecuteConcurrently(t *testing.T) {
 	stop := h.startToolHub(t, ctx)
 	defer stop()
 	user := f.Users[0]
+	started := time.Now()
 	type outcome struct {
 		index  int
 		result runtime.ExecuteResponse
@@ -76,36 +77,52 @@ func TestM32FiveManagedSessionsExecuteConcurrently(t *testing.T) {
 				t.Fatalf("unexpected provider request for session %d before five lanes active", index)
 			}
 		case outcome := <-outcomes:
-			t.Fatalf("run %d ended before five model calls overlapped: %v", outcome.index, outcome.err)
+			t.Fatalf("run %d ended before five model calls overlapped: status=%s event=%s text=%q err=%v", outcome.index, outcome.result.Status, outcome.result.LastEvent, outcome.result.Text, outcome.err)
 		case <-ctx.Done():
 			t.Fatal("five model calls did not overlap")
 		}
 	}
 	var runs [5]api.RunContext
-	seenGeneration := map[string]bool{}
+	var generation string
+	var container string
+	containers := make([]string, 0, 2)
 	for i := range runs {
 		runs[i] = h.waitRun(t, ctx, "m32-five-"+strconv.Itoa(i))
-		if runs[i].Status != "running" || !runs[i].MayUseOwnerMemory() || runs[i].RuntimeGeneration == "" || runs[i].RuntimeGeneration != runs[i].CurrentGeneration || seenGeneration[runs[i].RuntimeGeneration] {
-			t.Fatalf("lane %d missing distinct active runtime generation", i)
+		if runs[i].Status != "running" || !runs[i].MayUseOwnerMemory() || runs[i].RuntimeGeneration == "" || runs[i].RuntimeGeneration != runs[i].CurrentGeneration {
+			t.Fatalf("run %d missing active runtime generation", i)
 		}
-		seenGeneration[runs[i].RuntimeGeneration] = true
-		var lane supervisor.Runtime
-		for _, mode := range [...]string{"gateway", "gateway-2", "gateway-3", "gateway-4", "gateway-5"} {
-			rt, ok, err := h.manager.Status(supervisor.Binding{PrincipalID: user, ContextID: user, RuntimeID: user, UserID: user, RuntimeMode: mode})
-			m32Require(t, err)
-			if ok && rt.Generation == runs[i].RuntimeGeneration {
-				lane = rt
-				break
-			}
+		if generation == "" {
+			generation = runs[i].RuntimeGeneration
+		} else if runs[i].RuntimeGeneration != generation {
+			t.Fatal("five runs used different Hermes processes")
 		}
+		lane, ok, err := h.manager.Status(supervisor.Binding{PrincipalID: user, ContextID: user, RuntimeID: user, UserID: user, RuntimeMode: "gateway"})
+		m32Require(t, err)
 		if lane.Address == "" {
-			t.Fatalf("lane %d has no runtime MCP proxy", i)
+			t.Fatalf("run %d has no runtime MCP proxy", i)
+		}
+		if !ok || lane.Generation != generation || container != "" && lane.Container != container {
+			t.Fatal("five runs did not share the same runtime")
+		}
+		container = lane.Container
+		if len(containers) == 0 {
+			containers = append(containers, container, container+"-ctl")
 		}
 		client := mcp.NewClient(&mcp.Implementation{Name: "m32-lane-probe", Version: "1"}, nil)
 		session, err := client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: lane.Address + "/mcp", HTTPClient: &http.Client{Transport: m32Bearer{token: h.tokens[user]}}, DisableStandaloneSSE: true}, nil)
 		m32Require(t, err)
-		m32SessionCall(t, ctx, session, "memory_card", map[string]any{"op": "remember", "name": "m32-five-" + strconv.Itoa(i), "text": "synthetic-five-lane-" + strconv.Itoa(i)}, true)
+		m32SessionCallWithRun(t, ctx, session, "memory_card", map[string]any{"op": "remember", "name": "m32-five-" + strconv.Itoa(i), "text": "synthetic-five-lane-" + strconv.Itoa(i)}, runs[i].RunID, true)
 		m32Require(t, session.Close())
+	}
+	t.Logf("five model calls and ToolHub writes ready after %s", time.Since(started).Round(time.Millisecond))
+	statCtx, stopStats := context.WithTimeout(ctx, 15*time.Second)
+	statArgs := append([]string{"stats", "--no-stream", "--format", "{{.Name}},{{.MemUsage}}"}, containers...)
+	stats, statErr := exec.CommandContext(statCtx, "docker", statArgs...).Output()
+	stopStats()
+	if statErr == nil {
+		t.Logf("runtime and relay memory snapshot: %s", strings.ReplaceAll(strings.TrimSpace(string(stats)), "\n", "; "))
+	} else {
+		t.Logf("runtime and relay memory snapshot unavailable: %T", statErr)
 	}
 	job := m32LaneJob(f.Auth[user], user, 5)
 	go func() {
@@ -176,7 +193,74 @@ waiting:
 			t.Fatalf("lane %d audit phases=%v", i, phases)
 		}
 	}
-	t.Log("five same-owner Hermes runs reached the model concurrently; sixth waited; each active run wrote one attributed memory card")
+	for i := range runs {
+		completed := 0
+		for _, line := range strings.Split(string(audit), "\n") {
+			var row struct {
+				CapabilityID string `json:"capability_id"`
+				JobID        string `json:"job_id"`
+				Phase        string `json:"phase"`
+			}
+			if json.Unmarshal([]byte(line), &row) == nil && row.CapabilityID == "memory.search" && row.JobID == runs[i].JobID && row.Phase == "completed" {
+				completed++
+			}
+		}
+		if completed != 1 {
+			t.Fatalf("Hermes run %d made %d attributed memory searches", i, completed)
+		}
+	}
+	t.Log("five same-owner runs in one Hermes process reached the model concurrently; sixth waited; each active run wrote one attributed memory card")
+}
+
+func m32FiveRunToolReply(w http.ResponseWriter, stream bool, raw json.RawMessage) bool {
+	var messages []struct {
+		Role      string          `json:"role"`
+		Content   json.RawMessage `json:"content"`
+		ToolCalls []struct {
+			Function struct {
+				Name string `json:"name"`
+			} `json:"function"`
+		} `json:"tool_calls"`
+	}
+	if json.Unmarshal(raw, &messages) != nil {
+		return false
+	}
+	index, lastTool, toolReturned := -1, "", false
+	for _, message := range messages {
+		if message.Role == "user" {
+			for i := 0; i < 6; i++ {
+				if strings.Contains(string(message.Content), "Synthetic session "+strconv.Itoa(i)) {
+					index, lastTool, toolReturned = i, "", false
+				}
+			}
+		}
+		for _, call := range message.ToolCalls {
+			lastTool = call.Function.Name
+		}
+		if message.Role == "tool" {
+			toolReturned = true
+		}
+	}
+	if index < 0 || lastTool == "tool_call" && toolReturned {
+		return false
+	}
+	name := "tool_search"
+	arguments, _ := json.Marshal(map[string]any{"queries": []string{"mcp__toolhub__tool_call"}})
+	if lastTool == "tool_search" && toolReturned {
+		name = "tool_call"
+		arguments, _ = json.Marshal(map[string]any{"name": "mcp__toolhub__tool_call", "arguments": map[string]any{"tool": "memory_search", "arguments": map[string]any{"query": "synthetic-five-lane-" + strconv.Itoa(index)}}})
+	}
+	call := map[string]any{"index": 0, "id": "m32-tool", "type": "function", "function": map[string]any{"name": name, "arguments": string(arguments)}}
+	message := map[string]any{"role": "assistant", "content": nil, "tool_calls": []any{call}}
+	if stream {
+		w.Header().Set("Content-Type", "text/event-stream")
+		chunk, _ := json.Marshal(map[string]any{"id": "m32-tool", "object": "chat.completion.chunk", "choices": []any{map[string]any{"index": 0, "delta": message, "finish_reason": "tool_calls"}}})
+		_, _ = fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", chunk)
+	} else {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "m32-tool", "object": "chat.completion", "model": "m32-fixture", "choices": []any{map[string]any{"index": 0, "message": message, "finish_reason": "tool_calls"}}})
+	}
+	return true
 }
 
 func m32LaneJob(envelope identity.Envelope, user string, index int) runtime.ExecuteRequest {

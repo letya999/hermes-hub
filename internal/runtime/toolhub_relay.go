@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"time"
 )
 
@@ -47,7 +48,11 @@ func toolHubRelayHandler(target string) (http.Handler, error) {
 }
 
 func runToolHubRelay(ctx context.Context) error {
-	handler, err := toolHubRelayHandler("http://toolhub-control:8090")
+	target := os.Getenv("HUB_TOOLHUB_RELAY_UPSTREAM")
+	if target == "" {
+		target = "http://toolhub-control:8090"
+	}
+	handler, err := toolHubRelayHandler(target)
 	if err != nil {
 		return err
 	}

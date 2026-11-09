@@ -185,15 +185,17 @@ type m32Lifecycle struct {
 
 func newM32Lifecycle(t *testing.T, ctx context.Context, image, environment string, f devcheck.M32Fixture) *m32Lifecycle {
 	t.Helper()
-	h := &m32Lifecycle{f: f, image: image, environment: environment, control: strings.Repeat("m32-control-", 4), toolURL: "http://127.0.0.1:8090", tokens: map[string]string{}}
-	toolListen := "0.0.0.0:8090"
-	if image == "" {
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
-		m32Require(t, err)
-		toolListen = listener.Addr().String()
-		h.toolURL = "http://" + toolListen
-		m32Require(t, listener.Close())
+	h := &m32Lifecycle{f: f, image: image, environment: environment, control: strings.Repeat("m32-control-", 4), tokens: map[string]string{}}
+	bind := "127.0.0.1:0"
+	if image != "" {
+		bind = "0.0.0.0:0"
 	}
+	listener, err := net.Listen("tcp", bind)
+	m32Require(t, err)
+	toolListen := listener.Addr().String()
+	toolPort := listener.Addr().(*net.TCPAddr).Port
+	h.toolURL = fmt.Sprintf("http://127.0.0.1:%d", toolPort)
+	m32Require(t, listener.Close())
 	// Register cleanup before the first resource; each successful create is owned explicitly.
 	t.Cleanup(func() {
 		if image == "" {
@@ -258,7 +260,6 @@ func newM32Lifecycle(t *testing.T, ctx context.Context, image, environment strin
 		}
 		return out, err
 	}
-	var err error
 	runtimeImage := image
 	if runtimeImage == "" {
 		runtimeImage = "m32-unspawned"
@@ -302,11 +303,14 @@ func newM32Lifecycle(t *testing.T, ctx context.Context, image, environment strin
 		for _, service := range []string{"toolhub", "model-relay", "egress-relay"} {
 			name := "hermes-m32-" + service + "-" + user
 			args := []string{"run", "-d", "--name", name, "--network", controlNet, "--user", fmt.Sprintf("10001:%d", max(0, os.Getgid())), "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--add-host", "toolhub-control:host-gateway", "--add-host", "communication-hub:host-gateway", "--add-host", "host.docker.internal:host-gateway", "--entrypoint", "hub-runtime"}
+			if service == "toolhub" {
+				args = append(args, "-e", fmt.Sprintf("HUB_TOOLHUB_RELAY_UPSTREAM=http://toolhub-control:%d", toolPort))
+			}
 			if service == "egress-relay" {
 				args = append(args, "-e", "HUB_EGRESS_RELAY_HOSTS=communication-hub")
 			}
 			if service == "model-relay" {
-				args = append(args, "--env-file", filepath.Join(dir, "model-relay.auth"), "-e", "HUB_MODEL_RELAY_REGISTRY=/models/models.yaml", "-e", "HUB_MODEL_RELAY_STATE=/model-state/model-select.json", "-e", "HUB_MODEL_RELAY_OWNER="+user, "-e", "HUB_ENVIRONMENT="+environment, "-e", "HUB_TOOLHUB_URL=http://toolhub-control:8090", "-e", "HUB_TOOLHUB_CONTROL="+h.control, "-v", rootMount(filepath.Join(dir, "generated", "model-registry", environment), "/models")+":ro", "-v", rootMount(filepath.Join(dir, "managed", environment, "model-relay"), "/model-state"))
+				args = append(args, "--env-file", filepath.Join(dir, "model-relay.auth"), "-e", "HUB_MODEL_RELAY_REGISTRY=/models/models.yaml", "-e", "HUB_MODEL_RELAY_STATE=/model-state/model-select.json", "-e", "HUB_MODEL_RELAY_OWNER="+user, "-e", "HUB_ENVIRONMENT="+environment, "-e", fmt.Sprintf("HUB_TOOLHUB_URL=http://toolhub-control:%d", toolPort), "-e", "HUB_TOOLHUB_CONTROL="+h.control, "-v", rootMount(filepath.Join(dir, "generated", "model-registry", environment), "/models")+":ro", "-v", rootMount(filepath.Join(dir, "managed", environment, "model-relay"), "/model-state"))
 			}
 			entry := service
 			if entry == "toolhub" {
@@ -435,11 +439,13 @@ func (h *m32Lifecycle) execute(ctx context.Context, job runtime.ExecuteRequest) 
 		return runtime.ExecuteResponse{}, fmt.Errorf("supervisor dispatch HTTP %d", resp.StatusCode)
 	}
 	decoder := json.NewDecoder(io.LimitReader(resp.Body, 8<<20))
+	var last runtime.ExecuteResponse
 	for {
 		var event runtime.ExecuteResponse
 		if err := decoder.Decode(&event); err != nil {
-			return event, err
+			return last, err
 		}
+		last = event
 		if commodel.TerminalStatus(event.Status) {
 			return event, nil
 		}
@@ -495,8 +501,16 @@ func (h *m32Lifecycle) session(t *testing.T, ctx context.Context, user string, r
 }
 
 func m32SessionCall(t *testing.T, ctx context.Context, session *mcp.ClientSession, tool string, args map[string]any, want bool) string {
+	return m32SessionCallWithRun(t, ctx, session, tool, args, "", want)
+}
+
+func m32SessionCallWithRun(t *testing.T, ctx context.Context, session *mcp.ClientSession, tool string, args map[string]any, runID string, want bool) string {
 	t.Helper()
-	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "tool_call", Arguments: map[string]any{"tool": tool, "arguments": args}})
+	var meta mcp.Meta
+	if runID != "" {
+		meta = mcp.Meta{"x-hermes-hub-run-id": runID}
+	}
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{Meta: meta, Name: "tool_call", Arguments: map[string]any{"tool": tool, "arguments": args}})
 	ok := err == nil && result != nil && !result.IsError
 	if ok != want {
 		t.Fatalf("%s admission=%t expected=%t err=%v", tool, ok, want, err)
@@ -545,7 +559,7 @@ func m32Require(t *testing.T, err error) {
 	}
 }
 
-func m32HeldProvider(t *testing.T, inspect func(json.RawMessage)) (*httptest.Server, func(), <-chan struct{}) {
+func m32HeldProvider(t *testing.T, inspect func(json.RawMessage), reply ...func(http.ResponseWriter, bool, json.RawMessage) bool) (*httptest.Server, func(), <-chan struct{}) {
 	t.Helper()
 	gate, entered := make(chan struct{}), make(chan struct{}, 32)
 	var once sync.Once
@@ -575,6 +589,9 @@ func m32HeldProvider(t *testing.T, inspect func(json.RawMessage)) (*httptest.Ser
 			case <-r.Context().Done():
 				return
 			}
+		}
+		if len(reply) != 0 && reply[0](w, request.Stream, request.Messages) {
+			return
 		}
 		if request.Stream {
 			w.Header().Set("Content-Type", "text/event-stream")

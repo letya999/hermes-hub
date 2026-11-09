@@ -51,13 +51,6 @@ func (s *runtimeHTTP) admitHermesRun(ctx context.Context, request ExecuteRequest
 }
 
 func (s *runtimeHTTP) postHermesRun(ctx context.Context, request ExecuteRequest, payload hermesRunBody, emit func(ExecuteResponse) error) (ExecuteResponse, error) {
-	reserved, err := s.reserveRun(ctx, request.JobID)
-	if err != nil {
-		return ExecuteResponse{}, err
-	}
-	if reserved {
-		defer s.releaseAdmission(request.JobID)
-	}
 	base := "http://" + env("HUB_HERMES_API_HOST", "127.0.0.1") + ":" + env("HUB_HERMES_API_PORT", "8642")
 	auth := env("API_SERVER_KEY", os.Getenv("HUB_RUNTIME_AUTH"))
 	client := &http.Client{Timeout: 10 * time.Second}
@@ -69,24 +62,18 @@ func (s *runtimeHTTP) postHermesRun(ctx context.Context, request ExecuteRequest,
 		RunID string `json:"run_id"`
 	}
 	runStart := time.Now()
-	if err := hermesRequest(ctx, client, http.MethodPost, base+"/v1/runs", auth, payload, &admission, request.IdempotencyKey); err != nil {
+	s.beginAdmission()
+	err := hermesRequest(ctx, client, http.MethodPost, base+"/v1/runs", auth, payload, &admission, request.IdempotencyKey)
+	if err == nil && admission.RunID != "" && request.JobID != "" {
+		err = s.bindRun(request.JobID, admission.RunID)
+	}
+	s.finishAdmission()
+	if err != nil {
 		return ExecuteResponse{}, err
 	}
 	if admission.RunID == "" {
 		return ExecuteResponse{}, errors.New("hermes returned no run ID")
 	}
-	s.runMu.Lock()
-	if s.activeJob != "" && s.activeJob != request.JobID {
-		s.runMu.Unlock()
-		return ExecuteResponse{}, errors.New("Hermes run ownership changed during readmission")
-	}
-	if s.activeRun != "" && s.activeRun != admission.RunID {
-		s.runMu.Unlock()
-		return ExecuteResponse{}, errors.New("Hermes run changed during readmission")
-	}
-	s.activeJob, s.activeRun = request.JobID, admission.RunID
-	s.signalRunChangeLocked()
-	s.runMu.Unlock()
 	if originalStart := runStartFor(admission.RunID); !originalStart.IsZero() {
 		runStart = originalStart
 	} else {

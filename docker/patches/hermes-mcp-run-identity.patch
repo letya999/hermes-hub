@@ -1,0 +1,52 @@
+--- a/tools/mcp_tool_handlers.py
++++ b/tools/mcp_tool_handlers.py
+@@ -7,7 +7,7 @@
+ import inspect
+ import json
+ import time
+-from contextlib import asynccontextmanager
++from contextlib import asynccontextmanager, nullcontext
+ from types import SimpleNamespace
+ from typing import Any, Callable, Dict, List, Optional, Tuple
+ from tools.registry import tool_error
+@@ -279,7 +279,8 @@
+             inflight.discard(task)
+ 
+ 
+-async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str, args: dict):
++async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str, args: dict,
++                                       run_id: str = ""):
+     """``session.call_tool`` that fails fast when the stdio child is/gets dead: pre-call (a dead
+     child must not hold the slot for the full timeout) and mid-call (race against
+     ``_watch_stdio_children``). Both raise :class:`_StdioChildExited` for the respawn path, which
+@@ -289,7 +290,8 @@
+     _stdio_dead = getattr(server, "_stdio_children_dead", None)
+     if callable(_stdio_dead) and _stdio_dead() is True:
+         raise _StdioChildExited(f"MCP stdio subprocess for '{server_name}' had already exited when the call was dispatched")
+-    _call_coro = server.session.call_tool(tool_name, arguments=args)
++    call_options = {"meta": {"x-hermes-hub-run-id": run_id}} if run_id else {}
++    _call_coro = server.session.call_tool(tool_name, arguments=args, **call_options)
+     _watch_children = getattr(server, "_watch_stdio_children", None)
+     if not (inspect.iscoroutinefunction(_watch_children) and asyncio.iscoroutine(_call_coro)):
+         # Stubbed sessions return a non-awaitable, or there is no child-watcher to race: plain await.
+@@ -429,11 +431,18 @@
+         if server is None:
+             return error
+ 
++        run_id = ""
++        if server_name == "toolhub":
++            from tools.approval_context import get_current_session_key
++            run_id = get_current_session_key("")
++
+         async def _call():
+-            async with server._rpc_lock, _track_inflight_rpc(server, server_name, op):
++            # ToolHub's stateless endpoint can serve separate run calls concurrently.
++            lock = nullcontext() if run_id else server._rpc_lock
++            async with lock, _track_inflight_rpc(server, server_name, op):
+                 server._pending_call_context = contextvars.copy_context()  # for the elicitation callback
+                 try:
+-                    result = await _call_tool_racing_stdio_death(server, server_name, tool_name, args)
++                    result = await _call_tool_racing_stdio_death(server, server_name, tool_name, args, run_id)
+                 finally:
+                     server._pending_call_context = None
+             if getattr(server, "_mark_session_proven", None) is not None:  # round-trip done: transport healthy
