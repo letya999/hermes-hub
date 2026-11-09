@@ -793,8 +793,10 @@ name=hermes-hub-<user>-dev-<service>-1` → `…-dev-<service>:local` + `Up`.
 
 Cleanup: `just docker-clean` drops stale `hermes-hub:*` tags unreferenced by
 `spaces/*/compose*.yaml`, stopped `hermes-*` containers pinning dangling
-images, orphan `hermes-build-*` objects; `--deep` also drops
-`hermes-build-state-shared` — run only with no artifact build in flight.
+images, orphan `hermes-build-*` objects. The supervisor's matching runtime
+image is retained while a core/control Compose image references that release;
+`--deep` also drops `hermes-build-state-shared` — run only with no artifact
+build in flight.
 Windows disk reclaim: `scripts/reclaim-docker-disk.cmd` (admin; stops Docker
 Desktop/WSL, Optimize-VHD).
 
