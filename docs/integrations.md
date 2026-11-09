@@ -1,6 +1,6 @@
 ---
 description: Upstream pins and provider contracts — Hermes API, broker env layout, per-provider OAuth/auth contracts, web/doc/image capabilities.
-last_verified: 2026-11-08
+last_verified: 2026-11-09
 ---
 
 # Integration contracts
@@ -215,9 +215,12 @@ Keys/endpoints are runtime secrets via `secrets.<env>.env` or the self-env
 form: `TAVILY_API_KEY`, `EXA_API_KEY`, `PARALLEL_API_KEY`,
 `PERPLEXITY_API_KEY`, `FIRECRAWL_API_KEY`/`_URL`, `BRAVE_SEARCH_API_KEY`,
 `KEENABLE_API_KEY`, `SEARXNG_URL`, `XAI_API_KEY` (+`TAVILY_BASE_URL`,
-`PERPLEXITY_BASE_URL`). Never in prompts/args/results; `doctor` names a
-missing required env for searxng/firecrawl. Keyless `ddgs` + ring keep it
-working anonymously; no browser profile participates.
+`PERPLEXITY_BASE_URL`). Never in prompts/args/results; `doctor` names
+missing required credentials for providers without a keyless path (for
+example searxng). Firecrawl and the other keyless-ring providers can work
+without local keys when their public endpoints are reachable and admitted
+by the space's egress relay. `ddgs` also needs its optional upstream package;
+no browser profile participates.
 
 `deep-research-embedded` (`config/skills/`) is the on-disk state machine:
 `plan.yaml` → `sources.yaml` → `notes/` → `gaps.md` → drafts → cited

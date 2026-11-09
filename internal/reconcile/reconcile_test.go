@@ -116,6 +116,23 @@ func TestPlanTargetsConfigOwners(t *testing.T) {
 	}
 }
 
+func TestPlanWebProviderRoutingRecreatesEgressRelay(t *testing.T) {
+	changes := []passport.Change{
+		ch("config.web.search_backend", "hermes-config", passport.EffectRespawn),
+		ch("config.web.search_providers", "hermes-config", passport.EffectRespawn),
+	}
+	services := map[string]passportview.ServiceSpec{"hermes-runtime": {}, "egress-relay": {}}
+	actions := Plan(changes, services)
+	if len(actions) != 2 || actions[0].Kind != Recreate || actions[0].Target != "egress-relay" || actions[1].Kind != Respawn || actions[1].Target != "hermes-runtime" {
+		t.Fatalf("web routing must recreate egress before runtime respawn: %+v", actions)
+	}
+	delete(services, "egress-relay")
+	actions = Plan(changes, services)
+	if len(actions) != 1 || actions[0].Kind != Respawn {
+		t.Fatalf("undeclared egress relay must not be recreated: %+v", actions)
+	}
+}
+
 func TestPlanMemorySwitchStopsExistingWorkers(t *testing.T) {
 	services := map[string]passportview.ServiceSpec{
 		"hermes-runtime": {Mode: "supervised"}, "communication-hub": {Mode: "shared"}, "toolhub": {Mode: "shared"},

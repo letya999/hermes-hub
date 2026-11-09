@@ -1,5 +1,26 @@
 # Finite M32 live acceptance matrix
 
+## 2026-11-09: Web search and fetch through ToolHub
+
+The active `artem_two` dev runtime uses pinned Hermes `869228cab` and synthetic
+query `Example Domain IANA` / public page `https://example.com/`. Only safe
+provider names, statuses, counts, and HTTP classes were printed. Detailed
+call receipts are in [evidence-526.md](evidence-526.md#m32-web-search-and-fetch-live-acceptance-2026-11-09).
+
+| Case | Result | Evidence and reason |
+| --- | --- | --- |
+| `web_providers` inventory | PASS | ToolHub reports default search/extract `exa`; multi allowlist `exa, parallel, firecrawl, keenable`. Local `keyless` status was treated as a probe, not proof of network access. |
+| Single `web_search` | PASS | Final active revision returned `success=true`, two hits. Initial `provider_unavailable` came from the empty default config's keyless call failing against the egress relay's missing provider hosts; the Go adapter hid the upstream error behind the generic code. |
+| Multi-search, multiple allowed providers | PASS | Final ToolHub call returned `success=true`, five results, all four allowed providers used. |
+| `web_fetch` | PASS | Final default `exa` fetched the public test page, one result with content and no item error. |
+| Unallowed provider | PASS | `web_search_multi` requesting `ddgs` returned `providers not configured`, naming only the four published allowed providers. |
+| Partial provider failure | PASS | An earlier live `all` call returned four results from `exa`, `firecrawl`, `keenable`, with `parallel: search failed` and `partial_failure=true`. The final repeat happened to succeed for all four. |
+| Firecrawl `web_fetch` specifically | BLOCKED | With `api.firecrawl.dev` admitted and Firecrawl selected for extraction, ToolHub returned one item with HTTP 403 and no content. The pinned upstream keyless client sends no Authorization header; direct upstream classification in the same runtime also returned 403 without the relay's `host not allowed` marker. A valid `FIRECRAWL_API_KEY` or entitled managed gateway access is required for this endpoint; no credential was invented. |
+
+The published dev config keeps `exa` for search and extraction and the four
+listed multi providers. No browser profile, personal fact, full Compose stack,
+or remote CI was used.
+
 ## 2026-11-09: Browser through ToolHub
 
 The existing Playwright sidecar and an isolated static page were used. The

@@ -322,13 +322,13 @@ func TestWebDoctorWarnsOnlyKeyedProviders(t *testing.T) {
 	}
 	s.Web = WebSettings{Backend: "firecrawl"}
 	issues = Doctor(s, map[string]string{"OPENAI_API_KEY": "x"})
-	if !strings.Contains(strings.Join(issues, " "), "FIRECRAWL_API_KEY") {
-		t.Fatalf("missing firecrawl credentials not reported: %v", issues)
+	if strings.Contains(strings.Join(issues, " "), "FIRECRAWL") {
+		t.Fatalf("keyless firecrawl must not require credentials: %v", issues)
 	}
 	issues = Doctor(s, map[string]string{"OPENAI_API_KEY": "x", "FIRECRAWL_API_URL": "https://firecrawl.internal"})
 	for _, issue := range issues {
 		if strings.Contains(issue, "FIRECRAWL") {
-			t.Fatalf("self-hosted firecrawl URL satisfies the credential: %v", issues)
+			t.Fatalf("self-hosted firecrawl URL must not warn: %v", issues)
 		}
 	}
 	s.Web = WebSettings{Backend: "perplexity"}

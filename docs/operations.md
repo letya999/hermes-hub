@@ -32,6 +32,9 @@ build, select `hubctl build --dir spaces/alice toolhub`, then `hubctl up --dir
 spaces/alice --no-build toolhub`. Neither path should recreate unrelated
 services. Agent-tool contract changes additionally require catalog rebind
 and managed runtime respawn.
+Changing `config.web.backend`, `search_backend`, `extract_backend`, or
+`search_providers` also recreates that space's egress relay before the
+managed runtime respawns, so the configured provider hosts become reachable.
 For a stack service change, `space apply` uses the same scoped image builder
 and then recreates that service. A successful image build alone is not a
 successful service activation; managed Compose files have no build sections.

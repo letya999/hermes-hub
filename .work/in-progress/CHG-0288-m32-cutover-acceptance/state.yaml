@@ -29,6 +29,7 @@ validation:
   memory_boundary_followup: 5_pass_0_fail_local_strict_overlap_and_live_assignment_2026-11-09
   managed_session_regression: five_same_owner_real_hermes_runs_and_sixth_wait_passed_isolated_2026-11-09
   browser_acceptance: live_toolhub_user_profile_read_act_capture_wait_foreign_revoke_restore_passed_2026-11-09
+  web_acceptance: toolhub_single_multi_fetch_denial_partial_passed_firecrawl_extract_blocked_http403_2026-11-09
   go_check: historical_85_48pct_not_rerun_after_latest_acceptance_fixes
   lint: passed_2026-11-07
   docs_check: passed_2026-11-07
@@ -112,6 +113,7 @@ evidence:
   - "2026-11-05: Cross-stage audit and handoff recorded under CHG-0281. Acceptance plan strengthened for real process exit status, clean passport-only lifecycle, exact-profile rollback and actual ToolHub memory execution. Stage implementation remains not_started."
 remaining: [acceptance_526, implementation_527, quality_gates, live_acceptance, parallel_managed_runs]
 limitations:
+  - "M32 web: the final artem_two dev revision uses Exa for successful single search and fetch and four allowed multi-search providers. A live partial provider failure and off-list refusal passed. Firecrawl anonymous scrape still returns HTTP 403 after its host is allowed by egress; Firecrawl-specific fetch needs a valid FIRECRAWL_API_KEY or entitled managed gateway access. No Firecrawl extract PASS is claimed."
   - "The M32 main local acceptance is partial: web_search/fetch returned provider errors; GitHub get_me requires a current Broker grant; hub-media was not provisioned, so generation and channel send were not proven. Research was explicitly deferred. Images have exact Docker IDs but no embedded source-revision label; commit and build provenance are recorded separately."
   - "Automatic approval review rejected deletion of exact ignored .work/tmp synthetic helper/state files (no detailed reason returned), after path containment and ignore verification. They remain under ignored .work/tmp; no user vault or external state was deleted to work around the rejection."
   - "Current-source container acceptance still lacks group isolation, lost-ack capture and process-crash recovery, full live dreaming ToolHub recall, assignment post-revoke denial, model-selected terminal call, and actual incoming human Telegram message. Isolated assignment remember and positive live HTTP watcher passed. Exact-source image and remote CI gates remain open."

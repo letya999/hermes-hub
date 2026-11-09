@@ -1507,3 +1507,63 @@ final-window browser event carries profile revision 52. Governance ends with
 one active `artem_two` `browser.read` grant at revision 5. Cleanup removed
 the final test PNG and four test-page snapshots; no final test artifact
 remains. The pre-existing personal PNG and snapshots were retained.
+## M32 web search and fetch live acceptance, 2026-11-09
+
+Pinned upstream is Hermes `869228cab4a8276d3b4c78da9d9939670c47bd0f`
+from `docker/Dockerfile`; the running managed runtime's provider registry
+contains `brave-free, ddgs, exa, firecrawl, keenable, parallel, perplexity,
+searxng, tavily, xai`. The upstream registry and `plugins/web/keyless_mcp.py`
+were read in the running image. The ToolHub request used the existing
+`artem_two` runtime identity and only `Example Domain IANA` / `https://example.com/`.
+No credential values, raw environment, profiles, personal memory or response
+body were printed.
+
+Before repair, ToolHub `web_providers` returned `default_search_backend=auto`,
+`default_extract_backend=auto`, `multi_search_providers=[]`; `exa`,
+`firecrawl`, `keenable`, `parallel` were locally `keyless`, while `ddgs` was
+`unavailable`. All checked provider credential presence flags were false in
+the authored and materialized dev secrets. The live runtime's web section was
+empty; its egress relay admitted only `communication-hub,hub-media`.
+`web_search` returned `success=false,error=provider_unavailable` because
+`internal/agenttools/web.go` maps every upstream `success=false` to that code.
+The pinned Exa keyless diagnostic behind the same relay classified HTTP 403
+at the proxy. `web_search_multi` returned `no search providers configured`.
+The prior Firecrawl 403 was also consistent with the missing egress host.
+
+Published `web.search_backend=exa`, `extract_backend=exa`, and
+`search_providers=[exa,parallel,firecrawl,keenable]`. One first publication
+attempt failed before activation on an existing GitHub binding repin with
+`owned storage I/O unavailable`; a no-change publication restored ToolHub.
+A subsequent apply lacked a host-reachable Supervisor, left the guarded
+`pending` pointer, and was recovered through a temporary local Supervisor
+proxy. The successful publish `r-007256aeb6fb16f3` respawned runtime but
+did not recreate egress relay. The relay was recreated alone from the
+generated Compose file; its active host allowlist then included
+`mcp.exa.ai`, `search.parallel.ai`, `api.firecrawl.dev`, and
+`api.keenable.ai`. The fix in `internal/reconcile` now plans relay recreate
+before runtime respawn for web routing changes. Actual follow-up applies to
+`r-21dc09f485dc4a19` and final `r-ca97162f3014e9c7` both reported
+`recreate egress-relay: applied` then `respawn hermes-runtime: applied`.
+The Firecrawl keyless doctor warning was removed because the pinned upstream
+has an anonymous client path; this does not assert remote scrape entitlement.
+
+ToolHub receipts after egress repair:
+
+| Call | Safe observed fields |
+| --- | --- |
+| `web_providers` | default search/extract `exa`; multi allowlist `exa,parallel,firecrawl,keenable` |
+| `web_search` | final `success=true`, `search_hits=2` |
+| `web_search_multi` `all` | final `success=true`, `providers_used=[exa,parallel,firecrawl,keenable]`, `results_count=5`, `partial_failure=false` |
+| `web_fetch` | final `results_count=1`, `result_has_error=false`, content present |
+| `web_search_multi` `ddgs` | rejected as not configured; no provider request made |
+| `web_search_multi` `all`, earlier call | `success=true`, `partial_failure=true`, four hits from `exa,firecrawl,keenable`; `parallel=search failed` |
+| `web_fetch` with Firecrawl temporarily selected | one result, `error_http403=true`, no content |
+
+For the Firecrawl-specific failure, the running relay already allowed
+`api.firecrawl.dev`; pinned `_KeylessFirecrawlClient` posts to `/v2/scrape`
+without an Authorization header. A direct classification of that pinned
+client in the same runtime returned HTTP 403, with neither `host not allowed`
+nor proxy-tunnel failure. Firecrawl extraction is **BLOCKED** until a valid
+`FIRECRAWL_API_KEY` or authorized managed gateway route is provided. Exa
+extraction is the working published default. The final config has no pending
+apply journal. No test browser session or owned data object was created.
