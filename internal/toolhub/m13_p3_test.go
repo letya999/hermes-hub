@@ -1124,6 +1124,10 @@ func TestConnectorHTTPVerbsUseFacade(t *testing.T) {
 	if err != nil || onboarding.Phase != api.PhaseDisabled {
 		t.Fatalf("onboarding after HTTP disable: %v %+v", err, onboarding)
 	}
+	w, payload = call(http.MethodPost, "/v1/connectors/"+enabled.OnboardingID+":enable", "", "control-plane-token-which-is-32-chars!", "alice")
+	if w.Code != http.StatusOK || payload["state"] != api.OpStateDone {
+		t.Fatalf("enable over HTTP: %d %v", w.Code, payload)
+	}
 	// /v1/operations/<id> returns the same journaled record.
 	w, payload = call(http.MethodGet, "/v1/operations/"+operationID, "", "control-plane-token-which-is-32-chars!", "alice")
 	if w.Code != http.StatusOK || payload["operation_id"] != operationID || payload["state"] != api.OpStateDone {
@@ -1140,6 +1144,7 @@ func TestConnectorHTTPVerbsUseFacade(t *testing.T) {
 		{http.MethodPost, "/v1/connectors/x:disable", "", "alice"},
 		{http.MethodPost, "/v1/connectors/x:disable", "control-plane-token-which-is-32-chars!", ""},
 		{http.MethodPost, "/v1/connectors/x:disable", "mallory-token-00000000000000000000000", "alice"},
+		{http.MethodPost, "/v1/connectors/x:enable", "mallory-token-00000000000000000000000", "alice"},
 		{http.MethodGet, "/v1/operations/" + operationID, "control-plane-token-which-is-32-chars!", "mallory"},
 	} {
 		w, _ := call(tc.method, tc.path, "", tc.token, tc.principal)

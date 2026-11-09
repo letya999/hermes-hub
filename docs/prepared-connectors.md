@@ -392,6 +392,12 @@ The protected `/connect/` page displays confirmation status only. Human
 confirmation is a Telegram callback button. A confirmation notice must post
 a new keyboard message: editing an earlier status message sends text only
 and removes the button.
+The channel waits for ToolHub to finish the confirmed action. If admission
+fails after consent is durably recorded, the owner may resume enable on that
+same onboarding without another confirmation; ToolHub checks the stored
+action digest before retrying.
+`POST /v1/connectors/{onboarding_id}:enable` uses the same owner-scoped
+facade and operation journal as `connector_edit` for this retry.
 
 ### google-workspace
 

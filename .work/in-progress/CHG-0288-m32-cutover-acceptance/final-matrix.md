@@ -7,12 +7,11 @@
 | `goal_status → edit(set) → status → edit(pause) → edit(resume) → remove → status` | PASS | One isolated `artem_two` mock conversation and a confirmed active supervisor run: all seven ToolHub calls succeeded; states were absent, active, active, paused, active, absent, absent. |
 | Foreign and terminal goal run IDs | PASS | The `artem_main` bearer was denied on the live `artem_two` run; after its terminal failure, the same owner/run pair was denied. The test goal was cleared and the two created mock links and deliveries were removed. |
 | `context_status`, preview, compact, status, continuation | PASS | An isolated managed Hermes fixture called ToolHub on an active run. Preview left the journal count unchanged; queued manual compaction produced exactly one manual journal event; the next ToolHub status reported one compaction and the same session completed another run. |
-| GitHub prepared connector update and `get_me` | BLOCKED pending owner confirmation | The existing Broker grant is for an old policy epoch. The normal `connector_install` update reused the credential and reached `awaiting_confirm`; its first notice missed a restarting communication service. Scoped recovery fixed an invalid historical delivery that crashed startup, and retry now renews expired confirmation. A direct local install first selected an unrelated old mock origin; the routing fix excludes stale/uncertain jobs. The first Telegram confirmation edited a status message and lost its button; the channel now posts a fresh keyboard message. A fresh confirmation on the catalog's exact SHA was delivered through Telegram. No owner confirmation or new grant exists yet, so `get_me` has not been accepted. |
+| GitHub prepared connector update and `get_me` | PASS | The old Broker grant belonged to a previous policy epoch. The update reused the prepared connector and existing credential. Recovery fixed a historical invalid delivery and stale mock origin; the first Telegram confirmation also lost its button on a text edit, so the channel now sends a fresh keyboard message. The owner tapped it. ToolHub durably recorded consent, but a five-second channel timeout canceled admission. A scoped timeout fix and consent-bound enable resume completed the operation without a second tap. The active 0.0.3 binding and Broker grant match the current policy and binding; `get_me` returned HTTP 200 with the owner's GitHub login `letya999`, and the audit recorded `completed/succeeded/ok`. |
 
 The GitHub connector is not required for the M32 MVP criteria in this local
-matrix. Its provider-account acceptance remains open until a live Telegram
-confirmation creates a current-policy grant. No personal fact or historical
-delivery receipt was changed.
+matrix. Its provider-account acceptance is complete on the local dev stack.
+No personal fact or historical delivery receipt was changed.
 
 ## 2026-11-09: Web search and fetch through ToolHub
 

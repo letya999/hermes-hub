@@ -42,6 +42,40 @@ func finishAsHuman(t *testing.T, control *ControlPlane, id string) {
 	}
 }
 
+func TestEnableResumesConsumedHumanConfirmationAfterAdmissionFailure(t *testing.T) {
+	store := NewStore()
+	definition := catalogReadDefinition()
+	if err := store.RegisterDefinition(definition); err != nil {
+		t.Fatal(err)
+	}
+	auth := aliceAuth()
+	if err := putGrant(t, store, api.OperatorGrant(api.GrantDefinition, auth.PrincipalID, definition.DefinitionID, definition.Version)); err != nil {
+		t.Fatal(err)
+	}
+	grantTestControlOperations(t, store, auth.PrincipalID, "confirm", "enable")
+	on := api.Onboarding{Schema: api.SchemaVersion, OnboardingID: "onboard-resume-consent", PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, PolicyVersion: auth.PolicyVersion,
+		Mode: api.OnboardingCatalog, DefinitionID: definition.DefinitionID, DefinitionVersion: definition.Version, Phase: api.PhaseAwaitingConfirm,
+		ConfirmationNonce: "synthetic-nonce", ConfirmationExpires: time.Now().Add(time.Hour), Revision: 1}
+	if err := store.PutOnboarding(on); err != nil {
+		t.Fatal(err)
+	}
+	control := &ControlPlane{Store: store, Now: time.Now, Ready: func(context.Context, api.EffectiveBinding) error { return nil }}
+	if _, err := control.Invoke(t.Context(), auth, "enable", map[string]any{"onboarding_id": on.OnboardingID}); err == nil {
+		t.Fatal("unconfirmed onboarding enabled")
+	}
+	proof := api.HumanConfirmation{OnboardingID: on.OnboardingID, Actor: auth, Nonce: on.ConfirmationNonce, Revision: on.Revision, ActionDigest: api.ConfirmationActionDigest(on), ExpiresAt: on.ConfirmationExpires}
+	if _, err := store.ConsumeHumanConfirmation(proof, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.Invoke(t.Context(), auth, "enable", map[string]any{"onboarding_id": on.OnboardingID}); err != nil {
+		t.Fatalf("verified consent could not resume: %v", err)
+	}
+	after, err := store.onboarding(on.OnboardingID)
+	if err != nil || after.Phase != api.PhaseEnabled || after.BindingID == "" {
+		t.Fatalf("resumed state phase=%s bound=%t err=%v", after.Phase, after.BindingID != "", err)
+	}
+}
+
 func TestManagedRevocationWinsHumanConfirmation(t *testing.T) {
 	for _, name := range []string{"profile", "policy", "connectors", "self-install", "control-operations"} {
 		t.Run(name, func(t *testing.T) {

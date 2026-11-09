@@ -317,7 +317,8 @@ func (c *ControlPlane) enable(ctx context.Context, auth identity.Envelope, args 
 		return nil, err
 	}
 	if onboarding.BindingID == "" {
-		if onboarding.Phase != api.PhaseConfirmed && onboarding.Phase != api.PhaseEnabled && onboarding.Phase != api.PhaseDisabled {
+		consentedRetry := onboarding.Phase == api.PhaseAwaitingConfirm && onboarding.ConfirmationUsed && onboarding.HumanConsent != nil && onboarding.HumanConsent.ActionDigest == api.ConfirmationActionDigest(onboarding)
+		if !consentedRetry && onboarding.Phase != api.PhaseConfirmed && onboarding.Phase != api.PhaseEnabled && onboarding.Phase != api.PhaseDisabled {
 			return nil, fmt.Errorf("%w: confirm required", api.ErrUnauthorized)
 		}
 		binding, err := c.materializeBinding(ctx, auth, onboarding, definition)

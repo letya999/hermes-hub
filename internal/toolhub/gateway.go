@@ -287,19 +287,25 @@ func (g *Gateway) serveConnectorInstall(w http.ResponseWriter, r *http.Request) 
 	g.connectorFacadeResult(w, r, "connector_install", args)
 }
 
-// serveConnectorVerb maps POST /v1/connectors/{id}:disable onto the
-// connector_disable facade verb — same code path as the agent tool.
+// serveConnectorVerb maps enable and disable HTTP actions onto the same
+// connector facade verbs as the agent tools.
 func (g *Gateway) serveConnectorVerb(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost || r.Header.Get("Origin") != "" {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	id, found := strings.CutSuffix(strings.TrimPrefix(r.URL.Path, "/v1/connectors/"), ":disable")
-	if !found || id == "" {
+	path := strings.TrimPrefix(r.URL.Path, "/v1/connectors/")
+	id, tool := "", ""
+	if value, found := strings.CutSuffix(path, ":enable"); found {
+		id, tool = value, "connector_enable"
+	} else if value, found := strings.CutSuffix(path, ":disable"); found {
+		id, tool = value, "connector_disable"
+	}
+	if id == "" || strings.Contains(id, "/") {
 		http.NotFound(w, r)
 		return
 	}
-	g.connectorFacadeResult(w, r, "connector_disable", map[string]any{"target": id})
+	g.connectorFacadeResult(w, r, tool, map[string]any{"target": id})
 }
 
 // serveOperation is GET /v1/operations/{id} — the journaled operation record

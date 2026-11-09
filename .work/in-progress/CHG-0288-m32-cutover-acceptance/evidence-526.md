@@ -1665,9 +1665,9 @@ message on that first attempt. The route fix now requires a recent initiator
 and considers only running jobs for the active fallback. A new install using
 the prepared catalog's exact GitHub SHA returned HTTP 200 and
 `awaiting_confirm`; communication logged successful Telegram sends for its
-prepare-started and confirmation notices. Owner confirmation, grant
-replacement and `get_me` are still pending. This connector is outside the
-accepted local M32 MVP denominator.
+prepare-started and confirmation notices. At this stage, owner confirmation,
+grant replacement and `get_me` were still pending. This connector is outside
+the accepted local M32 MVP denominator.
 
 The owner's screenshot showed the protected `/connect/` status page without
 buttons. This is the intended page contract, but the Telegram button was
@@ -1678,9 +1678,23 @@ regression and vet passed, and the scoped communication image was rebuilt.
 After the previous nonce expired, the same prepared operation renewed it.
 A local resend of that live proof produced a fresh delivery; read-only spool
 inspection found `edit=false` and `buttons=1`, and communication logged two
-successful Telegram sends for the operation with no delivery error. The
-owner must press the button in the Telegram chat; `get_me` remains blocked
-until a current-policy grant is present.
+successful Telegram sends for the operation with no delivery error.
+
+The owner then tapped the Telegram button. ToolHub stored
+`confirmation_used=true` and a human consent, but the onboarding stayed at
+`awaiting-confirm` with a canceled workload HTTP request: communication's
+five-second confirmation call had canceled admission after consent. Scoped
+communication now waits up to two minutes. ToolHub enable now retries an
+admission only for a consumed human consent whose action digest still matches
+the onboarding; the owner need not tap again. The first agent MCP retry had
+an uncertain audited backend outcome with no enable operation, so it was not
+repeated. A new owner-authenticated ToolHub HTTP enable route used the same
+facade and returned HTTP 200, `state=done` for the exact onboarding. The
+store now has an active GitHub binding version 0.0.3 whose policy matches the
+profile, and its active Broker grant matches both policy and binding. The
+ToolHub read probe `get_me` returned HTTP 200, `is_error=false`, GitHub login
+`letya999`; the audit contains a matching `completed`, `succeeded`, `ok`
+tool call. GitHub account acceptance is PASS.
 
 Verification: `just check` passed; the named communication recovery, origin,
 keyboard and connector retry regressions passed; the isolated Docker context
@@ -1691,4 +1705,7 @@ of `just test ./internal/communication` passed in 239 seconds. A subsequent
 scoped run timed out at the suite's 300-second limit; the named origin and
 keyboard regressions passed after it. The full package gate is therefore
 intermittent locally, not a clean final green claim. Staged diff secret scan
-and whitespace check passed.
+and whitespace check passed. The later consent-resume and HTTP-route
+regressions passed. Final `just check` and
+`just test ./internal/toolhub ./internal/communication` passed (133.5 and
+149.5 seconds respectively).

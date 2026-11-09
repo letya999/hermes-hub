@@ -63,7 +63,7 @@ func (g *Gateway) confirmHumanCallback(ctx context.Context, caller identity.Enve
 	caller.CapabilityProfile, caller.Environment, caller.Generation, caller.Organization = a.CapabilityProfile, a.Environment, a.Generation, a.Organization
 	record.Proof.Actor = caller
 	body, _ = json.Marshal(record.Proof)
-	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	callCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, strings.TrimRight(g.config.ToolHubURL, "/")+"/v1/confirmations", bytes.NewReader(body))
 	if err != nil {
