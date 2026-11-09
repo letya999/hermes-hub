@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	_ "time/tzdata"
 
@@ -22,11 +23,19 @@ func Doctor(s Settings, secrets map[string]string) []string {
 	return DoctorScope(s, secrets, nil)
 }
 func DoctorScope(s Settings, userSecrets, orgSecrets map[string]string) []string {
+	issues, _ := DoctorScopeReport(s, userSecrets, orgSecrets)
+	return issues
+}
+
+// DoctorScopeReport keeps missing optional connector credentials visible
+// without preventing the owner's other services from starting.
+func DoctorScopeReport(s Settings, userSecrets, orgSecrets map[string]string) (issues, warnings []string) {
 	secrets := map[string]string{}
 	for key, value := range orgSecrets {
 		secrets[key] = value
 	}
-	issues := []string{}
+	issues = []string{}
+	lang := locale.LangOf(s.SpaceDir)
 	issues = append(issues, hostingIssues(s)...)
 	for key, value := range userSecrets {
 		if _, exists := secrets[key]; exists {
@@ -50,7 +59,11 @@ func DoctorScope(s Settings, userSecrets, orgSecrets map[string]string) []string
 		}
 		for _, key := range f.Requires {
 			if secrets[key] == "" {
-				issues = append(issues, "set "+key+" for "+f.Name)
+				if selfServiceNames[f.Name] {
+					warnings = append(warnings, locale.T(lang, "doctor.connector-credential-missing", f.Name, key))
+				} else {
+					issues = append(issues, "set "+key+" for "+f.Name)
+				}
 			}
 		}
 	}
@@ -87,11 +100,13 @@ func DoctorScope(s Settings, userSecrets, orgSecrets map[string]string) []string
 			for _, value := range values {
 				for _, match := range regexp.MustCompile(`\$\{([A-Z][A-Z0-9_]*)\}`).FindAllStringSubmatch(value, -1) {
 					if secrets[match[1]] == "" {
-						issues = append(issues, "set "+match[1]+" for MCP "+name)
+						warnings = append(warnings, locale.T(lang, "doctor.mcp-credential-missing", name))
 					}
 				}
 			}
 		}
 	}
-	return issues
+	slices.Sort(warnings)
+	warnings = slices.Compact(warnings)
+	return issues, warnings
 }

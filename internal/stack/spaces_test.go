@@ -48,8 +48,9 @@ func TestIndependentSpacesAndExternalMCP(t *testing.T) {
 			if _, ok := services["communication-hub"]; ok {
 				t.Fatal("gateway started without a messaging feature")
 			}
-			if strings.Contains(strings.Join(Doctor(s, map[string]string{}), " "), "EXTERNAL_TOKEN") == false {
-				t.Fatal("missing connector secret not reported")
+			issues, warnings := DoctorScopeReport(s, nil, nil)
+			if !strings.Contains(strings.Join(issues, " "), "OPENAI_API_KEY") || !strings.Contains(strings.Join(warnings, " "), "external") || strings.Contains(strings.Join(warnings, " "), "EXTERNAL_TOKEN") {
+				t.Fatalf("missing optional connector credential must warn without exposing its key: issues=%v warnings=%v", issues, warnings)
 			}
 		}
 	}

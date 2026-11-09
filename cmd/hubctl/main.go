@@ -644,7 +644,10 @@ func run(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		issues := stack.DoctorScope(s, secrets, orgSecrets)
+		issues, warnings := stack.DoctorScopeReport(s, secrets, orgSecrets)
+		for _, warning := range warnings {
+			fmt.Fprintln(os.Stderr, locale.T(locale.LangOf(s.SpaceDir), "doctor.warning", warning))
+		}
 		if len(issues) > 0 {
 			return fmt.Errorf("configuration incomplete:\n- %s", strings.Join(issues, "\n- "))
 		}

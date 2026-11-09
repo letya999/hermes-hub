@@ -147,6 +147,22 @@ func TestDoctorScopeUsesSeparateSecrets(t *testing.T) {
 	}
 }
 
+func TestDoctorScopeOptionalConnectorCredentialIsWarning(t *testing.T) {
+	s := Settings{Schema: 1, Environment: "dev", User: "alice", Model: "model", ModelURL: "http://model.invalid/v1", Tools: testTools("github"), MCP: map[string]MCPServer{"notes": {URL: "https://service.invalid/mcp", Headers: map[string]string{"Authorization": "Bearer ${CUSTOM_TOKEN}"}}}}
+	issues, warnings := DoctorScopeReport(s, map[string]string{"OPENAI_API_KEY": "model-key"}, nil)
+	if len(issues) != 0 || len(warnings) != 2 || !strings.Contains(strings.Join(warnings, " "), "GITHUB_TOKEN") || !strings.Contains(strings.Join(warnings, " "), "notes") || strings.Contains(strings.Join(warnings, " "), "CUSTOM_TOKEN") {
+		t.Fatalf("optional connector classification: issues=%v warnings=%v", issues, warnings)
+	}
+	if got := DoctorScope(s, map[string]string{"OPENAI_API_KEY": "model-key"}, nil); len(got) != 0 {
+		t.Fatalf("optional connector blocked startup: %v", got)
+	}
+	s.Ingress = []string{"telegram"}
+	issues, _ = DoctorScopeReport(s, map[string]string{"OPENAI_API_KEY": "model-key"}, nil)
+	if !strings.Contains(strings.Join(issues, " "), "TELEGRAM_BOT_TOKEN") {
+		t.Fatalf("gateway credential must remain mandatory: %v", issues)
+	}
+}
+
 func TestOrganizationPolicyReachesRuntimeConfig(t *testing.T) {
 	s := Settings{Schema: 1, Environment: "prod", User: "alice", Organization: "acme", OrgActions: []string{}, Tools: testTools("workspace", "slack"), MCP: map[string]MCPServer{"org": {URL: "https://org.invalid/mcp", Tools: &MCPTools{Include: []string{"query"}}}}, OrganizationDir: "/host/organizations/acme", OrganizationDocsDir: "/host/organizations/acme/docs"}
 	c := Config(s)

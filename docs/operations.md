@@ -157,6 +157,11 @@ Tool selection grants no authority; a managed profile binds the exact
    `tool-policy`, `tool-manifest`, hermes config), mints `runtime.auth`,
    and enrolls sibling `toolhub-tokens.json`/`model-relay-admins.json`.
    The supervised runtime spawns on first demand (pin or job).
+   Missing credentials for an optional connector (including a selected MCP
+   server) produce a warning in `doctor` and `up`; operations requiring that
+   credential may fail, while the rest of the space can start.
+   Missing model or channel credentials and invalid security configuration
+   remain blocking errors.
 
    A dedicated CLIProxy's init companion retries in the same container after
    a temporary Broker failure; its healthcheck only passes after both the
