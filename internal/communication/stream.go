@@ -138,13 +138,13 @@ func (s *Spool) RecordStreamEvent(job Job, event hubruntime.ExecuteResponse) err
 		case event.Status == "completed":
 			text, id, markdown = event.Text, "job-"+job.ID+"-response", true
 		case terminalStatus(event.Status):
-			text, id = failureMessage(lang, job.ID, event.Status), "job-"+job.ID+"-error"
+			text, id = failureMessage(lang, event.Status), "job-"+job.ID+"-error"
 			if event.Status == "cancelled" && mapping.ApprovalID != "" && !mapping.ApprovalDeadline.IsZero() && !time.Now().Before(mapping.ApprovalDeadline) {
 				key := "job.approval-expired"
 				if mapping.Control != nil && mapping.Control.Choice == "deny" {
 					key = "job.approval-denied"
 				}
-				text = locale.T(lang, key, job.ID)
+				text = locale.T(lang, key)
 			}
 		case event.LastEvent == "approval.request":
 			text = locale.T(lang, "job.approval-needed")

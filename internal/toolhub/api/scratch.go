@@ -378,7 +378,7 @@ func runtimeSkillRefs(ctx context.Context, binding ToolBinding, refs map[string]
 	if len(names) > 16 {
 		return nil
 	}
-	body, _ := json.Marshal(map[string]any{"principal_id": binding.PrincipalID, "context_id": binding.ContextID, "runtime_id": binding.RuntimeID, "policy_version": binding.PolicyVersion, "refs": names})
+	body, _ := json.Marshal(map[string]any{"principal_id": binding.PrincipalID, "context_id": binding.ContextID, "runtime_id": binding.RuntimeID, "policy_version": binding.PolicyVersion, "job_id": CallCorrelationFrom(ctx).JobID, "refs": names})
 	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, base+"/v1/skill-ref-lease", bytes.NewReader(body)) // #nosec G704 -- operator-configured internal supervisor

@@ -12,7 +12,10 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"time"
+
+	"github.com/letya999/hermes-hub/internal/stack"
 )
 
 var errJobInProgress = errors.New("job is already in progress")
@@ -92,6 +95,67 @@ func (m *Manager) abandonJob(request hubruntime.ExecuteRequest) {
 	_ = m.persistLocked()
 }
 
+// claimManagedLane gives each simultaneous conversation its own runtime and
+// static MCP connection. A lane remains reserved until its job is terminal.
+func (m *Manager) claimManagedLane(ctx context.Context, request hubruntime.ExecuteRequest, binding Binding) (string, error) {
+	settings, err := stack.ReadEffective(binding.ContextRoot, m.environment())
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	if settings.CapabilityMode != "managed" {
+		return "gateway", nil
+	}
+	key := executeJobKey(request)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		m.mu.Lock()
+		record, exists := m.jobs[key]
+		if !exists || terminalRunStatus(record.Status) || record.Status == "cancelled" {
+			m.mu.Unlock()
+			return "", errors.New("job is no longer active")
+		}
+		busy := map[string]bool{}
+		sameConversation := false
+		for otherKey, other := range m.jobs {
+			if otherKey == key || terminalRunStatus(other.Status) || other.Request.PrincipalID != request.PrincipalID || other.Request.ContextID != request.ContextID {
+				continue
+			}
+			if other.Request.ConversationID == request.ConversationID && (other.RuntimeMode != "" || other.UpdatedAt.Before(record.UpdatedAt) || other.UpdatedAt.Equal(record.UpdatedAt) && otherKey < key) {
+				sameConversation = true
+			}
+			if other.RuntimeMode != "" {
+				busy[other.RuntimeMode] = true
+			} else if other.Generation != "" { // legacy in-flight job
+				busy["gateway"] = true
+			}
+		}
+		if !sameConversation {
+			for _, mode := range [...]string{"gateway", "gateway-2", "gateway-3", "gateway-4", "gateway-5"} {
+				if busy[mode] {
+					continue
+				}
+				previous := record
+				record.RuntimeMode = mode
+				record.UpdatedAt = time.Now().UTC()
+				m.jobs[key] = record
+				err = m.persistLocked()
+				if err != nil {
+					m.jobs[key] = previous
+				}
+				m.mu.Unlock()
+				return mode, err
+			}
+		}
+		m.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
 func (m *Manager) bindJobGeneration(request hubruntime.ExecuteRequest, generation string) error {
 	key := executeJobKey(request)
 	m.mu.Lock()
@@ -139,7 +203,11 @@ func (m *Manager) finishJobGenerationLocked(request hubruntime.ExecuteRequest, r
 		if generation != "" && record.Generation != generation {
 			return errors.New("stale job generation")
 		}
-		current := m.items[runtimeKey(Binding{PrincipalID: request.PrincipalID, ContextID: request.ContextID, RuntimeMode: "gateway"})]
+		mode := record.RuntimeMode
+		if mode == "" {
+			mode = "gateway"
+		}
+		current := m.items[runtimeKey(Binding{PrincipalID: request.PrincipalID, ContextID: request.ContextID, RuntimeMode: mode})]
 		if current != nil && current.Generation != record.Generation && (record.Response.RunID != "" || response.RunID != "") {
 			return errors.New("obsolete runtime producer")
 		}
@@ -296,6 +364,13 @@ func (m *Manager) execute(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, known)
 		return
 	}
+	mode, err := m.claimManagedLane(r.Context(), request, binding)
+	if err != nil {
+		m.abandonJob(request)
+		writeRuntimeFailure(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	binding.RuntimeMode = mode
 	kind := LeaseJob
 	if r.Header.Get("Accept") == hubruntime.RunStreamContentType {
 		kind = LeaseStream

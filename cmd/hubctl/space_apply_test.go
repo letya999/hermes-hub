@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -53,6 +54,23 @@ func TestRefreshSharedRuntimeTokensAfterSiblingApply(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	settings, err := stack.ReadEffective(sibling, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(infra, "secrets.dev.env"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	routing := filepath.Join(infra, "automation-routing", "dev.json")
+	if err := os.MkdirAll(filepath.Dir(routing), 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(routing, []byte(`{"organization_id":"personal","users":[{"id":"bob","enabled":true,"runtime_id":"bob","policy_version":"policy-old","telegram_ids":[22]}]}`), 0640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(infra, "communication.users.yaml"), []byte(fmt.Sprintf("organization_id: personal\nusers:\n  - id: bob\n    enabled: true\n    runtime_id: bob\n    policy_version: %s\n    telegram_ids: [22]\n", stack.PolicyVersion(settings))), 0600); err != nil {
+		t.Fatal(err)
+	}
 	if err := refreshSharedRuntimeTokens(sibling, "dev"); err != nil {
 		t.Fatal(err)
 	}
@@ -64,12 +82,17 @@ func TestRefreshSharedRuntimeTokensAfterSiblingApply(t *testing.T) {
 	if err := json.Unmarshal(body, &enrolled); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := stack.ReadEffective(sibling, "dev")
-	if err != nil {
-		t.Fatal(err)
-	}
 	if enrolled[siblingToken].PolicyVersion != stack.PolicyVersion(settings) {
 		t.Fatal("sibling token kept a stale policy after apply")
+	}
+	var route struct {
+		Users []struct {
+			PolicyVersion string `json:"policy_version"`
+		} `json:"users"`
+	}
+	body, err = os.ReadFile(routing)
+	if err != nil || json.Unmarshal(body, &route) != nil || len(route.Users) != 1 || route.Users[0].PolicyVersion != stack.PolicyVersion(settings) {
+		t.Fatal("shared automation routing kept a stale policy after apply")
 	}
 	if _, ok := enrolled[ownerToken]; ok {
 		t.Fatal("infra owner's bearer leaked into sibling enrollment")

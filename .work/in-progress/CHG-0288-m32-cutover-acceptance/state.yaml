@@ -3,7 +3,7 @@ change: CHG-0288
 title: "M32 cutover and acceptance"
 status: in_progress
 branch: feat/m32-integration
-updated: 2026-11-08
+updated: 2026-11-09
 phase: acceptance-in-progress
 adr: [ADR-0095, ADR-0097]
 spec: [SPEC-0097, SPEC-0098, SPEC-0099]
@@ -22,22 +22,27 @@ historical_slices:
   S7.3-accept: not_started
 validation:
   documents: passed_2026-11-05
-  just_check: passed_after_m32_local_sish_fix_2026-11-08
-  affected_tests: stack_reconcile_hosting_supervisor_communication_toolhub_agenttools_runtime_passed_2026-11-08
+  just_check: passed_current_parallel_lanes_source_2026-11-09
+  affected_tests: supervisor_communication_stack_toolhub_api_runtime_locale_hubctl_toolhub_passed_2026-11-09
   five_check_acceptance: passed_5_of_5_local_technical_with_model_http_flake_2026-11-08
   five_check_source: 7c08b9516b65ddf567ce89ef01b0cee8cfcad61a
+  memory_boundary_followup: 5_pass_0_fail_local_strict_overlap_and_live_assignment_2026-11-09
+  managed_session_regression: five_same_owner_real_hermes_runs_and_sixth_wait_passed_isolated_2026-11-09
+  browser_acceptance: live_toolhub_user_profile_read_act_capture_wait_foreign_revoke_restore_passed_2026-11-09
   go_check: historical_85_48pct_not_rerun_after_latest_acceptance_fixes
   lint: passed_2026-11-07
   docs_check: passed_2026-11-07
   config_check: passed_2026-11-07
   docker_check: not_run_for_current_source_2026-11-07
   red_team: not_started
-  live_acceptance: two_owner_memory_and_sish_sites_passed_sessions_browser_models_partial_web_connector_media_2026-11-08
+  live_acceptance: two_owner_memory_and_sish_sites_passed_sessions_browser_models_partial_web_connector_media_memory_assignment_pending_2026-11-08
   cold_executor: passed_two_owner_live_file_roundtrip_and_zero_leases_2026-11-07
   native_dreaming: passed_real_relay_pdp_vault_two_timezones_spring_dst_revoke_host_restart_drafts_deferred_fixture_delivery_2026-11-07
   memory_lock_order: passed_waiting_owner_registry_writer_other_owner_progress_and_revoke_recheck_2026-11-07
-  deployed_toolhub: scoped_dev_overlay_fc7d11b30fd6_running_zero_restarts_catalog18_2026-11-07
-  deployed_communication: scoped_dev_overlay_bb54a65d7c8a_running_zero_restarts_service_home_positive_runtime_denied_both_owners_2026-11-07
+  deployed_toolhub: scoped_dev_overlay_e9b4f0ab38de_running_catalog18_2026-11-09
+  deployed_communication: scoped_dev_overlay_a2f5ed7012da_running_2026-11-09
+  deployed_supervisor: scoped_dev_overlay_7dfbb389ec35_running_2026-11-09
+  selected_runtime: scoped_dev_overlay_755187c6f32b_next_spawn_2026-11-09
   integrated_canary: startup_reminder_delivery_fences_assignment_recovery_passed_container_leg_not_run_2026-11-07
   issue_audit: all_20_github_issues_open_2026-11-07
   group_and_open_session_driver: exact_source_two_owner_group_container_passed_2026-11-08
@@ -48,7 +53,7 @@ validation:
   native_m32_matrix: passed_cmd_61_525s_devcheck_4_825s_container_legs_explicitly_skipped_2026-11-07
   latest_affected_tests: passport_2_577s_skillstore_3_998s_stack_25_767s_hubctl_55_923s_linux_permission_regressions_and_touched_vet_passed_2026-11-07
   spawned_runtime_group: compose_parity_and_script_http_red_then_green_supervisor_76_617s_devcheck_11_348s_cmd_1_198s_passed_2026-11-07
-  remote_acceptance_authorization: requested_commit_push_feat_m32_integration_full_ci_ghcr_awaiting_owner_2026-11-07
+  remote_acceptance_authorization: local_commit_authorized_2026-11-09_remote_ci_not_requested
 evidence:
   - "2026-11-08 M32 local cutover: code commit 80b895a62d16ae131594a1fcd4b8d4e9859f35d2. Existing artem_main/artem_two dev containers were scoped rebuilt and managed runtimes respawned on dev images; catalog 18.2.0 rebound. Local sish exposure served an isolated site through ToolHub; publish/list/status/remove passed and the route returned 404 after removal. Real model mock runs for both owners wrote, searched, read and used separate synthetic memory facts; ToolHub audit confirmed admitted/completed writes and reads. Sessions lifecycle, models list/switch, browser guest read/act/capture plus user-profile open/close, and media inspect at one/five/exact 20 MiB/over-limit were observed. Research is deferred by owner. Web providers had no successful upstream result, GitHub get_me remained absent because its Broker grant policy epoch is stale, and media_generate returned 502 without hub-media. Remote CI was not requested. Final local just check, eight affected package suites and staged gitleaks passed."
   - "2026-11-07 corrected assignment mock acceptance: direct ToolHub service control used each owner's actual mock envelope. One synthetic hook produced one routine occurrence and real model wake per owner; exact-job audit showed memory.search and memory.read admitted/completed/succeeded, both durable summaries/findings used own amber fact, and exact own mock deliveries passed. Both assignments and exact mock deliveries/links were removed. Assignment remember and post-revoke write denial remain live-unproven, so the whole bullet stays FAIL."
@@ -105,10 +110,10 @@ evidence:
   - "2026-11-05 continuation: deployment configuration contract passed in just check, but the full gate exited 1 on parallel Windows process failures (diagnostics.test.exe Access is denied and ToolHub scratch input materialization). Isolated packages and just go-check passed; own Go coverage 85.99%. Docker gate is running. No live acceptance or catalog rebind/respawn is claimed."
   - "2026-11-05 follow-up: unit packages repaired and stack/hubctl/migration/passport/passportview/reconcile pass; just check still fails all eight deployment-contract cases. Follow-up audit supersedes old open statuses; plan/handoff updated, devcheck docs passed. No stage acceptance claimed."
   - "2026-11-05: Cross-stage audit and handoff recorded under CHG-0281. Acceptance plan strengthened for real process exit status, clean passport-only lifecycle, exact-profile rollback and actual ToolHub memory execution. Stage implementation remains not_started."
-remaining: [acceptance_526, implementation_527, quality_gates, live_acceptance]
+remaining: [acceptance_526, implementation_527, quality_gates, live_acceptance, parallel_managed_runs]
 limitations:
   - "The M32 main local acceptance is partial: web_search/fetch returned provider errors; GitHub get_me requires a current Broker grant; hub-media was not provisioned, so generation and channel send were not proven. Research was explicitly deferred. Images have exact Docker IDs but no embedded source-revision label; commit and build provenance are recorded separately."
   - "Automatic approval review rejected deletion of exact ignored .work/tmp synthetic helper/state files (no detailed reason returned), after path containment and ignore verification. They remain under ignored .work/tmp; no user vault or external state was deleted to work around the rejection."
-  - "Current-source container acceptance still lacks group isolation, lost-ack capture and process-crash recovery, full live dreaming ToolHub recall, assignment remember/revoke live path, model-selected terminal call, and actual incoming human Telegram message. Positive live HTTP watcher passed. Exact-source image and remote CI gates remain open."
+  - "Current-source container acceptance still lacks group isolation, lost-ack capture and process-crash recovery, full live dreaming ToolHub recall, assignment post-revoke denial, model-selected terminal call, and actual incoming human Telegram message. Isolated assignment remember and positive live HTTP watcher passed. Exact-source image and remote CI gates remain open."
   - "Historical own Go coverage is 85.48%; it was not rerun after the latest fixes. Full seven-image Docker/published-SHA CI, isolated group/capture fault matrix, live agent-driven due work and deferred delivery, and container/process-crash dreaming acceptance remain unverified. Native two-timezone spring-DST/revoke/restart/digest checks passed with real components and local model/channel fixtures. Deterministic no-output due work during a communication outage and live stream/drop settlement passed."
 

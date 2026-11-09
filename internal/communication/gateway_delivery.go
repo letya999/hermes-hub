@@ -148,15 +148,15 @@ func (g *Gateway) worker(ctx context.Context) {
 					goalPaused = g.pauseGoalAfterRunFailure(*job)
 				}
 				lang := locale.LangOf(g.user(job.UserID).WorkspaceDir)
-				key, message := "job-"+job.ID+"-error", failureMessage(lang, job.ID, outcome.Status)
+				key, message := "job-"+job.ID+"-error", failureMessage(lang, outcome.Status)
 				if goalPaused {
 					message += " " + locale.T(lang, "job.goal-paused")
 				}
 				if errors.Is(runErr, ErrUncertain) || outcome.Status == "uncertain" {
 					key = "job-" + job.ID + "-uncertain"
-					message = locale.T(lang, "job.uncertain", job.ID)
+					message = locale.T(lang, "job.uncertain")
 					if outcome.RunID != "" && g.config.RuntimeURL != "" {
-						message = locale.T(lang, "job.recheck", job.ID)
+						message = locale.T(lang, "job.recheck")
 					}
 				}
 				deliver := true

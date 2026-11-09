@@ -48,6 +48,23 @@ func wantText(t *testing.T, lang locale.Lang, key string, args ...any) string {
 	return locale.T(lang, key, args...)
 }
 
+func TestJobErrorMessagesOmitInternalID(t *testing.T) {
+	for _, lang := range []locale.Lang{locale.LangEN, locale.LangRU, locale.LangKK, locale.LangES} {
+		for _, status := range []string{"failed", "cancelled", "interrupted"} {
+			text := failureMessage(lang, status)
+			if text == "" || strings.Contains(text, "ID:") || strings.Contains(text, "%!") {
+				t.Errorf("%s/%s leaked an internal ID or formatting error: %q", lang, status, text)
+			}
+		}
+		for _, key := range []string{"job.approval-expired", "job.approval-denied", "job.uncertain", "job.recheck"} {
+			text := wantText(t, lang, key)
+			if strings.Contains(text, "ID:") || strings.Contains(text, "%!") {
+				t.Errorf("%s/%s leaked an internal ID or formatting error: %q", lang, key, text)
+			}
+		}
+	}
+}
+
 // /language <code> persists a chosen preference in the user's workspace and
 // replies in the newly selected language.
 func TestLanguageCommandSetsWorkspacePref(t *testing.T) {
@@ -969,11 +986,11 @@ func TestStreamEventTextsLocalized(t *testing.T) {
 		wantText(t, locale.LangES, "job.approval-needed"),
 		windowPrefix,
 		wantText(t, locale.LangES, "job.approval-hint", "j-appr", "req-1", "once, deny", "j-appr"),
-		wantText(t, locale.LangES, "job.cancelled", "j-cancel"),
-		wantText(t, locale.LangES, "job.interrupted", "j-interr"),
-		wantText(t, locale.LangES, "job.failed", "j-fail"),
-		wantText(t, locale.LangES, "job.approval-expired", "j-exp"),
-		wantText(t, locale.LangES, "job.approval-denied", "j-deny"),
+		wantText(t, locale.LangES, "job.cancelled"),
+		wantText(t, locale.LangES, "job.interrupted"),
+		wantText(t, locale.LangES, "job.failed"),
+		wantText(t, locale.LangES, "job.approval-expired"),
+		wantText(t, locale.LangES, "job.approval-denied"),
 		"git push",
 		"/approve j-appr req-1",
 	} {
@@ -1255,10 +1272,10 @@ func TestWorkerFailureNoticesLocalized(t *testing.T) {
 	<-done
 	joined := strings.Join(fake.sent, "\n")
 	for _, want := range []string{
-		wantText(t, locale.LangES, "job.interrupted", "w-interr"),
-		wantText(t, locale.LangES, "job.cancelled", "w-goal") + " " + wantText(t, locale.LangES, "job.goal-paused"),
-		wantText(t, locale.LangES, "job.uncertain", "w-uncertain2"),
-		wantText(t, locale.LangES, "job.recheck", "w-uncertain"),
+		wantText(t, locale.LangES, "job.interrupted"),
+		wantText(t, locale.LangES, "job.cancelled") + " " + wantText(t, locale.LangES, "job.goal-paused"),
+		wantText(t, locale.LangES, "job.uncertain"),
+		wantText(t, locale.LangES, "job.recheck"),
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("sent=%q missing %q", joined, want)

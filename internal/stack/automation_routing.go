@@ -26,6 +26,23 @@ type routingSlackLink struct {
 	UserID string `json:"user_id" yaml:"user_id"`
 }
 
+// RefreshAutomationRouting updates the shared ToolHub view after a sibling
+// policy apply; the mounted directory lets ToolHub read the new file in place.
+func RefreshAutomationRouting(dir, environment string) error {
+	s, err := ReadEffective(dir, environment)
+	if err != nil {
+		return err
+	}
+	if !s.RendersInfra() {
+		return nil
+	}
+	secrets, err := ReadSecrets(filepath.Join(dir, "secrets."+environment+".env"))
+	if err != nil {
+		return err
+	}
+	return renderAutomationRouting(dir, s, secrets)
+}
+
 // renderAutomationRouting projects only channel identities. ToolHub reads this
 // operator-owned file during an outage; provider credentials stay in gateway env.
 func renderAutomationRouting(dir string, s Settings, secrets map[string]string) error {

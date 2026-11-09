@@ -1,6 +1,6 @@
 ---
 description: Complete agent-visible tool surface — catalog r5 families, pinned platform layer, connector_* facade, effect/grant requirements, delivery directives.
-last_verified: "2026-11-08"
+last_verified: "2026-11-09"
 ---
 
 # Tool surface
@@ -74,6 +74,8 @@ family to `web_search`, adds provider and cache operations, and removes the
 unused `desktop` and `drafts` companion connectors.
 Release 22 pairs with `hub-agent-tools@18.2.0` and wires `runtime:sessions`
 to communication's owner task registry and Hermes transcript.
+The current `hub-agent-tools@18.3.0` changes browser wait argument semantics;
+the platform vocabulary remains Release 22.
 Release 19 remains immutable. Revision-guarded `settings_read`/`settings_edit` and
 ToolHub-executed `memory_search`/`memory_read`/`memory_card` retain current rights.
 The new contract admits memory in a verified, active owner assignment under
@@ -188,7 +190,7 @@ word where one exists):
 | web_search | `web_search`, `web_fetch`, `web_providers`, `web_search_multi`, `web_cache` | handler:web_search | ToolHub admits each call, then the owning runtime invokes the pinned Hermes web provider or hub-web plugin through its private sidecar; configured provider allowlists, URL safety and cache policy stay upstream; `web_cache` requires its separate mutation right |
 | connectors | `connector_search`, `connector_list`, `connector_status`, `connector_install`, `connector_edit` | runtime:connectors | control surface (see below); credentials never travel args/results |
 | research | `research_create`, `research_read`, `research_list` | flow:deep_research | backend remains unavailable pending a dedicated long-lived research implementation |
-| browser | `browser_open`, `browser_read`, `browser_act`, `browser_capture` | handler:browser | ToolHub admits each call; the private owning runtime connects to its Playwright sidecar, with owner-bound session IDs and user/guest grants checked on each operation |
+| browser | `browser_open`, `browser_read`, `browser_act`, `browser_capture` | handler:browser | ToolHub admits each call; the private owning runtime connects to its Playwright sidecar, with owner-bound session IDs and user/guest grants checked on each operation. `browser_open` creates a tab and `close` closes that tab. `browser_act` with `action=wait` interprets numeric `value` as seconds (>0, ≤30), otherwise waits for visible text |
 | models | `model_list`, `model_switch` | runtime:models | ToolHub routes each admitted call to that owner's Model Relay; the relay rechecks the current list/switch right and model ladder; no second model state is kept in ToolHub |
 | sessions | `session_list`, `session_search`, `session_read`, `session_create`, `session_switch`, `session_edit`, `session_remove` | runtime:sessions | Telegram task IDs from communication are the session handles; create/reuse activates a named task; search covers titles and retained model replies; read maps an owned task to a bounded Hermes user/assistant transcript via supervisor; archive/restore and switch use the existing task pointer; remove deletes task routing but retains the upstream transcript for audit; foreign IDs are opaque |
 | memory | `memory_search` | runtime:toolhub | the memory vault contract (SPEC-0085/M32): BM25+graph over daily leaves, cards and summaries — hits carry `file:line` evidence refs, never answer from memory alone; ToolHub resolves the caller's enrolled vault from the verified identity envelope — no argument, root or header selects user, vault or audience; requires config.memory.enabled plus an exact live private or owner assignment run verified against the supervisor job record |
@@ -228,6 +230,9 @@ text hash, running status, generation, audience, user, environment). Any
 failure injects the explicit unavailable marker; there is no local vault
 fallback. Past-referencing turns earn one lane-2 hint line nudging
 `memory_search`, then `memory_read` for an exact hit ID when its excerpt is insufficient.
+Requests to send an existing memory entry stay on this read path: return the
+matching entry's contents or a private `memory_open` link. They do not create
+a new file, summary or card without an explicit write request.
 
 Writes into the vault run through one contract surface: `memory_card`
 (SPEC-0085 R6), executed inside ToolHub against the verified caller's own

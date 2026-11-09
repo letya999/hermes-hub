@@ -7,6 +7,14 @@ import (
 	"github.com/letya999/hermes-hub/internal/passportview"
 )
 
+func TestChannelContractExplainsBrowserWait(t *testing.T) {
+	for _, phrase := range []string{"each open creates a new tab", "numeric duration in seconds", "use \"2\" for two seconds"} {
+		if !strings.Contains(ChannelContract, phrase) {
+			t.Errorf("browser contract missing %q", phrase)
+		}
+	}
+}
+
 // The stable prompt contract is the agent's only routing map for monitoring
 // asks: it must steer "follow/monitor a source" requests to watch_create
 // and away from the cron-shaped kind=agent misuse that re-wakes the model
@@ -245,7 +253,7 @@ func TestChannelContractDropsCrossFamilyClauses(t *testing.T) {
 // its denial semantics — remember/fact lanes, the propose/owner-confirmation
 // gate for existing-memory edits and the invalid-shape retry discipline.
 func TestChannelContractGuidesMemoryCard(t *testing.T) {
-	for _, want := range []string{"memory_card", "remember", "status=denied", "status=invalid", "propose", "owner"} {
+	for _, want := range []string{"memory_card", "remember", "status=denied", "status=invalid", "propose", "owner", "send an existing memory entry", "do not create a new file"} {
 		if !strings.Contains(contractMemory, want) {
 			t.Fatalf("contract missing %q", want)
 		}
@@ -263,5 +271,20 @@ func TestChannelContractGuidesMemoryCard(t *testing.T) {
 	}
 	if body := (Settings{Tools: map[string]ToolEntry{"memory_vault": {Via: ToolViaOff}}}).channelContract(true); strings.Contains(body, "memory_card") {
 		t.Fatal("denied memory_vault kept the memory guidance")
+	}
+}
+
+func TestChannelContractDoesNotInventFormattingHistory(t *testing.T) {
+	if !strings.Contains(contractMid, "do not invent an edit history") {
+		t.Fatal("channel contract lost formatting evidence rule")
+	}
+	if !strings.Contains(contractHead, "instead of listing speculative causes") {
+		t.Fatal("channel contract lost failure diagnostic rule")
+	}
+}
+
+func TestChannelContractExplainsFiveSessionLimit(t *testing.T) {
+	if !strings.Contains(contractMid, "Up to five of this owner's sessions") || !strings.Contains(contractMid, "additional runs wait") {
+		t.Fatal("always-on contract must explain the five-session limit and queue")
 	}
 }

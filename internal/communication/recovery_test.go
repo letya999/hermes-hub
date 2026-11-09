@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/letya999/hermes-hub/internal/identity"
+	"github.com/letya999/hermes-hub/internal/locale"
 	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
@@ -298,7 +299,7 @@ func TestGatewayNoUncertainNoticeBeforeBudget(t *testing.T) {
 		sent = append(sent, delivery.Text)
 	}
 	for _, text := range sent {
-		if strings.Contains(text, "неизвестен") || strings.Contains(text, job.ID) {
+		if text == locale.T(locale.Fallback(), "job.uncertain") || text == locale.T(locale.Fallback(), "job.recheck") {
 			t.Fatalf("uncertain notice sent before reconciliation budget: %v", sent)
 		}
 	}
@@ -330,7 +331,7 @@ func TestUncertainNoticeAfterBudget(t *testing.T) {
 	for time.Now().Before(deadline) {
 		transport.mu.Lock()
 		for _, text := range transport.sent {
-			if strings.Contains(text, job.ID) {
+			if text == locale.T(locale.Fallback(), "job.uncertain") || text == locale.T(locale.Fallback(), "job.recheck") {
 				noticed = true
 			}
 		}

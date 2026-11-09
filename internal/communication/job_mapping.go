@@ -15,7 +15,7 @@ import (
 )
 
 // Only controlled status labels reach chat; upstream error text may contain credentials.
-func failureMessage(lang locale.Lang, jobID, status string) string {
+func failureMessage(lang locale.Lang, status string) string {
 	key := "job.failed"
 	switch status {
 	case "cancelled":
@@ -23,7 +23,7 @@ func failureMessage(lang locale.Lang, jobID, status string) string {
 	case "interrupted":
 		key = "job.interrupted"
 	}
-	return locale.T(lang, key, jobID)
+	return locale.T(lang, key)
 }
 
 type ConversationMapping struct {

@@ -460,7 +460,10 @@ func applyHandlers(ctx context.Context, dir, root, env string) reconcile.Handler
 
 func refreshSharedRuntimeTokens(dir, environment string) error {
 	if infra := stack.InfraSpaceDir(dir); infra != dir {
-		return stack.EnrollSiblingRuntimeTokens(infra, environment)
+		if err := stack.EnrollSiblingRuntimeTokens(infra, environment); err != nil {
+			return err
+		}
+		return stack.RefreshAutomationRouting(infra, environment)
 	}
 	return nil
 }

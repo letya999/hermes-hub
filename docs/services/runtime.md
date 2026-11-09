@@ -1,9 +1,17 @@
 ---
 description: hub-runtime — the agent container process and its relay modes (serve/idle/health, model/toolhub/egress/control relays).
-last_verified: 2026-11-08
+last_verified: 2026-11-09
 ---
 
 # hub-runtime
+
+Managed ToolHub MCP headers are static in upstream Hermes. Each managed owner
+has five runtime lanes (`gateway` through `gateway-5`), each with its own MCP
+proxy and exact admitted job/run binding. The supervisor durably assigns a
+lane before waking its container; a sixth job waits, and one conversation
+remains FIFO. Lanes share Hermes history under `/state/hermes` while their
+runtime markers under `/state` are separate. Spawn preparation serializes
+updates to the shared generated config and skills; model execution does not.
 
 `cmd/runtime` → `internal/runtime.Run`. One binary, several modes selected by
 argv[1] (`internal/runtime/runtime.go`): `idle`, `gateway`, `prepare`,

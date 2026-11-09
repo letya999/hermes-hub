@@ -509,7 +509,7 @@ var argDocs = map[string]map[string]argDoc{
 		"session": {Desc: "Browser session id."},
 		"action":  {Desc: "Page interaction verb.", Enum: []string{"click", "type", "scroll", "press", "select", "wait", "close"}},
 		"target":  {Desc: "Element selector or target for the action."},
-		"value":   {Desc: "Value for type/select/wait actions."},
+		"value":   {Desc: "Value for type/select; for wait, text to appear or a numeric duration in seconds (>0, ≤30)."},
 	},
 	"browser_capture": {
 		"session": {Desc: "Browser session id."},

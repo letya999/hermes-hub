@@ -155,3 +155,60 @@ owners' existing dev stacks and exact synthetic Telegram receipts. Terminal
 direct MCP execution and job control passed; the model-selected command and
 full dreaming/Telegram/group/fault gates remain separate acceptance rows.
 
+## 2026-11-09 managed-session regression
+
+Two owner Telegram jobs in distinct conversations failed before receiving a
+Hermes run ID while another job in the same runtime was active. M32's static
+MCP proxy needs one exact active job/run to preserve ToolHub authorization, but
+the gateway's ADR-0090 lanes admitted both. Runtime admission now reserves that
+binding before the Hermes HTTP call and queues a different job until release;
+focused concurrent admission tests cover the boundary. This removes the
+observed pre-admission conflict but does not satisfy true parallel managed
+execution. Follow-up design must isolate MCP identity per concurrent run or
+provide separate runtimes without discarding session history.
+
+The agent guidance now treats requests for an existing memory item as reads,
+requires evidence before describing prior message formatting, and prohibits
+speculative failure causes. Public terminal/recheck messages no longer append
+internal job IDs. These changes require final package/docs checks and a scoped
+managed runtime smoke before live acceptance can be claimed.
+
+## 2026-11-09 M32 memory boundary correction
+
+The two previously failed local cases now pass. An isolated two-owner fixture
+proved actual overlap of ToolHub `memory.write` audit windows and one committed
+card per owner. The assignment failure was stale generated automation routing:
+its old policy stamp caused supervisor HTTP 409 before job registration. Local
+render plus a scoped communication-hub rebuild corrected the routing; a fresh
+active assignment remembered once, completed, and survived ToolHub restart
+without another write. Exact synthetic objects were removed. Append-only
+evidence and the limits of this local dirty-source acceptance are recorded in
+`evidence-526.md`; remote CI and same-owner parallel managed execution remain
+open separately.
+
+## 2026-11-09 five managed session lanes
+
+The remaining ADR-0090/M32 gap is real same-owner concurrency. Keep Hermes
+upstream unchanged: supervisor durably assigns up to five runtime modes per
+owner, each with its own static MCP proxy, and retain the owner's Hermes session
+history. Isolate per-process runtime state, serialize shared generated-file
+preparation during cold spawns, route job controls and skill-ref leases by the
+stored mode, cap gateway admission at five, and expose the limit in agent
+guidance. Verify with a named concurrency regression and an isolated live
+five-run model hold; check exact ToolHub write attribution and sixth-run wait.
+Do not claim live acceptance until all five reach the held provider together
+and finish, the synthetic journal and audit agree, and fixture resources are
+removed.
+
+## 2026-11-09 Browser acceptance follow-up
+
+Use the existing `artem_two` dev Playwright sidecar and ToolHub on a local
+static test page. Open a fresh user-profile tab, read, wait, click and capture;
+verify the returned file path against the workspace. Reproduce the numeric
+`browser_act wait` failure before its fix and rerun after. Test an unknown and
+other-owner session ID, then revoke `browser.read` during an open session and
+restore the exact right. Close only probe sessions and remove only probe
+captures/snapshots. Rebuild the scoped runtime, rebind the immutable agent-tool
+version and respawn managed spaces. No second Playwright, personal tab edit,
+full Compose or remote CI.
+

@@ -429,7 +429,7 @@ func run(ctx context.Context, args []string) error {
 	supervisorWildcard := f.Bool("supervisor-allow-wildcard-listen", false, "permit binding the supervisor control plane on all interfaces")
 	supervisorAuth := f.String("supervisor-auth", supervisorAuthFromEnv(), "private supervisor token")
 	warmTTL := warmTTLFlag(f)
-	maxRuntimes := f.Int("max-runtimes", 8, "maximum running context runtimes")
+	maxRuntimes := f.Int("max-runtimes", 16, "maximum running context runtimes")
 	spoolDir := f.String("spool", "", "mounted stopped gateway spool for execution migration")
 	executionMode := f.String("execution-mode", "", "supervisor or static")
 	supervisorURL := f.String("supervisor-url", "", "private reachable host supervisor origin")

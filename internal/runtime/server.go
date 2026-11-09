@@ -119,6 +119,7 @@ type runtimeHTTP struct {
 	runMu     sync.Mutex
 	activeJob string
 	activeRun string
+	runChange chan struct{}
 	proxyOnce sync.Once
 	proxy     http.Handler
 	proxyErr  error

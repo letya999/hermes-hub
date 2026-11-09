@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 	"os"
@@ -49,6 +50,53 @@ func (s *runtimeHTTP) releaseRun(jobID, runID, status string) {
 	s.runMu.Lock()
 	if s.activeJob == jobID && s.activeRun == runID {
 		s.activeJob, s.activeRun = "", ""
+		s.signalRunChangeLocked()
 	}
 	s.runMu.Unlock()
+}
+
+// reserveRun waits until the runtime's static MCP client can be bound to one
+// job. Same-job readmission may reattach after the original run is known.
+func (s *runtimeHTTP) reserveRun(ctx context.Context, jobID string) (bool, error) {
+	if jobID == "" {
+		return false, nil
+	}
+	for {
+		s.runMu.Lock()
+		if s.activeJob == "" {
+			s.activeJob = jobID
+			s.runMu.Unlock()
+			return true, nil
+		}
+		if s.activeJob == jobID && s.activeRun != "" {
+			s.runMu.Unlock()
+			return false, nil
+		}
+		if s.runChange == nil {
+			s.runChange = make(chan struct{})
+		}
+		changed := s.runChange
+		s.runMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-changed:
+		}
+	}
+}
+
+func (s *runtimeHTTP) releaseAdmission(jobID string) {
+	s.runMu.Lock()
+	if s.activeJob == jobID && s.activeRun == "" {
+		s.activeJob = ""
+		s.signalRunChangeLocked()
+	}
+	s.runMu.Unlock()
+}
+
+func (s *runtimeHTTP) signalRunChangeLocked() {
+	if s.runChange != nil {
+		close(s.runChange)
+		s.runChange = nil
+	}
 }

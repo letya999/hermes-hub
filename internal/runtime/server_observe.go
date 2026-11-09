@@ -51,17 +51,18 @@ func (s *runtimeHTTP) admitHermesRun(ctx context.Context, request ExecuteRequest
 }
 
 func (s *runtimeHTTP) postHermesRun(ctx context.Context, request ExecuteRequest, payload hermesRunBody, emit func(ExecuteResponse) error) (ExecuteResponse, error) {
-	s.runMu.Lock()
-	if s.activeJob != "" && s.activeJob != request.JobID {
-		s.runMu.Unlock()
-		return ExecuteResponse{}, errors.New("another Hermes run is still unconfirmed")
+	reserved, err := s.reserveRun(ctx, request.JobID)
+	if err != nil {
+		return ExecuteResponse{}, err
+	}
+	if reserved {
+		defer s.releaseAdmission(request.JobID)
 	}
 	base := "http://" + env("HUB_HERMES_API_HOST", "127.0.0.1") + ":" + env("HUB_HERMES_API_PORT", "8642")
 	auth := env("API_SERVER_KEY", os.Getenv("HUB_RUNTIME_AUTH"))
 	client := &http.Client{Timeout: 10 * time.Second}
 	sessionID := payload.SessionID
 	if err := hermesRequest(ctx, client, http.MethodPost, base+"/api/sessions", auth, map[string]any{"id": sessionID}, nil); err != nil && !errors.Is(err, errSessionExists) {
-		s.runMu.Unlock()
 		return ExecuteResponse{}, err
 	}
 	var admission struct {
@@ -69,18 +70,22 @@ func (s *runtimeHTTP) postHermesRun(ctx context.Context, request ExecuteRequest,
 	}
 	runStart := time.Now()
 	if err := hermesRequest(ctx, client, http.MethodPost, base+"/v1/runs", auth, payload, &admission, request.IdempotencyKey); err != nil {
-		s.runMu.Unlock()
 		return ExecuteResponse{}, err
 	}
 	if admission.RunID == "" {
-		s.runMu.Unlock()
 		return ExecuteResponse{}, errors.New("hermes returned no run ID")
+	}
+	s.runMu.Lock()
+	if s.activeJob != "" && s.activeJob != request.JobID {
+		s.runMu.Unlock()
+		return ExecuteResponse{}, errors.New("Hermes run ownership changed during readmission")
 	}
 	if s.activeRun != "" && s.activeRun != admission.RunID {
 		s.runMu.Unlock()
 		return ExecuteResponse{}, errors.New("Hermes run changed during readmission")
 	}
 	s.activeJob, s.activeRun = request.JobID, admission.RunID
+	s.signalRunChangeLocked()
 	s.runMu.Unlock()
 	if originalStart := runStartFor(admission.RunID); !originalStart.IsZero() {
 		runStart = originalStart

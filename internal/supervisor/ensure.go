@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -290,13 +291,24 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 		// the name; remove it only when it is verifiably ours and stale.
 		m.reclaimStaleRuntime(ctx, binding, container, logical.Generation)
 	}
+	var spawnFilesLock *sync.Mutex
+	if managed {
+		preparation := binding
+		preparation.RuntimeMode = "spawn-files"
+		spawnFilesLock = m.lockFor(runtimeKey(preparation))
+		spawnFilesLock.Lock()
+	}
 	args, err := m.runArgsWithGeneration(binding, container, port, logical.Generation)
 	if err != nil {
+		if managed {
+			spawnFilesLock.Unlock()
+		}
 		m.markDegraded(key)
 		return Runtime{}, fmt.Errorf("prepare runtime launch: %w", err)
 	}
 	if managed {
 		if err := m.ensureManagedInfra(ctx, binding, managedSettings, container, port, logical.Generation); err != nil {
+			spawnFilesLock.Unlock()
 			cleanupErr := m.removeOwnedRuntime(ctx, logical.Runtime)
 			m.markDegraded(key)
 			if cleanupErr == nil || errors.Is(cleanupErr, ErrRuntimeMissing) {
@@ -305,7 +317,11 @@ func (m *Manager) Ensure(ctx context.Context, binding Binding) (Runtime, error) 
 			return Runtime{}, fmt.Errorf("managed topology: %w", err)
 		}
 	}
-	if out, runErr := m.command(ctx, args...); runErr != nil {
+	out, runErr := m.command(ctx, args...)
+	if managed {
+		spawnFilesLock.Unlock()
+	}
+	if runErr != nil {
 		m.markDegraded(key)
 		// Docker may have created the container before its acknowledgement was lost.
 		cleanupErr := m.removeOwnedRuntime(ctx, logical.Runtime)
@@ -438,6 +454,9 @@ func (m *Manager) normalize(binding Binding) (Binding, error) {
 	dirs := []string{"runtime", "hermes", "connections", "connections/google", "connections/telegram", "connections/browser", "home", "cache", "workspace", "archive"}
 	if managed {
 		dirs = []string{"managed/" + m.environment() + "/runtime", "managed/" + m.environment() + "/hermes", "managed/" + m.environment() + "/home", "managed/" + m.environment() + "/cache", "managed/" + m.environment() + "/workspace"}
+		if binding.RuntimeMode != "gateway" {
+			dirs = append(dirs, "managed/"+m.environment()+"/runtime/"+binding.RuntimeMode)
+		}
 	}
 	for _, name := range dirs {
 		path := filepath.Join(abs, filepath.FromSlash(name))
@@ -691,6 +710,10 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 	env := m.environment()
 	m.prepareSpawnFiles(binding, env)
 	managedDir := filepath.Join(binding.ContextRoot, "managed", env)
+	runtimeDir := filepath.Join(managedDir, "runtime")
+	if binding.RuntimeMode != "gateway" {
+		runtimeDir = filepath.Join(runtimeDir, binding.RuntimeMode)
+	}
 	args := []string{"run", "-d", "--name", container, "--network", managedAgentNetworkName(settings.User, env), "--network-alias", container, "--restart=no", "--log-driver", "local", "--log-opt", "max-size=10m", "--log-opt", "max-file=3", "--read-only", "--init", "--user", fmt.Sprintf("10001:%d", max(0, os.Getgid())), "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", strconv.Itoa(m.cfg.PIDs), "--memory", m.cfg.Memory, "--cpus", m.cfg.CPU}
 	args = append(args, "--env-file", filepath.Join(binding.ContextRoot, "managed-runtime."+env+".env"), "--env-file", binding.EnvFile)
 	if service := stack.RuntimeService(settings, "", binding.ContextRoot); service != nil {
@@ -705,8 +728,8 @@ func (m *Manager) managedRunArgs(binding Binding, settings stack.Settings, conta
 			}
 		}
 	}
-	for _, name := range []struct{ source, target string }{{"runtime", "/state"}, {"hermes", "/state/hermes"}, {"home", "/state/home"}, {"cache", "/state/cache"}} {
-		args = append(args, "--mount", "type=bind,src="+filepath.Join(managedDir, name.source)+",dst="+name.target)
+	for _, mount := range []struct{ source, target string }{{runtimeDir, "/state"}, {filepath.Join(managedDir, "hermes"), "/state/hermes"}, {filepath.Join(managedDir, "home"), "/state/home"}, {filepath.Join(managedDir, "cache"), "/state/cache"}} {
+		args = append(args, "--mount", "type=bind,src="+mount.source+",dst="+mount.target)
 	}
 	// The workspace passport owns the container filesystem once a revision is
 	// published (SPEC-0092 R5.2): /config, /workspace with read-only

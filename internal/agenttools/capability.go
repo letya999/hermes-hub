@@ -58,7 +58,7 @@ func HubToolsDefinition() api.ToolDefinition {
 	def := api.ToolDefinition{
 		Schema:       api.SchemaVersion,
 		DefinitionID: HubToolsDefinitionID,
-		Version:      "18.2.0",
+		Version:      "18.3.0",
 		Transport:    api.AgentTools,
 		Source:       api.DefinitionSource{},
 		Workload: api.WorkloadPolicy{
@@ -229,7 +229,7 @@ func HubToolsDefinition() api.ToolDefinition {
 			// ---- browser (4): curated names over the browser connector
 			tool("browser_open", "browser.open", "browser.open", "Open a browser session on a URL under the user or guest profile; returns a session id.", api.WriteEffect, use("open", "browser"), str("url"), opt("profile")),
 			tool("browser_read", "browser.read", "browser.read", "Read a browser session's page content or snapshot as bounded markdown.", api.ReadEffect, use("read", "browser"), str("session")),
-			tool("browser_act", "browser.act", "browser.act", "Act in a browser session: click, type, scroll, press, select, wait or close.", api.WriteEffect, use("act", "browser"), str("session"), str("action"), opt("target"), opt("value")),
+			tool("browser_act", "browser.act", "browser.act", "Act in a browser session: click, type, scroll, press, select, wait (text or seconds in value) or close.", api.WriteEffect, use("act", "browser"), str("session"), str("action"), opt("target"), opt("value")),
 			tool("browser_capture", "browser.capture", "browser.capture", "Capture a browser session as a screenshot or pdf written to the workspace.", api.ReadEffect, use("read", "browser"), str("session"), str("kind")),
 
 			// ---- platform (6): pinned discovery/self layer

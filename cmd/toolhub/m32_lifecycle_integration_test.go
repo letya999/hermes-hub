@@ -202,8 +202,12 @@ func newM32Lifecycle(t *testing.T, ctx context.Context, image, environment strin
 		cleanup, stop := context.WithTimeout(context.Background(), time.Minute)
 		defer stop()
 		for _, user := range f.Users {
-			if h.manager != nil {
-				rt, ok, err := h.runtimeStatus(user)
+			for _, mode := range []string{"gateway", "gateway-2", "gateway-3", "gateway-4", "gateway-5"} {
+				if h.manager == nil {
+					continue
+				}
+				auth := f.Auth[user]
+				rt, ok, err := h.manager.Status(supervisor.Binding{PrincipalID: auth.PrincipalID, ContextID: auth.ContextID, RuntimeID: auth.RuntimeID, UserID: user, RuntimeMode: mode})
 				if err != nil {
 					t.Errorf("lookup owned M32 runtime for cleanup: %v", err)
 				}
@@ -241,14 +245,25 @@ func newM32Lifecycle(t *testing.T, ctx context.Context, image, environment strin
 				args[i] = controlNet
 			}
 		}
-		return exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+		started := time.Now()
+		out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+		if err != nil && len(args) > 0 && args[0] == "run" {
+			classes := []string{}
+			for _, candidate := range []string{"port is already allocated", "address already in use", "container name", "permission denied", "no such file or directory", "invalid mount", "invalid volume", "network not found", "out of memory", "failed to create task", "mount", "bind", "not a directory", "file exists", "no space left", "invalid reference", "access is denied", "operation not permitted", "file sharing", "invalid argument", "failed to register", "no matching manifest", "runc create failed", "resource temporarily unavailable", "read-only file system", "context deadline exceeded"} {
+				if strings.Contains(strings.ToLower(string(out)), candidate) {
+					classes = append(classes, candidate)
+				}
+			}
+			t.Logf("isolated Docker run failed classes=%v output_bytes=%d elapsed=%s deadline=%t cancelled=%t", classes, len(out), time.Since(started).Round(time.Second), errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled))
+		}
+		return out, err
 	}
 	var err error
 	runtimeImage := image
 	if runtimeImage == "" {
 		runtimeImage = "m32-unspawned"
 	}
-	h.manager, err = supervisor.New(supervisor.Config{SpacesRoot: filepath.Join(f.Root, "spaces"), Image: runtimeImage, ScriptImage: os.Getenv("HUB_M32_SCRIPT_IMAGE"), Environment: environment, Network: controlNet, RuntimeAuth: h.control, WarmTTL: 30 * time.Minute, MaxConcurrent: 2, PortBase: 31000, Command: command})
+	h.manager, err = supervisor.New(supervisor.Config{SpacesRoot: filepath.Join(f.Root, "spaces"), Image: runtimeImage, ScriptImage: os.Getenv("HUB_M32_SCRIPT_IMAGE"), Environment: environment, Network: controlNet, RuntimeAuth: h.control, WarmTTL: 30 * time.Minute, MaxConcurrent: 6, PortBase: 31000, Command: command})
 	m32Require(t, err)
 	h.supervisor = httptest.NewServer(h.manager.Handler())
 	t.Cleanup(h.supervisor.Close)
@@ -298,8 +313,8 @@ func newM32Lifecycle(t *testing.T, ctx context.Context, image, environment strin
 				entry = "toolhub-relay"
 			}
 			args = append(args, os.Getenv("HUB_M32_SCRIPT_IMAGE"), entry)
-			h.docker(t, ctx, args...)
 			h.containers = append(h.containers, name)
+			h.docker(t, ctx, args...)
 			h.docker(t, ctx, "network", "connect", "--alias", service, agentNet, name)
 		}
 	}
@@ -532,7 +547,7 @@ func m32Require(t *testing.T, err error) {
 
 func m32HeldProvider(t *testing.T, inspect func(json.RawMessage)) (*httptest.Server, func(), <-chan struct{}) {
 	t.Helper()
-	gate, entered := make(chan struct{}), make(chan struct{}, 2)
+	gate, entered := make(chan struct{}), make(chan struct{}, 32)
 	var once sync.Once
 	release := func() { once.Do(func() { close(gate) }) }
 	listener, err := net.Listen("tcp", "0.0.0.0:0")

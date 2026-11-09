@@ -1129,11 +1129,9 @@ func (s *Spool) ClaimJob() (*Job, error) {
 				continue
 			}
 		}
-		// ponytail: parallel lanes share one home and runtime — workspace
-		// writes are last-writer-wins, the browser sidecar is single and a
-		// runtime restart hits every lane (ADR-0090 D5). Upgrade paths:
-		// per-session workspace views, a browser lane, per-lane wedge
-		// accounting.
+		// ponytail: lanes share workspace and one browser sidecar; concurrent
+		// writes there are last-writer-wins (ADR-0090 addendum). Use per-session
+		// workspace views if independent file writes become necessary.
 		key := jobContextKey(job.PrincipalID, job.ContextID, job.ConversationID)
 		if holder, busy := s.inFlight[key]; busy && holder != job.ID {
 			continue // Serialization is per conversation lane; other lanes stay claimable.

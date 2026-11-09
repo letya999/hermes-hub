@@ -1935,7 +1935,7 @@ func TestNewDefaultsAndServeStopsOnContext(t *testing.T) {
 		}
 		return nil, nil
 	}, func(context.Context, string, string) error { return nil })
-	if m.cfg.WarmTTL != time.Minute || m.cfg.MaxConcurrent != 8 || m.cfg.RuntimePort != 8080 || m.cfg.PIDs != 1024 {
+	if m.cfg.WarmTTL != time.Minute || m.cfg.MaxConcurrent != 16 || m.cfg.RuntimePort != 8080 || m.cfg.PIDs != 1024 {
 		t.Fatalf("defaults not applied: %+v", m.cfg)
 	}
 	ctx, cancel := context.WithCancel(context.Background())

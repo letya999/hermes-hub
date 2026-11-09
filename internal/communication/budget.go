@@ -108,12 +108,15 @@ type spoolLimits struct {
 	// deliveries claim a reserved lane and are exempt.
 	MaxDeliveries int
 	// MaxParallelPerContext caps conversation lanes held by one context;
-	// default 8 stays below the upstream Hermes max_concurrent_runs (10) so
-	// a pre-admission 429 is unreachable in steady state (ADR-0090 R3).
+	// A managed owner has five isolated runtime slots (ADR-0090 addendum).
 	MaxParallelPerContext int
 }
 
 func limitsFromEnv() spoolLimits {
+	lanes := intFromEnv("HUB_CONTEXT_MAX_PARALLEL", 5)
+	if lanes <= 0 || lanes > 5 {
+		lanes = 5
+	}
 	return spoolLimits{
 		MaxPendingPerScope:    intFromEnv("HUB_SPOOL_MAX_PENDING_PER_SCOPE", 16),
 		MaxPendingTotal:       intFromEnv("HUB_SPOOL_MAX_PENDING_TOTAL", 128),
@@ -124,7 +127,7 @@ func limitsFromEnv() spoolLimits {
 		MaxOwnedFiles:         intFromEnv("HUB_SPOOL_MAX_OWNED_FILES", 65536),
 		LifecycleFiles:        intFromEnv("HUB_SPOOL_LIFECYCLE_RESERVE_FILES", 128),
 		MaxDeliveries:         intFromEnv("HUB_SPOOL_MAX_DELIVERIES", 1024),
-		MaxParallelPerContext: intFromEnv("HUB_CONTEXT_MAX_PARALLEL", 8),
+		MaxParallelPerContext: lanes,
 	}
 }
 

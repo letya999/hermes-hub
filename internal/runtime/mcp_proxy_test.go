@@ -5,12 +5,70 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/letya999/hermes-hub/internal/toolhub/api"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 type proxyBearerTransport struct{ http.RoundTripper }
+
+func TestRunReservationQueuesDifferentJobs(t *testing.T) {
+	s := &runtimeHTTP{}
+	if reserved, err := s.reserveRun(t.Context(), "first"); err != nil || !reserved {
+		t.Fatalf("first reservation: reserved=%v err=%v", reserved, err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	started := make(chan struct{})
+	result := make(chan error, 1)
+	go func() {
+		close(started)
+		reserved, err := s.reserveRun(ctx, "second")
+		if err == nil && !reserved {
+			err = context.Canceled
+		}
+		result <- err
+	}()
+	<-started
+	select {
+	case err := <-result:
+		t.Fatalf("second run bypassed the active job: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	s.releaseAdmission("first")
+	if err := <-result; err != nil {
+		t.Fatalf("second reservation after release: %v", err)
+	}
+	s.releaseAdmission("second")
+}
+
+func TestRunReservationWaitsForSameJobAdmission(t *testing.T) {
+	s := &runtimeHTTP{}
+	if reserved, err := s.reserveRun(t.Context(), "first"); err != nil || !reserved {
+		t.Fatalf("first reservation: reserved=%v err=%v", reserved, err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	result := make(chan bool, 1)
+	go func() {
+		reserved, err := s.reserveRun(ctx, "first")
+		result <- err == nil && !reserved
+	}()
+	select {
+	case <-result:
+		t.Fatal("readmission bypassed pending admission")
+	case <-time.After(20 * time.Millisecond):
+	}
+	s.runMu.Lock()
+	s.activeRun = "run-one"
+	s.signalRunChangeLocked()
+	s.runMu.Unlock()
+	if !<-result {
+		t.Fatal("readmission did not attach to the admitted run")
+	}
+	s.releaseRun("first", "run-one", "completed")
+}
 
 func (t proxyBearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	r = r.Clone(r.Context())

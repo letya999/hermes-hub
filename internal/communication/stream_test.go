@@ -178,7 +178,7 @@ func (a *idleAPI) GetUpdates(ctx context.Context, _ int64, _ int) ([]Update, err
 	return nil, ctx.Err()
 }
 
-func TestTerminalFailureDeliveryNamesCauseWithoutRawError(t *testing.T) {
+func TestTerminalFailureDeliveryNamesCauseWithoutRawErrorOrID(t *testing.T) {
 	for _, status := range []string{"failed", "interrupted", "cancelled"} {
 		t.Run(status, func(t *testing.T) {
 			s, job := streamJob(t)
@@ -189,8 +189,8 @@ func TestTerminalFailureDeliveryNamesCauseWithoutRawError(t *testing.T) {
 				t.Fatal(err)
 			}
 			delivery, err := s.ClaimDelivery()
-			if err != nil || delivery == nil || !strings.Contains(delivery.Text, job.ID) || !strings.Contains(delivery.Text, "run."+status) || strings.Contains(delivery.Text, "provider secret") {
-				t.Fatalf("failure must carry a safe named cause and correlation ID: %+v %v", delivery, err)
+			if err != nil || delivery == nil || strings.Contains(delivery.Text, job.ID) || !strings.Contains(delivery.Text, "run."+status) || strings.Contains(delivery.Text, "provider secret") {
+				t.Fatalf("failure must carry a safe named cause without internal ID: %+v %v", delivery, err)
 			}
 		})
 	}

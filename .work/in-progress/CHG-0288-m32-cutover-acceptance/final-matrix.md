@@ -1,5 +1,36 @@
 # Finite M32 live acceptance matrix
 
+## 2026-11-09: Browser through ToolHub
+
+The existing Playwright sidecar and an isolated static page were used. The
+call-by-call record and audit window are in [evidence-526.md](evidence-526.md#browser-through-toolhub-and-the-existing-sidecar-2026-11-09).
+
+| Case | Result | Evidence and reason |
+| --- | --- | --- |
+| Personal profile open/read | PASS | `browser_open` created a new tab; `browser_read` returned the test heading. |
+| `browser_act wait` | PASS after fix | Numeric `7` failed before the fix because the adapter sent it as text; numeric and heading-text waits both succeeded through ToolHub after mapping numeric seconds to Playwright `time`. |
+| Personal profile act | PASS | `browser_act click` changed the button label; a subsequent `browser_read` returned `M32 Browser Clicked`. |
+| Personal profile capture | PASS after fix | `browser_capture` returned a path whose nonempty PNG was verified at that exact location after correcting the suggested filename. |
+| Forged and other-owner session ID | PASS | ToolHub refused an invented ID and refused the open `artem_two` ID when presented by `artem_main`. The live other-owner call also met the latter's narrower tool selection; owner-bound lookup passed its named regression. |
+| Revoke in open session | PASS | Revoking `browser.read` blocked the next ToolHub read before the backend; restoring the right with a higher revision allowed read in the same session. |
+| Close and cleanup | PASS | Created sessions returned successful close; only four test PNGs and 20 test-window snapshots were removed. The older personal PNG was retained. |
+
+The guest profile's earlier open/read/scroll/capture/close PASS is retained;
+this follow-up tested the personal profile. Exact-source catalog projection is
+recorded separately after the clean-source rollout.
+
+## 2026-11-08: memory boundary follow-up
+
+The narrower memory check is **3 PASS / 2 FAIL** on the existing dev stack:
+right revoked before write, foreign/finished-run refusal and no duplicate
+after ToolHub restart passed; strict overlap of two writer calls and a live
+assignment memory write did not. The two writes were submitted concurrently
+but their actual ToolHub commits were about 39 seconds apart. The assignment
+saved a wake and dispatch intent but never reached supervisor. Exact storage,
+audit, cleanup and scope are recorded in [evidence-526.md](evidence-526.md#memory-boundary-follow-up-2026-11-08).
+This follow-up does not change the historical five-check table below or close
+the broader #526 acceptance.
+
 ## 2026-11-08: five technical MVP checks requested by the owner
 
 The owner narrowed this local acceptance pass to five technical checks. The
@@ -83,6 +114,20 @@ These overlays are not exact committed-source images.
 | A2 | Existing file/hook watch paths passed; native HTTP probes and limits passed. A live public UUID watcher fetched changing values, sent five own Telegram notices and was deleted; all five exact bot messages were removed. | None for this row. |
 | I1 | Both owners' outgoing mock and Telegram delivery paths passed. | Actual incoming human Telegram round trip and group privacy path. Do not synthesize human input. |
 | G1 | No new full Compose stack or full image rebuild; ToolHub and runtime overlays were scoped. Affected package suites and `just check` passed after stale-test, format and doc repairs. Source remains dirty at baseline SHA `185892107fcc6056a41808fe22533a6c34c7940e`. | Exact-source image gate and remote CI. Remote workflow/publication require owner instruction. |
+
+2026-11-09 follow-up: same-owner parallel managed sessions now **PASS in isolated
+local integration**. Five distinct conversations were held simultaneously in
+five managed Hermes processes; each wrote one ToolHub memory card with exact
+job/run journal and audit attribution. A sixth waited, then all completed.
+Cold-spawn generated-file races were repaired. The live Telegram deployment
+and exact committed-image/remote CI gate remain unverified.
+
+The follow-up proxy-level probe passed on the newly built runtime image: all
+five `memory_card` calls entered through their separate runtime `/mcp`
+endpoints and ToolHub recorded the exact active job/run for each. Scoped dev
+ToolHub, supervisor and communication-hub overlays are running, and the new
+runtime overlay is selected for next spawn. The actual Telegram five-topic
+path remains unexercised.
 
 Frozen 2026-11-07 for the existing `artem_main` and `artem_two` dev spaces. A PASS
 requires evidence on the current source and deployed image; earlier fixture/native

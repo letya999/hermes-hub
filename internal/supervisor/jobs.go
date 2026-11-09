@@ -55,7 +55,11 @@ func (m *Manager) jobStatus(w http.ResponseWriter, r *http.Request, id string) {
 	// no live generation to report.
 	currentGeneration := ""
 	if ok {
-		key := runtimeKey(Binding{PrincipalID: record.Request.PrincipalID, ContextID: record.Request.ContextID, RuntimeMode: "gateway"})
+		mode := record.RuntimeMode
+		if mode == "" {
+			mode = "gateway"
+		}
+		key := runtimeKey(Binding{PrincipalID: record.Request.PrincipalID, ContextID: record.Request.ContextID, RuntimeMode: mode})
 		if entry := m.items[key]; entry != nil {
 			currentGeneration = entry.Runtime.Generation
 		}

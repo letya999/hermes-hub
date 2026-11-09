@@ -81,7 +81,7 @@ func (t *Tools) browserCall(ctx context.Context, name string, input Input) (any,
 		if err != nil {
 			return nil, errors.New("browser sidecar unavailable")
 		}
-		result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "browser_navigate", Arguments: map[string]any{"url": input.URL}})
+		result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "browser_tabs", Arguments: map[string]any{"action": "new", "url": input.URL}})
 		if err != nil || result.IsError {
 			_ = session.Close()
 			return nil, errors.New("browser navigation failed")
@@ -115,6 +115,12 @@ func (t *Tools) browserCall(ctx context.Context, name string, input Input) (any,
 	run.mu.Lock()
 	defer run.mu.Unlock()
 	if name == "browser_act" && input.Action == "close" {
+		ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+		defer cancel()
+		result, err := run.session.CallTool(ctx, &mcp.CallToolParams{Name: "browser_tabs", Arguments: map[string]any{"action": "close"}})
+		if err != nil || result.IsError {
+			return nil, errors.New("browser close failed")
+		}
 		t.browserMu.Lock()
 		delete(t.browserRuns, input.Session)
 		t.browserMu.Unlock()
@@ -145,7 +151,7 @@ func (t *Tools) browserCall(ctx context.Context, name string, input Input) (any,
 	}
 	out := map[string]any{"session": input.Session, "text": text.String()}
 	if name == "browser_capture" {
-		out["path"] = "browser/" + arguments["filename"].(string)
+		out["path"] = arguments["filename"].(string)
 	}
 	return out, nil
 }
@@ -155,11 +161,11 @@ func browserOperation(name string, in Input) (string, map[string]any, error) {
 	case "browser_read":
 		return "browser_snapshot", map[string]any{}, nil
 	case "browser_capture":
-		filename := in.Session + ".png"
+		filename := "browser/" + in.Session + ".png"
 		operation := "browser_take_screenshot"
 		args := map[string]any{"scale": "css"}
 		if in.Kind == "pdf" {
-			filename, operation = in.Session+".pdf", "browser_pdf_save"
+			filename, operation = "browser/"+in.Session+".pdf", "browser_pdf_save"
 			args = map[string]any{}
 		} else if in.Kind != "screenshot" {
 			return "", nil, errors.New("invalid browser capture kind")
@@ -194,6 +200,12 @@ func browserOperation(name string, in Input) (string, map[string]any, error) {
 			}
 		case "wait":
 			if in.Value != "" {
+				if seconds, err := strconv.ParseFloat(in.Value, 64); err == nil {
+					if !(seconds > 0 && seconds <= 30) {
+						return "", nil, errors.New("browser wait outside 0..30 seconds")
+					}
+					return "browser_wait_for", map[string]any{"time": seconds}, nil
+				}
 				return "browser_wait_for", map[string]any{"text": in.Value}, nil
 			}
 		}

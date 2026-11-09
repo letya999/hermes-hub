@@ -26,7 +26,7 @@ func TestRoutinePublicSurfaceHasFiveTools(t *testing.T) {
 		}
 	}
 	definition := HubToolsDefinition()
-	if definition.Version != "18.2.0" {
+	if definition.Version != "18.3.0" {
 		t.Errorf("new immutable contract version=%s", definition.Version)
 	}
 	arguments := map[string][]string{"routine_create": {"origin_job_id", "destination_task_id"}, "routine_list": {"query", "view"}, "routine_read": {"include", "history_limit", "history_cursor", "preview_limit"}, "routine_edit": {"action", "expected_revision", "patch", "until", "origin_job_id"}}
@@ -245,7 +245,7 @@ func TestRoutineListTransportsSearchQuery(t *testing.T) {
 // admit the new selection set (SPEC-0080 R2.3).
 func TestAssignmentCatalogVersion(t *testing.T) {
 	definition := HubToolsDefinition()
-	if definition.Version != "18.2.0" {
+	if definition.Version != "18.3.0" {
 		t.Fatalf("catalog version = %s, want 18.2.0 with knowledge link", definition.Version)
 	}
 }

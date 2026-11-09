@@ -1290,3 +1290,180 @@ image identity is
 connector model round trip; the successful list/search agent jobs above used
 the prior scoped image. The source remains dirty at HEAD
 `185892107fcc6056a41808fe22533a6c34c7940e`.
+
+## Memory boundary follow-up, 2026-11-08
+
+The owner's ordinary remember → search → read → fact-use cycle had already
+passed for both dev owners. This follow-up used only synthetic `m32acc-*`
+markers and mock chats in the existing dev stack. Source HEAD was
+`b35a97c2dacd5e65e535d2036646d80088bc827c`; the running ToolHub image
+was `sha256:bc33d338874c1b5b11525bb8f05a87f270bce2183b318425ffabde66d21af2eb`.
+The two managed runtime image IDs were `sha256:2091994b243c0edaff7a987af4e26c871abb277b17dd91ebf2fc901d86ec30d8`
+and `sha256:2fc5be0977785411f9219783273a40bbec06498f90142c0fbd5911252225872b`.
+These dev overlays have no exact HEAD label; this is local live evidence, not
+published-image or remote CI acceptance.
+
+| Requested case | Result | Observed reason |
+| --- | --- | --- |
+| Two simultaneous writes | **FAIL for strict overlap** | Two mock jobs were submitted concurrently and each model invoked ToolHub `memory_card`; both owner vaults had one card, one `ok` write-journal entry and one admitted/completed `memory.write` audit pair. The actual writer calls were about 39 seconds apart, so this does not prove simultaneous writer contention. `TestMemoryCardTwoUserIsolation` passed on temporary vaults. |
+| Right revoked before write | **PASS** | `artem_main`'s current `memory.remember` grant was revoked before one live mock job. ToolHub audit recorded two `decision/deny/not_started` events; the named card and successful write journal entry were absent. The original grant was restored by same-record revision CAS and verified active. `TestMemoryCardRevokedRightBlocksCommit` passed on temporary storage. |
+| Memory in active assignment | **FAIL live** | A verified owner mock assignment reached `active`, recorded one wake and one model-call attempt, but its dispatch intent remained `acked=false`; supervisor returned 404 for that exact event job, no model progress or memory card appeared. A ToolHub restart did not recover it. The assignment was cancelled and removed. `TestAssignmentMemoryCardRememberAndRevoke` passed in-process, but it does not replace this missing live execution. |
+| Foreign or finished run | **PASS** | Direct ToolHub read probes with each owner's bearer and the other owner's job/run, then each completed own job/run, returned HTTP 502 in all four cases. The segmented ToolHub audit recorded four `decision/preflight-error/not_started` entries per owner across the direct MCP and HTTP probes; no extra vault mutation appeared. `TestAssignmentMemoryWaitsForSameLiveRunID` passed on temporary storage. |
+| No duplicate after restart | **PASS for event replay** | Only the existing ToolHub container was restarted. Repeating both exact mock messages with their original client IDs returned the same job IDs, and each card still contained one marker before cleanup. The temporary-vault `TestMemoryCardIntentAndCommitRecovery` and `TestAuditRetryAfterJournalFailureDoesNotDuplicate` passed; a live crash at the writer commit barrier was not performed. |
+
+The successful writes are in the segmented ToolHub audit
+`runtime/toolhub/audit.jsonl.v1-000001` (the older `audit.jsonl` prefix is
+unchanged) and in each vault's `runtime/memory/writes.jsonl`. Cleanup removed
+the two exact test cards with path-scoped vault commits, their two request
+intents, the active assignment, four mock-chat links and their exact mock
+deliveries. The revoked-write and assignment markers never created cards.
+Both card paths are absent and clean in their vault Git worktrees. Durable
+audit/journal and dispatch receipts remain as append-only evidence. No existing
+personal fact was edited or deleted; the managed runs used the owners' ordinary
+pre-turn context. No full Compose stack was started, and no remote CI
+or external message was sent.
+
+## Memory boundary follow-up correction, 2026-11-09
+
+The two FAIL rows above describe the first probe, not the corrected result.
+The first "concurrent" probe submitted two mock jobs together but let the model
+schedule the actual writes 39 seconds apart. A new isolated integration probe
+(`TestM32LocalConcurrentWriters`) held two real managed Hermes runs open, then
+released two direct `memory_card remember` MCP calls against one production
+ToolHub process through a start barrier. The final run passed in 64.91 seconds:
+both ToolHub call intervals and both `memory.write` audit admitted→completed
+windows overlapped. Each synthetic owner vault had exactly one card containing
+its own marker and exactly one `remember/ok` journal row tied to its job/run.
+The first diagnostic run failed before writing because it used a cli-tools image
+without `hub-runtime`; rerunning with the correct existing image passed. That
+failed start left one named fixture container, which was removed, and the
+fixture cleanup was corrected to register each container before starting it.
+The successful run removed its own containers and networks. The two existing
+dev services were stopped only while the fixture held their ports, then restarted with their
+previous scoped dev images. No full Compose stack or remote CI was run.
+
+The live assignment failure had a separate cause. `artem_main`'s generated
+automation routing JSON still stamped policy `policy-301cac0b1edc0491`
+after the published owner policy had become `policy-dcac72efa593cc60`.
+Supervisor rejected that exact assignment dispatch with HTTP 409, so its
+unregistered job naturally returned 404 and the durable dispatch intent stayed
+unacknowledged. `hubctl render` regenerated the local dev routing input, and
+`hubctl dev-rebuild ... communication-hub` recreated only that service.
+Sibling `space apply` now refreshes the shared generated routing immediately
+after runtime token enrollment; `TestRefreshSharedRuntimeTokensAfterSiblingApply`
+reproduces a stale JSON policy and verifies the current stamp after refresh.
+A manual edit to `communication.users.yaml` still requires render and a scoped
+communication-hub recreate so both channel maps agree. A new
+isolated `artem_two` assignment then reached active, registered a supervisor
+run, invoked `memory_card remember`, recorded progress and completed with one
+mock delivery. Its exact job has one `remember/ok` journal row and one
+`memory.write` admitted/completed audit pair. After restarting ToolHub, the
+journal count was still one. The test assignment, its card, exact request intent,
+mock links and deliveries were removed; the append-only journal, audit and
+dispatch receipts remain. The other M32 boundary results above remain PASS.
+
+This corrects the five requested cases to **5 PASS / 0 FAIL** in local dev
+acceptance. Source HEAD was `b35a97c2dacd5e65e535d2036646d80088bc827c`
+plus dirty local changes; no exact committed-source image or remote CI acceptance
+is claimed. True parallel managed sessions within one owner's runtime remain a
+separate ADR-0090 limitation; this probe proves overlapping ToolHub writes
+across two owner runs.
+
+## Five simultaneous sessions of one owner, 2026-11-09
+
+`TestM32FiveManagedSessionsExecuteConcurrently` passed in 140.86 seconds on
+dirty local source. Five distinct conversations of one synthetic owner each
+reached the held model provider before its gate opened. Supervisor reported
+five distinct live generations with matching current generations. While all
+five runs were active, production ToolHub accepted one `memory_card remember`
+per job/run; the isolated vault journal had exactly one successful row for
+each, and its audit had exactly one admitted and completed `memory.write` pair
+per job. A sixth conversation did not reach the provider while the five
+slots were occupied, then all six completed after release. The fixture removed
+all ten runtime/control containers and its networks; both preexisting scoped
+dev services were restarted. No personal vault or full Compose stack was used.
+
+The first cold-spawn probe failed when concurrent preparation raced on the
+shared generated skills directory. The named regression reproduced its
+`directory is not empty` failure; per-owner spawn preparation now remains
+serialized until Docker has created the container. A second probe showed
+that counting raw provider requests was insufficient to establish five
+distinct sessions; the final test identifies all five conversations from their
+synthetic prompts. This is live local integration, not deployed Telegram
+acceptance or an exact committed-image/remote CI gate.
+
+Named supervisor regressions additionally cover five-slot allocation, a
+waiting sixth slot, FIFO when two jobs from one conversation are admitted
+before either claims a slot, separate `/state` and shared `/state/hermes`
+mounts, concurrent cold-spawn preparation, and skill-ref lease routing to the
+admitted job's lane. The gateway cap test rejects values above five or zero.
+
+After scoped dev rebuilds, the same test passed again in 88.90 seconds using
+the new runtime image, this time sending each memory write through its own
+runtime `/mcp` proxy with no caller-supplied job/run headers. ToolHub still
+attributed each write to the exact active job/run and the isolated journal
+and audit each showed one successful write per lane. The fixture again removed
+all runtime/control containers; the two port-sharing dev services restarted.
+The running dev ToolHub, supervisor and communication-hub images match their
+new scoped tags (`e9b4f0ab38de`, `7dfbb389ec35`, `a2f5ed7012da`); the
+selected runtime image for the next spawn is `755187c6f32b`. Unauthenticated
+ToolHub and communication endpoints returned 401, confirming the listeners
+were up without reading credentials. This is local dirty-source acceptance at
+base SHA `b35a97c2dacd5e65e535d2036646d80088bc827c`; no real Telegram
+five-session run or remote CI is claimed.
+
+## Browser through ToolHub and the existing sidecar, 2026-11-09
+
+The existing `artem_two` dev Playwright sidecar was resumed; no Playwright
+package or second sidecar was installed. A host-served static page at
+`http://host.docker.internal:18432/` contained only an M32 heading, one local
+button and a result label. Direct calls to the installed sidecar established
+the actual `browser_wait_for` contract: waiting for the heading succeeded,
+while waiting for an absent marker timed out. Each direct probe made and
+closed one new tab.
+
+The pre-fix ToolHub run opened a new user-profile session on that page.
+`browser_read` returned the heading. `browser_act` with `action=wait,
+value="7"` returned `browser operation failed`; the same call with the
+heading as value succeeded. The adapter had unconditionally passed `value`
+as Playwright's `text`, so the numeric call waited for visible digit 7
+instead of seven seconds. The scoped runtime fix maps a finite numeric value
+in (0, 30] to Playwright `time` and keeps other values as `text`; out-of-range
+numbers fail locally. The post-fix live ToolHub call with `value="7"` passed,
+as did a text wait. The browser contract/argument guidance and immutable
+`hub-agent-tools@18.3.0` definition were updated. The old 18.2.0 binding
+was temporarily retained during live behavior checks because the selected
+profile still pinned that version; the new binding must be projected with a
+clean-source apply and managed respawn.
+
+The same post-fix user-profile session passed `browser_act click` on the local
+button, and the next `browser_read` contained the page's `M32 Browser Clicked`
+marker. `browser_capture` completed through ToolHub. The first probe showed
+that its returned `browser/<session>.png` path was false: Playwright wrote a
+suggested filename at workspace root, despite `--output-dir`. Passing the
+`browser/` prefix in the suggested filename fixed that mismatch; the final
+probe verified a nonempty PNG at exactly the returned path. An invented
+session ID was rejected; an `artem_main` ToolHub call carrying the open
+`artem_two` session ID was also rejected. The owner-bound lookup is covered
+separately by `TestBrowserSidecarSessionOwnerGrantAndOperations`; the live
+other-owner call also met `artem_main`'s narrower tool selection.
+
+While that session remained open, the one active `artem_two` `browser.read`
+right was revoked through the protected governance store. Its next ToolHub
+`browser_read` was refused before backend execution. Regranting the same
+right with a higher revision restored the next read in the same session.
+The final governance document has one active `artem_two` `browser.read`
+grant and zero revoked rows for that right. All probe sessions returned
+successful `browser_act close` results. The audited window contains 17
+`browser.act` admitted rows, 16 completed/ok and one pre-fix backend error;
+four `browser.capture` admitted/completed-ok pairs; six `browser.open`
+admitted/completed-ok pairs; and three other-owner decision denials. These
+counts include diagnostic reruns, not one single acceptance run.
+
+Cleanup removed exactly four probe PNGs and 20 sidecar snapshots created
+during this test window. An older personal-profile PNG remained in place.
+The temporary test page and supervisor proxy will be stopped after catalog
+rollout; the existing browser sidecar is left to its normal idle lifecycle. No personal
+tab was navigated or closed: `browser_open` now creates a new tab and
+`browser_act close` closes that tab. No personal memory, full Compose stack or
+remote CI was used.

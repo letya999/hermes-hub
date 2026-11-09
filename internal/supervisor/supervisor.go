@@ -285,6 +285,7 @@ type jobRecord struct {
 	Unconfirmed       bool                       `json:"unconfirmed,omitempty"`
 	UnconfirmedSince  time.Time                  `json:"unconfirmed_since,omitempty"`
 	Generation        string                     `json:"generation,omitempty"`
+	RuntimeMode       string                     `json:"runtime_mode,omitempty"`
 	UpdatedAt         time.Time                  `json:"updated_at"`
 }
 
@@ -395,7 +396,7 @@ func New(cfg Config) (*Manager, error) {
 		cfg.BrowserIdleTTL = DefaultBrowserIdleTTL
 	}
 	if cfg.MaxConcurrent <= 0 {
-		cfg.MaxConcurrent = 8
+		cfg.MaxConcurrent = 16
 	}
 	if value, parseErr := strconv.Atoi(strings.TrimSpace(os.Getenv("HUB_MAX_RUNTIMES_PER_PRINCIPAL"))); parseErr == nil && value > 0 {
 		cfg.MaxPerPrincipal = value
@@ -673,7 +674,15 @@ func (m *Manager) bindingFor(request hubruntime.ExecuteRequest) (Binding, error)
 	if strings.HasPrefix(request.ScopeID, "user:") && request.OrganizationID != "" && request.OrganizationID != "personal" {
 		organizationRoot = filepath.Join(m.cfg.SpacesRoot, request.OrganizationID)
 	}
-	return m.normalize(Binding{PrincipalID: request.PrincipalID, ContextID: contextID, RuntimeID: request.RuntimeID, RuntimeMode: "gateway", ScopeID: request.ScopeID, UserID: request.UserID, OrganizationID: request.OrganizationID, PolicyVersion: request.PolicyVersion, OrganizationRoot: organizationRoot})
+	mode := "gateway"
+	if key := executeJobKey(request); key != "" {
+		m.mu.Lock()
+		if record, ok := m.jobs[key]; ok && record.Request.Envelope.Equal(request.Envelope) && record.RuntimeMode != "" {
+			mode = record.RuntimeMode
+		}
+		m.mu.Unlock()
+	}
+	return m.normalize(Binding{PrincipalID: request.PrincipalID, ContextID: contextID, RuntimeID: request.RuntimeID, RuntimeMode: mode, ScopeID: request.ScopeID, UserID: request.UserID, OrganizationID: request.OrganizationID, PolicyVersion: request.PolicyVersion, OrganizationRoot: organizationRoot})
 }
 
 func runtimeKey(binding Binding) string {

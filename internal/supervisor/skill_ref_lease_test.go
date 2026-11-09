@@ -10,6 +10,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/letya999/hermes-hub/internal/identity"
+	hubruntime "github.com/letya999/hermes-hub/internal/runtime"
 )
 
 func TestSkillRefLeaseRoutesOnlyMatchingRuntime(t *testing.T) {
@@ -49,6 +52,41 @@ func TestSkillRefLeaseRoutesOnlyMatchingRuntime(t *testing.T) {
 	}
 	if rec := call("alice", "policy-1"); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "caller-value") {
 		t.Fatalf("owned lease status=%d", rec.Code)
+	}
+}
+
+func TestSkillRefLeaseRoutesByAdmittedJobLane(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"lane": "gateway-2"})
+	}))
+	defer upstream.Close()
+	m, root := testManager(t, func(context.Context, ...string) ([]byte, error) { return []byte("running"), nil }, func(context.Context, string, string) error { return nil })
+	b := binding(root)
+	b.RuntimeMode = "gateway-2"
+	b, err := m.normalize(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	m.items[runtimeKey(b)] = &runtimeEntry{Runtime: Runtime{PrincipalID: "alice", ContextID: "alice", RuntimeID: "alice", RuntimeMode: "gateway-2", PolicyVersion: "policy-1", Address: upstream.URL, State: Ready}, binding: b, auth: "secret", leases: map[string]Lease{}}
+	m.jobs["job-2"] = jobRecord{Request: hubruntime.ExecuteRequest{Envelope: identity.TelegramEnvelope("alice", 11, "alice", "policy-1")}, RuntimeMode: "gateway-2", Status: "running"}
+	m.mu.Unlock()
+	for _, tc := range []struct {
+		job, principal string
+		want           int
+	}{
+		{"job-2", "alice", http.StatusOK},
+		{"job-2", "bob", http.StatusServiceUnavailable},
+		{"missing", "alice", http.StatusServiceUnavailable},
+	} {
+		body, _ := json.Marshal(map[string]any{"principal_id": tc.principal, "context_id": "alice", "runtime_id": "alice", "policy_version": "policy-1", "job_id": tc.job, "refs": []string{"GITHUB_TOKEN"}})
+		req := httptest.NewRequest(http.MethodPost, "/v1/skill-ref-lease", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer secret")
+		rec := httptest.NewRecorder()
+		m.Handler().ServeHTTP(rec, req)
+		if rec.Code != tc.want {
+			t.Fatalf("job=%s principal=%s status=%d, want %d", tc.job, tc.principal, rec.Code, tc.want)
+		}
 	}
 }
 

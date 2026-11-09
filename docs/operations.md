@@ -1,6 +1,6 @@
 ---
 description: Operator runbook — stack lifecycle, user onboarding, diagnostics, secrets, links, broker ops, migrations, backups, image hygiene, supervisor, rollout, preflight.
-last_verified: 2026-11-08
+last_verified: 2026-11-09
 ---
 
 # Operations
@@ -137,6 +137,11 @@ Tool selection grants no authority; a managed profile binds the exact
    space's `communication.users.yaml` (`id`, `runtime_id`, `telegram_ids`,
    `features`, `policy_version`) — no entry, no routed jobs; an entry with
    empty `telegram_ids` still jobs but cannot notify.
+   Keep `policy_version` current when editing this file. A sibling `space
+   apply` now refreshes the infra space's generated automation routing after
+   enrolling its runtime token. After a manual routing edit, render the infra
+   space and recreate only communication-hub so its loaded channel map agrees
+   with ToolHub's routing file.
 7. **Bring up** — `hubctl doctor --user <id>`, then
    `hubctl up --user <id> --env dev|prod`. Up renders `generated/` (compose,
    `tool-policy`, `tool-manifest`, hermes config), mints `runtime.auth`,
@@ -748,6 +753,11 @@ managed config from the reviewed `browser`/`browser_act` capability
 (same `hub:browser`/`hub:browser_guest` governance gate, no connector
 or catalog round-trip); `HUB_MANAGED_BROWSER` carries the grant to
 in-container materialization so the attested config matches.
+Managed `browser_open` creates its own Playwright tab in the chosen profile;
+`browser_act action=close` closes that tab. `action=wait` uses `value` as
+visible text or, when numeric, seconds in the interval (0, 30]. Captures
+return a path under the shared workspace's `browser/` directory; the named
+file must exist there before treating a capture as delivered.
 
 Entry points (`just`, `hubctl build`/`up`) force `DOCKER_BUILDKIT=1`,
 `COMPOSE_DOCKER_CLI_BUILD=1`, `COMPOSE_BAKE=true`; full `hubctl` builds prune
@@ -798,7 +808,7 @@ executor — see SPEC-0016/CHG-0018).
 In supervisor mode the runtime joins the space's project network and mounts
 its `broker-secrets-runtime` volume read-only. Footprint (dev host sample,
 2026-10-07): always-on ≈160 MiB per stack + ~410 MiB per warm runtime;
-cold start ~60–80 s, warm lease ~0.6 s; `--max-runtimes` (8) is the
+cold start ~60–80 s, warm lease ~0.6 s; `--max-runtimes` (16) is the
 concurrency bound; crash-loop denial after 3 crashes/10 min window.
 Re-run the protocol on the target host before fixing SLOs — CHG-0100.
 
@@ -854,13 +864,14 @@ retry — the original run may already have acted externally.
 
 Concurrency: in-flight serialization is per conversation lane
 `(principal, context, conversation)` — forum topics and DM tasks of one
-user run in parallel inside the shared context runtime, FIFO inside each
-conversation (ADR-0090, amends ADR-0025). `HUB_CONTEXT_MAX_PARALLEL` (8)
-caps a context's lanes below the upstream Hermes `max_concurrent_runs`
-(10); `HUB_COMMUNICATION_WORKERS` (32) bounds the pool; fair rotation
-still rotates by scope so one owner's sessions cannot crowd out others.
-Ceilings: shared workspace/`MEMORY.md` is last-writer-wins across lanes;
-one browser sidecar per space; a runtime restart hits all its lanes.
+user run in parallel in up to five managed runtime containers, FIFO inside
+each conversation (ADR-0090, amends ADR-0025). Each container has an exact
+MCP job/run identity and shares Hermes session history with its owner.
+`HUB_CONTEXT_MAX_PARALLEL` defaults to five and cannot raise the ceiling;
+`HUB_COMMUNICATION_WORKERS` (32) bounds the pool; fair rotation remains
+per scope. A sixth session waits. Shared workspace writes can conflict,
+and the browser sidecar remains one per space. A lane restart affects its
+own active run.
 
 Gateway/session ops: `/new`, `/use`, `/delete`, `/sessions`, `/session`
 manage per-task sessions (each task = own durable Hermes session; forum

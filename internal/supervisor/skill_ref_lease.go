@@ -20,6 +20,7 @@ func (m *Manager) skillRefLease(w http.ResponseWriter, r *http.Request) {
 		ContextID     string   `json:"context_id"`
 		RuntimeID     string   `json:"runtime_id"`
 		PolicyVersion string   `json:"policy_version"`
+		JobID         string   `json:"job_id"`
 		Refs          []string `json:"refs"`
 	}
 	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&request) != nil || !validID(request.PrincipalID) || !validID(request.ContextID) || !validID(request.RuntimeID) || request.PolicyVersion == "" || len(request.Refs) == 0 || len(request.Refs) > 16 {
@@ -30,7 +31,17 @@ func (m *Manager) skillRefLease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m.mu.Lock()
-	entry := m.items[runtimeKey(Binding{PrincipalID: request.PrincipalID, ContextID: request.ContextID, RuntimeMode: "gateway"})]
+	mode := "gateway"
+	if request.JobID != "" {
+		job, ok := m.jobs[request.JobID]
+		if !ok || job.Request.PrincipalID != request.PrincipalID || job.Request.ContextID != request.ContextID || job.Request.RuntimeID != request.RuntimeID || job.Request.PolicyVersion != request.PolicyVersion || terminalRunStatus(job.Status) || job.RuntimeMode == "" {
+			m.mu.Unlock()
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "runtime unavailable"})
+			return
+		}
+		mode = job.RuntimeMode
+	}
+	entry := m.items[runtimeKey(Binding{PrincipalID: request.PrincipalID, ContextID: request.ContextID, RuntimeMode: mode})]
 	if entry == nil || entry.RuntimeID != request.RuntimeID || entry.PolicyVersion != request.PolicyVersion || entry.State != Ready && entry.State != Busy && entry.State != Idle {
 		m.mu.Unlock()
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "runtime unavailable"})

@@ -343,3 +343,10 @@ func TestQuoteWithNestedListAndBreak(t *testing.T) {
 		t.Fatalf("slack quote: %v", sparts)
 	}
 }
+
+func TestTelegramApproximationTildesStayLiteral(t *testing.T) {
+	parts, degraded := renderTelegram("~50 specialists and ~10 projects")
+	if degraded || len(parts) != 1 || strings.Contains(parts[0], "<s>") || !strings.Contains(parts[0], "~50") || !strings.Contains(parts[0], "~10") {
+		t.Fatalf("approximation tildes became formatting: parts=%v degraded=%v", parts, degraded)
+	}
+}
