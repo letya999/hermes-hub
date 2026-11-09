@@ -1431,10 +1431,16 @@ instead of seven seconds. The scoped runtime fix maps a finite numeric value
 in (0, 30] to Playwright `time` and keeps other values as `text`; out-of-range
 numbers fail locally. The post-fix live ToolHub call with `value="7"` passed,
 as did a text wait. The browser contract/argument guidance and immutable
-`hub-agent-tools@18.3.0` definition were updated. The old 18.2.0 binding
+`hub-agent-tools@18.3.1` definition were updated. The old 18.2.0 binding
 was temporarily retained during live behavior checks because the selected
 profile still pinned that version; the new binding must be projected with a
 clean-source apply and managed respawn.
+
+During rollout, the protected store refused to re-register `18.3.0` as an
+immutable definition. A digest comparison isolated the difference to the
+`browser_act` record: that provisional version had been registered before
+the final wait argument contract. The completed contract is therefore
+versioned `18.3.1`; the provisional record was not overwritten.
 
 The same post-fix user-profile session passed `browser_act click` on the local
 button, and the next `browser_read` contained the page's `M32 Browser Clicked`

@@ -74,7 +74,7 @@ family to `web_search`, adds provider and cache operations, and removes the
 unused `desktop` and `drafts` companion connectors.
 Release 22 pairs with `hub-agent-tools@18.2.0` and wires `runtime:sessions`
 to communication's owner task registry and Hermes transcript.
-The current `hub-agent-tools@18.3.0` changes browser wait argument semantics;
+The current `hub-agent-tools@18.3.1` changes browser wait argument semantics;
 the platform vocabulary remains Release 22.
 Release 19 remains immutable. Revision-guarded `settings_read`/`settings_edit` and
 ToolHub-executed `memory_search`/`memory_read`/`memory_card` retain current rights.

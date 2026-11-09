@@ -439,7 +439,7 @@ outcome evidence are untrusted; streams have no clock occurrences (see event_sta
 
 ## Deployment and manual acceptance
 
-The current agent-tool catalog is hub-agent-tools@18.3.0 (platform Release 22); old definitions remain immutable. For managed spaces, publish selected tools/grants, then rebind and respawn the runtime. The browser contract gives each session its own tab; `browser_act wait` accepts text or numeric seconds up to 30, and close closes its tab.
+The current agent-tool catalog is hub-agent-tools@18.3.1 (platform Release 22); old definitions remain immutable. For managed spaces, publish selected tools/grants, then rebind and respawn the runtime. The browser contract gives each session its own tab; `browser_act wait` accepts text or numeric seconds up to 30, and close closes its tab.
 `memory_open` belongs to memory; it grants no routine a viewing link. Routine calls require the current `tasks.schedule` right as well as independent
 tool admission; selection does not grant the right. Current MCP discovery shows
 the five routine tools plus the watch and assignment families. A catalog
