@@ -63,6 +63,9 @@ func TestCliproxyInstanceGetsOnlyItsSession(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s init companion missing: %v", name, serviceKeys(services))
 		}
+		if init["restart"] != "on-failure" {
+			t.Fatalf("%s init must recover after transient Broker unavailability", name)
+		}
 		var initSeesSession, initSeesLease, initSeesCfg, initSeesGen bool
 		for _, v := range init["volumes"].([]any) {
 			m := v.(M)

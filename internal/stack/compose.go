@@ -51,6 +51,8 @@ func managedAgentNetwork(s Settings) string {
 	return "hermes-hub-agent-" + s.User + "-" + s.Environment
 }
 
+func ManagedAgentNetwork(s Settings) string { return managedAgentNetwork(s) }
+
 func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 	infra := s.RendersInfra()
 	stateVolumes := []any{
@@ -822,7 +824,9 @@ func compose(s Settings, projectRoot, dir string, includeGateway bool) M {
 			cliproxy["networks"] = M{"default": M{"aliases": []string{name}}, sharedNetworkName: M{"aliases": []string{name}}}
 			services[name] = cliproxy
 			init := cloneMap(coreCommon)
-			init["restart"] = "no"
+			// Broker may not be ready when a sibling space starts; retry this
+			// same companion until its grant can be materialized.
+			init["restart"] = "on-failure"
 			// Materialize, then hold the tmpfs mounts open for the service's
 			// lifetime — an exiting companion would destroy the volumes.
 			init["entrypoint"] = []string{"sh", "-c", "hub-runtime cliproxy-materialize && exec sleep infinity"}

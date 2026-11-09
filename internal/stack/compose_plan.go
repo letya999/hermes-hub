@@ -2,6 +2,7 @@ package stack
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 )
@@ -171,4 +172,61 @@ func ComposeChecked(s Settings, projectRoot, dir string) (M, error) {
 		return nil, err
 	}
 	return result, nil
+}
+
+// SplitInfraCompose keeps the infra owner's shared services in the original
+// project (and therefore on their existing volumes), while placing its
+// per-space services in a separate project. The published stack passport is
+// the only source of service placement.
+func SplitInfraCompose(s Settings, full M) (shared, user M) {
+	if !s.RendersInfra() || !HasPerSpaceServices(s) {
+		return full, nil
+	}
+	shared, user = maps.Clone(full), maps.Clone(full)
+	sharedServices, userServices := M{}, M{}
+	services := full["services"].(M)
+	for name, service := range services {
+		perSpace := false
+		for instance, mode := range s.PassportServices {
+			if mode != "per-space" {
+				continue
+			}
+			base := planServiceName(instance, s)
+			if name == base || name == base+"-init" || name == base+"-ctl" {
+				perSpace = true
+				break
+			}
+		}
+		if perSpace {
+			userServices[name] = service
+		} else {
+			sharedServices[name] = service
+		}
+	}
+	shared["services"], user["services"] = sharedServices, userServices
+	user["name"] = full["name"].(string) + "-user"
+	// The broker granted this relay's signing key in the original project.
+	// Retain that volume name when moving the relay to its own project.
+	userVolumes := maps.Clone(full["volumes"].(M))
+	if v, ok := userVolumes["broker-secrets-model"].(M); ok {
+		copy := maps.Clone(v)
+		copy["name"] = full["name"].(string) + "_broker-secrets-model"
+		userVolumes["broker-secrets-model"] = copy
+	}
+	user["volumes"] = userVolumes
+	userNetworks := maps.Clone(full["networks"].(M))
+	if _, ok := userNetworks[managedAgentNetwork(s)]; ok {
+		userNetworks[managedAgentNetwork(s)] = M{"name": managedAgentNetwork(s), "external": true}
+	}
+	user["networks"] = userNetworks
+	return shared, user
+}
+
+func HasPerSpaceServices(s Settings) bool {
+	for _, mode := range s.PassportServices {
+		if mode == "per-space" {
+			return true
+		}
+	}
+	return false
 }

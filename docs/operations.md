@@ -158,6 +158,18 @@ Tool selection grants no authority; a managed profile binds the exact
    and enrolls sibling `toolhub-tokens.json`/`model-relay-admins.json`.
    The supervised runtime spawns on first demand (pin or job).
 
+   A dedicated CLIProxy's init companion retries in the same container after
+   a temporary Broker failure; its healthcheck only passes after both the
+   session file and generated config exist. A persistent missing or revoked
+   grant still keeps the proxy unavailable and needs credential enrollment.
+
+   A published infra owner has two generated Compose plans: `compose.shared.<env>.yaml`
+   contains only `shared` services in its original project and preserves its
+   volumes; `compose.user.<env>.yaml` contains that owner's `per-space` services
+   in a separate project. `hubctl up` starts the shared plan first, then the
+   user plan. Other users keep one per-space Compose project each. Run `hubctl`
+   for lifecycle operations so a later up cannot rejoin the two plans.
+
    A *managed* space additionally needs, before `up`: an execution selection
    (`execution.<env>.json` — `mode: supervisor`,
    `supervisor_url: http://supervisor:8876`, `native_cron: disabled`),

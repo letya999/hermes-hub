@@ -334,6 +334,10 @@ func renderEnvironment(dir, root, environment, revisionID string) error {
 		return err
 	}
 	outputs := map[string]any{"hermes." + environment + ".yaml": Config(s), "compose." + environment + ".yaml": compose}
+	if shared, user := SplitInfraCompose(s, compose); user != nil {
+		outputs["compose.shared."+environment+".yaml"] = shared
+		outputs["compose.user."+environment+".yaml"] = user
+	}
 	// Generated files are reproducible; secrets and agent memories are never overwritten.
 	for name, v := range outputs {
 		b, err := yaml.Marshal(v)

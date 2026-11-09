@@ -79,6 +79,14 @@ func runDevRebuild(ctx context.Context, args []string) error {
 		return err
 	}
 	compose := filepath.Join(dirAbs, "generated", "compose.dev.yaml")
+	if settings.RendersInfra() && stack.HasPerSpaceServices(settings) {
+		_, user := stack.SplitInfraCompose(settings, stack.Compose(settings, rootAbs, dirAbs))
+		part := "shared"
+		if _, ok := user["services"].(stack.M)[service]; ok {
+			part = "user"
+		}
+		compose = filepath.Join(dirAbs, "generated", "compose."+part+".dev.yaml")
+	}
 	run := func(name string, env []string, workdir string, a ...string) error {
 		cmd := exec.CommandContext(ctx, name, a...) // #nosec G204 G702 -- fixed executable and validated service.
 		cmd.Dir, cmd.Env = workdir, env

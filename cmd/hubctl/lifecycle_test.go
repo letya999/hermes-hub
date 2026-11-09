@@ -59,7 +59,10 @@ func TestLifecycleAndFailurePropagation(t *testing.T) {
 		script = "@echo off\r\n>>\"%HUB_TEST_LOG%\" echo ENV DOCKER_BUILDKIT=%DOCKER_BUILDKIT% COMPOSE_BAKE=%COMPOSE_BAKE% COMPOSE_DOCKER_CLI_BUILD=%COMPOSE_DOCKER_CLI_BUILD%\r\n>>\"%HUB_TEST_LOG%\" echo %*\r\nif \"%~1\"==\"build\" if \"%HUB_FAIL_MATCH%\"==\"build\" exit /b 7\r\nif not \"%~1\"==\"compose\" exit /b 0\r\nif \"%HUB_FAIL_MATCH%\"==\"config\" (echo %* | findstr /C:\" config --quiet\" >nul && exit /b 7)\r\nif \"%HUB_FAIL_MATCH%\"==\"build\" (echo %* | findstr /C:\" build\" >nul && exit /b 7)\r\nif \"%HUB_FAIL_MATCH%\"==\"up\" (echo %* | findstr /C:\" up -d\" >nul && exit /b 7)\r\n"
 	}
 	if runtime.GOOS == "windows" {
+		script = strings.Replace(script, "if not \"%~1\"==\"compose\" exit /b 0\r\n", "if \"%~1\"==\"network\" if \"%~2\"==\"inspect\" (echo true & exit /b 0)\r\nif not \"%~1\"==\"compose\" exit /b 0\r\n", 1)
 		script += "exit /b 0\r\n"
+	} else {
+		script += "if [ \"$1\" = network ] && [ \"$2\" = inspect ]; then printf 'true\\n'; fi\n"
 	}
 	if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0700); err != nil {
 		t.Fatal(err)
@@ -82,16 +85,16 @@ func TestLifecycleAndFailurePropagation(t *testing.T) {
 			t.Fatal(op, err)
 		}
 	}
-	if err := run(context.Background(), []string{"up", "--dir", d, "--root", "../..", "communication-hub", "toolhub"}); err != nil {
+	if err := run(context.Background(), []string{"up", "--dir", d, "--root", "../..", "supervisor", "toolhub"}); err != nil {
 		t.Fatal(err)
 	}
 	beforeNoBuild, _ := os.ReadFile(log)
-	if err := run(context.Background(), []string{"up", "--dir", d, "--root", "../..", "--no-build", "communication-hub", "toolhub"}); err != nil {
+	if err := run(context.Background(), []string{"up", "--dir", d, "--root", "../..", "--no-build", "supervisor", "toolhub"}); err != nil {
 		t.Fatal(err)
 	}
 	afterNoBuild, _ := os.ReadFile(log)
 	scopedUp := strings.TrimPrefix(string(afterNoBuild), string(beforeNoBuild))
-	if strings.Count(string(afterNoBuild), " build communication-hub toolhub") != strings.Count(string(beforeNoBuild), " build communication-hub toolhub") || !strings.Contains(scopedUp, "--force-recreate --no-build --no-deps communication-hub toolhub") || strings.Contains(scopedUp, "--remove-orphans") {
+	if strings.Count(string(afterNoBuild), " build supervisor toolhub") != strings.Count(string(beforeNoBuild), " build supervisor toolhub") || !strings.Contains(scopedUp, "--force-recreate --no-build --no-deps supervisor toolhub") || strings.Contains(scopedUp, "--remove-orphans") {
 		t.Fatal("scoped no-build up touched unrelated services")
 	}
 	if err := run(context.Background(), []string{"up", "--dir", d, "--root", "../..", "--no-build"}); err != nil {
@@ -118,7 +121,7 @@ func TestLifecycleAndFailurePropagation(t *testing.T) {
 	if !strings.Contains(string(b), "ps --filter label=com.docker.compose.service=cliproxy") {
 		t.Fatal("up skipped the shared model proxy alias check")
 	}
-	if !strings.Contains(string(b), filepath.Join(d, "generated", "compose.prod.yaml")) || !strings.Contains(string(b), "ENV DOCKER_BUILDKIT=1 COMPOSE_BAKE=true COMPOSE_DOCKER_CLI_BUILD=1") || !strings.Contains(string(b), "image prune -f") || !strings.Contains(string(b), "--force-recreate") || !strings.Contains(string(b), "build --target prod-control") || !strings.Contains(string(b), "--no-deps communication-hub toolhub") || !strings.Contains(string(b), "telegram-account.Dockerfile") || strings.Contains(string(b), "prepare") || strings.Contains(string(b), "FOWNER") || strings.Contains(string(b), "career") {
+	if !strings.Contains(string(b), filepath.Join(d, "generated", "compose.prod.yaml")) || !strings.Contains(string(b), "ENV DOCKER_BUILDKIT=1 COMPOSE_BAKE=true COMPOSE_DOCKER_CLI_BUILD=1") || !strings.Contains(string(b), "image prune -f") || !strings.Contains(string(b), "--force-recreate") || !strings.Contains(string(b), "build --target prod-control") || !strings.Contains(string(b), "--no-deps supervisor toolhub") || !strings.Contains(string(b), "telegram-account.Dockerfile") || strings.Contains(string(b), "prepare") || strings.Contains(string(b), "FOWNER") || strings.Contains(string(b), "career") {
 		t.Fatal(string(b))
 	}
 	for _, fail := range []string{"build", "up"} {

@@ -104,6 +104,12 @@ merge was M14): trust the CHG number and directory, not the milestone name.
 | [CHG-0037](done/CHG-0037-toolhub-closeout/plan.md) | Abandoned: ToolHub closeout umbrella superseded by later per-issue CHGs |
 | [CHG-0031](done/CHG-0031-docker-disk-diagnosis/plan.md) | Abandoned: read-only diagnosis superseded by CHG-0031-docker-reclaim findings |
 
+## Done — M32 Docker topology
+
+| Change | State |
+|---|---|
+| [CHG-0291](done/CHG-0291-compose-infra-user-split/plan.md) | Shared control plane and infra owner's personal Compose project separated; live dev topology and idempotent up verified |
+
 ## Done — M30 Imperative Passports and Capability Grants
 
 | Change | State |

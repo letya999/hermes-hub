@@ -375,6 +375,33 @@ func init() { applyImageBuild = run }
 
 func applyHandlers(ctx context.Context, dir, root, env string) reconcile.Handlers {
 	composeFile := filepath.Join(dir, "generated", "compose."+env+".yaml")
+	composeFor := func(settings stack.Settings, service string) string {
+		if !settings.RendersInfra() || !stack.HasPerSpaceServices(settings) {
+			return composeFile
+		}
+		part := "shared"
+		if settings.PassportServices[service] == "per-space" || service == "hosting-controller" && settings.PassportServices["hosting"] == "per-space" {
+			part = "user"
+		}
+		return filepath.Join(dir, "generated", "compose."+part+"."+env+".yaml")
+	}
+	converge := func(settings stack.Settings) error {
+		if !settings.RendersInfra() || !stack.HasPerSpaceServices(settings) {
+			return dockerCompose(ctx, dir, "compose", "-f", composeFile, "up", "-d", "--remove-orphans", "--wait", "--wait-timeout", "180")
+		}
+		for _, part := range []string{"shared", "user"} {
+			if part == "user" {
+				if err := ensureAgentNetwork(ctx, stack.ManagedAgentNetwork(settings), dockerOutput); err != nil {
+					return err
+				}
+			}
+			file := filepath.Join(dir, "generated", "compose."+part+"."+env+".yaml")
+			if err := dockerCompose(ctx, dir, "compose", "-f", file, "up", "-d", "--remove-orphans", "--wait", "--wait-timeout", "180"); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	docker := func(a ...string) error {
 		return dockerCompose(ctx, dir, a...)
 	}
@@ -409,7 +436,7 @@ func applyHandlers(ctx context.Context, dir, root, env string) reconcile.Handler
 			if (service == "hosting-controller" && settings.Hosting.Image == "") || (service != "hosting-controller" && settings.PassportServices[service] == "") {
 				// A rollback can remove a newly created service. Converge the
 				// restored project so its orphaned container is removed.
-				return docker("compose", "-f", composeFile, "up", "-d", "--remove-orphans", "--wait", "--wait-timeout", "180")
+				return converge(settings)
 			}
 			name := stack.ComposeServiceName(settings, service)
 			if name == "" {
@@ -426,15 +453,27 @@ func applyHandlers(ctx context.Context, dir, root, env string) reconcile.Handler
 					}
 				}
 				infraCompose := filepath.Join(infraDir, "generated", "compose."+env+".yaml")
+				if infraSettings, readErr := stack.ReadEffective(infraDir, env); readErr == nil && infraSettings.RendersInfra() && stack.HasPerSpaceServices(infraSettings) {
+					infraCompose = filepath.Join(infraDir, "generated", "compose.shared."+env+".yaml")
+				}
 				return docker("compose", "-f", infraCompose, "up", "-d", "--wait", "--wait-timeout", "180", "--force-recreate", "--no-deps", service)
 			}
-			return docker("compose", "-f", composeFile, "up", "-d", "--wait", "--wait-timeout", "180", "--force-recreate", "--no-deps", name)
+			if settings.RendersInfra() && settings.PassportServices[service] == "per-space" {
+				if err := ensureAgentNetwork(ctx, stack.ManagedAgentNetwork(settings), dockerOutput); err != nil {
+					return err
+				}
+			}
+			return docker("compose", "-f", composeFor(settings, service), "up", "-d", "--wait", "--wait-timeout", "180", "--force-recreate", "--no-deps", name)
 		},
 		// One sweep covers every instance the new revision dropped:
 		// containers whose services no longer exist in the just-rendered
 		// file are compose orphans.
 		Remove: func() error {
-			return docker("compose", "-f", composeFile, "up", "-d", "--remove-orphans", "--wait", "--wait-timeout", "180")
+			settings, err := stack.ReadEffective(dir, env)
+			if err != nil {
+				return err
+			}
+			return converge(settings)
 		},
 		Respawn: func() error {
 			return respawnRuntime(ctx, dir, env)

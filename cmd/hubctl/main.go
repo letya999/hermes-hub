@@ -884,6 +884,46 @@ func run(ctx context.Context, args []string) error {
 		if len(f.Args()) > 0 {
 			upArgs = append(upArgs, "--no-deps")
 		}
+		if s.RendersInfra() && stack.HasPerSpaceServices(s) {
+			sharedFile := filepath.Join(abs, "generated", "compose.shared."+*environment+".yaml")
+			userFile := filepath.Join(abs, "generated", "compose.user."+*environment+".yaml")
+			upFile := func(file string, selected []string) error {
+				args := append(append([]string{"compose", "-f", file}, upArgs...), selected...)
+				return dockerCmd(args...).Run()
+			}
+			if len(f.Args()) == 0 {
+				if err := upFile(sharedFile, nil); err != nil {
+					return err
+				}
+				if err := ensureAgentNetwork(ctx, stack.ManagedAgentNetwork(s), dockerOutput); err != nil {
+					return err
+				}
+				return upFile(userFile, nil)
+			}
+			shared, user := stack.SplitInfraCompose(s, stack.Compose(s, *root, abs))
+			sharedNames, userNames := []string{}, []string{}
+			for _, name := range f.Args() {
+				if _, ok := user["services"].(stack.M)[name]; ok {
+					userNames = append(userNames, name)
+				} else if _, ok := shared["services"].(stack.M)[name]; ok {
+					sharedNames = append(sharedNames, name)
+				} else {
+					return fmt.Errorf("service %q is not in this stack", name)
+				}
+			}
+			if len(sharedNames) > 0 {
+				if err := upFile(sharedFile, sharedNames); err != nil {
+					return err
+				}
+			}
+			if len(userNames) > 0 {
+				if err := ensureAgentNetwork(ctx, stack.ManagedAgentNetwork(s), dockerOutput); err != nil {
+					return err
+				}
+				return upFile(userFile, userNames)
+			}
+			return nil
+		}
 		if err := docker(append(upArgs, f.Args()...)...); err != nil {
 			return err
 		}
@@ -891,6 +931,15 @@ func run(ctx context.Context, args []string) error {
 	}
 	switch op {
 	case "down":
+		if s, err := stack.ReadEffective(abs, *environment); err == nil && s.RendersInfra() && stack.HasPerSpaceServices(s) {
+			for _, part := range []string{"user", "shared"} {
+				file := filepath.Join(abs, "generated", "compose."+part+"."+*environment+".yaml")
+				if err := dockerCmd("compose", "-f", file, "down", "--remove-orphans").Run(); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
 		return docker("down", "--remove-orphans")
 	case "logs":
 		return docker("logs", "--tail", "100", "-f")
@@ -966,6 +1015,20 @@ func dockerOutput(ctx context.Context, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "docker", args...) // #nosec G702 -- fixed docker executable, argv without shell
 	cmd.Env = dockerCLIEnv()
 	return cmd.CombinedOutput()
+}
+
+func ensureAgentNetwork(ctx context.Context, name string, run func(context.Context, ...string) ([]byte, error)) error {
+	out, err := run(ctx, "network", "inspect", "--format", "{{.Internal}}", name)
+	if err == nil {
+		if strings.TrimSpace(string(out)) != "true" {
+			return fmt.Errorf("agent network %s is not internal", name)
+		}
+		return nil
+	}
+	if _, err := run(ctx, "network", "create", "--internal", name); err != nil {
+		return fmt.Errorf("create agent network %s: %w", name, err)
+	}
+	return nil
 }
 
 // A stopped Compose container can pin the previous generation after its tag

@@ -99,6 +99,12 @@ control-plane services (toolhub, credential-broker, cliproxy,
 workload-controller, communication-hub) are rendered once by the space
 whose `agent.yaml` keeps `infra: true`; siblings join the external
 `hermes-hub-runtime` network and enroll via `toolhub-tokens.json`.
+For a published infra owner, rendering also emits separate Compose plans:
+`compose.shared.<env>.yaml` keeps shared services and their existing volumes
+in the original project, while `compose.user.<env>.yaml` runs that owner's
+`per-space` services in a second project. `hubctl up` and `space apply` use
+these plans; the published `stack.yaml` decides placement. The owner's agent
+network is an internal external network shared with supervisor-spawned runtimes.
 
 For migrated spaces the published six-passport revision under
 `generated/passports/<revision>/` (selected by `generated/passports/current`)

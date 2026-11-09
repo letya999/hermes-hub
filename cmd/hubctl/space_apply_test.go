@@ -887,6 +887,8 @@ func TestSpaceApplyRenderFailureRestoresPreviousView(t *testing.T) {
 // `up --remove-orphans` so a dropped stack.services instance's container
 // actually disappears (imperative topology, both directions).
 func TestApplyRemoveHandlerSweepsOrphans(t *testing.T) {
+	dir := t.TempDir()
+	writeManagedSpaceDocs(t, dir, "alice", nil)
 	var captured []string
 	old := dockerCompose
 	dockerCompose = func(ctx context.Context, dir string, args ...string) error {
@@ -895,7 +897,7 @@ func TestApplyRemoveHandlerSweepsOrphans(t *testing.T) {
 	}
 	defer func() { dockerCompose = old }()
 
-	h := applyHandlers(context.Background(), t.TempDir(), t.TempDir(), "dev")
+	h := applyHandlers(context.Background(), dir, t.TempDir(), "dev")
 	if h.Remove == nil {
 		t.Fatal("remove action has no handler")
 	}
@@ -1034,7 +1036,9 @@ func TestApplyRecreateResolvesComposeNames(t *testing.T) {
 	// The infra sibling owns the shared compose project the channel
 	// diff's communication-hub recreate must run against.
 	infra := filepath.Join(root, "spaces", "infra")
-	writeManagedSpaceDocs(t, infra, "infra", managedInfraDocs("infra", false))
+	infraDocs := managedInfraDocs("infra", false)
+	infraDocs["stack"] = strings.Replace(infraDocs["stack"], "model-relay: {mode: shared}", "model-relay: {mode: per-space}", 1)
+	writeManagedSpaceDocs(t, infra, "infra", infraDocs)
 	var captured []string
 	old := dockerCompose
 	dockerCompose = func(ctx context.Context, dir string, args ...string) error {
@@ -1066,7 +1070,7 @@ func TestApplyRecreateResolvesComposeNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(captured, " ")
-	if !strings.Contains(joined, filepath.Join("infra", "generated", "compose.dev.yaml")) || !strings.Contains(joined, "communication-hub") {
+	if !strings.Contains(joined, filepath.Join("infra", "generated", "compose.shared.dev.yaml")) || !strings.Contains(joined, "communication-hub") {
 		t.Fatalf("shared service must recreate in the infra project: %v", captured)
 	}
 	// Rebuild delegates the selected image to the same path as hubctl build.
